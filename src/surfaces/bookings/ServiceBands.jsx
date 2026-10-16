@@ -33,9 +33,9 @@ export function DayRuleNotice({ text }) {
   if (!text) return null;
   return (
     <div role="note" style={{
-      fontSize: 12, fontWeight: 700, color: 'var(--orn)', padding: '5px 10px', borderRadius: 999,
+      display: 'inline-block', fontSize: 12, fontWeight: 700, color: 'var(--orn)', padding: '5px 10px', borderRadius: 12,
       background: 'color-mix(in srgb, var(--orn) 10%, transparent)', border: '1px solid color-mix(in srgb, var(--orn) 32%, transparent)',
-      whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0, maxWidth: '100%',
+      whiteSpace: 'normal', overflowWrap: 'anywhere', minWidth: 0, maxWidth: '100%', lineHeight: 1.35,
     }} title={text}>{text}</div>
   );
 }

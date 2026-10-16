@@ -227,11 +227,15 @@ const LIVE_SOURCES = ['pos', 'kiosk', 'online', 'mobile', 'catering', 'hubrise',
 test('the check source: booking after 20261016f, online before it', async () => {
   const fs = await import('node:fs');
   const sql = fs.readFileSync(new URL('../../../supabase/migrations/20261016f_OPS_booking_noshow_reports.sql', import.meta.url), 'utf8');
-  const m = /add constraint closed_checks_source_check\s+check \(source = any \(array\[([^\]]+)\]\)\)/i.exec(sql);
-  assert.ok(m, 'the migration re adds closed_checks_source_check');
-  const list = m[1].split(',').map((x) => x.trim().replace(/^'|'$/g, ''));
-  for (const s of LIVE_SOURCES) assert.ok(list.includes(s), `the new list keeps ${s}`);
-  assert.ok(list.includes(CHARGE_SOURCE));
+  // 16 Oct 2026 release review: the new list is built FROM the live constraint (every source it
+  // allows is kept) plus the charge source, and the file stops if the constraint is not there.
+  assert.match(sql, /select pg_get_constraintdef\(c\.oid\) into v_def from pg_constraint c/);
+  assert.match(sql, /closed_checks_source_check not found, nothing changed/);
+  assert.match(sql, /regexp_matches\(v_def, /);
+  assert.ok(sql.includes(`v_list := v_list || '${CHARGE_SOURCE}'::text;`), 'the charge source is added to the live list');
+  assert.match(sql, /add constraint closed_checks_source_check check \(source = any \(array\['/);
+  assert.match(sql, /\]\)\) not valid'/);
+  assert.ok(!/array\['pos', 'kiosk'/.test(sql), 'no typed list that could drop a live source');
   assert.equal(LIVE_SOURCES.includes(CHARGE_SOURCE), false);
   assert.equal(LIVE_SOURCES.includes(CHARGE_SOURCE_FALLBACK), true);
   assert.equal(isSourceCheckRefusal({ code: '23514', message: 'new row for relation "closed_checks" violates check constraint "closed_checks_source_check"' }), true);

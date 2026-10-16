@@ -221,7 +221,7 @@ test('slots: the booking\'s own time is marked current, past and full times say 
   assert.equal(cur.full, false);
   const tooBig = (await handleManage('manage_slots', { token: TOKEN, date: dayISO(5), party: 40 }, deps)).body;
   assert.deepEqual(tooBig.slots, []);
-  assert.match(tooBig.message, /please call the venue on 01484 000000/);
+  assert.match(tooBig.message, /send a request on the booking page or call the venue on 01484 000000/);
 });
 
 test('a cancelled booking shows as cancelled with nothing to press', async () => {
@@ -338,4 +338,18 @@ test('an edit_booking without p_expected_edited_at (older 20261016b) is called w
   const r = (await handleManage('manage_change', { token: TOKEN, date: dayISO(6), time: '20:00', party: 2 }, deps)).body;
   assert.equal(r.ok, true, r.message);
   assert.deepEqual(seen, [true, false]);
+});
+
+test('the guest link keeps to the venue\'s largest online party', async () => {
+  // Largest online party 6 (host tools): a booking of 2 cannot be grown to 10 on the link
+  // (16 Oct 2026 release review), but a party already bigger keeps its size.
+  const { deps } = setup({ rules: { widget_max_party: 6 } });
+  const r = (await handleManage('manage_slots', { token: TOKEN, date: dayISO(5), party: 10 }, deps)).body;
+  assert.deepEqual(r.slots, []);
+  assert.match(r.message, /For more than 6 guests, send a request on the booking page/);
+  const ok = (await handleManage('manage_slots', { token: TOKEN, date: dayISO(5), party: 6 }, deps)).body;
+  assert.equal(ok.ok, true);
+  const big = setup({ rules: { widget_max_party: 6 }, booking: { covers: 8 } });
+  const keep = (await handleManage('manage_slots', { token: TOKEN, date: dayISO(5), party: 8 }, big.deps)).body;
+  assert.equal(keep.ok, true);
 });

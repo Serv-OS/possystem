@@ -145,6 +145,27 @@ export async function promotePaidBooking(db: Db, bookingId: string, kind: string
     if (tab) return { ok: false, promoted: false, status: 'expired', error: 'table_taken' };
   }
 
+  // A host stand pay link leaves a phone booking 'confirmed' while the guest pays
+  // (booking-host pay_link). promote_paid_booking only moves pending_payment or
+  // expired, so a prepay on that link is moved here, the same for the guest page
+  // and the Adyen webhook, whichever settles first (16 Oct 2026 release review).
+  // A deposit or a hold keeps it confirmed, which the RPC already answers as done.
+  if (bk.status === 'confirmed' && next === 'prepaid') {
+    const { data: reqRows, error: reqErr } = await db.from('booking_requests')
+      .select('payload').eq('booking_id', bookingId).limit(20);
+    if (reqErr) return { ok: false, promoted: false, status: bk.status, error: 'lookup_failed' };
+    const hasPayLink = (reqRows || []).some((r: { payload?: Record<string, unknown> | null }) => r?.payload?.kind === 'pay_link');
+    if (hasPayLink) {
+      const { data: moved, error: moveErr } = await db.from('bookings')
+        .update({ status: 'prepaid' }).eq('id', bookingId).eq('status', 'confirmed').select('id');
+      if (moveErr) return { ok: false, promoted: false, status: bk.status, error: 'promote_failed' };
+      if (moved?.length) return { ok: true, promoted: true, status: 'prepaid' };
+      const { data: cur } = await db.from('bookings').select('status').eq('id', bookingId).maybeSingle();
+      if (cur?.status === 'prepaid') return { ok: true, promoted: false, status: 'prepaid' };
+      return { ok: false, promoted: false, status: cur?.status ?? null, error: cur ? 'not_promotable' : 'unknown_booking' };
+    }
+  }
+
   const { data, error } = await db.rpc('promote_paid_booking', { p_booking_id: bookingId, p_next_status: next });
   if (!error && data && typeof data === 'object') {
     return {
@@ -284,7 +305,7 @@ export async function markPaymentNeedsRefund(
     if (!r.location_id) continue;
     const who = [context.guestName ? `for ${context.guestName}` : null, context.time ? `at ${String(context.time).slice(0, 5)}` : null]
       .filter(Boolean).join(' ');
-    const body = `${moneyText(r.amount, r.currency)} was paid online${who ? ` ${who}` : ''}, but ${reason}. Refund the guest in Adyen.`;
+    const body = `${moneyText(r.amount, r.currency)} was paid online${who ? ` ${who}` : ''}, but ${reason}. Open the booking and press Refund on its Payment card.`;
     const { error: alertErr } = await db.from('activity_events').insert({
       location_id: r.location_id,
       kind: 'system',

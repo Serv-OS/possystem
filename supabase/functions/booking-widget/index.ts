@@ -1221,10 +1221,9 @@ Deno.serve(async (req) => {
             method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}` },
             body: JSON.stringify({ action: 'confirm', booking_id: bookingId }),
           }).catch(() => {});
-          if (kind === 'prepay') {
-            const { data: moved } = await db.from('bookings').update({ status: 'prepaid' }).eq('id', bookingId).eq('status', 'confirmed').select('id');
-            if (moved?.length) { confirmNow(); return { ok: true, promoted: true, status: 'prepaid' }; }
-          } else {
+          // A prepay goes through promotePaidBooking below, which moves a pay link booking from
+          // confirmed to prepaid for this page and the webhook alike.
+          if (kind !== 'prepay') {
             confirmNow();
             return { ok: true, promoted: false, status: 'confirmed' };
           }

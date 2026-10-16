@@ -49,7 +49,7 @@ import { platformAdmin } from '../_shared/gift-card-utils.ts';
 import { pagedRows } from '../_shared/pagedRows.js';
 import {
   LIVE_FOR_GUEST, MAX_SEND_ATTEMPTS, reminderDue, confirmationToSend, cancelToTell, changeToTell,
-  snapshotOf, sameSnapshot, nextAttempt, isPermanentFailure, calendarLinks, guestTemplateData, manageUrl,
+  snapshotOf, sameSnapshot, reminderIsStale, nextAttempt, isPermanentFailure, calendarLinks, guestTemplateData, manageUrl,
   venueContact, moneyWords, zonedToEpoch, owedBackOnBooking,
 } from '../_shared/bookingGuest.js';
 import { manageTokenFor, readBookingPayments, healGuestCancel, GUEST_CANCEL_REASON } from '../_shared/bookingGuestDb.ts';
@@ -492,8 +492,11 @@ async function guestSweep(venues: Map<string, Promise<Venue>>, out: { sent: Row[
         for (const kind of ['reminder_day', 'reminder_2h'] as Kind[]) {
           // A reminder for a booking that already had its confirmation in the last few hours is
           // skipped inside reminderDue (booked_recently).
-          if (!has(kind, ch) && reminderDue({ kind, booking: bk, tz, now }).due) {
-            note(bk, kind, ch, await deliver({ kind, channel: ch, bk, venue, v2: true }));
+          // A reminder sent for the booking's old date or time goes again for the new one.
+          const prev = has(kind, ch);
+          const stale = reminderIsStale(prev, bk);
+          if ((!prev || stale) && reminderDue({ kind, booking: bk, tz, now }).due) {
+            note(bk, kind, ch, await deliver({ kind, channel: ch, bk, venue, v2: true, mode: stale ? 'change' : 'once' }));
           }
         }
         // What this guest was last told on this channel: the newest confirmation or change sent.
@@ -608,6 +611,9 @@ Deno.serve(async (req) => {
 
     // ── notify: the guest changed or cancelled on their manage page ──────────
     if (action === 'notify') {
+      // Only booking-widget (the guest's own manage page) calls this, with the service role. Anyone
+      // else could make it text a guest about any booking (16 Oct 2026 release review).
+      if ((req.headers.get('Authorization') || '') !== `Bearer ${SERVICE_ROLE}`) return json({ ok: false, error: 'forbidden' }, 403);
       const bookingId = String(body.booking_id || '');
       const kind = String(body.kind || '') as Kind;
       if (kind !== 'changed' && kind !== 'cancelled') return json({ ok: false, error: 'kind must be changed or cancelled' }, 400);
@@ -617,6 +623,8 @@ Deno.serve(async (req) => {
       if (!bk0) return json({ ok: false, error: 'unknown_booking' }, 404);
       const [bk] = await withCrmContact([bk0]);
       if (kind === 'cancelled' && bk.status !== 'cancelled') return json({ ok: false, error: 'not_cancelled' }, 409);
+      // Only the guest's own online cancel is told here; a team cancel goes through the sweep's rules.
+      if (kind === 'cancelled' && bk.cancel_reason !== GUEST_CANCEL_REASON) return json({ ok: false, error: 'not_a_guest_cancel' }, 409);
       if (kind === 'changed' && !LIVE_FOR_GUEST.includes(bk.status)) return json({ ok: false, error: 'not_live' }, 409);
       const venue = await loadVenue(String(bk.location_id), venues);
       const results: Record<string, SendResult> = {};

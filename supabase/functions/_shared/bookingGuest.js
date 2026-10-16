@@ -21,7 +21,7 @@
 // import from src/). bookingGuestParity.test.js fails the suite when they drift. Edit one, copy
 // it over the other.
 
-import { paymentDue, paymentNetMinor, isNeedsRefundRow } from './bookingPayment.js';
+import { paymentDue, paymentNetMinor, isNeedsRefundRow, amountMinorOf } from './bookingPayment.js';
 
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 const hm = (s) => String(s || '').slice(0, 5);
@@ -175,11 +175,16 @@ export function cancelMoney(payments = []) {
 // the wrong sum):
 //   paidCovers   the party the money was taken for (the booking page's request row); missing
 //                means the booking's party before this change
-//   owed back    captured x (paidCovers - newCovers) / paidCovers, for a per guest price only.
-//                It is the WHOLE figure owed back now, not the step: 6 to 4 to 5 owes one
-//                seat, 6 to 4 to 6 owes nothing. The caller stores it in place of any older one.
-//   top up       more guests than were paid for, at today's price for the extra seats. There
-//                is no online top up yet, so the page refuses and the guest calls.
+//   held         what the rows still hold now (net of refunds); paid = what was taken (gross)
+//   required     paid x newCovers / paidCovers up to the paid party; above it, paid plus
+//                today's price for the extra seats
+//   owed back    held - required, for a per guest price only. It is the WHOLE figure owed
+//                back now, not the step: 6 to 4 to 5 owes one seat, 6 to 4 to 6 owes nothing.
+//                The caller stores it in place of any older one.
+//   top up       required - held: more guests than were paid for, or seats the venue already
+//                refunded coming back (6 to 4, £20 refunded, then 4 to 6 owes £20 again,
+//                16 Oct 2026 release review). There is no online top up yet, so the page
+//                refuses and the guest calls.
 //   state 'none'          nothing was paid
 //   state 'settled'       what was paid still covers the party (or cannot be worked out: no
 //                         package, or a price per booking that does not move with the party)
@@ -201,14 +206,16 @@ export function changeMoney({ pkg = null, oldCovers, newCovers, paidCovers = nul
   if (duePaid === null) return settled;
   const perGuest = dueAt(paid + 1) !== duePaid;
   if (!perGuest) return settled;
-  if (to > paid) {
-    const more = (dueAt(to) ?? duePaid) - duePaid;
-    return more > 0 ? { state: 'needs_top_up', diffMinor: more, ...base } : settled;
-  }
-  if (to < paid) {
-    const owed = Math.min(m.capturedMinor, Math.round((m.capturedMinor * (paid - to)) / paid));
-    return owed > 0 ? { state: 'owed_back', diffMinor: owed, ...base } : settled;
-  }
+  // What was taken on the rows that still count (a refund lowers what they hold, not this).
+  const takenRows = (payments || []).filter((p) => p && p.status === 'captured'
+    && (p.kind === 'prepay' || p.kind === 'deposit') && !p.applied_to_check && !needsRefund(p));
+  const gross = Math.max(m.capturedMinor, takenRows.reduce((s, p) => s + amountMinorOf(p), 0));
+  const held = m.capturedMinor;
+  const required = to > paid
+    ? gross + Math.max(0, (dueAt(to) ?? duePaid) - duePaid)
+    : Math.round((gross * to) / paid);
+  if (required > held) return { state: 'needs_top_up', diffMinor: required - held, ...base };
+  if (required < held) return { state: 'owed_back', diffMinor: held - required, ...base };
   return settled;
 }
 
@@ -311,6 +318,12 @@ export const snapshotOf = (b) => ({
 });
 export const sameSnapshot = (a, b) => !!a && !!b
   && String(a.date) === String(b.date) && hm(a.time) === hm(b.time) && num(a.covers) === num(b.covers);
+
+// Was a visit reminder on the ledger sent for a different date or time than the booking has now?
+// Then it is sent again for the new one (16 Oct 2026 release review: a booking moved to next
+// Friday never had a reminder for Friday). A row with no detail (the old ledger) is left alone.
+export const reminderIsStale = (row, booking) => !!row && !!row.detail && !!booking
+  && (String(row.detail.date ?? '') !== snapshotOf(booking).date || hm(row.detail.time) !== snapshotOf(booking).time);
 
 // Tell the guest about a change? told = what they were last told (their confirmation, or the
 // last change message that went); tried = the last change message tried, sent or not. A change

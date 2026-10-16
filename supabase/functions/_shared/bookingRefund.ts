@@ -78,6 +78,18 @@ export async function recomputeRefunded(db: Db, parentId: string): Promise<Row> 
     if (due !== undefined && due !== had) {
       patch.refund_due_minor = due;
       patch.refund_reason = null;
+    } else if (due === undefined && !parent.applied_to_check && had !== null && had > 0) {
+      // Money not used on a bill yet, flagged as owed back by a guest party change (manage.ts
+      // flagOwedBack): a stand refund lowers the figure by what went back since the last count
+      // (a failed refund puts it back), never above what the payment still holds. Without this
+      // the Diary kept saying "give back" after it was given (16 Oct 2026 release review).
+      const prevBack = hasColumn ? Math.max(0, Math.round(Number(pr.data.amount_refunded_minor) || 0)) : 0;
+      const step = hasColumn ? back - prevBack : 0;
+      const left = Math.max(0, Math.min(had - step, total - back));
+      if (left !== had) {
+        patch.refund_due_minor = left > 0 ? left : null;
+        if (left <= 0) patch.refund_reason = null;
+      }
     }
   }
   if (Object.keys(patch).length) {

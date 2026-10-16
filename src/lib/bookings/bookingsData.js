@@ -59,6 +59,8 @@ export function rowToBooking(r) {
     paidMinor: r._paidMinor ?? null,
     paidPrepayMinor: r._paidPrepayMinor ?? null,
     paidDepositMinor: r._paidDepositMinor ?? null,
+    // Money flagged to go back to the guest (needs_refund), so a cancelled booking can be refunded.
+    owedBackMinor: r._owedBackMinor ?? null,
     pacingOverrideBy: r.pacing_override_by || null,
     // 10 Sep 2026 payment gate: what the widget said was due at book time
     // (migration 20260910). undefined = column not there yet, null = nothing
@@ -188,6 +190,7 @@ export async function loadBookings(locationId, dateISO) {
     // paired devices from migration 20260824). Missing map entry = ledger not
     // visible (pre-migration RLS / error) → paidMinor stays null = "unknown".
     const paid = new Map(); // booking_id → { total, prepay, deposit } minor
+    const owedBack = new Map(); // booking_id → minor flagged needs_refund (before any refund)
     // 16 Oct 2026 review: a failed booking_tables read is NOT a good read. The rows still come
     // back (each on its primary table, the boot fallback), but with { error, partial }, so the
     // catch up reload keeps the diary on screen instead of shrinking every joined party to one
@@ -197,7 +200,7 @@ export async function loadBookings(locationId, dateISO) {
       const [{ data: bt, error: btErr }, { data: po }, { data: pay, error: payErr }] = await Promise.all([
         supabase.from('booking_tables').select('booking_id, table_id, is_primary').in('booking_id', ids),
         supabase.from('booking_preorders').select('booking_id').in('booking_id', ids),
-        supabase.from('booking_payments').select('booking_id, kind, amount, status').in('booking_id', ids).eq('status', 'captured'),
+        supabase.from('booking_payments').select('booking_id, kind, amount, status').in('booking_id', ids).in('status', ['captured', 'needs_refund']),
       ]);
       if (btErr) {
         console.warn('[bookingsData] loadBookings tables:', btErr.message);
@@ -218,6 +221,14 @@ export async function loadBookings(locationId, dateISO) {
       if (!payErr) {
         for (const r of pay || []) {
           if (r.kind === 'refund') continue;
+          // 16 Oct 2026 release review: money flagged to go back (a guest cancel in time) is kept
+          // apart, so Back Office can offer Refund on a cancelled booking. Never counted as paid.
+          if (r.status === 'needs_refund') {
+            if (r.kind === 'prepay' || r.kind === 'deposit') {
+              owedBack.set(r.booking_id, (owedBack.get(r.booking_id) || 0) + Math.round((Number(r.amount) || 0) * 100));
+            }
+            continue;
+          }
           // 16 Oct 2026: a no show or late cancel fee is the venue's revenue, never money paid
           // with the booking (it would badge the booking prepaid and count as credit).
           if (r.kind === 'no_show_charge') continue;
@@ -237,6 +248,7 @@ export async function loadBookings(locationId, dateISO) {
       _paidMinor: paid.get(r.id)?.total ?? null,
       _paidPrepayMinor: paid.get(r.id)?.prepay ?? null,
       _paidDepositMinor: paid.get(r.id)?.deposit ?? null,
+      _owedBackMinor: owedBack.get(r.id) ?? null,
     })).filter(Boolean), ...(tablesError ? { error: tablesError, partial: true } : {}) };
   } catch (e) {
     if (warnAbsentOr(e, 'loadBookings')) return { data: [] };

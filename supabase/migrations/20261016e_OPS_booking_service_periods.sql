@@ -384,7 +384,7 @@ begin
 
   -- 16 Oct 2026 (bookings audit section 3 item 6): service periods, closed days, date blocks,
   -- and for online bookings the notice and days ahead. Walk ins are never refused.
-  if coalesce(p_status, 'confirmed') <> 'dining' then
+  if coalesce(p_status, 'confirmed') <> 'dining' and coalesce(p_source, 'host') <> 'walk_in' then
     v_refusal := public._booking_time_refusal(p_location_id, p_booking_date, p_start_time, coalesce(p_source, 'host'));
     if v_refusal is not null then
       return v_refusal;

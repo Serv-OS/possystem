@@ -23,7 +23,7 @@ import { supabase, isMock } from '../../lib/supabase';
 // 16 Oct 2026: the no show and late cancel charge (NoShowCharge.jsx). A charge is the venue's
 // revenue, never money paid with the booking, so the ledger rows below leave it out.
 import NoShowCharge from './NoShowCharge.jsx';
-import { withoutNoShowCharges, takenCharge, moneyText } from '../../lib/bookings/noShowCharge.js';
+import { withoutNoShowCharges, takenCharge, noShowRows, moneyText } from '../../lib/bookings/noShowCharge.js';
 import { toMin, toHM, isTableFree, toOptimiserBooking, sessionsToBlocks } from '../../lib/bookings/optimiser.js';
 import { loadBookingPayments, lookupPreorderLinkBase } from '../../lib/bookings/bookingsData.js';
 import { undoNoShowStatus, bookingUnpaid, isNeedsRefundRow } from '../../lib/bookings/bookingPayment.js';
@@ -357,7 +357,7 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
         </div>
 
         {/* day switcher + view toggle */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px 0', flexShrink: 0 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10, padding: '10px 14px 0', flexShrink: 0 }}>
           <button className="btn btn-ghost btn-xs" onClick={() => shiftDay(-1)} style={{ ...mono }}>‹</button>
           {/* v5.9.62: the date is a real picker (tap it), and Today brings you back. Peter,
               24 Sep, on the iPad: "you need to be able to click on the date and set a date in
@@ -373,8 +373,9 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
           </div>
           {/* 16 Oct 2026 (host tools): the booking requests inbox. */}
           <div style={{ marginLeft: 'auto' }}><RequestsInbox /></div>
-          <DayRuleNotice text={serviceDay.notice} />
         </div>
+        {/* On its own line so the iPad shows the whole sentence (16 Oct 2026 release review). */}
+        {serviceDay.notice && <div style={{ padding: '6px 14px 0', flexShrink: 0 }}><DayRuleNotice text={serviceDay.notice} /></div>}
 
         {/* timeline / list — one measured scroll container for both views */}
         <div ref={wrapRef} style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: 14 }}>
@@ -955,7 +956,9 @@ export function Inspector({ b, nowMin, packages, tables, onClose, startMoving = 
   const [chargedNow, setChargedNow] = useState({ id: null, res: null });
   const feeRow = takenCharge(allPayRows);
   const feeNow = chargedNow.id === b.id ? chargedNow.res : null;
-  const feeTaken = !!feeRow || !!feeNow;
+  // A charge still waiting for the bank (pending) blocks Undo too: it may settle after the undo.
+  const feePending = noShowRows(allPayRows).some((r) => r.status === 'pending');
+  const feeTaken = !!feeRow || !!feeNow || feePending;
   // 10 Sep 2026 payment gate: pending_payment, or a booking that owed money
   // with no successful payment on the ledger (payRows null = not read yet).
   const unpaid = bookingUnpaid({ booking: b, pkg, payments: payRows });
@@ -1179,6 +1182,10 @@ export function Inspector({ b, nowMin, packages, tables, onClose, startMoving = 
               disabled={!b.seatedAt && payRows === null && !payReadFailed}
               onClick={() => {
                 setUndoErr('');
+                if (b.status === 'no_show' && feePending && !feeRow && !feeNow) {
+                  setUndoErr('A no show charge on this booking is still waiting for the bank. Wait for its answer before undoing the no show.');
+                  return;
+                }
                 if (b.status === 'no_show' && feeTaken) {
                   const amt = feeRow ? moneyText(Math.round(Number(feeRow.amount) * 100), String(feeRow.currency || 'GBP').toUpperCase())
                     : moneyText(feeNow?.amountMinor, feeNow?.currency);

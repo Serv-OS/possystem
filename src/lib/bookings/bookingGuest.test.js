@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   venueClockParts, zonedToEpoch, addDaysISO, fmtDateWords, guestWindow, manageState,
-  moneyOnBooking, cancelMoney, changeMoney, owedBackOnBooking, paymentNetMinor, moneyWords, packageOnDate, reminderDue,
+  reminderIsStale, moneyOnBooking, cancelMoney, changeMoney, owedBackOnBooking, paymentNetMinor, moneyWords, packageOnDate, reminderDue,
   confirmationToSend, cancelToTell, snapshotOf, sameSnapshot, changeToTell, nextAttempt,
   isPermanentFailure, calendarLinks, guestTemplateData, manageUrl, venueContact, MAX_SEND_ATTEMPTS,
 } from './bookingGuest.js';
@@ -107,6 +107,28 @@ test('changeMoney: more guests on a paid menu needs a top up, fewer is owed back
   assert.equal(changeMoney({ pkg: dep, oldCovers: 4, newCovers: 6, payments: [{ id: 'd', kind: 'deposit', status: 'captured', amount: 40 }] }).state, 'needs_top_up');
   // No package to work it out from: never guessed.
   assert.equal(changeMoney({ pkg: null, oldCovers: 4, newCovers: 2, payments: pay }).state, 'settled');
+});
+
+test('changeMoney: seats the venue already refunded must be paid again to come back', () => {
+  // £10 a guest, 6 paid; the guest goes to 4 and the venue refunds £20 (16 Oct 2026 review).
+  const pkg = { payment_model: 'prepay', price: 10, price_unit: 'per_cover' };
+  const pays = [
+    { id: 'p', kind: 'prepay', status: 'captured', amount: 60, currency: 'gbp' },
+    { id: 'r', kind: 'refund', status: 'refunded', amount: 20, refund_of: 'p' },
+  ];
+  const back = changeMoney({ pkg, oldCovers: 4, newCovers: 6, paidCovers: 6, payments: pays });
+  assert.equal(back.state, 'needs_top_up');
+  assert.equal(back.diffMinor, 2000);
+  const five = changeMoney({ pkg, oldCovers: 4, newCovers: 5, paidCovers: 6, payments: pays });
+  assert.equal(five.state, 'needs_top_up');
+  assert.equal(five.diffMinor, 1000);
+  assert.equal(changeMoney({ pkg, oldCovers: 4, newCovers: 4, paidCovers: 6, payments: pays }).state, 'settled');
+  const three = changeMoney({ pkg, oldCovers: 4, newCovers: 3, paidCovers: 6, payments: pays });
+  assert.equal(three.state, 'owed_back');
+  assert.equal(three.diffMinor, 1000);
+  // With nothing refunded, 6 to 4 to 6 still owes nothing.
+  assert.equal(changeMoney({ pkg, oldCovers: 4, newCovers: 6, paidCovers: 6, payments: [pays[0]] }).state, 'settled');
+  assert.equal(changeMoney({ pkg, oldCovers: 6, newCovers: 4, paidCovers: 6, payments: [pays[0]] }).diffMinor, 2000);
 });
 
 test('moneyWords', () => {
@@ -261,4 +283,13 @@ test('money net of part refunds (amount_refunded_minor)', () => {
   assert.equal(moneyOnBooking([{ ...row, amount_refunded_minor: 8000 }]).rows.length, 0, 'fully refunded is not money on the booking');
   assert.equal(owedBackOnBooking([{ ...row, status: 'needs_refund' }]).owedBackMinor, 6000);
   assert.equal(owedBackOnBooking([{ ...row, refusal_reason: 'needs refund: the guest cancelled online in time' }]).owedBackMinor, 6000);
+});
+
+test('reminderIsStale: a reminder sent for the old date or time goes again after a move', () => {
+  const bk = { booking_date: '2026-10-23', start_time: '19:00:00', covers: 4 };
+  assert.equal(reminderIsStale({ detail: { date: '2026-10-17', time: '19:00', covers: 4 } }, bk), true);
+  assert.equal(reminderIsStale({ detail: { date: '2026-10-23', time: '18:30', covers: 4 } }, bk), true);
+  assert.equal(reminderIsStale({ detail: { date: '2026-10-23', time: '19:00', covers: 2 } }, bk), false, 'a party change alone does not resend');
+  assert.equal(reminderIsStale({ detail: null }, bk), false);
+  assert.equal(reminderIsStale(null, bk), false);
 });

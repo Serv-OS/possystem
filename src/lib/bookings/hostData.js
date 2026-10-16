@@ -36,6 +36,9 @@ async function invoke(fn, body) {
       if (status === 404 && (ctx?.code === 'NOT_FOUND' || /requested function/i.test(String(ctx?.message || msg)))) {
         return { ok: false, error: NOT_DEPLOYED, notDeployed: true };
       }
+      // Keep the server's own answer on a non 2xx reply (adyen-modify answers a refund Adyen did
+      // not confirm with 502 { pending: true }), so the screen can say "on its way".
+      if (ctx && typeof ctx === 'object') return { ...ctx, ok: false, error: msg, status };
       return { ok: false, error: msg, status };
     }
     return data || { ok: false, error: 'The server sent nothing back.' };

@@ -33,6 +33,7 @@ import {
   payLinkWindow, venueWallToEpochMs,
 } from '../_shared/bookingHost.js';
 import { payLinkToken, payLinkUrl } from '../_shared/payLink.js';
+import { secondStepRefusal } from '../_shared/second-step.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -132,6 +133,7 @@ async function loadDayBookings(locationId: string, date: string) {
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock; // docs/SECOND_STEP.md
   if (req.method !== 'POST') return json({ ok: false, error: 'POST only' }, 405);
 
   const token = (req.headers.get('Authorization') || '').replace('Bearer ', '').trim();

@@ -141,6 +141,37 @@ test('a booking that is gone is unknown_booking, never a success', async () => {
   assert.equal((await promotePaidBooking(db, 'bk-x', 'prepay')).error, 'unknown_booking');
 });
 
+test('promotePaidBooking: a prepay on a host pay link moves a confirmed booking to prepaid, whichever path settles first', async () => {
+  // The webhook settles first (16 Oct 2026 release review): the RPC refuses confirmed, so this
+  // must be decided before it, or the money is flagged for refund and the guest pays twice.
+  const db = fakeDb({
+    tables: {
+      bookings: [{ id: 'bk-l', location_id: LOC, status: 'confirmed', booking_date: '2026-10-20', start_time: '19:00:00' }],
+      booking_requests: [{ booking_id: 'bk-l', payload: { kind: 'pay_link', party: 4 } }],
+    },
+    // Like promote_paid_booking: already at the status = done, confirmed = refused.
+    rpc: async () => (db.tables.bookings[0].status === 'prepaid'
+      ? { data: { ok: true, promoted: false, status: 'prepaid' }, error: null }
+      : { data: { ok: false, promoted: false, status: 'confirmed', error: 'not_promotable' }, error: null }),
+  });
+  const r = await promotePaidBooking(db, 'bk-l', 'prepay');
+  assert.deepEqual(r, { ok: true, promoted: true, status: 'prepaid' });
+  assert.equal(db.tables.bookings[0].status, 'prepaid');
+  assert.ok(!db.calls.some((c) => c.rpc), 'the RPC is not asked');
+  const again = await promotePaidBooking(db, 'bk-l', 'prepay');
+  assert.equal(again.ok, true, 'the second path sees it already prepaid');
+});
+
+test('promotePaidBooking: a confirmed booking with no pay link is still refused a prepay', async () => {
+  const db = fakeDb({
+    tables: { bookings: [{ id: 'bk-n', location_id: LOC, status: 'confirmed' }], booking_requests: [{ booking_id: 'bk-n', payload: { party: 4 } }] },
+    rpc: async () => ({ data: { ok: false, promoted: false, status: 'confirmed', error: 'not_promotable' }, error: null }),
+  });
+  const r = await promotePaidBooking(db, 'bk-n', 'prepay');
+  assert.equal(r.error, 'not_promotable');
+  assert.equal(db.tables.bookings[0].status, 'confirmed');
+});
+
 test('markPaymentNeedsRefund: before the migration the status is kept and the reason says NEEDS REFUND; money raises an alert', async () => {
   const db = fakeDb({
     tables: {
@@ -159,7 +190,7 @@ test('markPaymentNeedsRefund: before the migration the status is kept and the re
   const alert = db.tables.activity_events[0];
   assert.equal(alert.severity, 'urgent');
   assert.equal(alert.ref_id, 'bk-1');
-  assert.equal(alert.body, '£240.00 was paid online for Ana at 19:00, but the party was seated before the payment arrived. Refund the guest in Adyen.');
+  assert.equal(alert.body, '£240.00 was paid online for Ana at 19:00, but the party was seated before the payment arrived. Open the booking and press Refund on its Payment card.');
   assert.ok(!/bk-1/.test(alert.body), 'no ids inside the sentence');
 });
 

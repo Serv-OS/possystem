@@ -131,8 +131,10 @@ function seed({ bookings = [], reminders = [], rules = {}, v1 = false, customers
     message_templates: [],
   });
 }
-const call = async (body) => {
-  const res = await handler(new Request('http://fn.test', { method: 'POST', body: JSON.stringify(body) }));
+// booking-widget calls with the service role; notify refuses anything else.
+const call = async (body, { anon = false } = {}) => {
+  const headers = anon ? {} : { Authorization: `Bearer ${ENV.SUPABASE_SERVICE_ROLE_KEY}` };
+  const res = await handler(new Request('http://fn.test', { method: 'POST', headers, body: JSON.stringify(body) }));
   return res.json();
 };
 const bk = (over = {}) => ({
@@ -292,7 +294,7 @@ test('notify: the guest\'s own change is told once, the money line comes from th
   assert.equal(b.results.sms.reason, 'nothing_changed');
   assert.equal(state.sms.length, 1);
 
-  seed({ bookings: [bk({ status: 'cancelled', cancelled_at: '2026-10-14T10:59:00Z' })], reminders: [conf] });
+  seed({ bookings: [bk({ status: 'cancelled', cancelled_at: '2026-10-14T10:59:00Z', cancel_reason: 'Guest cancelled online' })], reminders: [conf] });
   state.ops.booking_payments.push({ booking_id: 'bk-1', kind: 'prepay', amount: 120, currency: 'gbp', status: 'needs_refund' });
   await call({ action: 'notify', booking_id: 'bk-1', kind: 'cancelled' });
   assert.match(state.sms[0].message, /The £120 you paid will be refunded by the venue\./);
@@ -372,4 +374,33 @@ test('the sweep flags a guest cancel whose refund flag was lost', async () => {
   await call({ action: 'send_due' });
   assert.equal(state.ops.booking_payments[0].status, 'needs_refund');
   assert.ok(state.ops.activity_events.some((e) => e.title === 'Online booking payment needs a refund'));
+});
+
+test('notify: refused without the service role, and a team cancel is never told through it', async () => {
+  at('2026-10-14T11:00:00Z');
+  const conf = { booking_id: 'bk-1', kind: 'confirmation', channel: 'sms', detail: { date: '2026-10-17', time: '19:00', covers: 2 } };
+  seed({ bookings: [bk({ start_time: '20:00:00' })], reminders: [conf] });
+  const anon = await call({ action: 'notify', booking_id: 'bk-1', kind: 'changed' }, { anon: true });
+  assert.equal(anon.error, 'forbidden');
+  assert.equal(state.sms.length, 0);
+  seed({ bookings: [bk({ status: 'cancelled', cancelled_at: '2026-10-14T10:59:00Z', cancel_reason: 'Duplicate' })], reminders: [conf] });
+  const team = await call({ action: 'notify', booking_id: 'bk-1', kind: 'cancelled' });
+  assert.equal(team.error, 'not_a_guest_cancel');
+  assert.equal(state.sms.length, 0);
+});
+
+test('a reminder sent for the old date goes again after the booking moves', async () => {
+  at('2026-10-16T11:00:00Z');
+  // The day before reminder went for Friday 16th; the booking is now Saturday 17th.
+  const old = { booking_id: 'bk-1', kind: 'reminder_day', channel: 'sms', status: 'sent', detail: { date: '2026-10-16', time: '19:00', covers: 2 }, sent_at: '2026-10-15T10:00:00Z' };
+  seed({ bookings: [bk()], reminders: [old] });
+  await call({ action: 'send_due' });
+  assert.equal(state.sms.filter((m) => /19:00/.test(m.message)).length >= 1, true);
+  const row = ledger().find((x) => x.kind === 'reminder_day');
+  assert.equal(row.detail.date, '2026-10-17');
+  assert.equal(row.status, 'sent');
+  // Run again: nothing more.
+  const before = state.sms.length;
+  await call({ action: 'send_due' });
+  assert.equal(state.sms.length, before);
 });

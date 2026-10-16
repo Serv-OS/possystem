@@ -7,7 +7,8 @@
 // has Accept (booked on the server through create_booking, the guest gets the
 // confirmation), Call (the guest's number) and Decline (a short text to the
 // guest). It checks every 45 seconds and raises a message on the stand when a
-// new one arrives, whichever screen is showing.
+// new one arrives, while the Diary is open (it is mounted in the Diary header;
+// moving the check to the whole stand is a follow up).
 // Data: booking-host (requests, request_accept, request_decline).
 
 import { useCallback, useEffect, useRef, useState } from 'react';

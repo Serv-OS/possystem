@@ -153,3 +153,27 @@ test('refunding the unused part of a payment the bill used lowers what is owed b
   await recomputeRefunded(db, PID);
   assert.equal(db.tables.booking_payments[0].refund_due_minor, 2000);
 });
+
+test('refunding money a guest party change flagged as owed back clears the flag, once', async () => {
+  // 6 to 4 online flagged 20.00 on a payment not used on a bill (16 Oct 2026 release review).
+  const p = parent({ amount: 60, applied_to_check: false, refund_due_minor: 2000, refund_reason: 'The guest changed the party online from 6 to 4' });
+  const db = fakeDb({ tables: { booking_payments: [p, refundRow({ amount: 20 })] } });
+  await recomputeRefunded(db, PID);
+  assert.equal(db.tables.booking_payments[0].refund_due_minor, null);
+  assert.equal(db.tables.booking_payments[0].refund_reason, null);
+  // Adyen confirms it: counted again, nothing changes
+  db.tables.booking_payments[1].status = 'refunded';
+  await recomputeRefunded(db, PID);
+  assert.equal(db.tables.booking_payments[0].refund_due_minor, null);
+});
+
+test('a part refund of money owed back lowers the figure; a failed one puts it back', async () => {
+  const p = parent({ amount: 60, applied_to_check: false, refund_due_minor: 2000, refund_reason: 'owed back' });
+  const db = fakeDb({ tables: { booking_payments: [p, refundRow({ amount: 5 })] } });
+  await recomputeRefunded(db, PID);
+  assert.equal(db.tables.booking_payments[0].refund_due_minor, 1500);
+  assert.equal(db.tables.booking_payments[0].refund_reason, 'owed back');
+  db.tables.booking_payments[1].status = 'failed';
+  await recomputeRefunded(db, PID);
+  assert.equal(db.tables.booking_payments[0].refund_due_minor, 2000);
+});

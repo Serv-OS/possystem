@@ -20,7 +20,7 @@
 //     and the venue can switch them off (booking_rules.guest_manage_enabled). Then the page says
 //     to call the venue, with the number.
 //   - Money is never refunded by itself. A cancel in time flags every captured prepay or deposit
-//     row as owed back and raises it on the venue's activity feed ("Refund the guest in Adyen").
+//     row as owed back and raises it on the venue's activity feed ("press Refund on its Payment card").
 //     Fewer guests on a per guest prepay or deposit stores the difference as owed back unless the
 //     bill uses it (the till's close works out the final figure). More guests on a paid booking
 //     needs a top up, which cannot be paid online yet: the page refuses and gives the phone.
@@ -41,6 +41,7 @@ import {
 } from '../_shared/bookingGuest.js';
 import { isMissingColumnError, isMissingFunctionError } from '../_shared/bookingPromote.ts';
 import { GUEST_CANCEL_REASON, isMissingTable, readBookingPayments, healGuestCancel } from '../_shared/bookingGuestDb.ts';
+import { widgetPartyBounds } from '../_shared/bookingHost.js';
 
 // deno-lint-ignore no-explicit-any
 type Row = Record<string, any>;
@@ -112,8 +113,13 @@ export async function handleManage(action: string, body: Row, d: Deps): Promise<
   const owedBackMinor = () => owedBackOnBooking(pays || []).owedBackMinor;
   const cust = (bk.customer || {}) as Row;
   const today = d.venueToday(tz);
-  const maxCovers = Math.max(1, Math.min(maxPartyForCap(rules.pacingCap, 12), Number(pkg?.max_covers) || 12));
-  const minCovers = Math.max(1, Number(pkg?.min_covers) || 1);
+  // The venue's online party sizes (Largest and Smallest online party, host tools) as well as the
+  // pacing cap and the package: a guest link never grows a booking past what the booking page
+  // would take without a request (16 Oct 2026 release review).
+  const bounds = widgetPartyBounds({ ...(rr as Row), ...(rules as Row) }, maxPartyForCap(rules.pacingCap, 50));
+  const maxCovers = Math.max(1, Math.min(bounds.max, Number(pkg?.max_covers) || bounds.max));
+  // The venue's smallest online party never refuses the party the booking already has.
+  const minCovers = Math.max(1, Number(pkg?.min_covers) || 1, Math.min(bounds.min, Number(bk.covers) || 1));
   const pkgTurn = pkg?.turn_minutes && Number(pkg.turn_minutes) > 0 ? Number(pkg.turn_minutes) : null;
   const myTables = (ownTables || []).map((r: Row) => String(r.table_id));
   if (!myTables.length && bk.primary_table_id) myTables.push(String(bk.primary_table_id));
@@ -204,7 +210,7 @@ export async function handleManage(action: string, body: Row, d: Deps): Promise<
     if (ahead > (rules.maxDaysAhead ?? 90)) return `Bookings open ${rules.maxDaysAhead ?? 90} days ahead. Pick an earlier date.`;
     if (party < minCovers) return `${pkg?.name || 'This booking'} is for ${minCovers} guests or more.`;
     if (party > Math.max(maxCovers, Number(bk.covers) || 1)) {
-      return `For more than ${Math.max(maxCovers, Number(bk.covers) || 1)} guests, please call the venue${contact.phone ? ` on ${contact.phone}` : ''}.`;
+      return `For more than ${Math.max(maxCovers, Number(bk.covers) || 1)} guests, send a request on the booking page or call the venue${contact.phone ? ` on ${contact.phone}` : ''}.`;
     }
     if (date !== String(bk.booking_date) && (rules.blockedDates || []).includes(date)) return 'The venue is not taking bookings online on that date. Pick another day.';
     if (pkg && date !== String(bk.booking_date) && !packageOnDate(pkg, date)) return `${pkg.name} is not available on that date. Pick another day.`;

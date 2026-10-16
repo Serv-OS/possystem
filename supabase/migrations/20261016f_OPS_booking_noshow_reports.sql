@@ -36,7 +36,9 @@
 --
 -- AFTER RUNNING
 --   Read the check select at the bottom: one_charge_index 1, payments_by_time_index 1,
---   duplicate_charges 0, source_allows_booking true.
+--   duplicate_charges 0, source_allows_booking true, and source_check_definition listing the
+--   12 sources: pos, kiosk, online, mobile, catering, hubrise, pax_table_pay,
+--   pos_send_to_terminal, adyen_pay_at_table, ezcater, qr, booking (NOT VALID).
 
 begin;
 
@@ -83,16 +85,45 @@ create index if not exists booking_payments_location_created
   on public.booking_payments (location_id, created_at);
 
 -- ── 3. closed_checks takes source 'booking' (the no show charge check) ──────
--- Same pattern as 20260919a1 step 0c: the full live list plus 'booking', NOT VALID so the
--- largest table is not re-read while it is locked (the new list is a strict superset, so no
--- existing row can break it; every new insert and update is still checked). Last in the file,
--- so the lock on closed_checks is held only from here to the commit. If a till holds
--- closed_checks for more than 3 seconds the whole file stops and nothing changes: run it again.
+-- The new list is built FROM the live constraint: every source it allows today is kept, and
+-- 'booking' is added (16 Oct 2026 release review: a typed list could drop a source live allows
+-- and every check closed with it would then fail). Read live 16 Oct 2026: the 11 sources from
+-- 20260919a1, NOT VALID. NOT VALID again so the largest table is not re-read while it is locked
+-- (the new list is a strict superset, so no existing row can break it; every new insert and
+-- update is still checked). Last in the file, so the lock on closed_checks is held only from
+-- here to the commit. If a till holds closed_checks for more than 3 seconds the whole file
+-- stops and nothing changes: run it again. If the constraint is missing or not a plain list,
+-- the file stops with the reason and nothing changes.
 set local lock_timeout = '3s';
-alter table public.closed_checks drop constraint if exists closed_checks_source_check;
-alter table public.closed_checks add constraint closed_checks_source_check
-  check (source = any (array['pos', 'kiosk', 'online', 'mobile', 'catering', 'hubrise', 'pax_table_pay',
-                             'pos_send_to_terminal', 'adyen_pay_at_table', 'ezcater', 'qr', 'booking'])) not valid;
+do $src$
+declare
+  v_def  text;
+  v_list text[];
+begin
+  select pg_get_constraintdef(c.oid) into v_def from pg_constraint c
+   where c.conrelid = 'public.closed_checks'::regclass and c.conname = 'closed_checks_source_check';
+  if v_def is null then
+    raise exception 'closed_checks_source_check not found, nothing changed';
+  end if;
+  if v_def like '%''booking''%' then
+    raise notice 'closed_checks already allows booking, left as it is';
+    return;
+  end if;
+  if v_def not like 'CHECK ((source = ANY (ARRAY[%' then
+    raise exception 'closed_checks_source_check is not a plain list of sources, nothing changed: %', v_def;
+  end if;
+  select array_agg(t.m[1] order by t.n) into v_list
+    from regexp_matches(v_def, '''([^'']*)''', 'g') with ordinality as t(m, n);
+  if v_list is null or array_length(v_list, 1) < 1 then
+    raise exception 'could not read the sources in closed_checks_source_check, nothing changed: %', v_def;
+  end if;
+  v_list := v_list || 'booking'::text;
+  execute 'alter table public.closed_checks drop constraint closed_checks_source_check';
+  execute 'alter table public.closed_checks add constraint closed_checks_source_check check (source = any (array['
+       || (select string_agg(quote_literal(x), ', ' order by n) from unnest(v_list) with ordinality as u(x, n))
+       || '])) not valid';
+end
+$src$;
 
 comment on column public.booking_payments.kind is
   'hold = card saved, nothing taken (amount 0 since 20261016d, hold_minor keeps the rule figure, never money); deposit, prepay = money taken online, credit on the bill; no_show_charge = the saved card charged for a no show or a late cancellation by booking-charge (16 Oct 2026; merchant_reference bkpay-<booking>-noshow-a<N> or -latecancel-a<N>; posted to closed check bkns-<booking>-a<N>, applied_check_id); refund = money given back.';
@@ -109,4 +140,6 @@ select
       group by booking_id having count(*) > 1) d) as duplicate_charges,
   (select count(*) from public.booking_payments where kind = 'no_show_charge') as no_show_charges_so_far,
   (select coalesce(bool_or(pg_get_constraintdef(oid) like '%''booking''%'), false) from pg_constraint
-    where conrelid = 'public.closed_checks'::regclass and conname = 'closed_checks_source_check') as source_allows_booking;
+    where conrelid = 'public.closed_checks'::regclass and conname = 'closed_checks_source_check') as source_allows_booking,
+  (select pg_get_constraintdef(oid) from pg_constraint
+    where conrelid = 'public.closed_checks'::regclass and conname = 'closed_checks_source_check') as source_check_definition;

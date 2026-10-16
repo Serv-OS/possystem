@@ -397,7 +397,8 @@ function BookingsList({ userName }) {
   const date = bookingsDate || today;
   const isToday = date === today;
   const rows = useMemo(
-    () => bookings.filter((b) => b.status !== 'cancelled').slice().sort((a, b) => toMin(a.startTime) - toMin(b.startTime) || bookingName(a).localeCompare(bookingName(b))),
+    // A cancelled booking stays listed (greyed) while money on it is owed back, so it can be refunded.
+    () => bookings.filter((b) => b.status !== 'cancelled' || Number(b.owedBackMinor) > 0).slice().sort((a, b) => toMin(a.startTime) - toMin(b.startTime) || bookingName(a).localeCompare(bookingName(b))),
     [bookings],
   );
   const labelOf = (id) => tables.find((t) => t.id === id)?.label || String(id).slice(-4);
@@ -427,7 +428,7 @@ function BookingsList({ userName }) {
           const locked = editRefusal(b);
           const edited = editedLine(b, fmt);
           return (
-            <div key={b.id} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px 12px', padding: '8px 12px', borderRadius: 10, background: 'var(--bg2)', border: '1px solid var(--bdr)' }}>
+            <div key={b.id} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px 12px', padding: '8px 12px', borderRadius: 10, background: 'var(--bg2)', border: '1px solid var(--bdr)', opacity: b.status === 'cancelled' ? 0.75 : 1 }}>
               <span style={{ fontSize: 14, fontWeight: 800, fontFamily: MONO, color: 'var(--t1)', width: 48 }}>{String(b.startTime || '').slice(0, 5)}</span>
               <span style={{ flex: '1 1 160px', minWidth: 0 }}>
                 <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: 'var(--t1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{bookingName(b)}</span>
@@ -438,7 +439,7 @@ function BookingsList({ userName }) {
               <StatusBadge st={st} />
               <button className="btn btn-ghost btn-xs" onClick={() => setEditing(b.id)} title={locked || 'Edit this booking'} style={{ height: 30, fontWeight: 700, opacity: locked ? 0.55 : 1, marginLeft: 'auto' }}>Edit</button>
               {/* 16 Oct 2026 (host tools): money taken for this booking, with Refund. */}
-              {Number(b.paidMinor) > 0 && (
+              {(Number(b.paidMinor) > 0 || Number(b.owedBackMinor) > 0) && (
                 <button className="btn btn-ghost btn-xs" onClick={() => setMoney(money === b.id ? null : b.id)} style={{ height: 30, fontWeight: 700 }}>
                   {money === b.id ? 'Hide payments' : 'Payments'}
                 </button>

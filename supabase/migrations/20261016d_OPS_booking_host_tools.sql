@@ -41,7 +41,9 @@
 
 begin;
 
-set local lock_timeout = '5s';
+-- 2 seconds: while this waits for a lock, reads and writes on bookings queue behind it. If it
+-- stops, nothing changed: run it again (16 Oct 2026 release review).
+set local lock_timeout = '2s';
 
 -- 20261016b must be in: this file replaces two of its functions.
 do $guard$
