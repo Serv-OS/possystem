@@ -18,7 +18,7 @@ import { trustSharedRead } from '../lib/deviceFence';
 import { mustChangeRows } from '../lib/rowWrites';
 import { occupationMatch, seatedAtOf } from '../lib/rowWriteFence';
 import { readShowsKitchenScreen } from '../lib/queueDevice';
-import { clearAsMoved, skipAsMovedHere } from './sessionMoveRule';
+import { clearAsMoved, skipAsMovedHere, sameOccupation } from './sessionMoveRule';
 
 // v5.5.639: a table held occupied locally but missing from the DB poll is re-published only if its
 // session is genuinely LIVE — has items, is the active table, or was seated within the business day.
@@ -204,13 +204,18 @@ export async function startSessionReconciler() {
           // device counter, so two parties could share ORD-1001 and this branch cleared a live
           // table. Two parties sharing an id fall through to the self heal below.
           const dbHome = sess?.id ? dbTableBySession.get(sess.id) : null;
+          const dbHomeSession = dbHome && dbHome !== t.id ? supabaseOpen.get(dbHome)?.session : null;
           if (dbHome && clearAsMoved({
             tableId: t.id, local: sess, dbHomeTableId: dbHome,
-            dbHomeSession: supabaseOpen.get(dbHome)?.session, activeTableId: store.activeTableId, now,
+            dbHomeSession, activeTableId: store.activeTableId, now,
           })) {
             changed = true;
             return { ...t, session: null, status: 'available', childIds: [] };
           }
+          // The same party is on another table but this one is the active table or inside the
+          // grace: hold it as it is. Neither cleared nor re-published (a heal would put the party
+          // on two tables); the next tick decides again.
+          if (dbHomeSession && sameOccupation(sess, dbHomeSession)) return t;
           const live = !!sess && (
             (sess.items?.length > 0) || isActive ||
             (sess.seatedAt && (now - sess.seatedAt) < SELF_HEAL_MAX_AGE_MS)
