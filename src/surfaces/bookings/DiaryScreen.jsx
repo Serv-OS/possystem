@@ -41,7 +41,6 @@ import EditBookingSheet from './EditBookingSheet.jsx';
 import GuestTags from './GuestTags.jsx';
 import RefundPanel from './RefundPanel.jsx';
 import PayLinkPanel from './PayLinkPanel.jsx';
-import RequestsInbox from './RequestsInbox.jsx';
 import { useServiceDay } from './useServiceDay.js';
 import { ClosedBands, DayRuleNotice } from './ServiceBands.jsx';
 
@@ -371,8 +370,8 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
             <Chip active={view === 'timeline'} onClick={() => setView('timeline')} style={viewChip}>Timeline</Chip>
             <Chip active={view === 'list'} onClick={() => setView('list')} style={viewChip}>List</Chip>
           </div>
-          {/* 16 Oct 2026 (host tools): the booking requests inbox. */}
-          <div style={{ marginLeft: 'auto' }}><RequestsInbox /></div>
+          {/* 17 Oct 2026 (v5.11.73): the booking requests inbox moved to the stand's top bar
+              (BookingsSurface), so it shows on every screen. */}
         </div>
         {/* On its own line so the iPad shows the whole sentence (16 Oct 2026 release review). */}
         {serviceDay.notice && <div style={{ padding: '6px 14px 0', flexShrink: 0 }}><DayRuleNotice text={serviceDay.notice} /></div>}

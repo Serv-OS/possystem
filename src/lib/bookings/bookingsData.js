@@ -11,7 +11,7 @@
 // back as { ok:false, error:'table_taken', tableId, bookingId } — the UI shows
 // alternatives, it never optimistically writes.
 
-import { supabase, isMock, platformSupabase } from '../supabase';
+import { supabase, isMock, platformSupabase, ensureAuthToken } from '../supabase';
 import { CUSTOMER_ROOT } from '../env';
 import { readAllPagesResult } from '../pagedRead.js';
 import { rowToPreorder, preorderInsertRows, withoutChoiceColumns, missingColumn } from './preorderRows.js';
@@ -258,9 +258,16 @@ export async function loadBookings(locationId, dateISO) {
 }
 
 // The atomic create — server-side free check, never optimistic.
+// 17 Oct 2026 (v5.11.73, migration 20261017b): create_booking is no longer open to the bare public
+// key, only to a signed in session (a paired device signs in anonymously, which is role
+// authenticated) and the service role. So the session is made sure of first: ensureAuthToken
+// hands back the one in storage (it never replaces an identity that exists, and never makes one in
+// Back Office). A refusal for want of a session is said in words.
+export const NO_SESSION_WORDS = 'This device is not signed in, so the booking was NOT made. Close the app, open it again, then book again.';
 export async function createBookingAtomic(b, locationId) {
   if (isMock || !supabase) return { ok: true, simulated: true };
   if (!isRealLoc(locationId)) return { ok: false, error: 'no location' };
+  try { await ensureAuthToken(); } catch { /* the call below says what happened */ }
   try {
     const { data, error } = await supabase.rpc('create_booking', {
       p_id: b.id,
@@ -280,7 +287,13 @@ export async function createBookingAtomic(b, locationId) {
       p_created_by: b.createdBy || null,
       p_pacing_override_by: b.pacingOverrideBy || null,
     });
-    if (error) { if (!warnAbsentOr(error, 'createBooking')) console.warn('[bookingsData] createBooking:', error.message); return { ok: false, error: error.message }; }
+    if (error) {
+      if (!warnAbsentOr(error, 'createBooking')) console.warn('[bookingsData] createBooking:', error.message);
+      if (String(error.code) === '42501' || /permission denied for function create_booking/i.test(String(error.message || ''))) {
+        return { ok: false, error: NO_SESSION_WORDS, message: NO_SESSION_WORDS };
+      }
+      return { ok: false, error: error.message };
+    }
     // 16 Oct 2026: tell the guest (confirmation by text and email, with their change and cancel
     // link). Fire and forget; a walk in or a booking with no phone or email sends nothing.
     if (data?.ok) nudgeConfirmation(b);

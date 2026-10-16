@@ -57,6 +57,10 @@ import { customerInitials, customerLabel } from '../lib/customerInitials';
 import { stampSummary, stampChip } from '../lib/stampSummary';
 import { announceOrderCustomer } from '../lib/orderCustomerLoyalty';
 import { receiptRewardLines } from '../lib/loyaltyMultiRedeem';
+// 17 Oct 2026 (v5.11.73, PR 295 follow up): VIP and Regular on the check header. Display only: it
+// reads the guest's CRM record once (cached five minutes), renders nothing when there is nothing
+// to say, and nothing at all if it ever fails (bookings/GuestTags.jsx, lib/bookings/tillGuestTags.js).
+import { TillGuestTags } from './bookings/GuestTags.jsx';
 
 const COURSE_COLORS = {
   0:{label:'Immediate',color:'#22d3ee',bg:'rgba(34,211,238,.1)'},
@@ -1176,6 +1180,7 @@ export default function POSSurface() {
               ⚠ ALLERGY: {customer.allergens.map(a=>(ALLERGENS.find(x=>x.id===a)?.label||a)).join(', ')}
             </div>
           )}
+          <TillGuestTags customer={customer} />
           {/* 27 Sep 2026 (Peter: "if a customer adds their number and then a staff member can link that
               to a profile that currently has no number"): a new customer with just a phone, whatever the
               takeaway details setting. Link BEFORE payment (order history makes the profile no longer empty). */}
