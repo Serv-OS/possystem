@@ -9,6 +9,9 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../store';
+// 16 Oct 2026 (v5.11.70 host tools): guest tags and the manager PIN for a pacing override.
+import GuestTags from './GuestTags.jsx';
+import ManagerPinPrompt from './ManagerPinPrompt.jsx';
 import { toMin, toHM, turnFor } from '../../lib/bookings/optimiser.js';
 import {
   mono, tintBg, tintBd, rulesOf, initialsOf, Chip, SectionTitle, todayISO } from './bits.jsx';
@@ -36,6 +39,7 @@ export default function BookScreen({ onBooked }) {
   const [err, setErr] = useState('');
   const [saving, setSaving] = useState(false);
   const [refresh, setRefresh] = useState(0);  // bump to re-run suggestions after a race
+  const [askPin, setAskPin] = useState(false); // 16 Oct 2026: manager PIN for the pacing override
 
   // ── time chips across the service window ────────────────────────────────────
   const slotTimes = useMemo(() => {
@@ -120,6 +124,10 @@ export default function BookScreen({ onBooked }) {
 
   return (
     <div style={{ flex: 1, minHeight: 0, display: 'flex', gap: 16, padding: 16, overflow: 'auto' }}>
+      {askPin && (
+        <ManagerPinPrompt title="Manager approval" sub={`${party} covers at ${time} takes the slot over the kitchen's pacing cap.`}
+          onCancel={() => setAskPin(false)} onApproved={(name) => { setAskPin(false); setOverrideBy(name); }} />
+      )}
       {/* ── column 1: party & time ── */}
       <div style={{ ...col, width: 300, flexShrink: 0 }}>
         <SectionTitle n={1}>Party &amp; time</SectionTitle>
@@ -162,7 +170,9 @@ export default function BookScreen({ onBooked }) {
             </div>
             {overrideBy
               ? <div style={{ fontSize: 11, color: 'var(--t2)', marginTop: 6, ...mono }}>Approved by {overrideBy}</div>
-              : <button className="btn btn-red btn-sm" onClick={() => setOverrideBy(approver())} style={{ marginTop: 8, height: 32 }}>Approve (manager)</button>}
+              : <button className="btn btn-red btn-sm" onClick={() => (rules.pacingOverrideRequiresPin ? setAskPin(true) : setOverrideBy(approver()))} style={{ marginTop: 8, height: 36 }}>
+                  {rules.pacingOverrideRequiresPin ? 'Manager PIN to approve' : 'Approve (manager)'}
+                </button>}
           </div>
         )}
         <div style={{ fontSize: 10, color: 'var(--t4)', marginTop: 10, lineHeight: 1.4 }}>
@@ -227,6 +237,7 @@ export default function BookScreen({ onBooked }) {
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 13, fontWeight: 700 }}>{guest.name || 'Guest'}</div>
               <div style={{ fontSize: 11, color: 'var(--t3)', ...mono }}>{guest.phone || ''}</div>
+              <GuestTags customerId={guest.id} compact />
             </div>
             <button onClick={() => setGuest(null)} style={{ background: 'none', border: 'none', color: 'var(--t3)', cursor: 'pointer', fontSize: 15 }}>✕</button>
           </div>
@@ -273,7 +284,7 @@ export default function BookScreen({ onBooked }) {
           <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--t2)' }}>No card is taken here</div>
           <div style={{ fontSize: 10.5, color: 'var(--t3)', marginTop: 3, lineHeight: 1.5 }}>
             Card holds are taken when a guest books online and card capture is switched on in Rules.
-            A booking taken over the phone has no card against it, and the bill is settled on the POS tab.
+            For a phone booking that needs a deposit, prepay or card hold, open the booking after Confirm and press Text a pay link.
           </div>
         </div>
 

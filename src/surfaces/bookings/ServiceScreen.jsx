@@ -17,6 +17,9 @@ import {
 } from './bits.jsx';
 import FloorScreen from './FloorScreen.jsx';
 import { Inspector } from './DiaryScreen.jsx';
+// 16 Oct 2026 (v5.11.70 host tools): the late party prompt, and dragging a waiting party onto the floor.
+import LatePrompt from './LatePrompt.jsx';
+import { dragHandlers, DRAG_SOURCE_STYLE } from './floorDrag.js';
 
 export default function ServiceScreen({ sel, onSelect, onBook }) {
   const narrow = useNarrowStand();
@@ -73,13 +76,15 @@ export default function ServiceScreen({ sel, onSelect, onBook }) {
             <MiniKpi label="Booked" value={`${coversBooked} cvr`} />
             <MiniKpi label="Seated" value={`${coversSeated} cvr`} col="var(--acc)" />
           </div>
+          <LatePrompt onOpen={(id) => onSelect(id)} />
         </div>
 
         <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 10px 12px' }}>
           <GroupLabel>Next up — {nextUp.length}</GroupLabel>
           {nextUp.length === 0 && <div style={{ fontSize: 11, color: 'var(--t4)', padding: '2px 2px 6px' }}>Nothing waiting.</div>}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-            {nextUp.map((b) => <Row key={b.id} b={b} sel={sel} onSelect={onSelect} nowMin={nowMin} packages={packages} tables={topTables} />)}
+            {/* press and hold a waiting party, then drop it on a table on the floor (seats it today) */}
+            {nextUp.map((b) => <Row key={b.id} b={b} sel={sel} onSelect={onSelect} nowMin={nowMin} packages={packages} tables={topTables} drag={dragHandlers(b, isToday ? 'seat' : 'move')} />)}
           </div>
 
           <GroupLabel>Seated — {seated.length}</GroupLabel>
@@ -115,7 +120,7 @@ export default function ServiceScreen({ sel, onSelect, onBook }) {
   );
 }
 
-function Row({ b, sel, onSelect, nowMin, packages, tables }) {
+function Row({ b, sel, onSelect, nowMin, packages, tables, drag = null }) {
   const st = displayStatus(b, nowMin, packages);
   const meta = statusMeta(st);
   const isSel = b.id === sel;
@@ -125,7 +130,9 @@ function Row({ b, sel, onSelect, nowMin, packages, tables }) {
   return (
     <button
       onClick={() => onSelect(isSel ? null : b.id)}
+      {...(drag || {})}
       style={{
+        ...(drag?.onPointerDown ? DRAG_SOURCE_STYLE : {}),
         display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '8px 10px',
         borderRadius: 10, textAlign: 'left', cursor: 'pointer', fontFamily: 'inherit',
         background: isSel ? tintBg('var(--acc)') : 'var(--bg2)',

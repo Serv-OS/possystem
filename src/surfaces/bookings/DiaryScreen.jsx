@@ -30,6 +30,11 @@ import {
   useNowMin, money, initialsOf, bookingName, todayISO, EmptyNote, Chip, preorderStateFor, courseColor,
 } from './bits.jsx';
 import EditBookingSheet from './EditBookingSheet.jsx';
+// 16 Oct 2026 (v5.11.70 host tools): guest tags, refunds, pay link, requests inbox.
+import GuestTags from './GuestTags.jsx';
+import RefundPanel from './RefundPanel.jsx';
+import PayLinkPanel from './PayLinkPanel.jsx';
+import RequestsInbox from './RequestsInbox.jsx';
 
 // A block that may be dragged on the Timeline: live and not yet seated. A
 // seated party's table is the till's business; finished bookings stay put.
@@ -343,6 +348,8 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
             <Chip active={view === 'timeline'} onClick={() => setView('timeline')} style={viewChip}>Timeline</Chip>
             <Chip active={view === 'list'} onClick={() => setView('list')} style={viewChip}>List</Chip>
           </div>
+          {/* 16 Oct 2026 (host tools): the booking requests inbox. */}
+          <div style={{ marginLeft: 'auto' }}><RequestsInbox /></div>
         </div>
 
         {/* timeline / list — one measured scroll container for both views */}
@@ -922,6 +929,8 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
               {b.customer.allergens?.length > 0 && (
                 <div style={{ fontSize: 11, color: 'var(--red)', fontWeight: 700, textTransform: 'capitalize' }}>{b.customer.allergens.join(', ')}</div>
               )}
+              {/* 16 Oct 2026 (host tools): VIP, Regular, visits from the CRM record. */}
+              <GuestTags customerId={b.customerId} />
             </div>
           </div>
         </div>
@@ -968,6 +977,9 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
           )}
         </div>
         <PaymentState b={b} prepaid={prepaid} rows={payRows} />
+        {/* 16 Oct 2026 (host tools): Refund (manager PIN) and the pay link by text. */}
+        <RefundPanel b={b} by={operatorName} />
+        <PayLinkPanel b={b} by={operatorName} />
       </div>
 
       <div style={sec}>

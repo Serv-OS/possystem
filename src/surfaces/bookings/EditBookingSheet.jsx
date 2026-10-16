@@ -32,6 +32,8 @@ import { minutesInTz } from '../../lib/locationTime.js';
 import { UK_ALLERGENS } from '../../lib/kioskAllergens.js';
 import { moneyMinor } from '../../lib/currency.js';
 import { mono, tintBg, tintBd, rulesOf, bookingName, Chip } from './bits.jsx';
+// 16 Oct 2026 (v5.11.70 host tools): VIP, Regular and visits beside the guest.
+import GuestTags from './GuestTags.jsx';
 
 const COVERS = [1, 2, 3, 4, 5, 6, 7, 8, 10, 12];
 
@@ -274,6 +276,7 @@ export default function EditBookingSheet({ b, onClose, onSaved, editedBy = null 
                 </div>
 
                 <div style={lbl}>Guest</div>
+                <GuestTags customerId={snap?.customerId} style={{ marginTop: -2, marginBottom: 8 }} />
                 <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" aria-label="Guest name" style={{ ...inp, marginBottom: 8 }} />
                 <input className="input" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="Phone" aria-label="Guest phone" inputMode="tel" style={{ ...inp, marginBottom: 8, ...mono }} />
                 <input className="input" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" aria-label="Guest email" inputMode="email" style={{ ...inp, marginBottom: 8 }} />
@@ -354,6 +357,6 @@ function PaymentLine({ payment, pkg, covers }) {
   if (payment.state === 'unknown') line = `${unit}. ${moneyMinor(payment.dueMinor)} due for ${covers} covers. Could not read what was paid. Check the booking's payment before taking money.`;
   else if (payment.state === 'settled') { line = `${unit}. ${moneyMinor(payment.dueMinor)} due for ${covers} covers, ${moneyMinor(payment.capturedMinor)} paid. Settled.`; col = 'var(--grn)'; }
   else if (payment.state === 'owed') { line = `${unit}. ${moneyMinor(payment.dueMinor)} due for ${covers} covers, ${moneyMinor(payment.capturedMinor)} paid. ${moneyMinor(payment.diffMinor)} still to take on the till.`; col = 'var(--orn)'; }
-  else { line = `${unit}. ${moneyMinor(payment.dueMinor)} due for ${covers} covers, ${moneyMinor(payment.capturedMinor)} paid. ${moneyMinor(payment.diffMinor)} over paid, refund it in Adyen.`; col = 'var(--orn)'; }
+  else { line = `${unit}. ${moneyMinor(payment.dueMinor)} due for ${covers} covers, ${moneyMinor(payment.capturedMinor)} paid. ${moneyMinor(payment.diffMinor)} over paid. Give it back with Refund on the booking's Payment card.`; col = 'var(--orn)'; }
   return <div style={{ marginTop: 6, fontSize: 12.5, lineHeight: 1.45, color: col, fontWeight: col === 'var(--t2)' ? 500 : 700 }}>{line}</div>;
 }
