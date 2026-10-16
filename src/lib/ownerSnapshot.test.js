@@ -208,6 +208,15 @@ test('8 Oct 2026 (review): a sale from three weeks ago refunded TODAY comes off 
   assert.equal(period_totals.net_sales, 20);
   assert.equal(period_totals.vat, 4);
   assert.equal(period_totals.orders, 3, 'the old sale is not one of today\'s orders');
+  // 16 Oct 2026 (the Net / Gross switch): gross is AFTER the refund too, so it is net plus VAT
+  // (Daily trading's Net sales plus VAT), never takings before refunds (Daily trading's Gross
+  // column would say 36 here, with 12 in its Refunds column). The app says 'after refunds'.
+  assert.equal(period_totals.gross_sales, 24);
+  assert.equal(period_totals.gross_sales, period_totals.net_sales + period_totals.vat);
+  const loc = snap.locations[0];
+  assert.equal(loc.today.gross_sales, loc.today.net_sales + loc.today.vat);
+  assert.equal(loc.today.gross_sales, 24);
+  assert.equal(snap.rollup.gross_sales, 24);
   // A refund made on a day outside the period changes nothing here (it belongs to that day).
   const t2 = leeds();
   t2.closed_checks.push(chk('L', '2026-09-10T10:00:00Z', { refunds: [{ id: 'f-old2', amount: 12, taxAmount: 2, timestamp: '2026-09-12T09:30:00Z', tenderMethod: 'card', cardStatus: 'succeeded', legs: [{ status: 'succeeded', amountMinor: 1200 }] }] }));

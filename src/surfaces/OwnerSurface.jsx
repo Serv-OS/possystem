@@ -55,7 +55,7 @@ import { compareBlock, groupCompareBlock, compareLine, groupLine, sharedCompareR
 import { canDetail, canMix, groupTarget, venueTarget } from '../lib/ownerDetail';
 import { cardBar, allOtherByCurrency } from '../lib/ownerMix';
 import {
-  BASIS_CHIPS, GROSS_NEEDS_UPDATE, readStoredBasis, storeBasis, shownBasis, basisCompare, basisNote, salesHeading, venueSales, rollupSales,
+  BASIS_CHIPS, grossNeedsUpdate, readStoredBasis, storeBasis, shownBasis, basisCompare, cardLines, topItemsNote, salesHeading, venueSales, rollupSales,
 } from '../lib/ownerBasis';
 import OwnerDetail from './owner/OwnerDetail';
 import MixBar from './owner/MixBar';
@@ -384,14 +384,14 @@ function Dashboard({ theme, onToggleTheme }) {
       {/* ── Net or gross sales (16 Oct 2026): every sales figure below follows it ── */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, margin: '-4px 0 14px' }}>
         <span style={{ fontSize: 12, color: 'var(--t3)', fontWeight: 700 }}>Sales shown</span>
-        <div role="group" aria-label="Net or gross sales" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 76px)', gap: 6 }}>
+        <div role="group" aria-label="Net or gross sales" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 84px)', gap: 6 }}>
           {BASIS_CHIPS.map((c) => (
             <button key={c.id} onClick={() => pickBasis(c.id)} aria-pressed={basisAsked === c.id}
-              style={{ ...periodChip, padding: '7px 6px', fontSize: 12.5, ...(basisAsked === c.id ? periodChipOn : null) }}>{c.label}</button>
+              style={{ ...periodChip, minHeight: 44, ...(basisAsked === c.id ? periodChipOn : null) }}>{c.label}</button>
           ))}
         </div>
       </div>
-      {sb.needsUpdate && <div style={{ color: 'var(--t3)', textAlign: 'center', fontSize: 12.5, margin: '-6px 0 12px' }}>{GROSS_NEEDS_UPDATE}</div>}
+      {sb.needsUpdate && <div style={{ color: 'var(--t3)', textAlign: 'center', fontSize: 12.5, margin: '-6px 0 12px' }}>{grossNeedsUpdate(r?.currency || 'GBP')}</div>}
 
       {loading && !data && <div style={{ color: 'var(--t3)', textAlign: 'center', padding: '60px 0' }}>Loading your business…</div>}
       {err && <div style={{ color: 'var(--red)', textAlign: 'center', padding: '20px 0', fontSize: 13 }}>{err}</div>}
@@ -436,6 +436,7 @@ function GroupCard({ g, shown, basis, multi, mixed, onOpen, bar }) {
   const rv = rollupView(r, shown);
   // 16 Oct 2026: the sales, the old line's figure and its percent, net or gross.
   const rs = rollupSales(r, rv, basis);
+  const words = cardLines(basis, cur);
   const dates = sharedRange(g.locations);
   const heading = [copy.heading, multi ? `${r?.locations} venue${r?.locations === 1 ? '' : 's'}` : '', mixed ? cur : '', shown === 'today' ? '' : rangeLabel(dates)].filter(Boolean).join(' · ');
   // The function's own comparison for the period shown; null from a function before the reason word.
@@ -449,10 +450,10 @@ function GroupCard({ g, shown, basis, multi, mixed, onOpen, bar }) {
         <MoreHint />
       </div>
       <div style={{ fontSize: 38, fontWeight: 900, letterSpacing: '-.02em', margin: '2px 0 2px', lineHeight: 1.05 }}>{money(rs.sales, cur)}</div>
-      <BasisLine basis={basis} currency={cur} forecast={rv.forecast > 0} labour />
+      <BasisLine text={words.line} />
       {rv.forecast > 0 && (
         <div style={{ fontSize: 13, fontWeight: 700, color: pctTone(rv.forecast_pct) }}>
-          {rv.forecast_pct}% of forecast <span style={{ color: 'var(--t4)', fontWeight: 600 }}>({money(rv.forecast, cur)})</span>
+          {rv.forecast_pct}% of forecast{words.groupForecast} <span style={{ color: 'var(--t4)', fontWeight: 600 }}>({money(rv.forecast, cur)})</span>
         </div>
       )}
       {/* 8 Oct 2026: the sales mix of this currency's venues, from the function; nothing from an old one. */}
@@ -498,6 +499,7 @@ function VenueCard({ l, showName, period, basis, showDates, onOpen, bar }) {
   const fpct = t.forecast_pct;
   // 16 Oct 2026: the sales, the average check and the old chip's percent, net or gross.
   const vs = venueSales(l, t, basis);
+  const words = cardLines(basis, l.currency);
   // The function's own comparison for the period shown; null from a function before the reason word.
   const cmp = basisCompare(compareBlock(l, t.period), basis);
   const line = cmp ? compareLine(cmp, l.range, t.period) : null;
@@ -512,11 +514,11 @@ function VenueCard({ l, showName, period, basis, showDates, onOpen, bar }) {
         <div>
           <div style={{ fontSize: 10.5, color: 'var(--t4)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em' }}>{salesHeading(basis, t.period)}{showDates && rangeLabel(l.range) ? ` · ${rangeLabel(l.range)}` : ''}</div>
           <div style={{ fontSize: 28, fontWeight: 900, letterSpacing: '-.02em', lineHeight: 1.1 }}>{money(vs.sales, l.currency)}</div>
-          <BasisLine basis={basis} currency={l.currency} forecast={t.forecast > 0} labour />
+          <BasisLine text={words.line} />
         </div>
         <div style={{ textAlign: 'right' }}>
           {t.forecast > 0
-            ? <><div style={{ fontSize: 18, fontWeight: 800, color: pctTone(fpct) }}>{fpct}%</div><div style={{ fontSize: 10, color: 'var(--t4)' }}>of {money(t.forecast, l.currency)}</div></>
+            ? <><div style={{ fontSize: 18, fontWeight: 800, color: pctTone(fpct) }}>{fpct}%</div><div style={{ fontSize: 10, color: 'var(--t4)' }}>of {money(t.forecast, l.currency)}{words.forecastSuffix}</div></>
             : <div style={{ fontSize: 11, color: 'var(--t4)' }}>no forecast</div>}
         </div>
       </div>
@@ -548,7 +550,7 @@ function VenueCard({ l, showName, period, basis, showDates, onOpen, bar }) {
 
       {t.top_items.length > 0 && (
         <div style={{ marginTop: 14, borderTop: '1px solid var(--bdr)', paddingTop: 10 }}>
-          <div style={{ fontSize: 10.5, color: 'var(--t4)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 6 }}>{copy.top}<span style={{ textTransform: 'none', letterSpacing: 0, fontWeight: 600 }}> · till prices</span></div>
+          <div style={{ fontSize: 10.5, color: 'var(--t4)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 6 }}>{copy.top}<span style={{ textTransform: 'none', letterSpacing: 0, fontWeight: 600 }}>{topItemsNote(l.currency)}</span></div>
           {t.top_items.map((it, i) => (
             <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, padding: '3px 0', color: 'var(--t2)' }}>
               <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.qty}× {it.name}</span>
@@ -561,9 +563,11 @@ function VenueCard({ l, showName, period, basis, showDates, onOpen, bar }) {
   );
 }
 
-// 16 Oct 2026: the small line under a sales figure, so a screenshot is never ambiguous.
-function BasisLine({ basis, currency, forecast, labour }) {
-  return <div style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 600, marginTop: 3 }}>{basisNote(basis, currency, { forecast, labour })}</div>;
+// 16 Oct 2026: the small line under a sales figure, so a screenshot is never ambiguous. Always
+// one short line ('Including VAT, after refunds' or 'Excluding VAT, after refunds', the same
+// length), so a tap on the switch never makes a card change height.
+function BasisLine({ text }) {
+  return <div style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 600, marginTop: 3 }}>{text}</div>;
 }
 
 function Stat({ label, value, tone }) {

@@ -25,7 +25,7 @@ import { withTimeout, TimeoutError } from '../../lib/withTimeout';
 import { PERIOD_COPY, rangeLabel } from '../../lib/ownerPeriod';
 import { compareLine, groupLine } from '../../lib/ownerCompare';
 import { DETAIL_NEEDS_UPDATE, detailRequest, detailKey, readDetail, detailRange } from '../../lib/ownerDetail';
-import { detailBasis, detailTotals, basisCompare, basisLabel, salesHeading } from '../../lib/ownerBasis';
+import { detailBasis, detailTotals, basisCompare, salesLabel, salesHeading } from '../../lib/ownerBasis';
 import OwnerReports from './OwnerReports';
 import { money, toneColor, smallCaps, linkBtn } from './style';
 
@@ -138,7 +138,7 @@ function Summary({ detail, target, period, basis }) {
     <div style={{ background: 'linear-gradient(160deg, var(--acc-d), var(--bg1))', border: '1px solid var(--acc-b)', borderRadius: 18, padding: '16px 18px', marginBottom: 12 }}>
       <div style={smallCaps}>{salesHeading(basis, period)}</div>
       <div style={{ fontSize: 34, fontWeight: 900, letterSpacing: '-.02em', lineHeight: 1.1, margin: '2px 0' }}>{money(t.sales, cur)}</div>
-      <div style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 600, marginBottom: 4 }}>{basisLabel(basis, cur)}</div>
+      <div style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 600, marginBottom: 4 }}>{salesLabel(basis, cur)}</div>
       <div style={{ fontSize: 12.5, color: 'var(--t3)' }}>
         {t.orders || 0} order{t.orders === 1 ? '' : 's'} · {money(t.avg, cur, 2)} average{t.tips > 0 ? ` · ${money(t.tips, cur)} tips` : ''}
       </div>

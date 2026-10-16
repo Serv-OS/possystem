@@ -2,11 +2,16 @@
 //
 // 16 Oct 2026, Peter: "the owner app needs a switch to show net or gross sales".
 //
-// THE TWO WORDS, the same as Back Office Daily trading:
+// THE TWO WORDS:
 //   gross  what customers paid for the goods, VAT in, after discounts and comps, less refunds
 //          made in the period. Tips and service charge are never sales.
 //   net    gross less the VAT RECORDED on each sale (closed_checks.tax_amount, refunds less the
 //          VAT they gave back). Never a flat 20 percent: a zero rated sandwich is all net.
+// Net is Back Office Daily trading's Net sales. Gross is Daily trading's Net sales plus VAT, which
+// is its Gross takings LESS its Refunds column: Daily trading's Gross is before refunds (and the
+// Sales summary and Z report use Gross for shelf prices before discounts). So on a day with a
+// refund the Owner app's Gross is lower than any Back Office figure called Gross, and the line
+// under every headline figure says 'after refunds' (salesLabel) so nobody reads it as theirs.
 // Both come from the function (owner-snapshot), worked out from the same check parts, so the
 // screen never works a figure out itself. This file only picks which one to draw.
 //
@@ -23,7 +28,9 @@
 // headline, sales by hour, week by day, order types and channels).
 // WHAT DOES NOT, and says so on screen:
 //   * forecast % and labour %: a forecast is typed net and labour is a share of net sales
-//     (Daily trading), so both stay on net and the label says it.
+//     (Daily trading), so both stay on net. Under Gross the forecast line says 'net' (cardLines);
+//     the labour box keeps its one word label (a longer one wraps in the four across group card
+//     and makes the card jump on a tap) and the Labour report says 'against net sales'.
 //   * payment mix: money taken, VAT in, whatever the switch.
 //   * top items and the sales mix money: till price times quantity before check discounts, as
 //     Product mix. The VAT of one line is not recorded, only the sale's, so a net figure per
@@ -42,8 +49,6 @@ export const BASIS_CHIPS = [
   { id: 'gross', label: 'Gross' },
 ];
 
-export const GROSS_NEEDS_UPDATE = 'Gross sales need a ServOS update. These figures exclude VAT.';
-
 /** The basis asked for, or the default for anything else. */
 export function ownerBasis(v) {
   return OWNER_BASES.includes(v) ? v : DEFAULT_BASIS;
@@ -61,17 +66,6 @@ export function storeBasis(storage, basis) {
 }
 
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
-const r2 = (n) => Math.round(n * 100) / 100;
-
-/** Net from gross and the VAT recorded in it, to the penny. */
-export function netFromGross(gross, vat) {
-  return r2(num(gross) - num(vat));
-}
-
-/** Gross from net and the VAT recorded beside it, to the penny. */
-export function grossFromNet(net, vat) {
-  return r2(num(net) + num(vat));
-}
 
 /** True when the function sends the figures including VAT. */
 export const canGross = (snapshot) => hasFeature(snapshot, 'gross');
@@ -89,34 +83,77 @@ export function shownBasis(snapshot, asked) {
 /** The tax word: VAT at a pound or euro venue, tax at a dollar one. */
 export const taxWord = (currency) => (String(currency || '').toUpperCase() === 'USD' ? 'tax' : 'VAT');
 
-/** The small line under a figure, so a screenshot is never ambiguous: 'Including VAT' or 'Excluding VAT'. */
+/** The one line shown when Gross was asked for but the function is older: VAT or tax by the venue's currency. */
+export const grossNeedsUpdate = (currency) => `Gross sales need a ServOS update. These figures exclude ${taxWord(currency)}.`;
+
+/** 'Including VAT' or 'Excluding VAT': the tax word alone, for figures that are not after refunds. */
 export function basisLabel(basis, currency = 'GBP') {
   return `${ownerBasis(basis) === 'gross' ? 'Including' : 'Excluding'} ${taxWord(currency)}`;
 }
 
 /**
- * The line under a card's figure. Under Gross it also says that the forecast and labour
- * percents beside it are on net sales.
+ * The small line under a headline sales figure (the cards, the detail headline, sales by hour,
+ * week by day): 'Including VAT, after refunds' or 'Excluding VAT, after refunds'. Both are after
+ * refunds (a refund comes off the day it was made), and both are the same length, so a tap on
+ * the switch never makes a card change height.
  */
-export function basisNote(basis, currency = 'GBP', { forecast = false, labour = false } = {}) {
-  const head = basisLabel(basis, currency);
-  if (ownerBasis(basis) !== 'gross' || !(forecast || labour)) return head;
-  const what = forecast && labour ? 'Forecast and labour use' : forecast ? 'Forecast uses' : 'Labour uses';
-  return `${head}. ${what} net sales.`;
+export function salesLabel(basis, currency = 'GBP') {
+  return `${basisLabel(basis, currency)}, after refunds`;
+}
+
+/**
+ * The words on one card that change with the switch, from one place so a test can see them:
+ *   line            under the big figure, always one short line (salesLabel)
+ *   forecastSuffix  after a venue card's forecast money ('of £900 net'): a forecast is typed net
+ *   groupForecast   after '% of forecast' on the group card
+ */
+export function cardLines(basis, currency = 'GBP') {
+  const gross = ownerBasis(basis) === 'gross';
+  return {
+    line: salesLabel(basis, currency),
+    forecastSuffix: gross ? ' net' : '',
+    groupForecast: gross ? ' on net' : '',
+  };
+}
+
+/**
+ * The words after a venue card's 'Top items' heading. Till prices are VAT inclusive at a pound or
+ * euro venue, so they say so (a screenshot under 'Excluding VAT' must not read as ex VAT money);
+ * a dollar venue's till prices are before tax, so only 'till prices'.
+ */
+export function topItemsNote(currency = 'GBP') {
+  return taxWord(currency) === 'VAT' ? ' · till prices, including VAT' : ' · till prices';
 }
 
 /** 'Net sales' or 'Gross sales'. */
 export const salesWord = (basis) => (ownerBasis(basis) === 'gross' ? 'Gross sales' : 'Net sales');
 
+const SWITCH_LEAVES = 'The Net / Gross switch does not change these.';
+
+/**
+ * The notes on the detail screen's report cards, from one place so a test can see them.
+ *   sales       sales by hour and week by day: follow the switch, after refunds
+ *   types       order types and channels: follow the switch, BEFORE refunds (a refund is not
+ *               booked against an order type)
+ *   payments    what each tender took: money taken, tax in, whatever the switch
+ *   exceptions  discounts, voids and refunds: till money, tax in at a VAT venue (till prices
+ *               include VAT); at a dollar venue only 'as rung up', since its prices are before tax
+ */
+export function reportNotes(basis, currency = 'GBP') {
+  const tax = taxWord(currency);
+  const label = basisLabel(basis, currency);
+  return {
+    sales: salesLabel(basis, currency),
+    types: `${salesWord(basis)}, ${label[0].toLowerCase()}${label.slice(1)}, before refunds.`,
+    payments: `What each kind took for goods, including ${tax}, tips out. ${SWITCH_LEAVES}`,
+    exceptions: `${tax === 'VAT' ? 'Including VAT' : 'As rung up on the till'}. ${SWITCH_LEAVES}`,
+  };
+}
+
 /** A card's sales heading for the period: 'Gross sales this week'. */
 export function salesHeading(basis, period) {
   const when = period === 'week' ? 'this week' : period === 'month' ? 'this month' : 'today';
   return `${salesWord(basis)} ${when}`;
-}
-
-/** One figure of a holder: the gross key under Gross, the net key otherwise. */
-export function pick(holder, basis, netKey, grossKey) {
-  return ownerBasis(basis) === 'gross' ? holder?.[grossKey] : holder?.[netKey];
 }
 
 /**

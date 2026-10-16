@@ -18,14 +18,15 @@
 // 16 Oct 2026, the Net / Gross switch: Sales by hour, Week by day and Order types and channels
 // follow it (src/lib/ownerBasis.js maps the function's gross figures into the shapes the charts
 // read). Payment mix is money taken (VAT in) whatever the switch; Top items and the Sales mix
-// money are till prices, as Product mix; labour is a share of net sales. Each card says so.
+// money are till prices, as Product mix; labour is a share of net sales. Each card says so, in
+// words from ownerBasis.reportNotes.
 
 import { useState } from 'react';
 import {
   hourChart, hoursLineWords, weekChart, shareRows, paymentMix, orderTypeLabel, channelLabel, labourView,
 } from '../../lib/ownerDetail';
 import { detailRows, noteFor } from '../../lib/ownerMix';
-import { basisHours, basisWeek, basisRows, basisLabel, salesWord } from '../../lib/ownerBasis';
+import { basisHours, basisWeek, basisRows, reportNotes } from '../../lib/ownerBasis';
 import { ReportCard, Empty, BarLine, Tabs } from './ui';
 import { money, smallCaps, linkBtn } from './style';
 
@@ -33,15 +34,16 @@ const FAINT = 'var(--t3)';
 
 export default function OwnerReports({ detail, period, basis = 'net', range, currency }) {
   const m = (n, dp = 0) => money(n, currency, dp);
-  const label = basisLabel(basis, currency);
+  // 16 Oct 2026: every card's words about VAT and the switch, from one pure place (ownerBasis.reportNotes).
+  const notes = reportNotes(basis, currency);
   return (
     <>
-      <HoursCard hours={basisHours(detail.hours, basis)} period={period} range={range} m={m} label={label} />
+      <HoursCard hours={basisHours(detail.hours, basis)} period={period} range={range} m={m} label={notes.sales} />
       <SalesMixCard mix={detail.mix} period={period} m={m} />
-      <WeekCard week={basisWeek(detail.week, basis)} m={m} label={label} />
-      <PaymentsCard payments={detail.payments} m={m} />
-      <MixCard types={basisRows(detail.order_types, basis)} channels={basisRows(detail.channels, basis)} m={m} note={`${salesWord(basis)}, ${label[0].toLowerCase()}${label.slice(1)}.`} />
-      <ExceptionsCard ex={detail.exceptions} m={m} />
+      <WeekCard week={basisWeek(detail.week, basis)} m={m} label={notes.sales} />
+      <PaymentsCard payments={detail.payments} m={m} note={notes.payments} />
+      <MixCard types={basisRows(detail.order_types, basis)} channels={basisRows(detail.channels, basis)} m={m} note={notes.types} />
+      <ExceptionsCard ex={detail.exceptions} m={m} note={notes.exceptions} />
       <ItemsCard items={detail.items} m={m} />
       <LabourCard labour={detail.labour} m={m} />
     </>
@@ -164,10 +166,10 @@ function WeekCard({ week, m, label }) {
 }
 
 // ── 3. Payment mix ───────────────────────────────────────────────────────────
-function PaymentsCard({ payments, m }) {
+function PaymentsCard({ payments, m, note }) {
   const mix = paymentMix(payments);
   return (
-    <ReportCard title="Payment mix" note="What each kind took for goods, tax in, tips out.">
+    <ReportCard title="Payment mix" note={note}>
       {!mix.money.length && !mix.credits.length ? <Empty>No payments in this period.</Empty> : (
         <>
           {mix.money.map((p) => <BarLine key={p.kind} label={p.label} value={m(p.amount, 2)} sub={`${p.share}%`} w={p.w} />)}
@@ -201,14 +203,14 @@ function MixCard({ types, channels, m, note }) {
 }
 
 // ── 5. Discounts, voids and refunds ──────────────────────────────────────────
-function ExceptionsCard({ ex, m }) {
+function ExceptionsCard({ ex, m, note }) {
   const parts = [
     { key: 'discounts', label: 'Discounts', e: ex?.discounts },
     { key: 'voids', label: 'Voids', e: ex?.voids },
     { key: 'refunds', label: 'Refunds', e: ex?.refunds },
   ];
   return (
-    <ReportCard title="Discounts, voids and refunds">
+    <ReportCard title="Discounts, voids and refunds" note={note}>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8 }}>
         {parts.map((p) => (
           <div key={p.key} style={{ background: 'var(--bg2)', borderRadius: 10, padding: '8px 10px' }}>

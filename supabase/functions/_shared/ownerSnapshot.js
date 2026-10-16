@@ -27,6 +27,9 @@
 // unchanged; each gains a gross twin beside it (gross_sales, avg_check_gross, cmp_gross_sales,
 // pct_gross, vs_cmp_pct_gross, wtd_gross, hours[].gross, week[].gross, order_types[].gross ...)
 // and OWNER_FEATURES says 'gross'. Forecast % and labour % stay on net sales, as Daily trading.
+// Gross here is Daily trading's Net sales plus VAT, which is its Gross takings LESS its Refunds
+// column. It is NOT Daily trading's Gross column (that one is before refunds), so on a day with a
+// refund the two differ by exactly that day's refunds; the app says 'after refunds' under it.
 //
 // A DAY IS THE VENUE'S BUSINESS DAY. 5 Oct 2026, Peter's decision on the Owner app day: "the
 // BUSINESS day, same as Back Office, Daily trading and Xero." Until now a day here was midnight

@@ -11,8 +11,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
-  OWNER_BASIS_KEY, OWNER_BASES, DEFAULT_BASIS, BASIS_CHIPS, GROSS_NEEDS_UPDATE, ownerBasis, readStoredBasis, storeBasis,
-  netFromGross, grossFromNet, canGross, shownBasis, taxWord, basisLabel, basisNote, salesWord, salesHeading, pick,
+  OWNER_BASIS_KEY, OWNER_BASES, DEFAULT_BASIS, BASIS_CHIPS, grossNeedsUpdate, ownerBasis, readStoredBasis, storeBasis,
+  canGross, shownBasis, taxWord, basisLabel, salesLabel, cardLines, topItemsNote, reportNotes, salesWord, salesHeading,
   basisCompare, basisHours, basisWeek, basisRows, detailBasis, detailTotals, venueSales, rollupSales,
 } from './ownerBasis.js';
 import { venueView, rollupView } from './ownerPeriod.js';
@@ -49,20 +49,6 @@ test('the switch is remembered on this phone, and a phone that will not store it
   assert.equal(storeBasis(undefined, 'gross'), false);
 });
 
-test('net from gross and the VAT recorded in it, to the penny, never a flat 20%', () => {
-  assert.equal(netFromGross(12, 2), 10);
-  // A zero rated sale is all net.
-  assert.equal(netFromGross(6, 0), 6);
-  // A mixed check: 4.80 of food at 0% and a 3.60 coffee with 0.60 VAT.
-  assert.equal(netFromGross(8.4, 0.6), 7.8);
-  assert.equal(netFromGross(0.1 + 0.2, 0.1), 0.2);
-  assert.equal(grossFromNet(7.8, 0.6), 8.4);
-  assert.equal(netFromGross(grossFromNet(123.45, 24.69), 24.69), 123.45);
-  // Refunds take VAT off too: a day can be negative both ways.
-  assert.equal(netFromGross(-12, -2), -10);
-  assert.equal(netFromGross(undefined, null), 0);
-});
-
 // ── an older function ────────────────────────────────────────────────────────
 
 test('Gross only from a function that sends it: otherwise net, under net words, with one line', () => {
@@ -75,7 +61,10 @@ test('Gross only from a function that sends it: otherwise net, under net words, 
   assert.deepEqual(shownBasis(old, 'net'), { basis: 'net', needsUpdate: false });
   // Before the first answer lands nothing is drawn, so nothing needs saying yet.
   assert.deepEqual(shownBasis(null, 'gross'), { basis: 'gross', needsUpdate: false });
-  assert.match(GROSS_NEEDS_UPDATE, /exclude VAT/);
+  // The line says VAT at a pound venue and tax at a dollar one, as every other line does.
+  assert.equal(grossNeedsUpdate('GBP'), 'Gross sales need a ServOS update. These figures exclude VAT.');
+  assert.equal(grossNeedsUpdate('USD'), 'Gross sales need a ServOS update. These figures exclude tax.');
+  assert.equal(grossNeedsUpdate(null), 'Gross sales need a ServOS update. These figures exclude VAT.');
 });
 
 // ── the words ────────────────────────────────────────────────────────────────
@@ -88,12 +77,11 @@ test('the line under a figure says which it is, so a screenshot is never ambiguo
   // A dollar venue charges sales tax, not VAT.
   assert.equal(taxWord('usd'), 'tax');
   assert.equal(basisLabel('gross', 'USD'), 'Including tax');
-  // Under Gross the forecast and labour percents beside the figure are on net sales, and it says so.
-  assert.equal(basisNote('gross', 'GBP', { forecast: true, labour: true }), 'Including VAT. Forecast and labour use net sales.');
-  assert.equal(basisNote('gross', 'GBP', { labour: true }), 'Including VAT. Labour uses net sales.');
-  assert.equal(basisNote('gross', 'GBP', { forecast: true }), 'Including VAT. Forecast uses net sales.');
-  assert.equal(basisNote('gross', 'GBP'), 'Including VAT');
-  assert.equal(basisNote('net', 'GBP', { forecast: true, labour: true }), 'Excluding VAT');
+  // A headline figure is after refunds both ways. Daily trading's Gross column is BEFORE
+  // refunds, so the words say it, and nobody reads the Owner app's Gross as that column.
+  assert.equal(salesLabel('gross'), 'Including VAT, after refunds');
+  assert.equal(salesLabel('net'), 'Excluding VAT, after refunds');
+  assert.equal(salesLabel('gross', 'USD'), 'Including tax, after refunds');
   assert.equal(salesWord('gross'), 'Gross sales');
   assert.equal(salesWord('net'), 'Net sales');
   assert.equal(salesHeading('gross', 'today'), 'Gross sales today');
@@ -130,9 +118,6 @@ test('a venue card: the sales, the average check and the old chip follow the swi
     // The view itself (forecast, labour, orders) is the same either way.
     assert.equal(v.forecast_pct, period === 'today' ? 26 : 29);
   }
-  // pick: one figure of a holder by the switch.
-  assert.equal(pick(venue.today, 'gross', 'net_sales', 'gross_sales'), 30);
-  assert.equal(pick(venue.today, 'net', 'net_sales', 'gross_sales'), 26);
 });
 
 test('the group card: the sales, the old line figure and its percent follow the switch', () => {
@@ -194,16 +179,74 @@ test('the detail headline: Gross only when the answer carries it', () => {
   assert.deepEqual(detailTotals(totals, 'net'), { sales: 23.9, avg: 4.78, orders: 5, tips: 0 });
 });
 
-test('the screens use the switch: remembered, labelled, and handed to the reports', () => {
+test('a card never changes height on a tap: the line under the figure is one length both ways; the net note sits on the forecast', () => {
+  const net = cardLines('net', 'GBP'), gross = cardLines('gross', 'GBP');
+  assert.deepEqual(net, { line: 'Excluding VAT, after refunds', forecastSuffix: '', groupForecast: '' });
+  assert.deepEqual(gross, { line: 'Including VAT, after refunds', forecastSuffix: ' net', groupForecast: ' on net' });
+  assert.equal(net.line.length, gross.line.length);
+  assert.equal(cardLines('net', 'USD').line.length, cardLines('gross', 'USD').line.length);
+  // Short enough for one line at 11px in a 375px phone's venue card (about 250px across).
+  assert.ok(gross.line.length <= 30);
+  // Top items on a card are till prices: VAT in at a pound venue, so a screenshot under
+  // 'Excluding VAT' never reads as ex VAT item money.
+  assert.equal(topItemsNote('GBP'), ' · till prices, including VAT');
+  assert.equal(topItemsNote('EUR'), ' · till prices, including VAT');
+  assert.equal(topItemsNote('USD'), ' · till prices');
+});
+
+test('the report notes: which cards follow the switch, and the ones that do not say so', () => {
+  const g = reportNotes('gross', 'GBP'), n = reportNotes('net', 'GBP'), us = reportNotes('gross', 'USD');
+  assert.equal(g.sales, 'Including VAT, after refunds');
+  assert.equal(n.sales, 'Excluding VAT, after refunds');
+  // Order types are booked from sales only, so they are before refunds.
+  assert.equal(g.types, 'Gross sales, including VAT, before refunds.');
+  assert.equal(n.types, 'Net sales, excluding VAT, before refunds.');
+  assert.equal(us.types, 'Gross sales, including tax, before refunds.');
+  // Payment mix and the exceptions card are the same whatever the switch, and say it.
+  for (const b of ['net', 'gross']) {
+    assert.equal(reportNotes(b, 'GBP').payments, 'What each kind took for goods, including VAT, tips out. The Net / Gross switch does not change these.');
+    assert.equal(reportNotes(b, 'GBP').exceptions, 'Including VAT. The Net / Gross switch does not change these.');
+  }
+  assert.equal(us.payments, 'What each kind took for goods, including tax, tips out. The Net / Gross switch does not change these.');
+  assert.equal(us.exceptions, 'As rung up on the till. The Net / Gross switch does not change these.');
+  for (const v of [...Object.values(g), ...Object.values(us)]) assert.doesNotMatch(v, /[\u2013\u2014]/);
+});
+
+// The JSX is not loaded by node:test, so these read the source, one card at a time: each card's
+// own function body must draw its line from cardLines, so dropping it from one card fails here.
+const body = (src, name) => {
+  const at = src.indexOf(`function ${name}(`);
+  assert.ok(at >= 0, `${name} is in the file`);
+  const next = src.indexOf('\nfunction ', at + 1);
+  return src.slice(at, next < 0 ? undefined : next);
+};
+
+test('the screens use the switch: remembered, labelled on every card, and handed to the reports', () => {
   const surface = read('../surfaces/OwnerSurface.jsx');
   assert.match(surface, /readStoredBasis\(phoneStorage\(\)\)/);
   assert.match(surface, /storeBasis\(phoneStorage\(\), id\)/);
   assert.match(surface, /aria-label="Net or gross sales"/);
-  assert.match(surface, /basisNote\(basis, currency/);
+  // The switch is a full size tap target (44 points), not smaller than the period chips.
+  assert.match(surface, /\.\.\.periodChip, minHeight: 44,/);
+  assert.match(surface, /grossNeedsUpdate\(r\?\.currency \|\| 'GBP'\)/);
+  // Two cards draw a sales figure, and each draws the one length line under it.
+  assert.equal((surface.match(/<BasisLine /g) || []).length, 2);
+  for (const card of ['GroupCard', 'VenueCard']) {
+    const b = body(surface, card);
+    assert.match(b, /const words = cardLines\(basis, /, card);
+    assert.match(b, /<BasisLine text=\{words\.line\} \/>/, card);
+  }
+  assert.match(body(surface, 'GroupCard'), /% of forecast\{words\.groupForecast\}/);
+  assert.match(body(surface, 'VenueCard'), /\{words\.forecastSuffix\}/);
+  assert.match(body(surface, 'VenueCard'), /\{topItemsNote\(l\.currency\)\}/);
   assert.match(surface, /basis=\{basis\}/);
   const detail = read('../surfaces/owner/OwnerDetail.jsx');
   assert.match(detail, /detailBasis\(detail, basisAsked\)/);
-  assert.match(detail, /basisLabel\(basis, cur\)/);
+  assert.match(body(detail, 'Summary'), /\{salesLabel\(basis, cur\)\}/);
   const reports = read('../surfaces/owner/OwnerReports.jsx');
   for (const f of ['basisHours', 'basisWeek', 'basisRows']) assert.match(reports, new RegExp(`${f}\\(`));
+  assert.match(reports, /const notes = reportNotes\(basis, currency\)/);
+  for (const n of ['notes.sales', 'notes.types', 'notes.payments', 'notes.exceptions']) assert.ok(reports.includes(n), n);
+  assert.match(body(reports, 'PaymentsCard'), /note=\{note\}/);
+  assert.match(body(reports, 'ExceptionsCard'), /note=\{note\}/);
 });

@@ -211,9 +211,9 @@ test('the venue screen: tap to open, a clear back, and never another venue\'s or
   // 8 Oct 2026: the Sales mix card sits second, right after Sales by hour, and a function from
   // before the mix (no detail.mix) gets no card at all.
   // 16 Oct 2026: hours and week go through the Net / Gross switch (src/lib/ownerBasis.js).
-  const hoursAt = reports.indexOf('<HoursCard hours={basisHours(detail.hours, basis)} period={period} range={range} m={m} label={label} />');
+  const hoursAt = reports.indexOf('<HoursCard hours={basisHours(detail.hours, basis)} period={period} range={range} m={m} label={notes.sales} />');
   const mixAt = reports.indexOf('<SalesMixCard mix={detail.mix} period={period} m={m} />');
-  const weekAt = reports.indexOf('<WeekCard week={basisWeek(detail.week, basis)} m={m} label={label} />');
+  const weekAt = reports.indexOf('<WeekCard week={basisWeek(detail.week, basis)} m={m} label={notes.sales} />');
   assert.ok(hoursAt > 0 && hoursAt < mixAt && mixAt < weekAt, 'Sales mix is the second card');
   assert.ok(reports.includes('title="Sales mix"'));
   assert.ok(reports.includes('if (!mix) return null;'));
