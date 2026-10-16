@@ -187,7 +187,7 @@ export function bookingsReport({ bookings = [], payments = null, shifts = [] } =
 // ── booking payments ────────────────────────────────────────────────────────────────────────
 
 export const KIND_NAMES = {
-  prepay: 'Prepaid', deposit: 'Deposit', hold: 'Card saved', [NO_SHOW_KIND]: 'No show charge', refund: 'Refund',
+  prepay: 'Prepaid', deposit: 'Deposit', hold: 'Card saved', [NO_SHOW_KIND]: 'No show or late cancel charge', refund: 'Refund',
 };
 export const PAY_STATUS_NAMES = {
   pending: 'Waiting', authorised: 'Authorised', captured: 'Taken', failed: 'Failed',

@@ -190,6 +190,9 @@ export async function loadBookings(locationId, dateISO) {
       if (!payErr) {
         for (const r of pay || []) {
           if (r.kind === 'refund') continue;
+          // 16 Oct 2026: a no show or late cancel fee is the venue's revenue, never money paid
+          // with the booking (it would badge the booking prepaid and count as credit).
+          if (r.kind === 'no_show_charge') continue;
           const p = paid.get(r.booking_id) || { total: 0, prepay: 0, deposit: 0 };
           const minor = Math.round((Number(r.amount) || 0) * 100); // amount is POUNDS
           p.total += minor;

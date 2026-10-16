@@ -28,6 +28,10 @@
 //     index as the database's own guard (the function works before it, without the index)
 //   - the amount the host was shown (expected_minor) must be the amount charged
 //   - a refusal is said in words and NOTHING is retried by itself; the host may try again
+//   - a timeout, 5xx or 429 is an unknown outcome: the row stays pending; after 10 minutes with
+//     no Adyen reference the host may "check with the bank again", which re-sends the SAME
+//     request (same reference and idempotency key), so the card is never charged twice
+//   - a refund (partial or full) still counts as charged: never a second charge
 //
 // ADYEN: /payments with paymentMethod { type: 'scheme', storedPaymentMethodId }, shopperReference,
 // shopperInteraction ContAuth, recurringProcessingModel UnscheduledCardOnFile, the venue's store and
@@ -37,7 +41,9 @@
 //
 // THE MONEY REACHES THE BOOKS: a charge that took money is written as booking_payments kind
 // no_show_charge (captured) and posted to a closed check (id bkns-<booking>-a<N>, ref NS-XXXXX,
-// source 'booking', one line "No show charge", card tender with the psp), the same row shape as a
+// source 'booking', or 'online' with customer.charge_source 'booking' until migration 20261016f
+// widens closed_checks_source_check; one line "No show charge", outside the scope of VAT until
+// Peter decides, card tender with the psp), the same row shape as a
 // sale, so Reports, the VAT and the Xero daily invoice pick it up; the row is then stamped
 // applied_to_check with applied_check_id. Refunds go through the existing refund path (refund the
 // check in History on the till or Transactions in Back Office: adyen-modify).
@@ -57,6 +63,7 @@ import { secondStepRefusal } from '../_shared/second-step.ts';
 import {
   chargeDecision, chargeQuestion, chargeReference, nextAttempt, refusalWords, chargeCheckRow,
   chargeCheckIds, attemptOf, kindOfReference, feeRate, noShowRows, moneyText, NO_SHOW_KIND, TAKEN_STATUSES, chargeLabel,
+  CHARGE_SOURCE_FALLBACK, isSourceCheckRefusal,
 } from '../_shared/noShowCharge.js';
 
 const cors = {
@@ -77,7 +84,7 @@ const platformAdmin = createClient(
 
 // deno-lint-ignore no-explicit-any
 type Row = Record<string, any>;
-const PAY_COLS = 'id, kind, status, amount, currency, card_last4, card_brand, stored_payment_method_id, refusal_reason, applied_to_check, applied_check_id, psp_reference, merchant_reference, created_at, captured_at';
+const PAY_COLS = 'id, kind, status, amount, currency, card_last4, card_brand, stored_payment_method_id, refusal_reason, applied_to_check, applied_check_id, psp_reference, merchant_reference, created_at, captured_at, authorised_at';
 
 const errText = (e: unknown) => {
   const x = e as { message?: unknown; details?: unknown; code?: unknown } | null;
@@ -152,14 +159,25 @@ async function postCheck(booking: Row, pay: Row, staffName: string | null): Prom
     kind,
     rate: feeRate(rates || []),
     staffName,
-    closedAt: pay.captured_at || new Date().toISOString(),
+    // When the money was taken, never when the check happened to be posted (a webhook settled
+    // charge has authorised_at and no captured_at), so it lands on the right business day.
+    closedAt: pay.captured_at || pay.authorised_at || pay.created_at || new Date().toISOString(),
   });
   // A column this database does not have yet is left out and the insert tried again
   // (src/lib/closedCheckWrite.js keeps the same rule for every till).
   const payload: Row = { ...row };
-  for (let i = 0; i < 6; i++) {
+  let sourceRetried = false;
+  for (let i = 0; i < 7; i++) {
     const { error } = await db.from('closed_checks').upsert(payload, { onConflict: 'id', ignoreDuplicates: true });
     if (!error) break;
+    // Before migration 20261016f closed_checks_source_check has no 'booking': post it as
+    // 'online' once (customer.charge_source still says 'booking'), so the money reaches the books.
+    if (!sourceRetried && isSourceCheckRefusal(error)) {
+      console.warn("[booking-charge] closed_checks does not take source 'booking' yet (20261016f not run), posting as 'online'");
+      sourceRetried = true;
+      payload.source = CHARGE_SOURCE_FALLBACK;
+      continue;
+    }
     const col = /Could not find the '([^']+)' column/.exec(String((error as { message?: unknown }).message || ''))?.[1];
     if (!col || !(col in payload) || col === 'id' || col === 'location_id') {
       return { ok: false, checkId: id, ref, error: errText(error) };
@@ -202,9 +220,10 @@ Deno.serve(async (req) => {
   if (req.method !== 'POST') return json({ ok: false, error: 'POST only' }, 405);
 
   const token = (req.headers.get('Authorization') || '').replace('Bearer ', '').trim();
-  if (!token) return json({ ok: false, error: 'Unauthorized' }, 401);
+  const signedOut = 'This device is not signed in. Reload the host stand and try again.';
+  if (!token) return json({ ok: false, error: 'Unauthorized', message: signedOut }, 401);
   const { data: { user } } = await db.auth.getUser(token);
-  if (!user) return json({ ok: false, error: 'Invalid token' }, 401);
+  if (!user) return json({ ok: false, error: 'Invalid token', message: signedOut }, 401);
 
   let body: Row = {};
   try { body = await req.json(); } catch { return json({ ok: false, error: 'invalid json' }, 400); }
@@ -221,7 +240,7 @@ Deno.serve(async (req) => {
     db.from('devices').select('id').eq('device_uid', user.id).eq('location_id', locationId).in('status', ['active', 'online']).limit(1).maybeSingle(),
     db.from('waitlist_devices').select('id').eq('device_uid', user.id).eq('location_id', locationId).eq('active', true).limit(1).maybeSingle(),
   ]);
-  if (!asUser && !till.data && !host.data) return json({ ok: false, error: 'No access to this location' }, 403);
+  if (!asUser && !till.data && !host.data) return json({ ok: false, error: 'No access to this location', message: 'This device is not set up for this venue.' }, 403);
 
   try {
     const st = await loadState(locationId, bookingId);
@@ -232,7 +251,7 @@ Deno.serve(async (req) => {
     await healUnposted(booking, payments, staffName);
     if (action === 'post_check') return json({ ok: true, charges: publicCharges(bookingId, payments) });
 
-    const decide = () => chargeDecision({ booking, payments, rules, customer, tz, currency });
+    const decide = () => chargeDecision({ booking, payments, rules, customer, tz, currency, nowMs: Date.now() });
     let d = decide();
     const quote = () => ({
       ok: true,
@@ -249,15 +268,22 @@ Deno.serve(async (req) => {
       brand: d.brand,
       windowHours: d.windowHours,
       hoursBefore: d.hoursBefore,
-      question: d.ok ? chargeQuestion(d) : null,
+      question: d.ok ? chargeQuestion(d)
+        : d.reason === 'stale_in_flight' ? `Ask the bank again about the ${moneyText(d.amountMinor, d.currency)} charge?` : null,
       charges: publicCharges(bookingId, payments),
     });
     if (action === 'quote') return json(quote());
 
     // ── charge ──
-    if (!d.ok) return json({ ...quote(), ok: false, error: d.reason, message: d.message });
-    const expected = body.expected_minor == null ? null : Math.round(Number(body.expected_minor));
-    if (expected !== null && expected !== d.amountMinor) {
+    // stale_in_flight: the same request is sent again (below), never a new charge.
+    const resend = () => d.reason === 'stale_in_flight' && d.retry;
+    if (!d.ok && !resend()) return json({ ...quote(), ok: false, error: d.reason, message: d.message });
+    // The amount the host was shown must be the amount charged: never charge without it.
+    if (body.expected_minor == null || body.expected_minor === '' || !Number.isFinite(Number(body.expected_minor))) {
+      return json({ ok: false, error: 'expected_minor required', message: 'The amount to charge was not sent. Nothing was taken.' }, 400);
+    }
+    const expected = Math.round(Number(body.expected_minor));
+    if (expected !== d.amountMinor) {
       return json({ ...quote(), ok: false, error: 'amount_changed', message: `The fee is now ${moneyText(d.amountMinor, d.currency)}, not ${moneyText(expected, d.currency)}. Check it and confirm again.` });
     }
 
@@ -271,40 +297,61 @@ Deno.serve(async (req) => {
     }
     currency = v.currency;
     d = decide();
-    if (!d.ok) return json({ ...quote(), ok: false, error: d.reason, message: d.message });
+    if (!d.ok && !resend()) return json({ ...quote(), ok: false, error: d.reason, message: d.message });
 
-    const attempt = nextAttempt(payments);
-    const reference = chargeReference(bookingId, attempt, d.kind);
-    const label = chargeLabel(d.kind);
+    let attempt: number;
+    let reference: string;
+    let rowId: string;
+    let storedId: string;
+    if (resend()) {
+      // The stuck row's own reference, attempt and so idempotency key, amount and token: Adyen
+      // replays its first answer if it got the request, or takes the charge once if it did not.
+      const r = d.retry as Row;
+      reference = String(r.merchant_reference || '');
+      attempt = attemptOf(reference);
+      rowId = String(r.id);
+      storedId = String(r.stored_payment_method_id || '');
+      currency = String(r.currency || currency).toUpperCase();
+      if (!reference || !storedId) {
+        return json({ ok: false, error: 'stale_unrecoverable', message: 'The first charge cannot be asked for again from here. Check it in the Adyen Customer Area before charging. Nothing more was taken.' });
+      }
+      await db.from('booking_payments').update({ refusal_reason: 'asked the bank again' }).eq('id', rowId).eq('status', 'pending');
+    } else {
+      attempt = nextAttempt(payments);
+      reference = chargeReference(bookingId, attempt, d.kind);
+      storedId = String(d.storedId);
 
-    // The attempt row first, so a second tap (or a second stand) sees a charge in flight.
-    const { data: ins, error: insErr } = await db.from('booking_payments').insert({
-      location_id: locationId,
-      booking_id: bookingId,
-      kind: NO_SHOW_KIND,
-      amount: d.amountMinor / 100,
-      currency: currency.toLowerCase(),
-      status: 'pending',
-      merchant_reference: reference,
-      merchant_account: v.merchantAccount,
-      stored_payment_method_id: d.storedId,
-      card_last4: d.last4,
-      card_brand: d.brand,
-      refusal_reason: 'waiting for the bank',
-    }).select('id').maybeSingle();
-    if (insErr) {
-      if (isUnique(insErr)) return json({ ok: false, error: 'charge_in_flight', message: 'Another charge for this booking has just started. Nothing more was taken.' });
-      console.error('[booking-charge] could not write the charge row:', errText(insErr));
-      return json({ ok: false, error: 'ledger_failed', message: 'The charge could not be recorded, so it was not sent to the card. Nothing was taken.' }, 503);
+      // The attempt row first, so a second tap (or a second stand) sees a charge in flight.
+      const { data: ins, error: insErr } = await db.from('booking_payments').insert({
+        location_id: locationId,
+        booking_id: bookingId,
+        kind: NO_SHOW_KIND,
+        amount: d.amountMinor / 100,
+        currency: currency.toLowerCase(),
+        status: 'pending',
+        merchant_reference: reference,
+        merchant_account: v.merchantAccount,
+        stored_payment_method_id: d.storedId,
+        card_last4: d.last4,
+        card_brand: d.brand,
+        refusal_reason: 'waiting for the bank',
+      }).select('id').maybeSingle();
+      if (insErr) {
+        if (isUnique(insErr)) return json({ ok: false, error: 'charge_in_flight', message: 'Another charge for this booking has just started. Nothing more was taken.' });
+        console.error('[booking-charge] could not write the charge row:', errText(insErr));
+        return json({ ok: false, error: 'ledger_failed', message: 'The charge could not be recorded, so it was not sent to the card. Nothing was taken.' }, 503);
+      }
+      rowId = String(ins?.id);
     }
-    const rowId = String(ins?.id);
+    const label = chargeLabel(d.kind);
+    const shopperReference = d.shopperReference || customer?.shopper_reference || booking.customer_id || null;
 
     const payment: Row = {
       merchantAccount: v.merchantAccount,
       amount: { value: d.amountMinor, currency },
       reference,
-      paymentMethod: { type: 'scheme', storedPaymentMethodId: d.storedId },
-      shopperReference: d.shopperReference,
+      paymentMethod: { type: 'scheme', storedPaymentMethodId: storedId },
+      shopperReference,
       shopperInteraction: 'ContAuth',
       recurringProcessingModel: 'UnscheduledCardOnFile',
       // adyen-webhook files the payment under this venue from it (resolveLocation step 0).
@@ -318,16 +365,26 @@ Deno.serve(async (req) => {
         { cfg: v.cfg, idempotencyKey: await paymentIdempotencyKey(reference, attempt) });
     } catch (e) {
       // No answer (a timeout): the charge may still have gone through, so the row stays pending
-      // and the webhook settles it. Never retried here.
+      // and the webhook settles it. Never retried here; if no webhook ever comes (the request
+      // never reached Adyen), the host can ask the bank again after 10 minutes (stale_in_flight).
       console.error('[booking-charge] no answer from Adyen for', reference, errText(e));
-      await db.from('booking_payments').update({ refusal_reason: 'no answer from Adyen yet' }).eq('id', rowId);
+      await db.from('booking_payments').update({ refusal_reason: 'no answer from Adyen yet' }).eq('id', rowId).eq('status', 'pending');
       return json({ ok: false, pending: true, error: 'no_answer', message: 'No answer from the bank yet. Do not charge again: it shows here when Adyen answers.' });
     }
     const j = res.data ?? {};
+    // A 5xx or 429 has an UNKNOWN outcome (Adyen: retry with the SAME idempotency key). The row
+    // stays pending, like a timeout: never marked failed, so the next tap cannot start a second
+    // payment with a new key. After 10 minutes the host can ask the bank again (same key).
+    if (!res.ok && (res.status >= 500 || res.status === 429)) {
+      console.error('[booking-charge] /payments unknown outcome:', res.status, JSON.stringify(j).slice(0, 300));
+      await db.from('booking_payments').update({ refusal_reason: 'no answer from Adyen yet' }).eq('id', rowId).eq('status', 'pending');
+      return json({ ok: false, pending: true, error: 'no_answer', message: 'No clear answer from the bank yet. Do not charge again: it shows here when Adyen answers.' });
+    }
     if (!res.ok) {
       const why = String(j.message || `refused (${res.status})`);
       console.error('[booking-charge] /payments refused:', res.status, JSON.stringify(j).slice(0, 300));
-      await db.from('booking_payments').update({ status: 'failed', refusal_reason: why.slice(0, 300) }).eq('id', rowId);
+      // Only while still pending: a webhook (or a replay from a second stand) may have settled it.
+      await db.from('booking_payments').update({ status: 'failed', refusal_reason: why.slice(0, 300) }).eq('id', rowId).eq('status', 'pending');
       return json({ ok: false, error: 'adyen_refused', message: `Adyen did not accept the charge: ${why}. Nothing was taken.` });
     }
 
@@ -374,7 +431,7 @@ Deno.serve(async (req) => {
     const words = refusalWords(code, j.refusalReason);
     await db.from('booking_payments').update({
       status: 'failed', psp_reference: j.pspReference || null, refusal_reason: String(j.refusalReason || code || 'refused').slice(0, 300),
-    }).eq('id', rowId);
+    }).eq('id', rowId).eq('status', 'pending');
     return json({ ok: false, error: 'card_refused', resultCode: code || null, message: words });
   } catch (e) {
     console.error('[booking-charge]', e);

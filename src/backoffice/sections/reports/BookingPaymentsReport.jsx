@@ -149,12 +149,12 @@ export default function BookingPaymentsReport({ range = null, sites = [], fmtN =
           <div key={cur} style={{ marginBottom: 14 }}>
             {currencies.length > 1 && <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--t1)', marginBottom: 8 }}>{cur}</div>}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
-              <StatTile label="Money taken" value={moneyMinor(t.taken, cur)} sub={`${moneyMinor(t.prepay, cur)} prepaid · ${moneyMinor(t.deposit, cur)} deposits`} color="var(--grn)" />
-              <StatTile label="No show charges" value={moneyMinor(t.noShow, cur)} sub="charged to saved cards" color={t.noShow > 0 ? 'var(--grn)' : 'var(--t1)'} />
+              <StatTile label="Money taken" value={moneyMinor(t.taken, cur)} sub={`${moneyMinor(t.prepay, cur)} prepaid · ${moneyMinor(t.deposit, cur)} deposits · ${moneyMinor(t.refunded, cur)} refunded`} color="var(--grn)" />
+              <StatTile label="No show and late cancel" value={moneyMinor(t.noShow, cur)} sub="charged to saved cards" color={t.noShow > 0 ? 'var(--grn)' : 'var(--t1)'} />
               <StatTile label="Not on a check yet" value={fmtN(t.notOnCheck)} sub="money taken, not used on a bill" color={t.notOnCheck > 0 ? 'var(--amb,#e8a020)' : 'var(--t1)'} />
               <StatTile label="Owed back" value={moneyMinor(t.owedBack, cur)} sub="to refund to guests" color={t.owedBack > 0 ? 'var(--red)' : 'var(--t1)'} />
               <StatTile label="Cards saved" value={fmtN(t.cardsSaved)} sub="nothing taken" color="var(--acc)" />
-              <StatTile label="Failed" value={fmtN(t.failed)} sub={`${moneyMinor(t.refunded, cur)} refunded`} color={t.failed > 0 ? 'var(--red)' : 'var(--t1)'} />
+              <StatTile label="Failed" value={fmtN(t.failed)} sub="declined or errored" color={t.failed > 0 ? 'var(--red)' : 'var(--t1)'} />
             </div>
           </div>
         );

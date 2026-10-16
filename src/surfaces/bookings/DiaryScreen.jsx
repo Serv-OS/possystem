@@ -23,14 +23,14 @@ import { supabase, isMock } from '../../lib/supabase';
 // 16 Oct 2026: the no show and late cancel charge (NoShowCharge.jsx). A charge is the venue's
 // revenue, never money paid with the booking, so the ledger rows below leave it out.
 import NoShowCharge from './NoShowCharge.jsx';
-import { withoutNoShowCharges } from '../../lib/bookings/noShowCharge.js';
+import { withoutNoShowCharges, takenCharge, moneyText } from '../../lib/bookings/noShowCharge.js';
 import { toMin, toHM, isTableFree, toOptimiserBooking, sessionsToBlocks } from '../../lib/bookings/optimiser.js';
 import { loadBookingPayments, lookupPreorderLinkBase } from '../../lib/bookings/bookingsData.js';
 import { undoNoShowStatus, bookingUnpaid, isNeedsRefundRow } from '../../lib/bookings/bookingPayment.js';
 import { choiceSummary } from '../../lib/bookings/preorderChoices.js';
 import { dropTarget, editedLine, hasGuest, fmtClock, EDIT_REFUSALS, MOVE_NON_BLOCKING } from '../../lib/bookings/editRules.js';
 import {
-  mono, tintBg, tintBd, rulesOf, displayStatus, statusMeta, StatusBadge, isLive,
+  mono, tintBg, tintBd, rulesOf, displayStatus, statusMeta, StatusBadge, isLive, isDead,
   useNowMin, money, initialsOf, bookingName, todayISO, EmptyNote, Chip, preorderStateFor, courseColor,
 } from './bits.jsx';
 import EditBookingSheet from './EditBookingSheet.jsx';
@@ -107,9 +107,12 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
   };
 
   const visible = useMemo(() => bookings.filter((b) => b.status !== 'cancelled'), [bookings]);
-  const listRows = useMemo(
-    () => visible.slice().sort((a, b) => toMin(a.startTime) - toMin(b.startTime) || bookingName(a).localeCompare(bookingName(b))),
-    [visible]);
+  // 16 Oct 2026: cancelled bookings sit greyed at the END of the list (never on the timeline),
+  // so a late cancellation can still be opened and charged after the Inspector was closed.
+  const listRows = useMemo(() => {
+    const byTime = (a, b) => toMin(a.startTime) - toMin(b.startTime) || bookingName(a).localeCompare(bookingName(b));
+    return [...visible.slice().sort(byTime), ...bookings.filter((b) => b.status === 'cancelled').sort(byTime)];
+  }, [visible, bookings]);
   const optBookings = useMemo(() => {
     const base = visible.map(toOptimiserBooking).filter(Boolean);
     // Open POS tabs block their tables like dining bookings — today only.
@@ -360,7 +363,7 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {listRows.map((b) => {
                 const st = displayStatus(b, nowMin, packages);
-                const dead = st === 'no_show';
+                const dead = st === 'no_show' || st === 'cancelled';
                 const isSel = b.id === sel;
                 const pkg = b.packageId ? packages.find((p) => p.id === b.packageId) : null;
                 const labels = (b.tables || []).map((id) => rows.find((t) => t.id === id)?.label || String(id).slice(-4)).join(' + ');
@@ -691,7 +694,9 @@ function PaymentState({ b, prepaid, rows }) {
         line = { txt: `${line.txt}. ${words}`, col: 'var(--orn)' };
       }
     }
-    else if (held) line = { txt: `✓ Card saved${card(held)}. Nothing was taken.`, col: 'var(--grn)' };
+    // "Nothing was taken" only while the booking is live: on a no show or a cancellation the
+    // charge panel below says whether the card was charged (16 Oct 2026).
+    else if (held) line = { txt: `✓ Card saved${card(held)}.${isDead(b) ? '' : ' Nothing was taken.'}`, col: 'var(--grn)' };
     else if (failed) {
       line = b.status === 'pending_payment'
         ? { txt: 'Card payment failed. The guest can still try again.', col: 'var(--red)' }
@@ -832,6 +837,12 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
   const heldRow = (payRows || []).find((r) => r.status === 'authorised' && r.kind === 'hold' && !isNeedsRefundRow(r));
   const onFile = capturedRow || heldRow || null;
   const [undoErr, setUndoErr] = useState('');
+  // A no show fee taken on this booking (read from the ledger, or charged on this screen just
+  // now, before the ledger is read again). Undo is refused while it is kept.
+  const [chargedNow, setChargedNow] = useState({ id: null, res: null });
+  const feeRow = takenCharge(allPayRows);
+  const feeNow = chargedNow.id === b.id ? chargedNow.res : null;
+  const feeTaken = !!feeRow || !!feeNow;
   // 10 Sep 2026 payment gate: pending_payment, or a booking that owed money
   // with no successful payment on the ledger (payRows null = not read yet).
   const unpaid = bookingUnpaid({ booking: b, pkg, payments: payRows });
@@ -974,7 +985,7 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
           )}
         </div>
         <PaymentState b={b} prepaid={prepaid} rows={payRows} />
-        <NoShowCharge b={b} hasSavedCard={!!heldRow} />
+        <NoShowCharge b={b} hasSavedCard={!!heldRow} hasCharge={feeTaken} onCharged={(res) => setChargedNow({ id: b.id, res })} />
       </div>
 
       <div style={sec}>
@@ -1031,6 +1042,12 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
               disabled={!b.seatedAt && payRows === null && !payReadFailed}
               onClick={() => {
                 setUndoErr('');
+                if (b.status === 'no_show' && feeTaken) {
+                  const amt = feeRow ? moneyText(Math.round(Number(feeRow.amount) * 100), String(feeRow.currency || 'GBP').toUpperCase())
+                    : moneyText(feeNow?.amountMinor, feeNow?.currency);
+                  setUndoErr(`A ${amt} no show charge was taken on this booking. Refund its check (History on the till, or Transactions in Back Office) before undoing the no show.`);
+                  return;
+                }
                 if (b.seatedAt) { updateBooking?.(b.id, { status: 'dining', departedAt: null }); return; }
                 const next = undoNoShowStatus({ booking: b, payments: payRows });
                 if (!next) {

@@ -5,7 +5,8 @@ import assert from 'node:assert/strict';
 import {
   chargeDecision, noShowFee, lateCancel, chargeQuestion, chargeReference, kindOfReference, attemptOf, nextAttempt,
   refusalWords, chargeCheckIds, chargeCheckRow, feeRate, feeTax, withoutNoShowCharges, takenCharge, moneyText,
-  NO_SHOW_KIND, isMissingFunctionReply,
+  NO_SHOW_KIND, isMissingFunctionReply, everCharged, hoursText, STALE_IN_FLIGHT_MS,
+  CHARGE_SOURCE, CHARGE_SOURCE_FALLBACK, isSourceCheckRefusal,
 } from './noShowCharge.js';
 
 const booking = (over = {}) => ({
@@ -55,9 +56,51 @@ test('one charge per booking: taken, or waiting for the bank, refuses another', 
   // A declined attempt does not block a second, deliberate try.
   const failed = { id: 'p4', kind: NO_SHOW_KIND, status: 'failed', amount: 40 };
   assert.equal(chargeDecision({ booking: booking(), payments: [hold(), failed], rules, customer }).ok, true);
-  // A refunded charge can be charged again only by choice: it no longer counts as taken.
-  const refunded = { id: 'p5', kind: NO_SHOW_KIND, status: 'refunded', amount: 40 };
-  assert.equal(chargeDecision({ booking: booking(), payments: [hold(), refunded], rules, customer }).ok, true);
+  // A refund, partial or full, marks the row refunded: the booking was still charged once.
+  const refunded = { id: 'p5', kind: NO_SHOW_KIND, status: 'refunded', amount: 40, merchant_reference: 'bkpay-bk-1-noshow-a1' };
+  const r = chargeDecision({ booking: booking(), payments: [hold(), refunded], rules, customer });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'already_charged');
+  assert.match(r.message, /then refunded/);
+  // Authorised then released (cancelled) took nothing: it may be charged.
+  const released = { id: 'p6', kind: NO_SHOW_KIND, status: 'cancelled', amount: 40, authorised_at: '2026-10-16T20:00:00Z' };
+  assert.equal(chargeDecision({ booking: booking(), payments: [hold(), released], rules, customer }).ok, true);
+  assert.equal(everCharged([{ kind: NO_SHOW_KIND, status: 'failed' }]), null);
+  assert.equal(everCharged([{ kind: NO_SHOW_KIND, status: 'cancelled', captured_at: '2026-10-16T20:00:00Z' }]).status, 'cancelled');
+});
+
+test('a charge stuck waiting with no Adyen reference can be asked for again, the same request', () => {
+  const created = '2026-10-16T19:40:00Z';
+  const pending = { id: 'p3', kind: NO_SHOW_KIND, status: 'pending', amount: 40, currency: 'gbp', card_last4: '4242', created_at: created, merchant_reference: 'bkpay-bk-1-noshow-a1' };
+  const t0 = Date.parse(created);
+  const fresh = chargeDecision({ booking: booking(), payments: [hold(), pending], rules, customer, nowMs: t0 + 60_000 });
+  assert.equal(fresh.reason, 'charge_in_flight');
+  const stale = chargeDecision({ booking: booking(), payments: [hold(), pending], rules, customer, nowMs: t0 + STALE_IN_FLIGHT_MS + 1 });
+  assert.equal(stale.ok, false);
+  assert.equal(stale.reason, 'stale_in_flight');
+  assert.equal(stale.retry.id, 'p3');
+  assert.equal(stale.amountMinor, 4000);
+  assert.equal(stale.kind, 'no_show');
+  // Adyen answered (Received): a webhook will come, so it stays in flight.
+  const answered = chargeDecision({ booking: booking(), payments: [hold(), { ...pending, psp_reference: 'PSP1' }], rules, customer, nowMs: t0 + 3_600_000 });
+  assert.equal(answered.reason, 'charge_in_flight');
+  // No clock handed in: never stale.
+  assert.equal(chargeDecision({ booking: booking(), payments: [hold(), pending], rules, customer }).reason, 'charge_in_flight');
+  // Undone since: not re-sent.
+  assert.equal(chargeDecision({ booking: booking({ status: 'confirmed' }), payments: [hold(), pending], rules, customer, nowMs: t0 + 3_600_000 }).reason, 'charge_in_flight');
+});
+
+test('a token from the guest record never shows the hold row card', () => {
+  const d = chargeDecision({ booking: booking(), payments: [hold({ stored_payment_method_id: null })], rules, customer });
+  assert.equal(d.ok, true);
+  assert.equal(d.last4, null);
+  assert.equal(chargeQuestion(d), 'Charge £40.00 to the saved card?');
+});
+
+test('hours read right: one hour, many hours, after the booking', () => {
+  assert.equal(hoursText(1), '1 hour before');
+  assert.equal(hoursText(48), '48 hours before');
+  assert.equal(hoursText(-0.5), 'after the booking time');
 });
 
 test('money already paid with the booking is kept or refunded, never charged again', () => {
@@ -127,7 +170,7 @@ test('refusals are plain words and always say nothing was taken', () => {
   assert.match(refusalWords('Cancelled', ''), /cancelled\. Nothing was taken/);
 });
 
-test('the check: one line, card tender with the psp, no covers, VAT taken out of the fee', () => {
+test('the check: one line, card tender with the psp, no covers, no VAT (outside the scope)', () => {
   const rate = feeRate([
     { id: 'r5', rate: 0.05, type: 'inclusive', active: true },
     { id: 'r20', rate: 0.2, type: 'inclusive', active: true, is_default: true, name: 'VAT', code: 'VAT20' },
@@ -145,10 +188,16 @@ test('the check: one line, card tender with the psp, no covers, VAT taken out of
   assert.equal(row.source, 'booking');
   assert.equal(row.items.length, 1);
   assert.equal(row.items[0].name, 'No show charge');
-  assert.equal(row.items[0].taxRateId, 'r20');
-  assert.equal(row.tax_amount, 6.67);
-  assert.equal(row.tax_breakdown.totalTax, 6.67);
-  assert.equal(row.tax_breakdown.breakdown[0].net, 33.33);
+  assert.equal(row.items[0].taxRateId, null);
+  assert.equal(row.items[0].notes, 'Booking 2026-10-16 19:30, 2 covers');
+  // Outside the scope of VAT until Peter decides: no VAT taken out, recorded as booked.
+  assert.equal(row.tax_amount, 0);
+  assert.equal(row.tax_breakdown.totalTax, 0);
+  assert.equal(row.tax_breakdown.share, 0);
+  assert.equal(row.tax_breakdown.breakdown[0].net, 40);
+  assert.match(row.tax_breakdown.breakdown[0].rate.name, /Outside the scope of VAT/);
+  assert.equal(row.customer.charge_source, 'booking');
+  assert.equal(chargeCheckRow({ booking: booking({ covers: 1 }), kind: 'no_show', closedAt: 'x', charge: { amountMinor: 100 } }).items[0].notes, 'Booking 2026-10-16 19:30, 1 cover');
   assert.deepEqual(row.tenders, [{ method: 'card', amount: 40, tip: 0, psp_ref: 'PSP123', processor: 'adyen' }]);
   assert.equal(row.payment_intents[0].id, 'PSP123');
   assert.equal(row.payment_intents[0].amountMinor, 4000);
@@ -170,6 +219,24 @@ test('ledger screens leave no show charges out; null stays null', () => {
   assert.equal(withoutNoShowCharges(null), null);
   assert.equal(takenCharge(rows).amount, 40);
   assert.equal(moneyText(1234, 'USD'), '$12.34');
+});
+
+// The LIVE closed_checks_source_check list (read 16 Oct 2026, last set by 20260919a1) plus what
+// 20261016f adds. The fallback must be in today's list, the charge source in the new one.
+const LIVE_SOURCES = ['pos', 'kiosk', 'online', 'mobile', 'catering', 'hubrise', 'pax_table_pay', 'pos_send_to_terminal', 'adyen_pay_at_table', 'ezcater', 'qr'];
+test('the check source: booking after 20261016f, online before it', async () => {
+  const fs = await import('node:fs');
+  const sql = fs.readFileSync(new URL('../../../supabase/migrations/20261016f_OPS_booking_noshow_reports.sql', import.meta.url), 'utf8');
+  const m = /add constraint closed_checks_source_check\s+check \(source = any \(array\[([^\]]+)\]\)\)/i.exec(sql);
+  assert.ok(m, 'the migration re adds closed_checks_source_check');
+  const list = m[1].split(',').map((x) => x.trim().replace(/^'|'$/g, ''));
+  for (const s of LIVE_SOURCES) assert.ok(list.includes(s), `the new list keeps ${s}`);
+  assert.ok(list.includes(CHARGE_SOURCE));
+  assert.equal(LIVE_SOURCES.includes(CHARGE_SOURCE), false);
+  assert.equal(LIVE_SOURCES.includes(CHARGE_SOURCE_FALLBACK), true);
+  assert.equal(isSourceCheckRefusal({ code: '23514', message: 'new row for relation "closed_checks" violates check constraint "closed_checks_source_check"' }), true);
+  assert.equal(isSourceCheckRefusal({ code: '23514', message: 'violates check constraint "closed_checks_total_check"' }), false);
+  assert.equal(isSourceCheckRefusal({ code: '23505', message: 'closed_checks_source_check' }), false);
 });
 
 test('a missing function is told apart from a missing booking', () => {

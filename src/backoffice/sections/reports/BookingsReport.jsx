@@ -245,10 +245,10 @@ export default function BookingsReport({ fromDay, toDay, locationConfig, range =
 
   return (
     <div>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:12, marginBottom:12 }}>
+      <div style={{ display:'flex', flexWrap:'wrap', justifyContent:'space-between', alignItems:'flex-start', gap:12, marginBottom:12 }}>
         <div style={{ fontSize:11, color:'var(--t3)', lineHeight:1.6 }}>
           {multi && <><strong style={{ color:'var(--t1)' }}>{readSites.length} sites</strong>, each read over its own days. </>}
-          Rates leave out bookings that never were: {fmtN(kpis.unpaidExpired)} unpaid and expired, {fmtN(kpis.awaitingPayment)} still paying.
+          {kpis.unpaidExpired + kpis.awaitingPayment > 0 && <>Rates leave out bookings that never were: {fmtN(kpis.unpaidExpired)} unpaid and expired, {fmtN(kpis.awaitingPayment)} still paying.</>}
         </div>
         <ExportBtn onClick={onExport}/>
       </div>
@@ -282,7 +282,7 @@ export default function BookingsReport({ fromDay, toDay, locationConfig, range =
               <StatTile label={`Taken${currencies.length > 1 ? ` (${cur})` : ''}`} value={moneyMinor(m.total, cur)} color="var(--grn)"/>
               <StatTile label="Prepaid" value={moneyMinor(m.prepay, cur)}/>
               <StatTile label="Deposits" value={moneyMinor(m.deposit, cur)}/>
-              <StatTile label="No show charges" value={moneyMinor(m.noShow, cur)}/>
+              <StatTile label="No show and late cancel" value={moneyMinor(m.noShow, cur)}/>
               <StatTile label="Cards saved" value={fmtN(report.cardsSaved || 0)} sub="nothing taken"/>
             </div>
           );
@@ -317,14 +317,14 @@ export default function BookingsReport({ fromDay, toDay, locationConfig, range =
       </div>
 
       {/* Covers by service */}
-      <div style={{ ...cardSt, overflow:'hidden' }}>
+      <div style={{ ...cardSt, overflow:'auto' }}>
         <div style={{ ...capSt, padding:'14px 16px 8px' }}>Covers by service</div>
-        <div style={{ ...headSt, gridTemplateColumns:'1.4fr 80px 80px 80px 80px 80px' }}>
+        <div style={{ ...headSt, gridTemplateColumns:'1.4fr 80px 80px 80px 80px 80px', minWidth:520 }}>
           <span>Service</span><span style={{ textAlign:'right' }}>Bookings</span><span style={{ textAlign:'right' }}>Covers</span>
           <span style={{ textAlign:'right' }}>Seated</span><span style={{ textAlign:'right' }}>No-shows</span><span style={{ textAlign:'right' }}>Cancelled</span>
         </div>
         {report.byService.map((r, i) => (
-          <div key={r.service} style={{ display:'grid', gridTemplateColumns:'1.4fr 80px 80px 80px 80px 80px', padding:'9px 16px', borderBottom: i === report.byService.length - 1 ? 'none' : '1px solid var(--bdr)', fontSize:12, gap:8, background: i % 2 === 0 ? 'transparent' : 'var(--bg2)' }}>
+          <div key={r.service} style={{ display:'grid', gridTemplateColumns:'1.4fr 80px 80px 80px 80px 80px', minWidth:520, padding:'9px 16px', borderBottom: i === report.byService.length - 1 ? 'none' : '1px solid var(--bdr)', fontSize:12, gap:8, background: i % 2 === 0 ? 'transparent' : 'var(--bg2)' }}>
             <span style={{ color:'var(--t1)', fontWeight:600 }}>{r.service}</span>
             <span style={numSt}>{fmtN(r.bookings)}</span>
             <span style={{ ...numSt, fontWeight:700, color:'var(--t1)' }}>{fmtN(r.covers)}</span>

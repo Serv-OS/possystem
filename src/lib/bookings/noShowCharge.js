@@ -57,6 +57,28 @@ export function takenCharge(rows) {
   return list.length ? list[list.length - 1] : null;
 }
 
+/**
+ * The latest charge that EVER took money, even if some or all of it was given back since: a
+ * refund (partial or full) marks the row refunded, and a booking is still only charged once
+ * (£40 charged, £10 back as goodwill, a second tap must not take £40 more). A charge that was
+ * only authorised and then released (cancelled) took nothing, so it does not count.
+ */
+export function everCharged(rows) {
+  const list = noShowRows(rows).filter((r) => r.status === 'refunded' || !!r.captured_at
+    || (!!r.authorised_at && r.status !== 'cancelled' && r.status !== 'failed'));
+  return list.length ? list[list.length - 1] : null;
+}
+
+/** "3 hours before", "1 hour before", or "after the booking time" (a cancel made after the start). */
+export function hoursText(h) {
+  const n = Math.round(num(h));
+  if (num(h) < 0) return 'after the booking time';
+  return `${n} hour${n === 1 ? '' : 's'} before`;
+}
+
+/** A charge waiting for the bank longer than this with no Adyen reference never reached Adyen's answer. */
+export const STALE_IN_FLIGHT_MS = 10 * 60 * 1000;
+
 // ── the venue clock ─────────────────────────────────────────────────────────────────────────
 
 // The venue wall clock of an instant, as minutes since 1970 read as if the wall clock were UTC.
@@ -153,7 +175,7 @@ const TIME = (ms, tz) => {
  *   ok true    the card may be charged amountMinor now (kind 'no_show' or 'late_cancel')
  *   charge     the charge already taken, when there is one
  */
-export function chargeDecision({ booking, payments = [], rules = null, customer = null, tz = 'Europe/London', currency = 'GBP' } = {}) {
+export function chargeDecision({ booking, payments = [], rules = null, customer = null, tz = 'Europe/London', currency = 'GBP', nowMs = null } = {}) {
   const rows = Array.isArray(payments) ? payments : [];
   const cur = String(booking?.payment_currency || currency || 'GBP').toUpperCase();
   const windowHours = Math.max(0, Math.round(num(rules?.cancellation_window_hours)));
@@ -171,9 +193,28 @@ export function chargeDecision({ booking, payments = [], rules = null, customer 
     const last4 = taken.card_last4 ? ` to the card ending ${taken.card_last4}` : '';
     return no('already_charged', `${moneyText(minorOf(taken.amount), taken.currency || cur)} was charged${last4}. A booking is only charged once.`, { charge: taken });
   }
+  const ever = everCharged(rows);
+  if (ever) {
+    return no('already_charged', `${moneyText(minorOf(ever.amount), ever.currency || cur)} was charged on this booking, then refunded. A booking is only charged once.`,
+      { charge: ever, kind: kindOfReference(ever.merchant_reference) });
+  }
   const inFlight = noShowRows(rows).find((r) => r.status === 'pending');
   if (inFlight) {
     const at = inFlight.created_at ? ` at ${TIME(inFlight.created_at, tz)}` : '';
+    // No Adyen reference after 10 minutes: the request may never have reached Adyen (a dropped
+    // connection, the function stopped before sending), so no webhook will ever settle it. The
+    // host may ask again: the SAME request is re-sent with the same idempotency key, so Adyen
+    // replays its first answer if it had one, or takes the charge once if it never got it.
+    const created = Date.parse(inFlight.created_at || '');
+    const stale = Number.isFinite(nowMs) && Number.isFinite(created) && nowMs - created > STALE_IN_FLIGHT_MS
+      && !inFlight.psp_reference && (booking.status === 'no_show' || booking.status === 'cancelled');
+    if (stale) {
+      const amountMinor = minorOf(inFlight.amount);
+      return no('stale_in_flight', `A charge of ${moneyText(amountMinor, inFlight.currency || cur)} was started${at} and the bank never answered. Check with the bank again: the same charge is asked for again, so the card cannot be charged twice.`, {
+        retry: inFlight, amountMinor, kind: kindOfReference(inFlight.merchant_reference),
+        last4: inFlight.card_last4 || null, brand: inFlight.card_brand || null,
+      });
+    }
     return no('charge_in_flight', `A charge was started${at} and the bank has not answered yet. Do not charge again; it shows here when Adyen answers.`);
   }
 
@@ -190,7 +231,7 @@ export function chargeDecision({ booking, payments = [], rules = null, customer 
     if (lc.late === null) return no('cancel_time_unknown', 'This booking has no cancellation time on record, so it cannot be charged as a late cancellation.');
     if (!(windowHours > 0)) return no('no_window', 'This venue has no cancellation window, so a cancellation is never charged.', { hoursBefore });
     if (!lc.late) {
-      return no('outside_window', `Cancelled ${Math.max(0, Math.round(hoursBefore))} hours before the booking, outside the ${windowHours} hour window. Nothing can be charged.`, { hoursBefore });
+      return no('outside_window', `Cancelled ${hoursText(hoursBefore)} the booking, outside the ${windowHours} hour window. Nothing can be charged.`, { hoursBefore });
     }
     kind = 'late_cancel';
   } else {
@@ -208,6 +249,10 @@ export function chargeDecision({ booking, payments = [], rules = null, customer 
   // the webhook instead) the guest's record; either way only when this booking saved a card.
   const hold = rows.filter((r) => r.kind === 'hold' && r.status === 'authorised' && !isNeedsRefund(r)).pop() || null;
   if (!hold) return no('no_card', 'No card was saved with this booking, so there is nothing to charge.', { kind, hoursBefore });
+  // The guest record holds the card saved MOST RECENTLY, at any booking, which may not be the
+  // card on this hold row. Then the hold's last 4 is never shown: the host is asked about "the
+  // saved card", never told one card while another is charged.
+  const fromHold = !!hold.stored_payment_method_id;
   const storedId = hold.stored_payment_method_id || customer?.stored_payment_method_id || null;
   const shopperReference = customer?.shopper_reference || booking.customer_id || null;
   if (!storedId || !shopperReference) {
@@ -220,7 +265,7 @@ export function chargeDecision({ booking, payments = [], rules = null, customer 
   return {
     ...base, ok: true, kind, reason: null, message: '',
     amountMinor: fee.amountMinor, perCoverMinor: fee.perCoverMinor, covers: fee.covers,
-    last4: hold.card_last4 || null, brand: hold.card_brand || null,
+    last4: fromHold ? (hold.card_last4 || null) : null, brand: fromHold ? (hold.card_brand || null) : null,
     storedId, shopperReference, hoursBefore,
   };
 }
@@ -313,21 +358,26 @@ export function feeRate(rates) {
   return live.find((r) => r.is_default) || live[0] || null;
 }
 
+// A no show or late cancel fee pays for a meal that never took place. UK policy generally treats
+// that as compensation, outside the scope of VAT (HMRC withdrew its 2020 change on retained
+// deposits). PETER DECIDES (with the accountant): until then no VAT is taken out of the fee.
+// The 0% entry is named so the Xero posting files it as outside the scope (NONE), and share 0
+// makes every report take the record as booked instead of working VAT out from the line.
+export const OUTSIDE_SCOPE_RATE = Object.freeze({
+  id: null, code: 'OUTSIDE', name: 'Outside the scope of VAT', rate: 0, type: 'inclusive',
+  active: true, appliesTo: ['all'], isDefault: false, locationId: null,
+});
+
 /**
- * The tax record of a fee. An INCLUSIVE rate (UK VAT) is taken out of the fee, the way every
- * sale books it. An EXCLUSIVE rate (US sales tax) is never added on top: the guest agreed to
- * the fee as stated, so the fee books no tax and the record says why.
+ * The tax record of a fee. An INCLUSIVE venue (UK VAT): the fee books NO VAT, recorded as
+ * outside the scope of VAT (see OUTSIDE_SCOPE_RATE). An EXCLUSIVE rate (US sales tax) is never
+ * added on top: the guest agreed to the fee as stated, so the fee books no tax and the record
+ * says why. A venue with no rates books no record, like every sale there.
  *   { taxAmount, record }
  */
 export function feeTax(amountMinor, rate) {
   const gross = round2(Math.round(num(amountMinor)) / 100);
   if (!rate) return { taxAmount: null, record: null };
-  const r = num(rate.rate);
-  const rateObj = {
-    id: rate.id, code: rate.code || null, name: rate.name || 'VAT', rate: r, type: rate.type || 'inclusive',
-    active: rate.active !== false, appliesTo: Array.isArray(rate.applies_to) ? rate.applies_to : ['all'],
-    isDefault: !!rate.is_default, locationId: rate.location_id || null,
-  };
   if ((rate.type || 'inclusive') !== 'inclusive') {
     return {
       taxAmount: 0,
@@ -337,16 +387,26 @@ export function feeTax(amountMinor, rate) {
       },
     };
   }
-  const tax = round2(gross * (r / (1 + r)));
-  const net = round2(gross - tax);
   return {
-    taxAmount: tax,
+    taxAmount: 0,
     record: {
-      total: gross, subtotal: net, totalTax: tax, exclusiveTax: 0, hasExclusiveTax: false,
-      breakdown: [{ net, tax, rate: rateObj, gross, items: 1 }],
-      source: 'no_show_charge',
+      total: gross, subtotal: gross, totalTax: 0, exclusiveTax: 0, hasExclusiveTax: false, share: 0,
+      breakdown: [{ net: gross, tax: 0, rate: { ...OUTSIDE_SCOPE_RATE }, gross, items: 1 }],
+      source: 'no_show_charge', note: 'Outside the scope of VAT: a no show or late cancellation charge is not a sale.',
     },
   };
+}
+
+/** closed_checks.source of a charge check. 20261016f adds it to closed_checks_source_check. */
+export const CHARGE_SOURCE = 'booking';
+/** The source posted instead while the live constraint does not take 'booking' yet. */
+export const CHARGE_SOURCE_FALLBACK = 'online';
+
+/** Was this insert refused by closed_checks_source_check (the migration has not run yet)? */
+export function isSourceCheckRefusal(error) {
+  const e = error || {};
+  const text = `${e.message || ''} ${e.details || ''}`;
+  return String(e.code || '') === '23514' && /closed_checks_source_check/.test(text);
 }
 
 /**
@@ -359,7 +419,7 @@ export function feeTax(amountMinor, rate) {
  *   staffName who charged it (the host stand operator), or null
  *   closedAt  ISO time it was charged
  */
-export function chargeCheckRow({ booking, charge, kind, rate = null, staffName = null, closedAt } = {}) {
+export function chargeCheckRow({ booking, charge, kind, rate = null, staffName = null, closedAt, source = CHARGE_SOURCE } = {}) {
   const attempt = attemptOf(charge?.reference);
   const { id, ref } = chargeCheckIds(booking?.id, attempt);
   const gross = round2(Math.round(num(charge?.amountMinor)) / 100);
@@ -368,6 +428,7 @@ export function chargeCheckRow({ booking, charge, kind, rate = null, staffName =
   const when = `${String(booking?.booking_date || '')} ${String(booking?.start_time || '').slice(0, 5)}`.trim();
   const { taxAmount, record } = feeTax(charge?.amountMinor, rate);
   const card = (charge?.last4 || charge?.brand) ? { brand: charge.brand || null, last4: charge.last4 || null } : null;
+  const coversN = Math.max(1, Math.round(num(booking?.covers)) || 1);
   return {
     id,
     ref,
@@ -379,8 +440,8 @@ export function chargeCheckRow({ booking, charge, kind, rate = null, staffName =
     items: [{
       uid: 'ns1', itemId: null, cat: null, name: label, receiptName: null, kitchenName: null,
       qty: 1, price: gross, mods: [], seat: 'shared', course: 0, fired: true, status: 'sent', voided: false,
-      notes: `Booking ${when}, ${Math.max(1, Math.round(num(booking?.covers)) || 1)} covers`,
-      taxRateId: rate?.id || null, taxOverrides: {}, allergens: [], parentId: null, centreId: null, pizzaConfig: null,
+      notes: `Booking ${when}, ${coversN} cover${coversN === 1 ? '' : 's'}`,
+      taxRateId: null, taxOverrides: {}, allergens: [], parentId: null, centreId: null, pizzaConfig: null,
     }],
     subtotal: gross,
     tax: 0,
@@ -396,9 +457,14 @@ export function chargeCheckRow({ booking, charge, kind, rate = null, staffName =
     status: 'paid',
     voided: false,
     refunded: false,
-    source: 'booking',
+    source,
     closed_at: closedAt,
-    customer: { name: cust.name || null, phone: cust.phone || null, email: cust.email || null },
+    customer: {
+      name: cust.name || null, phone: cust.phone || null, email: cust.email || null,
+      // Says what the check is even when it had to be posted as source 'online' (before
+      // migration 20261016f lets closed_checks take 'booking').
+      charge_source: CHARGE_SOURCE, booking_id: booking?.id ? String(booking.id) : null,
+    },
     customer_id: booking?.customer_id || null,
     customer_phone: cust.phone || null,
     tax_amount: taxAmount,
