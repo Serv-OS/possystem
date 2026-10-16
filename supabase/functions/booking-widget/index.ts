@@ -64,6 +64,8 @@ import { promotePaidBooking, markPaymentNeedsRefund, isMissingColumnError, loadB
 import { sanitiseChoice, optionGroupIdsFor, matchChoice, MAX_CHOICE_NOTE } from '../_shared/preorderChoices.js';
 import { phoneMatchKey, phoneRegionFromCurrency, phoneRawText } from '../_shared/phoneKey.js';
 import { readCustomerByPhone } from '../_shared/customerPhoneRead.js';
+// 16 Oct 2026: the guest's own change and cancel link (/book?manage=<token>).
+import { handleManage } from './manage.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -495,6 +497,11 @@ Deno.serve(async (req) => {
       return json({ ok: true, saved: rows2.length });
     }
 
+    // ── the guest's own link (16 Oct 2026): /book?manage=<token>, the token IS the credential ──
+    if (typeof action === 'string' && action.startsWith('manage_')) {
+      return await handleManage(action, body, { db, json, loadVenue, loadDayBookings, venueToday, venueNowMin, epochToVenueMin });
+    }
+
     const locationId = String(body.location_id || '');
     if (!locationId || locationId === 'loc-demo') return json({ error: 'location required' }, 400);
 
@@ -894,6 +901,16 @@ Deno.serve(async (req) => {
         }
       }
 
+      // 16 Oct 2026: the guest's change and cancel link for the Booked screen. The database mints
+      // the token (migration 20261016c); before that migration the column is not there and the
+      // screen simply shows no link.
+      let manageToken: string | null = null;
+      if (bookedId) {
+        const { data: mt, error: mtErr } = await db.from('bookings').select('manage_token').eq('id', bookedId).maybeSingle();
+        if (!mtErr) manageToken = (mt as { manage_token?: string | null } | null)?.manage_token || null;
+        else if (!isMissingColumnError(mtErr)) console.warn('[booking-widget] manage token read failed:', mtErr.message);
+      }
+
       // Booking confirmation SMS + email (Peter, 13 Aug: "didn't get SMS").
       // Fire-and-forget to booking-reminders — its ledger sends each channel
       // once. NOT for pending_payment: no money, no "your table is booked" —
@@ -940,7 +957,7 @@ Deno.serve(async (req) => {
       // expires it in 20 minutes if it never pays.
       return json({ ok: true, status: createStatus, bookingId: bookedId, table: tableLabel, time, date, party,
         package: pkg ? { id: pkg.id, name: pkg.name, paymentModel: pkg.payment_model } : null,
-        preorderToken, preorderDeadline,
+        preorderToken, preorderDeadline, manageToken,
         preordersTaken: validRows.length > 0,
         paymentDue,
         ...(guestAdyen ? { adyen: guestAdyen } : {}) });

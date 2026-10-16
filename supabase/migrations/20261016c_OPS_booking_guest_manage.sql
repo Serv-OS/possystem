@@ -65,14 +65,14 @@ end
 $guard$;
 
 -- ── 1. bookings.manage_token ─────────────────────────────────────────────────
--- 64 hex characters from two random uuids, the same shape as preorder_token. A volatile
--- default fills every existing row with its own value when the column is added.
+-- 32 hex characters from a random uuid (122 random bits; short enough to keep the text message
+-- short). A volatile default fills every existing row with its own value when the column is added.
 alter table public.bookings
   add column if not exists manage_token text
-  default (replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', ''));
+  default replace(gen_random_uuid()::text, '-', '');
 -- A second run, or a row written by a client that sent null on purpose: give it a code.
 update public.bookings
-   set manage_token = replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', '')
+   set manage_token = replace(gen_random_uuid()::text, '-', '')
  where manage_token is null;
 create unique index if not exists bookings_manage_token_key on public.bookings (manage_token);
 comment on column public.bookings.manage_token is
