@@ -30,6 +30,8 @@ import {
   useNowMin, money, initialsOf, bookingName, todayISO, EmptyNote, Chip, preorderStateFor, courseColor,
 } from './bits.jsx';
 import EditBookingSheet from './EditBookingSheet.jsx';
+import { useServiceDay } from './useServiceDay.js';
+import { ClosedBands, DayRuleNotice } from './ServiceBands.jsx';
 
 // A block that may be dragged on the Timeline: live and not yet seated. A
 // seated party's table is the till's business; finished bookings stay put.
@@ -73,8 +75,10 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
 
   const rows = useMemo(() => sortTables(tables), [tables]);
   const rowIndex = useMemo(() => new Map(rows.map((t, i) => [t.id, i])), [rows]);
-  const startMin = toMin(rules.serviceStart);
-  const endMin = toMin(rules.serviceEnd);
+  // 16 Oct 2026 (service periods): the grid draws the day's own services, greys the closed
+  // stretches and says when the day is closed (useServiceDay.js).
+  const serviceDay = useServiceDay(rules, bookingsDate || todayISO(), bookings);
+  const { startMin, endMin } = serviceDay;
   const slots = Math.max(1, Math.round((endMin - startMin) / 15));
 
   // ── fluid slot width (FloorScreen's ResizeObserver pattern) ─────────────────
@@ -343,6 +347,7 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
             <Chip active={view === 'timeline'} onClick={() => setView('timeline')} style={viewChip}>Timeline</Chip>
             <Chip active={view === 'list'} onClick={() => setView('list')} style={viewChip}>List</Chip>
           </div>
+          <DayRuleNotice text={serviceDay.notice} />
         </div>
 
         {/* timeline / list — one measured scroll container for both views */}
@@ -452,6 +457,7 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
                   `repeating-linear-gradient(to bottom, transparent 0 ${ROW_H}px, ${tintBg('var(--t1)', 2)} ${ROW_H}px ${ROW_H * 2}px)`,
                 ].join(', '),
               }}>
+                <ClosedBands bands={serviceDay.bands} startMin={startMin} slotW={slotW} height={gridH} />
                 {visible.map((b) => {
                   const st = displayStatus(b, nowMin, packages);
                   const meta = statusMeta(st);

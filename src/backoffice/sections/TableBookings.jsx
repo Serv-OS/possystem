@@ -19,6 +19,7 @@ import { toMin } from '../../lib/bookings/optimiser.js';
 import { editRefusal, editedLine, fmtClock, venueToday } from '../../lib/bookings/editRules.js';
 import { StatusBadge, displayStatus, bookingName } from '../../surfaces/bookings/bits.jsx';
 import EditBookingSheet from '../../surfaces/bookings/EditBookingSheet.jsx';
+import ServicePeriodsEditor from '../../surfaces/bookings/ServicePeriodsEditor.jsx';
 import { CUSTOMER_ROOT } from '../../lib/env';
 import { platformSupabase, getLocationId } from '../../lib/supabase';
 import { DEFAULT_RULES, DEFAULT_TURN_BANDS } from '../../lib/bookings/optimiser.js';
@@ -64,6 +65,7 @@ export default function TableBookings({ userName = null }) {
   };
   const patch = (p) => updateBookingRules?.(p);
   const setBand = (key, v) => patch({ turnBands: { ...rules.turnBands, [key]: v } });
+  const venueTzForRules = useStore((s) => s.locationConfig?.timezone);
 
   // ── venue slug → public /book URL (identical lookup to OnlineOrdering) ────
   const [slug, setSlug] = useState(null);
@@ -196,6 +198,14 @@ export default function TableBookings({ userName = null }) {
             </div>
           )}
         </div>
+      </div>
+
+      {/* 16 Oct 2026: service periods, closed days, date blocks and online notice (the same
+          editor as the host stand Rules screen). */}
+      <div style={{ marginTop: 14 }}>
+        <ServicePeriodsEditor rules={rules} patch={patch}
+          ready={!bookingRules || bookingRules.servicePeriodsReady !== false}
+          today={venueToday(venueTzForRules)} />
       </div>
 
       {/* ── Online booking blocks ── */}

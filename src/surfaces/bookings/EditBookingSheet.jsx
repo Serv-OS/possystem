@@ -99,11 +99,12 @@ export default function EditBookingSheet({ b, onClose, onSaved, editedBy = null 
   const dirty = Object.keys(patch).length > 0;
 
   // Times across the service window, plus the booking's own time when it is off grid.
+  // 16 Oct 2026: with service periods set, the chosen date's services (slotTimes with a date).
   const times = useMemo(() => {
-    const list = slotTimes(rules);
+    const list = slotTimes(rules, date);
     if (time && !list.includes(time)) list.push(time);
     return list.sort((x, y) => toMin(x) - toMin(y));
-  }, [rules, time]);
+  }, [rules, time, date]);
 
   // Other bookings on the chosen day: the store when it is the viewed day, a
   // fresh read for any other day. A sheet opened on an unreadable day shows

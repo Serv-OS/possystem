@@ -9,7 +9,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../store';
-import { toMin, toHM, turnFor } from '../../lib/bookings/optimiser.js';
+import { toMin, toHM, turnFor, serviceSlots, dayNotice } from '../../lib/bookings/optimiser.js';
 import {
   mono, tintBg, tintBd, rulesOf, initialsOf, Chip, SectionTitle, todayISO } from './bits.jsx';
 
@@ -38,13 +38,20 @@ export default function BookScreen({ onBooked }) {
   const [refresh, setRefresh] = useState(0);  // bump to re-run suggestions after a race
 
   // ── time chips across the service window ────────────────────────────────────
-  const slotTimes = useMemo(() => {
-    const out = [];
-    const step = rules.slotMinutes || 15;
-    for (let m = toMin(rules.serviceStart); m < toMin(rules.serviceEnd); m += step) out.push(toHM(m));
-    return out;
-  }, [rules.serviceStart, rules.serviceEnd, rules.slotMinutes]);
-  useEffect(() => { if (!time && slotTimes.length) setTime(slotTimes[0]); }, [slotTimes, time]);
+  // 16 Oct 2026 (service periods): the chosen day's services (lunch and dinner, last seating,
+  // closed days and blocks), the same grid the online page sells. With no periods set it is the
+  // old single window, exactly as before.
+  const bookDate = bookingsDate || todayISO();
+  const slotTimes = useMemo(() => serviceSlots(bookingRules ? rules : {}, bookDate),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [bookingRules, bookDate]);
+  const closedWords = useMemo(() => dayNotice(bookingRules || {}, bookDate), [bookingRules, bookDate]);
+  useEffect(() => {
+    // a day change can leave the picked time off the new day's grid: take its first slot
+    if (time && slotTimes.includes(time)) return;
+    if (slotTimes.length) setTime(slotTimes[0]);
+    else if (time) setTime(null);
+  }, [slotTimes, time]);
 
   const paceAt = useStore((s) => s.bookingPaceAt);
   const pace = useMemo(() => {
@@ -136,6 +143,11 @@ export default function BookScreen({ onBooked }) {
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 16 }}>
           {COVERS.map((c) => <Chip key={c} active={party === c} onClick={() => setParty(c)}>{c}</Chip>)}
         </div>
+        {closedWords && (
+          <div style={{ marginBottom: 10, padding: '10px 12px', borderRadius: 10, background: tintBg('var(--orn)', 8), border: `1px solid ${tintBd('var(--orn)')}`, fontSize: 12, color: 'var(--orn)', fontWeight: 700, lineHeight: 1.4 }}>
+            {closedWords}
+          </div>
+        )}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
           {slotTimes.map((t) => {
             const p = pace.get(t) || { load: 0, full: false };

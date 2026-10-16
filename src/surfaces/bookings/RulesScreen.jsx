@@ -7,6 +7,8 @@
 
 import { useStore } from '../../store';
 import { mono, tintBg, tintBd, rulesOf, money, Stepper, ToggleRow } from './bits.jsx';
+import ServicePeriodsEditor from './ServicePeriodsEditor.jsx';
+import { venueToday } from '../../lib/bookings/editRules.js';
 
 const BANDS = [
   { key: '1-2', label: '1–2 covers' },
@@ -19,6 +21,7 @@ export default function RulesScreen() {
   const bookingRules = useStore((s) => s.bookingRules);
   const updateBookingRules = useStore((s) => s.updateBookingRules);
   const rules = rulesOf(bookingRules);
+  const venueTz = useStore((s) => s.locationConfig?.timezone);
   const patch = (p) => updateBookingRules?.(p);
   const setBand = (key, v) => patch({ turnBands: { ...rules.turnBands, [key]: v } });
 
@@ -124,6 +127,12 @@ export default function RulesScreen() {
             </div>
           )}
         </div>
+      </div>
+      {/* 16 Oct 2026: service periods, closed days, date blocks and online notice. */}
+      <div style={{ marginTop: 16, maxWidth: 1056 }}>
+        <ServicePeriodsEditor rules={rules} patch={patch}
+          ready={!bookingRules || bookingRules.servicePeriodsReady !== false}
+          today={venueToday(venueTz)} />
       </div>
     </div>
   );
