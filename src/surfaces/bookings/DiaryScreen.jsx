@@ -20,6 +20,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../store';
 import { supabase, isMock } from '../../lib/supabase';
+// 16 Oct 2026: the no show and late cancel charge (NoShowCharge.jsx). A charge is the venue's
+// revenue, never money paid with the booking, so the ledger rows below leave it out.
+import NoShowCharge from './NoShowCharge.jsx';
+import { withoutNoShowCharges } from '../../lib/bookings/noShowCharge.js';
 import { toMin, toHM, isTableFree, toOptimiserBooking, sessionsToBlocks } from '../../lib/bookings/optimiser.js';
 import { loadBookingPayments, lookupPreorderLinkBase } from '../../lib/bookings/bookingsData.js';
 import { undoNoShowStatus, bookingUnpaid, isNeedsRefundRow } from '../../lib/bookings/bookingPayment.js';
@@ -820,7 +824,9 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
   // rules.holdPerCover x covers, and since rulesOf() falls back to £20 per cover
   // for a venue with no saved rules, every walk-in claimed "Card held" over an
   // invented figure (Peter, 25 Aug). A hold is real only if a row says so.
-  const [payRows, payReadFailed] = useBookingPayments(b.id);
+  const [allPayRows, payReadFailed] = useBookingPayments(b.id);
+  // 16 Oct 2026: a no show charge is never credit, never "paid online", never a reason to undo.
+  const payRows = withoutNoShowCharges(allPayRows);
   // Money flagged to go back is never "on file" (isNeedsRefundRow).
   const capturedRow = (payRows || []).find((r) => r.status === 'captured' && r.kind !== 'refund' && !isNeedsRefundRow(r));
   const heldRow = (payRows || []).find((r) => r.status === 'authorised' && r.kind === 'hold' && !isNeedsRefundRow(r));
@@ -968,6 +974,7 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
           )}
         </div>
         <PaymentState b={b} prepaid={prepaid} rows={payRows} />
+        <NoShowCharge b={b} hasSavedCard={!!heldRow} />
       </div>
 
       <div style={sec}>
