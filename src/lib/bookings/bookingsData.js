@@ -170,13 +170,21 @@ export async function loadBookings(locationId, dateISO) {
     // paired devices from migration 20260824). Missing map entry = ledger not
     // visible (pre-migration RLS / error) → paidMinor stays null = "unknown".
     const paid = new Map(); // booking_id → { total, prepay, deposit } minor
+    // 16 Oct 2026 review: a failed booking_tables read is NOT a good read. The rows still come
+    // back (each on its primary table, the boot fallback), but with { error, partial }, so the
+    // catch up reload keeps the diary on screen instead of shrinking every joined party to one
+    // table and showing its other tables as free.
+    let tablesError = null;
     if (ids.length) {
       const [{ data: bt, error: btErr }, { data: po }, { data: pay, error: payErr }] = await Promise.all([
         supabase.from('booking_tables').select('booking_id, table_id, is_primary').in('booking_id', ids),
         supabase.from('booking_preorders').select('booking_id').in('booking_id', ids),
         supabase.from('booking_payments').select('booking_id, kind, amount, status').in('booking_id', ids).eq('status', 'captured'),
       ]);
-      if (!btErr) {
+      if (btErr) {
+        console.warn('[bookingsData] loadBookings tables:', btErr.message);
+        tablesError = btErr.message || 'tables read failed';
+      } else {
         membership = (bt || []).reduce((m, row) => {
           const arr = m.get(row.booking_id) || [];
           if (row.is_primary) arr.unshift(row.table_id); else arr.push(row.table_id);
@@ -208,7 +216,7 @@ export async function loadBookings(locationId, dateISO) {
       _paidMinor: paid.get(r.id)?.total ?? null,
       _paidPrepayMinor: paid.get(r.id)?.prepay ?? null,
       _paidDepositMinor: paid.get(r.id)?.deposit ?? null,
-    })).filter(Boolean) };
+    })).filter(Boolean), ...(tablesError ? { error: tablesError, partial: true } : {}) };
   } catch (e) {
     if (warnAbsentOr(e, 'loadBookings')) return { data: [] };
     console.warn('[bookingsData] loadBookings threw:', e?.message || e);
@@ -345,10 +353,13 @@ export async function editBookingAtomic(id, next, locationId) {
       p_start_time: next.startTime,
       p_turn_minutes: next.turnMinutes,
       p_covers: next.covers,
-      p_table_ids: next.tables,
-      p_primary_table_id: next.primaryTableId,
+      p_table_ids: next.tables ?? null,
+      p_primary_table_id: next.tables ? next.primaryTableId : null,
       p_note: next.note ?? null,
       p_customer: next.customer ?? null,
+      // 16 Oct 2026 review: the stamp the edit was based on, checked again under the lock
+      // ('' = never edited, null = no check). Tables null = keep the booking's tables as they are.
+      p_expected_edited_at: next.expectedEditedAt ?? null,
     });
     if (error) {
       if (isMissingFunction(error)) return { ok: false, missing: true, error: error.message };
@@ -360,6 +371,7 @@ export async function editBookingAtomic(id, next, locationId) {
     return {
       ok: !!data?.ok, error: data?.error || null, tableId: data?.table_id || null,
       seats: data?.seats ?? null, status: data?.status || null, retabled: !!data?.retabled,
+      editedAt: data?.edited_at || null, editedBy: data?.edited_by || null,
       refused: !data?.ok,
     };
   } catch (e) { return { ok: false, error: e?.message || 'edit failed' }; }

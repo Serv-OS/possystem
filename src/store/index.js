@@ -64,7 +64,7 @@ import { newSessionOrderId } from '../lib/sessionOrderId';
 import { applyBookingPayment } from '../lib/bookings/applyBookingPayment';
 import { patchPendingCheck, isPendingCheck } from '../sync/DataSafe';
 import { markJobReconciled, closeTerminalSession, recallJob, forgetJob, cancelTerminalJob, buildCheckKey, fetchJob, fetchJobCapture } from '../lib/payments/terminalJobs';
-import { usableOrderRef, bookingLegsMinor, closerGrandMinor, closerMethod } from '../lib/payments/terminalJobCloser';
+import { usableOrderRef, bookingLegsMinor, giftLegsMinor, closerGrandMinor, closerMethod, closerCardIntents, withBookingIntents } from '../lib/payments/terminalJobCloser';
 import { printService } from '../lib/printer';
 import { hubrisePushStock, isHubriseConnected, hubrisePushStatus, isHubriseAutoReceipt } from '../lib/hubrise';
 import { buildChannelCloseFields } from '../lib/channelMoney';
@@ -6704,12 +6704,17 @@ export const useStore = create((set, get) => ({
     const bookingCreditMinor = Array.isArray(d.bookingPayment?.legs)
       ? bookingLegsMinor(d.bookingPayment)
       : (Number(d.bookingCreditMinor) || 0);
-    // 16 Oct 2026: the check is booked GROSS (card legs plus the booking legs it carries as
-    // tenders), as CheckoutModal books it, so tenders add up to the total and VAT is against it.
-    const closeGrandMinor = closerGrandMinor({ chargeMinor: job.charge_minor ?? 0, priorChargeMinor, bookingPayment: d.bookingPayment });
+    // The gift card the till debited before sending the job: the due is net of it too.
+    const giftMinor = giftLegsMinor(d.giftCard);
+    // 16 Oct 2026: the check is booked GROSS (card legs plus the booking and gift legs it carries
+    // as tenders), as CheckoutModal books it, so tenders add up to the total and VAT is against it.
+    const closeGrandMinor = closerGrandMinor({ chargeMinor: job.charge_minor ?? 0, priorChargeMinor, bookingPayment: d.bookingPayment, giftCard: d.giftCard });
     const closeMethod = closerMethod({ split: priorLegs.length > 0, bookingPayment: d.bookingPayment });
+    // The card legs named with what the card took, so a total carrying booking or gift money never
+    // turns into one card leg claiming the whole bill (a refund would aim at money it never took).
+    const cardIntents = closerCardIntents({ legIntents, transactionId: job.transaction_id || null, chargeMinor: job.charge_minor, bookingPayment: d.bookingPayment, giftCard: d.giftCard });
     const driftMinor = (!acknowledged && job.live_total_minor != null)
-      ? (Number(job.live_total_minor) - (Number(job.due_minor) + paidBeforeMinor + bookingCreditMinor)) : 0;
+      ? (Number(job.live_total_minor) - (Number(job.due_minor) + paidBeforeMinor + bookingCreditMinor + giftMinor)) : 0;
     const hasDrift = Number.isFinite(driftMinor) && driftMinor !== 0;
 
     // ── card block from the job (brand/last4/auth for the receipt) ─────────────
@@ -6754,7 +6759,7 @@ export const useStore = create((set, get) => ({
       grand: closeGrandMinor / 100,   // every leg's base + tip, plus the booking money (16 Oct 2026)
       tip:   ((job.tip_minor ?? 0) + priorTipMinor) / 100,
       stripePaymentIntentId: job.transaction_id || null,
-      paymentIntents: legIntents || undefined,
+      paymentIntents: cardIntents || undefined,
       cardReceipt,
       // v5.5.902: the gift card the POS debited BEFORE dispatching this job (the job's
       // due was already net of it). Recording it here is what makes a refund of a
@@ -6823,7 +6828,7 @@ export const useStore = create((set, get) => ({
         giftCard: d.giftCard || null,   // v5.5.902 — see termPay above
         stripePaymentIntentId: job.transaction_id || null,
         processor: job.processor || 'ryft',
-        paymentIntents: legIntents, cardReceipt,
+        paymentIntents: cardIntents, cardReceipt,
         loyaltyRedemption: null,
         closedAt: Date.now(),
         seatedAt: d.seatedAt ? Number(d.seatedAt) : null,
@@ -6864,10 +6869,7 @@ export const useStore = create((set, get) => ({
     // cardLegsOf can never route a refund at them).
     if (Array.isArray(d.bookingPayment?.legs) && d.bookingPayment.legs.length) {
       record.bookingPayment = d.bookingPayment;
-      record.paymentIntents = [
-        ...(record.paymentIntents || []),
-        ...d.bookingPayment.legs.map(l => ({ id: null, amountMinor: Number(l.amountMinor) || 0, method: l.method })),
-      ];
+      record.paymentIntents = withBookingIntents(record.paymentIntents, d.bookingPayment);
     }
 
     // ── ELECT THE SINGLE CLOSER — the closed_checks PK does the arbitration ────

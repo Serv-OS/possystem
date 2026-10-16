@@ -18,6 +18,21 @@
 import { venueToday, rolloverTarget, VENUE_CLOCK_TICK_MS } from './venueClock.js';
 
 export const CATCH_UP_EVERY_MS = 60 * 1000;
+export const REFRESH_RETRY_MS = 1500;
+
+// What a finished day reload may do with its rows (16 Oct 2026 review). The read takes two round
+// trips; a seat, cancel, no show or depart changes the store first and then writes, and realtime
+// echoes land at any time. A read that started before such a change can carry the older status,
+// so it is never applied over it:
+//   'skip'   the read failed, or the diary moved to another day meanwhile
+//   'retry'  the bookings changed while the read ran: read again shortly (once)
+//   'apply'  nothing changed while it ran: the rows replace the day
+export function dayRefreshAction({ error = null, data = null, dateAtStart, dateNow, before, after, retried = false } = {}) {
+  if (error || !Array.isArray(data)) return 'skip';
+  if (dateNow !== dateAtStart) return 'skip';
+  if (after !== before) return retried ? 'skip' : 'retry';
+  return 'apply';
+}
 const DEBOUNCE_MS = 400;
 
 // store: a zustand store (getState). Options:

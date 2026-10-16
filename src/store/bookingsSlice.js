@@ -28,6 +28,7 @@ import {
   departBookingIfDining,
 } from '../lib/bookings/bookingsData.js';
 import { venueToday, venueNow } from '../lib/bookings/venueClock.js';
+import { dayRefreshAction, REFRESH_RETRY_MS } from '../lib/bookings/bookingsCatchUp.js';
 import { bookingIdsToDepart } from '../lib/bookings/departOnClose.js';
 import { seatRefusal, undoCancelStatus } from '../lib/bookings/standRules.js';
 import { packageItemsFor } from '../lib/bookings/packagePricing.js';
@@ -174,13 +175,23 @@ export function bookingsSlice(set, get) {
     // the stand's catch up (wake, network back, 60 second timer) and by realtime
     // on every (re)subscribe, so events missed while asleep or offline are not
     // lost. A failed read ({ error }) keeps what is on screen.
-    refreshBookingsDay: async () => {
+    // A read that started before a local or realtime change is never applied over it
+    // (dayRefreshAction): it reads again once, 1.5 seconds later.
+    refreshBookingsDay: async (_reason, { retried = false } = {}) => {
       const locId = await resolveLocationId();
       if (!locId) return;
       const date = get().bookingsDate || todayISO(get);
+      const before = get().bookings;
       const { data, error } = await loadBookings(locId, date);
-      if (error || !Array.isArray(data)) return;
-      if (get().bookingsDate !== date) return;
+      const action = dayRefreshAction({
+        error, data, dateAtStart: date, dateNow: get().bookingsDate || todayISO(get),
+        before, after: get().bookings, retried,
+      });
+      if (action === 'retry') {
+        setTimeout(() => { get().refreshBookingsDay?.('retry', { retried: true }); }, REFRESH_RETRY_MS);
+        return;
+      }
+      if (action !== 'apply') return;
       set({ bookings: data, bookingsRefreshedAt: Date.now() });
     },
 
@@ -353,6 +364,11 @@ export function bookingsSlice(set, get) {
       if (!cached) return refuse(notHere);
       const rules = get().bookingRules || {};
       const tz = get().locationConfig?.timezone;
+      const staleWords = (editedAt, editedBy) => {
+        const at = editedAt ? toHM(minutesInTz(editedAt, tz) ?? 0) : null;
+        const who = editedBy ? ` by ${editedBy}` : '';
+        return `This booking was changed on another device${at ? ` at ${at}` : ''}${who}. Close and reopen to see it.`;
+      };
       const pkg = cached.packageId ? (get().packages || []).find((p) => p.id === cached.packageId) : null;
       const ctx = buildScheduleCtx(tz);
       const storeTables = (get().tables || []).filter((t) => !t.parentId);
@@ -385,19 +401,21 @@ export function bookingsSlice(set, get) {
               };
             });
             if (fresh.primaryTableId !== cached.primaryTableId) get().resyncBookingTables?.(id);
-            const at = fresh.customer?.edited_at ? toHM(minutesInTz(fresh.customer.edited_at, tz) ?? 0) : null;
-            const who = fresh.customer?.edited_by ? ` by ${fresh.customer.edited_by}` : '';
-            return refuse(`This booking was changed on another device${at ? ` at ${at}` : ''}${who}. Close and reopen to see it.`, { stale: true });
+            return refuse(staleWords(fresh.customer?.edited_at, fresh.customer?.edited_by), { stale: true });
           }
           entry = {
             ...cached,
             status: fresh.status, date: fresh.date, startTime: fresh.startTime, covers: fresh.covers,
             turnMinutes: fresh.turnMinutes, note: fresh.note, customer: fresh.customer,
           };
-          if (fresh.primaryTableId && fresh.primaryTableId !== cached.primaryTableId) {
-            const ids = await loadBookingTables(id);
-            entry = { ...entry, primaryTableId: fresh.primaryTableId, tables: ids && ids.length ? mergeBookingTables(fresh.primaryTableId, ids) : [fresh.primaryTableId] };
-          }
+          // 16 Oct 2026 review: the tables are ALWAYS re read. Another stand may have joined
+          // or moved a table without touching the edit stamp, and this device's copy (Back
+          // Office has no bookings realtime) would otherwise be the list the edit is checked
+          // against. edit_booking also keeps the live tables when none are sent (below).
+          const primary = fresh.primaryTableId || entry.primaryTableId;
+          const ids = await loadBookingTables(id);
+          if (ids && ids.length) entry = { ...entry, primaryTableId: primary, tables: mergeBookingTables(primary, ids) };
+          else if (fresh.primaryTableId && fresh.primaryTableId !== cached.primaryTableId) entry = { ...entry, primaryTableId: fresh.primaryTableId, tables: [fresh.primaryTableId] };
         }
       }
 
@@ -429,8 +447,8 @@ export function bookingsSlice(set, get) {
         // is why every slot change ALSO goes through move_booking below.
         let others = (get().bookings || []);
         if (live) {
-          const { data } = await loadBookings(locId, next.date);
-          if (Array.isArray(data)) others = data;
+          const { data, error } = await loadBookings(locId, next.date);
+          if (!error && Array.isArray(data)) others = data;
         } else if (next.date !== (get().bookingsDate || todayISO(get))) {
           others = [];
         }
@@ -484,19 +502,25 @@ export function bookingsSlice(set, get) {
       // database has it. edit_booking re checks the window, the seats, the
       // floor plan and an online payment still landing under the venue lock,
       // and writes the row and the tables in one transaction, so one call
-      // covers the slot and the tables. Unchanged fields go as this device just
-      // read them from the database (entry is the fresh row), the note and the
-      // guest only when they changed (null keeps what is there), so nothing a
-      // stamp check passed is written back over. Before migration 20261016b the
+      // covers the slot and the tables. Unchanged date, time, turn and covers go
+      // as this device just read them from the database (entry is the fresh row),
+      // the tables only when this edit names them and the note only when it
+      // changed (null keeps what is there, read under the lock), and the stamp
+      // is checked again under the lock, so nothing is written back over. Before migration 20261016b the
       // function is missing: the writes below (only the changed fields, then
       // move_booking for any slot change) run instead, and the stand says once
       // that only this device checked the diary.
       const noteChanged = next.note !== (entry.note || '');
+      // Tables only when this edit names them; null keeps the booking's tables as the database
+      // holds them under the lock, so a note or guest fix never writes back an old table list.
+      const tablesNamed = patch.tables !== undefined || patch.primaryTableId !== undefined;
       const atomic = await editBookingAtomic(id, {
         date: next.date, startTime: next.startTime, turnMinutes: next.turnMinutes, covers: next.covers,
-        tables: next.tables, primaryTableId: next.primaryTableId,
+        tables: tablesNamed ? next.tables : null, primaryTableId: tablesNamed ? next.primaryTableId : null,
         note: noteChanged ? next.note : null,
         customer: stamped,
+        // The stamp the caller opened with, checked again under the lock ('' = never edited).
+        expectedEditedAt: expectedEditedAt === undefined ? null : (expectedEditedAt || ''),
       }, locId);
       if (atomic.ok) {
         apply();
@@ -517,6 +541,7 @@ export function bookingsSlice(set, get) {
         }
         const label = atomic.tableId ? (tablesForRules.find((t) => t.id === atomic.tableId)?.label || null) : null;
         let msg;
+        if (atomic.error === 'stale') return refuse(staleWords(atomic.editedAt, atomic.editedBy), { stale: true });
         if (/payment_gate|waiting for payment/i.test(String(atomic.error || ''))) msg = 'This booking is waiting for payment, so its covers cannot change.';
         else if (atomic.error === 'table_taken') msg = `${label || 'That table'} is held by another booking at that time. Nothing was changed.`;
         else if (atomic.refused) msg = bookingRefusalWords({ error: atomic.error, tableLabel: label, seats: atomic.seats, status: atomic.status });
@@ -649,6 +674,16 @@ export function bookingsSlice(set, get) {
         get().showToast?.(otherDay, 'error');
         return { ok: false, error: 'other_day', text: otherDay };
       }
+      // 16 Oct 2026 review: the booking money is read alongside the server sessions read and
+      // settled BEFORE the till's own copy is checked below, so nothing slow is awaited between
+      // the open tab decision and seatTable (a till could open a check in that gap). At most
+      // 8 seconds; a slow or failed read is 0, exactly as a failed read always was.
+      const creditP = isTrainingMode()
+        ? Promise.resolve(null)
+        : Promise.race([
+          loadBookingCredit(b.id).catch(() => null),
+          new Promise((resolve) => setTimeout(() => resolve(null), 8000)),
+        ]);
       // An open POS tab on any of the booking's tables means no one can be
       // seated there yet — refuse loudly instead of silently overwriting the
       // live session (which is real money on a real check).
@@ -680,6 +715,7 @@ export function bookingsSlice(set, get) {
           if (isHostStandMode() && merged !== get().tables) set({ tables: merged });
         }
       }
+      const creditRead = await creditP;
       // The till's own copy is read AFTER the server read: a check opened or a line rung in on
       // this till while the read was in flight must still refuse the seat.
       const local = get().tables || [];
@@ -722,13 +758,11 @@ export function bookingsSlice(set, get) {
         // / "Deposit applied at close") and auto-applied by CheckoutModal as a
         // tender leg. Training tills carry the label but never real credit.
         const pkg = b.packageId ? (get().packages || []).find((p) => p.id === b.packageId) : null;
-        let credit = { prepayMinor: 0, depositMinor: 0 };
         // 16 Oct 2026: every booking, not only package ones, so a rule based deposit is on the
         // session too and the till takes off what the reader and PAX take off (they read the
-        // same ledger). No captured money: 0, exactly as before.
-        if (!isTrainingMode()) {
-          try { credit = await loadBookingCredit(b.id); } catch { /* stays 0 — honest fallback */ }
-        }
+        // same ledger). No captured money: 0, exactly as before. Read above (creditP), before
+        // the open tab check, so only a settled value is used here.
+        const credit = creditRead || { prepayMinor: 0, depositMinor: 0 };
         // v5.7.23 - free food is EARNED: the prepay 0.00 pricing only applies
         // when captured, un-applied prepay money is actually on the ledger. An
         // unpaid prepay booking (pending_payment, expired, legacy unpaid

@@ -820,9 +820,11 @@ export default function TablesSurface() {
                 bookings/FloorScreen. Active = live booking inside its
                 [start−15, start+turn) window, which covers dining/seated too. */}
             {(() => {
-              const now = new Date();
-              const nowMin = now.getHours() * 60 + now.getMinutes();
-              const today = now.toLocaleDateString('en-CA');
+              // 16 Oct 2026 review: the venue's clock and date, never the device's (a till in
+              // California for a UK venue drew the outline 8 hours off).
+              const vctx = buildScheduleCtx(useStore.getState().locationConfig?.timezone);
+              const nowMin = vctx.nowMinutes;
+              const today = vctx.ymd;
               return (bookings || []).filter(b => {
                 if ((b.tables || []).length < 2) return false;
                 if (b.date && b.date !== today) return false;
@@ -967,7 +969,13 @@ export default function TablesSurface() {
                               )}
                               {credit.hasCredit && (
                                 <>
-                                  <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, fontWeight:700, color:'var(--grn)', marginTop:5 }}>
+                                  {/* 16 Oct 2026 review: the bill the booking money comes off (discounts and
+                                      added tax included), so Total, booking and To pay add up on the card. */}
+                                  <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, fontWeight:700, marginTop:5 }}>
+                                    <span style={{ color:'var(--t2)' }}>Total</span>
+                                    <span style={{ fontFamily:'DM Mono,monospace' }}>{money(billTotal)}</span>
+                                  </div>
+                                  <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, fontWeight:700, color:'var(--grn)', marginTop:3 }}>
                                     <span>✓ {credit.label}{credit.surplusMinor > 0 && <span style={{ color:'var(--t3)', fontWeight:500 }}> ({money(credit.surplusMinor/100)} stays on the booking)</span>}</span>
                                     <span style={{ fontFamily:'DM Mono,monospace' }}>−{money(credit.appliedMinor/100)}</span>
                                   </div>
@@ -1241,7 +1249,9 @@ export default function TablesSurface() {
             const edit = useStore.getState().editBooking;
             const out = edit
               ? await edit(editBooking.id, { covers: res.partySize, startTime: res.time, note: res.notes, customer },
-                  { editedBy: useStore.getState().staff?.name || null })
+                  // 16 Oct 2026 review: the stamp the sheet opened with, so a change made on another
+                  // device meanwhile (an allergen, an email) is refused, never written back over.
+                  { editedBy: useStore.getState().staff?.name || null, expectedEditedAt: editBooking.customer?.edited_at || null })
               : { ok: false, error: 'Bookings are not loaded on this till.' };
             if (!out?.ok) {
               showToast(`Booking NOT changed: ${out?.error || 'the change was refused'}`, 'error');

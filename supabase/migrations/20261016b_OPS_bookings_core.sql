@@ -6,7 +6,7 @@
 -- #  Additive and safe to run twice. One transaction. No table is rewritten:  #
 -- #  three nullable columns on booking_payments (read granted to logins),    #
 -- #  one new internal helper,                                                 #
--- #  one new RPC (edit_booking), and five functions replaced in place.        #
+-- #  one new RPC (edit_booking), and six functions replaced in place.         #
 -- #  apply_booking_payment gains an optional third argument: the 2 argument   #
 -- #  version is DROPPED and the 3 argument one created in this same          #
 -- #  transaction, grants re issued, so every caller alive today (2 named     #
@@ -22,6 +22,8 @@
 --      booking money, write bookingPayment { bookingId, appliedMinor, legs } into the job's
 --      check draft (the till's closer books those tender legs and stamps the ledger), and refuse
 --      to start when the booking money covers the whole bill (the till checkout closes it).
+--      The PAX table list (terminal_open_tables) shows the same balance and leaves out a table
+--      the booking money covers in full.
 --   3  Surplus credit lost. apply_booking_payment stamped every captured row applied even when
 --      the bill was smaller than what was paid. It now takes the applied amount, stores
 --      applied_minor on each row, and when less was used than was paid it stores
@@ -468,6 +470,72 @@ end; $function$;
 -- Same grants the live function has (the PAX app calls it with the device's own session).
 grant execute on function public.terminal_start_table_payment(text, uuid) to anon, authenticated, service_role;
 
+-- ── 4b. PAX Table Pay list: the balance, never a fully prepaid table ───────
+-- The live function (20260801, same body in the 5 Aug baseline) with the lines marked 16 Oct
+-- 2026 added. The PAX app's table list shows total_minor and offers any table above 0, so it
+-- now shows what terminal_start_table_payment will really ask for (the bill less the booking
+-- money) and leaves out a table the booking money covers in full. A table with no booking
+-- (every live venue today) shows exactly what it showed before.
+create or replace function public.terminal_open_tables()
+returns table(table_id text, label text, session_id text, total_minor bigint, server_name text, opened_at timestamptz)
+language plpgsql stable security definer set search_path = public as $function$
+#variable_conflict use_column
+declare t terminal_devices;
+begin
+  t := _terminal_for_caller();
+  return query
+    select a.table_id::text,
+           coalesce(f.label, a.table_id)::text,
+           (a.session ->> 'id')::text,
+           (a.total_minor - bc.credit_minor)::bigint,   -- 16 Oct 2026: the balance
+           coalesce(a.session ->> 'server', '')::text,
+           case
+             when (a.session ->> 'seatedAt') ~ '^[0-9]+$'
+               then to_timestamp(((a.session ->> 'seatedAt')::bigint) / 1000.0)
+             else a.updated_at
+           end
+      from active_sessions a
+      left join floor_tables f
+        -- floor_tables.location_id is TEXT while active_sessions.location_id is
+        -- UUID (this schema is genuinely mixed). Cast the UUID side DOWN to text
+        -- rather than casting floor_tables up: that column legitimately holds
+        -- 'loc-demo', which is not a valid UUID, so ::uuid would throw 22P02.
+        on f.id = a.table_id and f.location_id = a.location_id::text
+      -- 16 Oct 2026: the booking money the start function will take off (0 with no booking).
+      cross join lateral (
+        select coalesce((public._booking_credit_for_session(a.location_id, a.session, a.total_minor::bigint)
+                         ->> 'appliedMinor')::bigint, 0) as credit_minor
+      ) bc
+     where a.location_id = t.location_id
+       and a.total_minor is not null
+       and a.total_minor > 0
+       and a.total_minor - bc.credit_minor > 0   -- 16 Oct 2026: paid in advance, close it on the till
+       and jsonb_array_length(coalesce(a.session -> 'items', '[]'::jsonb)) > 0
+       and not exists (
+             select 1 from terminal_jobs j
+              where j.check_key = t.location_id::text || ':' || a.table_id || ':' || coalesce(a.session ->> 'id', '-')
+                and (
+                      j.status in ('pending','claimed','tipping','charging_unsent','charging','unknown')
+                      -- R1 (20260730, refined 20260801): hide a PAID table only for
+                      -- the same occupation (seatedAt match) or a recent no-seatedAt
+                      -- job: a recurring ORD-N key from a past party must not hide
+                      -- a new party's bill.
+                   or (j.status = 'approved'
+                        and (
+                              (j.check_draft ->> 'seatedAt') is not null
+                                and j.check_draft ->> 'seatedAt' = a.session ->> 'seatedAt'
+                           or (j.check_draft ->> 'seatedAt') is null
+                                and j.created_at > now() - interval '2 hours'
+                            ))
+                    )
+           )
+     order by 6 asc;
+end; $function$;
+
+-- Same grants the live function has (the PAX app calls it with the device's own session).
+revoke all on function public.terminal_open_tables() from public;
+grant execute on function public.terminal_open_tables() to anon, authenticated, service_role;
+
 -- ── 5. apply_booking_payment: the amount used, the surplus flagged ──────────
 drop function if exists public.apply_booking_payment(text, text);
 
@@ -716,13 +784,21 @@ grant execute on function public.move_booking(text, uuid, text[], text) to anon,
 --                              counts as 4, as the till does)
 --   table_taken                the date, time, turn or tables changed, and another live booking
 --                              overlaps the new window on a chosen table
+--   stale                      p_expected_edited_at was given and the booking's edit stamp is
+--                              no longer that one (another device saved in between; '' means
+--                              the booking had never been edited)
 -- then writes the row (date, time, turn, covers, note, guest) and, when they changed, the
 -- tables (delete and insert, primary first), all in one transaction.
--- p_note and p_customer null = keep what is there.
+-- p_note and p_customer null = keep what is there. p_table_ids null = keep the booking's tables
+-- as they are now (read under the lock), so a note or guest edit can never put back a table
+-- list this device read before another device joined or moved a table.
+-- An earlier draft of this file had no p_expected_edited_at. Drop that form if a test database
+-- has it, so a call with named arguments can never be ambiguous. Live has neither form yet.
+drop function if exists public.edit_booking(text, uuid, date, time without time zone, integer, integer, text[], text, text, jsonb);
 create or replace function public.edit_booking(
   p_id text, p_location_id uuid, p_booking_date date, p_start_time time without time zone,
   p_turn_minutes integer, p_covers integer, p_table_ids text[], p_primary_table_id text,
-  p_note text default null, p_customer jsonb default null)
+  p_note text default null, p_customer jsonb default null, p_expected_edited_at text default null)
 returns jsonb
 language plpgsql
 security definer
@@ -750,10 +826,10 @@ begin
   ) then
     return jsonb_build_object('ok', false, 'error', 'no access');
   end if;
-  if p_table_ids is null or array_length(p_table_ids, 1) is null then
+  if p_table_ids is not null and array_length(p_table_ids, 1) is null then
     return jsonb_build_object('ok', false, 'error', 'no tables supplied');
   end if;
-  if not (p_primary_table_id = any(p_table_ids)) then
+  if p_table_ids is not null and not (p_primary_table_id = any(p_table_ids)) then
     return jsonb_build_object('ok', false, 'error', 'primary table must be a member');
   end if;
   if p_booking_date is null or p_start_time is null then
@@ -766,11 +842,13 @@ begin
     return jsonb_build_object('ok', false, 'error', 'turn out of range');
   end if;
 
-  select x into v_off from unnest(p_table_ids) as x
-   where not exists (select 1 from floor_tables f where f.id = x and f.location_id = p_location_id::text)
-   limit 1;
-  if v_off is not null then
-    return jsonb_build_object('ok', false, 'error', 'unknown_table', 'table_id', v_off);
+  if p_table_ids is not null then
+    select x into v_off from unnest(p_table_ids) as x
+     where not exists (select 1 from floor_tables f where f.id = x and f.location_id = p_location_id::text)
+     limit 1;
+    if v_off is not null then
+      return jsonb_build_object('ok', false, 'error', 'unknown_table', 'table_id', v_off);
+    end if;
   end if;
 
   perform pg_advisory_xact_lock(hashtext('bookings:' || p_location_id::text));
@@ -784,6 +862,26 @@ begin
   end if;
   if v_bk.status = 'pending_payment' and p_covers is distinct from v_bk.covers then
     return jsonb_build_object('ok', false, 'error', 'awaiting_payment');
+  end if;
+  -- The edit stamp, checked again under the lock: two devices that both passed their own read
+  -- can no longer overwrite each other's guest snapshot.
+  if p_expected_edited_at is not null
+     and coalesce(v_bk.customer ->> 'edited_at', '') is distinct from p_expected_edited_at then
+    return jsonb_build_object('ok', false, 'error', 'stale',
+      'edited_at', v_bk.customer ->> 'edited_at', 'edited_by', v_bk.customer ->> 'edited_by');
+  end if;
+  -- No tables sent: keep the booking's tables as they are now (primary first).
+  if p_table_ids is null then
+    select array_agg(bt.table_id order by (bt.table_id = v_bk.primary_table_id) desc, bt.table_id)
+      into p_table_ids from booking_tables bt where bt.booking_id = p_id;
+    if v_bk.primary_table_id is not null
+       and (p_table_ids is null or not (v_bk.primary_table_id = any(p_table_ids))) then
+      p_table_ids := array[v_bk.primary_table_id] || coalesce(p_table_ids, '{}'::text[]);
+    end if;
+    if p_table_ids is null or array_length(p_table_ids, 1) is null then
+      return jsonb_build_object('ok', false, 'error', 'no tables supplied');
+    end if;
+    p_primary_table_id := coalesce(v_bk.primary_table_id, p_table_ids[1]);
   end if;
 
   -- 16 Oct 2026: what this edit changes. Seats are checked only when the party grows or the
@@ -848,11 +946,11 @@ begin
   return jsonb_build_object('ok', true, 'id', p_id, 'retabled', v_retable);
 end $function$;
 
-revoke all on function public.edit_booking(text, uuid, date, time without time zone, integer, integer, text[], text, text, jsonb) from public;
-grant execute on function public.edit_booking(text, uuid, date, time without time zone, integer, integer, text[], text, text, jsonb)
+revoke all on function public.edit_booking(text, uuid, date, time without time zone, integer, integer, text[], text, text, jsonb, text) from public;
+grant execute on function public.edit_booking(text, uuid, date, time without time zone, integer, integer, text[], text, text, jsonb, text)
   to anon, authenticated, service_role;
 
-comment on function public.edit_booking(text, uuid, date, time without time zone, integer, integer, text[], text, text, jsonb) is
+comment on function public.edit_booking(text, uuid, date, time without time zone, integer, integer, text[], text, text, jsonb, text) is
   '16 Oct 2026 (bookings audit item 10): edit a booking''s date, time, turn, covers, note, guest and tables in one transaction under the venue lock, with the same free check as create_booking and move_booking, the floor plan check and the seats check.';
 
 commit;
@@ -863,7 +961,7 @@ notify pgrst, 'reload schema';
 --   payments_new_columns 3, credit_helper 1, new_columns_readable 3, edit_booking_fn 1, edit_has_fence 1,
 --   apply_skips_needs_refund 1, apply_3_args 1, apply_2_args 0,
 --   start_for_has_credit 1, pax_start_has_credit 1, create_has_floor_check 1,
---   move_has_floor_check 1, helper_not_public 1,
+--   move_has_floor_check 1, helper_not_public 1, edit_has_stamp_check 1, open_tables_has_credit 1,
 --   off_plan_live_bookings = live bookings (today or later) on a table not on the floor plan
 --   (2 at Provo on 16 Oct, demo rows; they keep working, only new writes are checked).
 select
@@ -889,6 +987,10 @@ select
   (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'move_booking'
      and pg_get_functiondef(p.oid) like '%unknown_table%') as move_has_floor_check,
   (select case when has_function_privilege('anon', 'public._booking_credit_for_session(uuid, jsonb, bigint)', 'execute') then 0 else 1 end) as helper_not_public,
+  (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'edit_booking'
+     and pg_get_functiondef(p.oid) like '%p_expected_edited_at%') as edit_has_stamp_check,
+  (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'terminal_open_tables'
+     and pg_get_functiondef(p.oid) like '%_booking_credit_for_session%') as open_tables_has_credit,
   (select count(*) from bookings b join booking_tables bt on bt.booking_id = b.id
     where b.booking_date >= current_date
       and b.status not in ('departed','cancelled','no_show','expired')

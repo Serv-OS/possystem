@@ -210,13 +210,52 @@ export function bookingLegsMinor(bookingPayment) {
 }
 
 /**
- * The gross a reader or PAX close books, in pence: every card leg (base plus tip) and the booking
- * money the draft took off the due. The check is booked gross, exactly as CheckoutModal books it,
- * so its tenders (booking_prepaid plus card) add up to its total and the VAT is against the total.
+ * Pence of gift card money the till debited before it sent the job (the job's due was already net
+ * of it). Same legs and the same commit_error rule as giftTenders, so the total and the tenders
+ * always agree. 0 with no gift card.
+ */
+export function giftLegsMinor(giftCard) {
+  if (!giftCard) return 0;
+  const legs = Array.isArray(giftCard.legs) && giftCard.legs.length ? giftCard.legs : [giftCard];
+  return legs
+    .filter((g) => g && !g.commit_error)
+    .reduce((n, g) => n + (Number(g.applied) || 0), 0);
+}
+
+/**
+ * The gross a reader or PAX close books, in pence: every card leg (base plus tip), the booking
+ * money the draft took off the due and the gift card the till debited before sending it. The
+ * check is booked gross, exactly as CheckoutModal books it, so its tenders (booking_prepaid, gift
+ * card and card) add up to its total and the VAT is against the total.
  * A £100 bill with a £96 prepay and £4 on the reader books 10000, not 400.
  */
-export function closerGrandMinor({ chargeMinor = 0, priorChargeMinor = 0, bookingPayment = null } = {}) {
-  return (Number(chargeMinor) || 0) + (Number(priorChargeMinor) || 0) + bookingLegsMinor(bookingPayment);
+export function closerGrandMinor({ chargeMinor = 0, priorChargeMinor = 0, bookingPayment = null, giftCard = null } = {}) {
+  return (Number(chargeMinor) || 0) + (Number(priorChargeMinor) || 0)
+    + bookingLegsMinor(bookingPayment) + giftLegsMinor(giftCard);
+}
+
+/**
+ * The card legs a reader or PAX close stores as payment_intents (before the booking legs are
+ * appended). A split keeps its legs. A single leg whose check total also carries booking or gift
+ * money names the card leg with what the card really took, so a refund can never be aimed at
+ * money the card never took (left out, the record falls back to the whole total on one id).
+ * Otherwise null: the record derives the one card leg from the total, as before.
+ */
+export function closerCardIntents({ legIntents = null, transactionId = null, chargeMinor = 0, bookingPayment = null, giftCard = null } = {}) {
+  if (Array.isArray(legIntents) && legIntents.length) return legIntents;
+  const other = bookingLegsMinor(bookingPayment) + giftLegsMinor(giftCard);
+  if (other > 0 && transactionId) return [{ id: transactionId, amountMinor: Number(chargeMinor) || 0 }];
+  return null;
+}
+
+/** payment_intents with the booking legs appended (id null, so cardLegsOf never refunds to them). */
+export function withBookingIntents(intents, bookingPayment) {
+  const legs = Array.isArray(bookingPayment?.legs) ? bookingPayment.legs : [];
+  if (!legs.length) return intents;
+  return [
+    ...(intents || []),
+    ...legs.map((l) => ({ id: null, amountMinor: Number(l.amountMinor) || 0, method: l.method })),
+  ];
 }
 
 /** The method a reader or PAX close books: 'card' or 'split', prefixed 'booking+' when booking money was used. */
