@@ -1127,16 +1127,17 @@ Deno.serve(async (req) => {
         // 16 Oct 2026 (host tools): a pay link on a booking that stayed 'confirmed'. A deposit or a
         // hold leaves it confirmed; a prepay moves it to prepaid (service role, so the gate allows it).
         if (linkPay && String(bk.status) === 'confirmed') {
+          // The confirmation the guest never had (a host booking sends none at create). The
+          // reminders ledger sends it once, however often this runs.
+          const confirmNow = () => fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/booking-reminders`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}` },
+            body: JSON.stringify({ action: 'confirm', booking_id: bookingId }),
+          }).catch(() => {});
           if (kind === 'prepay') {
             const { data: moved } = await db.from('bookings').update({ status: 'prepaid' }).eq('id', bookingId).eq('status', 'confirmed').select('id');
-            if (moved?.length) {
-              fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/booking-reminders`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}` },
-                body: JSON.stringify({ action: 'confirm', booking_id: bookingId }),
-              }).catch(() => {});
-              return { ok: true, promoted: true, status: 'prepaid' };
-            }
+            if (moved?.length) { confirmNow(); return { ok: true, promoted: true, status: 'prepaid' }; }
           } else {
+            confirmNow();
             return { ok: true, promoted: false, status: 'confirmed' };
           }
         }

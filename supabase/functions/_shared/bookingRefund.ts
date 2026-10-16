@@ -100,8 +100,9 @@ export async function settleBookingRefundEvent(db: Db, item: Row): Promise<boole
 // wipe the guest's remaining credit (bookings audit, auditor 6): it is now
 // written as a refund row instead, keyed on the event's own psp so an Adyen
 // retry never counts it twice, and the payment is recounted.
-//   -> 'part' when written as a part refund, 'full' when the caller should mark it refunded,
-//      'none' when there is no matching payment
+//   -> 'part' when handled here (a part refund written, or the host stand's own pending refund
+//      settled), 'full' when the caller should mark the payment refunded, 'none' when there is
+//      no matching payment
 export async function partRefundFromAdyen(db: Db, item: Row): Promise<'part' | 'full' | 'none'> {
   const original = String(item?.originalReference || '');
   const psp = String(item?.pspReference || '');
@@ -111,6 +112,17 @@ export async function partRefundFromAdyen(db: Db, item: Row): Promise<'part' | '
   if (!parent) return 'none';
   const value = Number(item?.amount?.value);
   const total = Math.round(Number(parent.amount) * 100) || 0;
+  // A refund the host stand asked for whose answer came back before its psp was stored: settle
+  // that pending row (same payment, same amount) rather than writing a second one.
+  const { data: pend } = await db.from('booking_payments').select('id, amount, merchant_reference, refund_of, psp_reference')
+    .eq('booking_id', parent.booking_id).eq('kind', 'refund').eq('status', 'pending');
+  const mine = (pend || []).find((r: Row) => !r.psp_reference && Math.round(Number(r.amount) * 100) === Math.round(value)
+    && (String(r.refund_of || '') === String(parent.id) || parseRefundReference(r.merchant_reference)?.parentId === String(parent.id).toLowerCase()));
+  if (mine) {
+    await db.from('booking_payments').update({ status: 'refunded', refusal_reason: null, ...(psp ? { psp_reference: psp } : {}) }).eq('id', mine.id);
+    await recomputeRefunded(db, parent.id);
+    return 'part';
+  }
   if (!Number.isFinite(value) || value <= 0 || value >= total) return 'full';
   if (psp) {
     const { data: seen } = await db.from('booking_payments').select('id').eq('psp_reference', psp).limit(1);

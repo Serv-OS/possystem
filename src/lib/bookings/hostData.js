@@ -28,12 +28,14 @@ async function invoke(fn, body) {
     const { data, error } = await supabase.functions.invoke(fn, { body });
     if (error) {
       let msg = error.message || 'The server did not answer.';
-      let status = error.context?.status ?? null;
-      try {
-        const ctx = await error.context?.json?.();
-        if (ctx?.error) msg = ctx.error;
-      } catch { /* no body */ }
-      if (status === 404 && /not found|requested function/i.test(msg)) return { ok: false, error: NOT_DEPLOYED, notDeployed: true };
+      const status = error.context?.status ?? null;
+      let ctx = null;
+      try { ctx = await error.context?.json?.(); } catch { /* no body */ }
+      if (ctx?.error) msg = ctx.error;
+      // A function that is not deployed answers 404 { code: 'NOT_FOUND', message: 'Requested function was not found' }.
+      if (status === 404 && (ctx?.code === 'NOT_FOUND' || /requested function/i.test(String(ctx?.message || msg)))) {
+        return { ok: false, error: NOT_DEPLOYED, notDeployed: true };
+      }
       return { ok: false, error: msg, status };
     }
     return data || { ok: false, error: 'The server sent nothing back.' };

@@ -111,3 +111,14 @@ test('a part refund made in Adyen becomes a refund row, never wipes the whole pa
   assert.equal(await partRefundFromAdyen(db, { ...item, pspReference: 'PSP-CA-2', amount: { value: 7600 } }), 'full');
   assert.equal(await partRefundFromAdyen(db, { ...item, originalReference: 'NOPE' }), 'none');
 });
+
+test('an Adyen answer that beats the stored psp settles the pending stand refund, never a second row', async () => {
+  const db = fakeDb({ tables: { booking_payments: [parent(), refundRow({ psp_reference: null })] } });
+  const r = await partRefundFromAdyen(db, { eventCode: 'REFUND', success: 'true', originalReference: 'PSP-PAY', pspReference: 'PSP-REF-9', amount: { value: 2000 } });
+  assert.equal(r, 'part');
+  const refunds = db.tables.booking_payments.filter((x) => x.kind === 'refund');
+  assert.equal(refunds.length, 1);
+  assert.equal(refunds[0].status, 'refunded');
+  assert.equal(refunds[0].psp_reference, 'PSP-REF-9');
+  assert.equal(db.tables.booking_payments[0].amount_refunded_minor, 2000);
+});
