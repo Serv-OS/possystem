@@ -44,7 +44,7 @@
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import {
-  suggestTables, paceAt, paceFull, turnFor, toMin, sessionsToBlocks,
+  suggestTables, paceAt, paceFull, turnFor, toMin, sessionsToBlocks, maxPartyForCap,
   DEFAULT_TURN_BANDS, DEFAULT_RULES,
 } from '../_shared/bookingOptimiser.js';
 import {
@@ -524,7 +524,8 @@ Deno.serve(async (req) => {
         serviceEnd: rules.serviceEnd,
         slotMinutes: rules.slotMinutes,
         maxDaysAhead: rules.maxDaysAhead,
-        maxCovers: 12,
+        // 16 Oct 2026: never offer a party the pacing cap can never take (it greyed every slot).
+        maxCovers: maxPartyForCap(rules.pacingCap, 12),
         cardCaptureEnabled: (rules as Record<string, unknown>).cardCaptureEnabled === true,
         cardCaptureMinCovers: (rules as Record<string, unknown>).cardCaptureMinCovers ?? 0,
         bookingTerms: (rules as Record<string, unknown>).bookingTerms || '',
@@ -537,6 +538,9 @@ Deno.serve(async (req) => {
     const tz = (venue.loc as { timezone?: string }).timezone || 'Europe/London';
     const today = venueToday(tz);
     const date = String(body.date || today);
+    // 16 Oct 2026: never clamped to the pacing cap (that would book a different party size than
+    // the guest asked for). The config action stops the picker at the cap; a stale page asking
+    // for more still meets slot_full, as before.
     const party = Math.max(1, Math.min(12, Math.round(Number(body.party) || 2)));
     const daysAhead = Math.round((Date.parse(date) - Date.parse(today)) / 86400000);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || daysAhead < 0 || daysAhead > rules.maxDaysAhead) {

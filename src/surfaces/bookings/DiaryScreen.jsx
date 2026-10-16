@@ -583,7 +583,9 @@ function PaymentState({ b, prepaid, rows }) {
       line = { txt: `✓ ${money(captured.amount, 2)} ${kind} by card${card(captured)}${applied}`, col: 'var(--grn)' };
       // 16 Oct 2026 (bookings audit item 3): the bill used less than was paid. The ledger keeps
       // the rest as money owed back (apply_booking_payment, migration 20261016b).
-      const surplus = rows.find((r) => Number(r.refund_due_minor) > 0);
+      // Owed only while the row is still captured: once a refund lands the webhook marks it
+      // refunded, and nothing lowers refund_due_minor yet (a partial refund is a follow up).
+      const surplus = rows.find((r) => r.status === 'captured' && Number(r.refund_due_minor) > 0);
       if (surplus) {
         const words = surplus.refund_reason
           || `${money(Number(surplus.refund_due_minor) / 100, 2)} was not used on the bill. Give it back to the guest.`;

@@ -4,7 +4,8 @@
 -- #  OPS DB ONLY   project ref  tbetcegmszzotrwdtqhi                          #
 -- #  Peter runs this by hand (Claude cannot run DDL on production).           #
 -- #  Additive and safe to run twice. One transaction. No table is rewritten:  #
--- #  three nullable columns on booking_payments, one new internal helper,     #
+-- #  three nullable columns on booking_payments (read granted to logins),    #
+-- #  one new internal helper,                                                 #
 -- #  one new RPC (edit_booking), and five functions replaced in place.        #
 -- #  apply_booking_payment gains an optional third argument: the 2 argument   #
 -- #  version is DROPPED and the 3 argument one created in this same          #
@@ -46,10 +47,19 @@
 
 begin;
 
+-- Fail fast rather than queue booking reads behind the ALTER: if a long transaction holds
+-- booking_payments, this stops after 5 seconds and nothing is changed. Just run it again.
+set local lock_timeout = '5s';
+
 -- ── 1. booking_payments: what was used, what goes back ──────────────────────
 alter table public.booking_payments add column if not exists applied_minor integer;
 alter table public.booking_payments add column if not exists refund_due_minor integer;
 alter table public.booking_payments add column if not exists refund_reason text;
+
+-- booking_payments has COLUMN scoped grants for authenticated (20260825f, checked live 16 Oct:
+-- no table level select). New columns get no grant by default, so the Diary's ledger read
+-- would be refused. Grant the three new columns, as the other readable ones.
+grant select (applied_minor, refund_due_minor, refund_reason) on public.booking_payments to authenticated;
 
 comment on column public.booking_payments.applied_minor is
   '16 Oct 2026: minor units of this row used on the check (apply_booking_payment with p_applied_minor). null = applied before this column existed, or not applied.';
@@ -491,14 +501,19 @@ begin
     raise exception 'no access to this booking';
   end if;
 
-  -- No amount given: exactly the old behaviour (every captured, unapplied row stamped).
+  -- No amount given: the old behaviour (every captured, unapplied prepay or deposit row
+  -- stamped). 16 Oct 2026: a row flagged NEEDS REFUND, a card hold, a no show charge or a
+  -- refund row is never stamped as used on a check (it stays in its own flow), the same rows
+  -- _booking_credit_for_session leaves out.
   if p_applied_minor is null then
     update booking_payments
        set applied_to_check = true,
            applied_check_id = coalesce(p_closed_check_id, applied_check_id)
      where booking_id = p_booking_id
        and status = 'captured'
-       and applied_to_check = false;
+       and applied_to_check = false
+       and kind in ('prepay', 'deposit')
+       and coalesce(refusal_reason, '') not ilike 'needs refund%';
     get diagnostics v_count = row_count;
     return v_count;
   end if;
@@ -513,6 +528,9 @@ begin
      where bp.booking_id = p_booking_id
        and bp.status = 'captured'
        and bp.applied_to_check = false
+       -- the same rows the credit helper counted: the applied amount was worked out from them
+       and bp.kind in ('prepay', 'deposit')
+       and coalesce(bp.refusal_reason, '') not ilike 'needs refund%'
      order by case bp.kind when 'prepay' then 0 when 'deposit' then 1 else 2 end, bp.created_at, bp.id
      for update
   loop
@@ -687,12 +705,17 @@ grant execute on function public.move_booking(text, uuid, text[], text) to anon,
 -- ── 8. edit_booking: one guarded write for date, time, covers and tables ────
 -- The Edit sheet, the Timeline drag and the till's Edit reservation all write through here.
 -- Under the venue lock it re checks, in this order:
+--   no access                  the caller is not a Back Office login for this venue, a till
+--                              paired here or a host stand paired here
 --   unknown booking            the id is not at this venue
 --   not_editable               dining, departed, cancelled, no show or expired
 --   awaiting_payment           covers changed while the guest is still paying online
 --   unknown_table              a table not on this venue's floor plan
---   too_many_covers            the tables seat fewer than the party (seats in the reply)
---   table_taken                another live booking overlaps the new window on a chosen table
+--   too_many_covers            the party grew or the tables changed, and the tables seat fewer
+--                              than the party (seats in the reply; a table with no covers set
+--                              counts as 4, as the till does)
+--   table_taken                the date, time, turn or tables changed, and another live booking
+--                              overlaps the new window on a chosen table
 -- then writes the row (date, time, turn, covers, note, guest) and, when they changed, the
 -- tables (delete and insert, primary first), all in one transaction.
 -- p_note and p_customer null = keep what is there.
@@ -714,9 +737,18 @@ declare
   v_end_min   int;
   v_old_ids   text[];
   v_retable   boolean;
+  v_window    boolean;
 begin
   if p_id is null or p_location_id is null then
     return jsonb_build_object('ok', false, 'error', 'unknown booking');
+  end if;
+  -- Fence (as apply_booking_payment): a Back Office login with this venue, a till paired here,
+  -- or a host stand paired here (waitlist_can_write covers the login and the stand).
+  if auth.uid() is null or not (
+    public.waitlist_can_write(p_location_id)
+    or exists (select 1 from devices d where d.device_uid = auth.uid() and d.location_id = p_location_id)
+  ) then
+    return jsonb_build_object('ok', false, 'error', 'no access');
   end if;
   if p_table_ids is null or array_length(p_table_ids, 1) is null then
     return jsonb_build_object('ok', false, 'error', 'no tables supplied');
@@ -754,17 +786,32 @@ begin
     return jsonb_build_object('ok', false, 'error', 'awaiting_payment');
   end if;
 
-  select coalesce(sum(f.max_covers), 0)::int into v_seats
-    from floor_tables f
-   where f.location_id = p_location_id::text
-     and f.id in (select distinct x from unnest(p_table_ids) as x);
-  if v_seats < p_covers then
-    return jsonb_build_object('ok', false, 'error', 'too_many_covers', 'seats', v_seats);
+  -- 16 Oct 2026: what this edit changes. Seats are checked only when the party grows or the
+  -- tables change, and the free check only when the window moves, so a booking already over
+  -- its tables (or already overlapping) can still have its note, guest or time kept as is.
+  select coalesce(array_agg(bt.table_id order by bt.table_id), '{}') into v_old_ids
+    from booking_tables bt where bt.booking_id = p_id;
+  v_retable := v_bk.primary_table_id is distinct from p_primary_table_id
+    or v_old_ids is distinct from (select array_agg(distinct x order by x) from unnest(p_table_ids) as x);
+  v_window := v_retable
+    or v_bk.booking_date is distinct from p_booking_date
+    or v_bk.start_time is distinct from p_start_time
+    or v_bk.turn_minutes is distinct from p_turn_minutes;
+
+  if v_retable or p_covers > coalesce(v_bk.covers, 0) then
+    select coalesce(sum(coalesce(f.max_covers, 4)), 0)::int into v_seats
+      from floor_tables f
+     where f.location_id = p_location_id::text
+       and f.id in (select distinct x from unnest(p_table_ids) as x);
+    if v_seats < p_covers then
+      return jsonb_build_object('ok', false, 'error', 'too_many_covers', 'seats', v_seats);
+    end if;
   end if;
 
   v_start_min := extract(hour from p_start_time)::int * 60 + extract(minute from p_start_time)::int;
   v_end_min := v_start_min + p_turn_minutes;
 
+  if v_window then
   select b.id, bt.table_id into v_conflict
   from bookings b
   join booking_tables bt on bt.booking_id = b.id
@@ -780,6 +827,7 @@ begin
     return jsonb_build_object('ok', false, 'error', 'table_taken',
       'table_id', v_conflict.table_id, 'booking_id', v_conflict.id);
   end if;
+  end if;
 
   update bookings
      set booking_date = p_booking_date,
@@ -790,10 +838,6 @@ begin
          customer     = coalesce(p_customer, customer)
    where id = p_id and location_id = p_location_id;
 
-  select coalesce(array_agg(bt.table_id order by bt.table_id), '{}') into v_old_ids
-    from booking_tables bt where bt.booking_id = p_id;
-  v_retable := v_bk.primary_table_id is distinct from p_primary_table_id
-    or v_old_ids is distinct from (select array_agg(distinct x order by x) from unnest(p_table_ids) as x);
   if v_retable then
     delete from booking_tables where booking_id = p_id;
     insert into booking_tables (location_id, booking_id, table_id, is_primary)
@@ -816,7 +860,8 @@ commit;
 notify pgrst, 'reload schema';
 
 -- VISIBLE CHECK (the SQL editor shows this last result). Expected:
---   payments_new_columns 3, credit_helper 1, edit_booking_fn 1, apply_3_args 1, apply_2_args 0,
+--   payments_new_columns 3, credit_helper 1, new_columns_readable 3, edit_booking_fn 1, edit_has_fence 1,
+--   apply_skips_needs_refund 1, apply_3_args 1, apply_2_args 0,
 --   start_for_has_credit 1, pax_start_has_credit 1, create_has_floor_check 1,
 --   move_has_floor_check 1, helper_not_public 1,
 --   off_plan_live_bookings = live bookings (today or later) on a table not on the floor plan
@@ -826,7 +871,13 @@ select
     where table_schema = 'public' and table_name = 'booking_payments'
       and column_name in ('applied_minor', 'refund_due_minor', 'refund_reason')) as payments_new_columns,
   (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = '_booking_credit_for_session') as credit_helper,
+  (select count(*) from unnest(array['applied_minor', 'refund_due_minor', 'refund_reason']) c
+    where has_column_privilege('authenticated', 'public.booking_payments', c, 'select')) as new_columns_readable,
   (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'edit_booking') as edit_booking_fn,
+  (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'edit_booking'
+     and pg_get_functiondef(p.oid) like '%no access%') as edit_has_fence,
+  (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'apply_booking_payment'
+     and pg_get_functiondef(p.oid) like '%not ilike ''needs refund%%') as apply_skips_needs_refund,
   (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'apply_booking_payment' and p.pronargs = 3) as apply_3_args,
   (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'apply_booking_payment' and p.pronargs = 2) as apply_2_args,
   (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'terminal_start_table_payment_for'

@@ -90,6 +90,15 @@ export function paceFull(load, party, cap) {
   return (Number(load) || 0) + Math.max(0, Number(party) || 0) > c;
 }
 
+// 16 Oct 2026: the biggest party the online page may offer. A party bigger than the pacing cap
+// can never be booked online (paceFull is true on an empty day), so the picker stops at the cap
+// and the slots and book actions clamp to the same ceiling. No cap set: the ceiling (12).
+export function maxPartyForCap(cap, ceiling = 12) {
+  const c = Number(cap);
+  const top = Math.max(1, Math.round(Number(ceiling) || 12));
+  return (Number.isFinite(c) && c > 0) ? Math.max(1, Math.min(top, Math.floor(c))) : top;
+}
+
 // ── the optimiser ─────────────────────────────────────────────────────────────
 // tables:     [{ id, label, covers, section }]
 // joinGroups: [{ id, label, tableIds: [...], kind }] — ordered = adjacent;
@@ -173,9 +182,10 @@ export function suggestTables({
       }
     }
   }
-  // 16 Oct 2026: every table outside any join group, on its own, same scoring.
+  // 16 Oct 2026: every table outside any join group, on its own, same scoring. A Bar section
+  // seat keeps the bar penalty its group would have given it, so a real table wins.
   for (const t of tables) {
-    if (!grouped.has(t.id)) consider([t.id]);
+    if (!grouped.has(t.id)) consider([t.id], String(t.section || '').toLowerCase() === 'bar' ? 'bar' : null);
   }
   candidates.sort((a, b) => a.score - b.score);
   return candidates.slice(0, Math.max(1, limit));

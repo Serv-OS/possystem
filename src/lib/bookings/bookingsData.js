@@ -436,7 +436,12 @@ export async function loadBookingPayments(bookingId) {
     const read = (cols) => supabase.from('booking_payments').select(cols)
       .eq('booking_id', bookingId).order('created_at', { ascending: true });
     let { data, error } = await read(`${BASE}, applied_minor, refund_due_minor, refund_reason`);
-    if (error && missingColumn(error)) ({ data, error } = await read(BASE));
+    // Also read without them when this login may not read them (42501): booking_payments has
+    // column scoped grants (20260825f), and the migration grants the three new columns. A read
+    // refused for them must never blank the whole ledger.
+    if (error && (missingColumn(error) || String(error.code || '') === '42501' || /permission denied/i.test(String(error.message || '')))) {
+      ({ data, error } = await read(BASE));
+    }
     if (error) return warnAbsentOr(error, 'loadBookingPayments') ? [] : null;
     return data || [];
   } catch (e) { return warnAbsentOr(e, 'loadBookingPayments') ? [] : null; }
@@ -450,11 +455,14 @@ export async function loadBookingCredit(bookingId) {
   if (isMock || !supabase || !bookingId) return { prepayMinor: 0, depositMinor: 0 };
   try {
     const { data, error } = await supabase.from('booking_payments')
-      .select('kind, amount, status, applied_to_check')
+      .select('kind, amount, status, applied_to_check, refusal_reason')
       .eq('booking_id', bookingId).eq('status', 'captured').eq('applied_to_check', false);
     if (error) { warnAbsentOr(error, 'loadBookingCredit'); return { prepayMinor: 0, depositMinor: 0 }; }
     let prepayMinor = 0, depositMinor = 0;
     for (const r of data || []) {
+      // 16 Oct 2026: a row flagged NEEDS REFUND is owed back, never credit on the bill (the
+      // reader's _booking_credit_for_session leaves it out too, so the till and reader agree).
+      if (/^needs refund/i.test(String(r.refusal_reason || ''))) continue;
       const minor = Math.round((Number(r.amount) || 0) * 100);
       if (r.kind === 'prepay') prepayMinor += minor;
       else if (r.kind === 'deposit') depositMinor += minor;

@@ -9,6 +9,7 @@ import {
   bookingRefusalWords,
   editRefusal, validateEdit, conflictsFor, paymentAfterEdit,
   snapToSlot, shiftTables, slotTimes, stampEdit, editedLine, hasGuest, describeChanges,
+  editChangesWindow, sameTables,
 } from './editRules.js';
 import { toMin } from './optimiser.js';
 
@@ -217,4 +218,41 @@ test('bookingRefusalWords: every code the guarded writes return reads as a sente
   for (const e of ['table_taken', 'unknown_table', 'too_many_covers', 'awaiting_payment', 'not_editable']) {
     assert.ok(!/[–—]/.test(bookingRefusalWords({ error: e })), `${e}: no long dashes`);
   }
+});
+
+// ── 16 Oct 2026: a note or phone edit never moves the window ──────────────────
+test('editChangesWindow: date, time, tables or more covers move it; note, guest or fewer covers do not', () => {
+  const b = bk({ covers: 4, tables: ['t4'], primaryTableId: 't4' });
+  assert.equal(editChangesWindow(b, { ...b, note: 'window seat' }), false);
+  assert.equal(editChangesWindow(b, { ...b, customer: { name: 'X', phone: '1' } }), false);
+  assert.equal(editChangesWindow(b, { ...b, covers: 3 }), false);
+  assert.equal(editChangesWindow(b, { ...b, startTime: '19:00:00' }), false);
+  assert.equal(editChangesWindow(b, { ...b, covers: 5 }), true);
+  assert.equal(editChangesWindow(b, { ...b, startTime: '19:15' }), true);
+  assert.equal(editChangesWindow(b, { ...b, date: '2026-10-21' }), true);
+  assert.equal(editChangesWindow(b, { ...b, tables: ['t8'], primaryTableId: 't8' }), true);
+  assert.equal(sameTables(b, { tables: ['t4'], primaryTableId: 't4' }), true);
+});
+
+test('validateEdit: a note edit keeps the booking turn, even when the band would be longer', () => {
+  const b = bk({ covers: 4, tables: ['t4'], primaryTableId: 't4', turnMinutes: 90 });
+  const r = validateEdit({ booking: b, patch: { note: 'birthday' }, rules: RULES, tables: TABLES, today: '2026-10-16' });
+  assert.equal(r.ok, true, r.errors.join(' | '));
+  assert.equal(r.next.turnMinutes, 90);
+  const moved = validateEdit({ booking: b, patch: { startTime: '19:30' }, rules: RULES, tables: TABLES, today: '2026-10-16' });
+  assert.equal(moved.next.turnMinutes, 105);
+});
+
+test('validateEdit: a booking already over its tables can still have its note or time changed', () => {
+  const over = bk({ covers: 4, tables: ['t1'], primaryTableId: 't1' });
+  const note = validateEdit({ booking: over, patch: { note: 'late' }, rules: RULES, tables: TABLES, today: '2026-10-16' });
+  assert.equal(note.ok, true, note.errors.join(' | '));
+  const time = validateEdit({ booking: over, patch: { startTime: '20:00' }, rules: RULES, tables: TABLES, today: '2026-10-16' });
+  assert.equal(time.ok, true, time.errors.join(' | '));
+  const grow = validateEdit({ booking: over, patch: { covers: 5 }, rules: RULES, tables: TABLES, today: '2026-10-16' });
+  assert.equal(grow.ok, false);
+});
+
+test('bookingRefusalWords: no access reads as a sentence', () => {
+  assert.match(bookingRefusalWords({ error: 'no access' }), /not allowed to change bookings/);
 });

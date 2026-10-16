@@ -27,7 +27,8 @@ import {
   loadBookingPreorders, saveBookingPreorders, loadBookingCredit,
 } from '../lib/bookings/bookingsData.js';
 import { packageItemsFor } from '../lib/bookings/packagePricing.js';
-import { validateEdit, conflictsFor, paymentAfterEdit, stampEdit, hasGuest, describeChanges, bookingRefusalWords } from '../lib/bookings/editRules.js';
+import { optimiserTables } from '../lib/bookings/optimiserTables.js';
+import { validateEdit, conflictsFor, paymentAfterEdit, stampEdit, hasGuest, describeChanges, bookingRefusalWords, editChangesWindow } from '../lib/bookings/editRules.js';
 import { logActivity } from '../lib/activity.js';
 import { buildScheduleCtx } from '../lib/locationTime.js';
 import { supabase, isMock, getActiveLocationSync, getLocationId } from '../lib/supabase.js';
@@ -100,12 +101,7 @@ function mergeBookingTables(primaryTableId, ...lists) {
   return out;
 }
 
-// Store tables → optimiser tables. Excludes merged split-check children
-// (parentId) exactly like the waitlist's tablesView.
-const optimiserTables = (tables = []) =>
-  (tables || []).filter((t) => !t.parentId).map((t) => ({
-    id: t.id, label: t.label || t.id, covers: t.maxCovers || 2, section: t.section || null,
-  }));
+// Store tables → optimiser tables: lib/bookings/optimiserTables.js (16 Oct 2026, tested).
 
 // ── the slice ─────────────────────────────────────────────────────────────────
 export function bookingsSlice(set, get) {
@@ -347,11 +343,18 @@ export function bookingsSlice(set, get) {
       } else if (next.date !== (get().bookingsDate || todayISO())) {
         others = [];
       }
-      // Open till tabs block their tables like a seated party, today only.
-      const blocks = next.date === ctx.ymd
+      // 16 Oct 2026: a note, phone, guest or smaller party edit does not move the window, so
+      // it is never refused for the diary (the till's Edit reservation on a table with an open
+      // tab). When the window moves, open till tabs block their tables like a seated party,
+      // today only, except a tab on this booking's own current tables (the party itself, or a
+      // walk in the host is already working around).
+      const windowMoves = editChangesWindow(entry, next);
+      const ownTables = new Set(entry.tables || []);
+      const blocks = (windowMoves && next.date === ctx.ymd)
         ? sessionsToBlocks(get().tables, others, rules.turnBands || DEFAULT_TURN_BANDS, ctx.nowMinutes, epochToVenueMin(get().locationConfig?.timezone))
+          .filter((b) => !(b.tables || []).some((t) => ownTables.has(t)))
         : [];
-      const conflicts = conflictsFor({ booking: next, others: [...others, ...blocks], tables: tablesForRules });
+      const conflicts = windowMoves ? conflictsFor({ booking: next, others: [...others, ...blocks], tables: tablesForRules }) : [];
       if (conflicts.length) {
         return { ok: false, error: conflicts[0].text, errors: conflicts.map((c) => c.text), conflicts };
       }
@@ -521,7 +524,10 @@ export function bookingsSlice(set, get) {
         // tender leg. Training tills carry the label but never real credit.
         const pkg = b.packageId ? (get().packages || []).find((p) => p.id === b.packageId) : null;
         let credit = { prepayMinor: 0, depositMinor: 0 };
-        if (b.packageId && !isTrainingMode()) {
+        // 16 Oct 2026: every booking, not only package ones, so a rule based deposit is on the
+        // session too and the till takes off what the reader and PAX take off (they read the
+        // same ledger). No captured money: 0, exactly as before.
+        if (!isTrainingMode()) {
           try { credit = await loadBookingCredit(b.id); } catch { /* stays 0 — honest fallback */ }
         }
         // v5.7.23 - free food is EARNED: the prepay 0.00 pricing only applies

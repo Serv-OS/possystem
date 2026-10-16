@@ -64,7 +64,7 @@ import { newSessionOrderId } from '../lib/sessionOrderId';
 import { applyBookingPayment } from '../lib/bookings/applyBookingPayment';
 import { patchPendingCheck, isPendingCheck } from '../sync/DataSafe';
 import { markJobReconciled, closeTerminalSession, recallJob, forgetJob, cancelTerminalJob, buildCheckKey, fetchJob, fetchJobCapture } from '../lib/payments/terminalJobs';
-import { usableOrderRef } from '../lib/payments/terminalJobCloser';
+import { usableOrderRef, bookingLegsMinor, closerGrandMinor, closerMethod } from '../lib/payments/terminalJobCloser';
 import { printService } from '../lib/printer';
 import { hubrisePushStock, isHubriseConnected, hubrisePushStatus, isHubriseAutoReceipt } from '../lib/hubrise';
 import { buildChannelCloseFields } from '../lib/channelMoney';
@@ -6699,8 +6699,12 @@ export const useStore = create((set, get) => ({
     // 16 Oct 2026: booking money the draft took off the due is not drift either (a prepaid
     // party's job is due only the balance). 0 on every draft without a booking.
     const bookingCreditMinor = Array.isArray(d.bookingPayment?.legs)
-      ? d.bookingPayment.legs.reduce((n, l) => n + (Number(l?.amountMinor) || 0), 0)
+      ? bookingLegsMinor(d.bookingPayment)
       : (Number(d.bookingCreditMinor) || 0);
+    // 16 Oct 2026: the check is booked GROSS (card legs plus the booking legs it carries as
+    // tenders), as CheckoutModal books it, so tenders add up to the total and VAT is against it.
+    const closeGrandMinor = closerGrandMinor({ chargeMinor: job.charge_minor ?? 0, priorChargeMinor, bookingPayment: d.bookingPayment });
+    const closeMethod = closerMethod({ split: priorLegs.length > 0, bookingPayment: d.bookingPayment });
     const driftMinor = (!acknowledged && job.live_total_minor != null)
       ? (Number(job.live_total_minor) - (Number(job.due_minor) + paidBeforeMinor + bookingCreditMinor)) : 0;
     const hasDrift = Number.isFinite(driftMinor) && driftMinor !== 0;
@@ -6742,9 +6746,9 @@ export const useStore = create((set, get) => ({
       // 'split' check (full items, every card leg a payment intent), mirroring
       // the POS SplitModal's single-check model so reports/refunds treat both
       // the same.
-      method: priorLegs.length ? 'split' : 'card',
+      method: closeMethod,
       processor: job.processor || 'ryft',
-      grand: ((job.charge_minor ?? 0) + priorChargeMinor) / 100,   // every leg's base + tip
+      grand: closeGrandMinor / 100,   // every leg's base + tip, plus the booking money (16 Oct 2026)
       tip:   ((job.tip_minor ?? 0) + priorTipMinor) / 100,
       stripePaymentIntentId: job.transaction_id || null,
       paymentIntents: legIntents || undefined,
@@ -6809,9 +6813,9 @@ export const useStore = create((set, get) => ({
         // 27 Sep 2026: less any sales tax added on top (US), now booked as taxAmount. UK: unchanged.
         subtotal, service: headlessService(d, headlessTax),
         tip: ((job.tip_minor ?? 0) + priorTipMinor) / 100,
-        total: ((job.charge_minor ?? 0) + priorChargeMinor) / 100,   // v5.6.68 — every split leg
+        total: closeGrandMinor / 100,   // v5.6.68 every split leg; 16 Oct 2026 plus the booking money
         taxAmount: roundVat(headlessTax?.totalTax),   // 8 Oct 2026: rounded once (taxRule.roundVat), as the row; null stays null
-        method: priorLegs.length ? 'split' : 'card',
+        method: closeMethod,
         tenders: jobTenders,            // v5.9.11
         giftCard: d.giftCard || null,   // v5.5.902 — see termPay above
         stripePaymentIntentId: job.transaction_id || null,
@@ -7874,7 +7878,7 @@ export const useStore = create((set, get) => ({
     }
 
     // ── Tell the truth ────────────────────────────────────────────────────────
-    const cardInMethod = String(check?.method || '').includes('card') || String(check?.method || '') === 'split';
+    const cardInMethod = String(check?.method || '').includes('card') || /(^|\+)split$/.test(String(check?.method || ''));   // 'booking+split' too (16 Oct 2026)
     let ok = true;
     let message;
     if (cashPayout) {

@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  suggestTables, isTableFree, paceAt, paceFull, turnFor, bandLabel,
+  suggestTables, isTableFree, paceAt, paceFull, turnFor, bandLabel, maxPartyForCap,
   toMin, toHM, toOptimiserBooking, WEIGHTS, DEFAULT_TURN_BANDS,
 sessionsToBlocks } from './optimiser.js';
 
@@ -238,6 +238,14 @@ test('SOLO TABLES: a grouped table is not offered twice, and a busy solo table i
   assert.ok(!ids.includes('t9'));
 });
 
+test('SOLO TABLES: a solo Bar section 2 top ranks below a solo main 2 top (bar penalty kept)', () => {
+  const venue = [{ ...T('b1', 2), section: 'bar' }, { ...T('t2', 2), section: 'main' }];
+  const solo = suggestTables({ party: 2, time: '19:00', tables: venue, joinGroups: [], limit: 10 });
+  assert.deepEqual(solo[0].set, ['t2']);
+  const grouped = suggestTables({ party: 2, time: '19:00', tables: venue, joinGroups: [{ id: 'bar', kind: 'bar', tableIds: ['b1'] }], limit: 10 });
+  assert.equal(solo.find((c) => c.set[0] === 'b1').score, grouped.find((c) => c.set[0] === 'b1').score);
+});
+
 test('PACING: the party being added counts (cap 12, 10 booked)', () => {
   assert.equal(paceFull(10, 2, 12), false);   // lands exactly on the cap
   assert.equal(paceFull(10, 3, 12), true);
@@ -245,4 +253,15 @@ test('PACING: the party being added counts (cap 12, 10 booked)', () => {
   assert.equal(paceFull(12, 0, 12), false);   // nothing added, at the cap, not over it
   assert.equal(paceFull(0, 13, 12), true);    // a party bigger than the cap on its own
   assert.equal(paceFull(50, 5, 0), false);    // no cap set
+});
+
+test('PACING: the online picker never offers a party the cap can never take', () => {
+  assert.equal(maxPartyForCap(8), 8);
+  assert.equal(maxPartyForCap(2), 2);
+  assert.equal(maxPartyForCap(12), 12);
+  assert.equal(maxPartyForCap(40), 12);    // the page ceiling
+  assert.equal(maxPartyForCap(0), 12);     // no cap set
+  assert.equal(maxPartyForCap(null), 12);
+  assert.equal(maxPartyForCap('9.5'), 9);
+  for (const cap of [2, 5, 8, 12]) assert.equal(paceFull(0, maxPartyForCap(cap), cap), false);
 });
