@@ -721,6 +721,11 @@ import { INITIAL_KDS, SHIFT, MENU_ITEMS, CATEGORIES, STAFF as STAFF_SEED, QUICK_
 import { money } from '../lib/currency';
 import { orderCollectionLabel } from '../lib/collectionLabel';
 import { withoutRecordNotes } from '../lib/orderCustomerNotes';
+// 16 Oct 2026: the stored subtotal of a closed check is the goods on its own lines (voided lines
+// out), the same sum the VAT share is taken from (lib/taxShare.js linesGoods). Its money fields
+// (subtotal, total, tenders) come from one pure helper both close paths share (lib/closeMoney.js).
+import { linesGoods } from '../lib/taxShare.js';
+import { closeMoney } from '../lib/closeMoney.js';
 
 // v5.7.35 — ?mode=kds pins the KDS surface for this page load (read once; the
 // mode param is the operator's explicit intent, so profile defaults must not
@@ -6487,6 +6492,7 @@ export const useStore = create((set, get) => ({
     // "exclude other locations" filter for EVERY location → report bleed.
     let recLocId = getActiveLocationSync();
     if (!recLocId) { try { recLocId = localStorage.getItem('rpos-active-location') || null; } catch {} }
+    const closeFigures = closeMoney(session.items, paymentInfo, session.total);
     return {
       id: idOverride || paymentInfo.closedCheckId || `chk-${Date.now()}`,
       ref,
@@ -6504,7 +6510,10 @@ export const useStore = create((set, get) => ({
       discounts:  [...(session.discounts || []),
                    ...evaluateAutoDiscounts(session.items.filter(i=>!i.voided), get().discountRules, 'pos', buildScheduleCtx(get().locationConfig?.timezone)).map(toAppliedDiscount),
                    ...promoDiscountEntry(paymentInfo.promoRedemption)],
-      subtotal:   session.subtotal || 0,
+      // 16 Oct 2026: from the lines this record books, never the session's running figure. That
+      // figure goes stale (an item added after a void sums the voided line back in, a line void
+      // or split can leave it behind), so a check could book shelf sales it never sold.
+      subtotal:   closeFigures.subtotal,
       // v5.5.851: service comes from the REAL pricing engine, never a hardcoded rate.
       // The old `subtotal * 0.125` booked a phantom 12.5% service on EVERY dine-in
       // close — including venues/orders with no service charge at all (live repro: a
@@ -6530,7 +6539,7 @@ export const useStore = create((set, get) => ({
       tip:        paymentInfo.tip || 0,
       // 27 Sep 2026: `??`, not `||`. A 100% comp at a table charges £0, and `0 || session.total`
       // booked the undiscounted bill as taken (phantom cash in the drawer). No grand: as before.
-      total:      paymentInfo.grand ?? session.total ?? 0,
+      total:      closeFigures.total,
       // v4.6.19. 8 Oct 2026: rounded once with the one rule (taxRule.roundVat), so the in memory
       // record equals the row closedCheckRow writes; null stays null (never 0).
       taxAmount:  roundVat(taxBreakdown?.totalTax),
@@ -6538,7 +6547,7 @@ export const useStore = create((set, get) => ({
       // v5.9.11: what paid the check, per tender (lib/accounting/tenders.js). CheckoutModal
       // hands over the exact list; other callers (MPOS card, a table closed with no payment
       // info, the terminal reconciler's termPay) get it derived from their payment info.
-      tenders:    tendersFromPaymentInfo(paymentInfo, { total: paymentInfo.grand ?? session.total ?? 0, tip: paymentInfo.tip || 0 }),
+      tenders:    closeFigures.tenders,
       giftCard:   giftRecordFrom(paymentInfo),                   // v5.5.217 refund reversal; v5.5.902 also carries split legs
       stripePaymentIntentId: paymentInfo.stripePaymentIntentId || paymentInfo.paymentIntentId || null,  // v5.5.301: for card refunds
       processor:  paymentInfo.processor || 'stripe',             // which processor took the payment (refund routes by this)
@@ -7255,7 +7264,11 @@ export const useStore = create((set, get) => ({
       walkInOrder = get().walkInOrder || walkInOrder;
     }
     const { staff, taxRates } = get();
-    const subtotal = walkInOrder.items.reduce((s, i) => s + i.price * i.qty, 0);
+    // 16 Oct 2026: voided lines out. This summed every line, voided ones too, so a walk in with a
+    // voided line booked it as a sale in the subtotal (a voided 18 x 1.50 line turned an 11.25 sale
+    // into 38.25 of shelf sales). The record's items, tax and charge never included it.
+    const closeFigures = closeMoney(walkInOrder.items, paymentInfo, linesGoods(walkInOrder.items));
+    const subtotal = closeFigures.subtotal;
     // v4.6.19 — compute tax at close so tax_amount can be stored with the row
     // v5.7.34 — through the unified seam (legacy parity or profiles cascade);
     // taxBreakdown now also carries the taxV2 named-lines record.
@@ -7315,11 +7328,11 @@ export const useStore = create((set, get) => ({
       tip: paymentInfo.tip || 0,
       // 27 Sep 2026: `??`, not `||`. A 100% comp charges £0, and `0 || subtotal` booked the full
       // price as taken in cash (7 "Custom 100%" checks at Leeds showed £44.90 cash never taken).
-      total: paymentInfo.grand ?? subtotal,
+      total: closeFigures.total,
       taxAmount: roundVat(taxBreakdown?.totalTax),   // v4.6.19. 8 Oct 2026: rounded once (taxRule.roundVat), as the row; null stays null
       taxBreakdown,                                                                  // v5.5.341: store full breakdown so receipts/reports show VAT lines (walk-in/MPOS)
       method: paymentInfo.method || 'card',
-      tenders: tendersFromPaymentInfo(paymentInfo, { total: paymentInfo.grand ?? subtotal, tip: paymentInfo.tip || 0 }),   // v5.9.11
+      tenders: closeFigures.tenders,   // v5.9.11 (lib/closeMoney.js)
       giftCard: giftRecordFrom(paymentInfo),                                         // v5.5.217 / v5.5.902
       stripePaymentIntentId: paymentInfo.stripePaymentIntentId || paymentInfo.paymentIntentId || null,              // v5.5.301
       processor: paymentInfo.processor || 'stripe',                                  // refund routes by this

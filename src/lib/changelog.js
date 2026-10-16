@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.71',
+    date: '16 Oct 2026',
+    items: [
+      "Back Office, Sales reports, Business summary: net sales now means the same as the Owner app and Daily trading, sales with the VAT taken out, after discounts, loyalty rewards and refunds. The owner found Business summary showing 2,112 against the Owner app's 1,703 for the same day: it kept the VAT in, counted free drink rewards as sales, and said plus Tax when the VAT was already inside the prices.",
+      "Business summary, Revenue breakdown, top to bottom: Item sales including VAT (from the lines on each check), less Voids, less Discounts, less Loyalty rewards, less Refunds, equals Sales including VAT, of which VAT, equals Net sales excluding VAT, plus Service, plus Tips, equals Money collected, split into Card, Cash and Gift card so it adds up. A check whose stored subtotal disagrees with its lines is named under the figures.",
+      "Till: a closed check's subtotal is now the goods on its own lines, voided lines left out. A voided line on a walk in order, or a table check whose running subtotal had gone stale, could store a higher subtotal than was sold (the charge, the VAT and the tenders were always right). Eight checks from the last 30 days are corrected by a one off data file.",
+    ],
+  },
+  {
     v: '5.11.70',
     date: '16 Oct 2026',
     items: [

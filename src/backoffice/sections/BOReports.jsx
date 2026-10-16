@@ -410,8 +410,11 @@ export default function BOReports({ setSection, canOpen } = {}) {
   const shownCompare = useMemo(() => (compare ? (prevLoaded ? compare : notLoaded(compare)) : null), [compare, prevLoaded]);
   const trendRange   = useMemo(() => ({ ...range, compare: shownCompare }), [range, shownCompare]);
 
-  const filtered     = useMemo(() => applyFilters(allChecks, { server: serverFilter, orderType: orderTypeFilter, source: sourceFilter }), [allChecks, serverFilter, orderTypeFilter, sourceFilter]);
-  const filteredPrev = useMemo(() => applyFilters(allPrev,   { server: serverFilter, orderType: orderTypeFilter, source: sourceFilter }), [allPrev,   serverFilter, orderTypeFilter, sourceFilter]);
+  // 16 Oct 2026: one filter object, also handed to the Business summary so the older sales it
+  // reads for refunds made in the range are filtered the same way as the range's own checks.
+  const reportFilters = useMemo(() => ({ server: serverFilter, orderType: orderTypeFilter, source: sourceFilter }), [serverFilter, orderTypeFilter, sourceFilter]);
+  const filtered     = useMemo(() => applyFilters(allChecks, reportFilters), [allChecks, reportFilters]);
+  const filteredPrev = useMemo(() => applyFilters(allPrev,   reportFilters), [allPrev,   reportFilters]);
 
   const servers    = useMemo(() => uniqueServers(allChecks),    [allChecks]);
   const orderTypes = useMemo(() => uniqueOrderTypes(allChecks), [allChecks]);
@@ -586,7 +589,7 @@ export default function BOReports({ setSection, canOpen } = {}) {
         </div>
       ) : (
         <>
-          {view === 'summary'    && <SalesSummary checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig} compare={shownCompare} onOpenReport={openReport} {...siteProps}/>}
+          {view === 'summary'    && <SalesSummary checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig} compare={shownCompare} onOpenReport={openReport} rangeFrom={range.from} rangeTo={range.to} locationId={activeLocId} filters={reportFilters} {...siteProps}/>}
           {view === 'sales_mix'  && <SalesMix     checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig} compare={shownCompare} range={trendRange} canOpen={canOpen} {...siteProps}/>}
           {view === 'exceptions' && <Exceptions   checks={filtered} fmt={fmt} {...siteProps}/>}
           {view === 'payments'   && <Payments     checks={filtered} fmt={fmt} fmtN={fmtN} {...siteProps}/>}
