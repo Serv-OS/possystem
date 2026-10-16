@@ -7,7 +7,7 @@
  * that a table closed on any device clears within 10 seconds on all others.
  */
 
-import { supabase, getLocationId } from '../lib/supabase';
+import { supabase, getLocationId, isHostStandMode } from '../lib/supabase';
 import { stampLocalSessionsFor } from '../lib/localSessions';
 import { useStore } from '../store';
 import { reassertSession } from './SessionSync';
@@ -319,7 +319,11 @@ export async function startSessionReconciler() {
       // v5.5.639: re-publish any locally-occupied table whose DB row vanished. reassertSession drops
       // the SessionSync _lastSent latch and schedules a flush, so flushSessions re-upserts the row
       // (the debounce coalesces multiple heals into one batched write). Does NOT touch local tables.
-      if (healIds.length) {
+      // 16 Oct 2026: a host stand (Table Bookings, Tables Ready) never owns a session, so it never
+      // puts a row back. Its own copy is replaced from the server every 30 seconds instead
+      // (lib/bookings/standSessionSync.js); re-publishing from the stand would resurrect a
+      // table the till had cashed off, and then that copy would read as the server's truth.
+      if (healIds.length && !isHostStandMode()) {
         console.warn(`[SessionReconciler] self-heal: re-publishing ${healIds.length} occupied table(s) missing from active_sessions:`, healIds.join(', '));
         healIds.forEach(id => reassertSession(id));
       }

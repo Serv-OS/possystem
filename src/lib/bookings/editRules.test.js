@@ -6,10 +6,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  bookingRefusalWords,
   editRefusal, validateEdit, conflictsFor, paymentAfterEdit,
   snapToSlot, shiftTables, slotTimes, stampEdit, editedLine, hasGuest, describeChanges,
-  editChangesWindow, sameTables,
+  changedFields, dropTarget, MOVE_NON_BLOCKING, preorderWarning,
+  bookingRefusalWords, editChangesWindow, sameTables,
 } from './editRules.js';
 import { toMin } from './optimiser.js';
 
@@ -206,6 +206,101 @@ test('describeChanges lists what moved in words', () => {
   assert.equal(describeChanges(before, before, TABLES), '');
 });
 
+// ── 16 Oct 2026 review ───────────────────────────────────────────────────────
+
+test('validateEdit: a guest only fix saves even when the slot itself would now be refused', () => {
+  // 12:30 is outside today's 17:00 to 23:00, T1 seats 2 for a party of 4, and
+  // the turn was 150 when the bands say 105. None of that is being changed.
+  const old = bk({ startTime: '12:30', covers: 4, turnMinutes: 150 });
+  const r = validateEdit({ booking: old, patch: { customer: { name: 'Olivia Pembroke' }, note: 'window seat' }, rules: RULES, tables: TABLES, today: '2026-10-21' });
+  assert.equal(r.ok, true, r.errors.join(' | '));
+  assert.equal(r.next.turnMinutes, 150);
+  assert.equal(r.changed.slot, false);
+  assert.equal(r.changed.covers, false);
+  // so editBooking skips the conflict check: an open tab on T1 cannot refuse it
+  const tab = { id: 'sess-t1', status: 'dining', tables: ['t1'], startTime: '12:00', turnMinutes: 120 };
+  assert.equal(conflictsFor({ booking: r.next, others: [tab], tables: TABLES }).length, 1);
+});
+
+test('validateEdit: moving the time still checks the hours; changing covers re bands the turn', () => {
+  const old = bk({ startTime: '12:30', turnMinutes: 150 });
+  assert.equal(validateEdit({ booking: old, patch: { startTime: '12:45' }, rules: RULES, tables: TABLES }).ok, false);
+  const moved = validateEdit({ booking: bk({ turnMinutes: 150 }), patch: { startTime: '19:30' }, rules: RULES, tables: TABLES });
+  assert.equal(moved.next.turnMinutes, 150);
+  assert.equal(moved.changed.slot, true);
+  const more = validateEdit({ booking: bk({ turnMinutes: 150 }), patch: { covers: 4, tables: ['t4'] }, rules: RULES, tables: TABLES });
+  assert.equal(more.next.turnMinutes, 105);
+  assert.equal(more.changed.turn, true);
+});
+
+test('validateEdit: a past booking date only refuses when the date is the thing being changed', () => {
+  const r = validateEdit({ booking: bk({ date: '2026-10-15' }), patch: { note: 'x' }, rules: RULES, tables: TABLES, today: '2026-10-16' });
+  assert.equal(r.ok, true);
+});
+
+test('conflictsFor: an expired booking counts for the edit (move_booking still sees it) and says so', () => {
+  const me = bk({ tables: ['t4'] });
+  const exp = bk({ id: 'bk-x', status: 'expired', tables: ['t4'], customer: { name: 'Smith' } });
+  assert.equal(conflictsFor({ booking: me, others: [exp], tables: TABLES }).length, 0);
+  const c = conflictsFor({ booking: me, others: [exp], tables: TABLES, nonBlocking: MOVE_NON_BLOCKING });
+  assert.equal(c.length, 1);
+  assert.match(c[0].text, /Smith \(expired unpaid, still holding the table\)/);
+});
+
+test('hasGuest: allergens alone are a guest', () => {
+  assert.equal(hasGuest({ allergens: ['peanuts'] }), true);
+  assert.equal(hasGuest({ allergens: [] }), false);
+});
+
+test('changedFields: only what the host changed goes in the patch', () => {
+  const snap = bk({ customer: { name: 'Oliver', phone: '1', allergens: ['milk', 'eggs'] }, note: 'n' });
+  const form = { date: snap.date, startTime: '19:00', covers: 2, tables: ['t1'], note: 'n', customer: { name: 'Oliver ', phone: '1', email: '', allergens: ['eggs', 'milk'] } };
+  assert.deepEqual(changedFields(snap, form), {});
+  assert.deepEqual(changedFields(snap, { ...form, customer: { ...form.customer, phone: '2' } }), { customer: { phone: '2' } });
+  assert.deepEqual(changedFields(snap, { ...form, tables: ['t4', 't2'] }), { tables: ['t4', 't2'], primaryTableId: 't4' });
+  assert.deepEqual(changedFields(snap, { ...form, startTime: '19:30', covers: 3 }), { startTime: '19:30', covers: 3 });
+});
+
+const ROWS = [{ id: 't1', label: 'T1', maxCovers: 2 }, { id: 't2', label: 'T2', maxCovers: 2 }, { id: 't4', label: 'T4', maxCovers: 4 }];
+const DT = { slotW: 24, rowH: 44, rows: ROWS, startMin: toMin('17:00'), endMin: toMin('23:00') };
+
+test('dropTarget: a table drag with sideways drift keeps the time', () => {
+  const r = dropTarget({ ...DT, booking: bk(), dx: 15, dy: 44 });
+  assert.equal(r.startMin, toMin('19:00'));
+  assert.deepEqual(r.tables, ['t2']);
+  assert.equal(r.timeChanged, false);
+  assert.equal(r.ok, true);
+  const drift = dropTarget({ ...DT, booking: bk(), dx: 16, dy: 0 });
+  assert.equal(drift.unchanged, true);
+});
+
+test('dropTarget: a time drag keeps the table; a drop past the end clamps to the last slot', () => {
+  const r = dropTarget({ ...DT, booking: bk(), dx: 48, dy: 20 });
+  assert.equal(r.startMin, toMin('19:30'));
+  assert.deepEqual(r.tables, ['t1']);
+  const far = dropTarget({ ...DT, booking: bk(), dx: 24 * 40, dy: 0 });
+  assert.equal(far.startMin, toMin('22:45'));
+});
+
+test('dropTarget: off the floor plan, too small, taken and no move', () => {
+  const off = dropTarget({ ...DT, booking: bk({ tables: ['t2', 't4'], covers: 4 }), dx: 0, dy: 44 });
+  assert.equal(off.ok, false);
+  assert.match(off.reason, /off the floor plan/);
+  const small = dropTarget({ ...DT, booking: bk({ tables: ['t4'], covers: 4 }), dx: 0, dy: -44 });
+  assert.equal(small.reason, 'T2 seats 2, this party is 4.');
+  const taken = dropTarget({ ...DT, booking: bk(), dx: 0, dy: 44, others: [bk({ id: 'bk-2', tables: ['t2'], startTime: '18:30', customer: { name: 'Smith' } })] });
+  assert.match(taken.reason, /T2 is taken by Smith 18:30 to 20:00/);
+  assert.equal(dropTarget({ ...DT, booking: bk(), dx: 3, dy: 5 }).unchanged, true);
+});
+
+test('preorderWarning: names the seats past the new covers', () => {
+  const rows = [{ seat: 1 }, { seat: 2 }, { seat: 3 }, { seat: 4 }, { seat: 4 }];
+  assert.equal(preorderWarning(rows, 4), null);
+  assert.equal(preorderWarning(rows, 3), 'Seat 4 has pre-orders. They will still go to the kitchen. Remove them in Pre-orders.');
+  assert.equal(preorderWarning(rows, 2), 'Seats 3 and 4 have pre-orders. They will still go to the kitchen. Remove them in Pre-orders.');
+  assert.equal(preorderWarning([], 1), null);
+});
+
 // 16 Oct 2026: the database's refusal codes in words.
 test('bookingRefusalWords: every code the guarded writes return reads as a sentence', () => {
   assert.equal(bookingRefusalWords({ error: 'table_taken', tableLabel: 'T5' }), 'T5 was just taken by another booking. Nothing was changed.');
@@ -216,7 +311,7 @@ test('bookingRefusalWords: every code the guarded writes return reads as a sente
   assert.equal(bookingRefusalWords({ error: 'something new' }), 'something new');
   assert.equal(bookingRefusalWords({}), 'The database refused the change.');
   for (const e of ['table_taken', 'unknown_table', 'too_many_covers', 'awaiting_payment', 'not_editable']) {
-    assert.ok(!/[–—]/.test(bookingRefusalWords({ error: e })), `${e}: no long dashes`);
+    assert.ok(!/[\u2013\u2014]/.test(bookingRefusalWords({ error: e })), `${e}: no long dashes`);
   }
 });
 
@@ -234,13 +329,16 @@ test('editChangesWindow: date, time, tables or more covers move it; note, guest 
   assert.equal(sameTables(b, { tables: ['t4'], primaryTableId: 't4' }), true);
 });
 
-test('validateEdit: a note edit keeps the booking turn, even when the band would be longer', () => {
+test('validateEdit: a note or time edit keeps the booking turn, even when the band would be longer', () => {
   const b = bk({ covers: 4, tables: ['t4'], primaryTableId: 't4', turnMinutes: 90 });
   const r = validateEdit({ booking: b, patch: { note: 'birthday' }, rules: RULES, tables: TABLES, today: '2026-10-16' });
   assert.equal(r.ok, true, r.errors.join(' | '));
   assert.equal(r.next.turnMinutes, 90);
+  // 5.11.68 rule: the turn stays the booking's own unless the covers change.
   const moved = validateEdit({ booking: b, patch: { startTime: '19:30' }, rules: RULES, tables: TABLES, today: '2026-10-16' });
-  assert.equal(moved.next.turnMinutes, 105);
+  assert.equal(moved.next.turnMinutes, 90);
+  const grown = validateEdit({ booking: b, patch: { covers: 3 }, rules: RULES, tables: TABLES, today: '2026-10-16' });
+  assert.equal(grown.next.turnMinutes, 105);
 });
 
 test('validateEdit: a booking already over its tables can still have its note or time changed', () => {

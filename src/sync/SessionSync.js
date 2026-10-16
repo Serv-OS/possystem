@@ -8,7 +8,7 @@
  * - Supabase Realtime subscription → apply incoming changes from other devices instantly
  */
 
-import { supabase, getLocationId } from '../lib/supabase';
+import { supabase, getLocationId, isHostStandMode } from '../lib/supabase';
 import { queueWrite, isOnline } from './OfflineQueue';
 import { reportWriteRefused } from '../lib/deviceLink';
 import { mustChangeRow, mustChangeRows } from '../lib/rowWrites';
@@ -30,6 +30,17 @@ let _lastSent = {}; // table_id → JSON string, avoid redundant writes
 let _lastTotals = {};
 let _clearedAt = {}; // table_id → timestamp when first noticed as available (grace period)
 let _graceTimer = null;
+// 16 Oct 2026 (Provo demo, T1): a host stand (Table Bookings, Tables Ready) publishes ONLY the
+// table it has just seated. Every other table it holds is a copy of another device's check, and
+// putting a copy back is how a cashed off table came back. The seat paths (bookingsSlice
+// seatBooking, waitlistSlice seat) mark the table here; the mark goes after its first
+// successful publish, so later copies of that table (the till's lines) are never written back.
+let _standOwned = new Set();
+
+/** A host stand marks the table it has just seated: the only table it may publish. */
+export function markStandOwned(tableId) {
+  if (tableId) _standOwned.add(tableId);
+}
 
 // ── Write ─────────────────────────────────────────────────────────────────────
 export async function flushSessions() {
@@ -68,7 +79,10 @@ export async function flushSessions() {
   }
 
   const tables = useStore.getState().tables;
-  const occupied = tables.filter(t => t.session && t.status !== 'available');
+  // 16 Oct 2026: a host stand publishes only a table it seated (markStandOwned) and never
+  // deletes a row. Everything else it holds is a copy, and a copy is never written back.
+  const hostStand = isHostStandMode();
+  const occupied = tables.filter(t => t.session && t.status !== 'available' && (!hostStand || _standOwned.has(t.id)));
   let writesIssued = 0, skipped = 0;
 
   // Scale: collect changed sessions and fire ONE batched upsert (and one batched delete below)
@@ -156,7 +170,7 @@ export async function flushSessions() {
   }
 
   // Clear sessions for tables that are now available (order complete/cleared)
-  const availableIds = tables
+  const availableIds = hostStand ? [] : tables
     .filter(t => t.status === 'available' || !t.session)
     .map(t => t.id);
 
@@ -243,7 +257,8 @@ export async function flushSessions() {
     if (upsertRows.length) {
       Promise.resolve(supabase.from('active_sessions').upsert(upsertRows, { onConflict: 'location_id,table_id' }))
         .then(res => { if (res?.error) { reportWriteRefused(res.error); console.warn('[SessionSync] batch upsert error, queueing for replay:', res.error.message || res.error); _queueUpserts(); }
-                       else console.log('[SessionSync] ✓ wrote ' + upsertRows.length + ' session(s) to active_sessions'); })
+                       else { if (hostStand) for (const r of upsertRows) _standOwned.delete(r.table_id);
+                              console.log('[SessionSync] ✓ wrote ' + upsertRows.length + ' session(s) to active_sessions'); } })
         .catch(e => { console.warn('[SessionSync] batch upsert threw — queueing for replay:', e?.message || e); _queueUpserts(); });
     }
     if (toDelete.length) {
@@ -287,6 +302,9 @@ export function scheduleFlush() {
 // session, so this never resurrects a legitimately-closed/empty table.
 export function reassertSession(tableId) {
   if (!tableId) return;
+  // 16 Oct 2026: a host stand never puts a table back. What it holds is a copy (the till owns the
+  // check), and its floor is replaced from the server every 30 seconds instead.
+  if (isHostStandMode()) return;
   if (readShowsKitchenScreen(useStore.getState().deviceConfig)) return;   // v5.9.72: a kitchen screen never resurrects a table
   // TOMBSTONE GUARD — the one place that stops a cashed-off table being resurrected.
   // Every "the shared row vanished, put ours back" path funnels through here: the
@@ -329,15 +347,19 @@ export function reassertSession(tableId) {
 // device's tables.
 export async function flushSingleSession(tableId) {
   if (!tableId) return;
+  // A host stand owns a seat only until it has been handed on once: published, queued, or found to
+  // be nothing to publish. A mark that outlived a failed or offline publish would let a later stand
+  // flush write its copy back over the till's rows (review, 16 Oct 2026).
+  const release = () => { _standOwned.delete(tableId); };
   if (!_locationId) {
-    try { _locationId = await getLocationId(); } catch { return; }
+    try { _locationId = await getLocationId(); } catch { release(); return; }
   }
-  if (!_locationId) return;
+  if (!_locationId) { release(); return; }
   const t = (useStore.getState().tables || []).find((x) => x.id === tableId);
-  if (!t || !t.session) return;
+  if (!t || !t.session) { release(); return; }
   // v5.5.944: same tombstone rule as flushSessions — a closed occupation is never
   // re-published, from any surface (the host stand's 30s poll snapshot can be stale).
-  if (isSessionClosed(t.id, t.session)) { reassertSession(t.id); return; }
+  if (isSessionClosed(t.id, t.session)) { release(); reassertSession(t.id); return; }
 
   _lastSent[t.id] = JSON.stringify(t.session);
   try {
@@ -348,11 +370,13 @@ export async function flushSingleSession(tableId) {
 
   const row = { location_id: _locationId, table_id: t.id, session: t.session, updated_at: new Date().toISOString() };
   queueWrite({ type: 'upsert', table: 'active_sessions', payload: row, onConflict: 'location_id,table_id' });
+  // Durably queued: the OfflineQueue replays it, so the stand gives up ownership now.
+  release();
   if (isOnline()) {
     try {
       const { error } = await supabase.from('active_sessions').upsert(row, { onConflict: 'location_id,table_id' });
       if (error) { reportWriteRefused(error); console.warn('[SessionSync] flushSingleSession upsert error:', error.message || error); }
-      else console.log('[SessionSync] ✓ persisted single session for table', t.label || t.id);
+      else { _standOwned.delete(t.id); console.log('[SessionSync] ✓ persisted single session for table', t.label || t.id); }
     } catch (e) { console.warn('[SessionSync] flushSingleSession threw —', e?.message || e); }
   }
 }
@@ -512,6 +536,7 @@ export function teardown() {
   _lastSent = {};
   _lastTotals = {};
   _clearedAt = {};
+  _standOwned = new Set();
   _graceTimer = null;
   _locationId = null;
 }

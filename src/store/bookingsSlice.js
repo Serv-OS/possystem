@@ -17,23 +17,25 @@
 // write, so a training till cannot pollute a live diary.
 
 import {
-  suggestTables, paceAt, paceFull, turnFor, toMin, toOptimiserBooking,
+  suggestTables, paceAt, paceFull, turnFor, toMin, toHM, toOptimiserBooking,
   DEFAULT_TURN_BANDS, DEFAULT_RULES,
 sessionsToBlocks } from '../lib/bookings/optimiser.js';
 import {
   loadBookings, createBookingAtomic, updateBookingRow, rowToBooking, loadBookingTables,
   loadBookingRules, saveBookingRules, loadPackages,
   upsertPackageRow, deletePackageRow, moveBookingTables, editBookingAtomic,
-  loadBookingPreorders, saveBookingPreorders, loadBookingCredit,
+  loadBookingPreorders, saveBookingPreorders, loadBookingCredit, loadBookingRow,
 } from '../lib/bookings/bookingsData.js';
 import { packageItemsFor } from '../lib/bookings/packagePricing.js';
 import { optimiserTables } from '../lib/bookings/optimiserTables.js';
-import { validateEdit, conflictsFor, paymentAfterEdit, stampEdit, hasGuest, describeChanges, bookingRefusalWords, editChangesWindow } from '../lib/bookings/editRules.js';
+import { validateEdit, conflictsFor, paymentAfterEdit, stampEdit, hasGuest, describeChanges, editRefusal, MOVE_NON_BLOCKING, bookingRefusalWords } from '../lib/bookings/editRules.js';
 import { logActivity } from '../lib/activity.js';
-import { buildScheduleCtx } from '../lib/locationTime.js';
-import { supabase, isMock, getActiveLocationSync, getLocationId } from '../lib/supabase.js';
+import { buildScheduleCtx, minutesInTz } from '../lib/locationTime.js';
+import { supabase, isMock, getActiveLocationSync, getLocationId, isHostStandMode } from '../lib/supabase.js';
 import { isTrainingMode } from '../lib/trainingMode.js';
-import { flushSingleSession } from '../sync/SessionSync.js';
+import { flushSingleSession, markStandOwned } from '../sync/SessionSync.js';
+import { isSessionClosed } from '../sync/sessionClosure.js';
+import { readServerSessions, mergeServerSessions } from '../lib/bookings/standSessionSync.js';
 
 const isRealLoc = (id) => !!id && id !== 'loc-demo';
 async function resolveLocationId() {
@@ -305,14 +307,60 @@ export function bookingsSlice(set, get) {
     // updated) and rewrites booking_tables delete and insert. A refused move
     // puts the row back. Never optimistic: the store changes after the writes.
     // Returns { ok:true, booking, payment } or { ok:false, error, errors?, conflicts? }.
-    editBooking: async (id, patch = {}, { editedBy = null } = {}) => {
-      const entry = (get().bookings || []).find((x) => x.id === id);
-      if (!entry) return { ok: false, error: 'This booking is not on the diary any more. Reload and try again.', errors: ['This booking is not on the diary any more. Reload and try again.'] };
+    editBooking: async (id, patch = {}, { editedBy = null, expectedEditedAt } = {}) => {
+      const notHere = 'This booking is not on the diary any more. Reload and try again.';
+      const refuse = (msg, extra = {}) => ({ ok: false, error: msg, errors: [msg], ...extra });
+      const cached = (get().bookings || []).find((x) => x.id === id);
+      if (!cached) return refuse(notHere);
       const rules = get().bookingRules || {};
-      const pkg = entry.packageId ? (get().packages || []).find((p) => p.id === entry.packageId) : null;
-      const ctx = buildScheduleCtx(get().locationConfig?.timezone);
+      const tz = get().locationConfig?.timezone;
+      const pkg = cached.packageId ? (get().packages || []).find((p) => p.id === cached.packageId) : null;
+      const ctx = buildScheduleCtx(tz);
       const storeTables = (get().tables || []).filter((t) => !t.parentId);
       const tablesForRules = storeTables.map((t) => ({ id: t.id, label: t.label || t.id, covers: t.maxCovers || 2 }));
+      const locId = await resolveLocationId();
+      const live = !!(locId && !isTrainingMode() && !isMock && supabase);
+
+      // 16 Oct 2026 review: read this booking's row fresh. The store copy can be
+      // stale (Back Office has no bookings realtime, and another stand may have
+      // seated the party a moment ago), so the status and the edit stamp are
+      // checked against what the database holds now. Tables and money stay
+      // from the store; the tables are re read only if the primary moved.
+      let entry = cached;
+      if (live) {
+        const fresh = await loadBookingRow(id, locId);
+        if (fresh) {
+          const why = editRefusal(fresh);
+          if (why) return refuse(why);
+          if (expectedEditedAt !== undefined && (fresh.customer?.edited_at || null) !== (expectedEditedAt || null)) {
+            // Bring this device's copy up to date first, so reopening the sheet
+            // shows the other device's change instead of refusing again.
+            set((s) => {
+              const list = s.bookings || [];
+              if (fresh.date !== (s.bookingsDate || todayISO())) return { bookings: list.filter((x) => x.id !== id) };
+              return {
+                bookings: list.map((x) => (x.id === id ? {
+                  ...x, status: fresh.status, date: fresh.date, startTime: fresh.startTime, covers: fresh.covers,
+                  turnMinutes: fresh.turnMinutes, note: fresh.note, customer: fresh.customer,
+                } : x)),
+              };
+            });
+            if (fresh.primaryTableId !== cached.primaryTableId) get().resyncBookingTables?.(id);
+            const at = fresh.customer?.edited_at ? toHM(minutesInTz(fresh.customer.edited_at, tz) ?? 0) : null;
+            const who = fresh.customer?.edited_by ? ` by ${fresh.customer.edited_by}` : '';
+            return refuse(`This booking was changed on another device${at ? ` at ${at}` : ''}${who}. Close and reopen to see it.`, { stale: true });
+          }
+          entry = {
+            ...cached,
+            status: fresh.status, date: fresh.date, startTime: fresh.startTime, covers: fresh.covers,
+            turnMinutes: fresh.turnMinutes, note: fresh.note, customer: fresh.customer,
+          };
+          if (fresh.primaryTableId && fresh.primaryTableId !== cached.primaryTableId) {
+            const ids = await loadBookingTables(id);
+            entry = { ...entry, primaryTableId: fresh.primaryTableId, tables: ids && ids.length ? mergeBookingTables(fresh.primaryTableId, ids) : [fresh.primaryTableId] };
+          }
+        }
+      }
 
       // Guest fields merge over the existing snapshot so nothing else on it is lost.
       const customer = patch.customer !== undefined
@@ -331,106 +379,162 @@ export function bookingsSlice(set, get) {
       });
       if (!v.ok) return { ok: false, error: v.errors[0], errors: v.errors };
       const next = v.next;
+      const slotChanged = v.changed.slot;
 
-      // The other bookings on the target day, read fresh so a booking another
-      // device just took is seen. The viewed day comes from the store when the
-      // read is not possible (training, mock).
-      const locId = await resolveLocationId();
-      let others = (get().bookings || []);
-      if (locId && !isTrainingMode() && !isMock && supabase) {
-        const { data } = await loadBookings(locId, next.date);
-        if (Array.isArray(data)) others = data;
-      } else if (next.date !== (get().bookingsDate || todayISO())) {
-        others = [];
+      // Only a change of when or where the table is held needs the conflict
+      // check. A name, phone, allergen, note or covers fix never does, so an
+      // open tab running over on the party's table cannot refuse it.
+      if (slotChanged) {
+        // The other bookings on the target day, read fresh so a booking another
+        // device just took is seen. If the read fails it comes back empty, which
+        // is why every slot change ALSO goes through move_booking below.
+        let others = (get().bookings || []);
+        if (live) {
+          const { data } = await loadBookings(locId, next.date);
+          if (Array.isArray(data)) others = data;
+        } else if (next.date !== (get().bookingsDate || todayISO())) {
+          others = [];
+        }
+        // Open till tabs block their tables like a seated party, today only,
+        // except a tab on this booking's own current tables (the party itself,
+        // or a walk in the host is already working around), so the till's Edit
+        // reservation can move the time on a table with an open tab.
+        const ownTables = new Set(entry.tables || []);
+        const blocks = next.date === ctx.ymd
+          ? sessionsToBlocks(get().tables, others, rules.turnBands || DEFAULT_TURN_BANDS, ctx.nowMinutes, epochToVenueMin(tz))
+            .filter((blk) => !(blk.tables || []).some((t) => ownTables.has(t)))
+          : [];
+        const conflicts = conflictsFor({ booking: next, others: [...others, ...blocks], tables: tablesForRules, nonBlocking: MOVE_NON_BLOCKING });
+        if (conflicts.length) {
+          return { ok: false, error: conflicts[0].text, errors: conflicts.map((c) => c.text), conflicts };
+        }
       }
-      // 16 Oct 2026: a note, phone, guest or smaller party edit does not move the window, so
-      // it is never refused for the diary (the till's Edit reservation on a table with an open
-      // tab). When the window moves, open till tabs block their tables like a seated party,
-      // today only, except a tab on this booking's own current tables (the party itself, or a
-      // walk in the host is already working around).
-      const windowMoves = editChangesWindow(entry, next);
-      const ownTables = new Set(entry.tables || []);
-      const blocks = (windowMoves && next.date === ctx.ymd)
-        ? sessionsToBlocks(get().tables, others, rules.turnBands || DEFAULT_TURN_BANDS, ctx.nowMinutes, epochToVenueMin(get().locationConfig?.timezone))
-          .filter((b) => !(b.tables || []).some((t) => ownTables.has(t)))
-        : [];
-      const conflicts = windowMoves ? conflictsFor({ booking: next, others: [...others, ...blocks], tables: tablesForRules }) : [];
-      if (conflicts.length) {
-        return { ok: false, error: conflicts[0].text, errors: conflicts.map((c) => c.text), conflicts };
-      }
 
-      const tablesChanged = (entry.tables || []).join(',') !== (next.tables || []).join(',')
-        || entry.primaryTableId !== next.primaryTableId;
-      const payment = paymentAfterEdit({ pkg, covers: next.covers, capturedMinor: entry.paidMinor ?? null });
+      const payment = paymentAfterEdit({ pkg, covers: next.covers, capturedMinor: cached.paidMinor ?? null });
 
+      // Never optimistic, and never the whole stale snapshot: only the edited
+      // fields go onto the row as it is in the store NOW, so a status change
+      // that arrived by realtime during the writes is kept.
+      const edited = {
+        date: next.date, startTime: next.startTime, covers: next.covers, turnMinutes: next.turnMinutes,
+        note: next.note, customer: next.customer, tables: next.tables, primaryTableId: next.primaryTableId,
+      };
       const apply = () => set((s) => {
         const viewing = s.bookingsDate || todayISO();
         const list = s.bookings || [];
         // A booking moved to another day leaves this day's diary.
         if (next.date !== viewing) return { bookings: list.filter((x) => x.id !== id) };
-        return { bookings: list.map((x) => (x.id === id ? next : x)) };
+        return { bookings: list.map((x) => (x.id === id ? { ...x, ...edited } : x)) };
       });
+      const logEdit = () => {
+        // One line on the activity feed. Best effort, never blocks the edit.
+        try {
+          const name = next.customer?.name || `Party of ${next.covers}`;
+          const words = describeChanges(entry, next, tablesForRules);
+          logActivity(locId, {
+            kind: 'ops', severity: 'info', title: 'Booking edited',
+            body: `${name}: ${words || 'no field changed'}`, refType: 'booking', refId: id, actorName: by,
+          }).catch(() => {});
+        } catch { /* the booking is saved either way */ }
+      };
 
       if (isTrainingMode()) { apply(); return { ok: true, booking: next, payment, training: true }; }
-      if (!locId) return { ok: false, error: 'No venue resolved, so the booking cannot be saved.', errors: ['No venue resolved, so the booking cannot be saved.'] };
+      if (!locId) return refuse('No venue resolved, so the booking cannot be saved.');
 
-      // 16 Oct 2026 (bookings audit item 10): ONE guarded write. edit_booking re checks the
-      // window, the seats and the floor plan under the venue lock and writes the row and the
-      // tables in one transaction, so a time only edit can no longer land on another booking.
-      // Before migration 20261016b the function is missing: fall back to the writes this
-      // release shipped with (row, then move_booking when the tables changed) and say so.
-      const atomic = await editBookingAtomic(id, { ...next, customer: stamped }, locId);
-      let serverGuard = true;
-      if (!atomic.ok && !atomic.missing) {
-        const label = atomic.tableId ? (tablesForRules.find((t) => t.id === atomic.tableId)?.label || null) : null;
-        const msg = /payment_gate|waiting for payment/i.test(String(atomic.error || ''))
-          ? 'This booking is waiting for payment, so its covers cannot change.'
-          : bookingRefusalWords({ error: atomic.error, tableLabel: label, seats: atomic.seats, status: atomic.status });
-        return { ok: false, error: msg, errors: [msg] };
+      // 16 Oct 2026 (bookings audit item 10): ONE guarded write when the
+      // database has it. edit_booking re checks the window, the seats, the
+      // floor plan and an online payment still landing under the venue lock,
+      // and writes the row and the tables in one transaction, so one call
+      // covers the slot and the tables. Unchanged fields go as this device just
+      // read them from the database (entry is the fresh row), the note and the
+      // guest only when they changed (null keeps what is there), so nothing a
+      // stamp check passed is written back over. Before migration 20261016b the
+      // function is missing: the writes below (only the changed fields, then
+      // move_booking for any slot change) run instead, and the stand says once
+      // that only this device checked the diary.
+      const noteChanged = next.note !== (entry.note || '');
+      const atomic = await editBookingAtomic(id, {
+        date: next.date, startTime: next.startTime, turnMinutes: next.turnMinutes, covers: next.covers,
+        tables: next.tables, primaryTableId: next.primaryTableId,
+        note: noteChanged ? next.note : null,
+        customer: stamped,
+      }, locId);
+      if (atomic.ok) {
+        apply();
+        logEdit();
+        return { ok: true, booking: next, payment, serverGuard: true };
       }
-      if (atomic.missing) {
-        serverGuard = false;
-        const rowPatch = {
-          date: next.date, startTime: next.startTime, turnMinutes: next.turnMinutes,
-          covers: next.covers, note: next.note, customer: stamped,
-        };
-        const r1 = await updateBookingRow(id, rowPatch, locId);
-        if (!r1.ok) {
-          const msg = /payment_gate|waiting for payment/i.test(String(r1.error || ''))
-            ? 'This booking is waiting for payment, so its covers cannot change.'
-            : `Booking NOT saved: ${r1.error || 'the database refused the change'}.`;
-          return { ok: false, error: msg, errors: [msg] };
-        }
-        if (tablesChanged) {
-          const r2 = await moveBookingTables(id, next.tables, next.primaryTableId, locId);
-          if (!r2.ok) {
-            // Put the row back the way it was, best effort, and say so.
-            await updateBookingRow(id, {
-              date: entry.date, startTime: entry.startTime, turnMinutes: entry.turnMinutes,
-              covers: entry.covers, note: entry.note || '', customer: entry.customer ?? null,
-            }, locId).catch(() => {});
-            const label = tablesForRules.find((t) => t.id === r2.tableId)?.label || null;
-            const words = bookingRefusalWords({ error: r2.error, tableLabel: label });
-            const taken = /Nothing was changed\.$/.test(words) ? words : `${words} Nothing was changed.`;
-            return { ok: false, error: taken, errors: [taken] };
+      if (!atomic.missing) {
+        // A dropped connection can hide an edit that DID land. The function is
+        // one transaction and the stamp is this edit's own, so the row carrying
+        // it means everything landed. Look before saying it failed.
+        if (!atomic.refused) {
+          const after = await loadBookingRow(id, locId);
+          if (after && (after.customer?.edited_at || null) === stamped.edited_at) {
+            apply();
+            logEdit();
+            return { ok: true, booking: next, payment, serverGuard: true };
           }
         }
-        if (!_warnedNoEditGuard) {
-          _warnedNoEditGuard = true;
-          get().showToast?.('Booking saved. The server double booking check is not switched on yet, so only this device checked the diary.', 'info');
+        const label = atomic.tableId ? (tablesForRules.find((t) => t.id === atomic.tableId)?.label || null) : null;
+        let msg;
+        if (/payment_gate|waiting for payment/i.test(String(atomic.error || ''))) msg = 'This booking is waiting for payment, so its covers cannot change.';
+        else if (atomic.error === 'table_taken') msg = `${label || 'That table'} is held by another booking at that time. Nothing was changed.`;
+        else if (atomic.refused) msg = bookingRefusalWords({ error: atomic.error, tableLabel: label, seats: atomic.seats, status: atomic.status });
+        else msg = `Booking NOT saved: ${atomic.error || 'the database refused the change'}.`;
+        return refuse(msg);
+      }
+
+      // Only what changed, plus the guest snapshot with the stamp.
+      const rowPatch = { customer: stamped };
+      const undo = { customer: entry.customer ?? null };
+      if (v.changed.date) { rowPatch.date = next.date; undo.date = entry.date; }
+      if (v.changed.time) { rowPatch.startTime = next.startTime; undo.startTime = entry.startTime; }
+      if (v.changed.turn) { rowPatch.turnMinutes = next.turnMinutes; undo.turnMinutes = entry.turnMinutes; }
+      if (v.changed.covers) { rowPatch.covers = next.covers; undo.covers = entry.covers; }
+      if (next.note !== (entry.note || '')) { rowPatch.note = next.note; undo.note = entry.note || ''; }
+
+      const r1 = await updateBookingRow(id, rowPatch, locId);
+      if (!r1.ok) {
+        const msg = /payment_gate|waiting for payment/i.test(String(r1.error || ''))
+          ? 'This booking is waiting for payment, so its covers cannot change.'
+          : `Booking NOT saved: ${r1.error || 'the database refused the change'}.`;
+        return refuse(msg);
+      }
+      // 16 Oct 2026 review: EVERY change of date, time, turn or tables goes
+      // through move_booking, even with the same tables. It re reads the row
+      // just written and checks those tables at the NEW time under the venue
+      // lock, so a time only change or a sideways Timeline drag is checked on
+      // the server too (before, only a table change was).
+      if (slotChanged) {
+        const r2 = await moveBookingTables(id, next.tables, next.primaryTableId, locId);
+        if (!r2.ok) {
+          // A timeout can hide a move that DID land. Look before undoing it.
+          if (r2.error !== 'table_taken') {
+            const now = await loadBookingTables(id);
+            if (now && now.join(',') === (next.tables || []).join(',')) {
+              apply(); logEdit();
+              return { ok: true, booking: next, payment, serverGuard: false };
+            }
+          }
+          const back = await updateBookingRow(id, undo, locId);
+          if (!back.ok) {
+            get().setBookingsDate?.(get().bookingsDate || todayISO());
+            return refuse('The time was saved but the table was NOT moved, and it could not be put back. Reload the diary and check this booking.');
+          }
+          const msg = r2.error === 'table_taken'
+            ? `${tablesForRules.find((t) => t.id === r2.tableId)?.label || 'That table'} is held by another booking at that time. Nothing was changed.`
+            : `Table NOT moved: ${r2.error || 'the database refused the move'}. Nothing was changed.`;
+          return refuse(msg);
         }
       }
+      if (!_warnedNoEditGuard) {
+        _warnedNoEditGuard = true;
+        get().showToast?.('Booking saved. The server double booking check is not switched on yet, so only this device checked the diary.', 'info');
+      }
       apply();
-      // One line on the activity feed. Best effort, never blocks the edit.
-      try {
-        const name = next.customer?.name || `Party of ${next.covers}`;
-        const words = describeChanges(entry, next, tablesForRules);
-        logActivity(locId, {
-          kind: 'ops', severity: 'info', title: 'Booking edited',
-          body: `${name}: ${words || 'no field changed'}`, refType: 'booking', refId: id, actorName: by,
-        }).catch(() => {});
-      } catch { /* the booking is saved either way */ }
-      return { ok: true, booking: next, payment, serverGuard };
+      logEdit();
+      return { ok: true, booking: next, payment, serverGuard: false };
     },
 
     // ── the POS Tables bridge (v5.6.27 — bookings replace thin reservations) ──
@@ -500,21 +604,68 @@ export function bookingsSlice(set, get) {
       // An open POS tab on any of the booking's tables means no one can be
       // seated there yet — refuse loudly instead of silently overwriting the
       // live session (which is real money on a real check).
-      const openOn = (b.tables?.length ? b.tables : [b.primaryTableId])
-        .map((tid) => (get().tables || []).find((t) => t.id === tid))
+      const bookingTables = (b.tables?.length ? b.tables : [b.primaryTableId]).filter(Boolean);
+      // 16 Oct 2026 (Provo demo, T1): the local copy is not the truth. The till had cashed T1 off
+      // (its active_sessions row was gone) and the host stand still held the session, so this
+      // refused with "Still has an open tab" while the till showed nothing open. And the other
+      // way: a stand that has not yet heard of a check a till opened moments ago (the INSERT not
+      // delivered, realtime down) would seat over it and the live check's lines would be gone.
+      // So every seat reads the server for the booking's tables (one indexed query) and decides
+      // from the merged tables. Only a host stand writes the merge into its store: a till owns
+      // its sessions (the SessionReconciler arbitrates for it, and the merge has no lastUpdated
+      // arbitration), and a till keeps the table it is editing (unsent lines live only in its
+      // memory). A failed read decides from the local copy. On a till its own copy also counts as
+      // open: a session the server does not hold yet (an offline till whose writes are still
+      // queued) must refuse, never be seated over.
+      let merged = null;
+      if (!isTrainingMode() && !isMock && supabase) {
+        const locId = await resolveLocationId();
+        // At most 3 seconds: a slow network falls back to the local copy, as a failed read does.
+        const rows = locId ? await Promise.race([
+          readServerSessions(supabase, locId, bookingTables),
+          new Promise((resolve) => setTimeout(() => resolve(null), 3000)),
+        ]) : null;
+        if (rows) {
+          const active = get().activeTableId;
+          const keepIds = !isHostStandMode() && active ? new Set([active]) : null;
+          merged = mergeServerSessions(get().tables || [], rows, { tableIds: bookingTables, keepIds, isClosed: isSessionClosed });
+          if (isHostStandMode() && merged !== get().tables) set({ tables: merged });
+        }
+      }
+      // The till's own copy is read AFTER the server read: a check opened or a line rung in on
+      // this till while the read was in flight must still refuse the seat.
+      const local = get().tables || [];
+      if (!merged) merged = local;
+      const openOn = bookingTables
+        .map((tid) => {
+          const m = merged.find((t) => t.id === tid);
+          if (m?.session) return m;
+          if (isHostStandMode()) return null;
+          const l = local.find((t) => t.id === tid);
+          return l?.session ? l : null;
+        })
         .filter((t) => t?.session);
       if (openOn.length) {
         const labels = openOn.map((t) => t.label || t.id).join(', ');
-        get().showToast?.(`${labels} still has an open tab. Cash it off, or move this booking first.`, 'error');
-        return { ok: false, error: 'table_open' };
+        // A row with lines on it is a live check. A row with none is a seated but empty check
+        // (seated from a stand or a till, nothing rung in yet): a different refusal, so the
+        // screen can say so.
+        const withItems = openOn.filter((t) => (t.session.items || []).some((i) => !i?.voided));
+        if (withItems.length) {
+          get().showToast?.(`${labels} still has an open tab. Cash it off, or move this booking first.`, 'error');
+          return { ok: false, error: 'table_open' };
+        }
+        get().showToast?.(`${labels} is seated with no order yet. Cash it off on the POS, or move this booking.`, 'error');
+        return { ok: false, error: 'table_seated_empty' };
       }
       // hasGuest, not a bare truthy check: an edited walk in carries an edit stamp
       // on its snapshot with no name or phone, and that is not a guest to attach.
-      const seatCustomer = hasGuest(b.customer) ? {
+      // A CRM linked booking always attaches, and allergens alone count as a guest.
+      const seatCustomer = (hasGuest(b.customer) || b.customerId) ? {
         customerId: b.customerId || null,
-        name: b.customer.name || 'Guest',
-        phone: b.customer.phone || null,
-        allergens: b.customer.allergens || [],
+        name: b.customer?.name || 'Guest',
+        phone: b.customer?.phone || null,
+        allergens: b.customer?.allergens || [],
       } : null;
       try {
         // ── v5.7.21: the booking's money rides onto the session ──────────────
@@ -571,9 +722,34 @@ export function bookingsSlice(set, get) {
         } else {
           get().seatTable?.(b.primaryTableId, { covers: b.covers, server: get().staff?.name, customer: seatCustomer, booking: bookingRef });
         }
+        // seatTable and seatTableWithItems make the seated table active. A till clears that when
+        // it leaves the POS; a host stand never does, and an active table is skipped by the
+        // realtime INSERT and UPDATE handlers and by the SessionReconciler, so the stand would not
+        // see the till's lines on that table until the 30 second reconcile. A stand edits no check.
+        // A host stand publishes only a table it seated (SessionSync markStandOwned).
+        if (isHostStandMode()) { markStandOwned(b.primaryTableId); set({ activeTableId: null }); }
         // Persist just this table's session immediately (the waitlist lesson:
         // a host stand's floor poll can flip the table back before the flush).
-        try { flushSingleSession(b.primaryTableId); } catch { /* best-effort */ }
+        // A till keeps main's timing (the flush runs in the background); only a host stand waits for it.
+        try {
+          const flushing = flushSingleSession(b.primaryTableId);
+          if (isHostStandMode()) await flushing; else flushing.catch(() => {});
+        } catch { /* best-effort */ }
+        // 16 Oct 2026 (Provo demo, 17:06 UK): the stand seated T1, the server row appeared at
+        // once, and the stand still drew T1 as "booking active, no session". On a host stand the
+        // floor's session for the booking's tables is set from the server row after the seat
+        // write, so the colour follows (light blue seated, orange once lines are rung in). A
+        // table with no row yet keeps its local copy (the write may still be queued).
+        if (isHostStandMode() && !isTrainingMode() && !isMock && supabase) {
+          try {
+            const locId = await resolveLocationId();
+            const rows = locId ? await readServerSessions(supabase, locId, bookingTables) : null;
+            if (rows) {
+              const next = mergeServerSessions(get().tables || [], rows, { tableIds: bookingTables, clearMissing: false, isClosed: isSessionClosed });
+              if (next !== get().tables) set({ tables: next });
+            }
+          } catch { /* the 30 second stand reconcile heals it */ }
+        }
       } catch (e) {
         console.warn('[bookings] seatTable failed:', e?.message || e);
       }
@@ -705,7 +881,12 @@ export function bookingsSlice(set, get) {
         // the membership events were missed entirely, which is what left a joined
         // party showing one table until someone reloaded (Peter, 25 Aug).
         if (!existing) get().refreshBookingTables?.(row.id);
-        if (retabled) get().resyncBookingTables?.(row.id);
+        // 16 Oct 2026 review: booking_tables has RLS on, so a realtime DELETE
+        // carries only the row id, never which booking or table left. Any UPDATE
+        // of a booking we already show (an edit writes the row, then move_booking
+        // writes primary_table_id) therefore re reads its tables once, debounced,
+        // so a table dropped from a join comes off every stand.
+        if (existing) get().resyncBookingTables?.(row.id);
         return { bookings: existing ? list.map((b) => (b.id === row.id ? merged : b)) : [...list, merged] };
       });
     },
@@ -767,6 +948,8 @@ export function bookingsSlice(set, get) {
       // other device's diary beside the new one. The primary never comes off here:
       // the bookings row says what the primary is.
       if (payload?.eventType === 'DELETE') {
+        // With RLS on booking_tables the old record holds only the id, so this
+        // usually returns here; the bookings UPDATE resync above does the work.
         const old = payload.old;
         if (!old?.booking_id || !old?.table_id) return;
         if (!(get().bookings || []).some((b) => b.id === old.booking_id)) return;

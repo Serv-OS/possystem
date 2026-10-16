@@ -16,8 +16,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../store';
 import { money } from '../../lib/currency';
 import { toMin } from '../../lib/bookings/optimiser.js';
-import { editRefusal, editedLine } from '../../lib/bookings/editRules.js';
-import { StatusBadge, displayStatus, bookingName, todayISO } from '../../surfaces/bookings/bits.jsx';
+import { editRefusal, editedLine, fmtClock, venueToday } from '../../lib/bookings/editRules.js';
+import { StatusBadge, displayStatus, bookingName } from '../../surfaces/bookings/bits.jsx';
 import EditBookingSheet from '../../surfaces/bookings/EditBookingSheet.jsx';
 import { CUSTOMER_ROOT } from '../../lib/env';
 import { platformSupabase, getLocationId } from '../../lib/supabase';
@@ -367,9 +367,14 @@ function BookingsList({ userName }) {
   const setBookingsDate = useStore((s) => s.setBookingsDate);
   const packages = useStore((s) => s.packages) || [];
   const tables = useStore((s) => s.tables) || [];
+  // Venue clock, never the browser's: Peter in California sees the Leeds day
+  // and the Leeds time an edit was made.
+  const venueTz = useStore((s) => s.locationConfig?.timezone);
+  const fmt = useMemo(() => fmtClock(venueTz), [venueTz]);
+  const today = venueToday(venueTz);
   const [editing, setEditing] = useState(null); // booking id
-  const date = bookingsDate || todayISO();
-  const isToday = date === todayISO();
+  const date = bookingsDate || today;
+  const isToday = date === today;
   const rows = useMemo(
     () => bookings.filter((b) => b.status !== 'cancelled').slice().sort((a, b) => toMin(a.startTime) - toMin(b.startTime) || bookingName(a).localeCompare(bookingName(b))),
     [bookings],
@@ -390,27 +395,30 @@ function BookingsList({ userName }) {
         </div>
         <button className="btn btn-ghost btn-xs" onClick={() => shiftDay(-1)} style={{ fontFamily: MONO }}>‹</button>
         <input type="date" value={date} onChange={(e) => { if (e.target.value) setBookingsDate?.(e.target.value); }} aria-label="Bookings date" style={{ ...S.inp, width: 160 }} />
-        {!isToday && <button className="btn btn-ghost btn-xs" onClick={() => setBookingsDate?.(todayISO())} style={{ fontWeight: 700 }}>Today</button>}
+        {!isToday && <button className="btn btn-ghost btn-xs" onClick={() => setBookingsDate?.(today)} style={{ fontWeight: 700 }}>Today</button>}
         <button className="btn btn-ghost btn-xs" onClick={() => shiftDay(1)} style={{ fontFamily: MONO }}>›</button>
       </div>
       {rows.length === 0 && <div style={{ fontSize: 12, color: 'var(--t4)', marginTop: 10 }}>No bookings on {date}.</div>}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10 }}>
+      {/* rows wrap on a phone instead of widening the page */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10, overflowX: 'auto' }}>
         {rows.map((b) => {
           const st = displayStatus(b, null, packages);
           const locked = editRefusal(b);
-          const edited = editedLine(b);
+          const edited = editedLine(b, fmt);
           return (
-            <div key={b.id} style={{ display: 'grid', gridTemplateColumns: '56px minmax(140px, 1fr) 60px minmax(90px, 160px) 110px minmax(120px, 1fr) 72px', alignItems: 'center', columnGap: 12, padding: '8px 12px', borderRadius: 10, background: 'var(--bg2)', border: '1px solid var(--bdr)' }}>
-              <span style={{ fontSize: 14, fontWeight: 800, fontFamily: MONO, color: 'var(--t1)' }}>{String(b.startTime || '').slice(0, 5)}</span>
-              <span style={{ minWidth: 0 }}>
+            <div key={b.id} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px 12px', padding: '8px 12px', borderRadius: 10, background: 'var(--bg2)', border: '1px solid var(--bdr)' }}>
+              <span style={{ fontSize: 14, fontWeight: 800, fontFamily: MONO, color: 'var(--t1)', width: 48 }}>{String(b.startTime || '').slice(0, 5)}</span>
+              <span style={{ flex: '1 1 160px', minWidth: 0 }}>
                 <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: 'var(--t1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{bookingName(b)}</span>
                 <span style={{ display: 'block', fontSize: 11, color: 'var(--t4)', fontFamily: MONO, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{b.customer?.phone || b.source || 'host'}</span>
               </span>
               <span style={{ fontSize: 12, color: 'var(--t3)', fontFamily: MONO }}>{b.covers} cvr</span>
               <span style={{ fontSize: 13, fontWeight: 800, fontFamily: MONO, color: 'var(--t1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{(b.tables || []).map(labelOf).join(' + ') || '-'}</span>
               <StatusBadge st={st} />
-              <span style={{ fontSize: 11, color: 'var(--t4)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={b.note || undefined}>{edited || b.note || ''}</span>
-              <button className="btn btn-ghost btn-xs" onClick={() => setEditing(b.id)} title={locked || 'Edit this booking'} style={{ height: 30, fontWeight: 700, opacity: locked ? 0.55 : 1 }}>Edit</button>
+              <button className="btn btn-ghost btn-xs" onClick={() => setEditing(b.id)} title={locked || 'Edit this booking'} style={{ height: 30, fontWeight: 700, opacity: locked ? 0.55 : 1, marginLeft: 'auto' }}>Edit</button>
+              {(edited || b.note) && (
+                <span style={{ flex: '1 1 100%', minWidth: 0, fontSize: 11, color: 'var(--t4)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={b.note || undefined}>{[edited, b.note].filter(Boolean).join(' · ')}</span>
+              )}
             </div>
           );
         })}

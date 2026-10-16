@@ -1048,7 +1048,8 @@ export default function TablesSurface() {
                     const primary = tables.find(t => t.id === selectedBk.primaryTableId);
                     const r = await seatBooking(selectedBk.id);
                     if (r?.ok) showToast(`${primary?.label || selectedTable.label} seated — ${selectedBk.covers} covers`, 'success');
-                    else showToast(r?.error || 'Could not seat the booking', 'error');
+                    // seatBooking already said why in words for these two; do not add the raw code.
+                    else if (r?.error !== 'table_open' && r?.error !== 'table_seated_empty') showToast(r?.error || 'Could not seat the booking', 'error');
                     setSelected(null);
                   }} style={{ height:44, fontSize:14 }}>Seat guests →</button>
                   <button className="btn btn-ghost btn-full" onClick={()=>setEditBooking(selectedBk)}>✏ Edit reservation</button>

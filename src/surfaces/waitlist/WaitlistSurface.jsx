@@ -20,8 +20,10 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../../store';
-import { ensureAuthToken, setResolvedLocationId } from '../../lib/supabase';
+import { ensureAuthToken, setResolvedLocationId, supabase } from '../../lib/supabase';
 import { startRealtime, stopRealtime } from '../../lib/realtime';
+import { isSessionClosed } from '../../sync/sessionClosure';
+import { startStandSessionSync } from '../../lib/bookings/standSessionSync.js';
 import {
   registerWaitlistDevice, waitlistHeartbeat, waitlistPinLogin,
 } from '../../lib/waitlist/waitlistData';
@@ -121,7 +123,17 @@ export default function WaitlistSurface() {
     // even if a realtime event is missed (brief: recompute at least every 1-2 min).
     const floorPoll = setInterval(() => { loadFloor?.(loc); }, 30000);
     const requote = setInterval(() => { recompute?.(); }, 60000);
-    return () => { clearInterval(hb); clearInterval(floorPoll); clearInterval(requote); try { stopRT(); } catch {} stopRealtime(); };
+    // 16 Oct 2026: the same 30 second server reconcile the bookings stand runs
+    // (lib/bookings/standSessionSync.js): every floor table's session is replaced from
+    // active_sessions, null where no row, and a cleared table leaves the device's local copies
+    // too, so the floor poll above cannot put a cashed off table back. A host stand never owns
+    // a session; the till that cashed it off does.
+    let storage = null;
+    try { storage = window.localStorage; } catch { storage = null; }
+    const stopStandSync = supabase
+      ? startStandSessionSync({ store: useStore, client: supabase, locationId: loc, isClosed: isSessionClosed, storage })
+      : () => {};
+    return () => { clearInterval(hb); clearInterval(floorPoll); clearInterval(requote); stopStandSync(); try { stopRT(); } catch {} stopRealtime(); };
   }, [stage, loc, loadFromDB, loadFloor, recompute]);
 
   if (stage === 'boot') return <Screen><div style={{ color: 'var(--t3)', ...mono }}>Starting…</div></Screen>;

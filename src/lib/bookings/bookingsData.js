@@ -306,9 +306,12 @@ export async function editBookingAtomic(id, next, locationId) {
       console.warn('[bookingsData] editBooking:', error.message);
       return { ok: false, error: error.message };
     }
+    // refused: the function answered and said no (a code such as table_taken). Without it the
+    // call itself failed (a dropped connection), and the edit may still have landed.
     return {
       ok: !!data?.ok, error: data?.error || null, tableId: data?.table_id || null,
       seats: data?.seats ?? null, status: data?.status || null, retabled: !!data?.retabled,
+      refused: !data?.ok,
     };
   } catch (e) { return { ok: false, error: e?.message || 'edit failed' }; }
 }
@@ -417,6 +420,19 @@ export async function loadBookingTables(bookingId) {
     }
     return arr.length ? arr : null;
   } catch (e) { warnAbsentOr(e, 'loadBookingTables'); return null; }
+}
+
+// 16 Oct 2026: one booking's row, read fresh, so an edit checks the status and
+// the edit stamp the database holds now rather than a cached copy. No tables
+// or money here (the caller keeps those). null when it cannot be read.
+export async function loadBookingRow(id, locationId) {
+  if (isMock || !supabase || !isRealLoc(locationId) || !id) return null;
+  try {
+    const { data, error } = await supabase.from('bookings').select('*')
+      .eq('id', id).eq('location_id', locationId).maybeSingle();
+    if (error) { warnAbsentOr(error, 'loadBookingRow'); return null; }
+    return data ? rowToBooking(data) : null;
+  } catch (e) { warnAbsentOr(e, 'loadBookingRow'); return null; }
 }
 
 // Money ledger for one booking. From migration 20260824 a paired host-stand

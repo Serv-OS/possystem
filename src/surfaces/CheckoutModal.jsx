@@ -783,8 +783,10 @@ function GiftCardEntry({ totalMinor, giftAlreadyApplied, onApplied, onRemove, on
     const giftStripped = raw.replace(/[\s-]/g, '').toUpperCase();
     setError(null);
 
-    // Gift-shaped (exactly 16 chars of the gift alphabet) → try gift card first.
-    if (/^[A-Z2-9]{16}$/.test(giftStripped)) {
+    // Gift shaped (exactly 16 letters or digits once separators are stripped): try gift card first.
+    // 16 Oct 2026: letters and digits, not only the issuing alphabet (A to Z without I and O, 2 to 9).
+    // A card imported from another system, or seeded, can carry 0, 1, I or O; the server decides.
+    if (/^[A-Z0-9]{16}$/.test(giftStripped)) {
       setLoading(true); setCardInfo(null);
       let status, j;
       try {

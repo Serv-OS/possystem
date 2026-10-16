@@ -182,6 +182,8 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
         // as confirmed so the host can move it or cash the old tab off.
         setMsg(seated.error === 'table_open'
           ? `${sug.label} still has an open tab, booking held on the diary`
+          : seated.error === 'table_seated_empty'
+          ? `${sug.label} is seated with no order yet, booking held on the diary`
           : 'Could not open the tab, booking held on the diary');
       } else {
         setMsg(`Seated ${name || 'walk-in'} on ${sug.label}`);
