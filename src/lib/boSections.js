@@ -49,7 +49,7 @@ export const NAV_IA = [
   { label:'Overview',   icon:'home',      single:'overview' },
   { label:'Menu',       icon:'list',      children:[['menu','Items & modifiers'],['discounts','Discounts'],['tax','Tax & VAT'],['challenge21','Challenge ID']] },
   { label:'Floor plan', icon:'floor',     single:'floorplan' },
-  { label:'Inventory',  icon:'inventory', children:[['stock-overview','Overview'],['stock-items','Stock items'],['stock-counts','Stock counts'],['wastage','Wastage'],['inventory','Daily counts'],['stock-reports','Reports']] },
+  { label:'Inventory',  icon:'inventory', children:[['stock-overview','Overview'],['stock-items','Stock items'],['stock-areas','Stock areas'],['stock-transfers','Transfers'],['stock-counts','Stock counts'],['wastage','Wastage'],['inventory','Daily counts'],['stock-reports','Reports']] },
   { label:'Produce',    icon:'inventory', children:[['recipes','Recipes'],['batches','Batches']] },
   { label:'Purchasing', icon:'channels',  children:[['order-pad','Order pad'],['suppliers','Suppliers'],['purchase-orders','Orders'],['invoices','Invoices'],['price-changes','Price changes']] },
   { label:'Operations', icon:'inventory', children:[['ops-overview','Compliance'],['ops-temperature','Temperature'],['ops-checklists','Checklists'],['ops-prep','Prep schedule'],['ops-maintenance','Maintenance'],['ops-notifications','Alert rules'],['ops-compliance','Calendar'],['ops-documents','Documents'],['ops-forms','Forms'],['ops-devices','Devices']] },
