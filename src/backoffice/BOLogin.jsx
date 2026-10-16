@@ -58,6 +58,7 @@ export default function BOLogin({ onLogin, recovery = false, onResetDone, area =
         const plan = signInPlan({
           hostname: window.location.hostname,
           supported: !!can.usable,
+          reason: can.reason || '',
           allowLocalhost: !!import.meta.env?.DEV,
         });
         // reason rides along so the page can say WHY there is no passkey button (15 Oct 2026).

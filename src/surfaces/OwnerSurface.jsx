@@ -41,6 +41,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { supabase, isMock } from '../lib/supabase';
+import { VERSION } from '../lib/version';
 import { ServOSWordmark, ServOSLockup } from '../components/ServOSBrand';
 import SecondStepGate from '../components/secondStep/SecondStepGate';
 import { isRealLogin, sessionProvesSecondStep } from '../lib/secondStep/rules';
@@ -202,7 +203,7 @@ function Login({ theme, onToggleTheme }) {
     (async () => {
       try {
         const can = await stepClient.canUsePasskey();
-        const plan = signInPlan({ hostname: window.location.hostname, supported: !!can.usable, allowLocalhost: !!import.meta.env?.DEV });
+        const plan = signInPlan({ hostname: window.location.hostname, supported: !!can.usable, reason: can.reason || '', allowLocalhost: !!import.meta.env?.DEV });
         if (alive) setPk({ ready: true, canUse: plan.canUsePasskey, primary: plan.primary, reason: can.reason || '' });
       } catch { if (alive) setPk({ ready: true, canUse: false, primary: 'password', reason: 'browser' }); }
     })();
@@ -243,7 +244,7 @@ function Login({ theme, onToggleTheme }) {
           {busy ? 'Signing in…' : 'Sign in'}
         </button>
       </form>
-      <div style={{ textAlign: 'center', color: 'var(--t4)', fontSize: 11.5, marginTop: 18, lineHeight: 1.6 }}>Use your back-office login. You’ll see every venue you manage.</div>
+      <div style={{ textAlign: 'center', color: 'var(--t4)', fontSize: 11.5, marginTop: 18, lineHeight: 1.6 }}>Use your back-office login. You’ll see every venue you manage.<div style={{ marginTop: 6, fontSize: 11, opacity: 0.7 }}>ServOS {VERSION}</div></div>
     </>
   );
 }

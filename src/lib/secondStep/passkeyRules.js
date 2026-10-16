@@ -39,8 +39,14 @@ export function wrongHostMessage(hostname) {
  *               first, and the emailed code after it
  *   'wrong_host' possystem-liard.vercel.app and anything else off our domain
  */
-export function signInPlan({ hostname, supported, allowLocalhost = false } = {}) {
+export function signInPlan({ hostname, supported, reason = '', allowLocalhost = false } = {}) {
   if (!passkeyHostAllowed(hostname, { allowLocalhost })) return { primary: 'wrong_host', canUsePasskey: false };
+  // 16 Oct 2026 (Peter's iPhone, Owner app): the device test (isUserVerifyingPlatformAuthenticator
+  // Available) said no while passkeys worked everywhere else on the phone, so the button never
+  // showed. Signing in with a passkey you already have does not need that test: the phone's own
+  // sheet offers it, or says there is none. So when the only objection is the device test, the
+  // button is offered; registering a NEW passkey still uses the stricter test (secondStepPlan).
+  if (!supported && reason === 'device') return { primary: 'passkey', canUsePasskey: true };
   if (!supported) return { primary: 'password', canUsePasskey: false };
   return { primary: 'passkey', canUsePasskey: true };
 }
