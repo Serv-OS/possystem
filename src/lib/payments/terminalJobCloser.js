@@ -200,3 +200,27 @@ export function checkoutOrderRef({ isBarTab = false, walkInRef = null, mint } = 
 export function usableOrderRef(ref) {
   return typeof ref === 'string' && ref.trim() !== '' && ref.length <= 40 ? ref : null;
 }
+
+// ── The booking money on a reader or PAX close (16 Oct 2026) ───────────────────
+
+/** Pence of booking prepay or deposit the draft took off the due (0 with no booking legs). */
+export function bookingLegsMinor(bookingPayment) {
+  const legs = Array.isArray(bookingPayment?.legs) ? bookingPayment.legs : [];
+  return legs.reduce((n, l) => n + (Number(l?.amountMinor) || 0), 0);
+}
+
+/**
+ * The gross a reader or PAX close books, in pence: every card leg (base plus tip) and the booking
+ * money the draft took off the due. The check is booked gross, exactly as CheckoutModal books it,
+ * so its tenders (booking_prepaid plus card) add up to its total and the VAT is against the total.
+ * A £100 bill with a £96 prepay and £4 on the reader books 10000, not 400.
+ */
+export function closerGrandMinor({ chargeMinor = 0, priorChargeMinor = 0, bookingPayment = null } = {}) {
+  return (Number(chargeMinor) || 0) + (Number(priorChargeMinor) || 0) + bookingLegsMinor(bookingPayment);
+}
+
+/** The method a reader or PAX close books: 'card' or 'split', prefixed 'booking+' when booking money was used. */
+export function closerMethod({ split = false, bookingPayment = null } = {}) {
+  const base = split ? 'split' : 'card';
+  return bookingLegsMinor(bookingPayment) > 0 ? `booking+${base}` : base;
+}

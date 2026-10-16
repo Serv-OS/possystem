@@ -18,6 +18,7 @@ import { trustSharedRead } from '../lib/deviceFence';
 import { mustChangeRows } from '../lib/rowWrites';
 import { occupationMatch, seatedAtOf } from '../lib/rowWriteFence';
 import { readShowsKitchenScreen } from '../lib/queueDevice';
+import { clearAsMoved, skipAsMovedHere, sameOccupation } from './sessionMoveRule';
 
 // v5.5.639: a table held occupied locally but missing from the DB poll is re-published only if its
 // session is genuinely LIVE — has items, is the active table, or was seated within the business day.
@@ -140,6 +141,7 @@ export async function startSessionReconciler() {
       };
       const localTableBySession = new Map();
       for (const t of tables) indexSession(localTableBySession, t.session, t.id);
+      const localSessionOn = (tid) => tables.find((x) => x.id === tid)?.session || null;
       const dbTableBySession = new Map();
       for (const [tid, c] of supabaseOpen) indexSession(dbTableBySession, c.session, tid);
 
@@ -196,11 +198,24 @@ export async function startSessionReconciler() {
           // table, so this local copy is the pre-transfer view (typically a
           // device that slept through the move). Healing it would republish the
           // OLD table and duplicate the party. Adopt the DB's view instead.
+          // 16 Oct 2026 (bookings audit item 6): a shared id is a move only when it is the SAME
+          // party (same seatedAt, or absorbed by a combine), never inside the 30 second grace and
+          // never on the active table (sync/sessionMoveRule.js, tested). Session ids were a per
+          // device counter, so two parties could share ORD-1001 and this branch cleared a live
+          // table. Two parties sharing an id fall through to the self heal below.
           const dbHome = sess?.id ? dbTableBySession.get(sess.id) : null;
-          if (dbHome && dbHome !== t.id) {
+          const dbHomeSession = dbHome && dbHome !== t.id ? supabaseOpen.get(dbHome)?.session : null;
+          if (dbHome && clearAsMoved({
+            tableId: t.id, local: sess, dbHomeTableId: dbHome,
+            dbHomeSession, activeTableId: store.activeTableId, now,
+          })) {
             changed = true;
             return { ...t, session: null, status: 'available', childIds: [] };
           }
+          // The same party is on another table but this one is the active table or inside the
+          // grace: hold it as it is. Neither cleared nor re-published (a heal would put the party
+          // on two tables); the next tick decides again.
+          if (dbHomeSession && sameOccupation(sess, dbHomeSession)) return t;
           const live = !!sess && (
             (sess.items?.length > 0) || isActive ||
             (sess.seatedAt && (now - sess.seatedAt) < SELF_HEAL_MAX_AGE_MS)
@@ -218,8 +233,13 @@ export async function startSessionReconciler() {
           // then the session was TRANSFERRED here and the DB row is the stale
           // source awaiting its delete. Re-adding it would put the party on two
           // tables at once. Leave it; the flush's delete pass removes the row.
+          // 16 Oct 2026: only when it is the same party (sync/sessionMoveRule.js). A different
+          // party that shares the id is another device's table and is shown.
           const localHome = entry.session?.id ? localTableBySession.get(entry.session.id) : null;
-          if (localHome && localHome !== t.id) return t;
+          if (localHome && skipAsMovedHere({
+            tableId: t.id, dbSession: entry.session, localHomeTableId: localHome,
+            localHomeSession: localSessionOn(localHome),
+          })) return t;
           changed = true;
           return { ...t, session: entry.session, status: 'occupied' };
         }
@@ -272,7 +292,10 @@ export async function startSessionReconciler() {
         const orphanSessions = new Map();
         for (const [tid, c] of supabaseOpen) {
           const localHome = c.session?.id ? localTableBySession.get(c.session.id) : null;
-          if (localHome && localHome !== tid) continue;
+          if (localHome && skipAsMovedHere({
+            tableId: tid, dbSession: c.session, localHomeTableId: localHome,
+            localHomeSession: localSessionOn(localHome),
+          })) continue;
           orphanSessions.set(tid, c.session);
         }
         const { labels, tombs, sections } = loadPlanState(_locationId);

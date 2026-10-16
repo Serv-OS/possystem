@@ -708,6 +708,13 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, venueName = '
             actions.reject();
             return;
           }
+          // 16 Oct 2026 (bookings audit item 20): the server charges exactly what was shown and
+          // refuses when the price went up meanwhile. Nothing was taken.
+          if (r?.error === 'due_mismatch') {
+            setPayErr('The price for this booking changed while you were paying, so nothing was taken. Please start the booking again.');
+            actions.reject();
+            return;
+          }
           if (r?.error === 'payment_record_failed') {
             // An older server: the bank may still say yes. Wait and check.
             setPhase('confirming');
@@ -1246,7 +1253,7 @@ export default function BookingWidget({ location }) {
   // Submit lifecycle
   const [submitting, setSubmitting] = useState(false);
   const [submitErr, setSubmitErr] = useState('');
-  const [result, setResult] = useState(null); // { status:'confirmed'|'pending', ... }
+  const [result, setResult] = useState(null); // { status:'confirmed'|'prepaid'|'pending_payment', ... }
 
   // Terms acknowledgement under the Book button — no checkbox (UK norm: the
   // "By booking you agree…" line is the acknowledgement). Which disclosure is
@@ -1372,11 +1379,28 @@ export default function BookingWidget({ location }) {
   const termsText = termsOpen === 'booking' ? bookingTerms
     : termsOpen === 'package' ? pkgTerms : '';
   const phoneOk = (() => { const n = normalisePhone(phone); return !!n && n.length >= 7; })();
+  // 16 Oct 2026 (bookings audit items 7 and 13): why a slot is greyed, for the package the guest
+  // has picked. The fn answers per package turn in fullFor (a 150 minute tasting menu needs a
+  // longer free gap than a table for 90), and gives the reason: 'past', 'kitchen' (the pacing
+  // cap) or 'tables' (no table free). An older fn sends only full.
+  const slotWhy = (s) => {
+    if (!s) return null;
+    const pid = selectedPkg ? String(selectedPkg.id) : null;
+    if (pid && s.fullFor && Object.prototype.hasOwnProperty.call(s.fullFor, pid)) return s.fullFor[pid] || null;
+    if (s.reason !== undefined) return s.reason || null;
+    return s.full ? 'full' : null;
+  };
+  const timeBlocked = !!time && slots.some((s) => s.time === time && !!slotWhy(s));
+  const greyReasons = new Set(slots.map(slotWhy).filter((r) => r && r !== 'past'));
   const canSubmit = !!name.trim() && phoneOk && !!time && !submitting && choicesComplete;
 
   // ── book ────────────────────────────────────────────────────────────────────
   const submit = async () => {
     if (!canSubmit) return;
+    if (timeBlocked) {
+      setSubmitErr(selectedPkg ? 'That time is full for this menu, please pick another.' : 'That time is full, please pick another.');
+      return;
+    }
     setSubmitting(true);
     setSubmitErr('');
     // In-window package: one row per guest per course group (seat = guest
@@ -1411,9 +1435,17 @@ export default function BookingWidget({ location }) {
     });
     setSubmitting(false);
     // status is the REAL row status from v5.7.21: 'pending_payment' means the
-    // next screen takes the card; 'prepaid' books a nothing-due prepay package;
-    // legacy 'pending' = availability vanished mid-flight.
-    if (r?.ok && ['confirmed', 'prepaid', 'pending_payment', 'pending'].includes(r.status)) { setResult(r); return; }
+    // next screen takes the card; 'prepaid' books a nothing-due prepay package.
+    // 16 Oct 2026 (bookings audit item 12): a time that went between quote and write is
+    // slot_gone (an older fn said status 'pending' and "the venue will confirm", which nobody
+    // ever saw). Either way: say so, refresh the times, keep everything else the guest typed.
+    if ((r?.ok && r.status === 'pending') || r?.error === 'slot_gone') {
+      setSubmitErr('That time has just gone, please pick another');
+      setTime(null);
+      setSlotsNonce((n) => n + 1);
+      return;
+    }
+    if (r?.ok && ['confirmed', 'prepaid', 'pending_payment'].includes(r.status)) { setResult(r); return; }
     if (r?.error === 'preorders_required') {
       // Defensive: the fn wants choices the page didn't collect (offer drift).
       // Reveal the section from ITS choiceGroups and walk the guest there.
@@ -1648,18 +1680,6 @@ export default function BookingWidget({ location }) {
     </Shell>;
   }
 
-  if (result?.status === 'pending') {
-    return <Shell {...shell}>
-      <div style={{ ...S.card, textAlign: 'center', padding: '34px 22px' }}>
-        <div style={{ fontSize: 38, marginBottom: 10 }}>🕐</div>
-        <div style={S.h1}>Almost there</div>
-        <div style={S.sub}>
-          {result.message || 'The venue will confirm your booking shortly.'}
-        </div>
-      </div>
-    </Shell>;
-  }
-
   // ── main booking form ───────────────────────────────────────────────────────
   const partyOptions = Array.from({ length: maxCovers }, (_, i) => i + 1);
 
@@ -1757,24 +1777,30 @@ export default function BookingWidget({ location }) {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
           {slots.map((s) => {
             const on = time === s.time;
+            const full = !!slotWhy(s);
             return (
-              <button key={s.time} type="button" disabled={s.full} aria-pressed={on}
+              <button key={s.time} type="button" disabled={full && !on} aria-pressed={on}
                 onClick={() => { setTime(s.time); setSubmitErr(''); }}
                 style={{
                   padding: '12px 2px', borderRadius: 10, textAlign: 'center',
                   fontSize: 13, fontWeight: 700, fontFamily: MONO,
-                  cursor: s.full ? 'default' : 'pointer',
-                  border: on ? `1.5px solid ${brand}` : '1px solid var(--line)',
-                  background: on ? `${brand}1f` : (s.full ? 'transparent' : 'var(--card)'),
-                  color: on ? brand : (s.full ? 'var(--muted)' : 'var(--ink)'),
-                  opacity: s.full ? 0.55 : 1,
+                  cursor: full ? 'default' : 'pointer',
+                  border: on ? `1.5px solid ${full ? 'var(--line)' : brand}` : '1px solid var(--line)',
+                  background: on && !full ? `${brand}1f` : (full ? 'transparent' : 'var(--card)'),
+                  color: on && !full ? brand : (full ? 'var(--muted)' : 'var(--ink)'),
+                  opacity: full ? 0.55 : 1,
                 }}>{s.time}</button>
             );
           })}
         </div>
       )}
-      <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8, marginBottom: 20 }}>
-        Greyed times are at the kitchen’s capacity, not closed.
+      {/* 16 Oct 2026 (bookings audit item 7): the two reasons a time is greyed, said apart. It
+          used to blame the kitchen for every grey slot, even when no table was free. */}
+      <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8, marginBottom: 20, lineHeight: 1.5 }}>
+        {greyReasons.has('kitchen') && <div>Some times are greyed because the kitchen is full then.</div>}
+        {greyReasons.has('tables') && <div>Some times are greyed because no table for {party} is free then.</div>}
+        {greyReasons.has('full') && <div>Greyed times are fully booked.</div>}
+        {timeBlocked && <div style={{ color: 'var(--ink)' }}>{selectedPkg ? 'The time you picked is full for this menu. Pick another time.' : 'The time you picked is now full. Pick another time.'}</div>}
       </div>
 
       {/* Package upsell — the offers the fn returned for THIS date+party.

@@ -15,6 +15,7 @@ import { supabase, isMock, platformSupabase } from '../supabase';
 import { CUSTOMER_ROOT } from '../env';
 import { readAllPagesResult } from '../pagedRead.js';
 import { rowToPreorder, preorderInsertRows, withoutChoiceColumns, missingColumn } from './preorderRows.js';
+import { isMissingFunction } from './applyBookingPayment.js';
 
 const isRealLoc = (l) => !!l && l !== 'loc-demo';
 
@@ -266,8 +267,15 @@ export async function updateBookingRow(id, patch, locationId) {
   if (patch.cancelReason !== undefined) row.cancel_reason = patch.cancelReason;
   if (!Object.keys(row).length) return { ok: true };
   try {
-    const { error } = await supabase.from('bookings').update(row).eq('id', id).eq('location_id', locationId);
+    // 16 Oct 2026 (bookings audit item 10): read back the id. A write the database matched to no
+    // row (a policy, another venue, a booking removed meanwhile) answers with no error and no
+    // row, and used to be reported as saved.
+    const { data, error } = await supabase.from('bookings').update(row).eq('id', id).eq('location_id', locationId).select('id');
     if (error) { if (!warnAbsentOr(error, 'updateBooking')) console.warn('[bookingsData] updateBooking:', error.message); return { ok: false, error: error.message }; }
+    if (Array.isArray(data) && data.length === 0) {
+      console.warn('[bookingsData] updateBooking: no row changed for', id);
+      return { ok: false, refused: true, error: NO_ROW_CHANGED };
+    }
     return { ok: true };
   } catch (e) { return { ok: false, error: e?.message }; }
 }
@@ -316,6 +324,45 @@ export async function loadCapturedMinorByBooking(bookingIds = []) {
     }
     return out;
   } catch (e) { warnAbsentOr(e, 'loadCapturedMinorByBooking'); return null; }
+}
+
+export const NO_ROW_CHANGED = 'the database changed no booking row (it may have been removed, or this device is not allowed to change it)';
+
+
+// 16 Oct 2026 (bookings audit item 10): THE guarded edit. edit_booking (migration 20261016b)
+// re checks the window, the covers against the seats and the floor plan under the venue lock,
+// then writes the row and the tables in one transaction.
+// -> { ok:true, retabled } | { ok:false, error, tableId?, seats?, status? } | { ok:false, missing:true }
+// missing = the function is not on the database yet: the caller falls back to the old writes.
+export async function editBookingAtomic(id, next, locationId) {
+  if (isMock || !supabase) return { ok: true, simulated: true };
+  if (!isRealLoc(locationId)) return { ok: false, error: 'no location' };
+  try {
+    const { data, error } = await supabase.rpc('edit_booking', {
+      p_id: id,
+      p_location_id: locationId,
+      p_booking_date: next.date,
+      p_start_time: next.startTime,
+      p_turn_minutes: next.turnMinutes,
+      p_covers: next.covers,
+      p_table_ids: next.tables,
+      p_primary_table_id: next.primaryTableId,
+      p_note: next.note ?? null,
+      p_customer: next.customer ?? null,
+    });
+    if (error) {
+      if (isMissingFunction(error)) return { ok: false, missing: true, error: error.message };
+      console.warn('[bookingsData] editBooking:', error.message);
+      return { ok: false, error: error.message };
+    }
+    // refused: the function answered and said no (a code such as table_taken). Without it the
+    // call itself failed (a dropped connection), and the edit may still have landed.
+    return {
+      ok: !!data?.ok, error: data?.error || null, tableId: data?.table_id || null,
+      seats: data?.seats ?? null, status: data?.status || null, retabled: !!data?.retabled,
+      refused: !data?.ok,
+    };
+  } catch (e) { return { ok: false, error: e?.message || 'edit failed' }; }
 }
 
 // Manually re-table a booking. Atomic server-side (move_booking RPC): the
@@ -448,9 +495,18 @@ export async function loadBookingRow(id, locationId) {
 export async function loadBookingPayments(bookingId) {
   if (isMock || !supabase) return [];
   try {
-    const { data, error } = await supabase.from('booking_payments')
-      .select('id, kind, status, amount, currency, card_last4, card_brand, applied_to_check, captured_at, authorised_at, refusal_reason')
+    const BASE = 'id, kind, status, amount, currency, card_last4, card_brand, applied_to_check, captured_at, authorised_at, refusal_reason';
+    // 16 Oct 2026: what the check used and what goes back (migration 20261016b). Before the
+    // migration the columns are not there: read without them.
+    const read = (cols) => supabase.from('booking_payments').select(cols)
       .eq('booking_id', bookingId).order('created_at', { ascending: true });
+    let { data, error } = await read(`${BASE}, applied_minor, refund_due_minor, refund_reason`);
+    // Also read without them when this login may not read them (42501): booking_payments has
+    // column scoped grants (20260825f), and the migration grants the three new columns. A read
+    // refused for them must never blank the whole ledger.
+    if (error && (missingColumn(error) || String(error.code || '') === '42501' || /permission denied/i.test(String(error.message || '')))) {
+      ({ data, error } = await read(BASE));
+    }
     if (error) return warnAbsentOr(error, 'loadBookingPayments') ? [] : null;
     return data || [];
   } catch (e) { return warnAbsentOr(e, 'loadBookingPayments') ? [] : null; }
@@ -464,11 +520,14 @@ export async function loadBookingCredit(bookingId) {
   if (isMock || !supabase || !bookingId) return { prepayMinor: 0, depositMinor: 0 };
   try {
     const { data, error } = await supabase.from('booking_payments')
-      .select('kind, amount, status, applied_to_check')
+      .select('kind, amount, status, applied_to_check, refusal_reason')
       .eq('booking_id', bookingId).eq('status', 'captured').eq('applied_to_check', false);
     if (error) { warnAbsentOr(error, 'loadBookingCredit'); return { prepayMinor: 0, depositMinor: 0 }; }
     let prepayMinor = 0, depositMinor = 0;
     for (const r of data || []) {
+      // 16 Oct 2026: a row flagged NEEDS REFUND is owed back, never credit on the bill (the
+      // reader's _booking_credit_for_session leaves it out too, so the till and reader agree).
+      if (/^needs refund/i.test(String(r.refusal_reason || ''))) continue;
       const minor = Math.round((Number(r.amount) || 0) * 100);
       if (r.kind === 'prepay') prepayMinor += minor;
       else if (r.kind === 'deposit') depositMinor += minor;

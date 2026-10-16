@@ -28,6 +28,7 @@ import { declineLine } from '../lib/declineMessage';
 import { money, currencySymbol, stripeCurrency, getActiveCurrencyCode } from '../lib/currency';
 import { publishDisplay, displayUsesScreen, publishTipRequest, onCustomerTip } from '../lib/customerDisplay';
 import { isTrainingMode } from '../lib/trainingMode';
+import { applyBookingPayment } from '../lib/bookings/applyBookingPayment';   // 16 Oct 2026: the amount used, surplus flagged
 import PaxTerminal from './PaxTerminal';
 import {
   findPaxTerminal, dispatchTerminalJob, buildCheckKey, toMinor, forgetJob, getPosDeviceId, fetchJobCapture,
@@ -1981,12 +1982,17 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     // consumed them). Best-effort and NOT awaited: the money maths above already
     // honoured the credit; this is the ledger's bookkeeping. Server-side
     // idempotent — only captured, un-applied rows update, so a retry no-ops.
+    // 16 Oct 2026 (bookings audit item 3): with the amount this check USED, so a bill smaller
+    // than the prepayment leaves the rest on the ledger as money to give back
+    // (lib/bookings/applyBookingPayment.js; falls back to the old call before migration 20261016b).
     if (bookingRecord?.bookingId && supabase && !isMock && !isTrainingMode()) {
-      supabase.rpc('apply_booking_payment', {
-        p_booking_id: bookingRecord.bookingId,
-        p_closed_check_id: checkId,
-      }).then(({ error }) => {
-        if (error) console.warn('[checkout] apply_booking_payment failed (credit still honoured on the check):', error.message);
+      applyBookingPayment(supabase.rpc.bind(supabase), {
+        bookingId: bookingRecord.bookingId,
+        checkId,
+        appliedMinor: bookingRecord.appliedMinor,
+      }).then((r) => {
+        if (!r.ok) console.warn('[checkout] apply_booking_payment failed (credit still honoured on the check):', r.error);
+        else if (r.fallback) console.warn('[checkout] apply_booking_payment: the amount used was not stored (migration 20261016b not run yet); every captured row was stamped applied, as before.');
       }).catch(() => {});
     }
   };

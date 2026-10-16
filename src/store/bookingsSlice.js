@@ -17,13 +17,13 @@
 // write, so a training till cannot pollute a live diary.
 
 import {
-  suggestTables, paceAt, turnFor, toMin, toHM, toOptimiserBooking,
+  suggestTables, paceAt, paceFull, turnFor, toMin, toHM, toOptimiserBooking,
   DEFAULT_TURN_BANDS, DEFAULT_RULES,
 sessionsToBlocks } from '../lib/bookings/optimiser.js';
 import {
   loadBookings, createBookingAtomic, updateBookingRow, rowToBooking, loadBookingTables,
   loadBookingRules, saveBookingRules, loadPackages,
-  upsertPackageRow, deletePackageRow, moveBookingTables,
+  upsertPackageRow, deletePackageRow, moveBookingTables, editBookingAtomic,
   loadBookingPreorders, saveBookingPreorders, loadBookingCredit, loadBookingRow,
   departBookingIfDining,
 } from '../lib/bookings/bookingsData.js';
@@ -31,7 +31,8 @@ import { venueToday, venueNow } from '../lib/bookings/venueClock.js';
 import { bookingIdsToDepart } from '../lib/bookings/departOnClose.js';
 import { seatRefusal, undoCancelStatus } from '../lib/bookings/standRules.js';
 import { packageItemsFor } from '../lib/bookings/packagePricing.js';
-import { validateEdit, conflictsFor, paymentAfterEdit, stampEdit, hasGuest, describeChanges, editRefusal, MOVE_NON_BLOCKING } from '../lib/bookings/editRules.js';
+import { optimiserTables } from '../lib/bookings/optimiserTables.js';
+import { validateEdit, conflictsFor, paymentAfterEdit, stampEdit, hasGuest, describeChanges, editRefusal, MOVE_NON_BLOCKING, bookingRefusalWords } from '../lib/bookings/editRules.js';
 import { logActivity } from '../lib/activity.js';
 import { buildScheduleCtx, minutesInTz } from '../lib/locationTime.js';
 import { supabase, isMock, getActiveLocationSync, getLocationId, isHostStandMode } from '../lib/supabase.js';
@@ -79,6 +80,8 @@ const pendingBookingTables = new Map(); // booking_id -> { ids: Set, at: epochMs
 // 16 Oct 2026: one settling read of booking_tables per edited booking (resyncBookingTables).
 const RESYNC_DELAY_MS = 1500;
 const pendingResync = new Map(); // booking_id -> timer
+// 16 Oct 2026: the "server check not switched on yet" note shows once per page load.
+let _warnedNoEditGuard = false;
 
 function bufferBookingTable(bookingId, tableId) {
   const now = Date.now();
@@ -104,12 +107,7 @@ function mergeBookingTables(primaryTableId, ...lists) {
   return out;
 }
 
-// Store tables → optimiser tables. Excludes merged split-check children
-// (parentId) exactly like the waitlist's tablesView.
-const optimiserTables = (tables = []) =>
-  (tables || []).filter((t) => !t.parentId).map((t) => ({
-    id: t.id, label: t.label || t.id, covers: t.maxCovers || 2, section: t.section || null,
-  }));
+// Store tables → optimiser tables: lib/bookings/optimiserTables.js (16 Oct 2026, tested).
 
 // ── the slice ─────────────────────────────────────────────────────────────────
 export function bookingsSlice(set, get) {
@@ -218,10 +216,12 @@ export function bookingsSlice(set, get) {
     },
 
     // Covers arriving within ±7 min of 'HH:MM' vs the pacing cap.
-    bookingPaceAt: (time) => {
+    // 16 Oct 2026 (bookings audit item 14): the party being added counts. Full means this party
+    // would take the slot OVER the cap (cap 12, 10 booked: a 2 fits, an 8 needs a manager).
+    bookingPaceAt: (time, party = 0) => {
       const cap = get().bookingRules?.pacingCap ?? DEFAULT_RULES.pacingCap;
       const load = paceAt(toMin(time), (get().bookings || []).map(toOptimiserBooking));
-      return { load, cap, full: load >= cap };
+      return { load, cap, full: paceFull(load, party, cap) };
     },
 
     // ── create (atomic, never optimistic) ─────────────────────────────────────
@@ -263,7 +263,13 @@ export function bookingsSlice(set, get) {
 
       const res = await createBookingAtomic(booking, locId);
       if (!res.ok) {
-        return { ok: false, error: res.error || 'Could not save the booking', tableId: res.tableId || null };
+        // 16 Oct 2026: the code stays in error (BookScreen offers alternatives on table_taken);
+        // message is the same refusal in words.
+        const label = res.tableId ? ((get().tables || []).find((t) => t.id === res.tableId)?.label || null) : null;
+        return {
+          ok: false, error: res.error || 'Could not save the booking', tableId: res.tableId || null,
+          message: bookingRefusalWords({ error: res.error, tableLabel: label }),
+        };
       }
       if (booking.date === (get().bookingsDate || todayISO(get))) {
         set((s) => ({ bookings: [...(s.bookings || []).filter((x) => x.id !== booking.id), booking] }));
@@ -428,9 +434,14 @@ export function bookingsSlice(set, get) {
         } else if (next.date !== (get().bookingsDate || todayISO(get))) {
           others = [];
         }
-        // Open till tabs block their tables like a seated party, today only.
+        // Open till tabs block their tables like a seated party, today only,
+        // except a tab on this booking's own current tables (the party itself,
+        // or a walk in the host is already working around), so the till's Edit
+        // reservation can move the time on a table with an open tab.
+        const ownTables = new Set(entry.tables || []);
         const blocks = next.date === ctx.ymd
           ? sessionsToBlocks(get().tables, others, rules.turnBands || DEFAULT_TURN_BANDS, ctx.nowMinutes, epochToVenueMin(tz))
+            .filter((blk) => !(blk.tables || []).some((t) => ownTables.has(t)))
           : [];
         const conflicts = conflictsFor({ booking: next, others: [...others, ...blocks], tables: tablesForRules, nonBlocking: MOVE_NON_BLOCKING });
         if (conflicts.length) {
@@ -469,6 +480,50 @@ export function bookingsSlice(set, get) {
       if (isTrainingMode()) { apply(); return { ok: true, booking: next, payment, training: true }; }
       if (!locId) return refuse('No venue resolved, so the booking cannot be saved.');
 
+      // 16 Oct 2026 (bookings audit item 10): ONE guarded write when the
+      // database has it. edit_booking re checks the window, the seats, the
+      // floor plan and an online payment still landing under the venue lock,
+      // and writes the row and the tables in one transaction, so one call
+      // covers the slot and the tables. Unchanged fields go as this device just
+      // read them from the database (entry is the fresh row), the note and the
+      // guest only when they changed (null keeps what is there), so nothing a
+      // stamp check passed is written back over. Before migration 20261016b the
+      // function is missing: the writes below (only the changed fields, then
+      // move_booking for any slot change) run instead, and the stand says once
+      // that only this device checked the diary.
+      const noteChanged = next.note !== (entry.note || '');
+      const atomic = await editBookingAtomic(id, {
+        date: next.date, startTime: next.startTime, turnMinutes: next.turnMinutes, covers: next.covers,
+        tables: next.tables, primaryTableId: next.primaryTableId,
+        note: noteChanged ? next.note : null,
+        customer: stamped,
+      }, locId);
+      if (atomic.ok) {
+        apply();
+        logEdit();
+        return { ok: true, booking: next, payment, serverGuard: true };
+      }
+      if (!atomic.missing) {
+        // A dropped connection can hide an edit that DID land. The function is
+        // one transaction and the stamp is this edit's own, so the row carrying
+        // it means everything landed. Look before saying it failed.
+        if (!atomic.refused) {
+          const after = await loadBookingRow(id, locId);
+          if (after && (after.customer?.edited_at || null) === stamped.edited_at) {
+            apply();
+            logEdit();
+            return { ok: true, booking: next, payment, serverGuard: true };
+          }
+        }
+        const label = atomic.tableId ? (tablesForRules.find((t) => t.id === atomic.tableId)?.label || null) : null;
+        let msg;
+        if (/payment_gate|waiting for payment/i.test(String(atomic.error || ''))) msg = 'This booking is waiting for payment, so its covers cannot change.';
+        else if (atomic.error === 'table_taken') msg = `${label || 'That table'} is held by another booking at that time. Nothing was changed.`;
+        else if (atomic.refused) msg = bookingRefusalWords({ error: atomic.error, tableLabel: label, seats: atomic.seats, status: atomic.status });
+        else msg = `Booking NOT saved: ${atomic.error || 'the database refused the change'}.`;
+        return refuse(msg);
+      }
+
       // Only what changed, plus the guest snapshot with the stamp.
       const rowPatch = { customer: stamped };
       const undo = { customer: entry.customer ?? null };
@@ -498,7 +553,7 @@ export function bookingsSlice(set, get) {
             const now = await loadBookingTables(id);
             if (now && now.join(',') === (next.tables || []).join(',')) {
               apply(); logEdit();
-              return { ok: true, booking: next, payment };
+              return { ok: true, booking: next, payment, serverGuard: false };
             }
           }
           const back = await updateBookingRow(id, undo, locId);
@@ -512,9 +567,13 @@ export function bookingsSlice(set, get) {
           return refuse(msg);
         }
       }
+      if (!_warnedNoEditGuard) {
+        _warnedNoEditGuard = true;
+        get().showToast?.('Booking saved. The server double booking check is not switched on yet, so only this device checked the diary.', 'info');
+      }
       apply();
       logEdit();
-      return { ok: true, booking: next, payment };
+      return { ok: true, booking: next, payment, serverGuard: false };
     },
 
     // ── the POS Tables bridge (v5.6.27 — bookings replace thin reservations) ──
@@ -664,7 +723,10 @@ export function bookingsSlice(set, get) {
         // tender leg. Training tills carry the label but never real credit.
         const pkg = b.packageId ? (get().packages || []).find((p) => p.id === b.packageId) : null;
         let credit = { prepayMinor: 0, depositMinor: 0 };
-        if (b.packageId && !isTrainingMode()) {
+        // 16 Oct 2026: every booking, not only package ones, so a rule based deposit is on the
+        // session too and the till takes off what the reader and PAX take off (they read the
+        // same ledger). No captured money: 0, exactly as before.
+        if (!isTrainingMode()) {
           try { credit = await loadBookingCredit(b.id); } catch { /* stays 0 — honest fallback */ }
         }
         // v5.7.23 - free food is EARNED: the prepay 0.00 pricing only applies

@@ -262,10 +262,37 @@ Deno.serve(async (req) => {
           ]);
           mark('queries');
           const sessBy = new Map((sess || []).map((r) => [String(r.table_id), r]));
+          // 16 Oct 2026 (bookings audit item 1): money a guest paid in advance for the booking
+          // seated on a table comes off what the reader shows, the same rule the start function
+          // charges by (terminal_start_table_payment_for, migration 20261016b). Only read when a
+          // table carries a booking; any failure shows the old figure (the start function still
+          // charges the right amount).
+          const creditBy = new Map<string, number>();
+          try {
+            const bookingIds = [...new Set((sess || [])
+              .map((r) => (r.session as Record<string, unknown> | null)?.booking as Record<string, unknown> | undefined)
+              .map((b) => (b?.bookingId ? String(b.bookingId) : ''))
+              .filter(Boolean))];
+            if (bookingIds.length) {
+              const { data: bp } = await opsAdmin.from('booking_payments')
+                .select('booking_id, amount, refusal_reason')
+                .eq('location_id', term.location_id).in('booking_id', bookingIds)
+                .eq('status', 'captured').eq('applied_to_check', false).in('kind', ['prepay', 'deposit']);
+              for (const r of bp || []) {
+                if (/^needs refund/i.test(String(r.refusal_reason || ''))) continue;
+                creditBy.set(String(r.booking_id), (creditBy.get(String(r.booking_id)) || 0) + Math.round((Number(r.amount) || 0) * 100));
+              }
+            }
+          } catch (e) { console.log(`[pay-at-table] booking credit read skipped: ${(e as Error)?.message || e}`); }
+          const creditFor = (tableId: string): number => {
+            const row = sessBy.get(String(tableId));
+            const bid = ((row?.session as Record<string, unknown> | null)?.booking as Record<string, unknown> | undefined)?.bookingId;
+            return bid ? Math.min(creditBy.get(String(bid)) || 0, Math.max(0, Number(row?.total_minor) || 0)) : 0;
+          };
           const remainingFor = (tableId: string): number => {
             const row = sessBy.get(String(tableId));
             if (!row) return 0;
-            return Math.max(0, (Number(row.total_minor) || 0) - (Number(row.paid_minor) || 0));
+            return Math.max(0, (Number(row.total_minor) || 0) - creditFor(tableId) - (Number(row.paid_minor) || 0));
           };
           const open = new Set((sess || []).map((r) => String(r.table_id)));
           const norm = (x: string) => String(x || '').toLowerCase();
@@ -412,9 +439,12 @@ Deno.serve(async (req) => {
           const remaining = remainingFor(table.id);
           if (remaining <= 0) {
             const t = Number(sess0?.total_minor);
-            await say(Number.isFinite(t) && t > 0
-              ? `${table.label} is fully paid — settle any difference on the till.`
-              : `${table.label} has no bill yet — send the order from the till first.`);
+            // 16 Oct 2026: a bill the booking money covers is closed on the till.
+            await say(Number.isFinite(t) && t > 0 && creditFor(table.id) >= t
+              ? `${table.label} was paid in advance on the booking. Close it on the till.`
+              : Number.isFinite(t) && t > 0
+                ? `${table.label} is fully paid — settle any difference on the till.`
+                : `${table.label} has no bill yet — send the order from the till first.`);
             return;
           }
           let amountMinor: number | null = null;               // null = charge everything owed
