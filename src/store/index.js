@@ -721,6 +721,9 @@ import { INITIAL_KDS, SHIFT, MENU_ITEMS, CATEGORIES, STAFF as STAFF_SEED, QUICK_
 import { money } from '../lib/currency';
 import { orderCollectionLabel } from '../lib/collectionLabel';
 import { withoutRecordNotes } from '../lib/orderCustomerNotes';
+// 16 Oct 2026: the stored subtotal of a closed check is the goods on its own lines (voided lines
+// out), the same sum the VAT share is taken from (lib/taxShare.js linesGoods).
+import { linesGoods } from '../lib/taxShare.js';
 
 // v5.7.35 — ?mode=kds pins the KDS surface for this page load (read once; the
 // mode param is the operator's explicit intent, so profile defaults must not
@@ -6504,7 +6507,10 @@ export const useStore = create((set, get) => ({
       discounts:  [...(session.discounts || []),
                    ...evaluateAutoDiscounts(session.items.filter(i=>!i.voided), get().discountRules, 'pos', buildScheduleCtx(get().locationConfig?.timezone)).map(toAppliedDiscount),
                    ...promoDiscountEntry(paymentInfo.promoRedemption)],
-      subtotal:   session.subtotal || 0,
+      // 16 Oct 2026: from the lines this record books, never the session's running figure. That
+      // figure goes stale (an item added after a void sums the voided line back in, a line void
+      // or split can leave it behind), so a check could book shelf sales it never sold.
+      subtotal:   linesGoods(session.items),
       // v5.5.851: service comes from the REAL pricing engine, never a hardcoded rate.
       // The old `subtotal * 0.125` booked a phantom 12.5% service on EVERY dine-in
       // close — including venues/orders with no service charge at all (live repro: a
@@ -7255,7 +7261,10 @@ export const useStore = create((set, get) => ({
       walkInOrder = get().walkInOrder || walkInOrder;
     }
     const { staff, taxRates } = get();
-    const subtotal = walkInOrder.items.reduce((s, i) => s + i.price * i.qty, 0);
+    // 16 Oct 2026: voided lines out. This summed every line, voided ones too, so a walk in with a
+    // voided line booked it as a sale in the subtotal (a voided 18 x 1.50 line turned an 11.25 sale
+    // into 38.25 of shelf sales). The record's items, tax and charge never included it.
+    const subtotal = linesGoods(walkInOrder.items);
     // v4.6.19 — compute tax at close so tax_amount can be stored with the row
     // v5.7.34 — through the unified seam (legacy parity or profiles cascade);
     // taxBreakdown now also carries the taxV2 named-lines record.
