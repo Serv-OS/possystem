@@ -16,6 +16,7 @@ import { CUSTOMER_ROOT } from '../env';
 import { readAllPagesResult } from '../pagedRead.js';
 import { rowToPreorder, preorderInsertRows, withoutChoiceColumns, missingColumn } from './preorderRows.js';
 import { isMissingFunction } from './applyBookingPayment.js';
+import { serviceRulesFromRow, SERVICE_RULE_COLUMNS, SERVICE_RULES_MISSING, touchesServiceRules } from './serviceRulesRow.js';
 
 const isRealLoc = (l) => !!l && l !== 'loc-demo';
 
@@ -97,6 +98,8 @@ export function rowToRules(r) {
     bookingTerms: r.booking_terms || '',
     blockedDates: Array.isArray(r.blocked_dates) ? r.blocked_dates : [],
     noOnlineTables: Array.isArray(r.no_online_tables) ? r.no_online_tables : [],
+    // 16 Oct 2026: service periods, closed days, date blocks, notice (migration 20261016e).
+    ...serviceRulesFromRow(r),
   };
 }
 
@@ -111,6 +114,7 @@ const RULES_TO_ROW = {
   cardCaptureMinCovers: 'card_capture_min_covers',
   bookingTerms: 'booking_terms',
   blockedDates: 'blocked_dates', noOnlineTables: 'no_online_tables',
+  ...SERVICE_RULE_COLUMNS,
 };
 
 export function rowToPackage(r) {
@@ -237,7 +241,7 @@ export async function createBookingAtomic(b, locationId) {
       p_pacing_override_by: b.pacingOverrideBy || null,
     });
     if (error) { if (!warnAbsentOr(error, 'createBooking')) console.warn('[bookingsData] createBooking:', error.message); return { ok: false, error: error.message }; }
-    return { ok: !!data?.ok, error: data?.error || null, tableId: data?.table_id || null, conflictBookingId: data?.booking_id && !data?.ok ? data.booking_id : null };
+    return { ok: !!data?.ok, error: data?.error || null, tableId: data?.table_id || null, conflictBookingId: data?.booking_id && !data?.ok ? data.booking_id : null, message: data?.message || null };
   } catch (e) {
     return { ok: false, error: e?.message || 'write failed' };
   }
@@ -311,7 +315,7 @@ export async function editBookingAtomic(id, next, locationId) {
     return {
       ok: !!data?.ok, error: data?.error || null, tableId: data?.table_id || null,
       seats: data?.seats ?? null, status: data?.status || null, retabled: !!data?.retabled,
-      refused: !data?.ok,
+      refused: !data?.ok, message: data?.message || null,
     };
   } catch (e) { return { ok: false, error: e?.message || 'edit failed' }; }
 }
@@ -538,7 +542,13 @@ export async function saveBookingRules(locationId, patch) {
   }
   try {
     const { error } = await supabase.from('booking_rules').upsert(row, { onConflict: 'location_id' });
-    if (error) { if (!warnAbsentOr(error, 'saveBookingRules')) console.warn('[bookingsData] saveBookingRules:', error.message); return { ok: false, error: error.message }; }
+    if (error) {
+      // 16 Oct 2026: a service period write before migration 20261016e names a column the
+      // database does not have yet. Say that in words; nothing was saved.
+      if (touchesServiceRules(patch) && missingColumn(error)) return { ok: false, error: error.message, words: SERVICE_RULES_MISSING };
+      if (!warnAbsentOr(error, 'saveBookingRules')) console.warn('[bookingsData] saveBookingRules:', error.message);
+      return { ok: false, error: error.message };
+    }
     return { ok: true };
   } catch (e) { return { ok: false, error: e?.message }; }
 }

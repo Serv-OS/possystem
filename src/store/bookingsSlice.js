@@ -19,7 +19,7 @@
 import {
   suggestTables, paceAt, paceFull, turnFor, toMin, toHM, toOptimiserBooking,
   DEFAULT_TURN_BANDS, DEFAULT_RULES,
-sessionsToBlocks } from '../lib/bookings/optimiser.js';
+sessionsToBlocks, bookingTimeRefusal } from '../lib/bookings/optimiser.js';
 import {
   loadBookings, createBookingAtomic, updateBookingRow, rowToBooking, loadBookingTables,
   loadBookingRules, saveBookingRules, loadPackages,
@@ -214,6 +214,14 @@ export function bookingsSlice(set, get) {
       if (!booking.startTime || !booking.covers || !booking.tables?.length) {
         return { ok: false, error: 'Booking needs a time, covers and at least one table' };
       }
+      // 16 Oct 2026 (bookings audit section 3 item 6): service periods, closed days and date
+      // blocks, the same check create_booking makes once migration 20261016e is run (so a stand
+      // says why before the database does). Walk ins are never held to them. With no periods
+      // set, the old single window is not enforced here, as before.
+      if (booking.source !== 'walk_in' && booking.status !== 'dining') {
+        const why = bookingTimeRefusal(rules || {}, booking.date, booking.startTime, { legacyWindow: false });
+        if (why) return { ok: false, error: why.code, message: why.message };
+      }
 
       if (isTrainingMode()) {
         // Training till: show it locally, never write. Matches the gate-every-
@@ -229,7 +237,7 @@ export function bookingsSlice(set, get) {
         const label = res.tableId ? ((get().tables || []).find((t) => t.id === res.tableId)?.label || null) : null;
         return {
           ok: false, error: res.error || 'Could not save the booking', tableId: res.tableId || null,
-          message: bookingRefusalWords({ error: res.error, tableLabel: label }),
+          message: bookingRefusalWords({ error: res.error, tableLabel: label, message: res.message }),
         };
       }
       if (booking.date === (get().bookingsDate || todayISO())) {
@@ -372,7 +380,8 @@ export function bookingsSlice(set, get) {
       const v = validateEdit({
         booking: entry,
         patch: { ...patch, customer: stamped },
-        rules: { serviceStart: rules.serviceStart || '17:00', serviceEnd: rules.serviceEnd || '23:00', turnBands: rules.turnBands || DEFAULT_TURN_BANDS },
+        // 16 Oct 2026: the whole rules object, so service periods, closed days and blocks count.
+        rules: { ...rules, serviceStart: rules.serviceStart || '17:00', serviceEnd: rules.serviceEnd || '23:00', turnBands: rules.turnBands || DEFAULT_TURN_BANDS },
         tables: tablesForRules,
         today: ctx.ymd,
         pkg,
@@ -480,7 +489,7 @@ export function bookingsSlice(set, get) {
         let msg;
         if (/payment_gate|waiting for payment/i.test(String(atomic.error || ''))) msg = 'This booking is waiting for payment, so its covers cannot change.';
         else if (atomic.error === 'table_taken') msg = `${label || 'That table'} is held by another booking at that time. Nothing was changed.`;
-        else if (atomic.refused) msg = bookingRefusalWords({ error: atomic.error, tableLabel: label, seats: atomic.seats, status: atomic.status });
+        else if (atomic.refused) msg = bookingRefusalWords({ error: atomic.error, tableLabel: label, seats: atomic.seats, status: atomic.status, message: atomic.message });
         else msg = `Booking NOT saved: ${atomic.error || 'the database refused the change'}.`;
         return refuse(msg);
       }
@@ -810,16 +819,17 @@ export function bookingsSlice(set, get) {
       for (const k of Object.keys(patch || {})) previous[k] = current[k];
       set({ bookingRules: { ...current, ...patch } });
       if (isTrainingMode()) return { ok: true };
-      const revert = (error) => {
+      const revert = (error, words = null) => {
         // Only the keys this save touched, on top of whatever is there NOW.
         set({ bookingRules: { ...(get().bookingRules || {}), ...previous } });
-        get().showToast?.('Booking rules NOT saved', 'error');
+        // 16 Oct 2026: words when the data layer has them (service periods before 20261016e).
+        get().showToast?.(words || 'Booking rules NOT saved', 'error');
         console.warn('[bookings] saveBookingRules failed:', error);
       };
       const locId = await resolveLocationId();
       if (!locId) { revert('no location'); return { ok: false, error: 'no location' }; }
       const res = await saveBookingRules(locId, patch);
-      if (!res.ok) revert(res.error);
+      if (!res.ok) revert(res.error, res.words);
       return res;
     },
 

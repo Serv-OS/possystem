@@ -21,7 +21,7 @@
 // The audit rides the booking's customer jsonb (edited_by, edited_at): the
 // bookings table has no audit columns and this release adds no schema.
 
-import { toMin, toHM, turnFor, toOptimiserBooking, DEFAULT_TURN_BANDS } from './optimiser.js';
+import { toMin, toHM, turnFor, toOptimiserBooking, DEFAULT_TURN_BANDS, servicePeriodsOf, serviceSlots, bookingTimeRefusal } from './optimiser.js';
 import { paymentDue, NON_BLOCKING_STATUSES } from './bookingPayment.js';
 import { buildScheduleCtx } from '../scheduleCtx.js';
 
@@ -52,7 +52,11 @@ export function editRefusal(booking) {
 }
 
 // Every 15 minute (or rule) slot across the service window, 'HH:MM'.
-export function slotTimes({ serviceStart = '17:00', serviceEnd = '23:00', slotMinutes = 15 } = {}) {
+// 16 Oct 2026: with service periods set and a date given, the slots of that day's periods
+// (lunch and dinner, last seating, closed days and blocks), the same grid as the Book screen.
+export function slotTimes(rules = {}, dateISO = null) {
+  if (dateISO && servicePeriodsOf(rules).custom) return serviceSlots(rules, dateISO);
+  const { serviceStart = '17:00', serviceEnd = '23:00', slotMinutes = 15 } = rules || {};
   const step = Math.max(5, num(slotMinutes) || 15);
   const out = [];
   for (let m = toMin(serviceStart); m < toMin(serviceEnd); m += step) out.push(toHM(m));
@@ -90,7 +94,7 @@ export function shiftTables(tableIds, rows, rowDelta) {
 // fix on a booking made before the hours or the bands changed, or one sitting
 // on a table smaller than its party, must still save. The turn stays the
 // booking's own unless the covers change (or it has none).
-//   rules   { serviceStart, serviceEnd, turnBands }
+//   rules   { serviceStart, serviceEnd, turnBands, servicePeriods?, closedWeekdays?, dateBlocks? }
 //   tables  [{ id, label, covers | maxCovers }] the venue's tables
 //   today   'YYYY-MM-DD' on the venue clock
 //   pkg     the booking's package (its turnMinutes wins over the band)
@@ -116,7 +120,14 @@ export function validateEdit({ booking, patch = {}, rules = {}, tables = [], tod
   else if (dateChanged && today && date < today) errors.push('That date has gone. A booking can be moved to today or a later day.');
 
   if (!isHM(startTime)) errors.push('Pick a time.');
-  else if (timeChanged) {
+  else if (servicePeriodsOf(rules).custom || (rules.closedWeekdays || []).length || (rules.dateBlocks || []).length) {
+    // 16 Oct 2026: service periods, closed days and date blocks, checked when the date or the
+    // time moves (what edit_booking checks too). A note or guest fix never trips them.
+    if ((timeChanged || dateChanged) && isISODate(date)) {
+      const why = bookingTimeRefusal(rules, date, startTime, { legacyWindow: timeChanged });
+      if (why) errors.push(why.message);
+    }
+  } else if (timeChanged) {
     const s = toMin(startTime);
     const open = toMin(rules.serviceStart || '17:00');
     const close = toMin(rules.serviceEnd || '23:00');
@@ -408,9 +419,16 @@ export function editChangesWindow(before = {}, next = {}) {
 // 16 Oct 2026 (bookings audit items 10 and 21): the database's refusal codes (create_booking,
 // move_booking, edit_booking) in the words the stand and the till show. tableLabel is the
 // table's name when the refusal names one. Unknown codes pass through as they are.
-export function bookingRefusalWords({ error = null, tableLabel = null, seats = null, status = null } = {}) {
+export function bookingRefusalWords({ error = null, tableLabel = null, seats = null, status = null, message = null } = {}) {
   const t = tableLabel || 'That table';
   switch (error) {
+    // 16 Oct 2026: service periods (migration 20261016e). The database says why in words.
+    case 'outside_service': return message || 'That time is outside service hours. Pick another time.';
+    case 'closed_day': return message || 'The venue is closed that day. Pick another day.';
+    case 'blocked': return message || 'That date is closed for bookings. Pick another day.';
+    case 'too_soon': return message || 'That time is too soon for an online booking.';
+    case 'too_far_ahead': return message || 'That date is too far ahead for an online booking.';
+    case 'past': return message || 'That time has gone. Pick a later time.';
     case 'table_taken': return `${t} was just taken by another booking. Nothing was changed.`;
     case 'unknown_table': return `${t} is not on this venue's floor plan any more. Reload the floor and pick again.`;
     case 'too_many_covers': return `The tables seat ${Number(seats) || 0}, fewer than the party. Add a table or pick a bigger one.`;

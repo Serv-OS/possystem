@@ -354,3 +354,50 @@ test('validateEdit: a booking already over its tables can still have its note or
 test('bookingRefusalWords: no access reads as a sentence', () => {
   assert.match(bookingRefusalWords({ error: 'no access' }), /not allowed to change bookings/);
 });
+
+// 16 Oct 2026 (bookings audit section 3 item 6): service periods in the Edit sheet and the drag.
+const PERIODS = {
+  ...RULES,
+  servicePeriods: [
+    { id: 'l', name: 'Lunch', days: [1, 2, 3, 4, 5, 6, 7], start: '12:00', end: '15:00', lastSeating: '13:30' },
+    { id: 'd', name: 'Dinner', days: [1, 2, 3, 4, 5, 6, 7], start: '17:00', end: '22:30', lastSeating: '21:00' },
+  ],
+  closedWeekdays: [1],
+  dateBlocks: [{ id: 'x', from: '2026-12-25', to: '2026-12-25', label: 'Christmas' }],
+};
+
+test('validateEdit with service periods: lunch is fine, the gap and a closed day are refused in words', () => {
+  // 2026-10-20 is a Tuesday, 2026-10-26 a Monday
+  assert.equal(validateEdit({ booking: bk(), patch: { startTime: '12:30' }, rules: PERIODS, tables: TABLES, today: '2026-10-16' }).ok, true);
+  const gap = validateEdit({ booking: bk(), patch: { startTime: '16:00' }, rules: PERIODS, tables: TABLES, today: '2026-10-16' });
+  assert.equal(gap.ok, false);
+  assert.match(gap.errors[0], /16:00 is outside service hours\. Open 12:00 to 15:00/);
+  const late = validateEdit({ booking: bk(), patch: { startTime: '21:30' }, rules: PERIODS, tables: TABLES, today: '2026-10-16' });
+  assert.match(late.errors[0], /last seating 21:00/);
+  const mon = validateEdit({ booking: bk(), patch: { date: '2026-10-26' }, rules: PERIODS, tables: TABLES, today: '2026-10-16' });
+  assert.equal(mon.ok, false);
+  assert.match(mon.errors[0], /closed on Mondays/);
+  const xmas = validateEdit({ booking: bk(), patch: { date: '2026-12-25' }, rules: PERIODS, tables: TABLES, today: '2026-10-16' });
+  assert.match(xmas.errors[0], /Christmas/);
+});
+
+test('validateEdit with service periods: a note or covers fix never trips the hours', () => {
+  const offHours = bk({ startTime: '16:00' });
+  assert.equal(validateEdit({ booking: offHours, patch: { note: 'window seat' }, rules: PERIODS, tables: TABLES, today: '2026-10-16' }).ok, true);
+  assert.equal(validateEdit({ booking: offHours, patch: { covers: 1 }, rules: PERIODS, tables: TABLES, today: '2026-10-16' }).ok, true);
+});
+
+test('slotTimes follows the day\'s periods when a date is given', () => {
+  const tue = slotTimes({ ...PERIODS, slotMinutes: 30 }, '2026-10-20');
+  assert.deepEqual(tue.slice(0, 4), ['12:00', '12:30', '13:00', '13:30']);
+  assert.equal(tue[4], '17:00');
+  assert.deepEqual(slotTimes(PERIODS, '2026-10-26'), []);
+  // without periods the old window, date or not
+  assert.equal(slotTimes(RULES, '2026-10-20')[0], '17:00');
+});
+
+test('bookingRefusalWords: the database words for service periods come through', () => {
+  assert.equal(bookingRefusalWords({ error: 'closed_day', message: 'The venue is closed on Mondays. Pick another day.' }), 'The venue is closed on Mondays. Pick another day.');
+  assert.match(bookingRefusalWords({ error: 'outside_service' }), /outside service hours/);
+  assert.match(bookingRefusalWords({ error: 'blocked' }), /closed for bookings/);
+});
