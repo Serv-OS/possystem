@@ -66,7 +66,7 @@ export default function GuestMessages({ b, sec }) {
     );
   };
 
-  // 17 Oct 2026 (v5.11.72): waits for the answer and says what really went, by text and by email.
+  // 17 Oct 2026 (v5.11.73): waits for the answer and says what really went, by text and by email.
   // It used to fire and say "Asked to send" whatever happened, and sent nothing at all when the
   // phone or email was only on the guest's record.
   const resend = async () => {

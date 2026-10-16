@@ -7,7 +7,7 @@
 
 export const CHANGELOG = [
   {
-    v: '5.11.72',
+    v: '5.11.73',
     date: '17 Oct 2026',
     items: [
       "Till: a guest's VIP and Regular tags now show on the check header, under the name, when the guest has a record. Display only, the two tags and nothing else, and nothing at all if the guest has none. Nothing else on the till changes.",

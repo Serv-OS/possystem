@@ -8,7 +8,7 @@
 // confirmation), Call (the guest's number) and Decline (a short text to the
 // guest). It checks every 45 seconds and raises a message on the stand when a
 // new one arrives.
-// 17 Oct 2026 (v5.11.72, PR 295 follow up): it sits in the stand's TOP BAR
+// 17 Oct 2026 (v5.11.73, PR 295 follow up): it sits in the stand's TOP BAR
 // (BookingsSurface, prop bar), so the count, the button and the alert are on
 // every screen, not only the Timeline. A new request stays marked New on the
 // button until the inbox is opened (lib/bookings/requestAlerts.js, tested).

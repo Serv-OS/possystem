@@ -18,7 +18,7 @@
 //             results. Called by the Diary Inspector's "Send pre-order link" button and the
 //             booking page. Resendable: a 60s per-channel throttle stops accidental double-taps.
 //   send_due , the sweep, run by pg_cron every 5 minutes (migration 20261016c; it was every 15)
-//             with NO host stand open. 17 Oct 2026 (v5.11.72): behind a cron key. Only the
+//             with NO host stand open. 17 Oct 2026 (v5.11.73): behind a cron key. Only the
 //             service role, or the cron job's x-cron-key header (a random key kept only in the
 //             database vault, checked by public.booking_reminders_cron_ok, migration 20261017a),
 //             may start it; until that migration runs it stays open as before
@@ -763,7 +763,7 @@ Deno.serve(async (req) => {
 
     if (action !== 'send_due') return json({ error: 'unknown action' }, 400);
 
-    // 17 Oct 2026 (v5.11.72): the sweep is the cron job's (or the service role's), nobody else's.
+    // 17 Oct 2026 (v5.11.73): the sweep is the cron job's (or the service role's), nobody else's.
     // The key is checked by the database, so it is never copied anywhere else (_shared/cronKey.js).
     const service = isServiceRoleBearer(req.headers.get('Authorization'), SERVICE_ROLE);
     const key = String(req.headers.get(CRON_KEY_HEADER) || '').trim();

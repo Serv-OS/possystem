@@ -2,7 +2,7 @@
 --
 -- OPS DB ONLY (tbetcegmszzotrwdtqhi). Only if 20261017a has to be undone.
 -- Puts booking-reminders-nudge back exactly as 20261016c left it (every 5 minutes, no key) and
--- removes the key check. The booking-reminders function from v5.11.72 then finds no check and
+-- removes the key check. The booking-reminders function from v5.11.73 then finds no check and
 -- stays open, as it was before, so reminders carry on either way. The vault key is left (it is
 -- harmless, and a second run of 20261017a reuses it).
 

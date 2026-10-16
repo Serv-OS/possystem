@@ -7,7 +7,7 @@
 //                       Fire and forget: the function's ledger sends each channel once, and the
 //                       5 minute sweep sends it anyway if this call is lost.
 //   sendConfirmation    the Inspector's Send confirmation button: the same call, awaited, so the
-//                       host is told what really went (17 Oct 2026, v5.11.72)
+//                       host is told what really went (17 Oct 2026, v5.11.73)
 //   loadGuestMessages   the ledger rows for one booking, for the Inspector's Messages list
 //   loadManageToken     the guest's change and cancel code (migration 20261016c)
 //   messageLine, failureWords   the words the Inspector shows for each row (pure, tested)

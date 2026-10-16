@@ -57,7 +57,7 @@ import { customerInitials, customerLabel } from '../lib/customerInitials';
 import { stampSummary, stampChip } from '../lib/stampSummary';
 import { announceOrderCustomer } from '../lib/orderCustomerLoyalty';
 import { receiptRewardLines } from '../lib/loyaltyMultiRedeem';
-// 17 Oct 2026 (v5.11.72, PR 295 follow up): VIP and Regular on the check header. Display only: it
+// 17 Oct 2026 (v5.11.73, PR 295 follow up): VIP and Regular on the check header. Display only: it
 // reads the guest's CRM record once (cached five minutes), renders nothing when there is nothing
 // to say, and nothing at all if it ever fails (bookings/GuestTags.jsx, lib/bookings/tillGuestTags.js).
 import { TillGuestTags } from './bookings/GuestTags.jsx';

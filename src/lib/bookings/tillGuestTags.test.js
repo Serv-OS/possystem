@@ -1,4 +1,4 @@
-// tillGuestTags.test.js: guest tags on the till's check header (17 Oct 2026, v5.11.72).
+// tillGuestTags.test.js: guest tags on the till's check header (17 Oct 2026, v5.11.73).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

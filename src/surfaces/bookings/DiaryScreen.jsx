@@ -370,7 +370,7 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
             <Chip active={view === 'timeline'} onClick={() => setView('timeline')} style={viewChip}>Timeline</Chip>
             <Chip active={view === 'list'} onClick={() => setView('list')} style={viewChip}>List</Chip>
           </div>
-          {/* 17 Oct 2026 (v5.11.72): the booking requests inbox moved to the stand's top bar
+          {/* 17 Oct 2026 (v5.11.73): the booking requests inbox moved to the stand's top bar
               (BookingsSurface), so it shows on every screen. */}
         </div>
         {/* On its own line so the iPad shows the whole sentence (16 Oct 2026 release review). */}

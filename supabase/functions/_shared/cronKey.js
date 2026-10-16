@@ -1,6 +1,6 @@
 // supabase/functions/_shared/cronKey.js
 //
-// WHO MAY RUN A SWEEP (17 Oct 2026, v5.11.72, PR 295 follow up "booking-reminders send_due
+// WHO MAY RUN A SWEEP (17 Oct 2026, v5.11.73, PR 295 follow up "booking-reminders send_due
 // behind a cron key"). Pure, no Deno, no network: node:test drives every branch
 // (src/lib/bookings/cronKey.test.js) and booking-reminders imports this file.
 //

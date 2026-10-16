@@ -410,7 +410,7 @@ test('a reminder sent for the old date goes again after the booking moves', asyn
   assert.equal(state.sms.length, before);
 });
 
-// ── 17 Oct 2026 (v5.11.72, PR 295 follow up): send_due behind a cron key ─────────────────────
+// ── 17 Oct 2026 (v5.11.73, PR 295 follow up): send_due behind a cron key ─────────────────────
 const KEY = 'k'.repeat(64);
 const keyCheck = (fn, args) => (fn === 'booking_reminders_cron_ok'
   ? { data: String(args?.p_key || '') === KEY, error: null }

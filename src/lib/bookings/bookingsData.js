@@ -258,7 +258,7 @@ export async function loadBookings(locationId, dateISO) {
 }
 
 // The atomic create — server-side free check, never optimistic.
-// 17 Oct 2026 (v5.11.72, migration 20261017b): create_booking is no longer open to the bare public
+// 17 Oct 2026 (v5.11.73, migration 20261017b): create_booking is no longer open to the bare public
 // key, only to a signed in session (a paired device signs in anonymously, which is role
 // authenticated) and the service role. So the session is made sure of first: ensureAuthToken
 // hands back the one in storage (it never replaces an identity that exists, and never makes one in

@@ -1,6 +1,6 @@
 // src/lib/bookings/tillGuestTags.js
 //
-// Guest tags on the TILL's check header (17 Oct 2026, v5.11.72, PR 295 follow up). Pure, tested
+// Guest tags on the TILL's check header (17 Oct 2026, v5.11.73, PR 295 follow up). Pure, tested
 // (tillGuestTags.test.js).
 //
 // The host stand shows every chip (VIP, Regular, visits, no-shows, the venue's own tags). The till

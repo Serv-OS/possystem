@@ -1,5 +1,5 @@
 // createBookingNoAnon.test.js: create_booking is no longer open to the bare public key
-// (17 Oct 2026, v5.11.72, migration 20261017b, PR 295 follow up).
+// (17 Oct 2026, v5.11.73, migration 20261017b, PR 295 follow up).
 //
 // Before the grant goes, every caller must be one that keeps it: the two edge functions on the
 // service role, and the web app through ONE door (createBookingAtomic) with a session made sure of.

@@ -36,7 +36,7 @@ test('messageLine: sent, retrying, given up, and rows from before the migration'
   }
 });
 
-// 17 Oct 2026 (v5.11.72, PR 295 follow up): Send confirmation when only the CRM record has the contact.
+// 17 Oct 2026 (v5.11.73, PR 295 follow up): Send confirmation when only the CRM record has the contact.
 const CRM = '3f2b8c1e-9a4d-4c2e-8f1a-5b6c7d8e9f01';
 
 test('a guest record counts as a way to reach the guest: the booking with no phone or email is still sent', () => {

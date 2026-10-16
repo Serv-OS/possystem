@@ -50,7 +50,7 @@ import RulesScreen from './RulesScreen.jsx';
 import EventsScreen from './EventsScreen.jsx';
 import ReportsScreen from './ReportsScreen.jsx';
 import WidgetScreen from './WidgetScreen.jsx';
-// 17 Oct 2026 (v5.11.72, PR 295 follow up): the booking requests inbox lives in the top bar, so
+// 17 Oct 2026 (v5.11.73, PR 295 follow up): the booking requests inbox lives in the top bar, so
 // its count, its button and its alert are on every screen (it was in the Timeline header only).
 import RequestsInbox from './RequestsInbox.jsx';
 
@@ -185,7 +185,7 @@ export default function BookingsSurface() {
     })();
     waitlistHeartbeat().catch(() => {});
     const hb = setInterval(() => waitlistHeartbeat().catch(() => {}), 60000);
-    // 17 Oct 2026 (v5.11.72, PR 295 follow up): the stand no longer starts the reminders sweep.
+    // 17 Oct 2026 (v5.11.73, PR 295 follow up): the stand no longer starts the reminders sweep.
     // pg_cron runs booking-reminders send_due every 5 minutes (stand or no stand) with its own key
     // (migration 20261017a), and the sweep refuses anyone else once that runs.
     return () => { live = false; stopStandSync?.(); stopCatchUp(); clearInterval(hb); };

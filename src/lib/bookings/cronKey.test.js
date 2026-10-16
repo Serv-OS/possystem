@@ -1,4 +1,4 @@
-// cronKey.test.js: who may start the booking-reminders sweep (17 Oct 2026, v5.11.72).
+// cronKey.test.js: who may start the booking-reminders sweep (17 Oct 2026, v5.11.73).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { sweepAccess, isMissingCheck, bearerOf, isServiceRoleBearer, CRON_KEY_HEADER, CRON_KEY_CHECK } from '../../../supabase/functions/_shared/cronKey.js';

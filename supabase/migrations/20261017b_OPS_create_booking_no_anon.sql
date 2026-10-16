@@ -20,7 +20,7 @@
 --   * The host stand, the till and Back Office (bookingsData.js createBookingAtomic): a signed in
 --     session, role authenticated. Tills, kiosks and stands sign in anonymously when they pair
 --     (an anonymous sign in is role authenticated, not anon), Back Office with a real login.
---     v5.11.72 also makes sure of a session right before the call (ensureAuthToken).
+--     v5.11.73 also makes sure of a session right before the call (ensureAuthToken).
 --   * No SQL function calls it, and nothing calls it with the bare public key.
 --   So only anon loses it. authenticated and service_role keep it.
 --

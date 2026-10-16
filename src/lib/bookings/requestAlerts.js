@@ -1,6 +1,6 @@
 // src/lib/bookings/requestAlerts.js
 //
-// When the host stand raises a booking request (17 Oct 2026, v5.11.72, PR 295 follow up "request
+// When the host stand raises a booking request (17 Oct 2026, v5.11.73, PR 295 follow up "request
 // alerts on every stand screen"). Pure, tested (requestAlerts.test.js); RequestsInbox.jsx runs it
 // on every poll.
 //

@@ -10,7 +10,7 @@
 // Renders nothing for a guest with no CRM record, while loading, or when the
 // record has nothing to say, so it can sit anywhere without moving a layout.
 //
-// 17 Oct 2026 (v5.11.72, PR 295 follow up): the till's check header shows
+// 17 Oct 2026 (v5.11.73, PR 295 follow up): the till's check header shows
 // TillGuestTags below, VIP and Regular only (lib/bookings/tillGuestTags.js),
 // inside a boundary that renders nothing if anything in here ever fails, so a
 // display chip can never take the check down at a live venue.

@@ -88,7 +88,7 @@ export async function loadGuestFacts(customerId) {
   const hit = cachedGuestFacts(id);
   if (hit) return hit;
   if (inFlight.has(id)) return inFlight.get(id);
-  // 17 Oct 2026 (v5.11.72): the in flight entry is cleared even when something throws, so one
+  // 17 Oct 2026 (v5.11.73): the in flight entry is cleared even when something throws, so one
   // failed read is not handed to every later caller for that guest.
   const p = (async () => {
     try {

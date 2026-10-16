@@ -97,7 +97,7 @@ export const STALE_IN_FLIGHT_MS = 10 * 60 * 1000;
  * late null = cannot tell (no cancel time on record, or no booking time). A window of 0 (or
  * none) means no late cancellations at all. A cancel after the booking time is late.
  *
- * 17 Oct 2026 (v5.11.72, PR 295 follow up): it used to subtract two wall clocks, so on the two
+ * 17 Oct 2026 (v5.11.73, PR 295 follow up): it used to subtract two wall clocks, so on the two
  * clock change weekends a year it was an hour out. UK clocks go back on 25 Oct 2026: a guest who
  * cancelled a Sunday 19:00 booking at 19:30 on the Saturday had cancelled 24.5 real hours before,
  * outside a 24 hour window, but the wall clocks said 23.5 and the card could be charged. The

@@ -31,7 +31,7 @@
 --
 -- ORDER (either order is safe, this one is cleanest)
 --   1  Run this file. The function live today ignores the header, so reminders carry on.
---   2  Deploy booking-reminders (PR for v5.11.72). From then on send_due runs only for this job or
+--   2  Deploy booking-reminders (PR for v5.11.73). From then on send_due runs only for this job or
 --      the service role. Before this file has run it stays open as today, so reminders never stop
 --      whichever comes first.
 --
@@ -93,7 +93,7 @@ as $fn$
 $fn$;
 
 comment on function public.booking_reminders_cron_ok(text) is
-  '17 Oct 2026 (v5.11.72): is this the booking-reminders cron key? Service role only (booking-reminders asks it before send_due). Never returns the key.';
+  '17 Oct 2026 (v5.11.73): is this the booking-reminders cron key? Service role only (booking-reminders asks it before send_due). Never returns the key.';
 
 -- Supabase grants new functions to anon and authenticated directly, so both are revoked by name.
 revoke all on function public.booking_reminders_cron_ok(text) from public, anon, authenticated;
@@ -128,7 +128,7 @@ end
 $fn$;
 
 comment on function public.booking_reminders_send_due() is
-  '17 Oct 2026 (v5.11.72): pg_cron booking-reminders-nudge. Posts send_due to booking-reminders with the vault key in x-cron-key. Holds no key itself. Never grant it to anyone.';
+  '17 Oct 2026 (v5.11.73): pg_cron booking-reminders-nudge. Posts send_due to booking-reminders with the vault key in x-cron-key. Holds no key itself. Never grant it to anyone.';
 
 revoke all on function public.booking_reminders_send_due() from public, anon, authenticated, service_role;
 

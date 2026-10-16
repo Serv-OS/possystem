@@ -18,7 +18,7 @@ export function hasGuestContact(b) {
 }
 
 // Is this new booking one the guest should hear about? A party seated at the door is not.
-// 17 Oct 2026 (v5.11.72, PR 295 follow up): a booking whose phone or email lives only on the
+// 17 Oct 2026 (v5.11.73, PR 295 follow up): a booking whose phone or email lives only on the
 // guest's CRM record counts too. It used to be skipped here, so the stand's Send confirmation
 // button showed, said "Asked to send", and sent nothing.
 export function shouldNudge(b) {
