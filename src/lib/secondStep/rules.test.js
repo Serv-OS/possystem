@@ -140,7 +140,9 @@ test('faceIdSupport inside our apps: blocked until the app build says it can do 
   // The build with the entitlement: the shell steps aside and the browser and device checks decide.
   assert.deepEqual(faceIdSupport({ ...ready, shellPasskeys: true }), { usable: true, reason: 'ok', label: 'Face ID or Touch ID' });
   assert.equal(faceIdSupport({ ...ready, shellPasskeys: true, hasWebAuthn: false }).reason, 'browser');
-  assert.equal(faceIdSupport({ ...ready, shellPasskeys: true, platformAuthenticator: false }).reason, 'device');
+  // the in app web view reports no platform authenticator even when passkeys work (16 Oct 2026): trust the build
+  assert.equal(faceIdSupport({ ...ready, shellPasskeys: true, platformAuthenticator: false }).reason, 'ok');
+  assert.equal(faceIdSupport({ ...ready, shellPasskeys: false, platformAuthenticator: false }).reason, 'app', 'an old build is still blocked');
   assert.equal(faceIdSupport({ ...ready, shellPasskeys: true, hostname: 'possystem-liard.vercel.app' }).reason, 'host', 'the flag never unlocks another address');
   // Outside any app the flag changes nothing.
   const safari = 'Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) Version/18.0 Mobile/15E148 Safari/604.1';
@@ -248,4 +250,10 @@ test('verifiedFactors and hasVerified ignore unverified and junk rows', () => {
   assert.equal(hasVerified(all, 'webauthn'), true);
   assert.equal(hasVerified(all, 'totp'), false);
   assert.deepEqual(verifiedFactors(undefined), []);
+});
+
+test('outside our apps a device with no platform authenticator still reads device (16 Oct 2026)', () => {
+  const safari = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1';
+  const r = faceIdSupport({ hostname: 'app.serv-os.app', userAgent: safari, hasWebAuthn: true, platformAuthenticator: false, shellPasskeys: true });
+  assert.equal(r.reason, 'device', 'the shell flag only counts inside our app');
 });

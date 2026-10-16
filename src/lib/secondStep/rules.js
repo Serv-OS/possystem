@@ -201,7 +201,13 @@ export function faceIdSupport({
   if (!rpIdFor(hostname, { allowLocalhost })) return { usable: false, reason: 'host', label };
   if (isInAppShell(userAgent) && shellPasskeys !== true) return { usable: false, reason: 'app', label };
   if (!hasWebAuthn) return { usable: false, reason: 'browser', label };
-  if (!platformAuthenticator) return { usable: false, reason: 'device', label };
+  // 16 Oct 2026 (Peter's iPhone, Owner app build 6): inside our own app the web view answers
+  // "no platform authenticator" even though passkeys work there through the app's associated
+  // domain (Safari and other apps on the same phone sign in with them). So in an app build that
+  // declares passkeys we trust the build and offer the button; if the phone really cannot, the
+  // sign in says why in words (explainPasskeyError) and the password stays offered.
+  const trustShell = isInAppShell(userAgent) && shellPasskeys === true;
+  if (!platformAuthenticator && !trustShell) return { usable: false, reason: 'device', label };
   return { usable: true, reason: 'ok', label };
 }
 
