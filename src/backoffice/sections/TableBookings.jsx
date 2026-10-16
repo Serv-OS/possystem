@@ -23,6 +23,7 @@ import EditBookingSheet from '../../surfaces/bookings/EditBookingSheet.jsx';
 // and privacy settings.
 import RefundPanel from '../../surfaces/bookings/RefundPanel.jsx';
 import HostToolsSettings from '../../surfaces/bookings/HostToolsSettings.jsx';
+import ServicePeriodsEditor from '../../surfaces/bookings/ServicePeriodsEditor.jsx';
 import { CUSTOMER_ROOT } from '../../lib/env';
 import { platformSupabase, getLocationId } from '../../lib/supabase';
 import { DEFAULT_RULES, DEFAULT_TURN_BANDS } from '../../lib/bookings/optimiser.js';
@@ -70,6 +71,7 @@ export default function TableBookings({ userName = null }) {
   };
   const patch = (p) => updateBookingRules?.(p);
   const setBand = (key, v) => patch({ turnBands: { ...rules.turnBands, [key]: v } });
+  const venueTzForRules = useStore((s) => s.locationConfig?.timezone);
 
   // ── venue slug → public /book URL (identical lookup to OnlineOrdering) ────
   const [slug, setSlug] = useState(null);
@@ -203,16 +205,24 @@ export default function TableBookings({ userName = null }) {
         </div>
       </div>
 
+      {/* 16 Oct 2026: service periods, closed days, date blocks and online notice (the same
+          editor as the host stand Rules screen). */}
+      <div style={{ marginTop: 14 }}>
+        <ServicePeriodsEditor rules={rules} patch={patch}
+          ready={!bookingRules || bookingRules.servicePeriodsReady !== false}
+          today={venueToday(venueTzForRules)} />
+      </div>
+
       {/* ── Online booking blocks ── */}
       <div style={{ ...S.section, marginTop: 14 }}>
         <div style={S.lbl}>Online booking blocks</div>
         <div style={S.hint}>
-          Both apply to the ONLINE widget only — the host stand can always book any table on any day.
+          Blocked days and these tables apply to the online page only. Closed days and closed dates set above stop the host stand too.
         </div>
         <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginTop: 12 }}>
           <div style={{ flex: '1 1 300px', minWidth: 260 }}>
-            <div style={{ fontSize: 12.5, fontWeight: 700 }}>Blocked days</div>
-            <div style={{ ...S.hint, marginTop: 2 }}>Guests cannot book these dates online — Christmas, private hire, deep-clean days.</div>
+            <div style={{ fontSize: 12.5, fontWeight: 700 }}>Older online blocked days</div>
+            <div style={{ ...S.hint, marginTop: 2 }}>Guests cannot book these dates online. For new blocks, use Closed dates and blocks above with Online only ticked.</div>
             <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
               <input type="date" value={newBlock} onChange={(e) => setNewBlock(e.target.value)}
                 style={{ ...S.inp, width: 170 }} />

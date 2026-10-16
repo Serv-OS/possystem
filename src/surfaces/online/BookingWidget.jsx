@@ -49,6 +49,7 @@ import {
   offeredWalletTypes, walletConfiguration, missingWalletNote, droppedWalletNote,
   walletErrorOutcome, walletStartFailedNote, walletErrorReport,
 } from '../../lib/payments/adyenWallets';
+import { noticeWords } from '../../lib/bookings/optimiser';
 
 const MONO = 'var(--font-mono, ui-monospace, monospace)';
 
@@ -1318,11 +1319,12 @@ export default function BookingWidget({ location }) {
     (async () => {
       const r = await callWidget({ action: 'slots', location_id: opsId, date, party });
       if (off) return;
-      if (r?.ok && r.blocked) { setSlotsRes({ key, slots: [], packages: [], err: false, blocked: true }); setTime(null); return; }
+      // 16 Oct 2026: a closed day (service periods) says why in the venue's words (message).
+      if (r?.ok && r.blocked) { setSlotsRes({ key, slots: [], packages: [], err: false, blocked: true, blockedText: r.message || null }); setTime(null); return; }
       if (!r?.ok) { setSlotsRes({ key, slots: [], packages: [], err: true }); setTime(null); return; }
       const next = Array.isArray(r.slots) ? r.slots : [];
       // Offers ride the same response — valid for exactly this date+party.
-      setSlotsRes({ key, slots: next, packages: Array.isArray(r.packages) ? r.packages : [], err: false });
+      setSlotsRes({ key, slots: next, packages: Array.isArray(r.packages) ? r.packages : [], err: false, noticeMinutes: Number(r.noticeMinutes) || 0 });
       // Keep the selection only if that time is still open.
       setTime((t) => (t && next.some((s) => s.time === t && !s.full)) ? t : null);
     })();
@@ -1509,6 +1511,14 @@ export default function BookingWidget({ location }) {
       setAskLarge(true);
       // The request form opens under Party size, above this message: bring it into view.
       setTimeout(() => { try { largeRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch { /* old browser */ } }, 60);
+      return;
+    }
+    if (r?.error === 'outside_hours') {
+      // 16 Oct 2026 (service periods): the time is outside service, inside the notice, or on a
+      // closed day or block. The fn says why; refresh the times, keep what the guest typed.
+      setSubmitErr(r.message || 'That time cannot be booked online. Please pick another.');
+      setTime(null);
+      setSlotsNonce((n) => n + 1);
       return;
     }
     if (r?.error === 'slot_full') {
@@ -1839,7 +1849,7 @@ export default function BookingWidget({ location }) {
         </div>
       ) : (slotsRes?.blocked || (cfg?.blockedDates || []).includes(date)) ? (
         <div style={{ padding: '18px 4px', fontSize: 13.5, color: 'var(--t2, #555)', lineHeight: 1.5 }}>
-          The venue isn't taking online bookings for this date. Pick another day, or call the venue directly.
+          {slotsRes?.blockedText || "The venue isn't taking online bookings for this date. Pick another day, or call the venue directly."}
         </div>
       ) : slots.length === 0 ? (
         <div style={{ padding: '14px 0', fontSize: 13, color: 'var(--muted)' }}>
@@ -1869,6 +1879,7 @@ export default function BookingWidget({ location }) {
       {/* 16 Oct 2026 (bookings audit item 7): the two reasons a time is greyed, said apart. It
           used to blame the kitchen for every grey slot, even when no table was free. */}
       <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8, marginBottom: 20, lineHeight: 1.5 }}>
+        {greyReasons.has('notice') && <div>Some times are greyed because online bookings need {noticeWords(slotsRes?.noticeMinutes) || 'some'} notice. Call {venueName} for a sooner table.</div>}
         {greyReasons.has('kitchen') && <div>Some times are greyed because the kitchen is full then.</div>}
         {greyReasons.has('tables') && <div>Some times are greyed because no table for {party} is free then.</div>}
         {greyReasons.has('full') && <div>Greyed times are fully booked.</div>}

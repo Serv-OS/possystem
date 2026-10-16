@@ -38,6 +38,8 @@ import GuestTags from './GuestTags.jsx';
 import RefundPanel from './RefundPanel.jsx';
 import PayLinkPanel from './PayLinkPanel.jsx';
 import RequestsInbox from './RequestsInbox.jsx';
+import { useServiceDay } from './useServiceDay.js';
+import { ClosedBands, DayRuleNotice } from './ServiceBands.jsx';
 
 // A block that may be dragged on the Timeline: live and not yet seated. A
 // seated party's table is the till's business; finished bookings stay put.
@@ -86,8 +88,10 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
 
   const rows = useMemo(() => sortTables(tables), [tables]);
   const rowIndex = useMemo(() => new Map(rows.map((t, i) => [t.id, i])), [rows]);
-  const startMin = toMin(rules.serviceStart);
-  const endMin = toMin(rules.serviceEnd);
+  // 16 Oct 2026 (service periods): the grid draws the day's own services, greys the closed
+  // stretches and says when the day is closed (useServiceDay.js).
+  const serviceDay = useServiceDay(rules, bookingsDate || clock.ymd, bookings);
+  const { startMin, endMin } = serviceDay;
   const slots = Math.max(1, Math.round((endMin - startMin) / 15));
 
   // ── fluid slot width (FloorScreen's ResizeObserver pattern) ─────────────────
@@ -195,9 +199,11 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
     return [...visible, ...sessionsToBlocks(tables, visible, rules.turnBands, Number.isFinite(nowMin) ? nowMin : 0, toVenueMin)];
   }, [visible, tables, isToday, nowMin, rules.turnBands, toVenueMin]);
   const labelOf = (id) => rows.find((t) => t.id === id)?.label || String(id).slice(-4);
+  const dropDate = bookingsDate || clock.ymd;
   const dropTargetFor = useCallback((b, dx, dy) => dropTarget({
     booking: b, dx, dy, slotW, rowH: ROW_H, rows, startMin, endMin, others: othersForDrag, nonBlocking: MOVE_NON_BLOCKING,
-  }), [slotW, rows, startMin, endMin, othersForDrag]);
+    rules, date: dropDate,
+  }), [slotW, rows, startMin, endMin, othersForDrag, rules, dropDate]);
   // The pointer offset, plus however far the diary has scrolled since the press.
   const offsetOf = (d) => {
     const el = wrapRef.current;
@@ -360,6 +366,7 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
           </div>
           {/* 16 Oct 2026 (host tools): the booking requests inbox. */}
           <div style={{ marginLeft: 'auto' }}><RequestsInbox /></div>
+          <DayRuleNotice text={serviceDay.notice} />
         </div>
 
         {/* timeline / list — one measured scroll container for both views */}
@@ -475,6 +482,7 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
                   `repeating-linear-gradient(to bottom, transparent 0 ${ROW_H}px, ${tintBg('var(--t1)', 2)} ${ROW_H}px ${ROW_H * 2}px)`,
                 ].join(', '),
               }}>
+                <ClosedBands bands={serviceDay.bands} startMin={startMin} slotW={slotW} height={gridH} />
                 {visible.map((b) => {
                   const st = displayStatus(b, nowMin, packages);
                   const meta = statusMeta(st);

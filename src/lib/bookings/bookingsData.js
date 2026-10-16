@@ -18,6 +18,7 @@ import { rowToPreorder, preorderInsertRows, withoutChoiceColumns, missingColumn 
 import { isMissingFunction } from './applyBookingPayment.js';
 // 16 Oct 2026: the guest's confirmation goes the moment the stand, the till or Back Office books.
 import { nudgeConfirmation } from './guestMessages.js';
+import { serviceRulesFromRow, SERVICE_RULE_COLUMNS, SERVICE_RULES_MISSING, touchesServiceRules } from './serviceRulesRow.js';
 
 const isRealLoc = (l) => !!l && l !== 'loc-demo';
 
@@ -107,6 +108,8 @@ export function rowToRules(r) {
     widgetMaxParty: r.widget_max_party === undefined ? undefined : (r.widget_max_party ?? null),
     lateReleaseMinutes: r.late_release_minutes === undefined ? undefined : (r.late_release_minutes ?? null),
     privacyUrl: r.privacy_url === undefined ? undefined : (r.privacy_url || ''),
+    // 16 Oct 2026: service periods, closed days, date blocks, notice (migration 20261016e).
+    ...serviceRulesFromRow(r),
   };
 }
 
@@ -124,6 +127,7 @@ const RULES_TO_ROW = {
   // 16 Oct 2026 (host tools, migration 20261016d)
   widgetMinParty: 'widget_min_party', widgetMaxParty: 'widget_max_party',
   lateReleaseMinutes: 'late_release_minutes', privacyUrl: 'privacy_url',
+  ...SERVICE_RULE_COLUMNS,
 };
 
 export function rowToPackage(r) {
@@ -264,7 +268,7 @@ export async function createBookingAtomic(b, locationId) {
     // 16 Oct 2026: tell the guest (confirmation by text and email, with their change and cancel
     // link). Fire and forget; a walk in or a booking with no phone or email sends nothing.
     if (data?.ok) nudgeConfirmation(b);
-    return { ok: !!data?.ok, error: data?.error || null, tableId: data?.table_id || null, conflictBookingId: data?.booking_id && !data?.ok ? data.booking_id : null };
+    return { ok: !!data?.ok, error: data?.error || null, tableId: data?.table_id || null, conflictBookingId: data?.booking_id && !data?.ok ? data.booking_id : null, message: data?.message || null };
   } catch (e) {
     return { ok: false, error: e?.message || 'write failed' };
   }
@@ -388,7 +392,7 @@ export async function editBookingAtomic(id, next, locationId) {
       ok: !!data?.ok, error: data?.error || null, tableId: data?.table_id || null,
       seats: data?.seats ?? null, status: data?.status || null, retabled: !!data?.retabled,
       editedAt: data?.edited_at || null, editedBy: data?.edited_by || null,
-      refused: !data?.ok,
+      refused: !data?.ok, message: data?.message || null,
     };
   } catch (e) { return { ok: false, error: e?.message || 'edit failed' }; }
 }
@@ -624,7 +628,13 @@ export async function saveBookingRules(locationId, patch) {
   }
   try {
     const { error } = await supabase.from('booking_rules').upsert(row, { onConflict: 'location_id' });
-    if (error) { if (!warnAbsentOr(error, 'saveBookingRules')) console.warn('[bookingsData] saveBookingRules:', error.message); return { ok: false, error: error.message }; }
+    if (error) {
+      // 16 Oct 2026: a service period write before migration 20261016e names a column the
+      // database does not have yet. Say that in words; nothing was saved.
+      if (touchesServiceRules(patch) && missingColumn(error)) return { ok: false, error: error.message, words: SERVICE_RULES_MISSING };
+      if (!warnAbsentOr(error, 'saveBookingRules')) console.warn('[bookingsData] saveBookingRules:', error.message);
+      return { ok: false, error: error.message };
+    }
     return { ok: true };
   } catch (e) { return { ok: false, error: e?.message }; }
 }

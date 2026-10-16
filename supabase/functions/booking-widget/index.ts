@@ -46,6 +46,7 @@ import { createClient } from 'npm:@supabase/supabase-js@2';
 import {
   suggestTables, paceAt, paceFull, turnFor, toMin, sessionsToBlocks, maxPartyForCap,
   DEFAULT_TURN_BANDS, DEFAULT_RULES,
+  serviceSlots, bookingTimeRefusal, guestTimeWords, guestClosedDayWords,
 } from '../_shared/bookingOptimiser.js';
 import {
   adyenConfig, adyenAccountForLocation, platformLocationIdFor, checkoutBase, adyenFetch,
@@ -234,8 +235,19 @@ function rulesFrom(r: Record<string, unknown> | null) {
     widgetMinParty: (r.widget_min_party as number | null | undefined) ?? null,
     widgetMaxParty: (r.widget_max_party as number | null | undefined) ?? null,
     privacyUrl: safeLink(r.privacy_url),
+    // 16 Oct 2026 (bookings audit section 3 item 6): service periods, closed days, date blocks and
+    // notice (migration 20261016e). Before the migration the columns are absent: empty, so the
+    // single service window above is used exactly as before.
+    servicePeriods: Array.isArray(r.service_periods) ? r.service_periods : [],
+    closedWeekdays: Array.isArray(r.closed_weekdays) ? r.closed_weekdays : [],
+    dateBlocks: Array.isArray(r.date_blocks) ? r.date_blocks : [],
+    minNoticeMinutes: Number(r.min_notice_minutes) || 0,
   };
 }
+
+// 16 Oct 2026: the words a GUEST sees for a refused time or a closed day (guestTimeWords and
+// guestClosedDayWords) live in _shared/bookingOptimiser.js, tested so a block's own reason
+// ("Private hire") never reaches a guest.
 
 // Load everything a quote needs, once per request.
 async function loadVenue(locationId: string) {
@@ -669,9 +681,16 @@ Deno.serve(async (req) => {
     if (action === 'slots' && dateBlocked) {
       return json({ ok: true, date, blocked: true, slots: [], packages: [] });
     }
+    // 16 Oct 2026 (bookings audit section 3 item 6): the day's slot grid comes from the service
+    // periods (lunch and dinner, last seating, past midnight, closed days and date blocks), the
+    // same pure grid the host stand uses. With no periods set it is the old single window.
+    const nowCtx = { ymd: today, nowMinutes: venueNowMin(tz) };
+    const daySlots: string[] = serviceSlots(rules, date, { online: true });
+    if (action === 'slots' && daySlots.length === 0) {
+      const closedWords = guestClosedDayWords(rules, date);
+      if (closedWords) return json({ ok: true, date, blocked: true, closed: true, message: closedWords, slots: [], packages: [] });
+    }
     if (action === 'slots') {
-      const start = toMin(rules.serviceStart), end = toMin(rules.serviceEnd);
-      const nowGuard = date === today ? venueNowMin(tz) : -1;
       // 16 Oct 2026: package_id (optional) quotes every slot on that package's turn. Packages with
       // their own turn also get a per slot answer in fullFor, so the page can switch packages
       // without asking again. reason says why a slot is greyed ('past', 'kitchen', 'tables').
@@ -681,15 +700,15 @@ Deno.serve(async (req) => {
       const bandTurn = turnFor(party, rules.turnBands);
       const turnPkgs = venue.packages.filter((p) => pkgTurn(p) !== null && pkgTurn(p) !== bandTurn);
       const slots: { time: string; full: boolean; reason: string | null; fullFor?: Record<string, string | null> }[] = [];
-      for (let t = start; t < end; t += rules.slotMinutes) {
-        const hh = String(Math.floor(t / 60)).padStart(2, '0'), mm = String(t % 60).padStart(2, '0');
-        const time = `${hh}:${mm}`;
-        const past = t <= nowGuard;
-        const reason = past ? 'past' : slotReason(time, askedTurn);
+      for (const time of daySlots) {
+        // gone ('past'), or inside the venue's minimum notice ('notice', which the page explains)
+        const why = bookingTimeRefusal(rules, date, time, { online: true, now: nowCtx });
+        const greyed = why ? (why.code === 'too_soon' ? 'notice' : 'past') : null;
+        const reason = greyed ?? slotReason(time, askedTurn);
         const slot: { time: string; full: boolean; reason: string | null; fullFor?: Record<string, string | null> } = { time, full: reason !== null, reason };
         if (turnPkgs.length) {
           slot.fullFor = {};
-          for (const p of turnPkgs) slot.fullFor[String(p.id)] = past ? 'past' : slotReason(time, pkgTurn(p));
+          for (const p of turnPkgs) slot.fullFor[String(p.id)] = greyed ?? slotReason(time, pkgTurn(p));
         }
         slots.push(slot);
       }
@@ -736,7 +755,7 @@ Deno.serve(async (req) => {
             includes: lines.map((l) => ({ name: l.display_name, course: l.course ?? 0, choice: !!l.is_preorder_choice })),
           };
         });
-      return json({ ok: true, slots, packages: offers });
+      return json({ ok: true, slots, packages: offers, noticeMinutes: Number(rules.minNoticeMinutes) || 0 });
     }
 
     if (action === 'book') {
@@ -746,6 +765,19 @@ Deno.serve(async (req) => {
       const phone = normPhone(String(body.phone || ''), phoneRegion);
       if (!/^\d{2}:\d{2}$/.test(time) || !name || !phone) {
         return json({ ok: false, error: 'name, valid mobile and time required' }, 400);
+      }
+      // 16 Oct 2026 (bookings audit section 3 item 6): the time must be one the slots action
+      // offers: inside a service period, before its last seating, not on a closed day or in a
+      // block, with the venue's notice, on the slot grid. A crafted request for 03:00 or a page
+      // left open past the time is refused here, before any row is written.
+      const timeWhy = bookingTimeRefusal(rules, date, time, { online: true, now: nowCtx });
+      if (timeWhy || !daySlots.includes(time)) {
+        await db.from('booking_requests').insert({
+          location_id: locationId,
+          payload: { date, time, party, reason: timeWhy?.code || 'off_grid' },
+          status: 'rejected',
+        });
+        return json({ ok: false, error: 'outside_hours', message: guestTimeWords(timeWhy, date) });
       }
       // THE WIDGET NEVER SELLS PAST THE CAP: no override path exists here. 16 Oct 2026: the party
       // being added counts (cap 12 with 10 booked takes a 2, never an 8).
@@ -902,6 +934,9 @@ Deno.serve(async (req) => {
       const candidates = quote(time, turnOverride);
       let bookedId: string | null = null;
       let tableLabel: string | null = null;
+      // 16 Oct 2026: create_booking refused the TIME (migration 20261016e), not a table: stop.
+      // deno-lint-ignore no-explicit-any
+      let timeRefused: any = null;
       for (const c of candidates) {
         const id = `bk-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
         const { data: res } = await db.rpc('create_booking', {
@@ -922,6 +957,10 @@ Deno.serve(async (req) => {
           p_created_by: 'widget',
         });
         if (res?.ok) { bookedId = id; tableLabel = c.label; break; }
+        if (res && ['outside_service', 'closed_day', 'blocked', 'too_soon', 'too_far_ahead', 'past'].includes(String(res.error))) {
+          timeRefused = { code: String(res.error), message: res.message || null };
+          break;
+        }
         // table_taken → try the next candidate (someone booked between quote and write)
       }
 
@@ -1008,13 +1047,16 @@ Deno.serve(async (req) => {
         location_id: locationId,
         payload: {
           date, time, party, name, phone, email, note, package_id: pkg ? String(pkg.id) : null, consent: body.consent === true,
-          ...(bookedId ? {} : { reason: 'slot_gone' }),
+          ...(bookedId ? {} : { reason: timeRefused ? timeRefused.code : 'slot_gone' }),
         },
         // 10 Sep 2026: an unpaid booking is not accepted yet.
         status: !bookedId ? 'rejected' : (createStatus !== 'pending_payment' ? 'accepted' : 'pending'),
         booking_id: bookedId,
       });
 
+      if (!bookedId && timeRefused) {
+        return json({ ok: false, error: 'outside_hours', message: guestTimeWords(timeRefused, date) });
+      }
       if (!bookedId) {
         // Availability vanished mid-flight. 200 with ok:false so the page can read it; the page
         // refreshes the times and asks for another.
