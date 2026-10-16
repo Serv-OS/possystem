@@ -7,6 +7,23 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.69',
+    date: '16 Oct 2026',
+    items: [
+      "Card reader Pay at table and PAX Table Pay (needs the 16 Oct bookings database update, which ServOS runs): a table seated from a prepaid or deposit booking is charged only the balance. The money the guest paid online comes off first and is booked on the check as the booking tender; when it covers the whole bill the reader says so and the till closes the table. The reader's table list shows the balance too. Before the update the reader behaves as it does today.",
+      "Bookings: when a bill comes to less than the guest prepaid, the check records how much of the prepayment it used and the rest is kept on the booking as money to give back, shown on the booking card in words ('give back £6.00'). Before, the whole payment was marked used and the difference vanished.",
+      "Bookings: every edit (the Edit sheet, a Timeline drag and the till's Edit reservation) goes through one guarded write that checks the new time, covers and tables against every other booking under the venue lock, so two devices can no longer double book a table with a time change. A refused edit says why. The till's Edit reservation now refuses a clash instead of saving it. Until the database update runs, edits save the way they did and say that only this device checked the diary.",
+      "Bookings: a booking change the database did not take (no row changed) is now reported as not saved and put back, instead of showing a change that never happened.",
+      "Bookings: new bookings, moves and edits refuse a table that is not on the venue's floor plan, and say so in words.",
+      "Bookings: a table that is not in any join group can now be booked on its own, on the host stand, the walk in panel, Move and the online booking page. A venue with no join groups at all could not sell a single table online before; now every table that fits is offered. Join groups still decide which tables may join.",
+      "Online booking page: greyed times say why, kitchen full or no table free for the party, instead of always blaming the kitchen. A package with its own sitting time (a 150 minute tasting menu) is checked against that time, so the page only offers what can be booked.",
+      "Online booking page: when the last table goes while a guest is booking, the page says 'That time has just gone, please pick another' and refreshes the times, instead of promising that the venue would confirm.",
+      "Bookings pacing: the party being added counts against the cap, on the online page and the host stand (cap 12 with 10 booked takes a party of 2, a party of 8 needs the manager's approval on the stand and is refused online).",
+      "Online booking payments charge exactly the amount the guest was shown. If the price went up while the guest was paying, nothing is taken and the page asks them to start again.",
+      "Tills: every new table order gets an id that is unique to the device (device, time and a random part). Before, every till numbered its first table after a restart the same way, and the floor sync could read two different parties as one moved party. The floor sync now treats a shared id as a move only when it is the same party (same seated time), never on the table being worked on and never in the first 30 seconds.",
+    ],
+  },
+  {
     v: '5.11.68',
     date: '16 Oct 2026',
     items: [
