@@ -58,6 +58,8 @@ import WaitlistConfig from './sections/WaitlistConfig';
 import WaitlistInsights from './sections/WaitlistInsights';
 import StockReports from './sections/StockReports';
 import StockCounts from './sections/StockCounts';
+import StockAreas from './sections/StockAreas';
+import StockTransfers from './sections/StockTransfers';
 import Wastage from './sections/Wastage';
 import Recipes from './sections/Recipes';
 import Batches from './sections/Batches';
@@ -128,6 +130,8 @@ const NAV = [
   { id:'wastage',    label:'Wastage',         icon:'🗑',  group:'Configuration' },
   { id:'stock-reports', label:'Stock reports', icon:'📊',  group:'Configuration' },
   { id:'stock-items', label:'Stock items',     icon:'📦',  group:'Configuration' },
+  { id:'stock-areas', label:'Stock areas',     icon:'🗄',  group:'Configuration' },
+  { id:'stock-transfers', label:'Transfers',   icon:'🔁',  group:'Configuration' },
   { id:'recipes',    label:'Recipes',         icon:'📖',  group:'Configuration' },
   { id:'batches',    label:'Batches',         icon:'🍲',  group:'Configuration' },
   { id:'ops-overview',    label:'Compliance overview', icon:'🌡', group:'Operations' },
@@ -1072,9 +1076,11 @@ export default function BackOfficeApp() {
           {section === 'inventory'  && <Inventory />}
           {section === 'stock-overview' && <StockOverview setSection={setSection} canOpen={canOpen} />}
           {section === 'stock-reports' && <StockReports />}
-          {section === 'stock-counts' && <StockCounts />}
+          {section === 'stock-counts' && <StockCounts orgCtx={orgCtx} />}
+          {section === 'stock-areas' && <StockAreas orgCtx={orgCtx} />}
+          {section === 'stock-transfers' && <StockTransfers orgCtx={orgCtx} />}
           {section === 'wastage'    && <Wastage />}
-          {section === 'stock-items' && <StockItems />}
+          {section === 'stock-items' && <StockItems orgCtx={orgCtx} />}
           {section === 'recipes'    && <Recipes />}
           {section === 'batches'    && <Batches />}
           {section === 'ops-overview'    && <OpsOverview setSection={setSection} />}

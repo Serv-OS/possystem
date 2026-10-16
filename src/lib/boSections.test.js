@@ -50,7 +50,7 @@ test('15 sections, the decided keys, in sidebar order', () => {
 });
 
 test('the route map is built from the sidebar: every route in exactly one section', () => {
-  assert.equal(allRoutes.length, 90);
+  assert.equal(allRoutes.length, 92);   // 16 Oct 2026: stock-areas and stock-transfers under Inventory
   assert.equal(new Set(allRoutes).size, allRoutes.length, 'no route listed twice');
   const map = buildRouteSections(NAV_IA);
   assert.equal(map.size, allRoutes.length);
@@ -59,6 +59,8 @@ test('the route map is built from the sidebar: every route in exactly one sectio
   assert.equal(sectionKeyOfRoute('staff'), 'team');
   assert.equal(sectionKeyOfRoute('inventory'), 'inventory');
   assert.equal(sectionKeyOfRoute('stock-reports'), 'inventory');
+  assert.equal(sectionKeyOfRoute('stock-areas'), 'inventory', '16 Oct 2026: a Coffee Boy manager with Inventory reaches Stock areas');
+  assert.equal(sectionKeyOfRoute('stock-transfers'), 'inventory');
   assert.equal(sectionKeyOfRoute('marketing-reports'), 'customers');
   assert.equal(sectionKeyOfRoute('security'), 'settings');
   assert.equal(sectionKeyOfRoute('team'), null, 'a section key is not a route');

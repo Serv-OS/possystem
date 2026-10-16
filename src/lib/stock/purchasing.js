@@ -11,6 +11,7 @@ import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supab
 import { convert } from './conversion.js';
 import { costAfterReceipt } from './costing.js';
 import { postStockMovement, fetchTaxRateMap } from './data.js';
+import { fetchReceivingArea } from './areas.js';
 import { purchaseNet } from '../tax.js';
 import { cleanFnError, poTotals, unreceivableLines, receiveRefusalText } from './purchasingRules.js';
 
@@ -44,10 +45,22 @@ async function itemMap(locationId, ids) {
 }
 
 /**
+ * Where a delivery lands (16 Oct 2026, stock areas): the caller's choice (the "Lands in" dropdown
+ * on the receive panel and the invoice post), else the venue's receiving area, else null and the
+ * database puts it in each item's own area. Null before the migration, so nothing changes.
+ */
+async function landingArea(locationId, chosen) {
+  if (chosen) return chosen;
+  const { data } = await fetchReceivingArea(locationId);
+  return data || null;
+}
+
+/**
  * Apply one receipt to an item: post PURCHASE_RECEIPT (+qtyBase at unitCostPerBase)
  * and update moving-average cost. Idempotent on idemKey (skips cost update on dupe).
+ * areaId (16 Oct 2026): the area the stock lands in; null lets the database decide.
  */
-async function applyReceipt(locationId, item, itemId, recvBase, unitCostPerBase, sourceType, sourceId, idemKey) {
+async function applyReceipt(locationId, item, itemId, recvBase, unitCostPerBase, sourceType, sourceId, idemKey, areaId = null) {
   if (!(recvBase > 0)) return;
   // v5.5.726: a ZERO/missing unit cost must NOT re-cost the item. A manager-raised PO (or any
   // un-priced line) has no price until the invoice — zeroing current_cost corrupts COGS
@@ -58,7 +71,7 @@ async function applyReceipt(locationId, item, itemId, recvBase, unitCostPerBase,
   const movementCost = priced ? unitCostPerBase : (Number(item.currentCost) || 0);
   const res = await postStockMovement({
     inventoryItemId: itemId, qtyBase: recvBase, unitCost: movementCost, movementType: 'PURCHASE_RECEIPT',
-    sourceType, sourceId, idempotencyKey: idemKey,
+    sourceType, sourceId, idempotencyKey: idemKey, areaId: areaId || null,
   }, locationId);
   if (res?.data?.duplicate) return; // already received — don't re-cost
   if (!priced) { item.onHand += recvBase; return; }   // stock in, cost untouched
@@ -220,10 +233,12 @@ export const checkReceivable = async (poId, locationId = null) => {
   return { error: bad.length ? new Error(receiveRefusalText(bad)) : null };
 };
 
-export const receivePurchaseOrder = async (poId, locationId = null, receipts = null) => {
+export const receivePurchaseOrder = async (poId, locationId = null, receipts = null, { areaId = null } = {}) => {
   if (isMock || !supabase) return { error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { error: new Error('No locationId') };
+  // 16 Oct 2026: the area the delivery lands in (the panel's choice, else the receiving area).
+  const landIn = await landingArea(locationId, areaId);
   const [{ data: lines }, { data: poRow }] = await Promise.all([
     supabase.from('po_lines').select('*').eq('location_id', locationId).eq('po_id', poId),
     supabase.from('purchase_orders').select('*').eq('location_id', locationId).eq('id', poId).maybeSingle(),
@@ -263,7 +278,7 @@ export const receivePurchaseOrder = async (poId, locationId = null, receipts = n
     if (accepted > 0) {
       const recvBase = accepted * baseContentPerPack;
       const unitCostPerBase = price / baseContentPerPack;
-      await applyReceipt(locationId, item, l.inventory_item_id, recvBase, unitCostPerBase, 'purchase_order', poId, `po:${poId}:${l.id}`);
+      await applyReceipt(locationId, item, l.inventory_item_id, recvBase, unitCostPerBase, 'purchase_order', poId, `po:${poId}:${l.id}`, landIn);
     }
     if (byLine) {
       const rate = Number(ratesById[l.purchase_tax_rate_id] || 0);
@@ -400,10 +415,11 @@ export const scanInvoice = async (imageBase64, mediaType) => {
  * post a PURCHASE_RECEIPT + update cost. lines: [{matchedItemId, description, qty,
  * unit, unitPrice, lineTotal, flags}]. Returns { data: invoice, error }.
  */
-export const postInvoice = async (header, lines, locationId = null) => {
+export const postInvoice = async (header, lines, locationId = null, { areaId = null } = {}) => {
   if (isMock || !supabase) return { data: null, error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: new Error('No locationId') };
+  const landIn = await landingArea(locationId, areaId);
   const { data: inv, error } = await supabase.from('supplier_invoices').insert({
     location_id: locationId, supplier_id: header.supplierId || null, invoice_number: header.invoiceNumber || null,
     invoice_date: header.invoiceDate || null, status: 'POSTED', ocr_confidence: header.ocrConfidence ?? null,
@@ -437,7 +453,7 @@ export const postInvoice = async (header, lines, locationId = null) => {
     catch { continue; }
     if (!(qtyBase > 0)) continue;
     const unitCostPerBase = netLine / qtyBase;
-    await applyReceipt(locationId, item, l.matchedItemId, qtyBase, unitCostPerBase, 'supplier_invoice', inv.id, `inv:${inv.id}:${l.matchedItemId}:${i}`);
+    await applyReceipt(locationId, item, l.matchedItemId, qtyBase, unitCostPerBase, 'supplier_invoice', inv.id, `inv:${inv.id}:${l.matchedItemId}:${i}`, landIn);
   }
   if (lineRows.length) await supabase.from('supplier_invoice_lines').insert(lineRows);
   return { data: invFromRow(inv), error: null };

@@ -30,6 +30,8 @@ import { foodCostPct, gpAmount, gpPct, costBreakdownByPurchasedItem, resolveItem
 import { fetchClosedChecksRange } from '../../lib/db';
 import { loadingText, faultText } from '../../lib/pagedRead';
 import { displayInUnits } from '../../lib/stock/uom';
+import { areasReady, fetchAreas, fetchAreaHoldings } from '../../lib/stock/areas';
+import { stockByAreaRows } from '../../lib/stock/areaRules';
 import { resolveTaxRate, netOf } from '../../lib/tax';
 import {
   Money, Signed, Tag, BarCell, RankChip, GradedChip, gradeOf,
@@ -37,7 +39,7 @@ import {
   ReportTable, SubToolbar, useSort, sortRows,
 } from './reports/reportKit';
 
-const TABS = ['Valuation', 'Recipe GP', 'Production', 'Movements', 'The Gap', 'By supplier'];
+const TABS = ['Valuation', 'By area', 'Recipe GP', 'Production', 'Movements', 'The Gap', 'By supplier'];
 const fmtCost = (v) => (v == null || !Number.isFinite(Number(v)) ? '—' : currencySymbol() + Number(v).toFixed(4).replace(/0+$/, '').replace(/\.$/, ''));
 const r3 = (v) => Math.round((Number(v) || 0) * 1000) / 1000;
 // v5.11.65: The Gap's "Received" is deliveries only; what the kitchen MADE has its own column,
@@ -84,6 +86,9 @@ export default function StockReports() {
   // read while the first is still out. Only the newest run of each may paint, and one
   // finishing can never un-hide the other's tab. Without this a slow 30 day read landed
   // after the 7 day one and showed a month of sales under a week's label.
+  // 16 Oct 2026 (stock areas): the By area tab reads the venue's areas and the holdings cache
+  // (one row per item and area, in pages) the first time it opens. Nothing before the migration.
+  const [byArea, setByArea] = useState(null);   // null = not loaded; { on, areas, holdings }
   const [movesLoad, setMovesLoad] = useState(null);
   const [movesFault, setMovesFault] = useState(null);
   const [checksLoad, setChecksLoad] = useState(null);
@@ -126,6 +131,16 @@ export default function StockReports() {
     setMoves(res.data || []);
   }, [from, to, locId, clock]);
   useEffect(() => { if (tab === 'Movements' || tab === 'The Gap') loadMoves(); }, [tab, loadMoves]);
+
+  const loadByArea = useCallback(async () => {
+    const loc = locId || getActiveLocationSync();
+    const on = await areasReady(loc);
+    if (!on) { setByArea({ on: false, areas: [], holdings: {}, error: null }); return; }
+    const [{ data: as, error: e1 }, { data: hold, error: e2 }] = await Promise.all([fetchAreas(loc), fetchAreaHoldings(loc)]);
+    setByArea({ on: true, areas: as || [], holdings: hold || {}, error: e1 || e2 || null });
+  }, [locId]);
+  // the load runs after this render settles (never a setState straight inside the effect), the same shape as StockAreas
+  useEffect(() => { if (tab !== 'By area') return undefined; const t = setTimeout(loadByArea, 0); return () => clearTimeout(t); }, [tab, loadByArea]);
 
   // Sales for the supplier tab only — don't pay for this query on other tabs.
   const loadChecks = useCallback(async () => {
@@ -179,6 +194,7 @@ export default function StockReports() {
 
       {loading && <div style={{ color:'var(--t3)', fontSize:13 }}>Loading…</div>}
       {!loading && tab === 'Valuation'   && <Valuation items={items} supplierName={supplierName}/>}
+      {!loading && tab === 'By area'     && <ByArea items={items} byArea={byArea} onRefresh={loadByArea}/>}
       {!loading && tab === 'Recipe GP'   && <RecipeGP recipes={recipes} ctx={ctx} menuItems={menuItems} taxRates={taxRates}/>}
       {!loading && tab === 'Production'  && <ProductionReport itemName={itemName} venueTz={clock.timezone}/>}
       {!loading && rangeBusy && <div style={{ color:'var(--t3)', fontSize:13 }}>{loadingText(rangeLoad)}</div>}
@@ -462,6 +478,74 @@ function ProductionReport({ itemName, venueTz }) {
           rows={view}
         />
       )}
+    </div>
+  );
+}
+
+/**
+ * Stock by area (16 Oct 2026): each item's holding in every area in its count unit, Unassigned
+ * when the item's total differs from the sum of its areas, the total and the value (each area
+ * floored at zero, like the Valuation tab floors the item). Red below zero, never hidden.
+ * Filter by area (items with a holding or an assignment there), search, Below zero only, CSV
+ * with the unit in every quantity cell. Not ranged: it is the stock now.
+ */
+function ByArea({ items, byArea, onRefresh }) {
+  const [search, setSearch] = useState('');
+  const [areaId, setAreaId] = useState('any');
+  const [belowOnly, setBelowOnly] = useState(false);
+  const live = useMemo(() => items.filter(i => !i.archivedAt), [items]);
+  const itemById = useMemo(() => { const m = {}; items.forEach(i => { m[i.id] = i; }); return m; }, [items]);
+  const areas = byArea?.areas || [];
+  const grid = useMemo(() => stockByAreaRows(live, areas, byArea?.holdings || {}, { q: search, areaId, belowOnly }), [live, areas, byArea, search, areaId, belowOnly]);
+  const unit = (itemId, qtyBase) => {
+    const it = itemById[itemId];
+    return it ? displayInUnits(qtyBase, { baseUnit: it.baseUnit, formats: it.packaging || [], itemConversions: it.conversions || [] }) : { qty: r3(qtyBase), label: '' };
+  };
+  const cell = (itemId, qty, { zeroBlank = true } = {}) => {
+    if (zeroBlank && Math.abs(qty) < 1e-9) return <span style={{ color: 'var(--t4)' }}>·</span>;
+    const d = unit(itemId, qty);
+    const red = qty < 0;
+    return <span style={{ color: red ? 'var(--red, #ef4444)' : 'var(--t2)', fontWeight: red ? 700 : 400, background: red ? 'rgba(239,68,68,0.10)' : 'transparent', borderRadius: 6, padding: red ? '2px 6px' : 0, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>{d.qty} {d.label}</span>;
+  };
+  const text = (itemId, qty) => { const d = unit(itemId, qty); return `${d.qty} ${d.label}`.trim(); };
+
+  if (!byArea) return <div style={{ padding: 20, color: 'var(--t3)' }}>Loading the areas...</div>;
+  if (!byArea.on) return <div style={{ padding: 20, color: 'var(--t3)' }}>Stock areas need the 16 Oct database update. Ask ServOS to run it, then open this tab again.</div>;
+  if (byArea.error) return <div style={{ padding: 20, color: 'var(--red, #ef4444)' }}>Could not read the holdings by area: {byArea.error.message || String(byArea.error)} <button onClick={onRefresh} style={{ marginLeft: 8, fontFamily: 'inherit', cursor: 'pointer' }}>Try again</button></div>;
+  if (!areas.length) return <div style={{ padding: 20, color: 'var(--t3)' }}>This venue has no stock areas yet. Set them up on Inventory, Stock areas (Add the usual six), then give each item its area.</div>;
+
+  const columns = [
+    { key: 'name', label: 'Item', render: r => <span style={{ color: 'var(--t1)', fontWeight: 500 }}>{r.name}{r.sku ? <span style={{ color: 'var(--t4)', fontWeight: 400, marginLeft: 6, fontSize: 11 }}>{r.sku}</span> : null}</span> },
+    ...areas.map(a => ({ key: `a:${a.id}`, label: a.name, align: 'right', render: r => cell(r.id, r.perArea[a.id] || 0) })),
+    ...(grid.showUnassigned ? [{ key: 'unassigned', label: 'Unassigned', align: 'right', render: r => cell(r.id, r.unassigned) }] : []),
+    { key: 'total', label: 'Total', align: 'right', render: r => cell(r.id, r.total, { zeroBlank: false }) },
+    { key: 'value', label: 'Value', align: 'right', render: r => <Money v={r.value}/> },
+  ];
+  const totals = { name: `Total (${grid.rows.length} item${grid.rows.length === 1 ? '' : 's'})`, value: money(grid.totals.value) };
+  const csvHeaders = [
+    { label: 'Item', key: 'name' }, { label: 'SKU', key: 'sku' }, { label: 'Category', key: 'category' },
+    ...areas.map(a => ({ label: a.name, key: (r) => text(r.id, r.perArea[a.id] || 0) })),
+    ...(grid.showUnassigned ? [{ label: 'Unassigned', key: (r) => text(r.id, r.unassigned) }] : []),
+    { label: 'Total', key: (r) => text(r.id, r.total) }, { label: 'Value', key: (r) => r.value.toFixed(2) }, { label: 'Below zero', key: (r) => (r.below ? 'yes' : '') },
+  ];
+  return (
+    <div>
+      <KpiBand items={[
+        { label: 'Areas', value: areas.length },
+        { label: 'Items shown', value: grid.rows.length },
+        { label: 'Below zero', value: grid.belowCount, tone: grid.belowCount ? 'warn' : undefined, sub: grid.belowCount ? 'an area sold or used more than it received: record the transfer, or count that area' : 'every area holds zero or more' },
+        { label: 'Value', value: money(grid.totals.value), sub: 'each area floored at zero' },
+      ]}/>
+      <SubToolbar count={`${grid.rows.length} item${grid.rows.length === 1 ? '' : 's'}`}>
+        <Chips value={areaId} onChange={setAreaId} options={[{ id: 'any', label: 'All areas' }, ...areas.map(a => ({ id: a.id, label: a.name }))]}/>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--t3)', cursor: 'pointer' }}>
+          <input type="checkbox" checked={belowOnly} onChange={e => setBelowOnly(e.target.checked)}/> Below zero only
+        </label>
+        <span style={{ marginLeft: 'auto' }}/>
+        <SearchField value={search} onChange={setSearch} placeholder="Search item, SKU or category"/>
+        <ExportBtn rows={grid.rows} name="stock-by-area" headers={csvHeaders}/>
+      </SubToolbar>
+      <ReportTable columns={columns} rows={grid.rows} totals={totals} empty={belowOnly ? 'No area is below zero. Good.' : 'No items match.'}/>
     </div>
   );
 }

@@ -33,6 +33,8 @@ import {
   setInventoryOnHand, fetchItemMovements, movementLabel,
 } from '../../lib/stock/data';
 import { fetchParLevels, upsertParLevel } from '../../lib/stock/counts';
+import { areasReady, fetchAreas, fetchAreaHoldings, assignItemArea } from '../../lib/stock/areas';
+import { legacyAreaFor, areasBelowZero } from '../../lib/stock/areaRules';
 import { reportSave } from '../../lib/saveHealth';
 import { fetchRecipes, upsertRecipe, replaceRecipeLines, recomputeMadeItemCost } from '../../lib/stock/recipes';
 import { toBase, fromBase, unitOptions, formatToken, unitLabel, displayInUnits } from '../../lib/stock/uom';
@@ -86,7 +88,7 @@ function Field({ label, children }) {
   return <div style={{ marginBottom: 14 }}><label style={labelStyle}>{label}</label>{children}</div>;
 }
 
-export default function StockItems() {
+export default function StockItems({ orgCtx = null }) {
   const showToast = useStore(s => s.showToast);
   const [locId, setLocId] = useState(getActiveLocationSync());
   const [items, setItems] = useState([]);
@@ -98,13 +100,28 @@ export default function StockItems() {
   const [draft, setDraft] = useState(null);
   const [tab, setTab] = useState('General');
   const [saving, setSaving] = useState(false);
+  // 16 Oct 2026 (stock areas): the venue's areas, each item's holdings per area, and whether the
+  // migration has run (before it, the screen keeps the Storage location text box and no Area column).
+  const [areas, setAreas] = useState([]);
+  const [areasOn, setAreasOn] = useState(false);
+  const [holdings, setHoldings] = useState({});
+  const [areaFilter, setAreaFilter] = useState('any');
+  const byName = orgCtx?.userName || null;
 
   const reload = useCallback(async (keepId) => {
     const loc = locId || getActiveLocationSync() || await getLocationId().catch(() => null);
     if (loc && loc !== locId) setLocId(loc);
-    const [{ data: its }, { data: sups }] = await Promise.all([fetchInventoryItems(loc), fetchSuppliers(loc)]);
+    const ready = await areasReady(loc);
+    setAreasOn(ready);
+    const [{ data: its }, { data: sups }, areaRes, holdRes] = await Promise.all([
+      fetchInventoryItems(loc), fetchSuppliers(loc),
+      ready ? fetchAreas(loc) : Promise.resolve({ data: [] }),
+      ready ? fetchAreaHoldings(loc) : Promise.resolve({ data: {} }),
+    ]);
     setItems(its || []);
     setSuppliers(sups || []);
+    setAreas(areaRes.data || []);
+    setHoldings(holdRes.data || {});
     setLoading(false);
     if (keepId) {
       const found = (its || []).find(i => i.id === keepId);
@@ -121,10 +138,15 @@ export default function StockItems() {
       else if (i.archivedAt) return false;
       if (filter === 'PURCHASED' && i.kind !== 'PURCHASED') return false;
       if (filter === 'MADE' && i.kind !== 'MADE') return false;
-      if (q && !(`${i.name} ${i.category || ''} ${i.sku || ''}`.toLowerCase().includes(q))) return false;
+      if (areaFilter !== 'any' && (areaFilter === 'none' ? !!i.areaId : i.areaId !== areaFilter)) return false;
+      if (q && !(`${i.name} ${i.category || ''} ${i.sku || ''} ${(i.supplierProducts || []).map(sp => sp.supplierSku || '').join(' ')}`.toLowerCase().includes(q))) return false;
       return true;
     });
-  }, [items, search, filter]);
+  }, [items, search, filter, areaFilter]);
+  const belowZeroItems = useMemo(() => new Set(areasBelowZero(holdings).map(b => b.itemId)), [holdings]);
+  const areaName = (id) => areas.find(a => a.id === id)?.name || '';
+  // a moved holding is in BASE units: say it in the item's count unit ("2 Case", "24 l"), never a bare figure
+  const movedWords = (qtyBase, it) => { const d = displayInUnits(qtyBase, { baseUnit: it?.baseUnit, formats: it?.packaging || [], itemConversions: it?.conversions || [] }); return `${d.qty} ${d.label}`.trim(); };
 
   const select = (it) => { setDraft(structuredClone(it)); setSelectedId(it.id); setTab('General'); };
   const startNew = () => { setDraft(blankItem()); setSelectedId(null); setTab('General'); };
@@ -137,8 +159,42 @@ export default function StockItems() {
     setSaving(false);
     reportSave('stock item', error);
     if (error) { showToast?.('Save failed: ' + error.message, 'error'); return; }
-    showToast?.('Saved', 'success');
-    await reload(data?.id || selectedId);
+    // the area is its own row (inventory_item_areas); a change moves the old area's holding too
+    // unless the operator unticked it on the General tab (review finding 2)
+    const savedId = data?.id || selectedId;
+    const before = items.find(i => i.id === savedId)?.areaId || null;
+    const after = draft.areaId || null;
+    if (areasOn && savedId && before !== after) {
+      const { data: moved, error: aErr } = await assignItemArea(savedId, after, { moveHolding: draft.moveHolding !== false, byName, item: draft }, locId);
+      reportSave('stock item area', aErr);
+      if (aErr) {
+        // the area row is written first and the holding moved second: say which half failed
+        showToast?.(moved?.areaSaved
+          ? `Area changed to ${areaName(after) || 'No area'}, but its stock stayed in ${areaName(before) || 'its old area'}: ${aErr.message}`
+          : `Item saved, but its area was NOT changed: ${aErr.message}`, 'error');
+        await reload(savedId); return;
+      }
+      showToast?.(moved?.movedQty > 0 ? `Saved. ${movedWords(moved.movedQty, draft)} moved from ${areaName(before)} to ${areaName(after) || 'No area'}.` : 'Saved', 'success');
+    } else {
+      showToast?.('Saved', 'success');
+    }
+    await reload(savedId);
+  };
+
+  /** The Area dropdown on a list row: saves on change, the holding moves with it. */
+  const changeRowArea = async (it, nextArea) => {
+    const next = nextArea || null;
+    if ((it.areaId || null) === next) return;
+    const { data: moved, error } = await assignItemArea(it.id, next, { moveHolding: true, byName, item: it }, locId);
+    reportSave('stock item area', error);
+    if (error) {
+      showToast?.(moved?.areaSaved
+        ? `${it.name}: area changed to ${areaName(next) || 'No area'}, but its stock stayed in ${areaName(it.areaId) || 'its old area'}. ${error.message}`
+        : `${it.name}: area NOT changed. ${error.message}`, 'error');
+      await reload(selectedId); return;
+    }
+    showToast?.(moved?.movedQty > 0 ? `${it.name} moved to ${areaName(next) || 'No area'} with its ${movedWords(moved.movedQty, it)}` : `${it.name} moved to ${areaName(next) || 'No area'}`, 'success');
+    await reload(selectedId);
   };
 
   const toggleArchive = async () => {
@@ -170,6 +226,13 @@ export default function StockItems() {
               }}>{f.label}</button>
             ))}
           </div>
+          {areasOn && areas.length > 0 && (
+            <select value={areaFilter} onChange={e => setAreaFilter(e.target.value)} title="Show items in one area" style={{ ...fieldStyle, marginTop: 8, padding: '5px 8px', fontSize: 11 }}>
+              <option value="any">Area: any</option>
+              {areas.map(a => <option key={a.id} value={a.id}>Area: {a.name}</option>)}
+              <option value="none">Area: no area</option>
+            </select>
+          )}
         </div>
         <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
           {loading && <div style={{ padding: 16, color: 'var(--t3)', fontSize: 13 }}>Loading…</div>}
@@ -190,11 +253,21 @@ export default function StockItems() {
                   {it.kind === 'MADE' ? '🍲' : '📦'}
                 </div>
                 <div style={{ minWidth: 0, flex: 1 }}>
-                  <div style={{ fontSize: 13, color: 'var(--t1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.name}</div>
+                  <div style={{ fontSize: 13, color: 'var(--t1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {belowZeroItems.has(it.id) && <span title="An area holds this item below zero: a transfer or a count puts it right" style={{ color: 'var(--red, #ef4444)', marginRight: 5 }}>●</span>}
+                    {it.name}
+                  </div>
                   <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2, display: 'flex', gap: 8 }}>
                     {(() => { const oh = displayInUnits(Number(it.onHand || 0), { baseUnit: it.baseUnit, formats: it.packaging || [] }); return <span style={{ color: 'var(--t2)' }}>{oh.qty} {oh.label}</span>; })()}
                     <span>· {fmtUnitCost(it.currentCost)}/{it.baseUnit}</span>
                   </div>
+                  {areasOn && areas.length > 0 && !it.archivedAt && (
+                    <select value={it.areaId || ''} onClick={e => e.stopPropagation()} onChange={e => { e.stopPropagation(); changeRowArea(it, e.target.value); }}
+                      title="The area this item lives in" style={{ ...fieldStyle, marginTop: 4, padding: '3px 6px', fontSize: 11, width: '100%' }}>
+                      <option value="">No area</option>
+                      {areas.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                    </select>
+                  )}
                 </div>
               </div>
             );
@@ -264,8 +337,8 @@ export default function StockItems() {
             </div>
 
             <div style={{ flex: 1, overflowY: 'auto', padding: '20px 22px', minHeight: 0 }}>
-              {tab === 'General' && <GeneralTab draft={draft} upd={upd} onSave={saveGeneral} saving={saving} />}
-              {tab === 'Stock' && <StockTab draft={draft} locId={locId} onChanged={() => reload(draft.id)} showToast={showToast} />}
+              {tab === 'General' && <GeneralTab draft={draft} upd={upd} onSave={saveGeneral} saving={saving} areas={areasOn ? areas : null} savedAreaId={items.find(i => i.id === draft.id)?.areaId || null} holdings={holdings[draft.id] || {}} />}
+              {tab === 'Stock' && <StockTab draft={draft} locId={locId} onChanged={() => reload(draft.id)} showToast={showToast} areas={areasOn ? areas : null} holdings={holdings[draft.id] || {}} />}
               {tab === 'Dimension & Measure' && <DimensionTab draft={draft} locId={locId} onChanged={() => reload(draft.id)} showToast={showToast} />}
               {tab === 'Units' && <UnitsTab draft={draft} locId={locId} onChanged={() => reload(draft.id)} showToast={showToast} />}
               {tab === 'Suppliers' && draft.kind !== 'MADE' && <SuppliersTab draft={draft} suppliers={suppliers} locId={locId} onChanged={() => reload(draft.id)} onSupplierAdded={() => reload(draft.id)} showToast={showToast} />}
@@ -279,8 +352,16 @@ export default function StockItems() {
 }
 
 // ── General tab ───────────────────────────────────────────────────────────────
-function GeneralTab({ draft, upd, onSave, saving }) {
+function GeneralTab({ draft, upd, onSave, saving, areas = null, savedAreaId = null, holdings = {} }) {
   const taxRates = useStore(s => s.taxRates) || [];
+  // 16 Oct 2026: with the migration run, "Storage location" is a dropdown of the venue's areas
+  // (one area per item). The legacy text is kept and shown read only when it matches no area,
+  // so nothing anybody typed is lost. Changing the area offers to move the old area's holding.
+  const areasOn = Array.isArray(areas);
+  const legacyMatch = areasOn ? legacyAreaFor(draft.storageLocation, areas) : null;
+  const oldHolding = areasOn && savedAreaId ? Number(holdings[savedAreaId] || 0) : 0;
+  const areaChanged = areasOn && !!draft.id && (savedAreaId || null) !== (draft.areaId || null);
+  const oldAreaName = areasOn ? (areas.find(a => a.id === savedAreaId)?.name || '') : '';
   return (
     <div style={{ maxWidth: 640 }}>
       <Field label="Name"><input value={draft.name} onChange={e => upd('name', e.target.value)} style={fieldStyle} placeholder="e.g. Coca-Cola 330ml can" /></Field>
@@ -304,7 +385,23 @@ function GeneralTab({ draft, upd, onSave, saving }) {
         <Field label="Base (stocking/costing) unit"><UnitSelect value={draft.baseUnit} onChange={v => upd('baseUnit', v)} style={{ width: '100%' }} /></Field>
         <Field label="Category"><input value={draft.category || ''} onChange={e => upd('category', e.target.value)} style={fieldStyle} placeholder="e.g. Soft drinks" /></Field>
         <Field label="Accounting group"><input value={draft.accountingGroup || ''} onChange={e => upd('accountingGroup', e.target.value)} style={fieldStyle} placeholder="e.g. Beverages" /></Field>
-        <Field label="Storage location"><input value={draft.storageLocation || ''} onChange={e => upd('storageLocation', e.target.value)} style={fieldStyle} placeholder="e.g. Dry store" /></Field>
+        {areasOn ? (
+          <Field label="Stock area">
+            <select value={draft.areaId || ''} onChange={e => upd('areaId', e.target.value || null)} style={fieldStyle}>
+              <option value="">No area</option>
+              {areas.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+              {areas.length === 0 && <option value="" disabled>Set up stock areas first (Inventory, Stock areas)</option>}
+            </select>
+            {draft.storageLocation && !legacyMatch && <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 4 }}>Legacy text: {draft.storageLocation}</div>}
+            {areaChanged && oldHolding > 0 && (
+              <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 12, color: 'var(--t2)', marginTop: 6, cursor: 'pointer' }}>
+                <input type="checkbox" checked={draft.moveHolding !== false} onChange={e => upd('moveHolding', e.target.checked)} /> Also move {Math.round(oldHolding * 1000) / 1000} {draft.baseUnit} from {oldAreaName}
+              </label>
+            )}
+          </Field>
+        ) : (
+          <Field label="Storage location"><input value={draft.storageLocation || ''} onChange={e => upd('storageLocation', e.target.value)} style={fieldStyle} placeholder="e.g. Dry store" /></Field>
+        )}
         <Field label="Shelf life (days)"><input type="number" min="0" value={draft.shelfLifeDays ?? ''} onChange={e => upd('shelfLifeDays', e.target.value)} style={fieldStyle} /></Field>
         <Field label="SKU / code"><input value={draft.sku || ''} onChange={e => upd('sku', e.target.value)} style={fieldStyle} /></Field>
         <Field label="Purchase VAT (input tax)">
@@ -353,7 +450,7 @@ function GeneralTab({ draft, upd, onSave, saving }) {
 }
 
 // ── Stock tab (on-hand + set count + movement ledger / reconciliation) ────────
-function StockTab({ draft, locId, onChanged, showToast }) {
+function StockTab({ draft, locId, onChanged, showToast, areas = null, holdings = {} }) {
   const [moves, setMoves] = useState(null);
   const [count, setCount] = useState('');
   const [busy, setBusy] = useState(false);
@@ -461,6 +558,31 @@ function StockTab({ draft, locId, onChanged, showToast }) {
           Stock value: <b style={{ color: 'var(--t1)', fontSize: 14 }}>{cost != null ? money(onHand * cost) : '—'}</b>
         </div>
       </div>
+
+      {/* 16 Oct 2026: where the stock sits, area by area. Below zero is shown red, never hidden. */}
+      {Array.isArray(areas) && areas.length > 0 && (
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>By area</div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {areas.filter(a => a.id === draft.areaId || Number(holdings[a.id] || 0) !== 0).map(a => {
+              const q = Number(holdings[a.id] || 0);
+              const d = displayInUnits(q, { baseUnit: draft.baseUnit, formats: draft.packaging || [], itemConversions: uomItem.itemConversions });
+              return (
+                <div key={a.id} style={{ padding: '8px 12px', borderRadius: 8, background: 'var(--bg1)', border: '1px solid ' + (q < 0 ? 'var(--red, #ef4444)' : 'var(--bdr)'), minWidth: 120 }}>
+                  <div style={{ fontSize: 11, color: 'var(--t3)' }}>{a.name}{a.id === draft.areaId ? ' · lives here' : ''}</div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: q < 0 ? 'var(--red, #ef4444)' : 'var(--t1)' }}>{d.qty} <span style={{ fontSize: 11, color: 'var(--t3)' }}>{d.label}</span></div>
+                </div>
+              );
+            })}
+            {(() => { const sum = Object.values(holdings).reduce((s, q) => s + (Number(q) || 0), 0); const un = Math.round((onHand - sum) * 10000) / 10000; if (Math.abs(un) < 1e-9) return null; const d = displayInUnits(un, { baseUnit: draft.baseUnit, formats: draft.packaging || [], itemConversions: uomItem.itemConversions }); return (
+              <div style={{ padding: '8px 12px', borderRadius: 8, background: 'var(--bg1)', border: '1px solid var(--bdr)', minWidth: 120 }}>
+                <div style={{ fontSize: 11, color: 'var(--t3)' }}>Unassigned</div>
+                <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--t1)' }}>{d.qty} <span style={{ fontSize: 11, color: 'var(--t3)' }}>{d.label}</span></div>
+              </div>
+            ); })()}
+          </div>
+        </div>
+      )}
 
       {/* Par & reorder (drives low-stock + future suggested ordering) */}
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, marginBottom: 18, flexWrap: 'wrap' }}>

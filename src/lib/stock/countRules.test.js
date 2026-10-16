@@ -50,12 +50,15 @@ test('approvalOutcomeText says what happened in plain words', () => {
 test('approveCount checks every write and only then marks the count APPROVED', () => {
   const src = readFileSync(resolve(here, './counts.js'), 'utf8');
   assert.match(src, /import \{ countApprovalPlan, approvalOutcomeText \} from '\.\/countRules\.js';/);
-  assert.match(src, /if \(mv\?\.error\) return \{/, 'a refused movement stops the approval');
-  assert.match(src, /if \(lineErr\) return \{/, 'a refused line update stops the approval');
+  // 16 Oct 2026 (stock areas): the posts go through a pool of 3 in flight; a refused movement or
+  // line update records the failure, no new post starts after it, and the approval stops.
+  assert.match(src, /if \(mv\?\.error\) \{ failure = failure \|\| \{ error: mv\.error, item: names\[a\.itemId\] \|\| null \}; return; \}/, 'a refused movement stops the approval');
+  assert.match(src, /if \(lineErr\) failure = failure \|\| \{ error: lineErr, item: names\[a\.itemId\] \|\| null \};/, 'a refused line update stops the approval');
+  assert.match(src, /if \(failure\) return \{ error: new Error\(approvalOutcomeText\(\{ posted, total, failedItem: failure\.item, error: failure\.error \}\)\), data: \{ posted, total \} \};/);
   assert.match(src, /if \(headErr\) return \{ error: headErr/, 'the APPROVED write itself is checked');
   const approved = src.indexOf("status: 'APPROVED'");
-  const loop = src.indexOf('for (const a of plan.adjustments)');
-  assert.ok(loop > 0 && approved > loop, 'APPROVED is written after the adjustments, never before');
+  const posts = src.indexOf('await Promise.all(plan.adjustments.map');
+  assert.ok(posts > 0 && approved > posts, 'APPROVED is written after the adjustments, never before');
   // v5.11.65: the toast counts movements, not counted lines. 12 counted, 10 matched = "2 lines
   // adjusted"; every line matched = "no stock moved" (reachable: the plan is not empty).
   assert.match(src, /const total = plan\.adjustments\.filter\(a => a\.delta !== 0\)\.length;/);

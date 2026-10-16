@@ -16,6 +16,7 @@ import { formatRateLabel, purchaseNet } from '../../lib/tax';
 import { convert } from '../../lib/stock/conversion';
 import { fetchSuppliers, fetchInventoryItems } from '../../lib/stock/data';
 import { scanInvoice, postInvoice, fetchInvoices } from '../../lib/stock/purchasing';
+import { areasReady, fetchAreas } from '../../lib/stock/areas';
 import { pickSupplierProduct } from '../../lib/stock/costing';
 import { matchScannedLine } from '../../lib/stock/purchasingRules';
 import { xeroStatus, xeroPushBill } from '../../lib/xero';
@@ -54,6 +55,10 @@ export default function Invoices() {
   const [xeroOn, setXeroOn] = useState(false);
   const [xeroPush, setXeroPush] = useState({});            // invoiceId -> 'busy' | {link} | {error}
   const [venueTz, setVenueTz] = useState(null);
+  // 16 Oct 2026 (stock areas): where the invoice's stock lands. '' = the database decides (the
+  // receiving area, else each item's own area). No areas before the migration.
+  const [areas, setAreas] = useState([]);
+  const [landArea, setLandArea] = useState('');
   // Sorting is applied ONLY to the read-only posted-invoice history (real row ids).
   // The review grid below is addressed by array index and must never be reordered.
   const [histSort, onHistSort] = useSort('date', 'desc');
@@ -62,8 +67,13 @@ export default function Invoices() {
     const loc = locId || getActiveLocationSync() || await getLocationId().catch(() => null);
     if (loc && loc !== locId) setLocId(loc);
     getLocationConfig(loc).then(c => setVenueTz(c?.timezone || null)).catch(() => {});
-    const [{ data: s }, { data: it }, { data: h }] = await Promise.all([fetchSuppliers(loc), fetchInventoryItems(loc), fetchInvoices(loc)]);
+    const areasOn = await areasReady(loc);
+    const [{ data: s }, { data: it }, { data: h }, areaRes] = await Promise.all([
+      fetchSuppliers(loc), fetchInventoryItems(loc), fetchInvoices(loc),
+      areasOn ? fetchAreas(loc) : Promise.resolve({ data: [] }),
+    ]);
     setSuppliers(s || []); setItems(it || []); setHistory(h || []);
+    setAreas(areaRes.data || []); setLandArea((areaRes.data || []).find(a => a.isReceiving)?.id || '');
     if (loc) xeroStatus(loc).then(st => setXeroOn(!!st?.connected)).catch(() => {});
   }, [locId]);
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, []);
@@ -151,7 +161,7 @@ export default function Invoices() {
       ...review.header, imagePath,
       subtotal: Math.round(net * 100) / 100, tax: Math.round(vat * 100) / 100, total: Math.round((net + vat) * 100) / 100,
       flags: undefined,
-    }, review.lines.map(l => ({ ...l, flags: lineInfo(l).flag ? [lineInfo(l).flag] : [] })), locId);
+    }, review.lines.map(l => ({ ...l, flags: lineInfo(l).flag ? [lineInfo(l).flag] : [] })), locId, { areaId: landArea || null });
     setPosting(false);
     if (error) { showToast?.(error.message, 'error'); return; }
     showToast?.(`Posted invoice — ${matched.length} line${matched.length === 1 ? '' : 's'} received`, 'success');
@@ -281,6 +291,15 @@ export default function Invoices() {
                   Subtotal (ex VAT): <b>{money(net)}</b> · VAT: <b>{money(vat)}</b> · Total: <b>{money(gross)}</b>
                   {read != null && <span style={{ fontSize: 11, color: mismatch ? 'var(--amber)' : 'var(--t3)', marginLeft: 10 }}>{mismatch ? `⚠ read total ${money(read)} — check VAT/lines` : `✓ matches read total`}</span>}
                 </div>
+                {areas.length > 0 && (
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--t3)', fontWeight: 700 }}>
+                    Lands in
+                    <select value={landArea} onChange={e => setLandArea(e.target.value)} style={{ ...field, width: 'auto', minWidth: 170, fontWeight: 400 }} title="The stock area this delivery goes into. Move it on with a transfer.">
+                      {!areas.some(a => a.isReceiving) && <option value="">Each item's own area</option>}
+                      {areas.map(a => <option key={a.id} value={a.id}>{a.name}{a.isReceiving ? ' (receiving)' : ''}</option>)}
+                    </select>
+                  </label>
+                )}
                 <button onClick={post} disabled={posting} style={{ padding: '9px 18px', borderRadius: 12, background: 'var(--grn)', color: '#0b0c10', border: 0, fontFamily: 'inherit', fontSize: 13, fontWeight: 700, cursor: posting ? 'default' : 'pointer', opacity: posting ? 0.5 : 1 }}>{posting ? 'Posting…' : 'Post to stock'}</button>
               </div>
             );

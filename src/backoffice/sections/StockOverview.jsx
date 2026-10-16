@@ -14,6 +14,9 @@ import { fetchInventoryItems, fetchSuppliers, fetchRecentMovements, movementLabe
 import { displayInUnits } from '../../lib/stock/uom';
 import { fetchRecipes } from '../../lib/stock/recipes';
 import { fetchPurchaseOrders } from '../../lib/stock/purchasing';
+import { areasReady, fetchAreas, fetchAreaHoldings } from '../../lib/stock/areas';
+import { areasBelowZero, countStatusText } from '../../lib/stock/areaRules';
+import { fetchCounts } from '../../lib/stock/counts';
 
 const card = { background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 14, padding: 18 };
 
@@ -28,10 +31,17 @@ export default function StockOverview({ setSection, canOpen = () => true }) {
   const load = useCallback(async () => {
     const loc = locId || getActiveLocationSync() || await getLocationId().catch(() => null);
     if (loc && loc !== locId) setLocId(loc);
-    const [{ data: items }, { data: recipes }, { data: suppliers }, { data: pos }, { data: moves }] = await Promise.all([
+    // 16 Oct 2026: stock areas (after the migration): the areas, the holdings below zero and the
+    // counts that are ready to approve. Before it: nothing new on this page.
+    const areasOn = await areasReady(loc);
+    const [{ data: items }, { data: recipes }, { data: suppliers }, { data: pos }, { data: moves }, areaRes, holdRes, countRes] = await Promise.all([
       fetchInventoryItems(loc), fetchRecipes(loc), fetchSuppliers(loc), fetchPurchaseOrders(loc), fetchRecentMovements(loc, 12),
+      areasOn ? fetchAreas(loc) : Promise.resolve({ data: null }),
+      areasOn ? fetchAreaHoldings(loc) : Promise.resolve({ data: {} }),
+      areasOn ? fetchCounts(loc, 30) : Promise.resolve({ data: [] }),
     ]);
-    setD({ items: items || [], recipes: recipes || [], suppliers: suppliers || [], pos: pos || [], moves: moves || [] });
+    setD({ items: items || [], recipes: recipes || [], suppliers: suppliers || [], pos: pos || [], moves: moves || [],
+      areas: areaRes.data, holdings: holdRes.data || {}, counts: countRes.data || [] });
   }, [locId]);
   useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
 
@@ -58,14 +68,21 @@ export default function StockOverview({ setSection, canOpen = () => true }) {
   const sellable = menuItems.filter(m => !m.archived && m.type !== 'subitem' && m.type !== 'variants' && !parentIds.has(String(m.id)));
   const unlinked = sellable.filter(m => !linkedMenuIds.has(String(m.id)));
   const itemName = (id) => items.find(i => i.id === id)?.name || '—';
+  const areasOn = Array.isArray(d.areas);
+  const areaCount = areasOn ? d.areas.length : 0;
+  const belowAreas = areasOn ? areasBelowZero(d.holdings) : [];
+  const belowItems = [...new Set(belowAreas.map(b => b.itemId))];
+  const readyCounts = areasOn ? d.counts.filter(c => c.status !== 'APPROVED' && countStatusText(c.areas).ready) : [];
 
   const steps = [
     { n: 1, label: 'Add your stock items', done: items.length > 0, detail: `${items.length} item${items.length === 1 ? '' : 's'}`, cta: 'Stock items', to: 'stock-items' },
+    // 16 Oct 2026: "the storage locations need to be set ahead of time"; the step shows until the venue has areas
+    ...(areasOn && areaCount === 0 ? [{ n: 2, label: 'Set up your stock areas', done: false, detail: 'Cellar, fridges, freezer, dry store, bar: where stock lives and where counts happen', cta: 'Stock areas', to: 'stock-areas' }] : []),
     { n: 2, label: 'Set a price on each item', done: purchasable.length > 0 && noPrice.length === 0, detail: `${priced.length} of ${purchasable.length} priced`, cta: 'Add prices', to: 'stock-items' },
     { n: 3, label: 'Build recipes & link to menu', done: dishes.length > 0, detail: `${dishes.length} dish recipe${dishes.length === 1 ? '' : 's'} · ${unlinked.length} menu item${unlinked.length === 1 ? '' : 's'} without one`, cta: 'Recipes', to: 'recipes' },
-    { n: 4, label: 'Count your stock on hand', done: withStock.length > 0, detail: `${withStock.length} item${withStock.length === 1 ? '' : 's'} with stock`, cta: 'Stock counts', to: 'stock-counts' },
+    { n: 4, label: areasOn && areaCount > 0 ? 'Count by area' : 'Count your stock on hand', done: withStock.length > 0, detail: `${withStock.length} item${withStock.length === 1 ? '' : 's'} with stock`, cta: 'Stock counts', to: 'stock-counts' },
     { n: 5, label: 'Add suppliers & receive deliveries', done: d.suppliers.length > 0, detail: `${d.suppliers.length} supplier${d.suppliers.length === 1 ? '' : 's'} · ${d.pos.length} order${d.pos.length === 1 ? '' : 's'}`, cta: 'Purchasing', to: 'suppliers' },
-  ];
+  ].map((s, i) => ({ ...s, n: i + 1 }));
   const doneCount = steps.filter(s => s.done).length;
 
   const stat = (label, value, sub, onClick, accent) => (
@@ -96,10 +113,10 @@ export default function StockOverview({ setSection, canOpen = () => true }) {
         <div style={card}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
             <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--t1)' }}>Set up your stock</div>
-            <div style={{ fontSize: 12, color: 'var(--t3)' }}>{doneCount}/5 done</div>
+            <div style={{ fontSize: 12, color: 'var(--t3)' }}>{doneCount}/{steps.length} done</div>
           </div>
           <div style={{ height: 6, background: 'var(--bg3)', borderRadius: 3, overflow: 'hidden', margin: '8px 0 16px' }}>
-            <div style={{ width: `${(doneCount / 5) * 100}%`, height: '100%', background: 'var(--grn, #16a34a)', transition: 'width .3s' }} />
+            <div style={{ width: `${(doneCount / steps.length) * 100}%`, height: '100%', background: 'var(--grn, #16a34a)', transition: 'width .3s' }} />
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {steps.map(s => (
@@ -117,9 +134,15 @@ export default function StockOverview({ setSection, canOpen = () => true }) {
 
         {/* Right column: attention + activity */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-          {(noPrice.length > 0 || unlinked.length > 0 || negatives.length > 0) && (
+          {(noPrice.length > 0 || unlinked.length > 0 || negatives.length > 0 || belowAreas.length > 0 || readyCounts.length > 0) && (
             <div style={card}>
               <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--t1)', marginBottom: 10 }}>Needs attention</div>
+              {readyCounts.length > 0 && (
+                <Attn color="var(--grn, #16a34a)" title={`${readyCounts.length} count${readyCounts.length === 1 ? '' : 's'} ready to approve`} sub="every area is marked complete" items={readyCounts.slice(0, 4).map(c => c.name)} cta="Stock counts" onClick={can('stock-counts') ? () => go('stock-counts') : null} />
+              )}
+              {belowAreas.length > 0 && (
+                <Attn color="var(--red, #ef4444)" title={`${belowAreas.length} area holding${belowAreas.length === 1 ? '' : 's'} below zero`} sub="sold or used from an area that never received it: record the move from the cellar, or count that area" items={belowItems.slice(0, 4).map(itemName)} cta="Stock items" onClick={can('stock-items') ? () => go('stock-items') : null} />
+              )}
               {noPrice.length > 0 && (
                 <Attn color="var(--red, #ef4444)" title={`${noPrice.length} item${noPrice.length === 1 ? '' : 's'} with no price`} sub="costs & GP can’t be worked out until these have a supplier price" items={noPrice.slice(0, 4).map(i => i.name)} cta="Fix prices" onClick={() => go('stock-items')} />
               )}
