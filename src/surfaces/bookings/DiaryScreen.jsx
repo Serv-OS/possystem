@@ -24,10 +24,25 @@ import { toMin, toHM, isTableFree, toOptimiserBooking, sessionsToBlocks } from '
 import { loadBookingPayments, lookupPreorderLinkBase } from '../../lib/bookings/bookingsData.js';
 import { undoNoShowStatus, bookingUnpaid, isNeedsRefundRow } from '../../lib/bookings/bookingPayment.js';
 import { choiceSummary } from '../../lib/bookings/preorderChoices.js';
+import { snapToSlot, shiftTables, conflictsFor, editedLine, hasGuest } from '../../lib/bookings/editRules.js';
 import {
   mono, tintBg, tintBd, rulesOf, displayStatus, statusMeta, StatusBadge, isLive,
   useNowMin, money, initialsOf, bookingName, todayISO, EmptyNote, Chip, preorderStateFor, courseColor,
 } from './bits.jsx';
+import EditBookingSheet from './EditBookingSheet.jsx';
+
+// 16 Oct 2026: the venue clock for the "Edited 17:42 by Jane" line.
+const fmtClock = (tz) => (d) => {
+  try {
+    return new Intl.DateTimeFormat('en-GB', { timeZone: tz || undefined, hour: '2-digit', minute: '2-digit', hour12: false }).format(d);
+  } catch {
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  }
+};
+// A block that may be dragged on the Timeline: live and not yet seated. A
+// seated party's table is the till's business; finished bookings stay put.
+const canDragBooking = (b) => isLive(b) && b.status !== 'dining';
+const DRAG_THRESHOLD_PX = 6;
 
 // Nothing created AT THE STAND can hold a card: BookScreen's payment buttons are
 // display only, and createBooking stores no payment fields. So for these sources
@@ -144,6 +159,80 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
     rules.holdPerCover, rules.cardCaptureEnabled, rules.cardCaptureMinCovers]);
 
   const selected = bookings.find((b) => b.id === sel) || null;
+
+  // ── Timeline drag (16 Oct 2026) ─────────────────────────────────────────────
+  // Peter: "on the timeline I should be able to drag things around, move things
+  // the way I want". Pointer events, so a finger on the iPad and a mouse on a
+  // laptop behave the same. A press that moves past the threshold becomes a
+  // drag: the block dims, a ghost shows the snapped landing (15 minute slots,
+  // every member table shifted by the same rows), green when free and red with
+  // the other booking's name when not. Letting go asks "Move X to T4 at 18:30?"
+  // with Move and Keep. Move goes through editBooking, so the same rules and
+  // the same server side table check apply as in the Edit sheet.
+  const editBooking = useStore((s) => s.editBooking);
+  const operatorName = useStore((s) => s.bookingsOperator?.name || s.staff?.name || null);
+  const dragRef = useRef(null);            // { id, x0, y0, active }
+  const suppressClickRef = useRef(false);  // the click that follows a drop is not a select
+  const [drag, setDrag] = useState(null);  // { id, dx, dy } while a drag is live
+  const [drop, setDrop] = useState(null);  // the confirm card after a drop
+  const othersForDrag = useMemo(() => {
+    if (!isToday) return visible;
+    return [...visible, ...sessionsToBlocks(tables, visible, rules.turnBands, Number.isFinite(nowMin) ? nowMin : 0)];
+  }, [visible, tables, isToday, nowMin, rules.turnBands]);
+  const labelOf = (id) => rows.find((t) => t.id === id)?.label || String(id).slice(-4);
+  // Where a block lands for a pointer offset: snapped start, shifted tables, conflicts.
+  const dropTargetFor = (b, dx, dy) => {
+    const bs = toMin(b.startTime);
+    let ns = snapToSlot(bs + Math.round(dx / slotW) * 15, 15);
+    ns = Math.max(startMin, Math.min(endMin - 15, ns));
+    const rowDelta = Math.round(dy / ROW_H);
+    const tables2 = shiftTables(b.tables || [], rows, rowDelta);
+    const unchanged = ns === bs && rowDelta === 0;
+    if (!tables2) return { ok: false, unchanged, startMin: ns, tables: null, conflicts: [], reason: 'That would push a joined table off the floor plan.' };
+    const seats = tables2.reduce((sum, id) => sum + (rows.find((t) => t.id === id)?.maxCovers || 0), 0);
+    const conflicts = conflictsFor({ booking: { id: b.id, tables: tables2, startTime: toHM(ns), turnMinutes: b.turnMinutes || 90 }, others: othersForDrag, tables: rows });
+    let reason = null;
+    if (conflicts.length) reason = conflicts[0].text;
+    else if (seats < (b.covers || 1)) reason = `${tables2.map(labelOf).join(' + ')} seats ${seats}, this party is ${b.covers}.`;
+    return { ok: !reason, unchanged, startMin: ns, tables: tables2, conflicts, reason };
+  };
+  const onBlockPointerDown = (b) => (e) => {
+    if (!canDragBooking(b) || drop) return;
+    dragRef.current = { id: b.id, x0: e.clientX, y0: e.clientY, active: false };
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* older browsers: the drag still works with the mouse */ }
+  };
+  const onBlockPointerMove = (b) => (e) => {
+    const d = dragRef.current;
+    if (!d || d.id !== b.id) return;
+    const dx = e.clientX - d.x0, dy = e.clientY - d.y0;
+    if (!d.active && Math.abs(dx) < DRAG_THRESHOLD_PX && Math.abs(dy) < DRAG_THRESHOLD_PX) return;
+    d.active = true;
+    setDrag({ id: b.id, dx, dy });
+  };
+  const onBlockPointerUp = (b) => (e) => {
+    const d = dragRef.current;
+    dragRef.current = null;
+    if (!d || d.id !== b.id) return;
+    if (!d.active) return;                 // a tap: the click handler selects
+    suppressClickRef.current = true;
+    // The click that follows this pointerup is swallowed above. Should a browser
+    // not send one, the flag must not swallow the NEXT tap instead.
+    setTimeout(() => { suppressClickRef.current = false; }, 0);
+    setDrag(null);
+    const t = dropTargetFor(b, e.clientX - d.x0, e.clientY - d.y0);
+    if (t.unchanged) return;
+    setDrop({ b, ...t, x: e.clientX, y: e.clientY, busy: false, error: null });
+  };
+  const onBlockPointerCancel = () => { dragRef.current = null; setDrag(null); };
+  const confirmDrop = async () => {
+    if (!drop || drop.busy || !drop.ok || !editBooking) return;
+    setDrop((d) => ({ ...d, busy: true, error: null }));
+    const res = await editBooking(drop.b.id, {
+      tables: drop.tables, primaryTableId: drop.tables[0], startTime: toHM(drop.startMin),
+    }, { editedBy: operatorName });
+    if (res?.ok) { setDrop(null); onSelect(drop.b.id); return; }
+    setDrop((d) => (d ? { ...d, busy: false, error: res?.error || 'Booking NOT moved. Try again.' } : d));
+  };
 
   const shiftDay = (delta) => {
     const base = bookingsDate || todayISO();
@@ -305,14 +394,28 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
                   if (left + width < 0 || left > gridW) return null;
                   const isSel = b.id === sel;
                   const pkg = b.packageId ? packages.find((p) => p.id === b.packageId) : null;
+                  const draggable = canDragBooking(b);
+                  const dragging = drag?.id === b.id;
                   return (
                     <button
                       key={b.id}
-                      onClick={() => onSelect(isSel ? null : b.id)}
+                      onClick={() => {
+                        if (suppressClickRef.current) { suppressClickRef.current = false; return; }
+                        onSelect(isSel ? null : b.id);
+                      }}
+                      onPointerDown={draggable ? onBlockPointerDown(b) : undefined}
+                      onPointerMove={draggable ? onBlockPointerMove(b) : undefined}
+                      onPointerUp={draggable ? onBlockPointerUp(b) : undefined}
+                      onPointerCancel={draggable ? onBlockPointerCancel : undefined}
+                      title={draggable ? 'Drag to another table or time' : b.status === 'dining' ? 'Seated. Change the table on the till.' : undefined}
                       style={{
                         position: 'absolute', left: Math.max(0, left), width: Math.min(width, gridW - Math.max(0, left)),
                         top: first * ROW_H + 3, height: (last - first + 1) * ROW_H - 6,
-                        borderRadius: 9, padding: '5px 8px', textAlign: 'left', overflow: 'hidden', cursor: 'pointer',
+                        borderRadius: 9, padding: '5px 8px', textAlign: 'left', overflow: 'hidden',
+                        cursor: dragging ? 'grabbing' : draggable ? 'grab' : 'pointer',
+                        touchAction: draggable ? 'none' : 'auto',
+                        userSelect: 'none', WebkitUserSelect: 'none', WebkitTouchCallout: 'none',
+                        opacity: dragging ? 0.35 : 1,
                         background: tintBg(meta.col), color: meta.col,
                         border: `1.5px solid ${isSel ? meta.col : tintBd(meta.col)}`,
                         boxShadow: isSel ? `0 0 0 3px ${tintBg('var(--acc)')}` : 'none',
@@ -329,6 +432,34 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
                     </button>
                   );
                 })}
+                {/* drag ghost: where the block will land */}
+                {drag && (() => {
+                  const b = visible.find((x) => x.id === drag.id);
+                  if (!b) return null;
+                  const t = dropTargetFor(b, drag.dx, drag.dy);
+                  const ids = t.tables || b.tables || [];
+                  const idxs = ids.map((id) => rowIndex.get(id)).filter((i) => i != null);
+                  if (!idxs.length) return null;
+                  const first = Math.min(...idxs), last = Math.max(...idxs);
+                  const col = t.ok ? 'var(--grn)' : 'var(--red)';
+                  const left = ((t.startMin - startMin) / 15) * slotW;
+                  const width = ((b.turnMinutes || 90) / 15) * slotW - 3;
+                  return (
+                    <div aria-hidden="true" style={{
+                      position: 'absolute', left: Math.max(0, left), width: Math.min(width, gridW - Math.max(0, left)),
+                      top: first * ROW_H + 3, height: (last - first + 1) * ROW_H - 6, pointerEvents: 'none',
+                      borderRadius: 9, padding: '5px 8px', overflow: 'hidden', zIndex: 3,
+                      background: tintBg(col, 22), color: col, border: `2px dashed ${col}`,
+                    }}>
+                      <div style={{ fontSize: 11, fontWeight: 800, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {ids.map(labelOf).join('+')} · {toHM(t.startMin)}
+                      </div>
+                      <div style={{ fontSize: 10, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', ...mono }}>
+                        {t.ok ? 'free' : t.reason}
+                      </div>
+                    </div>
+                  );
+                })()}
                 {/* now line */}
                 {Number.isFinite(nowMin) && nowMin >= startMin && nowMin <= endMin && (
                   <div style={{
@@ -355,6 +486,43 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
               <button className="btn btn-ghost" onClick={onBook} style={{ marginTop: 16, width: '100%', height: 40 }}>Take a booking</button>
             </div>
           )}
+      </div>
+
+      {/* the drop confirm: "Move Oliver Pembroke to T4 at 18:30?" */}
+      {drop && (
+        <DropConfirm drop={drop} labelOf={labelOf} onKeep={() => setDrop(null)} onMove={confirmDrop} />
+      )}
+    </div>
+  );
+}
+
+function DropConfirm({ drop, labelOf, onKeep, onMove }) {
+  const W = 300;
+  const vw = typeof window !== 'undefined' ? window.innerWidth : 1200;
+  const vh = typeof window !== 'undefined' ? window.innerHeight : 800;
+  const left = Math.max(8, Math.min(vw - W - 8, (drop.x || 0) - W / 2));
+  const top = Math.max(8, Math.min(vh - 190, (drop.y || 0) + 14));
+  const where = `${(drop.tables || []).map(labelOf).join(' + ')} at ${toHM(drop.startMin)}`;
+  return (
+    <div role="dialog" aria-label="Move booking" style={{
+      position: 'fixed', left, top, width: W, zIndex: 100002, padding: '12px 14px', borderRadius: 12,
+      background: 'var(--bg1)', color: 'var(--t1)', border: `1.5px solid ${drop.ok ? 'var(--acc)' : 'var(--red)'}`,
+      boxShadow: '0 14px 40px rgba(0,0,0,.45)',
+    }}>
+      <div style={{ fontSize: 14, fontWeight: 800, lineHeight: 1.35 }}>
+        {drop.tables ? `Move ${bookingName(drop.b)} to ${where}?` : `${bookingName(drop.b)} cannot go there.`}
+      </div>
+      {!drop.ok && (
+        <div role="alert" style={{ marginTop: 6, fontSize: 12.5, color: 'var(--red)', fontWeight: 700, lineHeight: 1.4 }}>{drop.reason}</div>
+      )}
+      {drop.error && (
+        <div role="alert" style={{ marginTop: 6, fontSize: 12.5, color: 'var(--red)', fontWeight: 700, lineHeight: 1.4 }}>{drop.error}</div>
+      )}
+      <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+        <button className="btn btn-ghost" onClick={onKeep} disabled={drop.busy} style={{ flex: 1, height: 38 }}>Keep</button>
+        <button className="btn btn-acc" onClick={onMove} disabled={!drop.ok || drop.busy} style={{ flex: 1, height: 38, fontWeight: 800, opacity: drop.ok ? 1 : 0.5 }}>
+          {drop.busy ? 'Moving…' : 'Move'}
+        </button>
       </div>
     </div>
   );
@@ -526,10 +694,15 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
   const cancelBooking = useStore((s) => s.cancelBooking);
   const markBookingNoShow = useStore((s) => s.markBookingNoShow);
   const [moving, setMoving] = useState(false);
+  // 16 Oct 2026: the Edit sheet (EditBookingSheet.jsx), shared with Back Office.
+  const [editing, setEditing] = useState(false);
+  const operatorName = useStore((s) => s.bookingsOperator?.name || s.staff?.name || null);
+  const venueTz = useStore((s) => s.locationConfig?.timezone);
+  const edited = editedLine(b, fmtClock(venueTz));
   // Render-adjustment (not an effect — the repo lint forbids sync setState in
   // effects): selecting a different booking closes the move panel.
   const [movingFor, setMovingFor] = useState(b.id);
-  if (movingFor !== b.id) { setMovingFor(b.id); setMoving(false); }
+  if (movingFor !== b.id) { setMovingFor(b.id); setMoving(false); setEditing(false); }
   const st = displayStatus(b, nowMin, packages);
   const start = toMin(b.startTime);
   const pkg = b.packageId ? packages.find((p) => p.id === b.packageId) : null;
@@ -622,9 +795,12 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
         {b.note && (
           <div style={{ marginTop: 10, padding: '7px 10px', borderRadius: 8, background: tintBg('var(--orn)', 8), color: 'var(--orn)', fontSize: 11, lineHeight: 1.4 }}>{b.note}</div>
         )}
+        {edited && (
+          <div style={{ marginTop: 8, fontSize: 11, color: 'var(--t3)', ...mono }}>{edited}</div>
+        )}
       </div>
 
-      {b.customer && (
+      {hasGuest(b.customer) && (
         <div style={sec}>
           {/* Not always "from CRM": a walk-in's name and number are typed at the
               door, so the plain label is the one that is true in every case. */}
@@ -636,6 +812,9 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
             <div style={{ minWidth: 0 }}>
               <div style={{ fontSize: 13, fontWeight: 700 }}>{b.customer.name || 'Guest'}</div>
               <div style={{ fontSize: 11, color: 'var(--t3)', ...mono }}>{b.customer.phone || 'no phone on file'}</div>
+              {b.customer.allergens?.length > 0 && (
+                <div style={{ fontSize: 11, color: 'var(--red)', fontWeight: 700, textTransform: 'capitalize' }}>{b.customer.allergens.join(', ')}</div>
+              )}
             </div>
           </div>
         </div>
@@ -759,7 +938,14 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
             padding, or .btn's nowrap pushes the labels through the borders. */}
         {isLive(b) && b.status !== 'dining' && (
           <div style={{ display: 'flex', gap: 8 }}>
+            {/* 16 Oct 2026: Edit opens the full sheet (date, time, covers, guest,
+                note, tables). Move stays as the quick table swap. */}
+            <button className="btn btn-ghost" onClick={() => setEditing(true)} style={{ flex: 1, minWidth: 0, height: 40, padding: '0 10px', fontSize: 12, fontWeight: 700 }}>Edit</button>
             <button className="btn btn-ghost" onClick={() => setMoving((m) => !m)} style={{ flex: 1, minWidth: 0, height: 40, padding: '0 10px', fontSize: 12 }}>{moving ? 'Close' : 'Move'}</button>
+          </div>
+        )}
+        {isLive(b) && b.status !== 'dining' && (
+          <div style={{ display: 'flex', gap: 8 }}>
             {/* markBookingNoShow, not a raw status write: it also bumps the guest's
                 lifetime no-show count on the CRM record, which is what drives the
                 card-hold prompt on their next booking. Not offered while the
@@ -771,6 +957,9 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
           </div>
         )}
       </div>
+      {editing && (
+        <EditBookingSheet b={b} editedBy={operatorName} onClose={() => setEditing(false)} />
+      )}
     </div>
   );
 }
