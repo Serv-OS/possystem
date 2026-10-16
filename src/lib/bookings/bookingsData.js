@@ -375,6 +375,19 @@ export async function loadBookingTables(bookingId) {
   } catch (e) { warnAbsentOr(e, 'loadBookingTables'); return null; }
 }
 
+// 16 Oct 2026: one booking's row, read fresh, so an edit checks the status and
+// the edit stamp the database holds now rather than a cached copy. No tables
+// or money here (the caller keeps those). null when it cannot be read.
+export async function loadBookingRow(id, locationId) {
+  if (isMock || !supabase || !isRealLoc(locationId) || !id) return null;
+  try {
+    const { data, error } = await supabase.from('bookings').select('*')
+      .eq('id', id).eq('location_id', locationId).maybeSingle();
+    if (error) { warnAbsentOr(error, 'loadBookingRow'); return null; }
+    return data ? rowToBooking(data) : null;
+  } catch (e) { warnAbsentOr(e, 'loadBookingRow'); return null; }
+}
+
 // Money ledger for one booking. From migration 20260824 a paired host-stand
 // device can read this too (the "paired device read" policy) — but a stand on
 // a pre-migration DB still gets [], so callers must treat empty as "not
