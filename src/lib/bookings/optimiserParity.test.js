@@ -47,3 +47,20 @@ test('PARITY: weights and defaults identical', () => {
   assert.deepEqual(copy.DEFAULT_TURN_BANDS, src.DEFAULT_TURN_BANDS);
   assert.deepEqual(copy.DEFAULT_RULES, src.DEFAULT_RULES);
 });
+
+// 16 Oct 2026: solo tables (no join group) and the party-aware pacing check.
+test('PARITY: solo tables and no join groups identical', () => {
+  const venue = [...VENUE, T('solo6', 6), T('solo2', 2)];
+  for (const party of [1, 2, 5, 6]) {
+    for (const joinGroups of [GROUPS, []]) {
+      const args = { party, time: '19:00', tables: venue, bookings: BOOKINGS, joinGroups, limit: 20 };
+      assert.deepEqual(copy.suggestTables(args), src.suggestTables(args), `party ${party} groups ${joinGroups.length}`);
+    }
+  }
+});
+
+test('PARITY: paceFull identical', () => {
+  for (const [l, p, c] of [[10, 2, 12], [10, 3, 12], [0, 0, 0], [5, 8, 12]]) {
+    assert.equal(copy.paceFull(l, p, c), src.paceFull(l, p, c));
+  }
+});

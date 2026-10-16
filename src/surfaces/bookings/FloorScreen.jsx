@@ -411,8 +411,8 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
         ) : (
           <div style={{ padding: '14px 14px', borderRadius: 13, border: '1px dashed var(--bdr2)', color: 'var(--t3)', fontSize: 12, lineHeight: 1.5, marginBottom: 14 }}>
             {(rules.joinGroups || []).length === 0
-              ? 'No join groups authored yet — author join groups in Back Office → Floor plan to get suggestions here.'
-              : `No table fits a party of ${walk} at ${nextQ} — check the diary for the next free window.`}
+              ? `No single table fits a party of ${walk} at ${nextQ}. Tables only join inside a join group: set them in Back Office, Floor plan.`
+              : `No table fits a party of ${walk} at ${nextQ}. Check the diary for the next free window.`}
           </div>
         )}
         {msg && <div style={{ fontSize: 11, color: 'var(--t2)', marginBottom: 12, ...mono }}>{msg}</div>}

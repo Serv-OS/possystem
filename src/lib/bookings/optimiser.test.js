@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  suggestTables, isTableFree, paceAt, turnFor, bandLabel,
+  suggestTables, isTableFree, paceAt, paceFull, turnFor, bandLabel,
   toMin, toHM, toOptimiserBooking, WEIGHTS, DEFAULT_TURN_BANDS,
 sessionsToBlocks } from './optimiser.js';
 
@@ -201,4 +201,48 @@ test('sessionsToBlocks feeds suggestTables: the blocked table is never offered',
   const out = suggestTables({ party: 2, time: '19:00', tables, bookings: blocks, joinGroups: [{ id: 'g', tableIds: ['t1', 't2'] }], limit: 3 });
   assert.ok(out.length >= 1, 'the free table is offered');
   assert.ok(out.every((c) => !c.set.includes('t1')), 'the open-tab table never is');
+});
+
+// ── 16 Oct 2026, bookings audit items 7 and 14 ───────────────────────────────
+test('SOLO TABLES: a table in no join group is offered on its own (Provo T3)', () => {
+  const venue = [T('t1', 2), T('t2', 2), T('t3', 6)];
+  const groups = [{ id: 'run', tableIds: ['t1', 't2'] }];
+  const bookings = [bk('x', ['t1'], '19:00', 90), bk('y', ['t2'], '19:00', 90)];
+  const out = suggestTables({ party: 5, time: '19:00', tables: venue, joinGroups: groups, bookings });
+  assert.equal(out.length, 1);
+  assert.deepEqual(out[0].set, ['t3']);
+  assert.equal(out[0].n, 1);
+});
+
+test('SOLO TABLES: a venue with NO join groups still gets every table that fits (Leeds widget)', () => {
+  const venue = [T('a', 2), T('b', 4), T('c', 4)];
+  const out = suggestTables({ party: 2, time: '19:00', tables: venue, joinGroups: [], limit: 10 });
+  assert.deepEqual(out.map((c) => c.set[0]).sort(), ['a', 'b', 'c']);
+  assert.deepEqual(out[0].set, ['a']);   // exact fit ranks first, same scoring as a grouped table
+  assert.ok(out.every((c) => c.n === 1), 'solo tables never join');
+});
+
+test('SOLO TABLES: same score as the same table inside a group of one', () => {
+  const venue = [T('t4', 4), T('t6', 6)];
+  const solo = suggestTables({ party: 4, time: '19:00', tables: venue, joinGroups: [], limit: 10, rules: { maxJoin: 3, tolerance: 2, protectLargeTables: true } });
+  const grouped = suggestTables({ party: 4, time: '19:00', tables: venue, joinGroups: [{ id: 'a', tableIds: ['t4'] }, { id: 'b', tableIds: ['t6'] }], limit: 10, rules: { maxJoin: 3, tolerance: 2, protectLargeTables: true } });
+  assert.deepEqual(solo, grouped);
+});
+
+test('SOLO TABLES: a grouped table is not offered twice, and a busy solo table is not offered', () => {
+  const venue = [T('t1', 2), T('t2', 2), T('t9', 2)];
+  const groups = [{ id: 'run', tableIds: ['t1', 't2'] }];
+  const out = suggestTables({ party: 2, time: '19:00', tables: venue, joinGroups: groups, limit: 10, bookings: [bk('z', ['t9'], '18:30', 90)] });
+  const ids = out.map((c) => c.id);
+  assert.equal(new Set(ids).size, ids.length);
+  assert.ok(!ids.includes('t9'));
+});
+
+test('PACING: the party being added counts (cap 12, 10 booked)', () => {
+  assert.equal(paceFull(10, 2, 12), false);   // lands exactly on the cap
+  assert.equal(paceFull(10, 3, 12), true);
+  assert.equal(paceFull(10, 8, 12), true);    // the audit's overshoot
+  assert.equal(paceFull(12, 0, 12), false);   // nothing added, at the cap, not over it
+  assert.equal(paceFull(0, 13, 12), true);    // a party bigger than the cap on its own
+  assert.equal(paceFull(50, 5, 0), false);    // no cap set
 });

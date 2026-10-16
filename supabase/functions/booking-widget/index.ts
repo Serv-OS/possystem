@@ -44,7 +44,7 @@
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import {
-  suggestTables, paceAt, turnFor, toMin, sessionsToBlocks,
+  suggestTables, paceAt, paceFull, turnFor, toMin, sessionsToBlocks,
   DEFAULT_TURN_BANDS, DEFAULT_RULES,
 } from '../_shared/bookingOptimiser.js';
 import {
@@ -579,12 +579,23 @@ Deno.serve(async (req) => {
         bookings.push(...sessionsToBlocks(sessTables, bookings, rules.turnBands, venueNowMin(tz), epochToVenueMin(tz)));
       } catch { /* availability falls back to bookings-only — never blocks the door */ }
     }
-    const quote = (time: string) => suggestTables({
+    // 16 Oct 2026 (bookings audit item 13): a package with its own turn is quoted on THAT turn,
+    // the same turn create_booking is asked for, so what is offered is what is booked. It used
+    // to quote on the covers band and book on the package turn, so create_booking refused every
+    // candidate and the guest was told "the venue will confirm".
+    const pkgTurn = (pkgRow: Record<string, unknown> | null | undefined): number | null =>
+      pkgRow?.turn_minutes && Number(pkgRow.turn_minutes) > 0 ? Number(pkgRow.turn_minutes) : null;
+    const quote = (time: string, turnMinutes: number | null = null) => suggestTables({
       party, time, tables: venue.tables, bookings,
       joinGroups: rules.joinGroups, turnBands: rules.turnBands, rules, limit: 3,
+      turnMinutes,
     });
-    const slotFull = (time: string) =>
-      paceAt(toMin(time), bookings) >= rules.pacingCap || quote(time).length === 0;
+    // 16 Oct 2026 (bookings audit item 14): the party being added counts against the cap.
+    const kitchenFull = (time: string) => paceFull(paceAt(toMin(time), bookings), party, rules.pacingCap);
+    // Why a slot cannot be sold, or null: 'kitchen' (pacing cap) or 'tables' (no table free).
+    const slotReason = (time: string, turnMinutes: number | null = null): string | null =>
+      kitchenFull(time) ? 'kitchen' : (quote(time, turnMinutes).length === 0 ? 'tables' : null);
+    const slotFull = (time: string, turnMinutes: number | null = null) => slotReason(time, turnMinutes) !== null;
 
     if (action === 'slots' && dateBlocked) {
       return json({ ok: true, date, blocked: true, slots: [], packages: [] });
@@ -592,11 +603,26 @@ Deno.serve(async (req) => {
     if (action === 'slots') {
       const start = toMin(rules.serviceStart), end = toMin(rules.serviceEnd);
       const nowGuard = date === today ? venueNowMin(tz) : -1;
-      const slots: { time: string; full: boolean }[] = [];
+      // 16 Oct 2026: package_id (optional) quotes every slot on that package's turn. Packages with
+      // their own turn also get a per slot answer in fullFor, so the page can switch packages
+      // without asking again. reason says why a slot is greyed ('past', 'kitchen', 'tables').
+      const askedPkg = body.package_id
+        ? venue.packages.find((x) => String(x.id) === String(body.package_id)) || null : null;
+      const askedTurn = pkgTurn(askedPkg);
+      const bandTurn = turnFor(party, rules.turnBands);
+      const turnPkgs = venue.packages.filter((p) => pkgTurn(p) !== null && pkgTurn(p) !== bandTurn);
+      const slots: { time: string; full: boolean; reason: string | null; fullFor?: Record<string, string | null> }[] = [];
       for (let t = start; t < end; t += rules.slotMinutes) {
         const hh = String(Math.floor(t / 60)).padStart(2, '0'), mm = String(t % 60).padStart(2, '0');
         const time = `${hh}:${mm}`;
-        slots.push({ time, full: t <= nowGuard || slotFull(time) });
+        const past = t <= nowGuard;
+        const reason = past ? 'past' : slotReason(time, askedTurn);
+        const slot: { time: string; full: boolean; reason: string | null; fullFor?: Record<string, string | null> } = { time, full: reason !== null, reason };
+        if (turnPkgs.length) {
+          slot.fullFor = {};
+          for (const p of turnPkgs) slot.fullFor[String(p.id)] = past ? 'past' : slotReason(time, pkgTurn(p));
+        }
+        slots.push(slot);
       }
       // Packages a guest could add for this date+party (the widget's upsell
       // card + the /book?package= deep link). Caps count that date's bookings.
@@ -652,8 +678,9 @@ Deno.serve(async (req) => {
       if (!/^\d{2}:\d{2}$/.test(time) || !name || !phone) {
         return json({ ok: false, error: 'name, valid mobile and time required' }, 400);
       }
-      // THE WIDGET NEVER SELLS PAST THE CAP — no override path exists here.
-      if (paceAt(toMin(time), bookings) >= rules.pacingCap) {
+      // THE WIDGET NEVER SELLS PAST THE CAP: no override path exists here. 16 Oct 2026: the party
+      // being added counts (cap 12 with 10 booked takes a 2, never an 8).
+      if (kitchenFull(time)) {
         return json({ ok: false, error: 'slot_full' });
       }
 
@@ -797,7 +824,8 @@ Deno.serve(async (req) => {
 
       // (What is due, the status and the Adyen config were settled by the
       // payment gate above, before any row was written.)
-      const candidates = quote(time);
+      // 16 Oct 2026: quoted on the turn the booking is written with (the package's own turn).
+      const candidates = quote(time, turnOverride);
       let bookedId: string | null = null;
       let tableLabel: string | null = null;
       for (const c of candidates) {
@@ -884,17 +912,24 @@ Deno.serve(async (req) => {
       }
 
       // Every widget attempt lands in booking_requests — the audit/intake ledger.
+      // 16 Oct 2026 (bookings audit item 12): a time that went between quote and write is
+      // 'rejected' with the reason slot_gone. It used to sit as 'pending' while the guest was told
+      // the venue would confirm, and nothing showed it to anyone.
       await db.from('booking_requests').insert({
         location_id: locationId,
-        payload: { date, time, party, name, phone, email, note, package_id: pkg ? String(pkg.id) : null, consent: body.consent === true },
+        payload: {
+          date, time, party, name, phone, email, note, package_id: pkg ? String(pkg.id) : null, consent: body.consent === true,
+          ...(bookedId ? {} : { reason: 'slot_gone' }),
+        },
         // 10 Sep 2026: an unpaid booking is not accepted yet.
-        status: bookedId && createStatus !== 'pending_payment' ? 'accepted' : 'pending',
+        status: !bookedId ? 'rejected' : (createStatus !== 'pending_payment' ? 'accepted' : 'pending'),
         booking_id: bookedId,
       });
 
       if (!bookedId) {
-        // Availability vanished mid-flight: the venue follows up by phone.
-        return json({ ok: true, status: 'pending', message: 'That time was just taken — the venue will confirm your booking shortly.' });
+        // Availability vanished mid-flight. 200 with ok:false so the page can read it; the page
+        // refreshes the times and asks for another.
+        return json({ ok: false, error: 'slot_gone', message: 'That time has just gone, please pick another' });
       }
       // status is the REAL row status: 'pending_payment' means the page must
       // take the card next (paymentDue says what for); the pg_cron sweep
