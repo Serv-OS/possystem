@@ -88,6 +88,8 @@ import { stampForPayment, restampForAmount, keepExistingStamp, paymentFacts } fr
 // promote door shared with booking-widget.
 import { coveringBookingPayment, stuckPaymentReason } from '../_shared/bookingPayment.js';
 import { promotePaidBooking, markPaymentNeedsRefund, loadBookingDue } from '../_shared/bookingPromote.ts';
+// 16 Oct 2026 (v5.11.70 host tools): table booking refunds and part refunds.
+import { settleBookingRefundEvent, partRefundFromAdyen } from '../_shared/bookingRefund.ts';
 import { looksLikeBackendDown } from '../_shared/backendDown.js';
 // v5.11.16: a reader tip the settle could not record is healed from Adyen's own
 // AUTHORISATION the moment it lands (see the live money event block below).
@@ -1337,7 +1339,21 @@ Deno.serve(async (req) => {
     // confirmation that settles/corrects it. Idempotent: keyed updates only,
     // and the raw event is already stored above whatever happens here.
     const ref = String(item.merchantReference || '');
-    if (ref.startsWith('bkpay-') && item.pspReference) {
+    // 16 Oct 2026 (v5.11.70 host tools): a refund asked for from the host stand or Back Office
+    // (adyen-modify booking_refund) is its own booking_payments row. Settle THAT row (refunded or
+    // failed) and recount the payment it gives back. Matched by its bkrf- reference or by the
+    // refund's own psp, so it is found whichever reference Adyen echoes. Best effort, like the
+    // block below: the raw event is stored already.
+    let bookingRefundHandled = false;
+    if (['REFUND', 'REFUND_FAILED', 'REFUNDED_REVERSED'].includes(String(item.eventCode || ''))
+        && (ref.startsWith('bkrf-') || ref.startsWith('bkpay-'))) {
+      try {
+        bookingRefundHandled = await settleBookingRefundEvent(admin, item);
+      } catch (e) {
+        console.error('[adyen-webhook] booking refund settle failed:', (e as Error).message);
+      }
+    }
+    if (ref.startsWith('bkpay-') && item.pspReference && !bookingRefundHandled) {
       try {
         // Reference parse is for the BOOKING ID (status promote below) only.
         // Old refs have no -a suffix; new ones carry the attempt number.
@@ -1363,7 +1379,11 @@ Deno.serve(async (req) => {
         } else if (code === 'CANCELLATION' && okEvent) {
           patch = { status: 'cancelled', released_at: new Date().toISOString() };
         } else if (code === 'REFUND' && okEvent) {
-          patch = { status: 'refunded' };
+          // 16 Oct 2026 (host tools): a PART refund made in Adyen used to mark the whole payment
+          // refunded and wipe the rest of the guest's credit. It is now a refund row; only a full
+          // refund marks the payment refunded, as before.
+          const howMuch = await partRefundFromAdyen(admin, item);
+          patch = howMuch === 'part' ? null : { status: 'refunded' };
         }
         // The rows this event settled: what the promote below is allowed to
         // rely on (10 Sep 2026 payment gate: no matched row, no promotion).

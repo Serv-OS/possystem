@@ -33,7 +33,10 @@ import { normalisePhone } from '../../lib/customerLookup';
 import { readTheme, deriveVars, readableOn, DISPLAY_FONT, BODY_FONT } from '../menu/menuTheme';
 import MenuHeader from '../menu/MenuHeader';
 import OnlineItemSheet from './OnlineItemSheet';
+// 16 Oct 2026: the guest's own change and cancel page (?manage=<token>).
+import ManageBookingPage from './ManageBookingPage';
 import { sheetThemeFrom } from './sheetTheme';
+import { LargePartyRequest, PayLinkPage } from './BookingRequestBits.jsx';
 import {
   itemHasOptions, itemNeedsSheetReturn, choiceSummary,
   optionGroupIdsFor, sizeChildren, MAX_CHOICE_NOTE,
@@ -46,6 +49,7 @@ import {
   offeredWalletTypes, walletConfiguration, missingWalletNote, droppedWalletNote,
   walletErrorOutcome, walletStartFailedNote, walletErrorReport,
 } from '../../lib/payments/adyenWallets';
+import { noticeWords } from '../../lib/bookings/optimiser';
 
 const MONO = 'var(--font-mono, ui-monospace, monospace)';
 
@@ -510,7 +514,9 @@ function GuestChoiceCards({ party, groups, getSel, onPick, getName, onName, bran
 // required mode the booking is pending_payment (failure = retry, then the
 // 20-minute expiry); in legacy mode it was already confirmed, so every
 // failure path stays soft — the guest can sort payment with the venue.
-function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, venueName = '', required = false, onPaid = null }) {
+// 16 Oct 2026 (host tools): payToken pays a host stand pay link (?pay=...), and heldNote
+// replaces the 20 minute line, because a pay link waits longer.
+function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, venueName = '', required = false, onPaid = null, payToken = null, heldNote = null }) {
   const holder = useRef(null);
   const dropinRef = useRef(null);
   const submittedRef = useRef(false); // pre-submit onError = setup failure → fallback copy
@@ -661,7 +667,9 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, venueName = '
         const handleReply = (r, actions) => {
           if (!live) return;
           if (r?.reference) referenceRef.current = r.reference;
-          if (r?.ok && (r.status === 'confirmed' || r.status === 'prepaid')) {
+          // A pay link reply carries a status only when the payment was Authorised (pending
+          // replies carry none), so this holds for a booking that stays 'confirmed' too.
+          if (r?.ok && !r.pending && !r.action && (r.status === 'confirmed' || r.status === 'prepaid')) {
             setPaidInfo({ pspReference: r.pspReference || null });
             setPhase('paid');
             actions.resolve({ resultCode: 'Authorised' });
@@ -722,7 +730,7 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, venueName = '
             return;
           }
           if (r?.error === 'unknown_or_closed') {
-            if (r.status === 'confirmed' || r.status === 'prepaid') {
+            if (!payToken && (r.status === 'confirmed' || r.status === 'prepaid')) {
               // Already paid and booked (the webhook got there first).
               setPhase('paid');
               actions.resolve({ resultCode: 'Authorised' });
@@ -763,6 +771,7 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, venueName = '
               action: 'booking_pay',
               location_id: opsId,
               booking_id: bookingId,
+              ...(payToken ? { pay_token: payToken } : {}),
               payment_method: state.data.paymentMethod,
               browser_info: state.data.browserInfo,
               origin: window.location.origin,
@@ -778,6 +787,7 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, venueName = '
               action: 'booking_pay_details',
               location_id: opsId,
               booking_id: bookingId,
+              ...(payToken ? { pay_token: payToken } : {}),
               reference: referenceRef.current,
               details: state.data?.details,
               payment_data: state.data?.paymentData,
@@ -838,9 +848,12 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, venueName = '
     let timer = null;
     const started = Date.now();
     const tick = async () => {
-      const r = await callWidget({ action: 'booking_status', location_id: opsId, booking_id: bookingId });
+      const r = await callWidget({ action: 'booking_status', location_id: opsId, booking_id: bookingId, ...(payToken ? { pay_token: payToken } : {}) });
       if (stopped) return;
-      if (r?.ok && (r.status === 'confirmed' || r.status === 'prepaid')) {
+      // A host stand pay link: the booking can stay 'confirmed' throughout, so only the
+      // server's paid flag (an authorised or captured payment) means paid.
+      const paidNow = payToken ? (r?.ok && r.paid === true) : (r?.ok && (r.status === 'confirmed' || r.status === 'prepaid'));
+      if (paidNow) {
         setPhase('paid');
         onPaidRef.current?.(r.status);
         return;
@@ -872,7 +885,7 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, venueName = '
       stopped = true;
       if (timer) clearTimeout(timer);
     };
-  }, [phase, bookingId, opsId, kind]);
+  }, [phase, bookingId, opsId, kind, payToken]);
 
   const retry = () => {
     submittedRef.current = false;
@@ -985,7 +998,7 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, venueName = '
           )}
           <div style={{ marginTop: 10, fontSize: 12, color: 'var(--muted)', lineHeight: 1.5 }}>
             {required
-              ? (HELD_NOTE[kind] || HELD_NOTE.prepay)
+              ? (heldNote || HELD_NOTE[kind] || HELD_NOTE.prepay)
               : 'Your table is booked either way. You can also sort payment with the venue.'}
           </div>
         </div>
@@ -1183,6 +1196,19 @@ export default function BookingWidget({ location }) {
   const [urlPreorderToken] = useState(() => {
     try { return new URLSearchParams(window.location.search).get('preorder') || null; } catch { return null; }
   });
+  // 16 Oct 2026: ?manage=<token> is the guest's own booking page (change, cancel, calendar).
+  const [urlManageToken] = useState(() => {
+    try { return new URLSearchParams(window.location.search).get('manage') || null; } catch { return null; }
+  });
+
+  // ?pay=<booking id>&t=<token> (16 Oct 2026, host tools): a pay link the host stand texted.
+  // The page IS the payment for that booking, checked before any booking boot.
+  const [urlPayLink] = useState(() => {
+    try {
+      const q = new URLSearchParams(window.location.search);
+      return q.get('pay') && q.get('t') ? { bookingId: q.get('pay'), token: q.get('t') } : null;
+    } catch { return null; }
+  });
 
   // boot: 'loading' | 'off' (widget disabled / not configured) | 'error' | 'ready'
   const [boot, setBoot] = useState('loading');
@@ -1263,7 +1289,7 @@ export default function BookingWidget({ location }) {
 
   // ── boot: best-effort anon auth, then config ────────────────────────────────
   useEffect(() => {
-    if (urlPreorderToken) return; // completion flow — PreorderPage boots itself
+    if (urlPreorderToken || urlPayLink) return; // completion flow and pay link boot themselves
     let off = false;
     (async () => {
       try { await ensureAuthToken(); } catch { /* anon best-effort — fn is public */ }
@@ -1273,6 +1299,8 @@ export default function BookingWidget({ location }) {
       if (c.widgetEnabled === false) { setBoot('off'); return; }
       setPageCurrency(c.currency);
       setCfg(c);
+      // 16 Oct 2026 (host tools): keep the party inside the venue's online sizes.
+      setParty((p) => Math.max(Number(c.minCovers) || 1, Math.min(Number(c.maxCovers) || 12, p)));
       // Anchor the calendar on the VENUE's today (config.today), never the
       // browser's — a guest in another timezone would otherwise default to a
       // date the venue has already finished (caught live, 11 Aug: a Pacific
@@ -1281,7 +1309,7 @@ export default function BookingWidget({ location }) {
       setBoot('ready');
     })();
     return () => { off = true; };
-  }, [opsId, urlPreorderToken]);
+  }, [opsId, urlPreorderToken, urlPayLink]);
 
   // ── slots: re-fetch whenever party or date changes (and on slot_full) ───────
   useEffect(() => {
@@ -1291,11 +1319,12 @@ export default function BookingWidget({ location }) {
     (async () => {
       const r = await callWidget({ action: 'slots', location_id: opsId, date, party });
       if (off) return;
-      if (r?.ok && r.blocked) { setSlotsRes({ key, slots: [], packages: [], err: false, blocked: true }); setTime(null); return; }
+      // 16 Oct 2026: a closed day (service periods) says why in the venue's words (message).
+      if (r?.ok && r.blocked) { setSlotsRes({ key, slots: [], packages: [], err: false, blocked: true, blockedText: r.message || null }); setTime(null); return; }
       if (!r?.ok) { setSlotsRes({ key, slots: [], packages: [], err: true }); setTime(null); return; }
       const next = Array.isArray(r.slots) ? r.slots : [];
       // Offers ride the same response — valid for exactly this date+party.
-      setSlotsRes({ key, slots: next, packages: Array.isArray(r.packages) ? r.packages : [], err: false });
+      setSlotsRes({ key, slots: next, packages: Array.isArray(r.packages) ? r.packages : [], err: false, noticeMinutes: Number(r.noticeMinutes) || 0 });
       // Keep the selection only if that time is still open.
       setTime((t) => (t && next.some((s) => s.time === t && !s.full)) ? t : null);
     })();
@@ -1371,6 +1400,10 @@ export default function BookingWidget({ location }) {
   const choicesHint = `Choose a ${joinAnd(pkgGroups.map((g) => String(g.label || '').toLowerCase()))} for each guest`;
 
   const maxCovers = Math.max(1, cfg?.maxCovers || 12);
+  const minCovers = Math.max(1, Math.min(maxCovers, Number(cfg?.minCovers) || 1));
+  // 16 Oct 2026 (host tools): "Larger party? Send a request" opens this.
+  const [askLarge, setAskLarge] = useState(false);
+  const largeRef = useRef(null);
   const maxDaysAhead = cfg?.maxDaysAhead ?? 90;
   // Terms in play right now: the venue's standing booking terms (config) plus
   // the selected package's own terms (rides the slots offer).
@@ -1473,6 +1506,21 @@ export default function BookingWidget({ location }) {
       setSlotsNonce((n) => n + 1);
       return;
     }
+    if (r?.error === 'party_size') {
+      setSubmitErr(Number(r.max) ? `Online bookings are for up to ${r.max} guests. Use Larger party? under Party size to send a request.` : 'Pick a party size from the list.');
+      setAskLarge(true);
+      // The request form opens under Party size, above this message: bring it into view.
+      setTimeout(() => { try { largeRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch { /* old browser */ } }, 60);
+      return;
+    }
+    if (r?.error === 'outside_hours') {
+      // 16 Oct 2026 (service periods): the time is outside service, inside the notice, or on a
+      // closed day or block. The fn says why; refresh the times, keep what the guest typed.
+      setSubmitErr(r.message || 'That time cannot be booked online. Please pick another.');
+      setTime(null);
+      setSlotsNonce((n) => n + 1);
+      return;
+    }
     if (r?.error === 'slot_full') {
       // Someone took the slot between quote and write — refresh availability.
       setSubmitErr('That time was just booked out. Please pick another.');
@@ -1488,10 +1536,20 @@ export default function BookingWidget({ location }) {
 
   // Tokened completion flow replaces the whole booking page (checked before
   // the boot states — boot never leaves 'loading' when a token is present).
+  if (urlPayLink) {
+    return <PayLinkPage bookingId={urlPayLink.bookingId} token={urlPayLink.token} opsId={opsId}
+      venueName={venueName} shell={shell} shellComponent={Shell} paymentCard={BookingPaymentCard} styles={S} brand={brand} onBrand={onBrand} />;
+  }
+
   if (urlPreorderToken) {
     return <PreorderPage token={urlPreorderToken} shell={shell}
       brand={brand} onBrand={onBrand} venueName={venueName}
       opsId={opsId} sheetTheme={sheetTheme} />;
+  }
+  if (urlManageToken) {
+    return <Shell {...shell}>
+      <ManageBookingPage token={urlManageToken} brand={brand} onBrand={onBrand} />
+    </Shell>;
   }
 
   if (boot === 'loading') {
@@ -1673,6 +1731,15 @@ export default function BookingWidget({ location }) {
             </div>
           </div>
         )}
+        {/* 16 Oct 2026: the guest's own change and cancel page (the same link is in their text
+            and email). Absent until migration 20261016c gives every booking its code, and when
+            the guest could not use it right now (inside the venue's cancellation window). */}
+        {result.manageToken && result.manageOpen !== false && (
+          <a href={`${window.location.origin}/book?manage=${result.manageToken}`}
+            style={{ display: 'block', margin: '0 auto 12px', maxWidth: 380, padding: '11px 14px', borderRadius: 11, border: '1px solid var(--line)', color: 'var(--ink)', fontSize: 14, fontWeight: 700, textAlign: 'center', textDecoration: 'none' }}>
+            Change or cancel this booking
+          </a>
+        )}
         <div style={S.sub}>
           We’ve saved your details. Just give your name when you arrive.
         </div>
@@ -1681,7 +1748,7 @@ export default function BookingWidget({ location }) {
   }
 
   // ── main booking form ───────────────────────────────────────────────────────
-  const partyOptions = Array.from({ length: maxCovers }, (_, i) => i + 1);
+  const partyOptions = Array.from({ length: maxCovers - minCovers + 1 }, (_, i) => i + minCovers);
 
   return <Shell {...shell}>
     {/* Package hero — the ?package= deep link's landing content: name, price,
@@ -1746,6 +1813,21 @@ export default function BookingWidget({ location }) {
           );
         })}
       </div>
+      {/* 16 Oct 2026 (host tools): a party above the venue's online limit asks instead. */}
+      {cfg?.requestsOpen && (
+        <div ref={largeRef} style={{ marginTop: -10, marginBottom: 18 }}>
+          {!askLarge ? (
+            <button type="button" onClick={() => setAskLarge(true)} style={{ ...S.linkBtn, fontSize: 13 }}>
+              Larger party? Send a request
+            </button>
+          ) : (
+            <LargePartyRequest opsId={opsId} venueName={cfg?.name || venueName} minParty={maxCovers + 1}
+              date={date} today={cfg?.today || todayISO()} maxDate={addDaysISO(maxDaysAhead, cfg?.today)}
+              name={name} phone={phone} email={email} brand={brand} onBrand={onBrand} styles={S}
+              onClose={() => setAskLarge(false)} />
+          )}
+        </div>
+      )}
 
       {/* Date */}
       <div style={S.fieldLbl}>Date</div>
@@ -1767,7 +1849,7 @@ export default function BookingWidget({ location }) {
         </div>
       ) : (slotsRes?.blocked || (cfg?.blockedDates || []).includes(date)) ? (
         <div style={{ padding: '18px 4px', fontSize: 13.5, color: 'var(--t2, #555)', lineHeight: 1.5 }}>
-          The venue isn't taking online bookings for this date. Pick another day, or call the venue directly.
+          {slotsRes?.blockedText || "The venue isn't taking online bookings for this date. Pick another day, or call the venue directly."}
         </div>
       ) : slots.length === 0 ? (
         <div style={{ padding: '14px 0', fontSize: 13, color: 'var(--muted)' }}>
@@ -1797,6 +1879,7 @@ export default function BookingWidget({ location }) {
       {/* 16 Oct 2026 (bookings audit item 7): the two reasons a time is greyed, said apart. It
           used to blame the kitchen for every grey slot, even when no table was free. */}
       <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8, marginBottom: 20, lineHeight: 1.5 }}>
+        {greyReasons.has('notice') && <div>Some times are greyed because online bookings need {noticeWords(slotsRes?.noticeMinutes) || 'some'} notice. Call {venueName} for a sooner table.</div>}
         {greyReasons.has('kitchen') && <div>Some times are greyed because the kitchen is full then.</div>}
         {greyReasons.has('tables') && <div>Some times are greyed because no table for {party} is free then.</div>}
         {greyReasons.has('full') && <div>Greyed times are fully booked.</div>}
@@ -1967,6 +2050,12 @@ export default function BookingWidget({ location }) {
           style={{ width: 18, height: 18, accentColor: brand, flex: 'none' }} />
         Keep me posted on news and offers
       </label>
+      {/* 16 Oct 2026 (host tools): the venue's privacy notice, when it has given one. */}
+      {cfg?.privacyUrl && (
+        <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 6, marginLeft: 28 }}>
+          <a href={cfg.privacyUrl} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--muted)' }}>How we use your details</a>
+        </div>
+      )}
 
       {submitErr && (
         <div style={{ marginTop: 14, fontSize: 13, fontWeight: 600, color: '#b91c1c' }}>{submitErr}</div>

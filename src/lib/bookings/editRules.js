@@ -21,7 +21,7 @@
 // The audit rides the booking's customer jsonb (edited_by, edited_at): the
 // bookings table has no audit columns and this release adds no schema.
 
-import { toMin, toHM, turnFor, toOptimiserBooking, DEFAULT_TURN_BANDS } from './optimiser.js';
+import { toMin, toHM, turnFor, toOptimiserBooking, DEFAULT_TURN_BANDS, servicePeriodsOf, serviceSlots, bookingTimeRefusal } from './optimiser.js';
 import { paymentDue, NON_BLOCKING_STATUSES } from './bookingPayment.js';
 import { buildScheduleCtx } from '../scheduleCtx.js';
 
@@ -52,7 +52,11 @@ export function editRefusal(booking) {
 }
 
 // Every 15 minute (or rule) slot across the service window, 'HH:MM'.
-export function slotTimes({ serviceStart = '17:00', serviceEnd = '23:00', slotMinutes = 15 } = {}) {
+// 16 Oct 2026: with service periods set and a date given, the slots of that day's periods
+// (lunch and dinner, last seating, closed days and blocks), the same grid as the Book screen.
+export function slotTimes(rules = {}, dateISO = null) {
+  if (dateISO && servicePeriodsOf(rules).custom) return serviceSlots(rules, dateISO);
+  const { serviceStart = '17:00', serviceEnd = '23:00', slotMinutes = 15 } = rules || {};
   const step = Math.max(5, num(slotMinutes) || 15);
   const out = [];
   for (let m = toMin(serviceStart); m < toMin(serviceEnd); m += step) out.push(toHM(m));
@@ -90,7 +94,7 @@ export function shiftTables(tableIds, rows, rowDelta) {
 // fix on a booking made before the hours or the bands changed, or one sitting
 // on a table smaller than its party, must still save. The turn stays the
 // booking's own unless the covers change (or it has none).
-//   rules   { serviceStart, serviceEnd, turnBands }
+//   rules   { serviceStart, serviceEnd, turnBands, servicePeriods?, closedWeekdays?, dateBlocks? }
 //   tables  [{ id, label, covers | maxCovers }] the venue's tables
 //   today   'YYYY-MM-DD' on the venue clock
 //   pkg     the booking's package (its turnMinutes wins over the band)
@@ -116,7 +120,14 @@ export function validateEdit({ booking, patch = {}, rules = {}, tables = [], tod
   else if (dateChanged && today && date < today) errors.push('That date has gone. A booking can be moved to today or a later day.');
 
   if (!isHM(startTime)) errors.push('Pick a time.');
-  else if (timeChanged) {
+  else if (servicePeriodsOf(rules).custom || (rules.closedWeekdays || []).length || (rules.dateBlocks || []).length) {
+    // 16 Oct 2026: service periods, closed days and date blocks, checked when the date or the
+    // time moves (what edit_booking checks too). A note or guest fix never trips them.
+    if ((timeChanged || dateChanged) && isISODate(date)) {
+      const why = bookingTimeRefusal(rules, date, startTime, { legacyWindow: timeChanged });
+      if (why) errors.push(why.message);
+    }
+  } else if (timeChanged) {
     const s = toMin(startTime);
     const open = toMin(rules.serviceStart || '17:00');
     const close = toMin(rules.serviceEnd || '23:00');
@@ -323,6 +334,19 @@ export function changedFields(snap, form) {
   return patch;
 }
 
+// 16 Oct 2026 (bookings audit section 3 item 6): why the stand must not save a NEW booking at
+// this time, or null. Service periods, closed days and date blocks, the same check
+// create_booking makes once migration 20261016e is run. Walk ins (source walk_in, or seated
+// straight away as dining) are never held to them. With no periods set the old single window is
+// not enforced here, as before.
+//   booking  { date, startTime, source, status }
+// -> null | { code, message }
+export function standTimeRefusal(booking, rules = {}) {
+  const b = booking || {};
+  if (b.source === 'walk_in' || b.status === 'dining') return null;
+  return bookingTimeRefusal(rules || {}, b.date, b.startTime, { legacyWindow: false });
+}
+
 // 16 Oct 2026 review: where a Timeline drag lands, as a pure function so the
 // snapping is tested. The drag locks to the axis the finger mostly moved on:
 // a mostly vertical drag (a table move) keeps the time unless it also went a
@@ -334,7 +358,9 @@ export function changedFields(snap, form) {
 //   rows     the Timeline's table rows in order [{ id, label, maxCovers | covers }]
 //   startMin, endMin  the drawn service window in minutes
 //   others   the day's bookings plus open tab blocks
-export function dropTarget({ booking, dx = 0, dy = 0, slotW = 24, rowH = 44, rows = [], startMin = 0, endMin = 24 * 60, others = [], nonBlocking = MOVE_NON_BLOCKING } = {}) {
+//   rules, date  the venue's booking rules and the Diary's date: a drag into a closed stretch,
+//            a closed day or a block is refused here, before Move is offered (16 Oct 2026)
+export function dropTarget({ booking, dx = 0, dy = 0, slotW = 24, rowH = 44, rows = [], startMin = 0, endMin = 24 * 60, others = [], nonBlocking = MOVE_NON_BLOCKING, rules = null, date = null } = {}) {
   const b = booking || {};
   const bs = toMin(b.startTime);
   const ax = Math.abs(num(dx)), ay = Math.abs(num(dy));
@@ -361,6 +387,11 @@ export function dropTarget({ booking, dx = 0, dy = 0, slotW = 24, rowH = 44, row
   let reason = null;
   if (conflicts.length) reason = conflicts[0].text;
   else if (rowDelta !== 0 && seats < num(b.covers || 1)) reason = `${tables2.map(label).join(' + ')} seats ${seats}, this party is ${b.covers}.`;
+  else if (timeChanged && rules && isISODate(date)) {
+    // The same check validateEdit makes on a time move, so Move is never offered and then refused.
+    const why = bookingTimeRefusal(rules, date, toHM(ns), { legacyWindow: true });
+    if (why) reason = why.message;
+  }
   return { ...base, ok: !reason, tables: tables2, conflicts, reason };
 }
 
@@ -408,9 +439,16 @@ export function editChangesWindow(before = {}, next = {}) {
 // 16 Oct 2026 (bookings audit items 10 and 21): the database's refusal codes (create_booking,
 // move_booking, edit_booking) in the words the stand and the till show. tableLabel is the
 // table's name when the refusal names one. Unknown codes pass through as they are.
-export function bookingRefusalWords({ error = null, tableLabel = null, seats = null, status = null } = {}) {
+export function bookingRefusalWords({ error = null, tableLabel = null, seats = null, status = null, message = null } = {}) {
   const t = tableLabel || 'That table';
   switch (error) {
+    // 16 Oct 2026: service periods (migration 20261016e). The database says why in words.
+    case 'outside_service': return message || 'That time is outside service hours. Pick another time.';
+    case 'closed_day': return message || 'The venue is closed that day. Pick another day.';
+    case 'blocked': return message || 'That date is closed for bookings. Pick another day.';
+    case 'too_soon': return message || 'That time is too soon for an online booking.';
+    case 'too_far_ahead': return message || 'That date is too far ahead for an online booking.';
+    case 'past': return message || 'That time has gone. Pick a later time.';
     case 'table_taken': return `${t} was just taken by another booking. Nothing was changed.`;
     case 'unknown_table': return `${t} is not on this venue's floor plan any more. Reload the floor and pick again.`;
     case 'too_many_covers': return `The tables seat ${Number(seats) || 0}, fewer than the party. Add a table or pick a bigger one.`;

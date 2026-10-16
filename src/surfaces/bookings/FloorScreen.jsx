@@ -16,6 +16,10 @@ import {
 import { useVenueClock } from './useVenueClock.js';
 import { nextQuarterMin } from '../../lib/bookings/venueClock.js';
 import { sessionTotal } from '../../lib/bookings/sessionTotal.js';
+// 16 Oct 2026 (v5.11.70 host tools): drag a party onto a table (floorDrag.js, FloorDragLayer.jsx).
+import { floorDrop } from '../../../supabase/functions/_shared/bookingHost.js';
+import { dragHandlers, useFloorDragState, DRAG_SOURCE_STYLE } from './floorDrag.js';
+import FloorDragLayer from './FloorDragLayer.jsx';
 
 // The POS's exact table colours (TablesSurface.jsx STATUS map) — one visual
 // language across till and host stand.
@@ -204,8 +208,20 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
 
   const openTabs = floorTables.filter((t) => t.session);
 
+  // 16 Oct 2026 (host tools): while a party is held over a table, that table lights green when
+  // it is free for the party and red when it is not (floorDrop, tested). Seat mode is today only.
+  const { drag } = useFloorDragState();
+  const dragBooking = drag ? (bookings.find((x) => x.id === drag.booking.id) || drag.booking) : null;
+  const seatNowMode = drag?.mode === 'seat' && Number.isFinite(statusNow);
+  const dropCol = (tableId) => {
+    if (!drag || drag.overId !== tableId) return null;
+    const v = floorDrop({ booking: dragBooking, table: floorTables.find((x) => x.id === tableId), others: bookings, nowMin: seatNowMode ? statusNow : null, mode: seatNowMode ? 'seat' : 'move' });
+    return v.ok ? 'var(--grn)' : v.unchanged ? 'var(--acc)' : 'var(--red)';
+  };
+
   return (
     <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: stacked ? 'column' : 'row' }}>
+      <FloorDragLayer />
       {/* ── canvas ── */}
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', padding: 14 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 10, flexWrap: 'wrap' }}>
@@ -338,8 +354,13 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
               ? bookings.find((bk) => bk.id === seatedBookingId) || null
               : null;
             const pickTarget = active || fromSession || next || null;
+            // A booked, not yet seated party can be lifted off its table and dropped on another.
+            const dragTarget = pickTarget && isLive(pickTarget) && pickTarget.status !== 'dining' ? pickTarget : null;
+            const over = dropCol(t.id);
             return (
               <div key={t.id}
+                data-floor-table={t.id}
+                {...dragHandlers(dragTarget, 'move', !!dragTarget)}
                 onClick={onPickBooking && pickTarget ? () => onPickBooking(pickTarget.id) : undefined}
                 title={later > 0 ? `${later} booking${later === 1 ? '' : 's'} still to come on ${t.label || t.id} today` : undefined}
                 style={{
@@ -347,9 +368,10 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
                 left: PAD + (t.x || 0) * scale, top: PAD + (t.y || 0) * scale,
                 width: rw, height: rh,
                 borderRadius: t.shape === 'rd' ? '50%' : 12,
-                border: `2px solid ${hot ? 'var(--acc)' : tintBd(col, 45)}`,
-                background: hot ? tintBg('var(--acc)', 18) : tintBg(col),
-                boxShadow: hot ? `0 0 0 4px ${tintBg('var(--acc)', 15)}` : 'none',
+                ...(dragTarget ? DRAG_SOURCE_STYLE : {}),
+                border: over ? `3px solid ${over}` : `2px solid ${hot ? 'var(--acc)' : tintBd(col, 45)}`,
+                background: over ? tintBg(over, 22) : hot ? tintBg('var(--acc)', 18) : tintBg(col),
+                boxShadow: over ? `0 0 0 5px ${tintBg(over, 25)}` : hot ? `0 0 0 4px ${tintBg('var(--acc)', 15)}` : 'none',
                 display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
                 overflow: 'visible', textAlign: 'center',
                 // NOT "all": left/top/width/height are all scale-driven, so every

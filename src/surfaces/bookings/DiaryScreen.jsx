@@ -20,19 +20,30 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../store';
 import { supabase, isMock } from '../../lib/supabase';
+// 16 Oct 2026: the no show and late cancel charge (NoShowCharge.jsx). A charge is the venue's
+// revenue, never money paid with the booking, so the ledger rows below leave it out.
+import NoShowCharge from './NoShowCharge.jsx';
+import { withoutNoShowCharges, takenCharge, noShowRows, moneyText } from '../../lib/bookings/noShowCharge.js';
 import { toMin, toHM, isTableFree, toOptimiserBooking, sessionsToBlocks } from '../../lib/bookings/optimiser.js';
 import { loadBookingPayments, lookupPreorderLinkBase } from '../../lib/bookings/bookingsData.js';
 import { undoNoShowStatus, bookingUnpaid, isNeedsRefundRow } from '../../lib/bookings/bookingPayment.js';
 import { choiceSummary } from '../../lib/bookings/preorderChoices.js';
 import { dropTarget, editedLine, hasGuest, fmtClock, EDIT_REFUSALS, MOVE_NON_BLOCKING } from '../../lib/bookings/editRules.js';
 import {
-  mono, tintBg, tintBd, rulesOf, displayStatus, statusMeta, StatusBadge, isLive,
+  mono, tintBg, tintBd, rulesOf, displayStatus, statusMeta, StatusBadge, isLive, isDead,
   money, initialsOf, bookingName, EmptyNote, Chip, preorderStateFor, courseColor,
 } from './bits.jsx';
 import { useVenueClock } from './useVenueClock.js';
 import { shiftYmd, ymdLabel, epochToVenueMin } from '../../lib/bookings/venueClock.js';
 import { seatRefusal, moneyOnFileLine, undoCancelStatus, offPlanBookings, UNDO_CANCEL_MS, CANCEL_REASONS, NO_SHOW_REASONS } from '../../lib/bookings/standRules.js';
 import EditBookingSheet from './EditBookingSheet.jsx';
+// 16 Oct 2026 (v5.11.70 host tools): guest tags, refunds, pay link, requests inbox.
+import GuestTags from './GuestTags.jsx';
+import RefundPanel from './RefundPanel.jsx';
+import PayLinkPanel from './PayLinkPanel.jsx';
+import RequestsInbox from './RequestsInbox.jsx';
+import { useServiceDay } from './useServiceDay.js';
+import { ClosedBands, DayRuleNotice } from './ServiceBands.jsx';
 
 // A block that may be dragged on the Timeline: live and not yet seated. A
 // seated party's table is the till's business; finished bookings stay put.
@@ -46,6 +57,9 @@ const EDGE_STEP = 12;      // px per frame
 // display only, and createBooking stores no payment fields. So for these sources
 // an empty ledger means "no card", not "cannot see it from here".
 const CARD_IMPOSSIBLE_SOURCES = new Set(['walk_in', 'host']);
+
+// 16 Oct 2026: the Inspector's Messages section (what the guest was sent, the guest link).
+import GuestMessages from './GuestMessages.jsx';
 
 const MIN_SLOT_W = 24;   // narrowest a 15-min column may go before overflow-x kicks in
 const GUTTER = 104;      // row-label column (border-box, divider included)
@@ -78,8 +92,10 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
 
   const rows = useMemo(() => sortTables(tables), [tables]);
   const rowIndex = useMemo(() => new Map(rows.map((t, i) => [t.id, i])), [rows]);
-  const startMin = toMin(rules.serviceStart);
-  const endMin = toMin(rules.serviceEnd);
+  // 16 Oct 2026 (service periods): the grid draws the day's own services, greys the closed
+  // stretches and says when the day is closed (useServiceDay.js).
+  const serviceDay = useServiceDay(rules, bookingsDate || clock.ymd, bookings);
+  const { startMin, endMin } = serviceDay;
   const slots = Math.max(1, Math.round((endMin - startMin) / 15));
 
   // ── fluid slot width (FloorScreen's ResizeObserver pattern) ─────────────────
@@ -108,9 +124,12 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
   };
 
   const visible = useMemo(() => bookings.filter((b) => b.status !== 'cancelled'), [bookings]);
-  const listRows = useMemo(
-    () => visible.slice().sort((a, b) => toMin(a.startTime) - toMin(b.startTime) || bookingName(a).localeCompare(bookingName(b))),
-    [visible]);
+  // 16 Oct 2026: cancelled bookings sit greyed at the END of the list (never on the timeline),
+  // so a late cancellation can still be opened and charged after the Inspector was closed.
+  const listRows = useMemo(() => {
+    const byTime = (a, b) => toMin(a.startTime) - toMin(b.startTime) || bookingName(a).localeCompare(bookingName(b));
+    return [...visible.slice().sort(byTime), ...bookings.filter((b) => b.status === 'cancelled').sort(byTime)];
+  }, [visible, bookings]);
   const optBookings = useMemo(() => {
     const base = visible.map(toOptimiserBooking).filter(Boolean);
     // Open POS tabs block their tables like dining bookings — today only.
@@ -187,9 +206,11 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
     return [...visible, ...sessionsToBlocks(tables, visible, rules.turnBands, Number.isFinite(nowMin) ? nowMin : 0, toVenueMin)];
   }, [visible, tables, isToday, nowMin, rules.turnBands, toVenueMin]);
   const labelOf = (id) => rows.find((t) => t.id === id)?.label || String(id).slice(-4);
+  const dropDate = bookingsDate || clock.ymd;
   const dropTargetFor = useCallback((b, dx, dy) => dropTarget({
     booking: b, dx, dy, slotW, rowH: ROW_H, rows, startMin, endMin, others: othersForDrag, nonBlocking: MOVE_NON_BLOCKING,
-  }), [slotW, rows, startMin, endMin, othersForDrag]);
+    rules, date: dropDate,
+  }), [slotW, rows, startMin, endMin, othersForDrag, rules, dropDate]);
   // The pointer offset, plus however far the diary has scrolled since the press.
   const offsetOf = (d) => {
     const el = wrapRef.current;
@@ -336,7 +357,7 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
         </div>
 
         {/* day switcher + view toggle */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px 0', flexShrink: 0 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10, padding: '10px 14px 0', flexShrink: 0 }}>
           <button className="btn btn-ghost btn-xs" onClick={() => shiftDay(-1)} style={{ ...mono }}>‹</button>
           {/* v5.9.62: the date is a real picker (tap it), and Today brings you back. Peter,
               24 Sep, on the iPad: "you need to be able to click on the date and set a date in
@@ -350,7 +371,11 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
             <Chip active={view === 'timeline'} onClick={() => setView('timeline')} style={viewChip}>Timeline</Chip>
             <Chip active={view === 'list'} onClick={() => setView('list')} style={viewChip}>List</Chip>
           </div>
+          {/* 16 Oct 2026 (host tools): the booking requests inbox. */}
+          <div style={{ marginLeft: 'auto' }}><RequestsInbox /></div>
         </div>
+        {/* On its own line so the iPad shows the whole sentence (16 Oct 2026 release review). */}
+        {serviceDay.notice && <div style={{ padding: '6px 14px 0', flexShrink: 0 }}><DayRuleNotice text={serviceDay.notice} /></div>}
 
         {/* timeline / list — one measured scroll container for both views */}
         <div ref={wrapRef} style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: 14 }}>
@@ -363,7 +388,7 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {listRows.map((b) => {
                 const st = displayStatus(b, nowMin, packages);
-                const dead = st === 'no_show';
+                const dead = st === 'no_show' || st === 'cancelled';
                 const isSel = b.id === sel;
                 const pkg = b.packageId ? packages.find((p) => p.id === b.packageId) : null;
                 const labels = (b.tables || []).map((id) => rows.find((t) => t.id === id)?.label || String(id).slice(-4)).join(' + ');
@@ -465,6 +490,7 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
                   `repeating-linear-gradient(to bottom, transparent 0 ${ROW_H}px, ${tintBg('var(--t1)', 2)} ${ROW_H}px ${ROW_H * 2}px)`,
                 ].join(', '),
               }}>
+                <ClosedBands bands={serviceDay.bands} startMin={startMin} slotW={slotW} height={gridH} />
                 {visible.map((b) => {
                   const st = displayStatus(b, nowMin, packages);
                   const meta = statusMeta(st);
@@ -697,17 +723,27 @@ function Kpi({ label, value, sub, col, last }) {
 // and falls back to neutral copy — an empty read is "not visible here", never
 // "unpaid".
 // [rows, failed]: rows null = not read yet, or the read failed (failed true).
-function useBookingPayments(bookingId) {
+// 16 Oct 2026 (host tools): read again when the booking's status moves, after a refund
+// (nonce), and every 15 s while a pay link waits with nothing on file, because a phone
+// booking paid by link stays confirmed (its status never moves).
+function useBookingPayments(bookingId, { status = null, nonce = 0, watch = false } = {}) {
   const [state, setState] = useState({ id: null, rows: null, failed: false });
+  const [tick, setTick] = useState(0);
   useEffect(() => {
     let alive = true;
     loadBookingPayments(bookingId).then((rows) => { if (alive) setState({ id: bookingId, rows, failed: rows === null }); });
     return () => { alive = false; };
-  }, [bookingId]);
+  }, [bookingId, status, nonce, tick]);
+  const onFile = (state.rows || []).some((r) => (r.status === 'captured' || r.status === 'authorised') && r.kind !== 'refund');
+  useEffect(() => {
+    if (!watch || onFile) return undefined;
+    const t = setInterval(() => setTick((n) => n + 1), 15000);
+    return () => clearInterval(t);
+  }, [watch, onFile, bookingId]);
   return state.id === bookingId ? [state.rows, state.failed] : [null, false];
 }
 
-function PaymentState({ b, prepaid, rows }) {
+function PaymentState({ b, prepaid, rows, tz = null }) {
   let line = null;
   if (rows && rows.length) {
     // Money that must go back is checked FIRST (10 Sep 2026 review): before
@@ -734,8 +770,8 @@ function PaymentState({ b, prepaid, rows }) {
       line = { txt: `✓ ${money(captured.amount, 2)} ${kind} by card${card(captured)}${applied}`, col: 'var(--grn)' };
       // 16 Oct 2026 (bookings audit item 3): the bill used less than was paid. The ledger keeps
       // the rest as money owed back (apply_booking_payment, migration 20261016b).
-      // Owed only while the row is still captured: once a refund lands the webhook marks it
-      // refunded, and nothing lowers refund_due_minor yet (a partial refund is a follow up).
+      // Host tools (16 Oct 2026): a refund from the stand lowers refund_due_minor as it goes
+      // (recomputeRefunded, null at 0), so the line goes once the money has gone back.
       const surplus = rows.find((r) => r.status === 'captured' && Number(r.refund_due_minor) > 0);
       if (surplus) {
         const words = surplus.refund_reason
@@ -743,7 +779,9 @@ function PaymentState({ b, prepaid, rows }) {
         line = { txt: `${line.txt}. ${words}`, col: 'var(--orn)' };
       }
     }
-    else if (held) line = { txt: `✓ Card saved${card(held)}. Nothing was taken.`, col: 'var(--grn)' };
+    // "Nothing was taken" only while the booking is live: on a no show or a cancellation the
+    // charge panel below says whether the card was charged (16 Oct 2026).
+    else if (held) line = { txt: `✓ Card saved${card(held)}.${isDead(b) ? '' : ' Nothing was taken.'}`, col: 'var(--grn)' };
     // 16 Oct 2026 (audit item 22): an expired booking with a stale pending row read
     // "payment pending, confirms by itself" about a booking the sweep had released.
     else if (b.status === 'expired') line = { txt: 'Payment not taken, booking released', col: 'var(--t4)' };
@@ -753,6 +791,11 @@ function PaymentState({ b, prepaid, rows }) {
         : { txt: 'Card payment failed. Take payment at the venue.', col: 'var(--red)' };
     }
     else line = { txt: 'Card payment pending. It confirms by itself when the bank answers.', col: 'var(--t3)' };
+  } else if (b.status === 'pending_payment' && b.payLinkUntil) {
+    const until = (() => {
+      try { return new Intl.DateTimeFormat('en-GB', { timeZone: tz || 'Europe/London', weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(b.payLinkUntil)); } catch { return ''; }
+    })();
+    line = { txt: `Pay link sent. Waits for payment until ${until}.`, col: 'var(--orn)' };
   } else if (b.status === 'pending_payment') {
     line = { txt: 'Awaiting card payment. The guest has 20 minutes to pay before the booking expires and the table frees itself.', col: 'var(--orn)' };
   } else if (b.status === 'expired') {
@@ -898,12 +941,24 @@ export function Inspector({ b, nowMin, packages, tables, onClose, startMoving = 
   // rules.holdPerCover x covers, and since rulesOf() falls back to £20 per cover
   // for a venue with no saved rules, every walk-in claimed "Card held" over an
   // invented figure (Peter, 25 Aug). A hold is real only if a row says so.
-  const [payRows, payReadFailed] = useBookingPayments(b.id);
+  const [payNonce, setPayNonce] = useState(0);
+  const payLinkWaiting = !!b.payLinkUntil && ['confirmed', 'pending_payment'].includes(b.status);
+  const [allPayRows, payReadFailed] = useBookingPayments(b.id, { status: b.status, nonce: payNonce, watch: payLinkWaiting });
+  // 16 Oct 2026: a no show charge is never credit, never "paid online", never a reason to undo.
+  const payRows = withoutNoShowCharges(allPayRows);
   // Money flagged to go back is never "on file" (isNeedsRefundRow).
   const capturedRow = (payRows || []).find((r) => r.status === 'captured' && r.kind !== 'refund' && !isNeedsRefundRow(r));
   const heldRow = (payRows || []).find((r) => r.status === 'authorised' && r.kind === 'hold' && !isNeedsRefundRow(r));
   const onFile = capturedRow || heldRow || null;
   const [undoErr, setUndoErr] = useState('');
+  // A no show fee taken on this booking (read from the ledger, or charged on this screen just
+  // now, before the ledger is read again). Undo is refused while it is kept.
+  const [chargedNow, setChargedNow] = useState({ id: null, res: null });
+  const feeRow = takenCharge(allPayRows);
+  const feeNow = chargedNow.id === b.id ? chargedNow.res : null;
+  // A charge still waiting for the bank (pending) blocks Undo too: it may settle after the undo.
+  const feePending = noShowRows(allPayRows).some((r) => r.status === 'pending');
+  const feeTaken = !!feeRow || !!feeNow || feePending;
   // 10 Sep 2026 payment gate: pending_payment, or a booking that owed money
   // with no successful payment on the ledger (payRows null = not read yet).
   const unpaid = bookingUnpaid({ booking: b, pkg, payments: payRows });
@@ -1006,6 +1061,8 @@ export function Inspector({ b, nowMin, packages, tables, onClose, startMoving = 
               {b.customer.allergens?.length > 0 && (
                 <div style={{ fontSize: 11, color: 'var(--red)', fontWeight: 700, textTransform: 'capitalize' }}>{b.customer.allergens.join(', ')}</div>
               )}
+              {/* 16 Oct 2026 (host tools): VIP, Regular, visits from the CRM record. */}
+              <GuestTags customerId={b.customerId} />
             </div>
           </div>
         </div>
@@ -1051,8 +1108,16 @@ export function Inspector({ b, nowMin, packages, tables, onClose, startMoving = 
             </span>
           )}
         </div>
-        <PaymentState b={b} prepaid={prepaid} rows={payRows} />
+        <PaymentState b={b} prepaid={prepaid} rows={payRows} tz={venueTz} />
+        {/* 16 Oct 2026 (host tools): Refund (manager PIN) and the pay link by text. */}
+        <RefundPanel b={b} by={operatorName} onChanged={() => setPayNonce((n) => n + 1)} />
+        <PayLinkPanel b={b} by={operatorName} hasPayment={!!(capturedRow || heldRow)} />
+        {/* 16 Oct 2026 (money track): the no show and late cancel charge on the saved card. */}
+        <NoShowCharge b={b} hasSavedCard={!!heldRow} hasCharge={feeTaken} onCharged={(res) => setChargedNow({ id: b.id, res })} />
       </div>
+
+      {/* 16 Oct 2026 (guest track): texts and emails sent to the guest, and their link. */}
+      <GuestMessages b={b} sec={sec} />
 
       <div style={sec}>
         <SecLabel>This booking</SecLabel>
@@ -1117,6 +1182,16 @@ export function Inspector({ b, nowMin, packages, tables, onClose, startMoving = 
               disabled={!b.seatedAt && payRows === null && !payReadFailed}
               onClick={() => {
                 setUndoErr('');
+                if (b.status === 'no_show' && feePending && !feeRow && !feeNow) {
+                  setUndoErr('A no show charge on this booking is still waiting for the bank. Wait for its answer before undoing the no show.');
+                  return;
+                }
+                if (b.status === 'no_show' && feeTaken) {
+                  const amt = feeRow ? moneyText(Math.round(Number(feeRow.amount) * 100), String(feeRow.currency || 'GBP').toUpperCase())
+                    : moneyText(feeNow?.amountMinor, feeNow?.currency);
+                  setUndoErr(`A ${amt} no show charge was taken on this booking. Refund its check (History on the till, or Transactions in Back Office) before undoing the no show.`);
+                  return;
+                }
                 if (b.seatedAt) { updateBooking?.(b.id, { status: 'dining', departedAt: null }); return; }
                 const next = undoNoShowStatus({ booking: b, payments: payRows });
                 if (!next) {

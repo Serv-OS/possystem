@@ -19,11 +19,18 @@ import { toMin } from '../../lib/bookings/optimiser.js';
 import { editRefusal, editedLine, fmtClock, venueToday } from '../../lib/bookings/editRules.js';
 import { StatusBadge, displayStatus, bookingName } from '../../surfaces/bookings/bits.jsx';
 import EditBookingSheet from '../../surfaces/bookings/EditBookingSheet.jsx';
+// 16 Oct 2026 (v5.11.70 host tools): refunds from the office, and the large party, late party
+// and privacy settings.
+import RefundPanel from '../../surfaces/bookings/RefundPanel.jsx';
+import HostToolsSettings from '../../surfaces/bookings/HostToolsSettings.jsx';
+import ServicePeriodsEditor from '../../surfaces/bookings/ServicePeriodsEditor.jsx';
 import { CUSTOMER_ROOT } from '../../lib/env';
 import { platformSupabase, getLocationId } from '../../lib/supabase';
 import { DEFAULT_RULES, DEFAULT_TURN_BANDS } from '../../lib/bookings/optimiser.js';
 import { claimWaitlistDevice } from '../../lib/waitlist/waitlistData';
 import { getActiveLocationSync } from '../../lib/supabase';
+// 16 Oct 2026: guest messages, the guest's change and cancel link, the cancellation window.
+import GuestManageSettings from './GuestManageSettings.jsx';
 
 const MONO = 'var(--font-mono, ui-monospace, monospace)';
 
@@ -64,6 +71,7 @@ export default function TableBookings({ userName = null }) {
   };
   const patch = (p) => updateBookingRules?.(p);
   const setBand = (key, v) => patch({ turnBands: { ...rules.turnBands, [key]: v } });
+  const venueTzForRules = useStore((s) => s.locationConfig?.timezone);
 
   // ── venue slug → public /book URL (identical lookup to OnlineOrdering) ────
   const [slug, setSlug] = useState(null);
@@ -180,11 +188,11 @@ export default function TableBookings({ userName = null }) {
             value={rules.pacingCap} onChange={v => patch({ pacingCap: v })}
             step={2} min={2} max={30} fmt={v => `${v} cvr`} />
           <BoStepper label="Card hold per cover"
-            sub="Above zero, online guests save a card when they book. Nothing is taken from the card."
+            sub="Above zero, online guests save a card when they book. Nothing is taken unless they do not show, or cancel inside the cancellation window; then the host can charge this amount per guest."
             value={rules.holdPerCover} onChange={v => patch({ holdPerCover: v })}
             step={5} min={0} max={50} fmt={v => money(v)} />
-          {/* 16 Oct 2026: the Cancellation window stepper is hidden until a guest can cancel
-              online (it drives nothing yet). Write the policy in Booking terms below. */}
+          {/* v5.11.70: the Cancellation window lives in "Guest messages and online changes" below:
+              online changes close then, and a cancellation inside it can be charged the card hold. */}
           <BoToggle label="Pacing override needs a manager"
             sub="Booking into a full slot at the host stand requires manager approval (PIN)."
             on={rules.pacingOverrideRequiresPin}
@@ -197,16 +205,24 @@ export default function TableBookings({ userName = null }) {
         </div>
       </div>
 
+      {/* 16 Oct 2026: service periods, closed days, date blocks and online notice (the same
+          editor as the host stand Rules screen). */}
+      <div style={{ marginTop: 14 }}>
+        <ServicePeriodsEditor rules={rules} patch={patch}
+          ready={!bookingRules || bookingRules.servicePeriodsReady !== false}
+          today={venueToday(venueTzForRules)} />
+      </div>
+
       {/* ── Online booking blocks ── */}
       <div style={{ ...S.section, marginTop: 14 }}>
         <div style={S.lbl}>Online booking blocks</div>
         <div style={S.hint}>
-          Both apply to the ONLINE widget only — the host stand can always book any table on any day.
+          Blocked days and these tables apply to the online page only. Closed days and closed dates set above stop the host stand too.
         </div>
         <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginTop: 12 }}>
           <div style={{ flex: '1 1 300px', minWidth: 260 }}>
-            <div style={{ fontSize: 12.5, fontWeight: 700 }}>Blocked days</div>
-            <div style={{ ...S.hint, marginTop: 2 }}>Guests cannot book these dates online — Christmas, private hire, deep-clean days.</div>
+            <div style={{ fontSize: 12.5, fontWeight: 700 }}>Older online blocked days</div>
+            <div style={{ ...S.hint, marginTop: 2 }}>Guests cannot book these dates online. For new blocks, use Closed dates and blocks above with Online only ticked.</div>
             <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
               <input type="date" value={newBlock} onChange={(e) => setNewBlock(e.target.value)}
                 style={{ ...S.inp, width: 170 }} />
@@ -249,6 +265,9 @@ export default function TableBookings({ userName = null }) {
           </div>
         </div>
       </div>
+
+      {/* ── 16 Oct 2026 · Guest messages and online changes (guest track) ── */}
+      <GuestManageSettings rules={rules} patch={patch} ui={{ Stepper: BoStepper, Toggle: BoToggle, S }} showToast={showToast} />
 
       {/* ── 2 · Booking widget ── */}
       <div style={{ ...S.section, marginTop: 14 }}>
@@ -317,6 +336,8 @@ export default function TableBookings({ userName = null }) {
         )}
       </div>
 
+      <HostToolsSettings />
+
       {/* ── 3 · Join groups pointer + per-location note ── */}
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 14 }}>
         <div style={{ ...S.note, background: 'var(--blu-d)', borderColor: 'var(--blu-b)' }}>
@@ -372,10 +393,12 @@ function BookingsList({ userName }) {
   const fmt = useMemo(() => fmtClock(venueTz), [venueTz]);
   const today = venueToday(venueTz);
   const [editing, setEditing] = useState(null); // booking id
+  const [money, setMoney] = useState(null);     // booking id with its payments open (16 Oct 2026)
   const date = bookingsDate || today;
   const isToday = date === today;
   const rows = useMemo(
-    () => bookings.filter((b) => b.status !== 'cancelled').slice().sort((a, b) => toMin(a.startTime) - toMin(b.startTime) || bookingName(a).localeCompare(bookingName(b))),
+    // A cancelled booking stays listed (greyed) while money on it is owed back, so it can be refunded.
+    () => bookings.filter((b) => b.status !== 'cancelled' || Number(b.owedBackMinor) > 0).slice().sort((a, b) => toMin(a.startTime) - toMin(b.startTime) || bookingName(a).localeCompare(bookingName(b))),
     [bookings],
   );
   const labelOf = (id) => tables.find((t) => t.id === id)?.label || String(id).slice(-4);
@@ -405,7 +428,7 @@ function BookingsList({ userName }) {
           const locked = editRefusal(b);
           const edited = editedLine(b, fmt);
           return (
-            <div key={b.id} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px 12px', padding: '8px 12px', borderRadius: 10, background: 'var(--bg2)', border: '1px solid var(--bdr)' }}>
+            <div key={b.id} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px 12px', padding: '8px 12px', borderRadius: 10, background: 'var(--bg2)', border: '1px solid var(--bdr)', opacity: b.status === 'cancelled' ? 0.75 : 1 }}>
               <span style={{ fontSize: 14, fontWeight: 800, fontFamily: MONO, color: 'var(--t1)', width: 48 }}>{String(b.startTime || '').slice(0, 5)}</span>
               <span style={{ flex: '1 1 160px', minWidth: 0 }}>
                 <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: 'var(--t1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{bookingName(b)}</span>
@@ -415,6 +438,17 @@ function BookingsList({ userName }) {
               <span style={{ fontSize: 13, fontWeight: 800, fontFamily: MONO, color: 'var(--t1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{(b.tables || []).map(labelOf).join(' + ') || '-'}</span>
               <StatusBadge st={st} />
               <button className="btn btn-ghost btn-xs" onClick={() => setEditing(b.id)} title={locked || 'Edit this booking'} style={{ height: 30, fontWeight: 700, opacity: locked ? 0.55 : 1, marginLeft: 'auto' }}>Edit</button>
+              {/* 16 Oct 2026 (host tools): money taken for this booking, with Refund. */}
+              {(Number(b.paidMinor) > 0 || Number(b.owedBackMinor) > 0) && (
+                <button className="btn btn-ghost btn-xs" onClick={() => setMoney(money === b.id ? null : b.id)} style={{ height: 30, fontWeight: 700 }}>
+                  {money === b.id ? 'Hide payments' : 'Payments'}
+                </button>
+              )}
+              {money === b.id && (
+                <div style={{ flex: '1 1 100%', minWidth: 0 }}>
+                  <RefundPanel b={b} backOffice by={userName} />
+                </div>
+              )}
               {(edited || b.note) && (
                 <span style={{ flex: '1 1 100%', minWidth: 0, fontSize: 11, color: 'var(--t4)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={b.note || undefined}>{[edited, b.note].filter(Boolean).join(' · ')}</span>
               )}

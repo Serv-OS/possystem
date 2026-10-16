@@ -561,7 +561,8 @@ test('pin: no report throws the pager\'s error away', () => {
   const bookings = read('./bookings/bookingsData.js');
   assert.match(bookings, /return \{ data: \[\], error, tooMany: !!tooMany \};/);
   const report = read('../backoffice/sections/reports/BookingsReport.jsx');
-  assert.match(report, /if \(error\) setFault\(tooMany \? 'too_long' : 'failed'\)/);
+  // 16 Oct 2026: multi site, so a failed site's read stops the loop and the whole report says so.
+  assert.match(report, /if \(error\) \{ fault = tooMany \? 'too_long' : 'failed'; break; \}/);
   assert.match(report, /if \(fault\) \{\s+return <EmptyState icon="⚠" message=\{faultText\(fault\)\}\/>;/);
 
   // every screen that calls the pager directly looks at its error
