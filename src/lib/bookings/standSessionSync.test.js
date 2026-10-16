@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 
 import {
   mergeServerSessions, readServerSessions, reconcileStandSessions, startStandSessionSync,
-  STAND_SESSION_SYNC_MS, WRITE_GRACE_MS,
+  decideOnDelete, withinWriteGrace, STAND_SESSION_SYNC_MS, WRITE_GRACE_MS,
 } from './standSessionSync.js';
 
 const NOW = Date.now();           // the reconcile reads the real clock, so the fixtures sit on it too
@@ -83,6 +83,83 @@ test('a cashed off ghost row (isClosed) counts as no row', () => {
     isClosed: (tid, s) => tid === 't1' && s.id === 'ORD-1', now: NOW,
   });
   assert.equal(next[0].session, null);
+});
+
+test('withinWriteGrace: a seat inside 20 seconds, never a session with no seatedAt', () => {
+  assert.equal(WRITE_GRACE_MS, 20_000);
+  assert.equal(withinWriteGrace({ seatedAt: NOW - 1000 }, NOW), true);
+  assert.equal(withinWriteGrace({ seatedAt: NOW - WRITE_GRACE_MS }, NOW), false);
+  assert.equal(withinWriteGrace({ seatedAt: 0 }, NOW), false);
+  assert.equal(withinWriteGrace({}, NOW), false);
+  assert.equal(withinWriteGrace(null, NOW), false);
+});
+
+// ── decideOnDelete: what a device does with its copy when an active_sessions DELETE arrives ──
+const FRESH = () => sess('ORD-5', { seatedAt: NOW - 300 });     // re seated 300 ms ago, flush pending
+const row = (s) => ({ table_id: 't1', session: s });
+
+test('delete, till, the table it is editing: kept, re published when the server has no row', () => {
+  const local = sess('ORD-1', { items: [{ name: 'Pint', qty: 1 }] });
+  // decided before any read (serverRow null): re publish
+  assert.equal(decideOnDelete({ localSession: local, serverRow: null, isActive: true, hostStand: false, now: NOW }), 'reassert');
+  // after a read that found the row: keep
+  assert.equal(decideOnDelete({ localSession: local, serverRow: row(local), isActive: true, hostStand: false, now: NOW }), 'keep');
+  // nothing on it locally: nothing to re publish, nothing cleared
+  assert.equal(decideOnDelete({ localSession: null, serverRow: null, isActive: true, hostStand: false, now: NOW }), 'keep');
+  // an old session is still never cleared while it is being edited
+  assert.equal(decideOnDelete({ localSession: sess('ORD-1'), serverRow: null, isActive: true, hostStand: false, now: NOW + 10 * WRITE_GRACE_MS }), 'reassert');
+});
+
+test('delete, till, another table with a server row: kept, re published when ours is newer by seatedAt', () => {
+  const older = sess('ORD-1', { seatedAt: OLD });
+  const newer = sess('ORD-2', { seatedAt: OLD + 5000 });
+  assert.equal(decideOnDelete({ localSession: older, serverRow: row(older), isActive: false, hostStand: false, now: NOW }), 'keep');
+  assert.equal(decideOnDelete({ localSession: older, serverRow: row(newer), isActive: false, hostStand: false, now: NOW }), 'keep');
+  assert.equal(decideOnDelete({ localSession: newer, serverRow: row(older), isActive: false, hostStand: false, now: NOW }), 'reassert');
+  // an explicit answer wins over the seatedAt comparison
+  assert.equal(decideOnDelete({ localSession: older, serverRow: row(older), isActive: false, hostStand: false, now: NOW, localNewerThanServer: true }), 'reassert');
+});
+
+test('delete, till, another table, no server row, inside the write grace: re published (the 600 ms flush window)', () => {
+  assert.equal(decideOnDelete({ localSession: FRESH(), serverRow: null, isActive: false, hostStand: false, now: NOW }), 'reassert');
+  assert.equal(decideOnDelete({ localSession: sess('ORD-5', { seatedAt: NOW - WRITE_GRACE_MS + 1 }), serverRow: null, isActive: false, hostStand: false, now: NOW }), 'reassert');
+});
+
+test('delete, till, another table, no server row, past the write grace: cleared', () => {
+  assert.equal(decideOnDelete({ localSession: sess('ORD-1'), serverRow: null, isActive: false, hostStand: false, now: NOW }), 'clear');
+  assert.equal(decideOnDelete({ localSession: sess('ORD-1', { seatedAt: NOW - WRITE_GRACE_MS }), serverRow: null, isActive: false, hostStand: false, now: NOW }), 'clear');
+  // no seatedAt is never inside the grace
+  assert.equal(decideOnDelete({ localSession: { id: 'ORD-1', items: [{ name: 'Pint' }] }, serverRow: null, isActive: false, hostStand: false, now: NOW }), 'clear');
+  // no local copy at all: cleared (the colour follows)
+  assert.equal(decideOnDelete({ localSession: null, serverRow: null, isActive: false, hostStand: false, now: NOW }), 'clear');
+});
+
+test('delete, host stand: a row keeps, no row clears, never re published, active or not', () => {
+  const older = sess('ORD-1', { seatedAt: OLD });
+  const newer = sess('ORD-2', { seatedAt: OLD + 5000 });
+  for (const isActive of [false, true]) {
+    assert.equal(decideOnDelete({ localSession: older, serverRow: row(older), isActive, hostStand: true, now: NOW }), 'keep');
+    assert.equal(decideOnDelete({ localSession: newer, serverRow: row(older), isActive, hostStand: true, now: NOW }), 'keep');
+    assert.equal(decideOnDelete({ localSession: older, serverRow: null, isActive, hostStand: true, now: NOW }), 'clear');
+    assert.equal(decideOnDelete({ localSession: null, serverRow: null, isActive, hostStand: true, now: NOW }), 'clear');
+  }
+});
+
+test('delete, host stand, a seat it made inside the write grace: kept, the same rule as the 30 second merge', () => {
+  const local = floor({ t1: FRESH() });
+  assert.equal(decideOnDelete({ localSession: FRESH(), serverRow: null, isActive: false, hostStand: true, now: NOW }), 'keep');
+  assert.equal(mergeServerSessions(local, [], { now: NOW }), local, 'the merge keeps it too');
+  const later = NOW + WRITE_GRACE_MS;
+  assert.equal(decideOnDelete({ localSession: FRESH(), serverRow: null, isActive: false, hostStand: true, now: later }), 'clear');
+  assert.equal(mergeServerSessions(local, [], { now: later })[0].session, null, 'and both let it go together');
+});
+
+test('delete, a failed read changes nothing on any device', () => {
+  for (const hostStand of [false, true]) {
+    for (const isActive of [false, true]) {
+      assert.equal(decideOnDelete({ localSession: sess('ORD-1'), serverRow: null, readFailed: true, isActive, hostStand, now: NOW }), 'keep');
+    }
+  }
 });
 
 // A PostgREST shaped client: from().select().eq().in() is thenable.

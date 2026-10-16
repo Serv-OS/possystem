@@ -343,25 +343,39 @@ export function bookingsSlice(set, get) {
       // seated there yet — refuse loudly instead of silently overwriting the
       // live session (which is real money on a real check).
       const bookingTables = (b.tables?.length ? b.tables : [b.primaryTableId]).filter(Boolean);
-      const openTables = () => bookingTables
-        .map((tid) => (get().tables || []).find((t) => t.id === tid))
-        .filter((t) => t?.session);
       // 16 Oct 2026 (Provo demo, T1): the local copy is not the truth. The till had cashed T1 off
       // (its active_sessions row was gone) and the host stand still held the session, so this
-      // refused with "Still has an open tab" while the till showed nothing open. Before refusing,
-      // re-read the server for the booking's tables and refresh those tables in the store; a
-      // till keeps the table it is editing (unsent lines live only in its memory).
-      if (openTables().length && !isTrainingMode() && !isMock && supabase) {
+      // refused with "Still has an open tab" while the till showed nothing open. And the other
+      // way: a stand that has not yet heard of a check a till opened moments ago (the INSERT not
+      // delivered, realtime down) would seat over it and the live check's lines would be gone.
+      // So every seat reads the server for the booking's tables (one indexed query) and decides
+      // from the merged tables. Only a host stand writes the merge into its store: a till owns
+      // its sessions (the SessionReconciler arbitrates for it, and the merge has no lastUpdated
+      // arbitration), and a till keeps the table it is editing (unsent lines live only in its
+      // memory). A failed read decides from the local copy. On a till its own copy also counts as
+      // open: a session the server does not hold yet (an offline till whose writes are still
+      // queued) must refuse, never be seated over.
+      const local = get().tables || [];
+      let merged = local;
+      if (!isTrainingMode() && !isMock && supabase) {
         const locId = await resolveLocationId();
         const rows = locId ? await readServerSessions(supabase, locId, bookingTables) : null;
         if (rows) {
           const active = get().activeTableId;
           const keepIds = !isHostStandMode() && active ? new Set([active]) : null;
-          const next = mergeServerSessions(get().tables || [], rows, { tableIds: bookingTables, keepIds, isClosed: isSessionClosed });
-          if (next !== get().tables) set({ tables: next });
+          merged = mergeServerSessions(get().tables || [], rows, { tableIds: bookingTables, keepIds, isClosed: isSessionClosed });
+          if (isHostStandMode() && merged !== get().tables) set({ tables: merged });
         }
       }
-      const openOn = openTables();
+      const openOn = bookingTables
+        .map((tid) => {
+          const m = merged.find((t) => t.id === tid);
+          if (m?.session) return m;
+          if (isHostStandMode()) return null;
+          const l = local.find((t) => t.id === tid);
+          return l?.session ? l : null;
+        })
+        .filter((t) => t?.session);
       if (openOn.length) {
         const labels = openOn.map((t) => t.label || t.id).join(', ');
         // A row with lines on it is a live check. A row with none is a seated but empty check
@@ -433,6 +447,11 @@ export function bookingsSlice(set, get) {
         } else {
           get().seatTable?.(b.primaryTableId, { covers: b.covers, server: get().staff?.name, customer: seatCustomer, booking: bookingRef });
         }
+        // seatTable and seatTableWithItems make the seated table active. A till clears that when
+        // it leaves the POS; a host stand never does, and an active table is skipped by the
+        // realtime INSERT and UPDATE handlers and by the SessionReconciler, so the stand would not
+        // see the till's lines on that table until the 30 second reconcile. A stand edits no check.
+        if (isHostStandMode()) set({ activeTableId: null });
         // Persist just this table's session immediately (the waitlist lesson:
         // a host stand's floor poll can flip the table back before the flush).
         try { await flushSingleSession(b.primaryTableId); } catch { /* best-effort */ }

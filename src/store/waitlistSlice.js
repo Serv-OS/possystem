@@ -66,6 +66,7 @@ import {
   getLocationId,
   ensureAuthToken,
   platformSupabase,
+  isHostStandMode,
 } from '../lib/supabase.js';
 
 // ── internal helpers (module-scoped, not exposed on the store) ────────────────
@@ -358,6 +359,10 @@ export function waitlistSlice(set, get) {
         } : null;
         try {
           get().seatTable?.(opts.tableId, { covers: updated.size, server: get().staff?.name, customer: seatCustomer });
+          // seatTable makes the seated table active. A host stand never clears it, and an active
+          // table is skipped by the realtime INSERT and UPDATE handlers and by the
+          // SessionReconciler, so the stand would miss the till's lines on it. A stand edits no check.
+          if (isHostStandMode()) set({ activeTableId: null });
           // The host stand renders WITHOUT SyncBridge, so seatTable's in-memory session would
           // never reach active_sessions and the 30s floor poll would flip the table back to free.
           // Persist JUST this table (flushSingleSession) — NOT the global flushSessions, which from

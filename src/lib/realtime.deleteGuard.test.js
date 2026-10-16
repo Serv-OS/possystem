@@ -7,9 +7,9 @@
  * Guard 2 kept the local session whenever the deleted payload carried no seatedAt (the replica
  * identity holds no session jsonb) and the copy had items, and re-published it.
  *
- * realtime.js subscribes to a live Supabase client, so the handler's shape is pinned by source:
- * the server read is there, the item heuristic is gone, Guard 1 (the table a till is editing)
- * stays, and the handler re-checks the store after the read.
+ * realtime.js subscribes to a live Supabase client, so the handler itself is pinned thinly by
+ * source: it reads this table's row once and hands the decision to decideOnDelete. Every case of
+ * that decision is a behaviour test in lib/bookings/standSessionSync.test.js.
  */
 
 import { test } from 'node:test';
@@ -24,40 +24,23 @@ assert.ok(start > 0, 'active_sessions DELETE handler present');
 const end = SRC.indexOf('.subscribe();', start);
 const HANDLER = SRC.slice(start, end);
 
-test('the handler is async and reads this table\'s row from the server once', () => {
+test('the handler reads this table\'s row from the server once', () => {
   assert.ok(HANDLER.includes('async ({ old: row })'), 'handler is async');
   assert.ok(HANDLER.includes(".from('active_sessions')"), 'reads active_sessions');
-  assert.ok(HANDLER.includes(".select('table_id, session')"));
-  assert.ok(HANDLER.includes(".eq('location_id', locationId)"));
   assert.ok(HANDLER.includes(".eq('table_id', tid)"));
   assert.ok(HANDLER.includes('.maybeSingle()'));
   assert.equal(HANDLER.split(".from('active_sessions')").length - 1, 1, 'exactly one read');
 });
 
-test('no items heuristic and no deleted seatedAt comparison are left', () => {
-  assert.ok(!HANDLER.includes('items?.length > 0'), 'the items fallback is gone');
-  assert.ok(!HANDLER.includes('deletedSeated'), 'the deleted payload seatedAt comparison is gone');
-  assert.ok(!HANDLER.includes('row?.session?.seatedAt'), 'the deleted payload session is not consulted');
-});
-
-test('Guard 1 is kept for a till and does not hold on a host stand', () => {
-  assert.ok(HANDLER.includes('tid === state.activeTableId && !isHostStandMode()'), 'Guard 1 before the read, till only');
-  assert.ok(HANDLER.includes('if (localTable?.session) reassertSession(tid);'), 'a till re-publishes the table it is editing');
-  assert.ok(SRC.includes('isHostStandMode } from \'./supabase\'') || SRC.includes('isHostStandMode }'), 'isHostStandMode imported');
-});
-
-test('after the read the store is checked again, a row keeps the local copy, no row clears it everywhere', () => {
-  const read = HANDLER.indexOf('.maybeSingle()');
-  const after = HANDLER.slice(read);
-  assert.ok(after.includes('const after = store.getState();'), 're-reads the store after the await');
-  assert.ok(after.includes('tid === after.activeTableId && !isHostStandMode()'), 're-checks activeTableId');
-  assert.ok(after.includes('if (serverRow?.session) {'), 'a server row keeps the local session');
-  assert.ok(after.includes("(localNow.session.seatedAt || 0) > (serverRow.session.seatedAt || 0)) reassertSession(tid)"),
-    'a till re-asserts only when its copy is newer by seatedAt');
-  assert.ok(after.includes("{ ...t, session: null, status: 'available' }"), 'no row: cleared');
-  assert.ok(!after.includes('isHostStandMode()) return;\n      store.setState'), 'the clear is not skipped on a host stand');
-  // a failed read changes nothing
-  assert.ok(HANDLER.includes('if (error) return;'));
+test('the handler hands the decision to decideOnDelete and acts on its answer', () => {
+  assert.ok(SRC.includes("import { decideOnDelete } from './bookings/standSessionSync.js';"), 'decideOnDelete imported');
+  assert.ok(HANDLER.includes('decideOnDelete({'), 'the handler calls it');
+  assert.ok(HANDLER.includes("if (decision === 'reassert') { reassertSession(tid); return; }"));
+  assert.ok(HANDLER.includes("if (decision !== 'clear') return;"));
+  // the old item heuristic and literal graces are gone
+  assert.ok(!HANDLER.includes('items?.length > 0'));
+  assert.ok(!HANDLER.includes('deletedSeated'));
+  assert.ok(!/\b20000\b|20 \* 1000/.test(HANDLER), 'no literal grace in the handler');
 });
 
 test('a host stand never self-heals a row the server dropped (SessionReconciler)', () => {

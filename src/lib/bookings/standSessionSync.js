@@ -26,6 +26,12 @@ export const STAND_SESSION_SYNC_MS = 30 * 1000;
 // the server does not hold is gone (the write failed or the till cashed it off).
 export const WRITE_GRACE_MS = 20 * 1000;
 
+/** True while a session seated at session.seatedAt is inside the write grace. */
+export function withinWriteGrace(session, now = Date.now(), graceMs = WRITE_GRACE_MS) {
+  const seatedAt = Number(session?.seatedAt) || 0;
+  return !!seatedAt && graceMs > 0 && now - seatedAt < graceMs;
+}
+
 const sameJson = (a, b) => {
   if (a === b) return true;
   if (!a || !b) return false;
@@ -76,12 +82,58 @@ export function mergeServerSessions(tables, rows, {
     }
     if (!t.session) return t;
     if (!clearMissing) return t;
-    const seatedAt = Number(t.session.seatedAt) || 0;
-    if (seatedAt && graceMs > 0 && now - seatedAt < graceMs) return t;   // our own write may be in flight
+    if (withinWriteGrace(t.session, now, graceMs)) return t;   // our own write may be in flight
     changed = true;
     return { ...t, session: null, status: 'available' };
   });
   return changed ? next : list;
+}
+
+/**
+ * What a device does with its copy of a table when an active_sessions DELETE arrives
+ * (lib/realtime.js). Pure, so every case is node tested.
+ *
+ *   localSession   this device's copy of the table's session (null = none)
+ *   serverRow      the table's row read back from the server ({ table_id, session }), null when
+ *                  there is no row (also passed as null for the two cases decided without a read:
+ *                  a till's active table, and no local copy)
+ *   readFailed     true when the read errored: change nothing, the reconcilers decide
+ *   isActive       the table is this device's activeTableId
+ *   hostStand      this device is a host stand (Table Bookings, Tables Ready)
+ *   now            the clock, for the write grace
+ *   localNewerThanServer  the local copy is newer than the server row by seatedAt (worked out
+ *                  here when not given)
+ *
+ * Returns 'keep' (leave the local copy), 'reassert' (a till re publishes its copy) or 'clear'.
+ *
+ * A till: the table it is editing is never cleared (re published when the server has no row).
+ * Any other table: a server row keeps the local copy (re published when ours is newer); no row
+ * inside the write grace re publishes, because a re seat on this till reaches the server only
+ * after scheduleFlush's 600 ms debounce and a DELETE (or a stale offline queue delete replay)
+ * can land in that window; no row past the grace clears it.
+ * A host stand: never re publishes. A row keeps; no row clears, except a seat the stand made
+ * inside the write grace, which is kept exactly as mergeServerSessions keeps it.
+ */
+export function decideOnDelete({
+  localSession = null, serverRow = null, readFailed = false, isActive = false, hostStand = false,
+  now = Date.now(), localNewerThanServer,
+} = {}) {
+  if (readFailed) return 'keep';
+  const serverSession = serverRow?.session || null;
+  if (isActive && !hostStand) {
+    if (!localSession) return 'keep';
+    return serverSession ? 'keep' : 'reassert';
+  }
+  if (!localSession) return 'clear';
+  if (serverSession) {
+    if (hostStand) return 'keep';
+    const newer = typeof localNewerThanServer === 'boolean'
+      ? localNewerThanServer
+      : (Number(localSession.seatedAt) || 0) > (Number(serverSession.seatedAt) || 0);
+    return newer ? 'reassert' : 'keep';
+  }
+  if (withinWriteGrace(localSession, now)) return hostStand ? 'keep' : 'reassert';
+  return 'clear';
 }
 
 /** The venue's active_sessions rows (table_id, session), or null when they could not be read. */
