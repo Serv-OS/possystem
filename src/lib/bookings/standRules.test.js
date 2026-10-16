@@ -6,7 +6,9 @@ import {
 } from './standRules.js';
 
 test('seatRefusal: only the venue today may be seated', () => {
-  assert.equal(seatRefusal({ booking: { date: '2026-10-17' }, today: '2026-10-16' }), OTHER_DAY_SEAT_TEXT);
+  assert.equal(seatRefusal({ booking: { date: '2026-10-17' }, today: '2026-10-16' }), 'This booking is for Sat 17 Oct. Seat it on the day.');
+  assert.equal(seatRefusal({ booking: { date: '2026-10-15', startTime: '19:00', turnMinutes: 90 }, today: '2026-10-16', nowMin: 600 }), 'This booking was for Thu 15 Oct.');
+  assert.ok(OTHER_DAY_SEAT_TEXT);
   assert.equal(seatRefusal({ booking: { date: '2026-10-16' }, today: '2026-10-16' }), null);
   assert.ok(seatRefusal({ booking: null, today: '2026-10-16' }));
 });
@@ -16,7 +18,7 @@ test('moneyOnFileLine: captured money is named, holds and nothing say so', () =>
   assert.equal(moneyOnFileLine(null).heldMinor, null);
   const paid = moneyOnFileLine([{ status: 'captured', kind: 'prepay', amount: 76 }], fmt);
   assert.equal(paid.heldMinor, 7600);
-  assert.equal(paid.line, '£76.00 is held on this booking and is not refunded automatically');
+  assert.equal(paid.line, '£76.00 was paid on this booking and is not refunded automatically');
   const refundDue = moneyOnFileLine([{ status: 'captured', kind: 'prepay', amount: 76, refusal_reason: 'NEEDS REFUND: late' }], fmt);
   assert.equal(refundDue.heldMinor, 0);
   assert.match(moneyOnFileLine([{ status: 'authorised', kind: 'hold', amount: 40 }], fmt).line, /card is saved/);
@@ -33,9 +35,13 @@ test('undoCancelStatus: back to confirmed when nothing was owed or it was paid',
 });
 
 test('PIN pad: learnt venue length, OK from 4 to 8', () => {
-  assert.equal(venuePinLength(null), 4);
+  assert.equal(venuePinLength(null), null);
   assert.equal(venuePinLength('6'), 6);
-  assert.equal(venuePinLength(12), 4);
+  assert.equal(venuePinLength(12), null);
+  // Nothing learnt yet (fresh stand): never auto submit, so a 6 digit PIN can be finished with OK.
+  assert.deepEqual(pinPadState('1234', null), { auto: false, ok: true });
+  assert.deepEqual(pinPadState('1234'), { auto: false, ok: true });
+  assert.deepEqual(pinPadState('1234', '4'), { auto: true, ok: true });
   assert.deepEqual(pinPadState('1234', 4), { auto: true, ok: true });
   assert.deepEqual(pinPadState('1234', 6), { auto: false, ok: true });
   assert.deepEqual(pinPadState('123456', 6), { auto: true, ok: true });
@@ -59,4 +65,13 @@ test('offPlanBookings: bookings on no floor plan table', () => {
     { id: 'e', tables: [], primaryTableId: 't-gone', status: 'prepaid' },
   ], ['T1', 'T2']);
   assert.deepEqual(out.map((b) => b.id), ['a', 'e']);
+});
+
+test('seatRefusal: a 23:30 booking whose party walks in at 00:10 can still be seated', () => {
+  const late = { date: '2026-10-15', startTime: '23:30', turnMinutes: 90 };
+  assert.equal(seatRefusal({ booking: late, today: '2026-10-16', nowMin: 10 }), null);
+  // its time has run out by 01:30
+  assert.equal(seatRefusal({ booking: late, today: '2026-10-16', nowMin: 90 }), 'This booking was for Thu 15 Oct.');
+  // no clock given: refused, as before
+  assert.ok(seatRefusal({ booking: late, today: '2026-10-16' }));
 });

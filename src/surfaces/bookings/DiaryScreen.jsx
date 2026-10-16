@@ -314,7 +314,8 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
   // 16 Oct 2026 (audit item 21): a live booking on a table that is not on the
   // floor plan used to vanish from the Timeline. It gets an Off plan row with
   // Move instead (the inspector opens on the move panel).
-  const offPlan = useMemo(() => offPlanBookings(visible, rows.map((t) => t.id)), [visible, rows]);
+  // No floor plan loaded yet (a stand boot: bookings can land first): nothing is off plan yet.
+  const offPlan = useMemo(() => (rows.length ? offPlanBookings(visible, rows.map((t) => t.id)) : []), [visible, rows]);
   const [moveFor, setMoveFor] = useState(null);
 
   return (
@@ -640,7 +641,10 @@ function DropConfirm({ drop, labelOf, onKeep, onMove }) {
 
 // 16 Oct 2026 (audit item 17): Cancel and No-show ask first, take a reason,
 // and say plainly when money is on file, because nothing refunds it by itself.
-function ConfirmSheet({ kind, name, reason, onReason, moneyLine, busy, onBack, onConfirm }) {
+// 16 Oct 2026 (review): the sheet promises the 30 second Undo only when the Undo bar will be
+// offered (canUndo, from undoCancelStatus), and never shows a money check that has failed as one
+// still running.
+function ConfirmSheet({ kind, name, reason, onReason, moneyLine, canUndo = false, busy, onBack, onConfirm }) {
   const isCancel = kind === 'cancel';
   const reasons = isCancel ? CANCEL_REASONS : NO_SHOW_REASONS;
   return (
@@ -651,7 +655,9 @@ function ConfirmSheet({ kind, name, reason, onReason, moneyLine, busy, onBack, o
           {isCancel ? `Cancel ${name}?` : `Mark ${name} as a no-show?`}
         </div>
         <div style={{ fontSize: 13, color: 'var(--t3)', marginTop: 4, lineHeight: 1.45 }}>
-          {isCancel ? 'The table is freed straight away. You can undo for 30 seconds.' : 'The table is freed and the guest\'s no-show count goes up by one.'}
+          {isCancel
+            ? (canUndo ? 'The table is freed straight away. You can undo for 30 seconds.' : 'The table is freed straight away. This cannot be undone here. The guest would need to book again.')
+            : 'The table is freed and the guest\'s no-show count goes up by one.'}
         </div>
         {moneyLine && (
           <div role="status" style={{ marginTop: 10, padding: '9px 11px', borderRadius: 9, background: tintBg('var(--orn)', 10), border: `1px solid ${tintBd('var(--orn)')}`, color: 'var(--orn)', fontSize: 13.5, fontWeight: 700, lineHeight: 1.4 }}>
@@ -664,7 +670,7 @@ function ConfirmSheet({ kind, name, reason, onReason, moneyLine, busy, onBack, o
         </div>
         <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
           <button className="btn btn-ghost" onClick={onBack} disabled={busy} style={{ flex: 1, height: 44 }}>Keep booking</button>
-          <button className={isCancel ? 'btn btn-acc' : 'btn btn-red'} onClick={onConfirm} disabled={busy} style={{ flex: 1, height: 44, fontWeight: 800 }}>
+          <button className="btn btn-red" onClick={onConfirm} disabled={busy} style={{ flex: 1, height: 44, fontWeight: 800 }}>
             {busy ? 'Saving…' : isCancel ? 'Cancel booking' : 'Mark no-show'}
           </button>
         </div>
@@ -899,10 +905,10 @@ export function Inspector({ b, nowMin, packages, tables, onClose, startMoving = 
   // a refusal the operator cannot see is the same as no refusal at all.
   const [seatErr, setSeatErr] = useState('');
   // 16 Oct 2026 (audit item 16): only the venue's today can be seated.
-  const otherDayWhy = seatRefusal({ booking: b, today: clock.ymd });
+  const otherDayWhy = seatRefusal({ booking: b, today: clock.ymd, nowMin: clock.nowMin });
   // A table missing from the floor plan (audit item 21) and whether the party's
   // table really has a tab open (audit item 22: "tab open" only when true).
-  const offPlanHere = (b.tables || []).length > 0 && !(b.tables || []).some((id) => tables.some((t) => t.id === id));
+  const offPlanHere = tables.length > 0 && (b.tables || []).length > 0 && !(b.tables || []).some((id) => tables.some((t) => t.id === id));
   const primaryHasTab = !!tables.find((t) => t.id === b.primaryTableId)?.session;
   const seatNow = async () => {
     const seat = useStore.getState().seatBooking;
@@ -1175,7 +1181,10 @@ export function Inspector({ b, nowMin, packages, tables, onClose, startMoving = 
           name={bookingName(b)}
           reason={confirmReason}
           onReason={setConfirmReason}
-          moneyLine={moneyOnFileLine(payRows, (v) => money(v, 2)).line}
+          moneyLine={payReadFailed && !Array.isArray(payRows)
+            ? 'Could not check for money on this booking. Check Back Office before refunding.'
+            : moneyOnFileLine(payRows, (v) => money(v, 2)).line}
+          canUndo={!!undoCancelStatus({ before: b.status, booking: b, payments: payRows })}
           busy={confirmBusy}
           onBack={() => setConfirmKind(null)}
           onConfirm={async () => {

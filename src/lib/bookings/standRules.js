@@ -4,17 +4,33 @@
 // kept pure and tested so the screens only render them. No store, no React.
 
 import { undoNoShowStatus } from './bookingPayment.js';
+import { shiftYmd, ymdLabel } from './venueClock.js';
 
 // ── other day seating (audit item 16) ────────────────────────────────────────
 // Seating a booking dated another day marked it dining with no till tab, and
 // the walk in panel booked and seated tomorrow when the diary was on tomorrow.
+// Kept for older callers; the words now name the booking's date.
 export const OTHER_DAY_SEAT_TEXT = 'Bookings for another day can be seated on the day';
 
+const hmMin = (hm) => {
+  const m = /^(\d{1,2}):(\d{2})/.exec(String(hm || ''));
+  return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+};
+
 // null = may be seated now; otherwise the words to show.
-export function seatRefusal({ booking, today }) {
+// 16 Oct 2026 (review): a late booking whose party arrives after midnight (23:30, in at 00:10)
+// may still be seated while its booked time has not run out (nowMin is the venue's minute of day).
+export function seatRefusal({ booking, today, nowMin = null }) {
   if (!booking) return 'This booking is not on the diary any more.';
-  if (today && booking.date && booking.date !== today) return OTHER_DAY_SEAT_TEXT;
-  return null;
+  if (!today || !booking.date || booking.date === today) return null;
+  if (booking.date === shiftYmd(today, -1) && nowMin != null) {
+    const start = hmMin(booking.startTime);
+    const turn = Number(booking.turnMinutes) || 90;
+    if (start != null && Number(nowMin) + 1440 < start + turn) return null;
+  }
+  const label = ymdLabel(booking.date, { long: true }).replace(',', '');
+  if (booking.date < today) return `This booking was for ${label}.`;
+  return `This booking is for ${label}. Seat it on the day.`;
 }
 
 // ── Cancel and No-show (audit item 17) ───────────────────────────────────────
@@ -33,7 +49,7 @@ export function moneyOnFileLine(rows, fmt = (v) => `£${Number(v).toFixed(2)}`) 
   if (!Array.isArray(rows)) return { heldMinor: null, line: 'Checking for money on this booking…' };
   const heldMinor = rows.filter(isCaptured).reduce((s, r) => s + Math.round((Number(r.amount) || 0) * 100), 0);
   if (heldMinor > 0) {
-    return { heldMinor, line: `${fmt(heldMinor / 100)} is held on this booking and is not refunded automatically` };
+    return { heldMinor, line: `${fmt(heldMinor / 100)} was paid on this booking and is not refunded automatically` };
   }
   if (rows.some(isHeldCard)) return { heldMinor: 0, line: 'A card is saved on this booking. Nothing was taken.' };
   return { heldMinor: 0, line: null };
@@ -54,21 +70,24 @@ export function undoCancelStatus({ before, booking, payments = null }) {
 // ── PIN pad (audit item 19) ──────────────────────────────────────────────────
 // The pad submitted at exactly 4 digits, so a venue with 6 digit PINs could
 // never log in. The venue's PIN length is learnt from the last good login on
-// this stand (PINs never reach the device), 4 until then; the OK key submits
-// any length from 4 to 8.
+// this stand (PINs never reach the device); the OK key submits any length from
+// 4 to 8. Until a login has taught it, the length is unknown (null) and the pad
+// never auto submits: a 6 digit venue's first login on a fresh stand would
+// otherwise be sent at 4 digits and refused every time.
 export const PIN_MIN = 4;
 export const PIN_MAX = 8;
 export const pinLengthKey = (loc) => `rpos-stand-pin-length:${loc || 'none'}`;
 
 export function venuePinLength(stored) {
   const n = Math.round(Number(stored) || 0);
-  return n >= PIN_MIN && n <= PIN_MAX ? n : PIN_MIN;
+  return n >= PIN_MIN && n <= PIN_MAX ? n : null;
 }
 
 // auto: the pad reached the venue's length. ok: the OK key may submit.
-export function pinPadState(pin, venueLength = PIN_MIN) {
+export function pinPadState(pin, venueLength = null) {
   const len = String(pin || '').length;
-  return { auto: len === venuePinLength(venueLength), ok: len >= PIN_MIN && len <= PIN_MAX };
+  const known = venuePinLength(venueLength);
+  return { auto: known != null && len === known, ok: len >= PIN_MIN && len <= PIN_MAX };
 }
 
 // ── the POS linked pill (audit item 9) ───────────────────────────────────────

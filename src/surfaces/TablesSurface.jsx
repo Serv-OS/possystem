@@ -6,6 +6,7 @@ import { toMin } from '../lib/bookings/optimiser.js';
 import { bookingCreditFor } from '../lib/bookings/bookingCredit';
 import { buildScheduleCtx } from '../lib/locationTime';
 import { resolveServiceCharge } from '../lib/serviceCharge';
+import { computeCheckTotals } from '../lib/payments/checkTotals';
 import CheckSelectorModal from '../components/CheckSelectorModal';
 import CustomerModal from '../components/CustomerModal';
 import { readCustomerByPhone } from '../../supabase/functions/_shared/customerPhoneRead.js';
@@ -928,7 +929,30 @@ export default function TablesSurface() {
                           const totalWithSC = sub + scAmt;
                           // 16 Oct 2026 (bookings audit item 2): booking money is a payment from
                           // seating, shown with the balance only (lib/bookings/bookingCredit.js).
-                          const credit = bookingCreditFor(session, totalWithSC);
+                          // The bill it comes off is the order screen's own figure: the same engine
+                          // and inputs as getPOSTotals (discounts, auto discounts, service, added
+                          // tax), so the card's To pay matches the order screen and the Pay button.
+                          // Only worked out when there is booking money; any failure keeps the old figure.
+                          let billTotal = totalWithSC;
+                          if (session.booking) {
+                            try {
+                              const st = useStore.getState();
+                              const t = computeCheckTotals({
+                                items: session.items || [],
+                                checkDiscounts: session.discounts || [],
+                                covers: session.covers || 1,
+                                serviceChargeWaived: !!session.serviceChargeWaived,
+                                orderType: 'dine-in',
+                                deviceConfig,
+                                discountRules: st.discountRules,
+                                timezone: st.locationConfig?.timezone,
+                                taxRates: st.taxRates,
+                                taxCtx: st.getTaxContext?.(),
+                              });
+                              if (Number.isFinite(Number(t?.total))) billTotal = Number(t.total);
+                            } catch { /* keep the running total with service */ }
+                          }
+                          const credit = bookingCreditFor(session, billTotal);
                           return (
                             <>
                               <div style={{ display:'flex', justifyContent:'space-between', fontSize:14, fontWeight:700 }}>
@@ -944,7 +968,7 @@ export default function TablesSurface() {
                               {credit.hasCredit && (
                                 <>
                                   <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, fontWeight:700, color:'var(--grn)', marginTop:5 }}>
-                                    <span>✓ {credit.label}</span>
+                                    <span>✓ {credit.label}{credit.surplusMinor > 0 && <span style={{ color:'var(--t3)', fontWeight:500 }}> ({money(credit.surplusMinor/100)} stays on the booking)</span>}</span>
                                     <span style={{ fontFamily:'DM Mono,monospace' }}>−{money(credit.appliedMinor/100)}</span>
                                   </div>
                                   <div style={{ display:'flex', justifyContent:'space-between', fontSize:14, fontWeight:800, marginTop:3 }}>
@@ -1064,8 +1088,9 @@ export default function TablesSurface() {
                     const primary = tables.find(t => t.id === selectedBk.primaryTableId);
                     const r = await seatBooking(selectedBk.id);
                     if (r?.ok) showToast(`${primary?.label || selectedTable.label} seated — ${selectedBk.covers} covers`, 'success');
-                    // seatBooking already said why in words for these two; do not add the raw code.
-                    else if (r?.error !== 'table_open' && r?.error !== 'table_seated_empty') showToast(r?.error || 'Could not seat the booking', 'error');
+                    // seatBooking already said why in words (table_open, table_seated_empty, and any
+                    // refusal that returns text); never put its raw code on screen.
+                    else if (!r?.text && r?.error !== 'table_open' && r?.error !== 'table_seated_empty') showToast(r?.error === 'unknown booking' ? 'This booking is not on the diary any more.' : 'Could not seat the booking', 'error');
                     setSelected(null);
                   }} style={{ height:44, fontSize:14 }}>Seat guests →</button>
                   <button className="btn btn-ghost btn-full" onClick={()=>setEditBooking(selectedBk)}>✏ Edit reservation</button>

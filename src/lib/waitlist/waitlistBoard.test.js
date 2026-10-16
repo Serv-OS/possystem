@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { waitingForEstimate, waitState, fittingFreeTables, seatSuggestions, estimate } from './waitlist.js';
+import { waitingForEstimate, waitState, fittingFreeTables, seatSuggestions, estimate, tablesHeldByBookings, bandFor } from './waitlist.js';
 
 const NOW = Date.parse('2026-10-16T19:00:00Z');
 const minsAgo = (m) => NOW - m * 60000;
@@ -33,6 +33,18 @@ test('waitState: under, approaching, over in amber then red, re quoted', () => {
   assert.equal(late.tone, 'red');
   assert.equal(late.text, 'Over by 137 min');
   assert.equal(late.requote, 147);
+  // what the host says now: about 5 more minutes, not 147
+  assert.equal(late.more, 5);
+});
+
+test('waitState: the minute the quote is reached reads Due now, not Over by 0 min', () => {
+  const s = waitState({ addedAt: minsAgo(5), firstQuote: 5, quoted: 3 }, NOW);
+  assert.equal(s.over, 0);
+  assert.equal(s.left, 0);
+  assert.equal(s.text, 'Due now');
+  assert.equal(s.tone, 'amber');
+  assert.equal(s.requote, null);
+  assert.equal(s.more, null);
 });
 
 test('waitState: the first quote is the promise, not the live estimate', () => {
@@ -71,4 +83,32 @@ test('seatSuggestions: queue order, one table per party', () => {
   assert.equal(s.b.id, 'T8');
   assert.equal(s.c, undefined);
   assert.equal(s.d, undefined);
+});
+
+test('a free 4 top with a booking 10 minutes from now is not offered to a walk in', () => {
+  const today = '2026-10-16';
+  const nowMin = 17 * 60 + 50;
+  const bookings = [
+    { id: 'bk-1', date: today, startTime: '18:00', turnMinutes: 90, tables: ['T4'], primaryTableId: 'T4', status: 'confirmed' },
+    { id: 'bk-2', date: today, startTime: '21:00', turnMinutes: 90, tables: ['T8'], primaryTableId: 'T8', status: 'confirmed' },
+    { id: 'bk-3', date: today, startTime: '17:30', turnMinutes: 90, tables: [], primaryTableId: 'T2', status: 'cancelled' },
+    { id: 'bk-4', date: '2026-10-17', startTime: '18:00', turnMinutes: 90, tables: ['T2'], status: 'confirmed' },
+  ];
+  const held = tablesHeldByBookings(bookings, { today, nowMin, turn: bandFor(4).turn });
+  assert.deepEqual([...held], ['T4']);
+  assert.deepEqual(fittingFreeTables(floor, { size: 3, blocked: held }).map((t) => t.id), ['T8']);
+  const s = seatSuggestions([{ id: 'a', size: 4, status: 'waiting' }], floor, {
+    blockedFor: (size) => tablesHeldByBookings(bookings, { today, nowMin, turn: bandFor(size).turn }),
+  });
+  assert.equal(s.a.id, 'T8');
+});
+
+test('a booking already over, or a party already dining, does not hold the table', () => {
+  const today = '2026-10-16';
+  const held = tablesHeldByBookings([
+    { date: today, startTime: '12:00', turnMinutes: 90, tables: ['T4'], status: 'confirmed' },
+    { date: today, startTime: '17:30', turnMinutes: 90, tables: ['T8'], status: 'dining' },
+    { date: today, startTime: '17:30', turnMinutes: 90, tables: [], primaryTableId: 'T2', status: 'prepaid' },
+  ], { today, nowMin: 18 * 60, turn: 60 });
+  assert.deepEqual([...held], ['T2']);
 });

@@ -27,7 +27,7 @@ import {
   loadBookingPreorders, saveBookingPreorders, loadBookingCredit, loadBookingRow,
   departBookingIfDining,
 } from '../lib/bookings/bookingsData.js';
-import { venueToday } from '../lib/bookings/venueClock.js';
+import { venueToday, venueNow } from '../lib/bookings/venueClock.js';
 import { bookingIdsToDepart } from '../lib/bookings/departOnClose.js';
 import { seatRefusal, undoCancelStatus } from '../lib/bookings/standRules.js';
 import { packageItemsFor } from '../lib/bookings/packagePricing.js';
@@ -584,7 +584,8 @@ export function bookingsSlice(set, get) {
       // 16 Oct 2026 (audit item 16): only a booking for the VENUE's today can be
       // seated. One dated another day was marked dining with no till tab (the
       // floor and the till then disagreed for a whole day).
-      const otherDay = seatRefusal({ booking: b, today: todayISO(get) });
+      const vNow = venueNow(get().locationConfig?.timezone);
+      const otherDay = seatRefusal({ booking: b, today: vNow.ymd, nowMin: vNow.nowMin });
       if (otherDay) {
         get().showToast?.(otherDay, 'error');
         return { ok: false, error: 'other_day', text: otherDay };
@@ -800,11 +801,12 @@ export function bookingsSlice(set, get) {
       if (moved?.ok) return { ok: true };
       await get().updateBooking(id, { status: 'cancelled', cancelledAt: b.cancelledAt || Date.now(), cancelReason: b.cancelReason || null });
       const label = (get().tables || []).find((t) => t.id === moved?.tableId)?.label || 'Its table';
+      if (moved?.error !== 'table_taken') console.warn('[bookings] undo cancel: move_booking said', moved?.error || 'no answer');
       return {
         ok: false,
         error: moved?.error === 'table_taken'
           ? `${label} was booked again in the meantime, so it stays cancelled.`
-          : `Could not check the table (${moved?.error || 'no answer'}), so it stays cancelled.`,
+          : 'Could not check the table just now, so it stays cancelled. Book it again if the guest still wants it.',
       };
     },
 

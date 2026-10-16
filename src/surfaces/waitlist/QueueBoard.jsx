@@ -9,9 +9,10 @@
 // active queue. The store keeps each entry's `quoted` fresh via recomputeWaitlistQuotes
 // on every floor/queue change; this view just renders.
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../store';
-import { perBandStrip, freshActives, DEFAULT_BANDS, DEFAULT_QUOTE_RULES, tablesView, waitingForEstimate, seatSuggestions } from '../../lib/waitlist/waitlist';
+import { perBandStrip, freshActives, DEFAULT_BANDS, DEFAULT_QUOTE_RULES, tablesView, waitingForEstimate, seatSuggestions, tablesHeldByBookings, bandFor } from '../../lib/waitlist/waitlist';
+import { venueNow } from '../../lib/bookings/venueClock.js';
 import QueueCard from './QueueCard';
 
 const mono = { fontFamily: 'var(--font-mono)' };
@@ -38,7 +39,18 @@ export default function QueueBoard({ loc, operator, onSeat }) {
   const waitingForEst = useMemo(() => waitingForEstimate(waitlist), [waitlist]);
   // "Seat on T8": the queue in order, each party offered the best free table
   // that fits and that nobody ahead of it was offered.
-  const seatOn = useMemo(() => seatSuggestions(active, tables), [active, tables]);
+  // 16 Oct 2026 (review): never a table with a booking due on it before this party would be done
+  // (tablesHeldByBookings). The stand loads today's bookings (WaitlistSurface); the minute tick
+  // keeps "due soon" current between floor polls.
+  const bookings = useStore(s => s.bookings);
+  const tz = useStore(s => s.locationConfig?.timezone);
+  const [minute, setMinute] = useState(0);
+  useEffect(() => { const t = setInterval(() => setMinute(m => m + 1), 60000); return () => clearInterval(t); }, []);
+  const seatOn = useMemo(() => {
+    const { ymd, nowMin } = venueNow(tz);
+    const blockedFor = (size) => tablesHeldByBookings(bookings || [], { today: ymd, nowMin, turn: bandFor(size, bands).turn });
+    return seatSuggestions(active, tables, { blockedFor });
+  }, [active, tables, bookings, tz, bands, minute]);
   const seatParty = useStore(s => s.seatWaitlistParty);
   const strip = useMemo(
     () => perBandStrip({ tables: tv, waiting: waitingForEst, bands, rules }),

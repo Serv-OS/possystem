@@ -77,7 +77,7 @@ export default function QueueCard({ entry, onSeat, seatOn = null, onSeatOn = nul
   // 16 Oct 2026 (Peter: parties waiting 126 to 142 min still read "quoted 5m"):
   // the timer runs against what the guest was PROMISED (the first quote), and a
   // party past it reads "Over by N min", amber for the first 10 minutes then
-  // red, with a new quote of elapsed + the live estimate (lib/waitlist, tested).
+  // red, with the extra wait to tell the guest (lib/waitlist, tested).
   // Elapsed time is wall clock arithmetic, the same on any device in any zone.
   const ws = waitState(entry);
   const promised = ws.promised;
@@ -140,8 +140,9 @@ export default function QueueCard({ entry, onSeat, seatOn = null, onSeatOn = nul
           <div style={{ fontSize: 10, color: 'var(--t3)', marginTop: 3, ...mono }}>
             {promised != null ? `quoted ${promised}m` : 'no quote'}
           </div>
-          {ws.requote != null && (
-            <div style={{ fontSize: 10, color: 'var(--t2)', marginTop: 2, fontWeight: 700, ...mono }}>new quote ~{ws.requote}m</div>
+          {/* what the host can say now: the extra wait, not the total since arrival */}
+          {ws.more != null && (
+            <div style={{ fontSize: 10, color: 'var(--t2)', marginTop: 2, fontWeight: 700, ...mono }}>tell them ~{ws.more} more min</div>
           )}
           {timerCue && (
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: 3, marginTop: 4, fontSize: 9.5, fontWeight: 700, color: timerCue.col, ...mono }}>
@@ -152,11 +153,10 @@ export default function QueueCard({ entry, onSeat, seatOn = null, onSeatOn = nul
       </div>
 
       {/* footer: status pill + one-tap action + kebab */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 12 }}>
+      {/* wraps on a phone: the pill, Seat on T8, the main action and the menu do not fit one 326 px line.
+          "Over by N min" shows once, under the timer. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, rowGap: 8, flexWrap: 'wrap', marginTop: 12 }}>
         <span style={{ fontSize: 10.5, fontWeight: 700, padding: '5px 11px', borderRadius: 999, background: pill.bg, color: pill.fg, border: `1px solid ${pill.bd}`, textTransform: 'uppercase', letterSpacing: '.06em', ...mono }}>{pill.label}</span>
-        {ws.over > 0 && (
-          <span style={{ fontSize: 10, color: timerCol, fontWeight: 700, ...mono }}>Over by {ws.over} min</span>
-        )}
         <div style={{ flex: 1 }} />
         {/* 16 Oct 2026: a fitting table is free and this party is next for it: one tap seats them there. */}
         {seatOn && onSeatOn && (

@@ -30,6 +30,7 @@ import {
 import { currentAverageWait, freshActives } from '../../lib/waitlist/waitlist';
 import { getLocationConfig } from '../../lib/locationTime';
 import { venueToday, ymdLabel } from '../../lib/bookings/venueClock.js';
+import { pinPadState, venuePinLength, pinLengthKey, PIN_MIN, PIN_MAX } from '../../lib/bookings/standRules.js';
 import { Icon } from '../../components/ServOSIcons';
 import AddPartyDrawer from './AddPartyDrawer';
 import SeatModal from './SeatModal';
@@ -117,7 +118,13 @@ export default function WaitlistSurface() {
     // 16 Oct 2026 (bookings audit item 8): the stand shows the VENUE's date, so load
     // the paired venue's timezone (a stand that booted before pairing had London).
     let cfgLive = true;
-    getLocationConfig(loc).then((cfg) => { if (cfgLive && cfg) useStore.setState({ locationConfig: cfg }); }).catch(() => {});
+    // 16 Oct 2026 (review): today's bookings too, once the venue's date is known, so "Seat on T8"
+    // and the Seat modal never offer a table with a booking due on it. Realtime (bookings channel,
+    // started below) keeps them current.
+    getLocationConfig(loc)
+      .then((cfg) => { if (cfgLive && cfg) useStore.setState({ locationConfig: cfg }); })
+      .catch(() => {})
+      .finally(() => { if (cfgLive) useStore.getState().loadBookingsFromDB?.(loc)?.catch?.(() => {}); });
     waitlistHeartbeat().catch(() => {});
     const hb = setInterval(() => waitlistHeartbeat().catch(() => {}), 60000);
     // The host stand renders WITHOUT SyncBridge, so hydrate the board + floor here and
@@ -282,33 +289,54 @@ function PairScreen({ code }) {
 }
 
 // ── staff PIN ─────────────────────────────────────────────────────────────────
+// 16 Oct 2026 (review): the same pad rule as the Bookings stand (standRules.js), so a venue with
+// 6 digit PINs can sign in here too. The learnt length is shared with the Bookings stand on this
+// tablet (same key); until a login has taught it, only the OK key submits.
+function readPinLength(loc) {
+  try { return venuePinLength(window.localStorage.getItem(pinLengthKey(loc))); } catch { return null; }
+}
 function PinScreen({ loc, venueName, onOk }) {
   const [pin, setPin] = useState('');
   const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [pinLen, setPinLen] = useState(() => readPinLength(loc));
   const submit = async (p) => {
+    if (busy) return;
+    setBusy(true);
     const data = await waitlistPinLogin(loc, p);
+    setBusy(false);
     if (!data?.ok) { setErr('PIN not recognised'); setPin(''); return; }
+    try { window.localStorage.setItem(pinLengthKey(loc), String(p.length)); } catch { /* private mode */ }
+    setPinLen(venuePinLength(p.length));
     onOk({ id: data.id, name: data.name, role: data.role });
   };
-  const tap = (d) => { setErr(''); const next = (pin + d).slice(0, 6); setPin(next); if (next.length === 4) submit(next); };
+  const tap = (d) => {
+    if (busy) return;
+    setErr('');
+    const next = (pin + d).slice(0, PIN_MAX);
+    setPin(next);
+    if (pinPadState(next, pinLen).auto) submit(next);
+  };
+  const canOk = pinPadState(pin, pinLen).ok && !busy;
   return (
     <Screen>
       <div style={{ textAlign: 'center', width: 280 }}>
         <div style={{ fontSize: 13, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.1em', ...mono }}>{venueName || 'Tables Ready'}</div>
         <div style={{ fontSize: 18, fontWeight: 800, margin: '6px 0 18px' }}>Enter your PIN</div>
         <div style={{ display: 'flex', justifyContent: 'center', gap: 12, marginBottom: 18 }}>
-          {[0, 1, 2, 3].map(i => <div key={i} style={{ width: 14, height: 14, borderRadius: 999, background: i < pin.length ? 'var(--acc)' : 'var(--inset)', border: '1px solid var(--bdr2)' }} />)}
+          {Array.from({ length: Math.max(pinLen || PIN_MIN, pin.length) }, (_, i) => <div key={i} style={{ width: 14, height: 14, borderRadius: 999, background: i < pin.length ? 'var(--acc)' : 'var(--inset)', border: '1px solid var(--bdr2)' }} />)}
         </div>
         {err && <div style={{ color: 'var(--red)', fontSize: 13, marginBottom: 12 }}>{err}</div>}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10 }}>
           {[1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => <PinKey key={n} onClick={() => tap(String(n))}>{n}</PinKey>)}
-          <div /><PinKey onClick={() => tap('0')}>0</PinKey>
           <PinKey onClick={() => setPin(pin.slice(0, -1))}>⌫</PinKey>
+          <PinKey onClick={() => tap('0')}>0</PinKey>
+          <PinKey onClick={() => { if (canOk) submit(pin); }} disabled={!canOk}>OK</PinKey>
         </div>
       </div>
     </Screen>
   );
 }
-const PinKey = ({ children, onClick }) => (
-  <button onClick={onClick} className="sv-glass" style={{ height: 60, fontSize: 22, fontWeight: 700, color: 'var(--t1)', cursor: 'pointer', border: '1px solid var(--bdr)', ...mono }}>{children}</button>
+const PinKey = ({ children, onClick, disabled = false }) => (
+  <button onClick={onClick} disabled={disabled} className="sv-glass" style={{ height: 60, fontSize: 22, fontWeight: 700, color: disabled ? 'var(--t4)' : 'var(--t1)', cursor: disabled ? 'default' : 'pointer', border: '1px solid var(--bdr)', ...mono }}>{children}</button>
 );

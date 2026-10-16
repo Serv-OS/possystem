@@ -72,7 +72,8 @@ export function venueClockText(timezone, at, { seconds = true } = {}) {
 
 // The next quarter hour strictly after nowMin, as minutes of the day (a walk
 // in seated at 19:07 is booked at 19:15).
-export const nextQuarterMin = (nowMin) => Math.ceil(((Number(nowMin) || 0) + 1) / 15) * 15;
+// Never past 23:59: after 23:45 the next quarter would be '24:00' on today's date.
+export const nextQuarterMin = (nowMin) => Math.min(1439, Math.ceil(((Number(nowMin) || 0) + 1) / 15) * 15);
 
 // Midnight rollover: when the venue's day changes and the diary was showing
 // the day that just ended, follow to the new day. A diary deliberately on

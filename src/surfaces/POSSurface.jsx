@@ -1479,7 +1479,7 @@ export default function POSSurface() {
                     close. Deposit: the captured deposit applies at close. */}
                 {bookingCredit.hasCredit && (
                   <div style={{fontSize:10.5,fontWeight:700,color:'var(--grn)',marginTop:2}}>
-                    ✓ {bookingCredit.label} {money(bookingCredit.creditMinor/100)}, shown as paid below
+                    ✓ {bookingCredit.label} {money(bookingCredit.creditMinor/100)}
                   </div>
                 )}
                 {/* v5.7.23 - a prepay booking with NO captured credit seats at
@@ -1708,14 +1708,18 @@ export default function POSSurface() {
                     </div>
                   );
                 })}
-                {bookingCredit.hasCredit ? (
+                {/* 16 Oct 2026 (review): with nothing rung in yet there is nothing to take the credit
+                    off, so only the Total row shows (never "−£0.00"). */}
+                {bookingCredit.hasCredit && items.length > 0 ? (
                   <>
                     <div style={{display:'flex',justifyContent:'space-between',fontSize:13,fontWeight:700,color:'var(--t2)',marginTop:8,paddingTop:8,borderTop:'1px solid var(--bdr)'}}>
                       <span>Total</span>
                       <span style={{fontFamily:'var(--font-mono)'}}>{money(total)}</span>
                     </div>
                     <div style={{display:'flex',justifyContent:'space-between',fontSize:13,fontWeight:700,color:'var(--grn)',marginTop:3}}>
-                      <span>✓ {bookingCredit.label}</span>
+                      <span>✓ {bookingCredit.label}{bookingCredit.surplusMinor > 0 && (
+                        <span style={{color:'var(--t3)',fontWeight:500}}> (of {money(bookingCredit.creditMinor/100)} paid, the rest stays on the booking)</span>
+                      )}</span>
                       <span style={{fontFamily:'var(--font-mono)'}}>−{money(bookingCredit.appliedMinor/100)}</span>
                     </div>
                     <div style={{display:'flex',justifyContent:'space-between',fontSize:22,fontWeight:800,marginTop:6}}>
@@ -1805,7 +1809,9 @@ export default function POSSurface() {
               }
               openCheckout();   // 30 Sep 2026: flag number (when the profile asks), allergen gate, checkout
             }}>
-              {items.length>0?`Pay ${money(bookingCredit.hasCredit ? bookingCredit.balanceMinor/100 : total)}`:'Pay'}
+              {items.length>0
+                ? (bookingCredit.hasCredit && bookingCredit.balanceMinor === 0 ? 'Close check' : `Pay ${money(bookingCredit.hasCredit ? bookingCredit.balanceMinor/100 : total)}`)
+                : 'Pay'}
             </button>
           </div>
         </div>

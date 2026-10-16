@@ -59,21 +59,7 @@ export default function ReportsScreen() {
     return () => { alive = false; };
   }, [currentLocationId, fromISO, toISO]);
 
-  // ── money actually taken: captured booking_payments for the week's bookings ──
-  // null = still reading, 'failed' = the ledger could not be read (said so).
-  const [paid, setPaid] = useState(null);
-  const fetchedIds = useMemo(() => (fetched || []).map((b) => b.id).sort().join(','), [fetched]);
-  useEffect(() => {
-    if (fetched === null) return undefined;
-    let alive = true;
-    const ids = fetchedIds ? fetchedIds.split(',') : [];
-    loadCapturedMinorByBooking(ids)
-      .then((m) => { if (alive) setPaid(m === null ? 'failed' : m); })
-      .catch(() => { if (alive) setPaid('failed'); });
-    return () => { alive = false; };
-  }, [fetched, fetchedIds]);
-
-  // ── merge: fetched range + the live diary (store wins — realtime-fresh) ─────
+  // ── merge: fetched range + the live diary (store wins, realtime fresh) ─────
   const rows = useMemo(() => {
     const inRange = (b) => b?.date >= fromISO && b?.date <= toISO;
     const map = new Map();
@@ -81,6 +67,26 @@ export default function ReportsScreen() {
     for (const b of storeBookings) if (inRange(b)) map.set(b.id, b);
     return [...map.values()];
   }, [fetched, storeBookings, fromISO, toISO]);
+
+  // ── money actually taken: captured booking_payments for the week's bookings ──
+  // null = still reading, 'failed' = the ledger could not be read (said so).
+  // 16 Oct 2026 (review): keyed on the MERGED rows, not the boot fetch. The screen stays mounted,
+  // so a booking that arrived by realtime after the stand opened (the prepaid brunch) counted its
+  // covers but none of its money. The previous figures stay on screen while a new read runs.
+  const [paid, setPaid] = useState(null);
+  // id and status: a booking whose payment lands later (pending payment to prepaid) reads again.
+  const rowKey = useMemo(() => rows.map((b) => `${b.id}|${b.status}`).sort().join(','), [rows]);
+  useEffect(() => {
+    if (fetched === null) return undefined;
+    let alive = true;
+    const ids = rowKey ? rowKey.split(',').map((k) => k.split('|')[0]) : [];
+    loadCapturedMinorByBooking(ids)
+      .then((m) => { if (alive) setPaid(m === null ? 'failed' : m); })
+      .catch(() => { if (alive) setPaid('failed'); });
+    return () => { alive = false; };
+    // fetched only gates the first read; rowKey carries every change that matters
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetched === null, rowKey]);
 
   // ── the maths ───────────────────────────────────────────────────────────────
   const stats = useMemo(() => {
@@ -90,9 +96,10 @@ export default function ReportsScreen() {
     const noShows = rows.filter((b) => b.status === 'no_show').length;
     const noShowPct = rows.length ? (noShows / rows.length) * 100 : 0;
 
-    // Money TAKEN, in minor units: the ledger read above for the week, with the
-    // live diary's own captured figures (loadBookings' join) for bookings that
-    // landed since. Cancelled bookings still count: the money was taken.
+    // Money TAKEN, in minor units: the ledger read above, over every booking on
+    // screen. While a new read is in flight, a booking it has not covered yet uses
+    // the figure loadBookings summed for it (paidMinor), if the diary reloaded it.
+    // Cancelled bookings still count: the money was taken.
     let takenMinor = 0, prepayMinor = 0;
     const ledger = paid instanceof Map ? paid : null;
     for (const b of rows) {

@@ -6898,6 +6898,10 @@ export const useStore = create((set, get) => ({
     if (created) {
       depleteForSale(record);
       get().triggerChallenge21Check?.(record);
+      // 16 Oct 2026 (bookings review): a table paid on the reader departs its booking here too,
+      // not only by the realtime echo. Only the paying occupation's session; never throws, and the
+      // write lands only while the booking is still dining.
+      get().departBookingsForClose?.(record, liveIsPayingOccupation ? table.session : null, { tableIsChild: !!table?.parentId });
       // v5.7.21 — stamp the booking's captured rows applied_to_check (server-side
       // idempotent: only un-applied captured rows update, so a retry is a 0-count
       // no-op). Best-effort, never blocks the close.

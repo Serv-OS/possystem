@@ -9,7 +9,8 @@
 
 import { useMemo } from 'react';
 import { useStore } from '../../store';
-import { bandFor, fittingFreeTables } from '../../lib/waitlist/waitlist';
+import { bandFor, fittingFreeTables, tablesHeldByBookings, DEFAULT_BANDS } from '../../lib/waitlist/waitlist';
+import { venueNow } from '../../lib/bookings/venueClock.js';
 import { Icon } from '../../components/ServOSIcons';
 
 const mono = { fontFamily: 'var(--font-mono)' };
@@ -20,8 +21,16 @@ export default function SeatModal({ entry, operator, onClose }) {
 
   // open tables that fit, best-fit ordered, section pref first (one helper,
   // shared with the queue card's "Seat on T8", lib/waitlist/waitlist.js)
-  const fits = useMemo(() => fittingFreeTables(tables, { size: entry.size, sectionPref: entry.sectionPref }),
-    [tables, entry.size, entry.sectionPref]);
+  // 16 Oct 2026 (review): a table with a booking due before this party would be done is not offered.
+  const bookings = useStore(s => s.bookings);
+  const tz = useStore(s => s.locationConfig?.timezone);
+  const cfgBands = useStore(s => s.waitlistConfig?.bands);
+  const fits = useMemo(() => {
+    const { ymd, nowMin } = venueNow(tz);
+    const bands = cfgBands?.length ? cfgBands : DEFAULT_BANDS;
+    const blocked = tablesHeldByBookings(bookings || [], { today: ymd, nowMin, turn: bandFor(entry.size, bands).turn });
+    return fittingFreeTables(tables, { size: entry.size, sectionPref: entry.sectionPref, blocked });
+  }, [tables, entry.size, entry.sectionPref, bookings, tz, cfgBands]);
 
   const seat = async (tableId) => { onClose?.(); await seatParty?.(entry.id, tableId); };
 

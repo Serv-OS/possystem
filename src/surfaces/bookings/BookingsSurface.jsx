@@ -40,7 +40,7 @@ import { startStandSessionSync } from '../../lib/bookings/standSessionSync.js';
 import { startBookingsCatchUp } from '../../lib/bookings/bookingsCatchUp.js';
 import { getLocationConfig } from '../../lib/locationTime';
 import { venueClockText, ymdLabel } from '../../lib/bookings/venueClock.js';
-import { channelPill, pinPadState, venuePinLength, pinLengthKey, PIN_MAX } from '../../lib/bookings/standRules.js';
+import { channelPill, pinPadState, venuePinLength, pinLengthKey, PIN_MIN, PIN_MAX } from '../../lib/bookings/standRules.js';
 import { mono, tintBg, tintBd } from './bits.jsx';
 import { useVenueClock } from './useVenueClock.js';
 import DiaryScreen from './DiaryScreen.jsx';
@@ -401,7 +401,7 @@ function PairScreen({ code }) {
 }
 
 // 16 Oct 2026 (audit item 19): the pad submits at the venue's PIN length (learnt
-// from the last good login on this stand, 4 until then) and the OK key submits
+// from the last good login on this stand; until then only the OK key submits) and the OK key submits
 // any PIN of 4 to 8 digits, so a venue with 6 digit PINs can log in.
 function readPinLength(loc) {
   try { return venuePinLength(window.localStorage.getItem(pinLengthKey(loc))); } catch { return venuePinLength(null); }
@@ -435,7 +435,7 @@ function PinScreen({ loc, venueName, onOk }) {
         <div style={{ fontSize: 13, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.1em', ...mono }}>{venueName || 'Table bookings'}</div>
         <div style={{ fontSize: 18, fontWeight: 800, margin: '6px 0 18px' }}>Enter your PIN</div>
         <div style={{ display: 'flex', justifyContent: 'center', gap: 12, marginBottom: 18 }}>
-          {Array.from({ length: Math.max(pinLen, pin.length) }, (_, i) => <div key={i} style={{ width: 14, height: 14, borderRadius: 999, background: i < pin.length ? 'var(--acc)' : 'var(--inset)', border: '1px solid var(--bdr2)' }} />)}
+          {Array.from({ length: Math.max(pinLen || PIN_MIN, pin.length) }, (_, i) => <div key={i} style={{ width: 14, height: 14, borderRadius: 999, background: i < pin.length ? 'var(--acc)' : 'var(--inset)', border: '1px solid var(--bdr2)' }} />)}
         </div>
         {err && <div style={{ color: 'var(--red)', fontSize: 13, marginBottom: 12 }}>{err}</div>}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10 }}>

@@ -63,6 +63,8 @@ test('nextQuarterMin: strictly after now', () => {
   assert.equal(nextQuarterMin(19 * 60 + 7), 19 * 60 + 15);
   assert.equal(nextQuarterMin(19 * 60), 19 * 60 + 15);
   assert.equal(nextQuarterMin(19 * 60 + 14), 19 * 60 + 15);
+  // after 23:45 it stays on today: 23:59, never '24:00'
+  assert.equal(nextQuarterMin(23 * 60 + 50), 1439);
 });
 
 test('rolloverTarget: follow midnight only when the diary was on the day that ended', () => {
