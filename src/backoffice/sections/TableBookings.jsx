@@ -24,6 +24,8 @@ import { platformSupabase, getLocationId } from '../../lib/supabase';
 import { DEFAULT_RULES, DEFAULT_TURN_BANDS } from '../../lib/bookings/optimiser.js';
 import { claimWaitlistDevice } from '../../lib/waitlist/waitlistData';
 import { getActiveLocationSync } from '../../lib/supabase';
+// 16 Oct 2026: guest messages, the guest's change and cancel link, the cancellation window.
+import GuestManageSettings from './GuestManageSettings.jsx';
 
 const MONO = 'var(--font-mono, ui-monospace, monospace)';
 
@@ -249,6 +251,9 @@ export default function TableBookings({ userName = null }) {
           </div>
         </div>
       </div>
+
+      {/* ── 16 Oct 2026 · Guest messages and online changes (guest track) ── */}
+      <GuestManageSettings rules={rules} patch={patch} ui={{ Stepper: BoStepper, Toggle: BoToggle, S }} showToast={showToast} />
 
       {/* ── 2 · Booking widget ── */}
       <div style={{ ...S.section, marginTop: 14 }}>

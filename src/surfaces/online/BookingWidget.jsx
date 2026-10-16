@@ -33,6 +33,8 @@ import { normalisePhone } from '../../lib/customerLookup';
 import { readTheme, deriveVars, readableOn, DISPLAY_FONT, BODY_FONT } from '../menu/menuTheme';
 import MenuHeader from '../menu/MenuHeader';
 import OnlineItemSheet from './OnlineItemSheet';
+// 16 Oct 2026: the guest's own change and cancel page (?manage=<token>).
+import ManageBookingPage from './ManageBookingPage';
 import { sheetThemeFrom } from './sheetTheme';
 import {
   itemHasOptions, itemNeedsSheetReturn, choiceSummary,
@@ -1183,6 +1185,10 @@ export default function BookingWidget({ location }) {
   const [urlPreorderToken] = useState(() => {
     try { return new URLSearchParams(window.location.search).get('preorder') || null; } catch { return null; }
   });
+  // 16 Oct 2026: ?manage=<token> is the guest's own booking page (change, cancel, calendar).
+  const [urlManageToken] = useState(() => {
+    try { return new URLSearchParams(window.location.search).get('manage') || null; } catch { return null; }
+  });
 
   // boot: 'loading' | 'off' (widget disabled / not configured) | 'error' | 'ready'
   const [boot, setBoot] = useState('loading');
@@ -1493,6 +1499,11 @@ export default function BookingWidget({ location }) {
       brand={brand} onBrand={onBrand} venueName={venueName}
       opsId={opsId} sheetTheme={sheetTheme} />;
   }
+  if (urlManageToken) {
+    return <Shell {...shell}>
+      <ManageBookingPage token={urlManageToken} brand={brand} onBrand={onBrand} />
+    </Shell>;
+  }
 
   if (boot === 'loading') {
     return <Shell {...shell}>
@@ -1672,6 +1683,15 @@ export default function BookingWidget({ location }) {
               We’ll also email and text you this link.
             </div>
           </div>
+        )}
+        {/* 16 Oct 2026: the guest's own change and cancel page (the same link is in their text
+            and email). Absent until migration 20261016c gives every booking its code, and when
+            the guest could not use it right now (inside the venue's cancellation window). */}
+        {result.manageToken && result.manageOpen !== false && (
+          <a href={`${window.location.origin}/book?manage=${result.manageToken}`}
+            style={{ display: 'block', margin: '0 auto 12px', maxWidth: 380, padding: '11px 14px', borderRadius: 11, border: '1px solid var(--line)', color: 'var(--ink)', fontSize: 14, fontWeight: 700, textAlign: 'center', textDecoration: 'none' }}>
+            Change or cancel this booking
+          </a>
         )}
         <div style={S.sub}>
           We’ve saved your details. Just give your name when you arrive.

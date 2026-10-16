@@ -16,6 +16,8 @@ import { CUSTOMER_ROOT } from '../env';
 import { readAllPagesResult } from '../pagedRead.js';
 import { rowToPreorder, preorderInsertRows, withoutChoiceColumns, missingColumn } from './preorderRows.js';
 import { isMissingFunction } from './applyBookingPayment.js';
+// 16 Oct 2026: the guest's confirmation goes the moment the stand, the till or Back Office books.
+import { nudgeConfirmation } from './guestMessages.js';
 
 const isRealLoc = (l) => !!l && l !== 'loc-demo';
 
@@ -248,6 +250,9 @@ export async function createBookingAtomic(b, locationId) {
       p_pacing_override_by: b.pacingOverrideBy || null,
     });
     if (error) { if (!warnAbsentOr(error, 'createBooking')) console.warn('[bookingsData] createBooking:', error.message); return { ok: false, error: error.message }; }
+    // 16 Oct 2026: tell the guest (confirmation by text and email, with their change and cancel
+    // link). Fire and forget; a walk in or a booking with no phone or email sends nothing.
+    if (data?.ok) nudgeConfirmation(b);
     return { ok: !!data?.ok, error: data?.error || null, tableId: data?.table_id || null, conflictBookingId: data?.booking_id && !data?.ok ? data.booking_id : null };
   } catch (e) {
     return { ok: false, error: e?.message || 'write failed' };
