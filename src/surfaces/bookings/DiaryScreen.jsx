@@ -44,6 +44,9 @@ const EDGE_STEP = 12;      // px per frame
 // an empty ledger means "no card", not "cannot see it from here".
 const CARD_IMPOSSIBLE_SOURCES = new Set(['walk_in', 'host']);
 
+// 16 Oct 2026: the Inspector's Messages section (what the guest was sent, the guest link).
+import GuestMessages from './GuestMessages.jsx';
+
 const MIN_SLOT_W = 24;   // narrowest a 15-min column may go before overflow-x kicks in
 const GUTTER = 104;      // row-label column (border-box, divider included)
 const WRAP_CHROME = 30;  // scroll-container padding (14×2) + timeline card border (1×2)
@@ -969,6 +972,9 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
         </div>
         <PaymentState b={b} prepaid={prepaid} rows={payRows} />
       </div>
+
+      {/* 16 Oct 2026 (guest track): texts and emails sent to the guest, and their link. */}
+      <GuestMessages b={b} sec={sec} />
 
       <div style={sec}>
         <SecLabel>This booking</SecLabel>
