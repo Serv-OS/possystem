@@ -28,9 +28,11 @@ import {
 } from '../lib/bookings/bookingsData.js';
 import { packageItemsFor } from '../lib/bookings/packagePricing.js';
 import { buildScheduleCtx } from '../lib/locationTime.js';
-import { supabase, isMock, getActiveLocationSync, getLocationId } from '../lib/supabase.js';
+import { supabase, isMock, getActiveLocationSync, getLocationId, isHostStandMode } from '../lib/supabase.js';
 import { isTrainingMode } from '../lib/trainingMode.js';
 import { flushSingleSession } from '../sync/SessionSync.js';
+import { isSessionClosed } from '../sync/sessionClosure.js';
+import { readServerSessions, mergeServerSessions } from '../lib/bookings/standSessionSync.js';
 
 const isRealLoc = (id) => !!id && id !== 'loc-demo';
 async function resolveLocationId() {
@@ -340,13 +342,38 @@ export function bookingsSlice(set, get) {
       // An open POS tab on any of the booking's tables means no one can be
       // seated there yet — refuse loudly instead of silently overwriting the
       // live session (which is real money on a real check).
-      const openOn = (b.tables?.length ? b.tables : [b.primaryTableId])
+      const bookingTables = (b.tables?.length ? b.tables : [b.primaryTableId]).filter(Boolean);
+      const openTables = () => bookingTables
         .map((tid) => (get().tables || []).find((t) => t.id === tid))
         .filter((t) => t?.session);
+      // 16 Oct 2026 (Provo demo, T1): the local copy is not the truth. The till had cashed T1 off
+      // (its active_sessions row was gone) and the host stand still held the session, so this
+      // refused with "Still has an open tab" while the till showed nothing open. Before refusing,
+      // re-read the server for the booking's tables and refresh those tables in the store; a
+      // till keeps the table it is editing (unsent lines live only in its memory).
+      if (openTables().length && !isTrainingMode() && !isMock && supabase) {
+        const locId = await resolveLocationId();
+        const rows = locId ? await readServerSessions(supabase, locId, bookingTables) : null;
+        if (rows) {
+          const active = get().activeTableId;
+          const keepIds = !isHostStandMode() && active ? new Set([active]) : null;
+          const next = mergeServerSessions(get().tables || [], rows, { tableIds: bookingTables, keepIds, isClosed: isSessionClosed });
+          if (next !== get().tables) set({ tables: next });
+        }
+      }
+      const openOn = openTables();
       if (openOn.length) {
         const labels = openOn.map((t) => t.label || t.id).join(', ');
-        get().showToast?.(`${labels} still has an open tab. Cash it off, or move this booking first.`, 'error');
-        return { ok: false, error: 'table_open' };
+        // A row with lines on it is a live check. A row with none is a seated but empty check
+        // (seated from a stand or a till, nothing rung in yet): a different refusal, so the
+        // screen can say so.
+        const withItems = openOn.filter((t) => (t.session.items || []).some((i) => !i?.voided));
+        if (withItems.length) {
+          get().showToast?.(`${labels} still has an open tab. Cash it off, or move this booking first.`, 'error');
+          return { ok: false, error: 'table_open' };
+        }
+        get().showToast?.(`${labels} is seated with no order yet. Cash it off on the POS, or move this booking.`, 'error');
+        return { ok: false, error: 'table_seated_empty' };
       }
       const seatCustomer = b.customer ? {
         customerId: b.customerId || null,
@@ -408,7 +435,22 @@ export function bookingsSlice(set, get) {
         }
         // Persist just this table's session immediately (the waitlist lesson:
         // a host stand's floor poll can flip the table back before the flush).
-        try { flushSingleSession(b.primaryTableId); } catch { /* best-effort */ }
+        try { await flushSingleSession(b.primaryTableId); } catch { /* best-effort */ }
+        // 16 Oct 2026 (Provo demo, 17:06 UK): the stand seated T1, the server row appeared at
+        // once, and the stand still drew T1 as "booking active, no session". On a host stand the
+        // floor's session for the booking's tables is set from the server row after the seat
+        // write, so the colour follows (light blue seated, orange once lines are rung in). A
+        // table with no row yet keeps its local copy (the write may still be queued).
+        if (isHostStandMode() && !isTrainingMode() && !isMock && supabase) {
+          try {
+            const locId = await resolveLocationId();
+            const rows = locId ? await readServerSessions(supabase, locId, bookingTables) : null;
+            if (rows) {
+              const next = mergeServerSessions(get().tables || [], rows, { tableIds: bookingTables, clearMissing: false, isClosed: isSessionClosed });
+              if (next !== get().tables) set({ tables: next });
+            }
+          } catch { /* the 30 second stand reconcile heals it */ }
+        }
       } catch (e) {
         console.warn('[bookings] seatTable failed:', e?.message || e);
       }

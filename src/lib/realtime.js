@@ -8,7 +8,7 @@
  * Each change event calls the appropriate store action to update state.
  */
 
-import { supabase, isMock, LOCATION_ID, isBackOfficeMode } from './supabase';
+import { supabase, isMock, LOCATION_ID, isBackOfficeMode, isHostStandMode } from './supabase';
 import { applyQueueRealtimeEvent, applyTabRealtimeEvent } from '../sync/QueueSync';
 import { applyWaitlistRealtimeEvent } from '../sync/WaitlistSync';
 import { reassertSession } from '../sync/SessionSync';
@@ -343,29 +343,56 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       table: 'active_sessions',
       // Note: Supabase Realtime does not support row-level filters on DELETE events
       // We receive all deletes and filter by location_id in the handler
-    }, ({ old: row }) => {
+    }, async ({ old: row }) => {
       if (row?.location_id && row.location_id !== locationId) return;
       const tid = row?.table_id;
       if (!tid) return;
       const state = store.getState();
       const localTable = (state.tables || []).find(t => t.id === tid);
-      // v5.5.283 Guard 1: never clear the table this device is actively editing
-      if (tid === state.activeTableId) {
+      // v5.5.283 Guard 1: never clear the table this device is actively editing. A till only:
+      // a host stand edits no check (seatTable stamps activeTableId as a side effect of seating,
+      // so the stand that seated T1 held it as "active" and kept T1 after the till cashed it off).
+      const editingHere = tid === state.activeTableId && !isHostStandMode();
+      if (editingHere) {
         // v5.5.639: the shared row was deleted out-of-band but we keep our live session — re-publish
         // it so active_sessions reconverges (otherwise the SessionSync _lastSent latch never re-writes
         // it and the table silently vanishes from the waitlist/other devices).
         if (localTable?.session) reassertSession(tid);
         return;
       }
-      // v5.5.283 Guard 2: if local session is newer than what was deleted, keep it.
-      // Protects re-seated tables from stale DELETE events.
-      if (localTable?.session) {
-        const localSeated = localTable.session.seatedAt || 0;
-        const deletedSeated = row?.session?.seatedAt || 0;
-        if (deletedSeated && localSeated > deletedSeated) { reassertSession(tid); return; }
-        // Fallback when REPLICA IDENTITY doesn't include session:
-        // preserve sessions that have items (active orders)
-        if (!deletedSeated && localTable.session.items?.length > 0) { reassertSession(tid); return; }
+      if (!localTable?.session) {
+        store.setState(s => ({
+          tables: s.tables.map(t => (t.id === tid ? { ...t, session: null, status: 'available' } : t)),
+        }));
+        return;
+      }
+      // 16 Oct 2026 (Provo demo, T1): the old Guard 2 KEPT the local copy whenever the deleted
+      // payload carried no seatedAt (the replica identity holds no session jsonb) and the copy
+      // had items, and re-published it. On a host stand that left a cashed off table open until
+      // the tablet reloaded, and "Seat now" refused with "Still has an open tab". The server
+      // decides instead: one read of this table's row. A row still there = keep the local copy
+      // (a till re-asserts only when its copy is newer by seatedAt); no row = clear it on every
+      // device, host stand included. A failed read changes nothing (the reconcilers decide).
+      let serverRow = null;
+      try {
+        const { data, error } = await supabase
+          .from('active_sessions')
+          .select('table_id, session')
+          .eq('location_id', locationId)
+          .eq('table_id', tid)
+          .maybeSingle();
+        if (error) return;
+        serverRow = data || null;
+      } catch { return; }
+      // The store may have moved while the read ran: a table seated or opened here meanwhile is
+      // this device's to keep.
+      const after = store.getState();
+      if (tid === after.activeTableId && !isHostStandMode()) return;
+      const localNow = (after.tables || []).find(t => t.id === tid);
+      if (serverRow?.session) {
+        if (!isHostStandMode() && localNow?.session
+            && (localNow.session.seatedAt || 0) > (serverRow.session.seatedAt || 0)) reassertSession(tid);
+        return;
       }
       store.setState(s => ({
         tables: s.tables.map(t =>
