@@ -1,18 +1,27 @@
 /**
- * stock/counts.js — par levels + stock-count sessions.
+ * stock/counts.js: par levels + stock count sessions.
  *
- * A count snapshots each item's on-hand at start (expected_qty). On APPROVAL it
- * posts STOCK_COUNT_ADJ movements (delta = counted − current on-hand) via
- * post_stock_movement (idempotent per count+item), so on-hand reconciles to the
+ * A count snapshots each line's expected quantity at start (expected_qty). On APPROVAL it
+ * posts STOCK_COUNT_ADJ movements (delta = counted minus what the system holds now) via
+ * post_stock_movement (idempotent per count, item and area), so stock reconciles to the
  * physical count and the correction feeds "the gap". House pattern throughout.
+ *
+ * 16 Oct 2026 (stock areas): a count is Full, By area, By supplier or Spot check; a line is one
+ * (item, area); each area on the sheet is marked complete by its counter (stock_count_areas);
+ * approval compares each line with THAT AREA's holding. Until Peter runs the migration
+ * (areasReady false) everything here keeps its 15 Oct shape: one Full count, lines with no area,
+ * adjustments against the item's on hand, the old idempotency keys.
  */
 
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
 import { postStockMovement } from './data.js';
 import { countApprovalPlan, approvalOutcomeText } from './countRules.js';
+import { resolveCountScope, adjustmentKey, chunkArray, INSERT_CHUNK, POST_IN_FLIGHT, countNameFor } from './areaRules.js';
+import { areasReady, fetchAreas, fetchItemAreas, fetchAreaHoldings } from './areas.js';
 import { countName } from '../venueDate.js';
 import { getLocationConfig } from '../locationTime';
 import { readAllPagesResult } from '../pagedRead.js';
+import { limiter } from '../../../supabase/functions/_shared/pagedRows.js';
 
 const nowIso = () => new Date().toISOString();
 async function ensureLoc(locationId) {
@@ -21,6 +30,9 @@ async function ensureLoc(locationId) {
   if (!locationId || locationId === 'loc-demo') return null;
   return locationId;
 }
+const zeroRows = (what, data) => (!data || data.length === 0)
+  ? new Error(`${what} matched 0 rows: RLS blocked it or the row no longer exists`)
+  : null;
 
 // ── par levels ────────────────────────────────────────────────────────────────
 export const fetchParLevels = async (locationId = null) => {
@@ -52,55 +64,161 @@ const countFromRow = (r) => ({
   id: r.id, locationId: r.location_id, name: r.name, countType: r.count_type, status: r.status,
   storageArea: r.storage_area, startedAt: r.started_at, submittedAt: r.submitted_at, approvedAt: r.approved_at,
   varianceValue: r.variance_value == null ? null : Number(r.variance_value), createdAt: r.created_at,
+  supplierId: r.supplier_id || null, approvalNote: r.approval_note || null,
+  startedByName: r.started_by_name || null, approvedByName: r.approved_by_name || null,
+  areas: [],
 });
 const lineFromRow = (r) => ({
-  id: r.id, countId: r.count_id, inventoryItemId: r.inventory_item_id,
+  id: r.id, countId: r.count_id, inventoryItemId: r.inventory_item_id, areaId: r.area_id || null,
   countedQty: r.counted_qty == null ? null : Number(r.counted_qty), expectedQty: r.expected_qty == null ? 0 : Number(r.expected_qty),
   varianceQty: r.variance_qty == null ? null : Number(r.variance_qty), unitCost: r.unit_cost == null ? null : Number(r.unit_cost), sortOrder: r.sort_order,
 });
+const areaRowFromRow = (r, areasById = {}) => ({
+  id: r.id, countId: r.count_id, areaId: r.area_id, name: areasById[r.area_id]?.name || 'Area',
+  status: r.status === 'complete' ? 'complete' : 'open', completedByName: r.completed_by_name || null, completedAt: r.completed_at || null,
+});
+
+/** The per area rows of these counts: { countId: [rows] }. Nothing when the migration has not run. */
+async function fetchCountAreaRows(countIds, locationId) {
+  if (!countIds.length || !(await areasReady(locationId))) return { data: {}, error: null };
+  const [{ data: rows, error }, { data: areas }] = await Promise.all([
+    supabase.from('stock_count_areas').select('*').eq('location_id', locationId).in('count_id', countIds).limit(1000),
+    fetchAreas(locationId, { includeArchived: true }),
+  ]);
+  if (error) return { data: {}, error };
+  const areasById = {};
+  (areas || []).forEach((a) => { areasById[a.id] = a; });
+  const out = {};
+  (rows || []).forEach((r) => { (out[r.count_id] ??= []).push(areaRowFromRow(r, areasById)); });
+  for (const list of Object.values(out)) list.sort((a, b) => (areasById[a.areaId]?.sortOrder ?? 0) - (areasById[b.areaId]?.sortOrder ?? 0));
+  return { data: out, error: null };
+}
 
 export const fetchCounts = async (locationId = null, limit = 60) => {
   if (isMock || !supabase) return { data: [], error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: [], error: null };
   const { data, error } = await supabase.from('stock_counts').select('*').eq('location_id', locationId).order('created_at', { ascending: false }).limit(limit);
-  return { data: (data || []).map(countFromRow), error };
+  const counts = (data || []).map(countFromRow);
+  const { data: areaRows } = await fetchCountAreaRows(counts.map((c) => c.id), locationId);
+  counts.forEach((c) => { c.areas = areaRows[c.id] || []; });
+  return { data: counts, error };
 };
 
+/** One count with its lines (paged: a Full count at a 1,000 item venue is well over 1,000 lines) and its area rows. */
 export const fetchCount = async (countId, locationId = null) => {
   if (isMock || !supabase) return { data: null, error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: null };
-  const [{ data: c }, { data: lines }] = await Promise.all([
+  const [{ data: c, error: cErr }, lines, areaRows] = await Promise.all([
     supabase.from('stock_counts').select('*').eq('location_id', locationId).eq('id', countId).maybeSingle(),
-    supabase.from('stock_count_lines').select('*').eq('location_id', locationId).eq('count_id', countId).order('sort_order'),
+    readAllPagesResult('count lines', (first) => supabase.from('stock_count_lines')
+      .select('*', first ? { count: 'exact' } : undefined).eq('location_id', locationId).eq('count_id', countId).order('sort_order').order('id')),
+    fetchCountAreaRows([countId], locationId),
   ]);
+  if (cErr) return { data: null, error: cErr };
   if (!c) return { data: null, error: null };
-  return { data: { ...countFromRow(c), lines: (lines || []).map(lineFromRow) }, error: null };
+  if (lines.error) return { data: null, error: lines.error };
+  return { data: { ...countFromRow(c), lines: (lines.data || []).map(lineFromRow), areas: areaRows.data?.[countId] || [] }, error: null };
 };
 
-/** Start a count over the given inventory items (snapshots expected on-hand + cost). */
-export const createCount = async ({ name, countType = 'FULL', storageArea, itemIds }, locationId = null) => {
+/**
+ * Start a count. scope: { type: FULL | AREA | SUPPLIER | SPOT | PARTIAL, areaIds, supplierId,
+ * itemIds }. `items` (from fetchInventoryItems) may be handed in to save a read. Snapshots each
+ * line's expected quantity (the area's holding, or the item's on hand for a line with no area)
+ * and cost; inserts lines 200 a request with every insert checked; writes one stock_count_areas
+ * row per area on the sheet. Before the migration: the 15 Oct behaviour, one line per item.
+ */
+export const createCount = async ({ name, countType = 'FULL', storageArea, itemIds, areaIds, supplierId, startedByName, items: givenItems, tz: givenTz }, locationId = null) => {
   if (isMock || !supabase) return { data: null, error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: new Error('No locationId') };
-  let ids = itemIds;
-  let itemsById = {};
-  const { data: items } = await supabase.from('inventory_items').select('id, name, on_hand, current_cost').eq('location_id', locationId).is('archived_at', null);
-  (items || []).forEach(i => { itemsById[i.id] = i; });
-  if (!ids || !ids.length) ids = (items || []).map(i => i.id);
+  const ready = await areasReady(locationId);
+  const type = String(countType || 'FULL').toUpperCase();
   // v5.11.65: a count with no name is dated on the VENUE's clock (a US venue after 17:00 local was
   // being named with London's tomorrow)
-  const tz = name ? null : ((await getLocationConfig(locationId).catch(() => null))?.timezone || null);
+  const tz = givenTz !== undefined ? givenTz : (name ? null : ((await getLocationConfig(locationId).catch(() => null))?.timezone || null));
+
+  if (!ready || (type !== 'AREA' && type !== 'SUPPLIER' && type !== 'SPOT' && type !== 'FULL')) {
+    // ── the 15 Oct shape ──
+    let ids = itemIds;
+    const itemsById = {};
+    const { data: items } = await supabase.from('inventory_items').select('id, name, on_hand, current_cost').eq('location_id', locationId).is('archived_at', null);
+    (items || []).forEach(i => { itemsById[i.id] = i; });
+    if (!ids || !ids.length) ids = (items || []).map(i => i.id);
+    const legacyType = ready ? type : (type === 'AREA' || type === 'SUPPLIER' ? 'FULL' : type);
+    const { data: c, error } = await supabase.from('stock_counts').insert({
+      location_id: locationId, name: name || countName(new Date(), tz, legacyType, storageArea), count_type: legacyType, status: 'DRAFT', storage_area: storageArea || null,
+      ...(ready ? { started_by_name: startedByName || null } : {}),
+    }).select().maybeSingle();
+    if (error || !c) return { data: null, error: error || new Error('Could not start count') };
+    const lines = ids.map((id, i) => ({
+      location_id: locationId, count_id: c.id, inventory_item_id: id,
+      expected_qty: Number(itemsById[id]?.on_hand) || 0, unit_cost: itemsById[id]?.current_cost == null ? null : Number(itemsById[id].current_cost), sort_order: i,
+    }));
+    for (const chunk of chunkArray(lines, INSERT_CHUNK)) {
+      const { data: ins, error: lineErr } = await supabase.from('stock_count_lines').insert(chunk).select('id');
+      const err = lineErr || zeroRows('Count lines', ins);
+      if (err) return { data: countFromRow(c), error: new Error(`The count was started but its lines did not all save: ${err.message}. Delete it and start again.`) };
+    }
+    return { data: countFromRow(c), error: null };
+  }
+
+  // ── with areas ──
+  const [itemsRes, areasRes, itemAreasRes, holdingsRes, spRes] = await Promise.all([
+    givenItems ? Promise.resolve({ data: givenItems, error: null }) : readAllPagesResult('stock items', (first) => supabase.from('inventory_items')
+      .select('id, name, on_hand, current_cost, archived_at, is_tracked', first ? { count: 'exact' } : undefined).eq('location_id', locationId).order('name').order('id')),
+    fetchAreas(locationId),
+    fetchItemAreas(locationId),
+    fetchAreaHoldings(locationId),
+    type === 'SUPPLIER' && supplierId
+      ? readAllPagesResult('supplier packs', (first) => supabase.from('supplier_products')
+        .select('inventory_item_id, supplier_id', first ? { count: 'exact' } : undefined).eq('location_id', locationId).eq('supplier_id', supplierId).order('id'))
+      : Promise.resolve({ data: [], error: null }),
+  ]);
+  const readErr = itemsRes.error || areasRes.error || itemAreasRes.error || holdingsRes.error || spRes.error;
+  if (readErr) return { data: null, error: readErr };
+  // rows from fetchInventoryItems are camelCase already; a raw read is mapped here
+  const items = (itemsRes.data || []).map((i) => (i.onHand !== undefined) ? i : {
+    id: i.id, name: i.name, onHand: Number(i.on_hand) || 0, currentCost: i.current_cost == null ? null : Number(i.current_cost),
+    archivedAt: i.archived_at, isTracked: i.is_tracked !== false,
+  });
+  const supplierProducts = (spRes.data || []).map((r) => (r.inventoryItemId ? r : { inventoryItemId: r.inventory_item_id, supplierId: r.supplier_id }));
+  const areas = areasRes.data || [];
+  const scope = resolveCountScope({ type, areaIds, supplierId, itemIds }, { items, itemAreas: itemAreasRes.data || {}, holdings: holdingsRes.data || {}, supplierProducts, areas });
+  if (!scope.lines.length) return { data: null, error: new Error('Nothing to count: no tracked items match that choice') };
+
+  let supplierName = null;
+  if (type === 'SUPPLIER' && supplierId) {
+    const { data: s } = await supabase.from('suppliers').select('name').eq('location_id', locationId).eq('id', supplierId).maybeSingle();
+    supplierName = s?.name || null;
+  }
+  const areaNames = (areaIds || []).map((id) => areas.find((a) => a.id === id)?.name).filter(Boolean);
+  const finalName = name || countNameFor({ ts: new Date(), tz, type, areaNames, supplierName });
   const { data: c, error } = await supabase.from('stock_counts').insert({
-    location_id: locationId, name: name || countName(new Date(), tz, countType, storageArea), count_type: countType, status: 'DRAFT', storage_area: storageArea || null,
+    location_id: locationId, name: finalName, count_type: type, status: 'DRAFT', storage_area: storageArea || null,
+    supplier_id: type === 'SUPPLIER' ? (supplierId || null) : null, started_by_name: startedByName || null,
   }).select().maybeSingle();
   if (error || !c) return { data: null, error: error || new Error('Could not start count') };
-  const lines = ids.map((id, i) => ({
-    location_id: locationId, count_id: c.id, inventory_item_id: id,
-    expected_qty: Number(itemsById[id]?.on_hand) || 0, unit_cost: itemsById[id]?.current_cost == null ? null : Number(itemsById[id].current_cost), sort_order: i,
+
+  const lines = scope.lines.map((l) => ({
+    location_id: locationId, count_id: c.id, inventory_item_id: l.itemId, area_id: l.areaId,
+    expected_qty: l.expectedQty, unit_cost: l.unitCost, sort_order: l.sortOrder,
   }));
-  if (lines.length) await supabase.from('stock_count_lines').insert(lines);
+  for (const chunk of chunkArray(lines, INSERT_CHUNK)) {
+    const { data: ins, error: lineErr } = await supabase.from('stock_count_lines').insert(chunk).select('id');
+    const err = lineErr || zeroRows('Count lines', ins);
+    if (err) return { data: countFromRow(c), error: new Error(`The count was started but its lines did not all save: ${err.message}. Delete it and start again.`) };
+  }
+  // AREA counts: one row per ticked area (an area ticked but empty still gets its row, so it can be
+  // marked complete); other types: one row per area that has lines. The Unassigned group has none.
+  const rowAreas = type === 'AREA' ? [...new Set([...(areaIds || []).filter((id) => areas.some((a) => a.id === id)), ...scope.areaIds])] : scope.areaIds;
+  if (rowAreas.length) {
+    const { data: ar, error: arErr } = await supabase.from('stock_count_areas')
+      .insert(rowAreas.map((areaId) => ({ location_id: locationId, count_id: c.id, area_id: areaId, status: 'open' }))).select('id');
+    const err = arErr || zeroRows('Count areas', ar);
+    if (err) return { data: countFromRow(c), error: new Error(`The count was started but its area rows did not save: ${err.message}. Delete it and start again.`) };
+  }
   return { data: countFromRow(c), error: null };
 };
 
@@ -122,9 +240,28 @@ export const setCountStatus = async (countId, status, locationId = null) => {
 };
 
 /**
- * Remove one item from a count sheet. Only meaningful before approval — once a
- * count is APPROVED its lines are the evidence behind posted STOCK_COUNT_ADJ
- * movements, so they must not be edited away.
+ * Mark one area of a count complete (or reopen it). Refused on an approved count. The caller
+ * flushes that area's dirty lines first (StockCounts.jsx) and passes the counter's name.
+ */
+export const markAreaComplete = async (countId, areaId, { complete = true, byName = null } = {}, locationId = null) => {
+  if (isMock || !supabase) return { error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { error: new Error('No locationId') };
+  const { data: count } = await supabase.from('stock_counts').select('status').eq('location_id', locationId).eq('id', countId).maybeSingle();
+  if (!count) return { error: new Error('Count not found') };
+  if (count.status === 'APPROVED') return { error: new Error('This count has been approved; its areas cannot be changed.') };
+  const patch = complete
+    ? { status: 'complete', completed_by_name: byName || null, completed_at: nowIso() }
+    : { status: 'open', completed_by_name: null, completed_at: null };
+  const { data, error } = await supabase.from('stock_count_areas').update(patch)
+    .eq('location_id', locationId).eq('count_id', countId).eq('area_id', areaId).select('id');
+  return { error: error || zeroRows(complete ? 'Mark area complete' : 'Reopen area', data) };
+};
+
+/**
+ * Remove one item from a count sheet. Only meaningful before approval: once a count is
+ * APPROVED its lines are the evidence behind posted STOCK_COUNT_ADJ movements, so they must
+ * not be edited away.
  */
 export const removeCountLine = async (lineId, locationId = null) => {
   if (isMock || !supabase) return { error: null };
@@ -135,7 +272,7 @@ export const removeCountLine = async (lineId, locationId = null) => {
   if (!line) return { error: new Error('Line not found') };
   const { data: count } = await supabase.from('stock_counts')
     .select('status').eq('location_id', locationId).eq('id', line.count_id).maybeSingle();
-  if (count?.status === 'APPROVED') return { error: new Error('This count has been approved — its lines are part of your stock history and cannot be removed.') };
+  if (count?.status === 'APPROVED') return { error: new Error('This count has been approved: its lines are part of your stock history and cannot be removed.') };
   return supabase.from('stock_count_lines').delete().eq('location_id', locationId).eq('id', lineId);
 };
 
@@ -145,7 +282,7 @@ export const removeCountLine = async (lineId, locationId = null) => {
  * Guarded on purpose: approving a count posts STOCK_COUNT_ADJ movements, and those
  * movements are what The Gap report measures variance from. Deleting an approved
  * count would silently rewrite stock history and leave the adjustments orphaned, so
- * it is refused — a DRAFT or SUBMITTED count has posted nothing and is safe to bin.
+ * it is refused: a DRAFT or SUBMITTED count has posted nothing and is safe to bin.
  */
 export const deleteCount = async (countId, locationId = null) => {
   if (isMock || !supabase) return { error: null };
@@ -164,46 +301,75 @@ export const deleteCount = async (countId, locationId = null) => {
 };
 
 /**
- * Approve a count: for every counted line, post a STOCK_COUNT_ADJ that moves on-hand
- * to the counted figure (delta = counted − current on-hand), idempotent per
- * count+item, and record the variance. Marks the count APPROVED.
+ * Approve a count: for every counted line, post a STOCK_COUNT_ADJ that moves the holding to
+ * the counted figure (delta = counted minus what the system holds now: that area's holding for
+ * a line with an area, the item's on hand for a line without), idempotent per count, item and
+ * area, and record the variance. Marks the count APPROVED with the approver's name and note.
+ *
+ * 16 Oct 2026: the posts go through a pool of 3 in flight (a Full count at a 1,000 item venue is
+ * 2,000 to 3,000 lines; one after another was 8 to 15 minutes), `onProgress({ done, total })`
+ * feeds the button, and the first failure stops new posts. A retry cannot post a line twice.
  */
-export const approveCount = async (countId, locationId = null) => {
+export const approveCount = async (countId, locationId = null, { approvedByName = null, approvalNote = null, onProgress = null } = {}) => {
   if (isMock || !supabase) return { error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { error: new Error('No locationId') };
-  const { data: lines } = await supabase.from('stock_count_lines').select('*').eq('location_id', locationId).eq('count_id', countId);
-  if (!lines?.length) return { error: new Error('No lines') };
-  const ids = lines.map(l => l.inventory_item_id);
-  const { data: items } = await supabase.from('inventory_items').select('id, name, on_hand, current_cost').eq('location_id', locationId).in('id', ids);
+  const ready = await areasReady(locationId);
+  const linesRes = await readAllPagesResult('count lines', (first) => supabase.from('stock_count_lines')
+    .select('*', first ? { count: 'exact' } : undefined).eq('location_id', locationId).eq('count_id', countId).order('sort_order').order('id'));
+  if (linesRes.error) return { error: linesRes.error };
+  const lines = linesRes.data || [];
+  if (!lines.length) return { error: new Error('No lines') };
+  const ids = [...new Set(lines.map(l => l.inventory_item_id))];
   const onHand = {}; const cost = {}; const names = {};
-  (items || []).forEach(i => { onHand[i.id] = Number(i.on_hand) || 0; cost[i.id] = i.current_cost == null ? 0 : Number(i.current_cost); names[i.id] = i.name; });
+  for (const chunk of chunkArray(ids, 200)) {
+    const { data: items, error: iErr } = await supabase.from('inventory_items').select('id, name, on_hand, current_cost').eq('location_id', locationId).in('id', chunk);
+    if (iErr) return { error: iErr };
+    (items || []).forEach(i => { onHand[i.id] = Number(i.on_hand) || 0; cost[i.id] = i.current_cost == null ? 0 : Number(i.current_cost); names[i.id] = i.name; });
+  }
+  // That area's holding NOW, for every line that has an area (the cache the posting function keeps).
+  let areaOnHand = null;
+  if (ready && lines.some((l) => l.area_id)) {
+    const { data: holdings, error: hErr } = await fetchAreaHoldings(locationId);
+    if (hErr) return { error: hErr };
+    areaOnHand = {};
+    for (const [itemId, areas] of Object.entries(holdings || {})) for (const [areaId, qty] of Object.entries(areas)) areaOnHand[`${itemId}:${areaId}`] = qty;
+  }
   // v5.11.65: the plan is worked out first (countRules, tested), then EVERY write is checked.
   // The old loop awaited each write and read none of the results, so a refused movement still
   // ended in "Count approved" with some adjustments missing. The first failure stops the
-  // approval and the count stays open; a retry cannot post a line twice (one key per count+item).
-  const plan = countApprovalPlan(lines, onHand, cost);
+  // approval and the count stays open; a retry cannot post a line twice (one key per count+item+area).
+  const plan = countApprovalPlan(lines, onHand, cost, areaOnHand);
   if (!plan.adjustments.length) return { error: new Error('Nothing has been counted on this sheet yet') };
   // v5.11.65: posted and total count MOVEMENTS, not counted lines. A sheet of 12 lines where 10
   // matched the shelf reads "2 lines adjusted", and one where every line matched reads "no stock
   // moved" (approvalOutcomeText), instead of "12 lines adjusted".
   const total = plan.adjustments.filter(a => a.delta !== 0).length;
   let posted = 0;
-  for (const a of plan.adjustments) {
+  let failure = null;
+  const gate = limiter(POST_IN_FLIGHT);
+  const tell = () => { try { onProgress?.({ done: posted, total }); } catch { /* the screen's problem */ } };
+  const postOne = async (a) => {
+    if (failure) return;
     if (a.delta !== 0) {
       const mv = await postStockMovement({
         inventoryItemId: a.itemId, qtyBase: a.delta, movementType: 'STOCK_COUNT_ADJ',
-        sourceType: 'stock_count', sourceId: countId, idempotencyKey: `count:${countId}:${a.itemId}`,
-        notes: 'Stock count',
+        sourceType: 'stock_count', sourceId: countId, idempotencyKey: adjustmentKey(countId, a.itemId, ready ? a.areaId : null),
+        notes: 'Stock count', areaId: ready ? a.areaId : null,
       }, locationId);
-      if (mv?.error) return { error: new Error(approvalOutcomeText({ posted, total, failedItem: names[a.itemId] || null, error: mv.error })), data: { posted, total } };
-      posted++;
+      if (mv?.error) { failure = failure || { error: mv.error, item: names[a.itemId] || null }; return; }
+      posted++; tell();
     }
     const { error: lineErr } = await supabase.from('stock_count_lines').update({ variance_qty: a.varQty }).eq('location_id', locationId).eq('id', a.lineId);
-    if (lineErr) return { error: new Error(approvalOutcomeText({ posted, total, failedItem: names[a.itemId] || null, error: lineErr })), data: { posted, total } };
-  }
+    if (lineErr) failure = failure || { error: lineErr, item: names[a.itemId] || null };
+  };
+  await Promise.all(plan.adjustments.map((a) => gate(() => postOne(a))));
+  if (failure) return { error: new Error(approvalOutcomeText({ posted, total, failedItem: failure.item, error: failure.error })), data: { posted, total } };
   const { data: head, error: headErr } = await supabase.from('stock_counts')
-    .update({ status: 'APPROVED', approved_at: nowIso(), variance_value: plan.varianceValue, updated_at: nowIso() })
+    .update({
+      status: 'APPROVED', approved_at: nowIso(), variance_value: plan.varianceValue, updated_at: nowIso(),
+      ...(ready ? { approved_by_name: approvedByName || null, approval_note: approvalNote || null } : {}),
+    })
     .eq('location_id', locationId).eq('id', countId).select('id');
   if (headErr) return { error: headErr, data: { posted, total } };
   if (!head?.length) return { error: new Error('The adjustments posted but the count could not be marked approved. Approve again (nothing will post twice).'), data: { posted, total } };

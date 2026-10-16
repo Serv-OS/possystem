@@ -17,14 +17,18 @@ export function canApproveCount(lines) {
 
 /**
  * What approving will do, line by line.
- * @param lines      stock_count_lines rows (snake_case)
+ * @param lines      stock_count_lines rows (snake_case; area_id null = the whole item)
  * @param onHandById { itemId: current on hand }
  * @param costById   { itemId: current unit cost }
- * @returns { adjustments: [{ lineId, itemId, counted, delta, varQty }], varianceValue, counted, uncounted }
- *   delta   = counted minus on hand now (what the ledger must move)
+ * @param areaOnHand { `${itemId}:${areaId}`: that area's holding now } (16 Oct 2026: stock areas).
+ *                   Null (the old call) means every line is against the item's on hand.
+ * @returns { adjustments: [{ lineId, itemId, areaId, counted, delta, varQty }], varianceValue, counted, uncounted }
+ *   delta   = counted minus on hand now (what the ledger must move). For a line with an area:
+ *             counted minus THAT AREA's holding now, so a Full count reading Cellar 0 and fridge 12
+ *             against Cellar 12 / fridge 0 posts minus 12 and plus 12: the item total does not move.
  *   varQty  = counted minus the expected figure snapshotted when the count started (what the sheet shows)
  */
-export function countApprovalPlan(lines, onHandById = {}, costById = {}) {
+export function countApprovalPlan(lines, onHandById = {}, costById = {}, areaOnHand = null) {
   const adjustments = [];
   let varianceValue = 0, counted = 0, uncounted = 0;
   for (const l of lines || []) {
@@ -32,10 +36,12 @@ export function countApprovalPlan(lines, onHandById = {}, costById = {}) {
     if (l.counted_qty == null || l.counted_qty === '') { uncounted++; continue; }
     counted++;
     const c = num(l.counted_qty);
-    const delta = c - num(onHandById[l.inventory_item_id]);
+    const areaId = l.area_id || null;
+    const now = (areaId && areaOnHand) ? num(areaOnHand[`${l.inventory_item_id}:${areaId}`]) : num(onHandById[l.inventory_item_id]);
+    const delta = c - now;
     const varQty = c - num(l.expected_qty);
     varianceValue += varQty * num(costById[l.inventory_item_id]);
-    adjustments.push({ lineId: l.id, itemId: l.inventory_item_id, counted: c, delta, varQty });
+    adjustments.push({ lineId: l.id, itemId: l.inventory_item_id, areaId, counted: c, delta, varQty });
   }
   return { adjustments, varianceValue: Math.round(varianceValue * 10000) / 10000, counted, uncounted };
 }

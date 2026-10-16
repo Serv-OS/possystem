@@ -26,6 +26,7 @@ import { outstandingOnOrder } from '../../lib/stock/onOrder';
 import { nextDeliveryYmd } from '../../lib/stock/purchasingRules';
 import { buildPoItemRows, filterSortPoItems, pinnedLines, categoriesOf, areasOf, countLine, applyQty, dropEmptyLines, unlistedLineCheck, rowLineValue, relineForSupplier } from '../../lib/stock/poItemList';
 import { fetchPurchaseOrders, savePurchaseOrder, setPOStatus, setPOExpectedDate, receivePurchaseOrder, attachInvoiceToPO, fetchPOInvoices, fnErrorText } from '../../lib/stock/purchasing';
+import { areasReady, fetchAreas } from '../../lib/stock/areas';
 import { reportSave } from '../../lib/saveHealth';
 import { fmtYmd } from '../../lib/venueDate';
 import NumberField from '../../components/NumberField';
@@ -65,19 +66,27 @@ export default function PurchaseOrders() {
   // null = closed; otherwise { [lineId]: { qtyPacks, unitPrice } } seeded from the order.
   const [receiving, setReceiving] = useState(null);
   const [poInvoices, setPoInvoices] = useState([]);
+  // 16 Oct 2026 (stock areas): the venue's areas and where this delivery lands. '' = the
+  // database decides (the receiving area, else each item's own area). Empty before the migration.
+  const [areas, setAreas] = useState([]);
+  const [landArea, setLandArea] = useState('');
 
   const reload = useCallback(async (keepId) => {
     const loc = locId || getActiveLocationSync() || await getLocationId().catch(() => null);
     if (loc && loc !== locId) setLocId(loc);
     const cfg = await getLocationConfig(loc).catch(() => null);
     setVenueTz(cfg?.timezone || null);
-    const [{ data: p }, { data: s }, { data: it }, { data: par }, { data: rate }, { data: wk }] = await Promise.all([
+    // 16 Oct 2026 (stock areas): the venue's areas ride along, so the receive panel can offer
+    // a 'Lands in' dropdown. Before the migration areasOn is false and the list stays empty.
+    const areasOn = await areasReady(loc);
+    const [{ data: p }, { data: s }, { data: it }, { data: par }, { data: rate }, { data: wk }, areaRes] = await Promise.all([
       fetchPurchaseOrders(loc), fetchSuppliers(loc), fetchInventoryItems(loc), fetchParLevels(loc), fetchUsageRates(28, loc), fetchUsageByWeekday(8, loc),
+      areasOn ? fetchAreas(loc) : Promise.resolve({ data: [] }),
     ]);
     // On order the way the Order pad counts it: SENT and PARTIAL orders, in the item's base unit.
     const byId = Object.fromEntries((it || []).map(i => [i.id, i]));
     const { byItem } = outstandingOnOrder(p || [], byId, { todayYmd: buildScheduleCtx(cfg?.timezone).ymd });
-    setPos(p || []); setSuppliers(s || []); setItems(it || []); setPars(par || {}); setUsage(rate || {}); setWeekday(wk); setOnOrder(byItem); setLoading(false);
+    setPos(p || []); setSuppliers(s || []); setItems(it || []); setPars(par || {}); setUsage(rate || {}); setWeekday(wk); setOnOrder(byItem); setAreas(areaRes.data || []); setLoading(false);
     if (keepId) { const f = (p || []).find(x => x.id === keepId); if (f) { setDraft(structuredClone(f)); setSelId(keepId); } }
   }, [locId]);
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, []);
@@ -205,6 +214,7 @@ export default function PurchaseOrders() {
     // delivery is nothing. Prices pre-filled from the PO so variance is one edit away.
     const seed = {};
     (draft.lines || []).forEach(l => { seed[l.id] = { qtyPacks: String(l.qtyPacks), unitPrice: String(l.unitPrice) }; });
+    setLandArea(areas.find(a => a.isReceiving)?.id || '');
     setReceiving(seed);
   };
   const acceptIntoStock = async () => {
@@ -215,7 +225,7 @@ export default function PurchaseOrders() {
       unitPrice: receiving[l.id]?.unitPrice ?? l.unitPrice,
     }));
     setBusy(true);
-    const { error, data } = await receivePurchaseOrder(draft.id, locId, receipts);
+    const { error, data } = await receivePurchaseOrder(draft.id, locId, receipts, { areaId: landArea || null });
     setBusy(false);
     reportSave('goods receipt', error);
     if (error) { showToast?.(error.message, 'error'); return; }
@@ -265,7 +275,7 @@ export default function PurchaseOrders() {
   const pinned = useMemo(() => pinnedLines(draft?.lines), [filterKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const shown = useMemo(() => filterSortPoItems(rows, { q: itemQ, category: cat, area, belowPar, onOrderOnly, onThisOrder, pinned }), [rows, itemQ, cat, area, belowPar, onOrderOnly, onThisOrder, pinned]);
   const cats = useMemo(() => categoriesOf(rows), [rows]);
-  const areas = useMemo(() => areasOf(rows), [rows]);
+  const areaChoices = useMemo(() => areasOf(rows), [rows]);
   const setRowQty = (row, v) => setDraft(d => ({ ...d, lines: applyQty(d.lines, row, v) }));
   // A box left at 0 when the cursor leaves it: the line goes (a 0 line is no line).
   const blurRowQty = (row) => setDraft(d => {
@@ -378,10 +388,10 @@ export default function PurchaseOrders() {
                           {cats.map(c => <option key={c} value={c}>{c}</option>)}
                         </select>
                       )}
-                      {areas.length > 0 && (
+                      {areaChoices.length > 0 && (
                         <select value={area} onChange={e => setArea(e.target.value)} style={{ ...field, width: 'auto', minWidth: 140 }} aria-label="Storage area">
                           <option value="">All areas</option>
-                          {areas.map(a => <option key={a} value={a}>{a}</option>)}
+                          {areaChoices.map(a => <option key={a} value={a}>{a}</option>)}
                         </select>
                       )}
                       <label style={tick}><input type="checkbox" checked={belowPar} onChange={e => setBelowPar(e.target.checked)} />Below par only</label>
@@ -484,6 +494,15 @@ export default function PurchaseOrders() {
                   Check off against the delivery note. Correct any quantity that differs and any price that changed.
                   Shorted lines automatically move to a balance order. Each line can only be received once.
                 </div>
+                {areas.length > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--t3)' }}>Lands in</span>
+                    <select value={landArea} onChange={e => setLandArea(e.target.value)} style={{ ...field, width: 'auto', minWidth: 180 }} title="The stock area this delivery goes into. Move it on with a transfer.">
+                      {!areas.some(a => a.isReceiving) && <option value="">Each item's own area</option>}
+                      {areas.map(a => <option key={a.id} value={a.id}>{a.name}{a.isReceiving ? ' (receiving)' : ''}</option>)}
+                    </select>
+                  </div>
+                )}
                 {(draft.lines || []).map(l => {
                   const r = receiving[l.id] || {};
                   const short = Number(r.qtyPacks) < Number(l.qtyPacks);
