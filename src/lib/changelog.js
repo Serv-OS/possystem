@@ -21,6 +21,26 @@ export const CHANGELOG = [
     ],
   },
   {
+    v: '5.11.67',
+    date: '16 Oct 2026',
+    items: [
+      "Gift cards: the till and the Back Office lookup now send any 16 letter or digit code to the server. They used to insist on the issuing alphabet (no 0, 1, I or O), so a card whose code holds one of those (an imported card, or a seeded demo card) was never looked up and the screen said the code was not found while Back Office listed the card. Real cards issued by ServOS were never affected.",
+      "Orders, new purchase order: choosing a supplier now lists every item that supplier sells as a table, with the item's codes, pack, net price, on hand, on order, par, the suggested packs (the Order pad rule) and a quantity box on each row. Type a quantity and the line is on the order; clear the box and it is off. Lines already on the order sit at the top. Before this the screen offered one search box that showed ten names at a time, so ordering from a supplier with hundreds of lines meant knowing every name.",
+      "Orders: a search box (name, SKU or the supplier's code, case and accent insensitive) and filters for category, storage area, below par only, on order only and on this order only, with a count line such as '60 of 1,200 items shown'. Search and filters work on the list already loaded, so they answer at once.",
+      "Orders: built for a thousand items. The table draws only the rows in view, so 1,200 items do not mean 1,200 boxes on the page, and the stock readers now read in pages of 1,000: the API answers at most 1,000 rows a request and said nothing about the rest, so a venue with more than 1,000 stock items, supplier packs or par levels silently lost the tail on every stock screen.",
+      "Orders: the expected date of a new order is filled in with the supplier's next delivery day on the venue's calendar (tomorrow for a supplier with no schedule), the same rule the Order pad uses, shown in words under the box. It can still be changed. The box used to open empty.",
+      "Orders: an item the supplier does not list can still be added through 'Show all items', but it now asks for the pack size and the price of a pack before it joins the order, and says why: with no pack on file for that supplier there is no size or price to order it by, and a line at no price would book stock at no cost. The row is marked 'pack typed' and the message points at the item's Suppliers tab to save the pack for next time.",
+      "Orders: a quantity box left at 0 is dropped when the order is saved, and the long dash in 'No lines yet' and the other Orders messages is gone.",
+      "Orders: when a supplier has two packs on file for an item (a starred 6 x 2 l case and an older 1 x 2 l bottle), the row shows and prices the starred pack, the same one the Order pad uses. It was taking whichever pack was added first, so the table and the pad could suggest different numbers for the same item.",
+      "Orders: changing the supplier on an order rebuilds every typed line from the new supplier's pack and price at the same number of packs, and takes off any item the new supplier has no pack for, naming them. Until now the old supplier's pack and price stayed on the lines and were emailed to the new supplier.",
+      "Orders: an item added through 'Show all items' must be typed in a unit that converts to the item's own unit (kg for an item counted in g, not 'crate'). The screen says so at once, instead of the delivery being refused later with the order already sent.",
+      "Orders: the Storage area and Category filters treat 'Dry store', 'dry store' and 'Dry Store' as one choice that matches all three. Each spelling used to be its own entry. Storage areas are still typed by hand on the item; a venue list of areas with a drop-down on the item is coming on its own release.",
+      "Orders: the item table keeps its names readable on a 1,280 px laptop (and scrolls sideways when the pane is narrow) instead of squeezing the Item column to nothing, and the price box no longer draws over the On hand figure.",
+      "Orders: the first Save draft on a new order keeps the search, filters and scroll position. Mark sent and Send to supplier stay off while every quantity on the order is 0. With 'On this order only' ticked, clearing a quantity box no longer pulls the row out from under the cursor. A line whose item has since been removed from Stock items reads 'Item no longer on file'.",
+      "Bookings host stand and Tables Ready: the stand now reads the floor from the server every 30 seconds, so a table the till has cashed off clears on the stand (it used to stay open until the tablet reloaded, and Seat now refused with 'still has an open tab'). A table the stand has just seated goes light blue at once and orange when the till rings lines in. The stand never writes any table except the one it seats. Seat now checks the server before refusing, and says 'seated with no order yet' for a seated table with nothing on it. Tills are unchanged, apart from seating a booking from the till, which now checks the server first (for at most 3 seconds) so it can never seat over a table another device has open.",
+    ],
+  },
+  {
     v: '5.11.66',
     date: '16 Oct 2026',
     items: [

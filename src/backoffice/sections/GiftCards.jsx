@@ -886,7 +886,7 @@ function LookupPanel() {
     try {
       const cleaned = q.replace(/[\s-]/g, '').toUpperCase();
       let body;
-      if (/^[A-Z2-9]{16}$/.test(cleaned)) {
+      if (/^[A-Z0-9]{16}$/.test(cleaned)) { // 16 Oct 2026: letters and digits, imported codes included
         body = { code: cleaned };
       } else {
         body = { search: q };

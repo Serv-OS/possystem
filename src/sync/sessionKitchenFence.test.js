@@ -400,7 +400,8 @@ const NOT_FENCED = [
   // The old mode word test stopped it: tables opened on it never reached the other tills.
   ['a till inside the KDS app', { mode: 'kds', type: 'pos', config: { defaultSurface: 'tables', profileName: 'Main counter' } }],
   ['a counter till that only opens on its kitchen view', { mode: 'pos', type: 'pos', config: { defaultSurface: 'kds', profileName: 'Main counter' } }],
-  // The Bookings host stand seats tables (walk ins and bookings) and publishes them here.
+  // The Bookings host stand seats tables (walk ins and bookings) and publishes them here: only the
+  // table it seated (SessionSync markStandOwned, set by the seat paths).
   ['the Bookings host stand', { mode: 'bookings', type: null, config: null }],
   ['the Bookings host stand in a browser that also holds a kitchen pairing', { mode: 'bookings', type: 'kds', config: { defaultSurface: 'kds', profileName: 'Kitchen Display' } }],
   // A profile that opens on the kiosk: not a kitchen screen, left as it was.
@@ -412,9 +413,81 @@ for (const [name, shape] of NOT_FENCED) {
   test(`not fenced: ${name} publishes a table seated on it`, async () => {
     page(shape);
     useStore.setState({ tables: floor({ t3: session(3) }) });
+    if (shape.mode === 'bookings') SS.markStandOwned('t3');   // what seatBooking does on a stand
     await flush();
     assert.equal(upserts().length, 1, name);
     assert.equal(serverTable('t3')?.session?.id, 'sess-3', name);
     SS.teardown();
   });
 }
+
+// ── A host stand publishes nothing but its own seat (16 Oct 2026, Provo demo, T1) ─────────────
+// The stand held copies of tables the tills owned. Any path that re published a copy (the
+// realtime UPDATE reassert with the stand clock ahead, the DELETE item guard, a flush of the
+// whole floor) put a table back that the till had cashed off. The class is closed at the source:
+// reassertSession does nothing on a stand, and a flush on a stand writes only a table the stand
+// seated, once.
+
+const STAND = { mode: 'bookings', type: null, config: null };
+const floor4 = (sessions = {}) => ['t1', 't2', 't3', 't4'].map((id) => ({
+  id, label: id.toUpperCase(), status: sessions[id] ? 'occupied' : 'available', session: sessions[id] || null,
+}));
+// Copies of three tills' tables (from the realtime handlers or the 30 second stand reconcile,
+// which never latch _lastSent) plus the stand's own seat on t4.
+const standFloor = () => floor4({ t1: session(1), t2: session(2), t3: session(3), t4: session(4, { items: [] }) });
+const upsertedIds = () => upserts().flatMap((l) => (Array.isArray(l.payload) ? l.payload : [l.payload]).map((r) => r.table_id)).sort();
+
+test('host stand: reassertSession on a copy writes nothing and schedules no flush', async () => {
+  page(STAND);
+  useStore.setState({ tables: standFloor() });
+  SS.markStandOwned('t4');                         // its own seat, not yet published
+  SS.reassertSession('t1');
+  await tick(700);                                 // past the 600 ms debounce a flush would use
+  assert.deepEqual(upserts(), [], 'not t1, and not even the stand seat: no flush was scheduled');
+  assert.equal(serverTable('t1'), null);
+  SS.teardown();
+});
+
+test('host stand: a scheduled flush publishes only its own seat (t4), never the copies', async () => {
+  page(STAND);
+  useStore.setState({ tables: standFloor() });
+  SS.markStandOwned('t4');
+  SS.scheduleFlush();
+  await tick(700);
+  assert.deepEqual(upsertedIds(), ['t4'], 'only the table the stand seated');
+  assert.equal(serverTable('t4')?.session?.id, 'sess-4');
+  for (const id of ['t1', 't2', 't3']) assert.equal(serverTable(id), null, `${id} is a copy, never written`);
+  SS.teardown();
+});
+
+test('host stand: once its seat is published, a later flush writes nothing (the till owns it now)', async () => {
+  page(STAND);
+  useStore.setState({ tables: standFloor() });
+  SS.markStandOwned('t4');
+  await flush();
+  assert.deepEqual(upsertedIds(), ['t4']);
+  server.log = [];
+  // The till rings lines in on t4; the stand takes the row into its floor (realtime UPDATE).
+  useStore.setState({ tables: standFloor().map((t) => (t.id === 't4' ? { ...t, session: session(4, { covers: 5 }) } : t)) });
+  await flush();
+  assert.deepEqual(upserts(), [], 'the stand copy of t4 is never written back');
+  // The till cashes t4 off; the stand clears it. A stand never deletes a row either.
+  useStore.setState({ tables: floor4() });
+  mock.timers.enable({ apis: ['Date'], now: Date.now() });
+  try { await flush(); mock.timers.tick(4000); await flush(); } finally { mock.timers.reset(); }
+  assert.deepEqual(writes(), [], 'no delete from a stand');
+  SS.teardown();
+});
+
+test('till, the same floor: publishes every table it holds and puts one back, as before', async () => {
+  page(TILL);
+  useStore.setState({ tables: standFloor() });
+  await flush();
+  assert.deepEqual(upsertedIds(), ['t1', 't2', 't3', 't4'], 'a till stamps every table it holds');
+  server.rows.active_sessions = server.rows.active_sessions.filter((r) => r.table_id !== 't1');
+  server.log = [];
+  SS.reassertSession('t1');
+  await tick(700);
+  assert.deepEqual(upsertedIds(), ['t1'], 'and puts back a row that went missing');
+  SS.teardown();
+});

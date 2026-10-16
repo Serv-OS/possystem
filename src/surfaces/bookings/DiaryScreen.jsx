@@ -837,6 +837,8 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
     if (res && res.ok === false) {
       setSeatErr(res.error === 'table_open'
         ? 'Still has an open tab. Cash it off on the POS, or move this booking to a free table.'
+        : res.error === 'table_seated_empty'
+        ? 'Seated with no order yet. Cash it off on the POS or move the booking.'
         : (res.error || 'Could not open the tab for this booking.'));
     }
   };

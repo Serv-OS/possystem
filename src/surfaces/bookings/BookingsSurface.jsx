@@ -34,7 +34,9 @@ import {
 } from '../../lib/waitlist/waitlistData';
 import { Icon } from '../../components/ServOSIcons';
 import { startSessionReconciler } from '../../sync/SessionReconciler';
+import { isSessionClosed } from '../../sync/sessionClosure';
 import { startRealtime } from '../../lib/realtime.js';
+import { startStandSessionSync } from '../../lib/bookings/standSessionSync.js';
 import { mono, tintBg, tintBd } from './bits.jsx';
 import DiaryScreen from './DiaryScreen.jsx';
 import ServiceScreen from './ServiceScreen.jsx';
@@ -125,6 +127,12 @@ export default function BookingsSurface() {
     // never started (Peter, 13 Aug: opened table invisible on the stand). Hydrate
     // the floor directly if it's missing, then kick reconciler + realtime — both
     // are idempotent, so a stand that DID boot with a location is unaffected.
+    // 16 Oct 2026: once the stream is up, the stand replaces every floor table's session from
+    // active_sessions every 30 seconds (lib/bookings/standSessionSync.js). A stand never owns a
+    // session, so a copy the server no longer holds (the till cashed the table off) heals here
+    // whatever realtime delivered. Started after the async hydration; stopped with the effect.
+    let live = true;
+    let stopStandSync = null;
     (async () => {
       try {
         if (!(useStore.getState().tables || []).length && supabase) {
@@ -149,6 +157,11 @@ export default function BookingsSurface() {
       } catch { /* the reconciler converges within 10s either way */ }
       startSessionReconciler();
       startRealtime(useStore, loc);
+      if (live && supabase) {
+        let storage = null;
+        try { storage = window.localStorage; } catch { storage = null; }
+        stopStandSync = startStandSessionSync({ store: useStore, client: supabase, locationId: loc, isClosed: isSessionClosed, storage });
+      }
     })();
     waitlistHeartbeat().catch(() => {});
     const hb = setInterval(() => waitlistHeartbeat().catch(() => {}), 60000);
@@ -159,7 +172,7 @@ export default function BookingsSurface() {
     const remind = () => { if (supabase) supabase.functions.invoke('booking-reminders', { body: { action: 'send_due' } }).catch(() => {}); };
     remind();
     const rem = setInterval(remind, 60 * 60 * 1000);
-    return () => { clearInterval(hb); clearInterval(rem); };
+    return () => { live = false; stopStandSync?.(); clearInterval(hb); clearInterval(rem); };
   }, [stage, loc]);
 
   const locations = useStore((s) => s.locations) || [];
