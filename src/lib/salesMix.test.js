@@ -772,11 +772,10 @@ test('reconcile: the stored subtotals against the lines', () => {
   assert.deepEqual(reconcile([null, undefined], 0), { gross: 0, voided: 0, voidedSubtotal: 0, subtotal: 0, off: 0, diff: 0 });
 });
 
-// 8 Oct 2026 (review finding 2): the Z report's Gross sales is computeSalesStats(checks).gross, the
-// stored subtotal of EVERY check, voided ones too. reconcile().gross must be that very figure, so
-// the report can name the voided checks as the known difference instead of claiming an equality
-// the Z report contradicts.
-test('reconcile: gross is the Z report Gross sales (voided checks in), subtotal is the live checks', () => {
+// 8 Oct 2026 (review finding 2): reconcile().gross is computeSalesStats(checks).gross, the stored
+// subtotal of EVERY check, voided ones too (the Z report's Gross sales until 16 Oct 2026), so the
+// report can name the voided checks as the known difference instead of claiming an equality.
+test('reconcile: gross is every stored subtotal (voided checks in), subtotal is the live checks', () => {
   const r = PLAIN();
   const paid = chk([line('c-food_aaaa1111', 44.5)], { subtotal: 44.5, total: 53.4 });
   const voided = { id: 'v', status: 'voided', closedAt: NOON, subtotal: 100, total: 120, items: [line('c-food_aaaa1111', 100)] };
@@ -784,7 +783,7 @@ test('reconcile: gross is the Z report Gross sales (voided checks in), subtotal 
   const stats = computeSalesStats(checks);
   const view = mixView(mixFromChecks(checks, r), null, r);
   const rec = reconcile(checks, view.total);
-  assert.equal(stats.gross, 144.5, 'the Z report prints Gross sales 144.50');
+  assert.equal(stats.gross, 144.5, 'every stored subtotal, 144.50');
   assert.equal(view.total, 44.5, 'the groups hold the live check only');
   assert.equal(rec.gross, stats.gross);
   assert.deepEqual([rec.voided, rec.voidedSubtotal, rec.subtotal, rec.off, rec.diff], [1, 100, 44.5, 0, 0]);

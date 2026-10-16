@@ -19,6 +19,16 @@ export const CHANGELOG = [
     ],
   },
   {
+    v: '5.11.72',
+    date: '16 Oct 2026',
+    items: [
+      "Till, X and Z report print: the figures are now the Business summary's, so Net sales excluding VAT on the slip is the same as Back Office, Daily trading and the Owner app, to the penny. Until now the slip printed the stored subtotal less discounts as Net sales, with the VAT still inside and free loyalty drinks counted as sales (Huddersfield 16 Oct: the slip said 2,085.10, the Owner app 1,703.30).",
+      "Till slip, top to bottom: Item sales including VAT, less Voids, less Discounts, less Loyalty rewards, less Refunds, equals Sales including VAT, of which VAT, Net sales excluding VAT, plus Service, plus Tips, equals Money collected. Payments list Card, Cash and Gift card with how many checks each paid and the tips inside, adding up to Money collected. A free loyalty drink is never shown as money: a reward the till labelled 'loyalty+cash' no longer reads as cash taken. A refund made today on an earlier sale comes off today. A 58 mm printer prints 'inc' and 'ex' so every line fits.",
+      "Back Office, Reports, Z report: the same figures and wording as the till slip and the Business summary. MONEY COLLECTED replaces GRAND TOTAL (which counted loyalty rewards as money), Payments are Card, Cash and Gift card, and the cash drawer helper reads the cash actually taken. The tax by rate block is unchanged and now says how much of it is VAT on loyalty rewards.",
+      "Back Office, Sales mix: the note under the table now says the checks' stored subtotals, as the Z report no longer prints them as Gross sales.",
+    ],
+  },
+  {
     v: '5.11.71',
     date: '16 Oct 2026',
     items: [
