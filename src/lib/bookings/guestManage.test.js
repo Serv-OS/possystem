@@ -39,6 +39,7 @@ function fakeDb({ tables = {}, rpc = null } = {}) {
         }
         let hits = list.filter((row) => st.filters.every((f) => f(row)));
         if (st.op === 'update') hits.forEach((row) => Object.assign(row, st.patch));
+        if (st.op === 'delete') { tables[table] = list.filter((row) => !hits.includes(row)); return { data: null, error: null }; }
         if (st.limitN != null) hits = hits.slice(0, st.limitN);
         if (st.single) return { data: hits[0] ? { ...hits[0] } : null, error: null };
         return { data: hits.map((r) => ({ ...r })), error: null };
@@ -47,6 +48,8 @@ function fakeDb({ tables = {}, rpc = null } = {}) {
         select() { return b; },
         update(p) { st.op = 'update'; st.patch = p; return b; },
         insert(r) { st.op = 'insert'; st.rows = Array.isArray(r) ? r : [r]; return b; },
+        delete() { st.op = 'delete'; return b; },
+        gt(c, v) { st.filters.push((row) => Number(row[c]) > Number(v)); return b; },
         eq(c, v) { st.filters.push((row) => String(row[c]) === String(v)); return b; },
         in(c, vs) { const set = (vs || []).map(String); st.filters.push((row) => set.includes(String(row[c]))); return b; },
         order() { return b; },
@@ -85,6 +88,7 @@ function setup({ booking = {}, payments = [], rules = {}, rpc = null, pkg = null
       locations: [{ id: LOC, address: '9 New Street, Huddersfield', receipt_branding: { header: { phone: '01484 000000' } } }],
       booking_payments: payments.map((p) => ({ booking_id: 'bk-1', location_id: LOC, ...p })),
       booking_tables: [{ booking_id: 'bk-1', table_id: 'T1' }],
+      booking_preorders: [{ booking_id: 'bk-1', seat: 1, display_name: 'Soup' }, { booking_id: 'bk-1', seat: 2, display_name: 'Salad' }],
       packages: pkg ? [pkg] : [],
       activity_events: [],
       active_sessions: [],
@@ -139,6 +143,10 @@ test('cancel in time: cancelled, the paid money flagged owed back with an alert,
   assert.equal(fetched.at(-1).body.action, 'notify');
   assert.equal(fetched.at(-1).body.kind, 'cancelled');
   assert.deepEqual(r.told, { sms: true, email: false });
+  assert.equal(r.paidLine, '£120 paid, to be refunded by the venue');
+  const again = (await handleManage('manage_info', { token: TOKEN }, deps)).body;
+  assert.equal(again.paidLine, '£120 paid, to be refunded by the venue');
+  assert.equal(again.view, 'cancelled');
 });
 
 test('inside the cancellation window: refused, with the phone number', async () => {
@@ -175,6 +183,7 @@ test('fewer guests on a paid menu: changed through edit_booking, the difference 
   assert.deepEqual(call.args.p_table_ids, ['T1']);   // its own table still fits and is free
   assert.equal(call.args.p_customer.edited_by, 'Guest online');
   assert.equal(db.tables.booking_payments[0].refund_due_minor, 6000);
+  assert.deepEqual(db.tables.booking_preorders.map((p) => p.seat), [1], 'the seat that is not coming loses its pre-order');
   assert.match(r.moneyNote, /£60 of what you paid will be refunded/);
   assert.ok(db.tables.activity_events.some((e) => e.title === 'Guest changed their booking online'));
   assert.equal(fetched.at(-1).body.kind, 'changed');

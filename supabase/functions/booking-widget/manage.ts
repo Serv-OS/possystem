@@ -91,6 +91,10 @@ export async function handleManage(action: string, body: Row, d: Deps): Promise<
   const currency = String(venue.loc?.currency || 'GBP').toUpperCase();
   const money = moneyOnBooking(pays || []);
   const hold = (pays || []).some((p: Row) => p.kind === 'hold' && p.status === 'authorised');
+  // Money already flagged to go back (a cancel in time): said as such, never as "paid".
+  const owedBackMinor = () => (pays || []).filter((p: Row) => (p.kind === 'prepay' || p.kind === 'deposit')
+    && (p.status === 'needs_refund' || /^needs refund/i.test(String(p.refusal_reason || ''))))
+    .reduce((sum: number, p: Row) => sum + Math.round((Number(p.amount) || 0) * 100), 0);
   const cust = (bk.customer || {}) as Row;
   const today = d.venueToday(tz);
   const maxCovers = Math.max(1, Math.min(maxPartyForCap(rules.pacingCap, 12), Number(pkg?.max_covers) || 12));
@@ -121,7 +125,9 @@ export async function handleManage(action: string, body: Row, d: Deps): Promise<
       canChange: state.canChange,
       why: state.why ? `${state.why}${/call the venue/i.test(state.why) && contact.phone ? ` The number is ${contact.phone}.` : ''}` : null,
       windowHours: state.windowHours,
-      paidLine: money.capturedMinor > 0 ? `${moneyWords(money.capturedMinor, money.currency || currency)} paid` : hold ? 'Card saved, nothing taken' : null,
+      paidLine: money.capturedMinor > 0 ? `${moneyWords(money.capturedMinor, money.currency || currency)} paid`
+        : owedBackMinor() > 0 ? `${moneyWords(owedBackMinor(), currency)} paid, to be refunded by the venue`
+        : hold ? 'Card saved, nothing taken' : null,
       cancelNote: money.capturedMinor > 0
         ? `The ${moneyWords(money.capturedMinor, money.currency || currency)} you paid will be refunded by the venue.`
         : hold ? 'Nothing was taken from your card.' : null,
@@ -266,6 +272,12 @@ export async function handleManage(action: string, body: Row, d: Deps): Promise<
 
     const before = `${fmtDateWords(bk.booking_date)} ${hm(bk.start_time)}, ${bk.covers} ${Number(bk.covers) === 1 ? 'guest' : 'guests'}`;
     const after = `${fmtDateWords(date)} ${time}, ${party} ${party === 1 ? 'guest' : 'guests'}`;
+    // Fewer guests: pre-orders for seats that are no longer coming would still reach the kitchen
+    // at seating (each pre-order row becomes a kitchen line). The guest said they are not coming.
+    if (party < Number(bk.covers)) {
+      const { error: poErr } = await d.db.from('booking_preorders').delete().eq('booking_id', bk.id).gt('seat', party);
+      if (poErr) console.warn('[booking-widget] pre-orders past the new party not removed:', poErr.message);
+    }
     let moneyText = '';
     if (m.state === 'owed_back') {
       moneyText = await flagOwedBack(d, money.rows, m.diffMinor, m.currency || currency, `The guest reduced the party online from ${bk.covers} to ${party}`);
@@ -310,7 +322,11 @@ export async function handleManage(action: string, body: Row, d: Deps): Promise<
     }).then(({ error }: Row) => { if (error) console.warn('[booking-widget] cancel alert not written:', error.message); });
     const told = await notify(bk.id, 'cancelled');
     const s = manageState({ booking: bk, rules: rr, tz });
-    return d.json({ ...summary(), view: s.view, canCancel: false, canChange: false, why: s.why, cancelled: true, told });
+    const after = summary();
+    return d.json({
+      ...after, view: s.view, canCancel: false, canChange: false, why: s.why, cancelled: true, told,
+      paidLine: owed.owedBackMinor > 0 ? `${moneyWords(owed.owedBackMinor, owed.currency || currency)} paid, to be refunded by the venue` : after.paidLine,
+    });
   }
 
   return say('unknown_action', 'Unknown action.');
