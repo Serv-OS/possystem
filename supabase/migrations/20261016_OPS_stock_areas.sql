@@ -175,6 +175,10 @@ create table if not exists public.stock_transfers (
 );
 comment on table public.stock_transfers is
   'Stock moving between areas of one venue (to_location_id null, born and finished DONE in one step) or between venues (SENT, then RECEIVED or CANCELLED). location_id is the SENDING venue. Posted through post_stock_transfer_leg only.';
+-- Builder B (16 Oct, later the same day): who cancelled a transfer and when. "add column if not
+-- exists" so the file stays safe to run twice.
+alter table public.stock_transfers add column if not exists cancelled_by_name text;
+alter table public.stock_transfers add column if not exists cancelled_at timestamptz;
 create index if not exists stock_transfers_loc_idx on public.stock_transfers (location_id, created_at desc);
 create index if not exists stock_transfers_to_loc_idx on public.stock_transfers (to_location_id, created_at desc) where to_location_id is not null;
 
@@ -326,6 +330,9 @@ grant execute on function public.post_stock_movement(uuid,uuid,numeric,text,nume
 --   p_leg = 'out'   the sending venue posts TRANSFER_OUT per line (status DRAFT becomes SENT)
 --   p_leg = 'both'  within one venue: OUT from from_area_id and IN to to_area_id (DRAFT becomes DONE)
 --   p_leg = 'in'    the receiving venue posts TRANSFER_IN per matched line (SENT becomes RECEIVED)
+--   p_leg = 'cancel' the sending venue takes a transfer back: a DRAFT is simply CANCELLED; a SENT
+--                   one (stock already out) posts TRANSFER_IN per line back into from_area_id,
+--                   key transfer:{id}:{lineId}:cancel, then CANCELLED. Never after RECEIVED or DONE.
 -- Refuses in words (jsonb error) for an ordinary refusal; raises only for a bad leg. A second
 -- call finds the status already moved and answers duplicate true. Granted to authenticated and
 -- service_role only (never anon).
@@ -347,8 +354,8 @@ declare
   v_new_avg numeric;
   v_res jsonb;
 begin
-  if p_leg not in ('out', 'in', 'both') then
-    raise exception 'post_stock_transfer_leg: leg must be out, in or both (got %)', coalesce(p_leg, 'null');
+  if p_leg not in ('out', 'in', 'both', 'cancel') then
+    raise exception 'post_stock_transfer_leg: leg must be out, in, both or cancel (got %)', coalesce(p_leg, 'null');
   end if;
 
   select * into v_t from stock_transfers where id = p_transfer_id for update;
@@ -370,8 +377,31 @@ begin
   end if;
 
   -- Already past this step: nothing moves twice.
-  if (p_leg in ('out', 'both') and v_t.status <> 'DRAFT') or (p_leg = 'in' and v_t.status <> 'SENT') then
+  if (p_leg in ('out', 'both') and v_t.status <> 'DRAFT') or (p_leg = 'in' and v_t.status <> 'SENT')
+     or (p_leg = 'cancel' and v_t.status = 'CANCELLED') then
     return jsonb_build_object('ok', true, 'duplicate', true, 'status', v_t.status);
+  end if;
+  if p_leg = 'cancel' and v_t.status not in ('DRAFT', 'SENT') then
+    return jsonb_build_object('ok', false, 'error', 'A transfer that is ' || lower(v_t.status) || ' cannot be cancelled: move the stock back with a new transfer');
+  end if;
+
+  if p_leg = 'cancel' then
+    -- A SENT transfer has already posted TRANSFER_OUT at the sender: put every line back where it came from.
+    if v_t.status = 'SENT' then
+      for v_l in
+        select * from stock_transfer_lines where transfer_id = p_transfer_id and not dropped order by sort_order, id
+      loop
+        if coalesce(v_l.qty_base, 0) <= 0 then continue; end if;
+        perform post_stock_movement(v_t.location_id, v_l.inventory_item_id, v_l.qty_base, 'TRANSFER_IN',
+          coalesce(v_l.unit_cost, (select current_cost from inventory_items where id = v_l.inventory_item_id), 0),
+          'stock_transfer', v_t.id::text, 'transfer:' || v_t.id::text || ':' || v_l.id::text || ':cancel',
+          now(), null, 'Transfer ' || coalesce(v_t.reference, '') || ' cancelled, stock back', v_t.from_area_id);
+        v_lines := v_lines + 1;
+      end loop;
+    end if;
+    update stock_transfers set status = 'CANCELLED', cancelled_by_name = p_by_name, cancelled_at = now(), updated_at = now()
+      where id = p_transfer_id;
+    return jsonb_build_object('ok', true, 'duplicate', false, 'status', 'CANCELLED', 'lines', v_lines);
   end if;
   if p_leg = 'both' and v_t.to_location_id is not null and v_t.to_location_id <> v_t.location_id then
     return jsonb_build_object('ok', false, 'error', 'A transfer to another venue is sent, then received there');

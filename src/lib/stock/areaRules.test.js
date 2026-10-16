@@ -12,6 +12,7 @@ import {
   resolveCountScope, defaultAreaFor, groupLinesByArea, areaSubtotal, rollUpLinesPerItem, adjustmentKey,
   approvalGate, otherAreaWarnings, countNameFor, countStatusText,
   filterItems, filterLines, categoriesOf, chunkArray, visibleRows, postingText, bulkAssignText, archiveRefusal, transferReference,
+  stockByAreaRows,
 } from './areaRules.js';
 import { countApprovalPlan } from './countRules.js';
 
@@ -542,4 +543,40 @@ test('no long dashes in the words this change added', () => {
   for (const f of ['./areaRules.js', './areas.js', './counts.js']) noDashes(read(f).replace(/\/\/.*$/gm, ''), f);
   const sections = ['../../backoffice/sections/StockAreas.jsx', '../../backoffice/sections/StockCounts.jsx', '../../components/StockItemPicker.jsx', '../../backoffice/sections/StockTransfers.jsx'];
   for (const f of sections) noDashes(read(f).replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, ''), f);
+});
+
+// ── Stock by area (builder B) ─────────────────────────────────────────────────
+
+test('stockByAreaRows: a holding per area in order, Unassigned only when the total differs, value floored per area, red below zero, filters', () => {
+  const items = [
+    { id: 'milk', name: 'Milk', sku: 'M1', category: 'Dairy', onHand: 10, currentCost: 1, areaId: FRIDGE },
+    { id: 'beans', name: 'Beans', sku: 'B1', category: 'Dry', onHand: 5, currentCost: 10, areaId: DRY },
+    { id: 'cups', name: 'Cups', sku: 'C1', category: 'Packaging', onHand: 100, currentCost: 0.05, areaId: null },
+    { id: 'old', name: 'Old', onHand: 3, currentCost: 1, archivedAt: '2026-01-01' },
+  ];
+  // milk: 12 in the cellar, minus 2 in the fridge (sold from the fridge, never transferred): total 10
+  // beans: 5 in the dry store. cups: nothing in any area: all 100 Unassigned.
+  const holdings = { milk: { [CELLAR]: 12, [FRIDGE]: -2 }, beans: { [DRY]: 5 } };
+  const all = stockByAreaRows(items, areas, holdings);
+  assert.deepEqual(all.rows.map((r) => r.name), ['Beans', 'Cups', 'Milk']);
+  const milk = all.rows.find((r) => r.id === 'milk');
+  assert.equal(milk.perArea[CELLAR], 12); assert.equal(milk.perArea[FRIDGE], -2); assert.equal(milk.perArea[FREEZER], 0);
+  assert.equal(milk.unassigned, 0); assert.equal(milk.total, 10); assert.equal(milk.below, true);
+  assert.equal(milk.value, 12, 'the fridge below zero counts for nothing, the cellar counts in full');
+  const cups = all.rows.find((r) => r.id === 'cups');
+  assert.equal(cups.unassigned, 100); assert.equal(cups.value, 5); assert.equal(cups.below, false);
+  assert.equal(all.showUnassigned, true);
+  assert.equal(all.belowCount, 1);
+  assert.deepEqual(all.totals.perArea, { [CELLAR]: 12, [FRIDGE]: -2, [FREEZER]: 0, [DRY]: 5 });
+  assert.equal(all.totals.unassigned, 100); assert.equal(all.totals.total, 115); assert.equal(all.totals.value, 67);
+  assert.ok(!(BAR in all.totals.perArea), 'an archived area has no column');
+  // filters: the fridge shows milk (a holding there), the dry store shows beans (assigned and held)
+  assert.deepEqual(stockByAreaRows(items, areas, holdings, { areaId: FRIDGE }).rows.map((r) => r.id), ['milk']);
+  assert.deepEqual(stockByAreaRows(items, areas, holdings, { areaId: DRY }).rows.map((r) => r.id), ['beans']);
+  assert.deepEqual(stockByAreaRows(items, areas, holdings, { areaId: FREEZER }).rows, []);
+  assert.deepEqual(stockByAreaRows(items, areas, holdings, { belowOnly: true }).rows.map((r) => r.id), ['milk']);
+  assert.deepEqual(stockByAreaRows(items, areas, holdings, { q: 'pack' }).rows.map((r) => r.id), ['cups']);
+  assert.deepEqual(stockByAreaRows(items, areas, holdings, { q: 'b1' }).rows.map((r) => r.id), ['beans']);
+  const none = stockByAreaRows(items, areas, { milk: { [FRIDGE]: 10 }, beans: { [DRY]: 5 }, cups: { [DRY]: 100 } });
+  assert.equal(none.showUnassigned, false, 'no Unassigned column when every item adds up');
 });

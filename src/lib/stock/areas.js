@@ -82,6 +82,7 @@ const transferFromRow = (r) => ({
   id: r.id, locationId: r.location_id, toLocationId: r.to_location_id, fromAreaId: r.from_area_id, toAreaId: r.to_area_id,
   status: r.status, reference: r.reference, note: r.note, createdByName: r.created_by_name,
   sentByName: r.sent_by_name, sentAt: r.sent_at, receivedByName: r.received_by_name, receivedAt: r.received_at,
+  cancelledByName: r.cancelled_by_name || null, cancelledAt: r.cancelled_at || null,
   createdAt: r.created_at, updatedAt: r.updated_at,
 });
 const transferLineFromRow = (r) => ({
@@ -348,7 +349,20 @@ export const bulkAssignItemArea = async (itemIds, areaId, opts = {}, locationId 
   return { data: out, error: null };
 };
 
-// ── Transfers (reads; builder B adds the send and receive screens) ─────────────
+/** The venue's receiving area id (null when none is flagged, or before the migration). */
+export const fetchReceivingArea = async (locationId = null) => {
+  if (isMock || !supabase) return { data: null, error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: null, error: null };
+  const ok = await areasReady(locationId);
+  if (!ok) return { data: null, error: null };
+  const { data, error } = await supabase.from('storage_areas').select('id')
+    .eq('location_id', locationId).eq('is_receiving', true).is('archived_at', null).limit(1).maybeSingle();
+  if (error) return { data: null, error };
+  return { data: data?.id || null, error: null };
+};
+
+// ── Transfers (reads; the send and receive paths are in transfers.js) ──────────
 /** Transfers where this venue is either end, newest first. */
 export const fetchTransfers = async (locationId = null, limit = 100) => {
   if (isMock || !supabase) return { data: [], error: null };

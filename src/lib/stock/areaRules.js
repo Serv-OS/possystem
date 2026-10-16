@@ -559,3 +559,56 @@ export function transferReference(rand = Math.random) {
   for (let i = 0; i < 6; i += 1) s += chars[Math.floor(rand() * chars.length) % chars.length];
   return `TR-${s}`;
 }
+
+// ── Stock by area (the report tab, builder B) ─────────────────────────────────
+/**
+ * One row per item for the Stock by area grid: the holding in each live area, the Unassigned
+ * figure (on hand minus the sum of its areas, shown only when it differs), the item total and
+ * the value (each area floored at zero, like valuation.js floors the item). filters:
+ * { q, areaId ('any' | id), belowOnly }. With an area filter only items with a holding or an
+ * assignment there are kept. Rows are sorted by name. Totals per area and overall come back too.
+ *   items: fetchInventoryItems items (id, name, sku, category, onHand, currentCost, areaId, archivedAt)
+ *   areas: live areas [{ id, name, sortOrder }]
+ *   holdings: { itemId: { areaId: qtyBase } }
+ */
+export function stockByAreaRows(items, areas, holdings, filters = {}) {
+  const live = (areas || []).filter((a) => a && !a.archivedAt);
+  const q = String(filters.q || '').trim().toLowerCase();
+  const words = q ? q.split(/\s+/) : [];
+  const areaFilter = filters.areaId && filters.areaId !== 'any' ? filters.areaId : null;
+  const rows = [];
+  const totals = { perArea: {}, unassigned: 0, total: 0, value: 0 };
+  live.forEach((a) => { totals.perArea[a.id] = 0; });
+  for (const i of (items || [])) {
+    if (!i || i.archivedAt) continue;
+    const per = {};
+    let areaSum = 0;
+    let value = 0;
+    let below = false;
+    for (const a of live) {
+      const qty = r4(holdings?.[i.id]?.[a.id]);
+      per[a.id] = qty;
+      areaSum += qty;
+      value += Math.max(0, qty) * num(i.currentCost);
+      if (qty < 0) below = true;
+    }
+    const total = r4(num(i.onHand));
+    const unassigned = r4(total - areaSum);
+    if (Math.abs(unassigned) > 1e-9) { value += Math.max(0, unassigned) * num(i.currentCost); if (unassigned < 0) below = true; }
+    if (areaFilter && !(Math.abs(per[areaFilter] || 0) > 1e-9 || (i.areaId || null) === areaFilter)) continue;
+    if (filters.belowOnly && !below) continue;
+    if (words.length) {
+      const hay = `${i.name || ''} ${i.sku || ''} ${i.category || ''}`.toLowerCase();
+      if (!words.every((w) => hay.includes(w))) continue;
+    }
+    rows.push({ id: i.id, name: i.name || '', sku: i.sku || '', category: i.category || '', areaId: i.areaId || null, perArea: per, unassigned, total, value: Math.round(value * 100) / 100, below });
+    live.forEach((a) => { totals.perArea[a.id] = r4(totals.perArea[a.id] + per[a.id]); });
+    totals.unassigned = r4(totals.unassigned + unassigned);
+    totals.total = r4(totals.total + total);
+    totals.value += value;
+  }
+  totals.value = Math.round(totals.value * 100) / 100;
+  rows.sort((a, b) => a.name.localeCompare(b.name));
+  const showUnassigned = rows.some((r) => Math.abs(r.unassigned) > 1e-9);
+  return { rows, totals, showUnassigned, belowCount: rows.filter((r) => r.below).length };
+}
