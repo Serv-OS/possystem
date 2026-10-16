@@ -477,3 +477,10 @@ test('a device with no passkey is told why, and what to do (Peter, 15 Oct 2026)'
   assert.equal(noPasskeyNote(undefined, ''), '');
   for (const r of ['device', 'browser', 'app']) assert.doesNotMatch(noPasskeyNote(r, 'Mozilla/5.0 (iPad)'), /[–—]/, 'no long dashes');
 });
+
+test('signInPlan: the device test alone never hides the passkey button (16 Oct 2026)', () => {
+  assert.deepEqual(signInPlan({ hostname: 'app.serv-os.app', supported: false, reason: 'device' }), { primary: 'passkey', canUsePasskey: true });
+  assert.deepEqual(signInPlan({ hostname: 'app.serv-os.app', supported: false, reason: 'app' }), { primary: 'password', canUsePasskey: false }, 'an old app build still uses the password');
+  assert.deepEqual(signInPlan({ hostname: 'app.serv-os.app', supported: false, reason: 'browser' }), { primary: 'password', canUsePasskey: false });
+  assert.deepEqual(signInPlan({ hostname: 'possystem-liard.vercel.app', supported: false, reason: 'device' }), { primary: 'wrong_host', canUsePasskey: false });
+});

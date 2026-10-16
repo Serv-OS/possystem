@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.74',
+    date: '16 Oct 2026',
+    items: [
+      "Owner app and Back Office sign in: the Sign in with a passkey button now shows whenever the only doubt is the device check. On the owner's iPhone the Owner app said passkeys were switched off while they worked everywhere else on the phone; signing in with a passkey you already have does not need that check, the phone's own sheet offers it. Making a new passkey still uses the stricter check.",
+      "Owner app sign in shows the ServOS version under the sign in button, so an out of date page is easy to spot.",
+    ],
+  },
+  {
     v: '5.11.73',
     date: '17 Oct 2026',
     items: [
