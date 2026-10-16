@@ -17,17 +17,17 @@
 // write, so a training till cannot pollute a live diary.
 
 import {
-  suggestTables, paceAt, turnFor, toMin, toOptimiserBooking,
+  suggestTables, paceAt, paceFull, turnFor, toMin, toOptimiserBooking,
   DEFAULT_TURN_BANDS, DEFAULT_RULES,
 sessionsToBlocks } from '../lib/bookings/optimiser.js';
 import {
   loadBookings, createBookingAtomic, updateBookingRow, rowToBooking, loadBookingTables,
   loadBookingRules, saveBookingRules, loadPackages,
-  upsertPackageRow, deletePackageRow, moveBookingTables,
+  upsertPackageRow, deletePackageRow, moveBookingTables, editBookingAtomic,
   loadBookingPreorders, saveBookingPreorders, loadBookingCredit,
 } from '../lib/bookings/bookingsData.js';
 import { packageItemsFor } from '../lib/bookings/packagePricing.js';
-import { validateEdit, conflictsFor, paymentAfterEdit, stampEdit, hasGuest, describeChanges } from '../lib/bookings/editRules.js';
+import { validateEdit, conflictsFor, paymentAfterEdit, stampEdit, hasGuest, describeChanges, bookingRefusalWords } from '../lib/bookings/editRules.js';
 import { logActivity } from '../lib/activity.js';
 import { buildScheduleCtx } from '../lib/locationTime.js';
 import { supabase, isMock, getActiveLocationSync, getLocationId } from '../lib/supabase.js';
@@ -73,6 +73,8 @@ const pendingBookingTables = new Map(); // booking_id -> { ids: Set, at: epochMs
 // 16 Oct 2026: one settling read of booking_tables per edited booking (resyncBookingTables).
 const RESYNC_DELAY_MS = 1500;
 const pendingResync = new Map(); // booking_id -> timer
+// 16 Oct 2026: the "server check not switched on yet" note shows once per page load.
+let _warnedNoEditGuard = false;
 
 function bufferBookingTable(bookingId, tableId) {
   const now = Date.now();
@@ -177,10 +179,12 @@ export function bookingsSlice(set, get) {
     },
 
     // Covers arriving within ±7 min of 'HH:MM' vs the pacing cap.
-    bookingPaceAt: (time) => {
+    // 16 Oct 2026 (bookings audit item 14): the party being added counts. Full means this party
+    // would take the slot OVER the cap (cap 12, 10 booked: a 2 fits, an 8 needs a manager).
+    bookingPaceAt: (time, party = 0) => {
       const cap = get().bookingRules?.pacingCap ?? DEFAULT_RULES.pacingCap;
       const load = paceAt(toMin(time), (get().bookings || []).map(toOptimiserBooking));
-      return { load, cap, full: load >= cap };
+      return { load, cap, full: paceFull(load, party, cap) };
     },
 
     // ── create (atomic, never optimistic) ─────────────────────────────────────
@@ -222,7 +226,13 @@ export function bookingsSlice(set, get) {
 
       const res = await createBookingAtomic(booking, locId);
       if (!res.ok) {
-        return { ok: false, error: res.error || 'Could not save the booking', tableId: res.tableId || null };
+        // 16 Oct 2026: the code stays in error (BookScreen offers alternatives on table_taken);
+        // message is the same refusal in words.
+        const label = res.tableId ? ((get().tables || []).find((t) => t.id === res.tableId)?.label || null) : null;
+        return {
+          ok: false, error: res.error || 'Could not save the booking', tableId: res.tableId || null,
+          message: bookingRefusalWords({ error: res.error, tableLabel: label }),
+        };
       }
       if (booking.date === (get().bookingsDate || todayISO())) {
         set((s) => ({ bookings: [...(s.bookings || []).filter((x) => x.id !== booking.id), booking] }));
@@ -361,29 +371,50 @@ export function bookingsSlice(set, get) {
       if (isTrainingMode()) { apply(); return { ok: true, booking: next, payment, training: true }; }
       if (!locId) return { ok: false, error: 'No venue resolved, so the booking cannot be saved.', errors: ['No venue resolved, so the booking cannot be saved.'] };
 
-      const rowPatch = {
-        date: next.date, startTime: next.startTime, turnMinutes: next.turnMinutes,
-        covers: next.covers, note: next.note, customer: stamped,
-      };
-      const r1 = await updateBookingRow(id, rowPatch, locId);
-      if (!r1.ok) {
-        const msg = /payment_gate|waiting for payment/i.test(String(r1.error || ''))
+      // 16 Oct 2026 (bookings audit item 10): ONE guarded write. edit_booking re checks the
+      // window, the seats and the floor plan under the venue lock and writes the row and the
+      // tables in one transaction, so a time only edit can no longer land on another booking.
+      // Before migration 20261016b the function is missing: fall back to the writes this
+      // release shipped with (row, then move_booking when the tables changed) and say so.
+      const atomic = await editBookingAtomic(id, { ...next, customer: stamped }, locId);
+      let serverGuard = true;
+      if (!atomic.ok && !atomic.missing) {
+        const label = atomic.tableId ? (tablesForRules.find((t) => t.id === atomic.tableId)?.label || null) : null;
+        const msg = /payment_gate|waiting for payment/i.test(String(atomic.error || ''))
           ? 'This booking is waiting for payment, so its covers cannot change.'
-          : `Booking NOT saved: ${r1.error || 'the database refused the change'}.`;
+          : bookingRefusalWords({ error: atomic.error, tableLabel: label, seats: atomic.seats, status: atomic.status });
         return { ok: false, error: msg, errors: [msg] };
       }
-      if (tablesChanged) {
-        const r2 = await moveBookingTables(id, next.tables, next.primaryTableId, locId);
-        if (!r2.ok) {
-          // Put the row back the way it was, best effort, and say so.
-          await updateBookingRow(id, {
-            date: entry.date, startTime: entry.startTime, turnMinutes: entry.turnMinutes,
-            covers: entry.covers, note: entry.note || '', customer: entry.customer ?? null,
-          }, locId).catch(() => {});
-          const taken = r2.error === 'table_taken'
-            ? `${tablesForRules.find((t) => t.id === r2.tableId)?.label || 'That table'} was just taken by another device. Nothing was changed.`
-            : `Table NOT moved: ${r2.error || 'the database refused the move'}. Nothing was changed.`;
-          return { ok: false, error: taken, errors: [taken] };
+      if (atomic.missing) {
+        serverGuard = false;
+        const rowPatch = {
+          date: next.date, startTime: next.startTime, turnMinutes: next.turnMinutes,
+          covers: next.covers, note: next.note, customer: stamped,
+        };
+        const r1 = await updateBookingRow(id, rowPatch, locId);
+        if (!r1.ok) {
+          const msg = /payment_gate|waiting for payment/i.test(String(r1.error || ''))
+            ? 'This booking is waiting for payment, so its covers cannot change.'
+            : `Booking NOT saved: ${r1.error || 'the database refused the change'}.`;
+          return { ok: false, error: msg, errors: [msg] };
+        }
+        if (tablesChanged) {
+          const r2 = await moveBookingTables(id, next.tables, next.primaryTableId, locId);
+          if (!r2.ok) {
+            // Put the row back the way it was, best effort, and say so.
+            await updateBookingRow(id, {
+              date: entry.date, startTime: entry.startTime, turnMinutes: entry.turnMinutes,
+              covers: entry.covers, note: entry.note || '', customer: entry.customer ?? null,
+            }, locId).catch(() => {});
+            const label = tablesForRules.find((t) => t.id === r2.tableId)?.label || null;
+            const words = bookingRefusalWords({ error: r2.error, tableLabel: label });
+            const taken = /Nothing was changed\.$/.test(words) ? words : `${words} Nothing was changed.`;
+            return { ok: false, error: taken, errors: [taken] };
+          }
+        }
+        if (!_warnedNoEditGuard) {
+          _warnedNoEditGuard = true;
+          get().showToast?.('Booking saved. The server double booking check is not switched on yet, so only this device checked the diary.', 'info');
         }
       }
       apply();
@@ -396,7 +427,7 @@ export function bookingsSlice(set, get) {
           body: `${name}: ${words || 'no field changed'}`, refType: 'booking', refId: id, actorName: by,
         }).catch(() => {});
       } catch { /* the booking is saved either way */ }
-      return { ok: true, booking: next, payment };
+      return { ok: true, booking: next, payment, serverGuard };
     },
 
     // ── the POS Tables bridge (v5.6.27 — bookings replace thin reservations) ──

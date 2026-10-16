@@ -49,9 +49,10 @@ export default function BookScreen({ onBooked }) {
   const paceAt = useStore((s) => s.bookingPaceAt);
   const pace = useMemo(() => {
     const map = new Map();
-    for (const t of slotTimes) map.set(t, paceAt ? paceAt(t) : { load: 0, cap: rules.pacingCap, full: false });
+    // 16 Oct 2026 (bookings audit item 14): full for THIS party (the party counts against the cap).
+    for (const t of slotTimes) map.set(t, paceAt ? paceAt(t, party) : { load: 0, cap: rules.pacingCap, full: false });
     return map;
-  }, [slotTimes, paceAt, bookings, rules.pacingCap]);
+  }, [slotTimes, paceAt, bookings, rules.pacingCap, party]);
   const slotFull = time ? !!pace.get(time)?.full : false;
 
   // ── candidates ──────────────────────────────────────────────────────────────
@@ -102,13 +103,15 @@ export default function BookScreen({ onBooked }) {
       onBooked?.(res.booking?.id);
       return;
     }
-    if (res.tableId) {
+    if (res.error === 'table_taken' && res.tableId) {
       const lbl = tables.find((t) => t.id === res.tableId)?.label || res.tableId;
       setTaken(lbl);
       setPick(0);
       setRefresh((r) => r + 1); // re-run suggestions against the fresh diary
     } else {
-      setErr(res.error || 'Could not save the booking');
+      // 16 Oct 2026: every other refusal in words (a table off the floor plan, and so on).
+      setErr(res.message || res.error || 'Could not save the booking');
+      if (res.error === 'unknown_table') { setPick(0); setRefresh((r) => r + 1); }
     }
   };
 
@@ -146,7 +149,7 @@ export default function BookScreen({ onBooked }) {
               }}>
                 <div style={{ fontSize: 13, fontWeight: 700, color: active ? (p.full ? 'var(--red)' : 'var(--acc)') : 'var(--t1)', ...mono }}>{t}</div>
                 <div style={{ fontSize: 10, color: p.full ? 'var(--red)' : 'var(--t4)', ...mono }}>
-                  {p.full ? 'at pacing cap' : `${p.load} cvr booked`}
+                  {p.full ? `${p.load} cvr, full for ${party}` : `${p.load} cvr booked`}
                 </div>
               </button>
             );
@@ -155,7 +158,7 @@ export default function BookScreen({ onBooked }) {
         {slotFull && (
           <div style={{ marginTop: 10, padding: '10px 12px', borderRadius: 10, background: tintBg('var(--red)', 8), border: `1px solid ${tintBd('var(--red)')}` }}>
             <div style={{ fontSize: 11, color: 'var(--red)', lineHeight: 1.4, fontWeight: 700 }}>
-              At the kitchen's pacing cap — a manager must approve
+              This party takes the slot over the kitchen's pacing cap. A manager must approve.
             </div>
             {overrideBy
               ? <div style={{ fontSize: 11, color: 'var(--t2)', marginTop: 6, ...mono }}>Approved by {overrideBy}</div>
@@ -177,9 +180,11 @@ export default function BookScreen({ onBooked }) {
         )}
         {candidates.length === 0 && (
           <div style={{ padding: '18px 14px', borderRadius: 13, border: '1px dashed var(--bdr2)', color: 'var(--t3)', fontSize: 12, lineHeight: 1.5 }}>
+            {/* 16 Oct 2026: tables outside a join group are offered on their own now, so an empty
+                list means nothing fits, groups or not. Groups only decide which tables may join. */}
             {(rules.joinGroups || []).length === 0
-              ? 'No join groups authored yet — author join groups in Back Office → Floor plan so the optimiser knows which tables may combine.'
-              : `No tables fit ${party} at ${time || '—'} — try another time or party size.`}
+              ? `No single table fits ${party} at ${time || 'that time'}. Tables only join inside a join group: set them in Back Office, Floor plan.`
+              : `No tables fit ${party} at ${time || 'that time'}. Try another time or party size.`}
           </div>
         )}
         {candidates.map((c, i) => {

@@ -432,7 +432,7 @@ export default function TablesSurface() {
   const compact = useCompact();
   const { tables, seatTable, openTableInPOS, clearTable, setReservation, setSurface, showToast, staff, locationSections, deviceConfig, setSessionCustomer,
     // v5.6.27: Table Bookings seams — "reserved" is derived from live bookings
-    bookings, upcomingBookingForTable, seatBooking, updateBooking, cancelBooking, packages } = useStore();
+    bookings, upcomingBookingForTable, seatBooking, cancelBooking, packages } = useStore();
   const [selected, setSelected]   = useState(null);
   const [showSeat, setShowSeat]   = useState(false);
   const [showReservation, setShowReservation] = useState(false);
@@ -1175,10 +1175,12 @@ export default function TablesSurface() {
           onCancel={()=>setShowReservation(false)}
         />
       )}
-      {/* v5.6.27: EDIT mode — prefilled from the claiming booking; confirms via
-          updateBooking (partySize→covers, time→startTime, notes→note; the
-          booking's tables + date stay as booked). Distinct path so
-          setReservation stays create-only. */}
+      {/* v5.6.27: EDIT mode, prefilled from the claiming booking. 16 Oct 2026 (bookings audit
+          item 10): confirms through the store's editBooking (the guarded edit_booking write:
+          the time and covers are checked against every other booking on the table under the
+          venue lock), never a plain row update. The booking's tables and date stay as booked.
+          A refusal keeps the sheet open and says why. Distinct path so setReservation stays
+          create-only. */}
       {editBooking && selectedTable && (
         <ReservationModal
           table={selectedTable}
@@ -1190,13 +1192,21 @@ export default function TablesSurface() {
             notes:     editBooking.note || '',
             customer:  editBooking.customer || null,
           }}
-          onConfirm={(res)=>{
+          onConfirm={async (res)=>{
             const customer = res.customer
               ? { ...res.customer, name: res.customer.name || res.name, phone: res.customer.phone || res.phone }
               : { ...(editBooking.customer || {}), name: res.name, phone: res.phone || null };
-            updateBooking(editBooking.id, { covers: res.partySize, startTime: res.time, note: res.notes, customer });
+            const edit = useStore.getState().editBooking;
+            const out = edit
+              ? await edit(editBooking.id, { covers: res.partySize, startTime: res.time, note: res.notes, customer },
+                  { editedBy: useStore.getState().staff?.name || null })
+              : { ok: false, error: 'Bookings are not loaded on this till.' };
+            if (!out?.ok) {
+              showToast(`Booking NOT changed: ${out?.error || 'the change was refused'}`, 'error');
+              return;
+            }
             setEditBooking(null);
-            showToast(`Booking updated — ${res.name} at ${res.time}`, 'success');
+            showToast(`Booking updated: ${res.name} at ${res.time}`, 'success');
           }}
           onCancel={()=>setEditBooking(null)}
         />

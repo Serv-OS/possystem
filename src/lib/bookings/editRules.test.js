@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  bookingRefusalWords,
   editRefusal, validateEdit, conflictsFor, paymentAfterEdit,
   snapToSlot, shiftTables, slotTimes, stampEdit, editedLine, hasGuest, describeChanges,
 } from './editRules.js';
@@ -202,4 +203,18 @@ test('describeChanges lists what moved in words', () => {
   const words = describeChanges(before, after, TABLES);
   assert.equal(words, 'time 19:00 to 19:30, covers 2 to 4, table T1 to T4, note');
   assert.equal(describeChanges(before, before, TABLES), '');
+});
+
+// 16 Oct 2026: the database's refusal codes in words.
+test('bookingRefusalWords: every code the guarded writes return reads as a sentence', () => {
+  assert.equal(bookingRefusalWords({ error: 'table_taken', tableLabel: 'T5' }), 'T5 was just taken by another booking. Nothing was changed.');
+  assert.match(bookingRefusalWords({ error: 'unknown_table', tableLabel: 'T9' }), /^T9 is not on this venue's floor plan/);
+  assert.match(bookingRefusalWords({ error: 'too_many_covers', seats: 6 }), /seat 6, fewer than the party/);
+  assert.match(bookingRefusalWords({ error: 'awaiting_payment' }), /still being paid online/);
+  assert.match(bookingRefusalWords({ error: 'not_editable', status: 'dining' }), /seated/);
+  assert.equal(bookingRefusalWords({ error: 'something new' }), 'something new');
+  assert.equal(bookingRefusalWords({}), 'The database refused the change.');
+  for (const e of ['table_taken', 'unknown_table', 'too_many_covers', 'awaiting_payment', 'not_editable']) {
+    assert.ok(!/[–—]/.test(bookingRefusalWords({ error: e })), `${e}: no long dashes`);
+  }
 });

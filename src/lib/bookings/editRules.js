@@ -248,3 +248,21 @@ export function describeChanges(before, after, tables = []) {
   if ((before.note || '') !== (after.note || '')) bits.push('note');
   return bits.join(', ');
 }
+
+// 16 Oct 2026 (bookings audit items 10 and 21): the database's refusal codes (create_booking,
+// move_booking, edit_booking) in the words the stand and the till show. tableLabel is the
+// table's name when the refusal names one. Unknown codes pass through as they are.
+export function bookingRefusalWords({ error = null, tableLabel = null, seats = null, status = null } = {}) {
+  const t = tableLabel || 'That table';
+  switch (error) {
+    case 'table_taken': return `${t} was just taken by another booking. Nothing was changed.`;
+    case 'unknown_table': return `${t} is not on this venue's floor plan any more. Reload the floor and pick again.`;
+    case 'too_many_covers': return `The tables seat ${Number(seats) || 0}, fewer than the party. Add a table or pick a bigger one.`;
+    case 'awaiting_payment': return 'This booking is still being paid online, so its covers cannot change until the payment lands.';
+    case 'not_editable': return EDIT_REFUSALS[status] || 'This booking can no longer be changed.';
+    case 'unknown booking': return 'This booking is not on the diary any more. Reload and try again.';
+    case 'booking is closed': return 'This booking is finished, so it cannot be moved.';
+    case 'no tables supplied': return 'Pick at least one table.';
+    default: return error ? String(error) : 'The database refused the change.';
+  }
+}
