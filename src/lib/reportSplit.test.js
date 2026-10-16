@@ -95,7 +95,7 @@ test('pin: every flipped report renders its one site view untouched when one sit
   // only hands to the Sales mix strip under its tiles; its own figures are untouched.
   // 16 Oct 2026 (one sales rule): and the range and site id, so refunds count on the day they
   // were made, as Daily trading and the Owner app take them.
-  assert.match(read(dir + 'SalesSummary.jsx'), /function SalesSummaryOne\(\{ checks, prevChecks, fmt, fmtN, locationConfig, compare, sites, scope, onOpenReport, rangeFrom, rangeTo, locationId \}\) \{/);
+  assert.match(read(dir + 'SalesSummary.jsx'), /function SalesSummaryOne\(\{ checks, prevChecks, fmt, fmtN, locationConfig, compare, sites, scope, onOpenReport, rangeFrom, rangeTo, locationId, filters \}\) \{/);
   assert.match(read(dir + 'DailyTrend.jsx'), /function DailyTrendOne\(\{ checks, prevChecks = \[\], fmt, fmtN, range \}\) \{/);
   assert.match(read(dir + 'Payments.jsx'), /function PaymentsOne\(\{ checks, fmt, fmtN \}\) \{/);
   assert.match(read(dir + 'Tables.jsx'), /function TablesOne\(\{ checks, fmt, fmtN \}\) \{/);

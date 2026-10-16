@@ -14,13 +14,13 @@
 
 import { useMemo } from 'react';
 import { StatTile, ExportBtn, EmptyState } from './_charts';
-import { classifyShift } from './_filters';
+import { classifyShift, applyFilters } from './_filters';
 import { toCsv, downloadCsv } from './_csv';
 import { isSplit, sumFields } from '../../../lib/reportSplit.js';
 import { useParts, exportSites } from './_siteSplit';
 import { SplitHeader, Blocks, GroupChange, SiteChange, SiteMatrix } from './SiteSplit';
 import SalesMixStrip from './SalesMixStrip';
-import { STRIP_NOTE, STRIP_NOTE_ADDED_TAX } from '../../../lib/salesMixView.js';
+import { STRIP_NOTE, STRIP_NOTE_ADDED_TAX, STRIP_NOTE_INCL_TAX } from '../../../lib/salesMixView.js';
 
 // The figures live in lib/salesStats.js (28 Sep 2026) so the till can print them too. The Z
 // report still imports computeSalesStats from here.
@@ -49,18 +49,24 @@ export default function SalesSummary(props) {
 // compare = the range's compare (the one percent rule, src/lib/reportCompare.js): the chips' words.
 // rangeFrom / rangeTo / locationId: the range (refunds count on the day they were made) and the
 // signed in site, whose checks closed before the range are read for refunds made inside it.
-function SalesSummaryOne({ checks, prevChecks, fmt, fmtN, locationConfig, compare, sites, scope, onOpenReport, rangeFrom, rangeTo, locationId }) {
+// filters = the report's server, order type and source filters (BOReports applies them to
+// `checks`); the older sales read for refunds are filtered the same way.
+function SalesSummaryOne({ checks, prevChecks, fmt, fmtN, locationConfig, compare, sites, scope, onOpenReport, rangeFrom, rangeTo, locationId, filters }) {
   const one = Array.isArray(sites) && sites.length === 1 ? sites[0] : null;
   const siteId = one && !one.isHome ? String(one.id) : (locationId ? String(locationId) : null);
   const from = rangeFrom ?? one?.range?.from ?? null;
   const to   = rangeTo   ?? one?.range?.to   ?? null;
   const lookback = useRefundLookback(siteId ? [siteId] : [], from);
-  const refundRows = (siteId && lookback.rows[siteId]) || NONE;
+  const refundRows = useMemo(() => applyFilters((siteId && lookback.rows[siteId]) || NONE, filters), [siteId, lookback.rows, filters]);
+  // The comparison period reads its own older sales, so its refunds come off the same way
+  // and the percent chips compare like with like.
+  const prevLookback = useRefundLookback(siteId && compare?.from ? [siteId] : [], compare?.from ?? null);
+  const prevRefundRows = useMemo(() => applyFilters((siteId && prevLookback.rows[siteId]) || NONE, filters), [siteId, prevLookback.rows, filters]);
   const currency = locationConfig?.currency || one?.currency || null;
   const range = useMemo(() => (from != null ? { fromMs: toMs(from), toMs: toMs(to) } : null), [from, to]);
   const prevRange = useMemo(() => (compare?.from ? { fromMs: toMs(compare.from), toMs: toMs(compare.to) } : null), [compare]);
   const cur  = useMemo(() => salesBreakdown(checks,     { range, refundRows, currency }), [checks, range, refundRows, currency]);
-  const prev = useMemo(() => salesBreakdown(prevChecks, { range: prevRange, currency }), [prevChecks, prevRange, currency]);
+  const prev = useMemo(() => salesBreakdown(prevChecks, { range: prevRange, refundRows: prevRefundRows, currency }), [prevChecks, prevRange, prevRefundRows, currency]);
   const avgCheck     = cur.count  ? cur.net  / cur.count  : 0;
   const prevAvgCheck = prev.count ? prev.net / prev.count : 0;
   const avgCover     = cur.covers  ? cur.net  / cur.covers  : 0;
@@ -185,7 +191,7 @@ function SalesSummaryOne({ checks, prevChecks, fmt, fmtN, locationConfig, compar
 
 // The Sales mix card's basis, worded for how the venue's prices hold tax.
 function stripNoteFor(b) {
-  return b.addedOn ? STRIP_NOTE_ADDED_TAX : STRIP_NOTE;
+  return b.addedOn ? STRIP_NOTE_ADDED_TAX : b.taxWord === 'tax' ? STRIP_NOTE_INCL_TAX : STRIP_NOTE;
 }
 
 // The ladder: 'of' lines are a breakdown of the line above them (not added), drawn as a nested block.
@@ -299,21 +305,35 @@ function addBreakdowns(list) {
   return all;
 }
 
+// The earliest of some range starts (Dates, ISO strings or ms), or null when none is set.
+function earliestStart(list) {
+  let min = null;
+  for (const v of list || []) { const ms = toMs(v); if (ms != null && (min == null || ms < min)) min = ms; }
+  return min;
+}
+
 function SalesSummarySites(props) {
   const { fmtN } = props;
   const { parts, blocks, fromSums } = useParts(props);
-  const lookback = useRefundLookback(fromSums ? [] : parts.map(p => p.id), props.rangeFrom ?? parts[0]?.site?.range?.from ?? null);
+  // Older sales are read from the EARLIEST start of any site's range (and of any site's
+  // comparison), so a site whose business day starts later still has every older check; the id
+  // dedupe in salesBreakdown stops a check being counted twice.
+  const ids = fromSums ? [] : parts.map(p => p.id);
+  const lookback = useRefundLookback(ids, earliestStart([props.rangeFrom, ...parts.map(p => p.site?.range?.from)]));
+  const cmpFrom = earliestStart(parts.map(p => p.compare?.from));
+  const prevLookback = useRefundLookback(cmpFrom != null ? ids : [], cmpFrom);
+  const filters = props.filters;
   const stats = useMemo(() => new Map(parts.map(p => {
     const range = p.site?.range?.from ? { fromMs: toMs(p.site.range.from), toMs: toMs(p.site.range.to) } : null;
     const cmp = p.compare?.from ? { fromMs: toMs(p.compare.from), toMs: toMs(p.compare.to) } : null;
     const opts = { currency: p.currency };
     return [p.id, {
       cur:  p.sums ? breakdownFromDaySums(p.sums.totals.stats, p.sums.totals.byTender, opts)
-                   : salesBreakdown(p.rows, { ...opts, range, refundRows: lookback.rows[String(p.id)] || NONE }),
+                   : salesBreakdown(p.rows, { ...opts, range, refundRows: applyFilters(lookback.rows[String(p.id)] || NONE, filters) }),
       prev: p.sums ? (p.prevSums ? breakdownFromDaySums(p.prevSums.totals.stats, p.prevSums.totals.byTender, opts) : salesBreakdown([], opts))
-                   : salesBreakdown(p.prevRows, { ...opts, range: cmp }),
+                   : salesBreakdown(p.prevRows, { ...opts, range: cmp, refundRows: applyFilters(prevLookback.rows[String(p.id)] || NONE, filters) }),
     }];
-  })), [parts, lookback.rows]);
+  })), [parts, lookback.rows, prevLookback.rows, filters]);
 
   const onExport = () => {
     const rows = [];

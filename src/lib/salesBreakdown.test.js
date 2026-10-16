@@ -22,6 +22,7 @@ import {
 import { tradingDays, checkSalesParts } from '../../supabase/functions/_shared/tradingSales.js';
 import { emptySales, addCheckSales, addRefundSales } from '../../supabase/functions/_shared/snapshotSales.js';
 import { computeSalesStats } from './salesStats.js';
+import { applyFilters } from '../backoffice/sections/reports/_filters.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const near = (a, b, d = 0.005) => assert.ok(Math.abs(a - b) < d, `${a} != ${b}`);
@@ -175,11 +176,49 @@ test('a check with no lines (an old or channel row) reads its subtotal as item s
   assert.equal(b.subtotalOff.length, 0);
 });
 
-test('an item discount is inside the stored subtotal and is not a stale subtotal', () => {
-  const r = check({ items: [line(10, 1, { discount: { type: 'percent', value: 50 } })], subtotal: 5, tax_amount: 0.83, total: 5, tenders: [card(5)] });
+// The till stores the subtotal as shelf prices BEFORE item discounts (linesGoods; live: every
+// check with an item discount in 30 days stores price x qty). That is not a stale subtotal.
+test('an item discount stays out of the stored subtotal and is not a stale subtotal', () => {
+  const r = check({ items: [line(10, 1, { discount: { type: 'percent', value: 50 } })], subtotal: 10, tax_amount: 0.83, total: 5, tenders: [card(5)] });
   const b = salesBreakdown([r]);
   near(b.items, 10); near(b.discounts, 5); near(b.recordedDiscounts, 5);
   assert.equal(b.subtotalOff.length, 0); assert.equal(b.discountOff.length, 0);
+});
+
+test('a subtotal stored AFTER the item discount is not the till rule and is named', () => {
+  const r = check({ items: [line(10, 1, { discount: { type: 'percent', value: 50 } })], subtotal: 5, tax_amount: 0.83, total: 5, tenders: [card(5)] });
+  const b = salesBreakdown([r]);
+  near(b.items, 10); near(b.discounts, 5); near(b.sales, 5);
+  assert.equal(b.subtotalOff.length, 1);
+  assert.deepEqual([b.subtotalOff[0].stored, b.subtotalOff[0].items], [5, 10]);
+});
+
+test('an old check with every line voided (empty items, nothing taken) is not item sales', () => {
+  // The till used to keep only live lines: items [], the voided goods left in the subtotal.
+  const r = check({ items: [], subtotal: 4, tax_amount: 0, total: 0, tenders: [] });
+  const b = salesBreakdown([r]);
+  near(b.items, 0); near(b.discounts, 0); near(b.sales, 0); near(b.net, 0);
+  assert.equal(b.subtotalOff.length, 1);
+  assert.deepEqual([b.subtotalOff[0].stored, b.subtotalOff[0].items], [4, 0]);
+});
+
+test('a filtered view takes off only the older refunds that pass its filter', () => {
+  const older = (id, server, orderType) => ({ id, ref: id, server, orderType, closed_at: new Date(DAY_FROM - 2 * 86400000).toISOString(), status: 'paid', service: 0, tip: 0, discounts: [],
+    items: [line(12)], subtotal: 12, tax_amount: 2, total: 12, tenders: [card(12)],
+    refunds: [{ id: `${id}r`, amount: 6, taxAmount: 1, tipAmount: 0, serviceAmount: 0, tenderMethod: 'card', cardStatus: 'accepted', timestamp: DAY_FROM + 3600000, legs: [{ status: 'succeeded', amountMinor: 600 }] }] });
+  const lookback = [older('o1', 'Jane', 'takeaway'), older('o2', 'Ben', 'dine-in')];
+  const jane = applyFilters(lookback, { server: 'Jane', orderType: 'all', source: 'all' });
+  near(salesBreakdown([], { range: RANGE, refundRows: jane }).refunds, 6);
+  near(salesBreakdown([], { range: RANGE, refundRows: applyFilters(lookback, { server: 'all', orderType: 'dine-in', source: 'all' }) }).refunds, 6);
+  near(salesBreakdown([], { range: RANGE, refundRows: applyFilters(lookback, null) }).refunds, 12);
+  // The Business summary filters its older sales (both periods, one site and sites) the same way.
+  const src = fs.readFileSync(path.join(here, '../backoffice/sections/reports/SalesSummary.jsx'), 'utf8');
+  assert.match(src, /applyFilters\(\(siteId && lookback\.rows\[siteId\]\) \|\| NONE, filters\)/);
+  assert.match(src, /applyFilters\(\(siteId && prevLookback\.rows\[siteId\]\) \|\| NONE, filters\)/);
+  assert.match(src, /refundRows: applyFilters\(lookback\.rows\[String\(p\.id\)\] \|\| NONE, filters\)/);
+  assert.match(src, /refundRows: applyFilters\(prevLookback\.rows\[String\(p\.id\)\] \|\| NONE, filters\)/);
+  const bo = fs.readFileSync(path.join(here, '../backoffice/sections/BOReports.jsx'), 'utf8');
+  assert.match(bo, /<SalesSummary [^\n]*filters=\{reportFilters\}/);
 });
 
 test('day sums (long periods across sites) are the nearest reading, marked estimated', () => {

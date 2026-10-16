@@ -21,8 +21,10 @@ import {
 export const BASIS_CSV = 'Item sales before check discounts and refunds';
 // 16 Oct 2026: the card says how its money holds tax (Peter could not make the Business summary
 // add up): UK prices include VAT; where tax is added on top (US), item prices are before tax.
-export const STRIP_NOTE = 'Item sales including VAT, before check discounts and refunds.';
-export const STRIP_NOTE_ADDED_TAX = 'Item sales before tax, before check discounts and refunds.';
+export const STRIP_NOTE = 'Item sales including VAT, before check discounts, loyalty rewards and refunds.';
+export const STRIP_NOTE_ADDED_TAX = 'Item sales before tax, before check discounts, loyalty rewards and refunds.';
+// A venue whose prices include its tax but which words it "tax" (a US venue on inclusive rates).
+export const STRIP_NOTE_INCL_TAX = 'Item sales including tax, before check discounts, loyalty rewards and refunds.';
 export const SUMS_NOTE = 'Pick 7 days or fewer to see the sales mix across sites.';
 export const CUSTOM_OPTION = '__custom';
 export const KPI_MAX_GROUPS = 6;

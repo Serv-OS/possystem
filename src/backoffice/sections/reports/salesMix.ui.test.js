@@ -73,7 +73,7 @@ test('the shell mounts the report and hands Business summary the Open Sales mix 
 test('Business summary mounts the strip in both views; the Z report mounts the groups block', () => {
   const ss = read('./SalesSummary.jsx');
   assert.match(ss, /import SalesMixStrip from '\.\/SalesMixStrip';/);
-  assert.match(ss, /function SalesSummaryOne\(\{ checks, prevChecks, fmt, fmtN, locationConfig, compare, sites, scope, onOpenReport, rangeFrom, rangeTo, locationId \}\)/);
+  assert.match(ss, /function SalesSummaryOne\(\{ checks, prevChecks, fmt, fmtN, locationConfig, compare, sites, scope, onOpenReport, rangeFrom, rangeTo, locationId, filters \}\)/);
   const strips = ss.split('\n').filter((l) => l.includes('<SalesMixStrip'));
   assert.equal(strips.length, 2);
   assert.ok(strips[0].includes('checks={checks}') && strips[0].includes("onOpenReport('sales_mix')"), 'one site strip');

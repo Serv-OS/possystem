@@ -107,11 +107,17 @@ test('v5.9.97 wiring: reader closes, the checkout draft and 100% comps (source p
   assert.match(store, /taxBreakdown: headlessTax,/);
   assert.match(store, /subtotal, service: headlessService\(d, headlessTax\),/);
   assert.doesNotMatch(store, /total: paymentInfo\.grand \|\| subtotal/, 'a 100% comp books £0, not the full price in cash');
-  assert.equal((store.match(/paymentInfo\.grand \?\? subtotal/g) || []).length, 2);
+  // 16 Oct 2026: both closes take total and tenders from lib/closeMoney.js, which keeps `??`
+  // (a 100% comp books 0); closeSubtotal.test.js drives it with a comp.
+  const closeMoneySrc = read('./closeMoney.js');
+  assert.match(closeMoneySrc, /const total = info\.grand \?\? fallbackTotal \?\? 0;/);
+  assert.doesNotMatch(closeMoneySrc, /info\.grand \|\|/);
+  assert.match(store, /closeMoney\(walkInOrder\.items, paymentInfo, linesGoods\(walkInOrder\.items\)\)/);
+  assert.equal((store.match(/total:\s+closeFigures\.total,/g) || []).length, 2);
   const modal = read('../surfaces/CheckoutModal.jsx');
   assert.match(modal, /\.\.\.\(taxBreakdown && Number\.isFinite\(Number\(taxBreakdown\.totalTax\)\) \? \{ taxBreakdown \} : \{\}\),/, 'the draft carries the bill tax');
   assert.equal((store.match(/taxBreakdown = taxForChargedGoods\(taxBreakdown, paymentInfo\);/g) || []).length, 2, 'table and walk in comps book no VAT');
-  assert.match(store, /total: {6}paymentInfo\.grand \?\? session\.total \?\? 0,/, 'a table comp books £0, not the bill');
+  assert.match(store, /const closeFigures = closeMoney\(session\.items, paymentInfo, session\.total\);/, 'a table comp books £0, not the bill');
   assert.doesNotMatch(store, /paymentInfo\.grand \|\| session\.total/);
 });
 

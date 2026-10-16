@@ -95,18 +95,26 @@ export function checkPieces(check) {
   const voided = isVoidedCheck(row);
   // A voided check's lines are voided with it: their value is what the Voids line takes off.
   const items = itemsOf(row, voided);
-  const goods = items.lines ? items.listed : Math.max(0, toMinor(row?.subtotal));
+  // No lines: an old or channel row, read by its stored subtotal. But an empty items list on a
+  // check that took nothing is an old till row whose every line was voided (the till then kept
+  // only live lines): its subtotal is the voided goods, never a sale, so it reads 0 and is named.
+  const storedSub = Math.max(0, toMinor(row?.subtotal));
+  const emptyVoidedRow = !items.lines && Array.isArray(row?.items) && toMinor(row?.total) <= 0 && storedSub > 0;
+  const goods = items.lines ? items.listed : emptyVoidedRow ? 0 : storedSub;
   const delivery = deliveryMinor(check, row);
   const out = {
-    row, voided, goods, itemsFromSubtotal: !items.lines, delivery,
+    row, voided, goods, itemsFromSubtotal: !items.lines && !emptyVoidedRow, delivery,
     moneySales: 0, moneyTax: 0, moneyAdded: 0, rewardsShelf: 0, rewardsTax: 0,
     service: 0, tips: 0, byTender: {}, recordedDiscount: 0, itemDiscount: 0, subtotalOff: null,
   };
-  // A stored subtotal that is not its own lines (after item discounts): named so it can be fixed.
+  // A stored subtotal that is not its own lines (price x qty, BEFORE item discounts, as the till
+  // stores it: tradingSales.js and the till's linesGoods): named so it can be fixed.
   if (items.lines && !voided) {
     const sub = toMinor(row?.subtotal);
-    if (Math.abs(sub - items.after) > 1) out.subtotalOff = { stored: sub / 100, items: items.after / 100 };
+    if (Math.abs(sub - items.listed) > 1) out.subtotalOff = { stored: sub / 100, items: items.listed / 100 };
     out.itemDiscount = Math.max(0, items.listed - items.after);
+  } else if (emptyVoidedRow && !voided) {
+    out.subtotalOff = { stored: storedSub / 100, items: 0 };
   }
   out.recordedDiscount = recordedDiscountMinor(row) + out.itemDiscount;
   if (out.voided || chargedNothing(row)) return out;
