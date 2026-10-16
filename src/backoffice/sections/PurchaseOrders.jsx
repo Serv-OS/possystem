@@ -24,7 +24,7 @@ import { fetchSuppliers, fetchInventoryItems, fetchUsageRates, fetchUsageByWeekd
 import { fetchParLevels } from '../../lib/stock/counts';
 import { outstandingOnOrder } from '../../lib/stock/onOrder';
 import { nextDeliveryYmd } from '../../lib/stock/purchasingRules';
-import { buildPoItemRows, filterSortPoItems, pinnedLines, categoriesOf, areasOf, countLine, applyQty, dropEmptyLines, unlistedLineCheck, rowLineValue } from '../../lib/stock/poItemList';
+import { buildPoItemRows, filterSortPoItems, pinnedLines, categoriesOf, areasOf, countLine, applyQty, dropEmptyLines, unlistedLineCheck, rowLineValue, relineForSupplier } from '../../lib/stock/poItemList';
 import { fetchPurchaseOrders, savePurchaseOrder, setPOStatus, setPOExpectedDate, receivePurchaseOrder, attachInvoiceToPO, fetchPOInvoices, fnErrorText } from '../../lib/stock/purchasing';
 import { reportSave } from '../../lib/saveHealth';
 import { fmtYmd } from '../../lib/venueDate';
@@ -97,19 +97,46 @@ export default function PurchaseOrders() {
   const ratesById = useMemo(() => { const m = {}; taxRates.forEach(r => { m[r.id] = r; }); return m; }, [taxRates]);
   const lineRateDec = useCallback((l) => Number(ratesById[l.purchaseTaxRateId]?.rate || 0), [ratesById]);
 
+  // ── the supplier's item table (new and draft orders): search and filter state ──────────────
+  const [itemQ, setItemQ] = useState('');
+  const [cat, setCat] = useState('');
+  const [area, setArea] = useState('');
+  const [belowPar, setBelowPar] = useState(false);
+  const [onOrderOnly, setOnOrderOnly] = useState(false);
+  const [onThisOrder, setOnThisOrder] = useState(false);
+  const [showAllItems, setShowAllItems] = useState(false);
+  // An item the supplier does not list, waiting for its pack and price before it joins the order.
+  const [unlisted, setUnlisted] = useState(null);
+  // Bumped when the user moves to another order or changes supplier: the table remounts at the
+  // top with the "lines first" order re-pinned. NOT an effect on draft.id: the first Save draft
+  // gives a new order its id, and that used to wipe the search, the filters and the scroll.
+  const [listGen, setListGen] = useState(0);
+  const resetItemFilters = () => { setItemQ(''); setCat(''); setArea(''); setBelowPar(false); setOnOrderOnly(false); setOnThisOrder(false); setShowAllItems(false); setUnlisted(null); setListGen(g => g + 1); };
+
   // The day a new order should arrive: the supplier's next delivery day from the venue's today
   // (tomorrow for a supplier with no schedule). One rule with the Order pad (nextDeliveryYmd).
   const defaultExpected = useCallback((supplierId) => (supplierId ? nextDeliveryYmd(supById[supplierId]?.deliveryDays, buildScheduleCtx(venueTz).ymd) || '' : ''), [supById, venueTz]);
   const newPO = () => {
     const supplierId = suppliers[0]?.id || '';
+    resetItemFilters();
     setDraft({ supplierId, reference: '', expectedDate: defaultExpected(supplierId), notes: '', status: 'DRAFT', lines: [] });
     setSelId(null);
   };
+  const openOrder = (p) => { resetItemFilters(); setDraft(structuredClone(p)); setSelId(p.id); };
 
   const upd = (k, v) => setDraft(d => ({ ...d, [k]: v }));
   // Choosing the supplier on a NEW order sets the expected date to that supplier's next delivery
-  // day (still editable). A saved draft keeps the date it has.
-  const changeSupplier = (supplierId) => setDraft(d => ({ ...d, supplierId, ...(d.id ? {} : { expectedDate: defaultExpected(supplierId) }) }));
+  // day (still editable). A saved draft keeps the date it has. Lines already typed are rebuilt
+  // from the new supplier's pack and price (relineForSupplier): a line's pack, price and
+  // supplier_product_id belong to the supplier it was typed for, and the old ones were being
+  // emailed to the new supplier as 'pack typed' rows. Items the new supplier has no pack for
+  // come off, and the toast names them.
+  const changeSupplier = (supplierId) => {
+    resetItemFilters();
+    const { lines, dropped } = relineForSupplier(draft?.lines, items, supplierId);
+    if (dropped.length) showToast?.(supplierId ? `${dropped.join(', ')}: ${supName(supplierId)} has no pack on file, taken off the order.` : 'Lines cleared: a line\'s pack and price belong to the supplier.', 'info');
+    setDraft(d => ({ ...d, supplierId, lines, ...(d.id ? {} : { expectedDate: defaultExpected(supplierId) }) }));
+  };
   const updLine = (i, k, v) => setDraft(d => ({ ...d, lines: d.lines.map((l, j) => j === i ? { ...l, [k]: v } : l) }));
   const rmLine = (i) => setDraft(d => ({ ...d, lines: d.lines.filter((_, j) => j !== i) }));
   // v5.5.923: a RECEIVED order's money is what was ACCEPTED, not what was ordered. The header
@@ -139,6 +166,7 @@ export default function PurchaseOrders() {
   // has no email on file.
   const supplierEmail = supById[draft?.supplierId]?.email || null;
   const sendToSupplier = async () => {
+    if (!dropEmptyLines(draft?.lines).length) { showToast?.('Nothing to send: every quantity is 0', 'error'); return; }
     const saved = await save('DRAFT');
     if (!saved?.id) return;
     setBusy(true);
@@ -227,25 +255,13 @@ export default function PurchaseOrders() {
   // The one field a sent order still needs: when it is due. Received and cancelled stay read only.
   const dateEditable = editable || ['SENT', 'PARTIAL'].includes(draft?.status);
 
-  // ── the supplier's item table (new and draft orders) ──────────────────────────────────────
-  const [itemQ, setItemQ] = useState('');
-  const [cat, setCat] = useState('');
-  const [area, setArea] = useState('');
-  const [belowPar, setBelowPar] = useState(false);
-  const [onOrderOnly, setOnOrderOnly] = useState(false);
-  const [onThisOrder, setOnThisOrder] = useState(false);
-  const [showAllItems, setShowAllItems] = useState(false);
-  // An item the supplier does not list, waiting for its pack and price before it joins the order.
-  const [unlisted, setUnlisted] = useState(null);
-  useEffect(() => { setItemQ(''); setCat(''); setArea(''); setBelowPar(false); setOnOrderOnly(false); setOnThisOrder(false); setShowAllItems(false); setUnlisted(null); }, [draft?.id, draft?.supplierId]);
-
   const todayDow = buildScheduleCtx(venueTz).isoDay % 7;
   const rows = useMemo(() => (draft && editable)
     ? buildPoItemRows({ items, supplierId: draft.supplierId, lines: draft.lines || [], pars, onOrder, usage, weekday, deliveryDays: supById[draft.supplierId]?.deliveryDays, todayDow })
     : [], [draft, editable, items, pars, onOrder, usage, weekday, supById, todayDow]);
   // The "lines first" order is pinned when the order is opened or a filter changes, not on every
   // keystroke: a row whose quantity is being typed must not jump to the top under the cursor.
-  const filterKey = `${draft?.id || 'new'}|${draft?.supplierId || ''}|${itemQ}|${cat}|${area}|${belowPar}|${onOrderOnly}|${onThisOrder}`;
+  const filterKey = `${listGen}|${draft?.supplierId || ''}|${itemQ}|${cat}|${area}|${belowPar}|${onOrderOnly}|${onThisOrder}`;
   const pinned = useMemo(() => pinnedLines(draft?.lines), [filterKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const shown = useMemo(() => filterSortPoItems(rows, { q: itemQ, category: cat, area, belowPar, onOrderOnly, onThisOrder, pinned }), [rows, itemQ, cat, area, belowPar, onOrderOnly, onThisOrder, pinned]);
   const cats = useMemo(() => categoriesOf(rows), [rows]);
@@ -269,9 +285,11 @@ export default function PurchaseOrders() {
   };
   const addUnlisted = () => {
     if (!unlisted) return;
-    const chk = unlistedLineCheck(unlisted);
-    if (!chk.ok) { showToast?.(chk.reason, 'error'); return; }
     const it = unlisted.it;
+    // The unit must convert to the item's unit now: receiving refuses the whole order otherwise,
+    // after it has been sent and its lines can no longer be edited.
+    const chk = unlistedLineCheck(unlisted, { baseUnit: it.baseUnit, conversions: it.conversions || [], itemName: it.name });
+    if (!chk.ok) { showToast?.(chk.reason, 'error'); return; }
     setDraft(d => ({ ...d, lines: [...d.lines, {
       inventoryItemId: it.id, description: it.name, qtyPacks: '1',
       packQty: Number(unlisted.packQty), innerQty: Number(unlisted.innerQty), innerUnit: String(unlisted.innerUnit).trim(),
@@ -282,6 +300,9 @@ export default function PurchaseOrders() {
     showToast?.(`${it.name} added with the pack and price you typed. ${supName(draft.supplierId)} has no pack on file for it: add one on the item's Suppliers tab to reuse it next time.`, 'info');
   };
   const lineCount = (draft?.lines || []).length;
+  // Lines with a quantity above 0: what save() writes. The send buttons follow this, not the
+  // raw count, so an order whose only lines sit at 0 cannot be marked sent or emailed empty.
+  const liveLines = useMemo(() => dropEmptyLines(draft?.lines).length, [draft]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, background: 'var(--bg)' }}>
@@ -305,7 +326,7 @@ export default function PurchaseOrders() {
           {loading && <div style={{ padding: 16, color: 'var(--t3)', fontSize: 13 }}>Loading…</div>}
           {!loading && visible.length === 0 && <div style={{ padding: 16, color: 'var(--t3)', fontSize: 13 }}>{pos.length === 0 ? 'No orders yet.' : 'No orders in this view.'}</div>}
           {visible.map(p => (
-            <div key={p.id} onClick={() => { setDraft(structuredClone(p)); setSelId(p.id); }} style={{ padding: '11px 16px', cursor: 'pointer', borderLeft: '3px solid ' + (p.id === selId ? 'var(--acc)' : 'transparent'), background: p.id === selId ? 'var(--bg2)' : 'transparent' }}>
+            <div key={p.id} onClick={() => openOrder(p)} style={{ padding: '11px 16px', cursor: 'pointer', borderLeft: '3px solid ' + (p.id === selId ? 'var(--acc)' : 'transparent'), background: p.id === selId ? 'var(--bg2)' : 'transparent' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
                 <span style={{ fontSize: 13, color: 'var(--t1)' }}>{supName(p.supplierId)}</span>
                 <Tag label={p.status} tone={STATUS_TONE[p.status]} />
@@ -438,8 +459,8 @@ export default function PurchaseOrders() {
                 {vatTotal > 0.005 && <span style={{ color: 'var(--t3)' }}> · VAT {money(vatTotal)} · <b style={{ color: 'var(--t1)' }}>pay {money(total + vatTotal)}</b></span>}
               </div>
               {editable && <button onClick={() => save('DRAFT')} disabled={busy} style={{ padding: '9px 16px', borderRadius: 8, background: 'var(--bg2)', border: '1px solid var(--bdr)', color: 'var(--t1)', fontSize: 13, cursor: 'pointer' }}>Save draft</button>}
-              {editable && supplierEmail && <PrimaryBtn onClick={sendToSupplier} disabled={busy || !draft.lines.length}>Send to supplier</PrimaryBtn>}
-              {editable && <button onClick={() => save('SENT')} disabled={busy || !draft.lines.length} style={{ padding: '9px 16px', borderRadius: 8, background: supplierEmail ? 'var(--bg2)' : 'var(--acc)', border: supplierEmail ? '1px solid var(--bdr)' : 0, color: supplierEmail ? 'var(--t1)' : '#0b0c10', fontSize: 13, fontWeight: 700, cursor: 'pointer', opacity: busy || !draft.lines.length ? 0.6 : 1 }} title={supplierEmail ? 'Mark sent without emailing' : 'No supplier email on file: marks the order sent without emailing'}>Mark sent</button>}
+              {editable && supplierEmail && <PrimaryBtn onClick={sendToSupplier} disabled={busy || !liveLines}>Send to supplier</PrimaryBtn>}
+              {editable && <button onClick={() => save('SENT')} disabled={busy || !liveLines} style={{ padding: '9px 16px', borderRadius: 8, background: supplierEmail ? 'var(--bg2)' : 'var(--acc)', border: supplierEmail ? '1px solid var(--bdr)' : 0, color: supplierEmail ? 'var(--t1)' : '#0b0c10', fontSize: 13, fontWeight: 700, cursor: 'pointer', opacity: busy || !liveLines ? 0.6 : 1 }} title={supplierEmail ? 'Mark sent without emailing' : 'No supplier email on file: marks the order sent without emailing'}>Mark sent</button>}
               {draft.id && (draft.status === 'SENT' || draft.status === 'PARTIAL') && !receiving && (
                 <button onClick={async () => {
                   setBusy(true);
@@ -529,6 +550,14 @@ const num = { ...td, textAlign: 'right', fontVariantNumeric: 'tabular-nums' };
 const COLS = [
   ['Item', 'left'], ['Pack', 'left'], ['Price', 'right'], ['On hand', 'right'], ['On order', 'right'], ['Par', 'right'], ['Suggested', 'right'], ['Packs', 'right'], ['Line (ex VAT)', 'right'],
 ];
+// Every column but Item has a fixed width that fits what it holds (Price: the 88 px box plus the
+// VAT tag; Packs: the 100 px box; each with 10 px padding a side). Item takes the rest, never
+// less than ITEM_MIN_W: the table has a floor and the scroller scrolls sideways past it, so at
+// 1,280 px (a 692 px pane beside the nav and the order list) the names stay readable and the
+// right-hand columns scroll into view instead of the Item column squeezing to nothing.
+const FIXED_COLS = [130, 150, 104, 96, 84, 92, 124, 104];
+const ITEM_MIN_W = 260;
+const TABLE_MIN_W = ITEM_MIN_W + FIXED_COLS.reduce((a, b) => a + b, 0);
 const fmtQty = (v) => Number(v || 0).toLocaleString('en-GB', { maximumFractionDigits: 3 });
 
 // The parent keys this component by its search and filter state, so a new search starts the list
@@ -553,10 +582,10 @@ function SupplierItemTable({ rows, onQty, onQtyBlur, onPrice, lineRateDec }) {
   const topPad = start * ROW_H;
   const bottomPad = Math.max(0, (rows.length - end) * ROW_H);
   return (
-    <div ref={ref} onScroll={e => setScrollTop(e.currentTarget.scrollTop)} style={{ maxHeight: TABLE_MAX_H, overflowY: 'auto', border: '1px solid var(--bdr)', borderRadius: 12, background: 'var(--bg1)' }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+    <div ref={ref} onScroll={e => setScrollTop(e.currentTarget.scrollTop)} style={{ maxHeight: TABLE_MAX_H, overflow: 'auto', border: '1px solid var(--bdr)', borderRadius: 12, background: 'var(--bg1)' }}>
+      <table style={{ width: '100%', minWidth: TABLE_MIN_W, borderCollapse: 'collapse', tableLayout: 'fixed' }}>
         <colgroup>
-          <col /><col style={{ width: 130 }} /><col style={{ width: 96 }} /><col style={{ width: 104 }} /><col style={{ width: 96 }} /><col style={{ width: 84 }} /><col style={{ width: 92 }} /><col style={{ width: 118 }} /><col style={{ width: 104 }} />
+          <col />{FIXED_COLS.map((w, i) => <col key={i} style={{ width: w }} />)}
         </colgroup>
         <thead><tr>{COLS.map(([h, align]) => <th key={h} style={{ ...th, textAlign: align }}>{h}</th>)}</tr></thead>
         <tbody>
@@ -581,7 +610,7 @@ function ItemRow({ r, last, onQty, onQtyBlur, onPrice, lineRateDec }) {
   const codes = [r.sku, r.supplierSku].filter(Boolean).join(' · ');
   return (
     <tr style={{ background: r.line ? 'color-mix(in srgb, var(--acc) 7%, transparent)' : 'transparent' }}>
-      <td style={{ ...td, ...cell, overflow: 'hidden', textOverflow: 'ellipsis' }} title={`${r.name}${codes ? ` (${codes})` : ''}${r.category ? ` · ${r.category}` : ''}${r.area ? ` · ${r.area}` : ''}`}>
+      <td style={{ ...td, ...cell, overflow: 'hidden', textOverflow: 'ellipsis' }} title={r.extra && !it ? `${r.name}: this item was removed from Stock items after the order was drafted. The line keeps the pack and price it was typed with.` : `${r.name}${codes ? ` (${codes})` : ''}${r.category ? ` · ${r.category}` : ''}${r.area ? ` · ${r.area}` : ''}`}>
         <span style={{ fontWeight: 500 }}>{r.name}</span>
         {codes && <span style={{ color: 'var(--t4)', fontSize: 11, marginLeft: 8 }}>{codes}</span>}
         {r.extra && <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, color: 'var(--amber, #F5A623)' }} title="This supplier has no pack on file for the item; the pack and price are the ones typed on this order">pack typed</span>}

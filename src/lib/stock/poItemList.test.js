@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   foldText, buildPoItemRows, filterSortPoItems, sortPoItemRows, pinnedLines, categoriesOf, areasOf, countLine,
-  applyQty, lineForRow, dropEmptyLines, unlistedLineCheck, rowMatches, rowLineValue, itemArea,
+  applyQty, lineForRow, dropEmptyLines, unlistedLineCheck, rowMatches, rowLineValue, itemArea, supplierPack, relineForSupplier,
 } from './poItemList.js';
 
 const SUP = 'sup-bakehouse';
@@ -51,6 +51,31 @@ test('build: one row per item the supplier lists, archived and made items left o
   assert.equal(rows.find(x => x.key === 'it-4').onOrder, 12);
   assert.equal(r.extra, false);
   assert.equal(r.line, null);
+});
+
+test('build: with two packs from one supplier the row is the PREFERRED pack, as the Order pad prices it', () => {
+  const items = synthetic(10);
+  // the bottle was added first (first by created_at), the case was starred later
+  items[3].supplierProducts = [
+    { id: 'sp-bottle', supplierId: SUP, supplierSku: 'B1', packQty: 1, innerQty: 2, innerUnit: 'l', packPrice: 3, netPackPrice: 2.5, isPreferred: false },
+    { id: 'sp-case', supplierId: SUP, supplierSku: 'C6', packQty: 6, innerQty: 2, innerUnit: 'l', packPrice: 15, netPackPrice: 12.5, isPreferred: true, purchaseTaxRateId: 'vat-20' },
+  ];
+  items[3].baseUnit = 'l';
+  const row = buildPoItemRows({ items, supplierId: SUP, lines: [], pars: { 'it-3': { parLevel: 20 } } }).find(r => r.key === 'it-3');
+  assert.equal(row.sp.id, 'sp-case');
+  assert.equal(row.packQty, 6);
+  assert.equal(row.innerQty, 2);
+  assert.equal(row.netPrice, 12.5);
+  assert.equal(row.supplierSku, 'C6');
+  assert.equal(row.suggestedPacks, 2);   // on hand 0, par 20 l, 12 l a case -> 2 cases, not 10 bottles
+  const l = lineForRow(row, '2');
+  assert.equal(l.supplierProductId, 'sp-case');
+  assert.equal(l.unitPrice, 12.5);
+  assert.equal(l.purchaseTaxRateId, 'vat-20');
+  // with no star the first pack on file is used; another supplier's pack never is
+  assert.equal(supplierPack({ supplierProducts: [{ id: 'a', supplierId: SUP }, { id: 'b', supplierId: SUP }] }, SUP).id, 'a');
+  assert.equal(supplierPack({ supplierProducts: [{ id: 'a', supplierId: OTHER, isPreferred: true }] }, SUP), null);
+  assert.equal(supplierPack(null, SUP), null);
 });
 
 test('build: suggested packs is the Order pad rule (top up to par with no history, whole packs)', () => {
@@ -139,6 +164,32 @@ test('filters: category, area, below par only, on order only, on this order only
   assert.equal(countLine(1, 1), '1 item');
 });
 
+test('filters: category and area spellings fold, so Dry store and dry store are one option that matches both', () => {
+  const items = synthetic(12);
+  items.forEach((it, i) => { it.storageLocation = i % 2 ? 'dry store' : 'Dry store'; it.category = i % 3 ? 'bread' : 'Bread'; });
+  const rows = buildPoItemRows({ items, supplierId: SUP, lines: [] });
+  assert.deepEqual(areasOf(rows), ['Dry store']);
+  assert.deepEqual(categoriesOf(rows), ['Bread']);
+  assert.equal(filterSortPoItems(rows, { area: 'Dry store' }).length, 12);
+  assert.equal(filterSortPoItems(rows, { area: 'dry store' }).length, 12);
+  assert.equal(filterSortPoItems(rows, { category: 'Bread', area: 'DRY STORE' }).length, 12);
+  assert.equal(filterSortPoItems(rows, { area: 'Freezer' }).length, 0);
+});
+
+test('filters: on this order only keeps a pinned row whose box was just cleared, so it does not vanish under the cursor', () => {
+  const items = synthetic(20);
+  const before = [{ inventoryItemId: 'it-5', qtyPacks: '2', unitPrice: 10 }];
+  const pinned = pinnedLines(before);
+  const row = buildPoItemRows({ items, supplierId: SUP, lines: before }).find(r => r.key === 'it-5');
+  const after = applyQty(before, row, '');
+  assert.equal(after.length, 0);
+  const rows = buildPoItemRows({ items, supplierId: SUP, lines: after });
+  assert.deepEqual(filterSortPoItems(rows, { onThisOrder: true, pinned }).map(r => r.key), ['it-5']);
+  // the next pin (filter change, order reopened) lets it go
+  assert.deepEqual(filterSortPoItems(rows, { onThisOrder: true, pinned: pinnedLines(after) }), []);
+  assert.deepEqual(filterSortPoItems(rows, { onThisOrder: true }), []);
+});
+
 test('scale: search and filter over 1,500 items stay instant (in memory, one pass)', () => {
   const rows = buildPoItemRows({ items: synthetic(), supplierId: SUP, lines: [], pars, onOrder });
   const t0 = performance.now();
@@ -187,6 +238,44 @@ test('unlistedLineCheck: an item the supplier does not list needs a pack with a 
   assert.match(unlistedLineCheck({ packQty: 1, innerQty: 6, innerUnit: ' ', unitPrice: 4 }).reason, /unit/);
   assert.match(unlistedLineCheck({ packQty: 1, innerQty: 6, innerUnit: 'each', unitPrice: 0 }).reason, /price/);
   assert.match(unlistedLineCheck({ packQty: 1, innerQty: 6, innerUnit: 'each', unitPrice: '' }).reason, /price/);
+});
+
+test('unlistedLineCheck: the unit must convert to the item unit, or receiving would refuse the whole sent order', () => {
+  const flour = { baseUnit: 'g', conversions: [], itemName: 'Flour' };
+  assert.equal(unlistedLineCheck({ packQty: 1, innerQty: 16, innerUnit: 'kg', unitPrice: 9 }, flour).ok, true);
+  assert.equal(unlistedLineCheck({ packQty: 1, innerQty: 16, innerUnit: 'KG ', unitPrice: 9 }, flour).ok, true);
+  const bad = unlistedLineCheck({ packQty: 1, innerQty: 2, innerUnit: 'crate', unitPrice: 9 }, flour);
+  assert.equal(bad.ok, false);
+  assert.match(bad.reason, /crate cannot be converted to Flour's unit \(g\)/);
+  assert.match(unlistedLineCheck({ packQty: 1, innerQty: 2, innerUnit: 'l', unitPrice: 9 }, flour).reason, /Units tab/);
+  // a bridge on the item makes the unit good
+  assert.equal(unlistedLineCheck({ packQty: 1, innerQty: 2, innerUnit: 'crate', unitPrice: 9 }, { ...flour, conversions: [{ fromQty: 1, fromUnit: 'crate', toQty: 12000, toUnit: 'g' }] }).ok, true);
+  // the unit is checked before the price, so one message at a time in the order the boxes sit
+  assert.match(unlistedLineCheck({ packQty: 1, innerQty: 2, innerUnit: 'crate', unitPrice: '' }, flour).reason, /crate/);
+  // no item unit given: the old check, unit words only
+  assert.equal(unlistedLineCheck({ packQty: 1, innerQty: 2, innerUnit: 'crate', unitPrice: 9 }).ok, true);
+});
+
+test('relineForSupplier: lines are rebuilt from the new supplier pack at the same packs, items it does not sell come off', () => {
+  const items = synthetic(1300);
+  items[2].supplierProducts.push({ id: 'sp-dairy-2', supplierId: OTHER, supplierSku: 'D2', packQty: 12, innerQty: 1, innerUnit: 'each', packPrice: 30, netPackPrice: 25, isPreferred: false, purchaseTaxRateId: 'vat-0' });
+  const lines = [
+    { id: 'pl-1', inventoryItemId: 'it-2', description: 'Item 0002', qtyPacks: '3', packQty: 1, innerQty: 6, innerUnit: 'each', unitPrice: 10, supplierProductId: 'sp-2' },
+    { id: 'pl-2', inventoryItemId: 'it-9', description: 'Item 0009', qtyPacks: '1', packQty: 1, innerQty: 6, innerUnit: 'each', unitPrice: 10, supplierProductId: 'sp-9' },
+    { inventoryItemId: 'it-gone', description: 'Old item', qtyPacks: '1', packQty: 1, innerQty: 1, innerUnit: 'each', unitPrice: 1 },
+  ];
+  const { lines: kept, dropped } = relineForSupplier(lines, items, OTHER);
+  assert.equal(kept.length, 1);
+  assert.equal(kept[0].id, 'pl-1');
+  assert.equal(kept[0].qtyPacks, '3');
+  assert.equal(kept[0].packQty, 12);
+  assert.equal(kept[0].unitPrice, 25);
+  assert.equal(kept[0].supplierProductId, 'sp-dairy-2');
+  assert.equal(kept[0].purchaseTaxRateId, 'vat-0');
+  assert.deepEqual(dropped, ['Item 0009', 'Old item']);
+  // back to the first supplier: the one kept line is priced off its pack again
+  assert.equal(relineForSupplier(kept, items, SUP).lines[0].supplierProductId, 'sp-2');
+  assert.deepEqual(relineForSupplier([], items, SUP), { lines: [], dropped: [] });
 });
 
 test('itemArea: reads whichever field names the storage area', () => {

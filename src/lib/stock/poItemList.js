@@ -35,6 +35,18 @@ export const itemArea = (it) => String(it?.storageArea || it?.storageAreaName ||
 const lineQtyNum = (l) => Number(l?.qtyPacks) || 0;
 
 /**
+ * The pack of ONE supplier we order an item in: the pack flagged preferred, else the first on
+ * file. The same reading the Order pad makes through pickSupplierProduct, narrowed to the
+ * order's supplier. A supplier with a starred 6 x 2 l case and an older 1 x 2 l bottle on file
+ * is ordered in cases here as well as on the pad. null when the supplier has no pack for it.
+ */
+export function supplierPack(it, supplierId) {
+  if (!supplierId) return null;
+  const packs = (it?.supplierProducts || []).filter(s => s && s.supplierId === supplierId);
+  return packs.find(p => p.isPreferred) || packs[0] || null;
+}
+
+/**
  * One row per item the supplier lists, plus one row per order line whose item the supplier
  * does NOT list (an item added through the "Show all items" picker, or on an older draft): those
  * carry the line's own pack and price and are flagged `extra`.
@@ -65,7 +77,7 @@ export function buildPoItemRows({
   const listed = new Set();
   for (const it of items || []) {
     if (!it || it.archivedAt || it.kind === 'MADE') continue;
-    const sp = supplierId ? (it.supplierProducts || []).find(s => s.supplierId === supplierId) : null;
+    const sp = supplierPack(it, supplierId);
     if (!sp) continue;
     listed.add(it.id);
     const hit = lineByItem.get(it.id) || null;
@@ -99,7 +111,7 @@ export function buildPoItemRows({
     const par = it ? (pars?.[it.id]?.parLevel ?? null) : null;
     rows.push({
       key: l.inventoryItemId || `line-${i}`, it: it || null, sp: null, extra: true,
-      name: it?.name || l.description || 'unlinked line', sku: it?.sku || '', supplierSku: '',
+      name: it?.name || l.description || 'Item no longer on file', sku: it?.sku || '', supplierSku: '',
       category: String(it?.category || '').trim(), area: itemArea(it),
       packQty: Number(l.packQty) || 1, innerQty: Number(l.innerQty) || 1, innerUnit: l.innerUnit || it?.baseUnit || 'each',
       netPrice: Number(l.unitPrice) || 0, onHand, onOrder: Number(onOrder?.[l.inventoryItemId]) || 0, par,
@@ -114,14 +126,26 @@ export function buildPoItemRows({
 /** Line value of a row: packs on the order times the net pack price. */
 export const rowLineValue = (r) => (r.line ? (Number(r.line.qtyPacks) || 0) * (Number(r.line.unitPrice) || 0) : 0);
 
-/** Distinct categories, A to Z, blanks dropped. */
-export function categoriesOf(rows) {
-  return [...new Set((rows || []).map(r => r.category).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+/**
+ * Distinct values of a free typed field, A to Z, blanks dropped, ONE entry per spelling once
+ * case and accents are folded: 'Dry store', 'dry store' and 'Dry Store' are one option (the
+ * first spelling seen), and the filter matches all three. Category and storage area are typed
+ * by hand on the item today, so a venue has months of near duplicates on file.
+ */
+function distinctFolded(values) {
+  const m = new Map();
+  for (const v of values || []) { const k = foldText(v); if (k && !m.has(k)) m.set(k, v); }
+  return [...m.values()].sort((a, b) => a.localeCompare(b));
 }
 
-/** Distinct storage areas, A to Z, blanks dropped. */
+/** Distinct categories, A to Z, blanks dropped, spellings folded. */
+export function categoriesOf(rows) {
+  return distinctFolded((rows || []).map(r => r.category));
+}
+
+/** Distinct storage areas, A to Z, blanks dropped, spellings folded. */
 export function areasOf(rows) {
-  return [...new Set((rows || []).map(r => r.area).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  return distinctFolded((rows || []).map(r => r.area));
 }
 
 /** Does one row match the search text? Name, our SKU and the supplier's code, accents and case folded. */
@@ -141,15 +165,18 @@ export function rowMatches(row, needle) {
  *   pinned: an optional Map of row key to position, taken when the list was last opened or
  *   filtered (pinnedLines). With it the "lines first" order is frozen, so a row does not jump
  *   to the top of the table while its quantity is being typed; without it the live lines lead.
+ *   With "on this order only" a pinned row also STAYS while its box is cleared, so the row is
+ *   not pulled out from under the cursor mid edit; it goes the next time the list is pinned.
  */
 export function filterSortPoItems(rows, { q = '', category = '', area = '', belowPar = false, onOrderOnly = false, onThisOrder = false, pinned = null } = {}) {
   const out = [];
+  const cat = foldText(category), ar = foldText(area);
   for (const r of rows || []) {
-    if (category && r.category !== category) continue;
-    if (area && r.area !== area) continue;
+    if (cat && foldText(r.category) !== cat) continue;
+    if (ar && foldText(r.area) !== ar) continue;
     if (belowPar && !r.belowPar) continue;
     if (onOrderOnly && !(r.onOrder > 0)) continue;
-    if (onThisOrder && !r.line) continue;
+    if (onThisOrder && !r.line && !(pinned && pinned.has(r.key))) continue;
     if (!rowMatches(r, q)) continue;
     out.push(r);
   }
@@ -225,12 +252,43 @@ export function dropEmptyLines(lines) {
  * Can an item the supplier does not list join the order? It needs a pack (pack size times inner
  * size above zero, with a unit) and a price above zero, the same facts pickSupplierProduct reads
  * from supplier_products for a listed item; receiving refuses a line with no pack content and a
- * zero price would book stock at no cost. Returns { ok, reason }.
+ * zero price would book stock at no cost. With the item's { baseUnit, conversions } the unit
+ * must also convert to the item's unit: receiving refuses the WHOLE order otherwise, and by
+ * then the order has been sent and its lines cannot be edited. Returns { ok, reason }.
  */
-export function unlistedLineCheck({ packQty, innerQty, innerUnit, unitPrice }) {
+export function unlistedLineCheck({ packQty, innerQty, innerUnit, unitPrice }, { baseUnit = null, conversions = [], itemName = 'the item' } = {}) {
   const pq = Number(packQty), iq = Number(innerQty), price = Number(unitPrice);
+  const unit = String(innerUnit || '').trim();
   if (!(pq > 0) || !(iq > 0)) return { ok: false, reason: 'Enter the pack: how many inner units in a pack and how much each holds (for example 6 x 2 l).' };
-  if (!String(innerUnit || '').trim()) return { ok: false, reason: 'Enter the unit the pack is measured in (each, kg, l).' };
+  if (!unit) return { ok: false, reason: 'Enter the unit the pack is measured in (each, kg, l).' };
+  if (baseUnit && packContentInBase({ packQty: pq, innerQty: iq, innerUnit: unit }, baseUnit, conversions || []) == null) {
+    return { ok: false, reason: `${unit} cannot be converted to ${itemName}'s unit (${baseUnit}). Use ${baseUnit}, or add a conversion on the item's Units tab first.` };
+  }
   if (!(price > 0)) return { ok: false, reason: 'Enter the price of one pack, ex VAT. A line at no price would book stock at no cost.' };
   return { ok: true, reason: null };
+}
+
+/**
+ * The order's lines after the supplier is changed. A line's pack, price, VAT rate and
+ * supplier_product_id belong to the supplier it was typed for, so each line is rebuilt from the
+ * NEW supplier's pack (preferred first) at the same number of packs, and a line whose item the
+ * new supplier has no pack for comes off. Returns { lines, dropped } with the names taken off,
+ * so the screen can say so. Without this the old supplier's pack and price were emailed to the
+ * new supplier as 'pack typed' rows.
+ */
+export function relineForSupplier(lines, items, supplierId) {
+  const byId = new Map((items || []).map(i => [i.id, i]));
+  const kept = [], dropped = [];
+  for (const l of lines || []) {
+    const it = byId.get(l?.inventoryItemId) || null;
+    const sp = supplierPack(it, supplierId);
+    if (!sp) { dropped.push(it?.name || l?.description || 'Item no longer on file'); continue; }
+    kept.push({
+      ...l, description: it.name,
+      packQty: Number(sp.packQty) || 1, innerQty: Number(sp.innerQty) || 1, innerUnit: sp.innerUnit || it.baseUnit || 'each',
+      unitPrice: spNetPrice(sp), supplierProductId: sp.id,
+      purchaseTaxRateId: sp.purchaseTaxRateId || it.purchaseTaxRateId || null,
+    });
+  }
+  return { lines: kept, dropped };
 }
