@@ -42,18 +42,18 @@ function SumsNote() {
 }
 
 // The signed in site, or one OTHER ticked site (its own categories, read fresh).
-function StripOne({ checks, fmt, sites, scope, onOpen }) {
+function StripOne({ checks, fmt, sites, scope, onOpen, note }) {
   const one = useOneSiteMix({ sites, scope });
   const view = useMemo(() => mixView(mixFromChecks(checks, one.resolver), null, one.resolver), [checks, one.resolver]);
   if (one.menuLoading) return <Card onOpen={onOpen}><div style={{ fontSize:11, color:'var(--t4)' }}>Loading…</div></Card>;
   const model = stripModel(view, { failed: one.menuFailed });
   if (!model) return null;
-  return <Card onOpen={onOpen}><StripBody model={model} fmt={fmt}/></Card>;
+  return <Card onOpen={onOpen}><StripBody model={model} fmt={fmt} note={note}/></Card>;
 }
 
 // One currency block of the split view: the sites' blocks added per group key (never across
 // currencies), names from the signed in site's resolver first.
-function StripBlock({ block, onOpen }) {
+function StripBlock({ block, onOpen, note }) {
   const pr = usePartResolvers(block.parts);
   const view = useMemo(() => {
     const ordered = [...block.parts].sort((a, b) => (b.site?.isHome ? 1 : 0) - (a.site?.isHome ? 1 : 0));
@@ -68,10 +68,11 @@ function StripBlock({ block, onOpen }) {
   const allFailed = block.parts.length > 0 && block.parts.every((p) => pr.menusFailed.includes(p.id));
   const model = stripModel(view, { failed: allFailed });
   if (!model) return null;
-  return <Card onOpen={onOpen}><StripBody model={model} fmt={block.fmt}/></Card>;
+  return <Card onOpen={onOpen}><StripBody model={model} fmt={block.fmt} note={note}/></Card>;
 }
 
-function StripBody({ model, fmt }) {
+// note: the basis line, worded by the report for how the venue's prices hold tax (STRIP_NOTE by default).
+function StripBody({ model, fmt, note }) {
   const { segments, words, hint } = model;
   const money = (n) => (fmt ? fmt(n) : n);
   return (
@@ -93,7 +94,7 @@ function StripBody({ model, fmt }) {
       {hint === 'failed' && <div style={hintSt}>The menu could not be read, so every sale shows as Other sales.</div>}
       {hint === 'all' && <div style={hintSt}>No sales groups set yet. Open Sales mix to set them up.</div>}
       {hint === 'most' && <div style={hintSt}>Most sales have no group yet. Set up groups in Sales mix.</div>}
-      <div style={{ marginTop:6, fontSize:11, color:'var(--t4)' }}>{STRIP_NOTE}</div>
+      <div style={{ marginTop:6, fontSize:11, color:'var(--t4)' }}>{note || STRIP_NOTE}</div>
     </>
   );
 }

@@ -585,7 +585,7 @@ export default function BOReports({ setSection, canOpen } = {}) {
         </div>
       ) : (
         <>
-          {view === 'summary'    && <SalesSummary checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig} compare={shownCompare} onOpenReport={openReport} {...siteProps}/>}
+          {view === 'summary'    && <SalesSummary checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig} compare={shownCompare} onOpenReport={openReport} rangeFrom={range.from} rangeTo={range.to} locationId={activeLocId} {...siteProps}/>}
           {view === 'sales_mix'  && <SalesMix     checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig} compare={shownCompare} range={trendRange} canOpen={canOpen} {...siteProps}/>}
           {view === 'exceptions' && <Exceptions   checks={filtered} fmt={fmt} {...siteProps}/>}
           {view === 'payments'   && <Payments     checks={filtered} fmt={fmt} fmtN={fmtN} {...siteProps}/>}

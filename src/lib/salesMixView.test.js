@@ -327,7 +327,7 @@ test('stripModel: every group as a segment, the aria words, the hint per state, 
   assert.equal(stripModel(mixView(mixFromChecks([], resolver), null, resolver)), null);
   assert.equal(stripModel(mixView(mixFromChecks([], resolver), null, resolver), { failed: true }), null);
   assert.equal(stripModel(null), null);
-  assert.equal(STRIP_NOTE, 'Item sales before check discounts and refunds.');
+  assert.equal(STRIP_NOTE, 'Item sales including VAT, before check discounts and refunds.');
   assert.equal(SUMS_NOTE, 'Pick 7 days or fewer to see the sales mix across sites.');
 });
 
