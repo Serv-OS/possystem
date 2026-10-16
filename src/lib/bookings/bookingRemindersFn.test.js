@@ -80,7 +80,7 @@ function fakeDb(tables, { name }) {
         not: (c, op, v) => cmp(c, (x) => (op === 'is' && v === null ? x !== null && x !== undefined : true)),
         gte: (c, v) => cmp(c, (x) => String(x) >= String(v)),
         lte: (c, v) => cmp(c, (x) => x != null && String(x) <= String(v)),
-        lt: (c, v) => cmp(c, (x) => Number(x) < Number(v)),
+        lt: (c, v) => cmp(c, (x) => (Number.isNaN(Number(v)) ? x != null && String(x) < String(v) : Number(x) < Number(v))),
         order() { return b; },
         limit(n) { st.limitN = n; return b; },
         range(a, z) { st.range = [a, z]; return b; },
@@ -114,14 +114,17 @@ before(async () => {
 });
 
 const fill = (target, src) => { for (const k of Object.keys(target)) delete target[k]; Object.assign(target, src); };
-function seed({ bookings = [], reminders = [], rules = {}, v1 = false } = {}) {
+function seed({ bookings = [], reminders = [], rules = {}, v1 = false, customers = [], payments = [] } = {}) {
   state.v1 = v1; state.sms = []; state.emails = []; state.smsReply = () => ({ status: 200, body: { ok: true } });
   fill(state.ops, {
-    bookings: bookings.map((b) => ({ ...b })),
+    // The guest's code lives in booking_manage_tokens (migration 20261016c), never on bookings.
+    bookings: bookings.map((b) => { const row = { ...b }; delete row.manage_token; return row; }),
+    booking_manage_tokens: bookings.filter((b) => b.manage_token).map((b) => ({ booking_id: b.id, location_id: b.location_id, token: b.manage_token })),
+    customers: customers.map((c) => ({ ...c })),
     booking_reminders: reminders.map((r, i) => ({ id: `seed-${i}`, location_id: LOC, status: 'sent', attempts: 1, ...r })),
     booking_rules: [{ location_id: LOC, cancellation_window_hours: 24, guest_phone: '01484 000000', ...rules }],
     locations: [{ id: LOC, name: 'Provo', timezone: 'Europe/London', currency: 'GBP', address: '9 New Street, Huddersfield', receipt_branding: null }],
-    booking_payments: [], packages: [], booking_preorders: [],
+    booking_payments: payments.map((p) => ({ ...p })), packages: [], booking_preorders: [], activity_events: [],
   });
   fill(state.platform, {
     locations: [{ id: 'plat-1', ops_location_id: LOC, online_slug: 'provo', company_id: 'co-1' }],
@@ -303,4 +306,70 @@ test('a template switched off in Message templates is not sent', async () => {
   state.platform.message_templates.push({ company_id: 'co-1', message_type: 'booking_reminder', channel: 'sms', enabled: false, body_text: 'x' });
   await call({ action: 'send_due' });
   assert.equal(state.sms.length, 0);
+});
+
+// ── review fixes (16 Oct 2026) ───────────────────────────────────────────────
+
+test('a claim that never finished (stuck in sending) is tried again after 10 minutes, a fresh one is left alone', async () => {
+  at('2026-10-16T11:30:00Z');
+  const stuck = { booking_id: 'bk-1', kind: 'reminder_day', channel: 'sms', status: 'sending', attempts: 1, sent_at: '2026-10-16T11:05:00Z' };
+  seed({ bookings: [bk()], reminders: [stuck] });
+  await call({ action: 'send_due' });
+  assert.equal(state.sms.length, 1);
+  const row = ledger().find((x) => x.kind === 'reminder_day');
+  assert.equal(row.status, 'sent');
+  assert.equal(row.attempts, 2);
+  seed({ bookings: [bk()], reminders: [{ ...stuck, sent_at: '2026-10-16T11:27:00Z' }] });
+  await call({ action: 'send_due' });
+  assert.equal(state.sms.length, 0, 'another sender may still be at work');
+  // The last try never finished: given up with words, never sent a 4th time.
+  seed({ bookings: [bk()], reminders: [{ ...stuck, attempts: 3 }] });
+  await call({ action: 'send_due' });
+  assert.equal(state.sms.length, 0);
+  assert.equal(ledger()[0].status, 'failed');
+  assert.match(ledger()[0].last_error, /never finished/);
+});
+
+test('a change message stuck in sending no longer blocks the next change', async () => {
+  at('2026-10-14T11:00:00Z');
+  const conf = { booking_id: 'bk-1', kind: 'confirmation', channel: 'sms', detail: { date: '2026-10-17', time: '19:00', covers: 2 }, sent_at: '2026-10-01T10:00:00Z' };
+  const stuck = { booking_id: 'bk-1', kind: 'changed', channel: 'sms', status: 'sending', detail: { date: '2026-10-17', time: '19:15', covers: 2 }, sent_at: '2026-10-14T09:00:00Z' };
+  seed({ bookings: [bk({ start_time: '20:00:00' })], reminders: [conf, stuck] });
+  const r = await call({ action: 'notify', booking_id: 'bk-1', kind: 'changed' });
+  assert.equal(r.results.sms.sent, true);
+  assert.match(state.sms[0].message, /20:00/);
+});
+
+test('a retry records what it told the guest (detail), so the change is never sent twice', async () => {
+  at('2026-10-16T11:30:00Z');
+  const failed = { booking_id: 'bk-1', kind: 'reminder_day', channel: 'sms', status: 'failed', attempts: 1, next_try_at: '2026-10-16T11:10:00Z', detail: { date: '2026-10-17', time: '19:00', covers: 2 }, sent_at: '2026-10-16T11:00:00Z' };
+  seed({ bookings: [bk({ covers: 4 })], reminders: [failed] });
+  await call({ action: 'send_due' });
+  const row = ledger().find((x) => x.kind === 'reminder_day');
+  assert.equal(row.status, 'sent');
+  assert.deepEqual(row.detail, { date: '2026-10-17', time: '19:00', covers: 4 });
+});
+
+test('a host stand booking with no email on it uses the guest record\'s email', async () => {
+  at('2026-10-14T11:00:00Z');
+  seed({
+    bookings: [bk({ source: 'host', customer_id: 'c-1', customer: { name: 'Sam Jones', phone: '+447700900001' } })],
+    customers: [{ id: 'c-1', email: 'sam@example.com', phone: '+447700900001' }],
+  });
+  const r = await call({ action: 'confirm', booking_id: 'bk-1' });
+  assert.equal(r.results.sms.sent, true);
+  assert.equal(r.results.email.sent, true);
+  assert.deepEqual(state.emails[0].to, ['sam@example.com']);
+  assert.equal(state.ops.bookings[0].customer.email, undefined, 'the booking row is never rewritten');
+});
+
+test('the sweep flags a guest cancel whose refund flag was lost', async () => {
+  at('2026-10-16T11:00:00Z');
+  seed({
+    bookings: [bk({ status: 'cancelled', cancel_reason: 'Guest cancelled online', cancelled_at: '2026-10-16T10:00:00Z' })],
+    payments: [{ id: 'p1', booking_id: 'bk-1', location_id: LOC, kind: 'prepay', amount: 120, currency: 'gbp', status: 'captured', applied_to_check: false }],
+  });
+  await call({ action: 'send_due' });
+  assert.equal(state.ops.booking_payments[0].status, 'needs_refund');
+  assert.ok(state.ops.activity_events.some((e) => e.title === 'Online booking payment needs a refund'));
 });

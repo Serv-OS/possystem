@@ -50,8 +50,9 @@ import { pagedRows } from '../_shared/pagedRows.js';
 import {
   LIVE_FOR_GUEST, MAX_SEND_ATTEMPTS, reminderDue, confirmationToSend, cancelToTell, changeToTell,
   snapshotOf, sameSnapshot, nextAttempt, isPermanentFailure, calendarLinks, guestTemplateData, manageUrl,
-  venueContact, moneyWords, zonedToEpoch,
+  venueContact, moneyWords, zonedToEpoch, owedBackOnBooking,
 } from '../_shared/bookingGuest.js';
+import { manageTokenFor, readBookingPayments, healGuestCancel, GUEST_CANCEL_REASON } from '../_shared/bookingGuestDb.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -242,16 +243,14 @@ const pkgRow = (id: string | null) => {
   return pkgCache.get(id)!;
 };
 
-// What the guest is owed back, worked out from the ledger (never from the caller).
+// What the guest is owed back, worked out from the ledger (never from the caller). Net of any
+// part refund already made (amount_refunded_minor, migration 20261016d).
 async function moneyLineFor(kind: Kind, bookingId: string, currency: string): Promise<string> {
   if (kind !== 'cancelled' && kind !== 'changed') return '';
   try {
     if (kind === 'cancelled') {
-      const { data } = await db.from('booking_payments').select('kind, amount, currency, status, refusal_reason').eq('booking_id', bookingId);
-      const owed = (data || []).filter((p: Row) => (p.kind === 'prepay' || p.kind === 'deposit')
-        && (p.status === 'needs_refund' || /^needs refund/i.test(String(p.refusal_reason || ''))));
-      const minor = owed.reduce((s: number, p: Row) => s + Math.round((Number(p.amount) || 0) * 100), 0);
-      return minor > 0 ? `The ${moneyWords(minor, owed[0]?.currency || currency)} you paid will be refunded by the venue. ` : '';
+      const owed = owedBackOnBooking(await readBookingPayments(db, bookingId));
+      return owed.owedBackMinor > 0 ? `The ${moneyWords(owed.owedBackMinor, owed.currency || currency)} you paid will be refunded by the venue. ` : '';
     }
     const { data, error } = await db.from('booking_payments').select('currency, status, refund_due_minor').eq('booking_id', bookingId);
     if (error) return '';   // before 20261016b there is no refund_due_minor
@@ -272,7 +271,9 @@ async function compose(kind: Kind, channel: Channel, bk: Row, venue: Venue, opts
   if (!venue.messagesOn && !opts.force) return { skip: 'venue_turned_booking_messages_off' };
   if (await templateOff(venue.companyId, type, channel)) return { skip: 'turned_off_in_message_templates' };
   const pkg = await pkgRow(bk.package_id || null);
-  const manageLink = venue.manageOn && kind !== 'cancelled' ? manageUrl(venue.base, bk.manage_token) : '';
+  // The guest's code lives in booking_manage_tokens (closed to the anon key), not on bookings.
+  const manageLink = venue.manageOn && kind !== 'cancelled' && venue.base
+    ? manageUrl(venue.base, await manageTokenFor(db, bk)) : '';
   const cal = kind === 'cancelled' ? { google: null } : calendarLinks({
     uid: `${bk.id}@serv-os.app`, title: `Table at ${venue.name}`, date: bk.booking_date, time: bk.start_time,
     minutes: bk.turn_minutes, tz: venue.tz, address: venue.address,
@@ -303,6 +304,14 @@ async function compose(kind: Kind, channel: Channel, bk: Row, venue: Venue, opts
     detail: snapshotOf(bk),
   };
 }
+
+// A 'sending' claim older than this never finished (the function hit its time limit, was
+// stopped, or lost the database between claim and settle). It counts as a failed try.
+const STALE_CLAIM_MS = 10 * 60000;
+const claimIsStale = (sentAt: unknown) => {
+  const t = Date.parse(String(sentAt || ''));
+  return !Number.isFinite(t) || Date.now() - t >= STALE_CLAIM_MS;
+};
 
 const isUnique = (e: Row | null) => String(e?.code || '') === '23505' || /duplicate key/i.test(String(e?.message || ''));
 
@@ -347,7 +356,9 @@ async function deliver(p: {
       if (error) return { sent: false, reason: isUnique(error) ? 'already_sent_(ledger)' : `ledger_refused_${error.code || 'write'}` };
       rowId = data?.id || null;
     } else {
-      if (prev.status === 'sending') return { sent: false, reason: 'already_sending' };
+      // A claim younger than 10 minutes is another sender at work. An older one never finished
+      // (the function was stopped between claim and settle): it is claimed again below.
+      if (prev.status === 'sending' && !claimIsStale(prev.sent_at)) return { sent: false, reason: 'already_sending' };
       const { data: claimed } = await db.from('booking_reminders')
         .update({ status: 'sending', attempts: 1, detail: msg.detail, sent_to: msg.to, sent_at: nowIso, last_error: null, next_try_at: null })
         .eq('id', prev.id).eq('sent_at', prev.sent_at).select('id');
@@ -367,12 +378,16 @@ async function deliver(p: {
     return res;
   }
   if (rowId) {
+    // detail and sent_to say what THIS try told the guest (a retry renders the booking as it is
+    // now), so the change check never sends the same change twice.
     if (res.sent) {
-      await db.from('booking_reminders').update({ status: 'sent', last_error: null, next_try_at: null, sent_at: new Date().toISOString() }).eq('id', rowId);
+      await db.from('booking_reminders').update({ status: 'sent', last_error: null, next_try_at: null, sent_at: new Date().toISOString(), detail: msg.detail, sent_to: msg.to }).eq('id', rowId);
     } else {
       const plan = nextAttempt({ attempts, permanent: isPermanentFailure(res.reason) });
       await db.from('booking_reminders').update({
         status: 'failed',
+        detail: msg.detail,
+        sent_to: msg.to,
         attempts: plan.giveUp ? MAX_SEND_ATTEMPTS : attempts,
         last_error: String(res.reason || 'failed').slice(0, 300),
         next_try_at: plan.nextTryAt,
@@ -380,6 +395,33 @@ async function deliver(p: {
     }
   }
   return res;
+}
+
+// The guest's phone or email from their customer record, when the booking itself has none.
+// The host stand writes the booking's guest as { name, phone } even when the guest record has
+// an email, so without this every stand booking was told by text only. In memory only: the
+// booking row is never rewritten.
+async function withCrmContact(list: Row[]): Promise<Row[]> {
+  const want = list.filter((b) => b?.customer_id && (!String(b.customer?.phone || '').trim() || !String(b.customer?.email || '').trim()));
+  const ids = [...new Set(want.map((b) => String(b.customer_id)))];
+  if (!ids.length) return list;
+  const crm = new Map<string, Row>();
+  for (let i = 0; i < ids.length; i += 150) {
+    const { data, error } = await db.from('customers').select('id, email, phone').in('id', ids.slice(i, i + 150));
+    if (error) { console.warn('[booking-reminders] customer contact read failed:', error.message); return list; }
+    for (const c of data || []) crm.set(String(c.id), c);
+  }
+  for (const b of want) {
+    const c = crm.get(String(b.customer_id));
+    if (!c) continue;
+    const cur = (b.customer || {}) as Row;
+    b.customer = {
+      ...cur,
+      phone: String(cur.phone || '').trim() || String(c.phone || '').trim() || null,
+      email: String(cur.email || '').trim() || String(c.email || '').trim() || null,
+    };
+  }
+  return list;
 }
 
 // Does this request see the 20261016c ledger (status, attempts, detail)?
@@ -412,6 +454,16 @@ async function guestSweep(venues: Map<string, Promise<Venue>>, out: { sent: Row[
       .gte('updated_at', new Date(now - 86400000).toISOString()).gte('booking_date', day(-1))
       .in('status', ['confirmed', 'prepaid', 'cancelled']).order('id')),
   ]);
+  // A guest cancel whose refund flag was lost (two writes on the manage page): flag it now.
+  const healed = new Set<string>();
+  for (const b of [...near, ...touched]) {
+    if (b.status !== 'cancelled' || b.cancel_reason !== GUEST_CANCEL_REASON || healed.has(String(b.id))) continue;
+    healed.add(String(b.id));
+    try {
+      if (await healGuestCancel(db, b, await readBookingPayments(db, String(b.id)))) out.sent.push({ booking: b.id, kind: 'refund_flag_healed' });
+    } catch (e) { console.error('[booking-reminders] refund flag heal failed for', b.id, (e as Error).message); }
+  }
+  await withCrmContact([...near, ...recent, ...touched]);
   const byId = new Map<string, Row>();
   for (const b of [...near, ...recent, ...touched]) if (b.source !== 'walk_in' && channelsOf(b).length) byId.set(String(b.id), b);
   if (!byId.size) return;
@@ -481,13 +533,31 @@ async function retryFailed(venues: Map<string, Promise<Venue>>, out: { sent: Row
     .eq('status', 'failed').lt('attempts', MAX_SEND_ATTEMPTS).lte('next_try_at', nowIso)
     .order('next_try_at', { ascending: true }).limit(100);
   if (error) { console.error('[booking-reminders] retry read failed:', error.message); return; }
-  for (const r of due || []) {
+  // A claim that never finished counts as a failed try (it would otherwise block that message,
+  // and every later change message on that channel, for ever).
+  const { data: stuck, error: stuckErr } = await db.from('booking_reminders')
+    .select('id, booking_id, kind, channel, attempts, sent_at')
+    .eq('status', 'sending').lt('sent_at', new Date(Date.now() - STALE_CLAIM_MS).toISOString())
+    .order('sent_at', { ascending: true }).limit(100);
+  if (stuckErr) console.error('[booking-reminders] stale claim read failed:', stuckErr.message);
+  const work = [
+    ...(due || []).map((r: Row) => ({ ...r, from: 'failed' })),
+    ...(stuck || []).map((r: Row) => ({ ...r, from: 'sending' })),
+  ];
+  for (const r of work) {
     const next = Number(r.attempts || 1) + 1;
-    const { data: claimed } = await db.from('booking_reminders')
+    if (r.from === 'sending' && next > MAX_SEND_ATTEMPTS) {
+      await db.from('booking_reminders').update({ status: 'failed', last_error: 'not sent: the last try never finished', next_try_at: null })
+        .eq('id', r.id).eq('status', 'sending').eq('sent_at', r.sent_at);
+      continue;
+    }
+    const claim = db.from('booking_reminders')
       .update({ status: 'sending', attempts: next, sent_at: new Date().toISOString() })
-      .eq('id', r.id).eq('status', 'failed').eq('attempts', r.attempts).select('id');
+      .eq('id', r.id).eq('status', r.from);
+    const { data: claimed } = await (r.from === 'sending' ? claim.eq('sent_at', r.sent_at) : claim.eq('attempts', r.attempts)).select('id');
     if (!claimed?.length) continue;
-    const { data: bk } = await db.from('bookings').select('*').eq('id', r.booking_id).maybeSingle();
+    const { data: bk0 } = await db.from('bookings').select('*').eq('id', r.booking_id).maybeSingle();
+    const bk = bk0 ? (await withCrmContact([bk0]))[0] : null;
     const venue = bk ? await loadVenue(String(bk.location_id), venues) : null;
     if (!bk || !venue || !stillWanted(r.kind as Kind, bk, venue.tz)) {
       await db.from('booking_reminders').update({ status: 'failed', attempts: MAX_SEND_ATTEMPTS, last_error: 'not sent: no longer needed', next_try_at: null }).eq('id', r.id);
@@ -510,8 +580,9 @@ Deno.serve(async (req) => {
     // ── booking confirmation (SMS + email, once per channel via the ledger) ──
     if (action === 'confirm') {
       const bookingId = String(body.booking_id || '');
-      const { data: bk } = await db.from('bookings').select('*').eq('id', bookingId).maybeSingle();
-      if (!bk || CLOSED.includes(bk.status)) return json({ ok: false, error: 'unknown_or_closed' }, 404);
+      const { data: bk0 } = await db.from('bookings').select('*').eq('id', bookingId).maybeSingle();
+      if (!bk0 || CLOSED.includes(bk0.status)) return json({ ok: false, error: 'unknown_or_closed' }, 404);
+      const [bk] = await withCrmContact([bk0]);
       // Pay-before-commit: never confirm a booking that has not paid, the
       // promote paths re-fire this action once the money lands.
       if (bk.status === 'pending_payment') return json({ ok: false, error: 'pending_payment_not_confirmable' }, 409);
@@ -542,8 +613,9 @@ Deno.serve(async (req) => {
       if (kind !== 'changed' && kind !== 'cancelled') return json({ ok: false, error: 'kind must be changed or cancelled' }, 400);
       const v2 = await ledgerIsV2();
       if (!v2) return json({ ok: false, error: 'needs_migration_20261016c' }, 409);
-      const { data: bk } = await db.from('bookings').select('*').eq('id', bookingId).maybeSingle();
-      if (!bk) return json({ ok: false, error: 'unknown_booking' }, 404);
+      const { data: bk0 } = await db.from('bookings').select('*').eq('id', bookingId).maybeSingle();
+      if (!bk0) return json({ ok: false, error: 'unknown_booking' }, 404);
+      const [bk] = await withCrmContact([bk0]);
       if (kind === 'cancelled' && bk.status !== 'cancelled') return json({ ok: false, error: 'not_cancelled' }, 409);
       if (kind === 'changed' && !LIVE_FOR_GUEST.includes(bk.status)) return json({ ok: false, error: 'not_live' }, 409);
       const venue = await loadVenue(String(bk.location_id), venues);

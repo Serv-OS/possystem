@@ -41,11 +41,13 @@ export async function loadGuestMessages(bookingId) {
 }
 
 // The guest's change and cancel code, or null (before migration 20261016c, or not readable).
+// The codes live in booking_manage_tokens, closed to the anon key (bookings itself is still
+// readable with that key); Back Office logins and paired host stands may read their venue's.
 export async function loadManageToken(bookingId) {
   if (isMock || !supabase || !bookingId) return null;
   try {
-    const { data, error } = await supabase.from('bookings').select('manage_token').eq('id', bookingId).maybeSingle();
+    const { data, error } = await supabase.from('booking_manage_tokens').select('token').eq('booking_id', bookingId).maybeSingle();
     if (error) return null;
-    return data?.manage_token || null;
+    return data?.token || null;
   } catch { return null; }
 }

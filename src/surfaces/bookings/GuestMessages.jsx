@@ -10,7 +10,7 @@
 
 import { useEffect, useState } from 'react';
 import { useStore } from '../../store';
-import { fmtClock } from '../../lib/bookings/editRules.js';
+import { fmtClock, venueToday } from '../../lib/bookings/editRules.js';
 import { lookupPreorderLinkBase } from '../../lib/bookings/bookingsData.js';
 import { loadGuestMessages, loadManageToken, messageLine, nudgeConfirmation } from '../../lib/bookings/guestMessages.js';
 
@@ -19,21 +19,30 @@ const TONE = { ok: 'var(--grn)', bad: 'var(--red)', wait: 'var(--orn)' };
 export default function GuestMessages({ b, sec }) {
   const showToast = useStore((s) => s.showToast);
   const venueTz = useStore((s) => s.locationConfig?.timezone);
-  const [state, setState] = useState({ id: null, rows: null, token: null });
+  // link: worked out before any tap, so "Copy guest link" writes to the clipboard at once (an
+  // iPad only allows a clipboard write while the tap is still in progress, not after a network
+  // read). base: false = read, no venue web address set.
+  const [state, setState] = useState({ id: null, rows: null, token: null, base: null });
   const [nonce, setNonce] = useState(0);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     let alive = true;
-    Promise.all([loadGuestMessages(b.id), loadManageToken(b.id)]).then(([rows, token]) => {
-      if (alive) setState({ id: b.id, rows, token });
-    });
+    Promise.all([loadGuestMessages(b.id), loadManageToken(b.id), lookupPreorderLinkBase(b.locationId).catch(() => null)])
+      .then(([rows, token, base]) => {
+        if (alive) setState({ id: b.id, rows, token, base: base || false });
+      });
     return () => { alive = false; };
-  }, [b.id, nonce]);
+  }, [b.id, b.locationId, nonce]);
 
   const ready = state.id === b.id;
   const rows = ready ? state.rows : undefined;
-  const hasContact = !!(String(b.customer?.phone || '').trim() || String(b.customer?.email || '').trim());
+  // A guest record (customerId) may carry the email the booking itself does not: the messages
+  // use it, so it counts as a way to reach the guest.
+  const hasContact = !!(String(b.customer?.phone || '').trim() || String(b.customer?.email || '').trim() || b.customerId);
+  const live = ['confirmed', 'prepaid'].includes(b.status);
+  const upcoming = !!b.date && b.date >= venueToday(venueTz);
+  const link = ready && state.token && state.base ? `${state.base}/book?manage=${state.token}` : null;
   if (b.source === 'walk_in' && !(rows && rows.length)) return null;
 
   const clock = fmtClock(venueTz);
@@ -44,13 +53,17 @@ export default function GuestMessages({ b, sec }) {
     return day === today ? clock(d) : `${day} ${clock(d)}`;
   };
 
-  const copyLink = async () => {
+  // No await before the clipboard write: the link was worked out when the section opened.
+  const copyLink = () => {
+    if (!ready) { showToast?.('Still loading the guest link. Try again in a moment.', 'info'); return; }
     if (!state.token) { showToast?.('This booking has no guest link yet. It arrives with the bookings update (migration 20261016c).', 'info'); return; }
-    const base = await lookupPreorderLinkBase(b.locationId);
-    if (!base) { showToast?.('No venue web address set (Back Office, Location settings), so there is no link to copy.', 'error'); return; }
-    const link = `${base}/book?manage=${state.token}`;
-    try { await navigator.clipboard.writeText(link); showToast?.('Guest link copied. The guest can change or cancel with it.', 'success'); }
-    catch { showToast?.(`Could not copy. The link is ${link}`, 'info'); }
+    if (!link) { showToast?.('No venue web address set (Back Office, Location settings), so there is no link to copy.', 'error'); return; }
+    let write;
+    try { write = navigator.clipboard.writeText(link); } catch (e) { write = Promise.reject(e); }
+    Promise.resolve(write).then(
+      () => showToast?.('Guest link copied. The guest can change or cancel with it.', 'success'),
+      () => showToast?.('This device would not copy the link. Open the booking in Back Office to copy it.', 'info'),
+    );
   };
 
   const resend = async () => {
@@ -70,7 +83,11 @@ export default function GuestMessages({ b, sec }) {
       {hasContact && rows === undefined && <div style={{ fontSize: 12.5, color: 'var(--t4)' }}>Checking what was sent</div>}
       {hasContact && rows === null && <div style={{ fontSize: 12.5, color: 'var(--t3)' }}>Could not read the messages from here.</div>}
       {hasContact && rows && rows.length === 0 && (
-        <div style={{ fontSize: 12.5, color: 'var(--t3)', lineHeight: 1.45 }}>Nothing sent yet. The confirmation goes within 5 minutes of booking, a reminder the day before and 2 hours before.</div>
+        <div style={{ fontSize: 12.5, color: 'var(--t3)', lineHeight: 1.45 }}>
+          {live && upcoming
+            ? 'No confirmation has gone to this guest yet. Tap Send confirmation to send it now. Reminders go the day before and 2 hours before.'
+            : 'Nothing was sent to this guest.'}
+        </div>
       )}
       {rows && rows.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -91,7 +108,7 @@ export default function GuestMessages({ b, sec }) {
       {hasContact && (
         <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
           <button className="btn btn-ghost" onClick={copyLink} style={{ flex: 1, minWidth: 0, height: 34, fontSize: 11.5, fontWeight: 700 }}>Copy guest link</button>
-          {['confirmed', 'prepaid'].includes(b.status) && rows && !rows.some((r) => r.kind === 'confirmation') && (
+          {live && upcoming && rows && !rows.some((r) => r.kind === 'confirmation') && (
             <button className="btn btn-ghost" onClick={resend} disabled={busy} style={{ flex: 1, minWidth: 0, height: 34, fontSize: 11.5, fontWeight: 700 }}>
               {busy ? 'Sending' : 'Send confirmation'}
             </button>

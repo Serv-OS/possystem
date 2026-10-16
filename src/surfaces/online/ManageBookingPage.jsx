@@ -123,7 +123,15 @@ export default function ManageBookingPage({ token, brand, onBrand }) {
   };
   const status = info.view === 'cancelled' ? 'Cancelled' : info.view === 'awaiting_payment' ? 'Waiting for payment' : info.view === 'closed' ? 'Finished' : 'Booked';
 
+  // iPhone and iPad: a download link puts booking.ics in Files. Opening the event instead goes
+  // straight to Safari's Add to Calendar sheet. Desktop and Android keep the download.
   const downloadIcs = () => {
+    const ios = /iPad|iPhone|iPod/.test(navigator.userAgent || '')
+      || (navigator.platform === 'MacIntel' && (navigator.maxTouchPoints || 0) > 1);
+    if (ios) {
+      window.location.href = `data:text/calendar;charset=utf-8,${encodeURIComponent(info.calendar.ics)}`;
+      return;
+    }
     try {
       const blob = new Blob([info.calendar.ics], { type: 'text/calendar;charset=utf-8' });
       const url = URL.createObjectURL(blob);
@@ -145,6 +153,7 @@ export default function ManageBookingPage({ token, brand, onBrand }) {
       return;
     }
     setOverride(r);
+    setSlotsRes(null);   // the next visit to the form loads fresh times, never this old reply
     setMode('summary'); setPDate(null); setPParty(null); setPTime(null);
     setDone(r.unchanged ? 'Nothing changed.' : ['Your booking is changed.', r.moneyNote, toldLine(r.told)].filter(Boolean).join(' '));
   };
@@ -210,13 +219,15 @@ export default function ManageBookingPage({ token, brand, onBrand }) {
       {mode === 'summary' && (info.canChange || info.canCancel) && (
         <div style={{ ...card, display: 'flex', flexDirection: 'column', gap: 10 }}>
           {info.canChange && (
-            <button type="button" style={btn} onClick={() => { setMode('change'); setErr(''); setDone(null); }}>Change date, time or guests</button>
+            <button type="button" style={btn} onClick={() => { setSlotsRes(null); setMode('change'); setErr(''); setDone(null); }}>Change date, time or guests</button>
           )}
           {info.canCancel && (
             <button type="button" style={{ ...btn, background: 'transparent', color: '#b91c1c', border: '1.5px solid rgba(185,28,28,.5)' }}
               onClick={() => { setMode('cancel'); setErr(''); setDone(null); }}>Cancel booking</button>
           )}
-          {info.windowHours > 0 && (
+          {/* Only for a booking that can be changed: one still waiting for payment can be cancelled
+              right up to its time (nothing was paid), so the window line would be wrong there. */}
+          {info.windowHours > 0 && info.canChange && (
             <div style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.5, textAlign: 'center' }}>
               You can change or cancel online until {info.windowHours} {info.windowHours === 1 ? 'hour' : 'hours'} before your booking.
             </div>

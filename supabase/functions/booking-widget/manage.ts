@@ -1,9 +1,10 @@
 // supabase/functions/booking-widget/manage.ts
 //
 // The guest's own link (16 Oct 2026): https://<venue>.<root>/book?manage=<token>.
-// Every booking gets a manage_token from the database when it is made (migration 20261016c),
-// whoever makes it. The token IS the credential: this file never takes a booking id, a venue
-// id or anything else from the page.
+// Every booking gets a code in booking_manage_tokens from the database when it is made
+// (migration 20261016c), whoever makes it. The code IS the credential: this file never takes a
+// booking id, a venue id or anything else from the page. The codes live in their own table,
+// closed to the anon key, because bookings itself is still readable with that key.
 //
 // Actions (all answer 200 with { ok, error?, message? } so the page can always read the words):
 //   manage_info    the booking, what the guest may do and, when not, why in words; the venue's
@@ -31,10 +32,11 @@ import {
   suggestTables, paceAt, paceFull, turnFor, toMin, sessionsToBlocks, maxPartyForCap,
 } from '../_shared/bookingOptimiser.js';
 import {
-  manageState, moneyOnBooking, cancelMoney, changeMoney, packageOnDate, calendarLinks, venueContact,
-  moneyWords, fmtDateWords,
+  manageState, moneyOnBooking, owedBackOnBooking, cancelMoney, changeMoney, packageOnDate, calendarLinks,
+  venueContact, moneyWords, fmtDateWords,
 } from '../_shared/bookingGuest.js';
-import { markPaymentNeedsRefund, isMissingColumnError, isMissingFunctionError } from '../_shared/bookingPromote.ts';
+import { isMissingColumnError, isMissingFunctionError } from '../_shared/bookingPromote.ts';
+import { GUEST_CANCEL_REASON, isMissingTable, readBookingPayments, healGuestCancel } from '../_shared/bookingGuestDb.ts';
 
 // deno-lint-ignore no-explicit-any
 type Row = Record<string, any>;
@@ -62,10 +64,16 @@ export async function handleManage(action: string, body: Row, d: Deps): Promise<
   const token = String(body.token || '');
   if (!/^[0-9a-f]{32,128}$/i.test(token)) return say('unknown_link', 'This link is not valid. Please check the link in your message.');
 
-  const { data: bk, error: bkErr } = await d.db.from('bookings').select('*').eq('manage_token', token).maybeSingle();
+  const { data: tok, error: tokErr } = await d.db.from('booking_manage_tokens').select('booking_id').eq('token', token).maybeSingle();
+  if (tokErr) {
+    if (isMissingTable(tokErr)) return say('not_ready', NOT_READY);
+    console.error('[booking-widget] manage lookup failed:', tokErr.message);
+    return say('lookup_failed', 'We could not load your booking just now. Please try again in a minute.');
+  }
+  if (!tok?.booking_id) return say('unknown_link', 'We could not find this booking. Please check the link in your message.');
+  const { data: bk, error: bkErr } = await d.db.from('bookings').select('*').eq('id', tok.booking_id).maybeSingle();
   if (bkErr) {
-    if (isMissingColumnError(bkErr)) return say('not_ready', NOT_READY);
-    console.error('[booking-widget] manage lookup failed:', bkErr.message);
+    console.error('[booking-widget] manage booking read failed:', bkErr.message);
     return say('lookup_failed', 'We could not load your booking just now. Please try again in a minute.');
   }
   if (!bk) return say('unknown_link', 'We could not find this booking. Please check the link in your message.');
@@ -74,12 +82,14 @@ export async function handleManage(action: string, body: Row, d: Deps): Promise<
   const venue = await d.loadVenue(locationId);
   if (!venue) return say('unknown_link', 'We could not find this booking. Please check the link in your message.');
   const tz = String(venue.loc?.timezone || 'Europe/London');
-  const [{ data: rawRules }, { data: locExtra }, { data: pays }, { data: ownTables }] = await Promise.all([
+  const [{ data: rawRules }, { data: locExtra }, pays, { data: ownTables }] = await Promise.all([
     d.db.from('booking_rules').select('*').eq('location_id', locationId).maybeSingle(),
     d.db.from('locations').select('address, receipt_branding').eq('id', locationId).maybeSingle(),
-    d.db.from('booking_payments').select('id, kind, status, amount, currency, applied_to_check, refusal_reason').eq('booking_id', bk.id),
+    readBookingPayments(d.db, String(bk.id)),
     d.db.from('booking_tables').select('table_id').eq('booking_id', bk.id),
   ]);
+  // A guest cancel whose refund flag was lost is flagged now (the guest was told it would be).
+  await healGuestCancel(d.db, bk, pays);
   const rr = (rawRules || {}) as Row;
   const rules = venue.rules || {};
   const contact = venueContact({ rules: rr, receiptBranding: locExtra?.receipt_branding, address: locExtra?.address || '' });
@@ -92,9 +102,7 @@ export async function handleManage(action: string, body: Row, d: Deps): Promise<
   const money = moneyOnBooking(pays || []);
   const hold = (pays || []).some((p: Row) => p.kind === 'hold' && p.status === 'authorised');
   // Money already flagged to go back (a cancel in time): said as such, never as "paid".
-  const owedBackMinor = () => (pays || []).filter((p: Row) => (p.kind === 'prepay' || p.kind === 'deposit')
-    && (p.status === 'needs_refund' || /^needs refund/i.test(String(p.refusal_reason || ''))))
-    .reduce((sum: number, p: Row) => sum + Math.round((Number(p.amount) || 0) * 100), 0);
+  const owedBackMinor = () => owedBackOnBooking(pays || []).owedBackMinor;
   const cust = (bk.customer || {}) as Row;
   const today = d.venueToday(tz);
   const maxCovers = Math.max(1, Math.min(maxPartyForCap(rules.pacingCap, 12), Number(pkg?.max_covers) || 12));
@@ -229,7 +237,16 @@ export async function handleManage(action: string, body: Row, d: Deps): Promise<
     if (date === String(bk.booking_date) && time === hm(bk.start_time) && party === Number(bk.covers)) {
       return d.json({ ...summary(), unchanged: true });
     }
-    const m = changeMoney({ pkg, oldCovers: bk.covers, newCovers: party, payments: pays || [] });
+    // The party the money was taken for: the booking page's own request row (no browser can
+    // write it). Only online bookings take money, so a booking without one falls back to its
+    // party now.
+    let paidCovers: number | null = null;
+    if (money.capturedMinor > 0) {
+      const { data: req } = await d.db.from('booking_requests').select('payload').eq('booking_id', bk.id)
+        .order('created_at', { ascending: true }).limit(1);
+      paidCovers = Number(req?.[0]?.payload?.party) || null;
+    }
+    const m = changeMoney({ pkg, oldCovers: bk.covers, newCovers: party, paidCovers, payments: pays || [] });
     if (m.state === 'needs_top_up') {
       return say('needs_top_up', `Adding guests to this booking needs ${moneyWords(m.diffMinor, m.currency || currency)} more, which cannot be paid online yet.${callLine(contact.phone)} The team can add them for you.`);
     }
@@ -243,16 +260,31 @@ export async function handleManage(action: string, body: Row, d: Deps): Promise<
     const sets = ctx.candidates(time);
     if (!sets.length) return say('slot_gone', 'No table is free at that time. Please pick another.');
 
-    // The edit stamp the Inspector shows: "Edited 17:42 by Guest online".
-    const stamped = { ...(bk.customer || {}), edited_by: 'Guest online', edited_at: new Date().toISOString() };
-    let done: Row | null = null;
-    let last = '';
-    for (const set of sets) {
-      const { data, error } = await d.db.rpc('edit_booking', {
+    // The edit stamp the Inspector shows: "Edited 17:42 by Guest online". It is written over the
+    // guest details as they are NOW: edit_booking refuses with 'stale' when the host saved them
+    // since this read (p_expected_edited_at), and the details are read again once.
+    let cur = (bk.customer || {}) as Row;
+    const stampOf = (c: Row) => ({ ...c, edited_by: 'Guest online', edited_at: new Date().toISOString() });
+    let withStamp = true;       // an edit_booking older than 20261016b has no p_expected_edited_at
+    let reread = false;
+    const callEdit = async (set: string[]) => {
+      const args: Row = {
         p_id: bk.id, p_location_id: locationId, p_booking_date: date, p_start_time: time,
         p_turn_minutes: ctx.turn, p_covers: party, p_table_ids: set, p_primary_table_id: set[0],
-        p_note: null, p_customer: stamped,
-      });
+        p_note: null, p_customer: stampOf(cur),
+      };
+      if (withStamp) {
+        const r = await d.db.rpc('edit_booking', { ...args, p_expected_edited_at: String(cur.edited_at ?? '') });
+        if (!r.error || !isMissingFunctionError(r.error)) return r;
+        withStamp = false;
+      }
+      return await d.db.rpc('edit_booking', args);
+    };
+    let done: Row | null = null;
+    let last = '';
+    for (let i = 0; i < sets.length; i++) {
+      const set = sets[i];
+      const { data, error } = await callEdit(set);
       if (error) {
         if (isMissingFunctionError(error)) return say('not_ready', NOT_READY);
         console.error('[booking-widget] manage_change edit_booking failed:', error.message);
@@ -260,6 +292,14 @@ export async function handleManage(action: string, body: Row, d: Deps): Promise<
       }
       if (data?.ok) { done = data; break; }
       last = String(data?.error || '');
+      if (last === 'stale' && !reread) {
+        // The host saved the guest's details a moment ago: keep their edit, try this table again.
+        reread = true;
+        const { data: fresh } = await d.db.from('bookings').select('customer').eq('id', bk.id).maybeSingle();
+        cur = ((fresh?.customer) || {}) as Row;
+        i -= 1;
+        continue;
+      }
       if (last === 'table_taken') continue;   // someone booked it between the quote and now
       if (last === 'no access') return say('not_ready', NOT_READY);   // migration 20261016c not run yet
       if (last === 'not_editable' || last === 'awaiting_payment') return say('not_changeable', 'This booking can no longer be changed online.');
@@ -278,9 +318,17 @@ export async function handleManage(action: string, body: Row, d: Deps): Promise<
       const { error: poErr } = await d.db.from('booking_preorders').delete().eq('booking_id', bk.id).gt('seat', party);
       if (poErr) console.warn('[booking-widget] pre-orders past the new party not removed:', poErr.message);
     }
+    // The figure stored on the rows is always the WHOLE amount owed back now: any older figure
+    // is cleared first (these rows are captured and unused, so no close has written them), then
+    // the new one is stored. 6 to 4 then back to 6 leaves nothing owed.
     let moneyText = '';
+    if (money.rows.length && party !== Number(bk.covers)) {
+      const { error: clrErr } = await d.db.from('booking_payments')
+        .update({ refund_due_minor: null, refund_reason: null }).in('id', money.rows.map((r) => r.id));
+      if (clrErr && !isMissingColumnError(clrErr)) console.error('[booking-widget] owed back not cleared:', clrErr.message);
+    }
     if (m.state === 'owed_back') {
-      moneyText = await flagOwedBack(d, money.rows, m.diffMinor, m.currency || currency, `The guest reduced the party online from ${bk.covers} to ${party}`);
+      moneyText = await flagOwedBack(d, money.rows, m.diffMinor, m.currency || currency, `The guest changed the party online from ${bk.covers} to ${party}`);
     }
     await d.db.from('activity_events').insert({
       location_id: locationId, kind: 'system', severity: moneyText ? 'action' : 'info',
@@ -297,8 +345,10 @@ export async function handleManage(action: string, body: Row, d: Deps): Promise<
 
   if (action === 'manage_cancel') {
     if (!state.canCancel) return say('not_cancellable', summary().why || 'This booking cannot be cancelled online.');
+    // Two writes: the cancel, then the refund flag. If the second is lost, healGuestCancel
+    // flags it on the guest's next visit and the booking-reminders sweep within 5 minutes.
     const { data: moved, error: upErr } = await d.db.from('bookings')
-      .update({ status: 'cancelled', cancelled_at: new Date().toISOString(), cancel_reason: 'Guest cancelled online' })
+      .update({ status: 'cancelled', cancelled_at: new Date().toISOString(), cancel_reason: GUEST_CANCEL_REASON })
       .eq('id', bk.id).eq('status', bk.status).select('id');
     if (upErr) {
       console.error('[booking-widget] manage_cancel failed:', upErr.message);
@@ -306,17 +356,14 @@ export async function handleManage(action: string, body: Row, d: Deps): Promise<
     }
     if (!moved?.length) return say('changed_meanwhile', 'Your booking changed a moment ago. Please reload the page.');
     bk.status = 'cancelled';
+    bk.cancel_reason = GUEST_CANCEL_REASON;
+    // The urgent "refund the guest" alert on the venue's activity feed, and the rows kept out of
+    // any bill (needs_refund). Nothing is refunded by itself.
     const owed = cancelMoney(pays || []);
-    if (owed.rowIds.length) {
-      // The urgent "refund the guest" alert on the venue's activity feed, and the rows kept out of
-      // any bill (needs_refund). Nothing is refunded by itself.
-      await markPaymentNeedsRefund(d.db, owed.rowIds, 'the guest cancelled online in time', {
-        guestName: cust.name ? String(cust.name) : null, time: hm(bk.start_time),
-      });
-    }
+    await healGuestCancel(d.db, bk, pays);
     await d.db.from('activity_events').insert({
       location_id: locationId, kind: 'system', severity: 'info',
-      title: 'Guest cancelled online',
+      title: GUEST_CANCEL_REASON,
       body: `${cust.name || 'A guest'} cancelled ${fmtDateWords(bk.booking_date)} at ${hm(bk.start_time)}, ${bk.covers} ${Number(bk.covers) === 1 ? 'guest' : 'guests'}. The table is free again.`,
       ref_type: 'booking', ref_id: String(bk.id),
     }).then(({ error }: Row) => { if (error) console.warn('[booking-widget] cancel alert not written:', error.message); });

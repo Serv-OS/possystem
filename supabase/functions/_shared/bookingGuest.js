@@ -8,7 +8,7 @@
 //   venueClockParts, zonedToEpoch   the VENUE clock (never the server's, never the device's)
 //   guestWindow, manageState        may the guest cancel or change online right now, and why not
 //   moneyOnBooking, cancelMoney,    what happens to money already paid when the guest cancels or
-//   changeMoney                     changes the party (never refunded by itself: flagged as owed back)
+//   changeMoney, owedBackOnBooking  changes the party (never refunded by itself: flagged as owed back)
 //   packageOnDate                   is the booking's package sold on the new date
 //   reminderDue                     is the day before or the 2 hours before reminder due now
 //   confirmationToSend, cancelToTell, changeToTell   the backstops the 5 minute sweep runs
@@ -139,14 +139,31 @@ export function manageState({ booking, rules = {}, tz, now = Date.now() } = {}) 
 
 const needsRefund = (p) => p.status === 'needs_refund' || /^needs refund/i.test(String(p.refusal_reason || ''));
 
+// What a payment row still holds, in minor units: its amount less anything already refunded
+// on it (amount_refunded_minor, migration 20261016d: a part refund keeps the row 'captured').
+export function paymentNetMinor(p) {
+  if (!p) return 0;
+  const refunded = Math.max(0, Math.round(num(p.amount_refunded_minor ?? p.amountRefundedMinor)));
+  return Math.max(0, Math.round(num(p.amount) * 100) - refunded);
+}
+
 // Captured prepay and deposit money that has not been used on a bill and is not already
-// flagged to go back. A saved card (hold) took nothing, so it is never money on the booking.
+// flagged to go back, net of any part refund. A saved card (hold) took nothing, so it is
+// never money on the booking.
 export function moneyOnBooking(payments = []) {
   const rows = (payments || []).filter((p) => p && p.status === 'captured'
-    && (p.kind === 'prepay' || p.kind === 'deposit') && !p.applied_to_check && !needsRefund(p));
-  const list = rows.map((p) => ({ id: p.id, kind: p.kind, amountMinor: Math.round(num(p.amount) * 100) }));
+    && (p.kind === 'prepay' || p.kind === 'deposit') && !p.applied_to_check && !needsRefund(p)
+    && paymentNetMinor(p) > 0);
+  const list = rows.map((p) => ({ id: p.id, kind: p.kind, amountMinor: paymentNetMinor(p) }));
   const currency = String(rows[0]?.currency || '').toUpperCase() || null;
   return { capturedMinor: list.reduce((s, r) => s + r.amountMinor, 0), rows: list, currency };
+}
+
+// Money already flagged to go back to the guest (a cancel in time), net of any part refund.
+export function owedBackOnBooking(payments = []) {
+  const rows = (payments || []).filter((p) => p && (p.kind === 'prepay' || p.kind === 'deposit') && needsRefund(p));
+  const currency = String(rows[0]?.currency || '').toUpperCase() || null;
+  return { owedBackMinor: rows.reduce((s, p) => s + paymentNetMinor(p), 0), currency };
 }
 
 // A cancel in time: every captured row is owed back to the guest. The venue refunds it (the
@@ -156,26 +173,46 @@ export function cancelMoney(payments = []) {
   return { owedBackMinor: m.capturedMinor, rowIds: m.rows.map((r) => r.id), currency: m.currency };
 }
 
-// The party changes on a booking with money paid.
+// The party changes on a booking with money paid. What is owed back is worked out from what
+// the guest PAID, never from the package's price today (a price changed since would give back
+// the wrong sum):
+//   paidCovers   the party the money was taken for (the booking page's request row); missing
+//                means the booking's party before this change
+//   owed back    captured x (paidCovers - newCovers) / paidCovers, for a per guest price only.
+//                It is the WHOLE figure owed back now, not the step: 6 to 4 to 5 owes one
+//                seat, 6 to 4 to 6 owes nothing. The caller stores it in place of any older one.
+//   top up       more guests than were paid for, at today's price for the extra seats. There
+//                is no online top up yet, so the page refuses and the guest calls.
 //   state 'none'          nothing was paid
-//   state 'settled'       what was paid still matches (or cannot be worked out: no package)
-//   state 'needs_top_up'  more guests on a per guest prepay or deposit: more money is owed. There
-//                         is no online top up yet, so the page refuses and the guest calls.
-//   state 'owed_back'     fewer guests: diffMinor goes back unless the bill uses it
-export function changeMoney({ pkg = null, oldCovers, newCovers, payments = [] } = {}) {
+//   state 'settled'       what was paid still covers the party (or cannot be worked out: no
+//                         package, or a price per booking that does not move with the party)
+//   state 'needs_top_up'  diffMinor more is owed
+//   state 'owed_back'     diffMinor goes back unless the bill uses it
+export function changeMoney({ pkg = null, oldCovers, newCovers, paidCovers = null, payments = [] } = {}) {
   const m = moneyOnBooking(payments);
-  const from = Math.round(num(oldCovers)), to = Math.round(num(newCovers));
-  if (!m.capturedMinor) return { state: 'none', diffMinor: 0, capturedMinor: 0, currency: m.currency };
-  const due = pkg ? paymentDue({ covers: Math.max(1, to), pkg, rules: null }) : null;
-  const dueMinor = due && (due.kind === 'prepay' || due.kind === 'deposit') ? due.amountMinor : null;
-  if (dueMinor === null) return { state: 'settled', diffMinor: 0, capturedMinor: m.capturedMinor, currency: m.currency };
-  if (to > from && dueMinor > m.capturedMinor) {
-    return { state: 'needs_top_up', diffMinor: dueMinor - m.capturedMinor, capturedMinor: m.capturedMinor, currency: m.currency };
+  const from = Math.max(1, Math.round(num(oldCovers)) || 1);
+  const to = Math.max(1, Math.round(num(newCovers)) || 1);
+  const paid = Math.max(1, Math.round(num(paidCovers)) || from);
+  const base = { capturedMinor: m.capturedMinor, currency: m.currency };
+  if (!m.capturedMinor) return { state: 'none', diffMinor: 0, ...base, capturedMinor: 0 };
+  const dueAt = (c) => {
+    const due = pkg ? paymentDue({ covers: Math.max(1, c), pkg, rules: null }) : null;
+    return due && (due.kind === 'prepay' || due.kind === 'deposit') ? due.amountMinor : null;
+  };
+  const duePaid = dueAt(paid);
+  const settled = { state: 'settled', diffMinor: 0, ...base };
+  if (duePaid === null) return settled;
+  const perGuest = dueAt(paid + 1) !== duePaid;
+  if (!perGuest) return settled;
+  if (to > paid) {
+    const more = (dueAt(to) ?? duePaid) - duePaid;
+    return more > 0 ? { state: 'needs_top_up', diffMinor: more, ...base } : settled;
   }
-  if (to < from && dueMinor < m.capturedMinor) {
-    return { state: 'owed_back', diffMinor: m.capturedMinor - dueMinor, capturedMinor: m.capturedMinor, currency: m.currency };
+  if (to < paid) {
+    const owed = Math.min(m.capturedMinor, Math.round((m.capturedMinor * (paid - to)) / paid));
+    return owed > 0 ? { state: 'owed_back', diffMinor: owed, ...base } : settled;
   }
-  return { state: 'settled', diffMinor: 0, capturedMinor: m.capturedMinor, currency: m.currency };
+  return settled;
 }
 
 const SYMBOL = { GBP: '£', USD: '$', EUR: '€' };

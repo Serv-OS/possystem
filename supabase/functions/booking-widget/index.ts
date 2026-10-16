@@ -66,6 +66,8 @@ import { phoneMatchKey, phoneRegionFromCurrency, phoneRawText } from '../_shared
 import { readCustomerByPhone } from '../_shared/customerPhoneRead.js';
 // 16 Oct 2026: the guest's own change and cancel link (/book?manage=<token>).
 import { handleManage } from './manage.ts';
+import { manageTokenFor } from '../_shared/bookingGuestDb.ts';
+import { manageState } from '../_shared/bookingGuest.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -244,6 +246,7 @@ async function loadVenue(locationId: string) {
     loc,
     rulesError: rulesError ? String(rulesError.message || rulesError) : null,
     rules: rulesFrom(rulesRow),
+    rawRules: (rulesRow || null) as Record<string, unknown> | null,
     tables: (floor || []).map((t) => ({ id: t.id, label: t.label || t.id, covers: t.max_covers || 2, section: t.section || null })),
     packages: pkgs || [],
     choiceLines: choiceLines || [],
@@ -902,13 +905,18 @@ Deno.serve(async (req) => {
       }
 
       // 16 Oct 2026: the guest's change and cancel link for the Booked screen. The database mints
-      // the token (migration 20261016c); before that migration the column is not there and the
-      // screen simply shows no link.
+      // the code (migration 20261016c, booking_manage_tokens); before that migration there is no
+      // code and the screen simply shows no link. manageOpen: the link is shown only when the
+      // guest can use it right now (a booking for tonight inside the venue's cancellation window
+      // would open straight onto "please call").
       let manageToken: string | null = null;
+      let manageOpen = false;
       if (bookedId) {
-        const { data: mt, error: mtErr } = await db.from('bookings').select('manage_token').eq('id', bookedId).maybeSingle();
-        if (!mtErr) manageToken = (mt as { manage_token?: string | null } | null)?.manage_token || null;
-        else if (!isMissingColumnError(mtErr)) console.warn('[booking-widget] manage token read failed:', mtErr.message);
+        manageToken = await manageTokenFor(db, { id: bookedId, location_id: locationId });
+        if (manageToken) {
+          const st = manageState({ booking: { status: createStatus, booking_date: date, start_time: time }, rules: venue.rawRules || {}, tz });
+          manageOpen = st.canChange || st.canCancel;
+        }
       }
 
       // Booking confirmation SMS + email (Peter, 13 Aug: "didn't get SMS").
@@ -957,7 +965,7 @@ Deno.serve(async (req) => {
       // expires it in 20 minutes if it never pays.
       return json({ ok: true, status: createStatus, bookingId: bookedId, table: tableLabel, time, date, party,
         package: pkg ? { id: pkg.id, name: pkg.name, paymentModel: pkg.payment_model } : null,
-        preorderToken, preorderDeadline, manageToken,
+        preorderToken, preorderDeadline, manageToken, manageOpen,
         preordersTaken: validRows.length > 0,
         paymentDue,
         ...(guestAdyen ? { adyen: guestAdyen } : {}) });

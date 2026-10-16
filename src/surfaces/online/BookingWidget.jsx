@@ -1675,8 +1675,9 @@ export default function BookingWidget({ location }) {
           </div>
         )}
         {/* 16 Oct 2026: the guest's own change and cancel page (the same link is in their text
-            and email). Absent until migration 20261016c gives every booking its code. */}
-        {result.manageToken && (
+            and email). Absent until migration 20261016c gives every booking its code, and when
+            the guest could not use it right now (inside the venue's cancellation window). */}
+        {result.manageToken && result.manageOpen !== false && (
           <a href={`${window.location.origin}/book?manage=${result.manageToken}`}
             style={{ display: 'block', margin: '0 auto 12px', maxWidth: 380, padding: '11px 14px', borderRadius: 11, border: '1px solid var(--line)', color: 'var(--ink)', fontSize: 14, fontWeight: 700, textAlign: 'center', textDecoration: 'none' }}>
             Change or cancel this booking

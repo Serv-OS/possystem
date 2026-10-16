@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   venueClockParts, zonedToEpoch, addDaysISO, fmtDateWords, guestWindow, manageState,
-  moneyOnBooking, cancelMoney, changeMoney, moneyWords, packageOnDate, reminderDue,
+  moneyOnBooking, cancelMoney, changeMoney, owedBackOnBooking, paymentNetMinor, moneyWords, packageOnDate, reminderDue,
   confirmationToSend, cancelToTell, snapshotOf, sameSnapshot, changeToTell, nextAttempt,
   isPermanentFailure, calendarLinks, guestTemplateData, manageUrl, venueContact, MAX_SEND_ATTEMPTS,
 } from './bookingGuest.js';
@@ -227,4 +227,38 @@ test('manage link and venue contact', () => {
   );
   assert.equal(venueContact({ rules: { guest_phone: '0113 222' }, receiptBranding: { header: { phone: '01484 111' } }, address: 'The Light' }).phone, '0113 222');
   assert.deepEqual(venueContact({}), { phone: '', address: '' });
+});
+
+test('changeMoney: owed back follows what was paid, not the price today', () => {
+  const pay = [{ id: 'p', kind: 'prepay', status: 'captured', amount: 80, currency: 'gbp' }];
+  // 4 paid £80 at £20; the menu is now £15 (or £25). One seat fewer owes back one paid seat.
+  for (const price of [15, 25]) {
+    const pkg = { payment_model: 'prepay', price, price_unit: 'per_cover' };
+    const r = changeMoney({ pkg, oldCovers: 4, newCovers: 3, paidCovers: 4, payments: pay });
+    assert.equal(r.state, 'owed_back');
+    assert.equal(r.diffMinor, 2000, `price ${price}`);
+  }
+});
+
+test('changeMoney: the figure is the whole amount owed now, measured from the party that paid', () => {
+  const pkg = { payment_model: 'prepay', price: 20, price_unit: 'per_cover' };
+  const pay = [{ id: 'p', kind: 'prepay', status: 'captured', amount: 120, currency: 'gbp' }];
+  assert.equal(changeMoney({ pkg, oldCovers: 6, newCovers: 4, paidCovers: 6, payments: pay }).diffMinor, 4000);
+  assert.equal(changeMoney({ pkg, oldCovers: 4, newCovers: 6, paidCovers: 6, payments: pay }).state, 'settled');
+  const five = changeMoney({ pkg, oldCovers: 4, newCovers: 5, paidCovers: 6, payments: pay });
+  assert.equal(five.state, 'owed_back');
+  assert.equal(five.diffMinor, 2000);
+  // More than were paid for: a top up at today's price for the extra seats only.
+  const seven = changeMoney({ pkg, oldCovers: 4, newCovers: 7, paidCovers: 6, payments: pay });
+  assert.equal(seven.state, 'needs_top_up');
+  assert.equal(seven.diffMinor, 2000);
+});
+
+test('money net of part refunds (amount_refunded_minor)', () => {
+  const row = { id: 'd', kind: 'deposit', status: 'captured', amount: 80, amount_refunded_minor: 2000, currency: 'gbp' };
+  assert.equal(paymentNetMinor(row), 6000);
+  assert.equal(moneyOnBooking([row]).capturedMinor, 6000);
+  assert.equal(moneyOnBooking([{ ...row, amount_refunded_minor: 8000 }]).rows.length, 0, 'fully refunded is not money on the booking');
+  assert.equal(owedBackOnBooking([{ ...row, status: 'needs_refund' }]).owedBackMinor, 6000);
+  assert.equal(owedBackOnBooking([{ ...row, refusal_reason: 'needs refund: the guest cancelled online in time' }]).owedBackMinor, 6000);
 });
