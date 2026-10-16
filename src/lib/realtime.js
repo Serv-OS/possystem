@@ -461,6 +461,15 @@ export function startRealtime(store, locationId = LOCATION_ID) {
         ...closedCheckRefundFields(check),
       };
       const current = store.getState().closedChecks || [];
+      // 16 Oct 2026 (bookings audit item 4): a check closed on another device departs the booking
+      // still dining on that table (idempotent: the write only lands while the row is dining).
+      // Read the table's session BEFORE the clear below takes it off the floor.
+      try {
+        const st = store.getState();
+        const t = (st.tables || []).find(x => x.id === normalised.tableId);
+        const sess = t?.session && (!t.session.seatedAt || !normalised.closedAt || t.session.seatedAt <= normalised.closedAt) ? t.session : null;
+        st.departBookingsForClose?.(normalised, sess, { tableIsChild: !!t?.parentId });
+      } catch { /* never block the closed check on a booking */ }
       if (!current.find(c => c.id === normalised.id)) {
         const update = { closedChecks: capClosedChecks([normalised, ...current]) };
         // Also clear the table from the floor — this is belt-and-suspenders
@@ -695,7 +704,15 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       if (payload.eventType === 'DELETE' && payload.old?.location_id && payload.old.location_id !== locationId) return;
       store.getState().applyBookingTablesRealtime?.(payload);
     })
-    .subscribe();
+    // 16 Oct 2026 (bookings audit item 9): the channel's real state drives the stand's POS linked
+    // pill, and every (re)subscribe reloads the viewed day so events missed while the socket was
+    // down are not lost. Both store calls are optional and never throw into the socket.
+    .subscribe((status) => {
+      try {
+        store.getState().setBookingsChannelStatus?.(status);
+        if (status === 'SUBSCRIBED') store.getState().refreshBookingsDay?.('subscribed');
+      } catch { /* the stand's own catch up timer still runs */ }
+    });
 
   channels = [kdsChannel, e86Channel, stockChannel, configChannel, taxChannel, sessionsChannel, checksChannel, queueChannel, tabsChannel, waitlistChannel, bookingsChannel];
 

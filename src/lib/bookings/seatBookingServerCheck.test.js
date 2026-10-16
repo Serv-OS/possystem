@@ -17,7 +17,8 @@ import { readFileSync } from 'node:fs';
 
 const SLICE = readFileSync(new URL('../../store/bookingsSlice.js', import.meta.url), 'utf8');
 const seatStart = SLICE.indexOf('seatBooking: async (id) => {');
-const seatEnd = SLICE.indexOf('markBookingNoShow: async (id) => {');
+// 16 Oct 2026: markBookingNoShow also takes a reason now, so the anchor stops at its name.
+const seatEnd = SLICE.indexOf('markBookingNoShow: async (id');
 assert.ok(seatStart > 0 && seatEnd > seatStart);
 const SEAT = SLICE.slice(seatStart, seatEnd);
 

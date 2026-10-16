@@ -159,7 +159,9 @@ export async function loadBookings(locationId, dateISO) {
       .from('bookings').select('*')
       .eq('location_id', locationId).eq('booking_date', dateISO)
       .order('start_time', { ascending: true });
-    if (error) { if (!warnAbsentOr(error, 'loadBookings')) console.warn('[bookingsData] loadBookings:', error.message); return { data: [] }; }
+    // 16 Oct 2026: a failed read says so ({ error }), so a catch up reload can keep
+    // the diary on screen instead of replacing it with an empty day.
+    if (error) { if (warnAbsentOr(error, 'loadBookings')) return { data: [] }; console.warn('[bookingsData] loadBookings:', error.message); return { data: [], error: error.message || 'read failed' }; }
     const ids = (data || []).map((b) => b.id);
     let membership = new Map();
     const preCounts = new Map();
@@ -207,8 +209,9 @@ export async function loadBookings(locationId, dateISO) {
       _paidDepositMinor: paid.get(r.id)?.deposit ?? null,
     })).filter(Boolean) };
   } catch (e) {
-    if (!warnAbsentOr(e, 'loadBookings')) console.warn('[bookingsData] loadBookings threw:', e?.message || e);
-    return { data: [] };
+    if (warnAbsentOr(e, 'loadBookings')) return { data: [] };
+    console.warn('[bookingsData] loadBookings threw:', e?.message || e);
+    return { data: [], error: e?.message || 'read failed' };
   }
 }
 
@@ -267,6 +270,52 @@ export async function updateBookingRow(id, patch, locationId) {
     if (error) { if (!warnAbsentOr(error, 'updateBooking')) console.warn('[bookingsData] updateBooking:', error.message); return { ok: false, error: error.message }; }
     return { ok: true };
   } catch (e) { return { ok: false, error: e?.message }; }
+}
+
+// 16 Oct 2026 (audit item 4): a cashed off table departs its booking. The write
+// is CONDITIONAL on the row still being dining, so the closing till and every
+// device that hears the closed check can all send it and only the first lands;
+// a booking re seated, undone or already departed is never touched.
+// { ok, changed }: changed is false when the row was not dining any more.
+export async function departBookingIfDining(id, locationId, departedAtMs = Date.now()) {
+  if (isMock || !supabase || !id || !isRealLoc(locationId)) return { ok: true, changed: false };
+  try {
+    const { data, error } = await supabase.from('bookings')
+      .update({ status: 'departed', departed_at: new Date(departedAtMs).toISOString() })
+      .eq('id', id).eq('location_id', locationId).eq('status', 'dining')
+      .select('id');
+    if (error) { if (!warnAbsentOr(error, 'departBookingIfDining')) console.warn('[bookingsData] departBookingIfDining:', error.message); return { ok: false, error: error.message }; }
+    return { ok: true, changed: Array.isArray(data) && data.length > 0 };
+  } catch (e) { return { ok: false, error: e?.message || 'write failed' }; }
+}
+
+// 16 Oct 2026 (audit item 22): Reports sums money actually TAKEN, not package
+// prices. Captured booking_payments per booking, minor units, refunds and rows
+// flagged for refund left out. ids are read in chunks so a long week never
+// builds an over long URL. null = the ledger could not be read (say so, never 0).
+export async function loadCapturedMinorByBooking(bookingIds = []) {
+  const ids = [...new Set((bookingIds || []).filter(Boolean))];
+  if (isMock || !supabase || !ids.length) return new Map();
+  const out = new Map();
+  try {
+    for (let i = 0; i < ids.length; i += 150) {
+      const { data, error } = await supabase.from('booking_payments')
+        .select('booking_id, kind, amount, status, refusal_reason')
+        .in('booking_id', ids.slice(i, i + 150)).eq('status', 'captured');
+      if (error) { warnAbsentOr(error, 'loadCapturedMinorByBooking'); return null; }
+      for (const r of data || []) {
+        if (r.kind === 'refund' || r.kind === 'hold') continue;
+        if (/^needs refund/i.test(String(r.refusal_reason || ''))) continue;
+        const minor = Math.round((Number(r.amount) || 0) * 100);
+        const p = out.get(r.booking_id) || { total: 0, prepay: 0, deposit: 0 };
+        p.total += minor;
+        if (r.kind === 'prepay') p.prepay += minor;
+        if (r.kind === 'deposit') p.deposit += minor;
+        out.set(r.booking_id, p);
+      }
+    }
+    return out;
+  } catch (e) { warnAbsentOr(e, 'loadCapturedMinorByBooking'); return null; }
 }
 
 // Manually re-table a booking. Atomic server-side (move_booking RPC): the
@@ -444,10 +493,12 @@ export async function lookupPreorderLinkBase(opsLocationId) {
 
 // How many live future bookings still reference a package (delete warning).
 
-export async function countUpcomingBookingsForPackage(packageId) {
+// 16 Oct 2026: from the VENUE's today (pass it in); the UTC date was wrong for
+// a California venue after 17:00 and for a UK one after 23:00 in summer.
+export async function countUpcomingBookingsForPackage(packageId, venueYmd = null) {
   if (isMock || !supabase || !packageId) return 0;
   try {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = venueYmd || new Date().toISOString().slice(0, 10);
     const { count, error } = await supabase
       .from('bookings').select('id', { count: 'exact', head: true })
       .eq('package_id', packageId).gte('booking_date', today)

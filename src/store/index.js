@@ -6563,6 +6563,9 @@ export const useStore = create((set, get) => ({
     set(s => ({ closedChecks: capClosedChecks([record, ...s.closedChecks]) }));
     insertClosedCheck(record);
     depleteForSale(record);   // v5.5.565: deplete recipe ingredients from the stock ledger (theoretical COGS); fire-and-forget no-op if no recipe
+    // 16 Oct 2026 (bookings audit item 4): cashing off a booked table departs its booking, so the
+    // host floor frees the table. Rule in lib/bookings/departOnClose.js (tested); never throws.
+    get().departBookingsForClose?.(record, session, { tableIsChild: !!table?.parentId });
     if (paymentInfo.promoRedemption) get().redeemPromoCode?.(paymentInfo.promoRedemption, record, session.customer);
     if (paymentInfo.loyaltyRedemption?.pending_commit) get().redeemLoyaltyAtCommit?.(paymentInfo.loyaltyRedemption, record, session.customer);
     // v5.5.163: Challenge 21 — increment alcohol counter; fire prompt at threshold.
