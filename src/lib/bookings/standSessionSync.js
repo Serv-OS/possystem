@@ -26,10 +26,28 @@ export const STAND_SESSION_SYNC_MS = 30 * 1000;
 // the server does not hold is gone (the write failed or the till cashed it off).
 export const WRITE_GRACE_MS = 20 * 1000;
 
-/** True while a session seated at session.seatedAt is inside the write grace. */
+/**
+ * True while a session seated at session.seatedAt is inside the write grace. A seatedAt in the
+ * future (stamped by a device whose clock runs ahead) is never inside it: the grace would
+ * otherwise last as long as that clock is ahead.
+ */
 export function withinWriteGrace(session, now = Date.now(), graceMs = WRITE_GRACE_MS) {
   const seatedAt = Number(session?.seatedAt) || 0;
-  return !!seatedAt && graceMs > 0 && now - seatedAt < graceMs;
+  const age = now - seatedAt;
+  return !!seatedAt && graceMs > 0 && age >= 0 && age < graceMs;
+}
+
+/**
+ * True when another table in `tables` holds the session `session` (same session id, or lists
+ * it in absorbedSessions after a combine): the party has MOVED, so this table's copy is the
+ * pre-move view. The same one session, one table rule as SessionReconciler's indexSession.
+ */
+export function sessionHeldElsewhere(tables, tableId, session) {
+  const sid = session?.id;
+  if (!sid || !Array.isArray(tables)) return false;
+  return tables.some((t) => t && t.id !== tableId && t.session && (
+    t.session.id === sid || (Array.isArray(t.session.absorbedSessions) && t.session.absorbedSessions.includes(sid))
+  ));
 }
 
 const sameJson = (a, b) => {
@@ -103,28 +121,37 @@ export function mergeServerSessions(tables, rows, {
  *   now            the clock, for the write grace
  *   localNewerThanServer  the local copy is newer than the server row by seatedAt (worked out
  *                  here when not given)
+ *   ownUnflushed   this till holds a write for the table the server may not have yet
+ *                  (SessionSync hasUnsentSession: not yet published, or the upsert in flight)
+ *   movedElsewhere another table on this device holds the same session id or lists it in
+ *                  absorbedSessions (sessionHeldElsewhere): the party moved or was combined
  *
  * Returns 'keep' (leave the local copy), 'reassert' (a till re publishes its copy) or 'clear'.
  *
- * A till: the table it is editing is never cleared (re published when the server has no row).
- * Any other table: a server row keeps the local copy (re published when ours is newer); no row
- * inside the write grace re publishes, because a re seat on this till reaches the server only
- * after scheduleFlush's 600 ms debounce and a DELETE (or a stale offline queue delete replay)
- * can land in that window; no row past the grace clears it.
+ * A till: the table it is editing is never cleared (re published when the server has no row,
+ * unless the session is held on another table here, then only kept).
+ * Any other table: a session held on another table here clears (the move: re publishing it
+ * would put the party on two tables, the 26 Aug bug). A server row keeps the local copy (re
+ * published when ours is newer). No row re publishes ONLY when this till has its own write for
+ * the table not yet on the server (a re seat waits 600 ms in scheduleFlush, so a DELETE can land
+ * first); a session this till only copied from another device clears, however fresh, because the
+ * device that owned it moved or cashed it off.
  * A host stand: never re publishes. A row keeps; no row clears, except a seat the stand made
  * inside the write grace, which is kept exactly as mergeServerSessions keeps it.
  */
 export function decideOnDelete({
   localSession = null, serverRow = null, readFailed = false, isActive = false, hostStand = false,
-  now = Date.now(), localNewerThanServer,
+  now = Date.now(), localNewerThanServer, ownUnflushed = false, movedElsewhere = false,
 } = {}) {
   if (readFailed) return 'keep';
   const serverSession = serverRow?.session || null;
   if (isActive && !hostStand) {
     if (!localSession) return 'keep';
-    return serverSession ? 'keep' : 'reassert';
+    if (serverSession || movedElsewhere) return 'keep';
+    return 'reassert';
   }
   if (!localSession) return 'clear';
+  if (movedElsewhere) return 'clear';
   if (serverSession) {
     if (hostStand) return 'keep';
     const newer = typeof localNewerThanServer === 'boolean'
@@ -132,8 +159,8 @@ export function decideOnDelete({
       : (Number(localSession.seatedAt) || 0) > (Number(serverSession.seatedAt) || 0);
     return newer ? 'reassert' : 'keep';
   }
-  if (withinWriteGrace(localSession, now)) return hostStand ? 'keep' : 'reassert';
-  return 'clear';
+  if (hostStand) return withinWriteGrace(localSession, now) ? 'keep' : 'clear';
+  return ownUnflushed ? 'reassert' : 'clear';
 }
 
 /** The venue's active_sessions rows (table_id, session), or null when they could not be read. */

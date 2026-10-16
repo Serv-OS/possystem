@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 
 import {
   mergeServerSessions, readServerSessions, reconcileStandSessions, startStandSessionSync,
-  decideOnDelete, withinWriteGrace, STAND_SESSION_SYNC_MS, WRITE_GRACE_MS,
+  decideOnDelete, withinWriteGrace, sessionHeldElsewhere, STAND_SESSION_SYNC_MS, WRITE_GRACE_MS,
 } from './standSessionSync.js';
 
 const NOW = Date.now();           // the reconcile reads the real clock, so the fixtures sit on it too
@@ -94,6 +94,15 @@ test('withinWriteGrace: a seat inside 20 seconds, never a session with no seated
   assert.equal(withinWriteGrace(null, NOW), false);
 });
 
+test('withinWriteGrace: a seatedAt in the future (a device clock running ahead) is not inside the grace', () => {
+  assert.equal(withinWriteGrace({ seatedAt: NOW + 1 }, NOW), false);
+  assert.equal(withinWriteGrace({ seatedAt: NOW + 5 * 60 * 1000 }, NOW), false);
+  assert.equal(withinWriteGrace({ seatedAt: NOW }, NOW), true, 'seated this very millisecond is inside');
+  // and the stand merge follows: a future stamped copy with no server row clears
+  const local = floor({ t1: sess('ORD-1', { seatedAt: NOW + 60_000 }) });
+  assert.equal(mergeServerSessions(local, [], { now: NOW })[0].session, null);
+});
+
 // ── decideOnDelete: what a device does with its copy when an active_sessions DELETE arrives ──
 const FRESH = () => sess('ORD-5', { seatedAt: NOW - 300 });     // re seated 300 ms ago, flush pending
 const row = (s) => ({ table_id: 't1', session: s });
@@ -120,9 +129,50 @@ test('delete, till, another table with a server row: kept, re published when our
   assert.equal(decideOnDelete({ localSession: older, serverRow: row(older), isActive: false, hostStand: false, now: NOW, localNewerThanServer: true }), 'reassert');
 });
 
-test('delete, till, another table, no server row, inside the write grace: re published (the 600 ms flush window)', () => {
-  assert.equal(decideOnDelete({ localSession: FRESH(), serverRow: null, isActive: false, hostStand: false, now: NOW }), 'reassert');
-  assert.equal(decideOnDelete({ localSession: sess('ORD-5', { seatedAt: NOW - WRITE_GRACE_MS + 1 }), serverRow: null, isActive: false, hostStand: false, now: NOW }), 'reassert');
+test('delete, till, another table, no server row, an own unsent session inside the grace: re published (the 600 ms flush window)', () => {
+  assert.equal(decideOnDelete({ localSession: FRESH(), serverRow: null, isActive: false, hostStand: false, now: NOW, ownUnflushed: true }), 'reassert');
+  assert.equal(decideOnDelete({ localSession: sess('ORD-5', { seatedAt: NOW - WRITE_GRACE_MS + 1 }), serverRow: null, isActive: false, hostStand: false, now: NOW, ownUnflushed: true }), 'reassert');
+  // an own write the server does not hold is never dropped, even past the grace (never lose a line)
+  assert.equal(decideOnDelete({ localSession: sess('ORD-5', { items: [{ name: 'Pint', qty: 1 }] }), serverRow: null, isActive: false, hostStand: false, now: NOW, ownUnflushed: true }), 'reassert');
+});
+
+test('delete, till, a session this till only COPIED, inside the grace: cleared, never re published (review case B)', () => {
+  // another device seated T1 seconds ago and cashed it off or moved it; this till holds the copy
+  assert.equal(decideOnDelete({ localSession: FRESH(), serverRow: null, isActive: false, hostStand: false, now: NOW }), 'clear');
+  assert.equal(decideOnDelete({ localSession: FRESH(), serverRow: null, isActive: false, hostStand: false, now: NOW, ownUnflushed: false }), 'clear');
+  // a copy stamped by a device whose clock runs ahead: still cleared
+  assert.equal(decideOnDelete({ localSession: sess('ORD-5', { seatedAt: NOW + 60_000 }), serverRow: null, isActive: false, hostStand: false, now: NOW }), 'clear');
+});
+
+test('delete, till, a MOVED session (T3 to T5 inside 20 seconds): cleared, the party is never on two tables (review case A)', () => {
+  const party = sess('ORD-7', { seatedAt: NOW - 3000, items: [{ name: 'Burger', qty: 2 }] });
+  // this till already has the T5 copy: T3 is the pre-move view
+  const tables = [
+    { id: 't3', session: party, status: 'occupied' },
+    { id: 't5', session: { ...party }, status: 'occupied' },
+  ];
+  const moved = sessionHeldElsewhere(tables, 't3', party);
+  assert.equal(moved, true);
+  assert.equal(decideOnDelete({ localSession: party, serverRow: null, isActive: false, hostStand: false, now: NOW, movedElsewhere: moved }), 'clear');
+  // the move check wins over an own unsent write and over a server row
+  assert.equal(decideOnDelete({ localSession: party, serverRow: null, isActive: false, hostStand: false, now: NOW, movedElsewhere: true, ownUnflushed: true }), 'clear');
+  assert.equal(decideOnDelete({ localSession: party, serverRow: row(sess('ORD-1', { seatedAt: OLD })), isActive: false, hostStand: false, now: NOW, movedElsewhere: true }), 'clear');
+  // the table being edited is never cleared, but a moved session is not re published either
+  assert.equal(decideOnDelete({ localSession: party, serverRow: null, isActive: true, hostStand: false, now: NOW, movedElsewhere: true }), 'keep');
+  // the delete arrives before the T5 copy (channels promise no order): not held elsewhere, and a
+  // copied session clears anyway
+  assert.equal(sessionHeldElsewhere([tables[0]], 't3', party), false);
+  assert.equal(decideOnDelete({ localSession: party, serverRow: null, isActive: false, hostStand: false, now: NOW }), 'clear');
+});
+
+test('sessionHeldElsewhere: same id or absorbed into another table, never the table itself', () => {
+  const a = sess('ORD-1');
+  assert.equal(sessionHeldElsewhere([{ id: 't1', session: a }], 't1', a), false);
+  assert.equal(sessionHeldElsewhere([{ id: 't1', session: a }, { id: 't2', session: sess('ORD-2') }], 't1', a), false);
+  assert.equal(sessionHeldElsewhere([{ id: 't1', session: a }, { id: 't2', session: sess('ORD-2', { absorbedSessions: ['ORD-1'] }) }], 't1', a), true);
+  assert.equal(sessionHeldElsewhere([{ id: 't1', session: a }, { id: 't2', session: null }], 't1', a), false);
+  assert.equal(sessionHeldElsewhere([{ id: 't2', session: sess('ORD-1') }], 't1', { items: [] }), false, 'no session id, no match');
+  assert.equal(sessionHeldElsewhere(null, 't1', a), false);
 });
 
 test('delete, till, another table, no server row, past the write grace: cleared', () => {

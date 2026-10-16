@@ -418,3 +418,48 @@ for (const [name, shape] of NOT_FENCED) {
     SS.teardown();
   });
 }
+
+// ── hasUnsentSession: what the realtime DELETE handler asks before it puts a table back ──────
+// 16 Oct 2026 review: a till re published a session it had only COPIED from another device, so a
+// party moved T3 to T5 within 20 seconds came back on T3 everywhere. The DELETE handler now re
+// publishes a table with no server row only when this till holds its own write for it.
+
+test('hasUnsentSession: own unsent seat yes, published no, a copy no once latched, in flight yes', async () => {
+  page(TILL);
+  assert.equal(SS.hasUnsentSession('t1'), false, 'no session, nothing unsent');
+  useStore.setState({ tables: floor({ t1: session(1) }) });
+  assert.equal(SS.hasUnsentSession('t1'), true, 'seated here, the flush has not run');
+  await flush();
+  assert.equal(serverTable('t1')?.session?.id, 'sess-1');
+  assert.equal(SS.hasUnsentSession('t1'), false, 'published and answered');
+  useStore.setState({ tables: floor({ t1: session(1, { covers: 6 }) }) });
+  assert.equal(SS.hasUnsentSession('t1'), true, 'a later edit here is unsent again');
+
+  // The flush latches _lastSent BEFORE the upsert is answered: hold the answer and look.
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const realFrom = client.from;
+  client.from = (table) => {
+    const b = query(table);
+    const then = b.then;
+    b.then = (res, rej) => gate.then(() => then(res, rej));
+    return b;
+  };
+  try {
+    const pending = SS.flushSessions();
+    await tick();
+    assert.equal(serverTable('t1')?.session?.covers, 2, 'the server has not taken the edit yet');
+    assert.equal(SS.hasUnsentSession('t1'), true, 'latched but in flight still counts as unsent');
+    release();
+    await pending; await tick();
+  } finally { client.from = realFrom; }
+  assert.equal(serverTable('t1')?.session?.covers, 6);
+  assert.equal(SS.hasUnsentSession('t1'), false, 'answered: nothing unsent');
+
+  // A table another device seated, loaded from the server: the copy is latched, nothing to send.
+  server.rows.active_sessions.push(serverRow('t2', session(2)));
+  await SS.loadSessions();
+  assert.equal(held('t2')?.session?.id, 'sess-2');
+  assert.equal(SS.hasUnsentSession('t2'), false, 'a copy of the server row is not this till\'s write');
+  SS.teardown();
+});

@@ -33,7 +33,7 @@ test('the handler reads this table\'s row from the server once', () => {
 });
 
 test('the handler hands the decision to decideOnDelete and acts on its answer', () => {
-  assert.ok(SRC.includes("import { decideOnDelete } from './bookings/standSessionSync.js';"), 'decideOnDelete imported');
+  assert.ok(SRC.includes("import { decideOnDelete, sessionHeldElsewhere } from './bookings/standSessionSync.js';"), 'decideOnDelete imported');
   assert.ok(HANDLER.includes('decideOnDelete({'), 'the handler calls it');
   assert.ok(HANDLER.includes("if (decision === 'reassert') { reassertSession(tid); return; }"));
   assert.ok(HANDLER.includes("if (decision !== 'clear') return;"));
@@ -41,6 +41,17 @@ test('the handler hands the decision to decideOnDelete and acts on its answer', 
   assert.ok(!HANDLER.includes('items?.length > 0'));
   assert.ok(!HANDLER.includes('deletedSeated'));
   assert.ok(!/\b20000\b|20 \* 1000/.test(HANDLER), 'no literal grace in the handler');
+});
+
+test('a till re publishes only its own unsent write, never a moved session (16 Oct review)', () => {
+  assert.ok(SRC.includes("import { reassertSession, hasUnsentSession } from '../sync/SessionSync';"));
+  // asked before the read and after it: the read can overtake this till's own upsert
+  assert.ok(HANDLER.includes('const unsentBefore = !hostStand && hasUnsentSession(tid);'));
+  assert.ok(HANDLER.includes('ownUnflushed: !hostStand && (unsentBefore || hasUnsentSession(tid)),'));
+  assert.ok(HANDLER.includes('movedElsewhere: sessionHeldElsewhere(after.tables, tid, localNow?.session),'));
+  // the no read branch passes both too
+  assert.ok(HANDLER.includes('ownUnflushed: !hostStand && hasUnsentSession(tid),'));
+  assert.ok(HANDLER.includes('movedElsewhere: sessionHeldElsewhere(state.tables, tid, localTable?.session),'));
 });
 
 test('a host stand never self-heals a row the server dropped (SessionReconciler)', () => {

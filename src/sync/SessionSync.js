@@ -30,6 +30,34 @@ let _lastSent = {}; // table_id → JSON string, avoid redundant writes
 let _lastTotals = {};
 let _clearedAt = {}; // table_id → timestamp when first noticed as available (grace period)
 let _graceTimer = null;
+// 16 Oct 2026: table_id → number of this till's session upserts sent and not yet answered. A
+// write in flight is not on the server yet, so hasUnsentSession counts it as unsent.
+let _inFlight = new Map();
+const _markInFlight = (ids) => { for (const id of ids) _inFlight.set(id, (_inFlight.get(id) || 0) + 1); };
+const _settleInFlight = (ids) => {
+  for (const id of ids) {
+    const n = (_inFlight.get(id) || 0) - 1;
+    if (n > 0) _inFlight.set(id, n); else _inFlight.delete(id);
+  }
+};
+
+/**
+ * True when THIS till holds a write for the table that the server may not have yet: its
+ * session differs from what this till last published (_lastSent), or this till's upsert of it
+ * is still in flight. A session this till only COPIED from another device stops counting once
+ * the flush that follows the copy has latched it. The realtime DELETE handler (lib/realtime.js,
+ * decideOnDelete) re publishes a table with no server row only when this is true, so a till
+ * never puts back a table another device moved or cashed off (16 Oct 2026 review).
+ */
+export function hasUnsentSession(tableId) {
+  if (!tableId) return false;
+  const t = (useStore.getState().tables || []).find((x) => x.id === tableId);
+  if (!t?.session) return false;
+  if (_inFlight.has(tableId)) return true;
+  let payload;
+  try { payload = JSON.stringify(t.session); } catch { return true; }
+  return _lastSent[tableId] !== payload;
+}
 
 // ── Write ─────────────────────────────────────────────────────────────────────
 export async function flushSessions() {
@@ -241,7 +269,10 @@ export async function flushSessions() {
   };
   if (isOnline()) {
     if (upsertRows.length) {
+      const sentIds = upsertRows.map(r => r.table_id);
+      _markInFlight(sentIds);
       Promise.resolve(supabase.from('active_sessions').upsert(upsertRows, { onConflict: 'location_id,table_id' }))
+        .finally(() => _settleInFlight(sentIds))
         .then(res => { if (res?.error) { reportWriteRefused(res.error); console.warn('[SessionSync] batch upsert error, queueing for replay:', res.error.message || res.error); _queueUpserts(); }
                        else console.log('[SessionSync] ✓ wrote ' + upsertRows.length + ' session(s) to active_sessions'); })
         .catch(e => { console.warn('[SessionSync] batch upsert threw — queueing for replay:', e?.message || e); _queueUpserts(); });
@@ -349,11 +380,13 @@ export async function flushSingleSession(tableId) {
   const row = { location_id: _locationId, table_id: t.id, session: t.session, updated_at: new Date().toISOString() };
   queueWrite({ type: 'upsert', table: 'active_sessions', payload: row, onConflict: 'location_id,table_id' });
   if (isOnline()) {
+    _markInFlight([t.id]);
     try {
       const { error } = await supabase.from('active_sessions').upsert(row, { onConflict: 'location_id,table_id' });
       if (error) { reportWriteRefused(error); console.warn('[SessionSync] flushSingleSession upsert error:', error.message || error); }
       else console.log('[SessionSync] ✓ persisted single session for table', t.label || t.id);
     } catch (e) { console.warn('[SessionSync] flushSingleSession threw —', e?.message || e); }
+    finally { _settleInFlight([t.id]); }
   }
 }
 
@@ -512,6 +545,7 @@ export function teardown() {
   _lastSent = {};
   _lastTotals = {};
   _clearedAt = {};
+  _inFlight = new Map();
   _graceTimer = null;
   _locationId = null;
 }

@@ -11,9 +11,9 @@
 import { supabase, isMock, LOCATION_ID, isBackOfficeMode, isHostStandMode } from './supabase';
 import { applyQueueRealtimeEvent, applyTabRealtimeEvent } from '../sync/QueueSync';
 import { applyWaitlistRealtimeEvent } from '../sync/WaitlistSync';
-import { reassertSession } from '../sync/SessionSync';
+import { reassertSession, hasUnsentSession } from '../sync/SessionSync';
 import { isSessionClosed } from '../sync/sessionClosure';
-import { decideOnDelete } from './bookings/standSessionSync.js';
+import { decideOnDelete, sessionHeldElsewhere } from './bookings/standSessionSync.js';
 import { playOrderChime } from './orderChime';
 import { receiveKioskAlertRow, kioskAlertsRealtimeStarted, kioskAlertsRealtimeStopped, restoreKioskAlerts } from './kioskStaffAlerts';
 import { isHubriseAutoReceipt } from './hubrise';
@@ -359,14 +359,25 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       // seatedAt); no row clears it, except a seat made inside the write grace (a till's re seat
       // waits 600 ms in scheduleFlush, so a DELETE can land before it reaches the server). A
       // failed read changes nothing (the reconcilers decide).
+      // 16 Oct 2026 review: the re seat grace was keyed on seatedAt alone, so a till re published
+      // a session it had only COPIED from another device: a party seated on T3 and moved to T5
+      // within 20 seconds came back on T3 on every other till (the 26 Aug duplicate). A till now
+      // re publishes a table with no row only when it holds its OWN write the server may not have
+      // (hasUnsentSession, asked before and after the read, since the read can overtake our own
+      // upsert), and never a session another table here holds (the move, sessionHeldElsewhere).
       const hostStand = isHostStandMode();
       const state = store.getState();
       const localTable = (state.tables || []).find(t => t.id === tid);
       const isActive = tid === state.activeTableId;
       let decision;
       if (!localTable?.session || (isActive && !hostStand)) {
-        decision = decideOnDelete({ localSession: localTable?.session || null, serverRow: null, isActive, hostStand, now: Date.now() });
+        decision = decideOnDelete({
+          localSession: localTable?.session || null, serverRow: null, isActive, hostStand, now: Date.now(),
+          ownUnflushed: !hostStand && hasUnsentSession(tid),
+          movedElsewhere: sessionHeldElsewhere(state.tables, tid, localTable?.session),
+        });
       } else {
+        const unsentBefore = !hostStand && hasUnsentSession(tid);
         let serverRow = null;
         let readFailed = false;
         try {
@@ -389,6 +400,8 @@ export function startRealtime(store, locationId = LOCATION_ID) {
           isActive: tid === after.activeTableId,
           hostStand,
           now: Date.now(),
+          ownUnflushed: !hostStand && (unsentBefore || hasUnsentSession(tid)),
+          movedElsewhere: sessionHeldElsewhere(after.tables, tid, localNow?.session),
         });
       }
       if (decision === 'reassert') { reassertSession(tid); return; }

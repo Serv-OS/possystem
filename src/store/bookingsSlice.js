@@ -355,8 +355,7 @@ export function bookingsSlice(set, get) {
       // memory). A failed read decides from the local copy. On a till its own copy also counts as
       // open: a session the server does not hold yet (an offline till whose writes are still
       // queued) must refuse, never be seated over.
-      const local = get().tables || [];
-      let merged = local;
+      let merged = null;
       if (!isTrainingMode() && !isMock && supabase) {
         const locId = await resolveLocationId();
         const rows = locId ? await readServerSessions(supabase, locId, bookingTables) : null;
@@ -367,6 +366,10 @@ export function bookingsSlice(set, get) {
           if (isHostStandMode() && merged !== get().tables) set({ tables: merged });
         }
       }
+      // The till's own copy is read AFTER the server read: a check opened or a line rung in on
+      // this till while the read was in flight must still refuse the seat.
+      const local = get().tables || [];
+      if (!merged) merged = local;
       const openOn = bookingTables
         .map((tid) => {
           const m = merged.find((t) => t.id === tid);
