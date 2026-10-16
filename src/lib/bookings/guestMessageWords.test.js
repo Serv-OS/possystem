@@ -32,6 +32,6 @@ test('messageLine: sent, retrying, given up, and rows from before the migration'
   const gaveUp = messageLine({ kind: 'cancelled', channel: 'sms', status: 'failed', attempts: 3, last_error: '(21211)' }, hhmm);
   assert.deepEqual(gaveUp, { title: 'Cancellation by text', tone: 'bad', text: 'Not sent: the number is not a valid mobile (tried 3 times)' });
   for (const k of ['confirmation', 'reminder_day', 'reminder_2h', 'changed', 'cancelled', 'preorder']) {
-    assert.doesNotMatch(messageLine({ kind: k, channel: 'sms', status: 'failed', attempts: 2, last_error: 'x' }, hhmm).text + messageLine({ kind: k }).title, /[–—]/);
+    assert.doesNotMatch(messageLine({ kind: k, channel: 'sms', status: 'failed', attempts: 2, last_error: 'x' }, hhmm).text + messageLine({ kind: k }).title, /[\u2013\u2014]/);
   }
 });

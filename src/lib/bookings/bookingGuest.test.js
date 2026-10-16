@@ -68,7 +68,7 @@ test('manageState: what the page offers for each status', () => {
   assert.equal(unpaid.canChange, false);
   for (const s of ['cancelled', 'dining', 'departed', 'no_show', 'expired', 'pending_payment', 'confirmed']) {
     const w = manageState({ booking: { ...live, status: s, booking_date: '2026-10-16' }, rules: { cancellation_window_hours: 24 }, tz: LDN, now }).why || '';
-    assert.doesNotMatch(w, /[–—]/, `no long dashes in the words for ${s}`);
+    assert.doesNotMatch(w, /[\u2013\u2014]/, `no long dashes in the words for ${s}`);
   }
 });
 

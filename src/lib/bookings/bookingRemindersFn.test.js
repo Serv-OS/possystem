@@ -152,7 +152,7 @@ test('the day before reminder goes once, with the manage link, the phone and no 
   assert.match(text, /^Provo: see you tomorrow at 19:00, table for 2\./);
   assert.match(text, /Change or cancel: https:\/\/provo\.serv-os\.app\/book\?manage=f{64}/);
   assert.match(text, /Call us on 01484 000000\./);
-  assert.doesNotMatch(text, /[–—]|\{\{/);
+  assert.doesNotMatch(text, /[\u2013\u2014]|\{\{/);
   assert.equal(state.sms[0].reference_id, 'bk-1');
   assert.equal(state.sms[0].type, 'booking_reminder');
   const row = ledger().find((x) => x.kind === 'reminder_day');
