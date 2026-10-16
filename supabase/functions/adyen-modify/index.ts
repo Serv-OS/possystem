@@ -529,12 +529,15 @@ async function bookingRefund({ body, opsLocationId, ploc, cfg, callerIsBoUser }:
 
   // The payment, read with the service role and bound to THIS venue. Before migration 20261016d
   // there is no amount_refunded_minor: only a full refund is allowed then.
+  // applied_minor and refund_due_minor (20261016b): the part the bill used is never refundable.
+  // Without them an applied payment counts as used in full (bookingHost.js usedMinor).
   const COLS = 'id, booking_id, location_id, kind, status, amount, currency, psp_reference, merchant_account, applied_to_check, refusal_reason';
   let partialAllowed = true;
-  let pr: any = await opsAdmin.from('booking_payments').select(`${COLS}, amount_refunded_minor`).eq('id', payId).maybeSingle();
+  let pr: any = await opsAdmin.from('booking_payments').select(`${COLS}, applied_minor, refund_due_minor, amount_refunded_minor`).eq('id', payId).maybeSingle();
   if (pr.error && isMissingCol(pr.error)) {
     partialAllowed = false;
-    pr = await opsAdmin.from('booking_payments').select(COLS).eq('id', payId).maybeSingle();
+    pr = await opsAdmin.from('booking_payments').select(`${COLS}, applied_minor, refund_due_minor`).eq('id', payId).maybeSingle();
+    if (pr.error && isMissingCol(pr.error)) pr = await opsAdmin.from('booking_payments').select(COLS).eq('id', payId).maybeSingle();
   }
   if (pr.error) return json({ ok: false, error: pr.error.message }, 500);
   const parent = pr.data;
@@ -575,19 +578,42 @@ async function bookingRefund({ body, opsLocationId, ploc, cfg, callerIsBoUser }:
     ...(partialAllowed ? { refund_of: parent.id } : {}),
   };
   const { data: ins, error: insErr } = await opsAdmin.from('booking_payments').insert(row).select('id').maybeSingle();
+  // Two taps at the same moment build the same reference: the unique index (20261016d) lets
+  // only one through, and the other never reaches Adyen.
+  if (insErr && String(insErr.code ?? '') === '23505') {
+    return json({ ok: false, error: 'A refund for this payment is already being made. Wait for it to finish.' });
+  }
   if (insErr || !ins?.id) return json({ ok: false, error: `Refund NOT started: ${insErr?.message || 'it could not be recorded'}.` }, 500);
   await recomputeRefunded(opsAdmin, parent.id);
 
-  const res = await adyenFetch('POST', `${checkoutBase(cfg)}/payments/${encodeURIComponent(parent.psp_reference)}/refunds`,
-    { merchantAccount: merchant, amount: { value: check.amountMinor, currency: cur }, reference },
-    { cfg, idempotencyKey: `mod:${reference}` });
+  const HELD = 'Adyen did not confirm the refund. It is held as pending until Adyen answers; do not refund again.';
+  let res: any;
+  try {
+    res = await adyenFetch('POST', `${checkoutBase(cfg)}/payments/${encodeURIComponent(parent.psp_reference)}/refunds`,
+      { merchantAccount: merchant, amount: { value: check.amountMinor, currency: cur }, reference },
+      { cfg, idempotencyKey: `mod:${reference}` });
+  } catch (e) {
+    // No answer at all (timeout, network): Adyen may have taken it. The row stays pending and
+    // holds the money; the REFUND or REFUND_FAILED webhook settles it by its bkrf- reference.
+    console.error('adyen-modify: booking refund got no answer, held as pending', reference, (e as Error)?.message);
+    return json({ ok: false, error: HELD, pending: true }, 502);
+  }
   if (!res.ok) {
-    await opsAdmin.from('booking_payments').update({ status: 'failed', refusal_reason: `Adyen did not accept the refund (${res.status})` }).eq('id', ins.id);
-    await recomputeRefunded(opsAdmin, parent.id);
-    return json({ ok: false, error: `Adyen did not accept the refund (${res.status}). Nothing was refunded.`, detail: res.data }, res.status >= 500 ? 502 : 200);
+    if (res.status >= 400 && res.status < 500) {
+      // A 4xx is a plain refusal: nothing was refunded.
+      await opsAdmin.from('booking_payments').update({ status: 'failed', refusal_reason: `Adyen did not accept the refund (${res.status})` }).eq('id', ins.id);
+      await recomputeRefunded(opsAdmin, parent.id);
+      return json({ ok: false, error: `Adyen did not accept the refund (${res.status}). Nothing was refunded.`, detail: res.data });
+    }
+    // A 5xx: Adyen may have taken it, so a second tap must never send another one.
+    console.error('adyen-modify: booking refund answered', res.status, 'held as pending', reference);
+    return json({ ok: false, error: HELD, pending: true, detail: res.data }, 502);
   }
   const modPsp = res.data?.pspReference ?? null;
-  if (modPsp) await opsAdmin.from('booking_payments').update({ psp_reference: modPsp }).eq('id', ins.id);
+  if (modPsp) {
+    const { error: pspErr } = await opsAdmin.from('booking_payments').update({ psp_reference: modPsp }).eq('id', ins.id);
+    if (pspErr) console.error('adyen-modify: could not store the refund psp', reference, modPsp, pspErr.message);
+  }
   return json({
     ok: true, status: res.data?.status ?? 'received', refund_row_id: ins.id, reference,
     amount_minor: check.amountMinor, left_minor: check.leftAfterMinor, approved_by: approvedBy, partial_allowed: partialAllowed,

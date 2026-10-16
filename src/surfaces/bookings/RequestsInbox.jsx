@@ -138,6 +138,13 @@ export default function RequestsInbox() {
                     </div>
                   </div>
                 ) : (
+                  <>
+                  {/* A tablet has no hover, so the reason Accept is grey is written out. */}
+                  {(!r.time || !r.date) && (
+                    <div style={{ fontSize: 12, color: 'var(--orn)', marginTop: 6, fontWeight: 700, lineHeight: 1.4 }}>
+                      No {r.date ? 'time' : 'date'} on this request. Call the guest, then book it on the Book screen.
+                    </div>
+                  )}
                   <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
                     <button className="btn btn-acc" onClick={() => accept(r)} disabled={busy === r.id || !r.date || !r.time} title={!r.time ? 'No time on the request: call the guest' : undefined}
                       style={{ flex: 2, height: 40, fontWeight: 800 }}>{busy === r.id ? 'Booking…' : 'Accept'}</button>
@@ -146,6 +153,7 @@ export default function RequestsInbox() {
                       : <button className="btn btn-ghost" disabled style={{ flex: 1, height: 40 }}>Call</button>}
                     <button className="btn btn-ghost" onClick={() => setDecline({ id: r.id, text: DECLINE_DEFAULT(venueName) })} disabled={busy === r.id} style={{ flex: 1, height: 40 }}>Decline</button>
                   </div>
+                  </>
                 )}
               </div>
             ))}

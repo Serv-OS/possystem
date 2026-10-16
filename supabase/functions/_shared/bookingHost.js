@@ -106,18 +106,43 @@ export function isRefundableRow(row) {
   return row.status === 'captured' || row.status === 'needs_refund';
 }
 
-export function refundableMinor(parent, rows = []) {
-  if (!isRefundableRow(parent)) return 0;
-  return Math.max(0, amountMinorOf(parent) - refundedMinorFor(parent, rows));
+// The part of a payment that paid a closed bill. Never refundable from here:
+// the check still books it as booking_prepaid or booking_deposit tender. A row
+// applied under the old rule (no applied_minor, or the column not there yet)
+// was used in full.
+export function usedMinor(parent) {
+  if (!parent?.applied_to_check) return 0;
+  if (parent.applied_minor === null || parent.applied_minor === undefined || parent.applied_minor === '') return amountMinorOf(parent);
+  return Math.max(0, Math.min(amountMinorOf(parent), Math.round(num(parent.applied_minor))));
 }
 
-// What the Refund box offers first: the money owed back when the bill used
-// less (refund_due_minor), else everything still refundable.
+export function refundableMinor(parent, rows = []) {
+  if (!isRefundableRow(parent)) return 0;
+  return Math.max(0, amountMinorOf(parent) - usedMinor(parent) - refundedMinorFor(parent, rows));
+}
+
+// What the Refund box offers first: everything still refundable. On a payment
+// the bill used, that is exactly the unused part still owed back (refunds
+// already made or on their way are taken off), so it can never be offered twice.
 export function refundSuggestion(parent, rows = []) {
-  const left = refundableMinor(parent, rows);
-  const due = Math.round(num(parent?.refund_due_minor));
-  if (due > 0 && due <= left) return due;
-  return left;
+  return refundableMinor(parent, rows);
+}
+
+// The money still owed back on a payment the bill used less of (what the host
+// stand shows in orange). 0 once it has been refunded, or on any other payment.
+export function refundDueLeftMinor(parent, rows = []) {
+  if (!parent?.applied_to_check) return 0;
+  return refundableMinor(parent, rows);
+}
+
+// The refund_due_minor to store after a refund: the unused part less what has
+// gone back, null at 0. undefined when the row is not one the bill used with a
+// known applied_minor (nothing to write).
+export function refundDueAfter(parent, refundedMinor) {
+  if (!parent?.applied_to_check) return undefined;
+  if (parent.applied_minor === null || parent.applied_minor === undefined || parent.applied_minor === '') return undefined;
+  const left = amountMinorOf(parent) - usedMinor(parent) - Math.max(0, Math.round(num(refundedMinor)));
+  return left > 0 ? left : null;
 }
 
 // May this refund go ahead? { ok, error } with the error in plain words.
@@ -134,7 +159,9 @@ export function refundCheck({ parent, rows = [], amountMinor, partialAllowed = t
     return { ok: false, error: 'Only money that was taken can be refunded.' };
   }
   const left = refundableMinor(parent, rows);
-  if (left <= 0) return { ok: false, error: 'Nothing is left to refund on this payment.' };
+  if (left <= 0) {
+    return { ok: false, error: usedMinor(parent) > 0 ? 'This payment paid the bill, so nothing is left to refund on it.' : 'Nothing is left to refund on this payment.' };
+  }
   const amt = Math.round(num(amountMinor));
   if (!(amt > 0) || amt !== num(amountMinor)) return { ok: false, error: 'Enter an amount above zero.' };
   if (amt > left) return { ok: false, error: `Only ${fmt(left)} can still be refunded on this payment.` };
@@ -297,9 +324,45 @@ export function safeLink(url) {
 }
 
 // ── pay link from the stand (plan item 9) ────────────────────────────────────
-// How long a guest has to pay a link sent from the stand before the booking is
-// released (the 20 minute sweep skips a booking while its link is live).
+// How long a pay link sent from the stand stays live: 24 hours, never past the
+// booking's own start. A booking still waiting online (pending_payment) is not
+// released by the 20 minute sweep while its link is live. A confirmed phone
+// booking stays confirmed throughout.
 export const PAY_LINK_HOURS = 24;
+export const PAY_LINK_MIN_MINUTES = 30;
+
+// A wall clock time at the venue (YYYY-MM-DD, HH:MM, IANA zone) as epoch ms.
+// Never the device clock or zone. NaN when the input is not a date and time.
+export function venueWallToEpochMs(ymd, hhmm, tz = 'Europe/London') {
+  const d = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(ymd || ''));
+  const t = /^(\d{1,2}):(\d{2})/.exec(String(hhmm || ''));
+  if (!d || !t) return NaN;
+  const guess = Date.UTC(Number(d[1]), Number(d[2]) - 1, Number(d[3]), Number(t[1]), Number(t[2]));
+  const offsetAt = (ms) => {
+    try {
+      const parts = new Intl.DateTimeFormat('en-GB', {
+        timeZone: tz || 'Europe/London', hourCycle: 'h23',
+        year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+      }).formatToParts(new Date(ms));
+      const g = (k) => Number(parts.find((p) => p.type === k)?.value);
+      return Date.UTC(g('year'), g('month') - 1, g('day'), g('hour') % 24, g('minute')) - ms;
+    } catch { return 0; }
+  };
+  let ms = guess - offsetAt(guess);
+  ms = guess - offsetAt(ms);
+  return ms;
+}
+
+// The pay link window: { ok, untilMs } or { ok:false, error } in plain words.
+export function payLinkWindow({ nowMs, startMs, hours = PAY_LINK_HOURS } = {}) {
+  const now = num(nowMs);
+  let until = now + Math.max(1, num(hours)) * 3600000;
+  if (Number.isFinite(startMs)) until = Math.min(until, startMs);
+  if (until - now < PAY_LINK_MIN_MINUTES * 60000) {
+    return { ok: false, error: 'The booking starts too soon for a pay link. Take payment when the guest arrives.' };
+  }
+  return { ok: true, untilMs: until };
+}
 
 // The words on the SMS. amountText is already in the venue's money.
 export function payLinkText({ venue, name, date, time, kind, amountText, link } = {}) {

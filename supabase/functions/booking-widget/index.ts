@@ -521,7 +521,8 @@ Deno.serve(async (req) => {
     const linkActions = ['pay_info', 'booking_pay', 'booking_pay_details', 'booking_status'];
     const payToken = linkActions.includes(action) ? String(body.pay_token || '') : '';
     const linkPay = !!payToken && await payLinkTokenOk(Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '', String(body.booking_id || ''), payToken);
-    if (payToken && !linkPay) return json({ ok: false, error: 'bad_link' }, 403);
+    // 200, not 403: the page can only read a body on a 2xx reply, and it must say "not valid".
+    if (payToken && !linkPay) return json({ ok: false, error: 'bad_link' });
     // The party sizes the page offers (venue setting, never above what the pacing cap can take).
     const partyBounds = widgetPartyBounds(rules as unknown as Record<string, unknown>, maxPartyForCap(rules.pacingCap, 50));
 
@@ -581,10 +582,10 @@ Deno.serve(async (req) => {
       // A public door: a burst cap per venue and a cool down per number.
       const tenMin = new Date(Date.now() - 10 * 60000).toISOString();
       const { count: burst } = await db.from('booking_requests').select('id', { count: 'exact', head: true })
-        .eq('location_id', locationId).eq('status', 'pending').gte('created_at', tenMin);
+        .eq('location_id', locationId).eq('status', 'pending').is('booking_id', null).gte('created_at', tenMin);
       if ((burst || 0) >= 30) return json({ ok: false, error: 'too_many_requests' });
       const { data: recent } = await db.from('booking_requests').select('payload').eq('location_id', locationId)
-        .eq('status', 'pending').gte('created_at', tenMin).limit(50);
+        .eq('status', 'pending').is('booking_id', null).gte('created_at', tenMin).limit(50);
       if ((recent || []).some((r) => (r.payload as Record<string, unknown>)?.phone === phone)) return json({ ok: true, already: true });
       const { error: rqErr } = await db.from('booking_requests').insert({
         location_id: locationId,
@@ -1020,7 +1021,15 @@ Deno.serve(async (req) => {
         .select('status, kind').eq('booking_id', bookingId)
         .order('created_at', { ascending: false }).limit(1);
       const last = lastPay?.[0] || null;
-      return json({ ok: true, status: st.status, payment: last ? { status: last.status, kind: last.kind } : null });
+      // 16 Oct 2026 (host tools): a pay link booking can stay 'confirmed' the whole time, so its
+      // status says nothing about the payment. paid: an authorised or captured row exists.
+      let paid: boolean | undefined;
+      if (linkPay) {
+        const { data: ok } = await db.from('booking_payments').select('id').eq('booking_id', bookingId)
+          .in('status', ['authorised', 'captured']).neq('kind', 'refund').limit(1);
+        paid = !!ok?.length;
+      }
+      return json({ ok: true, status: st.status, payment: last ? { status: last.status, kind: last.kind } : null, ...(linkPay ? { paid } : {}) });
     }
 
     // ── booking_pay / booking_pay_details: THE PAYMENT GATE (10 Sep 2026) ───
@@ -1043,11 +1052,11 @@ Deno.serve(async (req) => {
     // ── pay_info: the page behind a host stand pay link (16 Oct 2026, host tools) ──
     // The booking, what it owes and the venue's card form settings. The token was checked above.
     if (action === 'pay_info') {
-      if (!linkPay) return json({ ok: false, error: 'bad_link' }, 403);
+      if (!linkPay) return json({ ok: false, error: 'bad_link' });
       const bookingId = String(body.booking_id || '');
       const dueRes = await loadBookingDue(db, bookingId);
       const bk = (dueRes.booking || null) as Record<string, unknown> | null;
-      if (!bk || String(bk.location_id) !== locationId) return json({ ok: false, error: 'unknown_booking' }, 404);
+      if (!bk || String(bk.location_id) !== locationId) return json({ ok: false, error: 'unknown_booking' });
       const { data: paidRows } = await db.from('booking_payments').select('id, kind, status')
         .eq('booking_id', bookingId).in('status', ['authorised', 'captured']).neq('kind', 'refund');
       const summary = {

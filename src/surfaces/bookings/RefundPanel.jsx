@@ -51,7 +51,8 @@ export default function RefundPanel({ b, backOffice = false, by = null, onChange
 
   if (!res) return null;
   if (!res.ok) {
-    if (!res.notDeployed) return null;
+    // Only where there is money to give back: a walk-in or a free booking says nothing.
+    if (!res.notDeployed || !(Number(b.paidMinor) > 0)) return null;
     return <div style={{ fontSize: 12, color: 'var(--t4)', marginTop: 8, lineHeight: 1.45 }}>Refunds from here arrive with the next server update.</div>;
   }
   if (!money.length) return null;
@@ -71,6 +72,8 @@ export default function RefundPanel({ b, backOffice = false, by = null, onChange
       return;
     }
     setMsg({ ok: false, text: out?.error || 'Refund NOT made. Try again.' });
+    // Held as pending (Adyen did not answer): show the row on its way, and never offer it again.
+    if (out?.pending) { setOpen(null); setPin(''); setNonce((n) => n + 1); onChanged?.(); }
   };
 
   return (

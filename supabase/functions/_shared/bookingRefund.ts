@@ -16,7 +16,7 @@
 // TESTED: src/lib/bookings/bookingRefund.test.js drives this file with a fake
 // PostgREST client (Node strips the types).
 
-import { parseRefundReference, refundedMinorFor, parentAfterRefund } from './bookingHost.js';
+import { parseRefundReference, refundedMinorFor, refundRowsFor, parentAfterRefund, refundDueAfter } from './bookingHost.js';
 
 // deno-lint-ignore no-explicit-any
 type Db = any;
@@ -31,11 +31,19 @@ const missingColumn = (e: Row | null | undefined) => !!e
 // amount_refunded_minor is not there: only the status moves (a full refund).
 //   -> { ok, refundedMinor, status } | { ok:false, error }
 export async function recomputeRefunded(db: Db, parentId: string): Promise<Row> {
-  let pr = await db.from('booking_payments').select('id, booking_id, kind, status, amount, amount_refunded_minor').eq('id', parentId).maybeSingle();
+  // Newest columns first, then without them: amount_refunded_minor (20261016d), then
+  // applied_minor and refund_due_minor (20261016b).
+  const BASE = 'id, booking_id, kind, status, amount, applied_to_check';
+  let pr = await db.from('booking_payments').select(`${BASE}, applied_minor, refund_due_minor, amount_refunded_minor`).eq('id', parentId).maybeSingle();
   let hasColumn = true;
+  let hasDue = true;
   if (pr.error && missingColumn(pr.error)) {
     hasColumn = false;
-    pr = await db.from('booking_payments').select('id, booking_id, kind, status, amount').eq('id', parentId).maybeSingle();
+    pr = await db.from('booking_payments').select(`${BASE}, applied_minor, refund_due_minor`).eq('id', parentId).maybeSingle();
+    if (pr.error && missingColumn(pr.error)) {
+      hasDue = false;
+      pr = await db.from('booking_payments').select(BASE).eq('id', parentId).maybeSingle();
+    }
   }
   if (pr.error || !pr.data) return { ok: false, error: pr.error?.message || 'payment not found' };
   const parent = { ...pr.data, amount_refunded_minor: 0 };
@@ -44,14 +52,34 @@ export async function recomputeRefunded(db: Db, parentId: string): Promise<Row> 
     sib = await db.from('booking_payments').select('id, kind, status, amount, merchant_reference').eq('booking_id', parent.booking_id).eq('kind', 'refund');
   }
   if (sib.error) return { ok: false, error: sib.error.message };
+  const total = Math.round(Number(parent.amount) * 100) || 0;
+  const mine = refundRowsFor(parent, sib.data || []);
   const back = refundedMinorFor(parent, sib.data || []);
   const settledBack = refundedMinorFor(parent, (sib.data || []).filter((r: Row) => r.status === 'refunded'));
   // The status follows only what Adyen has CONFIRMED; the column also counts pending refunds,
   // so the till stops counting that money as credit the moment the refund is asked for.
   const after = parentAfterRefund(parent, settledBack);
   const patch: Row = {};
-  if (hasColumn) patch.amount_refunded_minor = Math.min(back, Math.round(Number(parent.amount) * 100) || 0);
-  if (after.status === 'refunded' && ['captured', 'needs_refund'].includes(String(parent.status))) patch.status = 'refunded';
+  if (hasColumn) patch.amount_refunded_minor = Math.min(back, total);
+  if (after.status === 'refunded' && ['captured', 'needs_refund'].includes(String(parent.status))) {
+    patch.status = 'refunded';
+  } else if (String(parent.status) === 'refunded' && settledBack < total
+    && mine.reduce((s: number, r: Row) => s + (Math.round(Number(r.amount) * 100) || 0), 0) >= total) {
+    // The refund rows made it refunded, then Adyen said one failed or was reversed
+    // (REFUND_FAILED, REFUNDED_REVERSED): the money is the guest's credit again, and it can be
+    // refunded again. A full refund made in Adyen's own screens has no rows and is left alone.
+    patch.status = 'captured';
+  }
+  // A payment the bill used less of: what is still owed back drops as it is refunded, so the
+  // stand stops saying "give it back" and never offers the same money twice.
+  if (hasDue) {
+    const due = refundDueAfter(parent, back);
+    const had = parent.refund_due_minor === null || parent.refund_due_minor === undefined ? null : Math.round(Number(parent.refund_due_minor));
+    if (due !== undefined && due !== had) {
+      patch.refund_due_minor = due;
+      patch.refund_reason = null;
+    }
+  }
   if (Object.keys(patch).length) {
     const { error } = await db.from('booking_payments').update(patch).eq('id', parent.id);
     if (error) return { ok: false, error: error.message };

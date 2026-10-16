@@ -66,7 +66,13 @@ export default function FloorDragLayer() {
       const res = await useStore.getState().seatBooking?.(live.id);
       if (res && res.ok === false) {
         setBusy(false);
-        setErr(res.text || (res.error === 'table_open' ? `${landing.table.label || 'That table'} still has an open tab on the till.` : res.error) || 'Moved, but the tab did not open. Use Seat now on the booking.');
+        // Never a raw code on screen.
+        const tl = landing.table.label || 'That table';
+        const words = {
+          table_open: `${tl} still has an open tab on the till.`,
+          table_seated_empty: `${tl} is seated with no order yet. Cash it off on the POS, or move this booking.`,
+        };
+        setErr(res.text || words[res.error] || 'Moved, but the tab did not open. Use Seat now on the booking.');
         return;
       }
     }
@@ -84,11 +90,11 @@ export default function FloorDragLayer() {
         <div aria-hidden="true" style={{
           position: 'fixed', left: Math.min(vw - 230, drag.x + 16), top: Math.min(vh - 70, drag.y + 16), zIndex: 100004, pointerEvents: 'none',
           minWidth: 160, maxWidth: 260, padding: '8px 11px', borderRadius: 11, boxShadow: '0 10px 28px rgba(0,0,0,.45)',
-          background: 'var(--bg1)', border: `2px solid ${hover ? (hover.ok ? 'var(--grn)' : 'var(--red)') : 'var(--acc)'}`, color: 'var(--t1)',
+          background: 'var(--bg1)', border: `2px solid ${hover && !hover.unchanged ? (hover.ok ? 'var(--grn)' : 'var(--red)') : 'var(--acc)'}`, color: 'var(--t1)',
         }}>
           <div style={{ fontSize: 13, fontWeight: 800 }}>{bookingName(live)} · {live.covers} cvr</div>
-          <div style={{ fontSize: 12, fontWeight: 700, marginTop: 2, color: hover ? (hover.ok ? 'var(--grn)' : 'var(--red)') : 'var(--t3)' }}>
-            {hover ? (hover.ok ? `${hover.table.label || hover.table.id} free${hover.seatMode ? ', seat now' : ''}` : hover.reason) : 'Drag onto a table'}
+          <div style={{ fontSize: 12, fontWeight: 700, marginTop: 2, color: hover && !hover.unchanged ? (hover.ok ? 'var(--grn)' : 'var(--red)') : 'var(--t3)' }}>
+            {hover?.unchanged ? 'Drag onto another table' : hover ? (hover.ok ? `${hover.table.label || hover.table.id} free${hover.seatMode ? ', seat now' : ''}` : hover.reason) : 'Drag onto a table'}
           </div>
         </div>
       )}

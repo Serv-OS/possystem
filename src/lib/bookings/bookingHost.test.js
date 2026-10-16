@@ -14,6 +14,7 @@ import {
   refundSuggestion, refundCheck, parentAfterRefund, creditMinorOf, isRefundableRow,
   widgetPartyBounds, partyNeedsRequest, requestRow, inboxRows, declineText,
   lateState, floorDrop, isManagerRole, consentChannel, safeLink, payLinkText,
+  usedMinor, refundDueLeftMinor, refundDueAfter, venueWallToEpochMs, payLinkWindow, PAY_LINK_HOURS,
 } from '../../../supabase/functions/_shared/bookingHost.js';
 import { payLinkToken, payLinkTokenOk, payLinkUrl } from '../../../supabase/functions/_shared/payLink.js';
 
@@ -85,9 +86,52 @@ test('refundCheck explains every refusal in words', () => {
 });
 
 test('the suggested refund is what the bill did not use, else everything left', () => {
-  assert.equal(refundSuggestion({ ...paid, refund_due_minor: 1400 }, []), 1400);
+  const used = { ...paid, applied_to_check: true, applied_minor: 6200, refund_due_minor: 1400 };
+  assert.equal(refundSuggestion(used, []), 1400);
   assert.equal(refundSuggestion(paid, []), 7600);
-  assert.equal(refundSuggestion({ ...paid, refund_due_minor: 99999 }, []), 7600);
+  // a stale refund_due_minor never offers more than the unused part
+  assert.equal(refundSuggestion({ ...used, refund_due_minor: 99999 }, []), 1400);
+});
+
+test('money the bill used is never refundable, so the unused part cannot go back twice', () => {
+  // prepay 100.00, the bill used 80.00, 20.00 owed back
+  const p = { id: P, kind: 'prepay', status: 'captured', amount: 100, applied_to_check: true, applied_minor: 8000, refund_due_minor: 2000 };
+  assert.equal(usedMinor(p), 8000);
+  assert.equal(refundableMinor(p, []), 2000);
+  assert.equal(refundDueLeftMinor(p, []), 2000);
+  assert.equal(refundCheck({ parent: p, amountMinor: 2000 }).ok, true);
+  // the 20.00 refund is on its way (or done): a second 20.00 is refused
+  const one = [{ id: 'r1', kind: 'refund', status: 'pending', amount: 20, merchant_reference: refundReference(P, 1) }];
+  assert.equal(refundableMinor(p, one), 0);
+  assert.equal(refundSuggestion(p, one), 0);
+  assert.equal(refundDueLeftMinor(p, one), 0);
+  assert.match(refundCheck({ parent: p, rows: one, amountMinor: 2000 }).error, /paid the bill, so nothing is left/);
+  assert.match(refundCheck({ parent: { ...p, amount_refunded_minor: 2000 }, amountMinor: 2000 }).error, /paid the bill/);
+  // 20.00 deposit, 15.00 used: after the 5.00 goes back nothing more is offered
+  const d = { id: P, kind: 'deposit', status: 'captured', amount: 20, applied_to_check: true, applied_minor: 1500, refund_due_minor: 500 };
+  const half = [{ id: 'r2', kind: 'refund', status: 'pending', amount: 5, refund_of: P }];
+  assert.equal(refundSuggestion(d, half), 0);
+  assert.equal(refundDueLeftMinor(d, half), 0);
+  // a failed refund gives the unused part back to refund
+  assert.equal(refundDueLeftMinor(d, [{ ...half[0], status: 'failed' }]), 500);
+});
+
+test('a payment applied under the old rule (no applied_minor) counts as used in full', () => {
+  const old = { id: P, kind: 'prepay', status: 'captured', amount: 50, applied_to_check: true };
+  assert.equal(usedMinor(old), 5000);
+  assert.equal(refundableMinor(old, []), 0);
+  assert.equal(refundableMinor({ ...old, applied_minor: null }, []), 0);
+  assert.equal(usedMinor({ ...old, applied_to_check: false }), 0);
+  assert.equal(refundDueLeftMinor({ ...old, applied_to_check: false }, []), 0);
+});
+
+test('refundDueAfter: the stored amount owed back drops as refunds go out, null at 0', () => {
+  const p = { kind: 'prepay', amount: 100, applied_to_check: true, applied_minor: 8000 };
+  assert.equal(refundDueAfter(p, 0), 2000);
+  assert.equal(refundDueAfter(p, 500), 1500);
+  assert.equal(refundDueAfter(p, 2000), null);
+  assert.equal(refundDueAfter({ ...p, applied_minor: null }, 0), undefined);
+  assert.equal(refundDueAfter({ ...p, applied_to_check: false }, 0), undefined);
 });
 
 test('a part refund keeps the payment captured and lowers its credit', () => {
@@ -193,4 +237,25 @@ test('pay link tokens are stable per booking, differ between bookings and check 
   assert.equal(payLinkUrl(null, 'bk-1', a), null);
   assert.match(payLinkText({ venue: 'Provo', name: 'Ada Lane', date: 'Sat 17 Oct', time: '19:00', kind: 'deposit', amountText: '£40.00', link: 'L' }), /^Hi Ada, to confirm your table at Provo on Sat 17 Oct at 19:00, please pay your £40.00 deposit: L$/);
   assert.match(payLinkText({ kind: 'hold', link: 'L' }), /save a card to hold your table \(nothing is taken\)/);
+});
+
+// ── pay link window (venue clock) ───────────────────────────────────────────
+test('venueWallToEpochMs reads a venue time in its own zone, summer and winter', () => {
+  assert.equal(new Date(venueWallToEpochMs('2026-10-16', '19:00', 'Europe/London')).toISOString(), '2026-10-16T18:00:00.000Z');
+  assert.equal(new Date(venueWallToEpochMs('2026-12-05', '19:00', 'Europe/London')).toISOString(), '2026-12-05T19:00:00.000Z');
+  assert.equal(new Date(venueWallToEpochMs('2026-10-16', '19:00', 'America/Los_Angeles')).toISOString(), '2026-10-17T02:00:00.000Z');
+  assert.ok(Number.isNaN(venueWallToEpochMs('nope', '19:00', 'Europe/London')));
+});
+
+test('a pay link never waits past the booking start, and is refused when it starts too soon', () => {
+  const now = Date.parse('2026-10-16T08:00:00Z');
+  // booking tonight at 19:00 London (18:00Z): the link ends at the start, not tomorrow morning
+  const start = venueWallToEpochMs('2026-10-16', '19:00', 'Europe/London');
+  assert.deepEqual(payLinkWindow({ nowMs: now, startMs: start }), { ok: true, untilMs: start });
+  // a booking next week: 24 hours
+  assert.equal(payLinkWindow({ nowMs: now, startMs: now + 7 * 86400000 }).untilMs, now + PAY_LINK_HOURS * 3600000);
+  // 20 minutes away: refused in words
+  assert.match(payLinkWindow({ nowMs: now, startMs: now + 20 * 60000 }).error, /starts too soon for a pay link/);
+  // no start known: 24 hours
+  assert.equal(payLinkWindow({ nowMs: now, startMs: NaN }).untilMs, now + PAY_LINK_HOURS * 3600000);
 });

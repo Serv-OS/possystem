@@ -26,10 +26,11 @@ import { suggestTables, turnFor, toMin, sessionsToBlocks, DEFAULT_TURN_BANDS } f
 import { phoneMatchKey, phoneRegionFromCurrency, phoneRawText } from '../_shared/phoneKey.js';
 import { readCustomerByPhone } from '../_shared/customerPhoneRead.js';
 import { paymentDue, packagePaymentNeed } from '../_shared/bookingPayment.js';
-import { isMissingColumnError } from '../_shared/bookingPromote.ts';
+import { isMissingColumnError, loadBookingDue } from '../_shared/bookingPromote.ts';
 import {
   visibleTags, inboxRows, declineText, refundableMinor, refundRowsFor, refundedMinorFor,
-  isRefundableRow, refundSuggestion, amountMinorOf, PAY_LINK_HOURS, payLinkText,
+  isRefundableRow, refundSuggestion, refundDueLeftMinor, amountMinorOf, payLinkText,
+  payLinkWindow, venueWallToEpochMs,
 } from '../_shared/bookingHost.js';
 import { payLinkToken, payLinkUrl } from '../_shared/payLink.js';
 
@@ -84,7 +85,10 @@ async function sendSms(to: string, message: string, locationId: string, type: st
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SERVICE_ROLE}` },
       body: JSON.stringify({ to, message, location_id: locationId, type }),
     });
-    if (!res.ok) return { sent: false, reason: `the text service answered ${res.status}` };
+    if (!res.ok) {
+      const j = await res.json().catch(() => null);
+      return { sent: false, reason: /E\.164|invalid phone|not a valid phone/i.test(String(j?.error || j?.message || '')) ? 'the mobile number is not valid' : 'the text service failed' };
+    }
     return { sent: true };
   } catch {
     return { sent: false, reason: 'the text service could not be reached' };
@@ -171,16 +175,17 @@ Deno.serve(async (req) => {
       if (!bookingId) return json({ ok: false, error: 'booking_id required' }, 400);
       const { data: bk } = await admin.from('bookings').select('id, location_id, status').eq('id', bookingId).maybeSingle();
       if (!bk || String(bk.location_id) !== locationId) return json({ ok: false, error: 'Booking not found at this venue.' }, 404);
-      const BASE = 'id, kind, status, amount, currency, card_last4, card_brand, applied_to_check, psp_reference, merchant_reference, refusal_reason, created_at, refund_due_minor';
+      const BASE = 'id, kind, status, amount, currency, card_last4, card_brand, applied_to_check, psp_reference, merchant_reference, refusal_reason, created_at';
+      const USED = ', applied_minor, refund_due_minor';
       // deno-lint-ignore no-explicit-any
-      let res: any = await admin.from('booking_payments').select(`${BASE}, amount_refunded_minor, refund_of`).eq('booking_id', bookingId).order('created_at');
+      let res: any = await admin.from('booking_payments').select(`${BASE}${USED}, amount_refunded_minor, refund_of`).eq('booking_id', bookingId).order('created_at');
       let partialAllowed = true;
       if (res.error && isMissingColumnError(res.error)) {
         // Before 20261016d: no part refunds (the till would still count the whole payment).
         partialAllowed = false;
-        res = await admin.from('booking_payments').select(BASE).eq('booking_id', bookingId).order('created_at');
-        // Before 20261016b as well: no refund_due_minor either.
-        if (res.error && isMissingColumnError(res.error)) res = await admin.from('booking_payments').select(BASE.replace(', refund_due_minor', '')).eq('booking_id', bookingId).order('created_at');
+        res = await admin.from('booking_payments').select(`${BASE}${USED}`).eq('booking_id', bookingId).order('created_at');
+        // Before 20261016b as well: an applied payment then counts as used in full.
+        if (res.error && isMissingColumnError(res.error)) res = await admin.from('booking_payments').select(BASE).eq('booking_id', bookingId).order('created_at');
       }
       if (res.error) return json({ ok: false, error: res.error.message }, 500);
       const all = (res.data || []) as Row[];
@@ -188,7 +193,8 @@ Deno.serve(async (req) => {
         id: r.id, kind: r.kind, status: r.status, amountMinor: amountMinorOf(r), currency: String(r.currency || 'gbp').toUpperCase(),
         card: [r.card_brand, r.card_last4 ? `···${r.card_last4}` : null].filter(Boolean).join(' ') || null,
         applied: !!r.applied_to_check, createdAt: r.created_at, reason: r.refusal_reason || null,
-        refundDueMinor: Number(r.refund_due_minor) || 0,
+        // What the bill did not use and has not gone back yet (0 once refunded).
+        refundDueMinor: r.kind === 'refund' ? 0 : refundDueLeftMinor(r, all),
         hasPsp: !!r.psp_reference,
         refundable: isRefundableRow(r),
         refundedMinor: r.kind === 'refund' ? 0 : refundedMinorFor(r, all),
@@ -266,45 +272,67 @@ Deno.serve(async (req) => {
       if (!candidates.length) {
         return json({ ok: false, error: `No table is free for ${party} at ${time} on ${sayDate(date)}. Call the guest to offer another time.` });
       }
-      // The guest on the company's guest book (only fill blanks, the same as the booking page).
-      const name = String(p.name || 'Guest').slice(0, 80);
-      const phone = phoneMatchKey(String(p.phone || ''), region);
-      const email = String(p.email || '').trim().toLowerCase() || null;
-      let customerId: string | null = null;
-      let allergens: string[] = [];
-      if (phone) {
-        const { data: existing } = await readCustomerByPhone(admin, { orgId: venue.org_id, phone: String(p.phone || ''), region, cols: 'id, name, email, allergens' });
-        if (existing) {
-          customerId = existing.id;
-          allergens = existing.allergens || [];
-          const patch: Row = {};
-          if (!existing.name && name) patch.name = name;
-          if (!existing.email && email) patch.email = email;
-          if (Object.keys(patch).length) await admin.from('customers').update(patch).eq('id', existing.id);
-        } else {
-          const { data: created } = await admin.from('customers')
-            .insert({ org_id: venue.org_id, name, phone, phone_raw: phoneRawText(p.phone) || phone, email, source: 'booking_widget' })
-            .select('id').maybeSingle();
-          customerId = created?.id || null;
-        }
-      }
-      const note = [String(p.note || '').slice(0, 250), 'From an online request'].filter(Boolean).join(' · ');
+      // Claim the request BEFORE booking: two stands (or a stand and Back Office) pressing
+      // Accept together must never book the guest twice. Only one update finds it pending.
+      const acceptedAt = new Date().toISOString();
+      const { data: claimed, error: claimErr } = await admin.from('booking_requests')
+        .update({ status: 'accepted', payload: { ...p, accepted: { by, at: acceptedAt } } })
+        .eq('id', requestId).eq('status', 'pending').is('booking_id', null).select('id');
+      if (claimErr) return json({ ok: false, error: claimErr.message }, 500);
+      if (!claimed?.length) return json({ ok: false, error: 'This request has been dealt with already.' });
+      // Put the claim back when nothing was booked, so the request stays in the inbox.
+      const release = async () => {
+        const { error } = await admin.from('booking_requests').update({ status: 'pending', payload: p })
+          .eq('id', requestId).eq('status', 'accepted').is('booking_id', null);
+        if (error) console.error('[booking-host] could not put the request back', requestId, error.message);
+      };
+
       let bookedId: string | null = null;
       let tableLabel: string | null = null;
-      for (const c of candidates) {
-        const id = `bk-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-        const { data: res } = await admin.rpc('create_booking', {
-          p_id: id, p_location_id: locationId, p_booking_date: date, p_start_time: time,
-          p_turn_minutes: turnFor(party, turnBands), p_covers: party, p_table_ids: c.set, p_primary_table_id: c.set[0],
-          p_customer_id: customerId, p_customer: { name, phone, email, allergens },
-          p_status: 'confirmed', p_source: 'host', p_package_id: null, p_note: note, p_created_by: by || 'request',
-        });
-        if (res?.ok) { bookedId = id; tableLabel = c.label; break; }
+      try {
+        // The guest on the company's guest book (only fill blanks, the same as the booking page).
+        const name = String(p.name || 'Guest').slice(0, 80);
+        const phone = phoneMatchKey(String(p.phone || ''), region);
+        const email = String(p.email || '').trim().toLowerCase() || null;
+        let customerId: string | null = null;
+        let allergens: string[] = [];
+        if (phone) {
+          const { data: existing } = await readCustomerByPhone(admin, { orgId: venue.org_id, phone: String(p.phone || ''), region, cols: 'id, name, email, allergens' });
+          if (existing) {
+            customerId = existing.id;
+            allergens = existing.allergens || [];
+            const patch: Row = {};
+            if (!existing.name && name) patch.name = name;
+            if (!existing.email && email) patch.email = email;
+            if (Object.keys(patch).length) await admin.from('customers').update(patch).eq('id', existing.id);
+          } else {
+            const { data: created } = await admin.from('customers')
+              .insert({ org_id: venue.org_id, name, phone, phone_raw: phoneRawText(p.phone) || phone, email, source: 'booking_widget' })
+              .select('id').maybeSingle();
+            customerId = created?.id || null;
+          }
+        }
+        const note = [String(p.note || '').slice(0, 250), 'From an online request'].filter(Boolean).join(' · ');
+        for (const c of candidates) {
+          const id = `bk-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+          const { data: res } = await admin.rpc('create_booking', {
+            p_id: id, p_location_id: locationId, p_booking_date: date, p_start_time: time,
+            p_turn_minutes: turnFor(party, turnBands), p_covers: party, p_table_ids: c.set, p_primary_table_id: c.set[0],
+            p_customer_id: customerId, p_customer: { name, phone, email, allergens },
+            p_status: 'confirmed', p_source: 'host', p_package_id: null, p_note: note, p_created_by: by || 'request',
+          });
+          if (res?.ok) { bookedId = id; tableLabel = c.label; break; }
+        }
+      } catch (e) {
+        await release();
+        throw e;
       }
-      if (!bookedId) return json({ ok: false, error: `Those tables were just taken. Try again, or book ${party} by hand on the Book screen.` });
-      await admin.from('booking_requests')
-        .update({ status: 'accepted', booking_id: bookedId, payload: { ...p, accepted: { by, at: new Date().toISOString() } } })
-        .eq('id', requestId);
+      if (!bookedId) {
+        await release();
+        return json({ ok: false, error: `Those tables were just taken. Try again, or book ${party} by hand on the Book screen.` });
+      }
+      const { error: linkErr } = await admin.from('booking_requests').update({ booking_id: bookedId }).eq('id', requestId);
+      if (linkErr) console.error('[booking-host] booked', bookedId, 'but could not link the request', requestId, linkErr.message);
       fetch(`${SUPABASE_URL}/functions/v1/booking-reminders`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SERVICE_ROLE}` },
         body: JSON.stringify({ action: 'confirm', booking_id: bookedId }),
@@ -335,49 +363,82 @@ Deno.serve(async (req) => {
 
       // What is due: a package that needs payment (picked now or already on the
       // booking), or a card hold at the venue's hold per cover.
-      const [{ data: rulesRow }, pkgRes] = await Promise.all([
+      const ownId = bk.package_id ? String(bk.package_id) : null;
+      const reqId = body.package_id ? String(body.package_id) : null;
+      const pkgIds = [...new Set([ownId, reqId].filter(Boolean))] as string[];
+      const [{ data: rulesRow }, { data: pkgRows }] = await Promise.all([
         admin.from('booking_rules').select('hold_per_cover').eq('location_id', locationId).maybeSingle(),
-        (body.package_id || bk.package_id)
-          ? admin.from('packages').select('*').eq('id', String(body.package_id || bk.package_id)).eq('location_id', locationId).maybeSingle()
-          : Promise.resolve({ data: null }),
+        pkgIds.length
+          ? admin.from('packages').select('*').in('id', pkgIds).eq('location_id', locationId)
+          : Promise.resolve({ data: [] as Row[] }),
       ]);
-      const pkg = (pkgRes as { data: Row | null }).data;
-      if (body.package_id && !pkg) return json({ ok: false, error: 'That package is not on this venue.' });
+      const pkgOf = (id: string | null) => (id ? ((pkgRows || []) as Row[]).find((x) => String(x.id) === id) || null : null);
+      const pkg = reqId ? pkgOf(reqId) : pkgOf(ownId);
+      if (reqId && !pkg) return json({ ok: false, error: 'That package is not on this venue.' });
+      const ownPkg = pkgOf(ownId);
       const wantHold = body.kind === 'hold' || !packagePaymentNeed(pkg).needsPayment;
+      // A card hold cannot stand in for the money the booking's own package takes: the page
+      // would refuse to save the card (what is due would not match).
+      if (wantHold && ownPkg && packagePaymentNeed(ownPkg).needsPayment) {
+        return json({ ok: false, error: `This booking is on ${ownPkg.name || 'a package'}, which takes a payment. Pick that package to text its payment, or change the package with Edit first.` });
+      }
       const due = wantHold
         ? paymentDue({ covers: bk.covers, pkg: null, rules: { card_capture_enabled: true, card_capture_min_covers: 0, hold_per_cover: rulesRow?.hold_per_cover } })
         : paymentDue({ covers: bk.covers, pkg, rules: null });
       if (!due) return json({ ok: false, error: wantHold ? 'Set a card hold per cover in Rules first, or pick a package that takes a deposit or prepay.' : 'That package takes no payment.' });
       const currency = String(venue.currency || (region === 'US' ? 'USD' : 'GBP')).toUpperCase();
 
+      // The link lives 24 hours, never past the booking's own start (venue clock).
+      const tz = venue.timezone || 'Europe/London';
+      const win = payLinkWindow({ nowMs: Date.now(), startMs: venueWallToEpochMs(String(bk.booking_date), String(bk.start_time).slice(0, 5), tz) });
+      if (!win.ok) return json({ ok: false, error: win.error });
+      const until = new Date(win.untilMs as number).toISOString();
+
       const base = await linkBase(locationId);
       const tok = await payLinkToken(SERVICE_ROLE, bookingId);
       const link = payLinkUrl(base, bookingId, tok);
       if (!link) return json({ ok: false, error: 'This venue has no booking page address yet (Back Office, Location settings, venue slug).' });
 
-      // Store what is due (the trigger lets only the service role write it).
-      // After the migration the booking waits as pending_payment while the link
-      // is live; before it, the booking stays confirmed and the link still works.
-      const until = new Date(Date.now() + PAY_LINK_HOURS * 3600000).toISOString();
+      // Store what is due (the trigger lets only the service role write it). The status is
+      // NOT changed: a confirmed phone booking stays confirmed while the guest pays (the page
+      // takes a link payment on a confirmed booking). A booking still waiting online stays
+      // pending_payment, and the sweep leaves it alone until pay_link_until (after 20261016d).
       const patch: Row = {
         payment_kind: due.kind, payment_due_minor: due.amountMinor, payment_currency: currency,
         ...(pkg && !wantHold && String(bk.package_id || '') !== String(pkg.id) ? { package_id: pkg.id } : {}),
-        ...(windowColumn ? { status: 'pending_payment', pay_link_until: until, pay_link_sent_at: new Date().toISOString() } : {}),
+        ...(windowColumn ? { pay_link_until: until, pay_link_sent_at: new Date().toISOString() } : {}),
       };
       const { error: upErr } = await admin.from('bookings').update(patch).eq('id', bookingId).in('status', ['confirmed', 'pending_payment']);
       if (upErr) return json({ ok: false, error: `Could not save what is due: ${upErr.message}` }, 500);
-      // The audit row booking_pay reads (the package and party), so the charge
-      // is checked against it like a booking made online.
-      await admin.from('booking_requests').insert({
-        location_id: locationId, status: 'accepted', booking_id: bookingId,
-        payload: { kind: 'pay_link', party: bk.covers, package_id: pkg && !wantHold ? String(pkg.id) : null, by, due_kind: due.kind, due_minor: due.amountMinor },
-      });
+      // The audit row booking_pay reads (the package and party), so the charge is checked
+      // against it like a booking made online. ONE pay_link row per booking, rewritten on a
+      // resend, so an older link's package or party can never block the new one.
+      const audit = { kind: 'pay_link', party: bk.covers, package_id: pkg && !wantHold ? String(pkg.id) : null, by, due_kind: due.kind, due_minor: due.amountMinor };
+      const { data: prior, error: priorErr } = await admin.from('booking_requests').select('id')
+        .eq('booking_id', bookingId).eq('payload->>kind', 'pay_link').order('created_at', { ascending: true }).limit(1);
+      if (priorErr) return json({ ok: false, error: `Could not save the pay link: ${priorErr.message}` }, 500);
+      const { error: auditErr } = prior?.length
+        ? await admin.from('booking_requests').update({ payload: audit }).eq('id', prior[0].id)
+        : await admin.from('booking_requests').insert({ location_id: locationId, status: 'accepted', booking_id: bookingId, payload: audit });
+      if (auditErr) return json({ ok: false, error: `Could not save the pay link: ${auditErr.message}` }, 500);
+      // Never text a link the page cannot take: read the due back exactly as booking_pay will.
+      const check = await loadBookingDue(admin, bookingId);
+      if (!check.ok || !check.due || check.due.kind !== due.kind || Math.round(Number(check.due.amountMinor)) !== due.amountMinor) {
+        console.error('[booking-host] pay link NOT sent, the page would refuse it', bookingId, check.ok ? check.due : check.error);
+        return json({ ok: false, error: 'Pay link NOT sent: what this booking owes does not match its package and covers. Check them with Edit, then try again.' });
+      }
       const text = payLinkText({
         venue: venue.name, name: bk.customer?.name, date: sayDate(String(bk.booking_date)), time: String(bk.start_time).slice(0, 5),
         kind: due.kind, amountText: moneyText(due.amountMinor, currency), link,
       });
       const sms = await sendSms(to, text, locationId, 'booking_pay_link');
-      return json({ ok: true, link, sms, status: windowColumn ? 'pending_payment' : bk.status, waitsUntil: windowColumn ? until : null, due: { ...due, currency } });
+      return json({
+        ok: true, link, sms, status: bk.status,
+        // Only a booking still waiting online is released when the link runs out.
+        waitsUntil: windowColumn && bk.status === 'pending_payment' ? until : null,
+        linkUntil: windowColumn ? until : null,
+        due: { ...due, currency },
+      });
     }
 
     return json({ ok: false, error: `unknown action: ${action}` }, 400);

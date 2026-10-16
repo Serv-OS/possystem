@@ -4,9 +4,11 @@
 // A booking taken by phone on a package that takes a deposit or a prepay, or
 // at a venue with a card hold, gets a text with a pay link. The guest pays on
 // the venue's own booking page (the same card form the online booking uses).
-// After migration 20261016d the booking waits as Awaiting payment while the
-// link is live (24 hours); before it the booking stays confirmed and the link
-// still works. booking-host sends it; booking-widget takes the payment.
+// The booking stays confirmed while the guest pays (the link lives 24 hours,
+// never past the booking's start). Hidden once the booking has a payment or a
+// saved card (hasPayment, from the Inspector's own ledger read), and on online
+// bookings, which had the booking page's payment step already.
+// booking-host sends it; booking-widget takes the payment.
 
 import { useState } from 'react';
 import { useStore } from '../../store';
@@ -21,7 +23,7 @@ const fmtUntil = (iso, tz) => {
   } catch { return ''; }
 };
 
-export default function PayLinkPanel({ b, by = null }) {
+export default function PayLinkPanel({ b, by = null, hasPayment = false }) {
   const packages = useStore((s) => s.packages) || [];
   const bookingRules = useStore((s) => s.bookingRules);
   const tz = useStore((s) => s.locationConfig?.timezone);
@@ -35,8 +37,8 @@ export default function PayLinkPanel({ b, by = null }) {
   const [forId, setForId] = useState(b.id);
   if (forId !== b.id) { setForId(b.id); setOut(null); setChoice(own ? own.id : (holdOn ? 'hold' : (payable[0]?.id || ''))); }
 
-  const live = b.status === 'confirmed' || (b.status === 'pending_payment' && b.source !== 'widget');
-  if (!live || Number(b.paidMinor) > 0) return null;
+  const live = b.status === 'confirmed' || b.status === 'pending_payment';
+  if (!live || hasPayment || Number(b.paidMinor) > 0 || b.source === 'widget') return null;
   if (!payable.length && !holdOn) return null;
   const phone = b.customer?.phone;
 
@@ -45,7 +47,7 @@ export default function PayLinkPanel({ b, by = null }) {
     ? paymentDue({ covers: b.covers, pkg, rules: null })
     : paymentDue({ covers: b.covers, pkg: null, rules: { cardCaptureEnabled: true, cardCaptureMinCovers: 0, holdPerCover: rules.holdPerCover } });
   const dueWords = !due ? 'Nothing to pay'
-    : due.kind === 'hold' ? 'Card saved, nothing taken'
+    : due.kind === 'hold' ? 'Card hold, nothing taken today'
     : due.kind === 'deposit' ? `${moneyMinor(due.amountMinor)} deposit` : `${moneyMinor(due.amountMinor)} prepay`;
 
   const send = async () => {
@@ -59,13 +61,19 @@ export default function PayLinkPanel({ b, by = null }) {
     try { await navigator.clipboard.writeText(link); setOut((o) => ({ ...o, copied: true })); } catch { /* the link is on screen */ }
   };
 
-  const waiting = b.status === 'pending_payment' && b.payLinkUntil;
+  const sent = !!b.payLinkUntil;
+  const waiting = b.status === 'pending_payment' && sent;
   return (
     <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 10, border: '1px dashed var(--bdr2)' }}>
-      <div style={{ fontSize: 12.5, fontWeight: 800 }}>{waiting ? 'Pay link sent' : 'Take a deposit by text'}</div>
+      <div style={{ fontSize: 12.5, fontWeight: 800 }}>{sent ? 'Pay link sent' : 'Text a pay link'}</div>
       {waiting && (
         <div style={{ fontSize: 12.5, color: 'var(--orn)', fontWeight: 700, marginTop: 3, lineHeight: 1.4 }}>
           Waiting for the guest to pay until {fmtUntil(b.payLinkUntil, tz)}. Then the booking is released.
+        </div>
+      )}
+      {sent && !waiting && (
+        <div style={{ fontSize: 12.5, color: 'var(--t3)', marginTop: 3, lineHeight: 1.4 }}>
+          Waiting for the guest to pay. The booking stays confirmed.
         </div>
       )}
       {!phone ? (
@@ -90,9 +98,9 @@ export default function PayLinkPanel({ b, by = null }) {
               </button>
             )}
           </div>
-          <div style={{ fontSize: 12.5, color: 'var(--t2)', marginTop: 6 }}>{dueWords} for {b.covers} covers, texted to {phone}</div>
+          <div style={{ fontSize: 12.5, color: 'var(--t2)', marginTop: 6 }}>{dueWords} for {b.covers} {Number(b.covers) === 1 ? 'cover' : 'covers'}, texted to {phone}</div>
           <button className="btn btn-acc" onClick={send} disabled={busy || !due} style={{ width: '100%', height: 42, marginTop: 8, fontWeight: 800 }}>
-            {busy ? 'Sending…' : waiting ? 'Send the pay link again' : 'Text a pay link'}
+            {busy ? 'Sending…' : sent ? 'Send the pay link again' : 'Text a pay link'}
           </button>
         </>
       )}

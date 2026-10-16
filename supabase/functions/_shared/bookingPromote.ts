@@ -210,11 +210,15 @@ export async function loadBookingDue(db: Db, bookingId: string): Promise<
     db.from('booking_rules').select('card_capture_enabled, hold_per_cover, card_capture_min_covers')
       .eq('location_id', bk.location_id).maybeSingle(),
     db.from('booking_requests').select('payload').eq('booking_id', bookingId)
-      .order('created_at', { ascending: true }).limit(1),
+      .order('created_at', { ascending: true }).limit(20),
   ]);
   if (rulesRes.error || reqRes.error) return { ok: false, error: 'lookup_failed', booking: bk };
   const rules = rulesRes.data || null;
-  const req = (reqRes.data?.[0]?.payload || null) as Record<string, unknown> | null;
+  // The audit row: the host stand's pay link row when there is one (booking-host keeps ONE per
+  // booking, rewritten on every resend, 16 Oct 2026 host tools), else the oldest row (the
+  // booking page's own). Both are written by the service role only.
+  const reqRows = (reqRes.data || []) as { payload?: Record<string, unknown> | null }[];
+  const req = (reqRows.find((r) => r?.payload?.kind === 'pay_link')?.payload || reqRows[0]?.payload || null) as Record<string, unknown> | null;
 
   const ownId = bk.package_id ? String(bk.package_id) : null;
   const reqId = req?.package_id ? String(req.package_id) : null;

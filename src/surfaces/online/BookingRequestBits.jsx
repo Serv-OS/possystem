@@ -68,15 +68,16 @@ export function LargePartyRequest({ opsId, venueName, minParty = 13, date, today
     <div style={box}>
       <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--ink)' }}>Send a request for a larger party</div>
       <div style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.5, marginTop: 2, marginBottom: 10 }}>The venue checks the tables and gets back to you.</div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 8 }}>
-        <label style={{ fontSize: 12, color: 'var(--muted)' }}>Guests
+      {/* Guests on its own row: three date and time boxes side by side overflow a phone. */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)', gap: 8, marginBottom: 8 }}>
+        <label style={{ fontSize: 12, color: 'var(--muted)', minWidth: 0, gridColumn: '1 / -1' }}>Guests
           <input type="number" min={minParty} max={200} value={party} onChange={(e) => setParty(Math.max(1, Math.min(200, Math.round(Number(e.target.value) || minParty))))} style={{ ...S.input, marginTop: 4 }} />
         </label>
-        <label style={{ fontSize: 12, color: 'var(--muted)' }}>Date
-          <input type="date" value={day} min={today} max={maxDate} onChange={(e) => { if (e.target.value) setDay(e.target.value); }} style={{ ...S.input, marginTop: 4 }} />
+        <label style={{ fontSize: 12, color: 'var(--muted)', minWidth: 0 }}>Date
+          <input type="date" value={day} min={today} max={maxDate} onChange={(e) => { if (e.target.value) setDay(e.target.value); }} style={{ ...S.input, marginTop: 4, width: '100%', minWidth: 0, boxSizing: 'border-box' }} />
         </label>
-        <label style={{ fontSize: 12, color: 'var(--muted)' }}>Time
-          <input type="time" value={time} step={900} onChange={(e) => setTime(e.target.value)} style={{ ...S.input, marginTop: 4 }} />
+        <label style={{ fontSize: 12, color: 'var(--muted)', minWidth: 0 }}>Time
+          <input type="time" value={time} step={900} onChange={(e) => setTime(e.target.value)} style={{ ...S.input, marginTop: 4, width: '100%', minWidth: 0, boxSizing: 'border-box' }} />
         </label>
       </div>
       <div style={{ display: 'grid', gap: 8 }}>
@@ -133,7 +134,8 @@ export function PayLinkPage({ bookingId, token, opsId, venueName, shell, shellCo
     );
   }
   if (!info.ok) {
-    const why = info.error === 'bad_link' ? 'This payment link is not valid. Please call the venue.'
+    const why = (info.error === 'bad_link' || info.error === 'unknown_booking') ? 'This payment link is not valid. Please call the venue.'
+      : info.error === 'due_mismatch' ? 'This payment link is out of date. Please call the venue for a new one.'
       : info.error === 'closed' ? 'This booking is no longer waiting for payment. Please call the venue if you think that is wrong.'
       : info.error === 'nothing_due' ? 'There is nothing to pay on this booking.'
       : info.error === 'payment_unavailable' ? 'Card payments are not available right now. Please call the venue.'

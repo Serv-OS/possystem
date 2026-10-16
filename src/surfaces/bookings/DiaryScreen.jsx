@@ -648,17 +648,27 @@ function Kpi({ label, value, sub, col, last }) {
 // and falls back to neutral copy — an empty read is "not visible here", never
 // "unpaid".
 // [rows, failed]: rows null = not read yet, or the read failed (failed true).
-function useBookingPayments(bookingId) {
+// 16 Oct 2026 (host tools): read again when the booking's status moves, after a refund
+// (nonce), and every 15 s while a pay link waits with nothing on file, because a phone
+// booking paid by link stays confirmed (its status never moves).
+function useBookingPayments(bookingId, { status = null, nonce = 0, watch = false } = {}) {
   const [state, setState] = useState({ id: null, rows: null, failed: false });
+  const [tick, setTick] = useState(0);
   useEffect(() => {
     let alive = true;
     loadBookingPayments(bookingId).then((rows) => { if (alive) setState({ id: bookingId, rows, failed: rows === null }); });
     return () => { alive = false; };
-  }, [bookingId]);
+  }, [bookingId, status, nonce, tick]);
+  const onFile = (state.rows || []).some((r) => (r.status === 'captured' || r.status === 'authorised') && r.kind !== 'refund');
+  useEffect(() => {
+    if (!watch || onFile) return undefined;
+    const t = setInterval(() => setTick((n) => n + 1), 15000);
+    return () => clearInterval(t);
+  }, [watch, onFile, bookingId]);
   return state.id === bookingId ? [state.rows, state.failed] : [null, false];
 }
 
-function PaymentState({ b, prepaid, rows }) {
+function PaymentState({ b, prepaid, rows, tz = null }) {
   let line = null;
   if (rows && rows.length) {
     // Money that must go back is checked FIRST (10 Sep 2026 review): before
@@ -685,8 +695,8 @@ function PaymentState({ b, prepaid, rows }) {
       line = { txt: `✓ ${money(captured.amount, 2)} ${kind} by card${card(captured)}${applied}`, col: 'var(--grn)' };
       // 16 Oct 2026 (bookings audit item 3): the bill used less than was paid. The ledger keeps
       // the rest as money owed back (apply_booking_payment, migration 20261016b).
-      // Owed only while the row is still captured: once a refund lands the webhook marks it
-      // refunded, and nothing lowers refund_due_minor yet (a partial refund is a follow up).
+      // Host tools (16 Oct 2026): a refund from the stand lowers refund_due_minor as it goes
+      // (recomputeRefunded, null at 0), so the line goes once the money has gone back.
       const surplus = rows.find((r) => r.status === 'captured' && Number(r.refund_due_minor) > 0);
       if (surplus) {
         const words = surplus.refund_reason
@@ -701,6 +711,11 @@ function PaymentState({ b, prepaid, rows }) {
         : { txt: 'Card payment failed. Take payment at the venue.', col: 'var(--red)' };
     }
     else line = { txt: 'Card payment pending. It confirms by itself when the bank answers.', col: 'var(--t3)' };
+  } else if (b.status === 'pending_payment' && b.payLinkUntil) {
+    const until = (() => {
+      try { return new Intl.DateTimeFormat('en-GB', { timeZone: tz || 'Europe/London', weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(b.payLinkUntil)); } catch { return ''; }
+    })();
+    line = { txt: `Pay link sent. Waits for payment until ${until}.`, col: 'var(--orn)' };
   } else if (b.status === 'pending_payment') {
     line = { txt: 'Awaiting card payment. The guest has 20 minutes to pay before the booking expires and the table frees itself.', col: 'var(--orn)' };
   } else if (b.status === 'expired') {
@@ -827,7 +842,9 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
   // rules.holdPerCover x covers, and since rulesOf() falls back to £20 per cover
   // for a venue with no saved rules, every walk-in claimed "Card held" over an
   // invented figure (Peter, 25 Aug). A hold is real only if a row says so.
-  const [payRows, payReadFailed] = useBookingPayments(b.id);
+  const [payNonce, setPayNonce] = useState(0);
+  const payLinkWaiting = !!b.payLinkUntil && ['confirmed', 'pending_payment'].includes(b.status);
+  const [payRows, payReadFailed] = useBookingPayments(b.id, { status: b.status, nonce: payNonce, watch: payLinkWaiting });
   // Money flagged to go back is never "on file" (isNeedsRefundRow).
   const capturedRow = (payRows || []).find((r) => r.status === 'captured' && r.kind !== 'refund' && !isNeedsRefundRow(r));
   const heldRow = (payRows || []).find((r) => r.status === 'authorised' && r.kind === 'hold' && !isNeedsRefundRow(r));
@@ -976,10 +993,10 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
             </span>
           )}
         </div>
-        <PaymentState b={b} prepaid={prepaid} rows={payRows} />
+        <PaymentState b={b} prepaid={prepaid} rows={payRows} tz={venueTz} />
         {/* 16 Oct 2026 (host tools): Refund (manager PIN) and the pay link by text. */}
-        <RefundPanel b={b} by={operatorName} />
-        <PayLinkPanel b={b} by={operatorName} />
+        <RefundPanel b={b} by={operatorName} onChanged={() => setPayNonce((n) => n + 1)} />
+        <PayLinkPanel b={b} by={operatorName} hasPayment={!!(capturedRow || heldRow)} />
       </div>
 
       <div style={sec}>

@@ -6,8 +6,8 @@
 -- #  RUN 20261016b_OPS_bookings_core.sql FIRST (this file replaces two of     #
 -- #  its functions and stops with a clear message if it has not been run).    #
 -- #  Additive and safe to run twice. One transaction. No table is rewritten:  #
--- #  nullable or defaulted columns only, one cron job body replaced, two      #
--- #  functions replaced in place with grants re issued.                      #
+-- #  nullable or defaulted columns only, one partial unique index, one cron   #
+-- #  job body replaced, two functions replaced with grants re issued.         #
 -- #  Safe in service: the app works before and after (every screen feature   #
 -- #  detects the new columns and says in words what waits for this file).     #
 -- ############################################################################
@@ -22,8 +22,10 @@
 --      (a hold takes no money); hold_minor keeps the rule figure for reference only.
 --   5  Large parties. widget_min_party and widget_max_party: the party sizes the booking page
 --      offers. A bigger party sends a request, which lands in the host stand's inbox.
---   9  Pay link from the stand. pay_link_until: a phone booking sent a pay link waits for its
---      payment until then; the 20 minute unpaid sweep skips it while the link is live.
+--   9  Pay link from the stand. pay_link_until: when the link stops being live (24 hours, never
+--      past the booking start). A confirmed phone booking stays confirmed; a booking still waiting
+--      online is not expired by the 20 minute sweep while its link is live. A unique index stops
+--      two refund taps at the same moment from both going out.
 --  11  late_release_minutes: after this many minutes late the host stand asks "Still waiting?".
 --      privacy_url: the venue's privacy notice, linked under the booking page's consent box.
 --
@@ -70,6 +72,14 @@ end
 $fk$;
 
 create index if not exists booking_payments_refund_of_idx on public.booking_payments (refund_of) where refund_of is not null;
+
+-- Two refund taps at the same moment build the same reference (bkrf-<payment id>-<n>): only one
+-- row may carry it, so the second tap is refused before it reaches Adyen. Part refunds made in
+-- Adyen's own screens are all written as bkrf-<payment id>-0 (each keyed on its own psp), so the
+-- -0 rows are left out. No refund rows exist on live today, so nothing can clash.
+create unique index if not exists booking_payments_refund_ref_uidx
+  on public.booking_payments (merchant_reference)
+  where kind = 'refund' and merchant_reference like 'bkrf-%' and merchant_reference not like '%-0';
 
 -- booking_payments has column scoped grants for authenticated (20260825f). The new columns get
 -- the same read grant as the other readable ones, so the host stand and the till can see them.
@@ -119,7 +129,7 @@ alter table public.bookings add column if not exists pay_link_until timestamptz;
 alter table public.bookings add column if not exists pay_link_sent_at timestamptz;
 
 comment on column public.bookings.pay_link_until is
-  '16 Oct 2026 (host tools): a booking sent a pay link from the host stand waits for its payment until this time; the unpaid sweep skips it until then. Written by booking-host only.';
+  '16 Oct 2026 (host tools): when a pay link sent from the host stand stops being live (24 hours, never past the booking start). A booking still waiting online (pending_payment) is not expired by the unpaid sweep until then; a confirmed booking stays confirmed. Written by booking-host; the sweep ignores a value more than 25 hours ahead.';
 comment on column public.bookings.pay_link_sent_at is
   '16 Oct 2026 (host tools): when the host stand last sent the pay link.';
 
@@ -137,7 +147,8 @@ begin
        set status = 'expired'
      where b.status = 'pending_payment'
        and b.created_at < now() - interval '20 minutes'
-       and (b.pay_link_until is null or b.pay_link_until < now())   -- 16 Oct 2026 (host tools): a live pay link waits
+       and (b.pay_link_until is null or b.pay_link_until < now()                  -- 16 Oct 2026 (host tools): a live pay link waits,
+            or b.pay_link_until > now() + interval '25 hours')                     -- never longer than booking-host can set
        and not exists (
          select 1 from public.booking_payments p
           where p.booking_id = b.id
@@ -302,7 +313,7 @@ notify pgrst, 'reload schema';
 -- VISIBLE CHECK (the SQL editor shows this last result). Expected:
 --   payments_new_columns 3, payments_columns_readable 3, rules_new_columns 4, bookings_new_columns 2,
 --   holds_with_money 0, credit_takes_refunds 1, apply_takes_refunds 1, helper_not_public 1,
---   sweep_skips_pay_links 1 (0 only where pg_cron is not installed).
+--   refund_ref_unique 1, sweep_skips_pay_links 1 (0 only where pg_cron is not installed).
 select
   (select count(*) from information_schema.columns
     where table_schema = 'public' and table_name = 'booking_payments'
@@ -321,4 +332,5 @@ select
   (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'apply_booking_payment'
      and p.pronargs = 3 and pg_get_functiondef(p.oid) like '%amount_refunded_minor%') as apply_takes_refunds,
   (select case when has_function_privilege('anon', 'public._booking_credit_for_session(uuid, jsonb, bigint)', 'execute') then 0 else 1 end) as helper_not_public,
+  (select count(*) from pg_indexes where schemaname = 'public' and indexname = 'booking_payments_refund_ref_uidx') as refund_ref_unique,
   (select count(*) from cron.job where jobname = 'bookings-expire-unpaid' and command like '%pay_link_until%') as sweep_skips_pay_links;

@@ -46,6 +46,14 @@ const tableUnder = (x, y) => {
 
 // The one press in progress: { bookingId, booking, mode, pointerId, x0, y0, armed, timer, target, cleanup }
 let press = null;
+
+// WebKit decides when a touch STARTS whether its touchmove can stop the scroll, so a listener
+// added after the hold is too late (the finger scrolls, the browser cancels the pointer and the
+// drag dies). One listener, added before any touch, stops the scroll only while a drag is armed
+// (the same approach as the Timeline drag).
+if (typeof document !== 'undefined') {
+  document.addEventListener('touchmove', (e) => { if (press?.armed) e.preventDefault(); }, { passive: false });
+}
 // The click a browser sends after a drag is swallowed once (by booking id, within a second).
 let swallow = { id: null, until: 0 };
 
@@ -75,17 +83,15 @@ function arm(d, x, y) {
     swallow = { id: d.bookingId, until: Date.now() + 1000 };
     stop(true);
   };
-  const onCancel = (e) => { if (e.pointerId === d.pointerId) stop(false); };
-  const noScroll = (e) => { e.preventDefault(); };
+  // A cancelled drag sends no click, so nothing is left to swallow: the next tap must work.
+  const onCancel = (e) => { if (e.pointerId === d.pointerId) { swallow = { id: null, until: 0 }; stop(false); } };
   window.addEventListener('pointermove', onMove);
   window.addEventListener('pointerup', onUp);
   window.addEventListener('pointercancel', onCancel);
-  document.addEventListener('touchmove', noScroll, { passive: false });
   d.cleanup = () => {
     window.removeEventListener('pointermove', onMove);
     window.removeEventListener('pointerup', onUp);
     window.removeEventListener('pointercancel', onCancel);
-    document.removeEventListener('touchmove', noScroll);
   };
   set({ drop: null, drag: { booking: d.booking, mode: d.mode, x, y, overId: tableUnder(x, y) } });
 }

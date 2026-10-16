@@ -122,3 +122,34 @@ test('an Adyen answer that beats the stored psp settles the pending stand refund
   assert.equal(refunds[0].psp_reference, 'PSP-REF-9');
   assert.equal(db.tables.booking_payments[0].amount_refunded_minor, 2000);
 });
+
+test('REFUND ok, then REFUND_FAILED: the payment goes back to captured with nothing refunded', async () => {
+  const db = fakeDb({ tables: { booking_payments: [parent(), refundRow({ amount: 76 })] } });
+  await settleBookingRefundEvent(db, { eventCode: 'REFUND', success: 'true', merchantReference: `bkrf-${PID}-1`, pspReference: 'PSP-REF-1' });
+  assert.equal(db.tables.booking_payments[0].status, 'refunded');
+  await settleBookingRefundEvent(db, { eventCode: 'REFUND_FAILED', success: 'true', merchantReference: `bkrf-${PID}-1`, pspReference: 'PSP-REF-1', reason: 'Refund failed at the bank' });
+  assert.equal(db.tables.booking_payments[1].status, 'failed');
+  assert.equal(db.tables.booking_payments[0].status, 'captured');
+  assert.equal(db.tables.booking_payments[0].amount_refunded_minor, 0);
+});
+
+test('a payment fully refunded in Adyen with no refund rows stays refunded', async () => {
+  const db = fakeDb({ tables: { booking_payments: [parent({ status: 'refunded' })] } });
+  const r = await recomputeRefunded(db, PID);
+  assert.equal(r.ok, true);
+  assert.equal(db.tables.booking_payments[0].status, 'refunded');
+});
+
+test('refunding the unused part of a payment the bill used lowers what is owed back', async () => {
+  const p = parent({ amount: 100, applied_to_check: true, applied_minor: 8000, refund_due_minor: 2000, refund_reason: 'give back 20.00' });
+  const db = fakeDb({ tables: { booking_payments: [p, refundRow({ amount: 20 })] } });
+  const r = await recomputeRefunded(db, PID);
+  assert.equal(r.ok, true);
+  assert.equal(db.tables.booking_payments[0].refund_due_minor, null);
+  assert.equal(db.tables.booking_payments[0].refund_reason, null);
+  assert.equal(db.tables.booking_payments[0].status, 'captured');
+  // the refund fails: the 20.00 is owed back again
+  db.tables.booking_payments[1].status = 'failed';
+  await recomputeRefunded(db, PID);
+  assert.equal(db.tables.booking_payments[0].refund_due_minor, 2000);
+});

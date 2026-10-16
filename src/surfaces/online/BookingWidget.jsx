@@ -655,7 +655,9 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, venueName = '
         const handleReply = (r, actions) => {
           if (!live) return;
           if (r?.reference) referenceRef.current = r.reference;
-          if (r?.ok && (r.status === 'confirmed' || r.status === 'prepaid')) {
+          // A pay link reply carries a status only when the payment was Authorised (pending
+          // replies carry none), so this holds for a booking that stays 'confirmed' too.
+          if (r?.ok && !r.pending && !r.action && (r.status === 'confirmed' || r.status === 'prepaid')) {
             setPaidInfo({ pspReference: r.pspReference || null });
             setPhase('paid');
             actions.resolve({ resultCode: 'Authorised' });
@@ -716,7 +718,7 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, venueName = '
             return;
           }
           if (r?.error === 'unknown_or_closed') {
-            if (r.status === 'confirmed' || r.status === 'prepaid') {
+            if (!payToken && (r.status === 'confirmed' || r.status === 'prepaid')) {
               // Already paid and booked (the webhook got there first).
               setPhase('paid');
               actions.resolve({ resultCode: 'Authorised' });
@@ -836,7 +838,10 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, venueName = '
     const tick = async () => {
       const r = await callWidget({ action: 'booking_status', location_id: opsId, booking_id: bookingId, ...(payToken ? { pay_token: payToken } : {}) });
       if (stopped) return;
-      if (r?.ok && (r.status === 'confirmed' || r.status === 'prepaid')) {
+      // A host stand pay link: the booking can stay 'confirmed' throughout, so only the
+      // server's paid flag (an authorised or captured payment) means paid.
+      const paidNow = payToken ? (r?.ok && r.paid === true) : (r?.ok && (r.status === 'confirmed' || r.status === 'prepaid'));
+      if (paidNow) {
         setPhase('paid');
         onPaidRef.current?.(r.status);
         return;
@@ -1380,6 +1385,7 @@ export default function BookingWidget({ location }) {
   const minCovers = Math.max(1, Math.min(maxCovers, Number(cfg?.minCovers) || 1));
   // 16 Oct 2026 (host tools): "Larger party? Send a request" opens this.
   const [askLarge, setAskLarge] = useState(false);
+  const largeRef = useRef(null);
   const maxDaysAhead = cfg?.maxDaysAhead ?? 90;
   // Terms in play right now: the venue's standing booking terms (config) plus
   // the selected package's own terms (rides the slots offer).
@@ -1483,8 +1489,10 @@ export default function BookingWidget({ location }) {
       return;
     }
     if (r?.error === 'party_size') {
-      setSubmitErr(Number(r.max) ? `Online bookings are for up to ${r.max} guests. Send a request below and the venue will be in touch.` : 'Pick a party size from the list.');
+      setSubmitErr(Number(r.max) ? `Online bookings are for up to ${r.max} guests. Use Larger party? under Party size to send a request.` : 'Pick a party size from the list.');
       setAskLarge(true);
+      // The request form opens under Party size, above this message: bring it into view.
+      setTimeout(() => { try { largeRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch { /* old browser */ } }, 60);
       return;
     }
     if (r?.error === 'slot_full') {
@@ -1767,7 +1775,7 @@ export default function BookingWidget({ location }) {
       </div>
       {/* 16 Oct 2026 (host tools): a party above the venue's online limit asks instead. */}
       {cfg?.requestsOpen && (
-        <div style={{ marginTop: -10, marginBottom: 18 }}>
+        <div ref={largeRef} style={{ marginTop: -10, marginBottom: 18 }}>
           {!askLarge ? (
             <button type="button" onClick={() => setAskLarge(true)} style={{ ...S.linkBtn, fontSize: 13 }}>
               Larger party? Send a request
