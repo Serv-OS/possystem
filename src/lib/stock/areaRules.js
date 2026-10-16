@@ -135,6 +135,24 @@ export function holdingsInvariant(items, holdings) {
   return bad;
 }
 
+/**
+ * Stock an item WITH a use area holds in no area at all: its on hand minus the sum of its area
+ * holdings. [{ itemId, name, areaId, qty }], expected empty: the database re homes such stock to
+ * the item's area the moment the area is given (inventory_item_areas trigger, 16 Oct review), and
+ * a Full count would otherwise find it in the area, expect 0 there and post it twice.
+ * `holdings` is the simple map { itemId: { areaId: qty } }.
+ */
+export function strandedHoldings(items, holdings) {
+  const out = [];
+  for (const i of items || []) {
+    if (!i || !i.areaId || i.archivedAt) continue;
+    const areas = Object.values(holdings?.[i.id] || {}).reduce((s, q) => s + num(q), 0);
+    const qty = r4(num(i.onHand) - areas);
+    if (Math.abs(qty) > 1e-6) out.push({ itemId: i.id, name: i.name, areaId: i.areaId, qty });
+  }
+  return out;
+}
+
 /** Items with any area below zero: [{ itemId, areaId, qty }]. `holdings` is { itemId: { areaId: qty } }. */
 export function areasBelowZero(holdings) {
   const out = [];
@@ -354,10 +372,11 @@ export function approvalGate(areaRows, { confirmIncomplete = false } = {}) {
   if (!incomplete.length) return { ok: true, incomplete: [], confirmText: null, note: null };
   const names = joinNames(incomplete);
   const verb = incomplete.length === 1 ? 'is' : 'are';
+  const its = incomplete.length === 1 ? 'Its' : 'Their';
   return {
     ok: !!confirmIncomplete,
     incomplete,
-    confirmText: `${names} ${verb} not marked complete. Approve anyway? Their uncounted lines will be left as the system has them.`,
+    confirmText: `${names} ${verb} not marked complete. Approve anyway? ${its} uncounted lines will be left as the system has them.`,
     note: `Approved with ${incomplete.join(', ')} not marked complete`,
   };
 }
@@ -421,7 +440,7 @@ export function countStatusText(areaRows) {
   const rows = (areaRows || []).filter(Boolean);
   if (!rows.length) return { text: '', ready: false };
   const done = rows.filter((r) => r.status === 'complete').length;
-  if (done === rows.length) return { text: `All ${rows.length} area${rows.length === 1 ? '' : 's'} complete · ready to approve`, ready: true };
+  if (done === rows.length) return { text: rows.length === 1 ? 'Area complete · ready to approve' : `All ${rows.length} areas complete · ready to approve`, ready: true };
   return { text: `${done} of ${rows.length} area${rows.length === 1 ? '' : 's'} complete`, ready: false };
 }
 
@@ -536,10 +555,10 @@ export function postingText(done, total) {
   return `Posting ${fmt(done)} of ${fmt(total)}`;
 }
 
-/** The toast after Bulk assign: "38 items moved to Dry store, 12 holdings moved, 0 failed". */
+/** The toast after Bulk assign: "38 items moved to Dry store, 12 holdings moved", with ", 2 failed" only when something did. */
 export function bulkAssignText({ moved = 0, holdings = 0, failed = 0, areaName = 'No area' } = {}) {
   const n = (v, w) => `${v} ${w}${v === 1 ? '' : 's'}`;
-  return `${n(moved, 'item')} moved to ${areaName}, ${n(holdings, 'holding')} moved, ${failed} failed`;
+  return `${n(moved, 'item')} moved to ${areaName}, ${n(holdings, 'holding')} moved${failed > 0 ? `, ${failed} failed` : ''}`;
 }
 
 /** Archive refusal words: "Move 12 items and 3 holdings out first". Null when the area is clear. */

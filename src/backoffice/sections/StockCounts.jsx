@@ -305,9 +305,10 @@ export default function StockCounts({ orgCtx = null }) {
       showToast?.(`${failed} line${failed === 1 ? '' : 's'} could not be saved. Not approved, so no stock was changed`, 'error');
       return;
     }
-    // Re read before any words are shown: the other counters' figures and completions since this
-    // sheet was opened are part of what the manager is approving.
-    const fresh = areasOn ? await refreshActive() : active;
+    // Re read before any words are shown, with or without areas: the other counters' figures and
+    // completions since this sheet was opened are part of what the manager is approving, and the
+    // figures typed on this screen are saved by flush() but never written back into active.lines.
+    const fresh = await refreshActive();
     let liveHoldings = holdings;
     if (areasOn) { const { data: h } = await fetchAreaHoldings(locId); liveHoldings = h || {}; setHoldings(liveHoldings); }
     setBusy(false);

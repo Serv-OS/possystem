@@ -21,6 +21,7 @@
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
 import { readAllPagesResult } from '../pagedRead.js';
 import { transferReference, chunkArray, INSERT_CHUNK } from './areaRules.js';
+import { staleLegError } from './transferRules.js';
 import { areasReady, fetchTransfer } from './areas.js';
 import { fetchReportScopeData } from '../reportSites.js';
 
@@ -114,12 +115,18 @@ export const createTransfer = async (draft, locationId = null) => {
   return { data: { id: head.id, reference }, error: null };
 };
 
-/** One leg through the database function. Returns { data: result, error }; a refusal in words is an error. */
+/**
+ * One leg through the database function. Returns { data: result, error }; a refusal in words is an
+ * error, and so is a duplicate answer whose status is not the one this leg leaves behind (the
+ * transfer was cancelled or received from another screen: nothing moved now).
+ */
 export const postTransferLeg = async (transferId, leg, byName = null) => {
   if (isMock || !supabase) return { data: null, error: null };
   const { data, error } = await supabase.rpc('post_stock_transfer_leg', { p_transfer_id: transferId, p_leg: leg, p_by_name: byName || null });
   if (error) return { data: null, error };
   if (data && data.ok === false) return { data, error: new Error(data.error || 'The transfer was refused') };
+  const stale = staleLegError(leg, data);
+  if (stale) return { data, error: new Error(stale) };
   return { data: data || {}, error: null };
 };
 

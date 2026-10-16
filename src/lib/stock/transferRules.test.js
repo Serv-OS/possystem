@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import {
-  TRANSFER_STATUS_WORDS, TRANSFER_FILTERS, uomCtxOf, transferUnitsFor, defaultTokenOf, fmtQtyOf,
+  TRANSFER_STATUS_WORDS, TRANSFER_FILTERS, LEG_END_STATUS, staleLegError, uomCtxOf, transferUnitsFor, defaultTokenOf, fmtQtyOf,
   transferDirection, transferHeadline, transferMatchesFilter, validateTransferDraft, buildTransferLines,
   lineWarnings, transferValue, receivePlan, matchCandidates, receiveLineUpdates, linesText, cancelText, movedText, transferNote,
 } from './transferRules.js';
@@ -191,6 +191,21 @@ test('transferPlan: OUT then IN per line, opposite signs, same cost, one key fam
   assert.deepEqual(netByItem, { [milk.id]: 0 });
 });
 
+test('staleLegError (16 Oct review): a duplicate answer is fine only when the status is the one the leg leaves behind', () => {
+  assert.deepEqual(LEG_END_STATUS, { out: 'SENT', both: 'DONE', in: 'RECEIVED', cancel: 'CANCELLED' });
+  assert.equal(staleLegError('in', { ok: true, duplicate: false, status: 'RECEIVED' }), null, 'a real post is never stale');
+  assert.equal(staleLegError('in', { ok: true, duplicate: true, status: 'RECEIVED' }), null, 'a retry of the same leg is a harmless duplicate');
+  assert.equal(staleLegError('in', { ok: true, duplicate: true, status: 'CANCELLED' }), 'This transfer is already cancelled: nothing moved. Refresh the list.');
+  assert.equal(staleLegError('out', { ok: true, duplicate: true, status: 'CANCELLED' }), 'This transfer is already cancelled: nothing moved. Refresh the list.');
+  assert.equal(staleLegError('both', { ok: true, duplicate: true, status: 'DONE' }), null);
+  assert.equal(staleLegError('cancel', { ok: true, duplicate: true, status: 'CANCELLED' }), null);
+  assert.equal(staleLegError('in', { ok: true, duplicate: true, status: 'SENT' }), 'This transfer is already sent: nothing moved. Refresh the list.');
+  assert.equal(staleLegError('in', null), null);
+  assert.equal(staleLegError('in', {}), null);
+  noDashes(staleLegError('in', { duplicate: true, status: 'CANCELLED' }), 'stale leg');
+  assert.equal(TRANSFER_FILTERS.find((f) => f.id === 'open').label, 'Not finished', 'a saved draft nobody will receive is not "awaiting receipt"');
+});
+
 // ── pins on the wiring ────────────────────────────────────────────────────────
 
 test('pin: transfers.js writes the head and lines first, then ONE call per leg to post_stock_transfer_leg', () => {
@@ -200,6 +215,8 @@ test('pin: transfers.js writes the head and lines first, then ONE call per leg t
   assert.match(src, /postTransferLeg\(made\.data\.id, 'out', draft\.byName\)/, 'to another venue: the out leg at send');
   assert.match(src, /postTransferLeg\(transferId, 'in', byName\)/, 'receive: the in leg');
   assert.match(src, /postTransferLeg\(transferId, 'cancel', byName\)/, 'cancel: the sender takes it back');
+  assert.match(src, /import \{ staleLegError \} from '\.\/transferRules\.js';/);
+  assert.match(src, /if \(data && data\.ok === false\) return \{ data, error: new Error\(data\.error \|\| 'The transfer was refused'\) \};\s+const stale = staleLegError\(leg, data\);\s+if \(stale\) return \{ data, error: new Error\(stale\) \};/, 'a duplicate answer with the wrong status is an error, so Receive and Send never toast success for stock that did not move');
   assert.match(src, /chunkArray\(lines, INSERT_CHUNK\)/, 'lines go in chunks of 200');
   assert.match(src, /data\?\.length === rows\.length \? null : new Error/, 'every chunk is checked for every row');
   assert.match(src, /\.eq\('transfer_id', transferId\)\.eq\('id', u\.id\)\.select\('id'\)/, 'every receive match write is checked');

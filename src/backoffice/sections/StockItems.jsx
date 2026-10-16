@@ -145,6 +145,8 @@ export default function StockItems({ orgCtx = null }) {
   }, [items, search, filter, areaFilter]);
   const belowZeroItems = useMemo(() => new Set(areasBelowZero(holdings).map(b => b.itemId)), [holdings]);
   const areaName = (id) => areas.find(a => a.id === id)?.name || '';
+  // a moved holding is in BASE units: say it in the item's count unit ("2 Case", "24 l"), never a bare figure
+  const movedWords = (qtyBase, it) => { const d = displayInUnits(qtyBase, { baseUnit: it?.baseUnit, formats: it?.packaging || [], itemConversions: it?.conversions || [] }); return `${d.qty} ${d.label}`.trim(); };
 
   const select = (it) => { setDraft(structuredClone(it)); setSelectedId(it.id); setTab('General'); };
   const startNew = () => { setDraft(blankItem()); setSelectedId(null); setTab('General'); };
@@ -165,8 +167,14 @@ export default function StockItems({ orgCtx = null }) {
     if (areasOn && savedId && before !== after) {
       const { data: moved, error: aErr } = await assignItemArea(savedId, after, { moveHolding: draft.moveHolding !== false, byName, item: draft }, locId);
       reportSave('stock item area', aErr);
-      if (aErr) { showToast?.(`Item saved, but its area was NOT changed: ${aErr.message}`, 'error'); await reload(savedId); return; }
-      showToast?.(moved?.movedQty > 0 ? `Saved. ${moved.movedQty} moved from ${areaName(before)} to ${areaName(after) || 'No area'}.` : 'Saved', 'success');
+      if (aErr) {
+        // the area row is written first and the holding moved second: say which half failed
+        showToast?.(moved?.areaSaved
+          ? `Area changed to ${areaName(after) || 'No area'}, but its stock stayed in ${areaName(before) || 'its old area'}: ${aErr.message}`
+          : `Item saved, but its area was NOT changed: ${aErr.message}`, 'error');
+        await reload(savedId); return;
+      }
+      showToast?.(moved?.movedQty > 0 ? `Saved. ${movedWords(moved.movedQty, draft)} moved from ${areaName(before)} to ${areaName(after) || 'No area'}.` : 'Saved', 'success');
     } else {
       showToast?.('Saved', 'success');
     }
@@ -179,8 +187,13 @@ export default function StockItems({ orgCtx = null }) {
     if ((it.areaId || null) === next) return;
     const { data: moved, error } = await assignItemArea(it.id, next, { moveHolding: true, byName, item: it }, locId);
     reportSave('stock item area', error);
-    if (error) { showToast?.(`${it.name}: area NOT changed. ${error.message}`, 'error'); return; }
-    showToast?.(moved?.movedQty > 0 ? `${it.name} moved to ${areaName(next) || 'No area'} with its ${moved.movedQty}` : `${it.name} moved to ${areaName(next) || 'No area'}`, 'success');
+    if (error) {
+      showToast?.(moved?.areaSaved
+        ? `${it.name}: area changed to ${areaName(next) || 'No area'}, but its stock stayed in ${areaName(it.areaId) || 'its old area'}. ${error.message}`
+        : `${it.name}: area NOT changed. ${error.message}`, 'error');
+      await reload(selectedId); return;
+    }
+    showToast?.(moved?.movedQty > 0 ? `${it.name} moved to ${areaName(next) || 'No area'} with its ${movedWords(moved.movedQty, it)}` : `${it.name} moved to ${areaName(next) || 'No area'}`, 'success');
     await reload(selectedId);
   };
 

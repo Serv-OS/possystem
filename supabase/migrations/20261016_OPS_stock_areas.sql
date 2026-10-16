@@ -6,7 +6,8 @@
 -- #  Adds 6 tables, 1 column on stock_counts (plus 3 name columns), 1 column  #
 -- #  on stock_count_lines, 1 column on stock_movements, replaces the          #
 -- #  post_stock_movement function with a 12 argument one, adds the transfer   #
--- #  leg function, and backfills the areas from each item's storage text.     #
+-- #  leg function and one trigger, widens the item_cost_history source check, #
+-- #  and backfills the areas from each item's storage text.                   #
 -- #  RUN OUTSIDE SERVICE: the posting function is dropped and created again   #
 -- #  inside this one transaction, and the API schema cache is reloaded at the #
 -- #  end. Then post ONE test movement (Stock items, Set count on a demo item)  #
@@ -62,8 +63,9 @@
 -- Rollback: 20261016_OPS_stock_areas_ROLLBACK.sql
 --
 -- Bare statements, no begin or commit: the SQL editor runs the paste as one transaction, so any
--- error means nothing changed. Safe to run twice: every create is "if not exists", the backfill
--- only touches rows with no area yet, and the cache is deleted and refilled inside the transaction.
+-- error means nothing changed. Safe to run twice, before or after the demo file: every create is
+-- "if not exists", the backfill only looks at items with no area yet (so an area renamed since the
+-- first run is never made again), and the cache is deleted and refilled inside the transaction.
 
 do $guard$
 begin
@@ -105,9 +107,11 @@ create table if not exists public.storage_areas (
 );
 comment on table public.storage_areas is
   'Stock areas of a venue (16 Oct 2026): Cellar, Walk in fridge, Freezer, Dry store, Bar, Kitchen. Set up ahead of time on Back Office, Stock areas. At most one live area a venue is the receiving area (deliveries land there). src/lib/stock/areaRules.js.';
--- Two live areas cannot share a name (spelling and case aside).
+-- Two live areas cannot share a name, spelling aside: the same normalised text as the backfill
+-- below and areaRules.normaliseAreaName ("Walk-in fridge" and "Walk in fridge" are one area).
 create unique index if not exists storage_areas_name_uniq
-  on public.storage_areas (location_id, lower(btrim(name))) where archived_at is null;
+  on public.storage_areas (location_id, regexp_replace(lower(regexp_replace(regexp_replace(btrim(name), '[-_]', ' ', 'g'), '\s+', ' ', 'g')), '^the ', ''))
+  where archived_at is null;
 -- At most one receiving area a venue.
 create unique index if not exists storage_areas_receiving_uniq
   on public.storage_areas (location_id) where is_receiving and archived_at is null;
@@ -238,6 +242,34 @@ create index if not exists stock_count_lines_count_area_idx on public.stock_coun
 alter table public.stock_movements add column if not exists area_id uuid references public.storage_areas(id) on delete set null;
 create index if not exists stock_mv_item_area_idx on public.stock_movements (location_id, inventory_item_id, area_id);
 
+-- ── 4b. An item's first area takes its unassigned stock with it ─────────────
+-- Stock that moved before an item had an area (a new venue trading for a few days before areas
+-- are set up, an item made after this file ran, a delivery at a venue with no receiving area)
+-- sits on movements with area_id null and counts toward on_hand only. When the item is given
+-- its use area those rows go to that area and the holdings cache row is rebuilt from the
+-- ledger, exactly what backfill steps 8c and 8d do. A trigger, so every path gets it: the
+-- dropdown, Bulk assign, the demo file, an importer. Without it the first Full count finds the
+-- stock in the area, expects 0 there, and posts it again (16 Oct review: on hand 7 became 14).
+create or replace function public.inventory_item_areas_rehome()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if new.is_primary then
+    update stock_movements set area_id = new.area_id
+     where location_id = new.location_id and inventory_item_id = new.inventory_item_id and area_id is null;
+    insert into inventory_item_area_stock (location_id, inventory_item_id, area_id, on_hand, updated_at)
+    select new.location_id, new.inventory_item_id, new.area_id, coalesce(sum(m.qty_base), 0), now()
+      from stock_movements m
+     where m.location_id = new.location_id and m.inventory_item_id = new.inventory_item_id and m.area_id = new.area_id
+    on conflict (inventory_item_id, area_id) do update set on_hand = excluded.on_hand, updated_at = now();
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists inventory_item_areas_rehome_trg on public.inventory_item_areas;
+create trigger inventory_item_areas_rehome_trg
+  after insert or update of area_id on public.inventory_item_areas
+  for each row execute function public.inventory_item_areas_rehome();
+
 -- ── 5. post_stock_movement: the 12 argument shape ───────────────────────────
 -- The 11 argument signature is dropped FIRST (same transaction). Postgres would otherwise keep
 -- both, and every 11 argument call would then be ambiguous ("function is not unique") because
@@ -324,6 +356,29 @@ end $$;
 
 grant execute on function public.post_stock_movement(uuid,uuid,numeric,text,numeric,text,text,text,timestamptz,uuid,text,uuid) to authenticated, anon, service_role;
 
+-- ── 5b. item_cost_history.source learns TRANSFER and PO_RECEIPT ─────────────
+-- The live check (000_baseline_ops.sql, item_cost_history_source_check) allows INVOICE, MANUAL,
+-- CONTRACT, CATALOG and RECIPE_ROLLUP only. The receiving leg below writes TRANSFER, and
+-- purchasing.js and manager-approve have written PO_RECEIPT since v5.5.923 with the insert
+-- error unchecked, so those rows have been refused silently (0 on live, 16 Oct 2026). Same find
+-- and replace shape as count_type above. A check that allows more cannot break a row that
+-- exists, so the ROLLBACK leaves it in place.
+do $cost_source$
+declare
+  r record;
+begin
+  for r in
+    select c.conname from pg_constraint c
+     where c.conrelid = 'public.item_cost_history'::regclass and c.contype = 'c'
+       and pg_get_constraintdef(c.oid) ilike '%source%'
+  loop
+    execute format('alter table public.item_cost_history drop constraint %I', r.conname);
+  end loop;
+  alter table public.item_cost_history add constraint item_cost_history_source_chk
+    check (source in ('INVOICE','MANUAL','CONTRACT','CATALOG','RECIPE_ROLLUP','PO_RECEIPT','TRANSFER'));
+end
+$cost_source$;
+
 -- ── 6. post_stock_transfer_leg: a whole leg in one transaction ──────────────
 -- Why a function and not a loop of posts from the browser: two venues, two legs, many lines; a
 -- lost line between venues is stock that exists nowhere. One transaction or nothing.
@@ -364,7 +419,8 @@ begin
   end if;
 
   -- Who is asking: the service role passes; a signed in login must hold the venue of this leg.
-  v_role := coalesce(current_setting('request.jwt.claims', true)::jsonb ->> 'role', '');
+  -- nullif: a session where the claim was set and has since gone back to '' must not break on ''::jsonb
+  v_role := coalesce(nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'role', '');
   if v_role <> 'service_role' then
     if p_leg = 'in' then
       v_mine := v_t.to_location_id is not null and v_t.to_location_id::text in (select user_accessible_locations());
@@ -444,8 +500,21 @@ begin
   if exists (select 1 from stock_transfer_lines where transfer_id = p_transfer_id and not dropped and to_inventory_item_id is null) then
     return jsonb_build_object('ok', false, 'error', 'Every line must be matched to one of your items or dropped before you receive');
   end if;
-  -- Where it lands: the chosen area, else the receiving area, else (null) the item's use area.
+  -- Every matched item must be at the receiving venue BEFORE anything posts: a return from
+  -- plpgsql does not roll back, so a refusal half way through the loop would leave the lines
+  -- already posted at the receiver with the head still SENT (16 Oct review).
+  if exists (select 1 from stock_transfer_lines l
+              where l.transfer_id = p_transfer_id and not l.dropped
+                and not exists (select 1 from inventory_items i where i.id = l.to_inventory_item_id and i.location_id = v_t.to_location_id)) then
+    return jsonb_build_object('ok', false, 'error', 'A matched item is not at the receiving venue');
+  end if;
+  -- Where it lands: the chosen area (only when it is a live area of the receiving venue), else
+  -- the receiving area, else (null) the item's use area.
   v_area := v_t.to_area_id;
+  if v_area is not null and not exists (select 1 from storage_areas a
+      where a.id = v_area and a.location_id = v_t.to_location_id and a.archived_at is null) then
+    v_area := null;
+  end if;
   if v_area is null then
     select a.id into v_area from storage_areas a
       where a.location_id = v_t.to_location_id and a.is_receiving and a.archived_at is null limit 1;
@@ -458,7 +527,8 @@ begin
     select id, on_hand, current_cost, cost_method into v_item from inventory_items
       where id = v_l.to_inventory_item_id and location_id = v_t.to_location_id;
     if not found then
-      return jsonb_build_object('ok', false, 'error', 'A matched item is not at the receiving venue');
+      -- checked before the loop; a raise rolls the whole leg back
+      raise exception 'post_stock_transfer_leg: matched item % is not at venue %', v_l.to_inventory_item_id, v_t.to_location_id;
     end if;
     v_before := coalesce(v_item.on_hand, 0);
     v_cost := coalesce(v_l.unit_cost, v_item.current_cost, 0);
@@ -467,9 +537,10 @@ begin
       now(), null, 'Transfer ' || coalesce(v_t.reference, ''), v_area);
     -- The receiver's cost moves the way a delivery moves it (costAfterReceipt in
     -- supabase/functions/_shared/stockCosting.js): moving average, or the last cost replaces.
-    -- A zero cost never re-costs the item.
+    -- The received cost stands on its own only when on hand plus received is zero or below,
+    -- the same rule as movingAverageCost. A zero cost never re-costs the item.
     if coalesce((v_res ->> 'duplicate')::boolean, false) = false and v_cost > 0 then
-      if coalesce(v_item.cost_method, 'MOVING_AVG') = 'LAST_COST' or v_before + v_qty <= 0 or v_before <= 0 then
+      if coalesce(v_item.cost_method, 'MOVING_AVG') = 'LAST_COST' or v_before + v_qty <= 0 then
         v_new_avg := v_cost;
       else
         v_new_avg := (v_before * coalesce(v_item.current_cost, 0) + v_qty * v_cost) / (v_before + v_qty);
@@ -516,15 +587,38 @@ begin
         with check ((location_id)::text in (select user_accessible_locations()));
     $f$, t, t);
   end loop;
+  -- Transfers: both ends read; only the SENDING venue makes a head or its lines (a receiving
+  -- login could otherwise write a head on behalf of any venue and receive stock nobody sent);
+  -- either end updates, within its own columns (the grants below); only the sender deletes.
   foreach t in array array['stock_transfers', 'stock_transfer_lines'] loop
     execute format('drop policy if exists %I_rls on public.%I;', t, t);
+    execute format('drop policy if exists %I_select on public.%I;', t, t);
+    execute format('drop policy if exists %I_insert on public.%I;', t, t);
+    execute format('drop policy if exists %I_update on public.%I;', t, t);
+    execute format('drop policy if exists %I_delete on public.%I;', t, t);
     execute format($f$
-      create policy %I_rls on public.%I
-        for all
+      create policy %I_select on public.%I
+        for select
+        using ((location_id)::text in (select user_accessible_locations())
+            or (to_location_id)::text in (select user_accessible_locations()));
+    $f$, t, t);
+    execute format($f$
+      create policy %I_insert on public.%I
+        for insert
+        with check ((location_id)::text in (select user_accessible_locations()));
+    $f$, t, t);
+    execute format($f$
+      create policy %I_update on public.%I
+        for update
         using ((location_id)::text in (select user_accessible_locations())
             or (to_location_id)::text in (select user_accessible_locations()))
         with check ((location_id)::text in (select user_accessible_locations())
             or (to_location_id)::text in (select user_accessible_locations()));
+    $f$, t, t);
+    execute format($f$
+      create policy %I_delete on public.%I
+        for delete
+        using ((location_id)::text in (select user_accessible_locations()));
     $f$, t, t);
   end loop;
   drop policy if exists inventory_item_area_stock_read on public.inventory_item_area_stock;
@@ -533,6 +627,15 @@ begin
   -- No insert, update or delete policy on the cache: the posting function writes it.
 end
 $rls$;
+
+-- The API may change only the columns the screens write (the receiver's matches and the area it
+-- lands in). status, sent_at, received_at, the names and unit_cost are written by
+-- post_stock_transfer_leg alone (security definer), so a receiving login cannot flip a draft to
+-- SENT and receive stock the sender never released.
+revoke update on public.stock_transfers from authenticated, anon;
+grant update (to_area_id, note, updated_at) on public.stock_transfers to authenticated;
+revoke update on public.stock_transfer_lines from authenticated, anon;
+grant update (to_inventory_item_id, qty_received_base, dropped) on public.stock_transfer_lines to authenticated;
 
 do $second_step$
 declare t text;
@@ -565,7 +668,9 @@ $realtime$;
 --     key: trimmed, spaces collapsed, lower case, dashes and underscores to spaces, a leading
 --     "the " dropped (areaRules.normaliseAreaName says the same in JavaScript). The display name
 --     is the first spelling seen, trimmed. Kind from the words (areaRules.kindFromName).
---     Nothing is flagged receiving here.
+--     Nothing is flagged receiving here. Only items with NO area yet are looked at, and an area
+--     is skipped when a live one has the same normalised name: a second run after the demo file
+--     renamed "Walk-in fridge" to "Walk in fridge" and "Back bar" to "Bar" makes nothing new.
 with texts as (
   select i.location_id,
          btrim(i.storage_location) as shown,
@@ -574,6 +679,7 @@ with texts as (
     from inventory_items i
    where i.archived_at is null
      and nullif(btrim(coalesce(i.storage_location, '')), '') is not null
+     and not exists (select 1 from inventory_item_areas ia where ia.inventory_item_id = i.id and ia.is_primary)
    group by i.location_id, btrim(i.storage_location)
 ), picked as (
   select distinct on (location_id, norm) location_id, norm, shown
@@ -597,13 +703,16 @@ select p.location_id, p.shown,
  where not exists (
    select 1 from storage_areas a
     where a.location_id = p.location_id and a.archived_at is null
-      and lower(btrim(a.name)) = lower(p.shown)
+      and regexp_replace(lower(regexp_replace(regexp_replace(btrim(a.name), '[-_]', ' ', 'g'), '\s+', ' ', 'g')), '^the ', '') = p.norm
  );
 
 -- 8b. Every item (archived too) whose text matches a live area gets that use area. An item that
---     already has a primary area keeps it.
+--     already has a primary area keeps it. One area per item (distinct on), the first in sort
+--     order, so two live areas with the same normalised name can never give an item two primary
+--     rows. The trigger of 4b re homes each item's unassigned movements as the row goes in; 8c
+--     and 8d below do the same for everything, belt and braces.
 insert into inventory_item_areas (location_id, inventory_item_id, area_id, is_primary)
-select i.location_id, i.id, a.id, true
+select distinct on (i.id) i.location_id, i.id, a.id, true
   from inventory_items i
   join storage_areas a
     on a.location_id = i.location_id and a.archived_at is null
@@ -611,6 +720,7 @@ select i.location_id, i.id, a.id, true
      = regexp_replace(lower(regexp_replace(regexp_replace(btrim(i.storage_location), '[-_]', ' ', 'g'), '\s+', ' ', 'g')), '^the ', '')
  where nullif(btrim(coalesce(i.storage_location, '')), '') is not null
    and not exists (select 1 from inventory_item_areas ia where ia.inventory_item_id = i.id and ia.is_primary)
+ order by i.id, a.sort_order, a.created_at
 on conflict (inventory_item_id, area_id) do nothing;
 
 -- 8c. Every old movement goes to its item's USE area, deliveries too. Nobody recorded any
@@ -649,7 +759,8 @@ notify pgrst, 'reload schema';
 
 -- VISIBLE CHECK (the SQL editor shows this last result). Expected:
 --   on_hand_vs_ledger 0, area_cache_vs_ledger 0, fn_12_args 1, fn_11_args 0, transfer_fn 1,
---   count_type_check 1, areas_made = the number of distinct storage texts across your venues,
+--   count_type_check 1, cost_source_check 1, rehome_trigger 1, areas_made = the number of distinct
+--   storage texts across your venues,
 --   items_with_area = the items that carried one of those texts, movements_without_area = movements
 --   of items with no area (0 at the demo venues), realtime_on 1.
 select
@@ -664,6 +775,9 @@ select
   (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'post_stock_transfer_leg') as transfer_fn,
   (select count(*) from pg_constraint c where c.conrelid = 'public.stock_counts'::regclass and c.conname = 'stock_counts_count_type_chk'
      and pg_get_constraintdef(c.oid) like '%AREA%' and pg_get_constraintdef(c.oid) like '%SUPPLIER%') as count_type_check,
+  (select count(*) from pg_constraint c where c.conrelid = 'public.item_cost_history'::regclass and c.conname = 'item_cost_history_source_chk'
+     and pg_get_constraintdef(c.oid) like '%TRANSFER%') as cost_source_check,
+  (select count(*) from pg_trigger t where t.tgrelid = 'public.inventory_item_areas'::regclass and t.tgname = 'inventory_item_areas_rehome_trg') as rehome_trigger,
   (select count(*) from storage_areas where archived_at is null) as areas_made,
   (select count(*) from inventory_item_areas where is_primary) as items_with_area,
   (select count(*) from stock_movements where area_id is null) as movements_without_area,

@@ -23,8 +23,25 @@ const r3 = (v) => Math.round(num(v) * 1000) / 1000;
 
 export const TRANSFER_STATUS_WORDS = Object.freeze({ DRAFT: 'Draft', SENT: 'Sent', RECEIVED: 'Received', CANCELLED: 'Cancelled', DONE: 'Done' });
 export const TRANSFER_FILTERS = Object.freeze([
-  { id: 'all', label: 'All' }, { id: 'open', label: 'Awaiting receipt' }, { id: 'done', label: 'Done' }, { id: 'cancelled', label: 'Cancelled' },
+  { id: 'all', label: 'All' }, { id: 'open', label: 'Not finished' }, { id: 'done', label: 'Done' }, { id: 'cancelled', label: 'Cancelled' },
 ]);
+/** The status each leg leaves behind. */
+export const LEG_END_STATUS = Object.freeze({ out: 'SENT', both: 'DONE', in: 'RECEIVED', cancel: 'CANCELLED' });
+
+/**
+ * post_stock_transfer_leg answers { ok: true, duplicate: true, status } whenever the status has
+ * already moved past the asked leg. That is only a harmless retry when the status is the one this
+ * leg leaves behind; a Receive on a transfer the sender cancelled, or a Send on a cancelled
+ * draft, moved nothing and must not be toasted as a success (16 Oct review). Returns the words
+ * for the error, or null when the answer is fine.
+ */
+export function staleLegError(leg, result) {
+  if (!result || result.duplicate !== true) return null;
+  const want = LEG_END_STATUS[leg];
+  if (!want || result.status === want) return null;
+  const word = (TRANSFER_STATUS_WORDS[result.status] || result.status || 'changed').toLowerCase();
+  return `This transfer is already ${word}: nothing moved. Refresh the list.`;
+}
 
 /** The uom context the unit helpers want, from a fetchInventoryItems item. */
 export function uomCtxOf(item) {

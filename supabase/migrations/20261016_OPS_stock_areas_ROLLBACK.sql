@@ -1,8 +1,10 @@
 -- ROLLBACK for 20261016_OPS_stock_areas.sql (Ops, tbetcegmszzotrwdtqhi).
 --
 -- Puts post_stock_movement back to its 11 argument shape (the text of 20260621e_stock_movements.sql),
--- drops post_stock_transfer_leg, the six new tables, the new columns on stock_counts,
--- stock_count_lines and stock_movements, and puts the count_type check back to FULL, PARTIAL, SPOT.
+-- drops post_stock_transfer_leg, the re home trigger function, the six new tables, the new columns
+-- on stock_counts, stock_count_lines and stock_movements, and puts the count_type check back to
+-- FULL, PARTIAL, SPOT. The wider item_cost_history source check (PO_RECEIPT and TRANSFER added)
+-- STAYS: rows with those sources may exist by now and a check that allows more breaks nothing.
 --
 -- WHAT IS LOST: every area, every item's area, every count's per area rows, every transfer and
 -- its lines, and the area on every movement posted since the migration ran. The ledger itself
@@ -31,6 +33,8 @@ set local lock_timeout = '3s';
 set local statement_timeout = '120s';
 
 drop function if exists public.post_stock_transfer_leg(uuid, text, text);
+-- The trigger goes with its table below; the function it calls does not.
+drop function if exists public.inventory_item_areas_rehome() cascade;
 
 -- The 12 argument function goes before the tables it references.
 drop function if exists public.post_stock_movement(uuid,uuid,numeric,text,numeric,text,text,text,timestamptz,uuid,text,uuid);

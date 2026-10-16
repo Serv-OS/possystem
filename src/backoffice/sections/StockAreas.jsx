@@ -124,7 +124,14 @@ export default function StockAreas({ orgCtx = null }) {
     await run('receiving area', () => setReceivingArea(next, locId), next ? `Deliveries will land in ${a.name}` : 'No receiving area: deliveries land in each item\'s own area');
   };
   const usualSix = async () => {
-    await run('stock areas', () => addUsualSix(locId), 'The usual six areas added. Tick the one deliveries land in when you are ready.');
+    setBusy(true);
+    const { data: n, error } = await addUsualSix(locId);
+    setBusy(false);
+    reportSave('stock areas', error);
+    if (error) { showToast?.(error.message || 'Add the usual six failed', 'error'); return; }
+    // the count that came back: a backfilled "Walk-in fridge" already counts as the usual "Walk in fridge"
+    showToast?.(n === 0 ? 'Every one of the usual six is already here' : `${n} area${n === 1 ? '' : 's'} added. Tick the one deliveries land in when you are ready.`, 'success');
+    await reload();
   };
   const assign = async () => {
     if (!picked.length) { showToast?.('Tick the items to move first', 'error'); return; }
@@ -160,7 +167,8 @@ export default function StockAreas({ orgCtx = null }) {
         {below > 0 && <span style={{ color: 'var(--red, #ef4444)' }}> {below} holding{below === 1 ? ' is' : 's are'} below zero: a transfer or a count puts it right.</span>}
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.2fr) minmax(320px, 1fr)', gap: 18, alignItems: 'start' }}>
+      {/* two columns on a desktop, stacked on a phone: a fixed 320px floor squeezed the list to nothing at 390px */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 320px), 1fr))', gap: 18, alignItems: 'start' }}>
         {/* ── the list ── */}
         <div style={card}>
           <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--t1)', marginBottom: 10 }}>Areas</div>

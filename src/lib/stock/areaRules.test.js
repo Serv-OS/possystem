@@ -7,7 +7,7 @@ import { dirname, resolve } from 'node:path';
 import {
   AREA_KINDS, USUAL_SIX, COUNT_TYPES, RECEIVING_HELP, COLLAPSE_OVER, RENDER_STEP, INSERT_CHUNK, POST_IN_FLIGHT,
   normaliseAreaName, kindFromName, kindLabel, legacyAreaFor, legacyAreasFromItems,
-  areaHoldings, holdingsInvariant, areasBelowZero, holdingOf,
+  areaHoldings, holdingsInvariant, areasBelowZero, holdingOf, strandedHoldings,
   transferPlan, matchTransferLines, canReceive,
   resolveCountScope, defaultAreaFor, groupLinesByArea, areaSubtotal, rollUpLinesPerItem, adjustmentKey,
   approvalGate, otherAreaWarnings, countNameFor, countStatusText,
@@ -127,6 +127,21 @@ test('areaHoldings rolls movements per item and area; holdingsInvariant finds no
   assert.equal(holdingOf(simple, 'milk', CELLAR), 12);
   assert.equal(holdingOf(simple, 'milk', DRY), 0);
   assert.equal(holdingOf(null, 'milk', DRY), 0);
+});
+
+test('strandedHoldings (16 Oct review): an item WITH a use area whose on hand is not the sum of its areas is flagged; no area or archived is not', () => {
+  // flour: on hand 7, all of it posted before it had an area (no area holding), then given DRY: a ghost of 7
+  // milk: 17 across two areas, on hand 17: fine. cups: no area yet, 500 in no area: not this list (Unassigned line on a count)
+  const items = [
+    { id: 'flour', name: 'Flour', onHand: 7, areaId: DRY }, { id: 'milk', name: 'Milk', onHand: 17, areaId: FRIDGE },
+    { id: 'cups', name: 'Cups', onHand: 500, areaId: null }, { id: 'old', name: 'Old', onHand: 3, areaId: DRY, archivedAt: '2026-01-01' },
+    { id: 'peas', name: 'Peas', onHand: 4, areaId: FREEZER },
+  ];
+  const simple = { milk: { [CELLAR]: 12, [FRIDGE]: 5 }, peas: { [FREEZER]: 4 } };
+  assert.deepEqual(strandedHoldings(items, simple), [{ itemId: 'flour', name: 'Flour', areaId: DRY, qty: 7 }]);
+  assert.deepEqual(strandedHoldings(items, { ...simple, flour: { [DRY]: 7 } }), [], 'once the database re homed it, nothing is stranded');
+  assert.deepEqual(strandedHoldings([], {}), []);
+  assert.deepEqual(strandedHoldings(null, null), []);
 });
 
 // ── 2 and 3. transfers ───────────────────────────────────────────────────────
@@ -300,7 +315,7 @@ test('approvalGate: ok only when all complete or confirmed; names the incomplete
   noDashes(g.confirmText, 'confirm'); noDashes(g.note, 'note');
   assert.equal(approvalGate(rows, { confirmIncomplete: true }).ok, true);
   const one = approvalGate([rows[1]]);
-  assert.equal(one.confirmText, 'Freezer is not marked complete. Approve anyway? Their uncounted lines will be left as the system has them.');
+  assert.equal(one.confirmText, 'Freezer is not marked complete. Approve anyway? Its uncounted lines will be left as the system has them.');
   const three = approvalGate([{ name: 'A', status: 'open' }, { name: 'B', status: 'open' }, { name: 'C', status: 'open' }]);
   assert.match(three.confirmText, /^A, B and C are not marked complete/);
   assert.deepEqual(approvalGate([rows[0]]), { ok: true, incomplete: [], confirmText: null, note: null });
@@ -363,7 +378,7 @@ test('countStatusText: "2 of 4 areas complete", then "All 4 areas complete · re
   const rows = (done, total) => Array.from({ length: total }, (_, i) => ({ status: i < done ? 'complete' : 'open' }));
   assert.deepEqual(countStatusText(rows(2, 4)), { text: '2 of 4 areas complete', ready: false });
   assert.deepEqual(countStatusText(rows(4, 4)), { text: 'All 4 areas complete · ready to approve', ready: true });
-  assert.deepEqual(countStatusText(rows(1, 1)), { text: 'All 1 area complete · ready to approve', ready: true });
+  assert.deepEqual(countStatusText(rows(1, 1)), { text: 'Area complete · ready to approve', ready: true });
   assert.deepEqual(countStatusText(rows(0, 1)), { text: '0 of 1 area complete', ready: false });
   assert.deepEqual(countStatusText([]), { text: '', ready: false });
   assert.deepEqual(countStatusText(null), { text: '', ready: false });
@@ -372,9 +387,9 @@ test('countStatusText: "2 of 4 areas complete", then "All 4 areas complete · re
 test('the small words: posting progress, bulk assign toast, archive refusal, the reference', () => {
   assert.equal(postingText(240, 1100), 'Posting 240 of 1,100');
   assert.equal(postingText(0, 3), 'Posting 0 of 3');
-  assert.equal(bulkAssignText({ moved: 38, holdings: 12, failed: 0, areaName: 'Dry store' }), '38 items moved to Dry store, 12 holdings moved, 0 failed');
+  assert.equal(bulkAssignText({ moved: 38, holdings: 12, failed: 0, areaName: 'Dry store' }), '38 items moved to Dry store, 12 holdings moved', 'no "0 failed" in a success toast');
   assert.equal(bulkAssignText({ moved: 1, holdings: 1, failed: 2, areaName: 'Bar' }), '1 item moved to Bar, 1 holding moved, 2 failed');
-  assert.equal(bulkAssignText({ moved: 3, areaName: 'No area' }), '3 items moved to No area, 0 holdings moved, 0 failed');
+  assert.equal(bulkAssignText({ moved: 3, areaName: 'No area' }), '3 items moved to No area, 0 holdings moved');
   assert.equal(archiveRefusal(12, 3), 'Move 12 items and 3 holdings out first');
   assert.equal(archiveRefusal(1, 0), 'Move 1 item out first');
   assert.equal(archiveRefusal(0, 1), 'Move 1 holding out first');
@@ -495,6 +510,51 @@ test('the migration drops the 11 argument signature before creating the 12 argum
   // stock_counts.area_ids is NOT added (review nit: scope lives in stock_count_areas)
   assert.doesNotMatch(mig, /area_ids/);
   noDashes(migration, 'migration'); noDashes(rollback, 'rollback');
+});
+
+test('the migration (16 Oct review fixes): first area re homes unassigned stock, cost source check widened, in leg checks before it posts, RLS split per command, re run safe backfill', () => {
+  // 4b: the trigger re homes null area movements and rebuilds the cache row, and exists before the backfill writes item areas
+  assert.match(mig, /create or replace function public\.inventory_item_areas_rehome\(\)/);
+  assert.match(mig, /if new\.is_primary then\s+update stock_movements set area_id = new\.area_id\s+where location_id = new\.location_id and inventory_item_id = new\.inventory_item_id and area_id is null;/);
+  assert.match(mig, /on conflict \(inventory_item_id, area_id\) do update set on_hand = excluded\.on_hand, updated_at = now\(\);/);
+  assert.match(mig, /create trigger inventory_item_areas_rehome_trg\s+after insert or update of area_id on public\.inventory_item_areas\s+for each row execute function public\.inventory_item_areas_rehome\(\);/);
+  assert.ok(mig.indexOf('create trigger inventory_item_areas_rehome_trg') < mig.indexOf('insert into inventory_item_areas (location_id, inventory_item_id, area_id, is_primary)'), 'the trigger is there before 8b writes item areas');
+  assert.match(sqlCode(rollback), /drop function if exists public\.inventory_item_areas_rehome\(\) cascade;/);
+  // 5b: the live item_cost_history check learns TRANSFER (and PO_RECEIPT) before the receiving leg writes it
+  assert.match(mig, /c\.conrelid = 'public\.item_cost_history'::regclass and c\.contype = 'c'/);
+  assert.match(mig, /add constraint item_cost_history_source_chk\s+check \(source in \('INVOICE','MANUAL','CONTRACT','CATALOG','RECIPE_ROLLUP','PO_RECEIPT','TRANSFER'\)\);/);
+  assert.ok(mig.indexOf('item_cost_history_source_chk') < mig.indexOf('create or replace function public.post_stock_transfer_leg'), 'widened before the function that needs it');
+  assert.doesNotMatch(sqlCode(rollback), /item_cost_history_source_check/, 'the rollback leaves the wider check in place');
+  // the in leg: every matched item checked BEFORE the loop; the chosen area must be a live area of the receiving venue
+  const inLeg = mig.slice(mig.indexOf("and not dropped and to_inventory_item_id is null) then"), mig.indexOf("set status = 'RECEIVED'"));
+  assert.ok(inLeg.length > 0 && inLeg.length < 6000, 'the in leg slice is the in leg');
+  const guard = inLeg.indexOf("return jsonb_build_object('ok', false, 'error', 'A matched item is not at the receiving venue');");
+  const loop = inLeg.indexOf('for v_l in');
+  assert.ok(guard > 0 && loop > guard, 'the refusal comes before anything posts');
+  assert.match(inLeg, /raise exception 'post_stock_transfer_leg: matched item % is not at venue %'/, 'inside the loop a raise rolls the whole leg back');
+  assert.match(inLeg, /if v_area is not null and not exists \(select 1 from storage_areas a\s+where a\.id = v_area and a\.location_id = v_t\.to_location_id and a\.archived_at is null\) then\s+v_area := null;/);
+  // the receiver's cost: the carried cost stands alone only when on hand plus received is zero or below (movingAverageCost)
+  assert.match(inLeg, /= 'LAST_COST' or v_before \+ v_qty <= 0 then/);
+  assert.doesNotMatch(inLeg, /or v_before <= 0 then/);
+  // RLS: only the sending venue inserts or deletes; both ends read and update; the API updates only its own columns
+  assert.match(mig, /create policy %I_insert on public\.%I\s+for insert\s+with check \(\(location_id\)::text in \(select user_accessible_locations\(\)\)\);/);
+  assert.match(mig, /create policy %I_delete on public\.%I\s+for delete\s+using \(\(location_id\)::text in \(select user_accessible_locations\(\)\)\);/);
+  assert.match(mig, /revoke update on public\.stock_transfers from authenticated, anon;\s+grant update \(to_area_id, note, updated_at\) on public\.stock_transfers to authenticated;/);
+  assert.match(mig, /revoke update on public\.stock_transfer_lines from authenticated, anon;\s+grant update \(to_inventory_item_id, qty_received_base, dropped\) on public\.stock_transfer_lines to authenticated;/);
+  // backfill: 8a compares normalised names and only looks at items with no area; 8b is one area per item
+  const eightA = mig.slice(mig.indexOf('with texts as ('), mig.indexOf('insert into inventory_item_areas (location_id, inventory_item_id, area_id, is_primary)'));
+  assert.match(eightA, /and not exists \(select 1 from inventory_item_areas ia where ia\.inventory_item_id = i\.id and ia\.is_primary\)\s+group by i\.location_id, btrim\(i\.storage_location\)/);
+  assert.match(eightA, /and regexp_replace\(lower\(regexp_replace\(regexp_replace\(btrim\(a\.name\), '\[-_\]', ' ', 'g'\), '\\s\+', ' ', 'g'\)\), '\^the ', ''\) = p\.norm/);
+  assert.doesNotMatch(eightA, /lower\(btrim\(a\.name\)\) = lower\(p\.shown\)/);
+  assert.match(mig, /select distinct on \(i\.id\) i\.location_id, i\.id, a\.id, true/);
+  assert.match(mig, /order by i\.id, a\.sort_order, a\.created_at\s+on conflict \(inventory_item_id, area_id\) do nothing;/);
+  // the live name index uses the same normalised text, so the screen cannot make two walk in fridges either
+  assert.match(mig, /create unique index if not exists storage_areas_name_uniq\s+on public\.storage_areas \(location_id, regexp_replace\(lower\(/);
+  // areas.js: the usual six are compared by the same rule
+  const areasSrc = code(read('./areas.js'));
+  assert.match(areasSrc, /const have = new Set\(\(existing \|\| \[\]\)\.map\(\(a\) => normaliseAreaName\(a\.name\)\)\);/);
+  assert.match(areasSrc, /could not be moved: \$\{mv\.error\.message/, 'the refusal still names the cause');
+  assert.match(areasSrc, /its \$\{qtyWords\(qty, item\)\} could not be moved/, 'the moved figure is said in the item\'s unit');
 });
 
 test('data.js: fetchInventoryItems reads in pages, postStockMovement sends p_area_id only when the areas are known to be ready', () => {

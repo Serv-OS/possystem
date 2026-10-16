@@ -139,7 +139,8 @@ export default function StockReports() {
     const [{ data: as, error: e1 }, { data: hold, error: e2 }] = await Promise.all([fetchAreas(loc), fetchAreaHoldings(loc)]);
     setByArea({ on: true, areas: as || [], holdings: hold || {}, error: e1 || e2 || null });
   }, [locId]);
-  useEffect(() => { if (tab === 'By area') loadByArea(); }, [tab, loadByArea]);
+  // the load runs after this render settles (never a setState straight inside the effect), the same shape as StockAreas
+  useEffect(() => { if (tab !== 'By area') return undefined; const t = setTimeout(loadByArea, 0); return () => clearTimeout(t); }, [tab, loadByArea]);
 
   // Sales for the supplier tab only — don't pay for this query on other tabs.
   const loadChecks = useCallback(async () => {

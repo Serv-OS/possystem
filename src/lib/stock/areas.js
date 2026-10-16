@@ -18,7 +18,8 @@
 
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
 import { readAllPagesResult } from '../pagedRead.js';
-import { transferReference, USUAL_SIX } from './areaRules.js';
+import { transferReference, USUAL_SIX, normaliseAreaName } from './areaRules.js';
+import { displayInUnits } from './uom.js';
 
 const nowIso = () => new Date().toISOString();
 
@@ -33,6 +34,12 @@ const zeroRows = (what, data) => (!data || data.length === 0)
   ? new Error(`${what} matched 0 rows: RLS blocked it or the row no longer exists`)
   : null;
 const noRow = (what, row) => row ? null : new Error(`${what} returned no row: RLS blocked it or it matched nothing`);
+/** "24 Bottle" for a base quantity of a fetchInventoryItems item (its count pack, else its base unit); the bare figure when no item is known. */
+const qtyWords = (qtyBase, item) => {
+  if (!item) return String(qtyBase);
+  const d = displayInUnits(qtyBase, { baseUnit: item.baseUnit, formats: item.packaging || item.formats || [], itemConversions: item.conversions || [] });
+  return `${d.qty} ${d.label}`.trim();
+};
 
 // ── Feature detection ─────────────────────────────────────────────────────────
 /** True when the error says the table is not there yet (42P01, PGRST205, or the wording). */
@@ -133,8 +140,9 @@ export const addUsualSix = async (locationId = null) => {
   if (!locationId) return { data: 0, error: new Error('No locationId') };
   const { data: existing, error: readErr } = await fetchAreas(locationId);
   if (readErr) return { data: 0, error: readErr };
-  const have = new Set((existing || []).map((a) => a.name.trim().toLowerCase()));
-  const rows = USUAL_SIX.filter((s) => !have.has(s.name.toLowerCase()))
+  // the same spelling rule as the migration's backfill: a backfilled "Walk-in fridge" is the usual "Walk in fridge"
+  const have = new Set((existing || []).map((a) => normaliseAreaName(a.name)));
+  const rows = USUAL_SIX.filter((s) => !have.has(normaliseAreaName(s.name)))
     .map((s, i) => ({ location_id: locationId, name: s.name, kind: s.kind, sort_order: ((existing || []).length + i + 1) * 10 }));
   if (!rows.length) return { data: 0, error: null };
   const { data, error } = await supabase.from('storage_areas').insert(rows).select('id');
@@ -289,7 +297,10 @@ export const moveHoldingBetweenAreas = async ({ inventoryItemId, fromAreaId, toA
  * Set an item's use area (null = No area). When the OLD area still holds a non zero quantity
  * and `moveHolding` is on, the holding goes with it as a within venue transfer in the same
  * action (16 Oct review, finding 2: otherwise new sales deplete the new area to below zero and
- * the old area keeps the figure for ever). Returns { data: { movedQty }, error }.
+ * the old area keeps the figure for ever). Stock the item holds in NO area (movements posted
+ * before it had one) goes to the new area inside the database: the inventory_item_areas trigger
+ * re homes those movements and rebuilds the cache row as the area row is written, so nothing
+ * here has to post it and the next count cannot find it twice. Returns { data: { movedQty }, error }.
  */
 export const assignItemArea = async (inventoryItemId, areaId, { moveHolding = true, byName = null, item = null } = {}, locationId = null) => {
   if (isMock || !supabase) return { data: { movedQty: 0 }, error: null };
@@ -323,7 +334,7 @@ export const assignItemArea = async (inventoryItemId, areaId, { moveHolding = tr
     const qty = Number(hold?.on_hand) || 0;
     if (qty > 0) {
       const mv = await moveHoldingBetweenAreas({ inventoryItemId, fromAreaId: oldArea, toAreaId: areaId, qtyBase: qty, note: 'Area changed', byName, item }, locationId);
-      if (mv.error) return { data: { movedQty: 0, areaSaved: true }, error: new Error(`Area changed, but its ${qty} could not be moved: ${mv.error.message || mv.error}`) };
+      if (mv.error) return { data: { movedQty: 0, areaSaved: true }, error: new Error(`Area changed, but its ${qtyWords(qty, item)} could not be moved: ${mv.error.message || mv.error}`) };
       movedQty = qty;
     }
   }

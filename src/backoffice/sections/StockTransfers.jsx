@@ -208,7 +208,7 @@ function NewTransfer({ locId, areas, items, itemsById, suppliers, holdings, venu
   };
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px, 1fr) minmax(360px, 1fr)', gap: 16, alignItems: 'start' }}>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 320px), 1fr))', gap: 16, alignItems: 'start' }}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         <div style={card}>
           <div style={{ display: 'flex', gap: 5, marginBottom: 12 }}>
@@ -406,7 +406,7 @@ function TransferDetail({ id, locId, areas, areaName, venueName, items, itemsByI
           <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: 4 }}>
             Each line is matched to one of your items by SKU, then by name. Amber lines need a match by hand, or Drop line (recorded, no stock). Correct any quantity that differs from what arrived. The cost comes with the stock.
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--t3)' }}>Lands in</span>
             <select value={landArea} onChange={e => setLandArea(e.target.value)} style={{ ...fieldStyle, minWidth: 180 }}>
               <option value="">Each item's own area</option>
@@ -421,6 +421,8 @@ function TransferDetail({ id, locId, areas, areaName, venueName, items, itemsByI
       )}
 
       <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
+       {/* the table scrolls sideways on a phone so the Received box, Cost and Value can be reached */}
+       <div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead>
             <tr style={{ background: 'var(--bg2)', color: 'var(--t3)', fontSize: 11.5 }}>
@@ -494,6 +496,7 @@ function TransferDetail({ id, locId, areas, areaName, venueName, items, itemsByI
             })}
           </tbody>
         </table>
+       </div>
       </div>
       <div style={{ fontSize: 11.5, color: 'var(--t4)' }}>Both legs show on Stock reports, Movements as Transfer out and Transfer in with the reference {t.reference || ''} in the note.</div>
     </div>
