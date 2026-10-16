@@ -19,6 +19,10 @@ import { toMin } from '../../lib/bookings/optimiser.js';
 import { editRefusal, editedLine, fmtClock, venueToday } from '../../lib/bookings/editRules.js';
 import { StatusBadge, displayStatus, bookingName } from '../../surfaces/bookings/bits.jsx';
 import EditBookingSheet from '../../surfaces/bookings/EditBookingSheet.jsx';
+// 16 Oct 2026 (v5.11.70 host tools): refunds from the office, and the large party, late party
+// and privacy settings.
+import RefundPanel from '../../surfaces/bookings/RefundPanel.jsx';
+import HostToolsSettings from '../../surfaces/bookings/HostToolsSettings.jsx';
 import { CUSTOMER_ROOT } from '../../lib/env';
 import { platformSupabase, getLocationId } from '../../lib/supabase';
 import { DEFAULT_RULES, DEFAULT_TURN_BANDS } from '../../lib/bookings/optimiser.js';
@@ -322,6 +326,8 @@ export default function TableBookings({ userName = null }) {
         )}
       </div>
 
+      <HostToolsSettings />
+
       {/* ── 3 · Join groups pointer + per-location note ── */}
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 14 }}>
         <div style={{ ...S.note, background: 'var(--blu-d)', borderColor: 'var(--blu-b)' }}>
@@ -377,6 +383,7 @@ function BookingsList({ userName }) {
   const fmt = useMemo(() => fmtClock(venueTz), [venueTz]);
   const today = venueToday(venueTz);
   const [editing, setEditing] = useState(null); // booking id
+  const [money, setMoney] = useState(null);     // booking id with its payments open (16 Oct 2026)
   const date = bookingsDate || today;
   const isToday = date === today;
   const rows = useMemo(
@@ -420,6 +427,17 @@ function BookingsList({ userName }) {
               <span style={{ fontSize: 13, fontWeight: 800, fontFamily: MONO, color: 'var(--t1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{(b.tables || []).map(labelOf).join(' + ') || '-'}</span>
               <StatusBadge st={st} />
               <button className="btn btn-ghost btn-xs" onClick={() => setEditing(b.id)} title={locked || 'Edit this booking'} style={{ height: 30, fontWeight: 700, opacity: locked ? 0.55 : 1, marginLeft: 'auto' }}>Edit</button>
+              {/* 16 Oct 2026 (host tools): money taken for this booking, with Refund. */}
+              {Number(b.paidMinor) > 0 && (
+                <button className="btn btn-ghost btn-xs" onClick={() => setMoney(money === b.id ? null : b.id)} style={{ height: 30, fontWeight: 700 }}>
+                  {money === b.id ? 'Hide payments' : 'Payments'}
+                </button>
+              )}
+              {money === b.id && (
+                <div style={{ flex: '1 1 100%', minWidth: 0 }}>
+                  <RefundPanel b={b} backOffice by={userName} />
+                </div>
+              )}
               {(edited || b.note) && (
                 <span style={{ flex: '1 1 100%', minWidth: 0, fontSize: 11, color: 'var(--t4)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={b.note || undefined}>{[edited, b.note].filter(Boolean).join(' · ')}</span>
               )}

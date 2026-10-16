@@ -58,7 +58,7 @@ import {
   paymentDue as computePaymentDue, packagePaymentNeed, packageSellableOnline, statusAtBooking,
   amountCovers, paymentSatisfiesDue, stuckPaymentReason,
 } from '../_shared/bookingPayment.js';
-import { promotePaidBooking, markPaymentNeedsRefund, isMissingColumnError, loadBookingDue } from '../_shared/bookingPromote.ts';
+import { promotePaidBooking, markPaymentNeedsRefund, isMissingColumnError, loadBookingDue, type PromoteResult } from '../_shared/bookingPromote.ts';
 // GUEST PRE ORDER CHOICES (10 Sep 2026): sizes and options on a pick are
 // validated here against the dish's real groups, never trusted from the page.
 import { sanitiseChoice, optionGroupIdsFor, matchChoice, MAX_CHOICE_NOTE } from '../_shared/preorderChoices.js';
@@ -68,6 +68,10 @@ import { readCustomerByPhone } from '../_shared/customerPhoneRead.js';
 import { handleManage } from './manage.ts';
 import { manageTokenFor } from '../_shared/bookingGuestDb.ts';
 import { manageState } from '../_shared/bookingGuest.js';
+// HOST TOOLS (16 Oct 2026, v5.11.70): party sizes and large party requests, the consent channel,
+// the privacy link, and the pay link a host stand sends (booking-host makes it, this checks it).
+import { widgetPartyBounds, partyNeedsRequest, consentChannel, safeLink } from '../_shared/bookingHost.js';
+import { payLinkTokenOk } from '../_shared/payLink.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -226,6 +230,10 @@ function rulesFrom(r: Record<string, unknown> | null) {
     bookingTerms: String(r.booking_terms || ''),
     blockedDates: Array.isArray(r.blocked_dates) ? (r.blocked_dates as string[]) : [],
     noOnlineTables: Array.isArray(r.no_online_tables) ? (r.no_online_tables as string[]) : [],
+    // 16 Oct 2026 (host tools, migration 20261016d): null or absent = the defaults (1 to 12).
+    widgetMinParty: (r.widget_min_party as number | null | undefined) ?? null,
+    widgetMaxParty: (r.widget_max_party as number | null | undefined) ?? null,
+    privacyUrl: safeLink(r.privacy_url),
   };
 }
 
@@ -518,6 +526,15 @@ Deno.serve(async (req) => {
     }
     const rules = venue.rules;
     if (!rules) return json({ ok: true, widgetEnabled: false, reason: 'not configured' });
+    // 16 Oct 2026 (host tools): a pay link sent from the host stand. The token is an HMAC of the
+    // booking id (_shared/payLink.js), so a link works whether or not the booking page is on.
+    const linkActions = ['pay_info', 'booking_pay', 'booking_pay_details', 'booking_status'];
+    const payToken = linkActions.includes(action) ? String(body.pay_token || '') : '';
+    const linkPay = !!payToken && await payLinkTokenOk(Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '', String(body.booking_id || ''), payToken);
+    // 200, not 403: the page can only read a body on a 2xx reply, and it must say "not valid".
+    if (payToken && !linkPay) return json({ ok: false, error: 'bad_link' });
+    // The party sizes the page offers (venue setting, never above what the pacing cap can take).
+    const partyBounds = widgetPartyBounds(rules as unknown as Record<string, unknown>, maxPartyForCap(rules.pacingCap, 50));
 
     if (action === 'config') {
       const cfgTz = (venue.loc as { timezone?: string }).timezone || 'Europe/London';
@@ -537,7 +554,11 @@ Deno.serve(async (req) => {
         slotMinutes: rules.slotMinutes,
         maxDaysAhead: rules.maxDaysAhead,
         // 16 Oct 2026: never offer a party the pacing cap can never take (it greyed every slot).
-        maxCovers: maxPartyForCap(rules.pacingCap, 12),
+        // Host tools: the venue's own party sizes; a bigger party sends a request instead.
+        maxCovers: partyBounds.max,
+        minCovers: partyBounds.min,
+        requestsOpen: true,
+        privacyUrl: (rules as Record<string, unknown>).privacyUrl || null,
         cardCaptureEnabled: (rules as Record<string, unknown>).cardCaptureEnabled === true,
         cardCaptureMinCovers: (rules as Record<string, unknown>).cardCaptureMinCovers ?? 0,
         bookingTerms: (rules as Record<string, unknown>).bookingTerms || '',
@@ -545,7 +566,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    if (!rules.widgetEnabled) return json({ ok: false, error: 'widget_disabled' }, 403);
+    if (!rules.widgetEnabled && !linkPay) return json({ ok: false, error: 'widget_disabled' }, 403);
 
     const tz = (venue.loc as { timezone?: string }).timezone || 'Europe/London';
     const today = venueToday(tz);
@@ -553,10 +574,42 @@ Deno.serve(async (req) => {
     // 16 Oct 2026: never clamped to the pacing cap (that would book a different party size than
     // the guest asked for). The config action stops the picker at the cap; a stale page asking
     // for more still meets slot_full, as before.
-    const party = Math.max(1, Math.min(12, Math.round(Number(body.party) || 2)));
+    // 16 Oct 2026 (host tools): up to the venue's largest online party (book refuses above it).
+    const party = Math.max(1, Math.min(50, Math.round(Number(body.party) || 2)));
     const daysAhead = Math.round((Date.parse(date) - Date.parse(today)) / 86400000);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || daysAhead < 0 || daysAhead > rules.maxDaysAhead) {
+    if (!linkPay && (!/^\d{4}-\d{2}-\d{2}$/.test(date) || daysAhead < 0 || daysAhead > rules.maxDaysAhead)) {
       return json({ ok: false, error: 'date_out_of_range' }, 400);
+    }
+
+    // ── request: "Larger party? Send a request" (16 Oct 2026, host tools) ──
+    // A party above the venue's online limit asks instead of booking. The row lands in the host
+    // stand's requests inbox (booking-host requests), where the host accepts, calls or declines.
+    if (action === 'request') {
+      const name = String(body.name || '').trim().slice(0, 80);
+      const phoneRegion = phoneRegionFromCurrency((venue.loc as { currency?: string }).currency);
+      const phone = normPhone(String(body.phone || ''), phoneRegion);
+      const reqParty = Math.max(1, Math.min(200, Math.round(Number(body.party) || 0)));
+      const reqTime = /^\d{2}:\d{2}$/.test(String(body.time || '')) ? String(body.time) : null;
+      if (!name || !phone) return json({ ok: false, error: 'name and a valid mobile are required' }, 400);
+      // A public door: a burst cap per venue and a cool down per number.
+      const tenMin = new Date(Date.now() - 10 * 60000).toISOString();
+      const { count: burst } = await db.from('booking_requests').select('id', { count: 'exact', head: true })
+        .eq('location_id', locationId).eq('status', 'pending').is('booking_id', null).gte('created_at', tenMin);
+      if ((burst || 0) >= 30) return json({ ok: false, error: 'too_many_requests' });
+      const { data: recent } = await db.from('booking_requests').select('payload').eq('location_id', locationId)
+        .eq('status', 'pending').is('booking_id', null).gte('created_at', tenMin).limit(50);
+      if ((recent || []).some((r) => (r.payload as Record<string, unknown>)?.phone === phone)) return json({ ok: true, already: true });
+      const { error: rqErr } = await db.from('booking_requests').insert({
+        location_id: locationId,
+        status: 'pending',
+        payload: {
+          kind: 'large_party', date, time: reqTime, party: reqParty, name, phone,
+          email: String(body.email || '').trim().toLowerCase().slice(0, 120) || null,
+          note: String(body.note || '').slice(0, 400),
+        },
+      });
+      if (rqErr) return json({ ok: false, error: 'request_failed' }, 500);
+      return json({ ok: true });
     }
 
     // Tables the widget must never offer (host stand unaffected). Filtered
@@ -699,6 +752,10 @@ Deno.serve(async (req) => {
       if (kitchenFull(time)) {
         return json({ ok: false, error: 'slot_full' });
       }
+      // 16 Oct 2026 (host tools): above the venue's online limit the page sends a request instead.
+      if (partyNeedsRequest(Number(body.party), partyBounds) || party < partyBounds.min) {
+        return json({ ok: false, error: 'party_size', min: partyBounds.min, max: partyBounds.max });
+      }
 
       // Optional package: re-validate the offer server-side (window, covers,
       // per-service cap) — never trust the card the page showed earlier.
@@ -790,7 +847,8 @@ Deno.serve(async (req) => {
         // Consent is an AUDIT event, not a flag — customer_consents is the record.
         await db.from('customer_consents').insert({
           customer_id: customerId, org_id: venue.loc.org_id, location_id: locationId,
-          channel: 'both', purpose: 'marketing', consented: true,
+          // 16 Oct 2026 (host tools): the channels the guest actually gave (a mobile only is texts only).
+          channel: consentChannel({ phone, email }) || 'sms', purpose: 'marketing', consented: true,
           source: 'booking_widget', method: 'explicit_optin',
         }).then(() => db.from('customers').update({ marketing_opt_in: true, marketing_opt_in_at: new Date().toISOString() }).eq('id', customerId));
       }
@@ -990,7 +1048,15 @@ Deno.serve(async (req) => {
         .select('status, kind').eq('booking_id', bookingId)
         .order('created_at', { ascending: false }).limit(1);
       const last = lastPay?.[0] || null;
-      return json({ ok: true, status: st.status, payment: last ? { status: last.status, kind: last.kind } : null });
+      // 16 Oct 2026 (host tools): a pay link booking can stay 'confirmed' the whole time, so its
+      // status says nothing about the payment. paid: an authorised or captured row exists.
+      let paid: boolean | undefined;
+      if (linkPay) {
+        const { data: ok } = await db.from('booking_payments').select('id').eq('booking_id', bookingId)
+          .in('status', ['authorised', 'captured']).neq('kind', 'refund').limit(1);
+        paid = !!ok?.length;
+      }
+      return json({ ok: true, status: st.status, payment: last ? { status: last.status, kind: last.kind } : null, ...(linkPay ? { paid } : {}) });
     }
 
     // ── booking_pay / booking_pay_details: THE PAYMENT GATE (10 Sep 2026) ───
@@ -1010,6 +1076,38 @@ Deno.serve(async (req) => {
     //     _shared/bookingPromote.ts: pending_payment, or expired only when its
     //     tables are still free (else the payment is marked needs_refund).
     //     cancelled, no_show, departed and dining never promote.
+    // ── pay_info: the page behind a host stand pay link (16 Oct 2026, host tools) ──
+    // The booking, what it owes and the venue's card form settings. The token was checked above.
+    if (action === 'pay_info') {
+      if (!linkPay) return json({ ok: false, error: 'bad_link' });
+      const bookingId = String(body.booking_id || '');
+      const dueRes = await loadBookingDue(db, bookingId);
+      const bk = (dueRes.booking || null) as Record<string, unknown> | null;
+      if (!bk || String(bk.location_id) !== locationId) return json({ ok: false, error: 'unknown_booking' });
+      const { data: paidRows } = await db.from('booking_payments').select('id, kind, status')
+        .eq('booking_id', bookingId).in('status', ['authorised', 'captured']).neq('kind', 'refund');
+      const summary = {
+        date: bk.booking_date, time: String(bk.start_time || '').slice(0, 5), party: bk.covers,
+        name: (bk.customer as Record<string, unknown> | null)?.name || null,
+      };
+      if (paidRows?.length) return json({ ok: true, paid: true, status: bk.status, booking: summary });
+      if (!['pending_payment', 'confirmed'].includes(String(bk.status))) return json({ ok: false, error: 'closed', status: bk.status, booking: summary });
+      if (!dueRes.ok) return json({ ok: false, error: 'due_mismatch', booking: summary });
+      if (!dueRes.due) return json({ ok: false, error: 'nothing_due', booking: summary });
+      const v = await adyenCfgForOps(locationId).catch(() => null);
+      if (!v || !adyenUsable(v)) return json({ ok: false, error: 'payment_unavailable', booking: summary });
+      let pkgName: string | null = null;
+      if (bk.package_id) {
+        const { data: pk } = await db.from('packages').select('name').eq('id', String(bk.package_id)).maybeSingle();
+        pkgName = pk?.name ? String(pk.name) : null;
+      }
+      return json({
+        ok: true, status: bk.status, bookingId, booking: { ...summary, packageName: pkgName },
+        paymentDue: { kind: dueRes.due.kind, amountMinor: dueRes.due.amountMinor, currency: dueRes.due.currency || v.currency },
+        adyen: { clientKey: v.cfg.clientKey, environment: v.cfg.env, region: v.cfg.region, dropinEnvironment: v.cfg.dropinEnvironment, currency: v.currency },
+      });
+    }
+
     if (action === 'booking_pay' || action === 'booking_pay_details') {
       const venueAdyen = await adyenCfgForOps(locationId);
       const cfg = venueAdyen.cfg;
@@ -1039,7 +1137,11 @@ Deno.serve(async (req) => {
       // charge. booking_pay_details may still finish a payment already in flight
       // for a booking that expired during the challenge (the promote then checks
       // its tables), but never one staff have seated, cancelled or closed.
-      const open = action === 'booking_pay' ? ['pending_payment'] : ['pending_payment', 'expired'];
+      // 16 Oct 2026 (host tools): a host stand pay link also pays a booking still 'confirmed'
+      // (sent before migration 20261016d, when the booking could not wait as pending_payment).
+      const open = action === 'booking_pay'
+        ? (linkPay ? ['pending_payment', 'confirmed'] : ['pending_payment'])
+        : (linkPay ? ['pending_payment', 'expired', 'confirmed'] : ['pending_payment', 'expired']);
       if (!open.includes(String(bk.status))) {
         // 200, not 404: the guest page can only read a body on a 2xx reply,
         // and it must be able to say plainly what happened to this booking.
@@ -1057,7 +1159,24 @@ Deno.serve(async (req) => {
 
       // Promote, then fire the confirmation and (when choices are missing) the
       // pre-order link. A payment that landed too late is flagged for refund.
-      const settlePromotion = async (kind: string, rowIds: string[]) => {
+      const settlePromotion = async (kind: string, rowIds: string[]): Promise<PromoteResult> => {
+        // 16 Oct 2026 (host tools): a pay link on a booking that stayed 'confirmed'. A deposit or a
+        // hold leaves it confirmed; a prepay moves it to prepaid (service role, so the gate allows it).
+        if (linkPay && String(bk.status) === 'confirmed') {
+          // The confirmation the guest never had (a host booking sends none at create). The
+          // reminders ledger sends it once, however often this runs.
+          const confirmNow = () => fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/booking-reminders`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}` },
+            body: JSON.stringify({ action: 'confirm', booking_id: bookingId }),
+          }).catch(() => {});
+          if (kind === 'prepay') {
+            const { data: moved } = await db.from('bookings').update({ status: 'prepaid' }).eq('id', bookingId).eq('status', 'confirmed').select('id');
+            if (moved?.length) { confirmNow(); return { ok: true, promoted: true, status: 'prepaid' }; }
+          } else {
+            confirmNow();
+            return { ok: true, promoted: false, status: 'confirmed' };
+          }
+        }
         const pr = await promotePaidBooking(db, bookingId, kind);
         if (pr.promoted) {
           const url = `${Deno.env.get('SUPABASE_URL')}/functions/v1/booking-reminders`;
@@ -1132,16 +1251,25 @@ Deno.serve(async (req) => {
           : q.in('status', ['pending', 'failed']));
         let rowId = ctx.rowId;
         if (!rowId) {
-          const { data: ins, error: insErr } = await db.from('booking_payments').insert({
+          // 16 Oct 2026 (host tools): a card hold takes NO money, so its amount is 0 (it used to
+          // carry the rule figure, which any sum of the ledger counted as money). The rule figure
+          // rides hold_minor once migration 20261016d adds it; before that it is left out.
+          const payRow: Record<string, unknown> = {
             location_id: locationId,
             booking_id: bookingId,
             kind: ctx.kind,
-            amount: ctx.dueMinor / 100,
+            amount: isHold ? 0 : ctx.dueMinor / 100,
+            ...(isHold ? { hold_minor: ctx.dueMinor } : {}),
             currency: currency.toLowerCase(),
             merchant_reference: ctx.reference,
             merchant_account: merchantAccount,
             ...fields,
-          }).select('id').maybeSingle();
+          };
+          let { data: ins, error: insErr } = await db.from('booking_payments').insert(payRow).select('id').maybeSingle();
+          if (insErr && isHold && isMissingColumnError(insErr, 'hold_minor')) {
+            const { hold_minor: _h, ...bare } = payRow;
+            ({ data: ins, error: insErr } = await db.from('booking_payments').insert(bare).select('id').maybeSingle());
+          }
           if (insErr) {
             // A retransmit of this attempt (same idempotency key) already wrote
             // the row carrying this psp: settle THAT row, never a second one.
@@ -1222,7 +1350,7 @@ Deno.serve(async (req) => {
           // finish() then writes the row, so the challenge is never stranded.
           const refKind = reference.match(/^bkpay-.+-(hold|deposit|prepay)-a\d+$/)?.[1] || null;
           if (!refKind || !owedDue || owedDue.kind !== refKind) return json({ ok: false, error: 'unknown_payment', reference });
-          att = { id: null, kind: refKind, amount: owedDue.amountMinor / 100, currency: currency.toLowerCase(), status: 'pending' };
+          att = { id: null, kind: refKind, amount: refKind === 'hold' ? 0 : owedDue.amountMinor / 100, currency: currency.toLowerCase(), status: 'pending' };
         }
         const dueMinor = Math.round(Number(att.amount) * 100);
         // What the BOOKING owes (loadBookingDue), never only what the attempt row says.
@@ -1260,7 +1388,8 @@ Deno.serve(async (req) => {
       }
 
       // ── booking_pay ──
-      if (!rules.cardCaptureEnabled) return json({ ok: false, error: 'card_capture_disabled' }, 403);
+      // A host stand pay link pays even with online card capture off (that switch is for the page).
+      if (!rules.cardCaptureEnabled && !linkPay) return json({ ok: false, error: 'card_capture_disabled' }, 403);
       // What to charge: loadBookingDue above (the stored due, the booking's own
       // package, the audit row's package and party, the rules; largest wins).
       const due = dueRes.due;

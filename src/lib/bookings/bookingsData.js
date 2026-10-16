@@ -72,6 +72,8 @@ export function rowToBooking(r) {
     preorderCount: r._preorderCount ?? 0,
     createdBy: r.created_by || null,
     updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : null,
+    // 16 Oct 2026 (host tools): a pay link from the stand keeps the booking waiting until this.
+    payLinkUntil: r.pay_link_until ? new Date(r.pay_link_until).getTime() : null,
   };
 }
 
@@ -99,6 +101,12 @@ export function rowToRules(r) {
     bookingTerms: r.booking_terms || '',
     blockedDates: Array.isArray(r.blocked_dates) ? r.blocked_dates : [],
     noOnlineTables: Array.isArray(r.no_online_tables) ? r.no_online_tables : [],
+    // 16 Oct 2026 (host tools, migration 20261016d). undefined = the column is not there yet
+    // (the settings say so), null = not set (the defaults apply).
+    widgetMinParty: r.widget_min_party === undefined ? undefined : (r.widget_min_party ?? null),
+    widgetMaxParty: r.widget_max_party === undefined ? undefined : (r.widget_max_party ?? null),
+    lateReleaseMinutes: r.late_release_minutes === undefined ? undefined : (r.late_release_minutes ?? null),
+    privacyUrl: r.privacy_url === undefined ? undefined : (r.privacy_url || ''),
   };
 }
 
@@ -113,6 +121,9 @@ const RULES_TO_ROW = {
   cardCaptureMinCovers: 'card_capture_min_covers',
   bookingTerms: 'booking_terms',
   blockedDates: 'blocked_dates', noOnlineTables: 'no_online_tables',
+  // 16 Oct 2026 (host tools, migration 20261016d)
+  widgetMinParty: 'widget_min_party', widgetMaxParty: 'widget_max_party',
+  lateReleaseMinutes: 'late_release_minutes', privacyUrl: 'privacy_url',
 };
 
 export function rowToPackage(r) {
@@ -536,16 +547,23 @@ export async function loadBookingPayments(bookingId) {
 export async function loadBookingCredit(bookingId) {
   if (isMock || !supabase || !bookingId) return { prepayMinor: 0, depositMinor: 0 };
   try {
-    const { data, error } = await supabase.from('booking_payments')
-      .select('kind, amount, status, applied_to_check, refusal_reason')
+    // 16 Oct 2026 (host tools): what was refunded is not credit (amount_refunded_minor, migration
+    // 20261016d, the same subtraction as _booking_credit_for_session). Before the migration the
+    // column is not there and only a full refund can be made, which the status already covers.
+    const read = (cols) => supabase.from('booking_payments').select(cols)
       .eq('booking_id', bookingId).eq('status', 'captured').eq('applied_to_check', false);
+    const BASE = 'kind, amount, status, applied_to_check, refusal_reason';
+    let { data, error } = await read(`${BASE}, amount_refunded_minor`);
+    if (error && (missingColumn(error) || String(error.code || '') === '42501' || /permission denied/i.test(String(error.message || '')))) {
+      ({ data, error } = await read(BASE));
+    }
     if (error) { warnAbsentOr(error, 'loadBookingCredit'); return { prepayMinor: 0, depositMinor: 0 }; }
     let prepayMinor = 0, depositMinor = 0;
     for (const r of data || []) {
       // 16 Oct 2026: a row flagged NEEDS REFUND is owed back, never credit on the bill (the
       // reader's _booking_credit_for_session leaves it out too, so the till and reader agree).
       if (/^needs refund/i.test(String(r.refusal_reason || ''))) continue;
-      const minor = Math.round((Number(r.amount) || 0) * 100);
+      const minor = Math.max(0, Math.round((Number(r.amount) || 0) * 100) - Math.max(0, Math.round(Number(r.amount_refunded_minor) || 0)));
       if (r.kind === 'prepay') prepayMinor += minor;
       else if (r.kind === 'deposit') depositMinor += minor;
     }
