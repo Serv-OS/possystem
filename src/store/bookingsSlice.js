@@ -358,7 +358,11 @@ export function bookingsSlice(set, get) {
       let merged = null;
       if (!isTrainingMode() && !isMock && supabase) {
         const locId = await resolveLocationId();
-        const rows = locId ? await readServerSessions(supabase, locId, bookingTables) : null;
+        // At most 3 seconds: a slow network falls back to the local copy, as a failed read does.
+        const rows = locId ? await Promise.race([
+          readServerSessions(supabase, locId, bookingTables),
+          new Promise((resolve) => setTimeout(() => resolve(null), 3000)),
+        ]) : null;
         if (rows) {
           const active = get().activeTableId;
           const keepIds = !isHostStandMode() && active ? new Set([active]) : null;
@@ -458,7 +462,11 @@ export function bookingsSlice(set, get) {
         if (isHostStandMode()) { markStandOwned(b.primaryTableId); set({ activeTableId: null }); }
         // Persist just this table's session immediately (the waitlist lesson:
         // a host stand's floor poll can flip the table back before the flush).
-        try { await flushSingleSession(b.primaryTableId); } catch { /* best-effort */ }
+        // A till keeps main's timing (the flush runs in the background); only a host stand waits for it.
+        try {
+          const flushing = flushSingleSession(b.primaryTableId);
+          if (isHostStandMode()) await flushing; else flushing.catch(() => {});
+        } catch { /* best-effort */ }
         // 16 Oct 2026 (Provo demo, 17:06 UK): the stand seated T1, the server row appeared at
         // once, and the stand still drew T1 as "booking active, no session". On a host stand the
         // floor's session for the booking's tables is set from the server row after the seat

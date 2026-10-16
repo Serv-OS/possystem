@@ -347,15 +347,19 @@ export function reassertSession(tableId) {
 // device's tables.
 export async function flushSingleSession(tableId) {
   if (!tableId) return;
+  // A host stand owns a seat only until it has been handed on once: published, queued, or found to
+  // be nothing to publish. A mark that outlived a failed or offline publish would let a later stand
+  // flush write its copy back over the till's rows (review, 16 Oct 2026).
+  const release = () => { _standOwned.delete(tableId); };
   if (!_locationId) {
-    try { _locationId = await getLocationId(); } catch { return; }
+    try { _locationId = await getLocationId(); } catch { release(); return; }
   }
-  if (!_locationId) return;
+  if (!_locationId) { release(); return; }
   const t = (useStore.getState().tables || []).find((x) => x.id === tableId);
-  if (!t || !t.session) return;
+  if (!t || !t.session) { release(); return; }
   // v5.5.944: same tombstone rule as flushSessions — a closed occupation is never
   // re-published, from any surface (the host stand's 30s poll snapshot can be stale).
-  if (isSessionClosed(t.id, t.session)) { reassertSession(t.id); return; }
+  if (isSessionClosed(t.id, t.session)) { release(); reassertSession(t.id); return; }
 
   _lastSent[t.id] = JSON.stringify(t.session);
   try {
@@ -366,6 +370,8 @@ export async function flushSingleSession(tableId) {
 
   const row = { location_id: _locationId, table_id: t.id, session: t.session, updated_at: new Date().toISOString() };
   queueWrite({ type: 'upsert', table: 'active_sessions', payload: row, onConflict: 'location_id,table_id' });
+  // Durably queued: the OfflineQueue replays it, so the stand gives up ownership now.
+  release();
   if (isOnline()) {
     try {
       const { error } = await supabase.from('active_sessions').upsert(row, { onConflict: 'location_id,table_id' });

@@ -45,11 +45,13 @@ test('only a host stand writes the merge into its store; the refusal is decided 
   assert.ok(!SEAT.includes('const openOn = openTables();'), 'the later local re read is gone');
 });
 
-test('a host stand marks the seated table its own and drops the active table, before the awaited flush', () => {
+test('a host stand marks the seated table its own and drops the active table, before the flush', () => {
   const seat = SEAT.indexOf('get().seatTable?.(b.primaryTableId');
   const clear = SEAT.indexOf('if (isHostStandMode()) { markStandOwned(b.primaryTableId); set({ activeTableId: null }); }');
-  const flush = SEAT.indexOf('await flushSingleSession(b.primaryTableId);');
+  const flush = SEAT.indexOf('const flushing = flushSingleSession(b.primaryTableId);');
   assert.ok(seat > 0 && clear > seat && flush > clear);
+  // a till keeps main's timing; only a host stand waits for the flush
+  assert.ok(SEAT.includes('if (isHostStandMode()) await flushing; else flushing.catch(() => {});'));
   assert.ok(SLICE.includes("import { flushSingleSession, markStandOwned } from '../sync/SessionSync.js';"));
   const W = readFileSync(new URL('../../store/waitlistSlice.js', import.meta.url), 'utf8');
   const wSeat = W.indexOf('get().seatTable?.(opts.tableId');
@@ -69,8 +71,8 @@ test('a row with lines refuses table_open, a row with none refuses table_seated_
 });
 
 test('after the seat write a host stand takes the booking tables\' session from the server row', () => {
-  const flush = SEAT.indexOf('await flushSingleSession(b.primaryTableId);');
-  assert.ok(flush > 0, 'the single table flush is awaited');
+  const flush = SEAT.indexOf('if (isHostStandMode()) await flushing;');
+  assert.ok(flush > 0, 'a host stand awaits the single table flush');
   const after = SEAT.slice(flush);
   assert.ok(after.includes('if (isHostStandMode() && !isTrainingMode() && !isMock && supabase) {'), 'host stand only');
   assert.ok(after.includes("mergeServerSessions(get().tables || [], rows, { tableIds: bookingTables, clearMissing: false, isClosed: isSessionClosed })"),
@@ -84,4 +86,17 @@ test('the Diary and Floor screens put the new refusal into words', () => {
   assert.ok(D.includes("'Seated with no order yet. Cash it off on the POS or move the booking.'"));
   assert.ok(F.includes("seated.error === 'table_seated_empty'"));
   assert.ok(F.includes('is seated with no order yet, booking held on the diary'));
+});
+
+test('the till pre seat read gives up after 3 seconds and falls back to the local copy', () => {
+  assert.ok(SEAT.includes('readServerSessions(supabase, locId, bookingTables),\n          new Promise((resolve) => setTimeout(() => resolve(null), 3000)),'));
+});
+
+test('a stand seat stops being stand owned once it is queued or there is nothing to publish', () => {
+  const S = readFileSync(new URL('../../sync/SessionSync.js', import.meta.url), 'utf8');
+  const fn = S.slice(S.indexOf('export async function flushSingleSession'), S.indexOf('// ── Deliberate table transfer'));
+  assert.ok(fn.includes('const release = () => { _standOwned.delete(tableId); };'));
+  assert.ok(fn.indexOf("queueWrite({ type: 'upsert'") < fn.indexOf('  release();\n  if (isOnline()) {'), 'released right after the durable queue write');
+  assert.ok(fn.includes("if (!t || !t.session) { release(); return; }"));
+  assert.ok(fn.includes('if (isSessionClosed(t.id, t.session)) { release(); reassertSession(t.id); return; }'));
 });
