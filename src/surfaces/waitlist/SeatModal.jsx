@@ -9,26 +9,19 @@
 
 import { useMemo } from 'react';
 import { useStore } from '../../store';
-import { bandFor } from '../../lib/waitlist/waitlist';
+import { bandFor, fittingFreeTables } from '../../lib/waitlist/waitlist';
 import { Icon } from '../../components/ServOSIcons';
 
 const mono = { fontFamily: 'var(--font-mono)' };
-const isFree = (t) => t.status === 'available';
 
 export default function SeatModal({ entry, operator, onClose }) {
   const tables = (useStore(s => s.tables) || []).filter(t => !t.parentId);
   const seatParty = useStore(s => s.seatWaitlistParty);
 
-  // open tables that fit, best-fit ordered, section pref first
-  const fits = useMemo(() => {
-    const cap = tables.filter(t => isFree(t) && t.maxCovers >= entry.size);
-    return cap.sort((a, b) => {
-      const aPref = entry.sectionPref ? (a.section === entry.sectionPref ? 0 : 1) : 0;
-      const bPref = entry.sectionPref ? (b.section === entry.sectionPref ? 0 : 1) : 0;
-      if (aPref !== bPref) return aPref - bPref;
-      return (a.maxCovers - entry.size) - (b.maxCovers - entry.size);
-    });
-  }, [tables, entry.size, entry.sectionPref]);
+  // open tables that fit, best-fit ordered, section pref first (one helper,
+  // shared with the queue card's "Seat on T8", lib/waitlist/waitlist.js)
+  const fits = useMemo(() => fittingFreeTables(tables, { size: entry.size, sectionPref: entry.sectionPref }),
+    [tables, entry.size, entry.sectionPref]);
 
   const seat = async (tableId) => { onClose?.(); await seatParty?.(entry.id, tableId); };
 

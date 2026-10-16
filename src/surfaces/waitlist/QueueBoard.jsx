@@ -11,7 +11,7 @@
 
 import { useMemo } from 'react';
 import { useStore } from '../../store';
-import { perBandStrip, freshActives, DEFAULT_BANDS, DEFAULT_QUOTE_RULES, tablesView } from '../../lib/waitlist/waitlist';
+import { perBandStrip, freshActives, DEFAULT_BANDS, DEFAULT_QUOTE_RULES, tablesView, waitingForEstimate, seatSuggestions } from '../../lib/waitlist/waitlist';
 import QueueCard from './QueueCard';
 
 const mono = { fontFamily: 'var(--font-mono)' };
@@ -34,7 +34,12 @@ export default function QueueBoard({ loc, operator, onSeat }) {
     : DEFAULT_QUOTE_RULES;
 
   const tv = useMemo(() => tablesView(tables), [tables]);
-  const waitingForEst = useMemo(() => active.map(e => ({ size: e.size, status: e.status, quoted: e.quoted, addedAt: e.addedAt })), [active]);
+  // 16 Oct 2026: one helper for the estimator's waiting list (AddPartyDrawer uses it too).
+  const waitingForEst = useMemo(() => waitingForEstimate(waitlist), [waitlist]);
+  // "Seat on T8": the queue in order, each party offered the best free table
+  // that fits and that nobody ahead of it was offered.
+  const seatOn = useMemo(() => seatSuggestions(active, tables), [active, tables]);
+  const seatParty = useStore(s => s.seatWaitlistParty);
   const strip = useMemo(
     () => perBandStrip({ tables: tv, waiting: waitingForEst, bands, rules }),
     [tv, waitingForEst, bands, rules],
@@ -68,7 +73,7 @@ export default function QueueBoard({ loc, operator, onSeat }) {
           {active.map((e, i) => (
             <div key={e.id} style={{ position: 'relative' }}>
               <span style={{ position: 'absolute', left: -2, top: 14, fontSize: 10, color: 'var(--t4)', fontWeight: 800, ...mono }}>{i + 1}</span>
-              <QueueCard entry={e} onSeat={onSeat} />
+              <QueueCard entry={e} onSeat={onSeat} seatOn={seatOn[e.id] || null} onSeatOn={(t) => seatParty?.(e.id, t.id)} />
             </div>
           ))}
         </div>

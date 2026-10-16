@@ -12,7 +12,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../store';
-import { estimate, bandFor, DEFAULT_BANDS, DEFAULT_QUOTE_RULES, isActive, tablesView } from '../../lib/waitlist/waitlist';
+import { estimate, bandFor, DEFAULT_BANDS, DEFAULT_QUOTE_RULES, tablesView, waitingForEstimate } from '../../lib/waitlist/waitlist';
 import { Icon } from '../../components/ServOSIcons';
 
 const mono = { fontFamily: 'var(--font-mono)' };
@@ -67,10 +67,9 @@ export default function AddPartyDrawer({ loc, operator, onClose }) {
     ? { buffer: cfg.buffer ?? 5, roundTo: cfg.roundTo ?? 5, maxQuote: cfg.maxQuote ?? 120, defaultTurn: cfg.defaultTurn ?? 60 }
     : DEFAULT_QUOTE_RULES;
   const tv = useMemo(() => tablesView(tables), [tables]);
-  const waitingForEst = useMemo(
-    () => waitlist.filter(e => isActive(e.status)).map(e => ({ size: e.size, status: e.status, quoted: e.quoted })),
-    [waitlist],
-  );
+  // 16 Oct 2026: the SAME waiting list the board feeds the estimator (with
+  // addedAt, stale parties out), so the drawer and the board quote alike.
+  const waitingForEst = useMemo(() => waitingForEstimate(waitlist), [waitlist]);
   const quote = useMemo(
     () => estimate({ size, sectionPref: zone, tables: tv, waiting: waitingForEst, bands, rules }),
     [size, zone, tv, waitingForEst, bands, rules],

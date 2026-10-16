@@ -28,6 +28,8 @@ import {
   registerWaitlistDevice, waitlistHeartbeat, waitlistPinLogin,
 } from '../../lib/waitlist/waitlistData';
 import { currentAverageWait, freshActives } from '../../lib/waitlist/waitlist';
+import { getLocationConfig } from '../../lib/locationTime';
+import { venueToday, ymdLabel } from '../../lib/bookings/venueClock.js';
 import { Icon } from '../../components/ServOSIcons';
 import AddPartyDrawer from './AddPartyDrawer';
 import SeatModal from './SeatModal';
@@ -112,6 +114,10 @@ export default function WaitlistSurface() {
     // Seed the resolver + current location from the claimed device location.
     setResolvedLocationId(loc);
     useStore.getState().setCurrentLocation?.(loc);
+    // 16 Oct 2026 (bookings audit item 8): the stand shows the VENUE's date, so load
+    // the paired venue's timezone (a stand that booted before pairing had London).
+    let cfgLive = true;
+    getLocationConfig(loc).then((cfg) => { if (cfgLive && cfg) useStore.setState({ locationConfig: cfg }); }).catch(() => {});
     waitlistHeartbeat().catch(() => {});
     const hb = setInterval(() => waitlistHeartbeat().catch(() => {}), 60000);
     // The host stand renders WITHOUT SyncBridge, so hydrate the board + floor here and
@@ -133,7 +139,7 @@ export default function WaitlistSurface() {
     const stopStandSync = supabase
       ? startStandSessionSync({ store: useStore, client: supabase, locationId: loc, isClosed: isSessionClosed, storage })
       : () => {};
-    return () => { clearInterval(hb); clearInterval(floorPoll); clearInterval(requote); stopStandSync(); try { stopRT(); } catch {} stopRealtime(); };
+    return () => { cfgLive = false; clearInterval(hb); clearInterval(floorPoll); clearInterval(requote); stopStandSync(); try { stopRT(); } catch {} stopRealtime(); };
   }, [stage, loc, loadFromDB, loadFloor, recompute]);
 
   if (stage === 'boot') return <Screen><div style={{ color: 'var(--t3)', ...mono }}>Starting…</div></Screen>;
@@ -187,6 +193,7 @@ function Screen({ children }) {
 function AppShell({ venueName, operator, view, onView, dark, onToggleTheme, onLogout, onAdd, children }) {
   const waitlist = useStore(s => s.waitlist) || [];
   const tables = useStore(s => s.tables) || [];
+  const venueTz = useStore(s => s.locationConfig?.timezone);
 
   // "Avg wait now" is the ACTUAL elapsed wait (v5.6.24), so it must tick with
   // the clock, not just with store changes — 30s granularity for a minutes stat.
@@ -205,7 +212,7 @@ function AppShell({ venueName, operator, view, onView, dark, onToggleTheme, onLo
         <button onClick={onLogout} title="Tap to switch user" style={{ flex: 1, minWidth: 0, textAlign: 'left', background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'inherit', fontFamily: 'inherit' }}>
           <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--t1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{venueName || 'Tables Ready'}</div>
           <div style={{ fontSize: 10.5, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.08em', ...mono }}>
-            {operator?.name ? operator.name : 'Host stand'} · {new Date().toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' }).toUpperCase()}
+            {operator?.name ? operator.name : 'Host stand'} · {ymdLabel(venueToday(venueTz), { long: true }).toUpperCase()}
           </div>
         </button>
         <button
@@ -265,7 +272,7 @@ function PairScreen({ code }) {
     <Screen>
       <div className="sv-glass" style={{ padding: 28, textAlign: 'center', maxWidth: 360 }}>
         <div style={{ fontSize: 13, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.1em', ...mono }}>Pair this host stand</div>
-        <div style={{ fontSize: 42, fontWeight: 800, letterSpacing: '.12em', margin: '16px 0', color: 'var(--acc)', ...mono }}>{code || '······'}</div>
+        <div style={{ fontSize: 42, fontWeight: 800, letterSpacing: '.12em', margin: '16px 0', color: 'var(--acc)', ...mono }}>{code || '········'}</div>
         <div style={{ fontSize: 13, color: 'var(--t2)', lineHeight: 1.5 }}>
           In Back Office → Channels → Tables Ready, enter this code to pair this tablet. This screen links automatically once it's attached to a venue.
         </div>
