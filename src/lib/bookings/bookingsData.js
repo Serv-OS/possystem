@@ -16,6 +16,10 @@ import { CUSTOMER_ROOT } from '../env';
 import { readAllPagesResult } from '../pagedRead.js';
 import { rowToPreorder, preorderInsertRows, withoutChoiceColumns, missingColumn } from './preorderRows.js';
 import { isMissingFunction } from './applyBookingPayment.js';
+import { paymentNetMinor } from './bookingPayment.js';
+// 16 Oct 2026: the guest's confirmation goes the moment the stand, the till or Back Office books.
+import { nudgeConfirmation } from './guestMessages.js';
+import { serviceRulesFromRow, SERVICE_RULE_COLUMNS, SERVICE_RULES_MISSING, touchesServiceRules } from './serviceRulesRow.js';
 
 const isRealLoc = (l) => !!l && l !== 'loc-demo';
 
@@ -55,6 +59,8 @@ export function rowToBooking(r) {
     paidMinor: r._paidMinor ?? null,
     paidPrepayMinor: r._paidPrepayMinor ?? null,
     paidDepositMinor: r._paidDepositMinor ?? null,
+    // Money flagged to go back to the guest (needs_refund), so a cancelled booking can be refunded.
+    owedBackMinor: r._owedBackMinor ?? null,
     pacingOverrideBy: r.pacing_override_by || null,
     // 10 Sep 2026 payment gate: what the widget said was due at book time
     // (migration 20260910). undefined = column not there yet, null = nothing
@@ -70,6 +76,8 @@ export function rowToBooking(r) {
     preorderCount: r._preorderCount ?? 0,
     createdBy: r.created_by || null,
     updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : null,
+    // 16 Oct 2026 (host tools): a pay link from the stand keeps the booking waiting until this.
+    payLinkUntil: r.pay_link_until ? new Date(r.pay_link_until).getTime() : null,
   };
 }
 
@@ -97,6 +105,14 @@ export function rowToRules(r) {
     bookingTerms: r.booking_terms || '',
     blockedDates: Array.isArray(r.blocked_dates) ? r.blocked_dates : [],
     noOnlineTables: Array.isArray(r.no_online_tables) ? r.no_online_tables : [],
+    // 16 Oct 2026 (host tools, migration 20261016d). undefined = the column is not there yet
+    // (the settings say so), null = not set (the defaults apply).
+    widgetMinParty: r.widget_min_party === undefined ? undefined : (r.widget_min_party ?? null),
+    widgetMaxParty: r.widget_max_party === undefined ? undefined : (r.widget_max_party ?? null),
+    lateReleaseMinutes: r.late_release_minutes === undefined ? undefined : (r.late_release_minutes ?? null),
+    privacyUrl: r.privacy_url === undefined ? undefined : (r.privacy_url || ''),
+    // 16 Oct 2026: service periods, closed days, date blocks, notice (migration 20261016e).
+    ...serviceRulesFromRow(r),
   };
 }
 
@@ -111,6 +127,10 @@ const RULES_TO_ROW = {
   cardCaptureMinCovers: 'card_capture_min_covers',
   bookingTerms: 'booking_terms',
   blockedDates: 'blocked_dates', noOnlineTables: 'no_online_tables',
+  // 16 Oct 2026 (host tools, migration 20261016d)
+  widgetMinParty: 'widget_min_party', widgetMaxParty: 'widget_max_party',
+  lateReleaseMinutes: 'late_release_minutes', privacyUrl: 'privacy_url',
+  ...SERVICE_RULE_COLUMNS,
 };
 
 export function rowToPackage(r) {
@@ -170,6 +190,7 @@ export async function loadBookings(locationId, dateISO) {
     // paired devices from migration 20260824). Missing map entry = ledger not
     // visible (pre-migration RLS / error) → paidMinor stays null = "unknown".
     const paid = new Map(); // booking_id → { total, prepay, deposit } minor
+    const owedBack = new Map(); // booking_id → minor flagged needs_refund (before any refund)
     // 16 Oct 2026 review: a failed booking_tables read is NOT a good read. The rows still come
     // back (each on its primary table, the boot fallback), but with { error, partial }, so the
     // catch up reload keeps the diary on screen instead of shrinking every joined party to one
@@ -179,7 +200,7 @@ export async function loadBookings(locationId, dateISO) {
       const [{ data: bt, error: btErr }, { data: po }, { data: pay, error: payErr }] = await Promise.all([
         supabase.from('booking_tables').select('booking_id, table_id, is_primary').in('booking_id', ids),
         supabase.from('booking_preorders').select('booking_id').in('booking_id', ids),
-        supabase.from('booking_payments').select('booking_id, kind, amount, status').in('booking_id', ids).eq('status', 'captured'),
+        supabase.from('booking_payments').select('booking_id, kind, amount, status').in('booking_id', ids).in('status', ['captured', 'needs_refund']),
       ]);
       if (btErr) {
         console.warn('[bookingsData] loadBookings tables:', btErr.message);
@@ -200,6 +221,17 @@ export async function loadBookings(locationId, dateISO) {
       if (!payErr) {
         for (const r of pay || []) {
           if (r.kind === 'refund') continue;
+          // 16 Oct 2026 release review: money flagged to go back (a guest cancel in time) is kept
+          // apart, so Back Office can offer Refund on a cancelled booking. Never counted as paid.
+          if (r.status === 'needs_refund') {
+            if (r.kind === 'prepay' || r.kind === 'deposit') {
+              owedBack.set(r.booking_id, (owedBack.get(r.booking_id) || 0) + Math.round((Number(r.amount) || 0) * 100));
+            }
+            continue;
+          }
+          // 16 Oct 2026: a no show or late cancel fee is the venue's revenue, never money paid
+          // with the booking (it would badge the booking prepaid and count as credit).
+          if (r.kind === 'no_show_charge') continue;
           const p = paid.get(r.booking_id) || { total: 0, prepay: 0, deposit: 0 };
           const minor = Math.round((Number(r.amount) || 0) * 100); // amount is POUNDS
           p.total += minor;
@@ -216,6 +248,7 @@ export async function loadBookings(locationId, dateISO) {
       _paidMinor: paid.get(r.id)?.total ?? null,
       _paidPrepayMinor: paid.get(r.id)?.prepay ?? null,
       _paidDepositMinor: paid.get(r.id)?.deposit ?? null,
+      _owedBackMinor: owedBack.get(r.id) ?? null,
     })).filter(Boolean), ...(tablesError ? { error: tablesError, partial: true } : {}) };
   } catch (e) {
     if (warnAbsentOr(e, 'loadBookings')) return { data: [] };
@@ -248,7 +281,10 @@ export async function createBookingAtomic(b, locationId) {
       p_pacing_override_by: b.pacingOverrideBy || null,
     });
     if (error) { if (!warnAbsentOr(error, 'createBooking')) console.warn('[bookingsData] createBooking:', error.message); return { ok: false, error: error.message }; }
-    return { ok: !!data?.ok, error: data?.error || null, tableId: data?.table_id || null, conflictBookingId: data?.booking_id && !data?.ok ? data.booking_id : null };
+    // 16 Oct 2026: tell the guest (confirmation by text and email, with their change and cancel
+    // link). Fire and forget; a walk in or a booking with no phone or email sends nothing.
+    if (data?.ok) nudgeConfirmation(b);
+    return { ok: !!data?.ok, error: data?.error || null, tableId: data?.table_id || null, conflictBookingId: data?.booking_id && !data?.ok ? data.booking_id : null, message: data?.message || null };
   } catch (e) {
     return { ok: false, error: e?.message || 'write failed' };
   }
@@ -372,7 +408,7 @@ export async function editBookingAtomic(id, next, locationId) {
       ok: !!data?.ok, error: data?.error || null, tableId: data?.table_id || null,
       seats: data?.seats ?? null, status: data?.status || null, retabled: !!data?.retabled,
       editedAt: data?.edited_at || null, editedBy: data?.edited_by || null,
-      refused: !data?.ok,
+      refused: !data?.ok, message: data?.message || null,
     };
   } catch (e) { return { ok: false, error: e?.message || 'edit failed' }; }
 }
@@ -531,16 +567,23 @@ export async function loadBookingPayments(bookingId) {
 export async function loadBookingCredit(bookingId) {
   if (isMock || !supabase || !bookingId) return { prepayMinor: 0, depositMinor: 0 };
   try {
-    const { data, error } = await supabase.from('booking_payments')
-      .select('kind, amount, status, applied_to_check, refusal_reason')
+    // 16 Oct 2026 (host tools): what was refunded is not credit (amount_refunded_minor, migration
+    // 20261016d, the same subtraction as _booking_credit_for_session). Before the migration the
+    // column is not there and only a full refund can be made, which the status already covers.
+    const read = (cols) => supabase.from('booking_payments').select(cols)
       .eq('booking_id', bookingId).eq('status', 'captured').eq('applied_to_check', false);
+    const BASE = 'kind, amount, status, applied_to_check, refusal_reason';
+    let { data, error } = await read(`${BASE}, amount_refunded_minor`);
+    if (error && (missingColumn(error) || String(error.code || '') === '42501' || /permission denied/i.test(String(error.message || '')))) {
+      ({ data, error } = await read(BASE));
+    }
     if (error) { warnAbsentOr(error, 'loadBookingCredit'); return { prepayMinor: 0, depositMinor: 0 }; }
     let prepayMinor = 0, depositMinor = 0;
     for (const r of data || []) {
       // 16 Oct 2026: a row flagged NEEDS REFUND is owed back, never credit on the bill (the
       // reader's _booking_credit_for_session leaves it out too, so the till and reader agree).
       if (/^needs refund/i.test(String(r.refusal_reason || ''))) continue;
-      const minor = Math.round((Number(r.amount) || 0) * 100);
+      const minor = paymentNetMinor(r);
       if (r.kind === 'prepay') prepayMinor += minor;
       else if (r.kind === 'deposit') depositMinor += minor;
     }
@@ -601,7 +644,13 @@ export async function saveBookingRules(locationId, patch) {
   }
   try {
     const { error } = await supabase.from('booking_rules').upsert(row, { onConflict: 'location_id' });
-    if (error) { if (!warnAbsentOr(error, 'saveBookingRules')) console.warn('[bookingsData] saveBookingRules:', error.message); return { ok: false, error: error.message }; }
+    if (error) {
+      // 16 Oct 2026: a service period write before migration 20261016e names a column the
+      // database does not have yet. Say that in words; nothing was saved.
+      if (touchesServiceRules(patch) && missingColumn(error)) return { ok: false, error: error.message, words: SERVICE_RULES_MISSING };
+      if (!warnAbsentOr(error, 'saveBookingRules')) console.warn('[bookingsData] saveBookingRules:', error.message);
+      return { ok: false, error: error.message };
+    }
     return { ok: true };
   } catch (e) { return { ok: false, error: e?.message }; }
 }

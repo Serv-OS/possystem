@@ -64,3 +64,38 @@ test('PARITY: paceFull identical', () => {
     assert.equal(copy.paceFull(l, p, c), src.paceFull(l, p, c));
   }
 });
+
+// 16 Oct 2026: service periods and booking rules. The widget sells from the copy's slot grid and
+// the stand from the source's, so they must agree on every day and every refusal.
+test('PARITY: service periods, slots, refusals and the diary greying identical', () => {
+  const rules = {
+    servicePeriods: [
+      { id: 'l', name: 'Lunch', days: [2, 3, 4, 5, 6, 7], start: '12:00', end: '15:00', lastSeating: '13:30' },
+      { id: 'd', name: 'Dinner', days: [5, 6], start: '18:00', end: '01:00', lastSeating: '00:15' },
+    ],
+    closedWeekdays: [1],
+    dateBlocks: [
+      { id: 'x', from: '2026-12-24', to: '2026-12-26', label: 'Christmas' },
+      { id: 'p', from: '2026-10-17', label: 'Private hire', start: '18:00', end: '21:00' },
+      { id: 'o', from: '2026-10-22', to: '2026-10-22', label: 'Walk ins only', onlineOnly: true },
+    ],
+    blockedDates: ['2026-10-23'],
+    minNoticeMinutes: 60,
+    widgetMaxDaysAhead: 60,
+    slotMinutes: 15,
+  };
+  const now = { ymd: '2026-10-16', nowMinutes: 12 * 60 };
+  for (let i = -1; i < 72; i++) {
+    const d = src.addDaysISO('2026-10-16', i);
+    for (const online of [false, true]) {
+      assert.deepEqual(copy.serviceSlots(rules, d, { online }), src.serviceSlots(rules, d, { online }), `slots ${d} ${online}`);
+      assert.deepEqual(copy.serviceWindows(rules, d, { online }), src.serviceWindows(rules, d, { online }), `windows ${d}`);
+      for (const t of ['00:00', '00:15', '11:45', '12:00', '13:30', '13:45', '16:00', '18:00', '19:30', '23:45']) {
+        assert.deepEqual(copy.bookingTimeRefusal(rules, d, t, { online, now }), src.bookingTimeRefusal(rules, d, t, { online, now }), `${d} ${t} ${online}`);
+      }
+    }
+    assert.deepEqual(copy.closedRanges(rules, d, 0, 1440), src.closedRanges(rules, d, 0, 1440));
+    assert.deepEqual(copy.diaryRange(rules, d), src.diaryRange(rules, d));
+    assert.equal(copy.dayNotice(rules, d), src.dayNotice(rules, d));
+  }
+});

@@ -103,10 +103,10 @@ test('pin: every flipped report renders its one site view untouched when one sit
 
 test('the eleven easy reports and (step 4) the menu, tax, tips and kitchen reports are flagged multi; the rest are not', () => {
   for (const v of ['summary', 'daily_trend', 'order_types', 'order_sources', 'daypart', 'servers', 'shifts', 'exceptions', 'payments', 'tables', 'transactions',
-    'items', 'item_trend', 'menu_eng', 'tax', 'tips', 'kds_perf']) {
+    'items', 'item_trend', 'menu_eng', 'tax', 'tips', 'kds_perf', 'bookings', 'booking_payments']) {
     assert.equal(REPORT_SITE_MODE[v], 'multi', v);
   }
-  for (const v of ['payroll', 'daily_trading', 'bookings', 'zreport', 'cash_drawer', 'open']) assert.equal(REPORT_SITE_MODE[v], 'home', v);
+  for (const v of ['payroll', 'daily_trading', 'zreport', 'cash_drawer', 'open']) assert.equal(REPORT_SITE_MODE[v], 'home', v);
   const { scope } = shellSites(['leeds', 'station']);
   assert.deepEqual(sitesForView('summary', scope).sites.map((s) => s.id).sort(), ['leeds', 'station']);
   assert.equal(sitesForView('summary', scope).note, null);

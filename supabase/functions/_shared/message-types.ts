@@ -82,6 +82,20 @@ const TAG_PACKAGE_NAME: MergeTag = { tag: 'package_name', label: 'Package Name',
 const TAG_PACKAGE_LINE: MergeTag = { tag: 'package_line', label: 'Package Clause (auto, empty if no package)', example: 'with Tasting Menu · 7 course ' };
 const TAG_PREORDER_LINK: MergeTag = { tag: 'preorder_link', label: 'Choose-menu Link', example: 'https://venue.serv-os.app/book?preorder=abc123' };
 const TAG_PREORDER_LINK_LINE: MergeTag = { tag: 'preorder_link_line', label: 'Choose-menu Sentence (auto, empty if no choices needed)', example: 'Choose your menu: https://venue.serv-os.app/book?preorder=abc123 ' };
+// 16 Oct 2026: the guest's own link, the venue's phone and address, and a calendar link. Each
+// *_line tag is a whole sentence that is EMPTY when it does not apply (no phone saved yet), so
+// one template reads right for every venue.
+const TAG_MANAGE_LINK: MergeTag = { tag: 'manage_link', label: 'Change or cancel link', example: 'https://venue.serv-os.app/book?manage=abc123' };
+const TAG_MANAGE_LINK_LINE: MergeTag = { tag: 'manage_link_line', label: 'Change or cancel sentence (auto)', example: 'Change or cancel: https://venue.serv-os.app/book?manage=abc123 ' };
+const TAG_VENUE_PHONE: MergeTag = { tag: 'venue_phone', label: 'Venue phone', example: '01484 000000' };
+const TAG_VENUE_PHONE_LINE: MergeTag = { tag: 'venue_phone_line', label: 'Call us sentence (auto, empty if no phone saved)', example: 'Call us on 01484 000000. ' };
+const TAG_VENUE_ADDRESS: MergeTag = { tag: 'venue_address', label: 'Venue address', example: '9 New Street, Huddersfield' };
+const TAG_VENUE_ADDRESS_LINE: MergeTag = { tag: 'venue_address_line', label: 'Find us sentence (auto, empty if no address saved)', example: 'Find us at 9 New Street, Huddersfield. ' };
+const TAG_CALENDAR_LINK: MergeTag = { tag: 'calendar_link', label: 'Add to calendar link (Google)', example: 'https://calendar.google.com/calendar/render?action=TEMPLATE' };
+const TAG_CALENDAR_LINK_LINE: MergeTag = { tag: 'calendar_link_line', label: 'Add to calendar sentence (auto)', example: 'Add it to your calendar: https://calendar.google.com/calendar/render?action=TEMPLATE ' };
+const TAG_WHEN: MergeTag = { tag: 'when', label: 'When (tomorrow or today)', example: 'tomorrow' };
+const TAG_MONEY_LINE: MergeTag = { tag: 'money_line', label: 'Money sentence (auto, empty if nothing was paid)', example: 'The £120 you paid will be refunded by the venue. ' };
+const GUEST_TAGS: MergeTag[] = [TAG_MANAGE_LINK, TAG_MANAGE_LINK_LINE, TAG_VENUE_PHONE, TAG_VENUE_PHONE_LINE, TAG_VENUE_ADDRESS, TAG_VENUE_ADDRESS_LINE, TAG_CALENDAR_LINK, TAG_CALENDAR_LINK_LINE];
 
 // ── Message type definitions ────────────────────────────────────────────────
 
@@ -310,13 +324,13 @@ Earn points on every order · Redeem rewards · Birthday treats · Gift card bal
   {
     type: 'booking_confirmation',
     label: 'Booking Confirmation',
-    description: 'Sent by SMS and email the moment a table booking is made (widget or host stand)',
+    description: 'Sent by SMS and email when a table booking is made: on the booking page, at the host stand, on the till or in Back Office',
     category: 'Bookings',
     channels: ['email', 'sms'],
-    mergeTags: [TAG_CUSTOMER_NAME, TAG_VENUE_NAME, TAG_DATE, TAG_TIME, TAG_PARTY_SIZE, TAG_PACKAGE_NAME, TAG_PACKAGE_LINE, TAG_PREORDER_LINK, TAG_PREORDER_LINK_LINE],
+    mergeTags: [TAG_CUSTOMER_NAME, TAG_VENUE_NAME, TAG_DATE, TAG_TIME, TAG_PARTY_SIZE, TAG_PACKAGE_NAME, TAG_PACKAGE_LINE, TAG_PREORDER_LINK, TAG_PREORDER_LINK_LINE, ...GUEST_TAGS],
     defaults: {
       sms: {
-        body: `{{venue_name}}: table for {{party_size}} booked {{package_line}}on {{date}} at {{time}}. {{preorder_link_line}}Need to change it? Call the venue.`,
+        body: `{{venue_name}}: table for {{party_size}} booked {{package_line}}on {{date}} at {{time}}. {{preorder_link_line}}{{manage_link_line}}{{venue_phone_line}}`,
       },
       email: {
         subject: `Booking confirmed: {{venue_name}}, {{date}}`,
@@ -326,7 +340,84 @@ Your table for {{party_size}} at {{venue_name}} is booked {{package_line}}for {{
 
 {{preorder_link_line}}
 
-Need to change anything? Just call the venue.`,
+{{calendar_link_line}}
+
+{{manage_link_line}}
+
+{{venue_address_line}}{{venue_phone_line}}`,
+      },
+    },
+  },
+  {
+    type: 'booking_reminder',
+    label: 'Booking Reminder',
+    description: 'Sent the day before (between 10:00 and 21:00) and again 2 hours before the booking',
+    category: 'Bookings',
+    channels: ['email', 'sms'],
+    mergeTags: [TAG_CUSTOMER_NAME, TAG_VENUE_NAME, TAG_DATE, TAG_TIME, TAG_PARTY_SIZE, TAG_WHEN, TAG_PACKAGE_NAME, TAG_PACKAGE_LINE, ...GUEST_TAGS],
+    defaults: {
+      sms: {
+        body: `{{venue_name}}: see you {{when}} at {{time}}, table for {{party_size}}. {{manage_link_line}}{{venue_phone_line}}`,
+      },
+      email: {
+        subject: `See you {{when}}: {{venue_name}}, {{time}}`,
+        body: `Hi {{customer_name}},
+
+A reminder that your table for {{party_size}} at {{venue_name}} is {{when}}, {{date}} at {{time}}.
+
+Plans changed? {{manage_link_line}}
+
+{{venue_address_line}}{{venue_phone_line}}`,
+      },
+    },
+  },
+  {
+    type: 'booking_changed',
+    label: 'Booking Changed',
+    description: 'Sent when the date, time or party size of a booking changes, by the guest or by the team',
+    category: 'Bookings',
+    channels: ['email', 'sms'],
+    mergeTags: [TAG_CUSTOMER_NAME, TAG_VENUE_NAME, TAG_DATE, TAG_TIME, TAG_PARTY_SIZE, TAG_MONEY_LINE, ...GUEST_TAGS],
+    defaults: {
+      sms: {
+        body: `{{venue_name}}: your booking is now {{date}} at {{time}}, table for {{party_size}}. {{money_line}}{{manage_link_line}}{{venue_phone_line}}`,
+      },
+      email: {
+        subject: `Booking changed: {{venue_name}}, {{date}} at {{time}}`,
+        body: `Hi {{customer_name}},
+
+Your booking at {{venue_name}} is now {{date}} at {{time}}, table for {{party_size}}.
+
+{{money_line}}
+
+{{calendar_link_line}}
+
+{{manage_link_line}}
+
+{{venue_phone_line}}`,
+      },
+    },
+  },
+  {
+    type: 'booking_cancelled',
+    label: 'Booking Cancelled',
+    description: 'Sent when a booking is cancelled, by the guest or by the team (not for a duplicate or a mistake)',
+    category: 'Bookings',
+    channels: ['email', 'sms'],
+    mergeTags: [TAG_CUSTOMER_NAME, TAG_VENUE_NAME, TAG_DATE, TAG_TIME, TAG_PARTY_SIZE, TAG_MONEY_LINE, TAG_VENUE_PHONE, TAG_VENUE_PHONE_LINE],
+    defaults: {
+      sms: {
+        body: `{{venue_name}}: your booking for {{party_size}} on {{date}} at {{time}} is cancelled. {{money_line}}{{venue_phone_line}}`,
+      },
+      email: {
+        subject: `Booking cancelled: {{venue_name}}, {{date}}`,
+        body: `Hi {{customer_name}},
+
+Your booking for {{party_size}} at {{venue_name}} on {{date}} at {{time}} is cancelled.
+
+{{money_line}}
+
+We hope to see you another time. {{venue_phone_line}}`,
       },
     },
   },

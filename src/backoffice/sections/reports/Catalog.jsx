@@ -109,7 +109,8 @@ export const CATEGORIES = [
       { id:'transactions', label:'Transactions & refunds', desc:'All closed checks with search, item details, and full or item-level refunds' },
       { id:'open',   label:'Open orders', desc:'Tables still on the floor, not yet paid', signalKey:'open', signalWord:'live' },
       { id:'tables', label:'Tables',      desc:'Revenue, turns, covers and avg check by table' },
-      { id:'bookings', label:'Bookings',  desc:'Booking volume, covers, no-shows, sources and peak times for the period' },
+      { id:'bookings', label:'Bookings',  desc:'Covers by service, no-shows, cancellations, money from bookings, lead sources and peak times' },
+      { id:'booking_payments', label:'Booking payments', desc:'Prepay, deposits, saved cards and no show charges, with the guest, the table, the card and what is owed back' },
     ],
   },
   {

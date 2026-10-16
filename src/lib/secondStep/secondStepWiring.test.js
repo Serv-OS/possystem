@@ -14,7 +14,7 @@ const exists = (p) => fs.existsSync(new URL(`../../../${p}`, import.meta.url));
 // Every edge function that authorises a real login from its JWT (the 18 Sep authority map,
 // plus customer-import, menu-translate, po-send and terminal-job-cancel found while wiring).
 export const WIRED_AT_TOP = [
-  'adyen-create-session', 'adyen-financial', 'adyen-modify', 'adyen-onboard', 'adyen-terminal-admin', 'adyen-terminal-charge',
+  'adyen-create-session', 'adyen-financial', 'adyen-modify', 'booking-charge', 'booking-host', 'adyen-onboard', 'adyen-terminal-admin', 'adyen-terminal-charge',
   'challenge21-counter', 'create-user', 'customer-import', 'ezcater-connect', 'gift-fulfill',
   'hubrise-catalog-push', 'hubrise-connect', 'hubrise-inventory-push', 'hubrise-order-status',
   'location-admin', 'manager-approve', 'manager-snapshot',

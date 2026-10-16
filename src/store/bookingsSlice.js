@@ -33,7 +33,7 @@ import { bookingIdsToDepart } from '../lib/bookings/departOnClose.js';
 import { seatRefusal, undoCancelStatus } from '../lib/bookings/standRules.js';
 import { packageItemsFor } from '../lib/bookings/packagePricing.js';
 import { optimiserTables } from '../lib/bookings/optimiserTables.js';
-import { validateEdit, conflictsFor, paymentAfterEdit, stampEdit, hasGuest, describeChanges, editRefusal, MOVE_NON_BLOCKING, bookingRefusalWords } from '../lib/bookings/editRules.js';
+import { validateEdit, conflictsFor, paymentAfterEdit, stampEdit, hasGuest, describeChanges, editRefusal, MOVE_NON_BLOCKING, bookingRefusalWords, standTimeRefusal } from '../lib/bookings/editRules.js';
 import { logActivity } from '../lib/activity.js';
 import { buildScheduleCtx, minutesInTz } from '../lib/locationTime.js';
 import { supabase, isMock, getActiveLocationSync, getLocationId, isHostStandMode } from '../lib/supabase.js';
@@ -264,6 +264,11 @@ export function bookingsSlice(set, get) {
       if (!booking.startTime || !booking.covers || !booking.tables?.length) {
         return { ok: false, error: 'Booking needs a time, covers and at least one table' };
       }
+      // 16 Oct 2026 (bookings audit section 3 item 6): service periods, closed days and date
+      // blocks, so a stand says why before the database does (standTimeRefusal, tested; walk
+      // ins are never held to them).
+      const why = standTimeRefusal(booking, rules);
+      if (why) return { ok: false, error: why.code, message: why.message };
 
       if (isTrainingMode()) {
         // Training till: show it locally, never write. Matches the gate-every-
@@ -279,7 +284,7 @@ export function bookingsSlice(set, get) {
         const label = res.tableId ? ((get().tables || []).find((t) => t.id === res.tableId)?.label || null) : null;
         return {
           ok: false, error: res.error || 'Could not save the booking', tableId: res.tableId || null,
-          message: bookingRefusalWords({ error: res.error, tableLabel: label }),
+          message: bookingRefusalWords({ error: res.error, tableLabel: label, message: res.message }),
         };
       }
       if (booking.date === (get().bookingsDate || todayISO(get))) {
@@ -429,7 +434,8 @@ export function bookingsSlice(set, get) {
       const v = validateEdit({
         booking: entry,
         patch: { ...patch, customer: stamped },
-        rules: { serviceStart: rules.serviceStart || '17:00', serviceEnd: rules.serviceEnd || '23:00', turnBands: rules.turnBands || DEFAULT_TURN_BANDS },
+        // 16 Oct 2026: the whole rules object, so service periods, closed days and blocks count.
+        rules: { ...rules, serviceStart: rules.serviceStart || '17:00', serviceEnd: rules.serviceEnd || '23:00', turnBands: rules.turnBands || DEFAULT_TURN_BANDS },
         tables: tablesForRules,
         today: ctx.ymd,
         pkg,
@@ -544,7 +550,7 @@ export function bookingsSlice(set, get) {
         if (atomic.error === 'stale') return refuse(staleWords(atomic.editedAt, atomic.editedBy), { stale: true });
         if (/payment_gate|waiting for payment/i.test(String(atomic.error || ''))) msg = 'This booking is waiting for payment, so its covers cannot change.';
         else if (atomic.error === 'table_taken') msg = `${label || 'That table'} is held by another booking at that time. Nothing was changed.`;
-        else if (atomic.refused) msg = bookingRefusalWords({ error: atomic.error, tableLabel: label, seats: atomic.seats, status: atomic.status });
+        else if (atomic.refused) msg = bookingRefusalWords({ error: atomic.error, tableLabel: label, seats: atomic.seats, status: atomic.status, message: atomic.message });
         else msg = `Booking NOT saved: ${atomic.error || 'the database refused the change'}.`;
         return refuse(msg);
       }
@@ -961,16 +967,17 @@ export function bookingsSlice(set, get) {
       for (const k of Object.keys(patch || {})) previous[k] = current[k];
       set({ bookingRules: { ...current, ...patch } });
       if (isTrainingMode()) return { ok: true };
-      const revert = (error) => {
+      const revert = (error, words = null) => {
         // Only the keys this save touched, on top of whatever is there NOW.
         set({ bookingRules: { ...(get().bookingRules || {}), ...previous } });
-        get().showToast?.('Booking rules NOT saved', 'error');
+        // 16 Oct 2026: words when the data layer has them (service periods before 20261016e).
+        get().showToast?.(words || 'Booking rules NOT saved', 'error');
         console.warn('[bookings] saveBookingRules failed:', error);
       };
       const locId = await resolveLocationId();
       if (!locId) { revert('no location'); return { ok: false, error: 'no location' }; }
       const res = await saveBookingRules(locId, patch);
-      if (!res.ok) revert(res.error);
+      if (!res.ok) revert(res.error, res.words);
       return res;
     },
 

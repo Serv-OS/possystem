@@ -14,27 +14,36 @@
 //   5 Discounts, voids and refunds
 //   6 Top items            by quantity, by sales, by category
 //   7 Labour against sales hidden when the period has no timesheets
+//
+// 16 Oct 2026, the Net / Gross switch: Sales by hour, Week by day and Order types and channels
+// follow it (src/lib/ownerBasis.js maps the function's gross figures into the shapes the charts
+// read). Payment mix is money taken (VAT in) whatever the switch; Top items and the Sales mix
+// money are till prices, as Product mix; labour is a share of net sales. Each card says so, in
+// words from ownerBasis.reportNotes.
 
 import { useState } from 'react';
 import {
   hourChart, hoursLineWords, weekChart, shareRows, paymentMix, orderTypeLabel, channelLabel, labourView,
 } from '../../lib/ownerDetail';
 import { detailRows, noteFor } from '../../lib/ownerMix';
+import { basisHours, basisWeek, basisRows, reportNotes } from '../../lib/ownerBasis';
 import { ReportCard, Empty, BarLine, Tabs } from './ui';
 import { money, smallCaps, linkBtn } from './style';
 
 const FAINT = 'var(--t3)';
 
-export default function OwnerReports({ detail, period, range, currency }) {
+export default function OwnerReports({ detail, period, basis = 'net', range, currency }) {
   const m = (n, dp = 0) => money(n, currency, dp);
+  // 16 Oct 2026: every card's words about VAT and the switch, from one pure place (ownerBasis.reportNotes).
+  const notes = reportNotes(basis, currency);
   return (
     <>
-      <HoursCard hours={detail.hours} period={period} range={range} m={m} />
+      <HoursCard hours={basisHours(detail.hours, basis)} period={period} range={range} m={m} label={notes.sales} />
       <SalesMixCard mix={detail.mix} period={period} m={m} />
-      <WeekCard week={detail.week} m={m} />
-      <PaymentsCard payments={detail.payments} m={m} />
-      <MixCard types={detail.order_types} channels={detail.channels} m={m} />
-      <ExceptionsCard ex={detail.exceptions} m={m} />
+      <WeekCard week={basisWeek(detail.week, basis)} m={m} label={notes.sales} />
+      <PaymentsCard payments={detail.payments} m={m} note={notes.payments} />
+      <MixCard types={basisRows(detail.order_types, basis)} channels={basisRows(detail.channels, basis)} m={m} note={notes.types} />
+      <ExceptionsCard ex={detail.exceptions} m={m} note={notes.exceptions} />
       <ItemsCard items={detail.items} m={m} />
       <LabourCard labour={detail.labour} m={m} />
     </>
@@ -42,7 +51,7 @@ export default function OwnerReports({ detail, period, range, currency }) {
 }
 
 // ── 1. Sales by hour ─────────────────────────────────────────────────────────
-function HoursCard({ hours, period, range, m }) {
+function HoursCard({ hours, period, range, m, label }) {
   const [open, setOpen] = useState(false);
   const c = hourChart(hours);
   const n = c.rows.length;
@@ -50,7 +59,7 @@ function HoursCard({ hours, period, range, m }) {
   const step = n <= 9 ? 1 : n <= 16 ? 2 : 3;
   const line = hoursLineWords(period, range);
   return (
-    <ReportCard title="Sales by hour" note={c.peak ? `Busiest hour ${c.peak.label}, ${m(c.peak.net)}` : null}>
+    <ReportCard title="Sales by hour" note={c.peak ? `Busiest hour ${c.peak.label}, ${m(c.peak.net)}. ${label}.` : `${label}.`}>
       {!n ? <Empty>No sales in these hours yet.</Empty> : (
         <>
           <div style={{ position: 'relative', height: 120, display: 'flex', alignItems: 'flex-end' }}>
@@ -107,7 +116,7 @@ function SalesMixCard({ mix, period, m }) {
     return <ReportCard title="Sales mix"><Empty>No sales groups set yet. Set them in Back Office, Reports, Sales mix. Until then every item is in Other sales.</Empty></ReportCard>;
   }
   return (
-    <ReportCard title="Sales mix" note={noteFor(period, mix.cmp_total != null)}>
+    <ReportCard title="Sales mix" note={`${noteFor(period, mix.cmp_total != null)} Till prices: the Net / Gross switch does not change these.`}>
       {v.rows.map((r) => (
         <div key={r.key}>
           <BarLine label={r.name} value={m(r.money)} sub={`${r.share}%`} w={r.w} color={r.color} />
@@ -131,10 +140,10 @@ function SalesMixCard({ mix, period, m }) {
 }
 
 // ── 2. Week by day ───────────────────────────────────────────────────────────
-function WeekCard({ week, m }) {
+function WeekCard({ week, m, label }) {
   const c = weekChart(week);
   return (
-    <ReportCard title="Week by day" note="This week against last week. Last week is whole days.">
+    <ReportCard title="Week by day" note={`This week against last week. Last week is whole days. ${label}.`}>
       {!(c.max > 0) ? <Empty>No sales this week or last.</Empty> : c.rows.map((r) => (
         <div key={r.dow} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 9 }}>
           <div style={{ width: 30, fontSize: 12, fontWeight: 700, color: 'var(--t3)', flexShrink: 0 }}>{r.dow}</div>
@@ -157,10 +166,10 @@ function WeekCard({ week, m }) {
 }
 
 // ── 3. Payment mix ───────────────────────────────────────────────────────────
-function PaymentsCard({ payments, m }) {
+function PaymentsCard({ payments, m, note }) {
   const mix = paymentMix(payments);
   return (
-    <ReportCard title="Payment mix" note="What each kind took for goods, tax in, tips out.">
+    <ReportCard title="Payment mix" note={note}>
       {!mix.money.length && !mix.credits.length ? <Empty>No payments in this period.</Empty> : (
         <>
           {mix.money.map((p) => <BarLine key={p.kind} label={p.label} value={m(p.amount, 2)} sub={`${p.share}%`} w={p.w} />)}
@@ -177,10 +186,10 @@ function PaymentsCard({ payments, m }) {
 }
 
 // ── 4. Order types and channels ──────────────────────────────────────────────
-function MixCard({ types, channels, m }) {
+function MixCard({ types, channels, m, note }) {
   const t = shareRows(types, 'net'), ch = shareRows(channels, 'net');
   return (
-    <ReportCard title="Order types and channels" note="Net sales.">
+    <ReportCard title="Order types and channels" note={note}>
       {!t.length && !ch.length ? <Empty>No sales in this period.</Empty> : (
         <>
           <div style={{ ...smallCaps, marginBottom: 6 }}>Order types</div>
@@ -194,14 +203,14 @@ function MixCard({ types, channels, m }) {
 }
 
 // ── 5. Discounts, voids and refunds ──────────────────────────────────────────
-function ExceptionsCard({ ex, m }) {
+function ExceptionsCard({ ex, m, note }) {
   const parts = [
     { key: 'discounts', label: 'Discounts', e: ex?.discounts },
     { key: 'voids', label: 'Voids', e: ex?.voids },
     { key: 'refunds', label: 'Refunds', e: ex?.refunds },
   ];
   return (
-    <ReportCard title="Discounts, voids and refunds">
+    <ReportCard title="Discounts, voids and refunds" note={note}>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8 }}>
         {parts.map((p) => (
           <div key={p.key} style={{ background: 'var(--bg2)', borderRadius: 10, padding: '8px 10px' }}>
@@ -247,7 +256,7 @@ function ItemsCard({ items, m }) {
   const shown = all ? list : list.slice(0, SHORT_LIST);
   const any = (items?.by_qty?.length || 0) > 0;
   return (
-    <ReportCard title="Top items" note="Sales include paid extras.">
+    <ReportCard title="Top items" note="Till prices with paid extras, before check discounts. The Net / Gross switch does not change these.">
       {!any ? <Empty>No items sold in this period.</Empty> : (
         <>
           <Tabs options={ITEM_TABS} value={by} onChange={(id) => { setBy(id); setAll(false); }} label="Sort items" />

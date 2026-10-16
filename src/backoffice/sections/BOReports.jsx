@@ -50,6 +50,7 @@ import LocationCompare from './reports/LocationCompare';
 import CashDrawer    from './reports/CashDrawer';
 import LoyaltyReport from './reports/LoyaltyReport';
 import BookingsReport from './reports/BookingsReport';
+import BookingPaymentsReport from './reports/BookingPaymentsReport';
 import Transactions  from './Transactions';
 import { money } from '../../lib/currency';
 
@@ -69,7 +70,7 @@ const NO_SITES = [];
 // not take them down; Kitchen performance stands on the ticket read, and (6 Oct 2026 review)
 // on the checks read when THAT is what stopped everything: the tickets are halted with the
 // checks, so an empty ticket list then is not "no kitchen tickets", it is the same fault.
-const OWN_DATA_VIEWS = new Set(['payroll', 'daily_trading', 'bookings', 'location_compare', 'cash_drawer', 'open']);
+const OWN_DATA_VIEWS = new Set(['payroll', 'daily_trading', 'bookings', 'booking_payments', 'location_compare', 'cash_drawer', 'open']);
 function faultFor(view, loadFault, kdsFault) {
   if (OWN_DATA_VIEWS.has(view) || view.startsWith('loyalty_')) return null;
   if (view === 'kds_perf') return kdsFault || loadFault || null;
@@ -605,7 +606,8 @@ export default function BOReports({ setSection, canOpen } = {}) {
           {view === 'order_types' && <OrderTypes   checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig} compare={shownCompare} {...siteProps}/>}
           {view === 'order_sources' && <OrderSources checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig} compare={shownCompare} {...siteProps}/>}
           {view === 'tables'      && <Tables       checks={filtered} fmt={fmt} fmtN={fmtN} {...siteProps}/>}
-          {view === 'bookings'    && <BookingsReport fromDay={range.fromDay} toDay={range.toDay} locationConfig={locationConfig} fmtN={fmtN} {...siteProps}/>}
+          {view === 'bookings'    && <BookingsReport fromDay={range.fromDay} toDay={range.toDay} range={range} locationConfig={locationConfig} fmtN={fmtN} {...siteProps}/>}
+          {view === 'booking_payments' && <BookingPaymentsReport range={range} fmtN={fmtN} {...siteProps}/>}
           {view === 'kds_perf'    && <KDSPerformance kdsTickets={kdsTickets || []} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig} {...siteProps}/>}
           {view === 'zreport'     && <ZReport      checks={filtered} periodLabelText={periodLabel(period, customRange, range)} rangeFrom={range.from} rangeTo={range.to} timeZone={range.timeZone} fmt={fmt} fmtN={fmtN} {...siteProps}/>}
           {view === 'tax'        && <Tax          checks={filtered} fmt={fmt} fmtN={fmtN} rangeFrom={range.from} rangeTo={range.to} locationId={activeLocId} {...siteProps}/>}
