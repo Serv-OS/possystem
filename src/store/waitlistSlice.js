@@ -57,7 +57,7 @@ import {
 } from '../lib/waitlist/waitlistData.js';
 
 import { fetchCustomerByPhone, normalisePhone } from '../lib/customerLookup.js';
-import { flushSingleSession } from '../sync/SessionSync.js';
+import { flushSingleSession, markStandOwned } from '../sync/SessionSync.js';
 
 import {
   supabase,
@@ -362,13 +362,14 @@ export function waitlistSlice(set, get) {
           // seatTable makes the seated table active. A host stand never clears it, and an active
           // table is skipped by the realtime INSERT and UPDATE handlers and by the
           // SessionReconciler, so the stand would miss the till's lines on it. A stand edits no check.
-          if (isHostStandMode()) set({ activeTableId: null });
+          // A host stand publishes only a table it seated (SessionSync markStandOwned).
+          if (isHostStandMode()) { markStandOwned(opts.tableId); set({ activeTableId: null }); }
           // The host stand renders WITHOUT SyncBridge, so seatTable's in-memory session would
           // never reach active_sessions and the 30s floor poll would flip the table back to free.
           // Persist JUST this table (flushSingleSession) — NOT the global flushSessions, which from
           // the host stand's poll-snapshot view would write/delete every other table and wipe
           // POS-seated ones. Honours "tables MUST never be lost" without clobbering other devices.
-          flushSingleSession(opts.tableId);
+          await flushSingleSession(opts.tableId);
         } catch (e) {
           console.warn('[waitlist] seatTable failed:', e?.message || e);
         }

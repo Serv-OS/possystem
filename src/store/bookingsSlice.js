@@ -30,7 +30,7 @@ import { packageItemsFor } from '../lib/bookings/packagePricing.js';
 import { buildScheduleCtx } from '../lib/locationTime.js';
 import { supabase, isMock, getActiveLocationSync, getLocationId, isHostStandMode } from '../lib/supabase.js';
 import { isTrainingMode } from '../lib/trainingMode.js';
-import { flushSingleSession } from '../sync/SessionSync.js';
+import { flushSingleSession, markStandOwned } from '../sync/SessionSync.js';
 import { isSessionClosed } from '../sync/sessionClosure.js';
 import { readServerSessions, mergeServerSessions } from '../lib/bookings/standSessionSync.js';
 
@@ -454,7 +454,8 @@ export function bookingsSlice(set, get) {
         // it leaves the POS; a host stand never does, and an active table is skipped by the
         // realtime INSERT and UPDATE handlers and by the SessionReconciler, so the stand would not
         // see the till's lines on that table until the 30 second reconcile. A stand edits no check.
-        if (isHostStandMode()) set({ activeTableId: null });
+        // A host stand publishes only a table it seated (SessionSync markStandOwned).
+        if (isHostStandMode()) { markStandOwned(b.primaryTableId); set({ activeTableId: null }); }
         // Persist just this table's session immediately (the waitlist lesson:
         // a host stand's floor poll can flip the table back before the flush).
         try { await flushSingleSession(b.primaryTableId); } catch { /* best-effort */ }

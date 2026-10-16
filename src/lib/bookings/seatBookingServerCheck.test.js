@@ -1,5 +1,5 @@
 /**
- * seatBookingServerCheck.test.js — seatBooking asks the server before refusing (16 Oct 2026).
+ * seatBookingServerCheck.test.js: seatBooking asks the server before refusing (16 Oct 2026).
  *
  * The bookings host stand held a copy of T1's session after the till had cashed it off, and
  * "Seat now, open POS tab" refused with "Still has an open tab". The slice has no node harness
@@ -7,7 +7,8 @@
  * re-read for the booking's tables before any refusal, a row with no lines is a different
  * refusal (table_seated_empty) that both screens put into words, and after a seat on a host
  * stand the floor's session comes from the server row. Every seat reads the server, only a
- * host stand writes the merge, and a host stand drops the active table after seating.
+ * host stand writes the merge, and a host stand marks the seated table as the one it may
+ * publish (SessionSync markStandOwned) and drops the active table after seating.
  */
 
 import { test } from 'node:test';
@@ -44,16 +45,18 @@ test('only a host stand writes the merge into its store; the refusal is decided 
   assert.ok(!SEAT.includes('const openOn = openTables();'), 'the later local re read is gone');
 });
 
-test('a host stand drops the active table right after seating, before the flush', () => {
+test('a host stand marks the seated table its own and drops the active table, before the awaited flush', () => {
   const seat = SEAT.indexOf('get().seatTable?.(b.primaryTableId');
-  const clear = SEAT.indexOf('if (isHostStandMode()) set({ activeTableId: null });');
+  const clear = SEAT.indexOf('if (isHostStandMode()) { markStandOwned(b.primaryTableId); set({ activeTableId: null }); }');
   const flush = SEAT.indexOf('await flushSingleSession(b.primaryTableId);');
   assert.ok(seat > 0 && clear > seat && flush > clear);
+  assert.ok(SLICE.includes("import { flushSingleSession, markStandOwned } from '../sync/SessionSync.js';"));
   const W = readFileSync(new URL('../../store/waitlistSlice.js', import.meta.url), 'utf8');
   const wSeat = W.indexOf('get().seatTable?.(opts.tableId');
-  const wClear = W.indexOf('if (isHostStandMode()) set({ activeTableId: null });', wSeat);
-  const wFlush = W.indexOf('flushSingleSession(opts.tableId);', wSeat);
+  const wClear = W.indexOf('if (isHostStandMode()) { markStandOwned(opts.tableId); set({ activeTableId: null }); }', wSeat);
+  const wFlush = W.indexOf('await flushSingleSession(opts.tableId);', wSeat);
   assert.ok(wSeat > 0 && wClear > wSeat && wFlush > wClear, 'Tables Ready does the same');
+  assert.ok(W.includes("import { flushSingleSession, markStandOwned } from '../sync/SessionSync.js';"));
   assert.ok(W.includes('  isHostStandMode,\n} from \'../lib/supabase.js\';'));
 });
 

@@ -1,15 +1,15 @@
 /**
- * realtime.deleteGuard.test.js — the active_sessions DELETE handler asks the server (16 Oct 2026).
+ * realtime.deleteGuard.test.js: the active_sessions DELETE handler (16 Oct 2026).
  *
  * Provo demo venue, Peter filming the bookings demo: the till cashed off T1 (its active_sessions
  * row was deleted) and the bookings host stand kept its local copy, so "Seat now, open POS tab"
  * refused with "Still has an open tab" while the till showed nothing open. The handler's old
  * Guard 2 kept the local session whenever the deleted payload carried no seatedAt (the replica
- * identity holds no session jsonb) and the copy had items, and re-published it.
+ * identity holds no session jsonb) and the copy had items, and re published it.
  *
- * realtime.js subscribes to a live Supabase client, so the handler itself is pinned thinly by
- * source: it reads this table's row once and hands the decision to decideOnDelete. Every case of
- * that decision is a behaviour test in lib/bookings/standSessionSync.test.js.
+ * Only the HOST STAND changes: it reads the table's row once and hands the decision to
+ * decideOnDelete (behaviour tests in lib/bookings/standSessionSync.test.js). A till runs the
+ * handler exactly as before. The live handlers are exercised in sync/standRealtime.test.js.
  */
 
 import { test } from 'node:test';
@@ -23,35 +23,40 @@ const start = SRC.indexOf("event: 'DELETE',\n      schema: 'public',\n      tabl
 assert.ok(start > 0, 'active_sessions DELETE handler present');
 const end = SRC.indexOf('.subscribe();', start);
 const HANDLER = SRC.slice(start, end);
+const STAND = SRC.slice(SRC.indexOf('const standDelete = async (tid) => {'), SRC.indexOf('const sessionsChannel = supabase'));
 
-test('the handler reads this table\'s row from the server once', () => {
-  assert.ok(HANDLER.includes('async ({ old: row })'), 'handler is async');
-  assert.ok(HANDLER.includes(".from('active_sessions')"), 'reads active_sessions');
-  assert.ok(HANDLER.includes(".eq('table_id', tid)"));
-  assert.ok(HANDLER.includes('.maybeSingle()'));
-  assert.equal(HANDLER.split(".from('active_sessions')").length - 1, 1, 'exactly one read');
+test('a host stand hands the delete to its own branch; a till never reaches it', () => {
+  assert.ok(HANDLER.includes('if (isHostStandMode()) { standDelete(tid); return; }'));
+  // the handler itself stays synchronous, as on main
+  assert.ok(HANDLER.includes('}, ({ old: row }) => {'), 'not async');
 });
 
-test('the handler hands the decision to decideOnDelete and acts on its answer', () => {
-  assert.ok(SRC.includes("import { decideOnDelete, sessionHeldElsewhere } from './bookings/standSessionSync.js';"), 'decideOnDelete imported');
-  assert.ok(HANDLER.includes('decideOnDelete({'), 'the handler calls it');
-  assert.ok(HANDLER.includes("if (decision === 'reassert') { reassertSession(tid); return; }"));
-  assert.ok(HANDLER.includes("if (decision !== 'clear') return;"));
-  // the old item heuristic and literal graces are gone
-  assert.ok(!HANDLER.includes('items?.length > 0'));
-  assert.ok(!HANDLER.includes('deletedSeated'));
-  assert.ok(!/\b20000\b|20 \* 1000/.test(HANDLER), 'no literal grace in the handler');
+test('the stand branch reads this table\'s row once and asks decideOnDelete', () => {
+  assert.ok(STAND.length > 0, 'standDelete present');
+  assert.ok(STAND.includes(".from('active_sessions')"));
+  assert.ok(STAND.includes(".eq('table_id', tid)"));
+  assert.ok(STAND.includes('.maybeSingle()'));
+  assert.equal(STAND.split(".from('active_sessions')").length - 1, 1, 'exactly one read');
+  assert.ok(SRC.includes("import { decideOnDelete } from './bookings/standSessionSync.js';"));
+  assert.ok(STAND.includes('decideOnDelete({ localSession: localNow?.session || null, serverRow, readFailed, now: Date.now() })'));
+  assert.ok(STAND.includes("if (decision !== 'clear') return;"));
+  assert.ok(!STAND.includes('reassertSession'), 'a stand never re publishes');
 });
 
-test('a till re publishes only its own unsent write, never a moved session (16 Oct review)', () => {
-  assert.ok(SRC.includes("import { reassertSession, hasUnsentSession } from '../sync/SessionSync';"));
-  // asked before the read and after it: the read can overtake this till's own upsert
-  assert.ok(HANDLER.includes('const unsentBefore = !hostStand && hasUnsentSession(tid);'));
-  assert.ok(HANDLER.includes('ownUnflushed: !hostStand && (unsentBefore || hasUnsentSession(tid)),'));
-  assert.ok(HANDLER.includes('movedElsewhere: sessionHeldElsewhere(after.tables, tid, localNow?.session),'));
-  // the no read branch passes both too
-  assert.ok(HANDLER.includes('ownUnflushed: !hostStand && hasUnsentSession(tid),'));
-  assert.ok(HANDLER.includes('movedElsewhere: sessionHeldElsewhere(state.tables, tid, localTable?.session),'));
+test('the till branch is the handler as it was on main (Guard 1 and Guard 2)', () => {
+  for (const line of [
+    'if (tid === state.activeTableId) {',
+    'if (localTable?.session) reassertSession(tid);',
+    'const deletedSeated = row?.session?.seatedAt || 0;',
+    'if (deletedSeated && localSeated > deletedSeated) { reassertSession(tid); return; }',
+    'if (!deletedSeated && localTable.session.items?.length > 0) { reassertSession(tid); return; }',
+  ]) assert.ok(HANDLER.includes(line), line);
+});
+
+test('INSERT and UPDATE: a till keeps its guards, a host stand takes the server row', () => {
+  assert.ok(SRC.includes('if (!hostStand && row.table_id === state.activeTableId) return;'));
+  assert.ok(SRC.includes('if (!hostStand && localUpdated > incomingUpdated) { reassertSession(row.table_id); return; }'));
+  assert.ok(SRC.includes('if (!hostStand && existing?.session?.seatedAt && row.session?.seatedAt &&'));
 });
 
 test('a host stand never self-heals a row the server dropped (SessionReconciler)', () => {
