@@ -174,7 +174,7 @@ export default function BookingsSurface() {
   // through showToast would be just as invisible as the seating refusal was.
   if (stage === 'boot') return <><GateScreen><div style={{ color: 'var(--t3)', ...mono }}>Starting…</div></GateScreen><BookingsToast /></>;
   if (stage === 'pair') return <><PairScreen code={claimCode} /><BookingsToast /></>;
-  if (stage === 'pin') return <><PinScreen loc={loc} venueName={venueName || venue?.name || ''} onOk={(op) => { setOperator(op); setStage('app'); }} /><BookingsToast /></>;
+  if (stage === 'pin') return <><PinScreen loc={loc} venueName={venueName || venue?.name || ''} onOk={(op) => { setOperator(op); useStore.getState().setBookingsOperator?.(op); setStage('app'); }} /><BookingsToast /></>;
 
   return (
     <div style={{ height: '100vh', display: 'flex', overflow: 'hidden', background: 'var(--bg)', color: 'var(--t1)' }}>
@@ -221,7 +221,7 @@ export default function BookingsSurface() {
           display: 'flex', alignItems: 'center', gap: 16, padding: '0 18px',
         }}>
           <button
-            onClick={() => { setOperator(null); setStage('pin'); }}
+            onClick={() => { setOperator(null); useStore.getState().setBookingsOperator?.(null); setStage('pin'); }}
             title="Tap to switch user"
             style={{ minWidth: 0, textAlign: 'left', background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'inherit', fontFamily: 'inherit' }}
           >
