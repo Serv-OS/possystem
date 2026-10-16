@@ -35,7 +35,7 @@ import { canVoidOrder } from '../lib/voidRules';
 import DiscountModal from '../components/DiscountModal';
 import { ReceiptModal, ReprintModal } from '../components/ReceiptModal';
 import { printService } from '../lib/printer';
-import { checksForBusinessDay, summariseShift } from '../lib/shiftReport';
+import { checksForBusinessDay, businessDayRange, summariseShift } from '../lib/shiftReport';
 import { businessDayOf } from '../../supabase/functions/_shared/businessDay.js';
 import { isTrainingMode } from '../lib/trainingMode';
 import CheckHistory from '../components/CheckHistory';
@@ -127,13 +127,15 @@ export default function POSSurface() {
     const dayStart = cfg.businessDayStart || '06:00';
     const now = Date.now();
     const checks = checksForBusinessDay(st.closedChecks, { now, timezone, dayStart });
-    const { stats, byMethod } = summariseShift(checks);
+    // 16 Oct 2026: the one sales rule (lib/shiftReport.js); the till's older checks carry the
+    // refunds made today on earlier sales, which come off today as in Daily trading.
+    const { sales, payments } = summariseShift(checks, { range: businessDayRange({ now, timezone, dayStart }), refundRows: st.closedChecks, currency: cfg.currency });
     let printedAtText = '';
     try { printedAtText = new Date(now).toLocaleString('en-GB', { timeZone: timezone, day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }); } catch { /* optional */ }
     try {
       const res = await printService.printShiftReport({
         kind, venueName: cfg.name || st.locationProfile?.name || '', dayLabel: businessDayOf(now, timezone, dayStart) || '',
-        printedAtText, printedBy: st.staff?.name || '', stats, byMethod, drawer, currency: cfg.currency,
+        printedAtText, printedBy: st.staff?.name || '', sales, payments, drawer, currency: cfg.currency,
       });
       if (res && res.ok === false) st.showToast?.(`${kind} report did not print: ${res.error || 'no receipt printer'}`, 'error');
       else st.showToast?.(`${kind} report sent to the printer`, 'success');

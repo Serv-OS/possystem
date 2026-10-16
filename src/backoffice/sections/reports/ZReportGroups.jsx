@@ -30,7 +30,7 @@ export default function ZReportGroups({ checks, fmt, siteId }) {
   const mapping = siteId ? mappings[String(siteId)] : null;
   const resolver = useMemo(() => makeMixResolver(mapping || {}, categories), [mapping, categories]);
   const view = useMemo(() => mixView(mixFromChecks(checks, resolver), null, resolver), [checks, resolver]);
-  // 8 Oct 2026 (review): the slip's Gross sales above holds voided checks, these lines do not.
+  // 8 Oct 2026 (review): the slip's Item sales above holds voided checks (less Voids), these lines do not.
   const voided = useMemo(() => (Array.isArray(checks) ? checks.filter((c) => !isLiveCheck(c)).length : 0), [checks]);
   const model = slipModel(view, { voided });
   if (!model) return null;
@@ -41,7 +41,7 @@ export default function ZReportGroups({ checks, fmt, siteId }) {
       {model.rows.map((r) => (
         <div key={r.key} style={ROW}><span>{r.name} ({r.share}%)</span><span>{fmt(r.money)}</span></div>
       ))}
-      {/* "(gross)": the same figure as Gross sales above when nothing was voided, so the two names read as one. */}
+      {/* "(gross)": the same figure as Item sales above when nothing was voided (16 Oct 2026: both are price x qty of the lines), so the two names read as one. */}
       <div style={{ ...ROW, ...BOLD }}><span>Item sales (gross)</span><span>{fmt(model.total)}</span></div>
       <div style={FINE}>before check discounts and refunds</div>
       {model.voidNote && <div style={FINE}>{model.voidNote}</div>}

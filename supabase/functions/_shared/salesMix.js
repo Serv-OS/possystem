@@ -122,7 +122,7 @@ export function lineQty(i) {
 
 /**
  * 8 Oct 2026, D3: till price times qty, nothing taken off. Product mix (ProductMix.jsx lines
- * 69 and 91), the stored check subtotal and the Z report Gross sales all sum exactly this, so
+ * 69 and 91), the stored check subtotal and the Z report Item sales all sum exactly this, so
  * groups, categories and items tie to one total (checked live at Leeds: 1,111 checks, stored
  * subtotal 7,708.70 = price times qty 7,708.70). The line's own discount is NOT applied (the
  * till does not net it from the stored subtotal either). Modifier prices are already inside
@@ -647,10 +647,10 @@ export function daypartSplit(checks, resolver, clock, shifts) {
 // ── reconcile (Back Office only) ──────────────────────────────────────────────
 
 /**
- * How the groups tie to the Z report's Gross sales. 8 Oct 2026 (review): the Z report's Gross
- * sales is the stored subtotal of EVERY check in the list, voided ones too (salesStats.js
- * computeSalesStats adds c.subtotal for each check and takes voids off later), while the mix
- * skips voided checks. So: gross = every check's subtotal (the Z report's figure), voided and
+ * How the groups tie to the checks' stored subtotals. 8 Oct 2026 (review): gross is the stored
+ * subtotal of EVERY check in the list, voided ones too (salesStats.js computeSalesStats, the Z
+ * report's Gross sales until 16 Oct 2026), while the mix skips voided checks. So: gross = every
+ * check's subtotal, voided and
  * voidedSubtotal = the voided checks and what they held, subtotal = the live checks' subtotals
  * (gross less voidedSubtotal), off = live checks whose stored subtotal is not the sum of their
  * live lines, diff = subtotal less the mix total.

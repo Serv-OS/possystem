@@ -141,10 +141,12 @@ export function groupTotals(view) {
 export const allGroupKeys = (view) => (view?.groups || []).map((g) => g.key);
 
 /**
- * The reconcile line under the table: how the groups tie to the Z report's Gross sales. 8 Oct
- * 2026 (review): that figure holds voided checks too (salesStats.js), the groups do not, so when
- * the period has a void the line names the voided checks as the known difference instead of
- * claiming an equality the Z report contradicts.
+ * The reconcile line under the table: how the groups tie to the checks' stored subtotals. 8 Oct
+ * 2026 (review): that figure holds voided checks too, the groups do not, so when the period has a
+ * void the line names the voided checks as the known difference instead of claiming an equality.
+ * 16 Oct 2026: the Z report no longer prints the stored subtotals as "Gross sales" (it reads the
+ * lines by the one sales rule, as the Business summary does), so the line names them as what they
+ * are: a check whose stored subtotal is not its lines is still named here.
  */
 export function reconcileWords(recon, fmt) {
   if (!recon) return '';
@@ -153,14 +155,14 @@ export function reconcileWords(recon, fmt) {
   const voids = v ? `less ${v} voided check${v === 1 ? '' : 's'} (${fmt(recon.voidedSubtotal)})` : '';
   if (recon.diff === 0) {
     return v
-      ? `Gross sales on the Z report is ${gross}; ${voids}, the lines equal ${fmt(recon.subtotal)}.`
-      : `Equals Gross sales on the Z report: ${gross}.`;
+      ? `The checks' stored subtotals are ${gross}; ${voids}, the lines equal ${fmt(recon.subtotal)}.`
+      : `Equals the checks' stored subtotals: ${gross}.`;
   }
   const n = recon.off;
   const off = `(${n} check${n === 1 ? '' : 's'} whose stored subtotal is not the sum of their lines)`;
   return v
-    ? `Gross sales on the Z report is ${gross}; ${voids} it is ${fmt(recon.subtotal)}, and the lines differ by ${fmt(recon.diff)} ${off}.`
-    : `Gross sales on the Z report is ${gross}; the lines differ by ${fmt(recon.diff)} ${off}.`;
+    ? `The checks' stored subtotals are ${gross}; ${voids} they are ${fmt(recon.subtotal)}, and the lines differ by ${fmt(recon.diff)} ${off}.`
+    : `The checks' stored subtotals are ${gross}; the lines differ by ${fmt(recon.diff)} ${off}.`;
 }
 
 // ── callout and notes ─────────────────────────────────────────────────────────

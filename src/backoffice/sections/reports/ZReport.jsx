@@ -14,6 +14,16 @@
 // v5.10.3: From, To and Printed are the VENUE's dates and times (range.timeZone), with
 // the zone named on the slip. Until then they were the browser's, so from California a
 // London day printed "From 26 Sep 22:30".
+//
+// 16 Oct 2026: the SALES block, the payments and Money collected are read by THE ONE SALES RULE
+// (src/lib/salesBreakdown.js through lib/shiftReport.js summariseShift, the till's own X and Z
+// slip), so Net sales excluding VAT is the Business summary's, Daily trading's and the Owner
+// app's figure to the penny. Until today Net sales was the stored subtotal less discounts: VAT
+// inside, free loyalty drinks counted (Huddersfield 16 Oct: 2,085.10 against 1,703.30), and the
+// GRAND TOTAL counted a loyalty reward as money. Older sales' refunds made inside the range come
+// off, as in the Business summary. The TAX block by rate is unchanged (the Tax summary's reading,
+// which includes VAT on loyalty rewards until Peter decides that with his accountant); the slip
+// says so with the amount.
 
 import { useRef, useMemo } from 'react';
 import { useStore } from '../../../store';
@@ -22,12 +32,17 @@ import { venueZone } from '../../../../supabase/functions/_shared/businessDay.js
 import { venueZoneLabel } from '../../../lib/payments/venueTime';
 import { computeSalesStats } from './SalesSummary';
 import { vatMissingLine } from '../../../lib/salesStats';
+import { breakdownLines, rewardsVatLine } from '../../../lib/salesBreakdown';
+import { summariseShift } from '../../../lib/shiftReport';
+import { applyFilters } from './_filters';
+import { useRefundLookback, toMs } from './_refundLookback';
 import { ExportBtn } from './_charts';
 import ZReportGroups from './ZReportGroups';
 
 const ROW = { display:'flex', justifyContent:'space-between', padding:'3px 0', fontSize:11, lineHeight:1.5 };
 const DIV = { borderTop:'1px dashed currentColor', margin:'8px 0' };
 const BOLD = { fontWeight:700 };
+const NONE = Object.freeze([]);
 
 function formatDate(ts, timeZone) {
   return new Date(ts).toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric', timeZone });
@@ -37,25 +52,26 @@ function formatTime(ts, timeZone) {
 }
 
 // timeZone = range.timeZone (the venue's; none = London, never the browser's).
-export default function ZReport({ checks, periodLabelText, rangeFrom, rangeTo, timeZone, fmt, fmtN, scope }) {
+// sites, locationId, filters, locationConfig: the site on screen, the signed in site, the report's
+// filters and its config, so refunds made in the range on older sales come off as in the Business
+// summary, read for the same site the same way (16 Oct 2026).
+export default function ZReport({ checks, periodLabelText, rangeFrom, rangeTo, timeZone, fmt, fmtN, scope, sites, locationId, filters, locationConfig }) {
   const { locationProfile, taxRates = [], shift } = useStore();
   const tz = venueZone(timeZone);
   const receiptRef = useRef(null);
 
+  // The TAX block's total and its no VAT warning (the Tax summary's reading, unchanged).
   const stats = useMemo(() => computeSalesStats(checks), [checks]);
 
-  // Payment method breakdown
-  const byMethod = useMemo(() => {
-    const m = {};
-    checks.filter(c => c.status !== 'voided').forEach(c => {
-      const key = (c.method || 'other').toLowerCase();
-      if (!m[key]) m[key] = { method: key, count: 0, total: 0, tips: 0 };
-      m[key].count++;
-      m[key].total += c.total || 0;
-      m[key].tips  += c.tip   || 0;
-    });
-    return Object.values(m).sort((a, b) => b.total - a.total);
-  }, [checks]);
+  // 16 Oct 2026: sales, payments and Money collected by the one sales rule (the Business summary's).
+  const one = Array.isArray(sites) && sites.length === 1 ? sites[0] : null;
+  const siteId = one && !one.isHome ? String(one.id) : (locationId ? String(locationId) : null);
+  const lookback = useRefundLookback(siteId ? [siteId] : [], rangeFrom ?? null);
+  const refundRows = useMemo(() => applyFilters((siteId && lookback.rows[siteId]) || NONE, filters), [siteId, lookback.rows, filters]);
+  const range = useMemo(() => (rangeFrom != null ? { fromMs: toMs(rangeFrom), toMs: toMs(rangeTo) } : null), [rangeFrom, rangeTo]);
+  const currency = locationConfig?.currency || one?.currency || null;
+  const { sales, payments } = useMemo(() => summariseShift(checks, { range, refundRows, currency }), [checks, range, refundRows, currency]);
+  const lines = useMemo(() => breakdownLines(sales), [sales]);
 
   // Order type breakdown
   const byOrderType = useMemo(() => {
@@ -102,9 +118,10 @@ export default function ZReport({ checks, periodLabelText, rangeFrom, rangeTo, t
     return Object.values(m).filter(r => r.gross > 0).sort((a, b) => b.gross - a.gross);
   }, [checks, taxCtx, taxRates]);
 
-  const voidCount = checks.filter(c => c.status === 'voided').length;
-  const refundCount = checks.reduce((s, c) => s + (c.refunds?.length || 0), 0);
   const discountCount = checks.reduce((s, c) => s + (c.discounts?.length || 0), 0);
+  const countFor = { voids: sales.voidCount, refunds: sales.refundCount, discounts: discountCount };
+  const toneFor = { voids: 'var(--red)', refunds: 'var(--red)', discounts: 'var(--acc)', rewards: 'var(--acc)' };
+  const rewardsNote = rewardsVatLine(sales, fmt);
 
   const printedAt = Date.now();
   const zNumber = shift?.zNumber || '—';
@@ -155,13 +172,22 @@ export default function ZReport({ checks, periodLabelText, rangeFrom, rangeTo, t
 
         {/* Sales ladder */}
         <div style={{ fontSize:11, fontWeight:700, color:'var(--t2)', letterSpacing:'.06em', marginBottom:4 }}>SALES</div>
-        <div style={ROW}><span>Checks closed</span><span>{fmtN(stats.count)}</span></div>
-        <div style={ROW}><span>Covers</span><span>{fmtN(stats.covers)}</span></div>
-        <div style={ROW}><span>Gross sales</span><span>{fmt(stats.gross)}</span></div>
-        {stats.discounts > 0 && <div style={ROW}><span>less Discounts ({discountCount})</span><span style={{ color:'var(--acc)' }}>−{fmt(stats.discounts)}</span></div>}
-        {stats.voids > 0     && <div style={ROW}><span>less Voids ({voidCount})</span><span style={{ color:'var(--red)' }}>−{fmt(stats.voids)}</span></div>}
-        {stats.refunds > 0   && <div style={ROW}><span>less Refunds ({refundCount})</span><span style={{ color:'var(--red)' }}>−{fmt(stats.refunds)}</span></div>}
-        <div style={{ ...ROW, ...BOLD }}><span>Net sales</span><span>{fmt(stats.net)}</span></div>
+        <div style={ROW}><span>Checks closed</span><span>{fmtN(sales.count)}</span></div>
+        <div style={ROW}><span>Covers</span><span>{fmtN(sales.covers)}</span></div>
+        {/* The Business summary's ladder, line for line (lib/salesBreakdown.js breakdownLines). */}
+        {lines.map(l => {
+          const strong = l.kind === 'head' || l.kind === 'sub' || l.kind === 'total' || l.key === 'net';
+          const n = countFor[l.key];
+          const label = n != null && l.kind === 'less' ? `${l.label} (${n})` : l.label;
+          return (
+            <div key={l.key} style={{ ...ROW, ...(strong ? BOLD : null), ...(l.kind === 'of' ? { paddingLeft:10 } : null) }}>
+              <span>{label}</span>
+              <span style={l.value < 0 && toneFor[l.key] ? { color: toneFor[l.key] } : undefined}>{l.value < 0 ? `−${fmt(-l.value)}` : fmt(l.value)}</span>
+            </div>
+          );
+        })}
+        {lookback.failed.length > 0 && <div style={{ ...ROW, color:'var(--t4)' }}><span>Refunds on sales from before this period could not be read, so they are not taken off here.</span><span/></div>}
+        {rewardsNote && <div style={{ ...ROW, color:'var(--t4)' }}><span>{rewardsNote}</span><span/></div>}
         <ZReportGroups checks={checks} fmt={fmt} siteId={scope?.homeId}/>
 
         <div style={DIV}/>
@@ -175,28 +201,19 @@ export default function ZReport({ checks, periodLabelText, rangeFrom, rangeTo, t
         {taxByRate.length > 0 && <div style={{ ...ROW, ...BOLD, marginTop:4 }}><span>Total tax</span><span>{fmt(stats.tax)}</span></div>}
         {/* 8 Oct 2026: a sale with no VAT recorded is counted 0 and named, never hidden. */}
         {stats.vatMissingCount > 0 && <div style={{ ...ROW, color:'var(--red)', fontWeight:700 }}><span>{vatMissingLine(stats)}</span><span/></div>}
-
-        {(stats.service > 0 || stats.tips > 0) && (
-          <>
-            <div style={DIV}/>
-            <div style={{ fontSize:11, fontWeight:700, color:'var(--t2)', letterSpacing:'.06em', marginBottom:4 }}>SERVICE &amp; TIPS</div>
-            {stats.service > 0 && <div style={ROW}><span>Service charge</span><span>{fmt(stats.service)}</span></div>}
-            {stats.tips    > 0 && <div style={ROW}><span>Tips</span><span>{fmt(stats.tips)}</span></div>}
-          </>
-        )}
+        {/* 16 Oct 2026: this block includes the VAT on free loyalty rewards, the SALES VAT does not (Peter's open question, D1). */}
+        {sales.rewardsTax >= 0.005 && <div style={{ ...ROW, paddingLeft:10 }}><span>of which on loyalty rewards</span><span>{fmt(sales.rewardsTax)}</span></div>}
 
         <div style={DIV}/>
-        <div style={{ ...ROW, ...BOLD, fontSize:13 }}><span>GRAND TOTAL</span><span>{fmt(stats.total)}</span></div>
+        <div style={{ ...ROW, ...BOLD, fontSize:13 }}><span>MONEY COLLECTED</span><span>{fmt(sales.collected)}</span></div>
         <div style={DIV}/>
 
-        {/* Payment methods */}
-        <div style={{ fontSize:11, fontWeight:700, color:'var(--t2)', letterSpacing:'.06em', marginBottom:4 }}>PAYMENT METHODS</div>
-        {byMethod.length === 0 ? (
-          <div style={{ ...ROW, color:'var(--t4)' }}><span>No payments</span><span>—</span></div>
-        ) : byMethod.map(m => (
-          <div key={m.method} style={ROW}>
-            <span>{m.method} ({m.count})</span>
-            <span>{fmt(m.total)}</span>
+        {/* Payments: the money tenders, adding up to Money collected (a loyalty reward is never money). */}
+        <div style={{ fontSize:11, fontWeight:700, color:'var(--t2)', letterSpacing:'.06em', marginBottom:4 }}>PAYMENTS</div>
+        {payments.map(p => (
+          <div key={p.kind}>
+            <div style={ROW}><span>{p.label} ({p.count})</span><span>{fmt(p.amount)}</span></div>
+            {Math.abs(p.tips) >= 0.005 && <div style={{ ...ROW, paddingLeft:10 }}><span>of which tips</span><span>{fmt(p.tips)}</span></div>}
           </div>
         ))}
 
@@ -218,9 +235,9 @@ export default function ZReport({ checks, periodLabelText, rangeFrom, rangeTo, t
         {/* Cash reconciliation helper */}
         <div style={{ fontSize:11, fontWeight:700, color:'var(--t2)', letterSpacing:'.06em', marginBottom:4 }}>CASH DRAWER</div>
         {(() => {
-          const cash = byMethod.find(m => m.method === 'cash');
-          const cashTotal = cash?.total || 0;
-          const cashTips  = cash?.tips  || 0;
+          const cash = payments.find(p => p.kind === 'cash');
+          const cashTotal = cash?.amount || 0;
+          const cashTips  = cash?.tips   || 0;
           return (
             <>
               <div style={ROW}><span>Cash payments</span><span>{fmt(cashTotal)}</span></div>
