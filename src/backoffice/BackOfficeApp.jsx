@@ -1112,7 +1112,7 @@ export default function BackOfficeApp() {
           {section === 'deliveries-live' && <DeliveriesBoard />}
           {section === 'menuboards' && <MenuBoards />}
           {section === 'order-screens' && <OrderScreens />}
-          {section === 'table-bookings' && <TableBookings />}
+          {section === 'table-bookings' && <TableBookings userName={authUser?.user_metadata?.full_name || authUser?.email || null} />}
           {section === 'packages'   && <PackageBuilder />}
           {section === 'print-menu' && <PrintMenu />}
           {section === 'printers'   && <PrinterRegistry />}

@@ -17,17 +17,27 @@
 // not data) adds a time-sorted list view; rows drive the same `sel` state so
 // the inspector works identically from either view.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../store';
 import { supabase, isMock } from '../../lib/supabase';
 import { toMin, toHM, isTableFree, toOptimiserBooking, sessionsToBlocks } from '../../lib/bookings/optimiser.js';
 import { loadBookingPayments, lookupPreorderLinkBase } from '../../lib/bookings/bookingsData.js';
 import { undoNoShowStatus, bookingUnpaid, isNeedsRefundRow } from '../../lib/bookings/bookingPayment.js';
 import { choiceSummary } from '../../lib/bookings/preorderChoices.js';
+import { dropTarget, editedLine, hasGuest, fmtClock, EDIT_REFUSALS, MOVE_NON_BLOCKING } from '../../lib/bookings/editRules.js';
 import {
   mono, tintBg, tintBd, rulesOf, displayStatus, statusMeta, StatusBadge, isLive,
   useNowMin, money, initialsOf, bookingName, todayISO, EmptyNote, Chip, preorderStateFor, courseColor,
 } from './bits.jsx';
+import EditBookingSheet from './EditBookingSheet.jsx';
+
+// A block that may be dragged on the Timeline: live and not yet seated. A
+// seated party's table is the till's business; finished bookings stay put.
+const canDragBooking = (b) => isLive(b) && b.status !== 'dining';
+const DRAG_THRESHOLD_PX = 6;
+const LONG_PRESS_MS = 350; // a finger holds this long before a block lifts
+const EDGE_PX = 40;        // within this of the diary's edge, a drag scrolls it
+const EDGE_STEP = 12;      // px per frame
 
 // Nothing created AT THE STAND can hold a card: BookScreen's payment buttons are
 // display only, and createBooking stores no payment fields. So for these sources
@@ -144,6 +154,155 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
     rules.holdPerCover, rules.cardCaptureEnabled, rules.cardCaptureMinCovers]);
 
   const selected = bookings.find((b) => b.id === sel) || null;
+
+  // ── Timeline drag (16 Oct 2026) ─────────────────────────────────────────────
+  // Peter: "on the timeline I should be able to drag things around, move things
+  // the way I want". Pointer events, so a finger on the iPad and a mouse on a
+  // laptop behave the same. A press that moves past the threshold becomes a
+  // drag: the block dims, a ghost shows the snapped landing (15 minute slots,
+  // every member table shifted by the same rows), green when free and red with
+  // the other booking's name when not. Letting go asks "Move X to T4 at 18:30?"
+  // with Move and Keep. Move goes through editBooking, so the same rules and
+  // the same server side table check apply as in the Edit sheet.
+  // 16 Oct 2026 review: a finger only picks a block up after a press and hold
+  // (LONG_PRESS_MS without moving), so a quick swipe across the blocks still
+  // scrolls the diary. A mouse picks up at once. The drag locks to the axis it
+  // mostly moves on (dropTarget in editRules.js, tested), the ghost is solid,
+  // and near the edge of the diary it scrolls so an off screen row is reachable.
+  const editBooking = useStore((s) => s.editBooking);
+  const operatorName = useStore((s) => s.bookingsOperator?.name || s.staff?.name || null);
+  // { id, pointerId, x0, y0, sl0, st0, lastX, lastY, armed, active, timer, el }
+  const dragRef = useRef(null);
+  const autoRef = useRef(null);            // the edge scroll animation frame
+  const suppressClickRef = useRef(false);  // the click that follows a drop is not a select
+  const [drag, setDrag] = useState(null);  // { id, dx, dy } while a drag is live
+  const [drop, setDrop] = useState(null);  // the confirm card after a drop
+  const othersForDrag = useMemo(() => {
+    if (!isToday) return visible;
+    return [...visible, ...sessionsToBlocks(tables, visible, rules.turnBands, Number.isFinite(nowMin) ? nowMin : 0)];
+  }, [visible, tables, isToday, nowMin, rules.turnBands]);
+  const labelOf = (id) => rows.find((t) => t.id === id)?.label || String(id).slice(-4);
+  const dropTargetFor = useCallback((b, dx, dy) => dropTarget({
+    booking: b, dx, dy, slotW, rowH: ROW_H, rows, startMin, endMin, others: othersForDrag, nonBlocking: MOVE_NON_BLOCKING,
+  }), [slotW, rows, startMin, endMin, othersForDrag]);
+  // The pointer offset, plus however far the diary has scrolled since the press.
+  const offsetOf = (d) => {
+    const el = wrapRef.current;
+    return {
+      dx: d.lastX - d.x0 + (el ? el.scrollLeft - d.sl0 : 0),
+      dy: d.lastY - d.y0 + (el ? el.scrollTop - d.st0 : 0),
+    };
+  };
+  const endDrag = () => {
+    const d = dragRef.current;
+    if (d?.timer) clearTimeout(d.timer);
+    dragRef.current = null;
+    if (autoRef.current) { cancelAnimationFrame(autoRef.current); autoRef.current = null; }
+    setDrag(null);
+  };
+  const edgeScroll = () => {
+    const d = dragRef.current, el = wrapRef.current;
+    if (!d || !d.active || !el) { autoRef.current = null; return; }
+    const r = el.getBoundingClientRect();
+    const vx = d.lastX < r.left + EDGE_PX ? -EDGE_STEP : d.lastX > r.right - EDGE_PX ? EDGE_STEP : 0;
+    const vy = d.lastY < r.top + EDGE_PX ? -EDGE_STEP : d.lastY > r.bottom - EDGE_PX ? EDGE_STEP : 0;
+    if (vx || vy) {
+      const sl = el.scrollLeft, st = el.scrollTop;
+      el.scrollLeft += vx; el.scrollTop += vy;
+      if (el.scrollLeft !== sl || el.scrollTop !== st) setDrag({ id: d.id, ...offsetOf(d) });
+    }
+    autoRef.current = requestAnimationFrame(edgeScroll);
+  };
+  // An armed drag must not scroll the page: one non passive touchmove listener.
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return undefined;
+    const onMove = (e) => { if (dragRef.current?.armed) e.preventDefault(); };
+    el.addEventListener('touchmove', onMove, { passive: false });
+    return () => el.removeEventListener('touchmove', onMove);
+  }, []);
+  useEffect(() => () => {
+    if (dragRef.current?.timer) clearTimeout(dragRef.current.timer);
+    if (autoRef.current) cancelAnimationFrame(autoRef.current);
+  }, []);
+  const onBlockPointerDown = (b) => (e) => {
+    if (!canDragBooking(b) || drop || dragRef.current) return; // one drag at a time, a second finger is ignored
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    const el = wrapRef.current;
+    const target = e.currentTarget;
+    const pointerId = e.pointerId;
+    const d = {
+      id: b.id, pointerId, x0: e.clientX, y0: e.clientY, lastX: e.clientX, lastY: e.clientY,
+      sl0: el?.scrollLeft || 0, st0: el?.scrollTop || 0, armed: false, active: false, timer: null,
+    };
+    const arm = () => {
+      if (dragRef.current !== d) return;
+      d.armed = true;
+      try { target.setPointerCapture(pointerId); } catch { /* the drag still works without capture */ }
+    };
+    dragRef.current = d;
+    if (e.pointerType === 'mouse') arm();
+    else {
+      d.timer = setTimeout(() => {
+        d.timer = null;
+        arm();
+        if (dragRef.current !== d) return;
+        try { navigator.vibrate?.(10); } catch { /* no haptics */ }
+        setDrag({ id: b.id, dx: 0, dy: 0 }); // picked up: the block dims and the ghost shows
+      }, LONG_PRESS_MS);
+    }
+  };
+  const onBlockPointerMove = (e) => {
+    const d = dragRef.current;
+    if (!d || d.pointerId !== e.pointerId) return;
+    d.lastX = e.clientX; d.lastY = e.clientY;
+    const mx = Math.abs(e.clientX - d.x0), my = Math.abs(e.clientY - d.y0);
+    if (!d.armed) {
+      // Moved before the hold finished: a swipe. Let the browser scroll.
+      if (mx > DRAG_THRESHOLD_PX || my > DRAG_THRESHOLD_PX) endDrag();
+      return;
+    }
+    if (!d.active && mx < DRAG_THRESHOLD_PX && my < DRAG_THRESHOLD_PX) return;
+    if (!d.active) { d.active = true; autoRef.current = requestAnimationFrame(edgeScroll); }
+    setDrag({ id: d.id, ...offsetOf(d) });
+  };
+  const onBlockPointerUp = (b) => (e) => {
+    const d = dragRef.current;
+    if (!d || d.pointerId !== e.pointerId) { if (!d) setDrag(null); return; }
+    const wasActive = d.active;
+    const off = offsetOf(d);
+    endDrag();
+    if (!wasActive) return;                // a tap (or a hold with no move): the click handler selects
+    suppressClickRef.current = true;
+    // The click that follows this pointerup is swallowed above. Should a browser
+    // not send one, the flag must not swallow the NEXT tap instead.
+    setTimeout(() => { suppressClickRef.current = false; }, 0);
+    const t = dropTargetFor(b, off.dx, off.dy);
+    if (t.unchanged) return;
+    setDrop({ b, ...t, x: e.clientX, y: e.clientY, busy: false, error: null });
+  };
+  const onBlockPointerCancel = (e) => {
+    const d = dragRef.current;
+    if (!d || (e?.pointerId !== undefined && d.pointerId !== e.pointerId)) return;
+    endDrag();
+  };
+  // Nothing changes on a refused drop, so its card closes by itself.
+  useEffect(() => {
+    if (!drop || drop.ok) return undefined;
+    const t = setTimeout(() => setDrop((d) => (d && !d.ok ? null : d)), 3500);
+    return () => clearTimeout(t);
+  }, [drop]);
+  const confirmDrop = async () => {
+    if (!drop || drop.busy || !drop.ok || !editBooking) return;
+    setDrop((d) => ({ ...d, busy: true, error: null }));
+    // Only the axis that moved, so a stale copy never puts back the other.
+    const movePatch = {};
+    if (drop.tablesChanged) { movePatch.tables = drop.tables; movePatch.primaryTableId = drop.tables[0]; }
+    if (drop.timeChanged) movePatch.startTime = toHM(drop.startMin);
+    const res = await editBooking(drop.b.id, movePatch, { editedBy: operatorName });
+    if (res?.ok) { setDrop(null); onSelect(drop.b.id); return; }
+    setDrop((d) => (d ? { ...d, busy: false, error: res?.error || 'Booking NOT moved. Try again.' } : d));
+  };
 
   const shiftDay = (delta) => {
     const base = bookingsDate || todayISO();
@@ -305,14 +464,31 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
                   if (left + width < 0 || left > gridW) return null;
                   const isSel = b.id === sel;
                   const pkg = b.packageId ? packages.find((p) => p.id === b.packageId) : null;
+                  const draggable = canDragBooking(b);
+                  const dragging = drag?.id === b.id;
                   return (
                     <button
                       key={b.id}
-                      onClick={() => onSelect(isSel ? null : b.id)}
+                      onClick={() => {
+                        if (suppressClickRef.current) { suppressClickRef.current = false; return; }
+                        onSelect(isSel ? null : b.id);
+                      }}
+                      onPointerDown={draggable ? onBlockPointerDown(b) : undefined}
+                      onPointerMove={draggable ? onBlockPointerMove : undefined}
+                      onPointerUp={draggable ? onBlockPointerUp(b) : undefined}
+                      onPointerCancel={draggable ? onBlockPointerCancel : undefined}
+                      onLostPointerCapture={draggable ? onBlockPointerCancel : undefined}
+                      onContextMenu={draggable ? (e) => e.preventDefault() : undefined}
+                      title={draggable ? 'Press and hold, then drag to another table or time' : b.status === 'dining' ? 'Seated. Change the table on the till.' : undefined}
                       style={{
                         position: 'absolute', left: Math.max(0, left), width: Math.min(width, gridW - Math.max(0, left)),
                         top: first * ROW_H + 3, height: (last - first + 1) * ROW_H - 6,
-                        borderRadius: 9, padding: '5px 8px', textAlign: 'left', overflow: 'hidden', cursor: 'pointer',
+                        borderRadius: 9, padding: '5px 8px', textAlign: 'left', overflow: 'hidden',
+                        cursor: dragging ? 'grabbing' : draggable ? 'grab' : 'pointer',
+                        // a quick swipe scrolls; only a held block drags (see onBlockPointerDown)
+                        touchAction: 'pan-x pan-y',
+                        userSelect: 'none', WebkitUserSelect: 'none', WebkitTouchCallout: 'none',
+                        opacity: dragging ? 0.35 : 1,
                         background: tintBg(meta.col), color: meta.col,
                         border: `1.5px solid ${isSel ? meta.col : tintBd(meta.col)}`,
                         boxShadow: isSel ? `0 0 0 3px ${tintBg('var(--acc)')}` : 'none',
@@ -329,6 +505,36 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
                     </button>
                   );
                 })}
+                {/* drag ghost: where the block will land */}
+                {drag && (() => {
+                  const b = visible.find((x) => x.id === drag.id);
+                  if (!b) return null;
+                  const t = dropTargetFor(b, drag.dx, drag.dy);
+                  const ids = t.tables || b.tables || [];
+                  const idxs = ids.map((id) => rowIndex.get(id)).filter((i) => i != null);
+                  if (!idxs.length) return null;
+                  const first = Math.min(...idxs), last = Math.max(...idxs);
+                  const col = t.ok ? 'var(--grn)' : 'var(--red)';
+                  const left = ((t.startMin - startMin) / 15) * slotW;
+                  const width = ((b.turnMinutes || 90) / 15) * slotW - 3;
+                  return (
+                    <div aria-hidden="true" style={{
+                      position: 'absolute', left: Math.max(0, left), width: Math.min(width, gridW - Math.max(0, left)),
+                      top: first * ROW_H + 3, height: (last - first + 1) * ROW_H - 6, pointerEvents: 'none',
+                      borderRadius: 9, padding: '5px 8px', overflow: 'hidden', zIndex: 3,
+                      // solid underneath the tint, so the booking it sits over does not show through
+                      background: `linear-gradient(${tintBg(col, 22)}, ${tintBg(col, 22)}), var(--bg1)`,
+                      color: col, border: `2px dashed ${col}`, boxShadow: '0 6px 18px rgba(0,0,0,.35)',
+                    }}>
+                      <div style={{ fontSize: 11, fontWeight: 800, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {ids.map(labelOf).join('+')} · {toHM(t.startMin)}
+                      </div>
+                      <div style={{ fontSize: 10, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', ...mono }}>
+                        {t.ok ? 'free' : t.reason}
+                      </div>
+                    </div>
+                  );
+                })()}
                 {/* now line */}
                 {Number.isFinite(nowMin) && nowMin >= startMin && nowMin <= endMin && (
                   <div style={{
@@ -355,6 +561,63 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
               <button className="btn btn-ghost" onClick={onBook} style={{ marginTop: 16, width: '100%', height: 40 }}>Take a booking</button>
             </div>
           )}
+      </div>
+
+      {/* the drop confirm: "Move Oliver Pembroke to T4 at 18:30?" */}
+      {drop && (
+        <DropConfirm drop={drop} labelOf={labelOf} onKeep={() => setDrop(null)} onMove={confirmDrop} />
+      )}
+    </div>
+  );
+}
+
+function DropConfirm({ drop, labelOf, onKeep, onMove }) {
+  const W = 320;
+  const vw = typeof window !== 'undefined' ? window.innerWidth : 1200;
+  const vh = typeof window !== 'undefined' ? window.innerHeight : 800;
+  const left = Math.max(8, Math.min(vw - W - 8, (drop.x || 0) - W / 2));
+  const top = Math.max(8, Math.min(vh - 220, (drop.y || 0) + 14));
+  const fromTables = (drop.b.tables || []).map(labelOf).join(' + ');
+  const toTables = (drop.tables || []).map(labelOf).join(' + ');
+  const fromAt = toHM(drop.fromMin ?? toMin(drop.b.startTime));
+  const toAt = toHM(drop.startMin);
+  const name = bookingName(drop.b);
+  // 16 Oct 2026 review: the change written as from and to, with a time change
+  // called out, so a host who meant a table move sees the time moved too.
+  return (
+    <div role="dialog" aria-label="Move booking" style={{
+      position: 'fixed', left, top, width: W, zIndex: 100002, padding: '12px 14px', borderRadius: 12,
+      background: 'var(--bg1)', color: 'var(--t1)', border: `1.5px solid ${drop.ok ? 'var(--acc)' : 'var(--red)'}`,
+      boxShadow: '0 14px 40px rgba(0,0,0,.45)',
+    }}>
+      <div style={{ fontSize: 14, fontWeight: 800, lineHeight: 1.35 }}>
+        {drop.ok ? `Move ${name}?` : `${name} cannot go ${drop.tables ? `to ${toTables} at ${toAt}` : 'there'}.`}
+      </div>
+      {drop.tables && (
+        <div style={{ marginTop: 6, fontSize: 13, fontWeight: 700, ...mono }}>
+          {fromTables} {fromAt} → {toTables} {toAt}
+        </div>
+      )}
+      {drop.ok && drop.timeChanged && (
+        <div style={{ marginTop: 4, fontSize: 12.5, fontWeight: 800, color: 'var(--orn)' }}>Time changes {fromAt} → {toAt}</div>
+      )}
+      {!drop.ok && (
+        <div role="alert" style={{ marginTop: 6, fontSize: 12.5, color: 'var(--red)', fontWeight: 700, lineHeight: 1.4 }}>{drop.reason}</div>
+      )}
+      {drop.error && (
+        <div role="alert" style={{ marginTop: 6, fontSize: 12.5, color: 'var(--red)', fontWeight: 700, lineHeight: 1.4 }}>{drop.error}</div>
+      )}
+      <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+        {drop.ok ? (
+          <>
+            <button className="btn btn-ghost" onClick={onKeep} disabled={drop.busy} style={{ flex: 1, height: 44 }}>Keep</button>
+            <button className="btn btn-acc" onClick={onMove} disabled={drop.busy} style={{ flex: 1, height: 44, fontWeight: 800 }}>
+              {drop.busy ? 'Moving…' : 'Move'}
+            </button>
+          </>
+        ) : (
+          <button className="btn btn-ghost" onClick={onKeep} style={{ flex: 1, height: 44, fontWeight: 700 }}>OK</button>
+        )}
       </div>
     </div>
   );
@@ -526,10 +789,15 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
   const cancelBooking = useStore((s) => s.cancelBooking);
   const markBookingNoShow = useStore((s) => s.markBookingNoShow);
   const [moving, setMoving] = useState(false);
+  // 16 Oct 2026: the Edit sheet (EditBookingSheet.jsx), shared with Back Office.
+  const [editing, setEditing] = useState(false);
+  const operatorName = useStore((s) => s.bookingsOperator?.name || s.staff?.name || null);
+  const venueTz = useStore((s) => s.locationConfig?.timezone);
+  const edited = editedLine(b, fmtClock(venueTz));
   // Render-adjustment (not an effect — the repo lint forbids sync setState in
   // effects): selecting a different booking closes the move panel.
   const [movingFor, setMovingFor] = useState(b.id);
-  if (movingFor !== b.id) { setMovingFor(b.id); setMoving(false); }
+  if (movingFor !== b.id) { setMovingFor(b.id); setMoving(false); setEditing(false); }
   const st = displayStatus(b, nowMin, packages);
   const start = toMin(b.startTime);
   const pkg = b.packageId ? packages.find((p) => p.id === b.packageId) : null;
@@ -624,9 +892,12 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
         {b.note && (
           <div style={{ marginTop: 10, padding: '7px 10px', borderRadius: 8, background: tintBg('var(--orn)', 8), color: 'var(--orn)', fontSize: 11, lineHeight: 1.4 }}>{b.note}</div>
         )}
+        {edited && (
+          <div style={{ marginTop: 8, fontSize: 11, color: 'var(--t3)', ...mono }}>{edited}</div>
+        )}
       </div>
 
-      {b.customer && (
+      {hasGuest(b.customer) && (
         <div style={sec}>
           {/* Not always "from CRM": a walk-in's name and number are typed at the
               door, so the plain label is the one that is true in every case. */}
@@ -638,6 +909,9 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
             <div style={{ minWidth: 0 }}>
               <div style={{ fontSize: 13, fontWeight: 700 }}>{b.customer.name || 'Guest'}</div>
               <div style={{ fontSize: 11, color: 'var(--t3)', ...mono }}>{b.customer.phone || 'no phone on file'}</div>
+              {b.customer.allergens?.length > 0 && (
+                <div style={{ fontSize: 11, color: 'var(--red)', fontWeight: 700, textTransform: 'capitalize' }}>{b.customer.allergens.join(', ')}</div>
+              )}
             </div>
           </div>
         </div>
@@ -761,7 +1035,22 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
             padding, or .btn's nowrap pushes the labels through the borders. */}
         {isLive(b) && b.status !== 'dining' && (
           <div style={{ display: 'flex', gap: 8 }}>
+            {/* 16 Oct 2026: Edit opens the full sheet (date, time, covers, guest,
+                note, tables). Move stays as the quick table swap. */}
+            <button className="btn btn-ghost" onClick={() => setEditing(true)} style={{ flex: 1, minWidth: 0, height: 40, padding: '0 10px', fontSize: 12, fontWeight: 700 }}>Edit</button>
             <button className="btn btn-ghost" onClick={() => setMoving((m) => !m)} style={{ flex: 1, minWidth: 0, height: 40, padding: '0 10px', fontSize: 12 }}>{moving ? 'Close' : 'Move'}</button>
+          </div>
+        )}
+        {/* 16 Oct 2026 review: a seated party shows Edit greyed with the reason
+            in words, since an iPad never shows a tooltip. */}
+        {b.status === 'dining' && (
+          <div>
+            <button className="btn btn-ghost" disabled style={{ width: '100%', height: 40, fontSize: 12, fontWeight: 700, opacity: 0.5 }}>Edit</button>
+            <div style={{ marginTop: 6, fontSize: 11.5, color: 'var(--t3)', lineHeight: 1.4 }}>{EDIT_REFUSALS.dining}</div>
+          </div>
+        )}
+        {isLive(b) && b.status !== 'dining' && (
+          <div style={{ display: 'flex', gap: 8 }}>
             {/* markBookingNoShow, not a raw status write: it also bumps the guest's
                 lifetime no-show count on the CRM record, which is what drives the
                 card-hold prompt on their next booking. Not offered while the
@@ -773,6 +1062,9 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
           </div>
         )}
       </div>
+      {editing && (
+        <EditBookingSheet b={b} editedBy={operatorName} onClose={() => setEditing(false)} />
+      )}
     </div>
   );
 }

@@ -12,9 +12,13 @@
 // The public URL follows OnlineOrdering.jsx exactly: platform DB `locations`
 // row via ops_location_id (fallback: id), slug → https://<slug>.<CUSTOMER_ROOT>/book.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../store';
 import { money } from '../../lib/currency';
+import { toMin } from '../../lib/bookings/optimiser.js';
+import { editRefusal, editedLine, fmtClock, venueToday } from '../../lib/bookings/editRules.js';
+import { StatusBadge, displayStatus, bookingName } from '../../surfaces/bookings/bits.jsx';
+import EditBookingSheet from '../../surfaces/bookings/EditBookingSheet.jsx';
 import { CUSTOMER_ROOT } from '../../lib/env';
 import { platformSupabase, getLocationId } from '../../lib/supabase';
 import { DEFAULT_RULES, DEFAULT_TURN_BANDS } from '../../lib/bookings/optimiser.js';
@@ -46,7 +50,7 @@ const FALLBACK = {
   joinGroups: [],
 };
 
-export default function TableBookings() {
+export default function TableBookings({ userName = null }) {
   const bookingRules = useStore(s => s.bookingRules);
   const updateBookingRules = useStore(s => s.updateBookingRules);
 
@@ -137,6 +141,10 @@ export default function TableBookings() {
     <div style={{ maxWidth: 1400 }}>
       <Head title="Table bookings"
         sub="The guard rails the diary, the optimiser and the booking widget obey — turn times, joins, pacing and no-show cover. Changes save instantly and every host stand reacts live; there is no save button." />
+
+      {/* 16 Oct 2026: the day's bookings, each with Edit, so a manager can fix a
+          booking from the office (the same sheet the host stand uses). */}
+      <BookingsList userName={userName} />
 
       {/* ── 1 · Rules ── */}
       <div style={{ display: 'flex', gap: 14, marginTop: 14, flexWrap: 'wrap', alignItems: 'flex-start' }}>
@@ -352,6 +360,76 @@ export default function TableBookings() {
   );
 }
 
+// ── The day's bookings with Edit (16 Oct 2026) ───────────────────────────────
+function BookingsList({ userName }) {
+  const bookings = useStore((s) => s.bookings) || [];
+  const bookingsDate = useStore((s) => s.bookingsDate);
+  const setBookingsDate = useStore((s) => s.setBookingsDate);
+  const packages = useStore((s) => s.packages) || [];
+  const tables = useStore((s) => s.tables) || [];
+  // Venue clock, never the browser's: Peter in California sees the Leeds day
+  // and the Leeds time an edit was made.
+  const venueTz = useStore((s) => s.locationConfig?.timezone);
+  const fmt = useMemo(() => fmtClock(venueTz), [venueTz]);
+  const today = venueToday(venueTz);
+  const [editing, setEditing] = useState(null); // booking id
+  const date = bookingsDate || today;
+  const isToday = date === today;
+  const rows = useMemo(
+    () => bookings.filter((b) => b.status !== 'cancelled').slice().sort((a, b) => toMin(a.startTime) - toMin(b.startTime) || bookingName(a).localeCompare(bookingName(b))),
+    [bookings],
+  );
+  const labelOf = (id) => tables.find((t) => t.id === id)?.label || String(id).slice(-4);
+  const shiftDay = (delta) => {
+    const d = new Date(`${date}T12:00:00`);
+    d.setDate(d.getDate() + delta);
+    setBookingsDate?.(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+  };
+  const selected = editing ? bookings.find((b) => b.id === editing) : null;
+  return (
+    <div style={{ ...S.section, marginTop: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <div style={{ flex: 1, minWidth: 160 }}>
+          <div style={S.lbl}>Bookings</div>
+          <div style={S.hint}>Every booking for the day. Edit changes the date, time, covers, guest, note or tables; the host stands see it at once.</div>
+        </div>
+        <button className="btn btn-ghost btn-xs" onClick={() => shiftDay(-1)} style={{ fontFamily: MONO }}>‹</button>
+        <input type="date" value={date} onChange={(e) => { if (e.target.value) setBookingsDate?.(e.target.value); }} aria-label="Bookings date" style={{ ...S.inp, width: 160 }} />
+        {!isToday && <button className="btn btn-ghost btn-xs" onClick={() => setBookingsDate?.(today)} style={{ fontWeight: 700 }}>Today</button>}
+        <button className="btn btn-ghost btn-xs" onClick={() => shiftDay(1)} style={{ fontFamily: MONO }}>›</button>
+      </div>
+      {rows.length === 0 && <div style={{ fontSize: 12, color: 'var(--t4)', marginTop: 10 }}>No bookings on {date}.</div>}
+      {/* rows wrap on a phone instead of widening the page */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10, overflowX: 'auto' }}>
+        {rows.map((b) => {
+          const st = displayStatus(b, null, packages);
+          const locked = editRefusal(b);
+          const edited = editedLine(b, fmt);
+          return (
+            <div key={b.id} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '6px 12px', padding: '8px 12px', borderRadius: 10, background: 'var(--bg2)', border: '1px solid var(--bdr)' }}>
+              <span style={{ fontSize: 14, fontWeight: 800, fontFamily: MONO, color: 'var(--t1)', width: 48 }}>{String(b.startTime || '').slice(0, 5)}</span>
+              <span style={{ flex: '1 1 160px', minWidth: 0 }}>
+                <span style={{ display: 'block', fontSize: 13, fontWeight: 700, color: 'var(--t1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{bookingName(b)}</span>
+                <span style={{ display: 'block', fontSize: 11, color: 'var(--t4)', fontFamily: MONO, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{b.customer?.phone || b.source || 'host'}</span>
+              </span>
+              <span style={{ fontSize: 12, color: 'var(--t3)', fontFamily: MONO }}>{b.covers} cvr</span>
+              <span style={{ fontSize: 13, fontWeight: 800, fontFamily: MONO, color: 'var(--t1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{(b.tables || []).map(labelOf).join(' + ') || '-'}</span>
+              <StatusBadge st={st} />
+              <button className="btn btn-ghost btn-xs" onClick={() => setEditing(b.id)} title={locked || 'Edit this booking'} style={{ height: 30, fontWeight: 700, opacity: locked ? 0.55 : 1, marginLeft: 'auto' }}>Edit</button>
+              {(edited || b.note) && (
+                <span style={{ flex: '1 1 100%', minWidth: 0, fontSize: 11, color: 'var(--t4)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={b.note || undefined}>{[edited, b.note].filter(Boolean).join(' · ')}</span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {selected && (
+        <EditBookingSheet b={selected} editedBy={userName} onClose={() => setEditing(null)} />
+      )}
+    </div>
+  );
+}
+
 // ── BO-idiom controls (PackageBuilder styling, RulesScreen semantics) ─────────
 function Row({ label, sub, children }) {
   return (
@@ -403,6 +481,7 @@ const S = {
   pill: { fontSize: 12.5, padding: '6px 11px', borderRadius: 8, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t2)', cursor: 'pointer', fontFamily: 'inherit', flexShrink: 0 },
   pillOn: { fontSize: 12.5, padding: '6px 11px', borderRadius: 8, border: '1px solid var(--grn-b)', background: 'var(--grn-d)', color: 'var(--grn)', cursor: 'pointer', fontFamily: 'inherit', fontWeight: 700, flexShrink: 0 },
   btn: { padding: '8px 14px', borderRadius: 8, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t1)', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', alignSelf: 'center' },
+  inp: { padding: '7px 10px', borderRadius: 9, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t1)', fontFamily: 'inherit', fontSize: 13, boxSizing: 'border-box' },
   monoBox: { fontFamily: MONO, fontSize: 12, color: 'var(--t1)', background: 'var(--bg2)', border: '1px solid var(--bdr2)', borderRadius: 8, padding: '9px 11px', cursor: 'pointer', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'left' },
   note: { flex: '1 1 260px', padding: '12px 14px', borderRadius: 12, border: '1px solid' },
   noteTitle: { fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em' },

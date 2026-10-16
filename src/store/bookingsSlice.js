@@ -17,17 +17,19 @@
 // write, so a training till cannot pollute a live diary.
 
 import {
-  suggestTables, paceAt, turnFor, toMin, toOptimiserBooking,
+  suggestTables, paceAt, turnFor, toMin, toHM, toOptimiserBooking,
   DEFAULT_TURN_BANDS, DEFAULT_RULES,
 sessionsToBlocks } from '../lib/bookings/optimiser.js';
 import {
   loadBookings, createBookingAtomic, updateBookingRow, rowToBooking, loadBookingTables,
   loadBookingRules, saveBookingRules, loadPackages,
   upsertPackageRow, deletePackageRow, moveBookingTables,
-  loadBookingPreorders, saveBookingPreorders, loadBookingCredit,
+  loadBookingPreorders, saveBookingPreorders, loadBookingCredit, loadBookingRow,
 } from '../lib/bookings/bookingsData.js';
 import { packageItemsFor } from '../lib/bookings/packagePricing.js';
-import { buildScheduleCtx } from '../lib/locationTime.js';
+import { validateEdit, conflictsFor, paymentAfterEdit, stampEdit, hasGuest, describeChanges, editRefusal, MOVE_NON_BLOCKING } from '../lib/bookings/editRules.js';
+import { logActivity } from '../lib/activity.js';
+import { buildScheduleCtx, minutesInTz } from '../lib/locationTime.js';
 import { supabase, isMock, getActiveLocationSync, getLocationId, isHostStandMode } from '../lib/supabase.js';
 import { isTrainingMode } from '../lib/trainingMode.js';
 import { flushSingleSession, markStandOwned } from '../sync/SessionSync.js';
@@ -70,6 +72,9 @@ export const mintBookingId = () => `bk-${Date.now()}-${Math.random().toString(36
 // booking that never arrives (another date, another venue) cannot accumulate.
 const PENDING_TABLES_TTL_MS = 5 * 60 * 1000;
 const pendingBookingTables = new Map(); // booking_id -> { ids: Set, at: epochMs }
+// 16 Oct 2026: one settling read of booking_tables per edited booking (resyncBookingTables).
+const RESYNC_DELAY_MS = 1500;
+const pendingResync = new Map(); // booking_id -> timer
 
 function bufferBookingTable(bookingId, tableId) {
   const now = Date.now();
@@ -110,6 +115,10 @@ export function bookingsSlice(set, get) {
     bookingsDate: todayISO(),     // 'YYYY-MM-DD' the diary is showing
     bookingRules: null,           // camelCase rules incl. turnBands + joinGroups (null until loaded)
     packages: [],
+    // 16 Oct 2026: who is logged in at the host stand (PIN login). The stand has no
+    // POS staff record, so edits are stamped from here. { id, name, role } or null.
+    bookingsOperator: null,
+    setBookingsOperator: (op) => set({ bookingsOperator: op || null }),
 
     // ── boot / day switch ─────────────────────────────────────────────────────
     loadBookingsFromDB: async (locationId, dateISO) => {
@@ -275,6 +284,200 @@ export function bookingsSlice(set, get) {
       return { ok: true };
     },
 
+    // ── edit (16 Oct 2026) ───────────────────────────────────────────────────
+    // Peter: "why can't I edit a booking, that is basic". One action for date,
+    // start time, covers, guest name, phone, email, allergens, note and tables
+    // (primary first, then joined). Source and package never change here.
+    // patch: { date?, startTime?, covers?, tables?, primaryTableId?, note?,
+    //          customer? ({ name, phone, email, allergens } merged over the snapshot) }
+    // The rules (editRules.js, tested) decide and say why not in words:
+    //   refused for dining, departed, cancelled, no show, expired
+    //   date not in the past, time inside service hours, covers fit the tables
+    //   turn minutes recomputed from the band for the new covers (package turn wins)
+    //   the new tables and window against every other live booking that day
+    // Writes: the bookings row first (date, time, turn, covers, note, customer
+    // with the edit stamp), then move_booking for the tables, which re-checks
+    // the tables under the venue lock at the NEW time (it reads the row it just
+    // updated) and rewrites booking_tables delete and insert. A refused move
+    // puts the row back. Never optimistic: the store changes after the writes.
+    // Returns { ok:true, booking, payment } or { ok:false, error, errors?, conflicts? }.
+    editBooking: async (id, patch = {}, { editedBy = null, expectedEditedAt } = {}) => {
+      const notHere = 'This booking is not on the diary any more. Reload and try again.';
+      const refuse = (msg, extra = {}) => ({ ok: false, error: msg, errors: [msg], ...extra });
+      const cached = (get().bookings || []).find((x) => x.id === id);
+      if (!cached) return refuse(notHere);
+      const rules = get().bookingRules || {};
+      const tz = get().locationConfig?.timezone;
+      const pkg = cached.packageId ? (get().packages || []).find((p) => p.id === cached.packageId) : null;
+      const ctx = buildScheduleCtx(tz);
+      const storeTables = (get().tables || []).filter((t) => !t.parentId);
+      const tablesForRules = storeTables.map((t) => ({ id: t.id, label: t.label || t.id, covers: t.maxCovers || 2 }));
+      const locId = await resolveLocationId();
+      const live = !!(locId && !isTrainingMode() && !isMock && supabase);
+
+      // 16 Oct 2026 review: read this booking's row fresh. The store copy can be
+      // stale (Back Office has no bookings realtime, and another stand may have
+      // seated the party a moment ago), so the status and the edit stamp are
+      // checked against what the database holds now. Tables and money stay
+      // from the store; the tables are re read only if the primary moved.
+      let entry = cached;
+      if (live) {
+        const fresh = await loadBookingRow(id, locId);
+        if (fresh) {
+          const why = editRefusal(fresh);
+          if (why) return refuse(why);
+          if (expectedEditedAt !== undefined && (fresh.customer?.edited_at || null) !== (expectedEditedAt || null)) {
+            // Bring this device's copy up to date first, so reopening the sheet
+            // shows the other device's change instead of refusing again.
+            set((s) => {
+              const list = s.bookings || [];
+              if (fresh.date !== (s.bookingsDate || todayISO())) return { bookings: list.filter((x) => x.id !== id) };
+              return {
+                bookings: list.map((x) => (x.id === id ? {
+                  ...x, status: fresh.status, date: fresh.date, startTime: fresh.startTime, covers: fresh.covers,
+                  turnMinutes: fresh.turnMinutes, note: fresh.note, customer: fresh.customer,
+                } : x)),
+              };
+            });
+            if (fresh.primaryTableId !== cached.primaryTableId) get().resyncBookingTables?.(id);
+            const at = fresh.customer?.edited_at ? toHM(minutesInTz(fresh.customer.edited_at, tz) ?? 0) : null;
+            const who = fresh.customer?.edited_by ? ` by ${fresh.customer.edited_by}` : '';
+            return refuse(`This booking was changed on another device${at ? ` at ${at}` : ''}${who}. Close and reopen to see it.`, { stale: true });
+          }
+          entry = {
+            ...cached,
+            status: fresh.status, date: fresh.date, startTime: fresh.startTime, covers: fresh.covers,
+            turnMinutes: fresh.turnMinutes, note: fresh.note, customer: fresh.customer,
+          };
+          if (fresh.primaryTableId && fresh.primaryTableId !== cached.primaryTableId) {
+            const ids = await loadBookingTables(id);
+            entry = { ...entry, primaryTableId: fresh.primaryTableId, tables: ids && ids.length ? mergeBookingTables(fresh.primaryTableId, ids) : [fresh.primaryTableId] };
+          }
+        }
+      }
+
+      // Guest fields merge over the existing snapshot so nothing else on it is lost.
+      const customer = patch.customer !== undefined
+        ? { ...(entry.customer || {}), ...(patch.customer || {}) }
+        : entry.customer;
+      const by = editedBy || get().bookingsOperator?.name || get().staff?.name || null;
+      const stamped = stampEdit(customer, by);
+
+      const v = validateEdit({
+        booking: entry,
+        patch: { ...patch, customer: stamped },
+        rules: { serviceStart: rules.serviceStart || '17:00', serviceEnd: rules.serviceEnd || '23:00', turnBands: rules.turnBands || DEFAULT_TURN_BANDS },
+        tables: tablesForRules,
+        today: ctx.ymd,
+        pkg,
+      });
+      if (!v.ok) return { ok: false, error: v.errors[0], errors: v.errors };
+      const next = v.next;
+      const slotChanged = v.changed.slot;
+
+      // Only a change of when or where the table is held needs the conflict
+      // check. A name, phone, allergen, note or covers fix never does, so an
+      // open tab running over on the party's table cannot refuse it.
+      if (slotChanged) {
+        // The other bookings on the target day, read fresh so a booking another
+        // device just took is seen. If the read fails it comes back empty, which
+        // is why every slot change ALSO goes through move_booking below.
+        let others = (get().bookings || []);
+        if (live) {
+          const { data } = await loadBookings(locId, next.date);
+          if (Array.isArray(data)) others = data;
+        } else if (next.date !== (get().bookingsDate || todayISO())) {
+          others = [];
+        }
+        // Open till tabs block their tables like a seated party, today only.
+        const blocks = next.date === ctx.ymd
+          ? sessionsToBlocks(get().tables, others, rules.turnBands || DEFAULT_TURN_BANDS, ctx.nowMinutes, epochToVenueMin(tz))
+          : [];
+        const conflicts = conflictsFor({ booking: next, others: [...others, ...blocks], tables: tablesForRules, nonBlocking: MOVE_NON_BLOCKING });
+        if (conflicts.length) {
+          return { ok: false, error: conflicts[0].text, errors: conflicts.map((c) => c.text), conflicts };
+        }
+      }
+
+      const payment = paymentAfterEdit({ pkg, covers: next.covers, capturedMinor: cached.paidMinor ?? null });
+
+      // Never optimistic, and never the whole stale snapshot: only the edited
+      // fields go onto the row as it is in the store NOW, so a status change
+      // that arrived by realtime during the writes is kept.
+      const edited = {
+        date: next.date, startTime: next.startTime, covers: next.covers, turnMinutes: next.turnMinutes,
+        note: next.note, customer: next.customer, tables: next.tables, primaryTableId: next.primaryTableId,
+      };
+      const apply = () => set((s) => {
+        const viewing = s.bookingsDate || todayISO();
+        const list = s.bookings || [];
+        // A booking moved to another day leaves this day's diary.
+        if (next.date !== viewing) return { bookings: list.filter((x) => x.id !== id) };
+        return { bookings: list.map((x) => (x.id === id ? { ...x, ...edited } : x)) };
+      });
+      const logEdit = () => {
+        // One line on the activity feed. Best effort, never blocks the edit.
+        try {
+          const name = next.customer?.name || `Party of ${next.covers}`;
+          const words = describeChanges(entry, next, tablesForRules);
+          logActivity(locId, {
+            kind: 'ops', severity: 'info', title: 'Booking edited',
+            body: `${name}: ${words || 'no field changed'}`, refType: 'booking', refId: id, actorName: by,
+          }).catch(() => {});
+        } catch { /* the booking is saved either way */ }
+      };
+
+      if (isTrainingMode()) { apply(); return { ok: true, booking: next, payment, training: true }; }
+      if (!locId) return refuse('No venue resolved, so the booking cannot be saved.');
+
+      // Only what changed, plus the guest snapshot with the stamp.
+      const rowPatch = { customer: stamped };
+      const undo = { customer: entry.customer ?? null };
+      if (v.changed.date) { rowPatch.date = next.date; undo.date = entry.date; }
+      if (v.changed.time) { rowPatch.startTime = next.startTime; undo.startTime = entry.startTime; }
+      if (v.changed.turn) { rowPatch.turnMinutes = next.turnMinutes; undo.turnMinutes = entry.turnMinutes; }
+      if (v.changed.covers) { rowPatch.covers = next.covers; undo.covers = entry.covers; }
+      if (next.note !== (entry.note || '')) { rowPatch.note = next.note; undo.note = entry.note || ''; }
+
+      const r1 = await updateBookingRow(id, rowPatch, locId);
+      if (!r1.ok) {
+        const msg = /payment_gate|waiting for payment/i.test(String(r1.error || ''))
+          ? 'This booking is waiting for payment, so its covers cannot change.'
+          : `Booking NOT saved: ${r1.error || 'the database refused the change'}.`;
+        return refuse(msg);
+      }
+      // 16 Oct 2026 review: EVERY change of date, time, turn or tables goes
+      // through move_booking, even with the same tables. It re reads the row
+      // just written and checks those tables at the NEW time under the venue
+      // lock, so a time only change or a sideways Timeline drag is checked on
+      // the server too (before, only a table change was).
+      if (slotChanged) {
+        const r2 = await moveBookingTables(id, next.tables, next.primaryTableId, locId);
+        if (!r2.ok) {
+          // A timeout can hide a move that DID land. Look before undoing it.
+          if (r2.error !== 'table_taken') {
+            const now = await loadBookingTables(id);
+            if (now && now.join(',') === (next.tables || []).join(',')) {
+              apply(); logEdit();
+              return { ok: true, booking: next, payment };
+            }
+          }
+          const back = await updateBookingRow(id, undo, locId);
+          if (!back.ok) {
+            get().setBookingsDate?.(get().bookingsDate || todayISO());
+            return refuse('The time was saved but the table was NOT moved, and it could not be put back. Reload the diary and check this booking.');
+          }
+          const msg = r2.error === 'table_taken'
+            ? `${tablesForRules.find((t) => t.id === r2.tableId)?.label || 'That table'} is held by another booking at that time. Nothing was changed.`
+            : `Table NOT moved: ${r2.error || 'the database refused the move'}. Nothing was changed.`;
+          return refuse(msg);
+        }
+      }
+      apply();
+      logEdit();
+      return { ok: true, booking: next, payment };
+    },
+
     // ── the POS Tables bridge (v5.6.27 — bookings replace thin reservations) ──
     // The next live booking claiming this table today, shown as the "reserved"
     // state on the Tables screen. DISPLAY-DERIVED, never a persisted status —
@@ -396,11 +599,14 @@ export function bookingsSlice(set, get) {
         get().showToast?.(`${labels} is seated with no order yet. Cash it off on the POS, or move this booking.`, 'error');
         return { ok: false, error: 'table_seated_empty' };
       }
-      const seatCustomer = b.customer ? {
+      // hasGuest, not a bare truthy check: an edited walk in carries an edit stamp
+      // on its snapshot with no name or phone, and that is not a guest to attach.
+      // A CRM linked booking always attaches, and allergens alone count as a guest.
+      const seatCustomer = (hasGuest(b.customer) || b.customerId) ? {
         customerId: b.customerId || null,
-        name: b.customer.name || 'Guest',
-        phone: b.customer.phone || null,
-        allergens: b.customer.allergens || [],
+        name: b.customer?.name || 'Guest',
+        phone: b.customer?.phone || null,
+        allergens: b.customer?.allergens || [],
       } : null;
       try {
         // ── v5.7.21: the booking's money rides onto the session ──────────────
@@ -565,10 +771,22 @@ export function bookingsSlice(set, get) {
         return;
       }
       const row = payload.new;
-      if (!row?.id || row.booking_date !== date) return;
+      if (!row?.id) return;
+      if (row.booking_date !== date) {
+        // 16 Oct 2026: an edit moved this booking to another day. It leaves this
+        // day's diary on every device; before, only the editing device dropped it.
+        if ((get().bookings || []).some((b) => b.id === row.id)) {
+          set((s) => ({ bookings: (s.bookings || []).filter((b) => b.id !== row.id) }));
+        }
+        return;
+      }
       set((s) => {
         const list = s.bookings || [];
         const existing = list.find((b) => b.id === row.id);
+        // 16 Oct 2026: a new primary table means the tables were rewritten (an edit
+        // or a move). The old members must not be kept, so start again from the new
+        // primary plus anything buffered, and settle the join from the database.
+        const retabled = !!existing && existing.primaryTableId !== row.primary_table_id;
         // Map through rowToBooking, the SAME mapper loadBookings uses, instead of
         // a hand-listed copy. The hand-listed one silently omitted departedAt,
         // cancelledAt, cancelReason and createdBy, and every column added to the
@@ -581,7 +799,7 @@ export function bookingsSlice(set, get) {
           // FIRST, so a joined booking does not land holding only its primary table.
           tables: mergeBookingTables(
             row.primary_table_id,
-            existing?.tables || [],
+            retabled ? [] : (existing?.tables || []),
             mapped.tables || [],
             [...(pendingBookingTables.get(row.id)?.ids || [])],
           ),
@@ -601,8 +819,37 @@ export function bookingsSlice(set, get) {
         // the membership events were missed entirely, which is what left a joined
         // party showing one table until someone reloaded (Peter, 25 Aug).
         if (!existing) get().refreshBookingTables?.(row.id);
+        // 16 Oct 2026 review: booking_tables has RLS on, so a realtime DELETE
+        // carries only the row id, never which booking or table left. Any UPDATE
+        // of a booking we already show (an edit writes the row, then move_booking
+        // writes primary_table_id) therefore re reads its tables once, debounced,
+        // so a table dropped from a join comes off every stand.
+        if (existing) get().resyncBookingTables?.(row.id);
         return { bookings: existing ? list.map((b) => (b.id === row.id ? merged : b)) : [...list, merged] };
       });
+    },
+
+    // 16 Oct 2026: after an edit rewrote a booking's tables, the membership events
+    // (DELETE old rows, INSERT new rows) and the bookings UPDATE arrive on two
+    // streams in any order. Whatever order they land in, one read of booking_tables
+    // a moment later REPLACES the list with the database's truth. Debounced per
+    // booking so a burst of events costs one read.
+    resyncBookingTables: (bookingId) => {
+      if (!bookingId) return;
+      const pending = pendingResync.get(bookingId);
+      if (pending) clearTimeout(pending);
+      pendingResync.set(bookingId, setTimeout(async () => {
+        pendingResync.delete(bookingId);
+        const ids = await loadBookingTables(bookingId);
+        if (!ids || !ids.length) return;
+        set((s) => ({
+          bookings: (s.bookings || []).map((b) => {
+            if (b.id !== bookingId) return b;
+            const primary = ids.includes(b.primaryTableId) ? b.primaryTableId : ids[0];
+            return { ...b, tables: mergeBookingTables(primary, ids), primaryTableId: primary };
+          }),
+        }));
+      }, RESYNC_DELAY_MS));
     },
 
     // A table that is a MEMBER of a SEATED join, not the primary. The party has one
@@ -634,6 +881,25 @@ export function bookingsSlice(set, get) {
     },
 
     applyBookingTablesRealtime: (payload) => {
+      // 16 Oct 2026: a DELETE is a table leaving a booking (an edit or move rewrote
+      // the membership). It used to be ignored, so the old table stayed on every
+      // other device's diary beside the new one. The primary never comes off here:
+      // the bookings row says what the primary is.
+      if (payload?.eventType === 'DELETE') {
+        // With RLS on booking_tables the old record holds only the id, so this
+        // usually returns here; the bookings UPDATE resync above does the work.
+        const old = payload.old;
+        if (!old?.booking_id || !old?.table_id) return;
+        if (!(get().bookings || []).some((b) => b.id === old.booking_id)) return;
+        set((s) => ({
+          bookings: (s.bookings || []).map((b) => {
+            if (b.id !== old.booking_id || old.table_id === b.primaryTableId) return b;
+            return { ...b, tables: (b.tables || []).filter((t) => t !== old.table_id) };
+          }),
+        }));
+        get().resyncBookingTables?.(old.booking_id);
+        return;
+      }
       const row = payload?.new;
       if (!row?.booking_id || !row?.table_id) return;
       // create_booking writes the booking and its member tables in ONE transaction,
