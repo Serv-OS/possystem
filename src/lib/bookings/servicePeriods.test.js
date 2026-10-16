@@ -10,7 +10,8 @@ import assert from 'node:assert/strict';
 import {
   isoWeekday, addDaysISO, sayDay, normalisePeriod, servicePeriodsOf, hasServiceRules,
   serviceWindows, serviceSlots, bookingTimeRefusal, diaryRange, closedRanges, dayNotice,
-  describeWindows, checkPeriod, checkBlock, wholeDayBlock,
+  describeWindows, checkPeriod, checkBlock, wholeDayBlock, blockReason, guestTimeWords,
+  guestClosedDayWords, noticeWords,
 } from './optimiser.js';
 
 const ALL = [1, 2, 3, 4, 5, 6, 7];
@@ -124,20 +125,33 @@ test('online only block stops the widget, never the host stand', () => {
   assert.equal(wholeDayBlock({ blockedDates: [SAT] }, SAT), null);
 });
 
-test('service past midnight: the late seats belong to the next calendar date', () => {
+test('service past midnight: it may END after midnight, but nobody is seated after it', () => {
+  // Every free check reads one date's bookings, so a 00:30 seat filed under Saturday could share
+  // a table with a Friday 23:30 one. The last seating is pulled back to 23:59.
   const r = { servicePeriods: [{ id: 'n', name: 'Late', days: [5], start: '20:00', end: '02:00', lastSeating: '00:30' }], slotMinutes: 30 };
   const fri = serviceSlots(r, FRI);
   assert.equal(fri[0], '20:00');
   assert.equal(fri[fri.length - 1], '23:30');
-  assert.deepEqual(serviceSlots(r, SAT), ['00:00', '00:30']);
-  assert.equal(bookingTimeRefusal(r, SAT, '00:30'), null);
-  assert.equal(bookingTimeRefusal(r, SAT, '01:00').code, 'closed_day');
+  assert.deepEqual(serviceSlots(r, SAT), []);
+  assert.equal(bookingTimeRefusal(r, SAT, '00:30').code, 'closed_day');
   assert.equal(bookingTimeRefusal(r, FRI, '23:30'), null);
-  // the late tail of Friday reads as open on the Saturday grid
+  assert.equal(normalisePeriod(r.servicePeriods[0]).lastAbs, 1439);
+  // no last seating: still nothing after midnight
+  const open = { servicePeriods: [{ id: 'n', days: [5], start: '20:00', end: '02:00' }], slotMinutes: 30 };
+  assert.deepEqual(serviceSlots(open, SAT), []);
+  assert.equal(serviceSlots(open, FRI).slice(-1)[0], '23:30');
+  // the late tail of Friday still reads as open on the Saturday grid
   assert.deepEqual(closedRanges(r, SAT, 0, 180), [{ startMin: 120, endMin: 180, label: 'Closed' }]);
   // the Friday grid draws to midnight
   assert.deepEqual(diaryRange(r, FRI), { startMin: 20 * 60, endMin: 24 * 60 });
-  assert.match(describeWindows(serviceWindows(r, FRI).windows), /20:00 to 02:00 \(last seating 00:30\)/);
+  assert.match(describeWindows(serviceWindows(r, FRI).windows), /20:00 to 02:00 \(last seating 23:59\)/);
+});
+
+test('legacy window that ends past midnight seats until midnight on the same date, never after', () => {
+  const legacy = { serviceStart: '17:00', serviceEnd: '01:00', slotMinutes: 15 };
+  assert.equal(serviceSlots(legacy, FRI).slice(-1)[0], '23:45');
+  assert.equal(serviceSlots(legacy, SAT)[0], '17:00');
+  assert.equal(bookingTimeRefusal(legacy, SAT, '00:30').code, 'outside_service');
 });
 
 test('a closed or blocked Friday also closes its past midnight tail', () => {
@@ -206,11 +220,52 @@ test('bad periods are ignored, and the editor checks say why', () => {
   assert.match(checkPeriod({ days: [], start: '12:00', end: '15:00' }), /at least one day/);
   assert.match(checkPeriod({ days: [1], start: '12:00', end: '12:00' }), /same time/);
   assert.match(checkPeriod({ days: [1], start: '12:00', end: '15:00', lastSeating: '15:30' }), /before the end/);
-  assert.equal(checkPeriod({ days: [5], start: '20:00', end: '02:00', lastSeating: '01:00' }), null);
+  assert.match(checkPeriod({ days: [5], start: '20:00', end: '02:00', lastSeating: '01:00' }), /before midnight/);
+  assert.equal(checkPeriod({ days: [5], start: '20:00', end: '02:00', lastSeating: '23:30' }), null);
+  assert.equal(checkPeriod({ days: [5], start: '20:00', end: '02:00' }), null, 'an end past midnight is fine');
   assert.equal(checkBlock({ from: SAT, to: SAT }), null);
   assert.match(checkBlock({ from: SAT, to: FRI }), /before the first/);
   assert.match(checkBlock({ from: SAT, start: '18:00' }), /both times/);
   assert.match(checkBlock({ from: SAT, start: '21:00', end: '18:00' }), /after the start/);
   // last seating later than the end is pulled back inside the period
   assert.equal(normalisePeriod({ days: [1], start: '12:00', end: '15:00', lastSeating: '16:00' }).lastAbs, 15 * 60 - 1);
+});
+
+test('a block with no reason never reads "Closed for bookings: Closed"', () => {
+  for (const label of ['', 'Closed', undefined]) {
+    const r = { ...DEMO, dateBlocks: [{ id: 'x', from: SAT, to: SAT, label }] };
+    assert.equal(dayNotice(r, SAT), 'Closed for bookings. The host stand can still seat walk ins.');
+    assert.equal(bookingTimeRefusal(r, SAT, '12:00').message, 'Sat 17 Oct is closed for bookings. Pick another day.');
+    // the Diary band still needs a word
+    assert.equal(closedRanges(r, SAT, 12 * 60, 13 * 60)[0].label, 'Closed');
+  }
+  const timed = { ...DEMO, dateBlocks: [{ id: 't', from: SAT, start: '18:00', end: '21:00', label: 'Blocked' }] };
+  assert.equal(bookingTimeRefusal(timed, SAT, '19:00').message, '18:00 to 21:00 on Sat 17 Oct is blocked. Pick another time.');
+  assert.equal(dayNotice(timed, SAT), '18:00 to 21:00 blocked.');
+  assert.equal(closedRanges(timed, SAT, 18 * 60, 21 * 60).find((c) => c.startMin === 18 * 60).label, 'Blocked');
+  // a typed reason is kept
+  const xmas = { ...DEMO, dateBlocks: [{ id: 'x', from: SAT, label: 'Christmas' }] };
+  assert.equal(dayNotice(xmas, SAT), 'Closed for bookings: Christmas. The host stand can still seat walk ins.');
+  assert.equal(blockReason(' Private hire '), 'Private hire');
+  assert.equal(blockReason('Blocked'), '');
+});
+
+test("guest words never show the venue's own block reason", () => {
+  const r = { ...DEMO, dateBlocks: [
+    { id: 'p', from: SAT, label: 'Private hire for the Smiths', start: '18:00', end: '21:00' },
+    { id: 'x', from: MON, to: MON, label: 'Staff party' },
+  ] };
+  const timed = guestTimeWords(bookingTimeRefusal(r, SAT, '19:00', { online: true }), SAT);
+  assert.doesNotMatch(timed, /Private hire|Smiths/);
+  assert.match(timed, /isn't taking online bookings then on Sat 17 Oct/);
+  const day = guestClosedDayWords(r, MON);
+  assert.doesNotMatch(day, /Staff party/);
+  assert.match(day, /isn't taking online bookings on Mon 19 Oct/);
+  assert.equal(guestClosedDayWords(r, FRI), null);
+  assert.match(guestClosedDayWords({ ...DEMO, closedWeekdays: [1] }, MON), /closed on Mondays/);
+  assert.equal(guestTimeWords(null, SAT), 'Pick one of the times shown.');
+  assert.equal(noticeWords(120), '2 hours');
+  assert.equal(noticeWords(60), '1 hour');
+  assert.equal(noticeWords(90), '90 minutes');
+  assert.equal(noticeWords(0), '');
 });

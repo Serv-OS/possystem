@@ -4,6 +4,7 @@
 // used on the host stand Rules screen and in Back Office Table bookings:
 //   services        lunch, dinner, any number per day, each with its weekdays, start, end (an end
 //                   at or before the start runs past midnight) and an optional last seating
+//                   (before midnight: a booking belongs to the day it starts on)
 //   slot interval   the minutes between bookable times
 //   closed days     weekdays with no service
 //   closed dates    date ranges (holidays) or times on dates (an evening private hire), for
@@ -17,10 +18,10 @@
 // Before migration 20261016e the columns are not on the database: the editor says so in words
 // and saves nothing for them (the slot interval still saves, its column is old).
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   checkPeriod, checkBlock, serviceWindows, describeWindows, servicePeriodsOf, addDaysISO, sayDay,
-  WEEKDAY_SHORT, toMin,
+  WEEKDAY_SHORT, toMin, blockReason,
 } from '../../lib/bookings/optimiser.js';
 
 const DAYS = [1, 2, 3, 4, 5, 6, 7];
@@ -99,7 +100,12 @@ export default function ServicePeriodsEditor({ rules = {}, patch, ready = true, 
   const savedKey = JSON.stringify(saved);
   const [draft, setDraft] = useState(saved);
   // Another device (or Back Office) changed them: follow, unless this screen holds an unsaved row.
-  useEffect(() => { setDraft(JSON.parse(savedKey)); }, [savedKey]);
+  // (Adjusted while rendering, the React pattern for following a prop, not in an effect.)
+  const [seenKey, setSeenKey] = useState(savedKey);
+  if (seenKey !== savedKey) {
+    setSeenKey(savedKey);
+    if (!draft.some((p) => checkPeriod(p))) setDraft(JSON.parse(savedKey));
+  }
   const errors = draft.map((p) => checkPeriod(p));
   const write = (list) => {
     setDraft(list);
@@ -116,7 +122,7 @@ export default function ServicePeriodsEditor({ rules = {}, patch, ready = true, 
   const nbErr = nb.from ? checkBlock({ ...nb, to: nb.to || nb.from, start: nb.start || null, end: nb.end || null }) : null;
   const addBlock = () => {
     if (!nb.from || nbErr) return;
-    const b = { id: newId('b'), from: nb.from, to: nb.to || nb.from, label: nb.label.trim() || (nb.start ? 'Blocked' : 'Closed') };
+    const b = { id: newId('b'), from: nb.from, to: nb.to || nb.from, label: nb.label.trim() };
     if (nb.start && nb.end) { b.start = nb.start; b.end = nb.end; }
     if (nb.onlineOnly) b.onlineOnly = true;
     patch?.({ dateBlocks: [...blocks, b].sort((x, y) => String(x.from).localeCompare(String(y.from))) });
@@ -129,7 +135,7 @@ export default function ServicePeriodsEditor({ rules = {}, patch, ready = true, 
     return Array.from({ length: 7 }, (_, i) => {
       const d = addDaysISO(today, i);
       const sw = serviceWindows(rules, d);
-      const words = sw.closed === 'blocked' ? `Closed (${sw.block?.label || 'Closed'})`
+      const words = sw.closed === 'blocked' ? `Closed${blockReason(sw.block?.label) ? ` (${blockReason(sw.block?.label)})` : ''}`
         : sw.closed === 'closed_day' ? 'Closed'
         : describeWindows(sw.windows.filter((w) => !w.spill)) || 'Closed';
       return { d, words };
@@ -145,7 +151,7 @@ export default function ServicePeriodsEditor({ rules = {}, patch, ready = true, 
       </div>
       {off && (
         <div style={{ marginTop: 10, padding: '10px 12px', borderRadius: 10, border: '1px solid var(--orn)', color: 'var(--orn)', fontSize: 12.5, lineHeight: 1.5, background: 'color-mix(in srgb, var(--orn) 8%, transparent)' }}>
-          Service periods need the database update 20261016e first. Until it is run the venue keeps one window, {String(rules.serviceStart || '17:00').slice(0, 5)} to {String(rules.serviceEnd || '23:00').slice(0, 5)}, every day. Nothing here can be saved yet.
+          Service periods need the database update 20261016e first. Until it is run the venue keeps one window, {String(rules.serviceStart || '17:00').slice(0, 5)} to {String(rules.serviceEnd || '23:00').slice(0, 5)}, every day. Only the time between booking slots can be saved until then.
         </div>
       )}
 
@@ -154,7 +160,7 @@ export default function ServicePeriodsEditor({ rules = {}, patch, ready = true, 
       {draft.length === 0 && (
         <div style={S.note}>
           One window every day, {String(rules.serviceStart || '17:00').slice(0, 5)} to {String(rules.serviceEnd || '23:00').slice(0, 5)}.
-          {' '}Add services to set lunch and dinner, different hours on different days, or a late service past midnight.
+          {' '}Add services to set lunch and dinner, different hours on different days, or a late service that ends past midnight.
         </div>
       )}
       {draft.map((p, i) => {
@@ -189,8 +195,8 @@ export default function ServicePeriodsEditor({ rules = {}, patch, ready = true, 
             {errors[i]
               ? <div style={S.err}>{errors[i]} Not saved until it is fixed.</div>
               : <div style={S.note}>
-                  {pastMidnight ? `Runs past midnight: seats after midnight are booked on the next date. ` : ''}
-                  {p.lastSeating ? `Last booking ${p.lastSeating}.` : 'No last seating set: the last booking is one slot before the end.'}
+                  {pastMidnight ? 'Runs past midnight. Nobody is booked in after midnight: a booking belongs to the day it starts on. ' : ''}
+                  {p.lastSeating ? `Last booking ${p.lastSeating}.` : pastMidnight ? 'No last seating set: the last booking is the last slot before midnight.' : 'No last seating set: the last booking is one slot before the end.'}
                 </div>}
           </div>
         );
@@ -227,7 +233,7 @@ export default function ServicePeriodsEditor({ rules = {}, patch, ready = true, 
       {blocks.length === 0 && <div style={S.note}>No dates blocked.</div>}
       {blocks.map((b) => (
         <div key={b.id || `${b.from}${b.start || ''}`} style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, flexWrap: 'wrap', fontSize: 12.5, color: 'var(--t1)' }}>
-          <span style={{ fontWeight: 800 }}>{b.label || 'Closed'}</span>
+          <span style={{ fontWeight: 800 }}>{blockReason(b.label) || (b.start && b.end ? 'Blocked' : 'Closed')}</span>
           <span style={{ color: 'var(--t3)' }}>
             {sayDay(b.from)}{b.to && b.to !== b.from ? ` to ${sayDay(b.to)}` : ''}
             {b.start && b.end ? `, ${b.start} to ${b.end}` : ', all day'}

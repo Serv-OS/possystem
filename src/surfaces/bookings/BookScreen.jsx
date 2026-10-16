@@ -1,10 +1,10 @@
 // src/surfaces/bookings/BookScreen.jsx
 //
-// The three-column booking flow — README §3. Covers + time chips (pacing-aware,
+// The three-column booking flow (README §3). Covers + time chips (pacing-aware,
 // manager override on a full slot), ranked candidates from the optimiser with
 // the FULL generated reasons list, then guest search (CRM), payment options
-// (display only — Phase 5 charges nothing) and the atomic confirm. On
-// {ok:false, tableId} — the create RPC lost the race — we say so plainly and
+// (display only, Phase 5 charges nothing) and the atomic confirm. On
+// {ok:false, tableId} (the create RPC lost the race) we say so plainly and
 // re-run suggestions rather than optimistically writing (OPTIMISER.md rule).
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -178,25 +178,27 @@ export default function BookScreen({ onBooked }) {
           </div>
         )}
         <div style={{ fontSize: 10, color: 'var(--t4)', marginTop: 10, lineHeight: 1.4 }}>
-          Slots at the cap stop being sold by the guest widget automatically — only the host can override.
+          Slots at the cap stop being sold by the guest widget automatically. Only the host can override.
         </div>
       </div>
 
       {/* ── column 2: table, auto-optimised ── */}
       <div style={{ ...col, flex: 1, minWidth: 260 }}>
-        <SectionTitle n={2}>Table — auto-optimised</SectionTitle>
+        <SectionTitle n={2}>Table: auto-optimised</SectionTitle>
         {taken && (
           <div style={{ marginBottom: 10, padding: '10px 12px', borderRadius: 10, background: tintBg('var(--red)', 10), border: `1px solid ${tintBd('var(--red)')}`, color: 'var(--red)', fontSize: 12, fontWeight: 700 }}>
-            {taken} was taken by another device — here are alternatives
+            {taken} was taken by another device. Here are alternatives.
           </div>
         )}
         {candidates.length === 0 && (
           <div style={{ padding: '18px 14px', borderRadius: 13, border: '1px dashed var(--bdr2)', color: 'var(--t3)', fontSize: 12, lineHeight: 1.5 }}>
             {/* 16 Oct 2026: tables outside a join group are offered on their own now, so an empty
                 list means nothing fits, groups or not. Groups only decide which tables may join. */}
-            {(rules.joinGroups || []).length === 0
-              ? `No single table fits ${party} at ${time || 'that time'}. Tables only join inside a join group: set them in Back Office, Floor plan.`
-              : `No tables fit ${party} at ${time || 'that time'}. Try another time or party size.`}
+            {!time
+              ? (slotTimes.length ? 'Pick a time.' : 'No booking times on this day. Pick another date.')
+              : (rules.joinGroups || []).length === 0
+                ? `No single table fits ${party} at ${time}. Tables only join inside a join group: set them in Back Office, Floor plan.`
+                : `No tables fit ${party} at ${time}. Try another time or party size.`}
           </div>
         )}
         {candidates.map((c, i) => {
@@ -218,7 +220,7 @@ export default function BookScreen({ onBooked }) {
               <div style={{ marginTop: 8 }}>
                 {(c.reasons || []).map((r, j) => (
                   <div key={j} style={{ fontSize: 11, color: 'var(--t2)', lineHeight: 1.45 }}>
-                    <span style={{ color: 'var(--t4)' }}>—</span> {r}
+                    <span style={{ color: 'var(--t4)' }}>·</span> {r}
                   </div>
                 ))}
               </div>
@@ -226,7 +228,7 @@ export default function BookScreen({ onBooked }) {
           );
         })}
         <div style={{ marginTop: 4, padding: '12px 14px', borderRadius: 13, background: tintBg('var(--blu)', 8), border: `1px solid ${tintBd('var(--blu)', 22)}`, fontSize: 11, color: 'var(--t2)', lineHeight: 1.5 }}>
-          <span style={{ color: 'var(--blu)', fontWeight: 700 }}>Why combinations?</span> Two 2-tops joined beat burning a 6-top on a small party. The limits — turn times, wasted-seat tolerance, max join, pacing — live in Rules and apply immediately.
+          <span style={{ color: 'var(--blu)', fontWeight: 700 }}>Why combinations?</span> Two 2-tops joined beat burning a 6-top on a small party. The limits (turn times, wasted-seat tolerance, max join, pacing) live in Rules and apply immediately.
         </div>
       </div>
 
@@ -289,12 +291,12 @@ export default function BookScreen({ onBooked }) {
           </div>
         </div>
 
-        <input className="input" placeholder="Note — occasion, allergies, requests…" value={note} onChange={(e) => setNote(e.target.value)} style={{ width: '100%', height: 40, boxSizing: 'border-box', marginBottom: 12 }} />
+        <input className="input" placeholder="Note: occasion, allergies, requests…" value={note} onChange={(e) => setNote(e.target.value)} style={{ width: '100%', height: 40, boxSizing: 'border-box', marginBottom: 12 }} />
 
         {/* summary */}
         <div style={{ background: 'var(--bg3)', borderRadius: 12, padding: '12px 14px', marginBottom: 10 }}>
           <div style={{ fontSize: 13, fontWeight: 800, ...mono }}>
-            {party} cvr · {time || '—'} · {cand ? cand.label : 'no table'}
+            {party} cvr · {time || 'no time'} · {cand ? cand.label : 'no table'}
           </div>
           <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 3, ...mono }}>
             {time ? `turn ${turnFor(party, rules.turnBands)} min · clear ${toHM(toMin(time) + turnFor(party, rules.turnBands))}` : ''}

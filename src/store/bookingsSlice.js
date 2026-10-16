@@ -19,7 +19,7 @@
 import {
   suggestTables, paceAt, paceFull, turnFor, toMin, toHM, toOptimiserBooking,
   DEFAULT_TURN_BANDS, DEFAULT_RULES,
-sessionsToBlocks, bookingTimeRefusal } from '../lib/bookings/optimiser.js';
+sessionsToBlocks } from '../lib/bookings/optimiser.js';
 import {
   loadBookings, createBookingAtomic, updateBookingRow, rowToBooking, loadBookingTables,
   loadBookingRules, saveBookingRules, loadPackages,
@@ -28,7 +28,7 @@ import {
 } from '../lib/bookings/bookingsData.js';
 import { packageItemsFor } from '../lib/bookings/packagePricing.js';
 import { optimiserTables } from '../lib/bookings/optimiserTables.js';
-import { validateEdit, conflictsFor, paymentAfterEdit, stampEdit, hasGuest, describeChanges, editRefusal, MOVE_NON_BLOCKING, bookingRefusalWords } from '../lib/bookings/editRules.js';
+import { validateEdit, conflictsFor, paymentAfterEdit, stampEdit, hasGuest, describeChanges, editRefusal, MOVE_NON_BLOCKING, bookingRefusalWords, standTimeRefusal } from '../lib/bookings/editRules.js';
 import { logActivity } from '../lib/activity.js';
 import { buildScheduleCtx, minutesInTz } from '../lib/locationTime.js';
 import { supabase, isMock, getActiveLocationSync, getLocationId, isHostStandMode } from '../lib/supabase.js';
@@ -215,13 +215,10 @@ export function bookingsSlice(set, get) {
         return { ok: false, error: 'Booking needs a time, covers and at least one table' };
       }
       // 16 Oct 2026 (bookings audit section 3 item 6): service periods, closed days and date
-      // blocks, the same check create_booking makes once migration 20261016e is run (so a stand
-      // says why before the database does). Walk ins are never held to them. With no periods
-      // set, the old single window is not enforced here, as before.
-      if (booking.source !== 'walk_in' && booking.status !== 'dining') {
-        const why = bookingTimeRefusal(rules || {}, booking.date, booking.startTime, { legacyWindow: false });
-        if (why) return { ok: false, error: why.code, message: why.message };
-      }
+      // blocks, so a stand says why before the database does (standTimeRefusal, tested; walk
+      // ins are never held to them).
+      const why = standTimeRefusal(booking, rules);
+      if (why) return { ok: false, error: why.code, message: why.message };
 
       if (isTrainingMode()) {
         // Training till: show it locally, never write. Matches the gate-every-

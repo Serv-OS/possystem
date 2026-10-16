@@ -2933,7 +2933,7 @@ export const useStore = create((set, get) => ({
       if (!r?.ok) {
         get().showToast?.(r?.error === 'table_taken'
           ? 'That table is already booked for this time'
-          : `Reservation NOT saved — ${r?.error || 'write refused'}`, 'error');
+          : `Reservation NOT saved: ${r?.message || r?.error || 'write refused'}`, 'error');
       }
     }).catch(() => {});
   },

@@ -186,9 +186,11 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
     return [...visible, ...sessionsToBlocks(tables, visible, rules.turnBands, Number.isFinite(nowMin) ? nowMin : 0)];
   }, [visible, tables, isToday, nowMin, rules.turnBands]);
   const labelOf = (id) => rows.find((t) => t.id === id)?.label || String(id).slice(-4);
+  const dropDate = bookingsDate || todayISO();
   const dropTargetFor = useCallback((b, dx, dy) => dropTarget({
     booking: b, dx, dy, slotW, rowH: ROW_H, rows, startMin, endMin, others: othersForDrag, nonBlocking: MOVE_NON_BLOCKING,
-  }), [slotW, rows, startMin, endMin, othersForDrag]);
+    rules, date: dropDate,
+  }), [slotW, rows, startMin, endMin, othersForDrag, rules, dropDate]);
   // The pointer offset, plus however far the diary has scrolled since the press.
   const offsetOf = (d) => {
     const el = wrapRef.current;

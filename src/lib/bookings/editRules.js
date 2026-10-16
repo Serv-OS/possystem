@@ -334,6 +334,19 @@ export function changedFields(snap, form) {
   return patch;
 }
 
+// 16 Oct 2026 (bookings audit section 3 item 6): why the stand must not save a NEW booking at
+// this time, or null. Service periods, closed days and date blocks, the same check
+// create_booking makes once migration 20261016e is run. Walk ins (source walk_in, or seated
+// straight away as dining) are never held to them. With no periods set the old single window is
+// not enforced here, as before.
+//   booking  { date, startTime, source, status }
+// -> null | { code, message }
+export function standTimeRefusal(booking, rules = {}) {
+  const b = booking || {};
+  if (b.source === 'walk_in' || b.status === 'dining') return null;
+  return bookingTimeRefusal(rules || {}, b.date, b.startTime, { legacyWindow: false });
+}
+
 // 16 Oct 2026 review: where a Timeline drag lands, as a pure function so the
 // snapping is tested. The drag locks to the axis the finger mostly moved on:
 // a mostly vertical drag (a table move) keeps the time unless it also went a
@@ -345,7 +358,9 @@ export function changedFields(snap, form) {
 //   rows     the Timeline's table rows in order [{ id, label, maxCovers | covers }]
 //   startMin, endMin  the drawn service window in minutes
 //   others   the day's bookings plus open tab blocks
-export function dropTarget({ booking, dx = 0, dy = 0, slotW = 24, rowH = 44, rows = [], startMin = 0, endMin = 24 * 60, others = [], nonBlocking = MOVE_NON_BLOCKING } = {}) {
+//   rules, date  the venue's booking rules and the Diary's date: a drag into a closed stretch,
+//            a closed day or a block is refused here, before Move is offered (16 Oct 2026)
+export function dropTarget({ booking, dx = 0, dy = 0, slotW = 24, rowH = 44, rows = [], startMin = 0, endMin = 24 * 60, others = [], nonBlocking = MOVE_NON_BLOCKING, rules = null, date = null } = {}) {
   const b = booking || {};
   const bs = toMin(b.startTime);
   const ax = Math.abs(num(dx)), ay = Math.abs(num(dy));
@@ -372,6 +387,11 @@ export function dropTarget({ booking, dx = 0, dy = 0, slotW = 24, rowH = 44, row
   let reason = null;
   if (conflicts.length) reason = conflicts[0].text;
   else if (rowDelta !== 0 && seats < num(b.covers || 1)) reason = `${tables2.map(label).join(' + ')} seats ${seats}, this party is ${b.covers}.`;
+  else if (timeChanged && rules && isISODate(date)) {
+    // The same check validateEdit makes on a time move, so Move is never offered and then refused.
+    const why = bookingTimeRefusal(rules, date, toHM(ns), { legacyWindow: true });
+    if (why) reason = why.message;
+  }
   return { ...base, ok: !reason, tables: tables2, conflicts, reason };
 }
 

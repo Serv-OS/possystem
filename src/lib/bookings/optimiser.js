@@ -249,10 +249,12 @@ export function sessionsToBlocks(tables, bookings, turnBands = DEFAULT_TURN_BAND
 //                   only those times are (an evening private hire). onlineOnly blocks the widget only.
 //   minNoticeMinutes  online bookings need this much notice (the host stand is never held to it)
 //   widgetMaxDaysAhead  online bookings open this many days ahead
-// No servicePeriods: the old single window (serviceStart to serviceEnd) every day, exactly as before.
-// A booking belongs to the calendar date it starts on, so a 00:30 seat from a Friday dinner that
-// runs past midnight is a Saturday booking; closed days and whole day blocks follow the day the
-// service STARTS on. Minutes are minutes of the day on the VENUE clock; "now" comes in from the
+// No servicePeriods: the old single window (serviceStart to serviceEnd) every day, as before. An end
+// at or before the start (17:00 to 01:00) used to offer nothing; it now seats until midnight on
+// the same date and never after (no live venue has one, checked 16 Oct 2026).
+// A booking belongs to the calendar date it starts on. A service may END past midnight, but its
+// last seating is 23:59 at the latest (every free check reads one date's bookings); closed days
+// and whole day blocks follow the day the service STARTS on. Minutes are minutes of the day on the VENUE clock; "now" comes in from the
 // caller (buildScheduleCtx with the venue timezone), never from this module.
 
 const HM_RE = /^\d{1,2}:\d{2}$/;
@@ -298,6 +300,11 @@ export function normalisePeriod(p, i = 0) {
     if (l < startMin) l += 1440;
     lastAbs = Math.max(startMin, Math.min(l, endAbs - 1));
   }
+  // 16 Oct 2026: no new seating after midnight. Every free check (create_booking, edit_booking,
+  // move_booking, the stand and the widget) reads one date's bookings, so a 00:30 seat filed
+  // under the next date could share a table with a 23:30 one. The end may still run past
+  // midnight (for the words and the late tail); the last seat is 23:59 at the latest.
+  lastAbs = Math.min(lastAbs, 1439);
   return {
     id: String(p.id || `p${i + 1}`),
     name: String(p.name || '').trim() || 'Service',
@@ -331,6 +338,13 @@ export function hasServiceRules(rules = {}) {
 const blocksOf = (rules) => (Array.isArray(rules?.dateBlocks) ? rules.dateBlocks : [])
   .filter((b) => b && isISODay(b.from) && isISODay(b.to || b.from));
 const timedBlock = (b) => isHMValue(b.start) && isHMValue(b.end) && toMin(b.end) > toMin(b.start);
+// A block's reason, or '' when none was typed. 'Closed' and 'Blocked' were the editor's old
+// stand ins and read as no reason, so the words never say "Closed for bookings: Closed".
+export function blockReason(label) {
+  const s = String(label || '').trim();
+  return s === 'Closed' || s === 'Blocked' ? '' : s;
+}
+const inBrackets = (label) => (blockReason(label) ? ` (${blockReason(label)})` : '');
 
 export function isClosedWeekday(rules, dateISO) {
   const closed = Array.isArray(rules?.closedWeekdays) ? rules.closedWeekdays.map(Number) : [];
@@ -342,7 +356,7 @@ export function isClosedWeekday(rules, dateISO) {
 export function wholeDayBlock(rules, dateISO, { online = false } = {}) {
   for (const b of blocksOf(rules)) {
     if (timedBlock(b) || (b.onlineOnly && !online)) continue;
-    if (b.from <= dateISO && dateISO <= (b.to || b.from)) return { ...b, label: String(b.label || '').trim() || 'Closed' };
+    if (b.from <= dateISO && dateISO <= (b.to || b.from)) return { ...b, label: blockReason(b.label) };
   }
   if (online && Array.isArray(rules?.blockedDates) && rules.blockedDates.includes(dateISO)) {
     return { id: `blocked-${dateISO}`, from: dateISO, to: dateISO, label: 'Not taking online bookings', onlineOnly: true };
@@ -354,7 +368,7 @@ export function wholeDayBlock(rules, dateISO, { online = false } = {}) {
 export function timedBlocksOn(rules, dateISO, { online = false } = {}) {
   return blocksOf(rules)
     .filter((b) => timedBlock(b) && (online || !b.onlineOnly) && b.from <= dateISO && dateISO <= (b.to || b.from))
-    .map((b) => ({ startMin: toMin(b.start), endMin: toMin(b.end), label: String(b.label || '').trim() || 'Blocked' }));
+    .map((b) => ({ startMin: toMin(b.start), endMin: toMin(b.end), label: blockReason(b.label) }));
 }
 
 // The open windows on a calendar day, in minutes of that day:
@@ -451,21 +465,19 @@ export function bookingTimeRefusal(rules = {}, dateISO, hhmm, { online = false, 
     if (until <= 0) return { code: 'past', message: 'That time has gone. Pick a later time.' };
     const notice = Math.max(0, Math.round(Number(rules?.minNoticeMinutes) || 0));
     if (until < notice) {
-      const h = notice / 60;
-      const words = notice % 60 === 0 ? `${h} hour${h === 1 ? '' : 's'}` : `${notice} minutes`;
-      return { code: 'too_soon', message: `Online bookings need ${words} notice. Pick a later time, or call the venue.` };
+      return { code: 'too_soon', message: `Online bookings need ${noticeWords(notice)} notice. Pick a later time, or call the venue.` };
     }
   }
   const { custom } = servicePeriodsOf(rules);
   const sw = serviceWindows(rules, dateISO, { online });
   const timed = timedBlocksOn(rules, dateISO, { online }).find((b) => t >= b.startMin && t < b.endMin);
   if (timed) {
-    return { code: 'blocked', message: `${toHM(timed.startMin)} to ${toHM(timed.endMin)} on ${sayDay(dateISO)} is blocked (${timed.label}). Pick another time.` };
+    return { code: 'blocked', message: `${toHM(timed.startMin)} to ${toHM(timed.endMin)} on ${sayDay(dateISO)} is blocked${inBrackets(timed.label)}. Pick another time.` };
   }
   const inWindow = sw.windows.some((w) => t >= Math.max(0, w.openMin) && t <= w.lastMin);
   if (inWindow) return null;
   if (sw.closed === 'blocked') {
-    return { code: 'blocked', message: `${sayDay(dateISO)} is closed for bookings (${sw.block?.label || 'Closed'}). Pick another day.` };
+    return { code: 'blocked', message: `${sayDay(dateISO)} is closed for bookings${inBrackets(sw.block?.label)}. Pick another day.` };
   }
   if (sw.closed === 'closed_day') {
     const wd = isoWeekday(dateISO);
@@ -479,6 +491,29 @@ export function bookingTimeRefusal(rules = {}, dateISO, hhmm, { online = false, 
   if (!custom && !legacyWindow) return null;
   const open = describeWindows(sw.windows);
   return { code: 'outside_service', message: `${hmv} is outside service hours.${open ? ` Open ${open}.` : ''} Pick another time.` };
+}
+
+// 16 Oct 2026: the words a GUEST sees for a refused time. A block's own reason is for the
+// venue (it may say "Private hire" or a name), so the guest gets plain words instead.
+export function guestTimeWords(why, dateISO) {
+  if (!why) return 'Pick one of the times shown.';
+  if (why.code === 'blocked') return `The venue isn't taking online bookings then on ${sayDay(dateISO)}. Pick another time or day, or call the venue.`;
+  return String(why.message || 'Pick one of the times shown.');
+}
+// Why a whole day has no online times, in guest words, or null when it has some.
+export function guestClosedDayWords(rules, dateISO) {
+  const sw = serviceWindows(rules, dateISO, { online: true });
+  if (!sw.closed) return null;
+  if (sw.closed === 'blocked') return `The venue isn't taking online bookings on ${sayDay(dateISO)}. Pick another day, or call the venue.`;
+  if (isClosedWeekday(rules, dateISO)) return `The venue is closed on ${WEEKDAY_PLURAL[isoWeekday(dateISO)]}. Pick another day.`;
+  return `There are no online times on ${WEEKDAY_PLURAL[isoWeekday(dateISO)]}. Pick another day.`;
+}
+// How much notice, in words ('2 hours', '90 minutes'), or '' for none.
+export function noticeWords(minutes) {
+  const n = Math.max(0, Math.round(Number(minutes) || 0));
+  if (!n) return '';
+  const h = n / 60;
+  return n % 60 === 0 ? `${h} hour${h === 1 ? '' : 's'}` : `${n} minutes`;
 }
 
 // The minutes the Diary and Timeline draw for a day: from the first window that seats to the
@@ -517,7 +552,7 @@ export function closedRanges(rules = {}, dateISO, fromMin, toMin_) {
   if (!isISODay(dateISO)) return [];
   const lo = Math.max(0, Number(fromMin) || 0), hi = Math.min(1440, Number(toMin_) || 1440);
   const sw = serviceWindows(rules, dateISO);
-  const label = sw.closed === 'blocked' ? (sw.block?.label || 'Closed') : 'Closed';
+  const label = sw.closed === 'blocked' ? (blockReason(sw.block?.label) || 'Closed') : 'Closed';
   const open = sw.windows.map((w) => [Math.max(lo, w.openMin), Math.min(hi, w.closeMin)]).filter(([a, b]) => b > a)
     .sort((a, b) => a[0] - b[0]);
   const out = [];
@@ -529,7 +564,7 @@ export function closedRanges(rules = {}, dateISO, fromMin, toMin_) {
   if (cur < hi) out.push({ startMin: cur, endMin: hi, label });
   for (const b of timedBlocksOn(rules, dateISO)) {
     const a = Math.max(lo, b.startMin), e = Math.min(hi, b.endMin);
-    if (e > a) out.push({ startMin: a, endMin: e, label: b.label });
+    if (e > a) out.push({ startMin: a, endMin: e, label: b.label || 'Blocked' });
   }
   return out;
 }
@@ -538,14 +573,17 @@ export function closedRanges(rules = {}, dateISO, fromMin, toMin_) {
 export function dayNotice(rules = {}, dateISO) {
   if (!isISODay(dateISO)) return null;
   const sw = serviceWindows(rules, dateISO);
-  if (sw.closed === 'blocked') return `Closed for bookings: ${sw.block?.label || 'Closed'}. The host stand can still seat walk ins.`;
+  if (sw.closed === 'blocked') {
+    const why = blockReason(sw.block?.label);
+    return `Closed for bookings${why ? `: ${why}` : ''}. The host stand can still seat walk ins.`;
+  }
   if (sw.closed === 'closed_day' && hasServiceRules(rules)) {
     return isClosedWeekday(rules, dateISO)
       ? `Closed on ${WEEKDAY_PLURAL[isoWeekday(dateISO)]}. The host stand can still seat walk ins.`
       : `No service on ${WEEKDAY_PLURAL[isoWeekday(dateISO)]}. The host stand can still seat walk ins.`;
   }
   const timed = timedBlocksOn(rules, dateISO);
-  if (timed.length) return timed.map((b) => `${toHM(b.startMin)} to ${toHM(b.endMin)} blocked (${b.label})`).join('. ') + '.';
+  if (timed.length) return timed.map((b) => `${toHM(b.startMin)} to ${toHM(b.endMin)} blocked${inBrackets(b.label)}`).join('. ') + '.';
   return null;
 }
 
@@ -561,6 +599,7 @@ export function checkPeriod(p) {
     let l = toMin(p.lastSeating);
     if (l < n.startMin) l += 1440;
     if (l >= n.endAbs) return 'Last seating must be before the end of the service.';
+    if (l >= 1440) return 'Last seating must be before midnight. A booking belongs to the day it starts on.';
   }
   return null;
 }

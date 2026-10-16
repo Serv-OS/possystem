@@ -46,7 +46,7 @@ import { createClient } from 'npm:@supabase/supabase-js@2';
 import {
   suggestTables, paceAt, paceFull, turnFor, toMin, sessionsToBlocks, maxPartyForCap,
   DEFAULT_TURN_BANDS, DEFAULT_RULES,
-  serviceSlots, serviceWindows, bookingTimeRefusal, sayDay, WEEKDAY_PLURAL, isoWeekday, isClosedWeekday,
+  serviceSlots, bookingTimeRefusal, guestTimeWords, guestClosedDayWords,
 } from '../_shared/bookingOptimiser.js';
 import {
   adyenConfig, adyenAccountForLocation, platformLocationIdFor, checkoutBase, adyenFetch,
@@ -233,23 +233,9 @@ function rulesFrom(r: Record<string, unknown> | null) {
   };
 }
 
-// 16 Oct 2026: the words a GUEST sees for a refused time. A block's own label is for the venue
-// (it may say "Private hire" or a name), so the guest gets plain words instead.
-// deno-lint-ignore no-explicit-any
-function guestTimeWords(why: any, date: string): string {
-  if (!why) return 'Pick one of the times shown.';
-  if (why.code === 'blocked') return `The venue isn't taking online bookings then on ${sayDay(date)}. Pick another time or day, or call the venue.`;
-  return String(why.message || 'Pick one of the times shown.');
-}
-// Why a whole day has no online times, in guest words, or null when it has some.
-// deno-lint-ignore no-explicit-any
-function guestClosedDayWords(rules: any, date: string): string | null {
-  const sw = serviceWindows(rules, date, { online: true });
-  if (!sw.closed) return null;
-  if (sw.closed === 'blocked') return `The venue isn't taking online bookings on ${sayDay(date)}. Pick another day, or call the venue.`;
-  if (isClosedWeekday(rules, date)) return `The venue is closed on ${WEEKDAY_PLURAL[isoWeekday(date)]}. Pick another day.`;
-  return `There are no online times on ${WEEKDAY_PLURAL[isoWeekday(date)]}. Pick another day.`;
-}
+// 16 Oct 2026: the words a GUEST sees for a refused time or a closed day (guestTimeWords and
+// guestClosedDayWords) live in _shared/bookingOptimiser.js, tested so a block's own reason
+// ("Private hire") never reaches a guest.
 
 // Load everything a quote needs, once per request.
 async function loadVenue(locationId: string) {
@@ -650,13 +636,14 @@ Deno.serve(async (req) => {
       const turnPkgs = venue.packages.filter((p) => pkgTurn(p) !== null && pkgTurn(p) !== bandTurn);
       const slots: { time: string; full: boolean; reason: string | null; fullFor?: Record<string, string | null> }[] = [];
       for (const time of daySlots) {
-        // gone, or inside the venue's minimum notice: greyed as past
-        const past = bookingTimeRefusal(rules, date, time, { online: true, now: nowCtx }) !== null;
-        const reason = past ? 'past' : slotReason(time, askedTurn);
+        // gone ('past'), or inside the venue's minimum notice ('notice', which the page explains)
+        const why = bookingTimeRefusal(rules, date, time, { online: true, now: nowCtx });
+        const greyed = why ? (why.code === 'too_soon' ? 'notice' : 'past') : null;
+        const reason = greyed ?? slotReason(time, askedTurn);
         const slot: { time: string; full: boolean; reason: string | null; fullFor?: Record<string, string | null> } = { time, full: reason !== null, reason };
         if (turnPkgs.length) {
           slot.fullFor = {};
-          for (const p of turnPkgs) slot.fullFor[String(p.id)] = past ? 'past' : slotReason(time, pkgTurn(p));
+          for (const p of turnPkgs) slot.fullFor[String(p.id)] = greyed ?? slotReason(time, pkgTurn(p));
         }
         slots.push(slot);
       }
@@ -703,7 +690,7 @@ Deno.serve(async (req) => {
             includes: lines.map((l) => ({ name: l.display_name, course: l.course ?? 0, choice: !!l.is_preorder_choice })),
           };
         });
-      return json({ ok: true, slots, packages: offers });
+      return json({ ok: true, slots, packages: offers, noticeMinutes: Number(rules.minNoticeMinutes) || 0 });
     }
 
     if (action === 'book') {

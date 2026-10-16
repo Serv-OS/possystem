@@ -9,7 +9,7 @@ import {
   editRefusal, validateEdit, conflictsFor, paymentAfterEdit,
   snapToSlot, shiftTables, slotTimes, stampEdit, editedLine, hasGuest, describeChanges,
   changedFields, dropTarget, MOVE_NON_BLOCKING, preorderWarning,
-  bookingRefusalWords, editChangesWindow, sameTables,
+  bookingRefusalWords, editChangesWindow, sameTables, standTimeRefusal,
 } from './editRules.js';
 import { toMin } from './optimiser.js';
 
@@ -400,4 +400,33 @@ test('bookingRefusalWords: the database words for service periods come through',
   assert.equal(bookingRefusalWords({ error: 'closed_day', message: 'The venue is closed on Mondays. Pick another day.' }), 'The venue is closed on Mondays. Pick another day.');
   assert.match(bookingRefusalWords({ error: 'outside_service' }), /outside service hours/);
   assert.match(bookingRefusalWords({ error: 'blocked' }), /closed for bookings/);
+});
+
+test('dropTarget: a drag into the closed gap between lunch and dinner is refused before Move', () => {
+  const DTP = { ...DT, startMin: toMin('12:00'), endMin: toMin('22:30'), rules: PERIODS, date: '2026-10-20' };
+  const b = bk({ startTime: '13:00' });
+  const gap = dropTarget({ ...DTP, booking: b, dx: 12 * 24, dy: 0 });
+  assert.equal(gap.startMin, toMin('16:00'));
+  assert.equal(gap.ok, false);
+  assert.match(gap.reason, /16:00 is outside service hours/);
+  const dinner = dropTarget({ ...DTP, booking: b, dx: 20 * 24, dy: 0 });
+  assert.equal(dinner.startMin, toMin('18:00'));
+  assert.equal(dinner.ok, true);
+  // a table move that keeps the time is never held to the periods
+  const across = dropTarget({ ...DTP, booking: bk({ startTime: '16:00' }), dx: 0, dy: 44 });
+  assert.equal(across.ok, true);
+  // without rules (an older caller) it behaves as before
+  assert.equal(dropTarget({ ...DTP, rules: null, booking: b, dx: 12 * 24, dy: 0 }).ok, true);
+});
+
+test('standTimeRefusal: walk ins and seated parties are never refused, a host booking is', () => {
+  const mon = '2026-10-19';
+  assert.equal(standTimeRefusal({ date: mon, startTime: '19:00', source: 'walk_in' }, PERIODS), null);
+  assert.equal(standTimeRefusal({ date: mon, startTime: '19:00', source: 'host', status: 'dining' }, PERIODS), null);
+  assert.equal(standTimeRefusal({ date: mon, startTime: '19:00', source: 'host', status: 'confirmed' }, PERIODS).code, 'closed_day');
+  assert.equal(standTimeRefusal({ date: mon, startTime: '19:00', source: 'pos' }, PERIODS).code, 'closed_day');
+  assert.equal(standTimeRefusal({ date: '2026-10-20', startTime: '16:00', source: 'host' }, PERIODS).code, 'outside_service');
+  assert.equal(standTimeRefusal({ date: '2026-10-20', startTime: '19:00', source: 'host' }, PERIODS), null);
+  // no periods set: the old window is not enforced on a new booking, as before
+  assert.equal(standTimeRefusal({ date: mon, startTime: '11:00', source: 'host' }, RULES), null);
 });

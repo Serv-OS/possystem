@@ -46,6 +46,7 @@ import {
   offeredWalletTypes, walletConfiguration, missingWalletNote, droppedWalletNote,
   walletErrorOutcome, walletStartFailedNote, walletErrorReport,
 } from '../../lib/payments/adyenWallets';
+import { noticeWords } from '../../lib/bookings/optimiser';
 
 const MONO = 'var(--font-mono, ui-monospace, monospace)';
 
@@ -1286,7 +1287,7 @@ export default function BookingWidget({ location }) {
       if (!r?.ok) { setSlotsRes({ key, slots: [], packages: [], err: true }); setTime(null); return; }
       const next = Array.isArray(r.slots) ? r.slots : [];
       // Offers ride the same response — valid for exactly this date+party.
-      setSlotsRes({ key, slots: next, packages: Array.isArray(r.packages) ? r.packages : [], err: false });
+      setSlotsRes({ key, slots: next, packages: Array.isArray(r.packages) ? r.packages : [], err: false, noticeMinutes: Number(r.noticeMinutes) || 0 });
       // Keep the selection only if that time is still open.
       setTime((t) => (t && next.some((s) => s.time === t && !s.full)) ? t : null);
     })();
@@ -1796,6 +1797,7 @@ export default function BookingWidget({ location }) {
       {/* 16 Oct 2026 (bookings audit item 7): the two reasons a time is greyed, said apart. It
           used to blame the kitchen for every grey slot, even when no table was free. */}
       <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8, marginBottom: 20, lineHeight: 1.5 }}>
+        {greyReasons.has('notice') && <div>Some times are greyed because online bookings need {noticeWords(slotsRes?.noticeMinutes) || 'some'} notice. Call {venueName} for a sooner table.</div>}
         {greyReasons.has('kitchen') && <div>Some times are greyed because the kitchen is full then.</div>}
         {greyReasons.has('tables') && <div>Some times are greyed because no table for {party} is free then.</div>}
         {greyReasons.has('full') && <div>Greyed times are fully booked.</div>}

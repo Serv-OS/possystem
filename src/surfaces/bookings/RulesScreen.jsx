@@ -1,9 +1,9 @@
 // src/surfaces/bookings/RulesScreen.jsx
 //
-// Rules — availability (README §5). The guard rails: turn-time bands, join /
+// Rules: availability (README §5). The guard rails: turn-time bands, join /
 // tolerance / pacing / no-show settings. Every stepper writes immediately via
 // updateBookingRules (the store applies optimistically then persists), so the
-// diary and the optimiser react live — there is no Save button by design.
+// diary and the optimiser react live; there is no Save button by design.
 
 import { useStore } from '../../store';
 import { mono, tintBg, tintBd, rulesOf, money, Stepper, ToggleRow } from './bits.jsx';
@@ -11,9 +11,9 @@ import ServicePeriodsEditor from './ServicePeriodsEditor.jsx';
 import { venueToday } from '../../lib/bookings/editRules.js';
 
 const BANDS = [
-  { key: '1-2', label: '1–2 covers' },
-  { key: '3-4', label: '3–4 covers' },
-  { key: '5-6', label: '5–6 covers' },
+  { key: '1-2', label: '1 to 2 covers' },
+  { key: '3-4', label: '3 to 4 covers' },
+  { key: '5-6', label: '5 to 6 covers' },
   { key: '7+', label: '7+ covers' },
 ];
 
@@ -62,7 +62,7 @@ export default function RulesScreen() {
           <div style={panel}>
             <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 4 }}>Combination, pacing &amp; no-shows</div>
             <div style={{ fontSize: 11, color: 'var(--t3)', marginBottom: 8, lineHeight: 1.4 }}>
-              The limits the optimiser and the widget obey. Live — no save step.
+              The limits the optimiser and the widget obey. Live, no save step.
             </div>
             <Stepper
               label="Max tables in one combination"
@@ -81,7 +81,7 @@ export default function RulesScreen() {
             />
             <Stepper
               label="Pacing cap per 15 min"
-              sub="Covers the kitchen can absorb in one window — full slots go red at the host stand and stop selling on the widget."
+              sub="Covers the kitchen can absorb in one window. Full slots go red at the host stand and stop selling on the widget."
               value={rules.pacingCap}
               onChange={(v) => patch({ pacingCap: v })}
               step={2} min={2} max={30}
@@ -123,7 +123,7 @@ export default function RulesScreen() {
           </div>
           {!bookingRules && (
             <div style={{ marginTop: 10, fontSize: 11, color: 'var(--t4)', ...mono }}>
-              Showing defaults — no rules saved for this venue yet. The first change writes them.
+              Showing defaults: no rules saved for this venue yet. The first change writes them.
             </div>
           )}
         </div>
