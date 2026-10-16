@@ -243,3 +243,340 @@ export function sessionsToBlocks(tables, bookings, turnBands = DEFAULT_TURN_BAND
   }
   return blocks;
 }
+
+// ── service periods and booking rules (16 Oct 2026, bookings audit section 3 item 6) ──────────
+// Per venue (booking_rules, migration 20261016e):
+//   servicePeriods  [{ id, name, days: [1..7], start: 'HH:MM', end: 'HH:MM', lastSeating: 'HH:MM' | null }]
+//                   days are ISO weekdays (1 Monday, 7 Sunday). An end at or before the start runs
+//                   past midnight (dinner 18:00 to 01:00). lastSeating is the latest start time
+//                   offered; without it the last slot is the one before the end.
+//   closedWeekdays  [1..7] days with no service at all (closed Mondays)
+//   dateBlocks      [{ id, from: 'YYYY-MM-DD', to: 'YYYY-MM-DD', label, start?, end?, onlineOnly? }]
+//                   with no times the whole service day is closed (holidays); with start and end
+//                   only those times are (an evening private hire). onlineOnly blocks the widget only.
+//   minNoticeMinutes  online bookings need this much notice (the host stand is never held to it)
+//   widgetMaxDaysAhead  online bookings open this many days ahead
+// No servicePeriods: the old single window (serviceStart to serviceEnd) every day, exactly as before.
+// A booking belongs to the calendar date it starts on, so a 00:30 seat from a Friday dinner that
+// runs past midnight is a Saturday booking; closed days and whole day blocks follow the day the
+// service STARTS on. Minutes are minutes of the day on the VENUE clock; "now" comes in from the
+// caller (buildScheduleCtx with the venue timezone), never from this module.
+
+const HM_RE = /^\d{1,2}:\d{2}$/;
+const isHMValue = (s) => HM_RE.test(String(s || '').slice(0, 5)) && toMin(String(s).slice(0, 5)) < 1440;
+const isISODay = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
+const ALL_DAYS = [1, 2, 3, 4, 5, 6, 7];
+export const WEEKDAY_SHORT = { 1: 'Mon', 2: 'Tue', 3: 'Wed', 4: 'Thu', 5: 'Fri', 6: 'Sat', 7: 'Sun' };
+export const WEEKDAY_PLURAL = { 1: 'Mondays', 2: 'Tuesdays', 3: 'Wednesdays', 4: 'Thursdays', 5: 'Fridays', 6: 'Saturdays', 7: 'Sundays' };
+const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+// ISO weekday of a 'YYYY-MM-DD' (1 Monday to 7 Sunday). Read as a calendar date, no timezone.
+export function isoWeekday(dateISO) {
+  const [y, m, d] = String(dateISO || '').split('-').map(Number);
+  const w = new Date(Date.UTC(y || 1970, (m || 1) - 1, d || 1)).getUTCDay();
+  return w === 0 ? 7 : w;
+}
+export function addDaysISO(dateISO, n) {
+  const [y, m, d] = String(dateISO || '').split('-').map(Number);
+  return new Date(Date.UTC(y || 1970, (m || 1) - 1, (d || 1) + (Number(n) || 0))).toISOString().slice(0, 10);
+}
+export function daysBetweenISO(fromISO, toISO) {
+  const a = Date.parse(`${fromISO}T00:00:00Z`), b = Date.parse(`${toISO}T00:00:00Z`);
+  return Math.round((b - a) / 86400000);
+}
+// 'Thu 25 Dec', the way a host says a date.
+export function sayDay(dateISO) {
+  if (!isISODay(dateISO)) return String(dateISO || '');
+  const [, m, d] = dateISO.split('-').map(Number);
+  return `${WEEKDAY_SHORT[isoWeekday(dateISO)]} ${d} ${MONTH_SHORT[m - 1]}`;
+}
+
+// One period with its minutes worked out. null when it cannot be used.
+export function normalisePeriod(p, i = 0) {
+  if (!p || !isHMValue(p.start) || !isHMValue(p.end)) return null;
+  const days = [...new Set((Array.isArray(p.days) ? p.days : []).map(Number).filter((d) => d >= 1 && d <= 7))].sort((a, b) => a - b);
+  if (!days.length) return null;
+  const startMin = toMin(String(p.start).slice(0, 5));
+  let endAbs = toMin(String(p.end).slice(0, 5));
+  if (endAbs <= startMin) endAbs += 1440;
+  let lastAbs = endAbs - 1;
+  if (isHMValue(p.lastSeating)) {
+    let l = toMin(String(p.lastSeating).slice(0, 5));
+    if (l < startMin) l += 1440;
+    lastAbs = Math.max(startMin, Math.min(l, endAbs - 1));
+  }
+  return {
+    id: String(p.id || `p${i + 1}`),
+    name: String(p.name || '').trim() || 'Service',
+    days,
+    start: toHM(startMin),
+    end: toHM(endAbs % 1440),
+    lastSeating: isHMValue(p.lastSeating) ? toHM(lastAbs % 1440) : null,
+    startMin, endAbs, lastAbs,
+  };
+}
+
+// The venue's periods. custom false = the old single window, every day.
+export function servicePeriodsOf(rules = {}) {
+  const raw = Array.isArray(rules?.servicePeriods) ? rules.servicePeriods : [];
+  const list = raw.map(normalisePeriod).filter(Boolean);
+  if (list.length) return { custom: true, periods: list };
+  const legacy = normalisePeriod({
+    id: 'service', name: 'Service', days: ALL_DAYS,
+    start: rules?.serviceStart || '17:00', end: rules?.serviceEnd || '23:00',
+  });
+  return { custom: false, periods: legacy ? [legacy] : [] };
+}
+
+// Does the venue have any rule the server enforces (periods, closed days or blocks)?
+export function hasServiceRules(rules = {}) {
+  return servicePeriodsOf(rules).custom
+    || (Array.isArray(rules?.closedWeekdays) && rules.closedWeekdays.length > 0)
+    || (Array.isArray(rules?.dateBlocks) && rules.dateBlocks.length > 0);
+}
+
+const blocksOf = (rules) => (Array.isArray(rules?.dateBlocks) ? rules.dateBlocks : [])
+  .filter((b) => b && isISODay(b.from) && isISODay(b.to || b.from));
+const timedBlock = (b) => isHMValue(b.start) && isHMValue(b.end) && toMin(b.end) > toMin(b.start);
+
+export function isClosedWeekday(rules, dateISO) {
+  const closed = Array.isArray(rules?.closedWeekdays) ? rules.closedWeekdays.map(Number) : [];
+  return closed.includes(isoWeekday(dateISO));
+}
+
+// The whole day block covering this service day, or null. online also sees the widget only
+// blocks and the older single blocked dates (blockedDates, online only).
+export function wholeDayBlock(rules, dateISO, { online = false } = {}) {
+  for (const b of blocksOf(rules)) {
+    if (timedBlock(b) || (b.onlineOnly && !online)) continue;
+    if (b.from <= dateISO && dateISO <= (b.to || b.from)) return { ...b, label: String(b.label || '').trim() || 'Closed' };
+  }
+  if (online && Array.isArray(rules?.blockedDates) && rules.blockedDates.includes(dateISO)) {
+    return { id: `blocked-${dateISO}`, from: dateISO, to: dateISO, label: 'Not taking online bookings', onlineOnly: true };
+  }
+  return null;
+}
+
+// Timed blocks on this calendar day: [{ startMin, endMin, label }].
+export function timedBlocksOn(rules, dateISO, { online = false } = {}) {
+  return blocksOf(rules)
+    .filter((b) => timedBlock(b) && (online || !b.onlineOnly) && b.from <= dateISO && dateISO <= (b.to || b.from))
+    .map((b) => ({ startMin: toMin(b.start), endMin: toMin(b.end), label: String(b.label || '').trim() || 'Blocked' }));
+}
+
+// The open windows on a calendar day, in minutes of that day:
+//   { closed: null | 'closed_day' | 'blocked', block, windows: [{ id, name, openMin, closeMin,
+//     lastMin, gridFrom, spill }] }
+// gridFrom is where the period's slot grid starts (before 0 for the part of yesterday's service
+// that runs past midnight), so slots stay on the period's own grid. lastMin below openMin = no
+// new seating in that window (the late tail of yesterday's dinner).
+export function serviceWindows(rules, dateISO, { online = false } = {}) {
+  const { periods } = servicePeriodsOf(rules);
+  const windows = [];
+  const dayBlock = wholeDayBlock(rules, dateISO, { online });
+  const closedToday = isClosedWeekday(rules, dateISO);
+  if (!dayBlock && !closedToday) {
+    const wd = isoWeekday(dateISO);
+    for (const p of periods) {
+      if (!p.days.includes(wd)) continue;
+      windows.push({
+        id: p.id, name: p.name, openMin: p.startMin, closeMin: Math.min(p.endAbs, 1440),
+        lastMin: Math.min(p.lastAbs, 1439), gridFrom: p.startMin, spill: false, endsAt: p.end,
+        lastSeating: p.lastSeating,
+      });
+    }
+  }
+  const prev = addDaysISO(dateISO, -1);
+  if (!wholeDayBlock(rules, prev, { online }) && !isClosedWeekday(rules, prev)) {
+    const wdPrev = isoWeekday(prev);
+    for (const p of periods) {
+      if (!p.days.includes(wdPrev) || p.endAbs <= 1440) continue;
+      windows.push({
+        id: `${p.id}-late`, name: p.name, openMin: 0, closeMin: p.endAbs - 1440,
+        lastMin: p.lastAbs >= 1440 ? p.lastAbs - 1440 : -1, gridFrom: p.startMin - 1440, spill: true,
+        endsAt: p.end, lastSeating: p.lastSeating,
+      });
+    }
+  }
+  windows.sort((a, b) => a.openMin - b.openMin);
+  const own = windows.filter((w) => !w.spill);
+  const closed = own.length ? null : (dayBlock ? 'blocked' : 'closed_day');
+  return { closed, block: dayBlock, windows };
+}
+
+// The bookable start times on a calendar day, 'HH:MM', in order: every period's grid from its
+// start to its last seating, minus timed blocks.
+export function serviceSlots(rules, dateISO, { online = false, slotMinutes = null } = {}) {
+  const step = Math.max(5, Math.round(Number(slotMinutes || rules?.slotMinutes) || 15));
+  const { windows } = serviceWindows(rules, dateISO, { online });
+  const blocks = timedBlocksOn(rules, dateISO, { online });
+  const out = new Set();
+  for (const w of windows) {
+    for (let t = w.gridFrom; t <= w.lastMin; t += step) {
+      if (t < Math.max(0, w.openMin) || t >= 1440) continue;
+      if (blocks.some((b) => t >= b.startMin && t < b.endMin)) continue;
+      out.add(t);
+    }
+  }
+  return [...out].sort((a, b) => a - b).map(toHM);
+}
+
+// '12:00 to 15:00 (last seating 13:30) and 17:00 to 22:30'. Windows that seat nobody (the
+// late tail of yesterday's dinner past its last seating) are left out; a service that runs
+// past midnight reads to its real end ('18:00 to 01:00').
+export function describeWindows(windows = []) {
+  const parts = (windows || []).filter((w) => w.lastMin >= w.openMin)
+    .slice().sort((a, b) => (a.spill === b.spill ? a.openMin - b.openMin : a.spill ? 1 : -1))
+    .map((w) => {
+      const end = w.endsAt || toHM(w.closeMin % 1440);
+      const last = w.lastSeating ? ` (last seating ${w.lastSeating})` : '';
+      return `${toHM(w.openMin)} to ${end}${last}`;
+    });
+  if (parts.length <= 1) return parts[0] || '';
+  return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+}
+
+// Why a booking cannot start at this time, or null when it can.
+//   online        a guest booking from the widget: also held to the notice and days ahead,
+//                 the widget only blocks and the old blocked dates
+//   now           { ymd, nowMinutes } on the VENUE clock (needed for the online checks)
+//   legacyWindow  false: with no service periods set, the old single window is not enforced
+//                 (what the database does, so no venue changes until it sets periods)
+// -> { code, message } with code one of 'too_far_ahead', 'past', 'too_soon', 'blocked',
+//    'closed_day', 'outside_service'
+export function bookingTimeRefusal(rules = {}, dateISO, hhmm, { online = false, now = null, legacyWindow = true } = {}) {
+  const hmv = String(hhmm || '').slice(0, 5);
+  if (!isISODay(dateISO) || !isHMValue(hmv)) return { code: 'outside_service', message: 'Pick a date and a time.' };
+  const t = toMin(hmv);
+  if (online && now && isISODay(now.ymd)) {
+    const ahead = daysBetweenISO(now.ymd, dateISO);
+    const maxAhead = Number(rules?.widgetMaxDaysAhead ?? rules?.maxDaysAhead);
+    if (Number.isFinite(maxAhead) && maxAhead >= 0 && ahead > maxAhead) {
+      return { code: 'too_far_ahead', message: `Online bookings open ${maxAhead} days ahead. Pick an earlier date.` };
+    }
+    const until = ahead * 1440 + t - (Number(now.nowMinutes) || 0);
+    if (until <= 0) return { code: 'past', message: 'That time has gone. Pick a later time.' };
+    const notice = Math.max(0, Math.round(Number(rules?.minNoticeMinutes) || 0));
+    if (until < notice) {
+      const h = notice / 60;
+      const words = notice % 60 === 0 ? `${h} hour${h === 1 ? '' : 's'}` : `${notice} minutes`;
+      return { code: 'too_soon', message: `Online bookings need ${words} notice. Pick a later time, or call the venue.` };
+    }
+  }
+  const { custom } = servicePeriodsOf(rules);
+  const sw = serviceWindows(rules, dateISO, { online });
+  const timed = timedBlocksOn(rules, dateISO, { online }).find((b) => t >= b.startMin && t < b.endMin);
+  if (timed) {
+    return { code: 'blocked', message: `${toHM(timed.startMin)} to ${toHM(timed.endMin)} on ${sayDay(dateISO)} is blocked (${timed.label}). Pick another time.` };
+  }
+  const inWindow = sw.windows.some((w) => t >= Math.max(0, w.openMin) && t <= w.lastMin);
+  if (inWindow) return null;
+  if (sw.closed === 'blocked') {
+    return { code: 'blocked', message: `${sayDay(dateISO)} is closed for bookings (${sw.block?.label || 'Closed'}). Pick another day.` };
+  }
+  if (sw.closed === 'closed_day') {
+    const wd = isoWeekday(dateISO);
+    return {
+      code: 'closed_day',
+      message: isClosedWeekday(rules, dateISO)
+        ? `The venue is closed on ${WEEKDAY_PLURAL[wd]}. Pick another day.`
+        : `There is no service on ${WEEKDAY_PLURAL[wd]}. Pick another day.`,
+    };
+  }
+  if (!custom && !legacyWindow) return null;
+  const open = describeWindows(sw.windows);
+  return { code: 'outside_service', message: `${hmv} is outside service hours.${open ? ` Open ${open}.` : ''} Pick another time.` };
+}
+
+// The minutes the Diary and Timeline draw for a day: from the first window that seats to the
+// last close, widened to fit any booking already on the day (so nothing is ever hidden), on
+// 15 minute lines. Closed days keep the widest span of the week so the grid still draws.
+//   bookings  [{ startTime | startMin, turnMinutes }]
+export function diaryRange(rules = {}, dateISO, { bookings = [] } = {}) {
+  const { periods } = servicePeriodsOf(rules);
+  // Own windows only: the late tail of yesterday's dinner would stretch the grid to midnight;
+  // a booking that really starts there widens it below.
+  const seating = isISODay(dateISO) ? serviceWindows(rules, dateISO).windows.filter((w) => !w.spill && w.lastMin >= w.openMin) : [];
+  let from, to;
+  if (seating.length) {
+    from = Math.min(...seating.map((w) => w.openMin));
+    to = Math.max(...seating.map((w) => w.closeMin));
+  } else if (periods.length) {
+    from = Math.min(...periods.map((p) => p.startMin));
+    to = Math.max(...periods.map((p) => Math.min(p.endAbs, 1440)));
+  } else { from = 17 * 60; to = 23 * 60; }
+  for (const b of bookings || []) {
+    const s = Number.isFinite(b?.startMin) ? b.startMin : toMin(String(b?.startTime || '').slice(0, 5));
+    if (!Number.isFinite(s)) continue;
+    from = Math.min(from, s);
+    to = Math.max(to, Math.min(1440, s + (Number(b.turnMinutes) || 90)));
+  }
+  from = Math.max(0, Math.floor(from / 15) * 15);
+  to = Math.min(1440, Math.ceil(to / 15) * 15);
+  if (to <= from) to = Math.min(1440, from + 60);
+  return { startMin: from, endMin: to };
+}
+
+// The closed stretches inside [fromMin, toMin) on a day, for greying the Diary and Timeline:
+// [{ startMin, endMin, label }]. Outside every open window reads 'Closed' (or the block's
+// label); timed blocks read their own label.
+export function closedRanges(rules = {}, dateISO, fromMin, toMin_) {
+  if (!isISODay(dateISO)) return [];
+  const lo = Math.max(0, Number(fromMin) || 0), hi = Math.min(1440, Number(toMin_) || 1440);
+  const sw = serviceWindows(rules, dateISO);
+  const label = sw.closed === 'blocked' ? (sw.block?.label || 'Closed') : 'Closed';
+  const open = sw.windows.map((w) => [Math.max(lo, w.openMin), Math.min(hi, w.closeMin)]).filter(([a, b]) => b > a)
+    .sort((a, b) => a[0] - b[0]);
+  const out = [];
+  let cur = lo;
+  for (const [a, b] of open) {
+    if (a > cur) out.push({ startMin: cur, endMin: a, label });
+    cur = Math.max(cur, b);
+  }
+  if (cur < hi) out.push({ startMin: cur, endMin: hi, label });
+  for (const b of timedBlocksOn(rules, dateISO)) {
+    const a = Math.max(lo, b.startMin), e = Math.min(hi, b.endMin);
+    if (e > a) out.push({ startMin: a, endMin: e, label: b.label });
+  }
+  return out;
+}
+
+// The words for a day at the top of the Diary: null on an ordinary day.
+export function dayNotice(rules = {}, dateISO) {
+  if (!isISODay(dateISO)) return null;
+  const sw = serviceWindows(rules, dateISO);
+  if (sw.closed === 'blocked') return `Closed for bookings: ${sw.block?.label || 'Closed'}. The host stand can still seat walk ins.`;
+  if (sw.closed === 'closed_day' && hasServiceRules(rules)) {
+    return isClosedWeekday(rules, dateISO)
+      ? `Closed on ${WEEKDAY_PLURAL[isoWeekday(dateISO)]}. The host stand can still seat walk ins.`
+      : `No service on ${WEEKDAY_PLURAL[isoWeekday(dateISO)]}. The host stand can still seat walk ins.`;
+  }
+  const timed = timedBlocksOn(rules, dateISO);
+  if (timed.length) return timed.map((b) => `${toHM(b.startMin)} to ${toHM(b.endMin)} blocked (${b.label})`).join('. ') + '.';
+  return null;
+}
+
+// A period or block as the editor saves it: trimmed, valid, or null with the reason.
+export function checkPeriod(p) {
+  if (!p) return 'Missing period.';
+  if (!isHMValue(p.start) || !isHMValue(p.end)) return 'Set a start and an end time.';
+  if (toMin(p.start) === toMin(p.end)) return 'The start and the end cannot be the same time.';
+  if (!Array.isArray(p.days) || !p.days.length) return 'Pick at least one day.';
+  if (p.lastSeating && !isHMValue(p.lastSeating)) return 'Last seating must be a time.';
+  if (p.lastSeating) {
+    const n = normalisePeriod(p);
+    let l = toMin(p.lastSeating);
+    if (l < n.startMin) l += 1440;
+    if (l >= n.endAbs) return 'Last seating must be before the end of the service.';
+  }
+  return null;
+}
+export function checkBlock(b) {
+  if (!b) return 'Missing block.';
+  if (!isISODay(b.from)) return 'Pick a first day.';
+  if (b.to && !isISODay(b.to)) return 'Pick a last day.';
+  if (b.to && b.to < b.from) return 'The last day is before the first day.';
+  if ((b.start || b.end) && !(isHMValue(b.start) && isHMValue(b.end))) return 'Set both times, or neither for the whole day.';
+  if (b.start && b.end && toMin(b.end) <= toMin(b.start)) return 'The end time must be after the start time.';
+  return null;
+}
