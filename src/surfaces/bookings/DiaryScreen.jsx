@@ -20,13 +20,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../store';
 import { supabase, isMock } from '../../lib/supabase';
+// 16 Oct 2026: the no show and late cancel charge (NoShowCharge.jsx). A charge is the venue's
+// revenue, never money paid with the booking, so the ledger rows below leave it out.
+import NoShowCharge from './NoShowCharge.jsx';
+import { withoutNoShowCharges, takenCharge, moneyText } from '../../lib/bookings/noShowCharge.js';
 import { toMin, toHM, isTableFree, toOptimiserBooking, sessionsToBlocks } from '../../lib/bookings/optimiser.js';
 import { loadBookingPayments, lookupPreorderLinkBase } from '../../lib/bookings/bookingsData.js';
 import { undoNoShowStatus, bookingUnpaid, isNeedsRefundRow } from '../../lib/bookings/bookingPayment.js';
 import { choiceSummary } from '../../lib/bookings/preorderChoices.js';
 import { dropTarget, editedLine, hasGuest, fmtClock, EDIT_REFUSALS, MOVE_NON_BLOCKING } from '../../lib/bookings/editRules.js';
 import {
-  mono, tintBg, tintBd, rulesOf, displayStatus, statusMeta, StatusBadge, isLive,
+  mono, tintBg, tintBd, rulesOf, displayStatus, statusMeta, StatusBadge, isLive, isDead,
   money, initialsOf, bookingName, EmptyNote, Chip, preorderStateFor, courseColor,
 } from './bits.jsx';
 import { useVenueClock } from './useVenueClock.js';
@@ -120,9 +124,12 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
   };
 
   const visible = useMemo(() => bookings.filter((b) => b.status !== 'cancelled'), [bookings]);
-  const listRows = useMemo(
-    () => visible.slice().sort((a, b) => toMin(a.startTime) - toMin(b.startTime) || bookingName(a).localeCompare(bookingName(b))),
-    [visible]);
+  // 16 Oct 2026: cancelled bookings sit greyed at the END of the list (never on the timeline),
+  // so a late cancellation can still be opened and charged after the Inspector was closed.
+  const listRows = useMemo(() => {
+    const byTime = (a, b) => toMin(a.startTime) - toMin(b.startTime) || bookingName(a).localeCompare(bookingName(b));
+    return [...visible.slice().sort(byTime), ...bookings.filter((b) => b.status === 'cancelled').sort(byTime)];
+  }, [visible, bookings]);
   const optBookings = useMemo(() => {
     const base = visible.map(toOptimiserBooking).filter(Boolean);
     // Open POS tabs block their tables like dining bookings — today only.
@@ -380,7 +387,7 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {listRows.map((b) => {
                 const st = displayStatus(b, nowMin, packages);
-                const dead = st === 'no_show';
+                const dead = st === 'no_show' || st === 'cancelled';
                 const isSel = b.id === sel;
                 const pkg = b.packageId ? packages.find((p) => p.id === b.packageId) : null;
                 const labels = (b.tables || []).map((id) => rows.find((t) => t.id === id)?.label || String(id).slice(-4)).join(' + ');
@@ -771,7 +778,9 @@ function PaymentState({ b, prepaid, rows, tz = null }) {
         line = { txt: `${line.txt}. ${words}`, col: 'var(--orn)' };
       }
     }
-    else if (held) line = { txt: `✓ Card saved${card(held)}. Nothing was taken.`, col: 'var(--grn)' };
+    // "Nothing was taken" only while the booking is live: on a no show or a cancellation the
+    // charge panel below says whether the card was charged (16 Oct 2026).
+    else if (held) line = { txt: `✓ Card saved${card(held)}.${isDead(b) ? '' : ' Nothing was taken.'}`, col: 'var(--grn)' };
     // 16 Oct 2026 (audit item 22): an expired booking with a stale pending row read
     // "payment pending, confirms by itself" about a booking the sweep had released.
     else if (b.status === 'expired') line = { txt: 'Payment not taken, booking released', col: 'var(--t4)' };
@@ -933,12 +942,20 @@ export function Inspector({ b, nowMin, packages, tables, onClose, startMoving = 
   // invented figure (Peter, 25 Aug). A hold is real only if a row says so.
   const [payNonce, setPayNonce] = useState(0);
   const payLinkWaiting = !!b.payLinkUntil && ['confirmed', 'pending_payment'].includes(b.status);
-  const [payRows, payReadFailed] = useBookingPayments(b.id, { status: b.status, nonce: payNonce, watch: payLinkWaiting });
+  const [allPayRows, payReadFailed] = useBookingPayments(b.id, { status: b.status, nonce: payNonce, watch: payLinkWaiting });
+  // 16 Oct 2026: a no show charge is never credit, never "paid online", never a reason to undo.
+  const payRows = withoutNoShowCharges(allPayRows);
   // Money flagged to go back is never "on file" (isNeedsRefundRow).
   const capturedRow = (payRows || []).find((r) => r.status === 'captured' && r.kind !== 'refund' && !isNeedsRefundRow(r));
   const heldRow = (payRows || []).find((r) => r.status === 'authorised' && r.kind === 'hold' && !isNeedsRefundRow(r));
   const onFile = capturedRow || heldRow || null;
   const [undoErr, setUndoErr] = useState('');
+  // A no show fee taken on this booking (read from the ledger, or charged on this screen just
+  // now, before the ledger is read again). Undo is refused while it is kept.
+  const [chargedNow, setChargedNow] = useState({ id: null, res: null });
+  const feeRow = takenCharge(allPayRows);
+  const feeNow = chargedNow.id === b.id ? chargedNow.res : null;
+  const feeTaken = !!feeRow || !!feeNow;
   // 10 Sep 2026 payment gate: pending_payment, or a booking that owed money
   // with no successful payment on the ledger (payRows null = not read yet).
   const unpaid = bookingUnpaid({ booking: b, pkg, payments: payRows });
@@ -1092,6 +1109,8 @@ export function Inspector({ b, nowMin, packages, tables, onClose, startMoving = 
         {/* 16 Oct 2026 (host tools): Refund (manager PIN) and the pay link by text. */}
         <RefundPanel b={b} by={operatorName} onChanged={() => setPayNonce((n) => n + 1)} />
         <PayLinkPanel b={b} by={operatorName} hasPayment={!!(capturedRow || heldRow)} />
+        {/* 16 Oct 2026 (money track): the no show and late cancel charge on the saved card. */}
+        <NoShowCharge b={b} hasSavedCard={!!heldRow} hasCharge={feeTaken} onCharged={(res) => setChargedNow({ id: b.id, res })} />
       </div>
 
       {/* 16 Oct 2026 (guest track): texts and emails sent to the guest, and their link. */}
@@ -1160,6 +1179,12 @@ export function Inspector({ b, nowMin, packages, tables, onClose, startMoving = 
               disabled={!b.seatedAt && payRows === null && !payReadFailed}
               onClick={() => {
                 setUndoErr('');
+                if (b.status === 'no_show' && feeTaken) {
+                  const amt = feeRow ? moneyText(Math.round(Number(feeRow.amount) * 100), String(feeRow.currency || 'GBP').toUpperCase())
+                    : moneyText(feeNow?.amountMinor, feeNow?.currency);
+                  setUndoErr(`A ${amt} no show charge was taken on this booking. Refund its check (History on the till, or Transactions in Back Office) before undoing the no show.`);
+                  return;
+                }
                 if (b.seatedAt) { updateBooking?.(b.id, { status: 'dining', departedAt: null }); return; }
                 const next = undoNoShowStatus({ booking: b, payments: payRows });
                 if (!next) {
