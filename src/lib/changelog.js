@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.67',
+    date: '16 Oct 2026',
+    items: [
+      "Orders, new purchase order: choosing a supplier now lists every item that supplier sells as a table, with the item's codes, pack, net price, on hand, on order, par, the suggested packs (the Order pad rule) and a quantity box on each row. Type a quantity and the line is on the order; clear the box and it is off. Lines already on the order sit at the top. Before this the screen offered one search box that showed ten names at a time, so ordering from a supplier with hundreds of lines meant knowing every name.",
+      "Orders: a search box (name, SKU or the supplier's code, case and accent insensitive) and filters for category, storage area, below par only, on order only and on this order only, with a count line such as '60 of 1,200 items shown'. Search and filters work on the list already loaded, so they answer at once.",
+      "Orders: built for a thousand items. The table draws only the rows in view, so 1,200 items do not mean 1,200 boxes on the page, and the stock readers now read in pages of 1,000: the API answers at most 1,000 rows a request and said nothing about the rest, so a venue with more than 1,000 stock items, supplier packs or par levels silently lost the tail on every stock screen.",
+      "Orders: the expected date of a new order is filled in with the supplier's next delivery day on the venue's calendar (tomorrow for a supplier with no schedule), the same rule the Order pad uses, shown in words under the box. It can still be changed. The box used to open empty.",
+      "Orders: an item the supplier does not list can still be added through 'Show all items', but it now asks for the pack size and the price of a pack before it joins the order, and says why: with no pack on file for that supplier there is no size or price to order it by, and a line at no price would book stock at no cost. The row is marked 'pack typed' and the message points at the item's Suppliers tab to save the pack for next time.",
+      "Orders: a quantity box left at 0 is dropped when the order is saved, and the long dash in 'No lines yet' and the other Orders messages is gone.",
+    ],
+  },
+  {
     v: '5.11.65',
     date: '15 Oct 2026',
     items: [

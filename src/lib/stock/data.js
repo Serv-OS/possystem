@@ -148,14 +148,24 @@ export const fetchInventoryItems = async (locationId = null) => {
   if (isMock || !supabase) return { data: [], error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: [], error: null };
+  // v5.11.67: every table read in pages of 1,000 (lib/pagedRead.js). PostgREST answers at most
+  // 1,000 rows a request whatever .limit() asks for and says nothing about the rest, so a venue
+  // with 1,200 stock items, or 1,200 supplier packs across its suppliers, silently lost the tail:
+  // items missing from every stock screen, packs missing so items showed "no supplier". Each
+  // read orders on a unique key so a row cannot land on two pages or fall between them.
+  const all = (what, table, order) => readAllPagesResult(what, (first) => {
+    let q = supabase.from(table).select('*', first ? { count: 'exact' } : undefined).eq('location_id', locationId);
+    for (const col of order) q = q.order(col);
+    return q;
+  });
   const [{ data: items, error }, { data: convs }, { data: sps }, { data: packs }, ratesById] = await Promise.all([
-    supabase.from('inventory_items').select('*').eq('location_id', locationId).order('name'),
-    supabase.from('inventory_item_conversions').select('*').eq('location_id', locationId),
+    all('stock items', 'inventory_items', ['name', 'id']),
+    all('unit conversions', 'inventory_item_conversions', ['id']),
     // Ordered, not incidental: readers pick the buy/count default and the preferred
     // supplier with .find(), so an unordered fetch let two devices resolve a different
-    // row from the same data — and price purchase orders off a different pack size.
-    supabase.from('supplier_products').select('*').eq('location_id', locationId).order('created_at').order('id'),
-    supabase.from('item_packaging_formats').select('*').eq('location_id', locationId).order('created_at').order('id'),
+    // row from the same data and price purchase orders off a different pack size.
+    all('supplier packs', 'supplier_products', ['created_at', 'id']),
+    all('item units', 'item_packaging_formats', ['created_at', 'id']),
     fetchTaxRateMap(locationId),
   ]);
   if (error) return { data: [], error };
