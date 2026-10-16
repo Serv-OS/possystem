@@ -83,11 +83,11 @@ test('Business summary mounts the strip in both views; the Z report mounts the g
 
   const z = read('./ZReport.jsx');
   assert.match(z, /import ZReportGroups from '\.\/ZReportGroups';/);
-  assert.match(z, /export default function ZReport\(\{ checks, periodLabelText, rangeFrom, rangeTo, timeZone, fmt, fmtN, scope \}\)/);
+  assert.match(z, /export default function ZReport\(\{ checks, periodLabelText, rangeFrom, rangeTo, timeZone, fmt, fmtN, scope, sites, locationId, filters, locationConfig \}\)/);
   const slip = z.split('\n').filter((l) => l.includes('<ZReportGroups'));
   assert.equal(slip.length, 1);
   assert.ok(slip[0].includes('siteId={scope?.homeId}'));
-  assert.ok(z.indexOf('<span>Net sales</span>') < z.indexOf('<ZReportGroups'), 'after the Net sales row');
+  assert.ok(z.indexOf('{lines.map(l => {') < z.indexOf('<ZReportGroups'), 'after the sales ladder');
   assert.ok(z.indexOf('<ZReportGroups') < z.indexOf('{/* Tax */}'), 'before the tax block');
 });
 
@@ -176,7 +176,7 @@ test('review fixes: the setup panel unmounts on close, swallows Escape in the na
 
 test('review fixes: the Z report block names voided checks and reads Item sales (gross)', () => {
   const z = read('./ZReportGroups.jsx');
-  assert.ok(z.includes('Item sales (gross)'), 'finding 16: one figure, one name family with Gross sales above');
+  assert.ok(z.includes('Item sales (gross)'), 'finding 16: one figure, one name family with Item sales above');
   assert.ok(z.includes('slipModel(view, { voided })'), 'finding 2: the slip counts the checks the mix skipped');
   assert.ok(z.includes('{model.voidNote && <div style={FINE}>{model.voidNote}</div>}'));
   assert.ok(z.includes('isLiveCheck'));

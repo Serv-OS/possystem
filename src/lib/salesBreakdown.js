@@ -105,7 +105,7 @@ export function checkPieces(check) {
   const out = {
     row, voided, goods, itemsFromSubtotal: !items.lines && !emptyVoidedRow, delivery,
     moneySales: 0, moneyTax: 0, moneyAdded: 0, rewardsShelf: 0, rewardsTax: 0,
-    service: 0, tips: 0, byTender: {}, recordedDiscount: 0, itemDiscount: 0, subtotalOff: null,
+    service: 0, tips: 0, byTender: {}, tipsByTender: {}, recordedDiscount: 0, itemDiscount: 0, subtotalOff: null,
   };
   // A stored subtotal that is not its own lines (price x qty, BEFORE item discounts, as the till
   // stores it: tradingSales.js and the till's linesGoods): named so it can be fixed.
@@ -125,6 +125,7 @@ export function checkPieces(check) {
       out.moneySales += p.sales; out.moneyTax += p.tax; out.moneyAdded += added;
       out.service += p.service; out.tips += p.tip;
       out.byTender[p.kind] = (out.byTender[p.kind] || 0) + p.gross;
+      out.tipsByTender[p.kind] = (out.tipsByTender[p.kind] || 0) + p.tip;
     } else {
       out.rewardsShelf += p.sales - added;
       out.rewardsTax += p.tax;
@@ -151,12 +152,13 @@ export function refundPieces(entry, check) {
   const closed = Date.parse(row?.closed_at);
   const atMs = r.atMs ?? (Number.isFinite(closed) ? closed : null);
   const share = addedTaxShare(row);
-  const out = { atMs, sales: 0, tax: 0, added: 0, service: 0, tips: 0, byTender: {} };
+  const out = { atMs, sales: 0, tax: 0, added: 0, service: 0, tips: 0, byTender: {}, tipsByTender: {} };
   for (const p of r.parts) {
     if (!MONEY_KINDS.has(p.kind)) continue;   // loyalty or promo credit put back: never takings
     out.sales += p.sales; out.tax += p.tax; out.added += Math.round(p.tax * share);
     out.service += p.service; out.tips += p.tip;
     out.byTender[p.kind] = (out.byTender[p.kind] || 0) + p.gross;
+    out.tipsByTender[p.kind] = (out.tipsByTender[p.kind] || 0) + p.tip;
   }
   return out;
 }
@@ -207,7 +209,7 @@ export function salesBreakdown(checks, { range = null, refundRows = null, curren
   let items = 0, voids = 0, delivery = 0, discounts = 0, recorded = 0, rewards = 0, rewardsTax = 0;
   let moneySales = 0, moneyTax = 0, moneyAdded = 0, service = 0, tips = 0;
   let count = 0, covers = 0, voidCount = 0, anyAdded = false;
-  const tender = {};
+  const tender = {}, tenderTips = {}, tenderChecks = {};
   const subtotalOff = [], discountOff = [], vatMissing = [];
   for (const c of checks || []) {
     if (!c) continue;
@@ -224,7 +226,11 @@ export function salesBreakdown(checks, { range = null, refundRows = null, curren
     moneySales += p.moneySales; moneyTax += p.moneyTax; moneyAdded += p.moneyAdded;
     service += p.service; tips += p.tips;
     if (p.moneyAdded > 0 || addedTaxShare(p.row) > 0) anyAdded = true;
-    for (const [k, v] of Object.entries(p.byTender)) tender[k] = (tender[k] || 0) + v;
+    for (const [k, v] of Object.entries(p.byTender)) {
+      tender[k] = (tender[k] || 0) + v;
+      if (v > 0) tenderChecks[k] = (tenderChecks[k] || 0) + 1;
+    }
+    for (const [k, v] of Object.entries(p.tipsByTender)) tenderTips[k] = (tenderTips[k] || 0) + v;
     const ref = c.ref || c.id;
     if (p.subtotalOff) subtotalOff.push({ id: c.id, ref, ...p.subtotalOff });
     if (!p.itemsFromSubtotal && Math.abs(taken - p.recordedDiscount) > 1 && !chargedNothing(p.row)) {
@@ -237,6 +243,7 @@ export function salesBreakdown(checks, { range = null, refundRows = null, curren
     refSales += r.sales; refTax += r.tax; refAdded += r.added; refCount += 1;
     service -= r.service; tips -= r.tips;
     for (const [k, v] of Object.entries(r.byTender)) tender[k] = (tender[k] || 0) - v;
+    for (const [k, v] of Object.entries(r.tipsByTender)) tenderTips[k] = (tenderTips[k] || 0) - v;
   });
   const refunds = refSales - refAdded;                       // on the item price basis
   const shelfSales = items - voids + delivery - discounts - rewards - refunds;
@@ -256,6 +263,10 @@ export function salesBreakdown(checks, { range = null, refundRows = null, curren
     subtotalOff, discountOff, vatMissing, estimated: false,
   };
   for (const k of TENDER_ORDER) out[`tender_${k}`] = m(tender[k] || 0);
+  // 16 Oct 2026 (the Z report): per money kind, how many checks it paid and the tips inside its
+  // amount (tender_* above already holds them). Counts, not added across sites.
+  out.tenderChecks = Object.fromEntries(TENDER_ORDER.map((k) => [k, tenderChecks[k] || 0]));
+  out.tenderTips = Object.fromEntries(TENDER_ORDER.map((k) => [k, m(tenderTips[k] || 0)]));
   return out;
 }
 

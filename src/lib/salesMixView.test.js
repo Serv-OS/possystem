@@ -149,18 +149,18 @@ test('groupTotals and the reconcile words', () => {
   assert.deepEqual(groupTotals(v), { total: 100, qty: 8, avg: 12.5, items: 5 });   // 5 distinct items
   assert.deepEqual(groupTotals({ total: 0, qty: 0, items: 0 }), { total: 0, qty: 0, avg: null, items: 0 });
   const rec = (o) => ({ gross: o.subtotal, voided: 0, voidedSubtotal: 0, ...o });
-  assert.equal(reconcileWords(rec({ subtotal: 100, off: 0, diff: 0 }), fmt), 'Equals Gross sales on the Z report: £100.00.');
-  assert.equal(reconcileWords(rec({ subtotal: 108, off: 1, diff: 8 }), fmt), 'Gross sales on the Z report is £108.00; the lines differ by £8.00 (1 check whose stored subtotal is not the sum of their lines).');
-  assert.equal(reconcileWords(rec({ subtotal: 108, off: 2, diff: 8 }), fmt), 'Gross sales on the Z report is £108.00; the lines differ by £8.00 (2 checks whose stored subtotal is not the sum of their lines).');
+  assert.equal(reconcileWords(rec({ subtotal: 100, off: 0, diff: 0 }), fmt), "Equals the checks' stored subtotals: £100.00.");
+  assert.equal(reconcileWords(rec({ subtotal: 108, off: 1, diff: 8 }), fmt), "The checks' stored subtotals are £108.00; the lines differ by £8.00 (1 check whose stored subtotal is not the sum of their lines).");
+  assert.equal(reconcileWords(rec({ subtotal: 108, off: 2, diff: 8 }), fmt), "The checks' stored subtotals are £108.00; the lines differ by £8.00 (2 checks whose stored subtotal is not the sum of their lines).");
   assert.equal(reconcileWords(null, fmt), '');
-  // 8 Oct 2026 (review finding 2): with a void in the period the Z report's Gross sales holds it and the
+  // 8 Oct 2026 (review finding 2): with a void in the period the stored subtotals hold it and the
   // groups do not, so the line names the voided checks as the known difference, never a false "Equals".
   const oneVoid = { gross: 144.5, voided: 1, voidedSubtotal: 100, subtotal: 44.5, off: 0, diff: 0 };
-  assert.equal(reconcileWords(oneVoid, fmt), 'Gross sales on the Z report is £144.50; less 1 voided check (£100.00), the lines equal £44.50.');
+  assert.equal(reconcileWords(oneVoid, fmt), "The checks' stored subtotals are £144.50; less 1 voided check (£100.00), the lines equal £44.50.");
   assert.equal(reconcileWords({ gross: 164.5, voided: 2, voidedSubtotal: 120, subtotal: 44.5, off: 0, diff: 0 }, fmt),
-    'Gross sales on the Z report is £164.50; less 2 voided checks (£120.00), the lines equal £44.50.');
+    "The checks' stored subtotals are £164.50; less 2 voided checks (£120.00), the lines equal £44.50.");
   assert.equal(reconcileWords({ gross: 152.5, voided: 1, voidedSubtotal: 100, subtotal: 52.5, off: 1, diff: 8 }, fmt),
-    'Gross sales on the Z report is £152.50; less 1 voided check (£100.00) it is £52.50, and the lines differ by £8.00 (1 check whose stored subtotal is not the sum of their lines).');
+    "The checks' stored subtotals are £152.50; less 1 voided check (£100.00) they are £52.50, and the lines differ by £8.00 (1 check whose stored subtotal is not the sum of their lines).");
   assert.doesNotMatch(reconcileWords(oneVoid, fmt), /^Equals/, 'no "Equals" when a void is in the period');
 });
 

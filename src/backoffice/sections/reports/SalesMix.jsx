@@ -11,7 +11,7 @@
 // summary strip, the Z report and the owner app always agree on where an item sits (D2).
 //
 // THE BASIS (D3): till price times qty before check discounts and refunds, as Product mix, so
-// the groups add up to Product mix's items and categories and to the Z report's Gross sales.
+// the groups add up to Product mix's items and categories and to the Z report's Item sales.
 //
 // WHO MAY SET UP GROUPS (8 Oct 2026, review): the panel writes menu categories, so it carries the
 // Menu section's lock (lib/boSections.js, canOpen('menu')). A Reports only login (Peter's
