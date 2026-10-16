@@ -39,7 +39,10 @@ export const fetchParLevels = async (locationId = null) => {
   if (isMock || !supabase) return { data: {}, error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: {}, error: null };
-  const { data, error } = await supabase.from('par_levels').select('*').eq('location_id', locationId);
+  // v5.11.67: in pages of 1,000; one request is capped at 1,000 rows by PostgREST, so the par of
+  // every item past the thousandth read as "no par" on the Order pad and the Orders screen.
+  const { data, error } = await readAllPagesResult('par levels', (first) => supabase.from('par_levels')
+    .select('*', first ? { count: 'exact' } : undefined).eq('location_id', locationId).order('id'));
   const map = {};
   (data || []).forEach(r => { map[r.inventory_item_id] = { parLevel: r.par_level == null ? null : Number(r.par_level), reorderPoint: r.reorder_point == null ? null : Number(r.reorder_point), minLevel: r.min_level == null ? null : Number(r.min_level) }; });
   return { data: map, error };

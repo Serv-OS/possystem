@@ -8,11 +8,12 @@
  * Each change event calls the appropriate store action to update state.
  */
 
-import { supabase, isMock, LOCATION_ID, isBackOfficeMode } from './supabase';
+import { supabase, isMock, LOCATION_ID, isBackOfficeMode, isHostStandMode } from './supabase';
 import { applyQueueRealtimeEvent, applyTabRealtimeEvent } from '../sync/QueueSync';
 import { applyWaitlistRealtimeEvent } from '../sync/WaitlistSync';
 import { reassertSession } from '../sync/SessionSync';
 import { isSessionClosed } from '../sync/sessionClosure';
+import { decideOnDelete } from './bookings/standSessionSync.js';
 import { playOrderChime } from './orderChime';
 import { receiveKioskAlertRow, kioskAlertsRealtimeStarted, kioskAlertsRealtimeStopped, restoreKioskAlerts } from './kioskStaffAlerts';
 import { isHubriseAutoReceipt } from './hubrise';
@@ -274,6 +275,42 @@ export function startRealtime(store, locationId = LOCATION_ID) {
   // ── Active sessions — table open/update/close from any device ────────────────
   // REQUIRES: ALTER TABLE active_sessions REPLICA IDENTITY FULL;
   // (so DELETE events carry the full row, not just PK)
+
+  // 16 Oct 2026 (Provo demo, T1): a HOST STAND (Table Bookings, Tables Ready) asks the server when
+  // a table's row is deleted. The till cashed off T1 and the stand kept its copy (the old Guard 2
+  // kept any copy with items), so "Seat now" refused with "Still has an open tab". On a stand:
+  // one read of the table's row; a row keeps the local copy (never re published); no row clears
+  // it, except a seat the stand made inside the write grace; a failed read changes nothing.
+  // Tills keep the handler exactly as it was (below).
+  const standDelete = async (tid) => {
+    const before = (store.getState().tables || []).find(t => t.id === tid);
+    let serverRow = null;
+    let readFailed = false;
+    if (before?.session) {
+      try {
+        const { data, error } = await supabase
+          .from('active_sessions')
+          .select('table_id, session')
+          .eq('location_id', locationId)
+          .eq('table_id', tid)
+          .maybeSingle();
+        if (error) readFailed = true;
+        else serverRow = data || null;
+      } catch { readFailed = true; }
+    }
+    // The store may have moved while the read ran: decide on the copy as it is now.
+    const localNow = (store.getState().tables || []).find(t => t.id === tid);
+    const decision = decideOnDelete({ localSession: localNow?.session || null, serverRow, readFailed, now: Date.now() });
+    if (decision !== 'clear') return;
+    store.setState(s => ({
+      tables: s.tables.map(t =>
+        t.id === tid
+          ? { ...t, session: null, status: 'available' }
+          : t
+      ),
+    }));
+  };
+
   const sessionsChannel = supabase
     .channel(`sessions:${locationId}`)
     .on('postgres_changes', {
@@ -287,13 +324,16 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       // the close — this is a re-add door for a resurrected table (see sessionClosure).
       if (isSessionClosed(row.table_id, row.session)) return;
       const state = store.getState();
+      // 16 Oct 2026: a host stand edits no check, so it takes the server row (its own seat echoed
+      // back, or the till's). Both guards below protect a till's own unsent lines.
+      const hostStand = isHostStandMode();
       // Skip echo-back: when we open a table, flushSessions writes to Supabase.
       // The INSERT echo arrives AFTER we've added the first item, overwriting it.
       // Guard 1: never overwrite the currently active table
-      if (row.table_id === state.activeTableId) return;
+      if (!hostStand && row.table_id === state.activeTableId) return;
       // Guard 2: skip if local session is already newer (we originated this write)
       const existing = (state.tables || []).find(t => t.id === row.table_id);
-      if (existing?.session?.seatedAt && row.session?.seatedAt &&
+      if (!hostStand && existing?.session?.seatedAt && row.session?.seatedAt &&
           existing.session.seatedAt >= row.session.seatedAt) return;
       store.setState(s => ({
         tables: s.tables.map(t =>
@@ -319,7 +359,10 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       // A cashed-off ghost UPDATE'd by another device must not repaint the floor.
       if (isSessionClosed(row.table_id, row.session)) return;
       const state = store.getState();
-      if (row.table_id === state.activeTableId) return;
+      // 16 Oct 2026: a host stand edits no check. It takes the server row, never keeps its copy
+      // over it and never re publishes (a stand clock running ahead made every copy look newer).
+      const hostStand = isHostStandMode();
+      if (!hostStand && row.table_id === state.activeTableId) return;
       const existing = (state.tables || []).find(t => t.id === row.table_id);
       const localUpdated = existing?.session?.lastUpdated || existing?.session?.seatedAt || 0;
       const incomingUpdated = row.session?.lastUpdated
@@ -328,7 +371,7 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       // v5.5.871: local is newer than this incoming row → do NOT overwrite it (that was the
       // stale-seat-row wipe of a just-sent single item). Keep local and re-publish so the shared
       // row reconverges to our newer session instead of lingering stale and re-triggering the wipe.
-      if (localUpdated > incomingUpdated) { reassertSession(row.table_id); return; }
+      if (!hostStand && localUpdated > incomingUpdated) { reassertSession(row.table_id); return; }
       store.setState(s => ({
         tables: s.tables.map(t =>
           t.id === row.table_id
@@ -347,6 +390,7 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       if (row?.location_id && row.location_id !== locationId) return;
       const tid = row?.table_id;
       if (!tid) return;
+      if (isHostStandMode()) { standDelete(tid); return; }
       const state = store.getState();
       const localTable = (state.tables || []).find(t => t.id === tid);
       // v5.5.283 Guard 1: never clear the table this device is actively editing
