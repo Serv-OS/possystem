@@ -38,6 +38,7 @@ import { KICK_WAIT_MS } from '../lib/payments/kickRace';
 import { getNextOrderRefLocal } from '../lib/db';
 import { suppressReaderTip } from '../lib/payments/readerTipRule';
 import { orderFlag, flagTableLabel } from '../lib/tillOrderType';   // 30 Sep 2026: a flag order's Table <n> for the job's draft
+import { bookingCreditFor } from '../lib/bookings/bookingCredit';   // 16 Oct 2026: one booking credit helper (order screen, table card, checkout)
 // (readerDisplay imports removed — cancel now lets the natural cart-change effect refresh the reader after onBack)
 
 // ─── Tip picker ───────────────────────────────────────────────────────────────
@@ -1587,8 +1588,11 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
       return (b && ((b.prepaidMinor || 0) + (b.depositMinor || 0)) > 0) ? b : null;
     } catch { return null; }
   });
-  const bookingCreditMajor = bookingInfo
-    ? ((bookingInfo.prepaidMinor || 0) + (bookingInfo.depositMinor || 0)) / 100 : 0;
+  // 16 Oct 2026 (bookings audit item 2): the credit and its words come from the ONE helper the
+  // order screen and the table card read (lib/bookings/bookingCredit.js), so the three agree.
+  // The figure is the same sum as before; the tender legs below are unchanged.
+  const bookingCreditInfo = bookingCreditFor(bookingInfo ? { booking: bookingInfo } : null);
+  const bookingCreditMajor = bookingCreditInfo.creditMinor / 100;
   // v5.7.23: SplitModal divides the GROSS bill and knows nothing about the booking credit, so splitting would re-charge money the booking already paid.
   const splitWithBookingCredit = !!bookingInfo;
 
@@ -2654,11 +2658,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginTop:4 }}>
                     <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>
                       {String.fromCodePoint(0x2713)}{' '}
-                      {bookingInfo?.prepaidMinor > 0 && bookingInfo?.depositMinor > 0
-                        ? 'Booking payments'
-                        : bookingInfo?.prepaidMinor > 0
-                          ? `${bookingInfo?.packageName || 'Package'} prepaid`
-                          : 'Booking deposit'}
+                      {bookingCreditInfo.label || 'Booking payments'}
                       {bookingCreditMajor > bookingApplied + 0.004 && (
                         <span style={{ color:'var(--t3)', fontWeight:500 }}> (of {money(bookingCreditMajor)} paid, the rest stays on the booking)</span>
                       )}

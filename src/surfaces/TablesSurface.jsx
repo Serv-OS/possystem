@@ -3,6 +3,7 @@ import { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { useStore } from '../store';
 import { toMin } from '../lib/bookings/optimiser.js';
+import { bookingCreditFor } from '../lib/bookings/bookingCredit';
 import { buildScheduleCtx } from '../lib/locationTime';
 import { resolveServiceCharge } from '../lib/serviceCharge';
 import CheckSelectorModal from '../components/CheckSelectorModal';
@@ -925,6 +926,9 @@ export default function TablesSurface() {
                           } catch {}
                           const scAmt = sub * scRate;
                           const totalWithSC = sub + scAmt;
+                          // 16 Oct 2026 (bookings audit item 2): booking money is a payment from
+                          // seating, shown with the balance only (lib/bookings/bookingCredit.js).
+                          const credit = bookingCreditFor(session, totalWithSC);
                           return (
                             <>
                               <div style={{ display:'flex', justifyContent:'space-between', fontSize:14, fontWeight:700 }}>
@@ -936,6 +940,18 @@ export default function TablesSurface() {
                                   <span>inc. service ({deviceConfig?.serviceCharge?.rate ?? 12.5}%)</span>
                                   <span style={{ fontFamily:'DM Mono,monospace' }}>{money(totalWithSC)}</span>
                                 </div>
+                              )}
+                              {credit.hasCredit && (
+                                <>
+                                  <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, fontWeight:700, color:'var(--grn)', marginTop:5 }}>
+                                    <span>✓ {credit.label}</span>
+                                    <span style={{ fontFamily:'DM Mono,monospace' }}>−{money(credit.appliedMinor/100)}</span>
+                                  </div>
+                                  <div style={{ display:'flex', justifyContent:'space-between', fontSize:14, fontWeight:800, marginTop:3 }}>
+                                    <span style={{ color:'var(--t2)' }}>To pay</span>
+                                    <span style={{ color:'var(--acc)', fontFamily:'DM Mono,monospace' }}>{money(credit.balanceMinor/100)}</span>
+                                  </div>
+                                </>
                               )}
                             </>
                           );
