@@ -9,8 +9,16 @@
 
 const JOIN_KEY = { msm_products: 'product_id', msm_categories: 'category_id', msm_modifier_groups: 'group_id' };
 
-export function fakeClient(tables = {}, { cap = 1000, rpcs = {}, fail = {} } = {}) {
+// stamp (opt in, for the demo mode screens): an insert gets an id and created_at / updated_at when it
+// has none, and an update moves updated_at on and answers with the rows as they are after it (the
+// way the database does with .select()). defaults: { table: { column: value } } for the columns the
+// database would fill in on an insert (stamp only).
+export function fakeClient(tables = {}, { cap = 1000, rpcs = {}, fail = {}, stamp = false, defaults = {} } = {}) {
   const calls = [];
+  let seq = 0;
+  let clock = Date.parse('2026-10-17T09:00:00Z');
+  const tick = () => new Date(clock += 1000).toISOString();
+  const newId = () => `dddddddd-0000-4000-8000-${String(++seq).padStart(12, '0')}`;
   const db = Object.fromEntries(Object.entries(tables).map(([k, v]) => [k, v.map((r) => ({ ...r }))]));
   const client = {
     calls, db,
@@ -50,7 +58,15 @@ export function fakeClient(tables = {}, { cap = 1000, rpcs = {}, fail = {} } = {
       calls.push({ table, op: st.op });
       if (fail[table]) return { data: null, error: { message: fail[table] } };
       const rows = db[table] || (db[table] = []);
-      if (st.op === 'insert') { for (const r of st.payload) rows.push({ ...r }); return { data: st.payload, error: null }; }
+      if (st.op === 'insert') {
+        if (stamp) {
+          const made = st.payload.map((r) => { const t = tick(); return { id: newId(), created_at: t, updated_at: t, ...(defaults[table] || {}), ...r }; });
+          for (const r of made) rows.push({ ...r });
+          return { data: st.single ? made[0] : made, error: null };
+        }
+        for (const r of st.payload) rows.push({ ...r });
+        return { data: st.payload, error: null };
+      }
       if (st.op === 'upsert') {
         const keys = String(st.onConflict).split(',');
         for (const r of st.payload) {
@@ -67,8 +83,9 @@ export function fakeClient(tables = {}, { cap = 1000, rpcs = {}, fail = {} } = {
       out = out.filter((r) => st.filters.every((f) => f(r)));
       if (st.op === 'update') {
         const ids = new Set(out.map((r) => r.id ?? JSON.stringify(r)));
-        for (let i = 0; i < rows.length; i++) if (ids.has(rows[i].id ?? JSON.stringify(rows[i]))) rows[i] = { ...rows[i], ...st.payload };
-        return { data: out, error: null };
+        const done = [];
+        for (let i = 0; i < rows.length; i++) if (ids.has(rows[i].id ?? JSON.stringify(rows[i]))) { rows[i] = { ...rows[i], ...st.payload, ...(stamp ? { updated_at: tick() } : {}) }; done.push({ ...rows[i] }); }
+        return { data: stamp ? done : out, error: null };
       }
       if (st.op === 'delete') {
         const keep = rows.filter((r) => !out.some((o) => o.id === r.id));

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback, lazy, Suspense } from 'react';
 import { useStore, loadVenueMenu, whenMenuLoadIdle, whenMenuWritesIdle, beginMenuRead, applyVenueMenuRead, saveUnsavedMenuRows, failedCreateIds, MENU_WAIT_MS, instructionGroupsBase, setInstructionGroupsBase } from '../store';
 import { withTimeout } from '../lib/withTimeout';
 import { pushedByName } from '../lib/pushedBy';
@@ -26,6 +26,8 @@ import { loadPlanState, mergeTombs, tombstonesFromRows, normaliseFloorRow, nextS
 import { refreshTablePlan } from '../sync/TablePlanSync';
 import { normaliseSections } from '../lib/sectionPlan';
 import MenuManager from './sections/MenuManager';
+// v5.11.75: the Multi site menu is its own chunk, loaded only when a login added by name opens it.
+const MultiSiteMenu = lazy(() => import('./sections/msm/MultiSiteMenu'));
 import FloorPlanBuilder from './sections/FloorPlanBuilder';
 import DeviceProfiles from './sections/DeviceProfiles';
 import DeviceRegistry from './sections/DeviceRegistry';
@@ -119,6 +121,9 @@ import { dropAdminPlaceholder } from '../lib/masterTillDevice';
 // text, 1px gap) plus the list's own padding. Generous per row so nothing is ever clipped; the
 // transition only needs a ceiling. Pure, pinned by src/lib/boSidebar.test.js.
 export const navGroupMaxHeight = (rows) => Math.max(1, Number(rows) || 0) * 44 + 24;
+
+// Demo mode (no database): the Multi site menu opens on made up sites (src/lib/msm/msmDemo.js).
+const MOCK_MSM_ACCESS = Object.freeze({ installed: true, enabled: true, role: 'editor', orgId: 'org-demo', orgName: 'Demo company', canOpen: true, canEdit: true, companies: [], reason: null });
 
 const NAV = [
   { id:'overview',   label:'Overview',        icon:'◈',  group:'Dashboard' },
@@ -398,9 +403,28 @@ export default function BackOfficeApp() {
   // database lets that login read and write is unchanged (lib/boSections.js has the rules).
   // `access` is who is signed in; until the profile has loaded it is nobody, and nobody opens
   // nothing. Demo mode has no login at all and shows everything, as it always did.
+  // MULTI SITE MENU (v5.11.75): one more fact on `access`, read after the profile with
+  // msm_my_access (15 s limit, stale guard, fails closed). Until it answers, and on any failure or
+  // "not installed", it is null and the entry stays hidden (lib/boSections.js routeGateOk).
+  // Demo mode shows it with made up sites.
+  const [msmAccess, setMsmAccess] = useState(isMock ? MOCK_MSM_ACCESS : null);
+  const msmOrgId = orgCtx && !orgCtx.loadFailed ? orgCtx.orgId || null : null;
+  const msmUserId = orgCtx && !orgCtx.loadFailed ? orgCtx.userId || null : null;
+  const [msmAccessTry, setMsmAccessTry] = useState(0);
+  useEffect(() => {
+    if (isMock) return undefined;
+    setMsmAccess(null);
+    if (!msmUserId) return undefined;
+    let live = true;
+    import('../lib/msm/msmApi')
+      .then(({ msmApi }) => msmApi.readAccess(msmOrgId))
+      .then((a) => { if (live && a && !a.stale) setMsmAccess(a); })
+      .catch((e) => { console.warn('[BackOfficeApp] Multi site menu access not read:', e?.message); });
+    return () => { live = false; };
+  }, [msmOrgId, msmUserId, msmAccessTry]);
   const access = useMemo(
-    () => (isMock ? EVERYTHING : (orgCtx && !orgCtx.loadFailed ? { role: orgCtx.role, sections: orgCtx.boSections } : null)),
-    [orgCtx],
+    () => (isMock ? { ...EVERYTHING, multiSiteMenu: msmAccess } : (orgCtx && !orgCtx.loadFailed ? { role: orgCtx.role, sections: orgCtx.boSections, multiSiteMenu: msmAccess } : null)),
+    [orgCtx, msmAccess],
   );
   // RENDER GUARD: every screen below is chosen by `section`, and `section` can only ever be a
   // route this login may open (a blocked or unknown route becomes the first allowed one, or null).
@@ -1072,6 +1096,11 @@ export default function BackOfficeApp() {
           {section === 'xero' && <XeroIntegration />}
           {section?.startsWith('wf-') && <Workforce section={section} orgCtx={orgCtx} />}
           {section === 'menu'       && <MenuManager />}
+          {section === 'multi-site-menu' && (
+            <Suspense fallback={<div style={{ padding:24, color:'var(--t3)', fontSize:13 }}>Loading the Multi site menu…</div>}>
+              <MultiSiteMenu access={msmAccess} orgCtx={orgCtx} onAccessLost={() => setMsmAccessTry((n) => n + 1)} />
+            </Suspense>
+          )}
           {section === 'floorplan'  && <FloorPlanBuilder />}
           {section === 'inventory'  && <Inventory />}
           {section === 'stock-overview' && <StockOverview setSection={setSection} canOpen={canOpen} />}

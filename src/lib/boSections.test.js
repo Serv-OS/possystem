@@ -17,7 +17,7 @@ import {
   sectionsToStore, sectionsToTicks, describeSections, canEditSectionsFor,
   checkSections, storedSections, withinSections, sameSections, sectionsFromAnswer, isEverythingRole,
   isSectionsColumnMissing, missingProfileColumn, readProfileRow, sectionsFromProfileRow, PROFILE_COLUMNS,
-  canSwitchLoginOn,
+  canSwitchLoginOn, MSM_ROUTE, routeGateOk,
 } from './boSections.js';
 import { planLoginSections } from '../../supabase/functions/_shared/boSectionRules.js';
 
@@ -29,6 +29,10 @@ const sqlCode = (src) => src.split('\n').filter((l) => !/^\s*--/.test(l)).map((l
 const KEYS = ['overview', 'menu', 'floorplan', 'inventory', 'produce', 'purchasing', 'operations', 'team',
   'workforce', 'customers', 'channels', 'hardware', 'reports', 'card-payments', 'settings'];
 const allRoutes = NAV_IA.flatMap(routesOfRow);
+// 17 Oct 2026: the Multi site menu has a gate of its own on top of its section (only people
+// ServOS added by name). Every rule below about "a section, all of it" means every route but that one.
+const ungated = allRoutes.filter((id) => id !== MSM_ROUTE);
+const NAV_NO_MSM = NAV_IA.map((r) => (r.children ? { ...r, children: r.children.filter((c) => c[0] !== MSM_ROUTE) } : r));
 
 // The people in the story.
 const OWNER = { role: 'owner', sections: null };
@@ -50,7 +54,7 @@ test('15 sections, the decided keys, in sidebar order', () => {
 });
 
 test('the route map is built from the sidebar: every route in exactly one section', () => {
-  assert.equal(allRoutes.length, 92);   // 16 Oct 2026: stock-areas and stock-transfers under Inventory
+  assert.equal(allRoutes.length, 93);   // 16 Oct 2026: stock-areas and stock-transfers under Inventory; 17 Oct: multi-site-menu under Menu
   assert.equal(new Set(allRoutes).size, allRoutes.length, 'no route listed twice');
   const map = buildRouteSections(NAV_IA);
   assert.equal(map.size, allRoutes.length);
@@ -96,11 +100,14 @@ test('null is everything; owners and ServOS staff ignore any list', () => {
   assert.equal(isEverythingRole('manager'), false);
   assert.equal(isEverythingRole(null), false);
   for (const who of [OWNER, SERVOS, MANAGER]) {
-    for (const id of allRoutes) assert.equal(canOpenRoute(id, who), true, id);
+    for (const id of ungated) assert.equal(canOpenRoute(id, who), true, id);
+    assert.equal(canOpenRoute(MSM_ROUTE, who), false, 'owners and ServOS are not let into the Multi site menu automatically');
     assert.equal(canOpenRoute('admin', who), true, 'a route in no section stays open to an unlimited login');
     assert.equal(canOpenRoute('wf-anything', who), true);
     assert.equal(firstAllowedRoute(who), 'overview');
-    assert.equal(filterNav(NAV_IA, who), NAV_IA, 'the sidebar as it is');
+    assert.deepEqual(filterNav(NAV_IA, who), NAV_NO_MSM, 'the sidebar as it is, less the Multi site menu');
+    const named = { ...who, multiSiteMenu: { canOpen: true } };
+    assert.equal(filterNav(NAV_IA, named), NAV_IA, 'added by name: the sidebar exactly as it is');
     assert.equal(guardRoute('menu', who), 'menu');
   }
 });
@@ -166,7 +173,7 @@ test('one section each: that section, all of it, and no other', () => {
     const who = { role: 'manager', sections: [key] };
     assert.deepEqual(filterNav(NAV_IA, who).map((r) => r.label), [row.label]);
     assert.equal(firstAllowedRoute(who), routesOfRow(row)[0]);
-    for (const id of allRoutes) assert.equal(canOpenRoute(id, who), routesOfRow(row).includes(id), `${key} / ${id}`);
+    for (const id of allRoutes) assert.equal(canOpenRoute(id, who), routesOfRow(row).includes(id) && id !== MSM_ROUTE, `${key} / ${id}`);
   }
 });
 
@@ -491,7 +498,8 @@ test('BackOfficeApp: one list, and every way in goes through the guard', () => {
   assert.deepEqual([...boCode.matchAll(/setAskedSection\(([^)]*)\)/g)].map((m) => m[1]), ['next', "'overview'"], 'the raw setter');
   assert.match(boCode, /const setSection = \(next\) => \{\s+if \(!canOpenRoute\(next, access\)\) \{[\s\S]{0,220}?return;\s+\}\s+setAskedSection\(next\);\s+\};/);
   // Who is signed in: nobody until the profile has loaded, and nobody when it failed to load.
-  assert.match(boCode, /\(\) => \(isMock \? EVERYTHING : \(orgCtx && !orgCtx\.loadFailed \? \{ role: orgCtx\.role, sections: orgCtx\.boSections \} : null\)\)/);
+  // 17 Oct 2026: plus the Multi site menu answer (null until msm_my_access says otherwise).
+  assert.match(boCode, /\(\) => \(isMock \? \{ \.\.\.EVERYTHING, multiSiteMenu: msmAccess \} : \(orgCtx && !orgCtx\.loadFailed \? \{ role: orgCtx\.role, sections: orgCtx\.boSections, multiSiteMenu: msmAccess \} : null\)\)/);
   // Every screen in the page is chosen by `section` (never by the asked route, never unguarded).
   const shell = boCode.slice(boCode.indexOf('<div className="bo-page-shell">'), boCode.indexOf('{showLocationSwitcher &&'));
   const lines = shell.split('\n').filter((l) => /&& </.test(l));
@@ -728,4 +736,37 @@ test('the migration: the guard refuses a limited person switching ON a login tha
   assert.ok(guard.indexOf("if v_api_role not in ('authenticated', 'anon') then") < guard.indexOf('if old.bo_access is false'));
   // The same words on the screen and in the database.
   assert.ok(team.includes('Only the owner can switch this login on.'));
+});
+
+// ── the Multi site menu gate (17 Oct 2026) ──────────────────────────────────
+// Peter: "I only want people to be able to access it if we add them from the admin area."
+
+test('Multi site menu: under Menu, and only for a login added by name', () => {
+  const menu = NAV_IA.find((r) => r.label === 'Menu');
+  assert.deepEqual(menu.children[1], [MSM_ROUTE, 'Multi site menu'], 'second under Menu, after Items & modifiers');
+  assert.equal(sectionKeyOfRoute(MSM_ROUTE), 'menu', 'the Menu section lock still applies on top');
+  const yes = { canOpen: true };
+  for (const who of [OWNER, SERVOS, MANAGER]) {
+    assert.equal(canOpenRoute(MSM_ROUTE, { ...who, multiSiteMenu: yes }), true);
+    assert.equal(guardRoute(MSM_ROUTE, who), 'overview', 'not added: the route lands on the first allowed screen');
+  }
+  // Limited away from Menu: never, even when added by name.
+  assert.equal(canOpenRoute(MSM_ROUTE, { ...MO, multiSiteMenu: yes }), false);
+  assert.equal(filterNav(NAV_IA, { ...MO, multiSiteMenu: yes }).some((r) => r.label === 'Menu'), false);
+  // Menu only and added: Menu shows with the entry.
+  const menuOnly = { role: 'manager', sections: ['menu'], multiSiteMenu: yes };
+  assert.equal(canOpenRoute(MSM_ROUTE, menuOnly), true);
+  assert.deepEqual(filterNav(NAV_IA, menuOnly)[0].children.map((c) => c[0]), routesOfRow(menu));
+  // Anything that is not exactly canOpen true is no (not read yet, not installed, switched off, a failed read).
+  for (const v of [undefined, null, {}, { canOpen: 'yes' }, { canOpen: 1 }, { canOpen: false, canEdit: true }, true, 'on'])
+    assert.equal(routeGateOk(MSM_ROUTE, { ...OWNER, multiSiteMenu: v }), false, JSON.stringify(v));
+  assert.equal(routeGateOk(MSM_ROUTE, null), false);
+  assert.equal(routeGateOk('menu', null), true, 'routes with no gate of their own are untouched by it');
+});
+
+test('Multi site menu: the screen reads the gate from the one access object, loaded lazily', () => {
+  const bo = read('../backoffice/BackOfficeApp.jsx');
+  assert.match(bo, /multiSiteMenu: msmAccess/, 'the access object carries the Multi site menu answer');
+  assert.match(bo, /lazy\(\(\) => import\('\.\/sections\/msm\/MultiSiteMenu'\)\)/, 'the screen is its own chunk');
+  assert.match(bo, /section === 'multi-site-menu'/, 'rendered only through the guarded section');
 });

@@ -47,7 +47,7 @@ export {
 // collapsible accordion of existing routes.
 export const NAV_IA = [
   { label:'Overview',   icon:'home',      single:'overview' },
-  { label:'Menu',       icon:'list',      children:[['menu','Items & modifiers'],['discounts','Discounts'],['tax','Tax & VAT'],['challenge21','Challenge ID']] },
+  { label:'Menu',       icon:'list',      children:[['menu','Items & modifiers'],['multi-site-menu','Multi site menu'],['discounts','Discounts'],['tax','Tax & VAT'],['challenge21','Challenge ID']] },
   { label:'Floor plan', icon:'floor',     single:'floorplan' },
   { label:'Inventory',  icon:'inventory', children:[['stock-overview','Overview'],['stock-items','Stock items'],['stock-areas','Stock areas'],['stock-transfers','Transfers'],['stock-counts','Stock counts'],['wastage','Wastage'],['inventory','Daily counts'],['stock-reports','Reports']] },
   { label:'Produce',    icon:'inventory', children:[['recipes','Recipes'],['batches','Batches']] },
@@ -124,6 +124,39 @@ export function sectionKeyOfRoute(routeId) {
   return typeof routeId === 'string' && ROUTE_SECTIONS.has(routeId) ? ROUTE_SECTIONS.get(routeId) : null;
 }
 
+// ── Routes with a gate of their own (17 Oct 2026, v5.11.75) ────────────────
+// Peter: "I only want people to be able to access it if we add them from the admin area."
+// The Multi site menu sits under Menu (so a login limited away from Menu never sees it either),
+// and on top it opens ONLY for a login ServOS added by name while the company is switched on:
+// profile.multiSiteMenu.canOpen, read with msm_my_access (src/lib/msm/msmData.js readAccess,
+// which fails closed). Owners and ServOS staff are NOT let in automatically. Anything else
+// (not read yet, not installed, a failed read, switched off) is no.
+export const MSM_ROUTE = 'multi-site-menu';
+const ROUTE_GATES = Object.freeze({
+  [MSM_ROUTE]: (profile) => !!profile && typeof profile === 'object' && profile.multiSiteMenu?.canOpen === true,
+});
+
+/** Does a route's own gate (if it has one) let this login in? Routes with no gate: yes. */
+export function routeGateOk(routeId, profile) {
+  const gate = typeof routeId === 'string' && Object.prototype.hasOwnProperty.call(ROUTE_GATES, routeId) ? ROUTE_GATES[routeId] : null;
+  return gate ? gate(profile) : true;
+}
+
+// The rows with every gated child this login may not open taken out (a group left with no child
+// goes too). The same array comes back when nothing was taken out.
+function withoutGatedChildren(rows, profile) {
+  let changed = false;
+  const out = [];
+  for (const row of rows) {
+    if (!row.children) { out.push(row); continue; }
+    const kids = row.children.filter((c) => routeGateOk(c[0], profile));
+    if (kids.length === row.children.length) { out.push(row); continue; }
+    changed = true;
+    if (kids.length) out.push({ ...row, children: kids });
+  }
+  return changed ? out : rows;
+}
+
 /** A login that opens everything (mock mode has no login at all: it is the demo owner). */
 export const EVERYTHING = Object.freeze({ role: 'owner', sections: null });
 
@@ -134,6 +167,7 @@ export const EVERYTHING = Object.freeze({ role: 'owner', sections: null });
  * This hides screens. It is not a database lock (see the top of this file).
  */
 export function canOpenRoute(routeId, profile) {
+  if (!routeGateOk(routeId, profile)) return false;
   const allowed = allowedKeys(profile);
   if (allowed === null) return true;
   const key = sectionKeyOfRoute(routeId);
@@ -143,8 +177,8 @@ export function canOpenRoute(routeId, profile) {
 /** The sidebar rows this login is shown. Everything = the list as it is. */
 export function filterNav(nav, profile) {
   const allowed = allowedKeys(profile);
-  if (allowed === null) return nav;
-  return nav.filter((row) => { const key = sectionKeyOfRow(row); return !!key && allowed.includes(key); });
+  const rows = allowed === null ? nav : nav.filter((row) => { const key = sectionKeyOfRow(row); return !!key && allowed.includes(key); });
+  return withoutGatedChildren(rows, profile);
 }
 
 /** Where a login lands: the first route of its first section in sidebar order, or null for none. */
