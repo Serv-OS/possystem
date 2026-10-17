@@ -16,8 +16,8 @@
 //     msmData (compare and set, saveHealth on every write) and then reads the draft back from the
 //     database. Nothing shows as staged before the database said so (the vanishing categories
 //     lesson).
-//   * Tabs: Grid and Menu details here; more tabs plug in through EXTRA_TABS (Publish, History,
-//     Sites, Spread: builder 3).
+//   * Tabs: Menu and Menu details here; Publish, Timeline, Sites and Price spread plug in through
+//     EXTRA_TABS (msmTabs.js). Export and Import of the spreadsheet open from the grid's toolbar.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase, isMock } from '../../../lib/supabase';
@@ -27,7 +27,7 @@ import { applyChanges } from '../../../../supabase/functions/_shared/msmDiff.js'
 import { indexCentral, stagedIndex } from '../../../lib/msm/msmGrid';
 import { readAllRows } from '../../../../supabase/functions/_shared/venueMenuCore.js';
 import { isNotInstalled } from '../../../../supabase/functions/_shared/msmAccess.js';
-import { Btn, Pill, Notice } from './msmUi';
+import { Btn, Pill, Notice, Count } from './msmUi';
 import { ui } from './msmStyle';
 import MsmGrid from './MsmGrid';
 import MsmProductSheet from './MsmProductSheet';
@@ -35,6 +35,7 @@ import MsmChangePrices from './MsmChangePrices';
 import MsmImport from './MsmImport';
 import MsmDetails from './MsmDetails';
 import MsmChangesPanel from './MsmChangesPanel';
+import MsmCsv from './MsmCsv';
 import { useSiteCosts } from './useSiteCosts';
 import { EXTRA_TABS } from './msmTabs';
 
@@ -80,6 +81,7 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
   const [importing, setImporting] = useState(false);
   const [reload, setReload] = useState(0);
   const [channel, setChannel] = useState(null);
+  const [csv, setCsv] = useState(null);               // 'export' | 'import' | null
 
   // ── Load: the live menu, then everything under it ──────────────────────
   useEffect(() => {
@@ -214,9 +216,9 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
     );
   }
 
-  const tabs = [{ id: 'grid', label: 'Menu' }, { id: 'details', label: 'Menu details' }, ...EXTRA_TABS];
+  const tabs = [{ id: 'grid', label: 'Menu' }, ...EXTRA_TABS, { id: 'details', label: 'Menu details' }];
   const extra = EXTRA_TABS.find((t) => t.id === tab);
-  const shared = { tabIds: tabs.map((t) => t.id), api, client, menu, live, eff, ix, sites, sets, working, rows, staged, ctx, stage, unstage, canEdit, editable, costs, channel, setChannel, refreshSets, reload: () => setReload((n) => n + 1), setWorkingId, setNote, setTab };
+  const shared = { tabIds: tabs.map((t) => t.id), api, client, menu, live, eff, ix, sites, sets, working, rows, staged, ctx, stage, unstage, canEdit, editable, costs, channel, setChannel, refreshSets, reload: () => setReload((n) => n + 1), setWorkingId, setNote, setTab, openProduct: (id) => setSheet({ productId: id }) };
 
   return (
     <div style={{ ...ui.page, display: 'flex', flexDirection: 'column', height: '100%', boxSizing: 'border-box' }}>
@@ -231,7 +233,7 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
       <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--bdr)', marginBottom: 14 }}>
         {tabs.map((t) => (
           <button key={t.id} type="button" onClick={() => setTab(t.id)} style={{ padding: '9px 14px', fontSize: 14, cursor: 'pointer', background: 'transparent', border: 'none', fontFamily: 'inherit',
-            color: tab === t.id ? 'var(--t1)' : 'var(--t3)', fontWeight: tab === t.id ? 700 : 500, borderBottom: `2.5px solid ${tab === t.id ? 'var(--acc)' : 'transparent'}`, marginBottom: -1 }}>{t.label}</button>
+            color: tab === t.id ? 'var(--t1)' : 'var(--t3)', fontWeight: tab === t.id ? 700 : 500, borderBottom: `2.5px solid ${tab === t.id ? 'var(--acc)' : 'transparent'}`, marginBottom: -1 }}>{t.label}{t.badge && <Count n={t.badge(shared)} tone={t.badgeTone} />}</button>
         ))}
         <div style={{ flex: 1 }} />
         {busy > 0 && <span style={{ ...ui.sub, alignSelf: 'center' }}>Saving…</span>}
@@ -246,7 +248,13 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
         <MsmGrid {...shared}
           onOpenProduct={(id) => setSheet({ productId: id })}
           onAddProduct={(siteOnly) => setSheet({ create: true, siteOnly: siteOnly || null })}
-          onChangePrices={(scope) => setTool(scope || { all: true })} />
+          onChangePrices={(scope) => setTool(scope || { all: true })}
+          extraTools={(
+            <>
+              <Btn small kind="soft" onClick={() => setCsv('export')}>Export</Btn>
+              {canEdit && <Btn small kind="soft" onClick={() => setCsv('import')}>Import prices</Btn>}
+            </>
+          )} />
       )}
       {tab === 'details' && <MsmDetails {...shared} />}
       {extra && extra.render(shared)}
@@ -257,6 +265,7 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
       )}
       {tool && <MsmChangePrices {...shared} initialScope={tool} onClose={() => setTool(null)} />}
       {showChanges && <MsmChangesPanel {...shared} onClose={() => setShowChanges(false)} />}
+      {csv && <MsmCsv key={csv} initial={csv} {...shared} onClose={() => setCsv(null)} />}
     </div>
   );
 }

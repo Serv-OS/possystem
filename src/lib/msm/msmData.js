@@ -76,6 +76,11 @@ export function createMsmData({ client, report = () => {}, invokeTimeoutMs = 600
     central: (menuId) => readCentral(client, menuId),
     changes: (setId) => readChanges(client, setId),
     history: (menuId, opts) => readHistory(client, menuId, opts),
+    /**
+     * What one publish wrote at each site (msm_version_sites.writes: the exact before and after of
+     * every column), for the history's per site detail. { rows: [{ location_id, writes }], error }.
+     */
+    versionDetail: (versionId) => readAllRows(() => client.from('msm_version_sites').select('location_id,writes').eq('version_id', versionId).order('location_id')),
     /** Drafts and scheduled or running sets of a menu, newest first. */
     sets: (menuId) => readAllRows(() => client.from('msm_change_sets').select('*').eq('menu_id', menuId).in('status', ['draft', 'scheduled', 'running']).order('created_at', { ascending: false }).order('id')),
     /** A venue's rows, fresh and paged (for the import, the preview and drift). */
@@ -105,10 +110,12 @@ export function createMsmData({ client, report = () => {}, invokeTimeoutMs = 600
     },
 
     // ── Drafts ────────────────────────────────────────────────────────────
-    async createDraft(menuId, title, kind = 'edit') {
+    async createDraft(menuId, title, kind = 'edit', { undoOf = null } = {}) {
       const t = String(title || '').trim().slice(0, 80);
       if (!t) return bad(new Error('Give the set of changes a name.'));
-      const res = write('multi site menu draft', await client.from('msm_change_sets').insert({ menu_id: menuId, org_id: '00000000-0000-0000-0000-000000000000', title: t, kind }).select('*').maybeSingle());
+      const row = { menu_id: menuId, org_id: '00000000-0000-0000-0000-000000000000', title: t, kind };
+      if (undoOf) row.undo_of_version = undoOf;
+      const res = write('multi site menu draft', await client.from('msm_change_sets').insert(row).select('*').maybeSingle());
       return res.error ? bad(res.error) : ok(res.data);
     },
     async renameDraft(setId, title) {

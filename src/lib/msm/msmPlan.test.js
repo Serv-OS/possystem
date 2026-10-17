@@ -212,8 +212,13 @@ test('ADD A SITE: venue menu, categories parents first, modifier groups remapped
   assert.equal(large.parent_id, latte.id);
   assert.equal(large.pricing.base, 3.7, 'site B\'s own price copied as an override');
   assert.ok(p.writes.links.insert.length >= 2);
-  // the new site has no printers routed: every new category is blocking until sent like another
-  assert.equal(checkSite(p).ok, false);
+  // A brand new site (this publish makes its menu) sells nothing yet, so a category no printer
+  // takes there is a warning: its printers are set up at the site before it opens. (Blocking here
+  // made Add a site impossible: "Send like" points at the new site's own new categories, which no
+  // printer takes either.) At a trading site it still blocks (the next test file pins that).
+  const h = checkSite(p);
+  assert.equal(h.ok, true, h.blocking.map((b) => b.words).join(' | '));
+  assert.ok(h.warnings.some((w) => w.code === 'new_category_unrouted_new_site'));
 });
 
 test('routing rule: nearest ticked category wins, Not here below it is respected', () => {

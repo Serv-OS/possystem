@@ -29,7 +29,7 @@ const DEF_W = 116;
 const SITE_W = 132;
 const HEAD_H = 46;
 
-export default function MsmGrid({ ix, live, sites, staged, ctx, stage, editable, canEdit, costs, channel, setChannel, setNote, onOpenProduct, onAddProduct, onChangePrices }) {
+export default function MsmGrid({ ix, live, sites, staged, ctx, stage, editable, canEdit, costs, channel, setChannel, setNote, onOpenProduct, onAddProduct, onChangePrices, extraTools = null }) {
   const [search, setSearch] = useState('');
   const [categoryId, setCategoryId] = useState('');
   const [show, setShow] = useState('all');
@@ -218,6 +218,7 @@ export default function MsmGrid({ ix, live, sites, staged, ctx, stage, editable,
           <SiteChecklist sites={sites} value={shownSites} groups={groups} onChange={(v) => setShownSites(v.length ? v : shownSites)} />
         </Popover>
         <div style={{ flex: 1 }} />
+        {extraTools}
         {canEdit && (
           <>
             <Btn small kind="soft" disabled={!editable} onClick={() => onAddProduct(null)}>Add product</Btn>

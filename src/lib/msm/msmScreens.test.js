@@ -96,7 +96,7 @@ test('round trip: a new category and product staged through the data layer show 
 test('demo mode: the made up company imports and opens with no database', async () => {
   const demo = demoMsm();
   const sites = demo.sites();
-  assert.equal(sites.length, 4);
+  assert.equal(sites.length, 5, 'four trading sites and one opening soon (for Add a site)');
   const v = await demo.api.venues(sites.map((s) => s.id));
   assert.equal(v.failed.length, 0);
   const lm = await demo.api.liveMenu(demo.orgId);

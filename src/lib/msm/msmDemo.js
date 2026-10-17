@@ -8,6 +8,11 @@
 
 import { fakeClient } from './fakeClient.js';
 import { createMsmData } from './msmData.js';
+import { applyChanges } from '../../../supabase/functions/_shared/msmDiff.js';
+import { planSite, touchedFromChanges } from '../../../supabase/functions/_shared/msmPlan.js';
+import { checkSite, failWords } from '../../../supabase/functions/_shared/msmHealth.js';
+import { dueAt } from '../../../supabase/functions/_shared/msmSchedule.js';
+import { readVenueRaw } from '../../../supabase/functions/_shared/venueMenuCore.js';
 
 export const DEMO_ORG = 'org-demo';
 const SITES = [
@@ -79,6 +84,11 @@ function venueTables() {
       });
     });
   });
+  // A fifth site that has just opened and has no menu yet: the one to show Add a site with.
+  const NEW_SITE = 'demo-site-0005-4000-8000-00000000e005';
+  t.locations.push({ id: NEW_SITE, org_id: DEMO_ORG, name: 'Canal Wharf (opening soon)', timezone: 'Europe/London', default_tax_profile_id: null });
+  t.tax_rates.push({ id: 'dm-vat-4', location_id: NEW_SITE, name: 'Standard rate', rate: 20, active: true });
+  t.print_routing.push({ id: 'dm-pr-4', location_id: NEW_SITE, centres: [{ id: 'k', name: 'Kitchen' }], routing: { k: { assignedCategories: [], excludedItems: [] } } });
   // Each site's own extras.
   const own = [[1, 'dm-station-meal-deal', 'Station meal deal', 'food', 6.5], [1, 'dm-station-porter-coffee', 'Commuter coffee', 'hot', 2.5],
     [2, 'dm-riverside-ice-cream', 'Ice cream tub', 'cold', 3.2], [3, 'dm-oldtown-afternoon-tea', 'Afternoon tea', 'bake', 14.5], [3, 'dm-oldtown-old-special', 'Old special', 'food', 7, true]];
@@ -111,6 +121,164 @@ function importCommit({ p_payload: p }, db) {
   return { data: { ok: true, menu_id: menuId, products: db.msm_products.length, categories: db.msm_categories.length, sites: db.msm_menu_sites.length, words: 'Version 1: imported. 0 changes at 0 sites.' }, error: null };
 }
 
+// ── The demo's publish (what msm_publish_now, msm_schedule_set and the msm-publish function do on
+// the real database, in memory, so Publish, Schedule, the timeline, history, Undo, Retry and Add a
+// site can all be shown with no database). Scheduled sets run when their time comes, checked each
+// time the screen reads the history (the real one runs every minute on the server).
+const demoNow = () => Date.now();
+const err = (message) => ({ data: null, error: { message } });
+
+function centralFromDb(db, menuId) {
+  const cats = (db.msm_categories || []).filter((c) => c.menu_id === menuId);
+  const catIds = new Set(cats.map((c) => c.id));
+  const groups = (db.msm_modifier_groups || []).filter((g) => g.menu_id === menuId);
+  const groupIds = new Set(groups.map((g) => g.id));
+  const products = (db.msm_products || []).filter((p) => p.menu_id === menuId);
+  const pids = new Set(products.map((p) => p.id));
+  return {
+    menu: (db.msm_menus || []).find((m) => m.id === menuId) || null,
+    sites: (db.msm_menu_sites || []).filter((s) => s.menu_id === menuId),
+    categories: cats, catSites: (db.msm_category_sites || []).filter((r) => catIds.has(r.category_id)),
+    groups, groupSites: (db.msm_modifier_group_sites || []).filter((r) => groupIds.has(r.group_id)),
+    products, productSites: (db.msm_product_sites || []).filter((r) => pids.has(r.product_id)),
+  };
+}
+
+function freeze(db, setId, kind, runLocal, lead, idle) {
+  const set = (db.msm_change_sets || []).find((x) => x.id === setId);
+  if (!set) return err('No such set of changes.');
+  if (set.status !== 'draft') return err(`This set is already ${set.status}.`);
+  const changes = (db.msm_changes || []).filter((c) => c.change_set_id === setId);
+  if (!changes.length) return err('There is nothing in this set to publish.');
+  const menuSites = (db.msm_menu_sites || []).filter((s) => s.menu_id === set.menu_id).map((s) => s.location_id);
+  const wide = changes.some((c) => c.target !== 'menu_site' && c.target !== 'product_site');
+  const reach = [...new Set([...(wide ? menuSites : []), ...changes.map((c) => c.location_id).filter(Boolean)])];
+  if (!reach.length) return err('This set does not reach any site.');
+  const tzOf = (loc) => (db.locations || []).find((l) => l.id === loc)?.timezone || 'Europe/London';
+  if (kind === 'scheduled') {
+    if (!runLocal) return err('Pick a date and time.');
+    const past = reach.find((loc) => (dueAt(runLocal, tzOf(loc), 0) ?? 0) <= demoNow());
+    if (past) return err(`That time has already passed at ${(db.locations || []).find((l) => l.id === past)?.name || 'one site'}.`);
+  }
+  const versionId = `dddddddd-3333-4000-8000-${String(demoNow()).slice(-12).padStart(12, '0')}`;
+  const leadM = Math.max(0, Math.min(240, Number(lead ?? 5)));
+  db.msm_versions.push({
+    id: versionId, menu_id: set.menu_id, org_id: DEMO_ORG, version_no: null, title: set.title, status: 'scheduled', apply_when_idle: idle !== false,
+    kind: set.kind === 'undo' && kind === 'publish' ? 'undo' : set.kind === 'add_site' && kind === 'publish' ? 'add_site' : kind,
+    change_set_id: setId, created_by_name: 'You (demo)', created_at: new Date().toISOString(), changes: [],
+  });
+  for (const loc of reach) {
+    const due = kind === 'scheduled' ? dueAt(runLocal, tzOf(loc), leadM) : demoNow();
+    db.msm_version_sites.push({ version_id: versionId, location_id: loc, org_id: DEMO_ORG, status: 'scheduled', due_at: new Date(due).toISOString(), attempts: 0, error: null, counts: null, writes: null });
+  }
+  Object.assign(set, { status: 'scheduled', version_id: versionId, scheduled_at: new Date().toISOString(), run_local: kind === 'scheduled' ? String(runLocal).replace('T', ' ') : null, lead_minutes: leadM, apply_when_idle: idle !== false, updated_at: new Date().toISOString() });
+  return { data: { ok: true, version_id: versionId, sites: db.msm_version_sites.filter((v) => v.version_id === versionId).map((v) => ({ location_id: v.location_id, due_at: v.due_at })) }, error: null };
+}
+
+function stopSet(db, setId, to) {
+  const set = (db.msm_change_sets || []).find((x) => x.id === setId);
+  if (!set) return err('No such set of changes.');
+  if (set.status !== 'scheduled') return err(`Only a scheduled set can be ${to === 'draft' ? 'unscheduled' : 'cancelled'} (this one is ${set.status}).`);
+  const v = db.msm_versions.find((x) => x.id === set.version_id);
+  const rows = db.msm_version_sites.filter((x) => x.version_id === set.version_id);
+  if ((v && v.version_no != null) || rows.some((r) => r.status !== 'scheduled')) return err(`It has already started, so it cannot be ${to === 'draft' ? 'unscheduled' : 'cancelled'}.`);
+  if (to === 'draft') {
+    db.msm_versions = db.msm_versions.filter((x) => x.id !== set.version_id);
+    db.msm_version_sites = db.msm_version_sites.filter((x) => x.version_id !== set.version_id);
+    Object.assign(set, { status: 'draft', version_id: null, scheduled_at: null, run_local: null, updated_at: new Date().toISOString() });
+  } else {
+    for (const r of rows) Object.assign(r, { status: 'cancelled', finished_at: new Date().toISOString() });
+    if (v) Object.assign(v, { status: 'cancelled', finished_at: new Date().toISOString() });
+    set.status = 'cancelled';
+  }
+  return { data: { ok: true, status: to }, error: null };
+}
+
+function refreshVersion(db, v) {
+  const rows = db.msm_version_sites.filter((x) => x.version_id === v.id);
+  const open = rows.filter((r) => r.status === 'scheduled' || r.status === 'running').length;
+  const done = rows.filter((r) => r.status === 'done' || r.status === 'nothing').length;
+  const failed = rows.filter((r) => r.status === 'failed').length;
+  v.status = open ? (v.version_no == null ? 'scheduled' : 'running') : !failed ? 'done' : !done ? 'failed' : 'partly_done';
+  if (!open) v.finished_at = v.finished_at || new Date().toISOString();
+  const set = (db.msm_change_sets || []).find((x) => x.id === v.change_set_id);
+  if (set) set.status = v.status;
+  if (v.status === 'done' || v.status === 'partly_done') {
+    const m = db.msm_menus.find((x) => x.id === v.menu_id);
+    if (m) Object.assign(m, { last_published_at: new Date().toISOString(), last_published_by: v.created_by_name });
+  }
+}
+
+// The audit of one site, in the shape msm_apply_site stores (msm_version_sites.writes).
+function auditOf(plan) {
+  const by = new Map();
+  for (const l of plan.lines) {
+    if (l.table !== 'items' || l.column === '(new)') continue;
+    const a = by.get(l.id) || { table: 'items', id: l.id, before: {}, after: {} };
+    if (l.column.startsWith('pricing.')) {
+      const k = l.column.slice(8);
+      a.before.pricing = { ...(a.before.pricing || {}), [k]: l.before };
+      a.after.pricing = { ...(a.after.pricing || {}), [k]: l.after };
+    } else { a.before[l.column] = l.before; a.after[l.column] = l.after; }
+    by.set(l.id, a);
+  }
+  const inserted = (plan.writes?.items?.insert || []).map((r) => ({ table: 'items', id: r.id, before: null, after: r }));
+  const cats = (plan.writes?.categories?.insert || []).map((r) => ({ table: 'categories', id: r.id, before: null, after: r }));
+  const menus = (plan.writes?.menus?.insert || []).map((r) => ({ table: 'menus', id: r.id, before: null, after: r }));
+  return [...menus, ...cats, ...inserted, ...by.values()];
+}
+
+async function runVersion(client, versionId) {
+  const db = client.db;
+  const v = db.msm_versions.find((x) => x.id === versionId);
+  if (!v) return { data: null, error: { message: 'No such publish.' } };
+  if (v.status === 'cancelled') return { data: { ok: true, status: 'cancelled', sites: [] }, error: null };
+  const changes = (db.msm_changes || []).filter((c) => c.change_set_id === v.change_set_id);
+  if (v.version_no == null) {
+    // msm_start_version: the set goes into the central tables, one version number.
+    const { central: after, before } = applyChanges(centralFromDb(db, v.menu_id), changes);
+    const keep = (t, ids) => db[t].filter((r) => !ids(r));
+    const pids = new Set(after.products.map((p) => p.id));
+    db.msm_categories = [...keep('msm_categories', (r) => r.menu_id === v.menu_id), ...after.categories.map((c) => ({ ...c, menu_id: v.menu_id }))];
+    db.msm_products = [...keep('msm_products', (r) => r.menu_id === v.menu_id), ...after.products.map((p) => ({ ...p, menu_id: v.menu_id }))];
+    db.msm_product_sites = [...keep('msm_product_sites', (r) => pids.has(r.product_id)), ...after.productSites];
+    db.msm_menu_sites = [...keep('msm_menu_sites', (r) => r.menu_id === v.menu_id), ...after.sites.map((s) => ({ ...s, menu_id: v.menu_id }))];
+    const m = db.msm_menus.find((x) => x.id === v.menu_id);
+    Object.assign(m, after.menu, { last_version_no: (m.last_version_no || 0) + 1 });
+    Object.assign(v, { version_no: m.last_version_no, status: 'running', started_at: new Date().toISOString(), changes: before });
+  }
+  const touched = touchedFromChanges(changes);
+  for (const vs of db.msm_version_sites.filter((x) => x.version_id === versionId && x.status === 'scheduled' && Date.parse(x.due_at) <= demoNow())) {
+    const central = centralFromDb(db, v.menu_id);
+    const raw = await readVenueRaw(client, vs.location_id);
+    const name = (db.locations || []).find((l) => l.id === vs.location_id)?.name || 'This site';
+    const plan = planSite({ central, touched, locationId: vs.location_id, orgId: DEMO_ORG, venue: raw });
+    const health = checkSite(plan);
+    vs.attempts = (vs.attempts || 0) + 1;
+    if (!health.ok) { Object.assign(vs, { status: 'failed', error: failWords(name, v.title, health.blocking), finished_at: new Date().toISOString() }); continue; }
+    // msm_apply_site: the venue rows as planned, and the new ids remembered centrally.
+    const A = plan.applied;
+    const loc = vs.location_id;
+    db.menus = [...db.menus.filter((r) => r.location_id !== loc), ...A.menus.map((r) => ({ ...r, location_id: loc }))];
+    db.menu_categories = [...db.menu_categories.filter((r) => r.location_id !== loc), ...A.categories.map((r) => ({ ...r, location_id: loc }))];
+    db.menu_items = [...db.menu_items.filter((r) => r.location_id !== loc), ...A.items.map((r) => ({ ...r, location_id: loc }))];
+    db.modifier_groups = [...db.modifier_groups.filter((r) => r.location_id !== loc), ...A.groups.map((r) => ({ ...r, location_id: loc }))];
+    const menuIds = new Set(A.menus.map((r) => r.id));
+    db.menu_category_links = [...db.menu_category_links.filter((r) => !menuIds.has(r.menu_id)), ...A.links];
+    for (const c of plan.writes.maps.categories) db.msm_category_sites.push({ ...c, location_id: loc });
+    for (const g of plan.writes.maps.groups) db.msm_modifier_group_sites.push({ ...g, location_id: loc });
+    if (plan.writes.maps.menu_site) { const ms = db.msm_menu_sites.find((s) => s.menu_id === v.menu_id && s.location_id === loc); if (ms) Object.assign(ms, plan.writes.maps.menu_site); }
+    Object.assign(vs, { status: plan.lines.length ? 'done' : 'nothing', counts: plan.counts, writes: auditOf(plan), error: null, finished_at: new Date().toISOString(), push_id: plan.lines.length ? `demo-push-${vs.attempts}` : null });
+  }
+  refreshVersion(db, v);
+  return { data: { ok: true, status: v.status, version_no: v.version_no, sites: db.msm_version_sites.filter((x) => x.version_id === versionId) }, error: null };
+}
+
+async function runDue(client) {
+  const due = new Set(client.db.msm_version_sites.filter((x) => x.status === 'scheduled' && Date.parse(x.due_at) <= demoNow()).map((x) => x.version_id));
+  for (const id of due) await runVersion(client, id);
+}
+
 let demo = null;
 /** The demo data layer (one per page load), plus helpers the screens use in demo mode. */
 export function demoMsm() {
@@ -122,9 +290,25 @@ export function demoMsm() {
     rpcs: {
       msm_my_access: () => ({ data: { companies: [{ org_id: DEMO_ORG, org_name: 'Demo company', enabled: true, role: 'editor' }] }, error: null }),
       msm_import_commit: importCommit,
+      msm_publish_now: ({ p_set, p_apply_when_idle }, db) => freeze(db, p_set, 'publish', null, 0, p_apply_when_idle),
+      msm_schedule_set: ({ p_set, p_run_local, p_lead_minutes, p_apply_when_idle }, db) => freeze(db, p_set, 'scheduled', String(p_run_local || '').replace(' ', 'T'), p_lead_minutes, p_apply_when_idle),
+      msm_unschedule_set: ({ p_set }, db) => stopSet(db, p_set, 'draft'),
+      msm_cancel_set: ({ p_set }, db) => stopSet(db, p_set, 'cancelled'),
+      msm_retry_site: ({ p_version, p_location }, db) => {
+        const vs = db.msm_version_sites.find((x) => x.version_id === p_version && x.location_id === p_location);
+        if (!vs) return err('That site is not in this publish.');
+        if (vs.status !== 'failed') return err(`Only a site that failed can be retried (this one is ${vs.status}).`);
+        Object.assign(vs, { status: 'scheduled', due_at: new Date().toISOString(), error: null, finished_at: null });
+        const v = db.msm_versions.find((x) => x.id === p_version);
+        if (v) refreshVersion(db, v);
+        return { data: { ok: true, status: 'scheduled' }, error: null };
+      },
     },
   });
+  client.functions = { invoke: async (_name, { body } = {}) => (body?.action === 'run_version' ? runVersion(client, body.version_id) : { data: null, error: { message: 'Unknown action' } }) };
   const api = createMsmData({ client, report: () => {} });
+  const history = api.history;
+  api.history = async (menuId, opts) => { await runDue(client); return history(menuId, opts); };
   const sites = () => client.db.locations.map((l) => ({ id: l.id, name: l.name, timezone: l.timezone }));
   // Made up plate costs for a few products, so the GP view has something to show.
   const costs = (loc) => {

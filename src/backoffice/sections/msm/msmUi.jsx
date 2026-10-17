@@ -27,6 +27,7 @@ export function Pill({ tone = 'neutral', children, title, style }) {
   const tones = {
     neutral: { background: 'var(--bg3)', color: 'var(--t2)' },
     acc: { background: 'var(--acc-d)', color: 'var(--acc)' },
+    good: { background: 'var(--acc-d)', color: 'var(--acc)' },
     warn: { background: 'color-mix(in srgb, var(--amber, #F5A623) 16%, transparent)', color: 'var(--amber, #F5A623)' },
     bad: { background: 'var(--red-d)', color: 'var(--red)' },
     blue: { background: 'var(--blu-d)', color: 'var(--blu)' },
@@ -184,4 +185,35 @@ export function Field({ label, hint, children, style }) {
       {hint && <div style={{ ...ui.sub, fontSize: 11.5, marginTop: 4 }}>{hint}</div>}
     </div>
   );
+}
+
+/**
+ * A long list where only the rows on screen are drawn (fixed row height), for the publish preview,
+ * the price spread and the spreadsheet import. `renderRow(item, index)` returns one row.
+ */
+export function WindowedList({ items, rowHeight = 34, height = 380, renderRow, empty = null, style }) {
+  const [top, setTop] = useState(0);
+  const list = items || [];
+  if (!list.length) return empty;
+  const h = Math.min(height, list.length * rowHeight);
+  const first = Math.max(0, Math.floor(top / rowHeight) - 6);
+  const last = Math.min(list.length, Math.ceil((top + h) / rowHeight) + 6);
+  return (
+    <div onScroll={(e) => setTop(e.currentTarget.scrollTop)} style={{ height: h, overflowY: 'auto', position: 'relative', ...style }}>
+      <div style={{ height: list.length * rowHeight, position: 'relative' }}>
+        {list.slice(first, last).map((item, i) => (
+          <div key={first + i} style={{ position: 'absolute', top: (first + i) * rowHeight, left: 0, right: 0, height: rowHeight }}>
+            {renderRow(item, first + i)}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** A small number in a circle, for tab badges. */
+export function Count({ n, tone = 'acc' }) {
+  if (!n) return null;
+  const bg = tone === 'bad' ? 'var(--red)' : tone === 'blue' ? 'var(--blu)' : 'var(--acc)';
+  return <span style={{ marginLeft: 6, minWidth: 18, height: 18, padding: '0 5px', borderRadius: 9, background: bg, color: '#0b0c10', fontSize: 11, fontWeight: 800, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', boxSizing: 'border-box' }}>{n}</span>;
 }

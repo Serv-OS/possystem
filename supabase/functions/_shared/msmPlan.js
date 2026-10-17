@@ -484,7 +484,10 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     const likeVid = c?.route_like_id ? venueCatOf(c.route_like_id) : null;
     const centreIds = likeVid ? centresFor(likeVid, routingRow, parentOf()) : [];
     if (!centreIds.length) {
-      problem('new_category_unrouted', 'block', `New category "${nc.label}" at this site is not sent to any printer or kitchen screen. Pick "Send like" a category that is.`, { categoryId: nc.categoryId });
+      // A brand new site (this publish makes its menu) sells nothing yet, so its printers are set
+      // up there before it opens: a warning. A site that already has a menu is trading: blocking.
+      if (W.menus.insert.length) problem('new_category_unrouted_new_site', 'warn', `"${nc.label}" is not sent to any printer or kitchen screen at this new site yet. Set it up in Back Office, Printers, before the site opens.`, { categoryId: nc.categoryId });
+      else problem('new_category_unrouted', 'block', `New category "${nc.label}" at this site is not sent to any printer or kitchen screen. Pick "Send like" a category that is.`, { categoryId: nc.categoryId });
       continue;
     }
     for (const cid of centreIds) {
