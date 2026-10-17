@@ -189,12 +189,14 @@ test('a category a venue emptied by hand is never refilled: a change elsewhere w
   assert.deepEqual(p.writes.items.update, [{ id: `m-tea_${sfx(B)}`, set: {}, pricing: { base: 2.1 } }]);
 });
 
-test('REVIEW BLOCKER 2: a sub item\'s option price and name follow it', () => {
+test('ROUND 2: a sub item\'s price or name change NEVER changes an option (the round 1 follow rule is gone)', () => {
   const { v, central, P } = setup();
   const p = plan(central, [{ target: 'product', entity_id: P('Oat milk').id, op: 'update', after: { default_price: 0.5, name: 'Oat', menu_name: 'Oat' } }], A, v[A]);
-  assert.deepEqual(p.writes.options, [{ item_id: 'm-oat', price: 0.5, name: 'Oat' }]);
+  assert.equal(p.writes.options, undefined, 'there is no follow list any more');
+  assert.equal(p.writes.groups.update.length, 0);
   const g = p.applied.groups.find((x) => x.id === 'mgd-milk');
-  assert.deepEqual(g.options[0], { id: 'opt-oat', name: 'Oat', price: 0.5, itemId: 'm-oat' });
+  assert.deepEqual(g.options[0], { id: 'opt-oat', name: 'Oat milk', price: 0.4, itemId: 'm-oat' }, 'the option keeps its own price and name');
+  assert.deepEqual(p.writes.items.update, [{ id: 'm-oat', set: { name: 'Oat', menu_name: 'Oat' }, pricing: { base: 0.5 } }]);
 });
 
 test('a size whose parent is not at the site is blocking', () => {

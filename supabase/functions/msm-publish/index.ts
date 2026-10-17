@@ -26,6 +26,18 @@
 //      (fingerprint moved) is read again once; if it moves again the site is queued a minute later.
 //   Values always come from central state at run time; the set only says which fields to touch.
 //
+// ROUND 2 (17 Oct 2026, same release)
+//   * Option groups and VAT per order type go through the same path (the planner and
+//     public.msm_apply_site do the work). Before planning, the database must answer
+//     public.msm_sql_contract() >= SQL_CONTRACT: against an older database a site is put back in
+//     the queue with the words "Run 20261017c first", never half applied.
+//   * { action: 'refresh_groups', menu_id }: the one time option group refresh for a group menu
+//     imported before round 2 (a person's call; editor, second step). Every site is read (its
+//     fingerprint first), the pure refresher (msmImport.refreshGroupsPayload) proves zero writes,
+//     and public.msm_import_groups saves it AS THE PERSON, refusing if any site saved meanwhile.
+//   * Translations: the menu-translate-10min job reads every venue's modifier_groups names and
+//     options at new design kiosk venues, so changed option text is translated without a call here.
+
 // ALSO ON EVERY run_due
 //   * the pre check, 60 minutes before a site is due: the same plan and health check, no writes;
 //     a blocking problem marks it "will fail" and emails the scheduler and the editors;
@@ -40,6 +52,8 @@ import { callerAccess } from '../_shared/msmAccess.js';
 import { readVenueRaw } from '../_shared/venueMenuCore.js';
 import { readCentral, readChanges } from '../_shared/msmRead.js';
 import { planSite, touchedFromChanges, countsWords } from '../_shared/msmPlan.js';
+import { refreshGroupsPayload } from '../_shared/msmImport.js';
+import { SQL_CONTRACT } from '../_shared/msmModel.js';
 import { checkSite, failWords } from '../_shared/msmHealth.js';
 import { buildMsmSnapshot, appliedRaw } from '../_shared/msmSnapshot.js';
 import { applyChanges } from '../_shared/msmDiff.js';
@@ -103,10 +117,19 @@ async function sendEmail(to: string, subject: string, html: string) {
 // A warm worker keeps module state between requests, so the cache is emptied at the start of
 // every request (Deno.serve below): a set unscheduled, edited and published again must never be
 // planned from the list of changes an earlier request read.
-const cache = { versions: new Map<string, Row>(), central: new Map<string, any>(), changes: new Map<string, Row[]>(), sites: new Map<string, Row>() };
+const cache = { versions: new Map<string, Row>(), central: new Map<string, any>(), changes: new Map<string, Row[]>(), sites: new Map<string, Row>(), contract: null as number | null };
 function clearCache() {
-  cache.versions.clear(); cache.central.clear(); cache.changes.clear(); cache.sites.clear();
+  cache.versions.clear(); cache.central.clear(); cache.changes.clear(); cache.sites.clear(); cache.contract = null;
 }
+
+// The database's side of the contract (20261017c answers 2). 0 when it cannot be read.
+async function sqlContract(): Promise<number> {
+  if (cache.contract != null) return cache.contract;
+  const { data, error } = await db.rpc('msm_sql_contract');
+  cache.contract = error ? 0 : Number(data) || 0;
+  return cache.contract;
+}
+const CONTRACT_WORDS = 'The database is older than this publish runner. Run 20261017c first; this site will try again in a few minutes.';
 
 async function version(id: string): Promise<Row> {
   if (cache.versions.has(id)) return cache.versions.get(id)!;
@@ -175,7 +198,7 @@ async function planFor(v: Row, loc: string, { precheck = false } = {}) {
   const raw = await readVenueRaw(db, loc);
   if (!raw.ok) throw new Error(`Could not read this site's menu (${raw.failed.join(', ')})`);
   const plan = planSite({ central, touched: touchedFromChanges(changes), locationId: loc, orgId: v.org_id, venue: raw });
-  const health = checkSite(plan);
+  const health = checkSite(plan, { siteName: (await siteRow(loc)).name });
   return { plan, health, raw, fingerprint };
 }
 
@@ -188,6 +211,8 @@ async function runSite(versionId: string, loc: string): Promise<SiteResult> {
     return { location_id: loc, status: data?.status || 'failed', words: text };
   };
   try {
+    // Round 2: never plan against an older database (it would drop option group writes).
+    if ((await sqlContract()) < SQL_CONTRACT) return await fail(CONTRACT_WORDS, 5);
     const started = await db.rpc('msm_start_version', { p_version: versionId });
     if (started.error) return await fail(`It could not start: ${words(started.error)}`);
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -346,6 +371,38 @@ Deno.serve(async (req) => {
       const { data: sites } = await db.from('msm_version_sites').select('location_id,status,error,push_id').eq('version_id', versionId);
       const { data: v2 } = await db.from('msm_versions').select('status,version_no').eq('id', versionId).maybeSingle();
       return json({ ok: true, status: v2?.status || null, version_no: v2?.version_no ?? null, sites: sites || [], ran });
+    }
+
+    if (action === 'refresh_groups') {
+      if (access.by !== 'user') return json({ ok: false, error: 'Only a signed in editor runs this.' }, 403);
+      const refusal = await secondStepRefusal(req);
+      if (refusal) return refusal;
+      const menuId = String(body.menu_id || '');
+      const { data: m } = await db.from('msm_menus').select('id, org_id, status, refreshed_at').eq('id', menuId).maybeSingle();
+      if (!m || m.status !== 'live') return json({ ok: false, error: 'No such group menu.' }, 404);
+      const asUser = createClient(SUPABASE_URL, ANON_KEY, { global: { headers: { Authorization: `Bearer ${token}` } }, auth: { persistSession: false } });
+      const { data: can, error: canErr } = await asUser.rpc('msm_can_edit', { p_org: m.org_id });
+      if (canErr || can !== true) return json({ ok: false, error: 'Only people ServOS added as an editor can do this.' }, 403);
+      if ((await sqlContract()) < SQL_CONTRACT) return json({ ok: false, error: 'Run 20261017c first. Nothing was changed.' }, 409);
+      if (m.refreshed_at) return json({ ok: true, already: true, words: 'The option groups are already brought in. Nothing to do.' });
+      const central = await centralOf(menuId, true);
+      const fingerprints: Record<string, string> = {};
+      const sites: Row[] = [];
+      for (const s of central.sites || []) {
+        // The fingerprint BEFORE the read, as a publish does: the database refuses the save if any
+        // site saved its menu in between.
+        const fp = await db.rpc('msm_venue_fingerprint', { p_location: s.location_id });
+        const raw = await readVenueRaw(db, s.location_id);
+        const site = await siteRow(s.location_id);
+        if (fp.error || !raw.ok) return json({ ok: false, error: `Could not read ${site.name}'s menu. Nothing was changed. Try again.` }, 503);
+        fingerprints[s.location_id] = fp.data;
+        sites.push({ location_id: s.location_id, name: site.name, raw });
+      }
+      const r = refreshGroupsPayload(central, sites);
+      if (!r.ok) return json({ ok: false, error: r.words, check: r.check || null }, 409);
+      const res = await asUser.rpc('msm_import_groups', { p_menu: menuId, p_payload: { ...r.payload, fingerprints } });
+      if (res.error) return json({ ok: false, error: words(res.error) }, 400);
+      return json({ ok: true, ...(res.data || {}), counts: r.counts, words: r.words });
     }
 
     return json({ ok: false, error: 'Unknown action' }, 400);

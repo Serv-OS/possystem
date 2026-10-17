@@ -10,18 +10,21 @@
 // A failed page is a failed read (rows null), never "no rows".
 
 import { readAllRows } from './venueMenuCore.js';
+import { isNotInstalled } from './msmAccess.js';
 
 const strip = (rows, key) => rows.map((r) => { const { [key]: _drop, ...rest } = r; return rest; });
 
 /**
  * The whole central menu: { ok, failed, error, menu, sites, categories, catSites, groups,
- * groupSites, products, productSites, siteGroups }.
+ * groupSites, options, optionSites, products, productSites, siteGroups, round2 }.
+ * Round 2's option rows (20261017c) are read too; before that file has run they come back empty
+ * with round2 false (the group menu still works as round 1), never as a failed read.
  */
 export async function readCentral(client, menuId) {
   const out = { ok: false, failed: [], error: null };
   if (!client || !menuId) { out.failed.push('menu'); out.error = new Error('No group menu'); return out; }
   const from = (t) => client.from(t);
-  const [menu, sites, cats, catSites, groups, groupSites, products, productSites, siteGroups] = await Promise.all([
+  const [menu, sites, cats, catSites, groups, groupSites, products, productSites, siteGroups, options, optionSites] = await Promise.all([
     readAllRows(() => from('msm_menus').select('*').eq('id', menuId).order('id')),
     readAllRows(() => from('msm_menu_sites').select('*').eq('menu_id', menuId).order('location_id')),
     readAllRows(() => from('msm_categories').select('*').eq('menu_id', menuId).order('sort_order').order('id')),
@@ -31,8 +34,14 @@ export async function readCentral(client, menuId) {
     readAllRows(() => from('msm_products').select('*').eq('menu_id', menuId).order('sort_order').order('id')),
     readAllRows(() => from('msm_product_sites').select('*, msm_products!inner(menu_id)').eq('msm_products.menu_id', menuId).order('product_id').order('location_id')),
     readAllRows(() => from('msm_site_groups').select('*').eq('menu_id', menuId).order('name').order('id')),
+    readAllRows(() => from('msm_modifier_options').select('*').eq('menu_id', menuId).order('group_id').order('sort_order').order('id')),
+    readAllRows(() => from('msm_modifier_option_sites').select('*, msm_modifier_options!inner(menu_id)').eq('msm_modifier_options.menu_id', menuId).order('option_id').order('location_id')),
   ]);
-  const legs = { menu, sites, categories: cats, 'category sites': catSites, 'modifier groups': groups, 'modifier group sites': groupSites, products, 'product sites': productSites, 'site groups': siteGroups };
+  // Before 20261017c: no option tables yet. Empty, and said so.
+  const round2 = !(isNotInstalled(options.error) || isNotInstalled(optionSites.error));
+  out.round2 = round2;
+  if (!round2) { options.rows = []; optionSites.rows = []; }
+  const legs = { menu, sites, categories: cats, 'category sites': catSites, 'modifier groups': groups, 'modifier group sites': groupSites, products, 'product sites': productSites, 'site groups': siteGroups, options, 'option sites': optionSites };
   for (const [name, r] of Object.entries(legs)) if (!r.rows) { out.failed.push(name); out.error = out.error || r.error; }
   if (menu.rows && !menu.rows.length) { out.failed.push('menu'); out.error = out.error || new Error('No such group menu'); }
   out.menu = menu.rows ? menu.rows[0] || null : null;
@@ -43,6 +52,8 @@ export async function readCentral(client, menuId) {
   out.groupSites = groupSites.rows ? strip(groupSites.rows, 'msm_modifier_groups') : null;
   out.products = products.rows;
   out.productSites = productSites.rows ? strip(productSites.rows, 'msm_products') : null;
+  out.options = options.rows;
+  out.optionSites = optionSites.rows ? strip(optionSites.rows, 'msm_modifier_options') : null;
   out.siteGroups = siteGroups.rows;
   out.ok = out.failed.length === 0;
   return out;

@@ -83,7 +83,7 @@ function builder(table, claims) {
       return r.error ? r : { data: null, error: null };
     }
     const cols = st.cols === '*' ? 'a.*' : st.cols.split(',').map((c) => `a.${ident(c.trim())}`).join(', ');
-    const joinSql = st.join ? ` join public.${ident(st.join)} j on j.id = a.${{ msm_products: 'product_id', msm_categories: 'category_id', msm_modifier_groups: 'group_id' }[st.join]}` : '';
+    const joinSql = st.join ? ` join public.${ident(st.join)} j on j.id = a.${{ msm_products: 'product_id', msm_categories: 'category_id', msm_modifier_groups: 'group_id', msm_modifier_options: 'option_id' }[st.join]}` : '';
     const joinCol = st.join ? `, json_build_object('menu_id', j.menu_id) as ${st.join}` : '';
     let sql = `select ${cols}${joinCol} from public.${table} a${joinSql}`;
     if (st.where.length) sql += ` where ${st.where.join(' and ')}`;

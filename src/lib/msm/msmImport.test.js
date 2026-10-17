@@ -86,8 +86,12 @@ test('a venue with two VAT rates at the same percent keeps its own rate id (neve
 test('options point at central products; sizes at their central parent', () => {
   const built = buildCentral(proposeImport(importSites(), { idGen: idGen() }), importSites(), {}, { idGen: idGen('g') });
   const g = built.central.groups.find((x) => x.name === 'Milk');
-  assert.equal(g.options[0].productId, byName(built.central, 'Oat milk').id);
-  assert.equal(g.options[0].itemId, undefined);
+  // Round 2: options are rows of their own, pointing at the central sub item; no venue ids in them.
+  const opts = built.central.options.filter((o) => o.group_id === g.id);
+  assert.equal(opts.length, 1);
+  assert.equal(opts[0].product_id, byName(built.central, 'Oat milk').id);
+  assert.equal(opts[0].itemId, undefined);
+  assert.deepEqual(g.options, [], 'the old jsonb list is no longer used');
   assert.equal(byName(built.central, 'Large latte').parent_product_id, byName(built.central, 'Latte').id);
   assert.equal(built.central.groupSites.length, 2);
 });

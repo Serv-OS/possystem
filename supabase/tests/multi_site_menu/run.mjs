@@ -26,6 +26,9 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..', '..', '..');
 const MIG = path.join(ROOT, 'supabase', 'migrations', '20261017_OPS_multi_site_menu.sql');
 const RB = path.join(ROOT, 'supabase', 'migrations', '20261017_OPS_multi_site_menu_ROLLBACK.sql');
+// Round 2 (17 Oct 2026): applied on top, as Peter runs it on Ops.
+const MIG2 = path.join(ROOT, 'supabase', 'migrations', '20261017c_OPS_multi_site_menu_groups.sql');
+const RB2 = path.join(ROOT, 'supabase', 'migrations', '20261017c_OPS_multi_site_menu_groups_ROLLBACK.sql');
 const BASE = path.join(HERE, 'baseline.sql');
 const DB = 'msm_harness';
 const CONN = ['-h', process.env.MSM_PGHOST || '127.0.0.1', '-p', process.env.MSM_PGPORT || '55991', '-U', 'postgres', '-X', '-q', '-v', 'ON_ERROR_STOP=1'];
@@ -85,6 +88,13 @@ expect('check row: anon has no table rights and no function rights', check[3] ==
 expect('check row: 18 member functions, 13 server functions', check[5] === '18' && check[6] === '13', r.out);
 expect('check row: the job runs every minute, the key is there and not in the job', check[7] === '1' && check[8] === 't' && check[9] === '1', r.out);
 expect('check row: 8 guards, 0 companies switched on', check[10] === '8' && check[11] === '0', r.out);
+r = psql(['-d', DB, '-1', '-At', '-f', MIG2]);
+expect('round 2 (20261017c) applies on top as one transaction', r.code === 0, r.err);
+r = psql(['-d', DB, '-1', '-At', '-f', MIG2]);
+expect('round 2 applies a second time (idempotent)', r.code === 0, r.err);
+const check2 = r.out.split('\n').pop().split('|');
+expect('round 2 check row: 2 new tables, row level security, fenced; anon nothing; 9 targets; contract 2; 19 functions; the follow block gone',
+  check2.slice(0, 9).join('|') === '2|2|2|0|9|2|0|19|t', r.out);
 
 one(`
 insert into organisations (id, name) values ('${ORG_A}', 'Company A'), ('${ORG_B}', 'Company B');
@@ -144,7 +154,8 @@ function readRaw(loc) {
     'taxRates', coalesce((select json_agg(t order by t.rate desc, t.id) from tax_rates t where t.location_id::text = '${loc}' and t.active), '[]'),
     'printRouting', (select to_json(p) from print_routing p where p.location_id::text = '${loc}' limit 1),
     'printers', coalesce((select json_agg(p order by p.id) from printers p where p.location_id::text = '${loc}'), '[]'),
-    'taxProfiles', '[]'::json, 'taxProfileLines', '[]'::json,
+    'taxProfiles', coalesce((select json_agg(t order by t.sort_order, t.id) from tax_profiles t where t.location_id::text = '${loc}'), '[]'),
+    'taxProfileLines', coalesce((select json_agg(t order by t.sort_order, t.id) from tax_profile_lines t where t.location_id::text = '${loc}'), '[]'),
     'location', (select json_build_object('id', l.id, 'org_id', l.org_id, 'name', l.name, 'timezone', l.timezone, 'default_tax_profile_id', l.default_tax_profile_id) from locations l where l.id::text = '${loc}'))`);
 }
 let n = 0;
@@ -207,7 +218,9 @@ const central = () => json(`select json_build_object(
   'groups', coalesce((select json_agg(g) from msm_modifier_groups g where g.menu_id = '${menuId}'), '[]'),
   'groupSites', coalesce((select json_agg(x) from msm_modifier_group_sites x join msm_modifier_groups g on g.id = x.group_id where g.menu_id = '${menuId}'), '[]'),
   'products', coalesce((select json_agg(p) from msm_products p where p.menu_id = '${menuId}'), '[]'),
-  'productSites', coalesce((select json_agg(x) from msm_product_sites x join msm_products p on p.id = x.product_id where p.menu_id = '${menuId}'), '[]'))`);
+  'productSites', coalesce((select json_agg(x) from msm_product_sites x join msm_products p on p.id = x.product_id where p.menu_id = '${menuId}'), '[]'),
+  'options', coalesce((select json_agg(o order by o.sort_order, o.id) from msm_modifier_options o where o.menu_id = '${menuId}'), '[]'),
+  'optionSites', coalesce((select json_agg(x) from msm_modifier_option_sites x join msm_modifier_options o on o.id = x.option_id where o.menu_id = '${menuId}'), '[]'))`);
 let C = central();
 const latte = C.products.find((p) => p.name === 'Latte');
 const oat = C.products.find((p) => p.name === 'Oat milk');
@@ -323,7 +336,9 @@ expect('nothing was written by the refused apply', one(`select pricing->>'base' 
 const okRun = runSite(V2, LA1);
 expect('read again, it publishes', okRun.out?.ok && okRun.out.push_id, okRun.res.err);
 expect('the sub item is 0.50', one(`select pricing->>'base' from menu_items where id = 'm-oat'`) === '0.5');
-expect('the option on the Milk group FOLLOWS its sub item: 0.50 (review blocker 2)', one(`select options->0->>'price' from modifier_groups where id = 'mgd-milk'`) === '0.5'
+// Round 2 (design 1.4): the round 1 "option price follows its sub item" rule is GONE. Option
+// prices are set on the option (357 live options differ from their sub item on purpose).
+expect('ROUND 2: the option on the Milk group keeps its OWN price (0.40) when its sub item moves', one(`select options->0->>'price' from modifier_groups where id = 'mgd-milk'`) === '0.40'
   && one(`select options->0->>'id' from modifier_groups where id = 'mgd-milk'`) === 'opt-1');
 
 // ── the write path refuses what it must ─────────────────────────────────────
@@ -348,7 +363,7 @@ one(`insert into menu_items (id, location_id, name, cat, pricing) values ('m-own
 r = probe({ items: { update: [{ id: 'm-own', set: { name: 'hijack' } }] } });
 expect('apply refuses to change a venue\'s OWN product (not managed by this group menu)', r.code !== 0 && /does not manage/.test(r.err), r.err);
 r = probe({ options: [{ item_id: 'm-own', price: 9 }] });
-expect('apply refuses an option change for a product it does not manage', r.code !== 0 && /does not manage/.test(r.err), r.err);
+expect('ROUND 2 contract: the round 1 follow list is a key this database refuses (never half applied)', r.code !== 0 && /does not know \(options\)\. Run 20261017c first/.test(r.err), r.err);
 one(`insert into menu_categories (id, location_id, menu_id, label) values ('cat-own', '${LA1}', 'menu-a1', 'Site A1 own'); insert into menu_category_links (menu_id, category_id) values ('menu-a1', 'cat-own')`);
 r = probe({ links: { delete: [{ menu_id: 'menu-a1', category_id: 'cat-own' }] } });
 expect('apply refuses to unlink a category it does not manage', r.code !== 0 && /does not manage/.test(r.err), r.err);
@@ -476,8 +491,14 @@ expect('switched off: editors cannot stage', r.code !== 0, r.err);
 one(`select msm_admin_set_enabled('${ORG_A}', true)`, as(U.S));
 expect('switched on again: the paused set runs', one(`select count(*) from msm_claim_due(5)`, SERVICE) === '1');
 
-// ── roll back ───────────────────────────────────────────────────────────────
+// ── ROUND 2: option groups, option prices per site, sub items, VAT per order type ──
+await import('./round2.mjs').then((m) => m.run({ q, one, json, lit, psql, expect, central, readRaw, mkSet, stage, runSite, menuId, ORG_A, ORG_B, LA1, LA2, LB1, U, as, ANON, SERVICE, sfx, VAT_A1, VAT_A2, VAT_B1, DB, CONN }));
+
+// ── roll back (round 2 first, as Peter would) ───────────────────────────────
 const menusBefore = one(`select count(*) from menu_items`);
+r = psql(['-d', DB, '-1', '-At', '-f', RB2]);
+expect('the round 2 roll back runs', r.code === 0, r.err);
+expect('the round 2 roll back leaves no round 2 table, function or column, and 5 targets', r.out.split('\n').pop() === '0|0|5|0', r.out);
 r = psql(['-d', DB, '-1', '-At', '-f', RB]);
 expect('the roll back runs', r.code === 0, r.err);
 expect('the roll back leaves no msm_ table, function, job or key', r.out.split('\n').pop() === '0|0|0|0', r.out);

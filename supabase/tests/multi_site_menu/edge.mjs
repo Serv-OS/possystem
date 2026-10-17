@@ -29,7 +29,7 @@ const lit = (v) => `'${JSON.stringify(v).replace(/'/g, "''")}'::jsonb`;
 
 // ── the database ────────────────────────────────────────────────────────────
 psql(['-d', 'postgres'], `drop database if exists ${DB};\ncreate database ${DB};\n`);
-for (const f of ['supabase/tests/multi_site_menu/baseline.sql', 'supabase/migrations/20261017_OPS_multi_site_menu.sql']) {
+for (const f of ['supabase/tests/multi_site_menu/baseline.sql', 'supabase/migrations/20261017_OPS_multi_site_menu.sql', 'supabase/migrations/20261017c_OPS_multi_site_menu_groups.sql']) {
   const p = psql(['-d', DB, '-1', '-f', path.join(ROOT, f)]);
   if (p.status) { console.error(p.stderr); process.exit(2); }
 }
@@ -180,6 +180,55 @@ const V6 = JSON.parse(asUser(E, `select msm_publish_now('${SET5}', true)`)).vers
 const r6 = await call({ action: 'run_version', version_id: V6 }, userAuth(E));
 expect('warm: the product added after unscheduling reaches the site (the same worker read the set afresh)', r6.status === 200
   && one(`select count(*) from menu_items where location_id = '${L1}' and name = 'Mince pie'`) === '1', JSON.stringify(r6.body));
+
+// ── ROUND 2: the contract with the database, the one time refresh, a group publish ──
+{
+  // An older database (the contract below 2): a site is never planned, it goes back in the queue in words.
+  one(`create or replace function public.msm_sql_contract() returns integer language sql immutable set search_path = '' as $f$ select 1 $f$`);
+  const SETC = mkSet('Contract');
+  stage(SETC, { target: 'product_site', entity: LATTE, loc: L2, op: 'update', after: { price: 3.7 } });
+  const VC = JSON.parse(asUser(E, `select msm_publish_now('${SETC}', true)`)).version_id;
+  await call({ action: 'run_version', version_id: VC }, userAuth(E));
+  const sc = json(`select to_json(v) from msm_version_sites v where version_id = '${VC}' and location_id = '${L2}'`);
+  expect('against an older database a site is never planned: back in the queue, "Run 20261017c first"', sc.status === 'scheduled' && /Run 20261017c first/.test(sc.error)
+    && one(`select pricing->>'base' from menu_items where id = 'm-latte_${sfx(L2)}'`) !== '3.7', JSON.stringify(sc));
+  one(`create or replace function public.msm_sql_contract() returns integer language sql immutable set search_path = '' as $f$ select 2 $f$`);
+  one(`update msm_version_sites set due_at = now() - interval '1 second' where version_id = '${VC}'`);
+  await call({ action: 'run_due' }, { 'x-cron-key': CRON });
+  expect('once 20261017c has run, the same site goes through', one(`select pricing->>'base' from menu_items where id = 'm-latte_${sfx(L2)}'`) === '3.7');
+
+  // A group menu made before round 2: its option group is a jsonb list until the refresh.
+  const GX = 'e7000000-0000-4000-8000-000000000001';
+  one(`insert into modifier_groups (id, location_id, name, options) values
+         ('mgd-shot', '${L1}', 'Extra shot', '[{"id": "opt-shot", "name": "Extra shot", "price": 0.5}]'),
+         ('mgd-shot_${sfx(L2)}', '${L2}', 'Extra shot', '[{"id": "opt-shot", "name": "Extra shot", "price": 0.6}]');
+       update menu_items set assigned_modifier_groups = '[{"groupId": "mgd-shot"}]' where id = 'm-latte';
+       update menu_items set assigned_modifier_groups = '[{"groupId": "mgd-shot_${sfx(L2)}"}]' where id = 'm-latte_${sfx(L2)}';
+       insert into msm_modifier_groups (id, menu_id, name, options) values ('${GX}', '${MENU}', 'Extra shot', '[{"id": "opt-shot", "name": "Extra shot", "price": 0.5}]');
+       insert into msm_modifier_group_sites (group_id, location_id, venue_group_id) values ('${GX}', '${L1}', 'mgd-shot'), ('${GX}', '${L2}', 'mgd-shot_${sfx(L2)}');
+       update msm_products set modifier_groups = '[{"groupId": "${GX}"}]' where id = '${LATTE}';
+       update msm_menus set refreshed_at = null where id = '${MENU}'`);
+  const rv = await call({ action: 'refresh_groups', menu_id: MENU }, userAuth(V));
+  expect('a viewer cannot run the refresh', rv.status === 403, JSON.stringify(rv.body));
+  const rr = await call({ action: 'refresh_groups', menu_id: MENU }, userAuth(E));
+  expect('the editor\'s refresh brings the option group in as rows, changing nothing at any site', rr.status === 200 && rr.body.ok === true
+    && one(`select count(*) from msm_modifier_options where menu_id = '${MENU}'`) === '1'
+    && one(`select os.price from msm_modifier_option_sites os join msm_modifier_options o on o.id = os.option_id where o.menu_id = '${MENU}' and os.location_id = '${L2}'`) === '0.60'
+    && one(`select options::text from modifier_groups where id = 'mgd-shot'`).includes('0.5'), JSON.stringify(rr.body));
+  const again = await call({ action: 'refresh_groups', menu_id: MENU }, userAuth(E));
+  expect('a second refresh says there is nothing to do', again.status === 200 && again.body.already === true, JSON.stringify(again.body));
+  // A group publish through the runner: the default option price moves where it is followed.
+  const OPT = json(`select to_json(id) from msm_modifier_options where menu_id = '${MENU}'`);
+  const SETG = mkSet('Shot up');
+  stage(SETG, { target: 'modifier_option', entity: OPT, op: 'update', after: { price: 0.55 } });
+  const VG = JSON.parse(asUser(E, `select msm_publish_now('${SETG}', true)`)).version_id;
+  const rg = await call({ action: 'run_version', version_id: VG }, userAuth(E));
+  expect('a group publish: site one\'s option follows to 0.55, site two keeps its own 0.60', rg.status === 200
+    && one(`select options->0->>'price' from modifier_groups where id = 'mgd-shot'`) === '0.55'
+    && one(`select options->0->>'price' from modifier_groups where id = 'mgd-shot_${sfx(L2)}'`) === '0.6', JSON.stringify(rg.body));
+  const pg = json(`select snapshot from config_pushes where location_id = '${L1}' order by created_at desc limit 1`);
+  expect('and site one\'s tills get the group as the table now holds it', pg.modifierGroupDefs.find((g) => g.id === 'mgd-shot')?.options[0].price === 0.55);
+}
 
 const failed = results.filter((x) => !x).length;
 console.log(`\n${results.length - failed} of ${results.length} checks passed`);

@@ -18,14 +18,28 @@
 //   their existing ids and inserts that venue's config push, in one transaction per venue
 //   (public.msm_apply_site). Every surface keeps reading exactly what it reads today.
 //
-// The lists below are pinned to the migration (supabase/migrations/20261017_OPS_multi_site_menu.sql)
-// by src/lib/msm/msmMigration.test.js: change one and that test says which list differs.
+// The lists below are pinned to the migrations (supabase/migrations/20261017_OPS_multi_site_menu.sql
+// and, from round 2, 20261017c_OPS_multi_site_menu_groups.sql: the NEWEST definition of each
+// function wins) by src/lib/msm/msmMigration.test.js: change one and that test says which differs.
+//
+// ROUND 2 (17 Oct 2026, same release): option groups become central like products (a group, its
+// options as rows, a default option price and a price per site, kept site values), sub items, and
+// VAT per order type on products (tax_by_type, written into menu_items.tax_overrides, four keys
+// only, every other key left as the site has it).
 
 // ── Staging ─────────────────────────────────────────────────────────────────
 
 // What a change can target. 'menu' is the central menu's own details; 'menu_site' adds a site;
 // 'product_site' is one product at one site (price, active, channel prices, kept venue values).
-export const TARGETS = Object.freeze(['menu', 'menu_site', 'category', 'product', 'product_site']);
+// Round 2 adds the option groups: a group, a group at one site (its venue id and what it keeps),
+// an option, and an option at one site (on or off there, its own price, what it keeps).
+export const TARGETS = Object.freeze([
+  'menu', 'menu_site', 'category', 'product', 'product_site',
+  'modifier_group', 'modifier_group_site', 'modifier_option', 'modifier_option_site',
+]);
+
+// The targets that are about ONE site (they need a location; every other target is for every site).
+export const SITE_TARGETS = Object.freeze(['menu_site', 'product_site', 'modifier_group_site', 'modifier_option_site']);
 
 export const OPS = Object.freeze(['create', 'update', 'remove']);
 
@@ -36,6 +50,10 @@ export const TARGET_OPS = Object.freeze({
   category: ['create', 'update', 'remove'],
   product: ['create', 'update', 'remove'],
   product_site: ['create', 'update'],
+  modifier_group: ['create', 'update', 'remove'],
+  modifier_group_site: ['create', 'update'],
+  modifier_option: ['create', 'update', 'remove'],
+  modifier_option_site: ['create', 'update'],
 });
 
 // The fields a change may carry in `after`, per target. Anything else is refused by the
@@ -48,13 +66,51 @@ export const STAGE_FIELDS = Object.freeze({
     'category_id', 'extra_category_ids', 'parent_product_id', 'type', 'name', 'menu_name', 'receipt_name',
     'kitchen_name', 'description', 'default_price', 'default_channels', 'tax_rate_name', 'tax_rate_percent',
     'allergens', 'tags', 'image', 'modifier_groups', 'visibility', 'sold_alone', 'item_code',
-    'site_only_location_id', 'archived', 'sort_order', 'family_base',
+    'site_only_location_id', 'archived', 'sort_order', 'family_base', 'tax_by_type',
   ],
   product_site: ['venue_item_id', 'active', 'price', 'channel_prices', 'kept'],
+  modifier_group: ['name', 'min', 'max', 'selection_type', 'sort_order', 'archived', 'family_base'],
+  modifier_group_site: ['venue_group_id', 'kept'],
+  modifier_option: ['group_id', 'name', 'price', 'product_id', 'sub_group_id', 'sort_order', 'archived'],
+  modifier_option_site: ['venue_option_id', 'active', 'price', 'kept'],
 });
 
 // The channel price keys a venue's pricing jsonb carries (lib/menuPricing.js reads the same).
 export const CHANNELS = Object.freeze(['dineIn', 'takeaway', 'collection', 'delivery', 'driveThru']);
+
+// VAT per order type (design 5.3): the ONLY menu_items.tax_overrides keys publish writes. The till,
+// kiosk and server read collection and drive thru through takeaway, and a bar tab through bar
+// (src/lib/taxRule.js TAX_ORDER_TYPE_ALIASES; 20261009a _vat_order_type_key), so one Takeaway row is
+// right everywhere. Every other key a site holds (counter, drive-thru, collection, an explicit null)
+// is copied as it is, always.
+export const ORDER_TYPE_TAX_KEYS = Object.freeze(['dine-in', 'takeaway', 'delivery', 'bar']);
+
+// The order types a group menu can show (msm_menus.order_types, public.msm_set_order_types): the
+// price keys the tills read, plus the bar tab (a VAT row only).
+export const ORDER_TYPES = Object.freeze([...CHANNELS, 'bar']);
+
+// An option group's choice kinds (modifier_groups.selection_type).
+export const SELECTION_TYPES = Object.freeze(['single', 'multiple', 'quantity']);
+
+// What a site may keep as its own on a group (msm_modifier_group_sites.kept, keyed by venue column)
+// and on an option (msm_modifier_option_sites.kept): its own name, its own sub item link
+// (item_link: false = the site's option has no sub item; a text = the site's own item id), its own
+// "Then ask" group (sub_group: false = none; a text = the site's own group id).
+export const GROUP_KEPT_COLUMNS = Object.freeze(['name', 'min', 'max', 'selection_type']);
+export const OPTION_KEPT_KEYS = Object.freeze(['name', 'item_link', 'sub_group']);
+
+// The keys of one option inside a venue group's options jsonb that publish may write.
+export const OPTION_ENTRY_KEYS = Object.freeze(['id', 'name', 'price', 'itemId', 'subGroupId']);
+export const OPTION_PATCH_KEYS = Object.freeze(['name', 'price', 'itemId', 'subGroupId']);
+
+// The top level keys of msm_apply_site's p_writes, and of p_writes.maps (the database refuses any
+// other key, so a newer planner against an older SQL never half applies: design review).
+export const WRITE_KEYS = Object.freeze(['menus', 'categories', 'items', 'links', 'groups', 'routing', 'maps']);
+export const MAP_KEYS = Object.freeze(['categories', 'groups', 'menu_site', 'options', 'items']);
+
+// public.msm_sql_contract() answers this once 20261017c has run. msm-publish refuses to plan
+// against an older database ("Run 20261017c first").
+export const SQL_CONTRACT = 2;
 
 // ── How a central field lands on a venue row (design 1.3) ───────────────────
 
@@ -80,9 +136,13 @@ export const CATEGORY_COLUMN = Object.freeze({
 // The venue values a site may KEEP as its own (msm_product_sites.kept, keyed by venue column).
 // Import writes every difference it finds here instead of refusing (design review, blocker 3),
 // and publish never writes a kept column at that site unless a change clears it there.
+// Round 2: tax_overrides, as an object of the ORDER TYPE keys the site keeps (a rate id, null for
+// "the venue default" as the site has it, or false for "no key here"), plus, for information only,
+// the site's other keys (counter, drive-thru, collection) which publish never writes anyway.
 export const KEPT_COLUMNS = Object.freeze([
   'cat', 'cats', 'image', 'name', 'menu_name', 'receipt_name', 'kitchen_name', 'description', 'tax_rate_id',
   'allergens', 'tags', 'visibility', 'sold_alone', 'item_code', 'assigned_modifier_groups', 'type', 'parent_id',
+  'tax_overrides',
 ]);
 
 // Venue columns publish may write (public.msm_apply_site refuses anything else).
@@ -92,7 +152,7 @@ export const VENUE_INSERT = Object.freeze({
   items: [
     'id', 'name', 'menu_name', 'receipt_name', 'kitchen_name', 'description', 'type', 'cat', 'cats', 'parent_id',
     'sort_order', 'pricing', 'allergens', 'assigned_modifier_groups', 'visibility', 'sold_alone', 'archived',
-    'tax_rate_id', 'image', 'scope', 'org_id', 'tags', 'item_code',
+    'tax_rate_id', 'image', 'scope', 'org_id', 'tags', 'item_code', 'tax_overrides',
   ],
   groups: ['id', 'name', 'min', 'max', 'min_select', 'max_select', 'selection_type', 'options', 'sort_order'],
 });
@@ -102,15 +162,23 @@ export const VENUE_UPDATE = Object.freeze({
   items: [
     'name', 'menu_name', 'receipt_name', 'kitchen_name', 'description', 'type', 'cat', 'cats', 'parent_id',
     'allergens', 'assigned_modifier_groups', 'visibility', 'sold_alone', 'archived', 'tax_rate_id', 'image', 'tags', 'item_code',
+    'tax_profile_id',
   ],
+  // A group is never written whole: these columns, then its options one by one (OPTION_PATCH_KEYS).
+  groups: ['name', 'min', 'max', 'min_select', 'max_select', 'selection_type'],
 });
+// tax_overrides is never sent whole on an update either: { set: {key: rate id}, remove: [keys] },
+// ORDER_TYPE_TAX_KEYS only, applied by the database to the row it has locked.
+// tax_profile_id is written in exactly two ways (msm_apply_site checks both): null over a profile
+// that is still a generated copy of the item's own rate (it hid the order type VAT), or that same
+// copy put back by a later publish (Undo).
 // pricing is never sent whole on an update: only these keys, merged in SQL (pricing || patch),
 // so a venue's own menu tier prices (pricing.menus) are never touched.
 export const PRICING_KEYS = Object.freeze(['base', ...CHANNELS]);
 
 // Never written by publish, whatever a change says (design 1.3, venue owned).
 export const VENUE_OWNED = Object.freeze([
-  'pricing.menus', 'sort_order (existing products)', 'centre_id', 'tax_overrides', 'tax_profile_id',
+  'pricing.menus', 'sort_order (existing products)', 'centre_id', 'tax_overrides keys other than dine-in, takeaway, delivery, bar',
   'option_group_order', 'lock_pricing', 'locked_fields', 'scope', 'master_id', 'org_id',
 ]);
 
@@ -132,6 +200,8 @@ export const newItemId = (product, locationId) => `${productBase(product)}_${suf
 export const newCategoryId = (categoryId, locationId) => `msmc-${hex12(categoryId)}_${suffixOf(locationId)}`;
 export const newMenuId = (menuId, locationId) => `menu-msm-${hex12(menuId)}_${suffixOf(locationId)}`;
 export const newGroupId = (groupId, locationId) => `msmg-${hex12(groupId)}_${suffixOf(locationId)}`;
+// A new option inside a venue group: the same id at every site (option ids are unique per group).
+export const newOptionId = (optionId) => `opt-msm-${hex12(optionId)}`;
 
 // The same ids with the WHOLE central uuid, for when the short one is already taken at that venue
 // (two central ids can share their first 12 characters; found by the edge harness, 17 Oct 2026).
@@ -139,6 +209,7 @@ const hex32 = (uuid) => String(uuid || '').replace(/-/g, '').toLowerCase();
 export const longCategoryId = (categoryId, locationId) => `msmc-${hex32(categoryId)}_${suffixOf(locationId)}`;
 export const longMenuId = (menuId, locationId) => `menu-msm-${hex32(menuId)}_${suffixOf(locationId)}`;
 export const longGroupId = (groupId, locationId) => `msmg-${hex32(groupId)}_${suffixOf(locationId)}`;
+export const longOptionId = (optionId) => `opt-msm-${hex32(optionId)}`;
 
 /** The short id, or the long one when the short one is taken (taken(id) says). null when both are. */
 export function freeId(short, long, taken) {
@@ -248,12 +319,18 @@ export function checkChange(change) {
   const c = change || {};
   if (!TARGETS.includes(c.target)) return { ok: false, words: `Unknown kind of change: ${c.target || '(none)'}.` };
   if (!(TARGET_OPS[c.target] || []).includes(c.op)) return { ok: false, words: `A ${c.target.replace('_', ' ')} cannot be changed that way (${c.op || 'no action'}).` };
-  if ((c.target === 'menu_site' || c.target === 'product_site') && !c.location_id) return { ok: false, words: 'Pick a site for this change.' };
-  if ((c.target === 'menu' || c.target === 'category' || c.target === 'product') && c.location_id) return { ok: false, words: 'This change is for every site, not one.' };
+  if (SITE_TARGETS.includes(c.target) && !c.location_id) return { ok: false, words: 'Pick a site for this change.' };
+  if (!SITE_TARGETS.includes(c.target) && c.location_id) return { ok: false, words: 'This change is for every site, not one.' };
   const after = c.after && typeof c.after === 'object' ? c.after : {};
   const bad = Object.keys(after).filter((k) => !(STAGE_FIELDS[c.target] || []).includes(k));
   if (bad.length) return { ok: false, words: `These cannot be changed here: ${bad.join(', ')}.` };
   if (c.target === 'product_site' && c.op === 'create' && !after.venue_item_id) return { ok: false, words: 'A new product at a site needs its venue id.' };
+  if (c.target === 'modifier_group_site' && c.op === 'create' && !after.venue_group_id) return { ok: false, words: 'A group at a site needs that site\'s group.' };
+  if ((c.target === 'modifier_group_site' && c.op !== 'create' && has(after, 'venue_group_id'))
+      || (c.target === 'modifier_option_site' && c.op !== 'create' && has(after, 'venue_option_id'))) return { ok: false, words: 'A site\'s own id never changes.' };
+  if (c.target === 'modifier_option' && c.op === 'create' && !after.group_id) return { ok: false, words: 'A new option needs its option group.' };
+  if (c.target === 'modifier_option' && c.op !== 'create' && has(after, 'group_id')) return { ok: false, words: 'An option cannot move to another group. Remove it and add it there.' };
+  if (c.target === 'modifier_group' && has(after, 'selection_type') && !SELECTION_TYPES.includes(after.selection_type)) return { ok: false, words: 'Pick one choice, several choices, or the same choice more than once.' };
   return { ok: true, words: '' };
 }
 

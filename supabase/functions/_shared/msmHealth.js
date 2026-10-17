@@ -16,6 +16,13 @@
 //     a product not on sale there; a product on sale nowhere; a menu tier price that wins over the
 //     price set; changed at the venue since it was staged; new categories are not in any
 //     automatic discount.
+//   ROUND 2, BLOCKING: a required option group with no options on at a site (customers could never
+//     finish); a group whose "choose up to" is below its "must choose"; a "Then ask" loop or a
+//     "Then ask" group missing; no matching VAT rate for an order type; a real tax profile on a
+//     product that gets VAT by order type. An option only sub item never needs a category.
+//   ROUND 2, WARNINGS: an option whose sub item is turned off at a site (with the fix); a group
+//     also used by a site's own products; a site's own Drive thru or Collection VAT that the group
+//     Takeaway VAT will not reach. Every line says the fix.
 
 import { CATEGORY_IMAGE_RE, normName, toPence, money2 } from './msmModel.js';
 
@@ -50,6 +57,8 @@ export function checkSite(plan, opts = {}) {
   const productOf = new Map(listOf(plan.lines).filter((l) => l.productId).map((l) => [l.id, l.productId]));
   const nameOf = (i) => i?.menu_name || i?.name || i?.id;
   const active = (i) => i && i.archived === false;
+  const optionOnly = (i) => !!i && i.type === 'subitem' && i.sold_alone !== true;
+  const siteName = opts.siteName || 'this site';
 
   // Item codes in use at the venue (the unique index counts every row, archived too).
   const codes = new Map();
@@ -64,7 +73,7 @@ export function checkSite(plan, opts = {}) {
     if (!i) continue;
     const productId = productOf.get(id);
     const label = `"${nameOf(i)}"`;
-    if (active(i) && !i.cat) {
+    if (active(i) && !i.cat && !optionOnly(i)) {
       if (catWritten.has(id)) push(blocking, { code: 'no_category', words: `${label} has no category at this site.`, productId });
       else push(warnings, { code: 'no_category_kept', words: `${label} has no category at this site (kept from the venue).`, productId });
     }
@@ -89,16 +98,34 @@ export function checkSite(plan, opts = {}) {
     if (priceWritten.has(id) && plan.venueMenuId) {
       const tier = i.pricing?.menus && i.pricing.menus[plan.venueMenuId];
       if (tier && typeof tier === 'object' && Object.values(tier).some((v) => v != null && v !== '')) {
-        push(warnings, { code: 'tier_price_wins', words: `${label} has a menu price at this site that wins over the price you set.`, productId });
+        push(warnings, { code: 'tier_price_wins', words: `${label}: ${siteName} has a timed menu price that will be charged instead. Change it in ${siteName}'s Menu Manager, or ignore this.`, productId });
       }
     }
     if (active(i)) {
       for (const g of listOf(i.assigned_modifier_groups)) {
         const def = listOf(A.groups).find((x) => x.id === (g && g.groupId));
         if (!def) continue;
-        const off = listOf(def.options).filter((o) => o && o.itemId && !active(byId.get(o.itemId))).map((o) => o.name);
-        if (off.length) push(warnings, { code: 'option_inactive', words: `"${def.name}" offers ${off.slice(0, 3).join(', ')}${off.length > 3 ? ' and more' : ''}, not on sale at this site.`, productId });
+        const offOpts = listOf(def.options).filter((o) => o && o.itemId && !active(byId.get(o.itemId)));
+        const off = offOpts.map((o) => o.name);
+        if (off.length) push(warnings, { code: 'option_inactive', words: `"${def.name}" offers ${off.slice(0, 3).join(', ')}${off.length > 3 ? ' and more' : ''}, whose sub item is turned off at ${siteName}. Turn the option off there too, or turn the sub item back on.`, productId, venueGroupId: def.id, venueOptionIds: offOpts.map((o) => o.id) });
       }
+    }
+  }
+
+  // Option groups this plan wrote: one customers could never finish, rules that cannot be met.
+  const groupIds = new Set([...listOf(plan.writtenGroupIds)]);
+  for (const i of items) if (active(i) && touched.has(i.id)) for (const a of listOf(i.assigned_modifier_groups)) { const id = a && (typeof a === 'string' ? a : a.groupId); if (id) groupIds.add(id); }
+  for (const gid of groupIds) {
+    const def = listOf(A.groups).find((x) => x.id === gid);
+    if (!def) continue;
+    const users = items.filter((i) => active(i) && listOf(i.assigned_modifier_groups).some((a) => (typeof a === 'string' ? a : a?.groupId) === gid));
+    if (!users.length && !listOf(plan.writtenGroupIds).includes(gid)) continue;
+    const min = Number(def.min ?? 0), max = Number(def.max ?? 1);
+    if (min > 0 && !listOf(def.options).length && users.length) {
+      push(blocking, { code: 'required_group_empty', words: `${siteName} customers could never finish ordering ${nameOf(users[0])}${users.length > 1 ? ` (and ${users.length - 1} more)` : ''}: "${def.name}" must be chosen but has no options on at ${siteName}. Turn an option on there, or make it optional.`, venueGroupId: gid });
+    }
+    if (max > 0 && max < min) {
+      push(blocking, { code: 'group_max_below_min', words: `"${def.name}": customers must choose ${min} but can only choose up to ${max}. Make "up to" ${min} or more.`, venueGroupId: gid });
     }
   }
 
@@ -136,6 +163,34 @@ export function checkCentral(central, touched) {
     const p = listOf(central?.products).find((x) => x.id === pid);
     if (!p || p.archived || t.op === 'remove') continue;
     if (!ps.some((r) => r.product_id === pid && r.active !== false)) warnings.push({ code: 'active_nowhere', words: `"${p.name}" is not on sale at any site.`, productId: pid });
+  }
+  // Option groups (round 2): rules that cannot be met, and "Then ask" loops.
+  const groups = listOf(central?.groups);
+  const opts = listOf(central?.options).filter((o) => o && !o.archived);
+  const touchedGroups = new Set([...(touched?.groups?.keys?.() || [])]);
+  for (const oid of touched?.options?.keys?.() || []) { const o = listOf(central?.options).find((x) => x.id === oid); if (o) touchedGroups.add(o.group_id); }
+  for (const gid of touchedGroups) {
+    const g = groups.find((x) => x.id === gid);
+    if (!g || g.archived) continue;
+    const min = Number(g.min ?? 0), max = Number(g.max ?? 1);
+    if (max > 0 && max < min) blocking.push({ code: 'group_max_below_min', words: `"${g.name}": customers must choose ${min} but can only choose up to ${max}. Make "up to" ${min} or more.`, groupId: gid });
+    // A loop through "Then ask": A asks B asks ... asks A.
+    const seen = new Set();
+    const walk = (id, depth) => {
+      if (depth > 20) return false;
+      for (const o of opts.filter((x) => x.group_id === id && x.sub_group_id)) {
+        if (o.sub_group_id === gid) return true;
+        if (seen.has(o.sub_group_id)) continue;
+        seen.add(o.sub_group_id);
+        if (walk(o.sub_group_id, depth + 1)) return true;
+      }
+      return false;
+    };
+    if (walk(gid, 0)) blocking.push({ code: 'then_ask_loop', words: `"${g.name}" comes back to itself through "Then ask", so customers could never finish. Change one of the "Then ask" groups.`, groupId: gid });
+    for (const o of opts.filter((x) => x.group_id === gid && x.sub_group_id)) {
+      const sg = groups.find((x) => x.id === o.sub_group_id);
+      if (!sg || sg.archived) blocking.push({ code: 'then_ask_missing', words: `The option "${o.name}" in "${g.name}" asks a group that is not in the group menu any more. Pick another "Then ask".`, groupId: gid });
+    }
   }
   for (const [cid, t] of touched?.categories || new Map()) {
     const c = listOf(central?.categories).find((x) => x.id === cid);

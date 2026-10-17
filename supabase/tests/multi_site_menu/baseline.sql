@@ -1,7 +1,8 @@
 -- A throwaway copy of the shape 20261017_OPS_multi_site_menu.sql runs against: the Supabase roles
 -- WITH the default privileges production has (new tables and functions granted to anon and
 -- authenticated, the trap the migration must undo by name), the auth helpers, the vault, pg_net and
--- pg_cron stand ins, and the menu tables with the LIVE column lists (read 17 Oct 2026).
+-- pg_cron stand ins, and the menu tables with the LIVE column lists (read 17 Oct 2026; round 2 adds
+-- the live tax profile line columns, closed checks and the order queue).
 do $roles$
 begin
   if to_regrole('anon') is null then create role anon nologin; end if;
@@ -60,13 +61,16 @@ create table public.print_routing (id uuid primary key default gen_random_uuid()
 create table public.printers (id text primary key, location_id uuid, name text, type text default 'escpos', connection text default 'network', ip text, port integer default 9100, paper_width integer default 80, meta jsonb default '{}', created_at timestamptz default now(), updated_at timestamptz default now());
 create table public.tax_rates (id uuid primary key default gen_random_uuid(), location_id uuid, name text, code text, rate numeric default 0, type text default 'inclusive', applies_to text[] default array['all'], is_default boolean default false, active boolean default true, created_at timestamptz default now());
 create table public.tax_profiles (id uuid primary key default gen_random_uuid(), location_id uuid, name text, description text, rounding jsonb, active boolean, sort_order integer, generated_from_rate_id uuid, created_at timestamptz default now(), updated_at timestamptz default now());
-create table public.tax_profile_lines (id uuid primary key default gen_random_uuid(), profile_id uuid not null, location_id uuid not null, name text not null, rate numeric not null default 0, flat_amount numeric not null default 0, compound boolean not null default false, taxable boolean not null default false, order_types text[] not null default array['all'], sort_order integer, active boolean);
+create table public.tax_profile_lines (id uuid primary key default gen_random_uuid(), profile_id uuid not null, location_id uuid not null, name text not null, jurisdiction text, line_type text default 'rate', rate numeric not null default 0, flat_amount numeric not null default 0, mode text default 'exclusive', compound boolean not null default false, taxable boolean not null default false, tax_basis text default 'pre_discount', order_types text[] not null default array['all'], sort_order integer default 0, active boolean default true, created_at timestamptz default now(), tax_service_charge boolean, tax_delivery_fee boolean);
+-- Sales and open orders (round 2: "sold in the last 7 days" and "trading now"), live columns read 17 Oct 2026.
+create table public.closed_checks (id text primary key, location_id text, items jsonb, total numeric, closed_at timestamptz default now(), voided boolean default false, order_type text, source text);
+create table public.order_queue (ref text, location_id text, type text, items jsonb, status text, created_at timestamptz default now(), primary key (location_id, ref));
 
 -- The menu tables as live: anyone may read; writes as today (not under test here).
 do $rls$
 declare t text;
 begin
-  foreach t in array array['menus','menu_categories','menu_category_links','menu_items','modifier_groups','config_pushes','activity_events','print_routing','printers','tax_rates','tax_profiles','tax_profile_lines','locations','organisations','user_profiles','user_locations'] loop
+  foreach t in array array['menus','menu_categories','menu_category_links','menu_items','modifier_groups','config_pushes','activity_events','print_routing','printers','tax_rates','tax_profiles','tax_profile_lines','locations','organisations','user_profiles','user_locations','closed_checks','order_queue'] loop
     execute format('alter table public.%I enable row level security', t);
     execute format('create policy allow_all on public.%I for all to public using (true) with check (true)', t);
   end loop;

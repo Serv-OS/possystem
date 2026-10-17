@@ -110,7 +110,7 @@ export function buildLocalTaxCtx({
  * rate it was generated from? (Backfill 20260825c copies the rate verbatim;
  * the builder lets operators edit generated profiles, which un-mirrors them.)
  */
-function isLegacyMirror(profile, ratesById) {
+export function isLegacyMirror(profile, ratesById) {
   const srcId = profile?.generatedFromRateId ?? profile?.generated_from_rate_id ?? null;
   if (!srcId) return false;
   const r = ratesById[srcId];

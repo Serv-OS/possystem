@@ -424,15 +424,15 @@ export default function BackOfficeApp() {
       .catch((e) => { console.warn('[BackOfficeApp] Multi site menu access not read:', e?.message); });
     return () => { live = false; };
   }, [msmOrgId, msmUserId, msmAccessTry]);
-  // Which of this venue's products the group menu manages (design 1.8): the sharing engine skips
-  // them and Menu Manager says so. Read for everyone who uses the venue (not only the people added),
+  // Which of this venue's products and option groups the group menu manages (design 1.8, round 2
+  // 1.10): the sharing engine skips them and Menu Manager says so. Read for everyone who uses the venue (not only the people added),
   // only once the feature is installed; empty for a company that is not switched on.
   const msmLocationId = orgCtx && !orgCtx.loadFailed ? orgCtx.locationId || null : null;
   useEffect(() => {
     if (isMock || !msmAccess?.installed || !msmLocationId) return undefined;
     let live = true;
     Promise.all([import('../lib/msm/msmApi'), import('../lib/msm/msmManaged')])
-      .then(([{ msmApi }, managed]) => msmApi.managedItems(msmLocationId).then((m) => { if (live) managed.setMsmManaged(msmLocationId, m); }))
+      .then(([{ msmApi }, managed]) => managed.loadMsmManaged(msmApi, msmLocationId, () => live))
       .catch(() => { /* not read: nothing is skipped, as before */ });
     return () => { live = false; };
   }, [msmAccess?.installed, msmLocationId]);

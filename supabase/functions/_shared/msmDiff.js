@@ -16,8 +16,8 @@
 //                                     (a create is undone by turning the product off, never a
 //                                     delete), with "changed since" warnings
 
-import { STAGE_FIELDS, has, sameValue, checkChange } from './msmModel.js';
-import { planSite, touchedFromChanges, countsWords, lineWords } from './msmPlan.js';
+import { STAGE_FIELDS, SITE_TARGETS, has, sameValue, checkChange, money2, newOptionId } from './msmModel.js';
+import { planSite, touchedFromChanges, countsWords, lineWords, groupOptionRows } from './msmPlan.js';
 import { checkSite, checkCentral } from './msmHealth.js';
 import { touchEverything } from './msmImport.js';
 
@@ -35,6 +35,7 @@ const changeKey = (c) => `${c.target}|${c.entity_id}|${c.location_id || ''}`;
 export function applyChanges(central, changes) {
   const C = clone(central || {});
   C.sites = listOf(C.sites); C.categories = listOf(C.categories); C.products = listOf(C.products); C.productSites = listOf(C.productSites);
+  C.groups = listOf(C.groups); C.groupSites = listOf(C.groupSites); C.options = listOf(C.options); C.optionSites = listOf(C.optionSites);
   const before = [];
   for (const ch of listOf(changes)) {
     if (!checkChange(ch).ok) continue;
@@ -48,20 +49,22 @@ export function applyChanges(central, changes) {
         C.sites.push({ location_id: ch.location_id, venue_menu_id: after.venue_menu_id || null });
         before.push({ ...ch, before: null });
       }
-    } else if (ch.target === 'category' || ch.target === 'product') {
-      const list = ch.target === 'category' ? C.categories : C.products;
+    } else if (ENTITY_LIST[ch.target]) {
+      const list = C[ENTITY_LIST[ch.target]];
       const row = list.find((r) => r.id === ch.entity_id);
       if (ch.op === 'create') {
-        if (!row) { list.push({ id: ch.entity_id, archived: false, ...after }); before.push({ ...ch, before: null }); }
+        if (!row) { list.push({ id: ch.entity_id, archived: false, ...(ch.target === 'modifier_group' ? { options: [] } : {}), ...clone(after) }); before.push({ ...ch, before: null }); }
       } else if (row) {
         before.push({ ...ch, before: ch.op === 'remove' ? { archived: !!row.archived } : pick(row) });
         if (ch.op === 'remove') row.archived = true;
         else Object.assign(row, clone(after));
       }
-    } else if (ch.target === 'product_site') {
-      const row = C.productSites.find((r) => r.product_id === ch.entity_id && r.location_id === ch.location_id);
+    } else if (SITE_LIST[ch.target]) {
+      const [listName, key, blank] = SITE_LIST[ch.target];
+      const list = C[listName];
+      const row = list.find((r) => r[key] === ch.entity_id && r.location_id === ch.location_id);
       if (ch.op === 'create' && !row) {
-        C.productSites.push({ product_id: ch.entity_id, location_id: ch.location_id, active: true, price: null, channel_prices: null, kept: {}, ...clone(after) });
+        list.push({ [key]: ch.entity_id, location_id: ch.location_id, ...clone(blank), ...clone(after) });
         before.push({ ...ch, before: null });
       } else if (row) {
         before.push({ ...ch, before: pick(row) });
@@ -72,19 +75,30 @@ export function applyChanges(central, changes) {
   return { central: C, before };
 }
 
+// Where each target lives in central state.
+const ENTITY_LIST = { category: 'categories', product: 'products', modifier_group: 'groups', modifier_option: 'options' };
+const SITE_LIST = {
+  product_site: ['productSites', 'product_id', { active: true, price: null, channel_prices: null, kept: {} }],
+  modifier_group_site: ['groupSites', 'group_id', { venue_group_id: null, kept: {} }],
+  // No option site row means off; a staged create without "active" means on (as the database).
+  modifier_option_site: ['optionSites', 'option_id', { venue_option_id: null, active: true, price: null, kept: {} }],
+};
+
 /** Central state BEFORE a set, from the state after it and applyChanges' `before`. */
 export function unapply(centralAfter, before) {
   const C = clone(centralAfter);
   for (const b of [...listOf(before)].reverse()) {
     if (b.target === 'menu' && b.before) Object.assign(C.menu, b.before);
-    else if (b.target === 'category' || b.target === 'product') {
-      const list = b.target === 'category' ? C.categories : C.products;
+    else if (ENTITY_LIST[b.target]) {
+      const list = listOf(C[ENTITY_LIST[b.target]]);
       if (!b.before) { const i = list.findIndex((r) => r.id === b.entity_id); if (i >= 0) list.splice(i, 1); }
       else { const row = list.find((r) => r.id === b.entity_id); if (row) Object.assign(row, b.before); }
-    } else if (b.target === 'product_site') {
-      const i = C.productSites.findIndex((r) => r.product_id === b.entity_id && r.location_id === b.location_id);
-      if (!b.before) { if (i >= 0) C.productSites.splice(i, 1); }
-      else if (i >= 0) Object.assign(C.productSites[i], b.before);
+    } else if (SITE_LIST[b.target]) {
+      const [listName, key] = SITE_LIST[b.target];
+      const list = listOf(C[listName]);
+      const i = list.findIndex((r) => r[key] === b.entity_id && r.location_id === b.location_id);
+      if (!b.before) { if (i >= 0) list.splice(i, 1); }
+      else if (i >= 0) Object.assign(list[i], b.before);
     } else if (b.target === 'menu_site' && !b.before) {
       C.sites = C.sites.filter((s) => s.location_id !== b.location_id);
     }
@@ -159,7 +173,7 @@ export function sitesReached(central, changes) {
   const named = new Set();
   let everywhere = false;
   for (const c of listOf(changes)) {
-    if (c.target === 'menu_site' || c.target === 'product_site') named.add(c.location_id);
+    if (SITE_TARGETS.includes(c.target)) named.add(c.location_id);
     else everywhere = true;
   }
   return everywhere ? all : all.filter((l) => named.has(l));
@@ -170,6 +184,9 @@ function namesOf(central) {
   for (const p of listOf(central?.products)) n[p.id] = p.menu_name || p.name;
   for (const c of listOf(central?.categories)) n[c.id] = c.label;
   for (const ps of listOf(central?.productSites)) n[ps.venue_item_id] = n[ps.product_id];
+  for (const g of listOf(central?.groups)) n[g.id] = g.name;
+  for (const gs of listOf(central?.groupSites)) n[gs.venue_group_id] = n[gs.group_id];
+  for (const o of listOf(central?.options)) n[o.id] = o.name;
   return n;
 }
 
@@ -208,6 +225,35 @@ export function siteDrift(central, locationId, raw, names = {}) {
     productId: l.productId, venueItemId: l.id, column: l.column, venue: l.before, group: l.after,
     words: `${n[l.productId] || l.id}: ${l.column.replace('pricing.', '').replace(/_/g, ' ')} is ${fmt(l.before)} at the venue, the group says ${fmt(l.after)}`,
   }));
+  // Option groups (round 2): a group rule or an option changed at the site.
+  for (const l of plan.lines.filter((x) => x.table === 'groups' && x.column !== '(new)')) {
+    const g = n[l.groupId] || 'An option group';
+    let words;
+    if (l.column === 'option') words = `${g}: ${l.before?.name || 'an option'} is ${money2(l.before?.price)} at the venue, the group says ${money2(l.after?.price)}${l.before?.name !== l.after?.name ? ` (named ${l.after?.name})` : ''}`;
+    else if (l.column === '(option added)') words = `${g}: ${l.after?.name || 'an option'} is not on at the venue, the group has it on`;
+    else if (l.column === '(option off)') words = `${g}: ${l.before?.name || 'an option'} is on at the venue, the group has it off`;
+    else if (l.column === '(option order)') continue;
+    else words = `${g}: ${l.column.replace(/_/g, ' ')} is ${fmt(l.before)} at the venue, the group says ${fmt(l.after)}`;
+    out.push({ kind: 'group', groupId: l.groupId, optionId: l.optionId || null, venueGroupId: l.id, column: l.column, venue: l.before, group: l.after, words });
+  }
+  // Options the group menu does not know, inside its own groups at this site.
+  const groupsHere = new Map(listOf(raw?.groups).map((g) => [g.id, g]));
+  for (const gs of listOf(central?.groupSites).filter((r) => r.location_id === locationId)) {
+    const vg = groupsHere.get(gs.venue_group_id);
+    const g = listOf(central?.groups).find((x) => x.id === gs.group_id);
+    if (!vg || !g || g.archived) continue;
+    const { rows, legacy } = groupOptionRows(g, central?.options);
+    if (legacy) continue;
+    const knownIds = new Set(listOf(central?.optionSites).filter((os) => os.location_id === locationId && rows.some((o) => o.id === os.option_id) && os.venue_option_id).map((os) => os.venue_option_id));
+    for (const o of rows) knownIds.add(newOptionId(o.id));
+    for (const e of listOf(vg.options)) {
+      if (!e || knownIds.has(e.id)) continue;
+      out.push({
+        kind: 'unknown_option', groupId: g.id, venueGroupId: vg.id, entry: e, column: '(unknown option)', venue: e, group: null,
+        words: `${g.name} at this site has an option the group menu does not know: ${e.name || 'an option'} ${money2(e.price ?? 0)}`,
+      });
+    }
+  }
   // A KEPT value is compared with what the site keeps, never with the group (review blocker 3).
   const items = new Map(listOf(raw?.items).map((i) => [i.id, i]));
   for (const ps of listOf(central?.productSites).filter((r) => r.location_id === locationId)) {
@@ -230,7 +276,31 @@ export function siteDrift(central, locationId, raw, names = {}) {
  */
 export function keepVenueChanges(central, locationId, driftLines) {
   const byProduct = new Map();
+  const groupOut = new Map();             // key -> change
+  const bump = (key, base) => { if (!groupOut.has(key)) groupOut.set(key, base); return groupOut.get(key); };
   for (const d of listOf(driftLines)) {
+    if (d.kind === 'unknown_option') continue;      // "Bring it into the group" or "Leave it" (bringOptionIn)
+    if (d.kind === 'group') {
+      if (d.optionId) {
+        const os = listOf(central.optionSites).find((r) => r.option_id === d.optionId && r.location_id === locationId);
+        if (!os) continue;
+        const c = bump(`o|${d.optionId}`, { target: 'modifier_option_site', entity_id: d.optionId, location_id: locationId, op: 'update', after: {}, before: {} });
+        if (d.column === '(option added)') { c.after.active = false; c.before.active = os.active; }
+        else if (d.column === '(option off)') { c.after.active = true; c.before.active = os.active; }
+        else if (d.column === 'option') {
+          const o = listOf(central.options).find((x) => x.id === d.optionId);
+          if (d.venue?.price !== d.group?.price) { c.after.price = samePriceNum(d.venue?.price, o?.price) ? null : Number(d.venue?.price ?? 0); c.before.price = os.price ?? null; }
+          if (d.venue?.name !== d.group?.name) { c.after.kept = { ...(c.after.kept || os.kept || {}), name: d.venue?.name ?? null }; c.before.kept = os.kept || {}; }
+        }
+      } else if (['name', 'min', 'max', 'selection_type'].includes(d.column)) {
+        const gs = listOf(central.groupSites).find((r) => r.group_id === d.groupId && r.location_id === locationId);
+        if (!gs) continue;
+        const c = bump(`g|${d.groupId}`, { target: 'modifier_group_site', entity_id: d.groupId, location_id: locationId, op: 'update', after: {}, before: {} });
+        c.after.kept = { ...(c.after.kept || gs.kept || {}), [d.column]: d.venue ?? null };
+        c.before.kept = gs.kept || {};
+      }
+      continue;
+    }
     const ps = listOf(central.productSites).find((r) => r.product_id === d.productId && r.location_id === locationId);
     if (!ps) continue;
     const cur = byProduct.get(d.productId) || { after: {}, before: {}, ps };
@@ -246,7 +316,39 @@ export function keepVenueChanges(central, locationId, driftLines) {
     }
     byProduct.set(d.productId, cur);
   }
-  return [...byProduct.entries()].map(([pid, c]) => ({ target: 'product_site', entity_id: pid, location_id: locationId, op: 'update', after: c.after, before: c.before }));
+  return [
+    ...[...byProduct.entries()].map(([pid, c]) => ({ target: 'product_site', entity_id: pid, location_id: locationId, op: 'update', after: c.after, before: c.before })),
+    ...[...groupOut.values()].filter((c) => Object.keys(c.after).length),
+  ];
+}
+const samePriceNum = (a, b) => Math.round(Number(a ?? 0) * 100) === Math.round(Number(b ?? 0) * 100);
+
+/**
+ * "Bring it into the group" for an option a site added to a group the group menu manages: a new
+ * option (the site's name and price as the default), on at that site with the SAME venue id (so
+ * nothing changes there), off at every other site where the group is (an explicit row each).
+ *   central   central state (live or the draft applied)
+ *   drift     a siteDrift line of kind 'unknown_option'
+ *   optionId  the new option's id (a uuid the screen makes)
+ */
+export function bringOptionIn(central, locationId, drift, optionId) {
+  const g = listOf(central?.groups).find((x) => x.id === drift?.groupId);
+  if (!g || !drift?.entry) return [];
+  const e = drift.entry;
+  const rows = groupOptionRows(g, central?.options).rows;
+  const productId = e.itemId ? listOf(central?.productSites).find((ps) => ps.location_id === locationId && ps.venue_item_id === e.itemId)?.product_id || null : null;
+  const changes = [{
+    target: 'modifier_option', entity_id: optionId, location_id: null, op: 'create',
+    after: { group_id: g.id, name: e.name ?? 'Option', price: Number(e.price ?? 0), product_id: productId, sub_group_id: null, sort_order: rows.length },
+  }];
+  for (const gs of listOf(central?.groupSites).filter((r) => r.group_id === g.id)) {
+    const here = gs.location_id === locationId;
+    changes.push({
+      target: 'modifier_option_site', entity_id: optionId, location_id: gs.location_id, op: 'create',
+      after: here ? { venue_option_id: e.id, active: true, price: null, kept: e.itemId && !productId ? { item_link: e.itemId } : {} } : { active: false, price: null },
+    });
+  }
+  return changes;
 }
 
 // ── Undo ────────────────────────────────────────────────────────────────────
@@ -264,16 +366,21 @@ export function undoChanges(version, central, names = {}) {
   const n = { ...namesOf(central), ...names };
   for (const c of listOf(version?.changes)) {
     if (c.target === 'menu_site') { skipped.push(`Adding a site cannot be undone here (${n[c.location_id] || c.location_id}).`); continue; }
+    if (c.target === 'modifier_group_site' && c.op === 'create') { skipped.push(`Linking an option group to a site cannot be undone here (${n[c.location_id] || 'one site'}).`); continue; }
     if (c.op === 'create') {
       if (c.target === 'product_site') out.push({ target: 'product_site', entity_id: c.entity_id, location_id: c.location_id, op: 'update', after: { active: false } });
       else if (c.target === 'category') out.push({ target: 'category', entity_id: c.entity_id, location_id: null, op: 'update', after: { archived: true } });
       else if (c.target === 'product') out.push({ target: 'product', entity_id: c.entity_id, location_id: null, op: 'update', after: { archived: true } });
+      // An option added is turned off at every site (its venue id stays for ever); a new group is removed.
+      else if (c.target === 'modifier_option') out.push({ target: 'modifier_option', entity_id: c.entity_id, location_id: null, op: 'update', after: { archived: true } });
+      else if (c.target === 'modifier_option_site') out.push({ target: 'modifier_option_site', entity_id: c.entity_id, location_id: c.location_id, op: 'update', after: { active: false } });
+      else if (c.target === 'modifier_group') out.push({ target: 'modifier_group', entity_id: c.entity_id, location_id: null, op: 'update', after: { archived: true } });
       continue;
     }
     const prev = c.before || {};
     const allowed = STAGE_FIELDS[c.target] || [];
     const after = {};
-    for (const k of Object.keys(prev)) if (allowed.includes(k) && k !== 'venue_item_id') after[k] = prev[k];
+    for (const k of Object.keys(prev)) if (allowed.includes(k) && !['venue_item_id', 'venue_group_id', 'venue_option_id', 'group_id'].includes(k)) after[k] = prev[k];
     if (c.op === 'remove') after.archived = prev.archived ?? false;
     if (!Object.keys(after).length) continue;
     // Changed since that version?
@@ -293,9 +400,11 @@ export function undoChanges(version, central, names = {}) {
 
 function currentRow(central, c) {
   if (c.target === 'menu') return central?.menu || null;
-  if (c.target === 'category') return listOf(central?.categories).find((r) => r.id === c.entity_id) || null;
-  if (c.target === 'product') return listOf(central?.products).find((r) => r.id === c.entity_id) || null;
-  if (c.target === 'product_site') return listOf(central?.productSites).find((r) => r.product_id === c.entity_id && r.location_id === c.location_id) || null;
+  if (ENTITY_LIST[c.target]) return listOf(central?.[ENTITY_LIST[c.target]]).find((r) => r.id === c.entity_id) || null;
+  if (SITE_LIST[c.target]) {
+    const [listName, key] = SITE_LIST[c.target];
+    return listOf(central?.[listName]).find((r) => r[key] === c.entity_id && r.location_id === c.location_id) || null;
+  }
   return null;
 }
 

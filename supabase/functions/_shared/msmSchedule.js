@@ -137,7 +137,10 @@ export const isPast = (local, tz, now = Date.now()) => {
 export function overlaps(sets, names = {}, tz = 'Europe/London') {
   const list = [...(sets || [])].filter((s) => s && s.due_at != null).sort((a, b) => a.due_at - b.due_at || String(a.id).localeCompare(String(b.id)));
   const out = [];
-  const keyOf = (c) => `${c.target === 'product_site' ? 'product' : c.target}|${c.entity_id}|${c.location_id || '*'}`;
+  // A site row counts as its entity's kind (a product at Leeds, an option at Leeds), so two sets
+  // that change the same option at the same site are named like products are.
+  const kind = (t) => ({ product_site: 'product', modifier_option_site: 'modifier_option', modifier_group_site: 'modifier_group' }[t] || t);
+  const keyOf = (c) => `${kind(c.target)}|${c.entity_id}|${c.location_id || '*'}`;
   for (let i = 0; i < list.length; i++) {
     for (let j = i + 1; j < list.length; j++) {
       const a = list[i], b = list[j];
@@ -152,7 +155,7 @@ export function overlaps(sets, names = {}, tz = 'Europe/London') {
       }
       if (!hits.length) continue;
       const first = hits[0];
-      const what = names[first.entity_id] || 'a product';
+      const what = names[first.entity_id] || (String(first.target).startsWith('modifier_') ? 'an option' : 'a product');
       const where = first.location_id ? ` at ${names[first.location_id] || 'one site'}` : '';
       const more = hits.length > 1 ? ` and ${hits.length - 1} more` : '';
       out.push({

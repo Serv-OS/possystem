@@ -1,6 +1,7 @@
 # Offline test for the Multi site menu migration
 
-`run.mjs` applies `supabase/migrations/20261017_OPS_multi_site_menu.sql` to a **local, throwaway
+`run.mjs` applies `supabase/migrations/20261017_OPS_multi_site_menu.sql`, then round 2's
+`20261017c_OPS_multi_site_menu_groups.sql` on top (as Peter runs them), to a **local, throwaway
 Postgres 17** that copies the shape of the live Ops database, then checks every rule as the roles
 PostgREST really uses, and drives the publish path **end to end with the real planner, health
 check and push builder** (`supabase/functions/_shared/msm*.js`), exactly as `msm-publish` runs
@@ -75,3 +76,23 @@ falls back to the whole id).
 - The write path refuses a venue's own product, option or category link (not managed by this menu),
   and a price change publishes even when the product already had a broken link.
 - The roll back leaves no msm_ object and every venue row.
+
+## Round 2 (option groups, sub items, VAT by order type), 17 Oct 2026
+
+`round2.mjs` runs inside `run.mjs` (216 of 216 with round 1's checks), and `edge.mjs` now applies
+20261017c too (34 of 34). They prove: the guard for the four new targets and VAT by order type; an
+option price at one site writes ONLY that option by its venue id while an option the site added stays
+put; the planner's picture of every written group equals the database row (patch, add, off, back
+on, reorder) and the till push entry equals the row as Push to POS maps it; a new option gets
+`opt-msm-<12 hex>` recorded centrally (two options sharing their first 12 characters never share an
+id: the harness found that, the second gets the whole id); the same version twice gives one option; a
+sub item missing at a site is added as option only and recorded; VAT keys one by one with a site's
+counter key and explicit null untouched and only that site's rates; the tax profile copy cleared and
+put back by Undo, a real profile refused; a save holding a row makes publish wait BEFORE the
+fingerprint; keys the database does not know are refused ("Run 20261017c first"); the managed lists,
+sold recently and trading now; `msm__is_legacy_mirror` against the shared fixture list
+(`src/lib/msm/msmMirrorFixtures.js`, the same list the planner and the till's engine are pinned to);
+the one time refresh (`msm_import_groups`) saved only when every site is as read, once, never while a
+draft holds option group changes, and then publishing would change nothing; the edge function's
+refresh action, the contract fallback, and a group publish through the runner. The round 2 roll back
+runs first, then round 1's.

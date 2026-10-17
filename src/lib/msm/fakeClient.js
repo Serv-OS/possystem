@@ -7,7 +7,7 @@
 // An embedded inner join filter (select('*, msm_products!inner(menu_id)').eq('msm_products.menu_id', x))
 // joins on <singular>_id (product_id, category_id, group_id).
 
-const JOIN_KEY = { msm_products: 'product_id', msm_categories: 'category_id', msm_modifier_groups: 'group_id' };
+const JOIN_KEY = { msm_products: 'product_id', msm_categories: 'category_id', msm_modifier_groups: 'group_id', msm_modifier_options: 'option_id' };
 
 // stamp (opt in, for the demo mode screens): an insert gets an id and created_at / updated_at when it
 // has none, and an update moves updated_at on and answers with the rows as they are after it (the

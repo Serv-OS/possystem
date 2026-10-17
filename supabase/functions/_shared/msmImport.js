@@ -23,9 +23,25 @@
 //   The planner is run for every site with EVERY managed field of every product touched. It must
 //   plan ZERO writes. Anything left is listed in words and the import cannot be created.
 //   This is the real proof that "publishing now would change 0 things at 0 sites".
+//
+// ROUND 2: OPTION GROUPS AND VAT BY ORDER TYPE (design 1.9 and 5.3, and the design review)
+//   * One central group per family (id less its venue suffix), then per normalised name. The
+//     groups an option asks next ("Then ask") come in too, as groups of their own.
+//   * Options are the UNION across sites, each one a row: matched by its sub item's central
+//     product AND its normalised name, then by the product alone, then by the name alone.
+//   * An option's default price is the most common across sites; a site with another price keeps
+//     its own; a site where the group is but the option is not has it OFF (an explicit row).
+//   * A site's own name, its own sub item link (or none) and its own "Then ask" are KEPT
+//     (msm_modifier_option_sites.kept), so the first price change never rewrites them.
+//   * Group rules (name, min, max, choice kind): the most common becomes the group's; a site that
+//     differs keeps its own (msm_modifier_group_sites.kept).
+//   * VAT by order type: the most common rate per key becomes the group's; a site that differs
+//     keeps its own key (a rate, an explicit null, or "no key"); its other keys are kept as they are.
+//   * The self check still says zero writes at every site, groups and VAT included.
 
-import { familyOf, normName, toPence, fromPence, CHANNELS, KEPT_COLUMNS, STAGE_FIELDS, sameValue } from './msmModel.js';
+import { familyOf, normName, toPence, fromPence, CHANNELS, KEPT_COLUMNS, STAGE_FIELDS, sameValue, samePrice, has } from './msmModel.js';
 import { planSite, touchedFromChanges } from './msmPlan.js';
+import { importTaxByType } from './msmTax.js';
 
 const listOf = (v) => (Array.isArray(v) ? v : []);
 const keyOf = (loc, id) => `${loc}|${id}`;
@@ -74,6 +90,180 @@ function itemsInMenu(raw, inMenu) {
 }
 
 const rateOf = (raw, id) => listOf(raw.taxRates).find((r) => r.id === id) || null;
+
+// ── Option groups (round 2) ─────────────────────────────────────────────────
+
+// The most common value of `vals` (by key), a tie taken by `prefer`.
+function mostCommon(vals, keyOf2 = (v) => JSON.stringify(v ?? null), prefer = undefined) {
+  const counts = new Map();
+  for (const v of vals) { const k = keyOf2(v); const c = counts.get(k) || { v, n: 0 }; c.n++; counts.set(k, c); }
+  const pk = prefer === undefined ? null : keyOf2(prefer);
+  let best = null;
+  for (const [k, c] of counts) if (!best || c.n > best.n || (c.n === best.n && k === pk)) best = { ...c, k };
+  return best ? best.v : undefined;
+}
+
+/**
+ * The option groups of the chosen venue menus as central groups with option ROWS.
+ *   sites            [{ location_id, raw }]
+ *   siteOrder        the same, the site holding most masters first (its option order wins)
+ *   keepBySite       Map(loc -> Set(venue item ids in the menu))
+ *   itemKeyToCentral Map(`loc|venueItemId` -> central product id)
+ *   existing         { groupKey: Map(`loc|venueGroupId` -> central group id), groups: [central
+ *                    groups] }   for the one time refresh: groups already in the group menu keep
+ *                    their ids and their rules
+ * Returns { groups, groupSites, groupKeyToCentral, options, entries } where entries are the
+ * per site facts finalizeOptionSites turns into option site rows once the products are settled.
+ */
+export function importGroups({ sites, siteOrder, keepBySite, itemKeyToCentral, idGen, masterSite = null, existing = null }) {
+  const S = listOf(siteOrder || sites);
+  const groups = [];
+  const groupSites = [];
+  const groupKeyToCentral = new Map();
+  const groupFamily = new Map();
+  const groupName = new Map();
+  const members = new Map();             // central id -> [{ loc, row }]
+  const known = new Map(listOf(existing?.groups).map((g) => [g.id, g]));
+  // The groups each site uses: on the menu's products, then every group an option asks next.
+  const usedBySite = new Map();
+  for (const st of S) {
+    const raw = st.raw;
+    const keep = keepBySite.get(st.location_id) || new Set();
+    const byId = new Map(listOf(raw.groups).filter(Boolean).map((g) => [g.id, g]));
+    const used = new Set();
+    for (const i of listOf(raw.items)) if (i && keep.has(i.id)) for (const a of listOf(i.assigned_modifier_groups)) { const id = typeof a === 'string' ? a : a?.groupId; if (id && byId.has(id)) used.add(id); }
+    if (existing) for (const [k] of existing.groupKey) { const [l, vid] = [k.slice(0, k.indexOf('|')), k.slice(k.indexOf('|') + 1)]; if (l === st.location_id && byId.has(vid)) used.add(vid); }
+    for (let grew = true, n = 0; grew && n < 10; n++) {
+      grew = false;
+      for (const id of [...used]) for (const o of listOf(byId.get(id)?.options)) if (o && o.subGroupId && byId.has(o.subGroupId) && !used.has(o.subGroupId)) { used.add(o.subGroupId); grew = true; }
+    }
+    usedBySite.set(st.location_id, { used, byId });
+  }
+  for (const st of S) {
+    const { used, byId } = usedBySite.get(st.location_id);
+    const ordered = [...used].map((id) => byId.get(id)).sort((a, b) => (Number(a.sort_order ?? 0) - Number(b.sort_order ?? 0)) || String(a.id).localeCompare(String(b.id)));
+    for (const gr of ordered) {
+      const fam = familyOf(gr);
+      const nk = normName(gr.name);
+      let gid = existing?.groupKey.get(keyOf(st.location_id, gr.id)) || null;
+      if (!gid) {
+        gid = groupFamily.get(fam) || groupName.get(nk) || null;
+        if (gid && (groupSites.some((r) => r.group_id === gid && r.location_id === st.location_id)
+          || listOf(existing?.groupKey ? [...existing.groupKey.entries()] : []).some(([k, v]) => v === gid && k.startsWith(`${st.location_id}|`)))) gid = null;
+      }
+      if (!gid) gid = idGen();
+      if (!groups.some((g) => g.id === gid)) {
+        const k = known.get(gid);
+        groups.push({
+          id: gid, name: k?.name ?? gr.name, min: k?.min ?? gr.min ?? 0, max: k?.max ?? gr.max ?? 1, selection_type: k?.selection_type || gr.selection_type || 'single',
+          sort_order: k?.sort_order ?? gr.sort_order ?? 0, source_location_id: k?.source_location_id ?? st.location_id, family_base: k?.family_base ?? fam,
+          archived: false, options: [], _fixed: !!k,
+        });
+      }
+      groupFamily.set(fam, groupFamily.get(fam) || gid);
+      groupName.set(nk, groupName.get(nk) || gid);
+      groupKeyToCentral.set(keyOf(st.location_id, gr.id), gid);
+      if (!groupSites.some((r) => r.group_id === gid && r.location_id === st.location_id)) groupSites.push({ group_id: gid, location_id: st.location_id, venue_group_id: gr.id, kept: {} });
+      if (!members.has(gid)) members.set(gid, []);
+      members.get(gid).push({ loc: st.location_id, row: gr });
+    }
+  }
+  // Group rules: the most common at the sites (a group already in the group menu keeps its own);
+  // a site that differs keeps its own value.
+  for (const g of groups) {
+    const ms = members.get(g.id) || [];
+    const master = ms.find((m) => m.loc === masterSite) || ms[0];
+    if (!g._fixed) {
+      g.name = mostCommon(ms.map((m) => m.row.name ?? 'Options'), undefined, master?.row.name) ?? g.name;
+      g.min = Number(mostCommon(ms.map((m) => Number(m.row.min ?? 0)), undefined, Number(master?.row.min ?? 0)) ?? 0);
+      g.max = Number(mostCommon(ms.map((m) => Number(m.row.max ?? 1)), undefined, Number(master?.row.max ?? 1)) ?? 1);
+      g.selection_type = mostCommon(ms.map((m) => m.row.selection_type || 'single'), undefined, master?.row.selection_type || 'single') || 'single';
+    }
+    delete g._fixed;
+    for (const m of ms) {
+      const gs = groupSites.find((r) => r.group_id === g.id && r.location_id === m.loc);
+      const kept = {};
+      if ((m.row.name ?? 'Options') !== g.name) kept.name = m.row.name ?? null;
+      if (Number(m.row.min ?? 0) !== Number(g.min)) kept.min = Number(m.row.min ?? 0);
+      if (Number(m.row.max ?? 1) !== Number(g.max)) kept.max = Number(m.row.max ?? 1);
+      if ((m.row.selection_type || 'single') !== g.selection_type) kept.selection_type = m.row.selection_type || 'single';
+      gs.kept = kept;
+    }
+  }
+  // Options: the union across sites, one row each.
+  const options = [];
+  const entries = [];                    // { optionId, loc, entry, productId, subGroupId (central) }
+  for (const g of groups) {
+    const ms = [...(members.get(g.id) || [])].sort((a, b) => (a.loc === masterSite ? -1 : b.loc === masterSite ? 1 : 0));
+    const mine = [];
+    let order = 0;
+    for (const m of ms) {
+      const taken = new Set();
+      for (const e of listOf(m.row.options)) {
+        if (!e || typeof e !== 'object') continue;
+        const productId = e.itemId ? itemKeyToCentral.get(keyOf(m.loc, e.itemId)) || null : null;
+        const nk = normName(e.name);
+        const free = mine.filter((o) => !taken.has(o.id));
+        const hit = (productId && free.find((o) => o.product_id === productId && normName(o.name) === nk))
+          || (productId && free.find((o) => o.product_id === productId))
+          || free.find((o) => normName(o.name) === nk && (!o.product_id || !productId || o.product_id === productId))
+          || null;
+        const subCentral = e.subGroupId ? groupKeyToCentral.get(keyOf(m.loc, e.subGroupId)) || null : null;
+        let o = hit;
+        if (!o) {
+          o = { id: idGen(), group_id: g.id, name: e.name ?? 'Option', price: Number(e.price ?? 0), product_id: productId, sub_group_id: subCentral, sort_order: order++, archived: false };
+          mine.push(o);
+          options.push(o);
+        }
+        taken.add(o.id);
+        entries.push({ optionId: o.id, groupId: g.id, loc: m.loc, entry: e, productId, subGroupId: subCentral });
+      }
+    }
+    // The default price: the most common across the sites that have it (the master's on a tie).
+    for (const o of mine) {
+      const es = entries.filter((x) => x.optionId === o.id);
+      const masterE = es.find((x) => x.loc === masterSite) || es[0];
+      const best = mostCommon(es.map((x) => toPence(x.entry.price ?? 0)), (v) => String(v), toPence(masterE?.entry.price ?? 0));
+      o.price = best == null || Number.isNaN(best) ? 0 : fromPence(best);
+    }
+  }
+  return { groups, groupSites, groupKeyToCentral, options, entries };
+}
+
+/**
+ * The option site rows, once the products are settled (a product left out takes its options' sub
+ * item link with it): every site where the group is gets a row for every option, on with the
+ * site's own price where it differs, or off; and what the site keeps (its own name, sub item link,
+ * "Then ask").
+ */
+export function finalizeOptionSites(central, entries) {
+  const ids = new Set(listOf(central.products).map((p) => p.id));
+  for (const o of listOf(central.options)) if (o.product_id && !ids.has(o.product_id)) o.product_id = null;
+  const venueItemOf = new Map(listOf(central.productSites).map((ps) => [keyOf(ps.location_id, ps.product_id), ps.venue_item_id]));
+  const venueGroupOf = new Map(listOf(central.groupSites).map((gs) => [keyOf(gs.location_id, gs.group_id), gs.venue_group_id]));
+  const out = [];
+  for (const o of listOf(central.options)) {
+    const sitesOfGroup = listOf(central.groupSites).filter((gs) => gs.group_id === o.group_id).map((gs) => gs.location_id);
+    for (const loc of sitesOfGroup) {
+      const x = listOf(entries).find((e) => e.optionId === o.id && e.loc === loc);
+      if (!x) { out.push({ option_id: o.id, location_id: loc, venue_option_id: null, active: false, price: null, kept: {} }); continue; }
+      const e = x.entry;
+      // An entry with no id cannot be matched by publish: it stays the site's own (never doubled).
+      if (e.id == null || e.id === '') { out.push({ option_id: o.id, location_id: loc, venue_option_id: null, active: false, price: null, kept: {} }); continue; }
+      const kept = {};
+      if ((e.name ?? 'Option') !== (o.name ?? 'Option')) kept.name = e.name ?? null;
+      const wantItem = o.product_id ? venueItemOf.get(keyOf(loc, o.product_id)) || null : null;
+      if ((e.itemId || null) !== wantItem) kept.item_link = e.itemId || false;
+      const wantSub = o.sub_group_id ? venueGroupOf.get(keyOf(loc, o.sub_group_id)) || null : null;
+      if ((e.subGroupId || null) !== wantSub) kept.sub_group = e.subGroupId || false;
+      out.push({
+        option_id: o.id, location_id: loc, venue_option_id: e.id ?? null, active: true,
+        price: samePrice(e.price ?? 0, o.price) ? null : Number(e.price ?? 0), kept,
+      });
+    }
+  }
+  return out;
+}
 
 /**
  * Propose a central menu from the venues.
@@ -212,41 +402,9 @@ export function proposeImport(sites, opts = {}) {
     if (g.kind === 'one') review.onlyOne.push({ productId: id, location_id: members[0].loc, archived: members[0].row.archived === true, name: members[0].row.menu_name || members[0].row.name, defaultChoice: members[0].row.archived === true ? 'leave' : 'extra' });
   }
 
-  // ── Modifier groups: those the products use, by family then name ──
-  const groups = [];
-  const groupSites = [];
-  const groupKeyToCentral = new Map();
-  const groupFamily = new Map();
-  const groupName = new Map();
-  for (const s of siteOrder) {
-    const used = new Set();
-    const keep = keepBySite.get(s.location_id);
-    for (const i of listOf(s.raw.items)) if (i && keep.has(i.id)) for (const a of listOf(i.assigned_modifier_groups)) if (a && a.groupId) used.add(a.groupId);
-    for (const gr of listOf(s.raw.groups).filter((x) => used.has(x.id))) {
-      const fam = familyOf(gr);
-      const nk = normName(gr.name);
-      let gid = groupFamily.get(fam) || groupName.get(nk) || null;
-      if (gid && groupSites.some((r) => r.group_id === gid && r.location_id === s.location_id)) gid = null;
-      if (!gid) {
-        gid = idGen();
-        groups.push({ id: gid, name: gr.name, min: gr.min ?? 0, max: gr.max ?? 1, selection_type: gr.selection_type || 'single', sort_order: gr.sort_order ?? 0, source_location_id: s.location_id, _raw: gr });
-      }
-      groupFamily.set(fam, groupFamily.get(fam) || gid);
-      groupName.set(nk, groupName.get(nk) || gid);
-      groupKeyToCentral.set(keyOf(s.location_id, gr.id), gid);
-      groupSites.push({ group_id: gid, location_id: s.location_id, venue_group_id: gr.id });
-    }
-  }
-  // Central options point at central products (productId) where the option has an item.
-  for (const g of groups) {
-    g.options = listOf(g._raw.options).map((o) => {
-      if (!o) return null;
-      const { itemId, ...rest } = o;
-      const pid = itemId ? itemKeyToCentral.get(keyOf(g.source_location_id, itemId)) : null;
-      return pid ? { ...rest, productId: pid } : { ...rest };
-    }).filter(Boolean);
-    delete g._raw;
-  }
+  // ── Option groups: those the products use (and the groups their options ask next) ──
+  const ig = importGroups({ sites: S, siteOrder, keepBySite, itemKeyToCentral, idGen, masterSite });
+  const { groups, groupSites, groupKeyToCentral } = ig;
 
   // ── Fill in each product from its master row and the sites ──
   const siteRaw = new Map(S.map((s) => [s.location_id, s.raw]));
@@ -291,7 +449,12 @@ export function proposeImport(sites, opts = {}) {
       site_only_location_id: g.kind === 'one' ? m.loc : null,
       archived: false, sort_order: r.sort_order ?? 0,
       family_base: familyOf(r),
+      tax_by_type: null,
     });
+    // VAT by order type (sizes follow their product's, worked out below).
+    const tax = r.parent_id ? { taxByType: null, kept: new Map() } : importTaxByType(g.members, (loc) => siteRaw.get(loc)?.taxRates || [], m.loc);
+    p.tax_by_type = tax.taxByType;
+    p._taxKept = tax.kept;
     for (const x of g.members) {
       const pp = toPence(x.row.pricing?.base);
       const channel = {};
@@ -303,12 +466,26 @@ export function proposeImport(sites, opts = {}) {
         product_id: p.id, location_id: x.loc, venue_item_id: x.row.id, active: x.row.archived !== true,
         price: pp == null || pp === best ? null : fromPence(pp),
         channel_prices: Object.keys(channel).length ? channel : null,
-        kept: {},
+        kept: p._taxKept.has(x.loc) ? { tax_overrides: p._taxKept.get(x.loc) } : {},
       });
     }
   }
-  for (const p of products) { delete p._group; delete p._master; }
-  return { masterSite, sites: S.map((s) => ({ location_id: s.location_id, venue_menu_id: s.venue_menu_id, name: s.name })), categories, catSites, groups, groupSites, products, productSites, review };
+  // A size with VAT by order type of its own at a site gets the full set from its product, so it
+  // keeps every key that differs (the planner leaves a size with none of its own alone).
+  for (const p of products) {
+    if (!p.parent_product_id) continue;
+    const parent = products.find((x) => x.id === p.parent_product_id);
+    const own = p._group.members.filter((x) => x.row.tax_overrides && typeof x.row.tax_overrides === 'object' && Object.keys(x.row.tax_overrides).length);
+    if (!own.length) continue;
+    const t = importTaxByType(own, (loc) => siteRaw.get(loc)?.taxRates || [], null, parent?.tax_by_type || {});
+    for (const ps of productSites) if (ps.product_id === p.id && t.kept.has(ps.location_id)) ps.kept = { ...ps.kept, tax_overrides: t.kept.get(ps.location_id) };
+  }
+  for (const p of products) { delete p._group; delete p._master; delete p._taxKept; }
+  return {
+    masterSite, sites: S.map((s) => ({ location_id: s.location_id, venue_menu_id: s.venue_menu_id, name: s.name })),
+    categories, catSites, groups, groupSites, options: ig.options, optionSites: [], optionEntries: ig.entries,
+    products, productSites, review,
+  };
 }
 
 // Every managed field of every product touched: the self check's change set.
@@ -323,7 +500,27 @@ export function touchEverything(central) {
   for (const ps of listOf(central.productSites)) {
     changes.push({ target: 'product_site', entity_id: ps.product_id, location_id: ps.location_id, op: 'update', after: { active: ps.active, price: ps.price, channel_prices: ps.channel_prices } });
   }
+  // Round 2: every group rule and every option, at every site (order is never touched: an order
+  // that differs between sites causes no writes).
+  for (const g of listOf(central.groups)) {
+    if (g.archived) continue;
+    changes.push({ target: 'modifier_group', entity_id: g.id, op: 'update', after: { name: g.name, min: g.min, max: g.max, selection_type: g.selection_type } });
+  }
+  for (const o of listOf(central.options)) {
+    changes.push({ target: 'modifier_option', entity_id: o.id, op: 'update', after: { name: o.name, price: o.price, product_id: o.product_id ?? null, sub_group_id: o.sub_group_id ?? null } });
+  }
+  for (const os of listOf(central.optionSites)) {
+    changes.push({ target: 'modifier_option_site', entity_id: os.option_id, location_id: os.location_id, op: 'update', after: { active: os.active, price: os.price } });
+  }
   return changes;
+}
+
+// What the one time refresh brings in, touched everywhere (its self check).
+export function touchRefresh(central) {
+  const all = touchEverything(central);
+  const out = all.filter((c) => c.target === 'modifier_group' || c.target === 'modifier_option' || c.target === 'modifier_option_site');
+  for (const p of listOf(central.products)) out.push({ target: 'product', entity_id: p.id, op: 'update', after: { tax_by_type: p.tax_by_type ?? null } });
+  return out;
 }
 
 /**
@@ -366,15 +563,18 @@ export function buildCentral(proposal, sites, decisions = {}, opts = {}) {
   // Sizes whose parent was left out lose their parent link centrally (each site keeps its own).
   const ids = new Set(products.map((p) => p.id));
   for (const p of products) if (p.parent_product_id && !ids.has(p.parent_product_id)) p.parent_product_id = null;
-  // Options pointing at a product that was left out keep their item at the venue only.
-  const dropProduct = (o) => { const copy = { ...o }; delete copy.productId; return copy; };
-  const groups = proposal.groups.map((g) => ({ ...g, options: g.options.map((o) => (o.productId && !ids.has(o.productId) ? dropProduct(o) : o)) }));
+  // Options pointing at a product that was left out keep their item at the venue only (the site
+  // keeps its own link, finalizeOptionSites).
+  const groups = proposal.groups.map((g) => ({ ...g, options: [] }));
+  const options = listOf(proposal.options).map((o) => ({ ...o }));
 
   const central = {
-    menu: { id: 'import', name: decisions.menuName || 'Group menu', description: decisions.menuDescription || '', use_name_everywhere: false },
+    menu: { id: 'import', name: decisions.menuName || 'Group menu', description: decisions.menuDescription || '', use_name_everywhere: false, refreshed_at: 'import' },
     sites: proposal.sites, categories: proposal.categories, catSites: proposal.catSites,
-    groups, groupSites: proposal.groupSites, products, productSites,
+    groups, groupSites: proposal.groupSites.map((gs) => ({ ...gs, kept: { ...(gs.kept || {}) } })), options, optionSites: [],
+    products, productSites,
   };
+  central.optionSites = finalizeOptionSites(central, proposal.optionEntries || []);
   const check = settleKept(central, sites);
   return { central, check, dropped: [...leave] };
 }
@@ -422,6 +622,13 @@ export function settleKept(central, sites, { passes = 4 } = {}) {
           changed++;
           continue;
         }
+        if (l.column.startsWith('tax_overrides.')) {
+          const k = l.column.slice(14);
+          const cur = row.tax_overrides && typeof row.tax_overrides === 'object' ? row.tax_overrides : {};
+          ps.kept.tax_overrides = { ...(ps.kept.tax_overrides || {}), [k]: has(cur, k) ? cur[k] : false };
+          changed++;
+          continue;
+        }
         if (KEPT_COLUMNS.includes(l.column)) {
           if (!sameValue(ps.kept[l.column], row[l.column]) || !Object.prototype.hasOwnProperty.call(ps.kept, l.column)) { ps.kept[l.column] = row[l.column] ?? null; changed++; }
           continue;
@@ -447,6 +654,8 @@ export function settleKept(central, sites, { passes = 4 } = {}) {
       const row = l.table === 'items' ? rowOf(s.location_id, l.id) : null;
       if (row && l.column === 'pricing.base' && row.pricing?.base == null) {
         problems.push({ location_id: s.location_id, words: `"${row.menu_name || row.name || l.id}" at ${s.name || 'a site'} has no base price. Open it in Menu Manager at that site, save its price, then import again.` });
+      } else if (l.table === 'groups') {
+        problems.push({ location_id: s.location_id, words: `Option group ${l.id} at ${s.name || 'a site'}: ${l.column.replace(/[()]/g, '')} would change. Import again; if it stays, tell ServOS.` });
       } else {
         problems.push({ location_id: s.location_id, words: `${l.table} ${l.id}: ${l.column} would change` });
       }
@@ -463,9 +672,85 @@ export function importPayload(central, { orgId, name, description }) {
     menu: { name: name || central.menu?.name || 'Group menu', description: description ?? central.menu?.description ?? '' },
     sites: central.sites.map((s) => ({ location_id: s.location_id, venue_menu_id: s.venue_menu_id })),
     categories: central.categories.map((c) => ({ ...c, sites: sitesOf(central.catSites, 'category_id', c.id).map((r) => ({ location_id: r.location_id, venue_category_id: r.venue_category_id })) })),
-    groups: central.groups.map((g) => ({ ...g, sites: sitesOf(central.groupSites, 'group_id', g.id).map((r) => ({ location_id: r.location_id, venue_group_id: r.venue_group_id })) })),
+    groups: central.groups.map((g) => ({ ...g, options: [], sites: sitesOf(central.groupSites, 'group_id', g.id).map((r) => ({ location_id: r.location_id, venue_group_id: r.venue_group_id, kept: r.kept || {} })) })),
+    options: listOf(central.options).map((o) => ({ ...o, sites: sitesOf(listOf(central.optionSites), 'option_id', o.id).map((r) => ({ location_id: r.location_id, venue_option_id: r.venue_option_id, active: r.active, price: r.price, kept: r.kept || {} })) })),
     products: central.products.map((p) => ({ ...p, sites: sitesOf(central.productSites, 'product_id', p.id).map((r) => ({ location_id: r.location_id, venue_item_id: r.venue_item_id, active: r.active, price: r.price, channel_prices: r.channel_prices, kept: r.kept || {} })) })),
   };
+}
+
+/**
+ * THE ONE TIME REFRESH (design 1.9): a group menu imported before round 2 holds its option groups
+ * as a jsonb list. This brings them in as rows (union across sites, default prices, each site's
+ * own prices, names, links and "Then ask", the groups those ask next), the group rules each site
+ * keeps, and VAT by order type for every product, WITHOUT changing anything at any site: the same
+ * self check proves zero writes, or nothing is saved.
+ *   central  readCentral(...) (the live group menu)
+ *   sites    [{ location_id, name, raw }]  readVenueRaw for every site of the menu
+ * Returns { ok, payload, check, counts, words }. payload is what public.msm_import_groups takes.
+ */
+export function refreshGroupsPayload(central, sites, opts = {}) {
+  const idGen = opts.idGen || defaultUuid;
+  const raws = new Map(listOf(sites).map((x) => [x.location_id, x.raw]));
+  const S = listOf(central?.sites).map((st) => ({ location_id: st.location_id, name: listOf(sites).find((x) => x.location_id === st.location_id)?.name || st.location_id, raw: raws.get(st.location_id) })).filter((x) => x.raw);
+  if (S.length !== listOf(central?.sites).length) return { ok: false, words: 'Could not read every site. Nothing was changed. Try again.' };
+  const itemKeyToCentral = new Map(listOf(central.productSites).map((ps) => [keyOf(ps.location_id, ps.venue_item_id), ps.product_id]));
+  const keepBySite = new Map(S.map((x) => [x.location_id, new Set(listOf(central.productSites).filter((ps) => ps.location_id === x.location_id).map((ps) => ps.venue_item_id))]));
+  const groupKey = new Map(listOf(central.groupSites).map((gs) => [keyOf(gs.location_id, gs.venue_group_id), gs.group_id]));
+  const masterSite = (() => { const counts = new Map(); for (const g of listOf(central.groups)) if (g.source_location_id) counts.set(g.source_location_id, (counts.get(g.source_location_id) || 0) + 1); return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || S[0]?.location_id || null; })();
+  const siteOrder = [...S].sort((a, b) => (a.location_id === masterSite ? -1 : b.location_id === masterSite ? 1 : 0));
+  const ig = importGroups({ sites: S, siteOrder, keepBySite, itemKeyToCentral, idGen, masterSite, existing: { groupKey, groups: listOf(central.groups) } });
+  // Groups already in the group menu that no site uses now stay as they are (no sites, no options).
+  const groups = [...ig.groups];
+  for (const g of listOf(central.groups)) if (!groups.some((x) => x.id === g.id)) groups.push({ ...g, options: [] });
+  // VAT by order type for every product.
+  const products = listOf(central.products).map((p) => ({ ...p }));
+  const productSites = listOf(central.productSites).map((ps) => ({ ...ps, kept: { ...(ps.kept || {}) } }));
+  const byId = new Map(products.map((p) => [p.id, p]));
+  const rowOf = (loc, id) => listOf(raws.get(loc)?.items).find((i) => i.id === id) || null;
+  const ratesOf = (loc) => raws.get(loc)?.taxRates || [];
+  for (const p of products) {
+    if (p.parent_product_id) continue;
+    const members = productSites.filter((ps) => ps.product_id === p.id).map((ps) => ({ loc: ps.location_id, row: rowOf(ps.location_id, ps.venue_item_id) })).filter((m) => m.row);
+    const t = importTaxByType(members, ratesOf, masterSite);
+    p.tax_by_type = t.taxByType;
+    for (const ps of productSites) if (ps.product_id === p.id) { delete ps.kept.tax_overrides; if (t.kept.has(ps.location_id)) ps.kept.tax_overrides = t.kept.get(ps.location_id); }
+  }
+  for (const p of products) {
+    if (!p.parent_product_id) continue;
+    p.tax_by_type = null;
+    const members = productSites.filter((ps) => ps.product_id === p.id).map((ps) => ({ loc: ps.location_id, row: rowOf(ps.location_id, ps.venue_item_id) }))
+      .filter((m) => m.row && m.row.tax_overrides && typeof m.row.tax_overrides === 'object' && Object.keys(m.row.tax_overrides).length);
+    const t = importTaxByType(members, ratesOf, null, byId.get(p.parent_product_id)?.tax_by_type || {});
+    for (const ps of productSites) if (ps.product_id === p.id) { delete ps.kept.tax_overrides; if (t.kept.has(ps.location_id)) ps.kept.tax_overrides = t.kept.get(ps.location_id); }
+  }
+  const next = { ...central, menu: { ...(central.menu || {}), refreshed_at: 'refresh' }, groups, groupSites: ig.groupSites, options: ig.options, optionSites: [], products, productSites };
+  next.optionSites = finalizeOptionSites(next, ig.entries);
+  // The proof: zero writes at every site with everything THE REFRESH brings in touched (every
+  // group rule, option and option site, and every product's VAT by order type). Anything else the
+  // group menu and a site already disagree on (an old failed publish, a product removed by hand)
+  // is not the refresh's to judge and never blocks it.
+  const touched = touchedFromChanges(touchRefresh(next));
+  const problems = [];
+  let writes = 0;
+  for (const st of S) {
+    const plan = planSite({ central: next, touched, locationId: st.location_id, orgId: null, venue: st.raw });
+    writes += plan.lines.length;
+    for (const l of plan.lines.slice(0, 10)) problems.push({ location_id: st.location_id, words: `${st.name}: ${l.table === 'groups' ? 'an option group' : 'a product'} would change (${String(l.column).replace(/[()]/g, '')}).` });
+  }
+  const counts = { groups: groups.length, newGroups: ig.groups.filter((g) => !listOf(central.groups).some((x) => x.id === g.id)).length, options: ig.options.length };
+  if (writes) return { ok: false, check: { ok: false, writes, problems }, counts, words: `The refresh would change ${writes} thing${writes === 1 ? '' : 's'} at the sites, so nothing was saved. ${problems[0]?.words || ''}`.trim() };
+  const sitesOf = (rows, key, id) => rows.filter((r) => r[key] === id);
+  const payload = {
+    menu_id: central.menu?.id,
+    groups: groups.map((g) => ({
+      id: g.id, name: g.name, min: g.min, max: g.max, selection_type: g.selection_type, sort_order: g.sort_order ?? 0,
+      family_base: g.family_base ?? null, source_location_id: g.source_location_id ?? null,
+      sites: sitesOf(next.groupSites, 'group_id', g.id).map((r) => ({ location_id: r.location_id, venue_group_id: r.venue_group_id, kept: r.kept || {} })),
+    })),
+    options: next.options.map((o) => ({ ...o, sites: sitesOf(next.optionSites, 'option_id', o.id).map((r) => ({ location_id: r.location_id, venue_option_id: r.venue_option_id, active: r.active, price: r.price, kept: r.kept || {} })) })),
+    products: products.map((p) => ({ id: p.id, tax_by_type: p.tax_by_type || null, sites: sitesOf(productSites, 'product_id', p.id).map((r) => ({ location_id: r.location_id, kept: r.kept || {} })) })),
+  };
+  return { ok: true, payload, check: { ok: true, writes: 0, problems: [] }, counts, words: `${counts.groups} option group${counts.groups === 1 ? '' : 's'} and ${counts.options} option${counts.options === 1 ? '' : 's'} brought in. Nothing changes at any site.` };
 }
 
 /** The review's headline numbers, in words. */

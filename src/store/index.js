@@ -45,7 +45,7 @@ import { saveModifierGroupChecked, createLatestQueue, insertModifierGroupOnce } 
 import { runBulkEdits, bulkSummaryWords } from '../lib/menuBulk';
 import { scheduleMenuTranslate } from '../lib/menuTranslateTrigger';
 import { createScopedPropagator, savedForPropagation } from '../lib/scopedPropagation';
-import { isMsmManaged } from '../lib/msm/msmManaged.js';
+import { isMsmManaged, isMsmManagedGroup } from '../lib/msm/msmManaged.js';
 import { withTimeout } from '../lib/withTimeout';
 import { buildLegacyProfiles } from '../lib/taxAdapter';
 import { qrCloseDecision } from '../lib/qrTabStranded';
@@ -1041,6 +1041,11 @@ const _groupTimers = new Map();
 const _groupBusy = new Map();    // groupId → { dirty, latest }
 function scheduleGroupPropagation(group) {
   if (!group?.id) return;
+  // 17 Oct 2026 (Multi site menu round 2, design 1.10): an option group the group menu manages at
+  // this venue is never fanned out by the sharing engine; head office publishes it. The engine also
+  // skips managed groups at the OTHER venues itself (db.js, the target side gate). Empty for every
+  // company that is not switched on, so nothing changes for them.
+  if (isMsmManagedGroup(group.id)) return;
   clearTimeout(_groupTimers.get(group.id));
   _groupTimers.set(group.id, setTimeout(async () => {
     _groupTimers.delete(group.id);
@@ -2243,6 +2248,9 @@ export const useStore = create((set, get) => ({
         let touched = 0;
         const updatedGroups = s.modifierGroupDefs.map(g => {
           if (!Array.isArray(g.options) || g.options.length === 0) return g;
+          // 17 Oct 2026 (Multi site menu round 2): option names in a group head office manages are
+          // set there (each site may keep its own); a sub item renamed here never rewrites them.
+          if (isMsmManagedGroup(g.id)) return g;
           let groupChanged = false;
           const newOptions = g.options.map(o => {
             const optItemId = o.itemId || o.item_id || null;

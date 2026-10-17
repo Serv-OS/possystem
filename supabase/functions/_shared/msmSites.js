@@ -45,7 +45,28 @@ export function planAddSite(central, opts = {}) {
     });
     count++;
   }
-  return { changes, count, words: `${count} product${count === 1 ? '' : 's'} will go on sale at the new site` };
+  // Round 2: every option of the option groups those products use (and the groups their options
+  // ask next) gets a row at the new site, on (or as the copied site has it), since no row means
+  // off. A group still waiting for its one time refresh has no option rows: it goes as round 1.
+  const included = new Set(changes.filter((c) => c.target === 'product_site').map((c) => c.entity_id));
+  const groupIds = new Set();
+  for (const p of listOf(central?.products)) if (included.has(p.id)) for (const g of listOf(p.modifier_groups)) { const id = typeof g === 'string' ? g : g?.groupId; if (id) groupIds.add(id); }
+  const options = listOf(central?.options).filter((o) => o && !o.archived);
+  for (let grew = true, n = 0; grew && n < 10; n++) {
+    grew = false;
+    for (const o of options) if (groupIds.has(o.group_id) && o.sub_group_id && !groupIds.has(o.sub_group_id)) { groupIds.add(o.sub_group_id); grew = true; }
+  }
+  const osFrom = new Map(listOf(central?.optionSites).filter((r) => r.location_id === copy).map((r) => [r.option_id, r]));
+  let optionCount = 0;
+  for (const o of options) {
+    if (!groupIds.has(o.group_id)) continue;
+    const src = osFrom.get(o.id);
+    const active = copy ? !!(src && src.active === true) : true;
+    const price = copy && src && src.price != null && !samePrice(src.price, o.price) ? Number(src.price) : null;
+    changes.push({ target: 'modifier_option_site', entity_id: o.id, location_id: loc, op: 'create', after: { active, price } });
+    optionCount++;
+  }
+  return { changes, count, optionCount, words: `${count} product${count === 1 ? '' : 's'} will go on sale at the new site` };
 }
 
 /**

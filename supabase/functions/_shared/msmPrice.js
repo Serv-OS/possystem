@@ -20,6 +20,17 @@
 //   * Set to: the exact price; rounding is not applied to an exact price.
 //   * Sizes follow their product unless excluded. A variants parent (whose own price is never
 //     charged) and an archived product are never changed.
+//
+// ROUND 2 (17 Oct 2026, design 1.4 and 5.4)
+//   * Option groups as a scope: an option's default price moves at Every site (sites with a
+//     price of their own move too, or follow again when they end equal), or Only some sites get a
+//     price of their own. The same maths. Free options (0.00) stay free on an amount change unless
+//     the person says otherwise (keepFree, on unless false).
+//   * An option only sub item (type subitem, not sold on its own) is never in a product scope: its
+//     own price is never charged. A sub item sold on its own is a product like any other.
+//   * alsoChannels: a Standard price change also moves every order type price that is SET (the
+//     group's, or a site's own), one line per order type; prices that follow move by themselves.
+//     The screen ticks it by default; off, the preview names the order types it will not reach.
 
 import { CHANNELS, toPence, fromPence, has, channelFallback } from './msmModel.js';
 
@@ -127,7 +138,17 @@ export function productsInScope(central, scope = {}) {
     for (const p of products) if (p.parent_product_id && out.has(p.parent_product_id)) out.add(p.id);
   }
   const byId = new Map(products.map((p) => [p.id, p]));
-  return [...out].filter((id) => byId.has(id) && !exclude.has(id) && byId.get(id).type !== 'variants').map((id) => byId.get(id));
+  const optionOnly = (p) => p.type === 'subitem' && p.sold_alone !== true;
+  return [...out].filter((id) => byId.has(id) && !exclude.has(id) && byId.get(id).type !== 'variants' && !optionOnly(byId.get(id))).map((id) => byId.get(id));
+}
+
+/** The options a scope covers: scope.optionGroupIds (every option of those groups) and scope.optionIds. */
+export function optionsInScope(central, scope = {}) {
+  const groups = new Set(scope.optionGroupIds || []);
+  const ids = new Set(scope.optionIds || []);
+  if (!groups.size && !ids.size) return [];
+  const liveGroup = new Set((central?.groups || []).filter((g) => g && !g.archived).map((g) => g.id));
+  return (central?.options || []).filter((o) => o && !o.archived && liveGroup.has(o.group_id) && (groups.has(o.group_id) || ids.has(o.id)));
 }
 
 // ── The tool ────────────────────────────────────────────────────────────────
@@ -149,12 +170,13 @@ const pence = (pounds) => (pounds == null ? null : toPence(pounds));
  *   summary:  { prices, sites, clears, clamped, products, offSites, pinned }
  * }
  */
-export function applyPriceChange(central, opts = {}) {
-  const channel = opts.channel && CHANNELS.includes(opts.channel) ? opts.channel : null;
+function runChannel(central, opts, channel, onlySet) {
   const rounding = opts.rounding || { mode: 'none' };
   const change = opts.change || { direction: 'up', mode: 'amount', value: 0 };
   const isSet = change.mode === 'set';
   const products = productsInScope(central, opts.scope || {});
+  // onlySet: only the prices of this order type that are SET (alsoChannels), never those that follow.
+  const setAnywhere = (p) => chanOf(p.default_channels, channel) != null || (central?.productSites || []).some((ps) => ps.product_id === p.id && chanOf(ps.channel_prices, channel) != null);
   const siteLocs = (central?.sites || []).map((s) => s.location_id);
   const allSites = opts.sites === 'all' || !Array.isArray(opts.sites);
   const chosen = allSites ? siteLocs : opts.sites.filter((l) => siteLocs.includes(l));
@@ -169,7 +191,7 @@ export function applyPriceChange(central, opts = {}) {
 
   // The channel prices set separately (In store changes only): the till charges these first.
   const pinnedOf = (p, ps) => {
-    if (channel) return [];
+    if (channel || opts.alsoChannels) return [];
     const keys = [];
     for (const k of CHANNELS) {
       if (chanOf(ps ? ps.channel_prices : null, k) != null || chanOf(p.default_channels, k) != null) keys.push(k);
@@ -178,6 +200,7 @@ export function applyPriceChange(central, opts = {}) {
   };
 
   for (const p of products) {
+    if (onlySet && !setAnywhere(p)) continue;
     const defBase = toPence(p.default_price);
     // The group's price for the chosen channel: its own, else what it falls back to (the till's chain).
     const defOwn = channel ? toPence(chanOf(p.default_channels, channel)) : defBase;
@@ -189,17 +212,18 @@ export function applyPriceChange(central, opts = {}) {
 
     if (allSites) {
       if (groupEff == null || Number.isNaN(groupEff)) continue;
+      const skipGroup = onlySet && defOwn == null;
       const r = changeOne(groupEff, change, rounding);
       if (r.invalid) continue;
       const newDef = r.pence;
       if (r.clamped) clamped++;
       const defPinned = pinnedOf(p, null);
-      rows.push({ productId: p.id, locationId: null, before: fromPence(groupEff), after: fromPence(newDef), changed: newDef !== groupEff, clamped: r.clamped, follows: false, clears: false, staged: false, off: false, pinned: defPinned });
-      if (newDef !== groupEff || (channel && defOwn == null)) {
+      if (!skipGroup) rows.push({ productId: p.id, locationId: null, channel, before: fromPence(groupEff), after: fromPence(newDef), changed: newDef !== groupEff, clamped: r.clamped, follows: false, clears: false, staged: false, off: false, pinned: defPinned });
+      if (!skipGroup && (newDef !== groupEff || (channel && defOwn == null))) {
         const after = channel
           ? { default_channels: { ...(p.default_channels || {}), [channel]: fromPence(newDef) } }
           : { default_price: fromPence(newDef) };
-        changes.push({ target: 'product', entity_id: p.id, location_id: null, op: 'update', after });
+        changes.push({ target: 'product', entity_id: p.id, location_id: null, op: 'update', after, _ch: channel });
       }
       for (const ps of siteRows) {
         // A site where the product is turned off is kept in step too (its own price changes or
@@ -214,10 +238,11 @@ export function applyPriceChange(central, opts = {}) {
         // the group's price. A channel the group never priced falls back to the site's own In
         // store price (or takeaway, for drive thru): staging the group's channel price would
         // replace that, so such a site is treated as having its own price.
+        if (own == null && onlySet) continue;      // it follows: moved by the Standard price or the group's
         if (own == null && (fallback === groupEff || defOwn != null || !channel)) {
           if (off) continue;
           const after = newDef;
-          rows.push({ productId: p.id, locationId: ps.location_id, before: fromPence(before), after: fromPence(after), changed: after !== before, clamped: r.clamped, follows: true, clears: false, staged: false, off: false, pinned });
+          rows.push({ productId: p.id, locationId: ps.location_id, channel, before: fromPence(before), after: fromPence(after), changed: after !== before, clamped: r.clamped, follows: true, clears: false, staged: false, off: false, pinned });
           if (after !== before) touchedSites.add(ps.location_id);
           continue;
         }
@@ -231,13 +256,13 @@ export function applyPriceChange(central, opts = {}) {
         }
         // Nothing to stage: no price of its own and the new group price is already what it charges.
         if (own == null && clearIt) {
-          if (!off) rows.push({ productId: p.id, locationId: ps.location_id, before: fromPence(before), after: fromPence(next), changed: next !== before, clamped: rc, follows: true, clears: false, staged: false, off: false, pinned });
+          if (!off) rows.push({ productId: p.id, locationId: ps.location_id, channel, before: fromPence(before), after: fromPence(next), changed: next !== before, clamped: rc, follows: true, clears: false, staged: false, off: false, pinned });
           if (!off && next !== before) touchedSites.add(ps.location_id);
           continue;
         }
         if (rc && !off) clamped++;
         if (clearIt && own != null) clears++;
-        rows.push({ productId: p.id, locationId: ps.location_id, before: fromPence(before), after: fromPence(next), changed: next !== before || (clearIt && own != null), clamped: rc, follows: false, clears: clearIt && own != null, staged: true, off, pinned });
+        rows.push({ productId: p.id, locationId: ps.location_id, channel, before: fromPence(before), after: fromPence(next), changed: next !== before || (clearIt && own != null), clamped: rc, follows: false, clears: clearIt && own != null, staged: true, off, pinned });
         if (off) offSites.add(ps.location_id);
         else touchedSites.add(ps.location_id);
         changes.push(siteChange(ps, channel, clearIt ? null : fromPence(next)));
@@ -247,6 +272,7 @@ export function applyPriceChange(central, opts = {}) {
         const ps = psBy.get(`${p.id}|${loc}`);
         if (!ps || ps.active === false) continue;
         const own = siteOwn(ps);
+        if (onlySet && own == null && defOwn == null) continue;   // follows the Standard price there
         const followVal = siteFallbackNow(ps);
         const before = own ?? followVal;
         if (before == null || Number.isNaN(before)) continue;
@@ -258,26 +284,136 @@ export function applyPriceChange(central, opts = {}) {
         if (pinned.length) pinnedRows++;
         const willStage = !(r.pence === before && (clearIt ? own == null : own === r.pence));
         if (clearIt && own != null) clears++;
-        rows.push({ productId: p.id, locationId: loc, before: fromPence(before), after: fromPence(r.pence), changed: r.pence !== before, clamped: r.clamped, follows: clearIt, clears: clearIt && own != null, staged: willStage, off: false, pinned });
+        rows.push({ productId: p.id, locationId: loc, channel, before: fromPence(before), after: fromPence(r.pence), changed: r.pence !== before, clamped: r.clamped, follows: clearIt, clears: clearIt && own != null, staged: willStage, off: false, pinned });
         if (!willStage) continue;
         touchedSites.add(loc);
         changes.push(siteChange(ps, channel, clearIt ? null : fromPence(r.pence)));
       }
     }
   }
+  return { rows, changes, touchedSites, offSites, clears, clamped, pinnedRows, products: products.length };
+}
+
+/**
+ * Work out a price change over a scope. Pure.
+ *   central   { products, productSites, categories, sites, groups, options, optionSites }
+ *   opts      { scope, change, rounding, channel (null = Standard), sites: 'all' | [locationIds],
+ *               alsoChannels (Standard only: move the order type prices that are set too),
+ *               keepFree (options: leave 0.00 options at 0.00 on an amount change; default on) }
+ * Returns {
+ *   rows:     every price shown in the preview: { productId | optionId, groupId?, locationId (null
+ *             = the group's), channel (null = Standard), before, after, changed, clamped, follows,
+ *             clears, staged, off, pinned, freeKept }
+ *   changes:  msm_changes rows to stage ({ target, entity_id, location_id, op: 'update', after })
+ *   summary:  { prices, sites, clears, clamped, products, offSites, pinned, options, freeKept }
+ * }
+ */
+export function applyPriceChange(central, opts = {}) {
+  const channel = opts.channel && CHANNELS.includes(opts.channel) ? opts.channel : null;
+  const runs = [runChannel(central, opts, channel, false)];
+  if (!channel && opts.alsoChannels) for (const k of CHANNELS) runs.push(runChannel(central, opts, k, true));
+  const opt = runOptions(central, opts);
+  const rows = [...runs.flatMap((r) => r.rows), ...opt.rows];
+  // One change per product or site, every order type merged in (each run set only its own key).
+  const merged = new Map();
+  const productOf = new Map((central?.products || []).map((p) => [p.id, p]));
+  const psOf = new Map((central?.productSites || []).map((ps) => [`${ps.product_id}|${ps.location_id}`, ps]));
+  for (const c of [...runs.flatMap((r) => r.changes), ...opt.changes]) {
+    const key = `${c.target}|${c.entity_id}|${c.location_id || ''}`;
+    const m = merged.get(key) || { target: c.target, entity_id: c.entity_id, location_id: c.location_id ?? null, op: 'update', after: {} };
+    for (const [k, v] of Object.entries(c.after)) {
+      if (k === 'default_channels') m.after.default_channels = { ...(m.after.default_channels || productOf.get(c.entity_id)?.default_channels || {}), ...pickChanged(v, c._ch) };
+      else if (k === 'channel_prices') m.after.channel_prices = { ...(m.after.channel_prices || psOf.get(`${c.entity_id}|${c.location_id}`)?.channel_prices || {}), ...pickChanged(v, c._ch) };
+      else m.after[k] = v;
+    }
+    merged.set(key, m);
+  }
+  const touchedSites = new Set([...runs.flatMap((r) => [...r.touchedSites]), ...opt.touchedSites]);
+  const offSites = new Set(runs.flatMap((r) => [...r.offSites]));
+  const sum = (k) => runs.reduce((n, r) => n + r[k], 0);
   // The headline counts what reaches the tills: site prices on sale, never the group price row.
   const prices = rows.filter((r) => r.locationId && r.changed && !r.off).length;
   return {
-    rows, changes,
-    summary: { prices, sites: touchedSites.size, clears, clamped, products: products.length, offSites: offSites.size, pinned: pinnedRows },
+    rows, changes: [...merged.values()],
+    summary: {
+      prices, sites: touchedSites.size, clears: sum('clears') + opt.clears, clamped: sum('clamped') + opt.clamped,
+      products: runs[0].products, offSites: offSites.size, pinned: runs[0].pinnedRows, options: opt.count, freeKept: opt.freeKept,
+    },
   };
+}
+const pickChanged = (obj, ch) => (ch && obj && typeof obj === 'object' ? { [ch]: obj[ch] } : obj || {});
+
+// Options (round 2): the same maths on msm_modifier_options.price and each site's own price.
+function runOptions(central, opts) {
+  const out = { rows: [], changes: [], touchedSites: new Set(), clears: 0, clamped: 0, count: 0, freeKept: 0 };
+  const options = optionsInScope(central, opts.scope || {});
+  if (!options.length) return out;
+  const rounding = opts.rounding || { mode: 'none' };
+  const change = opts.change || { direction: 'up', mode: 'amount', value: 0 };
+  const isSet = change.mode === 'set';
+  const keepFree = opts.keepFree !== false && change.mode === 'amount';
+  const siteLocs = (central?.sites || []).map((s) => s.location_id);
+  const allSites = opts.sites === 'all' || !Array.isArray(opts.sites);
+  const chosen = allSites ? siteLocs : opts.sites.filter((l) => siteLocs.includes(l));
+  const osBy = new Map((central?.optionSites || []).map((r) => [`${r.option_id}|${r.location_id}`, r]));
+  const row = (o, loc, extra) => ({ optionId: o.id, groupId: o.group_id, locationId: loc, channel: null, pinned: [], ...extra });
+  for (const o of options) {
+    out.count++;
+    const def = toPence(o.price ?? 0);
+    if (allSites) {
+      let newDef = def, rc = false;
+      if (keepFree && def === 0) out.freeKept++;
+      else { const r = changeOne(def, change, rounding); if (r.invalid) continue; newDef = r.pence; rc = r.clamped; }
+      if (rc) out.clamped++;
+      out.rows.push(row(o, null, { before: fromPence(def), after: fromPence(newDef), changed: newDef !== def, clamped: rc, follows: false, clears: false, staged: newDef !== def, off: false, freeKept: keepFree && def === 0 }));
+      if (newDef !== def) out.changes.push({ target: 'modifier_option', entity_id: o.id, location_id: null, op: 'update', after: { price: fromPence(newDef) } });
+      for (const loc of siteLocs) {
+        const os = osBy.get(`${o.id}|${loc}`);
+        if (!os) continue;
+        const off = os.active !== true;
+        const own = os.price == null ? null : toPence(os.price);
+        if (own == null) {
+          if (!off) { out.rows.push(row(o, loc, { before: fromPence(def), after: fromPence(newDef), changed: newDef !== def, clamped: rc, follows: true, clears: false, staged: false, off: false })); if (newDef !== def) out.touchedSites.add(loc); }
+          continue;
+        }
+        if (keepFree && own === 0) { out.freeKept++; out.rows.push(row(o, loc, { before: 0, after: 0, changed: false, clamped: false, follows: false, clears: false, staged: false, off, freeKept: true })); continue; }
+        let next, c2 = false;
+        if (isSet) next = newDef; else { const r2 = changeOne(own, change, rounding); next = r2.pence; c2 = r2.clamped; }
+        const clearIt = next === newDef;
+        if (c2 && !off) out.clamped++;
+        if (clearIt) out.clears++;
+        out.rows.push(row(o, loc, { before: fromPence(own), after: fromPence(next), changed: next !== own || clearIt, clamped: c2, follows: false, clears: clearIt, staged: true, off }));
+        if (!off) out.touchedSites.add(loc);
+        out.changes.push({ target: 'modifier_option_site', entity_id: o.id, location_id: loc, op: 'update', after: { price: clearIt ? null : fromPence(next) } });
+      }
+    } else {
+      for (const loc of chosen) {
+        const os = osBy.get(`${o.id}|${loc}`);
+        if (!os || os.active !== true) continue;
+        const own = os.price == null ? null : toPence(os.price);
+        const before = own ?? def;
+        if (keepFree && before === 0) { out.freeKept++; out.rows.push(row(o, loc, { before: 0, after: 0, changed: false, clamped: false, follows: own == null, clears: false, staged: false, off: false, freeKept: true })); continue; }
+        const r = changeOne(before, change, rounding);
+        if (r.invalid) continue;
+        if (r.clamped) out.clamped++;
+        const clearIt = r.pence === def;
+        const willStage = !(r.pence === before && (clearIt ? own == null : own === r.pence));
+        if (clearIt && own != null) out.clears++;
+        out.rows.push(row(o, loc, { before: fromPence(before), after: fromPence(r.pence), changed: r.pence !== before, clamped: r.clamped, follows: clearIt, clears: clearIt && own != null, staged: willStage, off: false }));
+        if (!willStage) continue;
+        out.touchedSites.add(loc);
+        out.changes.push({ target: 'modifier_option_site', entity_id: o.id, location_id: loc, op: 'update', after: { price: clearIt ? null : fromPence(r.pence) } });
+      }
+    }
+  }
+  return out;
 }
 
 function siteChange(ps, channel, value) {
   const after = channel
     ? { channel_prices: { ...(ps.channel_prices || {}), [channel]: value } }
     : { price: value };
-  return { target: 'product_site', entity_id: ps.product_id, location_id: ps.location_id, op: 'update', after };
+  return { target: 'product_site', entity_id: ps.product_id, location_id: ps.location_id, op: 'update', after, _ch: channel };
 }
 
 /** The preview's headline: "84 prices change at 6 sites" (plus clears and clamps). */
@@ -287,5 +423,6 @@ export function priceChangeWords(summary) {
   if (s.clears) parts.push(`clears ${s.clears} site price${s.clears === 1 ? '' : 's'}`);
   if (s.clamped) parts.push(`${s.clamped} would go below zero and stop at 0.00`);
   if (s.offSites) parts.push(`also keeps ${s.offSites} site${s.offSites === 1 ? '' : 's'} where it is off in step`);
+  if (s.freeKept) parts.push(`${s.freeKept} free option price${s.freeKept === 1 ? '' : 's'} left at 0.00`);
   return parts.join(', ');
 }

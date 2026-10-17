@@ -109,6 +109,61 @@ export function createMsmData({ client, report = () => {}, invokeTimeoutMs = 600
       } catch { return null; }
     },
 
+    /**
+     * Round 2: the option groups the group menu manages at a venue (Menu Manager lock, the sharing
+     * engine's own gate). null when it cannot be read. Returns Map(venueGroupId -> { groupId,
+     * kept: [columns], optionIds: [venue option ids the group menu owns there] }).
+     */
+    async managedGroups(locationId) {
+      if (!client || !locationId) return null;
+      try {
+        const res = await client.rpc('msm_managed_groups', { p_location: locationId });
+        if (res.error) return null;
+        return new Map((res.data || []).map((r) => [r.venue_group_id, { groupId: r.group_id, kept: r.kept || [], optionIds: r.option_ids || [] }]));
+      } catch { return null; }
+    },
+    /** Round 2: { ok, on, groups, items } at several venues at once (public.msm_managed_at). */
+    async managedAt(locationIds) {
+      const r = await rpc('msm_managed_at', { p_locations: [...new Set(locationIds || [])] });
+      return r.ok ? { ok: true, on: r.data?.on === true, groups: r.data?.groups || [], items: r.data?.items || [] } : { ok: false, error: r.error, notInstalled: r.notInstalled };
+    },
+    /**
+     * Round 2: how many of each venue product sold at each site in the last `days` days (the
+     * "removing something that sells" tick). { ok, rows: [{ location_id, venue_item_id, sold }] }.
+     */
+    async soldRecently(menuId, days = 7, venueItemIds = null) {
+      const r = await rpc('msm_sold_recently', { p_menu: menuId, p_days: days, p_item_ids: venueItemIds && venueItemIds.length ? venueItemIds : null });
+      return r.ok ? { ok: true, rows: r.data || [] } : { ok: false, rows: [], error: r.error };
+    },
+    /** Round 2: which sites are trading now, with their local time. { ok, rows: [{ location_id, trading, local_time }] }. */
+    async sitesTrading(menuId) {
+      const r = await rpc('msm_sites_trading', { p_menu: menuId });
+      return r.ok ? { ok: true, rows: r.data || [] } : { ok: false, rows: [], error: r.error };
+    },
+    /** Round 2: which order types the screens show (a setting: no draft, no publish, editors only). */
+    setOrderTypes: (menuId, types) => rpc('msm_set_order_types', { p_menu: menuId, p_types: types == null ? null : [...new Set(types)] }, 'multi site menu order types'),
+    /** Round 2: 2 once 20261017c has run, 1 before (the function is missing), null on a failure. */
+    async sqlContract() {
+      const r = await rpc('msm_sql_contract', {});
+      if (r.ok) return Number(r.data) || 1;
+      return r.notInstalled ? 1 : null;
+    },
+    /**
+     * Round 2: the one time option group refresh (design 1.9). The msm-publish function reads every
+     * site, brings the groups in as rows and proves zero writes first; nothing is saved otherwise.
+     * Returns { ok, data: { counts, words } } or { ok: false, words }.
+     */
+    async refreshGroups(menuId) {
+      if (!client?.functions?.invoke) return bad(new Error('No functions'));
+      try {
+        const res = await race(client.functions.invoke('msm-publish', { body: { action: 'refresh_groups', menu_id: menuId } }), invokeTimeoutMs, 'Refreshing option groups');
+        report('multi site menu refresh', res.error || (res.data && res.data.ok === false ? new Error(res.data.error || 'not saved') : null));
+        if (res.error) return bad(res.error);
+        if (res.data && res.data.ok === false) return { ok: false, data: res.data, error: null, words: res.data.error || res.data.words || 'Nothing was changed.' };
+        return ok(res.data);
+      } catch (e) { report('multi site menu refresh', e); return bad(e); }
+    },
+
     // ── Drafts ────────────────────────────────────────────────────────────
     async createDraft(menuId, title, kind = 'edit', { undoOf = null } = {}) {
       const t = String(title || '').trim().slice(0, 80);
