@@ -1,0 +1,69 @@
+# Offline test for the Multi site menu migration
+
+`run.mjs` applies `supabase/migrations/20261017_OPS_multi_site_menu.sql` to a **local, throwaway
+Postgres 17** that copies the shape of the live Ops database, then checks every rule as the roles
+PostgREST really uses, and drives the publish path **end to end with the real planner, health
+check and push builder** (`supabase/functions/_shared/msm*.js`), exactly as `msm-publish` runs
+them. It never connects to Supabase.
+
+- `baseline.sql`: the Supabase roles WITH production's default privileges (new tables and
+  functions are granted to anon and authenticated, the trap the migration must undo by name), the
+  auth helpers as live, the vault, pg_net and pg_cron stand ins, and the menu tables with their live
+  column lists (read 17 Oct 2026).
+- `run.mjs`: two made up companies (two sites and one), a ServOS person, an editor, a viewer, an
+  owner who was NOT added, and another company's editor.
+
+## Run
+
+```sh
+initdb -D <scratch>/data -U postgres --auth=trust -E UTF8
+LC_ALL=C pg_ctl -D <scratch>/data -o "-p 55991 -c listen_addresses=127.0.0.1 -c unix_socket_directories=''" start
+node supabase/tests/multi_site_menu/run.mjs
+pg_ctl -D <scratch>/data stop
+```
+
+`MSM_PGHOST` and `MSM_PGPORT` override the address.
+
+## The edge function itself
+
+```sh
+node supabase/tests/multi_site_menu/edge.mjs
+```
+
+Bundles `supabase/functions/msm-publish/index.ts` with rolldown (the bundler Vite ships), swaps
+the Supabase client for `supabaseMock.mjs` (every call becomes real SQL on the harness database, as
+the service role or as the signed in person, so grants, row level security and the functions all
+apply), stands in `Deno.serve` and `Deno.env`, and calls the handler like the job and the Back
+Office do. 17 Oct 2026: **25 of 25**: who may call it, publish now by the editor's call (a viewer is
+refused), a scheduled set run by the job at its time and not before, a blocking problem at one site
+while the other publishes, the pre check an hour before (words, no writes, the central tables not
+touched), a company switched off pausing its sets, late marked once, and every message noted once
+in the ledger. It found one real bug on its first run: two new categories whose central ids shared
+their first 12 characters got the same venue id (the database refused the second; the planner now
+falls back to the whole id).
+
+## What run.mjs proves (17 Oct 2026: 110 of 110)
+
+- The file applies as one transaction, twice; its check row reads as the file says.
+- Only ServOS with the second step switches a company on and adds people; nobody adds themselves.
+- The import writes the central tables only and changes nothing at any venue; it refuses a site of
+  another company and a product id from another venue; a second import is refused.
+- Row level security: the public key reads nothing; a viewer reads; the owner who was not added,
+  and another company's editor, read nothing; central rows cannot be written from the browser.
+- Staging: a site of another company, a field that is not allowed, a product not in the menu,
+  another venue's product id and another company's editor are all refused.
+- Schedule: due times on each site's clock (the database and the screen agree on both clock change
+  weekends, London and Los Angeles); a scheduled set is frozen; unschedule keeps every change.
+- Publish: the server claims due runs once, starts the version once, writes each venue in place
+  (the Latte's own Lunch price untouched), creates a new category with its menu link, sends it to
+  the same kitchen centre as the category it was sent like, inserts the config push with
+  `pushSource`, writes the activity feed and the exact before and after; a second apply does
+  nothing; a site with its own price gets nothing and no push.
+- A venue saved between the read and the write is refused whole, then published on a fresh read.
+- An option price follows its sub item.
+- The write path refuses another venue's product, an id that exists, a venue owned column, another
+  venue's category and the venue's menu tier prices.
+- Failures in words, retry, the notification ledger (once), late (once), the job posts only when
+  something is due, the cron key check, cancel, switching a company off pauses its sets and lifts the
+  lock, switching it on resumes them.
+- The roll back leaves no msm_ object and every venue row.

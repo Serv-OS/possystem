@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.75',
+    date: '17 Oct 2026',
+    items: [
+      "Multi site menu, first part (the database, the server and Company Admin; the Back Office screens come next). A company can keep ONE group menu for all its sites: its products, categories, which sites sell each one and the price at each site, with the extras a single site sells. Changes are gathered in a named set and published to every site at once, or scheduled for a date and time read on each site's own clock, so new products and price rises are on the tills by then with nobody pressing anything. Each site is written in its own rows and sent the same refresh as Push to POS, all or nothing per site. Every publish is kept with exactly what it changed, so it can be undone.",
+      "Multi site menu: nothing changes at any venue until ServOS switches the company on in Company Admin AND one of the people ServOS added by name publishes. Owners and ServOS staff are not let in automatically. The tills, kiosk, online ordering, QR, menu boards, HubRise, ezCater and the Smart Quick Screen keep reading exactly what they read today. Needs the database update 20261017 and the msm-publish function deployed; until then it stays hidden.",
+      "Multi site menu, the safety checks before anything is written: a site with no matching VAT rate, a product with no category, a price below zero, a new category that no printer or kitchen screen takes, a site saved by someone else at the same moment (read again first). A site with a problem is skipped and the reason is written in words; the others still publish. An hour before a scheduled publish the same check runs, and the person who scheduled it and every editor are emailed if a site would fail, so it can be fixed before opening.",
+      "Multi site menu: when a sub item's price or name is changed centrally (oat milk, a syrup), the option on every modifier group that uses it follows, so the till charges the new price.",
+    ],
+  },
+  {
     v: '5.11.74',
     date: '16 Oct 2026',
     items: [
