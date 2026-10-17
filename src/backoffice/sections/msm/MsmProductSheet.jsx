@@ -65,6 +65,9 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
     }
     return out;
   });
+  // What the sheet opened with: closing with changes typed asks first (Escape, a tap outside).
+  const [startForm] = useState(form);
+  const [startSites] = useState(siteForm);
   const [moreNames, setMoreNames] = useState(false);
   const [newCat, setNewCat] = useState(null);     // { label, parent_id, route_like_id }
   const [words, setWords] = useState('');
@@ -175,6 +178,8 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
 
   return (
     <Sheet title={title} width={640} onClose={onClose}
+      dirty={editable && !saving && (!!newCat || JSON.stringify(form) !== JSON.stringify(startForm) || JSON.stringify(siteForm) !== JSON.stringify(startSites))}
+      dirtyWords={create ? 'Close without adding it? What you typed is lost.' : 'Close without saving? Your changes are not in the draft.'}
       sub={create ? 'Goes into the draft. It reaches the tills when the draft is published, now or at a time you choose.' : `${categoryPath(ix, p.category_id) || 'No category'}${p.site_only_location_id ? ' · site only extra' : ''}${p.archived ? ' · removed' : ''}`}
       footer={editable ? (
         <>

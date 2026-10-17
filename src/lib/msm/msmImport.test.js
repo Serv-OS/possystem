@@ -110,3 +110,41 @@ test('a difference the planner sees is never left unexplained: settleKept reache
   const again = settleKept(built.central, sites);
   assert.equal(again.ok, true);
 });
+
+// ── 17 Oct review ────────────────────────────────────────────────────────────
+test('a venue\'s second menu (catering) is never pulled in: only the chosen menu\'s products', () => {
+  const v = venues();
+  const a = v[A];
+  a.menus.push({ id: 'menu-cater', location_id: A, name: 'Catering', is_default: false, is_active: true, sort_order: 1 });
+  a.categories.push({ ...a.categories[0], id: 'cat-platters', label: 'Platters', menu_id: 'menu-cater' });
+  a.links.push({ menu_id: 'menu-cater', category_id: 'cat-platters', sort_order: 1 });
+  a.items.push({ ...a.items[0], id: 'm-platter', name: 'Sandwich platter', menu_name: 'Sandwich platter', cat: 'cat-platters', assigned_modifier_groups: [] });
+  const p = proposeImport(importSites(v), { idGen: idGen() });
+  assert.ok(!p.products.some((x) => x.name === 'Sandwich platter'), 'the catering product is not proposed');
+  assert.ok(!p.productSites.some((s) => s.venue_item_id === 'm-platter'));
+  assert.ok(p.products.some((x) => x.name === 'Oat milk'), 'a sub item used as an option still matches');
+});
+
+test('a family clash matches the copy on sale, never an archived duplicate', () => {
+  const v = venues();
+  const b = v[B];
+  const copy = b.items.find((i) => i.id === `m-latte_${sfx(B)}`);
+  // An archived duplicate of the same family that sorts FIRST at site B.
+  b.items.unshift({ ...copy, id: 'm-latte-old', archived: true, master_id: 'm-latte', sort_order: -1 });
+  const p = proposeImport(importSites(v), { idGen: idGen() });
+  const latte = p.products.find((x) => x.name === 'Latte');
+  const atB = p.productSites.find((s) => s.product_id === latte.id && s.location_id === B);
+  assert.equal(atB.venue_item_id, `m-latte_${sfx(B)}`, 'the copy on sale is matched');
+  const clash = p.review.clashes.find((c) => c.location_id === B);
+  assert.equal(clash.matchedId, `m-latte_${sfx(B)}`);
+});
+
+test('a legacy row with no base price is named in words by the self check', () => {
+  const v = venues();
+  const row = v[B].items.find((i) => i.id === `m-latte_${sfx(B)}`);
+  row.pricing = { dineIn: null };
+  const sites = importSites(v);
+  const built = buildCentral(proposeImport(sites, { idGen: idGen() }), sites, {}, { idGen: idGen('g') });
+  assert.equal(built.check.ok, false);
+  assert.ok(built.check.problems.some((x) => /has no base price/.test(x.words)), JSON.stringify(built.check.problems));
+});

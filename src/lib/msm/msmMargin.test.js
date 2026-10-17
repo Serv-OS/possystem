@@ -38,3 +38,15 @@ test('a till takes a head office update by itself only when idle, and only an ms
   assert.equal(shouldCatchUp({ id: 'a', kind: 'msm' }, { id: 'a' }), false);
   assert.equal(shouldCatchUp({ id: 'b', kind: 'push' }, { id: 'a' }), false);
 });
+
+test('GP takes off the SITE\'s VAT: a kept rate, the mapped rate, and none for an exclusive (US) rate', async () => {
+  const { siteVatPct, vatMaps } = await import('./msmMargin.js');
+  const p = { id: 'p', tax_rate_name: 'VAT', tax_rate_percent: 20 };
+  const rates = [{ id: 'r20', name: 'VAT', rate: 20, active: true }, { id: 'r5', name: 'Reduced', rate: 5, active: true }];
+  assert.equal(siteVatPct(p, { kept: {} }, rates), 20);
+  assert.equal(siteVatPct(p, { kept: { tax_rate_id: 'r5' } }, rates), 5, 'the site kept its own rate');
+  assert.equal(siteVatPct(p, null, [{ id: 'us', name: 'VAT', rate: 20, type: 'exclusive', active: true }]), 0, 'exclusive: the price is already net');
+  assert.equal(siteVatPct(p, null, null), 20, 'rates not read: the group\'s rate');
+  const m = vatMaps({ productSites: [{ product_id: 'p', location_id: 'L', kept: { tax_rate_id: 'r5' } }] }, { L: rates });
+  assert.equal(m.L(p), 5);
+});

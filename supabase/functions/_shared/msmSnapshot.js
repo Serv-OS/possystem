@@ -53,11 +53,15 @@ export function buildMsmSnapshot({ raw, last = null, pushSource = {}, pushedBy =
   if (last && typeof last === 'object') {
     for (const k of CARRY_KEYS) if (last[k] !== undefined) snap[k] = last[k];
   }
+  // Like Push to POS (BackOfficeApp): an EMPTY read never replaces what the last push carried
+  // (a venue whose printers live only in its pushes would stop printing kitchen tickets).
   const routing = routingRead ? printRoutingFromRow(raw.printRouting) : null;
-  if (routing) snap.printRouting = routing;
+  const hasCentres = (r) => !!r && Array.isArray(r.centres) && r.centres.length > 0;
+  if (hasCentres(routing) || (routing && !hasCentres(last?.printRouting))) snap.printRouting = routing;
   else if (last?.printRouting) snap.printRouting = last.printRouting;
-  if (printersRead && Array.isArray(raw.printers)) snap.printers = raw.printers.map(mapPrinterRow);
+  if (printersRead && Array.isArray(raw.printers) && raw.printers.length) snap.printers = raw.printers.map(mapPrinterRow);
   else if (Array.isArray(last?.printers)) snap.printers = last.printers;
+  else if (printersRead && Array.isArray(raw.printers)) snap.printers = [];
   return {
     ...snap,
     version: now,

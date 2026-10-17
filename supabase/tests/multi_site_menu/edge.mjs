@@ -165,6 +165,22 @@ const r5 = await call({ action: 'run_due' }, { 'x-cron-key': CRON });
 expect('switched on again: marked late once and run (it fails on its problem, in words)', one(`select late_at is not null from msm_version_sites where version_id = '${V4}' and location_id = '${L1}'`) === 't' && r5.body.ran.some((x) => x.status === 'failed'), JSON.stringify(r5.body));
 expect('every message was noted in the ledger, so none repeats', Object.keys(json(`select notified from msm_version_sites where version_id = '${V4}' and location_id = '${L1}'`)).sort().join() === 'failed,late,will_fail');
 
+// ── a warm worker never plans from an earlier request's list of changes ─────
+const SET5 = mkSet('Mince pies');
+stage(SET5, { target: 'product_site', entity: LATTE, loc: L2, op: 'update', after: { price: 3.6 } });
+const V5 = JSON.parse(asUser(E, `select msm_schedule_set('${SET5}', '2031-01-01 15:00', 5, true)`)).version_id;
+one(`update msm_version_sites set due_at = now() + interval '40 minutes' where version_id = '${V5}'`);
+await call({ action: 'run_due' }, { 'x-cron-key': CRON });             // the pre check reads (and used to keep) SET5's changes
+expect('warm: the pre check ran for the scheduled set', one(`select precheck_at is not null from msm_version_sites where version_id = '${V5}' and location_id = '${L2}'`) === 't');
+asUser(E, `select msm_unschedule_set('${SET5}')`);
+const PIE = 'e0000000-0000-4000-8000-0000000000a5';
+stage(SET5, { target: 'product', entity: PIE, op: 'create', after: { name: 'Mince pie', category_id: HOT, default_price: 2.5, tax_rate_name: 'VAT', tax_rate_percent: 20 } });
+stage(SET5, { target: 'product_site', entity: PIE, loc: L1, op: 'create', after: { venue_item_id: `msm-e000000000a5_${sfx(L1)}`, active: true } });
+const V6 = JSON.parse(asUser(E, `select msm_publish_now('${SET5}', true)`)).version_id;
+const r6 = await call({ action: 'run_version', version_id: V6 }, userAuth(E));
+expect('warm: the product added after unscheduling reaches the site (the same worker read the set afresh)', r6.status === 200
+  && one(`select count(*) from menu_items where location_id = '${L1}' and name = 'Mince pie'`) === '1', JSON.stringify(r6.body));
+
 const failed = results.filter((x) => !x).length;
 console.log(`\n${results.length - failed} of ${results.length} checks passed`);
 process.exit(failed ? 1 : 0);

@@ -63,6 +63,7 @@ export default function MsmCsv({ initial = 'export', menu, live, eff, sites, row
 
   return (
     <Modal title="Spreadsheet" sub="Work on prices in Excel or Google Sheets, then bring them back." width={760} onClose={onClose}
+      dirty={mode === 'import' && !!file && !staged && !saving} dirtyWords="The file you picked is not in the draft yet."
       footer={mode === 'export' ? (
         <>
           <div style={{ flex: 1, ...ui.sub }}>{(eff?.products || []).filter((p) => !p.archived).length} products, {cols.length} site{cols.length === 1 ? '' : 's'}{rows.length ? ', with the draft\'s changes in' : ''}.</div>

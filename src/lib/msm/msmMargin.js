@@ -10,6 +10,7 @@
 // UK menu prices include VAT, so net = price / (1 + rate / 100).
 
 import { gpPct, gpAmount, recipeCost } from '../stock/costing.js';
+import { mapTaxRate } from '../../../supabase/functions/_shared/msmPlan.js';
 
 const round2 = (n) => Math.round(n * 100 + (n >= 0 ? 1e-9 : -1e-9)) / 100;
 
@@ -100,4 +101,31 @@ export function withMargins(rows, central, costs, vat) {
     const pct = typeof vat?.[r.locationId] === 'function' ? vat[r.locationId](p) : Number(p?.tax_rate_percent) || 0;
     return { ...r, gpBefore: marginFor({ price: r.before, vatPct: pct, cost }), gpAfter: marginFor({ price: r.after, vatPct: pct, cost }) };
   });
+}
+
+/**
+ * The VAT percent to take off a site's price for its GP (17 Oct review): the site's OWN rate
+ * (a kept tax_rate_id, else the group's rate mapped there by name and percent, as publish does),
+ * and 0 when that rate is exclusive (US sales tax is added on top: the menu price is already net).
+ * taxRates null (not read) falls back to the group's percent.
+ */
+export function siteVatPct(product, ps, taxRates) {
+  const groupPct = Number(product?.tax_rate_percent) || 0;
+  if (!Array.isArray(taxRates)) return groupPct;
+  const kept = ps?.kept && typeof ps.kept === 'object' && Object.prototype.hasOwnProperty.call(ps.kept, 'tax_rate_id');
+  const id = kept ? ps.kept.tax_rate_id : mapTaxRate(product, taxRates).id;
+  const r = id ? taxRates.find((x) => x && x.id === id) : null;
+  if (!r) return groupPct;
+  if (r.type === 'exclusive') return 0;
+  return Number(r.rate) || 0;
+}
+
+/** { [locationId]: (product) => vatPct } for withMargins and the grid, from each site's rates. */
+export function vatMaps(central, ratesByLoc) {
+  const ps = new Map((central?.productSites || []).map((r) => [`${r.product_id}|${r.location_id}`, r]));
+  const out = {};
+  for (const loc of Object.keys(ratesByLoc || {})) {
+    out[loc] = (p) => siteVatPct(p, ps.get(`${p?.id}|${loc}`), ratesByLoc[loc]);
+  }
+  return out;
 }

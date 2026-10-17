@@ -128,6 +128,8 @@ const MOCK_MSM_ACCESS = Object.freeze({ installed: true, enabled: true, role: 'e
 const NAV = [
   { id:'overview',   label:'Overview',        icon:'◈',  group:'Dashboard' },
   { id:'menu',       label:'Menu manager',    icon:'🍽',  group:'Configuration' },
+  // The top bar title only: the sidebar row comes from NAV_IA and shows only to people ServOS added.
+  { id:'multi-site-menu', label:'Multi site menu', icon:'🍽', group:'Configuration' },
   { id:'floorplan',  label:'Floor plan',      icon:'⬚',  group:'Configuration' },
   { id:'stock-overview', label:'Stock overview', icon:'📦',  group:'Configuration' },
   { id:'inventory',  label:'Daily counts',    icon:'📦',  group:'Configuration' },
@@ -422,6 +424,18 @@ export default function BackOfficeApp() {
       .catch((e) => { console.warn('[BackOfficeApp] Multi site menu access not read:', e?.message); });
     return () => { live = false; };
   }, [msmOrgId, msmUserId, msmAccessTry]);
+  // Which of this venue's products the group menu manages (design 1.8): the sharing engine skips
+  // them and Menu Manager says so. Read for everyone who uses the venue (not only the people added),
+  // only once the feature is installed; empty for a company that is not switched on.
+  const msmLocationId = orgCtx && !orgCtx.loadFailed ? orgCtx.locationId || null : null;
+  useEffect(() => {
+    if (isMock || !msmAccess?.installed || !msmLocationId) return undefined;
+    let live = true;
+    Promise.all([import('../lib/msm/msmApi'), import('../lib/msm/msmManaged')])
+      .then(([{ msmApi }, managed]) => msmApi.managedItems(msmLocationId).then((m) => { if (live) managed.setMsmManaged(msmLocationId, m); }))
+      .catch(() => { /* not read: nothing is skipped, as before */ });
+    return () => { live = false; };
+  }, [msmAccess?.installed, msmLocationId]);
   const access = useMemo(
     () => (isMock ? { ...EVERYTHING, multiSiteMenu: msmAccess } : (orgCtx && !orgCtx.loadFailed ? { role: orgCtx.role, sections: orgCtx.boSections, multiSiteMenu: msmAccess } : null)),
     [orgCtx, msmAccess],

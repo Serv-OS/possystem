@@ -67,3 +67,10 @@ test('import: a bad or negative price is an error, never staged', () => {
   assert.equal(r.changes.length, 0);
   assert.equal(r.errors.length, 2);
 });
+
+test('import: a comma decimal (2,50) is an error, never read as 250.00', () => {
+  const r = readCsvChanges('Central id,Default price,Site One price\np1,"2,50",\np3,"1,250.00",\n', central, sites);
+  assert.equal(r.errors.length, 1);
+  assert.ok(!r.changes.some((c) => c.entity_id === 'p1'));
+  assert.ok(r.changes.some((c) => c.entity_id === 'p3' && c.after.default_price === 1250));
+});

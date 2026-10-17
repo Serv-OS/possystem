@@ -284,7 +284,9 @@ function Review({ proposal, choices, setChoices, bucket, setBucket, siteName, si
             </>
           )}
           {bucket === 'clashes' && r.clashes.map((c, i) => (
-            <Line key={i} title={c.name} sub={`${siteName.get(c.location_id) || 'Site'} has ${c.ids.length} products with this name. The first is matched; the others stay that site's own.`} />
+            <Line key={i} title={c.name} sub={c.matchedId
+              ? `${siteName.get(c.location_id) || 'Site'} has ${c.ids.length} copies of this product. The one on sale (${c.matchedId}) is matched; the others stay that site's own.`
+              : `${siteName.get(c.location_id) || 'Site'} has ${c.ids.length} products with this name. None is matched; each stays that site's own.`} />
           ))}
         </div>
       </div>

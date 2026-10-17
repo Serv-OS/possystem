@@ -15,7 +15,7 @@
 // (supabase/functions/_shared/msmPrice.js): a site's own channel price, else the group's channel
 // price, else the site's In store price, else the group's In store price.
 
-import { CHANNELS, toPence, fromPence, normName, has } from '../../../supabase/functions/_shared/msmModel.js';
+import { CHANNELS, toPence, fromPence, normName, has, channelFallback } from '../../../supabase/functions/_shared/msmModel.js';
 
 export const ROW_H = 40;
 export const CAT_ROW_H = 40;
@@ -112,8 +112,8 @@ export function defaultFor(product, channel = null) {
   const ch = okChannel(channel);
   const base = product ? Number(product.default_price ?? 0) : 0;
   if (!ch) return base;
-  const v = product?.default_channels && has(product.default_channels, ch) ? product.default_channels[ch] : null;
-  return v == null ? base : Number(v);
+  // Drive thru reads takeaway before In store, like the till (msmModel.channelFallback).
+  return channelFallback(product, null, ch) ?? base;
 }
 
 /**
@@ -135,8 +135,8 @@ export function cellFor(ix, product, locationId, channel = null) {
     return { exists: true, active: ps.active !== false, price: own ?? defBase, own, follows: own == null, defaultPrice: defBase, keptCols, siteOnlyElsewhere };
   }
   const own = ps.channel_prices && has(ps.channel_prices, ch) && ps.channel_prices[ch] != null ? Number(ps.channel_prices[ch]) : null;
-  const defCh = product.default_channels && has(product.default_channels, ch) && product.default_channels[ch] != null ? Number(product.default_channels[ch]) : null;
-  const fallback = defCh ?? (ps.price != null ? Number(ps.price) : defBase);
+  // The till's chain (msmModel.channelFallback): drive thru reads takeaway before In store.
+  const fallback = channelFallback(product, ps, ch) ?? defBase;
   return { exists: true, active: ps.active !== false, price: own ?? fallback, own, follows: own == null, defaultPrice: fallback, keptCols, siteOnlyElsewhere };
 }
 
@@ -288,6 +288,9 @@ export function buildGridRows(central, opts = {}) {
 
 // ── Drawing only what is on screen ──────────────────────────────────────────
 
+/** May this product's price cells be edited from the keyboard? A variants parent is priced by its sizes. */
+export const priceEditable = (product) => !!product && product.type !== 'variants';
+
 /** The first and one past the last row to draw. */
 export function visibleRange(scrollTop, viewportH, total, rowH = ROW_H, overscan = 8) {
   const top = Math.max(0, Number(scrollTop) || 0);
@@ -306,7 +309,13 @@ export function visibleRange(scrollTop, viewportH, total, rowH = ROW_H, overscan
  *   anything else { ok: false, words }
  */
 export function priceInput(text) {
-  const t = String(text ?? '').trim().replace(/^[£$€]\s*/, '').replace(/,/g, '');
+  let t = String(text ?? '').trim().replace(/^[£$€]\s*/, '');
+  // A comma only ever separates thousands (1,250.00). '3,20' is a slip of the key next to the
+  // full stop (or a comma decimal pasted in): refused, never read as 320.00.
+  if (/,/.test(t)) {
+    if (!/^\d{1,3}(,\d{3})+(\.\d{1,2})?$/.test(t)) return { ok: false, words: 'Use a full stop for pence, like 3.20.' };
+    t = t.replace(/,/g, '');
+  }
   if (!t) return { ok: true, value: null };
   if (!/^\d{0,5}(\.\d{0,2})?$/.test(t) || t === '.') return { ok: false, words: 'Type a price in pounds and pence, like 3.20.' };
   const n = Number(t);

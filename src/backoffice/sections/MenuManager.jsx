@@ -22,6 +22,7 @@
  */
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { useStore, findDuplicateProductName, bulkUpdateMenuItems, bulkSummaryWords, runInMenuWriteQueue, MENU_WAIT_MS, loadVenueMenu, tabVenue } from '../../store';
+import { msmManagedState, subscribeMsmManaged } from '../../lib/msm/msmManaged.js';
 import { withTimeout } from '../../lib/withTimeout';
 import { venueTaxRates } from '../../lib/rowMapping';
 import { categoryFormOf, categoryFormPatch } from '../../lib/categoryForm';
@@ -464,8 +465,17 @@ export default function MenuManager() {
   const [importOpen, setImportOpen] = useState(false);
   const { menus } = useStore();
   const defaultMenuId = menus?.[0]?.id;
+  // 17 Oct 2026 (Multi site menu, design 1.8): how many of this venue's products head office
+  // manages. 0 (no banner) for every company that is not switched on.
+  const [msmManaged, setMsmManagedCount] = useState(() => msmManagedState().ids.size);
+  useEffect(() => subscribeMsmManaged((st) => setMsmManagedCount(st.ids.size)), []);
   return (
     <div className="bo-workspace" style={{ display:'flex', flexDirection:'column', height:'100%', overflow:'hidden' }}>
+      {msmManaged > 0 && (
+        <div role="status" style={{ padding:'8px 16px', background:'var(--blu-d, var(--bg2))', borderBottom:'1px solid var(--bdr)', fontSize:12.5, color:'var(--t2)', flexShrink:0 }}>
+          {msmManaged} product{msmManaged === 1 ? ' here is' : 's here are'} managed by your group menu (Multi site menu). Change their prices, names and categories there: a change made here is replaced by the next publish, and is not shared to your other sites.
+        </div>
+      )}
       <nav style={{ display:'flex', borderBottom:'1px solid var(--bdr)', background:'var(--bg1)', flexShrink:0, alignItems:'center' }}>
         {[['menu','🍽 Menus'],['quick','⚡ Quick Screen'],['items','📋 Items'],['modifiers','⊕ Modifier groups'],['instructions','📝 Instruction groups']].map(([id,label])=>(
           <button key={id} onClick={()=>setTab(id)} style={{ padding:'0 20px', height:46, cursor:'pointer', fontFamily:'inherit', border:'none', borderBottom:`3px solid ${tab===id?'var(--acc)':'transparent'}`, background:'transparent', color:tab===id?'var(--acc)':'var(--t3)', fontSize:13, fontWeight:tab===id?800:500 }}>

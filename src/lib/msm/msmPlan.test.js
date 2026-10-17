@@ -163,6 +163,25 @@ test('removing a category takes it off the venue menu, never deletes it; blocked
   assert.ok(checkSite(plan(central, moved, A, v[A])).ok);
 });
 
+test('bringing a removed category back (or undoing its removal) puts it back on the venue menu with its link', () => {
+  const { v, central, K } = setup();
+  const cold = K('Cold drinks');
+  const removed = [{ target: 'category', entity_id: cold.id, op: 'remove', after: {} }];
+  const off = plan(central, removed, A, v[A]);
+  const venueOff = { ...v[A], categories: off.applied.categories, links: off.applied.links };
+  const centralOff = applyChanges(central, removed).central;
+  assert.equal(centralOff.categories.find((c) => c.id === cold.id).archived, true);
+  const back = plan(centralOff, [{ target: 'category', entity_id: cold.id, op: 'update', after: { archived: false } }], A, venueOff);
+  assert.deepEqual(back.writes.categories.update, [{ id: 'cat-cold', set: { menu_id: 'menu-a' } }]);
+  assert.equal(back.writes.links.insert.length, 1);
+  assert.equal(back.writes.links.insert[0].menu_id, 'menu-a');
+  assert.equal(back.writes.links.insert[0].category_id, 'cat-cold');
+  assert.ok(back.applied.links.some((l) => l.menu_id === 'menu-a' && l.category_id === 'cat-cold'));
+  // Already on the menu: nothing to write.
+  const still = plan(central, [{ target: 'category', entity_id: cold.id, op: 'update', after: { archived: false } }], A, v[A]);
+  assert.equal(still.empty, true);
+});
+
 test('a category a venue emptied by hand is never refilled: a change elsewhere writes nothing there', () => {
   const { v, central, P } = setup();
   const p = plan(central, [{ target: 'product', entity_id: P('Tea').id, op: 'update', after: { default_price: 2.1 } }], B, v[B]);

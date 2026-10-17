@@ -21,7 +21,7 @@
 //   * Sizes follow their product unless excluded. A variants parent (whose own price is never
 //     charged) and an archived product are never changed.
 
-import { CHANNELS, toPence, fromPence, has } from './msmModel.js';
+import { CHANNELS, toPence, fromPence, has, channelFallback } from './msmModel.js';
 
 // ── Rounding ────────────────────────────────────────────────────────────────
 
@@ -85,7 +85,8 @@ export function changeOne(oldP, change, rounding) {
   const dir = change?.direction === 'down' ? -1 : 1;
   let raw;
   if (mode === 'percent') {
-    const pct = Number(change.value);
+    // The direction says up or down; a minus sign typed into the box never flips it.
+    const pct = Math.abs(Number(change.value));
     if (!Number.isFinite(pct)) return { pence: oldP, clamped: false, invalid: true };
     const exact = oldP * (1 + dir * pct / 100);
     raw = Math.floor(exact + 0.5 + 1e-9);                         // half up
@@ -132,6 +133,7 @@ export function productsInScope(central, scope = {}) {
 // ── The tool ────────────────────────────────────────────────────────────────
 
 const chanOf = (obj, k) => (obj && has(obj, k) && obj[k] != null ? obj[k] : null);
+const pence = (pounds) => (pounds == null ? null : toPence(pounds));
 
 /**
  * Work out a price change over a scope. Pure.
@@ -139,9 +141,12 @@ const chanOf = (obj, k) => (obj && has(obj, k) && obj[k] != null ? obj[k] : null
  *   opts      { scope, change, rounding, channel (null = In store), sites: 'all' | [locationIds] }
  * Returns {
  *   rows:     every price shown in the preview: { productId, locationId (null = the default),
- *             before, after, changed, clamped, follows (site follows the default), clears }
+ *             before, after, changed, clamped, follows (site follows the default), clears,
+ *             staged (a change row was staged for it: it can be unticked), off (the product is
+ *             turned off there: kept in step, not counted), pinned (In store change only: the
+ *             channel prices set separately for it, which the till charges first and which stay) }
  *   changes:  msm_changes rows to stage ({ target, entity_id, location_id, op: 'update', after })
- *   summary:  { prices, sites, clears, clamped, products }
+ *   summary:  { prices, sites, clears, clamped, products, offSites, pinned }
  * }
  */
 export function applyPriceChange(central, opts = {}) {
@@ -159,80 +164,112 @@ export function applyPriceChange(central, opts = {}) {
   const rows = [];
   const changes = [];
   const touchedSites = new Set();
-  let clears = 0, clamped = 0;
+  const offSites = new Set();
+  let clears = 0, clamped = 0, pinnedRows = 0;
+
+  // The channel prices set separately (In store changes only): the till charges these first.
+  const pinnedOf = (p, ps) => {
+    if (channel) return [];
+    const keys = [];
+    for (const k of CHANNELS) {
+      if (chanOf(ps ? ps.channel_prices : null, k) != null || chanOf(p.default_channels, k) != null) keys.push(k);
+    }
+    return keys;
+  };
 
   for (const p of products) {
     const defBase = toPence(p.default_price);
-    // The default and what a site gets when it has no override, for the chosen price.
+    // The group's price for the chosen channel: its own, else what it falls back to (the till's chain).
     const defOwn = channel ? toPence(chanOf(p.default_channels, channel)) : defBase;
-    const defEff = defOwn ?? defBase;
+    const groupEff = channel ? pence(channelFallback(p, null, channel)) : defBase;
     const siteRows = siteLocs.map((loc) => psBy.get(`${p.id}|${loc}`)).filter(Boolean);
     const siteOwn = (ps) => (channel ? toPence(chanOf(ps.channel_prices, channel)) : toPence(ps.price));
-    // What a site charges with no override of its own for the chosen price.
-    const siteFallback = (ps, defaultNow) => (channel ? (defaultNow ?? toPence(ps.price) ?? defBase) : defaultNow);
-    const siteEff = (ps, defaultNow) => siteOwn(ps) ?? siteFallback(ps, defaultNow);
+    // What a site charges with no price of its own for the chosen channel, today.
+    const siteFallbackNow = (ps) => (channel ? pence(channelFallback(p, ps, channel)) : defBase);
 
     if (allSites) {
-      if (defEff == null || Number.isNaN(defEff)) continue;
-      const r = changeOne(defEff, change, rounding);
+      if (groupEff == null || Number.isNaN(groupEff)) continue;
+      const r = changeOne(groupEff, change, rounding);
       if (r.invalid) continue;
       const newDef = r.pence;
       if (r.clamped) clamped++;
-      rows.push({ productId: p.id, locationId: null, before: fromPence(defEff), after: fromPence(newDef), changed: newDef !== defEff, clamped: r.clamped, follows: false, clears: false });
-      if (newDef !== defEff || (channel && defOwn == null)) {
+      const defPinned = pinnedOf(p, null);
+      rows.push({ productId: p.id, locationId: null, before: fromPence(groupEff), after: fromPence(newDef), changed: newDef !== groupEff, clamped: r.clamped, follows: false, clears: false, staged: false, off: false, pinned: defPinned });
+      if (newDef !== groupEff || (channel && defOwn == null)) {
         const after = channel
           ? { default_channels: { ...(p.default_channels || {}), [channel]: fromPence(newDef) } }
           : { default_price: fromPence(newDef) };
         changes.push({ target: 'product', entity_id: p.id, location_id: null, op: 'update', after });
       }
       for (const ps of siteRows) {
-        if (ps.active === false) continue;
+        // A site where the product is turned off is kept in step too (its own price changes or
+        // clears like any other), so turning it back on never brings back an old price.
+        const off = ps.active === false;
         const own = siteOwn(ps);
-        const before = siteEff(ps, defOwn);
-        if (own == null) {
-          // Follows the default: moves with it, no row of its own.
-          const after = siteFallback(ps, newDef);
-          rows.push({ productId: p.id, locationId: ps.location_id, before: fromPence(before), after: fromPence(after), changed: after !== before, clamped: r.clamped, follows: true, clears: false });
+        const fallback = siteFallbackNow(ps);
+        const before = own ?? fallback;
+        const pinned = pinnedOf(p, ps);
+        if (pinned.length && !off) pinnedRows++;
+        // A site with no price of its own FOLLOWS the group only when what it falls back to is
+        // the group's price. A channel the group never priced falls back to the site's own In
+        // store price (or takeaway, for drive thru): staging the group's channel price would
+        // replace that, so such a site is treated as having its own price.
+        if (own == null && (fallback === groupEff || defOwn != null || !channel)) {
+          if (off) continue;
+          const after = newDef;
+          rows.push({ productId: p.id, locationId: ps.location_id, before: fromPence(before), after: fromPence(after), changed: after !== before, clamped: r.clamped, follows: true, clears: false, staged: false, off: false, pinned });
           if (after !== before) touchedSites.add(ps.location_id);
           continue;
         }
+        if (before == null || Number.isNaN(before)) continue;
         let next, rc = false, clearIt = false;
         if (isSet) { next = newDef; clearIt = true; }
         else {
-          const r2 = changeOne(own, change, rounding);
+          const r2 = changeOne(before, change, rounding);
           next = r2.pence; rc = r2.clamped;
           if (next === newDef) clearIt = true;
         }
-        if (rc) clamped++;
-        if (clearIt) clears++;
-        rows.push({ productId: p.id, locationId: ps.location_id, before: fromPence(own), after: fromPence(next), changed: next !== own || clearIt, clamped: rc, follows: false, clears: clearIt });
-        touchedSites.add(ps.location_id);
+        // Nothing to stage: no price of its own and the new group price is already what it charges.
+        if (own == null && clearIt) {
+          if (!off) rows.push({ productId: p.id, locationId: ps.location_id, before: fromPence(before), after: fromPence(next), changed: next !== before, clamped: rc, follows: true, clears: false, staged: false, off: false, pinned });
+          if (!off && next !== before) touchedSites.add(ps.location_id);
+          continue;
+        }
+        if (rc && !off) clamped++;
+        if (clearIt && own != null) clears++;
+        rows.push({ productId: p.id, locationId: ps.location_id, before: fromPence(before), after: fromPence(next), changed: next !== before || (clearIt && own != null), clamped: rc, follows: false, clears: clearIt && own != null, staged: true, off, pinned });
+        if (off) offSites.add(ps.location_id);
+        else touchedSites.add(ps.location_id);
         changes.push(siteChange(ps, channel, clearIt ? null : fromPence(next)));
       }
     } else {
       for (const loc of chosen) {
         const ps = psBy.get(`${p.id}|${loc}`);
         if (!ps || ps.active === false) continue;
-        const before = siteEff(ps, defOwn);
+        const own = siteOwn(ps);
+        const followVal = siteFallbackNow(ps);
+        const before = own ?? followVal;
         if (before == null || Number.isNaN(before)) continue;
         const r = changeOne(before, change, rounding);
         if (r.invalid) continue;
         if (r.clamped) clamped++;
-        const followVal = siteFallback(ps, defOwn);
         const clearIt = r.pence === followVal;
-        const own = siteOwn(ps);
+        const pinned = pinnedOf(p, ps);
+        if (pinned.length) pinnedRows++;
+        const willStage = !(r.pence === before && (clearIt ? own == null : own === r.pence));
         if (clearIt && own != null) clears++;
-        rows.push({ productId: p.id, locationId: loc, before: fromPence(before), after: fromPence(r.pence), changed: r.pence !== before, clamped: r.clamped, follows: clearIt, clears: clearIt && own != null });
-        if (r.pence === before && (clearIt ? own == null : own === r.pence)) continue;
+        rows.push({ productId: p.id, locationId: loc, before: fromPence(before), after: fromPence(r.pence), changed: r.pence !== before, clamped: r.clamped, follows: clearIt, clears: clearIt && own != null, staged: willStage, off: false, pinned });
+        if (!willStage) continue;
         touchedSites.add(loc);
         changes.push(siteChange(ps, channel, clearIt ? null : fromPence(r.pence)));
       }
     }
   }
-  const prices = rows.filter((r) => r.changed).length;
+  // The headline counts what reaches the tills: site prices on sale, never the group price row.
+  const prices = rows.filter((r) => r.locationId && r.changed && !r.off).length;
   return {
     rows, changes,
-    summary: { prices, sites: touchedSites.size, clears, clamped, products: products.length },
+    summary: { prices, sites: touchedSites.size, clears, clamped, products: products.length, offSites: offSites.size, pinned: pinnedRows },
   };
 }
 
@@ -249,5 +286,6 @@ export function priceChangeWords(summary) {
   const parts = [`${s.prices || 0} price${s.prices === 1 ? '' : 's'} change at ${s.sites || 0} site${s.sites === 1 ? '' : 's'}`];
   if (s.clears) parts.push(`clears ${s.clears} site price${s.clears === 1 ? '' : 's'}`);
   if (s.clamped) parts.push(`${s.clamped} would go below zero and stop at 0.00`);
+  if (s.offSites) parts.push(`also keeps ${s.offSites} site${s.offSites === 1 ? '' : 's'} where it is off in step`);
   return parts.join(', ');
 }

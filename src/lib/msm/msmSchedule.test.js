@@ -3,7 +3,7 @@
 // gives the same answers (supabase/tests/multi_site_menu/run.mjs compares them).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { localToUtc, dueAt, startsWords, scheduleButtonWords, siteDueTimes, overlaps, isPast, clockText } from '../../../supabase/functions/_shared/msmSchedule.js';
+import { localToUtc, dueAt, startsWords, scheduleButtonWords, siteDueTimes, overlaps, isPast, clockText, scheduleNote } from '../../../supabase/functions/_shared/msmSchedule.js';
 
 const iso = (ms) => new Date(ms).toISOString().slice(0, 16);
 
@@ -57,4 +57,15 @@ test('scheduled sets run in time order, and an overlap says which one wins', () 
   assert.deepEqual(o.order, ['rise', 'quiet', 'xmas']);
   assert.equal(o.overlaps.length, 1);
   assert.equal(o.overlaps[0].words, 'Price rise (Mon 19 Oct 05:55) also changes Latte at Site B. Christmas (Tue 1 Dec 05:55) runs later and wins.');
+});
+
+test('the words under the time box: empty, past, lead already past, normal', () => {
+  const tz = 'Europe/London';
+  const at = localToUtc('2026-10-20T11:00', tz);
+  assert.deepEqual(scheduleNote('', tz, 5, at - 3600000), { ok: false, past: false, words: 'Pick a date and time.' });
+  assert.equal(scheduleNote('2026-10-20T11:00', tz, 5, at + 1).past, true);
+  const close = scheduleNote('2026-10-20T11:00', tz, 5, at - 2 * 60000);
+  assert.equal(close.ok, true);
+  assert.equal(close.words, 'Starts straight away so it is on every till by 11:00', 'never a start time already gone');
+  assert.equal(scheduleNote('2026-10-20T11:00', tz, 5, at - 3600000).words, 'Starts 10:55 so it is on every till by 11:00');
 });

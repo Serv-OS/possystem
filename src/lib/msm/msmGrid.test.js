@@ -180,6 +180,10 @@ test('typing a price: pounds and pence, a symbol, blank follows, anything else r
   assert.deepEqual(priceInput('0'), { ok: true, value: 0 });
   for (const bad of ['3.205', '-1', 'abc', '.', '3..2', '10000', '1e3']) assert.equal(priceInput(bad).ok, false, bad);
   assert.match(priceInput('abc').words, /pounds and pence/);
+  // A comma is a thousands separator only: '3,20' is refused, never 320.00 (17 Oct review).
+  for (const bad of ['3,20', '2,5', '12,50', '1,25,000']) assert.equal(priceInput(bad).ok, false, bad);
+  assert.match(priceInput('3,20').words, /full stop/);
+  assert.deepEqual(priceInput('1,250'), { ok: true, value: 1250 });
 });
 
 test('pasting a column: one price per line, the first cell of each, blank lines skipped, words kept', () => {
@@ -199,4 +203,11 @@ test('keys: arrows and Enter skip category rows; left and right stay inside the 
   assert.deepEqual(moveFocus(rows, 3, { row: 1, col: 0 }, 'ShiftTab'), { row: 1, col: 0 });
   assert.deepEqual(moveFocus(rows, 3, { row: 1, col: 1 }, 'ArrowLeft'), { row: 1, col: 0 });
   assert.equal(moveFocus([], 3, { row: 0, col: 0 }, 'ArrowDown').row, 0);
+});
+
+test('the grid shows drive thru from takeaway when drive thru is not priced, like the till', () => {
+  const product = { id: 'p', default_price: 3, default_channels: { takeaway: 3.2 } };
+  const ix = indexCentral({ products: [product], productSites: [{ product_id: 'p', location_id: 'L', price: null, active: true }], categories: [], sites: [{ location_id: 'L' }] });
+  assert.equal(cellFor(ix, product, 'L', 'driveThru').price, 3.2);
+  assert.equal(defaultFor(product, 'driveThru'), 3.2);
 });

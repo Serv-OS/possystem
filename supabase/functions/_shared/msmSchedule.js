@@ -87,6 +87,23 @@ export function startsWords(local, tz, leadMinutes = DEFAULT_LEAD_MINUTES) {
   return `Starts ${clockText(due, tz)} so it is on every till by ${clockText(at, tz)}`;
 }
 
+/**
+ * The words under the time box, and whether the time can be scheduled.
+ *   { ok: false, words: 'Pick a date and time.' }                 the box is empty (Safari's Clear)
+ *   { ok: false, past: true, words: 'That time has already passed' }
+ *   { ok: true, words: 'Starts straight away so it is on every till by 11:00' }   the lead is already past
+ *   { ok: true, words: startsWords(...) }
+ */
+export function scheduleNote(local, tz, leadMinutes = DEFAULT_LEAD_MINUTES, now = Date.now()) {
+  if (!local) return { ok: false, past: false, words: 'Pick a date and time.' };
+  const at = localToUtc(local, tz);
+  if (at == null) return { ok: false, past: false, words: 'Pick a date and time.' };
+  if (at <= now) return { ok: false, past: true, words: 'That time has already passed' };
+  const due = dueAt(local, tz, leadMinutes);
+  if (due <= now) return { ok: true, past: false, words: `Starts straight away so it is on every till by ${clockText(at, tz)}` };
+  return { ok: true, past: false, words: startsWords(local, tz, leadMinutes) };
+}
+
 /** The publish button's words: "Schedule for Mon 20 Oct 06:00 (starts 05:55)". */
 export function scheduleButtonWords(local, tz, leadMinutes = DEFAULT_LEAD_MINUTES) {
   const at = localToUtc(local, tz);

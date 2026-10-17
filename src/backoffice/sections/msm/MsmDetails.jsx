@@ -60,12 +60,12 @@ export default function MsmDetails({ client, menu, live, eff, sites, stage, edit
   const schedText = (m) => {
     if (!m) return '';
     const s = m.schedule || m.availability || null;
-    if (!s || (typeof s === 'object' && !Object.keys(s).length)) return 'All day';
+    if (!s || (typeof s === 'object' && !Object.keys(s).length)) return 'Times: all day';
     return 'Has its own times';
   };
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 1fr) minmax(320px, 1.4fr)', gap: 16, alignItems: 'start' }}>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16, alignItems: 'start' }}>
       <div style={ui.card}>
         <div style={{ ...ui.h2, marginBottom: 12 }}>Menu details</div>
         <fieldset disabled={!editable} style={{ border: 'none', padding: 0, margin: 0 }}>
@@ -81,7 +81,7 @@ export default function MsmDetails({ client, menu, live, eff, sites, stage, edit
         </fieldset>
         <div style={{ ...ui.sub, marginTop: 16 }}>
           {products.length} products in {(eff?.categories || []).filter((c) => !c.archived).length} categories.
-          {menu?.last_published_at ? ` Last published ${new Date(menu.last_published_at).toLocaleString('en-GB')}${menu.last_published_by ? ` by ${menu.last_published_by}` : ''}.` : ''}
+          {menu?.last_published_at ? ` Last published ${new Date(menu.last_published_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}${menu.last_published_by ? ` by ${menu.last_published_by}` : ''}.` : ''}
           {menu?.last_version_no ? ` Version ${menu.last_version_no}.` : ''}
         </div>
       </div>

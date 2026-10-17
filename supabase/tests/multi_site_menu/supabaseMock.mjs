@@ -11,7 +11,7 @@ import { spawnSync } from 'node:child_process';
 const CONN = ['-h', process.env.MSM_PGHOST || '127.0.0.1', '-p', process.env.MSM_PGPORT || '55991', '-U', 'postgres', '-X', '-q', '-At', '-v', 'ON_ERROR_STOP=1'];
 export const harness = { db: 'msm_edge', serviceKey: 'service-key-for-tests', log: [] };
 
-const SRF = new Set(['msm_claim_due', 'msm_precheck_due', 'msm_mark_late', 'msm_managed_items']);
+const SRF = new Set(['msm_claim_due', 'msm_precheck_due', 'msm_mark_late', 'msm_mark_missed', 'msm_managed_items']);
 const ident = (s) => { if (!/^[a-z_][a-z0-9_]*$/i.test(s)) throw new Error(`bad identifier ${s}`); return s; };
 const lit = (v) => {
   if (v === null || v === undefined) return 'null';

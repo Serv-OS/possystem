@@ -19,6 +19,7 @@ import { withBefore } from '../../../lib/msm/msmEdit';
 import { Btn, Pill, Notice, Modal, WindowedList } from './msmUi';
 import { ui } from './msmStyle';
 import { useMsmHistory } from './useMsmHistory';
+import { useConfirm } from './useConfirm';
 
 const KIND = { publish: 'Published', scheduled: 'Scheduled', undo: 'Undo', import: 'Import', add_site: 'Site added' };
 
@@ -57,8 +58,9 @@ export default function MsmTimeline({ api, menu, live, sites, sets, canEdit, set
   const past = useMemo(() => (history.rows || []).filter((v) => v.status !== 'scheduled'), [history.rows]);
 
   const [busy, setBusy] = useState('');
+  const [confirm, confirmDialog] = useConfirm();
   const stop = async (entry, how) => {
-    if (how === 'cancel' && !window.confirm(`Cancel "${entry.set.title}"? It will not run, and nothing changes at any site.`)) return;
+    if (how === 'cancel' && !(await confirm({ title: `Cancel "${entry.set.title}"?`, words: 'It will not run, and nothing changes at any site.', yes: 'Cancel it', no: 'Keep it scheduled', danger: true }))) return;
     setBusy(entry.set.id);
     const r = how === 'cancel' ? await api.cancel(entry.set.id) : await api.unschedule(entry.set.id);
     setBusy('');
@@ -90,10 +92,11 @@ export default function MsmTimeline({ api, menu, live, sites, sets, canEdit, set
 
   return (
     <div style={{ display: 'grid', gap: 16, maxWidth: 1080 }}>
+      {confirmDialog}
       {history.error && <Notice tone="bad">{history.error}</Notice>}
 
       <div>
-        <SectionHead title="Coming up" sub="Scheduled sets run by themselves at their time, in this order. A set starts a few minutes early so it is on every till by its time." />
+        <SectionHead title="Coming up" sub="Scheduled sets run by themselves at their time, in this order. A set starts a few minutes early: kiosks, kitchen screens and handhelds take it at once, counter tills between sales (never mid sale)." />
         {!entries.length && (
           <div style={{ ...ui.card, ...ui.sub }}>
             Nothing is scheduled. In Publish, pick "At a date and time" to put changes on the tills later, for example new products on the tills by Monday 06:00.
@@ -112,7 +115,7 @@ export default function MsmTimeline({ api, menu, live, sites, sets, canEdit, set
                   <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t4)', textTransform: 'uppercase', letterSpacing: '.06em' }}>On the tills by</div>
                   <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: '-.02em', marginTop: 4 }}>{at != null ? clockText(at, tz) : '…'}</div>
                   <div style={{ fontSize: 13, fontWeight: 650 }}>{at != null ? whenText(at, tz).replace(/ \d\d:\d\d$/, '') : local}</div>
-                  <div style={{ ...ui.sub, marginTop: 6 }}>{e.set.status === 'running' ? 'Running now' : countdownWords(e.firstDue, now)}</div>
+                  <div style={{ ...ui.sub, marginTop: 6 }}>{e.set.status === 'running' ? 'Running now' : (countdownWords(e.firstDue, now) === 'due now' ? 'Starting now' : `Starts ${countdownWords(e.firstDue, now)}`)}</div>
                 </div>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ ...ui.row, marginBottom: 4 }}>
@@ -151,12 +154,12 @@ export default function MsmTimeline({ api, menu, live, sites, sets, canEdit, set
         <SectionHead title="History" sub="Every publish is a version. Open one to see what it wrote at each site. Undo makes a new draft that puts it back, with the same preview first." />
         {!history.rows && !history.error && <div style={ui.sub}>Reading…</div>}
         {history.rows && !past.length && <div style={{ ...ui.card, ...ui.sub }}>Nothing published yet.</div>}
-        <div style={{ ...ui.card, padding: 0, overflow: 'hidden' }}>
+        {past.length > 0 && <div style={{ ...ui.card, padding: 0, overflow: 'hidden' }}>
           {past.map((v, i) => (
             <VersionRow key={v.id} v={v} first={i === 0} api={api} names={names} siteNames={siteNames} tzOf={tzOf} now={now} live={live}
               canEdit={canEdit} busy={busy} setBusy={setBusy} setNote={setNote} onRefresh={history.refresh} onUndo={() => startUndo(v)} />
           ))}
-        </div>
+        </div>}
       </div>
 
       {undo && (

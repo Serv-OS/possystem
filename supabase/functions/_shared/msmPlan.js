@@ -462,6 +462,17 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
       }
       continue;
     }
+    // Brought back (archived false, directly or by Undo): back on the venue menu, with its link,
+    // so its products show on the tills again (design 1.9: removal is reversible).
+    if (t.fields.has('archived') && !c.archived) {
+      if (vrow.menu_id !== venueMenuId) setCol('categories', vrow, 'menu_id', venueMenuId, meta);
+      if (!applied.links.some((l) => l.menu_id === venueMenuId && l.category_id === vid)) {
+        const link = { menu_id: venueMenuId, category_id: vid, sort_order: c.sort_order ?? 0 };
+        W.links.insert.push(link);
+        applied.links.push({ ...link });
+        lines.push({ table: 'links', id: vid, column: '(on menu)', before: null, after: venueMenuId, ...meta });
+      }
+    }
     for (const f of t.fields) {
       if (f === 'route_like_id' || f === 'archived') continue;
       if (f === 'parent_id') {

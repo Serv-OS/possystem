@@ -333,7 +333,7 @@ test('the new screens: headers, plain words, no long dashes, and wired as tabs',
   for (const id of ['publish', 'timeline', 'sites', 'spread']) assert.match(tabs, new RegExp(`id: '${id}'`));
   const pub = fs.readFileSync(new URL('MsmPublish.jsx', dir), 'utf8');
   assert.match(pub, /disabled=\{!canEdit \|\| busy \|\| blocked\}/, 'Publish now waits for a clean health check');
-  assert.match(pub, /disabled=\{!canEdit \|\| busy \|\| blocked \|\| past\}/, 'Schedule too, and never in the past');
+  assert.match(pub, /disabled=\{!canEdit \|\| busy \|\| blocked \|\| past \|\| !note\.ok\}/, 'Schedule too, never in the past and never with the time box empty');
   assert.match(pub, /api\.publishNow\(working\.id/);
   assert.match(pub, /api\.schedule\(working\.id, runLocal, lead, idle\)/);
 });

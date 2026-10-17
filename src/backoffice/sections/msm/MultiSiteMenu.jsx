@@ -221,7 +221,7 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
   const shared = { tabIds: tabs.map((t) => t.id), api, client, menu, live, eff, ix, sites, sets, working, rows, staged, ctx, stage, unstage, canEdit, editable, costs, channel, setChannel, refreshSets, reload: () => setReload((n) => n + 1), setWorkingId, setNote, setTab, openProduct: (id) => setSheet({ productId: id }) };
 
   return (
-    <div style={{ ...ui.page, display: 'flex', flexDirection: 'column', height: '100%', boxSizing: 'border-box' }}>
+    <div style={{ ...ui.page, display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, boxSizing: 'border-box' }}>
       <Header menu={menu} sites={sites}>
         <WorkingOn sets={sets} working={working} canEdit={canEdit} api={api} menu={menu}
           onPick={setWorkingId} onSets={setSets} onNote={setNote} />
@@ -230,9 +230,9 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
         </Btn>
       </Header>
 
-      <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--bdr)', marginBottom: 14 }}>
+      <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--bdr)', marginBottom: 14, overflowX: 'auto', flexShrink: 0 }}>
         {tabs.map((t) => (
-          <button key={t.id} type="button" onClick={() => setTab(t.id)} style={{ padding: '9px 14px', fontSize: 14, cursor: 'pointer', background: 'transparent', border: 'none', fontFamily: 'inherit',
+          <button key={t.id} type="button" onClick={() => setTab(t.id)} style={{ padding: '9px 14px', fontSize: 14, cursor: 'pointer', background: 'transparent', border: 'none', fontFamily: 'inherit', whiteSpace: 'nowrap', flexShrink: 0,
             color: tab === t.id ? 'var(--t1)' : 'var(--t3)', fontWeight: tab === t.id ? 700 : 500, borderBottom: `2.5px solid ${tab === t.id ? 'var(--acc)' : 'transparent'}`, marginBottom: -1 }}>{t.label}{t.badge && <Count n={t.badge(shared)} tone={t.badgeTone} />}</button>
         ))}
         <div style={{ flex: 1 }} />
@@ -316,8 +316,8 @@ function WorkingOn({ sets, working, canEdit, api, menu, onPick, onSets, onNote }
   return (
     <div style={{ ...ui.row }}>
       <span style={{ ...ui.sub, whiteSpace: 'nowrap' }}>Working on</span>
-      <select aria-label="Working on" style={{ ...ui.input, width: 230 }} value={working?.id || ''} onChange={(e) => { if (e.target.value === '__new') setNaming({ id: null, title: '' }); else onPick(e.target.value || null); }}>
-        <option value="">{drafts.length ? 'Nothing (the menu as published)' : 'A new draft (made on your first change)'}</option>
+      <select aria-label="Working on" style={{ ...ui.input, width: 'auto', minWidth: 200, maxWidth: 280 }} value={working?.id || ''} onChange={(e) => { if (e.target.value === '__new') setNaming({ id: null, title: '' }); else onPick(e.target.value || null); }}>
+        <option value="">{drafts.length ? 'The menu as published' : 'New draft (on first change)'}</option>
         {drafts.map((d) => <option key={d.id} value={d.id}>Draft: {d.title}</option>)}
         {others.map((d) => <option key={d.id} value={d.id}>{d.status === 'scheduled' ? 'Scheduled' : 'Running'}: {d.title}</option>)}
         {canEdit && <option value="__new">+ New draft…</option>}

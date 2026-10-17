@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useStore } from '../store';
+import { isMsmAutoApply, PENDING_WORDS } from '../lib/msm/msmTill.js';
 
 /**
  * Shows a sticky banner on the POS when the Back Office has pushed a config update.
@@ -42,7 +43,8 @@ export default function ConfigSyncBanner() {
       {/* Info */}
       <div style={{ flex:1, minWidth:0 }}>
         <span style={{ fontSize:13, fontWeight:700, color:'var(--acc)' }}>
-          Back Office update ready
+          {/* 17 Oct 2026 (Multi site menu): a head office update applies by itself between sales. */}
+          {isMsmAutoApply(snap) ? PENDING_WORDS : 'Back Office update ready'}
         </span>
         <span style={{ fontSize:12, color:'var(--t3)', marginLeft:10 }}>
           Pushed by {snap?.pushedBy || 'Manager'} at {time}

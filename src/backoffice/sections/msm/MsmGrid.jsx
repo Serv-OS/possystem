@@ -17,14 +17,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ROW_H, NO_CATEGORY, SHOW_FILTERS, CHANNEL_LABELS, channelLabel, buildGridRows, cellFor, cellStaged, categoryTree,
-  visibleRange, priceInput, parsePastedColumn, price2, moveFocus, defaultFor,
+  visibleRange, priceInput, parsePastedColumn, price2, moveFocus, defaultFor, priceEditable,
 } from '../../../lib/msm/msmGrid';
 import { sitePriceChange, siteActiveChange, defaultPriceChange, activeMany, priceMany, copyPricesMany, moveMany, pasteColumn } from '../../../lib/msm/msmEdit';
-import { marginFor } from '../../../lib/msm/msmMargin';
+import { marginFor, vatMaps } from '../../../lib/msm/msmMargin';
 import { Btn, Pill, Switch, Segmented, Popover, SiteChecklist } from './msmUi';
 import { ui, money } from './msmStyle';
 
+// The product column: up to 300 px, narrower on an iPad so the site prices stay on screen.
 const NAME_W = 300;
+const NAME_MIN = 170;
 const DEF_W = 116;
 const SITE_W = 132;
 const HEAD_H = 46;
@@ -50,6 +52,7 @@ export default function MsmGrid({ ix, live, sites, staged, ctx, stage, editable,
   const [pending, setPending] = useState(() => new Set());
   const [scrollTop, setScrollTop] = useState(0);
   const [viewH, setViewH] = useState(600);
+  const [viewW, setViewW] = useState(1200);
   const scroller = useRef(null);
   const groups = live?.siteGroups || [];
 
@@ -67,7 +70,7 @@ export default function MsmGrid({ ix, live, sites, staged, ctx, stage, editable,
   useEffect(() => {
     const el = scroller.current;
     if (!el) return undefined;
-    const measure = () => setViewH(el.clientHeight || 600);
+    const measure = () => { setViewH(el.clientHeight || 600); setViewW(el.clientWidth || 1200); };
     measure();
     if (typeof ResizeObserver === 'undefined') return undefined;
     const ro = new ResizeObserver(measure);
@@ -145,7 +148,8 @@ export default function MsmGrid({ ix, live, sites, staged, ctx, stage, editable,
       setFocus(moveFocus(rows, cols.length + 1, focus, e.key === 'Tab' && e.shiftKey ? 'ShiftTab' : e.key));
       return;
     }
-    if (!p || !editable) return;
+    // A variants parent draws no price cell (its sizes are priced): no edit, no switch, no clear.
+    if (!priceEditable(p) || !editable) return;
     if (e.key === 'Enter' || e.key === 'F2') {
       e.preventDefault();
       const c = loc ? cellFor(ix, p, loc, channel) : null;
@@ -191,14 +195,30 @@ export default function MsmGrid({ ix, live, sites, staged, ctx, stage, editable,
   // ── Selection ──────────────────────────────────────────────────────────
   const productRows = rows.filter((r) => r.kind === 'product');
   const allSelected = productRows.length > 0 && productRows.every((r) => selected.has(r.id));
-  const toggleSel = (id) => setSelected((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  // Shift click selects the block from the last product ticked to this one (design 4b).
+  const lastSel = useRef(null);
+  const toggleSel = (id, shift = false) => {
+    const ids = productRows.map((r) => r.id);
+    const from = lastSel.current != null ? ids.indexOf(lastSel.current) : -1;
+    const to = ids.indexOf(id);
+    if (shift && from >= 0 && to >= 0) {
+      const on = !selected.has(id);
+      const [a, b] = from < to ? [from, to] : [to, from];
+      setSelected((s) => { const n = new Set(s); for (const x of ids.slice(a, b + 1)) { if (on) n.add(x); else n.delete(x); } return n; });
+    } else {
+      setSelected((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+    }
+    lastSel.current = id;
+  };
   const selIds = [...selected].filter((id) => ix.products.has(id));
 
-  const totalW = NAME_W + DEF_W + cols.length * SITE_W;
+  const nameW = Math.max(NAME_MIN, Math.min(NAME_W, Math.round(viewW * 0.26)));
+  const totalW = nameW + DEF_W + cols.length * SITE_W;
+  const vat = useMemo(() => vatMaps(live, costs.ratesByLoc || {}), [live, costs.ratesByLoc]);
   const gpOn = mode === 'gp';
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, minHeight: 0 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, minHeight: 0, flex: 1 }}>
       {/* Toolbar */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
         <input aria-label="Search products" style={{ ...ui.input, width: 220 }} placeholder="Search products" value={search} onChange={(e) => setSearch(e.target.value)} />
@@ -264,11 +284,11 @@ export default function MsmGrid({ ix, live, sites, staged, ctx, stage, editable,
       {/* The grid */}
       <div ref={scroller} tabIndex={0} role="grid" aria-label="Group menu prices" aria-rowcount={rows.length}
         onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)} onKeyDown={onKeyDown} onPaste={onPaste}
-        style={{ position: 'relative', overflow: 'auto', height: 'calc(100vh - 300px)', minHeight: 380, border: '1px solid var(--bdr)', borderRadius: 14, background: 'var(--bg1)', outline: 'none' }}>
+        style={{ position: 'relative', overflow: 'auto', flex: 1, minHeight: 320, border: '1px solid var(--bdr)', borderRadius: 14, background: 'var(--bg1)', outline: 'none' }}>
         <div style={{ width: totalW, minWidth: '100%', position: 'relative' }}>
           {/* Header */}
           <div role="row" style={{ position: 'sticky', top: 0, zIndex: 4, display: 'flex', height: HEAD_H, background: 'var(--bg2)', borderBottom: '1px solid var(--bdr2)' }}>
-            <div style={{ ...headCell, width: NAME_W, position: 'sticky', left: 0, zIndex: 5, background: 'var(--bg2)', flexDirection: 'row', justifyContent: 'flex-start', gap: 10, paddingLeft: 12 }}>
+            <div style={{ ...headCell, width: nameW, position: 'sticky', left: 0, zIndex: 5, background: 'var(--bg2)', flexDirection: 'row', justifyContent: 'flex-start', gap: 10, paddingLeft: 12 }}>
               <input type="checkbox" aria-label="Select every product shown" checked={allSelected} onChange={() => setSelected(allSelected ? new Set() : new Set(productRows.map((r) => r.id)))} />
               <span>Product <span style={{ color: 'var(--t4)', fontWeight: 600 }}>({products})</span></span>
             </div>
@@ -277,7 +297,7 @@ export default function MsmGrid({ ix, live, sites, staged, ctx, stage, editable,
               <div key={s.id} style={{ ...headCell, width: SITE_W }} title={s.name}>
                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: SITE_W - 16 }}>{s.name}</span>
                 {gpOn && costs.status[s.id] === 'loading' && <span style={{ fontWeight: 500, color: 'var(--t4)' }}>costing…</span>}
-                {gpOn && costs.status[s.id] === 'failed' && <span style={{ fontWeight: 500, color: 'var(--red)' }}>costs not read</span>}
+                {gpOn && costs.status[s.id] === 'failed' && <Btn small kind="link" style={{ color: 'var(--red)', fontWeight: 600, padding: 0 }} onClick={() => costs.retry([s.id])}>costs not read: retry</Btn>}
               </div>
             ))}
           </div>
@@ -288,7 +308,7 @@ export default function MsmGrid({ ix, live, sites, staged, ctx, stage, editable,
             if (r.kind === 'cat') {
               return (
                 <div key={`c:${r.id}`} role="row" style={{ display: 'flex', height: ROW_H, background: 'var(--bg2)', borderBottom: '1px solid var(--bdr)' }}>
-                  <div style={{ position: 'sticky', left: 0, zIndex: 2, display: 'flex', alignItems: 'center', gap: 8, padding: `0 12px 0 ${12 + r.depth * 18}px`, width: NAME_W + DEF_W, boxSizing: 'border-box', background: 'var(--bg2)' }}>
+                  <div style={{ position: 'sticky', left: 0, zIndex: 2, display: 'flex', alignItems: 'center', gap: 8, padding: `0 12px 0 ${12 + r.depth * 18}px`, width: nameW + DEF_W, boxSizing: 'border-box', background: 'var(--bg2)' }}>
                     <button type="button" aria-label={r.collapsed ? 'Open' : 'Close'} onClick={() => setCollapsed((c) => { const n = new Set(c); if (n.has(r.id)) n.delete(r.id); else n.add(r.id); return n; })}
                       style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--t3)', fontSize: 12, width: 18, padding: 0 }}>{r.collapsed ? '▸' : '▾'}</button>
                     <span style={{ fontSize: 13, fontWeight: 800, color: r.id === NO_CATEGORY ? 'var(--red)' : 'var(--t1)' }}>{r.label}</span>
@@ -303,8 +323,8 @@ export default function MsmGrid({ ix, live, sites, staged, ctx, stage, editable,
             const pStaged = staged.products.get(p.id);
             return (
               <div key={p.id} role="row" style={{ display: 'flex', height: ROW_H, borderBottom: '1px solid var(--bdr)', background: selected.has(p.id) ? 'color-mix(in srgb, var(--acc) 7%, var(--bg1))' : 'var(--bg1)' }}>
-                <div style={{ position: 'sticky', left: 0, zIndex: 2, width: NAME_W, display: 'flex', alignItems: 'center', gap: 8, padding: `0 10px 0 ${12 + r.depth * 18 + (r.size ? 18 : 0)}px`, boxSizing: 'border-box', background: 'inherit', borderRight: '1px solid var(--bdr)' }}>
-                  <input type="checkbox" aria-label={`Select ${p.name}`} checked={selected.has(p.id)} onChange={() => toggleSel(p.id)} />
+                <div style={{ position: 'sticky', left: 0, zIndex: 2, width: nameW, display: 'flex', alignItems: 'center', gap: 8, padding: `0 10px 0 ${12 + r.depth * 18 + (r.size ? 18 : 0)}px`, boxSizing: 'border-box', background: 'inherit', borderRight: '1px solid var(--bdr)' }}>
+                  <input type="checkbox" aria-label={`Select ${p.name}`} checked={selected.has(p.id)} onChange={(e) => toggleSel(p.id, !!e.nativeEvent?.shiftKey)} />
                   <button type="button" onClick={() => onOpenProduct(p.id)} title="Open the product"
                     style={{ flex: 1, minWidth: 0, textAlign: 'left', background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontFamily: 'inherit', color: p.archived ? 'var(--t4)' : 'var(--t1)', fontSize: 13, fontWeight: r.size ? 500 : 650, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textDecoration: p.archived ? 'line-through' : 'none' }}>
                     {r.size ? '↳ ' : ''}{p.menu_name || p.name}
@@ -314,7 +334,8 @@ export default function MsmGrid({ ix, live, sites, staged, ctx, stage, editable,
                   {p.site_only_location_id && <Pill tone="blue" title="Sold at one site only">{(sites.find((s) => s.id === p.site_only_location_id)?.name || 'One site')} only</Pill>}
                 </div>
                 {p.type === 'variants' ? (
-                  <div role="gridcell" style={{ ...cellBase, width: DEF_W + cols.length * SITE_W, justifyContent: 'flex-start', color: 'var(--t4)', fontSize: 12 }}>Priced by its sizes below</div>
+                  <div role="gridcell" onClick={() => setFocus({ row: rowIndex, col: 0 })}
+                    style={{ ...cellBase, width: DEF_W + cols.length * SITE_W, justifyContent: 'flex-start', color: 'var(--t4)', fontSize: 12, ...(focus && focus.row === rowIndex ? focusRing : {}) }}>Priced by its sizes below</div>
                 ) : <>
                 <PriceCell width={DEF_W} rowIndex={rowIndex} col={0} focus={focus} editing={editing} setFocus={setFocus} setEditing={setEditing} commitEdit={commitEdit}
                   value={defaultFor(p, channel)} own staged={!!(pStaged && (channel ? pStaged.has('default_channels') : pStaged.has('default_price')))} pending={pending.has(`${p.id}|default`)} editable={editable} />
@@ -325,7 +346,8 @@ export default function MsmGrid({ ix, live, sites, staged, ctx, stage, editable,
                   let gp = null;
                   if (gpOn && c.exists) {
                     const m = costs.byLoc[s.id];
-                    gp = m ? marginFor({ price: c.price, vatPct: Number(p.tax_rate_percent) || 0, cost: m.get(ps?.venue_item_id) ?? null }) : null;
+                    gp = m ? marginFor({ price: c.price, vatPct: vat[s.id] ? vat[s.id](p) : Number(p.tax_rate_percent) || 0, cost: m.get(ps?.venue_item_id) ?? null })
+                      : costs.status[s.id] === 'failed' ? { noCost: true, noRecipe: true } : null;
                   }
                   return (
                     <SiteCell key={s.id} width={SITE_W} rowIndex={rowIndex} col={ci + 1} cell={c} st={st} gp={gp} gpOn={gpOn} p={p} loc={s.id}
@@ -416,7 +438,7 @@ function SiteCell({ width, rowIndex, col, cell, st, gp, gpOn, p, loc, focus, edi
           </div>
           {gpOn && (
             <span style={{ fontSize: 10.5, fontWeight: 650, color: gp && !gp.noRecipe ? (gp.gpPct != null && gp.gpPct < 60 ? 'var(--amber, #F5A623)' : 'var(--grn, var(--acc))') : 'var(--t4)' }}>
-              {gp ? (gp.noRecipe ? 'No recipe' : `${gp.words} · cost ${money(gp.cost)}`) : '…'}
+              {gp ? (gp.noCost ? 'No cost' : gp.noRecipe ? 'No recipe' : `${gp.words} · cost ${money(gp.cost)}`) : '…'}
             </span>
           )}
         </>

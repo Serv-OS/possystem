@@ -3,7 +3,7 @@
 // MULTI SITE MENU (v5.11.75): small shared pieces for the screens, in the ServOS look (the Back
 // Office theme tokens in src/styles/globals.css). No data, no rules: those live in src/lib/msm.
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ui } from './msmStyle';
 
 export function Btn({ kind = 'ghost', small = false, children, style, ...rest }) {
@@ -64,23 +64,62 @@ export function Segmented({ value, options, onChange, small = false }) {
   );
 }
 
-/** A panel that slides in from the right. */
-export function Sheet({ title, sub, onClose, width = 560, children, footer }) {
+/**
+ * The in app "are you sure". window.confirm shows nothing in the iPad apps (their web view has no
+ * confirm panel, so it answers false and the button silently does nothing) and a grey browser
+ * box in Safari. This is a ServOS dialog with the action written on its button.
+ */
+export function ConfirmDialog({ title, words, yes = 'Yes', no = 'Go back', danger = false, onYes, onNo }) {
   useEffect(() => {
-    const k = (e) => { if (e.key === 'Escape') onClose?.(); };
+    const k = (e) => { if (e.key === 'Escape') { e.stopPropagation(); onNo?.(); } };
+    window.addEventListener('keydown', k, true);
+    return () => window.removeEventListener('keydown', k, true);
+  }, [onNo]);
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 95, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+      <div onClick={onNo} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,.5)' }} />
+      <div role="alertdialog" aria-modal="true" aria-label={title} style={{ position: 'relative', width: 'min(440px, 100%)', background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 16, boxShadow: 'var(--sh3, var(--sh))', padding: '20px 22px' }}>
+        <div style={{ fontSize: 17, fontWeight: 800, letterSpacing: '-.01em' }}>{title}</div>
+        {words && <div style={{ ...ui.sub, marginTop: 8, fontSize: 13, lineHeight: 1.5, whiteSpace: 'pre-line' }}>{words}</div>}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 18, flexWrap: 'wrap' }}>
+          <Btn onClick={onNo}>{no}</Btn>
+          <Btn kind={danger ? 'danger' : 'primary'} onClick={onYes} autoFocus>{yes}</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Closing a panel with unsaved typing asks first (Escape, a tap outside, or Close).
+function useGuardedClose(onClose, dirty, dirtyWords) {
+  const [asking, setAsking] = useState(false);
+  const request = useCallback(() => { if (dirty) setAsking(true); else onClose?.(); }, [dirty, onClose]);
+  const dialog = asking ? (
+    <ConfirmDialog title="Close without saving?" words={dirtyWords || 'What you typed here is lost.'} yes="Close it" no="Keep editing" danger
+      onYes={() => { setAsking(false); onClose?.(); }} onNo={() => setAsking(false)} />
+  ) : null;
+  return { request, asking, dialog };
+}
+
+/** A panel that slides in from the right. dirty: closing asks first. */
+export function Sheet({ title, sub, onClose, width = 560, children, footer, dirty = false, dirtyWords }) {
+  const guard = useGuardedClose(onClose, dirty, dirtyWords);
+  useEffect(() => {
+    const k = (e) => { if (e.key === 'Escape' && !guard.asking) guard.request(); };
     window.addEventListener('keydown', k);
     return () => window.removeEventListener('keydown', k);
-  }, [onClose]);
+  }, [guard]);
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 60, display: 'flex', justifyContent: 'flex-end' }}>
-      <div onClick={onClose} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,.38)' }} />
+      {guard.dialog}
+      <div onClick={guard.request} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,.38)' }} />
       <div role="dialog" aria-label={title} style={{ position: 'relative', width: `min(${width}px, 100vw)`, height: '100%', background: 'var(--bg1)', borderLeft: '1px solid var(--bdr)', boxShadow: 'var(--sh3, var(--sh))', display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: '18px 20px 14px', borderBottom: '1px solid var(--bdr)', display: 'flex', alignItems: 'flex-start', gap: 12 }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 17, fontWeight: 800, letterSpacing: '-.01em' }}>{title}</div>
             {sub && <div style={{ ...ui.sub, marginTop: 3 }}>{sub}</div>}
           </div>
-          <Btn small onClick={onClose} aria-label="Close">Close</Btn>
+          <Btn small onClick={guard.request} aria-label="Close">Close</Btn>
         </div>
         <div style={{ flex: 1, overflowY: 'auto', padding: 20 }}>{children}</div>
         {footer && <div style={{ padding: '14px 20px', borderTop: '1px solid var(--bdr)', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>{footer}</div>}
@@ -89,23 +128,25 @@ export function Sheet({ title, sub, onClose, width = 560, children, footer }) {
   );
 }
 
-/** A centred dialog. */
-export function Modal({ title, sub, onClose, width = 760, children, footer }) {
+/** A centred dialog. dirty: closing asks first. */
+export function Modal({ title, sub, onClose, width = 760, children, footer, dirty = false, dirtyWords }) {
+  const guard = useGuardedClose(onClose, dirty, dirtyWords);
   useEffect(() => {
-    const k = (e) => { if (e.key === 'Escape') onClose?.(); };
+    const k = (e) => { if (e.key === 'Escape' && !guard.asking) guard.request(); };
     window.addEventListener('keydown', k);
     return () => window.removeEventListener('keydown', k);
-  }, [onClose]);
+  }, [guard]);
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 70, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
-      <div onClick={onClose} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,.45)' }} />
+      {guard.dialog}
+      <div onClick={guard.request} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,.45)' }} />
       <div role="dialog" aria-label={title} style={{ position: 'relative', width: `min(${width}px, 100%)`, maxHeight: 'calc(100vh - 32px)', background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 16, boxShadow: 'var(--sh3, var(--sh))', display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: '18px 22px 12px', borderBottom: '1px solid var(--bdr)', display: 'flex', gap: 12, alignItems: 'flex-start' }}>
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 18, fontWeight: 800, letterSpacing: '-.01em' }}>{title}</div>
             {sub && <div style={{ ...ui.sub, marginTop: 3 }}>{sub}</div>}
           </div>
-          <Btn small onClick={onClose}>Close</Btn>
+          <Btn small onClick={guard.request}>Close</Btn>
         </div>
         <div style={{ flex: 1, overflowY: 'auto', padding: '16px 22px' }}>{children}</div>
         {footer && <div style={{ padding: '14px 22px', borderTop: '1px solid var(--bdr)', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>{footer}</div>}

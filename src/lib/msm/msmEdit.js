@@ -18,7 +18,7 @@
 //     to its one site and is never added elsewhere.
 //   * Nothing is ever deleted: "remove" is archived, off is active false.
 
-import { STAGE_FIELDS, CHANNELS, has, sameValue, samePrice, newItemId, toPence, fromPence } from '../../../supabase/functions/_shared/msmModel.js';
+import { STAGE_FIELDS, CHANNELS, has, sameValue, samePrice, newItemId, toPence, fromPence, channelFallback } from '../../../supabase/functions/_shared/msmModel.js';
 
 const listOf = (v) => (Array.isArray(v) ? v : []);
 const findProduct = (c, id) => listOf(c?.products).find((p) => p.id === id) || null;
@@ -27,14 +27,16 @@ const findCategory = (c, id) => listOf(c?.categories).find((x) => x.id === id) |
 const okChannel = (ch) => (ch && CHANNELS.includes(ch) ? ch : null);
 const clone = (v) => (v == null ? v : JSON.parse(JSON.stringify(v)));
 
+// A variants parent's own price is never charged (Change prices leaves it out too).
+const VARIANTS_WORDS = 'This product is priced by its sizes. Change the price on each size.';
+
 /** The price a site falls back to when it has no price of its own (In store or a channel). */
 export function followPrice(product, site, channel = null) {
   const ch = okChannel(channel);
   const base = Number(product?.default_price ?? 0);
   if (!ch) return base;
-  const defCh = product?.default_channels?.[ch];
-  if (defCh != null) return Number(defCh);
-  return site?.price != null ? Number(site.price) : base;
+  // The till's chain (msmModel.channelFallback): drive thru reads takeaway before In store.
+  return channelFallback(product, site, ch) ?? base;
 }
 
 /** The price a site charges now (In store or a channel). */
@@ -56,6 +58,7 @@ export function sitePriceChange(ctx, productId, locationId, value, channel = nul
   const p = findProduct(ctx.eff, productId);
   const s = findSite(ctx.eff, productId, locationId);
   if (!p || !s) return { words: 'This product is not at that site. Turn it on there first.' };
+  if (p.type === 'variants') return { words: VARIANTS_WORDS };
   if (value != null && (!Number.isFinite(Number(value)) || Number(value) < 0)) return { words: 'A price cannot be below zero.' };
   const follow = followPrice(p, s, ch);
   const next = value == null || samePrice(value, follow) ? null : fromPence(toPence(value));
@@ -98,6 +101,7 @@ export function defaultPriceChange(ctx, productId, value, channel = null) {
   const ch = okChannel(channel);
   const p = findProduct(ctx.eff, productId);
   if (!p) return { words: 'That product is not in the group menu.' };
+  if (p.type === 'variants') return { words: VARIANTS_WORDS };
   if (value != null && (!Number.isFinite(Number(value)) || Number(value) < 0)) return { words: 'A price cannot be below zero.' };
   const liveP = findProduct(ctx.live, productId);
   if (!ch) {

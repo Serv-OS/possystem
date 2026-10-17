@@ -54,13 +54,14 @@ export default function MsmSpread({ ix, live, sites, rows, channel, setChannel, 
           {Object.entries(CHANNEL_LABELS).map(([k, l]) => <option key={k} value={k}>Prices: {l}</option>)}
         </select>
         <Popover label={`Sites (${cols.length}/${sites.length})`} width={260}>
-          <SiteChecklist sites={sites} value={shown} groups={live?.siteGroups || []} onChange={(v) => setShown(v.length >= 2 ? v : shown)} />
+          <SiteChecklist sites={sites} value={shown} groups={live?.siteGroups || []} onChange={setShown} />
         </Popover>
         <div style={{ flex: 1 }} />
         <span style={ui.sub}>{list.length} product{list.length === 1 ? '' : 's'}</span>
       </div>
 
-      <div style={{ ...ui.card, padding: 0, overflowX: 'auto' }}>
+      {cols.length < 2 && <div style={{ ...ui.card, ...ui.sub }}>Pick at least two sites to compare.</div>}
+      {cols.length >= 2 && <div style={{ ...ui.card, padding: 0, overflowX: 'auto' }}>
         <div style={{ minWidth: width }}>
           <div style={{ display: 'flex', borderBottom: '1px solid var(--bdr)', background: 'var(--bg2)', fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em' }}>
             <div style={{ width: NAME_W, padding: '10px 14px', flexShrink: 0 }}>Product</div>
@@ -99,7 +100,7 @@ export default function MsmSpread({ ix, live, sites, rows, channel, setChannel, 
               );
             }} />
         </div>
-      </div>
+      </div>}
     </div>
   );
 }

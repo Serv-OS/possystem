@@ -99,8 +99,14 @@ async function sendEmail(to: string, subject: string, html: string) {
   }
 }
 
-// ── Small cached reads for one invocation ───────────────────────────────────
+// ── Small cached reads for ONE request ──────────────────────────────────────
+// A warm worker keeps module state between requests, so the cache is emptied at the start of
+// every request (Deno.serve below): a set unscheduled, edited and published again must never be
+// planned from the list of changes an earlier request read.
 const cache = { versions: new Map<string, Row>(), central: new Map<string, any>(), changes: new Map<string, Row[]>(), sites: new Map<string, Row>() };
+function clearCache() {
+  cache.versions.clear(); cache.central.clear(); cache.changes.clear(); cache.sites.clear();
+}
 
 async function version(id: string): Promise<Row> {
   if (cache.versions.has(id)) return cache.versions.get(id)!;
@@ -161,7 +167,8 @@ type SiteResult = { location_id: string; status: string; words: string; push_id?
 
 async function planFor(v: Row, loc: string, { precheck = false } = {}) {
   const changes = await changesOf(v.change_set_id);
-  let central = await centralOf(v.menu_id, !precheck);
+  // Always a fresh read of the central menu (the pre check too: its verdict must be today's).
+  let central = await centralOf(v.menu_id, true);
   // Before the set starts (the pre check) the central tables do not hold it yet: lay it on in memory.
   if (precheck) central = applyChanges(central, changes).central;
   const fingerprint = precheck ? null : (await db.rpc('msm_venue_fingerprint', { p_location: loc })).data;
@@ -186,7 +193,9 @@ async function runSite(versionId: string, loc: string): Promise<SiteResult> {
     for (let attempt = 0; attempt < 2; attempt++) {
       const { plan, health, raw, fingerprint } = await planFor(v, loc);
       if (!health.ok) return await fail(failWords(site.name, v.title, health.blocking));
-      const { data: lastRow } = await db.from('config_pushes').select('snapshot').eq('location_id', loc).order('created_at', { ascending: false }).limit(1).maybeSingle();
+      // The id goes to msm_apply_site: a Push to POS that lands after this read makes it refuse
+      // (reason 'changed'), so its instruction groups and the rest are never replaced by these.
+      const { data: lastRow } = await db.from('config_pushes').select('id, snapshot').eq('location_id', loc).order('created_at', { ascending: false }).limit(1).maybeSingle();
       const snapshot = buildMsmSnapshot({
         raw: appliedRaw(raw, plan),
         last: lastRow?.snapshot || null,
@@ -197,8 +206,12 @@ async function runSite(versionId: string, loc: string): Promise<SiteResult> {
       const res = await db.rpc('msm_apply_site', {
         p_version: versionId, p_location: loc, p_writes: plan.writes, p_snapshot: snapshot, p_fingerprint: fingerprint,
         p_counts: plan.counts, p_pushed_by: snapshot.pushedBy, p_summary: `Head office menu update${v.title ? ` "${v.title}"` : ''}: ${countsWords(plan.counts) || 'no changes here'}.`,
+        p_last_push_id: lastRow?.id || null,
       });
       if (res.error) return await fail(`${site.name} was not changed: ${words(res.error)}`);
+      // Switched off between the claim and the write: the database put the site back in the
+      // queue; it runs when the company is switched on again (design 3.4).
+      if (res.data?.ok === false && res.data?.reason === 'paused') return { location_id: loc, status: 'scheduled', words: res.data.words || 'Paused' };
       if (res.data?.ok === false && res.data?.reason === 'changed') continue;     // read again once
       return { location_id: loc, status: res.data?.push_id ? 'done' : 'nothing', words: countsWords(plan.counts) || 'Nothing to change', push_id: res.data?.push_id || null };
     }
@@ -224,6 +237,19 @@ async function afterVersion(versionId: string) {
 }
 
 // ── The passes ──────────────────────────────────────────────────────────────
+// Scheduled runs more than 6 hours past their time are failed in words, never run by themselves.
+async function missedPass() {
+  const { data } = await db.rpc('msm_mark_missed');
+  for (const r of data || []) {
+    try {
+      const v = await version(r.version_id);
+      const s = await siteRow(r.location_id);
+      const when = r.due_at ? whenText(Date.parse(r.due_at), s.timezone) : '';
+      await notify('failed', v, r.location_id, { siteName: s.name, words: `${s.name} missed its time${when ? ` (${when})` : ''}, so nothing was changed there. Press Retry on the Publish tab if it should still go out.` });
+    } catch (e) { console.warn('[msm-publish] missed notice failed', words(e)); }
+  }
+}
+
 async function latePass() {
   const { data } = await db.rpc('msm_mark_late');
   for (const r of data || []) {
@@ -275,6 +301,7 @@ async function claimLoop(deadline: number) {
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return json({ ok: false, error: 'POST only' }, 405);
+  clearCache();
   let body: Row = {};
   try { body = await req.json(); } catch { body = {}; }
   const action = String(body.action || '');
@@ -295,6 +322,7 @@ Deno.serve(async (req) => {
     if (action === 'run_due') {
       if (access.by === 'user') return json({ ok: false, error: 'Only the scheduler runs this.' }, 403);
       const deadline = Date.now() + CRON_BUDGET_MS;
+      await missedPass().catch((e) => console.warn('[msm-publish] missed pass', words(e)));
       await latePass().catch((e) => console.warn('[msm-publish] late pass', words(e)));
       const ran = await claimLoop(deadline);
       if (Date.now() < deadline) await precheckPass(deadline).catch((e) => console.warn('[msm-publish] pre check pass', words(e)));

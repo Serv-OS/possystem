@@ -61,6 +61,7 @@ import KioskV2Root from './kiosk/KioskV2Root';
 import KioskV2Status from './kiosk/KioskV2Status';
 import { kioskNewDesignOn, kioskResetAllowed } from '../lib/kioskFlow';
 import KioskCardScreen from './kiosk/KioskCardScreen';
+import { kioskMayRefresh } from '../lib/msm/msmTillWatch.js';
 import KioskPayLinkGate from './kiosk/KioskPayLinkGate';
 import { usePaymentBusy } from '../lib/usePaymentBusy';
 import { kioskLineKeyV2 } from '../lib/kioskBasket';
@@ -125,7 +126,7 @@ function useKioskProfile(kioskId) {
 
 // Loads menu data scoped to this location. Returns items, categories, links, menus.
 // Uses the active-menu resolver (matching POS) so timed menus work.
-function useKioskMenu(profile, locationId, tz = 'Europe/London') {
+function useKioskMenu(profile, locationId, tz = 'Europe/London', reloadKey = 0) {
   const [data, setData] = useState({ items: [], categories: [], menus: [], links: [], taxRates: [], taxProfiles: [], venueDefaultTaxProfileId: null });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -204,7 +205,9 @@ function useKioskMenu(profile, locationId, tz = 'Europe/London') {
       }
     })();
     return () => { alive = false; };
-  }, [locationId]);
+    // reloadKey: 17 Oct 2026 (Multi site menu) a head office menu update read again on the start
+    // screen with an empty basket (useMsmKioskRefresh below). Nothing else bumps it.
+  }, [locationId, reloadKey]);
 
   // Resolve active menu through the ONE shared resolver (src/lib/menus/
   // resolveActiveMenu.js), the same chain the till runs. The kiosk gains the
@@ -265,6 +268,57 @@ function useKioskMenu(profile, locationId, tz = 'Europe/London') {
   const retryRates = useCallback(() => setRatesTry(n => n + 1), []);
 
   return { ...data, taxRates: rates, ratesState, retryRates, activeMenuId, loading, error };
+}
+
+// 17 Oct 2026 (Multi site menu, design step 5): this kiosk reads its menu straight from the
+// tables, once, at load. A head office menu update (a config push with pushSource.kind 'msm') is
+// read again here, but only on the start screen with an empty basket (never mid order). It hears
+// of one live, and also checks the newest push every 5 minutes (Realtime never replays one it
+// missed). An ordinary Push to POS changes nothing here, as before.
+function useMsmKioskRefresh(locationId, { screen, cartCount, setReload }) {
+  const idleRef = useRef({ screen, cartCount });
+  useEffect(() => { idleRef.current = { screen, cartCount }; }, [screen, cartCount]);
+  useEffect(() => {
+    if (!locationId || !supabase) return undefined;
+    let alive = true;
+    let pending = false;
+    let seen = null;
+    const tryNow = () => {
+      if (!alive || !kioskMayRefresh({ pending, ...idleRef.current })) return;
+      pending = false;
+      setReload((k) => k + 1);
+    };
+    const latest = async () => {
+      const { data } = await supabase.from('config_pushes')
+        .select('id, kind:snapshot->pushSource->>kind')
+        .eq('location_id', locationId).order('created_at', { ascending: false }).limit(1).maybeSingle();
+      return data || null;
+    };
+    const consider = (row) => {
+      if (!alive || !row?.id || row.id === seen) return;
+      seen = row.id;
+      if (row.kind !== 'msm') return;
+      pending = true;
+      tryNow();
+    };
+    // The newest push at load is what this kiosk already reads.
+    latest().then((row) => { if (alive && seen == null) seen = row?.id || ''; }).catch(() => {});
+    const chan = supabase.channel(`kiosk-msm:${locationId}`)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'config_pushes', filter: `location_id=eq.${locationId}` }, ({ new: push }) => {
+        if (!push?.id) return;
+        // The event can arrive without its snapshot (over 1 MB): ask for the kind by id.
+        supabase.from('config_pushes').select('id, kind:snapshot->pushSource->>kind').eq('id', push.id).maybeSingle()
+          .then(({ data }) => consider(data)).catch(() => {});
+      }).subscribe();
+    const idleTimer = setInterval(tryNow, 5000);
+    const catchUp = setInterval(() => { latest().then(consider).catch(() => {}); }, 5 * 60 * 1000);
+    return () => {
+      alive = false;
+      clearInterval(idleTimer);
+      clearInterval(catchUp);
+      try { supabase.removeChannel(chan); } catch { /* gone */ }
+    };
+  }, [locationId, setReload]);
 }
 
 // ============================================================
@@ -338,7 +392,9 @@ export default function KioskApp({ kioskId, onUnpair }) {
     const t = setInterval(read, 60_000);
     return () => { alive = false; clearInterval(t); };
   }, [locationId]);
-  const { items, categories, menus, links, taxRates, taxProfiles, venueDefaultTaxProfileId, activeMenuId, loading: menuLoading, error: menuError, ratesState, retryRates } = useKioskMenu(profile, locationId, kioskTz);
+  // 17 Oct 2026 (Multi site menu): bumped by useMsmKioskRefresh (below, once the basket exists).
+  const [msmReload, setMsmReload] = useState(0);
+  const { items, categories, menus, links, taxRates, taxProfiles, venueDefaultTaxProfileId, activeMenuId, loading: menuLoading, error: menuError, ratesState, retryRates } = useKioskMenu(profile, locationId, kioskTz, msmReload);
   // v5.7.34: local tax context for the unified seam — built from the kiosk's
   // own fetches (profiles + raw tax_profile_id columns + venue default).
   const kioskTaxCtx = useMemo(() => buildLocalTaxCtx({
@@ -500,6 +556,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
   }, [locationId]);
 
   const [cart, setCart] = useState([]); // [{ key, item, qty, mods, linePrice, lineTotal, name }]
+  useMsmKioskRefresh(locationId, { screen, cartCount: cart.length, setReload: setMsmReload });
   const [tip, setTip] = useState(0);
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');

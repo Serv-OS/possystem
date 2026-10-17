@@ -171,6 +171,31 @@ export const toPence = (v) => {
 };
 export const fromPence = (p) => (p === null || p === undefined ? null : Math.round(p) / 100);
 
+/**
+ * What a site charges for channel `ch` when it has NO `ch` price of its own, in pounds (null when
+ * nothing is priced). The till's own chain (src/lib/menuPricing.js resolveItemPrice): the venue
+ * row's pricing[ch] is the group's ch price; drive thru then reads takeaway (the site's own, then
+ * the group's); then the In store price (the site's own, then the group's). One chain for the
+ * Change prices tool, the grid and the product sheet.
+ */
+export function channelFallback(product, ps, ch) {
+  const n = (v) => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+  const def = (product && product.default_channels) || {};
+  const own = (ps && ps.channel_prices) || {};
+  const defCh = n(def[ch]);
+  if (defCh != null) return defCh;
+  if (ch === 'driveThru') {
+    const t = n(own.takeaway) ?? n(def.takeaway);
+    if (t != null) return t;
+  }
+  return n(ps && ps.price) ?? n(product && product.default_price);
+}
+
+/** The group's own fallback for channel `ch` (no site): its ch price, takeaway for drive thru, its In store price. */
+export function groupChannelPrice(product, ch) {
+  return channelFallback(product, null, ch);
+}
+
 // Two prices the same to the penny (null and undefined are the same "no price").
 export const samePrice = (a, b) => {
   const x = toPence(a), y = toPence(b);

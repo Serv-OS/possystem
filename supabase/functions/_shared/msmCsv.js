@@ -78,7 +78,12 @@ const yesNo = (v) => {
   return null;
 };
 const priceCell = (v) => {
-  const t = String(v ?? '').trim().replace(/^'/, '').replace(/^£/, '').replace(/,/g, '');
+  let t = String(v ?? '').trim().replace(/^'/, '').replace(/^£/, '');
+  // A comma only separates thousands: '2,50' (a comma decimal) is refused, never read as 250.00.
+  if (/,/.test(t)) {
+    if (!/^\d{1,3}(,\d{3})+(\.\d{1,2})?$/.test(t)) return { bad: true };
+    t = t.replace(/,/g, '');
+  }
   if (t === '') return { blank: true };
   const p = toPence(t);
   if (p === null || Number.isNaN(p)) return { bad: true };

@@ -82,7 +82,7 @@ expect('migration applies a second time (idempotent)', r.code === 0, r.err);
 const check = r.out.split('\n').pop().split('|');
 expect('check row: 15 tables, 15 with row level security, 15 fenced', check[0] === '15' && check[1] === '15' && check[2] === '15', r.out);
 expect('check row: anon has no table rights and no function rights', check[3] === '0' && check[4] === '0', r.out);
-expect('check row: 18 member functions, 12 server functions', check[5] === '18' && check[6] === '12', r.out);
+expect('check row: 18 member functions, 13 server functions', check[5] === '18' && check[6] === '13', r.out);
 expect('check row: the job runs every minute, the key is there and not in the job', check[7] === '1' && check[8] === 't' && check[9] === '1', r.out);
 expect('check row: 8 guards, 0 companies switched on', check[10] === '8' && check[11] === '0', r.out);
 
@@ -279,10 +279,12 @@ function runSite(versionId, loc, { tamper = null, writesOverride = null } = {}) 
   const changes = json(`select json_agg(x) from msm_changes x where change_set_id = (select change_set_id from msm_versions where id = '${versionId}')`);
   const plan = planSite({ central: central(), touched: touchedFromChanges(changes || []), locationId: loc, orgId: ORG_A, venue: raw });
   const health = checkSite(plan);
-  const last = json(`select snapshot from config_pushes where location_id = '${loc}' order by created_at desc limit 1`);
+  const lastRow = json(`select json_build_object('id', id, 'snapshot', snapshot) from config_pushes where location_id = '${loc}' order by created_at desc limit 1`);
+  const last = lastRow ? lastRow.snapshot : null;
+  const lastId = lastRow ? `'${lastRow.id}'` : 'null';
   const snap = buildMsmSnapshot({ raw: appliedRaw(raw, plan), last, pushSource: { versionId, title: 'Monday price rise', applyWhenIdle: true }, pushedBy: 'Multi site menu: Editor A', now: 1790000000000, resort: plan.writes.items.insert.length > 0 });
   if (tamper) one(tamper);
-  const res = q(`select msm_apply_site('${versionId}', '${loc}', ${lit(writesOverride || plan.writes)}, ${lit(snap)}, '${fp}', ${lit(plan.counts)}, 'Multi site menu: Editor A', ${lit(countsWords(plan.counts)).replace('::jsonb', '::text')})`, SERVICE);
+  const res = q(`select msm_apply_site('${versionId}', '${loc}', ${lit(writesOverride || plan.writes)}, ${lit(snap)}, '${fp}', ${lit(plan.counts)}, 'Multi site menu: Editor A', ${lit(countsWords(plan.counts)).replace('::jsonb', '::text')}, ${lastId})`, SERVICE);
   return { plan, health, res, out: res.code ? null : JSON.parse(res.out || 'null') };
 }
 const a1 = runSite(V1, LA1);
@@ -342,6 +344,23 @@ expect('apply refuses a category of another venue', r.code !== 0 && /not at this
 r = probe({ items: { update: [{ id: 'm-latte', pricing: { menus: {} } }] } });
 expect('apply refuses to write the venue\'s menu tier prices', r.code !== 0 && /may not write/.test(r.err), r.err);
 expect('none of the refused applies wrote anything', one(`select name from menu_items where id = 'm-b'`) === 'B coffee' && one(`select coalesce(centre_id, '') from menu_items where id = 'm-latte'`) === '');
+one(`insert into menu_items (id, location_id, name, cat, pricing) values ('m-own', '${LA1}', 'Site A1 own cake', 'cat-hot', '{"base": 2.00}')`);
+r = probe({ items: { update: [{ id: 'm-own', set: { name: 'hijack' } }] } });
+expect('apply refuses to change a venue\'s OWN product (not managed by this group menu)', r.code !== 0 && /does not manage/.test(r.err), r.err);
+r = probe({ options: [{ item_id: 'm-own', price: 9 }] });
+expect('apply refuses an option change for a product it does not manage', r.code !== 0 && /does not manage/.test(r.err), r.err);
+one(`insert into menu_categories (id, location_id, menu_id, label) values ('cat-own', '${LA1}', 'menu-a1', 'Site A1 own'); insert into menu_category_links (menu_id, category_id) values ('menu-a1', 'cat-own')`);
+r = probe({ links: { delete: [{ menu_id: 'menu-a1', category_id: 'cat-own' }] } });
+expect('apply refuses to unlink a category it does not manage', r.code !== 0 && /does not manage/.test(r.err), r.err);
+expect('the venue\'s own product and category link are untouched', one(`select name from menu_items where id = 'm-own'`) === 'Site A1 own cake'
+  && one(`select count(*) from menu_category_links where category_id = 'cat-own'`) === '1');
+// A link the venue already had that is broken (a modifier group of another site) never refuses a
+// change that does not set it (17 Oct review: two live products would have failed a whole site).
+one(`update menu_items set assigned_modifier_groups = '[{"groupId": "mgd-milk"}, {"groupId": "mgd-elsewhere"}]' where id = 'm-latte'`);
+r = probe({ items: { update: [{ id: 'm-latte', pricing: { base: 3.1 } }] } });
+expect('a price change publishes even though the product already had a broken link', r.code === 0 && JSON.parse(r.out).ok === true, r.err || r.out);
+expect('the broken link is left exactly as the venue had it', one(`select assigned_modifier_groups::text from menu_items where id = 'm-latte'`).includes('mgd-elsewhere'));
+one(`update menu_items set assigned_modifier_groups = '[{"groupId": "mgd-milk"}]' where id = 'm-latte'`);
 
 // ── failures, retry, the ledger, late, the job ─────────────────────────────
 one(`select msm_fail_site('${V3}', '${LA2}', 'Site A2 has no 20% VAT rate.')`, SERVICE);
@@ -364,6 +383,78 @@ one(`update msm_version_sites set status = 'done' where status in ('scheduled', 
 const before2 = one(`select count(*) from net.calls`);
 one(`select msm_run_due()`);
 expect('the job posts nothing when nothing is due', one(`select count(*) from net.calls`) === before2);
+
+// ── a new product moved into a category made later in the same set ─────────
+{
+  const SET6 = mkSet('Order of new rows');
+  const P6 = 'f0000000-0000-4000-8000-000000000006';
+  const K6 = 'f0000000-0000-4000-8000-0000000000c6';
+  r = stage({ set: SET6, target: 'product', entity: P6, op: 'create', after: { name: 'Pumpkin latte', default_price: 3.80, tax_rate_name: 'VAT', tax_rate_percent: 20, type: 'simple', sold_alone: true } });
+  expect('order: a new product with no category is staged', r.code === 0, r.err);
+  one(`select pg_sleep(0.01)`);
+  r = stage({ set: SET6, target: 'category', entity: K6, op: 'create', after: { label: 'Autumn', sort_order: 6, route_like_id: hot.id } });
+  expect('order: then a new category', r.code === 0, r.err);
+  r = q(`update msm_changes set after = after || '{"category_id": "${K6}"}'::jsonb where change_set_id = '${SET6}' and entity_id = '${P6}'`, as(U.E));
+  expect('order: the product is moved into it (its create row keeps its first time)', r.code === 0, r.err);
+  r = stage({ set: SET6, target: 'product_site', entity: P6, loc: LA1, op: 'create', after: { venue_item_id: `msm-f00000000000_${sfx(LA1)}`, active: true } });
+  expect('order: and put on at site A1', r.code === 0, r.err);
+  const V6 = json(`select msm_publish_now('${SET6}', true)`, as(U.E)).version_id;
+  one(`select count(*) from msm_claim_due(5)`, SERVICE);
+  r = q(`select msm_start_version('${V6}')`, SERVICE);
+  expect('order: the version starts (categories before products, links checked at the end)', r.code === 0 && JSON.parse(r.out).ok === true, r.err);
+  expect('order: the central product is in the new category', one(`select category_id from msm_products where id = '${P6}'`) === K6);
+  const run6 = runSite(V6, LA1);
+  expect('order: site A1 publishes it', run6.out?.ok === true && run6.out.push_id, run6.res.err || JSON.stringify(run6.health));
+  one(`update msm_version_sites set status = 'done' where version_id = '${V6}' and status in ('scheduled', 'running')`);
+}
+
+// ── throwing away a new product or category that other changes use ──────────
+{
+  const SET7 = mkSet('Discard');
+  const P7 = 'f0000000-0000-4000-8000-000000000007';
+  const K7 = 'f0000000-0000-4000-8000-0000000000c7';
+  stage({ set: SET7, target: 'category', entity: K7, op: 'create', after: { label: 'Winter', route_like_id: hot.id } });
+  stage({ set: SET7, target: 'product', entity: P7, op: 'create', after: { name: 'Mulled', category_id: K7, default_price: 4 } });
+  stage({ set: SET7, target: 'product_site', entity: P7, loc: LA1, op: 'create', after: { venue_item_id: `msm-f00000000007_${sfx(LA1)}`, active: true } });
+  r = q(`delete from msm_changes where change_set_id = '${SET7}' and entity_id = '${K7}'`, as(U.E));
+  expect('discard: a new category a staged product still uses is kept, in words', r.code !== 0 && /use this new category/.test(r.err), r.err);
+  r = q(`delete from msm_changes where change_set_id = '${SET7}' and target = 'product' and entity_id = '${P7}'`, as(U.E));
+  expect('discard: throwing away a new product takes its site rows with it', r.code === 0 && one(`select count(*) from msm_changes where change_set_id = '${SET7}' and entity_id = '${P7}'`) === '0', r.err);
+  r = q(`delete from msm_changes where change_set_id = '${SET7}' and entity_id = '${K7}'`, as(U.E));
+  expect('discard: then the category can go', r.code === 0, r.err);
+  const SET8 = mkSet('Whole draft');
+  stage({ set: SET8, target: 'category', entity: 'f0000000-0000-4000-8000-0000000000c8', op: 'create', after: { label: 'Spring', route_like_id: hot.id } });
+  stage({ set: SET8, target: 'product', entity: 'f0000000-0000-4000-8000-000000000008', op: 'create', after: { name: 'Elderflower', category_id: 'f0000000-0000-4000-8000-0000000000c8', default_price: 3 } });
+  r = q(`delete from msm_change_sets where id = '${SET8}'`, as(U.E));
+  expect('discard: a whole draft is still thrown away in one go', r.code === 0 && one(`select count(*) from msm_changes where change_set_id = '${SET8}'`) === '0', r.err);
+}
+
+// ── long overdue, a Push to POS in between, switched off mid run ────────────
+{
+  const SET9 = mkSet('Christmas, long ago');
+  stage({ set: SET9, target: 'product_site', entity: oat.id, loc: LA1, op: 'update', after: { price: 0.6 }, before: { price: 0.5 } });
+  const sch9 = json(`select msm_schedule_set('${SET9}', '2031-12-01 06:00', 5, true)`, as(U.E));
+  const V9 = sch9.version_id || one(`select version_id from msm_change_sets where id = '${SET9}'`);
+  one(`update msm_version_sites set due_at = now() - interval '7 hours' where version_id = '${V9}'`);
+  expect('overdue: a scheduled run 7 hours past its time is not started by itself', one(`select count(*) from msm_claim_due(5)`, SERVICE) === '0');
+  expect('overdue: it is failed once, in words', one(`select count(*) from msm_mark_missed()`, SERVICE) === '1' && one(`select count(*) from msm_mark_missed()`, SERVICE) === '0'
+    && /Missed its time/.test(one(`select error from msm_version_sites where version_id = '${V9}'`)) && one(`select status from msm_version_sites where version_id = '${V9}'`) === 'failed');
+  expect('overdue: the oat milk price did not move', one(`select pricing->>'base' from menu_items where id = 'm-oat'`) === '0.5');
+  json(`select msm_retry_site('${V9}', '${LA1}')`, as(U.E));
+  expect('overdue: Retry runs it now', one(`select count(*) from msm_claim_due(5)`, SERVICE) === '1');
+  json(`select msm_start_version('${V9}')`, SERVICE);
+  const pushed = runSite(V9, LA1, { tamper: `insert into config_pushes (location_id, pushed_by, snapshot) values ('${LA1}', 'Back Office', '{"locationId": "${LA1}", "instructionGroupDefs": [{"id": "ig1"}, {"id": "ig2"}]}')` });
+  expect('a Push to POS that landed after the read: the site is read again, nothing written', pushed.out?.ok === false && pushed.out.reason === 'changed' && /Push to POS/.test(pushed.out.words), pushed.res.err || pushed.res.out);
+  one(`select msm_admin_set_enabled('${ORG_A}', false)`, as(U.S));
+  const paused = runSite(V9, LA1);
+  expect('switched off mid run: the site waits (paused, back in the queue), it does not fail', paused.out?.ok === false && paused.out.reason === 'paused'
+    && one(`select status from msm_version_sites where version_id = '${V9}'`) === 'scheduled', paused.res.err || paused.res.out);
+  one(`select msm_admin_set_enabled('${ORG_A}', true)`, as(U.S));
+  one(`select count(*) from msm_claim_due(5)`, SERVICE);
+  const after9 = runSite(V9, LA1);
+  expect('switched on: it publishes, carrying the newer instruction groups', after9.out?.ok === true
+    && json(`select snapshot from config_pushes where id = '${after9.out.push_id}'`).instructionGroupDefs.length === 2, after9.res.err || after9.res.out);
+}
 
 // ── cancel, switch off pauses, the lock list ────────────────────────────────
 const SET4 = mkSet('Christmas off');

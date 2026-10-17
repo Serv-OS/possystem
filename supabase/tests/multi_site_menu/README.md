@@ -34,15 +34,15 @@ Bundles `supabase/functions/msm-publish/index.ts` with rolldown (the bundler Vit
 the Supabase client for `supabaseMock.mjs` (every call becomes real SQL on the harness database, as
 the service role or as the signed in person, so grants, row level security and the functions all
 apply), stands in `Deno.serve` and `Deno.env`, and calls the handler like the job and the Back
-Office do. 17 Oct 2026: **25 of 25**: who may call it, publish now by the editor's call (a viewer is
+Office do. 17 Oct 2026: **27 of 27**: who may call it, publish now by the editor's call (a viewer is
 refused), a scheduled set run by the job at its time and not before, a blocking problem at one site
 while the other publishes, the pre check an hour before (words, no writes, the central tables not
 touched), a company switched off pausing its sets, late marked once, and every message noted once
-in the ledger. It found one real bug on its first run: two new categories whose central ids shared
+in the ledger, and a warm worker that never plans from an earlier request's list of changes. It found one real bug on its first run: two new categories whose central ids shared
 their first 12 characters got the same venue id (the database refused the second; the planner now
 falls back to the whole id).
 
-## What run.mjs proves (17 Oct 2026: 110 of 110)
+## What run.mjs proves (17 Oct 2026: 134 of 134)
 
 - The file applies as one transaction, twice; its check row reads as the file says.
 - Only ServOS with the second step switches a company on and adds people; nobody adds themselves.
@@ -66,4 +66,12 @@ falls back to the whole id).
 - Failures in words, retry, the notification ledger (once), late (once), the job posts only when
   something is due, the cron key check, cancel, switching a company off pauses its sets and lifts the
   lock, switching it on resumes them.
+- A new product moved into a category made later in the same set starts (dependency order, links
+  checked at commit); throwing away a new product takes its site rows, a new category still used
+  is kept, a whole draft still goes in one go.
+- A scheduled run 7 hours late is never started by itself (failed in words once, Retry runs it); a
+  Push to POS that landed after the read makes the site read again; a company switched off mid run
+  leaves the site waiting.
+- The write path refuses a venue's own product, option or category link (not managed by this menu),
+  and a price change publishes even when the product already had a broken link.
 - The roll back leaves no msm_ object and every venue row.

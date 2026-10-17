@@ -45,6 +45,7 @@ import { saveModifierGroupChecked, createLatestQueue, insertModifierGroupOnce } 
 import { runBulkEdits, bulkSummaryWords } from '../lib/menuBulk';
 import { scheduleMenuTranslate } from '../lib/menuTranslateTrigger';
 import { createScopedPropagator, savedForPropagation } from '../lib/scopedPropagation';
+import { isMsmManaged } from '../lib/msm/msmManaged.js';
 import { withTimeout } from '../lib/withTimeout';
 import { buildLegacyProfiles } from '../lib/taxAdapter';
 import { qrCloseDecision } from '../lib/qrTabStranded';
@@ -1022,6 +1023,10 @@ const _scopedPropagator = createScopedPropagator({
 function scheduleScopedPropagation(getRow, id, patchKeys, savedRow = null) {
   const row = getRow(id);
   if (!row) return;
+  // 17 Oct 2026 (Multi site menu, design 1.8): a product the group menu manages at this venue is
+  // never fanned out by the sharing engine; head office publishes it to every site. Empty for every
+  // company that is not switched on (lib/msm/msmManaged.js), so nothing changes for them.
+  if (isMsmManaged(id)) return;
   const scope = row.scope || 'local';
   if (scope === 'local') return;
   if (!isMasterRow(row)) return;   // a copy never propagates; the master does (its master_id is its own id after a share)

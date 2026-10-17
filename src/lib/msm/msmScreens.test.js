@@ -8,9 +8,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { createMsmData } from './msmData.js';
 import { fakeClient } from './fakeClient.js';
-import { newProductChanges, newCategoryChange } from './msmEdit.js';
+import { newProductChanges, newCategoryChange, sitePriceChange, defaultPriceChange } from './msmEdit.js';
 import { applyChanges } from '../../../supabase/functions/_shared/msmDiff.js';
-import { buildGridRows, indexCentral, cellFor } from './msmGrid.js';
+import { buildGridRows, indexCentral, cellFor, priceEditable } from './msmGrid.js';
 import { demoMsm } from './msmDemo.js';
 
 const dir = new URL('../../backoffice/sections/msm/', import.meta.url);
@@ -60,8 +60,24 @@ test('demo data only in demo mode; the Back Office loads the access check and th
   assert.match(bo, /if \(live && a && !a\.stale\) setMsmAccess\(a\)/, 'a late or stale answer never opens it');
 });
 
-test('a top level new category cannot be added without saying how it prints (the screen uses the rule)', () => {
-  assert.match(read('MsmProductSheet.jsx'), /newCategoryChange\(ctx, \{ id: cid, label: newCat\.label, parent_id: newCat\.parent_id \|\| null, route_like_id: newCat\.route_like_id \|\| null \}\)/);
+test('never window.confirm: it shows nothing in the iPad apps, so the button would silently do nothing', () => {
+  for (const f of screens) assert.doesNotMatch(code(read(f)), /window\.confirm\(|\bconfirm\(`/, f);
+  // The four places that ask first use the in app dialog.
+  for (const f of ['MsmPublish.jsx', 'MsmTimeline.jsx', 'MsmChangesPanel.jsx']) assert.match(read(f), /useConfirm\(\)/, f);
+});
+
+test('a variants parent is priced by its sizes: no price change is staged on it from the grid or a paste', () => {
+  const live = {
+    menu: { id: 'm' }, sites: [{ location_id: 's1' }], categories: [],
+    products: [{ id: 'meal', name: 'Meal deal', type: 'variants', default_price: 0 }],
+    productSites: [{ product_id: 'meal', location_id: 's1', venue_item_id: 'v', price: null, active: true }],
+  };
+  const ctx = { live, eff: live };
+  assert.match(sitePriceChange(ctx, 'meal', 's1', 3).words, /priced by its sizes/);
+  assert.match(defaultPriceChange(ctx, 'meal', 3).words, /priced by its sizes/);
+  assert.equal(priceEditable(live.products[0]), false);
+  assert.equal(priceEditable({ id: 'x', type: 'simple' }), true);
+  assert.match(code(read('MsmGrid.jsx')), /if \(!priceEditable\(p\) \|\| !editable\) return;/, 'the grid keys stop on a variants row');
 });
 
 test('round trip: a new category and product staged through the data layer show in the grid as the draft', async () => {

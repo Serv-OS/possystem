@@ -19,11 +19,12 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { applyChanges, previewSet, sitesReached } from '../../../../supabase/functions/_shared/msmDiff.js';
-import { startsWords, scheduleButtonWords, isPast, dueAt, overlaps, DEFAULT_LEAD_MINUTES } from '../../../../supabase/functions/_shared/msmSchedule.js';
+import { scheduleNote, scheduleButtonWords, isPast, dueAt, overlaps, DEFAULT_LEAD_MINUTES } from '../../../../supabase/functions/_shared/msmSchedule.js';
 import { defaultRunLocal, minRunLocal, publishNowWords, previewHeadline, versionSummary, siteRowWords } from '../../../lib/msm/msmPublishView';
 import { Btn, Pill, Segmented, Notice, WindowedList, Field } from './msmUi';
 import { ui } from './msmStyle';
 import { useMsmHistory } from './useMsmHistory';
+import { useConfirm } from './useConfirm';
 
 const LEADS = [
   { value: 0, label: 'Exactly at that time' },
@@ -86,7 +87,9 @@ export default function MsmPublish({ api, menu, live, sites, sets, working, rows
   const [runLocal, setRunLocal] = useState(() => defaultRunLocal(Date.now(), tz));
   const [lead, setLead] = useState(DEFAULT_LEAD_MINUTES);
   const [idle, setIdle] = useState(true);
-  const past = mode === 'schedule' && reach.some((loc) => isPast(runLocal, tzOf(loc), now));
+  const [confirm, confirmDialog] = useConfirm();
+  const past = mode === 'schedule' && !!runLocal && reach.some((loc) => isPast(runLocal, tzOf(loc), now));
+  const note = scheduleNote(runLocal, tz, lead, now);
 
   // Other scheduled sets, for the overlap words.
   const [otherChanges, setOtherChanges] = useState({});
@@ -119,8 +122,13 @@ export default function MsmPublish({ api, menu, live, sites, sets, working, rows
   const blocked = !preview || !preview.ok || reading;
 
   const publishNow = async () => {
-    const tills = idle ? 'counter tills between sales' : 'counter tills when staff press Sync POS';
-    if (!window.confirm(`${publishNowWords(reachSites)}?\n\n${headline?.words || ''}. Kiosks, kitchen screens and handhelds update straight away, ${tills}.`)) return;
+    const tills = idle ? 'counter tills between sales (never mid sale)' : 'counter tills when staff tap Sync POS';
+    const yes = await confirm({
+      title: `${publishNowWords(reachSites)}?`,
+      words: `${headline?.words ? `${headline.words}.\n\n` : ''}Kiosks, kitchen screens and handhelds update straight away, ${tills}.`,
+      yes: publishNowWords(reachSites), no: 'Not yet',
+    });
+    if (!yes) return;
     setBusy(true);
     const r = await api.publishNow(working.id, { applyWhenIdle: idle });
     setBusy(false);
@@ -137,7 +145,7 @@ export default function MsmPublish({ api, menu, live, sites, sets, working, rows
     const r = await api.schedule(working.id, runLocal, lead, idle);
     setBusy(false);
     if (!r.ok) { setNote({ tone: 'bad', text: r.words }); return; }
-    setNote({ tone: 'good', text: `"${working.title}" is scheduled for ${scheduleButtonWords(runLocal, tz, lead).replace(/^Schedule for /, '')}. The tills update by themselves; nobody needs to be there.` });
+    setNote({ tone: 'good', text: `"${working.title}" is scheduled for ${scheduleButtonWords(runLocal, tz, lead).replace(/^Schedule for /, '')}. Nobody needs to be there: ${idle ? 'counter tills take it between sales, the rest straight away' : 'kiosks, kitchen screens and handhelds take it straight away; counter tills show Sync POS'}.` });
     setWorkingId(null);
     await refreshSets();
     await history.refresh();
@@ -145,7 +153,7 @@ export default function MsmPublish({ api, menu, live, sites, sets, working, rows
   };
 
   const stopScheduled = async (how) => {
-    if (how === 'cancel' && !window.confirm(`Cancel "${working.title}"? It will not run, and nothing changes at any site. Its changes stay in the history.`)) return;
+    if (how === 'cancel' && !(await confirm({ title: `Cancel "${working.title}"?`, words: 'It will not run, and nothing changes at any site. Its changes stay in the history.', yes: 'Cancel it', no: 'Keep it scheduled', danger: true }))) return;
     setBusy(true);
     const r = how === 'cancel' ? await api.cancel(working.id) : await api.unschedule(working.id);
     setBusy(false);
@@ -191,6 +199,7 @@ export default function MsmPublish({ api, menu, live, sites, sets, working, rows
     const startedAlready = (v?.sites || []).some((s) => s.status !== 'scheduled') || v?.version_no != null;
     return (
       <div style={{ display: 'grid', gap: 14, maxWidth: 900 }}>
+        {confirmDialog}
         {progress}
         <div style={ui.card}>
           <div style={{ ...ui.row, marginBottom: 6 }}>
@@ -199,7 +208,9 @@ export default function MsmPublish({ api, menu, live, sites, sets, working, rows
           </div>
           {working.run_local && <div style={{ fontSize: 14, fontWeight: 700, margin: '6px 0' }}>{scheduleButtonWords(String(working.run_local).replace(' ', 'T'), tz, working.lead_minutes).replace(/^Schedule for /, 'On the tills by ')}</div>}
           {sum && <div style={ui.sub}>{sum.detail}</div>}
-          <div style={{ ...ui.sub, marginTop: 8 }}>The tills update by themselves at that time. To change it, unschedule it: it becomes a draft again with every change kept.</div>
+          <div style={{ ...ui.sub, marginTop: 8 }}>{working.apply_when_idle === false
+            ? 'At that time kiosks, kitchen screens and handhelds update by themselves; counter tills show Sync POS.'
+            : 'At that time the tills update by themselves: counter tills between sales, never mid sale.'} To change it, unschedule it: it becomes a draft again with every change kept.</div>
           {canEdit && working.status === 'scheduled' && !startedAlready && (
             <div style={{ ...ui.row, marginTop: 14 }}>
               <Btn kind="primary" disabled={busy} onClick={() => stopScheduled('unschedule')}>Unschedule to change it</Btn>
@@ -228,6 +239,7 @@ export default function MsmPublish({ api, menu, live, sites, sets, working, rows
 
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'flex-start' }}>
+      {confirmDialog}
       <div style={{ display: 'grid', gap: 14, minWidth: 0, flex: '1.6 1 460px' }}>
         {progress}
         <div style={ui.card}>
@@ -262,25 +274,26 @@ export default function MsmPublish({ api, menu, live, sites, sets, working, rows
                 </select>
               </Field>
               {past ? <Notice tone="bad">That time has already passed{mixedClocks ? ' at one of the sites' : ''}. Pick a later one.</Notice>
-                : <div style={{ fontSize: 13, fontWeight: 650, marginBottom: 4 }}>{startsWords(runLocal, tz, lead)}.</div>}
+                : !note.ok ? <Notice tone="bad">{note.words}</Notice>
+                  : <div style={{ fontSize: 13, fontWeight: 650, marginBottom: 4 }}>{note.words}.</div>}
               {overlapWords.map((w) => <div key={w} style={{ marginTop: 8 }}><Notice>{w}</Notice></div>)}
             </div>
           )}
           <label style={{ ...ui.row, alignItems: 'flex-start', fontSize: 13, marginTop: 14, cursor: 'pointer' }}>
             <input type="checkbox" checked={idle} onChange={(e) => setIdle(e.target.checked)} style={{ marginTop: 2 }} />
-            <span>Counter tills update by themselves between sales<span style={{ ...ui.sub, display: 'block' }}>Never in the middle of a sale. Off: staff see the usual Sync POS banner.</span></span>
+            <span>Counter tills update by themselves between sales<span style={{ ...ui.sub, display: 'block' }}>Never in the middle of a sale: a till with an order open takes it as soon as that sale ends. Off: staff see the usual Sync POS banner and tap it.</span></span>
           </label>
           <div style={{ ...ui.sub, marginTop: 12, padding: '10px 12px', borderRadius: 10, background: 'var(--bg2)' }}>
             {mode === 'schedule'
-              ? 'Nobody needs to be there: the server publishes at that time and the tills update by themselves. Kiosks, kitchen screens and handhelds take it straight away, online and QR on their next page load, menu boards within two minutes. You are emailed if a site fails.'
-              : 'The tills update by themselves in the next few seconds. Kiosks, kitchen screens and handhelds take it straight away, online and QR on their next page load, menu boards within two minutes.'}
+              ? `Nobody needs to be there: the server publishes at that time. Kiosks, kitchen screens and handhelds take it straight away, ${idle ? 'counter tills between sales' : 'counter tills when staff tap Sync POS'}, online and QR on their next page load, menu boards within two minutes. A till that was off catches up when it is back on. You are emailed if a site fails.`
+              : `Kiosks, kitchen screens and handhelds take it in the next few seconds, ${idle ? 'counter tills between sales' : 'counter tills when staff tap Sync POS'}, online and QR on their next page load, menu boards within two minutes.`}
           </div>
           <div style={{ marginTop: 14 }}>
             {!canEdit && <div style={{ ...ui.sub, marginBottom: 8 }}>Only editors can publish.</div>}
             {preview && !preview.ok && <div style={{ ...ui.err, marginBottom: 8 }}>Fix the problems in red first; the button comes back by itself.</div>}
             {mode === 'now'
               ? <Btn kind="primary" style={{ width: '100%', padding: '11px 14px', fontSize: 14 }} disabled={!canEdit || busy || blocked} onClick={publishNow} data-testid="msm-publish-now">{busy ? 'Publishing…' : publishNowWords(reachSites)}</Btn>
-              : <Btn kind="primary" style={{ width: '100%', padding: '11px 14px', fontSize: 14 }} disabled={!canEdit || busy || blocked || past} onClick={schedule} data-testid="msm-schedule">{busy ? 'Scheduling…' : scheduleButtonWords(runLocal, tz, lead)}</Btn>}
+              : <Btn kind="primary" style={{ width: '100%', padding: '11px 14px', fontSize: 14 }} disabled={!canEdit || busy || blocked || past || !note.ok} onClick={schedule} data-testid="msm-schedule">{busy ? 'Scheduling…' : scheduleButtonWords(runLocal, tz, lead)}</Btn>}
           </div>
         </div>
       </div>

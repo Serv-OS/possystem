@@ -49,6 +49,30 @@ function categoriesInMenu(raw, venueMenuId) {
   return out;
 }
 
+// The venue products the chosen venue menu sells (17 Oct review: a venue's second menu, such as
+// catering, must never be pulled into the group menu). A product is in when one of its categories
+// is in the menu, or when it has no category the venue still holds (a product taken out of its
+// category by hand stays the site's to manage, as before). Then the sizes of those products, and
+// the sub items their modifier groups offer (a sub item used only as an option still matches).
+function itemsInMenu(raw, inMenu) {
+  const items = listOf(raw.items);
+  const catIds = new Set(listOf(raw.categories).map((c) => c.id));
+  const keep = new Set();
+  for (const i of items) {
+    if (!i) continue;
+    const known = [i.cat, ...listOf(i.cats)].filter((c) => c && catIds.has(c));
+    if (!known.length || known.some((c) => inMenu.has(c))) keep.add(i.id);
+  }
+  const used = new Set();
+  for (const i of items) if (i && keep.has(i.id)) for (const a of listOf(i.assigned_modifier_groups)) if (a && a.groupId) used.add(a.groupId);
+  for (const g of listOf(raw.groups)) if (g && used.has(g.id)) for (const o of listOf(g.options)) if (o && o.itemId) keep.add(o.itemId);
+  for (let grew = true, n = 0; grew && n < 10; n++) {
+    grew = false;
+    for (const i of items) if (i && !keep.has(i.id) && i.parent_id && keep.has(i.parent_id)) { keep.add(i.id); grew = true; }
+  }
+  return keep;
+}
+
 const rateOf = (raw, id) => listOf(raw.taxRates).find((r) => r.id === id) || null;
 
 /**
@@ -75,8 +99,14 @@ export function proposeImport(sites, opts = {}) {
   const catFamily = new Map();            // family -> central id
   const catLabel = new Map();             // `${normLabel}|${centralParent}` -> central id
   const categoryNames = [];
+  const inMenuBySite = new Map(S.map((s) => [s.location_id, categoriesInMenu(s.raw, s.venue_menu_id)]));
+  const keepBySite = new Map(S.map((s) => [s.location_id, itemsInMenu(s.raw, inMenuBySite.get(s.location_id))]));
+  const inMenuItem = (loc, row) => {
+    const cats = inMenuBySite.get(loc) || new Set();
+    return [row.cat, ...listOf(row.cats)].some((c) => c && cats.has(c));
+  };
   for (const s of siteOrder) {
-    const inMenu = categoriesInMenu(s.raw, s.venue_menu_id);
+    const inMenu = inMenuBySite.get(s.location_id);
     const cats = listOf(s.raw.categories).filter((c) => inMenu.has(c.id));
     const byId = new Map(cats.map((c) => [c.id, c]));
     const depth = (c, n = 0) => (c.parent_id && byId.has(c.parent_id) && n < 20 ? 1 + depth(byId.get(c.parent_id), n + 1) : 0);
@@ -107,7 +137,10 @@ export function proposeImport(sites, opts = {}) {
 
   // ── Products: families first ──
   const all = [];   // { loc, row }
-  for (const s of S) for (const row of listOf(s.raw.items)) if (row && !String(row.id).startsWith('demo-')) all.push({ loc: s.location_id, row });
+  for (const s of S) {
+    const keep = keepBySite.get(s.location_id);
+    for (const row of listOf(s.raw.items)) if (row && keep.has(row.id) && !String(row.id).startsWith('demo-')) all.push({ loc: s.location_id, row });
+  }
   const families = new Map();
   for (const x of all) {
     const f = familyOf(x.row);
@@ -123,9 +156,11 @@ export function proposeImport(sites, opts = {}) {
       // Two rows of one family at one site: a clash, settled by hand.
       const byLoc = new Map();
       for (const m of members) { if (!byLoc.has(m.loc)) byLoc.set(m.loc, []); byLoc.get(m.loc).push(m); }
-      for (const [loc, ms] of byLoc) if (ms.length > 1) clashes.push({ location_id: loc, name: ms[0].row.name, ids: ms.map((m) => m.row.id), family: fam });
-      // Keep the first per site in the family; the rest are left as the venue's own.
-      const firsts = [...byLoc.values()].map((ms) => ms[0]);
+      // Per site, the copy actually on sale is matched: on and in the menu, else on, else the first.
+      // The rest are left as the venue's own.
+      const pick = (loc, ms) => ms.find((m) => m.row.archived !== true && inMenuItem(loc, m.row)) || ms.find((m) => m.row.archived !== true) || ms[0];
+      for (const [loc, ms] of byLoc) if (ms.length > 1) clashes.push({ location_id: loc, name: pick(loc, ms).row.name, ids: ms.map((m) => m.row.id), family: fam, matchedId: pick(loc, ms).row.id });
+      const firsts = [...byLoc.entries()].map(([loc, ms]) => pick(loc, ms));
       if (firsts.length > 1) groupsOfItems.push({ kind: 'family', members: firsts });
       else leftovers.push(firsts[0]);
       continue;
@@ -153,7 +188,7 @@ export function proposeImport(sites, opts = {}) {
       // Same name twice at one site: a clash; each stays its own.
       const byLoc = new Map();
       for (const x of xs) { if (!byLoc.has(x.loc)) byLoc.set(x.loc, []); byLoc.get(x.loc).push(x); }
-      for (const [loc, ms] of byLoc) if (ms.length > 1) clashes.push({ location_id: loc, name: ms[0].row.name, ids: ms.map((m) => m.row.id) });
+      for (const [loc, ms] of byLoc) if (ms.length > 1) clashes.push({ location_id: loc, name: ms[0].row.name, ids: ms.map((m) => m.row.id), matchedId: null });
       for (const x of xs) groupsOfItems.push({ kind: 'one', members: [x] });
     } else groupsOfItems.push({ kind: 'one', members: xs });
   }
@@ -185,7 +220,8 @@ export function proposeImport(sites, opts = {}) {
   const groupName = new Map();
   for (const s of siteOrder) {
     const used = new Set();
-    for (const i of listOf(s.raw.items)) for (const a of listOf(i.assigned_modifier_groups)) if (a && a.groupId) used.add(a.groupId);
+    const keep = keepBySite.get(s.location_id);
+    for (const i of listOf(s.raw.items)) if (i && keep.has(i.id)) for (const a of listOf(i.assigned_modifier_groups)) if (a && a.groupId) used.add(a.groupId);
     for (const gr of listOf(s.raw.groups).filter((x) => used.has(x.id))) {
       const fam = familyOf(gr);
       const nk = normName(gr.name);
@@ -378,6 +414,9 @@ export function settleKept(central, sites, { passes = 4 } = {}) {
         if (l.column === 'archived') { ps.active = row.archived !== true; changed++; continue; }
         if (l.column.startsWith('pricing.')) {
           const k = l.column.slice(8);
+          // A legacy row priced only by its old single price has no pricing.base to keep: it can
+          // never settle, so it is named in words below instead of going round again.
+          if (k === 'base' && row.pricing?.base == null) { last.push({ location_id: s.location_id, line: l, noBase: true }); continue; }
           if (k === 'base') ps.price = row.pricing?.base ?? null;
           else ps.channel_prices = { ...(ps.channel_prices || {}), [k]: row.pricing?.[k] ?? null };
           changed++;
@@ -404,7 +443,14 @@ export function settleKept(central, sites, { passes = 4 } = {}) {
     const plan = planSite({ central, touched, locationId: s.location_id, orgId: null, venue: raw });
     const n = plan.lines.length;
     writes += n;
-    for (const l of plan.lines.slice(0, 20)) problems.push({ location_id: s.location_id, words: `${l.table} ${l.id}: ${l.column} would change` });
+    for (const l of plan.lines.slice(0, 20)) {
+      const row = l.table === 'items' ? rowOf(s.location_id, l.id) : null;
+      if (row && l.column === 'pricing.base' && row.pricing?.base == null) {
+        problems.push({ location_id: s.location_id, words: `"${row.menu_name || row.name || l.id}" at ${s.name || 'a site'} has no base price. Open it in Menu Manager at that site, save its price, then import again.` });
+      } else {
+        problems.push({ location_id: s.location_id, words: `${l.table} ${l.id}: ${l.column} would change` });
+      }
+    }
   }
   return { ok: writes === 0, writes, problems };
 }

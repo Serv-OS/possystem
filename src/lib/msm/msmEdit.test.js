@@ -210,3 +210,11 @@ test('VAT choices: the rates the menu uses, most used first', () => {
   c.products.push({ id: 'water', name: 'Water', tax_rate_name: 'Zero', tax_rate_percent: 0 });
   assert.deepEqual(taxChoices(c).map((t) => t.label), ['VAT 20%', 'Zero 0%']);
 });
+
+test('drive thru follows takeaway before In store, like the till (one chain everywhere)', () => {
+  const product = { id: 'p', default_price: 3, default_channels: { takeaway: 3.2 } };
+  assert.equal(followPrice(product, { price: null }, 'driveThru'), 3.2);
+  assert.equal(followPrice(product, { price: null, channel_prices: { takeaway: 3.4 } }, 'driveThru'), 3.4, 'the site\'s own takeaway first');
+  assert.equal(followPrice({ id: 'p', default_price: 3 }, { price: 3.5 }, 'driveThru'), 3.5, 'then the site\'s own In store price');
+  assert.equal(followPrice(product, { price: 3.5 }, 'delivery'), 3.5, 'other channels skip takeaway');
+});

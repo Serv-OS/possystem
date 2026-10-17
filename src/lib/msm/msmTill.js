@@ -1,10 +1,10 @@
 // src/lib/msm/msmTill.js
 //
 // MULTI SITE MENU (17 Oct 2026, v5.11.75): when a counter till may take a head office menu update
-// by itself (design 4a). Pure, tested (msmTill.test.js). NOT WIRED into the tills in this commit:
-// the till side (the idle watcher, the "Menu updated by head office" note and the catch up on
-// reconnect) is the next builder's, through these two functions only, so ordinary Push to POS
-// pushes keep today's behaviour exactly.
+// by itself (design 4a). Pure, tested (msmMargin.test.js, msmTillWatch.test.js). Wired into the
+// tills by msmTillWatch.js (the idle watcher, the "Menu updated by head office" note and the catch
+// up on reconnect) through these functions only, so ordinary Push to POS pushes keep today's
+// behaviour exactly.
 //
 //   * Only a push with pushSource.kind 'msm' and applyWhenIdle is ever applied by itself.
 //   * Never mid sale: no lines in the current order, no card payment running, no check open on

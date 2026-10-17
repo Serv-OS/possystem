@@ -55,7 +55,8 @@
 --     msm_admin_status, msm_admin_set_enabled, msm_admin_set_member
 --   Functions only the msm-publish function (service role) calls:
 --     msm_cron_ok, msm_claim_due, msm_start_version, msm_venue_fingerprint, msm_apply_site,
---     msm_fail_site, msm_precheck_due, msm_precheck_result, msm_mark_late, msm_note_notified
+--     msm_fail_site, msm_precheck_due, msm_precheck_result, msm_mark_late, msm_mark_missed,
+--     msm_note_notified
 --   The scheduler: vault secret msm_cron_key (made here), public.msm_run_due() (posts to
 --   msm-publish only when something is due), pg_cron job msm-run-due every minute.
 --
@@ -359,6 +360,16 @@ create table if not exists public.msm_version_sites (
 );
 -- The cron check: a cheap index read every minute.
 create index if not exists msm_version_sites_due on public.msm_version_sites (status, due_at) where status in ('scheduled', 'running');
+
+-- Links between NEW rows of one set (a product moved into a category made later in the same set,
+-- a category put under a newer one, a size of a new product) may wait until the end of the start:
+-- msm_start_version defers exactly these and the database still checks them before it commits.
+-- Everywhere else they are checked at once, as before. Safe to run twice.
+alter table public.msm_categories alter constraint msm_categories_parent_id_fkey deferrable initially immediate;
+alter table public.msm_categories alter constraint msm_categories_route_like_id_fkey deferrable initially immediate;
+alter table public.msm_products alter constraint msm_products_category_id_fkey deferrable initially immediate;
+alter table public.msm_products alter constraint msm_products_parent_product_id_fkey deferrable initially immediate;
+alter table public.msm_product_sites alter constraint msm_product_sites_product_id_fkey deferrable initially immediate;
 
 -- ============================================================================
 -- 2. WHO MAY SEE AND EDIT (SECURITY DEFINER helpers, set forms for row level security)
@@ -682,6 +693,25 @@ begin
     select s.status into v_set from public.msm_change_sets s where s.id = old.change_set_id;
     if found and v_set.status <> 'draft' then
       raise exception 'This set is %, so its changes cannot be removed.', v_set.status using errcode = '42501';
+    end if;
+    -- Throwing away a NEW product or category (the set itself still there): its site rows go
+    -- with it, and a change that still uses it keeps it (otherwise the set would fail at its time).
+    if found and old.op = 'create' and old.target = 'product' then
+      if exists (select 1 from public.msm_changes x
+                  where x.change_set_id = old.change_set_id and x.id <> old.id and x.target = 'product'
+                    and (x.after ->> 'parent_product_id' = old.entity_id::text)) then
+        raise exception 'Other changes in this set use this new product (its sizes). Remove those first.' using errcode = '22023';
+      end if;
+      delete from public.msm_changes x
+       where x.change_set_id = old.change_set_id and x.target = 'product_site' and x.entity_id = old.entity_id;
+    elsif found and old.op = 'create' and old.target = 'category' then
+      if exists (select 1 from public.msm_changes x
+                  where x.change_set_id = old.change_set_id and x.id <> old.id
+                    and ((x.target = 'category' and (x.after ->> 'parent_id' = old.entity_id::text or x.after ->> 'route_like_id' = old.entity_id::text))
+                      or (x.target = 'product' and (x.after ->> 'category_id' = old.entity_id::text
+                           or (jsonb_typeof(x.after -> 'extra_category_ids') = 'array' and x.after -> 'extra_category_ids' ? old.entity_id::text))))) then
+        raise exception 'Other changes in this set use this new category. Move those products or categories first.' using errcode = '22023';
+      end if;
     end if;
     return old;
   end if;
@@ -1492,7 +1522,11 @@ begin
       from public.msm_version_sites vs
       join public.msm_versions v on v.id = vs.version_id
       join public.msm_company co on co.org_id = v.org_id and co.enabled
-     where ((vs.status = 'scheduled' and vs.due_at <= now())
+     where ((vs.status = 'scheduled' and vs.due_at <= now()
+             -- A SCHEDULED run more than 6 hours past its time is never started by itself (a company
+             -- switched back on weeks later, a function that was down): msm_mark_missed fails it in
+             -- words and a person presses Retry if they still want it.
+             and (v.kind <> 'scheduled' or vs.due_at > now() - interval '6 hours'))
          or (vs.status = 'running' and vs.claimed_at < now() - interval '10 minutes'))
        and not exists (select 1 from public.msm_version_sites e
                          join public.msm_versions ev on ev.id = e.version_id
@@ -1539,7 +1573,15 @@ begin
   if v.status = 'cancelled' then
     raise exception 'This publish was cancelled.';
   end if;
-  for c in select * from public.msm_changes x where x.change_set_id = v.change_set_id order by x.created_at, x.id loop
+  -- Dependency order (the menu, then its sites, categories, products, then product sites), and
+  -- links between new rows of the same kind checked at commit: a staged create row keeps its
+  -- first time when it is edited, so a product moved into a category made later sorts first.
+  set constraints public.msm_categories_parent_id_fkey, public.msm_categories_route_like_id_fkey,
+                  public.msm_products_category_id_fkey, public.msm_products_parent_product_id_fkey,
+                  public.msm_product_sites_product_id_fkey deferred;
+  for c in select * from public.msm_changes x where x.change_set_id = v.change_set_id
+            order by case x.target when 'menu' then 0 when 'menu_site' then 1 when 'category' then 2 when 'product' then 3 else 4 end,
+                     x.created_at, x.id loop
     v_before := null;
     if c.target = 'menu' then
       select to_jsonb(m) into v_row from public.msm_menus m where m.id = v.menu_id;
@@ -1656,6 +1698,36 @@ as $fn$
       or not exists (select 1 from jsonb_object_keys(p_obj) k where k <> all (p_allowed));
 $fn$;
 
+-- Is a venue row one this group menu manages at that venue (or one this same write created)?
+-- The planner already leaves a venue's own rows alone; this is the database saying so too.
+create or replace function public.msm__managed_item(p_menu uuid, p_location text, p_id text, p_new text[])
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $fn$
+  select p_id = any (coalesce(p_new, '{}'))
+      or exists (select 1 from public.msm_product_sites ps join public.msm_products p on p.id = ps.product_id
+                  where p.menu_id = p_menu and ps.location_id = p_location and ps.venue_item_id = p_id);
+$fn$;
+
+create or replace function public.msm__managed_category(p_menu uuid, p_location text, p_id text, p_new text[], p_writes jsonb)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $fn$
+  select p_id = any (coalesce(p_new, '{}'))
+      or exists (select 1 from public.msm_category_sites cs join public.msm_categories c on c.id = cs.category_id
+                  where c.menu_id = p_menu and cs.location_id = p_location and cs.venue_category_id = p_id)
+      -- a venue category this same write maps (and the map loop below checks is at this venue)
+      or exists (select 1 from jsonb_array_elements(coalesce(p_writes #> '{maps,categories}', '[]'::jsonb)) m
+                  where m ->> 'venue_category_id' = p_id
+                    and exists (select 1 from public.msm_categories c where c.id::text = m ->> 'category_id' and c.menu_id = p_menu));
+$fn$;
+
 -- WRITE ONE VENUE: its menu rows in place and its config push, in ONE transaction.
 --   p_writes   msmPlan.js planSite(...).writes:
 --     { menus: {insert:[row], update:[{id, set}]}, categories: {insert, update}, items: {insert, update:[{id, set, pricing}]},
@@ -1668,9 +1740,11 @@ $fn$;
 -- fingerprint moved) is refused whole: {ok:false, reason:'changed'}; the function reads again.
 -- Every row written is checked: the venue's own id for an update, a new id for an insert, only
 -- allowlisted columns, references at this venue. updated_at is stamped now() by the server.
+drop function if exists public.msm_apply_site(uuid, text, jsonb, jsonb, text, jsonb, text, text);
 create or replace function public.msm_apply_site(p_version uuid, p_location text, p_writes jsonb, p_snapshot jsonb,
                                                  p_fingerprint text, p_counts jsonb default '{}'::jsonb,
-                                                 p_pushed_by text default 'Multi site menu', p_summary text default null)
+                                                 p_pushed_by text default 'Multi site menu', p_summary text default null,
+                                                 p_last_push_id uuid default null)
 returns jsonb
 language plpgsql
 security definer
@@ -1690,6 +1764,10 @@ declare
   v_items  text[] := '{}';
   v_cats   text[] := '{}';
   v_menus  text[] := '{}';
+  v_items_new text[] := '{}';
+  v_cats_new  text[] := '{}';
+  v_menus_new text[] := '{}';
+  v_set    jsonb;
   v_push   uuid;
   v_snap   jsonb;
   v_any    boolean := false;
@@ -1720,8 +1798,12 @@ begin
   if v.version_no is null then
     raise exception 'This publish has not started.';
   end if;
+  -- Switched off between the claim and the write: the site waits (design 3.4), it never fails.
   if not exists (select 1 from public.msm_company c where c.org_id = v.org_id and c.enabled) then
-    raise exception 'The Multi site menu is switched off for this company.';
+    update public.msm_version_sites
+       set status = 'scheduled', claimed_at = null, attempts = greatest(0, attempts - 1)
+     where version_id = p_version and location_id = p_location;
+    return jsonb_build_object('ok', false, 'reason', 'paused', 'words', 'The Multi site menu was switched off for this company. The site waits until it is switched on again.');
   end if;
   if not exists (select 1 from public.msm_menu_sites s where s.menu_id = v.menu_id and s.location_id = p_location)
      or not public.msm__venue_in_org(p_location, v.org_id) then
@@ -1729,6 +1811,12 @@ begin
   end if;
   if p_fingerprint is distinct from public.msm_venue_fingerprint(p_location) then
     return jsonb_build_object('ok', false, 'reason', 'changed', 'words', 'Someone saved the menu at this site while it was being published. Reading it again.');
+  end if;
+  -- The push carries the venue's instruction groups, profiles, discounts and printers from the
+  -- latest push the function read. A Push to POS that landed since would be replaced by an older
+  -- copy of them, so the function reads everything again.
+  if p_last_push_id is distinct from (select cp.id from public.config_pushes cp where cp.location_id = p_location order by cp.created_at desc limit 1) then
+    return jsonb_build_object('ok', false, 'reason', 'changed', 'words', 'A Push to POS landed at this site while it was being published. Reading it again.');
   end if;
 
   -- menus ----------------------------------------------------------------
@@ -1740,6 +1828,7 @@ begin
            coalesce(r.is_active, true), coalesce(r.sort_order, 0), 'local', v.org_id, v_now, v_now
       from jsonb_populate_record(null::public.menus, w) r;
     v_menus := v_menus || (w ->> 'id');
+    v_menus_new := v_menus_new || (w ->> 'id');
     v_audit := v_audit || jsonb_build_array(jsonb_build_object('table', 'menus', 'id', w ->> 'id', 'before', null, 'after', w));
   end loop;
   if jsonb_typeof(p_writes #> '{maps,menu_site}') = 'object' then
@@ -1751,6 +1840,10 @@ begin
     if not public.msm__keys_ok(u -> 'set', v_upd_menus) then raise exception 'A menu change has a field publish may not write.'; end if;
     select to_jsonb(m) into v_old from public.menus m where m.id = u ->> 'id' and m.location_id = p_location for update;
     if v_old is null then raise exception 'A menu is not at this site (%).', u ->> 'id'; end if;
+    if not (u ->> 'id' = any (v_menus_new)
+            or exists (select 1 from public.msm_menu_sites s where s.menu_id = v.menu_id and s.location_id = p_location and s.venue_menu_id = u ->> 'id')) then
+      raise exception 'A change points at a menu this group menu does not manage. Nothing was written.';
+    end if;
     -- jsonb_populate_record(t, set) keeps t's own value for every column the set does not name,
     -- so an untouched column is written back exactly as it is.
     update public.menus t set (name, description, updated_at) =
@@ -1776,12 +1869,16 @@ begin
            coalesce(r.accounting_group, ''), coalesce(r.sort_order, 0), coalesce(r.default_course, 1), r.image, 'local', v.org_id, v_now, v_now
       from jsonb_populate_record(null::public.menu_categories, w) r;
     v_cats := v_cats || (w ->> 'id');
+    v_cats_new := v_cats_new || (w ->> 'id');
     v_audit := v_audit || jsonb_build_array(jsonb_build_object('table', 'categories', 'id', w ->> 'id', 'before', null, 'after', w));
   end loop;
   for u in select x from jsonb_array_elements(coalesce(p_writes #> '{categories,update}', '[]'::jsonb)) x loop
     if not public.msm__keys_ok(u -> 'set', v_upd_cats) then raise exception 'A category change has a field publish may not write.'; end if;
     select to_jsonb(c) into v_old from public.menu_categories c where c.id = u ->> 'id' and c.location_id = p_location for update;
     if v_old is null then raise exception 'A category is not at this site (%).', u ->> 'id'; end if;
+    if not public.msm__managed_category(v.menu_id, p_location, u ->> 'id', v_cats_new, p_writes) then
+      raise exception 'A change points at a category this group menu does not manage. Nothing was written.';
+    end if;
     if (u -> 'set') ? 'menu_id' and u #>> '{set,menu_id}' is not null and not exists (select 1 from public.menus m where m.id = u #>> '{set,menu_id}' and m.location_id = p_location) then
       raise exception 'A category would point at a menu that is not at this site.';
     end if;
@@ -1826,6 +1923,7 @@ begin
            r.item_code, v_now, v_now
       from jsonb_populate_record(null::public.menu_items, w) r;
     v_items := v_items || (w ->> 'id');
+    v_items_new := v_items_new || (w ->> 'id');
     v_audit := v_audit || jsonb_build_array(jsonb_build_object('table', 'items', 'id', w ->> 'id', 'before', null, 'after', w));
   end loop;
   for u in select x from jsonb_array_elements(coalesce(p_writes #> '{items,update}', '[]'::jsonb)) x loop
@@ -1834,6 +1932,29 @@ begin
     end if;
     select to_jsonb(i) into v_old from public.menu_items i where i.id = u ->> 'id' and i.location_id = p_location for update;
     if v_old is null then raise exception 'A product is not at this site (%).', u ->> 'id'; end if;
+    if not public.msm__managed_item(v.menu_id, p_location, u ->> 'id', v_items_new) then
+      raise exception 'A change points at a product this group menu does not manage. Nothing was written.';
+    end if;
+    -- Only the references this change SETS to a new value are checked (a price change never
+    -- refuses a site over an old link the venue already had).
+    v_set := coalesce(u -> 'set', '{}'::jsonb);
+    if (v_set ? 'cat' and v_set ->> 'cat' is not null and v_set ->> 'cat' is distinct from v_old ->> 'cat'
+          and not exists (select 1 from public.menu_categories c where c.id = v_set ->> 'cat' and c.location_id = p_location))
+       or (jsonb_typeof(v_set -> 'cats') = 'array' and exists (
+             select 1 from jsonb_array_elements_text(v_set -> 'cats') x
+              where not (coalesce(v_old -> 'cats', '[]'::jsonb) ? x)
+                and not exists (select 1 from public.menu_categories c where c.id = x and c.location_id = p_location)))
+       or (v_set ? 'parent_id' and v_set ->> 'parent_id' is not null and v_set ->> 'parent_id' is distinct from v_old ->> 'parent_id'
+             and not exists (select 1 from public.menu_items p where p.id = v_set ->> 'parent_id' and p.location_id = p_location))
+       or (v_set ? 'tax_rate_id' and v_set ->> 'tax_rate_id' is not null and v_set ->> 'tax_rate_id' is distinct from v_old ->> 'tax_rate_id'
+             and not exists (select 1 from public.tax_rates r where r.id::text = v_set ->> 'tax_rate_id' and r.location_id::text = p_location))
+       or (jsonb_typeof(v_set -> 'assigned_modifier_groups') = 'array' and exists (
+             select 1 from jsonb_array_elements(v_set -> 'assigned_modifier_groups') a
+              where a ->> 'groupId' is not null
+                and not exists (select 1 from jsonb_array_elements(coalesce(v_old -> 'assigned_modifier_groups', '[]'::jsonb)) o where o ->> 'groupId' = a ->> 'groupId')
+                and not exists (select 1 from public.modifier_groups g where g.id = a ->> 'groupId' and g.location_id = p_location))) then
+      raise exception 'A product would point at a category, size, tax rate or modifier group that is not at this site. Nothing was written.';
+    end if;
     update public.menu_items t
        set (name, menu_name, receipt_name, kitchen_name, description, type, cat, cats, parent_id, allergens, assigned_modifier_groups,
             visibility, sold_alone, archived, tax_rate_id, image, tags, item_code, pricing, updated_at) =
@@ -1853,10 +1974,10 @@ begin
                                                                 else '{}'::jsonb end,
                  'after', coalesce(u -> 'set', '{}'::jsonb) || case when jsonb_typeof(u -> 'pricing') = 'object' then jsonb_build_object('pricing', u -> 'pricing') else '{}'::jsonb end));
   end loop;
-  -- Every product written points only at this venue's own rows.
+  -- Every NEW product points only at this venue's own rows (changed ones were checked above).
   if exists (
     select 1 from public.menu_items i
-     where i.location_id = p_location and i.id = any (v_items)
+     where i.location_id = p_location and i.id = any (v_items_new)
        and ((i.cat is not null and not exists (select 1 from public.menu_categories c where c.id = i.cat and c.location_id = p_location))
          or exists (select 1 from unnest(i.cats) x where not exists (select 1 from public.menu_categories c where c.id = x and c.location_id = p_location))
          or (i.parent_id is not null and not exists (select 1 from public.menu_items p where p.id = i.parent_id and p.location_id = p_location))
@@ -1881,6 +2002,9 @@ begin
     if not exists (select 1 from public.menus m where m.id = w ->> 'menu_id' and m.location_id = p_location) then
       raise exception 'A menu link points outside this site.';
     end if;
+    if not public.msm__managed_category(v.menu_id, p_location, w ->> 'category_id', v_cats_new, p_writes) then
+      raise exception 'A change points at a category this group menu does not manage. Nothing was written.';
+    end if;
     delete from public.menu_category_links l where l.menu_id = w ->> 'menu_id' and l.category_id = w ->> 'category_id';
     v_audit := v_audit || jsonb_build_array(jsonb_build_object('table', 'links', 'id', (w ->> 'menu_id') || '|' || (w ->> 'category_id'), 'before', w, 'after', null));
   end loop;
@@ -1889,6 +2013,9 @@ begin
   for w in select x from jsonb_array_elements(coalesce(p_writes -> 'options', '[]'::jsonb)) x loop
     if not exists (select 1 from public.menu_items i where i.id = w ->> 'item_id' and i.location_id = p_location) then
       raise exception 'An option follows a product that is not at this site.';
+    end if;
+    if not public.msm__managed_item(v.menu_id, p_location, w ->> 'item_id', v_items_new) then
+      raise exception 'A change points at a product this group menu does not manage. Nothing was written.';
     end if;
     update public.modifier_groups g
        set options = (select coalesce(jsonb_agg(case when o ->> 'itemId' = w ->> 'item_id'
@@ -2076,6 +2203,35 @@ as $fn$
   returning s.version_id, s.location_id;
 $fn$;
 
+-- Scheduled site runs more than 6 hours past their time (the company was switched off, or the
+-- function was down): failed in words, never started by themselves. Retry runs one now.
+create or replace function public.msm_mark_missed()
+returns table (version_id uuid, location_id text, due_at timestamptz)
+language plpgsql
+security definer
+set search_path = ''
+as $fn$
+#variable_conflict use_column
+declare
+  r record;
+begin
+  for r in
+    update public.msm_version_sites s
+       set status = 'failed', finished_at = now(), claimed_at = null,
+           error = 'Missed its time (it was due ' || to_char(s.due_at at time zone coalesce((select nullif(l.timezone, '') from public.locations l where l.id::text = s.location_id), 'Europe/London'), 'DD Mon YYYY HH24:MI')
+                   || '). Nothing was changed. Press Retry to publish it now.'
+      from public.msm_versions v, public.msm_company co
+     where v.id = s.version_id and co.org_id = v.org_id and co.enabled and v.kind = 'scheduled'
+       and s.status = 'scheduled' and s.due_at <= now() - interval '6 hours'
+    returning s.version_id, s.location_id, s.due_at
+  loop
+    perform public.msm__refresh_version(r.version_id);
+    version_id := r.version_id; location_id := r.location_id; due_at := r.due_at;
+    return next;
+  end loop;
+end
+$fn$;
+
 -- The notification ledger: true only the first time a key is noted for a site, so an email or a
 -- feed entry is never sent twice, however often a run repeats.
 create or replace function public.msm_note_notified(p_version uuid, p_location text, p_key text)
@@ -2183,8 +2339,9 @@ begin
     'public.msm_admin_set_enabled(uuid,boolean)', 'public.msm_admin_set_member(uuid,uuid,text)', 'public.msm_cron_ok(text)',
     'public.msm_venue_fingerprint(text)', 'public.msm__refresh_version(uuid)', 'public.msm_claim_due(integer)',
     'public.msm_start_version(uuid)', 'public.msm__keys_ok(jsonb,text[])',
-    'public.msm_apply_site(uuid,text,jsonb,jsonb,text,jsonb,text,text)', 'public.msm_fail_site(uuid,text,text,integer)',
+    'public.msm_apply_site(uuid,text,jsonb,jsonb,text,jsonb,text,text,uuid)', 'public.msm_fail_site(uuid,text,text,integer)',
     'public.msm_precheck_due(integer)', 'public.msm_precheck_result(uuid,text,boolean,text)', 'public.msm_mark_late()',
+    'public.msm_mark_missed()', 'public.msm__managed_item(uuid,text,text,text[])', 'public.msm__managed_category(uuid,text,text,text[],jsonb)',
     'public.msm_note_notified(uuid,text,text)', 'public.msm_run_due()'] loop
     execute format('revoke all on function %s from public, anon, authenticated, service_role', f);
   end loop;
@@ -2201,23 +2358,23 @@ begin
   -- the msm-publish function
   foreach f in array array[
     'public.msm_cron_ok(text)', 'public.msm_venue_fingerprint(text)', 'public.msm_claim_due(integer)', 'public.msm_start_version(uuid)',
-    'public.msm_apply_site(uuid,text,jsonb,jsonb,text,jsonb,text,text)', 'public.msm_fail_site(uuid,text,text,integer)',
+    'public.msm_apply_site(uuid,text,jsonb,jsonb,text,jsonb,text,text,uuid)', 'public.msm_fail_site(uuid,text,text,integer)',
     'public.msm_precheck_due(integer)', 'public.msm_precheck_result(uuid,text,boolean,text)', 'public.msm_mark_late()',
-    'public.msm_note_notified(uuid,text,text)', 'public.msm_can_edit(uuid)', 'public.msm_role(uuid)'] loop
+    'public.msm_mark_missed()', 'public.msm_note_notified(uuid,text,text)', 'public.msm_can_edit(uuid)', 'public.msm_role(uuid)'] loop
     execute format('grant execute on function %s to service_role', f);
   end loop;
   -- msm_run_due: nobody but the job (it runs as the database owner).
 end
 $grants$;
 
-comment on function public.msm_apply_site(uuid,text,jsonb,jsonb,text,jsonb,text,text) is
+comment on function public.msm_apply_site(uuid,text,jsonb,jsonb,text,jsonb,text,text,uuid) is
   'Multi site menu (17 Oct 2026): writes ONE venue''s menu rows in place and its config push in one transaction. Service role only (msm-publish). Idempotent; refuses a venue saved in between (fingerprint).';
 comment on function public.msm_run_due() is
   'Multi site menu: pg_cron msm-run-due. Posts run_due to msm-publish with the vault key only when something is due. Never grant it to anyone.';
 
 -- VISIBLE CHECK (the SQL editor shows this last result). Expected:
 --   tables 15, rls_on 15, fenced 15 (or 0 on a database without the second step), anon_table_rights 0,
---   anon_function_rights 0, member_functions 18, server_functions 12, job_every_minute 1, key_present true,
+--   anon_function_rights 0, member_functions 18, server_functions 13, job_every_minute 1, key_present true,
 --   key_not_in_job 1, guards 8, companies_switched_on 0
 select
   (select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace

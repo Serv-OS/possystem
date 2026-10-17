@@ -8,9 +8,11 @@ import { useMemo, useState } from 'react';
 import { groupChanges, unstageOrder } from '../../../lib/msm/msmWords';
 import { Btn, Sheet, Notice } from './msmUi';
 import { ui } from './msmStyle';
+import { useConfirm } from './useConfirm';
 
 export default function MsmChangesPanel({ api, eff, sites, working, rows, unstage, editable, refreshSets, setWorkingId, setNote, setTab, tabIds = [], onClose }) {
   const [busy, setBusy] = useState(false);
+  const [confirm, confirmDialog] = useConfirm();
   const names = useMemo(() => ({
     products: new Map((eff?.products || []).map((p) => [p.id, p.menu_name || p.name])),
     categories: new Map((eff?.categories || []).map((c) => [c.id, c.label])),
@@ -33,7 +35,8 @@ export default function MsmChangesPanel({ api, eff, sites, working, rows, unstag
 
   const discard = async () => {
     if (!working || working.status !== 'draft') return;
-    if (!window.confirm(`Throw away "${working.title}" and its ${rows.length} change${rows.length === 1 ? '' : 's'}? The tills are not affected.`)) return;
+    const yes = await confirm({ title: `Throw away "${working.title}"?`, words: `Its ${rows.length} change${rows.length === 1 ? '' : 's'} go. The tills are not affected.`, yes: 'Throw it away', no: 'Keep it', danger: true });
+    if (!yes) return;
     setBusy(true);
     const r = await api.discardDraft(working.id);
     setBusy(false);
@@ -56,6 +59,7 @@ export default function MsmChangesPanel({ api, eff, sites, working, rows, unstag
           {editable && working?.status === 'draft' && <Btn kind="danger" disabled={busy} onClick={discard}>Throw the draft away</Btn>}
         </>
       )}>
+      {confirmDialog}
       {!rows.length && <Notice>Nothing staged. Change a price, turn a product on or off, or add a product, and it shows here.</Notice>}
       {groups.map((g) => (
         <div key={g.key} style={{ padding: '10px 0', borderBottom: '1px solid var(--bdr)' }}>

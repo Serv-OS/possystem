@@ -115,3 +115,75 @@ test('the preview headline', () => {
   const out = applyPriceChange(central(), { scope: { all: true }, change: { direction: 'up', mode: 'percent', value: 5 }, sites: 'all' });
   assert.match(priceChangeWords(out.summary), /^\d+ prices change at \d sites/);
 });
+
+// ── 17 Oct review ────────────────────────────────────────────────────────────
+const one = (product, sites) => ({
+  sites: sites.map((s) => ({ location_id: s.location_id })),
+  categories: [],
+  products: [{ id: 'p', name: 'P', category_id: null, ...product }],
+  productSites: sites.map((s) => ({ product_id: 'p', active: true, price: null, ...s })),
+});
+
+test('a channel rise at All sites never lowers a site that charges its own In store price for that channel', () => {
+  const c = one({ default_price: 3, default_channels: null }, [{ location_id: L1, price: 3.5 }, { location_id: L2 }]);
+  const out = applyPriceChange(c, { scope: { all: true }, change: { direction: 'up', mode: 'percent', value: 10 }, channel: 'delivery', sites: 'all' });
+  const group = out.changes.find((x) => x.target === 'product');
+  assert.equal(group.after.default_channels.delivery, 3.3);
+  const london = out.changes.find((x) => x.target === 'product_site' && x.location_id === L1);
+  assert.equal(london.after.channel_prices.delivery, 3.85, 'site 1 charged 3.50 for delivery: +10% is 3.85, never 3.30');
+  const row = out.rows.find((r) => r.locationId === L1);
+  assert.equal(row.before, 3.5);
+  assert.equal(row.after, 3.85);
+  assert.equal(row.staged, true, 'it can be unticked');
+  assert.ok(!out.changes.some((x) => x.target === 'product_site' && x.location_id === L2), 'site 2 follows the group price, no row of its own');
+});
+
+test('drive thru reads takeaway first, like the till', () => {
+  const c = one({ default_price: 3, default_channels: { takeaway: 3.2 } }, [{ location_id: L1 }]);
+  const out = applyPriceChange(c, { scope: { all: true }, change: { direction: 'up', mode: 'percent', value: 10 }, channel: 'driveThru', sites: 'all' });
+  const group = out.rows.find((r) => r.locationId === null);
+  assert.equal(group.before, 3.2, 'the till charges the takeaway 3.20 for drive thru today');
+  assert.equal(group.after, 3.52);
+  const site = out.rows.find((r) => r.locationId === L1);
+  assert.equal(site.before, 3.2);
+  assert.equal(site.after, 3.52);
+});
+
+test('All sites keeps a site where the product is off in step: Set to clears its old price there too', () => {
+  const c = one({ default_price: 3 }, [{ location_id: L1, price: 3.5, active: false }, { location_id: L2 }]);
+  const out = applyPriceChange(c, { scope: { all: true }, change: { mode: 'set', value: 4 }, sites: 'all' });
+  const offRow = out.changes.find((x) => x.target === 'product_site' && x.location_id === L1);
+  assert.deepEqual(offRow.after, { price: null }, 'the old 3.50 is cleared, so turning it back on charges 4.00');
+  const r = out.rows.find((x) => x.locationId === L1);
+  assert.equal(r.off, true);
+  assert.equal(out.summary.offSites, 1);
+  assert.equal(out.summary.sites, 1, 'only site 2 counts as a till price change');
+  assert.equal(out.summary.prices, 1);
+  assert.match(priceChangeWords(out.summary), /where it is off/);
+});
+
+test('an In store change flags products with an Eat in price set separately (the counter charges that first)', () => {
+  const c = one({ default_price: 3, default_channels: { dineIn: 3 } }, [{ location_id: L1 }]);
+  const out = applyPriceChange(c, { scope: { all: true }, change: { direction: 'up', mode: 'amount', value: 0.2 }, sites: 'all' });
+  assert.deepEqual(out.rows.find((r) => r.locationId === L1).pinned, ['dineIn']);
+  assert.equal(out.summary.pinned, 1);
+});
+
+test('the headline counts site prices only, never the group price row', () => {
+  const c = one({ default_price: 3 }, [{ location_id: L1 }, { location_id: L2 }, { location_id: L3 }]);
+  const out = applyPriceChange(c, { scope: { all: true }, change: { direction: 'up', mode: 'amount', value: 0.1 }, sites: 'all' });
+  assert.equal(out.summary.prices, 3);
+  assert.match(priceChangeWords(out.summary), /^3 prices change at 3 sites/);
+});
+
+test('chosen sites: a site whose new price lands on the group price is staged, so it can be unticked', () => {
+  const c = one({ default_price: 3 }, [{ location_id: L1, price: 2.9 }]);
+  const out = applyPriceChange(c, { scope: { all: true }, change: { direction: 'up', mode: 'amount', value: 0.1 }, sites: [L1] });
+  const r = out.rows.find((x) => x.locationId === L1);
+  assert.equal(r.follows, true);
+  assert.equal(r.staged, true);
+});
+
+test('a minus sign in a percent never flips the direction', () => {
+  assert.equal(changeOne(300, { direction: 'up', mode: 'percent', value: -10 }).pence, 330);
+});

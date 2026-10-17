@@ -17,13 +17,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { applyPriceChange, priceChangeWords } from '../../../../supabase/functions/_shared/msmPrice.js';
 import { categoryTree, CHANNEL_LABELS, channelLabel } from '../../../lib/msm/msmGrid';
 import { withBefore, withoutUnticked } from '../../../lib/msm/msmEdit';
-import { withMargins } from '../../../lib/msm/msmMargin';
+import { withMargins, vatMaps } from '../../../lib/msm/msmMargin';
 import { normName } from '../../../../supabase/functions/_shared/msmModel.js';
 import { groupHints } from '../../../../supabase/functions/_shared/msmSites.js';
-import { Btn, Modal, Segmented, SiteChecklist, Field, Notice, Pill } from './msmUi';
+import { Btn, Modal, Segmented, SiteChecklist, Field, Notice, Pill, WindowedList } from './msmUi';
 import { ui, money } from './msmStyle';
 
-const SHOW_MAX = 250;
+const ROW_H = 36;
 
 export default function MsmChangePrices({ api, menu, live, eff, ix, sites, stage, editable, costs, channel: gridChannel, initialScope, reload, setNote, onClose }) {
   const start = initialScope || { all: true };
@@ -57,14 +57,22 @@ export default function MsmChangePrices({ api, menu, live, eff, ix, sites, stage
   const tree = useMemo(() => categoryTree(ix), [ix]);
   const siteName = useMemo(() => new Map(sites.map((s) => [s.id, s.name])), [sites]);
 
-  const valueNum = value === '' ? null : Number(String(value).replace(/^[£$€]/, ''));
-  const valueOk = valueNum != null && Number.isFinite(valueNum) && valueNum >= 0 && (mode !== 'percent' || valueNum <= 500);
+  // The preview is worked out a moment after typing stops (a whole menu at 20 sites is thousands of
+  // prices), so typing "10" never stutters on an iPad.
+  const [valueDeb, setValueDeb] = useState(value);
+  useEffect(() => { const t = setTimeout(() => setValueDeb(value), 250); return () => clearTimeout(t); }, [value]);
+  const parseValue = (v) => (v === '' ? null : Number(String(v).replace(/^[£$€]/, '')));
+  // A cut of 100% or more would take every price to 0.00: refused. A rise up to 500%.
+  const okValue = (n) => n != null && Number.isFinite(n) && n >= 0 && (mode !== 'percent' || (mode === 'percent' && (direction === 'down' ? n < 100 : n <= 500)));
+  const valueOk = okValue(parseValue(value));
+  const valueNum = parseValue(valueDeb);
+  const debOk = okValue(valueNum);
   const scope = scopeMode === 'all' ? { all: true, includeSizes } : scopeMode === 'products' ? { productIds, includeSizes } : { categoryIds, includeSizes };
   const scopeEmpty = (scopeMode === 'products' && !productIds.length) || (scopeMode === 'categories' && !categoryIds.length);
   const siteList = siteMode === 'all' ? 'all' : chosen;
 
   const result = useMemo(() => {
-    if (!valueOk || scopeEmpty || (siteMode === 'chosen' && !chosen.length)) return null;
+    if (!debOk || !valueOk || scopeEmpty || (siteMode === 'chosen' && !chosen.length)) return null;
     return applyPriceChange(eff, {
       scope, channel,
       change: { direction, mode, value: valueNum },
@@ -72,7 +80,7 @@ export default function MsmChangePrices({ api, menu, live, eff, ix, sites, stage
       sites: siteList,
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [eff, scopeMode, productIds, categoryIds, includeSizes, direction, mode, valueNum, valueOk, channel, rounding, endings, siteMode, chosen]);
+  }, [eff, scopeMode, productIds, categoryIds, includeSizes, direction, mode, valueNum, valueOk, debOk, channel, rounding, endings, siteMode, chosen]);
 
   // A new preview starts with everything ticked.
   useEffect(() => { setOffProducts(new Set()); setOffSites(new Set()); }, [result]);
@@ -80,8 +88,8 @@ export default function MsmChangePrices({ api, menu, live, eff, ix, sites, stage
 
   const rows = useMemo(() => {
     if (!result) return [];
-    return showGp ? withMargins(result.rows, eff, costs.byLoc, {}) : result.rows;
-  }, [result, showGp, eff, costs.byLoc]);
+    return showGp ? withMargins(result.rows, eff, costs.byLoc, vatMaps(eff, costs.ratesByLoc || {})) : result.rows;
+  }, [result, showGp, eff, costs.byLoc, costs.ratesByLoc]);
   const groups = useMemo(() => {
     const by = new Map();
     for (const r of rows) {
@@ -93,13 +101,27 @@ export default function MsmChangePrices({ api, menu, live, eff, ix, sites, stage
   }, [rows, showUnchanged]);
 
   const changes = result ? withoutUnticked(result.changes, offProducts, offSites) : [];
-  const counted = rows.filter((r) => r.changed && !offProducts.has(r.productId) && !(r.locationId && offSites.has(`${r.productId}|${r.locationId}`)));
+  // What reaches the tills: site prices on sale (never the group price row, never a site where it is off).
+  const ticked = rows.filter((r) => !offProducts.has(r.productId) && !(r.locationId && offSites.has(`${r.productId}|${r.locationId}`)));
+  const counted = ticked.filter((r) => r.changed && r.locationId && !r.off);
   const summary = result ? {
     prices: counted.length,
-    sites: new Set(counted.filter((r) => r.locationId).map((r) => r.locationId)).size,
-    clears: counted.filter((r) => r.clears).length,
+    sites: new Set(counted.map((r) => r.locationId)).size,
+    clears: ticked.filter((r) => r.changed && r.clears).length,
     clamped: counted.filter((r) => r.clamped).length,
+    offSites: new Set(ticked.filter((r) => r.off && r.staged).map((r) => r.locationId)).size,
   } : null;
+  const pinnedCount = result && !channel ? new Set(rows.filter((r) => r.locationId && r.pinned?.length && !r.off).map((r) => r.productId)).size : 0;
+
+  // The preview as one flat list (a product line, then its sites), drawn only where it is on screen.
+  const flat = useMemo(() => {
+    const out = [];
+    for (const g of groups) {
+      out.push({ kind: 'product', g });
+      for (const r of g.list) if (showUnchanged || r.changed) out.push({ kind: 'site', g, r });
+    }
+    return out;
+  }, [groups, showUnchanged]);
 
   const apply = async () => {
     if (!changes.length) return;
@@ -124,7 +146,7 @@ export default function MsmChangePrices({ api, menu, live, eff, ix, sites, stage
   };
 
   return (
-    <Modal title="Change prices" width={980} onClose={onClose}
+    <Modal title="Change prices" width={980} onClose={onClose} dirty={value !== ""} dirtyWords="The change you typed is not in the draft yet."
       sub="Pick what, by how much and where. Nothing reaches a till until the draft is published."
       footer={(
         <>
@@ -181,7 +203,7 @@ export default function MsmChangePrices({ api, menu, live, eff, ix, sites, stage
           </div>
           <Field label={mode === 'percent' ? 'Percent' : mode === 'set' ? 'New price' : 'Amount'} style={{ marginBottom: 10 }}>
             <input aria-label="Change value" style={{ ...ui.input, width: 140 }} inputMode="decimal" placeholder={mode === 'percent' ? '5' : '0.20'} value={value} onChange={(e) => setValue(e.target.value)} />
-            {value !== '' && !valueOk && <div style={{ ...ui.err, marginTop: 4 }}>{mode === 'percent' ? 'Type a percent between 0 and 500.' : 'Type pounds and pence, like 0.20.'}</div>}
+            {value !== '' && !valueOk && <div style={{ ...ui.err, marginTop: 4 }}>{mode === 'percent' ? (direction === 'down' ? 'A cut must be less than 100%.' : 'Type a percent between 0 and 500.') : 'Type pounds and pence, like 0.20.'}</div>}
           </Field>
           <Field label="Which price" style={{ marginBottom: 0 }}>
             <select style={ui.input} value={channel || ''} onChange={(e) => setChannel(e.target.value || null)}>
@@ -248,63 +270,60 @@ export default function MsmChangePrices({ api, menu, live, eff, ix, sites, stage
       </div>
       {!result && <Notice>Type the change above to see every price.</Notice>}
       {result && !groups.length && <Notice>No price changes. {mode === 'set' ? 'Every price is already that.' : 'Try a bigger change or a different rounding.'}</Notice>}
+      {result && pinnedCount > 0 && (
+        <div style={{ marginBottom: 8 }}><Notice>{pinnedCount} product{pinnedCount === 1 ? ' has' : 's have'} a price set separately for a channel (such as Eat in), which the till charges first. Those stay as they are; pick that price under "Which price" to change it too.</Notice></div>
+      )}
       {result && groups.length > 0 && (
         <div style={{ border: '1px solid var(--bdr)', borderRadius: 12, overflow: 'hidden' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead>
-              <tr style={{ background: 'var(--bg2)', color: 'var(--t3)', fontSize: 11.5, textAlign: 'left' }}>
-                <th style={th}>Product and site</th><th style={{ ...th, textAlign: 'right' }}>Before</th><th style={{ ...th, textAlign: 'right' }}>After</th><th style={{ ...th, textAlign: 'right' }}>Change</th>
-                {showGp && <th style={{ ...th, textAlign: 'right' }}>GP before → after</th>}
-              </tr>
-            </thead>
-            <tbody>
-              {groups.slice(0, SHOW_MAX).map((g) => {
-                const p = ix.products.get(g.pid);
-                const pOff = offProducts.has(g.pid);
-                return [
-                  <tr key={g.pid} style={{ background: 'var(--bg1)', borderTop: '1px solid var(--bdr)' }}>
-                    <td style={{ ...td, fontWeight: 750 }} colSpan={showGp ? 5 : 4}>
-                      <label style={{ ...ui.row, cursor: 'pointer' }}>
-                        <input type="checkbox" checked={!pOff} onChange={() => setOffProducts((s) => { const n = new Set(s); if (n.has(g.pid)) n.delete(g.pid); else n.add(g.pid); return n; })} />
-                        {p?.menu_name || p?.name}
-                      </label>
-                    </td>
-                  </tr>,
-                  ...g.list.filter((r) => showUnchanged || r.changed).map((r) => {
-                    const k = `${r.productId}|${r.locationId}`;
-                    const canUntick = r.locationId && !r.follows;
-                    const off = pOff || (r.locationId && offSites.has(k));
-                    return (
-                      <tr key={k} style={{ opacity: off ? 0.4 : 1, borderTop: '1px solid var(--bdr)' }}>
-                        <td style={{ ...td, paddingLeft: 34 }}>
-                          <label style={{ ...ui.row, cursor: canUntick ? 'pointer' : 'default' }}>
-                            {canUntick && <input type="checkbox" checked={!off} disabled={pOff} onChange={() => setOffSites((s) => { const n = new Set(s); if (n.has(k)) n.delete(k); else n.add(k); return n; })} />}
-                            <span>{r.locationId ? siteName.get(r.locationId) || 'Site' : `Group price (${channelLabel(channel)})`}</span>
-                            {r.follows && r.locationId && <Pill>follows the group price</Pill>}
-                            {r.clears && <Pill tone="blue">back on the group price</Pill>}
-                            {r.clamped && <Pill tone="bad">stopped at 0.00</Pill>}
-                          </label>
-                        </td>
-                        <td style={{ ...td, textAlign: 'right', color: 'var(--t3)' }}>{money(r.before)}</td>
-                        <td style={{ ...td, textAlign: 'right', fontWeight: 750 }}>{money(r.after)}</td>
-                        <td style={{ ...td, textAlign: 'right', color: r.after > r.before ? 'var(--grn, var(--acc))' : r.after < r.before ? 'var(--red)' : 'var(--t4)' }}>{diffWords(r)}</td>
-                        {showGp && <td style={{ ...td, textAlign: 'right', fontSize: 12 }}>{gpWords(r)}</td>}
-                      </tr>
-                    );
-                  }),
-                ];
-              })}
-            </tbody>
-          </table>
-          {groups.length > SHOW_MAX && <div style={{ padding: 10, ...ui.sub }}>Showing the first {SHOW_MAX} products of {groups.length}. Every one is included.</div>}
+          <div style={{ display: 'flex', background: 'var(--bg2)', color: 'var(--t3)', fontSize: 11.5, fontWeight: 700, height: ROW_H, alignItems: 'center' }}>
+            <div style={{ ...cellL, flex: 1 }}>Product and site</div>
+            <div style={cellR}>Before</div><div style={cellR}>After</div><div style={cellR}>Change</div>
+            {showGp && <div style={{ ...cellR, width: 130 }}>GP before → after</div>}
+          </div>
+          <WindowedList items={flat} rowHeight={ROW_H} height={420} renderRow={(item) => {
+            if (item.kind === 'product') {
+              const p = ix.products.get(item.g.pid);
+              const pOff = offProducts.has(item.g.pid);
+              return (
+                <div style={{ display: 'flex', alignItems: 'center', height: '100%', borderTop: '1px solid var(--bdr)', background: 'var(--bg1)', fontSize: 13, fontWeight: 750 }}>
+                  <label style={{ ...ui.row, ...cellL, cursor: 'pointer', flex: 1, minWidth: 0 }}>
+                    <input type="checkbox" checked={!pOff} onChange={() => setOffProducts((st) => { const n = new Set(st); if (n.has(item.g.pid)) n.delete(item.g.pid); else n.add(item.g.pid); return n; })} />
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p?.menu_name || p?.name}</span>
+                  </label>
+                </div>
+              );
+            }
+            const r = item.r;
+            const k = `${r.productId}|${r.locationId}`;
+            const pOff = offProducts.has(r.productId);
+            const canUntick = !!r.locationId && !!r.staged;
+            const off = pOff || (r.locationId && offSites.has(k));
+            return (
+              <div style={{ display: 'flex', alignItems: 'center', height: '100%', borderTop: '1px solid var(--bdr)', fontSize: 13, opacity: off ? 0.4 : 1 }}>
+                <label style={{ ...ui.row, ...cellL, paddingLeft: 34, cursor: canUntick ? 'pointer' : 'default', flex: 1, minWidth: 0, overflow: 'hidden' }}>
+                  {canUntick && <input type="checkbox" checked={!off} disabled={pOff} onChange={() => setOffSites((st) => { const n = new Set(st); if (n.has(k)) n.delete(k); else n.add(k); return n; })} />}
+                  <span style={{ whiteSpace: 'nowrap' }}>{r.locationId ? siteName.get(r.locationId) || 'Site' : `Group price (${channelLabel(channel)})`}</span>
+                  {r.follows && r.locationId && <Pill>follows the group price</Pill>}
+                  {r.clears && <Pill tone="blue">back on the group price</Pill>}
+                  {r.off && <Pill>off at this site: kept in step</Pill>}
+                  {r.clamped && <Pill tone="bad">stopped at 0.00</Pill>}
+                  {!channel && r.locationId && r.pinned?.length > 0 && <Pill tone="warn" title="The till charges this channel price first; it stays as it is">{r.pinned.map((c) => CHANNEL_LABELS[c] || c).join(', ')} set separately: stays</Pill>}
+                </label>
+                <div style={{ ...cellR, color: 'var(--t3)' }}>{money(r.before)}</div>
+                <div style={{ ...cellR, fontWeight: 750 }}>{money(r.after)}</div>
+                <div style={{ ...cellR, color: r.after > r.before ? 'var(--grn, var(--acc))' : r.after < r.before ? 'var(--red)' : 'var(--t4)' }}>{diffWords(r)}</div>
+                {showGp && <div style={{ ...cellR, width: 130, fontSize: 12 }}>{gpWords(r)}</div>}
+              </div>
+            );
+          }} />
         </div>
       )}
     </Modal>
   );
 }
 
-const th = { padding: '9px 12px', fontWeight: 700 };
-const td = { padding: '7px 12px', verticalAlign: 'middle' };
+const cellL = { padding: '0 12px', boxSizing: 'border-box' };
+const cellR = { width: 90, padding: '0 12px', textAlign: 'right', flexShrink: 0, boxSizing: 'border-box' };
 const gpWords = (r) => {
   if (!r.locationId) return '';
   const a = r.gpBefore, b = r.gpAfter;

@@ -94,6 +94,16 @@ test('a failed routing read keeps the last push\'s routing; a venue with no push
   assert.ok(Array.isArray(s2.menuItems) && s2.menuItems.length > 0);
 });
 
+test('an EMPTY printers or routing read never wipes what the last push carried (like Push to POS)', () => {
+  const raw = { ...venues()[A], printers: [], printRouting: { centres: [], routing: {} } };
+  const last = { printRouting: { centres: [{ id: 'LAST' }], routing: {} }, printers: [{ id: 'LASTP' }] };
+  const s = buildMsmSnapshot({ raw, last });
+  assert.equal(s.printers[0].id, 'LASTP', 'printers kept from the last push');
+  assert.equal(s.printRouting.centres[0].id, 'LAST', 'routing kept from the last push');
+  const none = buildMsmSnapshot({ raw, last: null });
+  assert.deepEqual(none.printers, [], 'no last push: the empty read is the answer');
+});
+
 test('appliedRaw lays a plan\'s rows over the read, keeping tax and printers', () => {
   const raw = venues()[A];
   const plan = { applied: { items: [{ id: 'only', archived: false }], menus: raw.menus, categories: raw.categories, links: raw.links, groups: [], printRouting: null } };
