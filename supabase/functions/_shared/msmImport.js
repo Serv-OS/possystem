@@ -761,8 +761,8 @@ export function reviewWords(review) {
   const r = review || {};
   const n = (a) => listOf(a).length;
   return [
-    `${n(r.family)} matched by family`,
-    `${n(r.name)} matched by name only (tick to link)`,
+    `${n(r.family)} already shared between sites`,
+    `${n(r.name)} with the same name at several sites (tick the ones that are the same)`,
     `${n(r.onlyOne)} only at one site`,
     ...(n(r.clashes) ? [`${n(r.clashes)} clash${n(r.clashes) === 1 ? '' : 'es'} to settle by hand`] : []),
   ].join(', ');

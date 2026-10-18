@@ -24,7 +24,7 @@ test('export: Excel safe, a byte order mark, plain numbers, the column order the
   const csv = exportCsv(central, sites);
   assert.equal(csv.charCodeAt(0), 0xFEFF);
   const rows = parseCsv(csv);
-  assert.deepEqual(rows[0], ['Central id', 'Product', 'Category', 'Size of', 'Default price', 'Site One price', 'Site One active', 'Site Two price', 'Site Two active']);
+  assert.deepEqual(rows[0], ['ServOS ID (do not change)', 'Product', 'Category', 'Size of', 'Group price', 'Site One price', 'Site One active', 'Site Two price', 'Site Two active']);
   assert.deepEqual(rows[1], ['p1', 'Latte', 'Hot drinks', '', '2.80', '', 'Yes', '3.00', 'Yes']);
   assert.deepEqual(rows[2], ['p2', 'Large latte', 'Hot drinks', 'Latte', '3.20', '', 'No', '', '']);
   assert.equal(rows[3][1], `'=HYPERLINK("x")`, 'a formula is never run by Excel');
@@ -73,4 +73,9 @@ test('import: a comma decimal (2,50) is an error, never read as 250.00', () => {
   assert.equal(r.errors.length, 1);
   assert.ok(!r.changes.some((c) => c.entity_id === 'p1'));
   assert.ok(r.changes.some((c) => c.entity_id === 'p3' && c.after.default_price === 1250));
+});
+
+test('import: a file made with the round 2 column names imports the same as an older one', () => {
+  const r = readCsvChanges('ServOS ID (do not change),Group price,Site Two price\np1,2.90,3.10\n', central, sites);
+  assert.deepEqual(r.changes.map((c) => [c.target, c.after]), [['product', { default_price: 2.9 }], ['product_site', { price: 3.1 }]]);
 });

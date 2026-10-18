@@ -21,7 +21,7 @@ import { ui } from './msmStyle';
 import { useMsmHistory } from './useMsmHistory';
 import { useConfirm } from './useConfirm';
 
-const KIND = { publish: 'Published', scheduled: 'Scheduled', undo: 'Undo', import: 'Import', add_site: 'Site added' };
+const KIND = { publish: 'Published', scheduled: 'Scheduled', undo: 'Put back', import: 'Import', add_site: 'Site added' };
 
 export default function MsmTimeline({ api, menu, live, sites, sets, canEdit, setWorkingId, setNote, setTab, refreshSets, reload }) {
   const history = useMsmHistory(api, menu?.id, { every: 15000, onSettled: () => { reload(); refreshSets(); } });
@@ -78,15 +78,15 @@ export default function MsmTimeline({ api, menu, live, sites, sets, canEdit, set
   const confirmUndo = async () => {
     const { version, plan } = undo;
     setBusy(`undo:${version.id}`);
-    const d = await api.createDraft(menu.id, `Undo version ${version.version_no}${version.title ? `: ${version.title}` : ''}`.slice(0, 80), 'undo', { undoOf: version.id });
+    const d = await api.createDraft(menu.id, `Put back before version ${version.version_no}${version.title ? `: ${version.title}` : ''}`.slice(0, 80), 'undo', { undoOf: version.id });
     if (!d.ok) { setBusy(''); setNote({ tone: 'bad', text: d.words }); return; }
     const r = await api.stageMany(d.data.id, withBefore(live, plan.changes), []);
     setBusy('');
     await refreshSets();
     setWorkingId(d.data.id);
     setUndo(null);
-    if (!r.ok) { setNote({ tone: 'bad', text: `The undo draft was made but ${r.failed.length || r.conflicts} change${(r.failed.length || r.conflicts) === 1 ? '' : 's'} did not go in: ${r.failed[0]?.words || 'someone changed them at the same moment'}.` }); return; }
-    setNote({ tone: 'good', text: `The undo is a draft: check what it changes at each site, then publish it or schedule it.` });
+    if (!r.ok) { setNote({ tone: 'bad', text: `The put back draft was made but ${r.failed.length || r.conflicts} change${(r.failed.length || r.conflicts) === 1 ? '' : 's'} did not go in: ${r.failed[0]?.words || 'someone changed them at the same moment'}.` }); return; }
+    setNote({ tone: 'good', text: `The put back is a draft: check what it changes at each site, then publish it or schedule it.` });
     setTab('publish');
   };
 
@@ -96,10 +96,10 @@ export default function MsmTimeline({ api, menu, live, sites, sets, canEdit, set
       {history.error && <Notice tone="bad">{history.error}</Notice>}
 
       <div>
-        <SectionHead title="Coming up" sub="Scheduled sets run by themselves at their time, in this order. A set starts a few minutes early: kiosks, kitchen screens and handhelds take it at once, counter tills between sales (never mid sale)." />
+        <SectionHead title="Coming up" sub="Scheduled pushes run by themselves at their time, in this order. Each starts a few minutes early: kiosks, kitchen screens and handhelds take it at once, counter tills between sales (never mid sale)." />
         {!entries.length && (
           <div style={{ ...ui.card, ...ui.sub }}>
-            Nothing is scheduled. In Publish, pick "At a date and time" to put changes on the tills later, for example new products on the tills by Monday 06:00.
+            Nothing is scheduled. In Review and publish, pick "At a date and time" to put changes on the tills later, for example new products on the tills by Monday 06:00.
           </div>
         )}
         <div style={{ display: 'grid', gap: 12 }}>
@@ -151,7 +151,7 @@ export default function MsmTimeline({ api, menu, live, sites, sets, canEdit, set
       </div>
 
       <div>
-        <SectionHead title="History" sub="Every publish is a version. Open one to see what it wrote at each site. Undo makes a new draft that puts it back, with the same preview first." />
+        <SectionHead title="History" sub="Every publish is a published version. Open one to see what it wrote at each site. Put back how it was makes a new draft that undoes it, with the same preview first." />
         {!history.rows && !history.error && <div style={ui.sub}>Reading…</div>}
         {history.rows && !past.length && <div style={{ ...ui.card, ...ui.sub }}>Nothing published yet.</div>}
         {past.length > 0 && <div style={{ ...ui.card, padding: 0, overflow: 'hidden' }}>
@@ -163,12 +163,12 @@ export default function MsmTimeline({ api, menu, live, sites, sets, canEdit, set
       </div>
 
       {undo && (
-        <Modal title={`Undo version ${undo.version.version_no}`} sub={undo.version.title || ''} width={620} onClose={() => setUndo(null)}
+        <Modal title={`Put back how it was before version ${undo.version.version_no}`} sub={undo.version.title || ''} width={620} onClose={() => setUndo(null)}
           footer={(
             <>
               <div style={{ flex: 1, ...ui.sub }}>{undo.plan.changes.length} change{undo.plan.changes.length === 1 ? '' : 's'} go into a new draft. Nothing reaches the tills until you publish it.</div>
               <Btn onClick={() => setUndo(null)}>Keep it as it is</Btn>
-              <Btn kind="primary" disabled={!undo.plan.changes.length || busy === `undo:${undo.version.id}`} onClick={confirmUndo}>Make the undo draft</Btn>
+              <Btn kind="primary" disabled={!undo.plan.changes.length || busy === `undo:${undo.version.id}`} onClick={confirmUndo}>Add the put back to a draft</Btn>
             </>
           )}>
           {!undo.plan.changes.length && <Notice>There is nothing in this version that can be put back.</Notice>}
@@ -278,7 +278,7 @@ function VersionRow({ v, first, api, names, siteNames, tzOf, now, live, canEdit,
               )} />
             </div>
           )}
-          {canUndo && <div><Btn small onClick={onUndo}>Undo this version…</Btn></div>}
+          {canUndo && <div><Btn small onClick={onUndo}>Put back how it was before version {v.version_no}…</Btn></div>}
         </div>
       )}
     </div>

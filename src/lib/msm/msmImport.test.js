@@ -43,7 +43,7 @@ test('only at one site: a normal product on at that site only, archived ones lef
   assert.equal(byName(built.central, 'Pie').site_only_location_id, null, 'no "site only extra" (UI issue 6)');
   assert.deepEqual(built.central.productSites.filter((s) => s.product_id === byName(built.central, 'Pie').id).map((s) => s.location_id), [C], 'on at its one site, no row elsewhere');
   assert.ok(built.dropped.includes(old.productId));
-  assert.match(reviewWords(p.review), /6 matched by family, 1 matched by name only/);
+  assert.match(reviewWords(p.review), /6 already shared between sites, 1 with the same name at several sites/);
 });
 
 test('default price is the most common across sites; every other site gets an override', () => {

@@ -13,6 +13,10 @@
 //      names (pick the group's), only at one site (bring in, on at that site only, or leave out),
 //      clashes (listed; each stays the site's own).
 //   3. Check: "Publishing now would change 0 things at 0 sites", then Create.
+//
+// ROUND 2, builder 3 (design 2 item 12): the menus are read as soon as the sites are known; step 2
+// is a checklist whose lists carry "Needs you" until looked at, and going on past a list nobody
+// opened asks first; "Name only" is explained; step 3 says "Safe to make".
 
 import { useEffect, useMemo, useState } from 'react';
 import { proposeImport, buildCentral, importPayload, reviewWords } from '../../../../supabase/functions/_shared/msmImport.js';
@@ -22,6 +26,7 @@ import {
 } from '../../../lib/msm/msmImportReview';
 import { Btn, Pill, Segmented, Field, Notice } from './msmUi';
 import { ui, money } from './msmStyle';
+import { useConfirm } from './useConfirm';
 
 export default function MsmImport({ api, client, orgId, orgName, readSites, onCancel, onDone }) {
   const [step, setStep] = useState('sites');      // sites | review | check
@@ -40,16 +45,28 @@ export default function MsmImport({ api, client, orgId, orgName, readSites, onCa
   const [working, setWorking] = useState('');
   const [words, setWords] = useState('');
 
+  // The company's sites, then straight away their menus (nobody has to press Read first).
   useEffect(() => {
     let on = true;
-    readSites(client, { orgId }).then((r) => {
+    readSites(client, { orgId }).then(async (r) => {
       if (!on) return;
       if (!r.rows) { setWords('Could not read your sites. Try again.'); setCompany([]); return; }
       setCompany(r.rows.map((x) => ({ id: x.id, name: x.name || 'Site' })));
-      setTicked(r.rows.map((x) => x.id));
+      const ids = r.rows.map((x) => x.id);
+      setTicked(ids);
+      if (!ids.length) return;
+      setReading(true);
+      const v = await api.venues(ids);
+      if (!on) return;
+      setReading(false);
+      setRaws(v.venues);
+      setFailed(v.failed);
+      const pick = {};
+      for (const loc of ids) { const at = venueMenuChoices(v.venues[loc]); if (at.length) pick[loc] = at[0].id; }
+      setMenuAt(pick);
     });
     return () => { on = false; };
-  }, [client, orgId, readSites]);
+  }, [api, client, orgId, readSites]);
 
   const siteName = useMemo(() => new Map((company || []).map((s) => [s.id, s.name])), [company]);
   const read = async () => {
@@ -125,6 +142,7 @@ export default function MsmImport({ api, client, orgId, orgName, readSites, onCa
             <div style={ui.h2}>Sites</div>
             <div style={{ ...ui.sub, marginBottom: 10 }}>Every site you can open in this company. Untick any to leave out; they can join later.</div>
             {company === null && <div style={ui.sub}>Reading your sites…</div>}
+            {reading && <div style={{ ...ui.sub, marginBottom: 6 }}>Reading each site's menu…</div>}
             {(company || []).map((s) => {
               const raw = raws[s.id];
               const menus = raw ? venueMenuChoices(raw) : [];
@@ -161,7 +179,7 @@ export default function MsmImport({ api, client, orgId, orgName, readSites, onCa
         <div style={ui.card}>
           {built.check.ok ? (
             <>
-              <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 6 }}>Ready</div>
+              <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 6 }}>Safe to make: nothing changes at any site today.</div>
               <div style={{ fontSize: 14, marginBottom: 16 }} data-testid="msm-import-summary">{importSummaryWords(built.central, built.check)}</div>
               <div style={{ ...ui.sub, marginBottom: 16 }}>
                 Where a site's price differs from the group's, it is kept as that site's own price. Where a site has its own name, photo, category or VAT for a product, it keeps it, and publishing never changes it there until you say so.
@@ -195,25 +213,38 @@ function Review({ proposal, choices, setChoices, bucket, setBucket, siteName, si
   const [site, setSite] = useState('');
   const [archived, setArchived] = useState('all');
   const [search, setSearch] = useState('');
+  const [visited, setVisited] = useState(() => new Set([bucket]));
+  const [confirm, confirmDialog] = useConfirm();
   const filter = { location_id: site || null, archived: archived === 'all' ? null : archived === 'archived', search };
   const shownOnly = filterOnlyOne(proposal, filter);
   const leave = new Set(choices.leaveOut);
 
+  // Lists that need a person's eye: "Needs you" until opened once.
+  const needs = { name: counts.name > 0, names: counts.names > 0, onlyOne: (counts.onlyOne.extra + counts.onlyOne.leave) > 0, clashes: counts.clashes > 0 };
+  const badge = (k) => (needs[k] && !visited.has(k) ? ' · Needs you' : '');
   const tabs = [
-    { value: 'family', label: `Matched (${counts.family})` },
-    { value: 'name', label: `Name only (${counts.nameTicked}/${counts.name})` },
-    { value: 'names', label: `Different names (${counts.names})` },
-    { value: 'onlyOne', label: `One site only (${counts.onlyOne.extra + counts.onlyOne.leave})` },
-    ...(counts.clashes ? [{ value: 'clashes', label: `Clashes (${counts.clashes})` }] : []),
+    { value: 'family', label: `Already shared (${counts.family})` },
+    { value: 'name', label: `Name only (${counts.nameTicked}/${counts.name})${badge('name')}` },
+    { value: 'names', label: `Different names (${counts.names})${badge('names')}` },
+    { value: 'onlyOne', label: `One site only (${counts.onlyOne.extra + counts.onlyOne.leave})${badge('onlyOne')}` },
+    ...(counts.clashes ? [{ value: 'clashes', label: `Clashes (${counts.clashes})${badge('clashes')}` }] : []),
   ];
+  const LIST_WORDS = { name: 'Name only', names: 'Different names', onlyOne: 'One site only', clashes: 'Clashes' };
+  const pickBucket = (b) => { setBucket(b); setVisited((v) => new Set([...v, b])); };
+  const next = async () => {
+    const missed = Object.keys(needs).filter((k) => needs[k] && !visited.has(k)).map((k) => LIST_WORDS[k]);
+    if (missed.length && !(await confirm({ title: 'Go on without looking?', words: `You have not looked at ${missed.join(', ')} yet. The choices already made there are used.`, yes: 'Go on anyway', no: 'Look first' }))) return;
+    onNext();
+  };
 
   return (
     <div>
+      {confirmDialog}
       <div style={{ ...ui.card, marginBottom: 12 }}>
         <div style={{ fontSize: 14, fontWeight: 700 }}>{reviewWords(r)}</div>
-        <div style={{ ...ui.sub, marginTop: 4 }}>Matched products are linked across sites. Settle the rest below, then check.</div>
+        <div style={{ ...ui.sub, marginTop: 4 }}>Work down the lists marked "Needs you", then check. Products already shared between sites are linked for you.</div>
       </div>
-      <div style={{ marginBottom: 12 }}><Segmented value={bucket} onChange={setBucket} options={tabs} /></div>
+      <div style={{ marginBottom: 12 }}><Segmented value={bucket} onChange={pickBucket} options={tabs} /></div>
       <div style={{ ...ui.card, padding: 0, overflow: 'hidden' }}>
         <div style={{ maxHeight: 'calc(100vh - 420px)', minHeight: 260, overflowY: 'auto' }}>
           {bucket === 'family' && r.family.map((f) => (
@@ -224,7 +255,7 @@ function Review({ proposal, choices, setChoices, bucket, setBucket, siteName, si
           {bucket === 'name' && (
             <>
               <div style={{ ...ui.row, padding: '10px 14px', borderBottom: '1px solid var(--bdr)' }}>
-                <span style={{ ...ui.sub, flex: 1 }}>Same name at different sites, but not shared from one product. Tick the ones that are the same product. Unticked ones stay each site's own.</span>
+                <span style={{ ...ui.sub, flex: 1 }}>Same name at several sites. Tick the ones that are the same product, so one price change reaches them all. Unticked ones stay each site's own.</span>
                 <Btn small kind="soft" onClick={() => setChoices(tickAllNames(choices, proposal, true))}>Tick all</Btn>
                 <Btn small kind="soft" onClick={() => setChoices(tickAllNames(choices, proposal, false))}>Untick all</Btn>
               </div>
@@ -293,7 +324,7 @@ function Review({ proposal, choices, setChoices, bucket, setBucket, siteName, si
       <div style={{ ...ui.row, marginTop: 14 }}>
         <Btn onClick={onBack}>Back</Btn>
         <div style={{ flex: 1, ...ui.sub }}>{counts.onlyOne.extra} sold at one site brought in, {counts.onlyOne.leave + choices.leaveOut.length} left out.</div>
-        <Btn kind="primary" disabled={busy} onClick={onNext}>Check and continue</Btn>
+        <Btn kind="primary" disabled={busy} onClick={next}>Check and continue</Btn>
       </div>
     </div>
   );

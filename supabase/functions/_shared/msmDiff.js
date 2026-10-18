@@ -260,6 +260,20 @@ export function siteDrift(central, locationId, raw, names = {}) {
     const row = items.get(ps.venue_item_id);
     if (!row || !ps.kept || typeof ps.kept !== 'object') continue;
     for (const [col, keptValue] of Object.entries(ps.kept)) {
+      // VAT by order type is kept per key (a rate id, null, or false for "no key here"): compared key
+      // by key, never as a whole object (the site's other keys are only there for information).
+      if (col === 'tax_overrides' && keptValue && typeof keptValue === 'object') {
+        const cur = row.tax_overrides && typeof row.tax_overrides === 'object' ? row.tax_overrides : {};
+        for (const [k, kv] of Object.entries(keptValue)) {
+          const now = has(cur, k) ? cur[k] : false;
+          if (sameValue(now, kv) && (now === null) === (kv === null)) continue;
+          out.push({
+            productId: ps.product_id, venueItemId: ps.venue_item_id, column: `tax_overrides.${k}`, venue: has(cur, k) ? cur[k] : undefined, group: kv, kept: true,
+            words: `${n[ps.product_id] || ps.venue_item_id}: VAT for ${k} was changed at the venue, it was keeping its own`,
+          });
+        }
+        continue;
+      }
       if (sameValue(row[col], keptValue)) continue;
       out.push({
         productId: ps.product_id, venueItemId: ps.venue_item_id, column: col, venue: row[col] ?? null, group: keptValue, kept: true,
@@ -310,7 +324,14 @@ export function keepVenueChanges(central, locationId, driftLines) {
       cur.after.channel_prices = { ...(cur.after.channel_prices || ps.channel_prices || {}), [k]: d.venue };
       cur.before.channel_prices = ps.channel_prices;
     } else if (d.column === 'archived') { cur.after.active = d.venue !== true; cur.before.active = ps.active; }
-    else {
+    else if (d.column.startsWith('tax_overrides.')) {
+      // One order type key kept as the site has it: a rate id, null, or false for "no key".
+      const k = d.column.slice(14);
+      const base = cur.after.kept || ps.kept || {};
+      const t = { ...(base.tax_overrides && typeof base.tax_overrides === 'object' ? base.tax_overrides : {}), [k]: d.venue === undefined ? false : d.venue };
+      cur.after.kept = { ...base, tax_overrides: t };
+      cur.before.kept = ps.kept || {};
+    } else {
       cur.after.kept = { ...(cur.after.kept || ps.kept || {}), [d.column]: d.venue };
       cur.before.kept = ps.kept || {};
     }

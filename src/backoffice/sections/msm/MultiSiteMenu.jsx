@@ -58,6 +58,11 @@ import { EXTRA_TABS } from './msmTabs';
 const WORKING_KEY = (menuId) => `msm-working-set:${menuId}`;
 const readWorking = (menuId) => { try { return localStorage.getItem(WORKING_KEY(menuId)) || null; } catch { return null; } };
 const saveWorking = (menuId, id) => { try { if (id) localStorage.setItem(WORKING_KEY(menuId), id); else localStorage.removeItem(WORKING_KEY(menuId)); } catch { /* private mode */ } };
+// The tab this person had open last (design 4: remember the viewer's tab), per browser.
+const TAB_KEY = 'msm-last-tab';
+const KNOWN_TABS = () => ['grid', 'groups', 'details', ...EXTRA_TABS.map((t) => t.id)];
+const readTab = () => { try { const t = localStorage.getItem(TAB_KEY); return t && KNOWN_TABS().includes(t) ? t : 'grid'; } catch { return 'grid'; } };
+const saveTab = (t) => { try { localStorage.setItem(TAB_KEY, t); } catch { /* private mode */ } };
 
 
 /** Site names (and clocks) for a list of venue ids, or for a whole company. */
@@ -88,7 +93,8 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
   const [rows, setRows] = useState([]);               // staged changes of the working set
   const [busy, setBusy] = useState(0);
   const [note, setNote] = useState(null);             // { tone, text }
-  const [tab, setTab] = useState('grid');
+  const [tab, setTabState] = useState(readTab);
+  const setTab = useCallback((t) => { setTabState(t); saveTab(t); }, []);
   const [sheet, setSheet] = useState(null);           // { productId } | { create: true } | null
   const [tool, setTool] = useState(null);             // Change prices scope | null
   const [showChanges, setShowChanges] = useState(false);
@@ -230,7 +236,7 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
     } finally {
       setBusy((n) => n - 1);
     }
-  }, [api, canEdit, menu, onAccessLost, readRows, rows, working, workingId]);
+  }, [api, canEdit, menu, onAccessLost, readRows, rows, working, workingId, setTab]);
 
   // Undo of a single action: put each field back, and take out what that action created.
   const unstage = useCallback(async (row) => {

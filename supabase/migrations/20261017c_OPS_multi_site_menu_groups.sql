@@ -589,9 +589,17 @@ begin
           raise exception 'An option''s id at a site cannot be blank.' using errcode = '22023';
         end if;
         -- An existing id must be in that site's own copy of the group (bringing an option in).
-        select gs.venue_group_id into v_vg
-          from public.msm_modifier_options o join public.msm_modifier_group_sites gs on gs.group_id = o.group_id and gs.location_id = new.location_id
-         where o.id = new.entity_id;
+        -- The option, or its group's row at that site, may be new in this same draft (bringing a
+        -- site's own product and its option group in, or "Bring it into the group").
+        select coalesce(gs.venue_group_id, gx.after ->> 'venue_group_id') into v_vg
+          from (select coalesce((select o.group_id from public.msm_modifier_options o where o.id = new.entity_id),
+                                (select nullif(x.after ->> 'group_id', '')::uuid from public.msm_changes x
+                                  where x.change_set_id = v_set.id and x.target = 'modifier_option' and x.op = 'create' and x.entity_id = new.entity_id
+                                  limit 1)) as gid) og
+          left join public.msm_modifier_group_sites gs on gs.group_id = og.gid and gs.location_id = new.location_id
+          left join public.msm_changes gx on gx.change_set_id = v_set.id and gx.target = 'modifier_group_site' and gx.op = 'create'
+                                         and gx.entity_id = og.gid and gx.location_id = new.location_id
+         limit 1;
         if v_vg is null or not exists (select 1 from public.modifier_groups g where g.id = v_vg and g.location_id = new.location_id
                                           and jsonb_typeof(g.options) = 'array' and g.options @> jsonb_build_array(jsonb_build_object('id', v_vid))) then
           raise exception 'That option is not in the site''s own option group.' using errcode = '42501';

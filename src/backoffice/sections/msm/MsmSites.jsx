@@ -9,9 +9,19 @@
 //     of its own are counted, never touched.
 //   * Add a site (design 4e): a venue of the company not in the group menu yet, every product at the
 //     group price or copied from a chosen site, in a new draft that opens in Publish for the preview.
+//
+// ROUND 2, builder 3 (design 3.1, 3.3 and 2 items 20 and 22):
+//   * "Find changes made at sites": each line in words with the site's name, and per line
+//     [Keep Leeds's] or [Put the group's back on next publish] (lib/msm/msmDriftView.js).
+//   * A site's own products (not in the group menu): "Leeds has 17 products of its own [Look at
+//     them]". Each says what it looks like in the group menu; [Link to Latte] or [Bring in as a new
+//     product] goes into the draft, worked out so that publishing writes NOTHING at the site
+//     (lib/msm/msmBringIn.js). Its option groups come in with it.
 
 import { useEffect, useMemo, useState } from 'react';
-import { sitesReached, siteDrift, keepVenueChanges } from '../../../../supabase/functions/_shared/msmDiff.js';
+import { sitesReached, siteDrift } from '../../../../supabase/functions/_shared/msmDiff.js';
+import { openDrift, driftWords, keepChanges, putBackChanges, bringInOption } from '../../../lib/msm/msmDriftView';
+import { ownProducts, bringInChanges, ownCountWords } from '../../../lib/msm/msmBringIn';
 import { planAddSite } from '../../../../supabase/functions/_shared/msmSites.js';
 import { whenText } from '../../../../supabase/functions/_shared/msmSchedule.js';
 import { readAllRows } from '../../../../supabase/functions/_shared/venueMenuCore.js';
@@ -23,16 +33,15 @@ import { useMsmHistory } from './useMsmHistory';
 
 export default function MsmSites({ api, client, menu, live, eff, sites, rows, canEdit, editable, stage, setWorkingId, setNote, setTab, refreshSets, reload }) {
   const history = useMsmHistory(api, menu?.id, { every: 20000, onSettled: () => { reload(); refreshSets(); } });
-  const [check, setCheck] = useState(null);         // { at, drift: { loc: [lines] }, own: { loc: n }, failed: [] }
+  const [check, setCheck] = useState(null);         // { at, drift: { loc: [lines] }, own: { loc: n }, raw: { loc: raw }, failed: [] }
+  const [bringing, setBringing] = useState(null);   // locationId
   const [checking, setChecking] = useState(false);
   const [review, setReview] = useState(null);       // locationId
   const [adding, setAdding] = useState(false);
   const [busy, setBusy] = useState('');
 
-  const names = useMemo(() => Object.fromEntries((live?.products || []).map((p) => [p.id, p.menu_name || p.name])), [live]);
+  const names = useMemo(() => Object.fromEntries([...(live?.products || []), ...(eff?.products || [])].map((p) => [p.id, p.menu_name || p.name]).concat([...(live?.groups || []), ...(eff?.groups || [])].map((g) => [g.id, g.name]))), [live, eff]);
   const waiting = useMemo(() => new Set(eff && rows.length ? sitesReached(eff, rows) : []), [eff, rows]);
-  const driftCount = useMemo(() => Object.fromEntries(Object.entries(check?.drift || {}).map(([k, v]) => [k, v.length])), [check]);
-  const cards = useMemo(() => siteCards(sites, history.rows || [], { waiting, drift: driftCount }), [sites, history.rows, waiting, driftCount]);
   const onSale = useMemo(() => {
     const m = new Map();
     for (const ps of eff?.productSites || []) if (ps.active !== false) m.set(ps.location_id, (m.get(ps.location_id) || 0) + 1);
@@ -42,17 +51,25 @@ export default function MsmSites({ api, client, menu, live, eff, sites, rows, ca
   const runCheck = async () => {
     setChecking(true);
     const r = await api.venues(sites.map((s) => s.id));
-    const drift = {}, own = {};
-    for (const s of sites) {
-      const raw = r.venues[s.id];
-      if (!raw) continue;
-      drift[s.id] = siteDrift(live, s.id, raw, names);
-      const managed = new Set((live?.productSites || []).filter((ps) => ps.location_id === s.id).map((ps) => ps.venue_item_id));
-      own[s.id] = (raw.items || []).filter((i) => !managed.has(i.id) && i.archived !== true).length;
-    }
-    setCheck({ at: Date.now(), drift, own, failed: r.failed });
+    const raw = {};
+    for (const s of sites) if (r.venues[s.id]) raw[s.id] = r.venues[s.id];
+    setCheck({ at: Date.now(), raw, failed: r.failed });
     setChecking(false);
   };
+  // Worked out from the rows read and the group menu as it is now (with the draft), so a line the
+  // draft already keeps, or a product already brought in, drops out at once.
+  const derived = useMemo(() => {
+    const drift = {}, own = {};
+    for (const s of sites) {
+      const raw = check?.raw?.[s.id];
+      if (!raw) continue;
+      try { drift[s.id] = openDrift(live, eff, s.id, raw, names); } catch { drift[s.id] = siteDrift(live, s.id, raw, names); }
+      try { own[s.id] = ownProducts(eff || live, s.id, raw).filter((o) => !o.archived); } catch { own[s.id] = []; }
+    }
+    return { drift, own };
+  }, [check, sites, live, eff, names]);
+  const driftCount = useMemo(() => Object.fromEntries(Object.entries(derived.drift).map(([k, v]) => [k, v.length])), [derived]);
+  const cards = useMemo(() => siteCards(sites, history.rows || [], { waiting, drift: driftCount }), [sites, history.rows, waiting, driftCount]);
 
   const retry = async (card) => {
     setBusy(card.id);
@@ -73,7 +90,7 @@ export default function MsmSites({ api, client, menu, live, eff, sites, rows, ca
             Each site sells from its own copy of the menu; publishing writes the group's changes into it.
           </div>
         </div>
-        <Btn kind="soft" disabled={checking} onClick={runCheck}>{checking ? 'Reading every site…' : 'Check the sites for changes made there'}</Btn>
+        <Btn kind="soft" disabled={checking} onClick={runCheck}>{checking ? 'Reading every site…' : 'Find changes made at sites'}</Btn>
         {canEdit && <Btn kind="primary" onClick={() => setAdding(true)}>Add a site</Btn>}
       </div>
       {history.error && <Notice tone="bad">{history.error}</Notice>}
@@ -85,7 +102,7 @@ export default function MsmSites({ api, client, menu, live, eff, sites, rows, ca
             <div style={{ ...ui.row, alignItems: 'flex-start' }}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 15, fontWeight: 750 }}>{c.name}</div>
-                <div style={ui.sub}>{onSale.get(c.id) || 0} products on sale{check?.own?.[c.id] ? ` · ${check.own[c.id]} of its own, not managed here` : ''}</div>
+                <div style={ui.sub}>{onSale.get(c.id) || 0} products on sale</div>
               </div>
               <Pill tone={c.tone}>{c.label}</Pill>
             </div>
@@ -99,11 +116,13 @@ export default function MsmSites({ api, client, menu, live, eff, sites, rows, ca
               {c.willFailWords && <div style={{ color: 'var(--red)' }}>Will fail: {c.willFailWords}</div>}
               {c.failed && <div style={{ color: 'var(--red)' }}>{c.failed.title ? `"${c.failed.title}" ` : ''}failed: {c.failed.error}</div>}
               {c.lastDoneAt != null && <div style={{ color: 'var(--t3)' }}>Last updated {new Date(c.lastDoneAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}{c.lastVersionNo ? ` (version ${c.lastVersionNo})` : ''}</div>}
-              {c.drift > 0 && <div>{c.drift} thing{c.drift === 1 ? ' was' : 's were'} changed at the venue since the last publish</div>}
+              {c.drift > 0 && <div>{c.drift} change{c.drift === 1 ? ' was' : 's were'} made at {c.name} since the last publish</div>}
+              {check?.raw?.[c.id] && <div>{ownCountWords((derived.own[c.id] || []).length, c.name)}</div>}
             </div>
             <div style={{ ...ui.row, marginTop: 12, flexWrap: 'wrap' }}>
               {canEdit && c.failed && <Btn small kind="primary" disabled={busy === c.id} onClick={() => retry(c)}>Retry {c.name}</Btn>}
-              {c.drift > 0 && <Btn small kind="soft" onClick={() => setReview(c.id)}>Review</Btn>}
+              {c.drift > 0 && <Btn small kind="soft" onClick={() => setReview(c.id)}>Look at the changes</Btn>}
+              {(derived.own[c.id] || []).length > 0 && <Btn small kind="soft" onClick={() => setBringing(c.id)}>Look at them</Btn>}
               {waiting.has(c.id) && <Btn small kind="link" onClick={() => setTab('publish')}>See what changes</Btn>}
             </div>
           </div>
@@ -111,8 +130,12 @@ export default function MsmSites({ api, client, menu, live, eff, sites, rows, ca
       </div>
 
       {review && (
-        <DriftReview site={sites.find((s) => s.id === review)} lines={check?.drift?.[review] || []} live={live} editable={editable} stage={stage}
+        <DriftReview site={sites.find((s) => s.id === review)} lines={derived.drift[review] || []} central={eff || live} names={names} editable={editable} stage={stage}
           onClose={() => setReview(null)} />
+      )}
+      {bringing && (
+        <BringIn site={sites.find((s) => s.id === bringing)} own={derived.own[bringing] || []} raw={check?.raw?.[bringing]} central={eff || live}
+          editable={editable} stage={stage} onClose={() => setBringing(null)} />
       )}
       {adding && (
         <AddSite api={api} client={client} menu={menu} live={live} sites={sites} setNote={setNote}
@@ -123,36 +146,131 @@ export default function MsmSites({ api, client, menu, live, eff, sites, rows, ca
   );
 }
 
-// What a venue changed by hand: tick the ones to keep as that site's own.
-function DriftReview({ site, lines, live, editable, stage, onClose }) {
-  const [ticked, setTicked] = useState(() => new Set());
-  const [saving, setSaving] = useState(false);
-  const toggle = (i) => setTicked((t) => { const n = new Set(t); if (n.has(i)) n.delete(i); else n.add(i); return n; });
-  const keep = async () => {
-    const picked = lines.filter((_, i) => ticked.has(i));
-    if (!picked.length) return;
-    setSaving(true);
-    const r = await stage(keepVenueChanges(live, site.id, picked), { done: `${picked.length} of ${site.name}'s own value${picked.length === 1 ? ' is' : 's are'} in the draft. Publish it to make it stick.` });
-    setSaving(false);
-    if (r?.ok) onClose();
+// What a site changed by hand since the last publish: per line, keep the site's value or put the
+// group menu's back on the next publish (design 3.3, item 20).
+function DriftReview({ site, lines, central, names, editable, stage, onClose }) {
+  const [busy, setBusy] = useState('');
+  const [done, setDone] = useState(() => new Set());
+  const name = site?.name || 'the site';
+  const act = async (key, changes, words) => {
+    if (!changes.length) return;
+    setBusy(key);
+    const r = await stage(changes, { done: words });
+    setBusy('');
+    if (r?.ok) setDone((d) => new Set([...d, key]));
   };
+  const keepAll = async () => {
+    const all = [];
+    for (const l of lines) if (l.kind !== 'unknown_option') all.push(...keepChanges(central, site.id, l));
+    await act('all', all, `${name} keeps its own values. They are in the draft, so publishing leaves them as they are.`);
+    onClose();
+  };
+  const newId = () => (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : null);
   return (
-    <Sheet title={`Changed at ${site?.name || 'the site'}`} width={600} onClose={onClose}
-      sub="Changed by hand at the site since the last publish. Keep the site's value, or leave it: the next publish that changes that product puts the group's value back."
+    <Sheet title={`Changes made at ${name}`} width={640} onClose={onClose}
+      sub={`Changed by hand at ${name} since the last publish. Keep ${name}'s value, or put the group menu's back on the next publish. A line you leave is overwritten only when a later publish changes that same thing.`}
       footer={(
         <>
-          <Btn small kind="soft" onClick={() => setTicked(new Set(lines.map((_, i) => i)))}>Tick all</Btn>
           <div style={{ flex: 1 }} />
-          {editable && <Btn kind="primary" disabled={saving || !ticked.size} onClick={keep}>Keep the site's for {ticked.size} ticked</Btn>}
+          {editable && lines.length > 1 && <Btn kind="soft" disabled={!!busy} onClick={keepAll}>Keep all of {name}'s</Btn>}
+          <Btn onClick={onClose}>Done</Btn>
         </>
       )}>
-      {!lines.length && <Notice tone="good">Nothing was changed at this site.</Notice>}
-      {lines.map((l, i) => (
-        <label key={`${l.venueItemId}|${l.column}`} style={{ ...ui.row, alignItems: 'flex-start', padding: '7px 0', borderBottom: '1px solid var(--bdr)', fontSize: 13, cursor: 'pointer' }}>
-          <input type="checkbox" checked={ticked.has(i)} onChange={() => toggle(i)} style={{ marginTop: 3 }} />
-          <span>{l.words}</span>
-        </label>
-      ))}
+      {!lines.length && <Notice tone="good">Nothing was changed at {name}.</Notice>}
+      {lines.map((l, i) => {
+        const key = `${i}|${l.venueItemId || l.venueGroupId}|${l.column}`;
+        const settled = done.has(key);
+        return (
+          <div key={key} style={{ ...ui.row, flexWrap: 'wrap', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--bdr)', fontSize: 13, opacity: settled ? 0.55 : 1 }}>
+            <span style={{ flex: '1 1 240px' }}>{driftWords(l, name, names)}{settled ? ' (in the draft)' : ''}</span>
+            {editable && !settled && (l.kind === 'unknown_option'
+              ? (
+                <>
+                  <Btn small kind="soft" disabled={!!busy || !newId()} onClick={() => act(key, bringInOption(central, site.id, l, newId()), `${l.entry?.name || 'The option'} is in the group menu now, on at ${name} with its own id, off at the other sites.`)}>Bring it into the group</Btn>
+                  <Btn small kind="link" onClick={() => setDone((d) => new Set([...d, key]))}>Leave it as {name}'s own</Btn>
+                </>
+              ) : (
+                <>
+                  <Btn small kind="soft" disabled={!!busy} onClick={() => act(key, keepChanges(central, site.id, l), `${name} keeps its own value. It is in the draft.`)}>Keep {name}'s</Btn>
+                  <Btn small kind="link" disabled={!!busy} onClick={() => act(key, putBackChanges(central, site.id, l), `The group menu's value goes back at ${name} on the next publish.`)}>Put the group's back on next publish</Btn>
+                </>
+              ))}
+          </div>
+        );
+      })}
+    </Sheet>
+  );
+}
+
+// A site's own products (design 3.1): what each looks like in the group menu, and the two ways in.
+function BringIn({ site, own, raw, central, editable, stage, onClose }) {
+  const [pick, setPick] = useState(null);         // { id, linkTo, result }
+  const [busy, setBusy] = useState(false);
+  const [filter, setFilter] = useState('');
+  const name = site?.name || 'the site';
+  const here = new Set((central?.productSites || []).filter((ps) => ps.location_id === site?.id).map((ps) => ps.product_id));
+  const linkable = (central?.products || []).filter((p) => !p.archived && !p.parent_product_id && !here.has(p.id))
+    .sort((a, b) => String(a.menu_name || a.name).localeCompare(String(b.menu_name || b.name)));
+  const list = own.filter((o) => !filter || o.name.toLowerCase().includes(filter.toLowerCase()));
+  const work = (o, linkTo) => {
+    const result = bringInChanges(central, site.id, raw, o.id, { linkTo: linkTo || null, siteName: name });
+    setPick({ id: o.id, linkTo: linkTo || null, result });
+  };
+  const add = async () => {
+    if (!pick?.result?.ok) return;
+    setBusy(true);
+    const r = await stage(pick.result.changes, { done: pick.result.words.join(' ') });
+    setBusy(false);
+    if (r?.ok) setPick(null);
+  };
+  return (
+    <Sheet title={`${name}'s own products`} width={680} onClose={onClose}
+      sub={`${ownCountWords(own.length, name)} Bring them in so one price change reaches every site. Bringing a product in changes nothing at ${name}: anything ${name} does differently stays ${name}'s own.`}
+      footer={<><div style={{ flex: 1 }} /><Btn onClick={onClose}>Done</Btn></>}>
+      {own.length > 8 && <input aria-label="Find a product" style={{ ...ui.input, marginBottom: 10 }} placeholder="Find a product" value={filter} onChange={(e) => setFilter(e.target.value)} />}
+      {!own.length && <Notice tone="good">Every product {name} sells is in the group menu.</Notice>}
+      {list.map((o) => {
+        const open = pick?.id === o.id;
+        return (
+          <div key={o.id} style={{ padding: '9px 0', borderBottom: '1px solid var(--bdr)' }}>
+            <div style={{ ...ui.row, flexWrap: 'wrap', alignItems: 'center' }}>
+              <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+                <div style={{ fontSize: 13.5, fontWeight: 700 }}>{o.name}{o.sizes.length ? <span style={{ ...ui.sub, fontWeight: 500 }}> · {o.sizes.length} size{o.sizes.length === 1 ? '' : 's'}</span> : null}</div>
+                <div style={ui.sub}>
+                  {o.match ? `Looks like ${o.match.name} in the group menu${o.match.how === 'family' ? ' (already shared between sites)' : ' (same name)'}` : 'Not in the group menu'}
+                  {o.groups.length ? ` · option groups: ${o.groups.join(', ')}` : ''}
+                </div>
+              </div>
+              {editable && (
+                <>
+                  {o.match && <Btn small kind="primary" onClick={() => work(o, o.match.productId)}>Link to {o.match.name}</Btn>}
+                  <Btn small kind={o.match ? 'soft' : 'primary'} onClick={() => work(o, null)}>Bring in as a new product</Btn>
+                  {linkable.length > 0 && (
+                    <select aria-label={`Link ${o.name} to another product`} style={{ ...ui.input, width: 'auto', maxWidth: 200, padding: '5px 8px', fontSize: 12.5 }} value=""
+                      onChange={(e) => { if (e.target.value) work(o, e.target.value); }}>
+                      <option value="">Link to another…</option>
+                      {linkable.map((p) => <option key={p.id} value={p.id}>{p.menu_name || p.name}</option>)}
+                    </select>
+                  )}
+                </>
+              )}
+            </div>
+            {open && (
+              <div style={{ marginTop: 8, padding: '10px 12px', borderRadius: 10, background: 'var(--bg2)' }}>
+                {pick.result.ok
+                  ? <>
+                    <ul style={{ margin: '0 0 8px', paddingLeft: 18, fontSize: 13, lineHeight: 1.5 }}>{pick.result.words.map((w) => <li key={w}>{w}</li>)}</ul>
+                    <div style={{ ...ui.row }}>
+                      <Btn small kind="primary" disabled={busy} onClick={add}>{busy ? 'Adding…' : 'Add to draft'}</Btn>
+                      <Btn small onClick={() => setPick(null)}>Cancel</Btn>
+                    </div>
+                  </>
+                  : <Notice tone="bad">{pick.result.problems.join(' ')}</Notice>}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </Sheet>
   );
 }
@@ -225,13 +343,13 @@ function AddSite({ api, client, menu, live, sites, setNote, onClose, onStaged })
               {company.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
           </Field>
-          <Field label="Its menu" hint={menus.length ? 'Products the site already sells stay as they are; the group\'s products go in beside them.' : 'This site has no menu yet: one is made when you publish.'}>
+          <Field label="Its menu" hint={menus.length ? 'A new menu is best for a new site. Adding to a menu it has keeps what it sells today; the group\'s products go in beside them.' : 'This site has no menu yet: one is made when you publish.'}>
             {raw === null && <div style={ui.sub}>Reading the site…</div>}
             {raw === 'error' && <Notice tone="bad">Could not read this site.</Notice>}
             {raw && raw !== 'error' && (
               <select aria-label="Its menu" style={ui.input} value={venueMenuId} onChange={(e) => setVenueMenuId(e.target.value)}>
-                <option value="">Make a new menu called "{menu.name}"</option>
-                {menus.map((m) => <option key={m.id} value={m.id}>Write into its menu "{m.name}" ({m.products} products)</option>)}
+                <option value="">New menu called "{menu.name}" (recommended for a new site)</option>
+                {menus.map((m) => <option key={m.id} value={m.id}>Add to {site?.name || 'its'}'s existing menu "{m.name}": its {m.products} products stay, the group products go in beside them</option>)}
               </select>
             )}
           </Field>

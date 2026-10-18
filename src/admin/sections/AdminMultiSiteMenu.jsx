@@ -41,6 +41,7 @@ export default function AdminMultiSiteMenu({ org, allUsers = [] }) {
   const [newRole, setNewRole] = useState('editor');
   const [many, setMany] = useState(null);           // { ok, sites } sites with more than one menu
   const [manyTicked, setManyTicked] = useState(false);
+  const [asking, setAsking] = useState(null);       // { words, yes, run } an in page "are you sure"
 
   const [reload, setReload] = useState(0);
   // Read on open, whenever the company changes, and on Try again. A late answer for a company the
@@ -98,16 +99,35 @@ export default function AdminMultiSiteMenu({ org, allUsers = [] }) {
             Turning this on shows the Multi site menu to the people below. Nothing changes at any venue until one of them publishes.
             Owners and ServOS staff are not let in automatically: add each person by name.
           </div>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 16 }}>
-            <button disabled={working || !status.enabled} style={{ ...st.btn, ...(status.enabled ? st.ghost : st.on) }}
-              onClick={() => act(() => msmApi.adminSetEnabled(orgId, false))}>Off</button>
-            <button disabled={working || status.enabled || (needsTick && !manyTicked)} title={needsTick && !manyTicked ? 'Tick the note below first' : undefined} style={{ ...st.btn, ...(status.enabled ? st.on : st.ghost) }}
-              onClick={() => act(() => msmApi.adminSetEnabled(orgId, true))}>On</button>
-            <span style={{ fontSize: 12, color: 'var(--t3)' }}>
-              {status.enabled ? `On${status.enabled_at ? ` since ${new Date(status.enabled_at).toLocaleDateString('en-GB')}` : ''}` : 'Off: nobody sees it'}
-              {status.has_menu ? ' · group menu set up' : ''}
+          {/* One switch with words (round 2, design 2 item 23). Turning it off asks first. */}
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 8 }}>
+            <button type="button" role="switch" aria-checked={!!status.enabled} aria-label="Multi site menu on or off" data-testid="msm-admin-switch"
+              disabled={working || (!status.enabled && needsTick && !manyTicked)} title={!status.enabled && needsTick && !manyTicked ? 'Tick the note below first' : undefined}
+              onClick={() => {
+                if (status.enabled) setAsking({ words: `Turn the Multi site menu off for ${org?.name || 'this company'}? Nobody will see it, and scheduled pushes wait until it is on again. Nothing at any site changes.`, yes: 'Turn it off', run: () => act(() => msmApi.adminSetEnabled(orgId, false)) });
+                else act(() => msmApi.adminSetEnabled(orgId, true));
+              }}
+              style={{ width: 46, height: 26, borderRadius: 13, border: 'none', cursor: 'pointer', position: 'relative', flexShrink: 0, background: status.enabled ? 'var(--acc)' : 'var(--bg3)', opacity: working ? 0.6 : 1 }}>
+              <span style={{ position: 'absolute', top: 3, left: status.enabled ? 23 : 3, width: 20, height: 20, borderRadius: 10, background: '#fff', transition: 'left .15s' }} />
+            </button>
+            <span style={{ fontSize: 13, color: 'var(--t1)', fontWeight: 650 }}>
+              {status.enabled ? `On${status.enabled_at ? ` since ${new Date(status.enabled_at).toLocaleDateString('en-GB')}` : ''}: the people below can open it` : 'Off: nobody sees it, and scheduled pushes wait until it is on again.'}
+              {status.has_menu ? <span style={{ color: 'var(--t3)', fontWeight: 500 }}> · group menu set up</span> : ''}
             </span>
           </div>
+          {asking && (
+            <div role="alertdialog" style={{ fontSize: 12.5, color: 'var(--t1)', marginBottom: 12, padding: '10px 12px', borderRadius: 10, border: '1px solid var(--red-b)', background: 'var(--red-d, var(--bg2))' }}>
+              <div style={{ marginBottom: 8 }}>{asking.words}</div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button style={{ ...st.btn, ...st.danger }} disabled={working} onClick={() => { const run = asking.run; setAsking(null); run(); }}>{asking.yes}</button>
+                <button style={{ ...st.btn, ...st.ghost }} onClick={() => setAsking(null)}>Keep it as it is</button>
+              </div>
+            </div>
+          )}
+          {status.enabled && members.length === 0 && (
+            <div style={{ fontSize: 12.5, color: 'var(--t1)', marginBottom: 12, padding: '8px 10px', borderRadius: 8, background: 'color-mix(in srgb, var(--amber, #F5A623) 10%, transparent)' }}>Nobody can open it yet. Add a person below.</div>
+          )}
+          <div style={{ marginBottom: 12 }} />
 
           {!status.enabled && needsTick && (
             <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 12.5, color: 'var(--t1)', marginBottom: 14, padding: '10px 12px', borderRadius: 10, border: '1px solid color-mix(in srgb, var(--amber, #F5A623) 45%, transparent)', background: 'color-mix(in srgb, var(--amber, #F5A623) 10%, transparent)', cursor: 'pointer' }}>
@@ -119,11 +139,13 @@ export default function AdminMultiSiteMenu({ org, allUsers = [] }) {
           )}
           <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 4 }}>People</div>
           {members.length === 0 && <div style={{ fontSize: 13, color: 'var(--t4)', padding: '6px 0 10px' }}>Nobody yet.</div>}
-          {members.map((m) => (
+          {members.map((m) => {
+            const other = (allUsers || []).some((u) => u && u.id === m.user_id && u.org_id && u.org_id !== orgId);
+            return (
             <div key={m.user_id} style={st.row}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--t1)' }}>{m.full_name || m.email || 'A login'}</div>
-                <div style={{ fontSize: 11, color: 'var(--t3)', fontFamily: 'monospace' }}>{m.email}</div>
+                <div style={{ fontSize: 11, color: 'var(--t3)', fontFamily: 'monospace' }}>{m.email}{other && <span style={{ color: 'var(--red)', fontFamily: 'inherit', fontWeight: 700 }}> · another company</span>}</div>
               </div>
               <span style={{ ...st.pill, background: m.role === 'editor' ? 'var(--acc-d)' : 'var(--bg3)', color: m.role === 'editor' ? 'var(--acc)' : 'var(--t2)' }}>
                 {m.role === 'editor' ? 'Editor' : 'Viewer'}
@@ -133,9 +155,10 @@ export default function AdminMultiSiteMenu({ org, allUsers = [] }) {
                 Make {m.role === 'editor' ? 'viewer' : 'editor'}
               </button>
               <button disabled={working} style={{ ...st.btn, ...st.danger, padding: '4px 10px', fontSize: 11 }}
-                onClick={() => act(() => msmApi.adminSetMember(orgId, m.user_id, null))}>Remove</button>
+                onClick={() => setAsking({ words: `Remove ${m.full_name || m.email || 'this login'} from the Multi site menu? They will not be able to open it. Nothing at any site changes.`, yes: 'Remove', run: () => act(() => msmApi.adminSetMember(orgId, m.user_id, null)) })}>Remove</button>
             </div>
-          ))}
+            );
+          })}
 
           <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
             <input style={st.input} placeholder="Add person: search by email or name" value={search} onChange={(e) => setSearch(e.target.value)} />
@@ -148,7 +171,7 @@ export default function AdminMultiSiteMenu({ org, allUsers = [] }) {
             <div key={u.id} style={st.row}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--t1)' }}>{u.full_name || u.email}</div>
-                <div style={{ fontSize: 11, color: 'var(--t3)', fontFamily: 'monospace' }}>{u.email}{u.org_id !== orgId ? ' · another company' : ''}</div>
+                <div style={{ fontSize: 11, color: 'var(--t3)', fontFamily: 'monospace' }}>{u.email}{u.org_id !== orgId && <span style={{ color: 'var(--red)', fontFamily: 'inherit', fontWeight: 700 }}> · another company</span>}</div>
               </div>
               <button disabled={working} style={{ ...st.btn, ...st.on, padding: '4px 12px', fontSize: 11 }}
                 onClick={async () => { await act(() => msmApi.adminSetMember(orgId, u.id, newRole)); setSearch(''); }}>

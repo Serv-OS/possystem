@@ -31,6 +31,8 @@ import { newOptionId, longOptionId, newItemId } from '../../functions/_shared/ms
 import { activeMany } from '../../../src/lib/msm/msmEdit.js';
 import { mapModifierGroupRow } from '../../functions/_shared/venueMenuCore.js';
 import { MIRROR_CASES, MIRROR_RATE_ID, MIRROR_OTHER_RATE_ID } from '../../../src/lib/msm/msmMirrorFixtures.js';
+import { ownProducts, bringInChanges } from '../../../src/lib/msm/msmBringIn.js';
+import { randomUUID } from 'node:crypto';
 
 export async function run(h) {
   const { q, one, json, lit, expect, central, readRaw, mkSet, stage, runSite, menuId, ORG_A, ORG_B, LA1, LA2, LB1, U, as, SERVICE, sfx, VAT_A1, VAT_A2, VAT_B1, DB, CONN } = h;
@@ -427,5 +429,38 @@ export async function run(h) {
       JSON.stringify(rows.map((x) => [x.id, x.name, x.parent_id, x.tax_rate_id, x.pricing?.base])));
     expect('repro: House Red is a normal product now (the one site mark gone)', one(`select site_only_location_id is null from msm_products where id = '${RED}'`) === 't');
     expect('repro: nothing written at A1 by the second publish', one(`select count(*) from msm_version_sites where version_id = '${VR2}' and location_id = '${LA1}' and status = 'done'`) === '0');
+  }
+
+  // ── Builder 3 (design 3.1): a site's own product, with an option group of its own, brought in ─
+  // The draft holds a new product, its row at A1 with the EXISTING venue id, a new option group
+  // linked to A1's own group and its options with their EXISTING venue option ids (the guard looks
+  // them up through the draft). Publishing writes nothing at A1.
+  {
+    settle();
+    one(`insert into modifier_groups (id, location_id, name, min, max, min_select, max_select, selection_type, options, sort_order) values ('mgd-bring', '${LA1}', 'Toppings', 0, 2, 0, 2, 'multiple', '[{"id": "opt-b1", "name": "Sprinkles", "price": 0.20}, {"id": "opt-b2", "name": "Cream", "price": 0.50}]', 5)`);
+    one(`insert into menu_items (id, location_id, name, menu_name, receipt_name, kitchen_name, cat, pricing, tax_rate_id, type, sold_alone, assigned_modifier_groups, scope) values ('m-bring', '${LA1}', 'Hot chocolate', 'Hot chocolate', 'Hot chocolate', 'HOT CHOC', 'cat-hot', '{"base": 3.30}', '${VAT_A1}', 'modifiable', true, '[{"groupId": "mgd-bring"}]', 'local')`);
+    const CC = central();
+    const raw = readRaw(LA1);
+    expect('bring in: the site\'s own product is listed', ownProducts(CC, LA1, raw).some((o) => o.id === 'm-bring'));
+    const b = bringInChanges(CC, LA1, raw, 'm-bring', { idGen: randomUUID, siteName: 'A1' });
+    expect('bring in: the changes are worked out with nothing written at the site', b.ok, b.problems.join(' | '));
+    const BI = mkSet('Bring in hot chocolate');
+    const bad = b.changes.map((c) => stage({ set: BI, target: c.target, entity: c.entity_id, loc: c.location_id, op: c.op, after: c.after, before: c.before })).filter((x) => x.code !== 0);
+    expect('bring in: the database takes every change (a new group and options carrying the site\'s own ids)', bad.length === 0, bad.map((x) => x.err).join(' | '));
+    r = stage({ set: BI, target: 'product_site', entity: CC.products.find((p) => p.name === 'Latte').id, loc: LA1, op: 'create', after: { venue_item_id: 'm-bring', active: true } });
+    expect('bring in: a product already at the site cannot take a second venue item', r.code !== 0, r.err);
+    const itemBefore = json(`select to_json(i) from menu_items i where id = 'm-bring'`);
+    const groupBefore = groupRow('mgd-bring');
+    const VB = publish(BI);
+    const rb = runSite(VB, LA1);
+    const itemAfter = json(`select to_json(i) from menu_items i where id = 'm-bring'`);
+    const groupAfter = groupRow('mgd-bring');
+    expect('bring in: publishing plans zero writes at A1 and passes its health check', rb.plan.lines.length === 0 && rb.health.ok && rb.res.code === 0, JSON.stringify(rb.plan.lines.slice(0, 3)) + (rb.res.err || ''));
+    expect('bring in: A1\'s product and option group are exactly as they were', canonJ(itemBefore.pricing) === canonJ(itemAfter.pricing) && itemBefore.name === itemAfter.name
+      && canonJ(itemBefore.assigned_modifier_groups) === canonJ(itemAfter.assigned_modifier_groups) && canonJ(groupBefore.options) === canonJ(groupAfter.options), JSON.stringify([itemAfter, groupAfter]));
+    expect('bring in: the group menu now manages it at A1 (product, group and both options by their venue ids)',
+      one(`select count(*) from msm_product_sites where location_id = '${LA1}' and venue_item_id = 'm-bring'`) === '1'
+        && one(`select count(*) from msm_modifier_group_sites where location_id = '${LA1}' and venue_group_id = 'mgd-bring'`) === '1'
+        && one(`select count(*) from msm_modifier_option_sites where location_id = '${LA1}' and venue_option_id in ('opt-b1', 'opt-b2') and active`) === '2');
   }
 }

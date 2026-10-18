@@ -62,7 +62,7 @@ export default function MsmCsv({ initial = 'export', menu, live, eff, sites, row
   };
 
   return (
-    <Modal title="Spreadsheet" sub="Work on prices in Excel or Google Sheets, then bring them back." width={760} onClose={onClose}
+    <Modal title="Prices in Excel" sub="1 Download, 2 change prices in Excel or Google Sheets, 3 bring it back. Nothing reaches the tills until you publish." width={760} onClose={onClose}
       dirty={mode === 'import' && !!file && !staged && !saving} dirtyWords="The file you picked is not in the draft yet."
       footer={mode === 'export' ? (
         <>
@@ -74,17 +74,17 @@ export default function MsmCsv({ initial = 'export', menu, live, eff, sites, row
           <div style={{ flex: 1, ...ui.sub }}>{result ? result.summary : 'Nothing is changed until you put it in the draft and publish it.'}</div>
           {staged
             ? <Btn kind="primary" onClick={() => { onClose(); setTab('publish'); }}>See what changes at each site</Btn>
-            : <Btn kind="primary" disabled={!editable || saving || !result?.changes.length} onClick={put}>{saving ? 'Putting them in…' : `Put ${result?.changes.length || 0} change${result?.changes.length === 1 ? '' : 's'} in the draft`}</Btn>}
+            : <Btn kind="primary" disabled={!editable || saving || !result?.changes.length} onClick={put}>{saving ? 'Adding…' : `Add ${result?.changes.length || 0} change${result?.changes.length === 1 ? '' : 's'} to draft`}</Btn>}
         </>
       )}>
       <div style={{ marginBottom: 14 }}>
-        <Segmented value={mode} onChange={setMode} options={[{ value: 'export', label: 'Export' }, { value: 'import', label: 'Import' }]} />
+        <Segmented value={mode} onChange={setMode} options={[{ value: 'export', label: '1 Download' }, { value: 'import', label: '3 Bring it back' }]} />
       </div>
       {mode === 'export' && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
           <div style={{ ...ui.sub, fontSize: 13 }}>
-            One row per product: its central id, name, category, what it is a size of and the group price, then each site's own price (blank when it follows the group price) and whether it is on sale there (Yes or No).
-            <br /><br />Change prices or Yes and No, keep the Central id column, and import the file back. New rows are ignored: add products in the menu.
+            One row per product: its ServOS ID, name, category, what it is a size of and the group price, then each site's own price (blank when it follows the group price) and whether it is on sale there (Yes or No).
+            <br /><br />2 Change prices or Yes and No in Excel. Leave the ServOS ID column as it is. 3 Bring the file back here. New rows are ignored: add products in the menu.
           </div>
           <div>
             <span style={ui.label}>Sites in the file</span>
@@ -94,7 +94,7 @@ export default function MsmCsv({ initial = 'export', menu, live, eff, sites, row
       )}
       {mode === 'import' && (
         <div>
-          {!editable && <div style={{ marginBottom: 10 }}><Notice>Pick a draft to work on (or ask to be made an editor) to import prices.</Notice></div>}
+          {!editable && <div style={{ marginBottom: 10 }}><Notice>Only editors can bring prices back in. You can still download the file.</Notice></div>}
           <input type="file" accept=".csv,text/csv" aria-label="Spreadsheet file" onChange={(e) => pick(e.target.files?.[0] || null)} style={{ fontSize: 13, marginBottom: 12 }} />
           {readError && <Notice tone="bad">{readError}</Notice>}
           {result && (

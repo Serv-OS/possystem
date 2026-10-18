@@ -1109,7 +1109,7 @@ export default function BackOfficeApp() {
           {section === 'sending-domain' && <SendingDomain />}
           {section === 'xero' && <XeroIntegration />}
           {section?.startsWith('wf-') && <Workforce section={section} orgCtx={orgCtx} />}
-          {section === 'menu'       && <MenuManager />}
+          {section === 'menu'       && <MenuManager setSection={setSection} canOpen={canOpen} />}
           {section === 'multi-site-menu' && (
             <Suspense fallback={<div style={{ padding:24, color:'var(--t3)', fontSize:13 }}>Loading the Multi site menu…</div>}>
               <MultiSiteMenu access={msmAccess} orgCtx={orgCtx} onAccessLost={() => setMsmAccessTry((n) => n + 1)} />

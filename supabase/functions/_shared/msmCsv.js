@@ -34,7 +34,9 @@ export function exportCsv(central, sites, opts = {}) {
   const prods = listOf(central?.products).filter((p) => !p.archived && (!opts.productIds || opts.productIds.includes(p.id)));
   const byId = new Map(listOf(central?.products).map((p) => [p.id, p]));
   const ps = new Map(listOf(central?.productSites).map((r) => [`${r.product_id}|${r.location_id}`, r]));
-  const head = ['Central id', 'Product', 'Category', 'Size of', 'Default price'];
+  // Round 2 words (design 2, item 9): "ServOS ID (do not change)" and "Group price". Files made
+  // before still import (the old names are read too).
+  const head = ['ServOS ID (do not change)', 'Product', 'Category', 'Size of', 'Group price'];
   for (const s of listOf(sites)) head.push(`${s.name} price`, `${s.name} active`);
   const lines = [head.map(cell).join(',')];
   for (const p of prods) {
@@ -106,8 +108,9 @@ export function readCsvChanges(text, central, sites) {
   if (!rows.length) return { changes, ignored, errors: [{ line: 0, words: 'The file is empty.' }], matched: 0, summary: 'Nothing to change' };
   const head = rows[0].map((h) => String(h).trim());
   const col = (name) => head.findIndex((h) => h.toLowerCase() === name.toLowerCase());
-  const iId = col('Central id'), iName = col('Product'), iCat = col('Category'), iDef = col('Default price');
-  if (iName < 0 && iId < 0) return { changes, ignored, errors: [{ line: 1, words: 'The first row must have the column names (at least Central id or Product).' }], matched: 0, summary: 'Nothing to change' };
+  const either = (a, b) => { const i = col(a); return i >= 0 ? i : col(b); };
+  const iId = either('ServOS ID (do not change)', 'Central id'), iName = col('Product'), iCat = col('Category'), iDef = either('Group price', 'Default price');
+  if (iName < 0 && iId < 0) return { changes, ignored, errors: [{ line: 1, words: 'The first row must have the column names (at least ServOS ID or Product).' }], matched: 0, summary: 'Nothing to change' };
   const siteCols = listOf(sites).map((s) => ({ s, price: col(`${s.name} price`), active: col(`${s.name} active`) }));
   const cats = new Map(listOf(central?.categories).map((c) => [c.id, c.label]));
   const products = listOf(central?.products).filter((p) => !p.archived);
@@ -127,7 +130,7 @@ export function readCsvChanges(text, central, sites) {
     if (!p && iName >= 0) {
       const k = `${normName(r[iName])}|${normName(iCat >= 0 ? r[iCat] : '')}`;
       p = byNameCat.get(k) || null;
-      if (byNameCat.get(k) === null) { ignored.push({ line, words: `"${r[iName]}" matches more than one product; add the Central id column.` }); continue; }
+      if (byNameCat.get(k) === null) { ignored.push({ line, words: `"${r[iName]}" matches more than one product; keep the ServOS ID column in the file.` }); continue; }
     }
     if (!p) { ignored.push({ line, words: `"${(iName >= 0 ? r[iName] : r[iId]) || 'This row'}" is not in the group menu (the file never adds products).` }); continue; }
     if (seen.has(p.id)) { ignored.push({ line, words: `"${p.name}" is in the file twice; only the first row counts.` }); continue; }

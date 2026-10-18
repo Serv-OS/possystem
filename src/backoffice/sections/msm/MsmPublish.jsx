@@ -22,6 +22,20 @@
 // a big price move, a price of zero, a VAT change, taking off something that sold this week, a
 // group made required, publishing now while sites are trading, with "Schedule for tonight 23:00
 // instead"). The button stays grey until every warning is ticked.
+//
+// ROUND 2, builder 3 (design 3.3, 2 items 17 and 18, 4 and 6.3):
+//   * CHANGES MADE AT THE SITES since the last publish, per site, each in words with what to do:
+//     [Keep Leeds's] (the site's value goes into the draft as its own) or [Put the group's back]
+//     (the draft touches it at that site only); a line this publish overwrites can also be ticked
+//     off as [Overwrite it]; an option the group menu does not know: [Bring it into the group] or
+//     [Leave it as Leeds's own] (lib/msm/msmDriftView.js). The publish needs one tick per site
+//     whose changes it overwrites; unsettled lines never block.
+//   * Which sites are trading now, on their own clocks; "Schedule for tomorrow 06:00" beside
+//     Publish now; when to start and the counter tills under "More options".
+//   * Health lines say the fix and carry it: [Open product], [Turn the option off there too].
+
+import { publishDrift, overwriteCounts, putBackChanges, keepChanges, bringInOption } from '../../../lib/msm/msmDriftView';
+import { tradingWords, optionOffFix, healthProduct, hubriseReminder } from '../../../lib/msm/msmPublishHelp';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { applyChanges, previewSet, sitesReached } from '../../../../supabase/functions/_shared/msmDiff.js';
@@ -51,7 +65,12 @@ function tonightLocal(tz) {
   } catch { return null; }
 }
 
-export default function MsmPublish({ api, menu, live, eff, sites, sets, working, rows, canEdit, setWorkingId, setNote, setTab, refreshSets, reload, sales, stage }) {
+const SETTLED_KEY = (setId) => `msm-settled:${setId}`;
+const readSettled = (setId) => { try { return new Set(JSON.parse(localStorage.getItem(SETTLED_KEY(setId)) || '[]')); } catch { return new Set(); } };
+const saveSettled = (setId, set) => { try { localStorage.setItem(SETTLED_KEY(setId), JSON.stringify([...set].slice(-500))); } catch { /* private mode: kept for this visit only */ } };
+const newUuid = () => (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-8xxx-xxxxxxxxxxxx'.replace(/x/g, () => Math.floor(Math.random() * 16).toString(16)));
+
+export default function MsmPublish({ api, menu, live, eff, sites, sets, working, rows, canEdit, setWorkingId, setNote, setTab, refreshSets, reload, sales, stage, openProduct }) {
   const [tracking, setTracking] = useState(null);          // { versionId, title, runWords }
   const history = useMsmHistory(api, menu?.id, { every: tracking ? 3000 : 20000, onSettled: () => { reload(); refreshSets(); } });
   const isDraft = working?.status === 'draft';
@@ -93,6 +112,28 @@ export default function MsmPublish({ api, menu, live, eff, sites, sets, working,
     }
   }, [isDraft, live, rows, venues.map, venues.key, reachKey, menu, siteNames]);
   const headline = useMemo(() => (preview ? previewHeadline(preview) : null), [preview]);
+
+  // ── Changes made at the sites (design 3.3) ───────────────────────────────
+  // What this person has settled for this draft (remembered in this browser, try and catch).
+  const wid = working?.id || null;
+  const [settledState, setSettledState] = useState({ id: null, set: new Set() });
+  const settled = useMemo(() => (settledState.id === wid ? settledState.set : (wid ? readSettled(wid) : new Set())), [settledState, wid]);
+  const settle = useCallback((key) => {
+    const n = new Set(settled);
+    n.add(key);
+    if (wid) saveSettled(wid, n);
+    setSettledState({ id: wid, set: n });
+  }, [settled, wid]);
+  const driftNames = useMemo(() => {
+    const n = {};
+    for (const p of [...(live?.products || []), ...(after?.products || [])]) n[p.id] = p.menu_name || p.name;
+    for (const g of [...(live?.groups || []), ...(after?.groups || [])]) n[g.id] = g.name;
+    return n;
+  }, [live, after]);
+  const drift = useMemo(() => {
+    if (!preview || !live || !after || !venues.map) return [];
+    try { return publishDrift(live, after, preview, venues.map, { siteNames, names: driftNames, settled }); } catch { return []; }
+  }, [preview, live, after, venues.map, siteNames, driftNames, settled]);
 
   // ── When ─────────────────────────────────────────────────────────────────
   const tz = tzOf(reach[0]);
@@ -146,7 +187,9 @@ export default function MsmPublish({ api, menu, live, eff, sites, sets, working,
   const blocked = !preview || !preview.ok || reading;
   const whenWords = mode === 'schedule' && runLocal ? scheduleButtonWords(runLocal, tz, lead).replace(/^Schedule for /, '') : null;
   const summaryLines = useMemo(() => (after && rows.length ? summarise(rows, after, { siteNames, when: whenWords }) : []), [after, rows, siteNames, whenWords]);
-  const risks = useMemo(() => (after && rows.length ? riskChecks(rows, after, sales ?? null, trading === undefined ? [] : trading, { siteNames, publishNow: mode === 'now', sitesReached: reach }) : []), [after, rows, sales, trading, siteNames, mode, reach]);
+  const risks = useMemo(() => (after && rows.length ? riskChecks(rows, after, sales ?? null, trading === undefined ? [] : trading, { siteNames, publishNow: mode === 'now', sitesReached: reach, drift: overwriteCounts(drift) }) : []), [after, rows, sales, trading, siteNames, mode, reach, drift]);
+  const tradingNow = useMemo(() => (trading === undefined ? null : tradingWords(trading, siteNames, reach)), [trading, siteNames, reach]);
+  const [moreOpen, setMoreOpen] = useState(false);
   const ready = allTicked(risks, ticked);
   const checking = sales === undefined || (mode === 'now' && trading === undefined);
 
@@ -289,7 +332,18 @@ export default function MsmPublish({ api, menu, live, eff, sites, sets, working,
       </div>
 
       <div style={{ display: 'grid', gap: 14, flex: '1 1 300px', minWidth: 0 }}>
+        <DriftPanel drift={drift} canEdit={canEdit && isDraft}
+          onKeep={(loc, d, key) => stage?.(keepChanges(after, loc, d), { done: `${siteNames[loc] || 'The site'} keeps its own value. It is in the draft, so publishing leaves it as it is.` }).then((r) => { if (r?.ok) settle(key); })}
+          onPutBack={(loc, d, key) => stage?.(putBackChanges(after, loc, d), { done: `The group's value goes back at ${siteNames[loc] || 'that site'} when you publish.` }).then((r) => { if (r?.ok) settle(key); })}
+          onBringIn={(loc, d, key) => stage?.(bringInOption(after, loc, d, newUuid()), { done: `${d.entry?.name || 'The option'} is in the group menu now, on at ${siteNames[loc] || 'that site'} with its own id, off at the other sites. Nothing changes at any site.` }).then((r) => { if (r?.ok) settle(key); })}
+          onSettle={settle} />
         <HealthPanel preview={preview} siteNames={siteNames} categories={(eff || after)?.categories || []} canEdit={canEdit && isDraft}
+          central={after} onOpenProduct={openProduct || null}
+          onOptionOff={(loc, p) => {
+            const ch = optionOffFix(after, loc, p.venueGroupId, p.venueOptionIds);
+            if (!ch.length) { setNote({ tone: 'warn', text: 'That option is the site\'s own, not the group menu\'s. Turn it off in that site\'s Menu Manager.' }); return; }
+            stage?.(ch, { done: `Turned off at ${siteNames[loc] || 'that site'} in the draft. It comes off when you publish.` });
+          }}
           onPrintLike={(categoryId, likeId) => {
             const c = ((eff || after)?.categories || []).find((x) => x.id === categoryId);
             const liveC = (live?.categories || []).find((x) => x.id === categoryId);
@@ -300,15 +354,11 @@ export default function MsmPublish({ api, menu, live, eff, sites, sets, working,
         <div style={ui.card}>
           <div style={{ ...ui.h2, marginBottom: 10 }}>When</div>
           <Segmented value={mode} onChange={setMode} options={[{ value: 'now', label: 'Now' }, { value: 'schedule', label: 'At a date and time' }]} />
+          {tradingNow?.words && <div data-testid="msm-trading" style={{ ...ui.sub, marginTop: 8, color: tradingNow.busy.length ? 'var(--t1)' : 'var(--t3)' }}>{tradingNow.words}</div>}
           {mode === 'schedule' && (
             <div style={{ marginTop: 14 }}>
               <Field label="On the tills by" hint={mixedClocks ? 'Read on each site\'s own clock: 06:00 means 06:00 where each site is.' : 'On the site\'s own clock.'}>
                 <input type="datetime-local" aria-label="On the tills by" style={ui.input} value={runLocal} min={minRunLocal(now, tz)} onChange={(e) => setRunLocal(e.target.value)} />
-              </Field>
-              <Field label="Start">
-                <select aria-label="Start" style={ui.input} value={lead} onChange={(e) => setLead(Number(e.target.value))}>
-                  {LEADS.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
-                </select>
               </Field>
               {past ? <Notice tone="bad">That time has already passed{mixedClocks ? ' at one of the sites' : ''}. Pick a later one.</Notice>
                 : !note.ok ? <Notice tone="bad">{note.words}</Notice>
@@ -316,16 +366,30 @@ export default function MsmPublish({ api, menu, live, eff, sites, sets, working,
               {overlapWords.map((w) => <div key={w} style={{ marginTop: 8 }}><Notice>{w}</Notice></div>)}
             </div>
           )}
-          <label style={{ ...ui.row, alignItems: 'flex-start', fontSize: 13, marginTop: 14, cursor: 'pointer' }}>
-            <input type="checkbox" checked={idle} onChange={(e) => setIdle(e.target.checked)} style={{ marginTop: 2 }} />
-            <span>Counter tills update by themselves between sales<span style={{ ...ui.sub, display: 'block' }}>Never in the middle of a sale: a till with an order open takes it as soon as that sale ends. Off: staff see the usual Sync POS banner and tap it.</span></span>
-          </label>
-          <div style={{ ...ui.sub, marginTop: 12, padding: '10px 12px', borderRadius: 10, background: 'var(--bg2)' }}>
-            {mode === 'schedule'
-              ? `Nobody needs to be there: the server publishes at that time. Kiosks, kitchen screens and handhelds take it straight away, ${idle ? 'counter tills between sales' : 'counter tills when staff tap Sync POS'}, online and QR on their next page load, menu boards within two minutes. A till that was off catches up when it is back on. You are emailed if a site fails.`
-              : `Kiosks, kitchen screens and handhelds take it in the next few seconds, ${idle ? 'counter tills between sales' : 'counter tills when staff tap Sync POS'}, online and QR on their next page load, menu boards within two minutes.`}
-          </div>
-          {summaryLines.length > 0 && <div style={{ marginTop: 14 }}><SummaryBox title="What this publish does" lines={summaryLines} /></div>}
+          <div style={{ ...ui.sub, marginTop: 12 }}>Tills, kiosks, kitchen screens and online update by themselves. Nobody needs to be there.</div>
+          <Btn small kind="link" style={{ padding: '6px 0 0' }} onClick={() => setMoreOpen((x) => !x)} aria-expanded={moreOpen}>{moreOpen ? 'Fewer options' : 'More options'}</Btn>
+          {moreOpen && (
+            <div style={{ marginTop: 8, padding: '10px 12px', borderRadius: 10, background: 'var(--bg2)' }}>
+              {mode === 'schedule' && (
+                <Field label="Start" hint="Starting a few minutes early means every till has it by the time you picked.">
+                  <select aria-label="Start" style={ui.input} value={lead} onChange={(e) => setLead(Number(e.target.value))}>
+                    {LEADS.map((l) => <option key={l.value} value={l.value}>{l.label}</option>)}
+                  </select>
+                </Field>
+              )}
+              <label style={{ ...ui.row, alignItems: 'flex-start', fontSize: 13, cursor: 'pointer' }}>
+                <input type="checkbox" checked={idle} onChange={(e) => setIdle(e.target.checked)} style={{ marginTop: 2 }} />
+                <span>Counter tills update by themselves between sales<span style={{ ...ui.sub, display: 'block' }}>Never in the middle of a sale: a till with an order open takes it as soon as that sale ends. Off: staff see the usual Sync POS banner and tap it.</span></span>
+              </label>
+              <div style={{ ...ui.sub, marginTop: 10 }}>
+                {mode === 'schedule'
+                  ? `The server publishes at that time. Kiosks, kitchen screens and handhelds take it straight away, ${idle ? 'counter tills between sales' : 'counter tills when staff tap Sync POS'}, online and QR on their next page load, menu boards within two minutes. A till that was off catches up when it is back on. You are emailed if a site fails.`
+                  : `Kiosks, kitchen screens and handhelds take it in the next few seconds, ${idle ? 'counter tills between sales' : 'counter tills when staff tap Sync POS'}, online and QR on their next page load, menu boards within two minutes.`}
+              </div>
+            </div>
+          )}
+          {summaryLines.length > 0 && <div style={{ marginTop: 14 }}><SummaryBox title="What this publish does" lines={preview && preview.ok && !preview.total ? ['Nothing changes at any site: this publish only updates the group menu (for example a site\'s own product brought in).', ...summaryLines] : summaryLines} /></div>}
+          {preview?.total > 0 && hubriseReminder(rows) && <div style={{ ...ui.sub, marginTop: 8 }}>{hubriseReminder(rows)}</div>}
           {risks.length > 0 && (
             <div style={{ marginTop: 10 }}>
               <ConfirmTicks risks={risks} ticked={ticked} onChange={setTicked}
@@ -339,7 +403,17 @@ export default function MsmPublish({ api, menu, live, eff, sites, sets, working,
             {!checking && !ready && <div style={{ ...ui.sub, marginBottom: 8 }}>Tick each warning above to go on.</div>}
             {preview && !preview.ok && <div style={{ ...ui.err, marginBottom: 8 }}>Fix the problems in red first; the button comes back by itself.</div>}
             {mode === 'now'
-              ? <Btn kind="primary" style={{ width: '100%', padding: '11px 14px', fontSize: 14 }} disabled={!canEdit || busy || blocked || !ready || checking} onClick={publishNow} data-testid="msm-publish-now">{busy ? 'Publishing…' : publishNowWords(reachSites)}</Btn>
+              ? (
+                <>
+                  <Btn kind="primary" style={{ width: '100%', padding: '11px 14px', fontSize: 14 }} disabled={!canEdit || busy || blocked || !ready || checking} onClick={publishNow} data-testid="msm-publish-now">{busy ? 'Publishing…' : publishNowWords(reachSites)}</Btn>
+                  {canEdit && (
+                    <Btn small kind="soft" style={{ width: '100%', marginTop: 8 }} data-testid="msm-schedule-tomorrow"
+                      onClick={() => { setMode('schedule'); setRunLocal(defaultRunLocal(Date.now(), tz)); }}>
+                      Or schedule it for tomorrow 06:00
+                    </Btn>
+                  )}
+                </>
+              )
               : <Btn kind="primary" style={{ width: '100%', padding: '11px 14px', fontSize: 14 }} disabled={!canEdit || busy || blocked || past || !note.ok || !ready || sales === undefined} onClick={schedule} data-testid="msm-schedule">{busy ? 'Scheduling…' : scheduleButtonWords(runLocal, tz, lead)}</Btn>}
           </div>
         </div>
@@ -389,18 +463,73 @@ function SiteTabs({ preview }) {
   );
 }
 
+// Changes made at the sites since the last publish (design 3.3). Per site, each line in words with
+// what to do about it. Lines this publish overwrites say so; the publish needs one tick per site for
+// those not settled (msmRisk 'overwrites'). Nothing here blocks.
+function DriftPanel({ drift, canEdit, onKeep, onPutBack, onBringIn, onSettle }) {
+  const [open, setOpen] = useState(null);
+  const [busy, setBusy] = useState('');
+  if (!drift.length) return null;
+  const total = drift.reduce((n, s) => n + s.lines.filter((l) => !l.settled).length, 0);
+  const run = async (key, fn) => { setBusy(key); try { await fn(); } finally { setBusy(''); } };
+  return (
+    <div data-testid="msm-drift" style={{ ...ui.card, borderColor: 'color-mix(in srgb, var(--amber, #F5A623) 50%, var(--bdr))' }}>
+      <div style={{ ...ui.row, marginBottom: 6 }}>
+        <div style={{ ...ui.h2, flex: 1, margin: 0 }}>Changed at the sites</div>
+        {total > 0 && <Pill tone="warn">{total} to look at</Pill>}
+      </div>
+      <div style={{ ...ui.sub, marginBottom: 8 }}>Changed by hand at a site since the last publish. Keep the site's value, or put the group menu's back. Nothing here stops the publish.</div>
+      {drift.map((s) => {
+        const shown = open === s.location_id ? s.lines : s.lines.slice(0, 4);
+        const left = s.lines.filter((l) => !l.settled).length;
+        return (
+          <div key={s.location_id} style={{ borderTop: '1px solid var(--bdr)', padding: '8px 0' }}>
+            <div style={{ fontSize: 13, fontWeight: 750, marginBottom: 4 }}>
+              {s.name}: {s.lines.length} change{s.lines.length === 1 ? '' : 's'} made at the site{s.overwrite ? `, ${s.overwrite} this publish overwrites` : ''}{!left ? ' (all settled)' : ''}
+            </div>
+            {shown.map((l) => (
+              <div key={l.key} style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', padding: '4px 0', fontSize: 12.5, opacity: l.settled ? 0.55 : 1 }}>
+                <span style={{ flex: '1 1 220px', color: 'var(--t2)' }}>
+                  {l.words}
+                  {l.overwritten && !l.settled && <span style={{ color: 'var(--amber, #F5A623)', fontWeight: 700 }}> This publish overwrites it.</span>}
+                  {l.settled && <span style={{ color: 'var(--t3)' }}> Settled.</span>}
+                </span>
+                {canEdit && !l.settled && (l.d.kind === 'unknown_option'
+                  ? (
+                    <>
+                      <Btn small kind="soft" disabled={!!busy} onClick={() => run(l.key, () => onBringIn(s.location_id, l.d, l.key))}>Bring it into the group</Btn>
+                      <Btn small kind="link" onClick={() => onSettle(l.key)}>Leave it as {s.name}'s own</Btn>
+                    </>
+                  ) : (
+                    <>
+                      <Btn small kind="soft" disabled={!!busy} onClick={() => run(l.key, () => onKeep(s.location_id, l.d, l.key))}>Keep {s.name}'s</Btn>
+                      {l.overwritten
+                        ? <Btn small kind="link" onClick={() => onSettle(l.key)}>Overwrite it</Btn>
+                        : <Btn small kind="link" disabled={!!busy} onClick={() => run(l.key, () => onPutBack(s.location_id, l.d, l.key))}>Put the group's back</Btn>}
+                    </>
+                  ))}
+              </div>
+            ))}
+            {s.lines.length > 4 && <Btn small kind="link" onClick={() => setOpen(open === s.location_id ? null : s.location_id)}>{open === s.location_id ? 'Show fewer' : `Show all ${s.lines.length}`}</Btn>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // Blocking problems in red (they stop the publish), warnings in amber (they let it through). A
 // category that is new at a site and would print nowhere offers its fix right here: pick which
 // category it prints like (round 2: before, the words pointed at a setting no screen showed).
-function HealthPanel({ preview, siteNames, categories = [], canEdit = false, onPrintLike = null }) {
+function HealthPanel({ preview, siteNames, categories = [], canEdit = false, onPrintLike = null, central = null, onOpenProduct = null, onOptionOff = null }) {
   const [showAll, setShowAll] = useState(false);
   if (!preview) return null;
   const block = [...(preview.central?.blocking || []).map((p) => ({ ...p, where: 'Every site' }))];
   const warn = [...(preview.central?.warnings || []).map((p) => ({ ...p, where: 'Every site' }))];
   for (const s of preview.sites) {
     if (s.missing) block.push({ code: 'unread', words: 'Could not read this site.', where: s.name });
-    for (const p of s.health?.blocking || []) block.push({ ...p, where: s.name || siteNames[s.location_id] });
-    for (const p of s.health?.warnings || []) warn.push({ ...p, where: s.name || siteNames[s.location_id] });
+    for (const p of s.health?.blocking || []) block.push({ ...p, where: s.name || siteNames[s.location_id], loc: s.location_id });
+    for (const p of s.health?.warnings || []) warn.push({ ...p, where: s.name || siteNames[s.location_id], loc: s.location_id });
   }
   const shownWarn = showAll ? warn : warn.slice(0, 6);
   return (
@@ -423,12 +552,15 @@ function HealthPanel({ preview, siteNames, categories = [], canEdit = false, onP
               {categories.filter((c) => !c.archived && c.id !== p.categoryId && !c.parent_id).map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
             </select>
           )}
+          {onOpenProduct && healthProduct(central, p) && <Btn small kind="soft" onClick={() => onOpenProduct(p.productId)}>Open product</Btn>}
         </div>
       ))}
       {shownWarn.map((p, i) => (
-        <div key={`w${i}`} style={{ display: 'flex', gap: 8, padding: '6px 0', borderTop: (i || block.length) ? '1px solid var(--bdr)' : 'none', fontSize: 12.5, color: 'var(--t2)' }}>
+        <div key={`w${i}`} style={{ display: 'flex', gap: 8, padding: '6px 0', borderTop: (i || block.length) ? '1px solid var(--bdr)' : 'none', fontSize: 12.5, color: 'var(--t2)', flexWrap: 'wrap' }}>
           <span style={{ color: 'var(--amber, #F5A623)', fontWeight: 800 }}>●</span>
-          <span><strong>{p.where}:</strong> {p.words}</span>
+          <span style={{ flex: '1 1 200px' }}><strong>{p.where}:</strong> {p.words}</span>
+          {canEdit && onOptionOff && p.code === 'option_inactive' && p.loc && <Btn small kind="soft" onClick={() => onOptionOff(p.loc, p)}>Turn the option off there too</Btn>}
+          {onOpenProduct && healthProduct(central, p) && <Btn small kind="soft" onClick={() => onOpenProduct(p.productId)}>Open product</Btn>}
         </div>
       ))}
       {warn.length > 6 && <Btn small kind="link" onClick={() => setShowAll((x) => !x)}>{showAll ? 'Show fewer' : `Show all ${warn.length}`}</Btn>}

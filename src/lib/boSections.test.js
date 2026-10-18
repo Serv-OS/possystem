@@ -561,7 +561,10 @@ test('BackOfficeApp: links on Overview and in Reports to a part the login is not
   assert.doesNotMatch(afterMemo, /\bALL_REPORTS\b|\bCATEGORIES\.|\bREPORT_BY_ID\b/, 'the catalog renders the filtered lists only');
   // The screens handed the setter get the guarded one (the only setSection in BackOfficeApp's scope).
   const shell = boCode.slice(boCode.indexOf('<div className="bo-page-shell">'), boCode.indexOf('{showLocationSwitcher &&'));
-  assert.equal((shell.match(/setSection=\{setSection\}/g) || []).length, 6);
+  // 17 Oct 2026 (Multi site menu round 2): Menu Manager gets it too, for "Open the Multi site menu"
+  // on a lock note, shown only when canOpen('multi-site-menu').
+  assert.match(boCode, /\{section === 'menu'\s+&& <MenuManager setSection=\{setSection\} canOpen=\{canOpen\} \/>\}/);
+  assert.equal((shell.match(/setSection=\{setSection\}/g) || []).length, 7);
 });
 
 // ── the Team screen ─────────────────────────────────────────────────────────
