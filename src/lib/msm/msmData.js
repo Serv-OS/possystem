@@ -294,6 +294,24 @@ export function createMsmData({ client, report = () => {}, invokeTimeoutMs = 600
       return res.error ? bad(res.error) : ok(true);
     },
 
+    /**
+     * Round 2 (UI issue 12c): the company's sites with more than one active menu, for the Admin
+     * switch's tick ("The multi site menu changes one menu per site for now"). Paged reads.
+     * Returns { ok, sites: [{ location_id, name, menus: [names] }] }.
+     */
+    async sitesWithManyMenus(orgId) {
+      if (!client || !orgId) return { ok: false, sites: [] };
+      const locs = await readAllRows(() => client.from('locations').select('id,name').eq('org_id', orgId).order('name').order('id'));
+      if (!locs.rows) return { ok: false, sites: [] };
+      const ids = locs.rows.map((l) => l.id);
+      if (!ids.length) return { ok: true, sites: [] };
+      const menus = await readAllRows(() => client.from('menus').select('id,name,location_id,is_active').in('location_id', ids).order('location_id').order('id'));
+      if (!menus.rows) return { ok: false, sites: [] };
+      const by = new Map();
+      for (const m of menus.rows) if (m.is_active !== false) { if (!by.has(m.location_id)) by.set(m.location_id, []); by.get(m.location_id).push(m.name || 'Menu'); }
+      return { ok: true, sites: locs.rows.filter((l) => (by.get(l.id) || []).length > 1).map((l) => ({ location_id: l.id, name: l.name, menus: by.get(l.id) })) };
+    },
+
     // ── Company Admin (ServOS only; the database checks) ──────────────────
     adminStatus: (orgId) => rpc('msm_admin_status', { p_org: orgId }),
     adminSetEnabled: (orgId, on) => rpc('msm_admin_set_enabled', { p_org: orgId, p_on: !!on }, 'multi site menu switch'),

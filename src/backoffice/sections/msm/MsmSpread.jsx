@@ -9,6 +9,7 @@
 import { useMemo, useState } from 'react';
 import { spreadRows, spreadSummary } from '../../../lib/msm/msmPublishView';
 import { CHANNEL_LABELS } from '../../../lib/msm/msmGrid';
+import { PUBLISHED_CHANNELS } from '../../../../supabase/functions/_shared/msmModel.js';
 import { Popover, SiteChecklist, Segmented, WindowedList } from './msmUi';
 import { ui, money } from './msmStyle';
 
@@ -49,9 +50,9 @@ export default function MsmSpread({ ix, live, sites, rows, channel, setChannel, 
           <option value="pct">Widest in percent first</option>
           <option value="name">A to Z</option>
         </select>
-        <select aria-label="Prices for" style={{ ...ui.input, width: 160 }} value={channel || ''} onChange={(e) => setChannel(e.target.value || null)}>
-          <option value="">Prices: In store</option>
-          {Object.entries(CHANNEL_LABELS).map(([k, l]) => <option key={k} value={k}>Prices: {l}</option>)}
+        <select aria-label="Showing" style={{ ...ui.input, width: 'auto', minWidth: 190 }} value={channel || ''} onChange={(e) => setChannel(e.target.value || null)}>
+          <option value="">Showing: Standard price</option>
+          {PUBLISHED_CHANNELS.map((k) => <option key={k} value={k}>Showing: {CHANNEL_LABELS[k]} price</option>)}
         </select>
         <Popover label={`Sites (${cols.length}/${sites.length})`} width={260}>
           <SiteChecklist sites={sites} value={shown} groups={live?.siteGroups || []} onChange={setShown} />

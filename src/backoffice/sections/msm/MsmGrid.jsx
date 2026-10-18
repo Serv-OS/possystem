@@ -13,15 +13,28 @@
 //
 // Every edit is staged through `stage` (MultiSiteMenu.jsx): nothing shows as changed before the
 // database has it.
+//
+// ROUND 2 (17 Oct 2026, the clarity pass): the toolbar's first row is Search, Category, Add product
+// and Change prices, with the rest under More; a second row picks what the grid shows (which
+// products, which price, prices or VAT or GP, which sites) beside a legend of every mark. Words:
+// "Standard price" (never In store), "Off here", "+ Sell here", "Only at Leeds". A single cell action
+// shows a note with Undo. A VAT view shows each product's VAT for an order type at every site.
+// Every popover opens above the sticky header (msmUi Popover portal; Peter's UI issue 1).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ROW_H, NO_CATEGORY, SHOW_FILTERS, CHANNEL_LABELS, channelLabel, buildGridRows, cellFor, cellStaged, categoryTree,
-  visibleRange, priceInput, parsePastedColumn, price2, moveFocus, defaultFor, priceEditable,
+  ROW_H, NO_CATEGORY, SHOW_FILTERS, CHANNEL_LABELS, priceLabel, buildGridRows, cellFor, cellStaged, categoryTree,
+  visibleRange, priceInput, parsePastedColumn, price2, moveFocus, defaultFor, priceEditable, showLabel,
 } from '../../../lib/msm/msmGrid';
-import { sitePriceChange, siteActiveChange, defaultPriceChange, activeMany, priceMany, copyPricesMany, moveMany, pasteColumn } from '../../../lib/msm/msmEdit';
+import { sitePriceChange, siteActiveChange, defaultPriceChange, activeMany, copyPricesMany, moveMany, pasteColumn } from '../../../lib/msm/msmEdit';
 import { marginFor, vatMaps } from '../../../lib/msm/msmMargin';
-import { Btn, Pill, Switch, Segmented, Popover, SiteChecklist } from './msmUi';
+import { shownPriceTypes, shownTaxTypes, vatCell } from '../../../lib/msm/msmOrderTypes';
+import { TAX_TYPE_WORDS, colWord } from '../../../lib/msm/msmWords';
+import { whyReadOnly, cellNoteWords } from '../../../lib/msm/msmStatus';
+import { addGroupWithSites } from '../../../lib/msm/msmGroupView';
+import * as groupEdit from '../../../lib/msm/msmGroupEdit';
+import { PUBLISHED_CHANNELS as CHANNELS } from '../../../../supabase/functions/_shared/msmModel.js';
+import { Btn, Pill, Switch, Segmented, Popover, SiteChecklist, MenuButton, Notice } from './msmUi';
 import { ui, money } from './msmStyle';
 
 // The product column: up to 300 px, narrower on an iPad so the site prices stay on screen.
@@ -31,11 +44,12 @@ const DEF_W = 116;
 const SITE_W = 132;
 const HEAD_H = 46;
 
-export default function MsmGrid({ ix, live, sites, staged, ctx, stage, editable, canEdit, costs, channel, setChannel, setNote, onOpenProduct, onAddProduct, onChangePrices, extraTools = null }) {
+export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, editable, canEdit, working, costs, channel, setChannel, ratesByLoc = {}, setNote, onOpenProduct, onAddProduct, onChangePrices, onCsv }) {
   const [search, setSearch] = useState('');
   const [categoryId, setCategoryId] = useState('');
   const [show, setShow] = useState('all');
-  const [mode, setMode] = useState('prices');
+  const [mode, setMode] = useState('prices');       // prices | vat | gp
+  const [taxKey, setTaxKey] = useState('takeaway');
   const [shownSites, setShownSites] = useState(() => sites.map((s) => s.id));
   const [collapsed, setCollapsed] = useState(() => new Set());
   const [selected, setSelected] = useState(() => new Set());
@@ -92,13 +106,15 @@ export default function MsmGrid({ ix, live, sites, staged, ctx, stage, editable,
   }, [focus]);
 
   // ── Writes ─────────────────────────────────────────────────────────────
-  const run = useCallback(async (keys, changes, done) => {
+  const run = useCallback(async (keys, changes, done, undo = true, nothing = 'Nothing to change: it is already like that.') => {
     const list = (changes || []).filter(Boolean);
-    if (!list.length) return;
+    // Never a silent nothing (Peter, UI issue 10): say so on screen.
+    if (!list.length) { setNote?.({ tone: 'warn', text: nothing }); return; }
     setPending((p) => { const s = new Set(p); keys.forEach((k) => s.add(k)); return s; });
-    try { await stage(list, { done }); }
+    try { await stage(list, { done, undo }); }
     finally { setPending((p) => { const s = new Set(p); keys.forEach((k) => s.delete(k)); return s; }); }
-  }, [stage]);
+  }, [stage, setNote]);
+  const siteNameOf = (loc) => sites.find((x) => x.id === loc)?.name || 'that site';
 
   const colLoc = (col) => (col === 0 ? null : cols[col - 1]?.id || null);
   const productAt = (row) => (rows[row] && rows[row].kind === 'product' ? rows[row].product : null);
@@ -119,7 +135,11 @@ export default function MsmGrid({ ix, live, sites, staged, ctx, stage, editable,
     if (r.words) { committed.current = null; setEditing({ ...ed, words: r.words }); return; }
     setEditing(null);
     if (nextKey) { setFocus((f) => moveFocus(rows, cols.length + 1, f || ed, nextKey)); scroller.current?.focus({ preventScroll: true }); }
-    if (r.change) await run([`${p.id}|${loc || 'default'}`], [r.change]);
+    if (r.change) {
+      const nm = p.menu_name || p.name;
+      const words = loc ? cellNoteWords({ product: nm, site: siteNameOf(loc), price: parsed.value, money }) : `${nm}: group ${priceLabel(channel).toLowerCase()} ${money(parsed.value)} (in the draft).`;
+      await run([`${p.id}|${loc || 'default'}`], [r.change], words);
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctx, channel, rows, cols, run]);
 
@@ -127,8 +147,23 @@ export default function MsmGrid({ ix, live, sites, staged, ctx, stage, editable,
     if (!editable) return;
     const r = siteActiveChange(ctx, p.id, loc, on);
     if (r.words) { setNote?.({ tone: 'warn', text: r.words }); return; }
-    run([`${p.id}|${loc}`], [r.change]);
-  }, [ctx, editable, run, setNote]);
+    const existed = !!ix.sites.get(`${p.id}|${loc}`);
+    run([`${p.id}|${loc}`], [r.change, ...(r.extra || [])], existed ? cellNoteWords({ product: p.menu_name || p.name, site: siteNameOf(loc), active: on }) : `${p.menu_name || p.name} will be sold at ${siteNameOf(loc)} (in the draft).`, true,
+      `${p.menu_name || p.name} is already ${on ? 'on' : 'off'} at ${siteNameOf(loc)}.`);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctx, editable, run, setNote, ix, sites]);
+
+  // The blue dot's "Use the group's settings": the site stops keeping its own values for this product
+  // (its own price stays; VAT keys a site holds for other order types are only noted, never written).
+  const giveBackToGroup = (p, loc) => {
+    const ps = ix.sites.get(`${p.id}|${loc}`);
+    if (!ps?.kept || !Object.keys(ps.kept).length) return;
+    const rest = Object.fromEntries(Object.entries(ps.kept.tax_overrides || {}).filter(([k]) => !['dine-in', 'takeaway', 'delivery', 'bar'].includes(k)));
+    const kept = Object.keys(rest).length ? { tax_overrides: rest } : {};
+    const liveS = (live?.productSites || []).find((x) => x.product_id === p.id && x.location_id === loc);
+    run([`${p.id}|${loc}`], [{ target: 'product_site', entity_id: p.id, location_id: loc, op: 'update', after: { kept }, before: { kept: liveS?.kept ?? {} } }],
+      `${siteNameOf(loc)} will use the group's settings for ${p.menu_name || p.name} once published (in the draft).`);
+  };
 
   const onKeyDown = (e) => {
     if (editingRef.current && e.target === e.currentTarget) {
@@ -166,7 +201,7 @@ export default function MsmGrid({ ix, live, sites, staged, ctx, stage, editable,
     } else if ((e.key === 'Delete' || e.key === 'Backspace') && loc) {
       e.preventDefault();
       const r = sitePriceChange(ctx, p.id, loc, null, channel);
-      if (r.change) run([`${p.id}|${loc}`], [r.change]);
+      if (r.change) run([`${p.id}|${loc}`], [r.change], cellNoteWords({ product: p.menu_name || p.name, site: siteNameOf(loc), price: null }));
     } else if (e.key === 'Escape') setFocus(null);
   };
 
@@ -212,6 +247,25 @@ export default function MsmGrid({ ix, live, sites, staged, ctx, stage, editable,
   };
   const selIds = [...selected].filter((id) => ix.products.has(id));
 
+  const why = whyReadOnly({ canEdit, working });
+  const orderTypes = useMemo(() => shownPriceTypes(eff || live), [eff, live]);
+  const taxTypes = useMemo(() => shownTaxTypes(eff || live), [eff, live]);
+  // Products on screen with their own order type price: a Standard price change does not reach it.
+  const pinned = useMemo(() => {
+    if (channel || mode !== 'prices') return null;
+    const counts = new Map();
+    for (const r of rows) {
+      if (r.kind !== 'product') continue;
+      const p = r.product;
+      for (const ch of CHANNELS) {
+        const set = (p.default_channels && p.default_channels[ch] != null) || cols.some((c) => { const ps = ix.sites.get(`${p.id}|${c.id}`); return ps?.channel_prices && ps.channel_prices[ch] != null; });
+        if (set) counts.set(ch, (counts.get(ch) || 0) + 1);
+      }
+    }
+    let best = null;
+    for (const [ch, n] of counts) if (!best || n > best.n) best = { ch, n };
+    return best;
+  }, [channel, mode, rows, cols, ix]);
   const nameW = Math.max(NAME_MIN, Math.min(NAME_W, Math.round(viewW * 0.26)));
   const totalW = nameW + DEF_W + cols.length * SITE_W;
   const vat = useMemo(() => vatMaps(live, costs.ratesByLoc || {}), [live, costs.ratesByLoc]);
@@ -219,41 +273,64 @@ export default function MsmGrid({ ix, live, sites, staged, ctx, stage, editable,
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10, minHeight: 0, flex: 1 }}>
-      {/* Toolbar */}
+      {/* Toolbar, first row: find, add, change prices */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
         <input aria-label="Search products" style={{ ...ui.input, width: 220 }} placeholder="Search products" value={search} onChange={(e) => setSearch(e.target.value)} />
         <select aria-label="Category" style={{ ...ui.input, width: 190 }} value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
           <option value="">Every category</option>
-          {tree.map((t) => <option key={t.id} value={t.id}>{'  '.repeat(t.depth)}{t.label}</option>)}
+          {tree.map((t) => <option key={t.id} value={t.id}>{'  '.repeat(t.depth)}{t.label}</option>)}
         </select>
-        <select aria-label="Show" style={{ ...ui.input, width: 190 }} value={show} onChange={(e) => setShow(e.target.value)}>
-          {SHOW_FILTERS.map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
-        </select>
-        <select aria-label="Prices for" title="Which price the grid shows" style={{ ...ui.input, width: 160 }} value={channel || ''} onChange={(e) => setChannel(e.target.value || null)}>
-          <option value="">Prices: In store</option>
-          {Object.entries(CHANNEL_LABELS).map(([k, l]) => <option key={k} value={k}>Prices: {l}</option>)}
-        </select>
-        <Segmented small value={mode} onChange={setMode} options={[{ value: 'prices', label: 'Prices' }, { value: 'gp', label: 'Show GP', title: 'Cost and gross profit from each site\'s own recipes' }]} />
-        <Popover label={`Sites (${cols.length}/${sites.length})`} width={260}>
-          <SiteChecklist sites={sites} value={shownSites} groups={groups} onChange={(v) => setShownSites(v.length ? v : shownSites)} />
-        </Popover>
         <div style={{ flex: 1 }} />
-        {extraTools}
         {canEdit && (
           <>
-            <Btn small kind="soft" disabled={!editable} onClick={() => onAddProduct(null)}>Add product</Btn>
-            <Popover label="Add site only extra" align="right" disabled={!editable} width={240}>
-              {(close) => (
-                <div>
-                  <div style={{ ...ui.sub, marginBottom: 8 }}>A product sold at one site only. Which site?</div>
-                  {sites.map((s) => <div key={s.id}><Btn small kind="link" onClick={() => { close(); onAddProduct(s.id); }}>{s.name}</Btn></div>)}
-                </div>
-              )}
-            </Popover>
-            <Btn small kind="primary" disabled={!editable} onClick={() => onChangePrices({ all: true })}>Change prices</Btn>
+            <Btn small kind="soft" disabled={!editable} title={why || 'A new product. Tick the sites it is sold at; untick to sell it at one or some.'} onClick={() => onAddProduct()} data-testid="msm-add-product">Add product</Btn>
+            <Btn small kind="primary" disabled={!editable} title={why || 'Up or down by an amount or a percent'} onClick={() => onChangePrices({ all: true })}>Change prices</Btn>
           </>
         )}
+        <MenuButton label="More" items={[
+          { label: 'Export to Excel', hint: 'The grid as a spreadsheet, prices and on or off at each site.', onClick: () => onCsv?.('export') },
+          canEdit && { label: 'Bring prices back from Excel', hint: 'Change prices in the spreadsheet, then bring it back. You see every change first.', disabled: !editable, why, onClick: () => onCsv?.('import') },
+        ]} />
       </div>
+      {why && canEdit && <div style={{ ...ui.sub, marginTop: -4 }}>{why}</div>}
+
+      {/* Toolbar, second row: what the grid shows */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <select aria-label="Show" title="Which products the grid lists" style={{ ...ui.input, width: 'auto', minWidth: 170 }} value={show} onChange={(e) => setShow(e.target.value)}>
+          {SHOW_FILTERS.map((f) => <option key={f.id} value={f.id}>Show: {f.label}</option>)}
+        </select>
+        <Segmented small value={mode} onChange={setMode} options={[
+          { value: 'prices', label: 'Prices' },
+          { value: 'vat', label: 'VAT', title: 'The VAT each product is charged for an order type, at each site' },
+          { value: 'gp', label: 'GP', title: 'Cost and gross profit from each site\'s own recipes' },
+        ]} />
+        {mode !== 'vat' && (
+          <select aria-label="Showing" title="Which price the grid shows" style={{ ...ui.input, width: 'auto', minWidth: 190 }} value={channel || ''} onChange={(e) => setChannel(e.target.value || null)}>
+            <option value="">Showing: Standard price</option>
+            {orderTypes.types.map((k) => <option key={k} value={k}>Showing: {CHANNEL_LABELS[k]} price</option>)}
+            {orderTypes.hidden.length > 0 && (
+              <optgroup label="Other order types (no prices set)">
+                {orderTypes.hidden.map((k) => <option key={k} value={k}>Showing: {CHANNEL_LABELS[k]} price</option>)}
+              </optgroup>
+            )}
+          </select>
+        )}
+        {mode === 'vat' && (
+          <select aria-label="VAT for" style={{ ...ui.input, width: 'auto', minWidth: 160 }} value={taxKey} onChange={(e) => setTaxKey(e.target.value)}>
+            {taxTypes.map((k) => <option key={k} value={k}>VAT for: {TAX_TYPE_WORDS[k]}</option>)}
+          </select>
+        )}
+        <Popover label={`Sites (${cols.length} of ${sites.length})`} width={260} testId="msm-sites-filter">
+          <SiteChecklist sites={sites} value={shownSites} groups={groups} onChange={(v) => setShownSites(v.length ? v : shownSites)} />
+        </Popover>
+      </div>
+      <Key mode={mode} />
+
+      {pinned && (
+        <Notice tone="info" actions={[{ label: `Show ${CHANNEL_LABELS[pinned.ch]} prices`, onClick: () => setChannel(pinned.ch) }]}>
+          {pinned.n} product{pinned.n === 1 ? ' has its' : 's have their'} own {CHANNEL_LABELS[pinned.ch]} price, so a Standard price change does not reach {CHANNEL_LABELS[pinned.ch]} for {pinned.n === 1 ? 'it' : 'them'}.
+        </Notice>
+      )}
 
       {/* Bulk bar */}
       {selIds.length > 0 && (
@@ -262,19 +339,30 @@ export default function MsmGrid({ ix, live, sites, staged, ctx, stage, editable,
           {editable && (
             <>
               <Btn small kind="primary" onClick={() => onChangePrices({ productIds: selIds })}>Change prices</Btn>
-              <SetPricePopover sites={sites} groups={groups} channel={channel} onApply={(value, locs) => { const r = priceMany(ctx, selIds, locs, value, channel); run(selIds.map((id) => `${id}|x`), r.changes, `${r.changes.length} price${r.changes.length === 1 ? '' : 's'} set.`); }} />
-              <SitesActionPopover label="Turn on at" sites={sites} groups={groups} button="Turn on" onApply={(locs) => { const r = activeMany(ctx, selIds, locs, true); run([], r.changes, `${r.changes.length} turned on.${r.words.length ? ` ${r.words[0]}` : ''}`); }} />
-              <SitesActionPopover label="Turn off at" sites={sites} groups={groups} button="Turn off" onApply={(locs) => { const r = activeMany(ctx, selIds, locs, false); run([], r.changes, `${r.changes.length} turned off.`); }} />
-              <CopyPricesPopover sites={sites} groups={groups} onApply={(from, to) => { const r = copyPricesMany(ctx, selIds, from, to, channel); run([], r.changes, `${r.changes.length} price${r.changes.length === 1 ? '' : 's'} copied.`); }} />
+              <SitesActionPopover label="Turn on at" sites={sites} groups={groups} button="Turn on" onApply={(locs) => { const r = activeMany(ctx, selIds, locs, true); run([], r.changes, `${r.changes.length} turned on (in the draft).${r.words.length ? ` ${r.words[0]}` : ''}`); }} />
+              <SitesActionPopover label="Turn off at" sites={sites} groups={groups} button="Turn off" onApply={(locs) => { const r = activeMany(ctx, selIds, locs, false); run([], r.changes, `${r.changes.length} turned off (in the draft).`); }} />
+              <CopyPricesPopover sites={sites} groups={groups} onApply={(from, to) => { const r = copyPricesMany(ctx, selIds, from, to, channel); run([], r.changes, `${r.changes.length} price${r.changes.length === 1 ? '' : 's'} copied (in the draft).`); }} />
               <Popover label="Move to" width={260}>
                 {(close) => (
                   <div style={{ maxHeight: 260, overflowY: 'auto' }}>
                     {tree.map((t) => (
-                      <div key={t.id}><Btn small kind="link" style={{ paddingLeft: 6 + t.depth * 12 }} onClick={() => { close(); const r = moveMany(ctx, selIds, t.id); run([], r.changes, `${r.changes.length} moved to ${t.label}.`); }}>{t.label}</Btn></div>
+                      <div key={t.id}><Btn small kind="link" style={{ paddingLeft: 6 + t.depth * 12 }} onClick={() => { close(); const r = moveMany(ctx, selIds, t.id); run([], r.changes, `${r.changes.length} moved to ${t.label} (in the draft).`); }}>{t.label}</Btn></div>
                     ))}
                   </div>
                 )}
               </Popover>
+              {(eff?.groups || []).some((g) => !g.archived) && (
+                <Popover label="Add option group" width={280}>
+                  {(close) => (
+                    <div style={{ maxHeight: 280, overflowY: 'auto' }}>
+                      <div style={{ ...ui.sub, marginBottom: 6 }}>Ask this question on the {selIds.length} product{selIds.length === 1 ? '' : 's'} ticked (a product with sizes means its sizes).</div>
+                      {(eff?.groups || []).filter((g) => !g.archived).map((g) => (
+                        <div key={g.id}><Btn small kind="link" onClick={() => { close(); const ch = addGroupWithSites(ctx, g.id, selIds, groupEdit); const n = ch.filter((c) => c.target === 'product').length; run([], ch, n ? `${g.name} added to ${n} product${n === 1 ? '' : 's'} (in the draft).` : `They all ask ${g.name} already.`); }}>{g.name}</Btn></div>
+                      ))}
+                    </div>
+                  )}
+                </Popover>
+              )}
             </>
           )}
           <Btn small onClick={() => setSelected(new Set())}>Clear</Btn>
@@ -292,7 +380,10 @@ export default function MsmGrid({ ix, live, sites, staged, ctx, stage, editable,
               <input type="checkbox" aria-label="Select every product shown" checked={allSelected} onChange={() => setSelected(allSelected ? new Set() : new Set(productRows.map((r) => r.id)))} />
               <span>Product <span style={{ color: 'var(--t4)', fontWeight: 600 }}>({products})</span></span>
             </div>
-            <div style={{ ...headCell, width: DEF_W }} title="The price every site follows unless it has its own">Group price<br /><span style={{ fontWeight: 500, color: 'var(--t4)' }}>{channelLabel(channel)}</span></div>
+            <div style={{ ...headCell, width: DEF_W }} title={mode === 'vat' ? 'The group\'s VAT for this order type' : 'The price every site follows unless it has its own'}>
+              {mode === 'vat' ? <>Group VAT<br /><span style={{ fontWeight: 500, color: 'var(--t4)' }}>{TAX_TYPE_WORDS[taxKey]}</span></>
+                : <>Group price<br /><span style={{ fontWeight: 500, color: 'var(--t4)' }}>{channel ? `${CHANNEL_LABELS[channel]} (blank = ${channel === 'driveThru' ? 'takeaway' : 'standard'})` : 'Standard price'}</span></>}
+            </div>
             {cols.map((s) => (
               <div key={s.id} style={{ ...headCell, width: SITE_W }} title={s.name}>
                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: SITE_W - 16 }}>{s.name}</span>
@@ -330,10 +421,19 @@ export default function MsmGrid({ ix, live, sites, staged, ctx, stage, editable,
                     {r.size ? '↳ ' : ''}{p.menu_name || p.name}
                   </button>
                   {isNew && <Pill tone="warn">New</Pill>}
-                  {!isNew && pStaged && pStaged.size > 0 && <Pill tone="warn" title={[...pStaged].join(', ')}>Edited</Pill>}
-                  {p.site_only_location_id && <Pill tone="blue" title="Sold at one site only">{(sites.find((s) => s.id === p.site_only_location_id)?.name || 'One site')} only</Pill>}
+                  {!isNew && pStaged && pStaged.size > 0 && <Pill tone="warn" title="Changed in the draft">Edited</Pill>}
+                  {p.type === 'subitem' && (ix.optionIn?.get(p.id)?.size || 0) > 0 && <Pill tone="neutral" title="A sub item: it is also picked as an option">{p.sold_alone === true ? `also an option in ${ix.optionIn.get(p.id).size} group${ix.optionIn.get(p.id).size === 1 ? '' : 's'}` : `option in ${ix.optionIn.get(p.id).size} group${ix.optionIn.get(p.id).size === 1 ? '' : 's'}`}</Pill>}
                 </div>
-                {p.type === 'variants' ? (
+                {mode === 'vat' ? (
+                  <>
+                    <VatCellView width={DEF_W} cell={vatCell(p, p.parent_product_id ? ix.products.get(p.parent_product_id) : null, null, taxKey)} group onOpen={() => onOpenProduct(p.id)} />
+                    {cols.map((x) => {
+                      const ps = ix.sites.get(`${p.id}|${x.id}`);
+                      if (!ps) return <div key={x.id} role="gridcell" style={{ ...cellBase, width: SITE_W, justifyContent: 'center', color: 'var(--t4)', fontSize: 12 }}>Not sold</div>;
+                      return <VatCellView key={x.id} width={SITE_W} off={ps.active === false} cell={vatCell(p, p.parent_product_id ? ix.products.get(p.parent_product_id) : null, ps, taxKey, ratesByLoc[x.id])} onOpen={() => onOpenProduct(p.id)} />;
+                    })}
+                  </>
+                ) : p.type === 'variants' ? (
                   <div role="gridcell" onClick={() => setFocus({ row: rowIndex, col: 0 })}
                     style={{ ...cellBase, width: DEF_W + cols.length * SITE_W, justifyContent: 'flex-start', color: 'var(--t4)', fontSize: 12, ...(focus && focus.row === rowIndex ? focusRing : {}) }}>Priced by its sizes below</div>
                 ) : <>
@@ -352,7 +452,7 @@ export default function MsmGrid({ ix, live, sites, staged, ctx, stage, editable,
                   return (
                     <SiteCell key={s.id} width={SITE_W} rowIndex={rowIndex} col={ci + 1} cell={c} st={st} gp={gp} gpOn={gpOn} p={p} loc={s.id}
                       focus={focus} editing={editing} setFocus={setFocus} setEditing={setEditing} commitEdit={commitEdit}
-                      pending={pending.has(`${p.id}|${s.id}`) || pending.has(`${p.id}|x`)} editable={editable} onToggle={toggle} />
+                      pending={pending.has(`${p.id}|${s.id}`) || pending.has(`${p.id}|x`)} editable={editable} onToggle={toggle} onUseGroup={giveBackToGroup} />
                   );
                 })}
                 </>}
@@ -360,11 +460,17 @@ export default function MsmGrid({ ix, live, sites, staged, ctx, stage, editable,
             );
           })}
           <div style={{ height: Math.max(0, rows.length - end) * ROW_H }} />
-          {rows.length === 0 && <div style={{ padding: 30, textAlign: 'center', ...ui.sub }}>No products match.</div>}
+          {rows.length === 0 && (
+            <div style={{ padding: 30, textAlign: 'center', ...ui.sub }}>
+              {search || categoryId || show !== 'all'
+                ? <>No products match{search ? ` "${search}"` : ''}{categoryId ? ` in ${tree.find((t) => t.id === categoryId)?.label || 'that category'}` : ''}{show !== 'all' ? ` (showing ${showLabel(show).toLowerCase()})` : ''}. <Btn small kind="link" onClick={() => { setSearch(''); setCategoryId(''); setShow('all'); }}>Clear filters</Btn></>
+                : 'No products yet. Add one with Add product.'}
+            </div>
+          )}
         </div>
       </div>
       <div style={{ ...ui.sub, fontSize: 11.5 }}>
-        Grey prices follow the group price. Amber marks are in the draft and reach the tills only when it is published. Click a price to change it; paste a column from a spreadsheet to fill prices down.
+        {mode === 'vat' ? 'VAT is changed on each product (open it).' : 'Tap a price to change it. Blank puts a site back on the group price. Paste a column from a spreadsheet to fill prices down.'}
       </div>
     </div>
   );
@@ -407,17 +513,15 @@ function PriceCell({ width, rowIndex, col, focus, editing, setFocus, setEditing,
   );
 }
 
-function SiteCell({ width, rowIndex, col, cell, st, gp, gpOn, p, loc, focus, editing, setFocus, setEditing, commitEdit, pending, editable, onToggle }) {
+function SiteCell({ width, rowIndex, col, cell, st, gp, gpOn, p, loc, focus, editing, setFocus, setEditing, commitEdit, pending, editable, onToggle, onUseGroup }) {
   const isFocus = focus && focus.row === rowIndex && focus.col === col;
   const isEdit = editing && editing.row === rowIndex && editing.col === col;
   if (!cell.exists) {
     return (
       <div role="gridcell" style={{ ...cellBase, width, justifyContent: 'center', ...(isFocus ? focusRing : {}), opacity: pending ? 0.5 : 1 }} onClick={() => setFocus({ row: rowIndex, col })}>
         {st.active && <span style={stagedMark} />}
-        {cell.siteOnlyElsewhere
-          ? <span style={{ color: 'var(--t4)', fontSize: 12 }} title="Another site's own extra">·</span>
-          : editable ? <button type="button" onClick={(e) => { e.stopPropagation(); onToggle(p, loc, true); }} title="Sell it at this site too"
-            style={{ background: 'none', border: '1px dashed var(--bdr2)', borderRadius: 7, color: 'var(--t3)', fontSize: 11.5, fontWeight: 700, padding: '3px 8px', cursor: 'pointer', fontFamily: 'inherit' }}>+ Add</button>
+        {editable ? <button type="button" onClick={(e) => { e.stopPropagation(); onToggle(p, loc, true); }} title="Sell it at this site too"
+            style={{ background: 'none', border: '1px dashed var(--bdr2)', borderRadius: 7, color: 'var(--t3)', fontSize: 11.5, fontWeight: 700, padding: '3px 8px', cursor: 'pointer', fontFamily: 'inherit' }}>+ Sell here</button>
             : <span style={{ color: 'var(--t4)', fontSize: 12 }}>Not sold</span>}
       </div>
     );
@@ -431,9 +535,11 @@ function SiteCell({ width, rowIndex, col, cell, st, gp, gpOn, p, loc, focus, edi
       {isEdit ? <EditBox editing={editing} setEditing={setEditing} commitEdit={commitEdit} /> : (
         <>
           <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-            {cell.keptCols.length > 0 && <span title={`This site keeps its own: ${cell.keptCols.join(', ').replace(/_/g, ' ')}`} style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--blu)', display: 'inline-block' }} />}
-            <span style={{ fontSize: 13, fontWeight: cell.follows ? 500 : 750, color: off ? 'var(--t4)' : cell.follows ? 'var(--t3)' : 'var(--t1)', textDecoration: off ? 'line-through' : 'none' }}
-              title={cell.follows ? 'Follows the group price' : 'This site\'s own price'}>{money(cell.price)}</span>
+            {cell.keptCols.length > 0 && <KeptDot cols={cell.keptCols} editable={editable} onUseGroup={() => onUseGroup?.(p, loc)} />}
+            {off
+              ? <span style={{ fontSize: 12, color: 'var(--t4)' }} title={`Turned off at this site (${money(cell.price)} when on)`}>Off here</span>
+              : <span style={{ fontSize: 13, fontWeight: cell.follows ? 500 : 750, color: cell.follows ? 'var(--t3)' : 'var(--t1)' }}
+                title={cell.follows ? 'Follows the group price' : 'This site\'s own price'}>{money(cell.price)}</span>}
             <Switch small on={!off} disabled={!editable} title={off ? 'Off at this site: turn on' : 'On at this site: turn off'} onChange={(v) => onToggle(p, loc, v)} />
           </div>
           {gpOn && (
@@ -444,25 +550,6 @@ function SiteCell({ width, rowIndex, col, cell, st, gp, gpOn, p, loc, focus, edi
         </>
       )}
     </div>
-  );
-}
-
-function SetPricePopover({ sites, groups, channel, onApply }) {
-  const [text, setText] = useState('');
-  const [locs, setLocs] = useState(() => sites.map((s) => s.id));
-  const parsed = priceInput(text);
-  return (
-    <Popover label="Set price" width={280}>
-      {(close) => (
-        <div>
-          <div style={{ ...ui.sub, marginBottom: 6 }}>{channel ? `${channelLabel(channel)} price` : 'Price'} at the sites ticked. Blank puts them back on the group price.</div>
-          <input autoFocus style={{ ...ui.input, marginBottom: 10 }} placeholder="3.20" value={text} onChange={(e) => setText(e.target.value)} />
-          <SiteChecklist sites={sites} groups={groups} value={locs} onChange={setLocs} />
-          {!parsed.ok && <div style={{ ...ui.err, marginTop: 6 }}>{parsed.words}</div>}
-          <Btn kind="primary" small style={{ marginTop: 10 }} disabled={!parsed.ok || !locs.length} onClick={() => { close(); onApply(parsed.value, locs); }}>Set price</Btn>
-        </div>
-      )}
-    </Popover>
   );
 }
 
@@ -487,15 +574,79 @@ function CopyPricesPopover({ sites, groups, onApply }) {
     <Popover label="Copy prices" width={280}>
       {(close) => (
         <div>
+          <div style={{ ...ui.sub, marginBottom: 8 }}>Gives the ticked sites the same prices as the site you pick. They stop following the group price.</div>
           <span style={ui.label}>From</span>
           <select style={{ ...ui.input, marginBottom: 10 }} value={from} onChange={(e) => setFrom(e.target.value)}>
             {sites.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
           </select>
           <span style={ui.label}>To</span>
           <SiteChecklist sites={sites.filter((s) => s.id !== from)} groups={groups} value={to} onChange={setTo} />
-          <Btn kind="primary" small style={{ marginTop: 10 }} disabled={!from || !to.length} onClick={() => { close(); onApply(from, to); }}>Copy</Btn>
+          <Btn kind="primary" small style={{ marginTop: 10 }} disabled={!from || !to.length} onClick={() => { close(); onApply(from, to); }}>Copy the prices</Btn>
         </div>
       )}
     </Popover>
+  );
+}
+
+// What every mark on the grid means, in words (Peter, 17 Oct 2026, UI issue 7: "what does this blue
+// dot mean"; a hover title cannot be read on an iPad). Open on the first visit, folded to one line
+// after that (remembered in this browser, in try and catch), and opened again with one tap.
+const KEY_SEEN = 'msm-grid-key-seen';
+const keySeen = () => { try { return localStorage.getItem(KEY_SEEN) === '1'; } catch { return false; } };
+function Key({ mode }) {
+  const [open, setOpen] = useState(() => !keySeen());
+  useEffect(() => { try { localStorage.setItem(KEY_SEEN, '1'); } catch { /* private mode: it opens again next time */ } }, []);
+  const dot = (c) => <span style={{ width: 7, height: 7, borderRadius: 4, background: c, display: 'inline-block', flexShrink: 0 }} />;
+  const items = mode === 'vat'
+    ? [[<span key="g" style={{ color: 'var(--t3)', fontWeight: 500 }}>VAT 20%</span>, 'Grey: the group\'s VAT for this order type.'],
+      [<span key="o" style={{ color: 'var(--t1)', fontWeight: 750 }}>Zero 0%</span>, 'Bold with a blue dot: this site keeps its own VAT for it.']]
+    : [[<span key="g" style={{ color: 'var(--t3)', fontWeight: 500 }}>3.40</span>, 'Grey price: follows the group price.'],
+      [<span key="o" style={{ color: 'var(--t1)', fontWeight: 750 }}>3.60</span>, 'Bold price: this site\'s own price.'],
+      [<span key="a" style={{ width: 3, height: 14, borderRadius: 2, background: 'var(--amber, #F5A623)', display: 'inline-block' }} />, 'Amber bar: a change waiting to go live.'],
+      [<span key="f" style={{ color: 'var(--t4)' }}>Off here</span>, 'Turned off at that site.'],
+      [dot('var(--blu)'), 'Blue dot: this site keeps its own settings for this product. Tap it to see which.']];
+  if (!open) {
+    return (
+      <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', fontSize: 11.5, color: 'var(--t3)' }}>
+        {items.map(([m], i) => <span key={i} style={{ display: 'inline-flex', alignItems: 'center' }}>{m}</span>)}
+        <Btn small kind="link" onClick={() => setOpen(true)}>What do the marks mean?</Btn>
+      </div>
+    );
+  }
+  return (
+    <div data-testid="msm-grid-key" style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap', padding: '8px 12px', borderRadius: 10, background: 'var(--bg2)', border: '1px solid var(--bdr)', fontSize: 12, color: 'var(--t2)' }}>
+      {items.map(([m, w], i) => <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>{m}<span>{w}</span></span>)}
+      <div style={{ flex: 1 }} />
+      <Btn small kind="link" onClick={() => setOpen(false)}>Hide the key</Btn>
+    </div>
+  );
+}
+
+// The blue dot: tap it to see what this site keeps as its own, and give it back to the group.
+function KeptDot({ cols, editable, onUseGroup }) {
+  return (
+    <span onClick={(e) => e.stopPropagation()} style={{ display: 'inline-flex' }}>
+      <Popover kind="link" small width={260} title="This site keeps its own settings: tap to see which"
+        label={<span aria-label="This site keeps its own settings" style={{ width: 9, height: 9, borderRadius: '50%', background: 'var(--blu)', display: 'inline-block' }} />}>
+        {(close) => (
+          <div style={{ fontSize: 12.5 }}>
+            <div style={{ fontWeight: 750, marginBottom: 4 }}>This site keeps its own</div>
+            <div style={{ ...ui.sub, marginBottom: 8 }}>{cols.map(colWord).join(', ')}. Publishing never changes these here.</div>
+            {editable && <Btn small kind="soft" onClick={() => { close(); onUseGroup(); }}>Use the group's settings</Btn>}
+          </div>
+        )}
+      </Popover>
+    </span>
+  );
+}
+
+// One VAT cell (the grid's VAT view): grey is the group's, bold a site that keeps its own.
+function VatCellView({ width, cell, group = false, off = false, onOpen }) {
+  return (
+    <div role="gridcell" onClick={onOpen} title={group ? 'Open the product to change its VAT' : cell.own ? 'This site keeps its own VAT for this order type' : 'Follows the group'}
+      style={{ ...cellBase, width, justifyContent: 'center', cursor: 'pointer', opacity: off ? 0.5 : 1, background: group ? 'color-mix(in srgb, var(--bg2) 55%, transparent)' : undefined }}>
+      {cell.own && <span style={{ width: 6, height: 6, borderRadius: 3, background: 'var(--blu)', display: 'inline-block' }} />}
+      <span style={{ fontSize: 11.5, lineHeight: 1.2, textAlign: 'center', fontWeight: group || cell.own ? 750 : 500, color: group || cell.own ? 'var(--t1)' : 'var(--t3)', overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>{cell.words}</span>
+    </div>
   );
 }

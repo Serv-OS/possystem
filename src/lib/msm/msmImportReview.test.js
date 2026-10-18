@@ -85,7 +85,7 @@ test('counts for the headline and per site', () => {
 
 test('summary words: products, sites, extras, kept values and the proof (or what is left to settle)', () => {
   const central = { products: [{ id: 'a' }, { id: 'b', site_only_location_id: 'x' }], sites: [{}, {}], productSites: [{ kept: { cat: 'x' } }, { kept: {} }] };
-  assert.equal(importSummaryWords(central, { ok: true }), '2 products at 2 sites, 1 of them site only extras. 1 site keeps some values of its own. Publishing now would change 0 things at 0 sites.');
+  assert.equal(importSummaryWords(central, { ok: true }), '2 products at 2 sites, 1 of them sold at one site. 1 site keeps some values of its own. Publishing now would change 0 things at 0 sites.');
   assert.match(importSummaryWords(central, { ok: false, writes: 3 }), /found 3 differences/);
 });
 

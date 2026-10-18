@@ -16,12 +16,20 @@
 //      (starts 05:55)". After Publish now, each site's progress shows here until it is done.
 // Nothing here writes a venue row: msm_publish_now / msm_schedule_set freeze the draft and the
 // server does the rest (msmData.js).
+//
+// ROUND 2 (17 Oct 2026, the foolproof layer, design 6.4 and 6.5): above the button, what the draft
+// does in sentences (lib/msm/msmSummary.js), and the warnings that need a tick (lib/msm/msmRisk.js:
+// a big price move, a price of zero, a VAT change, taking off something that sold this week, a
+// group made required, publishing now while sites are trading, with "Schedule for tonight 23:00
+// instead"). The button stays grey until every warning is ticked.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { applyChanges, previewSet, sitesReached } from '../../../../supabase/functions/_shared/msmDiff.js';
 import { scheduleNote, scheduleButtonWords, isPast, dueAt, overlaps, DEFAULT_LEAD_MINUTES } from '../../../../supabase/functions/_shared/msmSchedule.js';
 import { defaultRunLocal, minRunLocal, publishNowWords, previewHeadline, versionSummary, siteRowWords } from '../../../lib/msm/msmPublishView';
-import { Btn, Pill, Segmented, Notice, WindowedList, Field } from './msmUi';
+import { Btn, Pill, Segmented, Notice, WindowedList, Field, SummaryBox, ConfirmTicks } from './msmUi';
+import { summarise } from '../../../lib/msm/msmSummary';
+import { riskChecks, allTicked } from '../../../lib/msm/msmRisk';
 import { ui } from './msmStyle';
 import { useMsmHistory } from './useMsmHistory';
 import { useConfirm } from './useConfirm';
@@ -35,7 +43,15 @@ const LEADS = [
   { value: 60, label: 'An hour before' },
 ];
 
-export default function MsmPublish({ api, menu, live, sites, sets, working, rows, canEdit, setWorkingId, setNote, setTab, refreshSets, reload }) {
+// Tonight at 23:00 on a site's clock, as a datetime-local value.
+function tonightLocal(tz) {
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+    return `${parts}T23:00`;
+  } catch { return null; }
+}
+
+export default function MsmPublish({ api, menu, live, eff, sites, sets, working, rows, canEdit, setWorkingId, setNote, setTab, refreshSets, reload, sales, stage }) {
   const [tracking, setTracking] = useState(null);          // { versionId, title, runWords }
   const history = useMsmHistory(api, menu?.id, { every: tracking ? 3000 : 20000, onSettled: () => { reload(); refreshSets(); } });
   const isDraft = working?.status === 'draft';
@@ -88,6 +104,14 @@ export default function MsmPublish({ api, menu, live, sites, sets, working, rows
   const [lead, setLead] = useState(DEFAULT_LEAD_MINUTES);
   const [idle, setIdle] = useState(true);
   const [confirm, confirmDialog] = useConfirm();
+  const [ticked, setTicked] = useState(() => new Set());
+  const [trading, setTrading] = useState(undefined);   // undefined reading, null not read, rows
+  useEffect(() => {
+    let on = true;
+    if (!isDraft || !menu?.id || !api.sitesTrading) return undefined;
+    api.sitesTrading(menu.id).then((r) => { if (on) setTrading(r.ok ? r.rows : null); });
+    return () => { on = false; };
+  }, [api, isDraft, menu?.id, rows.length]);
   const past = mode === 'schedule' && !!runLocal && reach.some((loc) => isPast(runLocal, tzOf(loc), now));
   const note = scheduleNote(runLocal, tz, lead, now);
 
@@ -120,6 +144,11 @@ export default function MsmPublish({ api, menu, live, sites, sets, working, rows
   const [busy, setBusy] = useState(false);
   const reachSites = reach.map((loc) => ({ id: loc, name: siteNames[loc] || 'One site' }));
   const blocked = !preview || !preview.ok || reading;
+  const whenWords = mode === 'schedule' && runLocal ? scheduleButtonWords(runLocal, tz, lead).replace(/^Schedule for /, '') : null;
+  const summaryLines = useMemo(() => (after && rows.length ? summarise(rows, after, { siteNames, when: whenWords }) : []), [after, rows, siteNames, whenWords]);
+  const risks = useMemo(() => (after && rows.length ? riskChecks(rows, after, sales ?? null, trading === undefined ? [] : trading, { siteNames, publishNow: mode === 'now', sitesReached: reach }) : []), [after, rows, sales, trading, siteNames, mode, reach]);
+  const ready = allTicked(risks, ticked);
+  const checking = sales === undefined || (mode === 'now' && trading === undefined);
 
   const publishNow = async () => {
     const tills = idle ? 'counter tills between sales (never mid sale)' : 'counter tills when staff tap Sync POS';
@@ -177,9 +206,11 @@ export default function MsmPublish({ api, menu, live, sites, sets, working, rows
       <div style={{ display: 'grid', gap: 14, maxWidth: 900 }}>
         {progress}
         <div style={ui.card}>
-          <div style={ui.h2}>Publish</div>
+          <div style={ui.h2}>Review and publish</div>
           <div style={{ ...ui.sub, marginBottom: drafts.length ? 12 : 0 }}>
-            Changes collect in a draft. Pick one to see exactly what it changes at each site, then publish it now or schedule it, for example new products on the tills by 1 Dec 06:00.
+            {drafts.length
+              ? 'Changes collect in a draft. Pick one to see exactly what it changes at each site, then publish it now or schedule it, for example new products on the tills by 1 Dec 06:00.'
+              : 'No draft to publish. Make a change on the Products tab first.'}
           </div>
           {drafts.map((d) => (
             <div key={d.id} style={{ ...ui.row, padding: '9px 0', borderTop: '1px solid var(--bdr)' }}>
@@ -187,7 +218,7 @@ export default function MsmPublish({ api, menu, live, sites, sets, working, rows
               <Btn small kind="primary" onClick={() => setWorkingId(d.id)}>Open</Btn>
             </div>
           ))}
-          {!drafts.length && <div style={{ marginTop: 12 }}><Btn small onClick={() => setTab('grid')}>Go to the menu</Btn></div>}
+          {!drafts.length && <div style={{ marginTop: 12 }}><Btn small onClick={() => setTab('grid')}>Go to Products</Btn></div>}
         </div>
       </div>
     );
@@ -231,7 +262,7 @@ export default function MsmPublish({ api, menu, live, sites, sets, working, rows
         <div style={ui.card}>
           <div style={ui.h2}>{working.title}</div>
           <div style={ui.sub}>This draft is empty. Change a price, turn a product on or off, or add products in the menu, then come back here to publish or schedule.</div>
-          <div style={{ marginTop: 12 }}><Btn small onClick={() => setTab('grid')}>Go to the menu</Btn></div>
+          <div style={{ marginTop: 12 }}><Btn small onClick={() => setTab('grid')}>Go to Products</Btn></div>
         </div>
       </div>
     );
@@ -258,7 +289,13 @@ export default function MsmPublish({ api, menu, live, sites, sets, working, rows
       </div>
 
       <div style={{ display: 'grid', gap: 14, flex: '1 1 300px', minWidth: 0 }}>
-        <HealthPanel preview={preview} siteNames={siteNames} />
+        <HealthPanel preview={preview} siteNames={siteNames} categories={(eff || after)?.categories || []} canEdit={canEdit && isDraft}
+          onPrintLike={(categoryId, likeId) => {
+            const c = ((eff || after)?.categories || []).find((x) => x.id === categoryId);
+            const liveC = (live?.categories || []).find((x) => x.id === categoryId);
+            stage?.([{ target: 'category', entity_id: categoryId, location_id: null, op: 'update', after: { route_like_id: likeId }, before: { route_like_id: liveC?.route_like_id ?? null } }],
+              { done: `${c?.label || 'That category'} prints like ${((eff || after)?.categories || []).find((x) => x.id === likeId)?.label || 'the one you picked'} at every site where it is new.` });
+          }} />
 
         <div style={ui.card}>
           <div style={{ ...ui.h2, marginBottom: 10 }}>When</div>
@@ -288,12 +325,22 @@ export default function MsmPublish({ api, menu, live, sites, sets, working, rows
               ? `Nobody needs to be there: the server publishes at that time. Kiosks, kitchen screens and handhelds take it straight away, ${idle ? 'counter tills between sales' : 'counter tills when staff tap Sync POS'}, online and QR on their next page load, menu boards within two minutes. A till that was off catches up when it is back on. You are emailed if a site fails.`
               : `Kiosks, kitchen screens and handhelds take it in the next few seconds, ${idle ? 'counter tills between sales' : 'counter tills when staff tap Sync POS'}, online and QR on their next page load, menu boards within two minutes.`}
           </div>
+          {summaryLines.length > 0 && <div style={{ marginTop: 14 }}><SummaryBox title="What this publish does" lines={summaryLines} /></div>}
+          {risks.length > 0 && (
+            <div style={{ marginTop: 10 }}>
+              <ConfirmTicks risks={risks} ticked={ticked} onChange={setTicked}
+                actionLabel={() => 'Schedule for tonight 23:00 instead'}
+                onAction={() => { const t = tonightLocal(tz); setMode('schedule'); if (t) setRunLocal(t); }} />
+            </div>
+          )}
           <div style={{ marginTop: 14 }}>
             {!canEdit && <div style={{ ...ui.sub, marginBottom: 8 }}>Only editors can publish.</div>}
+            {checking && <div style={{ ...ui.sub, marginBottom: 8 }}>Checking each site first, a few seconds.</div>}
+            {!checking && !ready && <div style={{ ...ui.sub, marginBottom: 8 }}>Tick each warning above to go on.</div>}
             {preview && !preview.ok && <div style={{ ...ui.err, marginBottom: 8 }}>Fix the problems in red first; the button comes back by itself.</div>}
             {mode === 'now'
-              ? <Btn kind="primary" style={{ width: '100%', padding: '11px 14px', fontSize: 14 }} disabled={!canEdit || busy || blocked} onClick={publishNow} data-testid="msm-publish-now">{busy ? 'Publishing…' : publishNowWords(reachSites)}</Btn>
-              : <Btn kind="primary" style={{ width: '100%', padding: '11px 14px', fontSize: 14 }} disabled={!canEdit || busy || blocked || past || !note.ok} onClick={schedule} data-testid="msm-schedule">{busy ? 'Scheduling…' : scheduleButtonWords(runLocal, tz, lead)}</Btn>}
+              ? <Btn kind="primary" style={{ width: '100%', padding: '11px 14px', fontSize: 14 }} disabled={!canEdit || busy || blocked || !ready || checking} onClick={publishNow} data-testid="msm-publish-now">{busy ? 'Publishing…' : publishNowWords(reachSites)}</Btn>
+              : <Btn kind="primary" style={{ width: '100%', padding: '11px 14px', fontSize: 14 }} disabled={!canEdit || busy || blocked || past || !note.ok || !ready || sales === undefined} onClick={schedule} data-testid="msm-schedule">{busy ? 'Scheduling…' : scheduleButtonWords(runLocal, tz, lead)}</Btn>}
           </div>
         </div>
       </div>
@@ -342,8 +389,10 @@ function SiteTabs({ preview }) {
   );
 }
 
-// Blocking problems in red (they stop the publish), warnings in amber (they let it through).
-function HealthPanel({ preview, siteNames }) {
+// Blocking problems in red (they stop the publish), warnings in amber (they let it through). A
+// category that is new at a site and would print nowhere offers its fix right here: pick which
+// category it prints like (round 2: before, the words pointed at a setting no screen showed).
+function HealthPanel({ preview, siteNames, categories = [], canEdit = false, onPrintLike = null }) {
   const [showAll, setShowAll] = useState(false);
   if (!preview) return null;
   const block = [...(preview.central?.blocking || []).map((p) => ({ ...p, where: 'Every site' }))];
@@ -364,9 +413,16 @@ function HealthPanel({ preview, siteNames }) {
       </div>
       {!block.length && !warn.length && <div style={ui.sub}>Every product has a category, a price and a VAT rate at every site, and every new category prints somewhere.</div>}
       {block.map((p, i) => (
-        <div key={`b${i}`} style={{ display: 'flex', gap: 8, padding: '6px 0', borderTop: i ? '1px solid var(--bdr)' : 'none', fontSize: 12.5 }}>
+        <div key={`b${i}`} style={{ display: 'flex', gap: 8, padding: '6px 0', borderTop: i ? '1px solid var(--bdr)' : 'none', fontSize: 12.5, flexWrap: 'wrap' }}>
           <span style={{ color: 'var(--red)', fontWeight: 800 }}>●</span>
-          <span><strong>{p.where}:</strong> {p.words}</span>
+          <span style={{ flex: '1 1 200px' }}><strong>{p.where}:</strong> {p.words}</span>
+          {p.code === 'new_category_unrouted' && p.categoryId && canEdit && onPrintLike && (
+            <select aria-label="Prints like" style={{ ...ui.input, width: 'auto', minWidth: 170, padding: '5px 8px', fontSize: 12.5 }} value=""
+              onChange={(e) => { if (e.target.value) onPrintLike(p.categoryId, e.target.value); }}>
+              <option value="">Prints like…</option>
+              {categories.filter((c) => !c.archived && c.id !== p.categoryId && !c.parent_id).map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+            </select>
+          )}
         </div>
       ))}
       {shownWarn.map((p, i) => (

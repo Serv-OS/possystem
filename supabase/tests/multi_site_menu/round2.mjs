@@ -20,11 +20,15 @@
 //   * public.msm__is_legacy_mirror against the shared fixture list (msmMirrorFixtures.js);
 //   * the one time refresh (public.msm_import_groups): saved only when every site is as read, once,
 //     never while a draft holds option group changes, and then publishing would change nothing.
+//   * Peter's repro (UI issues 8, 10, 11): a product with three sizes sold at site A1 only (marked
+//     the way round 1 imported it) is ticked with its sizes, turned on at A2 and one size priced
+//     there: staged, published through msm_apply_site, and A2 holds the product and its sizes.
 
 import { spawn, spawnSync } from 'node:child_process';
 import { planSite, touchedFromChanges } from '../../functions/_shared/msmPlan.js';
 import { refreshGroupsPayload, touchEverything, proposeImport, buildCentral, importPayload } from '../../functions/_shared/msmImport.js';
-import { newOptionId, longOptionId } from '../../functions/_shared/msmModel.js';
+import { newOptionId, longOptionId, newItemId } from '../../functions/_shared/msmModel.js';
+import { activeMany } from '../../../src/lib/msm/msmEdit.js';
 import { mapModifierGroupRow } from '../../functions/_shared/venueMenuCore.js';
 import { MIRROR_CASES, MIRROR_RATE_ID, MIRROR_OTHER_RATE_ID } from '../../../src/lib/msm/msmMirrorFixtures.js';
 
@@ -383,5 +387,45 @@ export async function run(h) {
     const after = planSite({ central: cB, touched: touchedFromChanges(touchEverything(cB)), locationId: LB1, orgId: ORG_B, venue: readRaw(LB1) });
     expect('after the refresh, publishing everything would change nothing at the site', after.lines.length === 0, JSON.stringify(after.lines.slice(0, 3)));
     void VAT_A2; void VAT_B1;
+  }
+
+  // ── Peter's repro: House Red and its sizes, sold at A1 only, turned on at A2 ─────
+  {
+    settle();
+    let CC = central();
+    const hotCat = CC.categories.find((c) => c.label === 'Hot drinks');
+    const RED = 'f2a10000-0000-4000-8000-0000000000a1';
+    const SZ = [['f2a20000-0000-4000-8000-0000000000a2', '175 ml glass', 5.5], ['f2a30000-0000-4000-8000-0000000000a3', '250 ml glass', 7.5], ['f2a40000-0000-4000-8000-0000000000a4', 'Bottle', 22]];
+    const R1 = mkSet('House Red at A1');
+    r = stage({ set: R1, target: 'product', entity: RED, op: 'create', after: { name: 'House Red', menu_name: 'House Red', category_id: hotCat.id, type: 'variants', default_price: 0, tax_rate_name: 'VAT', tax_rate_percent: 20, sold_alone: true } });
+    expect('repro: House Red is staged', r.code === 0, r.err);
+    SZ.forEach(([id, name, price], i) => stage({ set: R1, target: 'product', entity: id, op: 'create', after: { name, menu_name: name, category_id: hotCat.id, parent_product_id: RED, type: 'simple', default_price: price, tax_rate_name: 'VAT', tax_rate_percent: 20, sold_alone: true, sort_order: i + 1 } }));
+    for (const id of [RED, ...SZ.map((x) => x[0])]) stage({ set: R1, target: 'product_site', entity: id, loc: LA1, op: 'create', after: { venue_item_id: newItemId({ id }, LA1), active: true } });
+    const VR1 = publish(R1);
+    const ra1 = runSite(VR1, LA1);
+    expect('repro: House Red and its sizes are on at A1', ra1.out?.ok === true && one(`select count(*) from menu_items where location_id = '${LA1}' and name in ('House Red', '175 ml glass', '250 ml glass', 'Bottle')`) === '4', ra1.res.err || JSON.stringify(ra1.health));
+    settle();
+    one(`update msm_products set site_only_location_id = '${LA1}' where id = '${RED}'`);   // as a round 1 import left it
+    CC = central();
+    const on = activeMany({ live: CC, eff: CC }, [RED, ...SZ.map((x) => x[0])], [LA2], true);
+    expect('repro: Turn on at A2 stages all four rows, nothing silently skipped, the old mark cleared once',
+      on.words.length === 0 && on.changes.filter((c) => c.target === 'product_site' && c.op === 'create').length === 4 && on.changes.filter((c) => c.target === 'product').length === 1, JSON.stringify(on));
+    const glass = on.changes.find((c) => c.target === 'product_site' && c.entity_id === SZ[1][0]);
+    glass.after = { ...glass.after, price: 8 };                                    // the 250 ml price at A2, on its new row
+    const R2 = mkSet('House Red at A2');
+    const bad = on.changes.map((c) => stage({ set: R2, target: c.target, entity: c.entity_id, loc: c.location_id, op: c.op, after: c.after, before: c.before })).filter((x) => x.code !== 0);
+    expect('repro: the database takes every staged change', bad.length === 0, bad.map((x) => x.err).join(' | '));
+    const VR2 = publish(R2);
+    const ra2 = runSite(VR2, LA2);
+    expect('repro: publish at A2 passes its health check and lands with a push', ra2.health.ok && ra2.out?.ok === true && !!ra2.out.push_id, ra2.res.err || JSON.stringify(ra2.health));
+    const rows = json(`select json_agg(i) from menu_items i where location_id = '${LA2}' and name in ('House Red', '175 ml glass', '250 ml glass', 'Bottle')`) || [];
+    const parent = rows.find((x) => x.name === 'House Red');
+    expect('repro: A2 now holds House Red and its three sizes, the sizes under it, A2\'s own VAT rate, the 250 ml at 8.00',
+      rows.length === 4 && parent && parent.type === 'variants' && rows.filter((x) => x.parent_id === parent.id).length === 3
+        && rows.every((x) => x.archived === false && x.tax_rate_id === VAT_A2 && x.id.endsWith(`_${sfx(LA2)}`))
+        && Number(rows.find((x) => x.name === '250 ml glass').pricing.base) === 8 && Number(rows.find((x) => x.name === 'Bottle').pricing.base) === 22,
+      JSON.stringify(rows.map((x) => [x.id, x.name, x.parent_id, x.tax_rate_id, x.pricing?.base])));
+    expect('repro: House Red is a normal product now (the one site mark gone)', one(`select site_only_location_id is null from msm_products where id = '${RED}'`) === 't');
+    expect('repro: nothing written at A1 by the second publish', one(`select count(*) from msm_version_sites where version_id = '${VR2}' and location_id = '${LA1}' and status = 'done'`) === '0');
   }
 }

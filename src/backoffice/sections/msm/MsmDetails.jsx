@@ -4,10 +4,14 @@
 // written to each site's own menu, and every site with the menu it writes into. Each site's menu
 // schedule, priority and default stay that site's own (timed menus are venue owned): shown here,
 // never changed by publishing.
+//
+// ROUND 2 (UI issue 12a): each site's real menu times, the site's OTHER menus (read only), and one
+// plain line saying what publishing touches and what stays set at each site.
 
 import { useEffect, useMemo, useState } from 'react';
 import { readAllRows } from '../../../../supabase/functions/_shared/venueMenuCore.js';
 import { Btn, Pill, Switch, Field, Notice } from './msmUi';
+import { menuTimesWords } from '../../../lib/msm/msmStatus';
 import { ui } from './msmStyle';
 
 export default function MsmDetails({ client, menu, live, eff, sites, stage, editable }) {
@@ -21,12 +25,13 @@ export default function MsmDetails({ client, menu, live, eff, sites, stage, edit
   const [read, setRead] = useState({ key: '', menus: null });
   const [saving, setSaving] = useState(false);
 
-  const ids = useMemo(() => (live?.sites || []).map((s) => s.venue_menu_id).filter(Boolean), [live]);
+  // Every menu at every site of the group menu (the one it writes into, and the site's others).
+  const ids = useMemo(() => (live?.sites || []).map((s) => s.location_id).filter(Boolean), [live]);
   const idsKey = ids.join('|');
   useEffect(() => {
     let on = true;
     if (!client || !ids.length) return undefined;
-    readAllRows(() => client.from('menus').select('*').in('id', ids).order('id')).then((r) => {
+    readAllRows(() => client.from('menus').select('*').in('location_id', ids).order('sort_order').order('id')).then((r) => {
       if (on) setRead({ key: idsKey, menus: r.rows ? new Map(r.rows.map((m) => [m.id, m])) : null });
     });
     return () => { on = false; };
@@ -57,12 +62,6 @@ export default function MsmDetails({ client, menu, live, eff, sites, stage, edit
     if (r?.ok) setTyped(null);
   };
 
-  const schedText = (m) => {
-    if (!m) return '';
-    const s = m.schedule || m.availability || null;
-    if (!s || (typeof s === 'object' && !Object.keys(s).length)) return 'Times: all day';
-    return 'Has its own times';
-  };
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16, alignItems: 'start' }}>
@@ -87,20 +86,31 @@ export default function MsmDetails({ client, menu, live, eff, sites, stage, edit
       </div>
       <div style={ui.card}>
         <div style={{ ...ui.h2, marginBottom: 4 }}>Sites</div>
-        <div style={{ ...ui.sub, marginBottom: 12 }}>Each site's own menu, which this group menu writes into when published. Its times and whether it is the default stay that site's own.</div>
+        <div style={{ fontSize: 13, fontWeight: 650, marginBottom: 4 }}>Changes here go into each site's own menu named below. Times, menu prices and which menu a till or platform uses stay set at each site.</div>
+        <div style={{ ...ui.sub, marginBottom: 12 }}>To price a platform such as delivery differently, use that platform's own menu at each site, as you do today.</div>
         {venueMenus === null && <Notice tone="bad">Could not read the sites' own menus.</Notice>}
         {venueMenus === undefined && <div style={{ ...ui.sub, marginBottom: 8 }}>Reading the sites' own menus…</div>}
         {sites.map((s) => {
           const ms = (live?.sites || []).find((x) => x.location_id === s.id);
           const vm = venueMenus?.get(ms?.venue_menu_id);
+          const others = venueMenus ? [...venueMenus.values()].filter((m) => m.location_id === s.id && m.id !== ms?.venue_menu_id && m.is_active !== false) : [];
           return (
-            <div key={s.id} style={{ ...ui.row, padding: '9px 0', borderTop: '1px solid var(--bdr)' }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13.5, fontWeight: 700 }}>{s.name}</div>
-                <div style={ui.sub}>{vm ? `${vm.name || 'Menu'} · ${schedText(vm)}${vm.is_default ? ' · default' : ''}` : ms?.venue_menu_id ? 'Its menu' : 'A menu is made on first publish'}</div>
+            <div key={s.id} style={{ padding: '10px 0', borderTop: '1px solid var(--bdr)' }}>
+              <div style={{ ...ui.row }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 700 }}>{s.name}</div>
+                  <div style={{ fontSize: 12.5, color: 'var(--t2)' }}>
+                    {vm ? <>Writes into <strong>{vm.name || 'its menu'}</strong> · {menuTimesWords(vm)}{vm.is_default ? ' · the default' : ''}</> : ms?.venue_menu_id ? 'Writes into its menu' : 'A menu is made on first publish'}
+                  </div>
+                </div>
+                <Pill>{counts.get(s.id) || 0} on sale</Pill>
+                {ms?.last_error && <Pill tone="bad" title={ms.last_error}>Last publish failed</Pill>}
               </div>
-              <Pill>{counts.get(s.id) || 0} on sale</Pill>
-              {ms?.last_error && <Pill tone="bad" title={ms.last_error}>Last publish failed</Pill>}
+              {others.length > 0 && (
+                <div style={{ ...ui.sub, fontSize: 12, marginTop: 4, paddingLeft: 10, borderLeft: '2px solid var(--bdr2)' }}>
+                  Its other menus (not changed here): {others.map((m) => `${m.name || 'Menu'} (${menuTimesWords(m)}${m.is_default ? ', the default' : ''})`).join('; ')}
+                </div>
+              )}
             </div>
           );
         })}

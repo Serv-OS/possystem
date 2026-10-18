@@ -9,8 +9,9 @@
 //   family        matched by shared family: linked, nothing to do
 //   name          matched by name only: NOT linked until ticked (each site keeps its own if not)
 //   names         one product, different names at different sites: pick the group's name
-//   onlyOne       only at one site: a site only extra, or Leave out (stays the venue's own).
-//                 Archived ones start as Leave out. Bulk: per site, all extras or all left out.
+//   onlyOne       only at one site: brought in (a product on at that site only), or Leave out
+//                 (stays the venue's own). Archived ones start as Leave out. Bulk per site.
+//                 ('extra' stays the internal value for "bring in", so saved choices still read.)
 //   clashes       two products with one name at one site: listed, each stays the venue's own
 //
 // Nothing here writes anything. The import writes the central tables only (msm_import_commit).
@@ -121,7 +122,7 @@ export function importSummaryWords(central, check) {
   const extras = listOf(central?.products).filter((p) => p.site_only_location_id).length;
   const kept = listOf(central?.productSites).filter((s) => s.kept && Object.keys(s.kept).length).length;
   const head = `${products} product${products === 1 ? '' : 's'} at ${sites} site${sites === 1 ? '' : 's'}`
-    + (extras ? `, ${extras} of them site only extras` : '')
+    + (extras ? `, ${extras} of them sold at one site` : '')
     + (kept ? `. ${kept} site${kept === 1 ? ' keeps' : 's keep'} some values of its own` : '');
   const proof = check?.ok ? 'Publishing now would change 0 things at 0 sites.' : `The check found ${check?.writes || 0} differences to settle before the group menu can be made.`;
   return `${head}. ${proof}`;

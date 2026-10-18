@@ -76,7 +76,7 @@ test('editing the same cell twice keeps the FIRST before, and putting it back re
   assert.equal(mergeStaged(row, back).action, 'delete');
 });
 
-test('on and off at a site; on where it is not sold adds it with a venue id in the sharing scheme; never another site\'s extra', () => {
+test('on and off at a site; on where it is not sold adds it with a venue id in the sharing scheme; a one site product goes on at a second site (UI issue 8)', () => {
   const ctx = ctxOf();
   assert.deepEqual(siteActiveChange(ctx, 'cola', L2, true).change.after, { active: true });
   assert.deepEqual(siteActiveChange(ctx, 'cola', L2, true).change.before, { active: false });
@@ -86,7 +86,11 @@ test('on and off at a site; on where it is not sold adds it with a venue id in t
   assert.deepEqual(add.after, { venue_item_id: 'm-latte_0000cc03', active: true, price: null, channel_prices: null });
   assert.ok(checkChange(add).ok);
   assert.equal(siteActiveChange(ctx, 'latte', L3, false).change, null, 'off where it is not sold: nothing');
-  assert.match(siteActiveChange(ctx, 'pie', L1, true).words, /another site's own extra/);
+  const pie = siteActiveChange(ctx, 'pie', L1, true);
+  assert.equal(pie.words, undefined, 'never refused');
+  assert.equal(pie.change.op, 'create');
+  assert.deepEqual(pie.extra.map((c) => [c.target, c.after]), [['product', { site_only_location_id: null }]], 'it becomes a normal product on at both');
+  assert.equal(siteActiveChange(ctx, 'cola', L1, true).already, true, 'already on: said, never silent');
   assert.match(siteActiveChange(ctx, 'latte', 'elsewhere', true).words, /not in the group menu/);
 });
 
@@ -174,7 +178,10 @@ test('a new category: a top level one must say which category it prints like (th
 test('the bulk bar: on, off, one price, copy from a site, move with sizes, paste down a column', () => {
   const ctx = ctxOf();
   const on = activeMany(ctx, ['cola', 'pie'], [L1, L2, L3], true);
-  assert.deepEqual(on.changes.map((c) => [c.entity_id, c.location_id, c.op]), [['cola', L2, 'update'], ['cola', L3, 'create']], 'never spreads an extra to other sites');
+  assert.deepEqual(on.changes.map((c) => [c.target, c.entity_id, c.location_id, c.op]), [
+    ['product_site', 'cola', L2, 'update'], ['product_site', 'cola', L3, 'create'],
+    ['product_site', 'pie', L1, 'create'], ['product', 'pie', null, 'update'], ['product_site', 'pie', L2, 'create'],
+  ], 'a one site product goes on at the others too, its old mark cleared once (UI issues 8 and 11)');
   const off = activeMany(ctx, ['latte'], [L1, L2], false);
   assert.equal(off.changes.length, 2);
   const price = priceMany(ctx, ['latte', 'cola'], [L1, L2, L3], 3.2);

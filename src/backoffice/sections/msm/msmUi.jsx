@@ -4,6 +4,7 @@
 // Office theme tokens in src/styles/globals.css). No data, no rules: those live in src/lib/msm.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ui } from './msmStyle';
 
 export function Btn({ kind = 'ghost', small = false, children, style, ...rest }) {
@@ -18,7 +19,10 @@ export function Btn({ kind = 'ghost', small = false, children, style, ...rest })
     <button type="button" {...rest} style={{
       padding: small ? '5px 10px' : '8px 14px', borderRadius: 9, cursor: rest.disabled ? 'default' : 'pointer',
       fontSize: small ? 12 : 13, fontWeight: 700, fontFamily: 'inherit', whiteSpace: 'nowrap',
-      opacity: rest.disabled ? 0.5 : 1, ...kinds[kind], ...style,
+      opacity: rest.disabled ? 0.5 : 1, ...kinds[kind],
+      // A grey main button reads as "not yet" (the warnings still need a tick), never as ready.
+      ...(rest.disabled && kind === 'primary' ? { background: 'var(--bg3)', color: 'var(--t3)', border: '1px solid var(--bdr2)', opacity: 0.85 } : {}),
+      ...style,
     }}>{children}</button>
   );
 }
@@ -155,27 +159,90 @@ export function Modal({ title, sub, onClose, width = 760, children, footer, dirt
   );
 }
 
-/** A button that opens a small panel under it (closes on a click outside or Escape). */
-export function Popover({ label, children, align = 'left', disabled, kind = 'ghost', small = true, width = 280 }) {
+/**
+ * A button that opens a small panel under it (closes on a click outside or Escape).
+ *
+ * Peter's UI issue 1 (17 Oct 2026): the Sites panel opened UNDER the grid's sticky header, which
+ * hid every site but the first. The panel is now drawn in a portal on document.body, fixed to the
+ * screen at the button's place, above every sticky cell, sheet and dialog (z-index 200), and it
+ * follows the button when the page or the grid scrolls. A panel that would run off the bottom of
+ * the screen opens above the button instead (iPad in landscape).
+ */
+export function Popover({ label, children, align = 'left', disabled, kind = 'ghost', small = true, width = 280, title, testId }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef(null);
+  const [pos, setPos] = useState(null);
+  const btnRef = useRef(null);
+  const panelRef = useRef(null);
+  const place = useCallback(() => {
+    const el = btnRef.current;
+    if (!el || typeof window === 'undefined') return;
+    const r = el.getBoundingClientRect();
+    const vw = window.innerWidth || 1024;
+    const vh = window.innerHeight || 768;
+    const w = Math.min(width, vw - 16);
+    let left = align === 'right' ? r.right - w : r.left;
+    left = Math.max(8, Math.min(left, vw - w - 8));
+    const below = vh - r.bottom - 14;
+    const above = r.top - 14;
+    const up = below < 220 && above > below;
+    setPos(up
+      ? { left, bottom: vh - r.top + 6, width: w, maxHeight: Math.max(140, above) }
+      : { left, top: r.bottom + 6, width: w, maxHeight: Math.max(140, below) });
+  }, [align, width]);
   useEffect(() => {
     if (!open) return undefined;
-    const click = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    const key = (e) => { if (e.key === 'Escape') setOpen(false); };
-    document.addEventListener('mousedown', click);
-    window.addEventListener('keydown', key);
-    return () => { document.removeEventListener('mousedown', click); window.removeEventListener('keydown', key); };
-  }, [open]);
+    const outside = (e) => {
+      if (btnRef.current && btnRef.current.contains(e.target)) return;
+      if (panelRef.current && panelRef.current.contains(e.target)) return;
+      setOpen(false);
+    };
+    const key = (e) => { if (e.key === 'Escape') { e.stopPropagation(); setOpen(false); } };
+    const move = () => place();
+    document.addEventListener('mousedown', outside);
+    document.addEventListener('touchstart', outside, { passive: true });
+    window.addEventListener('keydown', key, true);
+    window.addEventListener('resize', move);
+    window.addEventListener('scroll', move, true);
+    return () => {
+      document.removeEventListener('mousedown', outside);
+      document.removeEventListener('touchstart', outside);
+      window.removeEventListener('keydown', key, true);
+      window.removeEventListener('resize', move);
+      window.removeEventListener('scroll', move, true);
+    };
+  }, [open, place]);
+  const close = () => setOpen(false);
+  const panel = open && pos && typeof document !== 'undefined' ? createPortal(
+    <div ref={panelRef} role="dialog" aria-label={typeof label === 'string' ? label : undefined} data-msm-popover="1"
+      style={{ position: 'fixed', zIndex: 200, left: pos.left, top: pos.top, bottom: pos.bottom, width: pos.width, maxHeight: pos.maxHeight, overflowY: 'auto', boxSizing: 'border-box',
+        background: 'var(--bg1)', border: '1px solid var(--bdr2)', borderRadius: 12, boxShadow: 'var(--sh3, 0 12px 32px rgba(0,0,0,.35))', padding: 12, color: 'var(--t1)', fontFamily: 'inherit' }}>
+      {typeof children === 'function' ? children(close) : children}
+    </div>, document.body) : null;
   return (
-    <div ref={ref} style={{ position: 'relative', display: 'inline-block' }}>
-      <Btn kind={kind} small={small} disabled={disabled} onClick={() => setOpen((o) => !o)}>{label}</Btn>
-      {open && (
-        <div style={{ position: 'absolute', top: 'calc(100% + 6px)', [align]: 0, zIndex: 40, width, background: 'var(--bg1)', border: '1px solid var(--bdr2)', borderRadius: 12, boxShadow: 'var(--sh3, var(--sh))', padding: 12 }}>
-          {typeof children === 'function' ? children(() => setOpen(false)) : children}
+    <span ref={btnRef} style={{ display: 'inline-block' }}>
+      <Btn kind={kind} small={small} disabled={disabled} title={title} aria-expanded={open} data-testid={testId} onClick={() => { if (!open) place(); setOpen(!open); }}>{label}</Btn>
+      {panel}
+    </span>
+  );
+}
+
+/** A "More" style menu: a Popover whose items are plain rows. items: [{ label, hint, onClick, disabled, why }]. */
+export function MenuButton({ label = 'More', items, align = 'right', width = 280, kind = 'ghost', small = true }) {
+  return (
+    <Popover label={label} align={align} width={width} kind={kind} small={small}>
+      {(close) => (
+        <div style={{ display: 'grid', gap: 2, margin: -6 }}>
+          {items.filter(Boolean).map((it) => (
+            <button key={it.label} type="button" disabled={it.disabled} title={it.disabled ? it.why : undefined}
+              onClick={() => { close(); it.onClick?.(); }}
+              style={{ textAlign: 'left', background: 'transparent', border: 'none', borderRadius: 8, padding: '8px 10px', cursor: it.disabled ? 'default' : 'pointer', fontFamily: 'inherit', color: 'var(--t1)', opacity: it.disabled ? 0.5 : 1 }}>
+              <div style={{ fontSize: 13, fontWeight: 700 }}>{it.label}</div>
+              {(it.hint || (it.disabled && it.why)) && <div style={{ ...ui.sub, fontSize: 11.5 }}>{it.disabled && it.why ? it.why : it.hint}</div>}
+            </button>
+          ))}
         </div>
       )}
-    </div>
+    </Popover>
   );
 }
 
@@ -202,17 +269,66 @@ export function SiteChecklist({ sites, value, onChange, groups = [] }) {
   );
 }
 
-/** A message strip: tone good, warn or bad. */
-export function Notice({ tone = 'warn', children, onClose }) {
+/**
+ * A message strip: tone good, warn, bad or info. actions: [{ label, onClick }] drawn as buttons on
+ * the strip (every staged note carries its own way on: [Undo], [Review and publish]).
+ */
+export function Notice({ tone = 'warn', children, onClose, actions = null }) {
   const tones = {
     good: { background: 'var(--acc-d)', color: 'var(--t1)', border: '1px solid var(--acc-b, var(--acc))' },
     warn: { background: 'color-mix(in srgb, var(--amber, #F5A623) 12%, transparent)', color: 'var(--t1)', border: '1px solid color-mix(in srgb, var(--amber, #F5A623) 45%, transparent)' },
     bad: { background: 'var(--red-d)', color: 'var(--t1)', border: '1px solid var(--red-b)' },
+    info: { background: 'var(--blu-d, var(--bg2))', color: 'var(--t1)', border: '1px solid color-mix(in srgb, var(--blu, #4A8CFF) 40%, transparent)' },
   };
+  const list = (actions || []).filter(Boolean);
   return (
-    <div role="status" style={{ ...tones[tone], borderRadius: 10, padding: '9px 12px', fontSize: 13, lineHeight: 1.45, display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-      <div style={{ flex: 1 }}>{children}</div>
+    <div role="status" style={{ ...(tones[tone] || tones.warn), borderRadius: 10, padding: '9px 12px', fontSize: 13, lineHeight: 1.45, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+      <div style={{ flex: '1 1 240px', minWidth: 0 }}>{children}</div>
+      {list.map((a) => <Btn key={a.label} small kind={a.kind || 'soft'} onClick={a.onClick} disabled={a.disabled}>{a.label}</Btn>)}
       {onClose && <button type="button" onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--t3)', cursor: 'pointer', fontSize: 12, fontWeight: 700, fontFamily: 'inherit' }}>Dismiss</button>}
+    </div>
+  );
+}
+
+/**
+ * "What this does": the sentence summary shown before Add to draft and before Publish (design 6.4,
+ * lib/msm/msmSummary.js makes the sentences).
+ */
+export function SummaryBox({ lines, title = 'What this does', empty = null }) {
+  const list = (lines || []).filter(Boolean);
+  if (!list.length) return empty;
+  return (
+    <div data-testid="msm-summary" style={{ background: 'var(--bg2)', border: '1px solid var(--bdr)', borderRadius: 12, padding: '10px 14px' }}>
+      <div style={{ ...ui.label, marginBottom: 4 }}>{title}</div>
+      <ul style={{ margin: 0, paddingLeft: 18, display: 'grid', gap: 3 }}>
+        {list.slice(0, 12).map((l, i) => <li key={i} style={{ fontSize: 13, lineHeight: 1.45, color: 'var(--t1)' }}>{l}</li>)}
+      </ul>
+      {list.length > 12 && <div style={{ ...ui.sub, marginTop: 4 }}>And {list.length - 12} more.</div>}
+    </div>
+  );
+}
+
+/**
+ * Warnings that need a tick (design 6.5, lib/msm/msmRisk.js riskChecks). The button that goes on
+ * stays grey until every one is ticked (msmRisk.allTicked). A risk may carry an action, such as
+ * "Schedule for tonight 23:00 instead": onAction(risk) is called for it.
+ */
+export function ConfirmTicks({ risks, ticked, onChange, onAction = null, actionLabel = null }) {
+  const list = (risks || []).filter(Boolean);
+  if (!list.length) return null;
+  const set = ticked instanceof Set ? ticked : new Set();
+  const flip = (k) => { const n = new Set(set); if (n.has(k)) n.delete(k); else n.add(k); onChange(n); };
+  return (
+    <div data-testid="msm-risks" style={{ border: '1px solid color-mix(in srgb, var(--amber, #F5A623) 50%, transparent)', background: 'color-mix(in srgb, var(--amber, #F5A623) 8%, transparent)', borderRadius: 12, padding: '10px 14px' }}>
+      <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 2 }}>Please check {list.length === 1 ? 'this' : `these ${list.length}`} before you go on</div>
+      <div style={{ ...ui.sub, marginBottom: 8 }}>Tick each one to say you meant it. Nothing reaches the tills until you publish.</div>
+      {list.map((r) => (
+        <label key={r.key} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', padding: '5px 0', fontSize: 13, cursor: 'pointer', borderTop: '1px solid var(--bdr)' }}>
+          <input type="checkbox" checked={set.has(r.key)} onChange={() => flip(r.key)} style={{ marginTop: 3 }} />
+          <span style={{ flex: 1 }}>{r.words}</span>
+          {r.action && onAction && <Btn small kind="soft" onClick={(e) => { e.preventDefault(); onAction(r); }}>{actionLabel ? actionLabel(r) : 'Do that instead'}</Btn>}
+        </label>
+      ))}
     </div>
   );
 }

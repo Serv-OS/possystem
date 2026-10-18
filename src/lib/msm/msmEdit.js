@@ -14,8 +14,10 @@
 //   * A site price equal to the price that site would follow is stored as "follows" (null), so a
 //     site never holds an override that says nothing.
 //   * Turning a product on at a site where it is not in the group menu yet adds it there, with a
-//     new venue id in the sharing engine's scheme (msmModel.newItemId). A site only extra belongs
-//     to its one site and is never added elsewhere.
+//     new venue id in the sharing engine's scheme (msmModel.newItemId). Round 2 (Peter, UI issues 6
+//     and 8): there is no "site only extra" any more. A product imported at one site (the old
+//     site_only_location_id) turned on at a second site becomes a normal product on at both: the
+//     same edit clears that field. A switch never silently does nothing.
 //   * Nothing is ever deleted: "remove" is archived, off is active false.
 
 import { STAGE_FIELDS, CHANNELS, has, sameValue, samePrice, newItemId, toPence, fromPence, channelFallback } from '../../../supabase/functions/_shared/msmModel.js';
@@ -84,13 +86,23 @@ export function siteActiveChange(ctx, productId, locationId, active) {
   const s = findSite(ctx.eff, productId, locationId);
   if (!s) {
     if (!active) return { change: null };
-    if (p.site_only_location_id && p.site_only_location_id !== locationId) return { words: 'This is another site\'s own extra. Make a new product to sell it here too.' };
-    if (!listOf(ctx.eff?.sites).some((x) => x.location_id === locationId)) return { words: 'That site is not in the group menu yet.' };
-    return { change: { target: 'product_site', entity_id: productId, location_id: locationId, op: 'create', after: { venue_item_id: newItemId(p, locationId), active: true, price: null, channel_prices: null }, before: {} } };
+    if (!listOf(ctx.eff?.sites).some((x) => x.location_id === locationId)) return { words: 'That site is not in the group menu yet. Add it on the Sites tab first.' };
+    const change = { target: 'product_site', entity_id: productId, location_id: locationId, op: 'create', after: { venue_item_id: newItemId(p, locationId), active: true, price: null, channel_prices: null }, before: {} };
+    return { change, extra: clearSiteOnly(ctx, p, locationId) };
   }
-  if ((s.active !== false) === !!active) return { change: null };
+  if ((s.active !== false) === !!active) return { change: null, already: true };
   const liveS = findSite(ctx.live, productId, locationId);
-  return { change: { target: 'product_site', entity_id: productId, location_id: locationId, op: 'update', after: { active: !!active }, before: { active: liveS ? liveS.active !== false : null } } };
+  return {
+    change: { target: 'product_site', entity_id: productId, location_id: locationId, op: 'update', after: { active: !!active }, before: { active: liveS ? liveS.active !== false : null } },
+    extra: active ? clearSiteOnly(ctx, p, locationId) : [],
+  };
+}
+
+// The old "only at one site" mark, cleared when the product goes on at another site.
+function clearSiteOnly(ctx, p, locationId) {
+  if (!p.site_only_location_id || p.site_only_location_id === locationId) return [];
+  const liveP = findProduct(ctx.live, p.id);
+  return [{ target: 'product', entity_id: p.id, location_id: null, op: 'update', after: { site_only_location_id: null }, before: { site_only_location_id: liveP ? liveP.site_only_location_id ?? null : null } }];
 }
 
 /**
@@ -129,7 +141,9 @@ export function productProblems(fields, ctx = {}) {
   const name = String(f.name ?? '').trim();
   if (!name) out.push('Give the product a name.');
   if (name.length > 120) out.push('The name is too long (120 letters at most).');
-  if (!f.category_id) out.push('Pick a category.');
+  // Round 2: a sub item only ever used as an option is never on a menu, so it needs no category.
+  const optionOnly = f.type === 'subitem' && f.sold_alone !== true;
+  if (!f.category_id && !optionOnly) out.push('Pick a category.');
   const price = Number(f.default_price);
   if (f.default_price == null || f.default_price === '' || !Number.isFinite(price)) out.push('Give the product a price (0.00 for free).');
   else if (price < 0) out.push('A price cannot be below zero.');
@@ -180,7 +194,11 @@ export function newProductChanges(ctx, { id, fields, sites }) {
   const known = new Set(listOf(ctx.eff?.sites).map((s) => s.location_id));
   const chosen = listOf(sites).filter((s) => s && known.has(s.location_id) && (!siteOnly || s.location_id === siteOnly));
   if (siteOnly && !chosen.length) chosen.push({ location_id: siteOnly, active: true, price: null });
-  if (!chosen.length) return { words: 'Pick at least one site to sell it at.' };
+  // Round 2: a sub item only used as an option goes to a site only where an option needs it
+  // (publish adds it there), so it needs no site of its own.
+  const optionOnly = f.type === 'subitem' && f.sold_alone !== true;
+  if (optionOnly) chosen.length = 0;
+  else if (!chosen.length) return { words: 'Pick at least one site to sell it at.' };
   const after = {
     name: String(f.name).trim(), menu_name: f.menu_name ? String(f.menu_name).trim() : String(f.name).trim(),
     receipt_name: f.receipt_name ? String(f.receipt_name).trim() : null, kitchen_name: f.kitchen_name ? String(f.kitchen_name).trim() : null,
@@ -190,9 +208,12 @@ export function newProductChanges(ctx, { id, fields, sites }) {
     tax_rate_name: f.tax_rate_name ?? null, tax_rate_percent: f.tax_rate_percent == null || f.tax_rate_percent === '' ? null : Number(f.tax_rate_percent),
     allergens: listOf(f.allergens), tags: listOf(f.tags), image: f.image || null, modifier_groups: listOf(f.modifier_groups),
     visibility: f.visibility || { pos: true, kiosk: true, online: true, onlineDelivery: true },
-    sold_alone: f.sold_alone !== false, item_code: f.item_code ? String(f.item_code).trim() : null,
+    sold_alone: f.type === 'subitem' ? f.sold_alone === true : f.sold_alone !== false, item_code: f.item_code ? String(f.item_code).trim() : null,
     site_only_location_id: siteOnly, archived: false, sort_order: Number(f.sort_order) || 0,
   };
+  const tbt = f.tax_by_type && typeof f.tax_by_type === 'object' && Object.keys(f.tax_by_type).length ? clone(f.tax_by_type) : null;
+  if (tbt) after.tax_by_type = tbt;
+  if (optionOnly) { after.category_id = f.category_id || null; after.visibility = { pos: false, kiosk: false, online: false, onlineDelivery: false }; }
   const product = { id, family_base: null };
   const changes = [{ target: 'product', entity_id: id, location_id: null, op: 'create', after, before: {} }];
   for (const s of chosen) {
@@ -266,7 +287,7 @@ const collect = (results) => {
   const words = [];
   for (const r of results) {
     if (r.words) words.push(r.words);
-    else if (r.change) changes.push(r.change);
+    else if (r.change) changes.push(r.change, ...(r.extra || []));
     else if (r.changes) changes.push(...r.changes);
   }
   return { changes, words: [...new Set(words)] };
@@ -275,12 +296,12 @@ const collect = (results) => {
 /** On or off for products at sites. */
 export function activeMany(ctx, productIds, locationIds, active) {
   const out = [];
-  for (const pid of listOf(productIds)) for (const loc of listOf(locationIds)) {
-    const p = findProduct(ctx.eff, pid);
-    if (active && p?.site_only_location_id && p.site_only_location_id !== loc) continue;   // never spread an extra
-    out.push(siteActiveChange(ctx, pid, loc, active));
-  }
-  return collect(out);
+  for (const pid of listOf(productIds)) for (const loc of listOf(locationIds)) out.push(siteActiveChange(ctx, pid, loc, active));
+  const r = collect(out);
+  // One clearing of the old "one site only" mark per product, however many sites it goes on at.
+  const seen = new Set();
+  r.changes = r.changes.filter((c) => { if (c.target !== 'product' || !('site_only_location_id' in (c.after || {}))) return true; if (seen.has(c.entity_id)) return false; seen.add(c.entity_id); return true; });
+  return r;
 }
 
 /** One price for products at sites (null = follow the group's price). */
@@ -357,6 +378,13 @@ export function withBefore(live, changes) {
     } else if (c.target === 'product_site') {
       const s = findSite(live, c.entity_id, c.location_id);
       for (const k of Object.keys(c.after || {})) before[k] = s ? clone(s[k] ?? null) : null;
+    } else if (c.target === 'modifier_option') {
+      // Round 2: Change prices on option groups.
+      const o = listOf(live?.options).find((x) => x.id === c.entity_id);
+      for (const k of Object.keys(c.after || {})) before[k] = o ? clone(o[k] ?? null) : null;
+    } else if (c.target === 'modifier_option_site') {
+      const os = listOf(live?.optionSites).find((x) => x.option_id === c.entity_id && x.location_id === c.location_id);
+      for (const k of Object.keys(c.after || {})) before[k] = os ? clone(os[k] ?? null) : null;
     }
     return { ...c, before };
   });
@@ -368,5 +396,5 @@ export function withBefore(live, changes) {
  *   offSites      Set of `${productId}|${locationId}` unticked (that site's own price is left)
  */
 export function withoutUnticked(changes, offProducts = new Set(), offSites = new Set()) {
-  return listOf(changes).filter((c) => !offProducts.has(c.entity_id) && !(c.target === 'product_site' && offSites.has(`${c.entity_id}|${c.location_id}`)));
+  return listOf(changes).filter((c) => !offProducts.has(c.entity_id) && !((c.target === 'product_site' || c.target === 'modifier_option_site') && offSites.has(`${c.entity_id}|${c.location_id}`)));
 }

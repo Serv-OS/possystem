@@ -72,14 +72,13 @@ test('rows: search, category and the Show filters', () => {
   assert.deepEqual(r({ categoryId: 'hot' }), ['#hot', 'tea', 'latte', 'latte-l', '#xmas', 'ginger'], 'a category includes the ones under it');
   assert.deepEqual(r({ show: 'differ' }), ['#hot', 'latte'], 'Latte is 3.00 at one site and 3.20 at the other');
   assert.deepEqual(r({ show: 'off' }), ['#hot', 'tea']);
-  assert.deepEqual(r({ show: 'extras' }), ['#cold', 'pie']);
   assert.deepEqual(r({ show: 'kept' }), ['#hot', 'latte']);
   assert.deepEqual(r({ show: 'archived' }), ['#cold', 'gone']);
   assert.deepEqual(r({ show: 'staged', staged: stagedIndex([{ target: 'product_site', entity_id: 'cola', location_id: 'l2', op: 'update', after: { price: 2.5 } }]) }), ['#cold', 'cola']);
   assert.deepEqual(r({ show: 'staged', siteIds: ['l1'], staged: stagedIndex([{ target: 'product_site', entity_id: 'cola', location_id: 'l2', op: 'update', after: { price: 2.5 } }]) }), [], 'a hidden site column does not count');
 });
 
-test('cells: follows the group price in grey, its own price in full, not sold, and another site\'s extra', () => {
+test('cells: follows the group price in grey, its own price in full, not sold; no "site only extra" any more', () => {
   const ix = indexCentral(small());
   const latte = ix.products.get('latte');
   assert.deepEqual(pick(cellFor(ix, latte, 'l1')), { exists: true, active: true, price: 3, own: null, follows: true });
@@ -87,7 +86,7 @@ test('cells: follows the group price in grey, its own price in full, not sold, a
   assert.deepEqual(cellFor(ix, latte, 'l2').keptCols, ['cat']);
   assert.equal(cellFor(ix, ix.products.get('ginger'), 'l2').exists, false);
   assert.equal(cellFor(ix, ix.products.get('ginger'), 'l2').siteOnlyElsewhere, false);
-  assert.equal(cellFor(ix, ix.products.get('pie'), 'l1').siteOnlyElsewhere, true);
+  assert.equal(cellFor(ix, ix.products.get('pie'), 'l1').siteOnlyElsewhere, false, 'a product at one site is a normal product: "+ Sell here" elsewhere (UI issue 6)');
   assert.equal(cellFor(ix, ix.products.get('tea'), 'l2').active, false);
 });
 const pick = (c) => ({ exists: c.exists, active: c.active, price: c.price, own: c.own, follows: c.follows });
@@ -136,7 +135,12 @@ test('the coffee chain fixture: every product placed once, Latte prices differ, 
   const { rows } = buildGridRows(c, { siteIds: all });
   const productRows = rows.filter((r) => r.kind === 'product');
   assert.equal(new Set(productRows.map((r) => r.id)).size, productRows.length, 'no product twice');
-  assert.equal(productRows.length, c.products.filter((p) => !p.archived).length);
+  const optionOnly = (p) => p.type === 'subitem' && p.sold_alone !== true;
+  assert.equal(productRows.length, c.products.filter((p) => !p.archived && !optionOnly(p)).length, 'Products hides sub items only used as options');
+  const subs = buildGridRows(c, { siteIds: all, show: 'subs' }).rows.filter((r) => r.kind === 'product');
+  assert.ok(subs.length > 0 && subs.every((r) => optionOnly(r.product)), 'Sub items only used as options shows just those');
+  const every = buildGridRows(c, { siteIds: all, show: 'everything' }).rows.filter((r) => r.kind === 'product');
+  assert.equal(every.length, c.products.filter((p) => !p.archived).length, 'Everything shows both');
   const ix = indexCentral(c);
   assert.equal(pricesDiffer(ix, byName(c, 'Latte'), all), true);
   assert.equal(cellFor(ix, byName(c, 'Tea'), C).active, false);
@@ -210,4 +214,23 @@ test('the grid shows drive thru from takeaway when drive thru is not priced, lik
   const ix = indexCentral({ products: [product], productSites: [{ product_id: 'p', location_id: 'L', price: null, active: true }], categories: [], sites: [{ location_id: 'L' }] });
   assert.equal(cellFor(ix, product, 'L', 'driveThru').price, 3.2);
   assert.equal(defaultFor(product, 'driveThru'), 3.2);
+});
+
+test('search keeps a product\'s sizes under it, and a matched size under its product (UI issue 9)', () => {
+  const c = {
+    sites: [{ location_id: 'l1' }],
+    categories: [{ id: 'wine', label: 'Wine', sort_order: 1 }],
+    products: [
+      { id: 'red', name: 'House Red', category_id: 'wine', type: 'variants', default_price: 0 },
+      { id: 'r175', name: '175 ml glass', category_id: 'wine', parent_product_id: 'red', default_price: 5, sort_order: 1 },
+      { id: 'r250', name: '250 ml glass', category_id: 'wine', parent_product_id: 'red', default_price: 7, sort_order: 2 },
+      { id: 'rbtl', name: 'Bottle', category_id: 'wine', parent_product_id: 'red', default_price: 20, sort_order: 3 },
+      { id: 'white', name: 'House White', category_id: 'wine', default_price: 5 },
+    ],
+    productSites: [],
+  };
+  const r = (o) => buildGridRows(c, { siteIds: ['l1'], ...o }).rows.map((x) => (x.kind === 'cat' ? `#${x.id}` : `${x.size ? '  ' : ''}${x.id}`));
+  assert.deepEqual(r({ search: 'house red' }), ['#wine', 'red', '  r175', '  r250', '  rbtl']);
+  assert.deepEqual(r({ search: '250' }), ['#wine', 'red', '  r250'], 'the parent above, the size indented under it');
+  assert.deepEqual(r({ search: 'bottle' }), ['#wine', 'red', '  rbtl']);
 });

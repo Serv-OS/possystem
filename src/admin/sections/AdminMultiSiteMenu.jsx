@@ -8,6 +8,8 @@
 //   * The people: named logins, each an Editor (edit, publish, schedule) or a Viewer (looks only).
 //     Owners and ServOS staff are NOT let in automatically; add yourself if you need to.
 //   * Not installed (the migration has not run): the card says so and shows nothing else.
+//   * Round 2 (UI issue 12c): a company with a site that has more than one menu needs a tick before
+//     it is switched on: "The multi site menu changes one menu per site for now".
 // Every change goes through the database's own functions (msm_admin_set_enabled,
 // msm_admin_set_member), which check for ServOS with the second step. Nothing shows as done until
 // the database answers; the card always shows what the database returned.
@@ -37,6 +39,8 @@ export default function AdminMultiSiteMenu({ org, allUsers = [] }) {
   const [working, setWorking] = useState(false);
   const [search, setSearch] = useState('');
   const [newRole, setNewRole] = useState('editor');
+  const [many, setMany] = useState(null);           // { ok, sites } sites with more than one menu
+  const [manyTicked, setManyTicked] = useState(false);
 
   const [reload, setReload] = useState(0);
   // Read on open, whenever the company changes, and on Try again. A late answer for a company the
@@ -50,8 +54,10 @@ export default function AdminMultiSiteMenu({ org, allUsers = [] }) {
       else if (r.notInstalled) setState('missing');
       else { setState('error'); setError(r.words); }
     });
+    msmApi.sitesWithManyMenus?.(orgId).then((r) => { if (live) setMany(r || null); });
     return () => { live = false; };
   }, [orgId, reload]);
+  const needsTick = !!(many && many.ok && many.sites.length);
   const load = () => { setState('loading'); setError(''); setReload((n) => n + 1); };
 
   const act = async (fn) => {
@@ -95,7 +101,7 @@ export default function AdminMultiSiteMenu({ org, allUsers = [] }) {
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 16 }}>
             <button disabled={working || !status.enabled} style={{ ...st.btn, ...(status.enabled ? st.ghost : st.on) }}
               onClick={() => act(() => msmApi.adminSetEnabled(orgId, false))}>Off</button>
-            <button disabled={working || status.enabled} style={{ ...st.btn, ...(status.enabled ? st.on : st.ghost) }}
+            <button disabled={working || status.enabled || (needsTick && !manyTicked)} title={needsTick && !manyTicked ? 'Tick the note below first' : undefined} style={{ ...st.btn, ...(status.enabled ? st.on : st.ghost) }}
               onClick={() => act(() => msmApi.adminSetEnabled(orgId, true))}>On</button>
             <span style={{ fontSize: 12, color: 'var(--t3)' }}>
               {status.enabled ? `On${status.enabled_at ? ` since ${new Date(status.enabled_at).toLocaleDateString('en-GB')}` : ''}` : 'Off: nobody sees it'}
@@ -103,6 +109,14 @@ export default function AdminMultiSiteMenu({ org, allUsers = [] }) {
             </span>
           </div>
 
+          {!status.enabled && needsTick && (
+            <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 12.5, color: 'var(--t1)', marginBottom: 14, padding: '10px 12px', borderRadius: 10, border: '1px solid color-mix(in srgb, var(--amber, #F5A623) 45%, transparent)', background: 'color-mix(in srgb, var(--amber, #F5A623) 10%, transparent)', cursor: 'pointer' }}>
+              <input type="checkbox" checked={manyTicked} onChange={(e) => setManyTicked(e.target.checked)} style={{ marginTop: 2 }} />
+              <span>This company has sites with more than one menu. The multi site menu changes one menu per site for now.
+                <span style={{ display: 'block', color: 'var(--t3)', marginTop: 4 }}>{many.sites.slice(0, 4).map((x) => `${x.name}: ${x.menus.join(', ')}`).join(' · ')}{many.sites.length > 4 ? ` and ${many.sites.length - 4} more` : ''}</span>
+              </span>
+            </label>
+          )}
           <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 4 }}>People</div>
           {members.length === 0 && <div style={{ fontSize: 13, color: 'var(--t4)', padding: '6px 0 10px' }}>Nobody yet.</div>}
           {members.map((m) => (

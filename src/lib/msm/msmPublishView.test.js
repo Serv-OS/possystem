@@ -332,8 +332,10 @@ test('the new screens: headers, plain words, no long dashes, and wired as tabs',
   const tabs = fs.readFileSync(new URL('msmTabs.js', dir), 'utf8');
   for (const id of ['publish', 'timeline', 'sites', 'spread']) assert.match(tabs, new RegExp(`id: '${id}'`));
   const pub = fs.readFileSync(new URL('MsmPublish.jsx', dir), 'utf8');
-  assert.match(pub, /disabled=\{!canEdit \|\| busy \|\| blocked\}/, 'Publish now waits for a clean health check');
-  assert.match(pub, /disabled=\{!canEdit \|\| busy \|\| blocked \|\| past \|\| !note\.ok\}/, 'Schedule too, never in the past and never with the time box empty');
+  assert.match(pub, /disabled=\{!canEdit \|\| busy \|\| blocked \|\| !ready \|\| checking\}/, 'Publish now waits for a clean health check and every warning ticked (round 2)');
+  assert.match(pub, /disabled=\{!canEdit \|\| busy \|\| blocked \|\| past \|\| !note\.ok \|\| !ready \|\| sales === undefined\}/, 'Schedule too, never in the past, never with the time box empty, every warning ticked');
+  assert.match(pub, /riskChecks\(rows, after/, 'the warnings that need a tick are worked out from the draft');
+  assert.match(pub, /summarise\(rows, after/, 'the sentence summary sits above the button');
   assert.match(pub, /api\.publishNow\(working\.id/);
   assert.match(pub, /api\.schedule\(working\.id, runLocal, lead, idle\)/);
 });

@@ -136,7 +136,7 @@ stage(SET3, { target: 'product_site', entity: LATTE, loc: L2, op: 'update', afte
 const V3 = JSON.parse(asUser(E, `select msm_publish_now('${SET3}', true)`)).version_id;
 const r3 = await call({ action: 'run_version', version_id: V3 }, userAuth(E));
 const s1 = r3.body.sites.find((s) => s.location_id === L1), s2 = r3.body.sites.find((s) => s.location_id === L2);
-expect('site one fails in words (the new category is printed nowhere); site two still publishes', s1.status === 'failed' && /not sent to any printer/.test(s1.error) && s2.status === 'done' && r3.body.status === 'partly_done', JSON.stringify(r3.body));
+expect('site one fails in words (the new category is printed nowhere); site two still publishes', s1.status === 'failed' && /would print nowhere\. In Review and publish, pick which category it prints like/.test(s1.error) && s2.status === 'done' && r3.body.status === 'partly_done', JSON.stringify(r3.body));
 expect('nothing was written at the failed site', one(`select count(*) from menu_items where location_id = '${L1}' and name = 'Toast'`) === '0');
 expect('the failed site\'s feed says it did not get it', /did not get/.test(one(`select title from activity_events where location_id = '${L1}' order by created_at desc limit 1`)));
 expect('a failure is noted once in the ledger', json(`select notified from msm_version_sites where version_id = '${V3}' and location_id = '${L1}'`).failed != null);

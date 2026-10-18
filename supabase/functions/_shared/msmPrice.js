@@ -32,7 +32,7 @@
 //     group's, or a site's own), one line per order type; prices that follow move by themselves.
 //     The screen ticks it by default; off, the preview names the order types it will not reach.
 
-import { CHANNELS, toPence, fromPence, has, channelFallback } from './msmModel.js';
+import { CHANNELS, PUBLISHED_CHANNELS, toPence, fromPence, has, channelFallback } from './msmModel.js';
 
 // ── Rounding ────────────────────────────────────────────────────────────────
 
@@ -193,7 +193,7 @@ function runChannel(central, opts, channel, onlySet) {
   const pinnedOf = (p, ps) => {
     if (channel || opts.alsoChannels) return [];
     const keys = [];
-    for (const k of CHANNELS) {
+    for (const k of PUBLISHED_CHANNELS) {
       if (chanOf(ps ? ps.channel_prices : null, k) != null || chanOf(p.default_channels, k) != null) keys.push(k);
     }
     return keys;
@@ -311,7 +311,8 @@ function runChannel(central, opts, channel, onlySet) {
 export function applyPriceChange(central, opts = {}) {
   const channel = opts.channel && CHANNELS.includes(opts.channel) ? opts.channel : null;
   const runs = [runChannel(central, opts, channel, false)];
-  if (!channel && opts.alsoChannels) for (const k of CHANNELS) runs.push(runChannel(central, opts, k, true));
+  // Delivery is a platform price (UI issue 2): never moved here, never published.
+  if (!channel && opts.alsoChannels) for (const k of PUBLISHED_CHANNELS) runs.push(runChannel(central, opts, k, true));
   const opt = runOptions(central, opts);
   const rows = [...runs.flatMap((r) => r.rows), ...opt.rows];
   // One change per product or site, every order type merged in (each run set only its own key).

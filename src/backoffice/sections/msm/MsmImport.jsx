@@ -10,7 +10,7 @@
 //
 //   1. Sites: every site of the company, ticked, with the menu to read at each.
 //   2. Review: matched by family (nothing to do), matched by name only (tick to link), different
-//      names (pick the group's), only at one site (site only extra or leave out, in bulk per site),
+//      names (pick the group's), only at one site (bring in, on at that site only, or leave out),
 //      clashes (listed; each stays the site's own).
 //   3. Check: "Publishing now would change 0 things at 0 sites", then Create.
 
@@ -270,17 +270,17 @@ function Review({ proposal, choices, setChoices, bucket, setBucket, siteName, si
                 </select>
                 <input aria-label="Search" style={{ ...ui.input, width: 160 }} placeholder="Search" value={search} onChange={(e) => setSearch(e.target.value)} />
                 <div style={{ flex: 1 }} />
-                <Btn small kind="soft" disabled={!shownOnly.length} onClick={() => setChoices(setOnlyOneMany(choices, proposal, filter, 'extra').choices)}>Make all {shownOnly.length} site only extras</Btn>
+                <Btn small kind="soft" disabled={!shownOnly.length} onClick={() => setChoices(setOnlyOneMany(choices, proposal, filter, 'extra').choices)}>Bring in all {shownOnly.length}</Btn>
                 <Btn small kind="soft" disabled={!shownOnly.length} onClick={() => setChoices(setOnlyOneMany(choices, proposal, filter, 'leave').choices)}>Leave all {shownOnly.length} out</Btn>
               </div>
               {shownOnly.map((o) => (
                 <Line key={o.productId} title={o.name} sub={`${siteName.get(o.location_id) || 'Site'}${o.archived ? ' · off at that site' : ''} · ${money(pPrice.get(o.productId))}`} off={(choices.onlyOne[o.productId] || o.defaultChoice) === 'leave'}>
                   <Segmented small value={choices.onlyOne[o.productId] || o.defaultChoice} onChange={(v) => setChoices(setOnlyOne(choices, o.productId, v))}
-                    options={[{ value: 'extra', label: 'Site only extra' }, { value: 'leave', label: 'Leave out' }]} />
+                    options={[{ value: 'extra', label: 'Bring in' }, { value: 'leave', label: 'Leave out' }]} />
                 </Line>
               ))}
               {!shownOnly.length && <Empty>Nothing here.</Empty>}
-              <div style={{ ...ui.sub, padding: '10px 14px' }}>A site only extra is managed here and sold at that one site. Left out, it stays that site's own product, exactly as it is today.</div>
+              <div style={{ ...ui.sub, padding: '10px 14px' }}>Brought in, it is a normal product in the group menu, switched on at that one site; you can switch it on at other sites any time. Left out, it stays that site's own product, exactly as it is today.</div>
             </>
           )}
           {bucket === 'clashes' && r.clashes.map((c, i) => (
@@ -292,7 +292,7 @@ function Review({ proposal, choices, setChoices, bucket, setBucket, siteName, si
       </div>
       <div style={{ ...ui.row, marginTop: 14 }}>
         <Btn onClick={onBack}>Back</Btn>
-        <div style={{ flex: 1, ...ui.sub }}>{counts.onlyOne.extra} site only extras, {counts.onlyOne.leave + choices.leaveOut.length} left out.</div>
+        <div style={{ flex: 1, ...ui.sub }}>{counts.onlyOne.extra} sold at one site brought in, {counts.onlyOne.leave + choices.leaveOut.length} left out.</div>
         <Btn kind="primary" disabled={busy} onClick={onNext}>Check and continue</Btn>
       </div>
     </div>

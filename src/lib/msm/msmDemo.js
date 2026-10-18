@@ -63,7 +63,30 @@ function venueTables() {
     const menuId = S('dm-menu', loc, i);
     t.menus.push({ id: menuId, location_id: loc, name: 'All day', description: '', is_default: true, is_active: true, sort_order: 0, updated_at: '2026-10-01T10:00:00+00:00' });
     const vat = `dm-vat-${i}`;
-    t.tax_rates.push({ id: vat, location_id: loc, name: 'Standard rate', rate: 20, active: true });
+    t.tax_rates.push({ id: vat, location_id: loc, name: 'Standard rate', rate: 20, active: true, is_default: true });
+    // Round 2: a zero rate at three of the four sites (Old Town has none: the VAT by order type
+    // picker then says so, which is the point of showing it).
+    if (i < 3) t.tax_rates.push({ id: `dm-zero-${i}`, location_id: loc, name: 'Zero rate', rate: 0, active: true, is_default: false });
+    // Round 2: two option groups at every site, the milks linked to their sub items.
+    const milkGroup = S('dm-grp-milk', loc, i);
+    const syrupGroup = S('dm-grp-syrup', loc, i);
+    const sub = (nm) => S(`dm-${slug(nm)}`, loc, i);
+    t.modifier_groups.push({
+      id: milkGroup, location_id: loc, name: 'Milk options', min: 0, max: 1, min_select: 0, max_select: 1, selection_type: 'single', sort_order: 1,
+      options: [
+        { id: 'mo-oat', name: 'Oat milk', price: i === 1 ? 0.5 : 0.4, itemId: sub('Oat milk') },
+        { id: 'mo-soy', name: 'Soya milk', price: 0.4, itemId: sub('Soya milk') },
+        ...(i === 3 ? [] : [{ id: 'mo-alm', name: 'Almond milk', price: 0.45, itemId: sub('Almond milk') }]),
+      ],
+    });
+    t.modifier_groups.push({
+      id: syrupGroup, location_id: loc, name: 'Syrups', min: 0, max: 3, min_select: 0, max_select: 3, selection_type: 'multiple', sort_order: 2,
+      options: [
+        { id: 'sy-van', name: 'Vanilla syrup', price: 0.5, itemId: sub('Vanilla syrup') },
+        { id: 'sy-car', name: 'Caramel syrup', price: 0.5, itemId: sub('Caramel syrup') },
+        { id: 'sy-haz', name: 'Hazelnut syrup', price: 0.5, itemId: sub('Hazelnut syrup') },
+      ],
+    });
     CATS.forEach((c, ci) => {
       t.menu_categories.push({ id: S(`dm-cat-${c.key}`, loc, i), location_id: loc, menu_id: menuId, parent_id: null, label: c.label, icon: c.icon, color: c.color, accounting_group: '', sort_order: ci + 1, default_course: 1, image: null, master_id: i === 0 ? null : `dm-cat-${c.key}` });
       t.menu_category_links.push({ menu_id: menuId, category_id: S(`dm-cat-${c.key}`, loc, i), sort_order: ci + 1 });
@@ -78,7 +101,8 @@ function venueTables() {
         cat: S(`dm-cat-${ck}`, loc, i), cats: [], parent_id: null, sort_order: pi,
         pricing: { base: priceAt(ck, base, i), dineIn: null, takeaway: null, collection: null, delivery: null, driveThru: null },
         allergens: ck === 'bake' ? ['gluten', 'eggs', 'milk'] : (ck === 'hot' && name !== 'Tea' && name !== 'Green tea' && name !== 'Espresso' && name !== 'Americano') ? ['milk'] : [],
-        assigned_modifier_groups: [], visibility: { pos: true, kiosk: true, online: true, onlineDelivery: true }, sold_alone: ck !== 'milk',
+        assigned_modifier_groups: ['Flat white', 'Latte', 'Cappuccino', 'Mocha', 'Cortado', 'Iced latte'].includes(name) ? [{ groupId: S('dm-grp-milk', loc, i) }, { groupId: S('dm-grp-syrup', loc, i) }] : [],
+        visibility: ck === 'milk' ? { pos: false, kiosk: false, online: false, onlineDelivery: false } : { pos: true, kiosk: true, online: true, onlineDelivery: true }, sold_alone: ck !== 'milk',
         archived: i === 2 && name === 'Babyccino', tax_rate_id: vat, image: null, scope: i === 0 ? 'shared' : 'shared', org_id: DEMO_ORG,
         master_id: i === 0 ? null : `dm-${slug(name)}`, tags: [], item_code: null, centre_id: null, updated_at: '2026-10-01T10:00:00+00:00',
       });
@@ -117,6 +141,8 @@ function importCommit({ p_payload: p }, db) {
   db.msm_modifier_group_sites = p.groups.flatMap((g) => g.sites.map((s) => ({ group_id: g.id, ...s })));
   db.msm_products = p.products.map((x) => ({ ...noSites(x), menu_id: menuId, archived: false }));
   db.msm_product_sites = p.products.flatMap((x) => x.sites.map((s) => ({ product_id: x.id, ...s })));
+  db.msm_modifier_options = (p.options || []).map((o) => ({ ...noSites(o), menu_id: menuId, archived: !!o.archived }));
+  db.msm_modifier_option_sites = (p.options || []).flatMap((o) => (o.sites || []).map((s) => ({ option_id: o.id, ...s })));
   db.msm_versions = [{ id: 'dddddddd-2222-4000-8000-000000000001', menu_id: menuId, org_id: p.org_id, version_no: 1, kind: 'import', title: 'Import', status: 'done', created_by_name: 'You (demo)', created_at: now, changes: [] }];
   return { data: { ok: true, menu_id: menuId, products: db.msm_products.length, categories: db.msm_categories.length, sites: db.msm_menu_sites.length, words: 'Version 1: imported. 0 changes at 0 sites.' }, error: null };
 }
@@ -135,7 +161,10 @@ function centralFromDb(db, menuId) {
   const groupIds = new Set(groups.map((g) => g.id));
   const products = (db.msm_products || []).filter((p) => p.menu_id === menuId);
   const pids = new Set(products.map((p) => p.id));
+  const options = (db.msm_modifier_options || []).filter((o) => o.menu_id === menuId);
+  const oids = new Set(options.map((o) => o.id));
   return {
+    options, optionSites: (db.msm_modifier_option_sites || []).filter((r) => oids.has(r.option_id)),
     menu: (db.msm_menus || []).find((m) => m.id === menuId) || null,
     sites: (db.msm_menu_sites || []).filter((s) => s.menu_id === menuId),
     categories: cats, catSites: (db.msm_category_sites || []).filter((r) => catIds.has(r.category_id)),
@@ -243,6 +272,12 @@ async function runVersion(client, versionId) {
     db.msm_products = [...keep('msm_products', (r) => r.menu_id === v.menu_id), ...after.products.map((p) => ({ ...p, menu_id: v.menu_id }))];
     db.msm_product_sites = [...keep('msm_product_sites', (r) => pids.has(r.product_id)), ...after.productSites];
     db.msm_menu_sites = [...keep('msm_menu_sites', (r) => r.menu_id === v.menu_id), ...after.sites.map((s) => ({ ...s, menu_id: v.menu_id }))];
+    const gids = new Set(after.groups.map((g) => g.id));
+    const oids = new Set(after.options.map((o) => o.id));
+    db.msm_modifier_groups = [...keep('msm_modifier_groups', (r) => r.menu_id === v.menu_id), ...after.groups.map((g) => ({ ...g, menu_id: v.menu_id }))];
+    db.msm_modifier_group_sites = [...keep('msm_modifier_group_sites', (r) => gids.has(r.group_id)), ...after.groupSites];
+    db.msm_modifier_options = [...keep('msm_modifier_options', (r) => r.menu_id === v.menu_id), ...after.options.map((o) => ({ ...o, menu_id: v.menu_id }))];
+    db.msm_modifier_option_sites = [...keep('msm_modifier_option_sites', (r) => oids.has(r.option_id)), ...after.optionSites];
     const m = db.msm_menus.find((x) => x.id === v.menu_id);
     Object.assign(m, after.menu, { last_version_no: (m.last_version_no || 0) + 1 });
     Object.assign(v, { version_no: m.last_version_no, status: 'running', started_at: new Date().toISOString(), changes: before });
@@ -267,6 +302,7 @@ async function runVersion(client, versionId) {
     db.menu_category_links = [...db.menu_category_links.filter((r) => !menuIds.has(r.menu_id)), ...A.links];
     for (const c of plan.writes.maps.categories) db.msm_category_sites.push({ ...c, location_id: loc });
     for (const g of plan.writes.maps.groups) db.msm_modifier_group_sites.push({ ...g, location_id: loc });
+    for (const o of plan.writes.maps.options || []) { const os = db.msm_modifier_option_sites.find((r) => r.option_id === o.option_id && r.location_id === (o.location_id || loc)); if (os) os.venue_option_id = o.venue_option_id; }
     if (plan.writes.maps.menu_site) { const ms = db.msm_menu_sites.find((s) => s.menu_id === v.menu_id && s.location_id === loc); if (ms) Object.assign(ms, plan.writes.maps.menu_site); }
     Object.assign(vs, { status: plan.lines.length ? 'done' : 'nothing', counts: plan.counts, writes: auditOf(plan), error: null, finished_at: new Date().toISOString(), push_id: plan.lines.length ? `demo-push-${vs.attempts}` : null });
   }
@@ -283,12 +319,15 @@ let demo = null;
 /** The demo data layer (one per page load), plus helpers the screens use in demo mode. */
 export function demoMsm() {
   if (demo) return demo;
-  const tables = { ...venueTables(), msm_menus: [], msm_menu_sites: [], msm_categories: [], msm_category_sites: [], msm_modifier_groups: [], msm_modifier_group_sites: [], msm_products: [], msm_product_sites: [], msm_site_groups: [], msm_change_sets: [], msm_changes: [], msm_versions: [], msm_version_sites: [] };
+  const tables = { ...venueTables(), msm_menus: [], msm_menu_sites: [], msm_categories: [], msm_category_sites: [], msm_modifier_groups: [], msm_modifier_group_sites: [], msm_products: [], msm_product_sites: [], msm_modifier_options: [], msm_modifier_option_sites: [], msm_site_groups: [], msm_change_sets: [], msm_changes: [], msm_versions: [], msm_version_sites: [] };
   const client = fakeClient(tables, {
     stamp: true,
     defaults: { msm_change_sets: { status: 'draft', kind: 'edit', lead_minutes: 5, apply_when_idle: true, run_local: null, version_id: null } },
     rpcs: {
       msm_my_access: () => ({ data: { companies: [{ org_id: DEMO_ORG, org_name: 'Demo company', enabled: true, role: 'editor' }] }, error: null }),
+      // Round 2: made up sales and trading, so the warnings that need a tick can be shown.
+      msm_sold_recently: (_args, db) => ({ data: (db.menu_items || []).filter((x) => /latte|flat white|croissant/i.test(x.name)).map((x, n) => ({ location_id: x.location_id, venue_item_id: x.id, sold: 40 + n * 3 })), error: null }),
+      msm_sites_trading: (_args, db) => ({ data: (db.locations || []).slice(0, 4).map((l, n) => ({ location_id: l.id, trading: n === 1, local_time: null })), error: null }),
       msm_import_commit: importCommit,
       msm_publish_now: ({ p_set, p_apply_when_idle }, db) => freeze(db, p_set, 'publish', null, 0, p_apply_when_idle),
       msm_schedule_set: ({ p_set, p_run_local, p_lead_minutes, p_apply_when_idle }, db) => freeze(db, p_set, 'scheduled', String(p_run_local || '').replace(' ', 'T'), p_lead_minutes, p_apply_when_idle),

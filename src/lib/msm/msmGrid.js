@@ -16,6 +16,7 @@
 // price, else the site's In store price, else the group's In store price.
 
 import { CHANNELS, toPence, fromPence, normName, has, channelFallback } from '../../../supabase/functions/_shared/msmModel.js';
+import { isOptionOnlyItem } from '../menuRules.js';
 
 export const ROW_H = 40;
 export const CAT_ROW_H = 40;
@@ -24,11 +25,15 @@ export const NO_CATEGORY = '__none__';
 const listOf = (v) => (Array.isArray(v) ? v : []);
 const keyOf = (pid, loc) => `${pid}|${loc}`;
 
-/** The channel names the Prices for picker shows. null = In store (the base price). */
+/** The order type names the Showing picker uses. null = the Standard price (the base price). */
 export const CHANNEL_LABELS = Object.freeze({
   dineIn: 'Eat in', takeaway: 'Takeaway', collection: 'Collection', delivery: 'Delivery', driveThru: 'Drive thru',
 });
-export const channelLabel = (ch) => (ch ? CHANNEL_LABELS[ch] || ch : 'In store');
+// Round 2 (the clarity pass): "In store" read as "only in the shop"; it is the price used when no
+// order type price is set, so it is the Standard price (design 2, item 5).
+export const channelLabel = (ch) => (ch ? CHANNEL_LABELS[ch] || 'Another order type' : 'Standard price');
+/** "Standard price" or "Eat in price", for the Showing picker and the column header. */
+export const priceLabel = (ch) => (ch ? `${CHANNEL_LABELS[ch] || 'Order type'} price` : 'Standard price');
 const okChannel = (ch) => (ch && CHANNELS.includes(ch) ? ch : null);
 
 // ── Indexing ────────────────────────────────────────────────────────────────
@@ -60,7 +65,15 @@ export function indexCentral(central) {
   const byOrder = (a, b) => (Number(a.sort_order ?? 0) - Number(b.sort_order ?? 0)) || String(a.label || a.name || '').localeCompare(String(b.label || b.name || '')) || String(a.id).localeCompare(String(b.id));
   for (const list of childrenOf.values()) list.sort(byOrder);
   for (const list of sizes.values()) list.sort(byOrder);
-  return { products, sites, sizes, categories, childrenOf, byOrder };
+  // Round 2: which option groups each sub item is an option in ("also an option in 2 groups").
+  const liveGroups = new Set(listOf(central?.groups).filter((g) => g && !g.archived).map((g) => g.id));
+  const optionIn = new Map();
+  for (const o of listOf(central?.options)) {
+    if (!o || o.archived || !o.product_id || !liveGroups.has(o.group_id)) continue;
+    if (!optionIn.has(o.product_id)) optionIn.set(o.product_id, new Set());
+    optionIn.get(o.product_id).add(o.group_id);
+  }
+  return { products, sites, sizes, categories, childrenOf, byOrder, optionIn };
 }
 
 /**
@@ -126,7 +139,7 @@ export function defaultFor(product, channel = null) {
 export function cellFor(ix, product, locationId, channel = null) {
   const ch = okChannel(channel);
   const ps = ix.sites.get(keyOf(product.id, locationId)) || null;
-  const siteOnlyElsewhere = !!(product.site_only_location_id && product.site_only_location_id !== locationId);
+  const siteOnlyElsewhere = false;   // round 2: no "site only extra" (Peter, UI issue 6)
   const defBase = Number(product.default_price ?? 0);
   if (!ps) return { exists: false, active: false, price: null, own: null, follows: true, defaultPrice: defaultFor(product, ch), keptCols: [], siteOnlyElsewhere };
   const keptCols = ps.kept && typeof ps.kept === 'object' ? Object.keys(ps.kept) : [];
@@ -189,15 +202,19 @@ export function cellStaged(staged, productId, locationId, channel = null) {
 
 // ── Rows ────────────────────────────────────────────────────────────────────
 
+// Round 2 (design 1.5): sub items only ever used as options are hidden from "Products", so they
+// stop sitting among the products; "Sub items only used as options" and "Everything" show them.
 export const SHOW_FILTERS = Object.freeze([
-  { id: 'all', label: 'All products' },
+  { id: 'all', label: 'Products' },
+  { id: 'subs', label: 'Sub items only used as options' },
+  { id: 'everything', label: 'Everything' },
   { id: 'staged', label: 'Changed in this draft' },
   { id: 'differ', label: 'Prices differ' },
-  { id: 'off', label: 'Off somewhere' },
-  { id: 'extras', label: 'Site only extras' },
+  { id: 'off', label: 'Turned off somewhere' },
   { id: 'kept', label: 'A site keeps its own' },
   { id: 'archived', label: 'Removed' },
 ]);
+export const showLabel = (id) => (SHOW_FILTERS.find((f) => f.id === id) || SHOW_FILTERS[0]).label;
 
 /**
  * The rows the grid draws, in order.
@@ -216,6 +233,8 @@ export function buildGridRows(central, opts = {}) {
 
   const matches = (p) => {
     if (show === 'archived' ? !p.archived : p.archived) return false;
+    const optionOnly = isOptionOnlyItem(p);
+    if (show === 'subs' ? !optionOnly : (optionOnly && show !== 'everything' && show !== 'staged' && show !== 'archived')) return false;
     if (inCat && !inCat.has(p.category_id) && !listOf(p.extra_category_ids).some((c) => inCat.has(c))) return false;
     if (q) {
       const hay = normName([p.name, p.menu_name, p.receipt_name, p.item_code].filter(Boolean).join(' '));
@@ -225,7 +244,6 @@ export function buildGridRows(central, opts = {}) {
       case 'staged': return !!(opts.staged && (opts.staged.products.has(p.id) || siteIds.some((l) => opts.staged.sites.has(keyOf(p.id, l)))));
       case 'differ': return pricesDiffer(ix, p, siteIds, opts.channel);
       case 'off': return siteIds.some((l) => { const c = cellFor(ix, p, l); return c.exists && !c.active; });
-      case 'extras': return !!p.site_only_location_id;
       case 'kept': return siteIds.some((l) => cellFor(ix, p, l).keptCols.length > 0);
       default: return true;
     }
@@ -235,6 +253,18 @@ export function buildGridRows(central, opts = {}) {
   const byCat = new Map();
   const shown = new Set();
   for (const p of ix.products.values()) if (matches(p)) shown.add(p.id);
+  // Peter, 17 Oct 2026 (UI issue 9): searching "House Red" must show its sizes under it, and
+  // searching "250" must show the 250 ml glass under House Red, never on its own. A size whose
+  // product is listed is drawn under it below; a matched size brings its product in above it.
+  const archivedOk = (p) => (show === 'archived' ? !!p.archived : !p.archived);
+  if (q || inCat) {
+    for (const id of [...shown]) for (const sz of ix.sizes.get(id) || []) if (archivedOk(sz)) shown.add(sz.id);
+  }
+  for (const id of [...shown]) {
+    const parentId = ix.products.get(id)?.parent_product_id;
+    const parent = parentId ? ix.products.get(parentId) : null;
+    if (parent && archivedOk(parent)) shown.add(parent.id);
+  }
   for (const p of ix.products.values()) {
     if (!shown.has(p.id)) continue;
     if (p.parent_product_id && shown.has(p.parent_product_id)) continue;   // drawn under its parent

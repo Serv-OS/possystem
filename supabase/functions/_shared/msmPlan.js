@@ -53,7 +53,7 @@
 //     order type VAT), and can be put back later; a real profile blocks, in words.
 
 import {
-  CHANNELS, ORDER_TYPE_TAX_KEYS, PRODUCT_COLUMN, has, sameValue, samePrice,
+  PUBLISHED_CHANNELS, ORDER_TYPE_TAX_KEYS, PRODUCT_COLUMN, has, sameValue, samePrice,
   newCategoryId, newMenuId, newGroupId, longCategoryId, longMenuId, longGroupId, newOptionId, longOptionId,
   newItemId, freeId, money2, toPence, KEPT_COLUMNS,
 } from './msmModel.js';
@@ -288,7 +288,8 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
   if (!venueMenuId || !menuById.has(venueMenuId)) {
     if (!T.sitesCreated.has(loc)) {
       problem('no_venue_menu', 'block', venueMenuId
-        ? 'The menu this site used is gone at the venue. Pick its menu again in Menu details.'
+        // Menu details cannot re pick a site's menu yet (UI issue 12b): say what really helps.
+        ? 'The site\'s own menu that the group menu writes into was deleted at the site, so nothing is written here. Ask ServOS support to point the group menu at that site\'s menu. The other sites still publish.'
         : 'This site has no menu for the group menu to go into. Add the site again from Sites.');
       return finish(false);
     }
@@ -622,7 +623,8 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
       }
       const tax = mapTax(p);
       const pricing = { base: basePrice(p, ps) };
-      for (const k of CHANNELS) pricing[k] = channelPrice(p, ps, k);
+      // Delivery is a platform price (set at each site by the menu its platform uses): never written.
+      for (const k of PUBLISHED_CHANNELS) pricing[k] = channelPrice(p, ps, k);
       const row = {
         id: ps.venue_item_id, name: p.name, menu_name: p.menu_name ?? p.name, receipt_name: p.receipt_name ?? p.name,
         kitchen_name: p.kitchen_name ?? p.name, description: p.description ?? '', type: p.type || 'simple',
@@ -650,7 +652,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     if (w.prodOp === 'remove') cols.add('archived');
     for (const f of w.prodFields) {
       if (f === 'default_price') { if (ps.price == null) pricingKeys.add('base'); continue; }
-      if (f === 'default_channels') { CHANNELS.forEach((k) => { if (!(ps.channel_prices && ps.channel_prices[k] != null)) pricingKeys.add(k); }); continue; }
+      if (f === 'default_channels') { PUBLISHED_CHANNELS.forEach((k) => { if (!(ps.channel_prices && ps.channel_prices[k] != null)) pricingKeys.add(k); }); continue; }
       if (f === 'tax_by_type') { ORDER_TYPE_TAX_KEYS.forEach((k) => taxKeys.add(k)); continue; }
       const col = PRODUCT_COLUMN[f];
       if (col && col !== 'pricing') cols.add(col);
@@ -658,7 +660,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     for (const f of w.siteFields) {
       if (f === 'active') cols.add('archived');
       else if (f === 'price') pricingKeys.add('base');
-      else if (f === 'channel_prices') CHANNELS.forEach((k) => pricingKeys.add(k));
+      else if (f === 'channel_prices') PUBLISHED_CHANNELS.forEach((k) => pricingKeys.add(k));
     }
     for (const k of w.keptCleared) {
       if (k === 'tax_overrides') ORDER_TYPE_TAX_KEYS.forEach((x) => taxKeys.add(x));
@@ -667,6 +669,9 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     }
 
     for (const col of cols) {
+      // Where a product shows (till, kiosk, online, delivery) stays the site's own, as the normal
+      // menu builder leaves it (Peter, 17 Oct 2026, UI issue 2). A new row still gets one.
+      if (col === 'visibility') continue;
       if (col !== 'archived' && keptBlocks(col)) continue;
       const v = columnValue(p, ps, col);
       if (v === undefined) continue;
@@ -892,7 +897,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
       // A brand new site (this publish makes its menu) sells nothing yet, so its printers are set
       // up there before it opens: a warning. A site that already has a menu is trading: blocking.
       if (W.menus.insert.length) problem('new_category_unrouted_new_site', 'warn', `"${nc.label}" is not sent to any printer or kitchen screen at this new site yet. Set it up in Back Office, Printers, before the site opens.`, { categoryId: nc.categoryId });
-      else problem('new_category_unrouted', 'block', `New category "${nc.label}" at this site is not sent to any printer or kitchen screen. Pick "Send like" a category that is.`, { categoryId: nc.categoryId });
+      else problem('new_category_unrouted', 'block', `"${nc.label}" is new at this site and would print nowhere. In Review and publish, pick which category it prints like, so its tickets reach the right printer.`, { categoryId: nc.categoryId });
       continue;
     }
     for (const cid of centreIds) {

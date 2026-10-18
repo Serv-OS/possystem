@@ -9,7 +9,8 @@
 //   1. Same shared family: master_id, or the id with its `_<8 hex>` venue suffix removed.
 //   2. Same normalised name (lower case, punctuation gone, "&" as "and"), same type and the same
 //      parent for sizes. Shown side by side; must be ticked.
-//   3. Only at one site: a site only extra, or Leave out (stays the venue's own, not managed).
+//   3. Only at one site: brought in as a product on at that one site, or Leave out (stays the
+//      venue's own, not managed).
 //      Archived local only rows default to Leave out.
 //   Clashes (two products with one name at one site) are listed and must be settled by hand.
 //
@@ -446,7 +447,9 @@ export function proposeImport(sites, opts = {}) {
         return gid ? { ...a, groupId: gid } : null;
       }).filter(Boolean),
       visibility: r.visibility ?? null, sold_alone: !!r.sold_alone, item_code: r.item_code ?? null,
-      site_only_location_id: g.kind === 'one' ? m.loc : null,
+      // Peter, 17 Oct 2026 (UI issue 6): no "site only extra". A product at one site is a normal
+      // product, switched on at that site and nowhere else (no row elsewhere: nothing written there).
+      site_only_location_id: null,
       archived: false, sort_order: r.sort_order ?? 0,
       family_base: familyOf(r),
       tax_by_type: null,
@@ -541,7 +544,7 @@ export function buildCentral(proposal, sites, decisions = {}, opts = {}) {
   }
   let products = proposal.products.filter((p) => !leave.has(p.id)).map((p) => ({ ...p }));
   let productSites = proposal.productSites.filter((ps) => !leave.has(ps.product_id)).map((ps) => ({ ...ps, kept: { ...(ps.kept || {}) } }));
-  // A name match the person did not tick: each site's row becomes its own site only extra.
+  // A name match the person did not tick: each site's row becomes its own product, on at that site.
   const reject = new Set((decisions.rejectName || []).filter((id) => proposal.review.name.some((n) => n.productId === id)));
   for (const pid of reject) {
     const base = products.find((p) => p.id === pid);
@@ -551,7 +554,7 @@ export function buildCentral(proposal, sites, decisions = {}, opts = {}) {
     productSites = productSites.filter((ps) => ps.product_id !== pid);
     for (const ps of rows) {
       const nid = idGen();
-      products.push({ ...base, id: nid, site_only_location_id: ps.location_id, family_base: ps.venue_item_id.replace(/_[0-9a-f]{8}$/i, '') });
+      products.push({ ...base, id: nid, site_only_location_id: null, family_base: ps.venue_item_id.replace(/_[0-9a-f]{8}$/i, '') });
       productSites.push({ ...ps, product_id: nid, price: null, kept: {} });
     }
   }

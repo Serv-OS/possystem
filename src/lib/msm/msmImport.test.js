@@ -26,12 +26,13 @@ test('a same name product outside any family is only proposed, and must be ticke
   const sites = importSites();
   const built = buildCentral(p, sites, { rejectName: [p.review.name[0].productId] }, { idGen: idGen('g') });
   const cookies = built.central.products.filter((x) => x.name === 'Cookie');
-  assert.equal(cookies.length, 2, 'not ticked: each site keeps its own as a site only extra');
-  assert.ok(cookies.every((c) => c.site_only_location_id));
+  assert.equal(cookies.length, 2, 'not ticked: each site keeps its own, a product on at that site only');
+  assert.ok(cookies.every((c) => !c.site_only_location_id), 'no "site only extra" (UI issue 6)');
+  for (const c of cookies) assert.equal(built.central.productSites.filter((s) => s.product_id === c.id).length, 1);
   assert.ok(built.check.ok);
 });
 
-test('only at one site: a site only extra, archived ones left out by default', () => {
+test('only at one site: a normal product on at that site only, archived ones left out by default', () => {
   const p = proposeImport(importSites(), { idGen: idGen() });
   const old = p.review.onlyOne.find((o) => o.name === 'Old special');
   const pie = p.review.onlyOne.find((o) => o.name === 'Pie');
@@ -39,7 +40,8 @@ test('only at one site: a site only extra, archived ones left out by default', (
   assert.equal(pie.defaultChoice, 'extra');
   const built = buildCentral(p, importSites(), {}, { idGen: idGen('g') });
   assert.equal(byName(built.central, 'Old special'), undefined, 'left out: stays the venue\'s own');
-  assert.equal(byName(built.central, 'Pie').site_only_location_id, C);
+  assert.equal(byName(built.central, 'Pie').site_only_location_id, null, 'no "site only extra" (UI issue 6)');
+  assert.deepEqual(built.central.productSites.filter((s) => s.product_id === byName(built.central, 'Pie').id).map((s) => s.location_id), [C], 'on at its one site, no row elsewhere');
   assert.ok(built.dropped.includes(old.productId));
   assert.match(reviewWords(p.review), /6 matched by family, 1 matched by name only/);
 });

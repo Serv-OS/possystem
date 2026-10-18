@@ -16,10 +16,21 @@
 //     msmData (compare and set, saveHealth on every write) and then reads the draft back from the
 //     database. Nothing shows as staged before the database said so (the vanishing categories
 //     lesson).
-//   * Tabs: Menu and Menu details here; Publish, Timeline, Sites and Price spread plug in through
-//     EXTRA_TABS (msmTabs.js). Export and Import of the spreadsheet open from the grid's toolbar.
+//   * Tabs: Menu and Option groups here; Review and publish, Scheduled and history, Sites and Price
+//     check plug in through EXTRA_TABS (msmTabs.js); Menu details sits behind its own link. Export
+//     and Import of the spreadsheet open from the grid's More menu.
+//
+// ROUND 2 (17 Oct 2026, the clarity pass; Peter after round 1: "rather confusing in places"):
+//   * A STATUS BAR under the tabs says, always, whether what you see is the live menu, a draft that
+//     is not on the tills yet, or a scheduled push you are only looking at (lib/msm/msmStatus.js).
+//   * One draft at a time: the "Your changes go into" picker shows only when there are two drafts
+//     or a scheduled push. Draft names carry the time.
+//   * Every note after an edit carries its way on: [Undo] for a single action, [Review and publish].
+//   * A first run guide, four steps, closed once and remembered (localStorage, try and catch).
+//   * The sites' own VAT rates and last week's sales are read once here and shared, for the VAT by
+//     order type pickers and the warnings that need a tick (msmRisk.js).
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase, isMock } from '../../../lib/supabase';
 import { msmApi } from '../../../lib/msm/msmApi';
 import { demoMsm } from '../../../lib/msm/msmDemo';
@@ -28,6 +39,10 @@ import { indexCentral, stagedIndex } from '../../../lib/msm/msmGrid';
 import { readAllRows } from '../../../../supabase/functions/_shared/venueMenuCore.js';
 import { isNotInstalled } from '../../../../supabase/functions/_shared/msmAccess.js';
 import { Btn, Pill, Notice, Count } from './msmUi';
+import { statusBar, draftTitle, GUIDE_STEPS, guideClosed, setGuideClosed, undoFor } from '../../../lib/msm/msmStatus';
+import { changeKey } from '../../../../supabase/functions/_shared/msmDiff.js';
+import MsmGroups from './MsmGroups';
+import { WORDS } from '../../../lib/msm/msmWords';
 import { ui } from './msmStyle';
 import MsmGrid from './MsmGrid';
 import MsmProductSheet from './MsmProductSheet';
@@ -44,7 +59,6 @@ const WORKING_KEY = (menuId) => `msm-working-set:${menuId}`;
 const readWorking = (menuId) => { try { return localStorage.getItem(WORKING_KEY(menuId)) || null; } catch { return null; } };
 const saveWorking = (menuId, id) => { try { if (id) localStorage.setItem(WORKING_KEY(menuId), id); else localStorage.removeItem(WORKING_KEY(menuId)); } catch { /* private mode */ } };
 
-const draftTitle = () => `Changes ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`;
 
 /** Site names (and clocks) for a list of venue ids, or for a whole company. */
 async function readSites(client, { ids = null, orgId = null }) {
@@ -75,13 +89,17 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
   const [busy, setBusy] = useState(0);
   const [note, setNote] = useState(null);             // { tone, text }
   const [tab, setTab] = useState('grid');
-  const [sheet, setSheet] = useState(null);           // { productId } | { create: true, siteOnly } | null
+  const [sheet, setSheet] = useState(null);           // { productId } | { create: true } | null
   const [tool, setTool] = useState(null);             // Change prices scope | null
   const [showChanges, setShowChanges] = useState(false);
   const [importing, setImporting] = useState(false);
   const [reload, setReload] = useState(0);
   const [channel, setChannel] = useState(null);
   const [csv, setCsv] = useState(null);               // 'export' | 'import' | null
+  const [groupPick, setGroupPick] = useState(null);   // the option group to open on the Option groups tab
+  const [guide, setGuide] = useState(false);          // the first run guide is showing
+  const [ratesByLoc, setRatesByLoc] = useState({});   // each site's own VAT rates (tax_rates rows)
+  const [sales, setSales] = useState(undefined);      // undefined reading, null not read, Map(loc|venueItemId -> sold in 7 days)
 
   // ── Load: the live menu, then everything under it ──────────────────────
   useEffect(() => {
@@ -128,6 +146,33 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
   useEffect(() => { if (phase === 'ready') readRows(workingId); }, [phase, workingId, readRows]);
   useEffect(() => { if (menu) saveWorking(menu.id, workingId); }, [menu, workingId]);
 
+  // Each site's own VAT rates (for VAT by order type and the live example), read once.
+  const siteKey = sites.map((x) => x.id).join('|');
+  useEffect(() => {
+    if (phase !== 'ready' || !client || !siteKey) return undefined;
+    let on = true;
+    readAllRows(() => client.from('tax_rates').select('*').in('location_id', siteKey.split('|')).order('location_id').order('id')).then((r) => {
+      if (!on || !r.rows) return;
+      const m = {};
+      for (const loc of siteKey.split('|')) m[loc] = [];
+      for (const row of r.rows) (m[row.location_id] = m[row.location_id] || []).push(row);
+      setRatesByLoc(m);
+    });
+    return () => { on = false; };
+  }, [phase, client, siteKey]);
+  // Last week's sales per site and product, for "Latte sold 214 times at Leeds" (one read).
+  useEffect(() => {
+    if (phase !== 'ready' || !menu?.id || !api.soldRecently) return undefined;
+    let on = true;
+    api.soldRecently(menu.id, 7).then((r) => {
+      if (!on) return;
+      setSales(r.ok ? new Map((r.rows || []).map((x) => [`${x.location_id}|${x.venue_item_id}`, Number(x.sold) || 0])) : null);
+    });
+    return () => { on = false; };
+  }, [phase, menu?.id, api]);
+  // The first run guide shows until this person closes it once.
+  useEffect(() => { if (phase === 'ready' && menu?.id) setGuide(!guideClosed(menu.id)); }, [phase, menu?.id]);
+
   const working = sets.find((s) => s.id === workingId) || null;
   const editable = canEdit && (!working || working.status === 'draft');
   const eff = useMemo(() => (live ? applyChanges(live, rows).central : null), [live, rows]);
@@ -135,6 +180,11 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
   const staged = useMemo(() => stagedIndex(rows), [rows]);
   const ctx = useMemo(() => ({ live, eff }), [live, eff]);
   const costs = useSiteCosts({ demo, sites });
+  // The latest draft rows and central state, for an Undo pressed after later edits.
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+  const effRef = useRef(eff);
+  effRef.current = eff;
 
   const refreshSets = useCallback(async () => {
     if (!menu) return;
@@ -143,18 +193,24 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
   }, [api, menu]);
 
   // ── Staging: the one way every edit lands ──────────────────────────────
-  const stage = useCallback(async (changes, { done } = {}) => {
+  const undoRef = useRef(null);
+  const stage = useCallback(async (changes, { done, undo = false, quiet = false } = {}) => {
     const list = (changes || []).filter(Boolean);
     if (!list.length) return { ok: true, done: 0 };
+    // Worked out before the write, from what the screen showed: what Undo puts back (undoRef is
+    // set below, after unstage, so an Undo pressed later uses the latest rows).
+    const back = undo ? undoFor(effRef.current, list) : null;
     if (!canEdit) { setNote({ tone: 'bad', text: 'You can look but not change the group menu. Ask ServOS to make you an editor.' }); return { ok: false }; }
     if (working && working.status !== 'draft') { setNote({ tone: 'warn', text: `"${working.title}" is ${working.status}. Unschedule it to change it, or pick a draft to work on.` }); return { ok: false }; }
     setBusy((n) => n + 1);
     try {
       let setId = workingId;
+      let started = null;
       if (!setId) {
-        const d = await api.createDraft(menu.id, draftTitle(), 'edit');
+        const d = await api.createDraft(menu.id, draftTitle(new Date()), 'edit');
         if (!d.ok) { setNote({ tone: 'bad', text: d.words }); return { ok: false }; }
         setId = d.data.id;
+        started = d.data.title;
         setSets((s) => [d.data, ...s]);
         setWorkingId(setId);
       }
@@ -164,13 +220,19 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
       else if (r.failed?.length) {
         if ((r.failed[0].words || '').includes('cannot change the group menu')) onAccessLost?.();
         setNote({ tone: 'bad', text: `${r.failed.length} change${r.failed.length === 1 ? '' : 's'} did not save: ${r.failed[0].words}` });
-      } else if (done) setNote({ tone: 'good', text: done });
+      } else if (done && !quiet) {
+        const actions = [];
+        if (back) actions.push({ label: 'Undo', onClick: () => undoRef.current?.(back) });
+        actions.push({ label: 'Review and publish', kind: 'primary', onClick: () => { setNote(null); setTab('publish'); } });
+        setNote({ tone: 'good', text: started ? `Started a draft called "${started}". ${done} Your changes collect in this draft until you publish.` : done, actions });
+      }
       return r;
     } finally {
       setBusy((n) => n - 1);
     }
   }, [api, canEdit, menu, onAccessLost, readRows, rows, working, workingId]);
 
+  // Undo of a single action: put each field back, and take out what that action created.
   const unstage = useCallback(async (row) => {
     setBusy((n) => n + 1);
     try {
@@ -180,6 +242,17 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
       return r;
     } finally { setBusy((n) => n - 1); }
   }, [api, readRows, workingId]);
+
+  undoRef.current = async (back) => {
+    setNote(null);
+    if (back.updates.length) await stage(back.updates, { quiet: true });
+    for (const key of back.unstageKeys) {
+      const row = (rowsRef.current || []).find((r) => changeKey(r) === key);
+      if (row) await unstage(row);
+    }
+    setNote({ tone: 'good', text: 'Taken back. The draft is as it was.' });
+  };
+  const closeGuide = () => { setGuide(false); if (menu?.id) setGuideClosed(menu.id, true); };
 
   // ── Screens ────────────────────────────────────────────────────────────
   if (phase === 'loading') return <div style={ui.page}><Header /><div style={ui.sub}>Loading the group menu…</div></div>;
@@ -216,51 +289,60 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
     );
   }
 
-  const tabs = [{ id: 'grid', label: 'Menu' }, ...EXTRA_TABS, { id: 'details', label: 'Menu details' }];
+  // "Products", not "Menu" (UI issue 12d): the next release adds a tab per menu beside it.
+  const tabs = [{ id: 'grid', label: WORDS.productsTab }, { id: 'groups', label: 'Option groups' }, ...EXTRA_TABS, { id: 'details', label: 'Menu details', settings: true }];
   const extra = EXTRA_TABS.find((t) => t.id === tab);
-  const shared = { tabIds: tabs.map((t) => t.id), api, client, menu, live, eff, ix, sites, sets, working, rows, staged, ctx, stage, unstage, canEdit, editable, costs, channel, setChannel, refreshSets, reload: () => setReload((n) => n + 1), setWorkingId, setNote, setTab, openProduct: (id) => setSheet({ productId: id }) };
+  const status = statusBar({ working, rows, when: runWords(working?.run_local) });
+  const shared = {
+    tabIds: tabs.map((t) => t.id), api, client, menu, live, eff, ix, sites, sets, working, rows, staged, ctx, stage, unstage, canEdit, editable, costs, channel, setChannel,
+    refreshSets, reload: () => setReload((n) => n + 1), setWorkingId, setNote, setTab, ratesByLoc, sales,
+    openProduct: (id) => setSheet({ productId: id }), openGroup: (id) => { setGroupPick(id); setTab('groups'); },
+  };
+  const showPicker = sets.filter((x) => x.status === 'draft').length >= 2 || sets.some((x) => x.status !== 'draft');
 
   return (
     <div style={{ ...ui.page, display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, boxSizing: 'border-box' }}>
-      <Header menu={menu} sites={sites}>
-        <WorkingOn sets={sets} working={working} canEdit={canEdit} api={api} menu={menu}
-          onPick={setWorkingId} onSets={setSets} onNote={setNote} />
-        <Btn kind={staged.count ? 'primary' : 'soft'} onClick={() => setShowChanges(true)} data-testid="msm-changes-button">
-          Changes{staged.count ? ` (${staged.count})` : ''}
+      <Header menu={menu} sites={sites} onGuide={() => setGuide(true)}>
+        {showPicker && (
+          <WorkingOn sets={sets} working={working} rows={rows} canEdit={canEdit} api={api} menu={menu}
+            onPick={setWorkingId} onSets={setSets} onNote={setNote} />
+        )}
+        <Btn kind={rows.length && working?.status === 'draft' ? 'primary' : 'soft'} onClick={() => setTab('publish')} data-testid="msm-changes-button">
+          Review and publish{rows.length && working?.status === 'draft' ? ` (${rows.length})` : ''}
         </Btn>
       </Header>
 
-      <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--bdr)', marginBottom: 14, overflowX: 'auto', flexShrink: 0 }}>
-        {tabs.map((t) => (
-          <button key={t.id} type="button" onClick={() => setTab(t.id)} style={{ padding: '9px 14px', fontSize: 14, cursor: 'pointer', background: 'transparent', border: 'none', fontFamily: 'inherit', whiteSpace: 'nowrap', flexShrink: 0,
+      <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--bdr)', marginBottom: 10, overflowX: 'auto', flexShrink: 0 }}>
+        {tabs.filter((t) => !t.settings).map((t) => (
+          <button key={t.id} type="button" onClick={() => { if (t.id !== tab) setNote(null); setTab(t.id); }} style={{ padding: '9px 14px', fontSize: 14, cursor: 'pointer', background: 'transparent', border: 'none', fontFamily: 'inherit', whiteSpace: 'nowrap', flexShrink: 0,
             color: tab === t.id ? 'var(--t1)' : 'var(--t3)', fontWeight: tab === t.id ? 700 : 500, borderBottom: `2.5px solid ${tab === t.id ? 'var(--acc)' : 'transparent'}`, marginBottom: -1 }}>{t.label}{t.badge && <Count n={t.badge(shared)} tone={t.badgeTone} />}</button>
         ))}
         <div style={{ flex: 1 }} />
-        {busy > 0 && <span style={{ ...ui.sub, alignSelf: 'center' }}>Saving…</span>}
+        {busy > 0 && <span style={{ ...ui.sub, alignSelf: 'center', marginRight: 8 }}>Saving…</span>}
+        <button type="button" onClick={() => { setNote(null); setTab('details'); }} title="The menu's name and each site's menu"
+          style={{ padding: '9px 12px', fontSize: 13, cursor: 'pointer', background: 'transparent', border: 'none', fontFamily: 'inherit', whiteSpace: 'nowrap', flexShrink: 0,
+            color: tab === 'details' ? 'var(--t1)' : 'var(--t3)', fontWeight: tab === 'details' ? 700 : 500, borderBottom: `2.5px solid ${tab === 'details' ? 'var(--acc)' : 'transparent'}`, marginBottom: -1 }}>⚙ Menu details</button>
       </div>
 
-      {note && <div style={{ marginBottom: 12 }}><Notice tone={note.tone} onClose={() => setNote(null)}>{note.text}</Notice></div>}
-      {working && working.status !== 'draft' && (
-        <div style={{ marginBottom: 12 }}><Notice>Viewing "{working.title}" as it will be once it runs ({working.status}). It cannot be edited while it is {working.status}.</Notice></div>
-      )}
+      <StatusBar status={status} canEdit={canEdit}
+        onChanges={() => setShowChanges(true)} onPublish={() => setTab('publish')} onBack={() => setWorkingId(null)} />
+
+      {note && <div style={{ marginBottom: 12, flexShrink: 0 }}><Notice tone={note.tone} onClose={() => setNote(null)} actions={note.actions}>{note.text}</Notice></div>}
+      {guide && (tab === 'grid' || tab === 'groups') && <Guide onClose={closeGuide} />}
 
       {tab === 'grid' && (
         <MsmGrid {...shared}
           onOpenProduct={(id) => setSheet({ productId: id })}
-          onAddProduct={(siteOnly) => setSheet({ create: true, siteOnly: siteOnly || null })}
+          onAddProduct={() => setSheet({ create: true })}
           onChangePrices={(scope) => setTool(scope || { all: true })}
-          extraTools={(
-            <>
-              <Btn small kind="soft" onClick={() => setCsv('export')}>Export</Btn>
-              {canEdit && <Btn small kind="soft" onClick={() => setCsv('import')}>Import prices</Btn>}
-            </>
-          )} />
+          onCsv={(kind) => setCsv(kind)} />
       )}
+      {tab === 'groups' && <MsmGroups {...shared} pick={groupPick} onPick={setGroupPick} onChangePrices={(scope) => setTool(scope)} />}
       {tab === 'details' && <MsmDetails {...shared} />}
       {extra && extra.render(shared)}
 
       {sheet && (
-        <MsmProductSheet key={sheet.productId || `new:${sheet.siteOnly || ''}`} {...shared} productId={sheet.productId || null} create={!!sheet.create} siteOnly={sheet.siteOnly || null}
+        <MsmProductSheet key={sheet.productId || 'new'} {...shared} productId={sheet.productId || null} create={!!sheet.create}
           onClose={() => setSheet(null)} onCreated={(id) => setSheet({ productId: id })} />
       )}
       {tool && <MsmChangePrices {...shared} initialScope={tool} onClose={() => setTool(null)} />}
@@ -270,7 +352,64 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
   );
 }
 
-function Header({ menu, sites, children }) {
+// "Mon 1 Dec 06:00" from a scheduled push's time on the site clock (a wall clock time, no zone).
+function runWords(runLocal) {
+  if (!runLocal) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(String(runLocal));
+  if (!m) return null;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]));
+  return `${d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })} ${m[4]}:${m[5]}`;
+}
+
+// Live menu, a draft, or a scheduled push being looked at: said in one strip, always (design 2, item 1).
+function StatusBar({ status, canEdit, onChanges, onPublish, onBack }) {
+  const tones = {
+    good: { bar: 'var(--acc)', bg: 'var(--acc-d)' },
+    warn: { bar: 'var(--amber, #F5A623)', bg: 'color-mix(in srgb, var(--amber, #F5A623) 11%, transparent)' },
+    info: { bar: 'var(--blu, #4A8CFF)', bg: 'var(--blu-d, var(--bg2))' },
+  };
+  const t = tones[status.tone] || tones.good;
+  return (
+    <div role="status" data-testid="msm-status-bar" data-state={status.state}
+      style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '8px 12px', borderRadius: 10, background: t.bg, borderLeft: `4px solid ${t.bar}`, marginBottom: 12, flexShrink: 0 }}>
+      <span style={{ width: 8, height: 8, borderRadius: 4, background: t.bar, flexShrink: 0 }} />
+      <span style={{ fontSize: 13, fontWeight: 800, whiteSpace: 'nowrap' }}>{status.title}</span>
+      <span style={{ fontSize: 13, color: 'var(--t2)', flex: '1 1 260px', minWidth: 0 }}>{status.words}</span>
+      {status.state === 'draft' && (
+        <>
+          <Btn small kind="soft" onClick={onChanges}>See the changes</Btn>
+          {canEdit && <Btn small kind="primary" disabled={!status.count} onClick={onPublish} title={status.count ? undefined : 'Make a change first'}>Review and publish</Btn>}
+        </>
+      )}
+      {status.state === 'scheduled' && <Btn small kind="primary" onClick={onBack}>Back to the live menu</Btn>}
+    </div>
+  );
+}
+
+// The first run guide (design 6.7): four steps, closed once and remembered.
+function Guide({ onClose }) {
+  return (
+    <div data-testid="msm-guide" style={{ ...ui.card, padding: '14px 16px', marginBottom: 12, flexShrink: 0, background: 'linear-gradient(135deg, var(--acc-d), var(--bg1) 70%)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+        <div style={{ fontSize: 15, fontWeight: 800, flex: 1 }}>How the group menu works</div>
+        <Btn small kind="primary" onClick={onClose}>Got it</Btn>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 10 }}>
+        {GUIDE_STEPS.map((st) => (
+          <div key={st.n} style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+            <span style={{ width: 24, height: 24, borderRadius: 12, background: 'var(--acc)', color: '#0b0c10', fontSize: 12.5, fontWeight: 800, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{st.n}</span>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 750 }}>{st.title}</div>
+              <div style={{ ...ui.sub, fontSize: 12 }}>{st.words}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Header({ menu, sites, children, onGuide = null }) {
   return (
     <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14, flexWrap: 'wrap', marginBottom: 14 }}>
       <div style={{ flex: 1, minWidth: 260 }}>
@@ -280,6 +419,7 @@ function Header({ menu, sites, children }) {
           <div style={ui.sub}>
             {sites?.length || 0} site{sites?.length === 1 ? '' : 's'}
             {menu.last_published_at ? ` · last published ${new Date(menu.last_published_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}${menu.last_published_by ? ` by ${menu.last_published_by}` : ''}` : ''}
+            {onGuide && <> · <Btn small kind="link" style={{ padding: 0 }} onClick={onGuide}>How this works</Btn></>}
           </div>
         )}
       </div>
@@ -288,8 +428,10 @@ function Header({ menu, sites, children }) {
   );
 }
 
-// "Working on": which draft the edits land in, or a scheduled set to view as it will be.
-function WorkingOn({ sets, working, canEdit, api, menu, onPick, onSets, onNote }) {
+// "Your changes go into": which draft the edits land in, or a scheduled push to look at as it
+// will be. Shown only when there is a choice (two drafts, or a scheduled push): one draft at a
+// time is the normal case (design 2, item 3).
+function WorkingOn({ sets, working, rows, canEdit, api, menu, onPick, onSets, onNote }) {
   const [naming, setNaming] = useState(null);   // { id|null, title }
   const drafts = sets.filter((s) => s.status === 'draft');
   const others = sets.filter((s) => s.status !== 'draft');
@@ -315,15 +457,15 @@ function WorkingOn({ sets, working, canEdit, api, menu, onPick, onSets, onNote }
   }
   return (
     <div style={{ ...ui.row }}>
-      <span style={{ ...ui.sub, whiteSpace: 'nowrap' }}>Working on</span>
-      <select aria-label="Working on" style={{ ...ui.input, width: 'auto', minWidth: 200, maxWidth: 280 }} value={working?.id || ''} onChange={(e) => { if (e.target.value === '__new') setNaming({ id: null, title: '' }); else onPick(e.target.value || null); }}>
-        <option value="">{drafts.length ? 'The menu as published' : 'New draft (on first change)'}</option>
-        {drafts.map((d) => <option key={d.id} value={d.id}>Draft: {d.title}</option>)}
-        {others.map((d) => <option key={d.id} value={d.id}>{d.status === 'scheduled' ? 'Scheduled' : 'Running'}: {d.title}</option>)}
-        {canEdit && <option value="__new">+ New draft…</option>}
+      <span style={{ ...ui.sub, whiteSpace: 'nowrap' }}>Your changes go into:</span>
+      <select aria-label="Your changes go into" style={{ ...ui.input, width: 'auto', minWidth: 220, maxWidth: 320 }} value={working?.id || ''} onChange={(e) => { if (e.target.value === '__new') setNaming({ id: null, title: '' }); else onPick(e.target.value || null); }}>
+        <option value="">Live menu (your next change starts a draft)</option>
+        {drafts.map((d) => <option key={d.id} value={d.id}>Draft: {d.title}{d.id === working?.id ? ` (${rows.length} change${rows.length === 1 ? '' : 's'})` : ''}</option>)}
+        {others.map((d) => <option key={d.id} value={d.id}>{d.status === 'scheduled' ? 'Scheduled' : 'Publishing'}: {d.title} (read only)</option>)}
+        {canEdit && <option value="__new">+ Start another draft…</option>}
       </select>
       {canEdit && working?.status === 'draft' && <Btn small kind="link" onClick={() => setNaming({ id: working.id, title: working.title })}>Rename</Btn>}
-      {working && <Pill tone={working.status === 'draft' ? 'acc' : 'blue'}>{working.status === 'draft' ? 'Draft' : working.status}</Pill>}
+      {working && <Pill tone={working.status === 'draft' ? 'warn' : 'blue'}>{working.status === 'draft' ? 'Draft' : 'Read only'}</Pill>}
     </div>
   );
 }

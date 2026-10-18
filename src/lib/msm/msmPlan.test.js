@@ -117,7 +117,7 @@ test('REVIEW BLOCKER 1: a new top level category nobody prints is blocking', () 
   const a = plan(central, ch, A, v[A]);
   const h = checkSite(a);
   assert.equal(h.ok, false);
-  assert.match(h.blocking[0].words, /not sent to any printer or kitchen screen/);
+  assert.match(h.blocking[0].words, /would print nowhere\. In Review and publish, pick which category it prints like/, "the words say the fix, offered on the same line in Review and publish");
   assert.equal(a.writes.routing.length, 0);
 });
 
