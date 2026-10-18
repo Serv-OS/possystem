@@ -38,13 +38,14 @@ import { groupTickSiteRows } from '../../../lib/msm/msmGroupView';
 import { sheetSaveBlocked } from '../../../lib/msm/msmPublishView';
 import { isOptionOnlyItem } from '../../../lib/menuRules';
 import { shownPriceTypes, shownTaxTypes, groupTypeFallback, siteTypeFallback, siteRateChoices, choiceToRate, rateToChoice, sitesMissingRate, vatExample, examplePrice } from '../../../lib/msm/msmOrderTypes';
-import { PRICE_TYPE_WORDS, PRICE_TYPE_HELP, TAX_TYPE_WORDS, TAX_TYPE_HELP, HELP, colWord, keptValueWords } from '../../../lib/msm/msmWords';
+import { PRICE_TYPE_WORDS, PRICE_TYPE_HELP, TAX_TYPE_WORDS, TAX_TYPE_HELP, HELP, colWord, keptValueWords, sizeVatWords } from '../../../lib/msm/msmWords';
 import { summarise } from '../../../lib/msm/msmSummary';
 import { riskChecks, allTicked } from '../../../lib/msm/msmRisk';
 import { marginFor } from '../../../lib/msm/msmMargin';
 import { ORDER_TYPE_TAX_KEYS, samePrice, sameValue, pctText, noPriceAt } from '../../../../supabase/functions/_shared/msmModel.js';
 import { Btn, Pill, Switch, Sheet, Field, Notice, Segmented, SummaryBox, ConfirmTicks } from './msmUi';
 import { ui, money } from './msmStyle';
+import { draftCount } from '../../../lib/msm/msmStatus';
 import { useConfirm } from './useConfirm';
 import MsmPhotoField from './MsmPhotoField';
 
@@ -266,7 +267,7 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
     const nm = plan.fields?.name || form.name;
     const done = create
       ? `${nm} is in the draft${optionOnly ? ' as a sub item (only an option)' : ` at ${plan.chosen} site${plan.chosen === 1 ? '' : 's'}`}. Publish now, or schedule the draft for the time it must be on the tills.`
-      : `${nm}: ${plan.changes.length} change${plan.changes.length === 1 ? '' : 's'} in the draft.`;
+      : `${nm}: in the draft (${draftCount(plan.changes, eff).words}).`;
     const res = await stage(plan.changes, { done });
     setSaving(false);
     if (!res?.ok) return;
@@ -362,7 +363,7 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
       footer={editable ? (
         <>
           <Btn kind="primary" disabled={sheetSaveBlocked({ saving, problems: create && problems.length > 0, words: plan.words, changes: plan.changes.length, create, ready, salesReading: sales === undefined })} onClick={save} data-testid="msm-product-save">
-            {saving ? 'Adding…' : create ? 'Add to draft' : plan.changes.length ? `Add ${plan.changes.length} change${plan.changes.length === 1 ? '' : 's'} to draft` : 'No changes yet'}
+            {saving ? 'Adding…' : create ? 'Add to draft' : plan.changes.length ? `Add to draft: ${draftCount(plan.changes, eff).words}` : 'No changes yet'}
           </Btn>
           <Btn onClick={onClose}>Cancel</Btn>
           <div style={{ flex: 1 }} />
@@ -585,7 +586,7 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
           <div style={{ ...ui.card, boxShadow: 'none', padding: 14, marginBottom: 14 }}>
             <div style={{ ...ui.h2, marginBottom: 4 }}>VAT by order type</div>
             <div style={{ ...ui.sub, fontSize: 12.5 }}>
-              A size uses the VAT by order type of {parentOfForm ? (parentOfForm.menu_name || parentOfForm.name) : 'its product'}.
+              {sizeVatWords({ size: true, product: parentOfForm ? (parentOfForm.menu_name || parentOfForm.name) : 'its product', taxByType: parentOfForm?.tax_by_type || null })}
               {parentOfForm && openProduct && <> <Btn small kind="link" onClick={() => openProduct(parentOfForm.id)}>Open {parentOfForm.menu_name || parentOfForm.name}</Btn></>}
             </div>
             {ex && <div data-testid="msm-vat-example" style={{ fontSize: 13, fontWeight: 650, marginTop: 6, color: ex.ok ? 'var(--t1)' : 'var(--red)' }}>{ex.words}</div>}
@@ -594,7 +595,7 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
         {!optionOnly && !isSizeForm && (
           <div style={{ ...ui.card, boxShadow: 'none', padding: 14, marginBottom: 14 }}>
             <div style={{ ...ui.h2, marginBottom: 4 }}>VAT by order type</div>
-            <div style={{ ...ui.sub, fontSize: 11.5, marginBottom: 10 }}>Most products use their VAT for everything. Set one only where it differs, for example cold food taken away.</div>
+            <div style={{ ...ui.sub, fontSize: 11.5, marginBottom: 10 }}>Most products use their VAT for everything. Set one only where it differs, for example cold food taken away.{sizesOfThis.length ? ` ${sizeVatWords({ size: false, sizes: sizesOfThis.length })}` : ''}</div>
             {taxTypes.map((k) => {
               const v = tbt[k] || null;
               const miss = v ? missingFor(v) : [];

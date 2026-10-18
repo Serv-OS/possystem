@@ -47,6 +47,7 @@ import { riskChecks, allTicked } from '../../../lib/msm/msmRisk';
 import { ui } from './msmStyle';
 import { useMsmHistory } from './useMsmHistory';
 import { useConfirm } from './useConfirm';
+import { draftCount, siteCount } from '../../../lib/msm/msmStatus';
 
 const LEADS = [
   { value: 0, label: 'Exactly at that time' },
@@ -111,7 +112,9 @@ export default function MsmPublish({ api, menu, live, eff, sites, sets, working,
       return { preview: null, previewError: `The preview could not be worked out: ${e.message}. Nothing was changed.` };
     }
   }, [isDraft, live, rows, venues.map, venues.key, reachKey, menu, siteNames]);
-  const headline = useMemo(() => (preview ? previewHeadline(preview) : null), [preview]);
+  // The one counting rule (msmStatus.draftCount): the same words as the status bar.
+  const counted = useMemo(() => draftCount(rows, eff || live), [rows, eff, live]);
+  const headline = useMemo(() => (preview ? previewHeadline(preview, counted) : null), [preview, counted]);
 
   // ── Changes made at the sites (design 3.3) ───────────────────────────────
   // What this person has settled for this draft (remembered in this browser, try and catch).
@@ -333,7 +336,7 @@ export default function MsmPublish({ api, menu, live, eff, sites, sets, working,
           {venues.failed.length > 0 && <div style={{ marginBottom: 10 }}><Notice tone="bad">Could not read {venues.failed.map((l) => siteNames[l] || 'one site').join(', ')}. Read the sites again before publishing.</Notice></div>}
           {previewError && <Notice tone="bad">{previewError}</Notice>}
           {!preview && !previewError && <div style={ui.sub}>Reading {reach.length} site{reach.length === 1 ? '' : 's'}…</div>}
-          {preview && <SiteTabs preview={preview} />}
+          {preview && <SiteTabs preview={preview} central={preview.after || eff || live} />}
         </div>
       </div>
 
@@ -430,7 +433,7 @@ export default function MsmPublish({ api, menu, live, eff, sites, sets, working,
 }
 
 // A tab per site: its counts, then every line of what changes there.
-function SiteTabs({ preview }) {
+function SiteTabs({ preview, central }) {
   const [pick, setPick] = useState(null);
   const sites = preview.sites;
   const cur = sites.find((s) => s.location_id === pick) || sites[0];
@@ -448,7 +451,7 @@ function SiteTabs({ preview }) {
               <div style={{ fontSize: 13, fontWeight: 750, display: 'flex', gap: 6, alignItems: 'center' }}>
                 <span style={{ width: 7, height: 7, borderRadius: 4, background: bad ? 'var(--red)' : (s.plan?.lines?.length ? 'var(--acc)' : 'var(--t4)') }} />{s.name}
               </div>
-              <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: 2 }}>{s.missing ? 'Could not read' : s.plan?.lines?.length ? `${s.plan.lines.length} change${s.plan.lines.length === 1 ? '' : 's'}` : 'Nothing changes'}</div>
+              <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: 2 }}>{s.missing ? 'Could not read' : s.plan?.lines?.length ? siteCount(s.plan.lines, central, s.location_id).words || 'Changes here' : 'Nothing changes'}</div>
             </button>
           );
         })}

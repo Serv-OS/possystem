@@ -57,8 +57,10 @@ test('the live example is worked out by the real VAT engine', () => {
 test('the status bar: live, a draft with its count, a scheduled push read only', () => {
   assert.equal(statusBar({}).state, 'live');
   assert.match(statusBar({}).words, /nothing reaches the tills until you publish/);
-  const d = statusBar({ working: { status: 'draft', title: 'Changes 17 Oct 14:05' }, rows: [1, 2, 3] });
-  assert.deepEqual([d.state, d.title, d.words], ['draft', 'Draft "Changes 17 Oct 14:05"', '3 changes, not on the tills yet.']);
+  // Builder B recheck: one counting rule (msmStatus.draftCount), products changed, not rows.
+  const rows = ['p1', 'p2', 'p3'].map((id) => ({ target: 'product', entity_id: id, location_id: null, op: 'update', after: { name: id } }));
+  const d = statusBar({ working: { status: 'draft', title: 'Changes 17 Oct 14:05' }, rows });
+  assert.deepEqual([d.state, d.title, d.words, d.count], ['draft', 'Draft "Changes 17 Oct 14:05"', '3 products changed, not on the tills yet.', 3]);
   const s = statusBar({ working: { status: 'scheduled', title: 'Christmas' }, when: 'Mon 1 Dec 06:00' });
   assert.equal(s.state, 'scheduled');
   assert.match(s.words, /As it will be on Mon 1 Dec 06:00/);

@@ -87,6 +87,21 @@ export const TAX_TYPE_HELP = Object.freeze({
   bar: 'Bar tabs.',
 });
 
+/**
+ * The product sheet's VAT by order type line for a size, or for a product that has sizes (Builder
+ * B recheck, item 7: a size never holds its own; publish writes its product's to every size).
+ *   size      true on a size's sheet, false on its product's
+ *   product   the product's name (on a size's sheet) ; sizes = how many sizes it has
+ *   taxByType the product's VAT by order type ({ takeaway: { name, percent } ...})
+ */
+export function sizeVatWords({ size = true, product = 'its product', sizes = 0, taxByType = null } = {}) {
+  const set = Object.keys(TAX_TYPE_WORDS).filter((k) => taxByType && taxByType[k]);
+  const list = set.map((k) => `${TAX_TYPE_WORDS[k]} ${taxByType[k].name || 'VAT'} (${pctText(taxByType[k].percent)})`).join(', ');
+  if (!size) return sizes > 0 ? `Its ${sizes === 1 ? 'size uses' : `${sizes} sizes use`} these too.` : '';
+  if (!set.length) return `This size uses its VAT for every order type, as ${product} does. To set VAT by order type, set it on ${product}: its sizes follow it.`;
+  return `This size follows ${product}: ${list}. To change it, change it on ${product}.`;
+}
+
 // A site's own column names in words (one map for the product sheet, the preview and the grid).
 export const COL_WORDS = Object.freeze({
   cat: 'category', cats: 'extra categories', image: 'photo', name: 'name', menu_name: 'menu name', receipt_name: 'receipt name',

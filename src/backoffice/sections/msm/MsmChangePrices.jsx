@@ -31,6 +31,7 @@ import { normName } from '../../../../supabase/functions/_shared/msmModel.js';
 import { groupHints } from '../../../../supabase/functions/_shared/msmSites.js';
 import { Btn, Modal, Segmented, SiteChecklist, Field, Notice, Pill, WindowedList, SummaryBox, ConfirmTicks } from './msmUi';
 import { ui, money } from './msmStyle';
+import { draftCount } from '../../../lib/msm/msmStatus';
 
 const ROW_H = 36;
 
@@ -192,7 +193,7 @@ export default function MsmChangePrices({ api, menu, live, eff, ix, sites, stage
             {summary ? priceChangeWords(summary) : 'Fill in the change to see every price before and after.'}
           </div>
           <Btn onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" disabled={!editable || saving || !changes.length || !ready || sales === undefined} onClick={apply} title={!ready ? 'Tick each warning first' : undefined}>{saving ? 'Adding…' : `Add ${summary?.prices || 0} price change${summary?.prices === 1 ? '' : 's'} to draft`}</Btn>
+          <Btn kind="primary" disabled={!editable || saving || !changes.length || !ready || sales === undefined} onClick={apply} title={!ready ? 'Tick each warning first' : undefined}>{saving ? 'Adding…' : (staging.length ? `Add to draft: ${draftCount(staging, eff).words}` : 'Nothing to add')}</Btn>
         </>
       )}>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16, marginBottom: 14 }}>

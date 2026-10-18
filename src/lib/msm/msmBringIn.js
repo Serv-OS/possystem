@@ -449,6 +449,90 @@ export function bringInChanges(central, locationId, raw, venueItemId, opts = {})
   return { ok: true, changes: ordered, words, problems: [], productId: mainId };
 }
 
+/**
+ * JOIN A SITE THAT ALREADY SELLS THE GROUP'S PRODUCTS (Builder B recheck, item 6). Add a site is for
+ * a site that sells none of them (it writes every product there); Bring in only worked for a site
+ * already in the group menu. A site of the company that sells the group's products as its own
+ * (the same shared products, made by the sharing engine) had no way in. Now it joins in ONE draft:
+ * the site row, writing into the site's own menu, and each of its products that IS one of the group
+ * menu's (the same family) linked to it with Bring in, so everything it does differently stays its
+ * own. The whole set is planned once more and must write NOTHING at the site, or nothing is staged.
+ * Products it sells that are not the group's stay its own (Bring them in from the Sites tab later);
+ * the group's products it does not sell stay off there (turn them on from Products when wanted).
+ *   live         the group menu as published
+ *   opts         { locationId, venueMenuId (one of the site's menus), raw (readVenueRaw), idGen, siteName, orgId }
+ * Returns { ok, changes, linked: [names], own: [names], notSold, words: [sentences], problems: [words] }.
+ */
+export function planJoinSite(live, opts = {}) {
+  const steps = joinSteps(live, opts);
+  for (;;) { const n = steps.next(); if (n.done) return n.value; }
+}
+
+/**
+ * The same, a product at a time, so a screen can show its progress and stay responsive (a site with
+ * 280 of the group's products takes some seconds: each link is proven to write nothing).
+ *   onProgress(done, total)   after each product
+ *   shouldStop()              true stops it (the sheet was closed): resolves null
+ */
+export async function planJoinSiteAsync(live, opts = {}, { onProgress = () => {}, shouldStop = () => false, pause = () => new Promise((r) => setTimeout(r, 0)) } = {}) {
+  const steps = joinSteps(live, opts);
+  for (;;) {
+    const n = steps.next();
+    if (n.done) return n.value;
+    if (shouldStop()) return null;
+    try { onProgress(n.value.done, n.value.total); } catch { /* a progress line is never a reason to stop */ }
+    await pause();
+  }
+}
+
+/** Products of the site that are the group's own (the same family): the ones a join links. */
+export function joinableProducts(live, locationId, raw, venueMenuId) {
+  if (!locationId || !raw || !venueMenuId) return [];
+  const C = applyChanges(live, [{ target: 'menu_site', entity_id: live?.menu?.id || null, location_id: locationId, op: 'create', after: { venue_menu_id: venueMenuId } }]).central;
+  return ownProducts(C, locationId, raw).filter((o) => !o.archived && o.match && o.match.how === 'family');
+}
+
+function* joinSteps(live, opts) {
+  const loc = opts.locationId;
+  const raw = opts.raw;
+  const siteName = opts.siteName || 'This site';
+  const fail = (w) => ({ ok: false, changes: [], linked: [], own: [], notSold: 0, words: [], problems: [w] });
+  if (!loc || !raw) return fail('Pick a site.');
+  if (listOf(live?.sites).some((s) => s.location_id === loc)) return fail(`${siteName} is already in the group menu.`);
+  const menus = listOf(raw.menus).filter((m) => m && m.is_active !== false);
+  if (!opts.venueMenuId || !menus.some((m) => m.id === opts.venueMenuId)) return fail(`Pick the menu ${siteName}'s products are in.`);
+  let changes = [{ target: 'menu_site', entity_id: live?.menu?.id || null, location_id: loc, op: 'create', after: { venue_menu_id: opts.venueMenuId } }];
+  let C = applyChanges(live, changes).central;
+  const linked = [], own = [], problems = [];
+  const list = ownProducts(C, loc, raw).filter((o) => !o.archived);
+  let done = 0;
+  for (const o of list) {
+    done++;
+    if (!o.match || o.match.how !== 'family') own.push(o.name);
+    else {
+      const r = bringInChanges(C, loc, raw, o.id, { linkTo: o.match.productId, idGen: opts.idGen, siteName });
+      if (!r.ok) { own.push(o.name); problems.push(...r.problems); } else {
+        changes = [...changes, ...r.changes];
+        C = applyChanges(C, r.changes).central;
+        linked.push(o.name);
+      }
+    }
+    yield { done, total: list.length };
+  }
+  if (!linked.length) return { ...fail(`${siteName} sells none of the group menu's products as its own copy. Use Add a site with a new menu instead.`), own };
+  // The whole set, planned as the server will: it must write nothing at the site.
+  const plan = planSite({ central: C, touched: touchedFromChanges(changes), locationId: loc, orgId: opts.orgId || null, venue: raw });
+  if (plan.lines.length) return { ...fail(`Joining would change ${plan.lines.length} thing${plan.lines.length === 1 ? '' : 's'} at ${siteName}, so nothing was put in a draft. Ask ServOS to look at it.`), own };
+  const here = new Set(listOf(C.productSites).filter((ps) => ps.location_id === loc).map((ps) => ps.product_id));
+  const notSold = listOf(C.products).filter((p) => !p.archived && !p.parent_product_id && !optionOnly(p) && !here.has(p.id)).length;
+  const words = [
+    `${siteName} joins the group menu with the ${linked.length} product${linked.length === 1 ? '' : 's'} of the group's it already sells, writing into its menu as it is. Nothing changes at ${siteName} when you publish: what it does differently stays its own.`,
+  ];
+  if (own.length) words.push(`${own.length} product${own.length === 1 ? '' : 's'} it sells ${own.length === 1 ? 'is' : 'are'} not the group's (like ${own.slice(0, 2).join(' and ')}). ${own.length === 1 ? 'It stays' : 'They stay'} its own: bring ${own.length === 1 ? 'it' : 'them'} in from the Sites tab after publishing, if you want.`);
+  if (notSold) words.push(`${notSold} of the group's products ${notSold === 1 ? 'is' : 'are'} not sold there and stay off. Turn them on there from Products when you want.`);
+  return { ok: true, changes, linked, own, notSold, words, problems };
+}
+
 /** "Leeds has 17 products of its own, not in the group menu." */
 export function ownCountWords(n, siteName) {
   if (!n) return `Every product ${siteName} sells is in the group menu.`;

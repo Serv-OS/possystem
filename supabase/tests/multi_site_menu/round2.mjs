@@ -27,15 +27,22 @@
 //     publish never gives it a price nobody set there, a price set there lands, Undo writes no price
 //     again); a turn on over a site's own product is refused at once in words; a takeaway Zero
 //     Rate on a product with sizes lands on the product and every size, and Undo puts them back.
+//   * Builder B recheck: a product turned on at a site and off again before publishing leaves no
+//     row in the draft (its option rows go too), and Undo stages the turn on again (the guard takes
+//     it, and it publishes); a site of the company that already sells the group's products joins
+//     with them as they are (Add a site's "Join with what it sells now"): the guard takes the set
+//     and publishing writes nothing there.
 
 import { spawn, spawnSync } from 'node:child_process';
 import { planSite, touchedFromChanges } from '../../functions/_shared/msmPlan.js';
 import { refreshGroupsPayload, touchEverything, proposeImport, buildCentral, importPayload } from '../../functions/_shared/msmImport.js';
 import { newOptionId, longOptionId, newItemId } from '../../functions/_shared/msmModel.js';
 import { activeMany, siteActiveChange, sitePriceChange } from '../../../src/lib/msm/msmEdit.js';
+import { undoFor } from '../../../src/lib/msm/msmStatus.js';
+import { applyChanges } from '../../functions/_shared/msmDiff.js';
 import { mapModifierGroupRow } from '../../functions/_shared/venueMenuCore.js';
 import { MIRROR_CASES, MIRROR_RATE_ID, MIRROR_OTHER_RATE_ID } from '../../../src/lib/msm/msmMirrorFixtures.js';
-import { ownProducts, bringInChanges } from '../../../src/lib/msm/msmBringIn.js';
+import { ownProducts, bringInChanges, planJoinSite } from '../../../src/lib/msm/msmBringIn.js';
 import { randomUUID } from 'node:crypto';
 
 export async function run(h) {
@@ -660,5 +667,80 @@ export async function run(h) {
     const nr = runSite(VNU, LA1, { writesOverride: { items: { update: [{ id: sizeId, set: {}, tax_overrides: { set: { 'dine-in': null }, remove: [] } }] } } }).res;
     expect('RECHECK: the write path takes an explicit null a size copies from its product', nr.code === 0 && one(`select tax_overrides ? 'dine-in' and tax_overrides->'dine-in' = 'null'::jsonb from menu_items where id = '${sizeId}'`) === 't', nr.err);
     settle();
+  }
+
+  // ── Builder B recheck: on and off again leaves nothing; Undo restages; a site joins ──
+  {
+    settle();
+    const CC = central();
+    const toDb = (set, c) => stage({ set, target: c.target, entity: c.entity_id, loc: c.location_id, op: c.op, after: c.after, before: c.before });
+    const held = (set) => json(`select coalesce(json_agg(to_json(x) order by x.target, x.entity_id), '[]') from msm_changes x where change_set_id = '${set}'`);
+    // Hot chocolate (brought in at A1 above, with its Toppings group that A2 does not have).
+    const hotChoc = CC.products.find((p) => p.name === 'Hot chocolate');
+    const on = siteActiveChange({ live: CC, eff: CC }, hotChoc.id, LA2, true);
+    const onRows = [on.change, ...(on.extra || [])];
+    expect('BUILDER B: Hot chocolate turned on at A2 brings its two option rows', onRows.filter((c) => c.target === 'modifier_option_site' && c.op === 'create').length === 2, JSON.stringify(onRows));
+    const OO = mkSet('On and off again');
+    let bad = onRows.map((c) => toDb(OO, c)).filter((x) => x.code !== 0);
+    expect('BUILDER B: the database takes the turn on', bad.length === 0, bad.map((x) => x.err).join(' | '));
+    const was = held(OO);
+    const eff = applyChanges(CC, was).central;
+    const off = siteActiveChange({ live: CC, eff }, hotChoc.id, LA2, false);
+    const offRows = [off.change, ...(off.extra || [])];
+    expect('BUILDER B: off again takes out the product row and both option rows', offRows.filter((c) => c.dropCreate).length === 3, JSON.stringify(offRows));
+    // The screens delete the draft's create rows (msmDiff.mergeStaged, dropCreate).
+    for (const c of offRows.filter((x) => x.dropCreate)) q(`delete from msm_changes where change_set_id = '${OO}' and target = '${c.target}' and entity_id = '${c.entity_id}' and location_id = '${c.location_id}'`, as(U.E));
+    expect('BUILDER B: nothing is left in the draft', one(`select count(*) from msm_changes where change_set_id = '${OO}'`) === '0');
+    const back = undoFor(eff, offRows, was);
+    bad = [...back.restage, ...back.updates].map((c) => toDb(OO, c)).filter((x) => x.code !== 0);
+    expect('BUILDER B: Undo stages the turn on again and the guard takes it', bad.length === 0 && canonJ(held(OO).map((x) => [x.target, x.entity_id, x.op, x.after])) === canonJ(was.map((x) => [x.target, x.entity_id, x.op, x.after])), bad.map((x) => x.err).join(' | '));
+    const VO = publish(OO);
+    const ro = runSite(VO, LA2);
+    expect('BUILDER B: and it publishes: Hot chocolate and its Toppings at A2', ro.res.code === 0 && ro.health.ok && ro.plan.writes.items.insert.length === 1 && ro.plan.writes.groups.insert.length === 1
+      && (ro.plan.writes.groups.insert[0].options || []).length === 2, (ro.res.err || '') + JSON.stringify(ro.health.blocking));
+    settle();
+
+    // A third site of company A that already sells the group's Latte as its own copy (the sharing
+    // engine's id) and a Flapjack of its own: Add a site was a dead end for it. It joins.
+    const LA3 = '11111111-0000-4000-8000-0000000a0003';
+    const VAT_A3 = 'c0000000-0000-4000-8000-0000000000a3';
+    const M3 = `menu-a3_${sfx(LA3)}`, CAT3 = `cat-hot_${sfx(LA3)}`;
+    one(`insert into locations (id, org_id, name, timezone) values ('${LA3}', '${ORG_A}', 'Site A3', 'Europe/London')`);
+    one(`insert into tax_rates (id, location_id, name, rate) values ('${VAT_A3}', '${LA3}', 'VAT', 20)`);
+    one(`insert into menus (id, location_id, name, is_default) values ('${M3}', '${LA3}', 'Main', true)`);
+    one(`insert into menu_categories (id, location_id, menu_id, label, sort_order) values ('${CAT3}', '${LA3}', '${M3}', 'Hot drinks', 1)`);
+    one(`insert into menu_category_links (menu_id, category_id) values ('${M3}', '${CAT3}')`);
+    one(`insert into menu_items (id, location_id, name, menu_name, cat, pricing, tax_rate_id, master_id, scope, sold_alone) values ('m-latte_${sfx(LA3)}', '${LA3}', 'Latte', 'Latte', '${CAT3}', '{"base": 3.40}', '${VAT_A3}', 'm-latte', 'shared', true)`);
+    one(`insert into menu_items (id, location_id, name, menu_name, cat, pricing, tax_rate_id, scope, sold_alone) values ('m-flap-a3', '${LA3}', 'Flapjack', 'Flapjack', '${CAT3}', '{"base": 2.10}', '${VAT_A3}', 'local', true)`);
+    const C3 = central();
+    const raw3 = readRaw(LA3);
+    const j = planJoinSite(C3, { locationId: LA3, venueMenuId: M3, raw: raw3, idGen: randomUUID, siteName: 'A3', orgId: ORG_A });
+    expect('BUILDER B JOIN: A3 joins with the group\'s Latte it sells (its Flapjack stays its own)', j.ok && j.linked.join() === 'Latte' && j.own.join() === 'Flapjack', j.problems.join(' | ') + JSON.stringify(j));
+    const JS = mkSet('Add A3');
+    bad = j.changes.map((c) => toDb(JS, c)).filter((x) => x.code !== 0);
+    expect('BUILDER B JOIN: the database takes the site row and the link', bad.length === 0, bad.map((x) => x.err).join(' | '));
+    const latte3 = () => json(`select json_build_object('pricing', pricing, 'name', name, 'cat', cat, 'tax_rate_id', tax_rate_id, 'groups', assigned_modifier_groups, 'archived', archived) from menu_items where id = 'm-latte_${sfx(LA3)}'`);
+    const latteBefore = latte3();
+    const pushesBefore = one(`select count(*) from config_pushes where location_id = '${LA3}'`);
+    const VJ = publish(JS);
+    const rj = runSite(VJ, LA3);
+    expect('BUILDER B JOIN: publishing writes nothing at A3 and passes its health check', rj.res.code === 0 && rj.health.ok && rj.plan.lines.length === 0, JSON.stringify(rj.plan.lines.slice(0, 3)) + (rj.res.err || '') + JSON.stringify(rj.health.blocking));
+    expect('BUILDER B JOIN: A3 is in the group menu, writing into its own menu, its Latte managed by its own id',
+      one(`select venue_menu_id from msm_menu_sites where menu_id = '${menuId}' and location_id = '${LA3}'`) === M3
+        && one(`select count(*) from msm_product_sites where location_id = '${LA3}' and venue_item_id = 'm-latte_${sfx(LA3)}'`) === '1'
+        && one(`select count(*) from msm_product_sites where location_id = '${LA3}'`) === '1');
+    expect('BUILDER B JOIN: A3\'s Latte and Flapjack exactly as they were, no push', canonJ(latte3()) === canonJ(latteBefore)
+      && one(`select pricing->>'base' from menu_items where id = 'm-flap-a3'`) === '2.10' && one(`select count(*) from config_pushes where location_id = '${LA3}'`) === pushesBefore, JSON.stringify([latte3(), latteBefore]));
+    settle();
+    // A plain Add a site over a site's own products still never takes them over.
+    const LA4 = '11111111-0000-4000-8000-0000000a0004';
+    one(`insert into locations (id, org_id, name, timezone) values ('${LA4}', '${ORG_A}', 'Site A4', 'Europe/London')`);
+    one(`insert into menus (id, location_id, name, is_default) values ('menu-a4', '${LA4}', 'Main', true)`);
+    one(`insert into menu_items (id, location_id, name, menu_name, cat, pricing, master_id, scope, sold_alone) values ('m-latte_${sfx(LA4)}', '${LA4}', 'Latte', 'Latte', null, '{"base": 3.50}', 'm-latte', 'shared', true)`);
+    const C4 = central();
+    const plainAdd = [{ target: 'menu_site', entity_id: menuId, location_id: LA4, op: 'create', after: { venue_menu_id: 'menu-a4' } },
+      { target: 'product_site', entity_id: C4.products.find((p) => p.name === 'Latte').id, location_id: LA4, op: 'create', after: { venue_item_id: `m-latte_${sfx(LA4)}`, active: true, price: null, channel_prices: null } }];
+    const p4 = planSite({ central: applyChanges(C4, plainAdd).central, touched: touchedFromChanges(plainAdd), locationId: LA4, orgId: ORG_A, venue: readRaw(LA4) });
+    expect('BUILDER B JOIN: a plain Add a site over the site\'s own Latte is still blocked, in words', p4.problems.some((x) => x.code === 'site_has_product' && /Join with what it sells now/.test(x.words)), JSON.stringify(p4.problems));
   }
 }

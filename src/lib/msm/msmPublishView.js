@@ -350,15 +350,17 @@ export function csvFileName(menuName, nowMs = Date.now()) {
  *   preview   msmDiff.previewSet(...) result
  * Returns { blocking, warnings, sitesBlocked: [names], sitesOk, sitesChanging, words }.
  */
-export function previewHeadline(preview) {
+export function previewHeadline(preview, counted = null) {
   const sites = listOf(preview?.sites);
   const blocking = listOf(preview?.central?.blocking).length + sites.reduce((n, s) => n + listOf(s.health?.blocking).length, 0);
   const warnings = listOf(preview?.central?.warnings).length + sites.reduce((n, s) => n + listOf(s.health?.warnings).length, 0);
   const sitesBlocked = sites.filter((s) => s.missing || listOf(s.health?.blocking).length).map((s) => s.name);
   const sitesChanging = sites.filter((s) => (s.plan?.lines?.length || 0) > 0).length;
   const total = preview?.total || 0;
+  // The one counting rule (msmStatus.draftCount, Builder B recheck): what a manager changed, never
+  // the number of columns written at the sites.
   const words = total
-    ? `${plural(total, 'change')} at ${plural(sitesChanging, 'site')}`
+    ? (counted?.words ? `${counted.words} at ${plural(sitesChanging, 'site')}` : `Changes at ${plural(sitesChanging, 'site')}`)
     : 'Publishing this changes nothing at any site';
   return { blocking, warnings, sitesBlocked, sitesOk: sites.length - sitesBlocked.length, sitesChanging, words };
 }

@@ -39,7 +39,7 @@ import { indexCentral, stagedIndex } from '../../../lib/msm/msmGrid';
 import { readAllRows } from '../../../../supabase/functions/_shared/venueMenuCore.js';
 import { isNotInstalled } from '../../../../supabase/functions/_shared/msmAccess.js';
 import { Btn, Pill, Notice, Count } from './msmUi';
-import { statusBar, draftTitle, GUIDE_STEPS, guideClosed, setGuideClosed, undoFor, draftToStageInto, undoTarget } from '../../../lib/msm/msmStatus';
+import { statusBar, draftTitle, GUIDE_STEPS, guideClosed, setGuideClosed, undoFor, draftToStageInto, undoTarget, draftCount } from '../../../lib/msm/msmStatus';
 import { changeKey } from '../../../../supabase/functions/_shared/msmDiff.js';
 import MsmGroups from './MsmGroups';
 import { WORDS } from '../../../lib/msm/msmWords';
@@ -216,7 +216,7 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
     if (!list.length) return { ok: true, done: 0 };
     // Worked out before the write, from what the screen showed: what Undo puts back (undoRef is
     // set below, after unstage, so an Undo pressed later uses the latest rows).
-    const back = undo ? undoFor(effRef.current, list) : null;
+    const back = undo ? undoFor(effRef.current, list, rowsRef.current) : null;
     if (!canEdit) { setNote({ tone: 'bad', text: 'You can look but not change the group menu. Ask ServOS to make you an editor.' }); return { ok: false }; }
     if (working && working.status !== 'draft') { setNote({ tone: 'warn', text: `"${working.title}" is ${working.status}. Unschedule it to change it, or pick a draft to work on.` }); return { ok: false }; }
     setBusy((n) => n + 1);
@@ -273,7 +273,9 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
     const can = undoTarget({ sets: setsRef.current, workingId: workingIdRef.current, noteSetId });
     if (!can.ok) { setNote({ tone: 'warn', text: can.words }); return; }
     setNote(null);
-    if (back.updates.length) await stage(back.updates, { quiet: true });
+    // A turn on taken out of the draft again comes back as it was (its create rows staged again).
+    const again = [...(back.restage || []), ...back.updates];
+    if (again.length) await stage(again, { quiet: true });
     for (const key of back.unstageKeys) {
       const row = (rowsRef.current || []).find((r) => changeKey(r) === key);
       if (row) await unstage(row);
@@ -321,7 +323,9 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
   const tabs = [{ id: 'grid', label: WORDS.productsTab }, { id: 'groups', label: 'Option groups' }, ...EXTRA_TABS, { id: 'details', label: 'Menu details', settings: true }];
   const extra = EXTRA_TABS.find((t) => t.id === tab);
   const waitingDraft = !working ? sets.find((d) => d.status === 'draft') || null : null;
-  const status = statusBar({ working, rows, when: runWords(working?.run_local), draft: waitingDraft });
+  const status = statusBar({ working, rows, when: runWords(working?.run_local), draft: waitingDraft, central: eff });
+  // The one counting rule (msmStatus.draftCount), the same number and words on every screen.
+  const counted = draftCount(rows, eff);
   const shared = {
     tabIds: tabs.map((t) => t.id), api, client, menu, live, eff, ix, sites, sets, working, rows, staged, ctx, stage, unstage, canEdit, editable, costs, channel, setChannel,
     refreshSets, reload: () => setReload((n) => n + 1), setWorkingId, setNote, setTab, ratesByLoc, sales,
@@ -333,11 +337,12 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
     <div style={{ ...ui.page, display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, boxSizing: 'border-box' }}>
       <Header menu={menu} sites={sites} onGuide={() => setGuide(true)}>
         {showPicker && (
-          <WorkingOn sets={sets} working={working} rows={rows} canEdit={canEdit} api={api} menu={menu}
+          <WorkingOn sets={sets} working={working} rows={rows} counted={counted} canEdit={canEdit} api={api} menu={menu}
             onPick={setWorkingId} onSets={setSets} onNote={setNote} />
         )}
-        <Btn kind={rows.length && working?.status === 'draft' ? 'primary' : 'soft'} onClick={() => { setNote(null); setTab('publish'); }} data-testid="msm-changes-button">
-          Review and publish{rows.length && working?.status === 'draft' ? ` (${rows.length})` : ''}
+        <Btn kind={counted.total && working?.status === 'draft' ? 'primary' : 'soft'} onClick={() => { setNote(null); setTab('publish'); }} data-testid="msm-changes-button"
+          title={counted.total && working?.status === 'draft' ? counted.words : undefined}>
+          Review and publish{counted.total && working?.status === 'draft' ? ` (${counted.total})` : ''}
         </Btn>
       </Header>
 
@@ -464,7 +469,7 @@ function Header({ menu, sites, children, onGuide = null }) {
 // "Your changes go into": which draft the edits land in, or a scheduled push to look at as it
 // will be. Shown only when there is a choice (two drafts, or a scheduled push): one draft at a
 // time is the normal case (design 2, item 3).
-function WorkingOn({ sets, working, rows, canEdit, api, menu, onPick, onSets, onNote }) {
+function WorkingOn({ sets, working, counted, canEdit, api, menu, onPick, onSets, onNote }) {
   const [naming, setNaming] = useState(null);   // { id|null, title }
   const drafts = sets.filter((s) => s.status === 'draft');
   const others = sets.filter((s) => s.status !== 'draft');
@@ -493,7 +498,7 @@ function WorkingOn({ sets, working, rows, canEdit, api, menu, onPick, onSets, on
       <span style={{ ...ui.sub, whiteSpace: 'nowrap' }}>Your changes go into:</span>
       <select aria-label="Your changes go into" style={{ ...ui.input, width: 'auto', minWidth: 220, maxWidth: 320 }} value={working?.id || ''} onChange={(e) => { if (e.target.value === '__new') setNaming({ id: null, title: '' }); else onPick(e.target.value || null); }}>
         <option value="">Live menu (your next change starts a draft)</option>
-        {drafts.map((d) => <option key={d.id} value={d.id}>Draft: {d.title}{d.id === working?.id ? ` (${rows.length} change${rows.length === 1 ? '' : 's'})` : ''}</option>)}
+        {drafts.map((d) => <option key={d.id} value={d.id}>Draft: {d.title}{d.id === working?.id ? ` (${counted?.total ? counted.words : 'empty'})` : ''}</option>)}
         {others.map((d) => <option key={d.id} value={d.id}>{d.status === 'scheduled' ? 'Scheduled' : 'Publishing'}: {d.title} (read only)</option>)}
         {canEdit && <option value="__new">+ Start another draft…</option>}
       </select>

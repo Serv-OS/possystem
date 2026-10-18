@@ -174,7 +174,10 @@ test('preview headline counts blocking problems and warnings across sites', () =
     { name: 'B', plan: { lines: [1, 2] }, health: { blocking: [{}], warnings: [{}] } },
     { name: 'C', plan: { lines: [] }, health: { blocking: [], warnings: [] } },
   ] });
-  assert.deepEqual([h.blocking, h.warnings, h.sitesBlocked, h.sitesChanging, h.words], [1, 2, ['B'], 2, '5 changes at 2 sites']);
+  assert.deepEqual([h.blocking, h.warnings, h.sitesBlocked, h.sitesChanging, h.words], [1, 2, ['B'], 2, 'Changes at 2 sites']);
+  // Builder B recheck: the same counting rule as the status bar, never the columns written.
+  const pv = { total: 5, central: { blocking: [], warnings: [] }, sites: [{ name: 'A', plan: { lines: [1, 2, 3] }, health: { blocking: [], warnings: [] } }, { name: 'B', plan: { lines: [1, 2] }, health: { blocking: [], warnings: [] } }] };
+  assert.equal(previewHeadline(pv, { words: '3 products changed', total: 3 }).words, '3 products changed at 2 sites');
   assert.equal(previewHeadline({ total: 0, sites: [] }).words, 'Publishing this changes nothing at any site');
 });
 

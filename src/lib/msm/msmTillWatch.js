@@ -191,6 +191,76 @@ export function kioskMayRefresh({ pending, screen, cartCount }) {
   return !!pending && screen === 'attract' && !(Number(cartCount) > 0);
 }
 
+// ── The kiosk's re read after a head office update (Builder B recheck) ──────
+// Before: after a re read that failed, the kiosk asked for another every 5 seconds while idle, and
+// each ask threw away the read still running, so on a link slower than 5 seconds no read ever
+// finished. Now ONE read at a time: the next waits for the one running to answer, a failed one
+// waits longer each time (5 s, 10 s, 20 s ... never more than 5 minutes apart), and a read that has
+// not answered in 2 minutes counts as failed.
+export const KIOSK_RETRY_FIRST_MS = 5000;
+export const KIOSK_RETRY_MAX_MS = 5 * 60 * 1000;
+export const KIOSK_READ_GIVE_UP_MS = 2 * 60 * 1000;
+
+/** How long the kiosk waits before reading again after `failures` failed reads in a row. */
+export function kioskRetryDelayMs(failures) {
+  const n = Math.max(1, Math.floor(Number(failures) || 1));
+  return Math.min(KIOSK_RETRY_FIRST_MS * 2 ** Math.min(n - 1, 20), KIOSK_RETRY_MAX_MS);
+}
+
+/** The local mark that this kiosk's venue gets head office updates (set once one is heard). */
+const kioskKey = (loc) => `rpos-msm-kiosk:${loc}`;
+export function kioskHeardMsm(storage, loc) {
+  try { return !!loc && storage?.getItem(kioskKey(loc)) === '1'; } catch { return false; }
+}
+export function markKioskHeardMsm(storage, loc) {
+  try { if (loc) storage?.setItem(kioskKey(loc), '1'); } catch { /* best effort */ }
+}
+
+/**
+ * The kiosk's re read controller. Pure: the hook gives it the idle check, the way to start a read
+ * and the timers; it never reads anything itself.
+ *   isIdle()   on the start screen with an empty basket (kioskMayRefresh)
+ *   reload()   start ONE menu read; the hook calls readDone(ok) when it answers
+ * Returns { heard(), readDone(ok), stop(), state() }. Nothing runs until heard() is called: a kiosk
+ * that never hears of a head office update sets no timer and starts no read.
+ */
+export function createKioskRefresh({ isIdle, reload, timers = globalThis }) {
+  let wanted = 0;        // head office updates heard
+  let have = 0;          // updates the last good read covers
+  let reading = 0;       // updates the read in flight covers (0: none running)
+  let failures = 0;
+  let timer = null;
+  let giveUp = null;
+  let stopped = false;
+  const clear = () => { if (timer) { timers.clearTimeout(timer); timer = null; } };
+  const later = (ms) => {
+    clear();
+    if (!stopped) timer = timers.setTimeout(() => { timer = null; tick(); }, ms);
+  };
+  const tick = () => {
+    if (stopped || reading || have >= wanted || timer) return;
+    if (!isIdle()) { later(IDLE_CHECK_MS); return; }
+    reading = wanted;
+    giveUp = timers.setTimeout(() => { giveUp = null; done(false); }, KIOSK_READ_GIVE_UP_MS);
+    reload();
+  };
+  const done = (ok) => {
+    if (!reading || stopped) return;
+    if (giveUp) { timers.clearTimeout(giveUp); giveUp = null; }
+    const covered = reading;
+    reading = 0;
+    if (ok) { have = Math.max(have, covered); failures = 0; tick(); return; }
+    failures++;
+    later(kioskRetryDelayMs(failures));
+  };
+  return {
+    heard() { if (stopped) return; wanted++; tick(); },
+    readDone: done,
+    stop() { stopped = true; clear(); if (giveUp) { timers.clearTimeout(giveUp); giveUp = null; } },
+    state: () => ({ wanted, have, reading: !!reading, failures, waiting: !!timer }),
+  };
+}
+
 /**
  * The kiosk's menu after a read (17 Oct 2026 verification). On a RELOAD after a head office update
  * (the kiosk is trading), a menu read that failed keeps the menu on screen, never an empty one, and

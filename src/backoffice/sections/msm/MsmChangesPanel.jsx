@@ -9,6 +9,7 @@ import { groupChanges, unstageOrder, changeWords } from '../../../lib/msm/msmWor
 import { Btn, Sheet, Notice } from './msmUi';
 import { ui } from './msmStyle';
 import { useConfirm } from './useConfirm';
+import { draftCount } from '../../../lib/msm/msmStatus';
 
 export default function MsmChangesPanel({ api, eff, sites, working, rows, unstage, stage, editable, refreshSets, setWorkingId, setNote, setTab, tabIds = [], onClose }) {
   const [busy, setBusy] = useState(false);
@@ -22,6 +23,8 @@ export default function MsmChangesPanel({ api, eff, sites, working, rows, unstag
     optionGroup: new Map((eff?.options || []).map((o) => [o.id, o.group_id])),
   }), [eff, sites]);
   const groups = useMemo(() => groupChanges(rows, names), [rows, names]);
+  // The one counting rule (msmStatus.draftCount): the same words as the status bar.
+  const counted = useMemo(() => draftCount(rows, eff), [rows, eff]);
 
   // Taking back a new product takes back its sites too; a new category still used by a staged
   // product stays until that product is moved or taken back (msmWords.unstageOrder).
@@ -46,7 +49,7 @@ export default function MsmChangesPanel({ api, eff, sites, working, rows, unstag
 
   const discard = async () => {
     if (!working || working.status !== 'draft') return;
-    const yes = await confirm({ title: `Throw away "${working.title}"?`, words: `Its ${rows.length} change${rows.length === 1 ? '' : 's'} go. The tills are not affected.`, yes: 'Throw it away', no: 'Keep it', danger: true });
+    const yes = await confirm({ title: `Throw away "${working.title}"?`, words: `${counted.total ? `Everything in it goes (${counted.words}).` : 'It is empty.'} The tills are not affected.`, yes: 'Throw it away', no: 'Keep it', danger: true });
     if (!yes) return;
     setBusy(true);
     const r = await api.discardDraft(working.id);
@@ -60,7 +63,7 @@ export default function MsmChangesPanel({ api, eff, sites, working, rows, unstag
 
   return (
     <Sheet title={working ? working.title : 'Changes'} width={560} onClose={onClose}
-      sub={working ? `Draft: ${rows.length} change${rows.length === 1 ? '' : 's'}, not on the tills yet.` : 'No draft yet: your first change starts one.'}
+      sub={working ? (counted.total ? `Draft: ${counted.words}, not on the tills yet.` : 'Draft: empty so far.') : 'No draft yet: your first change starts one.'}
       footer={(
         <>
           {tabIds.includes('publish') && working?.status === 'draft' && rows.length > 0 && (

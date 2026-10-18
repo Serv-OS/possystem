@@ -26,7 +26,7 @@ import { applyChanges } from '../../../../supabase/functions/_shared/msmDiff.js'
 import { summarise, siteList } from '../../../lib/msm/msmSummary';
 import { riskChecks, allTicked } from '../../../lib/msm/msmRisk';
 import { HELP, CHOICE_WORDS } from '../../../lib/msm/msmWords';
-import { whyReadOnly } from '../../../lib/msm/msmStatus';
+import { whyReadOnly, draftCount } from '../../../lib/msm/msmStatus';
 import { priceInput, categoryTree } from '../../../lib/msm/msmGrid';
 import { taxChoices } from '../../../lib/msm/msmEdit';
 import { siteRateChoices, choiceToRate } from '../../../lib/msm/msmOrderTypes';
@@ -122,8 +122,7 @@ export default function MsmGroupSheet({ ctx, eff, ix, sites, stage, editable, ca
   const save = async () => {
     if (result.words || !result.changes.length || !ready) return;
     setSaving(true);
-    const n = result.changes.length;
-    const r = await stage(result.changes, { done: `${draft.name.trim()}: ${isNew ? 'new option group' : `${n} change${n === 1 ? '' : 's'}`} in the draft.` });
+    const r = await stage(result.changes, { done: `${draft.name.trim()}: ${isNew ? 'new option group' : draftCount(result.changes, eff).words} in the draft.` });
     setSaving(false);
     if (r?.ok) { setTicked(new Set()); setBuilt((b) => ({ ...b, sync: true })); onSaved?.(groupId); }
   };
@@ -399,7 +398,7 @@ export default function MsmGroupSheet({ ctx, eff, ix, sites, stage, editable, ca
           {!result.words && <ConfirmTicks risks={risks} ticked={ticked} onChange={setTicked} />}
           <div style={{ ...ui.row, flexWrap: 'wrap' }}>
             <Btn kind="primary" disabled={sheetSaveBlocked({ saving, words: result.words, changes: result.changes.length, ready, salesReading: sales === undefined })} onClick={save} data-testid="msm-group-save">
-              {saving ? 'Adding…' : result.changes.length ? `Add ${result.changes.length} change${result.changes.length === 1 ? '' : 's'} to draft` : 'Add to draft'}
+              {saving ? 'Adding…' : result.changes.length ? `Add to draft: ${draftCount(result.changes, eff).words}` : 'Add to draft'}
             </Btn>
             <Btn onClick={() => { setBuilt({ eff, draft: initDraft(eff, groupId, isNew), sync: false }); setTicked(new Set()); if (isNew) onCancel?.(); }}>{isNew ? 'Cancel' : 'Undo my edits'}</Btn>
             <span style={ui.sub}>{sales === undefined ? "Checking last week's sales, a few seconds." : !ready && risks.length ? 'Tick each warning to go on.' : 'Nothing reaches the tills until you publish.'}</span>

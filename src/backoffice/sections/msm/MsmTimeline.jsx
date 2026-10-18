@@ -11,7 +11,7 @@
 // same preview and health check show before anything moves.
 
 import { useEffect, useMemo, useState } from 'react';
-import { undoChanges } from '../../../../supabase/functions/_shared/msmDiff.js';
+import { undoChanges, applyChanges } from '../../../../supabase/functions/_shared/msmDiff.js';
 import { overlaps, whenText, clockText } from '../../../../supabase/functions/_shared/msmSchedule.js';
 import { timelineEntries, canStillChange, versionSummary, siteRowWords, countdownWords, auditLines } from '../../../lib/msm/msmPublishView';
 import { changeWords } from '../../../lib/msm/msmWords';
@@ -20,6 +20,7 @@ import { Btn, Pill, Notice, Modal, WindowedList } from './msmUi';
 import { ui } from './msmStyle';
 import { useMsmHistory } from './useMsmHistory';
 import { useConfirm } from './useConfirm';
+import { draftCount } from '../../../lib/msm/msmStatus';
 
 const KIND = { publish: 'Published', scheduled: 'Scheduled', undo: 'Put back', import: 'Import', add_site: 'Site added' };
 
@@ -123,7 +124,7 @@ export default function MsmTimeline({ api, menu, live, sites, sets, canEdit, set
                     {sum && <Pill tone={sum.tone}>{sum.head}</Pill>}
                   </div>
                   <div style={ui.sub}>
-                    {changesOf[e.set.id] ? `${changesOf[e.set.id].length} change${changesOf[e.set.id].length === 1 ? '' : 's'} · ` : ''}
+                    {changesOf[e.set.id] ? `${draftCount(changesOf[e.set.id], applyChanges(live, changesOf[e.set.id]).central).words || 'Nothing'} · ` : ''}
                     {e.sites.length} site{e.sites.length === 1 ? '' : 's'}
                     {e.set.lead_minutes ? ` · starts ${e.firstDue != null ? clockText(e.firstDue, tz) : ''}` : ''}
                     {e.set.apply_when_idle === false ? ' · counter tills show Sync POS' : ' · counter tills update between sales'}
@@ -166,7 +167,7 @@ export default function MsmTimeline({ api, menu, live, sites, sets, canEdit, set
         <Modal title={`Put back how it was before version ${undo.version.version_no}`} sub={undo.version.title || ''} width={620} onClose={() => setUndo(null)}
           footer={(
             <>
-              <div style={{ flex: 1, ...ui.sub }}>{undo.plan.changes.length} change{undo.plan.changes.length === 1 ? '' : 's'} go into a new draft. Nothing reaches the tills until you publish it.</div>
+              <div style={{ flex: 1, ...ui.sub }}>{undo.plan.changes.length ? `A new draft puts it back (${draftCount(undo.plan.changes, live).words}).` : 'Nothing to put back.'} Nothing reaches the tills until you publish it.</div>
               <Btn onClick={() => setUndo(null)}>Keep it as it is</Btn>
               <Btn kind="primary" disabled={!undo.plan.changes.length || busy === `undo:${undo.version.id}`} onClick={confirmUndo}>Make a draft that undoes it</Btn>
             </>
@@ -194,6 +195,9 @@ function SectionHead({ title, sub }) {
 }
 
 // One version: the summary line, and when opened each site's result and what it wrote there.
+// The version label's column: room for "Version 999" on one line.
+const VERSION_W = 78;
+
 function VersionRow({ v, first, api, names, siteNames, tzOf, now, live, canEdit, busy, setBusy, setNote, onRefresh, onUndo }) {
   const [open, setOpen] = useState(false);
   const [detail, setDetail] = useState(null);       // Map(loc -> writes) | 'error'
@@ -234,7 +238,8 @@ function VersionRow({ v, first, api, names, siteNames, tzOf, now, live, canEdit,
   return (
     <div style={{ borderTop: first ? 'none' : '1px solid var(--bdr)' }}>
       <div onClick={toggle} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') toggle(); }} style={{ ...ui.row, padding: '12px 16px', cursor: 'pointer' }}>
-        <span style={{ width: 54, fontSize: 12, fontWeight: 800, color: 'var(--t3)' }}>{v.version_no ? `Version ${v.version_no}` : ''}</span>
+        {/* One line, never wrapped in a narrow column (recheck: "Version 12" broke over two lines). */}
+        <span data-testid="msm-version-label" style={{ minWidth: VERSION_W, flexShrink: 0, whiteSpace: 'nowrap', fontSize: 12, fontWeight: 800, color: 'var(--t3)' }}>{v.version_no ? `Version ${v.version_no}` : ''}</span>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 13.5, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{v.title || KIND[v.kind] || 'Publish'}</div>
           <div style={ui.sub}>
@@ -245,7 +250,7 @@ function VersionRow({ v, first, api, names, siteNames, tzOf, now, live, canEdit,
         <span style={{ color: 'var(--t4)', fontSize: 12, width: 14 }}>{open ? '▾' : '▸'}</span>
       </div>
       {open && (
-        <div style={{ padding: '0 16px 16px 70px', display: 'grid', gap: 12 }}>
+        <div style={{ padding: `0 16px 16px ${16 + VERSION_W + 8}px`, display: 'grid', gap: 12 }}>
           {sum.detail && <div style={ui.sub}>{sum.detail}</div>}
           {v.sites.length > 0 && (
             <div>

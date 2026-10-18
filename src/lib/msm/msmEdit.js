@@ -24,6 +24,9 @@
 //     pasted at that site, a copy from another site that has one, or "Use the group price" sets it
 //     on purpose and takes "no price" away in the same change; a blank leaves it as it is (said).
 //     A copy from a site with no price copies nothing (said).
+//   * A product turned on at a site where it never was and off again before publishing leaves
+//     nothing: its row comes out of the draft, and so do the option rows its turn on staged there,
+//     unless another product still on at that site needs them (droppedOptionRows).
 
 import { STAGE_FIELDS, CHANNELS, has, sameValue, samePrice, newItemId, toPence, fromPence, channelFallback, hex12, pctText, keptWithoutNoPrice, noPriceAt } from '../../../supabase/functions/_shared/msmModel.js';
 
@@ -118,12 +121,16 @@ export function siteActiveChange(ctx, productId, locationId, active) {
       if (pr.change) more.push(pr.change, ...(pr.extra || []));
     }
   }
+  const dropped = r.change?.dropCreate ? [productId] : [];
   if (hasSizes(ctx.eff, p)) {
     for (const size of listOf(ctx.eff?.products).filter((x) => x.parent_product_id === p.id && !x.archived)) {
       const sr = siteActiveOne(ctx, size.id, locationId, active);
       if (sr.change) more.push(sr.change, ...(sr.extra || []));
+      if (sr.change?.dropCreate) dropped.push(size.id);
     }
   }
+  // Taken out of the draft again: the option rows its turn on staged go with it (Builder B recheck).
+  if (dropped.length) more.push(...droppedOptionRows(ctx, locationId, dropped));
   if (!more.length) return r;
   if (!r.change) return { change: more[0], extra: more.slice(1), already: r.already };
   return { ...r, extra: [...(r.extra || []), ...more] };
@@ -165,17 +172,54 @@ function siteActiveOne(ctx, productId, locationId, active) {
 // that already have a row there keep it, so an option a site turned off stays off. 17 Oct
 // verification; the same rule as Add to products and the product sheet's group tick.
 function groupRowsFor(ctx, p, locationId) {
-  if (p.type === 'subitem' && p.sold_alone !== true) return [];
+  const out = [];
+  for (const gid of groupsOf(ctx, p)) {
+    if (listOf(ctx.eff?.groupSites).some((r) => r.group_id === gid && r.location_id === locationId)) continue;
+    out.push(...optionRowsForNewSites(ctx, gid, [locationId]));
+  }
+  return out;
+}
+
+// A product's option groups and the "Then ask" groups their options lead to (none for a sub item
+// only used as an option).
+function groupsOf(ctx, p) {
+  if (!p || (p.type === 'subitem' && p.sold_alone !== true)) return new Set();
   const want = new Set(listOf(p.modifier_groups).map(gidOf).filter(Boolean));
   for (let round = 0; round < 10; round++) {
     const n = want.size;
     for (const o of listOf(ctx.eff?.options)) if (!o.archived && o.sub_group_id && want.has(o.group_id)) want.add(o.sub_group_id);
     if (want.size === n) break;
   }
+  return want;
+}
+
+/**
+ * The option rows to take out of the draft with products whose turn on at a site is taken out
+ * again before publishing (Builder B recheck: turning Pie on and off at a site left its 4 option
+ * rows, "3 changes" in the status bar and "an option is turned on" in the summary). Only the rows
+ * that turn on staged: rows this draft made (none is live) for groups that are not at that site,
+ * and that no other product still on there needs. An option row added any other way stays (a new
+ * option in a group the site has, a group the site already shows).
+ *   droppedIds   the products (and sizes) whose create at the site comes out
+ */
+export function droppedOptionRows(ctx, locationId, droppedIds) {
+  const dropped = new Set(listOf(droppedIds));
+  if (!dropped.size) return [];
+  const needed = new Set();
+  for (const ps of listOf(ctx.eff?.productSites)) {
+    if (ps.location_id !== locationId || ps.active === false || dropped.has(ps.product_id)) continue;
+    const other = findProduct(ctx.eff, ps.product_id);
+    if (other && !other.archived) for (const g of groupsOf(ctx, other)) needed.add(g);
+  }
+  const groups = new Set();
+  for (const id of dropped) for (const g of groupsOf(ctx, findProduct(ctx.eff, id))) if (!needed.has(g)) groups.add(g);
   const out = [];
-  for (const gid of want) {
-    if (listOf(ctx.eff?.groupSites).some((r) => r.group_id === gid && r.location_id === locationId)) continue;
-    out.push(...optionRowsForNewSites(ctx, gid, [locationId]));
+  for (const o of listOf(ctx.eff?.options)) {
+    if (!groups.has(o.group_id)) continue;
+    if (listOf(ctx.eff?.groupSites).some((r) => r.group_id === o.group_id && r.location_id === locationId)) continue;
+    if (!listOf(ctx.eff?.optionSites).some((r) => r.option_id === o.id && r.location_id === locationId)) continue;
+    if (listOf(ctx.live?.optionSites).some((r) => r.option_id === o.id && r.location_id === locationId)) continue;
+    out.push({ target: 'modifier_option_site', entity_id: o.id, location_id: locationId, op: 'update', after: { active: false }, before: { active: null }, dropCreate: true });
   }
   return out;
 }
@@ -411,6 +455,13 @@ export function activeMany(ctx, productIds, locationIds, active) {
   const out = [];
   for (const pid of listOf(productIds)) for (const loc of listOf(locationIds)) out.push(siteActiveChange(ctx, pid, loc, active));
   const r = collect(out);
+  // Several products taken out of the draft together at a site: an option group only they needed
+  // goes too (each one alone still saw the others needing it).
+  if (!active) {
+    const byLoc = new Map();
+    for (const c of r.changes) if (c.dropCreate && c.target === 'product_site') byLoc.set(c.location_id, [...(byLoc.get(c.location_id) || []), c.entity_id]);
+    for (const [loc, ids] of byLoc) r.changes.push(...droppedOptionRows(ctx, loc, ids));
+  }
   // One change per product (or product and site), however many ticks reach it: the old "one site
   // only" mark is cleared once, and a size and its product ticked together are turned on once.
   const seen = new Set();

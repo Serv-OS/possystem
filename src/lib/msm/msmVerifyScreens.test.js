@@ -101,11 +101,14 @@ test('the bulk note counts site rows (House Red and 3 sizes: 4), and a product w
     ...['red', 's175', 's250', 'btl'].map((id) => ({ target: 'product_site', entity_id: id, location_id: 'b', op: 'create', after: {} })),
     ...['red', 's175', 's250', 'btl'].map((id) => ({ target: 'product', entity_id: id, location_id: null, op: 'update', after: { site_only_location_id: null } })),
   ];
-  assert.equal(bulkActiveWords({ changes, words: [] }, true), '4 turned on (in the draft).');
+  assert.equal(bulkActiveWords({ changes, words: [] }, true), '4 products turned on (in the draft).');
+  // Builder B recheck: one counting rule; with the group menu a size counts with its product.
+  const central = { products: [{ id: 'red' }, ...['s175', 's250', 'btl'].map((id) => ({ id, parent_product_id: 'red' }))] };
+  assert.equal(bulkActiveWords({ changes, words: [] }, true, central), '1 product turned on (in the draft).');
   assert.equal(bulkActiveWords({ changes: [], words: ['That site is not in the group menu yet.'] }, true), 'That site is not in the group menu yet.');
   assert.match(noCategoryHint({ id: 'h', name: 'hawaiian', category_id: null, type: 'simple' }), /no category yet: open the product/);
   assert.equal(noCategoryHint({ id: 'o', type: 'subitem', sold_alone: false }), '', 'an option only sub item needs none');
-  assert.match(read('MsmGrid.jsx'), /bulkActiveWords\(r, true\)/);
+  assert.match(read('MsmGrid.jsx'), /bulkActiveWords\(r, true, eff\)/);
 });
 
 test('an old note\'s Undo after a publish never stages: it says the change is already out', () => {
@@ -178,7 +181,9 @@ test('the kiosk keeps its menu on screen when a reload after a head office push 
   const ok = kioskMenuAfterRead(prev, { items: { data: [{ id: 'x' }] }, categories: { data: [] }, menus: { data: [] }, links: { data: [] }, taxProfiles: { data: null, error: {} }, taxProfileLines: { data: [] } }, { reload: true });
   assert.deepEqual(ok.data.taxProfiles, [{ id: 'p' }], 'a failed profile read keeps the profiles on a reload');
   const kiosk = fs.readFileSync(new URL('../../surfaces/KioskApp.jsx', import.meta.url), 'utf8');
-  assert.match(kiosk, /kioskMayRefresh\(\{ pending: pending \|\| retryRef\.current, \.\.\.idleRef\.current \}\)/);
+  // Recheck (Builder B): a failed re read is read again later through the one at a time controller.
+  assert.match(kiosk, /isIdle: \(\) => kioskMayRefresh\(\{ pending: true, \.\.\.idleRef\.current \}\)/);
+  assert.match(kiosk, /setReloadDone\(\{ key: reloadKey, failed \}\)/);
 });
 
 test('the sharing gate asks once more before blocking (a blip fails only the check)', async () => {

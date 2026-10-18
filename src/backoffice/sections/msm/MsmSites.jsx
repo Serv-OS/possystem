@@ -18,10 +18,10 @@
 //     product] goes into the draft, worked out so that publishing writes NOTHING at the site
 //     (lib/msm/msmBringIn.js). Its option groups come in with it.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { sitesReached, siteDrift } from '../../../../supabase/functions/_shared/msmDiff.js';
 import { openDrift, driftWords, keepChanges, putBackChanges, bringInOption } from '../../../lib/msm/msmDriftView';
-import { ownProducts, bringInChanges, ownCountWords } from '../../../lib/msm/msmBringIn';
+import { ownProducts, bringInChanges, ownCountWords, planJoinSiteAsync, joinableProducts } from '../../../lib/msm/msmBringIn';
 import { planAddSite } from '../../../../supabase/functions/_shared/msmSites.js';
 import { whenText } from '../../../../supabase/functions/_shared/msmSchedule.js';
 import { readAllRows } from '../../../../supabase/functions/_shared/venueMenuCore.js';
@@ -276,7 +276,12 @@ function BringIn({ site, own, raw, central, editable, stage, onClose }) {
   );
 }
 
-// Add a site: pick the venue, which of its menus to write into (or a new one), and the prices.
+// A new id for a group menu row (Bring in makes groups and options it needs).
+const newUuid = () => (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID()
+  : 'xxxxxxxx-xxxx-4xxx-8xxx-xxxxxxxxxxxx'.replace(/x/g, () => Math.floor(Math.random() * 16).toString(16)));
+
+// Add a site: pick the venue, which of its menus to write into (or a new one), and the prices. A
+// site that already sells the group's products joins with them as they are (planJoinSite).
 function AddSite({ api, client, menu, live, sites, setNote, onClose, onStaged }) {
   const [company, setCompany] = useState(null);
   const [loc, setLoc] = useState('');
@@ -309,16 +314,44 @@ function AddSite({ api, client, menu, live, sites, setNote, onClose, onStaged })
   const venueMenuId = menuPick[loc] || '';
   const setVenueMenuId = (id) => setMenuPick((m) => ({ ...m, [loc]: id }));
 
-  const menus = raw && raw !== 'error' ? venueMenuChoices(raw) : [];
+  const menus = useMemo(() => (raw && raw !== 'error' ? venueMenuChoices(raw) : []), [raw]);
   const site = (company || []).find((s) => s.id === loc);
   const plan = useMemo(() => (loc ? planAddSite(live, { locationId: loc, venueMenuId: venueMenuId || null, prices, copyFrom }) : null), [live, loc, venueMenuId, prices, copyFrom]);
   // A site that already sells the group's products as its own (the same ids): Add a site would take
-  // them over, so it is refused here and at publish (17 Oct verification). Bring them in instead.
+  // them over, so it is refused at publish (17 Oct verification).
   const owned = useMemo(() => {
     if (!plan || !raw || raw === 'error') return [];
     const mine = new Map((raw.items || []).map((i) => [i.id, i]));
     return plan.changes.filter((c) => c.target === 'product_site' && mine.has(c.after?.venue_item_id)).map((c) => mine.get(c.after.venue_item_id));
   }, [plan, raw]);
+  // Builder B recheck (item 6): such a site was a dead end. It JOINS instead: its own menu, and the
+  // group's products it sells linked as they are (Bring in), planned to write nothing there. A site
+  // selling the group's products under other ids joins too (a plain Add a site would put a second
+  // copy beside each of its own).
+  const firstMenu = menus[0]?.id || '';
+  const joinMenuId = venueMenuId || firstMenu;
+  const joinable = useMemo(() => (raw && raw !== 'error' && joinMenuId ? joinableProducts(live, loc, raw, joinMenuId) : []), [live, loc, raw, joinMenuId]);
+  const joining = owned.length > 0 || joinable.length > 0;
+  const siteLabel = site?.name || 'This site';
+  const orgId = menu?.org_id || null;
+  // Worked out on request, a product at a time (some seconds for a big menu), never while drawing.
+  const [joinRun, setJoinRun] = useState(null);        // { key, done, total, result }
+  const joinKey = `${loc}|${joinMenuId}`;
+  const join = joinRun && joinRun.key === joinKey ? joinRun.result : null;
+  const working = !!joinRun && joinRun.key === joinKey && !joinRun.result;
+  const stopRef = useRef(false);
+  useEffect(() => () => { stopRef.current = true; }, []);
+  const workOutJoin = async () => {
+    if (!raw || raw === 'error' || working) return;
+    const key = joinKey;
+    stopRef.current = false;
+    setJoinRun({ key, done: 0, total: joinable.length, result: null });
+    const result = await planJoinSiteAsync(live, { locationId: loc, venueMenuId: joinMenuId || null, raw, siteName: siteLabel, orgId, idGen: newUuid }, {
+      onProgress: (done, total) => setJoinRun((j) => (j && j.key === key ? { ...j, done, total } : j)),
+      shouldStop: () => stopRef.current,
+    });
+    if (result) setJoinRun((j) => (j && j.key === key ? { ...j, result } : j));
+  };
 
   const go = async () => {
     if (!plan?.count) return;
@@ -332,19 +365,38 @@ function AddSite({ api, client, menu, live, sites, setNote, onClose, onStaged })
     onStaged(d.data.id);
   };
 
+  const goJoin = async () => {
+    if (!join?.ok) return;
+    setBusy(true);
+    const d = await api.createDraft(menu.id, `Add ${site?.name || 'a site'}`.slice(0, 80), 'add_site');
+    if (!d.ok) { setBusy(false); setNote({ tone: 'bad', text: d.words }); return; }
+    const r = await api.stageMany(d.data.id, join.changes, []);
+    setBusy(false);
+    if (!r.ok) { setNote({ tone: 'bad', text: `The draft was made but ${r.failed.length || r.conflicts} change${(r.failed.length || r.conflicts) === 1 ? '' : 's'} did not go in: ${r.failed[0]?.words || 'try again'}.` }); }
+    else setNote({ tone: 'good', text: `${site?.name || 'The site'} is in a draft, joining with the ${join.linked.length} product${join.linked.length === 1 ? '' : 's'} it already sells. Publishing changes nothing there; after that, one price change reaches it too.` });
+    onStaged(d.data.id);
+  };
+
   return (
     <Modal title="Add a site" sub="A new site gets the whole group menu in minutes. Nothing reaches it until you publish." width={640} onClose={onClose}
       footer={(
         <>
-          <div style={{ flex: 1, ...ui.sub }}>{plan?.count ? `${plan.words}.` : ''}</div>
+          <div style={{ flex: 1, ...ui.sub }}>{joining ? (join?.ok ? `${join.linked.length} product${join.linked.length === 1 ? '' : 's'} join as they are.` : working ? `Checking ${joinRun.done} of ${joinRun.total || '…'} products…` : '') : plan?.count ? `${plan.words}.` : ''}</div>
           <Btn onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" disabled={busy || !plan?.count || raw === null || raw === 'error' || owned.length > 0} onClick={go}>Put it in a new draft</Btn>
+          {joining
+            ? (join?.ok
+              ? <Btn kind="primary" disabled={busy} onClick={goJoin} data-testid="msm-join-site">Join with what it sells now</Btn>
+              : <Btn kind="primary" disabled={busy || working || !joinMenuId} onClick={workOutJoin} data-testid="msm-join-check">{working ? 'Checking…' : 'Check what joining changes'}</Btn>)
+            : <Btn kind="primary" disabled={busy || !plan?.count || raw === null || raw === 'error'} onClick={go}>Put it in a new draft</Btn>}
         </>
       )}>
       {words && <Notice tone="bad">{words}</Notice>}
-      {owned.length > 0 && (
-        <div style={{ marginBottom: 12 }}>
-          <Notice tone="bad">{site?.name || 'This site'} already sells {owned.length} of the group menu's products as its own (like {owned.slice(0, 2).map((i) => i.menu_name || i.name).join(' and ')}). Add a site is only for a site that does not sell them yet: bring its products in on the Sites tab instead, so nothing it sells today changes.</Notice>
+      {joining && (
+        <div style={{ marginBottom: 12, display: 'grid', gap: 8 }}>
+          <Notice tone="info">{site?.name || 'This site'} already sells {Math.max(owned.length, joinable.length)} of the group menu's products as its own copies (like {(joinable.length ? joinable.map((o) => o.name) : owned.map((i) => i.menu_name || i.name)).slice(0, 2).join(' and ')}). It joins with them as they are, so nothing it sells today changes. Check what joining changes first: it takes a few seconds.</Notice>
+          {join && (join.ok
+            ? <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, lineHeight: 1.5 }}>{join.words.map((w) => <li key={w}>{w}</li>)}</ul>
+            : <Notice tone="bad">{join.problems[0]}</Notice>)}
         </div>
       )}
       {company === null && <div style={ui.sub}>Reading the company's sites…</div>}
@@ -360,24 +412,24 @@ function AddSite({ api, client, menu, live, sites, setNote, onClose, onStaged })
             {raw === null && <div style={ui.sub}>Reading the site…</div>}
             {raw === 'error' && <Notice tone="bad">Could not read this site.</Notice>}
             {raw && raw !== 'error' && (
-              <select aria-label="Its menu" style={ui.input} value={venueMenuId} onChange={(e) => setVenueMenuId(e.target.value)}>
-                <option value="">New menu called "{menu.name}" (recommended for a new site)</option>
-                {menus.map((m) => <option key={m.id} value={m.id}>Add to {site?.name || 'its'}'s existing menu "{m.name}": the group products go in beside its own</option>)}
+              <select aria-label="Its menu" style={ui.input} value={joining ? joinMenuId : venueMenuId} onChange={(e) => setVenueMenuId(e.target.value)}>
+                {!joining && <option value="">New menu called "{menu.name}" (recommended for a new site)</option>}
+                {menus.map((m) => <option key={m.id} value={m.id}>{joining ? `Its menu "${m.name}" (${m.products} product${m.products === 1 ? '' : 's'} in it)` : `Add to ${site?.name || 'its'}'s existing menu "${m.name}": the group products go in beside its own`}</option>)}
               </select>
             )}
           </Field>
-          <Field label="Prices">
+          {!joining && <Field label="Prices">
             <Segmented value={prices} onChange={setPrices} options={[{ value: 'default', label: 'The group prices' }, { value: 'copy', label: 'Copy from a site' }]} />
             {prices === 'copy' && (
               <select aria-label="Copy prices from" style={{ ...ui.input, marginTop: 8 }} value={copyFrom} onChange={(e) => setCopyFrom(e.target.value)}>
                 {sites.map((s) => <option key={s.id} value={s.id}>{s.name} (what it sells, at its prices)</option>)}
               </select>
             )}
-          </Field>
-          <div style={{ ...ui.sub, padding: '10px 12px', borderRadius: 10, background: 'var(--bg2)' }}>
+          </Field>}
+          {!joining && <div style={{ ...ui.sub, padding: '10px 12px', borderRadius: 10, background: 'var(--bg2)' }}>
             Publishing makes the site's menu, its categories, the modifier groups and every product, with VAT matched by name and rate.
             Set up its printers and kitchen screens in its own Back Office before it opens. You can schedule it for opening morning.
-          </div>
+          </div>}
         </>
       )}
     </Modal>

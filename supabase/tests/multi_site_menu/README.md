@@ -119,3 +119,15 @@ takeaway Zero Rate on a product with sizes lands on the product and every size a
 site's own rate, nothing else on the rows, a size's counter key kept), one VAT change per row, and
 Undo puts every row back exactly; the write path takes an explicit null a size copies from its
 product. `run.mjs` checks the round 2 check row's new column (no_price_ok).
+
+## 17 Oct 2026 recheck, screens and drafts (282 of 282 with round 1's checks; edge.mjs 34 of 34)
+
+`round2.mjs` also proves, through the database: a product with an option group turned on at a site
+where the group is not, then off again before publishing, leaves NOTHING in the draft (its two
+option rows come out with it); Undo stages the turn on again exactly (the guard takes it) and it
+publishes (the product and its group at that site). A third site of the company that already sells
+the group's Latte as its own copy, plus a product of its own, JOINS (Add a site's "Join with what it
+sells now", `msmBringIn.planJoinSite`): the guard takes the site row and the link, publishing writes
+nothing there and sends no push, the site is in the group menu writing into its own menu, and its
+rows are exactly as they were. A plain Add a site over a site's own product is still blocked, in
+words that point to the join.

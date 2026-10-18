@@ -16,6 +16,7 @@ import { changeWords } from '../../../lib/msm/msmWords';
 import { withBefore } from '../../../lib/msm/msmEdit';
 import { Btn, Modal, Notice, Segmented, SiteChecklist, WindowedList } from './msmUi';
 import { ui } from './msmStyle';
+import { draftCount } from '../../../lib/msm/msmStatus';
 
 export default function MsmCsv({ initial = 'export', menu, live, eff, sites, rows, editable, stage, setTab, onClose }) {
   const [mode, setMode] = useState(initial);
@@ -56,7 +57,7 @@ export default function MsmCsv({ initial = 'export', menu, live, eff, sites, row
   const put = async () => {
     if (!result?.changes.length) return;
     setSaving(true);
-    const r = await stage(withBefore(live, result.changes), { done: `${result.changes.length} change${result.changes.length === 1 ? '' : 's'} from ${file.name} are in the draft.` });
+    const r = await stage(withBefore(live, result.changes), { done: `From ${file.name}: ${draftCount(result.changes, eff).words} (in the draft).` });
     setSaving(false);
     if (r?.ok) setStaged(true);
   };
@@ -74,7 +75,7 @@ export default function MsmCsv({ initial = 'export', menu, live, eff, sites, row
           <div style={{ flex: 1, ...ui.sub }}>{result ? result.summary : 'Nothing is changed until you put it in the draft and publish it.'}</div>
           {staged
             ? <Btn kind="primary" onClick={() => { onClose(); setTab('publish'); }}>See what changes at each site</Btn>
-            : <Btn kind="primary" disabled={!editable || saving || !result?.changes.length} onClick={put}>{saving ? 'Adding…' : `Add ${result?.changes.length || 0} change${result?.changes.length === 1 ? '' : 's'} to draft`}</Btn>}
+            : <Btn kind="primary" disabled={!editable || saving || !result?.changes.length} onClick={put}>{saving ? 'Adding…' : (result?.changes.length ? `Add to draft: ${draftCount(result.changes, eff).words}` : 'Nothing to add')}</Btn>}
         </>
       )}>
       <div style={{ marginBottom: 14 }}>

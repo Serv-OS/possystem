@@ -67,7 +67,8 @@ test('THE REPRO: House Red and its sizes turned on at site B, a size price chang
   // The status bar counts them at once (UI issue 10).
   const eff1 = applyChanges(live, on.changes).central;
   assert.equal(stagedIndex(on.changes).sites.size, 4);
-  assert.match(statusBar({ working: { status: 'draft', title: 'Changes 17 Oct 18:00' }, rows: on.changes }).words, /^5 changes, not on the tills yet\.$/);
+  // Builder B recheck: one counting rule. House Red and its 3 sizes are one product to a manager.
+  assert.match(statusBar({ working: { status: 'draft', title: 'Changes 17 Oct 18:00' }, rows: on.changes, central: eff1 }).words, /^1 product changed, not on the tills yet\.$/);
 
   // 2. Change the 250 ml glass at site B.
   const glass = sizes.find((s) => s.name === '250 ml glass');

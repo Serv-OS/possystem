@@ -769,13 +769,16 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     // A CREATE that meets a venue row already there (17 Oct verification). The ids publish makes
     // are the sharing engine's, so a site's OWN copy of a product can already hold the id: the
     // group menu must never take it over by writing only prices and on or off into it.
-    //   * Add a site: a product the new site already sells (its own copy, on or off).
+    //   * Add a site: a product the new site already sells (its own copy, on or off). A site that
+    //     JOINS with what it sells (Builder B recheck: Add a site's "Join with what it sells now",
+    //     msmBringIn.planJoinSite) links each of those with Bring in, whose create always carries
+    //     the site's kept values and is proven to write nothing: that one passes, as below.
     //   * Turn on at a site (or a new site row): a copy that sits in another of the site's menus,
     //     or in a category that is off this menu, so it would never show and its other menu's
     //     price would change. (Bring it in, from the Sites tab, links a copy in THIS menu.)
     if (!insertedItems.has(vrow.id)) {
-      if (T.sitesCreated.has(loc)) {
-        problem('site_has_product', 'block', `"${p.name}" is already at this site as its own product. Add a site is only for a site that does not sell the group menu's products yet: bring this site's products in from the Sites tab instead. Nothing was changed.`, meta);
+      if (T.sitesCreated.has(loc) && !w.siteFields.has('kept')) {
+        problem('site_has_product', 'block', `"${p.name}" is already at this site as its own product. Throw this draft away and add the site again: Add a site then offers "Join with what it sells now", which keeps everything it sells as it is. Nothing was changed.`, meta);
         continue;
       }
       const creating = w.siteOp === 'create' || w.prodOp === 'create';

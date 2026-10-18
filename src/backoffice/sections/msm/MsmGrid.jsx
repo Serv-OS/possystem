@@ -30,7 +30,7 @@ import { sitePriceChange, siteActiveChange, defaultPriceChange, activeMany, copy
 import { marginFor, vatMaps } from '../../../lib/msm/msmMargin';
 import { shownPriceTypes, shownTaxTypes, vatCell } from '../../../lib/msm/msmOrderTypes';
 import { TAX_TYPE_WORDS, colWord } from '../../../lib/msm/msmWords';
-import { whyReadOnly, cellNoteWords, bulkActiveWords, noCategoryHint } from '../../../lib/msm/msmStatus';
+import { whyReadOnly, cellNoteWords, bulkActiveWords, noCategoryHint, draftCount } from '../../../lib/msm/msmStatus';
 import { addGroupWithSites } from '../../../lib/msm/msmGroupView';
 import * as groupEdit from '../../../lib/msm/msmGroupEdit';
 import { riskChecks } from '../../../lib/msm/msmRisk';
@@ -257,7 +257,7 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
     const res = pasteColumn(ctx, cells, loc, channel);
     setEditing(null);
     run(cells.map((c) => `${c.productId}|${loc || 'default'}`), res.changes,
-      `${res.changes.length} price${res.changes.length === 1 ? '' : 's'} pasted${bad ? `; ${bad} line${bad === 1 ? ' was' : 's were'} not a price and ${bad === 1 ? 'was' : 'were'} skipped` : ''}.${res.words.length ? ` ${res.words[0]}` : ''}`,
+      `Prices pasted: ${draftCount(res.changes, eff).words || 'nothing changed'}${bad ? `; ${bad} line${bad === 1 ? ' was' : 's were'} not a price and ${bad === 1 ? 'was' : 'were'} skipped` : ''}.${res.words.length ? ` ${res.words[0]}` : ''}`,
       true, res.words[0] || 'Nothing to change: it is already like that.');
   };
 
@@ -376,15 +376,15 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
               <SitesActionPopover label="Turn on at" sites={sites} groups={groups} button="Turn on" onApply={(locs) => {
                 const r = activeMany(ctx, selIds, locs, true);
                 const noCat = selIds.map((id) => ix.products.get(id)).filter((x) => noCategoryHint(x)).length;
-                run([], r.changes, `${bulkActiveWords(r, true)}${noCat ? ` ${noCat} of them ${noCat === 1 ? 'has' : 'have'} no category yet: open ${noCat === 1 ? 'it' : 'them'} and pick one before you publish.` : ''}`, true, bulkActiveWords(r, true));
+                run([], r.changes, `${bulkActiveWords(r, true, eff)}${noCat ? ` ${noCat} of them ${noCat === 1 ? 'has' : 'have'} no category yet: open ${noCat === 1 ? 'it' : 'them'} and pick one before you publish.` : ''}`, true, bulkActiveWords(r, true, eff));
               }} />
-              <SitesActionPopover label="Turn off at" sites={sites} groups={groups} button="Turn off" onApply={(locs) => { const r = activeMany(ctx, selIds, locs, false); run([], r.changes, bulkActiveWords(r, false), true, bulkActiveWords(r, false)); }} />
-              <CopyPricesPopover sites={sites} groups={groups} onApply={(from, to) => { const r = copyPricesMany(ctx, selIds, from, to, channel); run([], r.changes, `${r.changes.length} price${r.changes.length === 1 ? '' : 's'} copied (in the draft).${r.words.length ? ` ${r.words[0]}` : ''}`, true, r.words[0] || 'Nothing to change: it is already like that.'); }} />
+              <SitesActionPopover label="Turn off at" sites={sites} groups={groups} button="Turn off" onApply={(locs) => { const r = activeMany(ctx, selIds, locs, false); run([], r.changes, bulkActiveWords(r, false, eff), true, bulkActiveWords(r, false, eff)); }} />
+              <CopyPricesPopover sites={sites} groups={groups} onApply={(from, to) => { const r = copyPricesMany(ctx, selIds, from, to, channel); run([], r.changes, `Prices copied: ${draftCount(r.changes, eff).words || 'nothing changed'} (in the draft).${r.words.length ? ` ${r.words[0]}` : ''}`, true, r.words[0] || 'Nothing to change: it is already like that.'); }} />
               <Popover label="Move to" width={260}>
                 {(close) => (
                   <div style={{ maxHeight: 260, overflowY: 'auto' }}>
                     {tree.map((t) => (
-                      <div key={t.id}><Btn small kind="link" style={{ paddingLeft: 6 + t.depth * 12 }} onClick={() => { close(); const r = moveMany(ctx, selIds, t.id); run([], r.changes, `${r.changes.length} moved to ${t.label} (in the draft).`); }}>{t.label}</Btn></div>
+                      <div key={t.id}><Btn small kind="link" style={{ paddingLeft: 6 + t.depth * 12 }} onClick={() => { close(); const r = moveMany(ctx, selIds, t.id); run([], r.changes, `Moved to ${t.label}: ${draftCount(r.changes, eff).words || 'nothing changed'} (in the draft).`); }}>{t.label}</Btn></div>
                     ))}
                   </div>
                 )}
