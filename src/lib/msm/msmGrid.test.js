@@ -120,10 +120,10 @@ test('staged marks: a price, a switch, a new site row, a product field', () => {
     { target: 'product', entity_id: 'tea', op: 'update', after: { default_price: 2.1 } },
     { target: 'product', entity_id: 'new', op: 'create', after: { name: 'New' } },
   ]);
-  assert.deepEqual(cellStaged(s, 'latte', 'l1'), { price: true, active: false });
-  assert.deepEqual(cellStaged(s, 'cola', 'l2'), { price: false, active: false });
-  assert.deepEqual(cellStaged(s, 'cola', 'l2', 'delivery'), { price: true, active: false });
-  assert.deepEqual(cellStaged(s, 'ginger', 'l2'), { price: true, active: true });
+  assert.deepEqual(cellStaged(s, 'latte', 'l1'), { price: true, active: false, kept: false });
+  assert.deepEqual(cellStaged(s, 'cola', 'l2'), { price: false, active: false, kept: false });
+  assert.deepEqual(cellStaged(s, 'cola', 'l2', 'delivery'), { price: true, active: false, kept: false });
+  assert.deepEqual(cellStaged(s, 'ginger', 'l2'), { price: true, active: true, kept: false });
   assert.equal(s.products.get('tea').has('default_price'), true);
   assert.equal(s.created.has('new'), true);
   assert.equal(s.count, 5);

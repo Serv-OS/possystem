@@ -140,7 +140,7 @@ export default function MsmImport({ api, client, orgId, orgName, readSites, onCa
           </div>
           <div style={ui.card}>
             <div style={ui.h2}>Sites</div>
-            <div style={{ ...ui.sub, marginBottom: 10 }}>Every site you can open in this company. Untick any to leave out; they can join later.</div>
+            <div style={{ ...ui.sub, marginBottom: 10 }}>Every site you can open in this company. Tick every site that already has its own menu now: Add a site later is only for a site that does not sell these products yet.</div>
             {company === null && <div style={ui.sub}>Reading your sites…</div>}
             {reading && <div style={{ ...ui.sub, marginBottom: 6 }}>Reading each site's menu…</div>}
             {(company || []).map((s) => {

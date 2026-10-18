@@ -43,6 +43,22 @@ export function legacyGroupIds(central) {
 export const groupSiteIds = (central, groupId) => new Set(listOf(central?.groupSites).filter((r) => r.group_id === groupId).map((r) => r.location_id));
 
 /**
+ * The sites a group goes to when the draft is published (17 Oct verification: a group put on
+ * products still said "At no site yet"): not at the site yet, but a product on sale there (the draft
+ * applied) asks it. Publish puts it there (msmPlan ensureGroup). Set(locationId).
+ */
+export function groupPendingSiteIds(central, groupId) {
+  const at = groupSiteIds(central, groupId);
+  const gid = (a) => (typeof a === 'string' ? a : a && typeof a === 'object' ? a.groupId : null);
+  const askers = new Set(listOf(central?.products).filter((p) => p && !p.archived && listOf(p.modifier_groups).some((a) => gid(a) === groupId)).map((p) => p.id));
+  const out = new Set();
+  for (const ps of listOf(central?.productSites)) {
+    if (askers.has(ps.product_id) && ps.active !== false && !at.has(ps.location_id)) out.add(ps.location_id);
+  }
+  return out;
+}
+
+/**
  * One option at one site.
  * Returns { here, active, own, price, follows } (here false: the group is not at that site).
  */

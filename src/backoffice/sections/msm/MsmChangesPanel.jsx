@@ -5,12 +5,12 @@
 // a time) is the Review and publish tab, with the per site preview and the health check.
 
 import { useMemo, useState } from 'react';
-import { groupChanges, unstageOrder } from '../../../lib/msm/msmWords';
+import { groupChanges, unstageOrder, changeWords } from '../../../lib/msm/msmWords';
 import { Btn, Sheet, Notice } from './msmUi';
 import { ui } from './msmStyle';
 import { useConfirm } from './useConfirm';
 
-export default function MsmChangesPanel({ api, eff, sites, working, rows, unstage, editable, refreshSets, setWorkingId, setNote, setTab, tabIds = [], onClose }) {
+export default function MsmChangesPanel({ api, eff, sites, working, rows, unstage, stage, editable, refreshSets, setWorkingId, setNote, setTab, tabIds = [], onClose }) {
   const [busy, setBusy] = useState(false);
   const [confirm, confirmDialog] = useConfirm();
   const names = useMemo(() => ({
@@ -29,11 +29,19 @@ export default function MsmChangesPanel({ api, eff, sites, working, rows, unstag
     const plan = unstageOrder(rows, row, names);
     if (plan.words) { setNote({ tone: 'warn', text: plan.words }); return; }
     setBusy(true);
+    const out = [];
     for (const r of plan.rows) {
       const res = await unstage(r);
       if (!res?.ok) break;
+      out.push(r);
     }
     setBusy(false);
+    // Taking out has an Undo too (17 Oct verification): what came out goes back in, the product
+    // before its sites (the reverse of the order it came out in).
+    if (out.length && stage) {
+      const back = [...out].reverse().map((r) => ({ target: r.target, entity_id: r.entity_id, location_id: r.location_id || null, op: r.op, after: r.after, before: r.before || {} }));
+      setNote({ tone: 'good', text: `Taken out of the draft: ${changeWords(row, names).subject}.`, actions: [{ label: 'Undo', onClick: () => { setNote(null); stage(back, { quiet: true }); } }] });
+    }
   };
 
   const discard = async () => {
@@ -56,7 +64,7 @@ export default function MsmChangesPanel({ api, eff, sites, working, rows, unstag
       footer={(
         <>
           {tabIds.includes('publish') && working?.status === 'draft' && rows.length > 0 && (
-            <Btn kind="primary" onClick={() => { onClose(); setTab('publish'); }}>Review and publish</Btn>
+            <Btn kind="primary" onClick={() => { onClose(); setNote?.(null); setTab('publish'); }}>Review and publish</Btn>
           )}
           <div style={{ flex: 1 }} />
           {editable && working?.status === 'draft' && rows.length > 0 && <Btn kind="danger" disabled={busy} onClick={discard}>Throw away this draft</Btn>}

@@ -290,6 +290,73 @@ export async function run(h) {
   expect('apply refuses to put back a profile it never cleared', r.code !== 0 && /only put back the old VAT profile copy it cleared/.test(r.err), r.err);
   settle();
 
+  // ── 17 Oct verification: a new VAT RATE over a generated copy of the OLD rate ──
+  //    The till reads the item's profile first, so the copy is cleared in the same write (the
+  //    database now accepts clearing a copy of the rate BEFORE the write too).
+  {
+    C = central();
+    const lat = C.products.find((p) => p.name === 'Latte');
+    one(`update menu_items set tax_profile_id = '${PF}' where id = 'm-latte';
+         update msm_product_sites set cleared_tax_profile_id = null where product_id = '${lat.id}' and location_id = '${LA1}'`);
+    const GR = mkSet('Latte zero rated');
+    stage({ set: GR, target: 'product', entity: lat.id, op: 'update', after: { tax_rate_name: 'Zero Rate', tax_rate_percent: 0 }, before: { tax_rate_name: lat.tax_rate_name, tax_rate_percent: lat.tax_rate_percent } });
+    const VR = publish(GR);
+    const vr = runSite(VR, LA1);
+    expect('VERIFY: a new VAT rate over a copy of the old rate publishes (the copy cleared in the same write)', vr.out?.ok === true, vr.res.err || JSON.stringify(vr.health));
+    expect('VERIFY: A1 now holds its own Zero Rate and no profile, so the till charges the new rate',
+      one(`select tax_rate_id from menu_items where id = 'm-latte'`) === Z1 && one(`select coalesce(tax_profile_id::text, 'none') from menu_items where id = 'm-latte'`) === 'none'
+      && one(`select cleared_tax_profile_id from msm_product_sites where product_id = '${lat.id}' and location_id = '${LA1}'`) === PF,
+      `${one(`select tax_rate_id from menu_items where id = 'm-latte'`)} ${one(`select tax_profile_id from menu_items where id = 'm-latte'`)}`);
+    runSite(VR, LA2);
+    settle();
+    // Back to the old rate (as Undo would): the rate goes back; the cleared copy is not needed.
+    const GR2 = mkSet('Latte back to VAT');
+    stage({ set: GR2, target: 'product', entity: lat.id, op: 'update', after: { tax_rate_name: lat.tax_rate_name, tax_rate_percent: lat.tax_rate_percent }, before: { tax_rate_name: 'Zero Rate', tax_rate_percent: 0 } });
+    const VR2 = publish(GR2);
+    const vr2 = runSite(VR2, LA1);
+    runSite(VR2, LA2);
+    expect('VERIFY: and back to the old rate', vr2.out?.ok === true && one(`select tax_rate_id from menu_items where id = 'm-latte'`) === VAT_A1, vr2.res.err || JSON.stringify(vr2.health));
+    one(`update msm_product_sites set cleared_tax_profile_id = null where product_id = '${lat.id}' and location_id = '${LA1}'`);
+    settle();
+  }
+
+  // ── 17 Oct verification: a run whose worker died is not claimed for ever; Retry starts again ──
+  {
+    C = central();
+    const lat = C.products.find((p) => p.name === 'Latte');
+    const GS = mkSet('Stuck run');
+    stage({ set: GS, target: 'product', entity: lat.id, op: 'update', after: { description: 'stuck' }, before: { description: lat.description ?? '' } });
+    const VS = json(`select msm_publish_now('${GS}', true)`, as(U.E)).version_id;
+    one(`update msm_version_sites set status = 'running', claimed_at = now() - interval '11 minutes', attempts = 5 where version_id = '${VS}' and location_id = '${LA1}'`);
+    one(`update msm_version_sites set status = 'done' where version_id = '${VS}' and location_id <> '${LA1}'`);
+    const claimed = json(`select coalesce(json_agg(c), '[]'::json) from msm_claim_due(20) c`, SERVICE);
+    expect('VERIFY: a stale run that has had 5 tries is not claimed again', !claimed.some((c) => c.version_id === VS), JSON.stringify(claimed));
+    expect('VERIFY: it is failed, in words, with Retry', one(`select status from msm_version_sites where version_id = '${VS}' and location_id = '${LA1}'`) === 'failed'
+      && /stopped part way at this site 5 times\. Nothing was changed there\. Press Retry\./.test(one(`select error from msm_version_sites where version_id = '${VS}' and location_id = '${LA1}'`)));
+    const back = json(`select msm_retry_site('${VS}', '${LA1}')`, as(U.E));
+    expect('VERIFY: Retry starts the count again (attempts 0)', back.status === 'scheduled' && one(`select attempts from msm_version_sites where version_id = '${VS}' and location_id = '${LA1}'`) === '0');
+    const again = json(`select coalesce(json_agg(c), '[]'::json) from msm_claim_due(20) c`, SERVICE);
+    expect('VERIFY: and the next claim is its first try', again.some((c) => c.version_id === VS && c.location_id === LA1 && c.attempts === 1), JSON.stringify(again));
+    // A busy moment right after a Retry is tried again, not failed at once.
+    const f = json(`select msm_fail_site('${VS}', '${LA1}', 'Someone was saving', 1)`, SERVICE);
+    expect('VERIFY: a busy moment after a Retry goes back in the queue', f.status === 'scheduled', JSON.stringify(f));
+    settle();
+  }
+
+  // ── 17 Oct verification: an import from a page still running round 1 (no options) is refused ──
+  {
+    r = q(`select msm_import_commit(${lit({ org_id: ORG_A, name: 'Old page', sites: [{ location_id: LA1 }], products: [], categories: [], groups: [] })})`, as(U.E));
+    expect('VERIFY: an import without its options (a page still on round 1) is refused in words', r.code !== 0 && /This page is out of date\. Reload the page/.test(r.err), r.err);
+  }
+
+  // ── 17 Oct verification: sales and trading are behind the second sign in step too ──
+  {
+    r = q(`select * from msm_sold_recently('${menuId}', 7, null)`, as(U.V, 'aal1'));
+    expect('VERIFY: sold recently needs the second step', r.code !== 0 && /second step/.test(r.err), r.err || r.out);
+    r = q(`select * from msm_sites_trading('${menuId}')`, as(U.V, 'aal1'));
+    expect('VERIFY: trading now needs the second step', r.code !== 0 && /second step/.test(r.err), r.err || r.out);
+  }
+
   // ── the row lock comes BEFORE the fingerprint ───────────────────────────
   {
     const G11 = mkSet('Lock probe');

@@ -25,7 +25,7 @@ import { useConfirm } from './useConfirm';
 // The order types a group menu can show. Delivery is a platform price (set by the menu that platform
 // uses at each site, UI issue 2), so it is not one of them; its VAT row always shows.
 const TYPE_CHOICES = ['dineIn', 'takeaway', 'collection', 'driveThru', 'bar'];
-const TYPE_HELP = { ...PRICE_TYPE_HELP, bar: 'Bar tabs: shows the Bar tab VAT row.' };
+const TYPE_HELP = { ...PRICE_TYPE_HELP, bar: 'Shows a Bar tab VAT row. Bar tabs have no price of their own.' };
 
 export default function MsmDetails({ api, client, menu, live, eff, sites, stage, editable, canEdit, rows = [], setNote, reload }) {
   const effMenu = eff?.menu || menu;
@@ -118,7 +118,7 @@ export default function MsmDetails({ api, client, menu, live, eff, sites, stage,
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 13.5, fontWeight: 700 }}>{s.name}</div>
                   <div style={{ fontSize: 12.5, color: 'var(--t2)' }}>
-                    {vm ? <>Writes into <strong>{vm.name || 'its menu'}</strong> · {menuTimesWords(vm)}{vm.is_default ? ' · the default' : ''}</> : ms?.venue_menu_id ? 'Writes into its menu' : 'A menu is made on first publish'}
+                    {vm ? <>Goes into the <strong>{vm.name || 'its'}</strong> menu · {menuTimesWords(vm)}{vm.is_default ? ' · the default' : ''}</> : ms?.venue_menu_id ? 'Goes into its menu' : 'A menu is made on first publish'}
                   </div>
                 </div>
                 <Pill>{counts.get(s.id) || 0} on sale</Pill>

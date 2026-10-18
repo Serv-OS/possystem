@@ -19,10 +19,12 @@
 //     resolveLineTaxRate), with the site's real overrides as publish would leave them (the four
 //     order type keys from the group menu or kept by the site, every other key the site holds).
 
-import { PUBLISHED_CHANNELS as CHANNELS, ORDER_TYPE_TAX_KEYS, channelFallback, has, money2 } from '../../../supabase/functions/_shared/msmModel.js';
+import { PUBLISHED_CHANNELS as CHANNELS, ORDER_TYPE_TAX_KEYS, channelFallback, has, money2, pctText, rateFraction } from '../../../supabase/functions/_shared/msmModel.js';
 import { mapRateDescriptor, cleanTaxByType } from '../../../supabase/functions/_shared/msmTax.js';
 import { resolveLineTaxRate } from '../tax.js';
 import { PRICE_TYPE_WORDS, TAX_TYPE_WORDS } from './msmWords.js';
+// "Zero Rate" stays "Zero Rate"; "VAT" becomes "VAT rate" (never "Zero Rate rate").
+const rateName = (name) => (!name ? 'matching rate' : /\brate$/i.test(String(name).trim()) ? String(name).trim() : `${String(name).trim()} rate`);
 
 const listOf = (v) => (Array.isArray(v) ? v : []);
 const num = (v) => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
@@ -107,7 +109,7 @@ export function siteRateChoices(ratesByLoc, siteIds = null) {
   }
   return [...seen.values()]
     .sort((a, b) => (b.sites - a.sites) || (b.percent - a.percent) || a.name.localeCompare(b.name))
-    .map((t) => ({ ...t, label: `${t.name || 'VAT'} (${t.percent}%)`, value: `${t.name}|${t.percent}` }));
+    .map((t) => ({ ...t, label: `${t.name || 'VAT'} (${pctText(t.percent)})`, value: `${t.name}|${t.percent}` }));
 }
 
 /** A picked choice value back to { name, percent } (or null for "Same as the product's VAT"). */
@@ -176,25 +178,26 @@ export function vatExample({ product, taxByType, kept = null, rates, orderType =
     ? orderType : orderType === 'collection' || orderType === 'drive-thru' ? 'takeaway' : orderType === 'bar-tab' ? 'bar' : orderType;
   if (unmatched.includes(key)) {
     const want = cleanTaxByType(taxByType)?.[key];
-    return { ok: false, words: `${siteName} has no ${want?.name || 'matching'} rate${want ? ` at ${want.percent}%` : ''}. Add it in Settings, Tax, or that site cannot be published.`, rate: null };
+    return { ok: false, words: `${siteName} has no ${rateName(want?.name)}${want ? ` at ${pctText(want.percent)}` : ''}. Add it in Settings, Tax, or that site cannot be published.`, rate: null };
   }
-  if (!own.ok) return { ok: false, words: `${siteName} has no ${product.tax_rate_name || 'matching'} rate at ${product.tax_rate_percent}%. Add it in Settings, Tax.`, rate: null };
+  if (!own.ok) return { ok: false, words: `${siteName} has no ${rateName(product.tax_rate_name)} at ${pctText(product.tax_rate_percent)}. Add it in Settings, Tax.`, rate: null };
   const { rate } = resolveLineTaxRate({ taxRateId: own.id, taxOverrides: overrides }, rates, orderType);
   const p = num(price);
   const who = `${p != null ? `A ${money2(p)} ` : 'A '}${product?.name || 'product'}`;
   const typeWord = String(orderType === 'collection' ? 'collection' : TAX_TYPE_WORDS[key] || orderType).toLowerCase();
   if (!rate) return { ok: true, words: `${who}, ${typeWord} at ${siteName}: no VAT rate applies.`, rate: null };
-  const pct = Number(rate.rate) || 0;
-  if (p == null) return { ok: true, words: `${product?.name || 'This product'}, ${typeWord} at ${siteName}: ${rate.name} (${pct}%).`, rate };
+  // tax_rates.rate is a fraction on live data (0.2 is 20%): rateFraction reads either way.
+  const f = rateFraction(rate.rate);
+  if (p == null) return { ok: true, words: `${product?.name || 'This product'}, ${typeWord} at ${siteName}: ${rate.name} (${pctText(rate.rate)}).`, rate };
   const inclusive = rate.type !== 'exclusive';
-  const vat = inclusive ? p - p / (1 + pct / 100) : p * (pct / 100);
-  const vatWords = `VAT ${money2(Math.round(vat * 100) / 100)}${inclusive ? '' : ' added'} (${rate.name}${pct ? `, ${pct}%` : ''})`;
+  const vat = inclusive ? p - p / (1 + f) : p * f;
+  const vatWords = `VAT ${money2(Math.round(vat * 100) / 100)}${inclusive ? '' : ' added'} (${rate.name}${f ? `, ${pctText(rate.rate)}` : ''})`;
   return { ok: true, words: `${who}, ${typeWord} at ${siteName}: ${vatWords}.`, rate };
 }
 
 // ── The grid's VAT view ─────────────────────────────────────────────────────
 
-const rateWords = (r) => (r ? `${r.name || 'VAT'} ${Number(r.percent ?? r.rate)}%` : 'No VAT rate');
+const rateWords = (r) => (r ? `${r.name || 'VAT'} ${pctText(r.percent ?? r.rate)}` : 'No VAT rate');
 
 /**
  * The VAT a product is charged for one order type key ('dine-in', 'takeaway', 'delivery', 'bar'):

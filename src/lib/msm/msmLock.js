@@ -29,14 +29,20 @@ export const OWNED_ITEM_KEYS = Object.freeze({
   taxOverrides: 'tax_overrides', tax_overrides: 'tax_overrides',
   allergens: 'allergens', tags: 'tags', image: 'image',
   assignedModifierGroups: 'assigned_modifier_groups', assigned_modifier_groups: 'assigned_modifier_groups', modifierGroups: 'assigned_modifier_groups',
-  visibility: 'visibility', soldAlone: 'sold_alone', sold_alone: 'sold_alone', type: 'type',
+  // visibility (where it shows) is NOT here: publish never writes it on an existing row, so it
+  // stays the site's (17 Oct verification; Peter's UI issue 2).
+  soldAlone: 'sold_alone', sold_alone: 'sold_alone', type: 'type',
   itemCode: 'item_code', item_code: 'item_code', parentId: 'parent_id', parent_id: 'parent_id',
   price: 'pricing',
 });
 
-// The prices head office owns inside pricing (the Standard price and the order type prices).
-// pricing.menus (timed menu prices) and anything else stay the site's.
-export const OWNED_PRICE_KEYS = Object.freeze(['base', 'dineIn', 'takeaway', 'collection', 'delivery', 'driveThru']);
+// The prices head office owns inside pricing (the Standard price and the order type prices publish
+// writes). Delivery is a platform price publish never writes (msmModel PUBLISHED_CHANNELS), and
+// pricing.menus (timed menu prices) and anything else stay the site's (17 Oct verification).
+export const OWNED_PRICE_KEYS = Object.freeze(['base', 'dineIn', 'takeaway', 'collection', 'driveThru']);
+// The VAT by order type keys head office owns (msmModel ORDER_TYPE_TAX_KEYS). A site's counter,
+// drive thru and collection keys are copied as they are by publish, so they stay editable here.
+export const OWNED_TAX_KEYS = Object.freeze(['dine-in', 'takeaway', 'delivery', 'bar']);
 
 // An option group's fields head office owns (store spelling -> column for the kept check).
 export const OWNED_GROUP_KEYS = Object.freeze({
@@ -51,9 +57,9 @@ export const OWNED_OPTION_KEYS = Object.freeze(['name', 'price', 'itemId', 'item
 const WORDS = {
   name: 'name', menu_name: 'name', receipt_name: 'receipt name', kitchen_name: 'kitchen name', description: 'description',
   cat: 'category', cats: 'extra categories', tax_rate_id: 'VAT', tax_overrides: 'VAT by order type', allergens: 'allergens',
-  tags: 'dietary tags', image: 'photo', assigned_modifier_groups: 'option groups', visibility: 'where it shows',
-  sold_alone: 'sold on its own', type: 'type', item_code: 'item code', parent_id: 'size of', pricing: 'prices',
-  min: 'rule', max: 'rule', selection_type: 'kind of choice', options: 'options',
+  tags: 'dietary tags', image: 'photo', assigned_modifier_groups: 'option groups', visibility: 'channels it shows on',
+  sold_alone: 'sold on its own setting', type: 'type', item_code: 'item code', parent_id: 'size link', pricing: 'prices',
+  min: 'rules', max: 'rules', selection_type: 'kind of choice', options: 'options',
 };
 export const lockWord = (col) => WORDS[col] || 'this setting';
 
@@ -78,6 +84,18 @@ export function lockedItemPatch(patch, cur, kept = []) {
   const out = {};
   const dropped = new Set();
   for (const [key, value] of Object.entries(patch || {})) {
+    // VAT by order type, key by key: only the four keys head office owns are kept as they were.
+    if ((key === 'taxOverrides' || key === 'tax_overrides') && !k.has('tax_overrides')) {
+      const was = cur && cur[key] && typeof cur[key] === 'object' ? cur[key] : (cur && cur.taxOverrides && typeof cur.taxOverrides === 'object' ? cur.taxOverrides : {});
+      const next = value && typeof value === 'object' ? { ...value } : {};
+      let changed = false;
+      for (const tk of OWNED_TAX_KEYS) {
+        if (!same(next[tk], was[tk])) { changed = true; if (has(was, tk)) next[tk] = was[tk]; else delete next[tk]; }
+      }
+      if (changed) dropped.add('tax_overrides');
+      if (!same(next, was)) out[key] = next;
+      continue;
+    }
     if (key === 'pricing') {
       const was = cur?.pricing && typeof cur.pricing === 'object' ? cur.pricing : {};
       const next = value && typeof value === 'object' ? { ...value } : {};
@@ -156,12 +174,16 @@ export function lockedOptionPatch(patch, ownedOption) {
   return { patch: out, dropped: dropped ? ['options'] : [] };
 }
 
-/** The toast after a refused edit: "Latte: the price and the name are set by head office ...". */
+/**
+ * The toast after a refused edit: "Latte: head office sets the prices and the name in the Multi site
+ * menu, so this was not changed here." The verb never depends on the word (17 Oct verification:
+ * "the prices is set").
+ */
 export function droppedWords(name, dropped) {
   const words = [...new Set((dropped || []).map(lockWord))];
   if (!words.length) return '';
   const list = words.length === 1 ? words[0] : `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}`;
-  return `${name || 'This product'}: the ${list} ${words.length === 1 ? 'is' : 'are'} set by head office in the Multi site menu, so ${words.length === 1 ? 'it was' : 'they were'} not changed here.`;
+  return `${name || 'This product'}: head office sets the ${list} in the Multi site menu, so this was not changed here.`;
 }
 
 /**

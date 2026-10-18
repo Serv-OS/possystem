@@ -30,7 +30,7 @@
 //     off as [Overwrite it]; an option the group menu does not know: [Bring it into the group] or
 //     [Leave it as Leeds's own] (lib/msm/msmDriftView.js). The publish needs one tick per site
 //     whose changes it overwrites; unsettled lines never block.
-//   * Which sites are trading now, on their own clocks; "Schedule for tomorrow 06:00" beside
+//   * Which sites are trading now, on their own clocks; "Or schedule it for <the next 06:00>" beside
 //     Publish now; when to start and the counter tills under "More options".
 //   * Health lines say the fix and carry it: [Open product], [Turn the option off there too].
 
@@ -39,8 +39,8 @@ import { tradingWords, optionOffFix, healthProduct, hubriseReminder } from '../.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { applyChanges, previewSet, sitesReached } from '../../../../supabase/functions/_shared/msmDiff.js';
-import { scheduleNote, scheduleButtonWords, isPast, dueAt, overlaps, DEFAULT_LEAD_MINUTES } from '../../../../supabase/functions/_shared/msmSchedule.js';
-import { defaultRunLocal, minRunLocal, publishNowWords, previewHeadline, versionSummary, siteRowWords, publishBlocked, scheduleBlocked } from '../../../lib/msm/msmPublishView';
+import { scheduleNote, scheduleButtonWords, isPast, dueAt, overlaps, DEFAULT_LEAD_MINUTES, localToUtc, whenText } from '../../../../supabase/functions/_shared/msmSchedule.js';
+import { defaultRunLocal, minRunLocal, publishNowWords, previewHeadline, versionSummary, siteRowWords, publishBlocked, scheduleBlocked, changingSites, nextMorningWords } from '../../../lib/msm/msmPublishView';
 import { Btn, Pill, Segmented, Notice, WindowedList, Field, SummaryBox, ConfirmTicks } from './msmUi';
 import { summarise } from '../../../lib/msm/msmSummary';
 import { riskChecks, allTicked } from '../../../lib/msm/msmRisk';
@@ -183,12 +183,16 @@ export default function MsmPublish({ api, menu, live, eff, sites, sets, working,
 
   // ── Actions ──────────────────────────────────────────────────────────────
   const [busy, setBusy] = useState(false);
-  const reachSites = reach.map((loc) => ({ id: loc, name: siteNames[loc] || 'One site' }));
+  // Only the sites this publish changes are named on the button, the question and the trading
+  // warning (17 Oct verification); the rest are visited and nothing is written there.
+  const changing = useMemo(() => changingSites(preview, reach), [preview, reach]);
+  const reachSites = changing.map((loc) => ({ id: loc, name: siteNames[loc] || 'One site' }));
+  const quietSites = reach.length - changing.length;
   const blocked = !preview || !preview.ok || reading;
   const whenWords = mode === 'schedule' && runLocal ? scheduleButtonWords(runLocal, tz, lead).replace(/^Schedule for /, '') : null;
   const summaryLines = useMemo(() => (after && rows.length ? summarise(rows, after, { siteNames, when: whenWords }) : []), [after, rows, siteNames, whenWords]);
-  const risks = useMemo(() => (after && rows.length ? riskChecks(rows, after, sales ?? null, trading === undefined ? [] : trading, { siteNames, publishNow: mode === 'now', sitesReached: reach, drift: overwriteCounts(drift) }) : []), [after, rows, sales, trading, siteNames, mode, reach, drift]);
-  const tradingNow = useMemo(() => (trading === undefined ? null : tradingWords(trading, siteNames, reach)), [trading, siteNames, reach]);
+  const risks = useMemo(() => (after && rows.length ? riskChecks(rows, after, sales ?? null, trading === undefined ? [] : trading, { siteNames, publishNow: mode === 'now', sitesReached: changing, drift: overwriteCounts(drift) }) : []), [after, rows, sales, trading, siteNames, mode, changing, drift]);
+  const tradingNow = useMemo(() => (trading === undefined ? null : tradingWords(trading, siteNames, changing)), [trading, siteNames, changing]);
   const [moreOpen, setMoreOpen] = useState(false);
   const ready = allTicked(risks, ticked);
   const checking = sales === undefined || (mode === 'now' && trading === undefined);
@@ -197,7 +201,7 @@ export default function MsmPublish({ api, menu, live, eff, sites, sets, working,
     const tills = idle ? 'counter tills between sales (never mid sale)' : 'counter tills when staff tap Sync POS';
     const yes = await confirm({
       title: `${publishNowWords(reachSites)}?`,
-      words: `${headline?.words ? `${headline.words}.\n\n` : ''}Kiosks, kitchen screens and handhelds update straight away, ${tills}.`,
+      words: `${headline?.words ? `${headline.words}.\n\n` : ''}${quietSites > 0 ? `Nothing changes at the other ${quietSites} site${quietSites === 1 ? '' : 's'}.\n\n` : ''}Kiosks, kitchen screens and handhelds update straight away, ${tills}.`,
       yes: publishNowWords(reachSites), no: 'Not yet',
     });
     if (!yes) return;
@@ -205,6 +209,8 @@ export default function MsmPublish({ api, menu, live, eff, sites, sets, working,
     const r = await api.publishNow(working.id, { applyWhenIdle: idle });
     setBusy(false);
     if (!r.ok) { setNote({ tone: 'bad', text: r.words }); return; }
+    // An old note's Undo must not stay on screen once its draft is published (17 Oct verification).
+    setNote(null);
     setTracking({ versionId: r.data.version_id, title: working.title, runWords: r.data.runWords || '' });
     setWorkingId(null);
     await refreshSets();
@@ -407,9 +413,10 @@ export default function MsmPublish({ api, menu, live, eff, sites, sets, working,
                 <>
                   <Btn kind="primary" style={{ width: '100%', padding: '11px 14px', fontSize: 14 }} disabled={publishBlocked({ canEdit, busy, blocked, ready, checking })} onClick={publishNow} data-testid="msm-publish-now">{busy ? 'Publishing…' : publishNowWords(reachSites)}</Btn>
                   {canEdit && (
-                    <Btn small kind="soft" style={{ width: '100%', marginTop: 8 }} data-testid="msm-schedule-tomorrow"
+                    <Btn small kind="soft" style={{ width: '100%', marginTop: 8, whiteSpace: 'normal' }} data-testid="msm-schedule-tomorrow"
                       onClick={() => { setMode('schedule'); setRunLocal(defaultRunLocal(Date.now(), tz)); }}>
-                      Or schedule it for tomorrow 06:00
+                      {/* The next 06:00 on the sites' clock, with its day (17 Oct verification). */}
+                      {nextMorningWords(defaultRunLocal(now, tz), whenText(localToUtc(defaultRunLocal(now, tz), tz), tz))}
                     </Btn>
                   )}
                 </>
@@ -529,7 +536,9 @@ function HealthPanel({ preview, siteNames, categories = [], canEdit = false, onP
   for (const s of preview.sites) {
     if (s.missing) block.push({ code: 'unread', words: 'Could not read this site.', where: s.name });
     for (const p of s.health?.blocking || []) block.push({ ...p, where: s.name || siteNames[s.location_id], loc: s.location_id });
-    for (const p of s.health?.warnings || []) warn.push({ ...p, where: s.name || siteNames[s.location_id], loc: s.location_id });
+    // "Changed at the site" lines are listed, in words and with Keep or Put back, in the changes
+    // made at the sites panel: never twice (17 Oct verification).
+    for (const p of s.health?.warnings || []) if (p.code !== 'changed_at_venue') warn.push({ ...p, where: s.name || siteNames[s.location_id], loc: s.location_id });
   }
   const shownWarn = showAll ? warn : warn.slice(0, 6);
   return (

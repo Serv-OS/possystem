@@ -69,7 +69,8 @@ export default function MsmSites({ api, client, menu, live, eff, sites, rows, ca
     return { drift, own };
   }, [check, sites, live, eff, names]);
   const driftCount = useMemo(() => Object.fromEntries(Object.entries(derived.drift).map(([k, v]) => [k, v.length])), [derived]);
-  const cards = useMemo(() => siteCards(sites, history.rows || [], { waiting, drift: driftCount }), [sites, history.rows, waiting, driftCount]);
+  // Never "In sync" for a site nobody has looked at yet (17 Oct verification).
+  const cards = useMemo(() => siteCards(sites, history.rows || [], { waiting, drift: driftCount, checked: !!check }), [sites, history.rows, waiting, driftCount, check]);
 
   const retry = async (card) => {
     setBusy(card.id);
@@ -192,7 +193,7 @@ function DriftReview({ site, lines, central, names, editable, stage, onClose }) 
               ) : (
                 <>
                   <Btn small kind="soft" disabled={!!busy} onClick={() => act(key, keepChanges(central, site.id, l), `${name} keeps its own value. It is in the draft.`)}>Keep {name}'s</Btn>
-                  <Btn small kind="link" disabled={!!busy} onClick={() => act(key, putBackChanges(central, site.id, l), `The group menu's value goes back at ${name} on the next publish.`)}>Put the group's back on next publish</Btn>
+                  <Btn small kind="link" disabled={!!busy} onClick={() => act(key, putBackChanges(central, site.id, l), `The group menu's value goes back at ${name} on the next publish.`)}>Put the group's back</Btn>
                 </>
               ))}
           </div>
@@ -311,6 +312,13 @@ function AddSite({ api, client, menu, live, sites, setNote, onClose, onStaged })
   const menus = raw && raw !== 'error' ? venueMenuChoices(raw) : [];
   const site = (company || []).find((s) => s.id === loc);
   const plan = useMemo(() => (loc ? planAddSite(live, { locationId: loc, venueMenuId: venueMenuId || null, prices, copyFrom }) : null), [live, loc, venueMenuId, prices, copyFrom]);
+  // A site that already sells the group's products as its own (the same ids): Add a site would take
+  // them over, so it is refused here and at publish (17 Oct verification). Bring them in instead.
+  const owned = useMemo(() => {
+    if (!plan || !raw || raw === 'error') return [];
+    const mine = new Map((raw.items || []).map((i) => [i.id, i]));
+    return plan.changes.filter((c) => c.target === 'product_site' && mine.has(c.after?.venue_item_id)).map((c) => mine.get(c.after.venue_item_id));
+  }, [plan, raw]);
 
   const go = async () => {
     if (!plan?.count) return;
@@ -330,10 +338,15 @@ function AddSite({ api, client, menu, live, sites, setNote, onClose, onStaged })
         <>
           <div style={{ flex: 1, ...ui.sub }}>{plan?.count ? `${plan.words}.` : ''}</div>
           <Btn onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" disabled={busy || !plan?.count || raw === null || raw === 'error'} onClick={go}>Put it in a new draft</Btn>
+          <Btn kind="primary" disabled={busy || !plan?.count || raw === null || raw === 'error' || owned.length > 0} onClick={go}>Put it in a new draft</Btn>
         </>
       )}>
       {words && <Notice tone="bad">{words}</Notice>}
+      {owned.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <Notice tone="bad">{site?.name || 'This site'} already sells {owned.length} of the group menu's products as its own (like {owned.slice(0, 2).map((i) => i.menu_name || i.name).join(' and ')}). Add a site is only for a site that does not sell them yet: bring its products in on the Sites tab instead, so nothing it sells today changes.</Notice>
+        </div>
+      )}
       {company === null && <div style={ui.sub}>Reading the company's sites…</div>}
       {company && !company.length && <Notice>Every site of the company is already in the group menu.</Notice>}
       {company && company.length > 0 && (
@@ -343,13 +356,13 @@ function AddSite({ api, client, menu, live, sites, setNote, onClose, onStaged })
               {company.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
           </Field>
-          <Field label="Its menu" hint={menus.length ? 'A new menu is best for a new site. Adding to a menu it has keeps what it sells today; the group\'s products go in beside them.' : 'This site has no menu yet: one is made when you publish.'}>
+          <Field label="Its menu" hint={menus.length ? 'A new menu is best for a new site. Adding to a menu it has puts the group\'s products in beside its own.' : 'This site has no menu yet: one is made when you publish.'}>
             {raw === null && <div style={ui.sub}>Reading the site…</div>}
             {raw === 'error' && <Notice tone="bad">Could not read this site.</Notice>}
             {raw && raw !== 'error' && (
               <select aria-label="Its menu" style={ui.input} value={venueMenuId} onChange={(e) => setVenueMenuId(e.target.value)}>
                 <option value="">New menu called "{menu.name}" (recommended for a new site)</option>
-                {menus.map((m) => <option key={m.id} value={m.id}>Add to {site?.name || 'its'}'s existing menu "{m.name}": its {m.products} products stay, the group products go in beside them</option>)}
+                {menus.map((m) => <option key={m.id} value={m.id}>Add to {site?.name || 'its'}'s existing menu "{m.name}": the group products go in beside its own</option>)}
               </select>
             )}
           </Field>

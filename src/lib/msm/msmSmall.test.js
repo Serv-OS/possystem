@@ -53,7 +53,7 @@ test('messages: the scheduler and every editor hear about a failure, in words', 
   assert.deepEqual(to, ['a@example.test', 'c@example.test'], 'editors and the scheduler, each address once');
 });
 
-test('add a site: every product on sale, another site\'s own extras left out; copy prices only where they differ', () => {
+test('add a site: every product on sale, one site products too (the old mark cleared); copy prices only where they differ', () => {
   const central = {
     menu: { id: 'm1' }, sites: [{ location_id: 's1' }],
     products: [
@@ -65,12 +65,18 @@ test('add a site: every product on sale, another site\'s own extras left out; co
     productSites: [{ product_id: 'p1', location_id: 's1', price: 3.2, active: true }, { product_id: 'p4', location_id: 's1', price: 2, active: true }],
   };
   const a = planAddSite(central, { locationId: 'new-site-0000abcd' });
-  assert.deepEqual(a.changes.map((c) => c.target), ['menu_site', 'product_site', 'product_site']);
+  // 17 Oct verification (UI item 8): the old "only at s1" mark never leaves Pie out.
+  assert.deepEqual(a.changes.map((c) => `${c.target}:${c.entity_id}`), ['menu_site:m1', 'product_site:p1', 'product_site:p2', 'product:p2', 'product_site:p4']);
+  assert.equal(a.changes.find((c) => c.target === 'product').after.site_only_location_id, null);
+  assert.equal(a.count, 3);
   assert.equal(a.changes[1].after.venue_item_id, 'm-latte_0000abcd');
   assert.equal(a.changes[1].after.price, null);
   const copy = planAddSite(central, { locationId: 'new-site-0000abcd', prices: 'copy', copyFrom: 's1' });
   assert.equal(copy.changes.find((c) => c.entity_id === 'p1').after.price, 3.2);
   assert.equal(copy.changes.find((c) => c.entity_id === 'p4').after.price, null, 'equal to the default: follows it');
+  const sells = { ...central, productSites: [...central.productSites, { product_id: 'p2', location_id: 's1', price: 4.5, active: true }] };
+  const copyPie = planAddSite(sells, { locationId: 'new-site-0000abcd', prices: 'copy', copyFrom: 's1' });
+  assert.equal(copyPie.changes.find((c) => c.target === 'product_site' && c.entity_id === 'p2').after.price, 4.5, 'copy from a site copies a one site product it sells');
   assert.match(planAddSite(central, { locationId: 's1' }).words, /already in the group menu/);
 });
 

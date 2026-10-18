@@ -23,7 +23,7 @@
 import { useState, useMemo, useCallback, useEffect, useRef, createContext, useContext } from 'react';
 import { useStore, findDuplicateProductName, bulkUpdateMenuItems, bulkSummaryWords, runInMenuWriteQueue, MENU_WAIT_MS, loadVenueMenu, tabVenue } from '../../store';
 import { msmManagedState, subscribeMsmManaged, isMsmManaged } from '../../lib/msm/msmManaged.js';
-import { itemLock, groupLock } from '../../lib/msm/msmLock.js';
+import { itemLock, groupLock, OWNED_TAX_KEYS } from '../../lib/msm/msmLock.js';
 import { MsmLockBanner, MsmLocked } from './msm/MsmLockNote';
 import { useConfirm } from './msm/useConfirm';
 import { useMsmLockState } from './msm/useMsmLockState';
@@ -397,7 +397,8 @@ function TaxSection({ item, onUpdate, markBOChange, lockRate = false, lockOverri
       </div>
       </MsmLocked>
 
-      <MsmLocked on={lockOverrides} label="VAT by order type">
+      {/* Multi site menu (17 Oct 2026 verification): only the four keys publish writes are head
+          office's (eat in, takeaway, delivery, bar tab); counter and drive thru stay the site's. */}
       <div style={{ marginBottom:8 }}>
         <span style={{ fontSize:10, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', display:'block', marginBottom:8 }}>
           Per-order-type overrides
@@ -407,7 +408,8 @@ function TaxSection({ item, onUpdate, markBOChange, lockRate = false, lockOverri
           Drive thru, collection and online collection use the takeaway override unless they have their own.
         </div>
         {ORDER_TYPES_TAX.map(ot => (
-          <div key={ot} style={{ display:'grid', gridTemplateColumns:'100px 1fr', gap:8, alignItems:'center', marginBottom:6 }}>
+          <MsmLocked key={ot} on={lockOverrides && OWNED_TAX_KEYS.includes(ot)} label={`${ORDER_TYPE_TAX_LABEL[ot] || 'Order type'} VAT`}>
+          <div style={{ display:'grid', gridTemplateColumns:'100px 1fr', gap:8, alignItems:'center', marginBottom:6 }}>
             <span style={{ fontSize:12, color:'var(--t2)', fontWeight:600 }}>{ORDER_TYPE_TAX_LABEL[ot] || ot}</span>
             <select value={item.taxOverrides?.[ot] || ''}
               onChange={e => setOverride(ot, e.target.value)}
@@ -420,9 +422,9 @@ function TaxSection({ item, onUpdate, markBOChange, lockRate = false, lockOverri
               <span style={{ gridColumn:'2', fontSize:11, color:'var(--t4)', lineHeight:1.5 }}>{ORDER_TYPE_TAX_NOTE[ot]}</span>
             )}
           </div>
+          </MsmLocked>
         ))}
       </div>
-      </MsmLocked>
     </div>
   );
 }
@@ -3568,7 +3570,9 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                 <span style={{ fontSize:14, fontWeight:800, color:'var(--acc)' }}>{money(p.base||0)} <button onClick={()=>setSec('details')} style={{ marginLeft:8, background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:10, fontFamily:'inherit', textDecoration:'underline' }}>edit on Details</button></span>
               </div>
             )}
-            <MsmLocked on={lockOn('pricing')} label="Order type prices">
+            {/* Multi site menu (17 Oct 2026 verification): head office owns the order type prices
+                publish writes; Delivery is a platform price publish never writes, so it stays the
+                site's, row by row. */}
             {[
               { k:'dineIn',       label:'Dine-in',        hint:'Leave blank to use base price' },
               { k:'takeaway',     label:'Takeaway',       hint:'' },
@@ -3577,7 +3581,8 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
               // Drive thru (16 Sep 2026): the resolver reads driveThru, then takeaway, then base.
               { k:'driveThru',    label:'Drive thru',     hint:'Leave blank to use the takeaway price' },
             ].map(({k,label,hint}) => (
-              <div key={k}>
+              <MsmLocked key={k} on={k !== 'delivery' && lockOn('pricing')} label={`${label} price`}>
+              <div>
                 <div style={{ display:'flex', alignItems:'baseline', gap:6, marginBottom:5 }}>
                   <span style={lbl}>{label}</span>
                   {hint && <span style={{ fontSize:9, color:'var(--t4)', fontWeight:400 }}>{hint}</span>}
@@ -3588,8 +3593,8 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                   {p[k]!==null&&p[k]!==undefined&&<button onClick={()=>fp(k,'')} style={{ position:'absolute', right:8, top:'50%', transform:'translateY(-50%)', background:'none', border:'none', color:'var(--t4)', cursor:'pointer', fontSize:14 }}>×</button>}
                 </div>
               </div>
+              </MsmLocked>
             ))}
-            </MsmLocked>
           {!isSub && <PerMenuPricingTiers item={item} onUpdate={onUpdate} />}
           </div>
         )}

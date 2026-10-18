@@ -183,7 +183,7 @@ test('the bulk bar: on, off, one price, copy from a site, move with sizes, paste
     ['product_site', 'pie', L1, 'create'], ['product', 'pie', null, 'update'], ['product_site', 'pie', L2, 'create'],
   ], 'a one site product goes on at the others too, its old mark cleared once (UI issues 8 and 11)');
   const off = activeMany(ctx, ['latte'], [L1, L2], false);
-  assert.equal(off.changes.length, 2);
+  assert.equal(off.changes.length, 4, 'Latte and its size Large latte go off together (17 Oct: a product with sizes, typed or not)');
   const price = priceMany(ctx, ['latte', 'cola'], [L1, L2, L3], 3.2);
   assert.deepEqual(price.changes.map((c) => [c.entity_id, c.location_id, c.after.price]), [['latte', L1, 3.2], ['cola', L1, 3.2], ['cola', L2, 3.2]], 'only where sold; Latte at L2 is already 3.20');
   const copy = copyPricesMany(ctx, ['latte'], L2, [L1, L3]);

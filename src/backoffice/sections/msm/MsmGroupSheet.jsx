@@ -20,7 +20,7 @@ import { useMemo, useState } from 'react';
 import * as edit from '../../../lib/msm/msmGroupEdit';
 import {
   groupForm, newGroupForm, newOptionForm, groupSaveChanges, addGroupWithSites, copyGroupWithSites, keptRuleLines, formSentence,
-  optionsOf, optionPriceWords, groupSiteIds,
+  optionsOf, optionPriceWords, groupSiteIds, groupPendingSiteIds,
 } from '../../../lib/msm/msmGroupView';
 import { applyChanges } from '../../../../supabase/functions/_shared/msmDiff.js';
 import { summarise, siteList } from '../../../lib/msm/msmSummary';
@@ -71,6 +71,8 @@ export default function MsmGroupSheet({ ctx, eff, ix, sites, stage, editable, ca
   const group = (eff?.groups || []).find((g) => g.id === groupId) || null;
   const legacy = !isNew && optionsOf(eff, groupId).legacy;
   const at = useMemo(() => groupSiteIds(eff, groupId), [eff, groupId]);
+  // Where it lands when the draft is published (a product sold there asks it).
+  const pending = useMemo(() => groupPendingSiteIds(eff, groupId), [eff, groupId]);
   const siteName = useMemo(() => new Map(sites.map((s) => [s.id, s.name])), [sites]);
   const otherGroups = (eff?.groups || []).filter((g) => !g.archived && g.id !== groupId);
   const users = useMemo(() => (eff?.products || []).filter((p) => !p.archived && (p.modifier_groups || []).some((a) => gidOf(a) === groupId)), [eff, groupId]);
@@ -92,7 +94,8 @@ export default function MsmGroupSheet({ ctx, eff, ix, sites, stage, editable, ca
   const risks = useMemo(() => riskChecks(result.changes, effAfter, sales ?? null, null, { siteNames: siteName, ratesByLoc }), [result.changes, effAfter, sales, siteName, ratesByLoc]);
   // Sites the group is not at yet (no product sold there asks it): said on screen, never only in a
   // hover title an iPad cannot show (round 2 review).
-  const absentSites = sites.filter((s) => !at.has(s.id)).map((s) => s.name);
+  const absentSites = sites.filter((s) => !at.has(s.id) && !pending.has(s.id)).map((s) => s.name);
+  const pendingSites = sites.filter((s) => pending.has(s.id)).map((s) => s.name);
   const ready = allTicked(risks, ticked);
 
   if (!draft || (!isNew && !group)) return <div style={ui.card}><Notice>That option group is no longer in the group menu.</Notice></div>;
@@ -181,7 +184,7 @@ export default function MsmGroupSheet({ ctx, eff, ix, sites, stage, editable, ca
           {!isNew && (
             <div style={{ display: 'flex', gap: 6, alignItems: 'center', paddingTop: 20 }}>
               <Pill tone="neutral">{users.length ? `On ${users.length} product${users.length === 1 ? '' : 's'}` : 'Not on any product'}</Pill>
-              <Pill tone={at.size ? 'blue' : 'neutral'}>{at.size ? `At ${at.size} site${at.size === 1 ? '' : 's'}` : 'At no site yet'}</Pill>
+              <Pill tone={at.size ? 'blue' : pending.size ? 'warn' : 'neutral'}>{at.size ? `At ${at.size} site${at.size === 1 ? '' : 's'}` : pending.size ? `Goes to ${pending.size} site${pending.size === 1 ? '' : 's'} when you publish` : 'At no site yet'}</Pill>
               {editable && (
                 <MenuButton label="More" items={[
                   !group.archived && !legacy && { label: 'Change prices', hint: 'Up or down by an amount or a percent, at every site or some.', disabled: dirty, why: 'Add your changes to the draft first.', onClick: () => onChangePrices?.({ optionGroupIds: [groupId] }) },
@@ -269,6 +272,11 @@ export default function MsmGroupSheet({ ctx, eff, ix, sites, stage, editable, ca
           {HELP.option} Grey prices follow the group price; a site's own price is bold. Leave a site's box blank to charge the group price. {HELP.optionVat}
         </div>
         {!draft.options.length && <Notice>No options yet. Add the answers, like Oat milk and Soya milk.</Notice>}
+        {pendingSites.length > 0 && (
+          <div data-testid="msm-group-pending" style={{ ...ui.sub, fontSize: 12, margin: '0 0 10px', padding: '8px 10px', borderRadius: 9, background: 'var(--bg2)', border: '1px solid color-mix(in srgb, var(--amber, #F5A623) 45%, transparent)' }}>
+            Goes to {siteList(pendingSites)} when you publish, with its options on there.
+          </div>
+        )}
         {draft.options.length > 0 && absentSites.length > 0 && (
           <div data-testid="msm-group-absent" style={{ ...ui.sub, fontSize: 12, margin: '0 0 10px', padding: '8px 10px', borderRadius: 9, background: 'var(--bg2)', border: '1px solid var(--bdr)' }}>
             Not at {siteList(absentSites)} yet. The group goes to a site when a product sold there asks it: use Add to products below, then Add to draft. Site prices can be set after that.
@@ -280,7 +288,8 @@ export default function MsmGroupSheet({ ctx, eff, ix, sites, stage, editable, ca
               <thead>
                 <tr style={{ background: 'var(--bg2)', color: 'var(--t3)', fontSize: 11.5, textAlign: 'left' }}>
                   <th style={th(36)} aria-label="Order" />
-                  <th style={th(200)}>Option</th>
+                  {/* The option's name stays in view while the site columns scroll sideways (17 Oct verification). */}
+                  <th style={{ ...th(200), position: 'sticky', left: 0, zIndex: 1, background: 'var(--bg2)' }}>Option</th>
                   <th style={th(96)} title="Every site charges this unless it has its own">Group price</th>
                   {sites.map((s) => <th key={s.id} style={th(124)} title={s.name}><span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 112 }}>{s.name}</span></th>)}
                   <th style={th(160)} title={HELP.thenAsk}>Then ask</th>
@@ -303,7 +312,7 @@ export default function MsmGroupSheet({ ctx, eff, ix, sites, stage, editable, ca
                           </div>
                         )}
                       </td>
-                      <td style={td}>
+                      <td style={{ ...td, position: 'sticky', left: 0, zIndex: 1, background: 'var(--bg1)' }}>
                         <input aria-label="Option name" readOnly={lock} style={{ ...ui.input, padding: '6px 9px', fontWeight: 650 }} value={o.name} placeholder="Like Oat milk" onChange={(e) => setOpt(i, { name: e.target.value })} />
                         {(o.product_id || o.newSub) && (
                           <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 4, flexWrap: 'wrap' }}>

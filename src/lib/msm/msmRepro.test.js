@@ -92,7 +92,11 @@ test('THE REPRO: House Red and its sizes turned on at site B, a size price chang
   const atB = preview.sites.find((s) => s.location_id === B);
   assert.ok(atB.health.ok, `no blocking problem at B: ${JSON.stringify(atB.health.blocking)}`);
   const words = atB.lines.map((l) => l.words);
-  for (const nm of ['House Red', '175 ml glass', '250 ml glass', 'Bottle']) assert.ok(words.some((w) => w.startsWith(`${nm}: new here`)), `${nm} is named at B: ${words.join(' | ')}`);
+  // 17 Oct verification: each size is named with its product and the price it goes on sale at.
+  for (const w of ['House Red: new here', 'House Red, 175 ml glass: new here at 5.50', 'House Red, 250 ml glass: new here at 8.00', 'House Red, Bottle: new here at 22.00']) {
+    assert.ok(words.includes(w), `"${w}" at B: ${words.join(' | ')}`);
+  }
+  assert.match(atB.words, /1 new product, 3 new sizes/, 'the site tab counts the product and its sizes apart');
   const atA = preview.sites.find((s) => s.location_id === A);
   assert.equal((atA?.plan?.lines || []).length, 0, 'nothing changes at A');
 

@@ -3,7 +3,7 @@
 // MULTI SITE MENU, ROUND 2 (17 Oct 2026, v5.11.75): small pure helpers for Review and publish, the
 // foolproof layer (design 2 items 17 and 18, design 4, design 6.3 and 6.5). Tested
 // (msmPublishHelp.test.js).
-//   tradingWords     "Leeds is trading now (14:05 there). Headingley looks quiet (23:10 there)."
+//   tradingWords     "Leeds is trading now (14:05 there). Headingley is not busy now (23:10 there)."
 //   optionOffFix     the draft change behind "Turn the option off there too" on a health warning
 //   healthProduct    which product a health line is about, for its [Open product] button
 
@@ -32,7 +32,7 @@ export function tradingWords(rows, siteNames = {}, reach = []) {
     const name = siteNames[r.location_id] || 'One site';
     const at = clockOf(r.local_time);
     (r.trading ? busy : quiet).push(name);
-    parts.push(`${name} ${r.trading ? 'is trading now' : 'looks quiet'}${at ? ` (${at} there)` : ''}`);
+    parts.push(`${name} ${r.trading ? 'is trading now' : 'is not busy now'}${at ? ` (${at} there)` : ''}`);
   }
   if (!parts.length) return { busy, quiet, words: '' };
   return { busy, quiet, words: `${parts.join('. ')}.` };

@@ -85,8 +85,8 @@ export default function MsmTimeline({ api, menu, live, sites, sets, canEdit, set
     await refreshSets();
     setWorkingId(d.data.id);
     setUndo(null);
-    if (!r.ok) { setNote({ tone: 'bad', text: `The put back draft was made but ${r.failed.length || r.conflicts} change${(r.failed.length || r.conflicts) === 1 ? '' : 's'} did not go in: ${r.failed[0]?.words || 'someone changed them at the same moment'}.` }); return; }
-    setNote({ tone: 'good', text: `The put back is a draft: check what it changes at each site, then publish it or schedule it.` });
+    if (!r.ok) { setNote({ tone: 'bad', text: `The undo draft was made but ${r.failed.length || r.conflicts} change${(r.failed.length || r.conflicts) === 1 ? '' : 's'} did not go in: ${r.failed[0]?.words || 'someone changed them at the same moment'}.` }); return; }
+    setNote({ tone: 'good', text: 'Undo draft made: check what it changes at each site, then publish it or schedule it.' });
     setTab('publish');
   };
 
@@ -168,7 +168,7 @@ export default function MsmTimeline({ api, menu, live, sites, sets, canEdit, set
             <>
               <div style={{ flex: 1, ...ui.sub }}>{undo.plan.changes.length} change{undo.plan.changes.length === 1 ? '' : 's'} go into a new draft. Nothing reaches the tills until you publish it.</div>
               <Btn onClick={() => setUndo(null)}>Keep it as it is</Btn>
-              <Btn kind="primary" disabled={!undo.plan.changes.length || busy === `undo:${undo.version.id}`} onClick={confirmUndo}>Add the put back to a draft</Btn>
+              <Btn kind="primary" disabled={!undo.plan.changes.length || busy === `undo:${undo.version.id}`} onClick={confirmUndo}>Make a draft that undoes it</Btn>
             </>
           )}>
           {!undo.plan.changes.length && <Notice>There is nothing in this version that can be put back.</Notice>}
@@ -234,7 +234,7 @@ function VersionRow({ v, first, api, names, siteNames, tzOf, now, live, canEdit,
   return (
     <div style={{ borderTop: first ? 'none' : '1px solid var(--bdr)' }}>
       <div onClick={toggle} role="button" tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter') toggle(); }} style={{ ...ui.row, padding: '12px 16px', cursor: 'pointer' }}>
-        <span style={{ width: 54, fontSize: 12, fontWeight: 800, color: 'var(--t3)' }}>{v.version_no ? `v${v.version_no}` : ''}</span>
+        <span style={{ width: 54, fontSize: 12, fontWeight: 800, color: 'var(--t3)' }}>{v.version_no ? `Version ${v.version_no}` : ''}</span>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 13.5, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{v.title || KIND[v.kind] || 'Publish'}</div>
           <div style={ui.sub}>
@@ -261,7 +261,7 @@ function VersionRow({ v, first, api, names, siteNames, tzOf, now, live, canEdit,
           )}
           {v.kind !== 'import' && (
             <div>
-              <span style={ui.label}>What it wrote at {siteNames[site || v.sites[0]?.location_id] || 'the site'}</span>
+              <span style={{ ...ui.label, textTransform: 'none', letterSpacing: 0 }}>What changed at {siteNames[site || v.sites[0]?.location_id] || 'the site'}</span>
               {detail === 'error' && <Notice tone="bad">Could not read what it wrote.</Notice>}
               {!detail && <div style={ui.sub}>Reading…</div>}
               {detail && detail !== 'error' && (

@@ -196,8 +196,9 @@ export function stagedIndex(rows) {
 /** Is a cell's price, or its switch, staged? */
 export function cellStaged(staged, productId, locationId, channel = null) {
   const f = staged?.sites?.get(keyOf(productId, locationId));
-  if (!f) return { price: false, active: false };
-  return { price: channel ? f.has('channel_prices') : f.has('price'), active: f.has('active') };
+  if (!f) return { price: false, active: false, kept: false };
+  // kept: "Use the group's settings" staged on the blue dot (17 Oct verification: it left no mark).
+  return { price: channel ? f.has('channel_prices') : f.has('price'), active: f.has('active'), kept: f.has('kept') };
 }
 
 // ── Rows ────────────────────────────────────────────────────────────────────

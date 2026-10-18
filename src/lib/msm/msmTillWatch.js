@@ -21,6 +21,7 @@
 //     applyWhenIdle false: then a counter till shows the banner only, as today.
 
 import { tillIsIdle, isMsmAutoApply, shouldCatchUp, APPLIED_WORDS } from './msmTill.js';
+import { isPaymentBusy } from '../paymentBusy.js';
 
 export const IDLE_CHECK_MS = 5000;
 export const CATCH_UP_MS = 5 * 60 * 1000;
@@ -57,7 +58,10 @@ export function counterTillState(state, doc = null) {
   try { domModal = !!(doc && doc.querySelector && doc.querySelector('[aria-modal="true"],[role="dialog"]')); } catch { /* no page */ }
   return {
     lines: Math.max(walk.length, Number(ui.orderLines) || 0),
-    paymentInProgress: !!ui.paymentInProgress,
+    // Any card payment anywhere in the app (the Bar screen's checkout, an Orders tab capture, a
+    // card machine job still watched) holds paymentBusy; the POS screen is not the only one
+    // (17 Oct verification: a push applied mid payment on the Bar screen).
+    paymentInProgress: !!ui.paymentInProgress || isPaymentBusy(),
     checkOpen: tableLines.length > 0,
     modalOpen: !!ui.modalOpen || !!s.pendingItem || domModal,
   };
@@ -185,4 +189,34 @@ export function startMsmCatchUp({ locationId, storage, sessionStore, store, read
 /** May the kiosk read its menu again now? Only on the start screen with an empty basket. */
 export function kioskMayRefresh({ pending, screen, cartCount }) {
   return !!pending && screen === 'attract' && !(Number(cartCount) > 0);
+}
+
+/**
+ * The kiosk's menu after a read (17 Oct 2026 verification). On a RELOAD after a head office update
+ * (the kiosk is trading), a menu read that failed keeps the menu on screen, never an empty one, and
+ * says so (failed), so the next idle moment on the start screen reads again. The first load keeps
+ * today's behaviour.
+ *   prev    the data on screen now
+ *   res     { items, categories, menus, links, taxProfiles, taxProfileLines }, each { data, error }
+ *   opts    { reload, assemble(profiles, lines), venueDefaultTaxProfileId }
+ * Returns { data, failed }.
+ */
+export function kioskMenuAfterRead(prev, res, { reload = false, assemble = () => [], venueDefaultTaxProfileId = null } = {}) {
+  const r = res || {};
+  const failed = ['items', 'categories', 'menus', 'links'].some((k) => !!r[k]?.error);
+  if (reload && failed) return { data: prev, failed: true };
+  const profilesOk = Array.isArray(r.taxProfiles?.data) && Array.isArray(r.taxProfileLines?.data);
+  return {
+    failed: false,
+    data: {
+      items: r.items?.data || [],
+      categories: r.categories?.data || [],
+      menus: r.menus?.data || [],
+      links: r.links?.data || [],
+      // Both profile reads must have succeeded: never line-less profiles. On a reload a failed
+      // read keeps the profiles on screen.
+      taxProfiles: profilesOk ? assemble(r.taxProfiles.data, r.taxProfileLines.data) : (reload ? (prev?.taxProfiles || []) : []),
+      venueDefaultTaxProfileId,
+    },
+  };
 }

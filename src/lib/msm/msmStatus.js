@@ -7,12 +7,39 @@
 
 const listOf = (v) => (Array.isArray(v) ? v : []);
 
-/** "Changes 17 Oct 14:05": a draft name that carries the time (design 2, item 3). */
-export function draftTitle(now = new Date()) {
+/**
+ * "Changes 17 Oct 14:05": a draft name that carries the time (design 2, item 3), on the SITES' clock
+ * when tz is given (17 Oct verification: Peter in California named UK drafts by his own clock).
+ */
+export function draftTitle(now = new Date(), tz = null) {
   const d = now instanceof Date ? now : new Date(now);
-  const day = d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
-  const time = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
+  const zone = tz ? { timeZone: tz } : {};
+  const day = d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', ...zone });
+  const time = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, ...zone });
   return `Changes ${day} ${time}`;
+}
+
+/**
+ * The Admin switch for a company (UI item 12c, 17 Oct verification: it failed open while the check
+ * was still running or had failed, and a blocked switch looked like an open one).
+ *   enabled   the company is on now
+ *   many      null while the check of the sites' menus runs, else { ok, sites }
+ *   ticked    the note is ticked
+ *   working   a change is being saved
+ * Returns { checking, needsTick, failed, blocked, disabled, note, title }.
+ */
+export function adminSwitchState({ enabled = false, many = null, ticked = false, working = false } = {}) {
+  const checking = !enabled && many == null;
+  const failed = !enabled && !!many && many.ok === false;
+  const needsTick = !enabled && !!many && (many.ok === false || listOf(many.sites).length > 0);
+  const blocked = !enabled && (checking || (needsTick && !ticked));
+  const note = checking ? "Checking the sites' menus…"
+    : failed ? "Could not check the sites' menus. The multi site menu changes one menu per site for now."
+      : needsTick ? 'This company has sites with more than one menu. The multi site menu changes one menu per site for now.' : '';
+  return {
+    checking, needsTick, failed, blocked, disabled: !!working || blocked, note,
+    title: checking ? "Checking the sites' menus first" : blocked ? 'Tick the note below first' : undefined,
+  };
 }
 
 /**
@@ -81,6 +108,24 @@ export function cellNoteWords({ product, site, active, price, money = (v) => Str
   return `${product} at ${site}: ${money(price)} (in the draft).`;
 }
 
+/**
+ * The note after the bulk bar's Turn on at or Turn off at (17 Oct verification: it counted the hidden
+ * "one site mark" clears, so House Red and 3 sizes read "8 turned on"). Counts the site rows only.
+ *   result   activeMany(...)'s { changes, words }
+ */
+export function bulkActiveWords(result, on = true) {
+  const n = (result?.changes || []).filter((c) => c && c.target === 'product_site').length;
+  const why = (result?.words || [])[0] || '';
+  if (!n) return why || `Nothing to turn ${on ? 'on' : 'off'}: it is already like that.`;
+  return `${n} turned ${on ? 'on' : 'off'} (in the draft).${why ? ` ${why}` : ''}`;
+}
+
+/** A product turned on at a site with no category yet: the hint at the moment it is flipped. */
+export function noCategoryHint(product) {
+  if (!product || product.category_id || (product.type === 'subitem' && product.sold_alone !== true) || product.parent_product_id) return '';
+  return 'It has no category yet: open the product and pick one before you publish.';
+}
+
 // ── Undo for a single action (design 2, item 7: "nothing instant without Undo") ──
 
 const ENTITY = { product: ['products', 'id'], category: ['categories', 'id'], modifier_group: ['groups', 'id'], modifier_option: ['options', 'id'] };
@@ -141,6 +186,23 @@ export function refreshClash(rows) {
     || (r?.target === 'product' && r.after && typeof r.after === 'object' && ('modifier_groups' in r.after || 'tax_by_type' in r.after)));
 }
 export const REFRESH_CLASH_WORDS = 'Your draft changes option groups. Publish it, or take those changes out (See the changes), then refresh.';
+
+/**
+ * May the Undo on a note still run? (17 Oct verification: after a publish the old note's Undo said
+ * "Taken back" and made a new empty draft, while the tills kept the new price.) Only while the draft
+ * the change went into is still a draft, and is the one edits go into now.
+ *   sets        the menu's change sets as the screen holds them
+ *   workingId   the set picked now (or null)
+ *   noteSetId   the set the change went into
+ * Returns { ok, words }.
+ */
+export function undoTarget({ sets, workingId = null, noteSetId = null } = {}) {
+  if (!noteSetId) return { ok: true, words: '' };
+  const set = listOf(sets).find((x) => x && x.id === noteSetId);
+  if (!set || set.status !== 'draft') return { ok: false, words: 'That change is already published or scheduled, so Undo cannot take it back here. To take it back, use Put back in Scheduled and history.' };
+  if (draftToStageInto(sets, workingId) !== noteSetId) return { ok: false, words: `That change is in the draft "${set.title || 'another draft'}". Pick that draft to take it back.` };
+  return { ok: true, words: '' };
+}
 
 /** The draft a new edit goes into when none is picked: the only draft there is (never a second one). */
 export function draftToStageInto(sets, workingId) {

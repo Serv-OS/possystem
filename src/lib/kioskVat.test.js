@@ -125,7 +125,8 @@ test('PIN: the kiosk loads its rates on their own, after the session, with retri
   assert.match(app, /readRates: \(\) => supabase\.from\('tax_rates'\)\.select\('id, name, rate, type, active, is_default, location_id'\)\.eq\('location_id', locationId\),/);
   assert.match(app, /setRatesState\(res\.status\);/);
   assert.match(app, /kioskRatesRetryMs\(ratesTry\)/);
-  assert.match(app, /return \{ \.\.\.data, taxRates: rates, ratesState, retryRates, activeMenuId, loading, error \};/);
+  // 17 Oct 2026 (Multi site menu): reloadFailed rides the same return (a failed reload keeps the menu).
+  assert.match(app, /return \{ \.\.\.data, taxRates: rates, ratesState, retryRates, activeMenuId, loading, error, reloadFailed \};/);
   // 8 Oct 2026 (review): an EMPTY answer is re judged against the menu whenever the menu changes
   // (it usually lands after the rates read), so an empty list at a venue whose menu names rates is
   // always re read; the decision no longer hangs on the rows held at the moment the read answered.

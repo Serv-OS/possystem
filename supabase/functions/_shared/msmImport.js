@@ -656,7 +656,16 @@ export function settleKept(central, sites, { passes = 4 } = {}) {
     for (const l of plan.lines.slice(0, 20)) {
       const row = l.table === 'items' ? rowOf(s.location_id, l.id) : null;
       if (row && l.column === 'pricing.base' && row.pricing?.base == null) {
-        problems.push({ location_id: s.location_id, words: `"${row.menu_name || row.name || l.id}" at ${s.name || 'a site'} has no base price. Open it in Menu Manager at that site, save its price, then import again.` });
+        // 17 Oct rehearsal: a live company had 13 such rows. A product with sizes has no base price box
+        // in Menu Manager, so the only way on for it is Leave out.
+        const nm = row.menu_name || row.name || l.id;
+        const sized = row.type === 'variants' || listOf(raw?.items).some((i) => i && i.parent_id === row.id && i.archived !== true);
+        problems.push({
+          location_id: s.location_id, noBase: true, sized,
+          words: sized
+            ? `"${nm}" at ${s.name || 'a site'} has no base price, and a product with sizes has no base price box in Menu Manager. Press Leave out on it in step 2 (it stays each site's own), then check again.`
+            : `"${nm}" at ${s.name || 'a site'} has no base price. Press Leave out on it in step 2, or open it in that site's Menu Manager and save a price there, then check again.`,
+        });
       } else if (l.table === 'groups') {
         problems.push({ location_id: s.location_id, words: `Option group ${l.id} at ${s.name || 'a site'}: ${l.column.replace(/[()]/g, '')} would change. Import again; if it stays, tell ServOS.` });
       } else {

@@ -10,7 +10,7 @@ test('trading words name each site with its own clock', () => {
     { location_id: 'l3', trading: true, local_time: null },
   ];
   const t = tradingWords(rows, { l1: 'Leeds', l2: 'Headingley', l3: 'Barnsley' }, ['l1', 'l2']);
-  assert.equal(t.words, 'Leeds is trading now (14:05 there). Headingley looks quiet (23:10 there).');
+  assert.equal(t.words, 'Leeds is trading now (14:05 there). Headingley is not busy now (23:10 there).');
   assert.deepEqual(t.busy, ['Leeds']);
   assert.equal(clockOf('nope'), null);
   assert.match(tradingWords(null).words, /could not check/);

@@ -69,7 +69,8 @@ test('the contract: msm_sql_contract() is msmModel.SQL_CONTRACT; apply_site know
   assert.deepEqual(arr(between(apply, 'v_opt_patch  constant text[] := array[', ']')), [...OPTION_PATCH_KEYS]);
   assert.deepEqual(arr(between(apply, 'v_upd_groups constant text[] := array[', ']')), [...VENUE_UPDATE.groups]);
   assert.deepEqual(arr(between(apply, 'v_tax_keys   constant text[] := array[', ']')), [...ORDER_TYPE_TAX_KEYS]);
-  assert.match(apply, /Run 20261017c first\. Nothing was written\./);
+  // 17 Oct verification: only an OLDER runner reaches this check, so the words say to redeploy it.
+  assert.match(apply, /The publish runner is older than the database: redeploy msm-publish, then press Retry\. Nothing was written\./);
   const fn = read('supabase/functions/msm-publish/index.ts');
   assert.match(fn, /if \(\(await sqlContract\(\)\) < SQL_CONTRACT\) return await fail\(CONTRACT_WORDS, 5\);/);
   assert.match(fn, /Run 20261017c first/);
@@ -85,8 +86,11 @@ test('round 2 apply: every named row locked BEFORE the fingerprint; the follow b
   assert.ok(apply.includes("v_snap := jsonb_set(v_snap, '{modifierGroupDefs}'"), 'the push entries of written groups are rebuilt');
   // Items inserted before groups (an option may point at a sub item this publish adds).
   assert.ok(apply.indexOf("p_writes #> '{items,insert}'") < apply.indexOf("p_writes #> '{groups,insert}'"));
-  // tax_profile_id: only the two allowed writes, both through the mirror check.
-  assert.equal((apply.match(/msm__is_legacy_mirror\(/g) || []).length, 2);
+  // tax_profile_id: only the two allowed writes, both through the mirror check (the clear accepts a
+  // copy of the rate after the write, or before it when the same write changes the rate: 17 Oct
+  // verification, so the mirror check is named three times).
+  assert.equal((apply.match(/msm__is_legacy_mirror\(/g) || []).length, 3);
+  assert.match(apply, /or public\.msm__is_legacy_mirror\(v_prof_old::uuid, nullif\(v_old ->> 'tax_rate_id', ''\)::uuid\)\) then\n\s*raise exception 'Publish may only clear an old copy/);
 });
 
 test('the venue columns publish may write are msmModel.VENUE_INSERT / VENUE_UPDATE / PRICING_KEYS', () => {
@@ -145,9 +149,16 @@ test('every function is closed to everyone first, by name, then opened to exactl
 });
 
 test('the round 2 roll back restores round 1\'s functions VERBATIM', () => {
-  for (const name of ['msm_site_org_guard', 'msm__ref_ok', 'msm_changes_guard', 'msm__sites_reached', 'msm_start_version', 'msm_import_commit', 'msm_apply_site']) {
-    assert.equal(fnText(RB2, name), fnText(SQL1, name), name);
+  // 17 Oct verification: the category icon is written as chr(127869) (pure ASCII survives the
+  // clipboard), the same character round 1 wrote as a literal; and the scheduler functions 20261017c
+  // caps are put back too.
+  const same = (t) => t.replace(/chr\(127869\)/g, "'\u{1F37D}'");
+  for (const name of ['msm_site_org_guard', 'msm__ref_ok', 'msm_changes_guard', 'msm__sites_reached', 'msm_start_version', 'msm_import_commit', 'msm_apply_site',
+    'msm_claim_due', 'msm_mark_missed', 'msm_run_due', 'msm_retry_site']) {
+    assert.equal(same(fnText(RB2, name)), fnText(SQL1, name), name);
   }
+  assert.doesNotMatch(readFileSync(new URL('../../../supabase/migrations/20261017c_OPS_multi_site_menu_groups.sql', import.meta.url), 'utf8'), /[^\t\n\r -~]/, 'the round 2 file is pure ASCII (the paste route garbles anything else)');
+  assert.doesNotMatch(readFileSync(new URL('../../../supabase/migrations/20261017c_OPS_multi_site_menu_groups_ROLLBACK.sql', import.meta.url), 'utf8'), /[^\t\n\r -~]/, 'and its roll back');
 });
 
 test('location ids: text NOT NULL with NO default (never \'loc-demo\')', () => {

@@ -39,7 +39,7 @@ import { indexCentral, stagedIndex } from '../../../lib/msm/msmGrid';
 import { readAllRows } from '../../../../supabase/functions/_shared/venueMenuCore.js';
 import { isNotInstalled } from '../../../../supabase/functions/_shared/msmAccess.js';
 import { Btn, Pill, Notice, Count } from './msmUi';
-import { statusBar, draftTitle, GUIDE_STEPS, guideClosed, setGuideClosed, undoFor, draftToStageInto } from '../../../lib/msm/msmStatus';
+import { statusBar, draftTitle, GUIDE_STEPS, guideClosed, setGuideClosed, undoFor, draftToStageInto, undoTarget } from '../../../lib/msm/msmStatus';
 import { changeKey } from '../../../../supabase/functions/_shared/msmDiff.js';
 import MsmGroups from './MsmGroups';
 import { WORDS } from '../../../lib/msm/msmWords';
@@ -197,6 +197,11 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
   rowsRef.current = rows;
   const effRef = useRef(eff);
   effRef.current = eff;
+  // The latest sets and pick, for an Undo pressed after a publish (it must never stage then).
+  const setsRef = useRef(sets);
+  setsRef.current = sets;
+  const workingIdRef = useRef(workingId);
+  workingIdRef.current = workingId;
 
   const refreshSets = useCallback(async () => {
     if (!menu) return;
@@ -221,7 +226,7 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
       let started = null;
       if (setId && setId !== workingId) setWorkingId(setId);
       if (!setId) {
-        const d = await api.createDraft(menu.id, draftTitle(new Date()), 'edit');
+        const d = await api.createDraft(menu.id, draftTitle(new Date(), sites[0]?.timezone || 'Europe/London'), 'edit');
         if (!d.ok) { setNote({ tone: 'bad', text: d.words }); return { ok: false }; }
         setId = d.data.id;
         started = d.data.title;
@@ -238,16 +243,20 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
         if ((r.failed[0].words || '').includes('cannot change the group menu')) onAccessLost?.();
         setNote({ tone: 'bad', text: `${r.failed.length} change${r.failed.length === 1 ? '' : 's'} did not save: ${r.failed[0].words}` });
       } else if (done && !quiet) {
+        // The status bar already offers Review and publish: the note keeps only Undo, tied to the
+        // draft this change went into (17 Oct verification).
         const actions = [];
-        if (back) actions.push({ label: 'Undo', onClick: () => undoRef.current?.(back) });
-        actions.push({ label: 'Review and publish', kind: 'primary', onClick: () => { setNote(null); setTab('publish'); } });
+        if (back) actions.push({ label: 'Undo', onClick: () => undoRef.current?.(back, setId) });
         setNote({ tone: 'good', text: started ? `Started a draft called "${started}". ${done} Your changes collect in this draft until you publish.` : done, actions });
+        // The first edit is the guide's last step: it folds away so the grid has the room.
+        setGuide(false);
+        if (menu?.id) setGuideClosed(menu.id, true);
       }
       return r;
     } finally {
       setBusy((n) => n - 1);
     }
-  }, [api, canEdit, menu, onAccessLost, readRows, rows, sets, working, workingId, setTab]);
+  }, [api, canEdit, menu, onAccessLost, readRows, rows, sets, sites, working, workingId]);
 
   // Undo of a single action: put each field back, and take out what that action created.
   const unstage = useCallback(async (row) => {
@@ -260,7 +269,9 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
     } finally { setBusy((n) => n - 1); }
   }, [api, readRows, workingId]);
 
-  undoRef.current = async (back) => {
+  undoRef.current = async (back, noteSetId = null) => {
+    const can = undoTarget({ sets: setsRef.current, workingId: workingIdRef.current, noteSetId });
+    if (!can.ok) { setNote({ tone: 'warn', text: can.words }); return; }
     setNote(null);
     if (back.updates.length) await stage(back.updates, { quiet: true });
     for (const key of back.unstageKeys) {
@@ -325,12 +336,13 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
           <WorkingOn sets={sets} working={working} rows={rows} canEdit={canEdit} api={api} menu={menu}
             onPick={setWorkingId} onSets={setSets} onNote={setNote} />
         )}
-        <Btn kind={rows.length && working?.status === 'draft' ? 'primary' : 'soft'} onClick={() => setTab('publish')} data-testid="msm-changes-button">
+        <Btn kind={rows.length && working?.status === 'draft' ? 'primary' : 'soft'} onClick={() => { setNote(null); setTab('publish'); }} data-testid="msm-changes-button">
           Review and publish{rows.length && working?.status === 'draft' ? ` (${rows.length})` : ''}
         </Btn>
       </Header>
 
-      <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--bdr)', marginBottom: 10, overflowX: 'auto', flexShrink: 0 }}>
+      {/* The tabs wrap onto a second line on an iPad, never cut off with no hint (17 Oct verification). */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, borderBottom: '1px solid var(--bdr)', marginBottom: 10, flexShrink: 0 }}>
         {tabs.filter((t) => !t.settings).map((t) => (
           <button key={t.id} type="button" onClick={() => { if (t.id !== tab) setNote(null); setTab(t.id); }} style={{ padding: '9px 14px', fontSize: 14, cursor: 'pointer', background: 'transparent', border: 'none', fontFamily: 'inherit', whiteSpace: 'nowrap', flexShrink: 0,
             color: tab === t.id ? 'var(--t1)' : 'var(--t3)', fontWeight: tab === t.id ? 700 : 500, borderBottom: `2.5px solid ${tab === t.id ? 'var(--acc)' : 'transparent'}`, marginBottom: -1 }}>{t.label}{t.badge && <Count n={t.badge(shared)} tone={t.badgeTone} />}</button>
@@ -343,7 +355,7 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
       </div>
 
       <StatusBar status={status} canEdit={canEdit}
-        onChanges={() => setShowChanges(true)} onPublish={() => setTab('publish')}
+        onChanges={() => setShowChanges(true)} onPublish={() => { setNote(null); setTab('publish'); }}
         draftId={sets.find((d) => d.status === 'draft')?.id || null}
         onBack={() => setWorkingId(sets.find((d) => d.status === 'draft')?.id || null)} />
 

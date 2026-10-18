@@ -56,7 +56,7 @@ test('a name and a kept value changed by hand: Put back uses the group\'s value 
   v[B].items.find((i) => i.id === S('m-cola', B)).menu_name = 'Cola can';
   const d = siteDrift(central, B, v[B], names).find((x) => x.productId === P('Cola').id && x.column === 'menu_name');
   assert.ok(d);
-  assert.equal(driftWords(d, 'Leeds', names), 'Cola: menu name was changed at Leeds');
+  assert.equal(driftWords(d, 'Leeds', names), 'Cola: menu name is "Cola can" at Leeds (group menu: "Cola")', '17 Oct: both names, so the person sees what the site calls it');
   const pb = plan(central, putBackChanges(central, B, d), B, v[B]);
   assert.deepEqual(pb.lines.map((l) => [l.column, l.after]), [['menu_name', 'Cola']]);
 });

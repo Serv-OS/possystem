@@ -33,7 +33,8 @@ export function planAddSite(central, opts = {}) {
   let count = 0;
   for (const p of listOf(central?.products)) {
     if (p.archived) continue;
-    if (p.site_only_location_id && p.site_only_location_id !== loc) continue;      // another site's own extra
+    // Round 2 (UI items 6 and 8, 17 Oct verification): there is no "site only extra". The old
+    // site_only_location_id mark never leaves a product out: every product follows one rule.
     if (only && !only.has(p.id)) continue;
     const src = psFrom.get(p.id);
     if (copy && (!src || src.active === false)) continue;                          // copy what that site sells
@@ -43,6 +44,10 @@ export function planAddSite(central, opts = {}) {
       target: 'product_site', entity_id: p.id, location_id: loc, op: 'create',
       after: { venue_item_id: newItemId(p, loc), active: true, price, channel_prices: channel },
     });
+    // The old one site mark is cleared as the product goes on at another site (as msmEdit does).
+    if (p.site_only_location_id && p.site_only_location_id !== loc) {
+      changes.push({ target: 'product', entity_id: p.id, location_id: null, op: 'update', after: { site_only_location_id: null }, before: { site_only_location_id: p.site_only_location_id } });
+    }
     count++;
   }
   // Round 2: every option of the option groups those products use (and the groups their options

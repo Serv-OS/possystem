@@ -20,13 +20,18 @@
 //     same edit clears that field. A switch never silently does nothing.
 //   * Nothing is ever deleted: "remove" is archived, off is active false.
 
-import { STAGE_FIELDS, CHANNELS, has, sameValue, samePrice, newItemId, toPence, fromPence, channelFallback, hex12 } from '../../../supabase/functions/_shared/msmModel.js';
+import { STAGE_FIELDS, CHANNELS, has, sameValue, samePrice, newItemId, toPence, fromPence, channelFallback, hex12, pctText } from '../../../supabase/functions/_shared/msmModel.js';
+import { optionRowsForNewSites } from './msmGroupEdit.js';
 
 const listOf = (v) => (Array.isArray(v) ? v : []);
 const findProduct = (c, id) => listOf(c?.products).find((p) => p.id === id) || null;
 const findSite = (c, pid, loc) => listOf(c?.productSites).find((s) => s.product_id === pid && s.location_id === loc) || null;
 const findCategory = (c, id) => listOf(c?.categories).find((x) => x.id === id) || null;
 const okChannel = (ch) => (ch && CHANNELS.includes(ch) ? ch : null);
+const gidOf = (a) => (typeof a === 'string' ? a : a && typeof a === 'object' ? (a.groupId ?? null) : null);
+// A product with sizes: typed 'variants', or any product that has live sizes under it (a size made
+// in the sheet never retypes its product; the demo's Latte). 17 Oct verification.
+export const hasSizes = (eff, p) => !!p && (p.type === 'variants' || listOf(eff?.products).some((x) => x.parent_product_id === p.id && !x.archived));
 const clone = (v) => (v == null ? v : JSON.parse(JSON.stringify(v)));
 
 // A variants parent's own price is never charged (Change prices leaves it out too).
@@ -97,7 +102,7 @@ export function siteActiveChange(ctx, productId, locationId, active) {
       if (pr.change) more.push(pr.change, ...(pr.extra || []));
     }
   }
-  if (p && p.type === 'variants') {
+  if (hasSizes(ctx.eff, p)) {
     for (const size of listOf(ctx.eff?.products).filter((x) => x.parent_product_id === p.id && !x.archived)) {
       const sr = siteActiveOne(ctx, size.id, locationId, active);
       if (sr.change) more.push(sr.change, ...(sr.extra || []));
@@ -116,14 +121,47 @@ function siteActiveOne(ctx, productId, locationId, active) {
     if (!active) return { change: null };
     if (!listOf(ctx.eff?.sites).some((x) => x.location_id === locationId)) return { words: 'That site is not in the group menu yet. Add it on the Sites tab first.' };
     const change = { target: 'product_site', entity_id: productId, location_id: locationId, op: 'create', after: { venue_item_id: newItemId(p, locationId), active: true, price: null, channel_prices: null }, before: {} };
-    return { change, extra: clearSiteOnly(ctx, p, locationId) };
+    return { change, extra: [...clearSiteOnly(ctx, p, locationId), ...groupRowsFor(ctx, p, locationId)] };
   }
   if ((s.active !== false) === !!active) return { change: null, already: true };
   const liveS = findSite(ctx.live, productId, locationId);
+  const liveP = findProduct(ctx.live, productId);
+  // On, then off again before publishing, at a site where the product never was (its row is only
+  // in this draft, with the id this module made for it): the draft's row comes out again, and the
+  // old one site mark goes back, so nothing is left to publish or count (17 Oct verification). A
+  // brought in row (the venue's own item) or a new product keeps its row: off there is real.
+  if (!active && !liveS && liveP && s.venue_item_id === newItemId(p, locationId)) {
+    const extra = [];
+    if ((liveP.site_only_location_id ?? null) !== (p.site_only_location_id ?? null)) {
+      extra.push({ target: 'product', entity_id: p.id, location_id: null, op: 'update', after: { site_only_location_id: liveP.site_only_location_id ?? null }, before: { site_only_location_id: liveP.site_only_location_id ?? null } });
+    }
+    return { change: { target: 'product_site', entity_id: productId, location_id: locationId, op: 'update', after: { active: false }, before: { active: null }, dropCreate: true }, extra };
+  }
   return {
     change: { target: 'product_site', entity_id: productId, location_id: locationId, op: 'update', after: { active: !!active }, before: { active: liveS ? liveS.active !== false : null } },
-    extra: active ? clearSiteOnly(ctx, p, locationId) : [],
+    extra: active ? [...clearSiteOnly(ctx, p, locationId), ...groupRowsFor(ctx, p, locationId)] : [],
   };
+}
+
+// The option rows a product's option groups need at a site where the group is not yet (and the
+// "Then ask" groups their options lead to). No row means off, so without these publish would make
+// the group there with nothing to pick (an empty question, or a required one that blocks). Options
+// that already have a row there keep it, so an option a site turned off stays off. 17 Oct
+// verification; the same rule as Add to products and the product sheet's group tick.
+function groupRowsFor(ctx, p, locationId) {
+  if (p.type === 'subitem' && p.sold_alone !== true) return [];
+  const want = new Set(listOf(p.modifier_groups).map(gidOf).filter(Boolean));
+  for (let round = 0; round < 10; round++) {
+    const n = want.size;
+    for (const o of listOf(ctx.eff?.options)) if (!o.archived && o.sub_group_id && want.has(o.group_id)) want.add(o.sub_group_id);
+    if (want.size === n) break;
+  }
+  const out = [];
+  for (const gid of want) {
+    if (listOf(ctx.eff?.groupSites).some((r) => r.group_id === gid && r.location_id === locationId)) continue;
+    out.push(...optionRowsForNewSites(ctx, gid, [locationId]));
+  }
+  return out;
 }
 
 // The old "only at one site" mark, cleared when the product goes on at another site.
@@ -161,6 +199,7 @@ export function defaultPriceChange(ctx, productId, value, channel = null) {
 // ── Products ────────────────────────────────────────────────────────────────
 
 const PRODUCT_EDITABLE = STAGE_FIELDS.product.filter((f) => !['family_base', 'site_only_location_id'].includes(f));
+const TEXT_FIELDS = new Set(['name', 'menu_name', 'receipt_name', 'kitchen_name', 'description', 'item_code']);
 
 /** Plain words for what is wrong with a product's fields ([] when nothing). */
 export function productProblems(fields, ctx = {}) {
@@ -198,6 +237,8 @@ export function productUpdate(ctx, productId, fields) {
     if (!has(fields, k)) continue;
     if (k === 'tax_by_type' && isSize) continue;
     if (sameValue(p[k], fields[k])) continue;
+    // Spaces at either end are no change (the sheet trims what it sends; 17 Oct rehearsal).
+    if (TEXT_FIELDS.has(k) && String(p[k] ?? '').trim() === String(fields[k] ?? '').trim()) continue;
     after[k] = clone(fields[k]);
     before[k] = liveP ? clone(liveP[k] ?? null) : null;
   }
@@ -241,7 +282,7 @@ export function newProductChanges(ctx, { id, fields, sites }) {
     allergens: listOf(f.allergens), tags: listOf(f.tags), image: f.image || null, modifier_groups: listOf(f.modifier_groups),
     visibility: f.visibility || { pos: true, kiosk: true, online: true, onlineDelivery: true },
     sold_alone: f.type === 'subitem' ? f.sold_alone === true : f.sold_alone !== false, item_code: f.item_code ? String(f.item_code).trim() : null,
-    site_only_location_id: siteOnly, archived: false, sort_order: Number(f.sort_order) || 0,
+    site_only_location_id: siteOnly, archived: false, sort_order: newSortOrder(ctx, f),
   };
   const tbt = f.tax_by_type && typeof f.tax_by_type === 'object' && Object.keys(f.tax_by_type).length ? clone(f.tax_by_type) : null;
   if (tbt) after.tax_by_type = tbt;
@@ -257,6 +298,30 @@ export function newProductChanges(ctx, { id, fields, sites }) {
     });
   }
   return { changes };
+}
+
+// A new product goes LAST in its category (a new size last among its product's sizes), as Menu
+// Manager adds one, not first at every till (17 Oct verification). A number the form gives wins.
+function newSortOrder(ctx, f) {
+  if (f.sort_order !== undefined && f.sort_order !== null && f.sort_order !== '' && Number.isFinite(Number(f.sort_order))) return Number(f.sort_order);
+  const parent = f.parent_product_id || null;
+  const peers = listOf(ctx.eff?.products).filter((p) => !p.archived && (parent ? p.parent_product_id === parent : (!p.parent_product_id && p.category_id === f.category_id)));
+  return peers.reduce((m, p) => Math.max(m, Number(p.sort_order) || 0), -1) + 1;
+}
+
+/**
+ * The sheet's Name box (17 Oct verification): the menu, receipt and kitchen names that still say
+ * the old name (or are blank) follow the new name, as Menu Manager's rename does, so the till
+ * button, the receipt and the kitchen ticket change too. A name set on purpose is left alone.
+ */
+export function renameFields(form, name) {
+  const out = { ...(form || {}), name };
+  const old = String(form?.name ?? '').trim();
+  for (const k of ['menu_name', 'receipt_name', 'kitchen_name']) {
+    const cur = form?.[k];
+    if (cur == null || String(cur).trim() === '' || String(cur).trim() === old) out[k] = name;
+  }
+  return out;
 }
 
 /** Take a product off the group menu everywhere (archived, never deleted). */
@@ -341,7 +406,7 @@ export function activeMany(ctx, productIds, locationIds, active) {
 export function priceMany(ctx, productIds, locationIds, value, channel = null) {
   const out = [];
   for (const pid of listOf(productIds)) for (const loc of listOf(locationIds)) {
-    if (!findSite(ctx.eff, pid, loc)) continue;
+    if (!findSite(ctx.eff, pid, loc)) { out.push({ words: 'Some products are not sold at those sites. Turn them on there first.' }); continue; }
     out.push(sitePriceChange(ctx, pid, loc, value, channel));
   }
   return collect(out);
@@ -353,10 +418,13 @@ export function copyPricesMany(ctx, productIds, fromLoc, toLocs, channel = null)
   for (const pid of listOf(productIds)) {
     const p = findProduct(ctx.eff, pid);
     const src = findSite(ctx.eff, pid, fromLoc);
-    if (!p || !src) continue;
+    if (!p) continue;
+    // Never a silent skip (UI issue 10): say why nothing was copied.
+    if (!src) { out.push({ words: 'Some products are not sold at the site you copy from. Turn them on there first.' }); continue; }
     const v = sitePrice(p, src, channel);
     for (const loc of listOf(toLocs)) {
-      if (loc === fromLoc || !findSite(ctx.eff, pid, loc)) continue;
+      if (loc === fromLoc) continue;
+      if (!findSite(ctx.eff, pid, loc)) { out.push({ words: 'Some products are not sold at those sites. Turn them on there first.' }); continue; }
       out.push(sitePriceChange(ctx, pid, loc, v, channel));
     }
   }
@@ -392,7 +460,7 @@ export function taxChoices(central) {
     if (!seen.has(k)) seen.set(k, { name: p.tax_rate_name || null, percent: Number(p.tax_rate_percent), n: 0 });
     seen.get(k).n++;
   }
-  return [...seen.values()].sort((a, b) => b.n - a.n).map((t) => ({ name: t.name, percent: t.percent, label: `${t.name ? `${t.name} ` : ''}${t.percent}%` }));
+  return [...seen.values()].sort((a, b) => b.n - a.n).map((t) => ({ name: t.name, percent: t.percent, label: `${t.name ? `${t.name} ` : ''}${pctText(t.percent)}` }));
 }
 
 // ── Change prices: the before of each change ────────────────────────────────

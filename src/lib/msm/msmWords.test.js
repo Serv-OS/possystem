@@ -25,8 +25,8 @@ test('products: new, removed, brought back, prices, moves and renames in words',
 
 test('sites: added, on and off, prices back to the group price, channel prices, kept values', () => {
   assert.equal(w({ target: 'product_site', entity_id: 'latte', location_id: 'l1', op: 'create', after: { venue_item_id: 'x', active: true, price: 3.3 } }), 'Station: added at 3.30');
-  assert.equal(w({ target: 'product_site', entity_id: 'latte', location_id: 'l1', op: 'update', after: { active: false, price: null }, before: { active: true, price: 3.2 } }), 'Station: turned off, price 3.20 to the group price');
-  assert.equal(w({ target: 'product_site', entity_id: 'latte', location_id: 'l2', op: 'update', after: { channel_prices: { takeaway: 3.3 } }, before: { channel_prices: { takeaway: 3.1, delivery: 4 } } }), 'Riverside: Takeaway price 3.10 to 3.30, Delivery price 4.00 to the group price');
+  assert.equal(w({ target: 'product_site', entity_id: 'latte', location_id: 'l1', op: 'update', after: { active: false, price: null }, before: { active: true, price: 3.2 } }), 'Station: turned off, price back to the group price (was 3.20)');
+  assert.equal(w({ target: 'product_site', entity_id: 'latte', location_id: 'l2', op: 'update', after: { channel_prices: { takeaway: 3.3 } }, before: { channel_prices: { takeaway: 3.1, delivery: 4 } } }), 'Riverside: Takeaway price 3.10 to 3.30, Delivery price back to the Standard price (was 4.00)');
   assert.equal(w({ target: 'product_site', entity_id: 'latte', location_id: 'l2', op: 'update', after: { kept: { image: 'y' } }, before: { kept: { cat: 'x', image: 'y' } } }), "Riverside: uses the group's category");
   assert.equal(changeWords({ target: 'product_site', entity_id: 'nope', location_id: 'zz', op: 'update', after: {} }, names).words, 'a site: no change');
 });
@@ -81,7 +81,7 @@ test('option groups and options in words', () => {
   assert.equal(gw({ target: 'modifier_option', entity_id: 'oat', op: 'update', after: { price: 0.6 }, before: { price: 0.5 } }), 'price 0.50 to 0.60 at every site that follows it');
   assert.equal(gw({ target: 'modifier_option', entity_id: 'x', op: 'create', after: { name: 'Hemp milk', group_id: 'milk', price: 0.6 } }), 'New option in Milk options, 0.60');
   assert.equal(gw({ target: 'modifier_option_site', entity_id: 'oat', location_id: 'l1', op: 'update', after: { active: false }, before: { active: true } }), 'Station: turned off');
-  assert.equal(gw({ target: 'modifier_option_site', entity_id: 'oat', location_id: 'l2', op: 'update', after: { price: null }, before: { price: 0.7 } }), 'Riverside: price 0.70 to the group price');
+  assert.equal(gw({ target: 'modifier_option_site', entity_id: 'oat', location_id: 'l2', op: 'update', after: { price: null }, before: { price: 0.7 } }), 'Riverside: price back to the group price (was 0.70)');
   assert.equal(gw({ target: 'product', entity_id: 'latte', op: 'update', after: { tax_by_type: { takeaway: { name: 'Zero Rate', percent: 0 } } }, before: { tax_by_type: null } }), 'Takeaway VAT to Zero Rate');
   assert.equal(gw({ target: 'product', entity_id: 'latte', op: 'update', after: { modifier_groups: [{ groupId: 'milk' }] }, before: { modifier_groups: [] } }), 'Milk options added');
   assert.equal(gw({ target: 'product', entity_id: 'd', op: 'create', after: { name: 'Donut', type: 'subitem', sold_alone: false } }), 'New sub item, only used as an option');

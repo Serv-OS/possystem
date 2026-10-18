@@ -16,7 +16,7 @@
 
 import { siteDrift, keepVenueChanges, bringOptionIn } from '../../../supabase/functions/_shared/msmDiff.js';
 import { money2 } from '../../../supabase/functions/_shared/msmModel.js';
-import { colWord, PRICE_TYPE_WORDS, TAX_TYPE_WORDS, CHOICE_WORDS } from './msmWords.js';
+import { colWord, PRICE_TYPE_WORDS, TAX_TYPE_WORDS, CHOICE_WORDS, keptValueWords } from './msmWords.js';
 
 const listOf = (v) => (Array.isArray(v) ? v : []);
 const has = (o, k) => !!o && typeof o === 'object' && Object.prototype.hasOwnProperty.call(o, k);
@@ -26,14 +26,17 @@ export function driftKey(loc, d) {
   return [loc, d.kind || 'item', d.venueItemId || d.venueGroupId || '', d.optionId || (d.entry && d.entry.id) || '', d.column].join('|');
 }
 
-const show = (v) => {
+const show = (v, col = null) => {
   if (v == null) return 'nothing';
   if (typeof v === 'number') return money2(v);
   if (typeof v === 'boolean') return v ? 'yes' : 'no';
   if (Array.isArray(v)) return v.length ? `${v.length} set` : 'none';
   if (typeof v === 'object') return 'its own setting';
-  return String(v);
+  // A photo link, a VAT rate id, a kind code: in words (17 Oct verification).
+  return col ? keptValueWords(col, v) : String(v);
 };
+const NAME_COLS = new Set(['name', 'menu_name', 'receipt_name', 'kitchen_name']);
+const quote = (v) => (v == null || String(v).trim() === '' ? 'blank' : `"${String(v).trim().slice(0, 40)}"`);
 
 /** One drift line in words, with the site's name: "Latte price 3.10 at Leeds (group menu says 3.00)". */
 export function driftWords(d, siteName, names = {}) {
@@ -55,7 +58,13 @@ export function driftWords(d, siteName, names = {}) {
     if (d.column === 'min' || d.column === 'max') return `${g}: ${colWord(d.column)} ${Number(d.venue ?? 0)} at ${site} (group menu says ${Number(d.group ?? 0)})`;
     return `${g}: ${colWord(d.column)} ${show(d.venue)} at ${site} (group menu says ${show(d.group)})`;
   }
-  if (d.kept) return `${who}: ${colWord(d.column)} was changed again at ${site}; ${site} was keeping its own (${show(d.group)}), now ${show(d.venue)}`;
+  if (d.kept && String(d.column).startsWith('tax_overrides.')) {
+    const k = d.column.slice(14);
+    return `${who}: ${TAX_TYPE_WORDS[k] || 'order type'} VAT was changed again at ${site}; ${site} was keeping its own`;
+  }
+  if (d.kept) return `${who}: ${colWord(d.column)} was changed again at ${site}; ${site} was keeping ${show(d.group, d.column)}, now ${show(d.venue, d.column)}`;
+  // A name: say both, so the person sees what the site calls it (17 Oct verification).
+  if (NAME_COLS.has(d.column)) return `${who}: ${colWord(d.column)} is ${quote(d.venue)} at ${site} (group menu: ${quote(d.group)})`;
   if (d.column === 'archived') return d.venue === true ? `${who} is turned off at ${site} (group menu has it on)` : `${who} is turned on at ${site} (group menu has it off)`;
   if (String(d.column).startsWith('pricing.')) {
     const k = d.column.slice(8);

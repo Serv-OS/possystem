@@ -118,16 +118,21 @@ export default function MsmGroups(props) {
             {list.map((g) => {
               const on = !creating && current?.group?.id === g.group.id;
               return (
-                <button key={g.group.id} type="button" onClick={() => { setCreating(null); onPick(g.group.id); }}
+                // 17 Oct verification: every mark here says what it means in words (an iPad shows no
+                // hover title), and a long name wraps instead of being cut off.
+                <button key={g.group.id} type="button" title={g.group.name} onClick={() => { setCreating(null); onPick(g.group.id); }}
                   style={{ display: 'block', width: '100%', textAlign: 'left', padding: '9px 10px', margin: '2px 0', borderRadius: 10, cursor: 'pointer', fontFamily: 'inherit', color: 'var(--t1)',
                     border: `1px solid ${on ? 'var(--acc)' : 'transparent'}`, background: on ? 'var(--acc-d)' : 'transparent' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    {touched.has(g.group.id) && <span title="Changed in the draft" style={{ width: 3, height: 16, borderRadius: 2, background: 'var(--amber, #F5A623)' }} />}
-                    <span style={{ fontSize: 13.5, fontWeight: 750, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{g.group.name}</span>
-                    {g.legacy && <Pill tone="warn">Needs refresh</Pill>}
-                    {g.differs && <span title="Differs between sites" style={{ width: 7, height: 7, borderRadius: 4, background: 'var(--blu)' }} />}
+                    {touched.has(g.group.id) && <span aria-hidden="true" style={{ width: 3, height: 16, borderRadius: 2, background: 'var(--amber, #F5A623)', flexShrink: 0 }} />}
+                    <span style={{ fontSize: 13.5, fontWeight: 750, flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>{g.group.name}</span>
+                    {round2 && g.legacy && <Pill tone="warn">Needs refresh</Pill>}
                   </div>
-                  <div style={{ ...ui.sub, fontSize: 11.5 }}>{g.rule} · {g.options.length} option{g.options.length === 1 ? '' : 's'} · {g.words}</div>
+                  <div style={{ ...ui.sub, fontSize: 11.5 }}>
+                    {g.rule} · {g.options.length} option{g.options.length === 1 ? '' : 's'} · {g.words}
+                    {g.differs && <span style={{ color: 'var(--blu)', fontWeight: 650 }}> · not the same at every site</span>}
+                    {touched.has(g.group.id) && <span style={{ color: 'var(--amber, #F5A623)', fontWeight: 650 }}> · changed in the draft</span>}
+                  </div>
                 </button>
               );
             })}

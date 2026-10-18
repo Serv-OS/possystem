@@ -33,7 +33,7 @@ export default function MsmSpread({ ix, live, eff, sites, rows, channel, setChan
   const open = (r) => (what === 'options' ? openGroup?.(r.product.groupId) : openProduct?.(r.product.id));
   const list = useMemo(() => {
     const q = search.trim().toLowerCase();
-    let out = all.filter((r) => (only === 'all' || (only === 'differ' ? r.spread > 0 : r.outliers.size > 0)) && (!q || String(r.product.menu_name || r.product.name).toLowerCase().includes(q)));
+    let out = all.filter((r) => (only === 'all' || (only === 'differ' ? r.spread > 0 : r.outliers.size > 0)) && (!q || String(r.label || r.product.menu_name || r.product.name).toLowerCase().includes(q)));
     if (sort === 'pct') out = [...out].sort((a, b) => (b.pct ?? 0) - (a.pct ?? 0));
     if (sort === 'name') out = [...out].sort((a, b) => String(a.product.name).localeCompare(String(b.product.name)));
     return out;
@@ -88,7 +88,7 @@ export default function MsmSpread({ ix, live, eff, sites, rows, channel, setChan
               return (
                 <div style={{ display: 'flex', alignItems: 'center', height: '100%', borderBottom: '1px solid var(--bdr)', fontSize: 13 }}>
                   <button type="button" onClick={() => open(r)} style={{ width: NAME_W, padding: '0 14px', flexShrink: 0, textAlign: 'left', background: 'none', border: 'none', color: 'var(--t1)', fontFamily: 'inherit', fontSize: 13, fontWeight: 650, cursor: 'pointer', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {r.product.menu_name || r.product.name}
+                    {r.label || r.product.menu_name || r.product.name}
                   </button>
                   <div style={{ width: NUM_W, padding: '0 8px', textAlign: 'right', flexShrink: 0 }}>{money(r.min)}</div>
                   <div style={{ width: NUM_W, padding: '0 8px', textAlign: 'right', flexShrink: 0 }}>{money(r.max)}</div>

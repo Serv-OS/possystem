@@ -50,7 +50,7 @@ test('the live example is worked out by the real VAT engine', () => {
   assert.equal(vatExample({ product, taxByType: tbt, rates: [VAT, ZERO], orderType: 'collection', price: 3.5, siteName: 'Leeds' }).words, 'A 3.50 Galaxy donut, collection at Leeds: VAT 0.00 (Zero Rate).', 'collection reads Takeaway');
   assert.equal(vatExample({ product, taxByType: tbt, rates: [VAT, ZERO], orderType: 'dine-in', price: 3.5, siteName: 'Leeds' }).words, 'A 3.50 Galaxy donut, eat in at Leeds: VAT 0.58 (VAT, 20%).');
   assert.equal(vatExample({ product, taxByType: tbt, kept: { collection: 'v' }, rates: [VAT, ZERO], orderType: 'collection', price: 3.5, siteName: 'Leeds' }).rate.id, 'v', "the site's own collection key wins over the alias");
-  assert.match(vatExample({ product, taxByType: tbt, rates: [VAT], orderType: 'takeaway', price: 3.5, siteName: 'Leeds' }).words, /Leeds has no Zero Rate rate at 0%/);
+  assert.match(vatExample({ product, taxByType: tbt, rates: [VAT], orderType: 'takeaway', price: 3.5, siteName: 'Leeds' }).words, /Leeds has no Zero Rate at 0%/);
   assert.match(vatExample({ product, taxByType: tbt, rates: null, siteName: 'Leeds' }).words, /Reading Leeds/);
 });
 

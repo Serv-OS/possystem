@@ -40,12 +40,18 @@
 --
 -- NOTHING CHANGES FOR ANY VENUE UNTIL its company is switched on in Admin AND someone publishes.
 --
--- ORDER FOR PETER
---   1. Run this file on Ops. Read the check row at the bottom (expected values written above it).
---   2. Redeploy msm-publish:  npx supabase functions deploy msm-publish --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
---   3. Push the branch to the develop site only.
+-- ORDER FOR PETER (17 Oct verification: deploy the function FIRST, then this file, back to back)
+--   0. Check nothing is waiting to publish (it must say 0), and that nobody is publishing on the dev
+--      site:  select count(*) from public.msm_version_sites where status in ('scheduled', 'running');
+--   1. Redeploy msm-publish:  npx supabase functions deploy msm-publish --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
+--      (Against the round 1 database it waits and tries again: nothing is started or written.)
+--   2. Run this file on Ops straight after. Read the check row at the bottom (expected values
+--      written above it).
+--   3. Push the branch to the develop site only. Then reload every open dev site Back Office tab
+--      (the version number stays 5.11.75, so the tabs do not reload by themselves).
 --   4. Demo company: Multi site menu, Menu details, "Refresh option groups from the sites" (it must
 --      say nothing changes at any site), then test.
+--   5. Switch on and import a new company only from a freshly loaded page.
 --
 -- UNDO: 20261017c_OPS_multi_site_menu_groups_ROLLBACK.sql (puts the round 1 functions back and drops
 -- only what this file added). Run it BEFORE the round 1 roll back, never after.
@@ -997,6 +1003,11 @@ declare
   v_name    text;
 begin
   perform public.msm__require_editor(v_org);
+  -- A round 2 import always sends its options (even as []). A page still running round 1 sends
+  -- none, and would make every option group empty: refused, in words (17 Oct verification).
+  if not (p_payload ? 'options') then
+    raise exception 'This page is out of date. Reload the page, then import again. Nothing was changed.' using errcode = '22023';
+  end if;
   if exists (select 1 from public.msm_menus m where m.org_id = v_org and m.status = 'live') then
     raise exception 'This company already has a group menu.' using errcode = '22023';
   end if;
@@ -1356,7 +1367,9 @@ begin
   end if;
   select k into v_bad from jsonb_object_keys(p_writes) k where k <> all (v_write_keys) limit 1;
   if found then
-    raise exception 'Publish sent something this database does not know (%). Run 20261017c first. Nothing was written.', v_bad;
+    -- Only an OLDER runner reaches this (a newer one stops at msm_sql_contract first): the words say
+    -- what really helps (17 Oct verification).
+    raise exception 'Publish sent something this database does not know (%). The publish runner is older than the database: redeploy msm-publish, then press Retry. Nothing was written.', v_bad;
   end if;
   if jsonb_typeof(p_writes -> 'maps') = 'object' then
     select k into v_bad from jsonb_object_keys(p_writes -> 'maps') k where k <> all (v_map_keys) limit 1;
@@ -1444,7 +1457,7 @@ begin
       raise exception 'A new category points at a parent that is not at this site.';
     end if;
     insert into public.menu_categories (id, location_id, menu_id, parent_id, label, icon, color, accounting_group, sort_order, default_course, image, scope, org_id, created_at, updated_at)
-    select r.id, p_location, r.menu_id, r.parent_id, coalesce(nullif(btrim(r.label), ''), 'Category'), coalesce(r.icon, '🍽'), coalesce(r.color, '#3b82f6'),
+    select r.id, p_location, r.menu_id, r.parent_id, coalesce(nullif(btrim(r.label), ''), 'Category'), coalesce(r.icon, chr(127869)), coalesce(r.color, '#3b82f6'),
            coalesce(r.accounting_group, ''), coalesce(r.sort_order, 0), coalesce(r.default_course, 1), r.image, 'local', v.org_id, v_now, v_now
       from jsonb_populate_record(null::public.menu_categories, w) r;
     v_cats := v_cats || (w ->> 'id');
@@ -1665,8 +1678,10 @@ begin
       raise exception 'VAT by order type for a product is not a rate at this site. Nothing was written.';
     end if;
     -- tax_profile_id in exactly two ways (design review blocker 3): cleared over a profile that is
-    -- still a generated copy of the item's own rate (after this write), remembered so it can come
-    -- back; or that same remembered copy put back. Anything else is refused.
+    -- still a generated copy of the item's own rate (after this write, or before it when the same
+    -- write changes the rate: 17 Oct verification, a new VAT rate over a copy of the old one would
+    -- have kept charging the old rate), remembered so it can come back; or that same remembered
+    -- copy put back. Anything else is refused.
     if v_set ? 'tax_profile_id' then
       v_rate_after := case when v_set ? 'tax_rate_id' then v_set ->> 'tax_rate_id' else v_old ->> 'tax_rate_id' end;
       v_prof_old := v_old ->> 'tax_profile_id';
@@ -1676,7 +1691,9 @@ begin
         from public.msm_product_sites ps join public.msm_products p on p.id = ps.product_id
        where p.menu_id = v.menu_id and ps.location_id = p_location and ps.venue_item_id = u ->> 'id';
       if v_prof_new is null then
-        if v_prof_old is null or v_product is null or not public.msm__is_legacy_mirror(v_prof_old::uuid, nullif(v_rate_after, '')::uuid) then
+        if v_prof_old is null or v_product is null
+           or not (public.msm__is_legacy_mirror(v_prof_old::uuid, nullif(v_rate_after, '')::uuid)
+                   or public.msm__is_legacy_mirror(v_prof_old::uuid, nullif(v_old ->> 'tax_rate_id', '')::uuid)) then
           raise exception 'Publish may only clear an old copy of a product''s own VAT rate. Nothing was written.';
         end if;
         update public.msm_product_sites set cleared_tax_profile_id = v_prof_old::uuid, updated_at = v_now
@@ -1994,6 +2011,11 @@ begin
   if v_org is null or not coalesce(public.msm_can_view(v_org), false) then
     raise exception 'You cannot see this group menu.' using errcode = '42501';
   end if;
+  -- Sales are behind the second sign in step too, as every other read of the group menu is
+  -- (17 Oct verification).
+  if not public.msm__second_step_ok() then
+    raise exception 'Your sign in needs its second step before you can see this.' using errcode = '42501';
+  end if;
   return query
   select cc.location_id, li ->> 'itemId',
          sum(case when li ->> 'qty' ~ '^[0-9]+(\.[0-9]+)?$' then (li ->> 'qty')::numeric else 1 end)
@@ -2024,6 +2046,9 @@ begin
   select m.org_id into v_org from public.msm_menus m where m.id = p_menu;
   if v_org is null or not coalesce(public.msm_can_view(v_org), false) then
     raise exception 'You cannot see this group menu.' using errcode = '42501';
+  end if;
+  if not public.msm__second_step_ok() then
+    raise exception 'Your sign in needs its second step before you can see this.' using errcode = '42501';
   end if;
   return query
   select s.location_id,
@@ -2070,6 +2095,183 @@ end
 $fn$;
 
 -- ============================================================================
+-- 8b. THE SCHEDULER, CAPPED (17 Oct verification)
+--   A site run whose worker died part way (a crash, a time limit) stayed 'running' and was claimed
+--   again every 10 minutes for ever, and a later publish at that site waited behind it for ever.
+--   After 5 tries it now fails, in words, with Retry. Retry starts the count again, so the first
+--   busy moment after a Retry is tried again rather than failing at once. The bodies are round 1's
+--   (20261017) with only these lines changed; the ROLLBACK puts round 1's back.
+-- ============================================================================
+
+-- Stale running claims that have had 5 tries: failed in words (nothing was written there: a site
+-- is written in one transaction, so a worker that died wrote nothing). Never emailed again: the
+-- late alarm has already gone out for it.
+create or replace function public.msm__fail_stuck()
+returns integer
+language plpgsql
+security definer
+set search_path = ''
+as $fn$
+declare
+  r record;
+  n integer := 0;
+begin
+  for r in
+    update public.msm_version_sites s
+       set status = 'failed', finished_at = now(), claimed_at = null,
+           error = 'The publish stopped part way at this site 5 times. Nothing was changed there. Press Retry.'
+     where s.status = 'running' and s.claimed_at < now() - interval '10 minutes' and s.attempts >= 5
+    returning s.version_id
+  loop
+    perform public.msm__refresh_version(r.version_id);
+    n := n + 1;
+  end loop;
+  return n;
+end
+$fn$;
+
+create or replace function public.msm_claim_due(p_limit integer default 1)
+returns table (version_id uuid, location_id text, attempts integer)
+language plpgsql
+security definer
+set search_path = ''
+as $fn$
+#variable_conflict use_column
+begin
+  perform public.msm__fail_stuck();
+  return query
+  with c as (
+    select vs.version_id, vs.location_id
+      from public.msm_version_sites vs
+      join public.msm_versions v on v.id = vs.version_id
+      join public.msm_company co on co.org_id = v.org_id and co.enabled
+     where ((vs.status = 'scheduled' and vs.due_at <= now()
+             -- A SCHEDULED run more than 6 hours past its time is never started by itself (a company
+             -- switched back on weeks later, a function that was down): msm_mark_missed fails it in
+             -- words and a person presses Retry if they still want it.
+             and (v.kind <> 'scheduled' or vs.due_at > now() - interval '6 hours'))
+         -- A stale claim is taken again only while it has had fewer than 5 tries (17 Oct).
+         or (vs.status = 'running' and vs.claimed_at < now() - interval '10 minutes' and vs.attempts < 5))
+       and not exists (select 1 from public.msm_version_sites e
+                         join public.msm_versions ev on ev.id = e.version_id
+                        where e.location_id = vs.location_id and e.version_id <> vs.version_id
+                          and e.status in ('scheduled', 'running') and ev.menu_id = v.menu_id
+                          and (e.due_at < vs.due_at or (e.due_at = vs.due_at and ev.created_at < v.created_at)))
+     order by vs.due_at, v.created_at
+     limit greatest(1, least(coalesce(p_limit, 1), 20))
+     for update of vs skip locked
+  ), u as (
+    update public.msm_version_sites s
+       set status = 'running', claimed_at = now(), attempts = s.attempts + 1, started_at = coalesce(s.started_at, now())
+      from c
+     where s.version_id = c.version_id and s.location_id = c.location_id
+    returning s.version_id, s.location_id, s.attempts
+  )
+  select u.version_id, u.location_id, u.attempts from u;
+end
+$fn$;
+
+create or replace function public.msm_mark_missed()
+returns table (version_id uuid, location_id text, due_at timestamptz)
+language plpgsql
+security definer
+set search_path = ''
+as $fn$
+#variable_conflict use_column
+declare
+  r record;
+begin
+  -- Stuck runs first (they are not "missed its time": failed in their own words, not returned).
+  perform public.msm__fail_stuck();
+  for r in
+    update public.msm_version_sites s
+       set status = 'failed', finished_at = now(), claimed_at = null,
+           error = 'Missed its time (it was due ' || to_char(s.due_at at time zone coalesce((select nullif(l.timezone, '') from public.locations l where l.id::text = s.location_id), 'Europe/London'), 'DD Mon YYYY HH24:MI')
+                   || '). Nothing was changed. Press Retry to publish it now.'
+      from public.msm_versions v, public.msm_company co
+     where v.id = s.version_id and co.org_id = v.org_id and co.enabled and v.kind = 'scheduled'
+       and s.status = 'scheduled' and s.due_at <= now() - interval '6 hours'
+    returning s.version_id, s.location_id, s.due_at
+  loop
+    perform public.msm__refresh_version(r.version_id);
+    version_id := r.version_id; location_id := r.location_id; due_at := r.due_at;
+    return next;
+  end loop;
+end
+$fn$;
+
+create or replace function public.msm_run_due()
+returns bigint
+language plpgsql
+security definer
+set search_path = ''
+as $fn$
+declare
+  k text;
+  req bigint;
+begin
+  -- A stuck run is failed here too, every minute, so nothing waits behind it for ever.
+  perform public.msm__fail_stuck();
+  if not exists (
+    select 1
+      from public.msm_version_sites vs
+      join public.msm_versions v on v.id = vs.version_id
+      join public.msm_company c on c.org_id = v.org_id and c.enabled
+     where vs.status in ('scheduled', 'running')
+       and ((vs.status = 'scheduled' and vs.due_at <= now())
+         or (vs.status = 'running' and vs.claimed_at < now() - interval '10 minutes' and vs.attempts < 5)
+         or (vs.status = 'scheduled' and vs.precheck_at is null and vs.due_at <= now() + interval '60 minutes')
+         or (vs.late_at is null and vs.due_at < now() - interval '15 minutes'))) then
+    return null;
+  end if;
+  select s.decrypted_secret into k from vault.decrypted_secrets s where s.name = 'msm_cron_key' limit 1;
+  if k is null or length(k) < 32 then
+    raise exception 'msm_run_due: no msm_cron_key in the vault (run 20261017 again)';
+  end if;
+  select net.http_post(
+    url := 'https://tbetcegmszzotrwdtqhi.supabase.co/functions/v1/msm-publish',
+    body := '{"action": "run_due"}'::jsonb,
+    params := '{}'::jsonb,
+    headers := jsonb_build_object('Content-Type', 'application/json', 'x-cron-key', k),
+    timeout_milliseconds := 25000
+  ) into req;
+  return req;
+end
+$fn$;
+
+create or replace function public.msm_retry_site(p_version uuid, p_location text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $fn$
+declare
+  v_org uuid;
+  v_status text;
+begin
+  select v.org_id into v_org from public.msm_versions v where v.id = p_version;
+  if v_org is null then
+    raise exception 'No such publish.' using errcode = '22023';
+  end if;
+  perform public.msm__require_editor(v_org);
+  select vs.status into v_status from public.msm_version_sites vs where vs.version_id = p_version and vs.location_id = p_location for update;
+  if not found then
+    raise exception 'That site is not in this publish.' using errcode = '22023';
+  end if;
+  if v_status <> 'failed' then
+    raise exception 'Only a site that failed can be retried (this one is %).', v_status using errcode = '22023';
+  end if;
+  -- attempts starts again: a Retry gets its own 5 tries (17 Oct verification).
+  update public.msm_version_sites
+     set status = 'scheduled', due_at = now(), claimed_at = null, attempts = 0, error = null, finished_at = null,
+         precheck_at = null, precheck_ok = null, precheck_words = null, late_at = null, notified = '{}'::jsonb
+   where version_id = p_version and location_id = p_location;
+  perform public.msm__refresh_version(p_version);
+  return jsonb_build_object('ok', true, 'status', 'scheduled');
+end
+$fn$;
+
+-- ============================================================================
 -- 9. GRANTS ON FUNCTIONS (by oid: every function this file makes or replaces is closed to everyone
 --    first, then opened to exactly who needs it; anon gets none)
 -- ============================================================================
@@ -2086,7 +2288,8 @@ begin
     'public.msm_import_commit(jsonb)', 'public.msm__import_options(uuid,jsonb)', 'public.msm_import_groups(uuid,jsonb)',
     'public.msm_apply_site(uuid,text,jsonb,jsonb,text,jsonb,text,text,uuid)', 'public.msm_managed_groups(text)',
     'public.msm_managed_at(text[])', 'public.msm_sold_recently(uuid,integer,text[])', 'public.msm_sites_trading(uuid)',
-    'public.msm_set_order_types(uuid,text[])'] loop
+    'public.msm_set_order_types(uuid,text[])', 'public.msm__fail_stuck()', 'public.msm_claim_due(integer)',
+    'public.msm_mark_missed()', 'public.msm_run_due()', 'public.msm_retry_site(uuid,text)'] loop
     p := to_regprocedure(f);
     if p is null then raise exception 'Missing function %', f; end if;
     execute format('revoke all on function %s from public, anon, authenticated, service_role', p);
@@ -2095,12 +2298,14 @@ begin
   foreach f in array array[
     'public.msm_import_commit(jsonb)', 'public.msm_import_groups(uuid,jsonb)', 'public.msm_managed_groups(text)',
     'public.msm_managed_at(text[])', 'public.msm_sold_recently(uuid,integer,text[])', 'public.msm_sites_trading(uuid)',
-    'public.msm_sql_contract()', 'public.msm_set_order_types(uuid,text[])'] loop
+    'public.msm_sql_contract()', 'public.msm_set_order_types(uuid,text[])', 'public.msm_retry_site(uuid,text)'] loop
     execute format('grant execute on function %s to authenticated', to_regprocedure(f));
   end loop;
-  -- the msm-publish function
+  -- the msm-publish function (msm__fail_stuck and msm_run_due: nobody, they run inside the
+  -- database's own functions and the job)
   foreach f in array array[
-    'public.msm_start_version(uuid)', 'public.msm_apply_site(uuid,text,jsonb,jsonb,text,jsonb,text,text,uuid)', 'public.msm_sql_contract()'] loop
+    'public.msm_start_version(uuid)', 'public.msm_apply_site(uuid,text,jsonb,jsonb,text,jsonb,text,text,uuid)', 'public.msm_sql_contract()',
+    'public.msm_claim_due(integer)', 'public.msm_mark_missed()'] loop
     execute format('grant execute on function %s to service_role', to_regprocedure(f));
   end loop;
 end
@@ -2113,9 +2318,10 @@ comment on function public.msm_managed_at(text[]) is
 
 -- VISIBLE CHECK (the SQL editor shows this last result). Expected:
 --   new_tables 2, rls_on 2, fenced 2 (or 0 on a database without the second step), anon_table_rights 0,
---   targets 9, contract 2, anon_function_rights 0, new_functions 19, follow_block_gone true,
+--   targets 9, contract 2, anon_function_rights 0, new_functions 20, follow_block_gone true,
 --   menus_waiting_for_refresh N (the menus imported before this file: 1 on 17 Oct, the demo company),
---   companies_switched_on N (unchanged by this file)
+--   companies_switched_on N (unchanged by this file), icon_ok true, stuck_capped true,
+--   retry_resets true
 select
   (select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace
     where n.nspname = 'public' and c.relkind = 'r' and c.relname in ('msm_modifier_options', 'msm_modifier_option_sites')) as new_tables,
@@ -2134,7 +2340,10 @@ select
     where n.nspname = 'public' and p.proname in ('msm_option_menu_guard', 'msm__group_ids', 'msm_sql_contract', 'msm__is_legacy_mirror',
       'msm__managed_group', 'msm__import_options', 'msm_import_groups', 'msm_managed_groups', 'msm_managed_at', 'msm_sold_recently',
       'msm_sites_trading', 'msm_site_org_guard', 'msm__ref_ok', 'msm_changes_guard', 'msm__sites_reached', 'msm_start_version',
-      'msm_import_commit', 'msm_apply_site', 'msm_set_order_types')) as new_functions,
+      'msm_import_commit', 'msm_apply_site', 'msm_set_order_types', 'msm__fail_stuck')) as new_functions,
   (position('follow their sub item (review blocker 2) ---' in pg_get_functiondef('public.msm_apply_site(uuid,text,jsonb,jsonb,text,jsonb,text,text,uuid)'::regprocedure)) = 0) as follow_block_gone,
   (select count(*) from public.msm_menus m where m.status = 'live' and m.refreshed_at is null) as menus_waiting_for_refresh,
-  (select count(*) from public.msm_company where enabled) as companies_switched_on;
+  (select count(*) from public.msm_company where enabled) as companies_switched_on,
+  (position('coalesce(r.icon, chr(127869))' in pg_get_functiondef('public.msm_apply_site(uuid,text,jsonb,jsonb,text,jsonb,text,text,uuid)'::regprocedure)) > 0) as icon_ok,
+  (position('vs.attempts < 5' in pg_get_functiondef('public.msm_claim_due(integer)'::regprocedure)) > 0) as stuck_capped,
+  (position('attempts = 0' in pg_get_functiondef('public.msm_retry_site(uuid,text)'::regprocedure)) > 0) as retry_resets;

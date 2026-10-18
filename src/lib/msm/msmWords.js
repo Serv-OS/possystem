@@ -9,11 +9,18 @@
 // things), so the screens agree and no raw code reaches a person who is not technical (Peter:
 // "these people using this will not be techy people"). msmWords.test.js pins it.
 
-import { money2 } from '../../../supabase/functions/_shared/msmModel.js';
+import { money2, toPence, pctText, CHANNELS } from '../../../supabase/functions/_shared/msmModel.js';
 import { CHANNEL_LABELS } from './msmGrid.js';
 
 const listOf = (v) => (Array.isArray(v) ? v : []);
-const price = (v) => (v == null ? 'the group price' : money2(v));
+// A price that moves from or to "follows" in words (17 Oct verification: never "price the group
+// price to 3.10"). blank is what a blank price uses.
+const priceMove = (label, from, to, blank = 'the group price') => (from == null && to == null ? `${label}: ${blank}`
+  : from == null ? `${label} set to ${money2(to)} (was ${blank})`
+    : to == null ? `${label} back to ${blank} (was ${money2(from)})`
+      : `${label} ${money2(from)} to ${money2(to)}`);
+// What a blank order type price at a site uses (the till's chain, PRICE_TYPE_HELP).
+const ORDER_TYPE_BLANK = { driveThru: 'the Takeaway price' };
 
 // ── The word list (design section 2) ────────────────────────────────────────
 // One word for each thing, everywhere. Never: central, head office, venue, set, staged, change set,
@@ -64,9 +71,9 @@ export const priceTypeWord = (ch) => (ch ? PRICE_TYPE_WORDS[ch] || 'Another orde
 // lib/menuPricing.js resolveItemPrice and msmModel.channelFallback; design 5.2).
 export const PRICE_TYPE_HELP = Object.freeze({
   base: 'Used when nothing else is set.',
-  dineIn: 'Till eat in, QR, kiosk eat in and bar tabs. Blank uses the Standard price.',
+  dineIn: 'Till eat in, QR and kiosk eat in. Blank uses the Standard price.',
   takeaway: 'Till and kiosk takeaway. Blank uses the Standard price.',
-  collection: 'Till Collect, online collection and ezCater takeout. Blank uses the Standard price, not Takeaway.',
+  collection: 'Till Collect, online collection and ezCater takeout. Blank uses the Standard price, not Takeaway. Its VAT follows Takeaway.',
   delivery: 'Online delivery and the HubRise catalogue. Blank uses the Standard price.',
   driveThru: 'Drive thru. Blank uses the Takeaway price.',
 });
@@ -91,18 +98,46 @@ export const COL_WORDS = Object.freeze({
 /** A column in words, never the column itself ("its own setting" when the map has none). */
 export const colWord = (k) => COL_WORDS[k] || 'its own setting';
 
+const KIND_WORDS = { simple: 'a simple product', modifiable: 'a product with options', variants: 'a product with sizes', subitem: 'a sub item' };
+/**
+ * A value a site keeps as its own, in words (17 Oct verification: never a VAT rate id, true or
+ * false, a type code or a web address).
+ *   col     the venue column
+ *   v       the kept value
+ *   opts    { rates: that site's tax_rates rows, names: { venue id: name } }
+ */
+export function keptValueWords(col, v, opts = {}) {
+  if (col === 'tax_rate_id') {
+    if (v == null || v === '') return 'no VAT rate';
+    const r = listOf(opts.rates).find((x) => x && String(x.id) === String(v));
+    return r ? `${r.name || 'VAT'} ${pctText(r.rate)}` : 'a VAT rate of its own';
+  }
+  if (col === 'image') return v ? 'its own photo' : 'no photo';
+  if (col === 'type') return KIND_WORDS[v] || 'its own kind of product';
+  if (col === 'parent_id') return v ? (opts.names?.[v] ? `a size of ${opts.names[v]}` : 'its own') : 'not a size';
+  if (col === 'cat') return v ? (opts.names?.[v] || 'its own category') : 'no category';
+  if (typeof v === 'boolean') return v ? 'yes' : 'no';
+  if (v == null || v === '') return 'blank';
+  if (Array.isArray(v)) return v.length ? `${v.length} set` : 'none';
+  if (typeof v === 'object') return Object.keys(v).length ? 'its own' : 'none';
+  if (typeof v === 'number') return String(v);
+  const t = String(v);
+  if (/^https?:\/\//.test(t)) return 'its own';
+  return t.length > 40 ? `${t.slice(0, 40)}...` : t;
+}
+
 // The kinds of choice an option group asks (modifier_groups.selection_type).
 export const CHOICE_WORDS = Object.freeze({ single: 'One choice', multiple: 'Several choices', quantity: 'Same choice more than once' });
 
 const FIELD = {
   name: 'name', menu_name: 'menu name', receipt_name: 'receipt name', kitchen_name: 'kitchen name', description: 'description',
   category_id: 'category', extra_category_ids: 'extra categories', parent_product_id: 'size of', type: 'type',
-  default_price: 'group price', default_channels: 'group channel prices', tax_rate_name: 'VAT', tax_rate_percent: 'VAT',
+  default_price: 'group price', default_channels: 'order type prices', tax_rate_name: 'VAT', tax_rate_percent: 'VAT',
   allergens: 'allergens', tags: 'tags', image: 'photo', modifier_groups: 'option groups', visibility: 'where it shows',
   sold_alone: 'sold on its own', item_code: 'item code', archived: 'removed', sort_order: 'order', label: 'name',
   parent_id: 'under', route_like_id: 'prints like', icon: 'icon', color: 'colour', use_name_everywhere: 'name at every site',
   tax_by_type: 'VAT by order type', min: 'rule', max: 'rule', selection_type: 'kind of choice', group_id: 'option group',
-  price: 'price', product_id: 'sub item', sub_group_id: 'Then ask', family_base: 'id scheme',
+  price: 'price', product_id: 'sub item', sub_group_id: 'Then ask',
 };
 export const fieldWord = (k) => FIELD[k] || 'a setting';
 
@@ -134,7 +169,7 @@ export function changeWords(row, names = {}) {
   if (row.target === 'product') {
     const subject = a.name || pn(row.entity_id);
     if (row.op === 'create' && a.type === 'subitem' && a.sold_alone !== true) return { subject, words: 'New sub item, only used as an option' };
-    if (row.op === 'create') return { subject, words: `New ${a.type === 'subitem' ? 'sub item, also sold on its own' : 'product'}, group price ${money2(a.default_price)}${a.category_id ? `, in ${cn(a.category_id)}` : ''}` };
+    if (row.op === 'create') return { subject, words: `New ${a.type === 'subitem' ? 'sub item, also sold on its own' : 'product'}, group price ${money2(a.default_price)}${a.category_id ? `, in ${cn(a.category_id)}` : ''}${a.image ? ', with a photo' : ''}` };
     if (row.op === 'remove' || (a.archived === true && Object.keys(a).length === 1)) return { subject, words: 'Removed from every site' };
     if (a.archived === false && Object.keys(a).length === 1) return { subject, words: 'Brought back' };
     const parts = [];
@@ -144,13 +179,16 @@ export function changeWords(row, names = {}) {
       else if (k === 'category_id') parts.push(`moved to ${cn(a.category_id)}`);
       else if (k === 'name' || k === 'menu_name') { if (!parts.some((x) => x.startsWith('renamed'))) parts.push(`renamed to ${a[k]}`); }
       else if (k === 'default_channels') {
-        const ch = Object.keys(a.default_channels || {}).filter((c) => (a.default_channels || {})[c] !== (b.default_channels || {})?.[c]);
-        parts.push(ch.length ? ch.map((c) => `${CHANNEL_LABELS[c] || c} group price to ${price(a.default_channels[c])}`).join(', ') : 'group channel prices');
+        // Only the order types the till charges, compared as money (a blank and a missing key are
+        // the same: 17 Oct verification, "Delivery group price to the group price").
+        const ac = a.default_channels || {}, bc = b.default_channels || {};
+        const ch = CHANNELS.filter((c) => toPence(ac[c]) !== toPence(bc[c]));
+        if (ch.length) parts.push(ch.map((c) => (ac[c] == null ? `${CHANNEL_LABELS[c] || 'Order type'} goes back to the Standard price` : `${CHANNEL_LABELS[c] || 'Order type'} group price to ${money2(ac[c])}`)).join(', '));
       } else if (k === 'tax_rate_percent' || k === 'tax_rate_name') { if (!parts.includes('VAT changed')) parts.push('VAT changed'); }
       else if (k === 'tax_by_type') {
         const bt = b.tax_by_type || {}, at = a.tax_by_type || {};
         const keys = Object.keys(TAX_TYPE_WORDS).filter((t) => JSON.stringify(bt[t] ?? null) !== JSON.stringify(at[t] ?? null));
-        parts.push(keys.length ? keys.map((t) => `${TAX_TYPE_WORDS[t]} VAT ${at[t] ? `to ${at[t].name || `${at[t].percent}%`}` : "back to the product's VAT"}`).join(', ') : 'VAT by order type changed');
+        parts.push(keys.length ? keys.map((t) => `${TAX_TYPE_WORDS[t]} VAT ${at[t] ? `to ${at[t].name || pctText(at[t].percent)}` : "back to the product's VAT"}`).join(', ') : 'VAT by order type changed');
       } else if (k === 'sold_alone') parts.push(a.sold_alone ? 'now also sold on its own' : 'now only used as an option');
       else if (k === 'type') parts.push(a.type === 'subitem' ? 'now a sub item' : 'now a product');
       else if (k === 'modifier_groups') {
@@ -171,12 +209,12 @@ export function changeWords(row, names = {}) {
     if (row.op === 'create') return { subject, words: `${site}: added${a.active === false ? ' (off)' : ''}${a.price != null ? ` at ${money2(a.price)}` : ''}` };
     const parts = [];
     if ('active' in a) parts.push(a.active ? 'turned on' : 'turned off');
-    if ('price' in a) parts.push(`price ${price(b.price)} to ${price(a.price)}`);
+    if ('price' in a) parts.push(priceMove('price', b.price ?? null, a.price ?? null));
     if ('channel_prices' in a) {
       const before = b.channel_prices || {};
       const after = a.channel_prices || {};
-      const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((k) => (before[k] ?? null) !== (after[k] ?? null));
-      parts.push(keys.length ? keys.map((k) => `${CHANNEL_LABELS[k] || k} price ${price(before[k] ?? null)} to ${price(after[k] ?? null)}`).join(', ') : 'channel prices');
+      const keys = CHANNELS.filter((k) => toPence(before[k]) !== toPence(after[k]));
+      if (keys.length) parts.push(keys.map((k) => priceMove(`${CHANNEL_LABELS[k] || 'Order type'} price`, before[k] ?? null, after[k] ?? null, ORDER_TYPE_BLANK[k] || 'the Standard price')).join(', '));
     }
     if ('kept' in a) {
       const gone = Object.keys(b.kept || {}).filter((k) => !Object.prototype.hasOwnProperty.call(a.kept || {}, k));
@@ -229,7 +267,7 @@ export function changeWords(row, names = {}) {
     if (row.op === 'create') return { subject, words: `${site}: ${a.active === false ? 'off' : 'on'}${a.price != null ? ` at ${money2(a.price)}` : ''}` };
     const parts = [];
     if ('active' in a) parts.push(a.active ? 'turned on' : 'turned off');
-    if ('price' in a) parts.push(`price ${price(b.price)} to ${price(a.price)}`);
+    if ('price' in a) parts.push(priceMove('price', b.price ?? null, a.price ?? null));
     if ('kept' in a) {
       const gone = Object.keys(b.kept || {}).filter((k) => !Object.prototype.hasOwnProperty.call(a.kept || {}, k));
       parts.push(gone.length ? `uses the group's ${gone.map(colWord).join(', ')}` : 'keeps its own');

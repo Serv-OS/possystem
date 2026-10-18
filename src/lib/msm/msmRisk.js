@@ -19,7 +19,7 @@
 // When the sales or trading read failed, the risk is shown anyway: "We could not check sales, so
 // please check."
 
-import { money2, toPence, has, channelFallback, PUBLISHED_CHANNELS, ORDER_TYPE_TAX_KEYS } from '../../../supabase/functions/_shared/msmModel.js';
+import { money2, toPence, has, channelFallback, PUBLISHED_CHANNELS, ORDER_TYPE_TAX_KEYS, pctText } from '../../../supabase/functions/_shared/msmModel.js';
 import { effectiveTaxByType } from '../../../supabase/functions/_shared/msmTax.js';
 import { isOptionOnlyItem } from '../menuRules.js';
 
@@ -27,7 +27,7 @@ const listOf = (v) => (Array.isArray(v) ? v : []);
 const TAX_WORDS = { 'dine-in': 'Eat in', takeaway: 'Takeaway', delivery: 'Delivery', bar: 'Bar tab' };
 const PRICE_WORDS = { dineIn: 'eat in', takeaway: 'takeaway', collection: 'collection', delivery: 'delivery', driveThru: 'drive thru' };
 const json = (v) => JSON.stringify(v ?? null);
-const rateWords = (r) => (r ? `${r.name}${r.percent != null ? ` (${Number(r.percent)}%)` : ''}` : 'the product\'s own VAT');
+const rateWords = (r) => (r ? `${r.name}${r.percent != null ? ` (${pctText(r.percent)})` : ''}` : 'the product\'s own VAT');
 
 /** Is a move from `before` to `after` (pence) more than 20%? Exactly 20% is not. */
 export function moreThan20(before, after) {
@@ -79,7 +79,7 @@ export function riskChecks(changes, central, sold = null, trading = null, opts =
   const oA = (oid) => (optAfter.has(oid) ? optAfter.get(oid) : option.get(oid)?.price);
   const rateName = (loc, id) => {
     const r = listOf(opts.ratesByLoc?.[loc]).find((x) => x && String(x.id) === String(id));
-    return r ? `${r.name}${r.rate != null ? ` (${Number(r.rate)}%)` : ''}` : null;
+    return r ? `${r.name}${r.rate != null ? ` (${pctText(r.rate)})` : ''}` : null;
   };
   for (const ch of listOf(changes)) {
     const a = ch.after || {}, b = ch.before || {};
@@ -108,6 +108,16 @@ export function riskChecks(changes, central, sold = null, trading = null, opts =
         const x = channelFallback({ ...p, default_price: dB(ch.entity_id), default_channels: was }, null, k);
         const y = channelFallback({ ...p, default_price: dA(ch.entity_id), default_channels: now }, null, k);
         priceRisk(`${pName(ch.entity_id)} ${PRICE_WORDS[k]} price`, 'at every site that follows it', x, y);
+        // A site with its own Standard price follows the group's order type price too: its own fall
+        // (5.00 to 3.10 at Station) gets its own tick (17 Oct verification).
+        for (const row of ps.values()) {
+          if (row.product_id !== ch.entity_id || row.active === false || row.price == null) continue;
+          if (row.channel_prices && row.channel_prices[k] != null) continue;
+          const sx = channelFallback({ ...p, default_price: dB(ch.entity_id), default_channels: was }, row, k);
+          const sy = channelFallback({ ...p, default_price: dA(ch.entity_id), default_channels: now }, row, k);
+          if (toPence(sx) === toPence(x)) continue;
+          priceRisk(`${pName(ch.entity_id)} ${PRICE_WORDS[k]} price`, `at ${siteName(row.location_id)}`, sx, sy);
+        }
       }
     }
     if (ch.target === 'product_site' && 'channel_prices' in a) {

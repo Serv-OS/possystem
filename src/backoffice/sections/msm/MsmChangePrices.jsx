@@ -51,7 +51,8 @@ export default function MsmChangePrices({ api, menu, live, eff, ix, sites, stage
   const [rounding, setRounding] = useState('5p');
   const [endings, setEndings] = useState([5, 9]);
   const [siteMode, setSiteMode] = useState('all');
-  const [chosen, setChosen] = useState(() => sites.map((s) => s.id));
+  // "Only some sites" starts with none ticked: the person picks (17 Oct verification).
+  const [chosen, setChosen] = useState([]);
   const [offProducts, setOffProducts] = useState(() => new Set());
   const [offSites, setOffSites] = useState(() => new Set());
   const [showUnchanged, setShowUnchanged] = useState(false);
@@ -192,7 +193,7 @@ export default function MsmChangePrices({ api, menu, live, eff, ix, sites, stage
           <Btn kind="primary" disabled={!editable || saving || !changes.length || !ready || sales === undefined} onClick={apply} title={!ready ? 'Tick each warning first' : undefined}>{saving ? 'Adding…' : `Add ${summary?.prices || 0} price change${summary?.prices === 1 ? '' : 's'} to draft`}</Btn>
         </>
       )}>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 16, marginBottom: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16, marginBottom: 14 }}>
         {/* 1. What */}
         <div style={ui.card}>
           <div style={ui.h2}>1. What</div>
@@ -333,7 +334,7 @@ export default function MsmChangePrices({ api, menu, live, eff, ix, sites, stage
         <label style={{ ...ui.row, fontSize: 12.5, cursor: 'pointer' }}><input type="checkbox" checked={showGp} onChange={(e) => setShowGp(e.target.checked)} /> GP before and after</label>
         <label style={{ ...ui.row, fontSize: 12.5, cursor: 'pointer' }}><input type="checkbox" checked={showUnchanged} onChange={(e) => setShowUnchanged(e.target.checked)} /> Show prices that stay the same</label>
       </div>
-      {!result && <Notice tone="info">{scopeEmpty ? (optionScope ? 'Tick at least one option group above.' : scopeMode === 'products' ? 'Add at least one product above.' : 'Tick at least one category above.') : 'Type the change above to see every price before and after.'}</Notice>}
+      {!result && <Notice tone="info">{scopeEmpty ? (optionScope ? 'Tick at least one option group above.' : scopeMode === 'products' ? 'Add at least one product above.' : 'Tick at least one category above.') : siteMode === 'chosen' && !chosen.length ? 'Tick at least one site in 4. Sites.' : 'Type the change above to see every price before and after.'}</Notice>}
       {result && !groups.length && <Notice>No price changes. {mode === 'set' ? 'Every price is already that.' : 'Try a bigger change or a different rounding.'}</Notice>}
       {[...pinnedBy.entries()].slice(0, 3).map(([c, set]) => (
         <div key={c} style={{ marginBottom: 8 }}>

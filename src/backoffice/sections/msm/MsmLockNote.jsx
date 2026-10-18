@@ -29,7 +29,10 @@ export function MsmLockBanner({ kind = 'product', kept = new Set(), onOpen = nul
       <div>{kind === 'group' ? LOCK_WORDS.group : LOCK_WORDS.product}</div>
       {kind === 'product' && <div style={{ marginTop: 3, color: 'var(--t3)' }}>{LOCK_WORDS.stillYours}</div>}
       {kind === 'group' && <div style={{ marginTop: 3, color: 'var(--t3)' }}>86 still works here, and you can put it on this site's own products.</div>}
-      {keptWords.length > 0 && <div style={{ marginTop: 3 }}>This site keeps its own {keptWords.join(', ')}: {keptWords.length === 1 ? 'that stays' : 'those stay'} editable here.</div>}
+      {keptWords.length > 0 && kind === 'product' && <div style={{ marginTop: 3 }}>This site keeps its own {keptWords.join(', ')}: {keptWords.length === 1 ? 'that stays' : 'those stay'} editable here.</div>}
+      {/* A managed option group stays read only here, whatever the site keeps (17 Oct verification:
+          the old line promised an edit this screen does not offer). */}
+      {keptWords.length > 0 && kind === 'group' && <div style={{ marginTop: 3 }}>This site keeps its own {keptWords.join(', ')}. Head office can change it for this site in the Multi site menu.</div>}
       {(onOpen || action) && (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 7 }}>
           {onOpen && <button type="button" onClick={onOpen} style={linkBtn}>Open the Multi site menu</button>}

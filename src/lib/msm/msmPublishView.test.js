@@ -18,9 +18,11 @@ import { newProductChanges, newCategoryChange, withBefore } from './msmEdit.js';
 
 const T = Date.UTC(2026, 9, 17, 14, 30);   // Sat 17 Oct 2026 15:30 in London
 
-test('the schedule picker starts at 06:00 tomorrow on the site\'s clock, and never before now', () => {
+test('the schedule picker starts at the next 06:00 on the site\'s clock, and never before now', () => {
   assert.equal(defaultRunLocal(T, 'Europe/London'), '2026-10-18T06:00');
-  assert.equal(defaultRunLocal(Date.UTC(2026, 9, 17, 23, 30), 'Europe/London'), '2026-10-19T06:00', '00:30 on Sunday in London: Monday');
+  assert.equal(defaultRunLocal(Date.UTC(2026, 9, 17, 23, 30), 'Europe/London'), '2026-10-18T06:00', '00:30 on Sunday in London: Sunday 06:00, the coming morning (17 Oct verification)');
+  assert.equal(defaultRunLocal(Date.UTC(2026, 9, 18, 2, 12), 'Europe/London'), '2026-10-18T06:00', '03:12 on Sunday: Sunday 06:00');
+  assert.equal(defaultRunLocal(Date.UTC(2026, 9, 18, 5, 1), 'Europe/London'), '2026-10-19T06:00', '06:01 on Sunday: Monday');
   assert.equal(defaultRunLocal(Date.UTC(2026, 9, 31, 12), 'Europe/London'), '2026-11-01T06:00', 'over a month end');
   assert.equal(defaultRunLocal(T, 'America/Los_Angeles'), '2026-10-18T06:00');
   assert.equal(minRunLocal(T, 'Europe/London'), '2026-10-17T15:30');
@@ -126,7 +128,7 @@ test('what a publish wrote at a site, in words', () => {
     { table: 'menus', id: 'm1', before: null, after: { name: 'Menu' } },
   ], new Map([['v-latte', 'Latte']]));
   assert.deepEqual(lines, [
-    'Latte: 2.80 to 2.95', 'Mince pie: new here at 2.50', 'Tea pot: turned off', 'Tea pot: name Tea to Tea pot', 'Latte (takeaway): none to 2.75',
+    'Latte: 2.80 to 2.95', 'Mince pie: new here at 2.50', 'Tea pot: turned off', 'Tea pot: name "Tea" to "Tea pot"', 'Latte (takeaway): now 2.75 (was the Standard price)',
     'Category Christmas: new here', 'The site\'s menu: made',
   ]);
 });

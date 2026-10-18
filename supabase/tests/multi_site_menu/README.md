@@ -89,10 +89,20 @@ id: the harness found that, the second gets the whole id); the same version twic
 sub item missing at a site is added as option only and recorded; VAT keys one by one with a site's
 counter key and explicit null untouched and only that site's rates; the tax profile copy cleared and
 put back by Undo, a real profile refused; a save holding a row makes publish wait BEFORE the
-fingerprint; keys the database does not know are refused ("Run 20261017c first"); the managed lists,
+fingerprint; keys the database does not know are refused ("redeploy msm-publish, then press Retry"); the managed lists,
 sold recently and trading now; `msm__is_legacy_mirror` against the shared fixture list
 (`src/lib/msm/msmMirrorFixtures.js`, the same list the planner and the till's engine are pinned to);
 the one time refresh (`msm_import_groups`) saved only when every site is as read, once, never while a
 draft holds option group changes, and then publishing would change nothing; the edge function's
 refresh action, the contract fallback, and a group publish through the runner. The round 2 roll back
 runs first, then round 1's.
+
+## 17 Oct 2026 verification (248 of 248 with round 1's checks; edge.mjs 34 of 34)
+
+`round2.mjs` also proves: a new VAT rate over a generated copy of the OLD rate publishes with the
+copy cleared in the same write (the till then charges the new rate); a run whose worker died is not
+claimed again after 5 tries, it fails in words, and Retry starts the count again (a busy moment after
+a Retry goes back in the queue); an import from a page still on round 1 (no options) is refused in
+words; sold recently and trading now need the second sign in step. `run.mjs` checks the round 2
+check row's new columns (icon_ok, stuck_capped, retry_resets) and that the round 2 roll back puts the
+scheduler functions and the group site foreign key back exactly as round 1 made them.

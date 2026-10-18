@@ -61,7 +61,7 @@ import KioskV2Root from './kiosk/KioskV2Root';
 import KioskV2Status from './kiosk/KioskV2Status';
 import { kioskNewDesignOn, kioskResetAllowed } from '../lib/kioskFlow';
 import KioskCardScreen from './kiosk/KioskCardScreen';
-import { kioskMayRefresh } from '../lib/msm/msmTillWatch.js';
+import { kioskMayRefresh, kioskMenuAfterRead } from '../lib/msm/msmTillWatch.js';
 import KioskPayLinkGate from './kiosk/KioskPayLinkGate';
 import { usePaymentBusy } from '../lib/usePaymentBusy';
 import { kioskLineKeyV2 } from '../lib/kioskBasket';
@@ -131,6 +131,11 @@ function useKioskMenu(profile, locationId, tz = 'Europe/London', reloadKey = 0) 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [tick, setTick] = useState(0);
+  // 17 Oct 2026 (Multi site menu): a reload after a head office update whose read failed keeps the
+  // menu on screen and asks for another reload at the next idle moment (useMsmKioskRefresh).
+  const [reloadFailed, setReloadFailed] = useState(false);
+  const dataRef = useRef(data);
+  useEffect(() => { dataRef.current = data; }, [data]);
 
   // 60-second tick for active-menu re-resolution (timed menus auto-switch)
   useEffect(() => {
@@ -187,17 +192,14 @@ function useKioskMenu(profile, locationId, tz = 'Europe/London', reloadKey = 0) 
         if (Array.isArray(instDefs) && instDefs.length) {
           useStore.setState({ instructionGroupDefs: instDefs });
         }
-        setData({
-          items: iRes.data || [],
-          categories: cRes.data || [],
-          menus: mRes.data || [],
-          links: lRes.data || [],
-          // v5.7.33: both reads must have succeeded - never keep line-less profiles.
-          taxProfiles: (Array.isArray(tpRes.data) && Array.isArray(tlRes.data))
-            ? assembleTaxProfiles(tpRes.data, tlRes.data) : [],
-          // v5.7.34: venue default profile for the seam's cascade step 4.
-          venueDefaultTaxProfileId: defRes?.data?.default_tax_profile_id ?? null,
+        // v5.7.33: both profile reads must have succeeded - never keep line-less profiles.
+        // v5.7.34: venue default profile for the seam's cascade step 4.
+        // 17 Oct 2026: on a reload (reloadKey > 0) a failed menu read keeps the menu on screen.
+        const next = kioskMenuAfterRead(dataRef.current, { items: iRes, categories: cRes, menus: mRes, links: lRes, taxProfiles: tpRes, taxProfileLines: tlRes }, {
+          reload: reloadKey > 0, assemble: assembleTaxProfiles, venueDefaultTaxProfileId: defRes?.data?.default_tax_profile_id ?? null,
         });
+        setReloadFailed(next.failed);
+        setData(next.data);
       } catch (e) {
         if (alive) setError(e?.message || 'Failed to load menu');
       } finally {
@@ -267,7 +269,7 @@ function useKioskMenu(profile, locationId, tz = 'Europe/London', reloadKey = 0) 
   }, [ratesState, data.items, ratesTry]);
   const retryRates = useCallback(() => setRatesTry(n => n + 1), []);
 
-  return { ...data, taxRates: rates, ratesState, retryRates, activeMenuId, loading, error };
+  return { ...data, taxRates: rates, ratesState, retryRates, activeMenuId, loading, error, reloadFailed };
 }
 
 // 17 Oct 2026 (Multi site menu, design step 5): this kiosk reads its menu straight from the
@@ -275,16 +277,19 @@ function useKioskMenu(profile, locationId, tz = 'Europe/London', reloadKey = 0) 
 // read again here, but only on the start screen with an empty basket (never mid order). It hears
 // of one live, and also checks the newest push every 5 minutes (Realtime never replays one it
 // missed). An ordinary Push to POS changes nothing here, as before.
-function useMsmKioskRefresh(locationId, { screen, cartCount, setReload }) {
+function useMsmKioskRefresh(locationId, { screen, cartCount, setReload, retry = false }) {
   const idleRef = useRef({ screen, cartCount });
   useEffect(() => { idleRef.current = { screen, cartCount }; }, [screen, cartCount]);
+  // A reload whose read failed (useKioskMenu kept the menu on screen): read again when idle.
+  const retryRef = useRef(retry);
+  useEffect(() => { retryRef.current = retry; }, [retry]);
   useEffect(() => {
     if (!locationId || !supabase) return undefined;
     let alive = true;
     let pending = false;
     let seen = null;
     const tryNow = () => {
-      if (!alive || !kioskMayRefresh({ pending, ...idleRef.current })) return;
+      if (!alive || !kioskMayRefresh({ pending: pending || retryRef.current, ...idleRef.current })) return;
       pending = false;
       setReload((k) => k + 1);
     };
@@ -394,7 +399,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
   }, [locationId]);
   // 17 Oct 2026 (Multi site menu): bumped by useMsmKioskRefresh (below, once the basket exists).
   const [msmReload, setMsmReload] = useState(0);
-  const { items, categories, menus, links, taxRates, taxProfiles, venueDefaultTaxProfileId, activeMenuId, loading: menuLoading, error: menuError, ratesState, retryRates } = useKioskMenu(profile, locationId, kioskTz, msmReload);
+  const { items, categories, menus, links, taxRates, taxProfiles, venueDefaultTaxProfileId, activeMenuId, loading: menuLoading, error: menuError, ratesState, retryRates, reloadFailed: msmReloadFailed } = useKioskMenu(profile, locationId, kioskTz, msmReload);
   // v5.7.34: local tax context for the unified seam — built from the kiosk's
   // own fetches (profiles + raw tax_profile_id columns + venue default).
   const kioskTaxCtx = useMemo(() => buildLocalTaxCtx({
@@ -556,7 +561,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
   }, [locationId]);
 
   const [cart, setCart] = useState([]); // [{ key, item, qty, mods, linePrice, lineTotal, name }]
-  useMsmKioskRefresh(locationId, { screen, cartCount: cart.length, setReload: setMsmReload });
+  useMsmKioskRefresh(locationId, { screen, cartCount: cart.length, setReload: setMsmReload, retry: msmReloadFailed });
   const [tip, setTip] = useState(0);
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');

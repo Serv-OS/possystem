@@ -55,12 +55,15 @@
 import {
   PUBLISHED_CHANNELS, ORDER_TYPE_TAX_KEYS, PRODUCT_COLUMN, has, sameValue, samePrice,
   newCategoryId, newMenuId, newGroupId, longCategoryId, longMenuId, longGroupId, newOptionId, longOptionId,
-  newItemId, freeId, money2, toPence, KEPT_COLUMNS,
+  newItemId, freeId, money2, toPence, KEPT_COLUMNS, pctText,
 } from './msmModel.js';
 import { mapRateDescriptor, effectiveTaxByType, venueProfileIsMirror, TAX_KEY_LABEL } from './msmTax.js';
 
 const clone = (v) => (v == null ? v : JSON.parse(JSON.stringify(v)));
 const listOf = (v) => (Array.isArray(v) ? v : []);
+const TRIMMED_TEXT = new Set(['name', 'menu_name', 'receipt_name', 'kitchen_name', 'label']);
+/** Two names that differ only by spaces at either end. */
+export const sameText = (a, b) => typeof a === 'string' && typeof b === 'string' && a.trim() === b.trim();
 const gidOf = (a) => (typeof a === 'string' ? a : a && typeof a === 'object' ? (a.groupId ?? a.id ?? null) : null);
 
 // ── The touched list, from a change set's msm_changes rows ──────────────────
@@ -260,6 +263,10 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
 
   const setCol = (table, row, column, value, meta = {}) => {
     if (sameValue(row[column], value)) return false;
+    // A name that differs only by spaces at either end is the same name (the import's database
+    // function trims names as it saves them, so the saved group menu and the venue would otherwise
+    // differ by a space and every publish touching a name would rewrite it: 17 Oct rehearsal).
+    if (TRIMMED_TEXT.has(column) && sameText(row[column], value)) return false;
     const map = upd[table];
     const u = map.get(row.id) || { id: row.id, set: {} };
     u.set[column] = value;
@@ -309,7 +316,8 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
       problem('no_venue_menu', 'block', venueMenuId
         // Menu details cannot re pick a site's menu yet (UI issue 12b): say what really helps.
         ? 'The site\'s own menu that the group menu writes into was deleted at the site, so nothing is written here. Ask ServOS support to point the group menu at that site\'s menu. The other sites still publish.'
-        : 'This site has no menu for the group menu to go into. Add the site again from Sites.');
+        // A site added whose first publish did not finish (Sites refuses to add it again).
+        : 'This site was added to the group menu, but the publish that adds it did not finish. Fix what that publish said, then press Retry on it in Publish history. The other sites still publish.');
       return finish(false);
     }
     // A new site (Add a site): its venue menu is created first, in the same transaction.
@@ -375,6 +383,21 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     const cs = catSite.get(cid);
     return cs?.venue_category_id && vCatById.has(cs.venue_category_id) ? cs.venue_category_id : null;
   };
+  // Is a venue item on the venue menu this group menu writes into? (its category, or an extra one,
+  // is on that menu by menu_id or a link; a child category follows its parent). No category at all
+  // counts as on the menu, as Bring it in allows.
+  const rowOnMenu = (row) => {
+    const cats = [row?.cat, ...listOf(row?.cats)].filter(Boolean);
+    if (!cats.length) return true;
+    const linked = new Set(applied.links.filter((l) => l.menu_id === venueMenuId).map((l) => l.category_id));
+    const on = (id, n = 0) => {
+      const c = vCatById.get(id);
+      if (!c || n > 20) return false;
+      if (c.menu_id === venueMenuId || linked.has(id)) return true;
+      return c.parent_id ? on(c.parent_id, n + 1) : false;
+    };
+    return cats.some((id) => on(id));
+  };
 
   // ── Product value helpers (central -> this venue) ─────────────────────────
   const siteActive = (p, ps) => !!ps && ps.active !== false && !p.archived;
@@ -396,7 +419,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
   const mapTax = (p, { quiet = false } = {}) => {
     const r = mapTaxRate(p, applied.taxRates);
     if (!r.ok && !quiet) {
-      const pct = p.tax_rate_percent == null ? '' : `${Number(p.tax_rate_percent)}% `;
+      const pct = p.tax_rate_percent == null ? '' : `${pctText(p.tax_rate_percent)} `;
       problem('no_tax_rate', 'block', `This site has no ${pct}VAT rate${p.tax_rate_name ? ` called "${p.tax_rate_name}"` : ''} for "${p.name}". Add it in Settings, Tax.`, { productId: p.id });
     }
     return r;
@@ -562,7 +585,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     for (const k of ORDER_TYPE_TAX_KEYS) {
       if (!eff[k]) continue;
       const m = mapRateDescriptor(eff[k], applied.taxRates);
-      if (!m.ok) { problem('no_tax_rate_type', 'block', `This site has no ${Number(eff[k].percent)}% VAT rate called "${eff[k].name}" for "${p.name}" (${TAX_KEY_LABEL[k]}). Add it in Settings, Tax.`, { productId: p.id }); continue; }
+      if (!m.ok) { problem('no_tax_rate_type', 'block', `This site has no ${pctText(eff[k].percent)} VAT rate called "${eff[k].name}" for "${p.name}" (${TAX_KEY_LABEL[k]}). Add it in that site's Settings, Tax, or set ${TAX_KEY_LABEL[k]} back to the product's VAT.`, { productId: p.id }); continue; }
       out[k] = m.id;
     }
     return out;
@@ -590,7 +613,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
       if (keptKey(k)) continue;
       if (!eff[k]) { wrote = setTaxKey(vrow, k, undefined, meta) || wrote; continue; }
       const m = mapRateDescriptor(eff[k], applied.taxRates);
-      if (!m.ok) { problem('no_tax_rate_type', 'block', `This site has no ${Number(eff[k].percent)}% VAT rate called "${eff[k].name}" for "${p.name}" (${TAX_KEY_LABEL[k]}). Add it in Settings, Tax.`, meta); continue; }
+      if (!m.ok) { problem('no_tax_rate_type', 'block', `This site has no ${pctText(eff[k].percent)} VAT rate called "${eff[k].name}" for "${p.name}" (${TAX_KEY_LABEL[k]}). Add it in that site's Settings, Tax, or set ${TAX_KEY_LABEL[k]} back to the product's VAT.`, meta); continue; }
       wrote = setTaxKey(vrow, k, m.id, meta) || wrote;
     }
     // Drive thru and collection read takeaway only when the site has no key of their own.
@@ -699,8 +722,32 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
       vItemById.set(row.id, vr);
       insertedItems.add(row.id);
       writtenItems.add(row.id);
-      lines.push({ table: 'items', id: row.id, column: '(new)', before: null, after: p.name, ...meta });
+      const parentP = p.parent_product_id ? productById.get(p.parent_product_id) : null;
+      lines.push({
+        table: 'items', id: row.id, column: '(new)', before: null, after: p.name, ...meta,
+        // The price it goes on sale at here, and the product a size belongs to (the preview names
+        // both: "House Red, 250 ml glass: new here at 8.25").
+        price: p.type === 'variants' ? null : pricing.base, parentName: parentP ? (parentP.menu_name || parentP.name || null) : null,
+      });
       continue;
+    }
+
+    // A CREATE that meets a venue row already there (17 Oct verification). The ids publish makes
+    // are the sharing engine's, so a site's OWN copy of a product can already hold the id: the
+    // group menu must never take it over by writing only prices and on or off into it.
+    //   * Add a site: a product the new site already sells (its own copy, on or off).
+    //   * Turn on at a site (or a new site row): a copy that sits in another of the site's menus,
+    //     or in a category that is off this menu, so it would never show and its other menu's
+    //     price would change. (Bring it in, from the Sites tab, links a copy in THIS menu.)
+    if (!insertedItems.has(vrow.id)) {
+      if (T.sitesCreated.has(loc)) {
+        problem('site_has_product', 'block', `"${p.name}" is already at this site as its own product. Add a site is only for a site that does not sell the group menu's products yet: bring this site's products in from the Sites tab instead. Nothing was changed.`, meta);
+        continue;
+      }
+      if (w.siteOp === 'create' && !rowOnMenu(vrow)) {
+        problem('own_copy_other_menu', 'block', `This site already has its own "${p.name}" in another of its menus (or in a category that is off this menu). Move it into this menu at the site, or bring it in from the Sites tab, then publish again. Nothing was changed.`, meta);
+        continue;
+      }
     }
 
     // An existing venue row: only the touched columns, and only where the value differs (an
@@ -752,6 +799,17 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
       if (col !== 'archived' && keptBlocks(col)) continue;
       const v = col === 'visibility' ? soldVisibility(p) : columnValue(p, ps, col);
       if (v === undefined) continue;
+      // A new VAT rate over a tax profile (17 Oct verification): the till reads the item's profile
+      // first, so a generated copy of the OLD rate would keep charging it. The copy is cleared in
+      // the same write; a real profile blocks, in words.
+      if (col === 'tax_rate_id' && vrow.tax_profile_id && !sameValue(vrow.tax_rate_id ?? null, v ?? null)) {
+        const mirror = venueProfileIsMirror(V, vrow.tax_profile_id, vrow.tax_rate_id ?? null);
+        if (mirror === null) { problem('tax_profiles_unread', 'block', `Could not read this site's tax profiles, so the new VAT rate for "${p.name}" was not checked. Try again.`, meta); continue; }
+        if (!mirror) { problem('real_tax_profile', 'block', `This site uses a tax profile on "${p.name}", so its VAT would not change. Set its tax in that site's Settings, Tax.`, meta); continue; }
+        setCol('items', vrow, col, v, meta);
+        setCol('items', vrow, 'tax_profile_id', null, { ...meta, profileCleared: true });
+        continue;
+      }
       setCol('items', vrow, col, v, meta);
     }
     for (const k of pricingKeys) {
@@ -852,6 +910,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     const consider = (col, value, mirror = null) => {
       if (!fieldTouched(col) || keptBlocks(col)) return;
       if (sameValue(vg[col], value)) return;
+      if (col === 'name' && sameText(vg[col], value)) return;
       u0[col] = value;
       lines.push({ table: 'groups', id: vg.id, column: col, before: clone(vg[col]), after: clone(value), groupId: gid });
       vg[col] = value;
@@ -872,7 +931,10 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     for (const o of rows) {
       const to = T.options.get(o.id) || null;
       const tos = T.optionSites.get(`${o.id}|${loc}`) || null;
-      if (to?.fields.has('sort_order') || to?.op === 'create') orderTouched = true;
+      // Only a real reorder (sort_order updates on options already there) moves a site's options:
+      // a new option is placed by its own add, so a site that orders its options its own way keeps
+      // that order (17 Oct verification).
+      if (to?.op === 'update' && to.fields.has('sort_order')) orderTouched = true;
       if (!to && !tos && tg.op !== 'create') continue;
       const os = osBy.get(o.id) || null;
       const kept2 = optionKept(os);
@@ -899,7 +961,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
           const want = os && os.price != null ? Number(os.price) : Number(o.price ?? 0);
           if (!samePrice(entry.price, want)) set.price = want;
         }
-        if ((touchedF('name') || cleared.has('name')) && !keptB('name') && entry.name !== name) set.name = name;
+        if ((touchedF('name') || cleared.has('name')) && !keptB('name') && entry.name !== name && !sameText(entry.name, name)) set.name = name;
         if ((touchedF('product_id') || cleared.has('item_link')) && !keptB('item_link')) {
           if (o.product_id) {
             const iid = ensureSubItem(o.product_id, name);
@@ -1013,22 +1075,26 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     return {
       locationId: loc, notAtSite: noSite, writes: W, applied, lines, problems, counts, newCategories,
       insertedItemIds: [...insertedItems], writtenItemIds: [...writtenItems], writtenGroupIds: [...writtenGroups], venueMenuId, empty,
+      managedItemIds: [...psBy.values()].map((x) => x.venue_item_id).filter(Boolean),
     };
   }
 }
 
 function countLines(lines, W) {
   const c = {
-    prices: 0, newProducts: 0, subItems: 0, turnedOn: 0, turnedOff: 0, renamed: 0, other: 0,
-    categoriesNew: W.categories.insert.length, categoriesOff: W.links.delete.length,
+    prices: 0, newProducts: 0, newSizes: 0, subItems: 0, turnedOn: 0, turnedOff: 0, renamed: 0, other: 0,
+    categoriesNew: W.categories.insert.length, categoriesOff: W.links.delete.length, categories: 0,
     groupsNew: W.groups.insert.length, groups: 0, vat: 0,
   };
   for (const l of lines) {
     if (l.table === 'groups') { if (l.column !== '(new)') c.groups++; continue; }
+    // A category edit (name, colour, under) counts, so the site never says "Nothing changes here"
+    // beside a line (17 Oct verification). Off and back on the menu are counted by their links.
+    if (l.table === 'categories') { if (l.column !== '(new)' && l.column !== 'menu_id') c.categories++; continue; }
     if (l.table !== 'items') continue;
-    if (l.column === '(new)') { if (l.subItemFor) c.subItems++; else c.newProducts++; continue; }
+    if (l.column === '(new)') { if (l.subItemFor) c.subItems++; else if (l.parentName) c.newSizes++; else c.newProducts++; continue; }
     if (l.column.startsWith('pricing.')) c.prices++;
-    else if (l.column.startsWith('tax_overrides.') || l.column === 'tax_profile_id') c.vat++;
+    else if (l.column.startsWith('tax_overrides.') || l.column === 'tax_profile_id' || l.column === 'tax_rate_id') c.vat++;
     else if (l.column === 'archived') { if (l.after === false) c.turnedOn++; else c.turnedOff++; }
     else if (['name', 'menu_name'].includes(l.column)) c.renamed++;
     else c.other++;
@@ -1043,12 +1109,14 @@ export function countsWords(counts) {
   const n = (k, one, many) => { if (c[k]) parts.push(`${c[k]} ${c[k] === 1 ? one : many}`); };
   n('prices', 'price', 'prices');
   n('newProducts', 'new product', 'new products');
+  n('newSizes', 'new size', 'new sizes');
   n('subItems', 'sub item added', 'sub items added');
   n('turnedOn', 'turned on', 'turned on');
   n('turnedOff', 'turned off', 'turned off');
   n('renamed', 'renamed', 'renamed');
   n('categoriesNew', 'new category', 'new categories');
   n('categoriesOff', 'category off the menu', 'categories off the menu');
+  n('categories', 'category change', 'category changes');
   n('groupsNew', 'new option group', 'new option groups');
   n('groups', 'option group change', 'option group changes');
   n('vat', 'VAT change', 'VAT changes');
@@ -1056,24 +1124,66 @@ export function countsWords(counts) {
   return parts.join(', ');
 }
 
-/** One line in plain words: "Latte: 2.80 to 2.95". */
+// Plain words for the columns publish writes (17 Oct verification: never a raw column name, id,
+// web address or true/false in the preview a manager checks before publishing).
+const TEXT_WORDS = { name: 'name', menu_name: 'name on the till', receipt_name: 'receipt name', kitchen_name: 'kitchen ticket name', description: 'description', item_code: 'item code' };
+const TYPE_WORDS = { simple: 'a simple product', modifiable: 'a product with options', variants: 'a product with sizes', subitem: 'a sub item' };
+const PRICE_LABEL = { dineIn: 'eat in', takeaway: 'takeaway', collection: 'collection', delivery: 'delivery', driveThru: 'drive thru' };
+const quoteText = (v) => {
+  const t = v == null ? '' : String(v).trim();
+  if (!t) return 'blank';
+  return `"${t.length > 40 ? `${t.slice(0, 40)}...` : t}"`;
+};
+const groupIdsOf = (v) => listOf(v).map(gidOf).filter(Boolean);
+const nameList = (ids, names, word) => {
+  const known = ids.map((id) => names[id]).filter(Boolean);
+  if (!known.length) return ids.length === 1 ? `an ${word}` : `${ids.length} ${word}s`;
+  return known.length > 2 ? `${known.slice(0, 2).join(', ')} and ${known.length - 2} more` : known.join(' and ');
+};
+
+/**
+ * A price line in words. A blank order type price follows the Standard price.
+ *   "Latte: 2.80 to 2.95", "Flat white (takeaway): now 3.10 (was the Standard price)"
+ */
+export function priceLineWords(who, key, before, after) {
+  const label = key === 'base' ? '' : ` (${PRICE_LABEL[key] || 'order type'})`;
+  const blank = key === 'base' ? 'no price' : 'the Standard price';
+  if (before == null && after == null) return `${who}${label}: ${blank}`;
+  if (before == null) return `${who}${label}: now ${money2(after)} (was ${blank})`;
+  if (after == null) return `${who}${label}: back to ${blank} (was ${money2(before)})`;
+  return `${who}${label}: ${money2(before)} to ${money2(after)}`;
+}
+
+/** One line in plain words: "Latte: 2.80 to 2.95". names maps ids (central and this site's) to names. */
 export function lineWords(line, names = {}) {
   const who = names[line.productId] || names[line.groupId] || names[line.id] || 'A product';
-  if (line.column === '(new)') return line.subItemFor ? `${line.after}: added here as a sub item for "${line.subItemFor}"` : `${line.after}: new here`;
+  if (line.column === '(new)') {
+    if (line.table === 'categories') return `New category: ${line.after}`;
+    if (line.table === 'menus') return `New menu at this site: ${line.after}`;
+    if (line.table === 'groups') return `New option group here: ${line.after}`;
+    if (line.subItemFor) return `${line.after}: added here as a sub item for "${line.subItemFor}"`;
+    const nm = line.parentName ? `${line.parentName}, ${line.after}` : line.after;
+    return `${nm}: new here${line.price != null ? ` at ${money2(line.price)}` : ''}`;
+  }
   if (line.column === '(off menu)') return `${names[line.categoryId] || 'A category'}: taken off the menu`;
   if (line.column === '(on menu)') return `${names[line.categoryId] || 'A category'}: back on the menu`;
-  if (line.column.startsWith('pricing.')) {
-    const k = line.column.slice(8);
-    const label = k === 'base' ? '' : ` (${{ dineIn: 'eat in', takeaway: 'takeaway', collection: 'collection', delivery: 'delivery', driveThru: 'drive thru' }[k] || 'order type'})`;
-    return `${who}${label}: ${line.before == null ? 'none' : money2(line.before)} to ${line.after == null ? 'none' : money2(line.after)}`;
+  if (line.table === 'categories') {
+    const c = `Category ${names[line.categoryId] || names[line.id] || ''}`.trim();
+    if (line.column === 'label') return `Category ${line.before || names[line.categoryId] || ''}: renamed to ${quoteText(line.after)}`;
+    if (line.column === 'parent_id') return line.after ? `${c}: now under ${names[line.after] || 'another category'}` : `${c}: now a top level category`;
+    if (line.column === 'menu_id') return `${c}: ${line.after ? 'back on the menu' : 'taken off the menu'}`;
+    if (line.column === 'sort_order') return `${c}: moves in the menu`;
+    const w = { color: 'colour', icon: 'icon', image: 'photo', accounting_group: 'accounting group', default_course: 'course' }[line.column];
+    return `${c}: ${w || 'details'} change${w ? 's' : ''}`;
   }
+  if (line.column.startsWith('pricing.')) return priceLineWords(who, line.column.slice(8), line.before, line.after);
   if (line.column.startsWith('tax_overrides.')) {
     const k = line.column.slice(14);
-    return `${who}: ${TAX_KEY_LABEL[k] || 'order type'} VAT ${line.after === undefined ? 'now the same as the product' : 'changed'}`;
+    return `${who}: ${TAX_KEY_LABEL[k] || 'order type'} VAT ${line.after === undefined ? 'now the same as the product' : `becomes ${names[line.after] || 'another rate'}`}`;
   }
   if (line.column === 'tax_profile_id') {
     return line.after == null
-      ? `${who} will now use its VAT by order type on the till. Until now an old tax profile hid it.`
+      ? `${who}: the till now charges the VAT set here. Until now an old tax profile hid it.`
       : `${who}: its old tax profile is put back`;
   }
   if (line.column === 'archived') return `${who}: ${line.after ? 'turned off' : 'turned on'}`;
@@ -1092,9 +1202,30 @@ export function lineWords(line, names = {}) {
     if (line.column === 'min' || line.column === 'max') return `${g}: customers now choose ${line.column === 'min' ? 'at least' : 'up to'} ${line.after}`;
     if (line.column === 'selection_type') return `${g}: ${{ single: 'one choice', multiple: 'several choices', quantity: 'the same choice more than once' }[line.after] || 'choices changed'}`;
     if (line.column === 'name') return `${g}: renamed to ${line.after}`;
+    return `${g}: changed`;
   }
-  const show = (v) => (v == null ? 'none' : typeof v === 'object' ? 'changed' : String(v));
-  return `${who}: ${line.column.replace(/_/g, ' ')} ${show(line.before)} to ${show(line.after)}`;
+  const col = line.column;
+  if (TEXT_WORDS[col]) return `${who}: ${TEXT_WORDS[col]} ${quoteText(line.before)} to ${quoteText(line.after)}`;
+  if (col === 'cat') return line.after ? `${who}: moves to ${names[line.after] || 'another category'}` : `${who}: taken out of its category`;
+  if (col === 'cats') return `${who}: extra categories change`;
+  if (col === 'parent_id') return line.after ? `${who}: now a size of ${names[line.after] || 'another product'}` : `${who}: no longer a size`;
+  if (col === 'tax_rate_id') return line.after ? `${who}: VAT rate becomes ${names[line.after] || 'another rate'}` : `${who}: no VAT rate`;
+  if (col === 'image') return `${who}: ${line.before == null || line.before === '' ? 'photo added' : line.after == null || line.after === '' ? 'photo removed' : 'photo changes'}`;
+  if (col === 'type') return `${who}: now ${TYPE_WORDS[line.after] || 'another kind of product'}`;
+  if (col === 'sold_alone') return `${who}: ${line.after ? 'now also sold on its own' : 'now only used as an option'}`;
+  if (col === 'allergens') return `${who}: allergens change`;
+  if (col === 'tags') return `${who}: dietary tags change`;
+  if (col === 'visibility') return `${who}: where it shows changes`;
+  if (col === 'assigned_modifier_groups') {
+    const b = groupIdsOf(line.before), a = groupIdsOf(line.after);
+    const added = a.filter((id) => !b.includes(id));
+    const gone = b.filter((id) => !a.includes(id));
+    const parts = [];
+    if (added.length) parts.push(`now asks ${nameList(added, names, 'option group')}`);
+    if (gone.length) parts.push(`no longer asks ${nameList(gone, names, 'option group')}`);
+    return `${who}: ${parts.length ? parts.join('; ') : 'option groups in a new order'}`;
+  }
+  return `${who}: changed`;
 }
 
 /** Is this KEPT column one msmModel allows? (kept rows from the database are checked) */

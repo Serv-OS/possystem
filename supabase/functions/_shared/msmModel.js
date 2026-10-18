@@ -362,3 +362,24 @@ export const money2 = (v) => {
   const a = Math.abs(p);
   return `${neg ? '-' : ''}${Math.floor(a / 100)}.${String(a % 100).padStart(2, '0')}`;
 };
+
+// A VAT rate as a percent (17 Oct 2026 verification): live tax_rates.rate is a FRACTION (0.2 is 20%,
+// lib/tax.js divides by 1 + rate), and the import copies it into msm_products.tax_rate_percent as it
+// is. A value above 1 is already a percent (older rows, made up data). Used for words only: mapping
+// a rate always compares the stored values as they are, so it never depends on this.
+export const ratePercent = (r) => {
+  if (r === null || r === undefined || r === '') return null;
+  const n = Number(r);
+  if (!Number.isFinite(n)) return null;
+  return n > 1 ? n : Math.round(n * 100000) / 1000;
+};
+/** "20%", "8.875%", "0%" ('' when there is no rate). */
+export const pctText = (r) => {
+  const p = ratePercent(r);
+  return p === null ? '' : `${Math.round(p * 1000) / 1000}%`;
+};
+/** The fraction to take off a VAT inclusive price (0.2 for 20%, whichever way the rate is stored). */
+export const rateFraction = (r) => {
+  const p = ratePercent(r);
+  return p === null ? 0 : p / 100;
+};

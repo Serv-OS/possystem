@@ -40,10 +40,10 @@ export function Pill({ tone = 'neutral', children, title, style }) {
 }
 
 /** An on or off switch. */
-export function Switch({ on, onChange, disabled, small = false, title }) {
+export function Switch({ on, onChange, disabled, small = false, title, ariaLabel }) {
   const w = small ? 26 : 34, h = small ? 15 : 19;
   return (
-    <button type="button" role="switch" aria-checked={!!on} title={title} disabled={disabled}
+    <button type="button" role="switch" aria-checked={!!on} title={title} aria-label={ariaLabel} disabled={disabled}
       onClick={(e) => { e.stopPropagation(); if (!disabled) onChange?.(!on); }}
       style={{ width: w, height: h, borderRadius: h, border: 'none', padding: 2, cursor: disabled ? 'default' : 'pointer', flexShrink: 0,
         background: on ? 'var(--acc)' : 'var(--bg4, var(--bg3))', opacity: disabled ? 0.55 : 1, transition: 'background .15s', display: 'flex', justifyContent: on ? 'flex-end' : 'flex-start' }}>
@@ -168,7 +168,7 @@ export function Modal({ title, sub, onClose, width = 760, children, footer, dirt
  * follows the button when the page or the grid scrolls. A panel that would run off the bottom of
  * the screen opens above the button instead (iPad in landscape).
  */
-export function Popover({ label, children, align = 'left', disabled, kind = 'ghost', small = true, width = 280, title, testId }) {
+export function Popover({ label, children, align = 'left', disabled, kind = 'ghost', small = true, width = 280, title, testId, btnStyle, ariaLabel }) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState(null);
   const btnRef = useRef(null);
@@ -220,7 +220,7 @@ export function Popover({ label, children, align = 'left', disabled, kind = 'gho
     </div>, document.body) : null;
   return (
     <span ref={btnRef} style={{ display: 'inline-block' }}>
-      <Btn kind={kind} small={small} disabled={disabled} title={title} aria-expanded={open} data-testid={testId} onClick={() => { if (!open) place(); setOpen(!open); }}>{label}</Btn>
+      <Btn kind={kind} small={small} disabled={disabled} title={title} aria-label={ariaLabel} aria-expanded={open} data-testid={testId} style={btnStyle} onClick={() => { if (!open) place(); setOpen(!open); }}>{label}</Btn>
       {panel}
     </span>
   );
@@ -323,10 +323,12 @@ export function ConfirmTicks({ risks, ticked, onChange, onAction = null, actionL
       <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 2 }}>Please check {list.length === 1 ? 'this' : `these ${list.length}`} before you go on</div>
       <div style={{ ...ui.sub, marginBottom: 8 }}>Tick each one to say you meant it. Nothing reaches the tills until you publish.</div>
       {list.map((r) => (
-        <label key={r.key} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', padding: '5px 0', fontSize: 13, cursor: 'pointer', borderTop: '1px solid var(--bdr)' }}>
+        // The words wrap and a button drops onto its own line under them in a narrow column, never
+        // one word per line beside it (17 Oct verification, at 1280 px).
+        <label key={r.key} style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'flex-start', padding: '5px 0', fontSize: 13, cursor: 'pointer', borderTop: '1px solid var(--bdr)' }}>
           <input type="checkbox" checked={set.has(r.key)} onChange={() => flip(r.key)} style={{ marginTop: 3 }} />
-          <span style={{ flex: 1 }}>{r.words}</span>
-          {r.action && onAction && <Btn small kind="soft" onClick={(e) => { e.preventDefault(); onAction(r); }}>{actionLabel ? actionLabel(r) : 'Do that instead'}</Btn>}
+          <span style={{ flex: '1 1 180px', minWidth: 0 }}>{r.words}</span>
+          {r.action && onAction && <Btn small kind="soft" style={{ marginLeft: 21, whiteSpace: 'normal', textAlign: 'left' }} onClick={(e) => { e.preventDefault(); onAction(r); }}>{actionLabel ? actionLabel(r) : 'Do that instead'}</Btn>}
         </label>
       ))}
     </div>

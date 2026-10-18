@@ -7,13 +7,15 @@
 //
 // No recipe = "No recipe", never a figure (a company with no recipes shows that everywhere).
 // VAT is the site's rate for that product (the central tax name and percent mapped at that site);
-// UK menu prices include VAT, so net = price / (1 + rate / 100).
+// UK menu prices include VAT, so net = price / (1 + rate). Live tax_rates.rate is a fraction (0.2 is
+// 20%, lib/tax.js netOf); a rate above 1 is read as a percent (msmModel.rateFraction).
 
 import { gpPct, gpAmount, recipeCost } from '../stock/costing.js';
 import { mapTaxRate } from '../../../supabase/functions/_shared/msmPlan.js';
 import { effectiveTaxByType } from '../../../supabase/functions/_shared/msmTax.js';
 import { siteOverridesAfter } from './msmOrderTypes.js';
 import { resolveLineTaxRate } from '../tax.js';
+import { rateFraction } from '../../../supabase/functions/_shared/msmModel.js';
 
 // The VAT key and the order type the till uses for an order type PRICE (round 2 review: a takeaway
 // price's GP takes off the takeaway VAT, not the product's own).
@@ -24,15 +26,14 @@ const round2 = (n) => Math.round(n * 100 + (n >= 0 ? 1e-9 : -1e-9)) / 100;
 /** Net (ex VAT) price of a VAT inclusive price. */
 export function netOf(price, vatPct) {
   const p = Number(price);
-  const v = Number(vatPct) || 0;
   if (!Number.isFinite(p)) return null;
-  return p / (1 + v / 100);
+  return p / (1 + rateFraction(vatPct));
 }
 
 /**
  * One price's margin.
  *   price    the selling price at that site (VAT inclusive)
- *   vatPct   the VAT rate there (20 for 20%)
+ *   vatPct   the VAT rate there, as tax_rates holds it (0.2 for 20%; 20 is read as 20% too)
  *   cost     the plate cost from the venue's recipe, or null when there is no recipe
  * Returns { noRecipe: true, words: 'No recipe' } or { net, cost, gp, gpPct, words }.
  */

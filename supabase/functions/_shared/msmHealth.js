@@ -23,6 +23,11 @@
 //   ROUND 2, WARNINGS: an option whose sub item is turned off at a site (with the fix); a group
 //     also used by a site's own products; a site's own Drive thru or Collection VAT that the group
 //     Takeaway VAT will not reach. Every line says the fix.
+//   17 OCT VERIFICATION, WARNINGS: a product this publish adds where the site already sells its own
+//     product with the same name (in any category); a product written into a category that is not
+//     on the site's menu (no till would show it).
+//   17 OCT VERIFICATION, BLOCKING (central): a product brought back into a category that was taken
+//     off the group menu.
 
 import { CATEGORY_IMAGE_RE, normName, toPence, money2 } from './msmModel.js';
 
@@ -112,6 +117,32 @@ export function checkSite(plan, opts = {}) {
     }
   }
 
+  // 17 Oct verification. A product this publish ADDS where the site already sells its own product
+  // (not in the group menu) with the same name, in any category: two buttons for one thing.
+  const managed = new Set(listOf(plan.managedItemIds));
+  for (const id of listOf(plan.insertedItemIds)) {
+    const i = byId.get(id);
+    if (!active(i) || optionOnly(i)) continue;
+    const n = normName(nameOf(i));
+    const own = items.find((o) => o !== i && active(o) && !optionOnly(o) && !managed.has(o.id) && o.id !== i.parent_id && o.parent_id !== i.id
+      && normName(nameOf(o)) === n && !(o.cat && o.cat === i.cat));
+    if (own) push(warnings, { code: 'own_same_name', words: `${siteName} already sells its own "${nameOf(own)}" (not in the group menu), so it would have two. To use that one instead, take this out of the draft and bring it in on the Sites tab.`, productId: productOf.get(id) });
+  }
+  // A product written on sale into a category that is not on the site's menu: no till shows it.
+  if (plan.venueMenuId && Array.isArray(A.links)) {
+    const cats = new Map(listOf(A.categories).map((c) => [c.id, c]));
+    const linked = new Set(listOf(A.links).filter((l) => l.menu_id === plan.venueMenuId).map((l) => l.category_id));
+    const onMenu = (cid, n = 0) => { const c = cats.get(cid); if (!c || n > 20) return false; return c.menu_id === plan.venueMenuId || linked.has(cid) || (c.parent_id ? onMenu(c.parent_id, n + 1) : false); };
+    for (const id of touched) {
+      const i = byId.get(id);
+      if (!active(i) || optionOnly(i) || i.parent_id) continue;
+      const mine = [i.cat, ...listOf(i.cats)].filter(Boolean);
+      if (!mine.length || mine.some((c) => onMenu(c))) continue;
+      const c = cats.get(i.cat);
+      push(warnings, { code: 'category_off_menu', words: `"${nameOf(i)}" is in ${c ? `"${c.label}"` : 'a category'}, which is not on ${siteName}'s menu, so no till shows it there. Put that category back on the menu in ${siteName}'s Menu Manager.`, productId: productOf.get(id) });
+    }
+  }
+
   // Option groups this plan wrote: one customers could never finish, rules that cannot be met.
   const groupIds = new Set([...listOf(plan.writtenGroupIds)]);
   for (const i of items) if (active(i) && touched.has(i.id)) for (const a of listOf(i.assigned_modifier_groups)) { const id = a && (typeof a === 'string' ? a : a.groupId); if (id) groupIds.add(id); }
@@ -163,10 +194,17 @@ export function checkCentral(central, touched) {
   const blocking = [];
   const warnings = [];
   const ps = listOf(central?.productSites);
+  const catOf = new Map(listOf(central?.categories).map((c) => [c.id, c]));
   for (const [pid, t] of touched?.products || new Map()) {
     const p = listOf(central?.products).find((x) => x.id === pid);
     if (!p || p.archived || t.op === 'remove') continue;
     if (!ps.some((r) => r.product_id === pid && r.active !== false)) warnings.push({ code: 'active_nowhere', words: `"${p.name}" is not on sale at any site.`, productId: pid });
+    // Brought back (or moved) into a category that was taken off the group menu: it would go on
+    // sale where no till shows it (17 Oct verification).
+    const gone = [p.category_id, ...listOf(p.extra_category_ids)].map((cid) => catOf.get(cid)).filter((c) => c && c.archived);
+    if (gone.length && !(t.op === 'update' && !t.fields.has('archived') && !t.fields.has('category_id') && !t.fields.has('extra_category_ids'))) {
+      blocking.push({ code: 'category_removed', words: `"${p.name}" is in "${gone[0].label}", which was taken off the group menu. Move it to another category first.`, productId: pid });
+    }
   }
   // Option groups (round 2): rules that cannot be met, and "Then ask" loops.
   const groups = listOf(central?.groups);

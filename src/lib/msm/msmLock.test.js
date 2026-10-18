@@ -82,7 +82,7 @@ test('one option: price refused, other keys allowed', () => {
 
 test('words say what was not changed and where to change it, with no codes', () => {
   const w = droppedWords('Latte', ['menu_name', 'pricing']);
-  assert.match(w, /^Latte: the name and prices are set by head office in the Multi site menu/);
+  assert.match(w, /^Latte: head office sets the name and prices in the Multi site menu, so this was not changed here\.$/);
   assert.doesNotMatch(w, /_/);
   assert.equal(droppedWords('Latte', []), '');
 });

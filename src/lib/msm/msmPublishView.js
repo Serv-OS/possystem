@@ -11,6 +11,8 @@
 import { money2, toPence, SITE_STATUS } from '../../../supabase/functions/_shared/msmModel.js';
 import { whenText, LATE_MINUTES } from '../../../supabase/functions/_shared/msmSchedule.js';
 import { indexCentral, cellFor } from './msmGrid.js';
+import { priceLineWords } from '../../../supabase/functions/_shared/msmPlan.js';
+import { keptValueWords } from './msmWords.js';
 
 const listOf = (v) => (Array.isArray(v) ? v : []);
 const ms = (v) => (v == null ? null : typeof v === 'number' ? v : Date.parse(v));
@@ -28,12 +30,13 @@ export function clockParts(utcMs, tz = 'Europe/London') {
 const pad = (n) => String(n).padStart(2, '0');
 
 /**
- * The time the schedule picker starts on: 06:00 tomorrow on the site's clock (before most cafes
- * open), as "YYYY-MM-DDTHH:MM" for a datetime-local box.
+ * The time the schedule picker starts on: the NEXT 06:00 on the site's clock (before most cafes
+ * open): today's when it is not 06:00 there yet (17 Oct verification: at 00:30 on Sunday the
+ * coming morning is Sunday, not Monday), as "YYYY-MM-DDTHH:MM" for a datetime-local box.
  */
 export function defaultRunLocal(nowMs = Date.now(), tz = 'Europe/London', hour = 6) {
   const c = clockParts(nowMs, tz);
-  const next = new Date(Date.UTC(c.y, c.m - 1, c.d + 1));
+  const next = new Date(Date.UTC(c.y, c.m - 1, c.hh < hour ? c.d : c.d + 1));
   return `${next.getUTCFullYear()}-${pad(next.getUTCMonth() + 1)}-${pad(next.getUTCDate())}T${pad(hour)}:00`;
 }
 
@@ -54,6 +57,22 @@ export function countdownWords(targetMs, nowMs = Date.now()) {
   if (h < 24) return `in ${plural(h, 'hour')}${m ? ` ${plural(m, 'minute')}` : ''}`;
   const d = Math.floor(h / 24), hh = h % 24;
   return `in ${plural(d, 'day')}${hh ? ` ${plural(hh, 'hour')}` : ''}`;
+}
+
+/**
+ * The sites a publish really changes (17 Oct verification: "Publish to 6 sites now? 1 change at 1
+ * site"): once the preview is read, only sites with something to write (or that could not be read);
+ * until then every site it reaches. The server still visits the rest and writes nothing there.
+ */
+export function changingSites(preview, reach) {
+  if (!preview || !Array.isArray(preview.sites)) return listOf(reach);
+  const on = new Set(preview.sites.filter((s) => s.missing || (s.plan?.lines?.length || 0) > 0).map((s) => s.location_id));
+  return listOf(reach).filter((loc) => on.has(loc));
+}
+
+/** "Or schedule it for Sun 18 Oct 06:00": the shortcut names the real day, never "tomorrow". */
+export function nextMorningWords(local, whenText) {
+  return `Or schedule it for ${whenText}`;
 }
 
 /** The publish button: "Publish to 6 sites now" or "Publish to Station now". */
@@ -150,18 +169,20 @@ export function canStillChange(entry) {
 
 // ── Sites ───────────────────────────────────────────────────────────────────
 
-const STATE_ORDER = ['late', 'failed', 'running', 'will_fail', 'scheduled', 'changed', 'waiting', 'in_sync'];
+const STATE_ORDER = ['late', 'failed', 'running', 'will_fail', 'scheduled', 'changed', 'waiting', 'in_sync', 'unchecked'];
 const STATE_LABEL = {
   late: 'Late', failed: 'Failed', running: 'Running', will_fail: 'Will fail', scheduled: 'Scheduled',
-  changed: 'Changed at the venue', waiting: 'Changes waiting', in_sync: 'In sync',
+  changed: 'Changed at the site', waiting: 'Changes waiting', in_sync: 'In sync', unchecked: 'Not checked yet',
 };
-const STATE_TONE = { late: 'bad', failed: 'bad', running: 'blue', will_fail: 'warn', scheduled: 'blue', changed: 'warn', waiting: 'acc', in_sync: 'good' };
+const STATE_TONE = { late: 'bad', failed: 'bad', running: 'blue', will_fail: 'warn', scheduled: 'blue', changed: 'warn', waiting: 'acc', in_sync: 'good', unchecked: 'neutral' };
 
 /**
  * A card per site: what it is doing now.
  *   sites     [{ id, name, timezone }]
  *   history   readHistory rows, newest first
- *   opts      { waiting: Set(locationId) reached by drafts, drift: { loc: count }, now }
+ *   opts      { waiting: Set(locationId) reached by drafts, drift: { loc: count }, now,
+ *               checked: false until "Find changes made at sites" has run (then no site claims
+ *               "In sync" without being looked at: 17 Oct verification) }
  * Returns [{ id, name, state, label, tone, flags: [{ state, label, tone }], nextAt, failed, lastDoneAt, lastVersionNo }].
  */
 export function siteCards(sites, history, opts = {}) {
@@ -191,7 +212,7 @@ export function siteCards(sites, history, opts = {}) {
     }
     if ((drift[site.id] || 0) > 0) flags.add('changed');
     if (waiting.has(site.id)) flags.add('waiting');
-    if (!flags.size) flags.add('in_sync');
+    if (!flags.size) flags.add(opts.checked === false ? 'unchecked' : 'in_sync');
     const ordered = STATE_ORDER.filter((s) => flags.has(s));
     const state = ordered[0];
     return {
@@ -214,7 +235,7 @@ const COL_WORDS = {
   name: 'name', menu_name: 'menu name', receipt_name: 'receipt name', kitchen_name: 'kitchen name', description: 'description',
   cat: 'category', cats: 'extra categories', parent_id: 'size of', tax_rate_id: 'VAT rate', allergens: 'allergens', image: 'photo',
   assigned_modifier_groups: 'modifier groups', visibility: 'where it shows', sold_alone: 'sold on its own', item_code: 'item code',
-  tags: 'tags', type: 'type', label: 'name', sort_order: 'order',
+  tags: 'tags', type: 'type', label: 'name', sort_order: 'order', tax_overrides: 'VAT by order type', tax_profile_id: 'tax profile',
 };
 const PRICE_WORDS = { base: '', dineIn: ' (eat in)', takeaway: ' (takeaway)', collection: ' (collection)', delivery: ' (delivery)', driveThru: ' (drive thru)' };
 
@@ -235,14 +256,21 @@ export function auditLines(writes, names = {}) {
       for (const k of Object.keys(after)) {
         if (k === 'pricing') {
           for (const ch of Object.keys(after.pricing || {})) {
-            const a = after.pricing[ch], b = before.pricing?.[ch];
-            out.push(`${who}${PRICE_WORDS[ch] ?? ` (${ch})`}: ${b == null ? 'none' : money2(b)} to ${a == null ? 'none' : money2(a)}`);
+            if (!(ch in PRICE_WORDS)) continue;
+            out.push(priceLineWords(who, ch, before.pricing?.[ch] ?? null, after.pricing[ch] ?? null));
           }
         } else if (k === 'archived') out.push(`${who}: ${after.archived ? 'turned off' : 'turned on'}`);
         else if (k === 'updated_at') continue;
-        else {
-          const show = (v) => (v == null ? 'none' : typeof v === 'object' ? 'changed' : String(v));
-          out.push(`${who}: ${COL_WORDS[k] || k.replace(/_/g, ' ')} ${show(before[k])} to ${show(after[k])}`);
+        else if (['name', 'menu_name', 'receipt_name', 'kitchen_name'].includes(k)) {
+          const q = (v) => (v == null || String(v).trim() === '' ? 'blank' : `"${String(v).trim()}"`);
+          out.push(`${who}: ${COL_WORDS[k]} ${q(before[k])} to ${q(after[k])}`);
+        } else {
+          // Never a raw value (an id, a photo link, true or false): in words (17 Oct verification).
+          const word = COL_WORDS[k] || 'a setting';
+          const objectish = (v) => v != null && typeof v === 'object';
+          out.push(objectish(before[k]) || objectish(after[k]) || ['description', 'cat', 'cats', 'parent_id', 'tax_rate_id', 'tax_profile_id'].includes(k)
+            ? `${who}: ${word} changed`
+            : `${who}: ${word} ${keptValueWords(k, before[k] ?? null)} to ${keptValueWords(k, after[k] ?? null)}`);
         }
       }
     } else if (w.table === 'categories') {
@@ -285,12 +313,15 @@ export function spreadRows(central, siteIds, { channel = null, outlierPct = 15 }
     const mid = Math.floor(pence.length / 2);
     const median = pence.length % 2 ? pence[mid] : Math.round((pence[mid - 1] + pence[mid]) / 2);
     const outliers = new Set(median > 0 ? prices.filter((x) => Math.abs(x.pence - median) * 100 > outlierPct * median).map((x) => x.loc) : []);
+    // A size is never shown alone (UI item 9): "Americano, Large" (17 Oct verification).
+    const parent = p.parent_product_id ? ix.products.get(p.parent_product_id) : null;
+    const own = p.menu_name || p.name;
     out.push({
-      product: p, prices, min: min / 100, max: max / 100, spread: (max - min) / 100,
+      product: p, label: parent ? `${parent.menu_name || parent.name}, ${own}` : own, prices, min: min / 100, max: max / 100, spread: (max - min) / 100,
       pct: min > 0 ? Math.round(((max - min) * 1000) / min) / 10 : null, median: median / 100, outliers,
     });
   }
-  return out.sort((a, b) => b.spread - a.spread || (b.pct ?? 0) - (a.pct ?? 0) || String(a.product.name).localeCompare(String(b.product.name)));
+  return out.sort((a, b) => b.spread - a.spread || (b.pct ?? 0) - (a.pct ?? 0) || String(a.label).localeCompare(String(b.label)));
 }
 
 /** One line over the spread: "21 of 58 products are priced differently between sites; widest Latte, 0.40 (12%)." */
@@ -298,7 +329,7 @@ export function spreadSummary(rows, comparable) {
   const differ = listOf(rows).filter((r) => r.spread > 0);
   if (!differ.length) return `Every product costs the same at every site${comparable ? ` (${plural(comparable, 'product')} compared)` : ''}.`;
   const w = differ[0];
-  return `${differ.length}${comparable ? ` of ${comparable}` : ''} product${differ.length === 1 ? ' is' : 's are'} priced differently between sites; the widest is ${w.product.menu_name || w.product.name}, ${money2(w.spread)}${w.pct != null ? ` (${w.pct}%)` : ''}.`;
+  return `${differ.length}${comparable ? ` of ${comparable}` : ''} product${differ.length === 1 ? ' is' : 's are'} priced differently between sites; the widest is ${w.label || w.product.menu_name || w.product.name}, ${money2(w.spread)}${w.pct != null ? ` (${w.pct}%)` : ''}.`;
 }
 
 // ── Spreadsheet ─────────────────────────────────────────────────────────────

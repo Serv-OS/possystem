@@ -8,7 +8,7 @@
 //   "Latte is turned off at Barnsley."
 //   "Galaxy donut: takeaway VAT becomes Zero Rate at every site."
 
-import { money2, toPence, has, PUBLISHED_CHANNELS } from '../../../supabase/functions/_shared/msmModel.js';
+import { money2, toPence, has, PUBLISHED_CHANNELS, pctText, newItemId, channelFallback } from '../../../supabase/functions/_shared/msmModel.js';
 import { isOptionOnlyItem } from '../menuRules.js';
 import { fieldWord, colWord, PRICE_TYPE_WORDS, CHOICE_WORDS } from './msmWords.js';
 
@@ -64,8 +64,11 @@ export function summarise(changes, central, opts = {}) {
   const bump = (m, k) => m.set(k, (m.get(k) || 0) + 1);
   const newProducts = [], newSubs = [], removed = [], back = [], groupOffs = [];
   const offAt = new Map(), onAt = new Map();          // loc -> [names]
+  const newAt = new Map();                             // loc -> [{ id, name, price, parentId }] (on sale there for the first time)
+  const joined = new Map();                            // loc -> [names] brought in from that site
   const reordered = new Set();
   const siteRows = new Map();                          // "Oat milk is turned on in Milk" -> [site names]
+  const createdProducts = new Set(listOf(changes).filter((c) => c.target === 'product' && c.op === 'create').map((c) => c.entity_id));
   const createdOptions = new Set(listOf(changes).filter((c) => c.target === 'modifier_option' && c.op === 'create').map((c) => c.entity_id));
   const cats = new Map(listOf(C.categories).map((c) => [c.id, c]));
   for (const ch of listOf(changes)) {
@@ -77,13 +80,29 @@ export function summarise(changes, central, opts = {}) {
       const d = toPence(a.default_price) - toPence(b.default_price);
       if (d > 0) bump(ups, '*'); else if (d < 0) bump(downs, '*');
     }
-    if (ch.target === 'product_site' && 'price' in a) {
+    // A product never sold at a site has no price to go up or down there (17 Oct verification): its
+    // price is said in the "goes on sale" sentence below instead.
+    if (ch.target === 'product_site' && 'price' in a && ch.op !== 'create') {
       const p = product.get(ch.entity_id);
       const was = b.price ?? p?.default_price, now = a.price ?? p?.default_price;
       const d = toPence(now) - toPence(was);
       if (d > 0) bump(ups, ch.location_id); else if (d < 0) bump(downs, ch.location_id);
     }
     if (ch.target === 'product_site' && 'active' in a) {
+      const p = product.get(ch.entity_id);
+      if (ch.op === 'create') {
+        // A new product's sites: its "new product" sentence covers them.
+        if (createdProducts.has(ch.entity_id)) continue;
+        // Brought in from the site (its own row, with what it keeps): already on sale there.
+        if (has(a, 'kept')) { if (!joined.has(ch.location_id)) joined.set(ch.location_id, []); joined.get(ch.location_id).push(pName(ch.entity_id)); continue; }
+        // Off at a site where it never was: nothing happens there (publish writes nothing).
+        if (a.active === false && p && a.venue_item_id === newItemId(p, ch.location_id)) continue;
+        if (a.active !== false) {
+          if (!newAt.has(ch.location_id)) newAt.set(ch.location_id, []);
+          newAt.get(ch.location_id).push({ id: ch.entity_id, name: pName(ch.entity_id), parentId: p?.parent_product_id || null, price: p?.type === 'variants' ? null : (a.price ?? p?.default_price ?? null) });
+          continue;
+        }
+      }
       const m = a.active ? onAt : offAt;
       if (!m.has(ch.location_id)) m.set(ch.location_id, []);
       m.get(ch.location_id).push(pName(ch.entity_id));
@@ -97,7 +116,7 @@ export function summarise(changes, central, opts = {}) {
       }
     }
     if (ch.target === 'product' && ('tax_rate_name' in a || 'tax_rate_percent' in a)) {
-      out.push(`${pName(ch.entity_id)}: VAT becomes ${a.tax_rate_name ?? 'another rate'}${a.tax_rate_percent != null ? ` (${Number(a.tax_rate_percent)}%)` : ''} at every site.`);
+      out.push(`${pName(ch.entity_id)}: VAT becomes ${a.tax_rate_name ?? 'another rate'}${a.tax_rate_percent != null ? ` (${pctText(a.tax_rate_percent)})` : ''} at every site.`);
     }
     // Options.
     if (ch.target === 'modifier_option' && 'price' in a && ch.op !== 'create') {
@@ -141,6 +160,16 @@ export function summarise(changes, central, opts = {}) {
         out.push(now[k] == null
           ? `${pName(ch.entity_id)}: ${PRICE_TYPE_WORDS[k]} price goes back to the Standard price at every site that follows it${when}.`
           : `${pName(ch.entity_id)}: ${PRICE_TYPE_WORDS[k]} price becomes ${money2(now[k])} at every site that follows it${when}.`);
+        // A site with its own Standard price but no price of its own for this order type follows
+        // the group's order type price too: name it, with what it charges otherwise (17 Oct
+        // verification: "Station (own price 3.50) also got takeaway 3.10").
+        if (now[k] != null) {
+          const p = product.get(ch.entity_id) || {};
+          const pAfter = { ...p, default_channels: { ...(p.default_channels || {}), ...now } };
+          const own = listOf(C.productSites).filter((r) => r.product_id === ch.entity_id && r.active !== false && r.price != null
+            && !(r.channel_prices && r.channel_prices[k] != null) && toPence(r.price) !== toPence(p.default_price) && toPence(channelFallback(pAfter, r, k)) === toPence(now[k]));
+          for (const r of own) out.push(`${pName(ch.entity_id)}: ${PRICE_TYPE_WORDS[k]} becomes ${money2(now[k])} at ${siteName(r.location_id)} too, where the Standard price is ${money2(r.price)}.`);
+        }
       }
     }
     if (ch.target === 'product_site' && 'channel_prices' in a) {
@@ -227,6 +256,25 @@ export function summarise(changes, central, opts = {}) {
   if (newSubs.length) out.push(`${newSubs.length} new sub item${newSubs.length === 1 ? '' : 's'} (only used as options): ${nameList(newSubs)}.`);
   for (const [loc, names] of offAt) out.push(names.length === 1 ? `${names[0]} is turned off at ${siteName(loc)}.` : `${names.length} products are turned off at ${siteName(loc)}: ${nameList(names)}.`);
   for (const [loc, names] of onAt) out.push(names.length === 1 ? `${names[0]} is turned on at ${siteName(loc)}.` : `${names.length} products are turned on at ${siteName(loc)}: ${nameList(names)}.`);
+  for (const [loc, names] of joined) out.push(`${nameList(names)} at ${siteName(loc)} ${names.length === 1 ? 'joins' : 'join'} the group menu (nothing changes there).`);
+  // On sale at a site for the first time, with the price it goes on at and its sizes under it:
+  // "House Red and 3 sizes go on sale at Location 2 (175 ml glass 5.50, 250 ml glass 8.25, Bottle 22.00)."
+  for (const [loc, rows] of newAt) {
+    const ids = new Set(rows.map((r) => r.id));
+    const tops = rows.filter((r) => !r.parentId || !ids.has(r.parentId));
+    const phrases = tops.map((t) => {
+      const sizes = rows.filter((r) => r.parentId === t.id);
+      const priced = (r) => (r.price != null ? `${r.name} ${money2(r.price)}` : r.name);
+      if (sizes.length) return `${t.name} and ${sizes.length} size${sizes.length === 1 ? '' : 's'} (${sizes.map(priced).join(', ')})`;
+      const parent = t.parentId ? product.get(t.parentId) : null;
+      const nm = parent ? `${parent.menu_name || parent.name}, ${t.name}` : t.name;
+      return t.price != null ? `${nm} at ${money2(t.price)}` : nm;
+    });
+    const many = phrases.length > 1 || tops.some((t) => rows.some((r) => r.parentId === t.id));
+    out.push(phrases.length > 4
+      ? `${rows.length} products go on sale at ${siteName(loc)} for the first time: ${phrases.slice(0, 3).join('; ')} and ${phrases.length - 3} more.`
+      : `${phrases.join('; ')} ${many ? 'go' : 'goes'} on sale at ${siteName(loc)}${when}.`);
+  }
   if (removed.length) out.push(`${nameList(removed)} ${removed.length === 1 ? 'is' : 'are'} taken off every site (nothing is deleted).`);
   if (back.length) out.push(`${nameList(back)} ${back.length === 1 ? 'comes' : 'come'} back.`);
   out.push(...groupOffs);

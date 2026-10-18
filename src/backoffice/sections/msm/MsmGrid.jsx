@@ -26,11 +26,11 @@ import {
   ROW_H, NO_CATEGORY, SHOW_FILTERS, CHANNEL_LABELS, priceLabel, buildGridRows, cellFor, cellStaged, categoryTree,
   visibleRange, priceInput, parsePastedColumn, price2, moveFocus, defaultFor, priceEditable, showLabel,
 } from '../../../lib/msm/msmGrid';
-import { sitePriceChange, siteActiveChange, defaultPriceChange, activeMany, copyPricesMany, moveMany, pasteColumn } from '../../../lib/msm/msmEdit';
+import { sitePriceChange, siteActiveChange, defaultPriceChange, activeMany, copyPricesMany, moveMany, pasteColumn, hasSizes } from '../../../lib/msm/msmEdit';
 import { marginFor, vatMaps } from '../../../lib/msm/msmMargin';
 import { shownPriceTypes, shownTaxTypes, vatCell } from '../../../lib/msm/msmOrderTypes';
 import { TAX_TYPE_WORDS, colWord } from '../../../lib/msm/msmWords';
-import { whyReadOnly, cellNoteWords } from '../../../lib/msm/msmStatus';
+import { whyReadOnly, cellNoteWords, bulkActiveWords, noCategoryHint } from '../../../lib/msm/msmStatus';
 import { addGroupWithSites } from '../../../lib/msm/msmGroupView';
 import * as groupEdit from '../../../lib/msm/msmGroupEdit';
 import { riskChecks } from '../../../lib/msm/msmRisk';
@@ -149,8 +149,16 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
     const r = siteActiveChange(ctx, p.id, loc, on);
     if (r.words) { setNote?.({ tone: 'warn', text: r.words }); return; }
     const existed = !!ix.sites.get(`${p.id}|${loc}`);
-    run([`${p.id}|${loc}`], [r.change, ...(r.extra || [])], existed ? cellNoteWords({ product: p.menu_name || p.name, site: siteNameOf(loc), active: on }) : `${p.menu_name || p.name} will be sold at ${siteNameOf(loc)} (in the draft).`, true,
-      `${p.menu_name || p.name} is already ${on ? 'on' : 'off'} at ${siteNameOf(loc)}.`);
+    const nm = p.menu_name || p.name;
+    // Sizes that go with it, and a product with no category yet, are said at the moment it is
+    // flipped (17 Oct verification: UI items 8 and 10).
+    const sizes = [r.change, ...(r.extra || [])].filter((c) => c && c.target === 'product_site' && c.entity_id !== p.id && ix.products.get(c.entity_id)?.parent_product_id === p.id).length;
+    const sizeWords = sizes ? ` Its ${sizes === 1 ? 'size goes' : `${sizes} sizes go`} with it.` : '';
+    const hint = on ? noCategoryHint(p) : '';
+    const words = r.change?.dropCreate ? `${nm} at ${siteNameOf(loc)} is taken out of the draft again: nothing changes there.`
+      : existed ? cellNoteWords({ product: nm, site: siteNameOf(loc), active: on }) : `${nm} will be sold at ${siteNameOf(loc)} (in the draft).`;
+    run([`${p.id}|${loc}`], [r.change, ...(r.extra || [])], `${words}${sizeWords}${hint ? ` ${hint}` : ''}`, true,
+      `${nm} is already ${on ? 'on' : 'off'} at ${siteNameOf(loc)}.`);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctx, editable, run, setNote, ix, sites]);
 
@@ -196,25 +204,36 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
       setFocus(moveFocus(rows, cols.length + 1, focus, e.key === 'Tab' && e.shiftKey ? 'ShiftTab' : e.key));
       return;
     }
-    // A variants parent draws no price cell (its sizes are priced): no edit, no switch, no clear.
-    if (!priceEditable(p) || !editable) return;
-    if (e.key === 'Enter' || e.key === 'F2') {
-      e.preventDefault();
-      const c = loc ? cellFor(ix, p, loc, channel) : null;
-      if (loc && !c.exists) return;
-      setEditing({ ...focus, text: price2(loc ? (c.own ?? c.price) : defaultFor(p, channel)), select: true });
-    } else if (/^[0-9.]$/.test(e.key)) {
-      e.preventDefault();
-      if (loc && !cellFor(ix, p, loc, channel).exists) return;
-      setEditing({ ...focus, text: e.key });
-    } else if (e.key === ' ' && loc) {
+    if (!p || !editable) return;
+    // Space turns a product on or off at a site, a product with sizes too (it has a switch there).
+    if (e.key === ' ' && loc) {
       e.preventDefault();
       const c = cellFor(ix, p, loc, channel);
       toggle(p, loc, !(c.exists && c.active));
-    } else if ((e.key === 'Delete' || e.key === 'Backspace') && loc) {
+      return;
+    }
+    // A variants parent draws no price cell (its sizes are priced): no edit, no clear.
+    if (!priceEditable(p)) {
+      if (e.key === 'Enter' || e.key === 'F2' || /^[0-9.]$/.test(e.key) || e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); setNote?.({ tone: 'warn', text: 'This product is priced by its sizes. Change the price on each size.' }); }
+      return;
+    }
+    // Never a silent nothing (UI item 10): a price on a product not sold there says so.
+    const notSoldWords = () => `${p.menu_name || p.name} is not sold at ${siteNameOf(loc)}. Press Space or tap + Sell here first.`;
+    if (e.key === 'Enter' || e.key === 'F2') {
       e.preventDefault();
+      const c = loc ? cellFor(ix, p, loc, channel) : null;
+      if (loc && !c.exists) { setNote?.({ tone: 'warn', text: notSoldWords() }); return; }
+      setEditing({ ...focus, text: price2(loc ? (c.own ?? c.price) : defaultFor(p, channel)), select: true });
+    } else if (/^[0-9.]$/.test(e.key)) {
+      e.preventDefault();
+      if (loc && !cellFor(ix, p, loc, channel).exists) { setNote?.({ tone: 'warn', text: notSoldWords() }); return; }
+      setEditing({ ...focus, text: e.key });
+    } else if (e.key === 'Delete' || e.key === 'Backspace') {
+      e.preventDefault();
+      if (!loc) { setNote?.({ tone: 'warn', text: 'The group price cannot be blank. Type 0.00 for free.' }); return; }
       const r = sitePriceChange(ctx, p.id, loc, null, channel);
       if (r.change) run([`${p.id}|${loc}`], [r.change], cellNoteWords({ product: p.menu_name || p.name, site: siteNameOf(loc), price: null }));
+      else setNote?.({ tone: 'warn', text: r.words || `${p.menu_name || p.name} at ${siteNameOf(loc)} already follows the group price.` });
     } else if (e.key === 'Escape') setFocus(null);
   };
 
@@ -237,7 +256,8 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
     const res = pasteColumn(ctx, cells, loc, channel);
     setEditing(null);
     run(cells.map((c) => `${c.productId}|${loc || 'default'}`), res.changes,
-      `${res.changes.length} price${res.changes.length === 1 ? '' : 's'} pasted${bad ? `; ${bad} line${bad === 1 ? ' was' : 's were'} not a price and ${bad === 1 ? 'was' : 'were'} skipped` : ''}.`);
+      `${res.changes.length} price${res.changes.length === 1 ? '' : 's'} pasted${bad ? `; ${bad} line${bad === 1 ? ' was' : 's were'} not a price and ${bad === 1 ? 'was' : 'were'} skipped` : ''}.${res.words.length ? ` ${res.words[0]}` : ''}`,
+      true, res.words[0] || 'Nothing to change: it is already like that.');
   };
 
   // ── Selection ──────────────────────────────────────────────────────────
@@ -352,9 +372,13 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
           {editable && (
             <>
               <Btn small kind="primary" onClick={() => onChangePrices({ productIds: selIds })}>Change prices</Btn>
-              <SitesActionPopover label="Turn on at" sites={sites} groups={groups} button="Turn on" onApply={(locs) => { const r = activeMany(ctx, selIds, locs, true); run([], r.changes, `${r.changes.length} turned on (in the draft).${r.words.length ? ` ${r.words[0]}` : ''}`); }} />
-              <SitesActionPopover label="Turn off at" sites={sites} groups={groups} button="Turn off" onApply={(locs) => { const r = activeMany(ctx, selIds, locs, false); run([], r.changes, `${r.changes.length} turned off (in the draft).`); }} />
-              <CopyPricesPopover sites={sites} groups={groups} onApply={(from, to) => { const r = copyPricesMany(ctx, selIds, from, to, channel); run([], r.changes, `${r.changes.length} price${r.changes.length === 1 ? '' : 's'} copied (in the draft).`); }} />
+              <SitesActionPopover label="Turn on at" sites={sites} groups={groups} button="Turn on" onApply={(locs) => {
+                const r = activeMany(ctx, selIds, locs, true);
+                const noCat = selIds.map((id) => ix.products.get(id)).filter((x) => noCategoryHint(x)).length;
+                run([], r.changes, `${bulkActiveWords(r, true)}${noCat ? ` ${noCat} of them ${noCat === 1 ? 'has' : 'have'} no category yet: open ${noCat === 1 ? 'it' : 'them'} and pick one before you publish.` : ''}`, true, bulkActiveWords(r, true));
+              }} />
+              <SitesActionPopover label="Turn off at" sites={sites} groups={groups} button="Turn off" onApply={(locs) => { const r = activeMany(ctx, selIds, locs, false); run([], r.changes, bulkActiveWords(r, false), true, bulkActiveWords(r, false)); }} />
+              <CopyPricesPopover sites={sites} groups={groups} onApply={(from, to) => { const r = copyPricesMany(ctx, selIds, from, to, channel); run([], r.changes, `${r.changes.length} price${r.changes.length === 1 ? '' : 's'} copied (in the draft).${r.words.length ? ` ${r.words[0]}` : ''}`, true, r.words[0] || 'Nothing to change: it is already like that.'); }} />
               <Popover label="Move to" width={260}>
                 {(close) => (
                   <div style={{ maxHeight: 260, overflowY: 'auto' }}>
@@ -398,7 +422,7 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
                 : <>Group price<br /><span style={{ fontWeight: 500, color: 'var(--t4)' }}>{channel ? `${CHANNEL_LABELS[channel]} (blank = ${channel === 'driveThru' ? 'takeaway' : 'standard'})` : 'Standard price'}</span></>}
             </div>
             {cols.map((s) => (
-              <div key={s.id} style={{ ...headCell, width: SITE_W }} title={s.name}>
+              <div key={s.id} role="columnheader" style={{ ...headCell, width: SITE_W }} title={s.name}>
                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: SITE_W - 16 }}>{s.name}</span>
                 {gpOn && costs.status[s.id] === 'loading' && <span style={{ fontWeight: 500, color: 'var(--t4)' }}>costing…</span>}
                 {gpOn && costs.status[s.id] === 'failed' && <Btn small kind="link" style={{ color: 'var(--red)', fontWeight: 600, padding: 0 }} onClick={() => costs.retry([s.id])}>costs not read: retry</Btn>}
@@ -456,17 +480,17 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
                       const st = cellStaged(staged, p.id, s.id, channel);
                       const isF = focus && focus.row === rowIndex && focus.col === ci + 1;
                       return (
-                        <div key={s.id} role="gridcell" aria-label={`${p.name} at ${s.name}: ${c.exists && c.active ? 'on' : 'off'}`}
+                        <div key={s.id} role="gridcell" aria-label={`${p.menu_name || p.name} at ${s.name}: ${c.exists && c.active ? 'on' : 'off'}`}
                           style={{ ...cellBase, width: SITE_W, justifyContent: 'center', ...(isF ? focusRing : {}), opacity: pending.has(`${p.id}|${s.id}`) ? 0.5 : 1 }}
                           onClick={() => setFocus({ row: rowIndex, col: ci + 1 })}>
-                          {st.active && <span style={stagedMark} />}
+                          {(st.active || st.kept) && <span style={stagedMark} />}
                           {!c.exists
-                            ? (editable ? <button type="button" onClick={(e) => { e.stopPropagation(); toggle(p, s.id, true); }} title="Sell it and its sizes at this site"
+                            ? (editable ? <button type="button" aria-label={`Sell ${p.menu_name || p.name} and its sizes at ${s.name}`} onClick={(e) => { e.stopPropagation(); toggle(p, s.id, true); }} title="Sell it and its sizes at this site"
                               style={{ background: 'none', border: '1px dashed var(--bdr2)', borderRadius: 7, color: 'var(--t3)', fontSize: 11.5, fontWeight: 700, padding: '3px 8px', cursor: 'pointer', fontFamily: 'inherit' }}>+ Sell here</button>
                               : <span style={{ color: 'var(--t4)', fontSize: 12 }}>Not sold</span>)
                             : <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
                               <span style={{ fontSize: 12, color: c.active ? 'var(--t3)' : 'var(--t4)' }}>{c.active ? 'Sold here' : 'Off here'}</span>
-                              <Switch small on={!!c.active} disabled={!editable} title={c.active ? 'On here with its sizes: turn off' : 'Off here: turn on with its sizes'} onChange={(v) => toggle(p, s.id, v)} />
+                              <Switch small on={!!c.active} disabled={!editable} ariaLabel={`${p.menu_name || p.name} at ${s.name}: ${c.active ? 'on' : 'off'}`} title={c.active ? 'On here with its sizes: turn off' : 'Off here: turn on with its sizes'} onChange={(v) => toggle(p, s.id, v)} />
                             </div>}
                         </div>
                       );
@@ -486,7 +510,7 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
                       : costs.status[s.id] === 'failed' ? { noCost: true, noRecipe: true } : null;
                   }
                   return (
-                    <SiteCell key={s.id} width={SITE_W} rowIndex={rowIndex} col={ci + 1} cell={c} st={st} gp={gp} gpOn={gpOn} p={p} loc={s.id}
+                    <SiteCell key={s.id} width={SITE_W} rowIndex={rowIndex} col={ci + 1} cell={c} st={st} gp={gp} gpOn={gpOn} p={p} loc={s.id} siteName={s.name} withSizes={hasSizes(eff, p)}
                       focus={focus} editing={editing} setFocus={setFocus} setEditing={setEditing} commitEdit={commitEdit}
                       pending={pending.has(`${p.id}|${s.id}`) || pending.has(`${p.id}|x`)} editable={editable} onToggle={toggle} onUseGroup={giveBackToGroup} keptVat={keptVatWords} />
                   );
@@ -515,6 +539,9 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
 const headCell = { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '0 8px', fontSize: 11.5, fontWeight: 700, color: 'var(--t2)', boxSizing: 'border-box', textAlign: 'center', lineHeight: 1.25, borderRight: '1px solid var(--bdr)' };
 const cellBase = { position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 7, padding: '0 10px', boxSizing: 'border-box', borderRight: '1px solid var(--bdr)', fontVariantNumeric: 'tabular-nums' };
 const stagedMark = { position: 'absolute', left: 0, top: 6, bottom: 6, width: 3, borderRadius: 2, background: 'var(--amber, #F5A623)' };
+// GP under 60% is shown in coral, never amber (amber means a change waiting to go live).
+const GP_LOW = 60;
+const GP_LOW_COLOUR = 'var(--coral, var(--red))';
 const focusRing = { boxShadow: 'inset 0 0 0 2px var(--acc)' };
 
 function EditBox({ editing, setEditing, commitEdit }) {
@@ -549,14 +576,15 @@ function PriceCell({ width, rowIndex, col, focus, editing, setFocus, setEditing,
   );
 }
 
-function SiteCell({ width, rowIndex, col, cell, st, gp, gpOn, p, loc, focus, editing, setFocus, setEditing, commitEdit, pending, editable, onToggle, onUseGroup, keptVat }) {
+function SiteCell({ width, rowIndex, col, cell, st, gp, gpOn, p, loc, siteName = 'this site', withSizes = false, focus, editing, setFocus, setEditing, commitEdit, pending, editable, onToggle, onUseGroup, keptVat }) {
   const isFocus = focus && focus.row === rowIndex && focus.col === col;
   const isEdit = editing && editing.row === rowIndex && editing.col === col;
+  const nm = p.menu_name || p.name;
   if (!cell.exists) {
     return (
-      <div role="gridcell" style={{ ...cellBase, width, justifyContent: 'center', ...(isFocus ? focusRing : {}), opacity: pending ? 0.5 : 1 }} onClick={() => setFocus({ row: rowIndex, col })}>
+      <div role="gridcell" aria-label={`${nm} at ${siteName}: not sold`} style={{ ...cellBase, width, justifyContent: 'center', ...(isFocus ? focusRing : {}), opacity: pending ? 0.5 : 1 }} onClick={() => setFocus({ row: rowIndex, col })}>
         {st.active && <span style={stagedMark} />}
-        {editable ? <button type="button" onClick={(e) => { e.stopPropagation(); onToggle(p, loc, true); }} title="Sell it at this site too"
+        {editable ? <button type="button" aria-label={`Sell ${nm} at ${siteName}`} onClick={(e) => { e.stopPropagation(); onToggle(p, loc, true); }} title={withSizes ? 'Sell it and its sizes at this site' : 'Sell it at this site too'}
             style={{ background: 'none', border: '1px dashed var(--bdr2)', borderRadius: 7, color: 'var(--t3)', fontSize: 11.5, fontWeight: 700, padding: '3px 8px', cursor: 'pointer', fontFamily: 'inherit' }}>+ Sell here</button>
             : <span style={{ color: 'var(--t4)', fontSize: 12 }}>Not sold</span>}
       </div>
@@ -564,10 +592,10 @@ function SiteCell({ width, rowIndex, col, cell, st, gp, gpOn, p, loc, focus, edi
   }
   const off = !cell.active;
   return (
-    <div role="gridcell" aria-label={`${p.name} at this site: ${off ? 'off' : 'on'}, ${price2(cell.price)}`}
+    <div role="gridcell" aria-label={`${nm} at ${siteName}: ${off ? 'off' : 'on'}, ${price2(cell.price)}`}
       style={{ ...cellBase, width, ...(isFocus && !isEdit ? focusRing : {}), opacity: pending ? 0.5 : 1, flexDirection: gpOn && !isEdit ? 'column' : 'row', alignItems: gpOn && !isEdit ? 'flex-end' : 'center', justifyContent: 'center', gap: gpOn ? 0 : 7 }}
       onClick={() => { setFocus({ row: rowIndex, col }); if (editable && !isEdit) setEditing({ row: rowIndex, col, text: price2(cell.own ?? cell.price), select: true }); }}>
-      {(st.price || st.active) && <span style={stagedMark} />}
+      {(st.price || st.active || st.kept) && <span style={stagedMark} />}
       {isEdit ? <EditBox editing={editing} setEditing={setEditing} commitEdit={commitEdit} /> : (
         <>
           <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
@@ -576,10 +604,10 @@ function SiteCell({ width, rowIndex, col, cell, st, gp, gpOn, p, loc, focus, edi
               ? <span style={{ fontSize: 12, color: 'var(--t4)' }} title={`Turned off at this site (${money(cell.price)} when on)`}>Off here</span>
               : <span style={{ fontSize: 13, fontWeight: cell.follows ? 500 : 750, color: cell.follows ? 'var(--t3)' : 'var(--t1)' }}
                 title={cell.follows ? 'Follows the group price' : 'This site\'s own price'}>{money(cell.price)}</span>}
-            <Switch small on={!off} disabled={!editable} title={off ? 'Off at this site: turn on' : 'On at this site: turn off'} onChange={(v) => onToggle(p, loc, v)} />
+            <Switch small on={!off} disabled={!editable} ariaLabel={`${nm} at ${siteName}: ${off ? 'off' : 'on'}`} title={off ? 'Off at this site: turn on' : 'On at this site: turn off'} onChange={(v) => onToggle(p, loc, v)} />
           </div>
           {gpOn && (
-            <span style={{ fontSize: 10.5, fontWeight: 650, color: gp && !gp.noRecipe ? (gp.gpPct != null && gp.gpPct < 60 ? 'var(--amber, #F5A623)' : 'var(--grn, var(--acc))') : 'var(--t4)' }}>
+            <span style={{ fontSize: 10.5, fontWeight: 650, color: gp && !gp.noRecipe ? (gp.gpPct != null && gp.gpPct < GP_LOW ? GP_LOW_COLOUR : 'var(--grn, var(--acc))') : 'var(--t4)' }}>
               {gp ? (gp.noCost ? 'No cost' : gp.noRecipe ? 'No recipe' : `${gp.words} · cost ${money(gp.cost)}`) : '…'}
             </span>
           )}
@@ -633,14 +661,25 @@ function Key({ mode }) {
   const [open, setOpen] = useState(() => !keySeen());
   useEffect(() => { try { localStorage.setItem(KEY_SEEN, '1'); } catch { /* private mode: it opens again next time */ } }, []);
   const dot = (c) => <span style={{ width: 7, height: 7, borderRadius: 4, background: c, display: 'inline-block', flexShrink: 0 }} />;
+  const priceItems = [[<span key="g" style={{ color: 'var(--t3)', fontWeight: 500 }}>3.40</span>, 'Grey price: follows the group price.'],
+    [<span key="o" style={{ color: 'var(--t1)', fontWeight: 750 }}>3.60</span>, 'Bold price: this site\'s own price.'],
+    [<span key="a" style={{ width: 3, height: 14, borderRadius: 2, background: 'var(--amber, #F5A623)', display: 'inline-block' }} />, 'Amber bar: a change waiting to go live.'],
+    [<span key="f" style={{ color: 'var(--t4)' }}>Off here</span>, 'Turned off at that site.'],
+    [<span key="s" style={{ border: '1px dashed var(--bdr2)', borderRadius: 6, padding: '0 5px', color: 'var(--t3)', fontWeight: 700 }}>+ Sell here</span>, 'Not sold at that site yet: tap to sell it there.'],
+    [dot('var(--blu)'), 'Blue dot: this site keeps its own settings for this product. Tap it to see which.'],
+    [<span key="n" style={{ color: 'var(--t3)' }}>↳</span>, 'A size, under its product.']];
+  // 17 Oct verification: the VAT sample carries its dot, the group column is named, and the GP
+  // colours are explained (low GP is coral, never the amber of a change waiting).
   const items = mode === 'vat'
-    ? [[<span key="g" style={{ color: 'var(--t3)', fontWeight: 500 }}>VAT 20%</span>, 'Grey: the group\'s VAT for this order type.'],
-      [<span key="o" style={{ color: 'var(--t1)', fontWeight: 750 }}>Zero 0%</span>, 'Bold with a blue dot: this site keeps its own VAT for it.']]
-    : [[<span key="g" style={{ color: 'var(--t3)', fontWeight: 500 }}>3.40</span>, 'Grey price: follows the group price.'],
-      [<span key="o" style={{ color: 'var(--t1)', fontWeight: 750 }}>3.60</span>, 'Bold price: this site\'s own price.'],
-      [<span key="a" style={{ width: 3, height: 14, borderRadius: 2, background: 'var(--amber, #F5A623)', display: 'inline-block' }} />, 'Amber bar: a change waiting to go live.'],
-      [<span key="f" style={{ color: 'var(--t4)' }}>Off here</span>, 'Turned off at that site.'],
-      [dot('var(--blu)'), 'Blue dot: this site keeps its own settings for this product. Tap it to see which.']];
+    ? [[<span key="g" style={{ color: 'var(--t3)', fontWeight: 500 }}>VAT 20%</span>, 'Grey: follows the group\'s VAT for this order type.'],
+      [<span key="o" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>{dot('var(--blu)')}<span style={{ color: 'var(--t1)', fontWeight: 750 }}>Zero 0%</span></span>, 'Bold with a blue dot: this site keeps its own VAT for it.'],
+      [<span key="c" style={{ color: 'var(--t1)', fontWeight: 750 }}>Group VAT</span>, 'The first column: what every site follows unless it keeps its own.']]
+    : mode === 'gp'
+      ? [...priceItems.slice(0, 4),
+        [<span key="gg" style={{ color: 'var(--grn, var(--acc))', fontWeight: 650 }}>65% GP</span>, `Green: GP ${GP_LOW}% or more.`],
+        [<span key="gl" style={{ color: GP_LOW_COLOUR, fontWeight: 650 }}>48% GP</span>, `Coral: GP under ${GP_LOW}%.`],
+        [<span key="gn" style={{ color: 'var(--t4)' }}>No recipe</span>, 'No recipe or no cost at that site.']]
+      : priceItems;
   if (!open) {
     return (
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', fontSize: 11.5, color: 'var(--t3)' }}>
@@ -662,8 +701,11 @@ function Key({ mode }) {
 function KeptDot({ cols, editable, vatWords, onUseGroup }) {
   return (
     <span onClick={(e) => e.stopPropagation()} style={{ display: 'inline-flex' }}>
-      <Popover kind="link" small width={290} title="This site keeps its own settings: tap to see which"
-        label={<span aria-label="This site keeps its own settings" style={{ width: 9, height: 9, borderRadius: '50%', background: 'var(--blu)', display: 'inline-block' }} />}>
+      {/* A bigger tap target than the 9 px dot (17 Oct verification: 19 by 21 px on an iPad): the
+          padding grows the button, the negative margin keeps the price and switch where they are. */}
+      <Popover kind="link" small width={290} title="This site keeps its own settings: tap to see which" ariaLabel="This site keeps its own settings: tap to see which"
+        btnStyle={{ padding: '14px 6px 14px 10px', margin: '-12px -2px -12px -8px' }}
+        label={<span style={{ width: 9, height: 9, borderRadius: '50%', background: 'var(--blu)', display: 'inline-block' }} />}>
         {(close) => <KeptDotBody cols={cols} editable={editable} vatWords={vatWords} onUseGroup={() => { close(); onUseGroup(); }} />}
       </Popover>
     </span>
@@ -686,7 +728,7 @@ function KeptDotBody({ cols, editable, vatWords, onUseGroup }) {
           <span>{words.join(' ')}</span>
         </label>
       )}
-      {editable && <Btn small kind="soft" disabled={words.length > 0 && !ok} onClick={onUseGroup}>Use the group's {list}</Btn>}
+      {editable && <Btn small kind="soft" style={{ whiteSpace: 'normal', textAlign: 'left', width: '100%' }} disabled={words.length > 0 && !ok} onClick={onUseGroup}>Use the group's {list}</Btn>}
     </div>
   );
 }

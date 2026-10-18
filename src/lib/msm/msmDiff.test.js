@@ -100,7 +100,8 @@ test('undo: after back to before; a new product is turned off, never deleted; a 
     { target: 'product', entity_id: 'np', location_id: null, op: 'update', after: { archived: true } },
     { target: 'product_site', entity_id: 'np', location_id: A, op: 'update', after: { active: false } },
   ]);
-  assert.ok(u.warnings.some((w) => /default price is 3\.40 now; undo sets it to 3\.20/.test(w)));
+  assert.ok(u.warnings.some((w) => /group price is 3\.40 now; undo sets it to 3\.20/.test(w)), u.warnings.join(' | '));
+  for (const x of u.warnings) assert.doesNotMatch(x, /_|\btrue\b|\bfalse\b/, '17 Oct verification: plain words');
   assert.ok(u.warnings.some((w) => /turns off 1 new product/.test(w)));
   assert.equal(u.skipped.length, 1);
 });

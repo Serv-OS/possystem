@@ -88,13 +88,21 @@ expect('check row: anon has no table rights and no function rights', check[3] ==
 expect('check row: 18 member functions, 13 server functions', check[5] === '18' && check[6] === '13', r.out);
 expect('check row: the job runs every minute, the key is there and not in the job', check[7] === '1' && check[8] === 't' && check[9] === '1', r.out);
 expect('check row: 8 guards, 0 companies switched on', check[10] === '8' && check[11] === '0', r.out);
+// 17 Oct verification: what round 1 left (the scheduler functions 20261017c caps, and the group
+// site foreign key it makes deferrable), so the round 2 roll back can be checked against it.
+const ROUND1_SHAPE = `select string_agg(md5(pg_get_functiondef(to_regprocedure(f))), ',' order by f) from unnest(array['public.msm_claim_due(integer)', 'public.msm_mark_missed()', 'public.msm_run_due()', 'public.msm_retry_site(uuid,text)']) f`;
+const ROUND1_FK = `select condeferrable::text from pg_constraint where conname = 'msm_modifier_group_sites_group_id_fkey'`;
+const round1Shape = one(ROUND1_SHAPE);
+const round1Fk = one(ROUND1_FK);
 r = psql(['-d', DB, '-1', '-At', '-f', MIG2]);
 expect('round 2 (20261017c) applies on top as one transaction', r.code === 0, r.err);
 r = psql(['-d', DB, '-1', '-At', '-f', MIG2]);
 expect('round 2 applies a second time (idempotent)', r.code === 0, r.err);
 const check2 = r.out.split('\n').pop().split('|');
-expect('round 2 check row: 2 new tables, row level security, fenced; anon nothing; 9 targets; contract 2; 19 functions; the follow block gone',
-  check2.slice(0, 9).join('|') === '2|2|2|0|9|2|0|19|t', r.out);
+expect('round 2 check row: 2 new tables, row level security, fenced; anon nothing; 9 targets; contract 2; 20 functions; the follow block gone',
+  check2.slice(0, 9).join('|') === '2|2|2|0|9|2|0|20|t', r.out);
+expect('round 2 check row (17 Oct verification): the category icon is ASCII safe, stuck runs are capped, Retry starts the count again',
+  check2.slice(11, 14).join('|') === 't|t|t', r.out);
 
 one(`
 insert into organisations (id, name) values ('${ORG_A}', 'Company A'), ('${ORG_B}', 'Company B');
@@ -363,7 +371,7 @@ one(`insert into menu_items (id, location_id, name, cat, pricing) values ('m-own
 r = probe({ items: { update: [{ id: 'm-own', set: { name: 'hijack' } }] } });
 expect('apply refuses to change a venue\'s OWN product (not managed by this group menu)', r.code !== 0 && /does not manage/.test(r.err), r.err);
 r = probe({ options: [{ item_id: 'm-own', price: 9 }] });
-expect('ROUND 2 contract: the round 1 follow list is a key this database refuses (never half applied)', r.code !== 0 && /does not know \(options\)\. Run 20261017c first/.test(r.err), r.err);
+expect('ROUND 2 contract: the round 1 follow list is a key this database refuses (never half applied)', r.code !== 0 && /does not know \(options\)\. The publish runner is older than the database: redeploy msm-publish/.test(r.err), r.err);
 one(`insert into menu_categories (id, location_id, menu_id, label) values ('cat-own', '${LA1}', 'menu-a1', 'Site A1 own'); insert into menu_category_links (menu_id, category_id) values ('menu-a1', 'cat-own')`);
 r = probe({ links: { delete: [{ menu_id: 'menu-a1', category_id: 'cat-own' }] } });
 expect('apply refuses to unlink a category it does not manage', r.code !== 0 && /does not manage/.test(r.err), r.err);
@@ -499,6 +507,8 @@ const menusBefore = one(`select count(*) from menu_items`);
 r = psql(['-d', DB, '-1', '-At', '-f', RB2]);
 expect('the round 2 roll back runs', r.code === 0, r.err);
 expect('the round 2 roll back leaves no round 2 table, function or column, and 5 targets', r.out.split('\n').pop() === '0|0|5|0', r.out);
+expect('the round 2 roll back puts the scheduler functions back exactly as round 1 made them (17 Oct verification)', one(ROUND1_SHAPE) === round1Shape);
+expect('the round 2 roll back puts the group site foreign key back as round 1 made it (not deferrable)', one(ROUND1_FK) === round1Fk && round1Fk === 'false', `${one(ROUND1_FK)} vs ${round1Fk}`);
 r = psql(['-d', DB, '-1', '-At', '-f', RB]);
 expect('the roll back runs', r.code === 0, r.err);
 expect('the roll back leaves no msm_ table, function, job or key', r.out.split('\n').pop() === '0|0|0|0', r.out);

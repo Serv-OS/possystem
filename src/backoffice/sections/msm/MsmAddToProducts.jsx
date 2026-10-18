@@ -44,7 +44,7 @@ export default function MsmAddToProducts({ ix, groupId, groupName, initial = nul
   const count = [...ticked].filter((id) => ix.products.has(id) && !(ix.sizes.get(id) || []).length).length;
 
   return (
-    <Modal title={`Add ${groupName || 'this option group'} to products`} width={640} onClose={onClose}
+    <Modal title={groupName ? `Which products ask "${groupName}"?` : 'Which products ask this option group?'} width={640} onClose={onClose}
       sub="Tick the products that should ask this question. A product with sizes means every size."
       footer={(
         <>

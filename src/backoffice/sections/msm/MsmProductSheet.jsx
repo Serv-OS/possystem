@@ -31,18 +31,18 @@ import { ALLERGENS } from '../../../data/seed';
 import { categoryTree, categoryPath, priceInput, price2, defaultFor } from '../../../lib/msm/msmGrid';
 import {
   productUpdate, newProductChanges, newCategoryChange, siteActiveChange, sitePriceChange,
-  removeProductChange, restoreProductChange, taxChoices, productProblems,
+  removeProductChange, restoreProductChange, taxChoices, productProblems, renameFields,
 } from '../../../lib/msm/msmEdit';
 import * as groupEdit from '../../../lib/msm/msmGroupEdit';
 import { groupTickSiteRows } from '../../../lib/msm/msmGroupView';
 import { sheetSaveBlocked } from '../../../lib/msm/msmPublishView';
 import { isOptionOnlyItem } from '../../../lib/menuRules';
 import { shownPriceTypes, shownTaxTypes, groupTypeFallback, siteTypeFallback, siteRateChoices, choiceToRate, rateToChoice, sitesMissingRate, vatExample, examplePrice } from '../../../lib/msm/msmOrderTypes';
-import { PRICE_TYPE_WORDS, PRICE_TYPE_HELP, TAX_TYPE_WORDS, TAX_TYPE_HELP, HELP, colWord } from '../../../lib/msm/msmWords';
+import { PRICE_TYPE_WORDS, PRICE_TYPE_HELP, TAX_TYPE_WORDS, TAX_TYPE_HELP, HELP, colWord, keptValueWords } from '../../../lib/msm/msmWords';
 import { summarise } from '../../../lib/msm/msmSummary';
 import { riskChecks, allTicked } from '../../../lib/msm/msmRisk';
 import { marginFor } from '../../../lib/msm/msmMargin';
-import { ORDER_TYPE_TAX_KEYS, samePrice, sameValue } from '../../../../supabase/functions/_shared/msmModel.js';
+import { ORDER_TYPE_TAX_KEYS, samePrice, sameValue, pctText } from '../../../../supabase/functions/_shared/msmModel.js';
 import { Btn, Pill, Switch, Sheet, Field, Notice, Segmented, SummaryBox, ConfirmTicks } from './msmUi';
 import { ui, money } from './msmStyle';
 import { useConfirm } from './useConfirm';
@@ -62,14 +62,6 @@ function withSoldVisibility(f) {
   if (isOptionOnlyItem(f)) return f;
   const v = f.visibility && typeof f.visibility === 'object' ? f.visibility : null;
   return v && Object.values(v).some((x) => x === true) ? f : { ...f, visibility: ALL_ON };
-}
-
-function keptValueWords(col, v) {
-  if (v == null || v === '') return 'none';
-  if (Array.isArray(v)) return v.length ? `${v.length} set` : 'none';
-  if (typeof v === 'object') return 'its own';
-  if (col === 'cat') return 'its own category';
-  return String(v).slice(0, 40);
 }
 
 export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, editable, costs, productId, create, ratesByLoc = {}, sales, openGroup, openProduct, onClose, onCreated }) {
@@ -390,7 +382,9 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
           </Field>
         )}
         <Field label="Name">
-          <input style={ui.input} value={form.name} maxLength={120} onChange={(e) => set('name', e.target.value)} placeholder="Like Gingerbread latte" />
+          {/* The menu, receipt and kitchen names that still say the old name follow it (17 Oct
+              verification: a rename left the till button, receipt and ticket on the old name). */}
+          <input style={ui.input} value={form.name} maxLength={120} onChange={(e) => { const v = e.target.value; setForm((f) => renameFields(f, v)); }} placeholder="Like Gingerbread latte" />
         </Field>
         {!moreNames && <Btn small kind="link" style={{ marginTop: -8, marginBottom: 8 }} onClick={() => setMoreNames(true)}>Menu, receipt and kitchen names</Btn>}
         {moreNames && (
@@ -435,7 +429,13 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
             )}
           </Field>
           <Field label="Is this a size of another product?" hint="For example Large of Latte. Leave it as Not a size otherwise.">
-            <select style={ui.input} value={form.parent_product_id} onChange={(e) => set('parent_product_id', e.target.value)}>
+            <select style={ui.input} value={form.parent_product_id} onChange={(e) => {
+              const v = e.target.value;
+              set('parent_product_id', v);
+              // A new size is sold where its product is (17 Oct verification: it defaulted to every
+              // site, and publish then blocked at a site that does not sell the product).
+              if (create && v) setSiteForm((m) => Object.fromEntries(Object.entries(m).map(([loc, sf]) => { const pps = ix.sites.get(`${v}|${loc}`); return [loc, { ...sf, active: !!pps && pps.active !== false }]; })));
+            }}>
               <option value="">Not a size</option>
               {sizesOf.map((x) => <option key={x.id} value={x.id}>{x.menu_name || x.name}</option>)}
             </select>
@@ -459,7 +459,7 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
             <select style={ui.input} value={productRate ? rateToChoice(productRate) : ''}
               onChange={(e) => { const r = choiceToRate(e.target.value); setForm((f) => ({ ...f, tax_rate_name: r?.name ?? null, tax_rate_percent: r?.percent ?? null })); }}>
               <option value="">No VAT rate</option>
-              {productRate && !rateChoices.some((t) => t.value === rateToChoice(productRate)) && <option value={rateToChoice(productRate)}>{productRate.name || 'VAT'} ({productRate.percent}%)</option>}
+              {productRate && !rateChoices.some((t) => t.value === rateToChoice(productRate)) && <option value={rateToChoice(productRate)}>{productRate.name || 'VAT'} ({pctText(productRate.percent)})</option>}
               {rateChoices.map((t) => <option key={t.value} value={t.value}>{t.label}{t.sites != null && t.sites < sites.length ? ` (at ${t.sites} of ${sites.length} sites)` : ''}</option>)}
             </select>
             {productRate && missingFor(productRate).length > 0 && <div style={{ ...ui.err, marginTop: 4 }}>{missingFor(productRate).join(', ')} {missingFor(productRate).length === 1 ? 'has' : 'have'} no rate like this. Add it in Settings, Tax, or {missingFor(productRate).length === 1 ? 'that site' : 'those sites'} cannot be published.</div>}
@@ -471,6 +471,77 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
             <Notice tone="info" actions={openGroup ? [{ label: 'Change the option prices too', onClick: () => openGroup(usedAsOption[0].group?.id) }] : null}>
               {p.menu_name || p.name} is also an option in {usedAsOption.slice(0, 3).map((u) => `${u.group?.name || 'a group'} (${money(u.option.price)})`).join(' and ')}{usedAsOption.length > 3 ? ` and ${usedAsOption.length - 3} more` : ''}. Option prices are set separately.
             </Notice>
+          </div>
+        )}
+
+        {/* Every site: straight under the price, so Add to draft is never pressed without seeing
+            where it is sold (17 Oct verification). */}
+        <div style={{ ...ui.row, margin: '6px 0 8px' }}>
+          <div style={{ ...ui.h2, flex: 1 }}>{optionOnly ? 'Sites (used as an option)' : 'Sold at'}</div>
+          {!create && <label style={{ ...ui.row, fontSize: 12.5, cursor: 'pointer' }}><input type="checkbox" checked={showGp} onChange={(e) => setShowGp(e.target.checked)} /> Show GP</label>}
+        </div>
+        {optionOnly ? (
+          <div style={{ ...ui.sub, marginBottom: 16 }}>A sub item only used as an option goes to each site where an option needs it, when published. It is never on a menu by itself.</div>
+        ) : (
+          <div style={{ border: '1px solid var(--bdr)', borderRadius: 12, overflow: 'hidden', marginBottom: 16 }}>
+            {visibleSites.map((s, i) => {
+              const sf = siteForm[s.id] || { exists: false, active: false, price: '', channels: {} };
+              const ps = p ? ix.sites.get(`${p.id}|${s.id}`) : null;
+              const pr = priceInput(sf.price);
+              const charge = pr.ok && pr.value != null ? pr.value : groupPrice;
+              const kept = ps?.kept && typeof ps.kept === 'object' ? Object.entries(ps.kept) : [];
+              const costMap = costs.byLoc[s.id];
+              const gp = showGp && ps && costMap ? marginFor({ price: charge, vatPct: Number(form.tax_rate_percent) || 0, cost: costMap.get(ps.venue_item_id) ?? null }) : null;
+              const elsewhere = false;
+              const ownTypeKeys = Object.keys(ps?.kept?.tax_overrides || {}).filter((k) => ['drive-thru', 'collection'].includes(k) && ps.kept.tax_overrides[k] != null);
+              return (
+                <div key={s.id} style={{ padding: '10px 12px', borderTop: i ? '1px solid var(--bdr)' : 'none', opacity: sf.active ? 1 : 0.7 }}>
+                  <div style={{ ...ui.row }}>
+                    <Switch on={sf.active} disabled={!editable || elsewhere} title={sf.active ? `Sold at ${s.name}: turn off` : `Not sold at ${s.name}: turn on`} onChange={(v) => setSite(s.id, { active: v })} />
+                    <div style={{ flex: 1, fontSize: 13, fontWeight: 650 }}>
+                      {s.name}
+                      {!sf.exists && !create && <span style={{ ...ui.sub, marginLeft: 8 }}>{sf.active ? 'will be sold here' : 'not sold here'}</span>}
+                      {sf.exists && !sf.active && <span style={{ ...ui.sub, marginLeft: 8 }}>turned off here</span>}
+                    </div>
+                    {!isVariants && (
+                      <input aria-label={`Price at ${s.name}`} style={{ ...ui.input, width: 120, textAlign: 'right', fontWeight: sf.price ? 750 : 500, borderColor: pr.ok ? 'var(--bdr2)' : 'var(--red)' }} inputMode="decimal"
+                        disabled={!editable || !sf.active} placeholder={groupPrice != null ? price2(groupPrice) : 'group price'}
+                        value={sf.price} onChange={(e) => setSite(s.id, { price: e.target.value })} />
+                    )}
+                    {!isVariants && sf.price && editable && sf.active && <Btn small kind="link" onClick={() => setSite(s.id, { price: '' })}>Use group price</Btn>}
+                  </div>
+                  {sf.active && !isVariants && priceTypes.length > 0 && (
+                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 6, paddingLeft: 44 }}>
+                      {priceTypes.map((k) => {
+                        const fb = siteTypeFallback({ ...p, default_price: groupPrice, default_channels: groupChannels() || {} }, { ...(ps || {}), channel_prices: { ...(sf.channels || {}), [k]: null } }, k, pr.ok ? pr.value : null);
+                        const r = priceInput(sf.channels?.[k] ?? '');
+                        return (
+                          <label key={k} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--t2)' }} title={fb.words}>
+                            {PRICE_TYPE_WORDS[k]}
+                            <input aria-label={`${PRICE_TYPE_WORDS[k]} price at ${s.name}`} inputMode="decimal" style={{ ...ui.input, width: 76, padding: '4px 7px', textAlign: 'right', fontWeight: sf.channels?.[k] ? 750 : 500, borderColor: r.ok ? 'var(--bdr2)' : 'var(--red)' }}
+                              placeholder={fb.value != null ? price2(fb.value) : ''} value={sf.channels?.[k] ?? ''} onChange={(e) => setSite(s.id, { channels: { ...(sf.channels || {}), [k]: e.target.value } })} />
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {(gp || kept.length > 0 || ownTypeKeys.length > 0) && (
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 6, paddingLeft: 44 }}>
+                      {gp && <Pill tone={gp.noRecipe ? 'neutral' : 'acc'}>{gp.noRecipe ? 'No recipe' : `${gp.words} · cost ${money(gp.cost)}`}</Pill>}
+                      {kept.filter(([col, v]) => !(col === 'tax_overrides' && !Object.keys(v || {}).some((k) => ORDER_TYPE_TAX_KEYS.includes(k)))).map(([col, v]) => (
+                        <span key={col} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                          <Pill tone="blue" title="This site keeps its own value; publishing never changes it there">{s.name} keeps its own {colWord(col)}{col === 'tax_overrides' ? '' : `: ${keptValueWords(col, v, { rates: ratesByLoc[s.id] })}`}</Pill>
+                          {editable && <Btn small kind="link" onClick={() => toGroupValue(s.id, col)}>Use the group's</Btn>}
+                        </span>
+                      ))}
+                      {ownTypeKeys.length > 0 && tbt.takeaway && (
+                        <span style={{ ...ui.sub, fontSize: 11.5 }}>{s.name} has its own {ownTypeKeys.map((k) => (k === 'drive-thru' ? 'Drive thru' : 'Collection')).join(' and ')} VAT on this, so the group Takeaway VAT will not reach {ownTypeKeys.length === 1 ? 'it' : 'them'} there.</span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
 
@@ -526,12 +597,12 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
                     </div>
                     <select aria-label={`${TAX_TYPE_WORDS[k]} VAT`} style={{ ...ui.input, width: 'auto', minWidth: 240, flex: 1 }} value={v ? rateToChoice(v) : ''}
                       onChange={(e) => { const r = choiceToRate(e.target.value); const next = { ...tbt }; if (r) next[k] = r; else delete next[k]; set('tax_by_type', next); }}>
-                      <option value="">Same as the product's VAT{productRate ? ` (${productRate.name || 'VAT'} ${productRate.percent}%)` : ''}</option>
-                      {v && !rateChoices.some((t) => t.value === rateToChoice(v)) && <option value={rateToChoice(v)}>{v.name} ({v.percent}%)</option>}
+                      <option value="">Same as the product's VAT{productRate ? ` (${productRate.name || 'VAT'} ${pctText(productRate.percent)})` : ''}</option>
+                      {v && !rateChoices.some((t) => t.value === rateToChoice(v)) && <option value={rateToChoice(v)}>{v.name} ({pctText(v.percent)})</option>}
                       {rateChoices.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
                     </select>
                   </div>
-                  {miss.length > 0 && <div style={{ ...ui.err, marginTop: 4 }}>{miss.join(', ')} {miss.length === 1 ? 'has' : 'have'} no {v.name} rate. Add it in Settings, Tax, or {miss.length === 1 ? 'that site' : 'those sites'} cannot be published.</div>}
+                  {miss.length > 0 && <div style={{ ...ui.err, marginTop: 4 }}>{miss.join(', ')} {miss.length === 1 ? 'does' : 'do'} not have {v.name}. Add it in {miss.length === 1 ? `${miss[0]}'s` : "each site's"} Settings, Tax, or {miss.length === 1 ? 'that site' : 'those sites'} cannot be published. Or pick "Same as the product's VAT".</div>}
                 </div>
               );
             })}
@@ -552,76 +623,6 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
                 <div style={{ ...ui.sub, fontSize: 11 }}>Worked out by the same VAT rules the tills use. Collection and Drive thru use Takeaway.</div>
               </div>
             )}
-          </div>
-        )}
-
-        {/* Every site */}
-        <div style={{ ...ui.row, margin: '6px 0 8px' }}>
-          <div style={{ ...ui.h2, flex: 1 }}>{optionOnly ? 'Sites (used as an option)' : 'Sold at'}</div>
-          {!create && <label style={{ ...ui.row, fontSize: 12.5, cursor: 'pointer' }}><input type="checkbox" checked={showGp} onChange={(e) => setShowGp(e.target.checked)} /> Show GP</label>}
-        </div>
-        {optionOnly ? (
-          <div style={{ ...ui.sub, marginBottom: 16 }}>A sub item only used as an option goes to each site where an option needs it, when published. It is never on a menu by itself.</div>
-        ) : (
-          <div style={{ border: '1px solid var(--bdr)', borderRadius: 12, overflow: 'hidden', marginBottom: 16 }}>
-            {visibleSites.map((s, i) => {
-              const sf = siteForm[s.id] || { exists: false, active: false, price: '', channels: {} };
-              const ps = p ? ix.sites.get(`${p.id}|${s.id}`) : null;
-              const pr = priceInput(sf.price);
-              const charge = pr.ok && pr.value != null ? pr.value : groupPrice;
-              const kept = ps?.kept && typeof ps.kept === 'object' ? Object.entries(ps.kept) : [];
-              const costMap = costs.byLoc[s.id];
-              const gp = showGp && ps && costMap ? marginFor({ price: charge, vatPct: Number(form.tax_rate_percent) || 0, cost: costMap.get(ps.venue_item_id) ?? null }) : null;
-              const elsewhere = false;
-              const ownTypeKeys = Object.keys(ps?.kept?.tax_overrides || {}).filter((k) => ['drive-thru', 'collection'].includes(k) && ps.kept.tax_overrides[k] != null);
-              return (
-                <div key={s.id} style={{ padding: '10px 12px', borderTop: i ? '1px solid var(--bdr)' : 'none', opacity: sf.active ? 1 : 0.7 }}>
-                  <div style={{ ...ui.row }}>
-                    <Switch on={sf.active} disabled={!editable || elsewhere} title={sf.active ? `Sold at ${s.name}: turn off` : `Not sold at ${s.name}: turn on`} onChange={(v) => setSite(s.id, { active: v })} />
-                    <div style={{ flex: 1, fontSize: 13, fontWeight: 650 }}>
-                      {s.name}
-                      {!sf.exists && !create && <span style={{ ...ui.sub, marginLeft: 8 }}>{sf.active ? 'will be sold here' : 'not sold here'}</span>}
-                      {sf.exists && !sf.active && <span style={{ ...ui.sub, marginLeft: 8 }}>turned off here</span>}
-                    </div>
-                    {!isVariants && (
-                      <input aria-label={`Price at ${s.name}`} style={{ ...ui.input, width: 120, textAlign: 'right', fontWeight: sf.price ? 750 : 500, borderColor: pr.ok ? 'var(--bdr2)' : 'var(--red)' }} inputMode="decimal"
-                        disabled={!editable || !sf.active} placeholder={groupPrice != null ? price2(groupPrice) : 'group price'}
-                        value={sf.price} onChange={(e) => setSite(s.id, { price: e.target.value })} />
-                    )}
-                    {!isVariants && sf.price && editable && sf.active && <Btn small kind="link" onClick={() => setSite(s.id, { price: '' })}>Use group price</Btn>}
-                  </div>
-                  {sf.active && !isVariants && priceTypes.length > 0 && (
-                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 6, paddingLeft: 44 }}>
-                      {priceTypes.map((k) => {
-                        const fb = siteTypeFallback({ ...p, default_price: groupPrice, default_channels: groupChannels() || {} }, { ...(ps || {}), channel_prices: { ...(sf.channels || {}), [k]: null } }, k, pr.ok ? pr.value : null);
-                        const r = priceInput(sf.channels?.[k] ?? '');
-                        return (
-                          <label key={k} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--t2)' }} title={fb.words}>
-                            {PRICE_TYPE_WORDS[k]}
-                            <input aria-label={`${PRICE_TYPE_WORDS[k]} price at ${s.name}`} inputMode="decimal" style={{ ...ui.input, width: 76, padding: '4px 7px', textAlign: 'right', fontWeight: sf.channels?.[k] ? 750 : 500, borderColor: r.ok ? 'var(--bdr2)' : 'var(--red)' }}
-                              placeholder={fb.value != null ? price2(fb.value) : ''} value={sf.channels?.[k] ?? ''} onChange={(e) => setSite(s.id, { channels: { ...(sf.channels || {}), [k]: e.target.value } })} />
-                          </label>
-                        );
-                      })}
-                    </div>
-                  )}
-                  {(gp || kept.length > 0 || ownTypeKeys.length > 0) && (
-                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 6, paddingLeft: 44 }}>
-                      {gp && <Pill tone={gp.noRecipe ? 'neutral' : 'acc'}>{gp.noRecipe ? 'No recipe' : `${gp.words} · cost ${money(gp.cost)}`}</Pill>}
-                      {kept.filter(([col, v]) => !(col === 'tax_overrides' && !Object.keys(v || {}).some((k) => ORDER_TYPE_TAX_KEYS.includes(k)))).map(([col, v]) => (
-                        <span key={col} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                          <Pill tone="blue" title="This site keeps its own value; publishing never changes it there">{s.name} keeps its own {colWord(col)}{col === 'tax_overrides' ? '' : `: ${keptValueWords(col, v)}`}</Pill>
-                          {editable && <Btn small kind="link" onClick={() => toGroupValue(s.id, col)}>Use the group's</Btn>}
-                        </span>
-                      ))}
-                      {ownTypeKeys.length > 0 && tbt.takeaway && (
-                        <span style={{ ...ui.sub, fontSize: 11.5 }}>{s.name} has its own {ownTypeKeys.map((k) => (k === 'drive-thru' ? 'Drive thru' : 'Collection')).join(' and ')} VAT on this, so the group Takeaway VAT will not reach {ownTypeKeys.length === 1 ? 'it' : 'them'} there.</span>
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
           </div>
         )}
 

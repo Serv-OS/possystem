@@ -22,7 +22,7 @@
 //     public.msm__is_legacy_mirror; the three are pinned to one fixture list), and can put that same
 //     copy back later (Undo). A real profile blocks order type VAT at that site, in words.
 
-import { ORDER_TYPE_TAX_KEYS, has } from './msmModel.js';
+import { ORDER_TYPE_TAX_KEYS, has, pctText } from './msmModel.js';
 
 const listOf = (v) => (Array.isArray(v) ? v : []);
 const lower = (s) => String(s ?? '').trim().toLowerCase();
@@ -97,7 +97,7 @@ export function overrideWords(value, taxRates) {
   if (value === undefined || value === false) return 'same as the product';
   if (value === null) return "the site's default VAT";
   const r = listOf(taxRates).find((x) => x && x.id === value);
-  return r ? `${r.name} (${Number(r.rate)}%)` : 'a VAT rate that is not at this site';
+  return r ? `${r.name} (${pctText(r.rate)})` : 'a VAT rate that is not at this site';
 }
 
 // ── The tax profile mirror check (raw database rows) ────────────────────────

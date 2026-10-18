@@ -7,6 +7,12 @@
 -- #  Run it BEFORE the round 1 roll back, never after.                        #
 -- ############################################################################
 --
+-- AFTER THIS: put round 1's msm-publish back, or every publish waits and then fails with "Run
+-- 20261017c first" (nothing is written; do NOT run 20261017c again). From a copy of round 1's code:
+--   git worktree add /tmp/msm-v1 f83c3535
+--   cd /tmp/msm-v1 && npx supabase functions deploy msm-publish --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
+-- (from that copy, because the function takes its shared files from the same commit).
+--
 -- What stays: every venue row a publish wrote (option groups, products, VAT by order type, config
 -- pushes). They are ordinary menu rows by then. The tills keep running.
 -- What goes: the option rows and option site rows of the group menu, the round 2 columns
@@ -56,6 +62,8 @@ alter table public.msm_product_sites drop column if exists cleared_tax_profile_i
 update public.msm_product_sites set kept = kept - 'tax_overrides' where kept ? 'tax_overrides';
 alter table public.msm_menus drop column if exists order_types;
 alter table public.msm_menus drop column if exists refreshed_at;
+-- Round 1 made this foreign key not deferrable; 20261017c made it deferrable (17 Oct verification).
+alter table public.msm_modifier_group_sites alter constraint msm_modifier_group_sites_group_id_fkey not deferrable;
 
 -- The round 1 functions, verbatim from 20261017_OPS_multi_site_menu.sql.
 create or replace function public.msm_site_org_guard()
@@ -685,7 +693,7 @@ begin
       raise exception 'A new category points at a parent that is not at this site.';
     end if;
     insert into public.menu_categories (id, location_id, menu_id, parent_id, label, icon, color, accounting_group, sort_order, default_course, image, scope, org_id, created_at, updated_at)
-    select r.id, p_location, r.menu_id, r.parent_id, coalesce(nullif(btrim(r.label), ''), 'Category'), coalesce(r.icon, '🍽'), coalesce(r.color, '#3b82f6'),
+    select r.id, p_location, r.menu_id, r.parent_id, coalesce(nullif(btrim(r.label), ''), 'Category'), coalesce(r.icon, chr(127869)), coalesce(r.color, '#3b82f6'),
            coalesce(r.accounting_group, ''), coalesce(r.sort_order, 0), coalesce(r.default_course, 1), r.image, 'local', v.org_id, v_now, v_now
       from jsonb_populate_record(null::public.menu_categories, w) r;
     v_cats := v_cats || (w ->> 'id');
@@ -935,6 +943,143 @@ $fn$;
 
 drop function if exists public.msm__group_ids(jsonb);
 
+-- The scheduler functions 20261017c capped (section 8b), back to round 1's, verbatim.
+create or replace function public.msm_claim_due(p_limit integer default 1)
+returns table (version_id uuid, location_id text, attempts integer)
+language plpgsql
+security definer
+set search_path = ''
+as $fn$
+#variable_conflict use_column
+begin
+  return query
+  with c as (
+    select vs.version_id, vs.location_id
+      from public.msm_version_sites vs
+      join public.msm_versions v on v.id = vs.version_id
+      join public.msm_company co on co.org_id = v.org_id and co.enabled
+     where ((vs.status = 'scheduled' and vs.due_at <= now()
+             -- A SCHEDULED run more than 6 hours past its time is never started by itself (a company
+             -- switched back on weeks later, a function that was down): msm_mark_missed fails it in
+             -- words and a person presses Retry if they still want it.
+             and (v.kind <> 'scheduled' or vs.due_at > now() - interval '6 hours'))
+         or (vs.status = 'running' and vs.claimed_at < now() - interval '10 minutes'))
+       and not exists (select 1 from public.msm_version_sites e
+                         join public.msm_versions ev on ev.id = e.version_id
+                        where e.location_id = vs.location_id and e.version_id <> vs.version_id
+                          and e.status in ('scheduled', 'running') and ev.menu_id = v.menu_id
+                          and (e.due_at < vs.due_at or (e.due_at = vs.due_at and ev.created_at < v.created_at)))
+     order by vs.due_at, v.created_at
+     limit greatest(1, least(coalesce(p_limit, 1), 20))
+     for update of vs skip locked
+  ), u as (
+    update public.msm_version_sites s
+       set status = 'running', claimed_at = now(), attempts = s.attempts + 1, started_at = coalesce(s.started_at, now())
+      from c
+     where s.version_id = c.version_id and s.location_id = c.location_id
+    returning s.version_id, s.location_id, s.attempts
+  )
+  select u.version_id, u.location_id, u.attempts from u;
+end
+$fn$;
+
+create or replace function public.msm_mark_missed()
+returns table (version_id uuid, location_id text, due_at timestamptz)
+language plpgsql
+security definer
+set search_path = ''
+as $fn$
+#variable_conflict use_column
+declare
+  r record;
+begin
+  for r in
+    update public.msm_version_sites s
+       set status = 'failed', finished_at = now(), claimed_at = null,
+           error = 'Missed its time (it was due ' || to_char(s.due_at at time zone coalesce((select nullif(l.timezone, '') from public.locations l where l.id::text = s.location_id), 'Europe/London'), 'DD Mon YYYY HH24:MI')
+                   || '). Nothing was changed. Press Retry to publish it now.'
+      from public.msm_versions v, public.msm_company co
+     where v.id = s.version_id and co.org_id = v.org_id and co.enabled and v.kind = 'scheduled'
+       and s.status = 'scheduled' and s.due_at <= now() - interval '6 hours'
+    returning s.version_id, s.location_id, s.due_at
+  loop
+    perform public.msm__refresh_version(r.version_id);
+    version_id := r.version_id; location_id := r.location_id; due_at := r.due_at;
+    return next;
+  end loop;
+end
+$fn$;
+
+create or replace function public.msm_run_due()
+returns bigint
+language plpgsql
+security definer
+set search_path = ''
+as $fn$
+declare
+  k text;
+  req bigint;
+begin
+  if not exists (
+    select 1
+      from public.msm_version_sites vs
+      join public.msm_versions v on v.id = vs.version_id
+      join public.msm_company c on c.org_id = v.org_id and c.enabled
+     where vs.status in ('scheduled', 'running')
+       and ((vs.status = 'scheduled' and vs.due_at <= now())
+         or (vs.status = 'running' and vs.claimed_at < now() - interval '10 minutes')
+         or (vs.status = 'scheduled' and vs.precheck_at is null and vs.due_at <= now() + interval '60 minutes')
+         or (vs.late_at is null and vs.due_at < now() - interval '15 minutes'))) then
+    return null;
+  end if;
+  select s.decrypted_secret into k from vault.decrypted_secrets s where s.name = 'msm_cron_key' limit 1;
+  if k is null or length(k) < 32 then
+    raise exception 'msm_run_due: no msm_cron_key in the vault (run 20261017 again)';
+  end if;
+  select net.http_post(
+    url := 'https://tbetcegmszzotrwdtqhi.supabase.co/functions/v1/msm-publish',
+    body := '{"action": "run_due"}'::jsonb,
+    params := '{}'::jsonb,
+    headers := jsonb_build_object('Content-Type', 'application/json', 'x-cron-key', k),
+    timeout_milliseconds := 25000
+  ) into req;
+  return req;
+end
+$fn$;
+
+create or replace function public.msm_retry_site(p_version uuid, p_location text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $fn$
+declare
+  v_org uuid;
+  v_status text;
+begin
+  select v.org_id into v_org from public.msm_versions v where v.id = p_version;
+  if v_org is null then
+    raise exception 'No such publish.' using errcode = '22023';
+  end if;
+  perform public.msm__require_editor(v_org);
+  select vs.status into v_status from public.msm_version_sites vs where vs.version_id = p_version and vs.location_id = p_location for update;
+  if not found then
+    raise exception 'That site is not in this publish.' using errcode = '22023';
+  end if;
+  if v_status <> 'failed' then
+    raise exception 'Only a site that failed can be retried (this one is %).', v_status using errcode = '22023';
+  end if;
+  update public.msm_version_sites
+     set status = 'scheduled', due_at = now(), claimed_at = null, error = null, finished_at = null,
+         precheck_at = null, precheck_ok = null, precheck_words = null, late_at = null, notified = '{}'::jsonb
+   where version_id = p_version and location_id = p_location;
+  perform public.msm__refresh_version(p_version);
+  return jsonb_build_object('ok', true, 'status', 'scheduled');
+end
+$fn$;
+
+drop function if exists public.msm__fail_stuck();
+
 do $grants$
 declare
   f text;
@@ -947,6 +1092,13 @@ begin
   execute format('grant execute on function %s to authenticated', to_regprocedure('public.msm_import_commit(jsonb)'));
   execute format('grant execute on function %s to service_role', to_regprocedure('public.msm_start_version(uuid)'));
   execute format('grant execute on function %s to service_role', to_regprocedure('public.msm_apply_site(uuid,text,jsonb,jsonb,text,jsonb,text,text,uuid)'));
+  -- The scheduler functions, as round 1 granted them (msm_run_due: nobody but the job).
+  foreach f in array array['public.msm_claim_due(integer)', 'public.msm_mark_missed()', 'public.msm_run_due()', 'public.msm_retry_site(uuid,text)'] loop
+    execute format('revoke all on function %s from public, anon, authenticated, service_role', to_regprocedure(f));
+  end loop;
+  execute format('grant execute on function %s to service_role', to_regprocedure('public.msm_claim_due(integer)'));
+  execute format('grant execute on function %s to service_role', to_regprocedure('public.msm_mark_missed()'));
+  execute format('grant execute on function %s to authenticated', to_regprocedure('public.msm_retry_site(uuid,text)'));
 end
 $grants$;
 
@@ -954,6 +1106,6 @@ $grants$;
 select
   (select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relname in ('msm_modifier_options', 'msm_modifier_option_sites')) as round2_tables,
   (select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public'
-     and p.proname in ('msm_sql_contract', 'msm_import_groups', 'msm_managed_groups', 'msm_managed_at', 'msm_sold_recently', 'msm_sites_trading', 'msm__is_legacy_mirror', 'msm__managed_group', 'msm__import_options', 'msm__group_ids', 'msm_option_menu_guard', 'msm_set_order_types')) as round2_functions,
+     and p.proname in ('msm_sql_contract', 'msm_import_groups', 'msm_managed_groups', 'msm_managed_at', 'msm_sold_recently', 'msm_sites_trading', 'msm__is_legacy_mirror', 'msm__managed_group', 'msm__import_options', 'msm__group_ids', 'msm_option_menu_guard', 'msm_set_order_types', 'msm__fail_stuck')) as round2_functions,
   (select count(*) from pg_constraint c, regexp_matches(pg_get_constraintdef(c.oid), '''[a-z_]+''', 'g') m where c.conname = 'msm_changes_target_ok') as targets,
   (select count(*) from information_schema.columns where table_schema = 'public' and table_name like 'msm\_%' and column_name in ('tax_by_type', 'refreshed_at', 'order_types', 'cleared_tax_profile_id')) as round2_columns;

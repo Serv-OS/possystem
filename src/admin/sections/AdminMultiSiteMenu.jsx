@@ -16,6 +16,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { msmApi } from '../../lib/msm/msmApi';
+import { adminSwitchState } from '../../lib/msm/msmStatus';
 
 const st = {
   card: { background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 12, padding: 20, marginBottom: 16, boxShadow: 'var(--sh)' },
@@ -39,7 +40,9 @@ export default function AdminMultiSiteMenu({ org, allUsers = [] }) {
   const [working, setWorking] = useState(false);
   const [search, setSearch] = useState('');
   const [newRole, setNewRole] = useState('editor');
-  const [many, setMany] = useState(null);           // { ok, sites } sites with more than one menu
+  // { org, n, r }: the check of the sites' menus for this company and this read (null until it
+  // answers, so the switch stays blocked while it runs: 17 Oct verification).
+  const [manyBy, setManyBy] = useState(null);
   const [manyTicked, setManyTicked] = useState(false);
   const [asking, setAsking] = useState(null);       // { words, yes, run } an in page "are you sure"
 
@@ -55,11 +58,18 @@ export default function AdminMultiSiteMenu({ org, allUsers = [] }) {
       else if (r.notInstalled) setState('missing');
       else { setState('error'); setError(r.words); }
     });
-    msmApi.sitesWithManyMenus?.(orgId).then((r) => { if (live) setMany(r || null); });
+    // The switch stays blocked until this check answers; a failed or thrown check still needs the
+    // tick (17 Oct verification: it failed open).
+    const check = msmApi.sitesWithManyMenus ? msmApi.sitesWithManyMenus(orgId) : Promise.resolve({ ok: false, sites: [] });
+    Promise.resolve(check)
+      .then((r) => { if (live) setManyBy({ org: orgId, n: reload, r: r || { ok: false, sites: [] } }); })
+      .catch(() => { if (live) setManyBy({ org: orgId, n: reload, r: { ok: false, sites: [] } }); });
     return () => { live = false; };
   }, [orgId, reload]);
-  const needsTick = !!(many && many.ok && many.sites.length);
-  const load = () => { setState('loading'); setError(''); setReload((n) => n + 1); };
+  const many = manyBy && manyBy.org === orgId && manyBy.n === reload ? manyBy.r : null;
+  const sw = adminSwitchState({ enabled: !!status?.enabled, many, ticked: manyTicked, working });
+  const needsTick = sw.needsTick;
+  const load = () => { setState('loading'); setError(''); setManyTicked(false); setReload((n) => n + 1); };
 
   const act = async (fn) => {
     setWorking(true); setError('');
@@ -102,12 +112,12 @@ export default function AdminMultiSiteMenu({ org, allUsers = [] }) {
           {/* One switch with words (round 2, design 2 item 23). Turning it off asks first. */}
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 8 }}>
             <button type="button" role="switch" aria-checked={!!status.enabled} aria-label="Multi site menu on or off" data-testid="msm-admin-switch"
-              disabled={working || (!status.enabled && needsTick && !manyTicked)} title={!status.enabled && needsTick && !manyTicked ? 'Tick the note below first' : undefined}
+              disabled={sw.disabled} aria-disabled={sw.disabled} title={sw.title}
               onClick={() => {
                 if (status.enabled) setAsking({ words: `Turn the Multi site menu off for ${org?.name || 'this company'}? Nobody will see it, and scheduled pushes wait until it is on again. Nothing at any site changes.`, yes: 'Turn it off', run: () => act(() => msmApi.adminSetEnabled(orgId, false)) });
                 else act(() => msmApi.adminSetEnabled(orgId, true));
               }}
-              style={{ width: 46, height: 26, borderRadius: 13, border: 'none', cursor: 'pointer', position: 'relative', flexShrink: 0, background: status.enabled ? 'var(--acc)' : 'var(--bg3)', opacity: working ? 0.6 : 1 }}>
+              style={{ width: 46, height: 26, borderRadius: 13, border: 'none', cursor: sw.blocked ? 'not-allowed' : 'pointer', position: 'relative', flexShrink: 0, background: status.enabled ? 'var(--acc)' : 'var(--bg3)', opacity: working || sw.blocked ? 0.45 : 1 }}>
               <span style={{ position: 'absolute', top: 3, left: status.enabled ? 23 : 3, width: 20, height: 20, borderRadius: 10, background: '#fff', transition: 'left .15s' }} />
             </button>
             <span style={{ fontSize: 13, color: 'var(--t1)', fontWeight: 650 }}>
@@ -129,11 +139,12 @@ export default function AdminMultiSiteMenu({ org, allUsers = [] }) {
           )}
           <div style={{ marginBottom: 12 }} />
 
+          {!status.enabled && sw.checking && <div style={{ fontSize: 12.5, color: 'var(--t3)', marginBottom: 14 }}>{sw.note}</div>}
           {!status.enabled && needsTick && (
             <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 12.5, color: 'var(--t1)', marginBottom: 14, padding: '10px 12px', borderRadius: 10, border: '1px solid color-mix(in srgb, var(--amber, #F5A623) 45%, transparent)', background: 'color-mix(in srgb, var(--amber, #F5A623) 10%, transparent)', cursor: 'pointer' }}>
               <input type="checkbox" checked={manyTicked} onChange={(e) => setManyTicked(e.target.checked)} style={{ marginTop: 2 }} />
-              <span>This company has sites with more than one menu. The multi site menu changes one menu per site for now.
-                <span style={{ display: 'block', color: 'var(--t3)', marginTop: 4 }}>{many.sites.slice(0, 4).map((x) => `${x.name}: ${x.menus.join(', ')}`).join(' · ')}{many.sites.length > 4 ? ` and ${many.sites.length - 4} more` : ''}</span>
+              <span>{sw.note}
+                {!sw.failed && <span style={{ display: 'block', color: 'var(--t3)', marginTop: 4 }}>{many.sites.slice(0, 4).map((x) => `${x.name}: ${x.menus.join(', ')}`).join(' · ')}{many.sites.length > 4 ? ` and ${many.sites.length - 4} more` : ''}</span>}
               </span>
             </label>
           )}

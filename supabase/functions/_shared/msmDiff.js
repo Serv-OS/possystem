@@ -16,7 +16,7 @@
 //                                     (a create is undone by turning the product off, never a
 //                                     delete), with "changed since" warnings
 
-import { STAGE_FIELDS, SITE_TARGETS, has, sameValue, checkChange, money2, newOptionId, channelFallback } from './msmModel.js';
+import { STAGE_FIELDS, SITE_TARGETS, has, sameValue, checkChange, money2, newOptionId, channelFallback, pctText } from './msmModel.js';
 import { planSite, touchedFromChanges, countsWords, lineWords, groupOptionRows } from './msmPlan.js';
 import { checkSite, checkCentral } from './msmHealth.js';
 import { touchEverything } from './msmImport.js';
@@ -118,6 +118,12 @@ export function unapply(centralAfter, before) {
 export function mergeStaged(existing, change) {
   const ok = checkChange(change);
   if (!ok.ok) return { action: 'none', row: null, words: ok.words };
+  // A product turned on at a site where it never was, then off again before publishing
+  // (msmEdit.siteActiveOne marks it dropCreate): the draft's create comes out, nothing is left.
+  if (change.dropCreate) {
+    if (existing && existing.op === 'create') return { action: 'delete', row: existing };
+    if (!existing) return { action: 'none', row: null };
+  }
   if (!existing) {
     if (change.op === 'update' && Object.keys(change.after || {}).every((k) => sameValue(change.after[k], change.before?.[k]))) return { action: 'none', row: null };
     return { action: 'insert', row: { ...change, after: clone(change.after || {}), before: clone(change.before || {}) } };
@@ -153,12 +159,15 @@ export function previewSet(central, changes, venues, opts = {}) {
     const raw = get(loc);
     if (!raw) { out.push({ location_id: loc, name: opts.siteNames?.[loc] || loc, missing: true, words: 'Could not read this site' }); continue; }
     const plan = planSite({ central: after, touched, locationId: loc, orgId: opts.orgId || null, venue: raw });
-    const drift = driftForPlan(unapply(after, before), touched, loc, raw, opts.orgId, names, plan);
+    // This site's own names too (its categories, VAT rates, products and groups by their venue
+    // ids), so a line never shows an id: "Latte: moves to Cold drinks" (17 Oct verification).
+    const here = { ...venueNamesOf(raw), ...names };
+    const drift = driftForPlan(unapply(after, before), touched, loc, raw, opts.orgId, here, plan);
     const health = checkSite(plan, { drift });
     out.push({
       location_id: loc, name: opts.siteNames?.[loc] || loc, plan, health, drift, counts: plan.counts,
       words: countsWords(plan.counts) || 'Nothing changes here',
-      lines: plan.lines.map((l) => ({ ...l, words: lineWords(l, names) })),
+      lines: plan.lines.map((l) => ({ ...l, words: lineWords(l, here) })),
     });
   }
   const c = checkCentral(after, touched);
@@ -177,6 +186,16 @@ export function sitesReached(central, changes) {
     else everywhere = true;
   }
   return everywhere ? all : all.filter((l) => named.has(l));
+}
+
+/** A site's own names by venue id: categories, products, option groups and VAT rates. */
+export function venueNamesOf(raw) {
+  const n = {};
+  for (const c of listOf(raw?.categories)) if (c?.id) n[c.id] = c.label || 'a category';
+  for (const i of listOf(raw?.items)) if (i?.id) n[i.id] = i.menu_name || i.name || 'a product';
+  for (const g of listOf(raw?.groups)) if (g?.id) n[g.id] = g.name || 'an option group';
+  for (const r of listOf(raw?.taxRates)) if (r?.id) n[r.id] = `${r.name || 'VAT'} (${pctText(r.rate)})`;
+  return n;
 }
 
 function namesOf(central) {
@@ -201,14 +220,21 @@ function driftForPlan(centralBefore, touched, loc, raw, orgId, names, planAfter)
     if (l.column === '(new)' || l.table !== 'items') continue;
     const a = after.get(`${l.id}|${l.column}`);
     if (!a) continue;
-    out.push({
-      productId: l.productId, column: l.column,
-      words: `${names[l.productId] || l.id} was set to ${fmt(l.before)} at the venue after it was last published. Publishing sets ${fmt(a.after)}.`,
-    });
+    out.push({ productId: l.productId, column: l.column, words: driftPlanWords(names[l.productId] || 'A product', l, a) });
   }
   return out;
 }
 const fmt = (v) => (v == null ? 'nothing' : typeof v === 'number' ? v.toFixed(2) : typeof v === 'object' ? 'something else' : String(v));
+
+// "Changed at the venue since it was last published" in words: never true or false, never an id
+// (17 Oct verification: "Flapjack was set to true at the venue ... Publishing sets false").
+const DRIFT_WORDS = { cat: 'category', cats: 'extra categories', tax_rate_id: 'VAT rate', parent_id: 'size of', image: 'photo', allergens: 'allergens', tags: 'dietary tags', assigned_modifier_groups: 'option groups', sold_alone: 'sold on its own', type: 'kind of product', name: 'name', menu_name: 'name on the till', receipt_name: 'receipt name', kitchen_name: 'kitchen ticket name', description: 'description', item_code: 'item code', visibility: 'where it shows' };
+function driftPlanWords(who, l, a) {
+  if (l.column === 'archived') return `${who} was turned ${l.before ? 'off' : 'on'} at the venue after it was last published. Publishing turns it ${a.after ? 'off' : 'back on'}.`;
+  if (l.column.startsWith('pricing.')) return `${who} was set to ${fmt(l.before)} at the venue after it was last published. Publishing sets ${fmt(a.after)}.`;
+  const word = DRIFT_WORDS[l.column] || (l.column.startsWith('tax_overrides.') ? 'VAT by order type' : 'a setting');
+  return `${who}: its ${word} was changed at the venue after it was last published. Publishing puts the group's back.`;
+}
 
 // ── Drift: what a venue changed by hand ─────────────────────────────────────
 
@@ -426,7 +452,7 @@ export function undoChanges(version, central, names = {}) {
     for (const k of Object.keys(after)) {
       const was = c.after ? c.after[k] : undefined;
       if (nowRow && was !== undefined && !sameValue(nowRow[k], was)) {
-        warnings.push(`${n[c.entity_id] || 'A product'}${c.location_id ? ` at ${n[c.location_id] || 'one site'}` : ''} ${k.replace(/_/g, ' ')} is ${fmt(nowRow[k])} now; undo sets it to ${fmt(after[k])}.`);
+        warnings.push(undoWarnWords(`${n[c.entity_id] || 'A product'}${c.location_id ? ` at ${n[c.location_id] || 'one site'}` : ''}`, k, nowRow[k], after[k]));
       }
     }
     out.push({ target: c.target, entity_id: c.entity_id, location_id: c.location_id || null, op: 'update', after });
@@ -434,6 +460,18 @@ export function undoChanges(version, central, names = {}) {
   const turnedOff = out.filter((c) => c.target === 'product_site' && c.after.active === false && listOf(version?.changes).some((v) => v.op === 'create' && v.target === 'product_site' && v.entity_id === c.entity_id)).length;
   if (turnedOff) warnings.push(`Undo turns off ${turnedOff} new product${turnedOff === 1 ? '' : 's'} at their sites (nothing is deleted).`);
   return { changes: out, warnings, skipped };
+}
+
+// "Changed since that version" in words (17 Oct verification: never "sold alone is true now; undo
+// sets it to true", never a column name or an id). Prices and on or off say both values.
+const UNDO_WORDS = { default_price: 'group price', price: 'price', name: 'name', menu_name: 'name on the till', receipt_name: 'receipt name', kitchen_name: 'kitchen ticket name', description: 'description', category_id: 'category', extra_category_ids: 'extra categories', tax_rate_name: 'VAT', tax_rate_percent: 'VAT', tax_by_type: 'VAT by order type', modifier_groups: 'option groups', allergens: 'allergens', tags: 'dietary tags', image: 'photo', sold_alone: 'sold on its own', type: 'kind of product', parent_product_id: 'size of', default_channels: 'order type prices', channel_prices: 'order type prices', kept: 'own settings', label: 'name', min: 'rule', max: 'rule', selection_type: 'kind of choice', sort_order: 'place' };
+function undoWarnWords(who, k, now, back) {
+  if (k === 'active') return `${who} is turned ${now === false ? 'off' : 'on'} now; undo turns it ${back === false ? 'off' : 'on'}.`;
+  if (k === 'archived') return `${who} is ${now ? 'removed' : 'on the menu'} now; undo ${back ? 'removes it' : 'brings it back'}.`;
+  if (['default_price', 'price'].includes(k) && (typeof now === 'number' || now == null) && (typeof back === 'number' || back == null)) {
+    return `${who} ${UNDO_WORDS[k]} is ${now == null ? 'the group price' : money2(now)} now; undo sets it to ${back == null ? 'the group price' : money2(back)}.`;
+  }
+  return `${who}: its ${UNDO_WORDS[k] || 'setting'} was changed since; undo puts back the one before.`;
 }
 
 function currentRow(central, c) {

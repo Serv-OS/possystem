@@ -78,6 +78,11 @@ export async function loadMsmManaged(api, locationId, isLive = () => true) {
 
 // ── The target side gate ────────────────────────────────────────────────────
 
+// The pause before the second ask (tests set it to 0).
+let managedRetryMs = 400;
+export function setManagedRetryMsForTest(ms) { managedRetryMs = Number(ms) || 0; }
+
+
 /**
  * Which groups and products the group menu manages at these venues, read afresh.
  *   client       the Ops Supabase client
@@ -89,8 +94,15 @@ export async function readManagedAt(client, locationIds) {
   const locs = [...new Set((locationIds || []).filter(Boolean).map(String))];
   const empty = { ok: true, notInstalled: false, on: false, groups: new Map(), items: new Map(), error: null };
   if (!client || !locs.length) return empty;
-  let res;
-  try { res = await client.rpc('msm_managed_at', { p_locations: locs }); } catch (e) { res = { data: null, error: e }; }
+  const call = async () => { try { return await client.rpc('msm_managed_at', { p_locations: locs }); } catch (e) { return { data: null, error: e }; } };
+  let res = await call();
+  // A short network blip fails only this check (an rpc POST is never resent by itself), while the
+  // copies it gates would have been: ask once more before blocking (17 Oct verification). It is a
+  // stable, read only function, so a second call is safe. Still blocked (fail closed) after that.
+  if (res?.error && !isNotInstalled(res.error)) {
+    await new Promise((r) => setTimeout(r, managedRetryMs));
+    res = await call();
+  }
   if (res?.error) return { ...empty, ok: false, notInstalled: isNotInstalled(res.error), error: res.error };
   const d = res?.data || {};
   const groups = new Map(), items = new Map();
