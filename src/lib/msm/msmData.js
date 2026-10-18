@@ -106,13 +106,20 @@ export function createMsmData({ client, report = () => {}, invokeTimeoutMs = 600
      * it cannot be read (not installed, switched off or a failure): Menu Manager then behaves as
      * today (the lock is a convenience, the database is the guard).
      * Returns Map(venueItemId -> { productId, kept: [columns] }) or null.
+     *
+     * 18 Oct 2026: read PAGED, in a fixed order, like soldRecently. The function returns a table,
+     * so the Data API's max rows (1,000) cut it with no error: a site selling more than 1,000 of
+     * the group menu's products would have shown every product past the first 1,000 unlocked in
+     * Menu Manager, and the store's isMsmManaged() would have let the site edit head office fields
+     * there. The venue id is unique at a site, so the pages are exact. A failed page is null (as
+     * today), never a shorter list. 100 pages is 100,000 products at one site.
      */
     async managedItems(locationId) {
       if (!client || !locationId) return null;
       try {
-        const res = await client.rpc('msm_managed_items', { p_location: locationId });
-        if (res.error) return null;
-        return new Map((res.data || []).map((r) => [r.venue_item_id, { productId: r.product_id, kept: r.kept || [] }]));
+        const r = await readAllRows(() => client.rpc('msm_managed_items', { p_location: locationId }).order('venue_item_id'), { max: 100 });
+        if (!r.rows) return null;
+        return new Map(r.rows.map((x) => [x.venue_item_id, { productId: x.product_id, kept: x.kept || [] }]));
       } catch { return null; }
     },
 
@@ -120,13 +127,14 @@ export function createMsmData({ client, report = () => {}, invokeTimeoutMs = 600
      * Round 2: the option groups the group menu manages at a venue (Menu Manager lock, the sharing
      * engine's own gate). null when it cannot be read. Returns Map(venueGroupId -> { groupId,
      * kept: [columns], optionIds: [venue option ids the group menu owns there] }).
+     * 18 Oct 2026: paged past the 1,000 row cap in a fixed order, as managedItems is.
      */
     async managedGroups(locationId) {
       if (!client || !locationId) return null;
       try {
-        const res = await client.rpc('msm_managed_groups', { p_location: locationId });
-        if (res.error) return null;
-        return new Map((res.data || []).map((r) => [r.venue_group_id, { groupId: r.group_id, kept: r.kept || [], optionIds: r.option_ids || [] }]));
+        const r = await readAllRows(() => client.rpc('msm_managed_groups', { p_location: locationId }).order('venue_group_id'), { max: 100 });
+        if (!r.rows) return null;
+        return new Map(r.rows.map((x) => [x.venue_group_id, { groupId: x.group_id, kept: x.kept || [], optionIds: x.option_ids || [] }]));
       } catch { return null; }
     },
     /** Round 2: { ok, on, groups, items } at several venues at once (public.msm_managed_at). */
