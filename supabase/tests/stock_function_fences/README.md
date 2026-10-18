@@ -45,20 +45,26 @@ net: it compares the live bodies with these md5s and changes nothing if any diff
    refusal case of step 4 fails here.
 3. The migration applies as the SQL editor runs a paste (one transaction, stop on error), its
    self test included, leaves the role and claims as they were, and its visible check reads
-   `1|3|0|0|3|3|2|0|1` on this seed.
+   `1|1|3|0|0|3|3|0|2|0|1` on this seed.
 4. AFTER: the bound till, kiosk and ops tablet, the Back Office login, the owner (no link row),
    the super admin, the service role and the SQL editor still post; every stranger is refused
    with 42501; another venue's item or area is refused with 22023; the use area lookup stays in
    the venue. The till's own call (the 11 named arguments deplete.js sends) books one
    SALE_DEPLETION row, moves on hand and the area holding, a repeat is a duplicate, a refund puts
    it back, and on hand still equals the ledger.
+4a. `_post_stock_movement` (the posting with no caller check) cannot be run through the API by
+   anyone, the service role included. A SECURITY DEFINER function and a SECURITY DEFINER trigger
+   owned by postgres reach it when an online customer's unbound session calls or fires them (the
+   shape a central depletion path takes); a definer function calling the public
+   `post_stock_movement` is judged by its outer caller (42501), and an invoker trigger cannot
+   reach the core (42501). The venue checks on the item still hold inside.
 5. Transfers: same rule (a bound till may now move its own stock between areas), one company only
    between venues, the sender's own lines and areas, a draft can always be cancelled, a sent
    transfer can always be taken back.
 6. Scale (2,000 venues, 5,000 devices, 20,000 venue links): well under a millisecond a call for a
    till or a Back Office login, under 10 ms for a super admin, inside the live timeouts.
-7. A second run passes its own guard. The ROLLBACK puts all three texts back (same md5), the
-   doors open again, and the migration applies again after it.
+7. A second run passes its own guard. The ROLLBACK puts all three texts back (same md5), drops
+   both new functions, the doors open again, and the migration applies again after it.
 8. The file stops with nothing changed when a function differs from these texts, when the reach
    rule is too wide (a stranger allowed), and when it is too narrow (user_accessible_locations
    only: every till would lose its stock).

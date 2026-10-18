@@ -332,9 +332,9 @@ console.log('\n3. The migration, as the SQL editor runs it');
   const rows = r.stdout.trim().split('\n');
   const check = rows[rows.length - 2].split('|');
   ok(rows[rows.length - 1] === 'ran_as=postgres claims=none', `the self test leaves the role and claims as they were (${rows[rows.length - 1]})`);
-  // reach_rule, fenced_functions, anon_can_call, public_can_call, signed_in_can_call, service_role_can_call,
-  // bound_devices, unbound_recent_devices, venues_without_company
-  ok(check.join('|') === '1|3|0|0|3|3|2|0|1', `visible check reads 1|3|0|0|3|3|2|0|1 (${check.join('|')})`);
+  // reach_rule, trusted_core, fenced_functions, anon_can_call, public_can_call, signed_in_can_call,
+  // service_role_can_call, core_open_to_api, bound_devices, unbound_recent_devices, venues_without_company
+  ok(check.join('|') === '1|1|3|0|0|3|3|0|2|0|1', `visible check reads 1|1|3|0|0|3|3|0|2|0|1 (${check.join('|')})`);
 }
 
 // -- 4. AFTER -------------------------------------------------------------------
@@ -350,6 +350,53 @@ runMatrix('after');
   ok(t.out === 't', `after: the bound till asking stock_caller_reaches gets true (${t.out})`);
   const k = asCaller('anonKey', `select public.stock_caller_reaches('${A1}')`);
   ok(k.out === 'f', `after: the bare anon key asking stock_caller_reaches gets false (${k.out})`);
+}
+
+console.log('\n4a. _post_stock_movement: never through the API; the way in for code inside the database');
+{
+  const core = (n) => `select public._post_stock_movement('${A1}', '${I.a1}', -1, 'SALE_DEPLETION', null, 'central', 'c${n}', 'central:c${n}')`;
+  for (const who of ['stranger', 'tillA1', 'boA1', 'anonKey', 'service']) {
+    const got = outcome(asCaller(who, core(who)));
+    ok(got === '42501', `${CALLERS[who].what} cannot run _post_stock_movement directly (${got})`);
+  }
+  // What a central depletion build looks like: a SECURITY DEFINER function, and a SECURITY DEFINER
+  // trigger on a table the writer inserts into, both owned by postgres, both called by an online
+  // customer's unbound anonymous session. And the two shapes that do NOT work, with the reason.
+  sql(`
+    create table public.zz_sales (id text primary key, location_id uuid not null, item uuid not null);
+    grant insert on public.zz_sales to authenticated, service_role;
+    create function public.zz_central(p_loc uuid, p_item uuid, p_key text) returns jsonb
+      language plpgsql security definer set search_path = public as $f$
+      begin return public._post_stock_movement(p_loc, p_item, -1, 'SALE_DEPLETION', null, 'central', p_key, 'central:' || p_key); end $f$;
+    grant execute on function public.zz_central(uuid, uuid, text) to authenticated;
+    create function public.zz_sales_trg() returns trigger
+      language plpgsql security definer set search_path = public as $f$
+      begin perform public._post_stock_movement(new.location_id, new.item, -1, 'SALE_DEPLETION', null, 'central', new.id, 'trg:' || new.id); return new; end $f$;
+    create trigger zz_sales_deplete after insert on public.zz_sales for each row execute function public.zz_sales_trg();
+    create function public.zz_door_from_definer(p_loc uuid, p_item uuid, p_key text) returns jsonb
+      language plpgsql security definer set search_path = public as $f$
+      begin return public.post_stock_movement(p_loc, p_item, -1, 'SALE_DEPLETION', null, 'central', p_key, 'door:' || p_key); end $f$;
+    grant execute on function public.zz_door_from_definer(uuid, uuid, text) to authenticated;
+    create table public.zz_sales_invoker (id text primary key, location_id uuid not null, item uuid not null);
+    grant insert on public.zz_sales_invoker to authenticated;
+    create function public.zz_invoker_trg() returns trigger language plpgsql as $f$
+      begin perform public._post_stock_movement(new.location_id, new.item, -1, 'SALE_DEPLETION', null, 'central', new.id, 'inv:' || new.id); return new; end $f$;
+    create trigger zz_invoker_deplete after insert on public.zz_sales_invoker for each row execute function public.zz_invoker_trg();
+  `);
+  const fn = asCaller('stranger', `select public.zz_central('${A1}', '${I.a1}', 'k1')`, { commit: true });
+  ok(outcome(fn) === 'ok' && JSON.parse(ledgerRow('central:k1')).length === 1,
+    `an online customer's session through a postgres owned SECURITY DEFINER function posts (${outcome(fn)})`);
+  const trg = asCaller('stranger', `insert into public.zz_sales (id, location_id, item) values ('s1', '${A1}', '${I.a1}')`, { commit: true });
+  ok(trg.status === 0 && JSON.parse(ledgerRow('trg:s1')).length === 1,
+    `an online customer's insert fires a postgres owned SECURITY DEFINER trigger that posts (${trg.sqlstate || 'ok'})`);
+  const svc = asCaller('service', `insert into public.zz_sales (id, location_id, item) values ('s2', '${B1}', '${I.b1}')`, { commit: true });
+  ok(svc.status === 0 && JSON.parse(ledgerRow('trg:s2')).length === 1, `the same trigger fired by the service role posts (${svc.sqlstate || 'ok'})`);
+  const door = outcome(asCaller('stranger', `select public.zz_door_from_definer('${A1}', '${I.a1}', 'k2')`));
+  ok(door === '42501', `but a definer function that calls the public post_stock_movement is judged by its OUTER caller (${door})`);
+  const inv = asCaller('stranger', `insert into public.zz_sales_invoker (id, location_id, item) values ('s3', '${A1}', '${I.a1}')`);
+  ok(inv.sqlstate === '42501', `and a trigger that is not SECURITY DEFINER cannot reach _post_stock_movement (${inv.sqlstate})`);
+  const bad = outcome(asCaller('stranger', `select public.zz_central('${A1}', '${I.b1}', 'k3')`));
+  ok(bad === '22023', `the venue checks still hold inside: another venue's item is refused (${bad})`);
 }
 
 console.log('\n4b. The till, exactly as deplete.js calls it, committed');
@@ -427,7 +474,7 @@ console.log('\n6. A second run, the ROLLBACK, and a run after it');
   for (const k of ['psm', 'sioh', 'leg']) ok(migText.includes(`'${after[k]}'`), `the guard also accepts the fenced ${k} text (${after[k]})`);
   const rb = sqlFile(ROLLBACK, { allowFail: true });
   const rbRow = rb.stdout.trim().split('\n').pop();
-  ok(rb.status === 0 && rbRow === '0|0|2|2', `the ROLLBACK applies, visible check 0|0|2|2 (${rbRow})`);
+  ok(rb.status === 0 && rbRow === '0|0|0|2|2', `the ROLLBACK applies, visible check 0|0|0|2|2 (${rbRow})`);
   for (const k of ['psm', 'sioh', 'leg']) ok(md5Of(SIG[k]) === before[k], `the ROLLBACK puts ${k} back exactly (md5 ${md5Of(SIG[k])})`);
   ok(outcome(asCaller('stranger', psmCall(A1, I.a1, 'rb'))) === 'ok', 'after the ROLLBACK the stranger can post again (the old behaviour, as documented)');
   const again = sqlText1(migText, { allowFail: true });

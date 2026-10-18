@@ -3,7 +3,7 @@
 -- OPS DB ONLY (tbetcegmszzotrwdtqhi). Undoes 20261018a_OPS_stock_function_fences.sql: puts
 -- post_stock_movement and post_stock_transfer_leg back to their 20261016 text, set_inventory_on_hand
 -- back to its live text of 5 Aug 2026 (000_baseline_ops.sql), gives EXECUTE back to PUBLIC and anon
--- exactly as before, and drops stock_caller_reaches.
+-- exactly as before, and drops stock_caller_reaches and _post_stock_movement.
 --
 -- Only if a till, kiosk or Back Office screen is refused stock it should post ("this session cannot
 -- move stock at venue ..."). Rolling back OPENS THE DOORS AGAIN: anyone with the public key can
@@ -303,12 +303,14 @@ revoke all on function public.post_stock_transfer_leg(uuid,text,text) from publi
 grant execute on function public.post_stock_transfer_leg(uuid,text,text) to authenticated, service_role;
 
 drop function if exists public.stock_caller_reaches(uuid);
+drop function if exists public._post_stock_movement(uuid,uuid,numeric,text,numeric,text,text,text,timestamptz,uuid,text,uuid);
 
 notify pgrst, 'reload schema';
 
--- VISIBLE CHECK. Expected: reach_rule 0, fenced_functions 0, anon_can_call 2, public_can_call 2.
+-- VISIBLE CHECK. Expected: reach_rule 0, trusted_core 0, fenced_functions 0, anon_can_call 2, public_can_call 2.
 select
   (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'stock_caller_reaches') as reach_rule,
+  (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = '_post_stock_movement') as trusted_core,
   (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace
      and p.proname in ('post_stock_movement', 'set_inventory_on_hand', 'post_stock_transfer_leg')
      and p.prosrc like '%stock_caller_reaches%') as fenced_functions,

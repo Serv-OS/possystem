@@ -30,19 +30,26 @@
 --   silently stop moving. A self test below proves every bound device still reaches its venue.
 --
 -- WHAT CHANGES
---   post_stock_movement (the 12 argument shape of 20261016)
---     * refuses a caller that cannot reach the venue (SQLSTATE 42501);
+--   _post_stock_movement (NEW, same 12 arguments): the posting itself, the 20261016 body
 --     * refuses a stock item that is not one of the venue's own items (22023);
 --     * refuses an area (p_area_id) that is not one of the venue's own areas (22023);
 --     * the use area lookup, the cost lookup and the duplicate answer read only this venue.
---     Every other line is the 20261016 text.
---   set_inventory_on_hand: the same caller check first. Every other line is the live text.
+--     No caller check, and only its owner (postgres) may run it: it is for SECURITY DEFINER
+--     functions and triggers owned by postgres (the two below, a central depletion path later).
+--     Never callable through the API (EXECUTE taken from PUBLIC, anon, authenticated and
+--     service_role). A caller check inside it would judge the OUTER caller, so a trigger fired by
+--     an online customer's paid order would be refused and abort that order's insert.
+--   post_stock_movement (the 12 argument shape of 20261016): the door the API uses. Refuses a
+--     caller that cannot reach the venue (SQLSTATE 42501), then posts through _post_stock_movement.
+--   set_inventory_on_hand: the same caller check first, then posts through _post_stock_movement.
+--     Every other line is the live text.
 --   post_stock_transfer_leg (20261016)
 --     * who is asking: stock_caller_reaches instead of user_accessible_locations (the service
 --       role still passes; a till bound to the venue now passes too, it can post there anyway);
 --     * a transfer between venues must stay inside one company (both venues share an org_id);
 --     * the sending lines, the area it leaves from and (within one venue) the area it goes to
---       must be the sender's own, checked before anything posts, refused in words.
+--       must be the sender's own, checked before anything posts, refused in words;
+--     * each line posts through _post_stock_movement (the leg checked the caller for its venue).
 --   EXECUTE on post_stock_movement and set_inventory_on_hand: taken from PUBLIC and anon, kept
 --   for authenticated and service_role. post_stock_transfer_leg grants are unchanged.
 --
@@ -61,8 +68,8 @@
 --     (till waste) on its own venue
 --   src/lib/stock/transfers.js, areas.js (post_stock_transfer_leg) Back Office login
 --   supabase/functions/stock-deplete, manager-approve           service role
---   set_inventory_on_hand and post_stock_transfer_leg call post_stock_movement inside the same
---   transaction with the same claims, for the same venue they just checked.
+--   set_inventory_on_hand and post_stock_transfer_leg check the caller, then post through
+--   _post_stock_movement for the venue they just checked.
 --   ~/.claude/servos-release/demo 70 and 71 call it from the SQL editor: the database itself.
 --
 -- GUARD: the three function bodies must be exactly the ones this file was written against
@@ -105,17 +112,17 @@ begin
 
   select md5(btrim(regexp_replace(p.prosrc, '\s+', ' ', 'g'))) into v_md5 from pg_proc p
    where p.oid = to_regprocedure('public.post_stock_movement(uuid,uuid,numeric,text,numeric,text,text,text,timestamptz,uuid,text,uuid)');
-  if v_md5 is null or v_md5 not in ('cf3987d3ff0064d735a9ae9727fd8794', 'adb486b4e4f95cccf5cfb6f59809331f') then
+  if v_md5 is null or v_md5 not in ('cf3987d3ff0064d735a9ae9727fd8794', 'ad53ab7ca7477bba0a56b2e512fc11e7') then
     v_bad := v_bad || ' post_stock_movement=' || coalesce(v_md5, 'missing');
   end if;
   select md5(btrim(regexp_replace(p.prosrc, '\s+', ' ', 'g'))) into v_md5 from pg_proc p
    where p.oid = to_regprocedure('public.set_inventory_on_hand(uuid,uuid,numeric,uuid,text)');
-  if v_md5 is null or v_md5 not in ('7d8a0343a1eca02bcb0c9dafe252fe8f', 'f7d55d836f6e05f784e296f89a83e5ad') then
+  if v_md5 is null or v_md5 not in ('7d8a0343a1eca02bcb0c9dafe252fe8f', '6c0b3299d657c8bb69b40cced6cf82a1') then
     v_bad := v_bad || ' set_inventory_on_hand=' || coalesce(v_md5, 'missing');
   end if;
   select md5(btrim(regexp_replace(p.prosrc, '\s+', ' ', 'g'))) into v_md5 from pg_proc p
    where p.oid = to_regprocedure('public.post_stock_transfer_leg(uuid,text,text)');
-  if v_md5 is null or v_md5 not in ('e75b6c4346e8944c8ff064159f3504c1', '667e330841d8e9e4e7d3447c9b8ab588') then
+  if v_md5 is null or v_md5 not in ('e75b6c4346e8944c8ff064159f3504c1', '8c6ee62b7279f09f94f1e0eaa320da9d') then
     v_bad := v_bad || ' post_stock_transfer_leg=' || coalesce(v_md5, 'missing');
   end if;
   if v_bad <> '' then
@@ -154,10 +161,15 @@ comment on function public.stock_caller_reaches(uuid) is
 revoke all on function public.stock_caller_reaches(uuid) from public;
 grant execute on function public.stock_caller_reaches(uuid) to anon, authenticated, service_role;
 
--- -- 2. post_stock_movement -------------------------------------------------------
--- Same signature as 20261016, so its grants and every caller stay as they are (grants are set
--- again in step 5). The marked lines are new; every other line is the 20261016 text.
-create or replace function public.post_stock_movement(
+-- -- 2. _post_stock_movement: the posting itself, for code inside the database ------
+-- The 20261016 body, with the venue checks on the item and the area. NO caller check: only the
+-- owner (postgres) may run it, so only SECURITY DEFINER functions and triggers owned by postgres
+-- reach it (set_inventory_on_hand and post_stock_transfer_leg below, after their own caller
+-- check; a central depletion function or trigger later). The API never can: EXECUTE is taken from
+-- PUBLIC, anon, authenticated and service_role in step 5. A caller check inside it would judge
+-- the OUTER caller's claims, so a trigger fired by an online customer's paid order would be
+-- refused and abort that insert; this is why the check lives in the door, not here.
+create or replace function public._post_stock_movement(
   p_location_id       uuid,
   p_inventory_item_id uuid,
   p_qty_base          numeric,
@@ -181,11 +193,6 @@ declare
   v_area uuid;
   v_area_onhand numeric;
 begin
-  -- FENCE 20261018a: only a caller that can reach this venue (stock_caller_reaches).
-  if not public.stock_caller_reaches(p_location_id) then
-    raise exception 'post_stock_movement: this session cannot move stock at venue %', p_location_id
-      using errcode = '42501';
-  end if;
   -- FENCE 20261018a: the item and a chosen area must be this venue's own.
   if not exists (select 1 from inventory_items i where i.id = p_inventory_item_id and i.location_id = p_location_id) then
     raise exception 'post_stock_movement: stock item % is not at venue %', p_inventory_item_id, p_location_id
@@ -249,9 +256,38 @@ begin
     'area_id', v_area, 'area_on_hand', v_area_onhand);
 end $$;
 
+-- -- 2b. post_stock_movement: the door the API uses ------------------------------
+-- Same signature as 20261016, so every caller (tills, Back Office, the edge functions) keeps its
+-- call shape. The caller check, then the posting above.
+create or replace function public.post_stock_movement(
+  p_location_id       uuid,
+  p_inventory_item_id uuid,
+  p_qty_base          numeric,
+  p_movement_type     text,
+  p_unit_cost         numeric default null,
+  p_source_type       text default null,
+  p_source_id         text default null,
+  p_idempotency_key   text default null,
+  p_occurred_at       timestamptz default null,
+  p_created_by        uuid default null,
+  p_notes             text default null,
+  p_area_id           uuid default null
+) returns jsonb
+language plpgsql security definer set search_path = public as $$
+begin
+  -- FENCE 20261018a: only a caller that can reach this venue (stock_caller_reaches).
+  if not public.stock_caller_reaches(p_location_id) then
+    raise exception 'post_stock_movement: this session cannot move stock at venue %', p_location_id
+      using errcode = '42501';
+  end if;
+  return public._post_stock_movement(p_location_id, p_inventory_item_id, p_qty_base, p_movement_type,
+    p_unit_cost, p_source_type, p_source_id, p_idempotency_key, p_occurred_at, p_created_by, p_notes, p_area_id);
+end $$;
+
 -- -- 3. set_inventory_on_hand -----------------------------------------------------
--- The caller check first, so a stranger cannot even learn whether an item exists. Every other
--- line is the live text (000_baseline_ops.sql, read from the catalog on 5 Aug 2026).
+-- The caller check first, so a stranger cannot even learn whether an item exists; the posting
+-- goes straight to _post_stock_movement (checked already). Every other line is the live text
+-- (000_baseline_ops.sql, read from the catalog on 5 Aug 2026).
 create or replace function public.set_inventory_on_hand(
   p_location_id uuid, p_inventory_item_id uuid, p_counted_qty numeric,
   p_created_by uuid default null, p_notes text default null
@@ -272,14 +308,15 @@ begin
   if not found then return jsonb_build_object('error', 'item not found'); end if;
   v_delta := p_counted_qty - v_cur;
   if v_delta = 0 then return jsonb_build_object('on_hand', v_cur, 'delta', 0); end if;
-  v_res := post_stock_movement(p_location_id, p_inventory_item_id, v_delta, 'STOCK_COUNT_ADJ',
+  v_res := public._post_stock_movement(p_location_id, p_inventory_item_id, v_delta, 'STOCK_COUNT_ADJ',
     null, 'manual_count', null, null, now(), p_created_by, p_notes);
   return v_res || jsonb_build_object('delta', v_delta);
 end $function$;
 
 -- -- 4. post_stock_transfer_leg ---------------------------------------------------
 -- The 20261016 text with the caller check swapped for stock_caller_reaches, one company only
--- between venues, and the sender's own lines and areas checked before anything posts.
+-- between venues, the sender's own lines and areas checked before anything posts, and each line
+-- posted through _post_stock_movement (the leg has checked the caller once for its venue).
 create or replace function public.post_stock_transfer_leg(p_transfer_id uuid, p_leg text, p_by_name text default null)
 returns jsonb
 language plpgsql security definer set search_path = public as $$
@@ -357,7 +394,7 @@ begin
         select * from stock_transfer_lines where transfer_id = p_transfer_id and not dropped order by sort_order, id
       loop
         if coalesce(v_l.qty_base, 0) <= 0 then continue; end if;
-        perform post_stock_movement(v_t.location_id, v_l.inventory_item_id, v_l.qty_base, 'TRANSFER_IN',
+        perform public._post_stock_movement(v_t.location_id, v_l.inventory_item_id, v_l.qty_base, 'TRANSFER_IN',
           coalesce(v_l.unit_cost, (select current_cost from inventory_items where id = v_l.inventory_item_id), 0),
           'stock_transfer', v_t.id::text, 'transfer:' || v_t.id::text || ':' || v_l.id::text || ':cancel',
           now(), null, 'Transfer ' || coalesce(v_t.reference, '') || ' cancelled, stock back', v_t.from_area_id);
@@ -382,11 +419,11 @@ begin
       if coalesce(v_l.qty_base, 0) <= 0 then continue; end if;
       v_cost := coalesce((select current_cost from inventory_items where id = v_l.inventory_item_id), 0);
       update stock_transfer_lines set unit_cost = v_cost where id = v_l.id;
-      perform post_stock_movement(v_t.location_id, v_l.inventory_item_id, -v_l.qty_base, 'TRANSFER_OUT',
+      perform public._post_stock_movement(v_t.location_id, v_l.inventory_item_id, -v_l.qty_base, 'TRANSFER_OUT',
         v_cost, 'stock_transfer', v_t.id::text, 'transfer:' || v_t.id::text || ':' || v_l.id::text || ':out',
         now(), null, 'Transfer ' || coalesce(v_t.reference, ''), v_t.from_area_id);
       if p_leg = 'both' then
-        perform post_stock_movement(v_t.location_id, v_l.inventory_item_id, v_l.qty_base, 'TRANSFER_IN',
+        perform public._post_stock_movement(v_t.location_id, v_l.inventory_item_id, v_l.qty_base, 'TRANSFER_IN',
           v_cost, 'stock_transfer', v_t.id::text, 'transfer:' || v_t.id::text || ':' || v_l.id::text || ':in',
           now(), null, 'Transfer ' || coalesce(v_t.reference, ''), v_t.to_area_id);
       end if;
@@ -441,7 +478,7 @@ begin
     end if;
     v_before := coalesce(v_item.on_hand, 0);
     v_cost := coalesce(v_l.unit_cost, v_item.current_cost, 0);
-    v_res := post_stock_movement(v_t.to_location_id, v_l.to_inventory_item_id, v_qty, 'TRANSFER_IN',
+    v_res := public._post_stock_movement(v_t.to_location_id, v_l.to_inventory_item_id, v_qty, 'TRANSFER_IN',
       v_cost, 'stock_transfer', v_t.id::text, 'transfer:' || v_t.id::text || ':' || v_l.id::text || ':in',
       now(), null, 'Transfer ' || coalesce(v_t.reference, ''), v_area);
     -- The receiver's cost moves the way a delivery moves it (costAfterReceipt in
@@ -478,12 +515,14 @@ revoke all on function public.set_inventory_on_hand(uuid,uuid,numeric,uuid,text)
 grant execute on function public.set_inventory_on_hand(uuid,uuid,numeric,uuid,text) to authenticated, service_role;
 revoke all on function public.post_stock_transfer_leg(uuid,text,text) from public, anon;
 grant execute on function public.post_stock_transfer_leg(uuid,text,text) to authenticated, service_role;
+-- The posting itself: the owner only (SECURITY DEFINER functions and triggers owned by postgres).
+revoke all on function public._post_stock_movement(uuid,uuid,numeric,text,numeric,text,text,text,timestamptz,uuid,text,uuid) from public, anon, authenticated, service_role;
 
 -- -- 6. Self test, on this database, before anything is kept ------------------------
 -- (a) Every till, kiosk and tablet bound to a venue still reaches it (they post SALE_DEPLETION
 --     at check close): asked AS each device, the way its own session asks.
 -- (b) A stranger (an anonymous session bound to nothing) is refused by both functions with
---     SQLSTATE 42501, at a real venue, before any read.
+--     SQLSTATE 42501, at a real venue, before any read, and cannot run _post_stock_movement.
 -- Any failure stops the whole file: nothing is kept. Role and claims are set inside a block that
 -- is always rolled back, so nothing of the test is left behind.
 do $selftest$
@@ -494,6 +533,7 @@ declare
   v_loc uuid;
   v_psm text := 'not run';
   v_sioh text := 'not run';
+  v_core text := 'not run';
 begin
   select coalesce(jsonb_agg(jsonb_build_object('uid', d.device_uid, 'loc', d.location_id)), '[]'::jsonb)
     into v_devices
@@ -527,9 +567,16 @@ begin
       exception when others then
         v_sioh := sqlstate;
       end;
+      begin
+        perform public._post_stock_movement(v_loc, '5e1f0000-0000-4000-8000-00000000a1e7'::uuid, -1, 'WASTE');
+        v_core := 'ALLOWED';
+      exception when others then
+        v_core := sqlstate;
+      end;
     else
       v_psm := '42501';
       v_sioh := '42501';
+      v_core := '42501';
     end if;
     raise exception using errcode = 'P0001', message = 'stock fence self test done';
   exception when others then
@@ -539,8 +586,8 @@ begin
   if v_unreached > 0 then
     raise exception 'Stopped, nothing changed: % bound device(s) could not reach their own venue with the new rule.', v_unreached;
   end if;
-  if v_psm <> '42501' or v_sioh <> '42501' then
-    raise exception 'Stopped, nothing changed: a stranger was not refused (post_stock_movement %, set_inventory_on_hand %).', v_psm, v_sioh;
+  if v_psm <> '42501' or v_sioh <> '42501' or v_core <> '42501' then
+    raise exception 'Stopped, nothing changed: a stranger was not refused (post_stock_movement %, set_inventory_on_hand %, _post_stock_movement %).', v_psm, v_sioh, v_core;
   end if;
 end
 $selftest$;
@@ -548,14 +595,15 @@ $selftest$;
 notify pgrst, 'reload schema';
 
 -- VISIBLE CHECK (the SQL editor shows this last result). Expected:
---   reach_rule 1, fenced_functions 3, anon_can_call 0, public_can_call 0, signed_in_can_call 3,
---   service_role_can_call 3, bound_devices = your bound tills, kiosks and tablets (all of them
+--   reach_rule 1, trusted_core 1, fenced_functions 3, anon_can_call 0, public_can_call 0,
+--   signed_in_can_call 3, service_role_can_call 3, core_open_to_api 0, bound_devices = your bound tills, kiosks and tablets (all of them
 --   reach their venue: the self test above stopped the file otherwise), unbound_recent_devices 0
 --   (a device seen in the last 7 days that no claim bound: it could not post stock; it cannot
 --   use pos_can_access either), venues_without_company = venues that cannot send or receive
 --   transfers between venues (they never have).
 select
   (select count(*) from pg_proc p where p.oid = to_regprocedure('public.stock_caller_reaches(uuid)')) as reach_rule,
+  (select count(*) from pg_proc p where p.oid = to_regprocedure('public._post_stock_movement(uuid,uuid,numeric,text,numeric,text,text,text,timestamptz,uuid,text,uuid)')) as trusted_core,
   (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace
      and p.proname in ('post_stock_movement', 'set_inventory_on_hand', 'post_stock_transfer_leg')
      and p.prosrc like '%stock_caller_reaches%') as fenced_functions,
@@ -572,6 +620,11 @@ select
   (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace
      and p.proname in ('post_stock_movement', 'set_inventory_on_hand', 'post_stock_transfer_leg')
      and has_function_privilege('service_role', p.oid, 'execute')) as service_role_can_call,
+  (select count(*) from pg_proc p, unnest(array['public', 'anon', 'authenticated', 'service_role']) r(name)
+    where p.oid = to_regprocedure('public._post_stock_movement(uuid,uuid,numeric,text,numeric,text,text,text,timestamptz,uuid,text,uuid)')
+      and case when r.name = 'public'
+               then exists (select 1 from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a where a.grantee = 0 and a.privilege_type = 'EXECUTE')
+               else has_function_privilege(r.name, p.oid, 'execute') end) as core_open_to_api,
   (select count(*) from public.devices d where d.device_uid is not null and d.location_id is not null
      and d.bound_via is not null and d.status in ('active', 'online')) as bound_devices,
   (select count(*) from public.devices d where d.bound_via is null and d.location_id is not null
