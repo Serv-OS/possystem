@@ -16,7 +16,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { readAllRows } from '../../../../supabase/functions/_shared/venueMenuCore.js';
 import { groupsNeedRefresh } from '../../../../supabase/functions/_shared/msmPlan.js';
 import { Btn, Pill, Switch, Field, Notice } from './msmUi';
-import { menuTimesWords } from '../../../lib/msm/msmStatus';
+import { menuTimesWords, refreshClash, REFRESH_CLASH_WORDS } from '../../../lib/msm/msmStatus';
 import { shownPriceTypes } from '../../../lib/msm/msmOrderTypes';
 import { PRICE_TYPE_WORDS, PRICE_TYPE_HELP } from '../../../lib/msm/msmWords';
 import { ui } from './msmStyle';
@@ -200,8 +200,10 @@ function RefreshGroups({ api, menu, canEdit, rows, setNote, reload }) {
       {confirmDialog}
       <div style={{ ...ui.h2, marginBottom: 4 }}>Option groups need a one time refresh</div>
       <div style={{ ...ui.sub, marginBottom: 10 }}>They were brought in before they could be edited here. The refresh reads every site and brings in each option with each site's own price. Nothing changes at any site.</div>
-      {rows.length > 0 && <div style={{ ...ui.sub, marginBottom: 8 }}>Publish or throw away the draft first.</div>}
-      {canEdit ? <Btn kind="primary" small disabled={busy || rows.length > 0} onClick={run}>{busy ? 'Refreshing…' : 'Refresh option groups from the sites'}</Btn>
+      {/* Grey only for a draft that really clashes (the server refuses only those); any other
+          waiting change is fine and the server's own words show if it refuses (round 2 review). */}
+      {refreshClash(rows) && <div style={{ ...ui.sub, marginBottom: 8 }}>{REFRESH_CLASH_WORDS}</div>}
+      {canEdit ? <Btn kind="primary" small disabled={busy || refreshClash(rows)} onClick={run}>{busy ? 'Refreshing…' : 'Refresh option groups from the sites'}</Btn>
         : <div style={ui.sub}>An editor can do it from here.</div>}
     </div>
   );

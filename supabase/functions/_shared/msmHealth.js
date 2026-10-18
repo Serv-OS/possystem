@@ -123,6 +123,10 @@ export function checkSite(plan, opts = {}) {
     const min = Number(def.min ?? 0), max = Number(def.max ?? 1);
     if (min > 0 && !listOf(def.options).length && users.length) {
       push(blocking, { code: 'required_group_empty', words: `${siteName} customers could never finish ordering ${nameOf(users[0])}${users.length > 1 ? ` (and ${users.length - 1} more)` : ''}: "${def.name}" must be chosen but has no options on at ${siteName}. Turn an option on there, or make it optional.`, venueGroupId: gid });
+    } else if (!listOf(def.options).length && users.length) {
+      // An optional group with nothing to pick shows as an empty heading on the till, kiosk and
+      // HubRise (round 2 review backstop).
+      push(warnings, { code: 'group_empty', words: `"${def.name}" has no options on at ${siteName}, so ${nameOf(users[0])}${users.length > 1 ? ` (and ${users.length - 1} more)` : ''} would show an empty question there. Turn its options on at ${siteName} on the Option groups tab.`, venueGroupId: gid });
     }
     if (max > 0 && max < min) {
       push(blocking, { code: 'group_max_below_min', words: `"${def.name}": customers must choose ${min} but can only choose up to ${max}. Make "up to" ${min} or more.`, venueGroupId: gid });

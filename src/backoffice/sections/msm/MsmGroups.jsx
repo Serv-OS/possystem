@@ -13,10 +13,10 @@
 // from the sites before their options can be edited here (design 1.9): the msm-publish function
 // reads every site, proves that nothing would change at any site, and only then saves.
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { groupList, legacyGroupIds } from '../../../lib/msm/msmGroupView';
 import { HELP } from '../../../lib/msm/msmWords';
-import { whyReadOnly } from '../../../lib/msm/msmStatus';
+import { whyReadOnly, refreshClash, REFRESH_CLASH_WORDS } from '../../../lib/msm/msmStatus';
 import { Btn, Pill, Notice } from './msmUi';
 import { ui } from './msmStyle';
 import { useConfirm } from './useConfirm';
@@ -52,6 +52,18 @@ export default function MsmGroups(props) {
     return s;
   }, [rows, eff]);
   const why = whyReadOnly({ canEdit, working });
+  // An iPad in portrait (under 720 px): the list OR the group, with a way back, so a tapped group is
+  // never drawn below the fold under a tall list (round 2 review).
+  const [narrow, setNarrow] = useState(() => { try { return window.matchMedia('(max-width: 719px)').matches; } catch { return false; } });
+  useEffect(() => {
+    let mq;
+    try { mq = window.matchMedia('(max-width: 719px)'); } catch { return undefined; }
+    const on = (e) => setNarrow(e.matches);
+    mq.addEventListener?.('change', on);
+    return () => mq.removeEventListener?.('change', on);
+  }, []);
+  const sheetRef = useRef(null);
+  useEffect(() => { if (narrow && (pick || creating)) sheetRef.current?.scrollIntoView?.({ block: 'start' }); }, [narrow, pick, creating]);
   const round2 = live?.round2 !== false;
   const current = creating ? null : (list.find((g) => g.group.id === pick) || (pick && (eff?.groups || []).some((g) => g.id === pick) ? { group: eff.groups.find((g) => g.id === pick) } : null));
 
@@ -77,14 +89,15 @@ export default function MsmGroups(props) {
         <Notice tone="info">Option groups can be built here once ServOS has run this release's database update. Until then each site sets its own in Menu Manager, and the products here keep the groups they have.</Notice>
       )}
       {round2 && legacy.length > 0 && (
-        <Notice tone="warn" actions={canEdit ? [{ label: refreshing ? 'Refreshing…' : 'Refresh option groups from the sites', kind: 'primary', onClick: refresh, disabled: refreshing || (rows || []).length > 0 }] : null}>
+        <Notice tone="warn" actions={canEdit ? [{ label: refreshing ? 'Refreshing…' : 'Refresh option groups from the sites', kind: 'primary', onClick: refresh, disabled: refreshing || refreshClash(rows) }] : null}>
           {legacy.length} option group{legacy.length === 1 ? ' was' : 's were'} brought in before they could be edited here. A one time refresh from the sites brings in each option with each site's own price. Nothing changes at any site.
-          {(rows || []).length > 0 && ' Publish or throw away the draft first.'}
+          {refreshClash(rows) && ` ${REFRESH_CLASH_WORDS}`}
         </Notice>
       )}
       <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-start', minHeight: 0, flex: 1 }}>
         {/* The list */}
-        <div style={{ ...ui.card, padding: 12, flex: '1 1 250px', maxWidth: 340, minWidth: 220, display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 'calc(100vh - 260px)', boxSizing: 'border-box' }}>
+        {!(narrow && (creating || current?.group)) && (
+        <div style={{ ...ui.card, padding: 12, flex: '1 1 250px', maxWidth: narrow ? 'none' : 340, minWidth: 220, display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 'calc(100vh - 260px)', boxSizing: 'border-box' }}>
           <div style={{ ...ui.row }}>
             <div style={{ ...ui.h2, flex: 1, margin: 0 }}>Option groups</div>
             {canEdit && <Btn small kind="primary" disabled={!editable || !round2} title={why || undefined} onClick={() => { setCreating(newId()); onPick(null); }}>New option group</Btn>}
@@ -121,8 +134,12 @@ export default function MsmGroups(props) {
           </div>
         </div>
 
+        )}
+
         {/* The group */}
-        <div style={{ flex: '3 1 400px', minWidth: 0 }}>
+        {!(narrow && !creating && !current?.group) && (
+        <div ref={sheetRef} style={{ flex: '3 1 400px', minWidth: 0 }}>
+          {narrow && (creating || current?.group) && <div style={{ marginBottom: 8 }}><Btn small kind="soft" onClick={() => { setCreating(null); onPick(null); }}>‹ Back to option groups</Btn></div>}
           {creating && <MsmGroupSheet key={creating} {...props} groupId={creating} isNew onSaved={(id) => { setCreating(null); onPick(id); }} onCancel={() => setCreating(null)} />}
           {!creating && current?.group && <MsmGroupSheet key={current.group.id} {...props} groupId={current.group.id} isNew={false} onSaved={() => {}} onCancel={() => onPick(null)} />}
           {!creating && !current?.group && (
@@ -140,6 +157,7 @@ export default function MsmGroups(props) {
             </div>
           )}
         </div>
+        )}
       </div>
     </div>
   );

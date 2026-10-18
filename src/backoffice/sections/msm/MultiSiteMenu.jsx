@@ -39,7 +39,7 @@ import { indexCentral, stagedIndex } from '../../../lib/msm/msmGrid';
 import { readAllRows } from '../../../../supabase/functions/_shared/venueMenuCore.js';
 import { isNotInstalled } from '../../../../supabase/functions/_shared/msmAccess.js';
 import { Btn, Pill, Notice, Count } from './msmUi';
-import { statusBar, draftTitle, GUIDE_STEPS, guideClosed, setGuideClosed, undoFor } from '../../../lib/msm/msmStatus';
+import { statusBar, draftTitle, GUIDE_STEPS, guideClosed, setGuideClosed, undoFor, draftToStageInto } from '../../../lib/msm/msmStatus';
 import { changeKey } from '../../../../supabase/functions/_shared/msmDiff.js';
 import MsmGroups from './MsmGroups';
 import { WORDS } from '../../../lib/msm/msmWords';
@@ -142,9 +142,15 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
   }, [api, client, orgId, reload]);
 
   // The working set's changes, read back from the database whenever the set changes.
+  // The latest read wins (UI issue 10b): the first edit of a session sets the new draft (whose
+  // effect reads it, still empty) and reads it again after the write; an older answer arriving last
+  // must never wipe the change from the status bar and the grid.
+  const readSeq = useRef(0);
   const readRows = useCallback(async (setId) => {
+    const my = ++readSeq.current;
     if (!setId) { setRows([]); return true; }
     const r = await api.changes(setId);
+    if (my !== readSeq.current) return true;
     if (!r.rows) { setNote({ tone: 'bad', text: 'Could not read the draft\'s changes. Nothing was lost; try again.' }); return false; }
     setRows(r.rows);
     return true;
@@ -210,8 +216,10 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
     if (working && working.status !== 'draft') { setNote({ tone: 'warn', text: `"${working.title}" is ${working.status}. Unschedule it to change it, or pick a draft to work on.` }); return { ok: false }; }
     setBusy((n) => n + 1);
     try {
-      let setId = workingId;
+      // One draft at a time (design 2 item 3): with none picked, the only draft there is takes it.
+      let setId = draftToStageInto(sets, workingId);
       let started = null;
+      if (setId && setId !== workingId) setWorkingId(setId);
       if (!setId) {
         const d = await api.createDraft(menu.id, draftTitle(new Date()), 'edit');
         if (!d.ok) { setNote({ tone: 'bad', text: d.words }); return { ok: false }; }
@@ -220,7 +228,10 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
         setSets((s) => [d.data, ...s]);
         setWorkingId(setId);
       }
-      const r = await api.stageMany(setId, list, setId === workingId ? rows : []);
+      // The draft's rows to merge into: the screen's own, or (a draft just picked up) read first.
+      let baseRows = setId === workingId ? rows : [];
+      if (setId !== workingId && !started) baseRows = (await api.changes(setId)).rows || [];
+      const r = await api.stageMany(setId, list, baseRows);
       await readRows(setId);
       if (r.conflicts) setNote({ tone: 'warn', text: `${r.conflicts} of these were changed by someone else at the same moment. The grid shows their change now.` });
       else if (r.failed?.length) {
@@ -236,7 +247,7 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
     } finally {
       setBusy((n) => n - 1);
     }
-  }, [api, canEdit, menu, onAccessLost, readRows, rows, working, workingId, setTab]);
+  }, [api, canEdit, menu, onAccessLost, readRows, rows, sets, working, workingId, setTab]);
 
   // Undo of a single action: put each field back, and take out what that action created.
   const unstage = useCallback(async (row) => {
@@ -298,7 +309,8 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
   // "Products", not "Menu" (UI issue 12d): the next release adds a tab per menu beside it.
   const tabs = [{ id: 'grid', label: WORDS.productsTab }, { id: 'groups', label: 'Option groups' }, ...EXTRA_TABS, { id: 'details', label: 'Menu details', settings: true }];
   const extra = EXTRA_TABS.find((t) => t.id === tab);
-  const status = statusBar({ working, rows, when: runWords(working?.run_local) });
+  const waitingDraft = !working ? sets.find((d) => d.status === 'draft') || null : null;
+  const status = statusBar({ working, rows, when: runWords(working?.run_local), draft: waitingDraft });
   const shared = {
     tabIds: tabs.map((t) => t.id), api, client, menu, live, eff, ix, sites, sets, working, rows, staged, ctx, stage, unstage, canEdit, editable, costs, channel, setChannel,
     refreshSets, reload: () => setReload((n) => n + 1), setWorkingId, setNote, setTab, ratesByLoc, sales,
@@ -331,7 +343,9 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
       </div>
 
       <StatusBar status={status} canEdit={canEdit}
-        onChanges={() => setShowChanges(true)} onPublish={() => setTab('publish')} onBack={() => setWorkingId(null)} />
+        onChanges={() => setShowChanges(true)} onPublish={() => setTab('publish')}
+        draftId={sets.find((d) => d.status === 'draft')?.id || null}
+        onBack={() => setWorkingId(sets.find((d) => d.status === 'draft')?.id || null)} />
 
       {note && <div style={{ marginBottom: 12, flexShrink: 0 }}><Notice tone={note.tone} onClose={() => setNote(null)} actions={note.actions}>{note.text}</Notice></div>}
       {guide && (tab === 'grid' || tab === 'groups') && <Guide onClose={closeGuide} />}
@@ -368,7 +382,7 @@ function runWords(runLocal) {
 }
 
 // Live menu, a draft, or a scheduled push being looked at: said in one strip, always (design 2, item 1).
-function StatusBar({ status, canEdit, onChanges, onPublish, onBack }) {
+function StatusBar({ status, canEdit, onChanges, onPublish, onBack, draftId = null }) {
   const tones = {
     good: { bar: 'var(--acc)', bg: 'var(--acc-d)' },
     warn: { bar: 'var(--amber, #F5A623)', bg: 'color-mix(in srgb, var(--amber, #F5A623) 11%, transparent)' },
@@ -387,7 +401,8 @@ function StatusBar({ status, canEdit, onChanges, onPublish, onBack }) {
           {canEdit && <Btn small kind="primary" disabled={!status.count} onClick={onPublish} title={status.count ? undefined : 'Make a change first'}>Review and publish</Btn>}
         </>
       )}
-      {status.state === 'scheduled' && <Btn small kind="primary" onClick={onBack}>Back to the live menu</Btn>}
+      {status.state === 'scheduled' && <Btn small kind="primary" onClick={onBack}>{draftId ? 'Back to your draft' : 'Back to the live menu'}</Btn>}
+      {status.state === 'live' && status.draftId && <Btn small kind="primary" onClick={onBack}>Back to your draft</Btn>}
     </div>
   );
 }

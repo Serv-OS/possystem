@@ -33,8 +33,11 @@ import {
   productUpdate, newProductChanges, newCategoryChange, siteActiveChange, sitePriceChange,
   removeProductChange, restoreProductChange, taxChoices, productProblems,
 } from '../../../lib/msm/msmEdit';
-import { optionsUsingProduct } from '../../../lib/msm/msmGroupEdit';
-import { shownPriceTypes, shownTaxTypes, groupTypeFallback, siteTypeFallback, siteRateChoices, choiceToRate, rateToChoice, sitesMissingRate, vatExample } from '../../../lib/msm/msmOrderTypes';
+import * as groupEdit from '../../../lib/msm/msmGroupEdit';
+import { groupTickSiteRows } from '../../../lib/msm/msmGroupView';
+import { sheetSaveBlocked } from '../../../lib/msm/msmPublishView';
+import { isOptionOnlyItem } from '../../../lib/menuRules';
+import { shownPriceTypes, shownTaxTypes, groupTypeFallback, siteTypeFallback, siteRateChoices, choiceToRate, rateToChoice, sitesMissingRate, vatExample, examplePrice } from '../../../lib/msm/msmOrderTypes';
 import { PRICE_TYPE_WORDS, PRICE_TYPE_HELP, TAX_TYPE_WORDS, TAX_TYPE_HELP, HELP, colWord } from '../../../lib/msm/msmWords';
 import { summarise } from '../../../lib/msm/msmSummary';
 import { riskChecks, allTicked } from '../../../lib/msm/msmRisk';
@@ -52,6 +55,15 @@ const EXAMPLE_TYPES = [['dine-in', 'Eat in'], ['takeaway', 'Takeaway'], ['collec
 const gidOf = (a) => (typeof a === 'string' ? a : a?.groupId ?? a?.id ?? null);
 const chText = (obj) => Object.fromEntries(Object.entries(obj || {}).filter(([, v]) => v != null).map(([k, v]) => [k, price2(v)]));
 
+// A product made sold (a sub item switched to sold on its own, or to A product) that shows nowhere
+// gets the normal "shows everywhere", as a new product does: publish writes it whole at each site.
+const ALL_ON = { pos: true, kiosk: true, online: true, onlineDelivery: true };
+function withSoldVisibility(f) {
+  if (isOptionOnlyItem(f)) return f;
+  const v = f.visibility && typeof f.visibility === 'object' ? f.visibility : null;
+  return v && Object.values(v).some((x) => x === true) ? f : { ...f, visibility: ALL_ON };
+}
+
 function keptValueWords(col, v) {
   if (v == null || v === '') return 'none';
   if (Array.isArray(v)) return v.length ? `${v.length} set` : 'none';
@@ -60,7 +72,7 @@ function keptValueWords(col, v) {
   return String(v).slice(0, 40);
 }
 
-export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, editable, costs, productId, create, ratesByLoc = {}, sales, openGroup, onClose, onCreated }) {
+export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, editable, costs, productId, create, ratesByLoc = {}, sales, openGroup, openProduct, onClose, onCreated }) {
   const p = productId ? ix.products.get(productId) : null;
   const tree = useMemo(() => categoryTree(ix), [ix]);
   const rateChoices = useMemo(() => {
@@ -185,6 +197,9 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
         for (const k of priceTypes) { const v = priceInput(siteForm[c.location_id]?.channels?.[k] ?? ''); if (v.ok && v.value != null) ch[k] = v.value; }
         if (Object.keys(ch).length) c.after.channel_prices = ch;
       }
+      // Its option groups switched on at the sites it is sold at, where they have no options yet
+      // (no row means off: the group would land there empty).
+      if (!isOptionOnlyItem(fields)) changes.push(...groupTickSiteRows(ctx, [], fields.modifier_groups, chosen.map((c) => c.location_id), groupEdit));
       return { changes, words: '', id: ids.product, chosen: chosen.length, fields };
     }
     // An existing product: its own fields, then each site.
@@ -230,6 +245,12 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
         changes.push({ target: 'product_site', entity_id: p.id, location_id: s.id, op: 'update', after: { channel_prices: Object.keys(next).length ? next : null }, before: { channel_prices: liveS?.channel_prices ?? null } });
       }
     }
+    // A group newly ticked here: its options switched on at the sites this product will be sold at,
+    // where they have no row yet (the same rule as Add to products; round 2 review).
+    if (!optionOnly) {
+      const sellLocs = visibleSites.filter((s) => siteForm[s.id]?.active).map((s) => s.id);
+      changes.push(...groupTickSiteRows(ctx, p.modifier_groups, fields.modifier_groups, sellLocs, groupEdit));
+    }
     // One row per product site (price, on or off, order type prices), and one product row.
     const merged = [];
     for (const c of changes) {
@@ -242,7 +263,7 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
   // The summary and the ticks read names and last week's sales from the group menu as the grid shows
   // it (new products and groups are named from their own change rows).
   const lines = summarise(plan.changes, eff, { siteNames: siteName });
-  const risks = riskChecks(plan.changes, eff, sales ?? null, null, { siteNames: siteName });
+  const risks = riskChecks(plan.changes, eff, sales ?? null, null, { siteNames: siteName, ratesByLoc });
   const ready = allTicked(risks, ticked);
 
   const save = async () => {
@@ -288,7 +309,15 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
       if (Object.keys(rest).length) kept.tax_overrides = rest; else delete kept.tax_overrides;
     } else delete kept[col];
     const liveS = (live?.productSites || []).find((x) => x.product_id === p.id && x.location_id === loc);
-    await stage([{ target: 'product_site', entity_id: p.id, location_id: loc, op: 'update', after: { kept }, before: { kept: liveS?.kept ?? {} } }],
+    const change = { target: 'product_site', entity_id: p.id, location_id: loc, op: 'update', after: { kept }, before: { kept: ps.kept } };
+    // VAT changes always need a tick (design 5.4 and 6.5): giving back a site's own VAT by order
+    // type says what it becomes, and asks first.
+    const vat = riskChecks([change], eff, null, null, { siteNames: siteName, ratesByLoc }).filter((r) => r.code === 'vat');
+    if (vat.length) {
+      const yes = await confirm({ title: `Use the group's VAT at ${siteName.get(loc)}?`, words: vat.map((r) => r.words).join('\n\n'), yes: 'Yes, I have checked', no: 'Keep the site\'s' });
+      if (!yes) return;
+    }
+    await stage([{ ...change, before: { kept: liveS?.kept ?? {} } }],
       { done: `${siteName.get(loc)} will use the group's ${colWord(col)} once published.`, undo: true });
   };
 
@@ -308,14 +337,27 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
   };
   const picked = (form.modifier_groups || []).map(gidOf).filter(Boolean);
   const dirty = !!newCat || JSON.stringify(form) !== JSON.stringify(startForm) || JSON.stringify(siteForm) !== JSON.stringify(startSites);
-  const usedAsOption = p ? optionsUsingProduct(ctx, p.id) : [];
+  const usedAsOption = p ? groupEdit.optionsUsingProduct(ctx, p.id) : [];
   const subChanged = !!p && usedAsOption.length > 0 && (form.name !== startForm.name || form.default_price !== startForm.default_price);
-  const tbt = form.tax_by_type || {};
+  const isVariants = form.type === 'variants';
+  const isSizeForm = !!form.parent_product_id;
+  const parentOfForm = isSizeForm ? ix.products.get(form.parent_product_id) || null : null;
+  const sizesOfThis = p ? [...ix.products.values()].filter((x) => x.parent_product_id === p.id && !x.archived) : [];
+  // A size's VAT example reads its product's VAT by order type (what the till charges).
+  const tbt = (isSizeForm ? parentOfForm?.tax_by_type : form.tax_by_type) || {};
   const productRate = form.tax_rate_percent == null ? null : { name: form.tax_rate_name, percent: form.tax_rate_percent };
   const missingFor = (rate) => sitesMissingRate(rate, ratesByLoc, visibleSites.map((s) => s.id)).map((l) => siteName.get(l));
   const exSite = example.loc && visibleSites.some((s) => s.id === example.loc) ? example.loc : visibleSites[0]?.id;
   const exPs = p && exSite ? ix.sites.get(`${p.id}|${exSite}`) : null;
-  const exPrice = (() => { const pr = priceInput(siteForm[exSite]?.price); return pr.ok && pr.value != null ? pr.value : groupPrice; })();
+  // The price the till charges for the picked order type there (its own box, else what it falls
+  // back to), never the Standard price for every order type (round 2 review).
+  const exPrice = (() => {
+    const sf = siteForm[exSite] || {};
+    const pr = priceInput(sf.price);
+    const ch = {};
+    for (const [k, v] of Object.entries(sf.channels || {})) { const r = priceInput(v ?? ''); if (r.ok && r.value != null) ch[k] = r.value; }
+    return examplePrice(example.type, { default_price: groupPrice, default_channels: groupChannels() || {} }, { price: pr.ok ? pr.value : null, channel_prices: ch });
+  })();
   const ex = exSite ? vatExample({ product: { name: form.menu_name || form.name || 'This product', tax_rate_name: form.tax_rate_name, tax_rate_percent: form.tax_rate_percent }, taxByType: tbt, kept: exPs?.kept?.tax_overrides || null, rates: ratesByLoc[exSite], orderType: example.type, price: exPrice, siteName: siteName.get(exSite) }) : null;
 
   return (
@@ -325,7 +367,7 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
       sub={create ? 'Goes into the draft. It reaches the tills when the draft is published, now or at a time you choose.' : `${categoryPath(ix, p.category_id) || (isSub ? 'Sub item' : 'No category')}${p.archived ? ' · removed' : ''}`}
       footer={editable ? (
         <>
-          <Btn kind="primary" disabled={saving || (create && problems.length > 0) || !!plan.words || (!create && !plan.changes.length) || !ready || sales === undefined} onClick={save} data-testid="msm-product-save">
+          <Btn kind="primary" disabled={sheetSaveBlocked({ saving, problems: create && problems.length > 0, words: plan.words, changes: plan.changes.length, create, ready, salesReading: sales === undefined })} onClick={save} data-testid="msm-product-save">
             {saving ? 'Adding…' : create ? 'Add to draft' : plan.changes.length ? `Add ${plan.changes.length} change${plan.changes.length === 1 ? '' : 's'} to draft` : 'No changes yet'}
           </Btn>
           <Btn onClick={onClose}>Cancel</Btn>
@@ -339,12 +381,12 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
           past the sheet's right edge (Peter, UI issue 5). */}
       <fieldset disabled={!editable} style={{ border: 'none', padding: 0, margin: 0, minWidth: 0 }}>
         <Field label="What is this?" hint={isSub ? HELP.subItem : 'A product customers buy, like a Latte.'}>
-          <Segmented value={form.type === 'subitem' ? 'subitem' : 'product'} onChange={(v) => setForm((f) => ({ ...f, type: v === 'subitem' ? 'subitem' : (f.type === 'subitem' ? 'simple' : f.type), sold_alone: v !== 'subitem' }))}
+          <Segmented value={form.type === 'subitem' ? 'subitem' : 'product'} onChange={(v) => setForm((f) => withSoldVisibility({ ...f, type: v === 'subitem' ? 'subitem' : (f.type === 'subitem' ? 'simple' : f.type), sold_alone: v !== 'subitem' }))}
             options={[{ value: 'product', label: 'A product' }, { value: 'subitem', label: 'A sub item (used inside option groups)' }]} />
         </Field>
         {isSub && (
           <Field label="Also sold on its own" hint={HELP.soldAlone}>
-            <Switch on={!!form.sold_alone} disabled={!editable} onChange={(v) => set('sold_alone', v)} />
+            <Switch on={!!form.sold_alone} disabled={!editable} onChange={(v) => setForm((f) => withSoldVisibility({ ...f, sold_alone: v }))} />
           </Field>
         )}
         <Field label="Name">
@@ -398,10 +440,21 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
               {sizesOf.map((x) => <option key={x.id} value={x.id}>{x.menu_name || x.name}</option>)}
             </select>
           </Field>
+          {isVariants ? (
+            <Field label="Price" hint="A product with sizes is never charged itself: each size has its own price.">
+              <div style={{ ...ui.sub, fontSize: 12.5 }}>Priced by its sizes: open a size to change its price.</div>
+              {sizesOfThis.length > 0 && openProduct && (
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
+                  {sizesOfThis.map((x) => <Btn key={x.id} small kind="soft" onClick={() => openProduct(x.id)}>{x.menu_name || x.name}</Btn>)}
+                </div>
+              )}
+            </Field>
+          ) : (
           <Field label={isSub && !form.sold_alone ? 'Its own price' : 'Standard price'} hint={optionOnly ? 'Never charged: when picked as an option it costs what the option says.' : 'Every site charges this unless it has its own price below.'}>
             <input style={{ ...ui.input, width: 140 }} inputMode="decimal" placeholder="0.00" value={form.default_price} onChange={(e) => set('default_price', e.target.value)} />
             {!priceOk.ok && <div style={{ ...ui.err, marginTop: 4 }}>{priceOk.words}</div>}
           </Field>
+          )}
           <Field label="VAT" hint="Each site uses its own VAT rate with this name.">
             <select style={ui.input} value={productRate ? rateToChoice(productRate) : ''}
               onChange={(e) => { const r = choiceToRate(e.target.value); setForm((f) => ({ ...f, tax_rate_name: r?.name ?? null, tax_rate_percent: r?.percent ?? null })); }}>
@@ -422,7 +475,7 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
         )}
 
         {/* Prices by order type */}
-        {!optionOnly && (
+        {!optionOnly && !isVariants && (
           <div style={{ ...ui.card, boxShadow: 'none', padding: 14, marginBottom: 14 }}>
             <div style={{ ...ui.row, marginBottom: 4 }}>
               <div style={{ ...ui.h2, flex: 1, margin: 0 }}>Prices by order type</div>
@@ -446,8 +499,18 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
           </div>
         )}
 
-        {/* VAT by order type */}
-        {!optionOnly && (
+        {/* VAT by order type (a size uses its product's: it is never written on a size) */}
+        {!optionOnly && isSizeForm && (
+          <div style={{ ...ui.card, boxShadow: 'none', padding: 14, marginBottom: 14 }}>
+            <div style={{ ...ui.h2, marginBottom: 4 }}>VAT by order type</div>
+            <div style={{ ...ui.sub, fontSize: 12.5 }}>
+              A size uses the VAT by order type of {parentOfForm ? (parentOfForm.menu_name || parentOfForm.name) : 'its product'}.
+              {parentOfForm && openProduct && <> <Btn small kind="link" onClick={() => openProduct(parentOfForm.id)}>Open {parentOfForm.menu_name || parentOfForm.name}</Btn></>}
+            </div>
+            {ex && <div data-testid="msm-vat-example" style={{ fontSize: 13, fontWeight: 650, marginTop: 6, color: ex.ok ? 'var(--t1)' : 'var(--red)' }}>{ex.words}</div>}
+          </div>
+        )}
+        {!optionOnly && !isSizeForm && (
           <div style={{ ...ui.card, boxShadow: 'none', padding: 14, marginBottom: 14 }}>
             <div style={{ ...ui.h2, marginBottom: 4 }}>VAT by order type</div>
             <div style={{ ...ui.sub, fontSize: 11.5, marginBottom: 10 }}>Most products use their VAT for everything. Set one only where it differs, for example cold food taken away.</div>
@@ -520,12 +583,14 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
                       {!sf.exists && !create && <span style={{ ...ui.sub, marginLeft: 8 }}>{sf.active ? 'will be sold here' : 'not sold here'}</span>}
                       {sf.exists && !sf.active && <span style={{ ...ui.sub, marginLeft: 8 }}>turned off here</span>}
                     </div>
-                    <input aria-label={`Price at ${s.name}`} style={{ ...ui.input, width: 120, textAlign: 'right', fontWeight: sf.price ? 750 : 500, borderColor: pr.ok ? 'var(--bdr2)' : 'var(--red)' }} inputMode="decimal"
-                      disabled={!editable || !sf.active} placeholder={groupPrice != null ? price2(groupPrice) : 'group price'}
-                      value={sf.price} onChange={(e) => setSite(s.id, { price: e.target.value })} />
-                    {sf.price && editable && sf.active && <Btn small kind="link" onClick={() => setSite(s.id, { price: '' })}>Use group price</Btn>}
+                    {!isVariants && (
+                      <input aria-label={`Price at ${s.name}`} style={{ ...ui.input, width: 120, textAlign: 'right', fontWeight: sf.price ? 750 : 500, borderColor: pr.ok ? 'var(--bdr2)' : 'var(--red)' }} inputMode="decimal"
+                        disabled={!editable || !sf.active} placeholder={groupPrice != null ? price2(groupPrice) : 'group price'}
+                        value={sf.price} onChange={(e) => setSite(s.id, { price: e.target.value })} />
+                    )}
+                    {!isVariants && sf.price && editable && sf.active && <Btn small kind="link" onClick={() => setSite(s.id, { price: '' })}>Use group price</Btn>}
                   </div>
-                  {sf.active && priceTypes.length > 0 && (
+                  {sf.active && !isVariants && priceTypes.length > 0 && (
                     <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 6, paddingLeft: 44 }}>
                       {priceTypes.map((k) => {
                         const fb = siteTypeFallback({ ...p, default_price: groupPrice, default_channels: groupChannels() || {} }, { ...(ps || {}), channel_prices: { ...(sf.channels || {}), [k]: null } }, k, pr.ok ? pr.value : null);
@@ -612,7 +677,7 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
 
       {editable && dirty && (
         <div style={{ display: 'grid', gap: 10, marginTop: 16 }}>
-          {plan.words ? <Notice tone="bad">{plan.words}</Notice> : <SummaryBox lines={lines} />}
+          {plan.words ? <Notice tone="bad">{plan.words}</Notice> : <SummaryBox lines={lines} empty={<div style={ui.sub}>{plan.changes.length ? 'These changes go into the draft.' : 'Nothing changed yet.'}</div>} />}
           {!plan.words && <ConfirmTicks risks={risks} ticked={ticked} onChange={setTicked} />}
           {sales === undefined && <div style={ui.sub}>Checking last week's sales, a few seconds.</div>}
         </div>

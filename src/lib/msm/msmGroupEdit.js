@@ -98,13 +98,17 @@ export function removeGroupChanges(ctx, groupId) {
  * A new option, with a row for every site where the group is (on, unless `sites` says otherwise).
  *   sites   { [locationId]: { active, price } } (price null = the default)
  */
-export function newOptionChanges(ctx, { id, groupId, name, price = 0, productId = null, subGroupId = null, sites = {} }) {
+export function newOptionChanges(ctx, { id, groupId, name, price = 0, productId = null, subGroupId = null, sites = {}, allSites = false }) {
   const rows = listOf(ctx?.eff?.options).filter((o) => o.group_id === groupId);
   const out = [{
     target: 'modifier_option', entity_id: id, location_id: null, op: 'create', before: {},
     after: { group_id: groupId, name: String(name || '').trim() || 'Option', price: Math.max(0, Number(price) || 0), product_id: productId, sub_group_id: subGroupId, sort_order: rows.length },
   }];
-  for (const loc of sitesOfGroup(ctx, groupId)) {
+  // A group at no site yet (a new one) has no sites to list: with allSites, every site of the group
+  // menu gets a row, so the option is on wherever the group lands (no row would mean off there).
+  const at = sitesOfGroup(ctx, groupId);
+  const locs = at.length || !allSites ? at : listOf(ctx?.eff?.sites).map((x) => x.location_id);
+  for (const loc of locs) {
     const s = sites[loc] || {};
     const own = s.price == null || samePrice(s.price, price) ? null : Number(s.price);
     out.push({ target: 'modifier_option_site', entity_id: id, location_id: loc, op: 'create', after: { active: s.active !== false, price: own }, before: {} });
@@ -239,8 +243,9 @@ export function removeGroupFromProducts(ctx, groupId, productIds) {
 }
 
 /**
- * "Copy this group": a new group with the same rules and options ("Milk options (copy)"), on at the
- * same sites with the same site prices once it is on a product there.
+ * "Copy this group": a new group with the same rules and options ("Milk options (copy)"), and a site
+ * row for each copied option at every site where the original has one, with the same on or off and
+ * the same own price (no row would mean off everywhere), so the copy is safe on its own.
  *   ids   { groupId, optionId: (oldOptionId) => newId }
  */
 export function copyGroupChanges(ctx, groupId, ids) {
@@ -249,8 +254,33 @@ export function copyGroupChanges(ctx, groupId, ids) {
   const out = newGroupChanges(ctx, { id: ids.groupId, name: `${g.name} (copy)`, min: g.min, max: g.max, selection_type: g.selection_type });
   const rows = listOf(ctx?.eff?.options).filter((o) => o.group_id === groupId && !o.archived).sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
   rows.forEach((o, i) => {
-    out.push({ target: 'modifier_option', entity_id: ids.optionId(o.id), location_id: null, op: 'create', before: {}, after: { group_id: ids.groupId, name: o.name, price: Number(o.price) || 0, product_id: o.product_id ?? null, sub_group_id: o.sub_group_id ?? null, sort_order: i } });
+    const nid = ids.optionId(o.id);
+    out.push({ target: 'modifier_option', entity_id: nid, location_id: null, op: 'create', before: {}, after: { group_id: ids.groupId, name: o.name, price: Number(o.price) || 0, product_id: o.product_id ?? null, sub_group_id: o.sub_group_id ?? null, sort_order: i } });
   });
+  rows.forEach((o) => {
+    const nid = ids.optionId(o.id);
+    for (const os of listOf(ctx?.eff?.optionSites).filter((r) => r.option_id === o.id)) {
+      out.push({ target: 'modifier_option_site', entity_id: nid, location_id: os.location_id, op: 'create', before: {}, after: { active: os.active === true, price: os.price == null ? null : Number(os.price) } });
+    }
+  });
+  return out;
+}
+
+/**
+ * The option site rows a group needs when it goes onto products at sites where its options have no
+ * row yet (no row means off: without these the group would land there with nothing to pick). One
+ * rule for Add to products, the bulk bar and the product sheet's group tick.
+ *   locations   the sites where the products that now ask it are on sale
+ */
+export function optionRowsForNewSites(ctx, groupId, locations) {
+  const out = [];
+  const opts = listOf(ctx?.eff?.options).filter((o) => o.group_id === groupId && !o.archived && !String(o.id).startsWith('legacy:'));
+  for (const o of opts) {
+    for (const loc of new Set(listOf(locations))) {
+      if (listOf(ctx?.eff?.optionSites).some((r) => r.option_id === o.id && r.location_id === loc)) continue;
+      out.push(...optionSiteChange(ctx, o.id, loc, { active: true }));
+    }
+  }
   return out;
 }
 

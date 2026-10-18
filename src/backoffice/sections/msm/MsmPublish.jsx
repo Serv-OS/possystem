@@ -40,7 +40,7 @@ import { tradingWords, optionOffFix, healthProduct, hubriseReminder } from '../.
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { applyChanges, previewSet, sitesReached } from '../../../../supabase/functions/_shared/msmDiff.js';
 import { scheduleNote, scheduleButtonWords, isPast, dueAt, overlaps, DEFAULT_LEAD_MINUTES } from '../../../../supabase/functions/_shared/msmSchedule.js';
-import { defaultRunLocal, minRunLocal, publishNowWords, previewHeadline, versionSummary, siteRowWords } from '../../../lib/msm/msmPublishView';
+import { defaultRunLocal, minRunLocal, publishNowWords, previewHeadline, versionSummary, siteRowWords, publishBlocked, scheduleBlocked } from '../../../lib/msm/msmPublishView';
 import { Btn, Pill, Segmented, Notice, WindowedList, Field, SummaryBox, ConfirmTicks } from './msmUi';
 import { summarise } from '../../../lib/msm/msmSummary';
 import { riskChecks, allTicked } from '../../../lib/msm/msmRisk';
@@ -405,7 +405,7 @@ export default function MsmPublish({ api, menu, live, eff, sites, sets, working,
             {mode === 'now'
               ? (
                 <>
-                  <Btn kind="primary" style={{ width: '100%', padding: '11px 14px', fontSize: 14 }} disabled={!canEdit || busy || blocked || !ready || checking} onClick={publishNow} data-testid="msm-publish-now">{busy ? 'Publishing…' : publishNowWords(reachSites)}</Btn>
+                  <Btn kind="primary" style={{ width: '100%', padding: '11px 14px', fontSize: 14 }} disabled={publishBlocked({ canEdit, busy, blocked, ready, checking })} onClick={publishNow} data-testid="msm-publish-now">{busy ? 'Publishing…' : publishNowWords(reachSites)}</Btn>
                   {canEdit && (
                     <Btn small kind="soft" style={{ width: '100%', marginTop: 8 }} data-testid="msm-schedule-tomorrow"
                       onClick={() => { setMode('schedule'); setRunLocal(defaultRunLocal(Date.now(), tz)); }}>
@@ -414,7 +414,7 @@ export default function MsmPublish({ api, menu, live, eff, sites, sets, working,
                   )}
                 </>
               )
-              : <Btn kind="primary" style={{ width: '100%', padding: '11px 14px', fontSize: 14 }} disabled={!canEdit || busy || blocked || past || !note.ok || !ready || sales === undefined} onClick={schedule} data-testid="msm-schedule">{busy ? 'Scheduling…' : scheduleButtonWords(runLocal, tz, lead)}</Btn>}
+              : <Btn kind="primary" style={{ width: '100%', padding: '11px 14px', fontSize: 14 }} disabled={scheduleBlocked({ canEdit, busy, blocked, past, noteOk: note.ok, ready, salesReading: sales === undefined })} onClick={schedule} data-testid="msm-schedule">{busy ? 'Scheduling…' : scheduleButtonWords(runLocal, tz, lead)}</Btn>}
           </div>
         </div>
       </div>

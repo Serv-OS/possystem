@@ -11,6 +11,13 @@
 
 import { gpPct, gpAmount, recipeCost } from '../stock/costing.js';
 import { mapTaxRate } from '../../../supabase/functions/_shared/msmPlan.js';
+import { effectiveTaxByType } from '../../../supabase/functions/_shared/msmTax.js';
+import { siteOverridesAfter } from './msmOrderTypes.js';
+import { resolveLineTaxRate } from '../tax.js';
+
+// The VAT key and the order type the till uses for an order type PRICE (round 2 review: a takeaway
+// price's GP takes off the takeaway VAT, not the product's own).
+const CHANNEL_TAX = { takeaway: ['takeaway', 'takeaway'], collection: ['takeaway', 'collection'], driveThru: ['takeaway', 'drive-thru'], dineIn: ['dine-in', 'dine-in'] };
 
 const round2 = (n) => Math.round(n * 100 + (n >= 0 ? 1e-9 : -1e-9)) / 100;
 
@@ -98,7 +105,7 @@ export function withMargins(rows, central, costs, vat) {
     const p = prod.get(r.productId);
     const s = ps.get(`${r.productId}|${r.locationId}`);
     const cost = s && costs?.[r.locationId] ? (costs[r.locationId].get(s.venue_item_id) ?? null) : null;
-    const pct = typeof vat?.[r.locationId] === 'function' ? vat[r.locationId](p) : Number(p?.tax_rate_percent) || 0;
+    const pct = typeof vat?.[r.locationId] === 'function' ? vat[r.locationId](p, r.channel || null) : Number(p?.tax_rate_percent) || 0;
     return { ...r, gpBefore: marginFor({ price: r.before, vatPct: pct, cost }), gpAfter: marginFor({ price: r.after, vatPct: pct, cost }) };
   });
 }
@@ -109,23 +116,34 @@ export function withMargins(rows, central, costs, vat) {
  * and 0 when that rate is exclusive (US sales tax is added on top: the menu price is already net).
  * taxRates null (not read) falls back to the group's percent.
  */
-export function siteVatPct(product, ps, taxRates) {
+export function siteVatPct(product, ps, taxRates, channel = null, productById = null) {
   const groupPct = Number(product?.tax_rate_percent) || 0;
   if (!Array.isArray(taxRates)) return groupPct;
   const kept = ps?.kept && typeof ps.kept === 'object' && Object.prototype.hasOwnProperty.call(ps.kept, 'tax_rate_id');
   const id = kept ? ps.kept.tax_rate_id : mapTaxRate(product, taxRates).id;
+  // An order type price: that order type's VAT, as publish leaves the site's overrides and as the
+  // till resolves it (lib/tax.js resolveLineTaxRate).
+  if (channel && CHANNEL_TAX[channel]) {
+    const [, orderType] = CHANNEL_TAX[channel];
+    const tbt = effectiveTaxByType(product, productById || new Map());
+    const keptTax = ps?.kept && typeof ps.kept === 'object' ? ps.kept.tax_overrides : null;
+    const { overrides } = siteOverridesAfter(tbt, keptTax, taxRates);
+    const { rate } = resolveLineTaxRate({ taxRateId: id, taxOverrides: overrides }, taxRates, orderType);
+    if (rate) return rate.type === 'exclusive' ? 0 : Number(rate.rate) || 0;
+  }
   const r = id ? taxRates.find((x) => x && x.id === id) : null;
   if (!r) return groupPct;
   if (r.type === 'exclusive') return 0;
   return Number(r.rate) || 0;
 }
 
-/** { [locationId]: (product) => vatPct } for withMargins and the grid, from each site's rates. */
+/** { [locationId]: (product, channel?) => vatPct } for withMargins and the grid, from each site's rates. */
 export function vatMaps(central, ratesByLoc) {
   const ps = new Map((central?.productSites || []).map((r) => [`${r.product_id}|${r.location_id}`, r]));
+  const byId = new Map((central?.products || []).map((p) => [p.id, p]));
   const out = {};
   for (const loc of Object.keys(ratesByLoc || {})) {
-    out[loc] = (p) => siteVatPct(p, ps.get(`${p?.id}|${loc}`), ratesByLoc[loc]);
+    out[loc] = (p, channel = null) => siteVatPct(p, ps.get(`${p?.id}|${loc}`), ratesByLoc[loc], channel, byId);
   }
   return out;
 }

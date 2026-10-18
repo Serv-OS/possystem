@@ -23,7 +23,7 @@ import {
   optionsOf, optionPriceWords, groupSiteIds,
 } from '../../../lib/msm/msmGroupView';
 import { applyChanges } from '../../../../supabase/functions/_shared/msmDiff.js';
-import { summarise } from '../../../lib/msm/msmSummary';
+import { summarise, siteList } from '../../../lib/msm/msmSummary';
 import { riskChecks, allTicked } from '../../../lib/msm/msmRisk';
 import { HELP, CHOICE_WORDS } from '../../../lib/msm/msmWords';
 import { whyReadOnly } from '../../../lib/msm/msmStatus';
@@ -34,6 +34,7 @@ import { isOptionOnlyItem } from '../../../lib/menuRules';
 import { Btn, Pill, Switch, Field, Notice, SummaryBox, ConfirmTicks, Popover, MenuButton, Modal } from './msmUi';
 import { ui, money } from './msmStyle';
 import { useConfirm } from './useConfirm';
+import { sheetSaveBlocked } from '../../../lib/msm/msmPublishView';
 import MsmAddToProducts from './MsmAddToProducts';
 
 const newId = () => (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID()
@@ -88,7 +89,10 @@ export default function MsmGroupSheet({ ctx, eff, ix, sites, stage, editable, ca
   }, [ctx, draft, eff, groupId]);
   const effAfter = useMemo(() => (result.changes.length ? applyChanges(eff, result.changes).central : eff), [eff, result.changes]);
   const lines = useMemo(() => summarise(result.changes, effAfter, { siteNames: siteName }), [result.changes, effAfter, siteName]);
-  const risks = useMemo(() => riskChecks(result.changes, effAfter, sales ?? null, null, { siteNames: siteName }), [result.changes, effAfter, sales, siteName]);
+  const risks = useMemo(() => riskChecks(result.changes, effAfter, sales ?? null, null, { siteNames: siteName, ratesByLoc }), [result.changes, effAfter, sales, siteName, ratesByLoc]);
+  // Sites the group is not at yet (no product sold there asks it): said on screen, never only in a
+  // hover title an iPad cannot show (round 2 review).
+  const absentSites = sites.filter((s) => !at.has(s.id)).map((s) => s.name);
   const ready = allTicked(risks, ticked);
 
   if (!draft || (!isNew && !group)) return <div style={ui.card}><Notice>That option group is no longer in the group menu.</Notice></div>;
@@ -265,6 +269,11 @@ export default function MsmGroupSheet({ ctx, eff, ix, sites, stage, editable, ca
           {HELP.option} Grey prices follow the group price; a site's own price is bold. Leave a site's box blank to charge the group price. {HELP.optionVat}
         </div>
         {!draft.options.length && <Notice>No options yet. Add the answers, like Oat milk and Soya milk.</Notice>}
+        {draft.options.length > 0 && absentSites.length > 0 && (
+          <div data-testid="msm-group-absent" style={{ ...ui.sub, fontSize: 12, margin: '0 0 10px', padding: '8px 10px', borderRadius: 9, background: 'var(--bg2)', border: '1px solid var(--bdr)' }}>
+            Not at {siteList(absentSites)} yet. The group goes to a site when a product sold there asks it: use Add to products below, then Add to draft. Site prices can be set after that.
+          </div>
+        )}
         {draft.options.length > 0 && (
           <div style={{ overflowX: 'auto', border: '1px solid var(--bdr)', borderRadius: 12 }}>
             <table style={{ borderCollapse: 'collapse', width: '100%', minWidth: 520 + sites.length * 124, fontSize: 13 }}>
@@ -359,6 +368,9 @@ export default function MsmGroupSheet({ ctx, eff, ix, sites, stage, editable, ca
           <div style={{ ...ui.h2, flex: 1, margin: 0 }}>Used by</div>
           {editable && !group?.archived && <Btn small kind="soft" onClick={() => setPicking(true)}>Add to products</Btn>}
         </div>
+        {editable && !group?.archived && absentSites.length > 0 && !draft.addTo.length && (
+          <div style={{ ...ui.sub, fontSize: 11.5, marginBottom: 6 }}>Add it to a product sold at {siteList(absentSites)} to bring it there, with its options on.</div>
+        )}
         <div style={ui.sub}>
           {users.length ? `${users.length} product${users.length === 1 ? '' : 's'} ask this question.` : isNew ? 'Pick the products that should ask this question.' : 'No product asks this question yet.'}
           {(draft.addTo.length > 0 || draft.takeOff.length > 0) && <strong style={{ color: 'var(--t1)' }}> {draft.addTo.length ? `Adding it to ${draft.addTo.length}` : ''}{draft.addTo.length && draft.takeOff.length ? ', ' : ''}{draft.takeOff.length ? `taking it off ${draft.takeOff.length}` : ''} when you add to draft.</strong>}
@@ -377,7 +389,7 @@ export default function MsmGroupSheet({ ctx, eff, ix, sites, stage, editable, ca
           {result.words ? <Notice tone="bad">{result.words}</Notice> : <SummaryBox lines={lines} empty={<div style={ui.sub}>No changes yet.</div>} />}
           {!result.words && <ConfirmTicks risks={risks} ticked={ticked} onChange={setTicked} />}
           <div style={{ ...ui.row, flexWrap: 'wrap' }}>
-            <Btn kind="primary" disabled={saving || !!result.words || !result.changes.length || !ready || sales === undefined} onClick={save} data-testid="msm-group-save">
+            <Btn kind="primary" disabled={sheetSaveBlocked({ saving, words: result.words, changes: result.changes.length, ready, salesReading: sales === undefined })} onClick={save} data-testid="msm-group-save">
               {saving ? 'Adding…' : result.changes.length ? `Add ${result.changes.length} change${result.changes.length === 1 ? '' : 's'} to draft` : 'Add to draft'}
             </Btn>
             <Btn onClick={() => { setBuilt({ eff, draft: initDraft(eff, groupId, isNew), sync: false }); setTicked(new Set()); if (isNew) onCancel?.(); }}>{isNew ? 'Cancel' : 'Undo my edits'}</Btn>
@@ -485,6 +497,7 @@ function NewSubItem({ ix, taxOptions, onAdd, onClose }) {
       </Field>
       <Field label="Also sold on its own" hint={HELP.soldAlone}>
         <Switch on={soldAlone} onChange={setSoldAlone} />
+        {soldAlone && <div style={{ ...ui.sub, fontSize: 11.5, marginTop: 6 }}>It goes on sale on its own at every site. Turn it off at a site on the Products tab.</div>}
       </Field>
       {soldAlone && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>

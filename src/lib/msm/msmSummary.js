@@ -8,11 +8,23 @@
 //   "Latte is turned off at Barnsley."
 //   "Galaxy donut: takeaway VAT becomes Zero Rate at every site."
 
-import { money2, toPence } from '../../../supabase/functions/_shared/msmModel.js';
+import { money2, toPence, has, PUBLISHED_CHANNELS } from '../../../supabase/functions/_shared/msmModel.js';
 import { isOptionOnlyItem } from '../menuRules.js';
+import { fieldWord, colWord, PRICE_TYPE_WORDS, CHOICE_WORDS } from './msmWords.js';
 
 const listOf = (v) => (Array.isArray(v) ? v : []);
 const TAX_WORDS = { 'dine-in': 'eat in', takeaway: 'takeaway', delivery: 'delivery', bar: 'bar tab' };
+// Fields a sentence above already covers, per target (the rest get one plain line each change, so
+// every change has a sentence before Add to draft and Publish: design 6.4, round 2 review).
+const COVERED = {
+  product: ['default_price', 'tax_by_type', 'tax_rate_name', 'tax_rate_percent', 'modifier_groups', 'default_channels', 'archived', 'sort_order', 'family_base', 'site_only_location_id'],
+  product_site: ['price', 'active', 'channel_prices', 'kept', 'venue_item_id'],
+  modifier_group: ['min', 'max', 'archived', 'name', 'selection_type', 'sort_order', 'family_base'],
+  modifier_option: ['price', 'archived', 'name', 'sort_order', 'group_id'],
+  modifier_option_site: ['price', 'active', 'kept', 'venue_option_id'],
+  modifier_group_site: ['kept', 'venue_group_id'],
+};
+const andList = (xs) => (xs.length <= 1 ? (xs[0] || '') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`);
 
 /** "Leeds", "Leeds and Huddersfield", "Leeds, Huddersfield and 2 more". */
 export function siteList(names) {
@@ -50,8 +62,12 @@ export function summarise(changes, central, opts = {}) {
   // Prices: up and down, every site (the group price) or the sites named.
   const ups = new Map(), downs = new Map();          // where -> count
   const bump = (m, k) => m.set(k, (m.get(k) || 0) + 1);
-  const newProducts = [], newSubs = [], removed = [], back = [];
+  const newProducts = [], newSubs = [], removed = [], back = [], groupOffs = [];
   const offAt = new Map(), onAt = new Map();          // loc -> [names]
+  const reordered = new Set();
+  const siteRows = new Map();                          // "Oat milk is turned on in Milk" -> [site names]
+  const createdOptions = new Set(listOf(changes).filter((c) => c.target === 'modifier_option' && c.op === 'create').map((c) => c.entity_id));
+  const cats = new Map(listOf(C.categories).map((c) => [c.id, c]));
   for (const ch of listOf(changes)) {
     const a = ch.after || {}, b = ch.before || {};
     if (ch.target === 'product' && ch.op === 'create') { (isOptionOnlyItem(a) ? newSubs : newProducts).push(a.name || 'A product'); continue; }
@@ -111,9 +127,84 @@ export function summarise(changes, central, opts = {}) {
       out.push(`${g.name || 'An option group'}: customers ${Number(min) > 0 ? 'must' : 'can'} choose ${min === max ? `exactly ${max}` : Number(max) >= 99 ? 'as many as they like' : `up to ${max}`}.`);
     }
     if (ch.target === 'product' && 'modifier_groups' in a && ch.op === 'update') {
-      const was = new Set(listOf(b.modifier_groups).map((x) => (typeof x === 'string' ? x : x?.groupId)));
-      for (const x of listOf(a.modifier_groups)) { const id = typeof x === 'string' ? x : x?.groupId; if (id && !was.has(id)) bump(ups, `group:${id}`); }
+      const gid = (x) => (typeof x === 'string' ? x : x?.groupId);
+      const was = new Set(listOf(b.modifier_groups).map(gid));
+      const now = new Set(listOf(a.modifier_groups).map(gid));
+      for (const id of now) if (id && !was.has(id)) bump(ups, `group:${id}`);
+      for (const id of was) if (id && !now.has(id)) groupOffs.push(`${group.get(id)?.name || 'An option group'} is taken off ${pName(ch.entity_id)} at every site.`);
     }
+    // Order type prices: the group's, and a site's own.
+    if (ch.target === 'product' && 'default_channels' in a && ch.op !== 'create') {
+      const was = b.default_channels || {}, now = a.default_channels || {};
+      for (const k of PUBLISHED_CHANNELS) {
+        if (toPence(was[k]) === toPence(now[k])) continue;
+        out.push(now[k] == null
+          ? `${pName(ch.entity_id)}: ${PRICE_TYPE_WORDS[k]} price goes back to the Standard price at every site that follows it${when}.`
+          : `${pName(ch.entity_id)}: ${PRICE_TYPE_WORDS[k]} price becomes ${money2(now[k])} at every site that follows it${when}.`);
+      }
+    }
+    if (ch.target === 'product_site' && 'channel_prices' in a) {
+      const was = b.channel_prices || {}, now = a.channel_prices || {};
+      for (const k of PUBLISHED_CHANNELS) {
+        if (toPence(was[k]) === toPence(now[k])) continue;
+        out.push(now[k] == null
+          ? `${pName(ch.entity_id)}: ${PRICE_TYPE_WORDS[k]} price at ${siteName(ch.location_id)} follows the group again${when}.`
+          : `${pName(ch.entity_id)}: ${PRICE_TYPE_WORDS[k]} price becomes ${money2(now[k])} at ${siteName(ch.location_id)}${when}.`);
+      }
+    }
+    if (ch.target === 'product' && 'default_price' in a && ch.op !== 'create' && b.default_price == null) {
+      out.push(`${pName(ch.entity_id)}: group price becomes ${money2(a.default_price)}${when}.`);
+    }
+    // A site's own settings given back or kept.
+    if ((ch.target === 'product_site' || ch.target === 'modifier_group_site' || ch.target === 'modifier_option_site') && 'kept' in a && ch.op !== 'create') {
+      const kb = b.kept || {}, ka = a.kept || {};
+      const gone = Object.keys(kb).filter((k) => !has(ka, k));
+      const added = Object.keys(ka).filter((k) => !has(kb, k) || JSON.stringify(ka[k]) !== JSON.stringify(kb[k]));
+      if (kb.tax_overrides && ka.tax_overrides && JSON.stringify(kb.tax_overrides) !== JSON.stringify(ka.tax_overrides) && !added.includes('tax_overrides')) added.push('tax_overrides');
+      const o = ch.target === 'modifier_option_site' ? option.get(ch.entity_id) : null;
+      const what = ch.target === 'product_site' ? pName(ch.entity_id)
+        : ch.target === 'modifier_group_site' ? (group.get(ch.entity_id)?.name || 'an option group')
+          : `${o?.name || 'an option'} in ${group.get(o?.group_id)?.name || 'its option group'}`;
+      if (gone.length) out.push(`${siteName(ch.location_id)} uses the group's ${andList(gone.map(colWord))} for ${what}.`);
+      if (added.length) out.push(`${siteName(ch.location_id)} keeps its own ${andList(added.map(colWord))} for ${what}.`);
+    }
+    // Option groups: a rename, the kind of choice, options renamed or moved, sub item and Then ask.
+    if (ch.target === 'modifier_group' && ch.op === 'update' && 'name' in a) out.push(`${b.name || group.get(ch.entity_id)?.name || 'An option group'} is renamed ${a.name}.`);
+    if (ch.target === 'modifier_group' && ch.op === 'update' && 'selection_type' in a) out.push(`${a.name || group.get(ch.entity_id)?.name || 'An option group'}: ${CHOICE_WORDS[a.selection_type] || 'the kind of choice changes'}.`);
+    if (ch.target === 'modifier_option' && ch.op === 'update' && 'name' in a) {
+      const o = option.get(ch.entity_id);
+      out.push(`${b.name || o?.name || 'An option'} is renamed ${a.name} in ${group.get(o?.group_id)?.name || 'its option group'}.`);
+    }
+    if (ch.target === 'modifier_option' && ch.op === 'update' && 'sort_order' in a) {
+      const o = option.get(ch.entity_id);
+      reordered.add(group.get(o?.group_id)?.name || 'An option group');
+    }
+    if (ch.target === 'modifier_option_site' && ch.op === 'create' && !createdOptions.has(ch.entity_id)) {
+      const o = option.get(ch.entity_id);
+      const k = `${o?.name || 'An option'} is turned ${a.active === false ? 'off' : 'on'} in ${group.get(o?.group_id)?.name || 'its option group'}`;
+      if (!siteRows.has(k)) siteRows.set(k, []);
+      siteRows.get(k).push(siteName(ch.location_id));
+    }
+    // Everything else: one plain line, so no change goes without a sentence.
+    if (COVERED[ch.target] && !(ch.op === 'create' && ['product', 'modifier_group', 'modifier_option', 'product_site', 'modifier_option_site'].includes(ch.target))) {
+      const rest = Object.keys(a).filter((k) => !COVERED[ch.target].includes(k));
+      if (rest.length) {
+        const words = [...new Set(rest.map(fieldWord))];
+        const who = ch.target.startsWith('modifier_group') ? (group.get(ch.entity_id)?.name || 'An option group')
+          : ch.target.startsWith('modifier_option') ? (option.get(ch.entity_id)?.name || 'An option') : pName(ch.entity_id);
+        const where = ch.location_id ? `at ${siteName(ch.location_id)}` : 'at every site';
+        out.push(`${who}: ${andList(words)} ${words.length === 1 && !/s$/.test(words[0]) ? 'changes' : 'change'} ${where}${when}.`);
+      }
+    }
+    if (ch.target === 'category') {
+      const label = a.label || cats.get(ch.entity_id)?.label || 'A category';
+      if (ch.op === 'create') out.push(`New category: ${label}.`);
+      else if (a.archived === true) out.push(`${label} comes off the menu at every site (nothing is deleted).`);
+      else if (a.archived === false) out.push(`${label} comes back on the menu.`);
+      else { const words = [...new Set(Object.keys(a).map(fieldWord))]; out.push(`Category ${label}: ${andList(words)} change${words.length === 1 && !/s$/.test(words[0]) ? 's' : ''} at every site.`); }
+    }
+    if (ch.target === 'menu') out.push(`The menu's ${andList([...new Set(Object.keys(a).map(fieldWord))])} change${Object.keys(a).length === 1 ? 's' : ''}.`);
+    if (ch.target === 'menu_site' && ch.op === 'create') out.push(`${siteName(ch.location_id)} is added to the group menu.`);
   }
   const where = (k) => (k === '*' ? (allSites > 1 ? 'every site' : 'the site') : siteName(k));
   const priceLine = (m, word) => {
@@ -138,7 +229,10 @@ export function summarise(changes, central, opts = {}) {
   for (const [loc, names] of onAt) out.push(names.length === 1 ? `${names[0]} is turned on at ${siteName(loc)}.` : `${names.length} products are turned on at ${siteName(loc)}: ${nameList(names)}.`);
   if (removed.length) out.push(`${nameList(removed)} ${removed.length === 1 ? 'is' : 'are'} taken off every site (nothing is deleted).`);
   if (back.length) out.push(`${nameList(back)} ${back.length === 1 ? 'comes' : 'come'} back.`);
-  return out;
+  out.push(...groupOffs);
+  for (const g of reordered) out.push(`${g}: its options are put in a new order.`);
+  for (const [k, sites] of siteRows) out.push(`${k} at ${siteList(sites)}.`);
+  return [...new Set(out)];
 }
 
 /** The publish button repeats it: "Publish to 6 sites now" or "Schedule for Mon 20 Oct 06:00". */

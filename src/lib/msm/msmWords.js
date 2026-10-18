@@ -104,7 +104,7 @@ const FIELD = {
   tax_by_type: 'VAT by order type', min: 'rule', max: 'rule', selection_type: 'kind of choice', group_id: 'option group',
   price: 'price', product_id: 'sub item', sub_group_id: 'Then ask', family_base: 'id scheme',
 };
-const fieldWord = (k) => FIELD[k] || 'a setting';
+export const fieldWord = (k) => FIELD[k] || 'a setting';
 
 /** "Choose exactly 1", "Choose up to 3", "Choose between 1 and 3", "Choose as many as they like". */
 export function ruleSentence(min, max) {

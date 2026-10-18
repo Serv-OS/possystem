@@ -1252,7 +1252,9 @@ $fn$;
 --                                                     | {op:'drop', id} | {op:'order', ids}]}]},
 --     routing: [{centre_id, category_id}],
 --     maps: {categories:[{category_id, venue_category_id}], groups:[{group_id, venue_group_id}],
---            options:[{option_id, venue_option_id}], items:[{product_id, venue_item_id}], menu_site: {venue_menu_id}}
+--            options:[{option_id, venue_option_id}], items:[{product_id, venue_item_id, active?}], menu_site: {venue_menu_id}}
+--               (items.active: false for a product sold on its own that this publish added at the site
+--               only for an option, so central never says it is on sale there; true or absent otherwise)
 --   p_snapshot  the config push (msmSnapshot.js), built from the same read with these writes applied;
 --               every product and option group written here is stamped from the row it now holds
 --   p_fingerprint  msm_venue_fingerprint as the function read it BEFORE that read
@@ -1828,8 +1830,11 @@ begin
        or not ((w ->> 'venue_item_id') = any (v_items_new)) then
       raise exception 'A sub item map points outside this group menu or this publish.';
     end if;
+    if w ? 'active' and jsonb_typeof(w -> 'active') <> 'boolean' then
+      raise exception 'A sub item map has an on or off that is not true or false.';
+    end if;
     insert into public.msm_product_sites (product_id, location_id, venue_item_id, active)
-    values ((w ->> 'product_id')::uuid, p_location, w ->> 'venue_item_id', true)
+    values ((w ->> 'product_id')::uuid, p_location, w ->> 'venue_item_id', coalesce((w ->> 'active')::boolean, true))
     on conflict (product_id, location_id) do nothing;
     get diagnostics v_rows = row_count;
     if v_rows <> 1 then raise exception 'That sub item is already at this site under another id. Nothing was written.'; end if;

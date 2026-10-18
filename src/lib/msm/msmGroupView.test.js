@@ -185,3 +185,39 @@ test('Copy this group: the copy\'s options carry the same site rows (on, off, ow
   assert.equal(soyB.active, false);
   assert.equal(after.optionSites.find((x) => x.option_id === opts[0].id && x.location_id === B).price, 0.6);
 });
+
+// ── Round 2 review (17 Oct 2026) ────────────────────────────────────────────
+
+test('review: ticking a group on a product in the product sheet switches its options on where the product is sold', async () => {
+  const { groupTickSiteRows } = await import('./msmGroupView.js');
+  const c = central();
+  const rows = groupTickSiteRows(ctxOf(c), [], [{ groupId: 'milk' }], [C], edit);
+  const t = rows.map((x) => `${x.entity_id}:${x.location_id}:${x.after.active}`);
+  assert.deepEqual(t.sort(), [`oat:${C}:true`, `soy:${C}:true`]);
+  assert.deepEqual(groupTickSiteRows(ctxOf(c), [{ groupId: 'milk' }], [{ groupId: 'milk' }], [C], edit), [], 'a group already on the product adds nothing');
+  assert.deepEqual(groupTickSiteRows(ctxOf(c), [], ['milk'], [A], edit), [], 'site A already has rows (kept as they are)');
+});
+
+test('review: copyGroupChanges alone makes the site rows, and a new group\'s new option can be on at every site', () => {
+  const c = central();
+  let n = 0;
+  const ids = new Map();
+  const ch = edit.copyGroupChanges(ctxOf(c), 'milk', { groupId: 'copy', optionId: (old) => { if (!ids.has(old)) ids.set(old, `n${++n}`); return ids.get(old); } });
+  assert.equal(ch.filter((x) => x.target === 'modifier_option_site').length, 4, 'a row per site the original has');
+  const blank = edit.newOptionChanges(ctxOf(c), { id: 'z', groupId: 'brand-new', name: 'Z', price: 0 });
+  assert.equal(blank.filter((x) => x.target === 'modifier_option_site').length, 0, 'the old rule without allSites');
+  const every = edit.newOptionChanges(ctxOf(c), { id: 'z', groupId: 'brand-new', name: 'Z', price: 0, allSites: true });
+  assert.equal(every.filter((x) => x.target === 'modifier_option_site').length, 3);
+});
+
+test('review: a group holding a minus option (brought in from a site) can still be saved; a typed minus price cannot', () => {
+  const c = central();
+  c.options[1].price = -0.2;
+  const f = groupForm(c, 'milk');
+  f.name = 'Milk';
+  const r = groupSaveChanges(ctxOf(c), f, edit);
+  assert.equal(r.words, '', 'renaming works');
+  assert.ok(r.changes.some((x) => x.target === 'modifier_group' && x.after.name === 'Milk'));
+  f.options[0].price = '-0.10';
+  assert.match(groupSaveChanges(ctxOf(c), f, edit).words, /0\.00 or more/);
+});

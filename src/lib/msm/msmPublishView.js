@@ -329,3 +329,19 @@ export function previewHeadline(preview) {
     : 'Publishing this changes nothing at any site';
   return { blocking, warnings, sitesBlocked, sitesOk: sites.length - sitesBlocked.length, sitesChanging, words };
 }
+
+/**
+ * Why the Publish now and Schedule buttons are grey (round 2 review: a rule tested by what it does,
+ * not by the source text). Returns true when the button must stay grey.
+ *   checking   sales (and, publishing now, which sites trade) still being read
+ */
+export function publishBlocked({ canEdit, busy, blocked, ready, checking }) {
+  return !canEdit || !!busy || !!blocked || !ready || !!checking;
+}
+export function scheduleBlocked({ canEdit, busy, blocked, past, noteOk, ready, salesReading }) {
+  return !canEdit || !!busy || !!blocked || !!past || !noteOk || !ready || !!salesReading;
+}
+/** The product and option group sheets' "Add to draft": grey until it can be added. */
+export function sheetSaveBlocked({ saving, problems = false, words = '', changes = 0, create = false, ready, salesReading }) {
+  return !!saving || !!problems || !!words || (!create && !changes) || !ready || !!salesReading;
+}

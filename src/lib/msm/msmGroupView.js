@@ -240,12 +240,22 @@ export function groupSaveChanges(ctx, draft, edit) {
   const name = String(draft?.name || '').trim();
   if (!name) return { changes: [], words: 'Give the option group a name, like Milk.' };
   const rule = ruleFromForm(draft.form);
+  // A minus price (it takes money off; design 1.4 keeps the ones brought in from a site) is fine
+  // when it is the option's price today; only a minus price TYPED here is refused, so a group that
+  // holds one can still be renamed or have its rule changed (round 2 review).
+  const sameCents = (a, b) => Math.round(Number(a) * 100) === Math.round(Number(b) * 100);
   for (const o of listOf(draft.options)) {
     if (!String(o.name || '').trim()) return { changes: [], words: 'Every option needs a name.' };
     const p = Number(o.price);
-    if (o.price === '' || !Number.isFinite(p) || p < 0) return { changes: [], words: `"${o.name}" needs a price of 0.00 or more.` };
-    for (const [, s] of Object.entries(o.sites || {})) {
-      if (s.own !== '' && s.own != null && !(Number.isFinite(Number(s.own)) && Number(s.own) >= 0)) return { changes: [], words: `A site price for "${o.name}" is not a price.` };
+    const cur = o.isNew ? null : listOf(ctx?.eff?.options).find((x) => x.id === o.id);
+    const keptMinus = cur && p < 0 && sameCents(p, cur.price ?? 0);
+    if (o.price === '' || !Number.isFinite(p) || (p < 0 && !keptMinus)) return { changes: [], words: `"${o.name}" needs a price of 0.00 or more.` };
+    for (const [loc, s] of Object.entries(o.sites || {})) {
+      if (s.own === '' || s.own == null) continue;
+      const v = Number(s.own);
+      const osNow = cur ? listOf(ctx?.eff?.optionSites).find((r) => r.option_id === o.id && r.location_id === loc) : null;
+      const keptSite = v < 0 && osNow && osNow.price != null && sameCents(v, osNow.price);
+      if (!(Number.isFinite(v) && (v >= 0 || keptSite))) return { changes: [], words: `A site price for "${o.name}" is not a price of 0.00 or more.` };
     }
   }
   const activeCount = listOf(draft.options).length;
@@ -298,13 +308,25 @@ export function addGroupWithSites(ctx, groupId, productIds, edit) {
   const out = edit.addGroupToProducts(ctx, groupId, productIds);
   if (!out.length) return out;
   const touched = new Set(out.map((c) => c.entity_id));
-  const locs = new Set(listOf(ctx?.eff?.productSites).filter((ps) => touched.has(ps.product_id) && ps.active !== false).map((ps) => ps.location_id));
-  for (const o of optionsOf(ctx?.eff, groupId).rows) {
-    if (String(o.id).startsWith('legacy:')) continue;
-    for (const loc of locs) {
-      if (listOf(ctx?.eff?.optionSites).some((r) => r.option_id === o.id && r.location_id === loc)) continue;
-      out.push(...edit.optionSiteChange(ctx, o.id, loc, { active: true }));
-    }
+  const locs = listOf(ctx?.eff?.productSites).filter((ps) => touched.has(ps.product_id) && ps.active !== false).map((ps) => ps.location_id);
+  out.push(...edit.optionRowsForNewSites(ctx, groupId, locs));
+  return out;
+}
+
+/**
+ * The product sheet's group ticks (round 2 review): for each group newly ticked on a product, the
+ * option site rows at the sites where the product will be on sale (the same rule as Add to
+ * products), so a group never lands at a site with no options.
+ *   oldGroups, newGroups   the product's modifier_groups before and after the edit
+ *   locations              where the product will be on sale after this save
+ */
+export function groupTickSiteRows(ctx, oldGroups, newGroups, locations, edit) {
+  const gid = (a) => (typeof a === 'string' ? a : a && typeof a === 'object' ? (a.groupId ?? null) : null);
+  const was = new Set(listOf(oldGroups).map(gid).filter(Boolean));
+  const out = [];
+  for (const g of new Set(listOf(newGroups).map(gid).filter(Boolean))) {
+    if (was.has(g)) continue;
+    out.push(...edit.optionRowsForNewSites(ctx, g, locations));
   }
   return out;
 }
@@ -318,11 +340,7 @@ export function addGroupWithSites(ctx, groupId, productIds, edit) {
 export function copyGroupWithSites(ctx, groupId, newId, edit) {
   const ids = new Map();
   const groupNew = newId();
+  // copyGroupChanges makes the site rows itself (round 2 review), so a second caller is safe too.
   const changes = edit.copyGroupChanges(ctx, groupId, { groupId: groupNew, optionId: (old) => { if (!ids.has(old)) ids.set(old, newId()); return ids.get(old); } });
-  for (const [oldId, nid] of ids) {
-    for (const os of listOf(ctx?.eff?.optionSites).filter((r) => r.option_id === oldId)) {
-      changes.push({ target: 'modifier_option_site', entity_id: nid, location_id: os.location_id, op: 'create', before: {}, after: { active: os.active === true, price: os.price == null ? null : Number(os.price) } });
-    }
-  }
   return { groupId: groupNew, changes };
 }

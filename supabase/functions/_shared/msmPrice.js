@@ -30,6 +30,10 @@
 //     own price is never charged. A sub item sold on its own is a product like any other.
 //   * alsoChannels: a Standard price change also moves every order type price that is SET (the
 //     group's, or a site's own), one line per order type; prices that follow move by themselves.
+//     A site's own order type price is cleared to follow only when what it would follow really is
+//     the new value (the group's own order type price moving in the same run), never on a guess.
+//   * An option with a minus price (it takes money off) is never moved: it is left as it is and
+//     counted ("1 option that takes money off was left as it is").
 //     The screen ticks it by default; off, the preview names the order types it will not reach.
 
 import { CHANNELS, PUBLISHED_CHANNELS, toPence, fromPence, has, channelFallback } from './msmModel.js';
@@ -252,7 +256,10 @@ function runChannel(central, opts, channel, onlySet) {
         else {
           const r2 = changeOne(before, change, rounding);
           next = r2.pence; rc = r2.clamped;
-          if (next === newDef) clearIt = true;
+          // Back on the group's price: follow it again. In an "also order type prices" run that is
+          // only true when the group has its OWN price for this order type and it moves here; with
+          // none, a cleared site price falls back to the site's own Standard price, not newDef.
+          if (next === newDef && (!onlySet || defOwn != null)) clearIt = true;
         }
         // Nothing to stage: no price of its own and the new group price is already what it charges.
         if (own == null && clearIt) {
@@ -279,7 +286,9 @@ function runChannel(central, opts, channel, onlySet) {
         const r = changeOne(before, change, rounding);
         if (r.invalid) continue;
         if (r.clamped) clamped++;
-        const clearIt = r.pence === followVal;
+        // followVal is worked out from the site's Standard price BEFORE this change; in an "also order
+        // type prices" run the Standard price moves too, so never clear to follow there.
+        const clearIt = !onlySet && r.pence === followVal;
         const pinned = pinnedOf(p, ps);
         if (pinned.length) pinnedRows++;
         const willStage = !(r.pence === before && (clearIt ? own == null : own === r.pence));
@@ -338,7 +347,7 @@ export function applyPriceChange(central, opts = {}) {
     rows, changes: [...merged.values()],
     summary: {
       prices, sites: touchedSites.size, clears: sum('clears') + opt.clears, clamped: sum('clamped') + opt.clamped,
-      products: runs[0].products, offSites: offSites.size, pinned: runs[0].pinnedRows, options: opt.count, freeKept: opt.freeKept,
+      products: runs[0].products, offSites: offSites.size, pinned: runs[0].pinnedRows, options: opt.count, freeKept: opt.freeKept, minusKept: opt.minusKept,
     },
   };
 }
@@ -346,7 +355,7 @@ const pickChanged = (obj, ch) => (ch && obj && typeof obj === 'object' ? { [ch]:
 
 // Options (round 2): the same maths on msm_modifier_options.price and each site's own price.
 function runOptions(central, opts) {
-  const out = { rows: [], changes: [], touchedSites: new Set(), clears: 0, clamped: 0, count: 0, freeKept: 0 };
+  const out = { rows: [], changes: [], touchedSites: new Set(), clears: 0, clamped: 0, count: 0, freeKept: 0, minusKept: 0 };
   const options = optionsInScope(central, opts.scope || {});
   if (!options.length) return out;
   const rounding = opts.rounding || { mode: 'none' };
@@ -361,9 +370,13 @@ function runOptions(central, opts) {
   for (const o of options) {
     out.count++;
     const def = toPence(o.price ?? 0);
+    // A minus price takes money off (design 1.4 keeps imported ones, "takes 0.50 off"): never
+    // moved by a price change, which would clamp the discount to 0.00.
+    const minus = (pence, loc, own) => { out.minusKept++; out.rows.push(row(o, loc, { before: fromPence(pence), after: fromPence(pence), changed: false, clamped: false, follows: own == null && loc != null, clears: false, staged: false, off: false, minusKept: true })); };
     if (allSites) {
       let newDef = def, rc = false;
-      if (keepFree && def === 0) out.freeKept++;
+      if (def < 0) minus(def, null, def);
+      else if (keepFree && def === 0) out.freeKept++;
       else { const r = changeOne(def, change, rounding); if (r.invalid) continue; newDef = r.pence; rc = r.clamped; }
       if (rc) out.clamped++;
       out.rows.push(row(o, null, { before: fromPence(def), after: fromPence(newDef), changed: newDef !== def, clamped: rc, follows: false, clears: false, staged: newDef !== def, off: false, freeKept: keepFree && def === 0 }));
@@ -373,6 +386,8 @@ function runOptions(central, opts) {
         if (!os) continue;
         const off = os.active !== true;
         const own = os.price == null ? null : toPence(os.price);
+        if (own != null && own < 0) { minus(own, loc, own); continue; }
+        if (own == null && def < 0) continue;      // follows a minus default, which stays
         if (own == null) {
           if (!off) { out.rows.push(row(o, loc, { before: fromPence(def), after: fromPence(newDef), changed: newDef !== def, clamped: rc, follows: true, clears: false, staged: false, off: false })); if (newDef !== def) out.touchedSites.add(loc); }
           continue;
@@ -393,6 +408,7 @@ function runOptions(central, opts) {
         if (!os || os.active !== true) continue;
         const own = os.price == null ? null : toPence(os.price);
         const before = own ?? def;
+        if (before < 0) { minus(before, loc, own); continue; }
         if (keepFree && before === 0) { out.freeKept++; out.rows.push(row(o, loc, { before: 0, after: 0, changed: false, clamped: false, follows: own == null, clears: false, staged: false, off: false, freeKept: true })); continue; }
         const r = changeOne(before, change, rounding);
         if (r.invalid) continue;
@@ -425,5 +441,6 @@ export function priceChangeWords(summary) {
   if (s.clamped) parts.push(`${s.clamped} would go below zero and stop at 0.00`);
   if (s.offSites) parts.push(`also keeps ${s.offSites} site${s.offSites === 1 ? '' : 's'} where it is off in step`);
   if (s.freeKept) parts.push(`${s.freeKept} free option price${s.freeKept === 1 ? '' : 's'} left at 0.00`);
+  if (s.minusKept) parts.push(`${s.minusKept} option${s.minusKept === 1 ? '' : 's'} that take${s.minusKept === 1 ? 's' : ''} money off ${s.minusKept === 1 ? 'was' : 'were'} left as ${s.minusKept === 1 ? 'it is' : 'they are'}`);
   return parts.join(', ');
 }

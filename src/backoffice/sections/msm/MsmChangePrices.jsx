@@ -263,7 +263,7 @@ export default function MsmChangePrices({ api, menu, live, eff, ix, sites, stage
               {!channel && (
                 <label style={{ ...ui.row, alignItems: 'flex-start', fontSize: 12.5, marginTop: 8, cursor: 'pointer' }}>
                   <input type="checkbox" checked={alsoChannels} onChange={(e) => setAlsoChannels(e.target.checked)} style={{ marginTop: 2 }} />
-                  <span>Also change order type prices that are set<span style={{ ...ui.sub, display: 'block', fontSize: 11.5 }}>So an Eat in or Delivery price of its own moves by the same amount.</span></span>
+                  <span>Also change order type prices that are set<span style={{ ...ui.sub, display: 'block', fontSize: 11.5 }}>So an Eat in, Takeaway, Collection or Drive thru price of its own moves by the same amount. Delivery prices are set by each platform's menu.</span></span>
                 </label>
               )}
             </Field>

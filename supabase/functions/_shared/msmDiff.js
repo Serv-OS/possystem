@@ -16,7 +16,7 @@
 //                                     (a create is undone by turning the product off, never a
 //                                     delete), with "changed since" warnings
 
-import { STAGE_FIELDS, SITE_TARGETS, has, sameValue, checkChange, money2, newOptionId } from './msmModel.js';
+import { STAGE_FIELDS, SITE_TARGETS, has, sameValue, checkChange, money2, newOptionId, channelFallback } from './msmModel.js';
 import { planSite, touchedFromChanges, countsWords, lineWords, groupOptionRows } from './msmPlan.js';
 import { checkSite, checkCentral } from './msmHealth.js';
 import { touchEverything } from './msmImport.js';
@@ -321,7 +321,24 @@ export function keepVenueChanges(central, locationId, driftLines) {
     if (d.column === 'pricing.base') { cur.after.price = d.venue; cur.before.price = ps.price; }
     else if (d.column.startsWith('pricing.')) {
       const k = d.column.slice(8);
-      cur.after.channel_prices = { ...(cur.after.channel_prices || ps.channel_prices || {}), [k]: d.venue };
+      // The site cleared its own price for this order type (venue null) while the group sets one:
+      // "follow" (null) would publish the group's price, the opposite of Keep. Keep what the site
+      // really charges there today instead: its Standard price (takeaway first for drive thru),
+      // from a Standard price drift line in the same list, else the central value it matches.
+      let value = d.venue;
+      const p = listOf(central.products).find((x) => x.id === d.productId);
+      const groupSets = p && p.default_channels && p.default_channels[k] != null;
+      if (value == null && groupSets) {
+        const baseLine = listOf(driftLines).find((x) => x && x.productId === d.productId && x.column === 'pricing.base');
+        const takeLine = listOf(driftLines).find((x) => x && x.productId === d.productId && x.column === 'pricing.takeaway');
+        const base = baseLine ? baseLine.venue : (ps.price ?? p.default_price);
+        const own = { ...(ps.channel_prices || {}), [k]: null };
+        if (takeLine) own.takeaway = takeLine.venue;
+        const pNo = { ...p, default_channels: { ...(p.default_channels || {}), [k]: null } };
+        if (k === 'driveThru' && takeLine && takeLine.venue == null) pNo.default_channels.takeaway = null;
+        value = channelFallback(pNo, { price: base, channel_prices: own }, k);
+      }
+      cur.after.channel_prices = { ...(cur.after.channel_prices || ps.channel_prices || {}), [k]: value };
       cur.before.channel_prices = ps.channel_prices;
     } else if (d.column === 'archived') { cur.after.active = d.venue !== true; cur.before.active = ps.active; }
     else if (d.column.startsWith('tax_overrides.')) {

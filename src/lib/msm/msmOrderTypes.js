@@ -219,3 +219,22 @@ export function vatCell(product, parent, ps, key, rates = null) {
   const r = listOf(rates).find((x) => x && String(x.id) === String(v));
   return { words: r ? rateWords(r) : 'Its own VAT', own: true, byType: true };
 }
+
+/**
+ * The price the till charges in the VAT example for one order type at one site (round 2 review: the
+ * example used the Standard price for every order type). The till's chain: the site's own box for
+ * that order type, else what it falls back to (msmModel.channelFallback). Delivery is a platform
+ * price set by the platform's menu: the example uses the Standard price there.
+ *   orderType      'dine-in' | 'takeaway' | 'collection' | 'delivery' | 'drive-thru'
+ *   product        the product as the sheet holds it ({ default_price, default_channels })
+ *   ps             the site row as the sheet holds it ({ price, channel_prices })
+ */
+export function examplePrice(orderType, product, ps) {
+  const key = { 'dine-in': 'dineIn', takeaway: 'takeaway', collection: 'collection', 'drive-thru': 'driveThru' }[orderType] || null;
+  const site = ps || {};
+  const standard = num(site.price) ?? num(product?.default_price);
+  if (!key) return standard;
+  const own = num(site.channel_prices?.[key]);
+  if (own != null) return own;
+  return channelFallback(product, site, key) ?? standard;
+}

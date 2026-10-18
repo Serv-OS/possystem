@@ -179,6 +179,31 @@ export async function run(h) {
     settle();
   }
 
+  // ── review: a product SOLD on its own that an option adds at a site is recorded OFF there (not on
+  //    sale); turned on there later, its option only row is written whole so the till shows it ──
+  {
+    const HAZ = 'e2a10000-0000-4000-8000-0000000000b1';
+    const HAZO = 'e2a20000-0000-4000-8000-0000000000b2';
+    const cat = central().categories.find((c) => !c.archived && !c.parent_id);
+    const G5b = mkSet('Hazelnut');
+    stage({ set: G5b, target: 'product', entity: HAZ, op: 'create', after: { name: 'Hazelnut shot', type: 'subitem', sold_alone: true, default_price: 1.2, category_id: cat.id, visibility: { pos: true, kiosk: true, online: true, onlineDelivery: true } } });
+    stage({ set: G5b, target: 'modifier_option', entity: HAZO, op: 'create', after: { group_id: milk.id, name: 'Hazelnut shot', price: 0.6, product_id: HAZ, sort_order: 3 } });
+    stage({ set: G5b, target: 'modifier_option_site', entity: HAZO, loc: LA1, op: 'create', after: { active: true } });
+    const h1 = runSite(publish(G5b), LA1);
+    expect('publish: a sold on its own sub item added at A1 only for an option', h1.out?.ok === true, h1.res.err || JSON.stringify(h1.health));
+    const hazPs = one(`select active::text from msm_product_sites where product_id = '${HAZ}' and location_id = '${LA1}'`);
+    expect("recorded at A1 as OFF: the grid and the sales checks never count it there", hazPs === "false", `${hazPs} ${JSON.stringify(h1.plan?.problems)}`);
+    settle();
+    const G5c = mkSet('Hazelnut on at A1');
+    const st = stage({ set: G5c, target: 'product_site', entity: HAZ, loc: LA1, op: 'update', after: { active: true }, before: { active: false } });
+    if (st.code) console.log('stage refused:', st.err);
+    const h2 = runSite(publish(G5c), LA1);
+    const hz = json(`select to_json(i) from menu_items i where i.location_id = '${LA1}' and i.name = 'Hazelnut shot'`);
+    expect('turned on at A1: written whole, so the till shows it (visibility, sold on its own, category, price)',
+      h2.out?.ok === true && hz && hz.visibility.pos === true && hz.sold_alone === true && hz.cat != null && Number(hz.pricing.base) === 1.2, h2.res.err || JSON.stringify(hz));
+    settle();
+  }
+
   // ── which order types the screens show (a setting, never a venue write) ──
   r = q(`select msm_set_order_types('${menuId}', array['takeaway', 'dineIn', 'takeaway'])`, as(U.E));
   expect('the menu\'s order types are saved (once each)', r.code === 0 && one(`select order_types::text from msm_menus where id = '${menuId}'`) === '{dineIn,takeaway}', r.err);

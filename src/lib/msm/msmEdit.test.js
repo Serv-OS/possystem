@@ -225,3 +225,39 @@ test('drive thru follows takeaway before In store, like the till (one chain ever
   assert.equal(followPrice({ id: 'p', default_price: 3 }, { price: 3.5 }, 'driveThru'), 3.5, 'then the site\'s own In store price');
   assert.equal(followPrice(product, { price: 3.5 }, 'delivery'), 3.5, 'other channels skip takeaway');
 });
+
+// ── Round 2 review (17 Oct 2026) ────────────────────────────────────────────
+
+test('review: "+ Sell here" on a size where its product is not on brings the product too (House Red through one cell)', async () => {
+  const ctx = ctxOf();
+  const r = siteActiveChange(ctx, 'latte-l', L3, true);
+  const all = [r.change, ...(r.extra || [])];
+  assert.ok(all.some((c) => c.target === 'product_site' && c.entity_id === 'latte-l' && c.location_id === L3 && c.op === 'create'));
+  assert.ok(all.some((c) => c.target === 'product_site' && c.entity_id === 'latte' && c.location_id === L3 && c.op === 'create'), 'the product goes on there too');
+  // A product with sizes turned on takes its sizes; off takes them off; ticking both stages each once.
+  const l = live();
+  l.products[0].type = 'variants';
+  const c2 = { live: l, eff: l };
+  const on = siteActiveChange(c2, 'latte', L3, true);
+  assert.ok([on.change, ...on.extra].some((c) => c.entity_id === 'latte-l' && c.location_id === L3));
+  const off = siteActiveChange(c2, 'latte', L2, false);
+  assert.ok([off.change, ...off.extra].some((c) => c.entity_id === 'latte-l' && c.location_id === L2 && c.after.active === false));
+  const many = activeMany(c2, ['latte', 'latte-l'], [L3], true).changes;
+  assert.equal(many.filter((c) => c.entity_id === 'latte-l' && c.location_id === L3).length, 1);
+});
+
+test('review: VAT by order type is never staged on a size (it uses its product\'s, and publish would never write it)', () => {
+  const ctx = ctxOf();
+  const r = productUpdate(ctx, 'latte-l', { tax_by_type: { takeaway: { name: 'Zero Rate', percent: 0 } } });
+  assert.equal(r.change, null);
+  const r2 = productUpdate(ctx, 'latte', { tax_by_type: { takeaway: { name: 'Zero Rate', percent: 0 } } });
+  assert.ok(r2.change.after.tax_by_type);
+});
+
+test('review: two photo uploads for one product get two different storage names (the live photo is never replaced in place)', async () => {
+  const { photoObjectId } = await import('./msmEdit.js');
+  const a = photoObjectId(P1, 1760000000000);
+  const b = photoObjectId(P1, 1760000000001);
+  assert.notEqual(a, b);
+  assert.match(a, /^msm-aaaaaaaa1111-/);
+});

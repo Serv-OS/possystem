@@ -187,3 +187,46 @@ test('chosen sites: a site whose new price lands on the group price is staged, s
 test('a minus sign in a percent never flips the direction', () => {
   assert.equal(changeOne(300, { direction: 'up', mode: 'percent', value: -10 }).pence, 330);
 });
+
+// ── Round 2 review (17 Oct 2026) ────────────────────────────────────────────
+
+test('review: "also order type prices" never clears a site\'s own Takeaway to follow a value the till will not charge (every site)', () => {
+  const c = central();
+  c.products[0].default_channels = null;
+  c.productSites[1] = { product_id: 'latte', location_id: L2, price: 3.5, channel_prices: { takeaway: 2.8 }, active: true };
+  const r = applyPriceChange(c, { scope: { productIds: ['latte'], includeSizes: false }, change: { direction: 'up', mode: 'amount', value: 0.2 }, sites: 'all', alsoChannels: true });
+  const l2 = r.changes.find((x) => x.target === 'product_site' && x.location_id === L2);
+  assert.equal(l2.after.price, 3.7, 'Leeds Standard 3.50 to 3.70');
+  assert.equal(l2.after.channel_prices.takeaway, 3, 'its own Takeaway 2.80 to 3.00, kept as its own (cleared it would charge 3.70)');
+});
+
+test('review: "also order type prices" never clears a site\'s own Takeaway to follow (only some sites)', () => {
+  const c = central();
+  c.productSites[1] = { product_id: 'latte', location_id: L2, price: 3.5, channel_prices: { takeaway: 3.3 }, active: true };
+  const r = applyPriceChange(c, { scope: { productIds: ['latte'], includeSizes: false }, change: { direction: 'up', mode: 'amount', value: 0.2 }, sites: [L2], alsoChannels: true });
+  const l2 = r.changes.find((x) => x.target === 'product_site' && x.location_id === L2);
+  assert.equal(l2.after.price, 3.7);
+  assert.equal(l2.after.channel_prices.takeaway, 3.5, 'Takeaway 3.30 to 3.50 stays its own (the new Standard is 3.70)');
+});
+
+test('review: an option that takes money off is never clamped to 0.00 by Change prices', () => {
+  const c = {
+    sites: [{ location_id: L1 }, { location_id: L2 }],
+    groups: [{ id: 'milk', name: 'Milk' }],
+    options: [{ id: 'none', group_id: 'milk', name: 'No milk', price: -0.2 }, { id: 'oat', group_id: 'milk', name: 'Oat', price: 0.4 }],
+    optionSites: [
+      { option_id: 'none', location_id: L1, active: true, price: null }, { option_id: 'none', location_id: L2, active: true, price: -0.3 },
+      { option_id: 'oat', location_id: L1, active: true, price: null }, { option_id: 'oat', location_id: L2, active: true, price: null },
+    ],
+    products: [], productSites: [], categories: [],
+  };
+  for (const change of [{ direction: 'up', mode: 'amount', value: 0.1 }, { direction: 'up', mode: 'percent', value: 10 }]) {
+    for (const sites of ['all', [L1, L2]]) {
+      const r = applyPriceChange(c, { scope: { optionGroupIds: ['milk'] }, change, sites });
+      assert.ok(!r.changes.some((x) => x.entity_id === 'none'), JSON.stringify(r.changes));
+      assert.equal(r.summary.clamped, 0);
+      assert.ok(r.summary.minusKept >= 1);
+      assert.match(priceChangeWords(r.summary), /take(s)? money off (was|were) left as (it is|they are)/);
+    }
+  }
+});

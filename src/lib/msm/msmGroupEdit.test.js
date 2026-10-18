@@ -165,3 +165,64 @@ test('THE TARGET SIDE GATE: the managed groups and products at a venue, read afr
   assert.equal(isMsmManagedGroup('mgd-own'), false);
   resetMsmManagedForTest();
 });
+
+// ── Round 2 review (17 Oct 2026) ────────────────────────────────────────────
+
+test('review: a tick holds the value it confirmed: a new price or VAT needs a new tick', () => {
+  const c = ctx();
+  const ch = (v) => [{ target: 'product_site', entity_id: c.P('Latte').id, location_id: A, op: 'update', after: { price: v }, before: { price: 3 } }];
+  const k1 = riskChecks(ch(3.8), c.central, null, null, { siteNames: names })[0].key;
+  const k2 = riskChecks(ch(38), c.central, null, null, { siteNames: names })[0].key;
+  assert.notEqual(k1, k2);
+  const vat = (pct) => [{ target: 'product', entity_id: c.P('Donut').id, op: 'update', after: { tax_by_type: { takeaway: { name: 'Zero Rate', percent: pct } } }, before: { tax_by_type: null } }];
+  assert.notEqual(riskChecks(vat(0), c.central)[0].key, riskChecks(vat(5), c.central)[0].key);
+});
+
+test('review: order type prices get a tick and a sentence; a first VAT by order type ticks at Publish too', () => {
+  const c = ctx();
+  const latte = c.P('Latte');
+  const ch = [{ target: 'product', entity_id: latte.id, op: 'update', after: { default_channels: { takeaway: 35 } }, before: { default_channels: { takeaway: 3.2 } } }];
+  const r = riskChecks(ch, c.central, null, null, { siteNames: names });
+  assert.ok(r.some((x) => x.code === 'big_price' && /Latte takeaway price goes from 3\.20 to 35\.00 at every site that follows it/.test(x.words)), JSON.stringify(r));
+  const z = riskChecks([{ ...ch[0], after: { default_channels: { takeaway: 0 } } }], c.central);
+  assert.ok(z.some((x) => x.code === 'zero_price'));
+  assert.ok(summarise(ch, c.central, { siteNames: names }).some((x) => /Latte: Takeaway price becomes 35\.00/.test(x)));
+  const site = [{ target: 'product_site', entity_id: latte.id, location_id: A, op: 'update', after: { channel_prices: { dineIn: 3.2 } }, before: { channel_prices: null } }];
+  assert.ok(summarise(site, c.central, { siteNames: names }).some((x) => x === 'Latte: Eat in price becomes 3.20 at Leeds.'));
+  // Publish passes the menu AFTER the draft: a product with no VAT by order type before still ticks.
+  const donut = c.P('Cola');
+  const first = [{ target: 'product', entity_id: donut.id, op: 'update', after: { tax_by_type: { takeaway: { name: 'Zero Rate', percent: 0 } } }, before: { tax_by_type: null } }];
+  const after = { ...c.central, products: c.central.products.map((p) => (p.id === donut.id ? { ...p, tax_by_type: first[0].after.tax_by_type } : p)) };
+  assert.ok(riskChecks(first, after).some((x) => x.code === 'vat'));
+});
+
+test('review: a site giving back its own VAT by order type needs the VAT tick, in words', () => {
+  const c = ctx();
+  const donut = c.P('Donut');
+  const ch = [{ target: 'product_site', entity_id: donut.id, location_id: B, op: 'update', after: { kept: {} }, before: { kept: { tax_overrides: { takeaway: false } } } }];
+  const r = riskChecks(ch, c.central, null, null, { siteNames: names });
+  assert.ok(r.some((x) => x.code === 'vat' && /Barnsley stops using its own takeaway VAT \(the product's own VAT\) for Donut and uses the group's \(Zero Rate \(0%\)\)/.test(x.words)), JSON.stringify(r));
+  assert.ok(summarise(ch, c.central, { siteNames: names }).some((x) => /Barnsley uses the group's VAT by order type for Donut/.test(x)));
+});
+
+test('review: every kind of change has at least one sentence before Add to draft and Publish', () => {
+  const c = ctx();
+  const P = c.P('Latte').id, G = c.G('Milk').id, O = c.O('Oat milk').id;
+  const cases = [
+    { target: 'product', entity_id: P, op: 'update', after: { name: 'Latte 2', image: 'x', allergens: ['milk'] }, before: {} },
+    { target: 'product', entity_id: P, op: 'update', after: { modifier_groups: [] }, before: { modifier_groups: [{ groupId: G }] } },
+    { target: 'product_site', entity_id: P, location_id: A, op: 'update', after: { kept: {} }, before: { kept: { cat: 'x' } } },
+    { target: 'modifier_group', entity_id: G, op: 'update', after: { name: 'Milks' }, before: { name: 'Milk' } },
+    { target: 'modifier_group', entity_id: G, op: 'update', after: { selection_type: 'multiple' }, before: { selection_type: 'single' } },
+    { target: 'modifier_group_site', entity_id: G, location_id: B, op: 'update', after: { kept: {} }, before: { kept: { max: 2 } } },
+    { target: 'modifier_option', entity_id: O, op: 'update', after: { name: 'Oat drink' }, before: { name: 'Oat milk' } },
+    { target: 'modifier_option', entity_id: O, op: 'update', after: { sub_group_id: G }, before: { sub_group_id: null } },
+    { target: 'modifier_option', entity_id: O, op: 'update', after: { sort_order: 3 }, before: { sort_order: 0 } },
+    { target: 'modifier_option_site', entity_id: O, location_id: C, op: 'create', after: { active: true, price: null }, before: {} },
+    { target: 'modifier_option_site', entity_id: O, location_id: B, op: 'update', after: { kept: {} }, before: { kept: { name: 'Oat' } } },
+    { target: 'category', entity_id: 'cat-new', op: 'create', after: { label: 'Christmas' }, before: {} },
+    { target: 'menu', entity_id: 'm', op: 'update', after: { name: 'Menu 2' }, before: {} },
+  ];
+  for (const ch of cases) assert.ok(summarise([ch], c.central, { siteNames: names }).length >= 1, JSON.stringify(ch));
+  assert.ok(summarise([cases[1]], c.central, { siteNames: names }).some((x) => /Milk is taken off Latte/.test(x)));
+});

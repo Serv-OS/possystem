@@ -5,7 +5,8 @@
 //
 // Reuses what Menu Manager uses, never a fork: lib/db.js uploadProductImage (the product-images
 // bucket, path <site>/<id>.<ext>, replaced on a new upload, public link with a cache buster) and
-// lib/categoryPhoto.js checkPhotoFile (jpg, png or webp, 5 MB at most). The file goes under the
+// lib/categoryPhoto.js checkPhotoFile (jpg, png or webp, 5 MB at most). Each upload is its own file
+// (<site>/msm-<id>-<time>.<ext>), never the live one replaced in place. The file goes under the
 // site this Back Office tab is on (the person's own site, which the storage rules let them write);
 // the link is the group menu's photo and publish writes that same link to every site's product, so
 // the till, kiosk, online, QR and boards show it. Choose or drop a photo, see it, replace it,
@@ -16,7 +17,7 @@ import { useRef, useState } from 'react';
 import { uploadProductImage } from '../../../lib/db';
 import { getLocationId, isMock } from '../../../lib/supabase';
 import { checkPhotoFile } from '../../../lib/categoryPhoto';
-import { hex12 } from '../../../../supabase/functions/_shared/msmModel.js';
+import { photoObjectId } from '../../../lib/msm/msmEdit';
 import { Btn } from './msmUi';
 import { ui } from './msmStyle';
 
@@ -36,7 +37,9 @@ export default function MsmPhotoField({ value, productId, onChange, disabled = f
     try {
       const loc = await getLocationId().catch(() => null);
       if (!loc || loc === 'loc-demo') { setWords('Could not tell which site this tab is on. Reload the Back Office and try again.'); return; }
-      const { url, error } = await uploadProductImage(`msm-${hex12(productId)}`, loc, file);
+      // A new object for every upload (msmEdit.photoObjectId): the photo the sites show today is
+      // never replaced in place, so nothing changes at a site until the draft is published.
+      const { url, error } = await uploadProductImage(photoObjectId(productId), loc, file);
       if (error || !url) { setWords('The photo did not upload. Check your connection and try again; nothing else changed.'); return; }
       onChange(url);
     } finally { setBusy(false); }

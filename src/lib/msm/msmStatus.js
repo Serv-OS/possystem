@@ -22,8 +22,11 @@ export function draftTitle(now = new Date()) {
  *   when      for a scheduled push, its time in words ("Mon 1 Dec 06:00"), or null
  * Returns { state: 'live' | 'draft' | 'scheduled', tone, title, words }.
  */
-export function statusBar({ working = null, rows = [], when = null } = {}) {
+export function statusBar({ working = null, rows = [], when = null, draft = null } = {}) {
   if (!working) {
+    // A draft waiting while the live menu shows: say so, and offer the way back to it (one draft at
+    // a time, design 2 item 3; round 2 review).
+    if (draft) return { state: 'live', tone: 'good', title: 'Live menu', words: `This is your live menu. Your draft "${draft.title}" is waiting; your next change goes into it.`, draftId: draft.id };
     return { state: 'live', tone: 'good', title: 'Live menu', words: 'This is your live menu. Changes go into a draft first; nothing reaches the tills until you publish.' };
   }
   if (working.status === 'draft') {
@@ -126,4 +129,22 @@ export function menuTimesWords(menu) {
   }
   const time = s.from && s.to ? `${s.from} to ${s.to}` : 'All day';
   return `${time}, ${dayWords}`;
+}
+
+/**
+ * Does the draft clash with the one time option group refresh? The server refuses only a draft or a
+ * scheduled push that changes option groups, a product's option groups or VAT by order type
+ * (msm_import_groups); any other change waiting is no reason to grey the button (round 2 review).
+ */
+export function refreshClash(rows) {
+  return listOf(rows).some((r) => ['modifier_group', 'modifier_group_site', 'modifier_option', 'modifier_option_site'].includes(r?.target)
+    || (r?.target === 'product' && r.after && typeof r.after === 'object' && ('modifier_groups' in r.after || 'tax_by_type' in r.after)));
+}
+export const REFRESH_CLASH_WORDS = 'Your draft changes option groups. Publish it, or take those changes out (See the changes), then refresh.';
+
+/** The draft a new edit goes into when none is picked: the only draft there is (never a second one). */
+export function draftToStageInto(sets, workingId) {
+  if (workingId) return workingId;
+  const drafts = listOf(sets).filter((d) => d && d.status === 'draft');
+  return drafts.length === 1 ? drafts[0].id : null;
 }

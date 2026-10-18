@@ -84,7 +84,23 @@ export function touchedFromChanges(changes) {
     if (op === 'create' || op === 'remove' || !cur.op) cur.op = op === 'update' && cur.op ? cur.op : op;
     for (const f of fields) cur.fields.add(f);
     for (const k of extra.keptCleared || []) cur.keptCleared.add(k);
+    // The order type price keys a change really moved (null = not known: every key is written).
+    if (has(extra, 'channelKeys')) {
+      if (extra.channelKeys === null || cur.channelKeys === null) cur.channelKeys = null;
+      else { cur.channelKeys = cur.channelKeys || new Set(); for (const k of extra.channelKeys) cur.channelKeys.add(k); }
+    }
     map.set(key, cur);
+  };
+  // A product site's channel_prices change: only the keys whose value differs between the staged
+  // before and after (Keep or Put back on Takeaway never rewrites a separate Eat in drift). With no
+  // before, every key (the old rule).
+  const channelKeysOf = (c, after) => {
+    if (!has(after, 'channel_prices')) return undefined;
+    if (!c.before || typeof c.before !== 'object' || !has(c.before, 'channel_prices')) return null;
+    const b = c.before.channel_prices && typeof c.before.channel_prices === 'object' ? c.before.channel_prices : {};
+    const a = after.channel_prices && typeof after.channel_prices === 'object' ? after.channel_prices : {};
+    const keys = new Set([...Object.keys(b), ...Object.keys(a)]);
+    return [...keys].filter((k) => has(a, k) !== has(b, k) || !samePrice(a[k], b[k]));
   };
   const clearedOf = (c, after) => {
     if (!has(after, 'kept')) return [];
@@ -107,7 +123,10 @@ export function touchedFromChanges(changes) {
     else if (c.target === 'menu_site' && c.op === 'create') t.sitesCreated.add(c.location_id);
     else if (c.target === 'category') merge(t.categories, c.entity_id, c.op, fields);
     else if (c.target === 'product') merge(t.products, c.entity_id, c.op, fields);
-    else if (c.target === 'product_site') merge(t.productSites, `${c.entity_id}|${c.location_id}`, c.op, fields, { keptCleared: clearedOf(c, after) });
+    else if (c.target === 'product_site') {
+      const ck = channelKeysOf(c, after);
+      merge(t.productSites, `${c.entity_id}|${c.location_id}`, c.op, fields, { keptCleared: clearedOf(c, after), ...(ck === undefined ? {} : { channelKeys: ck }) });
+    }
     else if (c.target === 'modifier_group') merge(t.groups, c.entity_id, c.op, fields);
     else if (c.target === 'modifier_group_site') merge(t.groupSites, `${c.entity_id}|${c.location_id}`, c.op, fields, { keptCleared: clearedOf(c, after) });
     else if (c.target === 'modifier_option') merge(t.options, c.entity_id, c.op, fields);
@@ -359,6 +378,14 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
 
   // ── Product value helpers (central -> this venue) ─────────────────────────
   const siteActive = (p, ps) => !!ps && ps.active !== false && !p.archived;
+  // An option only sub item: never on a menu by itself (type subitem, not sold on its own).
+  const optionOnlyP = (p) => !!p && p.type === 'subitem' && p.sold_alone !== true;
+  const HIDDEN = { pos: false, kiosk: false, online: false, onlineDelivery: false };
+  const SHOWN = { pos: true, kiosk: true, online: true, onlineDelivery: true };
+  // Where a product SOLD at a site shows when publish makes or promotes its row: the group menu's
+  // value, unless it shows nowhere (a sub item made sold on its own keeps the hidden value it was
+  // made with), then everywhere, as the normal menu builder does for a new product.
+  const soldVisibility = (p) => (p.visibility && typeof p.visibility === 'object' && Object.values(p.visibility).some((v) => v === true) ? p.visibility : SHOWN);
   const basePrice = (p, ps) => (ps && ps.price != null ? Number(ps.price) : (p.default_price == null ? null : Number(p.default_price)));
   const channelPrice = (p, ps, k) => {
     const own = ps?.channel_prices && ps.channel_prices[k] != null ? ps.channel_prices[k] : null;
@@ -405,8 +432,13 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     insertedItems.add(id);
     writtenItems.add(id);
     if (!ps) {
-      W.maps.items.push({ product_id: pid, venue_item_id: id });
-      psBy.set(pid, { product_id: pid, location_id: loc, venue_item_id: id, active: true, price: null, channel_prices: null, kept: {} });
+      // Recorded as what the venue row really is: an option only product is "on" here (that is all
+      // it ever is); a product sold on its own is NOT on sale here, only used by an option, so the
+      // grid, Change prices and the sales checks never count it (round 2 review). Turning it on
+      // later promotes this row (step 3).
+      const active = optionOnlyP(p);
+      W.maps.items.push({ product_id: pid, venue_item_id: id, active });
+      psBy.set(pid, { product_id: pid, location_id: loc, venue_item_id: id, active, price: null, channel_prices: null, kept: {} });
     }
     lines.push({ table: 'items', id, column: '(new)', before: null, after: p.name, productId: pid, subItemFor: why });
     return id;
@@ -543,7 +575,13 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     const keptKey = (k) => has(keptTax, k) && !w.keptCleared.has(`tax_overrides:${k}`);
     const cur = vrow.tax_overrides && typeof vrow.tax_overrides === 'object' ? vrow.tax_overrides : {};
     const isSize = !!p.parent_product_id;
-    if (isSize && !Object.keys(cur).length) return;          // a size with none of its own inherits
+    if (isSize && !Object.keys(cur).length) {
+      // A size with none of its own inherits its product's VAT by order type, but the till reads a
+      // size line's OWN tax profile first (taxCompute itemProfileIds; kiosk child.profile), so a
+      // generated copy of its rate on the size would hide the takeaway VAT (Provo, Location 2).
+      sizeProfile(p, ps, vrow, meta);
+      return;
+    }
     const eff = effectiveTaxByType(p, productById);
     // A size with its own overrides gets the full set (sizes do not merge with their product).
     const want = isSize ? [...ORDER_TYPE_TAX_KEYS] : keys;
@@ -575,6 +613,26 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     }
   }
 
+  // A size's own tax profile against its product's VAT by order type, as the product's row ends
+  // this write: a generated copy is cleared (and put back when the order type VAT goes again); a
+  // real profile blocks, in words.
+  function sizeProfile(p, ps, vrow, meta) {
+    const pps = psBy.get(p.parent_product_id);
+    const parentRow = pps ? vItemById.get(pps.venue_item_id) : null;
+    const pto = parentRow && parentRow.tax_overrides && typeof parentRow.tax_overrides === 'object' ? parentRow.tax_overrides : {};
+    const parentTyped = ORDER_TYPE_TAX_KEYS.some((k) => has(pto, k));
+    const rate = vrow.tax_rate_id ?? parentRow?.tax_rate_id ?? null;
+    if (vrow.tax_profile_id) {
+      if (!parentTyped) return;
+      const mirror = venueProfileIsMirror(V, vrow.tax_profile_id, rate);
+      if (mirror === null) { problem('tax_profiles_unread', 'block', `Could not read this site's tax profiles, so VAT by order type for "${p.name}" was not checked. Try again.`, meta); return; }
+      if (!mirror) { problem('real_tax_profile', 'block', `This site uses a tax profile on the size "${p.name}", so its takeaway VAT would not change. Set its tax in Settings, Tax.`, meta); return; }
+      setCol('items', vrow, 'tax_profile_id', null, { ...meta, profileCleared: true });
+    } else if (!parentTyped && ps.cleared_tax_profile_id) {
+      if (venueProfileIsMirror(V, ps.cleared_tax_profile_id, rate) === true) setCol('items', vrow, 'tax_profile_id', ps.cleared_tax_profile_id, { ...meta, profileRestored: true });
+    }
+  }
+
   // Will step 3 insert this product here? (the same test as the loop below)
   function willInsert(p, ps) {
     const w = work.get(p.id);
@@ -590,6 +648,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     const [pid, l] = key.split('|');
     if (l !== loc) continue;
     const w = add(pid); w.siteOp = t.op; t.fields.forEach((f) => w.siteFields.add(f)); t.keptCleared.forEach((k) => w.keptCleared.add(k));
+    if (t.fields.has('channel_prices')) w.channelKeys = t.channelKeys === undefined || t.channelKeys === null ? null : new Set(t.channelKeys);
   }
   // A product's VAT by order type reaches its sizes that carry overrides of their own.
   for (const p of listOf(C.products)) {
@@ -630,7 +689,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
         kitchen_name: p.kitchen_name ?? p.name, description: p.description ?? '', type: p.type || 'simple',
         cat: columnValue(p, ps, 'cat'), cats: mapCats(p), parent_id: mapParent(p), sort_order: p.sort_order ?? 0,
         pricing, allergens: listOf(p.allergens), assigned_modifier_groups: mapGroups(p),
-        visibility: p.visibility || { pos: true, kiosk: true, online: true }, sold_alone: !!p.sold_alone, archived: false,
+        visibility: optionOnlyP(p) ? HIDDEN : soldVisibility(p), sold_alone: !!p.sold_alone, archived: false,
         tax_rate_id: tax.ok ? tax.id : null, image: p.image ?? null, scope: 'local', org_id: orgId,
         tags: listOf(p.tags), item_code: p.item_code ?? null, tax_overrides: newRowTaxOverrides(p),
       };
@@ -660,7 +719,25 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     for (const f of w.siteFields) {
       if (f === 'active') cols.add('archived');
       else if (f === 'price') pricingKeys.add('base');
-      else if (f === 'channel_prices') PUBLISHED_CHANNELS.forEach((k) => pricingKeys.add(k));
+      else if (f === 'channel_prices') {
+        const moved = w.channelKeys;
+        PUBLISHED_CHANNELS.forEach((k) => { if (!moved || moved.has(k)) pricingKeys.add(k); });
+      }
+    }
+    // An option only row made into a product sold here (the sheet's "Also sold on its own", What is
+    // this? set to A product, or turned on at a site where it was only an option): written whole,
+    // like a new row, so the till shows it (POSSurface hides visibility.pos false) with its
+    // category, price, VAT and groups. Otherwise only the touched columns are written.
+    const wasOptionOnly = vrow.type === 'subitem' && vrow.sold_alone !== true;
+    const nowSold = siteActive(p, ps) && !optionOnlyP(p);
+    const promoteTouch = ['sold_alone', 'type', 'archived', 'category_id'].some((f) => w.prodFields.has(f))
+      || w.siteFields.has('active') || w.siteOp === 'create' || w.prodOp === 'create';
+    const promoting = wasOptionOnly && nowSold && promoteTouch;
+    if (promoting) {
+      ['type', 'sold_alone', 'cat', 'cats', 'visibility', 'tax_rate_id', 'assigned_modifier_groups', 'archived'].forEach((c) => cols.add(c));
+      pricingKeys.add('base');
+      PUBLISHED_CHANNELS.forEach((k) => pricingKeys.add(k));
+      if (!p.parent_product_id) ORDER_TYPE_TAX_KEYS.forEach((k) => taxKeys.add(k));
     }
     for (const k of w.keptCleared) {
       if (k === 'tax_overrides') ORDER_TYPE_TAX_KEYS.forEach((x) => taxKeys.add(x));
@@ -671,9 +748,9 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     for (const col of cols) {
       // Where a product shows (till, kiosk, online, delivery) stays the site's own, as the normal
       // menu builder leaves it (Peter, 17 Oct 2026, UI issue 2). A new row still gets one.
-      if (col === 'visibility') continue;
+      if (col === 'visibility' && !promoting) continue;
       if (col !== 'archived' && keptBlocks(col)) continue;
-      const v = columnValue(p, ps, col);
+      const v = col === 'visibility' ? soldVisibility(p) : columnValue(p, ps, col);
       if (v === undefined) continue;
       setCol('items', vrow, col, v, meta);
     }
@@ -805,7 +882,9 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
       const active = optionActive(o, os, g);
       let vid = os?.venue_option_id || null;
       let entry = vid ? entries.find((e) => e && e.id === vid) : null;
-      if (!vid) {
+      // Only an option that is ON here adopts an entry: one that is off (no row) leaves it alone, so
+      // central never records it on while the same pass drops it (drift reports it instead).
+      if (!vid && active) {
         // An entry that already carries this option's own id is adopted, never doubled (unless
         // another option of the group holds that id here).
         const held = heldByOthers(o);

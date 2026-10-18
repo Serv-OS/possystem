@@ -50,3 +50,19 @@ test('GP takes off the SITE\'s VAT: a kept rate, the mapped rate, and none for a
   const m = vatMaps({ productSites: [{ product_id: 'p', location_id: 'L', kept: { tax_rate_id: 'r5' } }] }, { L: rates });
   assert.equal(m.L(p), 5);
 });
+
+test('review: GP for an order type price takes off that order type\'s VAT (Zero Rate takeaway gives 0)', async () => {
+  const { siteVatPct, vatMaps, withMargins } = await import('./msmMargin.js');
+  const p = { id: 'p', tax_rate_name: 'VAT', tax_rate_percent: 20, tax_by_type: { takeaway: { name: 'Zero Rate', percent: 0 } } };
+  const rates = [{ id: 'r20', name: 'VAT', rate: 20, active: true }, { id: 'r0', name: 'Zero Rate', rate: 0, active: true }];
+  assert.equal(siteVatPct(p, { kept: {} }, rates, 'takeaway'), 0);
+  assert.equal(siteVatPct(p, { kept: {} }, rates, 'collection'), 0, 'collection reads takeaway');
+  assert.equal(siteVatPct(p, { kept: {} }, rates, 'dineIn'), 20);
+  assert.equal(siteVatPct(p, { kept: {} }, rates, null), 20, 'the Standard price: the product\'s own');
+  const central = { products: [p], productSites: [{ product_id: 'p', location_id: 'L', venue_item_id: 'v', kept: {} }] };
+  const m = vatMaps(central, { L: rates });
+  const [row] = withMargins([{ productId: 'p', locationId: 'L', channel: 'takeaway', before: 3, after: 3 }], central, { L: new Map([['v', 1]]) }, m);
+  assert.equal(row.gpAfter.gpPct != null, true);
+  const [std] = withMargins([{ productId: 'p', locationId: 'L', channel: null, before: 3, after: 3 }], central, { L: new Map([['v', 1]]) }, m);
+  assert.ok(row.gpAfter.gpPct > std.gpAfter.gpPct, 'no VAT taken off the takeaway price');
+});

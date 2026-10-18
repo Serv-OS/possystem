@@ -25,6 +25,7 @@ import { useStore, findDuplicateProductName, bulkUpdateMenuItems, bulkSummaryWor
 import { msmManagedState, subscribeMsmManaged, isMsmManaged } from '../../lib/msm/msmManaged.js';
 import { itemLock, groupLock } from '../../lib/msm/msmLock.js';
 import { MsmLockBanner, MsmLocked } from './msm/MsmLockNote';
+import { useConfirm } from './msm/useConfirm';
 import { useMsmLockState } from './msm/useMsmLockState';
 import { withTimeout } from '../../lib/withTimeout';
 import { venueTaxRates } from '../../lib/rowMapping';
@@ -309,7 +310,7 @@ function useItemCodes() {
   return { supported: state.supported === true, codes: state.codes, remember };
 }
 
-function TaxSection({ item, onUpdate, markBOChange }) {
+function TaxSection({ item, onUpdate, markBOChange, lockRate = false, lockOverrides = false }) {
   const { taxRates: allTaxRates, taxProfiles } = useStore();
   const taxRates = liveVenueRatesOf(allTaxRates);
 
@@ -356,8 +357,11 @@ function TaxSection({ item, onUpdate, markBOChange }) {
 
   const activeProfiles = (taxProfiles || []).filter(p => p.active !== false);
 
+  // Multi site menu: the rate and the order type overrides are locked separately, so a site that
+  // keeps its own VAT by order type (Leeds and its 3 donuts) can still change it here (design 3.2).
   return (
     <div>
+      <MsmLocked on={lockRate} label="VAT">
       {/* v5.7.33: tax PROFILE override — setup only, nothing charges with it yet */}
       {activeProfiles.length > 0 && (
         <div style={{ marginBottom:16 }}>
@@ -391,7 +395,9 @@ function TaxSection({ item, onUpdate, markBOChange }) {
           Applied to all order types unless overridden below.
         </div>
       </div>
+      </MsmLocked>
 
+      <MsmLocked on={lockOverrides} label="VAT by order type">
       <div style={{ marginBottom:8 }}>
         <span style={{ fontSize:10, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', display:'block', marginBottom:8 }}>
           Per-order-type overrides
@@ -416,6 +422,7 @@ function TaxSection({ item, onUpdate, markBOChange }) {
           </div>
         ))}
       </div>
+      </MsmLocked>
     </div>
   );
 }
@@ -2957,12 +2964,15 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
             )}
 
             {!isSub && (
-              <MsmLocked on={lockOn('receipt_name') || lockOn('kitchen_name')} label="Receipt and kitchen names">
               <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
+                {/* Locked per field: a site that keeps one of them as its own can still edit it (design 3.2). */}
+                <MsmLocked on={lockOn('receipt_name')} label="Receipt name">
                 <div><span style={lbl}>Receipt name</span><input style={inp} value={item.receiptName||''} onChange={e=>f('receiptName',e.target.value)} placeholder="Same as above"/></div>
+                </MsmLocked>
+                <MsmLocked on={lockOn('kitchen_name')} label="Kitchen name">
                 <div><span style={lbl}>Kitchen / KDS</span><input style={inp} value={item.kitchenName||''} onChange={e=>f('kitchenName',e.target.value)} placeholder="Same as above"/></div>
+                </MsmLocked>
               </div>
-              </MsmLocked>
             )}
 
             {/* v5.8.100: Item code. Hidden entirely until the column exists. */}
@@ -3434,6 +3444,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                 </div>
               </div>
             ) : (<>
+              <MsmLocked on={lockOn('assigned_modifier_groups')} label="Option groups">
               <div>
               <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
                 <span style={{ ...lbl, margin:0 }}>Modifier groups</span>
@@ -3492,6 +3503,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                 <div style={{ marginTop:4, padding:'8px 10px', fontSize:11, color:'var(--t4)', textAlign:'center', background:'var(--bg3)', borderRadius:8 }}>No matching groups — create one in the Modifier groups tab</div>
               )}
             </div>
+            </MsmLocked>
 
             {/* Instruction groups */}
             <div>
@@ -3584,9 +3596,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
 
         {/* ════ TAX ════════════════════════════════════════════════════════ */}
         {sec==='tax' && (
-          <MsmLocked on={lockOn('tax_rate_id') || lockOn('tax_overrides')} label="VAT">
-          <TaxSection item={item} onUpdate={onUpdate} markBOChange={markBOChange}/>
-          </MsmLocked>
+          <TaxSection item={item} onUpdate={onUpdate} markBOChange={markBOChange} lockRate={lockOn('tax_rate_id')} lockOverrides={lockOn('tax_overrides')}/>
         )}
 
         {/* ════ ALLERGENS & DIETARY ════════════════════════════════════════ */}
@@ -3797,6 +3807,9 @@ function PizzaBuilder({ item, onUpdate, markBOChange }) {
 // MODIFIER GROUPS TAB
 // Drag to reorder groups + options. Options support nested subGroupId.
 // ═══════════════════════════════════════════════════════════════════════════
+// The id stamp for "Make a copy for this site's own products" (kept out of the render body).
+const copyStamp = () => Date.now();
+
 function ModifiersTab() {
   const { modifierGroupDefs:groups, addModifierGroupDef, updateModifierGroupDef,
           updateModifierGroupOption,
@@ -3826,13 +3839,24 @@ function ModifiersTab() {
   const msmLockSt = useMsmLockState();
   const openMsm = useContext(MsmOpenCtx);
   const glock = sel ? groupLock(msmLockSt, sel.id) : null;
-  const copyForOwn = () => {
+  const [msmConfirm, msmConfirmDialog] = useConfirm();
+  const copyForOwn = async () => {
     if (!sel) return;
     const usesSel = (i) => (i.assignedModifierGroups || []).some(a => (a && typeof a === 'object' ? a.groupId : a) === sel.id);
     const own = (menuItems || []).filter(i => !i.archived && usesSel(i) && !isMsmManaged(i.id));
-    const stamp = Date.now();
-    const id = `mgd-${stamp}`;
     const name = `${sel.name} (this site)`;
+    // It changes this site's products straight away (not a draft): ask first, naming them (design 6.6).
+    const shown = own.slice(0, 5).map(i => i.menuName || i.name).filter(Boolean);
+    const yes = await msmConfirm({
+      title: `Make "${name}"?`,
+      words: own.length
+        ? `This makes "${name}" and moves ${own.length} of this site's own product${own.length === 1 ? '' : 's'} onto it now: ${shown.join(', ')}${own.length > 5 ? ` and ${own.length - 5} more` : ''}. Head office's group stays on its products.`
+        : `This makes "${name}" for this site. No product moves onto it yet. Head office's group stays on its products.`,
+      yes: own.length ? `Make it and move ${own.length}` : 'Make it', no: 'Not now',
+    });
+    if (!yes) return;
+    const stamp = copyStamp();
+    const id = `mgd-${stamp}`;
     // eslint-disable-next-line no-unused-vars
     const { id: _oldId, updated_at, updatedAt, ...rest } = sel;
     addModifierGroupDef({ ...rest, id, name, options: (sel.options || []).map((o, i) => ({ ...o, id: `opt-${stamp}-${i}` })) });
@@ -3907,6 +3931,7 @@ function ModifiersTab() {
 
   return (
     <div style={{ display:'flex', height:'100%', overflow:'hidden' }}>
+      {msmConfirmDialog}
 
       {/* ── Left: group list ─────────────────────────────────────── */}
       <div style={{ width:270, borderRight:'1px solid var(--bdr)', display:'flex', flexDirection:'column', overflow:'hidden' }}>

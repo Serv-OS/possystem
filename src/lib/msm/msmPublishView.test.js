@@ -332,10 +332,30 @@ test('the new screens: headers, plain words, no long dashes, and wired as tabs',
   const tabs = fs.readFileSync(new URL('msmTabs.js', dir), 'utf8');
   for (const id of ['publish', 'timeline', 'sites', 'spread']) assert.match(tabs, new RegExp(`id: '${id}'`));
   const pub = fs.readFileSync(new URL('MsmPublish.jsx', dir), 'utf8');
-  assert.match(pub, /disabled=\{!canEdit \|\| busy \|\| blocked \|\| !ready \|\| checking\}/, 'Publish now waits for a clean health check and every warning ticked (round 2)');
-  assert.match(pub, /disabled=\{!canEdit \|\| busy \|\| blocked \|\| past \|\| !note\.ok \|\| !ready \|\| sales === undefined\}/, 'Schedule too, never in the past, never with the time box empty, every warning ticked');
-  assert.match(pub, /riskChecks\(rows, after/, 'the warnings that need a tick are worked out from the draft');
-  assert.match(pub, /summarise\(rows, after/, 'the sentence summary sits above the button');
+  // The button rules are proved by what they do (publishBlocked, scheduleBlocked below); the screen
+  // only has to use them.
+  assert.match(pub, /disabled=\{publishBlocked\(\{ canEdit, busy, blocked, ready, checking \}\)\}/);
+  assert.match(pub, /disabled=\{scheduleBlocked\(/);
   assert.match(pub, /api\.publishNow\(working\.id/);
   assert.match(pub, /api\.schedule\(working\.id, runLocal, lead, idle\)/);
+});
+
+test('review: the Publish and Schedule buttons stay grey until every warning is ticked and the checks are done', async () => {
+  const { publishBlocked, scheduleBlocked, sheetSaveBlocked } = await import('./msmPublishView.js');
+  const ok = { canEdit: true, busy: false, blocked: false, ready: true, checking: false };
+  assert.equal(publishBlocked(ok), false);
+  assert.equal(publishBlocked({ ...ok, ready: false }), true, 'a warning not ticked');
+  assert.equal(publishBlocked({ ...ok, checking: true }), true, 'still checking sales or trading');
+  assert.equal(publishBlocked({ ...ok, blocked: true }), true, 'the health check found a problem');
+  assert.equal(publishBlocked({ ...ok, canEdit: false }), true);
+  const sOk = { canEdit: true, busy: false, blocked: false, past: false, noteOk: true, ready: true, salesReading: false };
+  assert.equal(scheduleBlocked(sOk), false);
+  for (const k of ['past', 'salesReading', 'busy', 'blocked']) assert.equal(scheduleBlocked({ ...sOk, [k]: true }), true, k);
+  for (const k of ['noteOk', 'ready', 'canEdit']) assert.equal(scheduleBlocked({ ...sOk, [k]: false }), true, k);
+  assert.equal(sheetSaveBlocked({ changes: 2, ready: true }), false);
+  assert.equal(sheetSaveBlocked({ changes: 0, ready: true }), true, 'nothing to add');
+  assert.equal(sheetSaveBlocked({ changes: 0, create: true, ready: true }), false, 'a new product');
+  assert.equal(sheetSaveBlocked({ changes: 2, ready: false }), true, 'a warning not ticked');
+  assert.equal(sheetSaveBlocked({ changes: 2, ready: true, words: 'Give it a name' }), true);
+  assert.equal(sheetSaveBlocked({ changes: 2, ready: true, salesReading: true }), true);
 });

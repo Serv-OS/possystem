@@ -169,7 +169,7 @@ test('an option on at a site whose sub item is not there: the sub item is added 
   assert.equal(ins.sold_alone, false);
   assert.deepEqual(ins.visibility, { pos: false, kiosk: false, online: false, onlineDelivery: false });
   assert.equal(ins.cat, null);
-  assert.deepEqual(p.writes.maps.items, [{ product_id: P('Coconut milk').id, venue_item_id: ins.id }]);
+  assert.deepEqual(p.writes.maps.items, [{ product_id: P('Coconut milk').id, venue_item_id: ins.id, active: true }], 'an option only product is "on" where an option needs it');
   assert.equal(p.writes.groups.update[0].options[0].entry.itemId, ins.id, 'never a missing or foreign item id');
   assert.equal(checkSite(p).blocking.length, 0, 'an option only sub item needs no category');
   assert.match(lineWords(p.lines.find((l) => l.column === '(new)')), /added here as a sub item for "Coconut milk"/);
@@ -388,4 +388,122 @@ test('the one time refresh is needed only for a group menu whose groups are stil
   assert.equal(groupsNeedRefresh(central), false);
   const old = { ...central, menu: { ...central.menu, refreshed_at: null }, options: [], groups: central.groups.map((g) => ({ ...g, options: [{ id: 'o', name: 'x', price: 0 }] })) };
   assert.equal(groupsNeedRefresh(old), true);
+});
+
+// ── Round 2 review fixes (17 Oct 2026) ──────────────────────────────────────
+
+const COLD = 'f0000000-0000-4000-8000-000000000002';
+const clone = (x) => JSON.parse(JSON.stringify(x));
+
+test('review: an option only sub item made "sold on its own" is written whole at a site, so the till shows it', () => {
+  const { v, central, P } = setup();
+  const coco = P('Coconut milk');
+  const ch = [{ target: 'product', entity_id: coco.id, op: 'update', after: { sold_alone: true, category_id: COLD }, before: { sold_alone: false, category_id: coco.category_id } }];
+  const p = plan(central, ch, A, v[A]);
+  const row = p.applied.items.find((i) => i.id === 'm-coco');
+  assert.equal(row.visibility.pos, true, 'POSSurface hides visibility.pos false');
+  assert.equal(row.sold_alone, true);
+  assert.equal(row.type, 'subitem');
+  assert.equal(row.cat, 'cat-cold');
+  assert.equal(row.pricing.base, 0.5);
+  assert.ok(p.lines.some((l) => l.column === 'visibility'), 'the preview lists it');
+  // A plain edit on a product sold on its own still never writes where it shows (UI issue 2).
+  const rename = [{ target: 'product', entity_id: P('Latte').id, op: 'update', after: { name: 'Latte 2' }, before: { name: 'Latte' } }];
+  assert.ok(!plan(central, rename, A, v[A]).lines.some((l) => l.column === 'visibility'));
+});
+
+test('review: a product sold on its own, off at a site and used there only by an option, is promoted when turned on there', () => {
+  const { v, central, P, O } = setup();
+  const c1 = clone(central);
+  const coco = c1.products.find((p) => p.id === P('Coconut milk').id);
+  Object.assign(coco, { sold_alone: true, category_id: COLD, visibility: { pos: true, kiosk: true, online: true, onlineDelivery: true } });
+  const vid = 'm-coco_000c0003';
+  c1.productSites.push({ product_id: coco.id, location_id: C, venue_item_id: vid, active: false, price: null, channel_prices: null, kept: {} });
+  const on = [{ target: 'modifier_option_site', entity_id: O('Coconut milk').id, location_id: C, op: 'update', after: { active: true }, before: { active: false } }];
+  const p1 = plan(c1, on, C, v[C]);
+  const ins = p1.writes.items.insert.find((i) => i.id === vid);
+  assert.ok(ins, 'the option only row is added for the option');
+  assert.equal(ins.visibility.pos, false);
+  assert.deepEqual(p1.writes.maps.items, [], 'its product site row already exists (off)');
+  const c2 = applyChanges(c1, on).central;
+  const sell = [{ target: 'product_site', entity_id: coco.id, location_id: C, op: 'update', after: { active: true }, before: { active: false } }];
+  const p2 = plan(c2, sell, C, after(v[C], p1));
+  const row = p2.applied.items.find((i) => i.id === vid);
+  assert.equal(row.visibility.pos, true);
+  assert.equal(row.sold_alone, true);
+  assert.equal(row.cat, S('cat-cold', C));
+  assert.equal(row.pricing.base, 0.5);
+  assert.ok(!p2.empty, 'turning it on is never a silent nothing');
+});
+
+test('review: a product sold on its own that an option adds at a site is recorded there as OFF (not on sale)', () => {
+  const { v, central, P, O } = setup();
+  const c1 = clone(central);
+  Object.assign(c1.products.find((p) => p.id === P('Coconut milk').id), { sold_alone: true, category_id: COLD });
+  const on = [{ target: 'modifier_option_site', entity_id: O('Coconut milk').id, location_id: C, op: 'update', after: { active: true }, before: { active: false } }];
+  const p = plan(c1, on, C, v[C]);
+  assert.equal(p.writes.maps.items.length, 1);
+  assert.equal(p.writes.maps.items[0].active, false, 'the grid, Change prices and the sales checks never count it at C');
+  assert.equal(p.writes.items.insert[0].visibility.pos, false);
+});
+
+test('review: an option that is off at a site never adopts an entry there (central would say on while the plan drops it)', () => {
+  const { v, central, G, O } = setup();
+  const c1 = clone(central);
+  const coco = O('Coconut milk');
+  c1.optionSites = c1.optionSites.filter((r) => !(r.option_id === coco.id && r.location_id === C));
+  const v2 = clone(v[C]);
+  v2.groups.find((g) => g.id === S('mgd-milk', C)).options.push({ id: newOptionId(coco.id), name: 'Coconut milk', price: 0.5 });
+  const ch = [{ target: 'modifier_option', entity_id: coco.id, op: 'update', after: { name: 'Coconut' }, before: { name: 'Coconut milk' } }];
+  const p = plan(c1, ch, C, v2);
+  assert.deepEqual(p.writes.maps.options, [], 'nothing recorded as on');
+  assert.ok(!(p.writes.groups.update[0]?.options || []).some((o) => o.op === 'drop'), 'and the entry is left alone for drift');
+  assert.ok(G('Milk'));
+});
+
+test('review: takeaway VAT reaches a size that carries its own generated tax profile copy (Provo, Location 2)', () => {
+  const { v, central, P } = setup();
+  const va = clone(v[A]);
+  va.items.find((i) => i.id === 'm-latte-l').tax_profile_id = PROFILE_A;
+  const latte = P('Latte');
+  const ch = [{ target: 'product', entity_id: latte.id, op: 'update', after: { tax_by_type: { takeaway: { name: 'Zero Rate', percent: 0 } } }, before: { tax_by_type: null } }];
+  const p = plan(central, ch, A, va);
+  assert.equal(p.applied.items.find((i) => i.id === 'm-latte').tax_overrides.takeaway, ZERO.A);
+  const size = p.applied.items.find((i) => i.id === 'm-latte-l');
+  assert.equal(size.tax_profile_id, null, 'the size line no longer hides the takeaway VAT');
+  assert.deepEqual(size.tax_overrides, {}, 'the size still inherits its product\'s keys');
+  assert.ok(p.lines.some((l) => l.id === 'm-latte-l' && l.column === 'tax_profile_id' && l.profileCleared));
+  // A real profile on the size blocks, in words.
+  va.taxProfiles.push({ id: 'pf-real', location_id: A, name: 'Hot food', active: true, sort_order: 1, generated_from_rate_id: null });
+  va.taxProfileLines.push({ id: 'pl-2', profile_id: 'pf-real', location_id: A, name: 'Hot', line_type: 'rate', rate: 20, mode: 'exclusive', compound: false, taxable: false, tax_basis: 'post_discount', order_types: ['dine-in'], active: true });
+  va.items.find((i) => i.id === 'm-latte-l').tax_profile_id = 'pf-real';
+  const p2 = plan(central, ch, A, va);
+  assert.ok(p2.problems.some((x) => x.code === 'real_tax_profile' && /size "Large latte"/.test(x.words)), JSON.stringify(p2.problems));
+});
+
+test('review: Keep or Put back on one order type price writes only that key, never a separate drift on another', () => {
+  const { v, central, P } = setup();
+  const latte = P('Latte');
+  const ps = central.productSites.find((r) => r.product_id === latte.id && r.location_id === A);
+  const ch = [{ target: 'product_site', entity_id: latte.id, location_id: A, op: 'update', after: { channel_prices: { takeaway: 3.2, dineIn: 3.5 } }, before: { channel_prices: { dineIn: 3.5 } } }];
+  const p = plan(central, ch, A, v[A]);
+  assert.deepEqual(p.lines.filter((l) => l.productId === latte.id).map((l) => l.column), ['pricing.takeaway']);
+  // No before (an older row): every order type key, as before.
+  const p2 = plan(central, [{ ...ch[0], before: {} }], A, v[A]);
+  assert.ok(p2.lines.some((l) => l.column === 'pricing.dineIn'));
+  assert.ok(ps);
+});
+
+test('review: "Keep the site\'s" on an order type price the site cleared keeps what it really charges', () => {
+  const { central, P } = setup();
+  const c1 = clone(central);
+  const latte = c1.products.find((p) => p.id === P('Latte').id);
+  latte.default_channels = { ...(latte.default_channels || {}), takeaway: 3.2 };
+  const d = [{ productId: latte.id, column: 'pricing.takeaway', venue: null, group: 3.2 }];
+  const out = keepVenueChanges(c1, A, d);
+  const ps = c1.productSites.find((r) => r.product_id === latte.id && r.location_id === A);
+  assert.equal(out[0].after.channel_prices.takeaway, ps.price ?? latte.default_price, 'the site charges its Standard price there');
+  // The group has no takeaway price: null still means "follow", which is what the site does.
+  latte.default_channels.takeaway = null;
+  assert.equal(keepVenueChanges(c1, A, d)[0].after.channel_prices.takeaway, null);
 });

@@ -20,7 +20,7 @@
 //     same edit clears that field. A switch never silently does nothing.
 //   * Nothing is ever deleted: "remove" is archived, off is active false.
 
-import { STAGE_FIELDS, CHANNELS, has, sameValue, samePrice, newItemId, toPence, fromPence, channelFallback } from '../../../supabase/functions/_shared/msmModel.js';
+import { STAGE_FIELDS, CHANNELS, has, sameValue, samePrice, newItemId, toPence, fromPence, channelFallback, hex12 } from '../../../supabase/functions/_shared/msmModel.js';
 
 const listOf = (v) => (Array.isArray(v) ? v : []);
 const findProduct = (c, id) => listOf(c?.products).find((p) => p.id === id) || null;
@@ -81,6 +81,34 @@ export function sitePriceChange(ctx, productId, locationId, value, channel = nul
  * Returns { change } or { words }.
  */
 export function siteActiveChange(ctx, productId, locationId, active) {
+  const r = siteActiveOne(ctx, productId, locationId, active);
+  if (r.words) return r;
+  const p = findProduct(ctx.eff, productId);
+  // Sizes and their product go together (UI issue 11, the House Red case through one cell): a size
+  // turned on where its product is not on brings the product too (publish would block with "a size
+  // of a product that is not at this site"); a product with sizes turned on or off takes its sizes.
+  const more = [];
+  if (p && p.parent_product_id && active) {
+    const parent = findProduct(ctx.eff, p.parent_product_id);
+    const pps = findSite(ctx.eff, p.parent_product_id, locationId);
+    if (parent && !parent.archived && (!pps || pps.active === false)) {
+      const pr = siteActiveOne(ctx, parent.id, locationId, true);
+      if (pr.words) return pr;
+      if (pr.change) more.push(pr.change, ...(pr.extra || []));
+    }
+  }
+  if (p && p.type === 'variants') {
+    for (const size of listOf(ctx.eff?.products).filter((x) => x.parent_product_id === p.id && !x.archived)) {
+      const sr = siteActiveOne(ctx, size.id, locationId, active);
+      if (sr.change) more.push(sr.change, ...(sr.extra || []));
+    }
+  }
+  if (!more.length) return r;
+  if (!r.change) return { change: more[0], extra: more.slice(1), already: r.already };
+  return { ...r, extra: [...(r.extra || []), ...more] };
+}
+
+function siteActiveOne(ctx, productId, locationId, active) {
   const p = findProduct(ctx.eff, productId);
   if (!p) return { words: 'That product is not in the group menu.' };
   const s = findSite(ctx.eff, productId, locationId);
@@ -163,8 +191,12 @@ export function productUpdate(ctx, productId, fields) {
   if (!p) return { words: 'That product is not in the group menu.' };
   const liveP = findProduct(ctx.live, productId);
   const after = {}, before = {};
+  // A size uses its product's VAT by order type (msmTax.effectiveTaxByType): its own value would
+  // be staged and shown, but never written (round 2 review). Never staged on a size.
+  const isSize = has(fields, 'parent_product_id') ? !!fields.parent_product_id : !!p.parent_product_id;
   for (const k of PRODUCT_EDITABLE) {
     if (!has(fields, k)) continue;
+    if (k === 'tax_by_type' && isSize) continue;
     if (sameValue(p[k], fields[k])) continue;
     after[k] = clone(fields[k]);
     before[k] = liveP ? clone(liveP[k] ?? null) : null;
@@ -177,7 +209,7 @@ export function productUpdate(ctx, productId, fields) {
 }
 
 /**
- * A new product (or a site only extra when fields.site_only_location_id is set).
+ * A new product, sold at the sites ticked.
  *   id       a new uuid for it
  *   fields   the product's fields
  *   sites    [{ location_id, active, price }]   where it goes on sale (price null = the default)
@@ -298,9 +330,10 @@ export function activeMany(ctx, productIds, locationIds, active) {
   const out = [];
   for (const pid of listOf(productIds)) for (const loc of listOf(locationIds)) out.push(siteActiveChange(ctx, pid, loc, active));
   const r = collect(out);
-  // One clearing of the old "one site only" mark per product, however many sites it goes on at.
+  // One change per product (or product and site), however many ticks reach it: the old "one site
+  // only" mark is cleared once, and a size and its product ticked together are turned on once.
   const seen = new Set();
-  r.changes = r.changes.filter((c) => { if (c.target !== 'product' || !('site_only_location_id' in (c.after || {}))) return true; if (seen.has(c.entity_id)) return false; seen.add(c.entity_id); return true; });
+  r.changes = r.changes.filter((c) => { const k = `${c.target}|${c.entity_id}|${c.location_id || ''}`; if (seen.has(k)) return false; seen.add(k); return true; });
   return r;
 }
 
@@ -397,4 +430,13 @@ export function withBefore(live, changes) {
  */
 export function withoutUnticked(changes, offProducts = new Set(), offSites = new Set()) {
   return listOf(changes).filter((c) => !offProducts.has(c.entity_id) && !((c.target === 'product_site' || c.target === 'modifier_option_site') && offSites.has(`${c.entity_id}|${c.location_id}`)));
+}
+
+/**
+ * The storage name for a product photo upload (before the extension): a NEW object every time, so
+ * a photo replaced in a draft never changes the photo the sites show today (the last publish points
+ * at the old object); only publishing the draft moves them to the new one (round 2 review).
+ */
+export function photoObjectId(productId, now = Date.now()) {
+  return `msm-${hex12(productId)}-${Number(now).toString(36)}`;
 }

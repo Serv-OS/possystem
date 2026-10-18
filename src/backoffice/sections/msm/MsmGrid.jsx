@@ -33,6 +33,7 @@ import { TAX_TYPE_WORDS, colWord } from '../../../lib/msm/msmWords';
 import { whyReadOnly, cellNoteWords } from '../../../lib/msm/msmStatus';
 import { addGroupWithSites } from '../../../lib/msm/msmGroupView';
 import * as groupEdit from '../../../lib/msm/msmGroupEdit';
+import { riskChecks } from '../../../lib/msm/msmRisk';
 import { PUBLISHED_CHANNELS as CHANNELS } from '../../../../supabase/functions/_shared/msmModel.js';
 import { Btn, Pill, Switch, Segmented, Popover, SiteChecklist, MenuButton, Notice } from './msmUi';
 import { ui, money } from './msmStyle';
@@ -155,13 +156,25 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
 
   // The blue dot's "Use the group's settings": the site stops keeping its own values for this product
   // (its own price stays; VAT keys a site holds for other order types are only noted, never written).
-  const giveBackToGroup = (p, loc) => {
+  const giveBackChange = (p, loc) => {
     const ps = ix.sites.get(`${p.id}|${loc}`);
-    if (!ps?.kept || !Object.keys(ps.kept).length) return;
+    if (!ps?.kept || !Object.keys(ps.kept).length) return null;
     const rest = Object.fromEntries(Object.entries(ps.kept.tax_overrides || {}).filter(([k]) => !['dine-in', 'takeaway', 'delivery', 'bar'].includes(k)));
     const kept = Object.keys(rest).length ? { tax_overrides: rest } : {};
+    return { target: 'product_site', entity_id: p.id, location_id: loc, op: 'update', after: { kept }, before: { kept: ps.kept } };
+  };
+  // What "Use the group's settings" does to VAT, in words, to tick before it is staged (design 5.4
+  // and 6.5: VAT changes always need a tick; round 2 review).
+  const siteNames = useMemo(() => new Map(sites.map((x) => [x.id, x.name])), [sites]);
+  const keptVatWords = (p, loc) => {
+    const c = giveBackChange(p, loc);
+    return c ? riskChecks([c], eff, null, null, { siteNames, ratesByLoc }).filter((r) => r.code === 'vat').map((r) => r.words) : [];
+  };
+  const giveBackToGroup = (p, loc) => {
+    const c = giveBackChange(p, loc);
+    if (!c) return;
     const liveS = (live?.productSites || []).find((x) => x.product_id === p.id && x.location_id === loc);
-    run([`${p.id}|${loc}`], [{ target: 'product_site', entity_id: p.id, location_id: loc, op: 'update', after: { kept }, before: { kept: liveS?.kept ?? {} } }],
+    run([`${p.id}|${loc}`], [{ ...c, before: { kept: liveS?.kept ?? {} } }],
       `${siteNameOf(loc)} will use the group's settings for ${p.menu_name || p.name} once published (in the draft).`);
   };
 
@@ -434,8 +447,31 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
                     })}
                   </>
                 ) : p.type === 'variants' ? (
-                  <div role="gridcell" onClick={() => setFocus({ row: rowIndex, col: 0 })}
-                    style={{ ...cellBase, width: DEF_W + cols.length * SITE_W, justifyContent: 'flex-start', color: 'var(--t4)', fontSize: 12, ...(focus && focus.row === rowIndex ? focusRing : {}) }}>Priced by its sizes below</div>
+                  <>
+                    <div role="gridcell" onClick={() => setFocus({ row: rowIndex, col: 0 })}
+                      style={{ ...cellBase, width: DEF_W, justifyContent: 'flex-start', color: 'var(--t4)', fontSize: 11.5, lineHeight: 1.2, ...(focus && focus.row === rowIndex && focus.col === 0 ? focusRing : {}) }}>Priced by its sizes below</div>
+                    {/* A product with sizes is turned on or off per site here, with its sizes (UI issue 11). */}
+                    {cols.map((s, ci) => {
+                      const c = cellFor(ix, p, s.id, channel);
+                      const st = cellStaged(staged, p.id, s.id, channel);
+                      const isF = focus && focus.row === rowIndex && focus.col === ci + 1;
+                      return (
+                        <div key={s.id} role="gridcell" aria-label={`${p.name} at ${s.name}: ${c.exists && c.active ? 'on' : 'off'}`}
+                          style={{ ...cellBase, width: SITE_W, justifyContent: 'center', ...(isF ? focusRing : {}), opacity: pending.has(`${p.id}|${s.id}`) ? 0.5 : 1 }}
+                          onClick={() => setFocus({ row: rowIndex, col: ci + 1 })}>
+                          {st.active && <span style={stagedMark} />}
+                          {!c.exists
+                            ? (editable ? <button type="button" onClick={(e) => { e.stopPropagation(); toggle(p, s.id, true); }} title="Sell it and its sizes at this site"
+                              style={{ background: 'none', border: '1px dashed var(--bdr2)', borderRadius: 7, color: 'var(--t3)', fontSize: 11.5, fontWeight: 700, padding: '3px 8px', cursor: 'pointer', fontFamily: 'inherit' }}>+ Sell here</button>
+                              : <span style={{ color: 'var(--t4)', fontSize: 12 }}>Not sold</span>)
+                            : <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                              <span style={{ fontSize: 12, color: c.active ? 'var(--t3)' : 'var(--t4)' }}>{c.active ? 'Sold here' : 'Off here'}</span>
+                              <Switch small on={!!c.active} disabled={!editable} title={c.active ? 'On here with its sizes: turn off' : 'Off here: turn on with its sizes'} onChange={(v) => toggle(p, s.id, v)} />
+                            </div>}
+                        </div>
+                      );
+                    })}
+                  </>
                 ) : <>
                 <PriceCell width={DEF_W} rowIndex={rowIndex} col={0} focus={focus} editing={editing} setFocus={setFocus} setEditing={setEditing} commitEdit={commitEdit}
                   value={defaultFor(p, channel)} own staged={!!(pStaged && (channel ? pStaged.has('default_channels') : pStaged.has('default_price')))} pending={pending.has(`${p.id}|default`)} editable={editable} />
@@ -452,7 +488,7 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
                   return (
                     <SiteCell key={s.id} width={SITE_W} rowIndex={rowIndex} col={ci + 1} cell={c} st={st} gp={gp} gpOn={gpOn} p={p} loc={s.id}
                       focus={focus} editing={editing} setFocus={setFocus} setEditing={setEditing} commitEdit={commitEdit}
-                      pending={pending.has(`${p.id}|${s.id}`) || pending.has(`${p.id}|x`)} editable={editable} onToggle={toggle} onUseGroup={giveBackToGroup} />
+                      pending={pending.has(`${p.id}|${s.id}`) || pending.has(`${p.id}|x`)} editable={editable} onToggle={toggle} onUseGroup={giveBackToGroup} keptVat={keptVatWords} />
                   );
                 })}
                 </>}
@@ -513,7 +549,7 @@ function PriceCell({ width, rowIndex, col, focus, editing, setFocus, setEditing,
   );
 }
 
-function SiteCell({ width, rowIndex, col, cell, st, gp, gpOn, p, loc, focus, editing, setFocus, setEditing, commitEdit, pending, editable, onToggle, onUseGroup }) {
+function SiteCell({ width, rowIndex, col, cell, st, gp, gpOn, p, loc, focus, editing, setFocus, setEditing, commitEdit, pending, editable, onToggle, onUseGroup, keptVat }) {
   const isFocus = focus && focus.row === rowIndex && focus.col === col;
   const isEdit = editing && editing.row === rowIndex && editing.col === col;
   if (!cell.exists) {
@@ -535,7 +571,7 @@ function SiteCell({ width, rowIndex, col, cell, st, gp, gpOn, p, loc, focus, edi
       {isEdit ? <EditBox editing={editing} setEditing={setEditing} commitEdit={commitEdit} /> : (
         <>
           <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-            {cell.keptCols.length > 0 && <KeptDot cols={cell.keptCols} editable={editable} onUseGroup={() => onUseGroup?.(p, loc)} />}
+            {cell.keptCols.length > 0 && <KeptDot cols={cell.keptCols} editable={editable} vatWords={() => keptVat?.(p, loc) || []} onUseGroup={() => onUseGroup?.(p, loc)} />}
             {off
               ? <span style={{ fontSize: 12, color: 'var(--t4)' }} title={`Turned off at this site (${money(cell.price)} when on)`}>Off here</span>
               : <span style={{ fontSize: 13, fontWeight: cell.follows ? 500 : 750, color: cell.follows ? 'var(--t3)' : 'var(--t1)' }}
@@ -623,20 +659,35 @@ function Key({ mode }) {
 }
 
 // The blue dot: tap it to see what this site keeps as its own, and give it back to the group.
-function KeptDot({ cols, editable, onUseGroup }) {
+function KeptDot({ cols, editable, vatWords, onUseGroup }) {
   return (
     <span onClick={(e) => e.stopPropagation()} style={{ display: 'inline-flex' }}>
-      <Popover kind="link" small width={260} title="This site keeps its own settings: tap to see which"
+      <Popover kind="link" small width={290} title="This site keeps its own settings: tap to see which"
         label={<span aria-label="This site keeps its own settings" style={{ width: 9, height: 9, borderRadius: '50%', background: 'var(--blu)', display: 'inline-block' }} />}>
-        {(close) => (
-          <div style={{ fontSize: 12.5 }}>
-            <div style={{ fontWeight: 750, marginBottom: 4 }}>This site keeps its own</div>
-            <div style={{ ...ui.sub, marginBottom: 8 }}>{cols.map(colWord).join(', ')}. Publishing never changes these here.</div>
-            {editable && <Btn small kind="soft" onClick={() => { close(); onUseGroup(); }}>Use the group's settings</Btn>}
-          </div>
-        )}
+        {(close) => <KeptDotBody cols={cols} editable={editable} vatWords={vatWords} onUseGroup={() => { close(); onUseGroup(); }} />}
       </Popover>
     </span>
+  );
+}
+// Inside the blue dot: what the site keeps, and "Use the group's" naming what goes back. A VAT by
+// order type given back says what it becomes and needs a tick first (design 5.4 and 6.5).
+function KeptDotBody({ cols, editable, vatWords, onUseGroup }) {
+  const words = useMemo(() => vatWords?.() || [], [vatWords]);
+  const [ok, setOk] = useState(false);
+  const back = cols.filter((c) => c !== 'tax_overrides' || words.length).map(colWord);
+  const list = back.length > 1 ? `${back.slice(0, -1).join(', ')} and ${back[back.length - 1]}` : back[0] || 'settings';
+  return (
+    <div style={{ fontSize: 12.5 }}>
+      <div style={{ fontWeight: 750, marginBottom: 4 }}>This site keeps its own</div>
+      <div style={{ ...ui.sub, marginBottom: 8 }}>{cols.map(colWord).join(', ')}. Publishing never changes these here.</div>
+      {editable && words.length > 0 && (
+        <label style={{ display: 'flex', gap: 6, alignItems: 'flex-start', marginBottom: 8, cursor: 'pointer' }}>
+          <input type="checkbox" checked={ok} onChange={(e) => setOk(e.target.checked)} style={{ marginTop: 2 }} />
+          <span>{words.join(' ')}</span>
+        </label>
+      )}
+      {editable && <Btn small kind="soft" disabled={words.length > 0 && !ok} onClick={onUseGroup}>Use the group's {list}</Btn>}
+    </div>
   );
 }
 
