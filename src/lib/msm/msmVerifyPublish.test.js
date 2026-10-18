@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { proposeImport, buildCentral } from '../../../supabase/functions/_shared/msmImport.js';
-import { planSite, touchedFromChanges, lineWords, sameText } from '../../../supabase/functions/_shared/msmPlan.js';
+import { planSite, touchedFromChanges, sameText } from '../../../supabase/functions/_shared/msmPlan.js';
 import { applyChanges, previewSet, mergeStaged, changeKey, siteDrift, bringOptionIn } from '../../../supabase/functions/_shared/msmDiff.js';
 import { checkSite, checkCentral } from '../../../supabase/functions/_shared/msmHealth.js';
 import { planAddSite } from '../../../supabase/functions/_shared/msmSites.js';
