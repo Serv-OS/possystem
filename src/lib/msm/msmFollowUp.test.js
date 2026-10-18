@@ -269,11 +269,12 @@ test('follow up 6: a category the group menu already has takes only "send like" 
   assert.equal(again.action, 'update');
   assert.equal(again.row.op, 'create');
   assert.equal(again.row.after.label, 'Soup');
-  // The database says the same (20261017c, public.msm_changes_guard).
-  const sql = read('../../../supabase/migrations/20261017c_OPS_multi_site_menu_groups.sql');
-  const guard = sql.slice(sql.indexOf('create or replace function public.msm_changes_guard('), sql.indexOf('$fn$;', sql.indexOf('create or replace function public.msm_changes_guard(')));
-  assert.match(guard, /if new\.op <> 'create' and exists \(select 1 from jsonb_object_keys\(new\.after\) k where k <> all \(array\['archived', 'route_like_id'\]\)\) then/);
-  assert.match(sql, /\) as category_fields_ok;\s*$/);
+  // The database says the same: 20261018, its own trigger after msm_changes_guard (18 Oct recheck:
+  // 20261017c had already run on Ops, so the rule is a new step; msmRunOnOps.test.js).
+  const sql = read('../../../supabase/migrations/20261018_OPS_multi_site_menu_category_fields.sql');
+  const guard = sql.slice(sql.indexOf('create or replace function public.msm_changes_category_fields('), sql.indexOf('$fn$;', sql.indexOf('create or replace function public.msm_changes_category_fields(')));
+  assert.match(guard, /if new\.target = 'category' and new\.op <> 'create' and jsonb_typeof\(new\.after\) = 'object'\s+and exists \(select 1 from jsonb_object_keys\(new\.after\) k where k <> all \(array\['archived', 'route_like_id'\]\)\) then/);
+  assert.match(sql, /\) as category_fields_ok,/);
 });
 
 test('follow up 6: bringing a category back adds no second menu record where it is already on the menu; Undo of a removal still puts both back', () => {
@@ -337,11 +338,15 @@ test('follow up A: the README counts each round\'s checks as the harness files h
   const count = (src, name) => (src.match(new RegExp(`expect\\('${name}`, 'g')) || []).length;
   assert.equal(count(round2, 'RECHECK'), 21);
   assert.equal(count(round2, 'BUILDER B'), 12);
-  assert.equal(count(round2, 'FOLLOW UP'), 7);
+  assert.equal(count(round2, 'FOLLOW UP'), 8);
   assert.equal(count(runner, 'round 2 check row \\(17 Oct recheck\\)'), 1);
-  assert.equal(count(runner, 'round 2 check row \\(18 Oct follow up\\)'), 1);
-  // 248 + 21 + 1 = 270; + 12 = 282; + 7 + 1 = 290.
+  assert.equal(count(runner, 'round 2 check row \\(18 Oct recheck\\)'), 1);
+  assert.equal(count(runner, '20261018'), 4);
+  assert.equal(count(runner, 'the 20261018 roll back'), 2);
+  // 248 + 21 + 1 = 270; + 12 = 282; + 7 + 1 = 290; 18 Oct recheck (20261018): + 1 + 4 + 2 = 297 (the
+  // 18 Oct check row check now says 20261017c is as Ops ran it).
   assert.match(readme, /## 17 Oct 2026 recheck \(270 of 270[^\n]*\n\n22 more checks: 21 in `round2\.mjs` \(named RECHECK\) and 1 in `run\.mjs`/);
   assert.match(readme, /## 17 Oct 2026 recheck, screens and drafts \(282 of 282[^\n]*\n\n12 more checks, all in `round2\.mjs` \(named BUILDER B\)/);
   assert.match(readme, /## 18 Oct 2026 follow up \(290 of 290[^\n]*\n\n8 more checks: 7 in `round2\.mjs` \(named FOLLOW UP\) and 1 in `run\.mjs`/);
+  assert.match(readme, /## 18 Oct 2026 recheck, the category rule as its own step \(297 of 297[^\n]*\n\n7 more checks: 1 in `round2\.mjs` \(named FOLLOW UP\) and 6 in `run\.mjs`/);
 });

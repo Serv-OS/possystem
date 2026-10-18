@@ -29,6 +29,9 @@ const RB = path.join(ROOT, 'supabase', 'migrations', '20261017_OPS_multi_site_me
 // Round 2 (17 Oct 2026): applied on top, as Peter runs it on Ops.
 const MIG2 = path.join(ROOT, 'supabase', 'migrations', '20261017c_OPS_multi_site_menu_groups.sql');
 const RB2 = path.join(ROOT, 'supabase', 'migrations', '20261017c_OPS_multi_site_menu_groups_ROLLBACK.sql');
+// 18 Oct 2026: the category rule, its own step (20261017c was already run on Ops; it stays as run).
+const MIG3 = path.join(ROOT, 'supabase', 'migrations', '20261018_OPS_multi_site_menu_category_fields.sql');
+const RB3 = path.join(ROOT, 'supabase', 'migrations', '20261018_OPS_multi_site_menu_category_fields_ROLLBACK.sql');
 const BASE = path.join(HERE, 'baseline.sql');
 const DB = 'msm_harness';
 const CONN = ['-h', process.env.MSM_PGHOST || '127.0.0.1', '-p', process.env.MSM_PGPORT || '55991', '-U', 'postgres', '-X', '-q', '-v', 'ON_ERROR_STOP=1'];
@@ -105,8 +108,19 @@ expect('round 2 check row (17 Oct verification): the category icon is ASCII safe
   check2.slice(11, 14).join('|') === 't|t|t', r.out);
 expect('round 2 check row (17 Oct recheck): no price is kept, a copied null VAT key is allowed, a turn on never takes over a site\'s own product',
   check2[14] === 't', r.out);
-expect('round 2 check row (18 Oct follow up): a category the group menu already has takes only send like and removed or back',
-  check2[15] === 't' && check2.length === 16, r.out);
+// 18 Oct recheck: 20261017c is the file as Ops ran it (15 columns, no category rule in its guard).
+const CATEGORY_RULE = `position('k <> all (array[''archived'', ''route_like_id''])' in pg_get_functiondef('public.msm_changes_guard()'::regprocedure)) > 0`;
+expect('round 2 check row (18 Oct recheck): 20261017c is as Ops ran it, 15 columns and no category rule in its guard (20261018 adds it)',
+  check2.length === 15 && one(`select ${CATEGORY_RULE}`) === 'f', r.out);
+const MSM_FUNCTIONS = `select string_agg(p.proname || ':' || md5(p.prosrc), ',' order by p.proname, pg_get_function_identity_arguments(p.oid)) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname like 'msm%' and p.proname <> 'msm_changes_category_fields'`;
+const round2Functions = one(MSM_FUNCTIONS);
+r = psql(['-d', DB, '-1', '-At', '-f', MIG3]);
+expect('20261018 (the category rule) applies on top as one transaction', r.code === 0, r.err);
+r = psql(['-d', DB, '-1', '-At', '-f', MIG3]);
+expect('20261018 applies a second time (idempotent)', r.code === 0, r.err);
+expect('20261018 check row: the category rule is on and runs after the main guard; anon nothing; no staged category field; contract 2',
+  r.out.split('\n').pop() === 't|t|0|0|2', r.out);
+expect('20261018 is additive: every function 20261017c left is exactly as it was', one(MSM_FUNCTIONS) === round2Functions);
 
 one(`
 insert into organisations (id, name) values ('${ORG_A}', 'Company A'), ('${ORG_B}', 'Company B');
@@ -506,8 +520,11 @@ expect('switched on again: the paused set runs', one(`select count(*) from msm_c
 // ── ROUND 2: option groups, option prices per site, sub items, VAT per order type ──
 await import('./round2.mjs').then((m) => m.run({ q, one, json, lit, psql, expect, central, readRaw, mkSet, stage, runSite, menuId, ORG_A, ORG_B, LA1, LA2, LB1, U, as, ANON, SERVICE, sfx, VAT_A1, VAT_A2, VAT_B1, DB, CONN }));
 
-// ── roll back (round 2 first, as Peter would) ───────────────────────────────
+// ── roll back (20261018 first, then round 2, as Peter would) ─────────────────
 const menusBefore = one(`select count(*) from menu_items`);
+r = psql(['-d', DB, '-1', '-At', '-f', RB3]);
+expect('the 20261018 roll back runs and leaves no category trigger or function', r.code === 0 && r.out.split('\n').pop() === '0|0', r.err || r.out);
+expect('the 20261018 roll back leaves every other function as 20261017c made it', one(MSM_FUNCTIONS) === round2Functions);
 r = psql(['-d', DB, '-1', '-At', '-f', RB2]);
 expect('the round 2 roll back runs', r.code === 0, r.err);
 expect('the round 2 roll back leaves no round 2 table, function or column, and 5 targets', r.out.split('\n').pop() === '0|0|5|0', r.out);

@@ -16,6 +16,9 @@ const SQL1 = read('supabase/migrations/20261017_OPS_multi_site_menu.sql');
 const SQL2 = read('supabase/migrations/20261017c_OPS_multi_site_menu_groups.sql');
 const RB = read('supabase/migrations/20261017_OPS_multi_site_menu_ROLLBACK.sql');
 const RB2 = read('supabase/migrations/20261017c_OPS_multi_site_menu_groups_ROLLBACK.sql');
+// 18 Oct 2026: the category rule, its own step after 20261017c (msmRunOnOps.test.js).
+const SQL3 = read('supabase/migrations/20261018_OPS_multi_site_menu_category_fields.sql');
+const RB3 = read('supabase/migrations/20261018_OPS_multi_site_menu_category_fields_ROLLBACK.sql');
 const arr = (text) => [...text.matchAll(/'([^']+)'/g)].map((m) => m[1]);
 const between = (s, a, b) => { const i = s.indexOf(a); assert.ok(i >= 0, `missing: ${a}`); const j = s.indexOf(b, i + a.length); return s.slice(i + a.length, j); };
 // The NEWEST definition of a function: round 2 (20261017c) replaces some of round 1's whole.
@@ -132,7 +135,7 @@ test('every msm_ table: row level security on, public and anon revoked by name, 
 });
 
 test('every function is closed to everyone first, by name, then opened to exactly who needs it (each file its own)', () => {
-  for (const [sql, rb, rollsBackTo] of [[SQL1, RB, null], [SQL2, RB2, SQL1]]) {
+  for (const [sql, rb, rollsBackTo] of [[SQL1, RB, null], [SQL2, RB2, SQL1], [SQL3, RB3, null]]) {
     const defs = [...sql.matchAll(/create or replace function (public\.msm\w*)\(/g)].map((m) => m[1]);
     const grants = between(sql, 'do $grants$', '$grants$;');
     const revoked = between(grants, 'foreach f in array array[', '] loop');
@@ -188,6 +191,7 @@ const NEW_FILES = () => [
   'supabase/functions/msm-publish/index.ts',
   'supabase/migrations/20261017_OPS_multi_site_menu.sql', 'supabase/migrations/20261017_OPS_multi_site_menu_ROLLBACK.sql',
   'supabase/migrations/20261017c_OPS_multi_site_menu_groups.sql', 'supabase/migrations/20261017c_OPS_multi_site_menu_groups_ROLLBACK.sql',
+  'supabase/migrations/20261018_OPS_multi_site_menu_category_fields.sql', 'supabase/migrations/20261018_OPS_multi_site_menu_category_fields_ROLLBACK.sql',
   'supabase/tests/multi_site_menu/run.mjs', 'supabase/tests/multi_site_menu/baseline.sql', 'supabase/tests/multi_site_menu/README.md',
   'src/admin/sections/AdminMultiSiteMenu.jsx',
 ];

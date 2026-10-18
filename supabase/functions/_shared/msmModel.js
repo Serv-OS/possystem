@@ -60,7 +60,8 @@ export const TARGET_OPS = Object.freeze({
 // No screen edits an existing category's name, place or colour yet, and the import keeps no per site
 // category differences (products have kept values, categories do not), so publish would write the
 // group's value over every site's own. A NEW category takes every field. The database refuses the
-// rest (public.msm_changes_guard, 20261017c); the screens say it first (msmDiff.mergeStaged).
+// rest (trigger msm_changes_guard_category, 20261018, after msm_changes_guard); the screens say it
+// first (msmDiff.mergeStaged).
 export const CATEGORY_UPDATE_FIELDS = Object.freeze(['archived', 'route_like_id']);
 /** Words when a change to a category the group menu already has carries any other field ('' when fine). */
 export function categoryUpdateWords(change, op = change?.op) {

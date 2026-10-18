@@ -34,6 +34,8 @@
 //     and publishing writes nothing there.
 //   * 18 Oct follow up: a category the group menu already has takes only "send like" and removed or
 //     back (a new name, place or colour is refused in words); a new category takes every field.
+//     The database side is 20261018_OPS_multi_site_menu_category_fields.sql (its own trigger, after
+//     the main guard), applied by run.mjs on top of 20261017c as Ops ran it.
 
 import { spawn, spawnSync } from 'node:child_process';
 import { planSite, touchedFromChanges } from '../../functions/_shared/msmPlan.js';
@@ -759,6 +761,9 @@ export async function run(h) {
     expect('FOLLOW UP: and its place, even beside a send like', r.code !== 0 && /name, place and colour/.test(r.err), r.err);
     r = stage({ set: FS, target: 'category', entity: cat.id, op: 'remove', after: { color: '#000000' } });
     expect('FOLLOW UP: and its colour on a removal', r.code !== 0 && /name, place and colour/.test(r.err), r.err);
+    // 18 Oct recheck: the rule is its own trigger (20261018), after the main guard, which still answers first.
+    r = stage({ set: FS, target: 'category', entity: cat.id, op: 'update', after: { label: 'Renamed', route_like_id: randomUUID() } });
+    expect('FOLLOW UP: the main guard still answers first (a send like to a category of no group menu, beside a new name)', r.code !== 0 && /That category is not in this group menu/.test(r.err), r.err);
     r = stage({ set: FS, target: 'category', entity: cat.id, op: 'update', after: { route_like_id: cat.id }, before: { route_like_id: null } });
     expect('FOLLOW UP: a send like is taken', r.code === 0, r.err);
     r = q(`update msm_changes set after = after || '{"archived": false}'::jsonb where change_set_id = '${FS}' and entity_id = '${cat.id}'`, as(U.E));

@@ -29,7 +29,7 @@ const lit = (v) => `'${JSON.stringify(v).replace(/'/g, "''")}'::jsonb`;
 
 // ── the database ────────────────────────────────────────────────────────────
 psql(['-d', 'postgres'], `drop database if exists ${DB};\ncreate database ${DB};\n`);
-for (const f of ['supabase/tests/multi_site_menu/baseline.sql', 'supabase/migrations/20261017_OPS_multi_site_menu.sql', 'supabase/migrations/20261017c_OPS_multi_site_menu_groups.sql']) {
+for (const f of ['supabase/tests/multi_site_menu/baseline.sql', 'supabase/migrations/20261017_OPS_multi_site_menu.sql', 'supabase/migrations/20261017c_OPS_multi_site_menu_groups.sql', 'supabase/migrations/20261018_OPS_multi_site_menu_category_fields.sql']) {
   const p = psql(['-d', DB, '-1', '-f', path.join(ROOT, f)]);
   if (p.status) { console.error(p.stderr); process.exit(2); }
 }

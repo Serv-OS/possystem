@@ -5,6 +5,8 @@
 -- #  Undoes 20261017c_OPS_multi_site_menu_groups.sql and puts the round 1     #
 -- #  functions back exactly as 20261017_OPS_multi_site_menu.sql made them.    #
 -- #  Run it BEFORE the round 1 roll back, never after.                        #
+-- #  If 20261018_OPS_multi_site_menu_category_fields.sql has run, run ITS     #
+-- #  roll back first.                                                         #
 -- ############################################################################
 --
 -- AFTER THIS: put round 1's msm-publish back, or every publish waits and then fails with "Run

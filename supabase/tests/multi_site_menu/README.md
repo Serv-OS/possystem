@@ -1,7 +1,8 @@
 # Offline test for the Multi site menu migration
 
 `run.mjs` applies `supabase/migrations/20261017_OPS_multi_site_menu.sql`, then round 2's
-`20261017c_OPS_multi_site_menu_groups.sql` on top (as Peter runs them), to a **local, throwaway
+`20261017c_OPS_multi_site_menu_groups.sql` and then `20261018_OPS_multi_site_menu_category_fields.sql`
+on top (as Peter runs them), to a **local, throwaway
 Postgres 17** that copies the shape of the live Ops database, then checks every rule as the roles
 PostgREST really uses, and drives the publish path **end to end with the real planner, health
 check and push builder** (`supabase/functions/_shared/msm*.js`), exactly as `msm-publish` runs
@@ -140,3 +141,19 @@ category_fields_ok). Through the database: a category the group menu already has
 like" and removed or back; a new name, a new place or a new colour is refused in words (also on a
 removal, and beside a send like); a new category takes every field and can be edited again before
 publishing. `src/lib/msm/msmFollowUp.test.js` pins these counts to the files.
+
+## 18 Oct 2026 recheck, the category rule as its own step (297 of 297 with round 1's checks; edge.mjs 34 of 34)
+
+7 more checks: 1 in `round2.mjs` (named FOLLOW UP) and 6 in `run.mjs`. 20261017c had already run on
+Ops (18 Oct) when the follow up wrote the category rule into it, so Ops never got the rule. The file
+is back byte for byte as Ops ran it (every msm_ function body on Ops matched it, read only) and the
+rule is its own file, `20261018_OPS_multi_site_menu_category_fields.sql`: one function and one
+trigger, `msm_changes_guard_category`, which fires after `msm_changes_guard` (name order). `run.mjs`
+now checks that 20261017c's check row has 15 columns and its guard no category rule (the old 18 Oct
+check row check, reworded); that 20261018 applies once and twice, its check row reads
+`t|t|0|0|2`, and every function 20261017c left is untouched; and that the 20261018 roll back runs
+first, leaves no trigger or function, and touches nothing else. `edge.mjs` applies 20261018 too.
+`round2.mjs` checks that the main guard still answers first. The FOLLOW UP checks above now pass
+through the 20261018 trigger (they failed against 20261017c alone, as Ops is now).
+`src/lib/msm/msmRunOnOps.test.js` pins 20261017c to the file Ops ran: any later change goes in a new
+migration.
