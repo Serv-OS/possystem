@@ -58,7 +58,7 @@ test('20261018: its own trigger, after the main guard, additive, safe twice, clo
   assert.doesNotMatch(sql, /grant execute/);
   assert.doesNotMatch(sql, /^\s*(begin|commit);/im, 'bare statements: the SQL editor runs the paste as one transaction');
   // The check row and what it should say.
-  assert.match(sql, /category_fields_ok true, guards_in_order true, anon_function_rights 0,\n--   staged_category_fields 0/);
+  assert.match(sql, /category_fields_ok true, guards_in_order true, anon_function_rights 0,\n-- {3}staged_category_fields 0/);
   assert.match(sql, /\) as category_fields_ok,[\s\S]*\) as guards_in_order,[\s\S]*\) as anon_function_rights,[\s\S]*\) as staged_category_fields,\s*public\.msm_sql_contract\(\) as contract;\s*$/);
   assert.match(rb, /drop trigger if exists msm_changes_guard_category on public\.msm_changes;\ndrop function if exists public\.msm_changes_category_fields\(\);/);
   assert.match(rb, /Run it BEFORE the 20261017c roll back/);
