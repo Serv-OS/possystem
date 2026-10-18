@@ -112,6 +112,9 @@ import { money, currencySymbol } from '../lib/currency';
 import { subscribeSaveHealth } from '../lib/saveHealth';
 import { shouldRegate, sessionIdOf, idleTooLong, idleSignOutMessage, ACTIVITY_EVENTS } from '../lib/backOfficeSession';
 import { NAV_IA, EVERYTHING, canOpenRoute, guardRoute, filterNav, canPushToPos, readProfileRow, sectionsFromProfileRow } from '../lib/boSections';
+// Its own line: boSections.test.js pins the import above word for word.
+import { isBetaRoute } from '../lib/boSections';
+import BetaTag from '../components/BetaTag';
 // 12 Oct 2026 (Preston, D3): the two buttons below that open the POS used to delete the
 // pairing and its config, which unpaired a real till in another tab of this browser. Now only
 // the Back Office placeholder is dropped; a real pairing and its config are left alone.
@@ -948,6 +951,7 @@ export default function BackOfficeApp() {
                         }}>
                           <span style={{ width:5, height:5, borderRadius:'50%', background:'currentColor', opacity: active?1:0.4, flexShrink:0 }} />
                           {label}
+                          {isBetaRoute(id) && <BetaTag />}
                         </button>
                       );
                     })}
@@ -1054,8 +1058,9 @@ export default function BackOfficeApp() {
           display:'flex', alignItems:'center', justifyContent:'space-between',
           padding:'0 24px', flexShrink:0,
         }}>
-          <div style={{ fontSize:16, fontWeight:600, color:'var(--t1)', letterSpacing:'-.015em' }}>
+          <div style={{ fontSize:16, fontWeight:600, color:'var(--t1)', letterSpacing:'-.015em', display:'flex', alignItems:'center', gap:8 }}>
             {NAV.find(n => n.id === section)?.label || (section?.startsWith('wf-') ? 'Workforce' : '')}
+            {isBetaRoute(section) && <BetaTag />}
           </div>
           <div style={{ display:'flex', alignItems:'center', gap:12 }}>
             {/* Quick nav: POS / Office segmented (Office active) */}

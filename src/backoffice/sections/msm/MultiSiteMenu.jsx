@@ -33,7 +33,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase, isMock } from '../../../lib/supabase';
 import { msmApi } from '../../../lib/msm/msmApi';
+import { salesMap } from '../../../lib/msm/msmData';
 import { demoMsm } from '../../../lib/msm/msmDemo';
+import BetaTag from '../../../components/BetaTag';
 import { applyChanges } from '../../../../supabase/functions/_shared/msmDiff.js';
 import { indexCentral, stagedIndex } from '../../../lib/msm/msmGrid';
 import { readAllRows } from '../../../../supabase/functions/_shared/venueMenuCore.js';
@@ -178,7 +180,7 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
     let on = true;
     api.soldRecently(menu.id, 7).then((r) => {
       if (!on) return;
-      setSales(r.ok ? new Map((r.rows || []).map((x) => [`${x.location_id}|${x.venue_item_id}`, Number(x.sold) || 0])) : null);
+      setSales(salesMap(r));
     });
     return () => { on = false; };
   }, [phase, menu?.id, api]);
@@ -451,7 +453,7 @@ function Header({ menu, sites, children, onGuide = null }) {
   return (
     <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14, flexWrap: 'wrap', marginBottom: 14 }}>
       <div style={{ flex: 1, minWidth: 260 }}>
-        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '1.2px', color: 'var(--t4)', textTransform: 'uppercase' }}>Multi site menu</div>
+        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '1.2px', color: 'var(--t4)', textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: 8 }}>Multi site menu<BetaTag /></div>
         <h1 style={{ fontSize: 26, fontWeight: 700, letterSpacing: '-.6px', margin: '4px 0 2px', color: 'var(--t1)' }}>{menu?.name || 'Group menu'}</h1>
         {menu && (
           <div style={ui.sub}>

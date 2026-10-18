@@ -42,6 +42,13 @@ export const refusalWords = (error) => {
   return m.replace(/^ERROR:\s*/, '').slice(0, 300);
 };
 
+/**
+ * The sales read as the screen and riskChecks hold it: Map('location|venueItemId' -> sold in the
+ * window), or null when it could not be read (so the warnings say "we could not check sales"
+ * rather than reading a failure as "nothing sold").
+ */
+export const salesMap = (r) => (r && r.ok ? new Map((r.rows || []).map((x) => [`${x.location_id}|${x.venue_item_id}`, Number(x.sold) || 0])) : null);
+
 export function createMsmData({ client, report = () => {}, invokeTimeoutMs = 60000 } = {}) {
   let accessSeq = 0;
   const ok = (data) => ({ ok: true, data, error: null });
@@ -130,10 +137,18 @@ export function createMsmData({ client, report = () => {}, invokeTimeoutMs = 600
     /**
      * Round 2: how many of each venue product sold at each site in the last `days` days (the
      * "removing something that sells" tick). { ok, rows: [{ location_id, venue_item_id, sold }] }.
+     *
+     * 18 Oct 2026: read PAGED, in a fixed order. The function returns a table, so the Data API's
+     * max rows (1,000) cut it with no error: a seven site company had 1,259 sold site and product pairs in a
+     * week, so 259 read as "not sold" and their "will come off the till" tick vanished. Each pair is
+     * one row (a group by), so ordering by site then product makes the pages exact. A failed or
+     * too long read is ok: false (the screen says "we could not check sales"), never an empty list.
+     * 100 pages is 100,000 pairs; past that it fails safe the same way.
      */
     async soldRecently(menuId, days = 7, venueItemIds = null) {
-      const r = await rpc('msm_sold_recently', { p_menu: menuId, p_days: days, p_item_ids: venueItemIds && venueItemIds.length ? venueItemIds : null });
-      return r.ok ? { ok: true, rows: r.data || [] } : { ok: false, rows: [], error: r.error };
+      const args = { p_menu: menuId, p_days: days, p_item_ids: venueItemIds && venueItemIds.length ? venueItemIds : null };
+      const r = await readAllRows(() => client.rpc('msm_sold_recently', args).order('location_id').order('venue_item_id'), { max: 100 });
+      return r.rows ? { ok: true, rows: r.rows } : { ok: false, rows: [], error: r.error };
     },
     /** Round 2: which sites are trading now, with their local time. { ok, rows: [{ location_id, trading, local_time }] }. */
     async sitesTrading(menuId) {

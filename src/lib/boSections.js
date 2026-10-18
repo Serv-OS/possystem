@@ -136,6 +136,14 @@ const ROUTE_GATES = Object.freeze({
   [MSM_ROUTE]: (profile) => !!profile && typeof profile === 'object' && profile.multiSiteMenu?.canOpen === true,
 });
 
+// ── Beta features (18 Oct 2026, Peter: a small BETA tag next to the feature's name) ────────
+// The routes whose sidebar row, top bar title and page heading carry the BETA tag. The tag is
+// src/components/BetaTag.js; the screens ask isBetaRoute() and render it for these routes only.
+export const BETA_ROUTES = new Set([MSM_ROUTE]);
+export function isBetaRoute(routeId) {
+  return typeof routeId === 'string' && BETA_ROUTES.has(routeId);
+}
+
 /** Does a route's own gate (if it has one) let this login in? Routes with no gate: yes. */
 export function routeGateOk(routeId, profile) {
   const gate = typeof routeId === 'string' && Object.prototype.hasOwnProperty.call(ROUTE_GATES, routeId) ? ROUTE_GATES[routeId] : null;

@@ -17,6 +17,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { msmApi } from '../../lib/msm/msmApi';
 import { adminSwitchState } from '../../lib/msm/msmStatus';
+import BetaTag from '../../components/BetaTag';
 
 const st = {
   card: { background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 12, padding: 20, marginBottom: 16, boxShadow: 'var(--sh)' },
@@ -94,7 +95,7 @@ export default function AdminMultiSiteMenu({ org, allUsers = [] }) {
   if (!orgId) return null;
   return (
     <div style={st.card} data-testid="msm-admin-card">
-      <div style={st.h}>Multi site menu</div>
+      <div style={{ ...st.h, display: 'flex', alignItems: 'center', gap: 8 }}>Multi site menu<BetaTag /></div>
       {state === 'loading' && <div style={st.sub}>Loading…</div>}
       {state === 'missing' && <div style={st.sub}>Not installed yet. It appears here once the database update for the Multi site menu has been run.</div>}
       {state === 'error' && (
