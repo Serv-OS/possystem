@@ -106,3 +106,16 @@ a Retry goes back in the queue); an import from a page still on round 1 (no opti
 words; sold recently and trading now need the second sign in step. `run.mjs` checks the round 2
 check row's new columns (icon_ok, stuck_capped, retry_resets) and that the round 2 roll back puts the
 scheduler functions and the group site foreign key back exactly as round 1 made them.
+
+## 17 Oct 2026 recheck (270 of 270 with round 1's checks; edge.mjs 34 of 34)
+
+`round2.mjs` also proves, through the database: a site's own product with NO Standard price is
+brought in keeping "no price" (`kept.no_price`), the guard takes it (and refuses a `no_price` that is
+not true, or one with a price of its own), publishing it writes nothing; a group price change leaves
+that site with no price and says so, and the write path refuses a price nobody set there; a price set
+there on purpose lands and takes `no_price` away; Undo writes "no price" again. A turn on whose id is
+already the site's own product (in this menu) is refused at once, in words (Bring it in links it). A
+takeaway Zero Rate on a product with sizes lands on the product and every size at each site (each
+site's own rate, nothing else on the rows, a size's counter key kept), one VAT change per row, and
+Undo puts every row back exactly; the write path takes an explicit null a size copies from its
+product. `run.mjs` checks the round 2 check row's new column (no_price_ok).

@@ -146,11 +146,33 @@ export const CATEGORY_COLUMN = Object.freeze({
 // Round 2: tax_overrides, as an object of the ORDER TYPE keys the site keeps (a rate id, null for
 // "the venue default" as the site has it, or false for "no key here"), plus, for information only,
 // the site's other keys (counter, drive-thru, collection) which publish never writes anyway.
+// 17 Oct recheck: no_price (always true): the site's row has NO Standard price (pricing.base null,
+// or no pricing.base at all). A missing price is a fact the import keeps, never a difference to fix:
+// publish never writes a Standard price into that row until someone sets a price for it at that
+// site in the multi site menu (that change takes no_price away), and a change that puts no_price
+// back (Undo) writes "no price" again. A product with sizes never gets a Standard price written by
+// publish at all (its sizes carry the price, as in Menu Manager), so it never needs this.
+export const NO_PRICE = 'no_price';
 export const KEPT_COLUMNS = Object.freeze([
   'cat', 'cats', 'image', 'name', 'menu_name', 'receipt_name', 'kitchen_name', 'description', 'tax_rate_id',
   'allergens', 'tags', 'visibility', 'sold_alone', 'item_code', 'assigned_modifier_groups', 'type', 'parent_id',
-  'tax_overrides',
+  'tax_overrides', 'no_price',
 ]);
+/** Does this site keep "no price" for the product? (msm_product_sites.kept.no_price) */
+export const keepsNoPrice = (ps) => !!ps && !!ps.kept && typeof ps.kept === 'object' && ps.kept[NO_PRICE] === true;
+/** A site's kept values without no_price (for a change that sets a price there on purpose). */
+export const keptWithoutNoPrice = (kept) => {
+  const out = { ...(kept && typeof kept === 'object' ? kept : {}) };
+  delete out[NO_PRICE];
+  return out;
+};
+/**
+ * A product priced by its sizes: typed 'variants', or any product with live sizes under it in the
+ * group menu. Its own Standard price is never charged, never written by publish, and never moved by
+ * Change prices (Menu Manager shows no Standard price box for it either).
+ */
+export const pricedBySizes = (product, products) => !!product && (product.type === 'variants'
+  || (Array.isArray(products) && products.some((x) => x && x.parent_product_id === product.id && !x.archived)));
 
 // Venue columns publish may write (public.msm_apply_site refuses anything else).
 export const VENUE_INSERT = Object.freeze({
@@ -267,6 +289,18 @@ export function channelFallback(product, ps, ch) {
     if (t != null) return t;
   }
   return n(ps && ps.price) ?? n(product && product.default_price);
+}
+
+/**
+ * Does a site have NO price for a product (17 Oct recheck)? It keeps no_price and has no Standard
+ * price of its own; for an order type, it has no price of its own for it either and nothing but
+ * its (missing) Standard price to fall back to.
+ */
+export function noPriceAt(product, ps, ch = null) {
+  if (!keepsNoPrice(ps) || ps.price != null) return false;
+  if (!ch || !CHANNELS.includes(ch)) return true;
+  if (ps.channel_prices && ps.channel_prices[ch] != null) return false;
+  return channelFallback({ ...(product || {}), default_price: null }, { ...ps, price: null }, ch) == null;
 }
 
 /** The group's own fallback for channel `ch` (no site): its ch price, takeaway for drive thru, its In store price. */

@@ -145,12 +145,36 @@ test('a family clash matches the copy on sale, never an archived duplicate', () 
   assert.equal(clash.matchedId, `m-latte_${sfx(B)}`);
 });
 
-test('a legacy row with no base price is named in words by the self check', () => {
+test('17 Oct recheck: a row with no Standard price is KEPT as "no price": nothing left out, zero writes', () => {
   const v = venues();
-  const row = v[B].items.find((i) => i.id === `m-latte_${sfx(B)}`);
-  row.pricing = { dineIn: null };
+  // Cola at B has no Standard price at all (a legacy row), Tea at A has an explicit null.
+  v[B].items.find((i) => i.id === `m-cola_${sfx(B)}`).pricing = { dineIn: null };
+  v[A].items.find((i) => i.id === 'm-tea').pricing = { base: null };
   const sites = importSites(v);
   const built = buildCentral(proposeImport(sites, { idGen: idGen() }), sites, {}, { idGen: idGen('g') });
-  assert.equal(built.check.ok, false);
-  assert.ok(built.check.problems.some((x) => /has no base price/.test(x.words)), JSON.stringify(built.check.problems));
+  assert.ok(built.check.ok, JSON.stringify(built.check.problems));
+  assert.equal(built.check.writes, 0, 'switching on and importing writes nothing at any site');
+  const plain = importSites(venues());
+  const base = buildCentral(proposeImport(plain, { idGen: idGen() }), plain, {}, { idGen: idGen('g') });
+  assert.deepEqual(built.dropped, base.dropped, 'nothing more is left out (only the archived one site row, as always)');
+  const colaB = siteOf(built.central, 'Cola', B);
+  assert.deepEqual([colaB.kept.no_price, colaB.price], [true, null], 'Cola keeps no price at B');
+  assert.equal(siteOf(built.central, 'Tea', A).kept.no_price, true);
+  assert.equal(siteOf(built.central, 'Cola', A).kept.no_price, undefined, 'a site with a price keeps none of it');
+  // The payload the database takes carries it.
+  const pay = importPayload(built.central, { orgId: ORG, name: 'Group menu' });
+  assert.equal(pay.products.find((x) => x.name === 'Cola').sites.find((x) => x.location_id === B).kept.no_price, true);
+});
+
+test('17 Oct recheck: a product with sizes and no Standard price needs nothing kept: publish never writes its own price', () => {
+  const v = venues();
+  v[B].items.find((i) => i.id === `m-latte_${sfx(B)}`).pricing = { base: null };
+  v[A].items.find((i) => i.id === 'm-latte').pricing = { base: null, menus: { 'menu-a': { base: 2.5 } } };
+  const sites = importSites(v);
+  const built = buildCentral(proposeImport(sites, { idGen: idGen() }), sites, {}, { idGen: idGen('g') });
+  assert.ok(built.check.ok, JSON.stringify(built.check.problems));
+  assert.equal(built.check.writes, 0);
+  const plain = importSites(venues());
+  assert.deepEqual(built.dropped, buildCentral(proposeImport(plain, { idGen: idGen() }), plain, {}, { idGen: idGen('g') }).dropped);
+  assert.equal(siteOf(built.central, 'Latte', B).kept.no_price, undefined, 'its sizes carry the price');
 });

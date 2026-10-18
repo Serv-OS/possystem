@@ -96,7 +96,11 @@ export function riskChecks(changes, central, sold = null, trading = null, opts =
     if (ch.target === 'product' && 'default_price' in a && ch.op !== 'create') priceRisk(pName(ch.entity_id), 'at every site that follows the group price', dB(ch.entity_id), a.default_price);
     if (ch.target === 'product' && ch.op === 'create' && Number(a.default_price) === 0 && !isOptionOnlyItem(a)) add('zero_price', `${a.name}|new`, `${a.name || 'A new product'} would be free (0.00).`);
     if (ch.target === 'product_site' && 'price' in a) {
-      priceRisk(pName(ch.entity_id), `at ${siteName(ch.location_id)}`, b.price ?? dB(ch.entity_id), a.price ?? dA(ch.entity_id));
+      // A site that had no price (17 Oct recheck) has nothing to go up or down from; only a free
+      // price needs a tick.
+      if (b.kept && b.kept.no_price === true && !(a.kept && a.kept.no_price === true)) {
+        if (toPence(a.price ?? dA(ch.entity_id)) === 0) add('zero_price', `${pName(ch.entity_id)}|${siteName(ch.location_id)}|0`, `${pName(ch.entity_id)} would be free (0.00) at ${siteName(ch.location_id)}.`);
+      } else priceRisk(pName(ch.entity_id), `at ${siteName(ch.location_id)}`, b.price ?? dB(ch.entity_id), a.price ?? dA(ch.entity_id));
     }
     // Order type prices (round 2 review): the group's and a site's own, per order type.
     if (ch.target === 'product' && 'default_channels' in a && ch.op !== 'create') {

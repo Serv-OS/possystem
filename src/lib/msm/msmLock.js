@@ -70,7 +70,9 @@ export const LOCK_WORDS = Object.freeze({
   stillYours: 'Still yours here: button colour, order, print centre, timed menu prices, 86, cooking preferences and recipes.',
 });
 
-const keptSet = (kept) => new Set(Array.isArray(kept) ? kept : kept instanceof Set ? [...kept] : []);
+// "no_price" (17 Oct recheck: the site's row has no Standard price) is not a setting the site keeps
+// and edits here: prices stay head office's, so it is never listed or unlocked.
+const keptSet = (kept) => new Set((Array.isArray(kept) ? kept : kept instanceof Set ? [...kept] : []).filter((k) => k !== 'no_price'));
 
 /**
  * The part of a store patch a site may save on a product the group menu manages.

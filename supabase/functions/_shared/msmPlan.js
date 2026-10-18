@@ -48,14 +48,28 @@
 //     live option prices). Option prices are set on the option.
 //   * VAT per order type: only the four keys (dine-in, takeaway, delivery, bar), one by one, as a
 //     patch the database applies to the row it locked; every other key and every explicit null the
-//     site has stays as it is (msmTax.js). A size with overrides of its own gets the full set.
-//     A tax profile that is still a generated copy of the item's own rate is cleared (it hid the
-//     order type VAT), and can be put back later; a real profile blocks, in words.
+//     site has stays as it is (msmTax.js). A tax profile that is still a generated copy of the
+//     item's own rate is cleared (it hid the order type VAT), and can be put back later; a real
+//     profile blocks, in words.
+//
+// 17 OCT RECHECK
+//   * A size takes the same four keys as its product's row at that site, exactly as Menu Manager
+//     cascades taxOverrides to every size (store/index.js): online cart lines, QR checkout and
+//     delivery platform orders read the SIZE row's own keys. A size that keeps its own key (kept
+//     tax_overrides) keeps it. A new size gets its product's keys.
+//   * No price (kept no_price): a site whose row has no Standard price keeps none. Publish never
+//     writes pricing.base there until a change sets a price for it at that site; a change that puts
+//     no_price back (Undo) writes "no price" again. A product priced by its sizes never gets a
+//     Standard price written into an existing row (its sizes carry the price).
+//   * A product turned on at a site (or a new product) whose venue id is already a row there is the
+//     site's OWN product: taking it over would write the group's values into it and Undo would then
+//     turn it off. Blocked, in words; Bring it in (Sites tab) links it on purpose, and its product
+//     site create carries the site's kept values (even none), which is how the planner knows.
 
 import {
   PUBLISHED_CHANNELS, ORDER_TYPE_TAX_KEYS, PRODUCT_COLUMN, has, sameValue, samePrice,
   newCategoryId, newMenuId, newGroupId, longCategoryId, longMenuId, longGroupId, newOptionId, longOptionId,
-  newItemId, freeId, money2, toPence, KEPT_COLUMNS, pctText,
+  newItemId, freeId, money2, toPence, KEPT_COLUMNS, pctText, NO_PRICE, keepsNoPrice, pricedBySizes,
 } from './msmModel.js';
 import { mapRateDescriptor, effectiveTaxByType, venueProfileIsMirror, TAX_KEY_LABEL } from './msmTax.js';
 
@@ -82,11 +96,12 @@ export function touchedFromChanges(changes) {
     groups: new Map(), groupSites: new Map(), options: new Map(), optionSites: new Map(),
   };
   const merge = (map, key, op, fields, extra = {}) => {
-    const cur = map.get(key) || { op: null, fields: new Set(), keptCleared: new Set() };
+    const cur = map.get(key) || { op: null, fields: new Set(), keptCleared: new Set(), keptAdded: new Set() };
     // create wins over update; remove wins over everything after it
     if (op === 'create' || op === 'remove' || !cur.op) cur.op = op === 'update' && cur.op ? cur.op : op;
     for (const f of fields) cur.fields.add(f);
     for (const k of extra.keptCleared || []) cur.keptCleared.add(k);
+    for (const k of extra.keptAdded || []) cur.keptAdded.add(k);
     // The order type price keys a change really moved (null = not known: every key is written).
     if (has(extra, 'channelKeys')) {
       if (extra.channelKeys === null || cur.channelKeys === null) cur.channelKeys = null;
@@ -118,6 +133,15 @@ export function touchedFromChanges(changes) {
     }
     return out;
   };
+  // The kept keys a change PUT (back): only no_price matters to the planner (Undo of a price set on
+  // a site that had none writes "no price" again). A create adds nothing: the row is new to the
+  // group menu, so what the site keeps is already what the venue holds.
+  const addedOf = (c, after) => {
+    if (c.op === 'create' || !has(after, 'kept')) return [];
+    const was = (c.before && c.before.kept) || {};
+    const now = after.kept || {};
+    return Object.keys(now).filter((k) => !has(was, k));
+  };
   for (const c of listOf(changes)) {
     if (!c) continue;
     const after = c.after && typeof c.after === 'object' ? c.after : {};
@@ -128,7 +152,7 @@ export function touchedFromChanges(changes) {
     else if (c.target === 'product') merge(t.products, c.entity_id, c.op, fields);
     else if (c.target === 'product_site') {
       const ck = channelKeysOf(c, after);
-      merge(t.productSites, `${c.entity_id}|${c.location_id}`, c.op, fields, { keptCleared: clearedOf(c, after), ...(ck === undefined ? {} : { channelKeys: ck }) });
+      merge(t.productSites, `${c.entity_id}|${c.location_id}`, c.op, fields, { keptCleared: clearedOf(c, after), keptAdded: addedOf(c, after), ...(ck === undefined ? {} : { channelKeys: ck }) });
     }
     else if (c.target === 'modifier_group') merge(t.groups, c.entity_id, c.op, fields);
     else if (c.target === 'modifier_group_site') merge(t.groupSites, `${c.entity_id}|${c.location_id}`, c.op, fields, { keptCleared: clearedOf(c, after) });
@@ -577,9 +601,21 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     }
   };
 
-  // VAT by order type for a NEW venue row: the four keys mapped (a size inherits, so none).
+  // The four keys of a size's product row at this site, as that row ends this write (parents are
+  // planned before their sizes). null when the product's row is not here.
+  const parentTypeKeys = (p) => {
+    const pps = psBy.get(p.parent_product_id);
+    const parentRow = pps ? vItemById.get(pps.venue_item_id) : null;
+    if (!parentRow) return null;
+    const pto = parentRow.tax_overrides && typeof parentRow.tax_overrides === 'object' ? parentRow.tax_overrides : {};
+    const out = {};
+    for (const k of ORDER_TYPE_TAX_KEYS) if (has(pto, k)) out[k] = pto[k];
+    return out;
+  };
+  // VAT by order type for a NEW venue row: the four keys mapped; a new size takes its product's
+  // (17 Oct recheck, as Menu Manager cascades them to every size).
   const newRowTaxOverrides = (p) => {
-    if (p.parent_product_id) return {};
+    if (p.parent_product_id) return parentTypeKeys(p) || {};
     const eff = effectiveTaxByType(p, productById);
     const out = {};
     for (const k of ORDER_TYPE_TAX_KEYS) {
@@ -596,63 +632,54 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     const kept = ps.kept && typeof ps.kept === 'object' ? ps.kept : {};
     const keptTax = kept.tax_overrides && typeof kept.tax_overrides === 'object' && !w.keptCleared.has('tax_overrides') ? kept.tax_overrides : {};
     const keptKey = (k) => has(keptTax, k) && !w.keptCleared.has(`tax_overrides:${k}`);
-    const cur = vrow.tax_overrides && typeof vrow.tax_overrides === 'object' ? vrow.tax_overrides : {};
     const isSize = !!p.parent_product_id;
-    if (isSize && !Object.keys(cur).length) {
-      // A size with none of its own inherits its product's VAT by order type, but the till reads a
-      // size line's OWN tax profile first (taxCompute itemProfileIds; kiosk child.profile), so a
-      // generated copy of its rate on the size would hide the takeaway VAT (Provo, Location 2).
-      sizeProfile(p, ps, vrow, meta);
-      return;
-    }
-    const eff = effectiveTaxByType(p, productById);
-    // A size with its own overrides gets the full set (sizes do not merge with their product).
-    const want = isSize ? [...ORDER_TYPE_TAX_KEYS] : keys;
     let wrote = false;
-    for (const k of want) {
-      if (keptKey(k)) continue;
-      if (!eff[k]) { wrote = setTaxKey(vrow, k, undefined, meta) || wrote; continue; }
-      const m = mapRateDescriptor(eff[k], applied.taxRates);
-      if (!m.ok) { problem('no_tax_rate_type', 'block', `This site has no ${pctText(eff[k].percent)} VAT rate called "${eff[k].name}" for "${p.name}" (${TAX_KEY_LABEL[k]}). Add it in that site's Settings, Tax, or set ${TAX_KEY_LABEL[k]} back to the product's VAT.`, meta); continue; }
-      wrote = setTaxKey(vrow, k, m.id, meta) || wrote;
-    }
-    // Drive thru and collection read takeaway only when the site has no key of their own.
-    if (eff.takeaway && keys.includes('takeaway')) {
-      const own = ['drive-thru', 'collection'].filter((k) => has(vrow.tax_overrides || {}, k));
-      if (own.length) problem('own_alias_vat', 'warn', `This site has its own ${own.map((k) => (k === 'drive-thru' ? 'Drive thru' : 'Collection')).join(' and ')} VAT on "${p.name}", so the group Takeaway VAT will not reach ${own.length === 1 ? 'it' : 'them'} there.`, meta);
+    let parentRow = null;
+    if (isSize) {
+      // 17 Oct recheck: a size takes its product's four keys at this site, as its product's row ends
+      // this write (Menu Manager cascades taxOverrides to every size; online, QR and delivery orders
+      // read the size row's own keys). Every other key the size has stays; a key it keeps stays.
+      const pps = psBy.get(p.parent_product_id);
+      parentRow = pps ? vItemById.get(pps.venue_item_id) : null;
+      const want = parentTypeKeys(p);
+      if (!want) return;                        // its product is not here (said elsewhere)
+      for (const k of ORDER_TYPE_TAX_KEYS) {
+        if (keptKey(k)) continue;
+        wrote = setTaxKey(vrow, k, has(want, k) ? want[k] : undefined, meta) || wrote;
+      }
+    } else {
+      const eff = effectiveTaxByType(p, productById);
+      for (const k of keys) {
+        if (keptKey(k)) continue;
+        if (!eff[k]) { wrote = setTaxKey(vrow, k, undefined, meta) || wrote; continue; }
+        const m = mapRateDescriptor(eff[k], applied.taxRates);
+        if (!m.ok) { problem('no_tax_rate_type', 'block', `This site has no ${pctText(eff[k].percent)} VAT rate called "${eff[k].name}" for "${p.name}" (${TAX_KEY_LABEL[k]}). Add it in that site's Settings, Tax, or set ${TAX_KEY_LABEL[k]} back to the product's VAT.`, meta); continue; }
+        wrote = setTaxKey(vrow, k, m.id, meta) || wrote;
+      }
+      // Drive thru and collection read takeaway only when the site has no key of their own.
+      if (eff.takeaway && keys.includes('takeaway')) {
+        const own = ['drive-thru', 'collection'].filter((k) => has(vrow.tax_overrides || {}, k));
+        if (own.length) problem('own_alias_vat', 'warn', `This site has its own ${own.map((k) => (k === 'drive-thru' ? 'Drive thru' : 'Collection')).join(' and ')} VAT on "${p.name}", so the group Takeaway VAT will not reach ${own.length === 1 ? 'it' : 'them'} there.`, meta);
+      }
     }
     if (!wrote) return;
     const anyType = ORDER_TYPE_TAX_KEYS.some((k) => has(vrow.tax_overrides || {}, k));
-    const rateAfter = vrow.tax_rate_id ?? null;
+    // A size's rate is its own, else its product's (the till's chain for a size line).
+    const rateAfter = vrow.tax_rate_id ?? (isSize ? parentRow?.tax_rate_id ?? null : null);
     if (vrow.tax_profile_id) {
       if (!anyType) return;
       const mirror = venueProfileIsMirror(V, vrow.tax_profile_id, rateAfter);
       if (mirror === null) { problem('tax_profiles_unread', 'block', `Could not read this site's tax profiles, so VAT by order type for "${p.name}" was not checked. Try again.`, meta); return; }
-      if (!mirror) { problem('real_tax_profile', 'block', `This site uses a tax profile on "${p.name}". Set its tax in Settings, Tax.`, meta); return; }
+      if (!mirror) {
+        problem('real_tax_profile', 'block', isSize
+          ? `This site uses a tax profile on the size "${p.name}", so its VAT by order type would not change. Set its tax in Settings, Tax.`
+          : `This site uses a tax profile on "${p.name}". Set its tax in Settings, Tax.`, meta);
+        return;
+      }
       setCol('items', vrow, 'tax_profile_id', null, { ...meta, profileCleared: true });
     } else if (!anyType && ps.cleared_tax_profile_id) {
       // The order type VAT is gone again (Undo): the old copy of its own rate goes back.
       if (venueProfileIsMirror(V, ps.cleared_tax_profile_id, rateAfter) === true) setCol('items', vrow, 'tax_profile_id', ps.cleared_tax_profile_id, { ...meta, profileRestored: true });
-    }
-  }
-
-  // A size's own tax profile against its product's VAT by order type, as the product's row ends
-  // this write: a generated copy is cleared (and put back when the order type VAT goes again); a
-  // real profile blocks, in words.
-  function sizeProfile(p, ps, vrow, meta) {
-    const pps = psBy.get(p.parent_product_id);
-    const parentRow = pps ? vItemById.get(pps.venue_item_id) : null;
-    const pto = parentRow && parentRow.tax_overrides && typeof parentRow.tax_overrides === 'object' ? parentRow.tax_overrides : {};
-    const parentTyped = ORDER_TYPE_TAX_KEYS.some((k) => has(pto, k));
-    const rate = vrow.tax_rate_id ?? parentRow?.tax_rate_id ?? null;
-    if (vrow.tax_profile_id) {
-      if (!parentTyped) return;
-      const mirror = venueProfileIsMirror(V, vrow.tax_profile_id, rate);
-      if (mirror === null) { problem('tax_profiles_unread', 'block', `Could not read this site's tax profiles, so VAT by order type for "${p.name}" was not checked. Try again.`, meta); return; }
-      if (!mirror) { problem('real_tax_profile', 'block', `This site uses a tax profile on the size "${p.name}", so its takeaway VAT would not change. Set its tax in Settings, Tax.`, meta); return; }
-      setCol('items', vrow, 'tax_profile_id', null, { ...meta, profileCleared: true });
-    } else if (!parentTyped && ps.cleared_tax_profile_id) {
-      if (venueProfileIsMirror(V, ps.cleared_tax_profile_id, rate) === true) setCol('items', vrow, 'tax_profile_id', ps.cleared_tax_profile_id, { ...meta, profileRestored: true });
     }
   }
 
@@ -664,20 +691,27 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
   }
 
   // ── 3. Which products this site must look at ──────────────────────────────
-  const work = new Map();   // productId -> { prodOp, prodFields:Set, siteOp, siteFields:Set, keptCleared:Set }
-  const add = (pid) => { if (!work.has(pid)) work.set(pid, { prodOp: null, prodFields: new Set(), siteOp: null, siteFields: new Set(), keptCleared: new Set() }); return work.get(pid); };
+  const work = new Map();   // productId -> { prodOp, prodFields:Set, siteOp, siteFields:Set, keptCleared:Set, keptAdded:Set }
+  const add = (pid) => { if (!work.has(pid)) work.set(pid, { prodOp: null, prodFields: new Set(), siteOp: null, siteFields: new Set(), keptCleared: new Set(), keptAdded: new Set() }); return work.get(pid); };
   for (const [pid, t] of T.products) { const w = add(pid); w.prodOp = t.op; t.fields.forEach((f) => w.prodFields.add(f)); }
   for (const [key, t] of T.productSites) {
     const [pid, l] = key.split('|');
     if (l !== loc) continue;
     const w = add(pid); w.siteOp = t.op; t.fields.forEach((f) => w.siteFields.add(f)); t.keptCleared.forEach((k) => w.keptCleared.add(k));
+    (t.keptAdded || []).forEach((k) => w.keptAdded.add(k));
     if (t.fields.has('channel_prices')) w.channelKeys = t.channelKeys === undefined || t.channelKeys === null ? null : new Set(t.channelKeys);
   }
-  // A product's VAT by order type reaches its sizes that carry overrides of their own.
+  // A product's VAT by order type reaches every size of it (17 Oct recheck: a size takes its
+  // product's four keys, as Menu Manager cascades them): the product's VAT by order type changed,
+  // or this site gave back a key it kept on the product ("Use the group's").
+  const parentTypeVatAt = (pid) => {
+    if (T.products.get(pid)?.fields.has('tax_by_type')) return true;
+    const ts = T.productSites.get(`${pid}|${loc}`);
+    return !!ts && [...ts.keptCleared].some((k) => k === 'tax_overrides' || k.startsWith('tax_overrides:'));
+  };
   for (const p of listOf(C.products)) {
     if (!p.parent_product_id) continue;
-    const pt = T.products.get(p.parent_product_id);
-    if (pt && pt.fields.has('tax_by_type')) add(p.id).prodFields.add('tax_by_type');
+    if (parentTypeVatAt(p.parent_product_id)) add(p.id).prodFields.add('tax_by_type');
   }
   if (T.sitesCreated.has(loc)) for (const pid of psBy.keys()) { const w = add(pid); if (!w.siteOp) w.siteOp = 'create'; }
 
@@ -744,8 +778,18 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
         problem('site_has_product', 'block', `"${p.name}" is already at this site as its own product. Add a site is only for a site that does not sell the group menu's products yet: bring this site's products in from the Sites tab instead. Nothing was changed.`, meta);
         continue;
       }
-      if (w.siteOp === 'create' && !rowOnMenu(vrow)) {
+      const creating = w.siteOp === 'create' || w.prodOp === 'create';
+      if (creating && !rowOnMenu(vrow)) {
         problem('own_copy_other_menu', 'block', `This site already has its own "${p.name}" in another of its menus (or in a category that is off this menu). Move it into this menu at the site, or bring it in from the Sites tab, then publish again. Nothing was changed.`, meta);
+        continue;
+      }
+      // 17 Oct recheck: a turn on (or a new product) over the site's own row in THIS menu. Bring it
+      // in links such a row on purpose: its product site create always carries the site's kept
+      // values (even none) and is proven to write nothing. Any other create would take the site's
+      // own product over (its price rewritten), and Undo would then turn it off.
+      if (creating && !w.siteFields.has('kept')) {
+        const own = vrow.menu_name || vrow.name || p.name;
+        problem('own_copy_takeover', 'block', `This site already sells its own "${own}" (not in the group menu). Turning the group's "${p.name}" on here would take that one over. To use it, bring it in from the Sites tab and link it to "${p.name}", then publish again. Nothing was changed.`, meta);
         continue;
       }
     }
@@ -789,8 +833,18 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     for (const k of w.keptCleared) {
       if (k === 'tax_overrides') ORDER_TYPE_TAX_KEYS.forEach((x) => taxKeys.add(x));
       else if (k.startsWith('tax_overrides:')) taxKeys.add(k.slice(14));
+      else if (k === NO_PRICE) pricingKeys.add('base');      // a price set here on purpose
       else cols.add(k);
     }
+    if (w.keptAdded.has(NO_PRICE)) pricingKeys.add('base');   // "no price" put back (Undo)
+    // 17 Oct recheck. No Standard price here (kept no_price, and no price of its own): nothing is
+    // written into pricing.base, unless a change put "no price" back. A product priced by its sizes
+    // never gets one written into its existing row at all.
+    // Priced by its sizes HERE: what the row is at this site (a site that keeps its own kind of
+    // product keeps it), or live sizes under it at this site.
+    const sizedParent = pricingKeys.has('base') && ((keptBlocks('type') ? vrow.type === 'variants' : pricedBySizes(p, C.products))
+      || applied.items.some((i) => i && i.parent_id === vrow.id && i.archived !== true));
+    const noPriceHere = keepsNoPrice(ps) && ps.price == null;
 
     for (const col of cols) {
       // Where a product shows (till, kiosk, online, delivery) stays the site's own, as the normal
@@ -813,6 +867,16 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
       setCol('items', vrow, col, v, meta);
     }
     for (const k of pricingKeys) {
+      if (k === 'base' && sizedParent) continue;
+      if (k === 'base' && noPriceHere) {
+        if (w.keptAdded.has(NO_PRICE)) { setPrice(vrow, 'base', null, { ...meta, noPrice: true }); continue; }
+        // Said (once) for a product on sale here; an option only sub item's own price is never charged
+        // (the row as it ends this write: a site may keep its own kind of product).
+        if (siteActive(p, ps) && !(vrow.type === 'subitem' && vrow.sold_alone !== true)) {
+          problem('no_price_kept', 'warn', `"${p.name}" has no price at this site, so the group price is not written here. To sell it at a price there, set its price for this site in the multi site menu.`, meta);
+        }
+        continue;
+      }
       const v = k === 'base' ? basePrice(p, ps) : channelPrice(p, ps, k);
       if (k === 'base' && v == null) { problem('no_price', 'block', `"${p.name}" has no price at this site.`, meta); continue; }
       setPrice(vrow, k, v, meta);
@@ -1086,6 +1150,10 @@ function countLines(lines, W) {
     categoriesNew: W.categories.insert.length, categoriesOff: W.links.delete.length, categories: 0,
     groupsNew: W.groups.insert.length, groups: 0, vat: 0,
   };
+  // One VAT change per product row, however many of its VAT values move in one write (17 Oct
+  // recheck: a new rate over an old profile copy clears the copy in the same write, which read as
+  // "2 VAT changes" for one product).
+  const vatRows = new Set();
   for (const l of lines) {
     if (l.table === 'groups') { if (l.column !== '(new)') c.groups++; continue; }
     // A category edit (name, colour, under) counts, so the site never says "Nothing changes here"
@@ -1094,7 +1162,7 @@ function countLines(lines, W) {
     if (l.table !== 'items') continue;
     if (l.column === '(new)') { if (l.subItemFor) c.subItems++; else if (l.parentName) c.newSizes++; else c.newProducts++; continue; }
     if (l.column.startsWith('pricing.')) c.prices++;
-    else if (l.column.startsWith('tax_overrides.') || l.column === 'tax_profile_id' || l.column === 'tax_rate_id') c.vat++;
+    else if (l.column.startsWith('tax_overrides.') || l.column === 'tax_profile_id' || l.column === 'tax_rate_id') { if (!vatRows.has(l.id)) { vatRows.add(l.id); c.vat++; } }
     else if (l.column === 'archived') { if (l.after === false) c.turnedOn++; else c.turnedOff++; }
     else if (['name', 'menu_name'].includes(l.column)) c.renamed++;
     else c.other++;
@@ -1179,7 +1247,8 @@ export function lineWords(line, names = {}) {
   if (line.column.startsWith('pricing.')) return priceLineWords(who, line.column.slice(8), line.before, line.after);
   if (line.column.startsWith('tax_overrides.')) {
     const k = line.column.slice(14);
-    return `${who}: ${TAX_KEY_LABEL[k] || 'order type'} VAT ${line.after === undefined ? 'now the same as the product' : `becomes ${names[line.after] || 'another rate'}`}`;
+    const to = line.after === undefined ? 'now the same as the product' : line.after === null ? "becomes the site's default VAT" : `becomes ${names[line.after] || 'another rate'}`;
+    return `${who}: ${TAX_KEY_LABEL[k] || 'order type'} VAT ${to}`;
   }
   if (line.column === 'tax_profile_id') {
     return line.after == null

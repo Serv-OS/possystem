@@ -28,6 +28,14 @@ function central() {
   };
 }
 
+// Latte with its size taken off (17 Oct recheck: a product with live sizes is priced by them and
+// never moved itself), for the tests about a product's own price.
+function centralP() {
+  const c = central();
+  c.products.find((p) => p.id === 'latte-l').archived = true;
+  return c;
+}
+
 test('percent is worked in whole pence, half up', () => {
   assert.equal(changeOne(280, { direction: 'up', mode: 'percent', value: 5 }).pence, 294);   // 294.0
   assert.equal(changeOne(285, { direction: 'up', mode: 'percent', value: 10 }).pence, 314);  // 313.5 -> 314
@@ -60,7 +68,7 @@ test('never below zero: clamped and flagged', () => {
 });
 
 test('ALL SITES: the default moves, followers move with it (no rows), overrides change too', () => {
-  const out = applyPriceChange(central(), { scope: { productIds: ['latte'], includeSizes: false }, change: { direction: 'up', mode: 'amount', value: 0.2 }, sites: 'all' });
+  const out = applyPriceChange(centralP(), { scope: { productIds: ['latte'], includeSizes: false }, change: { direction: 'up', mode: 'amount', value: 0.2 }, sites: 'all' });
   assert.deepEqual(out.changes, [
     { target: 'product', entity_id: 'latte', location_id: null, op: 'update', after: { default_price: 3 } },
     { target: 'product_site', entity_id: 'latte', location_id: L2, op: 'update', after: { price: 3.2 } },
@@ -70,7 +78,7 @@ test('ALL SITES: the default moves, followers move with it (no rows), overrides 
 });
 
 test('an override that ends equal to the default is cleared', () => {
-  const c = central();
+  const c = centralP();
   c.productSites.find((s) => s.product_id === 'latte' && s.location_id === L2).price = 2.9;
   const out = applyPriceChange(c, { scope: { productIds: ['latte'], includeSizes: false }, change: { direction: 'up', mode: 'amount', value: 0.1 }, sites: [L2] });
   // chosen sites: site 2 is worked from 2.90 to 3.00; the default stays 2.80, so it stays an override
@@ -81,7 +89,7 @@ test('an override that ends equal to the default is cleared', () => {
 });
 
 test('CHOSEN SITES: the default stays; each chosen site worked from its current price and stored as its own', () => {
-  const out = applyPriceChange(central(), { scope: { productIds: ['latte'], includeSizes: false }, change: { direction: 'up', mode: 'percent', value: 10 }, sites: [L1, L2] });
+  const out = applyPriceChange(centralP(), { scope: { productIds: ['latte'], includeSizes: false }, change: { direction: 'up', mode: 'percent', value: 10 }, sites: [L1, L2] });
   assert.deepEqual(out.changes, [
     { target: 'product_site', entity_id: 'latte', location_id: L1, op: 'update', after: { price: 3.08 } },
     { target: 'product_site', entity_id: 'latte', location_id: L2, op: 'update', after: { price: 3.3 } },
@@ -91,7 +99,7 @@ test('CHOSEN SITES: the default stays; each chosen site worked from its current 
 });
 
 test('SET TO at all sites sets the default and clears every override in scope (review nit)', () => {
-  const out = applyPriceChange(central(), { scope: { productIds: ['latte', 'cola'], includeSizes: false }, change: { mode: 'set', value: 2.5 }, sites: 'all' });
+  const out = applyPriceChange(centralP(), { scope: { productIds: ['latte', 'cola'], includeSizes: false }, change: { mode: 'set', value: 2.5 }, sites: 'all' });
   assert.ok(out.changes.some((c) => c.target === 'product' && c.entity_id === 'cola' && c.after.default_price === 2.5));
   assert.ok(out.changes.some((c) => c.target === 'product_site' && c.entity_id === 'latte' && c.location_id === L2 && c.after.price === null));
   assert.equal(out.summary.clears, 2);
@@ -99,11 +107,44 @@ test('SET TO at all sites sets the default and clears every override in scope (r
 });
 
 test('scope: categories include sub categories; sizes follow their product; variants parents and archived never', () => {
+  // 17 Oct recheck: Latte has a live size, so it is priced by its sizes (typed so or not) and never moved itself.
   const ids = (s) => productsInScope(central(), s).map((p) => p.id).sort();
-  assert.deepEqual(ids({ categoryIds: ['hot'] }), ['latte', 'latte-l', 'pumpkin']);
-  assert.deepEqual(ids({ productIds: ['latte'] }), ['latte', 'latte-l']);
-  assert.deepEqual(ids({ productIds: ['latte'], includeSizes: false }), ['latte']);
-  assert.deepEqual(ids({ all: true }), ['cola', 'latte', 'latte-l', 'pumpkin']);
+  assert.deepEqual(ids({ categoryIds: ['hot'] }), ['latte-l', 'pumpkin']);
+  assert.deepEqual(ids({ productIds: ['latte'] }), ['latte-l']);
+  assert.deepEqual(ids({ productIds: ['latte'], includeSizes: false }), []);
+  assert.deepEqual(ids({ all: true }), ['cola', 'latte-l', 'pumpkin']);
+  // Its size off sale: Latte is priced by itself again.
+  const idsP = (s) => productsInScope(centralP(), s).map((p) => p.id).sort();
+  assert.deepEqual(idsP({ categoryIds: ['hot'] }), ['latte', 'pumpkin']);
+});
+
+test('17 Oct recheck: a site with no price is skipped by an amount or a percent (said and counted); Set to gives it the price', () => {
+  const c = centralP();
+  c.productSites.find((s) => s.product_id === 'cola' && s.location_id === L1).kept = { no_price: true };
+  for (const change of [{ direction: 'up', mode: 'amount', value: 0.1 }, { direction: 'up', mode: 'percent', value: 10 }]) {
+    for (const sites of ['all', [L1, L2]]) {
+      const r = applyPriceChange(c, { scope: { productIds: ['cola'] }, change, sites });
+      assert.ok(!r.changes.some((x) => x.target === 'product_site' && x.location_id === L1), JSON.stringify(r.changes));
+      assert.equal(r.summary.noPrice, 1);
+      const row = r.rows.find((x) => x.locationId === L1);
+      assert.deepEqual([row.noPrice, row.skipped, row.before, row.after, row.changed], [true, true, null, null, false]);
+      assert.match(priceChangeWords(r.summary), /1 with no price at its site was skipped \(it keeps no price there\)/);
+      assert.ok(r.changes.some((x) => x.target === 'product_site' && x.location_id === L2), 'the site with a price still moves');
+    }
+  }
+  // Set to: the price is chosen on purpose, "no price" goes in the same change.
+  const all = applyPriceChange(c, { scope: { productIds: ['cola'] }, change: { mode: 'set', value: 2.5 }, sites: 'all' });
+  assert.deepEqual(all.changes.find((x) => x.location_id === L1).after, { price: null, kept: {} }, 'it follows the new group price');
+  const some = applyPriceChange(c, { scope: { productIds: ['cola'] }, change: { mode: 'set', value: 2.6 }, sites: [L1] });
+  assert.deepEqual(some.changes.find((x) => x.location_id === L1).after, { price: 2.6, kept: {} });
+  assert.equal(some.summary.noPrice, 0);
+  // An order type price of its own still moves at a site with no Standard price.
+  c.productSites.find((s) => s.product_id === 'cola' && s.location_id === L1).channel_prices = { takeaway: 1.9 };
+  const tk = applyPriceChange(c, { scope: { productIds: ['cola'] }, change: { direction: 'up', mode: 'amount', value: 0.1 }, channel: 'takeaway', sites: [L1] });
+  assert.equal(tk.changes.find((x) => x.location_id === L1).after.channel_prices.takeaway, 2);
+  const tk2 = applyPriceChange(c, { scope: { productIds: ['cola'] }, change: { direction: 'up', mode: 'amount', value: 0.1 }, channel: 'dineIn', sites: [L1] });
+  assert.equal(tk2.changes.length, 0, 'eat in would only fall back to its missing Standard price');
+  assert.equal(tk2.rows.find((x) => x.locationId === L1).noPrice, true);
 });
 
 test('a channel price: worked from the inherited price and stored as that channel only', () => {
@@ -191,7 +232,7 @@ test('a minus sign in a percent never flips the direction', () => {
 // ── Round 2 review (17 Oct 2026) ────────────────────────────────────────────
 
 test('review: "also order type prices" never clears a site\'s own Takeaway to follow a value the till will not charge (every site)', () => {
-  const c = central();
+  const c = centralP();
   c.products[0].default_channels = null;
   c.productSites[1] = { product_id: 'latte', location_id: L2, price: 3.5, channel_prices: { takeaway: 2.8 }, active: true };
   const r = applyPriceChange(c, { scope: { productIds: ['latte'], includeSizes: false }, change: { direction: 'up', mode: 'amount', value: 0.2 }, sites: 'all', alsoChannels: true });
@@ -201,7 +242,7 @@ test('review: "also order type prices" never clears a site\'s own Takeaway to fo
 });
 
 test('review: "also order type prices" never clears a site\'s own Takeaway to follow (only some sites)', () => {
-  const c = central();
+  const c = centralP();
   c.productSites[1] = { product_id: 'latte', location_id: L2, price: 3.5, channel_prices: { takeaway: 3.3 }, active: true };
   const r = applyPriceChange(c, { scope: { productIds: ['latte'], includeSizes: false }, change: { direction: 'up', mode: 'amount', value: 0.2 }, sites: [L2], alsoChannels: true });
   const l2 = r.changes.find((x) => x.target === 'product_site' && x.location_id === L2);

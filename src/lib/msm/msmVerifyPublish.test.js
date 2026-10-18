@@ -322,19 +322,47 @@ test('health: an own product of the same name; a category off the site\'s menu; 
   assert.ok(cc.blocking.some((b) => b.code === 'category_removed'), JSON.stringify(cc.blocking));
 });
 
-test('the import: a product with sizes and no base price is told to Leave out (Menu Manager has no box for it)', () => {
+test('17 Oct recheck: no price at a site through import, a group price change, a price set there, Change prices and Undo', () => {
   const v = venues();
-  const row = v[B].items.find((i) => i.id === `m-latte_${sfx(B)}`);
-  row.pricing = { dineIn: null };
+  v[B].items.find((i) => i.id === `m-cola_${sfx(B)}`).pricing = { base: null };
   const sites = importSites(v);
-  const built = buildCentral(proposeImport(sites, { idGen: idGen() }), sites, {}, { idGen: idGen('g') });
-  const p = built.check.problems.find((x) => /has no base price/.test(x.words));
-  assert.match(p.words, /product with sizes has no base price box in Menu Manager\. Press Leave out on it in step 2/);
-  const v2 = venues();
-  v2[B].items.find((i) => i.id === `m-cola_${sfx(B)}`).pricing = { dineIn: null };
-  const s2 = importSites(v2);
-  const b2 = buildCentral(proposeImport(s2, { idGen: idGen() }), s2, {}, { idGen: idGen('g') });
-  assert.match(b2.check.problems.find((x) => /has no base price/.test(x.words)).words, /Press Leave out on it in step 2, or open it in that site's Menu Manager/);
+  const central = build(v, sites);
+  const cola = central.products.find((p) => p.name === 'Cola');
+  const live = central;
+  // A group price change never reaches B, and says so; A follows it.
+  const up = [{ target: 'product', entity_id: cola.id, location_id: null, op: 'update', after: { default_price: 2.5 }, before: { default_price: cola.default_price } }];
+  const pb = planAt(central, up, B, v[B]);
+  assert.equal(pb.lines.length, 0, 'nothing written at B');
+  assert.ok(checkSite(pb).warnings.some((w) => w.code === 'no_price_kept' && /no price at this site/.test(w.words)), JSON.stringify(pb.problems));
+  assert.ok(planAt(central, up, A, v[A]).lines.some((l) => l.column === 'pricing.base'));
+  // The grid and the product sheet say "No price", never 0.00.
+  assert.equal(sitePriceChange({ live, eff: central }, cola.id, B, null).change, null, 'a blank leaves it with no price');
+  assert.match(sitePriceChange({ live, eff: central }, cola.id, B, null).note, /has no price at this site/);
+  // A price typed at B sets it on purpose and takes "no price" away; publish writes it.
+  const set = sitePriceChange({ live, eff: central }, cola.id, B, 2.6).change;
+  assert.deepEqual(set.after, { price: 2.6, kept: {} });
+  const ps = planAt(central, [set], B, v[B]);
+  assert.deepEqual(ps.writes.items.update, [{ id: `m-cola_${sfx(B)}`, set: {}, pricing: { base: 2.6 } }]);
+  assert.equal(checkSite(ps).blocking.length, 0);
+  // Typing the group's own price makes it follow the group price (written too).
+  const follow = sitePriceChange({ live, eff: central }, cola.id, B, cola.default_price).change;
+  assert.deepEqual(follow.after, { price: null, kept: {} });
+  assert.equal(planAt(central, [follow], B, v[B]).writes.items.update[0].pricing.base, Number(cola.default_price));
+  // Undo of that price: "no price" goes back, and publish writes no price again (never a missing-price block).
+  const c2 = applyChanges(central, [set]).central;
+  const v2 = JSON.parse(JSON.stringify(v[B]));
+  v2.items = ps.applied.items;
+  const undo = [{ target: 'product_site', entity_id: cola.id, location_id: B, op: 'update', after: { price: null, kept: { no_price: true } }, before: { price: 2.6, kept: {} } }];
+  const pu = planAt(c2, undo, B, v2);
+  assert.deepEqual(pu.writes.items.update, [{ id: `m-cola_${sfx(B)}`, set: {}, pricing: { base: null } }]);
+  assert.equal(checkSite(pu).blocking.length, 0, JSON.stringify(checkSite(pu).blocking));
+  // A copy from a site with no price copies nothing, and says so.
+  const cp = copyPricesMany({ live, eff: central }, [cola.id], B, [A, C]);
+  assert.deepEqual(cp.changes, []);
+  assert.match(cp.words.join(' '), /no price at the site you copy from/);
+  // Bulk set price at B is a price chosen on purpose.
+  const pm = priceMany({ live, eff: central }, [cola.id], [B], 2.7);
+  assert.deepEqual(pm.changes[0].after, { price: 2.7, kept: {} });
 });
 
 test('a name saved with its spaces trimmed is the same name: no drift and no rewrite', () => {

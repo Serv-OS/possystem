@@ -23,7 +23,7 @@
 import { planSite, touchedFromChanges, groupOptionRows } from '../../../supabase/functions/_shared/msmPlan.js';
 import { applyChanges } from '../../../supabase/functions/_shared/msmDiff.js';
 import { touchEverything } from '../../../supabase/functions/_shared/msmImport.js';
-import { importTaxByType } from '../../../supabase/functions/_shared/msmTax.js';
+import { importTaxByType, sizeKeptTax } from '../../../supabase/functions/_shared/msmTax.js';
 import {
   familyOf, normName, has, samePrice, sameValue, money2, KEPT_COLUMNS, GROUP_KEPT_COLUMNS, PUBLISHED_CHANNELS,
 } from '../../../supabase/functions/_shared/msmModel.js';
@@ -156,8 +156,10 @@ export function bringInChanges(central, locationId, raw, venueItemId, opts = {})
     // VAT by order type: what this site has that differs from the product's, and its other keys
     // (counter, drive-thru, collection, an explicit null), kept as they are (as the import does).
     const hasOwnTax = r.tax_overrides && typeof r.tax_overrides === 'object' && Object.keys(r.tax_overrides).length;
-    const parentTax = product?.parent_product_id ? (listOf(C.products).find((x) => x.id === product.parent_product_id)?.tax_by_type || {}) : (product?.tax_by_type || {});
-    const taxKept = hasOwnTax ? importTaxByType([{ loc, row: r }], ratesOf, loc, parentTax).kept.get(loc) : null;
+    // A size follows its product's row at the site (17 Oct recheck): it keeps only what differs.
+    const sizeOf = product?.parent_product_id && r.parent_id ? items.find((i) => i && i.id === r.parent_id) : null;
+    const taxKept = sizeOf ? sizeKeptTax(r, sizeOf)
+      : hasOwnTax ? importTaxByType([{ loc, row: r }], ratesOf, loc, product?.tax_by_type || {}).kept.get(loc) : null;
     const after = {
       venue_item_id: r.id, active: r.archived !== true,
       price: price == null || samePrice(price, product?.default_price) ? null : price,
@@ -368,6 +370,8 @@ export function bringInChanges(central, locationId, raw, venueItemId, opts = {})
         if (l.column === 'archived') { c.after.active = vr.archived !== true; changed++; continue; }
         if (l.column.startsWith('pricing.')) {
           const k = l.column.slice(8);
+          // No Standard price at the site (17 Oct recheck): it keeps "no price", as the import does.
+          if (k === 'base' && num(vr.pricing?.base) == null) { c.after.price = null; c.after.kept = { ...(c.after.kept || {}), no_price: true }; changed++; continue; }
           if (k === 'base') c.after.price = num(vr.pricing?.base);
           else c.after.channel_prices = { ...(c.after.channel_prices || {}), [k]: num(vr.pricing?.[k]) };
           changed++;
@@ -424,10 +428,12 @@ export function bringInChanges(central, locationId, raw, venueItemId, opts = {})
   }
   // What the site keeps, in words.
   const keptCols = new Set();
+  let noPrice = false;
   for (const c of siteRows.ps.values()) {
-    for (const k of Object.keys(c.after.kept || {})) keptCols.add(k);
+    for (const k of Object.keys(c.after.kept || {})) { if (k === 'no_price') noPrice = true; else keptCols.add(k); }
     if (c.after.price != null) keptCols.add('price');
   }
+  if (noPrice) words.push(`"${nameOf(row)}" has no price at ${siteName}, and keeps none there until someone sets one in the group menu.`);
   if (keptCols.size && link) {
     const w = { price: 'its own price', cat: 'its own category', name: 'its own name', menu_name: 'its own name', image: 'its own photo', tax_rate_id: 'its own VAT', tax_overrides: 'its own VAT by order type', assigned_modifier_groups: 'its own option groups', description: 'its own description', allergens: 'its own allergens' };
     const list = [...new Set([...keptCols].map((k) => w[k] || 'some settings of its own'))];

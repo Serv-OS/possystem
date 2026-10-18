@@ -103,6 +103,8 @@ expect('round 2 check row: 2 new tables, row level security, fenced; anon nothin
   check2.slice(0, 9).join('|') === '2|2|2|0|9|2|0|20|t', r.out);
 expect('round 2 check row (17 Oct verification): the category icon is ASCII safe, stuck runs are capped, Retry starts the count again',
   check2.slice(11, 14).join('|') === 't|t|t', r.out);
+expect('round 2 check row (17 Oct recheck): no price is kept, a copied null VAT key is allowed, a turn on never takes over a site\'s own product',
+  check2[14] === 't' && check2.length === 15, r.out);
 
 one(`
 insert into organisations (id, name) values ('${ORG_A}', 'Company A'), ('${ORG_B}', 'Company B');

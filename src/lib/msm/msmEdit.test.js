@@ -38,9 +38,12 @@ function live() {
   };
 }
 const ctxOf = (draft = []) => { const l = live(); return { live: l, eff: applyChanges(l, draft).central }; };
+// Latte with its size taken off (17 Oct recheck: a product with live sizes is priced by them, as in
+// Menu Manager), for the tests about a product's own price.
+const ctxP = (draft = []) => { const l = live(); l.products.find((x) => x.id === 'latte-l').archived = true; return { live: l, eff: applyChanges(l, draft).central }; };
 
 test('a site price: its own price, back on the group price when it equals it, nothing when nothing changes', () => {
-  const ctx = ctxOf();
+  const ctx = ctxP();
   assert.deepEqual(sitePriceChange(ctx, 'latte', L1, 3.4).change, { target: 'product_site', entity_id: 'latte', location_id: L1, op: 'update', after: { price: 3.4 }, before: { price: null } });
   assert.deepEqual(sitePriceChange(ctx, 'latte', L2, 3).change.after, { price: null }, '3.00 is the group price: the site follows it again');
   assert.deepEqual(sitePriceChange(ctx, 'latte', L2, null).change.after, { price: null });
@@ -53,7 +56,7 @@ test('a site price: its own price, back on the group price when it equals it, no
 });
 
 test('a site price per channel: one key changes, clearing deletes the key, before is the published value', () => {
-  const ctx = ctxOf();
+  const ctx = ctxP();
   const r = sitePriceChange(ctx, 'latte', L2, 3.3, 'takeaway').change;
   assert.deepEqual(r.after, { channel_prices: { takeaway: 3.3 } });
   assert.deepEqual(r.before, { channel_prices: { takeaway: 3.1 } });
@@ -65,10 +68,10 @@ test('a site price per channel: one key changes, clearing deletes the key, befor
 });
 
 test('editing the same cell twice keeps the FIRST before, and putting it back removes the staged row', () => {
-  const ctx0 = ctxOf();
+  const ctx0 = ctxP();
   const first = sitePriceChange(ctx0, 'latte', L1, 3.4).change;
   const row = { ...mergeStaged(null, first).row, id: 'r1' };
-  const ctx1 = ctxOf([row]);
+  const ctx1 = ctxP([row]);
   const second = sitePriceChange(ctx1, 'latte', L1, 3.6).change;
   assert.deepEqual(second.before, { price: null }, 'before comes from the published menu');
   assert.deepEqual(mergeStaged(row, second).row.after, { price: 3.6 });
@@ -95,7 +98,7 @@ test('on and off at a site; on where it is not sold adds it with a venue id in t
 });
 
 test('the group price: In store cannot be blank; a channel can be cleared', () => {
-  const ctx = ctxOf();
+  const ctx = ctxP();
   assert.deepEqual(defaultPriceChange(ctx, 'latte', 3.1).change, { target: 'product', entity_id: 'latte', location_id: null, op: 'update', after: { default_price: 3.1 }, before: { default_price: 3 } });
   assert.match(defaultPriceChange(ctx, 'latte', null).words, /cannot be blank/);
   assert.equal(defaultPriceChange(ctx, 'latte', 3).change, null);
@@ -184,21 +187,26 @@ test('the bulk bar: on, off, one price, copy from a site, move with sizes, paste
   ], 'a one site product goes on at the others too, its old mark cleared once (UI issues 8 and 11)');
   const off = activeMany(ctx, ['latte'], [L1, L2], false);
   assert.equal(off.changes.length, 4, 'Latte and its size Large latte go off together (17 Oct: a product with sizes, typed or not)');
-  const price = priceMany(ctx, ['latte', 'cola'], [L1, L2, L3], 3.2);
+  const price = priceMany(ctxP(), ['latte', 'cola'], [L1, L2, L3], 3.2);
   assert.deepEqual(price.changes.map((c) => [c.entity_id, c.location_id, c.after.price]), [['latte', L1, 3.2], ['cola', L1, 3.2], ['cola', L2, 3.2]], 'only where sold; Latte at L2 is already 3.20');
-  const copy = copyPricesMany(ctx, ['latte'], L2, [L1, L3]);
+  const copy = copyPricesMany(ctxP(), ['latte'], L2, [L1, L3]);
   assert.deepEqual(copy.changes.map((c) => [c.location_id, c.after.price]), [[L1, 3.2]]);
+  // 17 Oct recheck: with its size on sale, Latte is priced by its sizes: a price for it is said, never staged.
+  const sized = priceMany(ctx, ['latte', 'cola'], [L1], 3.2);
+  assert.deepEqual(sized.changes.map((c) => c.entity_id), ['cola']);
+  assert.match(sized.words.join(' '), /priced by its sizes/);
   const move = moveMany(ctx, ['latte'], 'cold');
   assert.deepEqual(move.changes.map((c) => c.entity_id).sort(), ['latte', 'latte-l'], 'the size moves with it');
   assert.deepEqual(moveMany(ctx, ['latte'], 'nope').words, ['Pick a category.']);
   const paste = pasteColumn(ctx, [{ productId: 'latte', value: 3.3 }, { productId: 'cola', value: null }, { productId: 'latte-l', value: 3.9 }], L1);
-  assert.deepEqual(paste.changes.map((c) => [c.entity_id, c.after.price]), [['latte', 3.3], ['latte-l', 3.9]]);
+  assert.deepEqual(paste.changes.map((c) => [c.entity_id, c.after.price]), [['latte-l', 3.9]], 'its size takes the price; Latte itself is priced by its sizes');
+  assert.match(paste.words.join(' '), /priced by its sizes/);
   const pasteDefault = pasteColumn(ctx, [{ productId: 'cola', value: 2.5 }], null);
   assert.deepEqual(pasteDefault.changes[0].after, { default_price: 2.5 });
 });
 
 test('Change prices: the before of each change comes from the published menu, and unticked rows are left out', () => {
-  const ctx = ctxOf();
+  const ctx = ctxP();
   const res = applyPriceChange(ctx.eff, { scope: { all: true }, change: { direction: 'up', mode: 'amount', value: 0.1 }, sites: 'all' });
   const staged = withBefore(ctx.live, res.changes);
   const latteDefault = staged.find((c) => c.target === 'product' && c.entity_id === 'latte');

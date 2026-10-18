@@ -35,8 +35,16 @@
 //   * An option with a minus price (it takes money off) is never moved: it is left as it is and
 //     counted ("1 option that takes money off was left as it is").
 //     The screen ticks it by default; off, the preview names the order types it will not reach.
+//
+// 17 OCT RECHECK: NO PRICE AT A SITE (msm_product_sites.kept.no_price)
+//   * Up or down by an amount or a percent never gives a price to a site that has none: that site
+//     is skipped, shown as "No price at this site" and counted ("2 with no price at their site
+//     were skipped"). An order type price the site has of its own still moves; one that would
+//     follow its Standard price has nothing to move and is skipped too.
+//   * Set to is a price chosen on purpose: a site with no price gets it (the same change takes
+//     "no price" away there), at every site or at the sites picked.
 
-import { CHANNELS, PUBLISHED_CHANNELS, toPence, fromPence, has, channelFallback } from './msmModel.js';
+import { CHANNELS, PUBLISHED_CHANNELS, toPence, fromPence, has, channelFallback, keepsNoPrice, keptWithoutNoPrice, pricedBySizes } from './msmModel.js';
 
 // ── Rounding ────────────────────────────────────────────────────────────────
 
@@ -143,7 +151,9 @@ export function productsInScope(central, scope = {}) {
   }
   const byId = new Map(products.map((p) => [p.id, p]));
   const optionOnly = (p) => p.type === 'subitem' && p.sold_alone !== true;
-  return [...out].filter((id) => byId.has(id) && !exclude.has(id) && byId.get(id).type !== 'variants' && !optionOnly(byId.get(id))).map((id) => byId.get(id));
+  // Priced by its sizes (typed 'variants', or with live sizes: 17 Oct recheck, as Menu Manager and
+  // publish see it): its own price is never charged, never moved.
+  return [...out].filter((id) => byId.has(id) && !exclude.has(id) && !pricedBySizes(byId.get(id), products) && !optionOnly(byId.get(id))).map((id) => byId.get(id));
 }
 
 /** The options a scope covers: scope.optionGroupIds (every option of those groups) and scope.optionIds. */
@@ -191,7 +201,14 @@ function runChannel(central, opts, channel, onlySet) {
   const changes = [];
   const touchedSites = new Set();
   const offSites = new Set();
-  let clears = 0, clamped = 0, pinnedRows = 0;
+  let clears = 0, clamped = 0, pinnedRows = 0, noPriceSkipped = 0;
+  const noPriceAt = (ps) => keepsNoPrice(ps) && ps.price == null;
+  // Nothing priced to move at a site with no Standard price: the Standard price itself, or an order
+  // type price that would only fall back to it (no order type price of its own or the group's).
+  const nothingToMove = (p, ps) => !channel || channelFallback({ ...p, default_price: null }, { ...ps, price: null }, channel) == null;
+  // A price given on purpose to a site with no price: the price (null = it follows the group's) and
+  // "no price" taken away there in the same change (the planner then writes its Standard price).
+  const givePrice = (ps, value) => ({ target: 'product_site', entity_id: ps.product_id, location_id: ps.location_id, op: 'update', after: { price: value, kept: keptWithoutNoPrice(ps.kept) }, _ch: null });
 
   // The channel prices set separately (In store changes only): the till charges these first.
   const pinnedOf = (p, ps) => {
@@ -212,7 +229,10 @@ function runChannel(central, opts, channel, onlySet) {
     const siteRows = siteLocs.map((loc) => psBy.get(`${p.id}|${loc}`)).filter(Boolean);
     const siteOwn = (ps) => (channel ? toPence(chanOf(ps.channel_prices, channel)) : toPence(ps.price));
     // What a site charges with no price of its own for the chosen channel, today.
-    const siteFallbackNow = (ps) => (channel ? pence(channelFallback(p, ps, channel)) : defBase);
+    // A site with no Standard price falls back to nothing once its own order type price is gone.
+    const siteFallbackNow = (ps) => (channel
+      ? pence(noPriceAt(ps) ? channelFallback({ ...p, default_price: null }, { ...ps, price: null }, channel) : channelFallback(p, ps, channel))
+      : defBase);
 
     if (allSites) {
       if (groupEff == null || Number.isNaN(groupEff)) continue;
@@ -234,6 +254,21 @@ function runChannel(central, opts, channel, onlySet) {
         // clears like any other), so turning it back on never brings back an old price.
         const off = ps.active === false;
         const own = siteOwn(ps);
+        // No price at this site: Set to gives it the new group price on purpose; anything else
+        // skips it (its own order type price, when it has one, still moves below).
+        if (noPriceAt(ps) && own == null) {
+          if (onlySet) continue;
+          if (isSet && !channel) {
+            rows.push({ productId: p.id, locationId: ps.location_id, channel, before: null, after: fromPence(newDef), changed: true, clamped: false, follows: true, clears: false, staged: true, off, pinned: [], noPrice: true });
+            if (off) offSites.add(ps.location_id); else touchedSites.add(ps.location_id);
+            changes.push(givePrice(ps, null));
+            continue;
+          }
+          if (nothingToMove(p, ps)) {
+            if (!off) { noPriceSkipped++; rows.push({ productId: p.id, locationId: ps.location_id, channel, before: null, after: null, changed: false, clamped: false, follows: false, clears: false, staged: false, off: false, pinned: [], noPrice: true, skipped: true }); }
+            continue;
+          }
+        }
         const fallback = siteFallbackNow(ps);
         const before = own ?? fallback;
         const pinned = pinnedOf(p, ps);
@@ -280,6 +315,23 @@ function runChannel(central, opts, channel, onlySet) {
         if (!ps || ps.active === false) continue;
         const own = siteOwn(ps);
         if (onlySet && own == null && defOwn == null) continue;   // follows the Standard price there
+        // No price at this site: Set to gives it that price on purpose; anything else skips it.
+        if (noPriceAt(ps) && own == null && nothingToMove(p, ps)) {
+          if (onlySet) continue;
+          if (isSet && !channel) {
+            const r = changeOne(null, change, rounding);
+            if (r.invalid) continue;
+            const follow = siteFallbackNow(ps);
+            const value = r.pence === follow ? null : fromPence(r.pence);
+            rows.push({ productId: p.id, locationId: loc, channel, before: null, after: fromPence(r.pence), changed: true, clamped: r.clamped, follows: value == null, clears: false, staged: true, off: false, pinned: [], noPrice: true });
+            touchedSites.add(loc);
+            changes.push(givePrice(ps, value));
+            continue;
+          }
+          noPriceSkipped++;
+          rows.push({ productId: p.id, locationId: loc, channel, before: null, after: null, changed: false, clamped: false, follows: false, clears: false, staged: false, off: false, pinned: [], noPrice: true, skipped: true });
+          continue;
+        }
         const followVal = siteFallbackNow(ps);
         const before = own ?? followVal;
         if (before == null || Number.isNaN(before)) continue;
@@ -300,7 +352,7 @@ function runChannel(central, opts, channel, onlySet) {
       }
     }
   }
-  return { rows, changes, touchedSites, offSites, clears, clamped, pinnedRows, products: products.length };
+  return { rows, changes, touchedSites, offSites, clears, clamped, pinnedRows, noPriceSkipped, products: products.length };
 }
 
 /**
@@ -348,6 +400,7 @@ export function applyPriceChange(central, opts = {}) {
     summary: {
       prices, sites: touchedSites.size, clears: sum('clears') + opt.clears, clamped: sum('clamped') + opt.clamped,
       products: runs[0].products, offSites: offSites.size, pinned: runs[0].pinnedRows, options: opt.count, freeKept: opt.freeKept, minusKept: opt.minusKept,
+      noPrice: runs[0].noPriceSkipped,
     },
   };
 }
@@ -441,6 +494,7 @@ export function priceChangeWords(summary) {
   if (s.clamped) parts.push(`${s.clamped} would go below zero and stop at 0.00`);
   if (s.offSites) parts.push(`also keeps ${s.offSites} site${s.offSites === 1 ? '' : 's'} where it is off in step`);
   if (s.freeKept) parts.push(`${s.freeKept} free option price${s.freeKept === 1 ? '' : 's'} left at 0.00`);
+  if (s.noPrice) parts.push(`${s.noPrice} with no price at ${s.noPrice === 1 ? 'its' : 'their'} site ${s.noPrice === 1 ? 'was' : 'were'} skipped (${s.noPrice === 1 ? 'it keeps' : 'they keep'} no price there)`);
   if (s.minusKept) parts.push(`${s.minusKept} option${s.minusKept === 1 ? '' : 's'} that take${s.minusKept === 1 ? 's' : ''} money off ${s.minusKept === 1 ? 'was' : 'were'} left as ${s.minusKept === 1 ? 'it is' : 'they are'}`);
   return parts.join(', ');
 }

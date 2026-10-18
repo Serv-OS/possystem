@@ -77,9 +77,12 @@ test('a variants parent is priced by its sizes: no price change is staged on it 
   assert.match(defaultPriceChange(ctx, 'meal', 3).words, /priced by its sizes/);
   assert.equal(priceEditable(live.products[0]), false);
   assert.equal(priceEditable({ id: 'x', type: 'simple' }), true);
+  // 17 Oct recheck: a product with live sizes is priced by them, typed so or not (as in Menu Manager).
+  assert.equal(priceEditable({ id: 'x', type: 'simple' }, [{ id: 'y', parent_product_id: 'x' }]), false);
+  assert.equal(priceEditable({ id: 'x', type: 'simple' }, [{ id: 'y', parent_product_id: 'x', archived: true }]), true);
   // 17 Oct verification: on a variants row the keys stop before any price edit, and say why (Space
   // still turns it on or off with its sizes, above this line).
-  assert.match(code(read('MsmGrid.jsx')), /if \(!priceEditable\(p\)\) \{\n\s*if \(e\.key === 'Enter' \|\| e\.key === 'F2' \|\| \/\^\[0-9\.\]\$\/\.test\(e\.key\) \|\| e\.key === 'Delete' \|\| e\.key === 'Backspace'\) \{ e\.preventDefault\(\); setNote\?\.\(\{ tone: 'warn', text: 'This product is priced by its sizes\. Change the price on each size\.' \}\); \}\n\s*return;\n\s*\}/, 'the grid keys stop on a variants row');
+  assert.match(code(read('MsmGrid.jsx')), /if \(!priceEditable\(p, eff\?\.products\)\) \{\n\s*if \(e\.key === 'Enter' \|\| e\.key === 'F2' \|\| \/\^\[0-9\.\]\$\/\.test\(e\.key\) \|\| e\.key === 'Delete' \|\| e\.key === 'Backspace'\) \{ e\.preventDefault\(\); setNote\?\.\(\{ tone: 'warn', text: 'This product is priced by its sizes\. Change the price on each size\.' \}\); \}\n\s*return;\n\s*\}/, 'the grid keys stop on a variants row');
 });
 
 test('round trip: a new category and product staged through the data layer show in the grid as the draft', async () => {

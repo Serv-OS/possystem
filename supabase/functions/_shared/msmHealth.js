@@ -58,7 +58,9 @@ export function checkSite(plan, opts = {}) {
   const byId = new Map(items.map((i) => [i.id, i]));
   const touched = new Set([...(plan.writtenItemIds || []), ...(plan.insertedItemIds || [])]);
   const catWritten = new Set(listOf(plan.lines).filter((l) => l.table === 'items' && (l.column === 'cat' || l.column === '(new)')).map((l) => l.id));
-  const priceWritten = new Set(listOf(plan.lines).filter((l) => l.table === 'items' && (l.column === 'pricing.base' || l.column === '(new)')).map((l) => l.id));
+  // A Standard price written (or a new row). "No price" put back on purpose (Undo of a price set on
+  // a site that had none: the line says noPrice) is not a missing price.
+  const priceWritten = new Set(listOf(plan.lines).filter((l) => l.table === 'items' && ((l.column === 'pricing.base' && !l.noPrice) || l.column === '(new)')).map((l) => l.id));
   const productOf = new Map(listOf(plan.lines).filter((l) => l.productId).map((l) => [l.id, l.productId]));
   const nameOf = (i) => i?.menu_name || i?.name || i?.id;
   const active = (i) => i && i.archived === false;
@@ -119,14 +121,20 @@ export function checkSite(plan, opts = {}) {
 
   // 17 Oct verification. A product this publish ADDS where the site already sells its own product
   // (not in the group menu) with the same name, in any category: two buttons for one thing.
+  // 17 Oct recheck: products are compared by their FULL name, a size with its product's name in
+  // front ("House Red, Large"), so a new "Large" never matches a site's own "Coke, Large".
   const managed = new Set(listOf(plan.managedItemIds));
+  const fullName = (i) => {
+    const parent = i?.parent_id ? byId.get(i.parent_id) : null;
+    return parent ? `${nameOf(parent)}, ${nameOf(i)}` : nameOf(i);
+  };
   for (const id of listOf(plan.insertedItemIds)) {
     const i = byId.get(id);
     if (!active(i) || optionOnly(i)) continue;
-    const n = normName(nameOf(i));
+    const n = normName(fullName(i));
     const own = items.find((o) => o !== i && active(o) && !optionOnly(o) && !managed.has(o.id) && o.id !== i.parent_id && o.parent_id !== i.id
-      && normName(nameOf(o)) === n && !(o.cat && o.cat === i.cat));
-    if (own) push(warnings, { code: 'own_same_name', words: `${siteName} already sells its own "${nameOf(own)}" (not in the group menu), so it would have two. To use that one instead, take this out of the draft and bring it in on the Sites tab.`, productId: productOf.get(id) });
+      && normName(fullName(o)) === n && !(o.cat && o.cat === i.cat));
+    if (own) push(warnings, { code: 'own_same_name', words: `${siteName} already sells its own "${fullName(own)}" (not in the group menu), so it would have two. To use that one instead, take this out of the draft and bring it in on the Sites tab.`, productId: productOf.get(id) });
   }
   // A product written on sale into a category that is not on the site's menu: no till shows it.
   if (plan.venueMenuId && Array.isArray(A.links)) {

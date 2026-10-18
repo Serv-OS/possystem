@@ -34,19 +34,28 @@ test('only the touched field is written, and only where it differs', () => {
 
 test('a default price moves every site that follows it, never a site with its own price', () => {
   const { v, central, P } = setup();
-  const ch = [{ target: 'product', entity_id: P('Latte').id, op: 'update', after: { default_price: 3.3 } }];
+  const ch = [{ target: 'product', entity_id: P('Cola').id, op: 'update', after: { default_price: 2.3 } }];
   const a = plan(central, ch, A, v[A]);
-  const b = plan(central, ch, B, v[B]);
-  assert.equal(a.empty, true, 'site A has its own 3.00');
-  assert.deepEqual(b.writes.items.update, [{ id: `m-latte_${sfx(B)}`, set: {}, pricing: { base: 3.3 } }]);
+  const c = plan(central, ch, C, v[C]);
+  assert.deepEqual(a.writes.items.update, [{ id: 'm-cola', set: {}, pricing: { base: 2.3 } }]);
+  assert.equal(c.empty, true, 'site C has its own 2.40');
+});
+
+test('17 Oct recheck: a product with sizes never gets a Standard price written (its sizes carry the price, as in Menu Manager)', () => {
+  const { v, central, P } = setup();
+  const ch = [{ target: 'product', entity_id: P('Latte').id, op: 'update', after: { default_price: 3.3 } }];
+  assert.equal(plan(central, ch, B, v[B]).empty, true);
+  const own = [{ target: 'product_site', entity_id: P('Latte').id, location_id: B, op: 'update', after: { price: 3.4 } }];
+  assert.equal(plan(central, own, B, v[B]).empty, true);
 });
 
 test('pricing is a patch of base and channel keys: the venue\'s menu tier prices are never touched', () => {
   const { v, central, P } = setup();
-  const p = plan(central, [{ target: 'product_site', entity_id: P('Latte').id, location_id: A, op: 'update', after: { price: 3.1 } }], A, v[A]);
+  v[A].items.find((i) => i.id === 'm-cola').pricing = { base: 2.2, menus: { 'menu-a': { base: 1.9 } } };
+  const p = plan(central, [{ target: 'product_site', entity_id: P('Cola').id, location_id: A, op: 'update', after: { price: 3.1 } }], A, v[A]);
   const u = p.writes.items.update[0];
   assert.deepEqual(u.pricing, { base: 3.1 });
-  assert.deepEqual(p.applied.items.find((i) => i.id === 'm-latte').pricing.menus, { 'menu-a': { base: 2.5 } });
+  assert.deepEqual(p.applied.items.find((i) => i.id === 'm-cola').pricing.menus, { 'menu-a': { base: 1.9 } });
 });
 
 test('ids never change: an update targets the venue\'s own id; venue products not in the group are left alone', () => {

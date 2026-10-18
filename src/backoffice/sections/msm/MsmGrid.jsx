@@ -24,7 +24,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ROW_H, NO_CATEGORY, SHOW_FILTERS, CHANNEL_LABELS, priceLabel, buildGridRows, cellFor, cellStaged, categoryTree,
-  visibleRange, priceInput, parsePastedColumn, price2, moveFocus, defaultFor, priceEditable, showLabel,
+  visibleRange, priceInput, parsePastedColumn, price2, moveFocus, defaultFor, priceEditable, showLabel, noPriceWords,
 } from '../../../lib/msm/msmGrid';
 import { sitePriceChange, siteActiveChange, defaultPriceChange, activeMany, copyPricesMany, moveMany, pasteColumn, hasSizes } from '../../../lib/msm/msmEdit';
 import { marginFor, vatMaps } from '../../../lib/msm/msmMargin';
@@ -168,7 +168,8 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
     const ps = ix.sites.get(`${p.id}|${loc}`);
     if (!ps?.kept || !Object.keys(ps.kept).length) return null;
     const rest = Object.fromEntries(Object.entries(ps.kept.tax_overrides || {}).filter(([k]) => !['dine-in', 'takeaway', 'delivery', 'bar'].includes(k)));
-    const kept = Object.keys(rest).length ? { tax_overrides: rest } : {};
+    // "No price" is not one of the settings the dot lists: it stays until a price is set there.
+    const kept = { ...(Object.keys(rest).length ? { tax_overrides: rest } : {}), ...(ps.kept.no_price === true ? { no_price: true } : {}) };
     return { target: 'product_site', entity_id: p.id, location_id: loc, op: 'update', after: { kept }, before: { kept: ps.kept } };
   };
   // What "Use the group's settings" does to VAT, in words, to tick before it is staged (design 5.4
@@ -213,7 +214,7 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
       return;
     }
     // A variants parent draws no price cell (its sizes are priced): no edit, no clear.
-    if (!priceEditable(p)) {
+    if (!priceEditable(p, eff?.products)) {
       if (e.key === 'Enter' || e.key === 'F2' || /^[0-9.]$/.test(e.key) || e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); setNote?.({ tone: 'warn', text: 'This product is priced by its sizes. Change the price on each size.' }); }
       return;
     }
@@ -233,7 +234,7 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
       if (!loc) { setNote?.({ tone: 'warn', text: 'The group price cannot be blank. Type 0.00 for free.' }); return; }
       const r = sitePriceChange(ctx, p.id, loc, null, channel);
       if (r.change) run([`${p.id}|${loc}`], [r.change], cellNoteWords({ product: p.menu_name || p.name, site: siteNameOf(loc), price: null }));
-      else setNote?.({ tone: 'warn', text: r.words || `${p.menu_name || p.name} at ${siteNameOf(loc)} already follows the group price.` });
+      else setNote?.({ tone: 'warn', text: r.words || r.note || `${p.menu_name || p.name} at ${siteNameOf(loc)} already follows the group price.` });
     } else if (e.key === 'Escape') setFocus(null);
   };
 
@@ -470,7 +471,7 @@ export default function MsmGrid({ ix, live, eff, sites, staged, ctx, stage, edit
                       return <VatCellView key={x.id} width={SITE_W} off={ps.active === false} cell={vatCell(p, p.parent_product_id ? ix.products.get(p.parent_product_id) : null, ps, taxKey, ratesByLoc[x.id])} onOpen={() => onOpenProduct(p.id)} />;
                     })}
                   </>
-                ) : p.type === 'variants' ? (
+                ) : !priceEditable(p, eff?.products) ? (
                   <>
                     <div role="gridcell" onClick={() => setFocus({ row: rowIndex, col: 0 })}
                       style={{ ...cellBase, width: DEF_W, justifyContent: 'flex-start', color: 'var(--t4)', fontSize: 11.5, lineHeight: 1.2, ...(focus && focus.row === rowIndex && focus.col === 0 ? focusRing : {}) }}>Priced by its sizes below</div>
@@ -592,7 +593,7 @@ function SiteCell({ width, rowIndex, col, cell, st, gp, gpOn, p, loc, siteName =
   }
   const off = !cell.active;
   return (
-    <div role="gridcell" aria-label={`${nm} at ${siteName}: ${off ? 'off' : 'on'}, ${price2(cell.price)}`}
+    <div role="gridcell" aria-label={`${nm} at ${siteName}: ${off ? 'off' : 'on'}, ${cell.noPrice ? 'no price' : price2(cell.price)}`}
       style={{ ...cellBase, width, ...(isFocus && !isEdit ? focusRing : {}), opacity: pending ? 0.5 : 1, flexDirection: gpOn && !isEdit ? 'column' : 'row', alignItems: gpOn && !isEdit ? 'flex-end' : 'center', justifyContent: 'center', gap: gpOn ? 0 : 7 }}
       onClick={() => { setFocus({ row: rowIndex, col }); if (editable && !isEdit) setEditing({ row: rowIndex, col, text: price2(cell.own ?? cell.price), select: true }); }}>
       {(st.price || st.active || st.kept) && <span style={stagedMark} />}
@@ -601,9 +602,11 @@ function SiteCell({ width, rowIndex, col, cell, st, gp, gpOn, p, loc, siteName =
           <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
             {cell.keptCols.length > 0 && <KeptDot cols={cell.keptCols} editable={editable} vatWords={() => keptVat?.(p, loc) || []} onUseGroup={() => onUseGroup?.(p, loc)} />}
             {off
-              ? <span style={{ fontSize: 12, color: 'var(--t4)' }} title={`Turned off at this site (${money(cell.price)} when on)`}>Off here</span>
-              : <span style={{ fontSize: 13, fontWeight: cell.follows ? 500 : 750, color: cell.follows ? 'var(--t3)' : 'var(--t1)' }}
-                title={cell.follows ? 'Follows the group price' : 'This site\'s own price'}>{money(cell.price)}</span>}
+              ? <span style={{ fontSize: 12, color: 'var(--t4)' }} title={cell.noPrice ? `Turned off at this site (${noPriceWords(siteName).toLowerCase()})` : `Turned off at this site (${money(cell.price)} when on)`}>Off here</span>
+              : cell.noPrice
+                ? <span style={{ fontSize: 12, color: 'var(--t3)', fontStyle: 'italic' }} title={`${noPriceWords(siteName)}. Type a price to sell it here at that price.`}>No price</span>
+                : <span style={{ fontSize: 13, fontWeight: cell.follows ? 500 : 750, color: cell.follows ? 'var(--t3)' : 'var(--t1)' }}
+                  title={cell.follows ? 'Follows the group price' : 'This site\'s own price'}>{money(cell.price)}</span>}
             <Switch small on={!off} disabled={!editable} ariaLabel={`${nm} at ${siteName}: ${off ? 'off' : 'on'}`} title={off ? 'Off at this site: turn on' : 'On at this site: turn off'} onChange={(v) => onToggle(p, loc, v)} />
           </div>
           {gpOn && (

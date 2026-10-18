@@ -15,7 +15,7 @@
 // (supabase/functions/_shared/msmPrice.js): a site's own channel price, else the group's channel
 // price, else the site's In store price, else the group's In store price.
 
-import { CHANNELS, toPence, fromPence, normName, has, channelFallback } from '../../../supabase/functions/_shared/msmModel.js';
+import { CHANNELS, toPence, fromPence, normName, has, channelFallback, NO_PRICE, noPriceAt, pricedBySizes } from '../../../supabase/functions/_shared/msmModel.js';
 import { isOptionOnlyItem } from '../menuRules.js';
 
 export const ROW_H = 40;
@@ -141,17 +141,23 @@ export function cellFor(ix, product, locationId, channel = null) {
   const ps = ix.sites.get(keyOf(product.id, locationId)) || null;
   const siteOnlyElsewhere = false;   // round 2: no "site only extra" (Peter, UI issue 6)
   const defBase = Number(product.default_price ?? 0);
-  if (!ps) return { exists: false, active: false, price: null, own: null, follows: true, defaultPrice: defaultFor(product, ch), keptCols: [], siteOnlyElsewhere };
-  const keptCols = ps.kept && typeof ps.kept === 'object' ? Object.keys(ps.kept) : [];
+  if (!ps) return { exists: false, active: false, price: null, own: null, follows: true, defaultPrice: defaultFor(product, ch), keptCols: [], siteOnlyElsewhere, noPrice: false };
+  // "No price" (kept no_price, 17 Oct recheck) is not a setting the site keeps: it is shown as
+  // "No price at <site>" in the cell, never as a blue dot, never as 0.00.
+  const keptCols = ps.kept && typeof ps.kept === 'object' ? Object.keys(ps.kept).filter((k) => k !== NO_PRICE) : [];
+  const noPrice = noPriceAt(product, ps, ch);
   if (!ch) {
     const own = ps.price == null ? null : Number(ps.price);
-    return { exists: true, active: ps.active !== false, price: own ?? defBase, own, follows: own == null, defaultPrice: defBase, keptCols, siteOnlyElsewhere };
+    return { exists: true, active: ps.active !== false, price: noPrice ? null : own ?? defBase, own, follows: own == null && !noPrice, defaultPrice: defBase, keptCols, siteOnlyElsewhere, noPrice };
   }
   const own = ps.channel_prices && has(ps.channel_prices, ch) && ps.channel_prices[ch] != null ? Number(ps.channel_prices[ch]) : null;
   // The till's chain (msmModel.channelFallback): drive thru reads takeaway before In store.
   const fallback = channelFallback(product, ps, ch) ?? defBase;
-  return { exists: true, active: ps.active !== false, price: own ?? fallback, own, follows: own == null, defaultPrice: fallback, keptCols, siteOnlyElsewhere };
+  return { exists: true, active: ps.active !== false, price: noPrice ? null : own ?? fallback, own, follows: own == null && !noPrice, defaultPrice: fallback, keptCols, siteOnlyElsewhere, noPrice };
 }
+
+/** "No price at Leeds" (the words every screen uses for a site with no price). */
+export const noPriceWords = (siteName) => `No price at ${siteName || 'this site'}`;
 
 /** Prices at the sites where the product is on, In store or a channel: [number]. */
 export function activePrices(ix, product, locationIds, channel = null) {
@@ -320,7 +326,9 @@ export function buildGridRows(central, opts = {}) {
 // ── Drawing only what is on screen ──────────────────────────────────────────
 
 /** May this product's price cells be edited from the keyboard? A variants parent is priced by its sizes. */
-export const priceEditable = (product) => !!product && product.type !== 'variants';
+// A product priced by its sizes (typed 'variants', or with live sizes under it when the products are
+// passed: Menu Manager shows no Standard price box for it either) has no price cell of its own.
+export const priceEditable = (product, products = null) => !!product && !pricedBySizes(product, products);
 
 /** The first and one past the last row to draw. */
 export function visibleRange(scrollTop, viewportH, total, rowH = ROW_H, overscan = 8) {

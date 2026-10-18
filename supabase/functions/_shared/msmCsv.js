@@ -11,7 +11,7 @@
 // flags only; it never creates or deletes a product. Unmatched rows are listed as ignored, and the
 // same publish preview shows before anything goes anywhere.
 
-import { toPence, fromPence, normName, money2, samePrice } from './msmModel.js';
+import { toPence, fromPence, normName, money2, samePrice, keepsNoPrice, keptWithoutNoPrice } from './msmModel.js';
 
 const listOf = (v) => (Array.isArray(v) ? v : []);
 const BOM = String.fromCharCode(0xFEFF);
@@ -155,7 +155,10 @@ export function readCsvChanges(text, central, sites) {
         if (c.bad) { errors.push({ line, words: `${sc.s.name} price for "${p.name}" is not a price.` }); continue; }
         if (!c.blank && c.pence < 0) { errors.push({ line, words: `${sc.s.name} price for "${p.name}" is below zero.` }); continue; }
         const want = c.blank || c.pence === newDefault ? null : fromPence(c.pence);
-        if (!samePrice(want, row.price) || (want === null) !== (row.price === null)) { after.price = want; before.price = row.price; }
+        // A site with no price (17 Oct recheck; exported blank): a price typed for it there sets it on
+        // purpose and takes "no price" away; a blank leaves it with no price.
+        if (!c.blank && keepsNoPrice(row) && row.price == null) { after.price = want; before.price = row.price; after.kept = keptWithoutNoPrice(row.kept); before.kept = row.kept; }
+        else if (!samePrice(want, row.price) || (want === null) !== (row.price === null)) { after.price = want; before.price = row.price; }
       }
       if (sc.active >= 0 && String(r[sc.active] ?? '').trim() !== '') {
         const a = yesNo(r[sc.active]);

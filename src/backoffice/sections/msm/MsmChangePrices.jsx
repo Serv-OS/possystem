@@ -132,6 +132,8 @@ export default function MsmChangePrices({ api, menu, live, eff, ix, sites, stage
     clamped: counted.filter((r) => r.clamped).length,
     offSites: new Set(kept.filter((r) => r.off && r.staged).map((r) => r.locationId)).size,
     freeKept: result.summary.freeKept,
+    // 17 Oct recheck: sites with no price are skipped by an amount or a percent, and said.
+    noPrice: kept.filter((r) => r.noPrice && r.skipped && r.locationId).length,
   } : null;
   // Products with their own order type price that this Standard change will not reach.
   const pinnedBy = useMemo(() => {
@@ -386,11 +388,13 @@ export default function MsmChangePrices({ api, menu, live, eff, ix, sites, stage
                   {r.clears && <Pill tone="blue">back on the group price</Pill>}
                   {r.off && <Pill>off here: kept in step</Pill>}
                   {r.freeKept && <Pill tone="blue">free: stays 0.00</Pill>}
+                  {r.noPrice && r.skipped && <Pill tone="warn" title="Set a price for it at this site first, or use Set to">No price at this site: skipped</Pill>}
+                  {r.noPrice && !r.skipped && <Pill tone="blue">had no price here: gets this price</Pill>}
                   {r.clamped && <Pill tone="bad">stopped at 0.00</Pill>}
                   {!channel && r.locationId && r.pinned?.length > 0 && <Pill tone="warn" title="The till charges this order type price first; it stays as it is">{r.pinned.map((c) => CHANNEL_LABELS[c] || 'Order type').join(', ')} has its own price: stays</Pill>}
                 </label>
-                <div style={{ ...cellR, color: 'var(--t3)' }}>{money(r.before)}</div>
-                <div style={{ ...cellR, fontWeight: 750 }}>{money(r.after)}</div>
+                <div style={{ ...cellR, color: 'var(--t3)' }}>{r.noPrice ? 'No price' : money(r.before)}</div>
+                <div style={{ ...cellR, fontWeight: 750 }}>{r.noPrice && r.skipped ? 'No price' : money(r.after)}</div>
                 <div style={{ ...cellR, color: r.after > r.before ? 'var(--grn, var(--acc))' : r.after < r.before ? 'var(--red)' : 'var(--t4)' }}>{diffWords(r)}</div>
                 {showGp && <div style={{ ...cellR, width: 130, fontSize: 12 }}>{gpWords(r)}</div>}
               </div>

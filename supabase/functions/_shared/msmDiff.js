@@ -16,7 +16,7 @@
 //                                     (a create is undone by turning the product off, never a
 //                                     delete), with "changed since" warnings
 
-import { STAGE_FIELDS, SITE_TARGETS, has, sameValue, checkChange, money2, newOptionId, channelFallback, pctText } from './msmModel.js';
+import { STAGE_FIELDS, SITE_TARGETS, has, sameValue, checkChange, money2, newOptionId, channelFallback, pctText, NO_PRICE, keptWithoutNoPrice } from './msmModel.js';
 import { planSite, touchedFromChanges, countsWords, lineWords, groupOptionRows } from './msmPlan.js';
 import { checkSite, checkCentral } from './msmHealth.js';
 import { touchEverything } from './msmImport.js';
@@ -286,6 +286,16 @@ export function siteDrift(central, locationId, raw, names = {}) {
     const row = items.get(ps.venue_item_id);
     if (!row || !ps.kept || typeof ps.kept !== 'object') continue;
     for (const [col, keptValue] of Object.entries(ps.kept)) {
+      // No price kept (17 Oct recheck): drift only when the venue has a Standard price now.
+      if (col === NO_PRICE) {
+        const base = row.pricing && typeof row.pricing === 'object' ? row.pricing.base : null;
+        if (base == null || ps.price != null) continue;
+        out.push({
+          productId: ps.product_id, venueItemId: ps.venue_item_id, column: 'pricing.base', venue: base, group: null, kept: true,
+          words: `${n[ps.product_id] || ps.venue_item_id}: has a price of ${fmt(base)} at the venue now, the group menu has no price for it there`,
+        });
+        continue;
+      }
       // VAT by order type is kept per key (a rate id, null, or false for "no key here"): compared key
       // by key, never as a whole object (the site's other keys are only there for information).
       if (col === 'tax_overrides' && keptValue && typeof keptValue === 'object') {
@@ -344,7 +354,16 @@ export function keepVenueChanges(central, locationId, driftLines) {
     const ps = listOf(central.productSites).find((r) => r.product_id === d.productId && r.location_id === locationId);
     if (!ps) continue;
     const cur = byProduct.get(d.productId) || { after: {}, before: {}, ps };
-    if (d.column === 'pricing.base') { cur.after.price = d.venue; cur.before.price = ps.price; }
+    if (d.column === 'pricing.base') {
+      // 17 Oct recheck: a site with no Standard price keeps "no price" (never "follow the group",
+      // which would publish the group's price, the opposite of Keep); a price the venue set on a
+      // row that had none is kept as its own and "no price" goes.
+      const base = cur.after.kept || ps.kept || {};
+      if (d.venue == null) { cur.after.price = null; cur.after.kept = { ...base, [NO_PRICE]: true }; }
+      else { cur.after.price = d.venue; if (has(base, NO_PRICE)) cur.after.kept = keptWithoutNoPrice(base); }
+      cur.before.price = ps.price;
+      if (has(cur.after, 'kept')) cur.before.kept = ps.kept || {};
+    }
     else if (d.column.startsWith('pricing.')) {
       const k = d.column.slice(8);
       // The site cleared its own price for this order type (venue null) while the group sets one:

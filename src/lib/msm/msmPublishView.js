@@ -300,8 +300,10 @@ export function auditLines(writes, names = {}) {
 export function spreadRows(central, siteIds, { channel = null, outlierPct = 15 } = {}) {
   const ix = central && central.products instanceof Map ? central : indexCentral(central);
   const out = [];
+  // Priced by its sizes (typed so, or with live sizes: 17 Oct recheck, as Menu Manager and publish see it).
+  const withSizes = new Set([...ix.products.values()].filter((x) => x.parent_product_id && !x.archived).map((x) => x.parent_product_id));
   for (const p of ix.products.values()) {
-    if (p.archived || p.type === 'variants') continue;
+    if (p.archived || p.type === 'variants' || withSizes.has(p.id)) continue;
     const prices = [];
     for (const loc of listOf(siteIds)) {
       const c = cellFor(ix, p, loc, channel);

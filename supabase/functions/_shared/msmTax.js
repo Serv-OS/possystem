@@ -160,6 +160,27 @@ export function venueProfileIsMirror(venue, profileId, rateId) {
   return isMirrorProfile(profile, venue.taxProfileLines.filter((l) => String(l.profile_id) === String(profile.id)), rate);
 }
 
+/**
+ * What a SIZE keeps of its own VAT by order type at a site (17 Oct recheck): a size follows its
+ * product's row at that site (publish writes the product's four keys to every size, as Menu Manager
+ * cascades them), so a key that equals its product's is following it; a key that differs is kept (a
+ * rate id, null, or false for "no key here"). The size's other keys (counter, drive-thru,
+ * collection) come too, for information only, as importTaxByType does. null when nothing differs
+ * and it has no other keys.
+ *   sizeRow, parentRow   the two venue rows at one site
+ */
+export function sizeKeptTax(sizeRow, parentRow) {
+  const sov = sizeRow && sizeRow.tax_overrides && typeof sizeRow.tax_overrides === 'object' ? sizeRow.tax_overrides : {};
+  const pov = parentRow && parentRow.tax_overrides && typeof parentRow.tax_overrides === 'object' ? parentRow.tax_overrides : {};
+  const out = {};
+  for (const k of ORDER_TYPE_TAX_KEYS) {
+    const same = has(sov, k) === has(pov, k) && (!has(sov, k) || (sov[k] === null ? pov[k] === null : pov[k] !== null && String(sov[k]) === String(pov[k])));
+    if (!same) out[k] = has(sov, k) ? sov[k] : false;
+  }
+  for (const k of Object.keys(sov)) if (!ORDER_TYPE_TAX_KEYS.includes(k)) out[k] = sov[k];
+  return Object.keys(out).length ? out : null;
+}
+
 // ── Import: the group's VAT by order type and what each site keeps ──────────
 
 // One site's value for a key, as a comparable token: 'none' (no key), 'null' (an explicit null),

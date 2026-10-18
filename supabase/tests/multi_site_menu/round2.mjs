@@ -23,12 +23,16 @@
 //   * Peter's repro (UI issues 8, 10, 11): a product with three sizes sold at site A1 only (marked
 //     the way round 1 imported it) is ticked with its sizes, turned on at A2 and one size priced
 //     there: staged, published through msm_apply_site, and A2 holds the product and its sizes.
+//   * 17 Oct recheck: a site's missing price is kept (the guard and the import take kept no_price,
+//     publish never gives it a price nobody set there, a price set there lands, Undo writes no price
+//     again); a turn on over a site's own product is refused at once in words; a takeaway Zero
+//     Rate on a product with sizes lands on the product and every size, and Undo puts them back.
 
 import { spawn, spawnSync } from 'node:child_process';
 import { planSite, touchedFromChanges } from '../../functions/_shared/msmPlan.js';
 import { refreshGroupsPayload, touchEverything, proposeImport, buildCentral, importPayload } from '../../functions/_shared/msmImport.js';
 import { newOptionId, longOptionId, newItemId } from '../../functions/_shared/msmModel.js';
-import { activeMany } from '../../../src/lib/msm/msmEdit.js';
+import { activeMany, siteActiveChange, sitePriceChange } from '../../../src/lib/msm/msmEdit.js';
 import { mapModifierGroupRow } from '../../functions/_shared/venueMenuCore.js';
 import { MIRROR_CASES, MIRROR_RATE_ID, MIRROR_OTHER_RATE_ID } from '../../../src/lib/msm/msmMirrorFixtures.js';
 import { ownProducts, bringInChanges } from '../../../src/lib/msm/msmBringIn.js';
@@ -554,5 +558,107 @@ export async function run(h) {
       one(`select count(*) from msm_product_sites where location_id = '${LA1}' and venue_item_id = 'm-bring'`) === '1'
         && one(`select count(*) from msm_modifier_group_sites where location_id = '${LA1}' and venue_group_id = 'mgd-bring'`) === '1'
         && one(`select count(*) from msm_modifier_option_sites where location_id = '${LA1}' and venue_option_id in ('opt-b1', 'opt-b2') and active`) === '2');
+  }
+
+  // ── 17 Oct recheck: no price at a site, a turn on over a site's own product, VAT on sizes ──
+  {
+    settle();
+    // A site's own product with NO Standard price at A1, brought in: the site keeps "no price".
+    one(`insert into menu_items (id, location_id, name, menu_name, receipt_name, kitchen_name, cat, pricing, tax_rate_id, type, sold_alone, assigned_modifier_groups, scope) values ('m-water', '${LA1}', 'Tap water', 'Tap water', 'Tap water', 'WATER', 'cat-hot', '{"base": null}', '${VAT_A1}', 'simple', true, '[]', 'local')`);
+    let CC = central();
+    const b = bringInChanges(CC, LA1, readRaw(LA1), 'm-water', { idGen: randomUUID, siteName: 'A1' });
+    const bps = b.changes.find((c) => c.target === 'product_site');
+    expect('RECHECK: bring in keeps no price for a row that has none', b.ok && bps?.after.kept?.no_price === true && bps.after.price === null, b.problems.join(' | ') + JSON.stringify(bps));
+    const NW = mkSet('Bring in tap water');
+    let bad = b.changes.map((c) => stage({ set: NW, target: c.target, entity: c.entity_id, loc: c.location_id, op: c.op, after: c.after, before: c.before })).filter((x) => x.code !== 0);
+    expect('RECHECK: the guard takes kept no_price', bad.length === 0, bad.map((x) => x.err).join(' | '));
+    const water = b.changes.find((c) => c.target === 'product' && c.op === 'create').entity_id;
+    const VW = publish(NW);
+    const rw = runSite(VW, LA1);
+    expect('RECHECK: publishing it writes nothing at A1 (its missing price is a fact, not a difference)', rw.plan.lines.length === 0 && rw.health.ok && rw.res.code === 0, JSON.stringify(rw.plan.lines) + (rw.res.err || ''));
+    expect('RECHECK: kept no_price saved centrally', one(`select kept->>'no_price' from msm_product_sites where product_id = '${water}' and location_id = '${LA1}'`) === 'true');
+    settle();
+    // A group price change never gives it one there, and the write path refuses one nobody set.
+    CC = central();
+    const wp = CC.products.find((p) => p.id === water);
+    const GP = mkSet('Tap water group price');
+    r = stage({ set: GP, target: 'product_site', entity: water, loc: LA1, op: 'update', after: { kept: { no_price: false } } });
+    expect('RECHECK: the guard refuses no_price that is not true', r.code !== 0 && /no price cannot have a price/.test(r.err), r.err);
+    r = stage({ set: GP, target: 'product_site', entity: water, loc: LA1, op: 'update', after: { price: 1, kept: { no_price: true } } });
+    expect('RECHECK: the guard refuses no price together with a price of its own', r.code !== 0 && /no price cannot have a price/.test(r.err), r.err);
+    r = stage({ set: GP, target: 'product', entity: water, op: 'update', after: { default_price: 0.5 }, before: { default_price: wp.default_price } });
+    const VP = publish(GP);
+    const probeNp = runSite(VP, LA1, { writesOverride: { items: { update: [{ id: 'm-water', set: {}, pricing: { base: 0.5 } }] } } }).res;
+    expect('RECHECK: the write path refuses a price nobody set at a site with no price', probeNp.code !== 0 && /would get one that nobody set there/.test(probeNp.err), probeNp.err);
+    const rp = runSite(VP, LA1);
+    expect('RECHECK: a group price change leaves A1 with no price (said, nothing written)', rp.res.code === 0 && rp.plan.lines.length === 0 && rp.health.warnings.some((w) => w.code === 'no_price_kept')
+      && one(`select pricing->>'base' from menu_items where id = 'm-water'`) === '', (rp.res.err || '') + JSON.stringify(rp.health));
+    settle();
+    // A price set at A1 on purpose lands, and no_price goes.
+    CC = central();
+    const setP = sitePriceChange({ live: CC, eff: CC }, water, LA1, 0.6).change;
+    const SP = mkSet('Tap water at A1');
+    r = stage({ set: SP, target: setP.target, entity: setP.entity_id, loc: setP.location_id, op: setP.op, after: setP.after, before: setP.before });
+    expect('RECHECK: a price set at a site with no price is staged with no_price taken away', r.code === 0, r.err);
+    const rs = runSite(publish(SP), LA1);
+    expect('RECHECK: and publish writes it', rs.res.code === 0 && Number(one(`select pricing->>'base' from menu_items where id = 'm-water'`)) === 0.6
+      && one(`select coalesce(kept->>'no_price', 'gone') from msm_product_sites where product_id = '${water}' and location_id = '${LA1}'`) === 'gone', rs.res.err || JSON.stringify(rs.health));
+    settle();
+    // Undo of that price: no price again at the venue (never a missing price block).
+    const UN = mkSet('Put back before tap water price');
+    r = stage({ set: UN, target: 'product_site', entity: water, loc: LA1, op: 'update', after: { price: null, kept: { no_price: true } }, before: { price: 0.6, kept: {} } });
+    const ru = runSite(publish(UN), LA1);
+    expect('RECHECK: Undo writes no price again at the venue', ru.res.code === 0 && ru.health.ok && one(`select pricing->>'base' from menu_items where id = 'm-water'`) === '' && one(`select pricing ? 'base' from menu_items where id = 'm-water'`) === 't', ru.res.err || JSON.stringify(ru.health));
+    settle();
+
+    // A turn on over a site's own product (same id, in this menu): refused at once, in words.
+    one(`insert into menu_items (id, location_id, name, menu_name, cat, pricing, tax_rate_id, type, sold_alone, scope) values ('m-water_${sfx(LA2)}', '${LA2}', 'Tap water', 'Tap water', 'cat-hot_${sfx(LA2)}', '{"base": 0.9}', '${VAT_A2}', 'simple', true, 'local')`);
+    CC = central();
+    const ton = siteActiveChange({ live: CC, eff: CC }, water, LA2, true);
+    expect('RECHECK: the turn on would use the site\'s own id', ton.change?.after.venue_item_id === `m-water_${sfx(LA2)}`, JSON.stringify(ton));
+    const TO = mkSet('Tap water at A2');
+    r = stage({ set: TO, target: 'product_site', entity: water, loc: LA2, op: 'create', after: ton.change.after });
+    expect('RECHECK: the guard refuses a turn on that would take over the site\'s own product, in words', r.code !== 0 && /already sells its own product with this id\. To use it, bring it in from the Sites tab/.test(r.err), r.err);
+    r = stage({ set: TO, target: 'product_site', entity: water, loc: LA2, op: 'create', after: { ...ton.change.after, kept: {} } });
+    expect('RECHECK: a Bring in shaped change (it carries what the site keeps) is taken', r.code === 0, r.err);
+    one(`delete from msm_change_sets where id = '${TO}'`);
+    expect('RECHECK: the site\'s own price untouched', one(`select pricing->>'base' from menu_items where id = 'm-water_${sfx(LA2)}'`) === '0.9');
+
+    // A takeaway Zero Rate on House Red (a product with sizes at A1 and A2): the product and every
+    // size at each site, only the four keys; Undo puts every row back exactly.
+    CC = central();
+    const red = CC.products.find((p) => p.name === 'House Red');
+    const redRows = (loc) => json(`select json_agg(json_build_object('id', id, 'tax_overrides', tax_overrides, 'pricing', pricing, 'name', name) order by id) from menu_items where location_id = '${loc}' and (id like 'msm-f2a%' or name = 'House Red')`) || [];
+    one(`update menu_items set tax_overrides = '{"counter": "${VAT_A1}"}'::jsonb where location_id = '${LA1}' and name = 'Bottle'`);
+    const before1 = redRows(LA1), before2 = redRows(LA2);
+    const RV = mkSet('House Red takeaway');
+    r = stage({ set: RV, target: 'product', entity: red.id, op: 'update', after: { tax_by_type: { takeaway: { name: 'Zero Rate', percent: 0 } } }, before: { tax_by_type: null } });
+    const VRV = publish(RV);
+    const rv1 = runSite(VRV, LA1), rv2 = runSite(VRV, LA2);
+    const after1 = redRows(LA1), after2 = redRows(LA2);
+    expect('RECHECK: takeaway VAT on a product with sizes lands at both sites', rv1.res.code === 0 && rv2.res.code === 0 && rv1.health.ok && rv2.health.ok, (rv1.res.err || '') + (rv2.res.err || ''));
+    expect('RECHECK: the product and its three sizes carry each site\'s own Zero Rate for takeaway',
+      after1.length === 4 && after2.length === 4 && after1.every((x) => x.tax_overrides.takeaway === Z1) && after2.every((x) => x.tax_overrides.takeaway === Z2), JSON.stringify([after1, after2]));
+    expect('RECHECK: nothing else changed on those rows (prices, names), and the size\'s counter key stays',
+      after1.every((x) => canonJ(x.pricing) === canonJ(before1.find((y) => y.id === x.id).pricing) && x.name === before1.find((y) => y.id === x.id).name)
+        && after1.find((x) => x.name === 'Bottle').tax_overrides.counter === VAT_A1, JSON.stringify(after1));
+    expect('RECHECK: one VAT change per row in the counts', rv1.plan.counts.vat === 4, JSON.stringify(rv1.plan.counts));
+    settle();
+    const RU = mkSet('Put back House Red takeaway');
+    r = stage({ set: RU, target: 'product', entity: red.id, op: 'update', after: { tax_by_type: null }, before: { tax_by_type: { takeaway: { name: 'Zero Rate', percent: 0 } } } });
+    const VRU = publish(RU);
+    const ru1 = runSite(VRU, LA1), ru2 = runSite(VRU, LA2);
+    expect('RECHECK: Undo puts the product and every size back exactly', ru1.res.code === 0 && ru2.res.code === 0
+      && canonJ(redRows(LA1).map((x) => x.tax_overrides)) === canonJ(before1.map((x) => x.tax_overrides)) && canonJ(redRows(LA2).map((x) => x.tax_overrides)) === canonJ(before2.map((x) => x.tax_overrides)),
+      JSON.stringify([redRows(LA1), before1]) + (ru1.res.err || '') + (ru2.res.err || ''));
+    settle();
+    // A size following an explicit null on its product (the site's default VAT) is written as null.
+    const NU = mkSet('Null probe');
+    stage({ set: NU, target: 'product', entity: red.id, op: 'update', after: { description: 'probe' }, before: { description: '' } });
+    const VNU = publish(NU);
+    const sizeId = after1.find((x) => x.name === 'Bottle').id;
+    const nr = runSite(VNU, LA1, { writesOverride: { items: { update: [{ id: sizeId, set: {}, tax_overrides: { set: { 'dine-in': null }, remove: [] } }] } } }).res;
+    expect('RECHECK: the write path takes an explicit null a size copies from its product', nr.code === 0 && one(`select tax_overrides ? 'dine-in' and tax_overrides->'dine-in' = 'null'::jsonb from menu_items where id = '${sizeId}'`) === 't', nr.err);
+    settle();
   }
 }

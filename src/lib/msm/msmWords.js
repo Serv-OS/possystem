@@ -94,6 +94,8 @@ export const COL_WORDS = Object.freeze({
   visibility: 'where it shows', sold_alone: 'sold on its own', item_code: 'item code', assigned_modifier_groups: 'option groups',
   type: 'type', parent_id: 'size of', tax_overrides: 'VAT by order type', label: 'name', sort_order: 'order',
   min: 'choose at least', max: 'choose up to', selection_type: 'kind of choice', item_link: 'sub item link', sub_group: 'Then ask',
+  // 17 Oct recheck: a site whose row has no Standard price keeps none (said as "No price at <site>").
+  no_price: 'no price',
 });
 /** A column in words, never the column itself ("its own setting" when the map has none). */
 export const colWord = (k) => COL_WORDS[k] || 'its own setting';

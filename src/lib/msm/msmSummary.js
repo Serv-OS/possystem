@@ -82,7 +82,17 @@ export function summarise(changes, central, opts = {}) {
     }
     // A product never sold at a site has no price to go up or down there (17 Oct verification): its
     // price is said in the "goes on sale" sentence below instead.
-    if (ch.target === 'product_site' && 'price' in a && ch.op !== 'create') {
+    // 17 Oct recheck: a site with no price that gets one (or gets "no price" back) is said as such,
+    // never as a price going up or down.
+    const hadNoPrice = ch.target === 'product_site' && b.kept && b.kept.no_price === true && !(a.kept && a.kept.no_price === true) && has(a, 'kept');
+    const backToNoPrice = ch.target === 'product_site' && a.kept && a.kept.no_price === true && !(b.kept && b.kept.no_price === true) && ch.op !== 'create';
+    if (hadNoPrice) {
+      const p = product.get(ch.entity_id);
+      const now = a.price ?? p?.default_price ?? null;
+      out.push(`${pName(ch.entity_id)} gets a price at ${siteName(ch.location_id)}: ${money2(now)}${a.price == null ? ', the group price' : ''} (it had no price there)${when}.`);
+    } else if (backToNoPrice) {
+      out.push(`${pName(ch.entity_id)} has no price at ${siteName(ch.location_id)} again${when}.`);
+    } else if (ch.target === 'product_site' && 'price' in a && ch.op !== 'create') {
       const p = product.get(ch.entity_id);
       const was = b.price ?? p?.default_price, now = a.price ?? p?.default_price;
       const d = toPence(now) - toPence(was);
@@ -187,8 +197,9 @@ export function summarise(changes, central, opts = {}) {
     // A site's own settings given back or kept.
     if ((ch.target === 'product_site' || ch.target === 'modifier_group_site' || ch.target === 'modifier_option_site') && 'kept' in a && ch.op !== 'create') {
       const kb = b.kept || {}, ka = a.kept || {};
-      const gone = Object.keys(kb).filter((k) => !has(ka, k));
-      const added = Object.keys(ka).filter((k) => !has(kb, k) || JSON.stringify(ka[k]) !== JSON.stringify(kb[k]));
+      // No price coming or going is said with the price, above.
+      const gone = Object.keys(kb).filter((k) => !has(ka, k) && k !== 'no_price');
+      const added = Object.keys(ka).filter((k) => (!has(kb, k) || JSON.stringify(ka[k]) !== JSON.stringify(kb[k])) && k !== 'no_price');
       if (kb.tax_overrides && ka.tax_overrides && JSON.stringify(kb.tax_overrides) !== JSON.stringify(ka.tax_overrides) && !added.includes('tax_overrides')) added.push('tax_overrides');
       const o = ch.target === 'modifier_option_site' ? option.get(ch.entity_id) : null;
       const what = ch.target === 'product_site' ? pName(ch.entity_id)

@@ -28,7 +28,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { ALLERGENS } from '../../../data/seed';
-import { categoryTree, categoryPath, priceInput, price2, defaultFor } from '../../../lib/msm/msmGrid';
+import { categoryTree, categoryPath, priceInput, price2, defaultFor, noPriceWords } from '../../../lib/msm/msmGrid';
 import {
   productUpdate, newProductChanges, newCategoryChange, siteActiveChange, sitePriceChange,
   removeProductChange, restoreProductChange, taxChoices, productProblems, renameFields,
@@ -42,7 +42,7 @@ import { PRICE_TYPE_WORDS, PRICE_TYPE_HELP, TAX_TYPE_WORDS, TAX_TYPE_HELP, HELP,
 import { summarise } from '../../../lib/msm/msmSummary';
 import { riskChecks, allTicked } from '../../../lib/msm/msmRisk';
 import { marginFor } from '../../../lib/msm/msmMargin';
-import { ORDER_TYPE_TAX_KEYS, samePrice, sameValue, pctText } from '../../../../supabase/functions/_shared/msmModel.js';
+import { ORDER_TYPE_TAX_KEYS, samePrice, sameValue, pctText, noPriceAt } from '../../../../supabase/functions/_shared/msmModel.js';
 import { Btn, Pill, Switch, Sheet, Field, Notice, Segmented, SummaryBox, ConfirmTicks } from './msmUi';
 import { ui, money } from './msmStyle';
 import { useConfirm } from './useConfirm';
@@ -331,10 +331,12 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
   const dirty = !!newCat || JSON.stringify(form) !== JSON.stringify(startForm) || JSON.stringify(siteForm) !== JSON.stringify(startSites);
   const usedAsOption = p ? groupEdit.optionsUsingProduct(ctx, p.id) : [];
   const subChanged = !!p && usedAsOption.length > 0 && (form.name !== startForm.name || form.default_price !== startForm.default_price);
-  const isVariants = form.type === 'variants';
   const isSizeForm = !!form.parent_product_id;
   const parentOfForm = isSizeForm ? ix.products.get(form.parent_product_id) || null : null;
   const sizesOfThis = p ? [...ix.products.values()].filter((x) => x.parent_product_id === p.id && !x.archived) : [];
+  // Priced by its sizes: typed so, or with live sizes under it (17 Oct recheck: as Menu Manager shows
+  // it and publish writes it, its own Standard price is never charged or written).
+  const isVariants = form.type === 'variants' || sizesOfThis.length > 0;
   // A size's VAT example reads its product's VAT by order type (what the till charges).
   const tbt = (isSizeForm ? parentOfForm?.tax_by_type : form.tax_by_type) || {};
   const productRate = form.tax_rate_percent == null ? null : { name: form.tax_rate_name, percent: form.tax_rate_percent };
@@ -489,7 +491,9 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
               const ps = p ? ix.sites.get(`${p.id}|${s.id}`) : null;
               const pr = priceInput(sf.price);
               const charge = pr.ok && pr.value != null ? pr.value : groupPrice;
-              const kept = ps?.kept && typeof ps.kept === 'object' ? Object.entries(ps.kept) : [];
+              // "No price" is shown in words (17 Oct recheck), never as a setting the site keeps.
+              const kept = ps?.kept && typeof ps.kept === 'object' ? Object.entries(ps.kept).filter(([col]) => col !== 'no_price') : [];
+              const noPrice = !!ps && noPriceAt(p, ps) && !sf.price;
               const costMap = costs.byLoc[s.id];
               const gp = showGp && ps && costMap ? marginFor({ price: charge, vatPct: Number(form.tax_rate_percent) || 0, cost: costMap.get(ps.venue_item_id) ?? null }) : null;
               const elsewhere = false;
@@ -505,7 +509,7 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
                     </div>
                     {!isVariants && (
                       <input aria-label={`Price at ${s.name}`} style={{ ...ui.input, width: 120, textAlign: 'right', fontWeight: sf.price ? 750 : 500, borderColor: pr.ok ? 'var(--bdr2)' : 'var(--red)' }} inputMode="decimal"
-                        disabled={!editable || !sf.active} placeholder={groupPrice != null ? price2(groupPrice) : 'group price'}
+                        disabled={!editable || !sf.active} placeholder={noPrice ? 'No price' : groupPrice != null ? price2(groupPrice) : 'group price'}
                         value={sf.price} onChange={(e) => setSite(s.id, { price: e.target.value })} />
                     )}
                     {!isVariants && sf.price && editable && sf.active && <Btn small kind="link" onClick={() => setSite(s.id, { price: '' })}>Use group price</Btn>}
@@ -525,8 +529,14 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
                       })}
                     </div>
                   )}
-                  {(gp || kept.length > 0 || ownTypeKeys.length > 0) && (
+                  {(gp || kept.length > 0 || ownTypeKeys.length > 0 || (noPrice && !isVariants)) && (
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 6, paddingLeft: 44 }}>
+                      {noPrice && !isVariants && (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                          <Pill tone="warn" title="Publishing never gives it a price there until you set one">{noPriceWords(s.name)}. Type a price to sell it there.</Pill>
+                          {editable && <Btn small kind="link" onClick={() => toGroupValue(s.id, 'no_price')}>Use the group price</Btn>}
+                        </span>
+                      )}
                       {gp && <Pill tone={gp.noRecipe ? 'neutral' : 'acc'}>{gp.noRecipe ? 'No recipe' : `${gp.words} · cost ${money(gp.cost)}`}</Pill>}
                       {kept.filter(([col, v]) => !(col === 'tax_overrides' && !Object.keys(v || {}).some((k) => ORDER_TYPE_TAX_KEYS.includes(k)))).map(([col, v]) => (
                         <span key={col} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>

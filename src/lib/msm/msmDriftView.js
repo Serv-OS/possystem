@@ -173,6 +173,13 @@ export function putBackChanges(central, loc, d) {
   const base = { target: 'product_site', entity_id: d.productId, location_id: loc, op: 'update' };
   const col = String(d.column);
   if (col === 'archived') return [{ ...base, after: { active: ps.active !== false }, before: { active: d.venue !== true } }];
+  // A site that keeps "no price" (17 Oct recheck): putting the group's back means no price again,
+  // which publish writes because the change puts no_price back (before says it was not there).
+  if (col === 'pricing.base' && ps.kept && ps.kept.no_price === true && ps.price == null) {
+    const without = { ...ps.kept };
+    delete without.no_price;
+    return [{ ...base, after: { price: null, kept: { ...ps.kept } }, before: { price: d.venue ?? null, kept: without } }];
+  }
   if (col === 'pricing.base') return [{ ...base, after: { price: ps.price ?? null }, before: { price: d.venue ?? null } }];
   if (col.startsWith('pricing.')) {
     const k = col.slice(8);

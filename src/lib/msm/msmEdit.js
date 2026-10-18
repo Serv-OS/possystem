@@ -19,8 +19,15 @@
 //     site_only_location_id) turned on at a second site becomes a normal product on at both: the
 //     same edit clears that field. A switch never silently does nothing.
 //   * Nothing is ever deleted: "remove" is archived, off is active false.
+//   * 17 Oct recheck. A site with NO price (kept no_price: its row has no Standard price, a fact the
+//     import keeps) stays with no price until someone sets one for it there: a price typed or
+//     pasted at that site, a copy from another site that has one, or "Use the group price" sets it
+//     on purpose and takes "no price" away in the same change; a blank leaves it as it is (said).
+//     A copy from a site with no price copies nothing (said).
 
-import { STAGE_FIELDS, CHANNELS, has, sameValue, samePrice, newItemId, toPence, fromPence, channelFallback, hex12, pctText } from '../../../supabase/functions/_shared/msmModel.js';
+import { STAGE_FIELDS, CHANNELS, has, sameValue, samePrice, newItemId, toPence, fromPence, channelFallback, hex12, pctText, keptWithoutNoPrice, noPriceAt } from '../../../supabase/functions/_shared/msmModel.js';
+
+export { noPriceAt };
 import { optionRowsForNewSites } from './msmGroupEdit.js';
 
 const listOf = (v) => (Array.isArray(v) ? v : []);
@@ -46,10 +53,11 @@ export function followPrice(product, site, channel = null) {
   return channelFallback(product, site, ch) ?? base;
 }
 
-/** The price a site charges now (In store or a channel). */
+/** The price a site charges now (In store or a channel); null when it has no price there. */
 export function sitePrice(product, site, channel = null) {
   const ch = okChannel(channel);
   if (!site) return null;
+  if (noPriceAt(product, site, ch)) return null;
   const own = ch ? site.channel_prices?.[ch] : site.price;
   return own != null ? Number(own) : followPrice(product, site, ch);
 }
@@ -65,7 +73,9 @@ export function sitePriceChange(ctx, productId, locationId, value, channel = nul
   const p = findProduct(ctx.eff, productId);
   const s = findSite(ctx.eff, productId, locationId);
   if (!p || !s) return { words: 'This product is not at that site. Turn it on there first.' };
-  if (p.type === 'variants') return { words: VARIANTS_WORDS };
+  // Priced by its sizes: a blank is nothing to stage (the product sheet saves one per site); a
+  // price typed for it says where to type it instead.
+  if (hasSizes(ctx.eff, p)) return value == null ? { change: null } : { words: VARIANTS_WORDS };
   if (value != null && (!Number.isFinite(Number(value)) || Number(value) < 0)) return { words: 'A price cannot be below zero.' };
   const follow = followPrice(p, s, ch);
   const next = value == null || samePrice(value, follow) ? null : fromPence(toPence(value));
@@ -76,6 +86,12 @@ export function sitePriceChange(ctx, productId, locationId, value, channel = nul
     const after = { ...(s.channel_prices || {}) };
     if (next == null) delete after[ch]; else after[ch] = next;
     return { change: { target: 'product_site', entity_id: productId, location_id: locationId, op: 'update', after: { channel_prices: Object.keys(after).length ? after : null }, before: { channel_prices: clone(liveS?.channel_prices ?? null) } } };
+  }
+  // No price at this site: a price given here sets it on purpose (and "no price" goes in the same
+  // change, so publish writes it); a blank leaves it with no price, and says so.
+  if (noPriceAt(p, s)) {
+    if (value == null) return { change: null, note: `${p.menu_name || p.name} has no price at this site. Type a price to sell it here at that price.` };
+    return { change: { target: 'product_site', entity_id: productId, location_id: locationId, op: 'update', after: { price: next, kept: keptWithoutNoPrice(s.kept) }, before: { price: liveS ? liveS.price ?? null : null, kept: clone(liveS?.kept ?? {}) } } };
   }
   if (samePrice(s.price, next)) return { change: null };
   return { change: { target: 'product_site', entity_id: productId, location_id: locationId, op: 'update', after: { price: next }, before: { price: liveS ? liveS.price ?? null : null } } };
@@ -179,7 +195,7 @@ export function defaultPriceChange(ctx, productId, value, channel = null) {
   const ch = okChannel(channel);
   const p = findProduct(ctx.eff, productId);
   if (!p) return { words: 'That product is not in the group menu.' };
-  if (p.type === 'variants') return { words: VARIANTS_WORDS };
+  if (hasSizes(ctx.eff, p)) return { words: VARIANTS_WORDS };
   if (value != null && (!Number.isFinite(Number(value)) || Number(value) < 0)) return { words: 'A price cannot be below zero.' };
   const liveP = findProduct(ctx.live, productId);
   if (!ch) {
@@ -421,6 +437,8 @@ export function copyPricesMany(ctx, productIds, fromLoc, toLocs, channel = null)
     if (!p) continue;
     // Never a silent skip (UI issue 10): say why nothing was copied.
     if (!src) { out.push({ words: 'Some products are not sold at the site you copy from. Turn them on there first.' }); continue; }
+    // A site with no price has none to copy (17 Oct recheck): never the group price in its place.
+    if (noPriceAt(p, src, channel)) { out.push({ words: 'Some products have no price at the site you copy from, so nothing was copied for them.' }); continue; }
     const v = sitePrice(p, src, channel);
     for (const loc of listOf(toLocs)) {
       if (loc === fromLoc) continue;

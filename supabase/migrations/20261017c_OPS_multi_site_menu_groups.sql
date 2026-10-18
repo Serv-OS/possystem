@@ -37,6 +37,11 @@
 --     Menu Manager lock and the sharing engine's target side gate), msm_sold_recently and
 --     msm_sites_trading (the risk ticks), msm__is_legacy_mirror, msm__managed_group,
 --     msm_sql_contract (= 2; msm-publish refuses to plan below it: "Run 20261017c first").
+--   * 17 Oct recheck: a site whose product has NO Standard price keeps none: msm_product_sites.kept
+--     takes no_price (always true; never with a price of the site's own), the first import saves
+--     it, and msm_apply_site refuses a Standard price nobody set there. A turn on whose id is
+--     already the site's OWN product is refused in words (Bring it in links it). A size copies its
+--     product's VAT by order type, an explicit null (the site's default VAT) included.
 --
 -- NOTHING CHANGES FOR ANY VENUE UNTIL its company is switched on in Admin AND someone publishes.
 --
@@ -238,7 +243,7 @@ declare
   v_allowed  text[];
   v_bad      text;
   v_ref      uuid;
-  v_kept     constant text[] := array['cat', 'cats', 'image', 'name', 'menu_name', 'receipt_name', 'kitchen_name', 'description', 'tax_rate_id', 'allergens', 'tags', 'visibility', 'sold_alone', 'item_code', 'assigned_modifier_groups', 'type', 'parent_id', 'tax_overrides'];
+  v_kept     constant text[] := array['cat', 'cats', 'image', 'name', 'menu_name', 'receipt_name', 'kitchen_name', 'description', 'tax_rate_id', 'allergens', 'tags', 'visibility', 'sold_alone', 'item_code', 'assigned_modifier_groups', 'type', 'parent_id', 'tax_overrides', 'no_price'];
   v_channels constant text[] := array['dineIn', 'takeaway', 'collection', 'delivery', 'driveThru'];
   v_tax_keys constant text[] := array['dine-in', 'takeaway', 'delivery', 'bar'];
   v_group_kept  constant text[] := array['name', 'min', 'max', 'selection_type'];
@@ -455,6 +460,15 @@ begin
       if exists (select 1 from public.msm_product_sites s where s.location_id = new.location_id and s.venue_item_id = v_vid) then
         raise exception 'That product is already managed at that site.' using errcode = '22023';
       end if;
+      -- 17 Oct recheck: a turn on (or a new product) whose id is already the site's OWN product
+      -- would take it over, and Undo would then turn it off. Only Bring it in links a site's own
+      -- product, and its change always carries what the site keeps (even none). (A site being added
+      -- in this set is checked at publish instead: Add a site says it in words there.)
+      if not (new.after ? 'kept')
+         and exists (select 1 from public.msm_menu_sites s where s.menu_id = v_set.menu_id and s.location_id = new.location_id)
+         and exists (select 1 from public.menu_items i where i.id = v_vid and i.location_id = new.location_id) then
+        raise exception 'This site already sells its own product with this id. To use it, bring it in from the Sites tab and link it to the group''s product. Nothing was changed.' using errcode = '22023';
+      end if;
       if not v_site_ok then
         raise exception 'That site is not in the group menu yet. Add the site first.' using errcode = '22023';
       end if;
@@ -470,6 +484,11 @@ begin
       select k into v_bad from jsonb_object_keys(new.after -> 'kept') k where k <> all (v_kept) limit 1;
       if found then raise exception 'A site cannot keep its own %', v_bad using errcode = '22023'; end if;
       -- Kept VAT by order type: per key, a rate id, null (the site's default) or false (no key).
+      -- No price (17 Oct recheck): only ever true, never with a price of the site's own.
+      if new.after -> 'kept' ? 'no_price' and (new.after #> '{kept,no_price}' <> 'true'::jsonb
+         or (jsonb_typeof(new.after -> 'price') = 'number')) then
+        raise exception 'A site with no price cannot have a price of its own in the same change.' using errcode = '22023';
+      end if;
       if new.after -> 'kept' ? 'tax_overrides' and (jsonb_typeof(new.after #> '{kept,tax_overrides}') <> 'object'
          or exists (select 1 from jsonb_each(new.after #> '{kept,tax_overrides}') e
                      where e.key !~ '^[a-z][a-z-]{0,23}$' or jsonb_typeof(e.value) not in ('string', 'null', 'boolean')
@@ -1084,7 +1103,8 @@ begin
     from jsonb_array_elements(coalesce(p_payload -> 'products', '[]'::jsonb)) p, jsonb_array_elements(coalesce(p -> 'sites', '[]'::jsonb)) x
    where not exists (select 1 from public.menu_items mi where mi.id = x ->> 'venue_item_id' and mi.location_id = x ->> 'location_id')
       or (jsonb_typeof(x -> 'kept') = 'object' and exists (select 1 from jsonb_object_keys(x -> 'kept') k
-            where k <> all (array['cat', 'cats', 'image', 'name', 'menu_name', 'receipt_name', 'kitchen_name', 'description', 'tax_rate_id', 'allergens', 'tags', 'visibility', 'sold_alone', 'item_code', 'assigned_modifier_groups', 'type', 'parent_id', 'tax_overrides'])))
+            where k <> all (array['cat', 'cats', 'image', 'name', 'menu_name', 'receipt_name', 'kitchen_name', 'description', 'tax_rate_id', 'allergens', 'tags', 'visibility', 'sold_alone', 'item_code', 'assigned_modifier_groups', 'type', 'parent_id', 'tax_overrides', 'no_price'])))
+      or (jsonb_typeof(x -> 'kept') = 'object' and x -> 'kept' ? 'no_price' and (x #> '{kept,no_price}' <> 'true'::jsonb or jsonb_typeof(x -> 'price') = 'number'))
    limit 1;
   if found then
     raise exception 'A product is not at the site it was matched to, or keeps a field it cannot (%).', v_bad using errcode = '42501';
@@ -1494,12 +1514,14 @@ begin
       raise exception 'A new product has a field publish may not write.';
     end if;
     if exists (select 1 from public.menu_items i where i.id = w ->> 'id') then raise exception 'A new product id is already taken (%).', w ->> 'id'; end if;
-    -- VAT per order type: the four keys, each a rate of THIS site (never a foreign id).
+    -- VAT per order type: the four keys, each a rate of THIS site (never a foreign id), or an
+    -- explicit null (the site's default VAT) that a new size copies from its product's row.
     if w ? 'tax_overrides' and jsonb_typeof(w -> 'tax_overrides') <> 'null' and (jsonb_typeof(w -> 'tax_overrides') <> 'object'
        or exists (select 1 from jsonb_object_keys(w -> 'tax_overrides') k where k <> all (v_tax_keys))
        or exists (select 1 from jsonb_each(w -> 'tax_overrides') e
-                   where jsonb_typeof(e.value) <> 'string'
-                      or not exists (select 1 from public.tax_rates r where r.id::text = e.value #>> '{}' and r.location_id::text = p_location))) then
+                   where jsonb_typeof(e.value) not in ('string', 'null')
+                      or (jsonb_typeof(e.value) = 'string'
+                          and not exists (select 1 from public.tax_rates r where r.id::text = e.value #>> '{}' and r.location_id::text = p_location)))) then
       raise exception 'A new product has VAT by order type that is not a rate at this site. Nothing was written.';
     end if;
     insert into public.menu_items (id, location_id, name, menu_name, receipt_name, kitchen_name, description, type, cat, cats, parent_id, sort_order,
@@ -1667,15 +1689,26 @@ begin
       raise exception 'A product would point at a category, size, tax rate or modifier group that is not at this site. Nothing was written.';
     end if;
     -- VAT per order type, as a patch of the four keys (every other key and every explicit null the
-    -- site has stays exactly as it is: design review blocker 2). Rates of THIS site only.
+    -- site has stays exactly as it is: design review blocker 2). Rates of THIS site only, or an
+    -- explicit null (the site's default VAT) a size copies from its product's row (17 Oct recheck:
+    -- a size takes its product's four keys, as Menu Manager cascades them).
     if jsonb_typeof(u -> 'tax_overrides') = 'object' and (
          (u #> '{tax_overrides,set}' is not null and (jsonb_typeof(u #> '{tax_overrides,set}') <> 'object'
             or exists (select 1 from jsonb_each(u #> '{tax_overrides,set}') e
-                        where e.key <> all (v_tax_keys) or jsonb_typeof(e.value) <> 'string'
-                           or not exists (select 1 from public.tax_rates r where r.id::text = e.value #>> '{}' and r.location_id::text = p_location))))
+                        where e.key <> all (v_tax_keys) or jsonb_typeof(e.value) not in ('string', 'null')
+                           or (jsonb_typeof(e.value) = 'string'
+                               and not exists (select 1 from public.tax_rates r where r.id::text = e.value #>> '{}' and r.location_id::text = p_location)))))
       or (u #> '{tax_overrides,remove}' is not null and (jsonb_typeof(u #> '{tax_overrides,remove}') <> 'array'
             or exists (select 1 from jsonb_array_elements_text(u #> '{tax_overrides,remove}') k where k <> all (v_tax_keys))))) then
       raise exception 'VAT by order type for a product is not a rate at this site. Nothing was written.';
+    end if;
+    -- No price (17 Oct recheck): a site that keeps "no price" for this product is never given a
+    -- Standard price by publish (a change that sets one there takes no_price away first).
+    if jsonb_typeof(u -> 'pricing') = 'object' and u -> 'pricing' ? 'base' and jsonb_typeof(u #> '{pricing,base}') <> 'null'
+       and exists (select 1 from public.msm_product_sites ps join public.msm_products p on p.id = ps.product_id
+                    where p.menu_id = v.menu_id and ps.location_id = p_location and ps.venue_item_id = u ->> 'id'
+                      and ps.kept -> 'no_price' = 'true'::jsonb and ps.price is null) then
+      raise exception 'A product with no price at this site would get one that nobody set there. Nothing was written.';
     end if;
     -- tax_profile_id in exactly two ways (design review blocker 3): cleared over a profile that is
     -- still a generated copy of the item's own rate (after this write, or before it when the same
@@ -2321,7 +2354,8 @@ comment on function public.msm_managed_at(text[]) is
 --   targets 9, contract 2, anon_function_rights 0, new_functions 20, follow_block_gone true,
 --   menus_waiting_for_refresh N (the menus imported before this file: 1 on 17 Oct, the demo company),
 --   companies_switched_on N (unchanged by this file), icon_ok true, stuck_capped true,
---   retry_resets true
+--   retry_resets true, no_price_ok true (17 Oct recheck: a site's missing price is kept, a size's
+--   VAT by order type follows its product, a turn on never takes over a site's own product)
 select
   (select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace
     where n.nspname = 'public' and c.relkind = 'r' and c.relname in ('msm_modifier_options', 'msm_modifier_option_sites')) as new_tables,
@@ -2346,4 +2380,8 @@ select
   (select count(*) from public.msm_company where enabled) as companies_switched_on,
   (position('coalesce(r.icon, chr(127869))' in pg_get_functiondef('public.msm_apply_site(uuid,text,jsonb,jsonb,text,jsonb,text,text,uuid)'::regprocedure)) > 0) as icon_ok,
   (position('vs.attempts < 5' in pg_get_functiondef('public.msm_claim_due(integer)'::regprocedure)) > 0) as stuck_capped,
-  (position('attempts = 0' in pg_get_functiondef('public.msm_retry_site(uuid,text)'::regprocedure)) > 0) as retry_resets;
+  (position('attempts = 0' in pg_get_functiondef('public.msm_retry_site(uuid,text)'::regprocedure)) > 0) as retry_resets,
+  (position('''no_price''' in pg_get_functiondef('public.msm_changes_guard()'::regprocedure)) > 0
+   and position('''no_price''' in pg_get_functiondef('public.msm_import_commit(jsonb)'::regprocedure)) > 0
+   and position('kept -> ''no_price''' in pg_get_functiondef('public.msm_apply_site(uuid,text,jsonb,jsonb,text,jsonb,text,text,uuid)'::regprocedure)) > 0
+   and position('i.id = v_vid and i.location_id = new.location_id' in pg_get_functiondef('public.msm_changes_guard()'::regprocedure)) > 0) as no_price_ok;

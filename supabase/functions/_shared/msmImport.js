@@ -40,9 +40,9 @@
 //     keeps its own key (a rate, an explicit null, or "no key"); its other keys are kept as they are.
 //   * The self check still says zero writes at every site, groups and VAT included.
 
-import { familyOf, normName, toPence, fromPence, CHANNELS, KEPT_COLUMNS, STAGE_FIELDS, sameValue, samePrice, has } from './msmModel.js';
+import { familyOf, normName, toPence, fromPence, CHANNELS, KEPT_COLUMNS, STAGE_FIELDS, sameValue, samePrice, has, NO_PRICE } from './msmModel.js';
 import { planSite, touchedFromChanges } from './msmPlan.js';
-import { importTaxByType } from './msmTax.js';
+import { importTaxByType, sizeKeptTax } from './msmTax.js';
 
 const listOf = (v) => (Array.isArray(v) ? v : []);
 const keyOf = (loc, id) => `${loc}|${id}`;
@@ -473,15 +473,18 @@ export function proposeImport(sites, opts = {}) {
       });
     }
   }
-  // A size with VAT by order type of its own at a site gets the full set from its product, so it
-  // keeps every key that differs (the planner leaves a size with none of its own alone).
+  // A size follows its product's row at its site (17 Oct recheck: publish writes the product's
+  // four keys to every size, as Menu Manager cascades them), so a size keeps only the keys that
+  // differ from its product's row there.
   for (const p of products) {
     if (!p.parent_product_id) continue;
-    const parent = products.find((x) => x.id === p.parent_product_id);
-    const own = p._group.members.filter((x) => x.row.tax_overrides && typeof x.row.tax_overrides === 'object' && Object.keys(x.row.tax_overrides).length);
-    if (!own.length) continue;
-    const t = importTaxByType(own, (loc) => siteRaw.get(loc)?.taxRates || [], null, parent?.tax_by_type || {});
-    for (const ps of productSites) if (ps.product_id === p.id && t.kept.has(ps.location_id)) ps.kept = { ...ps.kept, tax_overrides: t.kept.get(ps.location_id) };
+    for (const x of p._group.members) {
+      const parentRow = x.row.parent_id ? listOf(siteRaw.get(x.loc)?.items).find((i) => i && i.id === x.row.parent_id) : null;
+      const kept = sizeKeptTax(x.row, parentRow);
+      if (!kept) continue;
+      const ps = productSites.find((r) => r.product_id === p.id && r.location_id === x.loc);
+      if (ps) ps.kept = { ...ps.kept, tax_overrides: kept };
+    }
   }
   for (const p of products) { delete p._group; delete p._master; delete p._taxKept; }
   return {
@@ -617,9 +620,14 @@ export function settleKept(central, sites, { passes = 4 } = {}) {
         if (l.column === 'archived') { ps.active = row.archived !== true; changed++; continue; }
         if (l.column.startsWith('pricing.')) {
           const k = l.column.slice(8);
-          // A legacy row priced only by its old single price has no pricing.base to keep: it can
-          // never settle, so it is named in words below instead of going round again.
-          if (k === 'base' && row.pricing?.base == null) { last.push({ location_id: s.location_id, line: l, noBase: true }); continue; }
+          // 17 Oct recheck: a row with no Standard price (pricing.base null, or none at all) is a
+          // fact the import KEEPS: the site keeps "no price" (kept no_price), so publish never
+          // writes one there until someone sets a price for it at that site. Nothing is left out.
+          if (k === 'base' && row.pricing?.base == null) {
+            if (ps.kept[NO_PRICE] !== true || ps.price != null) { ps.kept[NO_PRICE] = true; ps.price = null; changed++; }
+            else last.push({ location_id: s.location_id, line: l });
+            continue;
+          }
           if (k === 'base') ps.price = row.pricing?.base ?? null;
           else ps.channel_prices = { ...(ps.channel_prices || {}), [k]: row.pricing?.[k] ?? null };
           changed++;
@@ -654,19 +662,7 @@ export function settleKept(central, sites, { passes = 4 } = {}) {
     const n = plan.lines.length;
     writes += n;
     for (const l of plan.lines.slice(0, 20)) {
-      const row = l.table === 'items' ? rowOf(s.location_id, l.id) : null;
-      if (row && l.column === 'pricing.base' && row.pricing?.base == null) {
-        // 17 Oct rehearsal: a live company had 13 such rows. A product with sizes has no base price box
-        // in Menu Manager, so the only way on for it is Leave out.
-        const nm = row.menu_name || row.name || l.id;
-        const sized = row.type === 'variants' || listOf(raw?.items).some((i) => i && i.parent_id === row.id && i.archived !== true);
-        problems.push({
-          location_id: s.location_id, noBase: true, sized,
-          words: sized
-            ? `"${nm}" at ${s.name || 'a site'} has no base price, and a product with sizes has no base price box in Menu Manager. Press Leave out on it in step 2 (it stays each site's own), then check again.`
-            : `"${nm}" at ${s.name || 'a site'} has no base price. Press Leave out on it in step 2, or open it in that site's Menu Manager and save a price there, then check again.`,
-        });
-      } else if (l.table === 'groups') {
+      if (l.table === 'groups') {
         problems.push({ location_id: s.location_id, words: `Option group ${l.id} at ${s.name || 'a site'}: ${l.column.replace(/[()]/g, '')} would change. Import again; if it stays, tell ServOS.` });
       } else {
         problems.push({ location_id: s.location_id, words: `${l.table} ${l.id}: ${l.column} would change` });
@@ -717,7 +713,6 @@ export function refreshGroupsPayload(central, sites, opts = {}) {
   // VAT by order type for every product.
   const products = listOf(central.products).map((p) => ({ ...p }));
   const productSites = listOf(central.productSites).map((ps) => ({ ...ps, kept: { ...(ps.kept || {}) } }));
-  const byId = new Map(products.map((p) => [p.id, p]));
   const rowOf = (loc, id) => listOf(raws.get(loc)?.items).find((i) => i.id === id) || null;
   const ratesOf = (loc) => raws.get(loc)?.taxRates || [];
   for (const p of products) {
@@ -727,13 +722,21 @@ export function refreshGroupsPayload(central, sites, opts = {}) {
     p.tax_by_type = t.taxByType;
     for (const ps of productSites) if (ps.product_id === p.id) { delete ps.kept.tax_overrides; if (t.kept.has(ps.location_id)) ps.kept.tax_overrides = t.kept.get(ps.location_id); }
   }
+  // A size follows its product's row at its site (17 Oct recheck): it keeps only what differs.
   for (const p of products) {
     if (!p.parent_product_id) continue;
     p.tax_by_type = null;
-    const members = productSites.filter((ps) => ps.product_id === p.id).map((ps) => ({ loc: ps.location_id, row: rowOf(ps.location_id, ps.venue_item_id) }))
-      .filter((m) => m.row && m.row.tax_overrides && typeof m.row.tax_overrides === 'object' && Object.keys(m.row.tax_overrides).length);
-    const t = importTaxByType(members, ratesOf, null, byId.get(p.parent_product_id)?.tax_by_type || {});
-    for (const ps of productSites) if (ps.product_id === p.id) { delete ps.kept.tax_overrides; if (t.kept.has(ps.location_id)) ps.kept.tax_overrides = t.kept.get(ps.location_id); }
+    const parentPs = (loc) => productSites.find((ps) => ps.product_id === p.parent_product_id && ps.location_id === loc);
+    for (const ps of productSites) {
+      if (ps.product_id !== p.id) continue;
+      delete ps.kept.tax_overrides;
+      const row = rowOf(ps.location_id, ps.venue_item_id);
+      if (!row) continue;
+      const pps = parentPs(ps.location_id);
+      const parentRow = (pps && rowOf(ps.location_id, pps.venue_item_id)) || (row.parent_id ? rowOf(ps.location_id, row.parent_id) : null);
+      const kept = sizeKeptTax(row, parentRow);
+      if (kept) ps.kept.tax_overrides = kept;
+    }
   }
   const next = { ...central, menu: { ...(central.menu || {}), refreshed_at: 'refresh' }, groups, groupSites: ig.groupSites, options: ig.options, optionSites: [], products, productSites };
   next.optionSites = finalizeOptionSites(next, ig.entries);
