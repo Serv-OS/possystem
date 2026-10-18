@@ -9,9 +9,14 @@
 // Mirrors the pure logic in src/lib/stock/{uom,explode}.js — keep them in step.
 //
 // POST { location_id, check_id, items:[{itemId, qty}], reverse?:bool }
-// Auth: verify_jwt=false; accepts anon (kiosk/online) + authenticated callers.
+// Auth: verify_jwt=false. v5.11.76 (18 Oct 2026, stock fences): served only for the service role,
+// a session the database says can reach the venue (Back Office login, owner, super admin, or a
+// till, kiosk or ops tablet bound to it), or a paid online, QR or catering order at that venue,
+// whose own stored lines are used. Everything else is refused (403) before any read. The rule
+// and its reasons: ../_shared/stockDepleteCaller.js. Needs a REDEPLOY to take effect.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { authoriseStockDeplete } from '../_shared/stockDepleteCaller.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -59,6 +64,7 @@ function toBase(qty: number, token: string, item: any): number {
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+const ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY') ?? '';
 
 async function buildCtx(sb: any, loc: string) {
   const [items, convs, packs, links, recipes, lines] = await Promise.all([
@@ -139,14 +145,30 @@ Deno.serve(async (req) => {
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
   let body: any;
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
-  const loc = String(body?.location_id || '');
-  const checkId = String(body?.check_id || '');
-  const items = Array.isArray(body?.items) ? body.items : [];
-  const reverse = body?.reverse === true;
-  const orderType = body?.order_type ? String(body.order_type) : null;   // scopes order-type-specific lines (e.g. takeaway cup)
-  if (!loc || !checkId || !items.length) return json({ error: 'location_id, check_id, items required' }, 400);
 
   const sb = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { autoRefreshToken: false, persistSession: false } });
+  // Who is asking (v5.11.76). The caller's own token asks the database whether it reaches the venue.
+  const apikey = req.headers.get('apikey') || ANON_KEY;
+  const auth = await authoriseStockDeplete({
+    authorization: req.headers.get('Authorization'),
+    serviceKey: SERVICE_ROLE,
+    makeCallerDb: (token: string) => createClient(SUPABASE_URL, apikey, {
+      global: { headers: { Authorization: `Bearer ${token}` } },
+      auth: { autoRefreshToken: false, persistSession: false },
+    }),
+    ops: sb,
+    body,
+  });
+  if (!auth.ok) {
+    if (auth.status === 403) console.warn('[stock-deplete] refused', JSON.stringify({ reason: auth.reason, location_id: String(body?.location_id || '').slice(0, 40) }));
+    return json({ error: auth.error, code: 'stock_caller', reason: auth.reason }, auth.status);
+  }
+  const loc = auth.locationId;
+  const checkId = auth.checkId;
+  const items = auth.items;          // a paid public order: its own stored lines, never the caller's
+  const reverse = auth.reverse;
+  const orderType = auth.orderType;  // scopes order-type-specific lines (e.g. takeaway cup)
+
   try {
     const ctx = await buildCtx(sb, loc);
     if (!Object.keys(ctx.menuRecipes).length) return json({ ok: true, depleted: 0, note: 'no recipes' });
