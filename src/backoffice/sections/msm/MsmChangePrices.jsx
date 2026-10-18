@@ -131,7 +131,9 @@ export default function MsmChangePrices({ api, menu, live, eff, ix, sites, stage
     sites: new Set(counted.map((r) => r.locationId)).size,
     clears: kept.filter((r) => r.changed && r.clears).length,
     clamped: counted.filter((r) => r.clamped).length,
-    offSites: new Set(kept.filter((r) => r.off && r.staged).map((r) => r.locationId)).size,
+    // A site where it is off: its own price staged, or following the group price that moves (18 Oct
+    // follow up: publish keeps that row in step too, so it is said, as Review and publish counts it).
+    offSites: new Set(kept.filter((r) => r.off && (r.staged || r.changed)).map((r) => r.locationId)).size,
     freeKept: result.summary.freeKept,
     // 17 Oct recheck: sites with no price are skipped by an amount or a percent, and said.
     noPrice: kept.filter((r) => r.noPrice && r.skipped && r.locationId).length,

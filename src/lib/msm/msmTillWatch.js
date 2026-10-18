@@ -220,7 +220,8 @@ export function markKioskHeardMsm(storage, loc) {
  * The kiosk's re read controller. Pure: the hook gives it the idle check, the way to start a read
  * and the timers; it never reads anything itself.
  *   isIdle()   on the start screen with an empty basket (kioskMayRefresh)
- *   reload()   start ONE menu read; the hook calls readDone(ok) when it answers
+ *   reload()   start ONE menu read; the hook calls readDone(ok) when it answers: true (shown),
+ *              false (failed) or 'busy' (it landed mid order and was not shown, 18 Oct follow up)
  * Returns { heard(), readDone(ok), stop(), state() }. Nothing runs until heard() is called: a kiosk
  * that never hears of a head office update sets no timer and starts no read.
  */
@@ -237,19 +238,32 @@ export function createKioskRefresh({ isIdle, reload, timers = globalThis }) {
     clear();
     if (!stopped) timer = timers.setTimeout(() => { timer = null; tick(); }, ms);
   };
+  let last = 0;          // updates the last read started covers (18 Oct follow up)
   const tick = () => {
     if (stopped || reading || have >= wanted || timer) return;
     if (!isIdle()) { later(IDLE_CHECK_MS); return; }
     reading = wanted;
+    last = wanted;
     giveUp = timers.setTimeout(() => { giveUp = null; done(false); }, KIOSK_READ_GIVE_UP_MS);
     reload();
   };
+  // ok: true (read and shown), false (failed), or 'busy' (read, but it landed mid order, so the hook
+  // did not show it: read again at the next idle moment, not a failure).
   const done = (ok) => {
-    if (!reading || stopped) return;
+    if (stopped) return;
+    if (!reading) {
+      // 18 Oct follow up: the read given up after 2 minutes answered before the next one started
+      // (the hook only passes on the answer of the last read it asked for, and an older read can
+      // never answer). It was shown, so it counts: before, the kiosk read the whole menu again about
+      // every 7 minutes for as long as the link stayed that slow.
+      if (ok === true && last > have) { have = last; failures = 0; clear(); tick(); }
+      return;
+    }
     if (giveUp) { timers.clearTimeout(giveUp); giveUp = null; }
     const covered = reading;
     reading = 0;
-    if (ok) { have = Math.max(have, covered); failures = 0; tick(); return; }
+    if (ok === 'busy') { later(IDLE_CHECK_MS); return; }
+    if (ok === true) { have = Math.max(have, covered); failures = 0; tick(); return; }
     failures++;
     later(kioskRetryDelayMs(failures));
   };

@@ -181,6 +181,17 @@ export function draftCount(rows, central = null) {
 }
 
 /**
+ * The Review and publish tab's badge (18 Oct follow up): the same number as the "Review and publish
+ * (N)" button beside it, never the rows the database holds (a new size at 3 sites read 4 there).
+ *   s   the screen's shared state: { working, rows, eff, live, counted (draftCount, when worked out) }
+ */
+export function publishBadge(s) {
+  if (s?.working?.status !== 'draft') return 0;
+  if (s.counted && Number.isFinite(s.counted.total)) return s.counted.total;
+  return draftCount(s.rows, s.eff || s.live || null).total;
+}
+
+/**
  * What a publish changes at ONE site, counted the same way, from the planner's lines there
  * (msmPlan.planSite(...).lines).
  */

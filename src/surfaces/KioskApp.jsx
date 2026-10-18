@@ -126,7 +126,7 @@ function useKioskProfile(kioskId) {
 
 // Loads menu data scoped to this location. Returns items, categories, links, menus.
 // Uses the active-menu resolver (matching POS) so timed menus work.
-function useKioskMenu(profile, locationId, tz = 'Europe/London', reloadKey = 0) {
+function useKioskMenu(profile, locationId, tz = 'Europe/London', reloadKey = 0, idleRef = null) {
   const [data, setData] = useState({ items: [], categories: [], menus: [], links: [], taxRates: [], taxProfiles: [], venueDefaultTaxProfileId: null });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -144,6 +144,10 @@ function useKioskMenu(profile, locationId, tz = 'Europe/London', reloadKey = 0) 
 
   useEffect(() => {
     let alive = true;
+    // 18 Oct 2026 follow up (Multi site menu): is the kiosk still on the start screen with an empty
+    // basket when a re read LANDS? (idleRef: { screen, cartCount }, kept by the kiosk below.) A read
+    // that started idle can answer mid order.
+    const mayApply = () => { const now = idleRef?.current; return now ? kioskMayRefresh({ pending: true, ...now }) : true; };
     (async () => {
       if (!locationId) { setLoading(false); return; }
       try {
@@ -197,8 +201,11 @@ function useKioskMenu(profile, locationId, tz = 'Europe/London', reloadKey = 0) 
           const res = { items: iRes, categories: cRes, menus: mRes, links: lRes, taxProfiles: tpRes, taxProfileLines: tlRes };
           const opts = { reload: true, assemble: assembleTaxProfiles, venueDefaultTaxProfileId: defRes?.data?.default_tax_profile_id ?? null };
           const failed = kioskMenuAfterRead(null, res, opts).failed;
-          if (!failed) setData((prev) => kioskMenuAfterRead(prev, res, opts).data);
-          setReloadDone({ key: reloadKey, failed });
+          // Landed mid order (18 Oct follow up): not shown (never swap the menu under a customer);
+          // the next idle moment reads again.
+          const busy = !failed && !mayApply();
+          if (!failed && !busy) setData((prev) => kioskMenuAfterRead(prev, res, opts).data);
+          setReloadDone({ key: reloadKey, failed, busy });
         } else {
           // The first load: exactly as before the Multi site menu.
           setData({
@@ -224,8 +231,9 @@ function useKioskMenu(profile, locationId, tz = 'Europe/London', reloadKey = 0) 
     })();
     return () => { alive = false; };
     // reloadKey: 17 Oct 2026 (Multi site menu) a head office menu update read again on the start
-    // screen with an empty basket (useMsmKioskRefresh below). Nothing else bumps it.
-  }, [locationId, reloadKey]);
+    // screen with an empty basket (useMsmKioskRefresh below). Nothing else bumps it. idleRef is a ref
+    // (the same object every render).
+  }, [locationId, reloadKey, idleRef]);
 
   // Resolve active menu through the ONE shared resolver (src/lib/menus/
   // resolveActiveMenu.js), the same chain the till runs. The kiosk gains the
@@ -307,7 +315,7 @@ function useMsmKioskRefresh(locationId, { screen, cartCount, setReload, done }) 
   const askedRef = useRef(0);
   // The re read this hook asked for has answered (useKioskMenu's reloadDone).
   useEffect(() => {
-    if (done && done.key === askedRef.current) ctlRef.current?.readDone(!done.failed);
+    if (done && done.key === askedRef.current) ctlRef.current?.readDone(done.busy ? 'busy' : !done.failed);
   }, [done]);
   useEffect(() => {
     if (!locationId || !supabase) return undefined;
@@ -433,7 +441,9 @@ export default function KioskApp({ kioskId, onUnpair }) {
   }, [locationId]);
   // 17 Oct 2026 (Multi site menu): bumped by useMsmKioskRefresh (below, once the basket exists).
   const [msmReload, setMsmReload] = useState(0);
-  const { items, categories, menus, links, taxRates, taxProfiles, venueDefaultTaxProfileId, activeMenuId, loading: menuLoading, error: menuError, ratesState, retryRates, reloadDone: msmReloadDone } = useKioskMenu(profile, locationId, kioskTz, msmReload);
+  // 18 Oct 2026 follow up: { screen, cartCount } for a re read that lands (kept just below the basket).
+  const msmIdleRef = useRef(null);
+  const { items, categories, menus, links, taxRates, taxProfiles, venueDefaultTaxProfileId, activeMenuId, loading: menuLoading, error: menuError, ratesState, retryRates, reloadDone: msmReloadDone } = useKioskMenu(profile, locationId, kioskTz, msmReload, msmIdleRef);
   // v5.7.34: local tax context for the unified seam — built from the kiosk's
   // own fetches (profiles + raw tax_profile_id columns + venue default).
   const kioskTaxCtx = useMemo(() => buildLocalTaxCtx({
@@ -595,6 +605,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
   }, [locationId]);
 
   const [cart, setCart] = useState([]); // [{ key, item, qty, mods, linePrice, lineTotal, name }]
+  useEffect(() => { msmIdleRef.current = { screen, cartCount: cart.length }; }, [screen, cart.length]);
   useMsmKioskRefresh(locationId, { screen, cartCount: cart.length, setReload: setMsmReload, done: msmReloadDone });
   const [tip, setTip] = useState(0);
   const [customerName, setCustomerName] = useState('');

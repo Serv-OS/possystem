@@ -327,7 +327,7 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
   // The one counting rule (msmStatus.draftCount), the same number and words on every screen.
   const counted = draftCount(rows, eff);
   const shared = {
-    tabIds: tabs.map((t) => t.id), api, client, menu, live, eff, ix, sites, sets, working, rows, staged, ctx, stage, unstage, canEdit, editable, costs, channel, setChannel,
+    counted, tabIds: tabs.map((t) => t.id), api, client, menu, live, eff, ix, sites, sets, working, rows, staged, ctx, stage, unstage, canEdit, editable, costs, channel, setChannel,
     refreshSets, reload: () => setReload((n) => n + 1), setWorkingId, setNote, setTab, ratesByLoc, sales,
     openProduct: (id) => setSheet({ productId: id }), openGroup: (id) => { setGroupPick(id); setTab('groups'); },
   };

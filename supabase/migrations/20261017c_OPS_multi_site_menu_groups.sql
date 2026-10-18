@@ -384,6 +384,12 @@ begin
     elsif not exists (select 1 from public.msm_categories c where c.id = new.entity_id and c.menu_id = v_set.menu_id) then
       raise exception 'That category is not in this group menu.' using errcode = '42501';
     end if;
+    -- 18 Oct follow up: a category the group menu already has takes only "send like" and removed or
+    -- back. The import keeps no per site category differences, so any other field would be written
+    -- over every site's own. A new category takes every field (msmModel.CATEGORY_UPDATE_FIELDS).
+    if new.op <> 'create' and exists (select 1 from jsonb_object_keys(new.after) k where k <> all (array['archived', 'route_like_id'])) then
+      raise exception 'A category''s name, place and colour stay as each site has them for now. Only a new category takes them here.' using errcode = '22023';
+    end if;
     foreach v_ref in array array[nullif(new.after ->> 'parent_id', '')::uuid, nullif(new.after ->> 'route_like_id', '')::uuid] loop
       if not public.msm__ref_ok(v_set.menu_id, v_set.id, 'category', v_ref) then
         raise exception 'That category is not in this group menu.' using errcode = '42501';
@@ -2355,7 +2361,9 @@ comment on function public.msm_managed_at(text[]) is
 --   menus_waiting_for_refresh N (the menus imported before this file: 1 on 17 Oct, the demo company),
 --   companies_switched_on N (unchanged by this file), icon_ok true, stuck_capped true,
 --   retry_resets true, no_price_ok true (17 Oct recheck: a site's missing price is kept, a size's
---   VAT by order type follows its product, a turn on never takes over a site's own product)
+--   VAT by order type follows its product, a turn on never takes over a site's own product),
+--   category_fields_ok true (18 Oct follow up: a category the group menu already has takes only
+--   "send like" and removed or back)
 select
   (select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace
     where n.nspname = 'public' and c.relkind = 'r' and c.relname in ('msm_modifier_options', 'msm_modifier_option_sites')) as new_tables,
@@ -2384,4 +2392,5 @@ select
   (position('''no_price''' in pg_get_functiondef('public.msm_changes_guard()'::regprocedure)) > 0
    and position('''no_price''' in pg_get_functiondef('public.msm_import_commit(jsonb)'::regprocedure)) > 0
    and position('kept -> ''no_price''' in pg_get_functiondef('public.msm_apply_site(uuid,text,jsonb,jsonb,text,jsonb,text,text,uuid)'::regprocedure)) > 0
-   and position('i.id = v_vid and i.location_id = new.location_id' in pg_get_functiondef('public.msm_changes_guard()'::regprocedure)) > 0) as no_price_ok;
+   and position('i.id = v_vid and i.location_id = new.location_id' in pg_get_functiondef('public.msm_changes_guard()'::regprocedure)) > 0) as no_price_ok,
+  (position('k <> all (array[''archived'', ''route_like_id''])' in pg_get_functiondef('public.msm_changes_guard()'::regprocedure)) > 0) as category_fields_ok;

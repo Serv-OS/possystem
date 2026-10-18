@@ -56,6 +56,19 @@ export const TARGET_OPS = Object.freeze({
   modifier_option_site: ['create', 'update'],
 });
 
+// A category the group menu already has (18 Oct follow up): only "send like" and removed or back.
+// No screen edits an existing category's name, place or colour yet, and the import keeps no per site
+// category differences (products have kept values, categories do not), so publish would write the
+// group's value over every site's own. A NEW category takes every field. The database refuses the
+// rest (public.msm_changes_guard, 20261017c); the screens say it first (msmDiff.mergeStaged).
+export const CATEGORY_UPDATE_FIELDS = Object.freeze(['archived', 'route_like_id']);
+/** Words when a change to a category the group menu already has carries any other field ('' when fine). */
+export function categoryUpdateWords(change, op = change?.op) {
+  if (!change || change.target !== 'category' || op === 'create') return '';
+  const bad = Object.keys(change.after && typeof change.after === 'object' ? change.after : {}).filter((k) => !CATEGORY_UPDATE_FIELDS.includes(k));
+  return bad.length ? "A category's name, place and colour stay as each site has them for now. Only a new category takes them here." : '';
+}
+
 // The fields a change may carry in `after`, per target. Anything else is refused by the
 // database (trigger msm_changes_guard) and dropped here (stageableFields).
 export const STAGE_FIELDS = Object.freeze({

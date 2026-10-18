@@ -183,7 +183,8 @@ test('the kiosk keeps its menu on screen when a reload after a head office push 
   const kiosk = fs.readFileSync(new URL('../../surfaces/KioskApp.jsx', import.meta.url), 'utf8');
   // Recheck (Builder B): a failed re read is read again later through the one at a time controller.
   assert.match(kiosk, /isIdle: \(\) => kioskMayRefresh\(\{ pending: true, \.\.\.idleRef\.current \}\)/);
-  assert.match(kiosk, /setReloadDone\(\{ key: reloadKey, failed \}\)/);
+  // 18 Oct follow up: it also says when a read landed mid order (busy), so it is read again, not shown.
+  assert.match(kiosk, /setReloadDone\(\{ key: reloadKey, failed, busy \}\)/);
 });
 
 test('the sharing gate asks once more before blocking (a blip fails only the check)', async () => {

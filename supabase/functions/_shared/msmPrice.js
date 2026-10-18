@@ -279,8 +279,15 @@ function runChannel(central, opts, channel, onlySet) {
         // replace that, so such a site is treated as having its own price.
         if (own == null && onlySet) continue;      // it follows: moved by the Standard price or the group's
         if (own == null && (fallback === groupEff || defOwn != null || !channel)) {
-          if (off) continue;
           const after = newDef;
+          // Off here and following the group price (18 Oct follow up): nothing is staged, but publish
+          // keeps its row in step with the new group price, and Review and publish counts it. Shown,
+          // and said in the headline ("also keeps N sites where it is off in step"); never a till price.
+          if (off) {
+            rows.push({ productId: p.id, locationId: ps.location_id, channel, before: fromPence(before), after: fromPence(after), changed: after !== before, clamped: r.clamped, follows: true, clears: false, staged: false, off: true, pinned });
+            if (after !== before) offSites.add(ps.location_id);
+            continue;
+          }
           rows.push({ productId: p.id, locationId: ps.location_id, channel, before: fromPence(before), after: fromPence(after), changed: after !== before, clamped: r.clamped, follows: true, clears: false, staged: false, off: false, pinned });
           if (after !== before) touchedSites.add(ps.location_id);
           continue;

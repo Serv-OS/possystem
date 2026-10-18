@@ -612,10 +612,21 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     for (const k of ORDER_TYPE_TAX_KEYS) if (has(pto, k)) out[k] = pto[k];
     return out;
   };
+  // 18 Oct follow up: a size with NO VAT rate of its own is charged its product's rate on the till
+  // and the kiosk only while it has no VAT keys of its own (store addItem, kioskLineTaxRefs). Giving
+  // it its product's order type keys would move its eat in VAT to the site's standard rate, so it is
+  // blocked in words instead (no live size has no rate today; the product sheet refuses a new one).
+  const sizeNoRate = (p, meta) => problem('size_no_rate', 'block', `The size "${p.name}" has no VAT rate of its own at this site, so giving it its product's VAT by order type would charge its eat in VAT at the site's standard rate. Give the size its VAT in the multi site menu, then publish again. Nothing was changed.`, meta);
+  const parentRowOf = (p) => { const pps = psBy.get(p.parent_product_id); return pps ? vItemById.get(pps.venue_item_id) || null : null; };
+
   // VAT by order type for a NEW venue row: the four keys mapped; a new size takes its product's
   // (17 Oct recheck, as Menu Manager cascades them to every size).
-  const newRowTaxOverrides = (p) => {
-    if (p.parent_product_id) return parentTypeKeys(p) || {};
+  const newRowTaxOverrides = (p, tax = null) => {
+    if (p.parent_product_id) {
+      const keys = parentTypeKeys(p) || {};
+      if (tax?.ok && tax.id == null && Object.keys(keys).length && parentRowOf(p)?.tax_rate_id != null) { sizeNoRate(p, { productId: p.id }); return {}; }
+      return keys;
+    }
     const eff = effectiveTaxByType(p, productById);
     const out = {};
     for (const k of ORDER_TYPE_TAX_KEYS) {
@@ -643,6 +654,9 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
       parentRow = pps ? vItemById.get(pps.venue_item_id) : null;
       const want = parentTypeKeys(p);
       if (!want) return;                        // its product is not here (said elsewhere)
+      const ownKeys = vrow.tax_overrides && typeof vrow.tax_overrides === 'object' ? Object.keys(vrow.tax_overrides) : [];
+      const adds = ORDER_TYPE_TAX_KEYS.some((k) => !keptKey(k) && has(want, k));
+      if (vrow.tax_rate_id == null && !vrow.tax_profile_id && parentRow?.tax_rate_id != null && !ownKeys.length && adds) { sizeNoRate(p, meta); return; }
       for (const k of ORDER_TYPE_TAX_KEYS) {
         if (keptKey(k)) continue;
         wrote = setTaxKey(vrow, k, has(want, k) ? want[k] : undefined, meta) || wrote;
@@ -748,7 +762,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
         pricing, allergens: listOf(p.allergens), assigned_modifier_groups: mapGroups(p),
         visibility: optionOnlyP(p) ? HIDDEN : soldVisibility(p), sold_alone: !!p.sold_alone, archived: false,
         tax_rate_id: tax.ok ? tax.id : null, image: p.image ?? null, scope: 'local', org_id: orgId,
-        tags: listOf(p.tags), item_code: p.item_code ?? null, tax_overrides: newRowTaxOverrides(p),
+        tags: listOf(p.tags), item_code: p.item_code ?? null, tax_overrides: newRowTaxOverrides(p, tax),
       };
       W.items.insert.push(row);
       const vr = { ...row, location_id: loc };
@@ -907,8 +921,10 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     }
     // Brought back (archived false, directly or by Undo): back on the venue menu, with its link,
     // so its products show on the tills again (design 1.9: removal is reversible).
-    if (t.fields.has('archived') && !c.archived) {
-      if (vrow.menu_id !== venueMenuId) setCol('categories', vrow, 'menu_id', venueMenuId, meta);
+    // Already on the venue menu by its menu id (18 Oct follow up): nothing to bring back. A link
+    // there would only be a second record of the same thing (menuMembership reads either).
+    if (t.fields.has('archived') && !c.archived && vrow.menu_id !== venueMenuId) {
+      setCol('categories', vrow, 'menu_id', venueMenuId, meta);
       if (!applied.links.some((l) => l.menu_id === venueMenuId && l.category_id === vid)) {
         const link = { menu_id: venueMenuId, category_id: vid, sort_order: c.sort_order ?? 0 };
         W.links.insert.push(link);

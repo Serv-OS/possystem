@@ -14,7 +14,7 @@ const ZERO = { id: 'z', name: 'Zero Rate', rate: 0, active: true };
 test('which order type prices show: the menu\'s own list, else those priced anywhere', () => {
   assert.deepEqual(shownPriceTypes({ menu: {}, products: [{ default_channels: { delivery: 4, takeaway: 3 } }], productSites: [{ channel_prices: { dineIn: 3 } }] }).types, ['dineIn', 'takeaway'], 'Delivery is a platform price, never shown (UI issue 2)');
   assert.deepEqual(shownPriceTypes({ menu: { order_types: ['takeaway', 'delivery', 'bar'] }, products: [{ default_channels: { dineIn: 4 } }] }).types, ['takeaway'], 'the setting wins; hidden prices stay');
-  assert.deepEqual(shownPriceTypes({ menu: {}, products: [{ default_channels: { dineIn: null } }] }).types, [], 'Coffee Boy: Standard only');
+  assert.deepEqual(shownPriceTypes({ menu: {}, products: [{ default_channels: { dineIn: null } }] }).types, [], 'live chain: Standard only');
   assert.deepEqual(shownTaxTypes({ menu: {} }), ['dine-in', 'takeaway', 'delivery']);
   assert.deepEqual(shownTaxTypes({ menu: { order_types: ['bar'] } }), ['dine-in', 'takeaway', 'delivery', 'bar'], 'Bar tab only when it is sold');
 });

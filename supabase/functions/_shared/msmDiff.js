@@ -16,7 +16,7 @@
 //                                     (a create is undone by turning the product off, never a
 //                                     delete), with "changed since" warnings
 
-import { STAGE_FIELDS, SITE_TARGETS, has, sameValue, checkChange, money2, newOptionId, channelFallback, pctText, NO_PRICE, keptWithoutNoPrice } from './msmModel.js';
+import { STAGE_FIELDS, SITE_TARGETS, has, sameValue, checkChange, money2, newOptionId, channelFallback, pctText, NO_PRICE, keptWithoutNoPrice, categoryUpdateWords } from './msmModel.js';
 import { planSite, touchedFromChanges, countsWords, lineWords, groupOptionRows } from './msmPlan.js';
 import { checkSite, checkCentral } from './msmHealth.js';
 import { touchEverything } from './msmImport.js';
@@ -125,10 +125,15 @@ export function mergeStaged(existing, change) {
     if (!existing) return { action: 'none', row: null };
   }
   if (!existing) {
+    const catWords = categoryUpdateWords(change);
+    if (catWords) return { action: 'none', row: null, words: catWords };
     if (change.op === 'update' && Object.keys(change.after || {}).every((k) => sameValue(change.after[k], change.before?.[k]))) return { action: 'none', row: null };
     return { action: 'insert', row: { ...change, after: clone(change.after || {}), before: clone(change.before || {}) } };
   }
   const op = existing.op === 'create' ? 'create' : change.op === 'remove' ? 'remove' : existing.op;
+  // A category the group menu already has: only "send like" and removed or back (18 Oct follow up).
+  const catWords = categoryUpdateWords(change, op);
+  if (catWords) return { action: 'none', row: null, words: catWords };
   const after = { ...clone(existing.after || {}), ...clone(change.after || {}) };
   const before = { ...clone(change.before || {}), ...clone(existing.before || {}) };   // the FIRST before wins
   if (op === 'update') {

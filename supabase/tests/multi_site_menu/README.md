@@ -109,7 +109,8 @@ scheduler functions and the group site foreign key back exactly as round 1 made 
 
 ## 17 Oct 2026 recheck (270 of 270 with round 1's checks; edge.mjs 34 of 34)
 
-`round2.mjs` also proves, through the database: a site's own product with NO Standard price is
+22 more checks: 21 in `round2.mjs` (named RECHECK) and 1 in `run.mjs` (the check row). `round2.mjs`
+also proves, through the database: a site's own product with NO Standard price is
 brought in keeping "no price" (`kept.no_price`), the guard takes it (and refuses a `no_price` that is
 not true, or one with a price of its own), publishing it writes nothing; a group price change leaves
 that site with no price and says so, and the write path refuses a price nobody set there; a price set
@@ -122,7 +123,7 @@ product. `run.mjs` checks the round 2 check row's new column (no_price_ok).
 
 ## 17 Oct 2026 recheck, screens and drafts (282 of 282 with round 1's checks; edge.mjs 34 of 34)
 
-`round2.mjs` also proves, through the database: a product with an option group turned on at a site
+12 more checks, all in `round2.mjs` (named BUILDER B). `round2.mjs` also proves, through the database: a product with an option group turned on at a site
 where the group is not, then off again before publishing, leaves NOTHING in the draft (its two
 option rows come out with it); Undo stages the turn on again exactly (the guard takes it) and it
 publishes (the product and its group at that site). A third site of the company that already sells
@@ -131,3 +132,11 @@ sells now", `msmBringIn.planJoinSite`): the guard takes the site row and the lin
 nothing there and sends no push, the site is in the group menu writing into its own menu, and its
 rows are exactly as they were. A plain Add a site over a site's own product is still blocked, in
 words that point to the join.
+
+## 18 Oct 2026 follow up (290 of 290 with round 1's checks; edge.mjs 34 of 34)
+
+8 more checks: 7 in `round2.mjs` (named FOLLOW UP) and 1 in `run.mjs` (the check row's new column,
+category_fields_ok). Through the database: a category the group menu already has takes only "send
+like" and removed or back; a new name, a new place or a new colour is refused in words (also on a
+removal, and beside a send like); a new category takes every field and can be edited again before
+publishing. `src/lib/msm/msmFollowUp.test.js` pins these counts to the files.

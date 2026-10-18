@@ -34,7 +34,7 @@ const touchAll = (central, loc, venue) => planSite({ central, touched: touchedFr
 
 // ── No price ────────────────────────────────────────────────────────────────
 
-test('the Coffee Boy shape: a product with sizes at one site, an option only sub item elsewhere, no price anywhere: imported whole, zero writes', () => {
+test('the live chain shape: a product with sizes at one site, an option only sub item elsewhere, no price anywhere: imported whole, zero writes', () => {
   const v = groupVenues();
   // A tea: a product with sizes at A (no Standard price, sizes priced), an option only sub item with
   // no price at B and C (its option carries the price).
@@ -76,7 +76,7 @@ test('the grid says No price at a site, never 0.00, never a blue dot; "Use the g
   const cell = cellFor(ix, cola, B);
   assert.deepEqual([cell.noPrice, cell.price, cell.follows, cell.keptCols], [true, null, false, []]);
   assert.equal(cellFor(ix, cola, A).noPrice, false);
-  assert.equal(noPriceWords('Leeds'), 'No price at Leeds');
+  assert.equal(noPriceWords('Site A'), 'No price at Site A');
   const ps = central.productSites.find((r) => r.product_id === cola.id && r.location_id === B);
   assert.equal(keepsNoPrice(ps), true);
   assert.equal(noPriceAt(cola, ps), true);

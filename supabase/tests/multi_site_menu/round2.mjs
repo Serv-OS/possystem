@@ -32,6 +32,8 @@
 //     it, and it publishes); a site of the company that already sells the group's products joins
 //     with them as they are (Add a site's "Join with what it sells now"): the guard takes the set
 //     and publishing writes nothing there.
+//   * 18 Oct follow up: a category the group menu already has takes only "send like" and removed or
+//     back (a new name, place or colour is refused in words); a new category takes every field.
 
 import { spawn, spawnSync } from 'node:child_process';
 import { planSite, touchedFromChanges } from '../../functions/_shared/msmPlan.js';
@@ -742,5 +744,30 @@ export async function run(h) {
       { target: 'product_site', entity_id: C4.products.find((p) => p.name === 'Latte').id, location_id: LA4, op: 'create', after: { venue_item_id: `m-latte_${sfx(LA4)}`, active: true, price: null, channel_prices: null } }];
     const p4 = planSite({ central: applyChanges(C4, plainAdd).central, touched: touchedFromChanges(plainAdd), locationId: LA4, orgId: ORG_A, venue: readRaw(LA4) });
     expect('BUILDER B JOIN: a plain Add a site over the site\'s own Latte is still blocked, in words', p4.problems.some((x) => x.code === 'site_has_product' && /Join with what it sells now/.test(x.words)), JSON.stringify(p4.problems));
+  }
+
+  // ── 18 Oct follow up: a category the group menu already has takes only "send like" and removed
+  // or back (the import keeps no per site category differences); a new one takes every field ──
+  {
+    settle();
+    const CK = central();
+    const cat = CK.categories.find((c) => !c.archived);
+    const FS = mkSet('Category fields');
+    r = stage({ set: FS, target: 'category', entity: cat.id, op: 'update', after: { label: 'Renamed' }, before: { label: cat.label } });
+    expect('FOLLOW UP: the guard refuses a new name on a category the group menu already has, in words', r.code !== 0 && /name, place and colour stay as each site has them/.test(r.err), r.err);
+    r = stage({ set: FS, target: 'category', entity: cat.id, op: 'update', after: { sort_order: 99, route_like_id: cat.id } });
+    expect('FOLLOW UP: and its place, even beside a send like', r.code !== 0 && /name, place and colour/.test(r.err), r.err);
+    r = stage({ set: FS, target: 'category', entity: cat.id, op: 'remove', after: { color: '#000000' } });
+    expect('FOLLOW UP: and its colour on a removal', r.code !== 0 && /name, place and colour/.test(r.err), r.err);
+    r = stage({ set: FS, target: 'category', entity: cat.id, op: 'update', after: { route_like_id: cat.id }, before: { route_like_id: null } });
+    expect('FOLLOW UP: a send like is taken', r.code === 0, r.err);
+    r = q(`update msm_changes set after = after || '{"archived": false}'::jsonb where change_set_id = '${FS}' and entity_id = '${cat.id}'`, as(U.E));
+    expect('FOLLOW UP: and removed or back with it', r.code === 0, r.err);
+    const NK = 'f0000000-0000-4000-8000-0000000000f1';
+    r = stage({ set: FS, target: 'category', entity: NK, op: 'create', after: { label: 'Brunch', sort_order: 7, color: '#123456', route_like_id: cat.id } });
+    expect('FOLLOW UP: a new category takes every field', r.code === 0, r.err);
+    r = q(`update msm_changes set after = after || '{"label": "Brunch menu", "icon": "B"}'::jsonb where change_set_id = '${FS}' and entity_id = '${NK}'`, as(U.E));
+    expect('FOLLOW UP: and can be edited again before publishing', r.code === 0, r.err);
+    one(`delete from msm_change_sets where id = '${FS}'`);
   }
 }

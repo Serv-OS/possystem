@@ -11,7 +11,7 @@
 // sub item ids), the products and the menu links (msmPlan.js). Tax is mapped by name and rate; a
 // missing rate blocks the site with words.
 
-import { newItemId, samePrice } from './msmModel.js';
+import { newItemId, samePrice, keepsNoPrice, pricedBySizes, PUBLISHED_CHANNELS } from './msmModel.js';
 
 const listOf = (v) => (Array.isArray(v) ? v : []);
 
@@ -20,24 +20,40 @@ const listOf = (v) => (Array.isArray(v) ? v : []);
  *   central   central state (live)
  *   opts      { locationId, venueMenuId (an existing venue menu to write into, or null to make one),
  *               prices: 'default' | 'copy', copyFrom (locationId), productIds (limit, default all) }
- * Returns { changes, count, words }.
+ * Returns { changes, count, optionCount, leftOut: [product names], words }.
+ *
+ * 18 Oct follow up: copying from a site where a product has NO price (it keeps "no price" and has no
+ * price of its own for any order type) leaves that product out, in words: the new site would
+ * otherwise sell it at the group price nobody set there. An option only sub item is never left out
+ * (the options at the new site point at it; its own price is never charged), nor a product priced by
+ * its sizes. A product with an order type price but no Standard price there goes with its order type
+ * prices, and the words say its Standard price is the group's at the new site. Never a kept value on
+ * these creates: a kept value on a site create is the Bring in sign (msmPlan).
  */
 export function planAddSite(central, opts = {}) {
   const loc = opts.locationId;
-  if (!loc) return { changes: [], count: 0, words: 'Pick a site.' };
-  if (listOf(central?.sites).some((s) => s.location_id === loc)) return { changes: [], count: 0, words: 'That site is already in the group menu.' };
+  if (!loc) return { changes: [], count: 0, leftOut: [], words: 'Pick a site.' };
+  if (listOf(central?.sites).some((s) => s.location_id === loc)) return { changes: [], count: 0, leftOut: [], words: 'That site is already in the group menu.' };
   const only = opts.productIds ? new Set(opts.productIds) : null;
   const copy = opts.prices === 'copy' && opts.copyFrom ? opts.copyFrom : null;
   const psFrom = new Map(listOf(central?.productSites).filter((r) => r.location_id === copy).map((r) => [r.product_id, r]));
   const changes = [{ target: 'menu_site', entity_id: central?.menu?.id || null, location_id: loc, op: 'create', after: { venue_menu_id: opts.venueMenuId || null } }];
   let count = 0;
-  for (const p of listOf(central?.products)) {
+  const leftOut = [];
+  const standardOnlyGroup = [];
+  const products = listOf(central?.products);
+  for (const p of products) {
     if (p.archived) continue;
     // Round 2 (UI items 6 and 8, 17 Oct verification): there is no "site only extra". The old
     // site_only_location_id mark never leaves a product out: every product follows one rule.
     if (only && !only.has(p.id)) continue;
     const src = psFrom.get(p.id);
     if (copy && (!src || src.active === false)) continue;                          // copy what that site sells
+    if (copy && keepsNoPrice(src) && src.price == null && !(p.type === 'subitem' && p.sold_alone !== true) && !pricedBySizes(p, products)) {
+      const typePrice = PUBLISHED_CHANNELS.some((k) => src.channel_prices && src.channel_prices[k] != null);
+      if (!typePrice) { leftOut.push(p.menu_name || p.name || 'A product'); continue; }
+      standardOnlyGroup.push(p.menu_name || p.name || 'A product');
+    }
     const price = copy && src && src.price != null && !samePrice(src.price, p.default_price) ? Number(src.price) : null;
     const channel = copy && src && src.channel_prices ? { ...src.channel_prices } : null;
     changes.push({
@@ -71,7 +87,11 @@ export function planAddSite(central, opts = {}) {
     changes.push({ target: 'modifier_option_site', entity_id: o.id, location_id: loc, op: 'create', after: { active, price } });
     optionCount++;
   }
-  return { changes, count, optionCount, words: `${count} product${count === 1 ? '' : 's'} will go on sale at the new site` };
+  const names = (xs) => (xs.length <= 3 ? xs.join(', ') : `${xs.slice(0, 3).join(', ')} and ${xs.length - 3} more`);
+  const words = [`${count} product${count === 1 ? '' : 's'} will go on sale at the new site`];
+  if (leftOut.length) words.push(`${leftOut.length} product${leftOut.length === 1 ? ' has' : 's have'} no price at the site you copy from, so ${leftOut.length === 1 ? 'it is' : 'they are'} left out: ${names(leftOut)}`);
+  if (standardOnlyGroup.length) words.push(`${names(standardOnlyGroup)} ${standardOnlyGroup.length === 1 ? 'has' : 'have'} no Standard price there, so at the new site ${standardOnlyGroup.length === 1 ? 'it takes' : 'they take'} the group price`);
+  return { changes, count, optionCount, leftOut, words: words.join('. ') };
 }
 
 /**

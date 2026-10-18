@@ -104,7 +104,9 @@ expect('round 2 check row: 2 new tables, row level security, fenced; anon nothin
 expect('round 2 check row (17 Oct verification): the category icon is ASCII safe, stuck runs are capped, Retry starts the count again',
   check2.slice(11, 14).join('|') === 't|t|t', r.out);
 expect('round 2 check row (17 Oct recheck): no price is kept, a copied null VAT key is allowed, a turn on never takes over a site\'s own product',
-  check2[14] === 't' && check2.length === 15, r.out);
+  check2[14] === 't', r.out);
+expect('round 2 check row (18 Oct follow up): a category the group menu already has takes only send like and removed or back',
+  check2[15] === 't' && check2.length === 16, r.out);
 
 one(`
 insert into organisations (id, name) values ('${ORG_A}', 'Company A'), ('${ORG_B}', 'Company B');

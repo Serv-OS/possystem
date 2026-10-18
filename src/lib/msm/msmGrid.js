@@ -156,7 +156,7 @@ export function cellFor(ix, product, locationId, channel = null) {
   return { exists: true, active: ps.active !== false, price: noPrice ? null : own ?? fallback, own, follows: own == null && !noPrice, defaultPrice: fallback, keptCols, siteOnlyElsewhere, noPrice };
 }
 
-/** "No price at Leeds" (the words every screen uses for a site with no price). */
+/** "No price at Site A" (the words every screen uses for a site with no price). */
 export const noPriceWords = (siteName) => `No price at ${siteName || 'this site'}`;
 
 /** Prices at the sites where the product is on, In store or a channel: [number]. */
