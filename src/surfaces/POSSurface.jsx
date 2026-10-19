@@ -57,6 +57,7 @@ import { customerInitials, customerLabel } from '../lib/customerInitials';
 import { stampSummary, stampChip } from '../lib/stampSummary';
 import { announceOrderCustomer } from '../lib/orderCustomerLoyalty';
 import { receiptRewardLines } from '../lib/loyaltyMultiRedeem';
+import { setTillUiState, resetTillUiState } from '../lib/msm/msmTillWatch.js';
 // 17 Oct 2026 (v5.11.73, PR 295 follow up): VIP and Regular on the check header. Display only: it
 // reads the guest's CRM record once (cached five minutes), renders nothing when there is nothing
 // to say, and nothing at all if it ever fails (bookings/GuestTags.jsx, lib/bookings/tillGuestTags.js).
@@ -474,6 +475,16 @@ export default function POSSurface() {
   const activeTable = activeTableId ? tables.find(t=>t.id===activeTableId) : null;
   const session = activeTable?.session;
   const items = getPOSItems();
+  // 17 Oct 2026 (Multi site menu): a head office menu update waits until this till is idle (no
+  // lines, no payment screen, nothing open). Only lib/msm/msmTillWatch.js reads this; an ordinary
+  // Push to POS is not affected.
+  const _tillModalOpen = !!(modalItem || editLine || flagPromptFor || showAllergens || showCustom || showCustomerModal
+    || linkMemberFor || pendingOrderType || voidTarget || showDiscount || showReceipt || showReprint || infoItem
+    || showReview || showSendModal || showAllergenGate || showTableActions);
+  useEffect(() => {
+    setTillUiState({ paymentInProgress: showCheckout, modalOpen: _tillModalOpen, orderLines: items.length });
+  }, [showCheckout, _tillModalOpen, items.length]);
+  useEffect(() => () => resetTillUiState(), []);
   // v5.5.890: footer tax breakdown was an un-memoized IIFE in the totals JSX — recomputed the
   // whole tax engine on every render (every keystroke / store write). Same memo pattern as
   // CheckoutModal. Display-only.

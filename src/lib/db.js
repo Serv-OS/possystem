@@ -41,6 +41,7 @@ import { saveTableChecked, openOrdersFor, readFloorPlan } from './tablePlanDb';
 import { saveSectionsChecked } from './sectionPlan';
 import { mustChangeRow } from './rowWrites';
 import { patchPendingCheck } from '../sync/DataSafe';
+import { readManagedAt, gateFor } from './msm/msmManaged.js';
 
 // 27 Sep 2026: the venue a Back Office menu, modifier group or discount write falls back to when
 // the caller passes none: the one THIS tab resolved (the same rule as store/index.js tabVenue).
@@ -1549,7 +1550,7 @@ const masterCategoryOf = async (catRow) => {
   return data || catRow;
 };
 
-const shareModifierGroupsToLocation = async (groupIds, sourceLocId, peerLocId, orgId, scope, mode = 'resend') => {
+const shareModifierGroupsToLocation = async (groupIds, sourceLocId, peerLocId, orgId, scope, mode = 'resend', gateRead = null) => {
   const idMap = new Map();
   if (isMock || !supabase) return idMap;
   if (!Array.isArray(groupIds) || groupIds.length === 0 || !peerLocId || !sourceLocId) return idMap;
@@ -1558,6 +1559,19 @@ const shareModifierGroupsToLocation = async (groupIds, sourceLocId, peerLocId, o
   const seenItems = new Set();
   const unmappedSub = [];
   idMap.unmapped = unmappedSub;
+  idMap.skippedManaged = new Set();
+  // 17 Oct 2026 (Multi site menu, round 2, design review blocker 1): the TARGET side gate. Before
+  // anything is written at the peer, the database says (afresh) which option groups and sub items
+  // head office manages THERE; every one is skipped, so a share, a re-send or an edit at the owning
+  // venue never overwrites the group menu's values (or the prices the tills charge). A failed read
+  // while that company is, or may be, switched on copies nothing (fail closed). Companies that are
+  // not switched on: an empty list, exactly as before.
+  const gate = gateFor(gateRead || await readManagedAt(supabase, [peerLocId]), peerLocId);
+  if (gate.blocked) {
+    idMap.blocked = true;
+    unmappedSub.push(`option groups (${gate.words})`);
+    return idMap;
+  }
 
   const srcSuffix = peerSuffixOf(sourceLocId);
   // A group or sub-item id that already ends with THIS venue's suffix is a copy;
@@ -1601,6 +1615,10 @@ const shareModifierGroupsToLocation = async (groupIds, sourceLocId, peerLocId, o
     }
     if (seenItems.has(peerItemId)) return peerItemId; // already copied this run
     seenItems.add(peerItemId);
+    if (gate.items.has(peerItemId)) {
+      unmappedSub.push(`sub item ${si.name || peerItemId} (head office manages it there in the Multi site menu, so it was left as published)`);
+      return peerItemId;
+    }
     // A sub-item may itself carry modifier groups — copy those first so its
     // rewritten assigned_modifier_groups point at peer groups. Guarded by
     // seenGroups, so a group<->item cycle terminates.
@@ -1673,6 +1691,12 @@ const shareModifierGroupsToLocation = async (groupIds, sourceLocId, peerLocId, o
       if (ownerRow) peerGid = bareGid;
     }
     idMap.set(gid, peerGid);
+    if (gate.groups.has(peerGid)) {
+      // It is there (head office put it there): products may point at it, but it is not written.
+      idMap.skippedManaged.add(gid);
+      unmappedSub.push(`option group ${g.name || peerGid} (head office manages it there in the Multi site menu, so it was left as published)`);
+      return;
+    }
     const peerOptions = [];
     for (const opt of (Array.isArray(g.options) ? g.options : [])) {
       const peerOpt = { ...opt };
@@ -1953,9 +1977,15 @@ export const setMenuItemScope = async (item, newScope, _depth = 0) => {
       master_id: masterId,
       updated_at: new Date().toISOString(),
     };
+    // 17 Oct 2026 (Multi site menu round 2): which products and groups head office manages at
+    // each peer, read once afresh; those copies are never written by a share (target side gate).
+    const managedRead = await readManagedAt(supabase, otherLocationIds);
     for (const peerLocId of otherLocationIds) {
       const peerLocSuffix = peerLocId.slice(-8);
       const peerId = `${masterId}_${peerLocSuffix}`;
+      const gate = gateFor(managedRead, peerLocId);
+      if (gate.blocked) { unmappedAll.push(`${peerLocId}|${gate.words}`); skippedPeers++; continue; }
+      if (gate.items.has(peerId)) { unmappedAll.push(`${peerLocId}|this product (head office manages it there in the Multi site menu, so it was left as published)`); continue; }
       // v5.5.12: rewrite cat / cats[] to peer-side IDs so the item shows up in
       // the right category section at each peer location.
       const peerCat = peerCatForSourceCat(item.cat, peerLocSuffix);
@@ -1965,7 +1995,7 @@ export const setMenuItemScope = async (item, newScope, _depth = 0) => {
       // v5.5.877 (Bug 3): copy the modifier groups to THIS peer and get a
       // source→peer group-id map, then repoint assigned_modifier_groups so the
       // peer item references groups that actually exist at the peer location.
-      const modIdMap = await memo60(`groups:${allGroupIds.join(',')}|${peerLocId}|${newScope}|resend`, () => shareModifierGroupsToLocation(allGroupIds, sourceLocId, peerLocId, org_id, newScope, 'resend'));
+      const modIdMap = await memo60(`groups:${allGroupIds.join(',')}|${peerLocId}|${newScope}|resend`, () => shareModifierGroupsToLocation(allGroupIds, sourceLocId, peerLocId, org_id, newScope, 'resend', managedRead));
       const rewriteAssigned = (assigned) => (Array.isArray(assigned) ? assigned : []).map(ag => {
         const gid = typeof ag === 'string' ? ag : ag?.groupId;
         if (!gid) return ag;
@@ -2035,6 +2065,7 @@ export const setMenuItemScope = async (item, newScope, _depth = 0) => {
       for (const v of variants) {
         const vMasterId = v.master_id || v.id;
         const peerVariantId = `${vMasterId}_${peerLocSuffix}`;
+        if (gate.items.has(peerVariantId)) { unmappedAll.push(`${peerLocId}|size ${v.name} (head office manages it there in the Multi site menu)`); continue; }
         // Variant's own cat: usually inherits parent, occasionally has its own.
         // If it has its own and it's promoted, rewrite. Otherwise inherit
         // peerCat from parent or null.
@@ -2183,9 +2214,14 @@ export const propagateScopedEdit = async (fullItem, changedKeys = null) => {
   };
 
   let propagated = 0; const unmapped = []; const failed = [];
+  // 17 Oct 2026 (Multi site menu round 2): copies head office manages are never written here.
+  const managedRead = await readManagedAt(supabase, [...new Set(siblings.map((x) => x.location_id).filter(Boolean))]);
   for (const sib of siblings) {
     if (!sib.location_id || sib.location_id === sourceLocId) continue;
     const venue = venueNames.get(String(sib.location_id)) || sib.location_id;
+    const gate = gateFor(managedRead, sib.location_id);
+    if (gate.blocked) { failed.push({ id: sib.id, venue, error: gate.words }); continue; }
+    if (gate.items.has(sib.id)) { unmapped.push(`${venue}|left as head office published it (Multi site menu)`); continue; }
     const suffix = peerSuffixOf(sib.location_id);
     let ids;
     try { ids = await peerIdMapsFor(sourceLocId, sib.location_id); }
@@ -2198,7 +2234,7 @@ export const propagateScopedEdit = async (fullItem, changedKeys = null) => {
         const { data: have } = await supabase.from('modifier_groups').select('id').in('id', groupIds.map((g) => `${g}_${suffix}`));
         missing = (have || []).length < groupIds.length;
       }
-      if (missing) modIdMap = await shareModifierGroupsToLocation(groupIds, sourceLocId, sib.location_id, org_id, scope, 'edit');
+      if (missing) modIdMap = await shareModifierGroupsToLocation(groupIds, sourceLocId, sib.location_id, org_id, scope, 'edit', managedRead);
     }
     const catIds = new Map(); let catUnknown = false;
     for (const c of [fullItem.cat, ...(Array.isArray(fullItem.cats) ? fullItem.cats : [])].filter(Boolean)) {
@@ -2297,12 +2333,17 @@ export const propagateModifierGroupEdit = async (group) => {
     .some((a) => (typeof a === 'string' ? a : a?.groupId) === group.id);
   const scope = (carriers || []).some((r) => r.scope === 'global' && usesGroup(r)) ? 'global' : 'shared';
   let propagated = 0;
+  const blockedAt = [];
+  const managedRead = await readManagedAt(supabase, (copies || []).map((c) => c.location_id));
   for (const copy of copies || []) {
     // shareModifierGroupsToLocation upserts the group AND its nested groups and
     // sub-items at that venue with every option rule intact, which is exactly a refresh.
-    const idMap = await shareModifierGroupsToLocation([group.id], sourceLocId, copy.location_id, org_id, scope, 'edit');
-    if (idMap.has(group.id)) propagated++;
+    // 17 Oct 2026: a copy head office manages (Multi site menu) is skipped there.
+    const idMap = await shareModifierGroupsToLocation([group.id], sourceLocId, copy.location_id, org_id, scope, 'edit', managedRead);
+    if (idMap.blocked) { blockedAt.push(copy.location_id); continue; }
+    if (idMap.has(group.id) && !idMap.skippedManaged.has(group.id)) propagated++;
   }
+  if (blockedAt.length) return { ok: false, propagated, error: new Error(`The change was not copied to ${blockedAt.length} other site${blockedAt.length === 1 ? '' : 's'}: could not check which option groups the group menu manages there. Save it again in a minute.`) };
   return { ok: true, propagated };
 };
 

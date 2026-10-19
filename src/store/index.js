@@ -45,6 +45,8 @@ import { saveModifierGroupChecked, createLatestQueue, insertModifierGroupOnce } 
 import { runBulkEdits, bulkSummaryWords } from '../lib/menuBulk';
 import { scheduleMenuTranslate } from '../lib/menuTranslateTrigger';
 import { createScopedPropagator, savedForPropagation } from '../lib/scopedPropagation';
+import { isMsmManaged, isMsmManagedGroup, msmManagedState } from '../lib/msm/msmManaged.js';
+import { lockedItemPatch, lockedGroupPatch, lockedOptionPatch, droppedWords } from '../lib/msm/msmLock.js';
 import { withTimeout } from '../lib/withTimeout';
 import { buildLegacyProfiles } from '../lib/taxAdapter';
 import { qrCloseDecision } from '../lib/qrTabStranded';
@@ -1022,6 +1024,10 @@ const _scopedPropagator = createScopedPropagator({
 function scheduleScopedPropagation(getRow, id, patchKeys, savedRow = null) {
   const row = getRow(id);
   if (!row) return;
+  // 17 Oct 2026 (Multi site menu, design 1.8): a product the group menu manages at this venue is
+  // never fanned out by the sharing engine; head office publishes it to every site. Empty for every
+  // company that is not switched on (lib/msm/msmManaged.js), so nothing changes for them.
+  if (isMsmManaged(id)) return;
   const scope = row.scope || 'local';
   if (scope === 'local') return;
   if (!isMasterRow(row)) return;   // a copy never propagates; the master does (its master_id is its own id after a share)
@@ -1032,10 +1038,42 @@ function scheduleScopedPropagation(getRow, id, patchKeys, savedRow = null) {
   // every modifier group to every venue.
   _scopedPropagator.schedule(id, patchKeys, savedRow);
 }
+// 17 Oct 2026 (Multi site menu round 2, design 3.2): the Menu Manager lock lives in the store, so
+// every screen respects it (Menu Manager, the menu visualiser, the canvas menu, the AI tools, bulk
+// VAT). A field head office owns on a product or option group the group menu manages at this venue
+// is not saved here (the next publish would replace it), and the person is told why, once. Empty
+// lists (every company not switched on, or a failed read) lock nothing, so nothing changes for them.
+let _msmLockToastAt = 0;
+function msmLockToast(words) {
+  if (!words) return;
+  const now = Date.now();
+  if (now - _msmLockToastAt < 2500) return;     // a bulk action says it once
+  _msmLockToastAt = now;
+  try { useStore.getState().showToast?.(words, 'info'); } catch { /* a toast never breaks a save */ }
+}
+function msmItemPatch(id, patch, cur) {
+  if (!isMsmManaged(id)) return patch;
+  const st = msmManagedState();
+  const r = lockedItemPatch(patch, cur, st.kept.get(id) || []);
+  if (r.dropped.length) msmLockToast(droppedWords(cur?.menuName || cur?.name, r.dropped));
+  return r.patch;
+}
+function msmGroupPatch(id, patch, cur) {
+  if (!isMsmManagedGroup(id)) return patch;
+  const st = msmManagedState();
+  const r = lockedGroupPatch(patch, cur, st.groupKept.get(id) || [], st.groupOptions.get(id) || []);
+  if (r.dropped.length) msmLockToast(droppedWords(`"${cur?.name || 'This option group'}"`, r.dropped));
+  return r.patch;
+}
 const _groupTimers = new Map();
 const _groupBusy = new Map();    // groupId → { dirty, latest }
 function scheduleGroupPropagation(group) {
   if (!group?.id) return;
+  // 17 Oct 2026 (Multi site menu round 2, design 1.10): an option group the group menu manages at
+  // this venue is never fanned out by the sharing engine; head office publishes it. The engine also
+  // skips managed groups at the OTHER venues itself (db.js, the target side gate). Empty for every
+  // company that is not switched on, so nothing changes for them.
+  if (isMsmManagedGroup(group.id)) return;
   clearTimeout(_groupTimers.get(group.id));
   _groupTimers.set(group.id, setTimeout(async () => {
     _groupTimers.delete(group.id);
@@ -1244,7 +1282,7 @@ export const useStore = create((set, get) => ({
   applyBulkTaxRates: async ({ assign, onProgress, shouldStop, ownRateIds = [] } = {}) => {
     await whenMenuLoadIdle();
     let landed = 0;
-    const save = bulkTaxSaver({
+    const saveOne = bulkTaxSaver({
       getRow: (id) => (get().menuItems || []).find(i => i.id === id),
       // 27 Sep 2026: checked against the row as the plan saw it (opened = a.item: its updated_at
       // is the token, its rate the base), never this page's newer copy (lib/bulkTax.js).
@@ -1255,6 +1293,11 @@ export const useStore = create((set, get) => ({
         if (savedForPropagation(r)) scheduleScopedPropagation((iid) => useStore.getState().menuItems.find(i => i.id === iid), a.id, ['taxRateId'], r.row || null);
       },
     });
+    // 17 Oct 2026 (Multi site menu round 2, design 3.2): a product head office manages keeps the
+    // VAT the group menu gives it (unless this site keeps its own), and is counted as not saved.
+    const save = (a) => ((isMsmManaged(a.id) && !(msmManagedState().kept.get(a.id) || []).includes('tax_rate_id'))
+      ? Promise.resolve({ error: new Error('its VAT is set by head office in the Multi site menu') })
+      : saveOne(a));
     const result = await runBulkTax({ assign, onProgress, shouldStop, ownRateIds, save });
     if (landed) get().markBOChange();
     return result;
@@ -1875,6 +1918,8 @@ export const useStore = create((set, get) => ({
   },
   updateModifierGroupDef: (id, patch) => set(s => {
     const base = s.modifierGroupDefs.find(g => g.id === id);
+    patch = msmGroupPatch(id, patch, base);
+    if (!Object.keys(patch || {}).length) return {};
     const updated = s.modifierGroupDefs.map(g => g.id === id ? { ...g, ...patch } : g);
     const group = updated.find(g => g.id === id);
     if (group) useStore.getState()._saveModGroupOrWarn(group, base);
@@ -1882,6 +1927,12 @@ export const useStore = create((set, get) => ({
   }),
   updateModifierGroupOption: (groupId, optId, patch) => set(s => {
     const base = s.modifierGroupDefs.find(g => g.id === groupId);
+    if (isMsmManagedGroup(groupId) && (msmManagedState().groupOptions.get(groupId) || new Set()).has(optId)) {
+      const r = lockedOptionPatch(patch, (base?.options || []).find(o => o.id === optId));
+      if (r.dropped.length) msmLockToast(droppedWords(`"${base?.name || 'This option group'}"`, r.dropped));
+      patch = r.patch;
+      if (!Object.keys(patch || {}).length) return {};
+    }
     const updated = s.modifierGroupDefs.map(g =>
       g.id === groupId ? { ...g, options: (g.options||[]).map(o => o.id===optId ? { ...o, ...patch } : o) } : g
     );
@@ -1891,6 +1942,12 @@ export const useStore = create((set, get) => ({
   }),
   removeModifierGroupDef: id => {
     const removed = useStore.getState().modifierGroupDefs.find(g => g.id === id);
+    // A group head office manages is never deleted at a site (its products, old orders and the
+    // price fence use it); Menu Manager offers a copy for the site's own products instead.
+    if (isMsmManagedGroup(id)) {
+      msmLockToast(`"${removed?.name || 'This option group'}" is managed by head office in the Multi site menu, so it cannot be deleted here. Make a copy for this site's own products instead.`);
+      return;
+    }
     set(s => ({ modifierGroupDefs: s.modifierGroupDefs.filter(g => g.id !== id) }));
     _groupCreateFailed.delete(id);
     if (isMock) return;
@@ -2097,6 +2154,8 @@ export const useStore = create((set, get) => ({
   // values back. Resolves with the save's outcome ({ ok, outcome }) so a bulk action can count
   // what really saved. opts.quiet: no toast per row (the bulk strips show one summary).
   updateMenuItem: (id, patch, opts = {}) => {
+    patch = msmItemPatch(id, patch, useStore.getState().menuItems.find(i => i.id === id));
+    if (!patch || !Object.keys(patch).length) return Promise.resolve({ ok: false, outcome: 'managed' });
     const writes = [];      // { id, patch, main?, cascade?, derived? } in the order they go out
     const groupSaves = [];  // { group, base } from the rename cascade
     let blocked = false;
@@ -2238,6 +2297,9 @@ export const useStore = create((set, get) => ({
         let touched = 0;
         const updatedGroups = s.modifierGroupDefs.map(g => {
           if (!Array.isArray(g.options) || g.options.length === 0) return g;
+          // 17 Oct 2026 (Multi site menu round 2): option names in a group head office manages are
+          // set there (each site may keep its own); a sub item renamed here never rewrites them.
+          if (isMsmManagedGroup(g.id)) return g;
           let groupChanged = false;
           const newOptions = g.options.map(o => {
             const optItemId = o.itemId || o.item_id || null;

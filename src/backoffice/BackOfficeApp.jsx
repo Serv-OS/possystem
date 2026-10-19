@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback, lazy, Suspense } from 'react';
 import { useStore, loadVenueMenu, whenMenuLoadIdle, whenMenuWritesIdle, beginMenuRead, applyVenueMenuRead, saveUnsavedMenuRows, failedCreateIds, MENU_WAIT_MS, instructionGroupsBase, setInstructionGroupsBase } from '../store';
 import { withTimeout } from '../lib/withTimeout';
 import { pushedByName } from '../lib/pushedBy';
@@ -26,6 +26,8 @@ import { loadPlanState, mergeTombs, tombstonesFromRows, normaliseFloorRow, nextS
 import { refreshTablePlan } from '../sync/TablePlanSync';
 import { normaliseSections } from '../lib/sectionPlan';
 import MenuManager from './sections/MenuManager';
+// v5.11.75: the Multi site menu is its own chunk, loaded only when a login added by name opens it.
+const MultiSiteMenu = lazy(() => import('./sections/msm/MultiSiteMenu'));
 import FloorPlanBuilder from './sections/FloorPlanBuilder';
 import DeviceProfiles from './sections/DeviceProfiles';
 import DeviceRegistry from './sections/DeviceRegistry';
@@ -110,6 +112,9 @@ import { money, currencySymbol } from '../lib/currency';
 import { subscribeSaveHealth } from '../lib/saveHealth';
 import { shouldRegate, sessionIdOf, idleTooLong, idleSignOutMessage, ACTIVITY_EVENTS } from '../lib/backOfficeSession';
 import { NAV_IA, EVERYTHING, canOpenRoute, guardRoute, filterNav, canPushToPos, readProfileRow, sectionsFromProfileRow } from '../lib/boSections';
+// Its own line: boSections.test.js pins the import above word for word.
+import { isBetaRoute } from '../lib/boSections';
+import BetaTag from '../components/BetaTag';
 // 12 Oct 2026 (Preston, D3): the two buttons below that open the POS used to delete the
 // pairing and its config, which unpaired a real till in another tab of this browser. Now only
 // the Back Office placeholder is dropped; a real pairing and its config are left alone.
@@ -120,9 +125,14 @@ import { dropAdminPlaceholder } from '../lib/masterTillDevice';
 // transition only needs a ceiling. Pure, pinned by src/lib/boSidebar.test.js.
 export const navGroupMaxHeight = (rows) => Math.max(1, Number(rows) || 0) * 44 + 24;
 
+// Demo mode (no database): the Multi site menu opens on made up sites (src/lib/msm/msmDemo.js).
+const MOCK_MSM_ACCESS = Object.freeze({ installed: true, enabled: true, role: 'editor', orgId: 'org-demo', orgName: 'Demo company', canOpen: true, canEdit: true, companies: [], reason: null });
+
 const NAV = [
   { id:'overview',   label:'Overview',        icon:'◈',  group:'Dashboard' },
   { id:'menu',       label:'Menu manager',    icon:'🍽',  group:'Configuration' },
+  // The top bar title only: the sidebar row comes from NAV_IA and shows only to people ServOS added.
+  { id:'multi-site-menu', label:'Multi site menu', icon:'🍽', group:'Configuration' },
   { id:'floorplan',  label:'Floor plan',      icon:'⬚',  group:'Configuration' },
   { id:'stock-overview', label:'Stock overview', icon:'📦',  group:'Configuration' },
   { id:'inventory',  label:'Daily counts',    icon:'📦',  group:'Configuration' },
@@ -398,9 +408,40 @@ export default function BackOfficeApp() {
   // database lets that login read and write is unchanged (lib/boSections.js has the rules).
   // `access` is who is signed in; until the profile has loaded it is nobody, and nobody opens
   // nothing. Demo mode has no login at all and shows everything, as it always did.
+  // MULTI SITE MENU (v5.11.75): one more fact on `access`, read after the profile with
+  // msm_my_access (15 s limit, stale guard, fails closed). Until it answers, and on any failure or
+  // "not installed", it is null and the entry stays hidden (lib/boSections.js routeGateOk).
+  // Demo mode shows it with made up sites.
+  const [msmAccess, setMsmAccess] = useState(isMock ? MOCK_MSM_ACCESS : null);
+  const msmOrgId = orgCtx && !orgCtx.loadFailed ? orgCtx.orgId || null : null;
+  const msmUserId = orgCtx && !orgCtx.loadFailed ? orgCtx.userId || null : null;
+  const [msmAccessTry, setMsmAccessTry] = useState(0);
+  useEffect(() => {
+    if (isMock) return undefined;
+    setMsmAccess(null);
+    if (!msmUserId) return undefined;
+    let live = true;
+    import('../lib/msm/msmApi')
+      .then(({ msmApi }) => msmApi.readAccess(msmOrgId))
+      .then((a) => { if (live && a && !a.stale) setMsmAccess(a); })
+      .catch((e) => { console.warn('[BackOfficeApp] Multi site menu access not read:', e?.message); });
+    return () => { live = false; };
+  }, [msmOrgId, msmUserId, msmAccessTry]);
+  // Which of this venue's products and option groups the group menu manages (design 1.8, round 2
+  // 1.10): the sharing engine skips them and Menu Manager says so. Read for everyone who uses the venue (not only the people added),
+  // only once the feature is installed; empty for a company that is not switched on.
+  const msmLocationId = orgCtx && !orgCtx.loadFailed ? orgCtx.locationId || null : null;
+  useEffect(() => {
+    if (isMock || !msmAccess?.installed || !msmLocationId) return undefined;
+    let live = true;
+    Promise.all([import('../lib/msm/msmApi'), import('../lib/msm/msmManaged')])
+      .then(([{ msmApi }, managed]) => managed.loadMsmManaged(msmApi, msmLocationId, () => live))
+      .catch(() => { /* not read: nothing is skipped, as before */ });
+    return () => { live = false; };
+  }, [msmAccess?.installed, msmLocationId]);
   const access = useMemo(
-    () => (isMock ? EVERYTHING : (orgCtx && !orgCtx.loadFailed ? { role: orgCtx.role, sections: orgCtx.boSections } : null)),
-    [orgCtx],
+    () => (isMock ? { ...EVERYTHING, multiSiteMenu: msmAccess } : (orgCtx && !orgCtx.loadFailed ? { role: orgCtx.role, sections: orgCtx.boSections, multiSiteMenu: msmAccess } : null)),
+    [orgCtx, msmAccess],
   );
   // RENDER GUARD: every screen below is chosen by `section`, and `section` can only ever be a
   // route this login may open (a blocked or unknown route becomes the first allowed one, or null).
@@ -910,6 +951,7 @@ export default function BackOfficeApp() {
                         }}>
                           <span style={{ width:5, height:5, borderRadius:'50%', background:'currentColor', opacity: active?1:0.4, flexShrink:0 }} />
                           {label}
+                          {isBetaRoute(id) && <BetaTag />}
                         </button>
                       );
                     })}
@@ -1016,8 +1058,9 @@ export default function BackOfficeApp() {
           display:'flex', alignItems:'center', justifyContent:'space-between',
           padding:'0 24px', flexShrink:0,
         }}>
-          <div style={{ fontSize:16, fontWeight:600, color:'var(--t1)', letterSpacing:'-.015em' }}>
+          <div style={{ fontSize:16, fontWeight:600, color:'var(--t1)', letterSpacing:'-.015em', display:'flex', alignItems:'center', gap:8 }}>
             {NAV.find(n => n.id === section)?.label || (section?.startsWith('wf-') ? 'Workforce' : '')}
+            {isBetaRoute(section) && <BetaTag />}
           </div>
           <div style={{ display:'flex', alignItems:'center', gap:12 }}>
             {/* Quick nav: POS / Office segmented (Office active) */}
@@ -1071,7 +1114,12 @@ export default function BackOfficeApp() {
           {section === 'sending-domain' && <SendingDomain />}
           {section === 'xero' && <XeroIntegration />}
           {section?.startsWith('wf-') && <Workforce section={section} orgCtx={orgCtx} />}
-          {section === 'menu'       && <MenuManager />}
+          {section === 'menu'       && <MenuManager setSection={setSection} canOpen={canOpen} />}
+          {section === 'multi-site-menu' && (
+            <Suspense fallback={<div style={{ padding:24, color:'var(--t3)', fontSize:13 }}>Loading the Multi site menu…</div>}>
+              <MultiSiteMenu access={msmAccess} orgCtx={orgCtx} onAccessLost={() => setMsmAccessTry((n) => n + 1)} />
+            </Suspense>
+          )}
           {section === 'floorplan'  && <FloorPlanBuilder />}
           {section === 'inventory'  && <Inventory />}
           {section === 'stock-overview' && <StockOverview setSection={setSection} canOpen={canOpen} />}

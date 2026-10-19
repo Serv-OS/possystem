@@ -1,0 +1,306 @@
+// src/lib/msm/msmTillWatch.js
+//
+// MULTI SITE MENU (17 Oct 2026, v5.11.75): the till side of a head office menu update (design
+// step 5). Peter: "these items need to be on the POS by X date and time". The server writes each
+// venue's rows and inserts a config push with pushSource.kind 'msm'. This file makes the tills
+// take that push by themselves:
+//
+//   * Kitchen screens, kiosks, order screens and handhelds already apply every push by themselves
+//     (realtime.js). Nothing changes for them, except the catch up below.
+//   * A COUNTER till takes a head office push by itself only when it is idle (msmTill.js
+//     tillIsIdle): no lines in the order, no check open with lines, no payment screen, no modal.
+//     It looks again every 5 seconds. Until then the Sync POS banner says the update applies when
+//     this sale ends, and staff can still tap it.
+//   * Catch up: Realtime never replays a push a till missed while it was offline or asleep. On
+//     reconnect, on waking and every 5 minutes the till reads the id, time, kind and version of
+//     its venue's newest push (one tiny read). A head office push it has not taken is read by id
+//     and goes the same way.
+//   * An ordinary Push to POS is never touched: it keeps today's banner exactly
+//     (msmTill.isMsmAutoApply and shouldCatchUp are true only for pushSource.kind 'msm').
+//   * The "Apply on counter tills automatically when idle" switch on the Publish tab sends
+//     applyWhenIdle false: then a counter till shows the banner only, as today.
+
+import { tillIsIdle, isMsmAutoApply, shouldCatchUp, APPLIED_WORDS } from './msmTill.js';
+import { isPaymentBusy } from '../paymentBusy.js';
+
+export const IDLE_CHECK_MS = 5000;
+export const CATCH_UP_MS = 5 * 60 * 1000;
+const UNATTENDED_SURFACES = ['kds', 'kiosk', 'orders', 'mpos'];
+
+// What the POS screen tells us about itself (POSSurface sets it; it holds the modal states).
+let ui = { paymentInProgress: false, modalOpen: false, orderLines: 0 };
+export function setTillUiState(next) {
+  ui = { ...ui, ...(next || {}) };
+}
+export function resetTillUiState() {
+  ui = { paymentInProgress: false, modalOpen: false, orderLines: 0 };
+}
+
+/** The same rule realtime.js uses: an unattended device applies every push by itself. */
+export function isUnattendedDevice(storage) {
+  try {
+    let surface = '';
+    try { surface = JSON.parse(storage.getItem('rpos-device-config') || '{}')?.defaultSurface || ''; } catch { /* none */ }
+    const devMode = storage.getItem('rpos-device-mode') || '';
+    return UNATTENDED_SURFACES.includes(surface) || devMode === 'kiosk' || devMode === 'mpos';
+  } catch {
+    return false;
+  }
+}
+
+/** The counter till's state for tillIsIdle, from the store, the POS screen and the page. */
+export function counterTillState(state, doc = null) {
+  const s = state || {};
+  const walk = Array.isArray(s.walkInOrder?.items) ? s.walkInOrder.items : [];
+  const table = s.activeTableId ? (Array.isArray(s.tables) ? s.tables : []).find((t) => t && t.id === s.activeTableId) : null;
+  const tableLines = Array.isArray(table?.session?.items) ? table.session.items : [];
+  let domModal = false;
+  try { domModal = !!(doc && doc.querySelector && doc.querySelector('[aria-modal="true"],[role="dialog"]')); } catch { /* no page */ }
+  return {
+    lines: Math.max(walk.length, Number(ui.orderLines) || 0),
+    // Any card payment anywhere in the app (the Bar screen's checkout, an Orders tab capture, a
+    // card machine job still watched) holds paymentBusy; the POS screen is not the only one
+    // (17 Oct verification: a push applied mid payment on the Bar screen).
+    paymentInProgress: !!ui.paymentInProgress || isPaymentBusy(),
+    checkOpen: tableLines.length > 0,
+    modalOpen: !!ui.modalOpen || !!s.pendingItem || domModal,
+  };
+}
+
+// ── Which head office push this till has seen (per venue, survives a reload) ─
+const seenKey = (loc) => `rpos-msm-seen:${loc}`;
+export function readSeen(storage, loc) {
+  try { const v = JSON.parse(storage.getItem(seenKey(loc)) || 'null'); return v && v.id ? v : null; } catch { return null; }
+}
+export function markSeen(storage, loc, push) {
+  if (!loc || !push || !push.id) return;
+  try { storage.setItem(seenKey(loc), JSON.stringify({ id: push.id, created_at: push.created_at || null })); } catch { /* best effort */ }
+}
+
+/**
+ * The watcher. deps:
+ *   store        the zustand store (getState: configUpdateSnapshot, configUpdateAvailable,
+ *                applyConfigUpdate, setConfigUpdate, showToast, walkInOrder, tables, ...)
+ *   doc          document (for open dialogs), or null
+ *   timers       { setInterval, clearInterval } (tests pass fakes)
+ */
+export function createMsmTillWatch({ store, doc = null, timers = globalThis }) {
+  let timer = null;
+  let pending = null;
+
+  const stop = () => {
+    if (timer) { timers.clearInterval(timer); timer = null; }
+    pending = null;
+  };
+
+  const tryApply = () => {
+    const s = store.getState();
+    // Applied by hand, or replaced by a newer push (an ordinary one keeps its banner): stop.
+    if (!pending || !s.configUpdateAvailable || s.configUpdateSnapshot !== pending) { stop(); return false; }
+    if (!tillIsIdle(counterTillState(s, doc))) return false;
+    s.applyConfigUpdate();
+    try { s.showToast?.(APPLIED_WORDS, 'success', 4000); } catch { /* no toast here */ }
+    stop();
+    return true;
+  };
+
+  /**
+   * A push snapshot the store now holds (setConfigUpdate already called). Unattended devices
+   * apply it themselves elsewhere; a counter till takes a head office one when idle.
+   * Returns 'applied' | 'waiting' | 'banner'.
+   */
+  const take = (snapshot, { unattended = false } = {}) => {
+    if (unattended || !isMsmAutoApply(snapshot)) return 'banner';
+    stop();
+    pending = snapshot;
+    if (tryApply()) return 'applied';
+    timer = timers.setInterval(tryApply, IDLE_CHECK_MS);
+    return 'waiting';
+  };
+
+  return { take, tryApply, stop, isWaiting: () => !!pending };
+}
+
+/**
+ * Catch up: should this till fetch the latest push by id?
+ *   latest          { id, created_at, kind, version } (the tiny read)
+ *   seen            readSeen(...)
+ *   appliedVersion  the version this tab applied last (sessionStorage rpos-config-version)
+ *   pendingVersion  the version waiting in the store (configUpdateSnapshot.version)
+ */
+export function needsCatchUp(latest, seen, appliedVersion, pendingVersion) {
+  if (!shouldCatchUp(latest, seen)) return false;
+  const v = latest && latest.version != null ? String(latest.version) : null;
+  if (v && (v === String(appliedVersion ?? '') || v === String(pendingVersion ?? ''))) return false;
+  return true;
+}
+
+/**
+ * Start the catch up for one venue. deps:
+ *   readLatest()       → { id, created_at, kind, version } | null   (the tiny read)
+ *   readSnapshot(id)   → snapshot | null
+ *   deliver(snapshot)  hands it to the same path a live push takes
+ *   win                window (online, visibilitychange), or null
+ * Returns stop().
+ */
+export function startMsmCatchUp({ locationId, storage, sessionStore, store, readLatest, readSnapshot, deliver, win = null, timers = globalThis }) {
+  if (!locationId) return () => {};
+  let busy = false;
+  let stopped = false;
+  const check = async () => {
+    if (busy || stopped) return;
+    busy = true;
+    try {
+      const latest = await readLatest();
+      if (!latest || stopped) return;
+      let applied = null;
+      try { applied = sessionStore?.getItem('rpos-config-version') ?? null; } catch { /* none */ }
+      const pendingVersion = store?.getState?.().configUpdateSnapshot?.version ?? null;
+      if (!needsCatchUp(latest, readSeen(storage, locationId), applied, pendingVersion)) {
+        if (latest.kind === 'msm') markSeen(storage, locationId, latest);
+        return;
+      }
+      const snap = await readSnapshot(latest.id);
+      if (!snap || stopped) return;
+      markSeen(storage, locationId, latest);
+      deliver(snap);
+    } catch { /* a failed read changes nothing; the next tick tries again */ } finally {
+      busy = false;
+    }
+  };
+  const onOnline = () => { check(); };
+  const onVisible = () => { try { if (!win.document || win.document.visibilityState === 'visible') check(); } catch { check(); } };
+  if (win && win.addEventListener) {
+    win.addEventListener('online', onOnline);
+    try { win.document?.addEventListener?.('visibilitychange', onVisible); } catch { /* none */ }
+  }
+  const t = timers.setInterval(check, CATCH_UP_MS);
+  return () => {
+    stopped = true;
+    timers.clearInterval(t);
+    if (win && win.removeEventListener) {
+      win.removeEventListener('online', onOnline);
+      try { win.document?.removeEventListener?.('visibilitychange', onVisible); } catch { /* none */ }
+    }
+  };
+}
+
+// ── The kiosk (new design) reads its menu straight from the tables ──────────
+/** May the kiosk read its menu again now? Only on the start screen with an empty basket. */
+export function kioskMayRefresh({ pending, screen, cartCount }) {
+  return !!pending && screen === 'attract' && !(Number(cartCount) > 0);
+}
+
+// ── The kiosk's re read after a head office update (Builder B recheck) ──────
+// Before: after a re read that failed, the kiosk asked for another every 5 seconds while idle, and
+// each ask threw away the read still running, so on a link slower than 5 seconds no read ever
+// finished. Now ONE read at a time: the next waits for the one running to answer, a failed one
+// waits longer each time (5 s, 10 s, 20 s ... never more than 5 minutes apart), and a read that has
+// not answered in 2 minutes counts as failed.
+export const KIOSK_RETRY_FIRST_MS = 5000;
+export const KIOSK_RETRY_MAX_MS = 5 * 60 * 1000;
+export const KIOSK_READ_GIVE_UP_MS = 2 * 60 * 1000;
+
+/** How long the kiosk waits before reading again after `failures` failed reads in a row. */
+export function kioskRetryDelayMs(failures) {
+  const n = Math.max(1, Math.floor(Number(failures) || 1));
+  return Math.min(KIOSK_RETRY_FIRST_MS * 2 ** Math.min(n - 1, 20), KIOSK_RETRY_MAX_MS);
+}
+
+/** The local mark that this kiosk's venue gets head office updates (set once one is heard). */
+const kioskKey = (loc) => `rpos-msm-kiosk:${loc}`;
+export function kioskHeardMsm(storage, loc) {
+  try { return !!loc && storage?.getItem(kioskKey(loc)) === '1'; } catch { return false; }
+}
+export function markKioskHeardMsm(storage, loc) {
+  try { if (loc) storage?.setItem(kioskKey(loc), '1'); } catch { /* best effort */ }
+}
+
+/**
+ * The kiosk's re read controller. Pure: the hook gives it the idle check, the way to start a read
+ * and the timers; it never reads anything itself.
+ *   isIdle()   on the start screen with an empty basket (kioskMayRefresh)
+ *   reload()   start ONE menu read; the hook calls readDone(ok) when it answers: true (shown),
+ *              false (failed) or 'busy' (it landed mid order and was not shown, 18 Oct follow up)
+ * Returns { heard(), readDone(ok), stop(), state() }. Nothing runs until heard() is called: a kiosk
+ * that never hears of a head office update sets no timer and starts no read.
+ */
+export function createKioskRefresh({ isIdle, reload, timers = globalThis }) {
+  let wanted = 0;        // head office updates heard
+  let have = 0;          // updates the last good read covers
+  let reading = 0;       // updates the read in flight covers (0: none running)
+  let failures = 0;
+  let timer = null;
+  let giveUp = null;
+  let stopped = false;
+  const clear = () => { if (timer) { timers.clearTimeout(timer); timer = null; } };
+  const later = (ms) => {
+    clear();
+    if (!stopped) timer = timers.setTimeout(() => { timer = null; tick(); }, ms);
+  };
+  let last = 0;          // updates the last read started covers (18 Oct follow up)
+  const tick = () => {
+    if (stopped || reading || have >= wanted || timer) return;
+    if (!isIdle()) { later(IDLE_CHECK_MS); return; }
+    reading = wanted;
+    last = wanted;
+    giveUp = timers.setTimeout(() => { giveUp = null; done(false); }, KIOSK_READ_GIVE_UP_MS);
+    reload();
+  };
+  // ok: true (read and shown), false (failed), or 'busy' (read, but it landed mid order, so the hook
+  // did not show it: read again at the next idle moment, not a failure).
+  const done = (ok) => {
+    if (stopped) return;
+    if (!reading) {
+      // 18 Oct follow up: the read given up after 2 minutes answered before the next one started
+      // (the hook only passes on the answer of the last read it asked for, and an older read can
+      // never answer). It was shown, so it counts: before, the kiosk read the whole menu again about
+      // every 7 minutes for as long as the link stayed that slow.
+      if (ok === true && last > have) { have = last; failures = 0; clear(); tick(); }
+      return;
+    }
+    if (giveUp) { timers.clearTimeout(giveUp); giveUp = null; }
+    const covered = reading;
+    reading = 0;
+    if (ok === 'busy') { later(IDLE_CHECK_MS); return; }
+    if (ok === true) { have = Math.max(have, covered); failures = 0; tick(); return; }
+    failures++;
+    later(kioskRetryDelayMs(failures));
+  };
+  return {
+    heard() { if (stopped) return; wanted++; tick(); },
+    readDone: done,
+    stop() { stopped = true; clear(); if (giveUp) { timers.clearTimeout(giveUp); giveUp = null; } },
+    state: () => ({ wanted, have, reading: !!reading, failures, waiting: !!timer }),
+  };
+}
+
+/**
+ * The kiosk's menu after a read (17 Oct 2026 verification). On a RELOAD after a head office update
+ * (the kiosk is trading), a menu read that failed keeps the menu on screen, never an empty one, and
+ * says so (failed), so the next idle moment on the start screen reads again. The first load keeps
+ * today's behaviour.
+ *   prev    the data on screen now
+ *   res     { items, categories, menus, links, taxProfiles, taxProfileLines }, each { data, error }
+ *   opts    { reload, assemble(profiles, lines), venueDefaultTaxProfileId }
+ * Returns { data, failed }.
+ */
+export function kioskMenuAfterRead(prev, res, { reload = false, assemble = () => [], venueDefaultTaxProfileId = null } = {}) {
+  const r = res || {};
+  const failed = ['items', 'categories', 'menus', 'links'].some((k) => !!r[k]?.error);
+  if (reload && failed) return { data: prev, failed: true };
+  const profilesOk = Array.isArray(r.taxProfiles?.data) && Array.isArray(r.taxProfileLines?.data);
+  return {
+    failed: false,
+    data: {
+      items: r.items?.data || [],
+      categories: r.categories?.data || [],
+      menus: r.menus?.data || [],
+      links: r.links?.data || [],
+      // Both profile reads must have succeeded: never line-less profiles. On a reload a failed
+      // read keeps the profiles on screen.
+      taxProfiles: profilesOk ? assemble(r.taxProfiles.data, r.taxProfileLines.data) : (reload ? (prev?.taxProfiles || []) : []),
+      venueDefaultTaxProfileId,
+    },
+  };
+}

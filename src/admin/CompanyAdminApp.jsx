@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, lazy, Suspense } from 'react';
 import { VERSION } from '../lib/version';
 import { supabase } from '../lib/supabase';
 import BOLogin from '../backoffice/BOLogin';
@@ -15,6 +15,10 @@ import AdminCustomerImport from './sections/AdminCustomerImport';
 import { money, CURRENCIES } from '../lib/currency';
 import { seedVenueTaxRates, seedWords } from '../lib/venueTaxRates';
 import { ServOSIcon, ServOSWordmark } from '../components/ServOSBrand';
+
+// v5.11.75: loaded only when a company is opened here, so the Multi site menu code never rides in
+// the bundle every till downloads.
+const AdminMultiSiteMenu = lazy(() => import('./sections/AdminMultiSiteMenu'));
 
 const S = {
   shell: { display:'flex', height:'100vh', fontFamily:'inherit', background:'var(--bg)', color:'var(--t1)' },
@@ -727,6 +731,9 @@ function AdminPanel({ authUser }) {
                       })
                   }
                 </div>
+
+                {/* v5.11.75: who may open the Multi site menu (named logins, ServOS only). */}
+                <Suspense fallback={null}><AdminMultiSiteMenu org={selectedOrg} allUsers={allUsers} /></Suspense>
               </>
             )}
 

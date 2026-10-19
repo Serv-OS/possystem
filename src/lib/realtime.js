@@ -20,6 +20,7 @@ import { isHubriseAutoReceipt } from './hubrise';
 import { channelCancelAlert } from './ezcaterCatering';
 import { closedCheckRefundFields, closedCheckTaxFields, serverTipFields } from './closedCheckRefundFields';
 import { resolvePushSnapshot, isNewerPush } from './configPushReceive';
+import { createMsmTillWatch, startMsmCatchUp, isUnattendedDevice, markSeen } from './msm/msmTillWatch.js';
 // v5.6.83: the same prepend-only ceiling the store applies. Cross-device inserts and
 // refund echoes land here, so capping only the local sale paths would still let a busy
 // venue grow this array without limit.
@@ -36,6 +37,14 @@ import { startChannelAutoRouter, stopChannelAutoRouter, offerLiveOrder, requestC
 
 let channels = [];
 let _rtLocation = null;   // the location the current channel set is subscribed to (for idempotency)
+// 17 Oct 2026 (Multi site menu): one idle watcher and one catch up per page.
+let _msmWatch = null;
+let _msmCatchUpStop = null;
+function msmWatchFor(store) {
+  if (!_msmWatch) _msmWatch = createMsmTillWatch({ store, doc: typeof document !== 'undefined' ? document : null });
+  return _msmWatch;
+}
+
 
 // v5.5.311: apply a stock_levels row to the store, keeping dailyCounts AND
 // eightySixIds in sync. Previously the POS only updated dailyCounts on a remote
@@ -219,6 +228,9 @@ export function startRealtime(store, locationId = LOCATION_ID) {
         const at = Date.parse(push?.created_at || '');
         if (Number.isFinite(at)) lastConfigPushAt = at;
         store.getState().setConfigUpdate(snapshot);
+        // 17 Oct 2026 (Multi site menu): a head office push this till has now heard of (the catch
+        // up below never reads it again).
+        if (snapshot?.pushSource?.kind === 'msm') { try { markSeen(localStorage, locationId, push); } catch { /* best effort */ } }
         // v5.5.311: Auto-apply on UNATTENDED surfaces (KDS / kiosk / orders /
         // MPOS) — nobody is there to click the ConfigSyncBanner, so without
         // this they never pick up new menu items / production-centre changes
@@ -237,11 +249,46 @@ export function startRealtime(store, locationId = LOCATION_ID) {
           const unattended = ['kds', 'kiosk', 'orders', 'mpos'];
           if (unattended.includes(surface) || devMode === 'kiosk' || devMode === 'mpos') {
             store.getState().applyConfigUpdate();
+          } else if (!isBackOfficeMode() && !isHostStandMode()) {
+            // 17 Oct 2026 (Multi site menu, design step 5): a COUNTER till takes a head office
+            // menu update by itself between sales (msm/msmTillWatch.js). An ordinary Push to POS
+            // keeps the banner exactly as before (take() returns 'banner' for it).
+            msmWatchFor(store).take(snapshot);
           }
         } catch { /* leave for manual banner */ }
       }
     })
     .subscribe();
+
+  // 17 Oct 2026 (Multi site menu): Realtime never replays a push a till missed while offline or
+  // asleep. On reconnect, on waking and every 5 minutes, one tiny read of the newest push; a
+  // head office push this till has not taken is read by id and goes the same way as a live one.
+  // Ordinary pushes are never caught up this way (they keep today's banner and boot read).
+  if (_msmCatchUpStop) { try { _msmCatchUpStop(); } catch { /* already stopped */ } _msmCatchUpStop = null; }
+  if (!isBackOfficeMode() && !isHostStandMode() && typeof window !== 'undefined') {
+    try {
+      _msmCatchUpStop = startMsmCatchUp({
+        locationId, storage: localStorage, sessionStore: sessionStorage, store, win: window,
+        readLatest: async () => {
+          const { data, error } = await supabase.from('config_pushes')
+            .select('id, created_at, kind:snapshot->pushSource->>kind, version:snapshot->>version')
+            .eq('location_id', locationId).order('created_at', { ascending: false }).limit(1).maybeSingle();
+          if (error) throw error;
+          return data || null;
+        },
+        readSnapshot: async (id) => {
+          const { data, error } = await supabase.from('config_pushes').select('snapshot').eq('id', id).maybeSingle();
+          if (error) throw error;
+          return data?.snapshot || null;
+        },
+        deliver: (snap) => {
+          store.getState().setConfigUpdate(snap);
+          if (isUnattendedDevice(localStorage)) store.getState().applyConfigUpdate();
+          else msmWatchFor(store).take(snap);
+        },
+      });
+    } catch { /* catch up is best effort; boot still reads the newest push */ }
+  }
 
   // ── Tax rates — live sync when names/rates change ──────────────────────────
   const taxChannel = supabase
@@ -845,6 +892,8 @@ export function mapMenuItemRow(item) {
 }
 
 export function stopRealtime() {
+  if (_msmCatchUpStop) { try { _msmCatchUpStop(); } catch { /* already stopped */ } _msmCatchUpStop = null; }
+  if (_msmWatch) _msmWatch.stop();
   if (!supabase) return;
   channels.forEach(ch => supabase.removeChannel(ch));
   channels = [];

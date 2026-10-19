@@ -20,8 +20,13 @@
  *  Instruction groups tab
  *  └── Same — options are plain strings
  */
-import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import { useState, useMemo, useCallback, useEffect, useRef, createContext, useContext } from 'react';
 import { useStore, findDuplicateProductName, bulkUpdateMenuItems, bulkSummaryWords, runInMenuWriteQueue, MENU_WAIT_MS, loadVenueMenu, tabVenue } from '../../store';
+import { msmManagedState, subscribeMsmManaged, isMsmManaged } from '../../lib/msm/msmManaged.js';
+import { itemLock, groupLock, OWNED_TAX_KEYS } from '../../lib/msm/msmLock.js';
+import { MsmLockBanner, MsmLocked } from './msm/MsmLockNote';
+import { useConfirm } from './msm/useConfirm';
+import { useMsmLockState } from './msm/useMsmLockState';
 import { withTimeout } from '../../lib/withTimeout';
 import { venueTaxRates } from '../../lib/rowMapping';
 import { categoryFormOf, categoryFormPatch } from '../../lib/categoryForm';
@@ -305,7 +310,7 @@ function useItemCodes() {
   return { supported: state.supported === true, codes: state.codes, remember };
 }
 
-function TaxSection({ item, onUpdate, markBOChange }) {
+function TaxSection({ item, onUpdate, markBOChange, lockRate = false, lockOverrides = false }) {
   const { taxRates: allTaxRates, taxProfiles } = useStore();
   const taxRates = liveVenueRatesOf(allTaxRates);
 
@@ -352,8 +357,11 @@ function TaxSection({ item, onUpdate, markBOChange }) {
 
   const activeProfiles = (taxProfiles || []).filter(p => p.active !== false);
 
+  // Multi site menu: the rate and the order type overrides are locked separately, so a site that
+  // keeps its own VAT by order type (Leeds and its 3 donuts) can still change it here (design 3.2).
   return (
     <div>
+      <MsmLocked on={lockRate} label="VAT">
       {/* v5.7.33: tax PROFILE override — setup only, nothing charges with it yet */}
       {activeProfiles.length > 0 && (
         <div style={{ marginBottom:16 }}>
@@ -387,7 +395,10 @@ function TaxSection({ item, onUpdate, markBOChange }) {
           Applied to all order types unless overridden below.
         </div>
       </div>
+      </MsmLocked>
 
+      {/* Multi site menu (17 Oct 2026 verification): only the four keys publish writes are head
+          office's (eat in, takeaway, delivery, bar tab); counter and drive thru stay the site's. */}
       <div style={{ marginBottom:8 }}>
         <span style={{ fontSize:10, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', display:'block', marginBottom:8 }}>
           Per-order-type overrides
@@ -397,7 +408,8 @@ function TaxSection({ item, onUpdate, markBOChange }) {
           Drive thru, collection and online collection use the takeaway override unless they have their own.
         </div>
         {ORDER_TYPES_TAX.map(ot => (
-          <div key={ot} style={{ display:'grid', gridTemplateColumns:'100px 1fr', gap:8, alignItems:'center', marginBottom:6 }}>
+          <MsmLocked key={ot} on={lockOverrides && OWNED_TAX_KEYS.includes(ot)} label={`${ORDER_TYPE_TAX_LABEL[ot] || 'Order type'} VAT`}>
+          <div style={{ display:'grid', gridTemplateColumns:'100px 1fr', gap:8, alignItems:'center', marginBottom:6 }}>
             <span style={{ fontSize:12, color:'var(--t2)', fontWeight:600 }}>{ORDER_TYPE_TAX_LABEL[ot] || ot}</span>
             <select value={item.taxOverrides?.[ot] || ''}
               onChange={e => setOverride(ot, e.target.value)}
@@ -410,6 +422,7 @@ function TaxSection({ item, onUpdate, markBOChange }) {
               <span style={{ gridColumn:'2', fontSize:11, color:'var(--t4)', lineHeight:1.5 }}>{ORDER_TYPE_TAX_NOTE[ot]}</span>
             )}
           </div>
+          </MsmLocked>
         ))}
       </div>
     </div>
@@ -459,13 +472,28 @@ function PickNumBox({ value, min, max, onCommit, style, placeholder = 'N' }) {
   );
 }
 
-export default function MenuManager() {
+// 17 Oct 2026 (Multi site menu round 2, design 3.2): opens the Multi site menu from a lock note,
+// only for people who may open it (null otherwise).
+const MsmOpenCtx = createContext(null);
+
+export default function MenuManager({ setSection = null, canOpen = null } = {}) {
   const [tab, setTab] = useState('menu');
+  const openMsm = setSection && typeof canOpen === 'function' && canOpen('multi-site-menu') ? () => setSection('multi-site-menu') : null;
   const [importOpen, setImportOpen] = useState(false);
   const { menus } = useStore();
   const defaultMenuId = menus?.[0]?.id;
+  // 17 Oct 2026 (Multi site menu, design 1.8): how many of this venue's products head office
+  // manages. 0 (no banner) for every company that is not switched on.
+  const [msmManaged, setMsmManagedCount] = useState(() => msmManagedState().ids.size);
+  useEffect(() => subscribeMsmManaged((st) => setMsmManagedCount(st.ids.size)), []);
   return (
     <div className="bo-workspace" style={{ display:'flex', flexDirection:'column', height:'100%', overflow:'hidden' }}>
+      {msmManaged > 0 && (
+        <div role="status" style={{ padding:'8px 16px', background:'var(--blu-d, var(--bg2))', borderBottom:'1px solid var(--bdr)', fontSize:12.5, color:'var(--t2)', flexShrink:0 }}>
+          🔒 {msmManaged} product{msmManaged === 1 ? ' here is' : 's here are'} managed by your group menu (Multi site menu). Their names, prices, categories, VAT, photos and option groups are set there and show read only here. Button colour, order, print centre, timed menu prices, 86, cooking preferences and recipes stay yours.
+          {openMsm && <> <button type="button" onClick={openMsm} style={{ background:'none', border:'none', padding:0, color:'var(--acc)', cursor:'pointer', fontFamily:'inherit', fontSize:12.5, fontWeight:700, textDecoration:'underline' }}>Open the Multi site menu</button></>}
+        </div>
+      )}
       <nav style={{ display:'flex', borderBottom:'1px solid var(--bdr)', background:'var(--bg1)', flexShrink:0, alignItems:'center' }}>
         {[['menu','🍽 Menus'],['quick','⚡ Quick Screen'],['items','📋 Items'],['modifiers','⊕ Modifier groups'],['instructions','📝 Instruction groups']].map(([id,label])=>(
           <button key={id} onClick={()=>setTab(id)} style={{ padding:'0 20px', height:46, cursor:'pointer', fontFamily:'inherit', border:'none', borderBottom:`3px solid ${tab===id?'var(--acc)':'transparent'}`, background:'transparent', color:tab===id?'var(--acc)':'var(--t3)', fontSize:13, fontWeight:tab===id?800:500 }}>
@@ -480,6 +508,7 @@ export default function MenuManager() {
           ↗ Import menu
         </button>
       </nav>
+      <MsmOpenCtx.Provider value={openMsm}>
       <div style={{ flex:1, overflow:'hidden' }}>
         {tab==='menu'         && <MenuTab />}
         {tab==='quick'        && <QuickScreenManager />}
@@ -487,6 +516,7 @@ export default function MenuManager() {
         {tab==='modifiers'    && <ModifiersTab />}
         {tab==='instructions' && <InstructionsTab />}
       </div>
+      </MsmOpenCtx.Provider>
       {importOpen && (
         <MenuImportModal
           menuId={defaultMenuId}
@@ -2661,6 +2691,11 @@ function SoldAloneNote({ item, style }) {
 
 function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose, is86, onToggle86, menuItems, addMenuItem, updateMenuItem, markBOChange, showToast }) {
   const { modifierGroupDefs, instructionGroupDefs } = useStore();
+  // Multi site menu (design 3.2): fields head office owns are read only here (the store refuses
+  // them too); a field this site keeps as its own stays editable. null = not managed.
+  const msmLock  = itemLock(useMsmLockState(), item.id);
+  const openMsm  = useContext(MsmOpenCtx);
+  const lockOn   = (col) => !!msmLock && msmLock.locked(col);
   const p        = item.pricing || { base: item.price || 0 };
   const isSub    = item.type === 'subitem';
   const isPizza  = item.type === 'pizza';
@@ -2849,12 +2884,14 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                 </span>
               )}
             </div>
+            <MsmLocked on={lockOn('type')} label="Type">
             <div style={{ display:'flex', gap:5, marginTop:4, flexWrap:'wrap' }}>
               {[['simple','Simple'],['modifiable','Modifiable'],['variants','Has sizes'],['combo','Combo'],['subitem','Sub item']].map(([v,l]) => {
                 const act = (item.type||'simple')===v || (v==='variants'&&isParent&&item.type!=='pizza');
                 return <button key={v} onClick={()=>f('type',v)} style={{ padding:'2px 7px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', fontSize:9, fontWeight:act?700:400, border:`1px solid ${act?'var(--acc)':'var(--bdr)'}`, background:act?'var(--acc-d)':'var(--bg3)', color:act?'var(--acc)':'var(--t4)' }}>{l}</button>;
               })}
             </div>
+            </MsmLocked>
           </div>
           <div style={{ display:'flex', gap:5, flexShrink:0 }}>
             <button onClick={onToggle86} style={{ fontSize:9, padding:'3px 8px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', border:`1px solid ${is86?'var(--grn-b)':'var(--red-b)'}`, background:is86?'var(--grn-d)':'var(--red-d)', color:is86?'var(--grn)':'var(--red)', fontWeight:700 }}>{is86?'Un-86':'86'}</button>
@@ -2877,6 +2914,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
 
       {/* ── Content ─────────────────────────────────────────────────────── */}
       <div style={{ flex:1, overflowY:'auto', padding:'16px' }}>
+        {msmLock && <MsmLockBanner kind="product" kept={msmLock.kept} onOpen={openMsm} />}
 
         {/* ════ DETAILS ════════════════════════════════════════════════════ */}
         {sec==='details' && (
@@ -2888,6 +2926,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                 exceptions to this number. Same field (pricing.base, via fp), so there
                 is one source of truth and nothing to keep in step. */}
             <div style={{ display:'grid', gridTemplateColumns: isParent ? '1fr' : '1fr 150px', gap:10 }}>
+              <MsmLocked on={lockOn('menu_name')} label="Name">
               <div>
                 <span style={lbl}>POS button name</span>
                 <input style={{ ...inp, ...(nameDup ? { border:'1.5px solid var(--red-b)' } : {}) }}
@@ -2902,9 +2941,11 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                   </div>
                 )}
               </div>
+              </MsmLocked>
               {!isParent && (
                 <div>
                   <span style={lbl}>Base price</span>
+                  <MsmLocked on={lockOn('pricing')} label="Price">
                   <div style={{ position:'relative' }}>
                     <span style={{ position:'absolute', left:10, top:'50%', transform:'translateY(-50%)', fontSize:16, color:'var(--acc)', fontWeight:700 }}>£</span>
                     {/* Shows EMPTY once cleared, same rule as the Pricing tab used to have:
@@ -2914,6 +2955,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                       value={(p.base||p.base===0)?p.base:''} placeholder="0.00"
                       onChange={e=>fp('base',e.target.value)}/>
                   </div>
+                  </MsmLocked>
                 </div>
               )}
             </div>
@@ -2925,13 +2967,19 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
 
             {!isSub && (
               <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
+                {/* Locked per field: a site that keeps one of them as its own can still edit it (design 3.2). */}
+                <MsmLocked on={lockOn('receipt_name')} label="Receipt name">
                 <div><span style={lbl}>Receipt name</span><input style={inp} value={item.receiptName||''} onChange={e=>f('receiptName',e.target.value)} placeholder="Same as above"/></div>
+                </MsmLocked>
+                <MsmLocked on={lockOn('kitchen_name')} label="Kitchen name">
                 <div><span style={lbl}>Kitchen / KDS</span><input style={inp} value={item.kitchenName||''} onChange={e=>f('kitchenName',e.target.value)} placeholder="Same as above"/></div>
+                </MsmLocked>
               </div>
             )}
 
             {/* v5.8.100: Item code. Hidden entirely until the column exists. */}
             {codesOn && (
+              <MsmLocked on={lockOn('item_code')} label="Item code">
               <div>
                 <span style={lbl}>Item code</span>
                 <div style={{ display:'flex', gap:8, alignItems:'center' }}>
@@ -2956,17 +3004,23 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                   <div style={{ fontSize:11, color:'var(--red)', marginTop:4, fontWeight:600 }}>{codeMsg}</div>
                 )}
               </div>
+              </MsmLocked>
             )}
 
             {/* v5.5.28: description is editable for sub-items too. The text shows on the
                 kiosk modifier picker when the option matches this sub-item by name. */}
+            <MsmLocked on={lockOn('description')} label="Description">
             <div>
               <span style={lbl}>Description <span style={{ fontWeight:400, textTransform:'none', letterSpacing:0 }}>{isSub ? '(shown in modifier picker on kiosk)' : '(kiosk & online)'}</span></span>
               <textarea style={{ ...inp, resize:'none', height:56 }} value={item.description||''} onChange={e=>f('description',e.target.value)} placeholder={isSub ? 'Brief description shown when this sub-item appears in a modifier group…' : 'Brief description shown to customers…'}/>
             </div>
+            </MsmLocked>
 
+            <MsmLocked on={lockOn('image')} label="Photo">
             <ItemImageUpload item={item} onUpdate={onUpdate} markBOChange={markBOChange} showToast={showToast} />
+            </MsmLocked>
 
+            <MsmLocked on={lockOn('cat')} label="Category">
             <div>
               <span style={lbl}>Primary category</span>
               <select value={item.cat||''} onChange={e=>f('cat',e.target.value)} style={{ ...inp, cursor:'pointer' }}>
@@ -2974,6 +3028,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                 {rootCats.map(c=><optgroup key={c.id} label={`${c.icon} ${c.label}`}><option value={c.id}>{c.icon} {c.label}</option>{subCats.filter(s=>s.parentId===c.id).map(s=><option key={s.id} value={s.id}>  └ {s.label}</option>)}</optgroup>)}
               </select>
             </div>
+            </MsmLocked>
 
             {/* v5.5.813 (handoff marker 9): with 26 categories this list ran ~6 rows
                 and pushed Sharing + Lock pricing below the fold. Capped at 9 with a
@@ -2988,6 +3043,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
               const shown = showAllCats ? ordered : ordered.slice(0, 9);
               const hidden = ordered.length - shown.length;
               return (
+                <MsmLocked on={lockOn('cats')} label="Extra categories">
                 <div>
                   <span style={lbl}>Also in</span>
                   <div style={{ display:'flex', flexWrap:'wrap', gap:4 }}>
@@ -3002,6 +3058,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                     )}
                   </div>
                 </div>
+                </MsmLocked>
               );
             })()}
 
@@ -3106,6 +3163,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                 </div>
                 {/* Sold alone: the same switch as the Items list, shown here too because this is
                     where the "Sub item" chip is tapped. */}
+                <MsmLocked on={lockOn('sold_alone')} label="Sold alone">
                 <div>
                   <span style={lbl}>Sold alone</span>
                   <button onClick={()=>f('soldAlone', !item.soldAlone)} aria-pressed={!!item.soldAlone}
@@ -3120,6 +3178,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                     <div style={{ fontSize:10, color:'var(--t4)', marginTop:4 }}>Only an option. It is not a product on the till, kiosk or online.</div>
                   )}
                 </div>
+                </MsmLocked>
                 <div>
                   <span style={lbl}>Group tag</span>
                   <input style={inp} value={item.subGroup||''} onChange={e=>f('subGroup',e.target.value)} placeholder="e.g. Milks, Sauces, Proteins…"/>
@@ -3372,6 +3431,11 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
         {/* ════ MODIFIERS ═════════════════════════════════════════════════ */}
         {sec==='modifiers' && !isSub && (
           <div style={{ display:'flex', flexDirection:'column', gap:20 }}>
+            {lockOn('assigned_modifier_groups') && (
+              <div role="note" style={{ padding:'8px 10px', borderRadius:8, background:'var(--blu-d, var(--bg3))', fontSize:11, color:'var(--t2)', lineHeight:1.5 }}>
+                🔒 The option groups on this product are set by head office in the Multi site menu, so changes to them here are not saved. Instruction groups (cooking preferences) below stay yours.
+              </div>
+            )}
 
             {/* Block modifiers on parent items that have variants */}
             {isParent ? (
@@ -3382,6 +3446,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                 </div>
               </div>
             ) : (<>
+              <MsmLocked on={lockOn('assigned_modifier_groups')} label="Option groups">
               <div>
               <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
                 <span style={{ ...lbl, margin:0 }}>Modifier groups</span>
@@ -3440,6 +3505,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                 <div style={{ marginTop:4, padding:'8px 10px', fontSize:11, color:'var(--t4)', textAlign:'center', background:'var(--bg3)', borderRadius:8 }}>No matching groups — create one in the Modifier groups tab</div>
               )}
             </div>
+            </MsmLocked>
 
             {/* Instruction groups */}
             <div>
@@ -3504,6 +3570,9 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                 <span style={{ fontSize:14, fontWeight:800, color:'var(--acc)' }}>{money(p.base||0)} <button onClick={()=>setSec('details')} style={{ marginLeft:8, background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:10, fontFamily:'inherit', textDecoration:'underline' }}>edit on Details</button></span>
               </div>
             )}
+            {/* Multi site menu (17 Oct 2026 verification): head office owns the order type prices
+                publish writes; Delivery is a platform price publish never writes, so it stays the
+                site's, row by row. */}
             {[
               { k:'dineIn',       label:'Dine-in',        hint:'Leave blank to use base price' },
               { k:'takeaway',     label:'Takeaway',       hint:'' },
@@ -3512,7 +3581,8 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
               // Drive thru (16 Sep 2026): the resolver reads driveThru, then takeaway, then base.
               { k:'driveThru',    label:'Drive thru',     hint:'Leave blank to use the takeaway price' },
             ].map(({k,label,hint}) => (
-              <div key={k}>
+              <MsmLocked key={k} on={k !== 'delivery' && lockOn('pricing')} label={`${label} price`}>
+              <div>
                 <div style={{ display:'flex', alignItems:'baseline', gap:6, marginBottom:5 }}>
                   <span style={lbl}>{label}</span>
                   {hint && <span style={{ fontSize:9, color:'var(--t4)', fontWeight:400 }}>{hint}</span>}
@@ -3523,6 +3593,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                   {p[k]!==null&&p[k]!==undefined&&<button onClick={()=>fp(k,'')} style={{ position:'absolute', right:8, top:'50%', transform:'translateY(-50%)', background:'none', border:'none', color:'var(--t4)', cursor:'pointer', fontSize:14 }}>×</button>}
                 </div>
               </div>
+              </MsmLocked>
             ))}
           {!isSub && <PerMenuPricingTiers item={item} onUpdate={onUpdate} />}
           </div>
@@ -3530,11 +3601,12 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
 
         {/* ════ TAX ════════════════════════════════════════════════════════ */}
         {sec==='tax' && (
-          <TaxSection item={item} onUpdate={onUpdate} markBOChange={markBOChange}/>
+          <TaxSection item={item} onUpdate={onUpdate} markBOChange={markBOChange} lockRate={lockOn('tax_rate_id')} lockOverrides={lockOn('tax_overrides')}/>
         )}
 
         {/* ════ ALLERGENS & DIETARY ════════════════════════════════════════ */}
         {sec==='allergens' && (
+          <MsmLocked on={lockOn('allergens') || lockOn('tags')} label="Allergens and dietary">
           <div>
             <span style={lbl}>Dietary — shows as a badge on the print menu &amp; menu board</span>
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:5, marginBottom:16 }}>
@@ -3565,6 +3637,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
               })}
             </div>
           </div>
+          </MsmLocked>
         )}
 
         {/* ════ PIZZA ══════════════════════════════════════════════════════ */}
@@ -3739,6 +3812,9 @@ function PizzaBuilder({ item, onUpdate, markBOChange }) {
 // MODIFIER GROUPS TAB
 // Drag to reorder groups + options. Options support nested subGroupId.
 // ═══════════════════════════════════════════════════════════════════════════
+// The id stamp for "Make a copy for this site's own products" (kept out of the render body).
+const copyStamp = () => Date.now();
+
 function ModifiersTab() {
   const { modifierGroupDefs:groups, addModifierGroupDef, updateModifierGroupDef,
           updateModifierGroupOption,
@@ -3762,6 +3838,42 @@ function ModifiersTab() {
 
   const sel = groups?.find(g=>g.id===selId);
   const upd = patch => { updateModifierGroupDef(selId,patch); markBOChange(); };
+  // Multi site menu (design 3.2 and the design review): a group head office manages shows read
+  // only (the store refuses it too), cannot be deleted here, and offers the site a way out: a copy
+  // of its own, with this site's own products moved onto it. null = not managed.
+  const msmLockSt = useMsmLockState();
+  const openMsm = useContext(MsmOpenCtx);
+  const glock = sel ? groupLock(msmLockSt, sel.id) : null;
+  const [msmConfirm, msmConfirmDialog] = useConfirm();
+  const copyForOwn = async () => {
+    if (!sel) return;
+    const usesSel = (i) => (i.assignedModifierGroups || []).some(a => (a && typeof a === 'object' ? a.groupId : a) === sel.id);
+    const own = (menuItems || []).filter(i => !i.archived && usesSel(i) && !isMsmManaged(i.id));
+    const name = `${sel.name} (this site)`;
+    // It changes this site's products straight away (not a draft): ask first, naming them (design 6.6).
+    const shown = own.slice(0, 5).map(i => i.menuName || i.name).filter(Boolean);
+    const yes = await msmConfirm({
+      title: `Make "${name}"?`,
+      words: own.length
+        ? `This makes "${name}" and moves ${own.length} of this site's own product${own.length === 1 ? '' : 's'} onto it now: ${shown.join(', ')}${own.length > 5 ? ` and ${own.length - 5} more` : ''}. Head office's group stays on its products.`
+        : `This makes "${name}" for this site. No product moves onto it yet. Head office's group stays on its products.`,
+      yes: own.length ? `Make it and move ${own.length}` : 'Make it', no: 'Not now',
+    });
+    if (!yes) return;
+    const stamp = copyStamp();
+    const id = `mgd-${stamp}`;
+    // eslint-disable-next-line no-unused-vars
+    const { id: _oldId, updated_at, updatedAt, ...rest } = sel;
+    addModifierGroupDef({ ...rest, id, name, options: (sel.options || []).map((o, i) => ({ ...o, id: `opt-${stamp}-${i}` })) });
+    for (const it of own) {
+      updateMenuItem(it.id, { assignedModifierGroups: (it.assignedModifierGroups || []).map(a => ((a && typeof a === 'object' ? a.groupId : a) === sel.id ? (typeof a === 'string' ? id : { ...a, groupId: id }) : a)) });
+    }
+    markBOChange();
+    showToast?.(own.length
+      ? `Copied as "${name}" and moved ${own.length} of this site's own product${own.length === 1 ? '' : 's'} onto it. Change the copy as you like; head office's group stays on its products.`
+      : `Copied as "${name}". Put it on this site's own products, then change it as you like.`);
+    setTimeout(() => setSelId(id), 30);
+  };
 
   // ── one group → many products (lib/menu/modifierAttach.js holds the rules) ──
   const shownGroups = matchGroups(groups||[], groupSearch);
@@ -3824,6 +3936,7 @@ function ModifiersTab() {
 
   return (
     <div style={{ display:'flex', height:'100%', overflow:'hidden' }}>
+      {msmConfirmDialog}
 
       {/* ── Left: group list ─────────────────────────────────────── */}
       <div style={{ width:270, borderRight:'1px solid var(--bdr)', display:'flex', flexDirection:'column', overflow:'hidden' }}>
@@ -3868,9 +3981,11 @@ function ModifiersTab() {
               <span style={{ fontSize:10, color:'var(--t4)', cursor:'grab', flexShrink:0 }}>⠿</span>
               <div style={{ flex:1, minWidth:0 }}>
                 <div style={{ fontSize:12, fontWeight:700, color:selId===g.id?'var(--acc)':'var(--t1)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{g.name}</div>
-                <div style={{ fontSize:9, color:'var(--t4)', marginTop:1 }}>{(g.options||[]).length} opts · {g.min>0?'required':'optional'}</div>
+                <div style={{ fontSize:9, color:'var(--t4)', marginTop:1 }}>{(g.options||[]).length} opts · {g.min>0?'required':'optional'}{groupLock(msmLockSt, g.id) ? ' · 🔒 head office' : ''}</div>
               </div>
-              <button onClick={e=>{e.stopPropagation();if(confirm(`Remove "${g.name}"?`)){removeModifierGroupDef(g.id);if(selId===g.id)setSelId(null);markBOChange();}}} style={{ width:20,height:20,borderRadius:5,border:'1px solid var(--red-b)',background:'var(--red-d)',color:'var(--red)',cursor:'pointer',fontSize:12,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>×</button>
+              {groupLock(msmLockSt, g.id)
+                ? <span title="Managed by head office in the Multi site menu, so it cannot be deleted here" style={{ width:20, textAlign:'center', fontSize:11, flexShrink:0 }}>🔒</span>
+                : <button onClick={e=>{e.stopPropagation();if(confirm(`Remove "${g.name}"?`)){removeModifierGroupDef(g.id);if(selId===g.id)setSelId(null);markBOChange();}}} style={{ width:20,height:20,borderRadius:5,border:'1px solid var(--red-b)',background:'var(--red-d)',color:'var(--red)',cursor:'pointer',fontSize:12,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>×</button>}
             </div>
           );})}
           {searching && shownGroups.length===0 && <div style={{ textAlign:'center', padding:'24px 8px', color:'var(--t4)', fontSize:11 }}>Nothing matches “{groupSearch}”</div>}
@@ -3884,6 +3999,8 @@ function ModifiersTab() {
 
           {/* Header */}
           <div style={{ padding:'12px 16px', borderBottom:'1px solid var(--bdr)', background:'var(--bg1)', flexShrink:0 }}>
+            {glock && <MsmLockBanner kind="group" kept={glock.kept} onOpen={openMsm} action={{ label:"Make a copy for this site's own products", onClick:copyForOwn }} />}
+            <fieldset disabled={!!glock} style={{ border:'none', padding:0, margin:0, minWidth:0, opacity: glock ? 0.62 : 1 }}>
             <input style={{ ...inp, fontSize:16, fontWeight:800, border:'none', background:'transparent', padding:'0 0 10px', color:'var(--t1)' }} value={sel.name} onChange={e=>upd({name:e.target.value})} placeholder="Group name"/>
 
             {/* ── UNIFIED SELECTION MODE PICKER ── */}
@@ -3961,14 +4078,16 @@ function ModifiersTab() {
                 </div>
               )}
             </div>
+            </fieldset>
           </div>
 
           {/* Options */}
           <div style={{ flex:1, overflowY:'auto', padding:'14px 16px' }}>
             <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
               <span style={{ fontSize:10, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em' }}>Options</span>
-              <span style={{ fontSize:9, color:'var(--t4)' }}>drag to reorder · nested = links to another group</span>
+              <span style={{ fontSize:9, color:'var(--t4)' }}>{glock ? '🔒 set by head office' : 'drag to reorder · nested = links to another group'}</span>
             </div>
+            <fieldset disabled={!!glock} style={{ border:'none', padding:0, margin:0, minWidth:0, opacity: glock ? 0.62 : 1 }}>
 
             {(sel.options||[]).map((opt,oi)=>(
               <div key={opt.id} draggable
@@ -4072,6 +4191,8 @@ function ModifiersTab() {
                 </div>
               )}
             </div>
+
+            </fieldset>
 
             {/* ── ON THESE PRODUCTS ─────────────────────────────────────────
                 Peter, 22 Sep 2026: "normally you would connect 1 modifier group
