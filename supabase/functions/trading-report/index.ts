@@ -200,9 +200,12 @@ Deno.serve(async (req) => {
     const recipeCogs: Record<string, number> = {};
     const wasteCost: Record<string, number> = {};
     const mv = await pagedRows('stock movements', () => opsAdmin.from('stock_movements').select('value_delta, occurred_at, movement_type').eq('location_id', ops).in('movement_type', ['SALE_DEPLETION', 'WASTE']).gte('occurred_at', fromIso).lt('occurred_at', toIso).order('occurred_at').order('id'));
+    // v5.11.77: SIGNED. A sale takes stock off (value_delta negative), so its cost is -value_delta;
+    // a refund's reversal (SALE_DEPLETION with a positive value_delta, key unsale:...) and the undo
+    // of a refused refund come OFF the day's figure. Math.abs would have added them on.
     for (const m of mv) {
       const k = dayOf(Date.parse(m.occurred_at));
-      const v = Math.abs(Number(m.value_delta) || 0);
+      const v = -(Number(m.value_delta) || 0);
       if (m.movement_type === 'WASTE') wasteCost[k] = (wasteCost[k] || 0) + v;
       else recipeCogs[k] = (recipeCogs[k] || 0) + v;
     }

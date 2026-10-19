@@ -30,10 +30,13 @@
 // ITEM MATCHING (step 6). We have no Menus API, so the venue types its ezCater
 // menu into the Partner Portal by hand and the lines arrive with posItemId =
 // null. _shared/ezcater-match-ingest.ts matches them to our menu by name before
-// the order_queue write, so the ticket routes to a station, depletes stock and
-// shows up in product mix. It can never fail an order: on any problem, including
-// the window before Peter runs the 20260917 migration, the mapper's own row goes
-// through unchanged and the ticket is plain text, exactly as it was before.
+// the order_queue write, so the ticket routes to a station and shows up in
+// product mix. It does NOT deplete stock yet: this webhook writes order_queue
+// only and books no closed check, and stock comes off booked checks
+// (20261018c). Follow up 5.11.78: book the closed check here. The matching can
+// never fail an order: on any problem, including the window before Peter runs
+// the 20260917 migration, the mapper's own row goes through unchanged and the
+// ticket is plain text, exactly as it was before.
 //
 // FILED AS A CATERING ORDER (18 Sep 2026, Peter chose "the simpler version"). The order_queue
 // row is written in EXACTLY the shape CateringCheckout.jsx writes for one of our own catering

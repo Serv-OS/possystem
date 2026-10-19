@@ -99,6 +99,31 @@ export const SIGNALS = Object.freeze({
     title: 'Orders have been open a long time',
     fix: 'Usually a collection nobody marked as collected. Worth a look in Orders, not worth getting up for.',
   },
+  // v5.11.77 central stock depletion (migration 20261018c). The database takes stock off every
+  // booked check through an outbox a pg_cron job drains every minute. If that job stops, stock
+  // stops moving at every central venue and nobody at the counter sees anything, so the oldest
+  // waiting event is the one measure that must wake somebody. Before 20261018c runs the function
+  // answers an empty list: no venue is central, nothing can be late.
+  stock_backlog: {
+    severity: PAGE,
+    minutes: 10,
+    say: (f) => `${f.count} sale${f.count === 1 ? '' : 's'} at ${f.venue} ${f.count === 1 ? 'has' : 'have'} waited over ${f.minutes} minutes for stock to come off. The stock drainer is not running or is stuck.`,
+    title: 'Stock is not coming off sales',
+    fix: 'In the SQL editor: select * from stock_outbox_runs order by id desc limit 5; then call public.stock_outbox_drain(); If runs stopped, check cron.job_run_details for stock-outbox-drain. Back Office, Stock control shows the backlog.',
+  },
+  stock_dead: {
+    severity: WARN,
+    say: (f) => `${f.count} stock event${f.count === 1 ? '' : 's'} at ${f.venue} failed 8 times and stopped retrying. The sale is booked; its stock is not.`,
+    title: 'A stock event gave up',
+    fix: 'Back Office, Stock control, the rows that need a person: read the error, fix the cause (usually an item or area removed), then Release.',
+  },
+  stock_held: {
+    severity: WARN,
+    minutes: 60,
+    say: (f) => `${f.count} sale${f.count === 1 ? '' : 's'} at ${f.venue} ${f.count === 1 ? 'has' : 'have'} waited over an hour for a person to release ${f.count === 1 ? 'it' : 'them'} (written by a session that could not be trusted, or found by the sweep).`,
+    title: 'Stock events are waiting for a person',
+    fix: 'Back Office, Stock control, the rows that need a person: Release the genuine sales. A row that keeps appearing from an unknown session is worth a look at who is writing checks for that venue.',
+  },
 });
 
 /**
@@ -121,6 +146,8 @@ export const WINDOWS = Object.freeze({
   // them an order abandoned weeks ago: permanent wallpaper, which is exactly
   // how an alert list gets ignored.
   orders_open: { olderThan: 45, within: 24 * 60 },
+  stock_backlog: { olderThan: 10 },
+  stock_held: { olderThan: 60 },
 });
 
 /** Signals that are about the system as a whole, not about one venue's count. */
@@ -137,6 +164,9 @@ const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
  *   ticketsLost?: Array<{ venue: string, count: number }>,
  *   printStuck?: Array<{ venue: string, count: number }>,
  *   ordersOpen?: Array<{ venue: string, count: number }>,
+ *   stockBacklog?: Array<{ venue: string, count: number }>,
+ *   stockDead?: Array<{ venue: string, count: number }>,
+ *   stockHeld?: Array<{ venue: string, count: number }>,
  * }} measured
  * @returns {Array<{ key: string, signal: string, severity: string, venue: string, count: number, title: string, body: string, fix: string }>}
  */
@@ -180,6 +210,9 @@ export function evaluate(measured = {}) {
   for (const r of measured.ticketsLost || []) add('ticket_lost', r.venue, r.count);
   for (const r of measured.printStuck || []) add('print_stuck', r.venue, r.count);
   for (const r of measured.ordersOpen || []) add('orders_open', r.venue, r.count);
+  for (const r of measured.stockBacklog || []) add('stock_backlog', r.venue, r.count);
+  for (const r of measured.stockDead || []) add('stock_dead', r.venue, r.count);
+  for (const r of measured.stockHeld || []) add('stock_held', r.venue, r.count);
   return out;
 }
 

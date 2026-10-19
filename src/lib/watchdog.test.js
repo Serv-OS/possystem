@@ -301,6 +301,43 @@ test('the alarm can be tested without waiting for a real fault', () => {
   assert.match(wf, /--test-sms/);
 });
 
+// -- v5.11.77 central stock depletion ------------------------------------------------------
+
+test('stock not coming off sales wakes somebody; a dead or held stock event waits for the morning', () => {
+  const findings = evaluate({ reachable: true, stockBacklog: [{ venue: 'Provo', count: 12 }], stockDead: [{ venue: 'Provo', count: 1 }], stockHeld: [{ venue: 'Location 2', count: 3 }] });
+  const by = Object.fromEntries(findings.map((f) => [f.signal, f]));
+  assert.equal(by.stock_backlog.severity, PAGE);
+  assert.match(by.stock_backlog.body, /12 sales at Provo have waited over 10 minutes for stock to come off/);
+  assert.match(by.stock_backlog.fix, /stock_outbox_runs/);
+  assert.equal(by.stock_dead.severity, WARN);
+  assert.match(by.stock_dead.body, /1 stock event at Provo failed 8 times/);
+  assert.equal(by.stock_held.severity, WARN);
+  assert.match(by.stock_held.body, /3 sales at Location 2 have waited over an hour for a person/);
+  assert.equal(pages(findings).length, 1);
+  assert.equal(by.stock_backlog.key, 'stock_backlog:Provo');
+});
+
+test('before the migration runs the stock lists are empty and nothing is said', () => {
+  assert.deepEqual(evaluate({ reachable: true, stockBacklog: [], stockDead: [], stockHeld: [] }), []);
+  assert.deepEqual(evaluate({ reachable: true, stockBacklog: [{ venue: 'Provo', count: 0 }] }), []);
+});
+
+test('the stock windows and words agree, and run.mjs and watchdog-status carry the three lists', () => {
+  assert.equal(WINDOWS.stock_backlog.olderThan, SIGNALS.stock_backlog.minutes);
+  assert.equal(WINDOWS.stock_held.olderThan, SIGNALS.stock_held.minutes);
+  assert.equal(SIGNALS.stock_backlog.minutes, 10);
+  assert.equal(SIGNALS.stock_held.minutes, 60);
+  const run = read('../../scripts/watchdog/run.mjs');
+  // String.raw keeps the backslashes, so the regex is the literal `stockBacklog: body.stockBacklog || []`
+  // (a plain template string dropped them and the empty alternatives matched anything)
+  for (const k of ['stockBacklog', 'stockDead', 'stockHeld']) assert.match(run, new RegExp(String.raw`${k}: body\.${k} \|\| \[\]`));
+  assert.doesNotMatch('nothing to do with it', new RegExp(String.raw`stockBacklog: body\.stockBacklog \|\| \[\]`), 'the pattern can fail');
+  const fn = read('../../supabase/functions/watchdog-status/index.ts');
+  assert.match(fn, /admin\.rpc\('stock_outbox_watch', \{ p_pending_older_min: stockOlder, p_held_older_min: heldOlder \}\)/);
+  assert.match(fn, /PGRST202|does not exist/, 'a missing function (migration not run) is not reported as an outage');
+  for (const k of ['stockBacklog', 'stockDead', 'stockHeld']) assert.ok(fn.includes(`${k}: byVenue(`), `${k} is answered by watchdog-status`);
+});
+
 test('the thresholds are the measured ones, and they are written down', () => {
   assert.equal(SIGNALS.card_stranded.minutes, 10);
   assert.equal(SIGNALS.print_stuck.minutes, 10);
