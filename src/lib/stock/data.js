@@ -459,6 +459,36 @@ export const postStockMovement = async (m, locationId = null) => {
   return supabase.rpc('post_stock_movement', args);
 };
 
+/**
+ * v5.11.77 central stock depletion (migration 20261018c). Which path takes stock off at this venue:
+ * 'browser' (the till, as before), 'central' (the database books every check) or 'paused'.
+ * A missing RPC (migration not run), a refused call or any error reads as 'browser' in
+ * centralMode.modeFromRpc, so nothing changes until the venue is switched on.
+ */
+export const fetchStockVenueMode = async (locationId = null) => {
+  if (isMock || !supabase) return { data: 'browser', error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: null, error: new Error('No locationId') };
+  return supabase.rpc('stock_venue_mode', { p_location_id: locationId });
+};
+
+/**
+ * The central depletion backlog for the Back Office stock screens: mode, pending, oldest pending
+ * age (s), held, dead, done in 24 h, last drain run, and the rows that need a person.
+ */
+export const fetchStockOutboxHealth = async (locationId = null) => {
+  if (isMock || !supabase) return { data: null, error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: null, error: new Error('No locationId') };
+  return supabase.rpc('stock_outbox_health', { p_location_id: locationId });
+};
+
+/** A Back Office login releases a held or dead outbox row: it posts on the next drain. */
+export const releaseStockOutbox = async (id) => {
+  if (isMock || !supabase) return { data: { ok: false, error: 'offline' }, error: null };
+  return supabase.rpc('stock_outbox_release', { p_id: Number(id) });
+};
+
 /** Set an item's on-hand to a counted figure (posts the delta as STOCK_COUNT_ADJ). */
 export const setInventoryOnHand = async (inventoryItemId, countedQty, notes = null, locationId = null) => {
   if (isMock || !supabase) return { data: null, error: null };

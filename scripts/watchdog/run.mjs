@@ -95,6 +95,10 @@ async function measure() {
       ticketsLost: body.ticketsLost || [],
       printStuck: body.printStuck || [],
       ordersOpen: body.ordersOpen || [],
+      // v5.11.77 central stock depletion: empty until 20261018c runs and a venue is switched on
+      stockBacklog: body.stockBacklog || [],
+      stockDead: body.stockDead || [],
+      stockHeld: body.stockHeld || [],
     };
   }
 

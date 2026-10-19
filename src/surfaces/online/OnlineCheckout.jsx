@@ -1263,7 +1263,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       try {
         if (closedCheck) {
           // v5.5.583: deplete recipe ingredients from the stock ledger (server-side, online is anonymous). Fire-and-forget.
-          depleteForSaleServer({ id: closedCheck.id, items: cart.map(l => ({ itemId: l.itemId, qty: l.qty })), orderType });
+          depleteForSaleServer({ id: closedCheck.id, items: cart.map(l => ({ itemId: l.itemId, qty: l.qty, mods: l.mods })), orderType });   // v5.11.77: the chosen options deplete too
           // v5.5.677: email + SMS the customer their confirmation/receipt (gift-only path).
           sendOrderConfirmation(closedCheck);
         }
@@ -1493,7 +1493,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       try {
         if (closedCheck) {
           // v5.5.583: deplete recipe ingredients from the stock ledger (server-side, online is anonymous). Fire-and-forget.
-          depleteForSaleServer({ id: closedCheck.id, items: cart.map(l => ({ itemId: l.itemId, qty: l.qty })), orderType });
+          depleteForSaleServer({ id: closedCheck.id, items: cart.map(l => ({ itemId: l.itemId, qty: l.qty, mods: l.mods })), orderType });   // v5.11.77: the chosen options deplete too
           // v5.5.677: email + SMS the customer their confirmation/receipt (was never wired for online).
           sendOrderConfirmation(closedCheck);
         }

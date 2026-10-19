@@ -10,7 +10,8 @@ import { useStore } from '../../store';
 import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
 import { money, currencySymbol, signedMoney } from '../../lib/currency';
 import { lineValue, negativeStock } from '../../lib/stock/valuation';
-import { fetchInventoryItems, fetchSuppliers, fetchRecentMovements, movementLabel } from '../../lib/stock/data';
+import { fetchInventoryItems, fetchSuppliers, fetchRecentMovements, movementLabel, fetchStockOutboxHealth, releaseStockOutbox } from '../../lib/stock/data';
+import { healthWords, heldReason } from '../../lib/stock/centralMode.js';
 import { displayInUnits } from '../../lib/stock/uom';
 import { fetchRecipes } from '../../lib/stock/recipes';
 import { fetchPurchaseOrders } from '../../lib/stock/purchasing';
@@ -34,15 +35,32 @@ export default function StockOverview({ setSection, canOpen = () => true }) {
     // 16 Oct 2026: stock areas (after the migration): the areas, the holdings below zero and the
     // counts that are ready to approve. Before it: nothing new on this page.
     const areasOn = await areasReady(loc);
-    const [{ data: items }, { data: recipes }, { data: suppliers }, { data: pos }, { data: moves }, areaRes, holdRes, countRes] = await Promise.all([
+    const [{ data: items }, { data: recipes }, { data: suppliers }, { data: pos }, { data: moves }, areaRes, holdRes, countRes, healthRes] = await Promise.all([
       fetchInventoryItems(loc), fetchRecipes(loc), fetchSuppliers(loc), fetchPurchaseOrders(loc), fetchRecentMovements(loc, 12),
       areasOn ? fetchAreas(loc) : Promise.resolve({ data: null }),
       areasOn ? fetchAreaHoldings(loc) : Promise.resolve({ data: {} }),
       areasOn ? fetchCounts(loc, 30) : Promise.resolve({ data: [] }),
+      // v5.11.77 central stock depletion: the backlog card. Before migration 20261018c the RPC
+      // does not exist and the card simply does not show.
+      fetchStockOutboxHealth(loc).catch(() => ({ data: null, error: null })),
     ]);
     setD({ items: items || [], recipes: recipes || [], suppliers: suppliers || [], pos: pos || [], moves: moves || [],
-      areas: areaRes.data, holdings: holdRes.data || {}, counts: countRes.data || [] });
+      areas: areaRes.data, holdings: holdRes.data || {}, counts: countRes.data || [],
+      health: healthRes && !healthRes.error ? healthWords(healthRes.data) : null });
   }, [locId]);
+  const [releasing, setReleasing] = useState(null);
+  const [releaseMsg, setReleaseMsg] = useState('');
+  const release = async (row) => {
+    setReleasing(row.id); setReleaseMsg('');
+    try {
+      const { data, error } = await releaseStockOutbox(row.id);
+      if (error) setReleaseMsg(error.message || 'Could not release it');
+      else if (data && data.ok === false) setReleaseMsg(data.error || 'Could not release it');
+      else setReleaseMsg('Released. Stock comes off on the next run (within a minute).');
+      await load();
+    } catch (e) { setReleaseMsg(e?.message || 'Could not release it'); }
+    setReleasing(null);
+  };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
 
   const go = (s) => setSection?.(s);
@@ -152,6 +170,36 @@ export default function StockOverview({ setSection, canOpen = () => true }) {
               {unlinked.length > 0 && (
                 <Attn color="#e8a020" title={`${unlinked.length} menu item${unlinked.length === 1 ? '' : 's'} without a recipe`} sub="these won’t deplete stock or show a cost when sold" items={unlinked.slice(0, 4).map(i => i.name)} cta="Build recipes" onClick={can('recipes') ? () => go('recipes') : null} />
               )}
+            </div>
+          )}
+
+          {d.health && (
+            <div style={{ ...card, borderLeft: `3px solid ${d.health.tone === 'alert' ? 'var(--red, #ef4444)' : d.health.tone === 'warn' ? '#e8a020' : d.health.tone === 'ok' ? 'var(--grn, #16a34a)' : 'var(--bdr)'}` }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--t1)' }}>{d.health.title}</div>
+              <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 4 }}>{d.health.sub}</div>
+              {d.health.mode !== 'browser' && d.health.pending === 0 && d.health.held === 0 && d.health.dead === 0 && (
+                <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 4 }}>Stock screens trail a sale by about 3 seconds, up to a minute.</div>
+              )}
+              {d.health.needsPerson.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10 }}>
+                  {d.health.needsPerson.slice(0, 5).map(row => (
+                    <div key={row.id} style={{ padding: '8px 10px', borderRadius: 8, background: 'var(--bg2)', border: '1px solid var(--bdr)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                        <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--t1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {row.kind === 'sale' ? 'Sale' : row.kind === 'refund' ? 'Refund' : row.kind === 'tomb' ? 'Void' : row.kind} · {row.check_id}
+                        </div>
+                        <button disabled={releasing === row.id} onClick={() => release(row)}
+                          style={{ padding: '5px 10px', borderRadius: 7, fontSize: 11, fontWeight: 600, cursor: 'pointer', background: 'var(--bg3)', color: 'var(--t1)', border: '1px solid var(--bdr)', flexShrink: 0 }}>
+                          {releasing === row.id ? 'Releasing…' : 'Release'}
+                        </button>
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>{heldReason(row)}</div>
+                    </div>
+                  ))}
+                  {d.health.needsPerson.length > 5 && <div style={{ fontSize: 11, color: 'var(--t4)' }}>and {d.health.needsPerson.length - 5} more</div>}
+                </div>
+              )}
+              {releaseMsg && <div style={{ fontSize: 11, color: 'var(--t2)', marginTop: 8 }}>{releaseMsg}</div>}
             </div>
           )}
 
