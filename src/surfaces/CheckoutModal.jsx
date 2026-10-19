@@ -40,7 +40,8 @@ import { getNextOrderRefLocal } from '../lib/db';
 import { suppressReaderTip } from '../lib/payments/readerTipRule';
 import { orderFlag, flagTableLabel } from '../lib/tillOrderType';   // 30 Sep 2026: a flag order's Table <n> for the job's draft
 import { bookingCreditFor, bookingLegsForBill } from '../lib/bookings/bookingCredit';   // 16 Oct 2026: one booking credit helper (order screen, table card, checkout)
-import { promoBasketValue } from '../lib/promoBasis';   // 19 Oct 2026 (v5.11.78): one promo basket on every channel
+import { placedPromoFor } from '../lib/orderPlacedFrom';   // v5.11.78 round 1: an order's own promo, as a promo credit
+import { promoBasketValue, heldPromo } from '../lib/promoBasis';   // 19 Oct 2026 (v5.11.78): one promo basket on every channel
 // (readerDisplay imports removed — cancel now lets the natural cart-change effect refresh the reader after onBack)
 
 // ─── Tip picker ───────────────────────────────────────────────────────────────
@@ -1331,7 +1332,10 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   const [loyaltyApplied, setLoyaltyApplied] = useState(null);
   // Promo code (marketing offers) — validated via promo-redeem; redeemed (bound to the order) by the store.
   // v5.5.505: entered through the unified gift-card/promo box (no separate field).
-  const [promoApplied, setPromoApplied] = useState(null);   // { code, code_id, offer_id, type, value, amount, label }
+  // v5.11.78 round 1: a walk in order opened from Orders that a customer page placed with a promo
+  // (lib/orderPlacedFrom.js) starts with that promo held: taken off as a promo tender, VAT left on
+  // the goods, as its pay now check books it; alreadyRedeemed, so the store never uses it again.
+  const [promoApplied, setPromoApplied] = useState(() => placedPromoFor(useStore.getState().walkInOrder, { tableId, orderType }));   // { code, code_id, offer_id, type, value, amount, label }
   // loyaltyApplied: { reward_id, reward_name, points_deducted, discount_type, discount_value, idempotency_key }
 
   // Loyalty discount applied to total
@@ -1647,8 +1651,9 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
       } });
       if (error) throw new Error(error.message);
       if (data?.valid) {
-        // `basis` rides on the held promo so the redeem records the same basket (store redeemPromoCode).
-        setPromoApplied({ code, code_id: data.code_id, offer_id: data.offer?.id, ...data.discount, basis: promoBasis });
+        // `basket` rides on the held promo so the redeem records the same basket (store
+        // redeemPromoCode reads it through promoRedeemBasket). Built by lib/promoBasis.js heldPromo.
+        setPromoApplied(heldPromo(code, data, promoBasis));
         return { ok: true };
       }
       const reasons = { not_found: 'Code not found', expired: 'Code expired', not_yet_active: 'Not active yet', already_used: 'Already used', usage_limit: 'Usage limit reached', min_spend: `Minimum spend ${money(Number(data?.min_spend || 0))}`, wrong_venue: 'Not valid at this venue', customer_mismatch: 'Belongs to another customer', customer_required: 'Attach the customer first', inactive: 'Offer inactive', voided: 'Code voided' };
@@ -2712,7 +2717,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                 )}
                 {promoApplied && (
                   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginTop:4 }}>
-                    <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>{String.fromCodePoint(0x1F3AB)} {promoApplied.label || promoApplied.code} <button disabled={paxBusy} onClick={()=>{ setPromoApplied(null); }} style={{ marginLeft:6, background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:12, textDecoration:'underline' }}>remove</button></span>
+                    <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>{String.fromCodePoint(0x1F3AB)} {promoApplied.label || promoApplied.code} {promoApplied.alreadyRedeemed ? <span style={{ marginLeft:6, color:'var(--t3)', fontSize:12, fontWeight:500 }}>used when ordered</span> : <button disabled={paxBusy} onClick={()=>{ setPromoApplied(null); }} style={{ marginLeft:6, background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:12, textDecoration:'underline' }}>remove</button>}</span>
                     <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{promoCredit > 0 ? `${String.fromCodePoint(0x2212)}${money(promoCredit)}` : '✓'}</span>
                   </div>
                 )}

@@ -7,7 +7,7 @@ import { RULES, SERVICE_DEVICE, STORE_MENU, ctxUK, basket } from './fixtures.js'
 import { posLines, posTotals } from './pos.js';
 import { computeCheckTotals, sessionTotalsMinor } from '../payments/checkTotals.js';
 import { headlessService, qrTabCloseFields } from '../headlessTax.js';
-import { recordCheckBasis } from '../taxBasis.js';
+import { recordCheckBasis, creditDiscountsFromPayment } from '../taxBasis.js';
 import { tendersFromPaymentInfo } from '../accounting/tenders.js';
 import { roundVat } from '../taxRule.js';
 import { readRepo, between } from './src.js';
@@ -85,9 +85,9 @@ test('catering: the delivery fee is the order\'s delivery fee, never the service
 
 // ── Catering pay later paid at the till (confirmed major: fee, options and promo lost) ────────────
 test('catering pay later at the till: charged what the customer agreed (options, its own delivery fee, its promo)', async () => {
-  const { placedOrderForTill } = await import('../orderPlacedFrom.js');
+  const { placedOrderForTill, placedPromoFor, quoteForWalkIn } = await import('../orderPlacedFrom.js');
   const o = {
-    source: 'catering', type: 'delivery', total: 55,
+    ref: 'CA-AB12C', source: 'catering', type: 'delivery', total: 55,
     items: [{ itemId: 'platter', name: 'Platter', price: 30, qty: 1, mods: [{ name: 'Extra cheese', price: 10 }], taxRateId: 'r20', taxOverrides: {} }],
     customer: { delivery_fee: 20, delivery_mode: 'self', promo_code: 'P5', promo_discount: 5 },
   };
@@ -95,14 +95,100 @@ test('catering pay later at the till: charged what the customer agreed (options,
   assert.equal(placed.items[0].price, 40, 'the option is inside the line price, the till\'s contract');
   assert.equal(placed.deliveryQuote.customerFeeMinor, 2000);
   assert.equal(placed.deliveryQuote.fromOrder, true, 'never a fresh quote');
-  const bill = computeCheckTotals({ items: placed.items, checkDiscounts: placed.discounts, covers: 1, orderType: 'delivery', deliveryQuote: placed.deliveryQuote, taxCtx: ctxUK() });
-  assert.equal(bill.total, o.total, 'the till charges the queue row\'s total');
+  assert.equal(placed.deliveryQuote.orderRef, o.ref, 'bound to this order');
+  assert.equal(placed.discounts, undefined, 'the promo is never a check discount');
+  const walkIn = { ref: o.ref, items: placed.items, placedPromo: placed.promo };
+  const promo = placedPromoFor(walkIn, { tableId: null, orderType: 'delivery' });
+  assert.deepEqual({ code: promo.code, amount: promo.amount, alreadyRedeemed: promo.alreadyRedeemed }, { code: 'P5', amount: 5, alreadyRedeemed: true });
+  const bill = computeCheckTotals({ items: placed.items, checkDiscounts: walkIn.discounts || [], covers: 1, orderType: 'delivery', deliveryQuote: quoteForWalkIn(placed.deliveryQuote, walkIn), taxCtx: ctxUK(), creditDiscounts: creditDiscountsFromPayment({ promoRedemption: promo }) });
+  assert.equal(bill.total - promo.amount, o.total, 'the till takes the queue row\'s total (the promo comes off as its credit)');
   // A till order reopened from Orders is left exactly as it is.
   const tillOrder = { source: 'pos', items: o.items, customer: {} };
   assert.equal(placedOrderForTill(tillOrder).items, o.items);
-  assert.match(readRepo('src/surfaces/POSSurface.jsx'), /if \(useStore\.getState\(\)\.deliveryQuote\?\.fromOrder\) return;/);
+  assert.equal(placedOrderForTill(tillOrder).promo, null);
+  assert.match(readRepo('src/surfaces/POSSurface.jsx'), /if \(isQuoteOfOrder\(useStore\.getState\(\)\.deliveryQuote, useStore\.getState\(\)\.walkInOrder\)\) return;/);
   assert.match(readRepo('src/store/index.js'), /if \(orderType === 'delivery' && _dq\?\.available && _dq\.fromOrder\) \{/);
-  assert.match(readRepo('src/surfaces/OrdersHub.jsx'), /const placed = placedOrderForTill\(o\);/);
+  const hub = readRepo('src/surfaces/OrdersHub.jsx');
+  assert.match(hub, /const placed = placedOrderForTill\(o\);/);
+  assert.match(hub, /\.\.\.\(placed\.promo \? \{ placedPromo: placed\.promo \} : \{\}\),/);
+  assert.doesNotMatch(hub, /placed\.discounts/);
+});
+
+// Round 1 fix (19 Oct 2026): the promo of a placed order was a check discount at the till, so the
+// UK VAT was scaled down by it and the reports counted a discount, while pay now books a promo tender.
+test('the same placed order books the same VAT, tenders and discounts paid now on the page or later at the till', async () => {
+  const { placedOrderForTill, placedPromoFor, quoteForWalkIn } = await import('../orderPlacedFrom.js');
+  const { computeOrderTaxUnified } = await import('../taxCompute.js');
+  const { creditDiscounts } = await import('../taxBasis.js');
+  const { tender, finishTenders, tillTenders } = await import('../accounting/tenders.js');
+  const { recordedDiscountMinor } = await import('../../../supabase/functions/_shared/tradingSales.js');
+  const { chargedShare } = await import('../../../supabase/functions/_shared/vatRederive.js');
+  for (const type of ['collection', 'delivery']) {
+    const fee = type === 'delivery' ? 7.5 : 0;
+    const cart = [{ itemId: 'platter', name: 'Platter', price: 30, qty: 1, mods: [{ id: 'x', name: 'Extra', price: 10 }], taxRateId: 'r20', taxOverrides: {} }];
+    const promoAmt = 5;
+    // Pay now on the catering page (CateringCheckout taxBk, total and tenders).
+    const nowTax = computeOrderTaxUnified(cart.map((l) => ({ price: l.price + l.mods.reduce((m, x) => m + x.price, 0), qty: l.qty, itemId: l.itemId, taxRateId: l.taxRateId, taxOverrides: l.taxOverrides })), ctxUK(), type, { discounts: creditDiscounts({ promo: promoAmt }), deliveryFee: fee });
+    const nowTotal = +(40 + fee - promoAmt).toFixed(2);
+    const nowRecord = { items: [{ uid: 'a', itemId: 'platter', price: 40, qty: 1 }], discounts: [{ type: 'promo', source: 'promo', code: 'P5', amount: promoAmt }], tenders: finishTenders([tender('promo', promoAmt), tender('card', nowTotal, 0)]) };
+    // The same order placed pay later, opened from Orders and paid at the till.
+    const o = { ref: 'CA-ZZ9', source: 'catering', type, total: nowTotal, items: cart, customer: { promo_code: 'P5', promo_discount: promoAmt, ...(fee ? { delivery_fee: fee, delivery_mode: 'self' } : {}) } };
+    const placed = placedOrderForTill(o);
+    const walkIn = { ref: o.ref, items: placed.items, placedPromo: placed.promo };
+    const held = placedPromoFor(walkIn, { tableId: null, orderType: type });   // CheckoutModal's first promoApplied
+    const payInfo = { promoRedemption: held };
+    const bill = computeCheckTotals({ items: walkIn.items, checkDiscounts: walkIn.discounts || [], covers: 1, orderType: type, deliveryQuote: quoteForWalkIn(placed.deliveryQuote, walkIn), taxCtx: ctxUK(), creditDiscounts: creditDiscountsFromPayment(payInfo) });
+    const grand = +(bill.total - held.amount).toFixed(2);
+    const tillRecord = { items: [{ uid: 'a', itemId: 'platter', price: 40, qty: 1 }], discounts: [{ source: 'promo', code: held.code, type: held.type, value: held.value, amount: held.amount }], tenders: finishTenders(tillTenders({ method: 'card', tillMoney: grand, promoCredit: held.amount })) };
+    assert.equal(grand, nowTotal, `${type}: the customer pays the same`);
+    assert.equal(roundVat(bill.tax?.totalTax), roundVat(nowTax?.totalTax), `${type}: the same VAT (6.67 on 40.00 of goods)`);
+    assert.equal(roundVat(bill.tax?.totalTax), 6.67);
+    assert.deepEqual(tillRecord.tenders.map((t) => [t.method, t.amount]), nowRecord.tenders.map((t) => [t.method, t.amount]), `${type}: a promo tender and the card`);
+    assert.deepEqual([recordedDiscountMinor(tillRecord), recordedDiscountMinor(nowRecord)], [0, 0], `${type}: no discount in the reports either way`);
+    assert.equal(chargedShare(tillRecord, tillRecord.items).share, chargedShare(nowRecord, nowRecord.items).share);
+  }
+  // The checkout starts with the order's promo only when it is paying that walk in order.
+  const p = placedOrderForTill({ ref: 'CA-1', source: 'online', type: 'collection', items: [], customer: { promo_code: 'X', promo_discount: 2 } }).promo;
+  assert.equal(placedPromoFor({ ref: 'CA-1', placedPromo: p }, { tableId: 't4' }), null, 'never on a table');
+  assert.equal(placedPromoFor({ ref: 'CA-1', placedPromo: p }, { orderType: 'bar-tab' }), null, 'never on a bar tab');
+  assert.equal(placedPromoFor({ ref: 'CA-2', placedPromo: p }, {}), null, 'never on another order');
+  const co = readRepo('src/surfaces/CheckoutModal.jsx');
+  assert.match(co, /const \[promoApplied, setPromoApplied\] = useState\(\(\) => placedPromoFor\(useStore\.getState\(\)\.walkInOrder, \{ tableId, orderType \}\)\);/);
+  assert.match(co, /promoCredit,\n\s+bookingPayment: bookingRecord,/, 'the held promo is the till\'s promo tender');
+  const store = readRepo('src/store/index.js');
+  assert.match(between(store, 'redeemPromoCode: async (promo, record, customer) => {', 'recordWalkInClosedCheck:'), /if \(promo\?\.alreadyRedeemed\) return \{ ok: true, skipped: 'already_redeemed' \};/, 'a code used when the order was placed is never used again');
+});
+
+// Round 1 fix (19 Oct 2026): an opened order's delivery fee stayed on the till after Clear, and the
+// next delivery sale charged it, sent no courier and logged no surcharge.
+test('a placed order\'s delivery fee counts only while that order is on the till: open, Clear, a new delivery order quotes afresh', async () => {
+  const { placedOrderForTill, quoteForWalkIn, isQuoteOfOrder } = await import('../orderPlacedFrom.js');
+  const o = { ref: 'CA-77', source: 'catering', type: 'delivery', items: [{ itemId: 'platter', name: 'Platter', price: 30, qty: 1, mods: [] }], customer: { delivery_fee: 7.5 } };
+  const placed = placedOrderForTill(o);
+  const bill = (walkIn, quote) => computeCheckTotals({ items: walkIn?.items || [], covers: 1, orderType: 'delivery', deliveryQuote: quoteForWalkIn(quote, walkIn), taxCtx: ctxUK() });
+  // 1. Opened from Orders: its own 7.50 is on the bill and the till does not quote.
+  const opened = { id: 'ORD-77', ref: o.ref, items: placed.items };
+  assert.equal(bill(opened, placed.deliveryQuote).deliveryFee, 7.5);
+  assert.equal(isQuoteOfOrder(placed.deliveryQuote, opened), true);
+  // 2. Clear, then a new phone order on Delivery (no ref yet, or its own new ref): never the old fee.
+  for (const next of [{ id: 'ORD-2', items: [{ uid: 'b', itemId: 'burger', price: 9, qty: 1 }] }, { id: 'ORD-3', ref: '#6721', items: [{ uid: 'b', itemId: 'burger', price: 9, qty: 1 }] }, null]) {
+    assert.equal(bill(next, placed.deliveryQuote).deliveryFee, 0, 'the abandoned order\'s fee is no quote here');
+    assert.equal(isQuoteOfOrder(placed.deliveryQuote, next), false, 'so the till quotes afresh (POSSurface)');
+    assert.equal(quoteForWalkIn(placed.deliveryQuote, next), null, 'and the close stamps, logs and dispatches by the fresh quote only');
+  }
+  // A till's own quote is passed exactly as it is (the same object: nothing moves for a till delivery sale).
+  const live = { available: true, customerFeeMinor: 450, dispatchable: true, mode: 'uber' };
+  assert.equal(quoteForWalkIn(live, { id: 'x', items: [] }), live);
+  assert.equal(quoteForWalkIn(live, null), live);
+  assert.equal(quoteForWalkIn(null, opened), null);
+  const store = readRepo('src/store/index.js');
+  assert.match(store, /clearWalkIn: \(\) => set\(s => \(\{ walkInOrder:null, customer:null, orderType:defaultOrderTypeFor\(s\.deviceConfig\), pendingLoyaltyReward:null, deliveryQuote:null \}\)\),/);
+  assert.match(store, /deliveryQuote: quoteForWalkIn\(get\(\)\.deliveryQuote, activeTableId \? null : walkInOrder\),/, 'getPOSTotals');
+  const close = between(store, 'recordWalkInClosed: (walkInOrder', 'refundCheck: async');
+  assert.match(close, /deliveryQuote: quoteForWalkIn\(get\(\)\.deliveryQuote, walkInOrder\),/, 'the VAT the close books');
+  assert.match(close, /const _dq = quoteForWalkIn\(get\(\)\.deliveryQuote, walkInOrder\);/, 'the fee it stamps, logs and dispatches');
+  assert.doesNotMatch(close, /deliveryQuote: get\(\)\.deliveryQuote/);
+  assert.match(readRepo('src/surfaces/MPOSSurface.jsx'), /deliveryQuote: quoteForWalkIn\(st\.deliveryQuote, order\),/);
 });
 
 // ── Booking money on MPOS (confirmed major: charged twice) ───────────────────────────────────────

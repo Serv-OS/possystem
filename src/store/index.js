@@ -70,7 +70,7 @@ import { usableOrderRef, bookingLegsMinor, giftLegsMinor, closerGrandMinor, clos
 import { printService } from '../lib/printer';
 import { hubrisePushStock, isHubriseConnected, hubrisePushStatus, isHubriseAutoReceipt } from '../lib/hubrise';
 import { buildChannelCloseFields } from '../lib/channelMoney';
-import { tillLineTaxRefs, tillLineTaxFields, tillLineCat, tillLineUnitPrice } from '../lib/tillLine';
+import { tillLineTaxRefs, tillLineTaxFields, tillLineCat, tillLineCats, tillLineUnitPrice } from '../lib/tillLine';
 import { logActivity } from '../lib/activity';
 import { depleteForSale, reverseForSale } from '../lib/stock/deplete';
 import { setTrainingMode as applyTrainingFlag, isTrainingMode } from '../lib/trainingMode';
@@ -91,6 +91,7 @@ import { reverseCardLeg } from '../lib/payments/cardReversal';
 import { commitRedemption, setDeviceClaimHooks } from '../lib/commitRedemptions';
 import { redemptionsOf, withSlots, rewardsRecord } from '../lib/loyaltyMultiRedeem';
 import { promoRedeemBasket } from '../lib/promoBasis';   // 30 Sep 2026: more than one reward on an order
+import { quoteForWalkIn } from '../lib/orderPlacedFrom';   // v5.11.78 round 1: an order's own delivery fee counts only while that order is on the till
 import { memberTokenFor } from '../lib/memberSession.js';
 import { CUSTOMER_MERGE_FN } from '../lib/customerMerge.js';
 import { upsertCustomerRow, autoJoinCustomer } from '../lib/customerAutoJoinRun.js';
@@ -3167,6 +3168,9 @@ export const useStore = create((set, get) => ({
       // can have a stale/wrong cat from creation or reassignment bugs.
       // (19 Oct 2026: lib/tillLine.js tillLineCat, shared with the bar tab round.)
       cat: tillLineCat(item, useStore.getState().menuItems),
+      // Round 1 fix (19 Oct 2026): and its "Also in" categories, so an automatic deal reaches the
+      // item here as it does on the kiosk, online, QR and the server (lib/tillLine.js lineCategories).
+      ...tillLineCats(item, useStore.getState().menuItems),
       parentId: item.parentId || null,
       // v5.5.338: variants inherit the parent's tax settings (default rate +
       // per-order-type overrides). Variant rows store empty tax_overrides, so
@@ -4148,7 +4152,9 @@ export const useStore = create((set, get) => ({
   walkInOrder: null,
   // 30 Sep 2026: the next order starts on the profile's default order type (lib/tillOrderType.js),
   // not always dine in. Floor tables still open as dine in (openTable and friends).
-  clearWalkIn: () => set(s => ({ walkInOrder:null, customer:null, orderType:defaultOrderTypeFor(s.deviceConfig), pendingLoyaltyReward:null })),
+  // v5.11.78 round 1: and the delivery quote. A fee an order brought with it (Orders, a catering pay
+  // later order) stayed on the till after Clear, and the next delivery sale charged it.
+  clearWalkIn: () => set(s => ({ walkInOrder:null, customer:null, orderType:defaultOrderTypeFor(s.deviceConfig), pendingLoyaltyReward:null, deliveryQuote:null })),
   // 30 Sep 2026 (Peter, Coffee Boy): the flag number staff typed for a dine in walk in order
   // (FlagNumberModal, lib/tillOrderType.js). Lives on the order, so Send and Pay both see it
   // and the prompt never shows twice. Digits only, or cleared.
@@ -4199,7 +4205,9 @@ export const useStore = create((set, get) => ({
       orderType, deviceConfig,
       discountRules: get().discountRules,
       timezone: get().locationConfig?.timezone,
-      deliveryQuote: get().deliveryQuote,
+      // v5.11.78 round 1: a fee an order brought with it counts only while that order is the one on
+      // the till (lib/orderPlacedFrom.js quoteForWalkIn); a till's own quote is passed as it is.
+      deliveryQuote: quoteForWalkIn(get().deliveryQuote, activeTableId ? null : walkInOrder),
       // v5.7.31: added-on (exclusive) sales tax now rides the bill. The POS
       // rendered "+ Sales Tax" lines but never charged them — total now carries
       // the exclusive share so screen, charge and record agree. UK inclusive
@@ -7179,6 +7187,9 @@ export const useStore = create((set, get) => ({
   },
 
   redeemPromoCode: async (promo, record, customer) => {
+    // v5.11.78 round 1: a promo an order brought with it (Orders, lib/orderPlacedFrom.js) was used
+    // when the order was placed. It is booked on this check as its promo tender, never used again.
+    if (promo?.alreadyRedeemed) return { ok: true, skipped: 'already_redeemed' };
     if (!promo?.code || !supabase || !record?.id) return;
     if (isTrainingMode()) return;   // TRAINING MODE: don't consume a one-time / limited promo code
     const { staff } = get();
@@ -7383,7 +7394,7 @@ export const useStore = create((set, get) => ({
           deviceConfig: get().deviceConfig,
           discountRules: get().discountRules,
           timezone: get().locationConfig?.timezone,
-          deliveryQuote: get().deliveryQuote,
+          deliveryQuote: quoteForWalkIn(get().deliveryQuote, walkInOrder),   // v5.11.78 round 1: the bill's own
           taxRates,
           taxCtx: get().getTaxContext(),
           creditDiscounts: creditDiscountsFromPayment(paymentInfo),
@@ -7449,7 +7460,9 @@ export const useStore = create((set, get) => ({
     // v5.5.646: delivery surcharge — stamp the customer-facing fee onto the record
     // (mirrors catering's customer.delivery_fee) so receipts/reports show it. The
     // grand total already includes it (getPOSTotals folds deliveryFee).
-    const _dq = get().deliveryQuote;
+    // v5.11.78 round 1: the quote this bill charged (getPOSTotals reads the same): a fee another
+    // order brought with it is no quote here, so it is never stamped, logged or acted on.
+    const _dq = quoteForWalkIn(get().deliveryQuote, walkInOrder);
     if (orderType === 'delivery' && _dq?.available) {
       record.customer = { ...(customer || {}), delivery_fee: (_dq.customerFeeMinor || 0) / 100, delivery_mode: _dq.mode || 'self' };
       record.deliveryFee = (_dq.customerFeeMinor || 0) / 100;

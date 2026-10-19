@@ -25,6 +25,7 @@ import { resolveItemPrice, repriceCartLines } from '../../lib/menuPricing';
 import { onlineSectionTrees, itemInSection } from '../../lib/onlineMenuTree';
 import { kitchenOverride, receiptOverride } from '../../lib/itemDisplay';
 import { lineTaxRefsFor } from '../../lib/taxRefs';
+import { lineCategories } from '../../lib/lineCategories';   // round 1 fix: one category rule on every channel
 import { dietaryBadges, DIET_LABELS } from '../../lib/dietary';
 import { getStashedTab, clearStashedTab, stashTab } from '../../lib/qrTabStorage';
 import { publicRead, ensureCustomerSession } from '../../lib/publicOrderClient';
@@ -656,8 +657,10 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
       // checkout stamps it onto order_queue/closed_checks items so printed +
       // emailed receipts read receiptName || name.
       receiptName: receiptOverride(item),
-      cat: item.cat || null,
-      cats: Array.isArray(item.cats) ? item.cats : null,
+      // Round 1 fix (19 Oct 2026): a size counts under its product's categories, "Also in" list
+      // included, as on the till, the kiosk and the server's deal check (lib/lineCategories.js).
+      // It read the size row's own, so an automatic deal could differ here from the till.
+      ...lineCategories(item, items),
       parentId: item.parent_id || item.parentId || null,
       // v5.5.154: snapshot tax info so the cart + checkout VAT breakdown
       // works without re-fetching menu_items for each line.

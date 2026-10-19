@@ -13,6 +13,7 @@ import { assembleTaxProfiles } from '../../lib/rowMapping';
 import { buildLocalTaxCtx } from '../../lib/taxCompute';
 import { kitchenOverride, receiptOverride } from '../../lib/itemDisplay';
 import { lineTaxRefsFor } from '../../lib/taxRefs';
+import { lineCategories } from '../../lib/lineCategories';   // round 1 fix: a size counts under its product's categories, as on the till
 import { resolveItemPrice, variantFromPrice, repriceCartLines } from '../../lib/menuPricing';
 import { isOptionOnlyItem } from '../../lib/menuRules';
 import { cateringMenuIdFor, cateringOrderMenuId } from '../../lib/cateringPricing';
@@ -226,7 +227,7 @@ export default function CateringSurface({ location }) {
       q = Math.min(q, room);
     }
     const price = priceFor(item);
-    setCart((c) => [...c, { uid: `${item.id}-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`, itemId: item.id, name: item.menu_name || item.name, kitchenName: kitchenOverride(item), receiptName: receiptOverride(item), cat: item.cat || null, cats: Array.isArray(item.cats) ? item.cats : null, parentId: item.parent_id || null, ...lineTaxRefsFor(item, items), price, qty: q, mods, notes }]);
+    setCart((c) => [...c, { uid: `${item.id}-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`, itemId: item.id, name: item.menu_name || item.name, kitchenName: kitchenOverride(item), receiptName: receiptOverride(item), ...lineCategories(item, items), parentId: item.parent_id || null, ...lineTaxRefsFor(item, items), price, qty: q, mods, notes }]);
   };
 
   // v5.7.34: the unified seam's tax context — this surface's own fetches

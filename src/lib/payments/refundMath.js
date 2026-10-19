@@ -191,9 +191,11 @@ export function vatRefundedSoFar(check) {
  * lines (bd.tax, v5.9.12). Null when the check stored no tax.
  *
  * 19 Oct 2026 (v5.11.78, channel parity): UK VAT follows the lines refunded, not the money.
- *   - a part refund that names its lines gives back those lines' own VAT (lineVatWeights: each
- *     line's goods at its own rate, as the sale booked it, after any bill discount), times the
- *     share of them actually refunded when the refund was capped at what is left. The tip and
+ *   - a part refund that names its lines gives back the VAT inside the money it returns for them
+ *     (lineVatWeights: each line's price at its own rate, the rate the sale booked it at), times
+ *     the share of them actually refunded when the refund was capped at what is left. The lines go
+ *     back at their own price, so their VAT is never scaled by a bill discount (a meal deal burger
+ *     refunded at 9.00 gives back the 1.50 inside 9.00, not 1.20). The tip and
  *     the service charge carry no VAT (UK VAT is never charged on either, taxEngine), so a tip
  *     only refund gives back 0. Before, the check's whole VAT was spread over the money: on a
  *     takeaway 3.50 drink (20%) plus a 4.00 cold sandwich (0%), refunding the sandwich gave back
@@ -205,7 +207,8 @@ export function vatRefundedSoFar(check) {
  *     reproduce, a full refund of only the card part of a gift card split) keeps the pro rata
  *     rule against refundTaxBasis, with the tip taken out of both sides;
  *   - never more than the VAT still on the check.
- * A one rate check with no tip and no service charge gives back exactly what it did before.
+ * A one rate check with no tip and no service charge gives back exactly what it did before, with
+ * or without a bill discount (pro rata on the money was the VAT inside the money on one rate).
  *
  * @param {object} check  the check BEFORE this refund
  * @param {object} bd     refundBreakdown(check, ...) for this refund
@@ -245,9 +248,14 @@ export function refundTaxAmount(check, bd, opts = {}) {
         selectedValue += num(it?.price) * (num(it?.refundQty) || 0);
       }
       if (placed) {
-        const lineVat = plan.totalRaw > 0 ? taxAmount * (selectedVat / plan.totalRaw) : 0;
+        // The VAT inside the money handed back: the lines are refunded at their own price
+        // (refundBreakdown), so they give back the VAT inside that price, never scaled by the
+        // bill's discount share. Scaling it (taxAmount x selectedVat / totalRaw, round 0) gave a
+        // meal deal burger refunded at 9.00 only 1.20 of VAT when 9.00 holds 1.50, and left the
+        // rest of the check carrying more than 20%. The refund that clears the bill sweeps what
+        // is left (clearsBill above), so nothing is ever stranded or given back twice.
         const capped = selectedValue > 0 ? Math.min(1, num(bd?.itemsAmount) / selectedValue) : 0;
-        return r2(Math.min(vatLeft, Math.max(0, lineVat * capped)));
+        return r2(Math.min(vatLeft, Math.max(0, selectedVat * capped)));
       }
     }
   }

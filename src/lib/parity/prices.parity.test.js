@@ -9,7 +9,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { MENU, STORE_MENU, raw, storeRow, extraOf } from './fixtures.js';
-import { posUnit, posLine } from './pos.js';
+import { posUnit, posLine, posLines } from './pos.js';
 import { resolveItemPrice, planCartLine, repriceCartLines } from '../menuPricing.js';
 import { packageItemsFor } from '../bookings/packagePricing.js';
 import { choicePriceFor } from '../bookings/guestChoicePricing.js';
@@ -64,6 +64,31 @@ test('bar tab: BarSurface books, shows and resolves its menu through the till\'s
 });
 
 // ── Catering (confirmed major: priced from base, fulfilment and tiers ignored) ────────────────────
+test('bar tab: picking a quantity of a drink already in the round adds that many, as the counter appends a line of that many', async () => {
+  const { addToRoundLines } = await import('../tillLine.js');
+  const pint = (qty, extra = {}) => ({ uid: `r${qty}`, itemId: 'beer-pint', name: 'Pint', price: 5, qty, mods: [], notes: '', ...extra });
+  const charge = (lines) => lines.reduce((s0, l) => s0 + l.price * l.qty, 0);
+  // A Pint in the round, then 3 more picked on the quantity stepper (InlineItemFlow): 4 Pints, 20.00.
+  const round = addToRoundLines([pint(1)], pint(3));
+  assert.equal(round.length, 1);
+  assert.equal(round[0].qty, 4);
+  // The counter: a line of 1 then a line of 3 (store.addItem always appends), the same money.
+  const counter = posLines({ orderType: 'bar-tab', menuId: null, lines: [{ itemId: 'beer-pint', qty: 1 }, { itemId: 'beer-pint', qty: 3 }] });
+  assert.equal(charge(round), charge(counter));
+  // One tap with no stepper adds one, as before.
+  assert.equal(addToRoundLines([pint(1)], pint(1))[0].qty, 2);
+  // A note, or another price (a timed menu turned over between taps), stays its own line.
+  assert.equal(addToRoundLines([pint(1)], pint(2, { notes: 'no head' })).length, 2);
+  assert.equal(addToRoundLines([pint(1, { notes: 'no head' })], pint(2)).length, 2);
+  assert.equal(addToRoundLines([pint(1)], pint(2, { price: 4 })).length, 2);
+  const prev = [pint(1)];
+  addToRoundLines(prev, pint(3));
+  assert.equal(prev[0].qty, 1, 'the round it was given is never changed');
+  const bar = readRepo('src/surfaces/BarSurface.jsx');
+  assert.match(bar, /setRoundItems\(prev => addToRoundLines\(prev, line\)\);/);
+  assert.doesNotMatch(bar, /qty:r\.qty\+1/, 'never one whatever the stepper said');
+});
+
 test('catering: Collection, Delivery and the catering menu\'s tier are the till\'s and the online page\'s prices', async () => {
   const { cateringMenuIdFor, cateringOrderMenuId } = await import('../cateringPricing.js');
   const one = { menuIds: ['bar'], items: MENU, categories: [] };

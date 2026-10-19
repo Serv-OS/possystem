@@ -112,6 +112,49 @@ test('refund: a one rate check with no tip gives back exactly what it did before
   assert.match(readRepo('src/store/index.js'), /const taxRefunded = refundTaxAmount\(chkBefore, bd, \{ items: refundItems, taxRates: get\(\)\.taxRates \}\);/);
 });
 
+// Round 1 fix (19 Oct 2026): a discounted check refunds each line at its own price, so the VAT given
+// back is the VAT inside that money. Scaling it by the bill's discount share gave a meal deal burger
+// refunded at 9.00 only 1.20 of VAT (1.50 is inside 9.00) and left the rest of the check at 26.7%.
+const checkOf = (b) => {
+  const t = posTotals(b);
+  return { id: `chk-${b.id}`, orderType: b.orderType, items: posLines(b), subtotal: t.subtotal, total: t.total, tip: 0, service: 0, taxAmount: vat(t.tax), taxBreakdown: t.tax, refunds: [] };
+};
+const refundLine = (chk, idx, qty = 1) => {
+  const items = [{ ...chk.items[idx], refundQty: qty }];
+  const bd = refundBreakdown(chk, { items });
+  return { bd, taxAmount: refundTaxAmount(chk, bd, { items, taxRates: UK_RATES }) };
+};
+for (const [id, expectTotal, expectVat] of [['auto-discount', 12, 2], ['manual-discount', 16.2, 2.7]]) {
+  test(`refund of one line on a discounted one rate check gives back the VAT inside the money returned (${id})`, () => {
+    const chk = checkOf(basket(id));
+    assert.equal(Math.round(chk.total * 100) / 100, expectTotal, 'the bill was discounted');
+    assert.equal(chk.taxAmount, expectVat, 'VAT booked on what was charged');
+    const { bd, taxAmount } = refundLine(chk, 0);
+    assert.equal(bd.amount, 9, 'the burger goes back at its own price');
+    assert.equal(taxAmount, 1.5, 'the VAT inside 9.00 at 20%');
+    // v5.11.75 (pro rata on the money) gave the same on one rate: nothing moves for these checks.
+    assert.equal(taxAmount, Math.round(chk.taxAmount * (bd.amount / chk.total) * 100) / 100);
+    // The rest of the check keeps 20% inside it, and the refund that clears the bill sweeps the rest.
+    const after = { ...chk, refunds: [{ amount: bd.amount, tipAmount: 0, serviceAmount: 0, taxAmount }] };
+    const leftMoney = Math.round((chk.total - bd.amount) * 100) / 100;
+    assert.equal(Math.round((chk.taxAmount - taxAmount) * 100) / 100, Math.round(leftMoney / 6 * 100) / 100, 'the money left carries 20% VAT');
+    const restItems = after.items.map((it, i) => ({ ...it, refundQty: i === 0 ? Math.max(0, it.qty - 1) : it.qty })).filter((it) => it.refundQty > 0);
+    const bd2 = refundBreakdown(after, { items: restItems });
+    assert.equal(refundTaxAmount(after, bd2, { items: restItems, taxRates: UK_RATES }), Math.round((chk.taxAmount - taxAmount) * 100) / 100);
+  });
+}
+
+test('refund of the 20% line on a discounted mixed rate check gives back the VAT inside its price, never a share of the bill\'s VAT', () => {
+  const chk = checkOf({ id: 'mixed-10', orderType: 'takeaway', menuId: null, lines: [{ itemId: 'burger', qty: 1 }, { itemId: 'toastie', qty: 1 }, { itemId: 'sarnie', qty: 1 }], checkDiscounts: [{ id: 'd1', label: '10% off', type: 'percent', value: 10 }] });
+  assert.equal(chk.taxAmount, 2.15, '14.35 of 20% goods less 10%');
+  assert.equal(refundLine(chk, 1).taxAmount, vat({ totalTax: 5.35 - 5.35 / 1.2 }), 'the toastie: 0.89 inside 5.35 (0.80 when scaled by the discount)');
+  assert.equal(refundLine(chk, 2).taxAmount, 0, 'the zero rated sandwich carried none');
+  // Never more than the VAT still on the check: a line refunded at its price on a discounted bill
+  // can hold more VAT than the bill booked (one 20% line, the rest zero rated), and gives back what is left.
+  const one = checkOf({ id: 'one-20', orderType: 'takeaway', menuId: null, lines: [{ itemId: 'toastie', qty: 1 }, { itemId: 'sarnie', qty: 1 }], checkDiscounts: [{ id: 'd1', label: '10% off', type: 'percent', value: 10 }] });
+  assert.equal(refundLine(one, 0).taxAmount, one.taxAmount);
+});
+
 // ── Public checks store the till's line contract (confirmed major: readers saw base only) ─────────
 test('public checks: a QR latte with a paid syrup is stored folded, and the daily VAT check then agrees with the booked VAT', async () => {
   const { foldLineMods } = await import('../channelMoney.js');
@@ -150,7 +193,7 @@ test('bar tab: a zero rated drink with a Bar override books the till\'s VAT, not
   const pos = computeCheckTotals({ items: [posLine({ orderType: 'bar-tab', menuId: null }, { itemId: 'squash', qty: 2 })], checkDiscounts: [], covers: 1, orderType: 'bar-tab', taxCtx: ctxUK() });
   assert.equal(tab.taxAmount, vat(pos.tax), 'the Bar override (5%) applies on the tab as at the counter');
   assert.notEqual(tab.taxAmount, vat({ totalTax: 3 - 3 / 1.2 }), 'never the 20% default');
-  assert.match(readRepo('src/surfaces/BarSurface.jsx'), /cat: tillLineCat\(item, storeMenuItems \|\| \[\]\), parentId: item\.parentId \|\| null, \.\.\.taxFields \}\];/);
+  assert.match(readRepo('src/surfaces/BarSurface.jsx'), /cat: tillLineCat\(item, storeMenuItems \|\| \[\]\), \.\.\.tillLineCats\(item, storeMenuItems \|\| \[\]\), parentId: item\.parentId \|\| null, \.\.\.taxFields \};/);
 });
 
 // ── ezCater (confirmed major: never booked) ───────────────────────────────────────────────────────

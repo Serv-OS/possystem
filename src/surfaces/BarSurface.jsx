@@ -21,7 +21,7 @@ import { giftRecordFrom } from '../lib/giftCommit';
 import { singleTender } from '../lib/accounting/tenders';
 import { creditDiscountsFromPayment } from '../lib/taxBasis';
 import { tabBill, tabCloseTax } from '../lib/barTabTax';
-import { tillLineTaxRefs, tillLineTaxFields, tillLineCat, tillLineUnitPrice } from '../lib/tillLine';
+import { tillLineTaxRefs, tillLineTaxFields, tillLineCat, tillLineCats, tillLineUnitPrice, addToRoundLines } from '../lib/tillLine';
 import { resolveItemPrice, variantFromPrice } from '../lib/menuPricing';
 import { resolveActiveMenu } from '../lib/menus/resolveActiveMenu';
 
@@ -319,16 +319,14 @@ export default function BarSurface() {
       || item.label
       || 'Item';
 
-    setRoundItems(prev=>{
-      // Same item+mods → increment qty
-      const idx = prev.findIndex(r=>r.itemId===item.id && JSON.stringify(r.mods)===JSON.stringify(mods) && !opts.notes);
-      if (idx>=0 && !opts.notes) return prev.map((r,i)=>i===idx?{...r,qty:r.qty+1}:r);
-      // Triple-naming: carry explicit kitchen/receipt names onto the round line
-      // (null when not set) — addRoundToTab's KDS tickets read kitchenName ||
-      // name, receipts read receiptName || name.
-      return [...prev, { uid:`r${Date.now()}`, itemId:item.id, name, kitchenName:kitchenOverride(item), receiptName:receiptOverride(item), price, qty:opts.qty||1, mods, notes:opts.notes||'', allergens:item.allergens||[],
-        cat: tillLineCat(item, storeMenuItems || []), parentId: item.parentId || null, ...taxFields }];
-    });
+    // Triple-naming: carry explicit kitchen/receipt names onto the round line
+    // (null when not set) — addRoundToTab's KDS tickets read kitchenName ||
+    // name, receipts read receiptName || name.
+    const line = { uid:`r${Date.now()}`, itemId:item.id, name, kitchenName:kitchenOverride(item), receiptName:receiptOverride(item), price, qty:opts.qty||1, mods, notes:opts.notes||'', allergens:item.allergens||[],
+      cat: tillLineCat(item, storeMenuItems || []), ...tillLineCats(item, storeMenuItems || []), parentId: item.parentId || null, ...taxFields };
+    // Same item, options and price, no note → joins that line by the quantity picked (round 1 fix,
+    // lib/tillLine.js addToRoundLines: it added 1 whatever the stepper said).
+    setRoundItems(prev => addToRoundLines(prev, line));
     showToast(`${name} added to round`,'success');
   };
 

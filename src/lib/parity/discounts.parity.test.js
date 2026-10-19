@@ -14,7 +14,7 @@ import { closedCheckRow } from '../closedCheckRow.js';
 import { roundVat } from '../taxRule.js';
 import { recordedDiscountMinor } from '../../../supabase/functions/_shared/tradingSales.js';
 import { chargedShare } from '../../../supabase/functions/_shared/vatRederive.js';
-import { readRepo } from './src.js';
+import { readRepo, between } from './src.js';
 
 const vat = (t) => roundVat(t?.totalTax);
 const TZ = 'Europe/London';
@@ -72,10 +72,20 @@ test('promo code: the till checks and records a code on the goods after discount
   const tillBasis = promoBasketValue({ discountedSub: t.discountedSub, subtotal: t.subtotal });
   const onlineBasis = t.discountedSub;   // OnlineCheckout: subtotal less offers; the server: goods less auto
   assert.equal(tillBasis, +onlineBasis.toFixed(2));
-  assert.equal(promoRedeemBasket({ code: 'X', basket: tillBasis }, { subtotal: t.subtotal }), tillBasis, 'the redeem records the figure it was checked on');
+  // Round 1 fix: the applied promo is built the way CheckoutModal builds it (heldPromo, from the
+  // promo-redeem answer), never by hand, so the name the checkout stores is the name the redeem reads.
+  const { heldPromo } = await import('../promoBasis.js');
+  const validate = { valid: true, code_id: 'c1', offer: { id: 'o1', name: '10% off' }, discount: { type: 'percent', value: 10, amount: +(tillBasis * 0.1).toFixed(2), label: '10% off' } };
+  const held = heldPromo('X', validate, tillBasis);
+  assert.notEqual(t.subtotal, tillBasis, 'the record\'s subtotal is before the discount');
+  assert.equal(promoRedeemBasket(held, { subtotal: t.subtotal }), tillBasis, 'the redeem records the figure it was checked on');
+  assert.equal(held.amount, validate.discount.amount);
+  assert.equal(promoRedeemBasket({ code: 'X', basis: tillBasis }, { subtotal: t.subtotal }), tillBasis, 'a promo held under the round 0 name still records its basket');
+  assert.equal(promoRedeemBasket({ code: 'X' }, { subtotal: t.subtotal }), +t.subtotal.toFixed(2), 'an older held promo with none: the record\'s subtotal');
   const co = readRepo('src/surfaces/CheckoutModal.jsx');
   assert.match(co, /basket: \{ subtotal: promoBasis \},/);
-  assert.match(co, /\.\.\.data\.discount, basis: promoBasis \}\);/);
+  assert.match(co, /setPromoApplied\(heldPromo\(code, data, promoBasis\)\);/);
+  assert.doesNotMatch(co, /basis: promoBasis/, 'one name for the held basket');
   assert.doesNotMatch(co, /basket: \{ subtotal: total \}/, 'never the bill with service and tax in it');
   assert.match(readRepo('src/store/index.js'), /basketValue: promoRedeemBasket\(promo, record\),/);
 });
@@ -117,6 +127,54 @@ test('a percent discount stores what the bill took off on the lines it closed wi
   assert.equal(row.discounts[3].amount, 0.5, 'a promo keeps the server\'s figure');
   assert.match(readRepo('src/surfaces/POSSurface.jsx'), /money\(checkDiscountAmount\(d, subtotal\)\)/);
   assert.match(readRepo('src/surfaces/mpos/MOrderActions.jsx'), /label: d\.label, type: d\.type, value: d\.value, scope: 'check',/);
+});
+
+// ── Automatic deals reach an item through its "Also in" category on every channel (round 1) ──────
+test('automatic deals: an item in the deal only through its "Also in" category gets the deal on the till and a bar tab, as on the kiosk, online, QR and the server', async () => {
+  const { lineCategories } = await import('../lineCategories.js');
+  const { MENU, raw } = await import('./fixtures.js');
+  const b = { id: 'cats', orderType: 'takeaway', menuId: null, lines: [{ itemId: 'wrap', qty: 1 }, { itemId: 'fries', qty: 1 }, { itemId: 'coke', qty: 1 }] };
+  const till = posLines(b);
+  assert.deepEqual(till[0].cats, ['mains'], 'the till line carries the item\'s Also in categories');
+  const save = (lines, ch) => evaluateAutoDiscounts(lines, RULES, ch, buildScheduleCtx(TZ)).map(toAppliedDiscount).reduce((s0, d) => s0 + d.value, 0);
+  const pos = save(till, 'pos');
+  assert.equal(pos, 2, '14.00 of goods for the 12.00 meal deal');
+  assert.equal(posTotals(b).total, 12);
+  // a bar tab round builds the same line (tillLine.js), so its bill takes the same deal
+  const tab = tabBill({ total: 14, rounds: [{ items: till }] }, ctxUK(), [], { discountRules: RULES, timezone: TZ });
+  assert.equal(tab.total, 12);
+  // the online and QR page line (OnlineSurface addToCart) and catering's: lineCategories over the raw rows
+  const page = b.lines.map((l, i) => ({ uid: `p${i}`, ...lineCategories(raw(l.itemId), MENU), price: till[i].price, qty: 1 }));
+  // the kiosk line: l.item is the product row (KioskApp autoDiscounts)
+  const kiosk = b.lines.map((l, i) => ({ uid: `k${i}`, cat: raw(l.itemId).cat, cats: raw(l.itemId).cats || null, price: till[i].price, qty: 1 }));
+  assert.deepEqual({ online: save(page, 'online'), qr: save(page, 'qr'), kiosk: save(kiosk, 'kiosk') }, { online: pos, qr: pos, kiosk: pos });
+  const store = readRepo('src/store/index.js');
+  assert.match(store, /cat: tillLineCat\(item, useStore\.getState\(\)\.menuItems\),\n(?:\s*\/\/.*\n)*\s*\.\.\.tillLineCats\(item, useStore\.getState\(\)\.menuItems\),/);
+  assert.match(readRepo('src/surfaces/BarSurface.jsx'), /\.\.\.tillLineCats\(item, storeMenuItems \|\| \[\]\),/);
+});
+
+test('automatic deals: a size counts under its product\'s categories on the till, the kiosk, the online and QR page, catering and the server', async () => {
+  const { lineCategories } = await import('../lineCategories.js');
+  const { MENU, raw } = await import('./fixtures.js');
+  // the size row still says Cold; its product is a Main, so the meal deal counts it
+  const b = { id: 'size-cat', orderType: 'takeaway', menuId: null, lines: [{ itemId: 'pie-big', qty: 1 }, { itemId: 'fries', qty: 1 }, { itemId: 'coke', qty: 1 }] };
+  const till = posLines(b);
+  assert.equal(till[0].cat, 'mains');
+  const save = (lines, ch) => evaluateAutoDiscounts(lines, RULES, ch, buildScheduleCtx(TZ)).map(toAppliedDiscount).reduce((s0, d) => s0 + d.value, 0);
+  const pos = save(till, 'pos');
+  assert.equal(pos, 4, '16.00 of goods for the 12.00 meal deal');
+  const page = b.lines.map((l, i) => ({ uid: `p${i}`, ...lineCategories(raw(l.itemId), MENU), price: till[i].price, qty: 1 }));
+  assert.equal(page[0].cat, 'mains', 'the page reads the product\'s category, never the size row\'s stale one');
+  const product = (id) => (raw(id).parent_id ? raw(raw(id).parent_id) : raw(id));
+  const kiosk = b.lines.map((l, i) => ({ uid: `k${i}`, cat: product(l.itemId).cat, cats: product(l.itemId).cats || null, price: till[i].price, qty: 1 }));
+  assert.deepEqual({ online: save(page, 'online'), qr: save(page, 'qr'), kiosk: save(kiosk, 'kiosk') }, { online: pos, qr: pos, kiosk: pos });
+  assert.match(readRepo('src/surfaces/online/OnlineSurface.jsx'), /\.\.\.lineCategories\(item, items\),\n\s+parentId: item\.parent_id \|\| item\.parentId \|\| null,/);
+  assert.match(readRepo('src/surfaces/catering/CateringSurface.jsx'), /\.\.\.lineCategories\(item, items\), parentId: item\.parent_id \|\| null,/);
+  // the server values public orders with the same rule (_public_order_value lines -> _public_order_auto)
+  const sql = readRepo('supabase/migrations/20261019a_OPS_channel_parity.sql');
+  const fn = between(sql, 'CREATE OR REPLACE FUNCTION public._public_order_value(', '$function$;');
+  assert.match(fn, /'cat', case when p\.id is not null and coalesce\(p\.cat, ''\) <> '' then p\.cat else r\.cat end,/);
+  assert.match(fn, /'cats', to_jsonb\(coalesce\(case when p\.id is not null and coalesce\(p\.cat, ''\) <> '' then p\.cats else r\.cats end, '\{\}'::text\[\]\)\),/);
 });
 
 // ── Automatic deals are the same on the till, kiosk, online and QR (regression guard) ─────────────

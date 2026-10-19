@@ -58,6 +58,7 @@ import MReceiptPrompt from './mpos/MReceiptPrompt';
 import MDone from './mpos/MDone';
 import MOrderHistory from './mpos/MOrderHistory';
 import MOrderDetail from './mpos/MOrderDetail';
+import { quoteForWalkIn } from '../lib/orderPlacedFrom';   // v5.11.78 round 1: an order's fee is bound to that order
 import MQueueDetail from './mpos/MQueueDetail';
 import { Sx, money } from './mpos/MShellStyles';
 
@@ -411,7 +412,7 @@ function MPOSRouter() {
           deviceConfig: st.deviceConfig,
           discountRules: st.discountRules,
           timezone: st.locationConfig?.timezone,
-          deliveryQuote: st.deliveryQuote,
+          deliveryQuote: quoteForWalkIn(st.deliveryQuote, order),   // v5.11.78 round 1: the bill's own
           taxRates: st.taxRates,
           taxCtx: st.getTaxContext(),
           creditDiscounts: creditDiscountsFromPayment(paymentInfo),

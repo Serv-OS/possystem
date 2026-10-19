@@ -76,6 +76,12 @@ export const MENU = [
   // overrides of its own (the "add size" case): the size follows its product's takeaway rule.
   { id: 'cake', name: 'Cake', type: 'variants', cat: 'cold', parent_id: null, tax_rate_id: 'r20', tax_overrides: { takeaway: 'r0' }, pricing: { base: 0 } },
   { id: 'cake-slice', name: 'Slice', type: 'simple', cat: 'cold', parent_id: 'cake', sort_order: 1, tax_rate_id: 'r20', tax_overrides: {}, pricing: { base: 3.00 } },
+  // Round 1 fix (19 Oct 2026): a wrap whose Primary category is Cold and "Also in" Mains (the meal
+  // deal reaches it only through cats), and a sized main whose size row still carries the old
+  // category it was created under (the till counts a size under its product's, v5.5.259).
+  { id: 'wrap', name: 'Wrap', type: 'simple', cat: 'cold', cats: ['mains'], parent_id: null, tax_rate_id: 'r20', tax_overrides: {}, pricing: { base: 8.00 } },
+  { id: 'pie', name: 'Pie', type: 'variants', cat: 'mains', cats: [], parent_id: null, tax_rate_id: 'r20', tax_overrides: {}, pricing: { base: 0 } },
+  { id: 'pie-big', name: 'Big', type: 'simple', cat: 'cold', cats: [], parent_id: 'pie', sort_order: 1, tax_rate_id: null, tax_overrides: {}, pricing: { base: 10.00 } },
 ];
 export const STORE_MENU = MENU.map(mapMenuItemRow);     // the till and phone store rows (SyncBridge mapper)
 export const raw = (id) => MENU.find((r) => r.id === id);

@@ -30,6 +30,13 @@
 --      QR, online, catering), guarded: only lines not already folded, only checks whose stored
 --      subtotal is their lines' base plus options. Each folded line is marked _foldedBy
 --      '20261019a' so the ROLLBACK can put exactly these back.
+--   5. (v5.11.78 round 1) The server's automatic deal check (_public_order_value lines read by
+--      _public_order_auto) counts a SIZE under its product's categories, "Also in" list
+--      included, the till's and the kiosk's rule (src/lib/lineCategories.js). It read the size
+--      row's own, so 3 size and rule pairs at the venues matched differently on the server.
+--      The online and QR page send the product's categories from v5.11.78, so run this soon
+--      after the release (until then a size whose row category differs from its product's can
+--      be valued with a different deal than the page took).
 --
 -- NOT a live tax calculation (central_tax_constraints.md): no tax is worked out again anywhere;
 -- the stored line shape changes and the service charge moves to its own column.
@@ -752,9 +759,13 @@ begin
         -- Only a line the storefront really sells, at the server's own price, takes part in
         -- the venue's automatic discounts or can be what a free item loyalty reward makes
         -- free (id, parent id and the names lib/loyaltyMenuMatch.js matches on).
+        -- v5.11.78 round 1: a size counts under its product's categories ("Also in" list
+        -- included), the till's rule (lib/lineCategories.js) and the kiosk's; it read the size
+        -- row's own, so a deal could differ between the server and the till.
         v_lines := v_lines || jsonb_build_array(jsonb_build_object(
-                     'unit', v_unit, 'qty', v_qty, 'cat', r.cat,
-                     'cats', to_jsonb(coalesce(r.cats, '{}'::text[])),
+                     'unit', v_unit, 'qty', v_qty,
+                     'cat', case when p.id is not null and coalesce(p.cat, '') <> '' then p.cat else r.cat end,
+                     'cats', to_jsonb(coalesce(case when p.id is not null and coalesce(p.cat, '') <> '' then p.cats else r.cats end, '{}'::text[])),
                      'id', r.id, 'pid', r.parent_id, 'item', greatest(0, v_item),
                      'name', coalesce(nullif(r.menu_name, ''), r.name),
                      'pname', v_pname, 'label', v_name));

@@ -15,7 +15,7 @@
 
 import { resolveItemPrice } from '../menuPricing.js';
 import { computeCheckTotals } from '../payments/checkTotals.js';
-import { tillLineUnitPrice, tillLineTaxRefs, tillLineTaxFields, tillLineCat } from '../tillLine.js';
+import { tillLineUnitPrice, tillLineTaxRefs, tillLineTaxFields, tillLineCat, tillLineCats } from '../tillLine.js';
 import {
   STORE_MENU, US_MENU, UK_RATES, US_RATES, RULES, SERVICE_DEVICE,
   ctxUK, ctxUS, lineMods, extraOf,
@@ -40,7 +40,7 @@ export function posLine(b, l, i = 0) {
   const refs = tillLineTaxRefs(row, menu, ratesFor(b));
   return {
     uid: `u${i}`, itemId: row.id, name: row.name, price, qty, mods: lineMods(l),
-    cat: tillLineCat(row, menu), parentId: row.parentId || null,
+    cat: tillLineCat(row, menu), ...tillLineCats(row, menu), parentId: row.parentId || null,
     ...tillLineTaxFields(refs),
   };
 }

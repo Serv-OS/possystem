@@ -1151,14 +1151,17 @@ export default function OrdersHub() {
       // its lines in the till's contract (options inside the price, channelMoney.foldLineMods;
       // the till's bill reads price x qty, so a 30.00 platter with a 10.00 option charged 30.00),
       // its own delivery fee (orderPlacedFrom.js, never a fresh quote that can differ or fail),
-      // and its promo code, already used when it was placed, as the discount it was.
+      // and its promo code, already used when it was placed.
+      // Round 1 fix: the promo rides on the order as placedPromo, the checkout's promo credit (a
+      // promo tender, VAT left on the goods, never redeemed again), exactly as pay now books it;
+      // the fee is bound to this order's ref, so it never stays on the till for the next sale.
       const placed = placedOrderForTill(o);
       useStore.setState({
         walkInOrder: {
           id: `ORD-${(o.ref||'').replace('#','')}`,
           ref: o.ref,
           items: placed.items,
-          ...(placed.discounts.length ? { discounts: placed.discounts } : {}),
+          ...(placed.promo ? { placedPromo: placed.promo } : {}),
           sentAt: o.sentAt,
           total: o.total,
           isASAP: o.isASAP,

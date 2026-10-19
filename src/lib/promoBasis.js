@@ -32,11 +32,27 @@ export function promoBasketValue({ discountedSub, subtotal } = {}) {
 }
 
 /**
+ * The promo a till checkout holds once promo-redeem says the code is valid (CheckoutModal
+ * applyPromoCode calls this, never builds the object itself). `basket` is the figure the code was
+ * checked on, kept so the redeem records the same one (promoRedeemBasket). Round 1 fix (19 Oct
+ * 2026): the checkout stored it as `basis` while the redeem read `basket`, so the till still
+ * recorded record.subtotal (goods before any discount) and a percent code logged a bigger
+ * discount_value than the check took. One builder, one name.
+ */
+export function heldPromo(code, data, basket) {
+  const d = data && typeof data === 'object' ? data : {};
+  const discount = d.discount && typeof d.discount === 'object' ? d.discount : {};
+  const held = basket != null && basket !== '' && Number.isFinite(Number(basket)) ? { basket: promoBasketValue({ discountedSub: basket }) } : {};
+  return { code, code_id: d.code_id, offer_id: d.offer?.id, ...discount, ...held };
+}
+
+/**
  * The basket value a till records when it redeems a promo: the figure it validated on, kept on
- * the applied promo as `basket`; else the bill's discounted goods; else the record's subtotal
- * (an older applied promo with neither).
+ * the applied promo as `basket` (heldPromo); else the record's subtotal (an older applied promo
+ * with none). `basis` is read too: the name v5.11.78 round 0 held it under.
  */
 export function promoRedeemBasket(promo, record) {
-  if (promo && promo.basket != null && Number.isFinite(Number(promo.basket))) return promoBasketValue({ discountedSub: promo.basket });
+  const held = promo ? (promo.basket ?? promo.basis) : null;
+  if (held != null && held !== '' && Number.isFinite(Number(held))) return promoBasketValue({ discountedSub: held });
   return promoBasketValue({ subtotal: record?.subtotal });
 }
