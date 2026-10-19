@@ -1,4 +1,4 @@
--- 20261019a_OPS_stock_phase0.sql
+-- 20261019b_OPS_stock_phase0.sql
 --
 -- ############################################################################
 -- #  OPS DB ONLY   project ref  tbetcegmszzotrwdtqhi                          #
@@ -12,23 +12,13 @@
 --
 -- WHY (multi site stock plan, 18 Oct 2026, section 7 "Phase 0" and 11.5): the safety pass on the
 -- stock every venue has today (Provo, Location 2 and one other company hold stock). Worth doing with
--- no sharing at all, and needed before Coffee Boy gets stock items. And (Peter, 19 Oct 2026): "if a
--- site is multi site stock, multi site should be on": central stock is AUTOMATIC, never a switch
--- someone has to remember.
+-- no sharing at all, and needed before Coffee Boy gets stock items. Central stock is NOT switched
+-- here: 20261019 (v5.11.78, run 19 Oct 2026) made every venue central, and every new venue central
+-- the moment it is created. This file does not touch stock_depletion_mode.
 --
 -- WHAT CHANGES (every change is additive: new columns, tables, functions, indexes and triggers;
--- five function bodies are replaced on top of their live text, md5 guarded; no stock row is updated)
---   0. Central stock is automatic (Peter, 19 Oct). Every venue that has a recipe link and no row in
---      stock_depletion_mode is switched to central now, through stock_central_switch (central_since
---      set, its 2 hour grace window booked once by key). From now on the moment a venue gets its
---      FIRST recipe link (a new venue, or one that never had a recipe) a trigger on
---      menu_item_recipes switches it to central in the same transaction, central_since = that
---      moment. A venue with no recipe link has nothing to take off, so it needs no row. A row that
---      says browser or paused is a deliberate back out (stock_central_switch, kept as the back out
---      and pause tool) and is never changed here, on a first run or a second. stock_depletion_default
---      stays 'browser' on purpose: 20261018c's own self test requires it, and with every recipe venue
---      holding its own row the default is only read for venues that have nothing to deplete.
---      _stock_counted_after (20261018c) is replaced: the late sale adjustment is now booked by
+-- four function bodies are replaced on top of their live text, md5 guarded; no stock row is updated)
+--   0. _stock_counted_after (20261018c) is replaced: the late sale adjustment is now booked by
 --      _post_stock_movement itself (item 3), from the time each line was counted and by area, under
 --      the same key late:<key>, so the drainer's own guard answers false and never doubles it.
 --   1. Counting while trading (11.5 item 1, decision 1 in 11.10): every count line records WHEN it
@@ -36,7 +26,12 @@
 --      database call, approve_stock_count: it locks the items in id order, works out each line
 --      against the stock held at the moment that line was counted, posts the adjustment dated to
 --      that moment, and stores expected and variance from the same figure. Sales made during the
---      count are never added back. A figure on an approved count can no longer be changed.
+--      count are never added back. The database stamps counted_at itself (an API caller cannot
+--      write it, on insert or later); a count older than a count of the same item (and area)
+--      approved already is SUPERSEDED: approving it posts nothing for those lines, so the newest
+--      count stays the truth. An approved count is locked in the database: its lines cannot be
+--      added, changed or removed, and the count cannot be reopened, re figured or deleted (only the
+--      service role or the SQL editor can).
 --   2. Opening count (4.6): the first count of an item at a venue posts OPENING_BALANCE, not a gain.
 --      It is costed (the item's cost, else the price the screen sends, else the line's cost) and
 --      never 0: approval stops and names the items that need a price. The Gap and the count's
@@ -49,6 +44,10 @@
 --      before it reads the use area; the area re home trigger takes the same lock first; transfers,
 --      count approval, receipts and waste lock every item they touch in id order before the first
 --      post, so two writers can never deadlock (the drainer of 20261018c also posts in item id order).
+--      The row lock is FOR NO KEY UPDATE (what an UPDATE of on hand takes anyway): every writer still
+--      queues on the item, but saving a count sheet, an order, an invoice or a transfer line that
+--      points at the item (a key share lock) never waits on it, so those saves cannot deadlock with a
+--      receipt, an approval or a till sale.
 --   5. Precision (11.5 item 9): unit costs keep 8 decimals (milk per ml lost up to 0.5% at 5);
 --      the quantity is rounded once, at the top of the posting; on hand on items and on areas share
 --      one scale (16,4).
@@ -61,7 +60,10 @@
 --      the pack price) and the cost together. Below zero or an unknown cost takes the delivery price,
 --      never an average. An invoice for an order already received is kept as paperwork and never
 --      counts the stock twice; a second posted invoice with the same number from the same supplier at
---      the same venue is refused.
+--      the same venue is refused. The screen sends its own invoice id (client_id): a retry after a lost
+--      answer is answered duplicate, so an invoice with no number never posts twice. A receive is Back
+--      Office work (a Back Office login, the owner, the Manager app through the service role) or the
+--      venue's Ops tablet; a till or a kiosk cannot receive (it would set the item's cost).
 --   8. Cost rule per venue (4.5, decision 2): stock_site_settings.cost_rule, 'price_list' (the
 --      default: exactly what every venue does today) or 'deliveries'. Read by the Back Office price
 --      save. No row means price list, so no number moves anywhere today.
@@ -69,7 +71,8 @@
 --      one call; for a menu product the database explodes that ONE product through its recipe (the
 --      same stock_explode rule as central depletion), so the till no longer reads the whole recipe
 --      book to log one waste (11.5 item 8). A product with no recipe is recorded by product, tagged
---      no_recipe ("No recipe: stock not taken off"), with waste_events.menu_item_id.
+--      no_recipe ("No recipe: stock not taken off"), with waste_events.menu_item_id. A stock item
+--      waste sent with no lines takes its own quantity off (a call with no quantity is refused).
 --  10. Deletes keep ledgers: an item with stock history cannot be deleted (archive it); a pack used
 --      by a recipe line cannot be deleted.
 --  11. Transfers (4.8): unit conversion on receive (blocked, in words, when the units cannot
@@ -77,12 +80,20 @@
 --      as waste with reason "Short on transfer", after a reversal of the shortfall, so the sender's
 --      on hand is unchanged and the loss shows in its waste; one company only, now also in the insert
 --      policy of both transfer tables; the receiver's cost moves like a delivery (below zero or an
---      unknown cost takes the transfer cost).
+--      unknown cost takes the transfer cost). What arrives is rounded DOWN in the receiver's unit
+--      (never more than was sent); a remainder under half a 4th decimal step of the coarser unit is
+--      not booked as Short on transfer (11.6438 ml into litres arrives as 0.0116 l, no short).
 --  12. Site indexes (11.5 item 7) on recipe_lines, item_packaging_formats, inventory_item_conversions,
 --      supplier_products, po_lines, item_cost_history, and small partial indexes for the new rules.
---  13. The order pad's weekday pattern on the venue's own clock (11.5 item 11), not UTC.
+--  13. The order pad's usage reads, in pages of 1,000 items (11.5 item 11): stock_usage_weekday_page
+--      (the weekday pattern on the venue's own clock, not UTC, one row per item with 7 values) and
+--      stock_usage_rates_page. The live stock_usage_by_weekday and stock_usage_rates stay as they are
+--      for screens not yet updated (those return up to one row per item and day, capped at 1,000).
 --  14. msm_stock_recipe_gaps: the Multi site menu's read only warning "12 products have a recipe at
 --      Provo but none at Location 2". Reads only; touches no menu table or function.
+--  15. Who may ask: stock_cost_rule answers the venue's rule only to a caller that reaches the venue
+--      (else the default); stock_same_company answers false unless the caller reaches the first venue.
+--      approve_stock_count checks the caller before it locks anything.
 --
 -- WHAT IT DOES NOT TOUCH
 --   post_stock_movement (20261018c's door) and set_inventory_on_hand (20261018a): the caller check
@@ -99,16 +110,15 @@
 --   triggers are untouched either way.
 --
 -- GUARD: _post_stock_movement must be exactly 20261018a's text, post_stock_transfer_leg and
---   _stock_counted_after 20261018c's, inventory_item_areas_rehome 20261016's, stock_usage_by_weekday
---   the live text, or this file's own (a second run). Anything else and NOTHING is changed: it says
---   which, and the line goes to Claude.
+--   _stock_counted_after 20261018c's, inventory_item_areas_rehome 20261016's, or this file's own (a
+--   second run). Anything else and NOTHING is changed: it says which, and the line goes to Claude.
 --
--- Proof: supabase/tests/stock_phase0/run.mjs (local Postgres 17 with 20261018a and 20261018c applied
---   as Peter ran them, the real roles, the live timeouts: authenticated 8 s, anon 3 s; bound till,
---   kiosk, Back Office login, owner, other company, stranger, service role, SQL editor; automatic
---   central on day one, a first recipe, a new venue, a back out, a second paste of 20261018c;
---   property runs, a 2,250 line count approval, concurrency).
--- UNDO: 20261019a_OPS_stock_phase0_ROLLBACK.sql
+-- Proof: supabase/tests/stock_phase0/run.mjs (local Postgres 17 with 20261018a, 20261018c and
+--   20261019 applied as Peter ran them, the real roles, the live timeouts: authenticated and service
+--   role 8 s, anon 3 s; bound till, kiosk, Back Office login, owner, other company, stranger, service
+--   role, SQL editor; a second paste of 20261018c; property runs, a 2,250 line count approval,
+--   concurrency with count sheet, order and invoice saves racing receipts, approvals and sales).
+-- UNDO: 20261019b_OPS_stock_phase0_ROLLBACK.sql
 --
 -- Bare statements, no begin or commit: the SQL editor runs the paste as one transaction.
 
@@ -141,32 +151,23 @@ begin
 
   select md5(btrim(regexp_replace(p.prosrc, '\s+', ' ', 'g'))) into v_md5 from pg_proc p
    where p.oid = to_regprocedure('public._post_stock_movement(uuid,uuid,numeric,text,numeric,text,text,text,timestamptz,uuid,text,uuid)');
-  if v_md5 is null or v_md5 not in ('e9865d7cad62f582db4e904bf41ad512', '88afa71242b6b592a4cace92d7d11946') then
+  if v_md5 is null or v_md5 not in ('e9865d7cad62f582db4e904bf41ad512', '2974176b3ea49b90065dc0c20572e343') then
     v_bad := v_bad || ' _post_stock_movement=' || coalesce(v_md5, 'missing');
   end if;
   select md5(btrim(regexp_replace(p.prosrc, '\s+', ' ', 'g'))) into v_md5 from pg_proc p
    where p.oid = to_regprocedure('public.post_stock_transfer_leg(uuid,text,text)');
-  if v_md5 is null or v_md5 not in ('541ac92297e3784706a2f7a958d5c396', '8236e7038a6fca8c768382ad08ecd0ef') then
+  if v_md5 is null or v_md5 not in ('541ac92297e3784706a2f7a958d5c396', 'f321c21b48115a8de8fbfcb021ab4577') then
     v_bad := v_bad || ' post_stock_transfer_leg=' || coalesce(v_md5, 'missing');
   end if;
   select md5(btrim(regexp_replace(p.prosrc, '\s+', ' ', 'g'))) into v_md5 from pg_proc p
    where p.oid = to_regprocedure('public._stock_counted_after(uuid,uuid,timestamptz)');
-  if v_md5 is null or v_md5 not in ('d9792fc95826ff4691437bbeb7133dea', '778cced5a08d61f8439d35501b0f80c1') then
+  if v_md5 is null or v_md5 not in ('d9792fc95826ff4691437bbeb7133dea', '7c413f3e439a68bc8d0440c97580d638') then
     v_bad := v_bad || ' _stock_counted_after=' || coalesce(v_md5, 'missing');
   end if;
   select md5(btrim(regexp_replace(p.prosrc, '\s+', ' ', 'g'))) into v_md5 from pg_proc p
    where p.oid = to_regprocedure('public.inventory_item_areas_rehome()');
-  if v_md5 is null or v_md5 not in ('fa39649e37be3f6645d3ac390989ead4', '8948cbdc6ad511cc61a304b9a565afea') then
+  if v_md5 is null or v_md5 not in ('fa39649e37be3f6645d3ac390989ead4', 'd1776e100d95826e79f55218ead52cb6') then
     v_bad := v_bad || ' inventory_item_areas_rehome=' || coalesce(v_md5, 'missing');
-  end if;
-  if to_regprocedure('public.stock_usage_by_weekday(uuid,integer)') is not null then
-    select md5(btrim(regexp_replace(p.prosrc, '\s+', ' ', 'g'))) into v_md5 from pg_proc p
-     where p.oid = to_regprocedure('public.stock_usage_by_weekday(uuid,integer)');
-    if v_md5 is distinct from 'd50b2c5d5e2da0eab622bb7e7e40faf1' then
-      v_bad := v_bad || ' stock_usage_by_weekday=' || coalesce(v_md5, 'missing');
-    end if;
-  elsif to_regprocedure('public.stock_usage_by_weekday(uuid,integer,text,text)') is null then
-    v_bad := v_bad || ' stock_usage_by_weekday=missing';
   end if;
   if v_bad <> '' then
     raise exception 'These functions are not the version this file was written for, so nothing was changed. Send this line to Claude:%', v_bad;
@@ -198,25 +199,25 @@ begin
   for r in
     select * from (values
       ('stock_count_lines', 'counted_at', 'timestamptz',
-       'When the counted figure was entered (database clock, stamped by stock_count_lines_counted_at). Approval works out the line against the stock held at this moment. 20261019a.'),
+       'When the counted figure was entered (database clock, stamped by stock_count_lines_counted_at). Approval works out the line against the stock held at this moment. 20261019b.'),
       ('stock_count_lines', 'is_opening', 'boolean not null default false',
-       'Set by approve_stock_count: this line was the item''s first count at the venue and posted OPENING_BALANCE (left out of The Gap and variance). 20261019a.'),
+       'Set by approve_stock_count: this line was the item''s first count at the venue and posted OPENING_BALANCE (left out of The Gap and variance). 20261019b.'),
       ('stock_counts', 'opening_value', 'numeric(14,2)',
-       'Value of the OPENING_BALANCE this count posted (kept apart from variance_value). 20261019a.'),
+       'Value of the OPENING_BALANCE this count posted (kept apart from variance_value). 20261019b.'),
       ('waste_events', 'menu_item_id', 'text',
-       'The menu product wasted (menu_items.id at the venue), when the waste is by product. 20261019a.'),
+       'The menu product wasted (menu_items.id at the venue), when the waste is by product. 20261019b.'),
       ('waste_events', 'no_recipe', 'boolean not null default false',
-       'True when a product waste took nothing off stock: "No recipe: stock not taken off". 20261019a.'),
+       'True when a product waste took nothing off stock: "No recipe: stock not taken off". 20261019b.'),
       ('item_cost_history', 'pack_label', 'text',
-       'The supplier pack the price was paid for ("6 x 1 l"), on PO_RECEIPT and INVOICE rows. pack_price is the net price paid for one such pack. 20261019a.'),
+       'The supplier pack the price was paid for ("6 x 1 l"), on PO_RECEIPT and INVOICE rows. pack_price is the net price paid for one such pack. 20261019b.'),
       ('supplier_invoice_lines', 'supplier_product_id', 'uuid references public.supplier_products(id) on delete set null',
-       'The supplier pack this invoice line was bought in (its pack and price), when matched. 20261019a.'),
+       'The supplier pack this invoice line was bought in (its pack and price), when matched. 20261019b.'),
       ('stock_transfer_lines', 'to_base_unit', 'text',
-       'The receiving item''s base unit at the receive (qty_received_base is in it). 20261019a.'),
+       'The receiving item''s base unit at the receive (qty_received_base is in it). 20261019b.'),
       ('stock_transfer_lines', 'short_qty_base', 'numeric(16,4)',
-       'What did not arrive, in the SENDER''s base unit: booked at the sender as waste, reason Short on transfer. 20261019a.'),
+       'What did not arrive, in the SENDER''s base unit: booked at the sender as waste, reason Short on transfer. 20261019b.'),
       ('stock_transfer_lines', 'to_unit_cost', 'numeric(18,8)',
-       'The transfer cost per RECEIVING base unit (sender cost divided by the unit factor). 20261019a.')
+       'The transfer cost per RECEIVING base unit (sender cost divided by the unit factor). 20261019b.')
     ) as t(tbl, col, typ, note)
   loop
     if not exists (select 1 from information_schema.columns c
@@ -238,7 +239,7 @@ create table if not exists public.stock_site_settings (
 do $settings$
 begin
   if obj_description('public.stock_site_settings'::regclass, 'pg_class') is null then
-    comment on table public.stock_site_settings is 'Stock settings per venue (20261019a). cost_rule: price_list (default, a supplier price change sets the cost) or deliveries (cost is the average paid; a price change only sets the cost of an item never received). No row means price_list.';
+    comment on table public.stock_site_settings is 'Stock settings per venue (20261019b). cost_rule: price_list (default, a supplier price change sets the cost) or deliveries (cost is the average paid; a price change only sets the cost of an item never received). No row means price_list.';
   end if;
   if not (select c.relrowsecurity from pg_class c where c.oid = 'public.stock_site_settings'::regclass) then
     alter table public.stock_site_settings enable row level security;
@@ -345,10 +346,12 @@ as $fn$
        or (p_location_id)::text in (select public.user_accessible_locations())
      );
 $fn$;
-comment on function public.stock_office_reaches(uuid) is 'Back Office stock work at a venue: service role, the database itself, or user_accessible_locations() (never an anonymous device). 20261019a.';
+comment on function public.stock_office_reaches(uuid) is 'Back Office stock work at a venue: service role, the database itself, or user_accessible_locations() (never an anonymous device). 20261019b.';
 revoke all on function public.stock_office_reaches(uuid) from public;
 grant execute on function public.stock_office_reaches(uuid) to authenticated, service_role;
 
+-- Are two venues of one company? Answered only to a caller that reaches the first venue (the transfer
+-- insert rules already need that), so a stranger cannot map which venues belong together.
 create or replace function public.stock_same_company(p_a uuid, p_b uuid)
 returns boolean
 language sql
@@ -357,6 +360,7 @@ security definer
 set search_path = public
 as $fn$
   select p_a is not null and p_b is not null
+     and public.stock_caller_reaches(p_a)
      and (p_a = p_b
           or exists (select 1 from locations a join locations b on b.org_id = a.org_id
                       where a.id = p_a and b.id = p_b and a.org_id is not null));
@@ -371,12 +375,30 @@ stable
 security definer
 set search_path = public
 as $fn$
-  select coalesce((select s.cost_rule from stock_site_settings s where s.location_id = p_location_id), 'price_list');
+  -- The venue's own rule only for a caller that reaches it; anyone else gets the default.
+  select case when public.stock_caller_reaches(p_location_id)
+              then coalesce((select s.cost_rule from stock_site_settings s where s.location_id = p_location_id), 'price_list')
+              else 'price_list' end;
 $fn$;
 revoke all on function public.stock_cost_rule(uuid) from public;
 grant execute on function public.stock_cost_rule(uuid) to authenticated, service_role;
 
--- Is this database on 20261019a? The Back Office asks once a session and keeps its old paths
+-- The caller is the database itself (SQL editor, pg_cron, a migration) or the service role (an edge
+-- function), never a Back Office login, a till or a kiosk. The count locks below let only these through.
+-- Owner only: the SECURITY DEFINER triggers call it.
+create or replace function public._stock_caller_is_system()
+returns boolean
+language sql
+stable
+set search_path = public
+as $fn$
+  select coalesce(nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'role', '') = 'service_role'
+      or (coalesce(nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'role', '') = ''
+          and session_user::text not in ('authenticator', 'anon', 'authenticated'));
+$fn$;
+revoke all on function public._stock_caller_is_system() from public, anon, authenticated, service_role;
+
+-- Is this database on 20261019b? The Back Office asks once a session and keeps its old paths
 -- until the answer is 1.
 create or replace function public.stock_phase0_ready()
 returns integer
@@ -438,7 +460,7 @@ revoke all on function public.stock_convert_qty(numeric, text, text, uuid[]) fro
 --     cost; nothing to return answers capped, qty 0 (11.5 item 6);
 --   * LATE SALE: a movement dated at or before an approved count of that item (and area) is posted
 --     with an equal and opposite STOCK_COUNT_ADJ dated at the count, key late:<key>, source_type
---     late_sale (11.5 item 2). A line counted from 20261019a on is judged by when it was counted;
+--     late_sale (11.5 item 2). A line counted from 20261019b on is judged by when it was counted;
 --     an older approved line by when its count was approved. 20261018c's drainer asks the same
 --     question under the same key, so the adjustment is booked exactly once.
 -- Same 12 arguments, same answer (with capped, qty and late_adjustment_id added), idempotent per
@@ -479,11 +501,11 @@ declare
   v_late_id uuid;
   v_late_key text;
 begin
-  -- FENCE 20261018a and LOCK 20261019a: the item must be this venue's own, and its row is locked
+  -- FENCE 20261018a and LOCK 20261019b: the item must be this venue's own, and its row is locked
   -- before anything else is read, so every writer of one item queues here in the same order.
   select i.current_cost into v_item_cost from inventory_items i
    where i.id = p_inventory_item_id and i.location_id = p_location_id
-   for update;
+   for no key update;
   if not found then
     raise exception 'post_stock_movement: stock item % is not at venue %', p_inventory_item_id, p_location_id
       using errcode = '22023';
@@ -493,7 +515,7 @@ begin
       using errcode = '22023';
   end if;
 
-  -- PRECISION 20261019a: one rounding, here.
+  -- PRECISION 20261019b: one rounding, here.
   v_qty := round(coalesce(p_qty_base, 0), 4);
 
   if p_idempotency_key is not null then
@@ -507,7 +529,7 @@ begin
 
   v_cost := coalesce(p_unit_cost, v_item_cost, 0);
 
-  -- RETURN CAP 20261019a: what this check's sale took, less what has come back already (returns
+  -- RETURN CAP 20261019b: what this check's sale took, less what has come back already (returns
   -- of this check item and the undo of a refused one, read by the check id).
   if p_movement_type = 'RETURN' and p_idempotency_key like 'return:%'
      and length(p_idempotency_key) > 7 + 37
@@ -581,7 +603,7 @@ begin
       returning on_hand into v_area_onhand;
   end if;
 
-  -- LATE SALE 20261019a: dated at or before an approved count of this item (this area, or a line
+  -- LATE SALE 20261019b: dated at or before an approved count of this item (this area, or a line
   -- that counted the whole item): the count already saw the stock as it was, so an equal and
   -- opposite adjustment, dated at the count, keeps on hand = counted + later movements.
   if p_occurred_at is not null and p_occurred_at < now()
@@ -633,7 +655,7 @@ revoke all on function public._post_stock_movement(uuid,uuid,numeric,text,numeri
 -- and a sale made after a line was counted but before the count was approved must stand).
 create or replace function public._stock_counted_after(p_loc uuid, p_item uuid, p_at timestamptz) returns boolean
 language sql stable security definer set search_path = public as $$
-  -- LATE SALE 20261019a: booked by _post_stock_movement; see 20261019a section 5.
+  -- LATE SALE 20261019b: booked by _post_stock_movement; see 20261019b section 5.
   select false;
 $$;
 revoke all on function public._stock_counted_after(uuid, uuid, timestamptz) from public, anon, authenticated, service_role;
@@ -645,8 +667,8 @@ create or replace function public.inventory_item_areas_rehome()
 returns trigger language plpgsql security definer set search_path = public as $$
 begin
   if new.is_primary then
-    -- LOCK 20261019a
-    perform 1 from inventory_items where id = new.inventory_item_id for update;
+    -- LOCK 20261019b
+    perform 1 from inventory_items where id = new.inventory_item_id for no key update;
     update stock_movements set area_id = new.area_id
      where location_id = new.location_id and inventory_item_id = new.inventory_item_id and area_id is null;
     insert into inventory_item_area_stock (location_id, inventory_item_id, area_id, on_hand, updated_at)
@@ -658,37 +680,90 @@ begin
   return new;
 end $$;
 
--- == 7. Count lines: when each was counted, and an approved count's figures stay ====================
+-- == 7. Count lines: when each was counted, and an approved count stays as it was approved ========
+-- counted_at is the DATABASE's clock: stamped when a figure is entered or changed, cleared when it is
+-- cleared, and an API caller cannot write it (on insert it is always stamped; on an update that does
+-- not change the figure the old time is kept). The late sale rule and the approval read it, so a
+-- moved counted_at could cancel live sales. Only the database itself (the SQL editor, a demo file)
+-- may set it by hand. A line of an APPROVED count cannot be added, changed, moved or removed, except
+-- by the service role or the SQL editor. approve_stock_count writes its lines before it marks the
+-- count approved, so it is never stopped here.
 create or replace function public.stock_count_lines_counted_at()
 returns trigger language plpgsql security definer set search_path = public as $$
 declare
-  v_status text;
+  v_sys boolean := public._stock_caller_is_system();
 begin
-  if tg_op = 'INSERT' then
-    if new.counted_qty is not null and new.counted_at is null then new.counted_at := now(); end if;
-    return new;
-  end if;
-  if new.counted_qty is distinct from old.counted_qty then
-    select c.status into v_status from stock_counts c where c.id = new.count_id;
-    if v_status = 'APPROVED' then
+  if not v_sys then
+    if exists (select 1 from stock_counts c
+                where upper(coalesce(c.status, '')) = 'APPROVED'
+                  and (c.id = case when tg_op = 'DELETE' then old.count_id else new.count_id end
+                       or (tg_op = 'UPDATE' and c.id = old.count_id))) then
       raise exception 'This count has been approved; its figures cannot change. Start a new count.'
         using errcode = '55000';
     end if;
+  end if;
+  if tg_op = 'DELETE' then
+    return old;
+  end if;
+  if tg_op = 'INSERT' then
+    if not v_sys or new.counted_at is null then
+      new.counted_at := case when new.counted_qty is null then null else now() end;
+    end if;
+    return new;
+  end if;
+  if new.counted_qty is distinct from old.counted_qty then
     new.counted_at := case when new.counted_qty is null then null else now() end;
+  elsif not v_sys then
+    new.counted_at := old.counted_at;
   end if;
   return new;
 end $$;
 revoke all on function public.stock_count_lines_counted_at() from public, anon, authenticated;
 do $trg_stock_count_lines_counted_at_trg$
 begin
-  -- only when missing: DROP/CREATE TRIGGER would lock the table on a second paste
-  if not exists (select 1 from pg_trigger where tgrelid = 'public.stock_count_lines'::regclass and tgname = 'stock_count_lines_counted_at_trg') then
+  -- only when missing (or an earlier draft that fired on the figure only): DROP/CREATE TRIGGER
+  -- would lock the table on a second paste
+  if not exists (select 1 from pg_trigger where tgrelid = 'public.stock_count_lines'::regclass
+                  and tgname = 'stock_count_lines_counted_at_trg' and (tgtype & 8) = 8 and tgattr = ''::int2vector) then
+    drop trigger if exists stock_count_lines_counted_at_trg on public.stock_count_lines;
     create trigger stock_count_lines_counted_at_trg
-      before insert or update of counted_qty on public.stock_count_lines
+      before insert or update or delete on public.stock_count_lines
       for each row execute function public.stock_count_lines_counted_at();
   end if;
 end
 $trg_stock_count_lines_counted_at_trg$;
+
+-- An approved count cannot be reopened, re figured or deleted through the API (a Back Office login
+-- could set it back to DRAFT, change a figure and approve again: the sheet would then disagree with
+-- the ledger). Its name and notes may still change. The service role and the SQL editor may.
+create or replace function public.stock_counts_keep_approved()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if upper(coalesce(old.status, '')) <> 'APPROVED' or public._stock_caller_is_system() then
+    return case when tg_op = 'DELETE' then old else new end;
+  end if;
+  if tg_op = 'DELETE' then
+    raise exception 'This count has been approved and already adjusted your stock, so it cannot be deleted.'
+      using errcode = '55000';
+  end if;
+  if new.status is distinct from old.status or new.approved_at is distinct from old.approved_at
+     or new.variance_value is distinct from old.variance_value or new.opening_value is distinct from old.opening_value
+     or new.location_id is distinct from old.location_id then
+    raise exception 'This count has been approved; it cannot be reopened or changed. Start a new count.'
+      using errcode = '55000';
+  end if;
+  return new;
+end $$;
+revoke all on function public.stock_counts_keep_approved() from public, anon, authenticated;
+do $trg_stock_counts_keep_approved_trg$
+begin
+  if not exists (select 1 from pg_trigger where tgrelid = 'public.stock_counts'::regclass and tgname = 'stock_counts_keep_approved_trg') then
+    create trigger stock_counts_keep_approved_trg
+      before update or delete on public.stock_counts
+      for each row execute function public.stock_counts_keep_approved();
+  end if;
+end
+$trg_stock_counts_keep_approved_trg$;
 
 -- == 8. Deletes keep ledgers =======================================================================
 create or replace function public.inventory_items_keep_history()
@@ -771,12 +846,12 @@ begin
   end if;
   v_doc := case when p_source_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then p_source_id::uuid end;
 
-  -- LOCK ORDER 20261019a: every item of this receipt, in id order, before the first post.
+  -- LOCK ORDER 20261019b: every item of this receipt, in id order, before the first post.
   perform 1 from inventory_items
    where location_id = p_location_id
      and id in (select (e ->> 'item_id')::uuid from jsonb_array_elements(p_lines) e)
    order by id
-   for update;
+   for no key update;
 
   for v_line in
     select e from jsonb_array_elements(p_lines) e order by (e ->> 'item_id')::uuid, (e ->> 'key')
@@ -825,13 +900,19 @@ begin
 end $$;
 revoke all on function public._stock_receive_lines(uuid, text, text, jsonb, uuid, text) from public, anon, authenticated, service_role;
 
--- The door for a receive (a purchase order, the Ops tablet's goods in, the Manager app).
+-- The door for a receive (a purchase order, the Ops tablet's goods in, the Manager app). A receive
+-- sets the item's cost, so it is Back Office work (stock_office_reaches: a Back Office login, the
+-- owner, the service role, the SQL editor) or the venue's own active Ops tablet. A till or a kiosk
+-- is refused (row level security gives cost writes to the Back Office only).
 create or replace function public.stock_receive(p_location_id uuid, p_source_type text, p_source_id text,
   p_lines jsonb, p_area_id uuid default null, p_notes text default null)
 returns jsonb
 language plpgsql security definer set search_path = public as $$
 begin
-  if not public.stock_caller_reaches(p_location_id) then
+  if not (public.stock_office_reaches(p_location_id)
+          or (p_location_id is not null and auth.uid() is not null
+              and exists (select 1 from ops_devices d
+                           where d.location_id = p_location_id and d.device_uid = auth.uid() and d.active))) then
     raise exception 'stock_receive: this session cannot move stock at venue %', p_location_id using errcode = '42501';
   end if;
   if p_source_type is null or p_source_type not in ('purchase_order', 'supplier_invoice') then
@@ -853,7 +934,8 @@ revoke all on function public.stock_receive(uuid, text, text, jsonb, uuid, text)
 grant execute on function public.stock_receive(uuid, text, text, jsonb, uuid, text) to authenticated, service_role;
 
 -- An invoice in one step: the header, its lines and its receipts, or nothing.
---   p_invoice:  { supplier_id, invoice_number, invoice_date, ocr_confidence, subtotal, tax, total,
+--   p_invoice:  { client_id (the screen's own id for this invoice: a retry answers duplicate),
+--                 supplier_id, invoice_number, invoice_date, ocr_confidence, subtotal, tax, total,
 --                 raw_json, image_path, po_id }
 --   p_lines:    [{ matched_item_id, description, qty, unit, unit_price, line_total, purchase_tax_rate_id,
 --                  line_tax, flags, supplier_product_id }]   (stored in this order)
@@ -872,12 +954,26 @@ declare
   v_inv uuid;
   v_rec jsonb;
   v_res jsonb;
+  v_client uuid;
+  v_con text;
 begin
   if not public.stock_office_reaches(p_location_id) then
     raise exception 'stock_post_invoice: this session cannot post invoices at venue %', p_location_id using errcode = '42501';
   end if;
   if p_invoice is null or jsonb_typeof(p_invoice) <> 'object' then
     raise exception 'stock_post_invoice: the invoice is missing' using errcode = '22023';
+  end if;
+  -- A retry of the same invoice (the answer was lost): the screen sends the same client_id, which is
+  -- the invoice's own id, so nothing is posted twice, with or without an invoice number.
+  if coalesce(p_invoice ->> 'client_id', '') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then
+    v_client := (p_invoice ->> 'client_id')::uuid;
+    if exists (select 1 from supplier_invoices si where si.id = v_client) then
+      if not exists (select 1 from supplier_invoices si where si.id = v_client and si.location_id = p_location_id) then
+        raise exception 'stock_post_invoice: invoice % is not at venue %', v_client, p_location_id using errcode = '22023';
+      end if;
+      return jsonb_build_object('ok', true, 'duplicate', true, 'invoice_id', v_client,
+        'words', 'This invoice was posted already. Nothing was posted twice.');
+    end if;
   end if;
   if p_area_id is not null and not exists (select 1 from storage_areas a where a.id = p_area_id and a.location_id = p_location_id) then
     raise exception 'stock_post_invoice: stock area % is not at venue %', p_area_id, p_location_id using errcode = '22023';
@@ -907,14 +1003,28 @@ begin
       'error', 'Invoice ' || v_number || ' from this supplier is posted already at this venue. Nothing was posted again.');
   end if;
 
-  insert into supplier_invoices (location_id, supplier_id, po_id, invoice_number, invoice_date, status, ocr_confidence,
-      subtotal, tax, total, raw_json, image_path, posted_at)
-    values (p_location_id, v_supplier, v_po, v_number, nullif(p_invoice ->> 'invoice_date', '')::date, 'POSTED',
-      nullif(p_invoice ->> 'ocr_confidence', '')::numeric, nullif(p_invoice ->> 'subtotal', '')::numeric,
-      nullif(p_invoice ->> 'tax', '')::numeric, nullif(p_invoice ->> 'total', '')::numeric,
-      case when jsonb_typeof(p_invoice -> 'raw_json') = 'object' then p_invoice -> 'raw_json' end,
-      nullif(p_invoice ->> 'image_path', ''), now())
-    returning id into v_inv;
+  -- Two retries at the same moment: the second waits on the first and is answered as a repeat.
+  begin
+    insert into supplier_invoices (id, location_id, supplier_id, po_id, invoice_number, invoice_date, status, ocr_confidence,
+        subtotal, tax, total, raw_json, image_path, posted_at)
+      values (coalesce(v_client, gen_random_uuid()), p_location_id, v_supplier, v_po, v_number, nullif(p_invoice ->> 'invoice_date', '')::date, 'POSTED',
+        nullif(p_invoice ->> 'ocr_confidence', '')::numeric, nullif(p_invoice ->> 'subtotal', '')::numeric,
+        nullif(p_invoice ->> 'tax', '')::numeric, nullif(p_invoice ->> 'total', '')::numeric,
+        case when jsonb_typeof(p_invoice -> 'raw_json') = 'object' then p_invoice -> 'raw_json' end,
+        nullif(p_invoice ->> 'image_path', ''), now())
+      returning id into v_inv;
+  exception when unique_violation then
+    get stacked diagnostics v_con = constraint_name;
+    if v_client is not null and exists (select 1 from supplier_invoices si where si.id = v_client and si.location_id = p_location_id) then
+      return jsonb_build_object('ok', true, 'duplicate', true, 'invoice_id', v_client,
+        'words', 'This invoice was posted already. Nothing was posted twice.');
+    end if;
+    if v_con = 'supplier_invoices_posted_number_uniq' then
+      return jsonb_build_object('ok', false, 'code', 'duplicate_number',
+        'error', 'Invoice ' || v_number || ' from this supplier is posted already at this venue. Nothing was posted again.');
+    end if;
+    raise;
+  end;
 
   insert into supplier_invoice_lines (location_id, invoice_id, matched_item_id, description, qty, unit, unit_price,
       line_total, purchase_tax_rate_id, line_tax, flags, sort_order, supplier_product_id)
@@ -953,6 +1063,9 @@ grant execute on function public.stock_post_invoice(uuid, jsonb, jsonb, jsonb, u
 --   * every item is locked in id order first; the key per line is the one the screen always used
 --     (count:<count>:<item>[:<area>]), so a retry, or a half approval made by an older screen, never
 --     posts a line twice;
+--   * a line counted BEFORE a count of the same item (same area, or the whole item) that is approved
+--     already is superseded: it posts nothing (delta 0, 'superseded' in its line), so the newest count
+--     stays the truth when an older sheet is approved late;
 --   * p_preview true: the plan only (lines, opening, needs_cost, values), nothing locked or written.
 create or replace function public.approve_stock_count(p_count_id uuid, p_approved_by_name text default null,
   p_approval_note text default null, p_costs jsonb default null, p_preview boolean default false)
@@ -978,17 +1091,22 @@ declare
   v_var numeric := 0;
   v_open_val numeric := 0;
   v_given numeric;
+  v_loc uuid;
+  v_superseded integer := 0;
 begin
+  -- Who is asking comes first: nothing is locked (and nothing says whether the count exists) for a
+  -- caller who cannot approve at its venue.
+  select c.location_id into v_loc from stock_counts c where c.id = p_count_id;
+  if v_loc is null or not public.stock_office_reaches(v_loc) then
+    raise exception 'approve_stock_count: that count was not found, or this login cannot approve counts at its venue' using errcode = '42501';
+  end if;
   if p_preview then
     select * into v_c from stock_counts where id = p_count_id;
   else
-    select * into v_c from stock_counts where id = p_count_id for update;
+    select * into v_c from stock_counts where id = p_count_id for no key update;
   end if;
-  if not found then
-    return jsonb_build_object('ok', false, 'error', 'Count not found');
-  end if;
-  if not public.stock_office_reaches(v_c.location_id) then
-    raise exception 'approve_stock_count: this session cannot approve counts at venue %', v_c.location_id using errcode = '42501';
+  if not found or v_c.location_id is distinct from v_loc then
+    raise exception 'approve_stock_count: that count was not found, or this login cannot approve counts at its venue' using errcode = '42501';
   end if;
   if v_c.status = 'APPROVED' then
     return jsonb_build_object('ok', true, 'duplicate', true, 'status', 'APPROVED');
@@ -1004,13 +1122,13 @@ begin
   end if;
 
   if not p_preview then
-    -- LOCK ORDER 20261019a: every counted item, in id order, before anything is read for the plan.
+    -- LOCK ORDER 20261019b: every counted item, in id order, before anything is read for the plan.
     perform 1 from inventory_items
      where location_id = v_c.location_id
        and id in (select l.inventory_item_id from stock_count_lines l
                    where l.count_id = p_count_id and l.location_id = v_c.location_id and l.counted_qty is not null)
      order by id
-     for update;
+     for no key update;
   end if;
 
   for v_l in
@@ -1033,13 +1151,24 @@ begin
                            and m.movement_type in ('OPENING_BALANCE', 'STOCK_COUNT_ADJ'))
             and not exists (select 1 from stock_count_lines o join stock_counts oc on oc.id = o.count_id
                              where o.location_id = v_c.location_id and o.inventory_item_id = l.inventory_item_id
-                               and o.count_id <> p_count_id and o.counted_qty is not null and oc.status = 'APPROVED')) as opening
+                               and o.count_id <> p_count_id and o.counted_qty is not null and oc.status = 'APPROVED')) as opening,
+           -- SUPERSEDED 20261019b: a count of this item (this area, or the whole item) approved
+           -- already and counted LATER than this line is the truth now; this older line posts nothing.
+           exists (select 1 from stock_count_lines o join stock_counts oc on oc.id = o.count_id and upper(oc.status) = 'APPROVED'
+                    where o.location_id = v_c.location_id and o.inventory_item_id = l.inventory_item_id
+                      and o.count_id <> p_count_id and o.counted_qty is not null
+                      and coalesce(o.counted_at, oc.approved_at) > l.at
+                      and (o.area_id is null or l.area_id is null or o.area_id = l.area_id)) as superseded
       from l
       join inventory_items i on i.id = l.inventory_item_id and i.location_id = v_c.location_id
      order by l.inventory_item_id, l.area_id nulls first, l.id
   loop
     v_expected := round(v_l.expected, 4);
     v_delta := round(v_l.counted_qty - v_expected, 4);
+    if v_l.superseded then
+      v_delta := 0;
+      v_superseded := v_superseded + 1;
+    end if;
     v_cost := null;
     if v_l.opening then
       v_given := null;
@@ -1059,7 +1188,7 @@ begin
     v_lines := v_lines || jsonb_build_array(jsonb_build_object(
       'line_id', v_l.id, 'item_id', v_l.inventory_item_id, 'area_id', v_l.area_id, 'counted', v_l.counted_qty,
       'expected', v_expected, 'delta', v_delta, 'opening', v_l.opening, 'cost', v_cost,
-      'counted_at', v_l.counted_at, 'at', v_l.at));
+      'counted_at', v_l.counted_at, 'at', v_l.at, 'superseded', v_l.superseded));
   end loop;
 
   if jsonb_array_length(v_needs) > 0 then
@@ -1070,7 +1199,7 @@ begin
   if p_preview then
     return jsonb_build_object('ok', true, 'preview', true, 'lines', v_lines, 'opening', v_opening,
       'variance_value', round(v_var, 2), 'opening_value', round(v_open_val, 2), 'uncounted', v_uncounted,
-      'counted', v_counted);
+      'counted', v_counted, 'superseded', v_superseded);
   end if;
 
   for v_l in
@@ -1114,7 +1243,8 @@ begin
    where id = p_count_id;
 
   return jsonb_build_object('ok', true, 'posted', v_posted, 'total', v_total, 'opening', v_opening,
-    'variance_value', round(v_var, 2), 'opening_value', round(v_open_val, 2), 'uncounted', v_uncounted);
+    'variance_value', round(v_var, 2), 'opening_value', round(v_open_val, 2), 'uncounted', v_uncounted,
+    'superseded', v_superseded);
 end $$;
 revoke all on function public.approve_stock_count(uuid, text, text, jsonb, boolean) from public, anon;
 grant execute on function public.approve_stock_count(uuid, text, text, jsonb, boolean) to authenticated, service_role;
@@ -1155,6 +1285,9 @@ begin
   if p_event is null or jsonb_typeof(p_event) <> 'object' then
     raise exception 'stock_record_waste: the waste is missing' using errcode = '22023';
   end if;
+  if p_lines is not null and jsonb_typeof(p_lines) = 'null' then
+    p_lines := null;   -- a JSON null from the API is no lines, the same as SQL null
+  end if;
   if p_lines is not null and jsonb_typeof(p_lines) <> 'array' then
     raise exception 'stock_record_waste: lines must be a list' using errcode = '22023';
   end if;
@@ -1168,9 +1301,22 @@ begin
   if v_kind = 'menu' and v_menu is not null then
     v_linked := exists (select 1 from menu_item_recipes r where r.location_id = p_location_id and r.menu_item_id = v_menu);
   end if;
+  if nullif(p_event ->> 'inventory_item_id', '') is not null then
+    select i.id into v_item from inventory_items i
+     where i.id = (p_event ->> 'inventory_item_id')::uuid and i.location_id = p_location_id;
+    if v_item is null then
+      raise exception 'stock_record_waste: stock item % is not at venue %', p_event ->> 'inventory_item_id', p_location_id using errcode = '22023';
+    end if;
+  end if;
 
-  -- The lines: the screen's, or (a menu product with none sent) the recipe's, worked out here.
-  if p_lines is null and v_kind = 'menu' and v_menu is not null then
+  -- The lines: the screen's, or (a menu product with none sent) the recipe's, worked out here, or (a
+  -- stock item with none sent) that item's own quantity: a stock item waste always takes it off.
+  if v_kind = 'item' and (p_lines is null or jsonb_array_length(p_lines) = 0) then
+    if v_item is null or coalesce(nullif(p_event ->> 'qty_base', '')::numeric, 0) <= 0 then
+      raise exception 'stock_record_waste: a stock item waste needs the item and a quantity above 0' using errcode = '22023';
+    end if;
+    v_lines := jsonb_build_array(jsonb_build_object('item_id', v_item, 'qty_base', round((p_event ->> 'qty_base')::numeric, 4)));
+  elsif p_lines is null and v_kind = 'menu' and v_menu is not null then
     select coalesce(jsonb_agg(jsonb_build_object('item_id', x.inventory_item_id, 'qty_base', round(x.qty_base, 4)) order by x.inventory_item_id), '[]'::jsonb)
       into v_lines
       from public.stock_explode(p_location_id,
@@ -1186,13 +1332,6 @@ begin
               where not exists (select 1 from inventory_items i
                                  where i.id = nullif(e ->> 'item_id', '')::uuid and i.location_id = p_location_id)) then
     raise exception 'stock_record_waste: a line names a stock item that is not at this venue' using errcode = '22023';
-  end if;
-  if nullif(p_event ->> 'inventory_item_id', '') is not null then
-    select i.id into v_item from inventory_items i
-     where i.id = (p_event ->> 'inventory_item_id')::uuid and i.location_id = p_location_id;
-    if v_item is null then
-      raise exception 'stock_record_waste: stock item % is not at venue %', p_event ->> 'inventory_item_id', p_location_id using errcode = '22023';
-    end if;
   end if;
   if v_kind = 'item' and (v_item is null
        or exists (select 1 from jsonb_array_elements(v_lines) e
@@ -1220,12 +1359,12 @@ begin
       'tag', case when jsonb_array_length(v_lines) > 0 then null when v_linked then 'nothing_to_deduct' else 'no_recipe' end);
   end if;
 
-  -- LOCK ORDER 20261019a
+  -- LOCK ORDER 20261019b
   perform 1 from inventory_items
    where location_id = p_location_id
      and id in (select (e ->> 'item_id')::uuid from jsonb_array_elements(v_lines) e)
    order by id
-   for update;
+   for no key update;
 
   select sum(round(nullif(e ->> 'qty_base', '')::numeric, 4) * coalesce(i.current_cost, 0)) into v_cost
     from jsonb_array_elements(v_lines) e
@@ -1265,7 +1404,9 @@ grant execute on function public.stock_record_waste(uuid, jsonb, jsonb) to authe
 --   * LOCK ORDER: every item the leg touches (both venues on a receive) locked in id order first;
 --   * UNITS: a receive converts the sender's base unit to the receiving item's, through stock_units
 --     or one unit bridge of either item; a line whose units cannot convert stops the receive in words
---     before anything posts; the received quantity is capped at what was sent (nothing is created);
+--     before anything posts; the received quantity is capped at what was sent and rounded down in
+--     the receiver's unit (nothing is created); a remainder under half a 4th decimal step of the
+--     coarser unit is rounding and books no Short on transfer;
 --   * SHORT ON TRANSFER: for each line, what did not arrive (all of it for a dropped line) is booked
 --     at the SENDER: a reversal of that much of its transfer out, then WASTE of the same, reason
 --     "Short on transfer", plus a waste row, valued at the sender's cost. The sender's on hand does
@@ -1300,7 +1441,7 @@ begin
     raise exception 'post_stock_transfer_leg: leg must be out, in, both or cancel (got %)', coalesce(p_leg, 'null');
   end if;
 
-  select * into v_t from stock_transfers where id = p_transfer_id for update;
+  select * into v_t from stock_transfers where id = p_transfer_id for no key update;
   if not found then
     return jsonb_build_object('ok', false, 'error', 'Transfer not found');
   end if;
@@ -1353,11 +1494,11 @@ begin
   if p_leg = 'cancel' then
     -- A SENT transfer has already posted TRANSFER_OUT at the sender: put every line back where it came from.
     if v_t.status = 'SENT' then
-      -- LOCK ORDER 20261019a
+      -- LOCK ORDER 20261019b
       perform 1 from inventory_items
        where location_id = v_t.location_id
          and id in (select l.inventory_item_id from stock_transfer_lines l where l.transfer_id = p_transfer_id and not l.dropped)
-       order by id for update;
+       order by id for no key update;
       for v_l in
         select * from stock_transfer_lines where transfer_id = p_transfer_id and not dropped order by case when p_leg = 'in' then to_inventory_item_id else inventory_item_id end, sort_order, id
       loop
@@ -1381,11 +1522,11 @@ begin
   end if;
 
   if p_leg in ('out', 'both') then
-    -- LOCK ORDER 20261019a
+    -- LOCK ORDER 20261019b
     perform 1 from inventory_items
      where location_id = v_t.location_id
        and id in (select l.inventory_item_id from stock_transfer_lines l where l.transfer_id = p_transfer_id and not l.dropped)
-     order by id for update;
+     order by id for no key update;
     for v_l in
       select * from stock_transfer_lines where transfer_id = p_transfer_id and not dropped order by case when p_leg = 'in' then to_inventory_item_id else inventory_item_id end, sort_order, id
     loop
@@ -1429,7 +1570,7 @@ begin
                 and not exists (select 1 from inventory_items i where i.id = l.to_inventory_item_id and i.location_id = v_t.to_location_id)) then
     return jsonb_build_object('ok', false, 'error', 'A matched item is not at the receiving venue');
   end if;
-  -- UNITS 20261019a: every matched line must convert from the sender's unit to the receiver's.
+  -- UNITS 20261019b: every matched line must convert from the sender's unit to the receiver's.
   select string_agg(coalesce(l.name_snapshot, 'A line') || ' (' || coalesce(l.base_unit, s.base_unit) || ' to ' || r.base_unit || ')', ', ')
     into v_bad
     from stock_transfer_lines l
@@ -1441,12 +1582,12 @@ begin
     return jsonb_build_object('ok', false, 'error', 'These units cannot be converted, so nothing was received: ' || v_bad || '. Add a unit bridge on your item, or drop the line.');
   end if;
 
-  -- LOCK ORDER 20261019a: both venues' items, one id order.
+  -- LOCK ORDER 20261019b: both venues' items, one id order.
   perform 1 from inventory_items
    where id in (select l.inventory_item_id from stock_transfer_lines l where l.transfer_id = p_transfer_id
                 union
                 select l.to_inventory_item_id from stock_transfer_lines l where l.transfer_id = p_transfer_id and not l.dropped)
-   order by id for update;
+   order by id for no key update;
 
   -- Where it lands: the chosen area (only when it is a live area of the receiving venue), else
   -- the receiving area, else (null) the item's use area.
@@ -1480,11 +1621,19 @@ begin
       if v_factor is null or v_factor <= 0 then
         raise exception 'post_stock_transfer_leg: % cannot be converted to %', v_from_unit, v_to_unit;
       end if;
-      -- What arrived, in the receiver's unit, never more than was sent.
-      v_qty := round(least(coalesce(v_l.qty_received_base, v_l.qty_base * v_factor), v_l.qty_base * v_factor), 4);
+      -- What arrived, in the receiver's unit, never more than was sent: rounded DOWN to the 4
+      -- decimals the receiver holds (rounding to the nearest could land more than left the sender).
+      v_qty := trunc(least(coalesce(v_l.qty_received_base, v_l.qty_base * v_factor), v_l.qty_base * v_factor), 4);
       if v_qty < 0 then v_qty := 0; end if;
       v_sent_recv := v_qty / v_factor;
-      v_short := round(greatest(0, v_l.qty_base - v_sent_recv), 4);
+      -- What did not arrive, in the sender's unit. A remainder under half a 4th decimal step of the
+      -- coarser of the two units is rounding, not a loss: no Short on transfer for it.
+      v_short := greatest(0, v_l.qty_base - v_sent_recv);
+      if v_short < 0.00005 * greatest(1, 1 / v_factor) then
+        v_short := 0;
+      else
+        v_short := round(v_short, 4);
+      end if;
       if v_qty > 0 then
         v_before := coalesce(v_item.on_hand, 0);
         v_res := public._post_stock_movement(v_t.to_location_id, v_l.to_inventory_item_id, v_qty, 'TRANSFER_IN',
@@ -1515,7 +1664,7 @@ begin
       v_lines := v_lines + 1;
     end if;
 
-    -- SHORT ON TRANSFER 20261019a: booked at the sender (only for stock that did leave it).
+    -- SHORT ON TRANSFER 20261019b: booked at the sender (only for stock that did leave it).
     v_out_id := null;
     if v_short > 0 then
       select m.id into v_out_id from stock_movements m
@@ -1575,20 +1724,27 @@ begin
 end
 $transfer_pol$;
 
--- == 13. The order pad's weekday pattern on the venue clock ========================================
--- The 2 argument function grouped by the UTC day. The new one takes the venue's zone and business
--- day start (the screen reads them from the venue's settings); with none it uses the zone on this
--- database and midnight. An unknown zone falls back to Europe/London, never an error.
-drop function if exists public.stock_usage_by_weekday(uuid, integer);
-create or replace function public.stock_usage_by_weekday(p_location_id uuid, p_weeks integer default 8,
-  p_tz text default null, p_day_start text default null)
-returns table(inventory_item_id uuid, dow integer, avg_daily_base numeric)
+-- == 13. The order pad's usage reads, in pages of 1,000 items ======================================
+-- The Order pad, Purchase orders and Batches read usage per item. The live stock_usage_by_weekday
+-- answers one row per item and weekday (up to 35,000 rows at 5,000 items) and the API cuts every
+-- answer at 1,000 rows, with no order: items and days went missing and counted as 0. These two
+-- answer ONE row per stock item of the venue, at most 1,000 items per call, in item id order; the
+-- screen asks again with p_after = the last id until a call answers fewer than 1,000 rows. Each call
+-- adds up only its own items' movements (stock_mv_item_idx). The weekday is the venue's own day:
+-- its zone (p_tz, else the venue's timezone) and business day start (p_day_start 'HH:MM', else
+-- midnight); an unknown zone falls back to Europe/London, never an error. by_dow holds 7 values,
+-- Sunday first, average base units used per such day over p_weeks weeks.
+-- The live stock_usage_by_weekday(uuid, integer) and stock_usage_rates(uuid, integer) are left as
+-- they are for screens not yet updated. Invoker rights: row level security decides what is read.
+create or replace function public.stock_usage_weekday_page(p_location_id uuid, p_weeks integer default 8,
+  p_after uuid default null, p_tz text default null, p_day_start text default null)
+returns table(inventory_item_id uuid, by_dow numeric[])
 language sql
 stable
 set search_path to 'public'
 as $function$
   with w as (
-    select greatest(coalesce(p_weeks, 8), 1) as weeks
+    select greatest(coalesce(p_weeks, 8), 1)::numeric as weeks
   ), z as (
     select coalesce(
              (select n.name from pg_timezone_names n
@@ -1597,22 +1753,68 @@ as $function$
              'Europe/London') as tz,
            case when coalesce(p_day_start, '') ~ '^([01]?[0-9]|2[0-3]):[0-5][0-9]$' then p_day_start::interval
                 else interval '0' end as ds
+  ), page as (
+    select i.id
+      from public.inventory_items i
+     where i.location_id = p_location_id and (p_after is null or i.id > p_after)
+     order by i.id
+     limit 1000
   ), m as (
     select sm.inventory_item_id,
            extract(dow from ((sm.occurred_at at time zone z.tz) - z.ds))::int as dow,
            sum(-sm.qty_base) as total_base
-    from public.stock_movements sm, w, z
-    where sm.location_id = p_location_id
-      and sm.movement_type in ('SALE_DEPLETION', 'PRODUCTION_CONSUME')
-      and sm.qty_base < 0
-      and sm.occurred_at >= now() - make_interval(weeks => w.weeks)
-    group by sm.inventory_item_id, extract(dow from ((sm.occurred_at at time zone z.tz) - z.ds))::int
+      from page p
+      join public.stock_movements sm on sm.location_id = p_location_id and sm.inventory_item_id = p.id
+     cross join w cross join z
+     where sm.movement_type in ('SALE_DEPLETION', 'PRODUCTION_CONSUME')
+       and sm.qty_base < 0
+       and sm.occurred_at >= now() - make_interval(weeks => w.weeks::integer)
+     group by 1, 2
   )
-  select m.inventory_item_id, m.dow, m.total_base / (select weeks from w)::numeric
-  from m;
+  select p.id,
+         array[coalesce(sum(m.total_base) filter (where m.dow = 0), 0) / (select weeks from w),
+               coalesce(sum(m.total_base) filter (where m.dow = 1), 0) / (select weeks from w),
+               coalesce(sum(m.total_base) filter (where m.dow = 2), 0) / (select weeks from w),
+               coalesce(sum(m.total_base) filter (where m.dow = 3), 0) / (select weeks from w),
+               coalesce(sum(m.total_base) filter (where m.dow = 4), 0) / (select weeks from w),
+               coalesce(sum(m.total_base) filter (where m.dow = 5), 0) / (select weeks from w),
+               coalesce(sum(m.total_base) filter (where m.dow = 6), 0) / (select weeks from w)]
+    from page p
+    left join m on m.inventory_item_id = p.id
+   group by p.id
+   order by p.id;
 $function$;
-revoke all on function public.stock_usage_by_weekday(uuid, integer, text, text) from public, anon;
-grant execute on function public.stock_usage_by_weekday(uuid, integer, text, text) to authenticated, service_role;
+revoke all on function public.stock_usage_weekday_page(uuid, integer, uuid, text, text) from public, anon;
+grant execute on function public.stock_usage_weekday_page(uuid, integer, uuid, text, text) to authenticated, service_role;
+
+create or replace function public.stock_usage_rates_page(p_location_id uuid, p_days integer default 28,
+  p_after uuid default null)
+returns table(inventory_item_id uuid, avg_daily_base numeric)
+language sql
+stable
+set search_path to 'public'
+as $function$
+  with d as (
+    select greatest(coalesce(p_days, 28), 1) as days
+  ), page as (
+    select i.id
+      from public.inventory_items i
+     where i.location_id = p_location_id and (p_after is null or i.id > p_after)
+     order by i.id
+     limit 1000
+  )
+  select p.id,
+         coalesce((select sum(-sm.qty_base) from public.stock_movements sm, d
+                    where sm.location_id = p_location_id and sm.inventory_item_id = p.id
+                      and sm.movement_type in ('SALE_DEPLETION', 'PRODUCTION_CONSUME')
+                      and sm.qty_base < 0
+                      and sm.occurred_at >= now() - make_interval(days => d.days)), 0)
+           / (select days from d)::numeric
+    from page p
+   order by p.id;
+$function$;
+revoke all on function public.stock_usage_rates_page(uuid, integer, uuid) from public, anon;
+grant execute on function public.stock_usage_rates_page(uuid, integer, uuid) to authenticated, service_role;
 
 -- == 14. The Multi site menu's read only recipe warning ============================================
 -- Per site of the group menu: how many products on sale there have NO recipe there but DO have one
@@ -1668,83 +1870,17 @@ revoke all on function public.msm_stock_recipe_gaps(uuid) from public, anon;
 grant execute on function public.msm_stock_recipe_gaps(uuid) to authenticated, service_role;
 
 
--- == 15. Central stock is automatic (Peter, 19 Oct 2026) ==========================================
--- "what do you mean it's manual to turn on?" and "if a site is multi site stock, multi site should
--- be on". The database books every check at a venue with recipes; nobody has to remember a switch.
---   * A venue's FIRST recipe link switches it to central in the same transaction (central_since =
---     that moment), through this statement level trigger on menu_item_recipes. A venue that
---     already has a row (central, or browser or paused after a deliberate back out) is left alone.
---   * Before its first recipe link a venue has nothing to take off: no row is needed, and the till
---     path finds no recipe either way. A brand new venue is the same: it turns central the moment
---     its first recipe link is saved, whoever saves it (Back Office, an import, the SQL editor).
---   * Never raises: a failure is a warning and the venue stays on the till path (the old,
---     safe path) until this file is pasted again, which switches it then.
---   * What it does NOT do: book the hours before the first recipe. 20261018c's hourly sweep looks
---     2 hours back from central_since and books paid checks it finds there as the database (its
---     switch grace window); for a venue's first recipe those sales really did use the stock the new
---     recipe names, so on hand comes out closer to the shelf, and the late sale rule keeps any
---     count that already saw them right.
-create or replace function public._stock_auto_central_on_link()
-returns trigger
-language plpgsql security definer set search_path = public, pg_temp as $$
-begin
-  begin
-    insert into stock_depletion_mode (location_id, mode, central_since, changed_by, changed_at)
-    select distinct n.location_id, 'central', now(), 'automatic: first recipe', now()
-      from new_rows n
-     where n.location_id is not null
-       and not exists (select 1 from stock_depletion_mode m where m.location_id = n.location_id)
-    on conflict (location_id) do nothing;
-  exception when others then
-    raise warning 'stock: automatic central switch skipped (% %); paste 20261019a again to switch these venues', sqlstate, sqlerrm;
-  end;
-  return null;
-end $$;
-revoke all on function public._stock_auto_central_on_link() from public, anon, authenticated, service_role;
-
-do $auto_trg$
-begin
-  if not exists (select 1 from pg_trigger where tgrelid = 'public.menu_item_recipes'::regclass and tgname = 'menu_item_recipes_auto_central') then
-    create trigger menu_item_recipes_auto_central
-      after insert on public.menu_item_recipes
-      referencing new table as new_rows
-      for each statement execute function public._stock_auto_central_on_link();
-  end if;
-end
-$auto_trg$;
-
--- Day one: every venue that has a recipe link and no row turns central now, through the switch
--- itself (central_since now; its last 2 hours of paid checks are queued once as the database:
--- a check its till already took off lands as a duplicate by key, nothing doubles). Live on 19 Oct:
--- Provo and Location 2 are central already (Peter, 17:55 UTC) and keep their central_since; the
--- third company's venue turns central here. A row that says browser or paused is kept.
-do $auto_day_one$
-declare
-  r record;
-begin
-  for r in
-    select distinct m.location_id
-      from menu_item_recipes m
-      join locations l on l.id = m.location_id
-     where not exists (select 1 from stock_depletion_mode d where d.location_id = m.location_id)
-     order by m.location_id
-  loop
-    perform public.stock_central_switch(r.location_id, 'central', '20261019a automatic');
-  end loop;
-end
-$auto_day_one$;
-
 notify pgrst, 'reload schema';
 
 -- VISIBLE CHECK (the SQL editor shows this last result). Expected on Ops (19 Oct 2026):
---   phase0_functions 9, core_locked 1, core_open_to_api 0, triggers 4, new_columns 12, cost_8dp 1,
+--   phase0_functions 11, core_locked 1, core_open_to_api 0, triggers 4, new_columns 12, cost_8dp 1,
 --   on_hand_16_4 1, site_indexes 10, settings_rows 0 (no venue has chosen yet: price list),
---   transfer_insert_same_company 2, auto_central_trigger 1, recipe_venues_central 3 (Provo,
---   Location 2 and the third company's venue), recipe_venues_on_till 0 (a venue someone backed out
---   to browser on purpose shows here and stays so), default_mode browser (on purpose, see item 0),
---   and stock_sums: one entry per venue that holds stock, the same figures as the BEFORE query in
---   supabase/tests/stock_phase0/README.md (nothing moved).
---   So: 9|1|0|4|12|1|1|10|0|2|1|3|0|browser|{...}
+--   transfer_insert_same_company 2, old_usage_reads_kept 2 (the live stock_usage_by_weekday and
+--   stock_usage_rates stay for screens not yet updated), and stock_sums: one entry per venue that
+--   holds stock, the same figures as the BEFORE query in supabase/tests/stock_phase0/README.md
+--   (nothing moved; cost may show more zeros after the point, 168.30576 as 168.30576000: the same
+--   number in the wider column).
+--   So: 11|1|0|4|12|1|1|10|0|2|2|{...}
 select
   (select count(*) from pg_proc p where p.oid in (
      to_regprocedure('public.stock_receive(uuid,text,text,jsonb,uuid,text)'),
@@ -1755,18 +1891,20 @@ select
      to_regprocedure('public.stock_convert_qty(numeric,text,text,uuid[])'),
      to_regprocedure('public.stock_office_reaches(uuid)'),
      to_regprocedure('public.msm_stock_recipe_gaps(uuid)'),
-     to_regprocedure('public.stock_usage_by_weekday(uuid,integer,text,text)'))) as phase0_functions,
+     to_regprocedure('public.stock_usage_weekday_page(uuid,integer,uuid,text,text)'),
+     to_regprocedure('public.stock_usage_rates_page(uuid,integer,uuid)'),
+     to_regprocedure('public._stock_caller_is_system()'))) as phase0_functions,
   (select count(*) from pg_proc p where p.oid = to_regprocedure('public._post_stock_movement(uuid,uuid,numeric,text,numeric,text,text,text,timestamptz,uuid,text,uuid)')
-     and p.prosrc like '%LOCK 20261019a%' and p.prosrc like '%RETURN CAP 20261019a%' and p.prosrc like '%LATE SALE 20261019a%') as core_locked,
+     and p.prosrc like '%LOCK 20261019b%' and p.prosrc like '%RETURN CAP 20261019b%' and p.prosrc like '%LATE SALE 20261019b%') as core_locked,
   (select count(*) from pg_proc p, unnest(array['anon', 'authenticated', 'service_role']) r(name)
     where p.oid in (to_regprocedure('public._post_stock_movement(uuid,uuid,numeric,text,numeric,text,text,text,timestamptz,uuid,text,uuid)'),
                     to_regprocedure('public._stock_receive_lines(uuid,text,text,jsonb,uuid,text)'),
-                    to_regprocedure('public._stock_auto_central_on_link()'),
+                    to_regprocedure('public._stock_caller_is_system()'),
                     to_regprocedure('public._stock_counted_after(uuid,uuid,timestamptz)'))
       and has_function_privilege(r.name, p.oid, 'execute')) as core_open_to_api,
   (select count(*) from pg_trigger t where not t.tgisinternal and t.tgname in
-     ('stock_count_lines_counted_at_trg', 'inventory_items_keep_history_trg', 'item_packaging_formats_in_use_trg',
-      'menu_item_recipes_auto_central')) as triggers,
+     ('stock_count_lines_counted_at_trg', 'stock_counts_keep_approved_trg', 'inventory_items_keep_history_trg',
+      'item_packaging_formats_in_use_trg')) as triggers,
   (select count(*) from information_schema.columns c where c.table_schema = 'public' and (c.table_name, c.column_name) in (
      ('stock_count_lines', 'counted_at'), ('stock_count_lines', 'is_opening'), ('stock_counts', 'opening_value'),
      ('waste_events', 'menu_item_id'), ('waste_events', 'no_recipe'), ('item_cost_history', 'pack_label'),
@@ -1784,12 +1922,8 @@ select
   (select count(*) from public.stock_site_settings) as settings_rows,
   (select count(*) from pg_policies p where p.schemaname = 'public' and p.policyname in ('stock_transfers_insert', 'stock_transfer_lines_insert')
      and p.with_check like '%stock_same_company%') as transfer_insert_same_company,
-  (select count(*) from pg_trigger t where t.tgrelid = 'public.menu_item_recipes'::regclass and t.tgname = 'menu_item_recipes_auto_central') as auto_central_trigger,
-  (select count(distinct r.location_id) from public.menu_item_recipes r
-     join public.stock_depletion_mode m on m.location_id = r.location_id and m.mode = 'central') as recipe_venues_central,
-  (select count(distinct r.location_id) from public.menu_item_recipes r
-     where public._stock_mode_of(r.location_id) not in ('central', 'paused')) as recipe_venues_on_till,
-  (select mode from public.stock_depletion_default) as default_mode,
+  (select count(*) from pg_proc p where p.oid in (to_regprocedure('public.stock_usage_by_weekday(uuid,integer)'),
+                                                 to_regprocedure('public.stock_usage_rates(uuid,integer)'))) as old_usage_reads_kept,
   (select coalesce(jsonb_object_agg(s.location_id, jsonb_build_object('items', s.items, 'on_hand', s.on_hand, 'cost', s.cost,
             'movements', s.movements, 'qty', s.qty, 'value', s.value)), '{}'::jsonb)
      from (select i.location_id::text as location_id, count(*) as items, sum(i.on_hand) as on_hand, sum(i.current_cost) as cost,

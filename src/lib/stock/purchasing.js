@@ -7,13 +7,13 @@
  * idempotent receipts.
  *
  * v5.11.79 (multi site stock plan, Phase 0, 11.5 item 3 and 4.9): a receive and an invoice are each
- * ONE database call (stock_receive, stock_post_invoice, 20261019a). The database locks the items in
+ * ONE database call (stock_receive, stock_post_invoice, 20261019b). The database locks the items in
  * id order, works the moving average out from the LOCKED on hand (a sale or a second device receiving
  * the same item can no longer give a wrong average), and writes the movement, the cost history (with
  * the supplier pack and the price paid per pack) and the cost together. Stock below zero or an
  * unknown cost takes the delivery price, never an average. A duplicate invoice number from the same
  * supplier is refused, and an invoice for an order already received is kept as paperwork. Before
- * 20261019a is run those calls are missing and the old browser path below runs.
+ * 20261019b is run those calls are missing and the old browser path below runs.
  */
 
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
@@ -164,7 +164,11 @@ export const savePurchaseOrder = async (po, lines, locationId = null) => {
     inner_unit: l.innerUnit || 'each', unit_price: Number(l.unitPrice) || 0, qty_received: Number(l.qtyReceived) || 0,
     purchase_tax_rate_id: l.purchaseTaxRateId || null, line_tax: lineTaxes[i], sort_order: i,
   }));
-  if (lrows.length) await supabase.from('po_lines').insert(lrows);
+  // v5.11.79: a line save that fails (a lock wait, a timeout) is said, never a header with no lines
+  if (lrows.length) {
+    const { error: lineErr } = await supabase.from('po_lines').insert(lrows);
+    if (lineErr) return { data: null, error: new Error(`The order was saved but its lines were not: ${lineErr.message || lineErr}. Save again.`) };
+  }
   return { data: poFromRow(data), error: null };
 };
 
@@ -319,7 +323,7 @@ export const receivePurchaseOrder = async (poId, locationId = null, receipts = n
     catch { continue; }
     if (!(baseContentPerPack > 0)) continue;
     if (accepted > 0 && !oneCall) {
-      // before 20261019a: the old browser path, line by line
+      // before 20261019b: the old browser path, line by line
       const recvBase = accepted * baseContentPerPack;
       const unitCostPerBase = price / baseContentPerPack;
       await applyReceipt(locationId, item, l.inventory_item_id, recvBase, unitCostPerBase, 'purchase_order', poId, `po:${poId}:${l.id}`, landIn);
@@ -503,6 +507,9 @@ export const postInvoice = async (header, lines, locationId = null, { areaId = n
     const { data: res, error: rpcErr } = await supabase.rpc('stock_post_invoice', {
       p_location_id: locationId,
       p_invoice: {
+        // v5.11.79: the screen's own id for this invoice (made once per scan): a retry is answered
+        // duplicate, so an invoice with no number never posts twice
+        client_id: header.clientId || null,
         supplier_id: header.supplierId || null, invoice_number: header.invoiceNumber || null, invoice_date: header.invoiceDate || null,
         ocr_confidence: header.ocrConfidence ?? null, subtotal: header.subtotal ?? null, tax: header.tax ?? null, total: header.total ?? null,
         raw_json: header.rawJson || null, image_path: header.imagePath || null, po_id: header.poId || null,

@@ -20,6 +20,7 @@ import { findDuplicateInvoice, duplicateInvoiceText, receivedOrdersOverlapping }
 import { areasReady, fetchAreas } from '../../lib/stock/areas';
 import { pickSupplierProduct } from '../../lib/stock/costing';
 import { matchScannedLine } from '../../lib/stock/purchasingRules';
+import { newUuid } from '../../lib/stock/phase0Rules';
 import { xeroStatus, xeroPushBill } from '../../lib/xero';
 import { PageHeader, ReportTable, useSort, sortRows, SubToolbar, Tag, Money } from './reports/reportKit';
 
@@ -106,7 +107,8 @@ export default function Invoices() {
       const sup = suppliers.find(s => (s.name || '').toLowerCase() === (data.supplier_name || '').toLowerCase());
       const cands = candidatesFor(items, sup?.id || null);
       setReview({
-        header: { supplierId: sup?.id || '', supplierName: data.supplier_name, invoiceNumber: data.invoice_number || '', invoiceDate: data.invoice_date || '', subtotal: data.subtotal, tax: data.tax, total: data.total, ocrConfidence: data.confidence != null ? Math.round(Number(data.confidence) * 100) : null, rawJson: data },
+        // v5.11.79: this invoice's own id, made once per scan, so a retry after a lost answer is a repeat, never a second posting
+        header: { clientId: newUuid(), supplierId: sup?.id || '', supplierName: data.supplier_name, invoiceNumber: data.invoice_number || '', invoiceDate: data.invoice_date || '', subtotal: data.subtotal, tax: data.tax, total: data.total, ocrConfidence: data.confidence != null ? Math.round(Number(data.confidence) * 100) : null, rawJson: data },
         lines: (data.lines || []).map(l => {
           const m = guessMatch(l, cands);
           return { matchedItemId: m?.id || '', description: l.description || '', qty: Number(l.qty) || 0, unit: l.unit || (m?.baseUnit) || 'each', unitPrice: Number(l.unit_price) || 0, lineTotal: l.line_total != null ? Number(l.line_total) : null, purchaseTaxRateId: m?.purchaseTaxRateId || '', priceIncludesTax: false };

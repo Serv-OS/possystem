@@ -396,9 +396,9 @@ Deno.serve(async (req) => {
       }
 
       // v5.11.79 (stock plan Phase 0, 11.5 item 3): every line's stock and cost in ONE database call
-      // (stock_receive, 20261019a): items locked in id order, the average worked out from the LOCKED
+      // (stock_receive, 20261019b): items locked in id order, the average worked out from the LOCKED
       // on hand, the cost history keeping the supplier pack and the price paid per pack. Same keys
-      // po:<order>:<line> as Back Office, so the two can never post one line twice. Before 20261019a
+      // po:<order>:<line> as Back Office, so the two can never post one line twice. Before 20261019b
       // is run the call is missing and the line by line path below runs, as before.
       let oneCall = false;
       {

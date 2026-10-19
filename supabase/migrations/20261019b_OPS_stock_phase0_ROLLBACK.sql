@@ -1,18 +1,17 @@
--- 20261019a_OPS_stock_phase0_ROLLBACK.sql
+-- 20261019b_OPS_stock_phase0_ROLLBACK.sql
 --
--- OPS DB ONLY (tbetcegmszzotrwdtqhi). Undoes 20261019a_OPS_stock_phase0.sql:
+-- OPS DB ONLY (tbetcegmszzotrwdtqhi). Undoes 20261019b_OPS_stock_phase0.sql:
 --   * _post_stock_movement goes back to 20261018a's text, post_stock_transfer_leg and
---     _stock_counted_after to 20261018c's (byte for byte), inventory_item_areas_rehome to 20261016's,
---     stock_usage_by_weekday to its 2 argument live text (the UTC day);
---   * the automatic central trigger on menu_item_recipes goes. Every venue's central stock mode
---     STAYS as it is: the database keeps booking the checks of a venue that turned central. Put one
---     back on the till path by hand: select public.stock_central_switch('<venue uuid>', 'browser', 'peter');
+--     _stock_counted_after to 20261018c's (byte for byte), inventory_item_areas_rehome to 20261016's;
+--   * every venue's central stock mode STAYS as it is (20261019 set it; this file never touched it);
 --   * drops stock_receive, _stock_receive_lines, stock_post_invoice, approve_stock_count,
 --     stock_record_waste, stock_convert_qty, stock_office_reaches, stock_same_company,
---     stock_cost_rule, stock_phase0_ready, msm_stock_recipe_gaps and the three triggers;
+--     stock_cost_rule, stock_phase0_ready, msm_stock_recipe_gaps, stock_usage_weekday_page,
+--     stock_usage_rates_page, _stock_caller_is_system and the four triggers (the live
+--     stock_usage_by_weekday and stock_usage_rates were never changed and stay);
 --   * the transfer insert policies go back to the sender check only (20261016);
 --   * drops stock_site_settings (every venue goes back to "cost from price list", the default) and
---     the columns 20261019a added, and its indexes;
+--     the columns 20261019b added, and its indexes;
 --   * unit costs go back to 5 decimals and on hand on items to (14,4): figures with more decimals
 --     are ROUNDED to 5 (milk at 0.00114286 per ml becomes 0.00114).
 --
@@ -355,46 +354,16 @@ language sql stable security definer set search_path = public as $$
 $$;
 revoke all on function public._stock_counted_after(uuid, uuid, timestamptz) from public, anon, authenticated, service_role;
 
-drop function if exists public.stock_usage_by_weekday(uuid, integer, text, text);
-create or replace function public.stock_usage_by_weekday(p_location_id uuid, p_weeks integer default 8)
-returns table(inventory_item_id uuid, dow integer, avg_daily_base numeric)
-language sql
-stable
-set search_path to 'public'
-as $function$
-  with w as (
-    select greatest(p_weeks, 1) as weeks
-  ), m as (
-    select sm.inventory_item_id,
-           extract(dow from sm.occurred_at)::int as dow,
-           sum(-sm.qty_base) as total_base
-    from public.stock_movements sm, w
-    where sm.location_id = p_location_id
-      and sm.movement_type in ('SALE_DEPLETION', 'PRODUCTION_CONSUME')
-      and sm.qty_base < 0
-      and sm.occurred_at >= now() - make_interval(weeks => w.weeks)
-    group by sm.inventory_item_id, extract(dow from sm.occurred_at)::int
-  )
-  select m.inventory_item_id, m.dow, m.total_base / (select weeks from w)::numeric
-  from m;
-$function$;
-
 -- == The new functions and triggers =================================================================
--- Automatic central: the trigger goes, every venue's mode row STAYS as it is (a venue that turned
--- central keeps the database booking its checks; to put one back on the till path:
--- select public.stock_central_switch('<venue uuid>', 'browser', 'peter');).
-do $auto$
-begin
-  if exists (select 1 from pg_trigger where tgrelid = 'public.menu_item_recipes'::regclass and tgname = 'menu_item_recipes_auto_central') then
-    drop trigger menu_item_recipes_auto_central on public.menu_item_recipes;
-  end if;
-end
-$auto$;
-drop function if exists public._stock_auto_central_on_link();
 drop trigger if exists stock_count_lines_counted_at_trg on public.stock_count_lines;
+drop trigger if exists stock_counts_keep_approved_trg on public.stock_counts;
 drop trigger if exists inventory_items_keep_history_trg on public.inventory_items;
 drop trigger if exists item_packaging_formats_in_use_trg on public.item_packaging_formats;
 drop function if exists public.stock_count_lines_counted_at();
+drop function if exists public.stock_counts_keep_approved();
+drop function if exists public._stock_caller_is_system();
+drop function if exists public.stock_usage_weekday_page(uuid, integer, uuid, text, text);
+drop function if exists public.stock_usage_rates_page(uuid, integer, uuid);
 drop function if exists public.inventory_items_keep_history();
 drop function if exists public.item_packaging_formats_in_use();
 drop function if exists public.stock_receive(uuid, text, text, jsonb, uuid, text);
@@ -476,10 +445,11 @@ select
   (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname in
      ('stock_receive', '_stock_receive_lines', 'stock_post_invoice', 'approve_stock_count', 'stock_record_waste',
       'stock_convert_qty', 'stock_office_reaches', 'stock_same_company', 'stock_cost_rule', 'stock_phase0_ready',
-      'msm_stock_recipe_gaps', '_stock_auto_central_on_link')) as phase0_functions_left,
+      'msm_stock_recipe_gaps', 'stock_usage_weekday_page', 'stock_usage_rates_page', '_stock_caller_is_system',
+      'stock_counts_keep_approved', 'stock_count_lines_counted_at')) as phase0_functions_left,
   (select count(*) from pg_trigger t where not t.tgisinternal and t.tgname in
-     ('stock_count_lines_counted_at_trg', 'inventory_items_keep_history_trg', 'item_packaging_formats_in_use_trg',
-      'menu_item_recipes_auto_central')) as triggers_left,
+     ('stock_count_lines_counted_at_trg', 'stock_counts_keep_approved_trg', 'inventory_items_keep_history_trg',
+      'item_packaging_formats_in_use_trg')) as triggers_left,
   (select count(*) from information_schema.columns c where c.table_schema = 'public' and (c.table_name, c.column_name) in (
      ('stock_count_lines', 'counted_at'), ('stock_count_lines', 'is_opening'), ('stock_counts', 'opening_value'),
      ('waste_events', 'menu_item_id'), ('waste_events', 'no_recipe'), ('item_cost_history', 'pack_label'),

@@ -16,9 +16,10 @@ import { purchaseNet } from '../tax.js';
 import { readAllPagesResult } from '../pagedRead.js';
 import { normDeliveryDays } from './purchasingRules.js';
 import { areasReady, areasReadySync, fetchItemAreas } from './areas.js';
-import { DEFAULT_COST_RULE, normCostRule, priceSetsCost } from './phase0Rules.js';
+import { DEFAULT_COST_RULE, normCostRule, priceSetsCost, isMissingFunctionError } from './phase0Rules.js';
+import { readUsagePages, weekdayProfile, usageRates, weekdayProfileFromDowRows } from './usagePages.js';
 
-/** stock_site_settings is not there yet (20261019a not run): read as the default, never an error. */
+/** stock_site_settings is not there yet (20261019b not run): read as the default, never an error. */
 const isMissingTableError = (e) => /42P01|PGRST205|relation .* does not exist|Could not find the table/i.test(`${e?.code || ''} ${e?.message || ''}`);
 
 const nowIso = () => new Date().toISOString();
@@ -495,7 +496,7 @@ export const fetchStockOutboxHealth = async (locationId = null) => {
 /**
  * v5.11.79 (stock plan Phase 0): the Multi site menu's read only warning rows, one per site at most:
  * { location_id, site_name, missing, from_location_id, from_site_name, from_count } for "12 products
- * have a recipe at Provo but none at Location 2" (msm_stock_recipe_gaps, 20261019a). Before the
+ * have a recipe at Provo but none at Location 2" (msm_stock_recipe_gaps, 20261019b). Before the
  * migration the call is missing and the screen shows nothing.
  */
 export const fetchMsmRecipeGaps = async (menuId) => {
@@ -566,24 +567,28 @@ export const fetchMovementsRange = async (fromIso, toIso, locationId = null, opt
 };
 
 /**
- * Average daily usage per item over the last `days`, as { itemId: avgDailyBase }.
- * The WEEKDAY SHAPE of usage — { itemId: [sun..sat avg daily base] } from the
- * stock_usage_by_weekday RPC. Returns data:null (not {}) when the RPC is not yet
- * migrated, so the Order Pad can tell "no shape available, use the flat rate"
- * apart from "profiled, this item just has no usage".
+ * The WEEKDAY SHAPE of usage: { itemId: [sun..sat avg daily base] }. Returns data:null (not {})
+ * when no shape is available, so the Order Pad can tell "no shape, use the flat rate" apart from
+ * "profiled, this item just has no usage".
+ * v5.11.79 (20261019b): read from stock_usage_weekday_page, one row per item, 1,000 items a page,
+ * on the venue's own clock (usagePages.js). The old one row per item and day read was cut at 1,000
+ * rows, so items and days went missing as 0. A failed page gives no shape at all (never a partial
+ * one); before 20261019b the old read runs.
  */
 export const fetchUsageByWeekday = async (weeks = 8, locationId = null) => {
   if (isMock || !supabase) return { data: null, error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: null };
+  const paged = await readUsagePages((after) => supabase.rpc('stock_usage_weekday_page', { p_location_id: locationId, p_weeks: weeks, p_after: after }),
+    { isMissing: isMissingFunctionError });
+  if (!paged.error) return { data: weekdayProfile(paged.rows), error: null };
+  if (!paged.missing) {
+    console.warn('[stock] weekday usage read failed, using the flat rate:', paged.error?.message || paged.error);
+    return { data: null, error: paged.error };
+  }
   const { data, error } = await supabase.rpc('stock_usage_by_weekday', { p_location_id: locationId, p_weeks: weeks });
   if (error || !Array.isArray(data)) return { data: null, error: null };   // migration not applied yet — flat fallback
-  const prof = {};
-  data.forEach(r => {
-    const a = (prof[r.inventory_item_id] ??= [0, 0, 0, 0, 0, 0, 0]);
-    const d = Number(r.dow); if (d >= 0 && d <= 6) a[d] = Number(r.avg_daily_base) || 0;
-  });
-  return { data: prof, error: null };
+  return { data: weekdayProfileFromDowRows(data), error: null };
 };
 
 /**
@@ -595,6 +600,11 @@ export const fetchUsageRates = async (days = 28, locationId = null) => {
   if (isMock || !supabase) return { data: {}, error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: {}, error: null };
+  // v5.11.79 (20261019b): one row per item, 1,000 items a page (the old read was cut at 1,000 rows).
+  const paged = await readUsagePages((after) => supabase.rpc('stock_usage_rates_page', { p_location_id: locationId, p_days: days, p_after: after }),
+    { isMissing: isMissingFunctionError });
+  if (!paged.error) return { data: usageRates(paged.rows), error: null };
+  if (!paged.missing) return { data: {}, error: paged.error };
   const { data: rpcData, error: rpcErr } = await supabase.rpc('stock_usage_rates', { p_location_id: locationId, p_days: days });
   if (!rpcErr && Array.isArray(rpcData)) {
     const rate = {};
@@ -639,7 +649,7 @@ export const fetchItemMovements = async (inventoryItemId, locationId = null, lim
  */
 /**
  * v5.11.79 (stock plan Phase 0, 4.5, decision 2): each venue's cost rule, from stock_site_settings
- * (20261019a). 'price_list' (the default, and the answer whenever the table or row is missing:
+ * (20261019b). 'price_list' (the default, and the answer whenever the table or row is missing:
  * exactly what every venue did before) or 'deliveries'.
  */
 export const fetchCostRule = async (locationId = null) => {

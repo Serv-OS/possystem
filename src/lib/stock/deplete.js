@@ -11,9 +11,8 @@
  * backed out by ServOS with stock_central_switch, or a venue with no recipe yet, where nothing
  * comes off anyway).
  *
- * v5.11.79 (20261019a): central stock is AUTOMATIC. Every venue with recipes is central and a venue
- * turns central the moment it gets its first recipe link, so the database books every check from
- * every channel. The online browser calls are gone and depleteForSaleServer (still called by the
+ * Since v5.11.78 (20261019) every venue is central, a new venue from the moment it is created, so
+ * the database books every check from every channel. The online browser calls are gone and depleteForSaleServer (still called by the
  * kiosk's fingerprinted submitOrder) does nothing: the database books those checks itself, and the
  * old call never found their venue anyway. Old kiosk builds that still call the stock-deplete
  * function are answered skipped central by the door.
@@ -50,7 +49,7 @@ async function venueModeFor(loc) {
 
 /**
  * v5.11.79: kiosk (and formerly online) stock off is booked by the DATABASE from the stored check
- * (20261018c, automatic at every venue with recipes since 20261019a). This is now a no-op on
+ * (20261018c, every venue central since 20261019). This is now a no-op on
  * purpose: the kiosk's submitOrder still calls it (that block is fingerprinted by the card path
  * guard, so it is not edited), and the old call never found the kiosk's venue anyway. Old kiosk
  * builds that still reach the stock-deplete function are answered skipped central by the door.

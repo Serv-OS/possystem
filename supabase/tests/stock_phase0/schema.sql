@@ -1,4 +1,4 @@
--- schema.sql: the live shape of every table 20261019a reads or writes, for a throwaway local
+-- schema.sql: the live shape of every table 20261019b reads or writes, for a throwaway local
 -- Postgres 17. Column types are the live Ops columns read on 18 Oct 2026 (information_schema,
 -- read only); constraints and foreign keys as pg_constraint showed them; row level security as
 -- pg_policies showed it on the tables the new functions are called against. Roles as Supabase has
@@ -18,6 +18,9 @@ grant anon, authenticated, service_role to authenticator;
 alter role authenticated set statement_timeout = '8s';
 alter role anon set statement_timeout = '3s';
 alter role authenticator set lock_timeout = '8s';
+-- Live (pg_roles, 19 Oct 2026): authenticator also carries statement_timeout = 8s, which binds the
+-- service role too (an edge function's calls).
+alter role authenticator set statement_timeout = '8s';
 
 create schema if not exists auth;
 create or replace function auth.uid() returns uuid language sql stable as $$

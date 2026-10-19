@@ -1,10 +1,10 @@
 /**
  * stock/phase0Rules.js: the pure rules of the stock safety pass (v5.11.79, multi site stock plan
  * Phase 0). No React, no Supabase: tested in phase0Rules.test.js. The database half is
- * supabase/migrations/20261019a_OPS_stock_phase0.sql (proof: supabase/tests/stock_phase0/run.mjs).
+ * supabase/migrations/20261019b_OPS_stock_phase0.sql (proof: supabase/tests/stock_phase0/run.mjs).
  *
  *   newUuid                   a client made id (waste events), safe on older WebViews
- *   isMissingFunctionError    a call to a function the database does not have yet (before 20261019a)
+ *   isMissingFunctionError    a call to a function the database does not have yet (before 20261019b)
  *   COST_RULES, priceSetsCost the per venue cost rule (decision 2): price list (default) or deliveries
  *   wasteStockTag             why a product waste took nothing off stock (never a refusal)
  *   openingCostOf             the cost an item's opening count is valued at, when the screen knows one
@@ -152,6 +152,7 @@ export function invoiceOutcome(res, error = null, lineCount = 0) {
   }
   if (!res) return { ok: false, text: 'The invoice was not posted: no answer from the database.' };
   if (res.ok === false) return { ok: false, code: res.code || null, text: res.error || 'The invoice was refused.' };
+  if (res.duplicate === true) return { ok: true, duplicate: true, text: 'This invoice was posted already. Nothing was posted twice.' };
   if (res.stock === false) return { ok: true, text: 'Invoice posted as paperwork for an order received already: its stock is in, nothing was counted twice.' };
   return { ok: true, text: `Posted invoice: ${plural(lineCount, 'line')} received into stock.` };
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// run.mjs: proves 20261019a (stock Phase 0, the safety pass) on a local, throwaway PostgreSQL 17
+// run.mjs: proves 20261019b (stock Phase 0, the safety pass) on a local, throwaway PostgreSQL 17
 // before Peter runs it on the Ops database. It never connects to Supabase.
 //
 //   node supabase/tests/stock_phase0/run.mjs              the whole proof
@@ -10,10 +10,11 @@
 // The database is built the way Ops is: the live table shapes and row level security
 // (schema.sql, policies.sql, central_schema.sql), the 20261016 / 5 Aug function texts
 // (../stock_function_fences/live), then the REAL 20261018a file (v5.11.76) and the REAL 20261018c
-// file (v5.11.77, central stock depletion), as Peter ran them, then 20261019a as the SQL editor
-// runs a paste (one transaction, stop on the first error). Every call is made the way the API makes it: logged in as
-// authenticator, SET ROLE to anon, authenticated or service_role, the request claims set, and the
-// live timeouts (authenticated 8 s, anon 3 s, lock 8 s). Exit code 0 only when every check holds.
+// file (v5.11.77, central stock depletion), as Peter ran them (section 21 also the REAL 20261019,
+// v5.11.78, every venue central, as live is), then 20261019b as the SQL editor runs a paste (one
+// transaction, stop on the first error). Every call is made the way the API makes it: logged in as authenticator, SET
+// ROLE to anon, authenticated or service_role, the request claims set, and the live timeouts
+// (authenticated and service role 8 s, anon 3 s, lock 8 s). Exit code 0 only when every check holds.
 
 import { spawn, spawnSync } from 'node:child_process';
 import { readFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
@@ -26,8 +27,11 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, '..', '..', '..');
 const FENCES = join(repo, 'supabase/migrations/20261018a_OPS_stock_function_fences.sql');
 const CENTRAL = join(repo, 'supabase/migrations/20261018c_OPS_central_stock_depletion.sql');
-const MIGRATION = join(repo, 'supabase/migrations/20261019a_OPS_stock_phase0.sql');
-const ROLLBACK = join(repo, 'supabase/migrations/20261019a_OPS_stock_phase0_ROLLBACK.sql');
+const CENTRAL_DEFAULT = join(repo, 'supabase/migrations/20261019_OPS_central_stock_default.sql');
+// PHASE0_MIGRATION / PHASE0_ROLLBACK: run the same proof against another copy of the file (to show
+// that a new check fails on the file before a fix). Normally unset.
+const MIGRATION = process.env.PHASE0_MIGRATION || join(repo, 'supabase/migrations/20261019b_OPS_stock_phase0.sql');
+const ROLLBACK = process.env.PHASE0_ROLLBACK || join(repo, 'supabase/migrations/20261019b_OPS_stock_phase0_ROLLBACK.sql');
 const FLIVE = join(repo, 'supabase/tests/stock_function_fences/live');
 const PRINT_MD5 = process.argv.includes('--print-md5');
 const QUICK = process.argv.includes('--quick');
@@ -132,7 +136,7 @@ function callerLines(c) {
   if (c.claims) lines.push(`select set_config('request.jwt.claims', ${lit(JSON.stringify(c.claims))}, true) \\g /dev/null`);
   if (c.role) {
     lines.push(`set local role ${c.role};`);
-    if (c.role === 'authenticated') lines.push(`set local statement_timeout = '8s';`);
+    if (c.role === 'authenticated' || c.role === 'service_role') lines.push(`set local statement_timeout = '8s';`);
     if (c.role === 'anon') lines.push(`set local statement_timeout = '3s';`);
     lines.push(`set local lock_timeout = '8s';`);
   }
@@ -150,6 +154,42 @@ function asCaller(callerKey, body, { commit = true } = {}) {
 const lastJson = (r) => { try { return JSON.parse(r.out.split('\n').filter(Boolean).pop()); } catch { return null; } };
 const callJ = (callerKey, body) => { const r = asCaller(callerKey, body); return { ...r, j: lastJson(r) }; };
 
+// -- live sessions, for interleavings: a caller's transaction kept open between statements ----------
+const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+let marks = 0;
+function session(callerKey) {
+  const c = CALLERS[callerKey];
+  const p = spawn(bin('psql'), ['-h', dir, '-p', port, '-U', c.login, '-d', DB, '-X', '-q', '-At'], { env });
+  const s = { out: '', err: '' };
+  p.stdout.on('data', (d) => { s.out += d; }); p.stderr.on('data', (d) => { s.err += d; });
+  const send = (t) => p.stdin.write(t + '\n');
+  callerLines(c).forEach(send);
+  s.run = (stmt) => { const m = `MK${++marks}`; send(stmt.trim().replace(/;?$/, ';')); send(`\\echo ${m}`); return m; };
+  s.done = (m) => s.out.includes(m);
+  s.wait = async (m, ms = 12000) => { const t = Date.now(); while (!s.done(m) && Date.now() - t < ms) await sleep(20); return s.done(m); };
+  s.end = async (word = 'commit') => { const m = s.run(word); await s.wait(m); p.stdin.end(); await new Promise((res) => p.on('close', res)); };
+  s.code = () => { const m = /ERROR:\s+([0-9A-Z]{5})/.exec(s.err); return m ? m[1] : null; };
+  return s;
+}
+// One API call in its own transaction, as PostgREST makes it; resolves { code, err, out }.
+function oneShot(callerKey, body) {
+  const c = CALLERS[callerKey];
+  const lines = callerLines(c);
+  lines.push(body.trim().replace(/;?$/, ';'), 'commit;');
+  return new Promise((res) => {
+    const p = spawn(bin('psql'), ['-h', dir, '-p', port, '-U', c.login, '-d', DB, '-v', 'ON_ERROR_STOP=1', '-X', '-q', '-At'], { env });
+    let err = ''; let out = '';
+    p.stderr.on('data', (d) => { err += d; }); p.stdout.on('data', (d) => { out += d; });
+    p.on('close', (code) => { const m = /ERROR:\s+([0-9A-Z]{5})/.exec(err); res({ code, err, out: out.trim(), sqlstate: m ? m[1] : null }); });
+    p.stdin.end(lines.join('\n') + '\n');
+  });
+}
+const freshItem = (name, { loc = A1, unit = 'each', cost: c = 1 } = {}) => {
+  const iid = randomUUID();
+  sql(`insert into inventory_items (id, location_id, name, base_unit, current_cost, on_hand) values ('${iid}', '${loc}', ${lit(name)}, '${unit}', ${c == null ? 'null' : c}, 0)`);
+  return iid;
+};
+
 const post = (loc, item, qty, type, { key = null, at = null, area = null, cost = null, src = 'closed_check', srcId = null } = {}) =>
   `select public.post_stock_movement(p_location_id => '${loc}', p_inventory_item_id => '${item}', p_qty_base => ${qty}, ` +
   `p_movement_type => '${type}', p_unit_cost => ${cost == null ? 'null' : cost}, p_source_type => ${lit(src)}, p_source_id => ${lit(srcId)}, ` +
@@ -162,7 +202,7 @@ const areaHold = (item, area) => num(`select coalesce((select on_hand from inven
 const areaLedger = (item, area) => num(`select coalesce(sum(qty_base), 0) from stock_movements where inventory_item_id = '${item}' and area_id = '${area}'`);
 
 // -- one database ------------------------------------------------------------------------------------
-function baseDb(name, { central = true } = {}) {
+function baseDb(name, { central = true, centralDefault = false } = {}) {
   DB = 'postgres';
   sql(`drop database if exists ${name}`);
   sql(`create database ${name}`);
@@ -184,14 +224,21 @@ function baseDb(name, { central = true } = {}) {
   sqlFile(join(FLIVE, 'post_stock_transfer_leg_20261016.sql'));
   sqlFile(join(here, 'live/rehome_20261016.sql'));
   sqlFile(join(here, 'live/stock_usage_by_weekday_live.sql'));
+  sqlFile(join(here, 'live/stock_usage_rates_live.sql'));
   sql(`grant execute on function ${SIG.psm} to authenticated, anon, service_role;
        grant execute on function public.set_inventory_on_hand(uuid,uuid,numeric,uuid,text) to public, anon, authenticated, service_role;
        revoke all on function ${SIG.leg} from public, anon;
-       grant execute on function ${SIG.leg} to authenticated, service_role;`);
+       grant execute on function ${SIG.leg} to authenticated, service_role;
+       revoke all on function public.stock_usage_rates(uuid, integer) from public, anon;
+       grant execute on function public.stock_usage_rates(uuid, integer) to authenticated, service_role;`);
   seed();
-  // v5.11.76 then v5.11.77, exactly as Peter ran them on 19 Oct 2026.
+  // v5.11.76 then v5.11.77, exactly as Peter ran them on 19 Oct 2026. v5.11.78's 20261019 (every
+  // venue central, every new venue central when created) only where asked: section 21 proves this
+  // file on top of it as live is; the other sections keep the venues on the till path so a till's
+  // own posts reach the core (the drainer calls the same core).
   sqlFile(FENCES);
   if (central) sqlFile(CENTRAL);
+  if (central && centralDefault) sqlFile(CENTRAL_DEFAULT);
 }
 
 function seed() {
@@ -252,18 +299,20 @@ console.log(`\nStock Phase 0 proof (seed ${SEED}${QUICK ? ', quick' : ''})`);
 console.log('\n1. Guard constants');
 baseDb('p0_md5');
 const md5 = { core18a: md5Of(SIG.core), leg18c: md5Of(SIG.leg), counted18c: md5Of(SIG.counted), rehome16: md5Of(SIG.rehome), weekday: md5Of(SIG.weekday2),
+  rates: md5Of('public.stock_usage_rates(uuid,integer)'),
   psm18c: md5Of(SIG.psm), sweep18c: md5Of(SIG.sweep), sw18c: md5Of(SIG.sw), modeOf18c: md5Of(SIG.modeOf), enq18c: md5Of(SIG.enq) };
 sqlText1(unguarded(migText.replace(/MD5_[A-Z0-9]+/g, '00000000000000000000000000000000')));
-md5.core19a = md5Of(SIG.core); md5.leg19a = md5Of(SIG.leg); md5.rehome19a = md5Of(SIG.rehome); md5.counted19a = md5Of(SIG.counted);
+md5.core19b = md5Of(SIG.core); md5.leg19b = md5Of(SIG.leg); md5.rehome19b = md5Of(SIG.rehome); md5.counted19b = md5Of(SIG.counted);
 if (PRINT_MD5) { console.log(JSON.stringify(md5, null, 2)); stop(); process.exit(0); }
-for (const k of ['core18a', 'leg18c', 'counted18c', 'rehome16', 'weekday', 'core19a', 'leg19a', 'rehome19a', 'counted19a']) ok(migText.includes(`'${md5[k]}'`), `the migration guard carries ${k} (${md5[k]})`);
+for (const k of ['core18a', 'leg18c', 'counted18c', 'rehome16', 'core19b', 'leg19b', 'rehome19b', 'counted19b']) ok(migText.includes(`'${md5[k]}'`), `the migration guard carries ${k} (${md5[k]})`);
+ok(md5Of(SIG.weekday2) === md5.weekday && md5Of('public.stock_usage_rates(uuid,integer)') === md5.rates, 'the live stock_usage_by_weekday and stock_usage_rates are left exactly as they are (md5)');
 ok(md5.leg18c === '541ac92297e3784706a2f7a958d5c396' && md5.core18a === 'e9865d7cad62f582db4e904bf41ad512', 'the base is the live text: 20261018c leg 541ac922..., 20261018a core e9865d7c... (read on Ops 19 Oct)');
 ok(rbText.includes(`'${md5.core18a}'`) && rbText.includes(`'${md5.leg18c}'`) && rbText.includes(`'${md5.counted18c}'`), 'the rollback check names the 20261018a and 20261018c md5s it puts back');
 ok(md5.psm18c === md5Of(SIG.psm) && md5Of(SIG.sweep) === md5.sweep18c && md5Of(SIG.sw) === md5.sw18c && md5Of(SIG.modeOf) === md5.modeOf18c && md5Of(SIG.enq) === md5.enq18c,
-  'the central door, the sweep, the switch, the mode lookup and the enqueue trigger are 20261018c\'s text after 20261019a (md5)');
+  'the central door, the sweep, the switch, the mode lookup and the enqueue trigger are 20261018c\'s text after 20261019b (md5)');
 
 // -- 2. BEFORE: what is wrong today (on 20261018a) ---------------------------------------------------
-console.log('\n2. BEFORE 20261019a (20261018a only): the faults are there');
+console.log('\n2. BEFORE 20261019b (20261018a only): the faults are there');
 baseDb('p0_before');
 {
   // a refund of a sale that never took stock off returns stock all the same
@@ -301,16 +350,16 @@ baseDb('p0_before');
 }
 
 // -- 3. the migration --------------------------------------------------------------------------------
-console.log('\n3. 20261019a, as the SQL editor runs it');
+console.log('\n3. 20261019b, as the SQL editor runs it');
 baseDb('p0_main');
 const applied = psql({ args: ['-1', '-f', MIGRATION] });
 const checkRow = applied.stdout.trim().split('\n').pop().split('|');
 ok(applied.status === 0, 'the file applies in one transaction');
-const [fnCount, coreLocked, coreOpen, trig, cols, cost8, oh16, idx, settings, trIns, autoTrig, recCentral, recTill, defMode] = checkRow.map((x) => x);
-ok(fnCount === '9' && coreLocked === '1' && coreOpen === '0' && trig === '4' && cols === '12', `visible check: functions ${fnCount}, core ${coreLocked}, internals open to the API ${coreOpen}, triggers ${trig}, columns ${cols}`);
-ok(cost8 === '1' && oh16 === '1' && idx === '10' && settings === '0' && trIns === '2', `visible check: cost 8dp ${cost8}, on hand 16,4 ${oh16}, indexes ${idx}, settings rows ${settings}, transfer insert rule ${trIns}`);
-ok(autoTrig === '1' && recCentral === '0' && recTill === '0' && defMode === 'browser', `visible check: automatic central trigger ${autoTrig}, recipe venues central ${recCentral}, on the till path ${recTill}, default ${defMode} (no venue has a recipe here)`);
-ok(/"on_hand"/.test(checkRow[14] || ''), 'visible check: the per venue stock sums come back');
+const [fnCount, coreLocked, coreOpen, trig, cols, cost8, oh16, idx, settings, trIns, oldUsage] = checkRow.map((x) => x);
+ok(fnCount === '11' && coreLocked === '1' && coreOpen === '0' && trig === '4' && cols === '12', `visible check: functions ${fnCount}, core ${coreLocked}, internals open to the API ${coreOpen}, triggers ${trig}, columns ${cols}`);
+ok(cost8 === '1' && oh16 === '1' && idx === '10' && settings === '0' && trIns === '2' && oldUsage === '2', `visible check: cost 8dp ${cost8}, on hand 16,4 ${oh16}, indexes ${idx}, settings rows ${settings}, transfer insert rule ${trIns}, old usage reads kept ${oldUsage}`);
+ok(checkRow.length === 12 && /"on_hand"/.test(checkRow[11] || ''), `visible check: 12 columns, the per venue stock sums last (${checkRow.slice(0, 11).join('|')}|...)`);
+ok(sql(`select count(*) from stock_depletion_mode`) === '0', '20261019b writes no central stock mode row');
 ok(sql(`select current_setting('role')`) === 'none', 'the session role is left as it was');
 
 // -- 4. the doors are as 20261018a left them ---------------------------------------------------------
@@ -455,6 +504,91 @@ const approve = (who, cid, extra = '') => callJ(who, `select public.approve_stoc
   ok(near(areaHold(I.beans, AR.cellar), areaLedger(I.beans, AR.cellar)) && near(areaHold(I.beans, AR.bar), areaLedger(I.beans, AR.bar)), 'area holdings equal their movements');
 }
 
+// -- 7b. overlapping counts, counted_at and approved counts locked ---------------------------------
+console.log('\n7b. An older count approved after a newer one; counted_at and an approved count are locked');
+{
+  const atSet = (cid, ago) => sql(`update stock_count_lines set counted_at = now() - interval '${ago}' where count_id = '${cid}'`);
+  // An older sheet (90 counted 60 minutes ago) approved AFTER a newer one (80, 30 minutes ago).
+  const e1 = freshItem('E1 water');
+  sql(`select public._post_stock_movement('${A1}', '${e1}', 100, 'PURCHASE_RECEIPT', 1, 'purchase_order', 'po-e1', 'po:e1:${e1}', now() - interval '2 hours')`);
+  const cOld = newCount(A1, [{ item: e1 }]); const cNew = newCount(A1, [{ item: e1 }]);
+  setCounted(cOld, e1, 90); atSet(cOld, '60 minutes');
+  callJ('tillA1', post(A1, e1, -5, 'SALE_DEPLETION', { key: `sale:e1a:${e1}`, srcId: 'e1a', at: `now() - interval '45 minutes'` }));
+  setCounted(cNew, e1, 80); atSet(cNew, '30 minutes');
+  let r = approve('boA1', cNew);
+  ok(r.j?.ok === true && near(onHand(e1), 80), `the newer count (80) approves: on hand ${onHand(e1)}`);
+  const pv = approve('boA1', cOld, ', null, true');
+  ok(pv.j?.superseded === 1 && pv.j?.lines?.[0]?.superseded === true && pv.j?.lines?.[0]?.delta === 0, `the preview of the older sheet says its line is superseded, delta 0 (${JSON.stringify(pv.j?.lines?.[0] || null)})`);
+  r = approve('boA1', cOld);
+  const tNew = `(select counted_at from stock_count_lines where count_id = '${cNew}')`;
+  ok(r.j?.ok === true && r.j?.superseded === 1 && r.j?.posted === 0 && near(onHand(e1), 80), `the older count approved after it posts nothing: on hand stays 80 (${onHand(e1)}; was 70 before this fix)`);
+  ok(near(num(`select coalesce(sum(qty_base), 0) from stock_movements where inventory_item_id = '${e1}' and occurred_at <= ${tNew}`), 80), 'the ledger at the newer count\'s moment is 80 (I6 for the newest count)');
+  ok(num(`select variance_qty from stock_count_lines where count_id = '${cOld}'`) === 0, 'the superseded line stores variance 0, matching the ledger');
+  // the control: oldest first still lands on the newest figure
+  const e1b = freshItem('E1 control');
+  sql(`select public._post_stock_movement('${A1}', '${e1b}', 100, 'PURCHASE_RECEIPT', 1, 'purchase_order', 'po-e1b', 'po:e1b:${e1b}', now() - interval '2 hours')`);
+  const dOld = newCount(A1, [{ item: e1b }]); const dNew = newCount(A1, [{ item: e1b }]);
+  setCounted(dOld, e1b, 90); atSet(dOld, '60 minutes');
+  callJ('tillA1', post(A1, e1b, -5, 'SALE_DEPLETION', { key: `sale:e1b:${e1b}`, srcId: 'e1b', at: `now() - interval '45 minutes'` }));
+  setCounted(dNew, e1b, 80); atSet(dNew, '30 minutes');
+  approve('boA1', dOld); approve('boA1', dNew);
+  ok(near(onHand(e1b), 80) && onHand(e1b) === ledger(e1b), `oldest first: on hand 80 as before (${onHand(e1b)})`);
+
+  // counted_at belongs to the database
+  const e2 = freshItem('E2 lemons', { cost: 0.3 });
+  sql(`select public._post_stock_movement('${A1}', '${e2}', 50, 'PURCHASE_RECEIPT', 0.3, 'purchase_order', 'po-e2', 'po:e2:${e2}', now() - interval '1 hour')`);
+  const cd = newCount(A1, [{ item: e2 }]);
+  setCounted(cd, e2, 40);
+  const t0 = sql(`select counted_at::text from stock_count_lines where count_id = '${cd}'`);
+  r = asCaller('boA1', `update stock_count_lines set counted_at = now() + interval '7 days' where count_id = '${cd}'`);
+  ok(r.status === 0 && sql(`select counted_at::text from stock_count_lines where count_id = '${cd}'`) === t0, 'a Back Office login cannot move counted_at on a draft line: the database keeps its own time');
+  r = asCaller('boA1', `insert into stock_count_lines (location_id, count_id, inventory_item_id, counted_qty, counted_at) values ('${A1}', '${cd}', '${e2}', 5, now() + interval '7 days')`);
+  ok(r.status === 0 && num(`select count(*) from stock_count_lines where count_id = '${cd}' and counted_at > now() + interval '1 minute'`) === 0, 'a line inserted with a future counted_at is stamped with the database clock instead');
+  r = asCaller('boA1', `update stock_count_lines set counted_qty = 41 where count_id = '${cd}' and counted_qty = 40`);
+  ok(sql(`select counted_at::text > '${t0}' from stock_count_lines where count_id = '${cd}' and counted_qty = 41`) === 't', 'changing the figure stamps a new time');
+  sql(`delete from stock_count_lines where count_id = '${cd}' and counted_qty = 5`);
+  atSet(cd, '10 minutes');
+  r = approve('boA1', cd);
+  ok(r.j?.ok === true, 'the sheet approves');
+  r = asCaller('boA1', `update stock_count_lines set counted_at = now() + interval '7 days' where count_id = '${cd}'`);
+  ok(r.sqlstate === '55000', `an approved line cannot be changed, counted_at included (${r.sqlstate})`);
+  r = asCaller('boA1', `insert into stock_count_lines (location_id, count_id, inventory_item_id, counted_qty, expected_qty) values ('${A1}', '${cd}', '${e2}', 999, 0)`);
+  ok(r.sqlstate === '55000', `a line cannot be added to an approved count (${r.sqlstate})`);
+  r = asCaller('boA1', `delete from stock_count_lines where count_id = '${cd}'`);
+  ok(r.sqlstate === '55000', `a line of an approved count cannot be removed (${r.sqlstate})`);
+  const bx = onHand(e2);
+  callJ('tillA1', post(A1, e2, -3, 'SALE_DEPLETION', { key: `sale:e2:${e2}`, srcId: 'e2', at: `now() - interval '1 minute'` }));
+  ok(near(onHand(e2), bx - 3), `a till sale made after the count still comes off (${bx} to ${onHand(e2)})`);
+
+  // an approved count cannot be reopened, re figured or deleted through the API
+  r = asCaller('boA1', `update stock_counts set status = 'DRAFT' where id = '${cd}'`);
+  ok(r.sqlstate === '55000' && sql(`select status from stock_counts where id = '${cd}'`) === 'APPROVED', `a Back Office login cannot set an approved count back to DRAFT (${r.sqlstate})`);
+  r = asCaller('ownerA', `update stock_counts set variance_value = 0, opening_value = 0 where id = '${cd}'`);
+  ok(r.sqlstate === '55000', `nor change its stored figures, the owner included (${r.sqlstate})`);
+  r = asCaller('boA1', `delete from stock_counts where id = '${cd}'`);
+  ok(r.sqlstate === '55000' && num(`select count(*) from stock_counts where id = '${cd}'`) === 1, `nor delete it (${r.sqlstate})`);
+  r = asCaller('boA1', `update stock_counts set name = 'Monday count' where id = '${cd}'`);
+  ok(r.status === 0 && sql(`select name from stock_counts where id = '${cd}'`) === 'Monday count', 'its name can still change');
+  r = asCaller('service', `update stock_counts set status = 'DRAFT' where id = '${cd}'`, { commit: false });
+  ok(r.status === 0, 'the service role may (an edge function; rolled back here)');
+  const draft = newCount(A1, [{ item: e2 }]);
+  r = asCaller('boA1', `delete from stock_counts where id = '${draft}'`);
+  ok(r.status === 0, 'a draft count can still be deleted');
+
+  // the caller is checked before anything is locked or said
+  const cb = newCount(B1, [{ item: I.b1 }]);
+  const r1 = asCaller('stranger', `select public.approve_stock_count('${cb}')`);
+  const r2 = asCaller('stranger', `select public.approve_stock_count('${randomUUID()}')`);
+  ok(r1.sqlstate === '42501' && r2.sqlstate === '42501' && r1.message === r2.message, `a stranger gets the same answer for another venue's count and for a made up id (${r1.sqlstate} ${r2.sqlstate})`);
+  const holder = session('sqlEditor');
+  const hm = holder.run(`select 1 from stock_counts where id = '${cb}' for update`);
+  await holder.wait(hm);
+  const tq = Date.now();
+  const r3 = await oneShot('stranger', `select public.approve_stock_count('${cb}')`);
+  ok(r3.sqlstate === '42501' && Date.now() - tq < 3000, `while another session holds that count, the stranger is refused at once, without waiting on its lock (${Date.now() - tq} ms)`);
+  await holder.end('rollback');
+}
+
 // -- 8. receiving ------------------------------------------------------------------------------------
 console.log('\n8. Receiving in one database step');
 const recv = (who, loc, srcType, srcId, lines, area = null) => callJ(who, `select public.stock_receive('${loc}', '${srcType}', ${lit(srcId)}, ${jlit(lines)}, ${area ? `'${area}'` : 'null'})`);
@@ -496,6 +630,17 @@ const recv = (who, loc, srcType, srcId, lines, area = null) => callJ(who, `selec
   }
   const rr = asCaller('boA1', `select public.stock_receive('${A1}', 'purchase_order', 'po-f', ${jlit([{ key: 'po:f:2', item_id: I.b1, qty_base: 1, unit_cost: 1 }])})`);
   ok(rr.sqlstate === '22023', `another venue's item is refused before anything posts (${rr.sqlstate})`);
+  // A receive sets the item's cost: Back Office work or the venue's Ops tablet, never a till or kiosk.
+  const lc0 = cost(I.lastc), hist0 = num(`select count(*) from item_cost_history where inventory_item_id = '${I.lastc}'`), oh0 = onHand(I.lastc);
+  for (const [who, loc, want] of [['tillA1', A1, '42501'], ['kioskA1', A1, '42501'], ['opsA2', A1, '42501']]) {
+    const x = asCaller(who, `select public.stock_receive('${loc}', 'purchase_order', 'po-dev', ${jlit([{ key: `po:dev:${who}`, item_id: I.lastc, qty_base: 1000, unit_cost: 0.0001 }])})`);
+    ok(x.sqlstate === want, `${CALLERS[who].what} cannot receive at A1, so it cannot set a cost (${x.sqlstate})`);
+  }
+  ok(cost(I.lastc) === lc0 && onHand(I.lastc) === oh0 && num(`select count(*) from item_cost_history where inventory_item_id = '${I.lastc}'`) === hist0, 'the item\'s cost, stock and cost history are untouched');
+  r = recv('service', A1, 'purchase_order', 'po-svc', [{ key: 'po:svc:1', item_id: I.lastc, qty_base: 1, unit_cost: 0.5 }]);
+  ok(r.j?.ok === true, 'the Manager app (service role) receives');
+  r = recv('ownerA', A1, 'purchase_order', 'po-own', [{ key: 'po:own:1', item_id: I.lastc, qty_base: 1, unit_cost: 0.5 }]);
+  ok(r.j?.ok === true, 'the owner (no link row) receives');
   ok([I.packed, I.free, I.lastc, I.milk].every((it) => onHand(it) === ledger(it)), 'on hand equals the ledger');
 }
 
@@ -533,6 +678,28 @@ const postInv = (who, inv, lines, receipts) => callJ(who, `select public.stock_p
     ok(rr.sqlstate === '42501', `${CALLERS[who].what} cannot post an invoice (${rr.sqlstate})`);
   }
   void inv2;
+  // A retry of an invoice with no number (the answer was lost): the screen's own id, sent again.
+  const cid = randomUUID();
+  const ohb = onHand(I.beans);
+  const once = () => postInv('boA1', { client_id: cid, supplier_id: SUP.a1b, invoice_number: null, total: 36 },
+    [{ matched_item_id: I.beans, qty: 2, unit: 'kg', unit_price: 18 }], [{ line_index: 0, item_id: I.beans, qty_base: 2, unit_cost: 18 }]);
+  const a = once(); const b = once();
+  ok(a.j?.ok === true && a.j?.invoice_id === cid && b.j?.ok === true && b.j?.duplicate === true && near(onHand(I.beans), ohb + 2),
+    `the same invoice with no number sent twice adds 2 kg once (gain ${onHand(I.beans) - ohb}; was 4 before this fix)`);
+  ok(num(`select count(*) from supplier_invoices where id = '${cid}'`) === 1 && num(`select count(*) from supplier_invoice_lines where invoice_id = '${cid}'`) === 1, 'one invoice, one line');
+  // two retries at the same moment
+  const cid2 = randomUUID();
+  const ohc = onHand(I.beans);
+  const body2 = `select public.stock_post_invoice('${A1}', ${jlit({ client_id: cid2, supplier_id: SUP.a1b, invoice_number: null })}, ${jlit([{ matched_item_id: I.beans, qty: 1, unit: 'kg', unit_price: 18 }])}, ${jlit([{ line_index: 0, item_id: I.beans, qty_base: 1, unit_cost: 18 }])})`;
+  const both = await Promise.all([oneShot('boA1', body2), oneShot('boA1', body2)]);
+  const answers = both.map((x) => { try { return JSON.parse(x.out.split('\n').filter(Boolean).pop()); } catch { return null; } });
+  ok(both.every((x) => x.code === 0) && answers.filter((x) => x?.duplicate === true).length === 1 && near(onHand(I.beans), ohc + 1),
+    `two retries at once: one posts, the other is answered duplicate, 1 kg in once (${JSON.stringify(answers.map((x) => x && (x.duplicate ? 'duplicate' : x.ok)))}, gain ${onHand(I.beans) - ohc})`);
+  // a client id that is another venue's invoice is refused
+  const bInv = randomUUID();
+  sql(`insert into supplier_invoices (id, location_id, status) values ('${bInv}', '${B1}', 'POSTED')`);
+  const x = postInv('boA1', { client_id: bInv, invoice_number: 'X-1' }, [], []);
+  ok(x.sqlstate === '22023', `a client id that names another venue's invoice is refused (${x.sqlstate})`);
 }
 
 // -- 10. waste -----------------------------------------------------------------------------------------
@@ -560,6 +727,15 @@ const waste = (who, loc, ev, lines) => callJ(who, `select public.stock_record_wa
   }
   const rr = asCaller('tillA1', `select public.stock_record_waste('${A1}', ${jlit({ kind: 'menu', item_name: 'x' })}, ${jlit([{ item_id: I.b1, qty_base: 1 }])})`);
   ok(rr.sqlstate === '22023' && num(`select count(*) from waste_events where item_name = 'x'`) === 0, 'another venue\'s item is refused and no waste row is left behind');
+  // A stock item waste sent with no lines takes its own quantity off (it used to record and take nothing).
+  for (const [label, linesSql] of [['no lines (SQL null)', 'null'], ['a JSON null', `'null'::jsonb`], ['an empty list', `'[]'::jsonb`]]) {
+    const ohc = onHand(I.cups); const wid4 = randomUUID();
+    const r4 = callJ('boA1', `select public.stock_record_waste('${A1}', ${jlit({ id: wid4, kind: 'item', inventory_item_id: I.cups, item_name: 'Cups', qty: 2, unit: 'each', qty_base: 2, reason: 'Breakage' })}, ${linesSql})`);
+    ok(r4.j?.ok === true && r4.j?.posted === 1 && near(onHand(I.cups), ohc - 2) && near(r4.j?.cost_value, Math.round(2 * cost(I.cups) * 100) / 100, 0.011),
+      `an item waste of 2 cups with ${label} takes 2 off and is costed (${ohc} to ${onHand(I.cups)}, cost ${r4.j?.cost_value})`);
+  }
+  const r5 = asCaller('boA1', `select public.stock_record_waste('${A1}', ${jlit({ kind: 'item', inventory_item_id: I.cups, item_name: 'No qty' })}, null)`);
+  ok(r5.sqlstate === '22023' && num(`select count(*) from waste_events where item_name = 'No qty'`) === 0, `an item waste with no lines and no quantity is refused, nothing written (${r5.sqlstate})`);
 }
 
 // -- 11. deletes keep ledgers --------------------------------------------------------------------------
@@ -655,19 +831,89 @@ const mkTransfer = (from, to, lines, { fromArea = null } = {}) => {
   r = asCaller('boA1', `insert into stock_transfers (location_id, to_location_id, status) values ('${A1}', '${A2}', 'DRAFT')`);
   ok(r.status === 0, 'a transfer to a sister venue is allowed');
   ok([I.milk, I.beans, I.cups, I.milk2, I.beans2, I.cups2].every((it) => near(onHand(it), ledger(it))), 'on hand equals the ledger at both venues');
+
+  // Rounding into a coarser unit (I5): received in full, 11.6438 ml into a litre item.
+  const fullIn = (sent) => {
+    const T = randomUUID(); const LN = randomUUID();
+    sql(`insert into stock_transfers (id, location_id, to_location_id, status, reference) values ('${T}', '${A1}', '${A2}', 'DRAFT', 'E12');
+         insert into stock_transfer_lines (id, transfer_id, location_id, to_location_id, inventory_item_id, base_unit, qty_base, name_snapshot) values ('${LN}', '${T}', '${A1}', '${A2}', '${I.milk}', 'ml', ${sent}, 'Milk');`);
+    leg('boA1', T, 'out');
+    sql(`update stock_transfer_lines set to_inventory_item_id = '${I.milk2}', qty_received_base = null where id = '${LN}'`);
+    const m2 = onHand(I.milk2);
+    const rr = leg('ownerA', T, 'in');
+    return { rr, got: Math.round((onHand(I.milk2) - m2) * 1e4) / 1e4, short: sql(`select coalesce(short_qty_base::text, '') from stock_transfer_lines where id = '${LN}'`) };
+  };
+  let e = fullIn(11.6438);
+  ok(e.rr.j?.ok === true && e.got === 0.0116 && e.short === '' && e.rr.j?.short_lines === 0, `11.6438 ml received in full lands as 0.0116 l with no Short on transfer (got ${e.got} l, short '${e.short}')`);
+  e = fullIn(11.6958);
+  ok(e.got === 0.0116 && Number(e.short) === 0.0958, `11.6958 ml lands as 0.0116 l, never 0.0117 (more than was sent); the 0.0958 ml left is booked short (got ${e.got}, short ${e.short})`);
+  e = fullIn(6000);
+  ok(e.got === 6 && e.short === '', 'a round 6,000 ml lands as 6 l, nothing short');
+
+  // Property run: random quantities across unit pairs, full and part receives, both directions.
+  const flourG = freshItem('Flour', { unit: 'g', cost: 0.002 }), flourKg = freshItem('Flour', { loc: A2, unit: 'kg', cost: 2 });
+  const pairs = [
+    { from: A1, to: A2, si: I.milk, ri: I.milk2, su: 'ml' }, { from: A2, to: A1, si: I.milk2, ri: I.milk, su: 'l' },
+    { from: A1, to: A2, si: flourG, ri: flourKg, su: 'g' }, { from: A2, to: A1, si: flourKg, ri: flourG, su: 'kg' },
+    { from: A1, to: A2, si: I.cups, ri: I.cups2, su: 'each' }, { from: A1, to: A2, si: I.beans, ri: I.cups2, su: 'kg' },
+  ];
+  const rand = rng(SEED + 7);
+  const tids = [];
+  const stmts = [];
+  for (let k = 0; k < (QUICK ? 120 : 400); k++) {
+    const pr = pairs[Math.floor(rand() * pairs.length)];
+    const T = randomUUID(); const LN = randomUUID();
+    const sent = Math.max(0.0001, Math.round(rand() * (rand() < 0.5 ? 50 : 50000)) / 10000);
+    const f = sql(`select public.stock_convert_qty(1, '${pr.su}', (select base_unit from inventory_items where id = '${pr.ri}'), array['${pr.ri}', '${pr.si}']::uuid[])`);
+    const typed = rand() < 0.5 ? 'null' : String(Math.floor(rand() * sent * Number(f) * 10000) / 10000);
+    tids.push(T);
+    stmts.push(`insert into stock_transfers (id, location_id, to_location_id, status, reference) values ('${T}', '${pr.from}', '${pr.to}', 'DRAFT', 'P5');
+insert into stock_transfer_lines (id, transfer_id, location_id, to_location_id, inventory_item_id, base_unit, qty_base, name_snapshot) values ('${LN}', '${T}', '${pr.from}', '${pr.to}', '${pr.si}', '${pr.su}', ${sent}, 'P');
+select public.post_stock_transfer_leg('${T}', 'out', 'P');
+update stock_transfer_lines set to_inventory_item_id = '${pr.ri}', qty_received_base = ${typed} where id = '${LN}';
+select public.post_stock_transfer_leg('${T}', 'in', 'P')`);
+  }
+  const pr5 = psql({ input: stmts.join(';\n') + ';\n', allowFail: true });
+  ok(pr5.status === 0, `${tids.length} random transfers sent and received with no error${pr5.status ? `: ${(pr5.stderr || '').slice(0, 300)}` : ''}`);
+  const tl = `array[${tids.map((t) => `'${t}'`).join(',')}]::uuid[]`;
+  const facts = `select l.id, l.qty_base as sent, coalesce(l.qty_received_base, 0) as got, coalesce(l.short_qty_base, 0) as short,
+      public.stock_convert_qty(1, l.base_unit, l.to_base_unit, array[l.to_inventory_item_id, l.inventory_item_id]) as f
+    from stock_transfer_lines l where l.transfer_id = any(${tl})`;
+  ok(sql(`select count(*) from stock_transfers where id = any(${tl}) and status = 'RECEIVED'`) === String(tids.length), 'every one received');
+  const created = sql(`select count(*) from (${facts}) x where x.got / x.f > x.sent + 0.0000000001`);
+  ok(created === '0', `nothing is created: what arrived is never more than was sent, in the sender's unit (${created} lines over)`);
+  const drift = sql(`select coalesce(max(abs(x.sent - x.got / x.f - x.short) / (0.00005 * greatest(1, 1 / x.f))), 0) from (${facts}) x`);
+  ok(Number(drift) < 1.000001, `nothing is lost beyond half a 4th decimal step of the coarser unit: sent = received + short within that (worst ${Number(drift).toFixed(4)} of a half step)`);
+  const tiny = sql(`select count(*) from (${facts}) x where x.short > 0 and x.short < 0.00005 * greatest(1, 1 / x.f)`);
+  ok(tiny === '0', 'no Short on transfer below half a step (rounding is never booked as a loss)');
+  const wasteRows = num(`select count(*) from waste_events w where w.reason = 'Short on transfer' and w.note like 'Transfer P5%'`);
+  const shortLines = num(`select count(*) from stock_transfer_lines where transfer_id = any(${tl}) and coalesce(short_qty_base, 0) > 0`);
+  ok(wasteRows === shortLines, `one waste row per short line (${wasteRows} and ${shortLines})`);
+  ok(sql(`select count(*) from inventory_items i where i.location_id in ('${A1}', '${A2}') and abs(coalesce(i.on_hand, 0) - coalesce((select sum(m.qty_base) from stock_movements m where m.inventory_item_id = i.id), 0)) > 0.0001`) === '0', 'I1: on hand equals the ledger at both venues after the run');
 }
 
-// -- 13. weekday on the venue clock ---------------------------------------------------------------------
-console.log('\n13. The order pad weekday is the venue\'s, not UTC');
+// -- 13. weekday on the venue clock, one row per item, paged ----------------------------------------
+console.log('\n13. The order pad weekday is the venue\'s, not UTC; one row per item, 1,000 items a page');
 {
-  // Monday 19 Oct 2026 00:30 in London (BST) is Sunday 23:30 UTC. Provo (A1) is America/Denver.
-  sql(`insert into stock_movements (location_id, inventory_item_id, qty_base, movement_type, occurred_at) values
-         ('${A2}', '${I.cups2}', -1, 'SALE_DEPLETION', '2026-10-18 23:30:00+00');`);
-  const asOf = (args) => sql(`select dow from public.stock_usage_by_weekday(${args}) where inventory_item_id = '${I.cups2}' and avg_daily_base > 0 order by dow`).split('\n').filter(Boolean);
-  // only rows within the last 8 weeks count; 18 Oct is "now" in this run's calendar or earlier
-  ok(asOf(`'${A2}', 520, null, '00:00'`).includes('1'), 'with the venue clock (London, midnight), a sale at 00:30 Monday is Monday');
-  ok(asOf(`'${A2}', 520, null, '06:00'`).includes('0'), 'with a 06:00 business day start it belongs to Sunday');
-  ok(asOf(`'${A2}', 520, 'Not/AZone', null`).length > 0, 'an unknown zone falls back to London, never an error');
+  // Monday 19 Oct 2026 00:30 in London (BST) is Sunday 23:30 UTC. One item with that one sale.
+  const wd = freshItem('Weekday cups', { loc: A2 });
+  sql(`select public._post_stock_movement('${A2}', '${wd}', -1, 'SALE_DEPLETION', null, 'closed_check', 'wd', 'sale:wd:${wd}', '2026-10-18 23:30:00+00')`);
+  const dowOf = (args) => {
+    const r = asCaller('ownerA', `select array_to_string(by_dow, ',') from public.stock_usage_weekday_page(${args}) where inventory_item_id = '${wd}'`);
+    return { status: r.status, v: (r.out || '').split(',').map(Number) };
+  };
+  // only rows within p_weeks count; 520 weeks reaches 18 Oct in any calendar this runs in
+  let d = dowOf(`'${A2}', 520, null, null, '00:00'`);
+  ok(d.v.length === 7 && near(d.v[1], 1 / 520, 1e-9) && d.v.filter((x) => x !== 0).length === 1, `with the venue clock (London, midnight), a sale at 00:30 Monday is Monday (${d.v.map((x) => +x.toFixed(4)).join(' ')})`);
+  d = dowOf(`'${A2}', 520, null, null, '06:00'`);
+  ok(near(d.v[0], 1 / 520, 1e-9) && d.v.filter((x) => x !== 0).length === 1, 'with a 06:00 business day start it belongs to Sunday');
+  d = dowOf(`'${A2}', 520, null, 'Not/AZone', null`);
+  ok(d.status === 0 && d.v.length === 7, 'an unknown zone falls back to London, never an error');
+  const rows = asCaller('ownerA', `select count(*) || '|' || count(*) filter (where array_length(by_dow, 1) = 7) from public.stock_usage_weekday_page('${A2}', 8)`).out;
+  const items2 = sql(`select count(*) from inventory_items where location_id = '${A2}'`);
+  ok(rows === `${items2}|${items2}`, `one row per stock item of the venue, each with 7 values (${rows}, items ${items2})`);
+  const rates = asCaller('ownerA', `select count(*) from public.stock_usage_rates_page('${A2}', 28)`).out;
+  ok(rates === items2, `the usage rate too: one row per item (${rates})`);
 }
 
 // -- 14. the Multi site menu warning --------------------------------------------------------------------
@@ -711,9 +957,19 @@ console.log('\n14b. The cost rule per venue, and who may call the new functions'
       ok(rr.sqlstate === '42501', `${fn.split('(')[0]} cannot be run through the API by the ${CALLERS[who].what} (${rr.sqlstate})`);
     }
   }
-  const w = asCaller('anonKey', `select count(*) from public.stock_usage_by_weekday('${A1}')`);
-  ok(w.sqlstate === '42501', `the bare anon key cannot read usage (${w.sqlstate})`);
-  ok(asCaller('boA1', `select count(*) from public.stock_usage_by_weekday('${A1}', 8, 'America/Denver', '06:00')`).status === 0, 'the Back Office reads usage on its venue clock');
+  for (const fn of [`public.stock_usage_weekday_page('${A1}')`, `public.stock_usage_rates_page('${A1}')`]) {
+    const w = asCaller('anonKey', `select count(*) from ${fn}`);
+    ok(w.sqlstate === '42501', `the bare anon key cannot read ${fn.split('(')[0]} (${w.sqlstate})`);
+  }
+  ok(asCaller('boA1', `select count(*) from public.stock_usage_weekday_page('${A1}', 8, null, 'America/Denver', '06:00')`).status === 0, 'the Back Office reads usage on its venue clock');
+  ok(asCaller('boB1', `select count(*) from public.stock_usage_weekday_page('${A1}', 520)`).out === '0', 'another company\'s login reads nothing of A1 (row level security)');
+  // The cost rule and the same company answer only to callers that reach the venue.
+  ok(callJ('stranger', `select public.stock_cost_rule('${A1}')`).out === 'price_list' && callJ('boB1', `select public.stock_cost_rule('${A1}')`).out === 'price_list',
+    'a stranger, or another company, is told the default, never A1\'s own rule');
+  ok(callJ('stranger', `select public.stock_same_company('${A1}', '${A2}')`).out === 'f' && callJ('boB1', `select public.stock_same_company('${A1}', '${A2}')`).out === 'f',
+    'a stranger, or another company, cannot learn that A1 and A2 belong together');
+  ok(callJ('boA1', `select public.stock_same_company('${A1}', '${A2}')`).out === 't' && callJ('boA1', `select public.stock_same_company('${A1}', '${B1}')`).out === 'f',
+    'A1\'s own login is told A2 is a sister venue and B1 is not');
   sql(`insert into stock_counts (id, location_id, status) values ('${id('91000000', '1')}', '${A1}', 'DRAFT');
        insert into stock_count_lines (location_id, count_id, inventory_item_id, counted_qty) values ('${A1}', '${id('91000000', '1')}', '${I.cups}', 3);`);
   ok(sql(`select counted_at is not null from stock_count_lines where count_id = '${id('91000000', '1')}'`) === 't', 'a line saved with a figure is stamped with its counted time');
@@ -747,9 +1003,15 @@ console.log(`\n15. Random sequences (seed ${SEED})`);
           const rq = 1 + Math.floor(rand() * 6);
           st += `;\nselect public._post_stock_movement('${A1}', '${it}', ${rq}, 'RETURN', null, 'closed_check_refund', 'p${chk}', 'return:p${chk}:r${o}:${it}')`;
         }
-      } else if (kind < 0.55) {
+      } else if (kind < 0.50) {
         const key = `po:prop:${s}:${o}`;
         st = `select public._stock_receive_lines('${A1}', 'purchase_order', 'prop', ${jlit([{ key, item_id: it, qty_base: 1 + Math.floor(rand() * 20), unit_cost: rand() < 0.15 ? 0 : Math.round(rand() * 500) / 100 }])}, ${rand() < 0.5 ? `'${AR.recv}'` : 'null'})`;
+      } else if (kind < 0.55) {
+        // an invoice, half of them with no number, posted with the screen's own id (replayed below)
+        const q = 1 + Math.floor(rand() * 10);
+        st = `select public.stock_post_invoice('${A1}', ${jlit({ client_id: randomUUID(), supplier_id: SUP.a1b, invoice_number: rand() < 0.5 ? null : `PROP-${s}-${o}` })}, ` +
+          `${jlit([{ matched_item_id: it, qty: q, unit: 'each', unit_price: 1 }])}, ${jlit([{ line_index: 0, item_id: it, qty_base: q, unit_cost: Math.round(rand() * 300) / 100 }])})`;
+        replays.push(st);
       } else if (kind < 0.65) {
         const wid = randomUUID();
         st = `select public.stock_record_waste('${A1}', ${jlit({ id: wid, kind: 'menu', item_name: 'W', qty: 1 })}, ${jlit([{ item_id: it, qty_base: 1 }])})`;
@@ -786,8 +1048,8 @@ rollback`;
   }
   const t0 = Date.now();
   const r = psql({ input: stmts.join(';\n') + ';\n', allowFail: true });
-  ok(r.status === 0, `${nSeq} random sequences (${stmts.length} steps: sales, refunds, receipts, waste, area moves, transfers, counts, crashes) ran with no error in ${Math.round((Date.now() - t0) / 1000)} s${r.status ? `: ${(r.stderr || '').slice(0, 300)}` : ''}`);
-  const snap = () => sql(`select count(*) || '|' || coalesce(sum(qty_base), 0) || '|' || coalesce(sum(value_delta), 0) from stock_movements where location_id = '${A1}'`);
+  ok(r.status === 0, `${nSeq} random sequences (${stmts.length} steps: sales, refunds, receipts, invoices with and without a number, waste, area moves, transfers, counts, crashes) ran with no error in ${Math.round((Date.now() - t0) / 1000)} s${r.status ? `: ${(r.stderr || '').slice(0, 300)}` : ''}`);
+  const snap = () => sql(`select count(*) || '|' || coalesce(sum(qty_base), 0) || '|' || coalesce(sum(value_delta), 0) || '|' || (select count(*) from supplier_invoices where location_id = '${A1}') || '|' || (select count(*) from waste_events where location_id = '${A1}') from stock_movements where location_id = '${A1}'`);
   const before = snap();
   const rp = psql({ input: replays.join(';\n') + ';\n', allowFail: true });
   ok(rp.status === 0 && snap() === before, `I3: replaying ${replays.length} of those steps changes nothing (${before})`);
@@ -834,6 +1096,45 @@ console.log('\n16. Count truth (I6): sales before, during and after a count, in 
     if (!near(atCount, counted) || !near(oh, counted - after)) { bad++; failures6.push({ k, counted, atCount, oh, want: counted - after }); }
   }
   ok(bad === 0, `I6 held in ${runs} runs: on hand = counted + movements after the count, the ledger at the count = counted${bad ? ` (${JSON.stringify(failures6.slice(0, 3))})` : ''}`);
+
+  // Two or three counts of one item open at once, approved in ANY order (newest first too), with
+  // sales posted before, between and after the approvals: the newest count is the truth.
+  const rand2 = rng(SEED + 11);
+  const runs2 = QUICK ? 30 : 120;
+  let bad2 = 0; let superseded = 0;
+  const fails2 = [];
+  for (let k = 0; k < runs2; k++) {
+    const item = randomUUID();
+    sql(`insert into inventory_items (id, location_id, name, base_unit, current_cost) values ('${item}', '${A1}', 'I6b ${k}', 'each', 1);
+         select public._post_stock_movement('${A1}', '${item}', 100, 'OPENING_BALANCE', 1, 'demo', null, 'open:${item}', now() - interval '3 days');`);
+    const nC = 2 + Math.floor(rand2() * 2);
+    const cs = Array.from({ length: nC }, (_, j) => ({ cid: randomUUID(), lid: randomUUID(), off: j * 7200 + Math.floor(rand2() * 3000), qty: 40 + Math.floor(rand2() * 50) }));
+    const evs = Array.from({ length: 6 + Math.floor(rand2() * 7) }, (_, i) => ({ i, off: Math.floor(rand2() * (nC * 7200 + 21600)) - 10800, qty: 1 + Math.floor(rand2() * 4), slot: Math.floor(rand2() * (nC + 2)) }));
+    const postE = (e) => `select public._post_stock_movement('${A1}', '${item}', -${e.qty}, 'SALE_DEPLETION', null, 'closed_check', 'i6b-${k}-${e.i}', 'sale:i6b-${k}-${e.i}:${item}', date_trunc('second', now()) - interval '1 day' + interval '${e.off} seconds')`;
+    const batch = (list) => { if (list.length) sql(list.map(postE).join(';\n') + ';\nselect 1;'); };
+    batch(evs.filter((e) => e.slot === 0));
+    for (const c of cs) {
+      sql(`insert into stock_counts (id, location_id, status) values ('${c.cid}', '${A1}', 'DRAFT');
+           insert into stock_count_lines (id, location_id, count_id, inventory_item_id) values ('${c.lid}', '${A1}', '${c.cid}', '${item}');
+           update stock_count_lines set counted_qty = ${c.qty} where id = '${c.lid}';
+           update stock_count_lines set counted_at = date_trunc('second', now()) - interval '1 day' + interval '${c.off} seconds' where id = '${c.lid}';`);
+    }
+    const order = [...cs];
+    for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(rand2() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
+    order.forEach((c, n) => {
+      const res = JSON.parse(sql(`select public.approve_stock_count('${c.cid}', 'I6b')`));
+      superseded += res.superseded || 0;
+      batch(evs.filter((e) => e.slot === n + 1));
+    });
+    batch(evs.filter((e) => e.slot > nC));
+    const newest = cs[cs.length - 1];
+    const at = `(select counted_at from stock_count_lines where id = '${newest.lid}')`;
+    const atNewest = num(`select coalesce(sum(qty_base), 0) from stock_movements where inventory_item_id = '${item}' and occurred_at <= ${at}`);
+    const after = evs.filter((e) => e.off > newest.off).reduce((t, e) => t + e.qty, 0);
+    const oh = onHand(item);
+    if (!near(atNewest, newest.qty) || !near(oh, newest.qty - after) || oh !== ledger(item)) { bad2++; fails2.push({ k, order: order.map((c) => cs.indexOf(c)), counted: newest.qty, atNewest, oh, want: newest.qty - after }); }
+  }
+  ok(bad2 === 0, `I6 with counts approved in any order held in ${runs2} runs (${superseded} older lines superseded): the newest count is the truth${bad2 ? ` (${JSON.stringify(fails2.slice(0, 3))})` : ''}`);
 }
 
 // -- 17. the moving average equals a replay (I9) --------------------------------------------------------
@@ -922,6 +1223,35 @@ console.log('\n18. Scale: 5,000 items, a big ledger, a 2,250 line count, 50 site
   const t1 = Date.now();
   const g = asCaller('superAdmin', `select count(*) || '|' || max(missing) from public.msm_stock_recipe_gaps('${menu}')`);
   ok(g.status === 0 && g.out.startsWith('50|'), `the recipe warning at 50 sites x 2,000 products: one row per site, inside 8 s (${Date.now() - t1} ms, ${g.out})${g.status ? ` ${g.message}` : ''}`);
+
+  // The order pad's usage reads at 5,000 items, page by page as the screen reads them (the API cuts
+  // any one answer at 1,000 rows): every item, all 7 days, the same totals as an uncapped sum.
+  const readPages = (fn) => {
+    const pages = []; let after = null; let tmax = 0; let failed = null;
+    for (let n = 0; n < 20; n++) {
+      const t = Date.now();
+      const r = asCaller('boA1', `select inventory_item_id || '|' || ${fn === 'w' ? `array_to_string(by_dow, ',')` : 'avg_daily_base'} from public.${fn === 'w' ? 'stock_usage_weekday_page' : 'stock_usage_rates_page'}('${BIG}', ${fn === 'w' ? 8 : 28}, ${after ? `'${after}'` : 'null'})`);
+      tmax = Math.max(tmax, Date.now() - t);
+      if (r.status !== 0) { failed = r.message; break; }
+      const rows = r.out ? r.out.split('\n') : [];
+      pages.push(rows);
+      if (rows.length < 1000) break;
+      after = rows[rows.length - 1].split('|')[0];
+    }
+    return { pages, all: pages.flat(), tmax, failed };
+  };
+  const direct = (days) => num(`select coalesce(sum(-qty_base), 0) from stock_movements where location_id = '${BIG}' and movement_type in ('SALE_DEPLETION', 'PRODUCTION_CONSUME') and qty_base < 0 and occurred_at >= now() - interval '${days} days'`);
+  const wk = readPages('w');
+  const wTotal = wk.all.reduce((t, row) => t + row.split('|')[1].split(',').reduce((a, v) => a + Number(v), 0), 0) * 8;
+  ok(!wk.failed && wk.pages.every((pg) => pg.length <= 1000) && wk.all.length === 5000 && new Set(wk.all.map((x) => x.split('|')[0])).size === 5000
+     && wk.all.every((x) => x.split('|')[1].split(',').length === 7),
+    `weekday usage: ${wk.pages.length} pages of at most 1,000, all 5,000 items once, 7 days each, slowest page ${wk.tmax} ms${wk.failed ? ` ${wk.failed}` : ''}`);
+  ok(near(wTotal, direct(56), 0.01), `and the same total as an uncapped sum (${Math.round(wTotal)} and ${direct(56)})`);
+  const rt = readPages('r');
+  const rTotal = rt.all.reduce((t, row) => t + Number(row.split('|')[1]), 0) * 28;
+  ok(!rt.failed && rt.pages.every((pg) => pg.length <= 1000) && rt.all.length === 5000 && near(rTotal, direct(28), 0.01),
+    `usage rates: ${rt.pages.length} pages, all 5,000 items, the same total (${Math.round(rTotal)} and ${direct(28)}), slowest page ${rt.tmax} ms`);
+  ok(num(`select count(*) from public.stock_usage_by_weekday('${BIG}', 8)`) > 1000, 'the old one row per item and day read answers more than 1,000 rows here (why the screens moved off it)');
 }
 
 // -- 19. concurrency ------------------------------------------------------------------------------------
@@ -970,12 +1300,100 @@ console.log('\n19. Concurrency: 8 tills sell while a 2,250 line count approves, 
   ok(sql(`select status from stock_counts where id = '${cid}'`) === 'APPROVED', 'the count approved');
 }
 
+// -- 19b. saves that point at stock items, racing the writers ---------------------------------------
+console.log('\n19b. Count sheet, order and invoice saves racing receipts, approvals and sales: no deadlock');
+{
+  const NAME_ORDER = [I.packed, I.beans, I.cups, I.lastc, I.milk];   // Bottled water, Coffee beans, Cups, Lemons, Milk
+  const recvSql = (src, items) => `select public.stock_receive('${A1}', 'purchase_order', '${src}', ${jlit(items.map((it, j) => ({ key: `po:${src}:${j}`, item_id: it, qty_base: 2, unit_cost: 1.5 })))}, null)`;
+  const invSql = (no, items) => `select public.stock_post_invoice('${A1}', ${jlit({ supplier_id: SUP.a1, invoice_number: no })}, ` +
+    `${jlit(items.map((it) => ({ matched_item_id: it, description: 'x', qty: 1, unit: 'each', unit_price: 1 })))}, ` +
+    `${jlit(items.map((it, j) => ({ item_id: it, qty_base: 1, unit_cost: 1, line_index: j })))}, null)`;
+  const sheetSql = (cid, items) => 'insert into stock_count_lines (location_id, count_id, inventory_item_id, sort_order) values ' +
+    items.map((it, j) => `('${A1}', '${cid}', '${it}', ${j})`).join(', ');
+  const headCount = () => { const cid = randomUUID(); sql(`insert into stock_counts (id, location_id, status) values ('${cid}', '${A1}', 'DRAFT')`); return cid; };
+
+  // D1: a till sale holds Milk; a receipt of Milk and Beans waits on it; a count sheet saved in one
+  // statement in name order (Beans, Cups, Milk) arrives. Before the fix the receipt held Beans FOR
+  // UPDATE while the save held its key share on Beans and waited for Milk: a deadlock.
+  {
+    const cid = headCount();
+    const T = session('tillA1');
+    const t1 = T.run(post(A1, I.milk, -1, 'SALE_DEPLETION', { key: 'sale:d1x', srcId: 'd1x' }));
+    await T.wait(t1);
+    const R = session('boA1'); const r1 = R.run(recvSql('d1x', [I.milk, I.beans]));
+    await sleep(300);
+    const S = session('boA1'); const s1 = S.run(sheetSql(cid, [I.beans, I.cups, I.milk]));
+    await sleep(300);
+    await T.end('commit');
+    await Promise.all([(async () => { await R.wait(r1); await R.end(R.code() ? 'rollback' : 'commit'); })(),
+                       (async () => { await S.wait(s1); await S.end(S.code() ? 'rollback' : 'commit'); })()]);
+    ok(!R.code() && !S.code(), `D1: the receipt and the count sheet save both finish (receipt ${R.code() || 'ok'}, save ${S.code() || 'ok'})`);
+  }
+  // D2: two invoices with the same items while a Back Office item edit holds Milk.
+  {
+    const E = session('boA1'); const e1 = E.run(`update inventory_items set name = name where id = '${I.milk}'`);
+    await E.wait(e1);
+    const X = session('boA1'); const x1 = X.run(invSql('D2-X', [I.milk, I.beans]));
+    await sleep(300);
+    const Y = session('boA1'); const y1 = Y.run(invSql('D2-Y', [I.milk, I.beans]));
+    await sleep(300);
+    await E.end('commit');
+    await Promise.all([(async () => { await X.wait(x1); await X.end(X.code() ? 'rollback' : 'commit'); })(),
+                       (async () => { await Y.wait(y1); await Y.end(Y.code() ? 'rollback' : 'commit'); })()]);
+    ok(!X.code() && !Y.code(), `D2: both invoices post (${X.code() || 'ok'}, ${Y.code() || 'ok'})`);
+  }
+  // N2: two invoices fired together, same 3 items in opposite orders, 30 rounds (an invoice inserts
+  // its lines, a key share in line order, then locks the items in id order).
+  {
+    const errs = {};
+    for (let k = 0; k < 30; k++) {
+      const items = [I.milk, I.beans, I.cups];
+      const res = await Promise.all([oneShot('boA1', invSql(`N2-${k}-a`, items)), oneShot('boA1', invSql(`N2-${k}-b`, [...items].reverse()))]);
+      for (const x of res) if (x.code !== 0) errs[x.sqlstate || 'other'] = (errs[x.sqlstate || 'other'] || 0) + 1;
+    }
+    ok(Object.keys(errs).length === 0, `N2: 60 invoices in pairs, no deadlock, no timeout (${JSON.stringify(errs)})`);
+  }
+  // N: the natural mix, 8 sessions: one statement count sheet saves (name order), order line saves,
+  // receipts and invoices (items shuffled), item waste, till sales, count approvals.
+  {
+    const WORKERS = 8; const ITER = QUICK ? 20 : 40;
+    const cids = Array.from({ length: WORKERS * ITER }, () => headCount());
+    const pos = Array.from({ length: WORKERS * ITER }, () => { const pid = randomUUID(); sql(`insert into purchase_orders (id, location_id, supplier_id, status) values ('${pid}', '${A1}', '${SUP.a1}', 'DRAFT')`); return pid; });
+    const errs = {}; const byKind = {}; let calls = 0;
+    const worker = async (w) => {
+      const R = rng(SEED + 4242 + w);
+      for (let k = 0; k < ITER; k++) {
+        const roll = R(); let kind; let who = 'boA1'; let body;
+        const shuffled = [...NAME_ORDER].sort(() => R() - 0.5);
+        if (roll < 0.25) { kind = 'sale'; who = 'tillA1'; body = 'select 1;' + shuffled.slice(0, 3).sort().map((it, j) => post(A1, it, -1, 'SALE_DEPLETION', { key: `s19b:${w}:${k}:${j}`, srcId: `n${w}_${k}` })).join(';'); }
+        else if (roll < 0.43) { kind = 'countSave'; body = sheetSql(cids[w * ITER + k], NAME_ORDER); }
+        else if (roll < 0.50) { kind = 'approve'; const c = cids[(w * ITER + k + 7) % cids.length]; body = `update stock_count_lines set counted_qty = 1 where count_id = '${c}'; select public.approve_stock_count('${c}', 'N')`; }
+        else if (roll < 0.58) { kind = 'poSave'; body = 'insert into po_lines (location_id, po_id, inventory_item_id, qty_packs, sort_order) values ' + NAME_ORDER.map((it, j) => `('${A1}', '${pos[w * ITER + k]}', '${it}', 1, ${j})`).join(', '); }
+        else if (roll < 0.72) { kind = 'receive'; body = recvSql(`n19b${w}_${k}`, shuffled); }
+        else if (roll < 0.86) { kind = 'invoice'; body = invSql(`N19b-${w}-${k}`, shuffled.slice(0, 3)); }
+        else { kind = 'waste'; const it = shuffled[0]; body = `select public.stock_record_waste('${A1}', ${jlit({ id: randomUUID(), kind: 'item', inventory_item_id: it, qty: 1, qty_base: 1 })}, ${jlit([{ item_id: it, qty_base: 1 }])})`; }
+        calls++;
+        const x = await oneShot(who, body);
+        if (x.code !== 0) {
+          const code = x.sqlstate || 'other';
+          // an approval of a sheet another worker has not saved yet answers "nothing counted": not a fault
+          if (!(kind === 'approve' && !x.sqlstate)) { errs[code] = (errs[code] || 0) + 1; byKind[kind] = (byKind[kind] || 0) + 1; }
+        }
+      }
+    };
+    const t0 = Date.now();
+    await Promise.all(Array.from({ length: WORKERS }, (_, w) => worker(w)));
+    ok(Object.keys(errs).length === 0, `N: ${calls} calls from ${WORKERS} sessions in ${Math.round((Date.now() - t0) / 1000)} s: no deadlock (40P01), no timeout (57014, 55P03) (${JSON.stringify(errs)} ${JSON.stringify(byKind)})`);
+    ok(sql(`select count(*) from inventory_items i where i.location_id = '${A1}' and abs(coalesce(i.on_hand, 0) - coalesce((select sum(m.qty_base) from stock_movements m where m.inventory_item_id = i.id), 0)) > 0.0001`) === '0', 'N: on hand equals the ledger after the run');
+  }
+}
+
 // -- 20. second run, rollback, guard ---------------------------------------------------------------------
 console.log('\n20. A second run, the rollback, the guard');
 {
   let r = psql({ args: ['-1', '-f', MIGRATION], allowFail: true });
   ok(r.status === 0, 'a second run passes its own guard and changes nothing it should not');
-  ok(md5Of(SIG.core) === md5.core19a, 'the core is still 20261019a after a second run');
+  ok(md5Of(SIG.core) === md5.core19b, 'the core is still 20261019b after a second run');
   const sums = sql(`select count(*) || '|' || sum(qty_base) from stock_movements`);
   const centralBefore = sql(`select count(*) from stock_depletion_mode where mode in ('central', 'paused')`);
   r = psql({ args: ['-1', '-f', ROLLBACK], allowFail: true });
@@ -987,7 +1405,7 @@ console.log('\n20. A second run, the rollback, the guard');
   const t = asCaller('tillA1', post(A1, I.milk, -1, 'SALE_DEPLETION', { key: `sale:chk-rb:${I.milk}` }));
   ok(t.status === 0, 'a till still posts after the rollback');
   r = psql({ args: ['-1', '-f', MIGRATION], allowFail: true });
-  ok(r.status === 0 && md5Of(SIG.core) === md5.core19a, 'the migration applies again after the rollback');
+  ok(r.status === 0 && md5Of(SIG.core) === md5.core19b, 'the migration applies again after the rollback');
   // the guard refuses a changed function, with nothing changed
   baseDb('p0_guard');
   sql(`create or replace function public.inventory_item_areas_rehome() returns trigger language plpgsql as $$ begin return new; end $$;`);
@@ -1000,21 +1418,19 @@ console.log('\n20. A second run, the rollback, the guard');
   ok(r.status !== 0 && /Run 20261018a/.test(r.stderr), 'without 20261018a the file stops and says to run it first');
 }
 
-// -- 21. central stock is automatic (Peter, 19 Oct 2026) ------------------------------------------------
-console.log('\n21. Central stock is automatic: day one, a first recipe, a new venue, a back out, a second paste of 20261018c');
+// -- 21. on top of central stock for every venue (20261019) ----------------------------------------
+console.log('\n21. On top of 20261019 (every venue central): modes untouched, a back out, a second paste of 20261018c, till waste, late sales');
 {
-  baseDb('p0_auto');
-  const A3 = id('a3000000', 'a3'), A4 = id('a4000000', 'a4'), A5 = id('a5000000', 'a5');
-  const BO3 = id('10000000', 'a3');
+  baseDb('p0_auto', { centralDefault: true });
+  const A3 = id('a3000000', 'a3');
   const R = { flat: id('83000000', '1'), flat2: id('83000000', '2'), b1: id('83000000', '3'), empty: id('83000000', '4') };
   const cc = (who, loc, cid, items, { at = 'now()', ot = 'dine-in' } = {}) =>
     asCaller(who, `insert into closed_checks (id, location_id, items, order_type, closed_at, ref) values ('${cid}', '${loc}', ${jlit(items)}, '${ot}', ${at}, '${cid}')`);
   const drain = () => psql({ input: 'call public.stock_outbox_drain(5, 50, 0.05, true);\n' });
   const modeRow = (loc) => sql(`select coalesce((select mode || '|' || coalesce(changed_by, '') from stock_depletion_mode where location_id = '${loc}'), 'none')`);
-  const since = (loc) => sql(`select coalesce(central_since::text, '') from stock_depletion_mode where location_id = '${loc}'`);
   const outbox = (loc) => num(`select count(*) from stock_outbox where location_id = '${loc}'`);
-  // Before 20261019a: Provo (A1) and Location 2 (A2) have recipes; Peter switched Provo on by hand an
-  // hour ago; Location 2 was never switched; B1 (another company) has a recipe and was backed out.
+  const modes = () => sql(`select string_agg(location_id || ':' || mode || ':' || coalesce(central_since::text, '') || ':' || coalesce(changed_by, ''), ',' order by location_id) from stock_depletion_mode`);
+  // As live on 19 Oct: 20261019 switched every venue to central; B1 (another company) is backed out.
   sql(`insert into recipes (id, location_id, name, wastage_pct) values ('${R.flat}', '${A1}', 'Flat white', 50), ('${R.flat2}', '${A2}', 'Flat white', 0), ('${R.b1}', '${B1}', 'Milk', 0), ('${R.empty}', '${A1}', 'Takeaway only', 0);
        insert into recipe_lines (location_id, recipe_id, component_item_id, qty, unit) values
          ('${A1}', '${R.flat}', '${I.milk}', 200, 'ml'), ('${A1}', '${R.flat}', '${I.beans}', 18, 'g'),
@@ -1022,95 +1438,48 @@ console.log('\n21. Central stock is automatic: day one, a first recipe, a new ve
        insert into recipe_lines (location_id, recipe_id, component_item_id, qty, unit, order_types) values ('${A1}', '${R.empty}', '${I.cups}', 1, 'each', '["takeaway"]');
        insert into menu_item_recipes (location_id, menu_item_id, recipe_id) values
          ('${A1}', 'mi-flat', '${R.flat}'), ('${A1}', 'mi-empty', '${R.empty}'), ('${A2}', 'mi-flat2', '${R.flat2}'), ('${B1}', 'mi-b1', '${R.b1}');
-       select public.stock_central_switch('${A1}', 'central', 'peter');
-       update stock_depletion_mode set central_since = now() - interval '1 hour' where location_id = '${A1}';
        select public.stock_central_switch('${B1}', 'browser', 'peter');`);
-  const sinceA1 = since(A1);
-  // Location 2, on the till path: a check the till booked itself 30 minutes ago, one it did not (20 minutes ago)
-  cc('service', A2, 'chk-g1', [{ itemId: 'mi-flat2', qty: 1 }], { at: `now() - interval '30 minutes'` });
-  asCaller('service', post(A2, I.milk2, -0.2, 'SALE_DEPLETION', { key: `sale:chk-g1:${I.milk2}`, srcId: 'chk-g1' }));
-  cc('service', A2, 'chk-g2', [{ itemId: 'mi-flat2', qty: 1 }], { at: `now() - interval '20 minutes'` });
-  ok(outbox(A2) === 0 && near(onHand(I.milk2), -0.2), 'before: Location 2 is on the till path (no row): nothing queued, the till took its own sale off');
-
+  ok(modeRow(A1) === 'central|default 20261019' && modeRow(A2) === 'central|default 20261019' && modeRow(B1) === 'browser|peter', 'before: every venue central by 20261019, B1 backed out by hand');
+  const before = modes();
   const applied = psql({ args: ['-1', '-f', MIGRATION], allowFail: true });
-  const row = applied.stdout.trim().split('\n').pop().split('|');
-  ok(applied.status === 0, `20261019a applies on top of 20261018c${applied.status ? ` ${(applied.stderr || '').slice(0, 400)}` : ''}`);
-  ok(row[10] === '1' && row[11] === '2' && row[12] === '1' && row[13] === 'browser', `visible check: trigger ${row[10]}, recipe venues central ${row[11]} (Provo, Location 2), on the till path ${row[12]} (the venue backed out on purpose), default ${row[13]}`);
-  ok(modeRow(A1) === 'central|peter' && since(A1) === sinceA1, 'day one: Provo, switched on by hand, keeps its row and its central_since');
-  ok(modeRow(A2) === 'central|20261019a automatic' && num(`select extract(epoch from now() - central_since) from stock_depletion_mode where location_id = '${A2}'`) < 120, 'day one: Location 2 (recipes, no row) is central now, central_since set');
-  ok(modeRow(B1) === 'browser|peter', 'day one: a venue backed out to the till path on purpose stays there');
-  ok(modeRow(BIG) === 'none' && sql(`select public._stock_mode_of('${BIG}')`) === 'browser', 'a venue with no recipe gets no row (nothing to take off)');
-  ok(num(`select count(*) from stock_outbox where location_id = '${A2}' and kind = 'sale' and writer = 'db' and 'switch_grace' = any(flags)`) === 2, 'the switch queued the last 2 hours of Location 2 checks once (grace window)');
-  drain();
-  ok(near(onHand(I.milk2), -0.4) && num(`select count(*) from stock_movements where idempotency_key = 'sale:chk-g1:${I.milk2}'`) === 1, `the check the till already booked lands as a duplicate by key; the other comes off (on hand ${onHand(I.milk2)})`);
+  ok(applied.status === 0, `20261019b applies on top of 20261018c and 20261019${applied.status ? ` ${(applied.stderr || '').slice(0, 400)}` : ''}`);
+  ok(modes() === before, '20261019b changes no venue\'s mode, central_since or who changed it (the backed out venue stays backed out)');
+  ok(outbox(A1) === 0 && outbox(A2) === 0, 'and queues nothing');
 
-  // Day one trading at Location 2: the database books the sale; the till's own post is answered skipped
+  // trading at Location 2: the database books the sale; the till's own post is answered skipped
   cc('service', A2, 'chk-d1', [{ itemId: 'mi-flat2', qty: 2 }]);
   ok(num(`select count(*) from stock_outbox where location_id = '${A2}' and check_id = 'chk-d1'`) === 1, 'a new check at Location 2 is queued by the trigger');
   let r = callJ('service', post(A2, I.milk2, -0.4, 'SALE_DEPLETION', { key: `sale:chk-d1:${I.milk2}`, srcId: 'chk-d1' }));
   ok(r.j?.skipped === 'central', `the till path is answered skipped central (${JSON.stringify(r.j)})`);
   drain();
-  ok(near(onHand(I.milk2), -0.8) && onHand(I.milk2) === ledger(I.milk2), `the drainer took it off once (on hand ${onHand(I.milk2)})`);
-  r = callJ('boA1', `select public.stock_venue_mode('${A1}')`);
-  ok(r.out === 'central', 'the till reads central for Provo');
+  ok(near(onHand(I.milk2), -0.4) && onHand(I.milk2) === ledger(I.milk2), `the drainer took it off once (on hand ${onHand(I.milk2)})`);
 
-  // A new venue: no row until its first recipe link, then central from that moment
-  sql(`insert into locations (id, org_id, name, timezone, created_at) values ('${A3}', '${ORG_A}', 'New site', 'Europe/London', now()), ('${A4}', '${ORG_A}', 'No recipes', 'Europe/London', now()), ('${A5}', '${ORG_A}', 'Imported', 'Europe/London', now());
-       insert into user_locations (user_id, location_id) values ('${BO3}', '${A3}');
-       insert into user_profiles (id, org_id, role) values ('${BO3}', null, 'manager');`);
-  CALLERS.boA3 = { login: 'authenticator', role: 'authenticated', claims: login(BO3), what: 'Back Office login of the new site' };
-  cc('service', A3, 'chk-n0', [{ itemId: 'mi-new', qty: 1 }], { at: `now() - interval '5 minutes'` });
-  ok(modeRow(A3) === 'none' && callJ('boA3', `select public.stock_venue_mode('${A3}')`).out === 'browser' && outbox(A3) === 0, 'a new venue with no recipe: no row, nothing queued');
-  const NEWI = id('40000000', 'a31'), NEWR = id('83000000', '31');
-  r = asCaller('boA3', `insert into inventory_items (id, location_id, name, base_unit, current_cost, on_hand) values ('${NEWI}', '${A3}', 'Oat milk', 'ml', 0.002, 0);
-    insert into recipes (id, location_id, name) values ('${NEWR}', '${A3}', 'Oat latte');
-    insert into recipe_lines (location_id, recipe_id, component_item_id, qty, unit) values ('${A3}', '${NEWR}', '${NEWI}', 250, 'ml');
-    insert into menu_item_recipes (location_id, menu_item_id, recipe_id) values ('${A3}', 'mi-new', '${NEWR}')`);
-  ok(r.status === 0 && modeRow(A3) === 'central|automatic: first recipe', `its first recipe link (saved by its own Back Office login) switches it to central in the same step (${modeRow(A3)}${r.status ? ` ${r.message}` : ''})`);
-  const sinceA3 = since(A3);
-  ok(num(`select extract(epoch from now() - '${sinceA3}'::timestamptz)`) < 120 && callJ('boA3', `select public.stock_venue_mode('${A3}')`).out === 'central', 'central_since is that moment, and the till reads central');
-  cc('service', A3, 'chk-n1', [{ itemId: 'mi-new', qty: 2 }]);
-  r = callJ('service', post(A3, NEWI, -500, 'SALE_DEPLETION', { key: `sale:chk-n1:${NEWI}`, srcId: 'chk-n1' }));
-  ok(r.j?.skipped === 'central', 'an old till or the kiosk function posting the same sale is answered skipped central');
-  drain();
-  ok(near(onHand(NEWI), -500), `the sale after the first recipe comes off once (on hand ${onHand(NEWI)})`);
-  asCaller('boA3', `insert into recipes (id, location_id, name) values ('${id('83000000', '32')}', '${A3}', 'Second');
-    insert into menu_item_recipes (location_id, menu_item_id, recipe_id) values ('${A3}', 'mi-second', '${id('83000000', '32')}')`);
-  ok(since(A3) === sinceA3, 'a second recipe link leaves central_since alone');
-  ok(sql(`select public.stock_outbox_sweep()`) === '1' && num(`select count(*) from stock_outbox where location_id = '${A3}' and check_id = 'chk-n0' and writer = 'db' and 'switch_grace' = any(flags)`) === 1,
-    'the hourly sweep books the sale made 5 minutes before the first recipe once, as the switch grace window does (it used the oat milk too)');
-  drain();
-  ok(near(onHand(NEWI), -750) && onHand(NEWI) === ledger(NEWI), `and on hand matches the ledger (${onHand(NEWI)})`);
-  sql(`insert into recipes (id, location_id, name) values ('${id('83000000', '51')}', '${A5}', 'Imported');
-       insert into menu_item_recipes (location_id, menu_item_id, recipe_id) values ('${A5}', 'mi-imp', '${id('83000000', '51')}');`);
-  ok(modeRow(A5) === 'central|automatic: first recipe', 'a first recipe link written by an import or the SQL editor switches that venue too');
-  cc('service', A4, 'chk-a4', [{ itemId: 'mi-x', qty: 1 }]);
-  ok(modeRow(A4) === 'none' && outbox(A4) === 0, 'a venue with no recipe: its checks queue nothing');
-  r = asCaller('sqlEditor', `insert into recipes (id, location_id, name) values ('${id('83000000', '41')}', '${A4}', 'Bulk'); insert into menu_item_recipes (location_id, menu_item_id, recipe_id) select '${A4}', 'bulk-' || g, '${id('83000000', '41')}' from generate_series(1, 100) g`);
-  ok(r.status === 0 && num(`select count(*) from stock_depletion_mode where location_id = '${A4}'`) === 1, '100 links in one statement: one row, one trigger pass');
+  // a new venue is central from the moment it is created (20261019's trigger); a first recipe link
+  // changes nothing (20261019b adds no trigger of its own)
+  sql(`insert into locations (id, org_id, name, timezone, created_at) values ('${A3}', '${ORG_A}', 'New site', 'Europe/London', now())`);
+  const a3 = modeRow(A3);
+  sql(`insert into recipes (id, location_id, name) values ('${id('83000000', '31')}', '${A3}', 'Oat latte');
+       insert into menu_item_recipes (location_id, menu_item_id, recipe_id) values ('${A3}', 'mi-new', '${id('83000000', '31')}');`);
+  ok(a3 === 'central|new venue' && modeRow(A3) === a3 && num(`select count(*) from pg_trigger where tgrelid = 'public.menu_item_recipes'::regclass and not tgisinternal and tgname like '%central%'`) === 0,
+    `a new venue is central when created (${a3}); its first recipe link leaves the row alone`);
 
-  // The back out: the switch puts a venue on the till path; a later recipe link does not undo it
-  sql(`select public.stock_central_switch('${A3}', 'browser', 'peter')`);
-  asCaller('boA3', `insert into recipes (id, location_id, name) values ('${id('83000000', '33')}', '${A3}', 'Third');
-    insert into menu_item_recipes (location_id, menu_item_id, recipe_id) values ('${A3}', 'mi-third', '${id('83000000', '33')}')`);
-  ok(modeRow(A3) === 'browser|peter', 'backed out to browser: a new recipe link leaves it on the till path');
-  const n3 = outbox(A3);
-  cc('service', A3, 'chk-n2', [{ itemId: 'mi-new', qty: 1 }]);
-  r = callJ('service', post(A3, NEWI, -250, 'SALE_DEPLETION', { key: `sale:chk-n2:${NEWI}`, srcId: 'chk-n2' }));
-  ok(outbox(A3) === n3 && r.j?.id && near(onHand(NEWI), -1000), 'on the till path the database queues nothing and the till posts as before');
+  // the back out: a venue on the till path stays there and the till posts as before
+  const nb = outbox(B1);
+  cc('service', B1, 'chk-b1', [{ itemId: 'mi-b1', qty: 1 }]);
+  r = callJ('service', post(B1, I.b1, -100, 'SALE_DEPLETION', { key: `sale:chk-b1:${I.b1}`, srcId: 'chk-b1' }));
+  ok(outbox(B1) === nb && r.j?.id && near(onHand(I.b1), -100), 'a venue backed out to the till path: nothing queued, the till posts as before');
 
-  // A second paste of 20261019a changes no mode
-  const modesBefore = sql(`select string_agg(location_id || ':' || mode || ':' || coalesce(central_since::text, ''), ',' order by location_id) from stock_depletion_mode`);
+  // A second paste of 20261019b changes no mode
+  const m2 = modes();
   const again = psql({ args: ['-1', '-f', MIGRATION], allowFail: true });
-  ok(again.status === 0 && sql(`select string_agg(location_id || ':' || mode || ':' || coalesce(central_since::text, ''), ',' order by location_id) from stock_depletion_mode`) === modesBefore,
-    'a second paste of 20261019a changes no venue\'s mode or central_since (backed out venues stay backed out)');
-  // A second paste of 20261018c stops with nothing changed: 20261019a's rules stay
+  ok(again.status === 0 && modes() === m2, 'a second paste of 20261019b changes no venue\'s mode');
+  // A second paste of 20261018c stops with nothing changed: 20261019b's rules stay
   const fnBefore = [md5Of(SIG.core), md5Of(SIG.leg), md5Of(SIG.counted), md5Of(SIG.psm), md5Of(SIG.sweep)].join(',');
+  const modesBefore = modes();
   const c2 = psql({ args: ['-1', '-f', CENTRAL], allowFail: true });
   ok(c2.status !== 0 && /Nothing was changed/.test(c2.stderr) && /post_stock_transfer_leg/.test(c2.stderr), `a second paste of 20261018c stops at its guard with "Nothing was changed" (${(c2.stderr || '').split('\n').find((x) => /ERROR/.test(x)) || ''})`);
-  ok([md5Of(SIG.core), md5Of(SIG.leg), md5Of(SIG.counted), md5Of(SIG.psm), md5Of(SIG.sweep)].join(',') === fnBefore
-     && sql(`select string_agg(location_id || ':' || mode || ':' || coalesce(central_since::text, ''), ',' order by location_id) from stock_depletion_mode`) === modesBefore
-     && num(`select count(*) from pg_trigger where tgname = 'menu_item_recipes_auto_central'`) === 1, 'and it changed nothing: functions, modes and the automatic trigger as they were');
+  ok([md5Of(SIG.core), md5Of(SIG.leg), md5Of(SIG.counted), md5Of(SIG.psm), md5Of(SIG.sweep)].join(',') === fnBefore && modes() === modesBefore,
+    'and it changed nothing: functions and modes as they were');
   ok(sql(`select mode from stock_depletion_default`) === 'browser', '20261018c\'s own self test rule still holds (the default stays browser)');
 
   // Waste on the till: the database explodes the one product (no recipe book read), never refused

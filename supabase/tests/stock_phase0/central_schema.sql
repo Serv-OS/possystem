@@ -1,5 +1,5 @@
 -- central_schema.sql: what 20261018c (central stock depletion, v5.11.77) reads beyond schema.sql, so the
--- REAL 20261018c file applies here as Peter ran it on 19 Oct 2026, before 20261019a. Taken from
+-- REAL 20261018c file applies here as Peter ran it on 19 Oct 2026, before 20261019b. Taken from
 -- ../central_stock/extra_schema.sql (live column types, Ops information_schema, 18 Oct 2026), minus the
 -- stock tables schema.sql already has. Plus production's default ACL: every new function made by
 -- postgres in public is granted EXECUTE to anon, authenticated and service_role, the trap each

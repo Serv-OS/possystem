@@ -319,11 +319,11 @@ export const approveCount = async (countId, locationId = null, { approvedByName 
   locationId = await ensureLoc(locationId);
   if (!locationId) return { error: new Error('No locationId') };
   // v5.11.79 (stock plan Phase 0, 11.5 item 1 and 4.6): ONE database call (approve_stock_count,
-  // 20261019a). Each line is worked out from the moment it was counted, so sales made while the count
+  // 20261019b). Each line is worked out from the moment it was counted, so sales made while the count
   // was running are never added back; the first count of an item posts Opening stock (out of The
   // Gap), valued at a real cost, never 0: with no cost known the call answers needs_cost and nothing
   // is written, and the screen asks the manager for one (`costs`: { itemId: cost per base unit }).
-  // All or nothing, and a retry posts nothing twice. Before 20261019a is run the call is missing and
+  // All or nothing, and a retry posts nothing twice. Before 20261019b is run the call is missing and
   // the old line by line path below runs.
   {
     const { data: res, error: rpcErr } = await supabase.rpc('approve_stock_count', {

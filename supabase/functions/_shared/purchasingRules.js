@@ -398,7 +398,7 @@ const normInvNo = (s) => String(s ?? '').trim().toLowerCase();
 
 /**
  * A posted invoice with the same number from the same supplier at this venue, or null. The
- * database refuses the second one too (20261019a unique rule); this lets the screen say so before
+ * database refuses the second one too (20261019b unique rule); this lets the screen say so before
  * the scan is uploaded. `history`: posted invoices [{ id, supplierId, invoiceNumber, invoiceDate }].
  */
 export function findDuplicateInvoice(history, { supplierId = null, invoiceNumber = '' } = {}) {

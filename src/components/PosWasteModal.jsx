@@ -24,7 +24,7 @@
  *     products have a recipe (one paged read of the links) and asks the database for the one product
  *     picked (stock_record_waste, preview). Recording is one database call that explodes that product
  *     and writes the waste row (with the product id) and its stock movements together.
- *   - Before 20261019a is run those calls are missing: the screen falls back to the old reads.
+ *   - Before 20261019b is run those calls are missing: the screen falls back to the old reads.
  */
 
 import { useEffect, useMemo, useState } from 'react';
@@ -95,7 +95,7 @@ export default function PosWasteModal({ open, onClose, locationId, showToast }) 
   }, [q, products]);
 
   // The stock the picked product takes off, worked out by the database for this ONE product
-  // (v5.11.79). Missing call (20261019a not run): the old reads, once, and the old explosion.
+  // (v5.11.79). Missing call (20261019b not run): the old reads, once, and the old explosion.
   const previewKey = product ? `${product.id}|${qty}` : '';
   useEffect(() => {
     if (!open || !product || !links) return;

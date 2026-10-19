@@ -189,7 +189,7 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
   }, [phase, menu?.id, api]);
   // v5.11.79 (stock plan Phase 0): read only warning, "12 products have a recipe at Provo but none at
   // Location 2". One database call, at most one row per site; touches no menu table. A database
-  // without 20261019a (or the demo) simply shows nothing.
+  // without 20261019b (or the demo) simply shows nothing.
   useEffect(() => {
     if (phase !== 'ready' || !menu?.id || demo) return undefined;
     let on = true;

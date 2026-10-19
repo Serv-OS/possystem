@@ -1262,7 +1262,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       try {
         if (closedCheck) {
           // v5.11.79: no browser stock call. The database takes stock off this booked check itself
-          // (20261018c central depletion, automatic at every venue with recipes since 20261019a),
+          // (20261018c central depletion, every venue central since 20261019),
           // from the stored lines and options, exactly once, even when the customer closes the tab.
           // v5.5.677: email + SMS the customer their confirmation/receipt (gift-only path).
           sendOrderConfirmation(closedCheck);
@@ -1493,7 +1493,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       try {
         if (closedCheck) {
           // v5.11.79: no browser stock call. The database takes stock off this booked check itself
-          // (20261018c central depletion, automatic at every venue with recipes since 20261019a),
+          // (20261018c central depletion, every venue central since 20261019),
           // from the stored lines and options, exactly once, even when the customer closes the tab.
           // v5.5.677: email + SMS the customer their confirmation/receipt (was never wired for online).
           sendOrderConfirmation(closedCheck);

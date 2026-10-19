@@ -729,7 +729,7 @@ function UnitsTab({ draft, locId, onChanged, showToast }) {
   const remove = async (id) => {
     const { error } = await deletePackagingFormat(id, locId);
     reportSave('packaging unit delete', error);
-    // v5.11.79: a pack a recipe uses cannot be deleted (20261019a); say why, in the database's words.
+    // v5.11.79: a pack a recipe uses cannot be deleted (20261019b); say why, in the database's words.
     if (error) { showToast?.(/used in a recipe/i.test(error.message || '') ? error.message : 'Unit NOT removed', 'error'); return; }
     onChanged();
   };

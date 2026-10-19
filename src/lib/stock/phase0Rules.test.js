@@ -1,7 +1,7 @@
 /**
  * phase0Rules.test.js: the stock safety pass (v5.11.79, multi site stock plan Phase 0). Run: npm test.
  *
- * The database half is supabase/migrations/20261019a_OPS_stock_phase0.sql, proved on a local
+ * The database half is supabase/migrations/20261019b_OPS_stock_phase0.sql, proved on a local
  * Postgres 17 by supabase/tests/stock_phase0/run.mjs (real roles, live timeouts). These tests pin
  * the browser half: the pure rules, the shared purchasing and costing rules the edge functions use
  * too, and the wiring in the source (the screens go through the one database call, with the old
@@ -23,8 +23,8 @@ import { sentInReceiverUnits, shortOf, receivePlan, receiveLineUpdates } from '.
 import { computeRecipe } from './costing.js';
 
 const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
-const MIG = '../../../supabase/migrations/20261019a_OPS_stock_phase0.sql';
-const RB = '../../../supabase/migrations/20261019a_OPS_stock_phase0_ROLLBACK.sql';
+const MIG = '../../../supabase/migrations/20261019b_OPS_stock_phase0.sql';
+const RB = '../../../supabase/migrations/20261019b_OPS_stock_phase0_ROLLBACK.sql';
 
 // ── small helpers ───────────────────────────────────────────────────────────────────────────────
 test('a missing database function is told apart from any other error', () => {
@@ -102,7 +102,7 @@ test('wastage % raises the plate cost (the cost side, here) and never the stock 
   const plain = computeRecipe({ yieldQty: 1, yieldUnit: 'each', wastagePct: 0, lines: [{ componentItemId: 'milk', qty: 200, unit: 'ml' }] }, out, { itemsById, recipesByOutputItem: {} });
   const wasted = computeRecipe({ yieldQty: 1, yieldUnit: 'each', wastagePct: 50, lines: [{ componentItemId: 'milk', qty: 200, unit: 'ml' }] }, out, { itemsById, recipesByOutputItem: {} });
   assert.ok(Math.abs(Number(wasted.totalCost ?? wasted.cost ?? wasted.unitCost) - 1.5 * Number(plain.totalCost ?? plain.cost ?? plain.unitCost)) < 1e-9, 'cost 1.5 x with 50% wastage');
-  // the quantity side is the database's stock_explode (20261018c) and the waste function (20261019a):
+  // the quantity side is the database's stock_explode (20261018c) and the waste function (20261019b):
   // neither multiplies by wastage_pct (harness section 21 proves 2 flat whites take 400 ml with 50%).
   const mig = read(MIG);
   const waste = mig.slice(mig.indexOf('create or replace function public.stock_record_waste('), mig.indexOf("revoke all on function public.stock_record_waste("));
@@ -322,7 +322,7 @@ test('the kiosk card path is untouched; the online checkout makes no stock call 
 });
 
 // ── the migration and its rollback ──────────────────────────────────────────────────────────────────
-test('20261019a and its rollback: ASCII only, bare statements, a visible check, the guard md5s agree', () => {
+test('20261019b and its rollback: ASCII only, bare statements, a visible check, the guard md5s agree', () => {
   const mig = read(MIG), rb = read(RB);
   for (const [name, text] of [['migration', mig], ['rollback', rb]]) {
     assert.ok([...text].every((ch) => ch.charCodeAt(0) < 128), `${name} is ASCII only`);
@@ -342,14 +342,78 @@ test('20261019a and its rollback: ASCII only, bare statements, a visible check, 
   assert.match(rb, /'e9865d7cad62f582db4e904bf41ad512'\) as core_is_18a/);
 });
 
-test('central stock is automatic: day one switch, first recipe trigger, back outs kept, default left browser', () => {
-  const mig = read(MIG);
-  assert.match(mig, /create trigger menu_item_recipes_auto_central\s+after insert on public\.menu_item_recipes\s+referencing new table as new_rows\s+for each statement/);
-  assert.match(mig, /and not exists \(select 1 from stock_depletion_mode m where m\.location_id = n\.location_id\)\s+on conflict \(location_id\) do nothing;/, 'a venue with a row (a back out) is never changed');
-  assert.match(mig, /perform public\.stock_central_switch\(r\.location_id, 'central', '20261019a automatic'\);/, 'day one goes through the switch itself');
+test('central stock is 20261019\'s: 20261019b switches no venue and adds no recipe trigger', () => {
+  const mig = read(MIG), rb = read(RB);
+  assert.doesNotMatch(mig, /(perform|select) public\.stock_central_switch\(/, 'no switch is called');
+  assert.doesNotMatch(mig, /insert into (public\.)?stock_depletion_mode|update (public\.)?stock_depletion_mode/, 'no mode row is written');
+  assert.doesNotMatch(mig, /on public\.menu_item_recipes/, 'no trigger on recipe links');
   assert.doesNotMatch(mig, /update public\.stock_depletion_default|update stock_depletion_default/, 'the default stays browser (20261018c\'s self test)');
   assert.doesNotMatch(mig, /create or replace function public\.(post_stock_movement|stock_outbox_sweep|stock_central_switch|_stock_mode_of|_stock_outbox_on_insert|_stock_outbox_apply|stock_outbox_drain)\(/, 'the door, the sweep, the switch, the enqueue and the drainer are 20261018c\'s');
-  assert.match(mig, /exception when others then\s+raise warning 'stock: automatic central switch skipped/, 'a recipe save never fails on it');
+  assert.match(mig, /20261019 \(v5\.11\.78, run 19 Oct 2026\) made every venue central/, 'the header says why');
+  assert.doesNotMatch(rb, /stock_central_switch\(|_stock_auto_central_on_link/, 'the rollback touches no mode either');
+});
+
+// ── the fixes of round 1 (19 Oct 2026 review) ──────────────────────────────────────────────────────
+test('row locks are FOR NO KEY UPDATE: a save that points at an item never deadlocks with a writer', () => {
+  const mig = read(MIG);
+  assert.equal((mig.match(/for no key update;/g) || []).length, 10, 'the 10 row locks');
+  assert.doesNotMatch(mig.replace(/for update using/g, ''), /for update\b/, 'no FOR UPDATE row lock is left (the policy text "for update using" is not a lock)');
+});
+
+test('counts: an older line under a newer approved count is superseded; counted_at and approved counts are locked', () => {
+  const mig = read(MIG);
+  assert.match(mig, /and coalesce\(o\.counted_at, oc\.approved_at\) > l\.at\s+and \(o\.area_id is null or l\.area_id is null or o\.area_id = l\.area_id\)\) as superseded/);
+  assert.match(mig, /if v_l\.superseded then\s+v_delta := 0;/);
+  assert.match(mig, /before insert or update or delete on public\.stock_count_lines/, 'the line trigger fires on every write, not only the figure');
+  assert.match(mig, /elsif not v_sys then\s+new\.counted_at := old\.counted_at;/, 'an API caller cannot move counted_at');
+  assert.match(mig, /before update or delete on public\.stock_counts\s+for each row execute function public\.stock_counts_keep_approved\(\);/);
+  assert.match(mig, /if new\.status is distinct from old\.status or new\.approved_at is distinct from old\.approved_at\s+or new\.variance_value is distinct from old\.variance_value or new\.opening_value is distinct from old\.opening_value/);
+  // the caller check comes before the lock
+  const fn = mig.slice(mig.indexOf('create or replace function public.approve_stock_count('));
+  assert.ok(fn.indexOf('stock_office_reaches(v_loc)') < fn.indexOf('for no key update'), 'approve checks the caller before it locks the count');
+});
+
+test('receive is Back Office or the Ops tablet; invoices take a client id; item waste with no lines; transfers round down', () => {
+  const mig = read(MIG);
+  const recv = mig.slice(mig.indexOf('create or replace function public.stock_receive('), mig.indexOf('revoke all on function public.stock_receive('));
+  assert.match(recv, /public\.stock_office_reaches\(p_location_id\)/);
+  assert.match(recv, /from ops_devices d\s+where d\.location_id = p_location_id and d\.device_uid = auth\.uid\(\) and d\.active/);
+  assert.doesNotMatch(recv, /stock_caller_reaches/, 'a till or kiosk session no longer reaches the receive');
+  assert.match(mig, /values \(coalesce\(v_client, gen_random_uuid\(\)\), p_location_id/, 'the client id is the invoice id');
+  assert.match(mig, /exception when unique_violation then/, 'two retries at once answer duplicate');
+  assert.match(mig, /if v_kind = 'item' and \(p_lines is null or jsonb_array_length\(p_lines\) = 0\) then/);
+  assert.match(mig, /v_qty := trunc\(least\(coalesce\(v_l\.qty_received_base, v_l\.qty_base \* v_factor\), v_l\.qty_base \* v_factor\), 4\);/);
+  assert.match(mig, /if v_short < 0\.00005 \* greatest\(1, 1 \/ v_factor\) then/);
+  assert.match(mig, /and public\.stock_caller_reaches\(p_a\)/, 'same company answers only callers that reach the first venue');
+  assert.match(mig, /select case when public\.stock_caller_reaches\(p_location_id\)/, 'the cost rule answers only callers that reach the venue');
+});
+
+test('usage reads: one row per item, 1,000 items a page; the live reads are kept; the rollback drops only the new ones', () => {
+  const mig = read(MIG), rb = read(RB);
+  assert.match(mig, /create or replace function public\.stock_usage_weekday_page\(p_location_id uuid, p_weeks integer default 8,\s+p_after uuid default null, p_tz text default null, p_day_start text default null\)\s+returns table\(inventory_item_id uuid, by_dow numeric\[\]\)/);
+  assert.match(mig, /create or replace function public\.stock_usage_rates_page\(p_location_id uuid, p_days integer default 28,\s+p_after uuid default null\)/);
+  assert.equal((mig.match(/order by i\.id\s+limit 1000/g) || []).length, 2, 'both page by item id, 1,000 at a time');
+  assert.doesNotMatch(mig, /drop function if exists public\.stock_usage_by_weekday|create or replace function public\.stock_usage_by_weekday|create or replace function public\.stock_usage_rates\(/, 'the live reads are not touched');
+  assert.match(rb, /drop function if exists public\.stock_usage_weekday_page\(uuid, integer, uuid, text, text\);/);
+  assert.match(rb, /drop function if exists public\.stock_usage_rates_page\(uuid, integer, uuid\);/);
+  assert.doesNotMatch(rb, /create or replace function public\.stock_usage_by_weekday/, 'nothing to put back');
+  const data = read('./data.js');
+  assert.match(data, /supabase\.rpc\('stock_usage_weekday_page', \{ p_location_id: locationId, p_weeks: weeks, p_after: after \}\)/);
+  assert.match(data, /supabase\.rpc\('stock_usage_rates_page', \{ p_location_id: locationId, p_days: days, p_after: after \}\)/);
+  const batches = read('../../backoffice/sections/Batches.jsx');
+  assert.match(batches, /fetchUsageByWeekday\(8, loc\)/);
+  assert.doesNotMatch(batches, /supabase\.rpc\('stock_usage_by_weekday'/, 'Batches no longer reads the capped one row per day answer');
+});
+
+test('an invoice carries the screen\'s own id, made once per scan, and a repeat is answered in words', () => {
+  const inv = read('../../backoffice/sections/Invoices.jsx');
+  assert.match(inv, /header: \{ clientId: newUuid\(\),/);
+  const pur = read('./purchasing.js');
+  assert.match(pur, /client_id: header\.clientId \|\| null,/);
+  const o = invoiceOutcome({ ok: true, duplicate: true, invoice_id: 'x' }, null, 2);
+  assert.equal(o.ok, true);
+  assert.match(o.text, /posted already\. Nothing was posted twice/);
+  assert.match(pur, /const \{ error: lineErr \} = await supabase\.from\('po_lines'\)\.insert\(lrows\);/, 'a failed order line save is said');
 });
 
 test('version and changelog say 5.11.79, name the database update, plain words', async () => {
@@ -357,8 +421,9 @@ test('version and changelog say 5.11.79, name the database update, plain words',
   assert.equal(VERSION, '5.11.79');
   const { CHANGELOG } = await import('../changelog.js');
   assert.equal(CHANGELOG[0].v, '5.11.79');
-  assert.ok(CHANGELOG[0].items.some((t) => /20261019a/.test(t)), 'the changelog names the database update');
-  assert.ok(CHANGELOG[0].items.some((t) => /switches on by itself the moment it gets its first recipe link/.test(t)), 'and says central stock is automatic');
+  assert.ok(CHANGELOG[0].items.some((t) => /20261019b/.test(t)), 'the changelog names the database update');
+  assert.ok(CHANGELOG[0].items.some((t) => /every venue has used it since 5\.11\.78/.test(t)), 'and says central stock is 5.11.78\'s, nothing switched here');
+  assert.ok(CHANGELOG[0].items.some((t) => /newest count stands/.test(t)) && CHANGELOG[0].items.some((t) => /pages of 1,000 items/.test(t)), 'and names the round 1 fixes');
   for (const t of CHANGELOG[0].items) assert.doesNotMatch(t, /[–—]/, 'no dashes as punctuation');
 });
 

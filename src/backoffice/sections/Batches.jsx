@@ -15,7 +15,7 @@ import { money, currencySymbol } from '../../lib/currency';
 import { fmtVenueDate, fmtVenueDateTime, fmtYmd } from '../../lib/venueDate';
 import { buildCostingCtx } from '../../lib/stock/recipes';
 import { fetchRecipes } from '../../lib/stock/recipes';
-import { fetchInventoryItems } from '../../lib/stock/data';
+import { fetchInventoryItems, fetchUsageByWeekday } from '../../lib/stock/data';
 import { planBatch, produceBatch, fetchBatches , ensureTodaysPlannedBatches, completePlannedBatch } from '../../lib/stock/production';
 import { PageHeader, PrimaryBtn, ReportTable, Money, Tag } from './reports/reportKit';
 
@@ -70,10 +70,10 @@ export default function Batches() {
       const [{ data: its }, { data: scheds }, prof] = await Promise.all([
         fetchInventoryItems(loc),
         supabase.from('prep_schedule').select('output_item_id, qty, unit, days_of_week, active').eq('location_id', loc).eq('active', true),
-        supabase.rpc('stock_usage_by_weekday', { p_location_id: loc, p_weeks: 8 }).then(r => r.data || []),
+        // v5.11.79: every item's weekday shape, read in pages of 1,000 (the raw read was cut at 1,000 rows)
+        fetchUsageByWeekday(8, loc).then(r => r.data || {}),
       ]);
-      const profByItem = {};
-      prof.forEach(r => { (profByItem[r.inventory_item_id] ??= [0,0,0,0,0,0,0])[r.dow] = Number(r.avg_daily_base) || 0; });
+      const profByItem = prof;
       const made = (its || []).filter(i => i.kind === 'MADE' && !i.archivedAt);
       const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
       const out = [];

@@ -79,16 +79,18 @@ export default function PurchaseOrders() {
     // 16 Oct 2026 (stock areas): the venue's areas ride along, so the receive panel can offer
     // a 'Lands in' dropdown. Before the migration areasOn is false and the list stays empty.
     const areasOn = await areasReady(loc);
-    const [{ data: p }, { data: s }, { data: it }, { data: par }, { data: rate }, { data: wk }, areaRes] = await Promise.all([
+    const [{ data: p }, { data: s }, { data: it }, { data: par }, { data: rate, error: rateErr }, { data: wk, error: wkErr }, areaRes] = await Promise.all([
       fetchPurchaseOrders(loc), fetchSuppliers(loc), fetchInventoryItems(loc), fetchParLevels(loc), fetchUsageRates(28, loc), fetchUsageByWeekday(8, loc),
       areasOn ? fetchAreas(loc) : Promise.resolve({ data: [] }),
     ]);
+    // v5.11.79: usage is read in pages; a page that fails gives no usage rather than part of it, so say so.
+    if (rateErr || wkErr) showToast?.('Usage could not be read in full, so suggested quantities may be low. Reload to try again.', 'error');
     // On order the way the Order pad counts it: SENT and PARTIAL orders, in the item's base unit.
     const byId = Object.fromEntries((it || []).map(i => [i.id, i]));
     const { byItem } = outstandingOnOrder(p || [], byId, { todayYmd: buildScheduleCtx(cfg?.timezone).ymd });
     setPos(p || []); setSuppliers(s || []); setItems(it || []); setPars(par || {}); setUsage(rate || {}); setWeekday(wk); setOnOrder(byItem); setAreas(areaRes.data || []); setLoading(false);
     if (keepId) { const f = (p || []).find(x => x.id === keepId); if (f) { setDraft(structuredClone(f)); setSelId(keepId); } }
-  }, [locId]);
+  }, [locId, showToast]);
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, []);
 
   const supById = useMemo(() => { const m = {}; suppliers.forEach(s => { m[s.id] = s; }); return m; }, [suppliers]);

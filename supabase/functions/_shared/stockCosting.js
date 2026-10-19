@@ -18,7 +18,7 @@
  * never averaged, when there is no stock to average against: on hand at or below zero (on hand -8
  * at 1.00 plus 10 at 2.00 used to give 6.00; it is 2.00), or an unknown cost (null, or 0: an item
  * that was never priced averaged in as free). The same rule as the database's receive
- * (20261019a _stock_receive_lines and post_stock_transfer_leg).
+ * (20261019b _stock_receive_lines and post_stock_transfer_leg).
  */
 export function movingAverageCost({ onHandQty = 0, currentAvg = 0, receivedQty, receivedUnitCost }) {
   const oh = Number(onHandQty) || 0;

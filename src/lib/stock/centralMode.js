@@ -10,8 +10,8 @@
  *
  * No row for a venue, a missing RPC (the migration not run yet), or any error = 'browser':
  * the till keeps depleting exactly as before (the door answers skipped central if the venue is
- * in fact central). v5.11.79 (20261019a): a venue turns central by itself with its first recipe
- * link; 'browser' after that is only a deliberate back out (stock_central_switch).
+ * in fact central). Since v5.11.78 (20261019) every venue is central from the moment it is created;
+ * 'browser' is only a deliberate back out (stock_central_switch).
  */
 
 export const STOCK_MODES = Object.freeze(['browser', 'central', 'paused']);
@@ -52,8 +52,8 @@ export function healthWords(h) {
   let title, sub, tone = 'ok';
   if (mode === 'browser') {
     title = 'Stock comes off at the till';
-    // v5.11.79: central is automatic from a venue's first recipe; browser is a back out by ServOS.
-    sub = 'Each till takes stock off when it closes a check. Kiosk, online, QR and delivery sales do not move stock here. Central stock turns on by itself when a venue gets its first recipe; this venue was put back on the till path by ServOS.';
+    // Since v5.11.78 (20261019) every venue is central; browser is a back out by ServOS.
+    sub = 'Each till takes stock off when it closes a check. Kiosk, online, QR and delivery sales do not move stock here. Every venue uses central stock; this venue was put back on the till path by ServOS.';
     tone = 'muted';
   } else {
     title = mode === 'paused' ? 'Central stock depletion is paused' : 'Stock comes off every booked check';

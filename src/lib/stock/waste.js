@@ -40,7 +40,7 @@ export const fetchWaste = async (fromIso, toIso, locationId = null) => {
       id: r.id, inventoryItemId: r.inventory_item_id, itemName: r.item_name, qty: Number(r.qty), unit: r.unit,
       reason: r.reason, note: r.note, costValue: r.cost_value == null ? null : Number(r.cost_value),
       saleValue: r.sale_value == null ? null : Number(r.sale_value), source: r.source, occurredAt: r.occurred_at,
-      // v5.11.79 (20261019a): the product wasted and whether nothing came off stock (null before the migration)
+      // v5.11.79 (20261019b): the product wasted and whether nothing came off stock (null before the migration)
       menuItemId: r.menu_item_id ?? null, noRecipe: r.no_recipe === true,
     })),
     error,
@@ -73,7 +73,7 @@ export const fetchWasteLinks = async (locationId = null) => {
 /**
  * v5.11.79: the "Comes off stock" box for ONE product, worked out by the database (stock_record_waste
  * with preview true: nothing written). { data: { lines: [{ item_id, name, base_unit, qty_base, cost }],
- * cost_value, tag, linked }, error, missing } where missing = 20261019a is not run yet (the screen then
+ * cost_value, tag, linked }, error, missing } where missing = 20261019b is not run yet (the screen then
  * falls back to reading the recipe book itself, as before).
  */
 export const previewMenuWaste = async ({ menuItemId, qty }, locationId = null) => {
@@ -114,7 +114,7 @@ export const logMenuItemWaste = async ({ menuItemId = null, productName, qty, sa
   // this one product through its recipe (the same rule as central depletion), writes the waste row
   // with the product id and every WASTE movement together, and NEVER refuses: a product with no
   // recipe is recorded with the lost sale and tagged "No recipe: stock not taken off". Before
-  // 20261019a is run the call is missing and the old path below runs (also never refusing).
+  // 20261019b is run the call is missing and the old path below runs (also never refusing).
   const n = Number(qty) || 1;
   const event = {
     id: newUuid(), kind: 'menu', menu_item_id: menuItemId ? String(menuItemId) : null, item_name: productName,
@@ -179,7 +179,7 @@ export const logWaste = async ({ inventoryItemId, qty, unit, reason, note, sourc
   const costValue = qtyBase * (item.current_cost == null ? 0 : Number(item.current_cost));
 
   // v5.11.79: the waste row and its WASTE movement in ONE database call (stock_record_waste,
-  // 20261019a), so a refused movement can never leave a waste row with no stock taken off.
+  // 20261019b), so a refused movement can never leave a waste row with no stock taken off.
   const { data: res, error: rpcErr } = await supabase.rpc('stock_record_waste', {
     p_location_id: locationId,
     p_event: { id: newUuid(), kind: 'item', inventory_item_id: inventoryItemId, item_name: item.name, qty: Number(qty),
