@@ -34,6 +34,19 @@
 --      server books the VAT inside what each line was charged when more than one rate meets a deal
 --      that hit some lines. A QR tab round now also keeps the deals the server applied
 --      (order_pricing.auto_rules, which settle_qr_tab books as deal lines; a round never kept them).
+--   8. (menus and availability) A line keeps the price it was added at when a timed menu flips
+--      (the till's rule): the online and QR pages send the menu each line was priced on and
+--      _public_order_value values the line on it, when it is one of the venue's menus. RUN THIS NO
+--      LATER THAN v5.11.81 GOES LIVE ON THE WEB: until it runs, a basket line kept at an earlier,
+--      cheaper menu price would be valued at the new menu and land in Payment short. Older pages
+--      send no line menu and are valued exactly as before.
+--   9. HubRise follows the menu and sold out items by itself (hubrise-reconcile, every 2 minutes):
+--      new columns on hubrise_connections (inventory_ids, menu_fingerprint, menu_fingerprint_at,
+--      catalog_fingerprint, catalog_payload_key, catalog_auto_tried_at, auto_catalog) and
+--      hubrise_menu_fingerprint(text), a cheap fingerprint of a venue's menu rows (service role
+--      only). The menu is pushed only where ServOS already publishes the HubRise catalog.
+--  10. Menu translations are kept up to date for every venue that holds some (the online page, QR
+--      and catering show them now), not only venues with a new design kiosk (menu_translate_cron).
 --
 -- NOT a live tax calculation (central_tax_constraints.md): the VAT is still worked out ONCE, when
 -- the order is booked, by the same function on the venue's stored rules, and stored on the check;
@@ -53,6 +66,10 @@ begin
   end if;
   if to_regclass('public.promo_redemptions') is null or to_regclass('public.device_profiles') is null then
     raise exception 'promo_redemptions or device_profiles is missing: not the OPS DB this file was written for. Nothing was changed.';
+  end if;
+  if to_regclass('public.hubrise_connections') is null or to_regclass('public.menu_translations') is null
+     or to_regclass('public.menus') is null then
+    raise exception 'hubrise_connections, menu_translations or menus is missing: not the OPS DB this file was written for. Nothing was changed.';
   end if;
 end
 $guard$;
@@ -445,6 +462,12 @@ declare
   v_menu_id  text := nullif(left(btrim(coalesce(p_menu_id, '')), 80), '');
   v_86       text[] := '{}'::text[];
   v_parents  text[] := '{}'::text[];
+  -- 20261020a (v5.11.81, menus and availability): a line keeps the price it was added at when a
+  -- timed menu flips (the till's rule, src/lib/channelMenu.js). The online and QR pages send the
+  -- menu each line was priced on (line menuId); it is used when it is one of this venue's menus,
+  -- else the order's menu, as before. No line menu (older pages, catering): the order's menu.
+  v_menus     text[] := '{}'::text[];
+  v_line_menu text;
   v_sell     boolean;
   v_noprice  boolean;    -- 20261020a: the row has no price set for this sale (the "no price" rule)
   v_floor    bigint;
@@ -487,6 +510,12 @@ begin
   if to_regclass('public.eighty_six') is not null then
     execute 'select coalesce(array_agg(e.item_id::text), ''{}''::text[]) from public.eighty_six e where e.location_id::text = $1'
       into v_86 using p_loc;
+  end if;
+
+  -- 20261020a: this venue's menus, once for the whole order (a line's own menu must be one of them).
+  if to_regclass('public.menus') is not null then
+    execute 'select coalesce(array_agg(m.id::text), ''{}''::text[]) from public.menus m where m.location_id::text = $1'
+      into v_menus using p_loc;
   end if;
 
   -- Every row that is the parent of a live size, once for the whole order (a variants parent
@@ -556,9 +585,14 @@ begin
     v_sell := false;
     v_floor := null;
     v_noprice := false;
+    -- 20261020a: the menu this line was priced on, when the page sent one of this venue's menus.
+    v_line_menu := nullif(left(btrim(coalesce(it ->> 'menuId', '')), 80), '');
+    if v_line_menu is null or not (v_line_menu = any(v_menus)) then
+      v_line_menu := v_menu_id;
+    end if;
     if r.id is not null then
-      v_floor := public._menu_item_floor_minor(r.pricing, v_channel, v_base, v_menu_id);
-      v_noprice := not public._menu_item_has_price(r.pricing, v_channel, v_menu_id);
+      v_floor := public._menu_item_floor_minor(r.pricing, v_channel, v_base, v_line_menu);
+      v_noprice := not public._menu_item_has_price(r.pricing, v_channel, v_line_menu);
       v_sell := not (r.id = any(v_parents))
                 and coalesce(r.archived, false) = false
                 and not (coalesce(r.type, '') = 'subitem' and r.sold_alone is not true)
@@ -2056,6 +2090,75 @@ begin
 end;
 $function$;
 
+-- 9. HubRise follows the menu and sold out items by itself (v5.11.81) -----------------------------
+-- What hubrise-reconcile (every 2 minutes) keeps per connection. All additive, safe to run twice.
+--   inventory_ids         the out of stock ids last sent (only the difference is sent next time)
+--   menu_fingerprint(_at) the menu as last seen and since when (a push waits for a still menu)
+--   catalog_fingerprint   the menu HubRise has (set by every push, Push menu included)
+--   catalog_payload_key   the catalog document last sent (an unchanged one is never sent again)
+--   catalog_auto_tried_at the last automatic push (a failed one waits 15 minutes)
+--   auto_catalog          false switches the automatic menu push off for that venue
+alter table public.hubrise_connections add column if not exists inventory_ids jsonb;
+alter table public.hubrise_connections add column if not exists menu_fingerprint text;
+alter table public.hubrise_connections add column if not exists menu_fingerprint_at timestamptz;
+alter table public.hubrise_connections add column if not exists catalog_fingerprint text;
+alter table public.hubrise_connections add column if not exists catalog_payload_key text;
+alter table public.hubrise_connections add column if not exists catalog_auto_tried_at timestamptz;
+alter table public.hubrise_connections add column if not exists auto_catalog boolean not null default true;
+
+-- A cheap fingerprint of everything a HubRise catalog is built from (menu rows, categories, option
+-- groups, tax rates, menus, the links of the venue's menus, the instruction groups of the latest
+-- push, the connection's menu choice). One md5 per row, in the database: nothing is sent to the
+-- caller but 32 characters. Service role only (the reconcile run and the catalog push).
+create or replace function public.hubrise_menu_fingerprint(p_location_id text)
+returns text
+language sql
+stable
+security definer
+set search_path to 'public'
+as $function$
+  select md5(concat_ws('|',
+    (select coalesce(string_agg(md5(t::text), ',' order by t.id), '') from public.menu_items t where t.location_id = p_location_id),
+    (select coalesce(string_agg(md5(t::text), ',' order by t.id), '') from public.menu_categories t where t.location_id = p_location_id),
+    (select coalesce(string_agg(md5(t::text), ',' order by t.id), '') from public.modifier_groups t where t.location_id = p_location_id),
+    (select coalesce(string_agg(md5(t::text), ',' order by t.id::text), '') from public.tax_rates t where t.location_id::text = p_location_id),
+    (select coalesce(string_agg(md5(t::text), ',' order by t.id), '') from public.menus t where t.location_id = p_location_id),
+    (select coalesce(string_agg(l.menu_id || ':' || l.category_id, ',' order by l.menu_id, l.category_id), '')
+       from public.menu_category_links l join public.menus m on m.id = l.menu_id where m.location_id = p_location_id),
+    (select coalesce(md5((c.snapshot -> 'instructionGroupDefs')::text), '')
+       from public.config_pushes c where c.location_id = p_location_id order by c.created_at desc limit 1),
+    (select coalesce(array_to_string(h.menu_ids, ','), '') || ':' || coalesce(h.currency, '')
+       from public.hubrise_connections h where h.location_id = p_location_id)
+  ));
+$function$;
+revoke all on function public.hubrise_menu_fingerprint(text) from public, anon, authenticated;
+grant execute on function public.hubrise_menu_fingerprint(text) to service_role;
+
+-- 10. Menu translations for every venue that holds some (v5.11.81) --------------------------------
+-- The online page, QR and catering show the venue's translations now, so a venue that pressed
+-- Translate now once (Back Office, Online ordering or Kiosk settings) is kept up to date in the
+-- background too, kiosk or not. Same function, one more source of venues.
+create or replace function public.menu_translate_cron() returns void
+language plpgsql security definer set search_path = public as $function$
+declare
+  loc record;
+begin
+  for loc in
+    select distinct location_id from (
+      select location_id::text as location_id
+        from public.device_profiles
+       where kiosk_new_design = true and location_id is not null
+      union
+      select distinct location_id::text
+        from public.menu_translations
+       where location_id is not null
+    ) v
+  loop
+    perform public.call_edge_fn('menu-translate', jsonb_build_object('location_id', loc.location_id, 'reason', 'cron'));
+  end loop;
+end $function$;
+revoke all on function public.menu_translate_cron() from public, anon, authenticated;
+
 commit;
 
 notify pgrst, 'reload schema';
@@ -2065,7 +2168,8 @@ notify pgrst, 'reload schema';
 --   service_rule_anon_can_call 1, vat_false_is_default 1, has_price_fn 1, value_no_price 1,
 --   settle_books_deals 1, promo_takes_lines 1, old_promo_gone 0, order_passes_lines 1,
 --   deals_by_line 1, lines_charged_fn 1, lines_charged_anon_can_call 0, check_vat_by_line 1,
---   round_keeps_deals 1
+--   round_keeps_deals 1, line_menu 1, hubrise_columns 7, fingerprint_fn 1,
+--   fingerprint_anon_can_call 0, translate_opted_in 1
 select
   (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'promo_release_atomic') as release_fn,
   (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'promo_release_atomic'
@@ -2096,4 +2200,14 @@ select
   (select case when position('byLine' in pg_get_functiondef(p.oid)) > 0 then 1 else 0 end
      from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = '_public_order_check_row') as check_vat_by_line,
   (select case when position('''auto_rules'', v_auto -> ''rules'', ''auto_lines''' in pg_get_functiondef(p.oid)) > 0 then 1 else 0 end
-     from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'place_public_order') as round_keeps_deals;
+     from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'place_public_order') as round_keeps_deals,
+  (select case when position('v_line_menu' in pg_get_functiondef(p.oid)) > 0 then 1 else 0 end
+     from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = '_public_order_value') as line_menu,
+  (select count(*) from information_schema.columns where table_schema = 'public' and table_name = 'hubrise_connections'
+     and column_name in ('inventory_ids', 'menu_fingerprint', 'menu_fingerprint_at', 'catalog_fingerprint',
+                         'catalog_payload_key', 'catalog_auto_tried_at', 'auto_catalog')) as hubrise_columns,
+  (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'hubrise_menu_fingerprint') as fingerprint_fn,
+  (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'hubrise_menu_fingerprint'
+     and has_function_privilege('anon', p.oid, 'execute')) as fingerprint_anon_can_call,
+  (select case when position('menu_translations' in pg_get_functiondef(p.oid)) > 0 then 1 else 0 end
+     from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'menu_translate_cron') as translate_opted_in;

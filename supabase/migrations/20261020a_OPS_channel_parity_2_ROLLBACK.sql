@@ -15,6 +15,33 @@ begin
 end
 $guard$;
 
+-- 10. menu_translate_cron as it was (venues with a new design kiosk only) --------------------------
+create or replace function public.menu_translate_cron() returns void
+language plpgsql security definer set search_path = public as $function$
+declare
+  loc record;
+begin
+  for loc in
+    select distinct location_id::text as location_id
+    from public.device_profiles
+    where kiosk_new_design = true and location_id is not null
+  loop
+    perform public.call_edge_fn('menu-translate', jsonb_build_object('location_id', loc.location_id, 'reason', 'cron'));
+  end loop;
+end $function$;
+revoke all on function public.menu_translate_cron() from public, anon, authenticated;
+
+-- 9. HubRise automatic menu and sold out sync: drop what was added -------------------------------
+-- (hubrise-reconcile and hubrise-catalog-push skip the automatic steps without these columns.)
+drop function if exists public.hubrise_menu_fingerprint(text);
+alter table public.hubrise_connections drop column if exists inventory_ids;
+alter table public.hubrise_connections drop column if exists menu_fingerprint;
+alter table public.hubrise_connections drop column if exists menu_fingerprint_at;
+alter table public.hubrise_connections drop column if exists catalog_fingerprint;
+alter table public.hubrise_connections drop column if exists catalog_payload_key;
+alter table public.hubrise_connections drop column if exists catalog_auto_tried_at;
+alter table public.hubrise_connections drop column if exists auto_catalog;
+
 -- 7. The deal and check row functions as they were ------------------------------------------------
 CREATE OR REPLACE FUNCTION public._public_order_auto(p_loc text, p_channel text, p_lines jsonb)
  RETURNS jsonb
@@ -1629,7 +1656,8 @@ notify pgrst, 'reload schema';
 
 -- VISIBLE CHECK. Expected: release_fn 0, released_columns 0, service_rule_fn 0, has_price_fn 0,
 --   vat_false_is_default 0, value_no_price 0, settle_books_deals 0, promo_takes_lines 0, old_promo_back 1,
---   deals_by_line 0, lines_charged_fn 0, check_vat_by_line 0
+--   deals_by_line 0, lines_charged_fn 0, check_vat_by_line 0, line_menu 0, hubrise_columns 0,
+--   fingerprint_fn 0, translate_opted_in 0
 select
   (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'promo_release_atomic') as release_fn,
   (select count(*) from information_schema.columns where table_schema = 'public' and table_name = 'promo_redemptions'
@@ -1650,4 +1678,12 @@ select
      from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = '_public_order_auto') as deals_by_line,
   (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = '_order_lines_charged') as lines_charged_fn,
   (select case when position('byLine' in pg_get_functiondef(p.oid)) > 0 then 1 else 0 end
-     from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = '_public_order_check_row') as check_vat_by_line;
+     from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = '_public_order_check_row') as check_vat_by_line,
+  (select case when position('v_line_menu' in pg_get_functiondef(p.oid)) > 0 then 1 else 0 end
+     from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = '_public_order_value') as line_menu,
+  (select count(*) from information_schema.columns where table_schema = 'public' and table_name = 'hubrise_connections'
+     and column_name in ('inventory_ids', 'menu_fingerprint', 'menu_fingerprint_at', 'catalog_fingerprint',
+                         'catalog_payload_key', 'catalog_auto_tried_at', 'auto_catalog')) as hubrise_columns,
+  (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'hubrise_menu_fingerprint') as fingerprint_fn,
+  (select case when position('menu_translations' in pg_get_functiondef(p.oid)) > 0 then 1 else 0 end
+     from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'menu_translate_cron') as translate_opted_in;

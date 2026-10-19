@@ -181,7 +181,9 @@ test('allowed: a HubRise or ezCater order is booked at the price the platform ch
   assert.match(ez, /export function ezcaterClosedCheck\(row/);
   // HubRise's catalog carries ONE price per product, the delivery price (hubrise-catalog-push), so a
   // Deliveroo collection order is priced at the delivery price: the platform's rule, not ours.
-  assert.match(readRepo('supabase/functions/hubrise-catalog-push/index.ts'), /channel: 'delivery'/);
+  // (v5.11.81: the push lives in _shared/hubrise-catalog.ts, shared with the reconcile run.)
+  assert.match(readRepo('supabase/functions/_shared/hubrise-catalog.ts'), /channel: 'delivery'/);
+  assert.match(readRepo('supabase/functions/hubrise-catalog-push/index.ts'), /import \{ pushCatalog \} from '\.\.\/_shared\/hubrise-catalog\.ts';/);
 });
 
 // ── A row with no price set never sells for 0.00 (v5.11.81, confirmed minor) ──────────────────────
@@ -203,6 +205,95 @@ test('no price: a row whose base is null, with no price for the order type or me
   assert.match(readRepo('src/store/index.js'), /if \(refusesNoPriceLine\(item, _currentOrderType, get\(\)\.activeMenuId, price\)\) \{/);
   assert.match(readRepo('src/surfaces/BarSurface.jsx'), /if \(refusesNoPriceLine\(item, 'bar-tab', barMenuId, price\)\)/);
   assert.match(readRepo('src/surfaces/KioskApp.jsx'), /if \(refusesNoPriceLine\(variantItem \|\| item, orderType, activeMenuId, linePrice\)\)/);
-  assert.match(readRepo('src/surfaces/online/OnlineSurface.jsx'), /if \(refusesNoPriceLine\(item, orderType, effectiveMenuId, price \+ optionsEach\)\)/);
+  assert.match(readRepo('src/surfaces/online/OnlineSurface.jsx'), /if \(refusesNoPriceLine\(item, priceType, effectiveMenuId, price \+ optionsEach\)\)/);
   assert.match(readRepo('src/surfaces/catering/CateringSurface.jsx'), /if \(refusesNoPriceLine\(item, priceChannel, menuIdOf\(item\), price \+ optionsEach\)\)/);
+});
+
+// ── v5.11.81, channel parity round 2: THE LINE KEEPS ITS PRICE when a timed menu flips ───────────
+// The rule the till already uses for a placed line (store.setOrderType is its only reprice; a menu
+// flip at the minute tick never moves a line). Every channel now follows it: kiosk, online, QR.
+// Only switching the order type reprices the open lines, at the menu on now.
+
+test('menu flip: the till keeps a line\'s price; switching the order type is the only reprice (the reference)', () => {
+  const store = readRepo('src/store/index.js');
+  const pos = readRepo('src/surfaces/POSSurface.jsx');
+  // The menu is mirrored into the store and nothing reprices on it.
+  assert.match(pos, /if \(_setActiveMenuId\) _setActiveMenuId\(deviceMenuId\);/);
+  assert.match(store, /setActiveMenuId: id => set\(\{ activeMenuId: id \}\),/, 'a menu change prices nothing');
+  assert.match(between(store, 'setOrderType: t => set(s => {', 'customer: null,'), /const newUnitPrice = fn\(src, t, s\.activeMenuId\);/);
+});
+
+test('menu flip: online and QR keep each line\'s price and menu; only Collection / Delivery reprices', async () => {
+  const { repriceCartLines, resolveItemPrice } = await import('../menuPricing.js');
+  // Half added at Collection on no menu (3.02); at 16:00 the Bar menu (1.23) comes on.
+  const half = raw('beer-half');
+  const line = { uid: 'a', itemId: 'beer-half', price: resolveItemPrice(half, 'collection', null), qty: 1, mods: [], menuId: null };
+  assert.equal(line.price, 3.02);
+  // The page no longer calls the reprice on a menu flip, so the line stays 3.02 (as the till's).
+  const online = readRepo('src/surfaces/online/OnlineSurface.jsx');
+  const effect = between(online, 'const pricedTypeRef = useRef(orderType);', '}, [orderType]);');
+  assert.match(effect, /if \(!orderType \|\| pricedTypeRef\.current === orderType\) return;/);
+  assert.match(effect, /repriceCartLines\(kept, items, orderType, effectiveMenuId, \{ stampMenu: true \}\)/);
+  assert.doesNotMatch(online, /\}, \[orderType, effectiveMenuId, items\]\);/, 'the old reprice on every menu flip is gone');
+  // Switching to Delivery reprices at the menu on now and records it on the line.
+  const moved = repriceCartLines([line], MENU, 'delivery', 'bar', { stampMenu: true })[0];
+  assert.equal(moved.price, 1.23);
+  assert.equal(moved.menuId, 'bar');
+  // A line already on that price and menu is the same object (React keeps it).
+  assert.equal(repriceCartLines([moved], MENU, 'delivery', 'bar', { stampMenu: true })[0], moved);
+  // Catering (menu per row, no timed menus) is unchanged: no menu stamped.
+  const plain = { uid: 'c', itemId: 'beer-half', price: 3.02, qty: 1, mods: [] };
+  assert.equal('menuId' in repriceCartLines([plain], MENU, 'delivery', () => 'bar', { stampMenu: true })[0], false);
+  // Each line carries its menu to the server, from the online page and QR (pay now and tab rounds).
+  assert.match(between(online, 'setCart(c => [...c, {', '}]);'), /menuId: effectiveMenuId \|\| null,/);
+  for (const f of ['src/surfaces/online/OnlineCheckout.jsx', 'src/surfaces/qr/QrCheckout.jsx']) {
+    assert.match(readRepo(f), /menuId: l\.menuId \|\| null,/, f);
+  }
+  // The server values each line on its own menu when it is one of the venue's menus (20261020a).
+  const sql = readRepo('supabase/migrations/20261020a_OPS_channel_parity_2.sql');
+  const fn = between(sql, 'CREATE OR REPLACE FUNCTION public._public_order_value(', '$function$;');
+  assert.match(fn, /v_line_menu := nullif\(left\(btrim\(coalesce\(it ->> 'menuId', ''\)\), 80\), ''\);/);
+  assert.match(fn, /if v_line_menu is null or not \(v_line_menu = any\(v_menus\)\) then\s+v_line_menu := v_menu_id;/);
+  assert.match(fn, /v_floor := public\._menu_item_floor_minor\(r\.pricing, v_channel, v_base, v_line_menu\);/);
+  assert.match(fn, /v_noprice := not public\._menu_item_has_price\(r\.pricing, v_channel, v_line_menu\);/);
+});
+
+test('menu flip: the kiosk keeps a line\'s price; a later add at another price is a line of its own (as the till appends)', async () => {
+  const { kioskLineSlot } = await import('../channelMenu.js');
+  const cart = [{ key: 'k', linePrice: 2.85, qty: 1 }];
+  assert.deepEqual(kioskLineSlot(cart, 'k', 2.85), { merge: true, key: 'k' }, 'same price: one line');
+  const slot = kioskLineSlot(cart, 'k', 1.23);
+  assert.deepEqual(slot, { merge: false, key: 'k@123', baseKey: 'k' }, 'the Bar menu came on: its own line');
+  const cart2 = [...cart, { key: slot.key, baseKey: 'k', linePrice: 1.23, qty: 1 }];
+  assert.deepEqual(kioskLineSlot(cart2, 'k', 1.23), { merge: true, key: 'k@123' });
+  assert.deepEqual(kioskLineSlot(cart2, 'k', 2.85), { merge: true, key: 'k' });
+  assert.deepEqual(kioskLineSlot([], 'k', 2.85), { merge: false, key: 'k', baseKey: 'k' });
+  // The till's money for the same taps: 2.85 + 1.23, never 2 x 1.23.
+  const charged = cart2.reduce((s, l) => s + l.linePrice * l.qty, 0);
+  assert.equal(+charged.toFixed(2), 4.08);
+  const app = readRepo('src/surfaces/KioskApp.jsx');
+  const add = between(app, 'const addToCart = useCallback(', 'resetIdle();');
+  assert.match(add, /const slot = kioskLineSlot\(prev, key, linePrice\);/);
+  assert.match(add, /\? \{ \.\.\.l, qty: l\.qty \+ qty, lineTotal: \(l\.qty \+ qty\) \* l\.linePrice \}/, 'a merge keeps the line\'s own price');
+  assert.doesNotMatch(add, /qty: l\.qty \+ qty, linePrice,/, 'the earlier units are never repriced');
+  // The new design's eat in / take away switch still reprices the basket (the till's order type rule).
+  assert.match(readRepo('src/surfaces/kiosk/KioskFlowV2.jsx'), /setCart\(c => repriceKioskCart\(c, items, orderType, activeMenuId\)\);/);
+  // A split line keeps the allergens noted for its item and picks.
+  const { basketAllergens } = await import('../kioskAllergens.js');
+  const split = [{ key: 'k@123', baseKey: 'k', name: 'Latte', item: { id: 'latte' }, modsArray: [] }];
+  assert.deepEqual(basketAllergens(split, [], new Map([['k', ['milk']]])), [{ id: 'milk', names: ['Latte'] }]);
+});
+
+test('online cards: the price shown first is the price charged (never the dine in fallback before the pick)', async () => {
+  const { storefrontPriceType } = await import('../channelMenu.js');
+  const types = [{ id: 'collection' }, { id: 'delivery' }];
+  assert.equal(storefrontPriceType(null, { orderTypes: types }), 'collection');
+  assert.equal(storefrontPriceType('delivery', { orderTypes: types }), 'delivery');
+  assert.equal(storefrontPriceType(null, { isQr: true }), 'dine-in');
+  assert.equal(storefrontPriceType(null, { orderTypes: [] }), 'collection');
+  // Half: the card before the pick shows Collection 3.02 (it showed the 2.85 base).
+  assert.equal(resolveItemPrice(raw('beer-half'), storefrontPriceType(null, { orderTypes: types }), null), 3.02);
+  const online = readRepo('src/surfaces/online/OnlineSurface.jsx');
+  assert.match(online, /const priceType = storefrontPriceType\(orderType, \{ isQr, orderTypes: allOrderTypes \}\);/);
+  assert.match(online, /const priceFor = \(it\) => resolveItemPrice\(it, priceType, effectiveMenuId\);/);
 });

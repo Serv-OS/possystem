@@ -263,19 +263,31 @@ export async function fetchAndIngest(sb: any, loc: string, token: string, hubLoc
   if (order?.id) await ingestOrder(sb, loc, order, eventCreatedAt);
 }
 
+/** The venue's out of stock set: 86'd items plus daily counts at 0. Throws when either read fails
+ *  (a half read set must never be sent: it would bring sold out items back). */
+export async function outOfStockIds(sb: any, loc: string): Promise<Set<string>> {
+  const [r86, rStock] = await Promise.all([
+    sb.from('eighty_six').select('item_id').eq('location_id', loc).limit(5000),
+    sb.from('stock_levels').select('item_id, remaining').eq('location_id', loc).lte('remaining', 0).limit(5000),
+  ]);
+  if (r86?.error) throw new Error(`eighty_six could not be read: ${r86.error.message || r86.error}`);
+  if (rStock?.error) throw new Error(`stock_levels could not be read: ${rStock.error.message || rStock.error}`);
+  // The Data API answers 1,000 rows at most: a set that size may be cut short, and sending a short
+  // set would bring sold out items back. Never sent (a venue has a few dozen at most).
+  if ((r86?.data || []).length >= 1000 || (rStock?.data || []).length >= 1000) throw new Error('out of stock list too long to send safely');
+  const ids = new Set<string>();
+  (r86?.data || []).forEach((r: any) => r.item_id && ids.add(String(r.item_id)));
+  (rStock?.data || []).forEach((r: any) => r.item_id && ids.add(String(r.item_id)));
+  return ids;
+}
+
 /** Full inventory resync: PUT the complete out-of-stock set (86'd + stock<=0). */
 export async function resyncInventory(sb: any, loc: string): Promise<{ outOfStock: number } | { skipped: string }> {
   const { data: conn } = await sb.from('hubrise_connections').select('access_token, hubrise_catalog_id').eq('location_id', loc).maybeSingle();
   if (!conn?.access_token) return { skipped: 'not connected' };
   if (!conn.hubrise_catalog_id) return { skipped: 'no catalog' };
 
-  const [{ data: eightySix }, { data: stock }] = await Promise.all([
-    sb.from('eighty_six').select('item_id').eq('location_id', loc),
-    sb.from('stock_levels').select('item_id, remaining').eq('location_id', loc).lte('remaining', 0),
-  ]);
-  const ids = new Set<string>();
-  (eightySix || []).forEach((r: any) => r.item_id && ids.add(String(r.item_id)));
-  (stock || []).forEach((r: any) => r.item_id && ids.add(String(r.item_id)));
+  const ids = await outOfStockIds(sb, loc);
   // Our catalog uses the item id as BOTH the sku ref (standalone) and (when name-matched)
   // the option ref — so push each 86'd id as sku_ref AND option_ref to cover items sold both
   // ways. If HubRise rejects unknown option refs, fall back to sku-only so 86 still applies.
@@ -286,6 +298,9 @@ export async function resyncInventory(sb: any, loc: string): Promise<{ outOfStoc
     try { await putInventory(conn.access_token, conn.hubrise_catalog_id, allEntries); }
     catch { await putInventory(conn.access_token, conn.hubrise_catalog_id, skuEntries); }
     await sb.from('hubrise_connections').update({ inventory_synced_at: new Date().toISOString(), inventory_sync_error: null }).eq('location_id', loc);
+    // v5.11.81: what HubRise now holds, so the reconcile run sends only later changes (column added
+    // by 20261020a; refused before it runs, which loses nothing).
+    try { await sb.from('hubrise_connections').update({ inventory_ids: [...ids].sort() }).eq('location_id', loc); } catch { /* before 20261020a */ }
   } catch (e) {
     await sb.from('hubrise_connections').update({ inventory_sync_error: e instanceof Error ? e.message : String(e) }).eq('location_id', loc);
     throw e;

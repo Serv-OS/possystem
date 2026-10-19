@@ -222,13 +222,19 @@ export function planCartLine(item, channel, menuId, { modSurcharge = 0, qty = 1 
 // the item list is left exactly as it was.
 // 19 Oct 2026 (v5.11.78): `menuId` may also be a function of the row (catering, whose menus are
 // chosen per category, prices each row on its own menu); a value is used for every line as before.
-export function repriceCartLines(cart, items, channel, menuId = null) {
+// v5.11.81 (channel parity round 2): the online and QR pages call this ONLY when the order type
+// changes (the till's setOrderType rule: a timed menu flip never moves a line already in the basket;
+// lib/channelMenu.js). With { stampMenu: true } every line also records the menu it is now priced on
+// (line.menuId), so the server values it on that menu (_public_order_value, migration 20261020a).
+export function repriceCartLines(cart, items, channel, menuId = null, { stampMenu = false } = {}) {
   const rows = Array.isArray(items) ? items : [];
+  const stamp = stampMenu && typeof menuId !== 'function';
   return (cart || []).map(l => {
     if (!l || l.itemId == null) return l;
     const src = rows.find(i => i && i.id === l.itemId);
     if (!src) return l;
     const price = resolveItemPrice(src, channel, typeof menuId === 'function' ? menuId(src) : menuId);
+    if (stamp && (l.menuId ?? null) !== (menuId ?? null)) return { ...l, price, menuId: menuId ?? null };
     return price === l.price ? l : { ...l, price };
   });
 }

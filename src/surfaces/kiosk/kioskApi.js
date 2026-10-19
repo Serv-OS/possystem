@@ -14,6 +14,7 @@
  * currency). The DEV preview passes its own object with the same functions.
  */
 import { getLocationConfig } from '../../lib/locationTime';
+import { loadMenuTranslationRows } from '../../lib/menuTextLoad';
 import { getActiveCurrencyCode } from '../../lib/currency';
 import { fetchKioskTables, groupKioskTables } from '../../lib/kioskTables';
 import { kioskTableStatus } from '../../lib/kioskFlow';
@@ -235,13 +236,10 @@ export async function attributePointsOrder({ customer, orderRecord }) {
  */
 export async function loadMenuTranslations(locationId, lang) {
   if (!locationId || !lang || lang === 'en') return [];
-  const res = await withTimeout(
-    supabase.from('menu_translations').select('entity_type,entity_id,text').eq('location_id', locationId).eq('lang', lang),
-    READ_TIMEOUT_MS,
-    null,
-  );
-  if (!res || res.error || !Array.isArray(res.data)) return null;
-  return res.data;
+  // v5.11.81: every row, page by page (lib/menuTextLoad.js, the same read the online, QR and
+  // catering pages use). One read stopped at 1,000 rows, so a big menu showed the rest in English.
+  const rows = await withTimeout(loadMenuTranslationRows(supabase, locationId, lang), READ_TIMEOUT_MS * 3, null);
+  return Array.isArray(rows) ? rows : null;
 }
 
 // No loadModifierGroups here: on a real kiosk the item sheet reads modifier_groups itself,

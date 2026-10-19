@@ -20,8 +20,14 @@ import { assembleTaxProfiles } from '../../lib/rowMapping';
 import { buildLocalTaxCtx, taxCtxHasConfig } from '../../lib/taxCompute';
 import { loadCustomerRates, ratesGate, venueExpectsRates } from '../../lib/customerRates';
 import { isItemEightySixed } from '../../lib/itemAvailability';
-import { resolveActiveMenu } from '../../lib/menus/resolveActiveMenu';
 import { resolveItemPrice, repriceCartLines, refusesNoPriceLine } from '../../lib/menuPricing';
+// v5.11.81 (channel parity round 2): one rule per channel for the menu shown (lib/channelMenu.js),
+// the kiosk's allergen marking (lib/kioskAllergens.js) and the venue's menu translations (lib/menuText.js).
+import { channelVisible, storefrontMenuId, categoriesOnMenu, storefrontPriceType } from '../../lib/channelMenu';
+import { itemAllergenIds, unsafeAllergenIds } from '../../lib/kioskAllergens';
+import { useMenuText, itemName as tItemName, itemDescription as tItemDescription, categoryLabel as tCategoryLabel } from '../../lib/menuText';
+import { loadMenuTranslationRows, customerMenuLang, applyMenuLang, languageLabel } from '../../lib/menuTextLoad';
+import { readAllRows } from '../../lib/venueMenuRead';
 import { onlineSectionTrees, itemInSection } from '../../lib/onlineMenuTree';
 import { kitchenOverride, receiptOverride } from '../../lib/itemDisplay';
 import { lineTaxRefsFor } from '../../lib/taxRefs';
@@ -136,6 +142,28 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   const [cart, setCart]             = useState([]);
   const [activeAllergens, setActiveAllergens] = useState([]); // user-picked filters
   const [showAllergyPicker, setShowAllergyPicker] = useState(false);
+  // v5.11.81 (channel parity round 2): the venue's menu text in the guest's language, as on the
+  // kiosk (menu_translations, lib/menuText.js). The browser's language picks it when the venue has
+  // that language; the pill switches back to English. Only what is SHOWN changes: the basket, the
+  // order, the kitchen and the receipt keep the English, as on the kiosk.
+  useMenuText();
+  const [menuLangOffer, setMenuLangOffer] = useState(null);   // the guest's language, when the venue has it
+  const [menuLang, setMenuLang] = useState('en');
+  useEffect(() => {
+    let alive = true;
+    const want = customerMenuLang(typeof navigator !== 'undefined' ? (navigator.languages || [navigator.language]) : []);
+    if (!want || !opsLocationId || !supabase) return undefined;
+    (async () => {
+      await ensureCustomerSession().catch(() => null);
+      const rows = await loadMenuTranslationRows(supabase, opsLocationId, want);
+      if (!alive || !Array.isArray(rows) || !rows.length) return;
+      setMenuLangOffer({ lang: want, rows });
+      setMenuLang(want);
+    })();
+    return () => { alive = false; };
+  }, [opsLocationId]);
+  useEffect(() => { applyMenuLang(menuLang, menuLangOffer); }, [menuLang, menuLangOffer]);
+  useEffect(() => () => applyMenuLang('en', null), []);
   const allOrderTypes = useMemo(() => {
     const arr = [{ id: 'collection', label: 'Collection', icon: '🥡', desc: 'Pick up at the venue' }];
     if (location.online_delivery_enabled) arr.push({ id: 'delivery', label: 'Delivery', icon: '🚴', desc: 'Brought to your door' });
@@ -143,9 +171,11 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   }, [location.online_delivery_enabled]);
 
   // Once we've loaded menu data, work out the allergen vocabulary
+  // v5.11.81: read through the kiosk's allergen ids (lib/kioskAllergens.js), so 'Dairy' and
+  // 'milk' are one choice and match each other, as on the kiosk.
   const knownAllergens = useMemo(() => {
     const set = new Set();
-    (items || []).forEach(i => (i.allergens || []).forEach(a => a && set.add(a)));
+    (items || []).forEach(i => itemAllergenIds(i).forEach(a => a && set.add(a)));
     return [...set].sort();
   }, [items]);
 
@@ -320,17 +350,20 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         // the whole load. Instruction defs come from the config_pushes
         // snapshot since there's no dedicated DB table for them.
         const [iRes, cRes, lRes, mRes, pRes, eRes, sRes, tpRes, tlRes, menusRes] = await Promise.allSettled([
-          supabase.from('menu_items').select('*')
-            .eq('location_id', opsLocationId).eq('archived', false).order('sort_order'),
+          // v5.11.81: every row, page by page. One read stops at the Data API's 1,000 row cap, so a
+          // venue with a bigger menu silently lost the rest of its products here.
+          readAllRows(() => supabase.from('menu_items').select('*')
+            .eq('location_id', opsLocationId).eq('archived', false).order('sort_order').order('id'))
+            .then((r) => (r.rows ? { data: r.rows } : { data: null, error: r.error })),
           supabase.from('menu_categories').select('*')
             .eq('location_id', opsLocationId).order('sort_order'),
           // v5.7.34: default_tax_profile_id rides the branding read — the venue
           // default the reviewer flagged missing (cascade step 4 on this surface).
           supabase.from('locations').select('receipt_branding, default_tax_profile_id, pos_settings')
             .eq('id', opsLocationId).maybeSingle(),
-          onlineMenuId
-            ? supabase.from('menu_category_links').select('category_id').eq('menu_id', onlineMenuId)
-            : Promise.resolve({ data: null }),
+          // v5.11.81: the pinned menu's links are read with every other menu's below (the pin now
+          // goes through the shared resolver, lib/channelMenu.js storefrontMenuId).
+          Promise.resolve({ data: null }),
           // v5.5.891: select ONLY the instruction defs — the full snapshot is the entire menu
           // (~13KB+ per row) and this was downloaded on every storefront first load just to
           // read one array.
@@ -361,14 +394,10 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         setDefaultImage(resolveDefaultProductImage(lRes.status === 'fulfilled' ? lRes.value?.data?.pos_settings : null));
         const snap           = pRes.value?.data || null; // v5.5.891: row IS { instructionGroupDefs } now
 
-        let cats = categoriesData;
-        if (linksData) {
-          const linked = new Set(linksData.map(l => l.category_id));
-          // Match the POS rule (v4.7.6): a category is in the menu if the menu is its
-          // PRIMARY home (menu_id) OR it's joined via menu_category_links. Checking only
-          // links dropped home-menu categories with no link row (Salads/Sides/Dessert).
-          cats = cats.filter(c => c.menu_id === onlineMenuId || linked.has(c.id) || (c.parent_id && linked.has(c.parent_id)));
-        }
+        // The menu filter (home menu, links, sub categories follow their parent; the POS rule) is
+        // applied by the resolver effect below, for a pinned menu too (v5.11.81).
+        const cats = categoriesData;
+        void linksData;
         console.log('[OnlineSurface] fetch results', {
           items: itemsData.length, categories: cats.length,
           configPushFound: !!snap, instructionGroupDefs: snap?.instructionGroupDefs?.length || 0,
@@ -377,14 +406,17 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           linksErr: mRes.reason?.message || mRes.value?.error?.message,
         });
         // v5.8.31: links for EVERY menu at the venue (the links table has no venue
-        // column, so it is keyed by the menu ids just fetched). Only needed when the
-        // storefront is following timed menus rather than a pinned one.
+        // column, so it is keyed by the menu ids just fetched). v5.11.81: read for a pinned menu
+        // too (the pin goes through the resolver, which needs every menu's links to know which
+        // menus are empty), page by page (a big venue can hold more than 1,000 links), and when
+        // the menus could not be read, the pin's own links, so a pin still filters as before.
         const menusData = (menusRes?.value?.data || []).filter(m => m && m.is_active !== false);
         let linksAll = [];
-        if (!onlineMenuId && menusData.length) {
+        const linkMenuIds = menusData.length ? menusData.map(m => m.id) : (onlineMenuId ? [onlineMenuId] : []);
+        if (linkMenuIds.length) {
           try {
-            const { data: la } = await supabase.from('menu_category_links').select('menu_id, category_id').in('menu_id', menusData.map(m => m.id));
-            linksAll = la || [];
+            const la = await readAllRows(() => supabase.from('menu_category_links').select('menu_id, category_id').in('menu_id', linkMenuIds).order('menu_id').order('category_id'));
+            linksAll = la.rows || [];
           } catch { /* fall back to showing everything */ }
           if (!alive) return;
         }
@@ -495,21 +527,18 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   // resolveActiveMenu.js, the till's chain: schedule on the venue clock, then
   // priority with the default breaking ties, then default, empty menus
   // skipped), re-run every minute so breakfast drops off and lunch appears
-  // without a reload. A pinned online_menu_id bypasses this by design (Back
-  // Office "Use whichever menu is active" vs a pin) and is never routed
-  // through the pinned-off-schedule branch.
+  // without a reload.
+  // v5.11.81 (channel parity round 2): a pinned online_menu_id goes through the SAME resolver as
+  // the pin of a till or kiosk (lib/channelMenu.js storefrontMenuId): on schedule it is the menu,
+  // off schedule the venue's default menu takes over, a pin to a switched off or empty menu is
+  // ignored. It bypassed the resolver, so a Bar menu pinned for 16:00 to 23:00 showed its prices
+  // online at 10:00 while the till and kiosk were on the default menu.
   useEffect(() => { const t = setInterval(() => setMenuTick(n => n + 1), 60_000); return () => clearInterval(t); }, []);
   useEffect(() => {
-    if (onlineMenuId) return;                 // pinned: load() already filtered
-    if (!menusRows.length) { setResolvedMenuId(null); return; }   // no menus defined: everything shows
-    const active = resolveActiveMenu({ menus: menusRows, categories: rawCats, links: allLinks, pinnedMenuId: null, timezone: location?.timezone });
+    const active = storefrontMenuId({ menus: menusRows, categories: rawCats, links: allLinks, pinnedMenuId: onlineMenuId, timezone: location?.timezone });
     setResolvedMenuId(active || null);        // pricing follows the same menu the categories do
-    if (!active) { setCategories(rawCats); return; }
-    const linked = new Set(allLinks.filter(l => l.menu_id === active).map(l => l.category_id));
-    const inMenu = rawCats.filter(c => c.menu_id === active || linked.has(c.id) || (c.parent_id && linked.has(c.parent_id)));
-    // Never-blank: a storefront must not show zero categories because of the
-    // menu filter. Fall back to every category rather than an empty page.
-    setCategories(inMenu.length ? inMenu : rawCats);
+    // Never blank: categoriesOnMenu falls back to every category rather than an empty page.
+    setCategories(categoriesOnMenu(rawCats, allLinks, active));
   }, [onlineMenuId, menusRows, allLinks, rawCats, menuTick, location?.timezone]);
 
   // Pricing: every surface prices like the till, so this is the till's own
@@ -525,10 +554,21 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   // come from this one function (addToCart writes priceFor(item) as l.price and
   // every checkout reads l.price), so the customer sees one number throughout.
   // Catering keeps its own base rule and does not use this.
-  const effectiveMenuId = onlineMenuId || resolvedMenuId;
-  const priceFor = (it) => resolveItemPrice(it, orderType, effectiveMenuId);
+  // v5.11.81: the pin is resolved above with every other menu (it is no longer used as is).
+  const effectiveMenuId = resolvedMenuId;
+  // v5.11.81: the order type the cards are priced for is never a missing one (resolveItemPrice
+  // reads dine in for that): the one picked, else the first the venue offers (lib/channelMenu.js).
+  const priceType = storefrontPriceType(orderType, { isQr, orderTypes: allOrderTypes });
+  const priceFor = (it) => resolveItemPrice(it, priceType, effectiveMenuId);
 
-  // Reprice the cart whenever the channel or the menu changes, mirroring the
+  // v5.11.81 (channel parity round 2): THE LINE KEEPS ITS PRICE, the till's rule
+  // (lib/channelMenu.js). The basket reprices ONLY when the order type changes, at the menu on now,
+  // as the till's setOrderType does. A timed menu flipping at the minute tick, or a menu row
+  // re read, no longer moves a line already in the basket (it did here and on QR, while the till
+  // kept the price). Each line carries the menu it was priced on (l.menuId), so the server values
+  // it on that menu. A line the new order type does not sell (Back Office "Visible on",
+  // Delivery off) is taken out with a message.
+  // History: reprice the cart whenever the channel or the menu changes, mirroring the
   // till (store.setOrderType reprices the open order with the active menu).
   // addToCart snapshots l.price at add time; before this nothing ever touched
   // it again, so a customer who added Half at Collection (3.02), tapped the
@@ -541,13 +581,29 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   // items are left as they are. The mapping is pure (repriceCartLines) and
   // returns the same line objects when nothing changed, so React state only
   // moves when a price actually did.
+  const pricedTypeRef = useRef(orderType);
   useEffect(() => {
-    if (!orderType) return;
+    if (!orderType || pricedTypeRef.current === orderType) return;
+    pricedTypeRef.current = orderType;
+    const channel = isQr ? 'qr' : 'online';
+    const byId = new Map((items || []).map(i => [i.id, i]));
+    // A line this order type does not sell: its row (or a size's product) is switched off here.
+    const hidden = (l) => {
+      const row = byId.get(l.itemId);
+      if (!row) return false;
+      const parent = row.parent_id ? byId.get(row.parent_id) : null;
+      return !channelVisible(row, channel, orderType) || (!!parent && !channelVisible(parent, channel, orderType));
+    };
+    // Worked out from this render's basket, so the message never depends on when React runs the update.
+    const gone = [...new Set(cart.filter(hidden).map(l => l.name || l.itemId))];
     setCart(c => {
-      const next = repriceCartLines(c, items, orderType, effectiveMenuId);
-      return next.some((l, i) => l !== c[i]) ? next : c;
+      const kept = c.filter(l => !hidden(l));
+      const next = repriceCartLines(kept, items, orderType, effectiveMenuId, { stampMenu: true });
+      return next.length !== c.length || next.some((l, i) => l !== c[i]) ? next : c;
     });
-  }, [orderType, effectiveMenuId, items]);
+    if (gone.length) setTimeout(() => alert(`Not available for ${orderType === 'delivery' ? 'delivery' : 'this order'}, taken out of your basket: ${gone.join(', ')}.`), 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orderType]);
 
   const theme = useMemo(() => sheetThemeFrom(branding, location.name), [branding, location.name]);
 
@@ -610,12 +666,21 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   // category): they follow their parent onto a menu, as on the till. Online and
   // QR both use this (same surface). The rule lives in lib/onlineMenuTree.js.
   const sectionTrees = useMemo(() => onlineSectionTrees(topCategories, rawCats), [topCategories, rawCats]);
+  // v5.11.81 (channel parity round 2): the Back Office "Visible on" switches mean the same on every
+  // channel (lib/channelMenu.js channelVisible): Online off hides a product here and on QR (QR has
+  // no switch of its own), Delivery off hides it from a delivery order. They were ignored here.
+  // ALLERGENS ARE MARKED, NEVER HIDDEN, the kiosk's rule (Peter's kiosk decision 11): a product
+  // that contains an allergen the guest asked to avoid stays on the menu, dimmed with what it
+  // contains (ItemCard), and its sheet says so before it is added. This page hid it, so a guest
+  // could not see what they could not have and the same menu read differently on each channel.
+  const visibleChannel = isQr ? 'qr' : 'online';
   const itemsForCat = (catId) => (items || []).filter(i => {
     if (i.parent_id || i.archived || i.sold_alone === false) return false;
+    if (!channelVisible(i, visibleChannel, priceType)) return false;
     if (!itemInSection(i, sectionTrees.get(catId) || catId)) return false;
-    if (activeAllergens.length && (i.allergens || []).some(a => activeAllergens.includes(a))) return false;
     return true;
   });
+  const unsafeFor = (item, kids) => unsafeAllergenIds(item, activeAllergens, kids);
 
   // ── Cart math ────────────────────────────────────────────────────────────
   const cartCount = cart.reduce((s, l) => s + (l.qty || 1), 0);
@@ -642,7 +707,11 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
     // v5.11.81: a row with no price set is never sold for 0.00 (the till's rule, menuPricing);
     // its paid options can still price it.
     const optionsEach = (mods || []).reduce((s0, m) => s0 + (Number(m?.price) || 0) * Math.max(1, Number(m?.qty) || 1), 0);
-    if (refusesNoPriceLine(item, orderType, effectiveMenuId, price + optionsEach)) { alert(`Sorry, ${item.menu_name || item.name} cannot be ordered right now.`); return; }
+    if (refusesNoPriceLine(item, priceType, effectiveMenuId, price + optionsEach)) { alert(`Sorry, ${item.menu_name || item.name} cannot be ordered right now.`); return; }
+    // v5.11.81: a product this channel does not show is never added (lib/channelMenu.js).
+    if (!channelVisible(item, visibleChannel, priceType) || (item.parent_id && !channelVisible((items || []).find(r => r.id === item.parent_id), visibleChannel, priceType))) {
+      alert(`Sorry, ${item.menu_name || item.name} cannot be ordered here.`); return;
+    }
     // v5.5.128: snapshot category info on the cart line so production
     // routing on the operator side can bucket the item to the right
     // kitchen station regardless of whether the master device's local
@@ -675,6 +744,9 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
       // (which reads these lines). The profile stays the row's own (cascade step 1).
       ...lineTaxRefsFor(item, items),
       price, qty, mods, notes: notes || '',
+      // v5.11.81: the menu this line was priced on. The line keeps its price when a timed menu
+      // flips (the till's rule), and the server values it on this menu (migration 20261020a).
+      menuId: effectiveMenuId || null,
     }]);
     setOpenItem(null);
   };
@@ -986,6 +1058,14 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
             </button>
           </div>
 
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          {/* v5.11.81: menu language (only when the venue has the guest's language) */}
+          {menuLangOffer && (
+            <button onClick={() => setMenuLang(menuLang === 'en' ? menuLangOffer.lang : 'en')} className="op-btn" style={{
+              padding: '6px 12px', borderRadius: 99, background: 'transparent', color: theme.fg,
+              border: `1px solid ${cardBdr}`, fontSize: 12, fontWeight: 700, fontFamily: 'inherit', cursor: 'pointer',
+            }}>{languageLabel(menuLang === 'en' ? menuLangOffer.lang : 'en')}</button>
+          )}
           {/* Allergy filter — only shown when there are allergens to filter */}
           {knownAllergens.length > 0 && (
             <button onClick={() => setShowAllergyPicker(true)} className="op-btn" style={{
@@ -1000,6 +1080,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
               <span>{activeAllergens.length ? `${activeAllergens.length} allergy filter${activeAllergens.length === 1 ? '' : 's'}` : 'Allergies'}</span>
             </button>
           )}
+          </div>
         </div>
 
         {/* Category chips */}
@@ -1019,7 +1100,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
                 background: 'transparent', color: theme.fg,
                 border: `1.5px solid ${cardBdr}`,
                 fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit',
-              }}>{c.label || c.name}</button>
+              }}>{tCategoryLabel(c) || c.name}</button>
             );
           })}
         </div>
@@ -1035,7 +1116,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
             background: '#ef444415', border: '1px solid #ef444455',
             fontSize: 12, color: '#b91c1c', fontWeight: 600, lineHeight: 1.5,
           }}>
-            ⚠ Showing items free from <b>{activeAllergens.join(', ')}</b>. Items containing those allergens are hidden from the menu. Always confirm with the venue if you have a severe allergy.
+            ⚠ Items containing <b>{activeAllergens.join(', ')}</b> are marked on the menu. Always confirm with the venue if you have a severe allergy.
           </div>
         </div>
       )}
@@ -1058,7 +1139,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           return (
             <section key={cat.id} id={`cat-${cat.id}`} style={{ marginBottom: 36, scrollMarginTop: 80 + noticeH }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 18 }}>
-                <h2 style={{ fontFamily: DISPLAY_FONT, fontWeight: 700, fontSize: 'clamp(20px,4.4cqw,28px)', margin: 0, letterSpacing: '-.02em', color: 'var(--ink)' }}>{cat.label || cat.name}</h2>
+                <h2 style={{ fontFamily: DISPLAY_FONT, fontWeight: 700, fontSize: 'clamp(20px,4.4cqw,28px)', margin: 0, letterSpacing: '-.02em', color: 'var(--ink)' }}>{tCategoryLabel(cat) || cat.name}</h2>
                 <span style={{ height: 1, flex: 1, background: 'var(--line)' }} />
                 <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>{catItems.length} item{catItems.length === 1 ? '' : 's'}</span>
               </div>
@@ -1081,6 +1162,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
                     <ItemCard key={item.id} item={item} theme={theme} priceFor={priceFor} defaultImage={defaultImage}
                       cardBg={cardBg} cardBdr={cardBdr} muted={muted}
                       variantInfo={vinfo}
+                      unsafe={unsafeFor(item, childrenByParent[item.id])}
                       is86={is86}
                       stock={stock}
                       onPick={() => is86 ? null : setOpenItem(item)}/>
@@ -1120,6 +1202,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         <OnlineItemSheet
           defaultImage={defaultImage}
           item={openItem} theme={theme} allItems={items} priceFor={priceFor}
+          avoidAllergens={activeAllergens}
           instGroupDefs={instGroupDefs}
           eightySixIds={eightySixIds}
           stockLevels={stockLevels} cart={cart}
@@ -1349,7 +1432,7 @@ function AllergyPickerModal({ theme, cardBdr, all, active, onClose, onSave }) {
         <div style={{ padding: '12px 22px 6px' }}>
           <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: '-0.02em' }}>Allergy filter</div>
           <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4, lineHeight: 1.55 }}>
-            We'll hide items containing any of the allergens you pick. <b>Always confirm with the venue</b> if you have a severe allergy — accidental cross-contamination is possible.
+            We'll mark items containing any of the allergens you pick. <b>Always confirm with the venue</b> if you have a severe allergy — accidental cross-contamination is possible.
           </div>
         </div>
         <div style={{ padding: '12px 22px 0', display: 'flex', flexWrap: 'wrap', gap: 8 }}>
@@ -1774,7 +1857,10 @@ function Hero({ theme, muted, leadMin, tableLabel }) {
   );
 }
 
-function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick, variantInfo, is86 = false, stock = null, priceFor = null, defaultImage = null }) {
+function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick, variantInfo, is86 = false, stock = null, priceFor = null, defaultImage = null, unsafe = [] }) {
+  // v5.11.81: a product with an allergen the guest asked to avoid is MARKED (dimmed, "Contains
+  // ..."), never hidden: the kiosk's rule (lib/kioskAllergens.js), now on every customer channel.
+  const marked = Array.isArray(unsafe) && unsafe.length > 0;
   const cardImage = productImage(item, defaultImage);
   // priceFor = the surface's price rule (the till's resolver for this channel and menu); the inline base read is only a last resort.
   const ownPrice = priceFor ? priceFor(item) : Number(item.pricing?.base ?? item.price ?? 0);
@@ -1793,7 +1879,7 @@ function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick, variantInfo, is
         background: cardBg, border: `1px solid ${cardBdr}`,
         color: theme.fg, fontFamily: 'inherit',
         cursor: is86 ? 'not-allowed' : 'pointer',
-        opacity: is86 ? 0.55 : 1,
+        opacity: is86 ? 0.55 : (marked ? 0.7 : 1),
         filter: is86 ? 'grayscale(0.6)' : undefined,
         transition: 'transform .15s ease, box-shadow .15s ease',
         WebkitTapHighlightColor: 'transparent',
@@ -1831,13 +1917,18 @@ function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick, variantInfo, is
       )}
       <div style={{ flex: 1, minWidth: 0, padding: 16, display: 'flex', flexDirection: 'column', gap: 4 }}>
         <div style={{ fontSize: 15, fontWeight: 700, lineHeight: 1.3, textDecoration: is86 ? 'line-through' : undefined }}>
-          {item.menu_name || item.name}
+          {tItemName(item) || item.name}
         </div>
-        {item.description && (
+        {tItemDescription(item) && (
           <div style={{ fontSize: 12, color: muted, lineHeight: 1.5,
             display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
           }}>
-            {item.description}
+            {tItemDescription(item)}
+          </div>
+        )}
+        {marked && (
+          <div style={{ fontSize: 11, fontWeight: 800, color: '#b91c1c', textTransform: 'capitalize' }}>
+            ⚠ Contains {unsafe.join(', ')}
           </div>
         )}
         <div style={{ flex: 1 }}/>

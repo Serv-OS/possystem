@@ -494,6 +494,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       uid: l.uid || l.key || l.id || `l${i}`,
       itemId: l.itemId, name: l.name, price: l.price,
       qty: l.qty || 1, mods: l.mods || [], notes: l.notes || '',
+      // v5.11.81: the menu this line was priced on (it keeps its price when a timed menu flips,
+      // the till's rule); the server values the line on it (migration 20261020a).
+      menuId: l.menuId || null,
       cat: l.cat || null,
       cats: l.cats || null,
       parentId: l.parentId || null,

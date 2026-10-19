@@ -253,8 +253,11 @@ export default function HubRise() {
             </button>
           </div>
           <div style={{ ...S.sub, marginTop: 10 }}>
-            Re-publish whenever you change the menu. Out-of-stock (86) items are pushed automatically and
-            also reconciled in the background.
+            {/* v5.11.81: the menu and sold out items follow ServOS by themselves (hubrise-reconcile). */}
+            {status.catalog_pushed_at
+              ? 'Your menu is kept up to date automatically: a few minutes after any menu change (Menu Manager or a multi site publish), it is pushed again. '
+              : 'Push the menu once to let ServOS keep it up to date automatically after every menu change. Until then nothing is pushed by itself, so a menu kept in HubRise is never overwritten. '}
+            Sold out (86) items are sent at once from the till, and an item sold out by its daily count within 2 minutes.
           </div>
         </div>
       )}

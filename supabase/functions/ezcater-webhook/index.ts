@@ -56,6 +56,7 @@
 //     event like any other here.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { ezcaterSoldOutNames, ezcaterSoldOutAlert } from '../_shared/ezcaterSoldOut.js';
 import { verifyEzcaterSignature, getOrder, isPermanent, isSchemaError } from '../_shared/ezcater.ts';
 import { orderToQueueRow, ezLifecycle } from '../_shared/ezcater-map.ts';
 import { matchQueueRow, MATCH_BUDGET_MS } from '../_shared/ezcater-match-ingest.ts';
@@ -530,6 +531,24 @@ Deno.serve(async (req) => {
           title: `${badge}: ${flagged.text}`, body: null,
           ref_type: 'order', ref_id: row.ref,
         });
+      } catch { /* the feed is best effort */ }
+    }
+
+    // v5.11.81 (channel parity round 2): ezCater cannot be told an item is sold out (no menu or
+    // stock API), so staff are told the moment an order (or a change) names one: a line or option
+    // matched to an item in the venue's 86 list (_shared/ezcaterSoldOut.js). Best effort, once per
+    // processed notification, never for a cancel.
+    if (written && !ezLifecycleState(queueRow?.customer?.ezcater_lifecycle).dead) {
+      try {
+        const { data: e86 } = await sb.from('eighty_six').select('item_id').eq('location_id', locationId).limit(5000);
+        const names = ezcaterSoldOutNames(queueRow?.items, (e86 || []).map((r: any) => r.item_id));
+        const text = ezcaterSoldOutAlert(ezcaterBadge({ customer: { channel: 'ezcater', ezcater_order_number: link.order_number } }) || 'ezCater', names);
+        if (text) {
+          await sb.from('activity_events').insert({
+            location_id: locationId, kind: 'order', severity: 'urgent', title: text, body: null,
+            ref_type: 'order', ref_id: row.ref,
+          });
+        }
       } catch { /* the feed is best effort */ }
     }
 

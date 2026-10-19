@@ -35,6 +35,10 @@ import { resolveItemPrice, variantFromPrice, refusesNoPriceLine } from '../lib/m
 import { depleteForSaleServer } from '../lib/stock/deplete';
 import KioskProductModal from './KioskProductModal';
 import KioskCategoryTile from './kiosk/KioskCategoryTile';
+import { kioskLineSlot } from '../lib/channelMenu';
+// v5.11.81 (channel parity round 2): the venue's menu words in the customer's language on the
+// classic kiosk too (the new design has had them since v5.8.82). Shown only: the order keeps English.
+import { useClassicKioskMenuWords, shownItemName, shownItemDescription } from './kiosk/kioskMenuWords';
 import { railTileMode } from '../lib/categoryPhoto';
 import { t, setLang, useKioskLang, LANGUAGES, getLanguageMeta } from '../lib/i18n';
 import { displayName } from '../lib/itemDisplay';
@@ -873,6 +877,9 @@ export default function KioskApp({ kioskId, onUnpair }) {
   const newDesign = kioskNewDesignOn(profile);
   const newDesignRef = useRef(false);
   useEffect(() => { newDesignRef.current = newDesign; }, [newDesign]);
+  // v5.11.81: the classic kiosk's language picker now changes the venue's menu text too (the new
+  // design's KioskV2Root loads its own). No rows, or English: the menu stays as typed.
+  useClassicKioskMenuWords(lang, locationId, !newDesign);
 
   // New kiosk design only (build spec D2): the card screen pauses the idle timer while the
   // reader is live, the order is saving or staff are needed (lib/kioskFlow.js
@@ -990,21 +997,22 @@ export default function KioskApp({ kioskId, onUnpair }) {
       ? kioskLineKeyV2({ item, variant, mods: modsArray })
       : kioskLineKey(item, variant, selectedMods);
     setCart(prev => {
-      const existing = prev.find(l => l.key === key);
-      if (existing) {
-        // Merge onto the FRESH unit price, the number the sheet just showed.
-        // The same item and the same picks can be priced differently a minute
-        // later (a timed menu came on at the tick, or the order type flipped),
-        // and the till reprices whole lines on that change, so the earlier
-        // unit is repriced too rather than the new unit charged at the old
-        // price the customer was never shown.
-        return prev.map(l => l.key === key
-          ? { ...l, qty: l.qty + qty, linePrice, lineTotal: (l.qty + qty) * linePrice }
+      // v5.11.81 (channel parity round 2): THE LINE KEEPS ITS PRICE, the till's rule
+      // (lib/channelMenu.js kioskLineSlot). The same item and picks merge only at the same price.
+      // At another price (a timed menu came on at the tick between two taps) the new units are a
+      // line of their own at the price the sheet just showed, as the till appends a line; the
+      // earlier units keep the price the customer saw. The kiosk repriced the earlier units before.
+      // Only the eat in / take away switch reprices a whole basket (KioskFlowV2, repriceKioskCart).
+      const slot = kioskLineSlot(prev, key, linePrice);
+      if (slot.merge) {
+        return prev.map(l => l.key === slot.key
+          ? { ...l, qty: l.qty + qty, lineTotal: (l.qty + qty) * l.linePrice }
           : l
         );
       }
       return [...prev, {
-        key,
+        key: slot.key,
+        ...(slot.key !== key ? { baseKey: key } : {}),
         item,
         variant,
         name: displayName(item),
@@ -2598,7 +2606,7 @@ function MenuItemCard({ item, price, fromPrice = null, brandColor, allergenFilte
             WebkitLineClamp: 2,
             WebkitBoxOrient: 'vertical',
             overflow: 'hidden',
-          }}>{displayName(item)}</div>
+          }}>{shownItemName(item)}</div>
           <div style={{
             fontSize: 'clamp(17px, 2vw, 22px)',
             fontWeight: 800,
@@ -2633,7 +2641,7 @@ function MenuItemCard({ item, price, fromPrice = null, brandColor, allergenFilte
         )}
 
         {/* Description */}
-        {item.description && (
+        {shownItemDescription(item) && (
           <div style={{
             fontSize: 'clamp(13px, 1.5vw, 16px)',
             color: 'var(--kFgMuted)',
@@ -2642,7 +2650,7 @@ function MenuItemCard({ item, price, fromPrice = null, brandColor, allergenFilte
             WebkitLineClamp: 2,
             WebkitBoxOrient: 'vertical',
             overflow: 'hidden',
-          }}>{item.description}</div>
+          }}>{shownItemDescription(item)}</div>
         )}
 
         {/* Add button — visual affordance; same as card-tap */}

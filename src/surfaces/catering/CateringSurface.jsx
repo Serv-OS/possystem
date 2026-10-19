@@ -19,6 +19,12 @@ import { resolveItemPrice, variantFromPrice, repriceCartLines, refusesNoPriceLin
 import { isOptionOnlyItem } from '../../lib/menuRules';
 import { cateringVisible } from '../../lib/cateringPricing';
 import { cateringMenuIdFor, cateringOrderMenuId } from '../../lib/cateringPricing';
+// v5.11.81 (channel parity round 2): the kiosk's allergen rule (marked, never hidden), the venue's
+// menu translations (shown only, the order keeps the English) and a paged menu read.
+import { itemAllergenIds, unsafeAllergenIds } from '../../lib/kioskAllergens';
+import { useMenuText, itemName as tItemName, itemDescription as tItemDescription, categoryLabel as tCategoryLabel } from '../../lib/menuText';
+import { loadMenuTranslationRows, customerMenuLang, applyMenuLang, languageLabel } from '../../lib/menuTextLoad';
+import { readAllRows } from '../../lib/venueMenuRead';
 import OnlineItemSheet from '../online/OnlineItemSheet';
 import OnlineCart from '../online/OnlineCart';
 import CateringCheckout from './CateringCheckout';
@@ -75,8 +81,28 @@ export default function CateringSurface({ location }) {
   const [cart, setCart] = useState([]);
   const [openItem, setOpenItem] = useState(null);
   const [showCart, setShowCart] = useState(false);
-  const [activeAllergens, setActiveAllergens] = useState([]);   // customer-picked allergens to hide
+  const [activeAllergens, setActiveAllergens] = useState([]);   // customer-picked allergens to MARK (v5.11.81: never hidden)
   const [showAllergyPicker, setShowAllergyPicker] = useState(false);
+  // v5.11.81: the venue's menu in the guest's browser language when it has one (as the kiosk,
+  // online and QR pages); the pill switches back to English. The order stays in English.
+  useMenuText();
+  const [menuLangOffer, setMenuLangOffer] = useState(null);
+  const [menuLang, setMenuLang] = useState('en');
+  useEffect(() => {
+    let alive = true;
+    const want = customerMenuLang(typeof navigator !== 'undefined' ? (navigator.languages || [navigator.language]) : []);
+    if (!want || !opsId || !supabase) return undefined;
+    (async () => {
+      await ensureAuthToken().catch(() => null);
+      const rows = await loadMenuTranslationRows(supabase, opsId, want);
+      if (!alive || !Array.isArray(rows) || !rows.length) return;
+      setMenuLangOffer({ lang: want, rows });
+      setMenuLang(want);
+    })();
+    return () => { alive = false; };
+  }, [opsId]);
+  useEffect(() => { applyMenuLang(menuLang, menuLangOffer); }, [menuLang, menuLangOffer]);
+  useEffect(() => () => applyMenuLang('en', null), []);
   const [fulfilment, setFulfilment] = useState(null);   // 'collection' | 'delivery'
   const [eventDate, setEventDate] = useState('');
   const [eventTime, setEventTime] = useState('');
@@ -106,7 +132,9 @@ export default function CateringSurface({ location }) {
         const menuIds = settings.menu_ids || [];
         const [{ data: linkRows }, { data: itemRows }, { data: catRows }, { data: taxRows }, { data: e86 }, { data: pushRow }, { data: brandRow }, { data: stockRows }, { data: profRows }, { data: lineRows }] = await Promise.all([
           menuIds.length ? supabase.from('menu_category_links').select('category_id').in('menu_id', menuIds) : Promise.resolve({ data: [] }),
-          supabase.from('menu_items').select('*').eq('location_id', opsId).eq('archived', false).order('sort_order'),
+          // v5.11.81: every row, page by page (one read stops at the Data API's 1,000 row cap).
+          readAllRows(() => supabase.from('menu_items').select('*').eq('location_id', opsId).eq('archived', false).order('sort_order').order('id'))
+            .then((r) => ({ data: r.rows || [] })),
           supabase.from('menu_categories').select('*').eq('location_id', opsId).order('sort_order'),
           supabase.from('tax_rates').select('id, name, rate, type, active, is_default').eq('location_id', opsId),
           supabase.from('eighty_six').select('item_id').eq('location_id', opsId),
@@ -202,7 +230,7 @@ export default function CateringSurface({ location }) {
   // Allergen vocabulary across the catering menu (for the filter chips).
   const knownAllergens = useMemo(() => {
     const set = new Set();
-    (items || []).forEach((i) => (i.allergens || []).forEach((a) => a && set.add(a)));
+    (items || []).forEach((i) => itemAllergenIds(i).forEach((a) => a && set.add(a)));
     return [...set].sort();
   }, [items]);
 
@@ -212,10 +240,13 @@ export default function CateringSurface({ location }) {
   // never sold as a product, the till's rule (lib/menuRules.js isOptionOnlyItem) and the server's
   // (place_public_order counts such a line as unknown, so a guest who paid in full came out
   // "Payment short" with no sale in the reports). 22 such rows showed as cards on live catering menus.
+  // v5.11.81 (channel parity round 2): allergens are MARKED, never hidden, the kiosk's rule (Peter's
+  // kiosk decision 11), on every customer channel: the card says what it contains and the item sheet
+  // warns before it is added (unsafeFor, OnlineItemSheet avoidAllergens).
   const itemsForCat = (catId) => items.filter((i) =>
     (i.cat === catId || (Array.isArray(i.cats) && i.cats.includes(catId))) && !i.parent_id && !isOptionOnlyItem(i) &&
-    cateringVisible(i, fulfilment) &&
-    !(activeAllergens.length && (i.allergens || []).some((a) => activeAllergens.includes(a))));
+    cateringVisible(i, fulfilment));
+  const unsafeFor = (item) => unsafeAllergenIds(item, activeAllergens, items.filter((k) => k.parent_id === item.id));
   // v5.5.743: match OnlineSurface exactly — show only TOP-LEVEL categories (no sub-categories) in the
   // nav + sections, sorted by (sort_order||0) with a stable tie-break. Catering was rendering every
   // category (incl. sub-categories like "Steaks") in raw DB order, so a sub surfaced first. Both
@@ -360,7 +391,7 @@ export default function CateringSurface({ location }) {
           <div style={{ ...center, padding: '8px 16px', overflowX: 'auto', whiteSpace: 'nowrap', WebkitOverflowScrolling: 'touch', scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
             {topCats.map((c) => {
               if (!itemsForCat(c.id).length) return null;
-              return <button key={c.id} onClick={() => document.getElementById(`cat-${c.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })} style={{ display: 'inline-block', padding: '7px 13px', marginRight: 6, borderRadius: 99, background: 'transparent', color: theme.brand, border: `1.5px solid ${theme.brand}`, fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>{c.label || c.name}</button>;
+              return <button key={c.id} onClick={() => document.getElementById(`cat-${c.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })} style={{ display: 'inline-block', padding: '7px 13px', marginRight: 6, borderRadius: 99, background: 'transparent', color: theme.brand, border: `1.5px solid ${theme.brand}`, fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>{tCategoryLabel(c) || c.name}</button>;
             })}
           </div>
         </div>
@@ -389,6 +420,14 @@ export default function CateringSurface({ location }) {
           {atCapacity && nextDate && <button onClick={() => setEventDate(nextDate)} style={{ ...pill, marginTop: 8, fontSize: 12.5, borderColor: theme.brand, color: theme.brand }}>Next available: {new Date(nextDate + 'T00:00:00').toLocaleDateString('en-GB')} — use this date</button>}
         </div>
 
+        {/* v5.11.81: menu language, only when the venue has the guest's language */}
+        {menuLangOffer && (
+          <div style={{ marginBottom: 10 }}>
+            <button onClick={() => setMenuLang(menuLang === 'en' ? menuLangOffer.lang : 'en')} style={{ ...pill }}>
+              {languageLabel(menuLang === 'en' ? menuLangOffer.lang : 'en')}
+            </button>
+          </div>
+        )}
         {/* Allergy filter — only when the menu carries allergen tags */}
         {knownAllergens.length > 0 && (
           <div style={{ marginBottom: 16 }}>
@@ -402,7 +441,7 @@ export default function CateringSurface({ location }) {
             </button>
             {activeAllergens.length > 0 && (
               <div style={{ marginTop: 8, fontSize: 12.5, color: '#b45309', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 10, padding: '8px 12px', lineHeight: 1.5 }}>
-                Showing items free from <b>{activeAllergens.join(', ')}</b>. Items containing those are hidden — always confirm with us for a severe allergy.
+                Items containing <b>{activeAllergens.join(', ')}</b> are marked on the menu. Always confirm with us for a severe allergy.
               </div>
             )}
           </div>
@@ -416,7 +455,7 @@ export default function CateringSurface({ location }) {
           return (
             <section key={cat.id} id={`cat-${cat.id}`} style={{ marginBottom: 'clamp(30px,5cqw,48px)', scrollMarginTop: 58 }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 16 }}>
-                <h2 style={{ fontFamily: DISPLAY_FONT, fontWeight: 700, fontSize: 'clamp(20px,4.4cqw,28px)', margin: 0, letterSpacing: '-.02em', color: 'var(--ink)' }}>{cat.label || cat.name}</h2>
+                <h2 style={{ fontFamily: DISPLAY_FONT, fontWeight: 700, fontSize: 'clamp(20px,4.4cqw,28px)', margin: 0, letterSpacing: '-.02em', color: 'var(--ink)' }}>{tCategoryLabel(cat) || cat.name}</h2>
                 <span style={{ height: 1, flex: 1, background: 'var(--line)' }} />
                 <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>{ci.length} item{ci.length === 1 ? '' : 's'}</span>
               </div>
@@ -425,12 +464,14 @@ export default function CateringSurface({ location }) {
                   const sold = is86(item.id);
                   const lim = limitFor(item.id);
                   const limText = [lim.min ? `min ${lim.min}` : '', lim.max ? `max ${lim.max}` : ''].filter(Boolean).join(' · ');
+                  const unsafe = unsafeFor(item);
                   return (
-                    <button key={item.id} disabled={sold} onClick={() => setOpenItem(item)} style={{ textAlign: 'left', background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', cursor: sold ? 'default' : 'pointer', opacity: sold ? 0.55 : 1 }}>
+                    <button key={item.id} disabled={sold} onClick={() => setOpenItem(item)} style={{ textAlign: 'left', background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', cursor: sold ? 'default' : 'pointer', opacity: sold ? 0.55 : (unsafe.length ? 0.7 : 1) }}>
                       {item.image && <div style={{ width: '100%', height: 150, backgroundImage: `url(${item.image})`, backgroundSize: 'cover', backgroundPosition: 'center', filter: sold ? 'grayscale(1)' : 'none' }} />}
                       <div style={{ padding: 14 }}>
-                        <div style={{ fontWeight: 700 }}>{item.menu_name || item.name}</div>
-                        {item.description && <div style={{ fontSize: 12.5, color: '#64748b', marginTop: 3 }}>{item.description}</div>}
+                        <div style={{ fontWeight: 700 }}>{tItemName(item) || item.name}</div>
+                        {tItemDescription(item) && <div style={{ fontSize: 12.5, color: '#64748b', marginTop: 3 }}>{tItemDescription(item)}</div>}
+                        {unsafe.length > 0 && <div style={{ marginTop: 6, fontSize: 11.5, fontWeight: 800, color: '#b91c1c', textTransform: 'capitalize' }}>⚠ Contains {unsafe.join(', ')}</div>}
                         {(item.allergens || []).length > 0 && (
                           <div title={`Contains: ${item.allergens.join(', ')}`} style={{ marginTop: 6, fontSize: 11, fontWeight: 700, color: '#b45309' }}>
                             ⚠ {item.allergens.length === 1 ? item.allergens[0] : `${item.allergens.length} allergens`}
@@ -461,6 +502,7 @@ export default function CateringSurface({ location }) {
 
       {openItem && (
         <OnlineItemSheet item={openItem} theme={theme} allItems={items} instGroupDefs={instGroupDefs} eightySixIds={eightySix}
+          avoidAllergens={activeAllergens}
           stockLevels={stockLevels} cart={cart} priceFor={priceFor}
           onClose={() => setOpenItem(null)} onAdd={(it, mods, qty, notes) => { addToCart(it, mods, qty, notes); setOpenItem(null); }} />
       )}
@@ -479,7 +521,7 @@ export default function CateringSurface({ location }) {
   );
 }
 
-// Compact allergen picker — hide items containing any picked allergen. Mirrors the online/kiosk flow.
+// Compact allergen picker: MARK items containing any picked allergen (v5.11.81, the kiosk's rule).
 function AllergyPicker({ theme, all, active, onClose, onSave }) {
   const [sel, setSel] = useState(active || []);
   const toggle = (a) => setSel((s) => (s.includes(a) ? s.filter((x) => x !== a) : [...s, a]));
@@ -488,7 +530,7 @@ function AllergyPicker({ theme, all, active, onClose, onSave }) {
       <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', width: 'min(560px,100%)', borderRadius: '18px 18px 0 0', padding: 20, maxHeight: '80vh', overflowY: 'auto' }}>
         <div style={{ fontFamily: DISPLAY_FONT, fontWeight: 700, fontSize: 20 }}>Allergies</div>
         <div style={{ fontSize: 13, color: '#64748b', marginTop: 6, lineHeight: 1.5 }}>
-          We’ll hide items containing anything you pick. <b>Always confirm with us</b> for a severe allergy — cross-contamination is possible.
+          We’ll mark items containing anything you pick. <b>Always confirm with us</b> for a severe allergy — cross-contamination is possible.
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 16 }}>
           {all.length === 0 && <div style={{ fontSize: 13, color: '#94a3b8' }}>No allergen tags on this menu yet.</div>}
@@ -504,7 +546,7 @@ function AllergyPicker({ theme, all, active, onClose, onSave }) {
         </div>
         <div style={{ display: 'flex', gap: 10, marginTop: 20 }}>
           {sel.length > 0 && <button onClick={() => setSel([])} style={{ ...pill, flex: 1 }}>Clear</button>}
-          <button onClick={() => onSave(sel)} style={{ ...btnPrimary(theme), flex: 2 }}>{sel.length ? `Hide ${sel.length} allergen${sel.length === 1 ? '' : 's'}` : 'Done'}</button>
+          <button onClick={() => onSave(sel)} style={{ ...btnPrimary(theme), flex: 2 }}>{sel.length ? `Mark ${sel.length} allergen${sel.length === 1 ? '' : 's'}` : 'Done'}</button>
         </div>
       </div>
     </div>

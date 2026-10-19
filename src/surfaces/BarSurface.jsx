@@ -4,6 +4,7 @@ import { MENU_ITEMS, ALLERGENS } from '../data/seed';
 import ProductModal, { AllergenModal } from '../components/ProductModal';
 import InlineItemFlow from '../components/InlineItemFlow';
 import { isOptionOnlyItem } from '../lib/menuRules';
+import { channelVisible } from '../lib/channelMenu';
 import CheckoutModal from './CheckoutModal';
 import TabPreAuthTerminal from '../components/TabPreAuthTerminal';
 import { getNextOrderRefLocal, fetchMenuCategoryLinks } from '../lib/db';
@@ -279,8 +280,11 @@ export default function BarSurface() {
     () => allowedCategoryIds(menuCategories, deviceMenuId, _categoryLinks),
     [menuCategories, deviceMenuId, _categoryLinks]); // null means show all
 
+  // v5.11.81 (channel parity round 2): Back Office "Visible on" POS off hides a product on the bar
+  // tab screen as on the till (POSSurface isBlocked) and the handheld; the bar showed it.
   const ITEMS = (storeMenuItems || MENU_ITEMS).filter(i => {
     if (i.archived || i.parentId || i.parent_id || isOptionOnlyItem(i)) return false;
+    if (!channelVisible(i, 'bar')) return false;
     return itemInAllowedCats(i, activeMenuCatIds);
   });
   const catMeta = (menuCategories||[]).find(c=>c.id===cat) || {color:'var(--acc)',icon:'🍸',label:'All'};
