@@ -5,7 +5,7 @@ import { taxCtxHasConfig } from '../lib/taxCompute';
 import { resolveServiceCharge } from '../lib/serviceCharge';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
 import { buildScheduleCtx } from '../lib/locationTime';
-import { resolveItemPrice } from '../lib/menuPricing';
+import { resolveItemPrice, refusesNoPriceLine } from '../lib/menuPricing';
 import { resolveCentresForItem, resolveOrderTypeKey, orderTypeFallbackMessage, orderTypeLabelOf, buildCatParentMap as catParentMapOf, mergeCatParentMaps, snapshotCategoriesFor, channelFallbackCentre } from '../lib/productionRouting';
 // 12 Oct 2026 (Coffee Boy Preston, QR drinks on the Food screen; Peter: "you need to fix the master
 // thing"). ONE rule answers "am I this venue's master till" (lib/masterTill.js, read here through
@@ -77,14 +77,14 @@ import { setTrainingMode as applyTrainingFlag, isTrainingMode } from '../lib/tra
 import { getDeliveryQuote, recordDeliverySurcharge } from '../lib/delivery/quoteService';
 import { dispatchDelivery, sendDeliveryTrackingSMS } from '../lib/delivery/dispatch';
 import { STALE_ORDER_FLOOR_MS } from '../sync/staleness';
-import { giftRecordFrom, giftLegs, reverseGiftCard, giftReversalFailedMessage } from '../lib/giftCommit';
+import { giftRecordFrom, giftLegs, reverseGiftCard, giftReversalFailedMessage, giftPartRefundPlan } from '../lib/giftCommit';
 import { tendersFromPaymentInfo, channelTenders, finishTenders, tender, giftTenders, bookingTenders } from '../lib/accounting/tenders';
 import { writeClosedCheckRow } from '../lib/closedCheckWrite';
 import { scrubDiscount } from '../lib/discountApprover';
 // v5.6.79 (#107/#108) — refund money maths + the per-leg processor router.
 import {
   refundBreakdown, legRefundedMinor, allocateToLegs,
-  rollUpLegStatus, retryableLegs, toMinor as toMinorAmt, refundTaxAmount,
+  rollUpLegStatus, retryableLegs, toMinor as toMinorAmt, refundTaxAmount, chargedGoodsOf,
 } from '../lib/payments/refundMath';
 import { resolveRefundCardLegs } from '../lib/payments/refundCardLegs';
 import { reverseCardLeg } from '../lib/payments/cardReversal';
@@ -364,7 +364,24 @@ function derivePaymentIntents(paymentInfo = {}) {
 // Marketing promo → an entry in the closed_check.discounts jsonb (reuses the existing discount slot).
 function promoDiscountEntry(promo) {
   if (!promo?.code) return [];
-  return [{ source: 'promo', code: promo.code, name: promo.label || promo.code, type: promo.type, value: promo.value, amount: Number(promo.amount) || 0 }];
+  // v5.11.81: an order's own promo (placed online, by QR or catering, paid later here) names the
+  // order its use was recorded under, so a full refund can give the code back (promoRelease.js).
+  return [{ source: 'promo', code: promo.code, name: promo.label || promo.code, type: promo.type, value: promo.value, amount: Number(promo.amount) || 0,
+    ...(promo.redemptionOrderId ? { redemptionOrderId: String(promo.redemptionOrderId) } : {}) }];
+}
+
+// v5.11.81: give the promo codes of a fully refunded or voided order back (promo-redeem 'release',
+// once per use server side). Fire and forget: the refund is recorded whatever happens here.
+function releasePromoCodes({ orderIds = [], orderRef = null, locationId, reason }) {
+  if ((!orderIds.length && !orderRef) || !locationId || isTrainingMode()) return;
+  postLoyaltyWithDeviceLink('promo-redeem', {
+    action: 'release', order_ids: orderIds, ...(orderRef ? { order_ref: orderRef } : {}), location_id: locationId, reason: reason || 'refund',
+  }).then(async (res) => {
+    if (!res) return;
+    const j = await res.json().catch(() => ({}));
+    if (res.ok) { if (j.released > 0) console.info('[promo] code given back:', j.released); }
+    else console.warn('[promo] release HTTP', res.status, j.error || '');
+  }).catch((e) => console.warn('[promo] release failed:', e?.message || e));
 }
 
 // ── Supabase helpers ─────────────────────────────────────────────────────────
@@ -732,6 +749,8 @@ import { withoutRecordNotes } from '../lib/orderCustomerNotes';
 import { linesGoods } from '../lib/taxShare.js';
 import { closeMoney } from '../lib/closeMoney.js';
 import { mintCheckId, usableCheckId, walkInCloseId, bookedCheck } from '../lib/walkInCheckId.js';
+import { loyaltyEarnItems, earnChannelFor, partRefundLoyaltyBody } from '../lib/loyaltyEarnItems.js';
+import { promoReleaseOrderIds } from '../../supabase/functions/_shared/promoRelease.js';
 
 // v5.7.35 — ?mode=kds pins the KDS surface for this page load (read once; the
 // mode param is the operator's explicit intent, so profile defaults must not
@@ -3153,6 +3172,12 @@ export const useStore = create((set, get) => ({
     // 19 Oct 2026 (v5.11.78, channel parity): the call and its fallback live in lib/tillLine.js,
     // which a bar tab round now calls too. Same maths, byte for byte.
     const price = tillLineUnitPrice(item, _currentOrderType, get().activeMenuId, opts.linePrice, qty);
+    // v5.11.81: a row with no price set is never sold for 0.00 (menuPricing.hasNoSellPrice, the
+    // multi site menu's "no price" rule). Paid options can still price it.
+    if (refusesNoPriceLine(item, _currentOrderType, get().activeMenuId, price)) {
+      get().showToast?.(`${opts.displayName || item.name} has no price set. Set one in Back Office before selling it.`, 'error');
+      return null;
+    }
     const newItem = {
       uid: uid(), itemId: item.id,
       name: opts.displayName || item.name,
@@ -4742,13 +4767,14 @@ export const useStore = create((set, get) => ({
       const itemSummary = (orderRecord.items || []).map(i => ({
         name: i.name, qty: i.qty, price: i.price,
       }));
+      // v5.11.81: the check's own id (refs recycle R1 to R99) and the one earn channel label.
       const { error: ordersErr } = await supabase.from('customer_orders').insert({
         customer_id: customerId,
         location_id: locId,
-        closed_check_id: orderRecord.ref || orderRecord.id || null,
+        closed_check_id: orderRecord.id || orderRecord.ref || null,
         ordered_at: new Date().toISOString(),
         total: Number(orderRecord.total) || 0,
-        channel: orderRecord.orderType || orderRecord.type || orderRecord.source || 'unknown',
+        channel: earnChannelFor(orderRecord),
         item_summary: itemSummary,
       });
       if (ordersErr) {
@@ -4757,14 +4783,14 @@ export const useStore = create((set, get) => ({
         console.log('[attributeOrderToCustomer] step 3/3 — customer_orders inserted');
       }
 
-      // Stamp customer_id on the closed_check (best-effort; scope by location_id
-      // to avoid the cross-location ref collision that would otherwise update
-      // closed_checks at OTHER locations sharing the same ref string).
-      if (orderRecord.ref) {
+      // Stamp customer_id on the closed_check (best-effort, scoped by location_id).
+      // v5.11.81: by the check's own id, never by its ref. A ref recycles (R1 to R99 at a venue),
+      // so matching on it stamped this customer on every older check that once had the same ref.
+      if (orderRecord.id) {
         // Fix round 2 (the zero row blocker): counted, and kept while this device is not linked.
         const stamp = await mustChangeRow({
           table: 'closed_checks', type: 'update', payload: { customer_id: customerId },
-          match: { ref: orderRecord.ref, location_id: locId }, kind: 'customer_stamp', label: `Customer on check ${orderRecord.ref}`,
+          match: { id: orderRecord.id, location_id: locId }, kind: 'customer_stamp', label: `Customer on check ${orderRecord.ref || orderRecord.id}`,
         });
         if (stamp.outcome === 'error') console.warn('[attributeOrderToCustomer] closed_checks customer_id stamp failed:', stamp.error?.message || stamp.error);
       }
@@ -4829,8 +4855,6 @@ export const useStore = create((set, get) => ({
           // v5.5.256: resolve parent category for variants so stamp cards can
           // match qualifying categories. Variants (sizes) don't have their own
           // cat field — they inherit from their master product.
-          const allMenuItems = get().menuItems || [];
-          const menuById = new Map(allMenuItems.map(m => [m.id, m]));
           const earnBody = {
             customer_id: customerId,
             location_id: locId,
@@ -4842,39 +4866,12 @@ export const useStore = create((set, get) => ({
             // or hit the global UNIQUE constraint and silently dropped the
             // ledger row. The chk id is unique, so the key never collides.
             closed_check_id: orderRecord.id || orderRecord.ref,
-            channel: orderRecord.orderType || orderRecord.source || 'pos',
-            items: (orderRecord.items || []).map(i => {
-              let cat = i.cat || i.category || null;
-              // v5.5.259: Variants ALWAYS use parent's category. Variant
-              // rows in the DB can have a stale/wrong cat (e.g. Sandwiches
-              // instead of Coffee) from category reassignment or creation
-              // bugs. The parent's cat is the source of truth for what
-              // "type" of product this is.
-              if (i.parentId) {
-                const parent = menuById.get(i.parentId);
-                const parentCat = parent?.cat || parent?.cats?.[0] || null;
-                if (parentCat) cat = parentCat;
-              }
-              // Double fallback: look up the original menu item's cat
-              if (!cat) {
-                const mi = menuById.get(i.itemId || i.id);
-                if (mi?.parentId) {
-                  // Variant via menu lookup — use parent's cat
-                  const parent = menuById.get(mi.parentId);
-                  cat = parent?.cat || parent?.cats?.[0] || null;
-                } else {
-                  cat = mi?.cat || mi?.cats?.[0] || null;
-                }
-              }
-              return {
-                name: i.name, qty: i.qty || 1, price: i.price || 0,
-                cat,
-                id: i.itemId || i.id || null,
-                isComp: !!i.isComp,
-                staffDiscount: !!i.isStaffDiscount,
-                isGiftCard: !!i.isGiftCard,
-              };
-            }),
+            // v5.11.81: ONE label per surface (lib/loyaltyEarnItems.js earnChannelFor): every till
+            // surface earns as 'pos' (it was the order type), each customer surface as itself.
+            channel: earnChannelFor(orderRecord),
+            // v5.5.259 rule (a size takes its product's category, comps flagged), moved to
+            // lib/loyaltyEarnItems.js unchanged so a part refund counts the stamps the same way.
+            items: loyaltyEarnItems(orderRecord.items || [], get().menuItems || []),
             subtotal: Number(orderRecord.total) || 0,
             staff_id: orderRecord.staffId || null,
             // Database fence stage 1: the member signed in at the kiosk proves the earn is theirs
@@ -7768,6 +7765,10 @@ export const useStore = create((set, get) => ({
     }
 
     const refundId = `ref-${Date.now()}`;
+    // v5.11.81: a PART refund gives the gift cards that paid toward the check their share of it
+    // (giftCommit.giftPartRefundPlan), and the card legs get the rest. A cash payout hands it all
+    // back in cash, so no gift share then. A full refund keeps its own path below.
+    const giftPart = (!isFullRefund && !cashPayout) ? giftPartRefundPlan(chkBefore, toMinorAmt(amount)) : { legs: [], totalMinor: 0 };
     // The tax that came back with these items, pro-rata on the check's own stored
     // tax. Recorded so VAT reporting CAN net a refund off (today it cannot — a
     // refund entry carried no tax portion at all, which is why `tax_amount` stayed
@@ -7805,6 +7806,11 @@ export const useStore = create((set, get) => ({
           // v5.9.12: the added-on sales tax part of `amount` (only when there is one,
           // so inclusive-VAT refund entries keep exactly their old shape).
           ...(bd.tax > 0 ? { addedTaxAmount: bd.tax } : {}),
+          // v5.11.81: the gift card share of a part refund, per leg (only when there is one).
+          ...(giftPart.totalMinor > 0 ? {
+            giftMinor: giftPart.totalMinor,
+            giftLegs: giftPart.legs.map((x) => ({ card_id: x.leg.card_id, key: x.leg.idempotency_key, minor: x.amountMinor })),
+          } : {}),
           // Filled in below once the processor has actually answered.
           cardStatus: 'pending',
           legs: [],
@@ -7864,15 +7870,18 @@ export const useStore = create((set, get) => ({
     // check can carry a leg per portion (giftLegs unwraps both shapes). A leg with a null
     // idempotency_key is one whose commit FAILED — nothing was debited, so there is nothing
     // to restore and reversing would 404 against a transaction that never existed.
+    // v5.11.81: a part refund reverses its own share of each gift card (giftPart above), the
+    // server claiming it once under this refund's id; a full refund puts back whatever is left.
     const legsToReverse = isFullRefund
       ? giftLegs(check).filter(g => g?.card_id && g.idempotency_key)
-      : [];
+      : giftPart.legs.map((x) => ({ ...x.leg, _partMinor: x.amountMinor }));
     if (legsToReverse.length) {
       (async () => {
         try {
           const token = await ensureAuthToken();
           if (!token) { console.warn('[refundCheck] gift reversal skipped — no auth token'); return; }
-          for (const leg of legsToReverse) {
+          for (const legIn of legsToReverse) {
+            const { _partMinor, ...leg } = legIn;
             // v5.5.903: one request shape, shared with the PAX cancel path — this used to
             // be the only gift-reverse-redeem caller, and a second hand-rolled copy is
             // exactly how two callers drift apart. reverseGiftCard NEVER throws, so one
@@ -7883,6 +7892,7 @@ export const useStore = create((set, get) => ({
               locationId: getActiveLocationSync(),
               reason: `POS refund: ${reason || 'refund'}`,
               staffId: manager?.id || null,
+              ...(_partMinor != null ? { amountMinor: _partMinor, refundId } : {}),
             });
             if (r.ok) console.info('[refundCheck] gift card reversed:', r.status || 'ok', 'restored:', r.restored);
             else {
@@ -7907,7 +7917,14 @@ export const useStore = create((set, get) => ({
     // loyalty summary, or the reward it used); when the till holds none (a stamps only member: the
     // check never carried one, so every refund was skipped), loyalty-refund finds the customer
     // from this check's own ledger rows.
-    if (nextStatus === 'refunded' && (check?.customer?.phone || check?.customer_id || check?.loyalty || check?.loyaltyRedemption)) {
+    // v5.11.81: a PART refund takes back what the refunded part earned (points by the share of the
+    // goods money returned, stamps by the qualifying lines returned), never the reward used;
+    // v5.11.78 took back nothing on a part refund (and before it, the whole check).
+    const partLoyalty = nextStatus === 'partial_refund'
+      ? partRefundLoyaltyBody({ refundId, bd, chargedGoods: chargedGoodsOf(chkBefore), refundItems, menuItems: get().menuItems || [] })
+      : null;
+    const loyaltyToReverse = nextStatus === 'refunded' || (partLoyalty && (partLoyalty.share > 0 || partLoyalty.items.length > 0));
+    if (loyaltyToReverse && (check?.customer?.phone || check?.customer_id || check?.loyalty || check?.loyaltyRedemption)) {
       (async () => {
         try {
           const token = await ensureAuthToken();
@@ -7924,6 +7941,7 @@ export const useStore = create((set, get) => ({
             closed_check_id: check.id || check.ref,
             reason: reason || 'refund',
             staff_id: manager?.id || null,
+            ...(partLoyalty || {}),
           });
           if (!res) { console.warn('[refundCheck] loyalty reversal skipped: no auth token'); return; }
           const j = await res.json().catch(() => ({}));
@@ -7969,7 +7987,8 @@ export const useStore = create((set, get) => ({
     );
     // Only the card's share goes to the card. The rest of a refund (a gift-card
     // or loyalty-funded portion) is reversed by the paths above, which own it.
-    const wantMinor = toMinorAmt(amount);
+    // v5.11.81: less the gift cards' share of a part refund (giftPart), which goes back to them.
+    const wantMinor = Math.max(0, toMinorAmt(amount) - giftPart.totalMinor);
     const cardTargetMinor = Number.isFinite(cardCapMinor) ? Math.min(wantMinor, cardCapMinor) : wantMinor;
     const { allocations } = cashPayout
       ? { allocations: [] }
@@ -8062,6 +8081,12 @@ export const useStore = create((set, get) => ({
       message = `Refund of ${money(amount)} accepted by the card processor — it settles shortly.`;
     } else {
       message = `Refund of ${money(amount)} returned to the card`;
+    }
+    // v5.11.81: say how much of a part refund goes back on the gift card.
+    if (giftPart.totalMinor > 0) message += ` (${money(giftPart.totalMinor / 100)} of it back on the gift card)`;
+    // v5.11.81: a FULL refund gives the order's promo codes back (a part refund keeps them used).
+    if (nextStatus === 'refunded') {
+      releasePromoCodes({ orderIds: promoReleaseOrderIds(check || chkBefore), locationId: chkBefore.locationId || getActiveLocationSync(), reason: `refund: ${reason || 'refund'}` });
     }
     // Order screens (keepPaidTillOrders): a paid till order kept in the queue that is now
     // FULLY refunded leaves it, or it stays on the TV and in Orders Hub as paid. Only once the
@@ -8440,6 +8465,12 @@ export const useStore = create((set, get) => ({
     // too, or Pay would book a sale for an order that is already voided.
     if (get().walkInOrder?.ref === o.ref) get().clearWalkIn();
     const paid = !!(o.paid || o.customer?.paid || ['online', 'kiosk'].includes(o.source));
+    // v5.11.81: an order placed with a promo code and voided before it was paid (a catering pay
+    // later order) gives its code back; it was used up at placing and burnt with no sale. A paid
+    // order's code goes back when the sale is fully refunded (refundCheck).
+    if (!paid && o.customer?.promo_code) {
+      releasePromoCodes({ orderIds: o.customer.check_id ? [String(o.customer.check_id)] : [], orderRef: o.ref, locationId: getActiveLocationSync(), reason: `void: ${reason || 'voided'}` });
+    }
     get().showToast(paid
       ? `${label} voided. It was already paid: refund it in Back Office, Transactions.`
       : `${label} voided by ${manager.name}. ${reason}`, 'error');

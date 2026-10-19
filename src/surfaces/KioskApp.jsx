@@ -31,7 +31,7 @@ import { creditDiscounts } from '../lib/taxBasis';
 import { assembleTaxProfiles } from '../lib/rowMapping';
 import { buildScheduleCtx } from '../lib/locationTime';
 import { resolveActiveMenu } from '../lib/menus/resolveActiveMenu';
-import { resolveItemPrice, variantFromPrice } from '../lib/menuPricing';
+import { resolveItemPrice, variantFromPrice, refusesNoPriceLine } from '../lib/menuPricing';
 import { depleteForSaleServer } from '../lib/stock/deplete';
 import KioskProductModal from './KioskProductModal';
 import KioskCategoryTile from './kiosk/KioskCategoryTile';
@@ -972,6 +972,8 @@ export default function KioskApp({ kioskId, onUnpair }) {
       qty = Math.min(qty, maxAdd);
     }
     const linePrice = priceEachOverride ?? resolvePrice(item, orderType, activeMenuId);
+    // v5.11.81: a row with no price set is never sold for 0.00 (the till's rule, menuPricing).
+    if (refusesNoPriceLine(variantItem || item, orderType, activeMenuId, linePrice)) { console.warn('[kiosk] not added: no price set for', (variantItem || item)?.name); return; }
     const modSummary = summaryOverride ?? Object.entries(selectedMods)
       .filter(([, v]) => v)
       .map(([k, v]) => Array.isArray(v) ? v.join(', ') : v)

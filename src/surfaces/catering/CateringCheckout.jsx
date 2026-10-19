@@ -139,7 +139,8 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
     ...(isDelivery ? { address: { line1: addr1.trim(), postcode: postcode.trim().toUpperCase(), ...(addrGeo ? { lat: addrGeo.lat, lng: addrGeo.lng } : {}) } } : {}),
     fulfilment, event_date: eventDate, event_time: eventTime,
     ...(notes.trim() ? { notes: notes.trim() } : {}), ...(taxId.trim() ? { tax_id: taxId.trim() } : {}),
-    ...(promoApplied ? { promo_code: promoApplied.code, promo_discount: promoApplied.amount } : {}), ...(tip ? { tip } : {}), ...(deliveryFee ? { delivery_fee: deliveryFee } : {}),
+    // v5.11.81: check_id is the id the promo's use is recorded under, so a void or a full refund can give the code back.
+    ...(promoApplied ? { promo_code: promoApplied.code, promo_discount: promoApplied.amount, check_id: checkId } : {}), ...(tip ? { tip } : {}), ...(deliveryFee ? { delivery_fee: deliveryFee } : {}),
     ...(isDelivery && deliveryQuote?.mode ? { delivery_mode: deliveryQuote.mode } : {}),   // fire-time dispatch reads this
     ...pay,
   });

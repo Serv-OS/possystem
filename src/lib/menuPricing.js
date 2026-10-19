@@ -86,6 +86,30 @@ export function menuTierPrice(item, channel, menuId) {
   return null;
 }
 
+// v5.11.81 (19 Oct 2026): a row with NO price set for this sale: a pricing object whose base is
+// null (or missing, or blank) with no price for this order type and no tier on this menu. The
+// multi site menu's "no price" rule: such a row is never sold for 0.00 (it resolved to 0 on
+// every channel). A real 0 (tap water, a free side: base 0) is a price and still sells. A row
+// with no pricing object keeps the legacy scalar rule. Callers refuse the line only when what it
+// would charge (options included) is 0, so a build your own product priced by its options sells.
+const priceSet = (v) => v !== null && v !== undefined && v !== '';
+export function hasNoSellPrice(item, channel = 'dineIn', menuId = null) {
+  const p = item?.pricing;
+  if (!p || typeof p !== 'object') return false;
+  if (menuId && p.menus && p.menus[menuId]) {
+    const tier = p.menus[menuId];
+    for (const key of channelKeys(channel)) if (priceSet(tier[key])) return false;
+    if (priceSet(tier.all) || priceSet(tier.base)) return false;
+  }
+  for (const key of channelKeys(channel)) if (priceSet(p[key])) return false;
+  return !priceSet(p.base);
+}
+
+/** True when a line for this row would be sold for nothing although the row has no price set. */
+export function refusesNoPriceLine(item, channel, menuId, unitPrice) {
+  return hasNoSellPrice(item, channel, menuId) && !(Number(unitPrice) > 0);
+}
+
 // The reference resolver. store.getItemPrice and the kiosk's resolvePrice
 // delegate here; online, QR and the boards call it directly.
 export function resolveItemPrice(item, channel = 'dineIn', menuId = null) {

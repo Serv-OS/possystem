@@ -183,3 +183,26 @@ test('allowed: a HubRise or ezCater order is booked at the price the platform ch
   // Deliveroo collection order is priced at the delivery price: the platform's rule, not ours.
   assert.match(readRepo('supabase/functions/hubrise-catalog-push/index.ts'), /channel: 'delivery'/);
 });
+
+// ── A row with no price set never sells for 0.00 (v5.11.81, confirmed minor) ──────────────────────
+test('no price: a row whose base is null, with no price for the order type or menu, is refused on every channel; a real 0.00 and a row priced by its options still sell', async () => {
+  const { hasNoSellPrice, refusesNoPriceLine, resolveItemPrice } = await import('../menuPricing.js');
+  const tea = { id: 'tea', name: 'Tea', pricing: { base: null } };
+  assert.equal(resolveItemPrice(tea, 'takeaway'), 0, 'it resolved to 0.00 on every channel');
+  assert.equal(hasNoSellPrice(tea, 'takeaway'), true);
+  assert.equal(refusesNoPriceLine(tea, 'takeaway', null, 0), true, 'refused at 0.00');
+  assert.equal(refusesNoPriceLine(tea, 'takeaway', null, 1.2), false, 'a paid option prices it: sold');
+  assert.equal(hasNoSellPrice({ pricing: { base: 0 } }, 'dine-in'), false, 'tap water at 0.00 is a price');
+  assert.equal(hasNoSellPrice({ pricing: { base: null, takeaway: 2 } }, 'takeaway'), false, 'a price for this order type');
+  assert.equal(hasNoSellPrice({ pricing: { base: null, takeaway: 2 } }, 'drive-thru'), false, 'drive thru falls to takeaway');
+  assert.equal(hasNoSellPrice({ pricing: { base: null, takeaway: 2 } }, 'dine-in'), true);
+  assert.equal(hasNoSellPrice({ pricing: { base: null, menus: { bar: { all: 4 } } } }, 'dine-in', 'bar'), false, 'a tier on this menu');
+  assert.equal(hasNoSellPrice({ pricing: { base: '' } }, 'dine-in'), true, 'a blank base is no price');
+  assert.equal(hasNoSellPrice({ price: 3 }, 'dine-in'), false, 'a legacy row keeps its scalar rule');
+  // Every add path refuses the line (till, bar tab, kiosk, online and QR, catering).
+  assert.match(readRepo('src/store/index.js'), /if \(refusesNoPriceLine\(item, _currentOrderType, get\(\)\.activeMenuId, price\)\) \{/);
+  assert.match(readRepo('src/surfaces/BarSurface.jsx'), /if \(refusesNoPriceLine\(item, 'bar-tab', barMenuId, price\)\)/);
+  assert.match(readRepo('src/surfaces/KioskApp.jsx'), /if \(refusesNoPriceLine\(variantItem \|\| item, orderType, activeMenuId, linePrice\)\)/);
+  assert.match(readRepo('src/surfaces/online/OnlineSurface.jsx'), /if \(refusesNoPriceLine\(item, orderType, effectiveMenuId, price \+ optionsEach\)\)/);
+  assert.match(readRepo('src/surfaces/catering/CateringSurface.jsx'), /if \(refusesNoPriceLine\(item, priceChannel, menuIdOf\(item\), price \+ optionsEach\)\)/);
+});

@@ -209,3 +209,91 @@ test('booking deposit on the handheld: taken off the bill and booked exactly as 
   assert.match(t, /const bookingPayment = booking \? bookingLegsForBill\(booking, bookingApplied\) : null;/);
   assert.match(readRepo('src/surfaces/CheckoutModal.jsx'), /const bookingLegsFor = \(\) => bookingLegsForBill\(bookingInfo, bookingApplied\);/);
 });
+
+// ── A service charge never carries VAT, on any channel (Peter, 19 Oct 2026: "service charge has no VAT") ──
+// v5.11.81: Peter's decision makes the rule. Every channel's own money code is run with a service
+// charge and without; the VAT booked is the VAT of the goods, never more. US added on tax on a
+// service charge follows the tax profile (a separate question) and is checked to stay as it is.
+test('service charge: no VAT on the till, a table, MPOS, Table Pay, reader closes, a bar tab, the kiosk, online, QR, catering, HubRise, ezCater and Xero', async () => {
+  const { headlessTaxBreakdown } = await import('../headlessTax.js');
+  const { tabCloseTax } = await import('../barTabTax.js');
+  const { computeOrderTaxUnified } = await import('../taxCompute.js');
+  const { buildChannelCloseFields } = await import('../channelMoney.js');
+  const { ezcaterClosedCheck } = await import('../../../supabase/functions/_shared/ezcaterCatering.js');
+  const { serviceTaxType } = await import('../../../supabase/functions/_shared/xeroTax.js');
+  const { UK_RATES } = await import('./fixtures.js');
+  const v = (t) => roundVat(t?.totalTax);
+  const b = basket('service-charge');   // dine in, 4 covers, 4 burgers and 4 cokes, 12.5% service
+  const items = posLines(b);
+  const bill = (deviceConfig, checkDiscounts = []) => computeCheckTotals({ items, checkDiscounts, covers: 4, orderType: 'dine-in', deviceConfig, discountRules: RULES, timezone: TZ, taxCtx: ctxUK() });
+  for (const disc of [[], [{ id: 'd', type: 'percent', value: 10 }]]) {
+    const withSvc = bill(SERVICE_DEVICE, disc);
+    const goods = v(bill({}, disc).tax);
+    assert.ok(withSvc.service > 0, 'the bill carries a service charge');
+    // The till counter, a table, MPOS (getPOSTotals) and the Table Pay stamp all run computeCheckTotals.
+    assert.equal(v(withSvc.tax), goods, 'till, table, MPOS: VAT on the goods only');
+    assert.equal(withSvc.tax.serviceTax, undefined, 'no tax line on the service charge');
+    // A reader close (pay at table, Table Pay, another till's job) books from the frozen draft.
+    const draft = { items, discounts: disc, covers: 4, orderType: 'dine-in', serviceMinor: Math.round(withSvc.service * 100) };
+    assert.equal(v(headlessTaxBreakdown(draft, { taxRates: UK_RATES, taxCtx: ctxUK(), deviceConfig: SERVICE_DEVICE, discountRules: RULES, timezone: TZ })), goods, 'reader close');
+    // QR pay now and online: the seam with the service charge in the basis (QrCheckout goodsTaxBreakdown).
+    assert.equal(v(computeOrderTaxUnified(items, ctxUK(), 'dine-in', { discounts: disc, service: withSvc.service })), v(computeOrderTaxUnified(items, ctxUK(), 'dine-in', { discounts: disc })), 'QR and online');
+  }
+  // A bar tab handed a service figure books the VAT of its lines only.
+  const tab = tabCloseTax(items, ctxUK(), { paymentInfo: { grand: 60, service: 7.5 } });
+  assert.equal(tab.taxAmount, v(computeOrderTaxUnified(items, ctxUK(), 'bar-tab')), 'bar tab');
+  // A QR tab books its rounds' service charge as service, out of the goods its VAT is on.
+  const rounds = [{ customer: { tip: 0, service_charge: 2.5 }, items: [{ itemId: 'burger', price: 9, qty: 2, mods: [] }, { itemId: 'coke', price: 2.5, qty: 1, mods: [] }] }];
+  const qrTab = qrTabCloseFields(rounds, 23, { menuItems: STORE_MENU, taxRates: UK_RATES, taxCtx: ctxUK(), hasTaxConfig: true });
+  assert.equal(qrTab.service, 2.5);
+  assert.equal(qrTab.taxAmount, roundVat(20.5 - 20.5 / 1.2), 'QR tab: VAT on the 20.50 of goods, never on the 2.50 service');
+  // The kiosk and catering charge no service charge at all; online and catering book service 0.
+  assert.doesNotMatch(readRepo('src/lib/kioskVat.js'), /service/, 'the kiosk tax call has no service charge in it');
+  assert.match(readRepo('src/surfaces/catering/CateringCheckout.jsx'), /subtotal, service: 0, tip, total, method: 'card',/);
+  // HubRise: a platform service fee is booked as service and adds no VAT.
+  const hubItems = [{ id: 'h1', itemId: 'burger', name: 'Burger', price: 9, qty: 2, mods: [] }];
+  const hub = (charges) => buildChannelCloseFields({ channel: 'delivery', total: 18, items: hubItems, customer: { payments: [], charges } }, { menuItems: STORE_MENU, taxRates: UK_RATES });
+  const withFee = hub([{ name: 'Service fee', type: 'other', amount: 1.5 }]);
+  assert.equal(withFee.service, 1.5);
+  assert.equal(withFee.taxAmount, hub([]).taxAmount, 'HubRise');
+  // ezCater: a misc fee is booked as the sale's service; the tax is ezCater's own figure, unchanged by it.
+  const ez = (fees) => ezcaterClosedCheck({ ref: 'EZ-9', location_id: 'L', type: 'collection', event_date: '2026-11-02', collection_time: '12:00',
+    items: [{ name: 'Box lunch', qty: 10, price: 12, lineSubunits: 12000 }],
+    customer: { channel: 'ezcater', ezcater_lifecycle: 'accepted', ezcater_order_id: 'u-9', catererReceivesTip: true, catererReceivesDeliveryFee: true,
+      totals: { subtotal: 120, tip: 0, deliveryFee: 10, feesAndDiscounts: fees }, tax: { salesTax: 8.7, salesTaxRemittance: 0 } } });
+  const ezFee = ez([{ name: 'Delivery fee', amount: 10 }, { name: 'Setup fee', amount: 15 }]);
+  assert.equal(ezFee.service, 15, 'the setup fee is booked as service, never the delivery fee');
+  assert.equal(ezFee.tax_amount, ez([{ name: 'Delivery fee', amount: 10 }]).tax_amount, 'ezCater');
+  assert.equal(ezFee.total, 120 + 8.7 + 10 + 15, 'the sale is what ezCater charged');
+  // Xero: a VAT venue's service charge line posts No VAT whatever is set.
+  const std = { key: 'rate:s', rateId: 's', pct: 20, mode: 'inclusive' };
+  for (const mapping of [{}, { serviceTaxable: true }, { serviceTax: 'OUTPUT2' }]) assert.equal(serviceTaxType({ mapping, revenueRates: null, detail: {} }, std), 'NONE', JSON.stringify(mapping));
+});
+
+test('service charge: random UK baskets never book VAT on a service charge, on the seam every channel calls (property)', async () => {
+  const { computeOrderTaxUnified } = await import('../taxCompute.js');
+  const ids = ['burger', 'coke', 'sarnie', 'toastie', 'water', 'latte', 'baby-l', 'cake-slice'];
+  let seed = 7;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+  for (let n = 0; n < 400; n++) {
+    const ot = ['dine-in', 'takeaway', 'delivery', 'collection'][Math.floor(rnd() * 4)];
+    const b = { orderType: ot, menuId: null, lines: ids.filter(() => rnd() < 0.5).map((itemId) => ({ itemId, qty: 1 + Math.floor(rnd() * 3) })) };
+    if (!b.lines.length) continue;
+    const items = posLines(b);
+    const service = Math.round(rnd() * 3000) / 100;
+    const disc = rnd() < 0.5 ? [{ type: 'amount', value: Math.round(rnd() * 500) / 100 }] : [];
+    const a = computeOrderTaxUnified(items, ctxUK(), ot, { discounts: disc, service, deliveryFee: 0 });
+    const z = computeOrderTaxUnified(items, ctxUK(), ot, { discounts: disc, service: 0, deliveryFee: 0 });
+    assert.equal(a.totalTax, z.totalTax, JSON.stringify({ b, service }));
+    assert.equal(a.serviceTax, undefined);
+  }
+});
+
+test('service charge, US: added on tax on a service charge still follows the tax profile (unchanged)', async () => {
+  const { computeOrderTaxUnified } = await import('../taxCompute.js');
+  const { ctxUS } = await import('./fixtures.js');
+  const lines = [{ uid: 'u', itemId: 'burger', cat: 'food', price: 17, qty: 1, taxRateId: null, taxOverrides: {} }];
+  const withSvc = computeOrderTaxUnified(lines, ctxUS(), 'dine-in', { discounts: [], service: 2 });
+  const without = computeOrderTaxUnified(lines, ctxUS(), 'dine-in', { discounts: [], service: 0 });
+  assert.ok(withSvc.exclusiveTax > without.exclusiveTax, 'San Mateo taxes a mandatory service charge');
+});

@@ -313,9 +313,10 @@ function RefundModal({check, onConfirm, onCancel}){
               )}
 
               {refundTotal>0&&<div style={{borderTop:'1px solid var(--bdr)',paddingTop:12,marginTop:12}}>
-                {(bd.service>0||bd.tip>0||bd.tax>0)&&(
+                {(bd.service>0||bd.tip>0||bd.tax>0||bd.discountBack>0)&&(
                   <div style={{fontSize:11,color:'var(--t3)',marginBottom:6,display:'flex',justifyContent:'space-between'}}>
-                    <span>Items {money(bd.itemsAmount)}{bd.service>0?` · service ${money(bd.service)}`:''}{bd.tax>0?` · sales tax ${money(bd.tax)}`:''}{bd.tip>0?` · tip ${money(bd.tip)}`:''}</span>
+                    {/* v5.11.81: a line goes back at what was paid for it, its share of the bill's discounts taken off */}
+                    <span>Items {money(bd.itemsAmount)}{bd.discountBack>0?` (after ${money(bd.discountBack)} of discounts)`:''}{bd.service>0?` · service ${money(bd.service)}`:''}{bd.tax>0?` · sales tax ${money(bd.tax)}`:''}{bd.tip>0?` · tip ${money(bd.tip)}`:''}</span>
                   </div>
                 )}
                 <div style={{display:'flex',justifyContent:'space-between',fontSize:16,fontWeight:800}}>
@@ -424,6 +425,7 @@ function RefundModal({check, onConfirm, onCancel}){
                       <span style={{fontFamily:'DM Mono,monospace'}}>{money((i.price*i.refundQty))}</span>
                     </div>
                   ))}
+                  {bd.discountBack>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--t2)'}}><span>Less discounts on these items</span><span style={{fontFamily:'DM Mono,monospace'}}>−{money(bd.discountBack)}</span></div>}
                   {bd.service>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--t2)'}}><span>Service charge</span><span style={{fontFamily:'DM Mono,monospace'}}>{money(bd.service)}</span></div>}
                   {bd.tax>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--t2)'}}><span>Sales tax</span><span style={{fontFamily:'DM Mono,monospace'}}>{money(bd.tax)}</span></div>}
                   {bd.tip>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--t2)'}}><span>Tip</span><span style={{fontFamily:'DM Mono,monospace'}}>{money(bd.tip)}</span></div>}

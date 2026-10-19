@@ -82,7 +82,83 @@ test('refund: a full refund takes back the stamps the sale earned, never a rewar
   assert.match(refund, /idempotency_key: claimKey,/);
   assert.match(refund, /\.eq\('id', card\.id\)\.eq\('stamps_collected', card\.stamps_collected\)\.eq\('completed_count', card\.completed_count\)/, 'the card moves only from the state it was read in');
   const store = readRepo('src/store/index.js');
-  assert.match(store, /if \(nextStatus === 'refunded' && \(check\?\.customer\?\.phone \|\| check\?\.customer_id \|\| check\?\.loyalty \|\| check\?\.loyaltyRedemption\)\) \{/);
+  assert.match(store, /const loyaltyToReverse = nextStatus === 'refunded' \|\| \(partLoyalty && \(partLoyalty\.share > 0 \|\| partLoyalty\.items\.length > 0\)\);/);
+  assert.match(store, /if \(loyaltyToReverse && \(check\?\.customer\?\.phone \|\| check\?\.customer_id \|\| check\?\.loyalty \|\| check\?\.loyaltyRedemption\)\) \{/);
   assert.match(store, /\.\.\.\(customerId \? \{ customer_id: customerId \} : \{\}\),/);
   assert.doesNotMatch(store, /loyalty reversal skipped — no customer_id on check/);
+});
+
+// ── A part refund takes back what the refunded part earned (v5.11.81: the v5.11.78 regression) ───
+test('part refund: points by the share of the goods refunded, stamps by the qualifying lines refunded, never the reward used; a later full refund takes only what is left', async () => {
+  const P = await import('../../../supabase/functions/_shared/loyaltyPartRefund.js');
+  const { partRefundLoyaltyBody, loyaltyEarnItems } = await import('../loyaltyEarnItems.js');
+  // 5 coffees at 3.00 earned 15 points and 5 stamps; 1 coffee refunded.
+  assert.equal(P.partRefundPoints({ earned: 15, alreadyTaken: 0, share: 0.2 }), 3);
+  assert.equal(P.partRefundStamps({ earned: 5, alreadyTaken: 0, refundedQualifying: 1 }), 1);
+  // A second part refund of 4 more coffees, then nothing is left for the full refund.
+  assert.equal(P.partRefundPoints({ earned: 15, alreadyTaken: 3, share: 0.8 }), 12);
+  assert.equal(P.remainingAfterParts({ earned: 15, alreadyTaken: 15 }), 0);
+  assert.equal(P.partRefundStamps({ earned: 5, alreadyTaken: 4, refundedQualifying: 3 }), 1, 'never more than the check earned');
+  assert.equal(P.partRefundPoints({ earned: 15, share: 'x' }), 0, 'a bad share takes nothing');
+  assert.equal(P.partRefundKey('chk-1', 'ref-9'), 'refund:chk-1:ref-9');
+  assert.equal(P.isPartRefundKey('refund:chk-1:ref-9', 'chk-1'), true);
+  assert.equal(P.isPartRefundKey('refund:chk-1', 'chk-1'), false, 'the full refund row is not a part');
+  assert.equal(P.isPartRefundKey('refund:chk-1x:ref-9', 'chk-1'), false);
+  // The till's body: the share of the goods money returned and the lines at the quantity refunded.
+  const body = partRefundLoyaltyBody({ refundId: 'ref-9', bd: { itemsAmount: 3 }, chargedGoods: 15, refundItems: [{ uid: 'a', itemId: 'flat', name: 'Flat white', cat: 'coffee', price: 3, qty: 5, refundQty: 1 }], menuItems: [] });
+  assert.deepEqual({ part: body.part, refund_id: body.refund_id, share: body.share }, { part: true, refund_id: 'ref-9', share: 0.2 });
+  assert.deepEqual(body.items, loyaltyEarnItems([{ uid: 'a', itemId: 'flat', name: 'Flat white', cat: 'coffee', price: 3, qty: 1 }], []), 'the earn\'s own line shape, qty = refunded');
+  // The function: a part refund claims its own rows and never gives a used reward back.
+  const fn = readRepo('supabase/functions/loyalty-refund/index.ts');
+  assert.match(fn, /const idempotencyKey = part \? partRefundKey\(String\(closed_check_id\), refundId\) : fullRefundKey;/);
+  assert.match(fn, /const claimKey = part \? partStampKey\(earnKey, refundId\) : fullKey;/);
+  assert.match(fn, /\/\/ v5\.11\.81: a part refund leaves a reward used on the check used \(the visit happened\)\.\n\s+if \(!part\) \{/);
+  assert.match(fn, /netReversal \+= partTaken;/, 'a full refund after part refunds never takes the same points twice');
+  assert.match(fn, /toClaw = remainingAfterParts\(\{ earned, alreadyTaken \}\);/);
+  const store = readRepo('src/store/index.js');
+  assert.match(store, /\? partRefundLoyaltyBody\(\{ refundId, bd, chargedGoods: chargedGoodsOf\(chkBefore\), refundItems, menuItems: get\(\)\.menuItems \|\| \[\] \}\)/);
+  assert.match(store, /staff_id: manager\?\.id \|\| null,\n\s+\.\.\.\(partLoyalty \|\| \{\}\),/);
+});
+
+// ── One earn label per surface, customer_id stamped by check id (v5.11.81) ───────────────────────
+test('earn: every till surface earns as pos, each customer surface as itself; the customer is stamped on the check by its id, never by a ref that recycles', async () => {
+  const { earnChannelFor } = await import('../loyaltyEarnItems.js');
+  for (const ot of ['dine-in', 'takeaway', 'delivery', 'drive-thru', 'bar-tab', 'collection']) assert.equal(earnChannelFor({ orderType: ot }), 'pos', ot);
+  assert.equal(earnChannelFor({ source: 'kiosk' }), 'kiosk');
+  assert.equal(earnChannelFor({ source: 'hubrise', orderType: 'delivery' }), 'hubrise');
+  assert.equal(earnChannelFor({ channel: 'qr' }), 'qr');
+  assert.equal(earnChannelFor({ channel: 'catering', source: 'catering' }), 'catering');
+  const store = readRepo('src/store/index.js');
+  assert.match(store, /channel: earnChannelFor\(orderRecord\),\n/);
+  assert.doesNotMatch(store, /channel: orderRecord\.orderType \|\| orderRecord\.source \|\| 'pos',/);
+  assert.match(store, /match: \{ id: orderRecord\.id, location_id: locId \}, kind: 'customer_stamp'/);
+  assert.doesNotMatch(store, /match: \{ ref: orderRecord\.ref, location_id: locId \}/);
+  assert.match(store, /closed_check_id: orderRecord\.id \|\| orderRecord\.ref \|\| null,/);
+});
+
+// ── A gift card gets its share of a part refund back (v5.11.81) ──────────────────────────────────
+test('part refund: the gift card that paid part of the bill gets its share back, the card leg the rest, never more than was spent', async () => {
+  const { giftPartRefundPlan } = await import('../giftCommit.js');
+  // 20.00 bill: 8.00 on a gift card, 12.00 on a bank card. A 5.00 part refund: 2.00 back on the gift card.
+  const leg = { card_id: 'g1', idempotency_key: 'giftcommit:chk-1:g1', applied: 800, code_last4: '1234' };
+  const check = { id: 'chk-1', total: 20, giftCard: leg, tenders: [{ method: 'gift_card', amount: 8, tip: 0 }, { method: 'card', amount: 12, tip: 0 }], refunds: [] };
+  const plan = giftPartRefundPlan(check, 500);
+  assert.equal(plan.totalMinor, 200);
+  assert.deepEqual(plan.legs.map((x) => [x.leg.card_id, x.amountMinor]), [['g1', 200]]);
+  // After parts that put back 7.00 already, only 1.00 is left on that spend.
+  const later = { ...check, refunds: [{ amount: 17.5, giftLegs: [{ card_id: 'g1', key: leg.idempotency_key, minor: 700 }] }] };
+  assert.equal(giftPartRefundPlan(later, 1000).totalMinor, 100);
+  // A leg whose commit failed (no key) was never debited, so nothing goes back to it.
+  assert.equal(giftPartRefundPlan({ ...check, giftCard: { ...leg, idempotency_key: null } }, 500).totalMinor, 0);
+  assert.equal(giftPartRefundPlan({ ...check, giftCard: null }, 500).totalMinor, 0);
+  // The till: the card leg is asked for the rest only; a cash payout asks the gift card for nothing.
+  const store = readRepo('src/store/index.js');
+  assert.match(store, /const giftPart = \(!isFullRefund && !cashPayout\) \? giftPartRefundPlan\(chkBefore, toMinorAmt\(amount\)\) : \{ legs: \[\], totalMinor: 0 \};/);
+  assert.match(store, /const wantMinor = Math\.max\(0, toMinorAmt\(amount\) - giftPart\.totalMinor\);/);
+  assert.match(store, /\.\.\.\(_partMinor != null \? \{ amountMinor: _partMinor, refundId \} : \{\}\),/);
+  // The function: its own claim per part refund, capped at the spend less what parts put back.
+  const fn = readRepo('supabase/functions/gift-reverse-redeem/index.ts');
+  assert.match(fn, /const refundKey = part \? `\$\{partPrefix\}\$\{refundId\}` : fullKey;/);
+  assert.match(fn, /const restoreAmount = part \? Math\.min\(partMinor as number, Math\.max\(0, spent - putBack\)\) : Math\.max\(0, spent - putBack\);/);
+  assert.match(fn, /if \(total === null \|\| total > spent\) \{/, 'a race can never put back more than was spent');
 });

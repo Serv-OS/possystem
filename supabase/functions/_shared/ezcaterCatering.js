@@ -513,11 +513,12 @@ const money2 = (v) => { const n = Number(v); return Number.isFinite(n) ? Math.ro
  *   subtotal       totals.subtotal (the food, before ezCater's discounts), else the line sum
  *   discounts      ezCater's discount rows (the negative feesAndDiscounts), as channel discount lines
  *   delivery fee   customer.delivery_fee, only when the caterer receives it (not third party delivery)
+ *   service        ezCater's other positive fees (misc fee, adjustment), v5.11.81; never UK VAT
  *   tip            only when the caterer receives it
  *   tax_amount     the sales tax the VENUE owes: ezCater's salesTax less what ezCater remits itself
  *                  (salesTaxRemittance, a marketplace facilitator state). Both figures and the state
  *                  ride the record (engine 'ezcater'), so no report books tax ezCater already paid.
- *   total          subtotal less discounts plus that tax, the tip and the fee: the sale, never
+ *   total          subtotal less discounts plus that tax, the tip, the fee and the service: the sale, never
  *                  catererTotalDue (which is net of ezCater's commission, a cost)
  *   tenders        one 'ezcater' tender for it (ezCater pays out weekly)
  *   closed_at      the event time on the venue clock, as a ServOS catering pay now order books it
@@ -543,10 +544,18 @@ export function ezcaterClosedCheck(row, { venueTz = DEFAULT_VENUE_TZ } = {}) {
   const discountTotal = money2(discounts.reduce((s, d) => s + d.amount, 0));
   const tip = c.catererReceivesTip === false ? 0 : money2(t.tip);
   const deliveryFee = c.catererReceivesDeliveryFee === false ? 0 : money2(t.deliveryFee);
+  // v5.11.81 (Peter, 19 Oct 2026: the one charges rule): ezCater's other positive fees (a misc fee or
+  // an adjustment the guest paid, never the delivery fee, which the list also carries) are booked as
+  // the sale's service charge, as HubRise books a platform fee. They were dropped, so the sale was
+  // short of what ezCater charged. A service charge never carries UK VAT; the tax booked stays
+  // ezCater's own figure (the platform sets the tax).
+  const positiveFees = (Array.isArray(t.feesAndDiscounts) ? t.feesAndDiscounts : []).filter((f) => Number(f?.amount) > 0)
+    .reduce((s0, f) => s0 + Math.round(Number(f.amount) * 100), 0) / 100;
+  const service = money2(Math.max(0, positiveFees - money2(t.deliveryFee)));
   const salesTax = money2(tax.salesTax ?? t.salesTax);
   const remitted = money2(tax.salesTaxRemittance ?? t.salesTaxRemittance);
   const owed = money2(Math.max(0, salesTax - remitted));
-  const total = money2(Math.max(0, subtotal - discountTotal) + owed + tip + deliveryFee);
+  const total = money2(Math.max(0, subtotal - discountTotal) + owed + tip + deliveryFee + service);
   const eventMs = wallTimeToInstantMs(row.event_date, row.collection_time || '12:00', venueTz);
   const closedAt = Number.isFinite(eventMs) ? new Date(eventMs).toISOString() : new Date().toISOString();
   return {
@@ -560,7 +569,7 @@ export function ezcaterClosedCheck(row, { venueTz = DEFAULT_VENUE_TZ } = {}) {
     items,
     discounts,
     subtotal,
-    service: 0,
+    service,
     tip,
     tax_amount: owed,
     tax_breakdown: {

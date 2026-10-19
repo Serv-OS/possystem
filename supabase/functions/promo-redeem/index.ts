@@ -7,6 +7,11 @@
 //       → { valid, discount:{type,value,amount,label,item_id?}, offer:{id,name}, reason? }   (no write)
 //   redeem   { code, order_id, location_id, customer_id?, staff_id?, basket_value?, idempotency_key? }
 //       → { ok, redeemed:true, discount, reason? }
+//   release  { order_ids:[...], order_ref?, location_id, reason? }   (v5.11.81)
+//       → { ok, released }   A full refund or a void gives the order's promo codes back: each use
+//       recorded against those orders at this venue is marked released and its use handed back to
+//       the code (promo_release_atomic, migration 20261020a), once. Only a till bound to the venue,
+//       its staff or ServOS's own server may ask (a refund is a till action).
 //
 // Redemption is RACE-SAFE and CRASH-SAFE: the ledger row and the use consumption happen inside one
 // transaction, the promo_redeem_atomic RPC (migration 20260806c). Only ONE concurrent till can win a
@@ -24,6 +29,9 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { computeDiscount } from '../_shared/promo.ts';
 import { normalisePromoCode, escapeLike, pickPromoRow, offerInOrg } from '../_shared/promoLookup.ts';
+import { authenticateCaller, resolveCompanyForLocation, callerStaffOrDevice, isServiceRoleRequest } from '../_shared/loyalty-utils.ts';
+import { decideGiftReverseAuthority } from '../_shared/gift-authority.ts';
+import { promoReleaseRequest } from '../_shared/promoRelease.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -89,9 +97,13 @@ async function evaluate(codeStr: string, locationId: string, customerId: string 
   if (offer.min_spend != null && Number(subtotal) < Number(offer.min_spend)) return { reason: 'min_spend' as const, row, offer, min_spend: Number(offer.min_spend) };
 
   // per-customer limit across the offer (shared codes): count this customer's prior redemptions.
+  // v5.11.81: a use given back by a refund or a void (released_at, 20261020a) does not count. Before
+  // that migration runs the column is not there: counted exactly as before.
   if (effectiveCustomerId && (offer.per_customer_limit ?? 0) > 0) {
-    const { count } = await opsAdmin.from('promo_redemptions').select('id', { count: 'exact', head: true })
+    const base = () => opsAdmin.from('promo_redemptions').select('id', { count: 'exact', head: true })
       .eq('offer_id', offer.id).eq('customer_id', effectiveCustomerId);
+    let { count, error } = await base().is('released_at', null);
+    if (error) ({ count } = await base());
     if ((count ?? 0) >= offer.per_customer_limit) return { reason: 'usage_limit' as const, row, offer };
   }
 
@@ -160,6 +172,36 @@ Deno.serve(async (req) => {
     if (res.result !== 'redeemed') return json({ ok: false, redeemed: false, reason: res.result });
 
     return json({ ok: true, redeemed: true, discount, offer: { id: offer.id, name: offer.name } });
+  }
+
+  if (action === 'release') {
+    // v5.11.81: a full refund or a void gives the order's promo codes back. A till action: the
+    // venue's staff, a device bound to the venue, or ServOS's own server (the service role key).
+    const reqd = promoReleaseRequest(body);
+    if (!reqd.ok) return json({ error: reqd.error }, 400);
+    if (!isServiceRoleRequest(req)) {
+      const authResult = await authenticateCaller(req);
+      if (authResult instanceof Response) return authResult;
+      const caller = authResult.user;
+      const companyResult = await resolveCompanyForLocation(caller.id, reqd.locationId);
+      if (companyResult instanceof Response) return companyResult;
+      const who = await callerStaffOrDevice(caller, reqd.locationId, String(companyResult));
+      const authority = decideGiftReverseAuthority({ user: caller, staff: who.staff, device: who.device, deviceReason: who.deviceReason });
+      if (!authority.ok) {
+        return json({ error: 'Only a till of this venue or a manager can give a promo code back.', code: 'promo_release_not_allowed', reason: authority.reason }, authority.status);
+      }
+    }
+    const { data: res, error: rpcErr } = await opsAdmin.rpc('promo_release_atomic', {
+      p_location_id: reqd.locationId,
+      p_order_ids: reqd.orderIds,
+      p_order_ref: reqd.orderRef,
+      p_reason: reqd.reason,
+    });
+    if (rpcErr) {
+      console.error('[promo-redeem] promo_release_atomic failed:', rpcErr.message);
+      return json({ error: 'Could not give the code back' }, 500);
+    }
+    return json({ ok: true, released: Number(res?.released ?? 0) });
   }
 
   return json({ error: 'unknown action' }, 400);

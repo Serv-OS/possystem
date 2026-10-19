@@ -22,7 +22,7 @@ import { singleTender } from '../lib/accounting/tenders';
 import { creditDiscountsFromPayment } from '../lib/taxBasis';
 import { tabBill, tabCloseTax } from '../lib/barTabTax';
 import { tillLineTaxRefs, tillLineTaxFields, tillLineCat, tillLineCats, tillLineUnitPrice, addToRoundLines } from '../lib/tillLine';
-import { resolveItemPrice, variantFromPrice } from '../lib/menuPricing';
+import { resolveItemPrice, variantFromPrice, refusesNoPriceLine } from '../lib/menuPricing';
 import { resolveActiveMenu } from '../lib/menus/resolveActiveMenu';
 
 const CAT_META = {
@@ -306,6 +306,8 @@ export default function BarSurface() {
     // Bar override set in Back Office, are booked on a tab as at the counter (tab lines carried
     // no tax references, so every line took the venue default). Category: a size's product's.
     const price = tillLineUnitPrice(item, 'bar-tab', barMenuId, opts.linePrice ?? null, opts.qty || 1);
+    // v5.11.81: never a 0.00 line for a row with no price set (the till's rule, store.addItem).
+    if (refusesNoPriceLine(item, 'bar-tab', barMenuId, price)) { showToast(`${item.name || 'This item'} has no price set. Set one in Back Office before selling it.`, 'error'); return; }
     const taxFields = tillLineTaxFields(tillLineTaxRefs(item, storeMenuItems || [], useStore.getState().taxRates));
     // name: ALL possible name fields resolved in order
     const name = opts.displayName

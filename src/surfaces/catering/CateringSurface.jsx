@@ -14,7 +14,7 @@ import { buildLocalTaxCtx } from '../../lib/taxCompute';
 import { kitchenOverride, receiptOverride } from '../../lib/itemDisplay';
 import { lineTaxRefsFor } from '../../lib/taxRefs';
 import { lineCategories } from '../../lib/lineCategories';   // round 1 fix: a size counts under its product's categories, as on the till
-import { resolveItemPrice, variantFromPrice, repriceCartLines } from '../../lib/menuPricing';
+import { resolveItemPrice, variantFromPrice, repriceCartLines, refusesNoPriceLine } from '../../lib/menuPricing';
 import { isOptionOnlyItem } from '../../lib/menuRules';
 import { cateringMenuIdFor, cateringOrderMenuId } from '../../lib/cateringPricing';
 import OnlineItemSheet from '../online/OnlineItemSheet';
@@ -227,6 +227,9 @@ export default function CateringSurface({ location }) {
       q = Math.min(q, room);
     }
     const price = priceFor(item);
+    // v5.11.81: a row with no price set is never sold for 0.00 (the till's rule, menuPricing).
+    const optionsEach = (mods || []).reduce((s0, m) => s0 + (Number(m?.price) || 0) * Math.max(1, Number(m?.qty) || 1), 0);
+    if (refusesNoPriceLine(item, priceChannel, menuIdOf(item), price + optionsEach)) { alert(`Sorry, ${item.menu_name || item.name} cannot be ordered right now.`); return; }
     setCart((c) => [...c, { uid: `${item.id}-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`, itemId: item.id, name: item.menu_name || item.name, kitchenName: kitchenOverride(item), receiptName: receiptOverride(item), ...lineCategories(item, items), parentId: item.parent_id || null, ...lineTaxRefsFor(item, items), price, qty: q, mods, notes }]);
   };
 

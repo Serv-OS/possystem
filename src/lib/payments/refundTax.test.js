@@ -98,7 +98,7 @@ test('a check whose tax is all added on (US) still returns the breakdown figure'
 test('refundCheck uses refundTaxAmount; the History loaders carry tenders', () => {
   const store = fs.readFileSync(path.join(here, '../../store/index.js'), 'utf8');
   assert.match(store, /const taxRefunded = refundTaxAmount\(chkBefore, bd, \{ items: refundItems, taxRates: get\(\)\.taxRates \}\);/);
-  assert.match(store, /toMinor as toMinorAmt, refundTaxAmount,\n\} from '\.\.\/lib\/payments\/refundMath';/);
+  assert.match(store, /toMinor as toMinorAmt, refundTaxAmount, chargedGoodsOf,\n\} from '\.\.\/lib\/payments\/refundMath';/);
   assert.doesNotMatch(store, /amount \/ Number\(chkBefore\.total\)/);
   // 28 Sep 2026: both loaders map tenders through the shared row map (closedCheckRefundFields).
   const db = fs.readFileSync(path.join(here, '../db.js'), 'utf8');

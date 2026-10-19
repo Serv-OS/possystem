@@ -5,7 +5,13 @@
 // the gift card dies (CheckoutModal / store._reverseTerminalJobGift). Online and kiosk never call
 // it (lib/giftCommit.js).
 //
-// Body: { card_id, original_idempotency_key, reason, staff_id?, location_id, device_hint? }
+// Body: { card_id, original_idempotency_key, reason, staff_id?, location_id, device_hint?,
+//         amount_minor?, refund_id? }
+//
+// v5.11.81 (19 Oct 2026): a PART refund puts back only its share. With amount_minor AND refund_id the
+// reversal is that amount, claimed under refund:<original key>:<refund id> (once per part refund),
+// never more than the spend less what earlier part refunds put back. A full reversal after part
+// refunds puts back only what they left. A part refund after the full one puts back nothing.
 //
 // Database fence stage 1 (19 Sep 2026, enforced always): any session could call this, and the key
 // of a spend (giftcommit:<check>:<card>) is known to the customer who made it. So a card could be
@@ -79,7 +85,25 @@ Deno.serve(async (req) => {
     return json({ error: 'Original redemption not found for this card and idempotency key' }, 404);
   }
 
-  const refundKey = `refund:${original_idempotency_key}`;
+  // v5.11.81: a part refund names its amount and its own refund id.
+  const partMinor = Number.isFinite(Number((body as any).amount_minor)) ? Math.max(0, Math.round(Number((body as any).amount_minor))) : null;
+  const refundId = typeof (body as any).refund_id === 'string' ? String((body as any).refund_id).trim().slice(0, 80) : '';
+  const part = partMinor != null && refundId !== '';
+  const fullKey = `refund:${original_idempotency_key}`;
+  const partPrefix = `${fullKey}:`;
+  const refundKey = part ? `${partPrefix}${refundId}` : fullKey;
+  // What part refunds of this spend already put back (a literal prefix test: `_` is a LIKE wildcard).
+  const partRestored = async (): Promise<number | null> => {
+    const { data, error } = await platformAdmin
+      .from('gift_card_transactions')
+      .select('amount_minor, idempotency_key')
+      .eq('card_id', card_id)
+      .eq('type', 'refund')
+      .like('idempotency_key', `${partPrefix}%`);
+    if (error) return null;
+    return (data || []).filter((r: any) => String(r.idempotency_key).startsWith(partPrefix))
+      .reduce((n: number, r: any) => n + Math.max(0, Number(r.amount_minor) || 0), 0);
+  };
   const alreadyReversed = async () => {
     const { data: tx } = await platformAdmin
       .from('gift_card_transactions')
@@ -101,6 +125,15 @@ Deno.serve(async (req) => {
       idempotent: true,
     });
   }
+  if (part) {
+    // The whole spend already went back: a part refund after it puts back nothing.
+    const { data: fullTx } = await platformAdmin.from('gift_card_transactions').select('id, balance_after_minor')
+      .eq('card_id', card_id).eq('idempotency_key', fullKey).maybeSingle();
+    if (fullTx) return json({ card_id, restored: 0, balance: fullTx.balance_after_minor, status: 'already_reversed', idempotent: true });
+  }
+  const spent = Math.abs(Number(originalTx.amount_minor) || 0);
+  const putBack = await partRestored();
+  if (putBack === null) return json({ error: 'Could not read the card ledger; nothing was changed. Try again.', code: 'gift_reverse_retry' }, 409);
 
   // Get current card state
   const { data: card } = await platformAdmin
@@ -117,8 +150,12 @@ Deno.serve(async (req) => {
     return json({ error: 'Cannot reverse on a voided card' }, 400);
   }
 
-  // Restore the debited amount (originalTx.amount_minor is negative)
-  const restoreAmount = Math.abs(originalTx.amount_minor);
+  // Restore the debited amount (originalTx.amount_minor is negative), less what part refunds put
+  // back; a part refund restores its own amount, never more than is left.
+  const restoreAmount = part ? Math.min(partMinor as number, Math.max(0, spent - putBack)) : Math.max(0, spent - putBack);
+  if (!(restoreAmount > 0)) {
+    return json({ card_id, restored: 0, balance: card.balance_minor, status: 'nothing_left' });
+  }
 
   // ── The claim: the refund row goes in FIRST ─────────────────────────────
   // (card_id, idempotency_key) is unique, so exactly one reversal of this spend can ever write
@@ -156,6 +193,17 @@ Deno.serve(async (req) => {
       }
     }
     return json({ error: `Ledger write failed: ${txErr?.message || 'no row'}` }, 500);
+  }
+
+  // v5.11.81: two part refunds racing must never put back more than was spent: counted again
+  // after the claim, and the claim taken back if they did.
+  {
+    const after = await partRestored();   // the part rows (this part's own claim included)
+    const total = after === null ? null : (part ? after : after + restoreAmount);
+    if (total === null || total > spent) {
+      await platformAdmin.from('gift_card_transactions').delete().eq('id', claim.id);
+      return json({ error: 'The card was busy; nothing was changed. Try again.', code: 'gift_reverse_retry' }, 409);
+    }
   }
 
   // ── Move the balance by compare and swap ───────────────────────────────

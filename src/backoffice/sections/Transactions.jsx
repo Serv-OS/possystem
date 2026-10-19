@@ -836,9 +836,9 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
                   {fmt(refundAmount)}
                 </span>
               </div>
-              {bd && (bd.tip > 0 || bd.service > 0 || bd.tax > 0) && (
+              {bd && (bd.tip > 0 || bd.service > 0 || bd.tax > 0 || bd.discountBack > 0) && (
                 <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 6 }}>
-                  Items {fmt(bd.itemsAmount)}{bd.service > 0 ? ` · service ${fmt(bd.service)}` : ''}{bd.tax > 0 ? ` · sales tax ${fmt(bd.tax)}` : ''}{bd.tip > 0 ? ` · tip ${fmt(bd.tip)}` : ''}
+                  Items {fmt(bd.itemsAmount)}{bd.discountBack > 0 ? ` (after ${fmt(bd.discountBack)} of discounts)` : ''}{bd.service > 0 ? ` · service ${fmt(bd.service)}` : ''}{bd.tax > 0 ? ` · sales tax ${fmt(bd.tax)}` : ''}{bd.tip > 0 ? ` · tip ${fmt(bd.tip)}` : ''}
                 </div>
               )}
               {legsChecking && (

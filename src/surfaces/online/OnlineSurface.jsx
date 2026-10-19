@@ -21,7 +21,7 @@ import { buildLocalTaxCtx, taxCtxHasConfig } from '../../lib/taxCompute';
 import { loadCustomerRates, ratesGate, venueExpectsRates } from '../../lib/customerRates';
 import { isItemEightySixed } from '../../lib/itemAvailability';
 import { resolveActiveMenu } from '../../lib/menus/resolveActiveMenu';
-import { resolveItemPrice, repriceCartLines } from '../../lib/menuPricing';
+import { resolveItemPrice, repriceCartLines, refusesNoPriceLine } from '../../lib/menuPricing';
 import { onlineSectionTrees, itemInSection } from '../../lib/onlineMenuTree';
 import { kitchenOverride, receiptOverride } from '../../lib/itemDisplay';
 import { lineTaxRefsFor } from '../../lib/taxRefs';
@@ -639,6 +639,10 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
     // The cart line's unit price. Checkout (online and QR) charges l.price as-is,
     // so this one call is what the customer pays.
     const price = priceFor(item);
+    // v5.11.81: a row with no price set is never sold for 0.00 (the till's rule, menuPricing);
+    // its paid options can still price it.
+    const optionsEach = (mods || []).reduce((s0, m) => s0 + (Number(m?.price) || 0) * Math.max(1, Number(m?.qty) || 1), 0);
+    if (refusesNoPriceLine(item, orderType, effectiveMenuId, price + optionsEach)) { alert(`Sorry, ${item.menu_name || item.name} cannot be ordered right now.`); return; }
     // v5.5.128: snapshot category info on the cart line so production
     // routing on the operator side can bucket the item to the right
     // kitchen station regardless of whether the master device's local
