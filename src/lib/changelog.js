@@ -7,6 +7,26 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.81',
+    date: '19 Oct 2026',
+    items: [
+      "Service charge never carries VAT, on any channel: the till, a table, a bar tab, the handheld, a reader close, the kiosk, online, QR, catering, Deliveroo, Uber Eats, Just Eat and ezCater. Xero now posts a UK venue's service charge with no VAT, and Back Office only offers a no VAT rate for it. A new test runs 400 random baskets through every channel on every release to prove it.",
+      "Kiosk: a promo code is now checked and recorded on the goods after the automatic deals, before service, tax and tip, as on the till, online and QR (a 10% code on a meal deal basket of 15.00 charged 12.00 now takes 1.20 off, not 1.50). Peter signed off this change to the kiosk card path; it needs one card test on the test reader before it goes live.",
+      "Promo codes follow their own offer on every channel and on the server: a code for some categories takes its percent off those items only, a free item code takes that item off (and asks the guest to add it first), a free delivery code takes the delivery fee off, and a bonus points code credits its points with the sale. Before, category rules were ignored and the other three took nothing off.",
+      "Promo codes are given back when their sale is fully refunded, or their order is voided before it was paid, so the customer can use them again. A part refund keeps the code used. Needs the database update 20261020a before promo-redeem is deployed.",
+      "Refunds: a part refund on a discounted bill gives back the money actually taken for those items (a burger in a meal deal comes back at 7.20, not 9.00), and the screen says how much discount came off them. A part refund of a sale paid partly by gift card puts that share back on the gift card. A part refund now takes back the stamps and points of the items refunded (this broke in v5.11.78); a later full refund takes back only what is left.",
+      "VAT: a deal or an item discount on some lines now takes VAT off those lines' own rates only, on the till, the handheld, the kiosk, online, QR and in the daily VAT check (a meal deal beside a zero rated sandwich booked 1.86 of VAT, the right figure is 1.79). A bill with one VAT rate, or a discount over the whole bill, is unchanged. No sale in the last 90 days was affected. Needs the database update 20261020a.",
+      "QR: a QR tab now earns stamps and points when it is paid, and its check shows the automatic deals its rounds got, as a till close does (a tab round never kept them). QR and Pay at table now charge the venue's one table service rule (the Main till's, or the first table till with a service charge), as the till does; QR had its own percentage.",
+      "Loyalty: an earn that fails is kept and sent again. Every till surface now labels its earns the same way, and the customer's record links to the sale by its check id. Deliveroo, Uber Eats and Just Eat orders earn for the customer's own phone, never the shared delivery number.",
+      "A menu row with no price set is never sold for 0.00: the till, kiosk, online, QR, catering and the server all refuse it. A real 0.00 item, like tap water, still sells.",
+      "Catering: the page waits for the venue's VAT rates and will not take an order without them (with a Try again), shows only items set for catering and for the chosen collection or delivery, and a promo code says why it was refused.",
+      "Bar tabs: staff can now put a manual discount on a tab (an amount, a percent or a preset), shown as its own line with a remove button, as at the counter. A reader, Table Pay, QR tab and handheld close now book the automatic deal lines too.",
+      "Till: a counter sale keeps one check id from first tap to close, so a sale can never be booked twice. A discount bigger than the bill now shows what it really took off. The handheld asks for the manager PIN every time, as the till does.",
+      "ezCater: a changed order now updates its sale (the old version is voided and the new one booked, so stock is never held), its fees are booked as service and its discounts as discount lines. Needs ezcater-webhook deployed.",
+      "Gift cards: the server only looks up a full gift card code, as the till does. Kiosk: a size uses its own tax profile, never its product's, as the till does for US tax.",
+    ],
+  },
+  {
     v: '5.11.78',
     date: '19 Oct 2026',
     items: [

@@ -182,6 +182,18 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   // they hit (uid = the key evaluateAutoDiscounts saw) and the table service
   // charge is taxed where the line's profile says so (US default: yes). UK
   // inclusive VAT never uses the basis, so UK totals and VAT are unchanged.
+  // v5.11.81: the bill's tax lines, named once (the seam and the per line VAT both read them).
+  const qrTaxLinesForBill = useMemo(() => cart.map((l, i) => ({
+      uid: l.key || l.uid || l.id || `l${i}`,
+      price: l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0),
+      qty: l.qty || 1,
+      itemId: l.itemId ?? null,
+      cat: l.cat ?? null,
+      cats: Array.isArray(l.cats) ? l.cats : null,
+      taxProfileId: l.taxProfileId ?? null,
+      taxRateId: l.taxRateId || l.tax_rate_id || null,
+      taxOverrides: l.taxOverrides || l.tax_overrides || {},
+    })), [cart]);
   const goodsTaxBreakdown = useMemo(() => computeOrderTaxUnified(
     cart.map((l, i) => ({
       uid: l.key || l.uid || l.id || `l${i}`,
@@ -204,8 +216,12 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   // booked. No offer: the same object as before. Added-on (US) tax: never scaled, it already
   // has the offer in its basis (lib/publicCheckTax.js offerChargedTax).
   const taxBreakdown = useMemo(
-    () => offerChargedTax(goodsTaxBreakdown, subtotal, discountedSubtotal, autoDiscountTotal),
-    [goodsTaxBreakdown, subtotal, discountedSubtotal, autoDiscountTotal],
+    () => offerChargedTax(goodsTaxBreakdown, subtotal, discountedSubtotal, autoDiscountTotal, {
+      // v5.11.81: a deal on some lines takes VAT off those lines' rates only, as at the till.
+      lines: qrTaxLinesForBill, discounts: autoDiscounts,
+      retax: (ls) => computeOrderTaxUnified(ls, taxCtx || { taxRates }, 'dine-in', null),
+    }),
+    [goodsTaxBreakdown, subtotal, discountedSubtotal, autoDiscountTotal, qrTaxLinesForBill, autoDiscounts, taxCtx, taxRates],
   );
   // 8 Oct 2026: does this page hold tax set up (rates or profiles)? With it, a sale is never sent
   // without VAT (publicCheckTaxFields throws a named error instead; the gate below stops payment first).
@@ -258,7 +274,10 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
       tableLabel: tableLabel || tableId,
       ...(notes.trim() ? { notes: notes.trim() } : {}),
     };
-    const items = cart.map(l => ({
+    const items = cart.map((l, i) => ({
+      // v5.11.81: the line's id, the one the automatic deals name (autoDiscounts above), so the
+      // saved deal finds its lines again (the daily VAT check, a refund).
+      uid: l.key || l.uid || l.id || `l${i}`,
       itemId: l.itemId, name: l.name, price: l.price,
       qty: l.qty || 1, mods: l.mods || [],
       cat: l.cat || null,

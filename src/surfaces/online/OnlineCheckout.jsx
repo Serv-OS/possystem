@@ -44,7 +44,7 @@ import { dispatchDelivery } from '../../lib/delivery/dispatch';
 import { sendEmailReceipt } from '../../lib/sendReceipt';
 import { getDayWindows, resolveLocalDateTime } from '../../lib/openingHours';
 import { computeOrderTaxUnified, chargesAddedOnRate, taxCtxHasConfig } from '../../lib/taxCompute';
-import { publicCheckTaxFields, offerScaledTax } from '../../lib/publicCheckTax';
+import { publicCheckTaxFields, offerTaxForOnline } from '../../lib/publicCheckTax';
 import VatGateNotice from './VatGateNotice';
 import { creditDiscounts } from '../../lib/taxBasis';
 import { breakdownIsExclusive, taxTermFor } from '../../lib/receiptTax';   // v5.7.34: rate-null guards + VAT/Sales Tax wording
@@ -307,8 +307,12 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   // describes the discounted bill in full (Xero read the offer as sales with no VAT rate).
   const discountedTaxBreakdown = useMemo(() => {
     if (!taxBreakdown || autoDiscountMinor <= 0 || subtotalMinor <= 0) return taxBreakdown;
-    return offerScaledTax(taxBreakdown, discountedSubtotalMinor / subtotalMinor);
-  }, [taxBreakdown, autoDiscountMinor, subtotalMinor, discountedSubtotalMinor]);
+    // v5.11.81: a deal on some lines takes VAT off those lines' rates only, as at the till.
+    return offerTaxForOnline(taxBreakdown, {
+      lines: onlineTaxLines, discounts: autoDiscounts, goods: subtotalMinor / 100, charged: discountedSubtotalMinor / 100,
+      retax: (ls) => computeOrderTaxUnified(ls, taxCtx || { taxRates }, orderType || 'collection'),
+    });
+  }, [taxBreakdown, autoDiscountMinor, subtotalMinor, discountedSubtotalMinor, onlineTaxLines, autoDiscounts, taxCtx, taxRates, orderType]);
   // v5.5.648: live delivery quote (Uber Direct, or the configured fee for HubRise-bridge
   // venues) — fold the customer fee into the amount payable so it's charged + shown.
   const [deliveryQuote, setDeliveryQuote] = useState(null);
@@ -484,7 +488,10 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     // there's no operator decision pending. Without these flags the
     // operator's queue UI shows them as "to send" and the operator has
     // to manually open + click save-and-send before anything fires.
-    const items = cart.map(l => ({
+    const items = cart.map((l, i) => ({
+      // v5.11.81: the line's id, the one the automatic deals name (autoDiscounts above), so the
+      // saved deal finds its lines again (the daily VAT check, a refund).
+      uid: l.uid || l.key || l.id || `l${i}`,
       itemId: l.itemId, name: l.name, price: l.price,
       qty: l.qty || 1, mods: l.mods || [], notes: l.notes || '',
       cat: l.cat || null,

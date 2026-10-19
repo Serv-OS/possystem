@@ -19,7 +19,7 @@ import { resolveServiceCharge } from '../serviceCharge.js';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../discountEngine.js';
 import { buildScheduleCtx } from '../scheduleCtx.js';
 import { computeOrderTaxUnified, taxCtxHasConfig } from '../taxCompute.js';
-import { inclusiveTaxOnCharged, linesGoods } from '../taxShare.js';
+import { inclusiveTaxOnChargedLines } from '../taxShare.js';
 
 /**
  * @param {object} ctx
@@ -125,7 +125,10 @@ export function computeCheckTotals(ctx) {
     // promo / loyalty credits stay out: the checkout takes them off as tenders (the accounting
     // layer spreads VAT over them), exactly as before. No discount: share 1, the same object as
     // before, byte for byte. Added-on (US) tax already carries the basis and is never scaled.
-    tax = inclusiveTaxOnCharged(tax, linesGoods(liveItems), discountedSub);
+    // v5.11.81: on what each LINE was charged, when a discount belongs to some lines on a bill with
+    // more than one rate (taxShare.inclusiveTaxOnChargedLines); every other bill: exactly as before.
+    tax = inclusiveTaxOnChargedLines(tax, liveItems, allCheckDiscounts, discountedSub,
+      (lines) => computeOrderTaxUnified(lines, taxSource, orderType || 'dine-in', null));
   }
 
   return {

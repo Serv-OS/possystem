@@ -92,11 +92,11 @@ test('migration 20261020a: ASCII only, one transaction, a guard, a visible check
     assert.match(sql, /This (migration )?must be run against the OPS DB/, `${name}: the guard`);
     assert.match(sql, /\nselect\n[\s\S]+;\s*$/, `${name}: ends with the visible check`);
   }
-  for (const fn of ['_vat_for_lines', '_public_order_value', 'settle_qr_tab', '_public_order_promo', 'place_public_order']) {
+  for (const fn of ['_vat_for_lines', '_public_order_value', 'settle_qr_tab', '_public_order_promo', 'place_public_order', '_public_order_auto', '_public_order_check_row']) {
     assert.match(fwd, new RegExp(`CREATE OR REPLACE FUNCTION public\\.${fn}\\(`), `forward replaces ${fn}`);
     assert.match(back, new RegExp(`CREATE OR REPLACE FUNCTION public\\.${fn}\\(`), `rollback restores ${fn}`);
   }
-  for (const fn of ['promo_release_atomic', 'venue_service_rule', '_menu_item_has_price']) {
+  for (const fn of ['promo_release_atomic', 'venue_service_rule', '_menu_item_has_price', '_order_lines_charged']) {
     assert.match(fwd, new RegExp(`create or replace function public\\.${fn}\\(`), `forward adds ${fn}`);
     assert.match(back, new RegExp(`drop function if exists public\\.${fn}\\(`), `rollback drops ${fn}`);
   }
@@ -106,6 +106,14 @@ test('migration 20261020a: ASCII only, one transaction, a guard, a visible check
   assert.match(fwd, /revoke all on function public\.promo_release_atomic\(text, text\[\], text, text\) from anon, authenticated;/);
   assert.match(fwd, /grant execute on function public\.venue_service_rule\(uuid\) to anon, authenticated, service_role;/);
   assert.match(fwd, /revoke all on function public\._menu_item_has_price\(jsonb, text, text\) from anon, authenticated;/);
+  assert.match(fwd, /revoke all on function public\._order_lines_charged\(jsonb, jsonb, bigint\) from anon, authenticated;/);
+  // v5.11.81 section 7: what each deal took off which line rides from the deals to the check row.
+  assert.match(fwd, /'n', jsonb_array_length\(v_out\),/, 'a priced line knows its place in the order');
+  assert.match(fwd, /return jsonb_build_object\('total_minor', v_total, 'rules', v_applied, 'line_minor', v_lsave\);/);
+  assert.match(fwd, /'auto_rules', v_auto -> 'rules', 'auto_lines', v_auto -> 'line_minor',\n\s+'value_minor', v_value_minor, 'hold_minor'/,
+    'a QR tab round keeps the deals the server applied (settle_qr_tab books them as deal lines)');
+  assert.match(fwd, /'auto_lines', v_auto -> 'line_minor',\n\s+'promo_code'/, 'a paid order keeps them too');
+  assert.match(fwd, /v_by := public\._public_order_vat\(p_loc, v_lc -> 'items', v_type, 1\);/, 'the per line VAT is the same function, once, at booking');
   // Never a live tax calculation (central_tax_constraints.md).
   assert.doesNotMatch(fwd, /_vat_for_lines\(p_lines, v_menu/i, 'no new caller of the VAT maths');
 });

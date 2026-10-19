@@ -10,7 +10,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { MENU, STORE_MENU, UK_RATES, ctxUK, ctxUS, US_MENU, raw, storeRow, basket } from './fixtures.js';
+import { MENU, STORE_MENU, UK_RATES, ctxUK, ctxUS, US_MENU, raw, storeRow, basket, RULES } from './fixtures.js';
 import { posLine, posLines, posTotals, taxCtxFor } from './pos.js';
 import { computeOrderTaxUnified } from '../taxCompute.js';
 import { computeCheckTotals } from '../payments/checkTotals.js';
@@ -23,6 +23,12 @@ import { rederiveSale } from '../../../supabase/functions/_shared/vatRederive.js
 import { mapMenuItemRow } from '../rowMapping.js';
 import { lineTaxRefsFor } from '../taxRefs.js';
 import { readRepo, between } from './src.js';
+import { evaluateAutoDiscounts, toAppliedDiscount } from '../discountEngine.js';
+import { kioskChargedTax } from '../kioskVat.js';
+import { offerChargedTax, offerTaxForOnline } from '../publicCheckTax.js';
+import { inclusiveTaxOnCharged, inclusiveTaxOnChargedLines } from '../taxShare.js';
+import { allocateCheckBasis } from '../taxBasis.js';
+import { chargedLineValues } from '../../../supabase/functions/_shared/lineCharged.js';
 
 const vat = (t) => roundVat(t?.totalTax);
 const line = (row, refs, price, qty = 1, extra = {}) => ({ uid: `x-${row.id}`, itemId: row.id, price, qty, ...refs, ...extra });
@@ -320,4 +326,93 @@ test('catering: payment waits for the venue\'s rates and a sale is never saved w
   assert.match(co, /\.\.\.publicCheckTaxFields\(taxBk, \{ hasTaxConfig, goods: subtotal \}\),/);
   assert.equal((co.match(/\{ const why = vatRefusal\(\); if \(why\) \{ setErr\(why\); return; \} \}/g) || []).length, 2, 'pay later and pay now both wait');
   assert.match(co, /disabled=\{busy \|\| !valid \|\| !!vatGate\}/);
+});
+
+// ── A deal on some lines takes VAT off those lines' rates only (confirmed minor, v5.11.81) ────────
+// A meal deal (burger, fries and the cheapest drink for 12.00) beside a sandwich, takeaway: the
+// burger and fries are 20%, the squash and the takeaway sandwich 0%. The deal's 2.00 came off the
+// burger (1.29), the fries (0.50) and the squash (0.21), never off the sandwich. VAT is inside what
+// each 20% line was charged: 7.71 + 3.00 = 10.71, VAT 1.79. One share on every rate booked 1.86.
+
+const mixed = { id: 'mixed-deal', orderType: 'takeaway', menuId: null, lines: [
+  { itemId: 'burger', qty: 1 }, { itemId: 'fries', qty: 1 }, { itemId: 'squash', qty: 1 }, { itemId: 'sarnie', qty: 1 }] };
+
+test('a deal on some lines: the till, kiosk, online, QR and the daily VAT check all book VAT on what each line was charged', () => {
+  const pos = posTotals(mixed);
+  const lines = posLines(mixed);
+  const goods = lines.reduce((s, l) => s + l.price * l.qty, 0);
+  assert.equal(goods, 18.5);
+  assert.equal(pos.discountedSub, 16.5, 'the deal took 2.00');
+  const expected = roundVat(10.71 - 10.71 / 1.2);
+  assert.equal(expected, 1.79);
+  assert.equal(vat(pos.tax), expected, 'the till');
+  assert.equal(pos.tax.byLine, true);
+  const uniform = vat(inclusiveTaxOnCharged(computeOrderTaxUnified(lines, ctxUK(), 'takeaway'), goods, 16.5));
+  assert.equal(uniform, 1.86, 'the old one share figure, for the record');
+
+  const auto = (ch) => evaluateAutoDiscounts(lines, RULES, ch, null).map(toAppliedDiscount);
+  const retax = (ot) => (ls) => computeOrderTaxUnified(ls, ctxUK(), ot);
+  const kiosk = kioskChargedTax(lines, ctxUK(), 'takeaway', { autoDiscounts: auto('kiosk'), goods, charged: 16.5 });
+  const full = computeOrderTaxUnified(lines, ctxUK(), 'collection');
+  const online = offerTaxForOnline(full, { lines, discounts: auto('online'), goods, charged: 16.5, retax: retax('collection') });
+  const qrFull = computeOrderTaxUnified(lines, ctxUK(), 'takeaway');
+  const qr = offerChargedTax(qrFull, goods, 16.5, 2, { lines, discounts: auto('qr'), retax: retax('takeaway') });
+  // The daily VAT check over the stored sale: its lines carry the uid the deal names.
+  const daily = rederiveSale({ items: lines, discounts: auto('pos'), order_type: 'takeaway', total: 16.5, tip: 0 }, { rates: UK_RATES, menu: MENU });
+  assert.deepEqual({ kiosk: vat(kiosk), online: vat(online), qr: vat(qr), daily: daily.totalTax },
+    { kiosk: expected, online: expected, qr: expected, daily: expected });
+  // Every record says it is a share of the goods listed, so reports read it as booked.
+  for (const r of [pos.tax, kiosk, online, qr, daily.record]) assert.equal(r.share, 16.5 / 18.5);
+});
+
+test('an item discount on the 20% line beside a 0% line: VAT off the 20% line only, at the till and in the daily check', () => {
+  const lines = posLines({ orderType: 'takeaway', menuId: null, lines: [{ itemId: 'burger', qty: 1 }, { itemId: 'sarnie', qty: 1 }] });
+  lines[0] = { ...lines[0], discount: { type: 'percent', value: 50 } };
+  const t = computeCheckTotals({ items: lines, checkDiscounts: [], covers: 1, serviceChargeWaived: false, orderType: 'takeaway',
+    deviceConfig: {}, discountRules: [], timezone: 'Europe/London', deliveryQuote: null, taxCtx: ctxUK() });
+  assert.equal(vat(t.tax), 0.75, 'the burger was charged 4.50');
+  const daily = rederiveSale({ items: lines, discounts: [], order_type: 'takeaway', total: 9, tip: 0 }, { rates: UK_RATES, menu: MENU });
+  assert.equal(daily.totalTax, 0.75);
+});
+
+test('one rate, or a discount spread over every line: the very same record as before, byte for byte (property)', () => {
+  let seed = 41;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+  const ids = ['burger', 'fries', 'coke', 'sarnie', 'squash', 'wrap'];
+  for (let t = 0; t < 300; t++) {
+    const ot = rnd() < 0.5 ? 'dine-in' : 'takeaway';
+    const b = { orderType: ot, menuId: null, lines: ids.filter(() => rnd() < 0.6).map((itemId) => ({ itemId, qty: 1 + Math.floor(rnd() * 3) })) };
+    if (!b.lines.length) continue;
+    const lines = posLines(b);
+    const goods = lines.reduce((s, l) => s + l.price * l.qty, 0);
+    const full = computeOrderTaxUnified(lines, ctxUK(), ot);
+    const retax = (ls) => computeOrderTaxUnified(ls, ctxUK(), ot);
+    // A check discount alone (amount or percent) keeps every line's share: the old record exactly.
+    const disc = rnd() < 0.5 ? [{ type: 'percent', value: 5 + Math.floor(rnd() * 40) }] : [{ type: 'amount', value: Math.round(rnd() * goods * 50) / 100 }];
+    const charged = Math.max(0, goods - (disc[0].type === 'percent' ? goods * disc[0].value / 100 : disc[0].value));
+    assert.deepEqual(inclusiveTaxOnChargedLines(full, lines, disc, charged, retax), inclusiveTaxOnCharged(full, goods, charged), `basket ${t}`);
+    // The per line money is the tax basis's own allocation (lineCharged.js mirrors taxBasis.js).
+    const deals = evaluateAutoDiscounts(lines, RULES, 'pos', null).map(toAppliedDiscount);
+    const all = [...deals, ...disc];
+    const a = chargedLineValues(lines, all).net;
+    const bb = allocateCheckBasis(lines, { discounts: all }).lines.map((x) => x.netValue);
+    a.forEach((v, n) => assert.ok(Math.abs(v - bb[n]) < 1e-9, `basket ${t} line ${n}`));
+    // Every line on one rate: whatever the deals hit, the old record exactly.
+    const one = lines.filter((l) => (l.taxRateId || 'r20') === 'r20' && !(l.taxOverrides && l.taxOverrides[ot]));
+    if (one.length === lines.length) {
+      const d2 = evaluateAutoDiscounts(one, RULES, 'pos', null).map(toAppliedDiscount);
+      const off = d2.reduce((s, d) => s + d.value, 0);
+      if (off > 0) assert.deepEqual(inclusiveTaxOnChargedLines(full, one, d2, goods - off, retax), inclusiveTaxOnCharged(full, goods, goods - off));
+    }
+  }
+});
+
+test('wiring: the kiosk, online and QR pages save each line with the id their deals name, and every surface books per line', () => {
+  assert.match(readRepo('src/lib/kioskLine.js'), /\.\.\.\(Number\.isInteger\(i\) \? \{ uid: l\.key \|\| `l\$\{i\}` \} : \{\}\),/);
+  assert.match(readRepo('src/surfaces/KioskApp.jsx'), /const itemsPayload = cart\.map\(kioskOrderItem\);/);
+  assert.match(readRepo('src/surfaces/KioskApp.jsx'), /uid: l\.key \|\| `l\$\{i\}`,/);
+  assert.match(readRepo('src/surfaces/online/OnlineCheckout.jsx'), /uid: l\.uid \|\| l\.key \|\| l\.id \|\| `l\$\{i\}`,\n\s+itemId: l\.itemId, name: l\.name, price: l\.price,/);
+  assert.match(readRepo('src/surfaces/qr/QrCheckout.jsx'), /uid: l\.key \|\| l\.uid \|\| l\.id \|\| `l\$\{i\}`,\n\s+itemId: l\.itemId, name: l\.name, price: l\.price,/);
+  assert.match(readRepo('src/lib/kioskVat.js'), /return inclusiveTaxOnChargedLines\(t, lines, autoDiscounts, charged,/);
+  assert.match(readRepo('supabase/functions/_shared/vatRederive.js'), /chargedLineValues\(lines, moneyDiscounts\(row\)\)/);
 });

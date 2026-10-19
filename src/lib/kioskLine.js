@@ -185,7 +185,7 @@ export function kioskCartUsage(cart) {
  * customer_orders record. Price is the basket line price (size price plus
  * modifiers), never a separate size price, so nothing can count it twice.
  */
-export function kioskOrderItem(l) {
+export function kioskOrderItem(l, i) {
   const v = l.variant || null;
   return {
     id: v ? v.id : l.item.id,
@@ -228,6 +228,12 @@ export function kioskOrderItem(l) {
     status: 'sent',
     fired: true,
     course: 1,
+    // v5.11.81: the line's id, the one the basket's automatic deals name (KioskApp autoDiscounts:
+    // uid = the line's key, else l<position>), as every till line carries one. The saved deal then
+    // finds its lines again: the daily VAT check and a refund take a deal's VAT and money off the
+    // lines it hit (taxShare.inclusiveTaxOnChargedLines). Only when written from the basket
+    // (cart.map passes the position).
+    ...(Number.isInteger(i) ? { uid: l.key || `l${i}` } : {}),
   };
 }
 

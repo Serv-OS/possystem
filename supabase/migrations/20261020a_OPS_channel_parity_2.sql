@@ -30,9 +30,14 @@
 --      item code takes that item off, a free delivery code the delivery fee. _public_order_promo
 --      takes the order's lines and delivery fee (the old 5 argument function is dropped and
 --      replaced; place_public_order passes them). No rule and no lines: every figure as before.
+--   7. A deal on some lines takes VAT off those lines' rates only (the till's rule, v5.11.81): the
+--      server books the VAT inside what each line was charged when more than one rate meets a deal
+--      that hit some lines. A QR tab round now also keeps the deals the server applied
+--      (order_pricing.auto_rules, which settle_qr_tab books as deal lines; a round never kept them).
 --
--- NOT a live tax calculation (central_tax_constraints.md): no new tax maths; the stored rules are
--- read as the apps read them.
+-- NOT a live tax calculation (central_tax_constraints.md): the VAT is still worked out ONCE, when
+-- the order is booked, by the same function on the venue's stored rules, and stored on the check;
+-- the stored rules are read as the apps read them.
 --
 -- UNDO: 20261020a_OPS_channel_parity_2_ROLLBACK.sql
 
@@ -731,6 +736,9 @@ begin
         -- row's own, so a deal could differ between the server and the till.
         v_lines := v_lines || jsonb_build_array(jsonb_build_object(
                      'unit', v_unit, 'qty', v_qty,
+                     -- 20261020a (v5.11.81): the line's place in the order, so a deal's saving can
+                     -- be booked on the line it hit (_public_order_auto 'line_minor').
+                     'n', jsonb_array_length(v_out),
                      'cat', case when p.id is not null and coalesce(p.cat, '') <> '' then p.cat else r.cat end,
                      'cats', to_jsonb(coalesce(case when p.id is not null and coalesce(p.cat, '') <> '' then p.cats else r.cats end, '{}'::text[])),
                      'id', r.id, 'pid', r.parent_id, 'item', greatest(0, v_item),
@@ -1399,7 +1407,11 @@ begin
                     'tab_open', true, 'payment_intent_id', v_pi, 'tab_join_code', v_join,
                     'tab_ref', v_tab_ref, 'round_ref', v_ref,
                     'pre_auth_amount', round(v_hold.amount_minor / 100.0, 2),
+                    -- 20261020a (v5.11.81): a round keeps the deals the server applied (auto_rules,
+                    -- which settle_qr_tab books as the check's deal lines; a round never kept them)
+                    -- and what each took off which line (auto_lines).
                     'order_pricing', jsonb_build_object('goods_minor', v_goods_minor, 'auto_minor', v_auto_minor,
+                                                        'auto_rules', v_auto -> 'rules', 'auto_lines', v_auto -> 'line_minor',
                                                         'value_minor', v_value_minor, 'hold_minor', v_hold.amount_minor));
     v_total := greatest(v_total, round(v_value_minor / 100.0, 2));
     v_paid := false;
@@ -1448,6 +1460,8 @@ begin
                                   then round(greatest(0, public._fence_num(v_check ->> 'total')) * 100)::bigint else 0 end);
     v_pricing := jsonb_build_object(
                    'goods_minor', v_goods_minor, 'auto_minor', v_auto_minor, 'auto_rules', v_auto -> 'rules',
+                   -- 20261020a (v5.11.81): what each deal took off which line, for the check's VAT.
+                   'auto_lines', v_auto -> 'line_minor',
                    'promo_code', v_decl ->> 'promo_code', 'promo_minor', v_promo_minor,
                    'promo_reason', case when v_promo is not null and not coalesce((v_promo ->> 'ok')::boolean, false)
                                         then v_promo ->> 'reason' end,
@@ -1594,6 +1608,454 @@ begin
 end;
 $function$;
 
+-- 7. A deal on some lines takes VAT off those lines' rates only ------------------------------------
+-- WHY (confirmed minor, "UK VAT on a targeted discount is spread over every rate"): a deal on the
+-- 20% burger beside a 0% sandwich booked the VAT as the whole bill's VAT times charged over goods,
+-- the same share on every rate, so the 0% line "lost" VAT it never had. The till, kiosk and the
+-- online and QR pages now book the VAT inside what EACH line was charged (taxShare
+-- .inclusiveTaxOnChargedLines); the server books the same from its own deal figures, so a page's
+-- figure still agrees with it to the penny. Still worked out ONCE, when the order is booked, by
+-- the same VAT function on the venue's stored rules; one rate, or a deal spread evenly: unchanged.
+--   _public_order_auto   also answers what each deal took off which line ('line_minor').
+--   _order_lines_charged (new, internal) each line at what it was charged.
+--   _public_order_check_row  the per line VAT, only when some line kept a different share.
+CREATE OR REPLACE FUNCTION public._public_order_auto(p_loc text, p_channel text, p_lines jsonb)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ STABLE SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+declare
+  v_tz      text;
+  u_line    integer[];
+  u_price   bigint[];
+  u_used    boolean[];
+  l_cat     text[];
+  l_cats    jsonb[];
+  v_n       integer := 0;
+  v_total   bigint := 0;
+  v_applied jsonb := '[]'::jsonb;
+  r         public.discount_rules%rowtype;
+  g         jsonb;
+  v_ids     text[];
+  v_rids    text[];
+  v_avail   integer[];
+  v_deal    integer[];
+  v_reward  integer[];
+  v_pick    integer[];
+  v_claim   integer[];
+  v_need    integer;
+  v_fire    integer;
+  v_count   integer;
+  v_save    bigint;
+  v_orig    bigint;
+  v_rtype   text;
+  v_rv      numeric;
+  v_gi      integer;
+  k         integer;
+  u_save    bigint[];
+  v_lsave   jsonb := '[]'::jsonb;
+begin
+  if jsonb_typeof(p_lines) is distinct from 'array' or jsonb_array_length(p_lines) = 0 then
+    return jsonb_build_object('total_minor', 0, 'rules', '[]'::jsonb);
+  end if;
+  select coalesce(nullif(l.timezone, ''), 'Europe/London') into v_tz from public.locations l where l.id::text = p_loc;
+
+  select array_agg(x ->> 'cat' order by li), array_agg(coalesce(x -> 'cats', '[]'::jsonb) order by li)
+    into l_cat, l_cats
+    from jsonb_array_elements(p_lines) with ordinality as l(x, li);
+  select array_agg(li::integer order by li, q), array_agg(coalesce((x ->> 'unit')::bigint, 0) order by li, q)
+    into u_line, u_price
+    from jsonb_array_elements(p_lines) with ordinality as l(x, li)
+    cross join lateral generate_series(1, greatest(1, least(999, coalesce((x ->> 'qty')::integer, 1)))) as q;
+  v_n := coalesce(cardinality(u_line), 0);
+  if v_n = 0 or v_n > 5000 then
+    return jsonb_build_object('total_minor', 0, 'rules', '[]'::jsonb);
+  end if;
+  u_used := array_fill(false, array[v_n]);
+  u_save := array_fill(0::bigint, array[v_n]);
+
+  for r in
+    select * from public.discount_rules d
+     where d.location_id = p_loc and d.active is true
+     order by d.priority desc nulls last, d.sort_order nulls last, d.created_at, d.id
+  loop
+    if r.channels is not null and public._fence_js_truthy(r.channels)
+       and not public._fence_js_truthy(r.channels -> p_channel) then
+      continue;
+    end if;
+    if not (public._fence_rule_live(r.schedule, v_tz, now())
+            or public._fence_rule_live(r.schedule, v_tz, now() - interval '20 minutes')) then
+      continue;
+    end if;
+    v_rtype := coalesce(r.reward_type, 'percent');
+    v_rv := coalesce(r.reward_value, 0);
+
+    if coalesce(r.trigger_type, 'buy_x') = 'bundle' then
+      continue when jsonb_typeof(r.trigger_groups) is distinct from 'array' or jsonb_array_length(r.trigger_groups) = 0;
+      v_fire := null;
+      for v_gi in 0 .. jsonb_array_length(r.trigger_groups) - 1 loop
+        g := r.trigger_groups -> v_gi;
+        v_ids := case when public._fence_js_truthy(g -> 'categoryIds')
+                      then case when jsonb_typeof(g -> 'categoryIds') = 'array'
+                                then array(select jsonb_array_elements_text(g -> 'categoryIds')) else '{}'::text[] end
+                      when public._fence_js_truthy(g -> 'category_ids')
+                      then case when jsonb_typeof(g -> 'category_ids') = 'array'
+                                then array(select jsonb_array_elements_text(g -> 'category_ids')) else '{}'::text[] end
+                      else '{}'::text[] end;
+        v_need := greatest(1, floor(public._fence_num(coalesce(g ->> 'qty', '1')))::integer);
+        select count(*) into v_count
+          from generate_subscripts(u_line, 1) s
+         where not u_used[s] and public._fence_cat_match(l_cat[u_line[s]], l_cats[u_line[s]], v_ids);
+        if v_count < v_need then
+          v_fire := 0;
+          exit;
+        end if;
+        v_fire := least(coalesce(v_fire, v_count / v_need), v_count / v_need);
+      end loop;
+      continue when coalesce(v_fire, 0) < 1;
+      v_orig := 0;
+      v_claim := '{}'::integer[];
+      for v_gi in 0 .. jsonb_array_length(r.trigger_groups) - 1 loop
+        g := r.trigger_groups -> v_gi;
+        v_ids := case when public._fence_js_truthy(g -> 'categoryIds')
+                      then case when jsonb_typeof(g -> 'categoryIds') = 'array'
+                                then array(select jsonb_array_elements_text(g -> 'categoryIds')) else '{}'::text[] end
+                      when public._fence_js_truthy(g -> 'category_ids')
+                      then case when jsonb_typeof(g -> 'category_ids') = 'array'
+                                then array(select jsonb_array_elements_text(g -> 'category_ids')) else '{}'::text[] end
+                      else '{}'::text[] end;
+        v_need := greatest(1, floor(public._fence_num(coalesce(g ->> 'qty', '1')))::integer);
+        v_pick := array(select s from generate_subscripts(u_line, 1) s
+                         where not u_used[s] and public._fence_cat_match(l_cat[u_line[s]], l_cats[u_line[s]], v_ids)
+                         order by u_price[s], s
+                         limit v_need * v_fire);
+        v_orig := v_orig + coalesce((select sum(u_price[s]) from unnest(v_pick) s), 0);
+        v_claim := v_claim || v_pick;
+      end loop;
+      v_save := round(greatest(0, v_orig - v_rv * 100 * v_fire))::bigint;
+      continue when v_save <= 0;
+      foreach k in array v_claim loop
+        u_used[k] := true;
+      end loop;
+      -- 20261020a: each unit's part of the saving, by its price (lib/discountEngine.js spreads a
+      -- bundle's saving over its items the same way).
+      if v_orig > 0 then
+        foreach k in array v_claim loop
+          u_save[k] := u_save[k] + round(u_price[k]::numeric * v_save / v_orig)::bigint;
+        end loop;
+      end if;
+
+    elsif coalesce(r.trigger_type, 'buy_x') = 'buy_x' then
+      v_ids := coalesce(r.trigger_category_ids, '{}'::text[]);
+      v_rids := coalesce(r.reward_category_ids, '{}'::text[]);
+      v_need := coalesce(r.trigger_qty, 2) + coalesce(r.reward_qty, 1);
+      continue when v_need <= 0;
+      v_avail := array(select s from generate_subscripts(u_line, 1) s
+                        where not u_used[s] and public._fence_cat_match(l_cat[u_line[s]], l_cats[u_line[s]], v_ids)
+                        order by u_price[s], s);
+      continue when coalesce(cardinality(v_avail), 0) < v_need;
+      v_fire := cardinality(v_avail) / v_need;
+      v_deal := v_avail[1 : v_need * v_fire];
+      v_reward := v_deal[1 : greatest(0, coalesce(r.reward_qty, 1) * v_fire)];
+      if coalesce(cardinality(v_rids), 0) > 0 then
+        v_reward := array(select s from unnest(v_reward) with ordinality as a(s, o)
+                           where public._fence_cat_match(l_cat[u_line[s]], l_cats[u_line[s]], v_rids)
+                           order by o);
+      end if;
+      continue when coalesce(cardinality(v_reward), 0) = 0;
+      select coalesce(sum(case v_rtype
+                            when 'percent' then round(u_price[s] * v_rv / 100)
+                            when 'amount'  then least(round(v_rv * 100), u_price[s])
+                            when 'free'    then u_price[s]
+                            else 0 end), 0)::bigint
+        into v_save
+        from unnest(v_reward) s;
+      continue when v_save <= 0;
+      foreach k in array v_deal loop
+        u_used[k] := true;
+      end loop;
+      -- 20261020a: each reward unit's own saving (the sum above, unit by unit).
+      foreach k in array v_reward loop
+        u_save[k] := u_save[k] + (case v_rtype
+                                    when 'percent' then round(u_price[k] * v_rv / 100)
+                                    when 'amount'  then least(round(v_rv * 100), u_price[k])
+                                    when 'free'    then u_price[k]
+                                    else 0 end)::bigint;
+      end loop;
+    else
+      continue;
+    end if;
+
+    v_total := v_total + v_save;
+    v_applied := v_applied || jsonb_build_array(jsonb_build_object('rule_id', r.id, 'name', r.name, 'saving_minor', v_save));
+  end loop;
+
+  -- 20261020a (v5.11.81): what the deals took off each line, by the line's place in the order
+  -- (_public_order_value's 'n'), so the check books a deal's VAT on the lines it hit.
+  select coalesce(jsonb_agg(jsonb_build_object('n', (p_lines -> (t.li - 1) ->> 'n')::integer, 'saving_minor', t.sv) order by t.li), '[]'::jsonb)
+    into v_lsave
+    from (select u_line[s] as li, sum(u_save[s])::bigint as sv
+            from generate_subscripts(u_line, 1) s
+           group by u_line[s]) t
+   where t.sv > 0 and coalesce(p_lines -> (t.li - 1) ->> 'n', '') ~ '^[0-9]{1,6}$';
+  return jsonb_build_object('total_minor', v_total, 'rules', v_applied, 'line_minor', v_lsave);
+end;
+$function$;
+
+create or replace function public._order_lines_charged(p_items jsonb, p_saves jsonb, p_auto_minor bigint)
+returns jsonb
+language plpgsql
+stable
+set search_path = public
+as $function$
+-- 20261020a (v5.11.81): what each line of a public order was charged after the venue's automatic
+-- deals, the till's steps (_shared/lineCharged.js chargedLineValues, src/lib/taxBasis.js
+-- allocateCheckBasis): each deal's saving comes off the line it hit (p_saves: { n, saving_minor },
+-- n = the line's place in p_items), whatever is left of the deals' total (p_auto_minor) is spread
+-- over the lines by value. Returns { items, differ, factor }: the lines at what each was charged
+-- (the options folded into the price, the line's tax keys kept, so the VAT rules read them as
+-- before), and whether some line kept a different share of its money from the rest (only then
+-- does a deal's VAT belong to some rates more than others). Null when there is nothing to do.
+declare
+  v_n      integer;
+  g        numeric[] := '{}'::numeric[];
+  rem      numeric[] := '{}'::numeric[];
+  x        jsonb;
+  s        jsonb;
+  v_qty    numeric;
+  v_unit   numeric;
+  v_left   numeric;
+  v_take   numeric;
+  v_idx    integer;
+  v_rest   numeric;
+  v_factor numeric;
+  v_f      numeric;
+  v_first  numeric;
+  v_differ boolean := false;
+  v_out    jsonb := '[]'::jsonb;
+  i        integer;
+begin
+  if jsonb_typeof(p_items) is distinct from 'array' or jsonb_typeof(p_saves) is distinct from 'array' then
+    return null;
+  end if;
+  v_n := jsonb_array_length(p_items);
+  if v_n = 0 or v_n > 1000 or jsonb_array_length(p_saves) = 0 then
+    return null;
+  end if;
+  -- Each line's money as the VAT rules read it (_vat_for_lines): unit price plus its options
+  -- (price x qty each), times the quantity. A voided line or a non line is worth nothing.
+  for i in 1 .. v_n loop
+    x := p_items -> (i - 1);
+    v_unit := 0;
+    v_qty := 1;
+    if jsonb_typeof(x) = 'object' and not coalesce((x ->> 'voided')::boolean, false) then
+      v_qty := case when jsonb_typeof(x -> 'qty') = 'number' then (x ->> 'qty')::numeric else public._fence_num(x ->> 'qty') end;
+      if v_qty is null or v_qty < 1 then v_qty := 1; end if;
+      v_unit := (case when jsonb_typeof(x -> 'price') = 'number' then (x ->> 'price')::numeric else public._fence_num(x ->> 'price') end)
+                + coalesce((select sum((case when jsonb_typeof(m -> 'price') = 'number' then (m ->> 'price')::numeric else public._fence_num(m ->> 'price') end)
+                                       * greatest(1, case when jsonb_typeof(m -> 'qty') = 'number' then (m ->> 'qty')::numeric else public._fence_num(m ->> 'qty') end))
+                              from jsonb_array_elements(case when jsonb_typeof(x -> 'mods') = 'array' then x -> 'mods' else '[]'::jsonb end) m
+                             where jsonb_typeof(m) = 'object'), 0);
+    end if;
+    g := g || (v_unit * v_qty);
+    rem := rem || (v_unit * v_qty);
+  end loop;
+  -- The deals' savings off the lines they hit, never more than a line holds or than the total.
+  v_left := greatest(0, coalesce(p_auto_minor, 0)) / 100.0;
+  for s in select e from jsonb_array_elements(p_saves) e loop
+    exit when v_left <= 0;
+    continue when jsonb_typeof(s) is distinct from 'object' or coalesce(s ->> 'n', '') !~ '^[0-9]{1,6}$';
+    v_idx := (s ->> 'n')::integer + 1;
+    continue when v_idx > v_n;
+    v_take := least(greatest(0, public._fence_num(s ->> 'saving_minor')) / 100.0, greatest(0, rem[v_idx]), v_left);
+    if v_take > 0 then
+      rem[v_idx] := rem[v_idx] - v_take;
+      v_left := v_left - v_take;
+    end if;
+  end loop;
+  -- The rest spread by value.
+  select coalesce(sum(r), 0) into v_rest from unnest(rem) r;
+  v_factor := case when v_rest > 0 then greatest(0, 1 - v_left / v_rest) else 0 end;
+  for i in 1 .. v_n loop
+    x := p_items -> (i - 1);
+    v_f := case when g[i] <> 0 then rem[i] * v_factor / g[i] else 0 end;
+    if g[i] > 0 then
+      if v_first is null then
+        v_first := v_f;
+      elsif abs(v_f - v_first) > 0.000000001 then
+        v_differ := true;
+      end if;
+    end if;
+    if jsonb_typeof(x) = 'object' and not coalesce((x ->> 'voided')::boolean, false) then
+      v_qty := case when jsonb_typeof(x -> 'qty') = 'number' then (x ->> 'qty')::numeric else public._fence_num(x ->> 'qty') end;
+      if v_qty is null or v_qty < 1 then v_qty := 1; end if;
+      x := (x - 'mods') || jsonb_build_object('price', rem[i] * v_factor / v_qty, 'qty', v_qty);
+    end if;
+    v_out := v_out || jsonb_build_array(x);
+  end loop;
+  return jsonb_build_object('items', v_out, 'differ', v_differ, 'factor', v_factor);
+end;
+$function$;
+
+revoke all on function public._order_lines_charged(jsonb, jsonb, bigint) from public;
+revoke all on function public._order_lines_charged(jsonb, jsonb, bigint) from anon, authenticated;
+grant execute on function public._order_lines_charged(jsonb, jsonb, bigint) to service_role;
+
+CREATE OR REPLACE FUNCTION public._public_order_check_row(p_loc text, p_ref text, p_source text, p_type text, p_check jsonb, p_items jsonb, p_customer jsonb)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ STABLE
+ SET search_path TO 'public'
+AS $function$
+declare
+  v_type     text := left(coalesce(nullif(p_check ->> 'order_type', ''), p_type), 40);
+  v_goods    numeric;
+  v_page     numeric;
+  v_page_rec jsonb;
+  v_pricing  jsonb := case when jsonb_typeof(p_customer -> 'order_pricing') = 'object' then p_customer -> 'order_pricing' end;
+  v_share    numeric := 1;
+  v_srv      jsonb;
+  v_tax      numeric;
+  v_rec      jsonb;
+  v_lc       jsonb;
+  v_by       jsonb;
+begin
+  -- The goods the SERVER priced (p_items: price plus modifiers, times quantity), the ceiling of
+  -- any VAT figure, as 20261002b.
+  select round(coalesce(sum(
+           (public._fence_num(x ->> 'price')
+            + coalesce((select sum(public._fence_num(m ->> 'price'))
+                          from jsonb_array_elements(case when jsonb_typeof(x -> 'mods') = 'array' then x -> 'mods' else '[]'::jsonb end) m), 0))
+           * (case when public._fence_num(x ->> 'qty') > 0 then least(public._fence_num(x ->> 'qty'), 999) else 1 end)), 0), 2)
+    into v_goods
+    from jsonb_array_elements(p_items) x
+   where jsonb_typeof(x) = 'object';
+  -- The page's figure, read as 20261002b read it: a JSON number at any number of decimals, or
+  -- text that is a plain number, rounded to pence, never below 0 and never above the goods.
+  if jsonb_typeof(p_check -> 'tax_amount') = 'number'
+     or (jsonb_typeof(p_check -> 'tax_amount') = 'string' and p_check ->> 'tax_amount' ~ '^\s*[0-9]{1,12}(\.[0-9]{1,30})?\s*$') then
+    v_page := least(greatest(round(btrim(p_check ->> 'tax_amount')::numeric, 2), 0), v_goods);
+  end if;
+  -- The page's record, kept as 20261002b kept it: the till's shape (a number for totalTax and a
+  -- list of rates, small), or a list; anything else is no record.
+  v_page_rec := case when jsonb_typeof(p_check -> 'tax_breakdown') = 'array' then p_check -> 'tax_breakdown'
+                     when jsonb_typeof(p_check -> 'tax_breakdown') = 'object'
+                          and jsonb_typeof(p_check -> 'tax_breakdown' -> 'totalTax') = 'number'
+                          and jsonb_typeof(p_check -> 'tax_breakdown' -> 'breakdown') = 'array'
+                          and length((p_check -> 'tax_breakdown')::text) <= 20000
+                     then p_check -> 'tax_breakdown' end;
+  -- The share of the goods charged: the venue's automatic deals (order_pricing, the server's own
+  -- figures) come off the VAT, as the till books a discounted bill (src/lib/taxShare.js). Promo
+  -- codes and loyalty rewards are tenders, not discounts, and leave the VAT alone (the till's rule
+  -- today; the owner decides Fix 5 with his accountant).
+  if v_pricing is not null and coalesce((v_pricing ->> 'goods_minor')::numeric, 0) > 0
+     and coalesce((v_pricing ->> 'auto_minor')::numeric, 0) > 0 then
+    v_share := greatest(0, least(1, ((v_pricing ->> 'goods_minor')::numeric - (v_pricing ->> 'auto_minor')::numeric)
+                                    / (v_pricing ->> 'goods_minor')::numeric));
+  end if;
+
+  -- 20261009a: THE VAT, the server's own, from the venue's Back Office rules.
+  v_srv := public._public_order_vat(p_loc, p_items, v_type, v_share);
+  -- 20261020a (v5.11.81, the till's rule, taxShare.inclusiveTaxOnChargedLines): a deal on SOME
+  -- lines takes VAT off those lines' rates only. With more than one rate and deals that kept some
+  -- lines' share apart from the rest, the VAT is the VAT inside what each line was charged (the
+  -- server's own deal figures per line, order_pricing.auto_lines). One rate, or the same share
+  -- on every line: the figure above, unchanged. Added on (US) tax already has the deals in its
+  -- basis on the page and is left alone.
+  if v_share < 1 and v_pricing is not null and jsonb_typeof(v_pricing -> 'auto_lines') = 'array'
+     and jsonb_array_length(v_pricing -> 'auto_lines') > 0
+     and coalesce((v_srv ->> 'has_rates')::boolean, false)
+     and coalesce((v_srv ->> 'exclusive_tax')::numeric, 0) = 0
+     and jsonb_typeof(v_srv -> 'record' -> 'breakdown') = 'array'
+     and jsonb_array_length(v_srv -> 'record' -> 'breakdown') > 1 then
+    v_lc := public._order_lines_charged(p_items, v_pricing -> 'auto_lines', coalesce((v_pricing ->> 'auto_minor')::bigint, 0));
+    if v_lc is not null and coalesce((v_lc ->> 'differ')::boolean, false) then
+      v_by := public._public_order_vat(p_loc, v_lc -> 'items', v_type, 1);
+      if coalesce((v_by ->> 'has_rates')::boolean, false) and coalesce((v_by ->> 'exclusive_tax')::numeric, 0) = 0 then
+        v_srv := v_by || jsonb_build_object('record', (v_by -> 'record')
+                   || jsonb_build_object('share', trim_scale(v_share), 'byLine', true));
+      end if;
+    end if;
+  end if;
+  if not coalesce((v_srv ->> 'has_rates')::boolean, false) then
+    -- No active rates at this venue: no tax set up. The page's figure and record, as before.
+    v_tax := v_page;
+    v_rec := coalesce(v_page_rec, '[]'::jsonb);
+  elsif v_page is not null
+        and (coalesce((v_srv ->> 'profiles_in_use')::boolean, false)
+             or abs(v_page - (v_srv ->> 'total_tax')::numeric) <= 0.01) then
+    -- The page agrees to the penny (a half penny may land either side): its figure, its record.
+    -- A venue set up as tax profiles keeps the page's figure whenever it sent one: those maths live
+    -- in the page's engine. With no record from the page, the server's split by rate is kept.
+    v_tax := v_page;
+    v_rec := coalesce(v_page_rec, (v_srv -> 'record') || jsonb_build_object('totalTax', v_page, 'booked', 'page'));
+  else
+    -- The page sent nothing, or a figure that is not the venue's rule: the server's, and the
+    -- record says so. Never null for goods above 0 at a venue with rates.
+    v_tax := (v_srv ->> 'total_tax')::numeric;
+    v_rec := (v_srv -> 'record') || jsonb_strip_nulls(jsonb_build_object(
+               'booked', 'server',
+               'reason', case when v_page is null then 'page-sent-none' else 'page-differs' end,
+               'pageTaxAmount', v_page));
+  end if;
+
+  return jsonb_build_object(
+      'id', left(coalesce(nullif(btrim(p_check ->> 'id'), ''), 'chk-' || p_source || '-' || p_ref), 80),
+      'ref', p_ref,
+      'location_id', p_loc,
+      'table_id', left(p_check ->> 'table_id', 80),
+      'table_label', left(p_check ->> 'table_label', 80),
+      'staff_name', null,
+      -- 20261019a (v5.11.78): the lines are stored in the till's contract, a line's paid options
+      -- inside its price (public._order_line_folded). The goods and the VAT above read the raw
+      -- lines, so neither moves.
+      'items', coalesce((select jsonb_agg(case when jsonb_typeof(x) = 'object' then public._order_line_folded(x) || '{"voided": false}'::jsonb else x end
+                                          order by n)
+                           from jsonb_array_elements(p_items) with ordinality as i(x, n)), '[]'::jsonb),
+      'subtotal', round(public._fence_num(p_check ->> 'subtotal'), 2),
+      'tax', round(public._fence_num(p_check ->> 'tax'), 2),
+      'payment_method', left(p_check ->> 'payment_method', 200),
+      'covers', greatest(1, least(99, public._fence_num(p_check ->> 'covers')::int)),
+      'voided', false,
+      'refunded', false,
+      'server', left(coalesce(nullif(p_check ->> 'server', ''), initcap(p_source)), 40),
+      'order_type', v_type,
+      'customer', case when jsonb_typeof(p_check -> 'customer') = 'object'
+                       then (p_check -> 'customer') - 'paid' - 'staff' - 'payment_state' - 'payment_unverified'
+                            - 'payment_confirmed_by' - 'order_pricing' - 'placed_via'
+                       else p_customer end,
+      'discounts', case when jsonb_typeof(p_check -> 'discounts') = 'array' then p_check -> 'discounts' else '[]'::jsonb end,
+      'service', round(public._fence_num(p_check ->> 'service'), 2),
+      'tip', round(public._fence_num(p_check ->> 'tip'), 2),
+      'method', left(coalesce(nullif(p_check ->> 'method', ''), 'card'), 40),
+      'refunds', '[]'::jsonb,
+      -- 20261009a: the record of the VAT booked (see the rule above). _public_order_write_check
+      -- reads this entry only when it is a list, so its money rules see what they saw before.
+      'tax_breakdown', v_rec,
+      -- 20261009a: the VAT booked (see the rule above).
+      'tax_amount', v_tax,
+      'source', p_source,
+      'gift_card', case when jsonb_typeof(p_check -> 'gift_card') = 'object' then p_check -> 'gift_card' end,
+      'loyalty', case when jsonb_typeof(p_check -> 'loyalty') = 'object' then p_check -> 'loyalty' end,
+      'promo', case when jsonb_typeof(p_check -> 'promo') = 'object' then p_check -> 'promo' end,
+      'stripe_payment_intent_id', left(p_check ->> 'stripe_payment_intent_id', 120),
+      'payment_intents', case when jsonb_typeof(p_check -> 'payment_intents') = 'array' then p_check -> 'payment_intents' end,
+      -- v5.9.11 (rebase, fix round 3): what paid the check, one entry per tender
+      -- (src/lib/accounting/tenders.js). The accounting layer posts card, cash, gift card and
+      -- credits from this, so a check written here must carry it or a QR, online or catering
+      -- sale lands in Unallocated. The page builds it from what it really charged, like
+      -- gift_card, loyalty and promo beside it; _public_order_write_check falls back to one
+      -- card tender for the money the server itself proved, so the column is never empty.
+      'tenders', case when jsonb_typeof(p_check -> 'tenders') = 'array'
+                       and jsonb_array_length(p_check -> 'tenders') > 0
+                      then p_check -> 'tenders' end,
+      'processor', case when p_check ->> 'processor' in ('stripe', 'ryft', 'adyen') then p_check ->> 'processor' else 'stripe' end,
+      'customer_phone', left(p_check ->> 'customer_phone', 40),
+      'closed_at_wanted', p_check ->> 'closed_at');
+end;
+$function$;
+
 commit;
 
 notify pgrst, 'reload schema';
@@ -1601,7 +2063,9 @@ notify pgrst, 'reload schema';
 -- VISIBLE CHECK (the SQL editor shows this last result). Expected:
 --   release_fn 1, release_anon_can_call 0, released_columns 2, service_rule_fn 1,
 --   service_rule_anon_can_call 1, vat_false_is_default 1, has_price_fn 1, value_no_price 1,
---   settle_books_deals 1, promo_takes_lines 1, old_promo_gone 0, order_passes_lines 1
+--   settle_books_deals 1, promo_takes_lines 1, old_promo_gone 0, order_passes_lines 1,
+--   deals_by_line 1, lines_charged_fn 1, lines_charged_anon_can_call 0, check_vat_by_line 1,
+--   round_keeps_deals 1
 select
   (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'promo_release_atomic') as release_fn,
   (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'promo_release_atomic'
@@ -1623,4 +2087,13 @@ select
   (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = '_public_order_promo'
      and pg_get_function_identity_arguments(p.oid) = 'p_loc text, p_code text, p_subtotal_minor bigint, p_check_id text, p_consume boolean') as old_promo_gone,
   (select case when position('v_val -> ''lines''' in pg_get_functiondef(p.oid)) > 0 then 1 else 0 end
-     from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'place_public_order') as order_passes_lines;
+     from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'place_public_order') as order_passes_lines,
+  (select case when position('line_minor' in pg_get_functiondef(p.oid)) > 0 then 1 else 0 end
+     from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = '_public_order_auto') as deals_by_line,
+  (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = '_order_lines_charged') as lines_charged_fn,
+  (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = '_order_lines_charged'
+     and has_function_privilege('anon', p.oid, 'execute')) as lines_charged_anon_can_call,
+  (select case when position('byLine' in pg_get_functiondef(p.oid)) > 0 then 1 else 0 end
+     from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = '_public_order_check_row') as check_vat_by_line,
+  (select case when position('''auto_rules'', v_auto -> ''rules'', ''auto_lines''' in pg_get_functiondef(p.oid)) > 0 then 1 else 0 end
+     from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'place_public_order') as round_keeps_deals;

@@ -23,7 +23,7 @@
 
 import { ratesGate, venueExpectsRates } from './customerRates.js';
 import { computeOrderTaxUnified, taxCtxHasConfig } from './taxCompute.js';
-import { inclusiveTaxOnCharged } from './taxShare.js';
+import { inclusiveTaxOnChargedLines } from './taxShare.js';
 
 /** Plain words for the customer and the member of staff they fetch. Short, no dashes. */
 export const KIOSK_VAT_WORDS = Object.freeze({
@@ -67,7 +67,9 @@ export function kioskChargedTax(lines, taxCtx, orderType, { autoDiscounts = [], 
   if (!taxCtx || !taxCtxHasConfig(taxCtx) || !Array.isArray(lines) || !lines.length) return null;
   const t = computeOrderTaxUnified(lines, taxCtx, orderType, { discounts: autoDiscounts });
   if (goods == null || charged == null) return t;
-  return inclusiveTaxOnCharged(t, goods, charged);
+  // v5.11.81: a deal on some lines takes VAT off those lines' rates only, as at the till
+  // (taxShare.inclusiveTaxOnChargedLines); every other basket: exactly as before.
+  return inclusiveTaxOnChargedLines(t, lines, autoDiscounts, charged, (ls) => computeOrderTaxUnified(ls, taxCtx, orderType, null), goods);
 }
 
 /** What the kiosk hands the save time guard (saleVatGuard.assertSaleVat): its own rates and context. */
