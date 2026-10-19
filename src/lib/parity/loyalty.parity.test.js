@@ -164,6 +164,10 @@ test('part refund: the gift card that paid part of the bill gets its share back,
   assert.match(fn, /const refundKey = part \? `\$\{partPrefix\}\$\{refundId\}` : fullKey;/);
   assert.match(fn, /const restoreAmount = part \? Math\.min\(partMinor as number, Math\.max\(0, spent - putBack\)\) : Math\.max\(0, spent - putBack\);/);
   assert.match(fn, /if \(total === null \|\| total > spent\) \{/, 'a race can never put back more than was spent');
+  // v5.11.81 round 1: the part refund ledger is read twice before a reversal refuses (one transient
+  // read error no longer leaves a guest's balance debited), and a read that fails twice still refuses.
+  assert.match(fn, /const partRestored = async \(\): Promise<number \| null> => \{\n\s+for \(let attempt = 0; attempt < 2; attempt\+\+\) \{/);
+  assert.match(fn, /if \(error\) continue;/);
 });
 
 // ── v5.11.81 round 1 fix: kiosk and online part refunds reach the whole bill, as the till's ─────────
@@ -248,6 +252,45 @@ test('part refunds: per leg picks on a split card check never send the gift shar
   assert.match(bo, /const cardShareMinor = Math\.max\(0, toMinor\(refundAmount\) - giftShareMinor\);/);
   const store = readRepo('src/store/index.js');
   assert.match(store, /const status = totalRefunded >= refundBillOf\(chk\) - 0\.005 \? 'refunded' : 'partial_refund';/);
+});
+
+// ── v5.11.81 round 1 fix: a percent reward is worked out on the goods on the till too ───────────────
+// Delivery order: 2 burgers (18.00) plus a 3.50 delivery fee. A 10% reward took 2.15 at the till
+// (planned on the whole bill) and 1.80 at the kiosk and online (the goods after deals). The till's
+// rewards screen and the customer display auto apply now pass the promo basket (goods after deals).
+test('reward basket: a 10% reward takes the same off at the till as at the kiosk (goods, never the delivery fee)', async () => {
+  const { planRedemptions } = await import('../loyaltyMultiRedeem.js');
+  const { kioskRewardDiscountMinor } = await import('../kioskLoyaltyReward.js');
+  const { promoBasketValue } = await import('../promoBasis.js');
+  const reward = { id: 'r10', label: '10% off', type: 'discount_percent', value: { percent: 10 }, pointsCost: 100 };
+  const goods = 18, bill = 21.5;
+  const till = (total) => planRedemptions([{ rewardId: 'r10' }], [reward], { items: [], total }).discountMinor;
+  assert.equal(till(bill), 215, 'on the whole bill (the old till figure)');
+  const basket = promoBasketValue({ discountedSub: goods });
+  assert.equal(till(basket), 180, 'on the goods');
+  assert.equal(kioskRewardDiscountMinor('discount_percent', { percent: 10 }, { goodsMinor: 1800 }), till(basket), 'the kiosk takes the same');
+  const co = readRepo('src/surfaces/CheckoutModal.jsx');
+  assert.match(co, /customerId: loyaltyData\.customerId \|\| customer\?\.customerId, items, total: promoBasis,/);
+  assert.match(co, /loyaltyData=\{loyaltyData\}\n\s+items=\{items\}\n\s+total=\{promoBasis\}/);
+});
+
+// ── v5.11.81 round 1 fix: a HubRise or QR tab earn never counts the visit twice ─────────────────────
+// hubrise-ingest already counts a delivery partner order (visit, revenue, customer_orders row) and
+// the QR page counts each round; the earns added at the till counted them all again.
+test('CRM: HubRise and QR tab earns at the till earn only (no second visit, revenue or order row)', () => {
+  const store = readRepo('src/store/index.js');
+  const fn = between(store, 'attributeOrderToCustomer: async ({ customer, orderRecord, countOrder = true }) => {', '\n  },\n');
+  assert.ok(fn, 'the option exists');
+  const locAt = fn.indexOf(".from('customer_locations')");
+  const ordAt = fn.indexOf(".from('customer_orders').insert(");
+  const guards = [...fn.matchAll(/if \(countOrder\) \{/g)].map((m) => m.index);
+  assert.equal(guards.length, 2, 'both counting steps are guarded');
+  assert.ok(guards[0] < locAt && guards[1] < ordAt && guards[1] > locAt, 'the visit bump and the order row sit inside the guards');
+  assert.ok(fn.indexOf("table: 'closed_checks', type: 'update', payload: { customer_id: customerId }") > ordAt, 'the check is still stamped');
+  assert.match(store, /get\(\)\.attributeOrderToCustomer\(\{ customer: hrEarner, orderRecord: record, countOrder: false \}\)/);
+  assert.match(store, /source: 'hubrise' \}, countOrder: false \}\)/);
+  const hub = readRepo('src/surfaces/OrdersHub.jsx');
+  assert.match(between(hub, 'const earnQrSale = (record) => {', 'const closeShortQrTab'), /countOrder: false,/);
 });
 
 // ── A QR tab earns like a QR pay now order (v5.11.81, partly fixed major) ─────────────────────────

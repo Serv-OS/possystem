@@ -331,7 +331,11 @@ test('service rule: QR and Pay at table charge the venue\'s table service charge
   assert.equal(withVenueServiceRule(counterTill, null), counterTill, 'not read yet: the till\'s own config, the same object');
   // Wiring: the QR page asks the database, SessionSync stamps with the rule, the till loads it.
   const qr = readRepo('src/surfaces/qr/QrCheckout.jsx');
-  assert.match(qr, /fetchVenueServiceRule\(location\.ops_location_id \|\| location\.id\)/);
+  // v5.11.81 round 1: one cached read per venue, started as the QR menu loads (no 4 second wait at Pay).
+  assert.match(qr, /venueServiceRuleCached\(location\.ops_location_id \|\| location\.id\)/);
+  assert.match(qr, /useState\(\(\) => peekVenueServiceRule\(location\.ops_location_id \|\| location\.id\)\)/);
+  assert.match(readRepo('src/surfaces/online/OnlineSurface.jsx'), /useEffect\(\(\) => \{ if \(isQr && opsLocationId\) venueServiceRuleCached\(opsLocationId\)\.catch\(\(\) => \{\}\); \}, \[isQr, opsLocationId\]\);/);
+  assert.match(readRepo('src/lib/db.js'), /if \(r\) entry\.value = r; else _venueRuleCache\.delete\(locationId\);/);
   assert.match(qr, /qrServiceCharge\(\{ rule: venueServiceRule \|\| null, legacyPct: location\.qr_service_charge_pct, discountedSubtotal \}\)\.amount/);
   assert.doesNotMatch(qr, /serviceChargePct > 0 \? \+\(discountedSubtotal \* serviceChargePct \/ 100\)/);
   assert.match(qr, /disabled=\{!valid \|\| working \|\| !!vatGate \|\| serviceRuleLoading\}/, 'Pay waits for the rule');
@@ -351,4 +355,27 @@ test('HubRise: a tip is booked as a tip and a service fee as service, neither ca
   const store = readRepo('src/store/index.js');
   assert.match(between(store, 'recordWalkInClosed: (walkInOrder', 'refundCheck: async'), /\.\.\.evaluateAutoDiscounts\(walkInOrder\.items\.filter\(i=>!i\.voided\), get\(\)\.discountRules, 'pos', buildScheduleCtx\(get\(\)\.locationConfig\?\.timezone\)\)\.map\(toAppliedDiscount\),/);
   assert.match(store, /items, discounts: \[\.\.\.stampDiscountAmounts\(items, headlessDiscs\), \.\.\.promoDiscountEntry\(d\.promoRedemption\)\],/, 'reader close and Table Pay');
+});
+
+// ── v5.11.81 round 1 fix: a Pay at table close books the service the reader charged ─────────────────
+// SessionSync stamps the bill the reader charges with the VENUE's one table rule; the rich close
+// worked service out with the closing till's own profile. A master till with no service charge
+// booked service 0 on a 22.50 charge of a 20.00 bill (2.50 unexplained). The close now books the
+// stamp's own service.
+test('Pay at table: the close books the service the stamped bill charged, whatever the closing till\'s own rule', async () => {
+  const { sessionServiceMajor } = await import('../payments/checkTotals.js');
+  const { withVenueServiceRule } = await import('../venueServiceRule.js');
+  const session = { items: [{ uid: 'a', itemId: 'x', price: 20, qty: 1 }], covers: 2, discounts: [] };
+  const masterTill = { serviceCharge: { enabled: false, rate: 0 } };
+  const venueRule = SERVICE_DEVICE.serviceCharge;
+  const stampOpts = { deviceConfig: withVenueServiceRule(masterTill, venueRule) };
+  const stamped = sessionTotalsMinor(session, stampOpts);
+  assert.equal(stamped.totalMinor, 2250, 'the reader charges 22.50');
+  assert.equal(sessionServiceMajor(session, { deviceConfig: masterTill }), 0, 'the closing till\'s own rule books none');
+  const booked = sessionServiceMajor(session, stampOpts);
+  assert.equal(booked, 2.5, 'the stamp\'s rule books the 2.50 the reader took');
+  assert.equal(Math.round((stamped.subtotalMinor / 100 + booked) * 100), stamped.totalMinor, 'nothing unexplained');
+  const store = readRepo('src/store/index.js');
+  assert.match(store, /const tablePayService = \(d\.serviceMinor == null && \(d\.source === 'pax_table_pay' \|\| d\.source === 'adyen_pay_at_table'\) && table\?\.session\)\n\s+\? sessionServiceMajor\(table\.session, \{\n\s+deviceConfig: withVenueServiceRule\(get\(\)\.deviceConfig, get\(\)\.venueServiceRule\),/);
+  assert.match(store, /\.\.\.\(tablePayService != null \? \{ service: tablePayService \} : \{\}\),\n\s+\};/);
 });

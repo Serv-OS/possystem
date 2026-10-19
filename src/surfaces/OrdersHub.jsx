@@ -562,6 +562,9 @@ export default function OrdersHub() {
       useStore.getState().attributeOrderToCustomer?.({
         customer: { name: c.name || null, phone: c.phone, email: c.email || null },
         orderRecord: { id: record.id, ref: record.ref, items: record.items || [], total: record.total, source: 'qr' },
+        // v5.11.81 round 1: each round was counted when the page placed it (attribute_public_order),
+        // so the close earns only, never a second visit and the revenue again.
+        countOrder: false,
       })?.catch?.((e) => console.warn('[OrdersHub] QR earn:', e?.message || e));
     } catch (e) { console.warn('[OrdersHub] QR earn:', e?.message || e); }
   };

@@ -27,6 +27,7 @@ import { checkDiscountAmount } from './taxBasis.js';
 import { computeOrderTaxUnified } from './taxCompute.js';
 import { modsTotal } from './channelMoney.js';
 import { sizeTaxRefs } from './taxRefs.js';
+import { lineCategories } from './lineCategories.js';
 import { isUsableBreakdown, scaleTaxRecord } from './taxShare.js';
 import { roundVat, TAX_FALLBACK_REASONS } from './taxRule.js';
 
@@ -141,7 +142,11 @@ export function qrTaxLines(items, menuItems = []) {
       out.taxRateId = refs.taxRateId;
       out.taxOverrides = refs.taxOverrides;
       out.taxProfileId = refs.taxProfileId;
-      if (out.cat == null && !(Array.isArray(out.cats) && out.cats.length)) out.cat = mi.cat ?? (Array.isArray(mi.cats) ? mi.cats[0] : null) ?? null;
+      // v5.11.81 round 1: a size takes its PRODUCT's category (lineCategories, the till's rule).
+      if (out.cat == null && !(Array.isArray(out.cats) && out.cats.length)) {
+        const lc = lineCategories(mi, menuItems);
+        out.cat = lc.cat ?? (lc.cats ? lc.cats[0] : null) ?? null;
+      }
     } else if (!(i.taxRateId ?? i.tax_rate_id) && !i.taxFallback) {
       out.taxFallback = { reason: TAX_FALLBACK_REASONS.ITEM_NOT_ON_MENU, rateId: null };
     }

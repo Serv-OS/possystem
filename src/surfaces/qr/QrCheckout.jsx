@@ -30,7 +30,7 @@ import { computeOrderTaxUnified, taxCtxHasConfig } from '../../lib/taxCompute';
 import { publicCheckTaxFields, offerChargedTax, qrBillTotal } from '../../lib/publicCheckTax';
 import VatGateNotice from '../online/VatGateNotice';
 import { breakdownIsExclusive, taxTermFor } from '../../lib/receiptTax';   // v5.7.34: rate-null guards + VAT/Sales Tax wording
-import { fetchActiveDiscountRules, fetchVenueServiceRule } from '../../lib/db';
+import { fetchActiveDiscountRules, venueServiceRuleCached, peekVenueServiceRule } from '../../lib/db';
 import { qrServiceCharge } from '../../lib/venueServiceRule';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../../lib/discountEngine';
 import { buildScheduleCtx } from '../../lib/locationTime';
@@ -59,14 +59,18 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   // service rule (lib/venueServiceRule.js: the service charge switched on for table service on the
   // device profiles), not its own QR setting. `undefined` while it is asked; null when the database
   // cannot answer yet (update 20261020a not run): then the QR setting, as before.
-  const [venueServiceRule, setVenueServiceRule] = useState(undefined);
+  // v5.11.81 round 1: the menu page started this read as it loaded (venueServiceRuleCached), so a
+  // rule already known is used at once and Pay is not held while it is asked again.
+  const [venueServiceRule, setVenueServiceRule] = useState(() => peekVenueServiceRule(location.ops_location_id || location.id));
   useEffect(() => {
     let live = true;
+    if (venueServiceRule !== undefined) return () => { live = false; };
     const timer = setTimeout(() => { if (live) setVenueServiceRule((r) => (r === undefined ? null : r)); }, 4000);
-    fetchVenueServiceRule(location.ops_location_id || location.id)
+    venueServiceRuleCached(location.ops_location_id || location.id)
       .then((r) => { if (live) setVenueServiceRule(r || null); })
       .catch(() => { if (live) setVenueServiceRule(null); });
     return () => { live = false; clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.ops_location_id, location.id]);
   const serviceRuleLoading = venueServiceRule === undefined;
   const serviceChargePct   = qrServiceCharge({ rule: venueServiceRule || null, legacyPct: location.qr_service_charge_pct, discountedSubtotal: 0 }).pct;

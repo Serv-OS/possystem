@@ -30,6 +30,10 @@
 import { computeOrderTaxUnified, taxCtxHasConfig } from './taxCompute.js';
 import { roundVat, NOT_IN_MENU } from './taxRule.js';
 import { lineTaxRefsFor } from './taxRefs.js';
+import { lineCategories } from './lineCategories.js';
+
+/** v5.11.81 round 1: the one category a line counts under for tax (a size: its product's). */
+const lineCat = (mi, menuItems) => { const c = lineCategories(mi, menuItems); return c.cat ?? (c.cats ? c.cats[0] : null) ?? null; };
 import { inclusiveTaxOnCharged } from './taxShare.js';
 
 /** Modifier total for one line, per unit — includes modifier quantity. */
@@ -141,7 +145,9 @@ export function buildChannelCloseFields(order, { menuItems = [], taxRates = [], 
       // v5.7.34: matched items also carry their profile cascade inputs; unknown
       // refs carry NO itemId/cat so no profile can ever apply to them either.
       itemId: mi ? mi.id : null,
-      cat: mi ? (mi.cat ?? (Array.isArray(mi.cats) ? mi.cats[0] : null)) : null,
+      // v5.11.81 round 1: a size counts under its PRODUCT's category (lineCategories, the till's
+      // rule), so a category tax profile reaches it; the size row's own (often stale) one did not.
+      cat: mi ? lineCat(mi, menuItems) : null,
       taxProfileId: refs ? refs.taxProfileId : null,
       taxRateId: refs ? refs.taxRateId : NOT_IN_MENU,
       taxOverrides: refs ? refs.taxOverrides : {},

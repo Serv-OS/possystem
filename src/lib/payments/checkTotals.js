@@ -183,3 +183,31 @@ export function sessionTotalsMinor(session, opts) {
     totalMinor: Math.round(t.total * 100),
   };
 }
+
+/**
+ * v5.11.81 (round 1 fix, "Pay at table rich close books service with the closing till's own rule"):
+ * the service charge (major units) on a table's bill, worked out exactly as sessionTotalsMinor
+ * stamps it (dine in, the session's covers and waiver). SessionSync stamps the bill the reader
+ * charges with the VENUE's one table rule (withVenueServiceRule); the close books service with this
+ * same rule, so a till whose own profile has no service charge never books 0 on a bill the reader
+ * charged 12.5% on. Null when there is nothing to work out.
+ */
+export function sessionServiceMajor(session, opts) {
+  if (!session || !Array.isArray(session.items) || !session.items.length) return null;
+  try {
+    const t = computeCheckTotals({
+      items: session.items.filter((i) => i && !i.voided),
+      checkDiscounts: session.discounts || [],
+      covers: session.covers || 1,
+      serviceChargeWaived: session.serviceChargeWaived || false,
+      orderType: 'dine-in',
+      deviceConfig: opts?.deviceConfig,
+      discountRules: opts?.discountRules,
+      timezone: opts?.timezone,
+      deliveryQuote: null,
+    });
+    return Number.isFinite(t.service) ? Math.max(0, t.service) : null;
+  } catch {
+    return null;
+  }
+}

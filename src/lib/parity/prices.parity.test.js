@@ -353,3 +353,29 @@ test('MPOS: tapping an open table keeps each line at the price it was added at, 
   // A new dine in order never reprices the table last opened on the handheld.
   assert.match(between(m, 'const onPickType = (type) => {', 'setFlow('), /if \(type === 'dine-in'\) setActiveTableId\(null\);\n\s*useStore\.getState\(\)\.setOrderType\(type\);/);
 });
+
+// ── v5.11.81 round 1 fix: the old kiosk design reprices the kept basket on an eat in / take away switch ─
+test('old kiosk: Back to the order type and a switch to eat in reprices the basket, as the till and the new design do', async () => {
+  const { repriceKioskCart } = await import('../kioskBasket.js');
+  const latte = raw('latte');
+  const ta = resolveItemPrice(latte, 'takeaway', null);
+  const cart = [{ key: 'latte:{}', item: latte, variant: null, qty: 1, modsArray: [], linePrice: ta, lineTotal: ta }];
+  const out = repriceKioskCart(cart, MENU, 'dineIn', null);
+  assert.equal(out[0].linePrice, resolveItemPrice(latte, 'dineIn', null), 'the eat in price');
+  assert.equal(out[0].linePrice, posUnit('latte', 'dine-in'), 'the till\'s eat in price');
+  const app = readRepo('src/surfaces/KioskApp.jsx');
+  assert.match(app, /if \(orderType && t !== orderType\) setCart\(c => repriceKioskCart\(c, items, t, activeMenuId\)\);\n\s+setOrderType\(t\);/);
+});
+
+// ── v5.11.81 round 1 fix: a refused no price row never shows "added" on the till ────────────────────
+test('no price: the till shows "added" only for a line that really was added', () => {
+  const store = readRepo('src/store/index.js');
+  const add = between(store, '  addItem: (item, mods=[], pizzaConfig=null, opts={}) => {', '  addCustomItem: (name, price, notes) => {');
+  assert.match(add, /get\(\)\.showToast\?\.\(`\$\{opts\.displayName \|\| item\.name\} has no price set\. Set one in Back Office before selling it\.`, 'error'\);\n\s+return null;/);
+  assert.match(add, /return newItem;\n {2}\},\n\n$/, 'addItem hands back the line it added');
+  const pos = readRepo('src/surfaces/POSSurface.jsx');
+  assert.equal((pos.match(/const line=addItem\(item,mods,cfg,opts\);setModalItem\(null\);if\(line\)showToast\(/g) || []).length, 1);
+  assert.equal((pos.match(/const line=addItem\(item,mods,cfg,opts\); setModalItem\(null\); if\(line\)showToast\(/g) || []).length, 1);
+  assert.match(pos, /const line = addItem\(item, \[\], null, \{ displayName: item\.menuName \|\| item\.name, qty: 1, linePrice: item\.pricing\?\.base \?\? item\.price \?\? 0 \}\);\n\s+if \(!line\) return;/);
+  assert.doesNotMatch(pos, /addItem\(item,mods,cfg,opts\);\s*setModalItem\(null\);\s*showToast\(/, 'no unconditional "added" toast is left');
+});

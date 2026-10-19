@@ -93,16 +93,23 @@ Deno.serve(async (req) => {
   const partPrefix = `${fullKey}:`;
   const refundKey = part ? `${partPrefix}${refundId}` : fullKey;
   // What part refunds of this spend already put back (a literal prefix test: `_` is a LIKE wildcard).
+  // v5.11.81 round 1: read twice before refusing. A full reversal (a card payment that died after
+  // the gift card was debited) now reads the part refunds too, so one transient read error must
+  // not leave the guest's balance debited. A read that fails twice still refuses (nothing changed):
+  // reading it as 0 could put back more than was spent after part refunds.
   const partRestored = async (): Promise<number | null> => {
-    const { data, error } = await platformAdmin
-      .from('gift_card_transactions')
-      .select('amount_minor, idempotency_key')
-      .eq('card_id', card_id)
-      .eq('type', 'refund')
-      .like('idempotency_key', `${partPrefix}%`);
-    if (error) return null;
-    return (data || []).filter((r: any) => String(r.idempotency_key).startsWith(partPrefix))
-      .reduce((n: number, r: any) => n + Math.max(0, Number(r.amount_minor) || 0), 0);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const { data, error } = await platformAdmin
+        .from('gift_card_transactions')
+        .select('amount_minor, idempotency_key')
+        .eq('card_id', card_id)
+        .eq('type', 'refund')
+        .like('idempotency_key', `${partPrefix}%`);
+      if (error) continue;
+      return (data || []).filter((r: any) => String(r.idempotency_key).startsWith(partPrefix))
+        .reduce((n: number, r: any) => n + Math.max(0, Number(r.amount_minor) || 0), 0);
+    }
+    return null;
   };
   const alreadyReversed = async () => {
     const { data: tx } = await platformAdmin

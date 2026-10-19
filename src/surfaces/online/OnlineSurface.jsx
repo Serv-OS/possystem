@@ -13,6 +13,7 @@
 // in BO → Online ordering) with fallback to ops receipt_branding.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { venueServiceRuleCached } from '../../lib/db';   // v5.11.81 round 1: the QR service rule, asked as the menu loads
 import { productImage, resolveDefaultProductImage } from '../../lib/productImage';
 import { supabase } from '../../lib/supabase';
 import { prepMinutes, prepRuleFromLocation, liveOrderCount } from '../../lib/prepTime';
@@ -66,6 +67,9 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   const isQr = mode === 'qr';
   const opsLocationId = location.ops_location_id || location.id;
   const onlineMenuId  = location.online_menu_id || null;
+  // v5.11.81 round 1: start the venue's table service rule read as the QR menu loads, so the QR
+  // checkout has it by the time the guest pays (lib/db.js venueServiceRuleCached).
+  useEffect(() => { if (isQr && opsLocationId) venueServiceRuleCached(opsLocationId).catch(() => {}); }, [isQr, opsLocationId]);
 
   const [items, setItems]           = useState([]);
   const [categories, setCategories] = useState([]);

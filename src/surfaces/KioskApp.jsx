@@ -71,7 +71,7 @@ import KioskCardScreen from './kiosk/KioskCardScreen';
 import { kioskMayRefresh, kioskMenuAfterRead, createKioskRefresh, kioskHeardMsm, markKioskHeardMsm, CATCH_UP_MS } from '../lib/msm/msmTillWatch.js';
 import KioskPayLinkGate from './kiosk/KioskPayLinkGate';
 import { usePaymentBusy } from '../lib/usePaymentBusy';
-import { kioskLineKeyV2 } from '../lib/kioskBasket';
+import { kioskLineKeyV2, repriceKioskCart } from '../lib/kioskBasket';
 import { kioskCardEligible, itemInCategory, kioskLegacyCategoryShown } from '../lib/kioskMenu';
 import { setActiveMemberSession } from '../lib/memberSession.js';
 // networkReader import removed — kiosk payment now uses server-side edge function directly
@@ -1483,6 +1483,10 @@ export default function KioskApp({ kioskId, onUnpair }) {
     <div onPointerDown={resetIdle} onKeyDown={resetIdle} onInput={resetIdle} data-kiosk-theme={isLight ? "light" : "dark"} style={kioskShell(brandColor, effectiveBg, brandAccent)}>
       {screen === 'attract' && <ScreenAttract brandName={brandName} brandColor={brandColor} brandAccent={brandAccent} brandLogoUrl={brandLogoUrl} attractVideoUrl={attractVideoUrl} avgWaitMinutes={avgWaitMinutes} banner={bannerFor('attract')} ctaLabel={labelTapToOrder} onStart={() => { resetIdle(); setScreen('orderType'); }} />}
       {screen === 'orderType' && <ScreenOrderType brandColor={brandColor} brandLogoUrl={brandLogoUrl} brandName={brandName} tableMode={tableMode} lang={lang} onOpenLanguagePicker={() => setShowLangPicker(true)} loyaltyEnabled={loyaltyEnabled} customerName={customerName} onLoyaltySignIn={() => { setLoyaltyReturnScreen('orderType'); setScreen('loyalty'); }} onPick={(t) => {
+        // v5.11.81 round 1: Back from the menu keeps the basket, so switching eat in and take away
+        // reprices it for the new order type, as the till and the new design (KioskFlowV2) do. A
+        // take away latte (2.80, 0%) stayed 2.80 and was then taxed at the eat in 20%.
+        if (orderType && t !== orderType) setCart(c => repriceKioskCart(c, items, t, activeMenuId));
         setOrderType(t);
         // v5.8.76: every eat in mode asks for a number (lib/kioskFlow.js kioskStartModel): the table
         // plan (either), a typed table number (enter) or the number on a flag (dispense).

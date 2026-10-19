@@ -63,9 +63,9 @@ test('wiring: the store mints the basket id once, the counter close refuses an i
 // With the basket id as the key leg, a checkout reopened on the same basket sent under the same key
 // as the first checkout's approved job, and the server's double charge net skipped it as "a retry,
 // not a repeat": a second charge could go to the reader. Each checkout now has its own key leg.
-const LOC = '5435c88e-6a58-4ebf-b2a0-b5ed5c9bdaa9';
-const TILL = 'ff1b5fb8-2406-4854-bdb0-37cc8af45361';
-const READER = 'a264a739-adb3-40fe-a5f1-628f906505b1';
+const LOC = '00000000-0000-4000-8000-0000000000a1';
+const TILL = '00000000-0000-4000-8000-0000000000b2';
+const READER = '00000000-0000-4000-8000-0000000000c3';
 const ITEMS = [{ name: 'Latte', qty: 1, price: 3.2, mods: [] }, { name: 'Cake', qty: 1, price: 4.5, mods: [] }];
 // terminalJobs.js (not importable under node: it imports the supabase client) builds the key so:
 const buildCheckKey = ({ locationId, tableId, sessionId, leg }) => {

@@ -472,3 +472,27 @@ test('refund fallback (no usable line record) leaves the service charge out of b
   assert.equal(one.bd.amount, 10);
   assert.equal(one.vat, 1.67, 'half the goods gives back half the VAT, none spread on the service');
 });
+
+// ── v5.11.81 round 1 fix: HubRise and a QR close tax a US size by its PRODUCT's category ────────────
+// A sized main in Food (the stacked San Mateo profile by category) whose size row still carries an
+// old Drinks category: the till, kiosk, online, QR and catering pages book the Food profile, HubRise
+// and a QR close of a line with no category booked the venue default from the size's own category.
+test('US: a size with a stale category of its own is taxed by its product\'s category on HubRise and a QR close, as on the till', async () => {
+  const MAIN = { id: 'main', name: 'Main', cat: 'food', parent_id: null, tax_rate_id: null, pricing: { base: 0 } };
+  const MAIN_L = { id: 'main-l', name: 'Large', cat: 'drinks', parent_id: 'main', tax_rate_id: null, pricing: { base: 12 } };
+  const store = [...US_MENU, MAIN, MAIN_L].map(mapMenuItemRow);
+  const ctx = ctxUS();
+  const { tillLineTaxRefs, tillLineTaxFields } = await import('../tillLine.js');
+  const { lineCategories } = await import('../lineCategories.js');
+  const size = store.find((r) => r.id === 'main-l');
+  const tillCat = lineCategories(size, store).cat;
+  assert.equal(tillCat, 'food', 'the till counts the size under its product');
+  const tillVat = (ot) => vat(computeOrderTaxUnified([{ uid: 't', itemId: 'main-l', cat: tillCat, price: 12, qty: 1, ...tillLineTaxFields(tillLineTaxRefs(size, store, [])) }], ctx, ot));
+  const defaultOnly = vat(computeOrderTaxUnified([{ uid: 'd', itemId: 'main-l', cat: 'drinks', price: 12, qty: 1, ...tillLineTaxFields(tillLineTaxRefs(size, store, [])) }], ctx, 'collection'));
+  assert.notEqual(tillVat('collection'), defaultOnly, 'the fixture tells the two categories apart');
+  const hub = buildChannelCloseFields(hubOrder([{ id: 'h', itemId: 'main-l', name: 'Large', price: 12, qty: 1, mods: [] }], { channel: 'collection' }), { menuItems: store, taxCtx: ctx }).taxAmount;
+  assert.equal(hub, tillVat('collection'), 'HubRise books the till\'s tax');
+  const qrLines = qrTaxLines([{ uid: 'q', itemId: 'main-l', name: 'Large', price: 12, qty: 1 }], store);
+  assert.equal(qrLines[0].cat, 'food');
+  assert.equal(vat(computeOrderTaxUnified(qrLines, ctx, 'dine-in')), tillVat('dine-in'), 'a QR close books the till\'s tax');
+});

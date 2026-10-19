@@ -15,7 +15,7 @@ import { isMasterTillHere, autoRouteGate, routerIdentity, hydratableDeviceConfig
 import { venueHoldsMenu, buildRouteStamp, countParentLinks, noticeLines, fallbackNotice } from '../lib/channelRouteGate';
 import { VERSION } from '../lib/version';
 import { clockStatusForPos } from '../lib/posClockIn';
-import { computeCheckTotals } from '../lib/payments/checkTotals';
+import { computeCheckTotals, sessionServiceMajor } from '../lib/payments/checkTotals';
 import { headlessTaxBreakdown, headlessService, headlessDiscounts, taxForChargedGoods } from '../lib/headlessTax';
 import { ratesFromSnapshot, venueRowsFromSnapshot, ratesAfterRead, clientTrustsEmpty, noTaxRatesAlert } from '../lib/venueTaxRates';
 // 8 Oct 2026 (VAT audit, Fix 3): the till refuses a tender while it cannot book the VAT
@@ -84,7 +84,7 @@ import { scrubDiscount } from '../lib/discountApprover';
 // v5.6.79 (#107/#108) — refund money maths + the per-leg processor router.
 import {
   refundBreakdown,
-  rollUpLegStatus, retryableLegs, toMinor as toMinorAmt, refundTaxAmount, chargedGoodsOf,
+  rollUpLegStatus, retryableLegs, refundTaxAmount, chargedGoodsOf,
   refundBillOf,
 } from '../lib/payments/refundMath';
 import { refundMoneySplit } from '../lib/payments/refundSplit';
@@ -753,6 +753,7 @@ import { closeMoney } from '../lib/closeMoney.js';
 import { mintCheckId, usableCheckId, walkInCloseId, bookedCheck, secondCardOnBooked } from '../lib/walkInCheckId.js';
 import { loyaltyEarnItems, earnChannelFor, partRefundLoyaltyBody, channelEarnCustomer } from '../lib/loyaltyEarnItems.js';
 import { promoReleaseOrderIds } from '../../supabase/functions/_shared/promoRelease.js';
+import { withVenueServiceRule } from '../lib/venueServiceRule.js';   // v5.11.81 round 1: Pay at table books the service the reader charged
 
 // v5.7.35 — ?mode=kds pins the KDS surface for this page load (read once; the
 // mode param is the operator's explicit intent, so profile defaults must not
@@ -3267,6 +3268,9 @@ export const useStore = create((set, get) => ({
         return { walkInOrder:{ ...(s.walkInOrder||{id:newSessionOrderId()}), items, subtotal, total:subtotal } };
       });
     }
+    // v5.11.81 round 1: the line added (null above when a row with no price is refused), so a
+    // screen shows "added" only for a line that really was added.
+    return newItem;
   },
 
   addCustomItem: (name, price, notes) => {
@@ -4649,7 +4653,10 @@ export const useStore = create((set, get) => ({
 
   // Attribute a closed check / walk-in to a customer. Increments visit_count + spend
   // on customer_locations and inserts a customer_orders row. Returns customer_id.
-  attributeOrderToCustomer: async ({ customer, orderRecord }) => {
+  // v5.11.81 round 1: countOrder false = earn and stamp only. A HubRise order was already counted by
+  // hubrise-ingest (upsertChannelCustomer) and each QR round by the page (attribute_public_order), so
+  // their earns no longer add a second visit, the revenue again and a duplicate customer_orders row.
+  attributeOrderToCustomer: async ({ customer, orderRecord, countOrder = true }) => {
     if (isMock || !supabase) return null;
     // TRAINING MODE: never create/update a real CRM customer or earn loyalty points.
     if (isTrainingMode()) return null;
@@ -4693,97 +4700,101 @@ export const useStore = create((set, get) => ({
       // No DB-side requirements beyond the table existing. Race-prone if two
       // devices close orders for the same customer simultaneously, but for
       // restaurant load that's a non-issue, and correctness > theoretical races.
-      let cl_step_status = 'unknown';
-      try {
-        const { data: existingLoc, error: readErr } = await supabase
-          .from('customer_locations')
-          .select('visit_count, lifetime_revenue')
-          .eq('customer_id', customerId)
-          .eq('location_id', locId)
-          .maybeSingle();
-        if (readErr) {
-          console.warn('[attributeOrderToCustomer] customer_locations read failed:', readErr.message, '(may be RLS — check customer_locations SELECT policy)');
-        }
-        const incRevenue = Number(orderRecord.total) || 0;
-        const nowIso = new Date().toISOString();
-        if (existingLoc) {
-          // UPDATE existing row
-          const newCount = (Number(existingLoc.visit_count) || 0) + 1;
-          const newRevenue = (Number(existingLoc.lifetime_revenue) || 0) + incRevenue;
-          const { error: updErr } = await supabase
+      if (countOrder) {
+        let cl_step_status = 'unknown';
+        try {
+          const { data: existingLoc, error: readErr } = await supabase
             .from('customer_locations')
-            .update({
-              visit_count: newCount,
-              lifetime_revenue: newRevenue,
-              last_visit_at: nowIso,
-            })
+            .select('visit_count, lifetime_revenue')
             .eq('customer_id', customerId)
-            .eq('location_id', locId);
-          if (updErr) {
-            console.warn('[attributeOrderToCustomer] customer_locations UPDATE failed:', updErr.message, '(may be RLS — check customer_locations UPDATE policy)');
-            cl_step_status = 'update_failed';
-          } else {
-            console.log('[attributeOrderToCustomer] step 2/3 — customer_locations UPDATE (visit', newCount, ', rev', newRevenue.toFixed(2), ')');
-            cl_step_status = 'updated';
+            .eq('location_id', locId)
+            .maybeSingle();
+          if (readErr) {
+            console.warn('[attributeOrderToCustomer] customer_locations read failed:', readErr.message, '(may be RLS — check customer_locations SELECT policy)');
           }
-        } else {
-          // INSERT new row
-          const { error: insErr } = await supabase
-            .from('customer_locations')
-            .insert({
-              customer_id: customerId,
-              location_id: locId,
-              visit_count: 1,
-              lifetime_revenue: incRevenue,
-              last_visit_at: nowIso,
-            });
-          if (insErr) {
-            // If a concurrent insert beat us, the row exists now — try update.
-            if (/duplicate|conflict/i.test(insErr.message)) {
-              console.warn('[attributeOrderToCustomer] customer_locations INSERT raced — retrying as UPDATE');
-              const { error: retryErr } = await supabase
-                .from('customer_locations')
-                .update({ last_visit_at: nowIso })
-                .eq('customer_id', customerId).eq('location_id', locId);
-              if (retryErr) {
-                console.warn('[attributeOrderToCustomer] customer_locations retry-update failed:', retryErr.message);
-                cl_step_status = 'race_retry_failed';
-              } else {
-                cl_step_status = 'inserted_via_race_retry';
-              }
+          const incRevenue = Number(orderRecord.total) || 0;
+          const nowIso = new Date().toISOString();
+          if (existingLoc) {
+            // UPDATE existing row
+            const newCount = (Number(existingLoc.visit_count) || 0) + 1;
+            const newRevenue = (Number(existingLoc.lifetime_revenue) || 0) + incRevenue;
+            const { error: updErr } = await supabase
+              .from('customer_locations')
+              .update({
+                visit_count: newCount,
+                lifetime_revenue: newRevenue,
+                last_visit_at: nowIso,
+              })
+              .eq('customer_id', customerId)
+              .eq('location_id', locId);
+            if (updErr) {
+              console.warn('[attributeOrderToCustomer] customer_locations UPDATE failed:', updErr.message, '(may be RLS — check customer_locations UPDATE policy)');
+              cl_step_status = 'update_failed';
             } else {
-              console.warn('[attributeOrderToCustomer] customer_locations INSERT failed:', insErr.message, '(may be RLS — check customer_locations INSERT policy)');
-              cl_step_status = 'insert_failed';
+              console.log('[attributeOrderToCustomer] step 2/3 — customer_locations UPDATE (visit', newCount, ', rev', newRevenue.toFixed(2), ')');
+              cl_step_status = 'updated';
             }
           } else {
-            console.log('[attributeOrderToCustomer] step 2/3 — customer_locations INSERT (first visit at this location)');
-            cl_step_status = 'inserted';
+            // INSERT new row
+            const { error: insErr } = await supabase
+              .from('customer_locations')
+              .insert({
+                customer_id: customerId,
+                location_id: locId,
+                visit_count: 1,
+                lifetime_revenue: incRevenue,
+                last_visit_at: nowIso,
+              });
+            if (insErr) {
+              // If a concurrent insert beat us, the row exists now — try update.
+              if (/duplicate|conflict/i.test(insErr.message)) {
+                console.warn('[attributeOrderToCustomer] customer_locations INSERT raced — retrying as UPDATE');
+                const { error: retryErr } = await supabase
+                  .from('customer_locations')
+                  .update({ last_visit_at: nowIso })
+                  .eq('customer_id', customerId).eq('location_id', locId);
+                if (retryErr) {
+                  console.warn('[attributeOrderToCustomer] customer_locations retry-update failed:', retryErr.message);
+                  cl_step_status = 'race_retry_failed';
+                } else {
+                  cl_step_status = 'inserted_via_race_retry';
+                }
+              } else {
+                console.warn('[attributeOrderToCustomer] customer_locations INSERT failed:', insErr.message, '(may be RLS — check customer_locations INSERT policy)');
+                cl_step_status = 'insert_failed';
+              }
+            } else {
+              console.log('[attributeOrderToCustomer] step 2/3 — customer_locations INSERT (first visit at this location)');
+              cl_step_status = 'inserted';
+            }
           }
+        } catch (e) {
+          console.warn('[attributeOrderToCustomer] customer_locations write threw:', e?.message || e);
+          cl_step_status = 'threw';
         }
-      } catch (e) {
-        console.warn('[attributeOrderToCustomer] customer_locations write threw:', e?.message || e);
-        cl_step_status = 'threw';
+        void cl_step_status; // keep for breakpoint readability if needed
       }
-      void cl_step_status; // keep for breakpoint readability if needed
 
-      // Step 3: insert customer_orders row.
-      const itemSummary = (orderRecord.items || []).map(i => ({
-        name: i.name, qty: i.qty, price: i.price,
-      }));
-      // v5.11.81: the check's own id (refs recycle R1 to R99) and the one earn channel label.
-      const { error: ordersErr } = await supabase.from('customer_orders').insert({
-        customer_id: customerId,
-        location_id: locId,
-        closed_check_id: orderRecord.id || orderRecord.ref || null,
-        ordered_at: new Date().toISOString(),
-        total: Number(orderRecord.total) || 0,
-        channel: earnChannelFor(orderRecord),
-        item_summary: itemSummary,
-      });
-      if (ordersErr) {
-        console.warn('[attributeOrderToCustomer] customer_orders insert failed:', ordersErr.message);
-      } else {
-        console.log('[attributeOrderToCustomer] step 3/3 — customer_orders inserted');
+      if (countOrder) {
+        // Step 3: insert customer_orders row.
+        const itemSummary = (orderRecord.items || []).map(i => ({
+          name: i.name, qty: i.qty, price: i.price,
+        }));
+        // v5.11.81: the check's own id (refs recycle R1 to R99) and the one earn channel label.
+        const { error: ordersErr } = await supabase.from('customer_orders').insert({
+          customer_id: customerId,
+          location_id: locId,
+          closed_check_id: orderRecord.id || orderRecord.ref || null,
+          ordered_at: new Date().toISOString(),
+          total: Number(orderRecord.total) || 0,
+          channel: earnChannelFor(orderRecord),
+          item_summary: itemSummary,
+        });
+        if (ordersErr) {
+          console.warn('[attributeOrderToCustomer] customer_orders insert failed:', ordersErr.message);
+        } else {
+          console.log('[attributeOrderToCustomer] step 3/3 — customer_orders inserted');
+        }
       }
 
       // Stamp customer_id on the closed_check (best-effort, scoped by location_id).
@@ -6850,6 +6861,18 @@ export const useStore = create((set, get) => ({
     // or a job no till sent, like Pay at table on the reader: those mint one here, as before).
     const frozenRef = usableOrderRef(d.orderRef);
 
+    // v5.11.81 (round 1 fix): a Pay at table job charged the bill SessionSync stamped with the
+    // VENUE's table service rule. Its draft carries no serviceMinor, so the rich record booked the
+    // service with THIS till's own profile (none at Huddersfield's master till: 22.50 taken, service
+    // 0 booked, 2.50 unexplained). The service is worked out with the stamp's own rule.
+    const tablePayService = (d.serviceMinor == null && (d.source === 'pax_table_pay' || d.source === 'adyen_pay_at_table') && table?.session)
+      ? sessionServiceMajor(table.session, {
+        deviceConfig: withVenueServiceRule(get().deviceConfig, get().venueServiceRule),
+        discountRules: get().discountRules,
+        timezone: get().locationConfig?.timezone,
+      })
+      : null;
+
     const termPay = {
       ...(frozenRef ? { orderRef: frozenRef } : {}),
       tenders: jobTenders,
@@ -6878,6 +6901,7 @@ export const useStore = create((set, get) => ({
       ...(d.loyaltyRedemption ? { loyaltyRedemption: d.loyaltyRedemption } : {}),
       ...(d.promoRedemption ? { promoRedemption: d.promoRedemption } : {}),
       ...(d.serviceMinor != null && Number.isFinite(Number(d.serviceMinor)) ? { service: Math.max(0, Number(d.serviceMinor)) / 100 } : {}),
+      ...(tablePayService != null ? { service: tablePayService } : {}),
     };
 
     // Rich path ONLY when the live occupation IS the one that paid → full-fidelity record
@@ -7358,7 +7382,7 @@ export const useStore = create((set, get) => ({
         // v5.11.81: earns for the customer's own phone, never a proxy line (channelEarnCustomer).
         const hrEarner = channelEarnCustomer(o.customer);
         if (hrEarner && !isTrainingMode()) {
-          get().attributeOrderToCustomer({ customer: hrEarner, orderRecord: record })
+          get().attributeOrderToCustomer({ customer: hrEarner, orderRecord: record, countOrder: false })
             .catch((e) => console.warn('[recordWalkInClosed channel] earn:', e?.message || e));
         }
         if (record.method === 'cash') {
@@ -9693,7 +9717,7 @@ export const useStore = create((set, get) => ({
         // own phone (never a proxy line: lib/loyaltyEarnItems.js channelEarnCustomer), by its own id.
         const earner = channelEarnCustomer(o.customer);
         if (earner) {
-          get().attributeOrderToCustomer({ customer: earner, orderRecord: { id: `chk-hr-${o.ref}`, ref: o.ref, items: f.items, total: f.total, source: 'hubrise' } })
+          get().attributeOrderToCustomer({ customer: earner, orderRecord: { id: `chk-hr-${o.ref}`, ref: o.ref, items: f.items, total: f.total, source: 'hubrise' }, countOrder: false })
             .catch((e) => console.warn('[bookChannelSale] earn:', e?.message || e));
         }
       }

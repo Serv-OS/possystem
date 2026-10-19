@@ -857,7 +857,9 @@ export default function POSSurface() {
     );
 
     if (!needsModal) {
-      addItem(item, [], null, { displayName: item.menuName || item.name, qty: 1, linePrice: item.pricing?.base ?? item.price ?? 0 });
+      // v5.11.81 round 1: "added" only when the line really was added (a row with no price is refused).
+      const line = addItem(item, [], null, { displayName: item.menuName || item.name, qty: 1, linePrice: item.pricing?.base ?? item.price ?? 0 });
+      if (!line) return;
       showToast(`${item.menuName || item.name} added`, 'success');
       setLastAddedUid(item.id);
       setTimeout(() => setLastAddedUid(null), 300);
@@ -1991,7 +1993,7 @@ export default function POSSurface() {
               item={modalItem}
               menuItems={MENU_ITEMS}
               activeAllergens={allergens}
-              onConfirm={(item,mods,cfg,opts)=>{ addItem(item,mods,cfg,opts); setModalItem(null); showToast(`${opts.displayName||item.name} added`,'success'); }}
+              onConfirm={(item,mods,cfg,opts)=>{ const line=addItem(item,mods,cfg,opts); setModalItem(null); if(line)showToast(`${opts.displayName||item.name} added`,'success'); }}
               onCancel={()=>setModalItem(null)}
             />
           </div>
@@ -2228,7 +2230,7 @@ export default function POSSurface() {
 
       {/* Modals */}
       {pendingItem&&<AllergenModal item={pendingItem} activeAllergens={allergens} onConfirm={()=>{const i=pendingItem;clearPendingItem();openFlow(i);}} onCancel={clearPendingItem}/>}
-      {modalItem&&modalItem.type==='pizza'&&<ProductModal key={modalItem.id} item={modalItem} activeAllergens={allergens} onConfirm={(item,mods,cfg,opts)=>{addItem(item,mods,cfg,opts);setModalItem(null);showToast(`${opts.displayName||item.name} added`,'success');}} onCancel={()=>setModalItem(null)}/>}
+      {modalItem&&modalItem.type==='pizza'&&<ProductModal key={modalItem.id} item={modalItem} activeAllergens={allergens} onConfirm={(item,mods,cfg,opts)=>{const line=addItem(item,mods,cfg,opts);setModalItem(null);if(line)showToast(`${opts.displayName||item.name} added`,'success');}} onCancel={()=>setModalItem(null)}/>}
       {showCheckout&&<CheckoutModal items={items} subtotal={subtotal} tipBasis={discountedSub} service={service} deliveryFee={deliveryFee} total={total} taxFor={(credits) => getPOSTotals({ creditDiscounts: credits })} orderType={orderType} covers={covers} tableId={activeTableId} seatList={seatList} customer={customer} onClose={()=>setShowCheckout(false)} onComplete={handlePayComplete}/>}
       {linkMemberFor&&<LinkMemberModal customer={linkMemberFor} onLinked={applyMemberLink} onClose={()=>setLinkMemberFor(null)}/>}
       {/* 30 Sep 2026: Cancel leaves the order exactly as it was. It used to put the order back on dine in,

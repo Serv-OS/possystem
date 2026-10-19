@@ -144,6 +144,22 @@
 //       (useKioskCheckout) checks and re-checks it on kioskPromoBasket (was goods before the deals).
 //       promoCredit is still min(the code's amount, what is left to pay), so a basket with no code
 //       charges exactly what it did.
+//     Called from inside the fingerprinted blocks, changed in v5.11.81 without moving a fingerprint
+//       (fuzzed: the reader amount, exclusiveTax included, is identical on 6000 UK and US baskets;
+//       0 live sizes affected): totals' kioskChargedTax books UK VAT line by line when a deal names
+//       its lines (lib/kioskVat.js, taxShare.inclusiveTaxOnChargedLines; VAT only, never the money)
+//       and kioskLineTaxRefs gives a size its own tax profile when it has one (lib/kioskLine.js);
+//       submitOrder's cart.map(kioskOrderItem) adds each line's uid (the id its deals name);
+//       addToCart (outside the blocks) keeps a line's price (lib/channelMenu.js kioskLineSlot) and
+//       refuses a row with no price (menuPricing.refusesNoPriceLine).
+//     Round 1 fixes (19 Oct 2026), all outside the fingerprinted blocks, none moves the reader
+//       amount for a basket whose code still applies: the old design's Continue checks a staged code
+//       again whenever the basket's value or LINES changed since it was checked
+//       (lib/kioskCheckout.js classicPromoContinue, lib/promoBasis.js promoCheckKey) and drops a
+//       code that no longer applies (a free item removed) before the pay screen; the new design's
+//       re-check key holds the lines too (useKioskCheckout promoKeyFor), so a swap at the same price
+//       checks the code again; the old design's order type screen reprices the kept basket on an eat
+//       in / take away switch (lib/kioskBasket.js repriceKioskCart, as KioskFlowV2 does).
 
 import test from 'node:test';
 import assert from 'node:assert/strict';

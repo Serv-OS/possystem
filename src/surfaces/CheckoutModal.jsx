@@ -1386,7 +1386,9 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     if (!pendingLoyaltyReward || !loyaltyData || loyaltyApplied) return;
     let alive = true;
     redeemLoyaltyReward(pendingLoyaltyReward, {
-      customerId: loyaltyData.customerId || customer?.customerId, items, total,
+      // v5.11.81 round 1: a percent reward is worked out on the GOODS after deals (the promo basket,
+      // as the kiosk and online do), never the delivery fee, service charge or added on tax.
+      customerId: loyaltyData.customerId || customer?.customerId, items, total: promoBasis,
       menuItems: useStore.getState().menuItems || [],
       // 28 Sep 2026: this site's categories as well, like Redeem on the rewards screen (v5.9.66), so
       // a reward that names a CATEGORY (Coffee Boy's Free Drink) applies the same both ways.
@@ -3073,7 +3075,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
               customer={customer}
               loyaltyData={loyaltyData}
               items={items}
-              total={total}
+              total={promoBasis}
               onApplied={(result) => {
                 setLoyaltyApplied(result);
                 setScreen('review');
