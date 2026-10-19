@@ -104,6 +104,23 @@ Deno.serve(async (req) => {
       if (r.error) return json({ ok: false, reason: 'db', detail: r.error.message }, 503);
     }
 
+    // v5.11.77 central stock depletion (migration 20261018c): per venue, sales waiting over
+    // stock_backlog.olderThan minutes for stock to come off, events that failed 8 times, and
+    // held rows older than stock_held.olderThan minutes. The outbox table has no API grants, so
+    // the service role reads it through stock_outbox_watch (SECURITY DEFINER, service role only).
+    // Before the migration runs the function does not exist (PGRST202): that is not a fault,
+    // no venue can be central yet, so the three lists are empty.
+    const stockOlder = clamp(w.stock_backlog?.olderThan, 1, 1440, 10);
+    const heldOlder = clamp(w.stock_held?.olderThan, 1, 10080, 60);
+    const stockRes = await admin.rpc('stock_outbox_watch', { p_pending_older_min: stockOlder, p_held_older_min: heldOlder });
+    const stockRows: Array<{ location_id: string; pending_old: number; dead: number; held_old: number }> =
+      stockRes.error ? [] : ((stockRes.data as Array<{ location_id: string; pending_old: number; dead: number; held_old: number }>) ?? []);
+    if (stockRes.error && !/stock_outbox_watch|PGRST202|does not exist/i.test(stockRes.error.message ?? '')) {
+      return json({ ok: false, reason: 'db', detail: stockRes.error.message }, 503);
+    }
+    const stockBy = (pick: (r: { pending_old: number; dead: number; held_old: number }) => number): Row[] =>
+      stockRows.filter((r) => !demoIds.includes(String(r.location_id))).flatMap((r) => Array.from({ length: Math.max(0, Number(pick(r)) || 0) }, () => ({ location_id: r.location_id })));
+
     const names = new Map<string, string>();
     for (const l of venuesRes.data ?? []) names.set(String(l.id), l.name ?? 'an unnamed venue');
     const byVenue = (rows: Row[] | null) => {
@@ -124,6 +141,10 @@ Deno.serve(async (req) => {
       ticketsLost: byVenue(lostRes.data as Row[]),
       printStuck: byVenue(stuckRes.data as Row[]),
       ordersOpen: byVenue(openRes.data as Row[]),
+      stockBacklog: byVenue(stockBy((r) => r.pending_old)),
+      stockDead: byVenue(stockBy((r) => r.dead)),
+      stockHeld: byVenue(stockBy((r) => r.held_old)),
+      stockWatchAvailable: !stockRes.error,
     });
   } catch (e) {
     // Threw rather than answered: the database is not reachable from here.

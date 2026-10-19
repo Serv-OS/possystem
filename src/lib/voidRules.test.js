@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
   VOID_REASONS, isLiveSentLine, isUnsentLine, canVoidItem, canVoidOrder, voidableLines, linesValue,
-  orderVoidLabel, lineUids, ticketHasLines, voidTicketItems, voidLogEntry, buildVoidTombstone,
+  orderVoidLabel, lineUids, ticketHasLines, voidTicketItems, voidLogEntry, buildVoidTombstone, tombstoneLine,
   checkSourceFor, normaliseCheckStatus, isVoidedCheck, voidedValue, voidLinesText,
 } from './voidRules.js';
 
@@ -120,6 +120,26 @@ test('a whole order void books a tombstone with no money on it and every line fl
   assert.equal(q.customer.name, 'Bo');
   assert.equal(q.source, 'online');
   assert.match(q.id, /^void-\d+-/);
+});
+
+test('v5.11.77: a tombstone keeps each line\'s kitchen state (sent), so a drink voided before send is never waste', () => {
+  // A course 0 drink is fired the moment it is added, while its status is still pending.
+  const drink = { uid: 'd', itemId: 'mi-latte', qty: 1, course: 0, fired: true, status: 'pending' };
+  const held2 = { uid: 'h', itemId: 'mi-steak', qty: 1, course: 2, fired: false, status: 'sent' };
+  const made = { uid: 'm', itemId: 'mi-burger', qty: 1, course: 1, fired: true, status: 'sent' };
+  const kiosk = { id: 'mi-cola', qty: 1 };   // a channel line on the Orders screen: no status at all
+  assert.deepEqual(tombstoneLine(drink), { ...drink, sent: false, status: 'voided', voided: true });
+  assert.equal(tombstoneLine(made).sent, true);
+  assert.equal(tombstoneLine(held2).sent, true, 'sent but held: the database also reads fired false');
+  assert.equal('sent' in tombstoneLine(kiosk), false, 'no status: no sent key (the channel rule applies)');
+  assert.equal(tombstoneLine(voided).sent, false, 'a line voided earlier never counts as sent');
+  const tomb = buildVoidTombstone({ order: { ref: 'W1', items: [drink, made] }, manager: { name: 'Kim' }, reason: 'Other', source: 'pos', now: 1, id: 'void-w1' });
+  assert.deepEqual(tomb.items.map(i => i.sent), [false, true], 'the walk in tombstone records sent before the status is overwritten');
+  // The table tombstone (store voidCheck) maps its lines through the same helper.
+  const src = read('../store/index.js');
+  const voidCheck = src.slice(src.indexOf('  voidCheck: (tableId,'), src.indexOf('  voidQueueOrder: (ref,'));
+  assert.ok(voidCheck.includes('items: (session.items || []).map(tombstoneLine),'), 'the table tombstone keeps sent too');
+  assert.ok(!/map\(i => \(\{ \.\.\.i, status: 'voided', voided: true \}\)\)/.test(voidCheck), 'no tombstone overwrites the status without keeping sent');
 });
 
 test('closed_checks.source CHECK constraint: an unknown channel books as pos', () => {

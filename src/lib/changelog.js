@@ -7,6 +7,26 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.77',
+    date: '18 Oct 2026',
+    items: [
+      "Stock comes off every sale, from every channel, in one place. Until now stock only came off when a till closed a check, and only in that till's browser: a kiosk, online, QR, delivery (HubRise) or catering sale never moved stock, a refund made anywhere but the till never put anything right, and a till that lost its connection at the wrong moment simply never took the stock off. Now the database does it from the booked check itself, for every channel that books a check, exactly once per check, within about a minute of the sale, and keeps trying if anything is in the way. Not yet: ezCater orders (they do not book a check today), next release. Needs the database update 20261018c (after 20261018a). Nothing changes at any venue until ServOS switches it on, one venue at a time.",
+      "Stock, the rules it books: the same quantities the till took today (recipe portions, usable %, order type lines such as a takeaway cup, pack sizes, sizes as their own product, chosen options), at the item's current cost and in its use area, dated at the sale. One change on purpose: wastage % on a recipe now changes cost only, it no longer takes extra stock off. Food is never put back: a refund, or a void after the kitchen made the item, books the refunded share as waste (so stock, waste and GP reports are right); only items marked Can go back on the shelf (a new switch on the stock item, off by default: cans, bottles) return to stock. A line or a whole order voided before it was sent to the kitchen never takes stock off (a drink is no longer counted as made the moment it is added). A catering order refunded or cancelled before its event takes nothing off. A refund always waits for its own sale, so a refund of a sale that was waiting for a person is never lost. A refund the card processor later refused is undone exactly.",
+      "Stock, kiosk and online sales: an online order's chosen options now deplete too (they were left out before), and kiosk lines are read in both the shapes the kiosk has written. A sale closed before a stock count but booked after it gets a matching adjustment, so the count still stands.",
+      "Stock, safety: the database books only checks written by a device paired to the venue, a Back Office login, ServOS's own server or a paid online, QR or catering order the server proved in the same step that saved it; anything else waits for a person. The server stock function no longer serves a stranger's call for an online order. At a venue switched on, a till on any build, the kiosk and the server stock function are told the database has it, so nothing can ever come off twice. Everything new is owned by the database and not callable through the public key.",
+      "Stock, seeing it: Back Office Stock control shows how stock is coming off at this venue, how many sales are waiting, how many need a person and why, with a Release button for a Back Office login. The overnight watchdog pages when stock has not come off a sale for 10 minutes and notes rows that failed or waited too long. Daily trading now subtracts a refund's reversal from recipe COGS instead of adding it.",
+    ],
+  },
+  {
+    v: '5.11.76',
+    date: '18 Oct 2026',
+    items: [
+      "Stock, safety: stock can now only be moved at a venue by that venue. Until now anyone holding the public key that ships in every web page could post a sale, a delivery or waste, or set the stock on hand, at any venue. Now only a till, kiosk or ops tablet paired to the venue, a Back Office login of the venue or its company, or ServOS's own server can. Tills keep taking stock off at check close exactly as before. Needs the database update 20261018a.",
+      "Stock, server stock off (kiosk and online): the server now checks who is asking. A paired device or a Back Office login of the venue is served as before; an online customer only for a paid online order at that venue, and then from the order as it was saved, never from what the page sends. Needs the stock-deplete function deployed.",
+      "Stock transfers: a transfer between venues must stay inside one company, and every line and area must belong to the sending venue. A till paired to the venue can now move stock between its own areas, like Back Office. Needs the database update 20261018a.",
+    ],
+  },
+  {
     v: '5.11.75',
     date: '17 Oct 2026',
     items: [
