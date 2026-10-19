@@ -7,9 +7,16 @@
  * have no recipe is a complete no-op — harmless before recipes exist, and only
  * touches stock for items that are actually recipe-linked.
  *
- * Scope: POS/bar/table (authenticated) deplete client-side here. Kiosk & online run
- * as anonymous users that can't read the recipe tables under RLS, so they call the
- * `stock-deplete` edge function (service role) via depleteForSaleServer().
+ * Scope: the till only (POS/bar/table), and only at a venue still on the till path ('browser':
+ * backed out by ServOS with stock_central_switch, or a venue with no recipe yet, where nothing
+ * comes off anyway).
+ *
+ * v5.11.79 (20261019a): central stock is AUTOMATIC. Every venue with recipes is central and a venue
+ * turns central the moment it gets its first recipe link, so the database books every check from
+ * every channel. The online browser calls are gone and depleteForSaleServer (still called by the
+ * kiosk's fingerprinted submitOrder) does nothing: the database books those checks itself, and the
+ * old call never found their venue anyway. Old kiosk builds that still call the stock-deplete
+ * function are answered skipped central by the door.
  *
  * v5.11.77 CENTRAL DEPLETION (migration 20261018c): at a venue switched to 'central' (or
  * 'paused') the DATABASE takes stock off every booked check, from the check itself, for every
@@ -20,7 +27,7 @@
  * error reads as 'browser': the old path, exactly as before, until a venue is switched on.
  */
 
-import { supabase, isMock, getActiveLocationSync } from '../supabase';
+import { getActiveLocationSync } from '../supabase';
 import { isTrainingMode } from '../trainingMode';
 import { buildDepletionCtx } from './recipes.js';
 import { postStockMovement, fetchStockVenueMode } from './data.js';
@@ -42,30 +49,14 @@ async function venueModeFor(loc) {
 }
 
 /**
- * Server-side depletion for anonymous channels (kiosk / online). Fire-and-forget —
- * never blocks or throws into the order flow. The edge function explodes the sold
- * items through their recipes with the service role and posts the movements.
+ * v5.11.79: kiosk (and formerly online) stock off is booked by the DATABASE from the stored check
+ * (20261018c, automatic at every venue with recipes since 20261019a). This is now a no-op on
+ * purpose: the kiosk's submitOrder still calls it (that block is fingerprinted by the card path
+ * guard, so it is not edited), and the old call never found the kiosk's venue anyway. Old kiosk
+ * builds that still reach the stock-deplete function are answered skipped central by the door.
  */
-export async function depleteForSaleServer(check, { reverse = false } = {}) {
-  try {
-    if (isMock || !supabase) return;
-    if (isTrainingMode()) return;   // TRAINING MODE: no recipe-COGS ledger movements
-    const loc = getActiveLocationSync();
-    if (!loc) return;
-    // v5.11.77: at a central venue the database already booked this check from the row itself
-    if (!tillShouldDeplete(await venueModeFor(loc))) return;
-    const items = (check?.items || [])
-      .filter((it) => !it.voided && it.itemId)
-      .map((it) => ({ itemId: it.itemId, qty: Number(it.qty) || 1,
-        // linked modifier sub-items (the bun) deplete server-side too
-        mods: (Array.isArray(it.mods) ? it.mods : []).filter(m => m && m.itemId && !m._instruction && !m.removed).map(m => ({ itemId: m.itemId, qty: Number(m.qty) || 1 })) }));
-    if (!items.length) return;
-    const checkId = check?.id || check?.ref;
-    if (!checkId) return;
-    // order_type scopes which recipe lines deplete (e.g. a takeaway cup). Default to dine-in/base.
-    await supabase.functions.invoke('stock-deplete', { body: { location_id: loc, check_id: String(checkId), items, reverse, order_type: check?.orderType || 'dine-in' } });
-  } catch (e) { console.warn('[stock] depleteForSaleServer failed:', e?.message); }
-}
+// eslint-disable-next-line no-unused-vars
+export async function depleteForSaleServer(_check, _opts = {}) { /* the database books every channel's checks */ }
 
 let _cache = { loc: null, at: 0, ctx: null };
 /** Drop the cached depletion context (call after editing recipes/costs). */
@@ -80,6 +71,18 @@ async function ctxFor(loc) {
 }
 
 const keyOf = (check) => String(check?.id || check?.ref || '');
+/**
+ * v5.11.79 (stock plan 11.5 item 2): the sale's own time on its movements, not the time they were
+ * posted (an offline till posts hours later; the database then matches a sale made before a count
+ * with a "Late sale before count" adjustment). A time more than 10 minutes ahead of this clock, or
+ * none, is left to the database clock.
+ */
+export function saleTimeOf(check, nowMs = Date.now()) {
+  const t = check?.closedAt ?? check?.closed_at;
+  const ms = typeof t === 'number' ? t : (t ? Date.parse(t) : NaN);
+  if (!Number.isFinite(ms) || ms > nowMs + 10 * 60 * 1000) return null;
+  return new Date(ms).toISOString();
+}
 const hasRecipes = (ctx) => ctx && ctx.menuRecipes && Object.keys(ctx.menuRecipes).length > 0;
 
 /** Deplete the stock items consumed by a closed check (theoretical COGS). */
@@ -99,11 +102,12 @@ export async function depleteForSale(check) {
     const agg = explodeBasket(items.map((it) => ({ itemId: it.itemId, qty: Number(it.qty) || 1, mods: it.mods })), ctx, check?.orderType || 'dine-in');
     const key = keyOf(check);
     if (!key) return;
+    const occurredAt = saleTimeOf(check);
     for (const [invId, qtyBase] of Object.entries(agg)) {
       if (!(qtyBase > 0)) continue;
       await postStockMovement({
         inventoryItemId: invId, qtyBase: -qtyBase, movementType: 'SALE_DEPLETION',
-        sourceType: 'closed_check', sourceId: key, idempotencyKey: `sale:${key}:${invId}`,
+        sourceType: 'closed_check', sourceId: key, idempotencyKey: `sale:${key}:${invId}`, occurredAt,
       }, loc);
     }
   } catch (e) { console.warn('[stock] depleteForSale failed:', e?.message); }

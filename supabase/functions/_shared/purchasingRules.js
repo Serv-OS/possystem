@@ -331,3 +331,107 @@ export function matchScannedLine(read, candidates) {
   }
   return bestScore >= 10 ? { match: best, how: 'name' } : { match: null, how: null };
 }
+
+// ── v5.11.79 (multi site stock plan, Phase 0): receiving in one database step ─────────────────────
+
+const r4 = (n) => Math.round((Number(n) || 0) * 10000) / 10000;
+const trimNum = (n) => String(Math.round((Number(n) || 0) * 1000) / 1000);
+
+/**
+ * The supplier pack a line was bought in, in words: "6 x 1 l", "12 x 330 ml", "1 kg". Kept on
+ * the cost history row with the price paid for one such pack, so a price paid report can say
+ * what was paid per pack, per site.
+ * @param {{ pack_qty?, inner_qty?, inner_unit?, packQty?, innerQty?, innerUnit? }} l
+ */
+export function packLabel(l) {
+  if (!l) return null;
+  const packQty = Number(l.pack_qty ?? l.packQty) || 1;
+  const inner = Number(l.inner_qty ?? l.innerQty);
+  const unit = String(l.inner_unit ?? l.innerUnit ?? '').trim();
+  if (!(inner > 0) || !unit) return null;
+  return packQty > 1 ? `${trimNum(packQty)} x ${trimNum(inner)} ${unit}` : `${trimNum(inner)} ${unit}`;
+}
+
+/**
+ * What one receive of an order sends to the database's stock_receive, in one call: every line
+ * that brings stock in, keyed `po:<order>:<line>` exactly as before (so a receive from Back Office,
+ * the Ops tablet and the Manager app can never post one line twice), with the base quantity, the
+ * NET cost per base unit (0 when the line is not priced: the stock moves in at the known cost and
+ * the cost is left alone), and the pack and the price paid per pack for the cost history.
+ *
+ * @param {string} poId
+ * @param {Array} lines     po_lines rows
+ * @param {object} opts
+ *   byLine:    { [lineId]: { qtyPacks, unitPrice } } for a line by line accept, or null for a
+ *              full receive (everything outstanding at the order price)
+ *   perPackOf: { [lineId]: base units in one pack } (unreceivableLines)
+ * @returns {Array<{ key, item_id, qty_base, unit_cost, supplier_product_id, pack_price, pack_label, line_id, accepted, price }>}
+ */
+export function poReceiptLines(poId, lines, { byLine = null, perPackOf = {} } = {}) {
+  const out = [];
+  for (const l of lines || []) {
+    if (!l || !l.inventory_item_id) continue;
+    const perPack = Number(perPackOf?.[l.id]);
+    if (!(perPack > 0)) continue;
+    const r = byLine ? byLine[String(l.id)] : null;
+    const ordered = Number(l.qty_packs) || 0;
+    const accepted = byLine ? Math.max(0, Number(r?.qtyPacks ?? 0) || 0) : Math.max(0, ordered - (Number(l.qty_received) || 0));
+    if (!(accepted > 0)) continue;
+    const price = byLine && r?.unitPrice != null && r.unitPrice !== '' ? Number(r.unitPrice) : (Number(l.unit_price) || 0);
+    out.push({
+      key: `po:${poId}:${l.id}`,
+      item_id: l.inventory_item_id,
+      qty_base: r4(accepted * perPack),
+      unit_cost: price > 0 ? price / perPack : 0,
+      supplier_product_id: l.supplier_product_id || null,
+      pack_price: price > 0 ? price : null,
+      pack_label: packLabel(l),
+      line_id: l.id,
+      accepted,
+      price,
+    });
+  }
+  return out;
+}
+
+const normInvNo = (s) => String(s ?? '').trim().toLowerCase();
+
+/**
+ * A posted invoice with the same number from the same supplier at this venue, or null. The
+ * database refuses the second one too (20261019a unique rule); this lets the screen say so before
+ * the scan is uploaded. `history`: posted invoices [{ id, supplierId, invoiceNumber, invoiceDate }].
+ */
+export function findDuplicateInvoice(history, { supplierId = null, invoiceNumber = '' } = {}) {
+  const n = normInvNo(invoiceNumber);
+  if (!n) return null;
+  return (history || []).find((inv) => inv && normInvNo(inv.invoiceNumber) === n
+    && String(inv.supplierId || '') === String(supplierId || '')) || null;
+}
+
+/** The words for a refused duplicate invoice number. */
+export function duplicateInvoiceText(invoiceNumber, supplierName = '') {
+  return `Invoice ${String(invoiceNumber || '').trim()}${supplierName ? ` from ${supplierName}` : ''} is posted already at this venue. Nothing was posted again.`;
+}
+
+/**
+ * Orders from this supplier received in the last `days` that brought in any of the items on an
+ * invoice: the delivery the invoice is probably for. Posting the invoice as a separate delivery
+ * would count that stock twice, so the screen asks first and offers "Link it to that order".
+ * orders: [{ id, reference, supplierId, status, receivedAt, lines: [{ inventoryItemId, qtyReceived }] }]
+ * @returns {Array<{ id, reference, receivedAt, overlap }>} newest first
+ */
+export function receivedOrdersOverlapping(orders, { supplierId = null, itemIds = [], nowMs = Date.now(), days = 14 } = {}) {
+  if (!supplierId) return [];
+  const want = new Set((itemIds || []).filter(Boolean).map(String));
+  if (!want.size) return [];
+  const since = nowMs - days * 86400000;
+  return (orders || [])
+    .filter((po) => po && po.status === 'RECEIVED' && String(po.supplierId || '') === String(supplierId)
+      && po.receivedAt && new Date(po.receivedAt).getTime() >= since)
+    .map((po) => ({
+      id: po.id, reference: po.reference || null, receivedAt: po.receivedAt,
+      overlap: new Set((po.lines || []).filter((l) => (Number(l.qtyReceived) || 0) > 0 && want.has(String(l.inventoryItemId))).map((l) => String(l.inventoryItemId))).size,
+    }))
+    .filter((x) => x.overlap > 0)
+    .sort((a, b) => new Date(b.receivedAt) - new Date(a.receivedAt));
+}

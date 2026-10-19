@@ -12,18 +12,22 @@
 /**
  * New moving average cost after receiving stock (default valuation policy for food).
  *   new_avg = (onHand x oldAvg + recvQty x recvCost) / (onHand + recvQty)
- * All quantities and costs are per base unit. Falls back to recvCost when there is no prior
- * on hand, or when on hand plus received is zero or below (stock sold past zero carries no
- * value to average against).
+ * All quantities and costs are per base unit.
+ *
+ * v5.11.79 (multi site stock plan, Phase 0, 11.5 item 3): the received cost stands on its own,
+ * never averaged, when there is no stock to average against: on hand at or below zero (on hand -8
+ * at 1.00 plus 10 at 2.00 used to give 6.00; it is 2.00), or an unknown cost (null, or 0: an item
+ * that was never priced averaged in as free). The same rule as the database's receive
+ * (20261019a _stock_receive_lines and post_stock_transfer_leg).
  */
 export function movingAverageCost({ onHandQty = 0, currentAvg = 0, receivedQty, receivedUnitCost }) {
   const oh = Number(onHandQty) || 0;
   const rq = Number(receivedQty);
   const rc = Number(receivedUnitCost);
-  if (!(rq > 0)) return Number(currentAvg) || 0;
-  const denom = oh + rq;
-  if (!(denom > 0)) return rc;
-  return (oh * (Number(currentAvg) || 0) + rq * rc) / denom;
+  const avg = currentAvg == null ? null : Number(currentAvg);
+  if (!(rq > 0)) return avg == null || !Number.isFinite(avg) ? 0 : avg;
+  if (oh <= 0 || !(avg > 0)) return rc;
+  return (oh * avg + rq * rc) / (oh + rq);
 }
 
 /**

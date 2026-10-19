@@ -3,7 +3,7 @@
  * the pins that keep the release honest: the migration and its rollback exist, are ASCII only,
  * carry no begin or commit of their own and end with a visible check; deplete.js asks the venue
  * mode before it posts; the online checkout sends its options; the trading report sums signed
- * stock values; the version and changelog say 5.11.77. Run: npm test.
+ * stock values; the changelog keeps the 5.11.77 entry. Run: npm test.
  */
 
 import { test } from 'node:test';
@@ -74,28 +74,30 @@ test('held reasons are plain words with the thing to do', () => {
   assert.match(heldReason({ flags: ['netted_refund_failed'] }), /by hand/);
 });
 
-test('deplete.js asks the venue mode before every post and the server call, and skips at a central venue', () => {
+test('deplete.js asks the venue mode before every post, and skips at a central venue', () => {
   const src = read('./deplete.js');
   assert.match(src, /import \{ modeFromRpc, tillShouldDeplete, MODE_TTL_MS \} from '\.\/centralMode\.js'/);
   assert.match(src, /fetchStockVenueMode/);
-  // each of the three entry points checks before it does anything with stock
-  for (const fn of ['depleteForSaleServer', 'depleteForSale', 'reverseForSale']) {
-    const body = src.slice(src.indexOf(`export async function ${fn}`));
+  // each till entry point checks before it does anything with stock
+  for (const fn of ['depleteForSale', 'reverseForSale']) {
+    const body = src.slice(src.indexOf(`export async function ${fn}(`));
     const check = body.indexOf('tillShouldDeplete(await venueModeFor(loc))');
-    const post = Math.min(...['postStockMovement(', "functions.invoke('stock-deplete'", 'explodeBasket('].map((k) => body.indexOf(k)).filter((i) => i > 0));
+    const post = Math.min(...['postStockMovement(', 'explodeBasket('].map((k) => body.indexOf(k)).filter((i) => i > 0));
     assert.ok(check > 0 && check < post, `${fn} checks the venue mode before it posts`);
   }
   // any failure reading the mode is 'browser', never a thrown error into the sale path
   assert.match(src, /catch \{ mode = 'browser'; \}/);
-  // the server call now leaves out removed options too, as the database does
-  assert.match(src, /!m\._instruction && !m\.removed/);
 });
 
-test('the online checkout sends the chosen options to the server stock call (both paths)', () => {
-  const src = read('../../surfaces/online/OnlineCheckout.jsx');
-  const calls = src.match(/depleteForSaleServer\(\{ id: closedCheck\.id, items: cart\.map\(l => \(\{ itemId: l\.itemId, qty: l\.qty, mods: l\.mods \}\)\), orderType \}\)/g) || [];
-  assert.equal(calls.length, 2, 'both online placement paths pass mods');
-  assert.doesNotMatch(src, /items: cart\.map\(l => \(\{ itemId: l\.itemId, qty: l\.qty \}\)\)/, 'no path still drops the options');
+test('v5.11.79: the kiosk and online browser stock calls are gone (the database books those checks)', () => {
+  const dep = read('./deplete.js');
+  // the kiosk's fingerprinted submitOrder still calls it, so it stays exported, and does nothing
+  const fn = dep.slice(dep.indexOf('export async function depleteForSaleServer('));
+  assert.match(fn, /^export async function depleteForSaleServer\(_check, _opts = \{\}\) \{ \/\* the database books every channel's checks \*\/ \}/);
+  assert.doesNotMatch(dep, /functions\.invoke\('stock-deplete'/, 'no browser call to the stock-deplete function');
+  const online = read('../../surfaces/online/OnlineCheckout.jsx');
+  assert.doesNotMatch(online, /depleteForSaleServer/, 'online checkout makes no stock call of its own');
+  assert.equal((online.match(/v5\.11\.79: no browser stock call/g) || []).length, 2, 'both placement paths say why');
 });
 
 test('the data layer exposes the three RPCs by their migration names', () => {
@@ -136,12 +138,12 @@ test('the migration and its rollback: present, ASCII only, bare statements, a vi
   assert.doesNotMatch(mig, /add column if not exists voided_items/, 'closed_checks is not altered (hottest realtime table)');
 });
 
-test('version and changelog say 5.11.77', async () => {
-  const { VERSION } = await import('../version.js');
-  assert.equal(VERSION, '5.11.77');
+test('the changelog keeps the 5.11.77 entry', async () => {
+  // v5.11.79 is on top now (central stock automatic, 20261019a); 5.11.77's own words stay as shipped.
   const { CHANGELOG } = await import('../changelog.js');
-  assert.equal(CHANGELOG[0].v, '5.11.77');
-  assert.ok(CHANGELOG[0].items.some((t) => /20261018c/.test(t)), 'the changelog names the database update');
-  assert.ok(CHANGELOG[0].items.some((t) => /Nothing changes at any venue until ServOS switches it on/.test(t)), 'and says nothing moves until a venue is switched on');
-  for (const t of CHANGELOG[0].items) assert.doesNotMatch(t, /[–—]/, 'no dashes as punctuation');
+  const e = CHANGELOG.find((x) => x.v === '5.11.77');
+  assert.ok(e, 'the 5.11.77 entry is there');
+  assert.ok(e.items.some((t) => /20261018c/.test(t)), 'the changelog names the database update');
+  assert.ok(e.items.some((t) => /Nothing changes at any venue until ServOS switches it on/.test(t)), 'and says what 5.11.77 shipped');
+  for (const t of e.items) assert.doesNotMatch(t, /[–—]/, 'no dashes as punctuation');
 });

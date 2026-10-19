@@ -14,16 +14,26 @@
  * stock". A venue with no stock items and no recipes used to see only a message here.
  * Now the menu always lists and, at a venue with no stock, a product with no recipe records
  * as a product waste (qty, reason, note, lost sale; nothing comes off stock because there is
- * none). A venue WITH stock behaves exactly as before: a product that would take nothing off
- * stock is still refused, and a failed stock read blocks the record rather than guessing.
+ * none). A failed stock read blocks the record rather than guessing.
+ *
+ * v5.11.79 (multi site stock plan, Phase 0, 4.7 and 11.5 item 8):
+ *   - NEVER refused. A product with no recipe (or a recipe that takes nothing off) is recorded by
+ *     product with the lost sale and tagged "No recipe: stock not taken off", at a venue with stock
+ *     too, so the day a venue gets its first stock item till waste keeps working.
+ *   - The till no longer reads the whole recipe book and item list to log one waste. It reads which
+ *     products have a recipe (one paged read of the links) and asks the database for the one product
+ *     picked (stock_record_waste, preview). Recording is one database call that explodes that product
+ *     and writes the waste row (with the product id) and its stock movements together.
+ *   - Before 20261019a is run those calls are missing: the screen falls back to the old reads.
  */
 
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store';
 import { getActiveLocationSync } from '../lib/supabase';
 import { money } from '../lib/currency';
-import { logMenuItemWaste, WASTE_REASONS } from '../lib/stock/waste';
-import { listWasteProducts, wasteRefusal, countLiveStockItems, stockPresence } from '../lib/stock/menuWaste';
+import { logMenuItemWaste, fetchWasteLinks, previewMenuWaste, WASTE_REASONS } from '../lib/stock/waste';
+import { listWasteProducts, wasteTag, countLiveStockItems, stockPresence } from '../lib/stock/menuWaste';
+import { wasteTagText } from '../lib/stock/phase0Rules';
 import { fetchInventoryItems } from '../lib/stock/data';
 import { buildDepletionCtx } from '../lib/stock/recipes';
 import { explodeBasket } from '../lib/stock/explode';
@@ -32,56 +42,50 @@ import { displayInUnits } from '../lib/stock/uom';
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1.5px solid var(--bdr2)', borderRadius: 10, padding: '12px 12px', fontSize: 15, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit' };
 const lbl = { fontSize: 11, fontWeight: 800, color: 'var(--t4)', textTransform: 'uppercase', letterSpacing: '.07em', display: 'block', marginBottom: 6 };
 const DEFAULT_REASON = WASTE_REASONS.includes('Breakage / spill') ? 'Breakage / spill' : WASTE_REASONS[0];
+const qtyWords = (q) => `${Math.round(Number(q) * 100) / 100}`;
 
 export default function PosWasteModal({ open, onClose, locationId, showToast }) {
   const menuItems = useStore(s => s.menuItems) || [];
   const loc = getActiveLocationSync() || locationId || null;
-  const [ctx, setCtx] = useState(null);
-  const [invById, setInvById] = useState({});   // inventory item id → { name, baseUnit, currentCost, formats }
-  // 26 Sep 2026: stock items that are not archived. invById keeps archived ones too (an old
-  // recipe line may still name one), but only live ones say "this venue runs stock".
+  // v5.11.79: which products have a recipe (menu item id -> true), from the links only.
+  const [links, setLinks] = useState(null);
+  // 26 Sep 2026: stock items that are not archived: only live ones say "this venue runs stock".
   const [liveStockCount, setLiveStockCount] = useState(0);
+  // v5.11.79: the old reads (recipe book + items), only when the database calls are missing.
+  const [legacy, setLegacy] = useState(null);   // { ctx, invById } | null
+  const [preview, setPreview] = useState(null); // { rows, totalCost, tag } for the picked product
   // 26 Sep 2026: a stock read failed. Said on screen and Record is disabled, not just a toast.
   const [loadFailed, setLoadFailed] = useState(false);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState('');
-  const [product, setProduct] = useState(null);  // { id, label, linked }
+  const [product, setProduct] = useState(null);  // { id, label, linked, price }
   const [qty, setQty] = useState(1);
   const [reason, setReason] = useState(DEFAULT_REASON);
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
 
-  // Load the recipe/depletion context + inventory costs once when the modal opens.
+  // Load which products have a recipe, and whether the venue runs stock, once when the modal opens.
   useEffect(() => {
     if (!open) return;
     let live = true;
     setLoading(true); setLoadFailed(false); setQ(''); setProduct(null); setQty(1); setReason(DEFAULT_REASON); setNote('');
-    // 26 Sep 2026 (waste without stock review): "not loaded" = ctx null + no inventory, so
-    // hasStock stays false, the header keeps the old copy, the failure line shows and Record
-    // is disabled (submit keeps its toast as a second guard).
-    const failed = () => { setCtx(null); setInvById({}); setLiveStockCount(0); setLoadFailed(true); setLoading(false); };
-    Promise.all([buildDepletionCtx(loc), fetchInventoryItems(loc)]).then(([c, inv]) => {
+    setLegacy(null); setPreview(null);
+    // 26 Sep 2026 (waste without stock review): "not loaded" = links null, so hasStock stays false,
+    // the header keeps the old copy, the failure line shows and Record is disabled.
+    const failed = () => { setLinks(null); setLiveStockCount(0); setLoadFailed(true); setLoading(false); };
+    fetchWasteLinks(loc).then((r) => {
       if (!live) return;
-      // supabase-js never throws on a failed fetch, it resolves { data: null, error } and the
-      // builders coerce that to []. Without this check a network blip at a STOCK venue read as
-      // "no stock is set up here" and recorded a waste with no cost and no stock movement.
-      if (inv?.error || c?.error) { failed(); return; }
-      const map = {};
-      (inv?.data || []).forEach((it) => { map[it.id] = { name: it.name, baseUnit: it.baseUnit, currentCost: it.currentCost, formats: it.packaging || [] }; });
-      setCtx(c); setInvById(map); setLiveStockCount(countLiveStockItems(inv?.data)); setLoading(false);
+      if (r?.error) { failed(); return; }
+      setLinks(r.links || {}); setLiveStockCount(Number(r.liveStockItems) || 0); setLoading(false);
     }).catch(() => { if (live) failed(); });
     return () => { live = false; };
   }, [open, loc]);
 
   // Every selling item with a parent-qualified name + whether it's recipe-linked
   // (pure, tested in lib/stock/menuWaste.test.js; the list never depends on stock existing).
-  const products = useMemo(() => listWasteProducts(menuItems, ctx?.menuRecipes), [menuItems, ctx]);
-  // Does this venue run stock at all? With no live stock items and no recipes, "no recipe"
-  // badges and "link it in Recipes" nags are noise, not help, and nothing is refused. It can
-  // only be true once every stock read succeeded (a failed load leaves ctx null, see above).
-  // Archived stock items do not count; stock items with no recipe linked at all is
-  // recipesMissing (rules in lib/stock/menuWaste.js, tested there).
-  const { hasStock, recipesMissing } = stockPresence({ loaded: !!ctx, linkedRecipes: Object.keys(ctx?.menuRecipes || {}).length, liveStockItems: liveStockCount });
+  const products = useMemo(() => listWasteProducts(menuItems, links), [menuItems, links]);
+  // Does this venue run stock at all? Only once the reads succeeded (rules in lib/stock/menuWaste.js).
+  const { hasStock, recipesMissing } = stockPresence({ loaded: !!links, linkedRecipes: Object.keys(links || {}).length, liveStockItems: liveStockCount });
 
   // Filtered list (or the whole menu when the box is empty) so staff can browse, not just type.
   const matches = useMemo(() => {
@@ -90,57 +94,70 @@ export default function PosWasteModal({ open, onClose, locationId, showToast }) 
     return list.slice(0, 100);
   }, [q, products]);
 
-  // Live stock impact of the selection: explode the product × qty through its recipe,
-  // value each ingredient at its current (net) cost — the same numbers logWaste posts.
-  const impact = useMemo(() => {
-    if (!product || !ctx) return null;
+  // The stock the picked product takes off, worked out by the database for this ONE product
+  // (v5.11.79). Missing call (20261019a not run): the old reads, once, and the old explosion.
+  const previewKey = product ? `${product.id}|${qty}` : '';
+  useEffect(() => {
+    if (!open || !product || !links) return;
     const n = Number(qty);
-    if (!(n > 0)) return null;
-    const agg = explodeBasket([{ itemId: product.id, qty: n }], ctx);
-    const ingredients = Object.entries(agg).filter(([, base]) => base > 0).map(([invId, qtyBase]) => ({ inventoryItemId: invId, qtyBase }));
-    const rows = ingredients.map(({ inventoryItemId: invId, qtyBase }) => {
-      const it = invById[invId];
-      const disp = it ? displayInUnits(qtyBase, { baseUnit: it.baseUnit, formats: it.formats }) : null;
-      const cost = it && it.currentCost != null ? qtyBase * Number(it.currentCost) : null;
-      return { invId, name: it?.name || 'Stock item', qtyLabel: disp ? `${disp.qty} ${disp.label}` : `${Math.round(qtyBase * 100) / 100}`, cost };
-    });
-    const totalCost = rows.reduce((s, r) => s + (r.cost || 0), 0);
-    const lostSale = (Number(product.price) || 0) * n;   // forgone revenue at the menu price
-    return { rows, ingredients, totalCost, lostSale };
-  }, [product, qty, ctx, invById]);
+    if (!(n > 0)) return;
+    let live = true;
+    const key = `${product.id}|${qty}`;
+    const fromLegacy = (lg) => {
+      const agg = explodeBasket([{ itemId: product.id, qty: n }], lg.ctx);
+      const rows = Object.entries(agg).filter(([, base]) => base > 0).map(([invId, qtyBase]) => {
+        const it = lg.invById[invId];
+        const disp = it ? displayInUnits(qtyBase, { baseUnit: it.baseUnit, formats: it.formats }) : null;
+        return { invId, qtyBase, name: it?.name || 'Stock item', qtyLabel: disp ? `${disp.qty} ${disp.label}` : qtyWords(qtyBase), cost: it && it.currentCost != null ? qtyBase * Number(it.currentCost) : null };
+      });
+      return { key, rows, totalCost: rows.reduce((t, r) => t + (r.cost || 0), 0), legacy: true };
+    };
+    (async () => {
+      if (legacy) { if (live) setPreview(fromLegacy(legacy)); return; }
+      const r = await previewMenuWaste({ menuItemId: product.id, qty: n }, loc);
+      if (!live) return;
+      if (r.missing) {
+        const [c, inv] = await Promise.all([buildDepletionCtx(loc), fetchInventoryItems(loc)]);
+        if (!live) return;
+        if (inv?.error || c?.error) { setLoadFailed(true); return; }
+        const invById = {};
+        (inv?.data || []).forEach((it) => { invById[it.id] = { name: it.name, baseUnit: it.baseUnit, currentCost: it.currentCost, formats: it.packaging || [] }; });
+        const lg = { ctx: c, invById };
+        setLegacy(lg); setLiveStockCount(countLiveStockItems(inv?.data)); setPreview(fromLegacy(lg));
+        return;
+      }
+      if (r.error || !r.data) { setLoadFailed(true); return; }
+      const rows = (r.data.lines || []).map((l) => ({ invId: l.item_id, qtyBase: Number(l.qty_base), name: l.name || 'Stock item', qtyLabel: `${qtyWords(l.qty_base)} ${l.base_unit || ''}`.trim(), cost: l.cost == null ? null : Number(l.cost) }));
+      setPreview({ key, rows, totalCost: Number(r.data.cost_value) || 0, tag: r.data.tag || null, legacy: false });
+    })().catch(() => { if (live) setLoadFailed(true); });
+    return () => { live = false; };
+  }, [open, product, qty, links, legacy, loc]);
+
+  // the preview of THIS product and quantity only (an older answer is never shown for a new pick)
+  const shown = preview && preview.key === previewKey ? preview : null;
+  const lostSale = product ? (Number(product.price) || 0) * (Number(qty) || 0) : 0;   // forgone revenue at the menu price
+  // v5.11.79: why nothing comes off stock (never a refusal; rule in lib/stock/menuWaste.js).
+  const tag = product && shown ? wasteTag({ hasStock, linked: product.linked, rows: shown.rows }) : null;
 
   const submit = async () => {
     if (!product) { showToast?.('Pick an item', 'error'); return; }
     const n = Number(qty);
     if (!(n > 0)) { showToast?.('Enter a quantity', 'error'); return; }
-    // 26 Sep 2026: at a venue with no stock a product with no recipe lines is no longer refused
-    // (Peter: "should be able to waste without stock"). Two things still stop a record. First
-    // the stock context failing to load: then we cannot tell a no-stock venue from a network
-    // blip, and skipping the deduction at a stock venue would be a silent wrong record.
-    if (!ctx || !impact) { showToast?.('Stock data did not load, close and try again', 'error'); return; }
-    // Second, at a venue WITH stock, a product that would take nothing off stock: exactly the
-    // refusal this modal always had (rule in lib/stock/menuWaste.js, tested there).
-    const refusal = wasteRefusal({ hasStock, linked: product.linked, rows: impact.rows });
-    if (refusal === 'unlinked') {
-      showToast?.(`${product.label} isn’t linked to a recipe yet — link it in Back Office → Recipes to track its waste.`, 'error');
-      return;
-    }
-    if (refusal) {
-      showToast?.(`${product.label} is linked to a recipe that takes nothing off stock, check its ingredients and units in Back Office → Recipes.`, 'error');
-      return;
-    }
+    // A failed stock read still stops a record: we cannot tell a no stock venue from a network
+    // blip. Nothing else does (v5.11.79: waste is never refused).
+    if (!links || loadFailed) { showToast?.('Stock data did not load, close and try again', 'error'); return; }
     setBusy(true);
     try {
-      const { error, training } = await logMenuItemWaste({
-        productName: product.label, qty: n, salePrice: product.price,
-        ingredients: impact.ingredients, reason, note: note.trim() || null, source: 'pos',
+      const { error, training, tag: savedTag } = await logMenuItemWaste({
+        menuItemId: product.id, productName: product.label, qty: n, salePrice: product.price,
+        ingredients: shown?.legacy ? shown.rows.map((r) => ({ inventoryItemId: r.invId, qtyBase: r.qtyBase })) : null,
+        reason, note: note.trim() || null, source: 'pos',
       }, loc);
       setBusy(false);
       if (error) {
         // v5.5.928: never surface a raw RLS string to staff — it reads as gibberish and the
-        // open modal gives no clue whether anything saved. (It has not: the event insert is
-        // first, so a refusal here means NOTHING recorded.)
-        const msg = /row-level security/i.test(error.message || '')
+        // open modal gives no clue whether anything saved. (It has not: one call, all or nothing.)
+        const msg = /row-level security|42501/i.test(`${error.code || ''} ${error.message || ''}`)
           ? 'This till is not allowed to record waste — re-pair the device or record it in Back Office → Wastage'
           : (error.message || 'Could not log waste');
         showToast?.(msg, 'error');
@@ -149,7 +166,8 @@ export default function PosWasteModal({ open, onClose, locationId, showToast }) 
       // 26 Sep 2026: a Training Mode till writes nothing (lib/stock/waste.js). Close as done so
       // the practice flow is the real one, but never say "Waste logged" for a row that is not there.
       if (training) { showToast?.('Training mode: waste not recorded', 'info'); onClose?.(); return; }
-      showToast?.(`Waste logged — ${n}× ${product.label} · lost sale ${money(impact.lostSale)}`, 'success');
+      const why = hasStock && (savedTag || tag) ? ` · ${savedTag === 'nothing_to_deduct' || tag === 'nothing_to_deduct' ? 'its recipe takes nothing off stock' : 'No recipe: stock not taken off'}` : '';
+      showToast?.(`Waste logged — ${n}× ${product.label} · lost sale ${money(lostSale)}${why}`, 'success');
       onClose?.();
     } catch (e) { setBusy(false); showToast?.(e?.message || 'Could not log waste', 'error'); }
   };
@@ -165,9 +183,9 @@ export default function PosWasteModal({ open, onClose, locationId, showToast }) 
           <button onClick={() => onClose?.()} style={{ background: 'transparent', border: 'none', fontSize: 24, color: 'var(--t4)', cursor: 'pointer', padding: 4 }}>×</button>
         </div>
         {/* 26 Sep 2026: "No stock is set up here" is only said once every stock read succeeded
-            (ctx set) and came back empty; while loading or after a failed load it is the old copy. */}
+            and came back empty; while loading or after a failed load it is the old copy. */}
         <div style={{ fontSize: 12, color: 'var(--t3)', marginBottom: 18 }}>
-          {loading || !ctx || hasStock
+          {loading || !links || hasStock
             ? 'Spilled, dropped or binned? Pick the menu item — the system works out the stock it uses and takes it off at cost.'
             : 'Spilled, dropped or binned? Pick the menu item, how many and why. No stock is set up here, so it is recorded by product with the lost sale.'}
         </div>
@@ -175,10 +193,9 @@ export default function PosWasteModal({ open, onClose, locationId, showToast }) 
         {loadFailed && (
           <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--red,#cc5959)', marginTop: -10, marginBottom: 14 }}>Stock data did not load, close and try again</div>
         )}
-        {/* 26 Sep 2026: stock items but no recipe linked at all means every product would be
-            refused on Record. Say why up front; the list stays so staff can still see the menu. */}
+        {/* Stock items but no recipe linked at all: say once that menu waste records with no stock taken off. */}
         {!loading && !loadFailed && recipesMissing && (
-          <div style={{ fontSize: 12, color: 'var(--amb,#e8a020)', lineHeight: 1.45, marginTop: -10, marginBottom: 14 }}>{'Stock items exist but no recipes are linked yet, so menu waste cannot come off stock. Link recipes in Back Office > Recipes.'}</div>
+          <div style={{ fontSize: 12, color: 'var(--amb,#e8a020)', lineHeight: 1.45, marginTop: -10, marginBottom: 14 }}>{'Stock items exist but no recipes are linked yet, so menu waste is recorded with the lost sale and no stock taken off. Link recipes in Back Office > Recipes.'}</div>
         )}
 
         {!product ? (
@@ -207,7 +224,8 @@ export default function PosWasteModal({ open, onClose, locationId, showToast }) 
               <span style={{ fontWeight: 700 }}>{product.label}</span>
               <button onClick={() => setProduct(null)} style={{ background: 'transparent', border: 0, color: 'var(--acc)', cursor: 'pointer', fontWeight: 700, fontSize: 13 }}>change</button>
             </div>
-            {hasStock && !product.linked && <div style={{ fontSize: 11.5, color: 'var(--amb,#e8a020)', marginBottom: 12 }}>⚠ This item has no recipe linked, so nothing will come off stock. Link it in Back Office → Recipes.</div>}
+            {/* v5.11.79: never a refusal, a plain note why nothing comes off stock. */}
+            {tag && <div style={{ fontSize: 11.5, color: 'var(--amb,#e8a020)', marginBottom: 12 }}>{wasteTagText(tag === 'nothing_to_deduct' ? 'nothing_to_deduct' : 'no_recipe')}</div>}
             <div style={{ display: 'flex', gap: 10, marginTop: 10, marginBottom: 14 }}>
               <div style={{ flex: '0 0 110px' }}>
                 <label style={lbl}>How many</label>
@@ -221,31 +239,29 @@ export default function PosWasteModal({ open, onClose, locationId, showToast }) 
               </div>
             </div>
 
-            {impact && impact.rows.length > 0 && (
+            {shown && shown.rows.length > 0 && (
               <div style={{ background: 'var(--bg2)', border: '1px solid var(--bdr)', borderRadius: 10, padding: '10px 12px', marginBottom: 14 }}>
                 <div style={{ fontSize: 11, fontWeight: 800, color: 'var(--t4)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>Comes off stock</div>
-                {impact.rows.map(r => (
+                {shown.rows.map(r => (
                   <div key={r.invId} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 13, color: 'var(--t2)', padding: '2px 0' }}>
                     <span>{r.qtyLabel} · {r.name}</span>
                     <span style={{ color: 'var(--t1)', fontVariantNumeric: 'tabular-nums' }}>{r.cost == null ? '—' : money(r.cost)}</span>
                   </div>
                 ))}
                 <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid var(--bdr)', marginTop: 6, paddingTop: 6, fontSize: 13.5, fontWeight: 700, color: 'var(--t2)' }}>
-                  <span>Stock cost</span><span style={{ fontVariantNumeric: 'tabular-nums' }}>{money(impact.totalCost)}</span>
+                  <span>Stock cost</span><span style={{ fontVariantNumeric: 'tabular-nums' }}>{money(shown.totalCost)}</span>
                 </div>
-                {impact.lostSale > 0 && (
+                {lostSale > 0 && (
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, fontSize: 14, fontWeight: 800, color: 'var(--red,#cc5959)' }}>
-                    <span>Lost sale</span><span style={{ fontVariantNumeric: 'tabular-nums' }}>{money(impact.lostSale)}</span>
+                    <span>Lost sale</span><span style={{ fontVariantNumeric: 'tabular-nums' }}>{money(lostSale)}</span>
                   </div>
                 )}
               </div>
             )}
-            {/* 26 Sep 2026, Peter: "should be able to waste without stock". No recipe lines means
-                no stock figure, so the lost sale is the one number worth confirming before saving.
-                Only at a no stock venue: a stock venue refuses this case on submit, as it always did. */}
-            {!hasStock && impact && impact.rows.length === 0 && impact.lostSale > 0 && (
+            {/* No stock lines: the lost sale is the one number worth confirming before saving. */}
+            {shown && shown.rows.length === 0 && lostSale > 0 && (
               <div style={{ display: 'flex', justifyContent: 'space-between', background: 'var(--bg2)', border: '1px solid var(--bdr)', borderRadius: 10, padding: '10px 12px', marginBottom: 14, fontSize: 14, fontWeight: 800, color: 'var(--red,#cc5959)' }}>
-                <span>Lost sale</span><span style={{ fontVariantNumeric: 'tabular-nums' }}>{money(impact.lostSale)}</span>
+                <span>Lost sale</span><span style={{ fontVariantNumeric: 'tabular-nums' }}>{money(lostSale)}</span>
               </div>
             )}
 
@@ -255,7 +271,7 @@ export default function PosWasteModal({ open, onClose, locationId, showToast }) 
             </div>
             {/* 26 Sep 2026: disabled after a failed stock read (loadFailed), same as while saving. */}
             <button onClick={submit} disabled={busy || loadFailed} style={{ width: '100%', padding: '14px', borderRadius: 12, border: 'none', background: 'var(--red,#cc5959)', color: '#fff', fontFamily: 'inherit', fontWeight: 800, fontSize: 15, cursor: busy || loadFailed ? 'default' : 'pointer', opacity: busy || loadFailed ? 0.6 : 1 }}>
-              {busy ? 'Logging…' : impact && impact.rows.length ? `Record waste — ${money(impact.totalCost)}` : 'Record waste'}
+              {busy ? 'Logging…' : shown && shown.rows.length ? `Record waste — ${money(shown.totalCost)}` : 'Record waste'}
             </button>
           </>
         )}

@@ -15,7 +15,8 @@ import NumberField from '../../components/NumberField';
 import { formatRateLabel, purchaseNet } from '../../lib/tax';
 import { convert } from '../../lib/stock/conversion';
 import { fetchSuppliers, fetchInventoryItems } from '../../lib/stock/data';
-import { scanInvoice, postInvoice, fetchInvoices } from '../../lib/stock/purchasing';
+import { scanInvoice, postInvoice, fetchInvoices, fetchPurchaseOrders } from '../../lib/stock/purchasing';
+import { findDuplicateInvoice, duplicateInvoiceText, receivedOrdersOverlapping } from '../../lib/stock/purchasingRules';
 import { areasReady, fetchAreas } from '../../lib/stock/areas';
 import { pickSupplierProduct } from '../../lib/stock/costing';
 import { matchScannedLine } from '../../lib/stock/purchasingRules';
@@ -142,6 +143,22 @@ export default function Invoices() {
   const post = async () => {
     const matched = review.lines.filter(l => l.matchedItemId && Number(l.qty) > 0);
     if (!matched.length) { showToast?.('Match at least one line to a stock item', 'error'); return; }
+    // v5.11.79 (stock plan 4.9): the same invoice number from the same supplier is posted already.
+    // The database refuses it too; saying so here keeps the scan from being uploaded twice.
+    const dup = findDuplicateInvoice(history, { supplierId: review.header.supplierId || null, invoiceNumber: review.header.invoiceNumber });
+    if (dup) { showToast?.(duplicateInvoiceText(review.header.invoiceNumber, suppliers.find(x => x.id === review.header.supplierId)?.name || ''), 'error'); return; }
+    // v5.11.79: an order from this supplier received in the last 14 days with these items is probably
+    // this delivery. Posting the invoice as its own delivery would count that stock twice.
+    let poId = null;
+    if (review.header.supplierId) {
+      const { data: pos } = await fetchPurchaseOrders(locId, 100);
+      const overlap = receivedOrdersOverlapping(pos || [], { supplierId: review.header.supplierId, itemIds: matched.map(l => l.matchedItemId) });
+      if (overlap.length) {
+        const o = overlap[0];
+        const when = o.receivedAt ? new Date(o.receivedAt).toLocaleDateString() : 'recently';
+        if (window.confirm(`Order ${o.reference || ''} from this supplier was received on ${when} with ${o.overlap} of these items.\n\nOK: keep this invoice as the paperwork for that order (its stock is in already, nothing is counted twice).\nCancel: post it as a separate delivery.`)) poId = o.id;
+      }
+    }
     setPosting(true);
     // Keep the scanned file: upload to the private invoice-scans bucket so it can be
     // re-viewed later and attached to the Xero bill. Best-effort — posting continues.
@@ -157,14 +174,14 @@ export default function Invoices() {
     // Store the VAT computed from the (reviewed) lines, net of any inc-VAT entries.
     const net = review.lines.reduce((s, l) => s + netLineOf(l), 0);
     const vat = review.lines.reduce((s, l) => s + netLineOf(l) * lineRateDec(l), 0);
-    const { error } = await postInvoice({
-      ...review.header, imagePath,
+    const { error, text } = await postInvoice({
+      ...review.header, imagePath, poId,
       subtotal: Math.round(net * 100) / 100, tax: Math.round(vat * 100) / 100, total: Math.round((net + vat) * 100) / 100,
       flags: undefined,
     }, review.lines.map(l => ({ ...l, flags: lineInfo(l).flag ? [lineInfo(l).flag] : [] })), locId, { areaId: landArea || null });
     setPosting(false);
     if (error) { showToast?.(error.message, 'error'); return; }
-    showToast?.(`Posted invoice — ${matched.length} line${matched.length === 1 ? '' : 's'} received`, 'success');
+    showToast?.(text || `Posted invoice — ${matched.length} line${matched.length === 1 ? '' : 's'} received`, 'success');
     setReview(null); setPendingFile(null); await reload();
   };
 

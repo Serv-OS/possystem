@@ -10,7 +10,8 @@ import { useStore } from '../../store';
 import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
 import { money, currencySymbol, signedMoney } from '../../lib/currency';
 import { lineValue, negativeStock } from '../../lib/stock/valuation';
-import { fetchInventoryItems, fetchSuppliers, fetchRecentMovements, movementLabel, fetchStockOutboxHealth, releaseStockOutbox } from '../../lib/stock/data';
+import { fetchInventoryItems, fetchSuppliers, fetchRecentMovements, movementLabel, fetchStockOutboxHealth, releaseStockOutbox, fetchCostRule, saveCostRule } from '../../lib/stock/data';
+import { COST_RULES, COST_RULE_WORDS, normCostRule } from '../../lib/stock/phase0Rules';
 import { healthWords, heldReason } from '../../lib/stock/centralMode.js';
 import { displayInUnits } from '../../lib/stock/uom';
 import { fetchRecipes } from '../../lib/stock/recipes';
@@ -26,8 +27,12 @@ const card = { background: 'var(--bg1)', border: '1px solid var(--bdr)', borderR
 // button. The setter it is handed refuses a blocked route anyway (belt and braces).
 export default function StockOverview({ setSection, canOpen = () => true }) {
   const menuItems = useStore(s => s.menuItems) || [];
+  const showToast = useStore(s => s.showToast);
   const [locId, setLocId] = useState(getActiveLocationSync());
   const [d, setD] = useState(null);
+  // v5.11.79 (stock plan 4.5, decision 2): where cost comes from at this venue.
+  const [costRule, setCostRule] = useState(null);
+  const [ruleBusy, setRuleBusy] = useState(false);
 
   const load = useCallback(async () => {
     const loc = locId || getActiveLocationSync() || await getLocationId().catch(() => null);
@@ -44,6 +49,7 @@ export default function StockOverview({ setSection, canOpen = () => true }) {
       // does not exist and the card simply does not show.
       fetchStockOutboxHealth(loc).catch(() => ({ data: null, error: null })),
     ]);
+    fetchCostRule(loc).then((r) => setCostRule(normCostRule(r?.data))).catch(() => setCostRule('price_list'));
     setD({ items: items || [], recipes: recipes || [], suppliers: suppliers || [], pos: pos || [], moves: moves || [],
       areas: areaRes.data, holdings: holdRes.data || {}, counts: countRes.data || [],
       health: healthRes && !healthRes.error ? healthWords(healthRes.data) : null });
@@ -152,6 +158,28 @@ export default function StockOverview({ setSection, canOpen = () => true }) {
 
         {/* Right column: attention + activity */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+          {costRule && (
+            <div style={card} data-testid="stock-cost-rule">
+              <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--t1)', marginBottom: 6 }}>Cost here</div>
+              {COST_RULES.map((r) => (
+                <label key={r} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', padding: '6px 0', cursor: ruleBusy ? 'default' : 'pointer' }}>
+                  <input type="radio" name="cost-rule" checked={costRule === r} disabled={ruleBusy}
+                    onChange={async () => {
+                      setRuleBusy(true);
+                      const { error } = await saveCostRule(r, null, locId);
+                      setRuleBusy(false);
+                      if (error) { showToast?.(`Cost rule not saved: ${error.message || error}`, 'error'); return; }
+                      setCostRule(r);
+                      showToast?.(`${COST_RULE_WORDS[r].label}: saved. No cost changed now; the next price save or delivery follows it.`, 'success');
+                    }} />
+                  <span>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--t1)' }}>{COST_RULE_WORDS[r].label}{r === 'price_list' ? ' (the default)' : ''}</span>
+                    <span style={{ display: 'block', fontSize: 11.5, color: 'var(--t3)', marginTop: 2 }}>{COST_RULE_WORDS[r].help}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          )}
           {(noPrice.length > 0 || unlinked.length > 0 || negatives.length > 0 || belowAreas.length > 0 || readyCounts.length > 0) && (
             <div style={card}>
               <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--t1)', marginBottom: 10 }}>Needs attention</div>

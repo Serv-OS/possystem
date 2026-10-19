@@ -11,7 +11,7 @@
  *   listWasteProducts(menuItems, menuRecipes) -> what the screen lists
  *   countLiveStockItems(items)                -> stock items that still count (archived ones do not)
  *   stockPresence({...})                      -> does this venue run stock, and are recipes missing
- *   wasteRefusal({ hasStock, linked, rows })  -> why a STOCK venue still says no (null = record it)
+ *   wasteTag({ hasStock, linked, rows })      -> why nothing came off stock (never a refusal, v5.11.79)
  *   buildMenuWasteRow({...})                  -> the waste_events row that gets inserted
  *   firstReadError(results)                   -> the first failed supabase read, or null
  */
@@ -76,20 +76,21 @@ export function stockPresence({ loaded, linkedRecipes, liveStockItems }) {
 }
 
 /**
- * 26 Sep 2026: may a venue record this menu waste? Peter: "should be able to waste
- * without stock", so a venue with NO stock is never refused (null). A venue WITH stock
- * keeps the rule it always had: when nothing would come off stock the record is refused,
- * because a waste that skips the deduction is a silent wrong number in the ledger. The
- * return value says why, so the screen can word it:
- *   'unlinked'           the product has no recipe (the old "link it in Recipes" toast)
- *   'nothing_to_deduct'  linked, but the recipe explodes to no stock lines (no lines yet,
- *                        an ingredient missing from stock, a unit that will not convert)
+ * v5.11.79 (stock plan Phase 0, 4.7): a menu waste is NEVER refused. Before, a venue WITH stock refused
+ * a product whose recipe took nothing off stock, so the day Coffee Boy got its first stock item every
+ * till waste of a product with no recipe would have been turned away (31 till wastes since 2 Oct).
+ * Now it is recorded all the same, by product, with the lost sale, and tagged so someone adds the
+ * recipe. The tag says why nothing came off stock, or null when stock did come off (or the venue has
+ * no stock at all, where there is nothing to say):
+ *   'no_recipe'          the product has no recipe ("No recipe: stock not taken off")
+ *   'nothing_to_deduct'  linked, but the recipe explodes to no stock lines (no lines yet, an
+ *                        ingredient missing from stock, a unit that will not convert)
  * `rows` are the exploded stock lines the screen shows under "Comes off stock".
  */
-export function wasteRefusal({ hasStock, linked, rows }) {
+export function wasteTag({ hasStock, linked, rows }) {
   if (!hasStock) return null;
   if (Array.isArray(rows) && rows.length > 0) return null;
-  return linked ? 'nothing_to_deduct' : 'unlinked';
+  return linked ? 'nothing_to_deduct' : 'no_recipe';
 }
 
 /**

@@ -99,6 +99,10 @@ const transferLineFromRow = (r) => ({
   qtyBase: Number(r.qty_base) || 0, unitCost: r.unit_cost == null ? null : Number(r.unit_cost),
   qtyReceivedBase: r.qty_received_base == null ? null : Number(r.qty_received_base),
   dropped: r.dropped === true, sortOrder: Number(r.sort_order) || 0,
+  // v5.11.79 (20261019a): the receiving item's unit at the receive, and what did not arrive (in the
+  // SENDER's unit), booked at the sender as Short on transfer. Null before the migration.
+  toBaseUnit: r.to_base_unit || null, shortQtyBase: r.short_qty_base == null ? null : Number(r.short_qty_base),
+  toUnitCost: r.to_unit_cost == null ? null : Number(r.to_unit_cost),
 });
 
 // ── Areas ─────────────────────────────────────────────────────────────────────

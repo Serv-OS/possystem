@@ -7,6 +7,23 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.79',
+    date: '19 Oct 2026',
+    items: [
+      "Stock, central stock is automatic: every venue with recipes now has its stock taken off by the database for every channel, and a venue switches on by itself the moment it gets its first recipe link (a new venue too). Nobody has to remember a switch. Provo and Location 2 stay as they are; the third company's venue switches on with this update. ServOS can still put a venue back on the till path, and it stays there until ServOS switches it again. The kiosk and online pages no longer make a stock call of their own: the database books those sales. Needs the database update 20261019a (after 20261018a and 20261018c).",
+      "Stock counts while trading: each counted line now records when it was counted, and approving is one step that works each line out from that moment, so sales made while the count was running are never added back. A 2,000 line count approves in about a second, from a phone too. A figure on an approved count can no longer be changed.",
+      "Opening stock: the first count of an item at a venue is booked as Opening stock, not as a gain, and The Gap leaves it out. It is valued at a real cost (the item's cost, else its supplier price, else a cost the manager types on the approval screen), never 0.",
+      "Waste is never refused: a menu product with no recipe is recorded with the lost sale and tagged No recipe: stock not taken off, at a venue with stock too, so till waste keeps working the day a venue gets its first stock item. Each waste row carries the product, and the till no longer reads the whole recipe book to log one waste: the database works out that one product.",
+      "Stock cost: each venue picks where cost comes from in Stock control (Overview, Cost here): the price list (the default, exactly as before) or deliveries (the average paid; a price change only sets the cost of an item never received). The item screen never writes the cost any more, so an old figure can no longer be saved back over a delivery. Stock below zero, or an item with no known cost, takes the delivery price instead of a wrong average (minus 8 at 1 plus 10 at 2 is now 2, not 6). Costs keep 8 decimals (milk per ml was losing up to half a percent). Wastage % on a recipe changes the plate cost only.",
+      "Deliveries and invoices: receiving an order, and posting an invoice, are each one step in the database, so two devices receiving at once, or sales during a receive, can no longer give a wrong average. The cost history keeps the supplier pack and the price paid per pack. A second invoice with the same number from the same supplier is refused. An invoice for an order received in the last 14 days asks first and can be kept as that order's paperwork, so its stock is never counted twice. The Manager app receive is the same one step.",
+      "Purchase orders: the order email now shows the supplier's own product code, and the order email and the Xero bill push accept the owner of the company (they refused owners with no link to that venue). The Orders screen reads only the lines of the orders it shows, so older orders no longer lose lines.",
+      "Stock transfers: lines match themselves by code then name, and when two of your items match, you pick (the first one never wins silently). A line sent in ml arrives in litres at a venue that counts in litres; units that cannot convert are named, not guessed. What did not arrive is booked at the sending venue as waste, Short on transfer, so it no longer vanishes. Only the company's own venues are offered, and the database refuses another company's.",
+      "Deletes keep history: a stock item with stock history cannot be deleted (archive it), and a pack a recipe uses cannot be deleted (it used to stop the recipe line taking anything off, without a word).",
+      "Multi site menu: a read only line on the products grid says, for example, 12 products have a recipe at Provo but none at Location 2, so the missing recipes can be added.",
+      "Built to scale: every recipe, costing, supplier, waste and order line read goes in pages of 1,000 (lines were silently cut past 1,000), every writer that touches several items locks them in one order so two can never deadlock, and stock tables are indexed by venue. The order pad's weekday pattern uses the venue's own day, not UTC.",
+    ],
+  },
+  {
     v: '5.11.77',
     date: '18 Oct 2026',
     items: [

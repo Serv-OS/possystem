@@ -16,6 +16,10 @@ import { purchaseNet } from '../tax.js';
 import { readAllPagesResult } from '../pagedRead.js';
 import { normDeliveryDays } from './purchasingRules.js';
 import { areasReady, areasReadySync, fetchItemAreas } from './areas.js';
+import { DEFAULT_COST_RULE, normCostRule, priceSetsCost } from './phase0Rules.js';
+
+/** stock_site_settings is not there yet (20261019a not run): read as the default, never an error. */
+const isMissingTableError = (e) => /42P01|PGRST205|relation .* does not exist|Could not find the table/i.test(`${e?.code || ''} ${e?.message || ''}`);
 
 const nowIso = () => new Date().toISOString();
 
@@ -78,7 +82,11 @@ const itemToRow = (i, locationId) => ({
   name: (i.name || '').trim(), kind: i.kind === 'MADE' ? 'MADE' : 'PURCHASED',
   base_unit: i.baseUnit || 'each', accounting_group: i.accountingGroup || null,
   category: i.category || null, is_tracked: i.isTracked !== false, is_sellable: i.isSellable === true,
-  current_cost: num(i.currentCost), cost_method: i.costMethod || 'MOVING_AVG',
+  // v5.11.79 (stock plan Phase 0, 4.5): the item screen NEVER writes current_cost. It held the cost it
+  // read when the sheet opened, so a delivery received while it was open was written back over with
+  // the old figure. Cost moves only through deliveries, the price list rule (recomputeItemCost), an
+  // opening count, transfers and production, each on the server or from fresh rows.
+  cost_method: i.costMethod || 'MOVING_AVG',
   allergens: Array.isArray(i.allergens) ? i.allergens : [],
   shelf_life_days: i.shelfLifeDays == null || i.shelfLifeDays === '' ? null : Number(i.shelfLifeDays),
   storage_location: i.storageLocation || null, default_supplier_id: i.defaultSupplierId || null,
@@ -236,8 +244,9 @@ export const fetchSuppliers = async (locationId = null) => {
   if (isMock || !supabase) return { data: [], error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: [], error: null };
-  const { data, error } = await supabase.from('suppliers').select('*')
-    .eq('location_id', locationId).is('archived_at', null).order('name');
+  // v5.11.79: in pages of 1,000 (lib/pagedRead.js), never a silent cut.
+  const { data, error } = await readAllPagesResult('suppliers', (first) => supabase.from('suppliers')
+    .select('*', first ? { count: 'exact' } : undefined).eq('location_id', locationId).is('archived_at', null).order('name').order('id'));
   return { data: (data || []).map(supplierFromRow), error };
 };
 
@@ -483,6 +492,17 @@ export const fetchStockOutboxHealth = async (locationId = null) => {
   return supabase.rpc('stock_outbox_health', { p_location_id: locationId });
 };
 
+/**
+ * v5.11.79 (stock plan Phase 0): the Multi site menu's read only warning rows, one per site at most:
+ * { location_id, site_name, missing, from_location_id, from_site_name, from_count } for "12 products
+ * have a recipe at Provo but none at Location 2" (msm_stock_recipe_gaps, 20261019a). Before the
+ * migration the call is missing and the screen shows nothing.
+ */
+export const fetchMsmRecipeGaps = async (menuId) => {
+  if (isMock || !supabase || !menuId) return { data: [], error: null };
+  return supabase.rpc('msm_stock_recipe_gaps', { p_menu: menuId });
+};
+
 /** A Back Office login releases a held or dead outbox row: it posts on the next drain. */
 export const releaseStockOutbox = async (id) => {
   if (isMock || !supabase) return { data: { ok: false, error: 'offline' }, error: null };
@@ -617,6 +637,31 @@ export const fetchItemMovements = async (inventoryItemId, locationId = null, lim
  * cost from their recipe (slice 3) and are skipped unless they have supplier
  * products of their own.
  */
+/**
+ * v5.11.79 (stock plan Phase 0, 4.5, decision 2): each venue's cost rule, from stock_site_settings
+ * (20261019a). 'price_list' (the default, and the answer whenever the table or row is missing:
+ * exactly what every venue did before) or 'deliveries'.
+ */
+export const fetchCostRule = async (locationId = null) => {
+  if (isMock || !supabase) return { data: DEFAULT_COST_RULE, error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: DEFAULT_COST_RULE, error: null };
+  const { data, error } = await supabase.from('stock_site_settings').select('cost_rule').eq('location_id', locationId).maybeSingle();
+  if (error) return { data: DEFAULT_COST_RULE, error: isMissingTableError(error) ? null : error };
+  return { data: normCostRule(data?.cost_rule), error: null };
+};
+
+/** Save the venue's cost rule (Back Office login of the venue; second step enforced by the table rule). */
+export const saveCostRule = async (rule, byName = null, locationId = null) => {
+  if (isMock || !supabase) return { data: null, error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: null, error: new Error('No locationId') };
+  const { data, error } = await supabase.from('stock_site_settings')
+    .upsert({ location_id: locationId, cost_rule: normCostRule(rule), updated_at: nowIso(), updated_by_name: byName || null })
+    .select('location_id');
+  return { data, error: error || zeroRows('Cost rule save', data) };
+};
+
 export async function recomputeItemCost(itemId, locationId = null) {
   // Callers read `.error`, so a bare { ok:false } reads to them as success. Mock mode is a
   // genuine no-op; the rest are real failures and must carry one — an item hidden by RLS
@@ -654,6 +699,16 @@ export async function recomputeItemCost(itemId, locationId = null) {
   if (!chosen || !Number.isFinite(chosenCost)) return { ok: true, unchanged: true };
 
   const prev = item.current_cost == null ? null : Number(item.current_cost);
+  // v5.11.79: the venue's cost rule. Price list (default): the price sets the cost, as before.
+  // Deliveries: the price only sets the cost of an item never received or with no cost yet.
+  const { data: rule } = await fetchCostRule(locationId);
+  if (normCostRule(rule) === 'deliveries') {
+    const { data: rec } = await supabase.from('stock_movements').select('id')
+      .eq('location_id', locationId).eq('inventory_item_id', itemId).eq('movement_type', 'PURCHASE_RECEIPT').limit(1);
+    if (!priceSetsCost({ rule, newCost: chosenCost, currentCost: prev, everReceived: (rec || []).length > 0 })) {
+      return { ok: true, unchanged: true, rule: 'deliveries' };
+    }
+  }
   const changed = prev == null || Math.abs(prev - chosenCost) > 1e-9;
   if (changed) {
     // These three writes ARE the cost record. Silently losing one leaves the history
