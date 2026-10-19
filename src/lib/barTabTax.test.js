@@ -95,8 +95,9 @@ test('no tax set up, nothing to tax, or anything unexpected: nothing stamped, as
 test('wiring: the bar tab close books tabCloseTax, never only the added-on record', () => {
   const bar = fs.readFileSync(new URL('../surfaces/BarSurface.jsx', import.meta.url), 'utf8');
   assert.match(bar, /import \{ tabBill, tabCloseTax \} from '\.\.\/lib\/barTabTax';/);
-  assert.match(bar, /const recTax = tabCloseTax\(allItems, useStore\.getState\(\)\.getTaxContext\(\), \{ bill, paymentInfo: payInfo \}\);/);
+  // 19 Oct 2026 (v5.11.78): with the venue's automatic deals, as every till close.
+  assert.match(bar, /const recTax = tabCloseTax\(allItems, useStore\.getState\(\)\.getTaxContext\(\), \{\n\s+bill, paymentInfo: payInfo,\n\s+discountRules: useStore\.getState\(\)\.discountRules,/);
   assert.match(bar, /\.\.\.\(recTax \? \{ taxAmount: recTax\.taxAmount, taxBreakdown: recTax\.taxBreakdown \} : \{\}\),/);
   assert.doesNotMatch(bar, /bill\.taxBreakdown \? \{ taxAmount/);
-  assert.match(bar, /tabBill\(tab, useStore\.getState\(\)\.getTaxContext\(\), creditDiscounts\)/);
+  assert.match(bar, /tabBill\(tab, useStore\.getState\(\)\.getTaxContext\(\), creditDiscounts, \{\n\s+discountRules: useStore\.getState\(\)\.discountRules,/);
 });

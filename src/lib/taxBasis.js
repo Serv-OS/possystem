@@ -148,6 +148,38 @@ export function linesAfterItemDiscounts(items) {
 }
 
 /**
+ * 19 Oct 2026 (v5.11.78, channel parity): every manual check discount on a closed check carries the
+ * amount the bill actually took off, worked out on the lines it closed with. A percent discount's
+ * `amount` was frozen when staff applied it, so a 10% applied at 3.70 and then charged on 8.10
+ * stored 0.37 where the bill took 0.81 off (26 live checks in 60 days); an MPOS discount stored no
+ * amount at all, and the receipt and most reports then read its value (a 10% read as 10.00). The
+ * bill itself was always right: it charges `value` percent of the live goods (computeCheckTotals).
+ *
+ * A percent line becomes that same figure: the live lines after their own item discounts, times
+ * value / 100, exactly computeCheckTotals' reducer (unrounded, as DiscountModal stored it). An
+ * amount line with no amount gets its value, which is what the bill took. Automatic deals (isAuto,
+ * worked out at close), promo codes, loyalty and channel discounts (any `source`: the server's or
+ * the platform's figure is the truth) are left exactly as they are. Same array back when nothing
+ * changes, so a record whose discounts are already right is byte for byte as before.
+ */
+export function stampDiscountAmounts(items, discounts) {
+  if (!Array.isArray(discounts) || !discounts.length) return discounts;
+  const sub = linesAfterItemDiscounts(items);
+  let changed = false;
+  const out = discounts.map(d => {
+    if (!d || typeof d !== 'object' || d.isAuto || d.source) return d;
+    let amount;
+    if (d.type === 'percent') amount = sub * num(d.value) / 100;
+    else if (d.amount == null || d.amount === '') amount = num(d.value);
+    else return d;
+    if (d.amount != null && d.amount !== '' && Number(d.amount) === amount) return d;
+    changed = true;
+    return { ...d, amount };
+  });
+  return changed ? out : discounts;
+}
+
+/**
  * MPOS charges each line after its own item discount and NOTHING else (no check
  * discount, no service charge, no delivery fee: a separate, known MPOS gap). Its
  * tax basis is exactly that, so the handheld taxes what it charges.
@@ -166,10 +198,10 @@ export function recordCheckBasis(check) {
   const loyaltyMinor = num(c.loyalty?.discount_value ?? c.loyaltyRedemption?.discount_value);
   if (loyaltyMinor > 0) discounts.push({ type: 'amount', value: loyaltyMinor / 100, source: 'loyalty' });
   const deliveryFee = num(c.deliveryFee ?? c.delivery_fee ?? c.customer?.delivery_fee);
-  // Catering rows book the delivery fee in `service` (and again in
-  // customer.delivery_fee): it is not a service charge, so it is counted once.
-  const catering = c.source === 'catering';
-  return { discounts, service: catering ? 0 : num(c.service), deliveryFee };
+  // 19 Oct 2026 (v5.11.78): catering books its delivery fee in customer.delivery_fee only, like
+  // every other source, so `service` is a service charge everywhere. (Its rows put the fee in
+  // `service` too until v5.11.78; none had a delivery fee, so the special case that undid it is gone.)
+  return { discounts, service: num(c.service), deliveryFee };
 }
 
 /**

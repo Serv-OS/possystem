@@ -168,3 +168,36 @@ export function stampAdjustBody({ customerId, locationId, programId, stampsDelta
     request_id: String(requestId || ''),
   };
 }
+
+/**
+ * 19 Oct 2026 (v5.11.78, channel parity): the card after a FULL refund takes back the stamps that
+ * sale earned. Points earned on a refunded sale were clawed back; stamps never were, so a refunded
+ * sale still counted towards a free item (13 refunded till checks, 7 of them full, kept theirs).
+ * The earn may have rolled the card over (7 stamps + 5 on a 10 stamp card = 1 completed card and
+ * 2 stamps), so taking it back takes the stamps first and then, only while a completed card is
+ * still UNUSED (completed_count above the redeem rows), opens one completed card again. A reward
+ * already used is never taken back: the clawback stops at what is left, and says how much it took.
+ * @param card      { stamps_collected, completed_count }
+ * @param redeemed  redeem rows this customer has on this programme
+ * @param opts      { stamps: the stamps that sale earned, stampsRequired }
+ * @returns { stamps_collected, completed_count, clawed }  (clawed 0 = nothing to move)
+ */
+export function planStampClawback(card, redeemed, { stamps = 0, stampsRequired } = {}) {
+  const need = Math.floor(Number(stampsRequired) || 0);
+  let collected = Math.max(0, Math.floor(Number(card?.stamps_collected) || 0));
+  let completed = Math.max(0, Math.floor(Number(card?.completed_count) || 0));
+  const used = Math.max(0, Math.floor(Number(redeemed) || 0));
+  const want = Math.max(0, Math.floor(Number(stamps) || 0));
+  let left = want;
+  const fromStamps = Math.min(collected, left);
+  collected -= fromStamps;
+  left -= fromStamps;
+  while (left > 0 && need > 0 && completed - used > 0) {
+    completed -= 1;
+    collected += need;
+    const t = Math.min(collected, left);
+    collected -= t;
+    left -= t;
+  }
+  return { stamps_collected: collected, completed_count: completed, clawed: want - left };
+}

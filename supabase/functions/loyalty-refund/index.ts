@@ -31,11 +31,26 @@
 // check is restored: an audit row (type='refund', key stamprefund:<redeem key>) is written FIRST
 // as the claim, then the redeem row is deleted, so every reader counts the reward available again
 // at once. Idempotent on its own (a retry finds no redeem row). Whole check, like the points path.
+//
+// 19 Oct 2026 (v5.11.78, channel parity): a full refund puts loyalty back exactly as it was.
+//   * customer_id is optional. The till only knew it when the check carried it, and a stamps
+//     only member's check never did, so every refund skipped this function ("no customer_id on
+//     check"): 0 stamp refund rows and 0 points refund rows ever. With none sent, the customer is
+//     the one this check's own ledger rows name (stamp_transactions.order_ref, loyalty_transactions
+//     .closed_check_id); exactly one, or nothing is done.
+//   * stamps EARNED on the refunded sale come off the card, as points earned always did
+//     (_shared/stampAdjust.js planStampClawback: the stamps first, then an UNUSED completed card,
+//     never a reward already used). An audit row (type 'refund', negative stamps, key
+//     stamprefund:earn:<earn key>) is written FIRST as the claim, then the card moves only from the
+//     state it was read in, and the redeem rows are counted again after the move (the adjust_stamps
+//     rule in loyalty-earn), so a reward taken this second is never left in debt.
+//   * the till calls this on a FULL refund only (store.refundCheck): it reverses the whole check.
 
 import {
   cors, json, opsAdmin, platformAdmin, authenticateCaller,
   resolveCompanyForLocation, updateBalance, checkLoyaltyAuthority, deviceHintOf,
 } from '../_shared/loyalty-utils.ts';
+import { planStampClawback } from '../_shared/stampAdjust.js';
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -51,14 +66,13 @@ Deno.serve(async (req) => {
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
 
   const {
-    customer_id,
+    customer_id: bodyCustomerId,
     location_id,
     closed_check_id,
     reason,
     staff_id,
   } = body as any;
 
-  if (!customer_id) return json({ error: 'customer_id required' }, 400);
   if (!closed_check_id) return json({ error: 'closed_check_id required' }, 400);
   if (!location_id) return json({ error: 'location_id required' }, 400);
 
@@ -81,7 +95,7 @@ Deno.serve(async (req) => {
     caller,
     locationId: String(location_id),
     companyId: String(companyId),
-    customerId: String(customer_id),
+    customerId: String(bodyCustomerId || ''),
     memberToken: (body as any).member_token,
     closedCheckId: closed_check_id,
     channel: (body as any).channel ?? null,
@@ -92,6 +106,85 @@ Deno.serve(async (req) => {
     deviceHint: deviceHintOf(body),
   });
   if (!gate.allow) return gate.response!;
+
+  // ── The customer (19 Oct 2026): the one sent, else the one this check's own ledger names ──
+  let customer_id: string | null = bodyCustomerId ? String(bodyCustomerId) : null;
+  if (!customer_id) {
+    const [{ data: sRows, error: sErr }, { data: lRows, error: lErr }] = await Promise.all([
+      opsAdmin.from('stamp_transactions').select('customer_id').eq('order_ref', String(closed_check_id)).limit(50),
+      opsAdmin.from('loyalty_transactions').select('customer_id').eq('closed_check_id', String(closed_check_id)).eq('company_id', companyId).limit(50),
+    ]);
+    if (sErr || lErr) return json({ error: 'could not read the loyalty ledger, refund not attempted' }, 500);
+    const names = new Set([...(sRows || []), ...(lRows || [])].map((r: any) => r?.customer_id).filter(Boolean).map(String));
+    if (names.size !== 1) {
+      return json({ status: 'no_transactions', points_reversed: 0, stamp_rewards_restored: 0, stamps_clawed: 0, ...(names.size > 1 ? { reason: 'more_than_one_customer' } : {}) });
+    }
+    customer_id = [...names][0];
+  }
+
+  // ── Stamps EARNED on this check come off the card (19 Oct 2026) ────────────────────────
+  let stampsClawed = 0;
+  {
+    const { data: stampEarns, error: earnReadErr } = await opsAdmin
+      .from('stamp_transactions')
+      .select('id, program_id, location_id, stamps, idempotency_key')
+      .eq('customer_id', customer_id)
+      .eq('order_ref', String(closed_check_id))
+      .eq('type', 'earn');
+    if (earnReadErr) {
+      return json({ error: `could not read the stamp ledger, refund not attempted: ${earnReadErr.message}` }, 500);
+    }
+    for (const row of stampEarns || []) {
+      const earned = Math.max(0, Math.floor(Number(row.stamps) || 0));
+      if (!earned || !row.program_id) continue;
+      const claimKey = `stamprefund:earn:${row.idempotency_key || row.id}`;
+      const { data: done } = await opsAdmin.from('stamp_transactions').select('id').eq('idempotency_key', claimKey).maybeSingle();
+      if (done) continue;
+      const { data: prog } = await platformAdmin.from('stamp_card_programs')
+        .select('id, stamps_required').eq('id', row.program_id).eq('company_id', companyId).maybeSingle();
+      if (!prog) continue;
+      const { data: card } = await platformAdmin.rpc('upsert_customer_stamp_card', {
+        p_customer_id: customer_id, p_program_id: prog.id, p_company_id: companyId,
+      });
+      if (!card) return json({ error: 'could not read the stamp card, refund not attempted' }, 503);
+      const countRedeemed = async (): Promise<number> => {
+        const { count } = await opsAdmin.from('stamp_transactions').select('id', { count: 'exact', head: true })
+          .eq('customer_id', customer_id).eq('program_id', prog.id).eq('type', 'redeem');
+        return count || 0;
+      };
+      const plan = planStampClawback(card, await countRedeemed(), { stamps: earned, stampsRequired: prog.stamps_required });
+      if (!plan.clawed) continue;
+      const { data: ins, error: insErr } = await opsAdmin.from('stamp_transactions').insert({
+        customer_id,
+        program_id: prog.id,
+        location_id: row.location_id || location_id,
+        stamps: -plan.clawed,
+        type: 'refund',
+        note: `Stamps taken back: order refunded${reason ? ` (${reason})` : ''}${plan.clawed < earned ? ` (${earned - plan.clawed} left: a reward was already used)` : ''}`,
+        order_ref: String(closed_check_id),
+        idempotency_key: claimKey,
+      }).select('id').single();
+      if (insErr?.code === '23505') continue;   // a previous attempt claimed it
+      if (insErr || !ins) return json({ error: 'could not record the stamp refund, refund not attempted' }, 500);
+      const { data: moved, error: updErr } = await platformAdmin.from('customer_stamp_cards')
+        .update({ stamps_collected: plan.stamps_collected, completed_count: plan.completed_count })
+        .eq('id', card.id).eq('stamps_collected', card.stamps_collected).eq('completed_count', card.completed_count)
+        .select('id');
+      if (updErr || !moved || moved.length === 0) {
+        await opsAdmin.from('stamp_transactions').delete().eq('id', ins.id);
+        return json({ error: 'the stamp card changed a moment ago, try the refund again', code: 'changed' }, 409);
+      }
+      if (plan.completed_count - (await countRedeemed()) < 0) {
+        await platformAdmin.from('customer_stamp_cards')
+          .update({ stamps_collected: card.stamps_collected, completed_count: card.completed_count })
+          .eq('id', card.id).eq('stamps_collected', plan.stamps_collected).eq('completed_count', plan.completed_count);
+        await opsAdmin.from('stamp_transactions').delete().eq('id', ins.id);
+        return json({ error: 'a reward was used a moment ago, try the refund again', code: 'changed' }, 409);
+      }
+      stampsClawed += plan.clawed;
+    }
+    if (stampsClawed > 0) console.info(`[loyalty-refund] took back ${stampsClawed} stamp(s) earned on check ${closed_check_id}`);
+  }
 
   // ── Stamp rewards redeemed on this check: give the completed cards back ────────────────
   // Before the points idempotency check on purpose: a check with only stamp rewards has no
@@ -148,6 +241,7 @@ Deno.serve(async (req) => {
       points_reversed: existingRefund.points,
       balance: existingRefund.balance_after,
       stamp_rewards_restored: stampRewardsRestored,
+      stamps_clawed: stampsClawed,
     });
   }
 
@@ -218,7 +312,7 @@ Deno.serve(async (req) => {
   const sourceTxs = [...(originalTxs || []), ...claimTxs];
 
   if (sourceTxs.length === 0) {
-    return json({ status: 'no_transactions', points_reversed: 0, stamp_rewards_restored: stampRewardsRestored });
+    return json({ status: 'no_transactions', points_reversed: 0, stamp_rewards_restored: stampRewardsRestored, stamps_clawed: stampsClawed });
   }
 
   // Calculate net reversal: earned points get clawed back (negative),
@@ -235,7 +329,7 @@ Deno.serve(async (req) => {
   }
 
   if (netReversal === 0) {
-    return json({ status: 'nothing_to_reverse', points_reversed: 0, stamp_rewards_restored: stampRewardsRestored });
+    return json({ status: 'nothing_to_reverse', points_reversed: 0, stamp_rewards_restored: stampRewardsRestored, stamps_clawed: stampsClawed });
   }
 
   if (!membership) {
@@ -362,6 +456,7 @@ Deno.serve(async (req) => {
     balance: newBalance,
     original_transactions: sourceTxs.length,
     stamp_rewards_restored: stampRewardsRestored,
+    stamps_clawed: stampsClawed,
     ...(claimTxs.length > 0 ? { claims_reversed: claimTxs.length } : {}),
   });
 });

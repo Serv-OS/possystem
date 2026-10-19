@@ -27,6 +27,7 @@
 // ============================================================
 
 import { kitchenOverride, receiptOverride } from './itemDisplay.js';
+import { sizeTaxRefs } from './taxRefs.js';
 
 const nameOf = (row) => row?.menuName || row?.menu_name || row?.name || '';
 
@@ -63,23 +64,15 @@ export function kioskVariant(parent, child) {
  * this fix carries no tax fields and falls to the parent, exactly as before).
  */
 export function kioskLineTaxRefs(l) {
+  // 19 Oct 2026 (v5.11.78, channel parity): the rate and per order type overrides come from the one
+  // shared size rule (lib/taxRefs.js sizeTaxRefs), which the till, the QR close, the online, QR
+  // and catering pages and the HubRise close also call. The profile keeps the kiosk's own rule
+  // (the size's, else its product's), so every kiosk figure is exactly what it was.
   const item = l?.item || {};
   const v = l?.variant || null;
-  const own = (row) => ({
-    rate: row?.taxRateId ?? row?.tax_rate_id ?? null,
-    ov: row?.taxOverrides ?? row?.tax_overrides ?? null,
-    profile: row?.taxProfileId ?? row?.tax_profile_id ?? null,
-  });
-  const parent = own(item);
-  if (!v) return { taxRateId: parent.rate || null, taxOverrides: parent.ov || {}, taxProfileId: parent.profile || null };
-  const child = own(v);
-  let taxRateId = child.rate || null;
-  let taxOverrides = child.ov && typeof child.ov === 'object' ? child.ov : {};
-  if (Object.keys(taxOverrides).length === 0) {
-    taxOverrides = parent.ov && typeof parent.ov === 'object' ? parent.ov : {};
-    if (!taxRateId) taxRateId = parent.rate || null;
-  }
-  return { taxRateId, taxOverrides, taxProfileId: child.profile || parent.profile || null };
+  const refs = v ? sizeTaxRefs(v, item) : sizeTaxRefs(item, null);
+  const profileOf = (row) => row?.taxProfileId ?? row?.tax_profile_id ?? null;
+  return { taxRateId: refs.taxRateId, taxOverrides: refs.taxOverrides, taxProfileId: (v ? (profileOf(v) || profileOf(item)) : profileOf(item)) || null };
 }
 
 /** The id whose RECIPE this line depletes: the size when picked, else the item. */

@@ -51,19 +51,22 @@ export const menuRowFor = (menu, itemId) => (itemId && menu?.status === 'ready'
 // dish with sizes is measured from its CHEAPEST live size, because a size
 // parent row is never charged itself (its own price is 0). So the smallest size
 // is included and a bigger one shows only the difference. Never below 0.
-export function choicePriceFor(model, priceOverride, lineRow, rows = []) {
+// 19 Oct 2026 (v5.11.78, channel parity): `menuId` is the menu on at the booking's own time (the
+// till's resolver, BookingWidget useGuestMenu), so a size costs what the till rings for eat in on
+// that menu, as the seated line will (bookingsSlice.packageLinesToItems). Absent: no menu tier, as before.
+export function choicePriceFor(model, priceOverride, lineRow, rows = [], menuId = null) {
   const override = priceOverride == null || priceOverride === '' ? null : Number(priceOverride);
   const lineOf = (menuPrice) => packageLinePrice(model, override, menuPrice);
   const sized = !!lineRow && variantChildren(lineRow, rows).length > 0;
   const baseMenu = sized
-    ? (variantFromPrice(lineRow, rows, 'dineIn') ?? 0)
-    : (lineRow ? resolveItemPrice(lineRow, 'dineIn') : 0);
+    ? (variantFromPrice(lineRow, rows, 'dineIn', menuId) ?? 0)
+    : (lineRow ? resolveItemPrice(lineRow, 'dineIn', menuId) : 0);
   const base = lineOf(baseMenu);
   return (row) => {
     if (!row) return 0;
     // The parent of a sized dish is shown for a moment before the sheet picks a size.
     if (sized && String(row.id) === String(lineRow.id)) return 0;
-    return Math.max(0, round2(lineOf(resolveItemPrice(row, 'dineIn')) - base));
+    return Math.max(0, round2(lineOf(resolveItemPrice(row, 'dineIn', menuId)) - base));
   };
 }
 
@@ -72,7 +75,7 @@ export function choiceExtra(choice, option, menu, model) {
   if (!choice || !option) return 0;
   const lineRow = menuRowFor(menu, option.itemId);
   const sizeRow = choice.variantItemId ? menuRowFor(menu, choice.variantItemId) : null;
-  const size = lineRow && sizeRow ? choicePriceFor(model, option.priceOverride, lineRow, menu.items)(sizeRow) : 0;
+  const size = lineRow && sizeRow ? choicePriceFor(model, option.priceOverride, lineRow, menu.items, menu.menuId || null)(sizeRow) : 0;
   return round2(size + modsExtra(choice.mods));
 }
 

@@ -31,6 +31,7 @@
 // PURE: imports accountingGroups.js (pure) for the alias table; runs in Node and Deno.
 
 import { TAX_ORDER_TYPE_ALIASES } from './accountingGroups.js';
+import { moneyDiscounts } from './accountingDay.js';
 
 export const NOT_IN_MENU = '__not_in_menu__';
 export const TAX_FALLBACK_REASONS = Object.freeze({
@@ -182,7 +183,8 @@ export function chargedShare(row, lines) {
     else subtotal += d.type === 'percent' ? base * (1 - (num(d.value) || 0) / 100) : Math.max(0, base - (num(d.value) || 0));
   }
   let checkDiscount = 0;
-  for (const d of Array.isArray(row?.discounts) ? row.discounts : []) {
+  // 19 Oct 2026 (v5.11.78): a promo code paid as a tender leaves the VAT alone, as the till books it (moneyDiscounts).
+  for (const d of moneyDiscounts(row)) {
     if (!d || typeof d !== 'object') continue;
     if (d.type === 'percent') checkDiscount += subtotal * (num(d.value) || 0) / 100;
     else checkDiscount += num(d.value) ?? num(d.amount) ?? 0;

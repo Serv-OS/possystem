@@ -50,9 +50,12 @@ export default function MOrderActions({ onClose }) {
 
   // ── Apply / remove order-level discount ──────────────────────────────────
   const commitDiscount = (d, manager) => {
+    // 19 Oct 2026 (v5.11.78, channel parity): the same check discount entry the till's DiscountModal
+    // builds (scope 'check'). Its amount is stamped at close from the lines it closed with
+    // (taxBasis.stampDiscountAmounts), so a 10% on an 8.10 bill reads 0.81, never 10.00.
     const entry = {
       id: `${d.id}-${Date.now()}`,
-      label: d.label, type: d.type, value: d.value,
+      label: d.label, type: d.type, value: d.value, scope: 'check',
       appliedBy: manager?.name || staff?.name || 'MPOS',
     };
     if (isTable) addCheckDiscount(activeTableId, entry);

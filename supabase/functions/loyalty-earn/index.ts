@@ -12,6 +12,8 @@
 //   subtotal,        -- same
 //   staff_id?,       -- who processed the order
 //   member_token?,   -- the member's loyalty session token (kiosk or online, when signed in)
+//   order_key?,      -- v5.11.78: a customer page's own order key (tracking token or payment ref),
+//                       earn only, for the phone on the check (earnFromCheck.ts decideOrderProofEarn)
 //   device_hint?,    -- the till's or kiosk's own id, for the [authority] log only
 // }
 //
@@ -54,6 +56,7 @@ import { authorityLogRow } from '../_shared/loyalty-authority.ts';
 import {
   decideEarnSource, earnItemsFromCheck, checkItemIds, checkCapMinor, type CheckRow,
 } from '../_shared/earnFromCheck.ts';
+import { orderProofFor } from '../_shared/orderProofEarn.ts';
 
 import { countQualifyingStamps, loadStampNameIndex } from '../_shared/stampQualify.ts';
 import { secondStepRefusal } from '../_shared/second-step.ts';
@@ -269,7 +272,7 @@ Deno.serve(async (req) => {
   // user of the venue, or the member's own token. Before 20260919a (report) every call earns as
   // before and the ones enforce would refuse are logged; after it they are refused. Before any
   // read.
-  const gate = await checkLoyaltyAuthority({
+  const fenceGate = await checkLoyaltyAuthority({
     fn: 'loyalty-earn',
     caller,
     locationId: String(location_id),
@@ -280,6 +283,27 @@ Deno.serve(async (req) => {
     channel,
     deviceHint: deviceHintOf(body),
   });
+  // 19 Oct 2026 (v5.11.78, channel parity): ONLY when the fence refused, a customer page that is
+  // not a member session may prove its own order with the order's key (_shared/orderProofEarn.ts,
+  // the rule in earnFromCheck.ts decideOrderProofEarn). Earn only, for the phone on the check, once
+  // per check; refused exactly as before when the proof fails.
+  let viaOrder = false;
+  if (!fenceGate.allow && (body as any).order_key) {
+    const proof = await orderProofFor({
+      locationId: String(location_id), customerId: String(customer_id), closedCheckId: String(closed_check_id),
+      channel, orderKey: (body as any).order_key,
+    });
+    if (proof.ok) viaOrder = true;
+    else {
+      recordAuthority(authorityLogRow({
+        fn: 'loyalty-earn', mode: fenceGate.mode, outcome: 'refused',
+        decision: { ok: false, reason: proof.reason, callerKind: fenceGate.decision.callerKind },
+        user: caller, companyId, locationId: location_id, customerId: customer_id,
+        closedCheckId: closed_check_id, channel, deviceHint: deviceHintOf(body),
+      }));
+    }
+  }
+  const gate = viaOrder ? { ...fenceGate, allow: true } : fenceGate;
   if (!gate.allow) return gate.response!;
 
   // ── The check itself ────────────────────────────────────────────────────
@@ -293,7 +317,7 @@ Deno.serve(async (req) => {
     .eq('id', String(closed_check_id))
     .in('location_id', locKeys)
     .maybeSingle();
-  const via = gate.decision.ok ? gate.decision.via : null;
+  const via = viaOrder ? 'order' : (gate.decision.ok ? gate.decision.via : null);
   const source = decideEarnSource({
     mode: gate.mode,
     check: (check as CheckRow) ?? null,

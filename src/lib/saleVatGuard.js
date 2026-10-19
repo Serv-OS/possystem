@@ -43,6 +43,7 @@ import { inclusiveTaxOnCharged, isUsableBreakdown, linesGoods } from './taxShare
 import { taxForChargedGoods } from './headlessTax.js';
 import { roundVat, TAX_FALLBACK_REASONS, taxFallbackNote, taxFallbacksOf } from './taxRule.js';
 import { venueExpectsRates } from './customerRates.js';
+import { moneyDiscounts } from '../../supabase/functions/_shared/accountingDay.js';
 
 /** Plain words for staff. Short, no dashes. */
 export const SALE_VAT_WORDS = Object.freeze({
@@ -189,7 +190,8 @@ function readRow(row) {
     taxAmount: num(snake ? row.tax_amount : row.taxAmount),
     taxBreakdown: snake ? row.tax_breakdown : row.taxBreakdown,
     items: Array.isArray(row.items) ? row.items : [],
-    discounts: Array.isArray(row.discounts) ? row.discounts : [],
+    // 19 Oct 2026 (v5.11.78): a promo code paid as a tender leaves the VAT alone (moneyDiscounts, the daily check's rule).
+    discounts: moneyDiscounts(row),
     subtotal: num(row.subtotal),
     total: num(row.total),
     tip: num(row.tip) ?? 0,

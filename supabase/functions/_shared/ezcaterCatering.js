@@ -490,3 +490,97 @@ export function ezcaterHoldAlertText(row) {
   const who = n ? `ezCater ${n}` : 'An ezCater order';
   return `${who} is due in the kitchen but has not been accepted on ezCater. Accept it on ezCater and it will fire.`;
 }
+
+// ── The sale (19 Oct 2026, v5.11.78 channel parity) ──────────────────────────────────────────
+
+/** The one closed_checks id an ezCater order books under (stable across retries and changes). */
+export function ezcaterCheckId(row) {
+  const key = String(row?.customer?.ezcater_order_id || row?.ref || '').trim();
+  return key ? `chk-ez-${key}`.slice(0, 80) : null;
+}
+
+const money2 = (v) => { const n = Number(v); return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0; };
+
+/**
+ * The closed_checks row an ezCater order books, once ezCater has it committed (accepted or later).
+ * An ezCater order was written to order_queue only, so it was never a sale: no sales report, no
+ * Tax report, no Xero, no daily check, and no stock (DECISIONS.md line 266 logged it as a known gap).
+ * Every other channel books a closed check; this is ezCater's, written by the webhook with the
+ * service role (never the till's save guard, which would replace ezCater's tax with ours).
+ *
+ * The money is ezCater's own, copied, never worked out again (ezcater-map.ts: "the platform sets
+ * the tax"):
+ *   subtotal       totals.subtotal (the food, before ezCater's discounts), else the line sum
+ *   discounts      ezCater's discount rows (the negative feesAndDiscounts), as channel discount lines
+ *   delivery fee   customer.delivery_fee, only when the caterer receives it (not third party delivery)
+ *   tip            only when the caterer receives it
+ *   tax_amount     the sales tax the VENUE owes: ezCater's salesTax less what ezCater remits itself
+ *                  (salesTaxRemittance, a marketplace facilitator state). Both figures and the state
+ *                  ride the record (engine 'ezcater'), so no report books tax ezCater already paid.
+ *   total          subtotal less discounts plus that tax, the tip and the fee: the sale, never
+ *                  catererTotalDue (which is net of ezCater's commission, a cost)
+ *   tenders        one 'ezcater' tender for it (ezCater pays out weekly)
+ *   closed_at      the event time on the venue clock, as a ServOS catering pay now order books it
+ * Returns null for an order that is not committed (awaiting acceptance) or not live.
+ */
+export function ezcaterClosedCheck(row, { venueTz = DEFAULT_VENUE_TZ } = {}) {
+  if (!row || typeof row !== 'object') return null;
+  const c = row.customer || {};
+  const state = ezLifecycleState(c.ezcater_lifecycle);
+  if (!state.committed || state.dead) return null;
+  const id = ezcaterCheckId(row);
+  if (!id) return null;
+  const t = c.totals || {};
+  const tax = c.tax || {};
+  const items = (Array.isArray(row.items) ? row.items : []).map((l) => ({ ...l, voided: false }));
+  const lineSum = items.reduce((s, l) => s + (Number(l?.lineSubunits) || Math.round((Number(l?.price) || 0) * (Number(l?.qty) || 1) * 100)), 0) / 100;
+  const subtotal = money2(Number(t.subtotal) > 0 ? t.subtotal : lineSum);
+  const discountRows = (Array.isArray(t.feesAndDiscounts) ? t.feesAndDiscounts : []).filter((f) => Number(f?.amount) < 0);
+  const discounts = discountRows.map((f) => {
+    const amount = money2(Math.abs(Number(f.amount)));
+    return { label: f.name || 'ezCater discount', name: f.name || 'ezCater discount', type: 'amount', value: amount, amount, scope: 'check', source: 'channel' };
+  });
+  const discountTotal = money2(discounts.reduce((s, d) => s + d.amount, 0));
+  const tip = c.catererReceivesTip === false ? 0 : money2(t.tip);
+  const deliveryFee = c.catererReceivesDeliveryFee === false ? 0 : money2(t.deliveryFee);
+  const salesTax = money2(tax.salesTax ?? t.salesTax);
+  const remitted = money2(tax.salesTaxRemittance ?? t.salesTaxRemittance);
+  const owed = money2(Math.max(0, salesTax - remitted));
+  const total = money2(Math.max(0, subtotal - discountTotal) + owed + tip + deliveryFee);
+  const eventMs = wallTimeToInstantMs(row.event_date, row.collection_time || '12:00', venueTz);
+  const closedAt = Number.isFinite(eventMs) ? new Date(eventMs).toISOString() : new Date().toISOString();
+  return {
+    id,
+    ref: row.ref,
+    location_id: row.location_id,
+    server: 'ezCater',
+    covers: Number.isFinite(Number(c.headcount)) && Number(c.headcount) > 0 ? Math.min(999, Math.round(Number(c.headcount))) : 1,
+    order_type: row.type === 'delivery' ? 'delivery' : 'collection',
+    customer: { ...c, channel: EZ_CHANNEL, ...(deliveryFee > 0 ? { delivery_fee: deliveryFee } : {}) },
+    items,
+    discounts,
+    subtotal,
+    service: 0,
+    tip,
+    tax_amount: owed,
+    tax_breakdown: {
+      engine: 'ezcater', source: 'ezcater', hasExclusiveTax: true,
+      totalTax: owed, exclusiveTax: owed, subtotal, total,
+      breakdown: [],
+      salesTax, remittedByChannel: remitted, operatorRemits: owed,
+      taxableState: tax.taxableState || null, taxExempt: tax.taxExempt === true,
+      currency: tax.currency || t.currency || null,
+    },
+    total,
+    method: 'ezcater',
+    tenders: [{ method: 'ezcater', amount: money2(total - tip), tip }],
+    processor: 'ezcater',
+    closed_at: closedAt,
+    status: 'paid',
+    voided: false,
+    refunds: [],
+    table_id: null,
+    table_label: `ezCater ${c.ezcater_order_number || row.ref}`.trim(),
+    source: 'catering',
+  };
+}

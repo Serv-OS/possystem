@@ -28,6 +28,8 @@ import { phonesMatch } from './giftCardMatch.ts';
 
 export type CheckRow = {
   id: string;
+  ref?: string | null;
+  source?: string | null;
   location_id?: string | null;
   items?: any[] | null;
   subtotal?: number | string | null;
@@ -126,7 +128,7 @@ export type EarnSource =
 export function decideEarnSource(p: {
   mode: 'report' | 'enforce';
   check: CheckRow | null;
-  via: 'member' | 'staff' | 'device' | null;
+  via: 'member' | 'staff' | 'device' | 'order' | null;
   member: { customerId: string; phone: string | null } | null;
 }): EarnSource {
   const enforce = p.mode === 'enforce';
@@ -146,4 +148,56 @@ export function decideEarnSource(p: {
       : { use: 'check', record: 'check_not_this_member' };
   }
   return { use: 'check', record: null };
+}
+
+// ── 19 Oct 2026 (v5.11.78, channel parity): the customer's own order, by its order key ─────────
+//
+// THE TILL'S RULE: the phone on a paid order earns. On the till, kiosk and MPOS a bound device
+// asks for the earn, so a typed phone earns the first time. A customer page (online, QR, catering)
+// has no device and an anonymous browser, so under the fence every guest who typed a phone was
+// refused (anonymous_no_device): 40 QR and 5 online checks with a phone at one venue in 60 days,
+// 0 stamps, while the same venue's till stamped 94 to 99% of its checks with a phone. A member
+// signed in with the one time code earned; nobody else did, and a new customer could never earn
+// their first stamp online.
+//
+// A page now proves it placed THIS order with the order's own key: the order tracking token the
+// server minted at checkout, or the card payment reference, never the phone's last 4 (the server's
+// _order_track_ok decides the key, the same check attribute_public_order makes). The earn is
+// allowed only when all of these hold:
+//   - the channel and the check are a customer page's (online, qr, catering);
+//   - the check exists at this venue and is earnable (the earn still comes from the check);
+//   - the key proves the order (keyOk, from _order_track_ok on the check's own ref);
+//   - the customer being credited is the phone ON THE CHECK (the customers row of this venue's
+//     organisation whose phone matches it), so a key can only ever earn for the phone that paid;
+//   - once per check, as every earn (the ledger claim).
+// Earn only: redeem and refund never accept an order key.
+
+export const ORDER_PROOF_CHANNELS = Object.freeze(['online', 'qr', 'catering']);
+
+/** A key that can prove an order: a token or a payment reference, never a 4 digit phone ending. */
+export function usableOrderKey(key: unknown): boolean {
+  if (typeof key !== 'string') return false;
+  const k = key.trim();
+  return k.length >= 12 && k.length <= 200;
+}
+
+export function decideOrderProofEarn(p: {
+  channel: unknown;
+  orderKey: unknown;
+  check: CheckRow | null;
+  keyOk: boolean;
+  customer: { orgId: string | null; phone: string | null } | null;
+  venueOrgId: string | null;
+}): { ok: true } | { ok: false; reason: string } {
+  const channel = String(p.channel ?? '').toLowerCase();
+  if (!ORDER_PROOF_CHANNELS.includes(channel)) return { ok: false, reason: 'order_proof_channel' };
+  if (!usableOrderKey(p.orderKey)) return { ok: false, reason: 'order_proof_key' };
+  if (!p.check) return { ok: false, reason: 'order_proof_no_check' };
+  if (!ORDER_PROOF_CHANNELS.includes(String(p.check.source ?? '').toLowerCase())) return { ok: false, reason: 'order_proof_not_public' };
+  if (!checkIsEarnable(p.check)) return { ok: false, reason: 'order_proof_not_earnable' };
+  if (!p.keyOk) return { ok: false, reason: 'order_proof_key_refused' };
+  if (!p.customer || !p.venueOrgId || String(p.customer.orgId ?? '') !== String(p.venueOrgId)) return { ok: false, reason: 'order_proof_customer' };
+  const c: any = p.check.customer || {};
+  if (!phonesMatch(c.phone ?? p.check.customer_phone ?? null, p.customer.phone)) return { ok: false, reason: 'order_proof_phone' };
+  return { ok: true };
 }

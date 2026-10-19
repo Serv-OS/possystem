@@ -12,6 +12,11 @@ import { publicRead } from '../../lib/publicOrderClient';
 import { assembleTaxProfiles } from '../../lib/rowMapping';
 import { buildLocalTaxCtx } from '../../lib/taxCompute';
 import { kitchenOverride, receiptOverride } from '../../lib/itemDisplay';
+import { lineTaxRefsFor } from '../../lib/taxRefs';
+import { lineCategories } from '../../lib/lineCategories';   // round 1 fix: a size counts under its product's categories, as on the till
+import { resolveItemPrice, variantFromPrice, repriceCartLines } from '../../lib/menuPricing';
+import { isOptionOnlyItem } from '../../lib/menuRules';
+import { cateringMenuIdFor, cateringOrderMenuId } from '../../lib/cateringPricing';
 import OnlineItemSheet from '../online/OnlineItemSheet';
 import OnlineCart from '../online/OnlineCart';
 import CateringCheckout from './CateringCheckout';
@@ -135,6 +140,19 @@ export default function CateringSurface({ location }) {
         setBoot({ loading: false, error: null });
       } catch (e) { setBoot({ loading: false, error: e?.message || 'failed' }); }
     })();
+    // 19 Oct 2026 (v5.11.78, channel parity): 86 changes arrive live, as on the online page (the
+    // same eighty_six channel), so an item switched off while a guest browses greys out at once.
+    let e86chan = null;
+    if (supabase && opsId) {
+      e86chan = supabase.channel(`catering-86:${opsId}`)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'eighty_six', filter: `location_id=eq.${opsId}` }, (payload) => {
+          const id = payload.new?.item_id || payload.old?.item_id;
+          if (!id) return;
+          if (payload.eventType === 'INSERT') setEightySix((prev) => (prev.includes(id) ? prev : [...prev, id]));
+          else if (payload.eventType === 'DELETE') setEightySix((prev) => prev.filter((x) => x !== id));
+        }).subscribe();
+    }
+    return () => { try { if (e86chan) supabase.removeChannel(e86chan); } catch { /* best effort */ } };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -152,6 +170,26 @@ export default function CateringSurface({ location }) {
 
   const subtotal = useMemo(() => cart.reduce((s, l) => s + (l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0)) * (l.qty || 1), 0), [cart]);
 
+  // 19 Oct 2026 (v5.11.78, channel parity): catering prices like the till (lib/menuPricing.js
+  // resolveItemPrice): the Collection or Delivery price, then the catering menu's tier, then base
+  // (lib/cateringPricing.js picks the menu: the one chosen in catering settings, or the item's own
+  // category's menu when several are chosen). It priced from base only, so the same Half was 3.02
+  // on the online page for collection and 2.85 here, a 50.00 delivery platter 90.00 here, and an
+  // item priced only on the catering menu's tier sold for 0.00. Timed menus stay out: an event
+  // days ahead is not on today's schedule.
+  const priceChannel = fulfilment || 'collection';
+  const menuIdOf = (it) => cateringMenuIdFor(it, { menuIds: cfg?.menu_ids || [], items, categories: taxCatRows });
+  const priceFor = (it) => resolveItemPrice(it, priceChannel, menuIdOf(it));
+  const cardPrice = (it) => variantFromPrice(it, items, priceChannel, menuIdOf(it)) ?? priceFor(it);
+  // Collection <-> Delivery reprices the basket, as the online page does (repriceCartLines).
+  useEffect(() => {
+    setCart((c) => {
+      const n = repriceCartLines(c, items, priceChannel, menuIdOf);
+      return n.some((l, i) => l !== c[i]) ? n : c;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [priceChannel, items, cfg, taxCatRows]);
+
   // Allergen vocabulary across the catering menu (for the filter chips).
   const knownAllergens = useMemo(() => {
     const set = new Set();
@@ -161,8 +199,12 @@ export default function CateringSurface({ location }) {
 
   // Hide items containing any picked allergen (mirrors online/kiosk). Applied everywhere itemsForCat
   // is used — the sticky category nav + the section render — so a fully-filtered category disappears.
+  // 19 Oct 2026 (v5.11.78, channel parity): an option only sub item (oat milk, a donut in a box) is
+  // never sold as a product, the till's rule (lib/menuRules.js isOptionOnlyItem) and the server's
+  // (place_public_order counts such a line as unknown, so a guest who paid in full came out
+  // "Payment short" with no sale in the reports). 22 such rows showed as cards on live catering menus.
   const itemsForCat = (catId) => items.filter((i) =>
-    (i.cat === catId || (Array.isArray(i.cats) && i.cats.includes(catId))) && !i.parent_id &&
+    (i.cat === catId || (Array.isArray(i.cats) && i.cats.includes(catId))) && !i.parent_id && !isOptionOnlyItem(i) &&
     !(activeAllergens.length && (i.allergens || []).some((a) => activeAllergens.includes(a))));
   // v5.5.743: match OnlineSurface exactly — show only TOP-LEVEL categories (no sub-categories) in the
   // nav + sections, sorted by (sort_order||0) with a stable tie-break. Catering was rendering every
@@ -184,8 +226,8 @@ export default function CateringSurface({ location }) {
       if (room <= 0) { alert(`You've reached the maximum (${lim.max}) for ${item.menu_name || item.name}.`); return; }
       q = Math.min(q, room);
     }
-    const price = Number(item.pricing?.base ?? item.price ?? 0);
-    setCart((c) => [...c, { uid: `${item.id}-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`, itemId: item.id, name: item.menu_name || item.name, kitchenName: kitchenOverride(item), receiptName: receiptOverride(item), cat: item.cat || null, cats: Array.isArray(item.cats) ? item.cats : null, parentId: item.parent_id || null, taxRateId: item.tax_rate_id || null, taxOverrides: item.tax_overrides || {}, taxProfileId: item.tax_profile_id ?? null, price, qty: q, mods, notes }]);
+    const price = priceFor(item);
+    setCart((c) => [...c, { uid: `${item.id}-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`, itemId: item.id, name: item.menu_name || item.name, kitchenName: kitchenOverride(item), receiptName: receiptOverride(item), ...lineCategories(item, items), parentId: item.parent_id || null, ...lineTaxRefsFor(item, items), price, qty: q, mods, notes }]);
   };
 
   // v5.7.34: the unified seam's tax context — this surface's own fetches
@@ -268,6 +310,7 @@ export default function CateringSurface({ location }) {
     <CateringCheckout
       location={location} cfg={cfg} cart={cart} taxRates={taxRates} taxCtx={taxCtx} theme={theme} cur={cur}
       fulfilment={fulfilment} eventDate={eventDate} eventTime={eventTime} subtotal={subtotal}
+      menuId={cateringOrderMenuId(cfg?.menu_ids || [])}
       onBack={() => setCheckout(false)}
     />
   );
@@ -358,7 +401,7 @@ export default function CateringSurface({ location }) {
                             ⚠ {item.allergens.length === 1 ? item.allergens[0] : `${item.allergens.length} allergens`}
                           </div>
                         )}
-                        <div style={{ marginTop: 8, fontWeight: 800, color: theme.brand }}>{sold ? 'Sold out' : money(Number(item.pricing?.base ?? item.price ?? 0), cur)}{!sold && limText && <span style={{ fontSize: 11.5, fontWeight: 600, color: '#94a3b8', marginLeft: 8 }}>{limText}</span>}</div>
+                        <div style={{ marginTop: 8, fontWeight: 800, color: theme.brand }}>{sold ? 'Sold out' : money(cardPrice(item), cur)}{!sold && limText && <span style={{ fontSize: 11.5, fontWeight: 600, color: '#94a3b8', marginLeft: 8 }}>{limText}</span>}</div>
                       </div>
                     </button>
                   );
@@ -383,7 +426,7 @@ export default function CateringSurface({ location }) {
 
       {openItem && (
         <OnlineItemSheet item={openItem} theme={theme} allItems={items} instGroupDefs={instGroupDefs} eightySixIds={eightySix}
-          stockLevels={stockLevels} cart={cart}
+          stockLevels={stockLevels} cart={cart} priceFor={priceFor}
           onClose={() => setOpenItem(null)} onAdd={(it, mods, qty, notes) => { addToCart(it, mods, qty, notes); setOpenItem(null); }} />
       )}
       {showCart && (

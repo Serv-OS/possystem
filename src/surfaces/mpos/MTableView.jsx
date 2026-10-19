@@ -7,6 +7,7 @@
 
 import { useMemo } from 'react';
 import { useStore } from '../../store';
+import { computeCheckTotals } from '../../lib/payments/checkTotals';
 import { Sx, money, elapsed, STATUS_PILL } from './MShellStyles';
 
 export default function MTableView({ tableId, onAddItems, onOpenCart, onPay, onClose, onSendToKitchen }) {
@@ -17,7 +18,21 @@ export default function MTableView({ tableId, onAddItems, onOpenCart, onPay, onC
   const items = useMemo(() => (session?.items || []).filter(i => !i.voided), [session]);
   const sentItems = items.filter(i => i.status === 'sent');
   const pendingItems = items.filter(i => i.status !== 'sent');
-  const subtotal = items.reduce((s, i) => s + (i.price || 0) * (i.qty || 0), 0);
+  // 19 Oct 2026 (v5.11.78, channel parity): the table's bill as the till charges it and MTender
+  // takes it (payments/checkTotals.computeCheckTotals, the call buildCloseRecord makes): discounts,
+  // automatic deals, service charge and any added on tax, not the lines before any of them.
+  const subtotal = useMemo(() => {
+    if (!session) return 0;
+    try {
+      const st = useStore.getState();
+      return computeCheckTotals({
+        items, checkDiscounts: session.discounts || [], covers: session.covers || 1,
+        serviceChargeWaived: session.serviceChargeWaived || false, orderType: 'dine-in',
+        deviceConfig: st.deviceConfig, discountRules: st.discountRules, timezone: st.locationConfig?.timezone,
+        taxRates: st.taxRates, taxCtx: st.getTaxContext(),
+      }).total;
+    } catch { return items.reduce((s, i) => s + (i.price || 0) * (i.qty || 0), 0); }
+  }, [session, items]);
   const pendingTotal = pendingItems.reduce((s, i) => s + (i.price || 0) * (i.qty || 0), 0);
 
   if (!session) {

@@ -21,8 +21,12 @@
 // so (tax_breakdown.fallbacks), so this file no longer cleans rate ids itself.
 
 import { computeCheckTotals } from './payments/checkTotals.js';
+import { evaluateAutoDiscounts, toAppliedDiscount } from './discountEngine.js';
+import { buildScheduleCtx } from './scheduleCtx.js';
+import { checkDiscountAmount } from './taxBasis.js';
 import { computeOrderTaxUnified } from './taxCompute.js';
 import { modsTotal } from './channelMoney.js';
+import { sizeTaxRefs } from './taxRefs.js';
 import { isUsableBreakdown, scaleTaxRecord } from './taxShare.js';
 import { roundVat, TAX_FALLBACK_REASONS } from './taxRule.js';
 
@@ -125,21 +129,18 @@ export function qrTaxLines(items, menuItems = []) {
     const mi = find(i.itemId ?? i.id) || find(i.parentId);
     const out = {
       ...i,
-      price: +((Number(i.price) || 0) + modsTotal(i.mods)).toFixed(2),
+      // A line already in the till's contract (channelMoney.foldLineMods) carries its options in
+      // its price: never add them twice.
+      price: i._modsFolded ? (Number(i.price) || 0) : +((Number(i.price) || 0) + modsTotal(i.mods)).toFixed(2),
       qty: Number(i.qty) || 1,
       itemId: i.itemId ?? i.id ?? null,
     };
     if (mi) {
-      let rate = mi.taxRateId ?? mi.tax_rate_id ?? null;
-      let ov = mi.taxOverrides ?? mi.tax_overrides ?? {};
-      const parent = find(mi.parentId ?? mi.parent_id);
-      if (parent && (!ov || typeof ov !== 'object' || Object.keys(ov).length === 0)) {
-        ov = parent.taxOverrides ?? parent.tax_overrides ?? ov;
-        if (!rate) rate = parent.taxRateId ?? parent.tax_rate_id ?? null;
-      }
-      out.taxRateId = rate;
-      out.taxOverrides = ov && typeof ov === 'object' ? ov : {};
-      out.taxProfileId = mi.taxProfileId ?? mi.tax_profile_id ?? null;
+      // 18 Oct 2026 (v5.11.78): the one shared size rule (lib/taxRefs.js sizeTaxRefs), the till's.
+      const refs = sizeTaxRefs(mi, find(mi.parentId ?? mi.parent_id) || null);
+      out.taxRateId = refs.taxRateId;
+      out.taxOverrides = refs.taxOverrides;
+      out.taxProfileId = refs.taxProfileId;
       if (out.cat == null && !(Array.isArray(out.cats) && out.cats.length)) out.cat = mi.cat ?? (Array.isArray(mi.cats) ? mi.cats[0] : null) ?? null;
     } else if (!(i.taxRateId ?? i.tax_rate_id) && !i.taxFallback) {
       out.taxFallback = { reason: TAX_FALLBACK_REASONS.ITEM_NOT_ON_MENU, rateId: null };
@@ -195,9 +196,24 @@ export function qrCloseTax(items, ctx = {}, { paidGoods = null } = {}) {
 export function qrTabCloseFields(rounds, runningTotal, ctx = {}) {
   const rows = Array.isArray(rounds) ? rounds : [];
   const tip = +rows.reduce((t, r) => t + (Number(r?.customer?.tip) || 0), 0).toFixed(2);
-  const goods = +((Number(runningTotal) || 0) - tip).toFixed(2);
+  // 19 Oct 2026 (v5.11.78, channel parity): the QR service charge each round took is booked as
+  // service, as on a QR pay now check and at the till, never as goods (it carries no VAT).
+  const service = Math.min(qrTabService(rows), Math.max(0, +((Number(runningTotal) || 0) - tip).toFixed(2)));
+  const goods = +((Number(runningTotal) || 0) - tip - service).toFixed(2);
   const tax = qrCloseTax(rows.flatMap((r) => (Array.isArray(r?.items) ? r.items : [])), ctx, { paidGoods: goods });
-  return { tip, subtotal: +(goods - tax.exclusiveTax).toFixed(2), ...tax };
+  return { tip, service, subtotal: +(goods - tax.exclusiveTax).toFixed(2), ...tax };
+}
+
+/**
+ * 19 Oct 2026 (v5.11.78, channel parity): the QR service charge a tab's rounds took, summed
+ * (customer.service_charge per round, the figure QrCheckout charged on that round). Every close
+ * of a QR tab (Orders force close, the short close, the phone's fallback write and settle_qr_tab
+ * on the server) books it as service, as a QR pay now check and a till table do. Before, it
+ * stayed inside the goods: VAT was booked on it and the service and tronc lines missed it.
+ */
+export function qrTabService(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  return +list.reduce((t, r) => t + Math.max(0, Number(r?.customer?.service_charge) || 0), 0).toFixed(2);
 }
 
 /**
@@ -220,11 +236,43 @@ export function qrTabSettleVat(fields) {
  * never below zero. UK inclusive VAT adds nothing on top (exclusiveTax 0), so
  * nothing changes there.
  */
-export function headlessService(draft, tax = null) {
+export function headlessService(draft, tax = null, discounts = null) {
   const d = draft || {};
-  const overMinor = Math.max(0, (Number(d.totalMinor) || 0) - (Number(d.subtotalMinor) || 0));
+  // 19 Oct 2026 (v5.11.78, channel parity): the service the till CHARGED when it froze one (a till
+  // since v5.11.78 freezes serviceMinor into the draft, from the same bill it charged).
+  if (d.serviceMinor != null && Number.isFinite(Number(d.serviceMinor))) return Math.max(0, Math.round(Number(d.serviceMinor))) / 100;
+  // Otherwise what was on the bill over the goods AFTER the discounts it lists: the subtotal is
+  // before them, so a 12.5% service charge on a discounted bill read as 0.00 (the charge sat in
+  // sales). No discounts: exactly as before.
+  const subMinor = Number(d.subtotalMinor) || 0;
+  const offMinor = Array.isArray(discounts) && discounts.length
+    ? Math.round(discounts.reduce((s, x) => s + checkDiscountAmount(x, subMinor / 100), 0) * 100) : 0;
+  const overMinor = Math.max(0, (Number(d.totalMinor) || 0) - Math.max(0, subMinor - offMinor));
   const addedMinor = isUsableBreakdown(tax) ? Math.round((Number(tax.exclusiveTax) || 0) * 100) : 0;
   return Math.max(0, overMinor - Math.max(0, addedMinor)) / 100;
+}
+
+/**
+ * 19 Oct 2026 (v5.11.78, channel parity): the discounts a check booked from a frozen card job
+ * draft carries, as the till's own close records them (store buildCloseRecord / recordWalkInClosed):
+ * the manual discounts the draft froze, plus the venue's automatic deals ('pos' rules). A till since
+ * v5.11.78 freezes the deals its bill applied (draft.autoDiscounts), so the deal booked is the one
+ * charged even if a scheduled window closes before the reconciler books; a draft from the server
+ * (Table Pay, pay at table) or an older till carries none, so they are worked out over the frozen
+ * lines with the same engine the VAT above already applies. A list that already holds a deal line
+ * is taken as it is. This record booked the manual list only (Shifts, Servers, Exceptions and the
+ * Z report then read 0.00 of deals on a reader sale).
+ */
+export function headlessDiscounts(draft, { discountRules = null, timezone } = {}) {
+  const d = draft || {};
+  const manual = Array.isArray(d.discounts) ? d.discounts : [];
+  if (manual.some((x) => x && x.isAuto)) return manual;
+  if (Array.isArray(d.autoDiscounts)) return [...manual, ...d.autoDiscounts];
+  const items = (Array.isArray(d.items) ? d.items : []).filter((i) => i && !i.voided);
+  if (!items.length || !Array.isArray(discountRules) || !discountRules.length) return manual;
+  try {
+    return [...manual, ...evaluateAutoDiscounts(items, discountRules, 'pos', buildScheduleCtx(timezone)).map(toAppliedDiscount)];
+  } catch { return manual; }
 }
 
 /**

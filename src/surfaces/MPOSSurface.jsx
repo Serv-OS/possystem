@@ -22,14 +22,18 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useStore } from '../store';
 import useSupabaseInit from '../lib/useSupabaseInit';
 import { queueWrite, dismissItem } from '../sync/OfflineQueue';
-import { getActiveLocationSync, isMock } from '../lib/supabase';
+import { supabase, getActiveLocationSync, isMock } from '../lib/supabase';
 import { isTrainingMode } from '../lib/trainingMode';
 import { getNextOrderRefLocal, fetchMenuCategoryLinks } from '../lib/db';
 import { resolveActiveMenu } from '../lib/menus/resolveActiveMenu';
 import { taxCtxHasConfig } from '../lib/taxCompute';
 import { closedCheckRow } from '../lib/closedCheckRow';
 import { tendersFromPaymentInfo } from '../lib/accounting/tenders';
-import { chargedTaxOf, creditDiscountsFromPayment } from '../lib/taxBasis';
+import { chargedTaxOf, creditDiscountsFromPayment, stampDiscountAmounts } from '../lib/taxBasis';
+import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
+import { applyBookingPayment } from '../lib/bookings/applyBookingPayment';
+import { bookingCloseInfo } from '../lib/bookings/bookingCloseInfo';
+import { buildScheduleCtx } from '../lib/scheduleCtx';
 import { roundVat } from '../lib/taxRule';   // 8 Oct 2026: the recovery record is rounded like the row
 import { computeCheckTotals } from '../lib/payments/checkTotals';
 import { taxForChargedGoods } from '../lib/headlessTax';
@@ -54,6 +58,7 @@ import MReceiptPrompt from './mpos/MReceiptPrompt';
 import MDone from './mpos/MDone';
 import MOrderHistory from './mpos/MOrderHistory';
 import MOrderDetail from './mpos/MOrderDetail';
+import { quoteForWalkIn } from '../lib/orderPlacedFrom';   // v5.11.78 round 1: an order's fee is bound to that order
 import MQueueDetail from './mpos/MQueueDetail';
 import { Sx, money } from './mpos/MShellStyles';
 
@@ -407,7 +412,7 @@ function MPOSRouter() {
           deviceConfig: st.deviceConfig,
           discountRules: st.discountRules,
           timezone: st.locationConfig?.timezone,
-          deliveryQuote: st.deliveryQuote,
+          deliveryQuote: quoteForWalkIn(st.deliveryQuote, order),   // v5.11.78 round 1: the bill's own
           taxRates: st.taxRates,
           taxCtx: st.getTaxContext(),
           creditDiscounts: creditDiscountsFromPayment(paymentInfo),
@@ -433,9 +438,13 @@ function MPOSRouter() {
       orderType,
       customer:   st.customer || null,
       items,
-      discounts:  order.discounts || [],
+      // 19 Oct 2026 (v5.11.78, channel parity): the record recordWalkInClosed would book: manual
+      // discounts with what the bill took off (stampDiscountAmounts), plus the automatic deals
+      // the till's bill applied ('pos' rules, the same merge), and the service charge charged.
+      discounts:  [...stampDiscountAmounts(items, order.discounts || []),
+                   ...evaluateAutoDiscounts(items, st.discountRules, 'pos', buildScheduleCtx(st.locationConfig?.timezone)).map(toAppliedDiscount)],
       subtotal,
-      service:    0,
+      service:    (paymentInfo?.service != null && Number.isFinite(Number(paymentInfo.service))) ? (roundVat(Number(paymentInfo.service)) ?? 0) : 0,
       tip:        paymentInfo?.tip || 0,
       total:      paymentInfo?.grand || subtotal,
       taxAmount:  roundVat(taxBreakdown?.totalTax),   // 8 Oct 2026: rounded once (taxRule.roundVat), as the row; null stays null
@@ -550,6 +559,13 @@ function MPOSRouter() {
     }
 
     if (failure) { onCloseFailed(failure, pi, tableId); return; }
+    // 19 Oct 2026 (v5.11.78): the booking money this close used is stamped applied (and the amount
+    // used), as CheckoutModal does after a till close. Best effort, server side idempotent.
+    if (pi.bookingPayment?.bookingId && supabase && !isMock && !isTrainingMode()) {
+      applyBookingPayment(supabase.rpc.bind(supabase), {
+        bookingId: pi.bookingPayment.bookingId, checkId: closedCheck.id, appliedMinor: pi.bookingPayment.appliedMinor,
+      }).then((r) => { if (!r.ok) console.warn('[mpos] apply_booking_payment:', r.error); }).catch(() => {});
+    }
 
     // A retry landed on the same id, so the buffered copy is now redundant — left in
     // the queue it would later replay the lossy rebuild over the real row. Dropped
@@ -852,7 +868,19 @@ function MPOSRouter() {
         // MPOS charged them), never the auto discounts a close would apply.
         onApproved={(info) => {
           const charged = chargedTaxOf(flow.context.payment);
-          onPaymentApproved(charged ? { ...info, chargedTaxBreakdown: charged } : info);
+          // 19 Oct 2026 (v5.11.78, channel parity): and the service charge MTender charged (the
+          // till's bill), so the close books it as service, as at the till.
+          const svc = Number(flow.context.payment?.service);
+          const withService = flow.context.payment?.service != null && Number.isFinite(svc) ? { service: svc } : {};
+          // 19 Oct 2026 (v5.11.78, channel parity): a booked party's deposit or prepay that MTender
+          // took off the bill is booked as the till books it: the check gross (card plus booking
+          // money), the booking legs as tenders and payment intents beside the card leg (named with
+          // what the card took, so a refund never aims at booking money), and the booking stamped
+          // applied once the close lands (onPaymentApproved).
+          const bp = flow.context.payment?.bookingPayment || null;
+          const withBooking = bookingCloseInfo(info, bp, Number(flow.context.payment?.bookingAppliedMajor) || 0);
+          const merged = { ...info, ...withService, ...withBooking };
+          onPaymentApproved(charged ? { ...merged, chargedTaxBreakdown: charged } : merged);
         }}
       />
     );

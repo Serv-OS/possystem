@@ -34,8 +34,13 @@ function resolveOptItemId(opt, menuItems) {
 // line's qty; the stepper hides — edit never changes quantity). onConfirm gets
 // the same (targetItem, mods, cfg, opts) shape; the caller replaces the line
 // in place instead of adding.
-export default function InlineItemFlow({ item, menuItems, activeAllergens = [], onConfirm, onCancel, mode = 'add', basePriceOverride = null, lockedQty = null }) {
-  const { modifierGroupDefs, instructionGroupDefs, eightySixIds, dailyCounts, orderType, activeMenuId } = useStore();
+// 19 Oct 2026 (v5.11.78): `priceChannel` / `priceMenuId` let a surface with its own order type and
+// menu (a bar tab is priced as eat in on the bar's own menu) show the size price it will charge.
+// Absent, the till's store order type and active menu, as before.
+export default function InlineItemFlow({ item, menuItems, activeAllergens = [], onConfirm, onCancel, mode = 'add', basePriceOverride = null, lockedQty = null, priceChannel = null, priceMenuId }) {
+  const { modifierGroupDefs, instructionGroupDefs, eightySixIds, dailyCounts, orderType: storeOrderType, activeMenuId: storeMenuId } = useStore();
+  const orderType = priceChannel || storeOrderType;
+  const activeMenuId = priceMenuId !== undefined ? priceMenuId : storeMenuId;
 
   // ── Resolve variant children from menuItems ──────────────────────────────
   const variantChildren = useMemo(() =>

@@ -78,10 +78,13 @@ test('a product is stamped with, and a till line charged at, this venue\'s own r
   assert.match(add, /isBackOfficeMode\(\) \? venueTaxRates\(useStore\.getState\(\)\.taxRates, tabVenue\(\)\)/, 'never the default of rates pushed from another venue, nor of the venue another tab switched to');
   assert.match(code(read('lib/rowMapping.js')), /filter\(\(r\) => r && locationId && !r\.unverified && \(r\.locationId \?\? r\.location_id\) === locationId\)/, 'nor one a till took unchecked from an old push');
   const addItem = between(store, 'addItem: (item, mods=[], pizzaConfig=null, opts={}) => {', 'seat: \'shared\'');
-  assert.match(addItem, /const refs = lineTaxRefs\(txRate, txOv, useStore\.getState\(\)\.taxRates\);/);
+  // 19 Oct 2026 (v5.11.78): the same rule through lib/tillLine.js (shared with the bar tab round).
+  assert.match(addItem, /const refs = tillLineTaxRefs\(item, useStore\.getState\(\)\.menuItems, useStore\.getState\(\)\.taxRates\);/);
+  assert.match(code(read('lib/tillLine.js')), /return lineTaxRefs\(sized\.taxRateId, sized\.taxOverrides, taxRates\);/);
   assert.match(addItem, /console\.warn\('\[tax\] product', item\.id, 'names rate id\(s\)'/);
   // 8 Oct 2026 (D4): the line carries WHY a rate was cleaned away, so the sale records it.
-  assert.match(addItem, /return \{ taxRateId: refs\.taxRateId, taxOverrides: refs\.taxOverrides, \.\.\.\(refs\.taxFallback \? \{ taxFallback: refs\.taxFallback \} : \{\}\) \};/);
+  assert.match(addItem, /return tillLineTaxFields\(refs\);/);
+  assert.match(code(read('lib/tillLine.js')), /return \{ taxRateId: refs\.taxRateId, taxOverrides: refs\.taxOverrides, \.\.\.\(refs\.taxFallback \? \{ taxFallback: refs\.taxFallback \} : \{\}\) \};/);
 });
 
 test('a push carries only its own venue\'s rates, and a till takes only its own', () => {

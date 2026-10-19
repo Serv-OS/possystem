@@ -364,7 +364,7 @@ export async function attributeOnlineOrder({
     if (serverDidIt) {
       // the rows are written; the welcome and the loyalty earn still run below
       if (serverCreated) await sendWelcomeFor(customerId, locationId);
-      await earnForOnlineOrder({ customerId, locationId, orderRecord, memberToken, memberCustomerId });
+      await earnForOnlineOrder({ customerId, locationId, orderRecord, memberToken, memberCustomerId, orderKey: trackKey });
       return customerId;
     }
     // 1. Upsert customers row. Use lookup-then-insert/update — same pattern
@@ -456,7 +456,7 @@ export async function attributeOnlineOrder({
     });
     if (e3) console.warn('[attributeOnlineOrder] customer_orders insert:', e3.message);
 
-    earnForOnlineOrder({ customerId, locationId, orderRecord, memberToken, memberCustomerId });
+    earnForOnlineOrder({ customerId, locationId, orderRecord, memberToken, memberCustomerId, orderKey: trackKey });
 
     return customerId;
   } catch (e) {
@@ -469,8 +469,19 @@ export async function attributeOnlineOrder({
  * Loyalty points for an online or QR order. Fire and forget, and idempotent server side on
  * the check id. Used by both paths, the server one and the old one.
  */
-export async function earnForOnlineOrder({ customerId, locationId, orderRecord, memberToken = null, memberCustomerId = null }) {
+/** 19 Oct 2026 (v5.11.78): an order key loyalty-earn accepts (the server's usableOrderKey rule):
+ *  a tracking token or a payment reference, never a 4 digit phone ending. */
+export function orderKeyUsable(key) {
+  if (typeof key !== 'string') return false;
+  const k = key.trim();
+  return k.length >= 12 && k.length <= 200;
+}
+
+export async function earnForOnlineOrder({ customerId, locationId, orderRecord, memberToken = null, memberCustomerId = null, orderKey = null }) {
   if (!customerId || !locationId || !orderRecord) return;
+  // 19 Oct 2026 (v5.11.78): a QR tab round has no check yet (it is booked when the tab settles),
+  // so there is nothing to earn from; a display ref would only be refused.
+  if (orderRecord.channel === 'qr' && !orderRecord.checkId) return;
   try {
     const token = await ensureAuthToken();
     if (!token) return;
@@ -480,7 +491,8 @@ export async function earnForOnlineOrder({ customerId, locationId, orderRecord, 
       // Round three (18 Sep 2026): loyalty-earn now earns from the server's own closed_checks
       // row, so this must be that row's id (checkId, 'chk-OL-...'), not the display ref.
       closed_check_id: orderRecord.checkId || orderRecord.ref || `online-${Date.now()}`,
-      channel: 'online',
+      // 19 Oct 2026 (v5.11.78): the page's own channel (online, qr, catering), as the till sends its own.
+      channel: orderRecord.channel || 'online',
       items: (orderRecord.items || []).map(i => ({
         name: i.name, qty: i.qty || 1, price: i.price || 0,
         cat: i.cat || i.category || null,
@@ -493,6 +505,11 @@ export async function earnForOnlineOrder({ customerId, locationId, orderRecord, 
       // in member IS this customer; a guest order (no sign in) earns before 20260919a (report
       // mode, logged) and not after it (enforced): signing in with the one time code earns.
       ...(memberToken && memberCustomerId && memberCustomerId === customerId ? { member_token: String(memberToken) } : {}),
+      // 19 Oct 2026 (v5.11.78, channel parity): a guest earns like a till customer. The order's own
+      // key (the tracking token, or the card payment reference; never the phone's last 4) proves
+      // this page placed this order, and loyalty-earn then credits only the phone on the check
+      // (supabase/functions/_shared/earnFromCheck.ts decideOrderProofEarn).
+      ...(orderKeyUsable(orderKey) ? { order_key: String(orderKey).trim() } : {}),
     };
     const sendEarn = () => fetch(
       `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/loyalty-earn`,
