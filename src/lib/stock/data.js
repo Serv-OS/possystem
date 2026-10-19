@@ -76,7 +76,16 @@ const itemFromRow = (r) => ({
   defaultSupplierId: r.default_supplier_id, sku: r.sku, barcode: r.barcode, notes: r.notes,
   purchaseTaxRateId: r.purchase_tax_rate_id || null,
   archivedAt: r.archived_at, createdAt: r.created_at, updatedAt: r.updated_at,
+  // v5.11.80 (multi site stock): set when head office owns this item (company columns locked here)
+  companyRef: r.company_ref || null,
 });
+// v5.11.80 (multi site stock): a company item sends ONLY the site's own columns. Its company columns
+// (name, category, unit, SKU, barcode, allergens, VAT, shelf life) are head office's: the database
+// refuses a change to them, and sending them back unchanged could still differ by a trimmed space.
+// So a company row is saved with an UPDATE of those columns only (an upsert would need every NOT NULL
+// column for its insert half).
+const SITE_ITEM_COLS = ['kind', 'is_tracked', 'is_sellable', 'cost_method', 'storage_location', 'default_supplier_id', 'notes', 'updated_at'];
+const pickCols = (row, cols) => Object.fromEntries(Object.entries(row).filter(([k]) => cols.includes(k)));
 const itemToRow = (i, locationId) => ({
   ...(i.id ? { id: i.id } : {}),
   location_id: locationId, org_id: i.orgId || null,
@@ -103,8 +112,10 @@ const supplierFromRow = (r) => ({
   // v5.11.65: days stored as numbers (1 = Mon .. 7 = Sun, the seed wrote [1,2,3,4,5,6]) read as the
   // names the Suppliers editor and the Order pad compare, so every venue's schedule is understood.
   deliveryDays: normDeliveryDays(r.delivery_days), cutoffTime: r.cutoff_time,
-  notes: r.notes, archivedAt: r.archived_at,
+  notes: r.notes, archivedAt: r.archived_at, companyRef: r.company_ref || null,
 });
+// v5.11.80: a company supplier sends only the site's own columns (account, order email, days, cut off).
+const SITE_SUPPLIER_COLS = ['email', 'account_number', 'min_order_value', 'delivery_days', 'cutoff_time', 'notes', 'updated_at'];
 const supplierToRow = (s, locationId) => ({
   ...(s.id ? { id: s.id } : {}),
   location_id: locationId, org_id: s.orgId || null, name: (s.name || '').trim(),
@@ -121,7 +132,10 @@ const spFromRow = (r) => ({
   packQty: Number(r.pack_qty), innerQty: Number(r.inner_qty), innerUnit: r.inner_unit,
   packPrice: Number(r.pack_price), isPreferred: r.is_preferred === true,
   purchaseTaxRateId: r.purchase_tax_rate_id || null, priceIncludesTax: r.price_includes_tax === true,
+  companyRef: r.company_ref || null, archivedAt: r.archived_at || null,
 });
+// v5.11.80: a company supplier price saves only is_preferred (the site's own choice).
+const SITE_SP_COLS = ['is_preferred', 'updated_at'];
 const spToRow = (sp, locationId) => ({
   ...(sp.id ? { id: sp.id } : {}),
   location_id: locationId, inventory_item_id: sp.inventoryItemId, supplier_id: sp.supplierId,
@@ -135,12 +149,14 @@ const spToRow = (sp, locationId) => ({
 const convFromRow = (r) => ({
   id: r.id, inventoryItemId: r.inventory_item_id,
   fromQty: Number(r.from_qty), fromUnit: r.from_unit, toQty: Number(r.to_qty), toUnit: r.to_unit,
+  companyRef: r.company_ref || null, archivedAt: r.archived_at || null,
 });
 
 const packFromRow = (r) => ({
   id: r.id, inventoryItemId: r.inventory_item_id, name: r.name,
   qtyInBase: Number(r.qty_in_base), parentFormatId: r.parent_format_id,
   isCountDefault: r.is_count_default === true, isPurchaseDefault: r.is_purchase_default === true,
+  companyRef: r.company_ref || null, archivedAt: r.archived_at || null,
 });
 
 // ── units ────────────────────────────────────────────────────────────────────
@@ -191,11 +207,12 @@ export const fetchInventoryItems = async (locationId = null) => {
   const convs = convRes.data, sps = spRes.data, packs = packRes.data;
   const itemAreas = areaRes.data || {};
   const convByItem = {};
-  (convs || []).forEach((c) => { (convByItem[c.inventory_item_id] ??= []).push(convFromRow(c)); });
+  // v5.11.80: a pack, unit bridge or supplier price switched off here (archived_at) is not offered
+  (convs || []).filter((c) => !c.archived_at).forEach((c) => { (convByItem[c.inventory_item_id] ??= []).push(convFromRow(c)); });
   const spByItem = {};
-  (sps || []).forEach((s) => { (spByItem[s.inventory_item_id] ??= []).push(spFromRow(s)); });
+  (sps || []).filter((x) => !x.archived_at).forEach((x) => { (spByItem[x.inventory_item_id] ??= []).push(spFromRow(x)); });
   const packByItem = {};
-  (packs || []).forEach((p) => { (packByItem[p.inventory_item_id] ??= []).push(packFromRow(p)); });
+  (packs || []).filter((p) => !p.archived_at).forEach((p) => { (packByItem[p.inventory_item_id] ??= []).push(packFromRow(p)); });
   const mapped = (items || []).map((r) => {
     const it = itemFromRow(r);
     it.areaId = itemAreas[r.id] || null;
@@ -226,7 +243,9 @@ export const upsertInventoryItem = async (item, locationId = null) => {
   if (!locationId) return { data: null, error: new Error('No locationId') };
   // maybeSingle() hands back data:null with error:null when nothing came back —
   // a blocked write reads exactly like a save. Report it.
-  const { data, error } = await supabase.from('inventory_items').upsert(itemToRow(item, locationId)).select().maybeSingle();
+  const { data, error } = item.companyRef && item.id
+    ? await supabase.from('inventory_items').update(pickCols(itemToRow(item, locationId), SITE_ITEM_COLS)).eq('location_id', locationId).eq('id', item.id).select().maybeSingle()
+    : await supabase.from('inventory_items').upsert(itemToRow(item, locationId)).select().maybeSingle();
   return { data, error: error || noRow('Item save', data) };
 };
 
@@ -255,7 +274,9 @@ export const upsertSupplier = async (supplier, locationId = null) => {
   if (isMock || !supabase) return { data: null, error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: new Error('No locationId') };
-  const { data, error } = await supabase.from('suppliers').upsert(supplierToRow(supplier, locationId)).select().maybeSingle();
+  const { data, error } = supplier.companyRef && supplier.id
+    ? await supabase.from('suppliers').update(pickCols(supplierToRow(supplier, locationId), SITE_SUPPLIER_COLS)).eq('location_id', locationId).eq('id', supplier.id).select().maybeSingle()
+    : await supabase.from('suppliers').upsert(supplierToRow(supplier, locationId)).select().maybeSingle();
   return { data: data ? supplierFromRow(data) : null, error: error || noRow('Supplier save', data) };
 };
 
@@ -284,7 +305,9 @@ export const upsertSupplierProduct = async (sp, locationId = null) => {
     const { error: clearErr } = await clear.select('id');
     if (clearErr) return { data: null, error: clearErr };
   }
-  const { data, error } = await supabase.from('supplier_products').upsert(spToRow(sp, locationId)).select().maybeSingle();
+  const { data, error } = sp.companyRef && sp.id
+    ? await supabase.from('supplier_products').update(pickCols(spToRow(sp, locationId), SITE_SP_COLS)).eq('location_id', locationId).eq('id', sp.id).select().maybeSingle()
+    : await supabase.from('supplier_products').upsert(spToRow(sp, locationId)).select().maybeSingle();
   const saveErr = error || noRow('Supplier product save', data);
   if (saveErr) return { data: null, error: saveErr };
   let partial = null;
@@ -742,3 +765,17 @@ export async function recomputeItemCost(itemId, locationId = null) {
   }
   return { ok: true, baseUnitCost: chosenCost, changed };
 }
+
+/**
+ * v5.11.80 (multi site stock): this venue's Shared stock status for its own screens: is its stock
+ * shared, who the stock Editors are, how many items head office manages here, what head office changed
+ * in the last 14 days. { data: { shared, editors, managed_items, news } | null }. Before 20261019c is
+ * run (or on any failure) data is null and the screens behave as before.
+ */
+export const fetchSharedStockStatus = async (locationId = null) => {
+  if (isMock || !supabase) return { data: null, error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: null, error: null };
+  const { data, error } = await supabase.rpc('msm_stock_site_status', { p_location_id: locationId });
+  return { data: error ? null : (data || null), error: error || null };
+};

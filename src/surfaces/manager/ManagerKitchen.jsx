@@ -25,6 +25,8 @@ import { money } from '../../lib/currency';
 import { Header, Stat, SectionTitle, mono } from './ui';
 import { Icon } from '../../components/ServOSIcons';
 import { useLayout } from './useLayout';
+// v5.11.80 (multi site stock Phase 1b): count by area and log waste on the phone.
+import ManagerStock from './ManagerStock';
 
 const DEL_PILL = { pending: ['Expected', 'var(--orn)'], overdue: ['Overdue', 'var(--red)'], accepted: ['Arrived', 'var(--grn)'], rejected: ['Rejected', 'var(--red)'] };
 const ACCEPT_MAX_C = 8;   // the Ops Deliveries threshold; the server (manager-approve) holds the same figure
@@ -64,6 +66,7 @@ export default function ManagerKitchen({ ctx }) {
   const [recvErr, setRecvErr] = useState('');
   const [recvBusy, setRecvBusy] = useState(false);
   const [recvDone, setRecvDone] = useState({});  // poId -> message (received this session)
+  const [stockOpen, setStockOpen] = useState(false);
 
   const today = venueDay(snap);
   const unlockPin = (fail) => { if (poEntry.length >= 4) setPoPin(poEntry); else fail?.('Enter your 4 to 6 digit PIN'); };
@@ -233,9 +236,16 @@ export default function ManagerKitchen({ ctx }) {
       style={{ width, padding: '8px 9px', borderRadius: 10, border: '1px solid var(--bdr)', background: 'var(--inset, transparent)', color: 'var(--t1)', fontSize: 14, fontWeight: 700, textAlign: 'right', fontFamily: 'var(--font-mono)', outline: 'none', ...extra }} />
   );
 
+  if (stockOpen) return <ManagerStock ctx={ctx} onClose={() => setStockOpen(false)} />;
+
   return (
     <div style={L.s.page2}>
       <Header title="Kitchen" sub="Stock · deliveries · prep" />
+      <button onClick={() => setStockOpen(true)} className="sv-glass" data-testid="manager-stock-open"
+        style={{ marginTop: 12, width: '100%', padding: '14px 16px', borderRadius: 14, border: '1px solid var(--bdr)', cursor: 'pointer', color: 'var(--t1)', fontWeight: 800, fontSize: 14, fontFamily: 'inherit', textAlign: 'left', ...L.s.span }}>
+        Count stock or log waste
+        <div style={{ fontSize: 12, color: 'var(--t3)', fontWeight: 500 }}>By area, with the barcode, saved as you go; approve with a manager PIN</div>
+      </button>
       {!snap && !err && <div style={{ color: 'var(--t3)', padding: 16, ...mono, ...L.s.span }}>Loading…</div>}
       {err && <div className="sv-glass" style={{ padding: 16, marginTop: 12, color: 'var(--t3)', fontSize: 13, ...L.s.span }}>Couldn’t load stock ({err}).</div>}
 

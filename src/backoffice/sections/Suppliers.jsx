@@ -91,13 +91,18 @@ export default function Suppliers() {
         {draft && (
           <div style={{ padding: '22px 26px', maxWidth: 640 }}>
             <h2 style={{ fontSize: 19, fontWeight: 700, letterSpacing: '-.3px', margin: '0 0 18px', color: 'var(--t1)' }}>{draft.name || 'New supplier'}</h2>
-            <div style={{ marginBottom: 14 }}><label style={lbl}>Name</label><input value={draft.name} onChange={e => upd('name', e.target.value)} style={field} /></div>
+            {draft.companyRef && (
+              <div style={{ marginBottom: 14, padding: '9px 12px', borderRadius: 10, fontSize: 12.5, lineHeight: 1.45, color: 'var(--t1)', background: 'var(--blu-d, var(--bg2))', border: '1px solid color-mix(in srgb, var(--blu, #4A8CFF) 40%, transparent)' }}>
+                <b>Managed by head office.</b> The name, contact, phone and payment terms are the company's (v5.11.80, multi site stock). This site's account number, order email, delivery days, cut off, minimum order and notes are its own and save here.
+              </div>
+            )}
+            <div style={{ marginBottom: 14 }}><label style={lbl}>Name</label><input value={draft.name} disabled={!!draft.companyRef} onChange={e => upd('name', e.target.value)} style={field} /></div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-              <div><label style={lbl}>Contact name</label><input value={draft.contactName || ''} onChange={e => upd('contactName', e.target.value)} style={field} /></div>
+              <div><label style={lbl}>Contact name</label><input value={draft.contactName || ''} disabled={!!draft.companyRef} onChange={e => upd('contactName', e.target.value)} style={field} /></div>
               <div><label style={lbl}>Account number</label><input value={draft.accountNumber || ''} onChange={e => upd('accountNumber', e.target.value)} style={field} /></div>
               <div><label style={lbl}>Email</label><input value={draft.email || ''} onChange={e => upd('email', e.target.value)} style={field} placeholder="orders@supplier.co.uk" /></div>
-              <div><label style={lbl}>Phone</label><input value={draft.phone || ''} onChange={e => upd('phone', e.target.value)} style={field} /></div>
-              <div><label style={lbl}>Payment terms (days)</label><input type="number" min="0" value={draft.paymentTermsDays ?? ''} onChange={e => upd('paymentTermsDays', e.target.value)} style={field} /></div>
+              <div><label style={lbl}>Phone</label><input value={draft.phone || ''} disabled={!!draft.companyRef} onChange={e => upd('phone', e.target.value)} style={field} /></div>
+              <div><label style={lbl}>Payment terms (days)</label><input type="number" min="0" value={draft.paymentTermsDays ?? ''} disabled={!!draft.companyRef} onChange={e => upd('paymentTermsDays', e.target.value)} style={field} /></div>
               <div><label style={lbl}>Min order value</label><input type="number" min="0" step="any" value={draft.minOrderValue ?? ''} onChange={e => upd('minOrderValue', e.target.value)} style={field} placeholder="£" /></div>
               <div><label style={lbl}>Cut-off time</label><input value={draft.cutoffTime || ''} onChange={e => upd('cutoffTime', e.target.value)} style={field} placeholder="e.g. 16:00" /></div>
             </div>
@@ -113,7 +118,7 @@ export default function Suppliers() {
             <div style={{ marginTop: 14 }}><label style={lbl}>Notes</label><textarea value={draft.notes || ''} onChange={e => upd('notes', e.target.value)} style={{ ...field, minHeight: 56, resize: 'vertical' }} /></div>
             <div style={{ display: 'flex', gap: 10, marginTop: 18 }}>
               <button onClick={save} disabled={saving} style={{ padding: '10px 22px', borderRadius: 12, background: 'var(--acc)', color: '#0b0c10', border: 0, fontSize: 13, fontWeight: 700, cursor: 'pointer', opacity: saving ? 0.6 : 1 }}>{saving ? 'Saving…' : draft.id ? 'Save changes' : 'Create supplier'}</button>
-              {draft.id && <button onClick={archive} style={{ padding: '10px 16px', borderRadius: 12, background: 'var(--bg2)', border: '1px solid var(--bdr2)', color: 'var(--t2)', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Archive</button>}
+              {draft.id && !draft.companyRef && <button onClick={archive} style={{ padding: '10px 16px', borderRadius: 12, background: 'var(--bg2)', border: '1px solid var(--bdr2)', color: 'var(--t2)', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Archive</button>}
             </div>
           </div>
         )}

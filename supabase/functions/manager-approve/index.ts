@@ -19,6 +19,9 @@
 //            hours/break/pay maths runs in workforce-clock via its service-role staff_id seam)
 //            'po.raise' (an order for one supplier in that supplier's packs and prices, v5.11.64)
 //            'po.receive' (goods in from the phone: stock, costs, temperature record, v5.11.64)
+//            'stock.areas' | 'stock.items' | 'stock.count_open' | 'stock.count_sheet' | 'stock.count_save' |
+//            'stock.count_approve' | 'stock.waste' (v5.11.80, multi site stock Phase 1b: counting by
+//            area and waste on the phone; the steps live in _shared/stockPhone.js)
 //   pin is optional for a Back Office user (user_locations / super_admin): that signed-in user
 //   is the accountable operator instead.
 
@@ -31,6 +34,8 @@ import { nextDeliveryYmd, packContent, packsForBase, netPackPrice, poTotals, unr
 // v5.11.65: ONE moving average rule with Back Office receiving (applyReceipt); the inline copy here
 // wrote 4.00 where Back Office wrote 1.20 when stock was below zero.
 import { costAfterReceipt } from '../_shared/stockCosting.js';
+// v5.11.80: counting and waste on the phone (multi site stock Phase 1b), one copy of the steps.
+import * as stockPhone from '../_shared/stockPhone.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -516,6 +521,37 @@ Deno.serve(async (req) => {
           temperature_c: tempC, in_range: inRange, delivery_id: del.id, invoice_id: invoiceId, scanned: !!body.scan, subtotal: r2(subtotal), tax: r2(tax), by: op.name ?? op.id });
       if (auditErr) return auditFailed('The receive', { received: true, balance_reference: balance?.reference || null });
       return json({ ok: true, received, shorted: shorted.length, balance_reference: balance?.reference || null, invoice_id: invoiceId, delivery_id: del.id });
+    }
+
+    // ── v5.11.80 stock on the phone (multi site stock plan, Phase 1b) ─────────
+    // Count by area with each figure's own time, saved as you go; approve in ONE database call
+    // (approve_stock_count, 20261019b) with the approver's PIN (checked above); waste through
+    // stock_record_waste. Every step is fenced to this location by the service role reads.
+    if (action.startsWith('stock.')) {
+      const { data: locRow } = await sb.from('locations').select('org_id').eq('id', loc).maybeSingle();
+      const orgId = locRow?.org_id || null;
+      const who = op.name || 'manager';
+      let out: any;
+      if (action === 'stock.areas') out = await stockPhone.areas(sb, loc);
+      else if (action === 'stock.count_open') out = await stockPhone.openCount(sb, loc, String(target_id), who);
+      else if (action === 'stock.items') out = await stockPhone.items(sb, loc, Math.max(0, Number(body.offset) || 0));
+      else if (action === 'stock.count_sheet') out = await stockPhone.sheet(sb, loc, String(target_id), Math.max(0, Number(body.offset) || 0));
+      else if (action === 'stock.count_save') out = await stockPhone.save(sb, loc, String(target_id), body.entries, { sentAt: body.sent_at || null });
+      else if (action === 'stock.count_approve') {
+        out = await stockPhone.approve(sb, loc, String(target_id), who);
+        if (!out?.error && out?.ok !== false) {
+          const auditErr = await audit(loc, orgId, op, 'stock.count_approve', 'stock_counts', String(target_id), null, { by: who, posted: out?.posted ?? null, opening: out?.opening ?? null });
+          if (auditErr) return auditFailed('The count approval', { approved: true });
+        }
+      } else if (action === 'stock.waste') {
+        out = await stockPhone.waste(sb, loc, { ...body, item_id: target_id }, who);
+        if (!out?.error) {
+          const auditErr = await audit(loc, orgId, op, 'stock.waste', 'waste_events', String(out?.id || target_id), null, { by: who, item: target_id, qty_base: body.qty_base, reason: body.reason || null });
+          if (auditErr) return auditFailed('The waste', { recorded: true });
+        }
+      } else return json({ error: 'unknown action' }, 400);
+      if (out?.error) return json({ error: out.error }, 400);
+      return json({ ok: true, ...out });
     }
 
     return json({ error: 'unknown action' }, 400);

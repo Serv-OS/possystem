@@ -7,6 +7,19 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.80',
+    date: '19 Oct 2026',
+    items: [
+      "Multi site stock (BETA): head office keeps one list of stock items, packs, unit bridges, suppliers and supplier prices, and publishes it to every site; each site keeps its own stock on hand, cost, pars, areas, counts, orders, invoices, waste and preferred supplier, and publishing never changes those. It sits beside the Multi site menu (Menu, Multi site stock) and opens only for the stock Editors and Viewers ServOS adds by name in Company Admin. Needs the database update 20261019c (after 20261019b).",
+      "Shared stock switch in Company Admin (ServOS staff, with the second step): it needs the Multi site menu on first. Switching it on puts central stock on at every site of the company, and every site that joins the company later is central from the moment it joins, with nothing to do by hand.",
+      "Every change goes into a draft first. Preview says per site what it gets (for example Leeds: 42 new stock items, 3 suppliers, 120 prices; no stock quantities change) and stops the publish, in words, when a site has no matching VAT rate or a supplier pack's unit cannot become the item's unit. Publish tonight (05:00 on each site's own clock, the default) or now. Sites are written one at a time inside the database; a site that is busy gives way and tries again the next minute, so tills are never held. History shows every version at every site, row by row, and the newest version can be undone exactly.",
+      "Set up: add the usual six areas at every site, Start from a site (that site's stock rows become the company list without changing a quantity, a cost or a name; if anything would change, nothing is kept), link a site's own items, suppliers and prices to company ones (only when ticked), switch items on everywhere or make one site stock what another stocks, and import items, packs or prices from a CSV file (checked row by row first). Change prices by a percent or an amount, at the company price or at chosen sites, with a preview.",
+      "At each site a company item, supplier or price says Managed by head office and names the stock Editors; its name, unit, SKU, barcode, VAT, allergens, packs and prices are locked here and in the database. The site's own fields (par, area, notes, made here, tracking, preferred supplier, account number, order email, delivery days) still save. The Stock overview shows what head office changed in the last 14 days.",
+      "Stock counts: approving a count now needs a manager PIN (a Manager or Owner at the venue, or someone with manager approvals). Five wrong PINs in 15 minutes and that login waits.",
+      "Manager app: Count stock or log waste from the Kitchen tab. Count by area with the barcode (the company barcode works at every site), each figure saved as you go with the time it was typed and kept on the phone when the signal drops; approve the whole count in one step with a manager PIN. Log waste by item with a reason. Needs manager-approve deployed.",
+    ],
+  },
+  {
     v: '5.11.79',
     date: '19 Oct 2026',
     items: [

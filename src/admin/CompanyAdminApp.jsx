@@ -19,6 +19,7 @@ import { ServOSIcon, ServOSWordmark } from '../components/ServOSBrand';
 // v5.11.75: loaded only when a company is opened here, so the Multi site menu code never rides in
 // the bundle every till downloads.
 const AdminMultiSiteMenu = lazy(() => import('./sections/AdminMultiSiteMenu'));
+const AdminSharedStock = lazy(() => import('./sections/AdminSharedStock'));
 
 const S = {
   shell: { display:'flex', height:'100vh', fontFamily:'inherit', background:'var(--bg)', color:'var(--t1)' },
@@ -734,6 +735,8 @@ function AdminPanel({ authUser }) {
 
                 {/* v5.11.75: who may open the Multi site menu (named logins, ServOS only). */}
                 <Suspense fallback={null}><AdminMultiSiteMenu org={selectedOrg} allUsers={allUsers} /></Suspense>
+                {/* v5.11.80: Shared stock (multi site stock): the switch and the stock people (ServOS only). */}
+                <Suspense fallback={null}><AdminSharedStock org={selectedOrg} allUsers={allUsers} /></Suspense>
               </>
             )}
 

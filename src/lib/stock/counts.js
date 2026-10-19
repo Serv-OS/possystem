@@ -314,7 +314,7 @@ export const deleteCount = async (countId, locationId = null) => {
  * 2,000 to 3,000 lines; one after another was 8 to 15 minutes), `onProgress({ done, total })`
  * feeds the button, and the first failure stops new posts. A retry cannot post a line twice.
  */
-export const approveCount = async (countId, locationId = null, { approvedByName = null, approvalNote = null, onProgress = null, costs = null } = {}) => {
+export const approveCount = async (countId, locationId = null, { approvedByName = null, approvalNote = null, onProgress = null, costs = null, pin = null } = {}) => {
   if (isMock || !supabase) return { error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { error: new Error('No locationId') };
@@ -325,6 +325,24 @@ export const approveCount = async (countId, locationId = null, { approvedByName 
   // is written, and the screen asks the manager for one (`costs`: { itemId: cost per base unit }).
   // All or nothing, and a retry posts nothing twice. Before 20261019b is run the call is missing and
   // the old line by line path below runs.
+  // v5.11.80 (multi site stock plan 4.6): a manager PIN approves (stock_approve_count_pin, 20261019c,
+  // checks it against the venue's staff and refuses after five wrong ones in 15 minutes). Before
+  // 20261019c is run that call is missing and the call without a PIN below runs, as in v5.11.79.
+  {
+    const { data: pres, error: pErr } = await supabase.rpc('stock_approve_count_pin', {
+      p_count_id: countId, p_pin: String(pin || ''), p_approved_by_name: approvedByName || null, p_approval_note: approvalNote || null,
+      p_costs: costs && Object.keys(costs).length ? costs : null, p_preview: false,
+    });
+    if (!pErr) {
+      if (pres && pres.ok === false && pres.pin) return { error: new Error(pres.error || 'That PIN is not a manager at this venue.'), pinRefused: true, data: pres };
+      const outcome = approvalOutcome(pres);
+      if (!outcome.ok) return { error: new Error(outcome.text), needsCost: outcome.needsCost || null, data: pres };
+      return { error: null, data: { posted: Number(pres?.posted) || 0, total: Number(pres?.total) || 0, opening: Number(pres?.opening) || 0,
+        varianceValue: pres?.variance_value ?? null, openingValue: pres?.opening_value ?? null, uncounted: pres?.uncounted ?? null,
+        duplicate: !!pres?.duplicate, text: `${outcome.text}${pres?.approved_by_pin ? ` Approved by ${pres.approved_by_pin}.` : ''}`, oneCall: true } };
+    }
+    if (!isMissingFunctionError(pErr)) return { error: pErr };
+  }
   {
     const { data: res, error: rpcErr } = await supabase.rpc('approve_stock_count', {
       p_count_id: countId, p_approved_by_name: approvedByName || null, p_approval_note: approvalNote || null,

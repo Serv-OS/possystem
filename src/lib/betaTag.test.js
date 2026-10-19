@@ -17,7 +17,9 @@ test('the Multi site menu is the one beta route; every other sidebar route is no
   assert.ok(BETA_ROUTES.has(MSM_ROUTE));
   assert.equal(isBetaRoute(MSM_ROUTE), true);
   assert.equal(isBetaRoute('multi-site-menu'), true);
-  const others = allRoutes.filter((id) => id !== MSM_ROUTE);
+  // v5.11.80: Multi site stock sits beside it, BETA too
+  assert.equal(isBetaRoute('multi-site-stock'), true);
+  const others = allRoutes.filter((id) => id !== MSM_ROUTE && id !== 'multi-site-stock');
   assert.ok(others.length > 50, `${others.length} other routes`);
   for (const id of others) assert.equal(isBetaRoute(id), false, id);
   for (const id of ['menu', 'overview', 'wf-rota', '', null, undefined, 0, {}]) assert.equal(isBetaRoute(id), false, String(id));

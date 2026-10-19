@@ -171,7 +171,10 @@ test('count approval is one database call; the old line by line path runs only w
   assert.match(fn, /if \(!isMissingFunctionError\(rpcErr\)\) return \{ error: rpcErr \};/);
   assert.match(fn, /p_costs: costs && Object\.keys\(costs\)\.length \? costs : null/);
   const screen = read('../../backoffice/sections/StockCounts.jsx');
-  assert.match(screen, /const \{ error, data: outcome, needsCost \} = await approveCount\(active\.id, locId, \{/);
+  // v5.11.80: the manager PIN call (stock_approve_count_pin) comes first, then this one, then the old path
+  assert.match(screen, /const \{ error, data: outcome, needsCost(, pinRefused)? \} = await approveCount\(active\.id, locId, \{/);
+  const pinCall = fn.indexOf("supabase.rpc('stock_approve_count_pin'");
+  assert.ok(pinCall > 0 && pinCall < rpc, 'the PIN call comes before the call without a PIN');
   assert.match(screen, /review\.needsCost && review\.needsCost\.length > 0 && \(/, 'the screen asks for the missing costs');
 });
 
@@ -418,13 +421,15 @@ test('an invoice carries the screen\'s own id, made once per scan, and a repeat 
 
 test('version and changelog say 5.11.79, name the database update, plain words', async () => {
   const { VERSION } = await import('../version.js');
-  assert.equal(VERSION, '5.11.79');
   const { CHANGELOG } = await import('../changelog.js');
-  assert.equal(CHANGELOG[0].v, '5.11.79');
-  assert.ok(CHANGELOG[0].items.some((t) => /20261019b/.test(t)), 'the changelog names the database update');
-  assert.ok(CHANGELOG[0].items.some((t) => /every venue has used it since 5\.11\.78/.test(t)), 'and says central stock is 5.11.78\'s, nothing switched here');
-  assert.ok(CHANGELOG[0].items.some((t) => /newest count stands/.test(t)) && CHANGELOG[0].items.some((t) => /pages of 1,000 items/.test(t)), 'and names the round 1 fixes');
-  for (const t of CHANGELOG[0].items) assert.doesNotMatch(t, /[–—]/, 'no dashes as punctuation');
+  // v5.11.80 sits on top of this release: the version is the newest entry; the 5.11.79 entry stays
+  assert.equal(VERSION, CHANGELOG[0].v);
+  const e = CHANGELOG.find((x) => x.v === '5.11.79');
+  assert.ok(e, 'the 5.11.79 entry is there');
+  assert.ok(e.items.some((t) => /20261019b/.test(t)), 'the changelog names the database update');
+  assert.ok(e.items.some((t) => /every venue has used it since 5\.11\.78/.test(t)), 'and says central stock is 5.11.78\'s, nothing switched here');
+  assert.ok(e.items.some((t) => /newest count stands/.test(t)) && e.items.some((t) => /pages of 1,000 items/.test(t)), 'and names the round 1 fixes');
+  for (const t of e.items) assert.doesNotMatch(t, /[–—]/, 'no dashes as punctuation');
 });
 
 test('the till path dates a sale at its own time, never ahead of the clock (11.5 item 2)', async () => {

@@ -10,7 +10,8 @@ import { useStore } from '../../store';
 import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
 import { money, currencySymbol, signedMoney } from '../../lib/currency';
 import { lineValue, negativeStock } from '../../lib/stock/valuation';
-import { fetchInventoryItems, fetchSuppliers, fetchRecentMovements, movementLabel, fetchStockOutboxHealth, releaseStockOutbox, fetchCostRule, saveCostRule } from '../../lib/stock/data';
+import { fetchInventoryItems, fetchSuppliers, fetchRecentMovements, movementLabel, fetchStockOutboxHealth, releaseStockOutbox, fetchCostRule, saveCostRule, fetchSharedStockStatus } from '../../lib/stock/data';
+import { newsWords } from '../../lib/stock/company/stockCompanyRules';
 import { COST_RULES, COST_RULE_WORDS, normCostRule } from '../../lib/stock/phase0Rules';
 import { healthWords, heldReason } from '../../lib/stock/centralMode.js';
 import { displayInUnits } from '../../lib/stock/uom';
@@ -33,6 +34,8 @@ export default function StockOverview({ setSection, canOpen = () => true }) {
   // v5.11.79 (stock plan 4.5, decision 2): where cost comes from at this venue.
   const [costRule, setCostRule] = useState(null);
   const [ruleBusy, setRuleBusy] = useState(false);
+  // v5.11.80 (multi site stock): what head office changed here lately, and who the stock Editors are
+  const [shared, setShared] = useState(null);
 
   const load = useCallback(async () => {
     const loc = locId || getActiveLocationSync() || await getLocationId().catch(() => null);
@@ -50,6 +53,7 @@ export default function StockOverview({ setSection, canOpen = () => true }) {
       fetchStockOutboxHealth(loc).catch(() => ({ data: null, error: null })),
     ]);
     fetchCostRule(loc).then((r) => setCostRule(normCostRule(r?.data))).catch(() => setCostRule('price_list'));
+    fetchSharedStockStatus(loc).then((r) => setShared(r?.data || null)).catch(() => setShared(null));
     setD({ items: items || [], recipes: recipes || [], suppliers: suppliers || [], pos: pos || [], moves: moves || [],
       areas: areaRes.data, holdings: holdRes.data || {}, counts: countRes.data || [],
       health: healthRes && !healthRes.error ? healthWords(healthRes.data) : null });
@@ -158,6 +162,16 @@ export default function StockOverview({ setSection, canOpen = () => true }) {
 
         {/* Right column: attention + activity */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+          {shared?.shared && (
+            <div style={card} data-testid="stock-head-office">
+              <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--t1)', marginBottom: 6 }}>Head office stock</div>
+              <div style={{ fontSize: 13, color: 'var(--t2)', lineHeight: 1.5 }}>
+                {newsWords(shared.news, (iso) => new Date(iso).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'short' })) || 'Nothing changed by head office in the last 14 days.'}
+                {Array.isArray(shared.news?.names) && shared.news.names.length > 0 && <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 4 }}>{shared.news.names.slice(0, 8).join(', ')}{shared.news.names.length > 8 ? ' and more' : ''}</div>}
+                <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 6 }}>{shared.managed_items} stock items here are managed by head office{shared.editors ? ` (stock Editors: ${shared.editors})` : ''}. New items arrive with nothing on hand: count them.</div>
+              </div>
+            </div>
+          )}
           {costRule && (
             <div style={card} data-testid="stock-cost-rule">
               <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--t1)', marginBottom: 6 }}>Cost here</div>
