@@ -14,7 +14,8 @@ import { requestPaymentProof, placePublicOrder } from '../../lib/publicOrderClie
 import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient';
 import { getLocationProcessor } from '../../lib/payments/processor';
 import RyftPaymentForm from '../../components/RyftPaymentForm';
-import { computeOrderTaxUnified } from '../../lib/taxCompute';
+import { computeOrderTaxUnified, taxCtxHasConfig } from '../../lib/taxCompute';
+import VatGateNotice from '../online/VatGateNotice';
 import { publicCheckTaxFields } from '../../lib/publicCheckTax';
 import { creditDiscounts } from '../../lib/taxBasis';
 import { sendEmailReceipt } from '../../lib/sendReceipt';
@@ -46,7 +47,9 @@ const center = { maxWidth: 640, margin: '0 auto', padding: '0 16px' };
 const lbl = { display: 'block', fontSize: 12, fontWeight: 700, color: '#475569', marginBottom: 5 };
 const inp = { width: '100%', boxSizing: 'border-box', border: '1px solid #cbd5e1', borderRadius: 10, padding: '9px 12px', fontSize: 14, fontFamily: 'inherit' };
 
-export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx = null, theme, cur, fulfilment, eventDate, eventTime, subtotal, menuId = null, onBack }) {
+// vatGate / onRetryRates (v5.11.81, the online and QR rule since 8 Oct 2026): ratesGate's answer
+// from the surface (null when the venue's tax rates are in). Payment never opens while it is shut.
+export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx = null, theme, cur, fulfilment, eventDate, eventTime, subtotal, menuId = null, onBack, vatGate = null, onRetryRates = null }) {
   const opsId = location.ops_location_id || location.id;
   const platformLocationId = location.id;
   const [name, setName] = useState(''); const [phone, setPhone] = useState(''); const [email, setEmail] = useState('');
@@ -227,7 +230,16 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
   });
 
   // ── PAY LATER ──────────────────────────────────────────────────────
+  // v5.11.81: a venue with tax set up never has a sale saved without VAT (publicCheckTaxFields
+  // throws a named error instead), and nothing is placed or charged while the rates are not in.
+  const hasTaxConfig = taxCtxHasConfig(taxCtx || { taxRates: taxRates || [] });
+  const vatRefusal = () => {
+    if (vatGate) return vatGate.message;
+    try { publicCheckTaxFields(taxBk, { hasTaxConfig, goods: subtotal }); } catch (e) { return e?.message || 'The VAT could not be worked out.'; }
+    return null;
+  };
   const placeLater = async () => {
+    { const why = vatRefusal(); if (why) { setErr(why); return; } }
     if (!valid) { setErr(belowMin ? `Minimum order for delivery is ${deliveryQuote?.minOrderMinor != null ? money(deliveryQuote.minOrderMinor / 100, cur) : 'higher'} — add more items or choose collection.` : 'Please complete the required fields.'); return; }
     setBusy(true); setErr('');
     try {
@@ -254,6 +266,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
 
   // ── PAY NOW (card) ─────────────────────────────────────────────────
   const startPayNow = async () => {
+    { const why = vatRefusal(); if (why) { setErr(why); return; } }
     if (!valid) { setErr(belowMin ? `Minimum order for delivery is ${deliveryQuote?.minOrderMinor != null ? money(deliveryQuote.minOrderMinor / 100, cur) : 'higher'} — add more items or choose collection.` : 'Please complete the required fields.'); return; }
     setErr('');
     if (processor === 'ryft') { setStep('pay'); return; }
@@ -305,7 +318,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
         tenders: finishTenders([tender('promo', discount), tender('card', Math.max(0, total - tip), tip, { pspRef: payId, processor })]),   // v5.9.11
         // 2 Oct 2026: tax_amount in pence and the tax record by rate whenever a rate was resolved,
         // UK included (lib/publicCheckTax.js; the raw figure was read as 0 by the server).
-        ...publicCheckTaxFields(taxBk),
+        ...publicCheckTaxFields(taxBk, { hasTaxConfig, goods: subtotal }),
         closed_at: closedAt, status: 'paid', refunds: [], table_id: null, table_label: `Catering ${ref}`,
         source: 'catering', stripe_payment_intent_id: payId, payment_intents: payId ? [{ id: payId, amountMinor: totalMinor }] : null, processor,
       };
@@ -510,8 +523,9 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
               </div>
             )}
 
+            <div style={{ marginTop: 12 }}><VatGateNotice gate={vatGate} onRetry={onRetryRates} theme={{ fg: '#0f172a' }}/></div>
             {err && <div style={{ color: '#dc2626', fontSize: 13, marginTop: 12 }}>{err}</div>}
-            <button onClick={payMode === 'later' ? placeLater : startPayNow} disabled={busy || !valid} style={{ marginTop: 16, width: '100%', padding: '13px', borderRadius: 10, border: 'none', background: theme.brand, color: '#fff', fontWeight: 800, fontSize: 15, cursor: valid ? 'pointer' : 'default', opacity: valid && !busy ? 1 : 0.5 }}>
+            <button onClick={payMode === 'later' ? placeLater : startPayNow} disabled={busy || !valid || !!vatGate} style={{ marginTop: 16, width: '100%', padding: '13px', borderRadius: 10, border: 'none', background: theme.brand, color: '#fff', fontWeight: 800, fontSize: 15, cursor: valid ? 'pointer' : 'default', opacity: valid && !busy ? 1 : 0.5 }}>
               {busy ? 'Please wait…' : payMode === 'later' ? `Place order — pay later (${money(total, cur)})` : `Continue to payment (${money(total, cur)})`}
             </button>
           </div>

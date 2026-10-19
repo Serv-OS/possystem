@@ -10,7 +10,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase, ensureAuthToken } from '../../lib/supabase';
 import { publicRead } from '../../lib/publicOrderClient';
 import { assembleTaxProfiles } from '../../lib/rowMapping';
-import { buildLocalTaxCtx } from '../../lib/taxCompute';
+import { buildLocalTaxCtx, taxCtxHasConfig } from '../../lib/taxCompute';
+import { loadCustomerRates, ratesGate, venueExpectsRates } from '../../lib/customerRates';
 import { kitchenOverride, receiptOverride } from '../../lib/itemDisplay';
 import { lineTaxRefsFor } from '../../lib/taxRefs';
 import { lineCategories } from '../../lib/lineCategories';   // round 1 fix: a size counts under its product's categories, as on the till
@@ -56,6 +57,12 @@ export default function CateringSurface({ location }) {
   const [items, setItems] = useState([]);
   const [cats, setCats] = useState([]);
   const [taxRates, setTaxRates] = useState([]);
+  // v5.11.81 (channel parity, confirmed minor): the rates gate online and QR have (8 Oct 2026). The
+  // rates are loaded on their own (lib/customerRates.js: the session first, an error or an empty
+  // answer read again) into a STATE the checkout gates payment on; catering read them once with the
+  // menu and took a failed read as no tax, so a sale could be booked with no VAT.
+  const [ratesState, setRatesState] = useState('loading');
+  const [ratesAttempt, setRatesAttempt] = useState(0);
   // v5.7.33: tax profiles + lines, delivered dark alongside taxRates - handed to
   // the cart/checkout ready for the profiles cutover, unused by any calculation.
   const [taxProfiles, setTaxProfiles] = useState([]);
@@ -122,7 +129,8 @@ export default function CateringSurface({ location }) {
         setCats((catRows || []).filter((c) =>
           !menuIds.length || menuIds.includes(c.menu_id) || allow.has(c.id) || (c.parent_id && allow.has(c.parent_id))));
         setItems(itemRows || []);
-        setTaxRates(taxRows || []);
+        // v5.11.81: a good first read is taken at once; anything else is left to the loader below.
+        if (Array.isArray(taxRows) && taxRows.length) { setTaxRates(taxRows.filter((r) => r && r.active !== false)); setRatesState('ok'); }
         // v5.7.33: both reads must have succeeded - never keep line-less profiles.
         if (Array.isArray(profRows) && Array.isArray(lineRows)) {
           setTaxProfiles(assembleTaxProfiles(profRows, lineRows));
@@ -235,10 +243,31 @@ export default function CateringSurface({ location }) {
 
   // v5.7.34: the unified seam's tax context — this surface's own fetches
   // (profiles + raw tax_profile_id columns + venue default) in one object.
+  // v5.11.81: the loader re-reads an empty or failed answer (the boot read may have gone out
+  // before the session); 'ok' from the boot read stands. ratesAttempt re-runs it (Try again).
+  useEffect(() => {
+    let alive = true;
+    if (!opsId || !supabase || boot.loading || (ratesState === 'ok' && ratesAttempt === 0)) return undefined;
+    (async () => {
+      const r = await loadCustomerRates({
+        waitForSession: ensureAuthToken,
+        readRates: () => supabase.from('tax_rates').select('id, name, rate, type, active, is_default').eq('location_id', opsId),
+      });
+      if (!alive) return;
+      if (r.status === 'ok') setTaxRates(r.rates);
+      setRatesState(r.status);
+      if (r.status !== 'ok') console.warn('[CateringSurface] tax rates not loaded:', r.status, r.error?.message);
+    })();
+    return () => { alive = false; };
+  }, [opsId, ratesAttempt, boot.loading]); // eslint-disable-line react-hooks/exhaustive-deps
+  const retryRates = () => { setRatesState('loading'); setRatesAttempt((n) => n + 1); };
+
   const taxCtx = useMemo(() => buildLocalTaxCtx({
     taxProfiles, menuItems: items, menuCategories: taxCatRows,
     venueDefaultProfileId: venueDefaultTaxProfileId, taxRates,
   }), [taxProfiles, items, taxCatRows, venueDefaultTaxProfileId, taxRates]);
+  // The gate: payment waits while the rates load, and never opens on a failed load at a venue that has tax.
+  const vatGate = useMemo(() => ratesGate({ ratesState, expectsRates: venueExpectsRates(items), hasTaxConfig: taxCtxHasConfig(taxCtx) }), [ratesState, items, taxCtx]);
 
   // Date gating
   const minDays = Number(cfg?.lead_time_min_days ?? 0);
@@ -312,6 +341,7 @@ export default function CateringSurface({ location }) {
   if (checkout) return (
     <CateringCheckout
       location={location} cfg={cfg} cart={cart} taxRates={taxRates} taxCtx={taxCtx} theme={theme} cur={cur}
+      vatGate={vatGate} onRetryRates={retryRates}
       fulfilment={fulfilment} eventDate={eventDate} eventTime={eventTime} subtotal={subtotal}
       menuId={cateringOrderMenuId(cfg?.menu_ids || [])}
       onBack={() => setCheckout(false)}

@@ -57,6 +57,21 @@ export function loyaltyEarnItems(items, menuItems = []) {
 }
 
 /**
+ * v5.11.81 (confirmed minor: "HubRise orders create CRM customers but never earn"): a delivery
+ * partner order earns for the phone on it only when that phone is the customer's own. Uber Eats and
+ * Deliveroo hand over a proxy line with a per order access code (phoneAccessCode): one number shared
+ * by many strangers, so earning on it would pool their stamps and points. Live, 1 HubRise sale in
+ * 570 carried a phone. Returns the customer to earn for, or null.
+ */
+export function channelEarnCustomer(customer) {
+  const c = customer && typeof customer === 'object' ? customer : {};
+  const phone = String(c.phone || '').trim();
+  if (phone.replace(/\D/g, '').length < 7) return null;
+  if (c.phoneAccessCode || c.phone_access_code || c.access_code) return null;
+  return { name: c.name || [c.firstName, c.lastName].filter(Boolean).join(' ') || null, phone, email: c.email || null };
+}
+
+/**
  * What a PART refund asks loyalty-refund to take back (_shared/loyaltyPartRefund.js): the refund's
  * id, the share of the check's goods money it returned (bd.itemsAmount over the goods the check
  * charged, 0..1) and the lines it returned at the quantity refunded.

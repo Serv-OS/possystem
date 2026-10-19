@@ -175,3 +175,36 @@ test('QR tab: a settled tab earns for the phone on it (the phone, by the tab\'s 
   assert.match(hub, /orderRecord: \{ id: record\.id, ref: record\.ref, items: record\.items \|\| \[\], total: record\.total, source: 'qr' \},/);
   assert.equal((hub.match(/earnQrSale\(/g) || []).length, 3, 'its three closes (force close, one round, closed short)');
 });
+
+// ── Earn has a durable retry like redeem (v5.11.81, confirmed minor) ─────────────────────────────
+test('earn: a loyalty earn that did not land is parked durably and replayed (once, server side), as a redemption is', () => {
+  const cr = readRepo('src/lib/commitRedemptions.js');
+  assert.match(cr, /export async function parkEarn\(earnBody, lastError, \{ retryable = true \} = \{\}\) \{/);
+  assert.match(cr, /id: `earn:loyalty:\$\{checkId\}`,\n\s+fn: 'loyalty-earn',\n\s+body: earnBody,/, 'replayed verbatim: earn:<check> is the idempotency anchor');
+  assert.match(cr, /\|\| \(res\.status === 409 && j\?\.code === 'check_not_found'\),/, 'a check that has not landed yet is worth a retry');
+  const store = readRepo('src/store/index.js');
+  const fn = between(store, '  attributeOrderToCustomer: async', '\n  },\n');
+  assert.match(fn, /parkEarn\(earnBody, e\?\.message \|\| 'network error'\)/, 'a transport failure');
+  assert.match(fn, /if \(earnReplyRetryable\(res\.status, j\)\) parkEarn\(earnBody, j\.error \|\| `HTTP \$\{res\.status\}`\)/, 'a refusal that can still succeed');
+  assert.doesNotMatch(fn, /res\.status !== 404\) \{\n\s+console\.warn\('\[loyalty-earn\] HTTP', res\.status, j\.error \|\| ''\);\n\s+\}/, 'never only a console warning');
+});
+
+// ── The gift code gate on the server search path (v5.11.81, confirmed minor) ──────────────────────
+test('gift code: any 16 letters or digits is a code on the server search path too (Back Office search box), as on the till since v5.11.67', async () => {
+  const { isFullGiftCode, classifyGiftLookup } = await import('../../../supabase/functions/_shared/gift-authority.ts');
+  assert.equal(isFullGiftCode('C246 89C2 7769 AA08'), true, 'a seeded or imported card with 0, 1, I or O');
+  assert.equal(classifyGiftLookup({ search: 'C24689C27769AA08' }), 'code', 'a code holder\'s exact lookup, never the staff search');
+  assert.equal(classifyGiftLookup({ search: 'Sam Smith' }), 'staff_search');
+  assert.equal(classifyGiftLookup({ search: 'AA08' }), 'staff_search');
+  const fn = readRepo('supabase/functions/gift-lookup/index.ts');
+  assert.match(fn, /if \(isFullGiftCode\(cleaned\)\) \{/);
+  assert.doesNotMatch(fn, /\/\^\[A-Z2-9\]\{16\}\$\//);
+});
+
+// ── Manager PIN: asked every time on the handheld, as on the till (v5.11.81, confirmed minor) ─────
+test('manager PIN: the handheld asks every time, as the till does (no 90 second grace window)', () => {
+  const pin = readRepo('src/surfaces/mpos/MManagerPin.jsx');
+  assert.doesNotMatch(pin, /GRACE_MS/);
+  assert.doesNotMatch(pin, /setItem\('mpos-last-manager-auth'/, 'an approval is never kept');
+  assert.match(pin, /export function getCachedManagerAuth\(\) \{\n\s+try \{ sessionStorage\.removeItem\('mpos-last-manager-auth'\); \} catch \{ \/\* storage blocked \*\/ \}\n\s+return null;\n\}/);
+});

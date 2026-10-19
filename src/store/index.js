@@ -88,7 +88,7 @@ import {
 } from '../lib/payments/refundMath';
 import { resolveRefundCardLegs } from '../lib/payments/refundCardLegs';
 import { reverseCardLeg } from '../lib/payments/cardReversal';
-import { commitRedemption, setDeviceClaimHooks } from '../lib/commitRedemptions';
+import { commitRedemption, setDeviceClaimHooks, parkEarn, earnReplyRetryable } from '../lib/commitRedemptions';
 import { redemptionsOf, withSlots, rewardsRecord } from '../lib/loyaltyMultiRedeem';
 import { promoRedeemBasket } from '../lib/promoBasis';   // 30 Sep 2026: more than one reward on an order
 import { quoteForWalkIn } from '../lib/orderPlacedFrom';   // v5.11.78 round 1: an order's own delivery fee counts only while that order is on the till
@@ -749,7 +749,7 @@ import { withoutRecordNotes } from '../lib/orderCustomerNotes';
 import { linesGoods } from '../lib/taxShare.js';
 import { closeMoney } from '../lib/closeMoney.js';
 import { mintCheckId, usableCheckId, walkInCloseId, bookedCheck } from '../lib/walkInCheckId.js';
-import { loyaltyEarnItems, earnChannelFor, partRefundLoyaltyBody } from '../lib/loyaltyEarnItems.js';
+import { loyaltyEarnItems, earnChannelFor, partRefundLoyaltyBody, channelEarnCustomer } from '../lib/loyaltyEarnItems.js';
 import { promoReleaseOrderIds } from '../../supabase/functions/_shared/promoRelease.js';
 
 // v5.7.35 — ?mode=kds pins the KDS surface for this page load (read once; the
@@ -4882,8 +4882,14 @@ export const useStore = create((set, get) => ({
           };
           // Waits for the device link and re-links once on a 403 (postLoyaltyWithDeviceLink).
           // Idempotent server side on earn:<closed_check_id>, so the retry cannot double earn.
-          const res = await postLoyaltyWithDeviceLink('loyalty-earn', earnBody);
-          if (!res) { console.warn('[attributeOrderToCustomer] loyalty earn skipped: no auth token'); return; }
+          let res;
+          try { res = await postLoyaltyWithDeviceLink('loyalty-earn', earnBody); }
+          catch (e) {
+            // v5.11.81: a transport failure is parked durably and replayed (lib/commitRedemptions parkEarn).
+            parkEarn(earnBody, e?.message || 'network error').catch(() => {});
+            throw e;
+          }
+          if (!res) { console.warn('[attributeOrderToCustomer] loyalty earn skipped: no auth token'); parkEarn(earnBody, 'no auth token').catch(() => {}); return; }
           const j = await res.json().catch(() => ({}));
           if (res.ok) {
             console.info('[loyalty-earn] ✓', j.points_earned, 'pts → balance:', j.balance, j.is_new_member ? '(new member)' : '');
@@ -4939,6 +4945,9 @@ export const useStore = create((set, get) => ({
             // 404 = loyalty not configured for this company — not an error
             if (res.status !== 404) {
               console.warn('[loyalty-earn] HTTP', res.status, j.error || '');
+              // v5.11.81: a refusal that can still succeed (a cold or busy function, a check that had
+              // not landed, the device link) is parked and replayed; earn:<check> keeps it to once.
+              if (earnReplyRetryable(res.status, j)) parkEarn(earnBody, j.error || `HTTP ${res.status}`).catch(() => {});
             }
           }
         } catch (e) {
@@ -7328,6 +7337,12 @@ export const useStore = create((set, get) => ({
         set(s => ({ closedChecks: capClosedChecks([record, ...s.closedChecks]) }));
         get().removeFromQueue(o.ref);      // local + DB delete
         insertClosedCheck(record);          // training/mock gated at the leaf
+        // v5.11.81: earns for the customer's own phone, never a proxy line (channelEarnCustomer).
+        const hrEarner = channelEarnCustomer(o.customer);
+        if (hrEarner && !isTrainingMode()) {
+          get().attributeOrderToCustomer({ customer: hrEarner, orderRecord: record })
+            .catch((e) => console.warn('[recordWalkInClosed channel] earn:', e?.message || e));
+        }
         if (record.method === 'cash') {
           // Drawer opens for the money actually taken at the till (the balance), not
           // the channel's headline total.
@@ -9639,6 +9654,13 @@ export const useStore = create((set, get) => ({
         get().showToast?.(`Channel order ${o.ref} was NOT booked to sales — ${error.message}`, 'error');
       } else if (!error) {
         reportSave('channel sale', null);
+        // v5.11.81: a delivery partner order earns like a till sale when it carries the customer's
+        // own phone (never a proxy line: lib/loyaltyEarnItems.js channelEarnCustomer), by its own id.
+        const earner = channelEarnCustomer(o.customer);
+        if (earner) {
+          get().attributeOrderToCustomer({ customer: earner, orderRecord: { id: `chk-hr-${o.ref}`, ref: o.ref, items: f.items, total: f.total, source: 'hubrise' } })
+            .catch((e) => console.warn('[bookChannelSale] earn:', e?.message || e));
+        }
       }
     } catch (err) {
       reportSave('channel sale', err);

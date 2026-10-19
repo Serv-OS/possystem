@@ -197,8 +197,36 @@ function outcome(res, j, bodyRead, body = null) {
     // the device link may be restored by a re-link or a new pairing, so it stays in the replay
     // queue.
     retryable: res.status === 401 || res.status === 408 || res.status === 429 || res.status >= 500
-      || (res.status === 403 && j?.code === 'loyalty_authority'),
+      || (res.status === 403 && j?.code === 'loyalty_authority')
+      // v5.11.81: loyalty-earn reads the server's own closed check, which may not have landed yet.
+      || (res.status === 409 && j?.code === 'check_not_found'),
   };
+}
+
+/**
+ * v5.11.81 (channel parity, confirmed minor): a loyalty EARN that did not land is parked in the
+ * same durable queue as a redemption and replayed by retryPendingRedemptions, so stamps and points
+ * are never lost to a network blip, a cold function or a check that had not landed yet. The redeem
+ * and promo calls always had this; the earn was fire and forget (a failed earn was only a console
+ * warning). Idempotent server side on earn:<closed_check_id>, so a replay of an earn that did land
+ * answers already_processed and credits nothing twice. The body is the till's own, sent verbatim.
+ * Returns true when parked. A refusal that can never succeed (loyalty off: 404) is not parked.
+ */
+export async function parkEarn(earnBody, lastError, { retryable = true } = {}) {
+  const checkId = String(earnBody?.closed_check_id || '').trim();
+  if (!checkId || !earnBody?.customer_id) return false;
+  return park({
+    id: `earn:loyalty:${checkId}`,
+    fn: 'loyalty-earn',
+    body: earnBody,
+    entity: 'loyalty earn',
+    label: `Loyalty earn for check ${checkId}: stamps and points not yet credited`,
+  }, lastError || 'not sent', retryable ? 0 : MAX_RETRIES);
+}
+
+/** v5.11.81: is a loyalty-earn reply worth parking for a retry (the same rule as a redemption's)? */
+export function earnReplyRetryable(status, body) {
+  return outcome({ ok: false, status: Number(status) || 0 }, body || {}, true).retryable;
 }
 
 // Park a failed redemption in the SHARED durable queue (IndexedDB, survives reload).

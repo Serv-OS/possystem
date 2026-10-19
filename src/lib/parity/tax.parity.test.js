@@ -233,8 +233,10 @@ test('ezCater: the sale is booked with ezCater\'s own tax (what the venue owes),
   // Not committed yet: nothing is booked.
   assert.equal(ezcaterClosedCheck({ ...row, customer: { ...row.customer, ezcater_lifecycle: 'new' } }), null);
   const hook = readRepo('supabase/functions/ezcater-webhook/index.ts');
-  assert.match(hook, /await sb\.from\('closed_checks'\)\.upsert\(sale, \{ onConflict: 'id' \}\);/);
-  assert.match(hook, /\.update\(\{ status: 'voided', voided: true \}\)\.eq\('id', checkId\)\.eq\('status', 'paid'\);/);
+  // v5.11.81: booked once per revision, never re-written in place (ezcaterSalePlan); a cancel voids every live one.
+  assert.match(hook, /const \{ error: cErr \} = await sb\.from\('closed_checks'\)\.insert\(plan\.row\);/);
+  assert.match(hook, /\.update\(\{ status: 'voided', voided: true \}\)\.in\('id', ids\)\.eq\('status', 'paid'\);/);
+  assert.doesNotMatch(hook, /\.upsert\(sale, \{ onConflict: 'id' \}\)/);
   const { judgeSale } = await import('../../../supabase/functions/_shared/vatCheck.js');
   assert.equal(judgeSale(sale, { rates: [], menu: [] }).verdict, 'not-checked', 'the daily check never judges a platform set tax');
 });
@@ -299,4 +301,23 @@ test('US: a size with no tax profile of its own is taxed the same on the till, t
   const hub = buildChannelCloseFields(hubOrder([{ id: 'h', itemId: 'cola-l', name: 'Large', price: 4, qty: 1, mods: [] }], { channel: 'collection' }), { menuItems: store, taxCtx: ctx }).taxAmount;
   assert.equal(till, 0.36, 'the venue default 8.875% (the size has no profile, nor its category)');
   assert.deepEqual({ kiosk, page, hub }, { kiosk: till, page: till, hub: till }, 'never the product\'s 8% (0.32) at the kiosk');
+});
+
+// ── Catering has the rates gate online and QR have (v5.11.81, confirmed minor) ────────────────────
+test('catering: payment waits for the venue\'s rates and a sale is never saved without VAT at a venue with tax set up', async () => {
+  const { ratesGate, venueExpectsRates } = await import('../customerRates.js');
+  const { publicCheckTaxFields } = await import('../publicCheckTax.js');
+  assert.equal(ratesGate({ ratesState: 'loading' }).code, 'loading');
+  assert.equal(ratesGate({ ratesState: 'error' }).code, 'failed');
+  assert.equal(ratesGate({ ratesState: 'ok', expectsRates: true, hasTaxConfig: true }), null);
+  assert.equal(venueExpectsRates(MENU), true);
+  assert.throws(() => publicCheckTaxFields(null, { hasTaxConfig: true, goods: 40 }), /VAT|rates|tax/i, 'never a sale with VAT null');
+  const surface = readRepo('src/surfaces/catering/CateringSurface.jsx');
+  assert.match(surface, /const vatGate = useMemo\(\(\) => ratesGate\(\{ ratesState, expectsRates: venueExpectsRates\(items\), hasTaxConfig: taxCtxHasConfig\(taxCtx\) \}\), \[ratesState, items, taxCtx\]\);/);
+  assert.match(surface, /const r = await loadCustomerRates\(\{/);
+  assert.match(surface, /vatGate=\{vatGate\} onRetryRates=\{retryRates\}/);
+  const co = readRepo('src/surfaces/catering/CateringCheckout.jsx');
+  assert.match(co, /\.\.\.publicCheckTaxFields\(taxBk, \{ hasTaxConfig, goods: subtotal \}\),/);
+  assert.equal((co.match(/\{ const why = vatRefusal\(\); if \(why\) \{ setErr\(why\); return; \} \}/g) || []).length, 2, 'pay later and pay now both wait');
+  assert.match(co, /disabled=\{busy \|\| !valid \|\| !!vatGate\}/);
 });

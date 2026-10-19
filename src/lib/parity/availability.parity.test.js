@@ -29,7 +29,7 @@ test('stock reach: every channel books a closed check, so the central stock depl
   assert.match(readRepo('src/surfaces/OrdersHub.jsx'), /writeClosedCheckRow\(supabase, tabCheck, \{ tag: 'forceCloseQrTab' \}\)/, 'QR tab force close');
   const settle = readRepo('supabase/migrations/20261019a_OPS_channel_parity.sql');
   assert.match(between(settle, 'CREATE OR REPLACE FUNCTION public.settle_qr_tab(', '$function$;'), /insert into public\.closed_checks/, 'QR tab closed on the phone');
-  assert.match(readRepo('supabase/functions/ezcater-webhook/index.ts'), /await sb\.from\('closed_checks'\)\.upsert\(sale, \{ onConflict: 'id' \}\);/, 'ezCater (new in v5.11.78)');
+  assert.match(readRepo('supabase/functions/ezcater-webhook/index.ts'), /await sb\.from\('closed_checks'\)\.insert\(plan\.row\);/, 'ezCater (v5.11.78; a revision per change since v5.11.81)');
 });
 
 test('catering: an option only sub item is never sold as a product, the till\'s and the server\'s rule', () => {

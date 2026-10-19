@@ -65,7 +65,7 @@ import {
   NOT_RELEASABLE_STATUSES_PG,
 } from '../_shared/ezcaterCatering.js';
 // 19 Oct 2026 (v5.11.78): the sale an ezCater order books (step 9).
-import { ezcaterClosedCheck, ezcaterCheckId, ezLifecycleState } from '../_shared/ezcaterCatering.js';
+import { ezcaterClosedCheck, ezcaterCheckId, ezLifecycleState, ezcaterSalePlan, ezcaterLiveRevisionIds } from '../_shared/ezcaterCatering.js';
 import { DEFAULT_VENUE_TZ } from '../_shared/cateringRules.js';
 
 const cors = {
@@ -469,21 +469,47 @@ Deno.serve(async (req) => {
     // ezcaterClosedCheck: the tax copied, never worked out again), replaced when ezCater changes the
     // order, and voided when ezCater cancels it. Never through the till's save guard. A failed write
     // is retried like the queue write (the order itself is already on file).
+    // v5.11.81: a booked check is never re-written in place. An order ezCater CHANGED after it was
+    // booked voids the booking it replaces and books a new revision (chk-ez-<id>-r2 ...;
+    // ezcaterSalePlan): the central stock trigger holds an in place change to a booked check's lines
+    // for a person ('items changed'), and reads a void and a new sale on its own. The same order
+    // sent again books nothing. A cancel voids every live revision.
     if (saleRow) {
       const life = ezLifecycleState(saleRow?.customer?.ezcater_lifecycle);
       const checkId = ezcaterCheckId(saleRow);
+      const { data: booked, error: bErr } = checkId
+        ? await sb.from('closed_checks').select('id, status, voided, items, subtotal, total, tax_amount, tip, service, discounts, order_type, closed_at')
+          .eq('location_id', saleRow.location_id).like('id', `${checkId}%`).limit(50)
+        : { data: [], error: null };
+      if (bErr) {
+        await failEvent(`${EZ_QUEUE_WRITTEN_MARKER}; sale read failed: ${bErr.message}`, 'error');
+        return retry('sale read failed');
+      }
+      const voidIds = async (ids: string[]) => {
+        if (!ids.length) return null;
+        const { error } = await sb.from('closed_checks').update({ status: 'voided', voided: true }).in('id', ids).eq('status', 'paid');
+        return error;
+      };
       if (checkId && life.dead) {
-        const { error: vErr } = await sb.from('closed_checks')
-          .update({ status: 'voided', voided: true }).eq('id', checkId).eq('status', 'paid');
+        const vErr = await voidIds(ezcaterLiveRevisionIds(checkId, booked || []));
         if (vErr) {
           await failEvent(`${EZ_QUEUE_WRITTEN_MARKER}; sale void failed: ${vErr.message}`, 'error');
           return retry('sale write failed');
         }
       } else {
         const sale = ezcaterClosedCheck(saleRow, { venueTz });
-        if (sale) {
-          const { error: cErr } = await sb.from('closed_checks').upsert(sale, { onConflict: 'id' });
-          if (cErr) {
+        const plan = sale ? ezcaterSalePlan(sale, booked || []) : { action: 'none' };
+        if (plan.action === 'amend') {
+          const vErr = await voidIds(plan.voidIds || []);
+          if (vErr) {
+            await failEvent(`${EZ_QUEUE_WRITTEN_MARKER}; sale void failed: ${vErr.message}`, 'error');
+            return retry('sale write failed');
+          }
+        }
+        if (plan.action === 'insert' || plan.action === 'amend') {
+          const { error: cErr } = await sb.from('closed_checks').insert(plan.row);
+          // 23505: another delivery of this webhook booked the same revision a moment ago.
+          if (cErr && String(cErr.code || '') !== '23505') {
             console.error('[ezcater-webhook] sale write failed, will retry:', row.ref, cErr.message);
             await failEvent(`${EZ_QUEUE_WRITTEN_MARKER}; sale write failed: ${cErr.message}`, 'error');
             return retry('sale write failed');

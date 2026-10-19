@@ -501,6 +501,51 @@ export function ezcaterCheckId(row) {
 
 const money2 = (v) => { const n = Number(v); return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0; };
 
+// v5.11.81: the booked revisions of one ezCater order: chk-ez-<key>, then chk-ez-<key>-r2, -r3...
+const revisionOf = (id, base) => {
+  if (id === base) return 1;
+  const m = typeof id === 'string' && id.startsWith(`${base}-r`) ? /^(\d{1,4})$/.exec(id.slice(base.length + 2)) : null;
+  return m ? Number(m[1]) : null;
+};
+const isVoidedRow = (r) => r?.voided === true || r?.status === 'voided' || r?.status === 'void';
+// What makes two bookings of an order the same sale: its lines, money, order type and event time.
+const saleFingerprint = (r) => JSON.stringify({
+  items: (Array.isArray(r?.items) ? r.items : []).map((l) => [String(l?.name ?? ''), Number(l?.qty) || 0, money2(l?.price), Number(l?.lineSubunits) || 0, String(l?.itemId ?? l?.posItemId ?? '')]),
+  total: money2(r?.total), subtotal: money2(r?.subtotal), tax: money2(r?.tax_amount), tip: money2(r?.tip), service: money2(r?.service),
+  discounts: (Array.isArray(r?.discounts) ? r.discounts : []).map((d) => money2(d?.amount ?? d?.value)),
+  type: String(r?.order_type ?? ''), at: r?.closed_at ? new Date(r.closed_at).toISOString() : null,
+});
+
+/**
+ * v5.11.81 (confirmed minor): how the webhook books an ezCater sale against what is already booked
+ * for that order. An order changed on ezCater after acceptance re-wrote its booked check in place
+ * (an upsert on chk-ez-<id>), and the central stock trigger (20261018c) holds any change to a booked
+ * check's lines as an 'items changed' event that needs a person, so every amended ezCater order
+ * would wait on someone. Now a changed order VOIDS the booking it replaces (the stock rule for a
+ * void: before the event, nothing was made) and books a NEW revision (chk-ez-<id>-r2, -r3 ...).
+ * A webhook that repeats the same order books nothing. Pure.
+ * @param {object} sale      ezcaterClosedCheck's row (id chk-ez-<key>)
+ * @param {Array}  existing  the closed_checks rows already booked for this order (any revision)
+ * @returns {{ action: 'insert'|'none'|'amend', row?: object, voidIds?: string[] }}
+ */
+export function ezcaterSalePlan(sale, existing = []) {
+  if (!sale || !sale.id) return { action: 'none' };
+  const base = String(sale.id);
+  const rows = (Array.isArray(existing) ? existing : []).filter((r) => r && revisionOf(r.id, base) != null);
+  const nextRev = rows.reduce((n, r) => Math.max(n, revisionOf(r.id, base)), 0) + 1;
+  const idFor = (rev) => (rev <= 1 ? base : `${base}-r${rev}`.slice(0, 80));
+  const live = rows.filter((r) => !isVoidedRow(r)).sort((a, b) => revisionOf(b.id, base) - revisionOf(a.id, base));
+  if (!live.length) return { action: 'insert', row: { ...sale, id: idFor(nextRev) } };
+  const current = live[0];
+  if (live.length === 1 && saleFingerprint(current) === saleFingerprint(sale)) return { action: 'none' };
+  return { action: 'amend', voidIds: live.map((r) => r.id), row: { ...sale, id: idFor(nextRev) } };
+}
+
+/** v5.11.81: every booked revision id of one ezCater order a cancel must void (live ones only). */
+export function ezcaterLiveRevisionIds(base, existing = []) {
+  return (Array.isArray(existing) ? existing : []).filter((r) => r && revisionOf(r.id, String(base)) != null && !isVoidedRow(r)).map((r) => r.id);
+}
+
 /**
  * The closed_checks row an ezCater order books, once ezCater has it committed (accepted or later).
  * An ezCater order was written to order_queue only, so it was never a sale: no sales report, no

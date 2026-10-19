@@ -255,3 +255,29 @@ test('QR tab: every close books the deal lines the server applied to each round,
   assert.match(settle, /'discounts', v_deals,/);
   assert.doesNotMatch(settle, /'discounts', '\[\]'::jsonb,/);
 });
+
+// ── An ezCater order changed after it was booked (v5.11.81, confirmed minor) ─────────────────────
+test('ezCater: a changed order voids its booking and books a new revision (never an in place edit the stock trigger holds); the same order again books nothing', async () => {
+  const { ezcaterClosedCheck, ezcaterSalePlan, ezcaterLiveRevisionIds } = await import('../../../supabase/functions/_shared/ezcaterCatering.js');
+  const row = (qty) => ({
+    ref: 'EZ-7', location_id: 'L', type: 'collection', event_date: '2026-11-02', collection_time: '12:00',
+    items: [{ name: 'Box lunch', qty, price: 12, lineSubunits: 1200 * qty }],
+    customer: { channel: 'ezcater', ezcater_lifecycle: 'accepted', ezcater_order_id: 'u-7', catererReceivesTip: true, catererReceivesDeliveryFee: true,
+      totals: { subtotal: 12 * qty, tip: 0, deliveryFee: 0, feesAndDiscounts: [{ name: 'Promo', amount: -5 }] }, tax: { salesTax: 0.87 * qty, salesTaxRemittance: 0 } },
+  });
+  const first = ezcaterClosedCheck(row(10), { venueTz: 'America/Denver' });
+  assert.deepEqual(first.discounts.map((d) => [d.source, d.amount]), [['channel', 5]], 'ezCater discounts are booked as discount lines');
+  const p1 = ezcaterSalePlan(first, []);
+  assert.equal(p1.action, 'insert');
+  assert.equal(p1.row.id, 'chk-ez-u-7');
+  const booked = [{ ...p1.row, status: 'paid' }];
+  assert.deepEqual(ezcaterSalePlan(ezcaterClosedCheck(row(10), { venueTz: 'America/Denver' }), booked), { action: 'none' }, 'the same order sent again books nothing');
+  const changed = ezcaterSalePlan(ezcaterClosedCheck(row(12), { venueTz: 'America/Denver' }), booked);
+  assert.equal(changed.action, 'amend');
+  assert.deepEqual(changed.voidIds, ['chk-ez-u-7']);
+  assert.equal(changed.row.id, 'chk-ez-u-7-r2', 'a new revision, never the booked row re-written');
+  const after = [{ ...booked[0], status: 'voided', voided: true }, { ...changed.row, status: 'paid' }];
+  assert.equal(ezcaterSalePlan(ezcaterClosedCheck(row(14), { venueTz: 'America/Denver' }), after).row.id, 'chk-ez-u-7-r3');
+  assert.deepEqual(ezcaterLiveRevisionIds('chk-ez-u-7', after), ['chk-ez-u-7-r2'], 'a cancel voids the live revision');
+  assert.deepEqual(ezcaterLiveRevisionIds('chk-ez-u-7', [{ id: 'chk-ez-u-70', status: 'paid' }]), [], 'never another order whose id starts the same');
+});

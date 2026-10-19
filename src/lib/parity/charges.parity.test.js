@@ -338,3 +338,17 @@ test('service rule: QR and Pay at table charge the venue\'s table service charge
   assert.match(readRepo('src/sync/SessionSync.js'), /deviceConfig: withVenueServiceRule\(_st\.deviceConfig, _st\.venueServiceRule\),/);
   assert.match(readRepo('src/sync/SyncBridge.jsx'), /sb\.rpc\('venue_service_rule', \{ p_location_id: locationId \}\)/);
 });
+
+// ── HubRise and ezCater fees and tips by the one rule (v5.11.81 regression guard) ─────────────────
+test('HubRise: a tip is booked as a tip and a service fee as service, neither carries UK VAT; reader, Table Pay, QR tab and handheld closes book the deal line', async () => {
+  const { buildChannelCloseFields } = await import('../channelMoney.js');
+  const { UK_RATES } = await import('./fixtures.js');
+  const items = [{ id: 'h1', itemId: 'burger', name: 'Burger', price: 9, qty: 2, mods: [] }];
+  const f = buildChannelCloseFields({ channel: 'delivery', total: 21.5, items, customer: { payments: [], charges: [{ name: 'Tip', type: 'tip', amount: 2 }, { name: 'Small order fee', type: 'other', amount: 1.5 }] } }, { menuItems: STORE_MENU, taxRates: UK_RATES });
+  assert.deepEqual({ tip: f.tip, service: f.service }, { tip: 2, service: 1.5 });
+  assert.equal(f.taxAmount, roundVat(18 - 18 / 1.2), 'VAT on the goods only');
+  // The till's walk in close (counter and handheld), the reader close and the QR closes book the AUTO line.
+  const store = readRepo('src/store/index.js');
+  assert.match(between(store, 'recordWalkInClosed: (walkInOrder', 'refundCheck: async'), /\.\.\.evaluateAutoDiscounts\(walkInOrder\.items\.filter\(i=>!i\.voided\), get\(\)\.discountRules, 'pos', buildScheduleCtx\(get\(\)\.locationConfig\?\.timezone\)\)\.map\(toAppliedDiscount\),/);
+  assert.match(store, /items, discounts: \[\.\.\.stampDiscountAmounts\(items, headlessDiscs\), \.\.\.promoDiscountEntry\(d\.promoRedemption\)\],/, 'reader close and Table Pay');
+});
