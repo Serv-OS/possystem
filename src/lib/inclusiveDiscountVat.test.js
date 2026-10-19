@@ -179,9 +179,12 @@ test('wiring: one seam; every reader of it follows', () => {
   const mpos = read('../surfaces/MPOSSurface.jsx');
   assert.match(mpos, /const charged = chargedTaxOf\(flow\.context\.payment\);/);
   assert.match(mpos, /taxBreakdown = computeCheckTotals\(\{\n\s+items,\n\s+checkDiscounts: order\.discounts \|\| \[\],/);
+  // 19 Oct 2026 (v5.11.78, channel parity): the handheld charges, shows and prints the TILL'S
+  // bill (store.getPOSTotals, computeCheckTotals), whose UK VAT is already on what was charged
+  // (inclusiveTaxOnCharged above). Its own lines only sum is gone.
   for (const f of ['../surfaces/mpos/MTender.jsx', '../surfaces/mpos/MCartSheet.jsx']) {
     const src = read(f);
-    assert.match(src, /inclusiveTaxOnCharged\(computeOrderTaxUnified\(/);
-    assert.match(src, /import \{ inclusiveTaxOnCharged, linesGoods \} from '\.\.\/\.\.\/lib\/taxShare';/);
+    assert.match(src, /getPOSTotals\(\)/);
+    assert.doesNotMatch(src, /LINES_ONLY_BASIS/);
   }
 });

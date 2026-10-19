@@ -70,7 +70,12 @@ test('a till check (total is the gross plus tip) is unchanged: total stays the b
     tenders: [{ method: 'gift_card', amount: 8, tip: 0 }, { method: 'card', amount: 2, tip: 1 }], refunds: [],
   };
   assert.equal(refundTaxBasis(chk), 11);
-  assert.equal(refundTaxAmount(chk, { amount: 5.5, tax: 0 }), Math.round(1.67 * (5.5 / 11) * 100) / 100);   // the old formula, byte for byte
+  // 19 Oct 2026 (v5.11.78): the tip carries no VAT, so it comes off both sides. A real breakdown
+  // of half this check gives half the tip back (0.50 of the 5.50): 5.00 of 10.00 of goods, the
+  // same 0.84 the old formula gave on the whole 5.50 of 11.00.
+  assert.equal(refundTaxAmount(chk, { amount: 5.5, tip: 0.5, tax: 0 }), Math.round(1.67 * (5.5 / 11) * 100) / 100);
+  // A tip only refund gives back no VAT (it gave 0.15 before).
+  assert.equal(refundTaxAmount(chk, { amount: 1, tip: 1, tax: 0 }), 0);
 });
 
 test('a check with no tenders (older rows) keeps the old rule exactly', () => {
@@ -92,7 +97,7 @@ test('a check whose tax is all added on (US) still returns the breakdown figure'
 
 test('refundCheck uses refundTaxAmount; the History loaders carry tenders', () => {
   const store = fs.readFileSync(path.join(here, '../../store/index.js'), 'utf8');
-  assert.match(store, /const taxRefunded = refundTaxAmount\(chkBefore, bd\);/);
+  assert.match(store, /const taxRefunded = refundTaxAmount\(chkBefore, bd, \{ items: refundItems, taxRates: get\(\)\.taxRates \}\);/);
   assert.match(store, /toMinor as toMinorAmt, refundTaxAmount,\n\} from '\.\.\/lib\/payments\/refundMath';/);
   assert.doesNotMatch(store, /amount \/ Number\(chkBefore\.total\)/);
   // 28 Sep 2026: both loaders map tenders through the shared row map (closedCheckRefundFields).

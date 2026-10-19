@@ -5,7 +5,7 @@ import { taxCtxHasConfig } from '../lib/taxCompute';
 import { resolveServiceCharge } from '../lib/serviceCharge';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
 import { buildScheduleCtx } from '../lib/locationTime';
-import { resolveItemPrice, cartUnitPrice } from '../lib/menuPricing';
+import { resolveItemPrice } from '../lib/menuPricing';
 import { resolveCentresForItem, resolveOrderTypeKey, orderTypeFallbackMessage, orderTypeLabelOf, buildCatParentMap as catParentMapOf, mergeCatParentMaps, snapshotCategoriesFor, channelFallbackCentre } from '../lib/productionRouting';
 // 12 Oct 2026 (Coffee Boy Preston, QR drinks on the Food screen; Peter: "you need to fix the master
 // thing"). ONE rule answers "am I this venue's master till" (lib/masterTill.js, read here through
@@ -16,8 +16,8 @@ import { venueHoldsMenu, buildRouteStamp, countParentLinks, noticeLines, fallbac
 import { VERSION } from '../lib/version';
 import { clockStatusForPos } from '../lib/posClockIn';
 import { computeCheckTotals } from '../lib/payments/checkTotals';
-import { headlessTaxBreakdown, headlessService, taxForChargedGoods } from '../lib/headlessTax';
-import { ratesFromSnapshot, venueRowsFromSnapshot, lineTaxRefs, ratesAfterRead, clientTrustsEmpty, noTaxRatesAlert } from '../lib/venueTaxRates';
+import { headlessTaxBreakdown, headlessService, headlessDiscounts, taxForChargedGoods } from '../lib/headlessTax';
+import { ratesFromSnapshot, venueRowsFromSnapshot, ratesAfterRead, clientTrustsEmpty, noTaxRatesAlert } from '../lib/venueTaxRates';
 // 8 Oct 2026 (VAT audit, Fix 3): the till refuses a tender while it cannot book the VAT
 // (lib/tillVatGate.js), re reads its rates until it can, and every sale meets the save time guard
 // (lib/saleVatGuard.js) with this till's rates. The in memory record is rounded like the row.
@@ -27,7 +27,7 @@ import { setVenueTaxSource, venueTaxFromStore, onSaleVatEvent, isSaleVatError } 
 import { roundVat } from '../lib/taxRule';
 import { venueRowsOnly } from '../lib/boVenueBoot';
 import { runBulkTax, bulkTaxSaver } from '../lib/bulkTax';
-import { creditDiscountsFromPayment, chargedTaxOf } from '../lib/taxBasis';
+import { creditDiscountsFromPayment, chargedTaxOf, stampDiscountAmounts } from '../lib/taxBasis';
 import { operatorSwitchPatch, logoutPatch } from '../lib/cartHold';
 import { kitchenOverride, receiptOverride, kitchenLineName, isSizeOnlyKitchenName } from '../lib/itemDisplay';
 // The till's own kitchen name chain (send, reprint, bar round, transfer notice), unchanged but
@@ -66,10 +66,11 @@ import { newSessionOrderId } from '../lib/sessionOrderId';
 import { applyBookingPayment } from '../lib/bookings/applyBookingPayment';
 import { patchPendingCheck, isPendingCheck } from '../sync/DataSafe';
 import { markJobReconciled, closeTerminalSession, recallJob, forgetJob, cancelTerminalJob, buildCheckKey, fetchJob, fetchJobCapture } from '../lib/payments/terminalJobs';
-import { usableOrderRef, bookingLegsMinor, giftLegsMinor, closerGrandMinor, closerMethod, closerCardIntents, withBookingIntents } from '../lib/payments/terminalJobCloser';
+import { usableOrderRef, bookingLegsMinor, giftLegsMinor, closerGrandMinor, closerMethod, closerCardIntents, closerCreditsMinor, withBookingIntents } from '../lib/payments/terminalJobCloser';
 import { printService } from '../lib/printer';
 import { hubrisePushStock, isHubriseConnected, hubrisePushStatus, isHubriseAutoReceipt } from '../lib/hubrise';
 import { buildChannelCloseFields } from '../lib/channelMoney';
+import { tillLineTaxRefs, tillLineTaxFields, tillLineCat, tillLineUnitPrice } from '../lib/tillLine';
 import { logActivity } from '../lib/activity';
 import { depleteForSale, reverseForSale } from '../lib/stock/deplete';
 import { setTrainingMode as applyTrainingFlag, isTrainingMode } from '../lib/trainingMode';
@@ -88,7 +89,8 @@ import {
 import { resolveRefundCardLegs } from '../lib/payments/refundCardLegs';
 import { reverseCardLeg } from '../lib/payments/cardReversal';
 import { commitRedemption, setDeviceClaimHooks } from '../lib/commitRedemptions';
-import { redemptionsOf, withSlots } from '../lib/loyaltyMultiRedeem';   // 30 Sep 2026: more than one reward on an order
+import { redemptionsOf, withSlots, rewardsRecord } from '../lib/loyaltyMultiRedeem';
+import { promoRedeemBasket } from '../lib/promoBasis';   // 30 Sep 2026: more than one reward on an order
 import { memberTokenFor } from '../lib/memberSession.js';
 import { CUSTOMER_MERGE_FN } from '../lib/customerMerge.js';
 import { upsertCustomerRow, autoJoinCustomer } from '../lib/customerAutoJoinRun.js';
@@ -3146,9 +3148,9 @@ export const useStore = create((set, get) => ({
     // charges; before, the charge path never read the menu and charged base
     // while the tile showed the lunch price.
     const _currentOrderType = get().orderType;
-    let price;
-    try { price = cartUnitPrice(item, _currentOrderType, get().activeMenuId, opts.linePrice, qty); }
-    catch { price = opts.linePrice != null ? opts.linePrice / qty : (item?.pricing?.base ?? item?.price ?? 0); }
+    // 19 Oct 2026 (v5.11.78, channel parity): the call and its fallback live in lib/tillLine.js,
+    // which a bar tab round now calls too. Same maths, byte for byte.
+    const price = tillLineUnitPrice(item, _currentOrderType, get().activeMenuId, opts.linePrice, qty);
     const newItem = {
       uid: uid(), itemId: item.id,
       name: opts.displayName || item.name,
@@ -3161,39 +3163,28 @@ export const useStore = create((set, get) => ({
       price, qty, mods: mods||[], notes: opts.notes||'',
       pizzaConfig, allergens: item.allergens||[],
       centreId: item.centreId,
-      cat: (() => {
-        // v5.5.259: Variants use the parent's category. Variant rows in the DB
-        // can have a stale/wrong cat from creation or reassignment bugs.
-        if (item.parentId) {
-          const parent = (useStore.getState().menuItems || []).find(m => m.id === item.parentId);
-          if (parent?.cat) return parent.cat;
-        }
-        return item.cat || null;
-      })(),
+      // v5.5.259: Variants use the parent's category. Variant rows in the DB
+      // can have a stale/wrong cat from creation or reassignment bugs.
+      // (19 Oct 2026: lib/tillLine.js tillLineCat, shared with the bar tab round.)
+      cat: tillLineCat(item, useStore.getState().menuItems),
       parentId: item.parentId || null,
       // v5.5.338: variants inherit the parent's tax settings (default rate +
       // per-order-type overrides). Variant rows store empty tax_overrides, so
       // without this a sized item's takeaway/zero-rate override is lost and it's
       // taxed at the default rate. Mirrors the category inheritance above.
       ...(() => {
-        let txRate = item.taxRateId || item.tax_rate_id || null;
-        let txOv = item.taxOverrides || item.tax_overrides || {};
-        if (item.parentId && (!txOv || Object.keys(txOv).length === 0)) {
-          const parent = (useStore.getState().menuItems || []).find(m => m.id === item.parentId);
-          if (parent) {
-            txOv = parent.taxOverrides || parent.tax_overrides || txOv;
-            if (!txRate) txRate = parent.taxRateId || parent.tax_rate_id || null;
-          }
-        }
+        // 19 Oct 2026 (v5.11.78, channel parity): the size rule is lib/taxRefs.js sizeTaxRefs, the
+        // one copy every channel (kiosk, QR close, online, catering, HubRise, bar tabs) now calls,
+        // through lib/tillLine.js tillLineTaxRefs. Same maths as before, byte for byte.
         // 27 Sep 2026 (review of the Leeds tax fix): a rate id this till does not hold (another
         // venue's, or a deleted rate) resolved to NO rate and the line booked no VAT, silently.
         // It is dropped here, so the line takes this venue's default rate like any product with no
         // rate, on every till (lib/venueTaxRates.js lineTaxRefs), and the till says so in its log.
         // 8 Oct 2026 (D4): the line also carries WHY (taxFallback), so the tax engine records it on
         // the sale (tax_breakdown.fallbacks) and the owner sees it, not only the console.
-        const refs = lineTaxRefs(txRate, txOv, useStore.getState().taxRates);
+        const refs = tillLineTaxRefs(item, useStore.getState().menuItems, useStore.getState().taxRates);
         if (refs.dropped.length) console.warn('[tax] product', item.id, 'names rate id(s)', refs.dropped.join(', '), 'that this venue does not have: charged at the venue default instead');
-        return { taxRateId: refs.taxRateId, taxOverrides: refs.taxOverrides, ...(refs.taxFallback ? { taxFallback: refs.taxFallback } : {}) };
+        return tillLineTaxFields(refs);
       })(),
       seat: 'shared',
       course: (() => {
@@ -4274,6 +4265,11 @@ export const useStore = create((set, get) => ({
     if (!fn) return { orderType:t };
     const menu = (s.menuItems || []).concat(s.SEED_MENU_ITEMS || []);
     const repriceItems = (items) => (items || []).map(it => {
+      // 19 Oct 2026 (v5.11.78): a booking's package line keeps the price it was seated at (its
+      // package rule: 0.00 on a captured prepay, the override, or the menu price at the booking's
+      // time). Repriced from its item it became the counter price on a table tap, and a size the
+      // guest picked (itemId is the dish, priced 0 as a size parent) became 0.00 plus its options.
+      if (it.fromPreorder) return it;
       const src = menu.find(m => m && m.id === it.itemId);
       if (!src) return it;
       // Same menu the tile and addItem price with, so the reprice keeps the tier.
@@ -6569,7 +6565,9 @@ export const useStore = create((set, get) => ({
       // Persist applied auto-discounts (re-evaluated at close, location-local) alongside any
       // manual discounts + promo, in the SAME shape — so EOD/sales/tax reports + receipts pick
       // them up unchanged. The charged total already reflects them via getPOSTotals → paymentInfo.grand.
-      discounts:  [...(session.discounts || []),
+      // 19 Oct 2026 (v5.11.78): a manual percent discount carries what this bill took off, never
+      // the figure frozen when it was applied (taxBasis.stampDiscountAmounts), so the receipt adds up.
+      discounts:  [...stampDiscountAmounts(session.items.filter(i => !i.voided), session.discounts || []),
                    ...evaluateAutoDiscounts(session.items.filter(i=>!i.voided), get().discountRules, 'pos', buildScheduleCtx(get().locationConfig?.timezone)).map(toAppliedDiscount),
                    ...promoDiscountEntry(paymentInfo.promoRedemption)],
       // 16 Oct 2026: from the lines this record books, never the session's running figure. That
@@ -6777,15 +6775,19 @@ export const useStore = create((set, get) => ({
       : (Number(d.bookingCreditMinor) || 0);
     // The gift card the till debited before sending the job: the due is net of it too.
     const giftMinor = giftLegsMinor(d.giftCard);
+    // 19 Oct 2026 (v5.11.78, channel parity): and the loyalty reward and promo code the checkout
+    // took off (CheckoutModal freezes them into the draft): booked as tenders on a gross total and
+    // committed once below, exactly as the till's own close does.
+    const credits = closerCreditsMinor({ loyaltyRedemption: d.loyaltyRedemption, promoRedemption: d.promoRedemption });
     // 16 Oct 2026: the check is booked GROSS (card legs plus the booking and gift legs it carries
     // as tenders), as CheckoutModal books it, so tenders add up to the total and VAT is against it.
-    const closeGrandMinor = closerGrandMinor({ chargeMinor: job.charge_minor ?? 0, priorChargeMinor, bookingPayment: d.bookingPayment, giftCard: d.giftCard });
+    const closeGrandMinor = closerGrandMinor({ chargeMinor: job.charge_minor ?? 0, priorChargeMinor, bookingPayment: d.bookingPayment, giftCard: d.giftCard, creditMinor: credits.creditMinor });
     const closeMethod = closerMethod({ split: priorLegs.length > 0, bookingPayment: d.bookingPayment });
     // The card legs named with what the card took, so a total carrying booking or gift money never
     // turns into one card leg claiming the whole bill (a refund would aim at money it never took).
-    const cardIntents = closerCardIntents({ legIntents, transactionId: job.transaction_id || null, chargeMinor: job.charge_minor, bookingPayment: d.bookingPayment, giftCard: d.giftCard });
+    const cardIntents = closerCardIntents({ legIntents, transactionId: job.transaction_id || null, chargeMinor: job.charge_minor, bookingPayment: d.bookingPayment, giftCard: d.giftCard, creditMinor: credits.creditMinor });
     const driftMinor = (!acknowledged && job.live_total_minor != null)
-      ? (Number(job.live_total_minor) - (Number(job.due_minor) + paidBeforeMinor + bookingCreditMinor + giftMinor)) : 0;
+      ? (Number(job.live_total_minor) - (Number(job.due_minor) + paidBeforeMinor + bookingCreditMinor + giftMinor + credits.creditMinor)) : 0;
     const hasDrift = Number.isFinite(driftMinor) && driftMinor !== 0;
 
     // ── card block from the job (brand/last4/auth for the receipt) ─────────────
@@ -6804,6 +6806,9 @@ export const useStore = create((set, get) => ({
     const jobTenders = finishTenders([
       ...bookingTenders(d.bookingPayment),
       ...giftTenders(d.giftCard),
+      // 19 Oct 2026 (v5.11.78): the reward and the promo code, as tillTenders books them.
+      tender('loyalty', credits.loyaltyMinor / 100, 0, { rewards: rewardsRecord(d.loyaltyRedemption) }),
+      tender('promo', credits.promoMinor / 100),
       tender('card', ((job.charge_minor ?? 0) - (job.tip_minor ?? 0)) / 100, (job.tip_minor ?? 0) / 100,
         { pspRef: job.transaction_id, processor: job.processor || 'ryft' }),
       ...priorLegs.map(l => tender('card', (Number(l.chargeMinor) - (Number(l.tipMinor) || 0)) / 100, (Number(l.tipMinor) || 0) / 100,
@@ -6837,6 +6842,11 @@ export const useStore = create((set, get) => ({
       // reconciler-closed check restore the balance — this path booked null before, so
       // the money came off the card with nothing on the check to reverse it by.
       giftCard: d.giftCard || null,
+      // 19 Oct 2026 (v5.11.78): the staged reward and promo code (committed below) and the
+      // service charge the till charged, so the rich record books what the till would.
+      ...(d.loyaltyRedemption ? { loyaltyRedemption: d.loyaltyRedemption } : {}),
+      ...(d.promoRedemption ? { promoRedemption: d.promoRedemption } : {}),
+      ...(d.serviceMinor != null && Number.isFinite(Number(d.serviceMinor)) ? { service: Math.max(0, Number(d.serviceMinor)) / 100 } : {}),
     };
 
     // Rich path ONLY when the live occupation IS the one that paid → full-fidelity record
@@ -6874,6 +6884,10 @@ export const useStore = create((set, get) => ({
         console.error('[tax] reconciler headless record: the VAT could not be worked out:', e?.message || e);
         headlessTax = null;
       }
+      // 19 Oct 2026 (v5.11.78, channel parity): the discounts the till's close would record: the
+      // frozen manual ones with what the bill took off, the automatic deals (frozen by the till,
+      // else worked out over the frozen lines) and the promo code line, as buildCloseRecord does.
+      const headlessDiscs = headlessDiscounts(d, { discountRules: get().discountRules, timezone: get().locationConfig?.timezone });
       record = {
         id: job.closed_check_id,
         ref: frozenRef || getNextOrderRefLocal(),
@@ -6884,13 +6898,13 @@ export const useStore = create((set, get) => ({
         // v5.5.862: honour the draft's own order type — a counter sale is not
         // 'dine-in'. Table-Pay drafts say 'dine-in'; Mode-3 drafts carry the till's.
         orderType: d.orderType || (tableId ? 'dine-in' : 'takeaway'),
-        items, discounts: Array.isArray(d.discounts) ? d.discounts : [],
+        items, discounts: [...stampDiscountAmounts(items, headlessDiscs), ...promoDiscountEntry(d.promoRedemption)],
         // v5.5.851: the frozen draft carries the POS's OWN stamped totals — the delta
         // between total and subtotal IS whatever service was genuinely on the bill
         // (zero when none was). Never a guessed rate (the old `subtotal * 0.125`
         // invented a fee the customer was never charged).
         // 27 Sep 2026: less any sales tax added on top (US), now booked as taxAmount. UK: unchanged.
-        subtotal, service: headlessService(d, headlessTax),
+        subtotal, service: headlessService(d, headlessTax, headlessDiscs),
         tip: ((job.tip_minor ?? 0) + priorTipMinor) / 100,
         total: closeGrandMinor / 100,   // v5.6.68 every split leg; 16 Oct 2026 plus the booking money
         taxAmount: roundVat(headlessTax?.totalTax),   // 8 Oct 2026: rounded once (taxRule.roundVat), as the row; null stays null
@@ -6900,7 +6914,7 @@ export const useStore = create((set, get) => ({
         stripePaymentIntentId: job.transaction_id || null,
         processor: job.processor || 'ryft',
         paymentIntents: cardIntents, cardReceipt,
-        loyaltyRedemption: null,
+        loyaltyRedemption: d.loyaltyRedemption || null,   // 19 Oct 2026: the reward this sale used
         closedAt: Date.now(),
         seatedAt: d.seatedAt ? Number(d.seatedAt) : null,
         status: 'paid', refunds: [],
@@ -6982,6 +6996,11 @@ export const useStore = create((set, get) => ({
     // Non-idempotent effects fire for EXACTLY the elected closer.
     if (created) {
       depleteForSale(record);
+      // 19 Oct 2026 (v5.11.78, channel parity): commit the promo code and the staged reward against
+      // this check, as the till's own close does. Both are keyed on the check id, so a till that
+      // also commits gets already_processed back, never a second use.
+      if (d.promoRedemption) get().redeemPromoCode?.(d.promoRedemption, record, null);
+      if (d.loyaltyRedemption?.pending_commit) get().redeemLoyaltyAtCommit?.(d.loyaltyRedemption, record, null);
       get().triggerChallenge21Check?.(record);
       // 16 Oct 2026 (bookings review): a table paid on the reader departs its booking here too,
       // not only by the realtime echo. Only the paying occupation's session; never throws, and the
@@ -7171,7 +7190,12 @@ export const useStore = create((set, get) => ({
       locationId: locId,
       customerId: customer?.customerId || customer?.id || null,
       staffId: staff?.id || null,
-      basketValue: record.subtotal || 0,
+      // 19 Oct 2026 (v5.11.78, channel parity): the basket the code was checked on (promoBasis.js:
+      // goods after item, check and automatic discounts, before service, delivery, tip and tax,
+      // the server's rule for online and QR). It was record.subtotal (goods BEFORE any discount)
+      // while the check had been on the whole bill, so a minimum spend code could validate and then
+      // be refused here, left unused and still usable.
+      basketValue: promoRedeemBasket(promo, record),
       channel: 'pos',
       closedCheckId: record.id,
     }, { functionsUrl: `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`, token });
@@ -7182,8 +7206,13 @@ export const useStore = create((set, get) => ({
   },
 
   // Direct record insertion — used by bar tabs and other ad-hoc payment flows
-  recordWalkInClosedCheck: (record) => {
+  // 19 Oct 2026 (v5.11.78, channel parity): `paymentInfo` is what the checkout handed over (the bar
+  // tab's CheckoutModal payInfo). Its promo code and any staged reward are committed against this
+  // check exactly as recordWalkInClosed and recordClosedCheck do, and the promo is booked as the
+  // same discount line. A held card capture hands over none, so nothing changes there.
+  recordWalkInClosedCheck: (record, paymentInfo = {}) => {
     const { staff } = get();
+    const pay = paymentInfo || {};
     const fullRecord = {
       id: `chk-${Date.now()}`,
       closedAt: Date.now(),
@@ -7192,6 +7221,8 @@ export const useStore = create((set, get) => ({
       locationId: getActiveLocationSync() || (() => { try { return localStorage.getItem('rpos-active-location') || null; } catch { return null; } })(),  // v5.5.279/311: stamp locationId (durable-tag fallback) for cross-location filter
       staffId: record.staffId || staff?.id || null,   // v4.6.19
       ...record,
+      ...(pay.promoRedemption ? { discounts: [...(record.discounts || []), ...promoDiscountEntry(pay.promoRedemption)] } : {}),
+      ...(pay.loyaltyRedemption ? { loyaltyRedemption: pay.loyaltyRedemption } : {}),
     };
     // v5.9.11: a caller that did not hand over tenders gets them derived from the record.
     if (!fullRecord.tenders) {
@@ -7203,6 +7234,8 @@ export const useStore = create((set, get) => ({
     set(s => ({ closedChecks: capClosedChecks([fullRecord, ...s.closedChecks]) }));
     insertClosedCheck(fullRecord).catch(()=>{});
     depleteForSale(fullRecord);   // v5.5.565: recipe → stock ledger depletion (fire-and-forget)
+    if (pay.promoRedemption) get().redeemPromoCode?.(pay.promoRedemption, fullRecord, fullRecord.customer);
+    if (pay.loyaltyRedemption?.pending_commit) get().redeemLoyaltyAtCommit?.(pay.loyaltyRedemption, fullRecord, fullRecord.customer);
     // v5.5.163: Challenge 21 — alcohol counter + prompt
     get().triggerChallenge21Check?.(fullRecord);
     // v4.6.30: cash drawer auto-fire on cash payment
@@ -7382,11 +7415,17 @@ export const useStore = create((set, get) => ({
       orderType,
       customer,
       items: walkInOrder.items.filter(i => !i.voided).map(i => ({ ...i })),
-      discounts: [...(walkInOrder.discounts || []),
+      // 19 Oct 2026 (v5.11.78): a manual percent discount carries what this bill took off
+      // (taxBasis.stampDiscountAmounts), as the table close.
+      discounts: [...stampDiscountAmounts(walkInOrder.items.filter(i => !i.voided), walkInOrder.discounts || []),
                   ...evaluateAutoDiscounts(walkInOrder.items.filter(i=>!i.voided), get().discountRules, 'pos', buildScheduleCtx(get().locationConfig?.timezone)).map(toAppliedDiscount),
                   ...promoDiscountEntry(paymentInfo.promoRedemption)],
       subtotal,
-      service: 0,
+      // 19 Oct 2026 (v5.11.78, channel parity): the service charge the checkout CHARGED (CheckoutModal
+      // hands it over, and the reader close books the same figure from its draft). It was a hard 0,
+      // so a counter eat in sale on a profile with a service charge booked the charge as goods.
+      // Never worked out again here: a close that charged none (MPOS, kiosk, Orders) passes none.
+      service: (paymentInfo.service != null && Number.isFinite(Number(paymentInfo.service))) ? (roundVat(Number(paymentInfo.service)) ?? 0) : 0,
       tip: paymentInfo.tip || 0,
       // 27 Sep 2026: `??`, not `||`. A 100% comp charges £0, and `0 || subtotal` booked the full
       // price as taken in cash (7 "Custom 100%" checks at Leeds showed £44.90 cash never taken).
@@ -7458,7 +7497,12 @@ export const useStore = create((set, get) => ({
     // v5.5.646: log delivery quote + surcharge (margin reporting) + clear the held quote.
     // v5.5.647: also dispatch the courier (edge fn routes by venue dispatch_backend).
     // Both skipped in training (no real surcharge row, no real courier).
-    if (orderType === 'delivery' && _dq?.available && !isTrainingMode()) {
+    // 19 Oct 2026 (v5.11.78): a fee the order brought with it (fromOrder: a catering pay later
+    // order paid at the till) was logged when it was placed, and its courier is dispatched when it
+    // fires (catering-release): neither again here.
+    if (orderType === 'delivery' && _dq?.available && _dq.fromOrder) {
+      set({ deliveryQuote: null });
+    } else if (orderType === 'delivery' && _dq?.available && !isTrainingMode()) {
       recordDeliverySurcharge({ opsLocationId: record.locationId, orderRef: record.ref, quote: _dq }).catch(() => {});
       // Only dispatch a courier in 'uber' mode. Self-delivery just fires to the POS/kitchen.
       if (_dq.dispatchable) {
@@ -7708,7 +7752,9 @@ export const useStore = create((set, get) => ({
     // 27 Sep 2026: inclusive VAT is pro rata against the money that settled the whole
     // bill (tenders less tip, or total when larger), never the card part alone of a
     // reader close paid partly by gift card (refundMath.refundTaxAmount).
-    const taxRefunded = refundTaxAmount(chkBefore, bd);
+    // 19 Oct 2026 (v5.11.78, channel parity): a part refund gives back the VAT of the LINES it
+    // returns (their own rates, as the sale booked them); the tip and service charge carry none.
+    const taxRefunded = refundTaxAmount(chkBefore, bd, { items: refundItems, taxRates: get().taxRates });
 
     let nextRefunds = null;
     let nextStatus = null;
@@ -7830,21 +7876,22 @@ export const useStore = create((set, get) => ({
     // v5.5.218: Loyalty points reversal — clawback earned points and restore
     // redeemed points. Fire-and-forget, same pattern as gift card reversal.
     // The edge function is idempotent via refund:{closed_check_id}.
-    if (check?.customer?.phone || check?.customer_id || check?.loyalty) {
+    // 19 Oct 2026 (v5.11.78, channel parity): loyalty is put back when the sale is FULLY refunded
+    // (loyalty-refund reverses the whole check: a part refund would give the whole reward back), as
+    // the gift card reversal above. The customer is the one the check names (its customer_id, its
+    // loyalty summary, or the reward it used); when the till holds none (a stamps only member: the
+    // check never carried one, so every refund was skipped), loyalty-refund finds the customer
+    // from this check's own ledger rows.
+    if (nextStatus === 'refunded' && (check?.customer?.phone || check?.customer_id || check?.loyalty || check?.loyaltyRedemption)) {
       (async () => {
         try {
           const token = await ensureAuthToken();
           if (!token) { console.warn('[refundCheck] loyalty reversal skipped — no auth token'); return; }
-          // Resolve customer_id: check may have it directly, or we find it from loyalty data
-          const customerId = check.customer_id || check.loyalty?.customer_id || null;
-          if (!customerId) {
-            console.warn('[refundCheck] loyalty reversal skipped — no customer_id on check');
-            return;
-          }
+          const customerId = check.customer_id || check.loyalty?.customer_id || check.loyaltyRedemption?.customer_id || null;
           // Waits for the device link and re-links once on a 403 (database fence stage 1).
           // Idempotent server side on refund:<closed_check_id>, so the retry cannot reverse twice.
           const res = await postLoyaltyWithDeviceLink('loyalty-refund', {
-            customer_id: customerId,
+            ...(customerId ? { customer_id: customerId } : {}),
             location_id: getActiveLocationSync(),
             // v5.5.311: must match the unique id used at earn time (chk-<ts>)
             // so loyalty-refund finds the right earn rows. Was check.ref

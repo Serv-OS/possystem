@@ -21,7 +21,7 @@ import { getAssignedNetworkReader } from '../lib/networkReader';
 import { CATEGORIES, MENU_ITEMS as SEED_MENU_ITEMS, ALLERGENS, QUICK_IDS, CAT_META } from '../data/seed';
 import { daypartOfHour } from '../lib/quickRank';
 import { taxCtxHasConfig } from '../lib/taxCompute';
-import { creditDiscountsFromPayment } from '../lib/taxBasis';
+import { creditDiscountsFromPayment, checkDiscountAmount } from '../lib/taxBasis';
 import { resolveQuickItems } from '../lib/quickRank';
 import ProductModal, { AllergenModal } from '../components/ProductModal';
 import InlineItemFlow from '../components/InlineItemFlow';
@@ -510,6 +510,9 @@ export default function POSSurface() {
     // channel (Deliveroo/UberEats) delivers it. The quote was failing on the channel's
     // address ("Delivery unavailable — out of range") and its gate blocked payment.
     if (useStore.getState().walkInOrder?._channelRef) return;
+    // 19 Oct 2026 (v5.11.78): nor for an order that carries the fee its customer agreed (a catering
+    // pay later order paid here, lib/orderPlacedFrom.js): that fee is charged, never a new quote.
+    if (useStore.getState().deliveryQuote?.fromOrder) return;
     const t = setTimeout(() => { quoteDelivery?.(); }, 450);
     return () => clearTimeout(t);
   }, [orderType, _addrKey, subtotal, items.length]);
@@ -1762,7 +1765,8 @@ export default function POSSurface() {
                       <div key={d.id} style={{display:'flex',alignItems:'center',justifyContent:'space-between',fontSize:11,color:'var(--grn)',marginBottom:2}}>
                         <span style={{display:'inline-flex',alignItems:'center',gap:5}}><Icon name="tag" size={12}/>{d.label}</span>
                         <div style={{display:'flex',alignItems:'center',gap:8}}>
-                          <span style={{fontFamily:'var(--font-mono)'}}>−{money(d.amount)}</span>
+                          {/* 19 Oct 2026 (v5.11.78): what the bill takes off NOW (a percent of the live lines), never the figure frozen when it was applied */}
+                          <span style={{fontFamily:'var(--font-mono)'}}>−{money(checkDiscountAmount(d, subtotal))}</span>
                           <button onClick={()=>activeTableId?removeCheckDiscount(activeTableId,d.id):removeWalkInDiscount(d.id)} style={{fontSize:11,color:'var(--t4)',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit'}}>✕</button>
                         </div>
                       </div>

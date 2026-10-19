@@ -6,11 +6,9 @@
 // device (Tap to Pay or assigned reader); cash always happens at the counter
 // where the drawer lives, so server staff route those at the till instead.
 
-import { useMemo, useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useStore } from '../../store';
-import { computeOrderTaxUnified } from '../../lib/taxCompute';
-import { LINES_ONLY_BASIS, linesAfterItemDiscounts } from '../../lib/taxBasis';
-import { inclusiveTaxOnCharged, linesGoods } from '../../lib/taxShare';
+import { bookingCreditFor, bookingLegsForBill } from '../../lib/bookings/bookingCredit';
 import { Sx, money } from './MShellStyles';
 import { adyenLocalBridgeAvailable } from '../../lib/payments/adyenLocalTerminal';
 import { findPaxTerminal, getPosDeviceId } from '../../lib/payments/terminalJobs';
@@ -22,46 +20,41 @@ import { findPaxTerminal, getPosDeviceId } from '../../lib/payments/terminalJobs
 const TIP_PRESETS = [10, 12.5, 15, 20];
 
 export default function MTender({ onBack, onConfirm }) {
-  const { activeTableId, tables, walkInOrder, orderType, deviceConfig } = useStore();
+  // Subscribed to the whole store (as before), so the bill below is read again whenever the
+  // order, the table, the device profile or the rules change.
+  const { deviceConfig } = useStore();
 
-  const order = useMemo(() => {
-    if (activeTableId) {
-      const t = tables.find(x => x.id === activeTableId);
-      return {
-        items: (t?.session?.items || []).filter(i => !i.voided),
-        label:`Table ${t?.label || activeTableId}`,
-      };
-    }
-    return {
-      items: walkInOrder?.items || [],
-      label: walkInOrder?.customer?.name || 'New order',
-    };
-  }, [activeTableId, tables, walkInOrder]);
-
-  const subtotal = order.items.reduce((s, i) => {
-    const base = (i.price || 0) * (i.qty || 0);
-    return s + (i.discount?.value ? base * (1 - i.discount.value / 100) : base);
-  }, 0);
-  // v5.7.34: unified seam — same read shape (totalTax / exclusiveTax /
-  // hasExclusiveTax); legacy-equivalent venues byte-identical.
-  const taxCtx = useStore(s => s.getTaxContext());
-  // v5.9.12: taxed on what this screen charges: each line after its item
-  // discount (LINES_ONLY_BASIS), not the menu price. The result rides to the
-  // close as chargedTaxBreakdown so the record books this exact tax.
-  const taxResult = useMemo(() => {
-    // 27 Sep 2026: UK inclusive VAT on the lines as discounted, as the close books it.
-    try { return inclusiveTaxOnCharged(computeOrderTaxUnified(order.items, taxCtx, orderType, LINES_ONLY_BASIS), linesGoods(order.items), linesAfterItemDiscounts(order.items)); }
-    catch { return { totalTax: 0 }; }
-  }, [order.items, taxCtx, orderType]);
-  const tax = Number(taxResult?.totalTax) || 0;
-  // v5.5.341: VAT-inclusive (UK) prices already CONTAIN the tax, so the bill is
-  // just the gross subtotal — adding tax on top double-counted it. Only add when
-  // the rate is exclusive (US sales tax).
-  // v5.7.31: add exclusiveTax (the exclusive-mode lines' share only), never
-  // totalTax — a check mixing inclusive and exclusive rates was re-charging the
-  // inclusive VAT on top. Pure-exclusive and pure-inclusive checks unchanged.
-  const exclusive = !!taxResult?.hasExclusiveTax;
-  const preTip = subtotal + (Number(taxResult?.exclusiveTax) || 0);
+  // 19 Oct 2026 (v5.11.78, channel parity): THE TILL'S BILL. The handheld charges exactly what the
+  // till charges for this order: store.getPOSTotals, i.e. payments/checkTotals.computeCheckTotals
+  // (item discounts of either kind, the check and automatic discounts, the service charge from
+  // this device's profile, any added on tax), the one implementation the counter, a table close
+  // and Table Pay use. MTender used to work its own sum: it read an amount item discount as a
+  // percent (2.00 off a 4.00 line charged 3.92), and it ignored check discounts, automatic deals
+  // and the service charge the close then booked, so the card took a different figure from the
+  // record. The tax record it hands the close is the bill's own (UK VAT on what was charged).
+  const bill = useStore.getState().getPOSTotals();
+  const tax = Number(bill?.tax?.totalTax) || 0;
+  const exclusive = !!bill?.tax?.hasExclusiveTax;
+  const exclusiveTax = Number(bill?.exclusiveTax) || 0;
+  const service = Number(bill?.service) || 0;
+  const discountsOff = Math.max(0, (Number(bill?.subtotal) || 0) - (Number(bill?.discountedSub) || 0));
+  // The goods after every discount: what a tip % applies to (the till's tipBasis).
+  const subtotal = Number(bill?.discountedSub) || 0;
+  const billTotal = Number(bill?.total) || 0;
+  // 19 Oct 2026 (v5.11.78, channel parity): a booked party's deposit or prepay comes off the bill
+  // first, as at the till (lib/bookings/bookingCredit.js, the same two helpers CheckoutModal
+  // reads): the card takes the rest plus any tip, and the close books the booking legs. A tip is
+  // for tonight and is never taken from booking money.
+  const stNow = useStore.getState();
+  const tableSession = stNow.activeTableId ? stNow.tables.find(t => t.id === stNow.activeTableId)?.session : null;
+  const booking = tableSession?.booking && ((Number(tableSession.booking.prepaidMinor) || 0) + (Number(tableSession.booking.depositMinor) || 0)) > 0
+    ? tableSession.booking : null;
+  const bookingCredit = bookingCreditFor(booking ? { booking } : null, billTotal);
+  const bookingApplied = Math.min(bookingCredit.creditMinor / 100, billTotal);
+  const bookingPayment = booking ? bookingLegsForBill(booking, bookingApplied) : null;
+  // Paid in full in advance: nothing for a card to take, so it closes on the till.
+  const paidInAdvance = !!bookingPayment && billTotal - bookingApplied <= 0.004;
+  const preTip = Math.max(0, billTotal - (bookingPayment ? bookingApplied : 0));
 
   // Tip in £ amount (computed from selected preset OR custom override).
   // No tip pre-selected: this is the customer's screen, and a pre-ticked tip is the
@@ -89,7 +82,8 @@ export default function MTender({ onBack, onConfirm }) {
   }, []);
   const [customTip, setCustomTip] = useState(null); // null | number
   // v5.8.19: the tip % applies to the goods, not to goods + sales tax (preTip
-  // is what the card takes before the tip; it stays the charge basis).
+  // is what the card takes before the tip; it stays the charge basis). 19 Oct 2026: the goods
+  // after every discount, as the till's tipBasis.
   const tipAmount = customTip != null ? customTip : (subtotal * tipPct) / 100;
   const grand = preTip + tipAmount;
 
@@ -129,10 +123,19 @@ export default function MTender({ onBack, onConfirm }) {
           <div style={{ fontSize:32, fontWeight:800, color:'var(--t2)', fontFamily:'var(--font-mono)', letterSpacing:'-.02em', marginTop:2 }}>
             {money(preTip)}
           </div>
+          {bookingPayment && (
+            <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>{`${bookingCredit.label || 'Booking payment'} ${money(bookingApplied)} already paid (bill ${money(billTotal)})`}</div>
+          )}
+          {discountsOff > 0.004 && (
+            <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>{`incl. ${money(discountsOff)} off`}</div>
+          )}
+          {service > 0.004 && (
+            <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>{`incl. service ${money(service)}`}</div>
+          )}
           {tax > 0 && (
             <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>
               {/* v5.7.31: the "+" figure is the exclusive share actually charged, never totalTax */}
-              {exclusive ? `${money(subtotal)} + ${money(Number(taxResult?.exclusiveTax) || 0)} tax` : `incl. VAT ${money(tax)}`}
+              {exclusive ? `${money(preTip - exclusiveTax)} + ${money(exclusiveTax)} tax` : `incl. VAT ${money(tax)}`}
             </div>
           )}
         </div>
@@ -189,9 +192,15 @@ export default function MTender({ onBack, onConfirm }) {
 
       {/* Big customer Confirm — auto-triggers card flow */}
       <div style={Sx.bottom}>
-        <button onClick={() => onConfirm?.({ method:'card', tip: tipAmount, grand, subtotal, tax, chargedTaxBreakdown: taxResult })} style={{ ...Sx.btnPrim, fontSize:17, padding:'18px 16px', minHeight:60 }}>
-          Confirm · {money(grand)}
-        </button>
+        {paidInAdvance ? (
+          <div style={{ padding:'14px 16px', borderRadius:12, background:'var(--bg2)', border:'1px solid var(--bdr)', fontSize:14, fontWeight:700, color:'var(--t2)', textAlign:'center' }}>
+            Paid in advance by the booking. Close this table on the till.
+          </div>
+        ) : (
+          <button onClick={() => onConfirm?.({ method:'card', tip: tipAmount, grand, subtotal: Number(bill?.subtotal) || 0, tax, service, chargedTaxBreakdown: bill?.tax || null, ...(bookingPayment ? { bookingPayment, bookingAppliedMajor: bookingApplied } : {}) })} style={{ ...Sx.btnPrim, fontSize:17, padding:'18px 16px', minHeight:60 }}>
+            Confirm · {money(grand)}
+          </button>
+        )}
         <button onClick={onBack} style={{ ...Sx.btnGhost, marginTop:8 }}>
           ← Back to order
         </button>

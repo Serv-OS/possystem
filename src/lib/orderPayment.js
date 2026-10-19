@@ -16,6 +16,9 @@
 // Pure helpers only (no Supabase, no store): OrdersHub, MPOS, CheckoutModal, the kitchen ticket
 // and the tests all use the same rules.
 
+import { qrTabService } from './headlessTax.js';
+import { foldLineMods } from './channelMoney.js';
+
 export const PAYMENT_CHECKING = 'checking';
 export const PAYMENT_SHORT = 'short';   // fix round 2 (S5), see paymentShortInfo below
 export const PAYMENT_CHECKING_LABEL = 'Payment being checked';
@@ -148,12 +151,14 @@ export function shortTabClosedCheck(tab, short, { nowIso = new Date().toISOStrin
   const rows = Array.isArray(tab.rows) ? tab.rows : [];
   const tipMinor = rows.reduce((t, r) => t + Math.round((Number(r && r.customer && r.customer.tip) || 0) * 100), 0);
   const tip = Math.min(tipMinor, Math.round(short.paidMinor)) / 100;
+  // 19 Oct 2026 (v5.11.78, channel parity): the rounds' QR service charge is service, never goods.
+  const service = Math.min(qrTabService(rows), Math.max(0, +(paid - tip).toFixed(2)));
   const first = (tab.firstRow && typeof tab.firstRow === 'object') ? tab.firstRow : (rows[0] || {});
   const baseCustomer = (first.customer && typeof first.customer === 'object') ? { ...first.customer } : {};
   delete baseCustomer.tab_join_code;
   delete baseCustomer.payment_unverified;
   let tax = null;
-  if (typeof taxFor === 'function') { try { tax = taxFor(Math.max(0, paid - tip)); } catch { tax = null; } }
+  if (typeof taxFor === 'function') { try { tax = taxFor(Math.max(0, paid - tip - service)); } catch { tax = null; } }
   const added = Math.max(0, Number(tax && tax.exclusiveTax) || 0);   // QR totals include added-on (US) tax
   return {
     id: `chk-qrshort-${holdRef}`.slice(0, 120),
@@ -169,10 +174,11 @@ export function shortTabClosedCheck(tab, short, { nowIso = new Date().toISOStrin
       tab_close_short: { paid_minor: Math.round(short.paidMinor), due_minor: Math.round(short.dueMinor || 0) },
       shortfall_minor: Math.max(0, Math.round((short.dueMinor || 0) - short.paidMinor)),
     },
-    items: (Array.isArray(tab.allItems) ? tab.allItems : []).map((i) => ({ ...i, voided: false })),
+    // 19 Oct 2026 (v5.11.78): stored in the till's line contract (options inside the price).
+    items: foldLineMods(Array.isArray(tab.allItems) ? tab.allItems : []).map((i) => ({ ...i, voided: false })),
     discounts: [],
-    subtotal: +Math.max(0, paid - tip - added).toFixed(2),
-    service: 0,
+    subtotal: +Math.max(0, paid - tip - service - added).toFixed(2),
+    service,
     tip,
     tax_amount: tax && tax.taxAmount != null ? tax.taxAmount : null,
     ...(tax && tax.taxBreakdown ? { tax_breakdown: tax.taxBreakdown } : {}),

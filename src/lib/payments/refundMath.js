@@ -18,6 +18,9 @@
  * once, at the boundary, with `toMinor` — never round twice.
  */
 
+import { resolveLineTaxRate } from '../tax.js';
+import { isScaledTaxRecord } from '../taxShare.js';
+
 /** Round to pennies. The single rounding point for pounds in this module. */
 export const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
@@ -127,19 +130,130 @@ export function refundTaxBasis(check) {
 }
 
 /**
- * The tax a refund gives back, for refunds[].taxAmount (the VAT reports net off).
- * A check whose tax is ALL added on (US) returns exactly the breakdown's figure for
- * the refunded lines (bd.tax, v5.9.12). Anything with inclusive VAT in it is pro rata
- * on the check's stored tax against refundTaxBasis. Null when the check stored no tax.
+ * 19 Oct 2026 (v5.11.78, channel parity): each live line's own share of a check's booked UK VAT,
+ * so a part refund gives back the VAT of the lines it returns (Peter, 8 Oct: "VAT ... should
+ * follow the Tax rules set on the back office per menu item"; the sale already did, the refund
+ * did not). A line's weight is its goods (price x qty) times its own rate's fraction r / (1 + r),
+ * the rate resolved by the one line rule (tax.js resolveLineTaxRate) for the check's order type.
+ *
+ * The weights are only used when they reproduce the record the sale booked: every rate bucket in
+ * taxBreakdown.breakdown must equal the weights for that rate (times the record's share when the
+ * bill was discounted, taxShare). Anything else (added on US tax, a real tax profile assigned by
+ * category, a line that cannot be placed, an older row with no breakdown) returns null and the
+ * caller keeps the money pro rata rule. Rates are the record's own first, then the venue's.
  */
-export function refundTaxAmount(check, bd) {
+export function lineVatWeights(check, taxRates = []) {
+  const t = check?.taxBreakdown;
+  if (!t || typeof t !== 'object' || t.hasExclusiveTax) return null;
+  const breakdown = Array.isArray(t.breakdown) ? t.breakdown : [];
+  if (!breakdown.length) return null;
+  const live = (Array.isArray(check?.items) ? check.items : []).filter((i) => i && !i.voided);
+  if (!live.length) return null;
+  const rates = [
+    ...breakdown.map((b) => b?.rate).filter((r) => r && r.id != null),
+    ...(Array.isArray(taxRates) ? taxRates : []),
+  ];
+  const orderType = check?.orderType || check?.order_type || 'dine-in';
+  const share = isScaledTaxRecord(t) ? Number(t.share) : 1;
+  const perRate = new Map();
+  const lines = [];
+  for (const l of live) {
+    const { rate } = resolveLineTaxRate(l, rates, orderType);
+    const r = rate ? num(rate.rate) : 0;
+    if (rate && rate.type && rate.type !== 'inclusive' && r > 0) return null;
+    const unitVat = num(l.price) * (r > 0 ? r / (1 + r) : 0);
+    const qty = num(l.qty) || 1;
+    if (rate) perRate.set(rate.id, (perRate.get(rate.id) || 0) + unitVat * qty);
+    lines.push({ line: l, unitVat, qty });
+  }
+  // The weights must BE the booked record, bucket for bucket, or they are not used.
+  for (const b of breakdown) {
+    const id = b?.rate?.id;
+    if (id == null) return null;
+    if (Math.abs((perRate.get(id) || 0) * share - num(b.tax)) > 0.01) return null;
+  }
+  for (const [id, v] of perRate) {
+    if (v * share > 0.01 && !breakdown.some((b) => b?.rate?.id === id)) return null;
+  }
+  const totalRaw = lines.reduce((s, x) => s + x.unitVat * x.qty, 0);
+  return { lines, totalRaw };
+}
+
+/** The VAT already given back on this check (the refunds[].taxAmount recorded so far). */
+export function vatRefundedSoFar(check) {
+  return (Array.isArray(check?.refunds) ? check.refunds : []).reduce((s, r) => s + num(r?.taxAmount), 0);
+}
+
+/**
+ * The tax a refund gives back, for refunds[].taxAmount (the VAT reports net off).
+ *
+ * A check whose tax is ALL added on (US) returns exactly the breakdown's figure for the refunded
+ * lines (bd.tax, v5.9.12). Null when the check stored no tax.
+ *
+ * 19 Oct 2026 (v5.11.78, channel parity): UK VAT follows the lines refunded, not the money.
+ *   - a part refund that names its lines gives back those lines' own VAT (lineVatWeights: each
+ *     line's goods at its own rate, as the sale booked it, after any bill discount), times the
+ *     share of them actually refunded when the refund was capped at what is left. The tip and
+ *     the service charge carry no VAT (UK VAT is never charged on either, taxEngine), so a tip
+ *     only refund gives back 0. Before, the check's whole VAT was spread over the money: on a
+ *     takeaway 3.50 drink (20%) plus a 4.00 cold sandwich (0%), refunding the sandwich gave back
+ *     0.31 of VAT it never carried, refunding the drink 0.27 of its 0.58, and a tip only refund
+ *     gave VAT back;
+ *   - the refund that brings the bill's money to nothing gives back all the VAT left, so line by
+ *     line refunds of a discounted check never strand VAT;
+ *   - anything that cannot be placed line by line (older rows, records the weights do not
+ *     reproduce, a full refund of only the card part of a gift card split) keeps the pro rata
+ *     rule against refundTaxBasis, with the tip taken out of both sides;
+ *   - never more than the VAT still on the check.
+ * A one rate check with no tip and no service charge gives back exactly what it did before.
+ *
+ * @param {object} check  the check BEFORE this refund
+ * @param {object} bd     refundBreakdown(check, ...) for this refund
+ * @param {object} [opts] { items: the refunded lines ({ uid, price, refundQty }), taxRates: the venue's rates }
+ */
+export function refundTaxAmount(check, bd, opts = {}) {
   const amount = num(bd?.amount);
   const addedOnly = num(bd?.tax) > 0 && check?.taxAmount != null
     && Math.abs(num(check.taxAmount) - addedOnTaxOf(check)) < 0.01;
   if (addedOnly) return bd.tax;
   if (check?.taxAmount == null) return null;
   const basis = refundTaxBasis(check);
-  return basis > 0 ? r2(num(check.taxAmount) * (amount / basis)) : null;
+  if (!(basis > 0)) return null;
+  const taxAmount = num(check.taxAmount);
+  const vatLeft = Math.max(0, taxAmount - vatRefundedSoFar(check));
+  const checkTip = num(check?.tip);
+  const bdTip = num(bd?.tip);
+  const done = refundedSoFar(check);
+  // Does this refund bring the money that settled the bill (less tip) to nothing?
+  const basisExTip = Math.max(0, basis - checkTip);
+  const clearsBill = basisExTip > 0 && (done.total - done.tip) + (amount - bdTip) >= basisExTip - 0.005;
+  if (clearsBill) return r2(vatLeft);
+
+  const items = Array.isArray(opts?.items) ? opts.items : [];
+  if (!bd?.isFullRefund) {
+    const plan = lineVatWeights(check, opts?.taxRates);
+    if (plan) {
+      if (!items.length) return 0;   // a tip or service only refund: no VAT went with it
+      let selectedVat = 0;
+      let selectedValue = 0;
+      let placed = true;
+      for (const it of items) {
+        const hit = plan.lines.find((x) => x.line === it || (x.line?.uid != null && x.line.uid === it?.uid));
+        if (!hit) { placed = false; break; }
+        const q = Math.min(Math.max(0, num(it?.refundQty)), hit.qty);
+        selectedVat += hit.unitVat * q;
+        selectedValue += num(it?.price) * (num(it?.refundQty) || 0);
+      }
+      if (placed) {
+        const lineVat = plan.totalRaw > 0 ? taxAmount * (selectedVat / plan.totalRaw) : 0;
+        const capped = selectedValue > 0 ? Math.min(1, num(bd?.itemsAmount) / selectedValue) : 0;
+        return r2(Math.min(vatLeft, Math.max(0, lineVat * capped)));
+      }
+    }
+  }
+  // Pro rata on the money, the tip left out of both sides (a tip carries no VAT).
+  const money = Math.max(0, amount - bdTip);
+  return basisExTip > 0 ? r2(Math.min(vatLeft, taxAmount * (money / basisExTip))) : null;
 }
 
 /**

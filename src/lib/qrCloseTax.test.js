@@ -127,11 +127,12 @@ test('closeShortQrTab: the check books the share of VAT the capture paid for', (
 test('wiring: all three Orders Hub QR closes book VAT (none books tax_amount null)', () => {
   const hub = fs.readFileSync(new URL('../surfaces/OrdersHub.jsx', import.meta.url), 'utf8');
   assert.doesNotMatch(hub, /tax_amount: null/);
-  assert.match(hub, /import \{ qrCloseTax \} from '\.\.\/lib\/headlessTax';/);
+  assert.match(hub, /import \{ qrCloseTax, qrTabService \} from '\.\.\/lib\/headlessTax';/);
   assert.match(hub, /import \{ taxCtxHasConfig \} from '\.\.\/lib\/taxCompute';/);
   assert.match(hub, /shortTabClosedCheck\(tab, short, \{ taxFor: \(paidGoods\) => qrCloseTax\(tab\.allItems, qrTaxCtx\(\), \{ paidGoods \}\) \}\)/);
-  assert.match(hub, /const qrTax = qrCloseTax\(tab\.allItems, qrTaxCtx\(\), \{ paidGoods: totalCollected - tabTip - surcharge \}\);/);
-  assert.match(hub, /const qrTax = qrCloseTax\(o\.items, qrTaxCtx\(\), \{ paidGoods: captureAmount - qrTip - surcharge \}\);/);
+  // 19 Oct 2026 (v5.11.78): the rounds' QR service charge comes out of the goods too (booked as service).
+  assert.match(hub, /const qrTax = qrCloseTax\(tab\.allItems, qrTaxCtx\(\), \{ paidGoods: totalCollected - tabTip - surcharge - tabService \}\);/);
+  assert.match(hub, /const qrTax = qrCloseTax\(o\.items, qrTaxCtx\(\), \{ paidGoods: captureAmount - qrTip - surcharge - qrService \}\);/);
   assert.equal((hub.match(/tax_amount: qrTax\.taxAmount,/g) || []).length, 2);
   assert.equal((hub.match(/\.\.\.\(qrTax\.taxBreakdown \? \{ tax_breakdown: qrTax\.taxBreakdown \} : \{\}\),/g) || []).length, 2);
   assert.match(hub, /menuItems: st\.menuItems \|\| \[\], taxRates: st\.taxRates \|\| \[\], taxCtx, hasTaxConfig: taxCtxHasConfig\(taxCtx\)/);

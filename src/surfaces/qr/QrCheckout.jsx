@@ -27,7 +27,7 @@ import RyftPaymentForm from '../../components/RyftPaymentForm';
 import { readRyftStoredCard } from '../../lib/payments/ryft';
 import { attributeOnlineOrder } from '../../lib/customerLookup';
 import { computeOrderTaxUnified, taxCtxHasConfig } from '../../lib/taxCompute';
-import { publicCheckTaxFields, offerChargedTax } from '../../lib/publicCheckTax';
+import { publicCheckTaxFields, offerChargedTax, qrBillTotal } from '../../lib/publicCheckTax';
 import VatGateNotice from '../online/VatGateNotice';
 import { breakdownIsExclusive, taxTermFor } from '../../lib/receiptTax';   // v5.7.34: rate-null guards + VAT/Sales Tax wording
 import { fetchActiveDiscountRules } from '../../lib/db';
@@ -201,8 +201,15 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   const exclusiveTax = +(Number(taxBreakdown?.exclusiveTax) || 0).toFixed(2);
 
   const total = useMemo(
-    () => +(discountedSubtotal + exclusiveTax + serviceCharge + tipAmount).toFixed(2),
+    () => qrBillTotal({ discountedSubtotal, exclusiveTax, serviceCharge, tip: tipAmount }),
     [discountedSubtotal, exclusiveTax, serviceCharge, tipAmount]
+  );
+  // 19 Oct 2026 (v5.11.78, channel parity): a round added to an open tab is the same bill with no
+  // tip (the Add to your tab sheet never asks for one): the offers, any added on tax and the QR
+  // service charge, exactly as pay now. It used to be the shelf goods plus a hidden default tip.
+  const roundTotal = useMemo(
+    () => qrBillTotal({ discountedSubtotal, exclusiveTax, serviceCharge, tip: 0 }),
+    [discountedSubtotal, exclusiveTax, serviceCharge]
   );
 
   // Database fence stage 1, fix round 2 (C22): the server refuses any round that would take a tab
@@ -274,7 +281,11 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
         tab_open: true,
         tab_join_code: existingTab?.rounds?.[0]?.customer?.tab_join_code || tabJoinCode,
         round_ref: ref,
-        tip: tipAmount,   // this round's tip, see v5.8.9 note on round 1
+        // 19 Oct 2026 (v5.11.78): THIS round's own figures, set after the round 1 spread so round
+        // 1's are never copied onto it. No tip (none was asked for); its own QR service charge,
+        // which every tab close books as service (headlessTax.qrTabService).
+        tip: 0,
+        service_charge: serviceCharge,
       };
       // The server keeps the tab's own code in customer (fence stage 1, C9). Fix round (C16): a
       // round from a phone that is neither the opener nor a member must CARRY the table code, so
@@ -290,7 +301,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
         source: 'qr',
         items,
         customer: roundCustomer,
-        total: subtotal + tipAmount, // round subtotal + this round's tip; close-time aggregates across rounds
+        total: roundTotal,   // 19 Oct 2026: offers, added on tax and service charge as pay now; no tip
         sent_at: new Date().toISOString(),
         collection_time: null,
         is_asap: true,
@@ -330,7 +341,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
       // STAGE 1 CLEANUP: remove after 20260919b (its order_queue_qr_floor trigger does this;
       // until then this helper only ever writes a QR owned session, contract S1).
       syncQrTableSession(opsLocationId, tableId).catch(() => {});
-      onPlaced?.({ ref, total: subtotal, addedToTab: true, trackToken: placed.trackToken, paymentIntentId: tabPi });
+      onPlaced?.({ ref, total: roundTotal, addedToTab: true, trackToken: placed.trackToken, paymentIntentId: tabPi });
     } catch (e) {
       console.error('[QrCheckout addToTab] failed:', e);
       setError(e?.message || 'Could not add to tab.');
@@ -649,7 +660,15 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
           phone: customer.phone, name: customer.name, email: customer.email,
           marketingOptIn: false,
           locationId: opsLocationId,
-          orderRecord: { ref, total, items, type: 'dine-in', channel: 'qr' },
+          // 19 Oct 2026 (v5.11.78, channel parity): the check's own id (loyalty-earn earns from the
+          // server's closed_checks row, whose id this page minted) so a guest who left a phone earns
+          // like a till customer. It sent the display ref (QR-XXXXX), which no check carries, and
+          // was refused: 0 of 40 QR checks with a phone earned in 60 days. An open tab has no check
+          // until it is settled, so a tab round earns nothing here.
+          orderRecord: { ref, checkId: closedCheckRow?.id || null, total, items, type: 'dine-in', channel: 'qr' },
+          // A signed in member's own token, as online sends it.
+          memberToken: loyalty?.token || null,
+          memberCustomerId: loyalty?.customer?.id || null,
           // Database fence stage 2: this order's own key proves the page placed it. payId is the
           // payment id this order's row carries (a new tab's hold, or the pay now charge). It
           // named tabPi from v5.9.16, which only exists in addToTab, so a guest who left a phone
@@ -749,13 +768,31 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
                   </div>
                 );
               })}
+              {autoDiscounts.map((d, i) => (
+                <div key={`ad-${i}`} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0 0', fontSize: 13, color: '#16a34a' }}>
+                  <span>{d.label || 'Offer'}</span>
+                  <span style={{ fontWeight: 700 }}>-{money(Number(d.value) || 0)}</span>
+                </div>
+              ))}
+              {serviceCharge > 0 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0 0', fontSize: 13, color: muted }}>
+                  <span>Service charge ({serviceChargePct}%)</span>
+                  <span style={{ fontWeight: 700 }}>{money(serviceCharge)}</span>
+                </div>
+              )}
+              {exclusiveTax > 0 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0 0', fontSize: 13, color: muted }}>
+                  <span>{taxTermFor(taxBreakdown)}</span>
+                  <span style={{ fontWeight: 700 }}>{money(exclusiveTax)}</span>
+                </div>
+              )}
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0 0', borderTop: `1px solid ${cardBdr}`, marginTop: 6 }}>
                 <span style={{ fontSize: 14, fontWeight: 800 }}>This round</span>
-                <span style={{ fontSize: 18, fontWeight: 900 }}>{money(subtotal)}</span>
+                <span style={{ fontSize: 18, fontWeight: 900 }}>{money(roundTotal)}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0 0', fontSize: 12, color: muted }}>
                 <span>Tab total after this round</span>
-                <span style={{ fontWeight: 700 }}>{money((Number(existingTab?.runningTotal || 0) + subtotal))}</span>
+                <span style={{ fontWeight: 700 }}>{money((Number(existingTab?.runningTotal || 0) + roundTotal))}</span>
               </div>
             </div>
             <div style={{ marginTop: 14, fontSize: 11, color: muted, lineHeight: 1.5 }}>
@@ -781,7 +818,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',
               }}>
               <span>{working ? 'Sending…' : '🍽 Send to kitchen'}</span>
-              <span>{money(subtotal)}</span>
+              <span>{money(roundTotal)}</span>
             </button>
           </div>
         </div>

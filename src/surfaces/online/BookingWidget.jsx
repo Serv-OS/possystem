@@ -50,6 +50,8 @@ import {
   walletErrorOutcome, walletStartFailedNote, walletErrorReport,
 } from '../../lib/payments/adyenWallets';
 import { noticeWords } from '../../lib/bookings/optimiser';
+import { resolveActiveMenu } from '../../lib/menus/resolveActiveMenu';
+import { wallTimeToInstantMs } from '../../lib/cateringRules';
 
 const MONO = 'var(--font-mono, ui-monospace, monospace)';
 
@@ -275,7 +277,10 @@ const NO_STOCK = {};
 // which dishes must be configured. For a future booking there is no 86 or
 // stock list: a dish out today may be back on the night.
 // Returns { status: 'off'|'loading'|'failed'|'ready', items, instGroupDefs, groupMin }.
-function useGuestMenu(locationId, enabled, optionItemIds) {
+// 19 Oct 2026 (v5.11.78, channel parity): `slot` ({ date, time, timezone }) is the booking's own
+// time. The venue's menus, categories and links are read with the items, and the menu on at that
+// time (the till's resolver) prices the choices, as the seated line is priced (menuId in the reply).
+function useGuestMenu(locationId, enabled, optionItemIds, slot = null) {
   const menuKey = enabled && locationId && supabase && !isMock ? String(locationId) : null;
   const [menuRes, setMenuRes] = useState(null); // { key, items, instGroupDefs, failed }
   const loadedFor = useRef(null);
@@ -283,18 +288,29 @@ function useGuestMenu(locationId, enabled, optionItemIds) {
     if (!menuKey || loadedFor.current === menuKey) return undefined;
     let off = false;
     (async () => {
-      let res = { key: menuKey, items: NO_ROWS, instGroupDefs: NO_ROWS, failed: true };
+      let res = { key: menuKey, items: NO_ROWS, instGroupDefs: NO_ROWS, failed: true, menus: NO_ROWS, cats: NO_ROWS, links: NO_ROWS };
       try {
-        const [iRes, pRes] = await Promise.allSettled([
+        const [iRes, pRes, mRes, cRes] = await Promise.allSettled([
           supabase.from('menu_items').select('*')
             .eq('location_id', menuKey).eq('archived', false).order('sort_order'),
           supabase.from('config_pushes').select('snapshot->instructionGroupDefs')
             .eq('location_id', menuKey).order('created_at', { ascending: false }).limit(1).maybeSingle(),
+          supabase.from('menus').select('*').eq('location_id', menuKey).order('sort_order'),
+          supabase.from('menu_categories').select('id, menu_id, parent_id').eq('location_id', menuKey),
         ]);
         const iOk = iRes.status === 'fulfilled' && !iRes.value?.error;
         if (!iOk) console.warn('[BookingWidget] menu load failed, choices show without options');
         const defs = pRes.status === 'fulfilled' ? pRes.value?.data?.instructionGroupDefs : null;
-        res = { key: menuKey, items: iOk ? (iRes.value.data || NO_ROWS) : NO_ROWS, instGroupDefs: Array.isArray(defs) ? defs : NO_ROWS, failed: !iOk };
+        const menus = mRes.status === 'fulfilled' && !mRes.value?.error ? (mRes.value.data || NO_ROWS) : NO_ROWS;
+        const cats = cRes.status === 'fulfilled' && !cRes.value?.error ? (cRes.value.data || NO_ROWS) : NO_ROWS;
+        let links = NO_ROWS;
+        if (menus.length) {
+          try {
+            const { data: la } = await supabase.from('menu_category_links').select('menu_id, category_id').in('menu_id', menus.map((m) => m.id));
+            links = la || NO_ROWS;
+          } catch { links = NO_ROWS; }
+        }
+        res = { key: menuKey, items: iOk ? (iRes.value.data || NO_ROWS) : NO_ROWS, instGroupDefs: Array.isArray(defs) ? defs : NO_ROWS, failed: !iOk, menus, cats, links };
       } catch (e) {
         console.warn('[BookingWidget] menu load threw:', e?.message);
       }
@@ -344,7 +360,21 @@ function useGuestMenu(locationId, enabled, optionItemIds) {
     : (!menuRes || menuRes.key !== menuKey) ? 'loading'
       : menuRes.failed ? 'failed' : 'ready';
   const groupMin = !ready ? null : !minKey ? {} : (minRes?.key === minKey ? minRes.groupMin : null);
-  return { status, items, instGroupDefs: ready ? menuRes.instGroupDefs : NO_ROWS, groupMin };
+  // The menu on at the booking's time, on the venue clock (no menus: none, every price as before).
+  const slotDate = slot?.date || null;
+  const slotTime = slot?.time || null;
+  const slotTz = slot?.timezone || 'Europe/London';
+  const menuId = useMemo(() => {
+    if (!ready || !menuRes.menus?.length) return null;
+    const atMs = slotDate && slotTime ? wallTimeToInstantMs(slotDate, slotTime, slotTz) : NaN;
+    try {
+      return resolveActiveMenu({
+        menus: menuRes.menus, categories: menuRes.cats, links: menuRes.links, pinnedMenuId: null, timezone: slotTz,
+        ...(Number.isFinite(atMs) ? { now: new Date(atMs) } : {}),
+      }) || null;
+    } catch { return null; }
+  }, [ready, menuRes, slotDate, slotTime, slotTz]);
+  return { status, items, instGroupDefs: ready ? menuRes.instGroupDefs : NO_ROWS, groupMin, menuId };
 }
 
 // Themed page chrome: brand CSS vars on the root, storefront MenuHeader, one
@@ -477,7 +507,7 @@ function GuestChoiceCards({ party, groups, getSel, onPick, getName, onName, bran
           eightySixIds={NO_ROWS}
           stockLevels={NO_STOCK}
           cart={NO_ROWS}
-          priceFor={choicePriceFor(model, sheet.option.priceOverride, sheet.row, rows)}
+          priceFor={choicePriceFor(model, sheet.option.priceOverride, sheet.row, rows, menu?.menuId || null)}
           lockQty
           addLabel="Save choice"
           notesMax={MAX_CHOICE_NOTE}
@@ -1061,7 +1091,8 @@ function PreorderPage({ token, shell, brand, onBrand, venueName, opsId = null, s
   const seats = Array.from({ length: party }, (_, i) => i + 1);
   // The booking venue's menu, for sizes and options (10 Sep 2026).
   const optionItemIds = groups.flatMap((g) => (g.options || []).map((o) => o.itemId)).filter(Boolean);
-  const guestMenu = useGuestMenu(info?.locationId || opsId, optionItemIds.length > 0, optionItemIds);
+  const guestMenu = useGuestMenu(info?.locationId || opsId, optionItemIds.length > 0, optionItemIds,
+    { date: info?.date || null, time: info?.time || null, timezone: info?.timezone || null });
   // Complete = every guest holds a CURRENT option per group (a saved choice the
   // venue has since removed from the package no longer counts), configured
   // where the dish needs a size or a required option.
@@ -1393,7 +1424,7 @@ export default function BookingWidget({ location }) {
     (selectedPkg && preSel[`${String(selectedPkg.id)}|${seat}|${course}`]) || null;
   // The venue menu, loaded once a selected package has dishes to choose from.
   const optionItemIds = pkgGroups.flatMap((g) => (g.options || []).map((o) => o.itemId)).filter(Boolean);
-  const guestMenu = useGuestMenu(opsId, optionItemIds.length > 0, optionItemIds);
+  const guestMenu = useGuestMenu(opsId, optionItemIds.length > 0, optionItemIds, { date, time, timezone: cfg?.timezone || null });
   const choicesComplete = !choicesNow || pkgGroups.every((g) =>
     Array.from({ length: party }, (_, i) => i + 1)
       .every((s) => choiceComplete(seatSel(s, g.course), g.options, guestMenu)));

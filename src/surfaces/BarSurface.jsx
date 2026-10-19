@@ -21,6 +21,9 @@ import { giftRecordFrom } from '../lib/giftCommit';
 import { singleTender } from '../lib/accounting/tenders';
 import { creditDiscountsFromPayment } from '../lib/taxBasis';
 import { tabBill, tabCloseTax } from '../lib/barTabTax';
+import { tillLineTaxRefs, tillLineTaxFields, tillLineCat, tillLineUnitPrice } from '../lib/tillLine';
+import { resolveItemPrice, variantFromPrice } from '../lib/menuPricing';
+import { resolveActiveMenu } from '../lib/menus/resolveActiveMenu';
 
 const CAT_META = {
   quick:    { icon:'⚡', color:'#e8a020' },
@@ -250,6 +253,24 @@ export default function BarSurface() {
     return () => { alive = false; };
   }, [_locIdForLinks]);
   const _categoryLinks = (_storeLinks && _storeLinks.length) ? _storeLinks : _localLinks;
+  // 19 Oct 2026 (v5.11.78, channel parity): the menu a bar tab PRICES on is the one the till's own
+  // resolver picks for this device (POSSurface does exactly this: the device pin on its schedule,
+  // else the timed or default menu, on the venue clock, re-read every minute), and it is mirrored
+  // into the store so the size buttons show it too. A tab used to charge the base price whatever
+  // menu was on (a Half on the Bar menu: 2.85 on a tab, 1.23 at the counter). Which categories the
+  // bar SHOWS is unchanged (the pinned menu's, or every category).
+  const [_barClock, _setBarClock] = useState(0);
+  useEffect(() => { const t = setInterval(() => _setBarClock((n) => n + 1), 60_000); return () => clearInterval(t); }, []);
+  const _barTz = useStore(s => s.locationConfig?.timezone) || 'Europe/London';
+  const barMenuId = useMemo(() => resolveActiveMenu({
+    menus,
+    categories: menuCategories,
+    links: _categoryLinks,
+    pinnedMenuId: deviceConfig?.menuId,
+    timezone: _barTz,
+  }), [menus, deviceConfig?.menuId, menuCategories, _categoryLinks, _barClock, _barTz]); // eslint-disable-line react-hooks/exhaustive-deps
+  const _setActiveMenuId = useStore(s => s.setActiveMenuId);
+  useEffect(() => { if (_setActiveMenuId) _setActiveMenuId(barMenuId); }, [barMenuId, _setActiveMenuId]);
   // v5.6.97: membership logic extracted to lib/menuMembership.js so the POS
   // grid and bar tabs share ONE mechanism (this inline filter was the original).
   const linkedCatIds = useMemo(() => linkedCategoryIdSet(_categoryLinks, deviceMenuId), [_categoryLinks, deviceMenuId]);
@@ -277,10 +298,15 @@ export default function BarSurface() {
   const roundCount = roundItems.reduce((s,i)=>s+i.qty,0);
 
   const addToRound = (item, mods=[], opts={}) => {
-    // price: linePrice override → flat price → pricing.base → 0 (never NaN)
-    const price = opts.linePrice!=null
-      ? opts.linePrice/(opts.qty||1)
-      : (item.price ?? item.pricing?.base ?? item.pricing?.dineIn ?? 0);
+    // 19 Oct 2026 (v5.11.78, channel parity): the till's own line rules (lib/tillLine.js, the
+    // calls store.addItem makes). Price: cartUnitPrice for a bar tab (eat in) on the bar's menu,
+    // the option surcharge stacked on it (InlineItemFlow and ProductModal hand the till's
+    // linePrice shape); a base only row with no tier gives exactly the price it gave before.
+    // Tax: the size rule and this venue's rates, so a zero rated or reduced rate item, and the
+    // Bar override set in Back Office, are booked on a tab as at the counter (tab lines carried
+    // no tax references, so every line took the venue default). Category: a size's product's.
+    const price = tillLineUnitPrice(item, 'bar-tab', barMenuId, opts.linePrice ?? null, opts.qty || 1);
+    const taxFields = tillLineTaxFields(tillLineTaxRefs(item, storeMenuItems || [], useStore.getState().taxRates));
     // name: ALL possible name fields resolved in order
     const name = opts.displayName
       || item.menuName
@@ -300,7 +326,8 @@ export default function BarSurface() {
       // Triple-naming: carry explicit kitchen/receipt names onto the round line
       // (null when not set) — addRoundToTab's KDS tickets read kitchenName ||
       // name, receipts read receiptName || name.
-      return [...prev, { uid:`r${Date.now()}`, itemId:item.id, name, kitchenName:kitchenOverride(item), receiptName:receiptOverride(item), price, qty:opts.qty||1, mods, notes:opts.notes||'', allergens:item.allergens||[] }];
+      return [...prev, { uid:`r${Date.now()}`, itemId:item.id, name, kitchenName:kitchenOverride(item), receiptName:receiptOverride(item), price, qty:opts.qty||1, mods, notes:opts.notes||'', allergens:item.allergens||[],
+        cat: tillLineCat(item, storeMenuItems || []), parentId: item.parentId || null, ...taxFields }];
     });
     showToast(`${name} added to round`,'success');
   };
@@ -406,8 +433,13 @@ export default function BarSurface() {
   // exact pre-v5.9.12 call. `tax` is the full breakdown (even inclusive-only,
   // for the checkout screen's VAT lines) under the name CheckoutModal's taxFor reads.
   // (27 Sep 2026: the maths moved, unchanged, to lib/barTabTax.js tabBill so it is tested.)
+  // 19 Oct 2026 (v5.11.78, channel parity): with the venue's automatic deals ('pos' rules, as at
+  // the counter and a table), so a tab is charged and booked what the till would charge.
   const tabBillWithTax = (tab, creditDiscounts = []) =>
-    tabBill(tab, useStore.getState().getTaxContext(), creditDiscounts);
+    tabBill(tab, useStore.getState().getTaxContext(), creditDiscounts, {
+      discountRules: useStore.getState().discountRules,
+      timezone: useStore.getState().locationConfig?.timezone,
+    });
 
   // Build + record a bar-tab closed check. Shared by the fresh-tender checkout
   // AND the held-card capture so the row shape is identical either way.
@@ -418,7 +450,11 @@ export default function BarSurface() {
     // credits, so it books the tax it charged. 27 Sep 2026: UK inclusive VAT too
     // (a UK tab booked tax_amount null), through computeCheckTotals like every till close.
     const bill = tabBillWithTax(tab, creditDiscountsFromPayment(payInfo));
-    const recTax = tabCloseTax(allItems, useStore.getState().getTaxContext(), { bill, paymentInfo: payInfo });
+    const recTax = tabCloseTax(allItems, useStore.getState().getTaxContext(), {
+      bill, paymentInfo: payInfo,
+      discountRules: useStore.getState().discountRules,
+      timezone: useStore.getState().locationConfig?.timezone,
+    });
     recordWalkInClosedCheck({
       // v5.5.902: adopt CheckoutModal's pre-minted check id when it sent one — it is the
       // id the gift-card debit was keyed to, so a later refund can find the ledger row.
@@ -432,7 +468,9 @@ export default function BarSurface() {
       orderType: 'bar-tab',
       customer: { name: tab.name },
       items: allItems,
-      discounts: [],
+      // 19 Oct 2026 (v5.11.78): the automatic deal lines the bill took off, in the till's shape,
+      // so net (subtotal less discounts) matches the counter (store recordWalkInClosed).
+      discounts: bill.autoDiscounts || [],
       subtotal,
       service: 0,
       tip: payInfo?.tip || 0,
@@ -460,7 +498,10 @@ export default function BarSurface() {
         || (payInfo?.stripePaymentIntentId
             ? [{ id: payInfo.stripePaymentIntentId, amountMinor: Math.round((payInfo?.grand || subtotal || 0) * 100) }]
             : null),
-    });
+    // 19 Oct 2026 (v5.11.78, channel parity): the checkout's promo code (and any staged reward)
+    // is committed against this check, as at the counter and a table. A code taken on a tab was
+    // never redeemed: the customer had the discount and the code stayed usable.
+    }, payInfo || {});
     closeTab(tab.id);
     setActiveTab(null);
   };
@@ -890,8 +931,8 @@ export default function BarSurface() {
             {displayItems.map(item=>{
               const storeCat = (menuCategories||[]).find(c=>c.id===item.cat); const m={color:storeCat?.color||'var(--acc)',icon:storeCat?.icon||'🍸'};
               const is86=eightySixIds.includes(item.id);
-              const variantKids = (storeMenuItems||MENU_ITEMS).filter(i => (i.parentId || i.parent_id) === item.id && !i.archived);
-              const fromPrice=item.type==='variants'&&variantKids.length?Math.min(...variantKids.map(v=>v.pricing?.base??v.price??0)):(item.pricing?.base??item.price??0);
+              // 19 Oct 2026 (v5.11.78): the tile shows the price the tab charges (the till's helpers).
+              const fromPrice = variantFromPrice(item, storeMenuItems || MENU_ITEMS, 'bar-tab', barMenuId) ?? resolveItemPrice(item, 'bar-tab', barMenuId);
               const inRound=roundItems.filter(r=>r.itemId===item.id).reduce((s,r)=>s+r.qty,0);
               return(
                 <button key={item.id} onClick={()=>handleItemTap(item)} style={{
@@ -960,6 +1001,9 @@ export default function BarSurface() {
           <CheckoutModal
             items={allItems}
             subtotal={subtotal}
+            // 19 Oct 2026 (v5.11.78): the goods after the venue's automatic deals, as the till's
+            // tipBasis (a tip % and a promo code apply to it, lib/promoBasis.js).
+            tipBasis={Math.max(0, subtotal - (bill.autoDiscounts || []).reduce((s0, d) => s0 + (Number(d.value) || 0), 0))}
             service={0}
             total={bill.total}
             taxFor={(credits) => tabBillWithTax(activeTab, credits)}

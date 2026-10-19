@@ -23,8 +23,11 @@ import AddressAutocomplete from '../../components/AddressAutocomplete';
 import { commitRedemption } from '../../lib/commitRedemptions';
 import { tipRuleFromCatering, tipChips, tipInitialKey, tipAmount as calcTip } from '../../lib/tipping';
 import { wallTimeToInstantMs, cateringPrepMinutes, cateringFireMs } from '../../lib/cateringRules';
-import { singleTender } from '../../lib/accounting/tenders';
+import { tender, finishTenders } from '../../lib/accounting/tenders';
 import { writeClosedCheckRow } from '../../lib/closedCheckWrite';
+import { foldLineMods } from '../../lib/channelMoney';
+import { attributeOnlineOrder } from '../../lib/customerLookup';
+import { chooseTrackKey, afterPlaced } from '../../lib/publicOrder';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 const money = (n, cur) => `${({ gbp: '£', usd: '$', eur: '€' }[cur] || '£')}${Number(n || 0).toFixed(2)}`;
@@ -43,7 +46,7 @@ const center = { maxWidth: 640, margin: '0 auto', padding: '0 16px' };
 const lbl = { display: 'block', fontSize: 12, fontWeight: 700, color: '#475569', marginBottom: 5 };
 const inp = { width: '100%', boxSizing: 'border-box', border: '1px solid #cbd5e1', borderRadius: 10, padding: '9px 12px', fontSize: 14, fontFamily: 'inherit' };
 
-export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx = null, theme, cur, fulfilment, eventDate, eventTime, subtotal, onBack }) {
+export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx = null, theme, cur, fulfilment, eventDate, eventTime, subtotal, menuId = null, onBack }) {
   const opsId = location.ops_location_id || location.id;
   const platformLocationId = location.id;
   const [name, setName] = useState(''); const [phone, setPhone] = useState(''); const [email, setEmail] = useState('');
@@ -127,7 +130,10 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
   // deducted. The ref stays in front because a human reads the ledger's order_id in Back Office
   // → Promotions; the UUID is what makes it unique.
   const checkId = useMemo(() => `chk-${ref}-${wideId()}`, [ref]);
-  const buildItems = () => cart.map((l) => ({ itemId: l.itemId, name: l.name, price: l.price, qty: l.qty || 1, mods: l.mods || [], notes: l.notes || '', cat: l.cat || null, cats: l.cats || null, parentId: l.parentId || null, kitchenName: l.kitchenName || null, receiptName: l.receiptName || null, status: 'received', fired: false, course: 1 }));
+  // 19 Oct 2026 (v5.11.78, channel parity): each line keeps the tax references it was added with
+  // (the till's size rule, lib/taxRefs.js), so a pay later order paid at the till books the same
+  // VAT as pay now (the till taxed a zero rated line at the default: 10.00 against 0).
+  const buildItems = () => cart.map((l) => ({ itemId: l.itemId, name: l.name, price: l.price, qty: l.qty || 1, mods: l.mods || [], notes: l.notes || '', cat: l.cat || null, cats: l.cats || null, parentId: l.parentId || null, kitchenName: l.kitchenName || null, receiptName: l.receiptName || null, taxRateId: l.taxRateId || null, taxOverrides: l.taxOverrides || {}, taxProfileId: l.taxProfileId || null, status: 'received', fired: false, course: 1 }));
   const buildCustomer = (pay) => ({
     name: name.trim(), phone: phone.replace(/\s+/g, ''), email: email.trim() || null,
     ...(isDelivery ? { address: { line1: addr1.trim(), postcode: postcode.trim().toUpperCase(), ...(addrGeo ? { lat: addrGeo.lat, lng: addrGeo.lng } : {}) } } : {}),
@@ -182,7 +188,9 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
       }).catch(() => {});
     }
   };
-  const discountLine = promoApplied ? [{ type: 'promo', code: promoApplied.code, label: promoApplied.name, amount: promoApplied.amount }] : [];
+  // The promo's line for the receipt and the server's proof of the code (_public_order_declared);
+  // since v5.11.78 the money is its promo TENDER below, as on the till, kiosk and online.
+  const discountLine = promoApplied ? [{ type: 'promo', source: 'promo', code: promoApplied.code, label: promoApplied.name, amount: promoApplied.amount }] : [];
   // v5.5.653: log the delivery quote + surcharge for margin reporting (best-effort). The
   // courier itself is dispatched at FIRE time (releaseDueCateringOrders), not now.
   const logDeliverySurcharge = () => {
@@ -227,7 +235,9 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
       // Database fence stage 1 (contract C11): one server call (no payment was taken).
       // FENCE STAGE 1 FALLBACK: the direct insert, only while place_public_order does not exist.
       const placed = await placePublicOrder({
-        opsLocationId: opsId, order: cateringRow,
+        // 19 Oct 2026 (v5.11.78): the catering menu these prices came from (lib/cateringPricing.js),
+        // on the RPC payload only (order_queue has no such column), as online sends its menu.
+        opsLocationId: opsId, order: { ...cateringRow, menu_id: menuId || null },
         legacyInsert: async () => {
           const { error } = await supabase.from('order_queue').insert(cateringRow);
           return error ? { ok: false, error } : { ok: true };
@@ -283,9 +293,15 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
       const closedAt = isNaN(eventMs) ? new Date().toISOString() : new Date(eventMs).toISOString();
       const closedCheck = {
         id: checkId, ref, location_id: opsId, server: 'Catering', staff_id: null, covers: 1,
-        order_type: fulfilment, customer: buildCustomer(pay), items: buildItems().map((i) => ({ ...i, voided: false })), discounts: discountLine,
-        subtotal, service: deliveryFee, tip, total, method: 'card',
-        tenders: singleTender('card', total, tip, { pspRef: payId, processor }),   // v5.9.11
+        // 19 Oct 2026 (v5.11.78, channel parity): the lines in the till's contract (options inside
+        // the price, as the server books them since 20261019a). The delivery fee is the order's
+        // delivery fee (customer.delivery_fee) and never the service charge: it was booked in
+        // BOTH, so reports read it as Delivery AND as Service, the server's clamp booked the tip as
+        // service, and the receipt showed a service charge nobody paid. The promo code is a promo
+        // tender beside the card, as online books it, so the VAT is on the goods as the till books it.
+        order_type: fulfilment, customer: buildCustomer(pay), items: foldLineMods(buildItems()).map((i) => ({ ...i, voided: false })), discounts: discountLine,
+        subtotal, service: 0, tip, total, method: 'card',
+        tenders: finishTenders([tender('promo', discount), tender('card', Math.max(0, total - tip), tip, { pspRef: payId, processor })]),   // v5.9.11
         // 2 Oct 2026: tax_amount in pence and the tax record by rate whenever a rate was resolved,
         // UK included (lib/publicCheckTax.js; the raw figure was read as 0 by the server).
         ...publicCheckTaxFields(taxBk),
@@ -296,7 +312,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
       // so the order is never dropped: without proof it is placed unpaid for the venue to confirm.
       const proof = await proofPromise;
       const placed = await placePublicOrder({
-        opsLocationId: opsId, order: cateringPaidRow, check: closedCheck,
+        opsLocationId: opsId, order: { ...cateringPaidRow, menu_id: menuId || null }, check: closedCheck,
         proofIds: proof.proofId ? [proof.proofId] : [],
         proofUnavailable: !!proof.unavailable, moneyTaken: true,
         // Fix round (C17): an order the server could not prove yet is checked again in the background.
@@ -322,6 +338,16 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
       }
       logDeliverySurcharge();
       redeemPromo(ref);
+      // 19 Oct 2026 (v5.11.78, channel parity): the customer record and loyalty, as online and QR
+      // do (pay now only: a pay later order is attributed by the till when it is paid there).
+      // afterPlaced: the order is saved and paid, so nothing here may throw into the catch below.
+      afterPlaced('CateringCheckout attribute', () => attributeOnlineOrder({
+        phone: phone.replace(/\s+/g, ''), name: name.trim(), email: email.trim() || null,
+        marketingOptIn: false,
+        locationId: opsId,
+        orderRecord: { ref, checkId, total: Math.max(0, subtotal - discount), items: buildItems(), type: fulfilment, channel: 'catering' },
+        trackKey: chooseTrackKey({ trackToken: placed?.trackToken, paymentIntentId: payId, phone }),
+      }));
       // Email the customer their confirmation/receipt (best-effort; never blocks the
       // on-screen confirmation). Reuses the receipt pipeline; the just-inserted
       // closed_checks row clears the send-receipt tenant fence via check_id.
@@ -331,7 +357,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
           to: toEmail, locationId: opsId, locationLabel: location.name,
           check: {
             id: closedCheck.id, ref, items: closedCheck.items, customer: closedCheck.customer,
-            closedAt: closedAt, total, method: 'card', service: deliveryFee, tip,
+            closedAt: closedAt, total, method: 'card', service: 0, tip,
             discountAmount: discount, taxAmount: taxBk?.totalTax || 0, taxBreakdown: taxBk, server: 'Catering',
           },
         }).catch(() => { /* best-effort; on-screen confirmation already shown */ });

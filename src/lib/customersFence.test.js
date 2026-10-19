@@ -54,7 +54,8 @@ test('attribution goes through the server, and its answer is final', () => {
   assert.match(fn, /if \(serverDidIt\) \{[\s\S]{0,400}return customerId;/);
   // the welcome and the loyalty earn still happen on both paths
   assert.match(fn, /sendWelcomeFor\(customerId, locationId\)/);
-  assert.match(fn, /earnForOnlineOrder\(\{ customerId, locationId, orderRecord, memberToken, memberCustomerId \}\)/);
+  // 19 Oct 2026 (v5.11.78): and the order's own key, so a guest earns like a till customer.
+  assert.match(fn, /earnForOnlineOrder\(\{ customerId, locationId, orderRecord, memberToken, memberCustomerId, orderKey: trackKey \}\)/);
 });
 
 test('every checkout sends the key that proves it placed the order', () => {

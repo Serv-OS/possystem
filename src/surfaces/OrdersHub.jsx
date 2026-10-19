@@ -27,7 +27,8 @@ import { getDeliveryDetail } from '../lib/delivery/deliveryConfig';
 import { dispatchDelivery, sendDeliveryTrackingSMS } from '../lib/delivery/dispatch';
 import { statusLabel, statusColor, statusIcon } from '../lib/delivery/status';
 import { courierPhase, courierLegs, courierLateness } from '../lib/delivery/courierTimes';
-import { buildChannelCloseFields } from '../lib/channelMoney';
+import { buildChannelCloseFields, foldLineMods } from '../lib/channelMoney';
+import { placedOrderForTill } from '../lib/orderPlacedFrom';
 import { cardLegTenders, singleTender } from '../lib/accounting/tenders';
 import { writeClosedCheckRow } from '../lib/closedCheckWrite';
 import CourierTrackingQR from '../components/CourierTrackingQR';
@@ -43,7 +44,7 @@ import {
 // Database fence stage 1, fix round 2: writes that must change a row are counted and kept while
 // this till is not linked; no card capture starts on a till that is not linked.
 import { mustChangeRow, mustChangeRows } from '../lib/rowWrites';
-import { qrCloseTax } from '../lib/headlessTax';
+import { qrCloseTax, qrTabService } from '../lib/headlessTax';
 import { taxCtxHasConfig } from '../lib/taxCompute';
 import { confirmLinkBeforeCard } from '../lib/deviceLink';
 import { holdPaymentBusy } from '../lib/paymentBusy';
@@ -800,10 +801,13 @@ export default function OrdersHub() {
       let closedCheckError = null;
       try {
         const tabTip = +(tab.rows || []).reduce((t, r) => t + (Number(r?.customer?.tip) || 0), 0).toFixed(2);
+        // 19 Oct 2026 (v5.11.78, channel parity): the QR service charge the rounds took is booked as
+        // service (headlessTax.qrTabService), never as goods with VAT on it.
+        const tabService = qrTabService(tab.rows);
         const tabProcessor = tab.firstRow?.customer?.processor || (isRyft ? 'ryft' : 'stripe');
         // 27 Sep 2026: the VAT on what this close took (tax_amount was null). A capture short of the
         // bill books only its share; QR round totals include any added-on (US) tax, taken out of subtotal.
-        const qrTax = qrCloseTax(tab.allItems, qrTaxCtx(), { paidGoods: totalCollected - tabTip - surcharge });
+        const qrTax = qrCloseTax(tab.allItems, qrTaxCtx(), { paidGoods: totalCollected - tabTip - surcharge - tabService });
         const { error: ccErr } = await writeClosedCheckRow(supabase, {
           id: `chk-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
           ref: tab.firstRow?.ref || tab.payment_intent_id,
@@ -820,13 +824,15 @@ export default function OrdersHub() {
             overage_outstanding: overageError ? +(finalTotal - totalCollected).toFixed(2) : 0,
             overage_error: overageError || null,
           },
-          items: tab.allItems.map(i => ({ ...i, voided: false })),
+          // 19 Oct 2026 (v5.11.78): stored in the till's line contract, options inside the price
+          // (channelMoney.foldLineMods), so every report and a part refund read the whole line.
+          items: foldLineMods(tab.allItems).map(i => ({ ...i, voided: false })),
           discounts: [],
           // v5.8.9: each round carries customer.tip and its total INCLUDES it.
           // Booking tab.total as subtotal with tip: 0 charged the guest a tip
           // the venue then kept as sales. Split it back out.
-          subtotal: +(tab.total - tabTip - qrTax.exclusiveTax).toFixed(2),
-          service: surcharge,
+          subtotal: +(tab.total - tabTip - tabService - qrTax.exclusiveTax).toFixed(2),
+          service: +(surcharge + tabService).toFixed(2),
           tip: tabTip, tax_amount: qrTax.taxAmount,
           ...(qrTax.taxBreakdown ? { tax_breakdown: qrTax.taxBreakdown } : {}),
           total: totalCollected,
@@ -1014,7 +1020,8 @@ export default function OrdersHub() {
         // 27 Sep 2026: the VAT on what the hold took (tax_amount was null); a capture capped below
         // the bill books only its share. QR totals include any added-on (US) tax, taken out of subtotal.
         const qrTip = Number(o.customer?.tip) || 0;
-        const qrTax = qrCloseTax(o.items, qrTaxCtx(), { paidGoods: captureAmount - qrTip - surcharge });
+        const qrService = qrTabService([o]);   // 19 Oct 2026 (v5.11.78): the round's QR service charge is service
+        const qrTax = qrCloseTax(o.items, qrTaxCtx(), { paidGoods: captureAmount - qrTip - surcharge - qrService });
         const { error: ccErr } = await writeClosedCheckRow(supabase, {
           id: `chk-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
           ref: o.ref,
@@ -1023,10 +1030,10 @@ export default function OrdersHub() {
           covers: 1,
           order_type: 'dine-in',
           customer: { ...o.customer, tab_closed_at: new Date().toISOString(), surcharge_applied: surcharge },
-          items: (o.items || []).map(i => ({ ...i, voided: false })),
+          items: foldLineMods(o.items || []).map(i => ({ ...i, voided: false })),   // 19 Oct 2026: the till's line contract
           discounts: [],
-          subtotal: +((Number(o.total) || 0) - qrTip - qrTax.exclusiveTax).toFixed(2),   // v5.8.9: o.total includes the tip
-          service: surcharge,                 // surface the auto-surcharge in the service line
+          subtotal: +((Number(o.total) || 0) - qrTip - qrService - qrTax.exclusiveTax).toFixed(2),   // v5.8.9: o.total includes the tip
+          service: +(surcharge + qrService).toFixed(2),   // the auto-surcharge and the round's QR service charge
           tip: qrTip, tax_amount: qrTax.taxAmount,
           ...(qrTax.taxBreakdown ? { tax_breakdown: qrTax.taxBreakdown } : {}),
           total: captureAmount,                // what was actually charged
@@ -1139,11 +1146,19 @@ export default function OrdersHub() {
       // walk-in slot so the POS actually shows the items. Previously this branch
       // only called setSurface('pos') which left walkInOrder null, so the POS
       // rendered an empty cart every time.
+      // 19 Oct 2026 (v5.11.78, channel parity): an order a customer page placed (catering pay
+      // later, an unpaid online or QR order) is charged at the till what the customer agreed:
+      // its lines in the till's contract (options inside the price, channelMoney.foldLineMods;
+      // the till's bill reads price x qty, so a 30.00 platter with a 10.00 option charged 30.00),
+      // its own delivery fee (orderPlacedFrom.js, never a fresh quote that can differ or fail),
+      // and its promo code, already used when it was placed, as the discount it was.
+      const placed = placedOrderForTill(o);
       useStore.setState({
         walkInOrder: {
           id: `ORD-${(o.ref||'').replace('#','')}`,
           ref: o.ref,
-          items: o.items || [],
+          items: placed.items,
+          ...(placed.discounts.length ? { discounts: placed.discounts } : {}),
           sentAt: o.sentAt,
           total: o.total,
           isASAP: o.isASAP,
@@ -1159,6 +1174,8 @@ export default function OrdersHub() {
         // fall through to the 'dine-in' default.
         orderType: o._raw?.type || o.type || 'dine-in',
         activeTableId: null,
+        // The order's own delivery fee (or none): never a quote left over from the last sale.
+        deliveryQuote: placed.deliveryQuote,
       });
       setSurface('pos');
     }

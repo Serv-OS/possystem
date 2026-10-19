@@ -26,6 +26,7 @@ import { writeClosedCheckRow } from '../../lib/closedCheckWrite';
 import { requestPaymentProof, settleQrTab } from '../../lib/publicOrderClient';
 import { tabCloseRefusalMessage } from '../../lib/publicOrder';
 import { qrTabCloseFields, qrTabSettleVat } from '../../lib/headlessTax';
+import { foldLineMods } from '../../lib/channelMoney';
 import { taxCtxHasConfig } from '../../lib/taxCompute';
 import VatGateNotice from '../online/VatGateNotice';
 
@@ -197,12 +198,14 @@ export default function TabResumeScreen({
             covers: 1,
             order_type: 'dine-in',
             customer: { ...(rounds?.[0]?.customer || {}), tab_closed_at: new Date().toISOString() },
-            items: allItems.map(i => ({ ...i, voided: false })),
+            // 19 Oct 2026 (v5.11.78, channel parity): the till's line contract (options inside the
+            // price, channelMoney.foldLineMods), and the rounds' QR service charge as service.
+            items: foldLineMods(allItems).map(i => ({ ...i, voided: false })),
             discounts: [],
             // v5.8.9: runningTotal includes each round's tip (customer.tip). Book it as a tip.
             // 27 Sep 2026: and its VAT (it booked null); added-on tax comes out of subtotal.
             subtotal: vat.subtotal,
-            service: 0, tip: tabTip, tax_amount: vat.taxAmount,
+            service: vat.service, tip: tabTip, tax_amount: vat.taxAmount,
             ...(vat.taxBreakdown ? { tax_breakdown: vat.taxBreakdown } : {}),
             total: runningTotal,
             method: 'card',

@@ -29,6 +29,8 @@
 
 import { computeOrderTaxUnified, taxCtxHasConfig } from './taxCompute.js';
 import { roundVat, NOT_IN_MENU } from './taxRule.js';
+import { lineTaxRefsFor } from './taxRefs.js';
+import { inclusiveTaxOnCharged } from './taxShare.js';
 
 /** Modifier total for one line, per unit — includes modifier quantity. */
 export const modsTotal = (mods) =>
@@ -37,6 +39,37 @@ export const modsTotal = (mods) =>
 /** Gross for one line including modifiers. */
 export const lineGross = (it) =>
   (Number(it.qty) || 1) * ((Number(it.price) || 0) + modsTotal(it.mods));
+
+/**
+ * 19 Oct 2026 (v5.11.78, channel parity): THE line contract every booked check follows is the
+ * till's. A line's `price` INCLUDES its paid options (store addItem, cartUnitPrice) and each option
+ * keeps its own price for display (receipts and the Product mix modifier table read them; 6,300
+ * till, kiosk and reader checks with paid options are stored this way). Queue rows from the
+ * customer pages (online, QR, catering) arrive base price plus priced options. Writing them raw
+ * split closed_checks into two conventions: the daily VAT check, the save guard, the Tax and Z
+ * report split by rate, a part refund and the till's cart all read price x qty, so 12 QR and 1
+ * online check with paid options read their lines WITHOUT the options (a 4.00 latte with a 0.70
+ * syrup derived 0.67 of VAT where 0.78 was booked, and the daily check told the owner the VAT was
+ * wrong). The server books public checks the same way since migration 20261019a.
+ *
+ * This folds the options into the price ONCE and leaves each option's price in place, marking the
+ * line `_modsFolded` so it is never folded twice. Same array back when no line has priced
+ * options. Never pass a till line through it (already folded, options priced, no marker): it would
+ * count them twice. Callers fold only the items they SAVE (or put in the till's cart), after any
+ * VAT has been worked out from the raw lines (those maths add the options themselves).
+ */
+export function foldLineMods(items) {
+  if (!Array.isArray(items)) return items;
+  let changed = false;
+  const out = items.map((i) => {
+    if (!i || typeof i !== 'object' || i._modsFolded) return i;
+    const extra = modsTotal(i.mods);
+    if (!(extra > 0)) return i;
+    changed = true;
+    return { ...i, price: +(((Number(i.price) || 0) + extra).toFixed(2)), _modsFolded: true };
+  });
+  return changed ? out : items;
+}
 
 /** Charge classification. HubRise charge types are free-ish ('delivery'|'tip'|'other'…)
  *  and channels often send type 'other' with a descriptive name — classify on both. */
@@ -92,6 +125,11 @@ export function buildChannelCloseFields(order, { menuItems = [], taxRates = [], 
   const hrOrderType = channelOrderTypeForTax(svc);
   const taxItems = items.map(it => {
     const mi = menuItems.find(m => m.id === (it.itemId || it.id));
+    // 19 Oct 2026 (v5.11.78, channel parity): a matched line carries the till's own tax
+    // references (lib/taxRefs.js): a size with no VAT of its own follows its product, exactly as
+    // store addItem does. This read the size row alone, so a Deliveroo size on "Use default"
+    // under a 5% product booked the venue's 20%, and nothing corrected it.
+    const refs = mi ? lineTaxRefsFor(mi, menuItems) : null;
     return {
       price: Number(it.price) || 0,   // already folded above — mods inherit the line's rate
       qty: Number(it.qty) || 1,
@@ -104,9 +142,9 @@ export function buildChannelCloseFields(order, { menuItems = [], taxRates = [], 
       // refs carry NO itemId/cat so no profile can ever apply to them either.
       itemId: mi ? mi.id : null,
       cat: mi ? (mi.cat ?? (Array.isArray(mi.cats) ? mi.cats[0] : null)) : null,
-      taxProfileId: mi ? (mi.taxProfileId ?? mi.tax_profile_id ?? null) : null,
-      taxRateId: mi ? (mi.taxRateId ?? null) : NOT_IN_MENU,
-      taxOverrides: mi?.taxOverrides || {},
+      taxProfileId: refs ? refs.taxProfileId : null,
+      taxRateId: refs ? refs.taxRateId : NOT_IN_MENU,
+      taxOverrides: refs ? refs.taxOverrides : {},
       // So a fallback note names the channel line (its own id and name, not our item's).
       lineId: it.uid ?? it.id ?? it.itemId ?? null,
       name: it.name ?? null,
@@ -120,7 +158,18 @@ export function buildChannelCloseFields(order, { menuItems = [], taxRates = [], 
   if (taxCtxHasConfig(ctx)) {
     // v5.7.34: through the unified seam — legacy-equivalent venues get
     // calculateOrderTax byte-identical; profile venues get the cascade.
-    try { taxBreakdown = computeOrderTaxUnified(taxItems, ctx, hrOrderType); } catch { /* conservative: null */ }
+    // 19 Oct 2026 (v5.11.78, channel parity): the till's basis rule (payments/checkTotals.js).
+    // The channel's discounts, its service type charges and its delivery fee are the check
+    // basis, so added on (US) tax follows the discount and taxes a bag or service fee where the
+    // line's profile says so (the till does); and UK inclusive VAT is the share of the goods
+    // actually charged (taxShare.inclusiveTaxOnCharged), exactly as the till books a discounted
+    // bill. Before, a 2.11 Deliveroo offer on 10.55 booked 1.76 VAT where the till books 1.41,
+    // and the daily VAT check then named the sale. With no discount the record is the same
+    // object as before (share 1), and UK VAT never reads the service or delivery basis.
+    try {
+      taxBreakdown = computeOrderTaxUnified(taxItems, ctx, hrOrderType, { discounts, service, deliveryFee });
+      taxBreakdown = inclusiveTaxOnCharged(taxBreakdown, subtotal, Math.max(0, subtotal - discountTotal));
+    } catch { /* conservative: null */ }
   }
 
   // Paid/due — from the decoded channel payments, same rule as the queue decode.

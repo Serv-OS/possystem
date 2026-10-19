@@ -229,9 +229,23 @@ export function giftLegsMinor(giftCard) {
  * card and card) add up to its total and the VAT is against the total.
  * A £100 bill with a £96 prepay and £4 on the reader books 10000, not 400.
  */
-export function closerGrandMinor({ chargeMinor = 0, priorChargeMinor = 0, bookingPayment = null, giftCard = null } = {}) {
+export function closerGrandMinor({ chargeMinor = 0, priorChargeMinor = 0, bookingPayment = null, giftCard = null, creditMinor = 0 } = {}) {
   return (Number(chargeMinor) || 0) + (Number(priorChargeMinor) || 0)
-    + bookingLegsMinor(bookingPayment) + giftLegsMinor(giftCard);
+    + bookingLegsMinor(bookingPayment) + giftLegsMinor(giftCard) + Math.max(0, Number(creditMinor) || 0);
+}
+
+/**
+ * 19 Oct 2026 (v5.11.78, channel parity): the loyalty reward and promo code credits the till's
+ * checkout took off before it sent the card job (CheckoutModal freezes the staged objects into the
+ * draft, as it freezes the gift card). In pence: { loyaltyMinor, promoMinor }. The till books
+ * them as loyalty and promo tenders on a gross total; a check the reconciler books now does the
+ * same, so its total, tenders and the reward's commit match the till's own close (a reader sale
+ * closed by the reconciler lost both and booked only the card money: subtotal 8.20, total 4.60).
+ */
+export function closerCreditsMinor({ loyaltyRedemption = null, promoRedemption = null } = {}) {
+  const loyaltyMinor = Math.max(0, Math.round(Number(loyaltyRedemption?.discount_value) || 0));
+  const promoMinor = Math.max(0, Math.round((Number(promoRedemption?.amount) || 0) * 100));
+  return { loyaltyMinor, promoMinor, creditMinor: loyaltyMinor + promoMinor };
 }
 
 /**
@@ -241,9 +255,9 @@ export function closerGrandMinor({ chargeMinor = 0, priorChargeMinor = 0, bookin
  * money the card never took (left out, the record falls back to the whole total on one id).
  * Otherwise null: the record derives the one card leg from the total, as before.
  */
-export function closerCardIntents({ legIntents = null, transactionId = null, chargeMinor = 0, bookingPayment = null, giftCard = null } = {}) {
+export function closerCardIntents({ legIntents = null, transactionId = null, chargeMinor = 0, bookingPayment = null, giftCard = null, creditMinor = 0 } = {}) {
   if (Array.isArray(legIntents) && legIntents.length) return legIntents;
-  const other = bookingLegsMinor(bookingPayment) + giftLegsMinor(giftCard);
+  const other = bookingLegsMinor(bookingPayment) + giftLegsMinor(giftCard) + Math.max(0, Number(creditMinor) || 0);
   if (other > 0 && transactionId) return [{ id: transactionId, amountMinor: Number(chargeMinor) || 0 }];
   return null;
 }

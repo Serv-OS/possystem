@@ -41,11 +41,12 @@
 //
 // PURE: imports only accountingDay.js (pure as well); runs under node --test and in Deno.
 
-import { checkTenderParts, refundParts, isVoidedCheck, MONEY_KINDS, toMinor, checkTaxRecorded } from './accountingDay.js';
+import { checkTenderParts, refundParts, isVoidedCheck, MONEY_KINDS, toMinor, checkTaxRecorded, moneyDiscounts } from './accountingDay.js';
 
-/** The check's recorded discounts (closed_checks.discounts[].amount, major units) in minor units. */
+/** The check's recorded discounts (closed_checks.discounts[].amount, major units) in minor units.
+ *  19 Oct 2026 (v5.11.78): a promo code paid as a tender is not counted again (moneyDiscounts). */
 export function recordedDiscountMinor(row) {
-  const list = Array.isArray(row?.discounts) ? row.discounts : [];
+  const list = moneyDiscounts(row);
   return list.reduce((s, d) => s + Math.max(0, toMinor(d?.amount)), 0);
 }
 
