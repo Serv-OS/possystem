@@ -42,7 +42,8 @@ export default function Batches() {
     const { data } = await fetchBatches(loc, 300);
     setQueue(data || []);
   };
-  useEffect(() => { loadQueue(); /* eslint-disable-next-line */ }, []);
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { loadQueue(); }, []);
   const doComplete = async () => {
     if (!completing || !(Number(actualIn) > 0)) return;
     const { error } = await completePlannedBatch(completing.id, Number(actualIn));
@@ -122,7 +123,8 @@ export default function Batches() {
     setRecipes((recs || []).filter(r => r.recipeType !== 'MENU' && r.outputItemId));
     setItems(its || []); setCtx(c); setBatches(bs || []); setLoading(false);
   }, [locId]);
-  useEffect(() => { reload(); /* eslint-disable-next-line */ }, []);
+  // eslint-disable-next-line react-hooks/set-state-in-effect, react-hooks/exhaustive-deps
+  useEffect(() => { reload(); }, []);
 
   const itemName = useCallback((id) => items.find(i => i.id === id)?.name || '—', [items]);
   const recipe = useMemo(() => recipes.find(r => r.id === recipeId) || null, [recipes, recipeId]);
