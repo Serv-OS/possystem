@@ -130,15 +130,17 @@
 //   reader (or the test card) is OWED before this reaches a kiosk; the step by step test is in the
 //   release note). ScreenPay logic, the credits, the totals and updateCartQty are byte for byte the
 //   8 Oct entry. Only the promo FIGURE moves, never how a card is charged:
-//     submitOrder 20475 -> 20542 chars: the promo redeem records basketValue
+//     submitOrder 20475 -> 20589 chars: the promo redeem records basketValue
 //       promoBasketValue({ discountedSub: discountedSubtotal }) (lib/promoBasis.js, the till's and
 //       the server's one promo basket: goods after the automatic deals, before tip and tax), where it
-//       recorded `subtotal` (goods BEFORE the deals); the useCallback dependency list gains
+//       recorded `subtotal` (goods BEFORE the deals), and sends basketLines: promoBasketLines(cart)
+//       (_shared/promoMath.js: the offer's category rules and a free item are worked out on the
+//       same lines the code was checked with); the useCallback dependency list gains
 //       discountedSubtotal after subtotal. The gift commit order, the idempotency key, the reward
 //       commit, both stock paths, the order_queue insert, the 30 second reset and every amount the
 //       reader is sent are unchanged.
 //     Outside the fingerprinted blocks: the old design's code box (ScreenGiftPromo) checks the code
-//       on the same basket (was the grand total with the tip in it), and the new design
+//       on the same basket and lines (was the grand total with the tip in it), and the new design
 //       (useKioskCheckout) checks and re-checks it on kioskPromoBasket (was goods before the deals).
 //       promoCredit is still min(the code's amount, what is left to pay), so a basket with no code
 //       charges exactly what it did.
@@ -155,8 +157,8 @@ const BLOCKS = [
     name: 'submitOrder',
     start: 'const submitOrder = useCallback(async (nameOverride, phoneOverride, cardPayment) => {',
     end: 'tableNumber, resetSession]);',
-    length: 20542,
-    sha256: 'ad52c387bb6bd42750753df352d9603c51bfc6dfe270b5707eb0984229540fbf',
+    length: 20589,
+    sha256: '3319750f33a0eea56b761790ae6261b97ac4c59043868be506410903acb8c8ef',
   },
   {
     name: 'ScreenPay logic',

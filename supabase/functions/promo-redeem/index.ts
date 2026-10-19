@@ -27,7 +27,7 @@
 // same key the page's own redeem call sends, so that call answers "already done").
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { computeDiscount } from '../_shared/promo.ts';
+import { computeDiscountForBasket } from '../_shared/promo.ts';
 import { normalisePromoCode, escapeLike, pickPromoRow, offerInOrg } from '../_shared/promoLookup.ts';
 import { authenticateCaller, resolveCompanyForLocation, callerStaffOrDevice, isServiceRoleRequest } from '../_shared/loyalty-utils.ts';
 import { decideGiftReverseAuthority } from '../_shared/gift-authority.ts';
@@ -57,7 +57,10 @@ async function orgForLocation(locationId: string): Promise<string | null> {
 }
 
 // Load code + its offer, and run all eligibility checks. Returns { code, offer, discount } or { reason }.
-async function evaluate(codeStr: string, locationId: string, customerId: string | null, subtotal: number) {
+// v5.11.81: `basket` is the checkout's { lines, delivery_fee } (_shared/promoMath.js): the offer's
+// category rules, a free item and free delivery are worked out on it. An older caller sends none and
+// gets exactly the old answer.
+async function evaluate(codeStr: string, locationId: string, customerId: string | null, subtotal: number, basket: any = null) {
   // Lockdown step 1 (d): an exact, case insensitive match, inside the venue's own org. The raw
   // input used to go straight into ilike with no org filter, so '%' or a prefix matched (and
   // enumerated) another company's codes. See _shared/promoLookup.ts.
@@ -107,7 +110,13 @@ async function evaluate(codeStr: string, locationId: string, customerId: string 
     if ((count ?? 0) >= offer.per_customer_limit) return { reason: 'usage_limit' as const, row, offer };
   }
 
-  const discount = computeDiscount(offer, Number(subtotal) || 0);
+  const discount = computeDiscountForBasket(offer, {
+    subtotal: Number(subtotal) || 0,
+    lines: Array.isArray(basket?.lines) ? basket.lines.slice(0, 300) : null,
+    deliveryFee: Number(basket?.delivery_fee ?? basket?.deliveryFee) || 0,
+  });
+  // A free item code with that item not in the basket: say so, never "applied" for nothing.
+  if ((discount as any).missing) return { reason: 'free_item_not_in_basket' as const, row, offer, item_id: offer.reward_item_id ?? null };
   return { row, offer, discount, effectiveCustomerId };
 }
 
@@ -119,10 +128,15 @@ Deno.serve(async (req) => {
   const locationId = String(body?.location_id ?? '').trim();
   const customerId = body?.customer_id ? String(body.customer_id) : null;
   const subtotal = Number(body?.basket?.subtotal ?? body?.basket_value ?? 0) || 0;
+  // v5.11.81: the basket's lines and delivery fee, on validate (basket) and on redeem (basket or basket_lines).
+  const basket = {
+    lines: Array.isArray(body?.basket?.lines) ? body.basket.lines : (Array.isArray(body?.basket_lines) ? body.basket_lines : null),
+    delivery_fee: body?.basket?.delivery_fee ?? body?.delivery_fee ?? 0,
+  };
 
   if (action === 'validate') {
-    const ev = await evaluate(body?.code, locationId, customerId, subtotal);
-    if ('reason' in ev) return json({ valid: false, reason: ev.reason, min_spend: (ev as any).min_spend });
+    const ev = await evaluate(body?.code, locationId, customerId, subtotal, basket);
+    if ('reason' in ev) return json({ valid: false, reason: ev.reason, min_spend: (ev as any).min_spend, item_id: (ev as any).item_id ?? undefined });
     return json({ valid: true, discount: ev.discount, offer: { id: ev.offer.id, name: ev.offer.name }, code_id: ev.row.id });
   }
 
@@ -137,7 +151,7 @@ Deno.serve(async (req) => {
       if (prior) return json({ ok: true, redeemed: true, idempotent: true });
     }
 
-    const ev = await evaluate(body?.code, locationId, customerId, subtotal);
+    const ev = await evaluate(body?.code, locationId, customerId, subtotal, basket);
     if ('reason' in ev) return json({ ok: false, redeemed: false, reason: ev.reason });
     const { row, offer, discount } = ev;
     // Attribution: prefer the adopted owner (personal codes) over the till's null.

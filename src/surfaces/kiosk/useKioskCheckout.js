@@ -27,6 +27,7 @@ import {
   giftDueMinor, kioskGiftRestage, kioskRewardRestage, kioskRewardCreditNoGift, kioskPromoResult, applyKioskCodeWhileOpen,
   kioskPayBlock, kioskTotalsRows, kioskSubmitArgs, kioskTextAllowed, kioskPromoBasket,
 } from '../../lib/kioskCheckout';
+import { promoBasketLines } from '../../../supabase/functions/_shared/promoMath.js';
 
 const PROMO_RECHECK_MS = 500;
 const MAX_NOTICES = 3;
@@ -165,6 +166,7 @@ export default function useKioskCheckout({ engine, api, screen, tipping, alcohol
   // v5.11.81: the code is checked on the till's promo basket (goods after the automatic deals),
   // the figure submitOrder records it on. It was the goods before the deals.
   const promoBasket = kioskPromoBasket(discountedSubtotal);
+  const promoLines = useMemo(() => promoBasketLines(cart), [cart]);
   const promoKey = promoKeyFor(promoApplied, promoBasket, customerId);
   const [promoCheckedKey, setPromoCheckedKey] = useState(null);
   const checking = !!promoApplied && promoKey !== promoCheckedKey;
@@ -174,7 +176,7 @@ export default function useKioskCheckout({ engine, api, screen, tipping, alcohol
     let alive = true;
     const code = promoApplied.code;
     const timer = setTimeout(async () => {
-      const reply = await api.validatePromo({ code, locationId, customerId, subtotal: promoBasket });
+      const reply = await api.validatePromo({ code, locationId, customerId, subtotal: promoBasket, lines: promoLines });
       if (!alive) return;
       const r = kioskPromoResult(code, reply);
       if (r.promo) {
@@ -190,7 +192,7 @@ export default function useKioskCheckout({ engine, api, screen, tipping, alcohol
       }
     }, PROMO_RECHECK_MS);
     return () => { alive = false; clearTimeout(timer); };
-  }, [open, promoApplied, promoKey, promoCheckedKey, cartItemCount, api, locationId, customerId, promoBasket, setPromoApplied]);
+  }, [open, promoApplied, promoKey, promoCheckedKey, cartItemCount, api, locationId, customerId, promoBasket, promoLines, setPromoApplied]);
 
   // ── The code box ──
   // One token per visit to Review and pay (new each time it opens, cleared when it closes or
@@ -215,7 +217,7 @@ export default function useKioskCheckout({ engine, api, screen, tipping, alcohol
         { input, giftStaged: giftCardPayment, promoStaged: promoApplied, grandTotal, giftDue },
         {
           lookupGift: (code) => api.lookupGift({ code, locationId }),
-          validatePromo: (code) => api.validatePromo({ code, locationId, customerId, subtotal: promoBasket }),
+          validatePromo: (code) => api.validatePromo({ code, locationId, customerId, subtotal: promoBasket, lines: promoLines }),
         },
         () => visit !== null && codeVisitRef.current === visit,
       );

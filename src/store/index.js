@@ -7228,6 +7228,9 @@ export const useStore = create((set, get) => ({
       // while the check had been on the whole bill, so a minimum spend code could validate and then
       // be refused here, left unused and still usable.
       basketValue: promoRedeemBasket(promo, record),
+      // v5.11.81: the same lines and delivery fee it was checked with (a category rule, a free item).
+      basketLines: Array.isArray(promo.basketLines) ? promo.basketLines : null,
+      deliveryFee: Number(promo.basketDeliveryFee) || 0,
       channel: 'pos',
       closedCheckId: record.id,
     }, { functionsUrl: `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`, token });

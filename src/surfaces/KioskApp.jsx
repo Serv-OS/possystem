@@ -53,6 +53,7 @@ import { fetchKioskTables, groupKioskTables } from '../lib/kioskTables';
 import { stageGiftCard, commitGiftCard, giftCardCheckRecord } from '../lib/giftCommit';
 import { commitRedemption } from '../lib/commitRedemptions';
 import { promoBasketValue } from '../lib/promoBasis';
+import { promoBasketLines } from '../../supabase/functions/_shared/promoMath.js';
 import { kioskLoyaltyCreditMinor, kioskRewardTapCheck } from '../lib/kioskLoyaltyReward';
 import { money, stripeCurrency } from '../lib/currency';
 import { getLocationProcessor, takesCardsOnTerminal } from '../lib/payments/processor';
@@ -1349,6 +1350,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
           channel: 'kiosk',
           code: promoApplied.code,
           basketValue: promoBasketValue({ discountedSub: discountedSubtotal }),
+          basketLines: promoBasketLines(cart),
         }, { functionsUrl: `${OPS_URL}/functions/v1`, token }))
           .catch(err => console.warn('[kiosk] promo redeem dispatch failed:', err?.message || err));
       }
@@ -1507,7 +1509,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
       {/* v5.5.900: gift card / promo code step BEFORE payment (mirrors online ordering) —
           the old entry lived on the pay screen, which auto-starts the card reader on mount,
           so guests never saw it. */}
-      {screen === 'gift' && <ScreenGiftPromo brandColor={brandColor} total={grandTotal} promoBasket={promoBasketValue({ discountedSub: discountedSubtotal })} loyaltyCredit={loyaltyCredit} giftCardCredit={giftCardCredit} promoCredit={promoCredit} promoApplied={promoApplied} onPromoApply={setPromoApplied} verifiedLoyalty={verifiedLoyalty} giftCardPayment={giftCardPayment} onGiftCardApply={setGiftCardPayment} locationId={locationId} loyaltyRedemption={loyaltyRedemption} notice={submitError || ''} onContinue={() => { setSubmitError(null); setScreen('pay'); }} onBack={() => { setSubmitError(null); if (loyaltyEnabled) setScreen('loyalty'); else setScreen('tip'); }} onCancel={resetSession} />}
+      {screen === 'gift' && <ScreenGiftPromo brandColor={brandColor} total={grandTotal} promoBasket={promoBasketValue({ discountedSub: discountedSubtotal })} promoLines={promoBasketLines(cart)} loyaltyCredit={loyaltyCredit} giftCardCredit={giftCardCredit} promoCredit={promoCredit} promoApplied={promoApplied} onPromoApply={setPromoApplied} verifiedLoyalty={verifiedLoyalty} giftCardPayment={giftCardPayment} onGiftCardApply={setGiftCardPayment} locationId={locationId} loyaltyRedemption={loyaltyRedemption} notice={submitError || ''} onContinue={() => { setSubmitError(null); setScreen('pay'); }} onBack={() => { setSubmitError(null); if (loyaltyEnabled) setScreen('loyalty'); else setScreen('tip'); }} onCancel={resetSession} />}
       {/* Database fence stage 1, fix round 2: ScreenPay (which starts the reader on mount) mounts
           only once the server says this kiosk is linked (surfaces/kiosk/KioskPayLinkGate.jsx). */}
       {screen === 'pay' && <KioskPayLinkGate brandColor={brandColor} onBack={() => { setSubmitError(null); setScreen('gift'); }} onCancel={resetSession}><KioskVatGate brandColor={brandColor} onBack={() => { setSubmitError(null); setScreen('gift'); }} onCancel={resetSession}><ScreenPay brandColor={brandColor} total={grandTotal} loyaltyCredit={loyaltyCredit} giftCardCredit={giftCardCredit} promoCredit={promoCredit} promoApplied={promoApplied} locationId={locationId} kioskId={kioskId} cart={cart} submitting={submitting} error={submitError} onPaid={(paid) => submitOrder(customerName, customerPhone, paid)} ensureCheckId={ensureCheckId} heldPayment={heldCardPayment} onBack={() => { setSubmitError(null); setScreen('gift'); }} loyaltyRedemption={loyaltyRedemption} onCancel={resetSession} /></KioskVatGate></KioskPayLinkGate>}
@@ -3151,7 +3153,7 @@ function ScreenTip({ brandColor, subtotal, tipPresets, tip, onSetTip, onContinue
 // `order_id: null` the moment a code was entered, so an abandoned basket, an idle
 // timeout or a declined card burned the card's value with no order and no reversal.
 // ============================================================
-function ScreenGiftPromo({ brandColor, total, promoBasket = 0, loyaltyCredit, giftCardCredit, promoCredit = 0, promoApplied = null, onPromoApply, verifiedLoyalty, giftCardPayment, onGiftCardApply, locationId, loyaltyRedemption, notice = '', onContinue, onBack, onCancel }) {
+function ScreenGiftPromo({ brandColor, total, promoBasket = 0, promoLines = null, loyaltyCredit, giftCardCredit, promoCredit = 0, promoApplied = null, onPromoApply, verifiedLoyalty, giftCardPayment, onGiftCardApply, locationId, loyaltyRedemption, notice = '', onContinue, onBack, onCancel }) {
   const [giftApplying, setGiftApplying] = useState(false);
   // v5.5.901: `notice` carries a commit-time failure back here (a gift-only order whose card
   // came up short at submit) so the guest is told why they're being asked to pay after all.
@@ -3195,7 +3197,7 @@ function ScreenGiftPromo({ brandColor, total, promoBasket = 0, loyaltyCredit, gi
           customer_id: verifiedLoyalty?.customer?.id || null,
           // v5.11.81 (Peter, 19 Oct 2026): the till's promo basket, the goods after the automatic
           // deals (lib/promoBasis.js). It was the grand total with the tip in it.
-          basket: { subtotal: promoBasket },
+          basket: { subtotal: promoBasket, ...(Array.isArray(promoLines) ? { lines: promoLines } : {}) },
         }),
       });
       const pj = await pv.json().catch(() => ({}));

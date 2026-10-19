@@ -97,6 +97,10 @@ function buildCall(spec) {
         staff_id: spec.staffId || null,
         channel: spec.channel || 'pos',
         basket_value: Number(spec.basketValue) || 0,
+        // v5.11.81: the basket's lines and delivery fee (promo-redeem works a category rule, a free
+        // item and free delivery out on them). Only when given, so an older parked body is unchanged.
+        ...(Array.isArray(spec.basketLines) && spec.basketLines.length ? { basket_lines: spec.basketLines.slice(0, 300) } : {}),
+        ...(Number(spec.deliveryFee) > 0 ? { delivery_fee: Number(spec.deliveryFee) } : {}),
         idempotency_key: `${checkId}:${code}`,
       },
     };

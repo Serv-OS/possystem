@@ -170,9 +170,10 @@ export async function lookupGift({ code, locationId }) {
  * kioskPromoBasket: the goods after the automatic deals, the till's figure), the same
  * basketValue submitOrder commits the code with.
  */
-export async function validatePromo({ code, locationId, customerId = null, subtotal = 0 }) {
+export async function validatePromo({ code, locationId, customerId = null, subtotal = 0, lines = null }) {
   return postFunction('promo-redeem', {
-    action: 'validate', code, location_id: locationId, customer_id: customerId || null, basket: { subtotal },
+    // v5.11.81: with the basket's lines (_shared/promoMath.js): the offer's category rules and a free item.
+    action: 'validate', code, location_id: locationId, customer_id: customerId || null, basket: { subtotal, ...(Array.isArray(lines) ? { lines } : {}) },
   });
 }
 

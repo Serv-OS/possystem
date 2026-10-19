@@ -38,6 +38,7 @@ import { stageGiftCard, commitGiftCard, giftCardCheckRecord } from '../../lib/gi
 import { tender, giftTenders, finishTenders } from '../../lib/accounting/tenders';
 import { writeClosedCheckRow } from '../../lib/closedCheckWrite';
 import { commitRedemption } from '../../lib/commitRedemptions';
+import { promoBasketLines } from '../../../supabase/functions/_shared/promoMath.js';   // v5.11.81: a code's own rules
 import { getDeliveryQuote, recordDeliverySurcharge } from '../../lib/delivery/quoteService';
 import { dispatchDelivery } from '../../lib/delivery/dispatch';
 import { sendEmailReceipt } from '../../lib/sendReceipt';
@@ -644,7 +645,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         body: JSON.stringify({
           action: 'validate', code, location_id: opsLocationId,
           customer_id: memberCustomerId,
-          basket: { subtotal: discountedSubtotalMinor / 100 },
+          // v5.11.81: with the basket's lines and delivery fee (_shared/promoMath.js): the offer's
+          // category rules, a free item and free delivery; the server values the order the same way.
+          basket: { subtotal: discountedSubtotalMinor / 100, lines: promoBasketLines(cart, { modsInPrice: false }), delivery_fee: deliveryFeeMinor / 100 },
         }),
       });
       const j = await res.json().catch(() => ({}));
@@ -992,6 +995,8 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       channel: 'online',
       code: promoApplied.code,
       basketValue: discountedSubtotalMinor / 100,
+      basketLines: promoBasketLines(cart, { modsInPrice: false }),   // v5.11.81: the same lines it was checked with
+      deliveryFee: deliveryFeeMinor / 100,
     }, { functionsUrl: FUNCTIONS_URL, token: await getAuthToken().catch(() => null) });
     if (!r.ok && !r.queued) {
       logActivity(opsLocationId, {

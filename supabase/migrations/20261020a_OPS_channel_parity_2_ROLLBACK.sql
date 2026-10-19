@@ -15,6 +15,532 @@ begin
 end
 $guard$;
 
+-- 6. The promo functions as they were -------------------------------------------------------------
+drop function if exists public._public_order_promo(text, text, bigint, text, boolean, jsonb, bigint);
+
+CREATE OR REPLACE FUNCTION public._public_order_promo(p_loc text, p_code text, p_subtotal_minor bigint, p_check_id text, p_consume boolean)
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+declare
+  v_code text := upper(btrim(coalesce(p_code, '')));
+  v_org  uuid;
+  c      public.promo_codes%rowtype;
+  o      public.offers%rowtype;
+  v_sub  numeric := greatest(0, coalesce(p_subtotal_minor, 0)) / 100.0;
+  v_amt  numeric := 0;
+  v_key  text;
+  v_res  jsonb;
+begin
+  if v_code = '' then
+    return jsonb_build_object('ok', false, 'reason', 'none');
+  end if;
+  select l.org_id into v_org from public.locations l where l.id::text = p_loc;
+  select * into c from public.promo_codes pc where upper(pc.code) = v_code limit 1;
+  if c.id is null then
+    return jsonb_build_object('ok', false, 'reason', 'not_found', 'code', v_code);
+  end if;
+  if c.org_id is distinct from v_org then
+    return jsonb_build_object('ok', false, 'reason', 'wrong_venue', 'code', v_code);
+  end if;
+  if c.status in ('voided', 'expired') or c.voided_at is not null
+     or (c.expires_at is not null and c.expires_at < now()) then
+    return jsonb_build_object('ok', false, 'reason', 'expired', 'code', v_code);
+  end if;
+  select * into o from public.offers ofr where ofr.id = c.offer_id;
+  if o.id is null or not coalesce(o.active, false)
+     or (o.valid_from is not null and o.valid_from > now())
+     or (o.valid_to is not null and o.valid_to < now()) then
+    return jsonb_build_object('ok', false, 'reason', 'inactive', 'code', v_code);
+  end if;
+  if coalesce(cardinality(o.venue_ids), 0) > 0 and not (p_loc = any(o.venue_ids)) then
+    return jsonb_build_object('ok', false, 'reason', 'wrong_venue', 'code', v_code);
+  end if;
+  if o.min_spend is not null and v_sub < o.min_spend then
+    return jsonb_build_object('ok', false, 'reason', 'min_spend', 'code', v_code);
+  end if;
+  v_amt := greatest(0, case o.reward_type
+                         when 'percent' then round(v_sub * coalesce(o.reward_value, 0) / 100, 2)
+                         when 'fixed'   then least(coalesce(o.reward_value, 0), v_sub)
+                         else 0 end);
+  v_key := case when coalesce(p_check_id, '') <> '' then p_check_id || ':' || v_code end;
+  if p_consume then
+    if v_key is null then
+      return jsonb_build_object('ok', false, 'reason', 'no_check', 'code', v_code);
+    end if;
+    if not exists (select 1 from public.promo_redemptions pr where pr.idempotency_key = v_key) then
+      if to_regprocedure('public.promo_redeem_atomic(uuid, integer, uuid, uuid, text, uuid, text, text, uuid, numeric, numeric, text)') is null then
+        return jsonb_build_object('ok', false, 'reason', 'unsupported', 'code', v_code);
+      end if;
+      v_res := public.promo_redeem_atomic(c.id, c.uses_count, o.id, c.org_id, c.code, c.customer_id, p_loc,
+                                          p_check_id, null, v_sub, v_amt, v_key);
+      if coalesce(v_res ->> 'result', '') not in ('redeemed', 'idempotent_hit') then
+        return jsonb_build_object('ok', false, 'reason', coalesce(v_res ->> 'result', 'failed'), 'code', v_code);
+      end if;
+    end if;
+  elsif c.uses_count >= coalesce(c.uses_allowed, 1)
+        and not (v_key is not null and exists (select 1 from public.promo_redemptions pr where pr.idempotency_key = v_key)) then
+    -- Spent, unless the use is this very order's own (a retry).
+    return jsonb_build_object('ok', false, 'reason', 'already_used', 'code', v_code);
+  end if;
+  return jsonb_build_object('ok', true, 'code', v_code, 'amount_minor', round(v_amt * 100)::bigint, 'offer_id', o.id);
+end;
+$function$;
+
+revoke all on function public._public_order_promo(text, text, bigint, text, boolean) from public;
+revoke all on function public._public_order_promo(text, text, bigint, text, boolean) from anon, authenticated;
+grant execute on function public._public_order_promo(text, text, bigint, text, boolean) to service_role;
+
+CREATE OR REPLACE FUNCTION public.place_public_order(p_location_id uuid, p_order jsonb, p_check jsonb DEFAULT NULL::jsonb, p_proof_ids uuid[] DEFAULT '{}'::uuid[])
+ RETURNS jsonb
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+declare
+  v_uid         uuid := auth.uid();
+  v_loc         text := p_location_id::text;
+  v_source      text := lower(coalesce(p_order ->> 'source', ''));
+  v_ref         text := btrim(coalesce(p_order ->> 'ref', ''));
+  v_raw         jsonb := case when jsonb_typeof(p_order -> 'customer') = 'object' then p_order -> 'customer' else '{}'::jsonb end;
+  v_customer    jsonb;
+  v_items       jsonb := case when jsonb_typeof(p_order -> 'items') = 'array' then p_order -> 'items' else '[]'::jsonb end;
+  v_total       numeric := round(public._fence_num(p_order ->> 'total'), 2);
+  v_type        text := left(coalesce(nullif(p_order ->> 'type', ''), 'collection'), 40);
+  -- Which menu the page priced this basket on (fix round 7): the storefront's own
+  -- effectiveMenuId. A per menu 0.00 is a real price on THAT menu and nowhere else.
+  v_menu_id     text := nullif(left(btrim(coalesce(p_order ->> 'menu_id', '')), 80), '');
+  v_check       jsonb := case when jsonb_typeof(p_check) = 'object' then p_check end;
+  v_check_id    text := null;
+  v_ip          text := public._fence_client_ip();
+  v_tab         boolean;
+  v_pi          text;
+  v_proof_ids   uuid[] := coalesce(p_proof_ids, '{}'::uuid[]);
+  v_card_minor  bigint := 0;
+  v_gift_minor  bigint := 0;
+  v_card_refs   text[] := '{}'::text[];
+  v_bound_ids   uuid[] := '{}'::uuid[];
+  v_val         jsonb;
+  v_auto        jsonb := jsonb_build_object('total_minor', 0, 'rules', '[]'::jsonb);
+  v_decl        jsonb;
+  v_promo       jsonb := null;
+  v_goods_minor bigint := 0;
+  v_auto_minor  bigint := 0;
+  v_promo_minor bigint := 0;
+  v_loy_decl    bigint := 0;
+  v_loy_minor   bigint := 0;
+  v_unknown     integer := 0;
+  v_tol         bigint := 0;
+  v_client_due  bigint := 0;
+  v_pricing     jsonb := null;
+  v_due_minor   bigint := 0;
+  v_value_minor bigint := 0;
+  v_running     bigint := 0;
+  v_paid        boolean := false;
+  v_unverified  boolean := false;
+  v_state       text := null;
+  v_status      text;
+  v_token       text;
+  v_join        text := null;
+  v_tab_ref     text;
+  v_written_id  text := null;
+  v_sent_at     timestamptz;
+  v_event_date  date;
+  v_existing    public.public_order_tokens%rowtype;
+  v_first       public.order_queue%rowtype;
+  v_hold        public.payment_proofs%rowtype;
+  v_code_given  text;
+  v_bucket      text;
+  v_cc          jsonb;
+  v_pay_ref     text;
+  v_processor   text;
+begin
+  if v_uid is null then
+    return jsonb_build_object('ok', false, 'reason', 'no_session', 'message', 'Please reload the page and try again.');
+  end if;
+  if p_location_id is null
+     or not exists (select 1 from public.locations l where l.id = p_location_id and coalesce(l.status, 'active') = 'active') then
+    return jsonb_build_object('ok', false, 'reason', 'venue', 'message', 'This venue is not taking orders.');
+  end if;
+  if v_source not in ('online', 'qr', 'catering') then
+    return jsonb_build_object('ok', false, 'reason', 'source');
+  end if;
+  if v_ref !~ '^[A-Za-z0-9][A-Za-z0-9._:-]{1,39}$' then
+    return jsonb_build_object('ok', false, 'reason', 'ref');
+  end if;
+
+  -- A retry by the same session gets the first answer back.
+  select * into v_existing from public.public_order_tokens t where t.location_id = v_loc and t.ref = v_ref;
+  if v_existing.ref is not null then
+    if v_existing.placed_by = v_uid then
+      return (select jsonb_build_object('ok', true, 'idempotent', true, 'ref', v_ref, 'paid', q.paid,
+                                        'status', q.status,
+                                        'payment_unverified', coalesce(q.customer ->> 'payment_state', '') in ('checking', 'short'),
+                                        'payment_state', q.customer ->> 'payment_state',
+                                        'track_token', v_existing.token,
+                                        'tab_join_code', q.customer ->> 'tab_join_code')
+                from public.order_queue q where q.location_id = v_loc and q.ref = v_ref);
+    end if;
+    return jsonb_build_object('ok', false, 'reason', 'ref_taken');
+  end if;
+  if exists (select 1 from public.order_queue q where q.location_id = v_loc and q.ref = v_ref) then
+    return jsonb_build_object('ok', false, 'reason', 'ref_taken');
+  end if;
+
+  if jsonb_array_length(v_items) = 0 or jsonb_array_length(v_items) > 200 or pg_column_size(v_items) > 262144 then
+    return jsonb_build_object('ok', false, 'reason', 'items');
+  end if;
+  if pg_column_size(v_raw) > 32768 then
+    return jsonb_build_object('ok', false, 'reason', 'customer');
+  end if;
+  if v_total < 0 or v_total > 100000 then
+    return jsonb_build_object('ok', false, 'reason', 'total');
+  end if;
+  if public._fence_is_locked('order:uid:' || v_uid::text) then
+    return jsonb_build_object('ok', false, 'reason', 'rate', 'message', 'Too many orders from this device. Please wait a few minutes.');
+  end if;
+
+  -- Server fields a phone must never set, on any order. Tab fields and the card payment
+  -- id are put back below only where the server has checked them.
+  v_customer := v_raw - 'paid' - 'payment_verified' - 'payment_unverified' - 'payment_state' - 'payment_ref'
+                      - 'payment_processor' - 'payment_confirmed_by' - 'payment_confirmed_note'
+                      - 'payment_verified_at' - 'order_pricing' - 'tab_join_code' - 'staff' - 'placed_via'
+                      - 'tab_open' - 'tab_ref' - 'round_ref' - 'tab_opened_at' - 'pre_auth_amount'
+                      - 'tab_running_total' - 'payment_intent_id';
+  v_tab := v_source = 'qr' and public._fence_bool(v_raw ->> 'tab_open');
+  v_pi := nullif(left(btrim(coalesce(v_raw ->> 'payment_intent_id', '')), 200), '');
+  v_check_id := case when v_check is not null then nullif(left(btrim(coalesce(v_check ->> 'id', '')), 80), '') end;
+
+  -- What the order is worth to the server: its lines from the menu, less the venue's own
+  -- automatic discounts (catering has none).
+  v_val := public._public_order_value(v_loc, v_source, v_type, v_items, v_menu_id);
+  v_items := v_val -> 'items';
+  v_goods_minor := (v_val ->> 'goods_minor')::bigint;
+  v_unknown := (v_val ->> 'unknown_lines')::integer;
+  if v_source in ('online', 'qr') then
+    v_auto := public._public_order_auto(v_loc, v_source, v_val -> 'lines');
+    v_auto_minor := least(v_goods_minor, (v_auto ->> 'total_minor')::bigint);
+  end if;
+  v_tol := least(50, jsonb_array_length(v_items) + 3);
+  v_decl := public._public_order_declared(p_order, v_check, v_source);
+
+  -- Money proofs named by the caller: this venue, not used before, fresh, and bound to this
+  -- order (its processor order reference, its check's ledger key, or a card payment no other
+  -- order names).
+  perform 1 from public.payment_proofs p where p.id = any(v_proof_ids) for update;
+  select coalesce(sum(p.amount_minor) filter (where p.kind = 'card'), 0),
+         coalesce(sum(p.amount_minor) filter (where p.kind = 'gift'), 0),
+         coalesce(array_agg(p.payment_ref) filter (where p.kind = 'card'), '{}'::text[]),
+         coalesce(array_agg(p.id), '{}'::uuid[])
+    into v_card_minor, v_gift_minor, v_card_refs, v_bound_ids
+    from public.payment_proofs p
+   where p.id = any(v_proof_ids)
+     and p.location_id = v_loc
+     and p.kind in ('card', 'gift')
+     and p.used_by_ref is null
+     and p.verified_at > now() - interval '24 hours'
+     and public._public_order_proof_bound(v_loc, v_ref, v_check_id, p.kind, p.payment_ref, p.meta);
+
+  if v_tab then
+    -- A QR tab: the card hold must be proven by the server.
+    if v_pi is null then
+      return jsonb_build_object('ok', false, 'reason', 'tab_not_verified',
+                                'message', 'We could not confirm the card hold for this tab. Please ask a member of staff.');
+    end if;
+    select * into v_hold
+      from public.payment_proofs p
+     where p.kind = 'preauth' and p.payment_ref = v_pi and p.location_id = v_loc
+     order by p.verified_at desc
+     limit 1
+     for update;
+    if v_hold.id is null then
+      return jsonb_build_object('ok', false, 'reason', 'tab_not_verified',
+                                'message', 'We could not confirm the card hold for this tab. Please ask a member of staff.');
+    end if;
+    -- A hold that was already captured is a closed tab: no new rounds on it.
+    if exists (select 1 from public.payment_proofs p
+                where p.kind = 'capture' and p.payment_ref = v_pi and p.location_id = v_loc) then
+      return jsonb_build_object('ok', false, 'reason', 'tab_closed',
+                                'message', 'This tab is already closed. Please start a new order.');
+    end if;
+    -- Every item of a round must be on the menu: a round is settled from its value later.
+    if v_unknown > 0 then
+      return jsonb_build_object('ok', false, 'reason', 'items',
+                                'message', 'Something in this order is no longer on the menu. Please refresh the menu and try again.');
+    end if;
+    select * into v_first
+      from public.order_queue q
+     where q.location_id = v_loc and q.source = 'qr' and q.status <> 'collected'
+       and public._fence_bool(q.customer ->> 'tab_open')
+       and q.customer ->> 'payment_intent_id' = v_pi
+     order by q.created_at
+     limit 1;
+    if v_first.ref is not null then
+      -- A new round on an open tab: only the tab's opener, a phone that joined it with
+      -- the table code, or a round that carries the code.
+      select max(q.customer ->> 'tab_join_code') into v_join
+        from public.order_queue q
+       where q.location_id = v_loc and q.source = 'qr' and q.status <> 'collected'
+         and public._fence_bool(q.customer ->> 'tab_open')
+         and q.customer ->> 'payment_intent_id' = v_pi;
+      if not public._qr_tab_is_member(v_loc, v_pi, v_uid) then
+        v_bucket := 'join:' || v_loc || ':' || md5(v_pi);
+        if public._fence_is_locked(v_bucket) then
+          return jsonb_build_object('ok', false, 'reason', 'locked', 'message', 'Too many wrong codes. Ask a member of staff.');
+        end if;
+        v_code_given := nullif(public._fence_norm_code(coalesce(p_order ->> 'tab_join_code', v_raw ->> 'tab_join_code')), '');
+        if v_code_given is null or coalesce(v_join, '') = '' or v_code_given <> public._fence_norm_code(v_join) then
+          if v_code_given is not null then
+            perform public._fence_count(v_bucket, 8, interval '1 hour', interval '1 hour');
+          end if;
+          return jsonb_build_object('ok', false, 'reason', 'tab_not_yours',
+                                    'message', 'Ask the person who opened this tab for the table code.');
+        end if;
+      end if;
+      v_tab_ref := coalesce(v_first.customer ->> 'tab_ref', v_first.ref);
+      v_customer := v_customer || jsonb_build_object('tab_opened_at',
+                      coalesce(v_first.customer ->> 'tab_opened_at', v_first.created_at::text));
+    else
+      -- Opening a tab. The hold must have been checked in the last 30 minutes (the
+      -- phone asks for the proof just before it places the first round), must not have
+      -- opened another tab already (a tab whose rounds were all collected), and must not
+      -- belong to another order.
+      if v_hold.used_by_ref is not null then
+        return jsonb_build_object('ok', false, 'reason', 'tab_closed',
+                                  'message', 'This tab is already closed. Please start a new order.');
+      end if;
+      if v_hold.verified_at < now() - interval '30 minutes'
+         or (nullif(btrim(coalesce(v_hold.meta ->> 'order_ref', '')), '') is not null and v_hold.meta ->> 'order_ref' <> v_ref) then
+        return jsonb_build_object('ok', false, 'reason', 'tab_not_verified',
+                                  'message', 'We could not confirm the card hold for this tab. Please try again.');
+      end if;
+    end if;
+    -- What this round is worth (never below the menu, less the automatic discounts), and
+    -- the tab may never run past its card hold (fix round 2): the hold is all the money a
+    -- tab is sure of.
+    v_value_minor := greatest(round(v_total * 100)::bigint, v_goods_minor - v_auto_minor - v_tol);
+    select coalesce(sum(greatest(round(q.total * 100)::bigint,
+                                 coalesce((q.customer -> 'order_pricing' ->> 'value_minor')::bigint, 0))), 0)
+      into v_running
+      from public.order_queue q
+     where q.location_id = v_loc and q.source = 'qr' and q.status <> 'collected'
+       and public._fence_bool(q.customer ->> 'tab_open')
+       and q.customer ->> 'payment_intent_id' = v_pi;
+    if v_running + v_value_minor > v_hold.amount_minor then
+      return jsonb_build_object('ok', false, 'reason', 'over_hold',
+                                'hold_minor', v_hold.amount_minor, 'running_minor', v_running, 'round_minor', v_value_minor,
+                                'message', 'This round would take the tab past its card hold. Close the tab and start a new one, or ask a member of staff.');
+    end if;
+    if v_first.ref is not null then
+      if not public._qr_tab_is_member(v_loc, v_pi, v_uid) then
+        insert into public.qr_tab_members (location_id, pi_hash, uid)
+        values (v_loc, md5(v_pi), v_uid)
+        on conflict do nothing;
+      end if;
+    else
+      update public.payment_proofs set used_by_ref = v_loc || ':' || v_ref, used_at = now() where id = v_hold.id;
+      v_join := public._fence_random_digits(6);
+      v_tab_ref := v_ref;
+      v_customer := v_customer || jsonb_build_object('tab_opened_at', now());
+    end if;
+    v_customer := v_customer || jsonb_build_object(
+                    'tab_open', true, 'payment_intent_id', v_pi, 'tab_join_code', v_join,
+                    'tab_ref', v_tab_ref, 'round_ref', v_ref,
+                    'pre_auth_amount', round(v_hold.amount_minor / 100.0, 2),
+                    'order_pricing', jsonb_build_object('goods_minor', v_goods_minor, 'auto_minor', v_auto_minor,
+                                                        'value_minor', v_value_minor, 'hold_minor', v_hold.amount_minor));
+    v_total := greatest(v_total, round(v_value_minor / 100.0, 2));
+    v_paid := false;
+    v_status := 'prep';
+  else
+    -- QR has no pay later: a QR order is either paid now or a round of a tab. Online
+    -- always pays too; an online order that arrives without its check (the page could
+    -- not build it) is treated as paid now with an empty check, so it is proven or
+    -- checked like any other. Only catering has pay later.
+    if v_check is null and v_source = 'qr' then
+      return jsonb_build_object('ok', false, 'reason', 'payment', 'message', 'Please pay for your order to send it.');
+    end if;
+    if v_check is null and v_source = 'online' then
+      v_check := '{}'::jsonb;
+    end if;
+    -- The card payment id stays only when it is this order's own proven payment.
+    if v_pi is not null and v_pi = any(v_card_refs) then
+      v_customer := v_customer || jsonb_build_object('payment_intent_id', v_pi);
+    end if;
+    -- The promo code the order names: checked here (nothing written yet), and used up
+    -- below, once nothing can refuse the order any more (a pay later order only checks it;
+    -- the page records the use after placing).
+    if v_decl ->> 'promo_code' is not null and v_unknown = 0 then
+      v_promo := public._public_order_promo(v_loc, v_decl ->> 'promo_code', v_goods_minor - v_auto_minor,
+                                            v_check_id, false);
+      if coalesce((v_promo ->> 'ok')::boolean, false) then
+        v_promo_minor := least((v_decl ->> 'promo_minor')::bigint, (v_promo ->> 'amount_minor')::bigint);
+      end if;
+    end if;
+    v_loy_decl := (v_decl ->> 'loyalty_minor')::bigint;
+    if v_check is not null then
+      -- A percent reward is worked out on the goods less the venue's AUTOMATIC deals, which is
+      -- the figure the storefront takes its percent of (OnlineCheckout.jsx:891 and :291), and
+      -- a free item reward is the cheapest line the server priced. The whole loyalty benefit
+      -- is then capped at what is LEFT to pay for the goods, deals and promo code off
+      -- (OnlineCheckout.jsx:338), so an order can never be given away twice over.
+      v_loy_minor := public._public_order_loyalty(v_loc, v_ref, v_check_id, v_loy_decl,
+                                                  greatest(0, v_goods_minor - v_auto_minor),
+                                                  greatest(0, v_goods_minor - v_auto_minor - v_promo_minor),
+                                                  v_val -> 'lines');
+    end if;
+    v_client_due := greatest(round(v_total * 100)::bigint,
+                             case when v_check is not null
+                                  then round(greatest(0, public._fence_num(v_check ->> 'total')) * 100)::bigint else 0 end);
+    v_pricing := jsonb_build_object(
+                   'goods_minor', v_goods_minor, 'auto_minor', v_auto_minor, 'auto_rules', v_auto -> 'rules',
+                   'promo_code', v_decl ->> 'promo_code', 'promo_minor', v_promo_minor,
+                   'promo_reason', case when v_promo is not null and not coalesce((v_promo ->> 'ok')::boolean, false)
+                                        then v_promo ->> 'reason' end,
+                   'loyalty_declared_minor', v_loy_decl, 'loyalty_minor', v_loy_minor,
+                   'tolerance_minor', v_tol, 'client_due_minor', v_client_due,
+                   'unknown_lines', v_unknown, 'max_unit_minor', (v_val ->> 'max_unit_minor')::bigint,
+                   'menu_id', v_menu_id);
+    v_due_minor := public._public_order_due(v_pricing, v_loy_minor);
+    if v_check is not null then
+      v_paid := v_unknown = 0
+                and case when v_due_minor > 0 then (v_card_minor + v_gift_minor) >= v_due_minor
+                         else (v_card_minor + v_gift_minor) > 0 or v_loy_minor > 0 or v_promo_minor > 0 end;
+      v_unverified := not v_paid;
+      -- Money may have been taken: never refused for the venue, but one network can
+      -- only send so many orders it cannot prove.
+      if v_unverified and v_ip is not null and public._fence_is_locked('order:unproven:ip:' || v_ip) then
+        return jsonb_build_object('ok', false, 'reason', 'rate', 'message', 'Too many orders from this network. Please ask a member of staff.');
+      end if;
+      -- Nothing refuses the order from here on: use the promo code up now. A code another
+      -- order used up a moment ago is no discount after all. The loyalty discount worked out
+      -- above keeps the smaller ceiling it was given (it was valued net of a promo code that
+      -- turned out not to apply). That can only make the order MORE short, never less, which
+      -- is the right way round: staff confirm it on the till.
+      if v_promo_minor > 0 then
+        v_promo := public._public_order_promo(v_loc, v_decl ->> 'promo_code', v_goods_minor - v_auto_minor,
+                                              v_check_id, true);
+        if not coalesce((v_promo ->> 'ok')::boolean, false) then
+          v_promo_minor := 0;
+          v_pricing := v_pricing || jsonb_build_object('promo_minor', 0, 'promo_reason', v_promo ->> 'reason');
+          v_due_minor := public._public_order_due(v_pricing, v_loy_minor);
+          v_paid := v_unknown = 0
+                    and case when v_due_minor > 0 then (v_card_minor + v_gift_minor) >= v_due_minor
+                             else (v_card_minor + v_gift_minor) > 0 or v_loy_minor > 0 end;
+          v_unverified := not v_paid;
+        end if;
+      end if;
+      if v_unverified then
+        v_state := case when v_unknown > 0 or (v_card_minor + v_gift_minor) > 0 then 'short' else 'checking' end;
+      end if;
+      v_status := case when v_paid and v_source <> 'catering' then 'prep' else 'received' end;
+    else
+      -- Catering pay later: no money taken, so the venue collects it later, at no less
+      -- than the amount due.
+      v_paid := false;
+      v_status := 'received';
+      if (v_ip is not null and public._fence_is_locked('order:later:ip:' || v_ip))
+         or public._fence_is_locked('order:later:loc:' || v_loc) then
+        return jsonb_build_object('ok', false, 'reason', 'rate', 'message', 'Too many orders right now. Please try again in a few minutes.');
+      end if;
+    end if;
+    v_customer := v_customer || jsonb_build_object('order_pricing',
+                    v_pricing || jsonb_build_object('due_minor', v_due_minor, 'proven_minor', v_card_minor + v_gift_minor));
+    v_total := greatest(v_total, round(v_due_minor / 100.0, 2));
+  end if;
+
+  if v_check is not null then
+    v_cc := public._public_order_check_row(v_loc, v_ref, v_source, v_type, v_check, v_items, v_customer);
+    v_pay_ref := coalesce(nullif(v_check ->> 'stripe_payment_intent_id', ''),
+                          case when jsonb_typeof(v_check -> 'payment_intents') = 'array'
+                               then nullif(v_check -> 'payment_intents' -> 0 ->> 'id', '') end,
+                          v_pi);
+    v_processor := case when coalesce(v_check ->> 'processor', v_raw ->> 'processor') in ('stripe', 'ryft', 'adyen')
+                        then coalesce(v_check ->> 'processor', v_raw ->> 'processor') end;
+  end if;
+  if v_unverified then
+    v_customer := v_customer || jsonb_strip_nulls(jsonb_build_object(
+                    'payment_unverified', true, 'payment_state', v_state,
+                    'payment_ref', left(v_pay_ref, 200), 'payment_processor', v_processor));
+  end if;
+
+  begin
+    v_sent_at := nullif(p_order ->> 'sent_at', '')::timestamptz;
+  exception when others then
+    v_sent_at := null;
+  end;
+  if v_sent_at is null or v_sent_at < now() - interval '1 hour' or v_sent_at > now() + interval '400 days' then
+    v_sent_at := now();
+  end if;
+  begin
+    v_event_date := nullif(p_order ->> 'event_date', '')::date;
+  exception when others then
+    v_event_date := null;
+  end;
+  if v_event_date is not null and (v_event_date < current_date - 1 or v_event_date > current_date + 400) then
+    v_event_date := null;
+  end if;
+
+  perform set_config('servos.public_order', 'on', true);
+  insert into public.order_queue
+    (ref, location_id, type, customer, items, total, status, staff, sent_at, collection_time, is_asap,
+     source, paid, payment_method, event_date)
+  values
+    (v_ref, v_loc, v_type, v_customer, v_items, v_total, v_status, null, v_sent_at,
+     left(nullif(p_order ->> 'collection_time', ''), 40), public._fence_bool(p_order ->> 'is_asap'),
+     v_source, v_paid, case when v_paid then left(coalesce(nullif(p_order ->> 'payment_method', ''), 'card'), 40) else null end,
+     v_event_date);
+  perform set_config('servos.public_order', 'off', true);
+
+  if v_paid and v_check is not null then
+    v_written_id := public._public_order_write_check(
+                      v_cc, least(v_card_minor, v_due_minor), '{}'::jsonb,
+                      jsonb_build_object('goods_minor', v_goods_minor,
+                                         'owed_minor', greatest(0, v_goods_minor - v_auto_minor
+                                                                   - v_promo_minor - v_loy_minor),
+                                         'proven_minor', v_card_minor + v_gift_minor,
+                                         'gift_minor', v_gift_minor, 'loyalty_minor', v_loy_minor,
+                                         'promo_minor', v_promo_minor));
+    update public.payment_proofs
+       set used_by_ref = v_loc || ':' || v_ref, used_at = now()
+     where location_id = v_loc and used_by_ref is null
+       and (id = any(v_bound_ids)
+            or (kind = 'loyalty' and id = any(v_proof_ids)
+                and public._public_order_proof_bound(v_loc, v_ref, v_check_id, kind, payment_ref, meta)));
+  elsif v_check is not null then
+    insert into public.public_order_pending_checks
+      (location_id, ref, check_row, due_minor, client_total, payment_refs, placed_by, pricing, unknown_lines)
+    values
+      (v_loc, v_ref, v_cc, v_due_minor, round(public._fence_num(v_check ->> 'total'), 2),
+       public._public_order_payment_refs(v_check, v_pi), v_uid, v_pricing, v_unknown)
+    on conflict (location_id, ref) do nothing;
+  end if;
+
+  v_token := replace(gen_random_uuid()::text, '-', '');
+  insert into public.public_order_tokens (location_id, ref, token, placed_by, paid)
+  values (v_loc, v_ref, v_token, v_uid, v_paid);
+
+  perform public._fence_count('order:uid:' || v_uid::text, 30, interval '10 minutes', interval '10 minutes');
+  if v_unverified and v_ip is not null then
+    perform public._fence_count('order:unproven:ip:' || v_ip, 60, interval '10 minutes', interval '10 minutes');
+  end if;
+  if not v_tab and v_check is null then
+    if v_ip is not null then
+      perform public._fence_count('order:later:ip:' || v_ip, 20, interval '10 minutes', interval '10 minutes');
+    end if;
+    perform public._fence_count('order:later:loc:' || v_loc, 200, interval '10 minutes', interval '10 minutes');
+  end if;
+
+  return jsonb_build_object('ok', true, 'ref', v_ref, 'paid', v_paid, 'status', v_status,
+                            'payment_unverified', v_unverified, 'payment_state', v_state, 'track_token', v_token,
+                            'tab_join_code', v_join, 'check_id', v_written_id,
+                            'due_minor', case when v_tab then null else v_due_minor end,
+                            'proven_minor', case when v_tab then null else v_card_minor + v_gift_minor end);
+end;
+$function$;
+
 -- 5. settle_qr_tab as it was ----------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.settle_qr_tab(p_location_id uuid, p_payment_intent_id text, p_check jsonb DEFAULT '{}'::jsonb, p_proof_ids uuid[] DEFAULT '{}'::uuid[])
  RETURNS jsonb
@@ -810,7 +1336,7 @@ commit;
 notify pgrst, 'reload schema';
 
 -- VISIBLE CHECK. Expected: release_fn 0, released_columns 0, service_rule_fn 0, has_price_fn 0,
---   vat_false_is_default 0, value_no_price 0, settle_books_deals 0
+--   vat_false_is_default 0, value_no_price 0, settle_books_deals 0, promo_takes_lines 0, old_promo_back 1
 select
   (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'promo_release_atomic') as release_fn,
   (select count(*) from information_schema.columns where table_schema = 'public' and table_name = 'promo_redemptions'
@@ -822,4 +1348,8 @@ select
   (select case when position('v_noprice' in pg_get_functiondef(p.oid)) > 0 then 1 else 0 end
      from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = '_public_order_value') as value_no_price,
   (select case when position('v_deals' in pg_get_functiondef(p.oid)) > 0 then 1 else 0 end
-     from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'settle_qr_tab') as settle_books_deals;
+     from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'settle_qr_tab') as settle_books_deals,
+  (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = '_public_order_promo'
+     and pg_get_function_identity_arguments(p.oid) like '%p_lines jsonb%') as promo_takes_lines,
+  (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = '_public_order_promo'
+     and pg_get_function_identity_arguments(p.oid) = 'p_loc text, p_code text, p_subtotal_minor bigint, p_check_id text, p_consume boolean') as old_promo_back;

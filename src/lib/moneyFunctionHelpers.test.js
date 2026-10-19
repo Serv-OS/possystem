@@ -230,7 +230,8 @@ test('promo codes: exact match only, never a wildcard or a prefix, never another
   assert.deepEqual(planSaveOffer(null, null, ORG), { ok: true, mode: 'insert' });
   assert.equal(planSaveOffer('offer-x', { id: 'offer-x', org_id: ORG2 }, ORG).status, 404, 'another company\'s offer is never taken over');
   const src = fnSrc('promo-redeem');
-  assert.equal((src.match(/await evaluate\(body\?\.code, locationId, customerId, subtotal\)/g) || []).length, 2, 'validate and redeem share the lookup');
+  // v5.11.81: with the basket's lines (_shared/promoMath.js).
+  assert.equal((src.match(/await evaluate\(body\?\.code, locationId, customerId, subtotal, basket\)/g) || []).length, 2, 'validate and redeem share the lookup');
 });
 
 test('the venue org comes from the Ops row (Platform locations has no org_id)', () => {

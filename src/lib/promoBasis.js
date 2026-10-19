@@ -39,11 +39,15 @@ export function promoBasketValue({ discountedSub, subtotal } = {}) {
  * recorded record.subtotal (goods before any discount) and a percent code logged a bigger
  * discount_value than the check took. One builder, one name.
  */
-export function heldPromo(code, data, basket) {
+export function heldPromo(code, data, basket, lines = null, deliveryFee = null) {
   const d = data && typeof data === 'object' ? data : {};
   const discount = d.discount && typeof d.discount === 'object' ? d.discount : {};
   const held = basket != null && basket !== '' && Number.isFinite(Number(basket)) ? { basket: promoBasketValue({ discountedSub: basket }) } : {};
-  return { code, code_id: d.code_id, offer_id: d.offer?.id, ...discount, ...held };
+  // v5.11.81: the basket's lines and delivery fee the code was checked with (promoMath.js), so the
+  // redeem works the discount out on the same basket (a category rule, a free item, free delivery).
+  const withLines = Array.isArray(lines) && lines.length ? { basketLines: lines } : {};
+  const withFee = Number(deliveryFee) > 0 ? { basketDeliveryFee: Number(deliveryFee) } : {};
+  return { code, code_id: d.code_id, offer_id: d.offer?.id, ...discount, ...held, ...withLines, ...withFee };
 }
 
 /**

@@ -482,7 +482,7 @@ test('promo chip labels: server fallbacks become keys, a venue label shows as wr
   // An older promo object with no type (or none at all) shows its label.
   assert.deepEqual(kioskPromoLabel({ label: '£5 off' }), { text: '£5 off' });
   assert.deepEqual(kioskPromoLabel(null), { text: '' });
-  // The fallbacks here are the ones the server builds.
-  const server = fs.readFileSync(new URL('../../supabase/functions/_shared/promo.ts', import.meta.url), 'utf8');
+  // The fallbacks here are the ones the server builds (v5.11.81: in _shared/promoMath.js, which promo.ts calls).
+  const server = fs.readFileSync(new URL('../../supabase/functions/_shared/promoMath.js', import.meta.url), 'utf8');
   for (const s of ['`${v}% off`', '`£${v.toFixed(2)} off`', "'Free item'", "'Free delivery'", '`${v} bonus points`', "'Offer'"]) assert.ok(server.includes(s), s);
 });

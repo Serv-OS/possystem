@@ -83,8 +83,8 @@ test('promo code: the till checks and records a code on the goods after discount
   assert.equal(promoRedeemBasket({ code: 'X', basis: tillBasis }, { subtotal: t.subtotal }), tillBasis, 'a promo held under the round 0 name still records its basket');
   assert.equal(promoRedeemBasket({ code: 'X' }, { subtotal: t.subtotal }), +t.subtotal.toFixed(2), 'an older held promo with none: the record\'s subtotal');
   const co = readRepo('src/surfaces/CheckoutModal.jsx');
-  assert.match(co, /basket: \{ subtotal: promoBasis \},/);
-  assert.match(co, /setPromoApplied\(heldPromo\(code, data, promoBasis\)\);/);
+  assert.match(co, /basket: \{ subtotal: promoBasis, lines, delivery_fee: Number\(deliveryFee\) \|\| 0 \},/);   // v5.11.81: + the lines
+  assert.match(co, /setPromoApplied\(heldPromo\(code, data, promoBasis, lines, Number\(deliveryFee\) \|\| 0\)\);/);
   assert.doesNotMatch(co, /basis: promoBasis/, 'one name for the held basket');
   assert.doesNotMatch(co, /basket: \{ subtotal: total \}/, 'never the bill with service and tax in it');
   assert.match(readRepo('src/store/index.js'), /basketValue: promoRedeemBasket\(promo, record\),/);
@@ -112,7 +112,7 @@ test('promo code on the kiosk: both designs check, value and record a code on th
   assert.equal(computeDiscount(tenPct, till).amount, 1.2);
   // The old design's code box, the new design's code box and re-check, and submitOrder's redeem.
   const k = readRepo('src/surfaces/KioskApp.jsx');
-  assert.match(k, /basket: \{ subtotal: promoBasket \},/);
+  assert.match(k, /basket: \{ subtotal: promoBasket, \.\.\.\(Array\.isArray\(promoLines\) \? \{ lines: promoLines \} : \{\}\) \},/);
   assert.doesNotMatch(k, /basket: \{ subtotal: total \}/, 'never the grand total with the tip in it');
   assert.match(k, /<ScreenGiftPromo brandColor=\{brandColor\} total=\{grandTotal\} promoBasket=\{promoBasketValue\(\{ discountedSub: discountedSubtotal \}\)\}/);
   const submit = between(k, 'const submitOrder = useCallback(async (nameOverride, phoneOverride, cardPayment) => {', 'tableNumber, resetSession]);');
@@ -120,7 +120,7 @@ test('promo code on the kiosk: both designs check, value and record a code on th
   assert.doesNotMatch(submit, /basketValue: subtotal,/);
   const v2 = readRepo('src/surfaces/kiosk/useKioskCheckout.js');
   assert.match(v2, /const promoBasket = kioskPromoBasket\(discountedSubtotal\);/);
-  assert.equal((v2.match(/api\.validatePromo\(\{ code, locationId, customerId, subtotal: promoBasket \}\)/g) || []).length, 2, 'the code box and the re-check');
+  assert.equal((v2.match(/api\.validatePromo\(\{ code, locationId, customerId, subtotal: promoBasket, lines: promoLines \}\)/g) || []).length, 2, 'the code box and the re-check');
   assert.doesNotMatch(v2, /customerId, subtotal \}\)/);
 });
 
@@ -302,4 +302,53 @@ test('bar tab: a manual 10% discount on the tab charges, taxes and records what 
   const store = readRepo('src/store/index.js');
   assert.match(store, /addTabDiscount: \(tabId, discount\) => \{/);
   assert.match(store, /const d = scrubDiscount\(discount\);/, 'the manager is a name tag, never the staff record');
+});
+
+// ── A promo code follows its own offer rules on every channel (v5.11.81, confirmed minor) ────────
+test('promo code: an offer for some categories, a free item, free delivery and bonus points work the same on the till, kiosk, online, catering and the server', async () => {
+  const { promoDiscountForBasket, promoBasketLines } = await import('../../../supabase/functions/_shared/promoMath.js');
+  const { computeDiscount } = await import('../../../supabase/functions/_shared/promo.ts');
+  // A till basket: 2 lattes (coffee, 3.20 each) and a toastie (food, 6.60), no deals: 13.00.
+  const till = [
+    { uid: 'a', itemId: 'latte', cat: 'coffee', price: 3.2, qty: 2 },
+    { uid: 'b', itemId: 'toastie', cat: 'food', price: 6.6, qty: 1 },
+  ];
+  const lines = promoBasketLines(till);
+  const off = (offer) => promoDiscountForBasket(offer, { subtotal: 13, lines, deliveryFee: 2.5 }).amount;
+  assert.equal(off({ reward_type: 'percent', reward_value: 20, include_category_ids: ['coffee'] }), 1.28, '20% of the coffee only, never of the toastie');
+  assert.equal(off({ reward_type: 'percent', reward_value: 20, exclude_category_ids: ['coffee'] }), 1.32);
+  assert.equal(off({ reward_type: 'free_item', reward_value: 0, reward_item_id: 'latte' }), 3.2, 'one latte free');
+  assert.equal(promoDiscountForBasket({ reward_type: 'free_item', reward_item_id: 'cake' }, { subtotal: 13, lines }).missing, true, 'not in the basket: said, never "applied" for nothing');
+  assert.equal(off({ reward_type: 'free_delivery' }), 2.5, 'the delivery fee');
+  assert.equal(promoDiscountForBasket({ reward_type: 'points_bonus', reward_value: 50 }, { subtotal: 13, lines }).points, 50);
+  // A size of the free item counts, at its own price.
+  assert.equal(promoDiscountForBasket({ reward_type: 'free_item', reward_item_id: 'latte' }, { subtotal: 4, lines: [{ itemId: 'latte-l', parentId: 'latte', cat: 'coffee', price: 4, qty: 1 }] }).amount, 4);
+  // No rule and no lines: exactly the old figures (promo.ts computeDiscount on a subtotal).
+  for (const o of [{ reward_type: 'percent', reward_value: 10 }, { reward_type: 'fixed', reward_value: 5 }, { reward_type: 'free_item', reward_value: 0, reward_item_id: 'latte' }]) {
+    assert.deepEqual({ ...computeDiscount(o, 13) }, { ...promoDiscountForBasket(o, { subtotal: 13 }) });
+  }
+  assert.equal(computeDiscount({ reward_type: 'percent', reward_value: 10 }, 12.35).amount, 1.24, 'pounds, rounded once, as before');
+  // A page line keeps its options apart; the basket line folds them in, as the server values a line.
+  assert.deepEqual(promoBasketLines([{ itemId: 'latte', cat: 'coffee', price: 3.2, qty: 1, mods: [{ price: 0.5 }] }], { modsInPrice: false })[0].price, 3.7);
+  // Every channel sends its lines; the server's public order maths is the same, in pence (20261020a).
+  assert.match(readRepo('src/surfaces/CheckoutModal.jsx'), /const lines = promoBasketLines\(items\);/);
+  assert.match(readRepo('src/surfaces/KioskApp.jsx'), /promoLines=\{promoBasketLines\(cart\)\}/);
+  assert.match(between(readRepo('src/surfaces/KioskApp.jsx'), 'const submitOrder = useCallback(', 'tableNumber, resetSession]);'), /basketLines: promoBasketLines\(cart\),/);
+  assert.match(readRepo('src/surfaces/kiosk/useKioskCheckout.js'), /const promoLines = useMemo\(\(\) => promoBasketLines\(cart\), \[cart\]\);/);
+  assert.equal((readRepo('src/surfaces/online/OnlineCheckout.jsx').match(/promoBasketLines\(cart, \{ modsInPrice: false \}\)/g) || []).length, 2);
+  assert.equal((readRepo('src/surfaces/catering/CateringCheckout.jsx').match(/promoBasketLines\(cart, \{ modsInPrice: false \}\)/g) || []).length, 2);
+  assert.match(readRepo('src/store/index.js'), /basketLines: Array\.isArray\(promo\.basketLines\) \? promo\.basketLines : null,/);
+  const fn = readRepo('supabase/functions/promo-redeem/index.ts');
+  assert.match(fn, /const discount = computeDiscountForBasket\(offer, \{/);
+  assert.match(fn, /if \(\(discount as any\)\.missing\) return \{ reason: 'free_item_not_in_basket' as const/);
+  const sql = readRepo('supabase/migrations/20261020a_OPS_channel_parity_2.sql');
+  const promoFn = between(sql, 'CREATE OR REPLACE FUNCTION public._public_order_promo(', '$function$;');
+  assert.match(promoFn, /p_lines jsonb DEFAULT NULL::jsonb, p_delivery_minor bigint DEFAULT 0\)/);
+  assert.match(promoFn, /when 'free_delivery' then greatest\(0, coalesce\(p_delivery_minor, 0\)\) \/ 100\.0/);
+  assert.match(sql, /drop function if exists public\._public_order_promo\(text, text, bigint, text, boolean\);/);
+  assert.equal((between(sql, 'CREATE OR REPLACE FUNCTION public.place_public_order(', '$function$;').match(/v_check_id, (false|true), v_val -> 'lines',/g) || []).length, 2);
+  // Bonus points are credited with the sale (loyalty-earn reads the check's own promo line).
+  const earn = readRepo('supabase/functions/loyalty-earn/index.ts');
+  assert.match(earn, /const codes = promoCodesOnCheck\(check as any\);/);
+  assert.match(earn, /pointsEarned \+= promoBonus;/);
 });

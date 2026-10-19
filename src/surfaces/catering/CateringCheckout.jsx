@@ -22,6 +22,7 @@ import { sendEmailReceipt } from '../../lib/sendReceipt';
 import { getDeliveryQuote, recordDeliverySurcharge } from '../../lib/delivery/quoteService';
 import AddressAutocomplete from '../../components/AddressAutocomplete';
 import { commitRedemption } from '../../lib/commitRedemptions';
+import { promoBasketLines } from '../../../supabase/functions/_shared/promoMath.js';   // v5.11.81: a code's own rules
 import { tipRuleFromCatering, tipChips, tipInitialKey, tipAmount as calcTip } from '../../lib/tipping';
 import { wallTimeToInstantMs, cateringPrepMinutes, cateringFireMs } from '../../lib/cateringRules';
 import { tender, finishTenders } from '../../lib/accounting/tenders';
@@ -147,12 +148,13 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
     ...(isDelivery && deliveryQuote?.mode ? { delivery_mode: deliveryQuote.mode } : {}),   // fire-time dispatch reads this
     ...pay,
   });
-  const promoReason = (r, min) => ({ not_found: "That code isn't valid.", expired: 'That code has expired.', already_used: 'That code has already been used.', voided: 'That code is no longer valid.', inactive: "That offer isn't active.", not_yet_active: "That offer hasn't started yet.", wrong_venue: "That code isn't valid here.", usage_limit: 'That code has reached its limit.', customer_required: 'That code is linked to an account — order signed in to use it.', customer_mismatch: 'That code is linked to a different account.', min_spend: `Spend at least ${money(min || 0, cur)} to use this code.` }[r] || "That code can't be used.");
+  const promoReason = (r, min) => ({ free_item_not_in_basket: 'Add the free item to your order first.', not_found: "That code isn't valid.", expired: 'That code has expired.', already_used: 'That code has already been used.', voided: 'That code is no longer valid.', inactive: "That offer isn't active.", not_yet_active: "That offer hasn't started yet.", wrong_venue: "That code isn't valid here.", usage_limit: 'That code has reached its limit.', customer_required: 'That code is linked to an account — order signed in to use it.', customer_mismatch: 'That code is linked to a different account.', min_spend: `Spend at least ${money(min || 0, cur)} to use this code.` }[r] || "That code can't be used.");
   const applyPromo = async () => {
     const code = promo.trim(); if (!code) return;
     setPromoBusy(true); setPromoErr(''); setPromoApplied(null);
     try {
-      const { data, error } = await supabase.functions.invoke('promo-redeem', { body: { action: 'validate', code, location_id: opsId, basket: { subtotal } } });
+      // v5.11.81: with the basket's lines and delivery fee (_shared/promoMath.js): category rules, a free item, free delivery.
+      const { data, error } = await supabase.functions.invoke('promo-redeem', { body: { action: 'validate', code, location_id: opsId, basket: { subtotal, lines: promoBasketLines(cart, { modsInPrice: false }), delivery_fee: Number(deliveryFee) || 0 } } });
       if (error) throw new Error(error.message);
       if (!data?.valid) { setPromoErr(promoReason(data?.reason, data?.min_spend)); return; }
       setPromoApplied({ code: code.toUpperCase(), amount: Number(data.discount?.amount || 0), name: data.offer?.name || 'Promo' });
@@ -182,6 +184,8 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
       channel: 'catering',
       code: promoApplied.code,
       basketValue: subtotal,
+      basketLines: promoBasketLines(cart, { modsInPrice: false }),   // v5.11.81: the same lines it was checked with
+      deliveryFee: Number(deliveryFee) || 0,
     }, { functionsUrl: FUNCTIONS_URL, token: await ensureAuthToken().catch(() => null) });
     if (!r.ok && !r.queued) {
       logActivity(opsId, {

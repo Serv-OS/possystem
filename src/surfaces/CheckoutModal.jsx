@@ -42,6 +42,7 @@ import { orderFlag, flagTableLabel } from '../lib/tillOrderType';   // 30 Sep 20
 import { bookingCreditFor, bookingLegsForBill } from '../lib/bookings/bookingCredit';   // 16 Oct 2026: one booking credit helper (order screen, table card, checkout)
 import { placedPromoFor } from '../lib/orderPlacedFrom';   // v5.11.78 round 1: an order's own promo, as a promo credit
 import { promoBasketValue, heldPromo } from '../lib/promoBasis';   // 19 Oct 2026 (v5.11.78): one promo basket on every channel
+import { promoBasketLines } from '../../supabase/functions/_shared/promoMath.js';   // v5.11.81: the basket's lines for a code's own rules
 import { mintCheckId } from '../lib/walkInCheckId';   // v5.11.81: one check id per counter basket
 // (readerDisplay imports removed — cancel now lets the natural cart-change effect refresh the reader after onBack)
 
@@ -1652,18 +1653,21 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     if (!code) return { error: 'Enter a code' };
     if (promoApplied) return { error: 'A promo code is already applied' };
     try {
+      // v5.11.81: with the basket's lines and delivery fee, so the offer's category rules, a free
+      // item and free delivery are worked out (lib/promoBasis.js, _shared/promoMath.js).
+      const lines = promoBasketLines(items);
       const { data, error } = await supabase.functions.invoke('promo-redeem', { body: {
         action: 'validate', code, location_id: getActiveLocationSync(),
-        customer_id: customer?.customerId || customer?.id || null, basket: { subtotal: promoBasis },
+        customer_id: customer?.customerId || customer?.id || null, basket: { subtotal: promoBasis, lines, delivery_fee: Number(deliveryFee) || 0 },
       } });
       if (error) throw new Error(error.message);
       if (data?.valid) {
         // `basket` rides on the held promo so the redeem records the same basket (store
         // redeemPromoCode reads it through promoRedeemBasket). Built by lib/promoBasis.js heldPromo.
-        setPromoApplied(heldPromo(code, data, promoBasis));
+        setPromoApplied(heldPromo(code, data, promoBasis, lines, Number(deliveryFee) || 0));
         return { ok: true };
       }
-      const reasons = { not_found: 'Code not found', expired: 'Code expired', not_yet_active: 'Not active yet', already_used: 'Already used', usage_limit: 'Usage limit reached', min_spend: `Minimum spend ${money(Number(data?.min_spend || 0))}`, wrong_venue: 'Not valid at this venue', customer_mismatch: 'Belongs to another customer', customer_required: 'Attach the customer first', inactive: 'Offer inactive', voided: 'Code voided' };
+      const reasons = { free_item_not_in_basket: 'Add the free item to the order first', not_found: 'Code not found', expired: 'Code expired', not_yet_active: 'Not active yet', already_used: 'Already used', usage_limit: 'Usage limit reached', min_spend: `Minimum spend ${money(Number(data?.min_spend || 0))}`, wrong_venue: 'Not valid at this venue', customer_mismatch: 'Belongs to another customer', customer_required: 'Attach the customer first', inactive: 'Offer inactive', voided: 'Code voided' };
       return { error: reasons[data?.reason] || 'Invalid code' };
     } catch (e) { return { error: e.message || 'Could not check code' }; }
   };

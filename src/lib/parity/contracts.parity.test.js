@@ -92,7 +92,7 @@ test('migration 20261020a: ASCII only, one transaction, a guard, a visible check
     assert.match(sql, /This (migration )?must be run against the OPS DB/, `${name}: the guard`);
     assert.match(sql, /\nselect\n[\s\S]+;\s*$/, `${name}: ends with the visible check`);
   }
-  for (const fn of ['_vat_for_lines', '_public_order_value', 'settle_qr_tab']) {
+  for (const fn of ['_vat_for_lines', '_public_order_value', 'settle_qr_tab', '_public_order_promo', 'place_public_order']) {
     assert.match(fwd, new RegExp(`CREATE OR REPLACE FUNCTION public\\.${fn}\\(`), `forward replaces ${fn}`);
     assert.match(back, new RegExp(`CREATE OR REPLACE FUNCTION public\\.${fn}\\(`), `rollback restores ${fn}`);
   }
