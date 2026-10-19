@@ -136,12 +136,14 @@ test('the migration and its rollback: present, ASCII only, bare statements, a vi
   assert.doesNotMatch(mig, /add column if not exists voided_items/, 'closed_checks is not altered (hottest realtime table)');
 });
 
-test('version and changelog say 5.11.77', async () => {
+test('version is 5.11.77 or later and the 5.11.77 changelog entry names the update', async () => {
   const { VERSION } = await import('../version.js');
-  assert.equal(VERSION, '5.11.77');
+  const num = (v) => v.split('.').map(Number).reduce((a, n) => a * 1000 + n, 0);
+  assert.ok(num(VERSION) >= num('5.11.77'), `version ${VERSION} is at least 5.11.77`);
   const { CHANGELOG } = await import('../changelog.js');
-  assert.equal(CHANGELOG[0].v, '5.11.77');
-  assert.ok(CHANGELOG[0].items.some((t) => /20261018c/.test(t)), 'the changelog names the database update');
-  assert.ok(CHANGELOG[0].items.some((t) => /Nothing changes at any venue until ServOS switches it on/.test(t)), 'and says nothing moves until a venue is switched on');
-  for (const t of CHANGELOG[0].items) assert.doesNotMatch(t, /[–—]/, 'no dashes as punctuation');
+  const entry = CHANGELOG.find((e) => e.v === '5.11.77');
+  assert.ok(entry, 'the 5.11.77 entry is kept');
+  assert.ok(entry.items.some((t) => /20261018c/.test(t)), 'the changelog names the database update');
+  assert.ok(entry.items.some((t) => /Nothing changes at any venue until ServOS switches it on/.test(t)), 'and says nothing moved until a venue was switched on (true at release; 20261019 made it the default)');
+  for (const t of entry.items) assert.doesNotMatch(t, /[–—]/, 'no dashes as punctuation');
 });

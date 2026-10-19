@@ -9,6 +9,7 @@
 // maps `tenders` (lib/accounting/tenders.js). Pure: no supabase import, testable in Node.
 import { scrubDiscounts, scrubItemDiscounts } from './discountApprover.js';
 import { roundVat } from './taxRule.js';
+import { stampDiscountAmounts } from './taxBasis.js';
 
 export function closedCheckRow(check, locationId) {
   const row = {
@@ -23,7 +24,9 @@ export function closedCheckRow(check, locationId) {
     // v5.10.0: a discount's approving manager leaves the till as { id, name, role } only, never
     // the staff record with its PIN (lib/discountApprover.js). Covers open tables loaded from before.
     items:        scrubItemDiscounts(check.items),
-    discounts:    scrubDiscounts(check.discounts),
+    // 19 Oct 2026 (v5.11.78): a manual percent discount stores what the bill took off on these
+    // lines, never the figure frozen when it was applied (taxBasis.stampDiscountAmounts).
+    discounts:    scrubDiscounts(stampDiscountAmounts(check.items, check.discounts)),
     subtotal:     check.subtotal,
     service:      check.service,
     tip:          check.tip,

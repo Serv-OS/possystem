@@ -175,7 +175,8 @@ test('store: the default applies at boot and profile apply, after every walk in,
   // setDeviceConfig (boot, Apply to this terminal, Push to POS) applies it only while nothing is rung up.
   has(src, "if (!get().activeTableId && !get().walkInOrder?.items?.length) {\n      const startType = defaultOrderTypeFor(finalConfig);", 'setDeviceConfig');
   // clearWalkIn goes back to the default, not always dine in.
-  has(src, "clearWalkIn: () => set(s => ({ walkInOrder:null, customer:null, orderType:defaultOrderTypeFor(s.deviceConfig), pendingLoyaltyReward:null }))", 'clearWalkIn');
+  // v5.11.78 round 1: it also drops the delivery quote (a fee an opened order brought must not stay).
+  has(src, "clearWalkIn: () => set(s => ({ walkInOrder:null, customer:null, orderType:defaultOrderTypeFor(s.deviceConfig), pendingLoyaltyReward:null, deliveryQuote:null }))", 'clearWalkIn');
   // Floor tables still open as dine in (Peter: real tables must stay dine in).
   assert.ok((src.match(/surface:'pos', orderType:'dine-in'/g) || []).length >= 4, 'table opens set dine-in');
   has(src, "set({ activeTableId:tableId, surface:'pos', orderType:'dine-in', walkInOrder:null, customer:null });", 'openTable stays dine-in');

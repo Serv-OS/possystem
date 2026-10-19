@@ -39,7 +39,12 @@ export function packageLinePrice(paymentModel, priceOverride, menuPrice) {
 // priceOverride, isPreorderChoice}]). preorders: [{id, seat, guestName,
 // itemId, displayName, course, notes, mods?, variantItemId?, variantName?}].
 // menuItems: the live menu (id, name, menuName, price, allergens).
-export function packageItemsFor({ pkg, covers, preorders = [], menuItems = [], now = Date.now(), prepayCaptured = true }) {
+// priceOf (19 Oct 2026, v5.11.78 channel parity): what a menu row costs at the table. The store
+// passes the till's own resolver for eat in on the menu that is on at the booking's time
+// (bookingsSlice.packageLinesToItems), so a seated line is what the counter would ring: a 12oz on
+// the Main menu's 34.00 tier seated at its 26.00 base before. Absent: the row's own price (the base
+// price, mapMenuItemRow), exactly as before.
+export function packageItemsFor({ pkg, covers, preorders = [], menuItems = [], now = Date.now(), prepayCaptured = true, priceOf = (row) => row?.price }) {
   if (!pkg) return [];
   // v5.7.23 - the prepay zero-pricing is EARNED by captured money, never by
   // the package model alone: a prepay booking with NO captured, un-applied
@@ -105,7 +110,7 @@ export function packageItemsFor({ pkg, covers, preorders = [], menuItems = [], n
         uid: `pl-${l.id}-${now}`,
         itemId: l.itemId || `pkg-line-${l.id}`,
         name: l.displayName || mi?.name || 'Package item',
-        price: packageLinePrice(model, l.priceOverride, mi?.price),
+        price: packageLinePrice(model, l.priceOverride, mi ? priceOf(mi) : undefined),
         qty: Math.max(1, Math.round((l.qtyPerCover || 1) * covers)),
         mods: [], notes: '', allergens: mi?.allergens || [],
         course: l.course ?? 0,
@@ -146,9 +151,10 @@ export function packageItemsFor({ pkg, covers, preorders = [], menuItems = [], n
       (l.itemId && r.itemId && l.itemId === r.itemId) ||
       (norm(l.displayName) && norm(l.displayName) === norm(r.displayName))
     )) || null;
+    const pricedMenu = priced ? priceOf(priced) : undefined;
     const linePrice = base
-      ? packageLinePrice(model, base.priceOverride, priced?.price)
-      : (model === 'prepay' ? 0 : (priced?.price ?? 0));
+      ? packageLinePrice(model, base.priceOverride, pricedMenu)
+      : (model === 'prepay' ? 0 : (pricedMenu ?? 0));
     const who = [r.seat ? `Seat ${r.seat}` : null, r.guestName || null].filter(Boolean).join(' · ');
     const dish = r.displayName || mi?.name || 'Pre-order';
     return {
@@ -159,6 +165,8 @@ export function packageItemsFor({ pkg, covers, preorders = [], menuItems = [], n
       qty: 1,
       mods,
       ...(variantName ? { variantName } : {}),
+      // 19 Oct 2026: the size row the guest picked (itemId stays the package line's item).
+      ...(r.variantItemId ? { variantItemId: r.variantItemId } : {}),
       notes: [who, r.notes || null].filter(Boolean).join(' · '),
       allergens: (size?.allergens?.length ? size.allergens : mi?.allergens) || [],
       course: r.course ?? 0,

@@ -140,3 +140,15 @@ export function offerScaledTax(tax, scale) {
     share: scale,
   };
 }
+
+/**
+ * 19 Oct 2026 (v5.11.78, channel parity): what a QR bill comes to, ONE formula for QR pay now and
+ * every round of a QR tab: the goods after the venue's automatic offers, plus any added on (US)
+ * tax, plus the QR service charge, plus the tip. A tab's later rounds used to be booked as the
+ * shelf goods plus a tip the guest never saw (the venue's default QR tip was pre-selected but
+ * never shown on the Add to your tab sheet): no offer, no service charge. Pence, rounded once.
+ */
+export function qrBillTotal({ discountedSubtotal = 0, exclusiveTax = 0, serviceCharge = 0, tip = 0 } = {}) {
+  const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+  return +(n(discountedSubtotal) + n(exclusiveTax) + n(serviceCharge) + n(tip)).toFixed(2);
+}

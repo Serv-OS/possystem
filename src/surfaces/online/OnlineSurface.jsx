@@ -24,6 +24,8 @@ import { resolveActiveMenu } from '../../lib/menus/resolveActiveMenu';
 import { resolveItemPrice, repriceCartLines } from '../../lib/menuPricing';
 import { onlineSectionTrees, itemInSection } from '../../lib/onlineMenuTree';
 import { kitchenOverride, receiptOverride } from '../../lib/itemDisplay';
+import { lineTaxRefsFor } from '../../lib/taxRefs';
+import { lineCategories } from '../../lib/lineCategories';   // round 1 fix: one category rule on every channel
 import { dietaryBadges, DIET_LABELS } from '../../lib/dietary';
 import { getStashedTab, clearStashedTab, stashTab } from '../../lib/qrTabStorage';
 import { publicRead, ensureCustomerSession } from '../../lib/publicOrderClient';
@@ -655,16 +657,19 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
       // checkout stamps it onto order_queue/closed_checks items so printed +
       // emailed receipts read receiptName || name.
       receiptName: receiptOverride(item),
-      cat: item.cat || null,
-      cats: Array.isArray(item.cats) ? item.cats : null,
+      // Round 1 fix (19 Oct 2026): a size counts under its product's categories, "Also in" list
+      // included, as on the till, the kiosk and the server's deal check (lib/lineCategories.js).
+      // It read the size row's own, so an automatic deal could differ here from the till.
+      ...lineCategories(item, items),
       parentId: item.parent_id || item.parentId || null,
       // v5.5.154: snapshot tax info so the cart + checkout VAT breakdown
       // works without re-fetching menu_items for each line.
-      taxRateId: item.tax_rate_id || item.taxRateId || null,
-      taxOverrides: item.tax_overrides || item.taxOverrides || {},
-      // v5.7.34: snapshot the item's tax profile too (cascade step 1) — same
-      // add-time snapshot rule the POS order lines follow.
-      taxProfileId: item.tax_profile_id ?? item.taxProfileId ?? null,
+      // 19 Oct 2026 (v5.11.78, channel parity): through the till's own size rule
+      // (lib/taxRefs.js): a size with no VAT of its own follows its product, as on the till,
+      // kiosk and QR close. This page used to read the size row alone, so a size on "Use
+      // default" under a 5% product was charged the venue's 20% here and on QR pay now
+      // (which reads these lines). The profile stays the row's own (cascade step 1).
+      ...lineTaxRefsFor(item, items),
       price, qty, mods, notes: notes || '',
     }]);
     setOpenItem(null);

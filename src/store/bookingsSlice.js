@@ -32,6 +32,9 @@ import { dayRefreshAction, REFRESH_RETRY_MS } from '../lib/bookings/bookingsCatc
 import { bookingIdsToDepart } from '../lib/bookings/departOnClose.js';
 import { seatRefusal, undoCancelStatus } from '../lib/bookings/standRules.js';
 import { packageItemsFor } from '../lib/bookings/packagePricing.js';
+import { resolveItemPrice } from '../lib/menuPricing.js';
+import { resolveActiveMenu } from '../lib/menus/resolveActiveMenu.js';
+import { wallTimeToInstantMs } from '../lib/cateringRules.js';
 import { optimiserTables } from '../lib/bookings/optimiserTables.js';
 import { validateEdit, conflictsFor, paymentAfterEdit, stampEdit, hasGuest, describeChanges, editRefusal, MOVE_NON_BLOCKING, bookingRefusalWords, standTimeRefusal } from '../lib/bookings/editRules.js';
 import { logActivity } from '../lib/activity.js';
@@ -640,10 +643,27 @@ export function bookingsSlice(set, get) {
     // auto-materialise — only actual booking_preorders picks land.
     // v5.7.23: prepayCaptured gates the 0.00 pricing. A prepay booking with
     // NO captured credit on the ledger prices like deposit (real prices).
-    packageLinesToItems: (packageId, covers, preorders = [], { prepayCaptured = true } = {}) => {
+    // 19 Oct 2026 (v5.11.78, channel parity): priced as the counter rings eat in, on the menu that
+    // is on at the booking's own time (the till's resolver over this device's menus, categories and
+    // links, read on the venue clock at the booking slot, never the store's activeMenuId, which a host
+    // stand never sets). `at` is the booking slot (date and start time); absent, now.
+    packageLinesToItems: (packageId, covers, preorders = [], { prepayCaptured = true, at = null } = {}) => {
       const pkg = (get().packages || []).find((p) => p.id === packageId);
       if (!pkg) return [];
-      return packageItemsFor({ pkg, covers, preorders, menuItems: get().menuItems || [], prepayCaptured });
+      const st = get();
+      const tz = st.locationConfig?.timezone || 'Europe/London';
+      const atMs = at && at.date && at.time ? wallTimeToInstantMs(at.date, at.time, tz) : NaN;
+      let menuId = null;
+      try {
+        menuId = resolveActiveMenu({
+          menus: st.menus, categories: st.menuCategories, links: st.categoryLinks, timezone: tz,
+          ...(Number.isFinite(atMs) ? { now: new Date(atMs) } : {}),
+        });
+      } catch { menuId = null; }
+      return packageItemsFor({
+        pkg, covers, preorders, menuItems: st.menuItems || [], prepayCaptured,
+        priceOf: (row) => resolveItemPrice(row, 'dine-in', menuId),
+      });
     },
 
     // ── per-seat pre-orders (Phase 4) ────────────────────────────────────────
@@ -783,7 +803,7 @@ export function bookingsSlice(set, get) {
         // pre-orders (if taken at booking) become the choice lines, each
         // carrying "Seat N · Name" so the kitchen knows whose plate it is.
         const preorders = b.packageId ? await get().loadPreorders?.(b.id) : [];
-        const pkgItems = b.packageId ? get().packageLinesToItems?.(b.packageId, b.covers, preorders || [], { prepayCaptured }) : [];
+        const pkgItems = b.packageId ? get().packageLinesToItems?.(b.packageId, b.covers, preorders || [], { prepayCaptured, at: { date: b.date, time: b.startTime } }) : [];
         const bookingRef = {
           bookingId: b.id,
           packageId: b.packageId || null,

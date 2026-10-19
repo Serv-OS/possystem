@@ -1,0 +1,76 @@
+// contracts.parity.test.js: what v5.11.78 must never change, and how its SQL is shaped.
+// Run: node --test src/lib/parity/contracts.parity.test.js
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { kioskLineTaxRefs } from '../kioskLine.js';
+import { cartUnitPrice } from '../menuPricing.js';
+import { STORE_MENU } from './fixtures.js';
+import { readRepo } from './src.js';
+
+// The kiosk's tax references as they were on v5.11.75, verbatim (kioskLine.js). The card path is
+// signed (kioskCardPathGuard): the kiosk now calls the shared size rule, and every figure it
+// produces must be the same.
+function oldKioskLineTaxRefs(l) {
+  const item = l?.item || {};
+  const v = l?.variant || null;
+  const own = (row) => ({
+    rate: row?.taxRateId ?? row?.tax_rate_id ?? null,
+    ov: row?.taxOverrides ?? row?.tax_overrides ?? null,
+    profile: row?.taxProfileId ?? row?.tax_profile_id ?? null,
+  });
+  const parent = own(item);
+  if (!v) return { taxRateId: parent.rate || null, taxOverrides: parent.ov || {}, taxProfileId: parent.profile || null };
+  const child = own(v);
+  let taxRateId = child.rate || null;
+  let taxOverrides = child.ov && typeof child.ov === 'object' ? child.ov : {};
+  if (Object.keys(taxOverrides).length === 0) {
+    taxOverrides = parent.ov && typeof parent.ov === 'object' ? parent.ov : {};
+    if (!taxRateId) taxRateId = parent.rate || null;
+  }
+  return { taxRateId, taxOverrides, taxProfileId: child.profile || parent.profile || null };
+}
+
+test('the kiosk\'s tax references are exactly what they were, on every row shape', () => {
+  const rates = [null, 'r20', 'r5'];
+  const ovs = [null, {}, { takeaway: 'r0' }];
+  const profiles = [null, 'p1'];
+  let n = 0;
+  for (const pr of rates) for (const pov of ovs) for (const pp of profiles)
+    for (const cr of rates) for (const cov of ovs) for (const cp of profiles) for (const sized of [true, false]) {
+      const item = { id: 'p', tax_rate_id: pr, tax_overrides: pov, tax_profile_id: pp };
+      const variant = sized ? { id: 'c', taxRateId: cr, taxOverrides: cov, taxProfileId: cp } : null;
+      const l = { item, variant };
+      assert.deepEqual(kioskLineTaxRefs(l), oldKioskLineTaxRefs(l), JSON.stringify(l));
+      n++;
+    }
+  assert.equal(n, 648);
+});
+
+test('the till line price helper is the till\'s own call, with its fallback', async () => {
+  const { tillLineUnitPrice } = await import('../tillLine.js');
+  for (const row of STORE_MENU) for (const ch of ['dine-in', 'takeaway', 'drive-thru', 'bar-tab']) for (const m of [null, 'bar', 'lunch']) {
+    for (const lp of [null, undefined, 7.5]) assert.equal(tillLineUnitPrice(row, ch, m, lp, 3), cartUnitPrice(row, ch, m, lp, 3));
+  }
+});
+
+test('migration 20261019a: ASCII only, one transaction, a guard, a visible check, and a rollback that puts back every function', () => {
+  const fwd = readRepo('supabase/migrations/20261019a_OPS_channel_parity.sql');
+  const back = readRepo('supabase/migrations/20261019a_OPS_channel_parity_ROLLBACK.sql');
+  for (const [name, sql] of [['forward', fwd], ['rollback', back]]) {
+    assert.equal([...sql].filter((ch) => ch.charCodeAt(0) > 127).length, 0, `${name}: ASCII only`);
+    assert.match(sql, /^begin;$/m, `${name}: one transaction`);
+    assert.match(sql, /^commit;$/m, name);
+    assert.match(sql, /This (migration )?must be run against the OPS DB/, `${name}: the guard`);
+    assert.match(sql, /\nselect\n[\s\S]+;\s*$/, `${name}: ends with the visible check`);
+  }
+  for (const fn of ['_public_order_check_row', 'settle_qr_tab', '_public_order_value']) {
+    assert.match(fwd, new RegExp(`CREATE OR REPLACE FUNCTION public\\.${fn}\\(`), `forward replaces ${fn}`);
+    assert.match(back, new RegExp(`CREATE OR REPLACE FUNCTION public\\.${fn}\\(`), `rollback restores ${fn}`);
+  }
+  assert.match(fwd, /create or replace function public\._order_line_folded\(p_line jsonb\)/);
+  assert.match(back, /drop function if exists public\._order_line_folded\(jsonb\);/);
+  assert.match(fwd, /revoke execute on function public\._order_line_folded\(jsonb\) from public, anon, authenticated;/, 'the helper is never callable from a browser');
+  // Never a live tax calculation (central_tax_constraints.md): no new tax maths in the file.
+  assert.doesNotMatch(fwd.replace(/CREATE OR REPLACE FUNCTION public\.(_public_order_check_row|settle_qr_tab|_public_order_value)\([\s\S]+?\$function\$;/g, ''), /_vat_for_lines|_public_order_vat\(/);
+});

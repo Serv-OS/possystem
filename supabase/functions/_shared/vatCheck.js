@@ -51,6 +51,9 @@ export function judgeSale(row, { rates, menu, profilesInUse = false } = {}) {
   if (rec && Array.isArray(rec.fallbacks)) out.fallbacks = rec.fallbacks.filter((f) => f && typeof f === 'object').map((f) => ({ reason: f.reason, name: f.name ?? null, rateId: f.rateId ?? null }));
   if (r.taxAmount == null) return { ...out, verdict: 'no-vat' };
   if (profilesInUse) return { ...out, verdict: 'not-checked', why: 'tax profiles in use' };
+  // 19 Oct 2026 (v5.11.78): a sale whose tax the platform set (an ezCater order, booked with
+  // ezCater's own figures) is never judged against our rates: said so, never counted as ok.
+  if (rec && rec.engine === 'ezcater') return { ...out, verdict: 'not-checked', why: 'tax set by ezCater' };
   const d = rederiveSale(row, { rates, menu });
   if (!d.ok || d.totalTax == null) return { ...out, verdict: 'not-checked', why: d.reason || 'could not be worked out', share: d.share };
   out.derived = d.totalTax;

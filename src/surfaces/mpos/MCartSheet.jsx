@@ -12,21 +12,18 @@
 
 import { useMemo, useState, useEffect } from 'react';
 import { useStore } from '../../store';
-import { computeOrderTaxUnified } from '../../lib/taxCompute';
-import { LINES_ONLY_BASIS, linesAfterItemDiscounts } from '../../lib/taxBasis';
-import { inclusiveTaxOnCharged, linesGoods } from '../../lib/taxShare';
 import { receiptTargetStatus } from '../../lib/printer';
+import { lineAfterItemDiscount } from '../../lib/taxBasis';
 import { Sx, money, STATUS_PILL } from './MShellStyles';
 import MItemActions from './MItemActions';
 import MOrderActions from './MOrderActions';
 
-// 27 Sep 2026: the cart's tax on what MPOS charges (each line after its item discount, never the
-// check or auto discounts): UK inclusive VAT on the lines as discounted, as the close books it.
-function linesOnlyTax(items, taxCtx, orderType) {
-  try {
-    return inclusiveTaxOnCharged(computeOrderTaxUnified(items, taxCtx, orderType, LINES_ONLY_BASIS), linesGoods(items), linesAfterItemDiscounts(items));
-  } catch { return null; }
-}
+// 19 Oct 2026 (v5.11.78, channel parity): the cart shows, prints and MTender charges ONE bill, the
+// till's own (store.getPOSTotals, payments/checkTotals.computeCheckTotals): item discounts of
+// either kind, check and automatic discounts, the service charge from this device's profile and
+// any added on tax. It used to show the lines before any discount (and read an amount item
+// discount as a percent), while the close booked the till's bill.
+const tillBill = () => { try { return useStore.getState().getPOSTotals(); } catch { return null; } };
 
 export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore }) {
   const {
@@ -76,14 +73,11 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
         const liveItems = activeTableId
           ? (tables.find(t => t.id === activeTableId)?.session?.items || []).filter(i => !i.voided)
           : (walkInOrder?.items || []);
-        const sub = liveItems.reduce((s, i) => {
-          const base = (i.price || 0) * (i.qty || 0);
-          return s + (i.discount?.value ? base * (1 - i.discount.value / 100) : base);
-        }, 0);
         // v5.5.342: compute VAT so the printed bill shows the tax breakdown.
-        // v5.9.12: on what MTender charges (lines after item discounts).
-        // 27 Sep 2026: UK inclusive VAT on the lines as discounted, as the close books it.
-        const billTax = linesOnlyTax(liveItems, useStore.getState().getTaxContext(), orderType);
+        // 19 Oct 2026 (v5.11.78): the till's bill, exactly what MTender then charges.
+        const bill = tillBill();
+        const sub = Number(bill?.subtotal) || 0;
+        const billTax = bill?.tax || null;
         const checkShape = {
           id: `bill-${Date.now()}`,
           ref: activeTableId
@@ -92,10 +86,12 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
           server: staff?.name || '',
           items: liveItems,
           subtotal: sub,
+          service: Number(bill?.service) || 0,
+          discounts: Array.isArray(bill?.checkDiscounts) ? bill.checkDiscounts : [],
           tip: 0,
           // v5.7.31 review fix: the printed bill must show the taxed total
-          // MTender then charges. UK inclusive: exclusiveTax is 0, unchanged.
-          total: sub + (Number(billTax?.exclusiveTax) || 0),
+          // MTender then charges (19 Oct 2026: the till's bill total).
+          total: Number(bill?.total) || 0,
           taxAmount: billTax?.totalTax ?? null,
           taxBreakdown: billTax,
           status: 'open',
@@ -109,7 +105,7 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
         const printPromise = Promise.resolve(printCustomerReceipt?.({
           location: locationConfig, check: checkShape,
           items: liveItems,
-          totals: { subtotal: sub, service: 0, tip: 0, grand: sub, taxBreakdown: billTax },
+          totals: { subtotal: sub, service: Number(bill?.service) || 0, tip: 0, grand: Number(bill?.total) || 0, taxBreakdown: billTax },
         }));
         const result = await Promise.race([printPromise, timeout]);
         if (result?.__timedOut) {
@@ -156,17 +152,18 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
   }, [activeTableId, tables, walkInOrder, orderType]);
 
   const items = sourceData.items.filter(i => !i.voided);
-  const subtotal = items.reduce((s, i) => s + (i.price || 0) * (i.qty || 0), 0);
   // v5.5.342: surface VAT on the cart (was missing). Inclusive VAT is extracted
   // from the price (shown "incl. VAT"); exclusive is added.
-  // v5.7.34: unified seam — same reads (totalTax / exclusiveTax / hasExclusiveTax).
-  const taxCtx = useStore(s => s.getTaxContext());
-  const taxResult = useMemo(() => linesOnlyTax(items, taxCtx, orderType), [items, taxCtx, orderType]);
+  // 19 Oct 2026 (v5.11.78): the till's bill (tillBill above), the figure MTender charges.
+  const bill = tillBill();
+  const taxResult = bill?.tax || null;
   const tax = Number(taxResult?.totalTax) || 0;
   // v5.7.31: the ADDED figure is the exclusive share only — on a mixed
   // inclusive+exclusive check, adding totalTax re-added the inclusive VAT.
-  const taxAdded = Number(taxResult?.exclusiveTax) || 0;
+  const taxAdded = Number(bill?.exclusiveTax) || 0;
   const taxExclusive = !!taxResult?.hasExclusiveTax;
+  // The bill before any added on tax (the "Subtotal" a US cart shows), else the whole bill.
+  const subtotal = Math.max(0, (Number(bill?.total) || 0) - taxAdded);
   const cartCount = items.reduce((s, i) => s + (i.qty || 0), 0);
   const sentCount = items.filter(i => i.status === 'sent').length;
   const pendingCount = items.length - sentCount;
@@ -429,10 +426,9 @@ function CourseGroupedItems({ items, onRemove, onInc, onDec, onActions }) {
         const courseItems = byCourse[c];
         const pending = courseItems.filter(i => i.status !== 'sent');
         const sent    = courseItems.filter(i => i.status === 'sent');
-        const courseSubtotal = courseItems.reduce((s, i) => {
-          const base = (i.price || 0) * (i.qty || 0);
-          return s + (i.discount?.value ? base * (1 - i.discount.value / 100) : base);
-        }, 0);
+        // 19 Oct 2026 (v5.11.78): each line after its own item discount, the till's reducer (an
+        // amount discount is an amount, never a percent).
+        const courseSubtotal = courseItems.reduce((s, i) => s + lineAfterItemDiscount(i), 0);
         const accent = courseAccent(c);
         return (
           <div key={c} style={{ marginBottom:14 }}>

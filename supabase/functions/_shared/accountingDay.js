@@ -82,6 +82,27 @@ export function canonicalMethod(raw) {
   return s;
 }
 
+/**
+ * 19 Oct 2026 (v5.11.78, channel parity): the check discounts that took MONEY off the bill.
+ * A promo code is a credit TENDER on every channel (the till's tillTenders, the kiosk, online,
+ * and catering since v5.11.78), and the server says the same ("Promo codes and loyalty rewards
+ * are tenders, not discounts"). The till ALSO keeps the code as a discounts[] line, for the
+ * receipt and the Exceptions report. Read as money as well, the code was counted twice: the
+ * Xero invoice posted it as a discount AND a credit, the Business summary named the check as a
+ * discount that differs, and the daily VAT check worked out VAT on the price less the code.
+ * So when the row carries a promo tender, its promo discount lines are display only and are
+ * left out here. A row with no promo tender (older rows, the 30 Jul ones with no tenders) keeps
+ * every line exactly as before. Same array back when nothing is left out.
+ */
+export function moneyDiscounts(row) {
+  const list = Array.isArray(row?.discounts) ? row.discounts : [];
+  if (!list.length) return list;
+  const tenders = Array.isArray(row?.tenders) ? row.tenders : [];
+  if (!tenders.some((t) => t && canonicalMethod(t.method) === 'promo')) return list;
+  const isPromoLine = (d) => !!d && typeof d === 'object' && (d.source === 'promo' || d.type === 'promo');
+  return list.some(isPromoLine) ? list.filter((d) => !isPromoLine(d)) : list;
+}
+
 export function tenderKind(method) {
   const m = canonicalMethod(method);
   if (m === 'split' || m === 'unallocated') return 'unallocated';

@@ -588,9 +588,13 @@ test('review: every closed-check door carries the VAT booked and its record (8 O
   assert.equal(bookedTaxRecord({ taxBreakdown: null }), null);
 });
 
-test('review: a catering record\'s delivery fee (booked in service) is counted once', () => {
-  assert.deepEqual(recordCheckBasis({ source: 'catering', service: 6, customer: { delivery_fee: 6 } }),
+test('v5.11.78: a catering record books its delivery fee once, in delivery_fee, like every source', () => {
+  // Catering wrote the fee into `service` too until v5.11.78 (no live catering row had one); it
+  // now books service 0 and the fee in customer.delivery_fee, so the basis reads it like online.
+  assert.deepEqual(recordCheckBasis({ source: 'catering', service: 0, customer: { delivery_fee: 6 } }),
     { discounts: [], service: 0, deliveryFee: 6 });
+  assert.deepEqual(recordCheckBasis({ source: 'online', service: 0, customer: { delivery_fee: 6 } }),
+    recordCheckBasis({ source: 'catering', service: 0, customer: { delivery_fee: 6 } }));
 });
 
 test('decision: a per-unit levy is added on top, so a part refund returns it with the items', () => {

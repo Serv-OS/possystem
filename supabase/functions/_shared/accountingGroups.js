@@ -39,7 +39,7 @@
 // A category id from another venue resolves through master_id to this venue's copy.
 
 import {
-  buildAccountingDay, checkTenderParts, refundParts, isVoidedCheck, taxContext, allocate, toMinor,
+  buildAccountingDay, checkTenderParts, refundParts, isVoidedCheck, taxContext, allocate, toMinor, moneyDiscounts,
 } from './accountingDay.js';
 
 export const OTHER_GROUP = 'other';
@@ -427,7 +427,8 @@ export function buildGroupedDay({ day, saleRows = [], refundRows = [], venue = {
     const remaining = afters.slice();
     const subtotalAfter = afters.reduce((s, v) => s + v, 0);
     const checkDiscounts = [];
-    for (const d of Array.isArray(row.discounts) ? row.discounts : []) {
+    // 19 Oct 2026 (v5.11.78): a promo code paid as a tender is posted once, as its credit (moneyDiscounts).
+    for (const d of moneyDiscounts(row)) {
       if (!d || typeof d !== 'object') continue;
       const amt = checkDiscountMinor(d, subtotalAfter);
       if (!amt) continue;

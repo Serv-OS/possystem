@@ -40,7 +40,8 @@ test('nobody writes the "option only sub item" rule again: they call isOptionOnl
   }
   assert.deepEqual(offenders, []);
   // 26 Sep 2026: PosWasteModal's product list moved to lib/stock/menuWaste.js (waste without stock), so the rule is checked there.
-  for (const rel of ['surfaces/POSSurface.jsx', 'surfaces/BarSurface.jsx', 'lib/stock/menuWaste.js', 'backoffice/sections/MenuManager.jsx', 'lib/kioskMenu.js', 'lib/menuBoardSections.js']) {
+  // 19 Oct 2026 (v5.11.78): the catering page too (it sold option only sub items as products).
+  for (const rel of ['surfaces/POSSurface.jsx', 'surfaces/BarSurface.jsx', 'lib/stock/menuWaste.js', 'backoffice/sections/MenuManager.jsx', 'lib/kioskMenu.js', 'lib/menuBoardSections.js', 'surfaces/catering/CateringSurface.jsx']) {
     assert.match(read(rel), /isOptionOnlyItem/, rel);
   }
 });

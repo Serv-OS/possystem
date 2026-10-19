@@ -1,0 +1,1736 @@
+{
+ "reference": "origin/main 2bbd9ecc (v5.11.75)",
+ "baskets": {
+  "sizes": {
+   "lines": [
+    {
+     "itemId": "beer-half",
+     "price": 3.01,
+     "qty": 2,
+     "taxRateId": "r20",
+     "taxOverrides": {}
+    },
+    {
+     "itemId": "beer-pint",
+     "price": 5,
+     "qty": 1,
+     "taxRateId": "r20",
+     "taxOverrides": {}
+    }
+   ],
+   "subtotal": 11.02,
+   "checkDiscount": 0,
+   "discountedSub": 11.02,
+   "service": 0,
+   "deliveryFee": 0,
+   "exclusiveTax": 0,
+   "total": 11.02,
+   "autoDiscounts": [],
+   "tax": {
+    "subtotal": 9.183333333333334,
+    "totalTax": 1.836666666666666,
+    "total": 11.02,
+    "exclusiveTax": 0,
+    "breakdown": [
+     {
+      "rate": {
+       "id": "r20",
+       "name": "Standard Rate",
+       "code": "VAT20",
+       "rate": 0.2,
+       "type": "inclusive",
+       "is_default": true,
+       "isDefault": true,
+       "active": true
+      },
+      "tax": 1.836666666666666,
+      "net": 9.183333333333334,
+      "gross": 11.02,
+      "items": 2
+     }
+    ],
+    "hasExclusiveTax": false,
+    "taxV2": {
+     "version": 2,
+     "source": "legacy",
+     "orderType": "takeaway",
+     "lines": [
+      {
+       "lineId": "legacy-line:r20",
+       "name": "Standard Rate",
+       "jurisdiction": null,
+       "mode": "inclusive",
+       "rate": 0.2,
+       "amount": 1.84
+      }
+     ],
+     "exclusiveTaxTotal": 0,
+     "inclusiveExtractedTotal": 1.84
+    },
+    "source": "legacy"
+   }
+  },
+  "options": {
+   "lines": [
+    {
+     "itemId": "toastie",
+     "price": 6.6,
+     "qty": 1,
+     "taxRateId": "r20",
+     "taxOverrides": {}
+    },
+    {
+     "itemId": "latte",
+     "price": 5.7,
+     "qty": 1,
+     "taxRateId": "r20",
+     "taxOverrides": {
+      "takeaway": "r0"
+     }
+    }
+   ],
+   "subtotal": 12.3,
+   "checkDiscount": 0,
+   "discountedSub": 12.3,
+   "service": 0,
+   "deliveryFee": 0,
+   "exclusiveTax": 0,
+   "total": 12.3,
+   "autoDiscounts": [],
+   "tax": {
+    "subtotal": 10.25,
+    "totalTax": 2.05,
+    "total": 12.3,
+    "exclusiveTax": 0,
+    "breakdown": [
+     {
+      "rate": {
+       "id": "r20",
+       "name": "Standard Rate",
+       "code": "VAT20",
+       "rate": 0.2,
+       "type": "inclusive",
+       "is_default": true,
+       "isDefault": true,
+       "active": true
+      },
+      "tax": 2.05,
+      "net": 10.25,
+      "gross": 12.3,
+      "items": 2
+     }
+    ],
+    "hasExclusiveTax": false,
+    "taxV2": {
+     "version": 2,
+     "source": "legacy",
+     "orderType": "dine-in",
+     "lines": [
+      {
+       "lineId": "legacy-line:r20",
+       "name": "Standard Rate",
+       "jurisdiction": null,
+       "mode": "inclusive",
+       "rate": 0.2,
+       "amount": 2.05
+      }
+     ],
+     "exclusiveTaxTotal": 0,
+     "inclusiveExtractedTotal": 2.05
+    },
+    "source": "legacy"
+   }
+  },
+  "order-type-takeaway": {
+   "lines": [
+    {
+     "itemId": "latte",
+     "price": 2.8,
+     "qty": 2,
+     "taxRateId": "r20",
+     "taxOverrides": {
+      "takeaway": "r0"
+     }
+    }
+   ],
+   "subtotal": 5.6,
+   "checkDiscount": 0,
+   "discountedSub": 5.6,
+   "service": 0,
+   "deliveryFee": 0,
+   "exclusiveTax": 0,
+   "total": 5.6,
+   "autoDiscounts": [],
+   "tax": {
+    "subtotal": 5.6,
+    "totalTax": 0,
+    "total": 5.6,
+    "exclusiveTax": 0,
+    "breakdown": [
+     {
+      "rate": {
+       "id": "r0",
+       "name": "Zero Rate",
+       "code": "ZERO",
+       "rate": 0,
+       "type": "inclusive",
+       "is_default": false,
+       "isDefault": false,
+       "active": true
+      },
+      "tax": 0,
+      "net": 5.6,
+      "gross": 5.6,
+      "items": 1
+     }
+    ],
+    "hasExclusiveTax": false,
+    "taxV2": {
+     "version": 2,
+     "source": "legacy",
+     "orderType": "takeaway",
+     "lines": [
+      {
+       "lineId": "legacy-line:r0",
+       "name": "Zero Rate",
+       "jurisdiction": null,
+       "mode": "inclusive",
+       "rate": 0,
+       "amount": 0
+      }
+     ],
+     "exclusiveTaxTotal": 0,
+     "inclusiveExtractedTotal": 0
+    },
+    "source": "legacy"
+   }
+  },
+  "order-type-collection": {
+   "lines": [
+    {
+     "itemId": "latte",
+     "price": 2.9,
+     "qty": 1,
+     "taxRateId": "r20",
+     "taxOverrides": {
+      "takeaway": "r0"
+     }
+    },
+    {
+     "itemId": "beer-half",
+     "price": 3.02,
+     "qty": 1,
+     "taxRateId": "r20",
+     "taxOverrides": {}
+    }
+   ],
+   "subtotal": 5.92,
+   "checkDiscount": 0,
+   "discountedSub": 5.92,
+   "service": 0,
+   "deliveryFee": 0,
+   "exclusiveTax": 0,
+   "total": 5.92,
+   "autoDiscounts": [],
+   "tax": {
+    "subtotal": 5.416666666666666,
+    "totalTax": 0.5033333333333334,
+    "total": 5.92,
+    "exclusiveTax": 0,
+    "breakdown": [
+     {
+      "rate": {
+       "id": "r20",
+       "name": "Standard Rate",
+       "code": "VAT20",
+       "rate": 0.2,
+       "type": "inclusive",
+       "is_default": true,
+       "isDefault": true,
+       "active": true
+      },
+      "tax": 0.5033333333333334,
+      "net": 2.5166666666666666,
+      "gross": 3.02,
+      "items": 1
+     },
+     {
+      "rate": {
+       "id": "r0",
+       "name": "Zero Rate",
+       "code": "ZERO",
+       "rate": 0,
+       "type": "inclusive",
+       "is_default": false,
+       "isDefault": false,
+       "active": true
+      },
+      "tax": 0,
+      "net": 2.9,
+      "gross": 2.9,
+      "items": 1
+     }
+    ],
+    "hasExclusiveTax": false,
+    "taxV2": {
+     "version": 2,
+     "source": "legacy",
+     "orderType": "collection",
+     "lines": [
+      {
+       "lineId": "legacy-line:r0",
+       "name": "Zero Rate",
+       "jurisdiction": null,
+       "mode": "inclusive",
+       "rate": 0,
+       "amount": 0
+      },
+      {
+       "lineId": "legacy-line:r20",
+       "name": "Standard Rate",
+       "jurisdiction": null,
+       "mode": "inclusive",
+       "rate": 0.2,
+       "amount": 0.5
+      }
+     ],
+     "exclusiveTaxTotal": 0,
+     "inclusiveExtractedTotal": 0.5
+    },
+    "source": "legacy"
+   }
+  },
+  "order-type-delivery": {
+   "lines": [
+    {
+     "itemId": "latte",
+     "price": 3.5,
+     "qty": 1,
+     "taxRateId": "r20",
+     "taxOverrides": {
+      "takeaway": "r0"
+     }
+    },
+    {
+     "itemId": "sarnie",
+     "price": 4.5,
+     "qty": 1,
+     "taxRateId": "r20",
+     "taxOverrides": {
+      "takeaway": "r0",
+      "delivery": "r0"
+     }
+    }
+   ],
+   "subtotal": 8,
+   "checkDiscount": 0,
+   "discountedSub": 8,
+   "service": 0,
+   "deliveryFee": 0,
+   "exclusiveTax": 0,
+   "total": 8,
+   "autoDiscounts": [],
+   "tax": {
+    "subtotal": 7.416666666666667,
+    "totalTax": 0.583333333333333,
+    "total": 8,
+    "exclusiveTax": 0,
+    "breakdown": [
+     {
+      "rate": {
+       "id": "r20",
+       "name": "Standard Rate",
+       "code": "VAT20",
+       "rate": 0.2,
+       "type": "inclusive",
+       "is_default": true,
+       "isDefault": true,
+       "active": true
+      },
+      "tax": 0.583333333333333,
+      "net": 2.916666666666667,
+      "gross": 3.5,
+      "items": 1
+     },
+     {
+      "rate": {
+       "id": "r0",
+       "name": "Zero Rate",
+       "code": "ZERO",
+       "rate": 0,
+       "type": "inclusive",
+       "is_default": false,
+       "isDefault": false,
+       "active": true
+      },
+      "tax": 0,
+      "net": 4.5,
+      "gross": 4.5,
+      "items": 1
+     }
+    ],
+    "hasExclusiveTax": false,
+    "taxV2": {
+     "version": 2,
+     "source": "legacy",
+     "orderType": "delivery",
+     "lines": [
+      {
+       "lineId": "legacy-line:r20",
+       "name": "Standard Rate",
+       "jurisdiction": null,
+       "mode": "inclusive",
+       "rate": 0.2,
+       "amount": 0.58
+      },
+      {
+       "lineId": "legacy-line:r0",
+       "name": "Zero Rate",
+       "jurisdiction": null,
+       "mode": "inclusive",
+       "rate": 0,
+       "amount": 0
+      }
+     ],
+     "exclusiveTaxTotal": 0,
+     "inclusiveExtractedTotal": 0.58
+    },
+    "source": "legacy"
+   }
+  },
+  "order-type-drive-thru": {
+   "lines": [
+    {
+     "itemId": "latte",
+     "price": 2.8,
+     "qty": 1,
+     "taxRateId": "r20",
+     "taxOverrides": {
+      "takeaway": "r0"
+     }
+    },
+    {
+     "itemId": "sarnie",
+     "price": 4.5,
+     "qty": 1,
+     "taxRateId": "r20",
+     "taxOverrides": {
+      "takeaway": "r0",
+      "delivery": "r0"
+     }
+    }
+   ],
+   "subtotal": 7.3,
+   "checkDiscount": 0,
+   "discountedSub": 7.3,
+   "service": 0,
+   "deliveryFee": 0,
+   "exclusiveTax": 0,
+   "total": 7.3,
+   "autoDiscounts": [],
+   "tax": {
+    "subtotal": 7.3,
+    "totalTax": 0,
+    "total": 7.3,
+    "exclusiveTax": 0,
+    "breakdown": [
+     {
+      "rate": {
+       "id": "r0",
+       "name": "Zero Rate",
+       "code": "ZERO",
+       "rate": 0,
+       "type": "inclusive",
+       "is_default": false,
+       "isDefault": false,
+       "active": true
+      },
+      "tax": 0,
+      "net": 7.3,
+      "gross": 7.3,
+      "items": 2
+     }
+    ],
+    "hasExclusiveTax": false,
+    "taxV2": {
+     "version": 2,
+     "source": "legacy",
+     "orderType": "drive-thru",
+     "lines": [
+      {
+       "lineId": "legacy-line:r0",
+       "name": "Zero Rate",
+       "jurisdiction": null,
+       "mode": "inclusive",
+       "rate": 0,
+       "amount": 0
+      }
+     ],
+     "exclusiveTaxTotal": 0,
+     "inclusiveExtractedTotal": 0
+    },
+    "source": "legacy"
+   }
+  },
+  "timed-menu": {
+   "lines": [
+    {
+     "itemId": "latte",
+     "price": 2.9,
+     "qty": 1,
+     "taxRateId": "r20",
+     "taxOverrides": {
+      "takeaway": "r0"
+     }
+    }
+   ],
+   "subtotal": 2.9,
+   "checkDiscount": 0,
+   "discountedSub": 2.9,
+   "service": 0,
+   "deliveryFee": 0,
+   "exclusiveTax": 0,
+   "total": 2.9,
+   "autoDiscounts": [],
+   "tax": {
+    "subtotal": 2.9,
+    "totalTax": 0,
+    "total": 2.9,
+    "exclusiveTax": 0,
+    "breakdown": [
+     {
+      "rate": {
+       "id": "r0",
+       "name": "Zero Rate",
+       "code": "ZERO",
+       "rate": 0,
+       "type": "inclusive",
+       "is_default": false,
+       "isDefault": false,
+       "active": true
+      },
+      "tax": 0,
+      "net": 2.9,
+      "gross": 2.9,
+      "items": 1
+     }
+    ],
+    "hasExclusiveTax": false,
+    "taxV2": {
+     "version": 2,
+     "source": "legacy",
+     "orderType": "takeaway",
+     "lines": [
+      {
+       "lineId": "legacy-line:r0",
+       "name": "Zero Rate",
+       "jurisdiction": null,
+       "mode": "inclusive",
+       "rate": 0,
+       "amount": 0
+      }
+     ],
+     "exclusiveTaxTotal": 0,
+     "inclusiveExtractedTotal": 0
+    },
+    "source": "legacy"
+   }
+  },
+  "timed-menu-size-tier": {
+   "lines": [
+    {
+     "itemId": "beer-half",
+     "price": 1.23,
+     "qty": 2,
+     "taxRateId": "r20",
+     "taxOverrides": {}
+    }
+   ],
+   "subtotal": 2.46,
+   "checkDiscount": 0,
+   "discountedSub": 2.46,
+   "service": 0,
+   "deliveryFee": 0,
+   "exclusiveTax": 0,
+   "total": 2.46,
+   "autoDiscounts": [],
+   "tax": {
+    "subtotal": 2.0500000000000003,
+    "totalTax": 0.4099999999999997,
+    "total": 2.46,
+    "exclusiveTax": 0,
+    "breakdown": [
+     {
+      "rate": {
+       "id": "r20",
+       "name": "Standard Rate",
+       "code": "VAT20",
+       "rate": 0.2,
+       "type": "inclusive",
+       "is_default": true,
+       "isDefault": true,
+       "active": true
+      },
+      "tax": 0.4099999999999997,
+      "net": 2.0500000000000003,
+      "gross": 2.46,
+      "items": 1
+     }
+    ],
+    "hasExclusiveTax": false,
+    "taxV2": {
+     "version": 2,
+     "source": "legacy",
+     "orderType": "dine-in",
+     "lines": [
+      {
+       "lineId": "legacy-line:r20",
+       "name": "Standard Rate",
+       "jurisdiction": null,
+       "mode": "inclusive",
+       "rate": 0.2,
+       "amount": 0.41
+      }
+     ],
+     "exclusiveTaxTotal": 0,
+     "inclusiveExtractedTotal": 0.41
+    },
+    "source": "legacy"
+   }
+  },
+  "vat-by-order-type": {
+   "lines": [
+    {
+     "itemId": "sarnie",
+     "price": 4.5,
+     "qty": 1,
+     "taxRateId": "r20",
+     "taxOverrides": {
+      "takeaway": "r0",
+      "delivery": "r0"
+     }
+    },
+    {
+     "itemId": "toastie",
+     "price": 5.35,
+     "qty": 1,
+     "taxRateId": "r20",
+     "taxOverrides": {}
+    }
+   ],
+   "subtotal": 9.85,
+   "checkDiscount": 0,
+   "discountedSub": 9.85,
+   "service": 0,
+   "deliveryFee": 0,
+   "exclusiveTax": 0,
+   "total": 9.85,
+   "autoDiscounts": [],
+   "tax": {
+    "subtotal": 8.958333333333332,
+    "totalTax": 0.8916666666666666,
+    "total": 9.85,
+    "exclusiveTax": 0,
+    "breakdown": [
+     {
+      "rate": {
+       "id": "r20",
+       "name": "Standard Rate",
+       "code": "VAT20",
+       "rate": 0.2,
+       "type": "inclusive",
+       "is_default": true,
+       "isDefault": true,
+       "active": true
+      },
+      "tax": 0.8916666666666666,
+      "net": 4.458333333333333,
+      "gross": 5.35,
+      "items": 1
+     },
+     {
+      "rate": {
+       "id": "r0",
+       "name": "Zero Rate",
+       "code": "ZERO",
+       "rate": 0,
+       "type": "inclusive",
+       "is_default": false,
+       "isDefault": false,
+       "active": true
+      },
+      "tax": 0,
+      "net": 4.5,
+      "gross": 4.5,
+      "items": 1
+     }
+    ],
+    "hasExclusiveTax": false,
+    "taxV2": {
+     "version": 2,
+     "source": "legacy",
+     "orderType": "takeaway",
+     "lines": [
+      {
+       "lineId": "legacy-line:r0",
+       "name": "Zero Rate",
+       "jurisdiction": null,
+       "mode": "inclusive",
+       "rate": 0,
+       "amount": 0
+      },
+      {
+       "lineId": "legacy-line:r20",
+       "name": "Standard Rate",
+       "jurisdiction": null,
+       "mode": "inclusive",
+       "rate": 0.2,
+       "amount": 0.89
+      }
+     ],
+     "exclusiveTaxTotal": 0,
+     "inclusiveExtractedTotal": 0.89
+    },
+    "source": "legacy"
+   }
+  },
+  "size-follows-parent": {
+   "lines": [
+    {
+     "itemId": "baby-l",
+     "price": 2.1,
+     "qty": 1,
+     "taxRateId": "r5",
+     "taxOverrides": {}
+    }
+   ],
+   "subtotal": 2.1,
+   "checkDiscount": 0,
+   "discountedSub": 2.1,
+   "service": 0,
+   "deliveryFee": 0,
+   "exclusiveTax": 0,
+   "total": 2.1,
+   "autoDiscounts": [],
+   "tax": {
+    "subtotal": 2,
+    "totalTax": 0.10000000000000009,
+    "total": 2.1,
+    "exclusiveTax": 0,
+    "breakdown": [
+     {
+      "rate": {
+       "id": "r5",
+       "name": "Reduced Rate",
+       "code": "VAT5",
+       "rate": 0.05,
+       "type": "inclusive",
+       "is_default": false,
+       "isDefault": false,
+       "active": true
+      },
+      "tax": 0.10000000000000009,
+      "net": 2,
+      "gross": 2.1,
+      "items": 1
+     }
+    ],
+    "hasExclusiveTax": false,
+    "taxV2": {
+     "version": 2,
+     "source": "legacy",
+     "orderType": "collection",
+     "lines": [
+      {
+       "lineId": "legacy-line:r5",
+       "name": "Reduced Rate",
+       "jurisdiction": null,
+       "mode": "inclusive",
+       "rate": 0.05,
+       "amount": 0.1
+      }
+     ],
+     "exclusiveTaxTotal": 0,
+     "inclusiveExtractedTotal": 0.1
+    },
+    "source": "legacy"
+   }
+  },
+  "zero-rate": {
+   "lines": [
+    {
+     "itemId": "water",
+     "price": 0,
+     "qty": 2,
+     "taxRateId": "r0",
+     "taxOverrides": {}
+    },
+    {
+     "itemId": "coke",
+     "price": 2.5,
+     "qty": 1,
+     "taxRateId": "r20",
+     "taxOverrides": {}
+    }
+   ],
+   "subtotal": 2.5,
+   "checkDiscount": 0,
+   "discountedSub": 2.5,
+   "service": 0,
+   "deliveryFee": 0,
+   "exclusiveTax": 0,
+   "total": 2.5,
+   "autoDiscounts": [],
+   "tax": {
+    "subtotal": 2.0833333333333335,
+    "totalTax": 0.4166666666666665,
+    "total": 2.5,
+    "exclusiveTax": 0,
+    "breakdown": [
+     {
+      "rate": {
+       "id": "r20",
+       "name": "Standard Rate",
+       "code": "VAT20",
+       "rate": 0.2,
+       "type": "inclusive",
+       "is_default": true,
+       "isDefault": true,
+       "active": true
+      },
+      "tax": 0.4166666666666665,
+      "net": 2.0833333333333335,
+      "gross": 2.5,
+      "items": 1
+     },
+     {
+      "rate": {
+       "id": "r0",
+       "name": "Zero Rate",
+       "code": "ZERO",
+       "rate": 0,
+       "type": "inclusive",
+       "is_default": false,
+       "isDefault": false,
+       "active": true
+      },
+      "tax": 0,
+      "net": 0,
+      "gross": 0,
+      "items": 1
+     }
+    ],
+    "hasExclusiveTax": false,
+    "taxV2": {
+     "version": 2,
+     "source": "legacy",
+     "orderType": "dine-in",
+     "lines": [
+      {
+       "lineId": "legacy-line:r0",
+       "name": "Zero Rate",
+       "jurisdiction": null,
+       "mode": "inclusive",
+       "rate": 0,
+       "amount": 0
+      },
+      {
+       "lineId": "legacy-line:r20",
+       "name": "Standard Rate",
+       "jurisdiction": null,
+       "mode": "inclusive",
+       "rate": 0.2,
+       "amount": 0.42
+      }
+     ],
+     "exclusiveTaxTotal": 0,
+     "inclusiveExtractedTotal": 0.42
+    },
+    "source": "legacy"
+   }
+  },
+  "auto-discount": {
+   "lines": [
+    {
+     "itemId": "burger",
+     "price": 9,
+     "qty": 1,
+     "taxRateId": "r20",
+     "taxOverrides": {}
+    },
+    {
+     "itemId": "fries",
+     "price": 3.5,
+     "qty": 1,
+     "taxRateId": "r20",
+     "taxOverrides": {}
+    },
+    {
+     "itemId": "coke",
+     "price": 2.5,
+     "qty": 1,
+     "taxRateId": "r20",
+     "taxOverrides": {}
+    }
+   ],
+   "subtotal": 15,
+   "checkDiscount": 3,
+   "discountedSub": 12,
+   "service": 0,
+   "deliveryFee": 0,
+   "exclusiveTax": 0,
+   "total": 12,
+   "autoDiscounts": [
+    {
+     "id": "r-meal",
+     "label": "Meal deal",
+     "type": "amount",
+     "value": 3,
+     "amount": 3,
+     "scope": "check",
+     "isAuto": true,
+     "appliedItems": [
+      {
+       "uid": "u0",
+       "name": "Burger",
+       "originalPrice": 9,
+       "saving": 1.8
+      },
+      {
+       "uid": "u1",
+       "name": "Fries",
+       "originalPrice": 3.5,
+       "saving": 0.7
+      },
+      {
+       "uid": "u2",
+       "name": "Coke",
+       "originalPrice": 2.5,
+       "saving": 0.5
+      }
+     ],
+     "ruleKind": "fixed_price"
+    }
+   ],
+   "tax": {
+    "subtotal": 10.000000000000002,
+    "totalTax": 2,
+    "total": 12,
+    "exclusiveTax": 0,
+    "breakdown": [
+     {
+      "rate": {
+       "id": "r20",
+       "name": "Standard Rate",
+       "code": "VAT20",
+       "rate": 0.2,
+       "type": "inclusive",
+       "is_default": true,
+       "isDefault": true,
+       "active": true
+      },
+      "tax": 1.9999999999999998,
+      "net": 10.000000000000002,
+      "gross": 12,
+      "items": 3
+     }
+    ],
+    "hasExclusiveTax": false,
+    "taxV2": {
+     "version": 2,
+     "source": "legacy",
+     "orderType": "takeaway",
+     "lines": [
+      {
+       "lineId": "legacy-line:r20",
+       "name": "Standard Rate",
+       "jurisdiction": null,
+       "mode": "inclusive",
+       "rate": 0.2,
+       "amount": 2
+      }
+     ],
+     "exclusiveTaxTotal": 0,
+     "inclusiveExtractedTotal": 2
+    },
+    "source": "legacy",
+    "share": 0.8
+   }
+  },
+  "manual-discount": {
+   "lines": [
+    {
+     "itemId": "burger",
+     "price": 9,
+     "qty": 2,
+     "taxRateId": "r20",
+     "taxOverrides": {}
+    }
+   ],
+   "subtotal": 18,
+   "checkDiscount": 1.8,
+   "discountedSub": 16.2,
+   "service": 0,
+   "deliveryFee": 0,
+   "exclusiveTax": 0,
+   "total": 16.2,
+   "autoDiscounts": [],
+   "tax": {
+    "subtotal": 13.499999999999998,
+    "totalTax": 2.7,
+    "total": 16.2,
+    "exclusiveTax": 0,
+    "breakdown": [
+     {
+      "rate": {
+       "id": "r20",
+       "name": "Standard Rate",
+       "code": "VAT20",
+       "rate": 0.2,
+       "type": "inclusive",
+       "is_default": true,
+       "isDefault": true,
+       "active": true
+      },
+      "tax": 2.6999999999999997,
+      "net": 13.499999999999998,
+      "gross": 16.2,
+      "items": 1
+     }
+    ],
+    "hasExclusiveTax": false,
+    "taxV2": {
+     "version": 2,
+     "source": "legacy",
+     "orderType": "dine-in",
+     "lines": [
+      {
+       "lineId": "legacy-line:r20",
+       "name": "Standard Rate",
+       "jurisdiction": null,
+       "mode": "inclusive",
+       "rate": 0.2,
+       "amount": 2.6999999999999997
+      }
+     ],
+     "exclusiveTaxTotal": 0,
+     "inclusiveExtractedTotal": 2.6999999999999997
+    },
+    "source": "legacy",
+    "share": 0.8999999999999999
+   }
+  },
+  "promo-code": {
+   "lines": [
+    {
+     "itemId": "burger",
+     "price": 9,
+     "qty": 2,
+     "taxRateId": "r20",
+     "taxOverrides": {}
+    }
+   ],
+   "subtotal": 18,
+   "checkDiscount": 0,
+   "discountedSub": 18,
+   "service": 0,
+   "deliveryFee": 0,
+   "exclusiveTax": 0,
+   "total": 18,
+   "autoDiscounts": [],
+   "tax": {
+    "subtotal": 15,
+    "totalTax": 3,
+    "total": 18,
+    "exclusiveTax": 0,
+    "breakdown": [
+     {
+      "rate": {
+       "id": "r20",
+       "name": "Standard Rate",
+       "code": "VAT20",
+       "rate": 0.2,
+       "type": "inclusive",
+       "is_default": true,
+       "isDefault": true,
+       "active": true
+      },
+      "tax": 3,
+      "net": 15,
+      "gross": 18,
+      "items": 1
+     }
+    ],
+    "hasExclusiveTax": false,
+    "taxV2": {
+     "version": 2,
+     "source": "legacy",
+     "orderType": "takeaway",
+     "lines": [
+      {
+       "lineId": "legacy-line:r20",
+       "name": "Standard Rate",
+       "jurisdiction": null,
+       "mode": "inclusive",
+       "rate": 0.2,
+       "amount": 3
+      }
+     ],
+     "exclusiveTaxTotal": 0,
+     "inclusiveExtractedTotal": 3
+    },
+    "source": "legacy"
+   }
+  },
+  "loyalty-redeem": {
+   "lines": [
+    {
+     "itemId": "latte",
+     "price": 2.8,
+     "qty": 2,
+     "taxRateId": "r20",
+     "taxOverrides": {
+      "takeaway": "r0"
+     }
+    }
+   ],
+   "subtotal": 5.6,
+   "checkDiscount": 0,
+   "discountedSub": 5.6,
+   "service": 0,
+   "deliveryFee": 0,
+   "exclusiveTax": 0,
+   "total": 5.6,
+   "autoDiscounts": [],
+   "tax": {
+    "subtotal": 5.6,
+    "totalTax": 0,
+    "total": 5.6,
+    "exclusiveTax": 0,
+    "breakdown": [
+     {
+      "rate": {
+       "id": "r0",
+       "name": "Zero Rate",
+       "code": "ZERO",
+       "rate": 0,
+       "type": "inclusive",
+       "is_default": false,
+       "isDefault": false,
+       "active": true
+      },
+      "tax": 0,
+      "net": 5.6,
+      "gross": 5.6,
+      "items": 1
+     }
+    ],
+    "hasExclusiveTax": false,
+    "taxV2": {
+     "version": 2,
+     "source": "legacy",
+     "orderType": "takeaway",
+     "lines": [
+      {
+       "lineId": "legacy-line:r0",
+       "name": "Zero Rate",
+       "jurisdiction": null,
+       "mode": "inclusive",
+       "rate": 0,
+       "amount": 0
+      }
+     ],
+     "exclusiveTaxTotal": 0,
+     "inclusiveExtractedTotal": 0
+    },
+    "source": "legacy"
+   }
+  },
+  "gift-card": {
+   "lines": [
+    {
+     "itemId": "burger",
+     "price": 9,
+     "qty": 1,
+     "taxRateId": "r20",
+     "taxOverrides": {}
+    }
+   ],
+   "subtotal": 9,
+   "checkDiscount": 0,
+   "discountedSub": 9,
+   "service": 0,
+   "deliveryFee": 0,
+   "exclusiveTax": 0,
+   "total": 9,
+   "autoDiscounts": [],
+   "tax": {
+    "subtotal": 7.5,
+    "totalTax": 1.5,
+    "total": 9,
+    "exclusiveTax": 0,
+    "breakdown": [
+     {
+      "rate": {
+       "id": "r20",
+       "name": "Standard Rate",
+       "code": "VAT20",
+       "rate": 0.2,
+       "type": "inclusive",
+       "is_default": true,
+       "isDefault": true,
+       "active": true
+      },
+      "tax": 1.5,
+      "net": 7.5,
+      "gross": 9,
+      "items": 1
+     }
+    ],
+    "hasExclusiveTax": false,
+    "taxV2": {
+     "version": 2,
+     "source": "legacy",
+     "orderType": "dine-in",
+     "lines": [
+      {
+       "lineId": "legacy-line:r20",
+       "name": "Standard Rate",
+       "jurisdiction": null,
+       "mode": "inclusive",
+       "rate": 0.2,
+       "amount": 1.5
+      }
+     ],
+     "exclusiveTaxTotal": 0,
+     "inclusiveExtractedTotal": 1.5
+    },
+    "source": "legacy"
+   }
+  },
+  "service-charge": {
+   "lines": [
+    {
+     "itemId": "burger",
+     "price": 9,
+     "qty": 4,
+     "taxRateId": "r20",
+     "taxOverrides": {}
+    },
+    {
+     "itemId": "coke",
+     "price": 2.5,
+     "qty": 4,
+     "taxRateId": "r20",
+     "taxOverrides": {}
+    }
+   ],
+   "subtotal": 46,
+   "checkDiscount": 0,
+   "discountedSub": 46,
+   "service": 5.75,
+   "deliveryFee": 0,
+   "exclusiveTax": 0,
+   "total": 51.75,
+   "autoDiscounts": [],
+   "tax": {
+    "subtotal": 38.333333333333336,
+    "totalTax": 7.666666666666666,
+    "total": 46,
+    "exclusiveTax": 0,
+    "breakdown": [
+     {
+      "rate": {
+       "id": "r20",
+       "name": "Standard Rate",
+       "code": "VAT20",
+       "rate": 0.2,
+       "type": "inclusive",
+       "is_default": true,
+       "isDefault": true,
+       "active": true
+      },
+      "tax": 7.666666666666666,
+      "net": 38.333333333333336,
+      "gross": 46,
+      "items": 2
+     }
+    ],
+    "hasExclusiveTax": false,
+    "taxV2": {
+     "version": 2,
+     "source": "legacy",
+     "orderType": "dine-in",
+     "lines": [
+      {
+       "lineId": "legacy-line:r20",
+       "name": "Standard Rate",
+       "jurisdiction": null,
+       "mode": "inclusive",
+       "rate": 0.2,
+       "amount": 7.67
+      }
+     ],
+     "exclusiveTaxTotal": 0,
+     "inclusiveExtractedTotal": 7.67
+    },
+    "source": "legacy"
+   }
+  },
+  "tip": {
+   "lines": [
+    {
+     "itemId": "toastie",
+     "price": 5.35,
+     "qty": 1,
+     "taxRateId": "r20",
+     "taxOverrides": {}
+    }
+   ],
+   "subtotal": 5.35,
+   "checkDiscount": 0,
+   "discountedSub": 5.35,
+   "service": 0,
+   "deliveryFee": 0,
+   "exclusiveTax": 0,
+   "total": 5.35,
+   "autoDiscounts": [],
+   "tax": {
+    "subtotal": 4.458333333333333,
+    "totalTax": 0.8916666666666666,
+    "total": 5.35,
+    "exclusiveTax": 0,
+    "breakdown": [
+     {
+      "rate": {
+       "id": "r20",
+       "name": "Standard Rate",
+       "code": "VAT20",
+       "rate": 0.2,
+       "type": "inclusive",
+       "is_default": true,
+       "isDefault": true,
+       "active": true
+      },
+      "tax": 0.8916666666666666,
+      "net": 4.458333333333333,
+      "gross": 5.35,
+      "items": 1
+     }
+    ],
+    "hasExclusiveTax": false,
+    "taxV2": {
+     "version": 2,
+     "source": "legacy",
+     "orderType": "dine-in",
+     "lines": [
+      {
+       "lineId": "legacy-line:r20",
+       "name": "Standard Rate",
+       "jurisdiction": null,
+       "mode": "inclusive",
+       "rate": 0.2,
+       "amount": 0.89
+      }
+     ],
+     "exclusiveTaxTotal": 0,
+     "inclusiveExtractedTotal": 0.89
+    },
+    "source": "legacy"
+   }
+  },
+  "deposit": {
+   "lines": [
+    {
+     "itemId": "burger",
+     "price": 9,
+     "qty": 2,
+     "taxRateId": "r20",
+     "taxOverrides": {}
+    }
+   ],
+   "subtotal": 18,
+   "checkDiscount": 0,
+   "discountedSub": 18,
+   "service": 0,
+   "deliveryFee": 0,
+   "exclusiveTax": 0,
+   "total": 18,
+   "autoDiscounts": [],
+   "tax": {
+    "subtotal": 15,
+    "totalTax": 3,
+    "total": 18,
+    "exclusiveTax": 0,
+    "breakdown": [
+     {
+      "rate": {
+       "id": "r20",
+       "name": "Standard Rate",
+       "code": "VAT20",
+       "rate": 0.2,
+       "type": "inclusive",
+       "is_default": true,
+       "isDefault": true,
+       "active": true
+      },
+      "tax": 3,
+      "net": 15,
+      "gross": 18,
+      "items": 1
+     }
+    ],
+    "hasExclusiveTax": false,
+    "taxV2": {
+     "version": 2,
+     "source": "legacy",
+     "orderType": "dine-in",
+     "lines": [
+      {
+       "lineId": "legacy-line:r20",
+       "name": "Standard Rate",
+       "jurisdiction": null,
+       "mode": "inclusive",
+       "rate": 0.2,
+       "amount": 3
+      }
+     ],
+     "exclusiveTaxTotal": 0,
+     "inclusiveExtractedTotal": 3
+    },
+    "source": "legacy"
+   }
+  },
+  "refund": {
+   "lines": [
+    {
+     "itemId": "burger",
+     "price": 9,
+     "qty": 1,
+     "taxRateId": "r20",
+     "taxOverrides": {}
+    },
+    {
+     "itemId": "coke",
+     "price": 2.5,
+     "qty": 1,
+     "taxRateId": "r20",
+     "taxOverrides": {}
+    }
+   ],
+   "subtotal": 11.5,
+   "checkDiscount": 0,
+   "discountedSub": 11.5,
+   "service": 0,
+   "deliveryFee": 0,
+   "exclusiveTax": 0,
+   "total": 11.5,
+   "autoDiscounts": [],
+   "tax": {
+    "subtotal": 9.583333333333334,
+    "totalTax": 1.9166666666666665,
+    "total": 11.5,
+    "exclusiveTax": 0,
+    "breakdown": [
+     {
+      "rate": {
+       "id": "r20",
+       "name": "Standard Rate",
+       "code": "VAT20",
+       "rate": 0.2,
+       "type": "inclusive",
+       "is_default": true,
+       "isDefault": true,
+       "active": true
+      },
+      "tax": 1.9166666666666665,
+      "net": 9.583333333333334,
+      "gross": 11.5,
+      "items": 2
+     }
+    ],
+    "hasExclusiveTax": false,
+    "taxV2": {
+     "version": 2,
+     "source": "legacy",
+     "orderType": "dine-in",
+     "lines": [
+      {
+       "lineId": "legacy-line:r20",
+       "name": "Standard Rate",
+       "jurisdiction": null,
+       "mode": "inclusive",
+       "rate": 0.2,
+       "amount": 1.92
+      }
+     ],
+     "exclusiveTaxTotal": 0,
+     "inclusiveExtractedTotal": 1.92
+    },
+    "source": "legacy"
+   }
+  },
+  "us-stacked": {
+   "lines": [
+    {
+     "itemId": "burger",
+     "price": 17,
+     "qty": 1,
+     "taxRateId": null,
+     "taxOverrides": {}
+    },
+    {
+     "itemId": "soda",
+     "price": 10,
+     "qty": 1,
+     "taxRateId": null,
+     "taxOverrides": {}
+    }
+   ],
+   "subtotal": 27,
+   "checkDiscount": 5,
+   "discountedSub": 22,
+   "service": 0,
+   "deliveryFee": 0,
+   "exclusiveTax": 2.04,
+   "total": 24.04,
+   "autoDiscounts": [],
+   "tax": {
+    "subtotal": 27,
+    "totalTax": 2.056388888888889,
+    "total": 29.05638888888889,
+    "exclusiveTax": 2.04,
+    "breakdown": [
+     {
+      "rate": {
+       "id": "us",
+       "name": "Sales Tax",
+       "code": "US_SALES",
+       "rate": 0.08875,
+       "type": "exclusive",
+       "is_default": true,
+       "isDefault": true,
+       "active": true
+      },
+      "tax": 0.7231481481481482,
+      "net": 8.148148148148149,
+      "gross": 8.871296296296297,
+      "items": 1
+     },
+     {
+      "rate": {
+       "id": "s1",
+       "name": "CA state",
+       "rate": 0.0725,
+       "type": "exclusive"
+      },
+      "tax": 1.0042592592592592,
+      "net": 13.851851851851853,
+      "gross": 14.856111111111112,
+      "items": 1
+     },
+     {
+      "rate": {
+       "id": "s2",
+       "name": "County",
+       "rate": 0.02125,
+       "type": "exclusive"
+      },
+      "tax": 0.2943518518518519,
+      "net": 13.851851851851853,
+      "gross": 14.146203703703705,
+      "items": 1
+     },
+     {
+      "rate": {
+       "id": "s3",
+       "name": "City",
+       "rate": 0.0025,
+       "type": "exclusive"
+      },
+      "tax": 0.034629629629629635,
+      "net": 13.851851851851853,
+      "gross": 13.886481481481482,
+      "items": 1
+     }
+    ],
+    "hasExclusiveTax": true,
+    "taxV2": {
+     "version": 2,
+     "source": "profiles",
+     "orderType": "takeaway",
+     "lines": [
+      {
+       "lineId": "s1",
+       "name": "CA state",
+       "jurisdiction": null,
+       "mode": "exclusive",
+       "rate": 0.0725,
+       "amount": 1
+      },
+      {
+       "lineId": "s2",
+       "name": "County",
+       "jurisdiction": null,
+       "mode": "exclusive",
+       "rate": 0.02125,
+       "amount": 0.29
+      },
+      {
+       "lineId": "s3",
+       "name": "City",
+       "jurisdiction": null,
+       "mode": "exclusive",
+       "rate": 0.0025,
+       "amount": 0.03
+      },
+      {
+       "lineId": "legacy-line:us",
+       "name": "Sales Tax",
+       "jurisdiction": null,
+       "mode": "exclusive",
+       "rate": 0.08875,
+       "amount": 0.72
+      }
+     ],
+     "exclusiveTaxTotal": 2.04,
+     "inclusiveExtractedTotal": 0
+    },
+    "source": "profiles",
+    "lineTaxes": [
+     1.3332407407407407,
+     0.7231481481481482
+    ],
+    "checkBasisApplied": true
+   }
+  }
+ },
+ "units": {
+  "latte|dine-in|": 3.2,
+  "latte|dine-in|lunch": 2.5,
+  "latte|dine-in|bar": 3.2,
+  "latte|takeaway|": 2.8,
+  "latte|takeaway|lunch": 2.4,
+  "latte|takeaway|bar": 2.8,
+  "latte|collection|": 2.9,
+  "latte|collection|lunch": 2.5,
+  "latte|collection|bar": 2.9,
+  "latte|delivery|": 3.5,
+  "latte|delivery|lunch": 2.5,
+  "latte|delivery|bar": 3.5,
+  "latte|drive-thru|": 2.8,
+  "latte|drive-thru|lunch": 2.4,
+  "latte|drive-thru|bar": 2.8,
+  "latte|bar-tab|": 3.2,
+  "latte|bar-tab|lunch": 2.5,
+  "latte|bar-tab|bar": 3.2,
+  "beer-half|dine-in|": 2.85,
+  "beer-half|dine-in|lunch": 2.85,
+  "beer-half|dine-in|bar": 1.23,
+  "beer-half|takeaway|": 3.01,
+  "beer-half|takeaway|lunch": 3.01,
+  "beer-half|takeaway|bar": 1.23,
+  "beer-half|collection|": 3.02,
+  "beer-half|collection|lunch": 3.02,
+  "beer-half|collection|bar": 1.23,
+  "beer-half|delivery|": 2.85,
+  "beer-half|delivery|lunch": 2.85,
+  "beer-half|delivery|bar": 1.23,
+  "beer-half|drive-thru|": 3.01,
+  "beer-half|drive-thru|lunch": 3.01,
+  "beer-half|drive-thru|bar": 1.23,
+  "beer-half|bar-tab|": 2.85,
+  "beer-half|bar-tab|lunch": 2.85,
+  "beer-half|bar-tab|bar": 1.23,
+  "beer-pint|dine-in|": 5,
+  "beer-pint|dine-in|lunch": 5,
+  "beer-pint|dine-in|bar": 5,
+  "beer-pint|takeaway|": 5,
+  "beer-pint|takeaway|lunch": 5,
+  "beer-pint|takeaway|bar": 5,
+  "beer-pint|collection|": 5,
+  "beer-pint|collection|lunch": 5,
+  "beer-pint|collection|bar": 5,
+  "beer-pint|delivery|": 5,
+  "beer-pint|delivery|lunch": 5,
+  "beer-pint|delivery|bar": 5,
+  "beer-pint|drive-thru|": 5,
+  "beer-pint|drive-thru|lunch": 5,
+  "beer-pint|drive-thru|bar": 5,
+  "beer-pint|bar-tab|": 5,
+  "beer-pint|bar-tab|lunch": 5,
+  "beer-pint|bar-tab|bar": 5,
+  "baby-l|dine-in|": 2.1,
+  "baby-l|dine-in|lunch": 2.1,
+  "baby-l|dine-in|bar": 2.1,
+  "baby-l|takeaway|": 2.1,
+  "baby-l|takeaway|lunch": 2.1,
+  "baby-l|takeaway|bar": 2.1,
+  "baby-l|collection|": 2.1,
+  "baby-l|collection|lunch": 2.1,
+  "baby-l|collection|bar": 2.1,
+  "baby-l|delivery|": 2.1,
+  "baby-l|delivery|lunch": 2.1,
+  "baby-l|delivery|bar": 2.1,
+  "baby-l|drive-thru|": 2.1,
+  "baby-l|drive-thru|lunch": 2.1,
+  "baby-l|drive-thru|bar": 2.1,
+  "baby-l|bar-tab|": 2.1,
+  "baby-l|bar-tab|lunch": 2.1,
+  "baby-l|bar-tab|bar": 2.1,
+  "toastie|dine-in|": 5.35,
+  "toastie|dine-in|lunch": 5.35,
+  "toastie|dine-in|bar": 5.35,
+  "toastie|takeaway|": 5.35,
+  "toastie|takeaway|lunch": 5.35,
+  "toastie|takeaway|bar": 5.35,
+  "toastie|collection|": 5.35,
+  "toastie|collection|lunch": 5.35,
+  "toastie|collection|bar": 5.35,
+  "toastie|delivery|": 5.35,
+  "toastie|delivery|lunch": 5.35,
+  "toastie|delivery|bar": 5.35,
+  "toastie|drive-thru|": 5.35,
+  "toastie|drive-thru|lunch": 5.35,
+  "toastie|drive-thru|bar": 5.35,
+  "toastie|bar-tab|": 5.35,
+  "toastie|bar-tab|lunch": 5.35,
+  "toastie|bar-tab|bar": 5.35,
+  "sarnie|dine-in|": 4.5,
+  "sarnie|dine-in|lunch": 4.5,
+  "sarnie|dine-in|bar": 4.5,
+  "sarnie|takeaway|": 4.5,
+  "sarnie|takeaway|lunch": 4.5,
+  "sarnie|takeaway|bar": 4.5,
+  "sarnie|collection|": 4.5,
+  "sarnie|collection|lunch": 4.5,
+  "sarnie|collection|bar": 4.5,
+  "sarnie|delivery|": 4.5,
+  "sarnie|delivery|lunch": 4.5,
+  "sarnie|delivery|bar": 4.5,
+  "sarnie|drive-thru|": 4.5,
+  "sarnie|drive-thru|lunch": 4.5,
+  "sarnie|drive-thru|bar": 4.5,
+  "sarnie|bar-tab|": 4.5,
+  "sarnie|bar-tab|lunch": 4.5,
+  "sarnie|bar-tab|bar": 4.5,
+  "water|dine-in|": 0,
+  "water|dine-in|lunch": 0,
+  "water|dine-in|bar": 0,
+  "water|takeaway|": 0,
+  "water|takeaway|lunch": 0,
+  "water|takeaway|bar": 0,
+  "water|collection|": 0,
+  "water|collection|lunch": 0,
+  "water|collection|bar": 0,
+  "water|delivery|": 0,
+  "water|delivery|lunch": 0,
+  "water|delivery|bar": 0,
+  "water|drive-thru|": 0,
+  "water|drive-thru|lunch": 0,
+  "water|drive-thru|bar": 0,
+  "water|bar-tab|": 0,
+  "water|bar-tab|lunch": 0,
+  "water|bar-tab|bar": 0
+ }
+}

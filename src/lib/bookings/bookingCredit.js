@@ -56,3 +56,28 @@ export function bookingCreditFor(session, totalMajor = null) {
     surplusMinor: creditMinor - appliedMinor,
   };
 }
+
+/**
+ * 19 Oct 2026 (v5.11.78, channel parity): the booking credit legs a close consumes, ONE rule for
+ * the till's checkout (CheckoutModal, moved here unchanged) and the handheld (MTender). Prepay
+ * first, then deposit, up to the amount applied to the bill (major units). Null when nothing is
+ * applied. The handheld charged a booked party the whole bill and left the deposit unapplied: the
+ * guest paid it twice and the booking was marked departed with no refund flag.
+ * @param booking      session.booking ({ bookingId, prepaidMinor, depositMinor })
+ * @param appliedMajor the credit applied to the bill, in major units (capped at the bill)
+ * @returns { bookingId, appliedMinor, legs: [{ method, amountMinor }] } | null
+ */
+export function bookingLegsForBill(booking, appliedMajor) {
+  if (!booking || !(Number(appliedMajor) > 0.004)) return null;
+  let leftMinor = Math.round(Number(appliedMajor) * 100);
+  const legs = [];
+  const take = (haveMinor, method) => {
+    const amt = Math.min(Number(haveMinor) || 0, leftMinor);
+    if (amt > 0) { legs.push({ method, amountMinor: amt }); leftMinor -= amt; }
+  };
+  take(booking.prepaidMinor, 'booking_prepaid');
+  take(booking.depositMinor, 'booking_deposit');
+  return legs.length
+    ? { bookingId: booking.bookingId, appliedMinor: Math.round(Number(appliedMajor) * 100), legs }
+    : null;
+}

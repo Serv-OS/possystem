@@ -64,6 +64,8 @@ import {
   ezcaterPriorLink, ezcaterQueueWrittenBefore, ezcaterEventError, EZ_QUEUE_WRITTEN_MARKER,
   NOT_RELEASABLE_STATUSES_PG,
 } from '../_shared/ezcaterCatering.js';
+// 19 Oct 2026 (v5.11.78): the sale an ezCater order books (step 9).
+import { ezcaterClosedCheck, ezcaterCheckId, ezLifecycleState } from '../_shared/ezcaterCatering.js';
 import { DEFAULT_VENUE_TZ } from '../_shared/cateringRules.js';
 
 const cors = {
@@ -383,6 +385,7 @@ Deno.serve(async (req) => {
     let written = false;
     let flagged: any = null;
     let rowOnFile = false;   // a queue row exists for this order now (written here or found)
+    let saleRow: any = null; // 19 Oct 2026: the latest row ezCater's figures built, for the sale below
     for (let attempt = 0; attempt < 3 && !written; attempt++) {
       const existing = await readExisting();
       const next = ezcaterCateringRow(queueRow, {
@@ -397,6 +400,7 @@ Deno.serve(async (req) => {
       // (queueWrittenBefore), so a row staff removed in between is never inserted a second time.
       // queueWrittenBefore and linkLifecycle also let a retried cancel after firing ring the bell
       // the failed first attempt never rang (see ezcaterWritePlan).
+      saleRow = next;
       const plan: any = ezcaterWritePlan({ next, existing, nowIso: new Date().toISOString(), linkKnown: !!priorLink || queueWrittenBefore,
         queueWrittenBefore, linkLifecycle: priorLink?.ez_lifecycle ?? null,
       });
@@ -456,6 +460,36 @@ Deno.serve(async (req) => {
       const msg = `link write failed: ${lErr.message}`;
       await failEvent(rowOnFile ? `${EZ_QUEUE_WRITTEN_MARKER}; ${msg}` : msg, 'error');
       return retry('link write failed');
+    }
+
+    // 9) THE SALE (19 Oct 2026, v5.11.78 channel parity). An ezCater order is booked as a sale the
+    // moment ezCater has it committed, like every other channel (it was never booked at all, so it
+    // reached no sales report, no Tax report, no Xero and no stock). ONE row per order
+    // (chk-ez-<ezCater order id>), written with ezCater's own figures (_shared/ezcaterCatering.js
+    // ezcaterClosedCheck: the tax copied, never worked out again), replaced when ezCater changes the
+    // order, and voided when ezCater cancels it. Never through the till's save guard. A failed write
+    // is retried like the queue write (the order itself is already on file).
+    if (saleRow) {
+      const life = ezLifecycleState(saleRow?.customer?.ezcater_lifecycle);
+      const checkId = ezcaterCheckId(saleRow);
+      if (checkId && life.dead) {
+        const { error: vErr } = await sb.from('closed_checks')
+          .update({ status: 'voided', voided: true }).eq('id', checkId).eq('status', 'paid');
+        if (vErr) {
+          await failEvent(`${EZ_QUEUE_WRITTEN_MARKER}; sale void failed: ${vErr.message}`, 'error');
+          return retry('sale write failed');
+        }
+      } else {
+        const sale = ezcaterClosedCheck(saleRow, { venueTz });
+        if (sale) {
+          const { error: cErr } = await sb.from('closed_checks').upsert(sale, { onConflict: 'id' });
+          if (cErr) {
+            console.error('[ezcater-webhook] sale write failed, will retry:', row.ref, cErr.message);
+            await failEvent(`${EZ_QUEUE_WRITTEN_MARKER}; sale write failed: ${cErr.message}`, 'error');
+            return retry('sale write failed');
+          }
+        }
+      }
     }
 
     // Staff see a change or a cancel that came in after the kitchen already had it (the bell in

@@ -87,5 +87,6 @@ test('the store names the card leg on both paths', () => {
   assert.match(close, /paymentIntents: cardIntents \|\| undefined,/);
   assert.match(close, /paymentIntents: cardIntents, cardReceipt,/);
   assert.match(close, /withBookingIntents\(record\.paymentIntents, d\.bookingPayment\)/);
-  assert.match(close, /bookingCreditMinor \+ giftMinor\)\)/);
+  // 19 Oct 2026 (v5.11.78): plus the reward and promo credits the checkout took off.
+  assert.match(close, /bookingCreditMinor \+ giftMinor \+ credits\.creditMinor\)\)/);
 });

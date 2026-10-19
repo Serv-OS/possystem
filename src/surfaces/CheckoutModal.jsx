@@ -39,7 +39,9 @@ import { KICK_WAIT_MS } from '../lib/payments/kickRace';
 import { getNextOrderRefLocal } from '../lib/db';
 import { suppressReaderTip } from '../lib/payments/readerTipRule';
 import { orderFlag, flagTableLabel } from '../lib/tillOrderType';   // 30 Sep 2026: a flag order's Table <n> for the job's draft
-import { bookingCreditFor } from '../lib/bookings/bookingCredit';   // 16 Oct 2026: one booking credit helper (order screen, table card, checkout)
+import { bookingCreditFor, bookingLegsForBill } from '../lib/bookings/bookingCredit';   // 16 Oct 2026: one booking credit helper (order screen, table card, checkout)
+import { placedPromoFor } from '../lib/orderPlacedFrom';   // v5.11.78 round 1: an order's own promo, as a promo credit
+import { promoBasketValue, heldPromo } from '../lib/promoBasis';   // 19 Oct 2026 (v5.11.78): one promo basket on every channel
 // (readerDisplay imports removed — cancel now lets the natural cart-change effect refresh the reader after onBack)
 
 // ─── Tip picker ───────────────────────────────────────────────────────────────
@@ -1330,7 +1332,10 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   const [loyaltyApplied, setLoyaltyApplied] = useState(null);
   // Promo code (marketing offers) — validated via promo-redeem; redeemed (bound to the order) by the store.
   // v5.5.505: entered through the unified gift-card/promo box (no separate field).
-  const [promoApplied, setPromoApplied] = useState(null);   // { code, code_id, offer_id, type, value, amount, label }
+  // v5.11.78 round 1: a walk in order opened from Orders that a customer page placed with a promo
+  // (lib/orderPlacedFrom.js) starts with that promo held: taken off as a promo tender, VAT left on
+  // the goods, as its pay now check books it; alreadyRedeemed, so the store never uses it again.
+  const [promoApplied, setPromoApplied] = useState(() => placedPromoFor(useStore.getState().walkInOrder, { tableId, orderType }));   // { code, code_id, offer_id, type, value, amount, label }
   // loyaltyApplied: { reward_id, reward_name, points_deducted, discount_type, discount_value, idempotency_key }
 
   // Loyalty discount applied to total
@@ -1620,20 +1625,17 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   // The booking credit legs a close consumes: prepay first, then deposit,
   // capped to the applied figure. Shared by complete() (modal-driven close)
   // and startTerminalJob (frozen into the draft for the reconciler path).
-  const bookingLegsFor = () => {
-    if (!bookingInfo || !(bookingApplied > 0.004)) return null;
-    let leftMinor = Math.round(bookingApplied * 100);
-    const legs = [];
-    const take = (haveMinor, method) => {
-      const amt = Math.min(Number(haveMinor) || 0, leftMinor);
-      if (amt > 0) { legs.push({ method, amountMinor: amt }); leftMinor -= amt; }
-    };
-    take(bookingInfo.prepaidMinor, 'booking_prepaid');
-    take(bookingInfo.depositMinor, 'booking_deposit');
-    return legs.length
-      ? { bookingId: bookingInfo.bookingId, appliedMinor: Math.round(bookingApplied * 100), legs }
-      : null;
-  };
+  // 19 Oct 2026 (v5.11.78): the rule moved unchanged to lib/bookings/bookingCredit.js
+  // bookingLegsForBill, which the handheld (MTender) now calls too.
+  const bookingLegsFor = () => bookingLegsForBill(bookingInfo, bookingApplied);
+
+  // 19 Oct 2026 (v5.11.78, channel parity): ONE basket for a promo code on every channel
+  // (lib/promoBasis.js): the goods after item, check and automatic discounts, before service,
+  // delivery, tip and tax, as online and the server judge it. The till checked it on the whole
+  // bill (service charge and added on tax in), so a 10% code took 10% of the service charge too
+  // and a minimum spend passed here on 20.25 and was refused at the redeem on 18.00.
+  // tipBasis is that figure (POSSurface and BarSurface pass the bill's discounted goods).
+  const promoBasis = promoBasketValue({ discountedSub: Number.isFinite(Number(tipBasis)) ? Number(tipBasis) : null, subtotal });
 
   // Validate a promo code in real time (no write). On success, hold it; the store redeems it
   // atomically (bound to the order) on payment completion. Called from the unified gift/promo box;
@@ -1645,11 +1647,13 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     try {
       const { data, error } = await supabase.functions.invoke('promo-redeem', { body: {
         action: 'validate', code, location_id: getActiveLocationSync(),
-        customer_id: customer?.customerId || customer?.id || null, basket: { subtotal: total },
+        customer_id: customer?.customerId || customer?.id || null, basket: { subtotal: promoBasis },
       } });
       if (error) throw new Error(error.message);
       if (data?.valid) {
-        setPromoApplied({ code, code_id: data.code_id, offer_id: data.offer?.id, ...data.discount });
+        // `basket` rides on the held promo so the redeem records the same basket (store
+        // redeemPromoCode reads it through promoRedeemBasket). Built by lib/promoBasis.js heldPromo.
+        setPromoApplied(heldPromo(code, data, promoBasis));
         return { ok: true };
       }
       const reasons = { not_found: 'Code not found', expired: 'Code expired', not_yet_active: 'Not active yet', already_used: 'Already used', usage_limit: 'Usage limit reached', min_spend: `Minimum spend ${money(Number(data?.min_spend || 0))}`, wrong_venue: 'Not valid at this venue', customer_mismatch: 'Belongs to another customer', customer_required: 'Attach the customer first', inactive: 'Offer inactive', voided: 'Code voided' };
@@ -1904,6 +1908,10 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
       method: finalMethod,
       tip: bookedTip,
       grand: bookedGrand,
+      // 19 Oct 2026 (v5.11.78, channel parity): the service charge this bill CHARGED (the figure on
+      // the review screen), so every close books it as service. A counter eat in sale on a profile
+      // with a service charge charged it and booked service 0 (the charge sat in total as goods).
+      service: Number.isFinite(Number(service)) ? Number(service) : 0,
       tenders,
       tendered,
       printReceipt,
@@ -2225,6 +2233,16 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
           // (dueMinor above already reflects it), so a reconciler-driven close
           // books the same tax. Absent when nothing lowered it (every UK check).
           ...(taxRelief > 0 ? { taxCredits } : {}),
+          // 19 Oct 2026 (v5.11.78, channel parity): what else the till's own close books, so a check
+          // the reconciler books (this till gone before the reader answered, or another till's
+          // reconciler first) is the same check: the automatic deals this bill took off, the
+          // service charge it charged, and the staged reward and promo code (dueMinor above is
+          // already net of them), which the reconciler books as tenders and commits once, keyed
+          // on this check id like the till's own commit.
+          autoDiscounts: Array.isArray(billTax?.autoDiscounts) ? billTax.autoDiscounts : [],
+          serviceMinor: toMinor(Number(service) || 0),
+          loyaltyRedemption: loyaltyApplied || null,
+          promoRedemption: promoApplied || null,
           // 28 Sep 2026: the order ref this checkout will book (getOrderRef). The reconciler on any
           // device books it too (store.closeApprovedTerminalJob), so the record carries the number
           // on the receipt and the kitchen ticket whoever books it.
@@ -2699,7 +2717,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                 )}
                 {promoApplied && (
                   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginTop:4 }}>
-                    <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>{String.fromCodePoint(0x1F3AB)} {promoApplied.label || promoApplied.code} <button disabled={paxBusy} onClick={()=>{ setPromoApplied(null); }} style={{ marginLeft:6, background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:12, textDecoration:'underline' }}>remove</button></span>
+                    <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>{String.fromCodePoint(0x1F3AB)} {promoApplied.label || promoApplied.code} {promoApplied.alreadyRedeemed ? <span style={{ marginLeft:6, color:'var(--t3)', fontSize:12, fontWeight:500 }}>used when ordered</span> : <button disabled={paxBusy} onClick={()=>{ setPromoApplied(null); }} style={{ marginLeft:6, background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:12, textDecoration:'underline' }}>remove</button>}</span>
                     <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{promoCredit > 0 ? `${String.fromCodePoint(0x2212)}${money(promoCredit)}` : '✓'}</span>
                   </div>
                 )}
@@ -3145,7 +3163,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
             // dropped by the store's row map, so a split check said only 'split' and no
             // accounts system could tell its card money from its cash.
             const tenders = splitTenders(portions, { legTip, giftLegs, processor: cardProcessor || 'stripe' });
-            onComplete({ method:'split', tip:tipTotal, grand:grossTotal+tipTotal, tenders, portions, paymentIntents, stripePaymentIntentId: paymentIntents[0]?.id || null, processor: cardProcessor || 'stripe', printReceipt,
+            onComplete({ method:'split', tip:tipTotal, grand:grossTotal+tipTotal, service: Number.isFinite(Number(service)) ? Number(service) : 0, tenders, portions, paymentIntents, stripePaymentIntentId: paymentIntents[0]?.id || null, processor: cardProcessor || 'stripe', printReceipt,
               closedCheckId: getCheckId(),
               // v5.5.902: split gift legs — the store folds these into the check's
               // gift_card jsonb so a refund can reverse every card that part-paid it.

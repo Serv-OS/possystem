@@ -26,8 +26,10 @@
 // Every surface prices like the till: the storefront (online, QR at a table),
 // the kiosk, the phone and the boards all call resolveItemPrice with their own
 // channel and the active menu, so the same item, size, channel and menu give
-// the same number everywhere. Catering is the one deliberate exception (its own
-// base rule, see CateringSurface).
+// the same number everywhere. Catering too since v5.11.78 (it charged base whatever the
+// order type: its own rule, now gone): catering prices for Collection or Delivery on the
+// catering menu chosen in its settings (timed menus stay out: an event days ahead is not
+// on today's schedule).
 //
 // Channel keys are dineIn, takeaway, collection, delivery and driveThru. The till
 // passes 'dine-in', the kiosk passes 'dineIn'; both (and 'dine_in') map to dineIn.
@@ -44,6 +46,9 @@ const CHANNEL_MAP = {
   dineIn: 'dineIn',
   'dine-in': 'dineIn',
   dine_in: 'dineIn',
+  // 18 Oct 2026 (v5.11.78): a bar tab is a dine in sale for price (it already is for routing and
+  // VAT), stated here rather than left to the default.
+  'bar-tab': 'dineIn',
   takeaway: 'takeaway',
   collection: 'collection',
   delivery: 'delivery',
@@ -191,13 +196,15 @@ export function planCartLine(item, channel, menuId, { modSurcharge = 0, qty = 1 
 // row on the new channel and menu. This is the till's setOrderType reprice
 // for a cart that lives outside the store. A line whose row is no longer in
 // the item list is left exactly as it was.
+// 19 Oct 2026 (v5.11.78): `menuId` may also be a function of the row (catering, whose menus are
+// chosen per category, prices each row on its own menu); a value is used for every line as before.
 export function repriceCartLines(cart, items, channel, menuId = null) {
   const rows = Array.isArray(items) ? items : [];
   return (cart || []).map(l => {
     if (!l || l.itemId == null) return l;
     const src = rows.find(i => i && i.id === l.itemId);
     if (!src) return l;
-    const price = resolveItemPrice(src, channel, menuId);
+    const price = resolveItemPrice(src, channel, typeof menuId === 'function' ? menuId(src) : menuId);
     return price === l.price ? l : { ...l, price };
   });
 }
