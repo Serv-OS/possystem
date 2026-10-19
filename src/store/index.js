@@ -206,7 +206,7 @@ import { voidOccupationKey } from '../lib/rowWriteFence';
 // 30 Sep 2026: the void rules (who can be voided, the records a void writes, how a kitchen
 // ticket learns about it) live in lib/voidRules.js so tables, walk ins and the order screens
 // all void the same way.
-import { voidableLines, lineUids, ticketHasLines, voidTicketItems, voidLogEntry, buildVoidTombstone, orderVoidLabel, voidLinesText } from '../lib/voidRules';
+import { voidableLines, lineUids, ticketHasLines, voidTicketItems, voidLogEntry, buildVoidTombstone, tombstoneLine, orderVoidLabel, voidLinesText } from '../lib/voidRules';
 // 30 Sep 2026: how long a voided queue row stays (status 'cancelled') before it is deleted,
 // so the customer's order tracker (5 s poll) can show the cancellation.
 const VOID_QUEUE_ROW_LINGER_MS = 30_000;
@@ -8307,7 +8307,9 @@ export const useStore = create((set, get) => ({
         // v5.9.81: the occupation key; openedAt when there is no seatedAt (a QR floor session), so
         // the void closes it on every device (lib/rowWriteFence.js checkClosesOccupation).
         seatedAt: voidOccupationKey(session),
-        items: (session.items || []).map(i => ({ ...i, status: 'voided', voided: true })),
+        // v5.11.77: tombstoneLine keeps sent (status was 'sent') so the database never books
+        // waste for a line voided before it reached the kitchen (a course 0 drink is fired at add)
+        items: (session.items || []).map(tombstoneLine),
         discounts: [], subtotal: 0, service: 0, tip: 0, total: 0, taxAmount: 0, tenders: [],
         voidReason: reason || null, voidedBy: manager?.name || null,
       };

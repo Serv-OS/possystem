@@ -5,28 +5,40 @@
 -- #  Peter runs this by hand (Claude cannot run DDL on production).           #
 -- #  NEEDS 20261018a_OPS_stock_function_fences.sql (v5.11.76) live first.     #
 -- #  One transaction: any error and nothing changes. Safe to run twice.       #
--- #  Run OUTSIDE UK service: CREATE TRIGGER takes a short lock on             #
--- #  closed_checks (lock_timeout 3 s below: it gives up, nothing changes,     #
--- #  run it again).                                                            #
+-- #  Run OUTSIDE UK service: the first run creates two triggers on          #
+-- #  closed_checks (last, just before the self test), a short lock that till  #
+-- #  closes wait behind (lock_timeout 3 s below: it gives up, nothing        #
+-- #  changes, run it again outside service). A second run takes no lock on    #
+-- #  closed_checks, inventory_items or the outbox (each step is skipped when  #
+-- #  done) but it is still best outside service.                              #
 -- #  DAY ONE NOTHING MOVES: every venue stays on the till ("browser") path    #
 -- #  until stock_central_switch(<venue>, 'central', 'peter') is run for it.    #
 -- ############################################################################
 --
 -- WHY (Peter, 18 Oct 2026): "you send the order to the POS, the POS should know what's been
 --   ordered ... it's supposed to be central." Today stock comes off only in the till's browser
---   at check close (fire and forget, no retry); kiosk, online, QR, HubRise, ezCater, catering
---   and every refund made outside the till never touch stock. The database now does it for
---   every channel, from the booked check itself, exactly once, and tells someone when it is late.
+--   at check close (fire and forget, no retry); kiosk, online, QR, HubRise, catering and every
+--   refund made outside the till never touch stock. The database now does it for every channel
+--   that books a closed check (till, kiosk, online, QR, HubRise, catering, reader closes, offline
+--   replays), from the booked check itself, exactly once, and tells someone when it is late.
+--   NOT COVERED YET: ezCater. Its webhook writes order_queue only and books no closed check
+--   (docs/EZCATER_V1_RELEASE.md), so nothing here sees it. Follow up 5.11.78: the webhook books a
+--   closed check (source catering, channel ezcater, closed_at = the event time) and this file's
+--   catering rule then covers it with no change here.
 --
 -- HOW (design B, "outbox + drainer", chosen 18 Oct)
 --   1. A statement level trigger on closed_checks writes ONE outbox row per booked, refunded or
 --      voided check at a venue switched to central (one PK probe for every other venue). It never
---      raises: any error is a warning and the hourly sweep finds the check. The sale write never
---      waits on stock.
---   2. pg_cron runs public.stock_outbox_drain() every minute (as postgres). It claims rows with
---      FOR UPDATE SKIP LOCKED in batches of 50, posts each event in its own subtransaction through
---      public._post_stock_movement (the fences core, owner only), commits per batch, retries with
+--      raises: any error is a warning and the hourly sweep finds the check (sales, refunds, undos
+--      and voids of checks closed in the last 48 hours). The sale write never waits on stock.
+--   2. pg_cron runs public.stock_outbox_drain() every minute (as postgres). With no venue switched
+--      on and nothing waiting it returns at once. It claims rows in batches of 50, posts each event
+--      in its own subtransaction through public._post_stock_movement (the fences core, owner only)
+--      and COMMITS EACH EVENT on its own (item rows are locked in item id order and held only for
+--      that one event, so Back Office posts and transfers never wait behind a batch), retries with
 --      backoff (15 s x 2^n, cap 1 h) and parks an event as dead after 8 tries, with the error.
+--      One drainer at a time: a transaction level advisory lock taken again in every transaction,
+--      so a call that is cut off frees it with its transaction.
 --   3. The one stock rule, in SQL (stock_explode): the same maths as src/lib/stock/explode.js
 --      (portion, usable %, order type tags, pack tokens, unit bridges, made items depleted as
 --      themselves, sizes are their own menu item, itemId else id, modifiers with itemId that are
@@ -50,9 +62,20 @@
 --     refunds and voids already moved. A refund the processor later refused (failed true, or the
 --     till's cardStatus failed) is undone exactly once (key undo:<key>).
 --   * A line voided before it was sent to the kitchen never takes stock off. A whole order voided
---     (tombstone, status voided) books WASTE only for lines marked fired or sent. A tombstone
---     that mirrors a paid check (same venue and ref, a prepaid kiosk or online order voided on the
+--     (tombstone, status voided) books WASTE only for lines the kitchen was cooking: a till from
+--     5.11.77 writes sent (the line's status was 'sent' before the void) and the line is made when
+--     sent and not held (fired not false); an older tombstone with no sent key is made when fired
+--     and not course 0 (a course 0 drink is fired the moment it is added, before any send); a
+--     channel tombstone with neither key (kiosk, online, QR lines) is made. A tombstone that
+--     mirrors a paid check (same venue and ref, a prepaid kiosk or online order voided on the
 --     Orders screen) books nothing: that sale's own refund does.
+--   * A catering order dated ahead posts at its event time. A void, or a refund, made BEFORE
+--     the event is netted off the sale (nothing was made): a full one cancels the sale, a part
+--     one posts what is left, and that refund or void then books nothing (flag before_made).
+--   * A refund, void or undo runs only after its own sale is booked, in event order per check:
+--     it waits while an earlier event of the check is pending, is held (sale_not_booked) while
+--     the sale is held or dead, and held (sale_missing) when no sale event exists for a check
+--     closed after the switch. Releasing the sale, or the sweep finding it, sends them on.
 --   * Posting values as the till: unit cost null (current cost at posting), area null (the
 --     item's use area), occurred_at = closed_at (the trading report buckets COGS by it),
 --     source_type closed_check, source_id = the check id.
@@ -71,8 +94,11 @@
 --   editor, the demo files, and place_public_order / settle_qr_tab which run as postgres), device
 --   (the venue is in accessible_location_uuids(): a bound till, kiosk or ops tablet, a Back Office
 --   login of the venue or its company, a super admin), else public. A public row posts once when a
---   paid public order proof exists for its ref (public_order_tokens.paid or payment_proofs
---   used_by_ref), a unique index makes one proof serve one check; else it is held.
+--   paid public order proof for its ref (public_order_tokens.paid or payment_proofs used_by_ref)
+--   was written IN THE SAME TRANSACTION as the check (the proof row's xmin equals the outbox row's
+--   xact: place_public_order, verify_public_order_payment and settle_qr_tab write both together),
+--   and a unique index makes one proof serve one check; anything else is held. So a copy forged
+--   with the public key, before or after the real order, never takes the proof.
 --
 -- SECURITY DEFAULTS
 --   Every routine here is owned by postgres with search_path = public; EXECUTE is taken from
@@ -85,9 +111,13 @@
 --   post_stock_movement from a trigger (it judges the outer caller and would abort a customer's
 --   order).
 --
+-- TRANSFERS: post_stock_transfer_leg (20261018a) is patched in place so every leg posts its lines
+--   in item id order (the drainer's order too): two writers that lock the same items in the same
+--   order wait, they never deadlock. Only its three ORDER BY clauses change (md5 guarded).
 -- GUARD: refuses unless 20261018a is live (public._post_stock_movement exists, stock_mv_idem_uniq
---   exists, post_stock_movement's body is 20261018a's fenced text or this file's door text) and
---   pg_cron is installed. Anything else and NOTHING is changed.
+--   exists, post_stock_movement's body is 20261018a's fenced text or this file's door text,
+--   post_stock_transfer_leg's body is 20261018a's text or this file's patched text) and pg_cron
+--   is installed. Anything else and NOTHING is changed.
 -- SELF TEST (rolled back): the internal routines are not callable through the API; the door
 --   answers skipped at a central venue; a stranger classifies as public.
 -- UNDO: 20261018c_OPS_central_stock_depletion_ROLLBACK.sql (run it BEFORE 20261018a's ROLLBACK).
@@ -130,6 +160,11 @@ begin
   if v_md5 is null or v_md5 not in ('ad53ab7ca7477bba0a56b2e512fc11e7', '0adb151adb1611b05a1099df81cf5aae') then
     raise exception 'post_stock_movement is not the 20261018a text this file was written for (md5 %). Nothing was changed. Send this line to Claude.', coalesce(v_md5, 'missing');
   end if;
+  select md5(btrim(regexp_replace(p.prosrc, '\s+', ' ', 'g'))) into v_md5 from pg_proc p
+   where p.oid = to_regprocedure('public.post_stock_transfer_leg(uuid,text,text)');
+  if v_md5 is null or v_md5 not in ('8c6ee62b7279f09f94f1e0eaa320da9d', '541ac92297e3784706a2f7a958d5c396') then
+    raise exception 'post_stock_transfer_leg is not the 20261018a text this file was written for (md5 %). Nothing was changed. Send this line to Claude.', coalesce(v_md5, 'missing');
+  end if;
 end
 $guard$;
 
@@ -138,21 +173,41 @@ set local lock_timeout = '3s';
 set local statement_timeout = '120s';
 
 -- -- 1. Columns, indexes and table options ---------------------------------------------------
-alter table public.inventory_items add column if not exists returns_to_shelf boolean not null default false;
-comment on column public.inventory_items.returns_to_shelf is
-  'Can go back on the shelf (sealed cans, bottles). Off by default: a refund, or a void after the kitchen made it, books food as waste, never back to stock. 20261018c.';
-
+-- Each step runs only when it is not there yet: ADD COLUMN IF NOT EXISTS and CREATE INDEX IF NOT
+-- EXISTS still lock the table when the thing exists, so a second paste would make stock posts
+-- wait behind this script for nothing.
 -- Refund caps and the sweep read a check's movements by source_id; the late sale guard reads
 -- the last count on an item.
-create index if not exists stock_mv_source_idx on public.stock_movements (location_id, source_id) where source_id is not null;
-create index if not exists stock_mv_count_idx on public.stock_movements (location_id, inventory_item_id, occurred_at desc)
-  where movement_type in ('STOCK_COUNT_ADJ', 'OPENING_BALANCE');
-create index if not exists stock_counts_approved_idx on public.stock_counts (location_id, approved_at) where upper(status) = 'APPROVED';
-
 -- Hot rows: on hand is updated on every movement. Room on the page for HOT updates and a tighter
 -- autovacuum so the tables do not bloat at 50 sites x 300 checks an hour.
-alter table public.inventory_items set (fillfactor = 80, autovacuum_vacuum_scale_factor = 0.02, autovacuum_analyze_scale_factor = 0.02);
-alter table public.inventory_item_area_stock set (fillfactor = 80, autovacuum_vacuum_scale_factor = 0.02, autovacuum_analyze_scale_factor = 0.02);
+do $cols$
+begin
+  if not exists (select 1 from information_schema.columns
+                  where table_schema = 'public' and table_name = 'inventory_items' and column_name = 'returns_to_shelf') then
+    alter table public.inventory_items add column returns_to_shelf boolean not null default false;
+    comment on column public.inventory_items.returns_to_shelf is
+      'Can go back on the shelf (sealed cans, bottles). Off by default: a refund, or a void after the kitchen made it, books food as waste, never back to stock. 20261018c.';
+  end if;
+  if to_regclass('public.stock_mv_source_idx') is null then
+    create index stock_mv_source_idx on public.stock_movements (location_id, source_id) where source_id is not null;
+  end if;
+  if to_regclass('public.stock_mv_count_idx') is null then
+    create index stock_mv_count_idx on public.stock_movements (location_id, inventory_item_id, occurred_at desc)
+      where movement_type in ('STOCK_COUNT_ADJ', 'OPENING_BALANCE');
+  end if;
+  if to_regclass('public.stock_counts_approved_idx') is null then
+    create index stock_counts_approved_idx on public.stock_counts (location_id, approved_at) where upper(status) = 'APPROVED';
+  end if;
+  if not exists (select 1 from pg_class c where c.oid = 'public.inventory_items'::regclass
+                  and coalesce(c.reloptions, '{}') @> array['fillfactor=80', 'autovacuum_vacuum_scale_factor=0.02', 'autovacuum_analyze_scale_factor=0.02']) then
+    alter table public.inventory_items set (fillfactor = 80, autovacuum_vacuum_scale_factor = 0.02, autovacuum_analyze_scale_factor = 0.02);
+  end if;
+  if not exists (select 1 from pg_class c where c.oid = 'public.inventory_item_area_stock'::regclass
+                  and coalesce(c.reloptions, '{}') @> array['fillfactor=80', 'autovacuum_vacuum_scale_factor=0.02', 'autovacuum_analyze_scale_factor=0.02']) then
+    alter table public.inventory_item_area_stock set (fillfactor = 80, autovacuum_vacuum_scale_factor = 0.02, autovacuum_analyze_scale_factor = 0.02);
+  end if;
+end
+$cols$;
 
 -- -- 2. The switch: which venues the database depletes -------------------------------------
 -- No row = the default, and the default is 'browser' (the till path, as today). 'central' = the
@@ -164,9 +219,9 @@ create table if not exists public.stock_depletion_default (
   changed_by text,
   changed_at timestamptz not null default now()
 );
-insert into public.stock_depletion_default (one, mode, changed_by) values (true, 'browser', '20261018c') on conflict (one) do nothing;
-alter table public.stock_depletion_default enable row level security;
-revoke all on public.stock_depletion_default from public, anon, authenticated, service_role;
+insert into public.stock_depletion_default (one, mode, changed_by)
+select true, 'browser', '20261018c' where not exists (select 1 from public.stock_depletion_default)
+on conflict (one) do nothing;
 
 create table if not exists public.stock_depletion_mode (
   location_id   uuid primary key,
@@ -175,10 +230,6 @@ create table if not exists public.stock_depletion_mode (
   changed_by    text,
   changed_at    timestamptz not null default now()
 );
-alter table public.stock_depletion_mode enable row level security;
-revoke all on public.stock_depletion_mode from public, anon, authenticated, service_role;
-comment on table public.stock_depletion_mode is
-  'Per venue: browser (the till takes stock off at close, as before), central (the database books every check from every channel), paused (kept, not posted). No row = stock_depletion_default (browser). Change it with stock_central_switch. 20261018c.';
 
 -- The mode of a venue, one PK probe.
 create or replace function public._stock_mode_of(p_loc uuid) returns text
@@ -212,15 +263,18 @@ create table if not exists public.stock_outbox (
   posted      jsonb,
   created_at  timestamptz not null default now(),
   done_at     timestamptz,
+  -- the transaction that wrote the row (the check's own insert or update): a public order's
+  -- payment proof counts only when it was written in that same transaction
+  xact        xid8 not null default pg_current_xact_id(),
   constraint stock_outbox_event_uniq unique (location_id, check_id, kind, event_ref)
 ) with (fillfactor = 80, autovacuum_vacuum_scale_factor = 0.02, autovacuum_analyze_scale_factor = 0.02);
-create index if not exists stock_outbox_due_idx on public.stock_outbox (due_at, id) where status = 'pending';
-create index if not exists stock_outbox_loc_status_idx on public.stock_outbox (location_id, status, created_at);
-create unique index if not exists stock_outbox_proof_uniq on public.stock_outbox (proof) where proof is not null;
-alter table public.stock_outbox enable row level security;
-revoke all on public.stock_outbox from public, anon, authenticated, service_role;
-comment on table public.stock_outbox is
-  'Central stock depletion queue: one event per booked, refunded or voided check at a central venue. writer: device, service, db, public, swept, released. status: pending, done, skipped, held (needs a person), dead (8 failures, see last_error). 20261018c.';
+do $xact$
+begin
+  if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'stock_outbox' and column_name = 'xact') then
+    alter table public.stock_outbox add column xact xid8 not null default pg_current_xact_id();
+  end if;
+end
+$xact$;
 
 create table if not exists public.stock_outbox_runs (
   id bigint generated always as identity primary key,
@@ -230,8 +284,44 @@ create table if not exists public.stock_outbox_runs (
   failed integer not null default 0,
   oldest_due_age_s numeric
 );
-alter table public.stock_outbox_runs enable row level security;
-revoke all on public.stock_outbox_runs from public, anon, authenticated, service_role;
+
+-- Indexes, RLS, no API grants and the comments, each only when it is not already so: on a second
+-- paste these statements would lock the outbox (ALTER TABLE ... ENABLE ROW LEVEL SECURITY takes
+-- ACCESS EXCLUSIVE) and every till close at a central venue would wait behind this script.
+do $tables$
+declare
+  r record;
+begin
+  if to_regclass('public.stock_outbox_due_idx') is null then
+    create index stock_outbox_due_idx on public.stock_outbox (due_at, id) where status = 'pending';
+  end if;
+  if to_regclass('public.stock_outbox_loc_status_idx') is null then
+    create index stock_outbox_loc_status_idx on public.stock_outbox (location_id, status, created_at);
+  end if;
+  if to_regclass('public.stock_outbox_proof_uniq') is null then
+    create unique index stock_outbox_proof_uniq on public.stock_outbox (proof) where proof is not null;
+  end if;
+  for r in select c.oid, c.relname, c.relrowsecurity from pg_class c
+            where c.relnamespace = 'public'::regnamespace
+              and c.relname in ('stock_depletion_default', 'stock_depletion_mode', 'stock_outbox', 'stock_outbox_runs') loop
+    if not r.relrowsecurity then
+      execute format('alter table public.%I enable row level security', r.relname);
+    end if;
+    if exists (select 1 from pg_class c, aclexplode(c.relacl) a
+                where c.oid = r.oid and (a.grantee = 0 or a.grantee in (select oid from pg_roles where rolname in ('anon', 'authenticated', 'service_role')))) then
+      execute format('revoke all on public.%I from public, anon, authenticated, service_role', r.relname);
+    end if;
+  end loop;
+  if obj_description('public.stock_depletion_mode'::regclass, 'pg_class') is null then
+    comment on table public.stock_depletion_mode is
+      'Per venue: browser (the till takes stock off at close, as before), central (the database books every check from every channel), paused (kept, not posted). No row = stock_depletion_default (browser). Change it with stock_central_switch. 20261018c.';
+  end if;
+  if obj_description('public.stock_outbox'::regclass, 'pg_class') is null then
+    comment on table public.stock_outbox is
+      'Central stock depletion queue: one event per booked, refunded or voided check at a central venue. writer: device, service, db, fenced_update, public, swept, released. status: pending, done, skipped, held (needs a person), dead (8 failures, see last_error). 20261018c.';
+  end if;
+end
+$tables$;
 
 -- -- 4. The one stock rule, in SQL ---------------------------------------------------------
 -- Mirrors src/lib/stock/explode.js with JavaScript semantics kept (Number(x) || 1, truthiness),
@@ -467,11 +557,7 @@ begin
   return null;
 end $$;
 
-drop trigger if exists closed_checks_stock_outbox_ins on public.closed_checks;
-create trigger closed_checks_stock_outbox_ins
-  after insert on public.closed_checks
-  referencing new table as new_rows
-  for each statement execute function public._stock_outbox_on_insert();
+-- (the two triggers themselves are created near the end, section 14)
 
 create or replace function public._stock_outbox_on_update() returns trigger
 language plpgsql security definer set search_path = public, pg_temp as $$
@@ -521,28 +607,22 @@ begin
       on conflict do nothing;
     end if;
   exception when others then
-    raise warning 'stock outbox: update enqueue skipped (% %)', sqlstate, sqlerrm;
+    raise warning 'stock outbox: update enqueue skipped (% %); the hourly sweep will find it (checks closed in the last 48 hours)', sqlstate, sqlerrm;
   end;
   return null;
 end $$;
 
-drop trigger if exists closed_checks_stock_outbox_upd on public.closed_checks;
-create trigger closed_checks_stock_outbox_upd
-  after update of refunds, status, voided, items, location_id on public.closed_checks
-  for each row
-  when (old.refunds is distinct from new.refunds or old.status is distinct from new.status
-        or old.voided is distinct from new.voided or old.items is distinct from new.items
-        or old.location_id is distinct from new.location_id)
-  execute function public._stock_outbox_on_update();
-
 -- -- 7. Posting helpers (everything posts through public._post_stock_movement) --------------
 -- Was this item counted after the moment given? A count movement dated later, or an approved
--- count that listed it (a zero variance line posts no movement).
+-- count that listed it (a zero variance line posts no movement). The guard's own late:...
+-- adjustments (source_type late_sale, dated when they were booked) are not counts: counting them
+-- would cancel every later sale drained after one late sale.
 create or replace function public._stock_counted_after(p_loc uuid, p_item uuid, p_at timestamptz) returns boolean
 language sql stable security definer set search_path = public as $$
   select exists (select 1 from stock_movements m
                   where m.location_id = p_loc and m.inventory_item_id = p_item and m.occurred_at > p_at
-                    and m.movement_type in ('STOCK_COUNT_ADJ', 'OPENING_BALANCE'))
+                    and m.movement_type in ('STOCK_COUNT_ADJ', 'OPENING_BALANCE')
+                    and m.source_type is distinct from 'late_sale')
       or exists (select 1 from stock_counts c join stock_count_lines l on l.count_id = c.id
                   where c.location_id = p_loc and upper(c.status) = 'APPROVED' and c.approved_at > p_at
                     and l.inventory_item_id = p_item);
@@ -586,6 +666,28 @@ language sql stable security definer set search_path = public as $$
      and m.movement_type = 'SALE_DEPLETION' and m.idempotency_key = 'sale:' || p_check || ':' || m.inventory_item_id::text;
 $$;
 
+-- A refund entry's lines in the shape stock_explode reads with 'refundQty'. A line with a uid
+-- but no modifiers takes them from the stored line, so options come back too (the till's refund
+-- copies the whole line; Back Office may not).
+create or replace function public._stock_refund_lines(p_items jsonb, p_entry jsonb) returns jsonb
+language sql immutable parallel safe as $$
+  select coalesce(jsonb_agg(
+           ri || jsonb_build_object('itemId', coalesce(ri -> 'itemId', sl.s -> 'itemId', ri -> 'id'))
+              || case when ri ? 'mods' or sl.s is null then '{}'::jsonb else jsonb_build_object('mods', sl.s -> 'mods') end), '[]'::jsonb)
+    from jsonb_array_elements(case when jsonb_typeof(p_entry -> 'items') = 'array' then p_entry -> 'items' else '[]'::jsonb end) ri
+    left join lateral (select s.v as s from jsonb_array_elements(case when jsonb_typeof(p_items) = 'array' then p_items else '[]'::jsonb end) s(v)
+                        where nullif(ri ->> 'uid', '') is not null and s.v ->> 'uid' = ri ->> 'uid' limit 1) sl on true
+   where jsonb_typeof(ri) = 'object';
+$$;
+
+-- When a refund entry was made: its own timestamp (ms), else when its outbox event was written.
+create or replace function public._stock_refund_at(p_loc uuid, p_check text, x jsonb) returns timestamptz
+language sql stable security definer set search_path = public as $$
+  select coalesce(case when jsonb_typeof(x -> 'timestamp') = 'number' then to_timestamp((x ->> 'timestamp')::numeric / 1000) end,
+                  (select o.occurred_at from stock_outbox o where o.location_id = p_loc and o.check_id = p_check
+                      and o.kind = 'refund' and o.event_ref = x ->> 'id'));
+$$;
+
 -- What earlier refunds and voids already moved off the sale, per item, read from the ledger:
 -- RETURN rows and unsale rows count, their undo rows cancel them (same type, opposite sign).
 create or replace function public._stock_given_back(p_loc uuid, p_check text) returns table (inventory_item_id uuid, qty numeric)
@@ -602,9 +704,10 @@ create or replace function public._stock_outbox_apply(p_id bigint) returns text
 language plpgsql security definer set search_path = public, pg_temp as $$
 declare
   e   stock_outbox%rowtype;
+  s   stock_outbox%rowtype;
   c   closed_checks%rowtype;
   v_ot text;
-  v_posted jsonb := '{}'::jsonb;
+  v_n integer := 0;
   v_flags text[] := '{}';
   m record;
   v_lines jsonb;
@@ -613,6 +716,14 @@ declare
   v_q numeric;
   v_full boolean := false;
   v_reason text;
+  v_xid text;
+  v_wait timestamptz;
+  v_has_sale boolean := false;
+  v_booked boolean;
+  v_since timestamptz;
+  v_ahead boolean := false;
+  v_netted text[] := '{}';
+  v_skip boolean := false;
 begin
   select * into e from stock_outbox where id = p_id for update;
   if not found or e.status <> 'pending' then return 'gone'; end if;
@@ -625,12 +736,19 @@ begin
   end if;
 
   -- Who wrote it. A device, Back Office, an edge function, the database itself, or a row a
-  -- person released: trusted. Anyone else (an unbound session): only a public order the server
-  -- proved paid, once per ref.
-  if e.writer not in ('device', 'service', 'db', 'fenced_update', 'released') then
+  -- person released: trusted. A refund, void or undo the sweep found: trusted, because it can
+  -- only give back what a booked sale took (the waits below never run it before a trusted sale).
+  -- Anyone else (an unbound session): only a public order whose payment proof (paid token, or a
+  -- payment_proofs row bound to the ref) was written in the SAME transaction as the check, once
+  -- per ref. A copy forged with the public key, before or after the real order, never matches.
+  if e.writer not in ('device', 'service', 'db', 'fenced_update', 'released')
+     and not (e.writer = 'swept' and e.kind in ('refund', 'void', 'undo')) then
+    v_xid := (e.xact::text::bigint % 4294967296)::text;
     if e.kind in ('sale', 'tomb') and c.ref is not null
-       and (exists (select 1 from public_order_tokens t where t.location_id = e.location_id::text and t.ref = c.ref and t.paid)
-            or exists (select 1 from payment_proofs p where p.location_id = e.location_id::text and p.used_by_ref = e.location_id::text || ':' || c.ref)) then
+       and (exists (select 1 from public_order_tokens t where t.location_id = e.location_id::text and t.ref = c.ref and t.paid
+                       and t.xmin::text = v_xid)
+            or exists (select 1 from payment_proofs p where p.location_id = e.location_id::text and p.used_by_ref = e.location_id::text || ':' || c.ref
+                          and p.xmin::text = v_xid)) then
       begin
         update stock_outbox set proof = e.location_id::text || ':' || c.ref where id = p_id;
       exception when unique_violation then
@@ -640,56 +758,141 @@ begin
       end;
     else
       update stock_outbox set status = 'held', flags = array_append(flags, 'unproven'), attempts = attempts + 1,
-             last_error = 'written by a session that cannot open this venue and no payment proof found' where id = p_id;
+             last_error = 'written by a session that cannot open this venue and no payment proof from the same transaction' where id = p_id;
       return 'held';
     end if;
   end if;
 
-  -- A refund, void or undo waits for its own sale event to finish first.
-  if e.kind in ('refund', 'void', 'undo')
-     and exists (select 1 from stock_outbox o where o.location_id = e.location_id and o.check_id = e.check_id
-                  and o.kind = 'sale' and o.status = 'pending') then
-    update stock_outbox set due_at = now() + interval '30 seconds' where id = p_id;
-    return 'waiting';
+  -- A refund, void or undo runs after its own sale, in event order per check.
+  if e.kind in ('refund', 'void', 'undo') then
+    -- (a) an earlier event of this check, or its sale, still pending (a retry in backoff, a
+    --     catering sale dated ahead): wait until just after it is due
+    select max(o.due_at) into v_wait from stock_outbox o
+     where o.location_id = e.location_id and o.check_id = e.check_id and o.id <> e.id and o.status = 'pending'
+       and (o.id < e.id or o.kind = 'sale');
+    if v_wait is not null then
+      update stock_outbox set due_at = greatest(now() + interval '5 seconds', v_wait + interval '1 second') where id = p_id;
+      return 'waiting';
+    end if;
+    select * into s from stock_outbox o where o.location_id = e.location_id and o.check_id = e.check_id and o.kind = 'sale';
+    v_has_sale := found;
+    v_booked := exists (select 1 from stock_movements mv where mv.location_id = e.location_id and mv.source_id = c.id
+                         and mv.source_type = 'closed_check' and mv.idempotency_key like 'sale:%');
+    -- (b) the sale is held or dead and took nothing yet: held with it; releasing the sale sends this on
+    if v_has_sale and s.status in ('held', 'dead') and not v_booked then
+      update stock_outbox set status = 'held', flags = array_append(flags, 'sale_not_booked'), attempts = attempts + 1,
+             last_error = 'waits for the sale of this check, which is ' || s.status || '; releasing the sale sends this on' where id = p_id;
+      return 'held';
+    end if;
+    -- (c) no sale event at all for a check closed after the switch, in the sweep's window: the
+    --     enqueue was lost; wait for the hourly sweep to find the sale (up to 2 hours, then the
+    --     ledger decides as for a check the till booked)
+    if not v_has_sale and not v_booked
+       and not exists (select 1 from stock_outbox o where o.location_id = e.location_id and o.check_id = e.check_id and o.kind = 'tomb') then
+      select md.central_since into v_since from stock_depletion_mode md where md.location_id = e.location_id;
+      if c.closed_at >= greatest(coalesce(v_since, '-infinity'::timestamptz), now() - interval '47 hours')
+         and e.created_at > now() - interval '2 hours' then
+        update stock_outbox set due_at = now() + interval '10 minutes',
+               flags = case when 'sale_missing' = any(flags) then flags else array_append(flags, 'sale_missing') end
+         where id = p_id;
+        return 'waiting';
+      end if;
+    end if;
+    -- (d) a catering sale dated ahead already netted this refund or void (it came before the
+    --     event, nothing was made): nothing to book here. Its undo cannot take back what was never
+    --     taken: a person books the stock by hand.
+    if v_has_sale and e.kind = 'refund' and ('netted:' || e.event_ref) = any(s.flags) then
+      v_flags := array_append(v_flags, 'before_made');
+      v_skip := true;
+    elsif v_has_sale and e.kind = 'void' and 'cancelled_before_made' = any(s.flags) then
+      v_flags := array_append(v_flags, 'before_made');
+      v_skip := true;
+    elsif v_has_sale and e.kind = 'undo' and ('netted:' || e.event_ref) = any(s.flags) then
+      update stock_outbox set status = 'held', flags = array_append(flags, 'netted_refund_failed'), attempts = attempts + 1,
+             last_error = 'the order was refunded before its event, so its stock was never taken; then the refund was refused. Take the stock off by hand.'
+       where id = p_id;
+      return 'held';
+    end if;
   end if;
 
   v_ot := c.order_type;
 
-  if e.kind = 'sale' then
-    for m in select x.inventory_item_id, x.qty_base from stock_explode(e.location_id, c.items, v_ot) x order by x.inventory_item_id loop
-      v_q := public._stock_post(e.location_id, m.inventory_item_id, -m.qty_base, 'SALE_DEPLETION', 'closed_check', c.id,
-                                'sale:' || c.id || ':' || m.inventory_item_id::text, e.occurred_at, null, null, null, true);
-      v_posted := v_posted || jsonb_build_object(m.inventory_item_id::text, -v_q);
-    end loop;
-    if v_posted = '{}'::jsonb then v_flags := array_append(v_flags, 'nothing_to_take'); end if;
-    if public.stock_explode_skipped(e.location_id, c.items, v_ot) > 0 then v_flags := array_append(v_flags, 'unit_skipped'); end if;
+  if v_skip then
+    null;
+
+  elsif e.kind = 'sale' then
+    -- A catering order dated ahead posts at its event time. A void or a full refund made before
+    -- then cancels it (nothing was made); part refunds made before then come off the sale.
+    v_ahead := e.occurred_at > e.created_at + interval '10 minutes';
+    if v_ahead then
+      select coalesce(array_agg('netted:' || (x ->> 'id') order by x ->> 'id'), '{}') into v_netted
+        from jsonb_array_elements(case when jsonb_typeof(c.refunds) = 'array' then c.refunds else '[]'::jsonb end) x
+       where public.stock_js_key(x -> 'id') is not null and not public._stock_refund_failed(x)
+         and public._stock_refund_at(e.location_id, c.id, x) < e.occurred_at;
+      if ((coalesce(c.voided, false) or coalesce(c.status, '') in ('void', 'voided'))
+          and exists (select 1 from stock_outbox o where o.location_id = e.location_id and o.check_id = e.check_id
+                         and o.kind = 'void' and o.occurred_at < e.occurred_at))
+         or exists (select 1 from jsonb_array_elements(case when jsonb_typeof(c.refunds) = 'array' then c.refunds else '[]'::jsonb end) x
+                     where ('netted:' || (x ->> 'id')) = any(v_netted) and public.stock_js_truthy(x -> 'isFullRefund')) then
+        v_flags := array_append(v_flags, 'cancelled_before_made') || v_netted;
+        v_skip := true;
+      end if;
+    end if;
+    if not v_skip then
+      for m in
+        with sold as (select x.inventory_item_id, x.qty_base from stock_explode(e.location_id, c.items, v_ot) x),
+             pre as (select x from jsonb_array_elements(case when jsonb_typeof(c.refunds) = 'array' then c.refunds else '[]'::jsonb end) x
+                      where ('netted:' || (x ->> 'id')) = any(v_netted)),
+             back as (select r.inventory_item_id, sum(r.qty_base) q
+                        from pre, lateral stock_explode(e.location_id, public._stock_refund_lines(c.items, pre.x), v_ot, 'refundQty') r
+                       group by r.inventory_item_id)
+        select sd.inventory_item_id, sd.qty_base - coalesce(b.q, 0) qty_base
+          from sold sd left join back b on b.inventory_item_id = sd.inventory_item_id
+         where sd.qty_base - coalesce(b.q, 0) > 0.00005
+         order by sd.inventory_item_id
+      loop
+        v_q := public._stock_post(e.location_id, m.inventory_item_id, -m.qty_base, 'SALE_DEPLETION', 'closed_check', c.id,
+                                  'sale:' || c.id || ':' || m.inventory_item_id::text, e.occurred_at, null, null, null, true);
+        v_n := v_n + 1;
+      end loop;
+      if cardinality(v_netted) > 0 then v_flags := array_append(v_flags, 'refund_before_made') || v_netted; end if;
+      if v_n = 0 then v_flags := array_append(v_flags, 'nothing_to_take'); end if;
+      if public.stock_explode_skipped(e.location_id, c.items, v_ot) > 0 then v_flags := array_append(v_flags, 'unit_skipped'); end if;
+    end if;
 
   elsif e.kind = 'tomb' then
-    -- A whole order voided. Lines the kitchen had (fired or sent) were made: waste, never for
-    -- shelf items. A tombstone that mirrors a paid check (same venue and ref, within a day: a
-    -- prepaid kiosk, online, QR or HubRise order voided on the Orders screen) books nothing.
+    -- A whole order voided. Lines the kitchen was cooking were made: waste, never for shelf items.
+    -- A line with sent (a 5.11.77 till: its status was 'sent' at the void) is made when sent and
+    -- not held (fired not false); an older line with no sent key when fired and not course 0 (a
+    -- course 0 drink is fired the moment it is added, before any send); a channel line with
+    -- neither key (kiosk, online, QR) is made. A tombstone that mirrors a paid check (same venue
+    -- and ref, within a day: a prepaid kiosk, online, QR or HubRise order voided on the Orders
+    -- screen) books nothing.
     if c.ref is not null and exists (select 1 from closed_checks p where p.location_id = c.location_id and p.ref = c.ref and p.id <> c.id
                                       and not coalesce(p.voided, false) and coalesce(p.status, 'paid') not in ('void', 'voided')
                                       and p.closed_at between c.closed_at - interval '24 hours' and c.closed_at + interval '10 minutes') then
       v_flags := array_append(v_flags, 'paid_twin');
     else
-      v_lines := (select coalesce(jsonb_agg(l - 'voided'), '[]'::jsonb) from jsonb_array_elements(case when jsonb_typeof(c.items) = 'array' then c.items else '[]'::jsonb end) l
-                   where public.stock_js_truthy(l -> 'sent') or public.stock_js_truthy(l -> 'fired')
-                      or (not (l ? 'sent') and not (l ? 'fired') and coalesce(c.source, 'pos') <> 'pos'));
+      v_lines := (select coalesce(jsonb_agg(l - 'voided'), '[]'::jsonb)
+                    from jsonb_array_elements(case when jsonb_typeof(c.items) = 'array' then c.items else '[]'::jsonb end) l
+                   where jsonb_typeof(l) = 'object'
+                     and case when l ? 'sent' then public.stock_js_truthy(l -> 'sent') and (not (l ? 'fired') or public.stock_js_truthy(l -> 'fired'))
+                              when l ? 'fired' then public.stock_js_truthy(l -> 'fired') and coalesce(l ->> 'course', '1') <> '0'
+                              else coalesce(nullif(c.source, ''), 'pos') <> 'pos' end);
       for m in select x.inventory_item_id, x.qty_base, i.returns_to_shelf from stock_explode(e.location_id, v_lines, v_ot) x
                  join inventory_items i on i.id = x.inventory_item_id order by x.inventory_item_id loop
         continue when m.returns_to_shelf;
         v_q := public._stock_post(e.location_id, m.inventory_item_id, -m.qty_base, 'WASTE', 'closed_check_void', c.id,
                                   'waste:' || c.id || ':tomb:' || m.inventory_item_id::text, e.occurred_at, null, null,
                                   'Voided after it was sent to the kitchen', true);
-        v_posted := v_posted || jsonb_build_object(m.inventory_item_id::text, -v_q);
+        v_n := v_n + 1;
         insert into waste_events (id, location_id, inventory_item_id, item_name, qty, unit, qty_base, reason, note, cost_value, source, occurred_at)
         select md5('waste:' || c.id || ':tomb:' || m.inventory_item_id::text)::uuid, e.location_id, m.inventory_item_id, i.name,
                -v_q, i.base_unit, -v_q, 'Voided after sent', 'Check ' || coalesce(c.ref, c.id), -v_q * coalesce(i.current_cost, 0), 'void', e.occurred_at
           from inventory_items i where i.id = m.inventory_item_id
         on conflict (id) do nothing;
       end loop;
-      if v_posted = '{}'::jsonb then v_flags := array_append(v_flags, 'nothing_made'); end if;
+      if v_n = 0 then v_flags := array_append(v_flags, 'nothing_made'); end if;
     end if;
 
   elsif e.kind in ('refund', 'void') then
@@ -708,15 +911,7 @@ begin
         return 'skipped';
       end if;
       v_full := public.stock_js_truthy(v_entry -> 'isFullRefund');
-      -- the refund's lines; a line with a uid but no modifiers takes them from the stored line,
-      -- so options come back too (the till's refund copies the whole line; Back Office may not)
-      v_lines := (select coalesce(jsonb_agg(
-                    ri || jsonb_build_object('itemId', coalesce(ri -> 'itemId', sl.s -> 'itemId', ri -> 'id'))
-                       || case when ri ? 'mods' or sl.s is null then '{}'::jsonb else jsonb_build_object('mods', sl.s -> 'mods') end), '[]'::jsonb)
-                   from jsonb_array_elements(case when jsonb_typeof(v_entry -> 'items') = 'array' then v_entry -> 'items' else '[]'::jsonb end) ri
-                   left join lateral (select s.v as s from jsonb_array_elements(case when jsonb_typeof(c.items) = 'array' then c.items else '[]'::jsonb end) s(v)
-                                       where nullif(ri ->> 'uid', '') is not null and s.v ->> 'uid' = ri ->> 'uid' limit 1) sl on true
-                  where jsonb_typeof(ri) = 'object');
+      v_lines := public._stock_refund_lines(c.items, v_entry);
       v_rid := e.event_ref;
       v_reason := 'Refunded';
     else
@@ -764,27 +959,27 @@ begin
                   v_q, m.base_unit, v_q, v_reason, 'Check ' || coalesce(c.ref, c.id), v_q * coalesce(m.unit_cost, 0), 'refund', e.occurred_at)
           on conflict (id) do nothing;
         end if;
-        v_posted := v_posted || jsonb_build_object(m.inventory_item_id::text, v_q);
+        v_n := v_n + 1;
       end loop;
-      if v_posted = '{}'::jsonb then v_flags := array_append(v_flags, 'nothing_to_give_back'); end if;
+      if v_n = 0 then v_flags := array_append(v_flags, 'nothing_to_give_back'); end if;
     end if;
 
   elsif e.kind = 'undo' then
     -- Post the exact opposite of every row this refund booked (same type, qty, cost, area), once.
-    for m in select s.* from stock_movements s
-              where s.location_id = e.location_id and s.source_id = c.id and s.source_type = 'closed_check_refund'
-                and s.idempotency_key like '%:' || c.id || ':' || e.event_ref || ':%'
-                and split_part(s.idempotency_key, ':', 1) in ('unsale', 'waste', 'return')
-                and not exists (select 1 from stock_movements u where u.location_id = e.location_id and u.idempotency_key = 'undo:' || s.idempotency_key)
-              order by s.inventory_item_id, s.idempotency_key loop
+    for m in select sm.* from stock_movements sm
+              where sm.location_id = e.location_id and sm.source_id = c.id and sm.source_type = 'closed_check_refund'
+                and sm.idempotency_key like '%:' || c.id || ':' || e.event_ref || ':%'
+                and split_part(sm.idempotency_key, ':', 1) in ('unsale', 'waste', 'return')
+                and not exists (select 1 from stock_movements u where u.location_id = e.location_id and u.idempotency_key = 'undo:' || sm.idempotency_key)
+              order by sm.inventory_item_id, sm.idempotency_key loop
       perform public._stock_post(e.location_id, m.inventory_item_id, -m.qty_base, m.movement_type, 'closed_check_refund', c.id,
                                  'undo:' || m.idempotency_key, now(), m.unit_cost, m.area_id, 'Refund refused by the card processor: reversed', false);
       if m.movement_type = 'WASTE' then
         delete from waste_events w where w.id = md5(m.idempotency_key)::uuid and w.location_id = e.location_id;
       end if;
-      v_posted := v_posted || jsonb_build_object(m.idempotency_key, -m.qty_base);
+      v_n := v_n + 1;
     end loop;
-    if v_posted = '{}'::jsonb then v_flags := array_append(v_flags, 'nothing_to_undo'); end if;
+    if v_n = 0 then v_flags := array_append(v_flags, 'nothing_to_undo'); end if;
 
   else
     -- edit and moved rows are written as held by the trigger; a released one has nothing safe to do by itself
@@ -792,15 +987,19 @@ begin
     return 'held';
   end if;
 
-  update stock_outbox set status = 'done', done_at = now(), attempts = attempts + 1, posted = v_posted, flags = flags || v_flags, last_error = null
+  -- posted: how many rows this event booked (the detail is in stock_movements by source_id)
+  update stock_outbox set status = 'done', done_at = now(), attempts = attempts + 1, posted = jsonb_build_object('rows', v_n),
+         flags = flags || v_flags, last_error = null
    where id = p_id;
   return 'done';
 end $$;
 
 -- -- 9. The drainer, sweep and purge (pg_cron, as postgres) -----------------------------------
--- A PROCEDURE so it can COMMIT between batches. Postgres refuses COMMIT inside a SECURITY DEFINER
+-- A PROCEDURE so it can COMMIT between events. Postgres refuses COMMIT inside a SECURITY DEFINER
 -- procedure, so it is INVOKER, schema qualified, and only its owner (postgres) can run it: pg_cron
--- and the SQL editor. Batches of 50 so the per event subtransactions stay small. Note: a
+-- and the SQL editor. Each event commits on its own: the items it posts are locked in item id
+-- order and held only for that event, so a Back Office post or a transfer leg (which also posts
+-- in item id order) waits for one event at most and never deadlocks with the drainer. Note: a
 -- statement_timeout set inside a running CALL does not re arm the timer, so the budget keeps the
 -- call well inside the server's 120 s limit; lock_timeout does apply to every lock wait.
 -- p_until_empty true (the SQL editor, "drain everything now"): stop at the first empty claim
@@ -809,19 +1008,31 @@ create or replace procedure public.stock_outbox_drain(p_budget_s integer default
 language plpgsql as $$
 declare
   v_t0 timestamptz := clock_timestamp();
+  v_lock bigint := hashtext('stock_outbox_drain');
   v_ids bigint[];
   v_id bigint;
   v_done integer := 0;
   v_fail integer := 0;
   v_run bigint;
   v_res text;
+  v_stop boolean := false;
 begin
-  if not pg_try_advisory_lock(hashtext('stock_outbox_drain')) then return; end if;
+  -- Day one (no venue switched on) and nothing waiting: return at once. No run row, no
+  -- connection held for the rest of the minute.
+  if not exists (select 1 from public.stock_depletion_mode m where m.mode in ('central', 'paused'))
+     and not exists (select 1 from public.stock_outbox o where o.status = 'pending') then
+    return;
+  end if;
+  -- One drainer at a time: a TRANSACTION level lock, taken again in every transaction below. A
+  -- call that is cut off (a timeout, a cancel) frees it with its transaction, so an SQL editor
+  -- session left open never locks pg_cron out.
+  if not pg_try_advisory_xact_lock(v_lock) then return; end if;
   insert into public.stock_outbox_runs (started_at, oldest_due_age_s)
   values (now(), (select extract(epoch from now() - min(o.due_at)) from public.stock_outbox o where o.status = 'pending' and o.due_at <= now()))
   returning id into v_run;
   commit;
   loop
+    if not pg_try_advisory_xact_lock(v_lock) then exit; end if;
     perform set_config('lock_timeout', '2s', true);
     select array_agg(q.id order by q.due_at, q.id) into v_ids
       from (select o.id, o.due_at from public.stock_outbox o
@@ -837,6 +1048,11 @@ begin
       continue;
     end if;
     foreach v_id in array v_ids loop
+      if not pg_try_advisory_xact_lock(v_lock) then v_stop := true; exit; end if;
+      perform set_config('lock_timeout', '2s', true);
+      -- the keys are idempotent and an event's movements and its status commit together, so a
+      -- crash that loses the last few commits only runs those events again
+      perform set_config('synchronous_commit', 'off', true);
       begin
         v_res := public._stock_outbox_apply(v_id);
         if v_res = 'done' then v_done := v_done + 1; end if;
@@ -849,35 +1065,97 @@ begin
                due_at = now() + least(interval '1 hour', interval '15 seconds' * power(2, attempts))
          where id = v_id;
       end;
+      commit;
     end loop;
-    commit;
-    exit when clock_timestamp() - v_t0 > make_interval(secs => p_budget_s);
+    exit when v_stop or clock_timestamp() - v_t0 > make_interval(secs => p_budget_s);
   end loop;
   update public.stock_outbox_runs set finished_at = now(), done = v_done, failed = v_fail where id = v_run;
   commit;
-  perform pg_advisory_unlock(hashtext('stock_outbox_drain'));
 end $$;
 
--- Hourly: a paid check at a central venue, closed after the switch and in the last 48 h, with
--- no sale event (the trigger was disabled, or its insert failed). Written as writer 'swept': the
--- drainer holds it unless a paid public order proof exists, and a Back Office login releases it.
+-- Hourly, over the checks of central venues closed in the last 48 hours, everything a lost
+-- enqueue would have written (the trigger was disabled, or its insert failed):
+--   * a sale or tomb event for a check with neither. Closed after the switch: writer swept, held
+--     for a person unless a same transaction payment proof exists. Closed in the 2 hours before
+--     the switch and not voided: writer db, the switch's own grace rule (a till insert still open
+--     while the switch ran: its trigger saw browser, then the door refused the till's own post).
+--     A check paid then voided (voided false, status voided, or a void event already there) gets
+--     its sale; the void event follows it. Only a tombstone (voided true) is a tomb.
+--   * a refund event for a refund entry with an id that is not refused and has none;
+--   * an undo event for a refused entry whose refund event exists and has no undo;
+--   * a void event for a voided check that has a sale event and no void event.
+--   Only sales wait 2 minutes (an open till insert has not run its trigger yet); a committed
+--   refund or void was committed together with its own trigger's insert, so nothing races those.
+-- Refunds, undos and voids are written as swept: they can only give back what a booked sale took.
 create or replace function public.stock_outbox_sweep() returns integer
 language plpgsql security definer set search_path = public as $$
 declare n integer;
 begin
-  insert into stock_outbox (location_id, check_id, kind, event_ref, writer, occurred_at, flags)
-  select c.location_id::uuid, c.id, case when coalesce(c.voided, false) or coalesce(c.status, '') in ('void', 'voided') then 'tomb' else 'sale' end, '',
-         'swept', coalesce(c.closed_at, now()), array['swept']
-    from stock_depletion_mode m
-    join closed_checks c on c.location_id = m.location_id::text
-   where m.mode in ('central', 'paused')
-     and c.closed_at >= greatest(now() - interval '48 hours', coalesce(m.central_since, now() - interval '48 hours'))
-     and c.closed_at < now() - interval '2 minutes'
-     and c.id not like 'demo-%' and coalesce(c.source, '') <> 'booking'
-     and exists (select 1 from menu_item_recipes r where r.location_id = m.location_id)
-     and not exists (select 1 from stock_outbox o where o.location_id = m.location_id and o.check_id = c.id and o.kind in ('sale', 'tomb'))
-  on conflict do nothing;
-  get diagnostics n = row_count;
+  with cc as materialized (
+    select m.location_id loc, m.central_since since, c.id, c.closed_at, c.refunds,
+           coalesce(c.voided, false) tombstone,
+           (coalesce(c.voided, false) or coalesce(c.status, '') in ('void', 'voided')) voided_any
+      from stock_depletion_mode m
+      join closed_checks c on c.location_id = m.location_id::text
+     where m.mode in ('central', 'paused')
+       and c.closed_at >= greatest(now() - interval '48 hours', coalesce(m.central_since - interval '2 hours', now() - interval '48 hours'))
+       and c.id not like 'demo-%' and coalesce(c.source, '') <> 'booking'
+       and exists (select 1 from menu_item_recipes r where r.location_id = m.location_id)
+  ),
+  ins_sale as (
+    insert into stock_outbox (location_id, check_id, kind, event_ref, writer, occurred_at, flags)
+    select cc.loc, cc.id,
+           case when cc.tombstone and not exists (select 1 from stock_outbox v where v.location_id = cc.loc and v.check_id = cc.id and v.kind = 'void')
+                then 'tomb' else 'sale' end, '',
+           case when cc.closed_at < cc.since then 'db' else 'swept' end,
+           coalesce(cc.closed_at, now()),
+           case when cc.closed_at < cc.since then array['swept', 'switch_grace'] else array['swept'] end
+      from cc
+     where cc.closed_at < now() - interval '2 minutes'   -- a till insert still open has not run its trigger yet
+       and (cc.closed_at >= coalesce(cc.since, '-infinity'::timestamptz) or not cc.voided_any)
+       and not exists (select 1 from stock_outbox o where o.location_id = cc.loc and o.check_id = cc.id and o.kind in ('sale', 'tomb'))
+    on conflict do nothing
+    returning location_id, check_id, kind
+  ),
+  ins_refund as (
+    insert into stock_outbox (location_id, check_id, kind, event_ref, writer, occurred_at, flags)
+    select cc.loc, cc.id, 'refund', x ->> 'id', 'swept',
+           coalesce(case when jsonb_typeof(x -> 'timestamp') = 'number' then to_timestamp((x ->> 'timestamp')::numeric / 1000) end, now()),
+           array['swept']
+      from cc cross join lateral jsonb_array_elements(cc.refunds) x
+     where cc.closed_at >= coalesce(cc.since, '-infinity'::timestamptz)
+       and jsonb_typeof(cc.refunds) = 'array' and jsonb_array_length(cc.refunds) > 0
+       and public.stock_js_key(x -> 'id') is not null and not public._stock_refund_failed(x)
+       and not exists (select 1 from stock_outbox o where o.location_id = cc.loc and o.check_id = cc.id and o.kind = 'tomb')
+       and not exists (select 1 from stock_outbox o where o.location_id = cc.loc and o.check_id = cc.id and o.kind = 'refund' and o.event_ref = x ->> 'id')
+    on conflict do nothing
+    returning 1
+  ),
+  ins_undo as (
+    insert into stock_outbox (location_id, check_id, kind, event_ref, writer, flags)
+    select cc.loc, cc.id, 'undo', x ->> 'id', 'swept', array['swept']
+      from cc cross join lateral jsonb_array_elements(cc.refunds) x
+     where cc.closed_at >= coalesce(cc.since, '-infinity'::timestamptz)
+       and jsonb_typeof(cc.refunds) = 'array' and jsonb_array_length(cc.refunds) > 0
+       and public._stock_refund_failed(x)
+       and exists (select 1 from stock_outbox o where o.location_id = cc.loc and o.check_id = cc.id and o.kind = 'refund' and o.event_ref = x ->> 'id')
+       and not exists (select 1 from stock_outbox o where o.location_id = cc.loc and o.check_id = cc.id and o.kind = 'undo' and o.event_ref = x ->> 'id')
+    on conflict do nothing
+    returning 1
+  ),
+  ins_void as (
+    insert into stock_outbox (location_id, check_id, kind, event_ref, writer, flags)
+    select cc.loc, cc.id, 'void', '', 'swept', array['swept']
+      from cc
+     where cc.closed_at >= coalesce(cc.since, '-infinity'::timestamptz) and cc.voided_any
+       and (exists (select 1 from stock_outbox o where o.location_id = cc.loc and o.check_id = cc.id and o.kind = 'sale')
+            or exists (select 1 from ins_sale i where i.location_id = cc.loc and i.check_id = cc.id and i.kind = 'sale'))
+       and not exists (select 1 from stock_outbox o where o.location_id = cc.loc and o.check_id = cc.id and o.kind = 'void')
+    on conflict do nothing
+    returning 1
+  )
+  select (select count(*) from ins_sale) + (select count(*) from ins_refund) + (select count(*) from ins_undo) + (select count(*) from ins_void)
+    into n;
   return n;
 end $$;
 
@@ -907,7 +1185,9 @@ $cron$;
 -- -- 10. The switch (SQL editor only) -------------------------------------------------------
 -- Turning a venue central enqueues sale events for its paid checks of the last 2 hours (the grace
 -- window: a till that posted seconds before the switch cannot double, the keys collide), as
--- writer db. Turning it browser stops the trigger and opens the door again; movements stay.
+-- writer db. A till insert still open while the switch runs is not visible to it: the hourly
+-- sweep covers the same 2 hours before central_since by the same rule. Turning it browser stops
+-- the trigger and opens the door again; movements stay.
 create or replace function public.stock_central_switch(p_loc uuid, p_mode text, p_who text default null) returns jsonb
 language plpgsql security definer set search_path = public as $$
 declare n integer := 0;
@@ -1013,11 +1293,15 @@ begin
 end $$;
 
 -- A Back Office login (not an anonymous device session) at the venue releases a held or dead row:
--- it is posted on the next drain as a trusted event. Edit and moved rows cannot be released: a
--- person corrects the stock by hand.
+-- it is posted on the next drain as a trusted event. Releasing a sale also sends on the refunds,
+-- voids and undos of that check that were held waiting for it (sale_not_booked); they run after
+-- it. Edit and moved rows, and an undo of a refund netted before a catering event, cannot be
+-- released: a person corrects the stock by hand.
 create or replace function public.stock_outbox_release(p_id bigint) returns jsonb
 language plpgsql security definer set search_path = public as $$
-declare e stock_outbox%rowtype;
+declare
+  e stock_outbox%rowtype;
+  n integer := 0;
 begin
   select * into e from stock_outbox where id = p_id for update;
   if not found then return jsonb_build_object('ok', false, 'error', 'No such row'); end if;
@@ -1029,10 +1313,20 @@ begin
   end if;
   if e.status not in ('held', 'dead') then return jsonb_build_object('ok', false, 'error', 'This event is ' || e.status); end if;
   if e.kind in ('edit', 'moved') then return jsonb_build_object('ok', false, 'error', 'A check edited or moved after the sale is corrected by hand (count or adjust the items)'); end if;
+  if 'netted_refund_failed' = any(e.flags) then
+    return jsonb_build_object('ok', false, 'error', 'This order was refunded before its event, so its stock was never taken, and then the refund was refused. Take the stock off by hand (waste or count).');
+  end if;
   update stock_outbox set status = 'pending', writer = 'released', due_at = now(), attempts = 0, last_error = null,
          flags = array_append(flags, 'released:' || coalesce(nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'sub', 'db'))
    where id = p_id;
-  return jsonb_build_object('ok', true, 'id', p_id);
+  if e.kind = 'sale' then
+    update stock_outbox set status = 'pending', due_at = now(), attempts = 0, last_error = null,
+           flags = array_append(flags, 'sale_released')
+     where location_id = e.location_id and check_id = e.check_id and kind in ('refund', 'void', 'undo')
+       and status = 'held' and 'sale_not_booked' = any(flags);
+    get diagnostics n = row_count;
+  end if;
+  return jsonb_build_object('ok', true, 'id', p_id, 'followers', n);
 end $$;
 
 -- The watchdog (service role): per venue, the counts its three signals read.
@@ -1063,6 +1357,7 @@ begin
                                 'stock_norm_order_type', 'stock_line_applies', 'stock_qty_to_base', 'stock_explode', 'stock_explode_skipped',
                                 '_stock_writer_class', '_stock_refund_failed', '_stock_outbox_on_insert', '_stock_outbox_on_update',
                                 '_stock_counted_after', '_stock_post', '_stock_taken', '_stock_given_back', '_stock_outbox_apply',
+                                '_stock_refund_lines', '_stock_refund_at',
                                 'stock_outbox_drain', 'stock_outbox_sweep', 'stock_outbox_purge', 'stock_central_switch',
                                 'stock_venue_mode', 'stock_outbox_health', 'stock_outbox_release', 'stock_outbox_watch')
   loop
@@ -1078,7 +1373,63 @@ grant execute on function public.stock_outbox_watch(integer, integer) to service
 revoke all on function public.post_stock_movement(uuid,uuid,numeric,text,numeric,text,text,text,timestamptz,uuid,text,uuid) from public, anon;
 grant execute on function public.post_stock_movement(uuid,uuid,numeric,text,numeric,text,text,text,timestamptz,uuid,text,uuid) to authenticated, service_role;
 
--- -- 14. Self test, on this database, before anything is kept ------------------------------
+-- -- 14. Transfers post in item id order (the drainer's order) ----------------------------------
+-- 20261018a's post_stock_transfer_leg walks its lines in sort_order. A 12 line transfer locks
+-- item rows in screen order while the drainer locks them in item id order: under a backlog the
+-- two deadlocked (1 s each, live deadlock_timeout). Only the three ORDER BY clauses change, to
+-- item id order (the receiving item for the in leg); the rest of the text is 20261018a's, byte for
+-- byte (md5 guarded above and again here). Same grants, same owner.
+do $leg$
+declare
+  v_def text;
+  v_md5 text;
+  v_old constant text := 'order by sort_order, id';
+  v_new constant text := 'order by case when p_leg = ''in'' then to_inventory_item_id else inventory_item_id end, sort_order, id';
+begin
+  select md5(btrim(regexp_replace(p.prosrc, '\s+', ' ', 'g'))) into v_md5 from pg_proc p
+   where p.oid = to_regprocedure('public.post_stock_transfer_leg(uuid,text,text)');
+  if v_md5 = '541ac92297e3784706a2f7a958d5c396' then return; end if;
+  if v_md5 is distinct from '8c6ee62b7279f09f94f1e0eaa320da9d' then
+    raise exception 'post_stock_transfer_leg changed while this ran (md5 %). Nothing was changed.', coalesce(v_md5, 'missing');
+  end if;
+  v_def := pg_get_functiondef(to_regprocedure('public.post_stock_transfer_leg(uuid,text,text)'));
+  if (length(v_def) - length(replace(v_def, v_old, ''))) / length(v_old) <> 3 then
+    raise exception 'post_stock_transfer_leg: expected 3 line loops to reorder. Nothing was changed.';
+  end if;
+  execute replace(v_def, v_old, v_new);
+  select md5(btrim(regexp_replace(p.prosrc, '\s+', ' ', 'g'))) into v_md5 from pg_proc p
+   where p.oid = to_regprocedure('public.post_stock_transfer_leg(uuid,text,text)');
+  if v_md5 is distinct from '541ac92297e3784706a2f7a958d5c396' then
+    raise exception 'post_stock_transfer_leg: the reordered text is not the one this file was tested with (md5 %). Nothing was changed.', v_md5;
+  end if;
+end
+$leg$;
+
+-- -- 15. The triggers (last, so the short lock on closed_checks is held only for the rest) -----
+-- Created only when missing: a second run never touches closed_checks (DROP TRIGGER takes ACCESS
+-- EXCLUSIVE and stalls every till close and every report read; even CREATE OR REPLACE TRIGGER
+-- waits for every open till insert). Their functions are replaced above, which locks nothing.
+do $trg$
+begin
+  if not exists (select 1 from pg_trigger where tgrelid = 'public.closed_checks'::regclass and tgname = 'closed_checks_stock_outbox_ins') then
+    create trigger closed_checks_stock_outbox_ins
+      after insert on public.closed_checks
+      referencing new table as new_rows
+      for each statement execute function public._stock_outbox_on_insert();
+  end if;
+  if not exists (select 1 from pg_trigger where tgrelid = 'public.closed_checks'::regclass and tgname = 'closed_checks_stock_outbox_upd') then
+    create trigger closed_checks_stock_outbox_upd
+      after update of refunds, status, voided, items, location_id on public.closed_checks
+      for each row
+      when (old.refunds is distinct from new.refunds or old.status is distinct from new.status
+            or old.voided is distinct from new.voided or old.items is distinct from new.items
+            or old.location_id is distinct from new.location_id)
+      execute function public._stock_outbox_on_update();
+  end if;
+end
+$trg$;
+
+-- -- 16. Self test, on this database, before anything is kept ------------------------------
 -- (a) none of the internal routines is callable by anon, authenticated or service_role;
 -- (b) the door answers skipped for a sale post at a (made up) central venue by the service role,
 --     and still posts nothing anywhere: the test block is rolled back;
@@ -1096,7 +1447,7 @@ begin
      and p.proname in ('_stock_mode_of', 'stock_venue_is_central', 'stock_qty_to_base', 'stock_explode', 'stock_explode_skipped',
                        '_stock_writer_class', '_stock_outbox_on_insert', '_stock_outbox_on_update', '_stock_counted_after', '_stock_post',
                        '_stock_taken', '_stock_given_back', '_stock_outbox_apply', 'stock_outbox_drain', 'stock_outbox_sweep',
-                       'stock_outbox_purge', 'stock_central_switch')
+                       'stock_outbox_purge', 'stock_central_switch', '_stock_refund_lines', '_stock_refund_at')
      and has_function_privilege(r.name, p.oid, 'execute');
   if v_open > 0 then
     raise exception 'Stopped, nothing changed: % internal stock routine grant(s) still reach the API.', v_open;
@@ -1135,7 +1486,8 @@ notify pgrst, 'reload schema';
 --   outbox_tables 3, triggers 2, cron_jobs 3, default_mode browser, venues_central 0 (nothing moves
 --   until stock_central_switch is run), door_central 1, internal_open_to_api 0, outbox_in_realtime 0,
 --   returns_to_shelf_column 1, api_rpcs 4 (stock_venue_mode, stock_outbox_health,
---   stock_outbox_release for signed in; stock_outbox_watch service role only).
+--   stock_outbox_release for signed in; stock_outbox_watch service role only),
+--   transfers_in_item_order 1. So: 3|2|3|browser|0|1|0|0|1|4|1
 select
   (select count(*) from pg_tables where schemaname = 'public' and tablename in ('stock_outbox', 'stock_outbox_runs', 'stock_depletion_mode')) as outbox_tables,
   (select count(*) from pg_trigger t join pg_class c on c.oid = t.tgrelid where c.relname = 'closed_checks' and t.tgname in ('closed_checks_stock_outbox_ins', 'closed_checks_stock_outbox_upd')) as triggers,
@@ -1153,4 +1505,6 @@ select
   (select count(*) from information_schema.columns where table_schema = 'public' and table_name = 'inventory_items' and column_name = 'returns_to_shelf') as returns_to_shelf_column,
   (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace
      and p.proname in ('stock_venue_mode', 'stock_outbox_health', 'stock_outbox_release', 'stock_outbox_watch')
-     and (has_function_privilege('authenticated', p.oid, 'execute') or has_function_privilege('service_role', p.oid, 'execute'))) as api_rpcs;
+     and (has_function_privilege('authenticated', p.oid, 'execute') or has_function_privilege('service_role', p.oid, 'execute'))) as api_rpcs,
+  (select count(*) from pg_proc p where p.oid = to_regprocedure('public.post_stock_transfer_leg(uuid,text,text)')
+     and md5(btrim(regexp_replace(p.prosrc, '\s+', ' ', 'g'))) = '541ac92297e3784706a2f7a958d5c396') as transfers_in_item_order;

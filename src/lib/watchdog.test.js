@@ -328,7 +328,10 @@ test('the stock windows and words agree, and run.mjs and watchdog-status carry t
   assert.equal(SIGNALS.stock_backlog.minutes, 10);
   assert.equal(SIGNALS.stock_held.minutes, 60);
   const run = read('../../scripts/watchdog/run.mjs');
-  for (const k of ['stockBacklog', 'stockDead', 'stockHeld']) assert.match(run, new RegExp(`${k}: body\.${k} \|\| \[\]`));
+  // String.raw keeps the backslashes, so the regex is the literal `stockBacklog: body.stockBacklog || []`
+  // (a plain template string dropped them and the empty alternatives matched anything)
+  for (const k of ['stockBacklog', 'stockDead', 'stockHeld']) assert.match(run, new RegExp(String.raw`${k}: body\.${k} \|\| \[\]`));
+  assert.doesNotMatch('nothing to do with it', new RegExp(String.raw`stockBacklog: body\.stockBacklog \|\| \[\]`), 'the pattern can fail');
   const fn = read('../../supabase/functions/watchdog-status/index.ts');
   assert.match(fn, /admin\.rpc\('stock_outbox_watch', \{ p_pending_older_min: stockOlder, p_held_older_min: heldOlder \}\)/);
   assert.match(fn, /PGRST202|does not exist/, 'a missing function (migration not run) is not reported as an outage');

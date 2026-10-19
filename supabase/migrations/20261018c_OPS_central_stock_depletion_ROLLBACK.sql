@@ -2,8 +2,8 @@
 --
 -- OPS DB ONLY (tbetcegmszzotrwdtqhi). Undoes 20261018c_OPS_central_stock_depletion.sql: drops the
 -- two triggers on closed_checks and the three pg_cron jobs, puts post_stock_movement back to its
--- 20261018a text (the door closes: tills post again everywhere), drops the API facing RPCs and the
--- internal routines. KEEPS the tables (stock_outbox, stock_outbox_runs, stock_depletion_mode,
+-- 20261018a text (the door closes: tills post again everywhere) and post_stock_transfer_leg back
+-- to its 20261018a line order, drops the API facing RPCs and the internal routines. KEEPS the tables (stock_outbox, stock_outbox_runs, stock_depletion_mode,
 -- stock_depletion_default, their rows), every stock movement already booked, the indexes, the
 -- table options and inventory_items.returns_to_shelf: nothing of the stock history is lost, and the
 -- migration applies again on top of it.
@@ -30,6 +30,11 @@ begin
    where p.oid = to_regprocedure('public.post_stock_movement(uuid,uuid,numeric,text,numeric,text,text,text,timestamptz,uuid,text,uuid)');
   if v_md5 is null or v_md5 not in ('0adb151adb1611b05a1099df81cf5aae', 'ad53ab7ca7477bba0a56b2e512fc11e7') then
     raise exception 'post_stock_movement is neither the 20261018c door nor the 20261018a text (md5 %). Nothing was changed. Send this line to Claude.', coalesce(v_md5, 'missing');
+  end if;
+  select md5(btrim(regexp_replace(p.prosrc, '\s+', ' ', 'g'))) into v_md5 from pg_proc p
+   where p.oid = to_regprocedure('public.post_stock_transfer_leg(uuid,text,text)');
+  if v_md5 is null or v_md5 not in ('541ac92297e3784706a2f7a958d5c396', '8c6ee62b7279f09f94f1e0eaa320da9d') then
+    raise exception 'post_stock_transfer_leg is neither the 20261018c order nor the 20261018a text (md5 %). Nothing was changed. Send this line to Claude.', coalesce(v_md5, 'missing');
   end if;
 end
 $guard$;
@@ -81,6 +86,20 @@ end $$;
 revoke all on function public.post_stock_movement(uuid,uuid,numeric,text,numeric,text,text,text,timestamptz,uuid,text,uuid) from public, anon;
 grant execute on function public.post_stock_movement(uuid,uuid,numeric,text,numeric,text,text,text,timestamptz,uuid,text,uuid) to authenticated, service_role;
 
+-- 3b. Transfers: post_stock_transfer_leg back to 20261018a's line order (sort_order), byte for byte.
+do $leg$
+declare
+  v_def text;
+  v_old constant text := 'order by case when p_leg = ''in'' then to_inventory_item_id else inventory_item_id end, sort_order, id';
+begin
+  if (select md5(btrim(regexp_replace(p.prosrc, '\s+', ' ', 'g'))) from pg_proc p
+       where p.oid = to_regprocedure('public.post_stock_transfer_leg(uuid,text,text)')) = '541ac92297e3784706a2f7a958d5c396' then
+    v_def := pg_get_functiondef(to_regprocedure('public.post_stock_transfer_leg(uuid,text,text)'));
+    execute replace(v_def, v_old, 'order by sort_order, id');
+  end if;
+end
+$leg$;
+
 -- 4. The routines (the tables stay).
 drop function if exists public.stock_outbox_watch(integer, integer);
 drop function if exists public.stock_outbox_release(bigint);
@@ -93,6 +112,8 @@ drop procedure if exists public.stock_outbox_drain(integer, integer, numeric, bo
 drop procedure if exists public.stock_outbox_drain(integer, integer, numeric);
 drop function if exists public._stock_outbox_apply(bigint);
 drop function if exists public._stock_given_back(uuid, text);
+drop function if exists public._stock_refund_at(uuid, text, jsonb);
+drop function if exists public._stock_refund_lines(jsonb, jsonb);
 drop function if exists public._stock_taken(uuid, text);
 drop function if exists public._stock_post(uuid, uuid, numeric, text, text, text, text, timestamptz, numeric, uuid, text, boolean);
 drop function if exists public._stock_counted_after(uuid, uuid, timestamptz);
@@ -115,7 +136,8 @@ drop function if exists public._stock_mode_of(uuid);
 notify pgrst, 'reload schema';
 
 -- VISIBLE CHECK. Expected: triggers 0, cron_jobs 0, routines_left 0, door_text_is_20261018a 1
--- (md5 ad53ab7ca7477bba0a56b2e512fc11e7), tables_kept 3, movements_kept = your count.
+-- (md5 ad53ab7ca7477bba0a56b2e512fc11e7), tables_kept 3, movements_kept = your count,
+-- transfer_leg_is_20261018a 1 (md5 8c6ee62b7279f09f94f1e0eaa320da9d).
 select
   (select count(*) from pg_trigger t join pg_class c on c.oid = t.tgrelid where c.relname = 'closed_checks' and t.tgname in ('closed_checks_stock_outbox_ins', 'closed_checks_stock_outbox_upd')) as triggers,
   (select count(*) from cron.job where jobname in ('stock-outbox-drain', 'stock-outbox-sweep', 'stock-outbox-purge')) as cron_jobs,
@@ -124,4 +146,6 @@ select
   (select count(*) from pg_proc p where p.oid = to_regprocedure('public.post_stock_movement(uuid,uuid,numeric,text,numeric,text,text,text,timestamptz,uuid,text,uuid)')
      and md5(btrim(regexp_replace(p.prosrc, '\s+', ' ', 'g'))) = 'ad53ab7ca7477bba0a56b2e512fc11e7') as door_text_is_20261018a,
   (select count(*) from pg_tables where schemaname = 'public' and tablename in ('stock_outbox', 'stock_outbox_runs', 'stock_depletion_mode')) as tables_kept,
-  (select count(*) from public.stock_movements) as movements_kept;
+  (select count(*) from public.stock_movements) as movements_kept,
+  (select count(*) from pg_proc p where p.oid = to_regprocedure('public.post_stock_transfer_leg(uuid,text,text)')
+     and md5(btrim(regexp_replace(p.prosrc, '\s+', ' ', 'g'))) = '8c6ee62b7279f09f94f1e0eaa320da9d') as transfer_leg_is_20261018a;

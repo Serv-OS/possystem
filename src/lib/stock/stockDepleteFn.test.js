@@ -2,8 +2,8 @@
  * stockDepleteFn.test.js: the stock-deplete edge function driven end to end in node (18 Oct 2026,
  * v5.11.76, stock fences). It posts stock movements with the service role, so who may ask is
  * proven here: a stranger is refused before a single recipe is read; a bound till, a Back Office
- * login and the service role are served; an online customer only for a PAID online order at that
- * venue, from that order's own stored lines, and never a reverse.
+ * login and the service role are served. v5.11.77: an online customer is refused even for a check
+ * stored as a PAID online order (anyone can write such a check with the public key; probe A4).
  *
  * The Deno file is imported directly (node strips the types). Its esm.sh import is mapped to a
  * stub whose createClient hands back fakes: the service role client (the function's own tables)
@@ -16,7 +16,7 @@ import { test, before, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import {
-  authoriseStockDeplete, callerReachesVenue, isPaidPublicOrder, itemsOfCheck, isVenueId,
+  authoriseStockDeplete, callerReachesVenue, isVenueId,
 } from '../../../supabase/functions/_shared/stockDepleteCaller.js';
 
 registerHooks({
@@ -191,34 +191,31 @@ test('the service role is served without asking the database who it is', async (
   assert.deepEqual(posted(), { 'inv-milk': -2, 'inv-oat': -2 });
 });
 
-test('an online customer with a PAID online order at the venue: the order\'s own lines, not the body', async () => {
-  state.checks.push({ id: 'chk-1', location_id: LOC, source: 'online', status: 'paid', voided: false, order_type: 'collection',
-    items: [{ itemId: 'latte', qty: 1, voided: false, mods: [{ itemId: 'oat-shot', qty: 1 }, { name: 'Extra hot', _instruction: true, itemId: 'x' }] }] });
-  const r = await call({ ...BODY, items: [{ itemId: 'latte', qty: 500 }] }, { token: TOKENS.customer });
-  assert.equal(r.status, 200);
-  assert.deepEqual(posted(), { 'inv-milk': -1, 'inv-oat': -1 }, '1 latte with oat, as stored, never the 500 the body asked for');
+test('v5.11.77: a check stored as a paid online order is no longer a door: the customer is refused, nothing read or posted', async () => {
+  // Anyone holding the public key can write this row (closed_checks insert policy with check true).
+  for (const chk of [
+    { id: 'chk-1', location_id: LOC, source: 'online', status: 'paid', voided: false, order_type: 'collection', items: [{ itemId: 'latte', qty: 100 }] },
+    { id: 'chk-1', location_id: LOC, source: 'qr', status: 'paid', voided: false, items: [{ itemId: 'latte', qty: 1 }] },
+    { id: 'chk-1', location_id: LOC, source: 'catering', status: 'paid', voided: false, items: [{ itemId: 'latte', qty: 1 }] },
+  ]) {
+    state.checks.length = 0; state.posts = []; state.reads = [];
+    state.checks.push(chk);
+    for (const token of [TOKENS.customer, TOKENS.stranger, null]) {
+      const r = await call(BODY, { token });
+      assert.equal(r.status, 403, `${chk.source} with ${token}`);
+      assert.equal(r.body.reason, 'not_this_venue');
+    }
+    assert.deepEqual(state.posts, [], 'nothing posted');
+    assert.deepEqual(state.reads, [], 'not even the stored check is read');
+  }
 });
 
-test('an online customer cannot reverse a paid order', async () => {
+test('an online customer cannot reverse', async () => {
   state.checks.push({ id: 'chk-1', location_id: LOC, source: 'online', status: 'paid', voided: false, items: [{ itemId: 'latte', qty: 1 }] });
   const r = await call({ ...BODY, reverse: true }, { token: TOKENS.customer });
   assert.equal(r.status, 403);
   assert.equal(r.body.reason, 'reverse_needs_venue');
   assert.deepEqual(state.posts, []);
-});
-
-test('a check that is not a paid public order at this venue is refused', async () => {
-  for (const chk of [
-    { id: 'chk-1', location_id: OTHER, source: 'online', status: 'paid', voided: false, items: [{ itemId: 'latte', qty: 1 }] },
-    { id: 'chk-1', location_id: LOC, source: 'pos', status: 'paid', voided: false, items: [{ itemId: 'latte', qty: 1 }] },
-    { id: 'chk-1', location_id: LOC, source: 'online', status: 'void', voided: true, items: [{ itemId: 'latte', qty: 1 }] },
-  ]) {
-    state.checks.length = 0; state.posts = [];
-    state.checks.push(chk);
-    const r = await call(BODY, { token: TOKENS.customer });
-    assert.equal(r.status, 403, JSON.stringify(chk));
-    assert.deepEqual(state.posts, []);
-  }
 });
 
 test('before 20261018a runs: the same answer from accessible_location_ids', async () => {
@@ -253,30 +250,6 @@ test('isVenueId: only a uuid', () => {
   assert.equal(isVenueId(LOC), true);
   assert.equal(isVenueId(LOC.toUpperCase()), true);
   for (const v of ['', 'loc-demo', `${LOC},x`, null, undefined, 42]) assert.equal(isVenueId(v), false, String(v));
-});
-
-test('isPaidPublicOrder: online, QR and catering at this venue, not voided', () => {
-  const base = { location_id: LOC, source: 'online', status: 'paid', voided: false };
-  assert.equal(isPaidPublicOrder(base, LOC), true);
-  assert.equal(isPaidPublicOrder({ ...base, source: 'qr' }, LOC), true);
-  assert.equal(isPaidPublicOrder({ ...base, source: 'catering' }, LOC), true);
-  assert.equal(isPaidPublicOrder({ ...base, status: undefined }, LOC), true, 'the column defaults to paid');
-  assert.equal(isPaidPublicOrder({ ...base, source: 'pos' }, LOC), false);
-  assert.equal(isPaidPublicOrder({ ...base, source: 'kiosk' }, LOC), false, 'a kiosk is a bound device, never this path');
-  assert.equal(isPaidPublicOrder({ ...base, voided: true }, LOC), false);
-  assert.equal(isPaidPublicOrder({ ...base, status: 'void' }, LOC), false);
-  assert.equal(isPaidPublicOrder({ ...base, location_id: OTHER }, LOC), false);
-  assert.equal(isPaidPublicOrder(null, LOC), false);
-});
-
-test('itemsOfCheck: the stored lines the way depleteForSaleServer sends them', () => {
-  assert.deepEqual(itemsOfCheck({ items: [
-    { itemId: 'latte', qty: 2, mods: [{ itemId: 'oat-shot' }, { itemId: 'note', _instruction: true }, { name: 'no id' }] },
-    { itemId: 'scone', qty: 1, voided: true },
-    { name: 'open price line' },
-    'junk',
-  ] }), [{ itemId: 'latte', qty: 2, mods: [{ itemId: 'oat-shot', qty: 1 }] }]);
-  assert.deepEqual(itemsOfCheck({}), []);
 });
 
 test('callerReachesVenue: any doubt is no', async () => {

@@ -13,11 +13,15 @@
 //     company, a super admin, or a till, kiosk or ops tablet BOUND to the venue). Until that
 //     migration runs, the same set from accessible_location_ids (live since 20260927a), so the
 //     function can be deployed before or after the SQL;
-//   * an online, QR or catering order PAID at that venue: a closed check with that id, at that
-//     venue, from one of those sources, not voided. Its OWN stored lines are used, never the
-//     caller's, and it can never reverse. So the most a stranger who learns a real check id can
-//     do is book that order's stock once (the movement keys are per check and item).
 // Anything else is refused (403) before a single recipe is read.
+//
+// v5.11.77 (review 19 Oct): the third door, "an online, QR or catering order PAID at that venue"
+// (a closed check with that id and source, not voided), is GONE. closed_checks takes inserts from
+// the bare public key, so a stranger could write a check with source online and 100 of a dish and
+// then have this function post it with the service role (probe A4: a bun 100 to 0). No genuine
+// call ever used it: the online checkout has no venue session, so depleteForSaleServer stops
+// before it calls (getActiveLocationSync is empty there). Online, QR and catering stock comes off
+// in the database (20261018c), from the check and a payment proof written in the same step.
 
 import { bearerOf, isMissingCheck } from './cronKey.js';
 
@@ -25,7 +29,6 @@ export { bearerOf };
 
 export const REACH_CHECK = 'stock_caller_reaches';
 export const REACH_FALLBACK = 'accessible_location_ids';
-export const PUBLIC_ORDER_SOURCES = Object.freeze(['online', 'qr', 'catering']);
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -63,33 +66,6 @@ export async function callerReachesVenue(callerDb, locationId) {
   }
 }
 
-/** A stored closed check that is a paid online, QR or catering order at this venue. */
-export function isPaidPublicOrder(check, locationId) {
-  if (!check || typeof check !== 'object') return false;
-  if (String(check.location_id || '').toLowerCase() !== String(locationId || '').toLowerCase()) return false;
-  if (!PUBLIC_ORDER_SOURCES.includes(String(check.source || '').toLowerCase())) return false;
-  if (check.voided === true) return false;
-  return String(check.status || 'paid').toLowerCase() !== 'void';
-}
-
-/**
- * A check's own lines, in the shape the function explodes: the same rule as depleteForSaleServer
- * (src/lib/stock/deplete.js): voided lines and lines with no item are left out, a linked option
- * (a sub item with an itemId, never a kitchen instruction) rides along as a mod.
- */
-export function itemsOfCheck(check) {
-  const items = Array.isArray(check?.items) ? check.items : [];
-  return items
-    .filter((it) => it && typeof it === 'object' && !it.voided && it.itemId)
-    .map((it) => ({
-      itemId: String(it.itemId),
-      qty: Number(it.qty) || 1,
-      mods: (Array.isArray(it.mods) ? it.mods : [])
-        .filter((m) => m && typeof m === 'object' && m.itemId && !m._instruction)
-        .map((m) => ({ itemId: String(m.itemId), qty: Number(m.qty) || 1 })),
-    }));
-}
-
 const refuse = (status, reason, error) => ({ ok: false, status, reason, error });
 
 /**
@@ -97,13 +73,12 @@ const refuse = (status, reason, error) => ({ ok: false, status, reason, error })
  *   authorization  the request's Authorization header
  *   serviceKey     the function's own service role key
  *   makeCallerDb   (token) => a client that talks to the database AS the caller
- *   ops            the service role client (reads the stored check)
  *   body           the parsed request body
  * Returns { ok: true, via, locationId, checkId, items, orderType, reverse } or
  *         { ok: false, status, reason, error }.
- *   via 'service' | 'venue' | 'paid_order'
+ *   via 'service' | 'venue'
  */
-export async function authoriseStockDeplete({ authorization, serviceKey, makeCallerDb, ops, body }) {
+export async function authoriseStockDeplete({ authorization, serviceKey, makeCallerDb, body }) {
   const locationId = String(body?.location_id || '');
   const checkId = String(body?.check_id || '');
   const items = Array.isArray(body?.items) ? body.items : [];
@@ -125,18 +100,5 @@ export async function authoriseStockDeplete({ authorization, serviceKey, makeCal
   }
 
   if (reverse) return refuse(403, 'reverse_needs_venue', 'Only the venue can put stock back');
-
-  let check = null;
-  try {
-    const { data, error } = await ops.from('closed_checks')
-      .select('id, location_id, source, status, voided, items, order_type')
-      .eq('id', checkId).eq('location_id', locationId).maybeSingle();
-    if (!error) check = data;
-  } catch {
-    check = null;
-  }
-  if (isPaidPublicOrder(check, locationId)) {
-    return { ok: true, via: 'paid_order', ...base, items: itemsOfCheck(check), orderType: check.order_type ? String(check.order_type) : orderType, reverse: false };
-  }
   return refuse(403, 'not_this_venue', 'This device or login cannot take stock off at this venue');
 }

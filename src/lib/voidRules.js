@@ -142,6 +142,19 @@ export function checkSourceFor(source) {
 }
 
 /**
+ * One line as a void tombstone carries it (v5.11.77). The line's kitchen state is kept BEFORE its
+ * status is overwritten: sent = its status was 'sent' (a 'pending' line never reached the kitchen,
+ * a course 0 drink included, which is fired the moment it is added). The database books waste
+ * only for a line that was sent and not held (fired not false). A line with no status at all (a
+ * kiosk, online or QR line on the Orders screen) gets no sent key, so the database keeps reading
+ * it as the channel's own order (made).
+ */
+export function tombstoneLine(i) {
+  if (!isObj(i)) return i;
+  return { ...i, ...(typeof i.status === 'string' ? { sent: i.status === 'sent' } : {}), status: 'voided', voided: true };
+}
+
+/**
  * The closed_checks TOMBSTONE a whole order void writes for a walk in or an order screen order.
  * Same idea as the table path (store.voidCheck, v5.9.72): flagged voided, status 'voided',
  * method 'void', and NO money on it (subtotal, total, tax, tenders all zero), so no report ever
@@ -149,7 +162,7 @@ export function checkSourceFor(source) {
  * what was voided and its value (voidedValue).
  */
 export function buildVoidTombstone({ order, orderType, customer = null, staff = null, manager, reason, locationId = null, source = 'pos', now = Date.now(), id = null } = {}) {
-  const lines = voidableLines(order?.items).map(i => ({ ...i, status: 'voided', voided: true }));
+  const lines = voidableLines(order?.items).map(tombstoneLine);
   return {
     id: id || `void-${now}-${Math.random().toString(36).slice(2, 7)}`,
     ref: order?.ref || null,

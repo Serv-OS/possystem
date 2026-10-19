@@ -11,9 +11,10 @@
 // POST { location_id, check_id, items:[{itemId, qty}], reverse?:bool }
 // Auth: verify_jwt=false. v5.11.76 (18 Oct 2026, stock fences): served only for the service role,
 // a session the database says can reach the venue (Back Office login, owner, super admin, or a
-// till, kiosk or ops tablet bound to it), or a paid online, QR or catering order at that venue,
-// whose own stored lines are used. Everything else is refused (403) before any read. The rule
-// and its reasons: ../_shared/stockDepleteCaller.js. Needs a REDEPLOY to take effect.
+// till, kiosk or ops tablet bound to it). v5.11.77: the "paid online order" door is gone (a
+// stranger could write the check it trusted with the public key). Everything else is refused
+// (403) before any read. The rule and its reasons: ../_shared/stockDepleteCaller.js. Needs a
+// REDEPLOY to take effect.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { authoriseStockDeplete } from '../_shared/stockDepleteCaller.js';
@@ -156,7 +157,6 @@ Deno.serve(async (req) => {
       global: { headers: { Authorization: `Bearer ${token}` } },
       auth: { autoRefreshToken: false, persistSession: false },
     }),
-    ops: sb,
     body,
   });
   if (!auth.ok) {
@@ -165,7 +165,7 @@ Deno.serve(async (req) => {
   }
   const loc = auth.locationId;
   const checkId = auth.checkId;
-  const items = auth.items;          // a paid public order: its own stored lines, never the caller's
+  const items = auth.items;          // the service role or a session that reaches the venue
   const reverse = auth.reverse;
   const orderType = auth.orderType;  // scopes order-type-specific lines (e.g. takeaway cup)
 

@@ -69,6 +69,9 @@ test('held reasons are plain words with the thing to do', () => {
   assert.match(heldReason({ flags: ['swept', 'unproven'] }), /genuine/);
   assert.match(heldReason({ status: 'dead', flags: [], last_error: '23514: broken' }), /Failed 8 times: 23514/);
   assert.equal(heldReason({ flags: [] }), 'Needs a person.');
+  // v5.11.77 review: a refund held behind its sale, and the undo of a refund netted before a catering event
+  assert.match(heldReason({ flags: ['swept', 'sale_not_booked'] }), /Release the sale; this follows it/);
+  assert.match(heldReason({ flags: ['netted_refund_failed'] }), /by hand/);
 });
 
 test('deplete.js asks the venue mode before every post and the server call, and skips at a central venue', () => {
@@ -113,7 +116,7 @@ test('the trading report sums signed stock values, so a refund reversal comes OF
 test('the migration and its rollback: present, ASCII only, bare statements, a visible check at the end, the same door md5', () => {
   const mig = read(MIG), rb = read(RB);
   for (const [name, text] of [['migration', mig], ['rollback', rb]]) {
-    assert.ok(/^[\x00-\x7F]*$/.test(text), `${name} is ASCII only`);
+    assert.ok([...text].every((ch) => ch.charCodeAt(0) < 128), `${name} is ASCII only`);
     assert.doesNotMatch(text, /^(begin|commit|start transaction)\s*;/im, `${name} has no begin or commit of its own`);
     assert.match(text.trimEnd(), /;\s*$/, `${name} ends with a statement`);
     assert.match(text, /VISIBLE CHECK/, `${name} has a visible check at the bottom`);
@@ -122,7 +125,7 @@ test('the migration and its rollback: present, ASCII only, bare statements, a vi
   const door = /not in \('ad53ab7ca7477bba0a56b2e512fc11e7', '([0-9a-f]{32})'\)/.exec(mig);
   assert.ok(door, 'the guard names the fenced text and the door text');
   assert.ok(rb.includes(`'${door[1]}'`), 'the rollback accepts the same door text');
-  assert.match(mig, /insert into public\.stock_depletion_default \(one, mode, changed_by\) values \(true, 'browser'/, 'the default is browser: nothing moves on day one');
+  assert.match(mig, /insert into public\.stock_depletion_default \(one, mode, changed_by\)\s+select true, 'browser'/, 'the default is browser: nothing moves on day one');
   assert.match(mig, /public\._post_stock_movement\(/, 'posts through the fences core');
   assert.doesNotMatch(mig.replace(/create or replace function public\.post_stock_movement[\s\S]*?end \$\$;/, ''), /perform public\.post_stock_movement\(|:= public\.post_stock_movement\(/, 'never calls the public door from inside');
   assert.match(mig, /array_append\(flags, /, 'flags are appended with array_append (the prototype bug)');

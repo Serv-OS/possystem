@@ -79,6 +79,8 @@ export function ageWords(seconds) {
 /** What a held row is, in words a manager reads. */
 export function heldReason(row) {
   const flags = Array.isArray(row?.flags) ? row.flags : [];
+  if (flags.includes('netted_refund_failed')) return 'This order was refunded before its event, so its stock was never taken; then the refund was refused. Take the stock off by hand (waste or a count); this cannot be released.';
+  if (flags.includes('sale_not_booked')) return 'A refund or void waiting for the sale of the same check, which needs a person first. Release the sale; this follows it.';
   if (flags.includes('unproven')) return 'Written by a session that cannot open this venue and no payment proof was found. Release it if the sale is genuine.';
   if (flags.includes('proof_used')) return 'Another check already used the payment proof for this order reference. Likely a duplicate: check the two sales before releasing.';
   if (flags.includes('too_old')) return 'Closed more than 31 days ago (an old offline replay). Release it only if its stock was never counted since.';
