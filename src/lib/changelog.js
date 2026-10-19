@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.76',
+    date: '18 Oct 2026',
+    items: [
+      "Stock, safety: stock can now only be moved at a venue by that venue. Until now anyone holding the public key that ships in every web page could post a sale, a delivery or waste, or set the stock on hand, at any venue. Now only a till, kiosk or ops tablet paired to the venue, a Back Office login of the venue or its company, or ServOS's own server can. Tills keep taking stock off at check close exactly as before. Needs the database update 20261018a.",
+      "Stock, server stock off (kiosk and online): the server now checks who is asking. A paired device or a Back Office login of the venue is served as before; an online customer only for a paid online order at that venue, and then from the order as it was saved, never from what the page sends. Needs the stock-deplete function deployed.",
+      "Stock transfers: a transfer between venues must stay inside one company, and every line and area must belong to the sending venue. A till paired to the venue can now move stock between its own areas, like Back Office. Needs the database update 20261018a.",
+    ],
+  },
+  {
     v: '5.11.75',
     date: '17 Oct 2026',
     items: [
