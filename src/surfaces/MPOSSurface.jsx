@@ -522,9 +522,11 @@ function MPOSRouter() {
     // failure state into the retry. buildCloseRecord and recordWalkInClosed both adopt
     // paymentInfo.closedCheckId, so a retry rewrites the SAME closed_checks row instead
     // of minting a second one the upsert can't collapse (= the sale counted twice).
+    // v5.11.81: a counter sale takes its basket's one id (store.ensureWalkInCheckId), so a retry or
+    // a second payment of the same basket books the same row (lib/walkInCheckId.js).
     const pi = paymentInfo?.closedCheckId
       ? paymentInfo
-      : { ...paymentInfo, closedCheckId: `chk-${Date.now()}` };
+      : { ...paymentInfo, closedCheckId: (!tableId && state.ensureWalkInCheckId?.()) || `chk-${Date.now()}` };
     // A first attempt can book the record and still throw on a later step (loyalty,
     // drawer, Challenge 21…). The id is stable, so a retry adopts that row instead of
     // closing the same sale twice.

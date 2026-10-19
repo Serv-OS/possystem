@@ -123,9 +123,10 @@ export default function SalesVat({ opts, map, set, detail, blocked = [], heading
         <div style={fieldRow}>
           <span style={flabel}>Service charge {addedOn ? 'tax' : 'VAT'}</span>
           <select value={map.salesNoVat ? '' : (map.serviceTax || '')} disabled={!!map.salesNoVat} onChange={e => set({ serviceTax: e.target.value || undefined })} style={sel}>
-            <option value="">{addedOn ? 'Same rate as the sales line (as before)' : 'No VAT (optional service charge is outside the scope of VAT)'}</option>
+            <option value="">{addedOn ? 'Same rate as the sales line (as before)' : 'No VAT (ServOS never books VAT on a service charge)'}</option>
             {!map.salesNoVat && !serviceKnown && <option value={map.serviceTax}>{map.serviceTax} (not a sales rate: choose again)</option>}
-            {rates.map(t => <option key={t.taxType} value={t.taxType}>{t.name} ({t.rate}%)</option>)}
+            {/* v5.11.81 (Peter, 19 Oct 2026: "service charge has no VAT"): a VAT venue may pick a 0% type only. */}
+            {rates.filter(t => addedOn || !(Number(t.rate) > 0)).map(t => <option key={t.taxType} value={t.taxType}>{t.name} ({t.rate}%)</option>)}
           </select>
         </div>
       )}

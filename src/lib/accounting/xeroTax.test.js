@@ -124,18 +124,19 @@ test('resolver: per-rate mapping wins; expense or unknown mapping ignored and wa
   }
 });
 
-test('service charge: No VAT unless opted in', () => {
+test('service charge: never any VAT at a VAT venue (Peter, 19 Oct 2026: "service charge has no VAT")', () => {
   const std = { key: 'rate:s', rateId: 's', pct: 20, mode: 'inclusive' };
   const s = (mapping) => serviceTaxType({ mapping, revenueRates: rev, detail: {} }, std);
   assert.equal(s({}), 'NONE');
-  assert.equal(s({ serviceTax: 'OUTPUT2' }), 'OUTPUT2');
+  assert.equal(s({ serviceTax: 'OUTPUT2' }), 'NONE', 'a rate above 0% is never posted on a service charge');
+  assert.equal(s({ serviceTax: 'RROUTPUT' }), 'NONE');
+  assert.equal(s({ serviceTax: 'ZERORATEDOUTPUT' }), 'ZERORATEDOUTPUT', 'a 0% type the operator chose stays');
   assert.equal(s({ serviceTax: 'INPUT2' }), 'NONE');
-  assert.equal(s({ serviceTaxable: true }), 'OUTPUT2');
-  assert.equal(s({ serviceTaxable: true, taxRateMap: { s: 'RROUTPUT' } }), 'RROUTPUT');
+  assert.equal(s({ serviceTaxable: true }), 'NONE', 'serviceTaxable no longer adds VAT');
+  assert.equal(s({ serviceTaxable: true, taxRateMap: { s: 'RROUTPUT' } }), 'NONE');
   assert.equal(s({ serviceTaxable: false, serviceTax: 'OUTPUT2' }), 'NONE');
   assert.equal(s({ salesNoVat: true, serviceTax: 'OUTPUT2' }), 'NONE');
-  // taxable, but the default rate has no Xero match: null, so the day is refused
-  assert.equal(serviceTaxType({ mapping: { serviceTaxable: true }, revenueRates: rev }, { key: 'pct:12.5', pct: 12.5 }), null);
+  assert.equal(serviceTaxType({ mapping: { serviceTaxable: true }, revenueRates: rev }, { key: 'pct:12.5', pct: 12.5 }), 'NONE');
   // a venue that adds tax on top (US): today's rule, the sales line's rate
   const us = revenueTaxRates(US);
   const excl = { key: 'excl', pct: null, mode: 'exclusive' };

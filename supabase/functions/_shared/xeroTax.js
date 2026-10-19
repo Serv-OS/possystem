@@ -12,7 +12,7 @@
 //     now maps to its own Xero rate (mapping.taxRateMap, else a match by percentage), and a
 //     rate with no match is never guessed: the day is refused until it is mapped;
 //   - service charge posted at the sales rate, but ServOS books no VAT on it. It posts No VAT
-//     unless the operator opts in (mapping.serviceTax, or serviceTaxable true).
+//     (v5.11.81, Peter 19 Oct 2026: "service charge has no VAT"; a 0% type may be chosen).
 // Line labels come from ServOS percentages and our own TaxType codes, never from Xero's rate
 // names (people rename them), so a retry sends the same payload.
 //
@@ -129,18 +129,23 @@ export function resolveSalesTaxType(bucket, { mapping = {}, revenueRates: rev = 
 }
 
 /**
- * The TaxType for the service charge line. ServOS books no VAT on service charge (an optional
- * one is outside the scope of VAT), so NONE unless the operator chose a rate (serviceTax) or
- * said it is taxable (serviceTaxable, then the venue's default rate). Null when that default
- * rate has no Xero match (the day must not post). A venue that adds tax on top (US, default
- * bucket 'excl') keeps today's rule, the sales line's rate, so US postings do not change.
+ * The TaxType for the service charge line. ServOS books no VAT on a service charge on any channel
+ * (Peter, 19 Oct 2026: "service charge has no VAT", v5.11.81), so a VAT venue's service charge
+ * posts NONE. The operator may still pick a 0% sales type for it (zero rated or exempt), which
+ * carries no VAT; a rate above 0% and serviceTaxable true are no longer honoured there (no venue
+ * had chosen either). A venue that adds tax on top (US, default bucket 'excl') keeps its rule, the
+ * sales line's rate or the type chosen, because US tax on a service charge follows the tax
+ * profile; null when that rate has no Xero match (the day must not post).
  */
 export function serviceTaxType(ctx = {}, defaultBucket = null) {
   const m = ctx.mapping || {};
+  const rev = ctx.revenueRates ?? null;
   if (m.salesNoVat === true || m.taxDefault === 'NONE' || m.serviceTaxable === false) return 'NONE';
-  if (m.serviceTax && isSalesType(m.serviceTax, ctx.revenueRates ?? null)) return m.serviceTax;
-  if (m.serviceTaxable === true || defaultBucket?.key === 'excl') return resolveSalesTaxType(defaultBucket || { key: 'default', pct: null }, ctx).taxType;
-  return 'NONE';
+  if (defaultBucket?.key !== 'excl') {
+    return (m.serviceTax && isSalesType(m.serviceTax, rev) && rateOf(m.serviceTax, rev) === 0) ? m.serviceTax : 'NONE';
+  }
+  if (m.serviceTax && isSalesType(m.serviceTax, rev)) return m.serviceTax;
+  return resolveSalesTaxType(defaultBucket, ctx).taxType;
 }
 
 /** The default sales TaxType kept in xero_config.detail: kept when it is a sales rate, else picked again. */

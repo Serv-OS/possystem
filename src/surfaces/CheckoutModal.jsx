@@ -42,6 +42,7 @@ import { orderFlag, flagTableLabel } from '../lib/tillOrderType';   // 30 Sep 20
 import { bookingCreditFor, bookingLegsForBill } from '../lib/bookings/bookingCredit';   // 16 Oct 2026: one booking credit helper (order screen, table card, checkout)
 import { placedPromoFor } from '../lib/orderPlacedFrom';   // v5.11.78 round 1: an order's own promo, as a promo credit
 import { promoBasketValue, heldPromo } from '../lib/promoBasis';   // 19 Oct 2026 (v5.11.78): one promo basket on every channel
+import { mintCheckId } from '../lib/walkInCheckId';   // v5.11.81: one check id per counter basket
 // (readerDisplay imports removed — cancel now lets the natural cart-change effect refresh the reader after onBack)
 
 // ─── Tip picker ───────────────────────────────────────────────────────────────
@@ -1485,13 +1486,19 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   // (`giftcommit:<check>:<card>`) — lands on the same id the refund reversal later
   // reads back off the check. Side benefit: the modal-driven close and the terminal-job
   // reconciler now agree on one id instead of minting two for the same PAX sale.
+  //
+  // v5.11.81: a COUNTER sale's id belongs to its BASKET (store.ensureWalkInCheckId), not to this
+  // checkout: a second checkout opened on the same cart, or a retry, books under the same id, so
+  // the same sale can never be booked twice (lib/walkInCheckId.js). A table or a bar tab mints
+  // its own as before.
   const checkIdRef = useRef(null);
   const getCheckId = useCallback(() => {
     if (!checkIdRef.current) {
-      checkIdRef.current = `chk-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+      const basketId = (!tableId && orderType !== 'bar-tab') ? useStore.getState().ensureWalkInCheckId?.() : null;
+      checkIdRef.current = basketId || mintCheckId();
     }
     return checkIdRef.current;
-  }, []);
+  }, [tableId, orderType]);
   // 28 Sep 2026: the ORDER REF, frozen the same way, once per checkout, at the first send to a card
   // machine. It rides in the job's draft, so whichever device books the job books this ref, and
   // out on paymentInfo.orderRef, so this checkout's own close books it too (the kitchen ticket and
@@ -1749,6 +1756,8 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         // A fresh id makes a re-apply a genuinely new redemption. Safe to mint: no check
         // has been recorded under the old id (the job died), and the next dispatch
         // re-keys its own job from it.
+        // v5.11.81: a counter basket's own id is retired with it (store.rotateWalkInCheckId).
+        if (!tableId && orderType !== 'bar-tab') useStore.getState().rotateWalkInCheckId?.();
         checkIdRef.current = null;
         setGiftError('');
         try { useStore.getState().showToast?.('Gift card balance restored — apply it again if you need to.', 'info'); } catch {}

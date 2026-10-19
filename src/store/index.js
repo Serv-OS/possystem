@@ -731,6 +731,7 @@ import { withoutRecordNotes } from '../lib/orderCustomerNotes';
 // (subtotal, total, tenders) come from one pure helper both close paths share (lib/closeMoney.js).
 import { linesGoods } from '../lib/taxShare.js';
 import { closeMoney } from '../lib/closeMoney.js';
+import { mintCheckId, usableCheckId, walkInCloseId, bookedCheck } from '../lib/walkInCheckId.js';
 
 // v5.7.35 — ?mode=kds pins the KDS surface for this page load (read once; the
 // mode param is the operator's explicit intent, so profile defaults must not
@@ -7347,6 +7348,16 @@ export const useStore = create((set, get) => ({
       // path would double-book; just clear the cart state and stop.
       return null;
     }
+    // v5.11.81: ONE check id per basket. A basket already booked under its id (a second Complete
+    // after the first close threw on a later step, a checkout opened again on the same cart) is
+    // never booked again: the first record is handed back, with no second kitchen send, drawer,
+    // redeem or stock. Provo R40 was booked twice, 18 s apart, under two ids.
+    const oneCheckId = walkInCloseId(walkInOrder, paymentInfo);
+    const alreadyBooked = bookedCheck(get().closedChecks, oneCheckId);
+    if (alreadyBooked) {
+      console.warn('[recordWalkInClosed] this basket is already booked as', oneCheckId, '- not booked again');
+      return alreadyBooked;
+    }
     // 28 Sep 2026: a sale sent to a card machine froze its ref into the job (CheckoutModal
     // getOrderRef), and any device that books the job books that ref. Give it to the walk in
     // BEFORE the kitchen send below, so the ticket, the receipt and the record all carry it.
@@ -7413,7 +7424,8 @@ export const useStore = create((set, get) => ({
     const existingRef = walkInOrder.ref || null;
     const record = {
       // v5.5.902: adopt CheckoutModal's pre-minted id (see buildCloseRecord).
-      id: paymentInfo.closedCheckId || `chk-${Date.now()}`,
+      // v5.11.81: else the basket's own id (store.ensureWalkInCheckId), so a retry books the same row.
+      id: oneCheckId || `chk-${Date.now()}`,
       ref: existingRef || frozenRef || getNextOrderRefLocal(),
       tableId: null,
       // 30 Sep 2026: a dine in order with a flag number books "Table 30" (the receipt prints
@@ -9414,6 +9426,27 @@ export const useStore = create((set, get) => ({
     const w = get().walkInOrder;
     if (!r || !w || w.ref) return;
     set({ walkInOrder: { ...w, ref: r } });
+  },
+  // v5.11.81: ONE closed check id per counter basket (lib/walkInCheckId.js). Minted the first time
+  // a checkout or a retry asks, kept on the basket, so a second checkout or a retry of the same
+  // basket books under the same id and recordWalkInClosed never books it twice. A new basket
+  // (walkInOrder replaced or cleared) starts without one.
+  ensureWalkInCheckId: () => {
+    const w = get().walkInOrder;
+    if (!w) return null;
+    if (usableCheckId(w.checkId)) return w.checkId;
+    const id = mintCheckId();
+    set({ walkInOrder: { ...w, checkId: id } });
+    return id;
+  },
+  // A gift card reversal retires the id (CheckoutModal: a re-apply must be a new redemption).
+  // Nothing was booked under it (the job died), so the basket takes a fresh one.
+  rotateWalkInCheckId: () => {
+    const w = get().walkInOrder;
+    if (!w) return null;
+    const id = mintCheckId();
+    set({ walkInOrder: { ...w, checkId: id } });
+    return id;
   },
   theme: localStorage.getItem('rpos-theme') || 'dark',
   setTheme: (t) => {
