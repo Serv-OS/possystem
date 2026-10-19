@@ -90,7 +90,39 @@ test('promo code: the till checks and records a code on the goods after discount
   assert.match(readRepo('src/store/index.js'), /basketValue: promoRedeemBasket\(promo, record\),/);
 });
 
-test.todo('promo code on the kiosk: checks and records on goods before its deals (inside the signed kiosk card path: needs Peter\'s sign off and a hardware test, kioskCardPathGuard)');
+// v5.11.81 (Peter, 19 Oct 2026: "kiosk yes"): the kiosk checked a code on the goods before its
+// deals (new design) or on the grand total with the tip in it (old design), and recorded it on the
+// goods before the deals. Inside the signed card path: only the promo figure moved (kioskCardPathGuard).
+test('promo code on the kiosk: both designs check, value and record a code on the till\'s basket (goods after the deals)', async () => {
+  const { promoBasketValue } = await import('../promoBasis.js');
+  const { kioskPromoBasket } = await import('../kioskCheckout.js');
+  const { computeDiscount } = await import('../../../supabase/functions/_shared/promo.ts');
+  const b = basket('auto-discount');   // 15.00 of goods, the meal deal makes it 12.00
+  const t = posTotals(b);
+  const till = promoBasketValue({ discountedSub: t.discountedSub, subtotal: t.subtotal });
+  assert.equal(till, 12);
+  // The kiosk's own figures (KioskApp totals: subtotal less its deals on the kiosk channel).
+  const kioskLines = posLines(b).map((l, i) => ({ uid: `k${i}`, cat: l.cat, cats: l.cats || null, price: l.price, qty: l.qty }));
+  const kioskSub = kioskLines.reduce((s0, l) => s0 + l.price * l.qty, 0);
+  const kioskDeals = evaluateAutoDiscounts(kioskLines, RULES, 'kiosk', buildScheduleCtx(TZ)).map(toAppliedDiscount).reduce((s0, d) => s0 + d.value, 0);
+  const discountedSubtotal = Math.max(0, +(kioskSub - kioskDeals).toFixed(2));
+  assert.equal(kioskPromoBasket(discountedSubtotal), till, 'the kiosk checks the code on the till\'s 12.00, never 15.00');
+  const tenPct = { reward_type: 'percent', reward_value: 10 };
+  assert.equal(computeDiscount(tenPct, kioskPromoBasket(discountedSubtotal)).amount, 1.2, '10% takes 1.20 off at the kiosk, as at the till');
+  assert.equal(computeDiscount(tenPct, till).amount, 1.2);
+  // The old design's code box, the new design's code box and re-check, and submitOrder's redeem.
+  const k = readRepo('src/surfaces/KioskApp.jsx');
+  assert.match(k, /basket: \{ subtotal: promoBasket \},/);
+  assert.doesNotMatch(k, /basket: \{ subtotal: total \}/, 'never the grand total with the tip in it');
+  assert.match(k, /<ScreenGiftPromo brandColor=\{brandColor\} total=\{grandTotal\} promoBasket=\{promoBasketValue\(\{ discountedSub: discountedSubtotal \}\)\}/);
+  const submit = between(k, 'const submitOrder = useCallback(async (nameOverride, phoneOverride, cardPayment) => {', 'tableNumber, resetSession]);');
+  assert.match(submit, /basketValue: promoBasketValue\(\{ discountedSub: discountedSubtotal \}\),/);
+  assert.doesNotMatch(submit, /basketValue: subtotal,/);
+  const v2 = readRepo('src/surfaces/kiosk/useKioskCheckout.js');
+  assert.match(v2, /const promoBasket = kioskPromoBasket\(discountedSubtotal\);/);
+  assert.equal((v2.match(/api\.validatePromo\(\{ code, locationId, customerId, subtotal: promoBasket \}\)/g) || []).length, 2, 'the code box and the re-check');
+  assert.doesNotMatch(v2, /customerId, subtotal \}\)/);
+});
 
 // ── One promo record (confirmed major: counted twice on the till, VAT wrong on catering) ──────────
 test('promo code: counted once in every report, whichever channel took it (moneyDiscounts)', () => {

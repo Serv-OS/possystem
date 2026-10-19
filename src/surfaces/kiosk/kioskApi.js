@@ -166,7 +166,8 @@ export async function lookupGift({ code, locationId }) {
 }
 
 /**
- * promo-redeem validate (no write). The basket basis is the goods subtotal, the same
+ * promo-redeem validate (no write). `subtotal` is the promo basket (lib/kioskCheckout.js
+ * kioskPromoBasket: the goods after the automatic deals, the till's figure), the same
  * basketValue submitOrder commits the code with.
  */
 export async function validatePromo({ code, locationId, customerId = null, subtotal = 0 }) {

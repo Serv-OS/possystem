@@ -21,6 +21,7 @@ import { buildChannelCloseFields } from '../channelMoney.js';
 import { refundBreakdown, refundTaxAmount } from '../payments/refundMath.js';
 import { rederiveSale } from '../../../supabase/functions/_shared/vatRederive.js';
 import { mapMenuItemRow } from '../rowMapping.js';
+import { lineTaxRefsFor } from '../taxRefs.js';
 import { readRepo, between } from './src.js';
 
 const vat = (t) => roundVat(t?.totalTax);
@@ -30,7 +31,6 @@ const hubOrder = (items, extra = {}) => ({ channel: 'delivery', total: items.red
 // ── A size follows its product (confirmed major: online, QR pay now, catering, HubRise) ───────────
 for (const [id, ot] of [['baby-l', 'collection'], ['baby-l', 'dine-in'], ['cake-slice', 'takeaway']]) {
   test(`a size with no VAT of its own follows its product: ${id} ${ot} books the till's VAT on every channel`, async () => {
-    const { lineTaxRefsFor } = await import('../taxRefs.js');
     const b = { orderType: ot, menuId: null, lines: [{ itemId: id, qty: 1 }] };
     const pos = vat(posTotals(b).tax);
     const price = posLine(b, b.lines[0]).price;
@@ -234,7 +234,22 @@ for (const id of ['vat-by-order-type', 'order-type-delivery', 'order-type-drive-
     const seam = (ls) => vat(computeOrderTaxUnified(ls, ctx, b.orderType, basis));
     // kiosk, online and QR pay now lines carry the same references (taxRefs / kioskLine), so the
     // seam over the till's lines is what each books; the QR close restores them from the menu.
-    if (!b.checkDiscounts) assert.equal(seam(lines), pos, 'the shared seam');
+    // v5.11.81: a basket with check discounts passes them as the basis, so us-stacked asserts too
+    // (it made no assertion at all).
+    let asserted = 0;
+    const eq = (a, e, m) => { assert.equal(a, e, m); asserted++; };
+    eq(seam(lines), pos, 'the shared seam');
+    if (b.region === 'us') {
+      // The kiosk, online and HubRise lines for a US basket, from the raw rows each reads.
+      const rows = US_MENU;
+      const kioskLines = lines.map((l) => ({ ...l, ...kioskLineTaxRefs({ item: rows.find((r) => r.id === l.itemId) }) }));
+      const pageLines = lines.map((l) => ({ ...l, ...lineTaxRefsFor(rows.find((r) => r.id === l.itemId), rows) }));
+      eq(seam(kioskLines), pos, 'kiosk');
+      eq(seam(pageLines), pos, 'online and QR pay now');
+      const hub = buildChannelCloseFields(hubOrder(lines.map((l, i) => ({ id: `h${i}`, itemId: l.itemId, name: l.name, price: l.price, qty: l.qty, mods: [] })),
+        { channel: 'collection', customer: { payments: [], discounts: (b.checkDiscounts || []).map((d) => ({ name: d.label, amount: d.value })) } }), { menuItems: US_MENU.map(mapMenuItemRow), taxCtx: ctx });
+      eq(hub.taxAmount, pos, 'HubRise');
+    }
     if (b.region !== 'us') {
       const qr = qrTaxLines(lines.map((l) => ({ itemId: l.itemId, parentId: l.parentId, price: l.price, qty: l.qty, mods: [] })), STORE_MENU);
       assert.equal(vat(computeOrderTaxUnified(qr, ctx, b.orderType)), pos, 'QR close');
@@ -242,7 +257,30 @@ for (const id of ['vat-by-order-type', 'order-type-delivery', 'order-type-drive-
       if (b.orderType !== 'drive-thru') {
         const hub = buildChannelCloseFields(hubOrder(lines.map((l, i) => ({ id: `h${i}`, itemId: l.itemId, name: l.name, price: l.price, qty: l.qty, mods: [] })), { channel }), { menuItems: STORE_MENU, taxRates: UK_RATES });
         assert.equal(hub.taxAmount, pos, 'HubRise');
+        asserted++;
       }
+      asserted++;
     }
+    assert.ok(asserted >= 2, `${id}: the test makes its assertions (${asserted})`);
   });
 }
+
+// v5.11.81: the kiosk taxes a size under the till's profile rule (the size's own, then the venue's
+// cascade), never its product's profile (Peter, 19 Oct 2026: "kiosk yes").
+test('US: a size with no tax profile of its own is taxed the same on the till, the kiosk, the online page and HubRise', async () => {
+  const COLA = { id: 'cola', name: 'Cola', cat: 'drinks', parent_id: null, tax_rate_id: null, tax_profile_id: 'p-cola', pricing: { base: 0 } };
+  const LARGE = { id: 'cola-l', name: 'Large', cat: 'drinks', parent_id: 'cola', tax_rate_id: null, tax_profile_id: null, pricing: { base: 4 } };
+  const rows = [...US_MENU, COLA, LARGE];
+  const P_COLA = { id: 'p-cola', name: 'Cola levy', active: true, rounding: { mode: 'half_up', level: 'item' }, lines: [
+    { id: 'c1', name: 'Reduced', lineType: 'rate', rate: 0.08, mode: 'exclusive', compound: false, taxable: false, orderTypes: ['all'], active: true }] };
+  const base = ctxUS();
+  const ctx = { ...base, profilesById: { ...base.profilesById, 'p-cola': P_COLA }, itemProfileIds: { ...base.itemProfileIds, cola: 'p-cola' } };
+  const store = rows.map(mapMenuItemRow);
+  const { tillLineTaxRefs, tillLineTaxFields } = await import('../tillLine.js');
+  const till = vat(computeOrderTaxUnified([{ uid: 't', itemId: 'cola-l', cat: 'drinks', price: 4, qty: 1, ...tillLineTaxFields(tillLineTaxRefs(store.find((r) => r.id === 'cola-l'), store, [])) }], ctx, 'takeaway'));
+  const kiosk = vat(computeOrderTaxUnified([{ uid: 'k', itemId: 'cola-l', cat: 'drinks', price: 4, qty: 1, ...kioskLineTaxRefs({ item: COLA, variant: kioskVariant(COLA, LARGE) }) }], ctx, 'takeaway'));
+  const page = vat(computeOrderTaxUnified([{ uid: 'p', itemId: 'cola-l', cat: 'drinks', price: 4, qty: 1, ...lineTaxRefsFor(LARGE, rows) }], ctx, 'takeaway'));
+  const hub = buildChannelCloseFields(hubOrder([{ id: 'h', itemId: 'cola-l', name: 'Large', price: 4, qty: 1, mods: [] }], { channel: 'collection' }), { menuItems: store, taxCtx: ctx }).taxAmount;
+  assert.equal(till, 0.36, 'the venue default 8.875% (the size has no profile, nor its category)');
+  assert.deepEqual({ kiosk, page, hub }, { kiosk: till, page: till, hub: till }, 'never the product\'s 8% (0.32) at the kiosk');
+});

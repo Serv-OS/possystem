@@ -10,7 +10,8 @@ import { readRepo } from './src.js';
 
 // The kiosk's tax references as they were on v5.11.75, verbatim (kioskLine.js). The card path is
 // signed (kioskCardPathGuard): the kiosk now calls the shared size rule, and every figure it
-// produces must be the same.
+// produces must be the same, apart from ONE change Peter signed off on 19 Oct 2026 (v5.11.81): a
+// size with no tax profile of its own no longer takes its product's (the till's rule).
 function oldKioskLineTaxRefs(l) {
   const item = l?.item || {};
   const v = l?.variant || null;
@@ -31,20 +32,26 @@ function oldKioskLineTaxRefs(l) {
   return { taxRateId, taxOverrides, taxProfileId: child.profile || parent.profile || null };
 }
 
-test('the kiosk\'s tax references are exactly what they were, on every row shape', () => {
+test('the kiosk\'s tax references are exactly what they were, on every row shape (bar the v5.11.81 size profile rule)', () => {
   const rates = [null, 'r20', 'r5'];
   const ovs = [null, {}, { takeaway: 'r0' }];
   const profiles = [null, 'p1'];
   let n = 0;
+  let m = 0;
   for (const pr of rates) for (const pov of ovs) for (const pp of profiles)
     for (const cr of rates) for (const cov of ovs) for (const cp of profiles) for (const sized of [true, false]) {
       const item = { id: 'p', tax_rate_id: pr, tax_overrides: pov, tax_profile_id: pp };
       const variant = sized ? { id: 'c', taxRateId: cr, taxOverrides: cov, taxProfileId: cp } : null;
       const l = { item, variant };
-      assert.deepEqual(kioskLineTaxRefs(l), oldKioskLineTaxRefs(l), JSON.stringify(l));
+      const was = oldKioskLineTaxRefs(l);
+      // v5.11.81: a size's own profile, never its product's (the till's rule); every other field as was.
+      const want = sized ? { ...was, taxProfileId: cp || null } : was;
+      assert.deepEqual(kioskLineTaxRefs(l), want, JSON.stringify(l));
+      if (sized && !cp && pp) { assert.equal(was.taxProfileId, pp); m++; }
       n++;
     }
   assert.equal(n, 648);
+  assert.equal(m, 81, 'the only rows that move: a size with no profile under a product with one');
 });
 
 test('the till line price helper is the till\'s own call, with its fallback', async () => {

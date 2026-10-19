@@ -22,6 +22,7 @@ import { stageGiftCard } from './giftCommit.js';
 import { kioskOrderItem } from './kioskLine.js';
 import { kioskRewardTapCheck, kioskRewardMissingItems, kioskLoyaltyCreditMinor } from './kioskLoyaltyReward.js';
 import { eligibleItemNames } from './loyaltyMenuMatch.js';
+import { promoBasketValue } from './promoBasis.js';
 
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -238,6 +239,19 @@ export function kioskGiftLookupResult(body, now = Date.now()) {
   if (!(num(body.balance) > 0)) return { errorKey: 'k2.code.giftEmpty' };
   if (body.expires_at && Date.parse(body.expires_at) < now) return { errorKey: 'k2.code.giftExpired' };
   return { ok: true };
+}
+
+/**
+ * The basket a kiosk promo code is checked, valued and recorded on (v5.11.81, Peter 19 Oct 2026:
+ * "kiosk yes"). The till's and the server's one figure (lib/promoBasis.js): the goods after the
+ * automatic deals, before tip and tax. The new design checked the code on the goods BEFORE the
+ * deals, the old design on the grand total with the tip in it, and both recorded it on the goods
+ * before the deals, so a 10% code on a meal deal took more off at the kiosk than at the till.
+ * The new design checks with this; the old design's code box and submitOrder's redeem call
+ * promoBasketValue({ discountedSub: discountedSubtotal }) in KioskApp, the same figure.
+ */
+export function kioskPromoBasket(discountedSubtotal) {
+  return promoBasketValue({ discountedSub: discountedSubtotal });
 }
 
 /**

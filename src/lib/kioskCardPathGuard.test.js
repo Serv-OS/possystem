@@ -125,6 +125,23 @@
 //       second reset and every other line are unchanged.
 //     Neither pay screen line changed its ScreenPay call; ScreenPay now mounts inside KioskVatGate
 //       (surfaces/kiosk/KioskVatGate.jsx) under KioskPayLinkGate, which only decides WHETHER it mounts.
+//   v5.11.81 (19 Oct 2026, kiosk promo basket. Peter's sign off: "kiosk yes, fix it all please, we
+//   need to be bullet proof". CARD PATH: one kiosk card payment with a promo code on a real Adyen
+//   reader (or the test card) is OWED before this reaches a kiosk; the step by step test is in the
+//   release note). ScreenPay logic, the credits, the totals and updateCartQty are byte for byte the
+//   8 Oct entry. Only the promo FIGURE moves, never how a card is charged:
+//     submitOrder 20475 -> 20542 chars: the promo redeem records basketValue
+//       promoBasketValue({ discountedSub: discountedSubtotal }) (lib/promoBasis.js, the till's and
+//       the server's one promo basket: goods after the automatic deals, before tip and tax), where it
+//       recorded `subtotal` (goods BEFORE the deals); the useCallback dependency list gains
+//       discountedSubtotal after subtotal. The gift commit order, the idempotency key, the reward
+//       commit, both stock paths, the order_queue insert, the 30 second reset and every amount the
+//       reader is sent are unchanged.
+//     Outside the fingerprinted blocks: the old design's code box (ScreenGiftPromo) checks the code
+//       on the same basket (was the grand total with the tip in it), and the new design
+//       (useKioskCheckout) checks and re-checks it on kioskPromoBasket (was goods before the deals).
+//       promoCredit is still min(the code's amount, what is left to pay), so a basket with no code
+//       charges exactly what it did.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -138,8 +155,8 @@ const BLOCKS = [
     name: 'submitOrder',
     start: 'const submitOrder = useCallback(async (nameOverride, phoneOverride, cardPayment) => {',
     end: 'tableNumber, resetSession]);',
-    length: 20475,
-    sha256: '45f18fa4833a4d5191c3a710e34196fbe6ebe8ce3d3df8307fafd0a57ee3362f',
+    length: 20542,
+    sha256: 'ad52c387bb6bd42750753df352d9603c51bfc6dfe270b5707eb0984229540fbf',
   },
   {
     name: 'ScreenPay logic',
