@@ -31,7 +31,7 @@ test('bar tab: the venue\'s automatic deals run on a tab exactly as at the count
   const rec = tabCloseTax(lines, ctxUK(), { bill, paymentInfo: { grand: bill.total }, discountRules: RULES, timezone: TZ });
   assert.equal(rec.taxAmount, vat(pos.tax), 'VAT on what the tab charged');
   const bar = readRepo('src/surfaces/BarSurface.jsx');
-  assert.match(bar, /discounts: bill\.autoDiscounts \|\| \[\],/);
+  assert.match(bar, /discounts: \[\.\.\.stampDiscountAmounts\(allItems, manualDiscounts\), \.\.\.\(bill\.autoDiscounts \|\| \[\]\)\],/);
   assert.match(bar, /discountRules: useStore\.getState\(\)\.discountRules,\n\s+timezone: useStore\.getState\(\)\.locationConfig\?\.timezone,/);
 });
 
@@ -280,4 +280,26 @@ test('ezCater: a changed order voids its booking and books a new revision (never
   assert.equal(ezcaterSalePlan(ezcaterClosedCheck(row(14), { venueTz: 'America/Denver' }), after).row.id, 'chk-ez-u-7-r3');
   assert.deepEqual(ezcaterLiveRevisionIds('chk-ez-u-7', after), ['chk-ez-u-7-r2'], 'a cancel voids the live revision');
   assert.deepEqual(ezcaterLiveRevisionIds('chk-ez-u-7', [{ id: 'chk-ez-u-70', status: 'paid' }]), [], 'never another order whose id starts the same');
+});
+
+// ── Bar tabs take a manual discount, as the counter does (v5.11.81, confirmed minor) ──────────────
+test('bar tab: a manual 10% discount on the tab charges, taxes and records what the counter does for the same lines', () => {
+  const b = { ...basket('manual-discount') };   // 2 burgers, 10% off (dine in at the counter)
+  const lines = posLines(b);
+  const pos = posTotals(b);
+  const tab = { id: 't1', total: lines.reduce((s0, l) => s0 + l.price * l.qty, 0), rounds: [{ items: lines }] };
+  const bill = tabBill(tab, ctxUK(), [], { discountRules: RULES, timezone: TZ, checkDiscounts: b.checkDiscounts });
+  assert.equal(bill.total, pos.total, 'the tab charges 16.20, as the counter');
+  assert.equal(bill.checkDiscount, 1.8);
+  const rec = tabCloseTax(lines, ctxUK(), { bill, paymentInfo: { grand: bill.total }, discountRules: RULES, timezone: TZ, checkDiscounts: b.checkDiscounts });
+  assert.equal(rec.taxAmount, vat(pos.tax), 'VAT on what the tab charged');
+  // No discount: the bill is exactly what it was.
+  assert.equal(tabBill(tab, ctxUK(), [], { discountRules: RULES, timezone: TZ }).total, 18);
+  const bar = readRepo('src/surfaces/BarSurface.jsx');
+  assert.match(bar, /checkDiscounts: \(useStore\.getState\(\)\.barTabDiscounts \|\| \{\}\)\[tab\?\.id\] \|\| \[\],/);
+  assert.match(bar, /discounts: \[\.\.\.stampDiscountAmounts\(allItems, manualDiscounts\), \.\.\.\(bill\.autoDiscounts \|\| \[\]\)\],/);
+  assert.match(bar, /<DiscountModal\n\s+items=\{tabItems\}\n\s+subtotal=\{goods\}\n\s+checkOnly/);
+  const store = readRepo('src/store/index.js');
+  assert.match(store, /addTabDiscount: \(tabId, discount\) => \{/);
+  assert.match(store, /const d = scrubDiscount\(discount\);/, 'the manager is a name tag, never the staff record');
 });

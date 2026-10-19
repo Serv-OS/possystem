@@ -19,7 +19,8 @@ import { money, currencySymbol } from '../lib/currency';
 import { kitchenOverride, receiptOverride } from '../lib/itemDisplay';
 import { giftRecordFrom } from '../lib/giftCommit';
 import { singleTender } from '../lib/accounting/tenders';
-import { creditDiscountsFromPayment } from '../lib/taxBasis';
+import { creditDiscountsFromPayment, stampDiscountAmounts, shownCheckDiscounts } from '../lib/taxBasis';
+import DiscountModal from '../components/DiscountModal';
 import { tabBill, tabCloseTax } from '../lib/barTabTax';
 import { tillLineTaxRefs, tillLineTaxFields, tillLineCat, tillLineCats, tillLineUnitPrice, addToRoundLines } from '../lib/tillLine';
 import { resolveItemPrice, variantFromPrice, refusesNoPriceLine } from '../lib/menuPricing';
@@ -410,6 +411,10 @@ export default function BarSurface() {
   };
 
   const [showTabCheckout, setShowTabCheckout] = useState(false);
+  // v5.11.81: the till's discount screen on a tab (check discounts, kept on this till until paid).
+  const [showTabDiscount, setShowTabDiscount] = useState(false);
+  const barTabDiscounts = useStore(s => s.barTabDiscounts) || {};
+  const tabDiscountsOf = (tab) => (tab && barTabDiscounts[tab.id]) || [];
   // v5.5.324: closing a tab that has a real card hold uses a CAPTURE flow (not
   // the fresh-tender checkout). These drive the held-card close modal.
   const [holdClose, setHoldClose] = useState(null);          // { tab } | null
@@ -439,6 +444,8 @@ export default function BarSurface() {
     tabBill(tab, useStore.getState().getTaxContext(), creditDiscounts, {
       discountRules: useStore.getState().discountRules,
       timezone: useStore.getState().locationConfig?.timezone,
+      // v5.11.81: the manual check discounts staff put on this tab (the till's rule).
+      checkDiscounts: (useStore.getState().barTabDiscounts || {})[tab?.id] || [],
     });
 
   // Build + record a bar-tab closed check. Shared by the fresh-tender checkout
@@ -450,10 +457,12 @@ export default function BarSurface() {
     // credits, so it books the tax it charged. 27 Sep 2026: UK inclusive VAT too
     // (a UK tab booked tax_amount null), through computeCheckTotals like every till close.
     const bill = tabBillWithTax(tab, creditDiscountsFromPayment(payInfo));
+    const manualDiscounts = (useStore.getState().barTabDiscounts || {})[tab.id] || [];
     const recTax = tabCloseTax(allItems, useStore.getState().getTaxContext(), {
       bill, paymentInfo: payInfo,
       discountRules: useStore.getState().discountRules,
       timezone: useStore.getState().locationConfig?.timezone,
+      checkDiscounts: manualDiscounts,   // v5.11.81
     });
     recordWalkInClosedCheck({
       // v5.5.902: adopt CheckoutModal's pre-minted check id when it sent one — it is the
@@ -470,7 +479,8 @@ export default function BarSurface() {
       items: allItems,
       // 19 Oct 2026 (v5.11.78): the automatic deal lines the bill took off, in the till's shape,
       // so net (subtotal less discounts) matches the counter (store recordWalkInClosed).
-      discounts: bill.autoDiscounts || [],
+      // v5.11.81: and the manual check discounts, each with what it took off (stampDiscountAmounts).
+      discounts: [...stampDiscountAmounts(allItems, manualDiscounts), ...(bill.autoDiscounts || [])],
       subtotal,
       service: 0,
       tip: payInfo?.tip || 0,
@@ -874,6 +884,21 @@ export default function BarSurface() {
                 <span>Total</span>
                 <span style={{ color:'var(--acc)',fontFamily:'DM Mono,monospace' }}>{money(((activeTab.total||0)+roundTotal))}</span>
               </div>
+              {/* v5.11.81: the tab's manual discounts (taken off when it is paid, as at the counter) */}
+              {(() => {
+                const discs = tabDiscountsOf(activeTab);
+                const goods = activeTab.rounds.flatMap(r => r.items.filter(i => !i.voided)).reduce((s0, i) => s0 + (i.price || 0) * (i.qty || 1), 0);
+                const shown = shownCheckDiscounts(discs, goods);
+                return discs.map((d, di) => (
+                  <div key={d.id} style={{ display:'flex',justifyContent:'space-between',alignItems:'center',fontSize:12,color:'var(--grn)',marginBottom:4 }}>
+                    <span>{d.label}</span>
+                    <span style={{ display:'flex',gap:8,alignItems:'center' }}>
+                      <span style={{ fontFamily:'DM Mono,monospace' }}>−{money(shown[di])}</span>
+                      <button onClick={()=>useStore.getState().removeTabDiscount(activeTab.id, d.id)} style={{ fontSize:11,color:'var(--t4)',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit' }}>✕</button>
+                    </span>
+                  </div>
+                ));
+              })()}
               <div style={{ display:'flex',gap:6 }}>
                 {roundItems.length>0 && (
                   <button onClick={fireRound} style={{ flex:2,height:38,borderRadius:10,cursor:'pointer',fontFamily:'inherit',background:'var(--acc)',border:'none',color:'#0e0f14',fontSize:13,fontWeight:700 }}>
@@ -884,6 +909,9 @@ export default function BarSurface() {
                   <button onClick={()=>handleCloseTab(activeTab)} style={{ flex:roundItems.length>0?1:2,height:38,borderRadius:10,cursor:'pointer',fontFamily:'inherit',background:'var(--red-d)',border:'1px solid var(--red-b)',color:'var(--red)',fontSize:13,fontWeight:700 }}>
                     {roundItems.length>0 ? 'Pay' : `Close tab · ${money((activeTab.total||0))}`}
                   </button>
+                )}
+                {activeTab.status!=='closed' && activeTab.total > 0 && (
+                  <button onClick={()=>setShowTabDiscount(true)} title="Discount" style={{ width:38,height:38,borderRadius:10,cursor:'pointer',fontFamily:'inherit',background:'var(--bg3)',border:'1px solid var(--bdr2)',color:'var(--grn)',fontSize:15,fontWeight:800 }}>%</button>
                 )}
                 <button onClick={()=>setActiveTab(null)} style={{ width:38,height:38,borderRadius:10,cursor:'pointer',fontFamily:'inherit',background:'var(--bg3)',border:'1px solid var(--bdr2)',color:'var(--t3)',fontSize:18 }}>←</button>
               </div>
@@ -989,6 +1017,29 @@ export default function BarSurface() {
         </div>
       )}
 
+      {/* v5.11.81: a manual discount on the whole tab, the till's own discount screen and manager rule */}
+      {showTabDiscount && activeTab && (() => {
+        const tabItems = activeTab.rounds.flatMap(r => r.items.filter(i => !i.voided));
+        const goods = tabItems.reduce((s0, i) => s0 + (i.price || 0) * (i.qty || 1), 0);
+        return (
+          <DiscountModal
+            items={tabItems}
+            subtotal={goods}
+            checkOnly
+            onConfirm={(disc) => {
+              // A category preset picks its own lines: on a tab it comes off as the amount it worked out.
+              const d = disc.scope === 'items'
+                ? { ...disc, scope: 'check', type: 'amount', value: Number(disc.amount) || 0, itemUids: null }
+                : disc;
+              useStore.getState().addTabDiscount(activeTab.id, d);
+              showToast(`${disc.label} applied to ${activeTab.name}'s tab`, 'success');
+              setShowTabDiscount(false);
+            }}
+            onCancel={() => setShowTabDiscount(false)}
+          />
+        );
+      })()}
+
       {/* Tab checkout */}
       {showTabCheckout && activeTab && (() => {
         const allItems = activeTab.rounds.flatMap(r => r.items);
@@ -1003,7 +1054,7 @@ export default function BarSurface() {
             subtotal={subtotal}
             // 19 Oct 2026 (v5.11.78): the goods after the venue's automatic deals, as the till's
             // tipBasis (a tip % and a promo code apply to it, lib/promoBasis.js).
-            tipBasis={Math.max(0, subtotal - (bill.autoDiscounts || []).reduce((s0, d) => s0 + (Number(d.value) || 0), 0))}
+            tipBasis={Math.max(0, subtotal - (bill.autoDiscounts || []).reduce((s0, d) => s0 + (Number(d.value) || 0), 0) - (bill.checkDiscount || 0))}
             service={0}
             total={bill.total}
             taxFor={(credits) => tabBillWithTax(activeTab, credits)}

@@ -5342,10 +5342,23 @@ export const useStore = create((set, get) => ({
   updateTabStatus: (tabId,status) => set(s=>({ tabs:s.tabs.map(t=>t.id===tabId?{...t,status}:t) })),
   // Raise the card-hold ceiling after a successful Stripe incremental authorization (step-up).
   setTabHold: (tabId, heldMinor) => set(s=>({ tabs:s.tabs.map(t=>t.id===tabId?{...t, preAuthHeldMinor: heldMinor, preAuthAmount: heldMinor/100}:t) })),
+  // v5.11.81 (channel parity: bar tabs can take a manual discount): the check discounts put on a
+  // tab on THIS till (the till's DiscountModal, the same manager rule), kept beside the tab until
+  // it is paid. bar_tabs has no discounts column, so another till does not see them; staff apply a
+  // discount on the till that takes the payment. Cleared when the tab closes.
+  barTabDiscounts: {},
+  addTabDiscount: (tabId, discount) => {
+    if (!tabId || !discount) return;
+    const d = scrubDiscount(discount);
+    set(s => ({ barTabDiscounts: { ...s.barTabDiscounts, [tabId]: [...(s.barTabDiscounts[tabId] || []), d] } }));
+  },
+  removeTabDiscount: (tabId, discountId) => set(s => ({
+    barTabDiscounts: { ...s.barTabDiscounts, [tabId]: (s.barTabDiscounts[tabId] || []).filter(d => d.id !== discountId) },
+  })),
   closeTab: tabId => {
     const st = get();
     const closing = st.tabs.find(t => t.id === tabId);
-    set(s=>({ tabs:s.tabs.map(t=>t.id===tabId?{...t,status:'closed'}:t), activeTabId:s.activeTabId===tabId?null:s.activeTabId }));
+    set(s=>{ const { [tabId]: _gone, ...restDisc } = s.barTabDiscounts || {}; void _gone; return { tabs:s.tabs.map(t=>t.id===tabId?{...t,status:'closed'}:t), activeTabId:s.activeTabId===tabId?null:s.activeTabId, barTabDiscounts: restDisc }; });
     // v4.6.26: release the floor-plan table if this was a bar tab linked to
     // one, and no other open bar tab is still on it.
     if (closing && closing.tableId) {

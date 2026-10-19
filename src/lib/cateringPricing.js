@@ -38,3 +38,18 @@ export function cateringOrderMenuId(menuIds = []) {
   const chosen = Array.isArray(menuIds) ? menuIds.filter(Boolean) : [];
   return chosen.length === 1 ? chosen[0] : null;
 }
+
+/**
+ * v5.11.81 (partly fixed major: catering ignored channel visibility): a product switched off for
+ * online ordering in Back Office ("Visible on", visibility.online false) is not on the catering
+ * page either, the catering page being an online ordering page; on a delivery order the delivery
+ * switch (visibility.onlineDelivery false) hides it too. A row with no visibility set is shown, as
+ * before. The kiosk (visibility.kiosk) and the till (visibility.pos) read their own switch.
+ */
+export function cateringVisible(item, fulfilment = null) {
+  const v = item && typeof item.visibility === 'object' && item.visibility ? item.visibility : null;
+  if (!v) return true;
+  if (v.online === false) return false;
+  if (fulfilment === 'delivery' && v.onlineDelivery === false) return false;
+  return true;
+}

@@ -17,6 +17,7 @@ import { lineTaxRefsFor } from '../../lib/taxRefs';
 import { lineCategories } from '../../lib/lineCategories';   // round 1 fix: a size counts under its product's categories, as on the till
 import { resolveItemPrice, variantFromPrice, repriceCartLines, refusesNoPriceLine } from '../../lib/menuPricing';
 import { isOptionOnlyItem } from '../../lib/menuRules';
+import { cateringVisible } from '../../lib/cateringPricing';
 import { cateringMenuIdFor, cateringOrderMenuId } from '../../lib/cateringPricing';
 import OnlineItemSheet from '../online/OnlineItemSheet';
 import OnlineCart from '../online/OnlineCart';
@@ -213,6 +214,7 @@ export default function CateringSurface({ location }) {
   // "Payment short" with no sale in the reports). 22 such rows showed as cards on live catering menus.
   const itemsForCat = (catId) => items.filter((i) =>
     (i.cat === catId || (Array.isArray(i.cats) && i.cats.includes(catId))) && !i.parent_id && !isOptionOnlyItem(i) &&
+    cateringVisible(i, fulfilment) &&
     !(activeAllergens.length && (i.allergens || []).some((a) => activeAllergens.includes(a))));
   // v5.5.743: match OnlineSurface exactly — show only TOP-LEVEL categories (no sub-categories) in the
   // nav + sections, sorted by (sort_order||0) with a stable tie-break. Catering was rendering every
