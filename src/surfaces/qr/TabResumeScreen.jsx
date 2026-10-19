@@ -25,7 +25,9 @@ import { singleTender } from '../../lib/accounting/tenders';
 import { writeClosedCheckRow } from '../../lib/closedCheckWrite';
 import { requestPaymentProof, settleQrTab } from '../../lib/publicOrderClient';
 import { tabCloseRefusalMessage } from '../../lib/publicOrder';
-import { qrTabCloseFields, qrTabSettleVat } from '../../lib/headlessTax';
+import { qrTabCloseFields, qrTabSettleVat, qrTabDealLines } from '../../lib/headlessTax';
+import { attributeOnlineOrder } from '../../lib/customerLookup';
+import { chooseTrackKey, afterPlaced } from '../../lib/publicOrder';
 import { foldLineMods } from '../../lib/channelMoney';
 import { taxCtxHasConfig } from '../../lib/taxCompute';
 import VatGateNotice from '../online/VatGateNotice';
@@ -187,11 +189,12 @@ export default function TabResumeScreen({
         // Aggregate items across all rounds for the closed_check.
         const allItems = (rounds || []).flatMap(r => r.items || []);
         const tabTip = vat.tip;
+        const legacyCheckId = `chk-${Date.now()}-${Math.random().toString(36).slice(2,5)}`;
         try {
           // v5.9.11: writeClosedCheckRow drops a column the database does not have yet and
           // retries, so a paid sale is never lost to a migration Peter has not run.
           await writeClosedCheckRow(supabase, {
-            id: `chk-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
+            id: legacyCheckId,
             ref: tab.tab_ref,
             location_id: rounds?.[0]?.location_id || null,
             server: 'QR',
@@ -201,7 +204,7 @@ export default function TabResumeScreen({
             // 19 Oct 2026 (v5.11.78, channel parity): the till's line contract (options inside the
             // price, channelMoney.foldLineMods), and the rounds' QR service charge as service.
             items: foldLineMods(allItems).map(i => ({ ...i, voided: false })),
-            discounts: [],
+            discounts: qrTabDealLines(rounds),   // v5.11.81: the deals the server applied to each round
             // v5.8.9: runningTotal includes each round's tip (customer.tip). Book it as a tip.
             // 27 Sep 2026: and its VAT (it booked null); added-on tax comes out of subtotal.
             subtotal: vat.subtotal,
@@ -223,7 +226,7 @@ export default function TabResumeScreen({
             source: 'qr',
           }, { tag: 'TabResume' });
         } catch (e) { console.warn('[TabResume] closed_checks insert:', e?.message); }
-        return { ok: true };
+        return { ok: true, checkId: legacyCheckId };
       };
       const settled = capProof.unavailable
         ? { ...(await legacySettle()), path: 'legacy' }
@@ -243,6 +246,19 @@ export default function TabResumeScreen({
         return;
       }
 
+      // v5.11.81 (partly fixed major): a settled tab earns stamps and points for the phone on it, as a
+      // QR pay now order does (the check's own id, proven by this tab's own key). A tab earned
+      // nothing: it has no check until it is settled. Best effort: the tab is closed whatever happens.
+      const tabCustomer = (rounds || [])[0]?.customer || {};
+      if (tabCustomer.phone && settled.checkId) {
+        afterPlaced('TabResume attribute', () => attributeOnlineOrder({
+          phone: tabCustomer.phone, name: tabCustomer.name || null, email: tabCustomer.email || null,
+          marketingOptIn: false,
+          locationId: locId,
+          orderRecord: { ref: tab.tab_ref, checkId: settled.checkId, total: runningTotal, items: (rounds || []).flatMap(r => r.items || []), type: 'dine-in', channel: 'qr' },
+          trackKey: chooseTrackKey({ trackToken: tab.track_token || null, paymentIntentId: tab.payment_intent_id || null }),
+        }));
+      }
       clearStashedTab(slug, tableId);
       onClosed?.({ amount: runningTotal });
     } catch (e) {

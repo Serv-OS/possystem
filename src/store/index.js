@@ -2143,6 +2143,7 @@ export const useStore = create((set, get) => ({
   },
   discountPresets: [],   // from discounts table — manual presets staff can apply
   discountRules: [],     // from discount_rules table — auto-discount rules
+  venueServiceRule: null, // v5.11.81: the venue's one table service rule (SyncBridge, venue_service_rule); null = not read
   setQuickScreenIds: (ids) => set({ quickScreenIds: ids }),
   setQuickScreenMode: (m) => set({ quickScreenMode: m }),
   setQuickScreenAuto: (a) => set({ quickScreenAuto: a }),

@@ -205,6 +205,34 @@ export function qrTabCloseFields(rounds, runningTotal, ctx = {}) {
 }
 
 /**
+ * v5.11.81 (partly fixed major): the automatic deal lines a QR check books, from what the SERVER
+ * applied when each round was placed (customer.order_pricing.auto_rules: { rule_id, name,
+ * saving_minor }), summed per rule over the rounds. The money already came off each round (the page
+ * charged the goods after the deal); this records the deal on the check, as the till's close books
+ * its AUTO lines, so Shifts, Servers, Exceptions and the Z report show it and the daily VAT check
+ * reads the goods charged. Every QR tab close wrote `discounts: []`. A round placed by an old page
+ * (no order_pricing) adds nothing. The same shape toAppliedDiscount gives the till.
+ */
+export function qrTabDealLines(rows) {
+  const byRule = new Map();
+  for (const r of (Array.isArray(rows) ? rows : [])) {
+    const rules = r?.customer?.order_pricing?.auto_rules;
+    for (const x of (Array.isArray(rules) ? rules : [])) {
+      const minor = Math.max(0, Math.round(Number(x?.saving_minor) || 0));
+      if (!minor) continue;
+      const id = x?.rule_id != null ? String(x.rule_id) : String(x?.name || 'deal');
+      const e = byRule.get(id) || { id, label: x?.name || 'Deal', minor: 0 };
+      e.minor += minor;
+      byRule.set(id, e);
+    }
+  }
+  return [...byRule.values()].map((e) => ({
+    id: e.id, label: e.label, type: 'amount', value: e.minor / 100, amount: e.minor / 100,
+    scope: 'check', isAuto: true, source: 'auto',
+  }));
+}
+
+/**
  * 19 Oct 2026 (v5.11.78, channel parity): the QR service charge a tab's rounds took, summed
  * (customer.service_charge per round, the figure QrCheckout charged on that round). Every close
  * of a QR tab (Orders force close, the short close, the phone's fallback write and settle_qr_tab

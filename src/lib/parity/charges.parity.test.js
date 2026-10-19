@@ -297,3 +297,44 @@ test('service charge, US: added on tax on a service charge still follows the tax
   const without = computeOrderTaxUnified(lines, ctxUS(), 'dine-in', { discounts: [], service: 0 });
   assert.ok(withSvc.exclusiveTax > without.exclusiveTax, 'San Mateo taxes a mandatory service charge');
 });
+
+// ── QR and Pay at table follow the venue's one table service rule (v5.11.81, partly fixed major) ──
+test('service rule: QR and Pay at table charge the venue\'s table service charge, never the QR setting or the last till to publish', async () => {
+  const { pickVenueServiceRule, qrServiceCharge, withVenueServiceRule, normaliseServiceRule } = await import('../venueServiceRule.js');
+  // Location 2's shape: the master till charges 12.5% from 6 covers; a handheld charges 12.5% on every table.
+  const profiles = [
+    { id: 'p-bar', is_master: false, table_service_enabled: true, sort_order: 1, service_charge: null },
+    { id: 'p-hand', is_master: false, table_service_enabled: true, sort_order: 2, service_charge: { enabled: true, rate: 12.5, applyTo: 'all', minCovers: 8 } },
+    { id: 'p-main', is_master: true, table_service_enabled: true, sort_order: 3, service_charge: { enabled: true, rate: 12.5, applyTo: 'minCovers', minCovers: 6 } },
+  ];
+  assert.deepEqual(pickVenueServiceRule(profiles), { enabled: true, rate: 12.5, applyTo: 'minCovers', minCovers: 6 }, 'the master till\'s rule');
+  // Provo's shape: the master has it switched off, the handheld on: the venue charges it.
+  const provo = [
+    { id: 'main', is_master: true, table_service_enabled: true, service_charge: { enabled: false, rate: 12.5, applyTo: 'minCovers', minCovers: 6 } },
+    { id: 'mpos', is_master: false, table_service_enabled: true, service_charge: { enabled: true, rate: 12.5, applyTo: 'all', minCovers: 8 } },
+  ];
+  assert.deepEqual(pickVenueServiceRule(provo), { enabled: true, rate: 12.5, applyTo: 'all', minCovers: 8 });
+  assert.deepEqual(pickVenueServiceRule([{ id: 'x', is_master: true, service_charge: null }]), { enabled: false }, 'no table service charge anywhere');
+  assert.deepEqual(pickVenueServiceRule([{ id: 'x', table_service_enabled: false, service_charge: { enabled: true, rate: 10 } }]), { enabled: false }, 'a bar only profile is not table service');
+  // QR: the venue rule on the goods after offers, read as the till reads it (dine in).
+  const all = normaliseServiceRule({ enabled: true, rate: 12.5, applyTo: 'all' });
+  assert.deepEqual(qrServiceCharge({ rule: all, legacyPct: 10, discountedSubtotal: 19.8 }), { amount: 2.48, pct: 12.5 }, 'never the QR setting\'s 10%');
+  assert.deepEqual(qrServiceCharge({ rule: { enabled: false }, legacyPct: 10, discountedSubtotal: 19.8 }), { amount: 0, pct: 0 }, 'no table service charge: none on QR either');
+  assert.deepEqual(qrServiceCharge({ rule: null, legacyPct: 10, discountedSubtotal: 19.8 }), { amount: 1.98, pct: 10 }, 'until the database answers: the QR setting, as before');
+  // The same goods at a table on the till under that rule: the same service charge.
+  const till = computeCheckTotals({ items: [{ uid: 'a', itemId: 'x', price: 19.8, qty: 1 }], checkDiscounts: [], covers: 1, orderType: 'dine-in', deviceConfig: { serviceCharge: all } });
+  assert.equal(roundVat(till.service), 2.48);
+  // Pay at table: the stamp takes the venue rule, whichever till published the table.
+  const counterTill = { serviceCharge: null, profileName: 'Bar till' };
+  const stamp = sessionTotalsMinor({ items: [{ uid: 'a', itemId: 'x', price: 20, qty: 1 }], discounts: [], covers: 2 }, { deviceConfig: withVenueServiceRule(counterTill, all) });
+  assert.equal(stamp.totalMinor, 2250, 'a table published by a till with no service charge still stamps the venue\'s 12.5%');
+  assert.equal(withVenueServiceRule(counterTill, null), counterTill, 'not read yet: the till\'s own config, the same object');
+  // Wiring: the QR page asks the database, SessionSync stamps with the rule, the till loads it.
+  const qr = readRepo('src/surfaces/qr/QrCheckout.jsx');
+  assert.match(qr, /fetchVenueServiceRule\(location\.ops_location_id \|\| location\.id\)/);
+  assert.match(qr, /qrServiceCharge\(\{ rule: venueServiceRule \|\| null, legacyPct: location\.qr_service_charge_pct, discountedSubtotal \}\)\.amount/);
+  assert.doesNotMatch(qr, /serviceChargePct > 0 \? \+\(discountedSubtotal \* serviceChargePct \/ 100\)/);
+  assert.match(qr, /disabled=\{!valid \|\| working \|\| !!vatGate \|\| serviceRuleLoading\}/, 'Pay waits for the rule');
+  assert.match(readRepo('src/sync/SessionSync.js'), /deviceConfig: withVenueServiceRule\(_st\.deviceConfig, _st\.venueServiceRule\),/);
+  assert.match(readRepo('src/sync/SyncBridge.jsx'), /sb\.rpc\('venue_service_rule', \{ p_location_id: locationId \}\)/);
+});

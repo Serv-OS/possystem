@@ -2627,6 +2627,19 @@ export const fetchDiscountRules = async (locationId = null) => {
     .order('priority', { ascending: false });
 };
 
+// v5.11.81: the venue's ONE table service charge rule (lib/venueServiceRule.js; the database's
+// venue_service_rule, migration 20261020a, callable by a QR guest). Resolves the rule
+// ({ enabled, rate, applyTo, minCovers } or { enabled: false }), or null when it cannot be read
+// (the database update not run yet, offline): the caller then keeps its own rule, as before.
+export const fetchVenueServiceRule = async (locationId) => {
+  if (isMock || !locationId || !supabase) return null;
+  try {
+    const { data, error } = await supabase.rpc('venue_service_rule', { p_location_id: locationId });
+    if (error || !data || typeof data !== 'object') return null;
+    return data;
+  } catch { return null; }
+};
+
 export const fetchActiveDiscountRules = async (locationId = null) => {
   if (isMock) return { data: null, error: null };
   if (!locationId || locationId === 'loc-demo') locationId = await getLocationId();

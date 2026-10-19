@@ -133,11 +133,11 @@ export async function settleQrTabWithFallback({
     const { data, error } = res || {};
     if (error && isMissingRpc(error)) {                       // FENCE STAGE 1 FALLBACK
       if (!legacySettle) return { ok: false, path: 'legacy', reason: 'no_legacy' };
-      try { const l = await legacySettle(); return { ok: !!(l && l.ok), path: 'legacy', reason: l?.ok ? null : 'error' }; }
+      try { const l = await legacySettle(); return { ok: !!(l && l.ok), path: 'legacy', reason: l?.ok ? null : 'error', checkId: l?.checkId ?? null }; }
       catch (e) { return { ok: false, path: 'legacy', reason: 'error', message: e?.message }; }
     }
     if (error) { last = { ok: false, path: 'rpc', reason: 'error', message: error.message }; continue; }
-    if (data && data.ok) return { ok: true, path: 'rpc', closed: Number(data.closed) || 0, booked: data.booked ?? null, shortfall: data.shortfall ?? null, alreadyClosed: data.reason === 'already_closed' };
+    if (data && data.ok) return { ok: true, path: 'rpc', closed: Number(data.closed) || 0, booked: data.booked ?? null, shortfall: data.shortfall ?? null, alreadyClosed: data.reason === 'already_closed', checkId: data.check_id ?? null };
     last = { ok: false, path: 'rpc', reason: data?.reason || 'error', message: data?.message || null };
     // C23 (fix round 2): 'short' carries what the capture paid and what the tab is worth.
     if (last.reason === 'short') { last.paidMinor = Number(data?.paid_minor) || 0; last.dueMinor = Number(data?.due_minor) || 0; }

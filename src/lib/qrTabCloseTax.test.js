@@ -90,7 +90,7 @@ test('the VAT reaches settle_qr_tab in p_check', async () => {
 test('wiring: the phone close books the VAT on its own write and hands it to the server', () => {
   const src = fs.readFileSync(new URL('../surfaces/qr/TabResumeScreen.jsx', import.meta.url), 'utf8');
   assert.doesNotMatch(src, /tax_amount: null/);
-  assert.match(src, /import \{ qrTabCloseFields, qrTabSettleVat \} from '\.\.\/\.\.\/lib\/headlessTax';/);
+  assert.match(src, /import \{ qrTabCloseFields, qrTabSettleVat, qrTabDealLines \} from '\.\.\/\.\.\/lib\/headlessTax';/);   // v5.11.81: + the deal lines
   assert.match(src, /const vat = qrTabCloseFields\(rounds, runningTotal, \{ menuItems, taxRates, taxCtx, hasTaxConfig: taxCtxHasConfig\(taxCtx\) \}\);/);
   assert.match(src, /subtotal: vat\.subtotal,/);
   assert.match(src, /tax_amount: vat\.taxAmount,/);

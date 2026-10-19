@@ -30,7 +30,8 @@ import { computeOrderTaxUnified, taxCtxHasConfig } from '../../lib/taxCompute';
 import { publicCheckTaxFields, offerChargedTax, qrBillTotal } from '../../lib/publicCheckTax';
 import VatGateNotice from '../online/VatGateNotice';
 import { breakdownIsExclusive, taxTermFor } from '../../lib/receiptTax';   // v5.7.34: rate-null guards + VAT/Sales Tax wording
-import { fetchActiveDiscountRules } from '../../lib/db';
+import { fetchActiveDiscountRules, fetchVenueServiceRule } from '../../lib/db';
+import { qrServiceCharge } from '../../lib/venueServiceRule';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../../lib/discountEngine';
 import { buildScheduleCtx } from '../../lib/locationTime';
 import { stashTab } from '../../lib/qrTabStorage';
@@ -54,7 +55,21 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   const opsLocationId      = location.ops_location_id || location.id;
   const platformLocationId = location.id;
   const tz                 = location.timezone || 'Europe/London';
-  const serviceChargePct   = Number(location.qr_service_charge_pct ?? 0);
+  // v5.11.81 (Peter: the POS is central): the QR service charge follows the venue's ONE table
+  // service rule (lib/venueServiceRule.js: the service charge switched on for table service on the
+  // device profiles), not its own QR setting. `undefined` while it is asked; null when the database
+  // cannot answer yet (update 20261020a not run): then the QR setting, as before.
+  const [venueServiceRule, setVenueServiceRule] = useState(undefined);
+  useEffect(() => {
+    let live = true;
+    const timer = setTimeout(() => { if (live) setVenueServiceRule((r) => (r === undefined ? null : r)); }, 4000);
+    fetchVenueServiceRule(location.ops_location_id || location.id)
+      .then((r) => { if (live) setVenueServiceRule(r || null); })
+      .catch(() => { if (live) setVenueServiceRule(null); });
+    return () => { live = false; clearTimeout(timer); };
+  }, [location.ops_location_id, location.id]);
+  const serviceRuleLoading = venueServiceRule === undefined;
+  const serviceChargePct   = qrServiceCharge({ rule: venueServiceRule || null, legacyPct: location.qr_service_charge_pct, discountedSubtotal: 0 }).pct;
   // v5.5.149: open-tab support is BO-toggleable. When the venue allows tabs
   // we surface the customer-facing warning message + (commit 3b) a Pay-now
   // / Open-tab radio. paymentMode='pay_now' is the safe default.
@@ -151,8 +166,8 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   const discountedSubtotal = Math.max(0, +(subtotal - autoDiscountTotal).toFixed(2));
 
   const serviceCharge = useMemo(() =>
-    serviceChargePct > 0 ? +(discountedSubtotal * serviceChargePct / 100).toFixed(2) : 0,
-    [discountedSubtotal, serviceChargePct]);
+    qrServiceCharge({ rule: venueServiceRule || null, legacyPct: location.qr_service_charge_pct, discountedSubtotal }).amount,
+    [discountedSubtotal, venueServiceRule, location.qr_service_charge_pct]);
 
   const tipAmount = useMemo(() => (
     tipRule.on ? calcTip(discountedSubtotal, tipMode, customTip) : 0
@@ -685,6 +700,8 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
           stashTab(location.online_slug, tableId, {
             tab_ref: ref,
             payment_intent_id: payId,
+            // v5.11.81: this order's own key, so the tab earns loyalty when it is settled (TabResumeScreen).
+            track_token: placed?.trackToken || null,
             tab_join_code: joinCode,   // v5.5.716: so the opener can re-share it from the resume screen (fence stage 1: the server's code)
             processor,
             stripe_account: pi?.stripe_account || null,
@@ -806,7 +823,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
             background: theme.bg, borderTop: `1px solid ${cardBdr}`,
           }}>
             {error && <div style={{ fontSize: 12, color: '#ef4444', marginBottom: 10 }}>{error}</div>}
-            <button onClick={addToExistingTab} disabled={working || !cart.length}
+            <button onClick={addToExistingTab} disabled={working || !cart.length || serviceRuleLoading}
               className="op-btn-primary"
               style={{
                 width: '100%', padding: '16px 22px', borderRadius: 14,
@@ -1016,7 +1033,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
             )}
             <VatGateNotice gate={vatGate} onRetry={onRetryRates} theme={theme}/>
             {error && <div style={{ fontSize: 12, color: '#ef4444', marginBottom: 10 }}>{error}</div>}
-            <button onClick={continueToPayment} disabled={!valid || working || !!vatGate}
+            <button onClick={continueToPayment} disabled={!valid || working || !!vatGate || serviceRuleLoading}
               className={valid && !working && !vatGate ? 'op-btn-primary' : undefined}
               style={{
                 width: '100%', padding: '16px 22px', borderRadius: 14,

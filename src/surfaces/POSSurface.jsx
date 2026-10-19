@@ -21,7 +21,7 @@ import { getAssignedNetworkReader } from '../lib/networkReader';
 import { CATEGORIES, MENU_ITEMS as SEED_MENU_ITEMS, ALLERGENS, QUICK_IDS, CAT_META } from '../data/seed';
 import { daypartOfHour } from '../lib/quickRank';
 import { taxCtxHasConfig } from '../lib/taxCompute';
-import { creditDiscountsFromPayment, checkDiscountAmount } from '../lib/taxBasis';
+import { creditDiscountsFromPayment, shownCheckDiscounts } from '../lib/taxBasis';
 import { isQuoteOfOrder } from '../lib/orderPlacedFrom';   // v5.11.78 round 1: an order's fee is bound to that order
 import { resolveQuickItems } from '../lib/quickRank';
 import ProductModal, { AllergenModal } from '../components/ProductModal';
@@ -1761,14 +1761,16 @@ export default function POSSurface() {
               {/* Check discounts */}
               {(()=>{
                 const checkDiscounts=activeTableId?(tables.find(t=>t.id===activeTableId)?.session?.discounts||[]):(useStore.getState().walkInOrder?.discounts||[]);
+                // v5.11.81: never more than the bill (an amount bigger than the bill shows what it takes off)
+                const shownDisc=shownCheckDiscounts(checkDiscounts, subtotal);
                 return checkDiscounts.length>0?(
                   <div style={{padding:'0 12px 4px'}}>
-                    {checkDiscounts.map(d=>(
+                    {checkDiscounts.map((d,di)=>(
                       <div key={d.id} style={{display:'flex',alignItems:'center',justifyContent:'space-between',fontSize:11,color:'var(--grn)',marginBottom:2}}>
                         <span style={{display:'inline-flex',alignItems:'center',gap:5}}><Icon name="tag" size={12}/>{d.label}</span>
                         <div style={{display:'flex',alignItems:'center',gap:8}}>
                           {/* 19 Oct 2026 (v5.11.78): what the bill takes off NOW (a percent of the live lines), never the figure frozen when it was applied */}
-                          <span style={{fontFamily:'var(--font-mono)'}}>−{money(checkDiscountAmount(d, subtotal))}</span>
+                          <span style={{fontFamily:'var(--font-mono)'}}>−{money(shownDisc[di])}</span>
                           <button onClick={()=>activeTableId?removeCheckDiscount(activeTableId,d.id):removeWalkInDiscount(d.id)} style={{fontSize:11,color:'var(--t4)',background:'none',border:'none',cursor:'pointer',fontFamily:'inherit'}}>✕</button>
                         </div>
                       </div>

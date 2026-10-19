@@ -157,7 +157,8 @@ test('a percent discount stores what the bill took off on the lines it closed wi
   assert.equal(Math.round(row.discounts[1].amount * 100) / 100, 0.81, 'MPOS reads 0.81, never 10.00');
   assert.equal(row.discounts[2].amount, undefined, 'a deal line is left as it is');
   assert.equal(row.discounts[3].amount, 0.5, 'a promo keeps the server\'s figure');
-  assert.match(readRepo('src/surfaces/POSSurface.jsx'), /money\(checkDiscountAmount\(d, subtotal\)\)/);
+  // v5.11.81: shown capped at what is left of the bill (shownCheckDiscounts), never the typed value.
+  assert.match(readRepo('src/surfaces/POSSurface.jsx'), /money\(shownDisc\[di\]\)/);
   assert.match(readRepo('src/surfaces/mpos/MOrderActions.jsx'), /label: d\.label, type: d\.type, value: d\.value, scope: 'check',/);
 });
 
@@ -218,4 +219,39 @@ test('regression: the meal deal saves the same on the till, kiosk, online and QR
   assert.equal(pos, 3);
   for (const ch of ['kiosk', 'online', 'qr']) assert.equal(save(ch), pos, ch);
   assert.equal(SERVICE_DEVICE.serviceCharge.rate, 12.5);
+});
+
+// v5.11.81 (confirmed minor): the till's discount line shows what the bill takes off.
+test('the till discount line shows the capped value: 10.00 off a 6.00 bill reads -6.00, as the bill takes', async () => {
+  const { shownCheckDiscounts } = await import('../taxBasis.js');
+  assert.deepEqual(shownCheckDiscounts([{ type: 'amount', value: 10 }], 6), [6]);
+  assert.deepEqual(shownCheckDiscounts([{ type: 'percent', value: 10 }, { type: 'amount', value: 20 }], 15), [1.5, 13.5], 'in order, never past the bill');
+  assert.deepEqual(shownCheckDiscounts([{ type: 'amount', value: 2 }], 6), [2], 'a discount inside the bill is shown as typed');
+  const t = computeCheckTotals({ items: [{ uid: 'a', itemId: 'x', price: 6, qty: 1 }], checkDiscounts: [{ type: 'amount', value: 10 }], covers: 1, orderType: 'takeaway' });
+  assert.equal(t.discountedSub, 0, 'the bill takes 6.00');
+});
+
+// ── A QR tab's record carries the deals each round took (v5.11.81, partly fixed major) ───────────
+test('QR tab: every close books the deal lines the server applied to each round, summed per rule (settle on the server too)', async () => {
+  const { qrTabDealLines } = await import('../headlessTax.js');
+  const rounds = [
+    { customer: { order_pricing: { goods_minor: 1500, auto_minor: 300, auto_rules: [{ rule_id: 'r-meal', name: 'Meal deal', saving_minor: 300 }] } } },
+    { customer: { order_pricing: { goods_minor: 1500, auto_minor: 300, auto_rules: [{ rule_id: 'r-meal', name: 'Meal deal', saving_minor: 300 }] } } },
+    { customer: {} },   // a round an old page placed: nothing to add
+  ];
+  const lines = qrTabDealLines(rounds);
+  assert.deepEqual(lines, [{ id: 'r-meal', label: 'Meal deal', type: 'amount', value: 6, amount: 6, scope: 'check', isAuto: true, source: 'auto' }]);
+  // The same deal line the till books for the meal deal (toAppliedDiscount), counted once in reports.
+  const pos = posTotals(basket('auto-discount'));
+  assert.equal(pos.autoDiscounts[0].value * 2, lines[0].value);
+  assert.equal(recordedDiscountMinor({ discounts: lines, tenders: [{ method: 'card', amount: 24, tip: 0 }] }), 600);
+  assert.deepEqual(qrTabDealLines([]), []);
+  for (const f of ['src/surfaces/OrdersHub.jsx', 'src/surfaces/qr/TabResumeScreen.jsx', 'src/lib/orderPayment.js']) {
+    assert.doesNotMatch(between(readRepo(f), 'foldLineMods(', 'subtotal'), /discounts: \[\],/, `${f}: never an empty deal list`);
+  }
+  assert.equal((readRepo('src/surfaces/OrdersHub.jsx').match(/discounts: qrTabDealLines\(/g) || []).length, 2);
+  const sql = readRepo('supabase/migrations/20261020a_OPS_channel_parity_2.sql');
+  const settle = between(sql, 'CREATE OR REPLACE FUNCTION public.settle_qr_tab(', '$function$;');
+  assert.match(settle, /'discounts', v_deals,/);
+  assert.doesNotMatch(settle, /'discounts', '\[\]'::jsonb,/);
 });

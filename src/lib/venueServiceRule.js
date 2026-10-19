@@ -21,7 +21,8 @@ const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 
 /** A rule in the shape resolveServiceCharge reads, or { enabled: false }. */
 export function normaliseServiceRule(sc) {
-  if (!sc || typeof sc !== 'object' || sc.enabled !== true || !(num(sc.rate) > 0)) return { enabled: false };
+  const on = sc && typeof sc === 'object' && (sc.enabled === true || String(sc.enabled).toLowerCase() === 'true');
+  if (!on || !(num(sc.rate) > 0)) return { enabled: false };
   const applyTo = sc.applyTo === 'minCovers' ? 'minCovers' : 'all';
   return {
     enabled: true,
@@ -36,7 +37,8 @@ const profileRule = (p) => p?.serviceCharge ?? p?.service_charge ?? null;
 const masterRow = (p) => p?.is_master === true;
 const tableService = (p) => (p?.tableServiceEnabled ?? p?.table_service_enabled) !== false;
 const sortOf = (p) => { const n = Number(p?.sortOrder ?? p?.sort_order); return Number.isFinite(n) ? n : Number.MAX_SAFE_INTEGER; };
-const createdOf = (p) => String(p?.createdAt ?? p?.created_at ?? '');
+// A profile with no created_at sorts last, as the database's `nulls last` does.
+const createdOf = (p) => { const c = p?.createdAt ?? p?.created_at; return c == null || c === '' ? '\uffff' : String(c); };
 
 /**
  * The venue's table service rule from its device_profiles rows (as the database holds them): among the
@@ -50,8 +52,8 @@ export function pickVenueServiceRule(profiles) {
   if (!on.length) return { enabled: false };
   on.sort((a, b) => (Number(masterRow(b)) - Number(masterRow(a)))
     || (sortOf(a) - sortOf(b))
-    || createdOf(a).localeCompare(createdOf(b))
-    || String(a.id ?? '').localeCompare(String(b.id ?? '')));
+    || (createdOf(a) < createdOf(b) ? -1 : createdOf(a) > createdOf(b) ? 1 : 0)
+    || (String(a.id ?? '') < String(b.id ?? '') ? -1 : String(a.id ?? '') > String(b.id ?? '') ? 1 : 0));
   return normaliseServiceRule(profileRule(on[0]));
 }
 

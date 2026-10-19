@@ -714,7 +714,7 @@ function QrSettingsBlock({
         type="number" min="0"
         value={servicePct}
         onChange={v => setServicePct(parseFloat(v) || 0)}
-        help="Auto-applied to every QR order. 0 = none. Capped at 50%."/>
+        help="Used only until the database update 20261020a runs. From v5.11.81 QR charges the venue's table service charge, set on the device profiles (Back Office, Device profiles, Service charge), the same as the tables."/>
 
       <TipRuleEditor
         title="Tipping at the table (QR)"

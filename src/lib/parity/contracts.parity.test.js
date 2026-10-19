@@ -81,3 +81,31 @@ test('migration 20261019a: ASCII only, one transaction, a guard, a visible check
   // Never a live tax calculation (central_tax_constraints.md): no new tax maths in the file.
   assert.doesNotMatch(fwd.replace(/CREATE OR REPLACE FUNCTION public\.(_public_order_check_row|settle_qr_tab|_public_order_value)\([\s\S]+?\$function\$;/g, ''), /_vat_for_lines|_public_order_vat\(/);
 });
+
+test('migration 20261020a: ASCII only, one transaction, a guard, a visible check, and a rollback that puts back every function it replaced', () => {
+  const fwd = readRepo('supabase/migrations/20261020a_OPS_channel_parity_2.sql');
+  const back = readRepo('supabase/migrations/20261020a_OPS_channel_parity_2_ROLLBACK.sql');
+  for (const [name, sql] of [['forward', fwd], ['rollback', back]]) {
+    assert.equal([...sql].filter((ch) => ch.charCodeAt(0) > 127).length, 0, `${name}: ASCII only`);
+    assert.match(sql, /^begin;$/m, `${name}: one transaction`);
+    assert.match(sql, /^commit;$/m, name);
+    assert.match(sql, /This (migration )?must be run against the OPS DB/, `${name}: the guard`);
+    assert.match(sql, /\nselect\n[\s\S]+;\s*$/, `${name}: ends with the visible check`);
+  }
+  for (const fn of ['_vat_for_lines', '_public_order_value', 'settle_qr_tab']) {
+    assert.match(fwd, new RegExp(`CREATE OR REPLACE FUNCTION public\\.${fn}\\(`), `forward replaces ${fn}`);
+    assert.match(back, new RegExp(`CREATE OR REPLACE FUNCTION public\\.${fn}\\(`), `rollback restores ${fn}`);
+  }
+  for (const fn of ['promo_release_atomic', 'venue_service_rule', '_menu_item_has_price']) {
+    assert.match(fwd, new RegExp(`create or replace function public\\.${fn}\\(`), `forward adds ${fn}`);
+    assert.match(back, new RegExp(`drop function if exists public\\.${fn}\\(`), `rollback drops ${fn}`);
+  }
+  assert.match(fwd, /alter table public\.promo_redemptions add column if not exists released_at timestamptz;/, 'additive, safe to run twice');
+  assert.match(back, /alter table public\.promo_redemptions drop column if exists released_at;/);
+  // Who may call what: the give back only through promo-redeem (service role), the rule by a QR guest.
+  assert.match(fwd, /revoke all on function public\.promo_release_atomic\(text, text\[\], text, text\) from anon, authenticated;/);
+  assert.match(fwd, /grant execute on function public\.venue_service_rule\(uuid\) to anon, authenticated, service_role;/);
+  assert.match(fwd, /revoke all on function public\._menu_item_has_price\(jsonb, text, text\) from anon, authenticated;/);
+  // Never a live tax calculation (central_tax_constraints.md).
+  assert.doesNotMatch(fwd, /_vat_for_lines\(p_lines, v_menu/i, 'no new caller of the VAT maths');
+});

@@ -162,3 +162,16 @@ test('part refund: the gift card that paid part of the bill gets its share back,
   assert.match(fn, /const restoreAmount = part \? Math\.min\(partMinor as number, Math\.max\(0, spent - putBack\)\) : Math\.max\(0, spent - putBack\);/);
   assert.match(fn, /if \(total === null \|\| total > spent\) \{/, 'a race can never put back more than was spent');
 });
+
+// ── A QR tab earns like a QR pay now order (v5.11.81, partly fixed major) ─────────────────────────
+test('QR tab: a settled tab earns for the phone on it (the phone, by the tab\'s own key; the till, by its bound device)', () => {
+  const resume = readRepo('src/surfaces/qr/TabResumeScreen.jsx');
+  assert.match(resume, /if \(tabCustomer\.phone && settled\.checkId\) \{/);
+  assert.match(resume, /orderRecord: \{ ref: tab\.tab_ref, checkId: settled\.checkId, total: runningTotal, items: \(rounds \|\| \[\]\)\.flatMap\(r => r\.items \|\| \[\]\), type: 'dine-in', channel: 'qr' \},/);
+  assert.match(resume, /trackKey: chooseTrackKey\(\{ trackToken: tab\.track_token \|\| null, paymentIntentId: tab\.payment_intent_id \|\| null \}\),/);
+  assert.match(readRepo('src/surfaces/qr/QrCheckout.jsx'), /track_token: placed\?\.trackToken \|\| null,/, 'the opener keeps the tab\'s own key');
+  assert.match(readRepo('src/lib/publicOrder.js'), /checkId: data\.check_id \?\? null \};/, 'settle_qr_tab answers the check id');
+  const hub = readRepo('src/surfaces/OrdersHub.jsx');
+  assert.match(hub, /orderRecord: \{ id: record\.id, ref: record\.ref, items: record\.items \|\| \[\], total: record\.total, source: 'qr' \},/);
+  assert.equal((hub.match(/earnQrSale\(/g) || []).length, 3, 'its three closes (force close, one round, closed short)');
+});
