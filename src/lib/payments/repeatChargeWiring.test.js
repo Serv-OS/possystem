@@ -111,7 +111,10 @@ test('the till sends repeat_ok_job_id only when staff pressed "Different custome
   assert.ok(co.includes('const takeRepeatOk = () => { const id = repeatOkRef.current; repeatOkRef.current = null; return id; };'), 'read and forgotten in one step');
   assert.ok(startJob.includes('repeatOkJobId: takeRepeatOk(),'), 'sent on the create, once');
   assert.equal(startJob.split('takeRepeatOk()').length - 1, 1, 'one read per send');
-  assert.ok(co.includes('const takePaymentAnyway = (jobId) => { repeatOkRef.current = jobId; setRepeatWarn(null); startTerminalJob(); };'));
+  // v5.11.81 round 1: a counter basket whose earlier payment is booked under its own id takes a
+  // fresh id first (walkInCheckId.rotateOnRepeatOverride), then the ack rides on this one send.
+  assert.ok(co.includes('    repeatOkRef.current = jobId; setRepeatWarn(null); startTerminalJob();\n  };'));
+  assert.ok(co.includes('const takePaymentAnyway = (jobId) => {\n    if (rotateOnRepeatOverride({'));
 });
 
 test('the checkout shows the POSSIBLE_REPEAT dialog with Open <ref>, Clear this order and Different customer', () => {

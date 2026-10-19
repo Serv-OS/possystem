@@ -44,7 +44,7 @@ import {
 // Database fence stage 1, fix round 2: writes that must change a row are counted and kept while
 // this till is not linked; no card capture starts on a till that is not linked.
 import { mustChangeRow, mustChangeRows } from '../lib/rowWrites';
-import { qrCloseTax, qrTabService, qrTabDealLines } from '../lib/headlessTax';
+import { qrCloseTax, qrTabService, qrTabDealLines, qrGrossSubtotal } from '../lib/headlessTax';
 import { taxCtxHasConfig } from '../lib/taxCompute';
 import { confirmLinkBeforeCard } from '../lib/deviceLink';
 import { holdPaymentBusy } from '../lib/paymentBusy';
@@ -846,7 +846,8 @@ export default function OrdersHub() {
           // v5.8.9: each round carries customer.tip and its total INCLUDES it.
           // Booking tab.total as subtotal with tip: 0 charged the guest a tip
           // the venue then kept as sales. Split it back out.
-          subtotal: +(tab.total - tabTip - tabService - qrTax.exclusiveTax).toFixed(2),
+          // v5.11.81 round 1: gross goods (the deals added back), or reports take the deal off twice.
+          subtotal: qrGrossSubtotal(tab.total - tabTip - tabService - qrTax.exclusiveTax, qrTabDealLines(tab.rows)),
           service: +(surcharge + tabService).toFixed(2),
           tip: tabTip, tax_amount: qrTax.taxAmount,
           ...(qrTax.taxBreakdown ? { tax_breakdown: qrTax.taxBreakdown } : {}),
@@ -1050,7 +1051,8 @@ export default function OrdersHub() {
           customer: { ...o.customer, tab_closed_at: new Date().toISOString(), surcharge_applied: surcharge },
           items: foldLineMods(o.items || []).map(i => ({ ...i, voided: false })),   // 19 Oct 2026: the till's line contract
           discounts: qrTabDealLines([o]),   // v5.11.81: the deal the server applied to this round
-          subtotal: +((Number(o.total) || 0) - qrTip - qrService - qrTax.exclusiveTax).toFixed(2),   // v5.8.9: o.total includes the tip
+          // v5.8.9: o.total includes the tip. v5.11.81 round 1: gross goods (the deal added back).
+          subtotal: qrGrossSubtotal((Number(o.total) || 0) - qrTip - qrService - qrTax.exclusiveTax, qrTabDealLines([o])),
           service: +(surcharge + qrService).toFixed(2),   // the auto-surcharge and the round's QR service charge
           tip: qrTip, tax_amount: qrTax.taxAmount,
           ...(qrTax.taxBreakdown ? { tax_breakdown: qrTax.taxBreakdown } : {}),

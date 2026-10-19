@@ -820,6 +820,7 @@ declare
   v_rec        jsonb;
   v_service    numeric := 0;     -- 20261019a: the rounds' QR service charge, booked as service
   v_deals      jsonb := '[]'::jsonb;   -- 20261020a: the deals the server applied to each round
+  v_deal_total numeric := 0;           -- 20261020a round 1: their total, added back onto the gross subtotal
 begin
   if v_uid is null then
     return jsonb_build_object('ok', false, 'reason', 'no_session');
@@ -991,6 +992,15 @@ begin
            where q.location_id = v_loc and q.ref = any(v_refs) and jsonb_typeof(x) = 'object'
            group by 1) d
    where d.minor > 0;
+  -- 20261020a round 1 fix: each round's money is ALREADY after its deal, so the booked subtotal
+  -- (what was charged less tip, added tax and service) is net of the deals. Reports work out net
+  -- sales as subtotal less discounts, so booking the deal lines on that took the deal off twice.
+  -- The deal total goes back onto the subtotal: gross goods at menu price, as QR pay now and the
+  -- till book them (2 pizzas at 10.00 with a 5.00 deal: subtotal 20, discount 5, net 15).
+  select coalesce(sum(public._fence_num_or_null(d ->> 'amount')), 0)
+    into v_deal_total
+    from jsonb_array_elements(v_deals) d;
+  v_deal_total := greatest(0, coalesce(v_deal_total, 0));
 
   update public.order_queue
      set status = 'collected',
@@ -1008,7 +1018,7 @@ begin
       -- 20261019a: the till's line contract (paid options inside the price), the service apart.
       'items', coalesce((select jsonb_agg(public._order_line_folded(x) order by n)
                            from jsonb_array_elements(v_items) with ordinality as i(x, n)), '[]'::jsonb),
-      'subtotal', greatest(0, v_booked - v_tip - v_added - v_service),
+      'subtotal', greatest(0, v_booked - v_tip - v_added - v_service) + v_deal_total,
       'tax', 0,
       'tax_amount', v_tax,
       'total', v_booked,
@@ -2184,7 +2194,7 @@ select
   (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = '_menu_item_has_price') as has_price_fn,
   (select case when position('v_noprice' in pg_get_functiondef(p.oid)) > 0 then 1 else 0 end
      from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = '_public_order_value') as value_no_price,
-  (select case when position('v_deals' in pg_get_functiondef(p.oid)) > 0 then 1 else 0 end
+  (select case when position('v_deal_total' in pg_get_functiondef(p.oid)) > 0 then 1 else 0 end
      from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'settle_qr_tab') as settle_books_deals,
   (select count(*) from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = '_public_order_promo'
      and pg_get_function_identity_arguments(p.oid) like '%p_lines jsonb%') as promo_takes_lines,

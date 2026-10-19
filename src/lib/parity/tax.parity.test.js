@@ -416,3 +416,59 @@ test('wiring: the kiosk, online and QR pages save each line with the id their de
   assert.match(readRepo('src/lib/kioskVat.js'), /return inclusiveTaxOnChargedLines\(t, lines, autoDiscounts, charged,/);
   assert.match(readRepo('supabase/functions/_shared/vatRederive.js'), /chargedLineValues\(lines, moneyDiscounts\(row\)\)/);
 });
+
+// ── v5.11.81 round 1 fix: refunds of a per line VAT record (byLine) ─────────────────────────────────
+// computeCheckTotals (and the kiosk, online, QR and server records) books each line's VAT on what
+// that line was charged when a deal names its lines and the bill has more than one rate. The refund
+// must read that record line by line, and a service or tip only refund gives back no VAT whatever
+// the record (Peter, 19 Oct 2026: "service charge has no VAT").
+const byLineCheck = (b) => {
+  const items = posLines(b);
+  const t = posTotals(b);
+  const discounts = (t.autoDiscounts && t.autoDiscounts.length)
+    ? t.autoDiscounts
+    : evaluateAutoDiscounts(items, RULES, 'pos', null).map(toAppliedDiscount);
+  const total = Math.round(t.total * 100) / 100;
+  return { id: `chk-bl-${b.orderType}`, orderType: b.orderType, items, discounts, subtotal: t.subtotal,
+    service: Math.round((t.service || 0) * 100) / 100, tip: 0, total, taxAmount: vat(t.tax), taxBreakdown: t.tax,
+    refunds: [], tenders: [{ method: 'card', amount: total, tip: 0 }] };
+};
+const giveLine = (chk, it, opts = {}) => {
+  const items = it ? [{ ...it, refundQty: 1 }] : [];
+  const bd = refundBreakdown(chk, { items, tipOverride: 0, serviceOverride: 0, ...opts });
+  return { bd, vat: refundTaxAmount(chk, bd, { items, taxRates: UK_RATES }) };
+};
+
+test('refund of a per line record: dine in meal deal, babyccino and water with service gives back each line its own VAT, service 0', () => {
+  const chk = byLineCheck({ orderType: 'dine-in', menuId: null, covers: 2, device: 'service',
+    lines: [{ itemId: 'burger', qty: 1 }, { itemId: 'fries', qty: 1 }, { itemId: 'coke', qty: 1 }, { itemId: 'baby-l', qty: 1 }, { itemId: 'water', qty: 1 }] });
+  assert.equal(chk.taxBreakdown.byLine, true, 'the fixture books a per line record');
+  assert.ok(chk.service > 0, 'the fixture carries a service charge');
+  const svc = giveLine(chk, null, { serviceOverride: chk.service });
+  assert.equal(svc.bd.amount, chk.service);
+  assert.equal(svc.vat, 0, 'a service only refund gives back no VAT');
+  const byId = Object.fromEntries(chk.items.map((l) => [l.itemId, l]));
+  assert.equal(giveLine(chk, byId['baby-l']).vat, 0.10, 'the 2.10 babyccino at 5% gives back its 0.10');
+  assert.equal(giveLine(chk, byId.water).vat, 0, 'tap water at 0% gives back nothing');
+  const burger = giveLine(chk, byId.burger);
+  assert.equal(burger.vat, vat({ totalTax: burger.bd.amount / 6 }), 'the deal burger gives back the 20% inside the money paid for it');
+});
+
+test('refund of a per line record: takeaway meal deal plus a 0% cold sandwich gives back no VAT on the sandwich', () => {
+  const chk = byLineCheck({ orderType: 'takeaway', menuId: null, lines: [{ itemId: 'burger', qty: 1 }, { itemId: 'fries', qty: 1 }, { itemId: 'coke', qty: 1 }, { itemId: 'sarnie', qty: 1 }] });
+  assert.equal(chk.taxBreakdown.byLine, true);
+  const byId = Object.fromEntries(chk.items.map((l) => [l.itemId, l]));
+  assert.equal(giveLine(chk, byId.sarnie).vat, 0, 'the zero rated sandwich carried no VAT');
+  const burger = giveLine(chk, byId.burger);
+  assert.equal(burger.bd.amount, 7.2);
+  assert.equal(burger.vat, 1.2, 'the VAT inside 7.20 at 20%');
+});
+
+test('refund fallback (no usable line record) leaves the service charge out of both sides', () => {
+  const chk = { id: 'chk-old', orderType: 'dine-in', items: [{ uid: 'a', price: 10, qty: 1 }, { uid: 'b', price: 10, qty: 1 }],
+    subtotal: 20, service: 2.5, tip: 0, total: 22.5, taxAmount: 3.33, taxBreakdown: null, refunds: [] };
+  assert.equal(giveLine(chk, null, { serviceOverride: 2.5 }).vat, 0, 'a service only refund gives back no VAT');
+  const one = giveLine(chk, chk.items[0]);
+  assert.equal(one.bd.amount, 10);
+  assert.equal(one.vat, 1.67, 'half the goods gives back half the VAT, none spread on the service');
+});

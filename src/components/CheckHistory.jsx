@@ -7,7 +7,8 @@ import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
 import { recordCheckBasis } from '../lib/taxBasis';
 import { bookedTaxRecord } from '../lib/taxShare';
 import { shortOrderRef } from '../lib/db';
-import { refundBreakdown, legRefundedMinor, toMinor } from '../lib/payments/refundMath';
+import { refundBreakdown, legRefundedMinor, toMinor, defaultLegPicks } from '../lib/payments/refundMath';
+import { giftPartRefundPlan } from '../lib/giftCommit';
 import { useRefundCardLegs } from '../lib/payments/useRefundCardLegs';
 import { PROCESSOR_NAME, processorLabel, refundProcessorName } from '../lib/payments/refundProcessorLabel';
 
@@ -123,18 +124,18 @@ function RefundModal({check, onConfirm, onCancel}){
   useEffect(()=>{ if(isSplitCard)setStep(s=>s==='card_terminal'?'legs':s); },[isSplitCard]);
   // Default allocation: fill the legs from the front, exactly as the store would
   // if the operator never opens the picker.
-  const defaultPicks=useMemo(()=>{
-    let remain=toMinor(refundTotal); const out={};
-    for(const l of legs){
-      if(remain<=0)break;
-      const room=legRoom(l);
-      const take=room==null?remain:Math.min(remain,room);
-      if(take<=0)continue;
-      out[l.id]=take; remain-=take;
-    }
-    return out;
+  // v5.11.81 (round 1 fix): a part refund's gift card share goes back to the gift card
+  // (giftPartRefundPlan, as the store does), so the cards are offered only the rest.
+  const giftShareMinor=useMemo(
+    ()=>isFullRefund?0:giftPartRefundPlan(check,toMinor(refundTotal)).totalMinor,
+    [check,refundTotal,isFullRefund],
+  );
+  const cardShareMinor=Math.max(0,toMinor(refundTotal)-giftShareMinor);
+  const defaultPicks=useMemo(
+    ()=>defaultLegPicks(legs,legDone,cardShareMinor),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[legs,refundTotal,JSON.stringify(legDone)]);
+    [legs,cardShareMinor,JSON.stringify(legDone)],
+  );
   const picks=legPicks||defaultPicks;
   const pickedMinor=legs.reduce((s,l)=>s+(Number(picks[l.id])||0),0);
 
@@ -489,21 +490,26 @@ function RefundModal({check, onConfirm, onCancel}){
               })}
               <div style={{display:'flex',justifyContent:'space-between',fontSize:13,fontWeight:700,padding:'8px 2px',borderTop:'1px solid var(--bdr)',marginTop:4}}>
                 <span style={{color:'var(--t2)'}}>Allocated to cards</span>
-                <span style={{color:pickedMinor===toMinor(refundTotal)?'var(--grn)':'var(--acc)',fontFamily:'DM Mono,monospace'}}>
-                  {money(pickedMinor/100)} of {money(refundTotal)}
+                <span style={{color:pickedMinor===cardShareMinor?'var(--grn)':'var(--acc)',fontFamily:'DM Mono,monospace'}}>
+                  {money(pickedMinor/100)} of {money(cardShareMinor/100)}
                 </span>
               </div>
-              {pickedMinor!==toMinor(refundTotal)&&(
+              {giftShareMinor>0&&(
+                <div style={{fontSize:11,color:'var(--t3)',lineHeight:1.5,marginBottom:6}}>
+                  {money(giftShareMinor/100)} goes back to the gift card.
+                </div>
+              )}
+              {pickedMinor!==cardShareMinor&&(
                 <div style={{fontSize:11,color:'var(--t3)',lineHeight:1.5,marginBottom:10}}>
-                  {pickedMinor<toMinor(refundTotal)
-                    ? `${money((toMinor(refundTotal)-pickedMinor)/100)} is not going back to any card. Only what you allocate here is reversed.`
-                    : 'More is allocated than the refund total — trim a card before continuing.'}
+                  {pickedMinor<cardShareMinor
+                    ? `${money((cardShareMinor-pickedMinor)/100)} is not going back to any card. Only what you allocate here is reversed.`
+                    : 'More is allocated than the card share of this refund. Trim a card before continuing.'}
                 </div>
               )}
               <div style={{display:'flex',gap:8,marginTop:8}}>
                 <button className="btn btn-ghost" style={{flex:1}} onClick={()=>setStep('tender')}>← Back</button>
                 <button className="btn btn-acc" style={{flex:2,height:44}}
-                  disabled={pickedMinor<=0||pickedMinor>toMinor(refundTotal)}
+                  disabled={pickedMinor<=0||pickedMinor>cardShareMinor}
                   onClick={()=>setStep('card_terminal')}>Continue →</button>
               </div>
             </>

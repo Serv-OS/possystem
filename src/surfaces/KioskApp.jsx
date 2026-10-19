@@ -56,7 +56,8 @@ import { fetchCustomerByPhone } from '../lib/customerLookup';
 import { fetchKioskTables, groupKioskTables } from '../lib/kioskTables';
 import { stageGiftCard, commitGiftCard, giftCardCheckRecord } from '../lib/giftCommit';
 import { commitRedemption } from '../lib/commitRedemptions';
-import { promoBasketValue } from '../lib/promoBasis';
+import { promoBasketValue, promoCheckKey } from '../lib/promoBasis';
+import { classicPromoContinue } from '../lib/kioskCheckout';   // v5.11.81 round 1: the old design re-checks a code on Continue
 import { promoBasketLines } from '../../supabase/functions/_shared/promoMath.js';
 import { kioskLoyaltyCreditMinor, kioskRewardTapCheck } from '../lib/kioskLoyaltyReward';
 import { money, stripeCurrency } from '../lib/currency';
@@ -3216,12 +3217,63 @@ function ScreenGiftPromo({ brandColor, total, promoBasket = 0, promoLines = null
           offer_id: pj.offer?.id || null,
           label: pj.discount?.label || pj.offer?.name || 'Promo code',
           amount: pj.discount?.amount || 0,
+          // v5.11.81 (round 1 fix): the basket it was checked on (Continue checks it again on change).
+          checkedOn: promoCheckKey(promoBasket, promoLines),
         });
         setManualGCCode('');
         return true;
       }
     } catch { /* fall through to the caller's error */ }
     return false;
+  };
+
+  // v5.11.81 (round 1 fix, "classic kiosk keeps a free item code after the item is removed"): every
+  // way to the pay screen goes through Continue here, so the staged code is checked again on the
+  // basket as it is NOW (value and lines) before the reader is sent anything. A code that no longer
+  // applies is removed, and a new amount is shown, before the guest continues (classicPromoContinue).
+  const [promoChecking, setPromoChecking] = useState(false);
+  const [promoNotice, setPromoNotice] = useState('');
+  const continueToPay = async () => {
+    if (promoChecking) return;
+    const key = promoCheckKey(promoBasket, promoLines);
+    const first = classicPromoContinue(promoApplied, key);
+    if (first.action === 'go') { onContinue(); return; }
+    setPromoChecking(true);
+    let reply = null;
+    try {
+      const token = await ensureAuthToken().catch(() => null);
+      if (token) {
+        const pv = await fetch(`${OPS_URL}/functions/v1/promo-redeem`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            action: 'validate', code: promoApplied.code, location_id: locationId,
+            customer_id: verifiedLoyalty?.customer?.id || null,
+            basket: { subtotal: promoBasket, ...(Array.isArray(promoLines) ? { lines: promoLines } : {}) },
+          }),
+        });
+        reply = { httpOk: pv.ok, body: await pv.json().catch(() => ({})) };
+      } else {
+        reply = { networkError: true };
+      }
+    } catch {
+      reply = { networkError: true };
+    } finally {
+      setPromoChecking(false);
+    }
+    const next = classicPromoContinue(promoApplied, key, reply);
+    if (next.action === 'drop') {
+      onPromoApply(null);
+      setPromoNotice(`The code ${promoApplied.code} no longer applies to this order, so it has been removed. Check the total, then continue.`);
+      return;
+    }
+    if (next.action === 'update') {
+      onPromoApply(next.promo);
+      setPromoNotice(`The code ${promoApplied.code} is now worth ${money(next.promo.amount || 0)} on this order. Check the total, then continue.`);
+      return;
+    }
+    if (next.promo && next.promo !== promoApplied) onPromoApply(next.promo);
+    onContinue();
   };
 
   // v5.5.281: Apply a gift card by manually entered code (guest checkout)
@@ -3409,9 +3461,12 @@ function ScreenGiftPromo({ brandColor, total, promoBasket = 0, promoLines = null
       {/* Bottom CTA — disabled while a gift card apply is in flight, otherwise the customer
           can advance to the reader before `total` has dropped and be charged the pre-gift amount. */}
       <div style={{ padding: '14px 22px 22px', flexShrink: 0 }}>
-        <button onClick={onContinue} disabled={giftApplying}
-          style={{ ...primaryCta(brandColor), width: '100%', opacity: giftApplying ? 0.5 : 1, cursor: giftApplying ? 'wait' : 'pointer' }}>
-          {giftApplying ? 'Applying code…' : fullyCovered ? 'Continue →' : `Continue to payment · ${money(total)} →`}
+        {promoNotice && (
+          <div role="status" style={{ padding: 10, borderRadius: 10, marginBottom: 10, fontSize: 14, color: '#b45309', background: '#f59e0b15', border: '1px solid #f59e0b55', fontWeight: 600 }}>{promoNotice}</div>
+        )}
+        <button onClick={continueToPay} disabled={giftApplying || promoChecking}
+          style={{ ...primaryCta(brandColor), width: '100%', opacity: (giftApplying || promoChecking) ? 0.5 : 1, cursor: (giftApplying || promoChecking) ? 'wait' : 'pointer' }}>
+          {giftApplying ? 'Applying code…' : promoChecking ? 'Checking code…' : fullyCovered ? 'Continue →' : `Continue to payment · ${money(total)} →`}
         </button>
       </div>
     </div>

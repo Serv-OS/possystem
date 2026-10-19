@@ -21,7 +21,8 @@ import { sendEmailReceipt } from '../../lib/sendReceipt';
 import { getLocationId } from '../../lib/supabase';
 import { loadLocationBranding } from '../../lib/receiptBranding';
 import { money } from '../../lib/currency';
-import { refundBreakdown, legRefundedMinor, toMinor } from '../../lib/payments/refundMath';
+import { refundBreakdown, legRefundedMinor, toMinor, defaultLegPicks } from '../../lib/payments/refundMath';
+import { giftPartRefundPlan } from '../../lib/giftCommit';
 import { useRefundCardLegs } from '../../lib/payments/useRefundCardLegs';
 import { modsText } from '../../lib/reportText';
 import { isSplit, actionLock } from '../../lib/reportSplit.js';
@@ -250,18 +251,14 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
   const { legs, checking: legsChecking, failed: legsFailed, retry: retryLegs } = useRefundCardLegs(refundTarget);
   const legDone = useMemo(() => (refundTarget ? legRefundedMinor(refundTarget) : {}), [refundTarget]);
   const legRoom = (l) => (l.amountMinor == null ? null : Math.max(0, l.amountMinor - (legDone[l.id] || 0)));
-  const defaultPicks = useMemo(() => {
-    let remain = toMinor(refundAmount); const out = {};
-    for (const l of legs) {
-      if (remain <= 0) break;
-      const room = legRoom(l);
-      const take = room == null ? remain : Math.min(remain, room);
-      if (take <= 0) continue;
-      out[l.id] = take; remain -= take;
-    }
-    return out;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [legs, refundAmount, legDone]);
+  // v5.11.81 (round 1 fix): a part refund's gift card share goes back to the gift card
+  // (giftPartRefundPlan, as the store does), so the cards are offered only the rest.
+  const giftShareMinor = useMemo(
+    () => ((refundMode === 'full' || !refundTarget) ? 0 : giftPartRefundPlan(refundTarget, toMinor(refundAmount)).totalMinor),
+    [refundTarget, refundAmount, refundMode],
+  );
+  const cardShareMinor = Math.max(0, toMinor(refundAmount) - giftShareMinor);
+  const defaultPicks = useMemo(() => defaultLegPicks(legs, legDone, cardShareMinor), [legs, legDone, cardShareMinor]);
   const picks = legPicks || defaultPicks;
   const pickedMinor = legs.reduce((s, l) => s + (Number(picks[l.id]) || 0), 0);
 
@@ -817,8 +814,8 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
                 })}
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, fontWeight: 700, marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--bdr, #e5e7eb)' }}>
                   <span>Allocated to cards</span>
-                  <span style={{ color: pickedMinor === toMinor(refundAmount) ? '#16a34a' : '#d97706' }}>
-                    {fmt(pickedMinor / 100)} of {fmt(refundAmount)}
+                  <span style={{ color: pickedMinor === cardShareMinor ? '#16a34a' : '#d97706' }}>
+                    {fmt(pickedMinor / 100)} of {fmt(cardShareMinor / 100)}
                   </span>
                 </div>
               </div>

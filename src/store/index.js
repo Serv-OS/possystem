@@ -77,15 +77,17 @@ import { setTrainingMode as applyTrainingFlag, isTrainingMode } from '../lib/tra
 import { getDeliveryQuote, recordDeliverySurcharge } from '../lib/delivery/quoteService';
 import { dispatchDelivery, sendDeliveryTrackingSMS } from '../lib/delivery/dispatch';
 import { STALE_ORDER_FLOOR_MS } from '../sync/staleness';
-import { giftRecordFrom, giftLegs, reverseGiftCard, giftReversalFailedMessage, giftPartRefundPlan } from '../lib/giftCommit';
+import { giftRecordFrom, giftLegs, reverseGiftCard, giftReversalFailedMessage } from '../lib/giftCommit';
 import { tendersFromPaymentInfo, channelTenders, finishTenders, tender, giftTenders, bookingTenders } from '../lib/accounting/tenders';
 import { writeClosedCheckRow } from '../lib/closedCheckWrite';
 import { scrubDiscount } from '../lib/discountApprover';
 // v5.6.79 (#107/#108) — refund money maths + the per-leg processor router.
 import {
-  refundBreakdown, legRefundedMinor, allocateToLegs,
+  refundBreakdown,
   rollUpLegStatus, retryableLegs, toMinor as toMinorAmt, refundTaxAmount, chargedGoodsOf,
+  refundBillOf,
 } from '../lib/payments/refundMath';
+import { refundMoneySplit } from '../lib/payments/refundSplit';
 import { resolveRefundCardLegs } from '../lib/payments/refundCardLegs';
 import { reverseCardLeg } from '../lib/payments/cardReversal';
 import { commitRedemption, setDeviceClaimHooks, parkEarn, earnReplyRetryable } from '../lib/commitRedemptions';
@@ -748,7 +750,7 @@ import { withoutRecordNotes } from '../lib/orderCustomerNotes';
 // (subtotal, total, tenders) come from one pure helper both close paths share (lib/closeMoney.js).
 import { linesGoods } from '../lib/taxShare.js';
 import { closeMoney } from '../lib/closeMoney.js';
-import { mintCheckId, usableCheckId, walkInCloseId, bookedCheck } from '../lib/walkInCheckId.js';
+import { mintCheckId, usableCheckId, walkInCloseId, bookedCheck, secondCardOnBooked } from '../lib/walkInCheckId.js';
 import { loyaltyEarnItems, earnChannelFor, partRefundLoyaltyBody, channelEarnCustomer } from '../lib/loyaltyEarnItems.js';
 import { promoReleaseOrderIds } from '../../supabase/functions/_shared/promoRelease.js';
 
@@ -7384,7 +7386,23 @@ export const useStore = create((set, get) => ({
     const oneCheckId = walkInCloseId(walkInOrder, paymentInfo);
     const alreadyBooked = bookedCheck(get().closedChecks, oneCheckId);
     if (alreadyBooked) {
-      console.warn('[recordWalkInClosed] this basket is already booked as', oneCheckId, '- not booked again');
+      // v5.11.81 (round 1 fix): a close that carries a DIFFERENT card payment than the booked one
+      // is a second charge with no sale behind it. Say so loudly (it was a console line only).
+      const secondCard = secondCardOnBooked(alreadyBooked, paymentInfo);
+      if (secondCard) {
+        const ref = alreadyBooked.ref || oneCheckId;
+        const msg = `A second card payment was taken for ${ref}, which is already paid. Check the card machine and refund the second payment.`;
+        console.error('[recordWalkInClosed] second card payment on a booked basket', oneCheckId, secondCard);
+        try { get().showToast?.(msg, 'error', 20000); } catch { /* toast is best effort */ }
+        try {
+          logActivity(alreadyBooked.locationId || getActiveLocationSync() || null, {
+            kind: 'ops', severity: 'urgent', title: 'Second card payment on a paid order',
+            body: `${msg} Card reference ${secondCard}.`, refType: 'closed_check', refId: oneCheckId,
+          }).catch(() => {});
+        } catch { /* activity is best effort */ }
+      } else {
+        console.warn('[recordWalkInClosed] this basket is already booked as', oneCheckId, '- not booked again');
+      }
       return alreadyBooked;
     }
     // 28 Sep 2026: a sale sent to a card machine froze its ref into the job (CheckoutModal
@@ -7800,7 +7818,10 @@ export const useStore = create((set, get) => ({
     // v5.11.81: a PART refund gives the gift cards that paid toward the check their share of it
     // (giftCommit.giftPartRefundPlan), and the card legs get the rest. A cash payout hands it all
     // back in cash, so no gift share then. A full refund keeps its own path below.
-    const giftPart = (!isFullRefund && !cashPayout) ? giftPartRefundPlan(chkBefore, toMinorAmt(amount)) : { legs: [], totalMinor: 0 };
+    // v5.11.81 (round 1 fix): the gift and card split is one pure function (payments/refundSplit),
+    // the very code the parity tests run; it also caps the operator's per leg picks at the card share.
+    const split = refundMoneySplit({ check: chkBefore, amount, isFullRefund: !!isFullRefund, cashPayout, legs: legLookup.legs, legRefunds });
+    const giftPart = split.giftPart;
     // The tax that came back with these items, pro-rata on the check's own stored
     // tax. Recorded so VAT reporting CAN net a refund off (today it cannot — a
     // refund entry carried no tax portion at all, which is why `tax_amount` stayed
@@ -7852,7 +7873,10 @@ export const useStore = create((set, get) => ({
         // v5.6.79 — against TOTAL, not subtotal. A tip-inclusive refund could
         // exceed `subtotal` on a partial and prematurely flip the check to
         // 'refunded', which hard-blocks every later refund.
-        const status = totalRefunded >= (Number(chk.total) || 0) - 0.005 ? 'refunded' : 'partial_refund';
+        // v5.11.81 (round 1 fix): against the whole BILL (refundBillOf), not `total`: a kiosk, online
+        // or reader row books `total` as the card part only, and flipped to 'refunded' after the
+        // first line, hiding the refund button with gift card money still to put back.
+        const status = totalRefunded >= refundBillOf(chk) - 0.005 ? 'refunded' : 'partial_refund';
         nextRefunds = allRefunds;
         nextStatus = status;
         return { ...chk, refunds: allRefunds, status };
@@ -8012,19 +8036,14 @@ export const useStore = create((set, get) => ({
     // away with it on Adyen only because the reversal silently did nothing. Now
     // that reversals actually work on all three processors, the gate is load-
     // bearing rather than theoretical.
-    const alreadyByLeg = legRefundedMinor(chkBefore);   // BEFORE this refund's own entry
-    const cardCapMinor = legs.reduce(
-      (s, l) => s + (l.amountMinor == null ? Infinity : Math.max(0, l.amountMinor - (alreadyByLeg[l.id] || 0))),
-      0,
-    );
-    // Only the card's share goes to the card. The rest of a refund (a gift-card
-    // or loyalty-funded portion) is reversed by the paths above, which own it.
+    // Each leg capped at what it took less earlier refunds (BEFORE this refund's own entry). Only the card's share goes to the card. The rest of a refund (a gift-card or
+    // loyalty-funded portion) is reversed by the paths above, which own it.
     // v5.11.81: less the gift cards' share of a part refund (giftPart), which goes back to them.
-    const wantMinor = Math.max(0, toMinorAmt(amount) - giftPart.totalMinor);
-    const cardTargetMinor = Number.isFinite(cardCapMinor) ? Math.min(wantMinor, cardCapMinor) : wantMinor;
-    const { allocations } = cashPayout
-      ? { allocations: [] }
-      : allocateToLegs(legs, cardTargetMinor, legRefunds, alreadyByLeg);
+    // v5.11.81 (round 1 fix, double refund on split card checks): the operator's per leg picks
+    // never add up to more than the card's share, or a part refund sent the gift share back to the
+    // gift card AND to the cards (legs 5.00 + 5.00 plus a 10.00 gift card: 15.00 out for 10.00).
+    // All of it in refundMoneySplit (split, above).
+    const { allocations } = split;
 
     let legOutcomes = [];
     if (allocations.length) {

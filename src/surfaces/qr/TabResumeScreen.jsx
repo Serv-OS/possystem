@@ -25,7 +25,7 @@ import { singleTender } from '../../lib/accounting/tenders';
 import { writeClosedCheckRow } from '../../lib/closedCheckWrite';
 import { requestPaymentProof, settleQrTab } from '../../lib/publicOrderClient';
 import { tabCloseRefusalMessage } from '../../lib/publicOrder';
-import { qrTabCloseFields, qrTabSettleVat, qrTabDealLines } from '../../lib/headlessTax';
+import { qrTabCloseFields, qrTabSettleVat, qrTabDealLines, qrGrossSubtotal } from '../../lib/headlessTax';
 import { attributeOnlineOrder } from '../../lib/customerLookup';
 import { chooseTrackKey, afterPlaced } from '../../lib/publicOrder';
 import { foldLineMods } from '../../lib/channelMoney';
@@ -207,7 +207,8 @@ export default function TabResumeScreen({
             discounts: qrTabDealLines(rounds),   // v5.11.81: the deals the server applied to each round
             // v5.8.9: runningTotal includes each round's tip (customer.tip). Book it as a tip.
             // 27 Sep 2026: and its VAT (it booked null); added-on tax comes out of subtotal.
-            subtotal: vat.subtotal,
+            // v5.11.81 round 1: gross goods (the deals added back), or reports take the deal off twice.
+            subtotal: qrGrossSubtotal(vat.subtotal, qrTabDealLines(rounds)),
             service: vat.service, tip: tabTip, tax_amount: vat.taxAmount,
             ...(vat.taxBreakdown ? { tax_breakdown: vat.taxBreakdown } : {}),
             total: runningTotal,

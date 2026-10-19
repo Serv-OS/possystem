@@ -43,7 +43,7 @@ import { bookingCreditFor, bookingLegsForBill } from '../lib/bookings/bookingCre
 import { placedPromoFor } from '../lib/orderPlacedFrom';   // v5.11.78 round 1: an order's own promo, as a promo credit
 import { promoBasketValue, heldPromo } from '../lib/promoBasis';   // 19 Oct 2026 (v5.11.78): one promo basket on every channel
 import { promoBasketLines } from '../../supabase/functions/_shared/promoMath.js';   // v5.11.81: the basket's lines for a code's own rules
-import { mintCheckId } from '../lib/walkInCheckId';   // v5.11.81: one check id per counter basket
+import { mintCheckId, checkoutKeyLeg, mintKeyNonce, rotateOnRepeatOverride } from '../lib/walkInCheckId';   // v5.11.81: one check id per counter basket, one card job key per checkout
 // (readerDisplay imports removed — cancel now lets the natural cart-change effect refresh the reader after onBack)
 
 // ─── Tip picker ───────────────────────────────────────────────────────────────
@@ -1500,6 +1500,12 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     }
     return checkIdRef.current;
   }, [tableId, orderType]);
+  // v5.11.81 (round 1 fix): this checkout's own card job key leg (walkInCheckId.checkoutKeyLeg).
+  // The basket keeps one closed check id, but each checkout sends under its own key, so the
+  // server's double charge net sees an approved job on the same basket from an earlier checkout.
+  // Minted once per checkout: a retry here keeps the same key and re-attaches.
+  const keyNonceRef = useRef(null);
+  const getKeyNonce = () => { if (!keyNonceRef.current) keyNonceRef.current = mintKeyNonce(); return keyNonceRef.current; };
   // 28 Sep 2026: the ORDER REF, frozen the same way, once per checkout, at the first send to a card
   // machine. It rides in the job's draft, so whichever device books the job books this ref, and
   // out on paymentInfo.orderRef, so this checkout's own close books it too (the kitchen ticket and
@@ -2108,7 +2114,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
       if (!tableId && !isBarTab) useStore.getState().freezeWalkInRef?.(orderRef);
       const checkKey = buildCheckKey({
         locationId, tableId, sessionId: session?.id,
-        leg: tableId ? undefined : checkId,
+        leg: tableId ? undefined : checkoutKeyLeg(checkId, getKeyNonce()),
       });
       const dueMinor = toMinor(grand);
       if (!(dueMinor > 0)) throw new Error('Nothing left for the card to take.');
@@ -2362,7 +2368,19 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   // (the same reversal the card screen's Back uses).
   const openPriorCheck = (ref) => { setRepeatWarn(null); reverseDispatchedGift('Card machine payment not sent (possible repeat)'); useStore.getState().openCheckHistoryFor?.(ref); onClose?.(); };
   const clearRepeatedOrder = () => { setRepeatWarn(null); reverseDispatchedGift('Card machine payment not sent (possible repeat)'); useStore.getState().clearWalkIn?.(); onClose?.(); };
-  const takePaymentAnyway = (jobId) => { repeatOkRef.current = jobId; setRepeatWarn(null); startTerminalJob(); };
+  // v5.11.81 (round 1 fix): when the earlier payment is booked under THIS basket's id, a charge
+  // staff wave through as a different customer books its own row (a fresh basket id), or it would
+  // share the id and never be booked (walkInCheckId.rotateOnRepeatOverride).
+  const takePaymentAnyway = (jobId) => {
+    if (rotateOnRepeatOverride({
+      priorClosedCheckId: repeatWarn?.closed_check_id, checkId: checkIdRef.current,
+      counter: !tableId && !isBarTab, giftDebited: !!paxGiftRef.current,
+    })) {
+      useStore.getState().rotateWalkInCheckId?.();
+      checkIdRef.current = null;
+    }
+    repeatOkRef.current = jobId; setRepeatWarn(null); startTerminalJob();
+  };
 
   const handleCardPress = () => {
     // TRAINING MODE — first, before anything else. A job row would dispatch a

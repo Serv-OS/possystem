@@ -233,6 +233,20 @@ export function qrTabDealLines(rows) {
 }
 
 /**
+ * v5.11.81 (round 1 fix, "QR tab closes book deal lines on a subtotal that is already after the
+ * deal"): the subtotal a QR close books when it books the deal lines. Each round's money is already
+ * after its deal, so the money a close works its subtotal out from (charged less tip, service and
+ * added tax) is NET of the deals. Reports work out net sales as subtotal less discounts
+ * (salesStats, report_day_sums), so the deal came off twice: 2 pizzas at 10.00 with a 5.00 deal,
+ * charged 15.00, reported net 10. The deal total goes back on: gross goods at menu price, as QR pay
+ * now and the till book them (subtotal 20, discount 5, net 15). No deal lines: the same subtotal.
+ */
+export function qrGrossSubtotal(netSubtotal, deals) {
+  const dealTotal = (Array.isArray(deals) ? deals : []).reduce((s, d) => s + Math.max(0, Number(d?.amount) || 0), 0);
+  return +((Number(netSubtotal) || 0) + dealTotal).toFixed(2);
+}
+
+/**
  * 19 Oct 2026 (v5.11.78, channel parity): the QR service charge a tab's rounds took, summed
  * (customer.service_charge per round, the figure QrCheckout charged on that round). Every close
  * of a QR tab (Orders force close, the short close, the phone's fallback write and settle_qr_tab

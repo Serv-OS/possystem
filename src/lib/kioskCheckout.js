@@ -279,6 +279,27 @@ export function kioskPromoResult(code, reply) {
 }
 
 /**
+ * v5.11.81 (round 1 fix, "classic kiosk keeps a free item code after the item is removed"): what the
+ * OLD design's Continue does with a staged code before the pay screen. The code is checked again
+ * whenever the basket (value and lines, promoBasis.promoCheckKey) is not the one it was checked on:
+ *   { action: 'go', promo }      still valid at the same amount (promo carries the new checkedOn)
+ *   { action: 'update', promo }  valid at a NEW amount: stay, so the guest sees the new total
+ *   { action: 'drop' }           no longer valid (free item gone, min spend, ...): stay, code removed
+ *   { action: 'go', promo }      network failure: keep the code (the server checks it at redeem),
+ *                                as the new design does
+ * No check needed (no code, or the same basket) is { action: 'go', promo: staged }.
+ */
+export function classicPromoContinue(staged, key, reply = undefined) {
+  if (!staged || staged.checkedOn === key) return { action: 'go', promo: staged || null };
+  if (reply === undefined) return { action: 'check' };
+  const r = kioskPromoResult(staged.code, reply);
+  if (r.failed) return { action: 'go', promo: staged };
+  if (!r.promo) return { action: 'drop' };
+  const promo = { ...staged, ...r.promo, checkedOn: key };
+  return Math.abs(num(r.promo.amount) - num(staged.amount)) > 1e-9 ? { action: 'update', promo } : { action: 'go', promo };
+}
+
+/**
  * The applied promo chip's label, in the customer's language where it can be.
  * promo-redeem (supabase/functions/_shared/promo.ts computeDiscount) sends the offer's own
  * reward_label, or else an English label it built: "10% off", "£5.00 off", "Free item",

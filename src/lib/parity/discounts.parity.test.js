@@ -352,3 +352,41 @@ test('promo code: an offer for some categories, a free item, free delivery and b
   assert.match(earn, /const codes = promoCodesOnCheck\(check as any\);/);
   assert.match(earn, /pointsEarned \+= promoBonus;/);
 });
+
+// ── v5.11.81 round 1 fix: a QR tab close with a deal reports the same net sales as QR pay now ────────
+// Each round's money is already after its deal. The tab closes booked the deal lines on a subtotal
+// worked out from that money, and reports (salesStats, report_day_sums) take net = subtotal less
+// discounts, so the deal came off twice. 2 pizzas at 10.00, a 5.00 deal, 15.00 charged: net 10 on
+// every tab close, 15 on QR pay now. The deal total now goes back onto the subtotal.
+test('QR tab close with a deal: net sales equal the same sale paid now (every close path)', async () => {
+  const { computeSalesStats } = await import('../salesStats.js');
+  const { qrTabDealLines, qrTabCloseFields, qrGrossSubtotal } = await import('../headlessTax.js');
+  const { shortTabClosedCheck } = await import('../orderPayment.js');
+  const items = [{ id: 'p', name: 'Pizza', price: 10, qty: 2, mods: [] }];
+  const round = { ref: 'QR-1', location_id: 'L', total: 15, items,
+    customer: { tip: 0, service_charge: 0, order_pricing: { goods_minor: 2000, auto_minor: 500, value_minor: 1500,
+      auto_rules: [{ rule_id: 'r1', name: '2 for 15', saving_minor: 500 }] } } };
+  const deals = qrTabDealLines([round]);
+  const net = (c) => computeSalesStats([{ total: 15, taxAmount: 2.5, status: 'paid', service: 0, tip: 0, ...c }]).net;
+  const payNow = net({ subtotal: 20, discounts: [{ value: 5, amount: 5 }] });
+  assert.equal(payNow, 15);
+  // The phone's close (TabResume) and the till's two Orders closes, through the shared rule.
+  const vat = qrTabCloseFields([round], 15, {});
+  assert.equal(net({ subtotal: qrGrossSubtotal(vat.subtotal, deals), discounts: deals }), payNow, 'TabResume close');
+  assert.equal(net({ subtotal: qrGrossSubtotal(15, deals), discounts: deals }), payNow, 'Orders force close');
+  // The till's short close, the real writer.
+  const sc = shortTabClosedCheck({ rows: [round], allItems: items, firstRow: round, payment_intent_id: 'pi_x', processor: 'stripe' },
+    { paidMinor: 1500, dueMinor: 1500 }, { taxFor: () => ({ taxAmount: 2.5, exclusiveTax: 0 }) });
+  assert.equal(sc.subtotal, 20);
+  assert.equal(net({ subtotal: sc.subtotal, discounts: sc.discounts }), payNow, 'short close');
+  // No deal: the subtotal is exactly what it was.
+  assert.equal(qrGrossSubtotal(12.5, []), 12.5);
+  // Wiring: every writer adds the deals back, and so does settle_qr_tab on the server.
+  const hub = readRepo('src/surfaces/OrdersHub.jsx');
+  assert.match(hub, /subtotal: qrGrossSubtotal\(tab\.total - tabTip - tabService - qrTax\.exclusiveTax, qrTabDealLines\(tab\.rows\)\),/);
+  assert.match(hub, /subtotal: qrGrossSubtotal\(\(Number\(o\.total\) \|\| 0\) - qrTip - qrService - qrTax\.exclusiveTax, qrTabDealLines\(\[o\]\)\),/);
+  assert.match(readRepo('src/surfaces/qr/TabResumeScreen.jsx'), /subtotal: qrGrossSubtotal\(vat\.subtotal, qrTabDealLines\(rounds\)\),/);
+  const sql = readRepo('supabase/migrations/20261020a_OPS_channel_parity_2.sql');
+  assert.match(sql, /'subtotal', greatest\(0, v_booked - v_tip - v_added - v_service\) \+ v_deal_total,/);
+  assert.match(sql, /select coalesce\(sum\(public\._fence_num_or_null\(d ->> 'amount'\)\), 0\)\n\s+into v_deal_total\n\s+from jsonb_array_elements\(v_deals\) d;/);
+});

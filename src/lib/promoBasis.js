@@ -60,3 +60,21 @@ export function promoRedeemBasket(promo, record) {
   if (held != null && held !== '' && Number.isFinite(Number(held))) return promoBasketValue({ discountedSub: held });
   return promoBasketValue({ subtotal: record?.subtotal });
 }
+
+/**
+ * v5.11.81 (round 1 fix, "a free item code kept after the item is removed"): the basket a code was
+ * checked on, as one key: the basket value in pence plus every line (item, quantity, price), sorted.
+ * A code's amount depends on its lines (category rules, a free item), so a swap at the same price
+ * (the free latte for a flat white) is a different basket and the code is checked again. Was the
+ * basket value alone on the new kiosk, and never re-checked on the old one.
+ * @param {number} basket  the promo basket value (promoBasketValue)
+ * @param {Array}  lines   promoBasketLines(...) ({ itemId, price, qty })
+ */
+export function promoCheckKey(basket, lines) {
+  const sig = (Array.isArray(lines) ? lines : [])
+    .filter((l) => l && typeof l === 'object')
+    .map((l) => `${l.itemId ?? ''}:${Math.max(1, Math.round(num(l.qty) || 1))}:${Math.round(num(l.price) * 100)}`)
+    .sort()
+    .join(',');
+  return `${Math.round(num(basket) * 100)}|${sig}`;
+}

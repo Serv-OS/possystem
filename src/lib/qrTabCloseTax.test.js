@@ -90,9 +90,9 @@ test('the VAT reaches settle_qr_tab in p_check', async () => {
 test('wiring: the phone close books the VAT on its own write and hands it to the server', () => {
   const src = fs.readFileSync(new URL('../surfaces/qr/TabResumeScreen.jsx', import.meta.url), 'utf8');
   assert.doesNotMatch(src, /tax_amount: null/);
-  assert.match(src, /import \{ qrTabCloseFields, qrTabSettleVat, qrTabDealLines \} from '\.\.\/\.\.\/lib\/headlessTax';/);   // v5.11.81: + the deal lines
+  assert.match(src, /import \{ qrTabCloseFields, qrTabSettleVat, qrTabDealLines, qrGrossSubtotal \} from '\.\.\/\.\.\/lib\/headlessTax';/);   // v5.11.81: + the deal lines (round 1: + the gross subtotal)
   assert.match(src, /const vat = qrTabCloseFields\(rounds, runningTotal, \{ menuItems, taxRates, taxCtx, hasTaxConfig: taxCtxHasConfig\(taxCtx\) \}\);/);
-  assert.match(src, /subtotal: vat\.subtotal,/);
+  assert.match(src, /subtotal: qrGrossSubtotal\(vat\.subtotal, qrTabDealLines\(rounds\)\),/);   // v5.11.81 round 1: the deals added back
   assert.match(src, /tax_amount: vat\.taxAmount,/);
   assert.match(src, /\.\.\.\(vat\.taxBreakdown \? \{ tax_breakdown: vat\.taxBreakdown \} : \{\}\),/);
   assert.match(src, /check: \{ table_label: tableLabelForCheck, \.\.\.qrTabSettleVat\(vat\) \}/);

@@ -297,3 +297,59 @@ test('online cards: the price shown first is the price charged (never the dine i
   assert.match(online, /const priceType = storefrontPriceType\(orderType, \{ isQr, orderTypes: allOrderTypes \}\);/);
   assert.match(online, /const priceFor = \(it\) => resolveItemPrice\(it, priceType, effectiveMenuId\);/);
 });
+
+// ── v5.11.81 round 1 fix: the handheld opens an open table as the desktop till does (no reprice) ────
+// MPOS ran setActiveTableId then setOrderType('dine-in') on a table tap; setOrderType reprices the
+// active table at the current menu, so a Latte added on Lunch at 2.50 became 3.20 once Lunch ended
+// (and 3.20 dropped to 2.50 the other way). The desktop's openTableInPOS only sets dine in. The
+// test runs the store's real setOrderType and openTableInPOS bodies, then checks the handheld's two
+// taps now set state the desktop's way.
+test('MPOS: tapping an open table keeps each line at the price it was added at, as the desktop till does', async () => {
+  const { qrCloseDecision } = await import('../qrTabStranded.js');
+  const store = readRepo('src/store/index.js');
+  const body = (start, end) => between(store, start, end).trim().replace(/^[A-Za-z]+:\s*/, '').replace(/,\s*$/, '');
+  const soBody = body('setOrderType: t => set(s => {', '  customer: null,');
+  const otBody = body('openTableInPOS: (tableId) => {', '  // Save a table session without sending');
+  assert.ok(soBody && otBody, 'found both store actions');
+  const make = (init) => {
+    let state = { ...init };
+    const set = (fn) => { const p = typeof fn === 'function' ? fn(state) : fn; state = { ...state, ...p }; };
+    const get = () => state;
+    state.setOrderType = new Function('set', 'get', `return (${soBody});`)(set, get);
+    state.openTableInPOS = new Function('set', 'get', 'qrCloseDecision', `return (${otBody});`)(set, get, qrCloseDecision);
+    state.getItemPrice = (item, ot, menuId = null) => resolveItemPrice(item, ot, menuId);
+    return { get, set };
+  };
+  const latte = storeRow('latte');
+  const addedAt = resolveItemPrice(latte, 'dine-in', 'lunch');
+  const now = resolveItemPrice(latte, 'dine-in', null);
+  assert.notEqual(addedAt, now, 'the fixture has a Lunch tier');
+  const state = () => ({
+    menuItems: STORE_MENU, SEED_MENU_ITEMS: [], orderType: 'takeaway', activeTableId: null, activeMenuId: null,
+    orderQueue: [], walkInOrder: null, surface: 'tables', showToast: () => {},
+    tables: [{ id: 'T5', session: { items: [{ uid: 'l1', itemId: 'latte', name: 'Latte', price: addedAt, qty: 1, mods: [] }] } }],
+  });
+  const desk = make(state());
+  desk.get().openTableInPOS('T5');
+  assert.equal(desk.get().tables[0].session.items[0].price, addedAt, 'the desktop keeps the line price');
+  // The handheld's taps now set the very state the desktop sets.
+  const mpos = make(state());
+  mpos.set({ walkInOrder: null, activeTableId: 'T5', orderType: 'dine-in', deliveryQuote: null });
+  assert.equal(mpos.get().tables[0].session.items[0].price, addedAt, 'the handheld keeps the line price too');
+  assert.equal(mpos.get().orderType, 'dine-in');
+  // What the old tap did: setOrderType reprices the table (kept for a real order type switch).
+  const old = make(state());
+  old.set({ activeTableId: 'T5' });
+  old.get().setOrderType('dine-in');
+  assert.equal(old.get().tables[0].session.items[0].price, now, 'setOrderType still reprices a real switch');
+  // Wiring: neither handheld table tap calls setOrderType any more.
+  const m = readRepo('src/surfaces/MPOSSurface.jsx');
+  const pick = between(m, 'const onPickTable = (table) => {', 'const onSeated');
+  assert.match(pick, /useStore\.setState\(\{ walkInOrder: null, activeTableId: table\.id, orderType: 'dine-in', deliveryQuote: null \}\);/);
+  assert.doesNotMatch(pick, /setOrderType\(/);
+  const list = between(m, "if (o._kind === 'table') {", "} else if (o._kind === 'closed')");
+  assert.match(list, /useStore\.setState\(\{ activeTableId: tableId, orderType: 'dine-in', deliveryQuote: null \}\);/);
+  assert.doesNotMatch(list, /setOrderType\(/);
+  // A new dine in order never reprices the table last opened on the handheld.
+  assert.match(between(m, 'const onPickType = (type) => {', 'setFlow('), /if \(type === 'dine-in'\) setActiveTableId\(null\);\n\s*useStore\.getState\(\)\.setOrderType\(type\);/);
+});

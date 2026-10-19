@@ -153,14 +153,101 @@ test('part refund: the gift card that paid part of the bill gets its share back,
   assert.equal(giftPartRefundPlan({ ...check, giftCard: null }, 500).totalMinor, 0);
   // The till: the card leg is asked for the rest only; a cash payout asks the gift card for nothing.
   const store = readRepo('src/store/index.js');
-  assert.match(store, /const giftPart = \(!isFullRefund && !cashPayout\) \? giftPartRefundPlan\(chkBefore, toMinorAmt\(amount\)\) : \{ legs: \[\], totalMinor: 0 \};/);
-  assert.match(store, /const wantMinor = Math\.max\(0, toMinorAmt\(amount\) - giftPart\.totalMinor\);/);
+  // v5.11.81 round 1: the split is one pure function the store calls (payments/refundSplit.js).
+  assert.match(store, /const split = refundMoneySplit\(\{ check: chkBefore, amount, isFullRefund: !!isFullRefund, cashPayout, legs: legLookup\.legs, legRefunds \}\);/);
+  const split = readRepo('src/lib/payments/refundSplit.js');
+  assert.match(split, /const giftPart = \(!isFullRefund && !cashPayout\) \? giftPartRefundPlan\(check, amountMinor\) : \{ legs: \[\], totalMinor: 0 \};/);
+  assert.match(split, /const wantMinor = Math\.max\(0, amountMinor - giftPart\.totalMinor\);/);
   assert.match(store, /\.\.\.\(_partMinor != null \? \{ amountMinor: _partMinor, refundId \} : \{\}\),/);
   // The function: its own claim per part refund, capped at the spend less what parts put back.
   const fn = readRepo('supabase/functions/gift-reverse-redeem/index.ts');
   assert.match(fn, /const refundKey = part \? `\$\{partPrefix\}\$\{refundId\}` : fullKey;/);
   assert.match(fn, /const restoreAmount = part \? Math\.min\(partMinor as number, Math\.max\(0, spent - putBack\)\) : Math\.max\(0, spent - putBack\);/);
   assert.match(fn, /if \(total === null \|\| total > spent\) \{/, 'a race can never put back more than was spent');
+});
+
+// ── v5.11.81 round 1 fix: kiosk and online part refunds reach the whole bill, as the till's ─────────
+// The kiosk, the online page and a reader close book `total` as the CARD part; the till books the
+// whole bill. Refunding line by line must give the same money back on both rows, the gift card its
+// share, the card never more than it took. Runs the store's own split (payments/refundSplit.js).
+async function refundLineByLine(check, { legRefundsFor = null } = {}) {
+  const { refundBreakdown, cardLegsOf, refundBillOf } = await import('../payments/refundMath.js');
+  const { refundMoneySplit } = await import('../payments/refundSplit.js');
+  let c = check;
+  const steps = [];
+  for (const it of check.items) {
+    const items = [{ ...it, refundQty: 1 }];
+    const bd = refundBreakdown(c, { items });
+    if (!(bd.amount > 0)) { steps.push({ amount: 0, gift: 0, card: 0, status: c.status }); continue; }
+    const legs = cardLegsOf(c);
+    const split = refundMoneySplit({ check: c, amount: bd.amount, legs, legRefunds: legRefundsFor ? legRefundsFor(legs, bd) : null });
+    const entry = {
+      id: `r${steps.length + 1}`, amount: bd.amount, tipAmount: bd.tip, serviceAmount: bd.service,
+      ...(split.giftPart.totalMinor > 0 ? { giftMinor: split.giftPart.totalMinor, giftLegs: split.giftPart.legs.map((x) => ({ card_id: x.leg.card_id, key: x.leg.idempotency_key, minor: x.amountMinor })) } : {}),
+      legs: split.allocations.map((a) => ({ id: a.id, amountMinor: a.refundMinor, status: 'succeeded' })),
+    };
+    const refunds = [...(c.refunds || []), entry];
+    const done = refunds.reduce((s, r) => s + r.amount, 0);
+    c = { ...c, refunds, status: done >= refundBillOf(c) - 0.005 ? 'refunded' : 'partial_refund' };
+    steps.push({ amount: bd.amount, gift: split.giftPart.totalMinor / 100, card: split.allocations.reduce((s, a) => s + a.refundMinor, 0) / 100, status: c.status });
+  }
+  return { steps, gift: steps.reduce((s, x) => s + x.gift, 0), card: steps.reduce((s, x) => s + x.card, 0) };
+}
+const burgerRow = (total) => ({
+  id: 'chk-bill', ref: 'R1', subtotal: 15, tip: 0, service: 0, total,
+  items: [{ uid: 'a', name: 'Burger', price: 7.5, qty: 1 }, { uid: 'b', name: 'Burger', price: 7.5, qty: 1 }], discounts: [],
+  tenders: [{ method: 'gift_card', amount: 10, tip: 0 }, { method: 'card', amount: 5, tip: 0, psp_ref: 'psp1', processor: 'adyen' }],
+  processor: 'adyen', stripePaymentIntentId: 'psp1',
+  giftCard: { card_id: 'gc1', idempotency_key: 'k1', applied: 1000 },
+  refunds: [], status: 'paid',
+});
+
+test('part refunds: a kiosk or online row (total = card part) gives back the same as the till row, line by line', async () => {
+  const till = await refundLineByLine(burgerRow(15));
+  const kiosk = await refundLineByLine(burgerRow(5));
+  assert.deepEqual(kiosk.steps.map((x) => x.amount), till.steps.map((x) => x.amount), 'each line gives back the same money');
+  assert.equal(Math.round((kiosk.gift + kiosk.card) * 100) / 100, 15, 'the whole 15.00 comes back');
+  assert.equal(Math.round(kiosk.gift * 100) / 100, 10, 'the gift card gets all its 10.00 back');
+  assert.ok(kiosk.card <= 5, 'the card never gives back more than the 5.00 it took');
+  assert.equal(kiosk.steps[0].status, 'partial_refund', 'the first line does not close the sale');
+  assert.equal(kiosk.steps[1].status, 'refunded');
+});
+
+test('part refunds: a kiosk order paid all by gift card (total 0) can be refunded', async () => {
+  const { refundBreakdown } = await import('../payments/refundMath.js');
+  const row = { ...burgerRow(0), tenders: undefined, stripePaymentIntentId: null, processor: null, giftCard: { card_id: 'gc1', idempotency_key: 'k1', applied: 1500 } };
+  assert.equal(refundBreakdown(row, { isFullRefund: true }).amount, 15);
+  const one = await refundLineByLine(row);
+  assert.equal(Math.round(one.gift * 100) / 100, 15, 'every penny goes back to the gift card');
+  assert.equal(one.card, 0);
+});
+
+test('part refunds: per leg picks on a split card check never send the gift share to the cards as well', async () => {
+  const { refundBreakdown, cardLegsOf } = await import('../payments/refundMath.js');
+  const { refundMoneySplit } = await import('../payments/refundSplit.js');
+  // Legs 5.00 and 5.00 on two cards plus a 10.00 gift card, a 20.00 bill; a 10.00 part refund.
+  const row = {
+    id: 'chk-split', total: 20, tip: 0, service: 0, subtotal: 20, discounts: [], refunds: [], status: 'paid', processor: 'adyen',
+    items: [{ uid: 'a', price: 10, qty: 1 }, { uid: 'b', price: 10, qty: 1 }],
+    paymentIntents: [{ id: 'p1', amountMinor: 500 }, { id: 'p2', amountMinor: 500 }],
+    tenders: [{ method: 'gift_card', amount: 10, tip: 0 }, { method: 'card', amount: 5, psp_ref: 'p1' }, { method: 'card', amount: 5, psp_ref: 'p2' }],
+    giftCard: { card_id: 'gc1', idempotency_key: 'k1', applied: 1000 },
+  };
+  const bd = refundBreakdown(row, { items: [{ ...row.items[0], refundQty: 1 }] });
+  assert.equal(bd.amount, 10);
+  const legs = cardLegsOf(row);
+  // The operator (or the old default) asks the cards for the whole 10.00.
+  const split = refundMoneySplit({ check: row, amount: bd.amount, legs, legRefunds: { p1: 500, p2: 500 } });
+  const out = split.giftPart.totalMinor + split.allocations.reduce((s, a) => s + a.refundMinor, 0);
+  assert.equal(split.giftPart.totalMinor, 500);
+  assert.equal(out, 1000, 'exactly 10.00 goes out for a 10.00 refund (was 15.00)');
+  // The refund screens default the picks to the card share only.
+  const ch = readRepo('src/components/CheckHistory.jsx');
+  assert.match(ch, /const cardShareMinor=Math\.max\(0,toMinor\(refundTotal\)-giftShareMinor\);/);
+  const bo = readRepo('src/backoffice/sections/Transactions.jsx');
+  assert.match(bo, /const cardShareMinor = Math\.max\(0, toMinor\(refundAmount\) - giftShareMinor\);/);
+  const store = readRepo('src/store/index.js');
+  assert.match(store, /const status = totalRefunded >= refundBillOf\(chk\) - 0\.005 \? 'refunded' : 'partial_refund';/);
 });
 
 // ── A QR tab earns like a QR pay now order (v5.11.81, partly fixed major) ─────────────────────────

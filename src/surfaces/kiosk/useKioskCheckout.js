@@ -28,6 +28,7 @@ import {
   kioskPayBlock, kioskTotalsRows, kioskSubmitArgs, kioskTextAllowed, kioskPromoBasket,
 } from '../../lib/kioskCheckout';
 import { promoBasketLines } from '../../../supabase/functions/_shared/promoMath.js';
+import { promoCheckKey } from '../../lib/promoBasis.js';
 
 const PROMO_RECHECK_MS = 500;
 const MAX_NOTICES = 3;
@@ -42,8 +43,12 @@ function noticesReducer(list, action) {
   return list;
 }
 
-const promoKeyFor = (promo, subtotal, customerId) => (
-  promo ? `${promo.code}|${Math.round((Number(subtotal) || 0) * 100)}|${customerId || ''}` : null
+// v5.11.81 (round 1 fix): the key holds the basket's LINES too (promoBasis.promoCheckKey), so a
+// swap at the same price (the free latte for a flat white) checks the code again. The key was the
+// basket value alone: the stale free item discount was charged and the redeem then refused it,
+// leaving a one time code usable again.
+const promoKeyFor = (promo, subtotal, customerId, lines = null) => (
+  promo ? `${promo.code}|${promoCheckKey(subtotal, lines)}|${customerId || ''}` : null
 );
 
 export default function useKioskCheckout({ engine, api, screen, tipping, alcoholIds, currency }) {
@@ -167,7 +172,7 @@ export default function useKioskCheckout({ engine, api, screen, tipping, alcohol
   // the figure submitOrder records it on. It was the goods before the deals.
   const promoBasket = kioskPromoBasket(discountedSubtotal);
   const promoLines = useMemo(() => promoBasketLines(cart), [cart]);
-  const promoKey = promoKeyFor(promoApplied, promoBasket, customerId);
+  const promoKey = promoKeyFor(promoApplied, promoBasket, customerId, promoLines);
   const [promoCheckedKey, setPromoCheckedKey] = useState(null);
   const checking = !!promoApplied && promoKey !== promoCheckedKey;
   useEffect(() => {
@@ -224,7 +229,7 @@ export default function useKioskCheckout({ engine, api, screen, tipping, alcohol
       if (result.gift) setGiftCardPayment(result.gift);
       if (result.promo) {
         setPromoApplied(result.promo);
-        setPromoCheckedKey(promoKeyFor(result.promo, promoBasket, customerId));
+        setPromoCheckedKey(promoKeyFor(result.promo, promoBasket, customerId, promoLines));
       }
       return result;
     } finally {
