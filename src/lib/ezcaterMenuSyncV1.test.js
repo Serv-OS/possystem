@@ -921,8 +921,20 @@ test('RULE B end to end: our item renamed (on the menu, and off it)', async () =
   const lines = [line('Caesar Salad', 'c-lg', 'Large')];
   const ours = [{ id: 'm-cl', name: 'Caesar Salad Large' }];
   const rename = (id, name) => (sb) => { sb.store.menu_items.find((i) => i.id === id).name = name; };
-  const gone = await pipeline({ menus: [[menu], [menu]], lines, ours, after: [rename('m-cl', 'Large Caesar')] });
-  assert.equal(gone.row(K('Caesar Salad', 'Large')).menu_item_id, null, 'our item no longer has that exact name');
+  const archive = (id) => (sb) => { sb.store.menu_items.find((i) => i.id === id).archived = true; };
+  // v5.11.81 (channel parity round 2, "a rename keeps its links"): our item renamed (a Menu
+  // Manager edit, a multi site publish) keeps the exact link while it is still on our menu and no
+  // other item of ours has that exact name. It was cleared, so the next order printed by name with
+  // no item (no routing, 86 or stock).
+  const renamed = await pipeline({ menus: [[menu], [menu]], lines, ours, after: [rename('m-cl', 'Large Caesar')] });
+  assert.equal(renamed.row(K('Caesar Salad', 'Large')).menu_item_id, 'm-cl', 'kept on the renamed item');
+  assert.equal(renamed.plans[1].counts.cleared, 0);
+  assert.equal(renamed.plans[1].counts.renamedKept, 1);
+  assert.equal(renamed.out[0].itemId, 'm-cl');
+  assert.equal(renamed.queued[0].itemId, 'm-cl');
+  // Our item taken off the menu (archived): cleared, as before.
+  const gone = await pipeline({ menus: [[menu], [menu]], lines, ours, after: [archive('m-cl')] });
+  assert.equal(gone.row(K('Caesar Salad', 'Large')).menu_item_id, null, 'our item is no longer on the menu');
   assert.equal(gone.plans[1].counts.cleared, 1);
   assert.equal(gone.out[0].itemId, null);
   assert.equal(gone.queued[0].itemId, null);
@@ -935,7 +947,10 @@ test('RULE B end to end: our item renamed (on the menu, and off it)', async () =
   const kept = await pipeline({ menus: [[menu], [other]], lines, ours });
   assert.equal(kept.row(K('Caesar Salad', 'Large')).menu_item_id, 'm-cl');
   assert.equal(kept.out[0].itemId, 'm-cl', 'a change to an order placed before still routes');
-  const offGone = await pipeline({ menus: [[menu], [other]], lines, ours, after: [rename('m-cl', 'Large Caesar')] });
+  const offRenamed = await pipeline({ menus: [[menu], [other]], lines, ours, after: [rename('m-cl', 'Large Caesar')] });
+  assert.equal(offRenamed.row(K('Caesar Salad', 'Large')).menu_item_id, 'm-cl', 'off the menu and renamed: kept too');
+  assert.equal(offRenamed.out[0].itemId, 'm-cl');
+  const offGone = await pipeline({ menus: [[menu], [other]], lines, ours, after: [(sb) => { rename('m-cl', 'Large Caesar')(sb); archive('m-cl')(sb); }] });
   assert.equal(offGone.row(K('Caesar Salad', 'Large')).menu_item_id, null);
   assert.equal(offGone.out[0].itemId, null);
 });
@@ -1046,10 +1061,11 @@ test('RULE B: our menu read only in part links nothing new and decides nothing a
 });
 
 test('RULE B: a failed decision write keeps that row exactly as it was: its old facts stay with its old decision', async () => {
-  // Our Caesar Salad Large was renamed, so the sync clears its exact link; that write fails.
+  // Our Caesar Salad Large was renamed and another item of ours now has that exact name, so the
+  // sync moves its exact link; that write fails.
   const sb = fakeSb({ ...TABLES([{ location_id: LOC, kind: 'item', ez_key: K('Caesar Salad', 'Large'), ez_name: 'Caesar Salad', ez_only_size: 'Large',
     ez_ids: ['c-lg'], synced_at: NOW, menu_item_id: 'm-cl', option_id: null, source: 'auto', matched_by: 'exact', seen_count: 0 }]),
-  menu_items: [{ id: 'm-cl', name: 'Large Caesar', location_id: LOC }] }, {
+  menu_items: [{ id: 'm-cl', name: 'Large Caesar', location_id: LOC }, { id: 'm-cl2', name: 'Caesar Salad Large', location_id: LOC }] }, {
     failUpdate: (name, patch) => (name === 'ezcater_item_links' && 'matched_by' in patch ? { code: '57014', message: 'statement timeout' } : null),
   });
   const input = await readMatchInputs(sb, LOC);
@@ -1125,13 +1141,13 @@ test('sync writes every row once; syncing twice duplicates nothing and keeps sta
 
 test('the sync message says what changed, in plain words', async () => {
   const sb = fakeSb({ ...TABLES([
-    // An exact link our renamed item no longer matches: taken off.
+    // An exact link to an item of ours that is no longer on the menu: taken off.
     { location_id: LOC, kind: 'item', ez_key: K('Caesar Salad', 'Regular'), ez_name: 'Caesar Salad', ez_only_size: 'Regular', ez_ids: ['c-reg'], synced_at: NOW,
       menu_item_id: 'm-cr', option_id: null, source: 'auto', matched_by: 'exact', seen_count: 0 },
     // Staff matches saved before the sync: one made for exactly the name ezCater sells, one not.
     { location_id: LOC, kind: 'item', ez_key: 'turkey sandwich', ez_name: 'Turkey Sandwich', menu_item_id: 'm-t', option_id: null, source: 'manual', matched_by: 'u', seen_count: 0 },
     { location_id: LOC, kind: 'item', ez_key: 'brownie', ez_name: 'Brownie', menu_item_id: 'm-b', option_id: null, source: 'manual', matched_by: 'u', seen_count: 0 },
-  ]), menu_items: [{ id: 'm-cr', name: 'Old Caesar', location_id: LOC }, { id: 'm-t', name: 'Turkey Sandwich', location_id: LOC }, { id: 'm-b', name: 'Brownie', location_id: LOC }] });
+  ]), menu_items: [{ id: 'm-cr', name: 'Old Caesar', location_id: LOC, archived: true }, { id: 'm-t', name: 'Turkey Sandwich', location_id: LOC }, { id: 'm-b', name: 'Brownie', location_id: LOC }] });
   const menu = { id: 'menu-9', name: 'M', startDate: null, endDate: null, categories: [{ id: 'c', name: 'C', items: [
     item('i-c', 'Caesar Salad', [size('c-reg', 'Regular')]), item('i-t', 'Turkey Sandwich', [size('t-box', 'Box')]),
     item('i-b', 'Brownie', [size('b-1', '')]), item('i-x', 'Cookies', [size('x1', 'Dozen'), size('x2', 'dozen')]),

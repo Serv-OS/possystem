@@ -125,6 +125,41 @@
 //       second reset and every other line are unchanged.
 //     Neither pay screen line changed its ScreenPay call; ScreenPay now mounts inside KioskVatGate
 //       (surfaces/kiosk/KioskVatGate.jsx) under KioskPayLinkGate, which only decides WHETHER it mounts.
+//   v5.11.81 (19 Oct 2026, kiosk promo basket. Peter's sign off: "kiosk yes, fix it all please, we
+//   need to be bullet proof". CARD PATH: one kiosk card payment with a promo code on a real Adyen
+//   reader (or the test card) is OWED before this reaches a kiosk; the step by step test is in the
+//   release note). ScreenPay logic, the credits, the totals and updateCartQty are byte for byte the
+//   8 Oct entry. Only the promo FIGURE moves, never how a card is charged:
+//     submitOrder 20475 -> 20589 chars: the promo redeem records basketValue
+//       promoBasketValue({ discountedSub: discountedSubtotal }) (lib/promoBasis.js, the till's and
+//       the server's one promo basket: goods after the automatic deals, before tip and tax), where it
+//       recorded `subtotal` (goods BEFORE the deals), and sends basketLines: promoBasketLines(cart)
+//       (_shared/promoMath.js: the offer's category rules and a free item are worked out on the
+//       same lines the code was checked with); the useCallback dependency list gains
+//       discountedSubtotal after subtotal. The gift commit order, the idempotency key, the reward
+//       commit, both stock paths, the order_queue insert, the 30 second reset and every amount the
+//       reader is sent are unchanged.
+//     Outside the fingerprinted blocks: the old design's code box (ScreenGiftPromo) checks the code
+//       on the same basket and lines (was the grand total with the tip in it), and the new design
+//       (useKioskCheckout) checks and re-checks it on kioskPromoBasket (was goods before the deals).
+//       promoCredit is still min(the code's amount, what is left to pay), so a basket with no code
+//       charges exactly what it did.
+//     Called from inside the fingerprinted blocks, changed in v5.11.81 without moving a fingerprint
+//       (fuzzed: the reader amount, exclusiveTax included, is identical on 6000 UK and US baskets;
+//       0 live sizes affected): totals' kioskChargedTax books UK VAT line by line when a deal names
+//       its lines (lib/kioskVat.js, taxShare.inclusiveTaxOnChargedLines; VAT only, never the money)
+//       and kioskLineTaxRefs gives a size its own tax profile when it has one (lib/kioskLine.js);
+//       submitOrder's cart.map(kioskOrderItem) adds each line's uid (the id its deals name);
+//       addToCart (outside the blocks) keeps a line's price (lib/channelMenu.js kioskLineSlot) and
+//       refuses a row with no price (menuPricing.refusesNoPriceLine).
+//     Round 1 fixes (19 Oct 2026), all outside the fingerprinted blocks, none moves the reader
+//       amount for a basket whose code still applies: the old design's Continue checks a staged code
+//       again whenever the basket's value or LINES changed since it was checked
+//       (lib/kioskCheckout.js classicPromoContinue, lib/promoBasis.js promoCheckKey) and drops a
+//       code that no longer applies (a free item removed) before the pay screen; the new design's
+//       re-check key holds the lines too (useKioskCheckout promoKeyFor), so a swap at the same price
+//       checks the code again; the old design's order type screen reprices the kept basket on an eat
+//       in / take away switch (lib/kioskBasket.js repriceKioskCart, as KioskFlowV2 does).
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -138,8 +173,8 @@ const BLOCKS = [
     name: 'submitOrder',
     start: 'const submitOrder = useCallback(async (nameOverride, phoneOverride, cardPayment) => {',
     end: 'tableNumber, resetSession]);',
-    length: 20475,
-    sha256: '45f18fa4833a4d5191c3a710e34196fbe6ebe8ce3d3df8307fafd0a57ee3362f',
+    length: 20589,
+    sha256: '3319750f33a0eea56b761790ae6261b97ac4c59043868be506410903acb8c8ef',
   },
   {
     name: 'ScreenPay logic',

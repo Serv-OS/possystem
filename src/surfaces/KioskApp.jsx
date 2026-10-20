@@ -31,10 +31,14 @@ import { creditDiscounts } from '../lib/taxBasis';
 import { assembleTaxProfiles } from '../lib/rowMapping';
 import { buildScheduleCtx } from '../lib/locationTime';
 import { resolveActiveMenu } from '../lib/menus/resolveActiveMenu';
-import { resolveItemPrice, variantFromPrice } from '../lib/menuPricing';
+import { resolveItemPrice, variantFromPrice, refusesNoPriceLine } from '../lib/menuPricing';
 import { depleteForSaleServer } from '../lib/stock/deplete';
 import KioskProductModal from './KioskProductModal';
 import KioskCategoryTile from './kiosk/KioskCategoryTile';
+import { kioskLineSlot } from '../lib/channelMenu';
+// v5.11.81 (channel parity round 2): the venue's menu words in the customer's language on the
+// classic kiosk too (the new design has had them since v5.8.82). Shown only: the order keeps English.
+import { useClassicKioskMenuWords, shownItemName, shownItemDescription } from './kiosk/kioskMenuWords';
 import { railTileMode } from '../lib/categoryPhoto';
 import { t, setLang, useKioskLang, LANGUAGES, getLanguageMeta } from '../lib/i18n';
 import { displayName } from '../lib/itemDisplay';
@@ -52,6 +56,9 @@ import { fetchCustomerByPhone } from '../lib/customerLookup';
 import { fetchKioskTables, groupKioskTables } from '../lib/kioskTables';
 import { stageGiftCard, commitGiftCard, giftCardCheckRecord } from '../lib/giftCommit';
 import { commitRedemption } from '../lib/commitRedemptions';
+import { promoBasketValue, promoCheckKey } from '../lib/promoBasis';
+import { classicPromoContinue } from '../lib/kioskCheckout';   // v5.11.81 round 1: the old design re-checks a code on Continue
+import { promoBasketLines } from '../../supabase/functions/_shared/promoMath.js';
 import { kioskLoyaltyCreditMinor, kioskRewardTapCheck } from '../lib/kioskLoyaltyReward';
 import { money, stripeCurrency } from '../lib/currency';
 import { getLocationProcessor, takesCardsOnTerminal } from '../lib/payments/processor';
@@ -64,7 +71,7 @@ import KioskCardScreen from './kiosk/KioskCardScreen';
 import { kioskMayRefresh, kioskMenuAfterRead, createKioskRefresh, kioskHeardMsm, markKioskHeardMsm, CATCH_UP_MS } from '../lib/msm/msmTillWatch.js';
 import KioskPayLinkGate from './kiosk/KioskPayLinkGate';
 import { usePaymentBusy } from '../lib/usePaymentBusy';
-import { kioskLineKeyV2 } from '../lib/kioskBasket';
+import { kioskLineKeyV2, repriceKioskCart } from '../lib/kioskBasket';
 import { kioskCardEligible, itemInCategory, kioskLegacyCategoryShown } from '../lib/kioskMenu';
 import { setActiveMemberSession } from '../lib/memberSession.js';
 // networkReader import removed — kiosk payment now uses server-side edge function directly
@@ -871,6 +878,9 @@ export default function KioskApp({ kioskId, onUnpair }) {
   const newDesign = kioskNewDesignOn(profile);
   const newDesignRef = useRef(false);
   useEffect(() => { newDesignRef.current = newDesign; }, [newDesign]);
+  // v5.11.81: the classic kiosk's language picker now changes the venue's menu text too (the new
+  // design's KioskV2Root loads its own). No rows, or English: the menu stays as typed.
+  useClassicKioskMenuWords(lang, locationId, !newDesign);
 
   // New kiosk design only (build spec D2): the card screen pauses the idle timer while the
   // reader is live, the order is saving or staff are needed (lib/kioskFlow.js
@@ -971,6 +981,8 @@ export default function KioskApp({ kioskId, onUnpair }) {
       qty = Math.min(qty, maxAdd);
     }
     const linePrice = priceEachOverride ?? resolvePrice(item, orderType, activeMenuId);
+    // v5.11.81: a row with no price set is never sold for 0.00 (the till's rule, menuPricing).
+    if (refusesNoPriceLine(variantItem || item, orderType, activeMenuId, linePrice)) { console.warn('[kiosk] not added: no price set for', (variantItem || item)?.name); return; }
     const modSummary = summaryOverride ?? Object.entries(selectedMods)
       .filter(([, v]) => v)
       .map(([k, v]) => Array.isArray(v) ? v.join(', ') : v)
@@ -986,21 +998,22 @@ export default function KioskApp({ kioskId, onUnpair }) {
       ? kioskLineKeyV2({ item, variant, mods: modsArray })
       : kioskLineKey(item, variant, selectedMods);
     setCart(prev => {
-      const existing = prev.find(l => l.key === key);
-      if (existing) {
-        // Merge onto the FRESH unit price, the number the sheet just showed.
-        // The same item and the same picks can be priced differently a minute
-        // later (a timed menu came on at the tick, or the order type flipped),
-        // and the till reprices whole lines on that change, so the earlier
-        // unit is repriced too rather than the new unit charged at the old
-        // price the customer was never shown.
-        return prev.map(l => l.key === key
-          ? { ...l, qty: l.qty + qty, linePrice, lineTotal: (l.qty + qty) * linePrice }
+      // v5.11.81 (channel parity round 2): THE LINE KEEPS ITS PRICE, the till's rule
+      // (lib/channelMenu.js kioskLineSlot). The same item and picks merge only at the same price.
+      // At another price (a timed menu came on at the tick between two taps) the new units are a
+      // line of their own at the price the sheet just showed, as the till appends a line; the
+      // earlier units keep the price the customer saw. The kiosk repriced the earlier units before.
+      // Only the eat in / take away switch reprices a whole basket (KioskFlowV2, repriceKioskCart).
+      const slot = kioskLineSlot(prev, key, linePrice);
+      if (slot.merge) {
+        return prev.map(l => l.key === slot.key
+          ? { ...l, qty: l.qty + qty, lineTotal: (l.qty + qty) * l.linePrice }
           : l
         );
       }
       return [...prev, {
-        key,
+        key: slot.key,
+        ...(slot.key !== key ? { baseKey: key } : {}),
         item,
         variant,
         name: displayName(item),
@@ -1345,7 +1358,8 @@ export default function KioskApp({ kioskId, onUnpair }) {
           customerId: verifiedLoyalty?.customer?.id || null,
           channel: 'kiosk',
           code: promoApplied.code,
-          basketValue: subtotal,
+          basketValue: promoBasketValue({ discountedSub: discountedSubtotal }),
+          basketLines: promoBasketLines(cart),
         }, { functionsUrl: `${OPS_URL}/functions/v1`, token }))
           .catch(err => console.warn('[kiosk] promo redeem dispatch failed:', err?.message || err));
       }
@@ -1404,7 +1418,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
     } finally {
       setSubmitting(false);
     }
-  }, [submitting, kioskId, locationId, cart, subtotal, total, grandTotal, taxBreakdown, chargedTaxBreakdown, kioskVenueTaxCtx, loyaltyCredit, loyaltyDiscountMinor, giftCardCredit, promoCredit, promoApplied, verifiedLoyalty, loyaltyRedemption, giftCardPayment, tip, orderType, customerName, customerPhone, customerEmail, customerMarketingOptIn, tableNumber, resetSession]);
+  }, [submitting, kioskId, locationId, cart, subtotal, discountedSubtotal, total, grandTotal, taxBreakdown, chargedTaxBreakdown, kioskVenueTaxCtx, loyaltyCredit, loyaltyDiscountMinor, giftCardCredit, promoCredit, promoApplied, verifiedLoyalty, loyaltyRedemption, giftCardPayment, tip, orderType, customerName, customerPhone, customerEmail, customerMarketingOptIn, tableNumber, resetSession]);
 
   // ─── Loading + error gates ───
   if (profLoading || menuLoading) {
@@ -1469,6 +1483,10 @@ export default function KioskApp({ kioskId, onUnpair }) {
     <div onPointerDown={resetIdle} onKeyDown={resetIdle} onInput={resetIdle} data-kiosk-theme={isLight ? "light" : "dark"} style={kioskShell(brandColor, effectiveBg, brandAccent)}>
       {screen === 'attract' && <ScreenAttract brandName={brandName} brandColor={brandColor} brandAccent={brandAccent} brandLogoUrl={brandLogoUrl} attractVideoUrl={attractVideoUrl} avgWaitMinutes={avgWaitMinutes} banner={bannerFor('attract')} ctaLabel={labelTapToOrder} onStart={() => { resetIdle(); setScreen('orderType'); }} />}
       {screen === 'orderType' && <ScreenOrderType brandColor={brandColor} brandLogoUrl={brandLogoUrl} brandName={brandName} tableMode={tableMode} lang={lang} onOpenLanguagePicker={() => setShowLangPicker(true)} loyaltyEnabled={loyaltyEnabled} customerName={customerName} onLoyaltySignIn={() => { setLoyaltyReturnScreen('orderType'); setScreen('loyalty'); }} onPick={(t) => {
+        // v5.11.81 round 1: Back from the menu keeps the basket, so switching eat in and take away
+        // reprices it for the new order type, as the till and the new design (KioskFlowV2) do. A
+        // take away latte (2.80, 0%) stayed 2.80 and was then taxed at the eat in 20%.
+        if (orderType && t !== orderType) setCart(c => repriceKioskCart(c, items, t, activeMenuId));
         setOrderType(t);
         // v5.8.76: every eat in mode asks for a number (lib/kioskFlow.js kioskStartModel): the table
         // plan (either), a typed table number (enter) or the number on a flag (dispense).
@@ -1504,7 +1522,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
       {/* v5.5.900: gift card / promo code step BEFORE payment (mirrors online ordering) —
           the old entry lived on the pay screen, which auto-starts the card reader on mount,
           so guests never saw it. */}
-      {screen === 'gift' && <ScreenGiftPromo brandColor={brandColor} total={grandTotal} loyaltyCredit={loyaltyCredit} giftCardCredit={giftCardCredit} promoCredit={promoCredit} promoApplied={promoApplied} onPromoApply={setPromoApplied} verifiedLoyalty={verifiedLoyalty} giftCardPayment={giftCardPayment} onGiftCardApply={setGiftCardPayment} locationId={locationId} loyaltyRedemption={loyaltyRedemption} notice={submitError || ''} onContinue={() => { setSubmitError(null); setScreen('pay'); }} onBack={() => { setSubmitError(null); if (loyaltyEnabled) setScreen('loyalty'); else setScreen('tip'); }} onCancel={resetSession} />}
+      {screen === 'gift' && <ScreenGiftPromo brandColor={brandColor} total={grandTotal} promoBasket={promoBasketValue({ discountedSub: discountedSubtotal })} promoLines={promoBasketLines(cart)} loyaltyCredit={loyaltyCredit} giftCardCredit={giftCardCredit} promoCredit={promoCredit} promoApplied={promoApplied} onPromoApply={setPromoApplied} verifiedLoyalty={verifiedLoyalty} giftCardPayment={giftCardPayment} onGiftCardApply={setGiftCardPayment} locationId={locationId} loyaltyRedemption={loyaltyRedemption} notice={submitError || ''} onContinue={() => { setSubmitError(null); setScreen('pay'); }} onBack={() => { setSubmitError(null); if (loyaltyEnabled) setScreen('loyalty'); else setScreen('tip'); }} onCancel={resetSession} />}
       {/* Database fence stage 1, fix round 2: ScreenPay (which starts the reader on mount) mounts
           only once the server says this kiosk is linked (surfaces/kiosk/KioskPayLinkGate.jsx). */}
       {screen === 'pay' && <KioskPayLinkGate brandColor={brandColor} onBack={() => { setSubmitError(null); setScreen('gift'); }} onCancel={resetSession}><KioskVatGate brandColor={brandColor} onBack={() => { setSubmitError(null); setScreen('gift'); }} onCancel={resetSession}><ScreenPay brandColor={brandColor} total={grandTotal} loyaltyCredit={loyaltyCredit} giftCardCredit={giftCardCredit} promoCredit={promoCredit} promoApplied={promoApplied} locationId={locationId} kioskId={kioskId} cart={cart} submitting={submitting} error={submitError} onPaid={(paid) => submitOrder(customerName, customerPhone, paid)} ensureCheckId={ensureCheckId} heldPayment={heldCardPayment} onBack={() => { setSubmitError(null); setScreen('gift'); }} loyaltyRedemption={loyaltyRedemption} onCancel={resetSession} /></KioskVatGate></KioskPayLinkGate>}
@@ -2593,7 +2611,7 @@ function MenuItemCard({ item, price, fromPrice = null, brandColor, allergenFilte
             WebkitLineClamp: 2,
             WebkitBoxOrient: 'vertical',
             overflow: 'hidden',
-          }}>{displayName(item)}</div>
+          }}>{shownItemName(item)}</div>
           <div style={{
             fontSize: 'clamp(17px, 2vw, 22px)',
             fontWeight: 800,
@@ -2628,7 +2646,7 @@ function MenuItemCard({ item, price, fromPrice = null, brandColor, allergenFilte
         )}
 
         {/* Description */}
-        {item.description && (
+        {shownItemDescription(item) && (
           <div style={{
             fontSize: 'clamp(13px, 1.5vw, 16px)',
             color: 'var(--kFgMuted)',
@@ -2637,7 +2655,7 @@ function MenuItemCard({ item, price, fromPrice = null, brandColor, allergenFilte
             WebkitLineClamp: 2,
             WebkitBoxOrient: 'vertical',
             overflow: 'hidden',
-          }}>{item.description}</div>
+          }}>{shownItemDescription(item)}</div>
         )}
 
         {/* Add button — visual affordance; same as card-tap */}
@@ -3148,7 +3166,7 @@ function ScreenTip({ brandColor, subtotal, tipPresets, tip, onSetTip, onContinue
 // `order_id: null` the moment a code was entered, so an abandoned basket, an idle
 // timeout or a declined card burned the card's value with no order and no reversal.
 // ============================================================
-function ScreenGiftPromo({ brandColor, total, loyaltyCredit, giftCardCredit, promoCredit = 0, promoApplied = null, onPromoApply, verifiedLoyalty, giftCardPayment, onGiftCardApply, locationId, loyaltyRedemption, notice = '', onContinue, onBack, onCancel }) {
+function ScreenGiftPromo({ brandColor, total, promoBasket = 0, promoLines = null, loyaltyCredit, giftCardCredit, promoCredit = 0, promoApplied = null, onPromoApply, verifiedLoyalty, giftCardPayment, onGiftCardApply, locationId, loyaltyRedemption, notice = '', onContinue, onBack, onCancel }) {
   const [giftApplying, setGiftApplying] = useState(false);
   // v5.5.901: `notice` carries a commit-time failure back here (a gift-only order whose card
   // came up short at submit) so the guest is told why they're being asked to pay after all.
@@ -3190,7 +3208,9 @@ function ScreenGiftPromo({ brandColor, total, loyaltyCredit, giftCardCredit, pro
           // v5.5.888: OTP-verified customer identity — lets customer-locked (personal)
           // codes validate at the kiosk and per-customer limits count correctly.
           customer_id: verifiedLoyalty?.customer?.id || null,
-          basket: { subtotal: total },
+          // v5.11.81 (Peter, 19 Oct 2026): the till's promo basket, the goods after the automatic
+          // deals (lib/promoBasis.js). It was the grand total with the tip in it.
+          basket: { subtotal: promoBasket, ...(Array.isArray(promoLines) ? { lines: promoLines } : {}) },
         }),
       });
       const pj = await pv.json().catch(() => ({}));
@@ -3201,12 +3221,63 @@ function ScreenGiftPromo({ brandColor, total, loyaltyCredit, giftCardCredit, pro
           offer_id: pj.offer?.id || null,
           label: pj.discount?.label || pj.offer?.name || 'Promo code',
           amount: pj.discount?.amount || 0,
+          // v5.11.81 (round 1 fix): the basket it was checked on (Continue checks it again on change).
+          checkedOn: promoCheckKey(promoBasket, promoLines),
         });
         setManualGCCode('');
         return true;
       }
     } catch { /* fall through to the caller's error */ }
     return false;
+  };
+
+  // v5.11.81 (round 1 fix, "classic kiosk keeps a free item code after the item is removed"): every
+  // way to the pay screen goes through Continue here, so the staged code is checked again on the
+  // basket as it is NOW (value and lines) before the reader is sent anything. A code that no longer
+  // applies is removed, and a new amount is shown, before the guest continues (classicPromoContinue).
+  const [promoChecking, setPromoChecking] = useState(false);
+  const [promoNotice, setPromoNotice] = useState('');
+  const continueToPay = async () => {
+    if (promoChecking) return;
+    const key = promoCheckKey(promoBasket, promoLines);
+    const first = classicPromoContinue(promoApplied, key);
+    if (first.action === 'go') { onContinue(); return; }
+    setPromoChecking(true);
+    let reply = null;
+    try {
+      const token = await ensureAuthToken().catch(() => null);
+      if (token) {
+        const pv = await fetch(`${OPS_URL}/functions/v1/promo-redeem`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            action: 'validate', code: promoApplied.code, location_id: locationId,
+            customer_id: verifiedLoyalty?.customer?.id || null,
+            basket: { subtotal: promoBasket, ...(Array.isArray(promoLines) ? { lines: promoLines } : {}) },
+          }),
+        });
+        reply = { httpOk: pv.ok, body: await pv.json().catch(() => ({})) };
+      } else {
+        reply = { networkError: true };
+      }
+    } catch {
+      reply = { networkError: true };
+    } finally {
+      setPromoChecking(false);
+    }
+    const next = classicPromoContinue(promoApplied, key, reply);
+    if (next.action === 'drop') {
+      onPromoApply(null);
+      setPromoNotice(`The code ${promoApplied.code} no longer applies to this order, so it has been removed. Check the total, then continue.`);
+      return;
+    }
+    if (next.action === 'update') {
+      onPromoApply(next.promo);
+      setPromoNotice(`The code ${promoApplied.code} is now worth ${money(next.promo.amount || 0)} on this order. Check the total, then continue.`);
+      return;
+    }
+    if (next.promo && next.promo !== promoApplied) onPromoApply(next.promo);
+    onContinue();
   };
 
   // v5.5.281: Apply a gift card by manually entered code (guest checkout)
@@ -3394,9 +3465,12 @@ function ScreenGiftPromo({ brandColor, total, loyaltyCredit, giftCardCredit, pro
       {/* Bottom CTA — disabled while a gift card apply is in flight, otherwise the customer
           can advance to the reader before `total` has dropped and be charged the pre-gift amount. */}
       <div style={{ padding: '14px 22px 22px', flexShrink: 0 }}>
-        <button onClick={onContinue} disabled={giftApplying}
-          style={{ ...primaryCta(brandColor), width: '100%', opacity: giftApplying ? 0.5 : 1, cursor: giftApplying ? 'wait' : 'pointer' }}>
-          {giftApplying ? 'Applying code…' : fullyCovered ? 'Continue →' : `Continue to payment · ${money(total)} →`}
+        {promoNotice && (
+          <div role="status" style={{ padding: 10, borderRadius: 10, marginBottom: 10, fontSize: 14, color: '#b45309', background: '#f59e0b15', border: '1px solid #f59e0b55', fontWeight: 600 }}>{promoNotice}</div>
+        )}
+        <button onClick={continueToPay} disabled={giftApplying || promoChecking}
+          style={{ ...primaryCta(brandColor), width: '100%', opacity: (giftApplying || promoChecking) ? 0.5 : 1, cursor: (giftApplying || promoChecking) ? 'wait' : 'pointer' }}>
+          {giftApplying ? 'Applying code…' : promoChecking ? 'Checking code…' : fullyCovered ? 'Continue →' : `Continue to payment · ${money(total)} →`}
         </button>
       </div>
     </div>

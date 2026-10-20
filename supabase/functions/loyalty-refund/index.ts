@@ -45,12 +45,26 @@
 //     state it was read in, and the redeem rows are counted again after the move (the adjust_stamps
 //     rule in loyalty-earn), so a reward taken this second is never left in debt.
 //   * the till calls this on a FULL refund only (store.refundCheck): it reverses the whole check.
+//
+// v5.11.81 (19 Oct 2026): a PART refund takes back what the refunded part earned
+// (_shared/loyaltyPartRefund.js). Body adds { part: true, refund_id, share, items }:
+//   * points: floor(points earned x share of the goods refunded), its own row refund:<check>:<refund id>;
+//   * stamps: the qualifying items refunded (counted with loyalty-earn's own rule), its own row
+//     stamprefund:earn:<earn key>:<refund id>;
+//   * a reward used on the check stays used; only a FULL refund gives it back.
+// A full refund after part refunds takes only what they left. v5.11.78 reversed nothing on a part
+// refund (and before it, the whole check).
 
 import {
   cors, json, opsAdmin, platformAdmin, authenticateCaller,
   resolveCompanyForLocation, updateBalance, checkLoyaltyAuthority, deviceHintOf,
 } from '../_shared/loyalty-utils.ts';
 import { planStampClawback } from '../_shared/stampAdjust.js';
+import { countQualifyingStamps, loadStampNameIndex } from '../_shared/stampQualify.ts';
+import {
+  partRefundKey, isPartRefundKey, partStampKey, isPartStampKey, refundShare,
+  partRefundPoints, partRefundStamps, remainingAfterParts,
+} from '../_shared/loyaltyPartRefund.js';
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -75,6 +89,13 @@ Deno.serve(async (req) => {
 
   if (!closed_check_id) return json({ error: 'closed_check_id required' }, 400);
   if (!location_id) return json({ error: 'location_id required' }, 400);
+  // v5.11.81: a part refund names itself, its refund id, the share of the goods it returned and the
+  // lines it returned (for the stamps).
+  const part = (body as any).part === true;
+  const refundId = part ? String((body as any).refund_id || '').trim().slice(0, 80) : '';
+  const share = part ? refundShare((body as any).share) : 1;
+  const partItems = part && Array.isArray((body as any).items) ? ((body as any).items as any[]).slice(0, 500) : [];
+  if (part && !refundId) return json({ error: 'refund_id required for a part refund' }, 400);
 
   // ── Resolve company (validates caller access) ─────────────────────────
   // v5.5.218: Must validate the caller has access to this company via their
@@ -134,15 +155,42 @@ Deno.serve(async (req) => {
     if (earnReadErr) {
       return json({ error: `could not read the stamp ledger, refund not attempted: ${earnReadErr.message}` }, 500);
     }
+    // v5.11.81: the stamps earlier part refunds of this check already took back, per earn row.
+    const { data: stampRefunds, error: refReadErr } = (stampEarns || []).length
+      ? await opsAdmin.from('stamp_transactions').select('stamps, idempotency_key, program_id')
+        .eq('customer_id', customer_id).eq('order_ref', String(closed_check_id)).eq('type', 'refund')
+      : { data: [], error: null };
+    if (refReadErr) {
+      return json({ error: `could not read the stamp ledger, refund not attempted: ${refReadErr.message}` }, 500);
+    }
+    let stampNames: any = null;
     for (const row of stampEarns || []) {
       const earned = Math.max(0, Math.floor(Number(row.stamps) || 0));
       if (!earned || !row.program_id) continue;
-      const claimKey = `stamprefund:earn:${row.idempotency_key || row.id}`;
+      const earnKey = String(row.idempotency_key || row.id);
+      const fullKey = `stamprefund:earn:${earnKey}`;
+      const claimKey = part ? partStampKey(earnKey, refundId) : fullKey;
       const { data: done } = await opsAdmin.from('stamp_transactions').select('id').eq('idempotency_key', claimKey).maybeSingle();
       if (done) continue;
+      if (part) {
+        // A full refund already took this earn back: a part refund after it takes nothing.
+        const { data: fullDone } = await opsAdmin.from('stamp_transactions').select('id').eq('idempotency_key', fullKey).maybeSingle();
+        if (fullDone) continue;
+      }
+      const alreadyTaken = (stampRefunds || [])
+        .filter((r: any) => isPartStampKey(r?.idempotency_key, earnKey))
+        .reduce((n: number, r: any) => n + Math.max(0, -Math.floor(Number(r?.stamps) || 0)), 0);
       const { data: prog } = await platformAdmin.from('stamp_card_programs')
-        .select('id, stamps_required').eq('id', row.program_id).eq('company_id', companyId).maybeSingle();
+        .select('id, stamps_required, qualifying_category_ids, qualifying_item_ids').eq('id', row.program_id).eq('company_id', companyId).maybeSingle();
       if (!prog) continue;
+      let toClaw: number;
+      if (part) {
+        if (stampNames === null) stampNames = await loadStampNameIndex(opsAdmin, [prog], partItems);
+        toClaw = partRefundStamps({ earned, alreadyTaken, refundedQualifying: countQualifyingStamps(partItems, prog as any, stampNames) });
+      } else {
+        toClaw = remainingAfterParts({ earned, alreadyTaken });
+      }
+      if (!toClaw) continue;
       const { data: card } = await platformAdmin.rpc('upsert_customer_stamp_card', {
         p_customer_id: customer_id, p_program_id: prog.id, p_company_id: companyId,
       });
@@ -152,7 +200,7 @@ Deno.serve(async (req) => {
           .eq('customer_id', customer_id).eq('program_id', prog.id).eq('type', 'redeem');
         return count || 0;
       };
-      const plan = planStampClawback(card, await countRedeemed(), { stamps: earned, stampsRequired: prog.stamps_required });
+      const plan = planStampClawback(card, await countRedeemed(), { stamps: toClaw, stampsRequired: prog.stamps_required });
       if (!plan.clawed) continue;
       const { data: ins, error: insErr } = await opsAdmin.from('stamp_transactions').insert({
         customer_id,
@@ -160,7 +208,7 @@ Deno.serve(async (req) => {
         location_id: row.location_id || location_id,
         stamps: -plan.clawed,
         type: 'refund',
-        note: `Stamps taken back: order refunded${reason ? ` (${reason})` : ''}${plan.clawed < earned ? ` (${earned - plan.clawed} left: a reward was already used)` : ''}`,
+        note: `Stamps taken back: ${part ? 'part of the order' : 'order'} refunded${reason ? ` (${reason})` : ''}${plan.clawed < toClaw ? ` (${toClaw - plan.clawed} left: a reward was already used)` : ''}`,
         order_ref: String(closed_check_id),
         idempotency_key: claimKey,
       }).select('id').single();
@@ -190,7 +238,8 @@ Deno.serve(async (req) => {
   // Before the points idempotency check on purpose: a check with only stamp rewards has no
   // loyalty_transactions row, and answered 'no_transactions' having restored nothing.
   let stampRewardsRestored = 0;
-  {
+  // v5.11.81: a part refund leaves a reward used on the check used (the visit happened).
+  if (!part) {
     const { data: stampRedeems, error: stampReadErr } = await opsAdmin
       .from('stamp_transactions')
       .select('id, program_id, location_id, note, idempotency_key')
@@ -227,13 +276,22 @@ Deno.serve(async (req) => {
   }
 
   // ── Idempotency check (scoped to company) ─────────────────────────────
-  const idempotencyKey = `refund:${closed_check_id}`;
+  const fullRefundKey = `refund:${closed_check_id}`;
+  const idempotencyKey = part ? partRefundKey(String(closed_check_id), refundId) : fullRefundKey;
   const { data: existingRefund } = await opsAdmin
     .from('loyalty_transactions')
     .select('id, points, balance_after')
     .eq('idempotency_key', idempotencyKey)
     .eq('company_id', companyId)
     .maybeSingle();
+  // v5.11.81: a part refund after the full refund takes nothing (the full one took everything).
+  const { data: fullRefundRow } = part
+    ? await opsAdmin.from('loyalty_transactions').select('id, points, balance_after')
+      .eq('idempotency_key', fullRefundKey).eq('company_id', companyId).maybeSingle()
+    : { data: null };
+  if (!existingRefund && fullRefundRow) {
+    return json({ status: 'already_processed', points_reversed: 0, balance: fullRefundRow.balance_after, stamp_rewards_restored: 0, stamps_clawed: stampsClawed });
+  }
 
   if (existingRefund) {
     return json({
@@ -285,7 +343,7 @@ Deno.serve(async (req) => {
   // by a different function, so the usual shape of this failure is a check that HAS its earn
   // row and is missing only the redeem one.
   let claimTxs: any[] = [];
-  if (membership) {
+  if (membership && !part) {
     const prefix = `redeem:${closed_check_id}:`;
     const { data: claims } = await platformAdmin
       .from('loyalty_redemption_claims')
@@ -317,15 +375,28 @@ Deno.serve(async (req) => {
 
   // Calculate net reversal: earned points get clawed back (negative),
   // redeemed points get restored (positive)
+  // v5.11.81: the points earlier part refunds of this check already took back (positive figure).
+  const partTaken = (originalTxs || [])
+    .filter((t: any) => t.type === 'refund' && isPartRefundKey(t.idempotency_key, String(closed_check_id)))
+    .reduce((n: number, t: any) => n + Math.max(0, -(Number(t.points) || 0)), 0);
   let netReversal = 0;
-  for (const tx of sourceTxs) {
-    if (tx.type === 'earn' || tx.type === 'bonus') {
-      // Clawback: reverse the earn
-      netReversal -= tx.points;
-    } else if (tx.type === 'redeem') {
-      // Restore: reverse the redeem (tx.points is already negative)
-      netReversal -= tx.points; // double negative = positive
+  if (part) {
+    // A part refund: the share of the points earned, never a redeem (the reward stays used).
+    const earned = sourceTxs.filter((t: any) => t.type === 'earn' || t.type === 'bonus')
+      .reduce((n: number, t: any) => n + (Number(t.points) || 0), 0);
+    netReversal = -partRefundPoints({ earned, alreadyTaken: partTaken, share });
+  } else {
+    for (const tx of sourceTxs) {
+      if (tx.type === 'earn' || tx.type === 'bonus') {
+        // Clawback: reverse the earn
+        netReversal -= tx.points;
+      } else if (tx.type === 'redeem') {
+        // Restore: reverse the redeem (tx.points is already negative)
+        netReversal -= tx.points; // double negative = positive
+      }
     }
+    // What part refunds already took back is not taken twice.
+    netReversal += partTaken;
   }
 
   if (netReversal === 0) {
@@ -374,7 +445,7 @@ Deno.serve(async (req) => {
   // loyalty-redeem increments loyalty_rewards.total_redeemed (which gates
   // limited-availability rewards). A refund must give that stock back, else a
   // limited reward reports "sold out" earlier than it should after refunds.
-  try {
+  if (!part) try {
     for (const tx of sourceTxs) {
       if (tx.type === 'redeem' && tx.reward_id) {
         const { data: rw } = await platformAdmin
@@ -447,7 +518,9 @@ Deno.serve(async (req) => {
     closed_check_id,
     idempotency_key: idempotencyKey,
     staff_id: staff_id || null,
-    note: reason ? `Refund: ${reason}` : 'Order refunded — loyalty reversed',
+    note: part
+      ? (reason ? `Part refund: ${reason}` : 'Part of the order refunded: points it earned taken back')
+      : (reason ? `Refund: ${reason}` : 'Order refunded — loyalty reversed'),
   });
 
   return json({

@@ -140,7 +140,9 @@ export function buildCatalog(opts: {
   // type='subitem' here: a subitem with sold_alone=true is a real standalone product.)
   const publishable = (it: any) =>
     it && !it.archived && it.sold_alone !== false && !it.parent_id &&
-    (!it.visibility || it.visibility.online !== false) &&
+    // v5.11.81: Back Office "Visible on" Online off, or Delivery off, keeps a product off the
+    // delivery platforms (the rule every channel reads, src/lib/channelMenu.js channelVisible).
+    (!it.visibility || (it.visibility.online !== false && it.visibility.onlineDelivery !== false)) &&
     (!publishIds || publishIds.has(String(it.id)));
 
   const childrenOf = (parentId: string) =>

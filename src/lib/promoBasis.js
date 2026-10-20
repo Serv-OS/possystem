@@ -39,11 +39,15 @@ export function promoBasketValue({ discountedSub, subtotal } = {}) {
  * recorded record.subtotal (goods before any discount) and a percent code logged a bigger
  * discount_value than the check took. One builder, one name.
  */
-export function heldPromo(code, data, basket) {
+export function heldPromo(code, data, basket, lines = null, deliveryFee = null) {
   const d = data && typeof data === 'object' ? data : {};
   const discount = d.discount && typeof d.discount === 'object' ? d.discount : {};
   const held = basket != null && basket !== '' && Number.isFinite(Number(basket)) ? { basket: promoBasketValue({ discountedSub: basket }) } : {};
-  return { code, code_id: d.code_id, offer_id: d.offer?.id, ...discount, ...held };
+  // v5.11.81: the basket's lines and delivery fee the code was checked with (promoMath.js), so the
+  // redeem works the discount out on the same basket (a category rule, a free item, free delivery).
+  const withLines = Array.isArray(lines) && lines.length ? { basketLines: lines } : {};
+  const withFee = Number(deliveryFee) > 0 ? { basketDeliveryFee: Number(deliveryFee) } : {};
+  return { code, code_id: d.code_id, offer_id: d.offer?.id, ...discount, ...held, ...withLines, ...withFee };
 }
 
 /**
@@ -55,4 +59,22 @@ export function promoRedeemBasket(promo, record) {
   const held = promo ? (promo.basket ?? promo.basis) : null;
   if (held != null && held !== '' && Number.isFinite(Number(held))) return promoBasketValue({ discountedSub: held });
   return promoBasketValue({ subtotal: record?.subtotal });
+}
+
+/**
+ * v5.11.81 (round 1 fix, "a free item code kept after the item is removed"): the basket a code was
+ * checked on, as one key: the basket value in pence plus every line (item, quantity, price), sorted.
+ * A code's amount depends on its lines (category rules, a free item), so a swap at the same price
+ * (the free latte for a flat white) is a different basket and the code is checked again. Was the
+ * basket value alone on the new kiosk, and never re-checked on the old one.
+ * @param {number} basket  the promo basket value (promoBasketValue)
+ * @param {Array}  lines   promoBasketLines(...) ({ itemId, price, qty })
+ */
+export function promoCheckKey(basket, lines) {
+  const sig = (Array.isArray(lines) ? lines : [])
+    .filter((l) => l && typeof l === 'object')
+    .map((l) => `${l.itemId ?? ''}:${Math.max(1, Math.round(num(l.qty) || 1))}:${Math.round(num(l.price) * 100)}`)
+    .sort()
+    .join(',');
+  return `${Math.round(num(basket) * 100)}|${sig}`;
 }

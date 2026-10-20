@@ -217,7 +217,7 @@ export async function commitGiftCard(staged, { functionsUrl, token, locationId, 
  * @returns {Promise<{ ok:boolean, skipped:boolean, restored:number,
  *                     status:string|null, error:string|null }>}
  */
-export async function reverseGiftCard(record, { functionsUrl, token, locationId, reason, staffId = null }) {
+export async function reverseGiftCard(record, { functionsUrl, token, locationId, reason, staffId = null, amountMinor = null, refundId = null }) {
   const cardId = record?.card_id || null;
   const originalKey = record?.idempotency_key || null;
   // A null key means the commit FAILED — nothing was ever debited, so there is nothing
@@ -236,6 +236,9 @@ export async function reverseGiftCard(record, { functionsUrl, token, locationId,
         reason: reason || 'Payment did not complete',
         staff_id: staffId,
         location_id: locationId,
+        // v5.11.81: a PART refund puts back only its share, under its own refund id (each part is
+        // its own claim server side; the whole spend can never come back twice).
+        ...(amountMinor != null && refundId ? { amount_minor: Math.max(0, Math.round(Number(amountMinor) || 0)), refund_id: String(refundId) } : {}),
         ...(deviceHint() ? { device_hint: deviceHint() } : {}),
       }),
     });
@@ -320,4 +323,40 @@ export function giftLegs(check) {
   const g = check?.giftCard;
   if (!g) return [];
   return Array.isArray(g.legs) && g.legs.length ? g.legs : [g];
+}
+
+/**
+ * v5.11.81 (19 Oct 2026, "gift balance comes back on a part refund for the part refunded"): the
+ * gift card share of a PART refund, per gift card leg. A part refund gave nothing back to the gift
+ * card (gift-reverse-redeem restored the whole spend, so it ran on a full refund only) and the
+ * card leg took the whole refund instead: gift card money went back to a bank card. Now the part
+ * refund's money is split the way the bill was paid: the gift cards' share is
+ * refund x (gift paid / money that settled the bill), spread over the legs in order, each capped
+ * at what is still unrestored on it (earlier part refunds recorded refunds[].giftLegs).
+ * A cash payout hands everything back in cash, so the caller asks for no gift share then.
+ * @param check        the check BEFORE this refund
+ * @param amountMinor  the money this refund returns, in pence
+ * @returns {{ legs: Array<{ leg, amountMinor }>, totalMinor: number }}
+ */
+export function giftPartRefundPlan(check, amountMinor) {
+  const legs = giftLegs(check).filter((g) => g?.card_id && g.idempotency_key && Number(g.applied) > 0);
+  const want = Math.max(0, Math.round(Number(amountMinor) || 0));
+  if (!legs.length || !want) return { legs: [], totalMinor: 0 };
+  const paidMinor = legs.reduce((n, g) => n + Math.round(Number(g.applied) || 0), 0);
+  const tenders = Array.isArray(check?.tenders) ? check.tenders : [];
+  const settledMinor = Math.round(tenders.reduce((n, t) => n + (Number(t?.amount) || 0) + (Number(t?.tip) || 0), 0) * 100);
+  const billMinor = Math.max(Math.round((Number(check?.total) || 0) * 100), settledMinor, paidMinor);
+  const restoredOn = (g) => (Array.isArray(check?.refunds) ? check.refunds : [])
+    .flatMap((r) => (Array.isArray(r?.giftLegs) ? r.giftLegs : []))
+    .filter((x) => x && x.key === g.idempotency_key && x.card_id === g.card_id)
+    .reduce((n, x) => n + Math.max(0, Math.round(Number(x.minor) || 0)), 0);
+  let left = Math.min(want, Math.floor((want * paidMinor) / billMinor + 1e-9));
+  const out = [];
+  for (const g of legs) {
+    if (left <= 0) break;
+    const room = Math.max(0, Math.round(Number(g.applied) || 0) - restoredOn(g));
+    const take = Math.min(room, left);
+    if (take > 0) { out.push({ leg: g, amountMinor: take }); left -= take; }
+  }
+  return { legs: out, totalMinor: out.reduce((n, x) => n + x.amountMinor, 0) };
 }

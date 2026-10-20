@@ -25,7 +25,7 @@ import { buildLegacyProfiles } from './taxAdapter.js';
 import { normaliseTaxProfileLineRow } from './rowMapping.js';
 import { computeCheckTotals } from './payments/checkTotals.js';
 import { refundBreakdown, refundedSoFar, addedOnTaxOf, r2 } from './payments/refundMath.js';
-import { scaleTaxRecord, bookedTaxRecord } from './taxShare.js';
+import { bookedTaxRecord } from './taxShare.js';
 import { closedCheckTaxFields } from './closedCheckRefundFields.js';
 
 const near = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) < eps, `${a} ≈ ${b}`);
@@ -258,10 +258,17 @@ test('UK LOCK: computeCheckTotals totals are unchanged with discounts, service, 
     // 27 Sep 2026: the booked VAT is the items-only VAT on the goods CHARGED: discountedSub (50,
     // after the item and check discounts) over the undiscounted goods (36 + 13 + 12 = 61). The
     // promo / loyalty credits never move it (they are tenders). Totals above are unchanged.
-    const itemsOnly = computeOrderTaxUnified(ctx.items.filter(i => !i.voided), variant.taxCtx || { taxRates: UK_RATES }, 'dine-in');
-    assert.deepEqual(t.tax, scaleTaxRecord(itemsOnly, 50 / 61));
+    // v5.11.81 (confirmed minor): the 50% item discount belongs to the 5% line, so the VAT is
+    // the VAT inside what EACH line was charged: 36 + 13 + 6 = 55, 5.00 off by value = 50
+    // (20% lines 44.55, VAT 7.42; the 5% line 5.45, VAT 0.26). One share on every rate booked 7.16.
+    const live = ctx.items.filter(i => !i.voided);
+    const charged = live.map((i, n) => ({ ...i, discount: undefined, price: [32.727272727272727, 11.818181818181818, 5.454545454545454][n] / i.qty }));
+    const byLine = computeOrderTaxUnified(charged, variant.taxCtx || { taxRates: UK_RATES }, 'dine-in');
     assert.equal(t.tax.share, 50 / 61);
-    assert.equal(t.tax.totalTax, Math.round(itemsOnly.totalTax * 50 / 61 * 100) / 100);
+    assert.equal(t.tax.byLine, true);
+    assert.equal(t.tax.totalTax, 7.68);
+    assert.equal(Math.round(byLine.totalTax * 100) / 100, 7.68);
+    assert.deepEqual(t.tax.breakdown.map(b => Math.round(b.tax * 100)), [742, 26]);
   }
 });
 

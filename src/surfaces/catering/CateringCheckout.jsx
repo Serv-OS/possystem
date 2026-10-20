@@ -14,13 +14,15 @@ import { requestPaymentProof, placePublicOrder } from '../../lib/publicOrderClie
 import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient';
 import { getLocationProcessor } from '../../lib/payments/processor';
 import RyftPaymentForm from '../../components/RyftPaymentForm';
-import { computeOrderTaxUnified } from '../../lib/taxCompute';
+import { computeOrderTaxUnified, taxCtxHasConfig } from '../../lib/taxCompute';
+import VatGateNotice from '../online/VatGateNotice';
 import { publicCheckTaxFields } from '../../lib/publicCheckTax';
 import { creditDiscounts } from '../../lib/taxBasis';
 import { sendEmailReceipt } from '../../lib/sendReceipt';
 import { getDeliveryQuote, recordDeliverySurcharge } from '../../lib/delivery/quoteService';
 import AddressAutocomplete from '../../components/AddressAutocomplete';
 import { commitRedemption } from '../../lib/commitRedemptions';
+import { promoBasketLines } from '../../../supabase/functions/_shared/promoMath.js';   // v5.11.81: a code's own rules
 import { tipRuleFromCatering, tipChips, tipInitialKey, tipAmount as calcTip } from '../../lib/tipping';
 import { wallTimeToInstantMs, cateringPrepMinutes, cateringFireMs } from '../../lib/cateringRules';
 import { tender, finishTenders } from '../../lib/accounting/tenders';
@@ -46,7 +48,9 @@ const center = { maxWidth: 640, margin: '0 auto', padding: '0 16px' };
 const lbl = { display: 'block', fontSize: 12, fontWeight: 700, color: '#475569', marginBottom: 5 };
 const inp = { width: '100%', boxSizing: 'border-box', border: '1px solid #cbd5e1', borderRadius: 10, padding: '9px 12px', fontSize: 14, fontFamily: 'inherit' };
 
-export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx = null, theme, cur, fulfilment, eventDate, eventTime, subtotal, menuId = null, onBack }) {
+// vatGate / onRetryRates (v5.11.81, the online and QR rule since 8 Oct 2026): ratesGate's answer
+// from the surface (null when the venue's tax rates are in). Payment never opens while it is shut.
+export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx = null, theme, cur, fulfilment, eventDate, eventTime, subtotal, menuId = null, onBack, vatGate = null, onRetryRates = null }) {
   const opsId = location.ops_location_id || location.id;
   const platformLocationId = location.id;
   const [name, setName] = useState(''); const [phone, setPhone] = useState(''); const [email, setEmail] = useState('');
@@ -139,16 +143,18 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
     ...(isDelivery ? { address: { line1: addr1.trim(), postcode: postcode.trim().toUpperCase(), ...(addrGeo ? { lat: addrGeo.lat, lng: addrGeo.lng } : {}) } } : {}),
     fulfilment, event_date: eventDate, event_time: eventTime,
     ...(notes.trim() ? { notes: notes.trim() } : {}), ...(taxId.trim() ? { tax_id: taxId.trim() } : {}),
-    ...(promoApplied ? { promo_code: promoApplied.code, promo_discount: promoApplied.amount } : {}), ...(tip ? { tip } : {}), ...(deliveryFee ? { delivery_fee: deliveryFee } : {}),
+    // v5.11.81: check_id is the id the promo's use is recorded under, so a void or a full refund can give the code back.
+    ...(promoApplied ? { promo_code: promoApplied.code, promo_discount: promoApplied.amount, check_id: checkId } : {}), ...(tip ? { tip } : {}), ...(deliveryFee ? { delivery_fee: deliveryFee } : {}),
     ...(isDelivery && deliveryQuote?.mode ? { delivery_mode: deliveryQuote.mode } : {}),   // fire-time dispatch reads this
     ...pay,
   });
-  const promoReason = (r, min) => ({ not_found: "That code isn't valid.", expired: 'That code has expired.', already_used: 'That code has already been used.', voided: 'That code is no longer valid.', inactive: "That offer isn't active.", not_yet_active: "That offer hasn't started yet.", wrong_venue: "That code isn't valid here.", usage_limit: 'That code has reached its limit.', customer_required: 'That code is linked to an account — order signed in to use it.', customer_mismatch: 'That code is linked to a different account.', min_spend: `Spend at least ${money(min || 0, cur)} to use this code.` }[r] || "That code can't be used.");
+  const promoReason = (r, min) => ({ free_item_not_in_basket: 'Add the free item to your order first.', not_found: "That code isn't valid.", expired: 'That code has expired.', already_used: 'That code has already been used.', voided: 'That code is no longer valid.', inactive: "That offer isn't active.", not_yet_active: "That offer hasn't started yet.", wrong_venue: "That code isn't valid here.", usage_limit: 'That code has reached its limit.', customer_required: 'That code is linked to an account — order signed in to use it.', customer_mismatch: 'That code is linked to a different account.', min_spend: `Spend at least ${money(min || 0, cur)} to use this code.` }[r] || "That code can't be used.");
   const applyPromo = async () => {
     const code = promo.trim(); if (!code) return;
     setPromoBusy(true); setPromoErr(''); setPromoApplied(null);
     try {
-      const { data, error } = await supabase.functions.invoke('promo-redeem', { body: { action: 'validate', code, location_id: opsId, basket: { subtotal } } });
+      // v5.11.81: with the basket's lines and delivery fee (_shared/promoMath.js): category rules, a free item, free delivery.
+      const { data, error } = await supabase.functions.invoke('promo-redeem', { body: { action: 'validate', code, location_id: opsId, basket: { subtotal, lines: promoBasketLines(cart, { modsInPrice: false }), delivery_fee: Number(deliveryFee) || 0 } } });
       if (error) throw new Error(error.message);
       if (!data?.valid) { setPromoErr(promoReason(data?.reason, data?.min_spend)); return; }
       setPromoApplied({ code: code.toUpperCase(), amount: Number(data.discount?.amount || 0), name: data.offer?.name || 'Promo' });
@@ -178,6 +184,8 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
       channel: 'catering',
       code: promoApplied.code,
       basketValue: subtotal,
+      basketLines: promoBasketLines(cart, { modsInPrice: false }),   // v5.11.81: the same lines it was checked with
+      deliveryFee: Number(deliveryFee) || 0,
     }, { functionsUrl: FUNCTIONS_URL, token: await ensureAuthToken().catch(() => null) });
     if (!r.ok && !r.queued) {
       logActivity(opsId, {
@@ -226,7 +234,16 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
   });
 
   // ── PAY LATER ──────────────────────────────────────────────────────
+  // v5.11.81: a venue with tax set up never has a sale saved without VAT (publicCheckTaxFields
+  // throws a named error instead), and nothing is placed or charged while the rates are not in.
+  const hasTaxConfig = taxCtxHasConfig(taxCtx || { taxRates: taxRates || [] });
+  const vatRefusal = () => {
+    if (vatGate) return vatGate.message;
+    try { publicCheckTaxFields(taxBk, { hasTaxConfig, goods: subtotal }); } catch (e) { return e?.message || 'The VAT could not be worked out.'; }
+    return null;
+  };
   const placeLater = async () => {
+    { const why = vatRefusal(); if (why) { setErr(why); return; } }
     if (!valid) { setErr(belowMin ? `Minimum order for delivery is ${deliveryQuote?.minOrderMinor != null ? money(deliveryQuote.minOrderMinor / 100, cur) : 'higher'} — add more items or choose collection.` : 'Please complete the required fields.'); return; }
     setBusy(true); setErr('');
     try {
@@ -253,6 +270,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
 
   // ── PAY NOW (card) ─────────────────────────────────────────────────
   const startPayNow = async () => {
+    { const why = vatRefusal(); if (why) { setErr(why); return; } }
     if (!valid) { setErr(belowMin ? `Minimum order for delivery is ${deliveryQuote?.minOrderMinor != null ? money(deliveryQuote.minOrderMinor / 100, cur) : 'higher'} — add more items or choose collection.` : 'Please complete the required fields.'); return; }
     setErr('');
     if (processor === 'ryft') { setStep('pay'); return; }
@@ -304,7 +322,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
         tenders: finishTenders([tender('promo', discount), tender('card', Math.max(0, total - tip), tip, { pspRef: payId, processor })]),   // v5.9.11
         // 2 Oct 2026: tax_amount in pence and the tax record by rate whenever a rate was resolved,
         // UK included (lib/publicCheckTax.js; the raw figure was read as 0 by the server).
-        ...publicCheckTaxFields(taxBk),
+        ...publicCheckTaxFields(taxBk, { hasTaxConfig, goods: subtotal }),
         closed_at: closedAt, status: 'paid', refunds: [], table_id: null, table_label: `Catering ${ref}`,
         source: 'catering', stripe_payment_intent_id: payId, payment_intents: payId ? [{ id: payId, amountMinor: totalMinor }] : null, processor,
       };
@@ -509,8 +527,9 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
               </div>
             )}
 
+            <div style={{ marginTop: 12 }}><VatGateNotice gate={vatGate} onRetry={onRetryRates} theme={{ fg: '#0f172a' }}/></div>
             {err && <div style={{ color: '#dc2626', fontSize: 13, marginTop: 12 }}>{err}</div>}
-            <button onClick={payMode === 'later' ? placeLater : startPayNow} disabled={busy || !valid} style={{ marginTop: 16, width: '100%', padding: '13px', borderRadius: 10, border: 'none', background: theme.brand, color: '#fff', fontWeight: 800, fontSize: 15, cursor: valid ? 'pointer' : 'default', opacity: valid && !busy ? 1 : 0.5 }}>
+            <button onClick={payMode === 'later' ? placeLater : startPayNow} disabled={busy || !valid || !!vatGate} style={{ marginTop: 16, width: '100%', padding: '13px', borderRadius: 10, border: 'none', background: theme.brand, color: '#fff', fontWeight: 800, fontSize: 15, cursor: valid ? 'pointer' : 'default', opacity: valid && !busy ? 1 : 0.5 }}>
               {busy ? 'Please wait…' : payMode === 'later' ? `Place order — pay later (${money(total, cur)})` : `Continue to payment (${money(total, cur)})`}
             </button>
           </div>

@@ -231,7 +231,8 @@ test('commitRedemptions scores a 200 with the slot check, on the live call and o
 test('loyalty-refund restores the stamp rewards of a refunded check: audit row first, then the redeem row goes', () => {
   const fn = readSrc('../../supabase/functions/loyalty-refund/index.ts');
   const block = fn.indexOf('let stampRewardsRestored = 0;');
-  assert.ok(block > 0 && block < fn.indexOf('const idempotencyKey = `refund:${closed_check_id}`;'), 'before the points idempotency short circuit');
+  // v5.11.81: the full refund's key is fullRefundKey (a part refund has its own key beside it).
+  assert.ok(block > 0 && block < fn.indexOf('const fullRefundKey = `refund:${closed_check_id}`;'), 'before the points idempotency short circuit');
   const body = fn.slice(block);
   assert.ok(body.includes(".eq('order_ref', String(closed_check_id))\n      .eq('type', 'redeem');"), 'found by the check, whatever the slot');
   assert.ok(body.indexOf("type: 'refund',") < body.indexOf(".delete().eq('id', row.id).eq('type', 'redeem')"), 'audit row first, delete second');

@@ -209,3 +209,173 @@ test('booking deposit on the handheld: taken off the bill and booked exactly as 
   assert.match(t, /const bookingPayment = booking \? bookingLegsForBill\(booking, bookingApplied\) : null;/);
   assert.match(readRepo('src/surfaces/CheckoutModal.jsx'), /const bookingLegsFor = \(\) => bookingLegsForBill\(bookingInfo, bookingApplied\);/);
 });
+
+// ── A service charge never carries VAT, on any channel (Peter, 19 Oct 2026: "service charge has no VAT") ──
+// v5.11.81: Peter's decision makes the rule. Every channel's own money code is run with a service
+// charge and without; the VAT booked is the VAT of the goods, never more. US added on tax on a
+// service charge follows the tax profile (a separate question) and is checked to stay as it is.
+test('service charge: no VAT on the till, a table, MPOS, Table Pay, reader closes, a bar tab, the kiosk, online, QR, catering, HubRise, ezCater and Xero', async () => {
+  const { headlessTaxBreakdown } = await import('../headlessTax.js');
+  const { tabCloseTax } = await import('../barTabTax.js');
+  const { computeOrderTaxUnified } = await import('../taxCompute.js');
+  const { buildChannelCloseFields } = await import('../channelMoney.js');
+  const { ezcaterClosedCheck } = await import('../../../supabase/functions/_shared/ezcaterCatering.js');
+  const { serviceTaxType } = await import('../../../supabase/functions/_shared/xeroTax.js');
+  const { UK_RATES } = await import('./fixtures.js');
+  const v = (t) => roundVat(t?.totalTax);
+  const b = basket('service-charge');   // dine in, 4 covers, 4 burgers and 4 cokes, 12.5% service
+  const items = posLines(b);
+  const bill = (deviceConfig, checkDiscounts = []) => computeCheckTotals({ items, checkDiscounts, covers: 4, orderType: 'dine-in', deviceConfig, discountRules: RULES, timezone: TZ, taxCtx: ctxUK() });
+  for (const disc of [[], [{ id: 'd', type: 'percent', value: 10 }]]) {
+    const withSvc = bill(SERVICE_DEVICE, disc);
+    const goods = v(bill({}, disc).tax);
+    assert.ok(withSvc.service > 0, 'the bill carries a service charge');
+    // The till counter, a table, MPOS (getPOSTotals) and the Table Pay stamp all run computeCheckTotals.
+    assert.equal(v(withSvc.tax), goods, 'till, table, MPOS: VAT on the goods only');
+    assert.equal(withSvc.tax.serviceTax, undefined, 'no tax line on the service charge');
+    // A reader close (pay at table, Table Pay, another till's job) books from the frozen draft.
+    const draft = { items, discounts: disc, covers: 4, orderType: 'dine-in', serviceMinor: Math.round(withSvc.service * 100) };
+    assert.equal(v(headlessTaxBreakdown(draft, { taxRates: UK_RATES, taxCtx: ctxUK(), deviceConfig: SERVICE_DEVICE, discountRules: RULES, timezone: TZ })), goods, 'reader close');
+    // QR pay now and online: the seam with the service charge in the basis (QrCheckout goodsTaxBreakdown).
+    assert.equal(v(computeOrderTaxUnified(items, ctxUK(), 'dine-in', { discounts: disc, service: withSvc.service })), v(computeOrderTaxUnified(items, ctxUK(), 'dine-in', { discounts: disc })), 'QR and online');
+  }
+  // A bar tab handed a service figure books the VAT of its lines only.
+  const tab = tabCloseTax(items, ctxUK(), { paymentInfo: { grand: 60, service: 7.5 } });
+  assert.equal(tab.taxAmount, v(computeOrderTaxUnified(items, ctxUK(), 'bar-tab')), 'bar tab');
+  // A QR tab books its rounds' service charge as service, out of the goods its VAT is on.
+  const rounds = [{ customer: { tip: 0, service_charge: 2.5 }, items: [{ itemId: 'burger', price: 9, qty: 2, mods: [] }, { itemId: 'coke', price: 2.5, qty: 1, mods: [] }] }];
+  const qrTab = qrTabCloseFields(rounds, 23, { menuItems: STORE_MENU, taxRates: UK_RATES, taxCtx: ctxUK(), hasTaxConfig: true });
+  assert.equal(qrTab.service, 2.5);
+  assert.equal(qrTab.taxAmount, roundVat(20.5 - 20.5 / 1.2), 'QR tab: VAT on the 20.50 of goods, never on the 2.50 service');
+  // The kiosk and catering charge no service charge at all; online and catering book service 0.
+  assert.doesNotMatch(readRepo('src/lib/kioskVat.js'), /service/, 'the kiosk tax call has no service charge in it');
+  assert.match(readRepo('src/surfaces/catering/CateringCheckout.jsx'), /subtotal, service: 0, tip, total, method: 'card',/);
+  // HubRise: a platform service fee is booked as service and adds no VAT.
+  const hubItems = [{ id: 'h1', itemId: 'burger', name: 'Burger', price: 9, qty: 2, mods: [] }];
+  const hub = (charges) => buildChannelCloseFields({ channel: 'delivery', total: 18, items: hubItems, customer: { payments: [], charges } }, { menuItems: STORE_MENU, taxRates: UK_RATES });
+  const withFee = hub([{ name: 'Service fee', type: 'other', amount: 1.5 }]);
+  assert.equal(withFee.service, 1.5);
+  assert.equal(withFee.taxAmount, hub([]).taxAmount, 'HubRise');
+  // ezCater: a misc fee is booked as the sale's service; the tax is ezCater's own figure, unchanged by it.
+  const ez = (fees) => ezcaterClosedCheck({ ref: 'EZ-9', location_id: 'L', type: 'collection', event_date: '2026-11-02', collection_time: '12:00',
+    items: [{ name: 'Box lunch', qty: 10, price: 12, lineSubunits: 12000 }],
+    customer: { channel: 'ezcater', ezcater_lifecycle: 'accepted', ezcater_order_id: 'u-9', catererReceivesTip: true, catererReceivesDeliveryFee: true,
+      totals: { subtotal: 120, tip: 0, deliveryFee: 10, feesAndDiscounts: fees }, tax: { salesTax: 8.7, salesTaxRemittance: 0 } } });
+  const ezFee = ez([{ name: 'Delivery fee', amount: 10 }, { name: 'Setup fee', amount: 15 }]);
+  assert.equal(ezFee.service, 15, 'the setup fee is booked as service, never the delivery fee');
+  assert.equal(ezFee.tax_amount, ez([{ name: 'Delivery fee', amount: 10 }]).tax_amount, 'ezCater');
+  assert.equal(ezFee.total, 120 + 8.7 + 10 + 15, 'the sale is what ezCater charged');
+  // Xero: a VAT venue's service charge line posts No VAT whatever is set.
+  const std = { key: 'rate:s', rateId: 's', pct: 20, mode: 'inclusive' };
+  for (const mapping of [{}, { serviceTaxable: true }, { serviceTax: 'OUTPUT2' }]) assert.equal(serviceTaxType({ mapping, revenueRates: null, detail: {} }, std), 'NONE', JSON.stringify(mapping));
+});
+
+test('service charge: random UK baskets never book VAT on a service charge, on the seam every channel calls (property)', async () => {
+  const { computeOrderTaxUnified } = await import('../taxCompute.js');
+  const ids = ['burger', 'coke', 'sarnie', 'toastie', 'water', 'latte', 'baby-l', 'cake-slice'];
+  let seed = 7;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+  for (let n = 0; n < 400; n++) {
+    const ot = ['dine-in', 'takeaway', 'delivery', 'collection'][Math.floor(rnd() * 4)];
+    const b = { orderType: ot, menuId: null, lines: ids.filter(() => rnd() < 0.5).map((itemId) => ({ itemId, qty: 1 + Math.floor(rnd() * 3) })) };
+    if (!b.lines.length) continue;
+    const items = posLines(b);
+    const service = Math.round(rnd() * 3000) / 100;
+    const disc = rnd() < 0.5 ? [{ type: 'amount', value: Math.round(rnd() * 500) / 100 }] : [];
+    const a = computeOrderTaxUnified(items, ctxUK(), ot, { discounts: disc, service, deliveryFee: 0 });
+    const z = computeOrderTaxUnified(items, ctxUK(), ot, { discounts: disc, service: 0, deliveryFee: 0 });
+    assert.equal(a.totalTax, z.totalTax, JSON.stringify({ b, service }));
+    assert.equal(a.serviceTax, undefined);
+  }
+});
+
+test('service charge, US: added on tax on a service charge still follows the tax profile (unchanged)', async () => {
+  const { computeOrderTaxUnified } = await import('../taxCompute.js');
+  const { ctxUS } = await import('./fixtures.js');
+  const lines = [{ uid: 'u', itemId: 'burger', cat: 'food', price: 17, qty: 1, taxRateId: null, taxOverrides: {} }];
+  const withSvc = computeOrderTaxUnified(lines, ctxUS(), 'dine-in', { discounts: [], service: 2 });
+  const without = computeOrderTaxUnified(lines, ctxUS(), 'dine-in', { discounts: [], service: 0 });
+  assert.ok(withSvc.exclusiveTax > without.exclusiveTax, 'San Mateo taxes a mandatory service charge');
+});
+
+// ── QR and Pay at table follow the venue's one table service rule (v5.11.81, partly fixed major) ──
+test('service rule: QR and Pay at table charge the venue\'s table service charge, never the QR setting or the last till to publish', async () => {
+  const { pickVenueServiceRule, qrServiceCharge, withVenueServiceRule, normaliseServiceRule } = await import('../venueServiceRule.js');
+  // Location 2's shape: the master till charges 12.5% from 6 covers; a handheld charges 12.5% on every table.
+  const profiles = [
+    { id: 'p-bar', is_master: false, table_service_enabled: true, sort_order: 1, service_charge: null },
+    { id: 'p-hand', is_master: false, table_service_enabled: true, sort_order: 2, service_charge: { enabled: true, rate: 12.5, applyTo: 'all', minCovers: 8 } },
+    { id: 'p-main', is_master: true, table_service_enabled: true, sort_order: 3, service_charge: { enabled: true, rate: 12.5, applyTo: 'minCovers', minCovers: 6 } },
+  ];
+  assert.deepEqual(pickVenueServiceRule(profiles), { enabled: true, rate: 12.5, applyTo: 'minCovers', minCovers: 6 }, 'the master till\'s rule');
+  // Provo's shape: the master has it switched off, the handheld on: the venue charges it.
+  const provo = [
+    { id: 'main', is_master: true, table_service_enabled: true, service_charge: { enabled: false, rate: 12.5, applyTo: 'minCovers', minCovers: 6 } },
+    { id: 'mpos', is_master: false, table_service_enabled: true, service_charge: { enabled: true, rate: 12.5, applyTo: 'all', minCovers: 8 } },
+  ];
+  assert.deepEqual(pickVenueServiceRule(provo), { enabled: true, rate: 12.5, applyTo: 'all', minCovers: 8 });
+  assert.deepEqual(pickVenueServiceRule([{ id: 'x', is_master: true, service_charge: null }]), { enabled: false }, 'no table service charge anywhere');
+  assert.deepEqual(pickVenueServiceRule([{ id: 'x', table_service_enabled: false, service_charge: { enabled: true, rate: 10 } }]), { enabled: false }, 'a bar only profile is not table service');
+  // QR: the venue rule on the goods after offers, read as the till reads it (dine in).
+  const all = normaliseServiceRule({ enabled: true, rate: 12.5, applyTo: 'all' });
+  assert.deepEqual(qrServiceCharge({ rule: all, legacyPct: 10, discountedSubtotal: 19.8 }), { amount: 2.48, pct: 12.5 }, 'never the QR setting\'s 10%');
+  assert.deepEqual(qrServiceCharge({ rule: { enabled: false }, legacyPct: 10, discountedSubtotal: 19.8 }), { amount: 0, pct: 0 }, 'no table service charge: none on QR either');
+  assert.deepEqual(qrServiceCharge({ rule: null, legacyPct: 10, discountedSubtotal: 19.8 }), { amount: 1.98, pct: 10 }, 'until the database answers: the QR setting, as before');
+  // The same goods at a table on the till under that rule: the same service charge.
+  const till = computeCheckTotals({ items: [{ uid: 'a', itemId: 'x', price: 19.8, qty: 1 }], checkDiscounts: [], covers: 1, orderType: 'dine-in', deviceConfig: { serviceCharge: all } });
+  assert.equal(roundVat(till.service), 2.48);
+  // Pay at table: the stamp takes the venue rule, whichever till published the table.
+  const counterTill = { serviceCharge: null, profileName: 'Bar till' };
+  const stamp = sessionTotalsMinor({ items: [{ uid: 'a', itemId: 'x', price: 20, qty: 1 }], discounts: [], covers: 2 }, { deviceConfig: withVenueServiceRule(counterTill, all) });
+  assert.equal(stamp.totalMinor, 2250, 'a table published by a till with no service charge still stamps the venue\'s 12.5%');
+  assert.equal(withVenueServiceRule(counterTill, null), counterTill, 'not read yet: the till\'s own config, the same object');
+  // Wiring: the QR page asks the database, SessionSync stamps with the rule, the till loads it.
+  const qr = readRepo('src/surfaces/qr/QrCheckout.jsx');
+  // v5.11.81 round 1: one cached read per venue, started as the QR menu loads (no 4 second wait at Pay).
+  assert.match(qr, /venueServiceRuleCached\(location\.ops_location_id \|\| location\.id\)/);
+  assert.match(qr, /useState\(\(\) => peekVenueServiceRule\(location\.ops_location_id \|\| location\.id\)\)/);
+  assert.match(readRepo('src/surfaces/online/OnlineSurface.jsx'), /useEffect\(\(\) => \{ if \(isQr && opsLocationId\) venueServiceRuleCached\(opsLocationId\)\.catch\(\(\) => \{\}\); \}, \[isQr, opsLocationId\]\);/);
+  assert.match(readRepo('src/lib/db.js'), /if \(r\) entry\.value = r; else _venueRuleCache\.delete\(locationId\);/);
+  assert.match(qr, /qrServiceCharge\(\{ rule: venueServiceRule \|\| null, legacyPct: location\.qr_service_charge_pct, discountedSubtotal \}\)\.amount/);
+  assert.doesNotMatch(qr, /serviceChargePct > 0 \? \+\(discountedSubtotal \* serviceChargePct \/ 100\)/);
+  assert.match(qr, /disabled=\{!valid \|\| working \|\| !!vatGate \|\| serviceRuleLoading\}/, 'Pay waits for the rule');
+  assert.match(readRepo('src/sync/SessionSync.js'), /deviceConfig: withVenueServiceRule\(_st\.deviceConfig, _st\.venueServiceRule\),/);
+  assert.match(readRepo('src/sync/SyncBridge.jsx'), /sb\.rpc\('venue_service_rule', \{ p_location_id: locationId \}\)/);
+});
+
+// ── HubRise and ezCater fees and tips by the one rule (v5.11.81 regression guard) ─────────────────
+test('HubRise: a tip is booked as a tip and a service fee as service, neither carries UK VAT; reader, Table Pay, QR tab and handheld closes book the deal line', async () => {
+  const { buildChannelCloseFields } = await import('../channelMoney.js');
+  const { UK_RATES } = await import('./fixtures.js');
+  const items = [{ id: 'h1', itemId: 'burger', name: 'Burger', price: 9, qty: 2, mods: [] }];
+  const f = buildChannelCloseFields({ channel: 'delivery', total: 21.5, items, customer: { payments: [], charges: [{ name: 'Tip', type: 'tip', amount: 2 }, { name: 'Small order fee', type: 'other', amount: 1.5 }] } }, { menuItems: STORE_MENU, taxRates: UK_RATES });
+  assert.deepEqual({ tip: f.tip, service: f.service }, { tip: 2, service: 1.5 });
+  assert.equal(f.taxAmount, roundVat(18 - 18 / 1.2), 'VAT on the goods only');
+  // The till's walk in close (counter and handheld), the reader close and the QR closes book the AUTO line.
+  const store = readRepo('src/store/index.js');
+  assert.match(between(store, 'recordWalkInClosed: (walkInOrder', 'refundCheck: async'), /\.\.\.evaluateAutoDiscounts\(walkInOrder\.items\.filter\(i=>!i\.voided\), get\(\)\.discountRules, 'pos', buildScheduleCtx\(get\(\)\.locationConfig\?\.timezone\)\)\.map\(toAppliedDiscount\),/);
+  assert.match(store, /items, discounts: \[\.\.\.stampDiscountAmounts\(items, headlessDiscs\), \.\.\.promoDiscountEntry\(d\.promoRedemption\)\],/, 'reader close and Table Pay');
+});
+
+// ── v5.11.81 round 1 fix: a Pay at table close books the service the reader charged ─────────────────
+// SessionSync stamps the bill the reader charges with the VENUE's one table rule; the rich close
+// worked service out with the closing till's own profile. A master till with no service charge
+// booked service 0 on a 22.50 charge of a 20.00 bill (2.50 unexplained). The close now books the
+// stamp's own service.
+test('Pay at table: the close books the service the stamped bill charged, whatever the closing till\'s own rule', async () => {
+  const { sessionServiceMajor } = await import('../payments/checkTotals.js');
+  const { withVenueServiceRule } = await import('../venueServiceRule.js');
+  const session = { items: [{ uid: 'a', itemId: 'x', price: 20, qty: 1 }], covers: 2, discounts: [] };
+  const masterTill = { serviceCharge: { enabled: false, rate: 0 } };
+  const venueRule = SERVICE_DEVICE.serviceCharge;
+  const stampOpts = { deviceConfig: withVenueServiceRule(masterTill, venueRule) };
+  const stamped = sessionTotalsMinor(session, stampOpts);
+  assert.equal(stamped.totalMinor, 2250, 'the reader charges 22.50');
+  assert.equal(sessionServiceMajor(session, { deviceConfig: masterTill }), 0, 'the closing till\'s own rule books none');
+  const booked = sessionServiceMajor(session, stampOpts);
+  assert.equal(booked, 2.5, 'the stamp\'s rule books the 2.50 the reader took');
+  assert.equal(Math.round((stamped.subtotalMinor / 100 + booked) * 100), stamped.totalMinor, 'nothing unexplained');
+  const store = readRepo('src/store/index.js');
+  assert.match(store, /const tablePayService = \(d\.serviceMinor == null && \(d\.source === 'pax_table_pay' \|\| d\.source === 'adyen_pay_at_table'\) && table\?\.session\)\n\s+\? sessionServiceMajor\(table\.session, \{\n\s+deviceConfig: withVenueServiceRule\(get\(\)\.deviceConfig, get\(\)\.venueServiceRule\),/);
+  assert.match(store, /\.\.\.\(tablePayService != null \? \{ service: tablePayService \} : \{\}\),\n\s+\};/);
+});

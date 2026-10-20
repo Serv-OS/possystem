@@ -7,12 +7,21 @@
 //      because it only filters by created_at). Each event is fetched, ingested
 //      (idempotent), then acknowledged (DELETE) so it clears from HubRise.
 //   2. retry failed outbound status pushes (hubrise_order_links.push_error set).
+//   3. v5.11.81: SOLD OUT ITEMS follow ServOS by themselves: the difference between the venue's 86
+//      set and the set last sent goes as a PATCH (an automatic 86 from a daily count reached the
+//      platforms only through this; a till's 86 tap still goes at once).
+//   4. v5.11.81: THE MENU follows ServOS by themselves where ServOS already publishes the HubRise
+//      catalog (Push menu pressed once): a multi site publish or a Menu Manager save is pushed
+//      once the menu has been still for 90 seconds. Rules: _shared/hubriseAutoSync.js.
 //
 // Auth: x-run-secret === HUBRISE_RECONCILE_SECRET, or Bearer SERVICE_ROLE.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { listEvents, getEvent, ackEvent } from '../_shared/hubrise.ts';
-import { ingestOrder, patchOrderStatus, resyncInventory } from '../_shared/hubrise-ingest.ts';
+import { ingestOrder, patchOrderStatus, resyncInventory, outOfStockIds } from '../_shared/hubrise-ingest.ts';
+import { patchInventory } from '../_shared/hubrise.ts';
+import { pushCatalog, menuFingerprint } from '../_shared/hubrise-catalog.ts';
+import { inventoryDelta, inventoryPatchEntries, catalogSyncStep, autoCatalogAllowed, giveUpOnInventoryError, MAX_PUSHES_PER_RUN } from '../_shared/hubriseAutoSync.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-run-secret' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -86,6 +95,52 @@ async function reconcileLocation(conn: any): Promise<{ drained: number; retried:
   return { drained, retried, errors };
 }
 
+// 3) v5.11.81: sold out items, the difference only, as a PATCH (never replaces the inventory).
+// Skipped until 20261020a has run (no inventory_ids column on the row read with select *).
+async function syncInventoryDelta(conn: any): Promise<string> {
+  if (!Object.prototype.hasOwnProperty.call(conn, 'inventory_ids')) return 'no column';
+  if (!conn.access_token || !conn.hubrise_catalog_id) return 'no catalog';
+  const loc = conn.location_id;
+  const now = [...(await outOfStockIds(sb, loc))];
+  const delta = inventoryDelta(Array.isArray(conn.inventory_ids) ? conn.inventory_ids : null, now);
+  const changed = delta.soldOut.length + delta.back.length > 0;
+  let refused: string | null = null;
+  if (changed) {
+    try {
+      try { await patchInventory(conn.access_token, conn.hubrise_catalog_id, inventoryPatchEntries(delta)); }
+      catch { await patchInventory(conn.access_token, conn.hubrise_catalog_id, inventoryPatchEntries(delta, { skuOnly: true })); }
+    } catch (e) {
+      if (!giveUpOnInventoryError(e)) throw e;          // 5xx or network: the next run tries again
+      refused = e instanceof Error ? e.message : String(e);
+    }
+  }
+  const at = new Date().toISOString();
+  await sb.from('hubrise_connections').update({
+    inventory_ids: [...now].sort(),
+    ...(changed && !refused ? { inventory_pushed_at: at, inventory_synced_at: at, inventory_sync_error: null } : {}),
+    ...(refused ? { inventory_sync_error: refused } : {}),
+  }).eq('location_id', loc);
+  return refused ? `refused: ${refused}` : `sold out ${delta.soldOut.length}, back ${delta.back.length}`;
+}
+
+// 4) v5.11.81: the menu, where ServOS owns the catalog, once it has been still for a while.
+async function syncCatalog(conn: any, budget: { pushes: number }): Promise<string> {
+  const loc = conn.location_id;
+  if (!autoCatalogAllowed(conn)) return 'off';          // no fingerprint read for a venue it never pushes
+  const fp = await menuFingerprint(sb, loc);
+  const step = catalogSyncStep(conn, fp, Date.now());
+  if (step === 'note') {
+    await sb.from('hubrise_connections').update({ menu_fingerprint: fp, menu_fingerprint_at: new Date().toISOString() }).eq('location_id', loc);
+    return 'changed, waiting';
+  }
+  if (step !== 'push') return step;
+  if (budget.pushes >= MAX_PUSHES_PER_RUN) return 'next run';
+  budget.pushes++;
+  await sb.from('hubrise_connections').update({ catalog_auto_tried_at: new Date().toISOString() }).eq('location_id', loc);
+  const out = await pushCatalog(sb, loc, false, { onlyIfChanged: true });   // records the fingerprint on success
+  return out.unchanged ? 'same catalog, not sent' : `pushed ${out.products} products`;
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
@@ -99,10 +154,16 @@ Deno.serve(async (req) => {
 
   const { data: conns } = await sb.from('hubrise_connections').select('*').eq('status', 'connected');
   const results: any[] = [];
+  const budget = { pushes: 0 };
   for (const conn of (conns || [])) {
     if (!conn.access_token) continue;
-    try { results.push({ location_id: conn.location_id, ...(await reconcileLocation(conn)) }); }
-    catch (e) { results.push({ location_id: conn.location_id, error: e instanceof Error ? e.message : String(e) }); }
+    let out: any = { location_id: conn.location_id };
+    try { out = { ...out, ...(await reconcileLocation(conn)) }; }
+    catch (e) { out.error = e instanceof Error ? e.message : String(e); }
+    // Each step on its own: a failure here never stops the orders above or the next venue.
+    try { out.inventory = await syncInventoryDelta(conn); } catch (e) { out.inventory = `failed: ${e instanceof Error ? e.message : String(e)}`; }
+    try { out.menu = await syncCatalog(conn, budget); } catch (e) { out.menu = `failed: ${e instanceof Error ? e.message : String(e)}`; }
+    results.push(out);
   }
   return json({ ok: true, locations: results.length, results });
 });

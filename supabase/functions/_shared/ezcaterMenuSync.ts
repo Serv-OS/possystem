@@ -701,6 +701,32 @@ export function autoTargetFor(entry: MenuEntry, ourItems: any[]):
   return hits.size === 1 ? { menuItemId: Array.from(hits)[0], optionId: null } : null;
 }
 
+/**
+ * v5.11.81 (channel parity round 2: "a rename keeps its links"). An EXACT auto link to an item of
+ * ours that has since been RENAMED (a Menu Manager edit, a multi site publish) keeps routing: the
+ * sync used to clear it as soon as our name stopped matching, so the next ezCater order printed by
+ * name with no item (no routing, no 86, no stock). Kept only when ALL of these hold:
+ *   the link was an exact auto link on a plain ITEM name (never an option, never a staff match),
+ *   the same item of ours is still on the menu (whole menu read, not archived), and
+ *   no item of ours now carries that exact name (if one does, autoTargetFor links that one).
+ * The link stays on the same product row. Reusing a product row for something else is a re match
+ * on the Item matching card, as before.
+ */
+export function renamedTargetKept(entry: MenuEntry, was: Decision | null, ourItems: any[]):
+  { menuItemId: string | null; optionId: string | null } | null {
+  if (!was || was.matchedBy !== EXACT_MATCHED_BY || !was.menuItemId || was.optionId) return null;
+  if (!mayAutoLink(entry)) return null;
+  const want = entryExactName(entry);
+  if (!want) return null;
+  let stillThere = false;
+  for (const it of arr(ourItems)) {
+    if (!it || it.id == null) continue;
+    if (String(it.id) === was.menuItemId) stillThere = true;
+    if (ourNamesOf(it).some((n) => plainSame(n, want))) return null;   // an exact name: that rule decides
+  }
+  return stillThere ? { menuItemId: was.menuItemId, optionId: null } : null;
+}
+
 // ── Decisions ────────────────────────────────────────────────────────────────────────────────
 
 const idsOf = (v: unknown): string[] => arr(v).map((x) => s(x)).filter(Boolean);
@@ -810,6 +836,8 @@ export interface SyncPlan {
     items: number; sizes: number; options: number; inserted: number; refreshed: number;
     autoLinked: number; toDecide: number; redecided: number; cleared: number; lookAgain: number;
     carried: number;
+    /** v5.11.81: exact auto links kept after our item was renamed (renamedTargetKept). */
+    renamedKept?: number;
   };
 }
 
@@ -1013,7 +1041,7 @@ export function planMenuSync(input: {
   const optionItems = input.complete ? optionItemsOf(arr(input.entries) as MenuEntry[]) : null;
   const plan: SyncPlan = {
     inserts: [], refreshes: [], redecides: [],
-    counts: { items: 0, sizes: 0, options: 0, inserted: 0, refreshed: 0, autoLinked: 0, toDecide: 0, redecided: 0, cleared: 0, lookAgain: 0, carried: 0 },
+    counts: { items: 0, sizes: 0, options: 0, inserted: 0, refreshed: 0, autoLinked: 0, toDecide: 0, redecided: 0, cleared: 0, lookAgain: 0, carried: 0, renamedKept: 0 },
   };
   const decide = (target: { menuItemId: string | null; optionId: string | null } | null): Decision => (target
     ? { menuItemId: target.menuItemId, optionId: target.optionId, matchedBy: EXACT_MATCHED_BY }
@@ -1075,8 +1103,11 @@ export function planMenuSync(input: {
       continue;
     }
     // An automatic row, with our whole menu: decided again, its facts in the same write.
+    // v5.11.81: an exact link to an item of ours that was renamed is kept (renamedTargetKept).
     if (input.menuOk) {
-      const next = decide(target);
+      const kept = target ? null : renamedTargetKept(e, was, input.ourItems);
+      if (kept) plan.counts.renamedKept = (plan.counts.renamedKept || 0) + 1;
+      const next = decide(target || kept);
       if (!sameDecision(was, next)) {
         plan.redecides.push({ kind: e.kind, ezKey: e.ezKey, was, ...next, facts });
         if ((was.menuItemId || was.optionId) && !next.menuItemId && !next.optionId) plan.counts.cleared++;
@@ -1100,7 +1131,10 @@ export function planMenuSync(input: {
       if (!was.menuItemId && !was.optionId) continue;
       // A row an earlier rule keyed (its key is not its own name's key today) is never kept.
       const target = was.matchedBy === EXACT_MATCHED_BY && !isEarlierSyncRow(prev) ? autoTargetFor(storedEntry(prev), input.ourItems) : null;
-      const keep = !!target && target.menuItemId === was.menuItemId && target.optionId === was.optionId;
+      // v5.11.81: our item renamed, nothing else of ours with that name: the link is kept.
+      const kept = !target && !isEarlierSyncRow(prev) ? renamedTargetKept(storedEntry(prev), was, input.ourItems) : null;
+      if (kept) plan.counts.renamedKept = (plan.counts.renamedKept || 0) + 1;
+      const keep = (!!target && target.menuItemId === was.menuItemId && target.optionId === was.optionId) || !!kept;
       if (!keep) {
         plan.redecides.push({ kind: kindOf(prev), ezKey: s(prev.ez_key), was, ...decide(null) });
         plan.counts.cleared++;

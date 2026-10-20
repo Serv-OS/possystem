@@ -751,15 +751,15 @@ test('Xero: a rate with no Xero match blocks the day', () => {
   assert.equal(mapped.transactions[0].payload.LineItems[0].TaxType, 'TAX002');
 });
 
-test('Xero: service charge is No VAT by default; serviceTax and serviceTaxable opt in', () => {
+test('Xero: service charge is No VAT at a VAT venue, whatever is set (Peter, 19 Oct 2026)', () => {
   const row = { ...mixed, total: 33, service: 3, tenders: [{ method: 'card', amount: 33, tip: 0 }] };
   const svc = (mapping) => {
     const plan = planXeroDay(rday([row]), { detail: UK_DETAIL, mapping });
     return [plan.transactions[0].payload.LineItems.find((l) => l.Description.startsWith('Service charge')).TaxType, plan.warnings.map((w) => w.code)];
   };
   assert.deepEqual(svc({}), ['NONE', ['service_unmapped']]);
-  assert.deepEqual(svc({ serviceTax: 'OUTPUT2' }), ['OUTPUT2', ['service_unmapped', 'vat_differs']]);   // ServOS booked no VAT on it
-  assert.equal(svc({ serviceTaxable: true })[0], 'OUTPUT2');                      // the venue default rate
+  assert.deepEqual(svc({ serviceTax: 'OUTPUT2' }), ['NONE', ['service_unmapped']], 'no VAT, so nothing differs from what ServOS booked');
+  assert.equal(svc({ serviceTaxable: true })[0], 'NONE');
   assert.equal(svc({ serviceTaxable: false, serviceTax: 'OUTPUT2' })[0], 'NONE');
   assert.deepEqual(svc({ serviceTax: 'INPUT2' }), ['NONE', ['service_unmapped', 'tax_mapping_invalid']]);
   assert.equal(svc({ salesNoVat: true, serviceTax: 'OUTPUT2' })[0], 'NONE');

@@ -250,6 +250,9 @@ function MPOSRouter() {
 
   // After picking type in MNewOrder
   const onPickType = (type) => {
+    // v5.11.81 (round 1 fix): a NEW dine in order never reprices the table last opened here
+    // (activeTableId is kept for a quick resume); the table is picked on the next screen.
+    if (type === 'dine-in') setActiveTableId(null);
     useStore.getState().setOrderType(type);
     if (type === 'dine-in') {
       setFlow({ screen: 'pickTable' });
@@ -276,9 +279,10 @@ function MPOSRouter() {
       setFlow({ screen: 'covers', context: { table } });
     } else {
       // Existing session → table view
-      useStore.setState({ walkInOrder: null });
-      setActiveTableId(table.id);
-      useStore.getState().setOrderType('dine-in');
+      // v5.11.81 (round 1 fix): open the table the way the desktop till does (openTableInPOS):
+      // dine in, no reprice. setOrderType repriced every line at the current menu, so a Latte
+      // added on Lunch at 2.50 became 3.20 when the table was tapped after Lunch ended.
+      useStore.setState({ walkInOrder: null, activeTableId: table.id, orderType: 'dine-in', deliveryQuote: null });
       setFlow({ screen: 'tableView', context: { tableId: table.id } });
     }
   };
@@ -522,9 +526,11 @@ function MPOSRouter() {
     // failure state into the retry. buildCloseRecord and recordWalkInClosed both adopt
     // paymentInfo.closedCheckId, so a retry rewrites the SAME closed_checks row instead
     // of minting a second one the upsert can't collapse (= the sale counted twice).
+    // v5.11.81: a counter sale takes its basket's one id (store.ensureWalkInCheckId), so a retry or
+    // a second payment of the same basket books the same row (lib/walkInCheckId.js).
     const pi = paymentInfo?.closedCheckId
       ? paymentInfo
-      : { ...paymentInfo, closedCheckId: `chk-${Date.now()}` };
+      : { ...paymentInfo, closedCheckId: (!tableId && state.ensureWalkInCheckId?.()) || `chk-${Date.now()}` };
     // A first attempt can book the record and still throw on a later step (loyalty,
     // drawer, Challenge 21…). The id is stable, so a retry adopts that row instead of
     // closing the same sale twice.
@@ -951,8 +957,8 @@ function MPOSRouter() {
               if (o._kind === 'table') {
                 const tableId = o.tableId || o._table?.id || null;
                 if (!tableId) { showToast?.('Could not find that table', 'error'); return; }
-                setActiveTableId(tableId);
-                useStore.getState().setOrderType('dine-in');
+                // v5.11.81 (round 1 fix): as the desktop till opens a table: dine in, no reprice.
+                useStore.setState({ activeTableId: tableId, orderType: 'dine-in', deliveryQuote: null });
                 setFlow({ screen: 'tableView', context: { tableId } });
               } else if (o._kind === 'closed') {
                 // Find the underlying closedChecks row by id (MOrdersList uses

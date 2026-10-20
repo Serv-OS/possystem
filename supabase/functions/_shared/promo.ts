@@ -1,5 +1,6 @@
 // supabase/functions/_shared/promo.ts
 // Shared promo-code helpers: human-readable, non-guessable code generation + reward→discount mapping.
+import { promoDiscountForBasket } from './promoMath.js';
 
 // Crockford-ish alphabet minus ambiguous chars (no I, L, O, 0, 1).
 const ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
@@ -16,31 +17,23 @@ export function genCode(prefix = '', length = 5): string {
 
 export type Offer = {
   reward_type: string; reward_value: number; reward_item_id?: string | null; reward_label?: string | null;
+  include_category_ids?: string[] | null; exclude_category_ids?: string[] | null;
 };
 
 // Map an offer's reward to a discount the till applies through its existing discount slot.
 // amount is in major currency units (matches closed_checks numeric(10,2)).
+// v5.11.81: the one promo maths (_shared/promoMath.js), here and in the apps. With a subtotal alone
+// it is exactly the old answer; with the basket's lines it honours the offer's category rules and
+// prices a free item, and a free delivery code takes the delivery fee off.
 export function computeDiscount(offer: Offer, subtotal: number): {
   type: string; value: number; amount: number; label: string; item_id?: string | null;
 } {
-  const v = Number(offer.reward_value) || 0;
-  const sub = Math.max(0, Number(subtotal) || 0);
-  switch (offer.reward_type) {
-    case 'percent': {
-      const amount = Math.round(sub * (v / 100) * 100) / 100;
-      return { type: 'percent', value: v, amount, label: offer.reward_label || `${v}% off` };
-    }
-    case 'fixed': {
-      const amount = Math.min(v, sub);
-      return { type: 'amount', value: v, amount, label: offer.reward_label || `£${v.toFixed(2)} off` };
-    }
-    case 'free_item':
-      return { type: 'free_item', value: v, amount: 0, item_id: offer.reward_item_id ?? null, label: offer.reward_label || 'Free item' };
-    case 'free_delivery':
-      return { type: 'free_delivery', value: 0, amount: 0, label: offer.reward_label || 'Free delivery' };
-    case 'points_bonus':
-      return { type: 'points_bonus', value: v, amount: 0, label: offer.reward_label || `${v} bonus points` };
-    default:
-      return { type: 'amount', value: 0, amount: 0, label: offer.reward_label || 'Offer' };
-  }
+  return promoDiscountForBasket(offer, { subtotal });
+}
+
+/** v5.11.81: the same for a whole basket ({ subtotal, lines, deliveryFee }). */
+export function computeDiscountForBasket(offer: Offer, basket: { subtotal?: number; lines?: unknown[] | null; deliveryFee?: number }): {
+  type: string; value: number; amount: number; label: string; item_id?: string | null; missing?: boolean; points?: number;
+} {
+  return promoDiscountForBasket(offer, basket || {});
 }

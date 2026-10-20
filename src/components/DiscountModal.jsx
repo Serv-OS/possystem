@@ -9,7 +9,8 @@ const managersFrom = (staffMembers) =>
     .filter(s => s.role === 'Manager' && s.active !== false)
     .map(s => ({ pin: s.pin, name: s.name, id: s.id }));
 
-export default function DiscountModal({ items, subtotal, onConfirm, onCancel }) {
+// checkOnly (v5.11.81): a bar tab takes a discount on the whole tab only (its lines live in rounds).
+export default function DiscountModal({ items, subtotal, onConfirm, onCancel, checkOnly = false }) {
   const { staffMembers, staff: currentUser, discountPresets } = useStore();
   // 29 Sep 2026: ONLY this venue's own discounts from Back Office. The hard-coded starter set
   // (Staff meal, Happy hour 20%, Comp...) showed at venues that had set none up. v5.5.641's
@@ -74,6 +75,7 @@ export default function DiscountModal({ items, subtotal, onConfirm, onCancel }) 
   // to its matching items with no manual picking; everything else goes to the apply step.
   const proceedAfterAuth = (mgr) => {
     if (categoryUids && categoryUids.length) { buildDiscount('items', categoryUids, mgr); return; }
+    if (checkOnly) { buildDiscount('check', [], mgr); return; }
     // Category preset but nothing in the basket matches → show step 2 (don't silently apply £0).
     if (preset?.scope === 'category') { setScope('items'); setItemSel([]); }
     setStep('apply');
