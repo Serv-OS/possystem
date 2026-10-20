@@ -16,6 +16,7 @@ import { occupationMatch, seatedAtOf } from '../lib/rowWriteFence';
 import { useStore } from '../store';
 import { isTrainingMode } from '../lib/trainingMode';
 import { sessionTotalsMinor } from '../lib/payments/checkTotals';
+import { withVenueServiceRule } from '../lib/venueServiceRule.js';
 import { isSessionClosed } from './sessionClosure';
 import { sessionVenueOk, stampLocalSessionsFor } from '../lib/localSessions';
 import { readShowsKitchenScreen } from '../lib/queueDevice';
@@ -107,7 +108,9 @@ export async function flushSessions() {
   // tidiness.
   const _st = useStore.getState();
   const _totalsOpts = {
-    deviceConfig: _st.deviceConfig,
+    // v5.11.81: Pay at table takes the venue's one table service rule (lib/venueServiceRule.js),
+    // not the rule of whichever till published the table last. Not read yet: the till's own.
+    deviceConfig: withVenueServiceRule(_st.deviceConfig, _st.venueServiceRule),
     discountRules: _st.discountRules,
     timezone: _st.locationConfig?.timezone,
     // v5.7.31: the stamped bill must include added-on sales tax — a reader

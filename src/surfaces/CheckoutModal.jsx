@@ -42,6 +42,8 @@ import { orderFlag, flagTableLabel } from '../lib/tillOrderType';   // 30 Sep 20
 import { bookingCreditFor, bookingLegsForBill } from '../lib/bookings/bookingCredit';   // 16 Oct 2026: one booking credit helper (order screen, table card, checkout)
 import { placedPromoFor } from '../lib/orderPlacedFrom';   // v5.11.78 round 1: an order's own promo, as a promo credit
 import { promoBasketValue, heldPromo } from '../lib/promoBasis';   // 19 Oct 2026 (v5.11.78): one promo basket on every channel
+import { promoBasketLines } from '../../supabase/functions/_shared/promoMath.js';   // v5.11.81: the basket's lines for a code's own rules
+import { mintCheckId, checkoutKeyLeg, mintKeyNonce, rotateOnRepeatOverride } from '../lib/walkInCheckId';   // v5.11.81: one check id per counter basket, one card job key per checkout
 // (readerDisplay imports removed — cancel now lets the natural cart-change effect refresh the reader after onBack)
 
 // ─── Tip picker ───────────────────────────────────────────────────────────────
@@ -1384,7 +1386,9 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     if (!pendingLoyaltyReward || !loyaltyData || loyaltyApplied) return;
     let alive = true;
     redeemLoyaltyReward(pendingLoyaltyReward, {
-      customerId: loyaltyData.customerId || customer?.customerId, items, total,
+      // v5.11.81 round 1: a percent reward is worked out on the GOODS after deals (the promo basket,
+      // as the kiosk and online do), never the delivery fee, service charge or added on tax.
+      customerId: loyaltyData.customerId || customer?.customerId, items, total: promoBasis,
       menuItems: useStore.getState().menuItems || [],
       // 28 Sep 2026: this site's categories as well, like Redeem on the rewards screen (v5.9.66), so
       // a reward that names a CATEGORY (Coffee Boy's Free Drink) applies the same both ways.
@@ -1485,13 +1489,25 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   // (`giftcommit:<check>:<card>`) — lands on the same id the refund reversal later
   // reads back off the check. Side benefit: the modal-driven close and the terminal-job
   // reconciler now agree on one id instead of minting two for the same PAX sale.
+  //
+  // v5.11.81: a COUNTER sale's id belongs to its BASKET (store.ensureWalkInCheckId), not to this
+  // checkout: a second checkout opened on the same cart, or a retry, books under the same id, so
+  // the same sale can never be booked twice (lib/walkInCheckId.js). A table or a bar tab mints
+  // its own as before.
   const checkIdRef = useRef(null);
   const getCheckId = useCallback(() => {
     if (!checkIdRef.current) {
-      checkIdRef.current = `chk-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+      const basketId = (!tableId && orderType !== 'bar-tab') ? useStore.getState().ensureWalkInCheckId?.() : null;
+      checkIdRef.current = basketId || mintCheckId();
     }
     return checkIdRef.current;
-  }, []);
+  }, [tableId, orderType]);
+  // v5.11.81 (round 1 fix): this checkout's own card job key leg (walkInCheckId.checkoutKeyLeg).
+  // The basket keeps one closed check id, but each checkout sends under its own key, so the
+  // server's double charge net sees an approved job on the same basket from an earlier checkout.
+  // Minted once per checkout: a retry here keeps the same key and re-attaches.
+  const keyNonceRef = useRef(null);
+  const getKeyNonce = () => { if (!keyNonceRef.current) keyNonceRef.current = mintKeyNonce(); return keyNonceRef.current; };
   // 28 Sep 2026: the ORDER REF, frozen the same way, once per checkout, at the first send to a card
   // machine. It rides in the job's draft, so whichever device books the job books this ref, and
   // out on paymentInfo.orderRef, so this checkout's own close books it too (the kitchen ticket and
@@ -1645,18 +1661,21 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     if (!code) return { error: 'Enter a code' };
     if (promoApplied) return { error: 'A promo code is already applied' };
     try {
+      // v5.11.81: with the basket's lines and delivery fee, so the offer's category rules, a free
+      // item and free delivery are worked out (lib/promoBasis.js, _shared/promoMath.js).
+      const lines = promoBasketLines(items);
       const { data, error } = await supabase.functions.invoke('promo-redeem', { body: {
         action: 'validate', code, location_id: getActiveLocationSync(),
-        customer_id: customer?.customerId || customer?.id || null, basket: { subtotal: promoBasis },
+        customer_id: customer?.customerId || customer?.id || null, basket: { subtotal: promoBasis, lines, delivery_fee: Number(deliveryFee) || 0 },
       } });
       if (error) throw new Error(error.message);
       if (data?.valid) {
         // `basket` rides on the held promo so the redeem records the same basket (store
         // redeemPromoCode reads it through promoRedeemBasket). Built by lib/promoBasis.js heldPromo.
-        setPromoApplied(heldPromo(code, data, promoBasis));
+        setPromoApplied(heldPromo(code, data, promoBasis, lines, Number(deliveryFee) || 0));
         return { ok: true };
       }
-      const reasons = { not_found: 'Code not found', expired: 'Code expired', not_yet_active: 'Not active yet', already_used: 'Already used', usage_limit: 'Usage limit reached', min_spend: `Minimum spend ${money(Number(data?.min_spend || 0))}`, wrong_venue: 'Not valid at this venue', customer_mismatch: 'Belongs to another customer', customer_required: 'Attach the customer first', inactive: 'Offer inactive', voided: 'Code voided' };
+      const reasons = { free_item_not_in_basket: 'Add the free item to the order first', not_found: 'Code not found', expired: 'Code expired', not_yet_active: 'Not active yet', already_used: 'Already used', usage_limit: 'Usage limit reached', min_spend: `Minimum spend ${money(Number(data?.min_spend || 0))}`, wrong_venue: 'Not valid at this venue', customer_mismatch: 'Belongs to another customer', customer_required: 'Attach the customer first', inactive: 'Offer inactive', voided: 'Code voided' };
       return { error: reasons[data?.reason] || 'Invalid code' };
     } catch (e) { return { error: e.message || 'Could not check code' }; }
   };
@@ -1749,6 +1768,8 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         // A fresh id makes a re-apply a genuinely new redemption. Safe to mint: no check
         // has been recorded under the old id (the job died), and the next dispatch
         // re-keys its own job from it.
+        // v5.11.81: a counter basket's own id is retired with it (store.rotateWalkInCheckId).
+        if (!tableId && orderType !== 'bar-tab') useStore.getState().rotateWalkInCheckId?.();
         checkIdRef.current = null;
         setGiftError('');
         try { useStore.getState().showToast?.('Gift card balance restored — apply it again if you need to.', 'info'); } catch {}
@@ -2095,7 +2116,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
       if (!tableId && !isBarTab) useStore.getState().freezeWalkInRef?.(orderRef);
       const checkKey = buildCheckKey({
         locationId, tableId, sessionId: session?.id,
-        leg: tableId ? undefined : checkId,
+        leg: tableId ? undefined : checkoutKeyLeg(checkId, getKeyNonce()),
       });
       const dueMinor = toMinor(grand);
       if (!(dueMinor > 0)) throw new Error('Nothing left for the card to take.');
@@ -2349,7 +2370,19 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   // (the same reversal the card screen's Back uses).
   const openPriorCheck = (ref) => { setRepeatWarn(null); reverseDispatchedGift('Card machine payment not sent (possible repeat)'); useStore.getState().openCheckHistoryFor?.(ref); onClose?.(); };
   const clearRepeatedOrder = () => { setRepeatWarn(null); reverseDispatchedGift('Card machine payment not sent (possible repeat)'); useStore.getState().clearWalkIn?.(); onClose?.(); };
-  const takePaymentAnyway = (jobId) => { repeatOkRef.current = jobId; setRepeatWarn(null); startTerminalJob(); };
+  // v5.11.81 (round 1 fix): when the earlier payment is booked under THIS basket's id, a charge
+  // staff wave through as a different customer books its own row (a fresh basket id), or it would
+  // share the id and never be booked (walkInCheckId.rotateOnRepeatOverride).
+  const takePaymentAnyway = (jobId) => {
+    if (rotateOnRepeatOverride({
+      priorClosedCheckId: repeatWarn?.closed_check_id, checkId: checkIdRef.current,
+      counter: !tableId && !isBarTab, giftDebited: !!paxGiftRef.current,
+    })) {
+      useStore.getState().rotateWalkInCheckId?.();
+      checkIdRef.current = null;
+    }
+    repeatOkRef.current = jobId; setRepeatWarn(null); startTerminalJob();
+  };
 
   const handleCardPress = () => {
     // TRAINING MODE — first, before anything else. A job row would dispatch a
@@ -3042,7 +3075,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
               customer={customer}
               loyaltyData={loyaltyData}
               items={items}
-              total={total}
+              total={promoBasis}
               onApplied={(result) => {
                 setLoyaltyApplied(result);
                 setScreen('review');

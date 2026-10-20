@@ -27,7 +27,7 @@ import { secondStepRefusal } from '../_shared/second-step.ts';
 import { writeWfAudit } from '../_shared/wfAudit.js';
 // v5.11.64: ONE copy of the purchasing rules with the Order pad (pack choice, pack content, net
 // price, order totals, next delivery day) and ONE unit conversion engine with Back Office receiving.
-import { nextDeliveryYmd, packContent, packsForBase, netPackPrice, poTotals, unreceivableLines, receiveRefusalText } from '../_shared/purchasingRules.js';
+import { nextDeliveryYmd, packContent, packsForBase, netPackPrice, poTotals, unreceivableLines, receiveRefusalText, poReceiptLines } from '../_shared/purchasingRules.js';
 // v5.11.65: ONE moving average rule with Back Office receiving (applyReceipt); the inline copy here
 // wrote 4.00 where Back Office wrote 1.20 when stock was below zero.
 import { costAfterReceipt } from '../_shared/stockCosting.js';
@@ -395,6 +395,32 @@ Deno.serve(async (req) => {
         return json({ ok: true, rejected: true });
       }
 
+      // v5.11.79 (stock plan Phase 0, 11.5 item 3): every line's stock and cost in ONE database call
+      // (stock_receive, 20261019b): items locked in id order, the average worked out from the LOCKED
+      // on hand, the cost history keeping the supplier pack and the price paid per pack. Same keys
+      // po:<order>:<line> as Back Office, so the two can never post one line twice. Before 20261019b
+      // is run the call is missing and the line by line path below runs, as before.
+      let oneCall = false;
+      {
+        const rcpt: Record<string, any> = {};
+        for (const [lineId, r] of Object.entries(byLine)) rcpt[lineId] = { qtyPacks: r?.qty_packs ?? 0, unitPrice: r?.unit_price };
+        const stockLines = poReceiptLines(po.id, lines, { byLine: rcpt, perPackOf }).map((x: any) => ({
+          key: x.key, item_id: x.item_id, qty_base: x.qty_base, unit_cost: x.unit_cost,
+          supplier_product_id: x.supplier_product_id, pack_price: x.pack_price, pack_label: x.pack_label,
+        }));
+        if (!stockLines.length) oneCall = true;
+        else {
+          const { data: rres, error: rErr } = await sb.rpc('stock_receive', {
+            p_location_id: loc, p_source_type: 'purchase_order', p_source_id: po.id, p_lines: stockLines, p_area_id: null,
+            p_notes: `Received in the Manager app by ${op.name || 'manager'}`,
+          });
+          const missing = rErr && /PGRST202|42883|could not find the function|does not exist/i.test(`${rErr.code || ''} ${rErr.message || ''}`);
+          if (rErr && !missing) { console.error('[po.receive] stock_receive', rErr.message); return json({ error: `could not book the order into stock: ${rErr.message}`, done: false }, 500); }
+          if (!rErr && (rres as any)?.ok === false) return json({ error: (rres as any)?.error || 'the receive was refused', done: false }, 400);
+          oneCall = !rErr;
+        }
+      }
+
       let subtotal = 0, tax = 0;
       const shorted: any[] = [];
       let received = 0;
@@ -405,7 +431,8 @@ Deno.serve(async (req) => {
         const accepted = Math.max(0, Number(r?.qty_packs ?? 0) || 0);
         const price = r?.unit_price != null && r.unit_price !== '' ? Number(r.unit_price) : (Number(l.unit_price) || 0);
         const perPack = perPackOf[l.id];
-        if (accepted > 0) {
+        if (accepted > 0 && oneCall) received++;
+        if (accepted > 0 && !oneCall) {
           const recvBase = accepted * perPack;
           const unitCostPerBase = price / perPack;
           // applyReceipt (purchasing.js lines 50 to 80): a zero price moves the stock in at the item's

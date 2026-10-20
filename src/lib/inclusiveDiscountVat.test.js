@@ -50,16 +50,32 @@ test('no discount: the very same result as before, byte for byte (no share key)'
   assert.equal(isScaledTaxRecord(t.tax), false);
 });
 
-test('an amount off, an item discount and mixed rates: VAT on the goods charged, spread by value', () => {
+test('an amount off, an item discount and mixed rates: VAT on what EACH line was charged (v5.11.81)', () => {
   const items = [
     { uid: 'a', price: 10, qty: 1, taxRateId: 'std' },
     { uid: 'b', price: 10, qty: 1, taxRateId: 'zero', discount: { type: 'percent', value: 50 } },
   ];
   const t = bill(items, { checkDiscounts: [{ type: 'amount', value: 3 }] });
-  // goods 20, after the item discount 15, after £3 off 12: share 12 / 20.
+  // goods 20, after the item discount 15 (a 10, b 5), after £3 off spread by value 12 (a 8, b 4).
+  // v5.11.81 (confirmed minor): the item discount belongs to the 0% line, so it takes no VAT off
+  // the 20% line. The 20% line was charged 8.00: VAT 1.33. Before, one share (0.6) on every rate
+  // booked 1.00, as if half the burger's VAT had gone with the sandwich's discount.
   assert.equal(t.discountedSub, 12);
+  assert.equal(t.total, 12, 'what the bill charges is unchanged');
   assert.equal(t.tax.share, 0.6);
-  assert.equal(pence(t.tax.totalTax), pence((10 - 10 / 1.2) * 0.6));
+  assert.equal(t.tax.byLine, true);
+  assert.equal(pence(t.tax.totalTax), pence(8 - 8 / 1.2));
+});
+
+test('a check discount alone on mixed rates: the one share, the very same record as before', () => {
+  const items = [
+    { uid: 'a', price: 10, qty: 1, taxRateId: 'std' },
+    { uid: 'b', price: 10, qty: 1, taxRateId: 'zero' },
+  ];
+  const t = bill(items, { checkDiscounts: [{ type: 'amount', value: 3 }] });
+  const full = computeOrderTaxUnified(items, { taxRates: UK }, 'takeaway');
+  assert.deepEqual(t.tax, inclusiveTaxOnCharged(full, 20, 17));
+  assert.equal('byLine' in t.tax, false);
 });
 
 test('a 100% discount books no VAT through the seam itself', () => {
@@ -167,7 +183,8 @@ const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
 
 test('wiring: one seam; every reader of it follows', () => {
   const ct = read('./payments/checkTotals.js');
-  assert.match(ct, /tax = inclusiveTaxOnCharged\(tax, linesGoods\(liveItems\), discountedSub\);/);
+  // v5.11.81: a discount that names its lines takes VAT off those lines' rates (one share otherwise).
+  assert.match(ct, /tax = inclusiveTaxOnChargedLines\(tax, liveItems, allCheckDiscounts, discountedSub,/);
   const tc = read('./taxCompute.js');
   assert.match(tc, /const booked = bookedTaxRecord\(check\);\n {2}if \(booked\) return booked;/);
   const ch = read('../components/CheckHistory.jsx');

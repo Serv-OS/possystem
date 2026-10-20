@@ -36,7 +36,7 @@ import { productImage } from '../lib/productImage';
 import { supabase } from '../lib/supabase';
 import { useStore } from '../store';
 import { t, tf, useKioskLang } from '../lib/i18n';
-import { translateEnglish, useMenuText } from '../lib/menuText';
+import { translateEnglish, useMenuText, itemName as tItemName, itemDescription as tItemDescription } from '../lib/menuText';
 import { displayName } from '../lib/itemDisplay';
 import { kioskLineNeed } from '../lib/kioskLine';
 import { money } from '../lib/currency';
@@ -724,16 +724,16 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
           marginBottom: 'clamp(10px, 1.4vw, 14px)',
           lineHeight: 1.1,
           color: brandColor,
-        }}>{displayName(item)}</div>
+        }}>{tItemName(item) || displayName(item)}</div>
 
-        {/* Description — muted */}
-        {item?.description && (
+        {/* Description — muted. v5.11.81: in the customer's language when the venue has it. */}
+        {item && tItemDescription(item) && (
           <div style={{
             fontSize: 'clamp(16px, 1.9vw, 20px)',
             color: 'var(--kFgMuted)',
             lineHeight: 1.5,
             marginBottom: 'clamp(16px, 2.2vw, 24px)',
-          }}>{item.description}</div>
+          }}>{tItemDescription(item)}</div>
         )}
 
         {/* Base price, brand color, large. Variant parent: "from <cheapest size>"

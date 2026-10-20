@@ -2,34 +2,21 @@
 // supervisor approval (Comp 100%, voids of sent items, future refunds).
 // Reads staffMembers from the store and finds a manager whose pin matches.
 // On success: calls onApprove({ id, name, role }) — the caller decides what
-// happens next. 90s grace window: a successful gate stashes the manager in
-// store.lastManagerAuth so a follow-up gated action within the window
-// proceeds without re-prompting.
+// happens next.
+// v5.11.81 (channel parity): the manager is asked EVERY time, as the till asks (its discount and
+// void gates have no grace window). The handheld kept a 90 s grace window, so a second discount or
+// void within 90 s went through on the first approval, with nobody asked.
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useStore } from '../../store';
 import { Sx } from './MShellStyles';
 import MBottomSheet from './MBottomSheet';
 
-const GRACE_MS = 90 * 1000;
-
-// Helper: returns a cached manager if the last auth is within the grace
-// window, otherwise null. Callers can use this to decide whether to skip
-// the prompt entirely.
+// v5.11.81: no grace window, so there is never a cached approval. Kept (always null) for the
+// callers that ask before opening the sheet; an approval an older build left in this tab is cleared.
 export function getCachedManagerAuth() {
-  try {
-    const raw = sessionStorage.getItem('mpos-last-manager-auth');
-    if (!raw) return null;
-    const obj = JSON.parse(raw);
-    if (!obj?.at || Date.now() - obj.at > GRACE_MS) return null;
-    return obj.manager || null;
-  } catch { return null; }
-}
-
-function setCachedManagerAuth(manager) {
-  try {
-    sessionStorage.setItem('mpos-last-manager-auth', JSON.stringify({ at: Date.now(), manager }));
-  } catch {}
+  try { sessionStorage.removeItem('mpos-last-manager-auth'); } catch { /* storage blocked */ }
+  return null;
 }
 
 /**
@@ -49,13 +36,6 @@ export default function MManagerPin({ reason, onApprove, onCancel }) {
   const [pin, setPin] = useState('');
   const [shake, setShake] = useState(false);
 
-  // Auto-grace check: if a manager auth is still warm, fast-approve.
-  useEffect(() => {
-    const cached = getCachedManagerAuth();
-    if (cached) onApprove?.(cached);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   const tap = (k) => {
     if (k === '⌫') { setPin(p => p.slice(0, -1)); return; }
     if (pin.length >= 8) return;
@@ -64,7 +44,6 @@ export default function MManagerPin({ reason, onApprove, onCancel }) {
     if (picked && next.length >= (picked.pin || '').length) {
       // Auto-submit at expected length
       if (next === picked.pin) {
-        setCachedManagerAuth({ id: picked.id, name: picked.name, role: picked.role });
         onApprove?.({ id: picked.id, name: picked.name, role: picked.role });
       } else {
         setShake(true);

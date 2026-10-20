@@ -25,7 +25,6 @@ import { decrementStockRPC, fetchActiveDiscountRules } from '../../lib/db';
 import { logOrderActivity, logActivity } from '../../lib/activity';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../../lib/discountEngine';
 import { buildScheduleCtx } from '../../lib/locationTime';
-import { depleteForSaleServer } from '../../lib/stock/deplete';
 import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient';
 import { getLocationProcessor } from '../../lib/payments/processor';
 import AdyenPaymentForm from '../../components/AdyenPaymentForm';
@@ -38,12 +37,13 @@ import { stageGiftCard, commitGiftCard, giftCardCheckRecord } from '../../lib/gi
 import { tender, giftTenders, finishTenders } from '../../lib/accounting/tenders';
 import { writeClosedCheckRow } from '../../lib/closedCheckWrite';
 import { commitRedemption } from '../../lib/commitRedemptions';
+import { promoBasketLines } from '../../../supabase/functions/_shared/promoMath.js';   // v5.11.81: a code's own rules
 import { getDeliveryQuote, recordDeliverySurcharge } from '../../lib/delivery/quoteService';
 import { dispatchDelivery } from '../../lib/delivery/dispatch';
 import { sendEmailReceipt } from '../../lib/sendReceipt';
 import { getDayWindows, resolveLocalDateTime } from '../../lib/openingHours';
 import { computeOrderTaxUnified, chargesAddedOnRate, taxCtxHasConfig } from '../../lib/taxCompute';
-import { publicCheckTaxFields, offerScaledTax } from '../../lib/publicCheckTax';
+import { publicCheckTaxFields, offerTaxForOnline } from '../../lib/publicCheckTax';
 import VatGateNotice from './VatGateNotice';
 import { creditDiscounts } from '../../lib/taxBasis';
 import { breakdownIsExclusive, taxTermFor } from '../../lib/receiptTax';   // v5.7.34: rate-null guards + VAT/Sales Tax wording
@@ -306,8 +306,12 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   // describes the discounted bill in full (Xero read the offer as sales with no VAT rate).
   const discountedTaxBreakdown = useMemo(() => {
     if (!taxBreakdown || autoDiscountMinor <= 0 || subtotalMinor <= 0) return taxBreakdown;
-    return offerScaledTax(taxBreakdown, discountedSubtotalMinor / subtotalMinor);
-  }, [taxBreakdown, autoDiscountMinor, subtotalMinor, discountedSubtotalMinor]);
+    // v5.11.81: a deal on some lines takes VAT off those lines' rates only, as at the till.
+    return offerTaxForOnline(taxBreakdown, {
+      lines: onlineTaxLines, discounts: autoDiscounts, goods: subtotalMinor / 100, charged: discountedSubtotalMinor / 100,
+      retax: (ls) => computeOrderTaxUnified(ls, taxCtx || { taxRates }, orderType || 'collection'),
+    });
+  }, [taxBreakdown, autoDiscountMinor, subtotalMinor, discountedSubtotalMinor, onlineTaxLines, autoDiscounts, taxCtx, taxRates, orderType]);
   // v5.5.648: live delivery quote (Uber Direct, or the configured fee for HubRise-bridge
   // venues) — fold the customer fee into the amount payable so it's charged + shown.
   const [deliveryQuote, setDeliveryQuote] = useState(null);
@@ -483,9 +487,15 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     // there's no operator decision pending. Without these flags the
     // operator's queue UI shows them as "to send" and the operator has
     // to manually open + click save-and-send before anything fires.
-    const items = cart.map(l => ({
+    const items = cart.map((l, i) => ({
+      // v5.11.81: the line's id, the one the automatic deals name (autoDiscounts above), so the
+      // saved deal finds its lines again (the daily VAT check, a refund).
+      uid: l.uid || l.key || l.id || `l${i}`,
       itemId: l.itemId, name: l.name, price: l.price,
       qty: l.qty || 1, mods: l.mods || [], notes: l.notes || '',
+      // v5.11.81: the menu this line was priced on (it keeps its price when a timed menu flips,
+      // the till's rule); the server values the line on it (migration 20261020a).
+      menuId: l.menuId || null,
       cat: l.cat || null,
       cats: l.cats || null,
       parentId: l.parentId || null,
@@ -644,7 +654,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         body: JSON.stringify({
           action: 'validate', code, location_id: opsLocationId,
           customer_id: memberCustomerId,
-          basket: { subtotal: discountedSubtotalMinor / 100 },
+          // v5.11.81: with the basket's lines and delivery fee (_shared/promoMath.js): the offer's
+          // category rules, a free item and free delivery; the server values the order the same way.
+          basket: { subtotal: discountedSubtotalMinor / 100, lines: promoBasketLines(cart, { modsInPrice: false }), delivery_fee: deliveryFeeMinor / 100 },
         }),
       });
       const j = await res.json().catch(() => ({}));
@@ -992,6 +1004,8 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       channel: 'online',
       code: promoApplied.code,
       basketValue: discountedSubtotalMinor / 100,
+      basketLines: promoBasketLines(cart, { modsInPrice: false }),   // v5.11.81: the same lines it was checked with
+      deliveryFee: deliveryFeeMinor / 100,
     }, { functionsUrl: FUNCTIONS_URL, token: await getAuthToken().catch(() => null) });
     if (!r.ok && !r.queued) {
       logActivity(opsLocationId, {
@@ -1262,8 +1276,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
 
       try {
         if (closedCheck) {
-          // v5.5.583: deplete recipe ingredients from the stock ledger (server-side, online is anonymous). Fire-and-forget.
-          depleteForSaleServer({ id: closedCheck.id, items: cart.map(l => ({ itemId: l.itemId, qty: l.qty, mods: l.mods })), orderType });   // v5.11.77: the chosen options deplete too
+          // v5.11.79: no browser stock call. The database takes stock off this booked check itself
+          // (20261018c central depletion, every venue central since 20261019),
+          // from the stored lines and options, exactly once, even when the customer closes the tab.
           // v5.5.677: email + SMS the customer their confirmation/receipt (gift-only path).
           sendOrderConfirmation(closedCheck);
         }
@@ -1492,8 +1507,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
 
       try {
         if (closedCheck) {
-          // v5.5.583: deplete recipe ingredients from the stock ledger (server-side, online is anonymous). Fire-and-forget.
-          depleteForSaleServer({ id: closedCheck.id, items: cart.map(l => ({ itemId: l.itemId, qty: l.qty, mods: l.mods })), orderType });   // v5.11.77: the chosen options deplete too
+          // v5.11.79: no browser stock call. The database takes stock off this booked check itself
+          // (20261018c central depletion, every venue central since 20261019),
+          // from the stored lines and options, exactly once, even when the customer closes the tab.
           // v5.5.677: email + SMS the customer their confirmation/receipt (was never wired for online).
           sendOrderConfirmation(closedCheck);
         }

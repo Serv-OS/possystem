@@ -21,6 +21,7 @@ import { getValidAccessToken, xeroApi, XERO_API } from '../_shared/xero.ts';
 import { claimSyncRun, readSyncRow } from '../_shared/syncRun.ts';
 import { shortHash } from '../_shared/xeroPostingPlan.js';
 import { secondStepRefusal } from '../_shared/second-step.ts';
+import { officeReachesVenue } from '../_shared/stockOfficeReach.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -41,11 +42,15 @@ async function requireAccess(req: Request, opsLocationId: string): Promise<{ ok:
   if (token === SERVICE_ROLE) return { ok: true };
   const { data: { user: caller } } = await sb.auth.getUser(token);
   if (!caller) return { ok: false, res: json({ error: 'Invalid token' }, 401) };
-  const [{ data: ul }, { data: prof }] = await Promise.all([
+  // v5.11.79: the database's own rule (user_accessible_locations): a link row, a super admin, or the
+  // OWNER of the venue's company with no link row (_shared/stockOfficeReach.js). Owners were refused.
+  const [{ data: ul }, { data: prof }, { data: venue }] = await Promise.all([
     sb.from('user_locations').select('location_id').eq('user_id', caller.id).eq('location_id', opsLocationId).maybeSingle(),
-    sb.from('user_profiles').select('role').eq('id', caller.id).maybeSingle(),
+    sb.from('user_profiles').select('role, org_id').eq('id', caller.id).maybeSingle(),
+    sb.from('locations').select('org_id').eq('id', opsLocationId).maybeSingle(),
   ]);
-  if (!ul && prof?.role !== 'super_admin') return { ok: false, res: json({ error: 'No access to this location' }, 403) };
+  const reach = officeReachesVenue({ user: caller, profile: prof || null, linked: !!ul, venueOrgId: venue?.org_id || null });
+  if (!reach.ok) return { ok: false, res: json({ error: 'No access to this location' }, 403) };
   return { ok: true };
 }
 

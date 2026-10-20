@@ -79,9 +79,11 @@ export default function OrderPad() {
     const loc = locId || getActiveLocationSync() || await getLocationId().catch(() => null);
     if (loc && loc !== locId) setLocId(loc);
     getLocationConfig(loc).then(c => setVenueTz(c?.timezone || null)).catch(() => {});
-    const [{ data: its }, { data: sup }, { data: par }, { data: rate }, { data: pos }, { data: wk }] = await Promise.all([
+    const [{ data: its }, { data: sup }, { data: par }, { data: rate, error: rateErr }, { data: pos }, { data: wk, error: wkErr }] = await Promise.all([
       fetchInventoryItems(loc), fetchSuppliers(loc), fetchParLevels(loc), fetchUsageRates(USAGE_DAYS, loc), fetchPurchaseOrders(loc), fetchUsageByWeekday(8, loc),
     ]);
+    // v5.11.79: usage is read in pages; a page that fails gives no usage rather than part of it, so say so.
+    if (rateErr || wkErr) showToast?.('Usage could not be read in full, so suggested quantities may be low. Reload to try again.', 'error');
     // v5.11.65: on order = SENT and PARTIAL only (a draft was never sent), each line converted to
     // the item's base unit as receiving does, and an order more than a week past its date left
     // out and named: a July order that will never arrive stopped its items being suggested again.
@@ -89,7 +91,7 @@ export default function OrderPad() {
     const byId = Object.fromEntries((its || []).map(i => [i.id, i]));
     const { byItem: oo, stale } = outstandingOnOrder(pos, byId, { todayYmd: buildScheduleCtx(cfg?.timezone).ymd });
     setItems(its || []); setSuppliers(sup || []); setPars(par || {}); setUsage(rate || {}); setWeekday(wk); setOnOrder(oo); setStaleOrders(stale); setLoading(false);
-  }, [locId]);
+  }, [locId, showToast]);
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, []);
 
   const supById = useMemo(() => { const m = {}; suppliers.forEach(s => { m[s.id] = s; }); return m; }, [suppliers]);

@@ -59,6 +59,7 @@ import {
 import { orderProofFor } from '../_shared/orderProofEarn.ts';
 
 import { countQualifyingStamps, loadStampNameIndex } from '../_shared/stampQualify.ts';
+import { promoCodesOnCheck } from '../_shared/promoMath.js';
 import { secondStepRefusal } from '../_shared/second-step.ts';
 import { STAMP_ADJUST_ACTION, STAMP_ADJUST_TYPE, validateStampAdjust, applyStampAdjust, stampAdjustNote, stampAdjustKey, stampAdjustRole, rewardsAvailable } from '../_shared/stampAdjust.js';
 
@@ -313,7 +314,7 @@ Deno.serve(async (req) => {
   const locKeys = [venue.opsLocationId || uuidOr0(location_id)];
   const { data: check } = await opsAdmin
     .from('closed_checks')
-    .select('id, location_id, items, subtotal, total, status, voided, refunded, customer, customer_id, customer_phone')
+    .select('id, location_id, items, subtotal, total, status, voided, refunded, customer, customer_id, customer_phone, discounts, promo')
     .eq('id', String(closed_check_id))
     .in('location_id', locKeys)
     .maybeSingle();
@@ -457,6 +458,7 @@ Deno.serve(async (req) => {
   // When points are off (stamp-cards-only venue), or the order earns 0 points, we DON'T
   // early-return — we fall through so stamp cards still get awarded below.
   let pointsEarned = 0;
+  let promoBonus = 0;   // v5.11.81: a bonus points promo code's points (see below)
   let newBalance = membership.points_balance;
   if (pointsOn) {
     pointsEarned = calculatePoints(
@@ -465,6 +467,28 @@ Deno.serve(async (req) => {
       tierMultiplier,
       config.points_rounding || 'floor',
     );
+    // v5.11.81 (channel parity: "non money rewards ignored on every channel"): a bonus points
+    // promo code used on this sale ("Double points weekend", reward_value points) credits its
+    // points with the sale, once (they ride this earn's own row, earn:<check>). It credited none.
+    // Read from the booked check's own promo line, at this venue's organisation only.
+    if (check) {
+      try {
+        const codes = promoCodesOnCheck(check as any);
+        if (codes.length) {
+          const { data: locRow } = await opsAdmin.from('locations').select('org_id').eq('id', locKeys[0]).maybeSingle();
+          if (locRow?.org_id) {
+            const { data: pcs } = await opsAdmin.from('promo_codes').select('offer_id, code').eq('org_id', locRow.org_id).in('code', codes);
+            const offerIds = [...new Set((pcs || []).map((p: any) => p.offer_id).filter(Boolean))];
+            if (offerIds.length) {
+              const { data: offs } = await opsAdmin.from('offers').select('id, reward_type, reward_value')
+                .eq('org_id', locRow.org_id).in('id', offerIds).eq('reward_type', 'points_bonus');
+              promoBonus = (offs || []).reduce((n: number, o: any) => n + Math.max(0, Math.round(Number(o.reward_value) || 0)), 0);
+            }
+          }
+        }
+      } catch (e) { console.warn('[loyalty-earn] promo bonus read failed:', e instanceof Error ? e.message : String(e)); }
+    }
+    pointsEarned += promoBonus;
     if (pointsEarned > 0) {
       // Round three: the ledger row is the CLAIM and goes in first. earn:<check> is unique, so
       // of two racing calls exactly one writes it; the other is told already_processed and moves

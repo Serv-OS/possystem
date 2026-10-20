@@ -30,7 +30,8 @@ import { computeOrderTaxUnified, taxCtxHasConfig } from '../../lib/taxCompute';
 import { publicCheckTaxFields, offerChargedTax, qrBillTotal } from '../../lib/publicCheckTax';
 import VatGateNotice from '../online/VatGateNotice';
 import { breakdownIsExclusive, taxTermFor } from '../../lib/receiptTax';   // v5.7.34: rate-null guards + VAT/Sales Tax wording
-import { fetchActiveDiscountRules } from '../../lib/db';
+import { fetchActiveDiscountRules, venueServiceRuleCached, peekVenueServiceRule } from '../../lib/db';
+import { qrServiceCharge } from '../../lib/venueServiceRule';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../../lib/discountEngine';
 import { buildScheduleCtx } from '../../lib/locationTime';
 import { stashTab } from '../../lib/qrTabStorage';
@@ -54,7 +55,25 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   const opsLocationId      = location.ops_location_id || location.id;
   const platformLocationId = location.id;
   const tz                 = location.timezone || 'Europe/London';
-  const serviceChargePct   = Number(location.qr_service_charge_pct ?? 0);
+  // v5.11.81 (Peter: the POS is central): the QR service charge follows the venue's ONE table
+  // service rule (lib/venueServiceRule.js: the service charge switched on for table service on the
+  // device profiles), not its own QR setting. `undefined` while it is asked; null when the database
+  // cannot answer yet (update 20261020a not run): then the QR setting, as before.
+  // v5.11.81 round 1: the menu page started this read as it loaded (venueServiceRuleCached), so a
+  // rule already known is used at once and Pay is not held while it is asked again.
+  const [venueServiceRule, setVenueServiceRule] = useState(() => peekVenueServiceRule(location.ops_location_id || location.id));
+  useEffect(() => {
+    let live = true;
+    if (venueServiceRule !== undefined) return () => { live = false; };
+    const timer = setTimeout(() => { if (live) setVenueServiceRule((r) => (r === undefined ? null : r)); }, 4000);
+    venueServiceRuleCached(location.ops_location_id || location.id)
+      .then((r) => { if (live) setVenueServiceRule(r || null); })
+      .catch(() => { if (live) setVenueServiceRule(null); });
+    return () => { live = false; clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.ops_location_id, location.id]);
+  const serviceRuleLoading = venueServiceRule === undefined;
+  const serviceChargePct   = qrServiceCharge({ rule: venueServiceRule || null, legacyPct: location.qr_service_charge_pct, discountedSubtotal: 0 }).pct;
   // v5.5.149: open-tab support is BO-toggleable. When the venue allows tabs
   // we surface the customer-facing warning message + (commit 3b) a Pay-now
   // / Open-tab radio. paymentMode='pay_now' is the safe default.
@@ -151,8 +170,8 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   const discountedSubtotal = Math.max(0, +(subtotal - autoDiscountTotal).toFixed(2));
 
   const serviceCharge = useMemo(() =>
-    serviceChargePct > 0 ? +(discountedSubtotal * serviceChargePct / 100).toFixed(2) : 0,
-    [discountedSubtotal, serviceChargePct]);
+    qrServiceCharge({ rule: venueServiceRule || null, legacyPct: location.qr_service_charge_pct, discountedSubtotal }).amount,
+    [discountedSubtotal, venueServiceRule, location.qr_service_charge_pct]);
 
   const tipAmount = useMemo(() => (
     tipRule.on ? calcTip(discountedSubtotal, tipMode, customTip) : 0
@@ -167,6 +186,18 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   // they hit (uid = the key evaluateAutoDiscounts saw) and the table service
   // charge is taxed where the line's profile says so (US default: yes). UK
   // inclusive VAT never uses the basis, so UK totals and VAT are unchanged.
+  // v5.11.81: the bill's tax lines, named once (the seam and the per line VAT both read them).
+  const qrTaxLinesForBill = useMemo(() => cart.map((l, i) => ({
+      uid: l.key || l.uid || l.id || `l${i}`,
+      price: l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0),
+      qty: l.qty || 1,
+      itemId: l.itemId ?? null,
+      cat: l.cat ?? null,
+      cats: Array.isArray(l.cats) ? l.cats : null,
+      taxProfileId: l.taxProfileId ?? null,
+      taxRateId: l.taxRateId || l.tax_rate_id || null,
+      taxOverrides: l.taxOverrides || l.tax_overrides || {},
+    })), [cart]);
   const goodsTaxBreakdown = useMemo(() => computeOrderTaxUnified(
     cart.map((l, i) => ({
       uid: l.key || l.uid || l.id || `l${i}`,
@@ -189,8 +220,12 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   // booked. No offer: the same object as before. Added-on (US) tax: never scaled, it already
   // has the offer in its basis (lib/publicCheckTax.js offerChargedTax).
   const taxBreakdown = useMemo(
-    () => offerChargedTax(goodsTaxBreakdown, subtotal, discountedSubtotal, autoDiscountTotal),
-    [goodsTaxBreakdown, subtotal, discountedSubtotal, autoDiscountTotal],
+    () => offerChargedTax(goodsTaxBreakdown, subtotal, discountedSubtotal, autoDiscountTotal, {
+      // v5.11.81: a deal on some lines takes VAT off those lines' rates only, as at the till.
+      lines: qrTaxLinesForBill, discounts: autoDiscounts,
+      retax: (ls) => computeOrderTaxUnified(ls, taxCtx || { taxRates }, 'dine-in', null),
+    }),
+    [goodsTaxBreakdown, subtotal, discountedSubtotal, autoDiscountTotal, qrTaxLinesForBill, autoDiscounts, taxCtx, taxRates],
   );
   // 8 Oct 2026: does this page hold tax set up (rates or profiles)? With it, a sale is never sent
   // without VAT (publicCheckTaxFields throws a named error instead; the gate below stops payment first).
@@ -243,9 +278,15 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
       tableLabel: tableLabel || tableId,
       ...(notes.trim() ? { notes: notes.trim() } : {}),
     };
-    const items = cart.map(l => ({
+    const items = cart.map((l, i) => ({
+      // v5.11.81: the line's id, the one the automatic deals name (autoDiscounts above), so the
+      // saved deal finds its lines again (the daily VAT check, a refund).
+      uid: l.key || l.uid || l.id || `l${i}`,
       itemId: l.itemId, name: l.name, price: l.price,
       qty: l.qty || 1, mods: l.mods || [],
+      // v5.11.81: the menu this line was priced on (it keeps its price when a timed menu flips,
+      // the till's rule); the server values the line on it (migration 20261020a).
+      menuId: l.menuId || null,
       cat: l.cat || null,
       cats: l.cats || null,
       parentId: l.parentId || null,
@@ -685,6 +726,8 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
           stashTab(location.online_slug, tableId, {
             tab_ref: ref,
             payment_intent_id: payId,
+            // v5.11.81: this order's own key, so the tab earns loyalty when it is settled (TabResumeScreen).
+            track_token: placed?.trackToken || null,
             tab_join_code: joinCode,   // v5.5.716: so the opener can re-share it from the resume screen (fence stage 1: the server's code)
             processor,
             stripe_account: pi?.stripe_account || null,
@@ -806,7 +849,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
             background: theme.bg, borderTop: `1px solid ${cardBdr}`,
           }}>
             {error && <div style={{ fontSize: 12, color: '#ef4444', marginBottom: 10 }}>{error}</div>}
-            <button onClick={addToExistingTab} disabled={working || !cart.length}
+            <button onClick={addToExistingTab} disabled={working || !cart.length || serviceRuleLoading}
               className="op-btn-primary"
               style={{
                 width: '100%', padding: '16px 22px', borderRadius: 14,
@@ -1016,7 +1059,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
             )}
             <VatGateNotice gate={vatGate} onRetry={onRetryRates} theme={theme}/>
             {error && <div style={{ fontSize: 12, color: '#ef4444', marginBottom: 10 }}>{error}</div>}
-            <button onClick={continueToPayment} disabled={!valid || working || !!vatGate}
+            <button onClick={continueToPayment} disabled={!valid || working || !!vatGate || serviceRuleLoading}
               className={valid && !working && !vatGate ? 'op-btn-primary' : undefined}
               style={{
                 width: '100%', padding: '16px 22px', borderRadius: 14,

@@ -5,7 +5,7 @@ import { taxCtxHasConfig } from '../lib/taxCompute';
 import { resolveServiceCharge } from '../lib/serviceCharge';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
 import { buildScheduleCtx } from '../lib/locationTime';
-import { resolveItemPrice } from '../lib/menuPricing';
+import { resolveItemPrice, refusesNoPriceLine } from '../lib/menuPricing';
 import { resolveCentresForItem, resolveOrderTypeKey, orderTypeFallbackMessage, orderTypeLabelOf, buildCatParentMap as catParentMapOf, mergeCatParentMaps, snapshotCategoriesFor, channelFallbackCentre } from '../lib/productionRouting';
 // 12 Oct 2026 (Coffee Boy Preston, QR drinks on the Food screen; Peter: "you need to fix the master
 // thing"). ONE rule answers "am I this venue's master till" (lib/masterTill.js, read here through
@@ -15,7 +15,7 @@ import { isMasterTillHere, autoRouteGate, routerIdentity, hydratableDeviceConfig
 import { venueHoldsMenu, buildRouteStamp, countParentLinks, noticeLines, fallbackNotice } from '../lib/channelRouteGate';
 import { VERSION } from '../lib/version';
 import { clockStatusForPos } from '../lib/posClockIn';
-import { computeCheckTotals } from '../lib/payments/checkTotals';
+import { computeCheckTotals, sessionServiceMajor } from '../lib/payments/checkTotals';
 import { headlessTaxBreakdown, headlessService, headlessDiscounts, taxForChargedGoods } from '../lib/headlessTax';
 import { ratesFromSnapshot, venueRowsFromSnapshot, ratesAfterRead, clientTrustsEmpty, noTaxRatesAlert } from '../lib/venueTaxRates';
 // 8 Oct 2026 (VAT audit, Fix 3): the till refuses a tender while it cannot book the VAT
@@ -83,12 +83,14 @@ import { writeClosedCheckRow } from '../lib/closedCheckWrite';
 import { scrubDiscount } from '../lib/discountApprover';
 // v5.6.79 (#107/#108) — refund money maths + the per-leg processor router.
 import {
-  refundBreakdown, legRefundedMinor, allocateToLegs,
-  rollUpLegStatus, retryableLegs, toMinor as toMinorAmt, refundTaxAmount,
+  refundBreakdown,
+  rollUpLegStatus, retryableLegs, refundTaxAmount, chargedGoodsOf,
+  refundBillOf,
 } from '../lib/payments/refundMath';
+import { refundMoneySplit } from '../lib/payments/refundSplit';
 import { resolveRefundCardLegs } from '../lib/payments/refundCardLegs';
 import { reverseCardLeg } from '../lib/payments/cardReversal';
-import { commitRedemption, setDeviceClaimHooks } from '../lib/commitRedemptions';
+import { commitRedemption, setDeviceClaimHooks, parkEarn, earnReplyRetryable } from '../lib/commitRedemptions';
 import { redemptionsOf, withSlots, rewardsRecord } from '../lib/loyaltyMultiRedeem';
 import { promoRedeemBasket } from '../lib/promoBasis';   // 30 Sep 2026: more than one reward on an order
 import { quoteForWalkIn } from '../lib/orderPlacedFrom';   // v5.11.78 round 1: an order's own delivery fee counts only while that order is on the till
@@ -364,7 +366,24 @@ function derivePaymentIntents(paymentInfo = {}) {
 // Marketing promo → an entry in the closed_check.discounts jsonb (reuses the existing discount slot).
 function promoDiscountEntry(promo) {
   if (!promo?.code) return [];
-  return [{ source: 'promo', code: promo.code, name: promo.label || promo.code, type: promo.type, value: promo.value, amount: Number(promo.amount) || 0 }];
+  // v5.11.81: an order's own promo (placed online, by QR or catering, paid later here) names the
+  // order its use was recorded under, so a full refund can give the code back (promoRelease.js).
+  return [{ source: 'promo', code: promo.code, name: promo.label || promo.code, type: promo.type, value: promo.value, amount: Number(promo.amount) || 0,
+    ...(promo.redemptionOrderId ? { redemptionOrderId: String(promo.redemptionOrderId) } : {}) }];
+}
+
+// v5.11.81: give the promo codes of a fully refunded or voided order back (promo-redeem 'release',
+// once per use server side). Fire and forget: the refund is recorded whatever happens here.
+function releasePromoCodes({ orderIds = [], orderRef = null, locationId, reason }) {
+  if ((!orderIds.length && !orderRef) || !locationId || isTrainingMode()) return;
+  postLoyaltyWithDeviceLink('promo-redeem', {
+    action: 'release', order_ids: orderIds, ...(orderRef ? { order_ref: orderRef } : {}), location_id: locationId, reason: reason || 'refund',
+  }).then(async (res) => {
+    if (!res) return;
+    const j = await res.json().catch(() => ({}));
+    if (res.ok) { if (j.released > 0) console.info('[promo] code given back:', j.released); }
+    else console.warn('[promo] release HTTP', res.status, j.error || '');
+  }).catch((e) => console.warn('[promo] release failed:', e?.message || e));
 }
 
 // ── Supabase helpers ─────────────────────────────────────────────────────────
@@ -731,6 +750,10 @@ import { withoutRecordNotes } from '../lib/orderCustomerNotes';
 // (subtotal, total, tenders) come from one pure helper both close paths share (lib/closeMoney.js).
 import { linesGoods } from '../lib/taxShare.js';
 import { closeMoney } from '../lib/closeMoney.js';
+import { mintCheckId, usableCheckId, walkInCloseId, bookedCheck, secondCardOnBooked } from '../lib/walkInCheckId.js';
+import { loyaltyEarnItems, earnChannelFor, partRefundLoyaltyBody, channelEarnCustomer } from '../lib/loyaltyEarnItems.js';
+import { promoReleaseOrderIds } from '../../supabase/functions/_shared/promoRelease.js';
+import { withVenueServiceRule } from '../lib/venueServiceRule.js';   // v5.11.81 round 1: Pay at table books the service the reader charged
 
 // v5.7.35 — ?mode=kds pins the KDS surface for this page load (read once; the
 // mode param is the operator's explicit intent, so profile defaults must not
@@ -2123,6 +2146,7 @@ export const useStore = create((set, get) => ({
   },
   discountPresets: [],   // from discounts table — manual presets staff can apply
   discountRules: [],     // from discount_rules table — auto-discount rules
+  venueServiceRule: null, // v5.11.81: the venue's one table service rule (SyncBridge, venue_service_rule); null = not read
   setQuickScreenIds: (ids) => set({ quickScreenIds: ids }),
   setQuickScreenMode: (m) => set({ quickScreenMode: m }),
   setQuickScreenAuto: (a) => set({ quickScreenAuto: a }),
@@ -3152,6 +3176,12 @@ export const useStore = create((set, get) => ({
     // 19 Oct 2026 (v5.11.78, channel parity): the call and its fallback live in lib/tillLine.js,
     // which a bar tab round now calls too. Same maths, byte for byte.
     const price = tillLineUnitPrice(item, _currentOrderType, get().activeMenuId, opts.linePrice, qty);
+    // v5.11.81: a row with no price set is never sold for 0.00 (menuPricing.hasNoSellPrice, the
+    // multi site menu's "no price" rule). Paid options can still price it.
+    if (refusesNoPriceLine(item, _currentOrderType, get().activeMenuId, price)) {
+      get().showToast?.(`${opts.displayName || item.name} has no price set. Set one in Back Office before selling it.`, 'error');
+      return null;
+    }
     const newItem = {
       uid: uid(), itemId: item.id,
       name: opts.displayName || item.name,
@@ -3238,6 +3268,9 @@ export const useStore = create((set, get) => ({
         return { walkInOrder:{ ...(s.walkInOrder||{id:newSessionOrderId()}), items, subtotal, total:subtotal } };
       });
     }
+    // v5.11.81 round 1: the line added (null above when a row with no price is refused), so a
+    // screen shows "added" only for a line that really was added.
+    return newItem;
   },
 
   addCustomItem: (name, price, notes) => {
@@ -4620,7 +4653,10 @@ export const useStore = create((set, get) => ({
 
   // Attribute a closed check / walk-in to a customer. Increments visit_count + spend
   // on customer_locations and inserts a customer_orders row. Returns customer_id.
-  attributeOrderToCustomer: async ({ customer, orderRecord }) => {
+  // v5.11.81 round 1: countOrder false = earn and stamp only. A HubRise order was already counted by
+  // hubrise-ingest (upsertChannelCustomer) and each QR round by the page (attribute_public_order), so
+  // their earns no longer add a second visit, the revenue again and a duplicate customer_orders row.
+  attributeOrderToCustomer: async ({ customer, orderRecord, countOrder = true }) => {
     if (isMock || !supabase) return null;
     // TRAINING MODE: never create/update a real CRM customer or earn loyalty points.
     if (isTrainingMode()) return null;
@@ -4664,106 +4700,111 @@ export const useStore = create((set, get) => ({
       // No DB-side requirements beyond the table existing. Race-prone if two
       // devices close orders for the same customer simultaneously, but for
       // restaurant load that's a non-issue, and correctness > theoretical races.
-      let cl_step_status = 'unknown';
-      try {
-        const { data: existingLoc, error: readErr } = await supabase
-          .from('customer_locations')
-          .select('visit_count, lifetime_revenue')
-          .eq('customer_id', customerId)
-          .eq('location_id', locId)
-          .maybeSingle();
-        if (readErr) {
-          console.warn('[attributeOrderToCustomer] customer_locations read failed:', readErr.message, '(may be RLS — check customer_locations SELECT policy)');
-        }
-        const incRevenue = Number(orderRecord.total) || 0;
-        const nowIso = new Date().toISOString();
-        if (existingLoc) {
-          // UPDATE existing row
-          const newCount = (Number(existingLoc.visit_count) || 0) + 1;
-          const newRevenue = (Number(existingLoc.lifetime_revenue) || 0) + incRevenue;
-          const { error: updErr } = await supabase
+      if (countOrder) {
+        let cl_step_status = 'unknown';
+        try {
+          const { data: existingLoc, error: readErr } = await supabase
             .from('customer_locations')
-            .update({
-              visit_count: newCount,
-              lifetime_revenue: newRevenue,
-              last_visit_at: nowIso,
-            })
+            .select('visit_count, lifetime_revenue')
             .eq('customer_id', customerId)
-            .eq('location_id', locId);
-          if (updErr) {
-            console.warn('[attributeOrderToCustomer] customer_locations UPDATE failed:', updErr.message, '(may be RLS — check customer_locations UPDATE policy)');
-            cl_step_status = 'update_failed';
-          } else {
-            console.log('[attributeOrderToCustomer] step 2/3 — customer_locations UPDATE (visit', newCount, ', rev', newRevenue.toFixed(2), ')');
-            cl_step_status = 'updated';
+            .eq('location_id', locId)
+            .maybeSingle();
+          if (readErr) {
+            console.warn('[attributeOrderToCustomer] customer_locations read failed:', readErr.message, '(may be RLS — check customer_locations SELECT policy)');
           }
-        } else {
-          // INSERT new row
-          const { error: insErr } = await supabase
-            .from('customer_locations')
-            .insert({
-              customer_id: customerId,
-              location_id: locId,
-              visit_count: 1,
-              lifetime_revenue: incRevenue,
-              last_visit_at: nowIso,
-            });
-          if (insErr) {
-            // If a concurrent insert beat us, the row exists now — try update.
-            if (/duplicate|conflict/i.test(insErr.message)) {
-              console.warn('[attributeOrderToCustomer] customer_locations INSERT raced — retrying as UPDATE');
-              const { error: retryErr } = await supabase
-                .from('customer_locations')
-                .update({ last_visit_at: nowIso })
-                .eq('customer_id', customerId).eq('location_id', locId);
-              if (retryErr) {
-                console.warn('[attributeOrderToCustomer] customer_locations retry-update failed:', retryErr.message);
-                cl_step_status = 'race_retry_failed';
-              } else {
-                cl_step_status = 'inserted_via_race_retry';
-              }
+          const incRevenue = Number(orderRecord.total) || 0;
+          const nowIso = new Date().toISOString();
+          if (existingLoc) {
+            // UPDATE existing row
+            const newCount = (Number(existingLoc.visit_count) || 0) + 1;
+            const newRevenue = (Number(existingLoc.lifetime_revenue) || 0) + incRevenue;
+            const { error: updErr } = await supabase
+              .from('customer_locations')
+              .update({
+                visit_count: newCount,
+                lifetime_revenue: newRevenue,
+                last_visit_at: nowIso,
+              })
+              .eq('customer_id', customerId)
+              .eq('location_id', locId);
+            if (updErr) {
+              console.warn('[attributeOrderToCustomer] customer_locations UPDATE failed:', updErr.message, '(may be RLS — check customer_locations UPDATE policy)');
+              cl_step_status = 'update_failed';
             } else {
-              console.warn('[attributeOrderToCustomer] customer_locations INSERT failed:', insErr.message, '(may be RLS — check customer_locations INSERT policy)');
-              cl_step_status = 'insert_failed';
+              console.log('[attributeOrderToCustomer] step 2/3 — customer_locations UPDATE (visit', newCount, ', rev', newRevenue.toFixed(2), ')');
+              cl_step_status = 'updated';
             }
           } else {
-            console.log('[attributeOrderToCustomer] step 2/3 — customer_locations INSERT (first visit at this location)');
-            cl_step_status = 'inserted';
+            // INSERT new row
+            const { error: insErr } = await supabase
+              .from('customer_locations')
+              .insert({
+                customer_id: customerId,
+                location_id: locId,
+                visit_count: 1,
+                lifetime_revenue: incRevenue,
+                last_visit_at: nowIso,
+              });
+            if (insErr) {
+              // If a concurrent insert beat us, the row exists now — try update.
+              if (/duplicate|conflict/i.test(insErr.message)) {
+                console.warn('[attributeOrderToCustomer] customer_locations INSERT raced — retrying as UPDATE');
+                const { error: retryErr } = await supabase
+                  .from('customer_locations')
+                  .update({ last_visit_at: nowIso })
+                  .eq('customer_id', customerId).eq('location_id', locId);
+                if (retryErr) {
+                  console.warn('[attributeOrderToCustomer] customer_locations retry-update failed:', retryErr.message);
+                  cl_step_status = 'race_retry_failed';
+                } else {
+                  cl_step_status = 'inserted_via_race_retry';
+                }
+              } else {
+                console.warn('[attributeOrderToCustomer] customer_locations INSERT failed:', insErr.message, '(may be RLS — check customer_locations INSERT policy)');
+                cl_step_status = 'insert_failed';
+              }
+            } else {
+              console.log('[attributeOrderToCustomer] step 2/3 — customer_locations INSERT (first visit at this location)');
+              cl_step_status = 'inserted';
+            }
           }
+        } catch (e) {
+          console.warn('[attributeOrderToCustomer] customer_locations write threw:', e?.message || e);
+          cl_step_status = 'threw';
         }
-      } catch (e) {
-        console.warn('[attributeOrderToCustomer] customer_locations write threw:', e?.message || e);
-        cl_step_status = 'threw';
-      }
-      void cl_step_status; // keep for breakpoint readability if needed
-
-      // Step 3: insert customer_orders row.
-      const itemSummary = (orderRecord.items || []).map(i => ({
-        name: i.name, qty: i.qty, price: i.price,
-      }));
-      const { error: ordersErr } = await supabase.from('customer_orders').insert({
-        customer_id: customerId,
-        location_id: locId,
-        closed_check_id: orderRecord.ref || orderRecord.id || null,
-        ordered_at: new Date().toISOString(),
-        total: Number(orderRecord.total) || 0,
-        channel: orderRecord.orderType || orderRecord.type || orderRecord.source || 'unknown',
-        item_summary: itemSummary,
-      });
-      if (ordersErr) {
-        console.warn('[attributeOrderToCustomer] customer_orders insert failed:', ordersErr.message);
-      } else {
-        console.log('[attributeOrderToCustomer] step 3/3 — customer_orders inserted');
+        void cl_step_status; // keep for breakpoint readability if needed
       }
 
-      // Stamp customer_id on the closed_check (best-effort; scope by location_id
-      // to avoid the cross-location ref collision that would otherwise update
-      // closed_checks at OTHER locations sharing the same ref string).
-      if (orderRecord.ref) {
+      if (countOrder) {
+        // Step 3: insert customer_orders row.
+        const itemSummary = (orderRecord.items || []).map(i => ({
+          name: i.name, qty: i.qty, price: i.price,
+        }));
+        // v5.11.81: the check's own id (refs recycle R1 to R99) and the one earn channel label.
+        const { error: ordersErr } = await supabase.from('customer_orders').insert({
+          customer_id: customerId,
+          location_id: locId,
+          closed_check_id: orderRecord.id || orderRecord.ref || null,
+          ordered_at: new Date().toISOString(),
+          total: Number(orderRecord.total) || 0,
+          channel: earnChannelFor(orderRecord),
+          item_summary: itemSummary,
+        });
+        if (ordersErr) {
+          console.warn('[attributeOrderToCustomer] customer_orders insert failed:', ordersErr.message);
+        } else {
+          console.log('[attributeOrderToCustomer] step 3/3 — customer_orders inserted');
+        }
+      }
+
+      // Stamp customer_id on the closed_check (best-effort, scoped by location_id).
+      // v5.11.81: by the check's own id, never by its ref. A ref recycles (R1 to R99 at a venue),
+      // so matching on it stamped this customer on every older check that once had the same ref.
+      if (orderRecord.id) {
         // Fix round 2 (the zero row blocker): counted, and kept while this device is not linked.
         const stamp = await mustChangeRow({
           table: 'closed_checks', type: 'update', payload: { customer_id: customerId },
-          match: { ref: orderRecord.ref, location_id: locId }, kind: 'customer_stamp', label: `Customer on check ${orderRecord.ref}`,
+          match: { id: orderRecord.id, location_id: locId }, kind: 'customer_stamp', label: `Customer on check ${orderRecord.ref || orderRecord.id}`,
         });
         if (stamp.outcome === 'error') console.warn('[attributeOrderToCustomer] closed_checks customer_id stamp failed:', stamp.error?.message || stamp.error);
       }
@@ -4828,8 +4869,6 @@ export const useStore = create((set, get) => ({
           // v5.5.256: resolve parent category for variants so stamp cards can
           // match qualifying categories. Variants (sizes) don't have their own
           // cat field — they inherit from their master product.
-          const allMenuItems = get().menuItems || [];
-          const menuById = new Map(allMenuItems.map(m => [m.id, m]));
           const earnBody = {
             customer_id: customerId,
             location_id: locId,
@@ -4841,39 +4880,12 @@ export const useStore = create((set, get) => ({
             // or hit the global UNIQUE constraint and silently dropped the
             // ledger row. The chk id is unique, so the key never collides.
             closed_check_id: orderRecord.id || orderRecord.ref,
-            channel: orderRecord.orderType || orderRecord.source || 'pos',
-            items: (orderRecord.items || []).map(i => {
-              let cat = i.cat || i.category || null;
-              // v5.5.259: Variants ALWAYS use parent's category. Variant
-              // rows in the DB can have a stale/wrong cat (e.g. Sandwiches
-              // instead of Coffee) from category reassignment or creation
-              // bugs. The parent's cat is the source of truth for what
-              // "type" of product this is.
-              if (i.parentId) {
-                const parent = menuById.get(i.parentId);
-                const parentCat = parent?.cat || parent?.cats?.[0] || null;
-                if (parentCat) cat = parentCat;
-              }
-              // Double fallback: look up the original menu item's cat
-              if (!cat) {
-                const mi = menuById.get(i.itemId || i.id);
-                if (mi?.parentId) {
-                  // Variant via menu lookup — use parent's cat
-                  const parent = menuById.get(mi.parentId);
-                  cat = parent?.cat || parent?.cats?.[0] || null;
-                } else {
-                  cat = mi?.cat || mi?.cats?.[0] || null;
-                }
-              }
-              return {
-                name: i.name, qty: i.qty || 1, price: i.price || 0,
-                cat,
-                id: i.itemId || i.id || null,
-                isComp: !!i.isComp,
-                staffDiscount: !!i.isStaffDiscount,
-                isGiftCard: !!i.isGiftCard,
-              };
-            }),
+            // v5.11.81: ONE label per surface (lib/loyaltyEarnItems.js earnChannelFor): every till
+            // surface earns as 'pos' (it was the order type), each customer surface as itself.
+            channel: earnChannelFor(orderRecord),
+            // v5.5.259 rule (a size takes its product's category, comps flagged), moved to
+            // lib/loyaltyEarnItems.js unchanged so a part refund counts the stamps the same way.
+            items: loyaltyEarnItems(orderRecord.items || [], get().menuItems || []),
             subtotal: Number(orderRecord.total) || 0,
             staff_id: orderRecord.staffId || null,
             // Database fence stage 1: the member signed in at the kiosk proves the earn is theirs
@@ -4883,8 +4895,14 @@ export const useStore = create((set, get) => ({
           };
           // Waits for the device link and re-links once on a 403 (postLoyaltyWithDeviceLink).
           // Idempotent server side on earn:<closed_check_id>, so the retry cannot double earn.
-          const res = await postLoyaltyWithDeviceLink('loyalty-earn', earnBody);
-          if (!res) { console.warn('[attributeOrderToCustomer] loyalty earn skipped: no auth token'); return; }
+          let res;
+          try { res = await postLoyaltyWithDeviceLink('loyalty-earn', earnBody); }
+          catch (e) {
+            // v5.11.81: a transport failure is parked durably and replayed (lib/commitRedemptions parkEarn).
+            parkEarn(earnBody, e?.message || 'network error').catch(() => {});
+            throw e;
+          }
+          if (!res) { console.warn('[attributeOrderToCustomer] loyalty earn skipped: no auth token'); parkEarn(earnBody, 'no auth token').catch(() => {}); return; }
           const j = await res.json().catch(() => ({}));
           if (res.ok) {
             console.info('[loyalty-earn] ✓', j.points_earned, 'pts → balance:', j.balance, j.is_new_member ? '(new member)' : '');
@@ -4940,6 +4958,9 @@ export const useStore = create((set, get) => ({
             // 404 = loyalty not configured for this company — not an error
             if (res.status !== 404) {
               console.warn('[loyalty-earn] HTTP', res.status, j.error || '');
+              // v5.11.81: a refusal that can still succeed (a cold or busy function, a check that had
+              // not landed, the device link) is parked and replayed; earn:<check> keeps it to once.
+              if (earnReplyRetryable(res.status, j)) parkEarn(earnBody, j.error || `HTTP ${res.status}`).catch(() => {});
             }
           }
         } catch (e) {
@@ -5334,10 +5355,23 @@ export const useStore = create((set, get) => ({
   updateTabStatus: (tabId,status) => set(s=>({ tabs:s.tabs.map(t=>t.id===tabId?{...t,status}:t) })),
   // Raise the card-hold ceiling after a successful Stripe incremental authorization (step-up).
   setTabHold: (tabId, heldMinor) => set(s=>({ tabs:s.tabs.map(t=>t.id===tabId?{...t, preAuthHeldMinor: heldMinor, preAuthAmount: heldMinor/100}:t) })),
+  // v5.11.81 (channel parity: bar tabs can take a manual discount): the check discounts put on a
+  // tab on THIS till (the till's DiscountModal, the same manager rule), kept beside the tab until
+  // it is paid. bar_tabs has no discounts column, so another till does not see them; staff apply a
+  // discount on the till that takes the payment. Cleared when the tab closes.
+  barTabDiscounts: {},
+  addTabDiscount: (tabId, discount) => {
+    if (!tabId || !discount) return;
+    const d = scrubDiscount(discount);
+    set(s => ({ barTabDiscounts: { ...s.barTabDiscounts, [tabId]: [...(s.barTabDiscounts[tabId] || []), d] } }));
+  },
+  removeTabDiscount: (tabId, discountId) => set(s => ({
+    barTabDiscounts: { ...s.barTabDiscounts, [tabId]: (s.barTabDiscounts[tabId] || []).filter(d => d.id !== discountId) },
+  })),
   closeTab: tabId => {
     const st = get();
     const closing = st.tabs.find(t => t.id === tabId);
-    set(s=>({ tabs:s.tabs.map(t=>t.id===tabId?{...t,status:'closed'}:t), activeTabId:s.activeTabId===tabId?null:s.activeTabId }));
+    set(s=>{ const { [tabId]: _gone, ...restDisc } = s.barTabDiscounts || {}; void _gone; return { tabs:s.tabs.map(t=>t.id===tabId?{...t,status:'closed'}:t), activeTabId:s.activeTabId===tabId?null:s.activeTabId, barTabDiscounts: restDisc }; });
     // v4.6.26: release the floor-plan table if this was a bar tab linked to
     // one, and no other open bar tab is still on it.
     if (closing && closing.tableId) {
@@ -6827,6 +6861,18 @@ export const useStore = create((set, get) => ({
     // or a job no till sent, like Pay at table on the reader: those mint one here, as before).
     const frozenRef = usableOrderRef(d.orderRef);
 
+    // v5.11.81 (round 1 fix): a Pay at table job charged the bill SessionSync stamped with the
+    // VENUE's table service rule. Its draft carries no serviceMinor, so the rich record booked the
+    // service with THIS till's own profile (none at Huddersfield's master till: 22.50 taken, service
+    // 0 booked, 2.50 unexplained). The service is worked out with the stamp's own rule.
+    const tablePayService = (d.serviceMinor == null && (d.source === 'pax_table_pay' || d.source === 'adyen_pay_at_table') && table?.session)
+      ? sessionServiceMajor(table.session, {
+        deviceConfig: withVenueServiceRule(get().deviceConfig, get().venueServiceRule),
+        discountRules: get().discountRules,
+        timezone: get().locationConfig?.timezone,
+      })
+      : null;
+
     const termPay = {
       ...(frozenRef ? { orderRef: frozenRef } : {}),
       tenders: jobTenders,
@@ -6855,6 +6901,7 @@ export const useStore = create((set, get) => ({
       ...(d.loyaltyRedemption ? { loyaltyRedemption: d.loyaltyRedemption } : {}),
       ...(d.promoRedemption ? { promoRedemption: d.promoRedemption } : {}),
       ...(d.serviceMinor != null && Number.isFinite(Number(d.serviceMinor)) ? { service: Math.max(0, Number(d.serviceMinor)) / 100 } : {}),
+      ...(tablePayService != null ? { service: tablePayService } : {}),
     };
 
     // Rich path ONLY when the live occupation IS the one that paid → full-fidelity record
@@ -7207,6 +7254,9 @@ export const useStore = create((set, get) => ({
       // while the check had been on the whole bill, so a minimum spend code could validate and then
       // be refused here, left unused and still usable.
       basketValue: promoRedeemBasket(promo, record),
+      // v5.11.81: the same lines and delivery fee it was checked with (a category rule, a free item).
+      basketLines: Array.isArray(promo.basketLines) ? promo.basketLines : null,
+      deliveryFee: Number(promo.basketDeliveryFee) || 0,
       channel: 'pos',
       closedCheckId: record.id,
     }, { functionsUrl: `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`, token });
@@ -7329,6 +7379,12 @@ export const useStore = create((set, get) => ({
         set(s => ({ closedChecks: capClosedChecks([record, ...s.closedChecks]) }));
         get().removeFromQueue(o.ref);      // local + DB delete
         insertClosedCheck(record);          // training/mock gated at the leaf
+        // v5.11.81: earns for the customer's own phone, never a proxy line (channelEarnCustomer).
+        const hrEarner = channelEarnCustomer(o.customer);
+        if (hrEarner && !isTrainingMode()) {
+          get().attributeOrderToCustomer({ customer: hrEarner, orderRecord: record, countOrder: false })
+            .catch((e) => console.warn('[recordWalkInClosed channel] earn:', e?.message || e));
+        }
         if (record.method === 'cash') {
           // Drawer opens for the money actually taken at the till (the balance), not
           // the channel's headline total.
@@ -7346,6 +7402,32 @@ export const useStore = create((set, get) => ({
       // Queue row already gone (another till closed it) — fall through to the generic
       // path would double-book; just clear the cart state and stop.
       return null;
+    }
+    // v5.11.81: ONE check id per basket. A basket already booked under its id (a second Complete
+    // after the first close threw on a later step, a checkout opened again on the same cart) is
+    // never booked again: the first record is handed back, with no second kitchen send, drawer,
+    // redeem or stock. Provo R40 was booked twice, 18 s apart, under two ids.
+    const oneCheckId = walkInCloseId(walkInOrder, paymentInfo);
+    const alreadyBooked = bookedCheck(get().closedChecks, oneCheckId);
+    if (alreadyBooked) {
+      // v5.11.81 (round 1 fix): a close that carries a DIFFERENT card payment than the booked one
+      // is a second charge with no sale behind it. Say so loudly (it was a console line only).
+      const secondCard = secondCardOnBooked(alreadyBooked, paymentInfo);
+      if (secondCard) {
+        const ref = alreadyBooked.ref || oneCheckId;
+        const msg = `A second card payment was taken for ${ref}, which is already paid. Check the card machine and refund the second payment.`;
+        console.error('[recordWalkInClosed] second card payment on a booked basket', oneCheckId, secondCard);
+        try { get().showToast?.(msg, 'error', 20000); } catch { /* toast is best effort */ }
+        try {
+          logActivity(alreadyBooked.locationId || getActiveLocationSync() || null, {
+            kind: 'ops', severity: 'urgent', title: 'Second card payment on a paid order',
+            body: `${msg} Card reference ${secondCard}.`, refType: 'closed_check', refId: oneCheckId,
+          }).catch(() => {});
+        } catch { /* activity is best effort */ }
+      } else {
+        console.warn('[recordWalkInClosed] this basket is already booked as', oneCheckId, '- not booked again');
+      }
+      return alreadyBooked;
     }
     // 28 Sep 2026: a sale sent to a card machine froze its ref into the job (CheckoutModal
     // getOrderRef), and any device that books the job books that ref. Give it to the walk in
@@ -7413,7 +7495,8 @@ export const useStore = create((set, get) => ({
     const existingRef = walkInOrder.ref || null;
     const record = {
       // v5.5.902: adopt CheckoutModal's pre-minted id (see buildCloseRecord).
-      id: paymentInfo.closedCheckId || `chk-${Date.now()}`,
+      // v5.11.81: else the basket's own id (store.ensureWalkInCheckId), so a retry books the same row.
+      id: oneCheckId || `chk-${Date.now()}`,
       ref: existingRef || frozenRef || getNextOrderRefLocal(),
       tableId: null,
       // 30 Sep 2026: a dine in order with a flag number books "Table 30" (the receipt prints
@@ -7756,6 +7839,13 @@ export const useStore = create((set, get) => ({
     }
 
     const refundId = `ref-${Date.now()}`;
+    // v5.11.81: a PART refund gives the gift cards that paid toward the check their share of it
+    // (giftCommit.giftPartRefundPlan), and the card legs get the rest. A cash payout hands it all
+    // back in cash, so no gift share then. A full refund keeps its own path below.
+    // v5.11.81 (round 1 fix): the gift and card split is one pure function (payments/refundSplit),
+    // the very code the parity tests run; it also caps the operator's per leg picks at the card share.
+    const split = refundMoneySplit({ check: chkBefore, amount, isFullRefund: !!isFullRefund, cashPayout, legs: legLookup.legs, legRefunds });
+    const giftPart = split.giftPart;
     // The tax that came back with these items, pro-rata on the check's own stored
     // tax. Recorded so VAT reporting CAN net a refund off (today it cannot — a
     // refund entry carried no tax portion at all, which is why `tax_amount` stayed
@@ -7793,6 +7883,11 @@ export const useStore = create((set, get) => ({
           // v5.9.12: the added-on sales tax part of `amount` (only when there is one,
           // so inclusive-VAT refund entries keep exactly their old shape).
           ...(bd.tax > 0 ? { addedTaxAmount: bd.tax } : {}),
+          // v5.11.81: the gift card share of a part refund, per leg (only when there is one).
+          ...(giftPart.totalMinor > 0 ? {
+            giftMinor: giftPart.totalMinor,
+            giftLegs: giftPart.legs.map((x) => ({ card_id: x.leg.card_id, key: x.leg.idempotency_key, minor: x.amountMinor })),
+          } : {}),
           // Filled in below once the processor has actually answered.
           cardStatus: 'pending',
           legs: [],
@@ -7802,7 +7897,10 @@ export const useStore = create((set, get) => ({
         // v5.6.79 — against TOTAL, not subtotal. A tip-inclusive refund could
         // exceed `subtotal` on a partial and prematurely flip the check to
         // 'refunded', which hard-blocks every later refund.
-        const status = totalRefunded >= (Number(chk.total) || 0) - 0.005 ? 'refunded' : 'partial_refund';
+        // v5.11.81 (round 1 fix): against the whole BILL (refundBillOf), not `total`: a kiosk, online
+        // or reader row books `total` as the card part only, and flipped to 'refunded' after the
+        // first line, hiding the refund button with gift card money still to put back.
+        const status = totalRefunded >= refundBillOf(chk) - 0.005 ? 'refunded' : 'partial_refund';
         nextRefunds = allRefunds;
         nextStatus = status;
         return { ...chk, refunds: allRefunds, status };
@@ -7852,15 +7950,18 @@ export const useStore = create((set, get) => ({
     // check can carry a leg per portion (giftLegs unwraps both shapes). A leg with a null
     // idempotency_key is one whose commit FAILED — nothing was debited, so there is nothing
     // to restore and reversing would 404 against a transaction that never existed.
+    // v5.11.81: a part refund reverses its own share of each gift card (giftPart above), the
+    // server claiming it once under this refund's id; a full refund puts back whatever is left.
     const legsToReverse = isFullRefund
       ? giftLegs(check).filter(g => g?.card_id && g.idempotency_key)
-      : [];
+      : giftPart.legs.map((x) => ({ ...x.leg, _partMinor: x.amountMinor }));
     if (legsToReverse.length) {
       (async () => {
         try {
           const token = await ensureAuthToken();
           if (!token) { console.warn('[refundCheck] gift reversal skipped — no auth token'); return; }
-          for (const leg of legsToReverse) {
+          for (const legIn of legsToReverse) {
+            const { _partMinor, ...leg } = legIn;
             // v5.5.903: one request shape, shared with the PAX cancel path — this used to
             // be the only gift-reverse-redeem caller, and a second hand-rolled copy is
             // exactly how two callers drift apart. reverseGiftCard NEVER throws, so one
@@ -7871,6 +7972,7 @@ export const useStore = create((set, get) => ({
               locationId: getActiveLocationSync(),
               reason: `POS refund: ${reason || 'refund'}`,
               staffId: manager?.id || null,
+              ...(_partMinor != null ? { amountMinor: _partMinor, refundId } : {}),
             });
             if (r.ok) console.info('[refundCheck] gift card reversed:', r.status || 'ok', 'restored:', r.restored);
             else {
@@ -7895,7 +7997,14 @@ export const useStore = create((set, get) => ({
     // loyalty summary, or the reward it used); when the till holds none (a stamps only member: the
     // check never carried one, so every refund was skipped), loyalty-refund finds the customer
     // from this check's own ledger rows.
-    if (nextStatus === 'refunded' && (check?.customer?.phone || check?.customer_id || check?.loyalty || check?.loyaltyRedemption)) {
+    // v5.11.81: a PART refund takes back what the refunded part earned (points by the share of the
+    // goods money returned, stamps by the qualifying lines returned), never the reward used;
+    // v5.11.78 took back nothing on a part refund (and before it, the whole check).
+    const partLoyalty = nextStatus === 'partial_refund'
+      ? partRefundLoyaltyBody({ refundId, bd, chargedGoods: chargedGoodsOf(chkBefore), refundItems, menuItems: get().menuItems || [] })
+      : null;
+    const loyaltyToReverse = nextStatus === 'refunded' || (partLoyalty && (partLoyalty.share > 0 || partLoyalty.items.length > 0));
+    if (loyaltyToReverse && (check?.customer?.phone || check?.customer_id || check?.loyalty || check?.loyaltyRedemption)) {
       (async () => {
         try {
           const token = await ensureAuthToken();
@@ -7912,6 +8021,7 @@ export const useStore = create((set, get) => ({
             closed_check_id: check.id || check.ref,
             reason: reason || 'refund',
             staff_id: manager?.id || null,
+            ...(partLoyalty || {}),
           });
           if (!res) { console.warn('[refundCheck] loyalty reversal skipped: no auth token'); return; }
           const j = await res.json().catch(() => ({}));
@@ -7950,18 +8060,14 @@ export const useStore = create((set, get) => ({
     // away with it on Adyen only because the reversal silently did nothing. Now
     // that reversals actually work on all three processors, the gate is load-
     // bearing rather than theoretical.
-    const alreadyByLeg = legRefundedMinor(chkBefore);   // BEFORE this refund's own entry
-    const cardCapMinor = legs.reduce(
-      (s, l) => s + (l.amountMinor == null ? Infinity : Math.max(0, l.amountMinor - (alreadyByLeg[l.id] || 0))),
-      0,
-    );
-    // Only the card's share goes to the card. The rest of a refund (a gift-card
-    // or loyalty-funded portion) is reversed by the paths above, which own it.
-    const wantMinor = toMinorAmt(amount);
-    const cardTargetMinor = Number.isFinite(cardCapMinor) ? Math.min(wantMinor, cardCapMinor) : wantMinor;
-    const { allocations } = cashPayout
-      ? { allocations: [] }
-      : allocateToLegs(legs, cardTargetMinor, legRefunds, alreadyByLeg);
+    // Each leg capped at what it took less earlier refunds (BEFORE this refund's own entry). Only the card's share goes to the card. The rest of a refund (a gift-card or
+    // loyalty-funded portion) is reversed by the paths above, which own it.
+    // v5.11.81: less the gift cards' share of a part refund (giftPart), which goes back to them.
+    // v5.11.81 (round 1 fix, double refund on split card checks): the operator's per leg picks
+    // never add up to more than the card's share, or a part refund sent the gift share back to the
+    // gift card AND to the cards (legs 5.00 + 5.00 plus a 10.00 gift card: 15.00 out for 10.00).
+    // All of it in refundMoneySplit (split, above).
+    const { allocations } = split;
 
     let legOutcomes = [];
     if (allocations.length) {
@@ -8050,6 +8156,12 @@ export const useStore = create((set, get) => ({
       message = `Refund of ${money(amount)} accepted by the card processor — it settles shortly.`;
     } else {
       message = `Refund of ${money(amount)} returned to the card`;
+    }
+    // v5.11.81: say how much of a part refund goes back on the gift card.
+    if (giftPart.totalMinor > 0) message += ` (${money(giftPart.totalMinor / 100)} of it back on the gift card)`;
+    // v5.11.81: a FULL refund gives the order's promo codes back (a part refund keeps them used).
+    if (nextStatus === 'refunded') {
+      releasePromoCodes({ orderIds: promoReleaseOrderIds(check || chkBefore), locationId: chkBefore.locationId || getActiveLocationSync(), reason: `refund: ${reason || 'refund'}` });
     }
     // Order screens (keepPaidTillOrders): a paid till order kept in the queue that is now
     // FULLY refunded leaves it, or it stays on the TV and in Orders Hub as paid. Only once the
@@ -8428,6 +8540,12 @@ export const useStore = create((set, get) => ({
     // too, or Pay would book a sale for an order that is already voided.
     if (get().walkInOrder?.ref === o.ref) get().clearWalkIn();
     const paid = !!(o.paid || o.customer?.paid || ['online', 'kiosk'].includes(o.source));
+    // v5.11.81: an order placed with a promo code and voided before it was paid (a catering pay
+    // later order) gives its code back; it was used up at placing and burnt with no sale. A paid
+    // order's code goes back when the sale is fully refunded (refundCheck).
+    if (!paid && o.customer?.promo_code) {
+      releasePromoCodes({ orderIds: o.customer.check_id ? [String(o.customer.check_id)] : [], orderRef: o.ref, locationId: getActiveLocationSync(), reason: `void: ${reason || 'voided'}` });
+    }
     get().showToast(paid
       ? `${label} voided. It was already paid: refund it in Back Office, Transactions.`
       : `${label} voided by ${manager.name}. ${reason}`, 'error');
@@ -9415,6 +9533,27 @@ export const useStore = create((set, get) => ({
     if (!r || !w || w.ref) return;
     set({ walkInOrder: { ...w, ref: r } });
   },
+  // v5.11.81: ONE closed check id per counter basket (lib/walkInCheckId.js). Minted the first time
+  // a checkout or a retry asks, kept on the basket, so a second checkout or a retry of the same
+  // basket books under the same id and recordWalkInClosed never books it twice. A new basket
+  // (walkInOrder replaced or cleared) starts without one.
+  ensureWalkInCheckId: () => {
+    const w = get().walkInOrder;
+    if (!w) return null;
+    if (usableCheckId(w.checkId)) return w.checkId;
+    const id = mintCheckId();
+    set({ walkInOrder: { ...w, checkId: id } });
+    return id;
+  },
+  // A gift card reversal retires the id (CheckoutModal: a re-apply must be a new redemption).
+  // Nothing was booked under it (the job died), so the basket takes a fresh one.
+  rotateWalkInCheckId: () => {
+    const w = get().walkInOrder;
+    if (!w) return null;
+    const id = mintCheckId();
+    set({ walkInOrder: { ...w, checkId: id } });
+    return id;
+  },
   theme: localStorage.getItem('rpos-theme') || 'dark',
   setTheme: (t) => {
     localStorage.setItem('rpos-theme', t);
@@ -9574,6 +9713,13 @@ export const useStore = create((set, get) => ({
         get().showToast?.(`Channel order ${o.ref} was NOT booked to sales — ${error.message}`, 'error');
       } else if (!error) {
         reportSave('channel sale', null);
+        // v5.11.81: a delivery partner order earns like a till sale when it carries the customer's
+        // own phone (never a proxy line: lib/loyaltyEarnItems.js channelEarnCustomer), by its own id.
+        const earner = channelEarnCustomer(o.customer);
+        if (earner) {
+          get().attributeOrderToCustomer({ customer: earner, orderRecord: { id: `chk-hr-${o.ref}`, ref: o.ref, items: f.items, total: f.total, source: 'hubrise' }, countOrder: false })
+            .catch((e) => console.warn('[bookChannelSale] earn:', e?.message || e));
+        }
       }
     } catch (err) {
       reportSave('channel sale', err);

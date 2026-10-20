@@ -55,6 +55,8 @@ import MsmChangesPanel from './MsmChangesPanel';
 import MsmCsv from './MsmCsv';
 import { useSiteCosts } from './useSiteCosts';
 import { EXTRA_TABS } from './msmTabs';
+import { recipeGapWords } from '../../../lib/stock/phase0Rules';
+import { fetchMsmRecipeGaps } from '../../../lib/stock/data';
 
 
 const WORKING_KEY = (menuId) => `msm-working-set:${menuId}`;
@@ -108,6 +110,7 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
   const [guide, setGuide] = useState(false);          // the first run guide is showing
   const [ratesByLoc, setRatesByLoc] = useState({});   // each site's own VAT rates (tax_rates rows)
   const [sales, setSales] = useState(undefined);      // undefined reading, null not read, Map(loc|venueItemId -> sold in 7 days)
+  const [recipeGaps, setRecipeGaps] = useState([]);   // v5.11.79: read only stock warning rows (msm_stock_recipe_gaps)
 
   // ── Load: the live menu, then everything under it ──────────────────────
   useEffect(() => {
@@ -184,6 +187,17 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
     });
     return () => { on = false; };
   }, [phase, menu?.id, api]);
+  // v5.11.79 (stock plan Phase 0): read only warning, "12 products have a recipe at Provo but none at
+  // Location 2". One database call, at most one row per site; touches no menu table. A database
+  // without 20261019b (or the demo) simply shows nothing.
+  useEffect(() => {
+    if (phase !== 'ready' || !menu?.id || demo) return undefined;
+    let on = true;
+    fetchMsmRecipeGaps(menu.id)
+      .then((r) => { if (on) setRecipeGaps(r && !r.error && Array.isArray(r.data) ? r.data : []); })
+      .catch(() => { if (on) setRecipeGaps([]); });
+    return () => { on = false; };
+  }, [phase, menu?.id, demo]);
   // The first run guide shows until this person closes it once.
   useEffect(() => { if (phase === 'ready' && menu?.id) setGuide(!guideClosed(menu.id)); }, [phase, menu?.id]);
 
@@ -367,6 +381,11 @@ export default function MultiSiteMenu({ access, orgCtx, onAccessLost }) {
         onBack={() => setWorkingId(sets.find((d) => d.status === 'draft')?.id || null)} />
 
       {note && <div style={{ marginBottom: 12, flexShrink: 0 }}><Notice tone={note.tone} onClose={() => setNote(null)} actions={note.actions}>{note.text}</Notice></div>}
+      {tab === 'grid' && recipeGaps.length > 0 && (
+        <div style={{ marginBottom: 12, flexShrink: 0 }} data-testid="msm-recipe-gaps">
+          <Notice tone="warn">{recipeGapWords(recipeGaps).join(' ')} Sales there take nothing off stock until a recipe is added in Back Office, Recipes, at that site.</Notice>
+        </div>
+      )}
       {guide && (tab === 'grid' || tab === 'groups') && <Guide onClose={closeGuide} />}
 
       {tab === 'grid' && (

@@ -40,7 +40,10 @@
 // PURE. No imports, so node tests load it directly.
 
 export const GIFT_CODE_LENGTH = 16;
-const CODE_RE = /^[A-Z2-9]{16}$/;
+// v5.11.81: any 16 letters or digits, the gate the till and Back Office send by since v5.11.67 (an
+// imported or seeded card can hold 0, 1, I or O). The issuing alphabet here sent such a code typed
+// into the Back Office search box down the staff search path, and a code holder got nothing.
+const CODE_RE = /^[A-Z0-9]{16}$/;
 
 /** Strip spaces and dashes, upper case. Same as gift-card-utils normalizeCode. */
 export function cleanGiftCode(v: unknown): string {

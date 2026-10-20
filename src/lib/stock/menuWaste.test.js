@@ -13,7 +13,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
-  listWasteProducts, buildMenuWasteRow, usableIngredientLines, wasteRefusal,
+  listWasteProducts, buildMenuWasteRow, usableIngredientLines, wasteTag,
   countLiveStockItems, stockPresence, firstReadError,
 } from './menuWaste.js';
 
@@ -67,33 +67,34 @@ test('a missing or odd menu never throws', () => {
 });
 
 // ── When a venue may still say no ─────────────────────────────────────────────
-// 26 Sep 2026 review: a venue WITH stock keeps the refusal it always had (nothing would come
-// off stock), a venue with NO stock is never blocked. The screen words the reason.
+// v5.11.79 (multi site stock plan, Phase 0, 4.7): a menu waste is NEVER refused. The tag only
+// says why nothing came off stock, at a venue that runs stock.
 
-test('a venue with no stock is never refused, linked or not, rows or not', () => {
-  assert.equal(wasteRefusal({ hasStock: false, linked: false, rows: [] }), null);
-  assert.equal(wasteRefusal({ hasStock: false, linked: true, rows: [] }), null);
-  assert.equal(wasteRefusal({ hasStock: false, linked: false, rows: undefined }), null);
-  assert.equal(wasteRefusal({ hasStock: undefined, linked: false, rows: [] }), null);
+test('a venue with no stock has nothing to say about stock, linked or not, rows or not', () => {
+  assert.equal(wasteTag({ hasStock: false, linked: false, rows: [] }), null);
+  assert.equal(wasteTag({ hasStock: false, linked: true, rows: [] }), null);
+  assert.equal(wasteTag({ hasStock: false, linked: false, rows: undefined }), null);
+  assert.equal(wasteTag({ hasStock: undefined, linked: false, rows: [] }), null);
 });
 
-test('a venue with stock records a product that takes something off stock, as before', () => {
+test('a product that takes something off stock needs no tag', () => {
   const rows = [{ invId: 'beans', qtyLabel: '18 g', cost: 0.54 }];
-  assert.equal(wasteRefusal({ hasStock: true, linked: true, rows }), null);
-  // Rows come from the recipe explosion; a row without a link is not a state the modal makes,
-  // but if it ever did, something comes off stock so the record stands.
-  assert.equal(wasteRefusal({ hasStock: true, linked: false, rows }), null);
+  assert.equal(wasteTag({ hasStock: true, linked: true, rows }), null);
+  assert.equal(wasteTag({ hasStock: true, linked: false, rows }), null);
 });
 
-test('a venue with stock still refuses an unlinked product: the old "link it in Recipes" toast', () => {
-  assert.equal(wasteRefusal({ hasStock: true, linked: false, rows: [] }), 'unlinked');
-  assert.equal(wasteRefusal({ hasStock: true, linked: false, rows: undefined }), 'unlinked');
+test('at a stock venue an unlinked product is RECORDED and tagged no recipe (it used to be refused)', () => {
+  assert.equal(wasteTag({ hasStock: true, linked: false, rows: [] }), 'no_recipe');
+  assert.equal(wasteTag({ hasStock: true, linked: false, rows: undefined }), 'no_recipe');
 });
 
-test('a venue with stock refuses a linked product whose recipe explodes to nothing (no silent no deduction record)', () => {
-  // A recipe with no lines yet, an ingredient missing from stock or a unit that will not
-  // convert all explode to zero rows. HEAD refused these too (with the unlinked wording).
-  assert.equal(wasteRefusal({ hasStock: true, linked: true, rows: [] }), 'nothing_to_deduct');
+test('at a stock venue a linked recipe that explodes to nothing is RECORDED and tagged nothing to deduct', () => {
+  assert.equal(wasteTag({ hasStock: true, linked: true, rows: [] }), 'nothing_to_deduct');
+});
+
+test('the old refusal is gone from the module', () => {
+  const src = read('./menuWaste.js');
+  assert.doesNotMatch(src, /export function wasteRefusal/);
 });
 
 // ── What the record looks like ────────────────────────────────────────────────
@@ -205,53 +206,45 @@ test('firstReadError: a { data: null, error } among the results is that error, t
 
 // ── The visibility rule, pinned in the source ─────────────────────────────────
 
-test('the till modal never hides the menu behind a recipe check and refuses only through wasteRefusal', () => {
+test('the till modal never hides the menu, never refuses, and asks the database for the one product picked (v5.11.79)', () => {
   const src = read('../../components/PosWasteModal.jsx');
   assert.doesNotMatch(src, /noRecipesAtAll/, 'the "No recipes are linked yet" dead end is gone');
   assert.doesNotMatch(src, />No recipes are linked yet/, 'rendered text, not the comment that says it is gone');
-  assert.match(src, /import \{ listWasteProducts, wasteRefusal, countLiveStockItems, stockPresence \} from '\.\.\/lib\/stock\/menuWaste'/, 'the list and the rules are the shared pure helpers');
-  assert.match(src, /listWasteProducts\(menuItems, ctx\?\.menuRecipes\)/);
-  // The old unconditional refusal is gone; the only refusal goes through the tested rule.
-  assert.doesNotMatch(src, /if \(!impact \|\| !impact\.rows\.length\)/, 'HEAD refused every product with no lines, stock or not');
-  assert.match(src, /const refusal = wasteRefusal\(\{ hasStock, linked: product\.linked, rows: impact\.rows \}\);/);
-  // The two escapes in the regex are HEAD's own em dash and arrow, pinned byte for byte (not new copy).
-  assert.match(src, /if \(refusal === 'unlinked'\) \{\s*showToast\?\.\(`\$\{product\.label\} isn’t linked to a recipe yet \u2014 link it in Back Office \u2192 Recipes to track its waste\.`, 'error'\);\s*return;/, 'a stock venue gets the exact HEAD toast for an unlinked product');
-  assert.match(src, /if \(refusal\) \{\s*showToast\?\.\(`\$\{product\.label\} is linked to a recipe that takes nothing off stock/, 'a linked recipe that explodes to nothing is refused with the accurate reason');
-  // "no recipe" badges and the link it in Recipes nag only show at a venue that runs stock,
-  // and the nag is HEAD's wording (a stock venue refuses, so "still recorded" would be a lie).
+  assert.match(src, /import \{ listWasteProducts, wasteTag, countLiveStockItems, stockPresence \} from '\.\.\/lib\/stock\/menuWaste'/, 'the list and the rules are the shared pure helpers');
+  assert.match(src, /listWasteProducts\(menuItems, links\)/);
+  assert.doesNotMatch(src, /wasteRefusal/, 'nothing refuses a waste any more');
+  assert.doesNotMatch(src, /isn’t linked to a recipe yet/, 'the old refusal toast is gone');
+  assert.doesNotMatch(src, /is linked to a recipe that takes nothing off stock, check/, 'the old refusal toast is gone');
+  // the till reads which products have a recipe, never the recipe book, on open
+  assert.match(src, /fetchWasteLinks\(loc\)\.then/);
+  assert.doesNotMatch(src.slice(src.indexOf('fetchWasteLinks(loc).then'), src.indexOf('fetchWasteLinks(loc).then') + 400), /buildDepletionCtx/);
+  // the one product's lines come from the database (preview), the recipe book only as a fallback
+  assert.match(src, /previewMenuWaste\(\{ menuItemId: product\.id, qty: n \}, loc\)/);
+  assert.match(src, /if \(r\.missing\) \{\s*const \[c, inv\] = await Promise\.all\(\[buildDepletionCtx\(loc\), fetchInventoryItems\(loc\)\]\);/);
+  // the record is one call with the product id; no refusal branch before it
+  assert.match(src, /menuItemId: product\.id, productName: product\.label/);
+  assert.match(src, /const tag = product && shown \? wasteTag\(\{ hasStock, linked: product\.linked, rows: shown\.rows \}\) : null;/);
   assert.match(src, /\{hasStock && !p\.linked &&/);
-  assert.match(src, /\{hasStock && !product\.linked && <div[^>]*>⚠ This item has no recipe linked, so nothing will come off stock\. Link it in Back Office → Recipes\.<\/div>\}/);
-  assert.doesNotMatch(src, /It is still recorded with its lost sale/);
-  // With no stock lines the lost sale is still shown before saving, at a no stock venue only.
-  assert.match(src, /\{!hasStock && impact && impact\.rows\.length === 0 && impact\.lostSale > 0 &&/);
+  assert.match(src, /\{tag && <div[^>]*>\{wasteTagText\(/, 'a plain note why nothing comes off stock, never a refusal');
 });
 
-test('a failed stock read is "not loaded", never "no stock here": ctx null, inventory empty, said on screen, Record disabled, old copy', () => {
+test('a failed stock read is "not loaded", never "no stock here": links null, said on screen, Record disabled, old copy', () => {
   const src = read('../../components/PosWasteModal.jsx');
-  // (1) fetchInventoryItems resolves { data, error } and buildDepletionCtx carries `error`;
-  // neither throws, so the .catch alone never fired for a failed fetch.
-  assert.match(src, /const failed = \(\) => \{ setCtx\(null\); setInvById\(\{\}\); setLiveStockCount\(0\); setLoadFailed\(true\); setLoading\(false\); \};/);
+  assert.match(src, /const failed = \(\) => \{ setLinks\(null\); setLiveStockCount\(0\); setLoadFailed\(true\); setLoading\(false\); \};/);
   assert.match(src, /setLoading\(true\); setLoadFailed\(false\);/, 'every open starts clean');
-  assert.match(src, /if \(inv\?\.error \|\| c\?\.error\) \{ failed\(\); return; \}/, 'inv?.error and ctx?.error are treated as not loaded');
+  assert.match(src, /if \(r\?\.error\) \{ failed\(\); return; \}/, 'a failed read is not loaded');
   assert.match(src, /\.catch\(\(\) => \{ if \(live\) failed\(\); \}\)/, 'a thrown error takes the same path');
-  // v3: the failure is said under the header and Record is disabled, not only a toast on tap.
   assert.match(src, /\{loadFailed && \(\s*<div[^>]*>Stock data did not load, close and try again<\/div>/);
   assert.match(src, /<button onClick=\{submit\} disabled=\{busy \|\| loadFailed\}/);
-  // Submit stays blocked until the reads succeed (second guard behind the disabled button).
-  assert.match(src, /if \(!ctx \|\| !impact\) \{ showToast\?\.\('Stock data did not load, close and try again', 'error'\); return; \}/);
-  // hasStock cannot be true without a ctx, so a failed load never shows a stock venue as no stock.
-  assert.match(src, /const \{ hasStock, recipesMissing \} = stockPresence\(\{ loaded: !!ctx, linkedRecipes: Object\.keys\(ctx\?\.menuRecipes \|\| \{\}\)\.length, liveStockItems: liveStockCount \}\);/);
-  assert.doesNotMatch(src, /Object\.keys\(invById\)\.length/, 'archived stock items no longer make a stock venue');
-  assert.match(src, /setLiveStockCount\(countLiveStockItems\(inv\?\.data\)\)/);
-  // (3) The no stock header copy shows only once the reads succeeded and came back empty.
-  assert.match(src, /\{loading \|\| !ctx \|\| hasStock\s*\? 'Spilled, dropped or binned\? Pick the menu item \u2014 the system works out/);
+  assert.match(src, /if \(!links \|\| loadFailed\) \{ showToast\?\.\('Stock data did not load, close and try again', 'error'\); return; \}/);
+  assert.match(src, /const \{ hasStock, recipesMissing \} = stockPresence\(\{ loaded: !!links, linkedRecipes: Object\.keys\(links \|\| \{\}\)\.length, liveStockItems: liveStockCount \}\);/);
+  assert.match(src, /\{loading \|\| !links \|\| hasStock\s*\? 'Spilled, dropped or binned\? Pick the menu item \u2014 the system works out/);
   assert.match(src, /: 'Spilled, dropped or binned\? Pick the menu item, how many and why\. No stock is set up here/);
 });
 
 test('stock items with no recipe linked at all get one amber line under the header, and the list stays', () => {
   const src = read('../../components/PosWasteModal.jsx');
-  assert.match(src, /\{!loading && !loadFailed && recipesMissing && \(\s*<div style=\{\{[^}]*color: 'var\(--amb,#e8a020\)'[^}]*\}\}>\{'Stock items exist but no recipes are linked yet, so menu waste cannot come off stock\. Link recipes in Back Office > Recipes\.'\}<\/div>/);
-  // The list is not behind it: the product picker is still the only branch on `product`.
+  assert.match(src, /\{!loading && !loadFailed && recipesMissing && \(\s*<div style=\{\{[^}]*color: 'var\(--amb,#e8a020\)'[^}]*\}\}>\{'Stock items exist but no recipes are linked yet, so menu waste is recorded with the lost sale and no stock taken off\. Link recipes in Back Office > Recipes\.'\}<\/div>/);
   assert.match(src, /\{!product \? \(/);
   assert.doesNotMatch(src, /recipesMissing \? \(/, 'the line is an addition, never a replacement for the list');
   for (const line of src.split('\n').filter(l => /Stock items exist but no recipes|Stock data did not load|Training mode: waste not recorded/.test(l))) {
@@ -270,8 +263,8 @@ test('Training Mode: neither waste writer commits anything, and both screens say
   assert.equal(src.match(/if \(isTrainingMode\(\)\)/g).length, 2);
   // The till modal closes as done but never says "Waste logged" for a training record.
   const modal = read('../../components/PosWasteModal.jsx');
-  assert.match(modal, /const \{ error, training \} = await logMenuItemWaste\(/);
-  assert.match(modal, /if \(training\) \{ showToast\?\.\('Training mode: waste not recorded', 'info'\); onClose\?\.\(\); return; \}\s*showToast\?\.\(`Waste logged/);
+  assert.match(modal, /const \{ error, training, tag: savedTag \} = await logMenuItemWaste\(/);
+  assert.match(modal, /if \(training\) \{ showToast\?\.\('Training mode: waste not recorded', 'info'\); onClose\?\.\(\); return; \}\s*const why = [^\n]*\n\s*showToast\?\.\(`Waste logged/);
   // Back Office Wastage says the same for raw stock waste.
   const bo = read('../../backoffice/sections/Wastage.jsx');
   assert.match(bo, /const \{ error, training \} = await logWaste\(/);

@@ -17,6 +17,7 @@ import { getVenueUberConfig } from '../../lib/delivery/deliveryConfig';
 import { renderTableQrJpeg, qrFileName, saveHref, buildQrPdf, savePdf } from '../../lib/tableQr';
 import { prepMinutes } from '../../lib/prepTime';
 import { TIP_DEFAULTS, normaliseTipRule, parsePctList } from '../../lib/tipping';
+import MenuTranslations from './MenuTranslations';
 
 // Reuses the existing receipt-assets bucket with an online/ prefix so logo
 // + hero uploads don't collide with the receipt branding's logo/QR assets.
@@ -109,6 +110,7 @@ export default function OnlineOrdering({ setSection, canOpen = () => true }) {
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const [uploadingHero, setUploadingHero] = useState(false);
   const [opsLocId, setOpsLocId] = useState(null);
+  const [showTranslations, setShowTranslations] = useState(false);   // v5.11.81 menu languages
   const logoInputRef = useRef(null);
   const heroInputRef = useRef(null);
 
@@ -431,6 +433,7 @@ export default function OnlineOrdering({ setSection, canOpen = () => true }) {
         <div style={S.h2}>🍽 Which menu shows online?</div>
         <div style={S.desc}>
           Choose which of your menus to expose on the customer-facing surfaces. If unset, the active menu (the one running in your POS / kiosk right now) is used as a fallback.
+          A chosen menu follows its own times, as on a till: outside them, your default menu shows.
         </div>
         {menus.length === 0 ? (
           <div style={{ fontSize:12, color:'var(--t4)', fontStyle:'italic' }}>
@@ -447,6 +450,20 @@ export default function OnlineOrdering({ setSection, canOpen = () => true }) {
           </select>
         )}
       </div>
+
+      {/* v5.11.81: menu languages reach the online page, QR and catering too (as the kiosk). */}
+      <div style={S.card}>
+        <div style={S.h2}>🌐 Menu languages</div>
+        <div style={S.desc}>
+          Guests whose phone is set to Spanish, French or Chinese see your menu in their language on the online page,
+          QR and catering, with a switch back to English. Orders, tickets and receipts stay in English.
+          Your menu is translated for you and you can fix any line.
+        </div>
+        {opsLocId ? (
+          <button type="button" onClick={() => setShowTranslations(true)} style={S.link}>Menu translations</button>
+        ) : null}
+      </div>
+      {showTranslations && opsLocId ? <MenuTranslations locationId={opsLocId} onClose={() => setShowTranslations(false)} /> : null}
 
       {/* Branding — consolidated into Menu appearance (v5.5.744) */}
       <div style={S.card}>
@@ -714,7 +731,7 @@ function QrSettingsBlock({
         type="number" min="0"
         value={servicePct}
         onChange={v => setServicePct(parseFloat(v) || 0)}
-        help="Auto-applied to every QR order. 0 = none. Capped at 50%."/>
+        help="Used only until the database update 20261020a runs. From v5.11.81 QR charges the venue's table service charge, set on the device profiles (Back Office, Device profiles, Service charge), the same as the tables."/>
 
       <TipRuleEditor
         title="Tipping at the table (QR)"

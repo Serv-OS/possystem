@@ -2,9 +2,18 @@
  * stock/purchasing.js — purchase orders, receiving, and supplier invoices.
  *
  * Receiving a PO or posting an invoice writes PURCHASE_RECEIPT movements to the
- * ledger (via post_stock_movement) and updates each item's moving-average cost
- * with a new effective-dated item_cost_history row. House pattern: loc-demo guard,
- * camelCase ↔ snake_case, idempotent receipts.
+ * ledger and updates each item's moving-average cost with a new effective-dated
+ * item_cost_history row. House pattern: loc-demo guard, camelCase ↔ snake_case,
+ * idempotent receipts.
+ *
+ * v5.11.79 (multi site stock plan, Phase 0, 11.5 item 3 and 4.9): a receive and an invoice are each
+ * ONE database call (stock_receive, stock_post_invoice, 20261019b). The database locks the items in
+ * id order, works the moving average out from the LOCKED on hand (a sale or a second device receiving
+ * the same item can no longer give a wrong average), and writes the movement, the cost history (with
+ * the supplier pack and the price paid per pack) and the cost together. Stock below zero or an
+ * unknown cost takes the delivery price, never an average. A duplicate invoice number from the same
+ * supplier is refused, and an invoice for an order already received is kept as paperwork. Before
+ * 20261019b is run those calls are missing and the old browser path below runs.
  */
 
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
@@ -13,7 +22,9 @@ import { costAfterReceipt } from './costing.js';
 import { postStockMovement, fetchTaxRateMap } from './data.js';
 import { fetchReceivingArea } from './areas.js';
 import { purchaseNet } from '../tax.js';
-import { cleanFnError, poTotals, unreceivableLines, receiveRefusalText } from './purchasingRules.js';
+import { cleanFnError, poTotals, unreceivableLines, receiveRefusalText, poReceiptLines, packLabel } from './purchasingRules.js';
+import { isMissingFunctionError, invoiceOutcome } from './phase0Rules.js';
+import { readAllPagesResult } from '../pagedRead.js';
 
 const nowIso = () => new Date().toISOString();
 async function ensureLoc(locationId) {
@@ -109,11 +120,17 @@ export const fetchPurchaseOrders = async (locationId = null, limit = 100) => {
   if (isMock || !supabase) return { data: [], error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: [], error: null };
-  const [{ data: pos, error }, { data: lines }] = await Promise.all([
-    supabase.from('purchase_orders').select('*').eq('location_id', locationId).order('created_at', { ascending: false }).limit(limit),
-    supabase.from('po_lines').select('*').eq('location_id', locationId).order('sort_order'),
-  ]);
+  const { data: pos, error } = await supabase.from('purchase_orders').select('*').eq('location_id', locationId).order('created_at', { ascending: false }).limit(limit);
   if (error) return { data: [], error };
+  // v5.11.79 (stock plan 11.5 item 8): the lines of THESE orders only, in pages of 1,000. It read
+  // every line the venue ever had in one request, so past 1,000 lines (about 3 weeks at 2 orders a
+  // day of 25 lines) older orders showed with lines missing.
+  const ids = (pos || []).map((r) => r.id);
+  const linesRes = ids.length ? await readAllPagesResult('order lines', (first) => supabase.from('po_lines')
+    .select('*', first ? { count: 'exact' } : undefined).eq('location_id', locationId).in('po_id', ids).order('po_id').order('sort_order').order('id'))
+    : { data: [], error: null };
+  if (linesRes.error) return { data: [], error: linesRes.error };
+  const lines = linesRes.data;
   const linesByPo = {};
   (lines || []).forEach((l) => { (linesByPo[l.po_id] ??= []).push(poLineFromRow(l)); });
   return { data: (pos || []).map((r) => ({ ...poFromRow(r), lines: linesByPo[r.id] || [] })), error: null };
@@ -147,7 +164,11 @@ export const savePurchaseOrder = async (po, lines, locationId = null) => {
     inner_unit: l.innerUnit || 'each', unit_price: Number(l.unitPrice) || 0, qty_received: Number(l.qtyReceived) || 0,
     purchase_tax_rate_id: l.purchaseTaxRateId || null, line_tax: lineTaxes[i], sort_order: i,
   }));
-  if (lrows.length) await supabase.from('po_lines').insert(lrows);
+  // v5.11.79: a line save that fails (a lock wait, a timeout) is said, never a header with no lines
+  if (lrows.length) {
+    const { error: lineErr } = await supabase.from('po_lines').insert(lrows);
+    if (lineErr) return { data: null, error: new Error(`The order was saved but its lines were not: ${lineErr.message || lineErr}. Save again.`) };
+  }
   return { data: poFromRow(data), error: null };
 };
 
@@ -260,6 +281,32 @@ export const receivePurchaseOrder = async (poId, locationId = null, receipts = n
     const { bad } = unreceivableLines(lines, map);
     if (bad.length) return { error: new Error(receiveRefusalText(bad)) };
   }
+  // v5.11.79: every line's stock and cost in ONE database call, before any order line is touched
+  // (all or nothing; a retry posts nothing twice: the keys stay po:<order>:<line>).
+  let oneCall = false;
+  {
+    const perPackOf = {};
+    for (const l of lines) {
+      const item = map[l.inventory_item_id];
+      if (!item) continue;
+      try { perPackOf[l.id] = convert(Number(l.pack_qty) * Number(l.inner_qty), l.inner_unit, item.baseUnit, { itemConversions: item.conversions }); } catch { /* checked above */ }
+    }
+    const rpcLines = poReceiptLines(poId, lines, { byLine, perPackOf }).map((r) => ({
+      key: r.key, item_id: r.item_id, qty_base: r.qty_base, unit_cost: r.unit_cost,
+      supplier_product_id: r.supplier_product_id, pack_price: r.pack_price, pack_label: r.pack_label,
+    }));
+    if (rpcLines.length) {
+      const { data: res, error: rpcErr } = await supabase.rpc('stock_receive', {
+        p_location_id: locationId, p_source_type: 'purchase_order', p_source_id: String(poId), p_lines: rpcLines,
+        p_area_id: landIn || null, p_notes: null,
+      });
+      if (!rpcErr && res?.ok !== false) oneCall = true;
+      else if (!rpcErr) return { error: new Error(res?.error || 'The receive was refused. Nothing was received.') };
+      else if (!isMissingFunctionError(rpcErr)) return { error: new Error(`Nothing was received: ${rpcErr.message || rpcErr}`) };
+    } else {
+      oneCall = true;   // nothing to bring in (every line shorted): only the order lines change
+    }
+  }
   const ratesById = receipts ? await fetchTaxRateMap(locationId) : null;
   const shorted = [];
   let acceptedSubtotal = 0, acceptedTax = 0;
@@ -275,7 +322,8 @@ export const receivePurchaseOrder = async (poId, locationId = null, receipts = n
     try { baseContentPerPack = convert(Number(l.pack_qty) * Number(l.inner_qty), l.inner_unit, item.baseUnit, { itemConversions: item.conversions }); }
     catch { continue; }
     if (!(baseContentPerPack > 0)) continue;
-    if (accepted > 0) {
+    if (accepted > 0 && !oneCall) {
+      // before 20261019b: the old browser path, line by line
       const recvBase = accepted * baseContentPerPack;
       const unitCostPerBase = price / baseContentPerPack;
       await applyReceipt(locationId, item, l.inventory_item_id, recvBase, unitCostPerBase, 'purchase_order', poId, `po:${poId}:${l.id}`, landIn);
@@ -420,6 +468,60 @@ export const postInvoice = async (header, lines, locationId = null, { areaId = n
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: new Error('No locationId') };
   const landIn = await landingArea(locationId, areaId);
+  // v5.11.79: the invoice, its lines and its receipts in ONE database call (stock_post_invoice).
+  {
+    const ratesById = await fetchTaxRateMap(locationId);
+    const map = await itemMap(locationId, lines.map(l => l.matchedItemId));
+    const matchedIds = [...new Set(lines.map(l => l.matchedItemId).filter(Boolean))];
+    // the supplier pack each matched line was bought in (preferred first), for the price paid report
+    const spByItem = {};
+    if (header.supplierId && matchedIds.length) {
+      const { data: sps } = await supabase.from('supplier_products').select('id, inventory_item_id, pack_qty, inner_qty, inner_unit, is_preferred')
+        .eq('location_id', locationId).eq('supplier_id', header.supplierId).in('inventory_item_id', matchedIds)
+        .order('is_preferred', { ascending: false }).order('created_at').order('id');
+      (sps || []).forEach((sp) => { if (!spByItem[sp.inventory_item_id]) spByItem[sp.inventory_item_id] = sp; });
+    }
+    const rpcLines = [];
+    const receipts = [];
+    lines.forEach((l, i) => {
+      const rate = Number(ratesById[l.purchaseTaxRateId] || 0);
+      const raw = l.lineTotal != null ? Number(l.lineTotal) : (Number(l.qty) * Number(l.unitPrice));
+      const netLine = purchaseNet(raw, l.priceIncludesTax === true, rate) ?? 0;
+      const sp = l.matchedItemId ? spByItem[l.matchedItemId] : null;
+      rpcLines.push({
+        matched_item_id: l.matchedItemId || null, description: l.description || null, qty: Number(l.qty) || 0, unit: l.unit || 'each',
+        unit_price: Number(l.unitPrice) || 0, line_total: Math.round(netLine * 100) / 100, purchase_tax_rate_id: l.purchaseTaxRateId || null,
+        line_tax: Math.round(netLine * rate * 100) / 100, flags: l.flags || [], supplier_product_id: sp?.id || null,
+      });
+      const item = map[l.matchedItemId];
+      if (!item || !(Number(l.qty) > 0)) return;
+      let qtyBase;
+      try { qtyBase = convert(Number(l.qty), l.unit || item.baseUnit, item.baseUnit, { itemConversions: item.conversions }); } catch { return; }
+      if (!(qtyBase > 0)) return;
+      receipts.push({
+        line_index: i, item_id: l.matchedItemId, qty_base: qtyBase, unit_cost: netLine > 0 ? netLine / qtyBase : 0,
+        supplier_product_id: sp?.id || null, pack_price: Number(l.qty) > 0 && netLine > 0 ? Math.round((netLine / Number(l.qty)) * 10000) / 10000 : null,
+        pack_label: (sp ? packLabel(sp) : null) || l.unit || null,
+      });
+    });
+    const { data: res, error: rpcErr } = await supabase.rpc('stock_post_invoice', {
+      p_location_id: locationId,
+      p_invoice: {
+        // v5.11.79: the screen's own id for this invoice (made once per scan): a retry is answered
+        // duplicate, so an invoice with no number never posts twice
+        client_id: header.clientId || null,
+        supplier_id: header.supplierId || null, invoice_number: header.invoiceNumber || null, invoice_date: header.invoiceDate || null,
+        ocr_confidence: header.ocrConfidence ?? null, subtotal: header.subtotal ?? null, tax: header.tax ?? null, total: header.total ?? null,
+        raw_json: header.rawJson || null, image_path: header.imagePath || null, po_id: header.poId || null,
+      },
+      p_lines: rpcLines, p_receipts: receipts, p_area_id: landIn || null,
+    });
+    if (!rpcErr || !isMissingFunctionError(rpcErr)) {
+      const outcome = invoiceOutcome(res, rpcErr, receipts.length);
+      if (!outcome.ok) return { data: null, error: new Error(outcome.text), code: outcome.code || null };
+      return { data: res?.invoice_id ? { id: res.invoice_id } : null, error: null, stock: res?.stock !== false, text: outcome.text };
+    }
+  }
   const { data: inv, error } = await supabase.from('supplier_invoices').insert({
     location_id: locationId, supplier_id: header.supplierId || null, invoice_number: header.invoiceNumber || null,
     invoice_date: header.invoiceDate || null, status: 'POSTED', ocr_confidence: header.ocrConfidence ?? null,

@@ -170,16 +170,32 @@ test('matchTransferLines: SKU first, then name, never archived; canReceive needs
     { id: 'l6', skuSnapshot: 'ZZ', nameSnapshot: 'zz', toInventoryItemId: 'r-flour' },
   ];
   const { lines: got, unmatched } = matchTransferLines(lines, receiver);
-  assert.equal(got[0].toInventoryItemId, 'r-milk'); assert.equal(got[0].matchedBy, 'sku', 'the first item with that SKU');
+  // v5.11.79 (stock plan 4.8): two of the receiver's items carry SKU MILK2, so the receiver picks;
+  // the first match never wins silently.
+  assert.equal(got[0].toInventoryItemId, null, 'two items share the SKU: no silent first match');
+  assert.deepEqual(got[0].ambiguous, ['r-milk', 'r-eggs'], 'the line lists the items it could be');
   assert.equal(got[1].toInventoryItemId, 'r-flour'); assert.equal(got[1].matchedBy, 'name');
   assert.equal(got[2].toInventoryItemId, null, 'archived items never match');
   assert.equal(got[3].dropped, true);
   assert.equal(got[5].matchedBy, 'kept', 'a match made by hand stays');
-  assert.deepEqual(unmatched, ['l3', 'l5']);
+  assert.deepEqual(unmatched, ['l1', 'l3', 'l5']);
   assert.equal(canReceive(got), false);
-  got[2].toInventoryItemId = 'r-milk'; got[4].dropped = true;
+  got[0].toInventoryItemId = 'r-milk'; got[2].toInventoryItemId = 'r-milk'; got[4].dropped = true;
   assert.equal(canReceive(got), true);
   assert.equal(canReceive([]), false);
+});
+
+test('matchTransferLines: one SKU match wins over names; two items with the same name and no SKU match means pick', () => {
+  const receiver = [{ id: 'a', name: 'Milk', sku: 'M1' }, { id: 'b', name: 'Milk', sku: null }, { id: 'c', name: 'Beans', sku: 'B1' }];
+  const { lines: got, unmatched } = matchTransferLines([
+    { id: 'x', skuSnapshot: 'M1', nameSnapshot: 'Milk' },
+    { id: 'y', skuSnapshot: 'ZZ', nameSnapshot: 'milk' },
+    { id: 'z', skuSnapshot: null, nameSnapshot: 'Beans' },
+  ], receiver);
+  assert.equal(got[0].toInventoryItemId, 'a'); assert.equal(got[0].matchedBy, 'sku');
+  assert.equal(got[1].toInventoryItemId, null); assert.deepEqual(got[1].ambiguous, ['a', 'b']);
+  assert.equal(got[2].toInventoryItemId, 'c'); assert.equal(got[2].matchedBy, 'name');
+  assert.deepEqual(unmatched, ['y']);
 });
 
 // ── 5. scope ─────────────────────────────────────────────────────────────────

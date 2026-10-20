@@ -341,7 +341,10 @@ test('PIN: the call sites the audit found all write through writeClosedCheckRow'
     assert.match(read(`../../${file}`), re, file);
   }
   // OrdersHub's two force closes (lines 772 and 979 of the audit) still write through it
-  assert.equal((read('../surfaces/OrdersHub.jsx').match(/await writeClosedCheckRow\(supabase, \{/g) || []).length, 2);
+  // (v5.11.81: each record is built first, then written, so the close can earn by its id)
+  const hubSrc = read('../surfaces/OrdersHub.jsx');
+  assert.match(hubSrc, /await writeClosedCheckRow\(supabase, tabCheck, \{ tag: 'forceCloseQrTab' \}\);/);
+  assert.match(hubSrc, /await writeClosedCheckRow\(supabase, oneCheck, \{ tag: 'OrdersHub force-close' \}\);/);
   // the offline queue keeps no copy of the missing column loop of its own
   assert.doesNotMatch(read('../sync/OfflineQueue.js'), /missingColumnOf\(/);
   // MPOS buffers its recovery row for that replay

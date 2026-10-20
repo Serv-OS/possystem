@@ -166,7 +166,9 @@ export function basketAllergens(cart, items, lineExtras = null) {
         for (const id of itemAllergenIds(byId.get(m.itemId))) ids.add(id);
       }
     }
-    const extra = lineExtras instanceof Map ? lineExtras.get(line.key) : null;
+    // v5.11.81: a line kept at its own price has its own key (lib/channelMenu.js kioskLineSlot);
+    // the allergens noted for the item and picks ride its base key.
+    const extra = lineExtras instanceof Map ? (lineExtras.get(line.key) || (line.baseKey ? lineExtras.get(line.baseKey) : null)) : null;
     for (const id of (Array.isArray(extra) ? extra : [])) {
       const norm = normaliseAllergenId(id);
       if (norm) ids.add(norm);

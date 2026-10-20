@@ -50,6 +50,20 @@ export function checkDiscountAmount(d, subtotal) {
   return num(d.value ?? d.amount);
 }
 
+/**
+ * v5.11.81: what each check discount takes off the bill ON SCREEN, in order, never more than is left
+ * of the subtotal (computeCheckTotals floors the bill at 0.00). An amount discount bigger than the
+ * bill showed its typed value (10.00 off a 6.00 bill read -10.00 while the bill took 6.00).
+ */
+export function shownCheckDiscounts(discounts, subtotal) {
+  let left = Math.max(0, num(subtotal));
+  return (Array.isArray(discounts) ? discounts : []).map((d) => {
+    const take = Math.min(Math.max(0, checkDiscountAmount(d, num(subtotal))), left);
+    left -= take;
+    return take;
+  });
+}
+
 /** Pro rata weights: the first list with a positive sum wins, else equal shares. */
 function weightsOf(...lists) {
   for (const w of lists) {

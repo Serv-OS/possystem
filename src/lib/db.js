@@ -2627,6 +2627,38 @@ export const fetchDiscountRules = async (locationId = null) => {
     .order('priority', { ascending: false });
 };
 
+// v5.11.81: the venue's ONE table service charge rule (lib/venueServiceRule.js; the database's
+// venue_service_rule, migration 20261020a, callable by a QR guest). Resolves the rule
+// ({ enabled, rate, applyTo, minCovers } or { enabled: false }), or null when it cannot be read
+// (the database update not run yet, offline): the caller then keeps its own rule, as before.
+export const fetchVenueServiceRule = async (locationId) => {
+  if (isMock || !locationId || !supabase) return null;
+  try {
+    const { data, error } = await supabase.rpc('venue_service_rule', { p_location_id: locationId });
+    if (error || !data || typeof data !== 'object') return null;
+    return data;
+  } catch { return null; }
+};
+
+// v5.11.81 round 1 ("the QR pay button waits up to 4 seconds for the service rule"): one read per
+// venue per page visit. The QR menu page starts it as it loads (prefetch), so by checkout the rule
+// is usually known and Pay is never held. A rule read is kept; a failed read (null) is asked again
+// next time. peekVenueServiceRule answers at once: the rule, or undefined while it is not known.
+const _venueRuleCache = new Map();   // locationId -> { promise, value }
+export const venueServiceRuleCached = (locationId) => {
+  if (!locationId) return Promise.resolve(null);
+  const hit = _venueRuleCache.get(locationId);
+  if (hit) return hit.promise;
+  const entry = { value: undefined, promise: null };
+  entry.promise = fetchVenueServiceRule(locationId).then((r) => {
+    if (r) entry.value = r; else _venueRuleCache.delete(locationId);
+    return r || null;
+  }, () => { _venueRuleCache.delete(locationId); return null; });
+  _venueRuleCache.set(locationId, entry);
+  return entry.promise;
+};
+export const peekVenueServiceRule = (locationId) => (locationId ? _venueRuleCache.get(locationId)?.value : undefined);
+
 export const fetchActiveDiscountRules = async (locationId = null) => {
   if (isMock) return { data: null, error: null };
   if (!locationId || locationId === 'loc-demo') locationId = await getLocationId();

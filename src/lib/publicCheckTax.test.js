@@ -260,10 +260,11 @@ test('QR with an offer at an added-on (US) venue: the record is not scaled, the 
 
 test('guard: the QR page books the offer scaled record and the Online page scales the whole record', () => {
   const qr = readFileSync(join(here, '../surfaces/qr/QrCheckout.jsx'), 'utf8');
-  assert.match(qr, /const taxBreakdown = useMemo\(\s*\(\) => offerChargedTax\(goodsTaxBreakdown, subtotal, discountedSubtotal, autoDiscountTotal\)/);
+  // v5.11.81: with the bill's lines, its offers and the seam, so a deal on some lines takes VAT off their rates.
+  assert.match(qr, /const taxBreakdown = useMemo\(\s*\(\) => offerChargedTax\(goodsTaxBreakdown, subtotal, discountedSubtotal, autoDiscountTotal, \{\s*\/\/[^\n]*\n\s*lines: qrTaxLinesForBill, discounts: autoDiscounts,/);
   assert.match(qr, /publicCheckTaxFields\(taxBreakdown, \{ hasTaxConfig, goods: subtotal \}\)/);   // 8 Oct 2026: with the tax config flag
   const online = readFileSync(join(here, '../surfaces/online/OnlineCheckout.jsx'), 'utf8');
-  assert.match(online, /return offerScaledTax\(taxBreakdown, discountedSubtotalMinor \/ subtotalMinor\);/);
+  assert.match(online, /return offerTaxForOnline\(taxBreakdown, \{\n\s+lines: onlineTaxLines, discounts: autoDiscounts, goods: subtotalMinor \/ 100, charged: discountedSubtotalMinor \/ 100,/);
 });
 
 // The three pages that send a paid check to place_public_order must all use the one helper.

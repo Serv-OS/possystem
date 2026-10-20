@@ -23,6 +23,7 @@ import { getLocationConfig } from '../../lib/locationTime';
 import { signedMoney } from '../../lib/currency';
 import { fetchInventoryItems, fetchSuppliers } from '../../lib/stock/data';
 import { fetchCounts, fetchCount, createCount, saveCountLine, approveCount, deleteCount, removeCountLine, markAreaComplete } from '../../lib/stock/counts';
+import { openingCosts } from '../../lib/stock/phase0Rules';
 import { approvalOutcomeText } from '../../lib/stock/countRules';
 import { areasReady, fetchAreas, fetchAreaHoldings, moveHoldingBetweenAreas } from '../../lib/stock/areas';
 import {
@@ -331,8 +332,8 @@ export default function StockCounts({ orgCtx = null }) {
     if (!r.gate.ok && !r.confirmIncomplete) { showToast?.('Tick "Approve anyway" or mark the areas complete first', 'error'); return; }
     setBusy(true);
     // the transfers the manager agreed to: posted first, so the count adjustment for those lines is 0
-    let movedCount = 0;
-    for (const w of r.warnings) {
+    let movedCount = r.movedCount || 0;
+    for (const w of (r.movesDone ? [] : r.warnings)) {
       if (!w.moveFrom || !r.moves[w.lineId]) continue;
       const mv = await moveHoldingBetweenAreas({ inventoryItemId: w.itemId, fromAreaId: w.moveFrom.areaId, toAreaId: w.areaId, qtyBase: w.moveFrom.qty, note: `Found by count ${r.fresh.name}`, byName: loginName, item: itemsById[w.itemId] }, locId);
       reportSave('stock transfer', mv.error);
@@ -340,15 +341,26 @@ export default function StockCounts({ orgCtx = null }) {
       movedCount++;
     }
     setPosting({ done: 0, total: 0 });
-    const { error, data: outcome } = await approveCount(active.id, locId, {
+    // v5.11.79: the costs the manager typed for items counted for the first time (opening stock is
+    // never valued at 0), plus what the screen already knows for them (openingCosts, tested).
+    const { costs } = openingCosts(r.needsCost || [], itemsById, r.typedCosts || {});
+    const { error, data: outcome, needsCost } = await approveCount(active.id, locId, {
       approvedByName: loginName, approvalNote: r.gate.ok ? null : r.gate.note,
-      onProgress: (p) => setPosting(p),
+      onProgress: (p) => setPosting(p), costs,
     });
     setPosting(null); setBusy(false);
+    if (needsCost && needsCost.length) {
+      // Nothing was written. Ask for a cost per item, keep the moves already recorded.
+      const known = openingCosts(needsCost, itemsById, r.typedCosts || {});
+      setReview(prev => ({ ...(prev || r), needsCost, movesDone: true, movedCount, typedCosts: { ...Object.fromEntries(Object.entries(known.costs).map(([k, v]) => [k, String(v)])), ...(prev?.typedCosts || {}) } }));
+      showToast?.(error?.message || 'Enter a cost for the items counted for the first time', 'error');
+      return;
+    }
     reportSave('stock count approval', error);
     if (error) { showToast?.(error.message, 'error'); await refreshActive(); return; }
     setReview(null);
-    showToast?.(approvalOutcomeText({ posted: outcome?.posted ?? 0, total: outcome?.total ?? 0 }) + (movedCount ? ` ${movedCount} transfer${movedCount === 1 ? '' : 's'} recorded.` : ''), 'success');
+    const words = outcome?.oneCall ? outcome.text : approvalOutcomeText({ posted: outcome?.posted ?? 0, total: outcome?.total ?? 0 });
+    showToast?.(words + (movedCount ? ` ${movedCount} transfer${movedCount === 1 ? '' : 's'} recorded.` : ''), 'success');
     const { data } = await fetchCount(active.id, locId);
     setActive(data); setEdits({}); await reload();
   };
@@ -528,6 +540,22 @@ export default function StockCounts({ orgCtx = null }) {
                       )}
                     </div>
                   ))}
+                </div>
+              )}
+              {review.needsCost && review.needsCost.length > 0 && (
+                <div style={{ padding: '10px 12px', borderRadius: 10, background: 'var(--bg2)', border: '1px solid var(--amber, #F5A623)', marginBottom: 10 }}>
+                  <div style={{ fontSize: 12.5, color: 'var(--t1)', marginBottom: 6 }}>Counted here for the first time with no cost yet. Opening stock is never valued at 0: enter a cost per {'base unit'} for each (from an invoice or the supplier price list).</div>
+                  {review.needsCost.map(n => {
+                    const iid = n.item_id || n.itemId;
+                    return (
+                      <label key={iid} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, fontSize: 12.5, color: 'var(--t1)', padding: '4px 0', borderTop: '1px solid var(--bg3)' }}>
+                        <span>{n.name || itemName(iid)} <span style={{ color: 'var(--t3)' }}>per {itemsById[iid]?.baseUnit || 'unit'}</span></span>
+                        <input inputMode="decimal" value={review.typedCosts?.[iid] ?? ''} placeholder="0.00"
+                          onChange={e => { const v = e.target.value; setReview(r => ({ ...r, typedCosts: { ...(r.typedCosts || {}), [iid]: v } })); }}
+                          style={{ width: 110, padding: '6px 8px', borderRadius: 8, border: '1px solid var(--bdr)', background: 'var(--bg1)', color: 'var(--t1)', fontFamily: 'var(--font-mono)' }} />
+                      </label>
+                    );
+                  })}
                 </div>
               )}
               <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>

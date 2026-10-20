@@ -16,7 +16,7 @@
 // Pure helpers only (no Supabase, no store): OrdersHub, MPOS, CheckoutModal, the kitchen ticket
 // and the tests all use the same rules.
 
-import { qrTabService } from './headlessTax.js';
+import { qrTabService, qrTabDealLines, qrGrossSubtotal } from './headlessTax.js';
 import { foldLineMods } from './channelMoney.js';
 
 export const PAYMENT_CHECKING = 'checking';
@@ -176,8 +176,9 @@ export function shortTabClosedCheck(tab, short, { nowIso = new Date().toISOStrin
     },
     // 19 Oct 2026 (v5.11.78): stored in the till's line contract (options inside the price).
     items: foldLineMods(Array.isArray(tab.allItems) ? tab.allItems : []).map((i) => ({ ...i, voided: false })),
-    discounts: [],
-    subtotal: +Math.max(0, paid - tip - service - added).toFixed(2),
+    discounts: qrTabDealLines(rows),   // v5.11.81: the deals the server applied to each round
+    // v5.11.81 round 1: gross goods (the deals added back), or reports take the deal off twice.
+    subtotal: qrGrossSubtotal(Math.max(0, paid - tip - service - added), qrTabDealLines(rows)),
     service,
     tip,
     tax_amount: tax && tax.taxAmount != null ? tax.taxAmount : null,

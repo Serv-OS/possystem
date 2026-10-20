@@ -127,7 +127,7 @@ test('closeShortQrTab: the check books the share of VAT the capture paid for', (
 test('wiring: all three Orders Hub QR closes book VAT (none books tax_amount null)', () => {
   const hub = fs.readFileSync(new URL('../surfaces/OrdersHub.jsx', import.meta.url), 'utf8');
   assert.doesNotMatch(hub, /tax_amount: null/);
-  assert.match(hub, /import \{ qrCloseTax, qrTabService \} from '\.\.\/lib\/headlessTax';/);
+  assert.match(hub, /import \{ qrCloseTax, qrTabService, qrTabDealLines, qrGrossSubtotal \} from '\.\.\/lib\/headlessTax';/);   // v5.11.81: + the deal lines
   assert.match(hub, /import \{ taxCtxHasConfig \} from '\.\.\/lib\/taxCompute';/);
   assert.match(hub, /shortTabClosedCheck\(tab, short, \{ taxFor: \(paidGoods\) => qrCloseTax\(tab\.allItems, qrTaxCtx\(\), \{ paidGoods \}\) \}\)/);
   // 19 Oct 2026 (v5.11.78): the rounds' QR service charge comes out of the goods too (booked as service).

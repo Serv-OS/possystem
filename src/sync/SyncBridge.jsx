@@ -572,6 +572,12 @@ export default function SyncBridge({ onSyncPulse }) {
                 priority: r.priority ?? 0, sortOrder: r.sort_order ?? 0,
               }));
             } catch (e) { console.warn('[SyncBridge] discount load error:', e?.message); }
+            // v5.11.81: the venue's one table service charge rule, for the Pay at table stamp
+            // (SessionSync). A failed read (the database update not run) leaves the store's.
+            try {
+              const { data: svcRule, error: svcErr } = await sb.rpc('venue_service_rule', { p_location_id: locationId });
+              if (!svcErr && svcRule && typeof svcRule === 'object') patch.venueServiceRule = svcRule;
+            } catch { /* the till's own rule stands */ }
           }
           // 27 Sep 2026: the one mapper (lib/rowMapping.js mapCategoryRow), with srvAt.
           if (catsRes.data?.length && !snapHas('menuCategories')) patch.menuCategories = catsRes.data.map(mapCategoryRow);

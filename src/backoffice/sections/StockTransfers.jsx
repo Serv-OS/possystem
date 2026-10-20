@@ -33,6 +33,7 @@ import {
   TRANSFER_STATUS_WORDS, TRANSFER_FILTERS, uomCtxOf, transferUnitsFor, defaultTokenOf, fmtQtyOf,
   transferDirection, transferHeadline, transferMatchesFilter, validateTransferDraft, buildTransferLines,
   lineWarnings, transferValue, receivePlan, matchCandidates, receiveLineUpdates, linesText, cancelText, movedText,
+  sentInReceiverUnits, unitProblemText, shortOf,
 } from '../../lib/stock/transferRules';
 import { fromBase, toBase } from '../../lib/stock/uom';
 import { reportSave } from '../../lib/saveHealth';
@@ -337,8 +338,20 @@ function TransferDetail({ id, locId, areas, areaName, venueName, items, itemsByI
   };
   const recvItem = (l) => (l.toInventoryItemId ? itemsById[l.toInventoryItemId] : null);
   const setLine = (lineId, patch) => setPlan(p => {
-    const next = p.lines.map(l => (l.id === lineId ? { ...l, ...patch } : l));
-    return { ...p, lines: next, unmatched: next.filter(l => !l.dropped && !l.toInventoryItemId).map(l => l.id), canReceive: next.length > 0 && next.every(l => l.dropped || l.toInventoryItemId) };
+    const next = p.lines.map(l => {
+      if (l.id !== lineId) return l;
+      const m = { ...l, ...patch };
+      // v5.11.79: a new match works the sent quantity out again in THAT item's unit
+      if ('toInventoryItemId' in patch) {
+        const ri = m.toInventoryItemId ? itemsById[m.toInventoryItemId] : null;
+        const sent = ri ? sentInReceiverUnits(m, ri) : Number(m.qtyBase);
+        m.sentHere = sent; m.unitProblem = ri && !m.dropped && sent == null ? unitProblemText(m, ri) : null;
+        m.qtyReceivedBase = sent; m.recvText = undefined; m.ambiguous = undefined;
+      }
+      return m;
+    });
+    return { ...p, lines: next, unmatched: next.filter(l => !l.dropped && !l.toInventoryItemId).map(l => l.id),
+      canReceive: next.length > 0 && next.every(l => l.dropped || (l.toInventoryItemId && !l.unitProblem)) };
   });
 
   const doReceive = async () => {
@@ -404,7 +417,7 @@ function TransferDetail({ id, locId, areas, areaName, venueName, items, itemsByI
         <div style={{ ...card, border: '1px solid var(--amber, #F5A623)' }}>
           <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--t1)' }}>Receive into {venueName(locId) || 'this venue'}</div>
           <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: 4 }}>
-            Each line is matched to one of your items by SKU, then by name. Amber lines need a match by hand, or Drop line (recorded, no stock). Correct any quantity that differs from what arrived. The cost comes with the stock.
+            Each line is matched to one of your items by SKU, then by name; when two of your items match, you pick. Amber lines need a match by hand, or Drop line. Quantities are in your item's unit. Correct any quantity that differs from what arrived: what did not arrive is booked at the sending venue as waste (Short on transfer). The cost comes with the stock.
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--t3)' }}>Lands in</span>
@@ -440,12 +453,17 @@ function TransferDetail({ id, locId, areas, areaName, venueName, items, itemsByI
               const cost = l.unitCost != null ? l.unitCost : (costById[l.inventoryItemId] || 0);
               const tone = l.dropped ? 'var(--t4)' : receiving ? (l.toInventoryItemId ? 'var(--grn, #16a34a)' : 'var(--amber, #F5A623)') : 'var(--t1)';
               const recvTok = ri ? defaultTokenOf(ri) : null;
-              const recvShown = ri && recvTok ? fromBase(l.qtyReceivedBase ?? l.qtyBase, recvTok, uomCtxOf(ri)) : null;
+              const recvShown = ri && recvTok && (l.qtyReceivedBase ?? l.sentHere) != null ? fromBase(l.qtyReceivedBase ?? l.sentHere, recvTok, uomCtxOf(ri)) : null;
               return (
                 <tr key={l.id} style={{ borderTop: '1px solid var(--bdr)', opacity: l.dropped ? 0.55 : 1 }}>
                   <td style={{ padding: '10px 14px', color: tone }}>
                     <div>{l.nameSnapshot || itemsById[l.inventoryItemId]?.name || 'Item'}</div>
-                    <div style={{ fontSize: 11, color: 'var(--t3)' }}>{[l.skuSnapshot, l.dropped ? 'dropped' : receiving ? (l.matchedBy === 'sku' ? 'matched by SKU' : l.matchedBy === 'name' ? 'matched by name' : l.matchedBy === 'kept' ? 'matched' : l.toInventoryItemId ? 'matched by hand' : 'no match yet') : null].filter(Boolean).join(' · ')}</div>
+                    <div style={{ fontSize: 11, color: 'var(--t3)' }}>{[l.skuSnapshot, l.dropped ? 'dropped' : receiving ? (l.matchedBy === 'sku' ? 'matched by SKU' : l.matchedBy === 'name' ? 'matched by name' : l.matchedBy === 'kept' ? 'matched' : l.toInventoryItemId ? 'matched by hand' : (l.ambiguous?.length ? `${l.ambiguous.length} of your items match: pick one` : 'no match yet')) : null].filter(Boolean).join(' · ')}</div>
+                    {/* v5.11.79: units that cannot convert, and what did not arrive (booked at the sender) */}
+                    {receiving && l.unitProblem && <div style={{ fontSize: 11, color: 'var(--amber, #F5A623)', marginTop: 2 }}>{l.unitProblem}</div>}
+                    {receiving && ri && !l.dropped && !l.unitProblem && (() => { const sh = shortOf(l, ri); return sh > 0 ? <div style={{ fontSize: 11, color: 'var(--amber, #F5A623)', marginTop: 2 }}>{`Short ${fmtQtyOf(sh, ri)}: booked at ${venueName(t.locationId) || 'the sending venue'} as waste, Short on transfer`}</div> : null; })()}
+                    {receiving && l.dropped && <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>{`Not received: booked at ${venueName(t.locationId) || 'the sending venue'} as waste, Short on transfer`}</div>}
+                    {!receiving && t.status === 'RECEIVED' && Number(l.shortQtyBase) > 0 && <div style={{ fontSize: 11, color: 'var(--amber, #F5A623)', marginTop: 2 }}>{`Short on transfer ${r3(l.shortQtyBase)} ${l.baseUnit || ''}, booked as waste at ${venueName(t.locationId) || 'the sending venue'}`}</div>}
                   </td>
                   <td style={{ padding: '10px 14px', textAlign: 'right', color: 'var(--t2)', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>{sentQty(l)}</td>
                   {receiving && (
@@ -467,7 +485,7 @@ function TransferDetail({ id, locId, areas, areaName, venueName, items, itemsByI
                                 <button style={small} onClick={() => setLine(l.id, { dropped: true })}>Drop line</button>
                               </div>
                               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                                {matchCandidates(search[l.id] ?? (l.nameSnapshot || ''), items, 6).map(c => (
+                                {(l.ambiguous?.length ? items.filter(c => l.ambiguous.includes(c.id)) : matchCandidates(search[l.id] ?? (l.nameSnapshot || ''), items, 6)).map(c => (
                                   <button key={c.id} style={chip(false)} onClick={() => { setLine(l.id, { toInventoryItemId: c.id, matchedBy: 'hand' }); }}>{c.name}{c.sku ? ` · ${c.sku}` : ''}</button>
                                 ))}
                               </div>
@@ -490,7 +508,7 @@ function TransferDetail({ id, locId, areas, areaName, venueName, items, itemsByI
                     <td style={{ padding: '10px 14px', textAlign: 'right', color: 'var(--t2)', whiteSpace: 'nowrap' }}>{l.dropped ? 'dropped' : (ri ? fmtQtyOf(l.qtyReceivedBase ?? l.qtyBase, ri) : `${r3(l.qtyReceivedBase ?? l.qtyBase)} ${l.baseUnit || ''}`)}</td>
                   )}
                   <td style={{ padding: '10px 14px', textAlign: 'right', color: 'var(--t3)', whiteSpace: 'nowrap' }}>{money(cost)} a {l.baseUnit || 'unit'}</td>
-                  <td style={{ padding: '10px 14px', textAlign: 'right', color: 'var(--t2)', whiteSpace: 'nowrap' }}>{l.dropped ? '' : money(Math.max(0, Number(l.qtyReceivedBase ?? l.qtyBase)) * cost)}</td>
+                  <td style={{ padding: '10px 14px', textAlign: 'right', color: 'var(--t2)', whiteSpace: 'nowrap' }}>{l.dropped ? '' : money(Math.max(0, Number(l.qtyBase) * (l.sentHere > 0 && l.qtyReceivedBase != null ? Number(l.qtyReceivedBase) / l.sentHere : 1)) * cost)}</td>
                 </tr>
               );
             })}

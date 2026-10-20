@@ -123,6 +123,8 @@ export async function runMenuSync(
     if (plan.counts.carried) bits.push(`${plan.counts.carried} of your earlier matches kept`);
     // An automatic match whose names no longer match exactly (ours renamed or gone).
     if (plan.counts.cleared) bits.push(`${plan.counts.cleared} automatic match${plan.counts.cleared === 1 ? '' : 'es'} taken off because the names no longer match exactly`);
+    // v5.11.81: an exact match kept after our item was renamed (ezcaterMenuSync renamedTargetKept).
+    if (plan.counts.renamedKept) bits.push(`${plan.counts.renamedKept} automatic match${plan.counts.renamedKept === 1 ? '' : 'es'} kept on your renamed item${plan.counts.renamedKept === 1 ? '' : 's'}`);
     // A staff match made for a different name than the synced one (from before the sync).
     if (plan.counts.lookAgain) bits.push(`${plan.counts.lookAgain} of your matches to check again: the ezCater name is not the one you matched, so those print by name until you press Still right or Change`);
     // Two sizes of one item with the same name: no name says which one an order means.

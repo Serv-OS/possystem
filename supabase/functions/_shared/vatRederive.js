@@ -18,6 +18,9 @@
 //   - the share of the goods charged: src/lib/payments/checkTotals.js (item discounts and
 //     check discounts off, loyalty and promo credits NOT off) through taxShare.inclusiveTaxOnCharged,
 //     and headlessTax.taxForChargedGoods (a bill charged nothing books 0);
+//   - v5.11.81: a discount that names its lines (an item discount, a deal's appliedItems) takes
+//     VAT off those lines' own rates when the bill has more than one rate (lineCharged.js, the
+//     till's taxShare.inclusiveTaxOnChargedLines); every other sale keeps the one share;
 //   - the rounding: src/lib/taxRule.js roundHalfUpMinor, half up to the penny, ONCE per sale.
 // src/lib/accounting/vatRederive.test.js pins this mirror against the real engine
 // (saleVatGuard.rederiveSaleTax) over 200 live till sales and the 14 QR sales of the audit, and
@@ -32,6 +35,7 @@
 
 import { TAX_ORDER_TYPE_ALIASES } from './accountingGroups.js';
 import { moneyDiscounts } from './accountingDay.js';
+import { chargedLineValues, sharesDiffer } from './lineCharged.js';
 
 export const NOT_IN_MENU = '__not_in_menu__';
 export const TAX_FALLBACK_REASONS = Object.freeze({
@@ -216,6 +220,7 @@ export function rederiveSale(row, { rates, menu } = {}) {
   const byRate = new Map();
   const fallbacks = [];
   let sumTax = 0, sumNet = 0, sumGross = 0, exclusive = 0;
+  const perLine = [];
   for (const line of lines) {
     const rule = lineRule(line, menuIdx);
     const { rate, fallback } = resolveLineRate(rule, line, idx, orderType);
@@ -227,6 +232,7 @@ export function rederiveSale(row, { rates, menu } = {}) {
       else { net = gross0; tax = net * rate.rate; gross = net + tax; exclusive += tax; }
     }
     sumGross += gross; sumNet += net; sumTax += tax;
+    perLine.push({ rate, tax, net, gross });
     if (rate) {
       const e = byRate.get(rate.id) || { rate: { id: rate.id, code: rate.code, name: rate.name, rate: rate.rate, type: rate.type, active: true, appliesTo: rate.appliesTo, isDefault: rate.isDefault }, tax: 0, net: 0, gross: 0, items: 0 };
       e.tax += tax; e.net += net; e.gross += gross; e.items += 1;
@@ -236,6 +242,27 @@ export function rederiveSale(row, { rates, menu } = {}) {
   const hasExclusive = exclusive > 0;
   const { goods, share: rawShare } = chargedShare(row, lines);
   const share = hasExclusive ? 1 : rawShare;
+  // v5.11.81: more than one rate, and a discount that kept some lines' share apart from the rest:
+  // each line's VAT is the VAT inside what IT was charged (the till's taxShare.inclusiveTaxOnChargedLines).
+  // (More than one rate means more than one entry by rate, a 0% one included, as the till counts them.)
+  const values = (!hasExclusive && share > 0 && share < 1 && byRate.size > 1) ? chargedLineValues(lines, moneyDiscounts(row)) : null;
+  if (values && sharesDiffer(values)) {
+    let t = 0, n2 = 0, g2 = 0;
+    for (const e of byRate.values()) { e.tax = 0; e.net = 0; e.gross = 0; }
+    perLine.forEach((pl, n) => {
+      const f = values.gross[n] > 0 ? values.net[n] / values.gross[n] : 0;
+      t += pl.tax * f; n2 += pl.net * f; g2 += pl.gross * f;
+      if (pl.rate) { const e = byRate.get(pl.rate.id); e.tax += pl.tax * f; e.net += pl.net * f; e.gross += pl.gross * f; }
+    });
+    const totalTax = roundHalfUpPence(t);
+    const breakdown = [...byRate.values()].sort((a, b) => b.rate.rate - a.rate.rate);
+    const record = {
+      subtotal: n2, totalTax, total: g2, exclusiveTax: 0, breakdown, hasExclusiveTax: false,
+      source: 'check', share, byLine: true, ...(fallbacks.length ? { fallbacks } : {}),
+    };
+    const noDefault = fallbacks.some((f) => f.reason === TAX_FALLBACK_REASONS.NO_DEFAULT_RATE);
+    return { ok: !noDefault, reason: noDefault ? 'no-default-rate' : null, totalTax, share, goods, record, fallbacks };
+  }
   const totalTax = roundHalfUpPence(sumTax * share);
   const breakdown = [...byRate.values()].sort((a, b) => b.rate.rate - a.rate.rate)
     .map((e) => ({ ...e, tax: e.tax * share, net: e.net * share, gross: e.gross * share }));

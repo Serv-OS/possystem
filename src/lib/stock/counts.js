@@ -2,9 +2,9 @@
  * stock/counts.js: par levels + stock count sessions.
  *
  * A count snapshots each line's expected quantity at start (expected_qty). On APPROVAL it
- * posts STOCK_COUNT_ADJ movements (delta = counted minus what the system holds now) via
- * post_stock_movement (idempotent per count, item and area), so stock reconciles to the
- * physical count and the correction feeds "the gap". House pattern throughout.
+ * posts STOCK_COUNT_ADJ movements (delta = counted minus what the system held when the line was
+ * counted, v5.11.79) through ONE database call (approve_stock_count), so stock reconciles to the
+ * physical count and the correction feeds "the gap". A first count is Opening stock. House pattern.
  *
  * 16 Oct 2026 (stock areas): a count is Full, By area, By supplier or Spot check; a line is one
  * (item, area); each area on the sheet is marked complete by its counter (stock_count_areas);
@@ -22,6 +22,7 @@ import { countName } from '../venueDate.js';
 import { getLocationConfig } from '../locationTime';
 import { readAllPagesResult } from '../pagedRead.js';
 import { limiter } from '../../../supabase/functions/_shared/pagedRows.js';
+import { approvalOutcome, isMissingFunctionError } from './phase0Rules.js';
 
 const nowIso = () => new Date().toISOString();
 async function ensureLoc(locationId) {
@@ -143,7 +144,10 @@ export const createCount = async ({ name, countType = 'FULL', storageArea, itemI
     // ── the 15 Oct shape ──
     let ids = itemIds;
     const itemsById = {};
-    const { data: items } = await supabase.from('inventory_items').select('id, name, on_hand, current_cost').eq('location_id', locationId).is('archived_at', null);
+    // v5.11.79: in pages of 1,000 (a venue past 1,000 items lost the tail of its count sheet)
+    const { data: items, error: itemsErr } = await readAllPagesResult('stock items', (first) => supabase.from('inventory_items')
+      .select('id, name, on_hand, current_cost', first ? { count: 'exact' } : undefined).eq('location_id', locationId).is('archived_at', null).order('name').order('id'));
+    if (itemsErr) return { data: null, error: itemsErr };
     (items || []).forEach(i => { itemsById[i.id] = i; });
     if (!ids || !ids.length) ids = (items || []).map(i => i.id);
     const legacyType = ready ? type : (type === 'AREA' || type === 'SUPPLIER' ? 'FULL' : type);
@@ -310,10 +314,31 @@ export const deleteCount = async (countId, locationId = null) => {
  * 2,000 to 3,000 lines; one after another was 8 to 15 minutes), `onProgress({ done, total })`
  * feeds the button, and the first failure stops new posts. A retry cannot post a line twice.
  */
-export const approveCount = async (countId, locationId = null, { approvedByName = null, approvalNote = null, onProgress = null } = {}) => {
+export const approveCount = async (countId, locationId = null, { approvedByName = null, approvalNote = null, onProgress = null, costs = null } = {}) => {
   if (isMock || !supabase) return { error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { error: new Error('No locationId') };
+  // v5.11.79 (stock plan Phase 0, 11.5 item 1 and 4.6): ONE database call (approve_stock_count,
+  // 20261019b). Each line is worked out from the moment it was counted, so sales made while the count
+  // was running are never added back; the first count of an item posts Opening stock (out of The
+  // Gap), valued at a real cost, never 0: with no cost known the call answers needs_cost and nothing
+  // is written, and the screen asks the manager for one (`costs`: { itemId: cost per base unit }).
+  // All or nothing, and a retry posts nothing twice. Before 20261019b is run the call is missing and
+  // the old line by line path below runs.
+  {
+    const { data: res, error: rpcErr } = await supabase.rpc('approve_stock_count', {
+      p_count_id: countId, p_approved_by_name: approvedByName || null, p_approval_note: approvalNote || null,
+      p_costs: costs && Object.keys(costs).length ? costs : null, p_preview: false,
+    });
+    if (!rpcErr) {
+      const outcome = approvalOutcome(res);
+      if (!outcome.ok) return { error: new Error(outcome.text), needsCost: outcome.needsCost || null, data: res };
+      return { error: null, data: { posted: Number(res?.posted) || 0, total: Number(res?.total) || 0, opening: Number(res?.opening) || 0,
+        varianceValue: res?.variance_value ?? null, openingValue: res?.opening_value ?? null, uncounted: res?.uncounted ?? null,
+        duplicate: !!res?.duplicate, text: outcome.text, oneCall: true } };
+    }
+    if (!isMissingFunctionError(rpcErr)) return { error: rpcErr };
+  }
   const ready = await areasReady(locationId);
   const linesRes = await readAllPagesResult('count lines', (first) => supabase.from('stock_count_lines')
     .select('*', first ? { count: 'exact' } : undefined).eq('location_id', locationId).eq('count_id', countId).order('sort_order').order('id'));

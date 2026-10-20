@@ -20,6 +20,8 @@
 
 import { resolveLineTaxRate } from '../tax.js';
 import { isScaledTaxRecord } from '../taxShare.js';
+import { allocateCheckBasis } from '../taxBasis.js';
+import { roundHalfUpMinor } from '../taxRule.js';
 
 /** Round to pennies. The single rounding point for pounds in this module. */
 export const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
@@ -112,6 +114,64 @@ export function selectedAddedOnTax(check, items, share, serviceRefunded = 0) {
 }
 
 /**
+ * v5.11.81 (round 1 fix, "kiosk and online part refunds stop at the card part"): the whole bill a
+ * refund can give back. The till books `total` as the whole bill (gift card, reward and card
+ * together), but the kiosk, the online page and a reader close book `total` as the CARD part only,
+ * with every payment in `tenders` (and the gift card record). Capping a refund at `total` gave a
+ * 14.80 kiosk order paid 5.00 gift, 2.00 reward and 7.80 card only 7.80 back line by line, and a
+ * kiosk order paid all by gift card (total 0) could never be refunded at all. The bill is the
+ * largest of: total, every tender plus its tip, and the gift card money taken. A till row is
+ * unchanged (its tenders add up to its total). The card itself never takes more than it was paid:
+ * each card leg is capped at its own amount (allocateToLegs, the store's cardCapMinor).
+ */
+export function refundBillOf(check) {
+  const total = num(check?.total);
+  const tenders = Array.isArray(check?.tenders) ? check.tenders : [];
+  const settled = tenders.reduce((s, t) => s + num(t?.amount) + num(t?.tip), 0);
+  const g = check?.giftCard || null;
+  const giftLegsList = g ? (Array.isArray(g.legs) && g.legs.length ? g.legs : [g]) : [];
+  const giftPaid = giftLegsList.reduce((s, x) => s + Math.max(0, Math.round(num(x?.applied))), 0) / 100;
+  return r2(Math.max(total, settled, giftPaid));
+}
+
+/**
+ * v5.11.81 (round 1 fix, double refund on split card checks): the default per leg picks, filled
+ * from the front up to each leg's room, for `amountMinor` of CARD money (the refund less the gift
+ * cards' share). The store fills the same way when no picks are given.
+ */
+export function defaultLegPicks(legs, legDone, amountMinor) {
+  let remain = Math.max(0, Math.round(num(amountMinor)));
+  const out = {};
+  for (const l of (Array.isArray(legs) ? legs : [])) {
+    if (remain <= 0) break;
+    const room = l.amountMinor == null ? null : Math.max(0, l.amountMinor - (num(legDone?.[l.id]) || 0));
+    const take = room == null ? remain : Math.min(remain, room);
+    if (take <= 0) continue;
+    out[l.id] = take;
+    remain -= take;
+  }
+  return out;
+}
+
+/**
+ * v5.11.81 (round 1 fix, double refund on split card checks): the operator's per leg picks never add
+ * up to more than the card money this refund returns (`capMinor`: the refund less the gift cards'
+ * share). Kept in leg order, the first legs first. Null stays null (no picks: the store fills).
+ */
+export function capLegPicks(legs, picks, capMinor) {
+  if (!picks || typeof picks !== 'object' || !Object.keys(picks).length) return picks;
+  let left = Math.max(0, Math.round(num(capMinor)));
+  const out = {};
+  for (const l of (Array.isArray(legs) ? legs : [])) {
+    const want = Math.max(0, Math.round(num(picks[l.id])));
+    const take = Math.min(want, left);
+    out[l.id] = take;
+    left -= take;
+  }
+  return out;
+}
+
+/**
  * 27 Sep 2026 (review of the Leeds VAT fix): the bill a refund's VAT is pro rated
  * against. A reader close stores `total` as the CARD part only (the gift card taken
  * before the job was sent is not in it), so pro rating the check's whole VAT against
@@ -128,6 +188,9 @@ export function refundTaxBasis(check) {
   const settled = r2(tenders.reduce((s, t) => s + num(t?.amount) + num(t?.tip), 0) - num(check?.tip));
   return Math.max(total, settled);
 }
+
+/** A refund line's entry in a chargedLineUnits plan (same object, else the same uid). */
+const placeLine = (plan, it) => (plan ? plan.find((x) => x.line === it || (x.line?.uid != null && x.line.uid === it?.uid)) || null : null);
 
 /**
  * 19 Oct 2026 (v5.11.78, channel parity): each live line's own share of a check's booked UK VAT,
@@ -154,7 +217,14 @@ export function lineVatWeights(check, taxRates = []) {
     ...(Array.isArray(taxRates) ? taxRates : []),
   ];
   const orderType = check?.orderType || check?.order_type || 'dine-in';
-  const share = isScaledTaxRecord(t) ? Number(t.share) : 1;
+  // v5.11.81 (round 1 fix, refund VAT regression): a per line record (taxShare
+  // inclusiveTaxOnChargedLines, byLine) booked each line's VAT on what THAT line was charged, so a
+  // deal takes VAT off its own lines' rates only. One shared share cannot reproduce it, so each line
+  // is weighted by its own charged fraction (chargedLineUnits: the same placement the refund money
+  // uses). unitVat stays at the full price: refundTaxAmount scales it by unit / price itself.
+  const byLine = t.byLine === true;
+  const share = byLine ? 1 : (isScaledTaxRecord(t) ? Number(t.share) : 1);
+  const paid = byLine ? chargedLineUnits(check) : null;
   const perRate = new Map();
   const lines = [];
   for (const l of live) {
@@ -163,7 +233,13 @@ export function lineVatWeights(check, taxRates = []) {
     if (rate && rate.type && rate.type !== 'inclusive' && r > 0) return null;
     const unitVat = num(l.price) * (r > 0 ? r / (1 + r) : 0);
     const qty = num(l.qty) || 1;
-    if (rate) perRate.set(rate.id, (perRate.get(rate.id) || 0) + unitVat * qty);
+    let charged = 1;
+    if (byLine && paid) {
+      const hit = placeLine(paid, l);
+      if (!hit) return null;
+      charged = num(l.price) > 0 ? Math.min(1, Math.max(0, hit.unit / num(l.price))) : 1;
+    }
+    if (rate) perRate.set(rate.id, (perRate.get(rate.id) || 0) + unitVat * qty * charged);
     lines.push({ line: l, unitVat, qty });
   }
   // The weights must BE the booked record, bucket for bucket, or they are not used.
@@ -240,12 +316,17 @@ export function refundTaxAmount(check, bd, opts = {}) {
       let selectedVat = 0;
       let selectedValue = 0;
       let placed = true;
+      // v5.11.81: a line goes back at what was paid for it (refundUnitPrice), so the VAT given back
+      // is the VAT inside THAT money, line by line at the line's own rate.
+      const paid = chargedLineUnits(check);
       for (const it of items) {
         const hit = plan.lines.find((x) => x.line === it || (x.line?.uid != null && x.line.uid === it?.uid));
         if (!hit) { placed = false; break; }
         const q = Math.min(Math.max(0, num(it?.refundQty)), hit.qty);
-        selectedVat += hit.unitVat * q;
-        selectedValue += num(it?.price) * (num(it?.refundQty) || 0);
+        const price = num(hit.line?.price);
+        const unit = refundUnitPrice(check, it, paid);
+        selectedVat += hit.unitVat * q * (price > 0 ? Math.min(1, unit / price) : 1);
+        selectedValue += unit * (num(it?.refundQty) || 0);
       }
       if (placed) {
         // The VAT inside the money handed back: the lines are refunded at their own price
@@ -260,8 +341,54 @@ export function refundTaxAmount(check, bd, opts = {}) {
     }
   }
   // Pro rata on the money, the tip left out of both sides (a tip carries no VAT).
-  const money = Math.max(0, amount - bdTip);
-  return basisExTip > 0 ? r2(Math.min(vatLeft, taxAmount * (money / basisExTip))) : null;
+  // v5.11.81 (round 1 fix; Peter, 19 Oct 2026: "service charge has no VAT"): the service charge is
+  // taken out of both sides too, so a service only refund gives back 0 VAT whatever the record, and
+  // a line refund's VAT is never spread over a service charge that carried none. Kept in only when
+  // the record itself taxed the service (added on US tax, or a stored serviceTax).
+  const tb = check?.taxBreakdown || {};
+  const svcTaxed = !!tb.hasExclusiveTax || num(tb.serviceTax) > 0;
+  const money = Math.max(0, amount - bdTip - (svcTaxed ? 0 : num(bd?.service)));
+  const basisGoods = Math.max(0, basisExTip - (svcTaxed ? 0 : num(check?.service)));
+  if (basisGoods > 0) return r2(Math.min(vatLeft, taxAmount * (money / basisGoods)));
+  return basisExTip > 0 ? 0 : null;
+}
+
+/**
+ * v5.11.81 (19 Oct 2026, "a part refund on a discounted check gives back the money actually taken
+ * for those lines"): what the customer actually paid for each live line, per unit. The line after
+ * its own item discount and its share of the check's real discounts (manual, automatic deals,
+ * a delivery partner's offer), placed the way the tax basis places them (taxBasis.allocateCheckBasis:
+ * a deal on the lines it hit, the rest pro rata). A promo code or a loyalty reward is a TENDER on
+ * every channel (counted once, never a discount), so it is left out here, as it is from the VAT.
+ * Null for a check with no discount at all: every line then goes back at its own price, exactly as
+ * before. Before this a refunded line always went back at its menu price, so on a 15.00 meal deal
+ * sold at 12.00 the burger went back at 9.00 and the guest kept 6.00 of goods for 3.00.
+ * @returns {Array<{ line, unit, qty }>|null}
+ */
+export function chargedLineUnits(check) {
+  const live = (Array.isArray(check?.items) ? check.items : []).filter((i) => i && !i.voided);
+  if (!live.length) return null;
+  const discounts = (Array.isArray(check?.discounts) ? check.discounts : [])
+    .filter((d) => d && typeof d === 'object' && d.source !== 'promo' && d.source !== 'loyalty' && d.type !== 'promo');
+  const itemDiscounted = live.some((i) => i.discount && num(i.discount.value) > 0);
+  if (!discounts.length && !itemDiscounted) return null;
+  const alloc = allocateCheckBasis(live, { discounts }).lines;
+  return live.map((line, n) => {
+    const qty = num(line.qty) || 1;
+    return { line, unit: Math.max(0, num(alloc[n]?.netValue)) / qty, qty };
+  });
+}
+
+/** The money a refund line goes back at, per unit: what was actually paid for it (chargedLineUnits), else its price. */
+export function refundUnitPrice(check, it, plan = chargedLineUnits(check)) {
+  const hit = placeLine(plan, it);
+  return hit ? hit.unit : num(it?.price);
+}
+
+/** v5.11.81: the goods money a check charged (its lines after their discounts), else itemsBasis. */
+export function chargedGoodsOf(check) {
+  const plan = chargedLineUnits(check);
+  return plan ? r2(plan.reduce((s, x) => s + x.unit * x.qty, 0)) : itemsBasis(check);
 }
 
 /**
@@ -312,7 +439,8 @@ export function refundBreakdown(check, {
   serviceOverride = null,
 } = {}) {
   const done = refundedSoFar(check);
-  const total = num(check?.total);
+  // v5.11.81 (round 1 fix): the whole bill, not the card part a kiosk, online or reader row books.
+  const total = refundBillOf(check);
   const maxRefund = r2(Math.max(0, total - done.total));
   const tipRemaining = r2(Math.max(0, num(check?.tip) - done.tip));
   const serviceRemaining = r2(Math.max(0, num(check?.service) - done.service));
@@ -334,11 +462,18 @@ export function refundBreakdown(check, {
     };
   }
 
-  const selected = r2(
+  // v5.11.81: each line goes back at what was actually paid for it (chargedLineUnits); a check
+  // with no discount has no plan and every figure is exactly what it was.
+  const plan = chargedLineUnits(check);
+  const selectedGross = r2(
     (Array.isArray(items) ? items : [])
       .reduce((s, i) => s + num(i?.price) * (num(i?.refundQty) || 0), 0),
   );
-  const basis = itemsBasis(check);
+  // Half up on the true value (taxRule.roundHalfUpMinor), so 5.35 less 10% (4.815) goes back as 4.82.
+  const selected = plan
+    ? roundHalfUpMinor((Array.isArray(items) ? items : []).reduce((s, i) => s + refundUnitPrice(check, i, plan) * (num(i?.refundQty) || 0), 0), 2)
+    : selectedGross;
+  const basis = plan ? r2(plan.reduce((s, x) => s + x.unit * x.qty, 0)) : itemsBasis(check);
   const share = basis > 0 ? clamp(selected / basis, 0, 1) : 0;
 
   const proRataTip = r2(tipRemaining * share);
@@ -365,6 +500,9 @@ export function refundBreakdown(check, {
     itemsAmount: r2(itemsAmount), tip, service, tax, amount,
     proRataTip, proRataService,
     tipRemaining, serviceRemaining, taxRemaining, maxRefund, share, isFullRefund: false,
+    // v5.11.81: the lines at their menu price, and the check's discounts on them (shown as
+    // "Less discounts" on the refund screens), so the lines listed add up to the money returned.
+    selectedGross, discountBack: r2(Math.max(0, selectedGross - selected)),
   };
 }
 
