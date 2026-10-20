@@ -155,7 +155,7 @@ export default function Recipes() {
     if (draft.recipeType === 'PREP' && !draft.outputItemId) { showToast?.('Choose the made-here item this prep produces', 'error'); return; }
     if (!draft.name?.trim()) upd('name', draft.recipeType === 'MENU' ? 'Dish' : 'Prep');
     setSaving(true);
-    // v5.11.82 (multi site stock Drop 0, plan 4.5): the recipe, its lines and the menu product link
+    // v5.11.84 (multi site stock Drop 0, plan 4.5): the recipe, its lines and the menu product link
     // in ONE call (saveRecipeWithLines, stock_save_recipe), which also re costs a made item. It saves
     // all of it or none of it, so a saved recipe is never reported as "Ingredients NOT saved".
     const res = await saveRecipeWithLines({ ...draft, name: draft.name?.trim() || (draft.recipeType === 'MENU' ? menuMeta.label(menuMeta.byId[String(draft.menuItemId)] || {}) : 'Prep') }, locId, { section: 'produce' });

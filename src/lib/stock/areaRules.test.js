@@ -588,7 +588,7 @@ test('data.js: fetchInventoryItems reads in pages, postStockMovement sends p_are
 test('counts.js: lines carry their area, approval is one database call, line inserts are chunked and checked', () => {
   const src = code(read('./counts.js'));
   assert.match(src, /import \{ resolveCountScope, chunkArray, INSERT_CHUNK, countNameFor \} from '\.\/areaRules\.js';/);
-  // v5.11.82 (multi site stock Drop 0): the browser approval loop (a post per line through a pool
+  // v5.11.84 (multi site stock Drop 0): the browser approval loop (a post per line through a pool
   // of 3, then APPROVED) is gone; the database approves in one call, keyed per count, item and area
   // the same way (approve_stock_count, 20261019b), all or nothing.
   const approve = src.slice(src.indexOf('export const approveCount'));

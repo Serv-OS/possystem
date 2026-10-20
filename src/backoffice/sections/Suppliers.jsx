@@ -45,7 +45,7 @@ export default function Suppliers() {
   const save = async () => {
     if (!draft.name.trim()) { showToast?.('Name required', 'error'); return; }
     setSaving(true);
-    // v5.11.82 (multi site stock Drop 0): one save function (stock_save_supplier) saves every field
+    // v5.11.84 (multi site stock Drop 0): one save function (stock_save_supplier) saves every field
     // of this form, named as a Purchasing save, with the version of the row this form loaded.
     const { data, error } = await upsertSupplier(draft, locId, { section: 'purchasing' });
     setSaving(false);

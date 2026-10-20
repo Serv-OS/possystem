@@ -1,5 +1,5 @@
 // node --test: the invoice scan asks who is signing in (api/_userAuth.js and api/stock-invoice-scan.js,
-// v5.11.82, multi site stock Drop 0, plan 7.7 and 9.6). Until now anyone could post an image and
+// v5.11.84, multi site stock Drop 0, plan 7.7 and 9.6). Until now anyone could post an image and
 // spend the vision key.
 import test from 'node:test';
 import assert from 'node:assert/strict';

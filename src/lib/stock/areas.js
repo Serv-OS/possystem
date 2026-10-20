@@ -312,7 +312,7 @@ export const assignItemArea = async (inventoryItemId, areaId, { moveHolding = tr
   if (isMock || !supabase) return { data: { movedQty: 0 }, error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: new Error('No locationId') };
-  // v5.11.82 (multi site stock Drop 0): ONE save function (stock_save_item_site) sets the area and,
+  // v5.11.84 (multi site stock Drop 0): ONE save function (stock_save_item_site) sets the area and,
   // when the old area still holds stock and moveHolding is on, moves that holding as a within venue
   // transfer in the same transaction, so the area and the holding can never end up half changed.
   // Before the database has the function the steps below run as before.

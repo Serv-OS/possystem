@@ -120,7 +120,7 @@ test('every wf_audit write in the edge functions goes through the chain writer',
   const calls = ma.match(/await audit\(/g) || [];
   const checked = ma.match(/const auditErr = await audit\(/g) || [];
   // v5.11.64: po.receive audits a rejected delivery and a receive (two more).
-  // v5.11.82 (multi site stock Drop 0): stock.count_approve and stock.waste (counting and waste on
+  // v5.11.84 (multi site stock Drop 0): stock.count_approve and stock.waste (counting and waste on
   // the phone) audit too. Opening a count and saving figures are not audited (no stock moves).
   assert.equal(calls.length, 8, 'timesheet.clock_out, timesheet.approve, timeoff.decide, po.raise, po.reject_delivery, po.receive, stock.count_approve, stock.waste');
   assert.equal(checked.length, calls.length, 'an audit result is ignored');

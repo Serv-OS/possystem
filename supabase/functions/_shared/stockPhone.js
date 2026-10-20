@@ -1,6 +1,6 @@
 // supabase/functions/_shared/stockPhone.js
 //
-// Counting and waste on a phone (the Manager app). v5.11.82, multi site stock Drop 0 (plan 4.23):
+// Counting and waste on a phone (the Manager app). v5.11.84, multi site stock Drop 0 (plan 4.23):
 // re landed from Phase 1b with its fixes. The phone is an anonymous paired device, so it works
 // through manager-approve (device fence + staff PIN + audit, service role); this module holds the
 // steps, with the service role client passed in, so node --test drives it with a stand in

@@ -49,7 +49,7 @@ test('approvalOutcomeText says what happened in plain words', () => {
 
 test('approveCount checks every write and only then marks the count APPROVED', () => {
   const src = readFileSync(resolve(here, './counts.js'), 'utf8');
-  // v5.11.82 (multi site stock Drop 0): approval is ONE database call (stock_approve_count_pin, else
+  // v5.11.84 (multi site stock Drop 0): approval is ONE database call (stock_approve_count_pin, else
   // approve_stock_count), all or nothing: the database posts every adjustment, checks each one, and
   // marks the count APPROVED last, in one transaction. The old browser loop (a post per line, then
   // the APPROVED write) never ran once 20261019b was in and is gone; countApprovalPlan and

@@ -88,7 +88,7 @@ function Field({ label, children }) {
   return <div style={{ marginBottom: 14 }}><label style={labelStyle}>{label}</label>{children}</div>;
 }
 
-// v5.11.82 (multi site stock Drop 0): every save on this screen goes through a database save
+// v5.11.84 (multi site stock Drop 0): every save on this screen goes through a database save
 // function that checks the screen's Back Office section (Inventory), and sends back the version of
 // the row it loaded, so a change saved by someone else meanwhile is said instead of overwritten.
 const INV = Object.freeze({ section: 'inventory' });
@@ -1018,7 +1018,7 @@ function RecipeTab({ draft, items, locId, showToast, onChanged }) {
     const keep = lines.filter(l => l.componentItemId && Number(l.qty) > 0);
     if (!keep.length) { showToast?.('Add at least one ingredient', 'error'); return; }
     setSaving(true);
-    // v5.11.82 (multi site stock Drop 0): the recipe, its lines and this item's cost roll up in ONE
+    // v5.11.84 (multi site stock Drop 0): the recipe, its lines and this item's cost roll up in ONE
     // call (saveRecipeWithLines, stock_save_recipe), so saved lines are never reported as lost.
     const res = await saveRecipeWithLines({
       ...(recipe?.id ? { id: recipe.id, rowVersion: recipe.rowVersion ?? null } : {}),

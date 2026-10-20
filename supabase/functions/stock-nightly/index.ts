@@ -1,6 +1,6 @@
 // supabase/functions/stock-nightly/index.ts
 //
-// The stock nightly run (v5.11.82, multi site stock Drop 0, plan 7.3 steps 12, 14, 15 and 18). Started
+// The stock nightly run (v5.11.84, multi site stock Drop 0, plan 7.3 steps 12, 14, 15 and 18). Started
 // by pg_cron job 'stock-nightly' at 03:40 UTC (public.stock_nightly_send(), migration 20261021a), which
 // posts { "action": "run" } with the header x-cron-key: a random key kept only in the database vault
 // (secret stock_nightly_cron_key) and checked by public.stock_nightly_cron_ok (service role only), so

@@ -3,7 +3,7 @@
  * Recording waste posts a WASTE movement (negative, valued at current cost) and
  * an audit row in waste_events. Idempotent per event id.
  *
- * v5.11.82 (multi site stock Drop 0): both writers are the one database call (stock_record_waste)
+ * v5.11.84 (multi site stock Drop 0): both writers are the one database call (stock_record_waste)
  * only. The old browser paths never ran once 20261019b was in; a database without the call is told
  * it needs the update and nothing is written.
  */
@@ -141,7 +141,7 @@ export const logWaste = async ({ inventoryItemId, qty, unit, reason, note, sourc
   if (!locationId) return { data: null, error: new Error('No locationId') };
   if (!(Number(qty) > 0)) return { data: null, error: new Error('Quantity must be > 0') };
 
-  // v5.11.82 (Drop 0): an archived unit bridge or pack is not offered (archived_at, before 0a: all)
+  // v5.11.84 (Drop 0): an archived unit bridge or pack is not offered (archived_at, before 0a: all)
   const live = (table, cols) => liveOrAll((on) => {
     const q = supabase.from(table).select(cols).eq('location_id', locationId).eq('inventory_item_id', inventoryItemId);
     return on ? q.is('archived_at', null) : q;

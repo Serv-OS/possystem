@@ -11,7 +11,7 @@
 //   POST { action:'snapshot', ops_location_id }  — token in Authorization header.
 // Auth: the device claimed to THIS location (ops_devices.device_uid = auth.uid()), OR a BO user who
 // reaches it. Single venue only: multi site rollups stay in Back Office.
-// v5.11.82 (multi site stock Drop 0, plan 6.2): "reaches" is the database's own rule
+// v5.11.84 (multi site stock Drop 0, plan 6.2): "reaches" is the database's own rule
 // (officeReachesVenue: a link row, a super admin, or the owner of the venue's company; owners were
 // refused before). A login that reaches the venue ONLY through Stock control 'all' in its company
 // (stockOfficeReachesVenue) gets the stock blocks only (kitchen: items, deliveries, batches and the
@@ -23,7 +23,7 @@ import { pagedRows } from '../_shared/pagedRows.js';
 import { SALES_CHECK_COLS, emptySales, addCheckSales, addRefundSales, refundMadeAt } from '../_shared/snapshotSales.js';
 // v5.11.64: the pack rule, pack content and net pack price are the Order pad's own (one copy).
 import { pickSupplierProduct, packContent, packContentInBase, netPackPrice } from '../_shared/purchasingRules.js';
-// v5.11.82: the two reach rules (everything / stock only), and archived rows left out of choices.
+// v5.11.84: the two reach rules (everything / stock only), and archived rows left out of choices.
 import { officeReachesVenue, stockOfficeReachesVenue, readOfficeReachFacts } from '../_shared/stockOfficeReach.js';
 import { liveOrAll, liveFilter } from '../_shared/stockPhone.js';
 
@@ -69,7 +69,7 @@ Deno.serve(async (req) => {
   const loc = body?.ops_location_id;
   if (!loc) return json({ error: 'ops_location_id required' }, 400);
   const acc = await requireManager(req, loc); if (!acc.ok) return acc.res;
-  // v5.11.82: false for a login that reaches the venue only through Stock control 'all' (plan 6.2):
+  // v5.11.84: false for a login that reaches the venue only through Stock control 'all' (plan 6.2):
   // sales, the floor, the team and the Ops counts are not even read for it.
   const full = acc.scope === 'all';
 
@@ -236,7 +236,7 @@ Deno.serve(async (req) => {
           pagedRows('stock items', () => sb.from('inventory_items').select('id, name, kind, on_hand, base_unit, default_supplier_id, purchase_tax_rate_id')
             .eq('location_id', loc).in('id', ids).is('archived_at', null).order('id')),
           pagedRows('suppliers', () => sb.from('suppliers').select('id, name, delivery_days').eq('location_id', loc).order('id')),
-          // v5.11.82 (multi site stock Drop 0, plan 5.4): an archived supplier price is never offered
+          // v5.11.84 (multi site stock Drop 0, plan 5.4): an archived supplier price is never offered
           // (archived_at comes with 20261021a; before it every row is read, as before)
           liveOrAll((live: boolean) => pagedRows('supplier packs', () => liveFilter(sb.from('supplier_products')
             .select('id, inventory_item_id, supplier_id, supplier_sku, pack_description, pack_qty, inner_qty, inner_unit, pack_price, is_preferred, purchase_tax_rate_id, price_includes_tax, created_at')
@@ -244,7 +244,7 @@ Deno.serve(async (req) => {
           pagedRows('tax rates', () => sb.from('tax_rates').select('id, rate').eq('location_id', loc).order('id')),
           // the item's cross dimension bridges: the pack content is sent in the item's base unit too
           // (perPackBase), so the phone divides a shortfall in base units by a matching figure
-          // v5.11.82 (Drop 0): an archived unit bridge does not convert
+          // v5.11.84 (Drop 0): an archived unit bridge does not convert
           liveOrAll((live: boolean) => pagedRows('unit conversions', () => liveFilter(sb.from('inventory_item_conversions').select('inventory_item_id, from_qty, from_unit, to_qty, to_unit')
             .eq('location_id', loc).in('inventory_item_id', ids), live).order('id'))),
         ]);
@@ -293,7 +293,7 @@ Deno.serve(async (req) => {
       }
     } catch { kitchenItems = []; }
 
-    // v5.11.82 (multi site stock Drop 0, plan 4.23): how many live tracked stock items the venue has
+    // v5.11.84 (multi site stock Drop 0, plan 4.23): how many live tracked stock items the venue has
     // (one head count): the phone shows Count stock only where there is stock to count. null when the
     // read fails (the phone then falls back to the items with a par).
     let trackedItems: number | null = null;
@@ -432,7 +432,7 @@ Deno.serve(async (req) => {
 
     return json({
       ok: true, location_id: loc, venueName: locRow?.name || '', tz, today,   // today = the venue's calendar day (v5.11.64: the Kitchen tab marks orders due today / overdue with it)
-      // v5.11.82: 'stock' for a login that reaches the venue only through Stock control 'all': the
+      // v5.11.84: 'stock' for a login that reaches the venue only through Stock control 'all': the
       // money, floor, team and ops blocks are null (the Manager app shows nothing for a null block)
       scope: full ? 'all' : 'stock', currency,
       money: full ? money : null,

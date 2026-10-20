@@ -1,6 +1,6 @@
 // src/surfaces/manager/ManagerStock.jsx
 //
-// Count by area and log waste on a phone (v5.11.82, multi site stock Drop 0: Phase 1b re landed,
+// Count by area and log waste on a phone (v5.11.84, multi site stock Drop 0: Phase 1b re landed,
 // plan 4.23). Opened from the Kitchen tab.
 //   * Count: pick an area (or the whole venue), scan a barcode or search, type the figure in the
 //     item's count pack. Each figure is saved as you go with the time it was typed, kept on the phone

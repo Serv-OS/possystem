@@ -466,7 +466,7 @@ test('pin: the shared report loaders read through the pager, with a unique order
   assert.doesNotMatch(stock, /\.limit\(/);
 });
 
-test('pin: the Drop 0 archived filters keep every stock read paged, and never widen on a failure (v5.11.82)', () => {
+test('pin: the Drop 0 archived filters keep every stock read paged, and never widen on a failure (v5.11.84)', () => {
   // fetchInventoryItems leaves archived packs, bridges and supplier prices out of the rows it read
   // in pages (so a database without the column reads exactly as before).
   const items = fnBody(read('./stock/data.js'), 'fetchInventoryItems');

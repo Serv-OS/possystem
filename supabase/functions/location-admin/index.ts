@@ -38,7 +38,7 @@
 //   save_reader_settings      { ops_location_id, patch:{...} }  → location_reader_settings upsert
 //                                                                (six columns, database fence stage 1 P2)
 //
-// THE VENUE CLOCK (v5.11.82, multi site stock Drop 0, plan 7.3 step 15)
+// THE VENUE CLOCK (v5.11.84, multi site stock Drop 0, plan 7.3 step 15)
 //   The Ops database keeps its own copy of each venue's clock (venue_clock: timezone and business
 //   day start), because stock day totals are bucketed in the Ops database and it cannot read the
 //   Platform. After save_location changes timezone or business_day_start on the Platform row, the
@@ -420,7 +420,7 @@ async function resolvePlatformLocation(opsLocationId: string) {
   return data;
 }
 
-// v5.11.82: send the venue's clock to the Ops copy (venue_clock_sync, 20261021a). Never throws and
+// v5.11.84: send the venue's clock to the Ops copy (venue_clock_sync, 20261021a). Never throws and
 // never fails the caller: a missing function (before 20261021a) or any error is logged only.
 // 'HH:MM' or null; a Platform time column reads back as 'HH:MM:SS'.
 const clockTime = (v: unknown): string | null => {

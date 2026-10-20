@@ -1,5 +1,5 @@
 /**
- * stock/companyData.js: how the browser talks to the stock save functions (v5.11.82, multi site
+ * stock/companyData.js: how the browser talks to the stock save functions (v5.11.84, multi site
  * stock Drop 0). The client is passed in, so node --test drives every path with a stand in
  * (saveContract.test.js); data.js, recipes.js, counts.js and areas.js hand in the real one.
  *

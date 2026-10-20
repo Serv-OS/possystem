@@ -1,4 +1,4 @@
-// node --test: the Drop 0 edge functions run for real against a stand in database (v5.11.82, multi
+// node --test: the Drop 0 edge functions run for real against a stand in database (v5.11.84, multi
 // site stock Drop 0, plan 6.2, 4.23, 7.3 step 15 and 9.6). Each index.ts is loaded as it ships: its
 // types are stripped by node, the Supabase client import becomes a stand in that answers from plain
 // rows, and Deno.serve hands the handler to the test. So the reach rules, the staff PIN rule, the

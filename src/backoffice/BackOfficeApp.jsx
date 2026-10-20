@@ -663,7 +663,7 @@ export default function BackOfficeApp() {
       // Step 3: fetch org + location names separately (can fail gracefully)
       let orgName = 'Serv OS';
       let locationName = null;
-      // v5.11.82 (multi site stock Drop 0): the company of the VENUE being managed (locations.org_id),
+      // v5.11.84 (multi site stock Drop 0): the company of the VENUE being managed (locations.org_id),
       // which is not always the login's own profile org. Stock control is per company (decision 1).
       let venueOrgId = null;
       try {
@@ -692,7 +692,7 @@ export default function BackOfficeApp() {
         orgName,
         locationId: effectiveLocId,
         locationName,
-        // v5.11.82 (multi site stock Drop 0): the venue's company and this login's Stock control
+        // v5.11.84 (multi site stock Drop 0): the venue's company and this login's Stock control
         // setting (null = sites; owners of that company and ServOS staff are always all). Read only
         // in Drop 0: nobody's rights change until the Drop 1 screens show the levels. A database
         // without the column yet reads as null (lib/boSections.js OPTIONAL_PROFILE_COLUMNS).

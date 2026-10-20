@@ -1,6 +1,6 @@
 /**
  * saveContract.test.js: the stock saves keep their names, arguments and answers while their bodies
- * move to the database save functions (v5.11.82, multi site stock Drop 0, map 5.4 and 9.2).
+ * move to the database save functions (v5.11.84, multi site stock Drop 0, map 5.4 and 9.2).
  * Run: npm test.
  *
  * data.js and recipes.js import the browser Supabase client, which node cannot load, so the paths

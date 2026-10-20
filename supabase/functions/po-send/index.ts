@@ -12,7 +12,7 @@
 // same answer as the database's user_accessible_locations() (_shared/stockOfficeReach.js). Each line
 // now carries the supplier's own product code (supplier_products.supplier_sku) so the supplier can
 // pick the order without guessing.
-// v5.11.82 (multi site stock Drop 0, plan 6.2): this is a stock only function, so it takes the
+// v5.11.84 (multi site stock Drop 0, plan 6.2): this is a stock only function, so it takes the
 // STOCK reach (stockOfficeReachesVenue): the same as above, plus a login whose Stock control is 'all'
 // in the venue's own company (the database's stock_reach_locations()). Before 20261021a no login has
 // a Stock control, so the answer is exactly the one above.
@@ -70,7 +70,7 @@ Deno.serve(async (req) => {
     const linked = Array.isArray(rows) && rows.length > 0;
     let reach: { ok: boolean } = officeReachesVenue({ user: u, profile: null, linked, venueOrgId: null });
     if (!reach.ok) {
-      // No link row: the owner of the venue's company, a super admin, or (v5.11.82) Stock control
+      // No link row: the owner of the venue's company, a super admin, or (v5.11.84) Stock control
       // 'all' in the venue's own company (read with the service role).
       const [prof, { data: venue }] = await Promise.all([
         readReachProfile(admin, u.id),

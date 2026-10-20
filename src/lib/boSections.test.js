@@ -347,7 +347,7 @@ test('readProfileRow: reads the list; not installed = everyone opens everything'
   assert.equal(older.sectionsInstalled, false);
 });
 
-test('readProfileRow: a database without stock_control (before Drop 0a, or after its rollback) never locks Back Office (v5.11.82)', async () => {
+test('readProfileRow: a database without stock_control (before Drop 0a, or after its rollback) never locks Back Office (v5.11.84)', async () => {
   assert.ok(PROFILE_COLUMNS.includes('stock_control'), 'the Stock control setting is read with the profile');
   assert.ok(OPTIONAL_PROFILE_COLUMNS.includes('stock_control'), 'and the read may go without it');
   assert.equal(missingProfileColumn(missing('stock_control')), 'stock_control');

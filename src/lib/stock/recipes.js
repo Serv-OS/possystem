@@ -40,7 +40,7 @@ const recipeFromRow = (r) => ({
   outputItemId: r.output_item_id, yieldQty: Number(r.yield_qty), yieldUnit: r.yield_unit,
   wastagePct: Number(r.wastage_pct) || 0, gpTargetPct: r.gp_target_pct == null ? null : Number(r.gp_target_pct),
   method: r.method, photo: r.photo, status: r.status, archivedAt: r.archived_at,
-  // v5.11.82 (multi site stock Drop 0): the version the save sends back, and the company record behind it
+  // v5.11.84 (multi site stock Drop 0): the version the save sends back, and the company record behind it
   rowVersion: versionOf(r.row_version), companyRef: r.company_ref || null,
 });
 const recipeToRow = (rc, locationId) => ({
@@ -89,7 +89,7 @@ export const fetchRecipes = async (locationId = null) => {
 };
 
 /**
- * v5.11.82 (multi site stock Drop 0, plan 4.5): save a recipe, its ingredient lines and its till
+ * v5.11.84 (multi site stock Drop 0, plan 4.5): save a recipe, its ingredient lines and its till
  * product link in ONE database call (stock_save_recipe), which also re costs the made item it
  * produces (with a REVALUE when stock is held) and never leaves the lines half replaced. Used by
  * Recipes.jsx `save` and the Stock items Recipe tab, which keep their toasts word for word.
@@ -115,7 +115,7 @@ export const upsertRecipe = async (recipe, locationId = null) => {
 };
 
 /**
- * Archive (or restore) a recipe. v5.11.82 (Drop 0): stock_archive_recipe archives it AND removes its
+ * Archive (or restore) a recipe. v5.11.84 (Drop 0): stock_archive_recipe archives it AND removes its
  * till product links, so a removed dish no longer takes stock off. opts: { version, section }.
  */
 export const setRecipeArchived = async (id, archived, locationId = null, opts = {}) => {
@@ -146,7 +146,7 @@ export const replaceRecipeLines = async (recipeId, lines, locationId = null) => 
   return supabase.from('recipe_lines').insert(rows);
 };
 
-/** Link a till product to a recipe. v5.11.82 (Drop 0): stock_link_menu_item, today's upsert as the fallback. */
+/** Link a till product to a recipe. v5.11.84 (Drop 0): stock_link_menu_item, today's upsert as the fallback. */
 export const linkMenuItemRecipe = async (menuItemId, recipeId, portion = 1, locationId = null, opts = {}) => {
   if (isMock || !supabase) return { error: null };
   locationId = await ensureLoc(locationId);
@@ -160,7 +160,7 @@ export const linkMenuItemRecipe = async (menuItemId, recipeId, portion = 1, loca
   return { data: r.data ?? null, error: r.error || null };
 };
 
-/** Unlink a till product. v5.11.82 (Drop 0): stock_link_menu_item with no recipe, today's delete as the fallback. */
+/** Unlink a till product. v5.11.84 (Drop 0): stock_link_menu_item with no recipe, today's delete as the fallback. */
 export const unlinkMenuItem = async (menuItemId, locationId = null, opts = {}) => {
   if (isMock || !supabase) return { error: null };
   locationId = await ensureLoc(locationId);
@@ -232,7 +232,7 @@ export const buildCostingCtx = async (locationId = null) => {
  * Recompute a MADE item's current_cost from its PREP recipe roll-up and persist it
  * (inventory_items.current_cost + an item_cost_history row, source RECIPE_ROLLUP).
  * Call after saving a PREP recipe so dependent costs reflect the change.
- * v5.11.82 (Drop 0): the not installed fallback of saveRecipeWithLines only. With the save
+ * v5.11.84 (Drop 0): the not installed fallback of saveRecipeWithLines only. With the save
  * functions in, stock_save_recipe re costs the made item in the database (stock_recost_made_items).
  */
 export const recomputeMadeItemCost = async (outputItemId, locationId = null) => {

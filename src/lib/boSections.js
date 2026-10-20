@@ -271,7 +271,7 @@ export function canSwitchLoginOn(targetSections, mySections) {
 // section access is not installed, and everyone opens everything, exactly as before 8 Oct 2026.
 // ANY other failure (the network, a refusal, no row) must never widen access: the caller shows
 // "Could not load your access. Try again." and no sidebar at all.
-// v5.11.82 (multi site stock Drop 0): stock_control is read too (the login's Stock control setting,
+// v5.11.84 (multi site stock Drop 0): stock_control is read too (the login's Stock control setting,
 // decision 1), and it is OPTIONAL: a web build that reaches a database before Drop 0a, or after its
 // rollback drops the column, must never lock anyone out of Back Office. Missing reads as null.
 export const PROFILE_COLUMNS = Object.freeze(['role', 'org_id', 'location_id', 'bo_access', 'bo_sections', 'stock_control']);

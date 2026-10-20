@@ -1,4 +1,4 @@
-// node --test: who reaches a venue from an edge function (v5.11.82, multi site stock Drop 0, plan 6.2).
+// node --test: who reaches a venue from an edge function (v5.11.84, multi site stock Drop 0, plan 6.2).
 // Two answers, never one: officeReachesVenue (everything) is unchanged; stockOfficeReachesVenue adds
 // Stock control 'all' in the venue's own company, and only stock work uses it.
 import test from 'node:test';

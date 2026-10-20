@@ -564,7 +564,7 @@ export default function StockCounts({ orgCtx = null }) {
                   })}
                 </div>
               )}
-              {/* v5.11.82 (multi site stock Drop 0, plan 4.17): a manager PIN approves a count. */}
+              {/* v5.11.84 (multi site stock Drop 0, plan 4.17): a manager PIN approves a count. */}
               <label style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10, fontSize: 12.5, color: 'var(--t1)', marginBottom: 10 }}>
                 Manager PIN
                 <input type="password" inputMode="numeric" autoComplete="off" value={review.pin || ''} placeholder="PIN"

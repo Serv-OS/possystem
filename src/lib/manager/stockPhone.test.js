@@ -1,4 +1,4 @@
-// node --test: counting and waste on the phone, the client side (v5.11.82, multi site stock Drop 0:
+// node --test: counting and waste on the phone, the client side (v5.11.84, multi site stock Drop 0:
 // Phase 1b re landed, plan 4.23). The server side (_shared/stockPhone.js) has its own test.
 import test from 'node:test';
 import assert from 'node:assert/strict';

@@ -1,5 +1,5 @@
 // node --test: counting and waste on the phone, the server side (supabase/functions/_shared/stockPhone.js,
-// v5.11.82, multi site stock Drop 0: Phase 1b re landed with its fixes, plan 4.23). The client side
+// v5.11.84, multi site stock Drop 0: Phase 1b re landed with its fixes, plan 4.23). The client side
 // has its own test (src/lib/manager/stockPhone.test.js).
 import test from 'node:test';
 import assert from 'node:assert/strict';

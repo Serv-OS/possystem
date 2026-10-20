@@ -49,7 +49,7 @@ export const fetchParLevels = async (locationId = null) => {
 };
 
 /**
- * Save an item's par, reorder point and minimum. v5.11.82 (multi site stock Drop 0): one save
+ * Save an item's par, reorder point and minimum. v5.11.84 (multi site stock Drop 0): one save
  * function (stock_save_item_site) that writes all three together and keeps a figure the screen did
  * not send (the old upsert wrote min_level null every time the Stock tab saved par and reorder).
  * Before the database has it: today's upsert.
@@ -186,7 +186,7 @@ export const createCount = async ({ name, countType = 'FULL', storageArea, itemI
     fetchAreas(locationId),
     fetchItemAreas(locationId),
     fetchAreaHoldings(locationId),
-    // v5.11.82 (Drop 0): an archived supplier price never puts its item on a supplier's count
+    // v5.11.84 (Drop 0): an archived supplier price never puts its item on a supplier's count
     type === 'SUPPLIER' && supplierId
       ? liveOrAll((live) => readAllPagesResult('supplier packs', (first) => {
         let q = supabase.from('supplier_products')
@@ -329,7 +329,7 @@ export const deleteCount = async (countId, locationId = null) => {
  * count of an item posts Opening stock (out of The Gap), valued at a real cost, never 0: with no cost
  * known the call answers needs_cost and nothing is written, and the screen asks the manager for one
  * (`costs`: { itemId: cost per base unit }).
- * v5.11.82 (multi site stock Drop 0, plan 4.17): a manager PIN approves the count
+ * v5.11.84 (multi site stock Drop 0, plan 4.17): a manager PIN approves the count
  * (stock_approve_count_pin, 0a): the database checks the PIN against the venue's managers, refuses
  * after five wrong ones in 15 minutes and stores who it was. Before 0a that call is missing and the
  * call without a PIN runs, as in v5.11.81. The old line by line browser path is gone (it never ran

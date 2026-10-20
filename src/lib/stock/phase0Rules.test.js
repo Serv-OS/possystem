@@ -69,7 +69,7 @@ test('a price of 0 or less never sets a cost, whatever the rule', () => {
 });
 
 test('the item screen never writes cost; price saves follow the venue rule (source)', () => {
-  // v5.11.82 (Drop 0): the row mappers and writers live in saveRules.js; data.js uses them.
+  // v5.11.84 (Drop 0): the row mappers and writers live in saveRules.js; data.js uses them.
   const rules = read('./saveRules.js');
   const row = rules.slice(rules.indexOf('export const itemToRow = '), rules.indexOf('export const supplierFromRow = '));
   assert.ok(row.length > 100, 'itemToRow found');
@@ -142,7 +142,7 @@ test('both waste writers are the one database call only; a database without it i
   const item = src.slice(src.indexOf('export const logWaste'));
   assert.match(item, /supabase\.rpc\('stock_record_waste', \{/);
   assert.match(item, /kind: 'item', inventory_item_id: inventoryItemId/);
-  // v5.11.82 (multi site stock Drop 0): the old browser writers are gone (they never ran once
+  // v5.11.84 (multi site stock Drop 0): the old browser writers are gone (they never ran once
   // 20261019b was in). A missing function writes nothing and says so.
   for (const body of [menu, item]) {
     assert.match(body, /if \(isMissingFunctionError\(rpcErr\)\) return \{ data: null, error: new Error\(`Waste not recorded\. \$\{NEEDS_UPDATE\}`\) \};/);
@@ -182,7 +182,7 @@ test('approval words: needs a cost, approved, opening lines, a repeat', () => {
 test('count approval is one database call with a manager PIN; no browser path is left (source)', () => {
   const src = read('./counts.js');
   const fn = src.slice(src.indexOf('export const approveCount'));
-  // v5.11.82 (multi site stock Drop 0, plan 4.17): the PIN call first, the call without a PIN only
+  // v5.11.84 (multi site stock Drop 0, plan 4.17): the PIN call first, the call without a PIN only
   // when the PIN call is missing (before 0a), and nothing in the browser after that.
   const pinCall = fn.indexOf("supabase.rpc('stock_approve_count_pin'");
   const rpc = fn.indexOf("supabase.rpc('approve_stock_count'");
@@ -253,7 +253,7 @@ test('receives and invoices are one database call each; no browser cost writer i
   const recv = src.slice(src.indexOf('export const receivePurchaseOrder'), src.indexOf('export const createOrdersFromBasket'));
   assert.match(recv, /supabase\.rpc\('stock_receive', \{/);
   assert.ok(recv.indexOf("supabase.rpc('stock_receive'") < recv.indexOf("from('po_lines').update("), 'stock goes in before any order line changes');
-  // v5.11.82 (multi site stock Drop 0): the old browser receive (applyReceipt) wrote cost with no
+  // v5.11.84 (multi site stock Drop 0): the old browser receive (applyReceipt) wrote cost with no
   // REVALUE. It is gone: a database without the call writes nothing and says so.
   assert.match(recv, /if \(rpcErr && isMissingFunctionError\(rpcErr\)\) return \{ error: new Error\(`Nothing was received\. \$\{NEEDS_UPDATE\}`\) \};/);
   assert.doesNotMatch(src, /applyReceipt|costAfterReceipt|from\('item_cost_history'\)|current_cost: newAvg/, 'no cost is written from the browser');

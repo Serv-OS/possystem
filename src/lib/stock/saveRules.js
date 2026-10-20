@@ -1,6 +1,6 @@
 /**
  * stock/saveRules.js: the stock catalogue's row shapes and the save function arguments built from
- * them (v5.11.82, multi site stock Drop 0). Pure: no React, no Supabase, so node --test drives it
+ * them (v5.11.84, multi site stock Drop 0). Pure: no React, no Supabase, so node --test drives it
  * (saveRules.test.js, saveContract.test.js).
  *
  * Drop 0 moves every catalogue write in the browser to one database save function each
@@ -79,7 +79,7 @@ export const itemFromRow = (r) => ({
   defaultSupplierId: r.default_supplier_id, sku: r.sku, barcode: r.barcode, notes: r.notes,
   purchaseTaxRateId: r.purchase_tax_rate_id || null,
   archivedAt: r.archived_at, createdAt: r.created_at, updatedAt: r.updated_at,
-  // v5.11.82 (Drop 0): the version the save sends back, and the company record behind this row
+  // v5.11.84 (Drop 0): the version the save sends back, and the company record behind this row
   rowVersion: versionOf(r.row_version), companyRef: r.company_ref || null,
 });
 /** The direct write of today (only when the database has no stock_save_item yet). */

@@ -11,7 +11,7 @@
  * reaches a site through the owner rule was refused with "not authorized" on the PO email and the
  * Xero bill, while every other Back Office screen let them in.
  *
- * v5.11.82 (multi site stock Drop 0, plan 6.2): TWO answers, never one.
+ * v5.11.84 (multi site stock Drop 0, plan 6.2): TWO answers, never one.
  *   officeReachesVenue        unchanged: link, super admin, owner of the venue's company. Used for
  *                             everything that is not stock (timesheets, time off, sales, staff).
  *   stockOfficeReachesVenue   the same, plus a login whose Stock control is 'all' in the venue's

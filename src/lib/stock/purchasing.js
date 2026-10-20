@@ -14,7 +14,7 @@
  * unknown cost takes the delivery price, never an average. A duplicate invoice number from the same
  * supplier is refused, and an invoice for an order already received is kept as paperwork.
  *
- * v5.11.82 (multi site stock Drop 0): the old browser receive and invoice paths are gone. They never
+ * v5.11.84 (multi site stock Drop 0): the old browser receive and invoice paths are gone. They never
  * ran once 20261019b was in, and each wrote cost with no REVALUE. A database with neither call is
  * told it needs the update and nothing is written. An archived unit bridge or supplier price is not
  * used for a new receive or invoice, and the invoice scan sends the signed in session.
@@ -45,7 +45,7 @@ async function itemMap(locationId, ids) {
   if (!uniq.length) return {};
   const [{ data: items }, { data: convs }] = await Promise.all([
     supabase.from('inventory_items').select('id, name, base_unit, on_hand, current_cost, cost_method').eq('location_id', locationId).in('id', uniq),
-    // v5.11.82 (Drop 0): an archived unit bridge is not used for a new receive or invoice
+    // v5.11.84 (Drop 0): an archived unit bridge is not used for a new receive or invoice
     liveOrAll((live) => {
       const q = supabase.from('inventory_item_conversions').select('*').eq('location_id', locationId).in('inventory_item_id', uniq);
       return live ? q.is('archived_at', null) : q;
@@ -411,7 +411,7 @@ export const fetchInvoices = async (locationId = null, limit = 100) => {
 
 /**
  * Send an invoice image to the Claude-vision OCR endpoint. Returns parsed JSON.
- * v5.11.82 (multi site stock Drop 0): the endpoint checks who is asking. The call sends this
+ * v5.11.84 (multi site stock Drop 0): the endpoint checks who is asking. The call sends this
  * session's access token (Authorization: Bearer) and the venue it scans for; the server refuses a
  * request with no sign in, and a venue the login does not reach.
  */
@@ -452,7 +452,7 @@ export const postInvoice = async (header, lines, locationId = null, { areaId = n
     // the supplier pack each matched line was bought in (preferred first), for the price paid report
     const spByItem = {};
     if (header.supplierId && matchedIds.length) {
-      // v5.11.82 (Drop 0): never an archived supplier price
+      // v5.11.84 (Drop 0): never an archived supplier price
       const { data: sps } = await liveOrAll((live) => {
         let q = supabase.from('supplier_products').select('id, inventory_item_id, pack_qty, inner_qty, inner_unit, is_preferred')
           .eq('location_id', locationId).eq('supplier_id', header.supplierId).in('inventory_item_id', matchedIds);

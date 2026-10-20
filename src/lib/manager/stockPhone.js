@@ -1,6 +1,6 @@
 // src/lib/manager/stockPhone.js
 //
-// Counting and waste on the phone, the client side (v5.11.82, multi site stock Drop 0: re landed
+// Counting and waste on the phone, the client side (v5.11.84, multi site stock Drop 0: re landed
 // from Phase 1b, plan 4.23).
 //   * Every figure is kept on the phone first (an outbox in localStorage, per count) with the time it
 //     was typed, then sent in batches; a dropped signal loses nothing and the figure keeps its own

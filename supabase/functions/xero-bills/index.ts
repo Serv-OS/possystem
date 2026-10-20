@@ -44,7 +44,7 @@ async function requireAccess(req: Request, opsLocationId: string): Promise<{ ok:
   if (!caller) return { ok: false, res: json({ error: 'Invalid token' }, 401) };
   // v5.11.79: the database's own rule (user_accessible_locations): a link row, a super admin, or the
   // OWNER of the venue's company with no link row (_shared/stockOfficeReach.js). Owners were refused.
-  // v5.11.82 (multi site stock Drop 0, plan 6.2): a supplier bill is stock work, so this takes the
+  // v5.11.84 (multi site stock Drop 0, plan 6.2): a supplier bill is stock work, so this takes the
   // STOCK reach: the same, plus a login whose Stock control is 'all' in the venue's own company
   // (stockOfficeReachesVenue; officeReachesVenue is unchanged for everything else).
   const facts = await readOfficeReachFacts(sb, caller, opsLocationId);

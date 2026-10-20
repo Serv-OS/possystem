@@ -9,7 +9,7 @@
  * Tables: inventory_items, inventory_item_conversions, suppliers, supplier_products,
  * item_packaging_formats, item_cost_history (see 20260621d_stock_foundation.sql).
  *
- * v5.11.82 (multi site stock Drop 0): every catalogue write is ONE database save function
+ * v5.11.84 (multi site stock Drop 0): every catalogue write is ONE database save function
  * (stock_save_item, stock_save_supplier, stock_save_supplier_item, stock_save_pack,
  * stock_set_pack_default, stock_save_bridge, the stock_archive_* functions, stock_save_cost_rule).
  * Each writes the site row and its company record together and takes the cost step (with a REVALUE
@@ -75,7 +75,7 @@ const noRow = (what, row) => row ? null
   : new Error(`${what} returned no row — RLS blocked it or it matched nothing`);
 
 // ── mappers ──────────────────────────────────────────────────────────────────
-// v5.11.82 (multi site stock Drop 0): the row mappers live in saveRules.js (pure, tested) so the
+// v5.11.84 (multi site stock Drop 0): the row mappers live in saveRules.js (pure, tested) so the
 // save arguments and the rows they come back as can be checked without a database. Each reads
 // row_version into rowVersion, and the save functions get it back as p_version.
 
@@ -124,7 +124,7 @@ export const fetchInventoryItems = async (locationId = null) => {
   ]);
   const err = error || convRes.error || spRes.error || packRes.error || areaRes.error;
   if (err) return { data: [], error: err };
-  // v5.11.82 (Drop 0): an archived pack, unit bridge or supplier price is never offered again.
+  // v5.11.84 (Drop 0): an archived pack, unit bridge or supplier price is never offered again.
   // (A filter on the rows read, so a database without the column yet reads exactly as before.)
   const convs = liveOnly(convRes.data), sps = liveOnly(spRes.data), packs = liveOnly(packRes.data);
   const itemAreas = areaRes.data || {};
@@ -159,7 +159,7 @@ export const fetchInventoryItems = async (locationId = null) => {
 };
 
 /**
- * v5.11.82 (Drop 0): the site row a save function wrote, in the shape the direct write's .select()
+ * v5.11.84 (Drop 0): the site row a save function wrote, in the shape the direct write's .select()
  * handed back (a raw row), so every caller reads the answer exactly as before.
  */
 const siteRowOf = (res, idKey) => res?.site_row || (res?.[idKey] ? { id: res[idKey] } : null);
@@ -206,7 +206,7 @@ export const fetchSuppliers = async (locationId = null) => {
 };
 
 /**
- * Save a supplier. v5.11.82 (Drop 0): stock_save_supplier writes every field the Suppliers form has
+ * Save a supplier. v5.11.84 (Drop 0): stock_save_supplier writes every field the Suppliers form has
  * (name, contact, email, phone, account number, payment terms, minimum order, delivery days, cut off,
  * notes) at this venue's row in one call. opts.section names the screen ('purchasing', or
  * 'inventory' for the Stock items quick add).
@@ -269,7 +269,7 @@ async function directSupplierProduct(sp, locationId) {
 }
 
 /**
- * Save a supplier pack. v5.11.82 (Drop 0): stock_save_supplier_item writes the pack, the one
+ * Save a supplier pack. v5.11.84 (Drop 0): stock_save_supplier_item writes the pack, the one
  * preferred pack per item and the item's cost in ONE transaction (the cost step runs in the
  * database, with a REVALUE when the cost moves while stock is held), so there is no "pack saved, cost
  * not" half any more and `partial` is null. A busy site catches up within a minute (`queued`).
@@ -286,7 +286,7 @@ export const upsertSupplierProduct = async (sp, locationId = null, opts = {}) =>
 };
 
 /**
- * Remove a supplier pack. v5.11.82 (Drop 0): an ARCHIVE, never a delete (stock_archive_supplier_item):
+ * Remove a supplier pack. v5.11.84 (Drop 0): an ARCHIVE, never a delete (stock_archive_supplier_item):
  * order lines and the cost history keep the pack they were bought in. The next live pack becomes the
  * preferred one and the cost step runs, in the same transaction.
  */
@@ -310,7 +310,7 @@ export const upsertItemConversion = async (conv, locationId = null, opts = {}) =
   if (isMock || !supabase) return { data: null, error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: new Error('No locationId') };
-  // v5.11.82 (Drop 0): stock_save_bridge saves the bridge and re costs the item in one transaction.
+  // v5.11.84 (Drop 0): stock_save_bridge saves the bridge and re costs the item in one transaction.
   const r = await saveOrDirect(supabase, 'stock_save_bridge', bridgeSaveArgs(conv, locationId, opts), async () => {
     const row = {
       ...(conv.id ? { id: conv.id } : {}),
@@ -335,7 +335,7 @@ export const upsertItemConversion = async (conv, locationId = null, opts = {}) =
   return { data: siteRowOf(r.data, 'site_bridge_id'), error: null, partial: null, queued: r.data?.queued || [] };
 };
 
-/** v5.11.82 (Drop 0): an archive (stock_archive_bridge), refused while a recipe or a supplier pack needs it. */
+/** v5.11.84 (Drop 0): an archive (stock_archive_bridge), refused while a recipe or a supplier pack needs it. */
 export const deleteItemConversion = async (id, inventoryItemId, locationId = null, opts = {}) => {
   if (isMock || !supabase) return { data: null, error: null };
   locationId = await ensureLoc(locationId);
@@ -354,7 +354,7 @@ export const deleteItemConversion = async (id, inventoryItemId, locationId = nul
 // ── packaging / "units you use" (named packs: Keg, Case, Bottle, glass…) ──────
 //
 // THE INVARIANT: exactly one format per item may hold is_purchase_default, and one
-// is_count_default. v5.11.82 (Drop 0): stock_save_pack and stock_set_pack_default keep it in ONE
+// is_count_default. v5.11.84 (Drop 0): stock_save_pack and stock_set_pack_default keep it in ONE
 // database transaction. The direct path below runs only before the database has them, and keeps
 // today's rule there: there is no unique partial index behind either column, and PostgREST gives
 // the client no transaction (clear-others and set-this are two round trips), so it is ORDER + CHECK:
@@ -440,7 +440,7 @@ export const setUnitDefault = async (formatId, inventoryItemId, kind, locationId
 };
 
 /**
- * Remove a unit. v5.11.82 (Drop 0): an archive (stock_archive_pack), refused while a recipe line uses
+ * Remove a unit. v5.11.84 (Drop 0): an archive (stock_archive_pack), refused while a recipe line uses
  * the pack, in the database's own words ("This pack is used in a recipe ...").
  */
 export const deletePackagingFormat = async (id, locationId = null, opts = {}) => {
@@ -668,7 +668,7 @@ export const fetchItemMovements = async (inventoryItemId, locationId = null, lim
 /**
  * v5.11.79 (stock plan Phase 0, 4.5, decision 2): each venue's cost rule. 'price_list' (the default,
  * and the answer whenever nothing is stored: exactly what every venue did before) or 'deliveries'.
- * v5.11.82 (Drop 0): read through stock_cost_rule, which answers the site's override, else the
+ * v5.11.84 (Drop 0): read through stock_cost_rule, which answers the site's override, else the
  * company's rule (a one site company: its own), else the price list. Before the database has the
  * function the stock_site_settings row is read as before.
  */
@@ -684,7 +684,7 @@ export const fetchCostRule = async (locationId = null) => {
 };
 
 /**
- * Save the venue's cost rule. v5.11.82 (Drop 0): stock_save_cost_rule saves the company rule (for a
+ * Save the venue's cost rule. v5.11.84 (Drop 0): stock_save_cost_rule saves the company rule (for a
  * one site company that is the site's rule, and any Back Office login of the venue may change it,
  * as today). Before the database has it: the stock_site_settings row, as before.
  */
@@ -710,7 +710,7 @@ export const saveCostRule = async (rule, byName = null, locationId = null) => {
  * updates inventory_items.current_cost when the cost changes. MADE items derive
  * cost from their recipe (slice 3) and are skipped unless they have supplier
  * products of their own.
- * v5.11.82 (Drop 0): the fallback of the direct writes only. With the save functions installed the
+ * v5.11.84 (Drop 0): the fallback of the direct writes only. With the save functions installed the
  * cost step runs inside the database (and writes a REVALUE); this leaves the browser in Drop 1.
  */
 export async function recomputeItemCost(itemId, locationId = null) {
@@ -721,7 +721,7 @@ export async function recomputeItemCost(itemId, locationId = null) {
   if (!itemId) return { ok: false, error: new Error('no item id') };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { ok: false, error: new Error('no location resolved') };
-  // v5.11.82 (Drop 0): only LIVE supplier prices and unit bridges (archived ones are never offered).
+  // v5.11.84 (Drop 0): only LIVE supplier prices and unit bridges (archived ones are never offered).
   const liveRead = (table) => liveOrAll((live) => {
     const q = supabase.from(table).select('*').eq('location_id', locationId).eq('inventory_item_id', itemId);
     return live ? q.is('archived_at', null) : q;

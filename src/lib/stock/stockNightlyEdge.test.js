@@ -1,5 +1,5 @@
 // node --test: the pure rules of the stock-nightly run (supabase/functions/stock-nightly/rules.js,
-// v5.11.82, multi site stock Drop 0, plan 7.3 step 15). The run itself is driven end to end in
+// v5.11.84, multi site stock Drop 0, plan 7.3 step 15). The run itself is driven end to end in
 // stockEdgeRoles.test.js.
 import test from 'node:test';
 import assert from 'node:assert/strict';

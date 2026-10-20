@@ -20,12 +20,12 @@
 //            'po.raise' (an order for one supplier in that supplier's packs and prices, v5.11.64)
 //            'po.receive' (goods in from the phone: stock, costs, temperature record, v5.11.64)
 //            'stock.areas' | 'stock.items' | 'stock.count_open' | 'stock.count_sheet' | 'stock.count_save' |
-//            'stock.count_approve' | 'stock.waste' (v5.11.82, multi site stock Drop 0: counting by
+//            'stock.count_approve' | 'stock.waste' (v5.11.84, multi site stock Drop 0: counting by
 //            area and waste on the phone, re landed from Phase 1b; the steps live in _shared/stockPhone.js)
 //   pin is optional for a Back Office user who reaches the venue: that signed-in user is the
 //   accountable operator instead (never for stock.count_approve, which always needs a manager PIN).
 //
-// v5.11.82 (multi site stock Drop 0, plan 6.2 and 4.23): WHO REACHES THE VENUE, two answers.
+// v5.11.84 (multi site stock Drop 0, plan 6.2 and 4.23): WHO REACHES THE VENUE, two answers.
 //   * Every action: officeReachesVenue (_shared/stockOfficeReach.js), the database's own rule: a link
 //     row, a super admin, or the owner of the venue's company. Owners who reach a site by the owner
 //     rule were refused here before; nothing else widens.
@@ -42,9 +42,9 @@ import { writeWfAudit } from '../_shared/wfAudit.js';
 // v5.11.64: ONE copy of the purchasing rules with the Order pad (pack choice, pack content, net
 // price, order totals, next delivery day) and ONE unit conversion engine with Back Office receiving.
 import { nextDeliveryYmd, packContent, packsForBase, netPackPrice, poTotals, unreceivableLines, receiveRefusalText, poReceiptLines } from '../_shared/purchasingRules.js';
-// v5.11.82: the two reach rules (everything / stock only) and the facts they read.
+// v5.11.84: the two reach rules (everything / stock only) and the facts they read.
 import { officeReachesVenue, stockOfficeReachesVenue, readOfficeReachFacts } from '../_shared/stockOfficeReach.js';
-// v5.11.82: counting and waste on the phone (multi site stock Drop 0), one copy of the steps; liveOrAll
+// v5.11.84: counting and waste on the phone (multi site stock Drop 0), one copy of the steps; liveOrAll
 // leaves archived packs, bridges and supplier prices out (all rows before 20261021a).
 import * as stockPhone from '../_shared/stockPhone.js';
 
@@ -84,7 +84,7 @@ async function officeReaches(user: any, loc: string, stockAction: boolean): Prom
 // v5.8.21: a signed-in Back Office user acting from the Workforce screens has no
 // staff PIN. If the bearer is a user who reaches the venue, they are the
 // accountable operator (audit records their user id + email).
-// v5.11.82: "reaches" is the database's rule (link, super admin, owner of the venue's company),
+// v5.11.84: "reaches" is the database's rule (link, super admin, owner of the venue's company),
 // plus Stock control 'all' for stock actions only.
 async function boOperator(caller: Caller, loc: string, stockAction: boolean): Promise<{ id: string; name?: string; role?: string; permissions?: string[] } | null> {
   const user = caller.user;
@@ -160,7 +160,7 @@ Deno.serve(async (req) => {
   if (action === 'stock.count_approve' && !pin) return json({ error: 'PIN required' }, 403);
   const op = pin ? await resolveOperator(loc, pin) : await boOperator(caller, loc, stockAction);
   if (!op) return json({ error: pin ? 'PIN not recognised' : 'PIN required' }, 403);
-  // v5.11.82 (plan 4.23): any active staff PIN at the venue opens the phone's stock steps (areas,
+  // v5.11.84 (plan 4.23): any active staff PIN at the venue opens the phone's stock steps (areas,
   // items, a count, saving figures, waste); only the count approval, and every other action, needs
   // a manager PIN.
   const staffPinEnough = String(action).startsWith('stock.') && action !== 'stock.count_approve';
@@ -269,7 +269,7 @@ Deno.serve(async (req) => {
       const itemIds = [...new Set(lines.map((l: any) => l.inventory_item_id))] as string[];
       // wf_audit's (location_id, org_id) must be a real pair from locations (INVARIANTS), so the org
       // comes from the venue, before anything is written; the timezone gives the venue's "today".
-      // v5.11.82 (multi site stock Drop 0, plan 5.4): an archived supplier price or unit bridge is never
+      // v5.11.84 (multi site stock Drop 0, plan 5.4): an archived supplier price or unit bridge is never
       // offered (archived_at comes with 20261021a; before it every row is read, as before).
       const [{ data: owned }, { data: packRows }, { data: rateRows }, { data: locRow }, { data: convRows }] = await Promise.all([
         sb.from('inventory_items').select('id, name, base_unit, default_supplier_id, purchase_tax_rate_id').eq('location_id', loc).in('id', itemIds),
@@ -395,7 +395,7 @@ Deno.serve(async (req) => {
       const itemIds = [...new Set(lines.map((l: any) => l.inventory_item_id).filter(Boolean))] as string[];
       const [{ data: items }, { data: convs }, { data: rateRows }] = await Promise.all([
         itemIds.length ? sb.from('inventory_items').select('id, name, base_unit, on_hand, current_cost, cost_method').eq('location_id', loc).in('id', itemIds) : Promise.resolve({ data: [] }),
-        // v5.11.82 (Drop 0): an archived unit bridge is not used for a new receive (every row before 20261021a)
+        // v5.11.84 (Drop 0): an archived unit bridge is not used for a new receive (every row before 20261021a)
         itemIds.length ? stockPhone.liveOrAll((live: boolean) => stockPhone.liveFilter(sb.from('inventory_item_conversions').select('*').eq('location_id', loc).in('inventory_item_id', itemIds), live)) : Promise.resolve({ data: [] }),
         sb.from('tax_rates').select('id, rate').eq('location_id', loc),
       ]);
@@ -439,7 +439,7 @@ Deno.serve(async (req) => {
       // (stock_receive, 20261019b): items locked in id order, the average worked out from the LOCKED
       // on hand, the cost history keeping the supplier pack and the price paid per pack. Same keys
       // po:<order>:<line> as Back Office, so the two can never post one line twice.
-      // v5.11.82 (multi site stock Drop 0, plan 5.4): the old line by line path (a movement, then the
+      // v5.11.84 (multi site stock Drop 0, plan 5.4): the old line by line path (a movement, then the
       // average worked out here and written to item_cost_history and current_cost with no REVALUE) is
       // gone. It never ran once 20261019b was in. A database without the call books nothing and says so.
       {
@@ -532,7 +532,7 @@ Deno.serve(async (req) => {
       return json({ ok: true, received, shorted: shorted.length, balance_reference: balance?.reference || null, invoice_id: invoiceId, delivery_id: del.id });
     }
 
-    // -- v5.11.82 stock on the phone (multi site stock Drop 0, plan 4.23, re landed from Phase 1b) --
+    // -- v5.11.84 stock on the phone (multi site stock Drop 0, plan 4.23, re landed from Phase 1b) --
     // Count by area with each figure's own time, saved as you go (one line per count, item and area:
     // a figure sent twice updates the line); approve in ONE database call (approve_stock_count,
     // 20261019b) with a manager PIN (checked above), the PIN holder stored on the count; waste through

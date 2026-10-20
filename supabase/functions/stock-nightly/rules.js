@@ -1,6 +1,6 @@
 // supabase/functions/stock-nightly/rules.js
 //
-// The pure rules of the stock-nightly run (v5.11.82, multi site stock Drop 0, plan 7.3 step 15).
+// The pure rules of the stock-nightly run (v5.11.84, multi site stock Drop 0, plan 7.3 step 15).
 // No Deno, no network: node --test drives every branch (src/lib/stock/stockNightlyEdge.test.js) and
 // stock-nightly/index.ts imports this file.
 //

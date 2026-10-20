@@ -25,7 +25,7 @@ import { money } from '../../lib/currency';
 import { Header, Stat, SectionTitle, mono } from './ui';
 import { Icon } from '../../components/ServOSIcons';
 import { useLayout } from './useLayout';
-// v5.11.82 (multi site stock Drop 0, plan 4.23): count by area and log waste on the phone.
+// v5.11.84 (multi site stock Drop 0, plan 4.23): count by area and log waste on the phone.
 import ManagerStock from './ManagerStock';
 
 const DEL_PILL = { pending: ['Expected', 'var(--orn)'], overdue: ['Overdue', 'var(--red)'], accepted: ['Arrived', 'var(--grn)'], rejected: ['Rejected', 'var(--red)'] };
