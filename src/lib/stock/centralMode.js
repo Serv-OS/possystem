@@ -9,7 +9,9 @@
  * stock_venue_mode and asks these helpers what to do.
  *
  * No row for a venue, a missing RPC (the migration not run yet), or any error = 'browser':
- * the till keeps depleting exactly as before. Nothing changes until Peter switches a venue on.
+ * the till keeps depleting exactly as before (the door answers skipped central if the venue is
+ * in fact central). Since v5.11.78 (20261019) every venue is central from the moment it is created;
+ * 'browser' is only a deliberate back out (stock_central_switch).
  */
 
 export const STOCK_MODES = Object.freeze(['browser', 'central', 'paused']);
@@ -50,7 +52,8 @@ export function healthWords(h) {
   let title, sub, tone = 'ok';
   if (mode === 'browser') {
     title = 'Stock comes off at the till';
-    sub = 'Each till takes stock off when it closes a check. Kiosk, online, QR and delivery sales do not move stock yet. ServOS switches a venue to central depletion.';
+    // Since v5.11.78 (20261019) every venue is central; browser is a back out by ServOS.
+    sub = 'Each till takes stock off when it closes a check. Kiosk, online, QR and delivery sales do not move stock here. Every venue uses central stock; this venue was put back on the till path by ServOS.';
     tone = 'muted';
   } else {
     title = mode === 'paused' ? 'Central stock depletion is paused' : 'Stock comes off every booked check';

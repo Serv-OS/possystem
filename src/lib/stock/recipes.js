@@ -9,8 +9,23 @@
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
 import { componentUnitCost, computeRecipe } from './costing.js';
 import { firstReadError } from './menuWaste.js';
+import { readAllPagesResult } from '../pagedRead.js';
 
 const nowIso = () => new Date().toISOString();
+
+/**
+ * v5.11.79 (stock plan Phase 0, 1,000 row cap): every recipe and costing read in pages of 1,000
+ * (lib/pagedRead.js), ordered on a unique key. PostgREST answers at most 1,000 rows a request and
+ * says nothing about the rest: a recipe book past 1,000 lines (about 470 products a site at 2 to 5
+ * lines) silently dropped lines, so plate costs and stock off came out short. A failed page is an
+ * error, never "no rows".
+ */
+const pageAll = (what, table, cols, locationId, order = [], live = false) => readAllPagesResult(what, (first) => {
+  let q = supabase.from(table).select(cols, first ? { count: 'exact' } : undefined).eq('location_id', locationId);
+  if (live) q = q.is('archived_at', null);
+  for (const col of [...order, 'id']) q = q.order(col);
+  return q;
+});
 async function ensureLoc(locationId) {
   if (!locationId || locationId === 'loc-demo') locationId = getActiveLocationSync();
   if (!locationId || locationId === 'loc-demo') locationId = await getLocationId().catch(() => null);
@@ -46,11 +61,13 @@ export const fetchRecipes = async (locationId = null) => {
   if (isMock || !supabase) return { data: [], error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: [], error: null };
-  const [{ data: recs, error }, { data: lines }, { data: links }] = await Promise.all([
-    supabase.from('recipes').select('*').eq('location_id', locationId).is('archived_at', null).order('name'),
-    supabase.from('recipe_lines').select('*').eq('location_id', locationId).order('sort_order'),
-    supabase.from('menu_item_recipes').select('*').eq('location_id', locationId),
+  const reads = await Promise.all([
+    pageAll('recipes', 'recipes', '*', locationId, ['name'], true),
+    pageAll('recipe lines', 'recipe_lines', '*', locationId, ['sort_order']),
+    pageAll('recipe links', 'menu_item_recipes', '*', locationId),
   ]);
+  const [{ data: recs }, { data: lines }, { data: links }] = reads;
+  const error = firstReadError(reads);
   if (error) return { data: [], error };
   const linesByRecipe = {};
   (lines || []).forEach((l) => { (linesByRecipe[l.recipe_id] ??= []).push(lineFromRow(l)); });
@@ -135,11 +152,11 @@ export const buildCostingCtx = async (locationId = null) => {
   locationId = await ensureLoc(locationId);
   if (!locationId) return { itemsById: {}, recipesByOutputItem: {}, error: null };
   const reads = await Promise.all([
-    supabase.from('inventory_items').select('id, name, kind, base_unit, current_cost').eq('location_id', locationId),
-    supabase.from('inventory_item_conversions').select('*').eq('location_id', locationId),
-    supabase.from('recipes').select('id, output_item_id, yield_qty, yield_unit, wastage_pct, recipe_type').eq('location_id', locationId).is('archived_at', null),
-    supabase.from('recipe_lines').select('*').eq('location_id', locationId).order('sort_order'),
-    supabase.from('item_packaging_formats').select('id, inventory_item_id, name, qty_in_base').eq('location_id', locationId),
+    pageAll('stock items', 'inventory_items', 'id, name, kind, base_unit, current_cost', locationId),
+    pageAll('unit conversions', 'inventory_item_conversions', '*', locationId),
+    pageAll('recipes', 'recipes', 'id, output_item_id, yield_qty, yield_unit, wastage_pct, recipe_type', locationId, [], true),
+    pageAll('recipe lines', 'recipe_lines', '*', locationId, ['sort_order']),
+    pageAll('packaging units', 'item_packaging_formats', 'id, inventory_item_id, name, qty_in_base', locationId),
   ]);
   const [{ data: items }, { data: convs }, { data: recs }, { data: lines }, { data: packs }] = reads;
   const convByItem = {};
@@ -209,9 +226,9 @@ export const buildDepletionCtx = async (locationId = null) => {
   locationId = await ensureLoc(locationId);
   if (!locationId) return { ...base, menuRecipes: {} };
   const reads = await Promise.all([
-    supabase.from('menu_item_recipes').select('menu_item_id, recipe_id, portion').eq('location_id', locationId),
-    supabase.from('recipes').select('id, wastage_pct').eq('location_id', locationId).is('archived_at', null),
-    supabase.from('recipe_lines').select('recipe_id, component_item_id, qty, unit, usable_pct, order_types').eq('location_id', locationId).order('sort_order'),
+    pageAll('recipe links', 'menu_item_recipes', 'id, menu_item_id, recipe_id, portion', locationId),
+    pageAll('recipes', 'recipes', 'id, wastage_pct', locationId, [], true),
+    pageAll('recipe lines', 'recipe_lines', 'id, recipe_id, component_item_id, qty, unit, usable_pct, order_types', locationId, ['sort_order']),
   ]);
   const [{ data: links }, { data: recs }, { data: lines }] = reads;
   const wastageByRecipe = {};

@@ -25,7 +25,6 @@ import { decrementStockRPC, fetchActiveDiscountRules } from '../../lib/db';
 import { logOrderActivity, logActivity } from '../../lib/activity';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../../lib/discountEngine';
 import { buildScheduleCtx } from '../../lib/locationTime';
-import { depleteForSaleServer } from '../../lib/stock/deplete';
 import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient';
 import { getLocationProcessor } from '../../lib/payments/processor';
 import AdyenPaymentForm from '../../components/AdyenPaymentForm';
@@ -1262,8 +1261,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
 
       try {
         if (closedCheck) {
-          // v5.5.583: deplete recipe ingredients from the stock ledger (server-side, online is anonymous). Fire-and-forget.
-          depleteForSaleServer({ id: closedCheck.id, items: cart.map(l => ({ itemId: l.itemId, qty: l.qty, mods: l.mods })), orderType });   // v5.11.77: the chosen options deplete too
+          // v5.11.79: no browser stock call. The database takes stock off this booked check itself
+          // (20261018c central depletion, every venue central since 20261019),
+          // from the stored lines and options, exactly once, even when the customer closes the tab.
           // v5.5.677: email + SMS the customer their confirmation/receipt (gift-only path).
           sendOrderConfirmation(closedCheck);
         }
@@ -1492,8 +1492,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
 
       try {
         if (closedCheck) {
-          // v5.5.583: deplete recipe ingredients from the stock ledger (server-side, online is anonymous). Fire-and-forget.
-          depleteForSaleServer({ id: closedCheck.id, items: cart.map(l => ({ itemId: l.itemId, qty: l.qty, mods: l.mods })), orderType });   // v5.11.77: the chosen options deplete too
+          // v5.11.79: no browser stock call. The database takes stock off this booked check itself
+          // (20261018c central depletion, every venue central since 20261019),
+          // from the stored lines and options, exactly once, even when the customer closes the tab.
           // v5.5.677: email + SMS the customer their confirmation/receipt (was never wired for online).
           sendOrderConfirmation(closedCheck);
         }

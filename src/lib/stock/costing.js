@@ -99,6 +99,27 @@ export function packBaseUnitCost({ packPrice, packQty = 1, innerQty = 1, innerUn
   return { baseContent, baseUnitCost: price / baseContent };
 }
 
+/**
+ * v5.11.80: which supplier price sets an item's cost (the price list rule, recomputeItemCost): the
+ * preferred LIVE price whose units convert, else the cheapest live one. A price or unit bridge head
+ * office switched off at the site (archived_at set, 20261019c) never counts, even if it was preferred.
+ * netOf(sp) gives the pack price net of VAT. Returns { chosen, cost, netPack } or null.
+ */
+export function chooseCostSource({ sps = [], baseUnit, bridges = [], netOf = (sp) => Number(sp.pack_price) }) {
+  const live = (bridges || []).filter((b) => b && !b.archived_at)
+    .map((c) => ('fromQty' in c ? c : { fromQty: Number(c.from_qty), fromUnit: c.from_unit, toQty: Number(c.to_qty), toUnit: c.to_unit }));
+  let chosen = null, chosenCost = Infinity, chosenNetPack = null;
+  for (const sp of (sps || []).filter((x) => x && !x.archived_at)) {
+    let bc; const netPack = netOf(sp);
+    try {
+      bc = packBaseUnitCost({ packPrice: netPack, packQty: Number(sp.pack_qty), innerQty: Number(sp.inner_qty), innerUnit: sp.inner_unit, baseUnit, itemConversions: live }).baseUnitCost;
+    } catch { continue; }
+    if (sp.is_preferred) { chosen = sp; chosenCost = bc; chosenNetPack = netPack; break; }
+    if (bc < chosenCost) { chosen = sp; chosenCost = bc; chosenNetPack = netPack; }
+  }
+  return chosen && Number.isFinite(chosenCost) ? { chosen, cost: chosenCost, netPack: chosenNetPack } : null;
+}
+
 // The moving average rule lives in _shared/stockCosting.js (v5.11.65) so the Manager app's receive
 // writes the same cost as Back Office receiving. Re-exported here for every browser caller.
 export { movingAverageCost, costAfterReceipt } from '../../../supabase/functions/_shared/stockCosting.js';

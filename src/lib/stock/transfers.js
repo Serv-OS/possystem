@@ -49,10 +49,13 @@ export const fetchVenueChoices = async (locationId = null) => {
   if (!locationId) return { data: none, error: null };
   const scope = await fetchReportScopeData(locationId);
   const readable = scope.readableIds ? new Set(scope.readableIds.map(String)) : null;
+  // v5.11.79 (stock plan 4.8): sister sites only, the venues of THIS venue's company (the database
+  // refuses a transfer to another company too, in the table rule and in the posting).
+  const homeOrg = (scope.locations || []).find((l) => String(l.id) === String(locationId))?.org_id || null;
   const namesById = {};
   (scope.locations || []).forEach((l) => { namesById[String(l.id)] = l.name || 'Venue'; });
   const venues = (scope.locations || [])
-    .filter((l) => String(l.id) !== String(locationId) && (!readable || readable.has(String(l.id))))
+    .filter((l) => String(l.id) !== String(locationId) && (!readable || readable.has(String(l.id))) && homeOrg && String(l.org_id) === String(homeOrg))
     .map((l) => ({ id: String(l.id), name: l.name || 'Venue' }));
   return { data: { venues, namesById }, error: null };
 };

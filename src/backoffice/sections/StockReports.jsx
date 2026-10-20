@@ -656,7 +656,7 @@ function TheGap({ moves, itemName, itemUnit }) {
       <Callout>
         <b>“The gap”</b> is the difference between what your recipes and deliveries say you should have and what you actually
         counted. A negative variance is unexplained loss — over-pour, spillage, theft or mis-ringing. Only items you have
-        <b> counted</b> in this period appear.
+        <b> counted</b> in this period appear. A first count is <b>opening stock</b>, never a gain, so it is left out.
       </Callout>
       <KpiBand items={[
         { label:'Unexplained loss', value: signedMoney(loss), tone: loss < 0 ? 'bad' : 'good' },

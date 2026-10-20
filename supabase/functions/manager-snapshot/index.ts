@@ -206,6 +206,14 @@ Deno.serve(async (req) => {
     //    client (kitchen.js belowPar/bySupplier) decides what's short. Isolated: a stock read failure
     //    must never break takings/floor/team, so default to []. ──
     let kitchenItems: any[] = [];
+    // v5.11.80: how many live tracked stock items the venue has (one head count): the phone shows
+    // Count stock only where there is stock to count. null when the read fails (the phone then falls back).
+    let trackedItems: number | null = null;
+    try {
+      const { count, error } = await sb.from('inventory_items').select('id', { count: 'exact', head: true })
+        .eq('location_id', loc).is('archived_at', null).eq('is_tracked', true);
+      trackedItems = error ? null : (count ?? 0);
+    } catch { trackedItems = null; }
     try {
       const pars = await pagedRows('par levels', () => sb.from('par_levels')
         .select('inventory_item_id, par_level, reorder_point').eq('location_id', loc).order('id'));
@@ -406,7 +414,7 @@ Deno.serve(async (req) => {
     return json({
       ok: true, location_id: loc, venueName: locRow?.name || '', tz, today,   // today = the venue's calendar day (v5.11.64: the Kitchen tab marks orders due today / overdue with it)
       money, floor, team: { punches, shifts: teamShifts, ratesMinor, pendingTimesheets, pendingTimeOff, breakPolicy },
-      kitchen: { items: kitchenItems, deliveries: kitchenDeliveries, batches: kitchenBatches },
+      kitchen: { items: kitchenItems, deliveries: kitchenDeliveries, batches: kitchenBatches, trackedItems },
       ops,
       generated_at: new Date().toISOString(),
     });

@@ -16,6 +16,7 @@
 import { toBase, fromBase, formatToken, unitLabel } from './uom.js';
 import { lineValue } from './valuation.js';
 import { matchTransferLines, canReceive } from './areaRules.js';
+import { convert } from './conversion.js';
 
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 const r4 = (v) => Math.round(num(v) * 10000) / 10000;
@@ -176,14 +177,56 @@ export function transferValue(lines, costById = {}) {
 }
 
 /**
- * What the receiving venue sees: each line matched to one of its items (SKU, then name), the
- * quantity received defaulting to the quantity sent, and whether Receive may go ahead.
+ * v5.11.79 (stock plan 4.8): what was sent, in the RECEIVING item's base unit. The sender counts milk
+ * in ml, the receiver in l: 6000 ml arrives as 6 l. Same dimension through the standard units, else
+ * through one of the receiving item's unit bridges (1 each = 110 g). Null when the units cannot be
+ * converted: that line cannot be received until a bridge is added or the line is dropped (the
+ * database refuses it in words too).
+ */
+export function sentInReceiverUnits(line, receiverItem) {
+  const from = String(line?.baseUnit || '').trim().toLowerCase();
+  const to = String(receiverItem?.baseUnit || '').trim().toLowerCase();
+  if (!from || !to || from === to) return num(line?.qtyBase);
+  try {
+    const v = convert(num(line.qtyBase), from, to, { itemConversions: receiverItem?.conversions || [] });
+    return Number.isFinite(v) && v >= 0 ? r4(v) : null;
+  } catch { return null; }
+}
+
+/** The words for a line whose units cannot be converted at the receiving venue. */
+export function unitProblemText(line, receiverItem) {
+  return `${line?.nameSnapshot || 'This line'} was sent in ${line?.baseUnit || '?'} and your ${receiverItem?.name || 'item'} counts in ${receiverItem?.baseUnit || '?'}: add a unit bridge on your item, or drop the line.`;
+}
+
+/**
+ * What did not arrive, in the receiving unit, for a line: sent (converted) less received, never
+ * below 0. Booked at the SENDER as waste, reason Short on transfer, when the transfer is received.
+ */
+export function shortOf(line, receiverItem) {
+  if (line?.dropped) return null;
+  const sent = sentInReceiverUnits(line, receiverItem);
+  if (sent == null) return null;
+  const got = line?.qtyReceivedBase == null ? sent : num(line.qtyReceivedBase);
+  return r4(Math.max(0, sent - got));
+}
+
+/**
+ * What the receiving venue sees: each line matched to one of its items (SKU, then name; two
+ * possible matches means the receiver picks), the quantity received defaulting to the quantity
+ * sent IN THE RECEIVING ITEM'S UNIT, and whether Receive may go ahead (every line matched or
+ * dropped, and every matched line's units convert).
  * Lines already matched by hand (toInventoryItemId set to a live item) are kept.
  */
 export function receivePlan(lines, receiverItems) {
   const { lines: matched, unmatched } = matchTransferLines(lines, receiverItems);
-  const out = matched.map((l) => ({ ...l, qtyReceivedBase: l.qtyReceivedBase == null ? num(l.qtyBase) : num(l.qtyReceivedBase) }));
-  return { lines: out, unmatched, canReceive: canReceive(out) };
+  const byId = new Map((receiverItems || []).filter(Boolean).map((i) => [i.id, i]));
+  const out = matched.map((l) => {
+    const ri = l.toInventoryItemId ? byId.get(l.toInventoryItemId) : null;
+    const sent = ri ? sentInReceiverUnits(l, ri) : num(l.qtyBase);
+    const unitProblem = ri && !l.dropped && sent == null ? unitProblemText(l, ri) : null;
+    return { ...l, sentHere: sent, unitProblem, qtyReceivedBase: l.qtyReceivedBase == null ? (sent == null ? null : sent) : num(l.qtyReceivedBase) };
+  });
+  return { lines: out, unmatched, canReceive: canReceive(out) && out.every((l) => l.dropped || !l.unitProblem) };
 }
 
 /** The receiving venue's items that look like a line, for the match by hand list: name, SKU or supplier code contains the words. */
@@ -201,7 +244,8 @@ export function receiveLineUpdates(lines) {
   return (lines || []).filter(Boolean).map((l) => ({
     id: l.id,
     to_inventory_item_id: l.dropped ? null : (l.toInventoryItemId || null),
-    qty_received_base: l.dropped ? null : r4(l.qtyReceivedBase == null ? l.qtyBase : l.qtyReceivedBase),
+    // in the RECEIVING item's unit (v5.11.79: sentHere is the sent quantity converted to it)
+    qty_received_base: l.dropped ? null : r4(l.qtyReceivedBase ?? l.sentHere ?? l.qtyBase),
     dropped: l.dropped === true,
   }));
 }

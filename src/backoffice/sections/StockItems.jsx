@@ -31,6 +31,7 @@ import {
   upsertItemConversion, deleteItemConversion,
   upsertPackagingFormat, deletePackagingFormat, setUnitDefault,
   setInventoryOnHand, fetchItemMovements, movementLabel,
+  fetchSharedStockStatus,
 } from '../../lib/stock/data';
 import { fetchParLevels, upsertParLevel } from '../../lib/stock/counts';
 import { areasReady, fetchAreas, fetchAreaHoldings, assignItemArea } from '../../lib/stock/areas';
@@ -106,6 +107,9 @@ export default function StockItems({ orgCtx = null }) {
   const [areasOn, setAreasOn] = useState(false);
   const [holdings, setHoldings] = useState({});
   const [areaFilter, setAreaFilter] = useState('any');
+  // v5.11.80 (multi site stock): this venue's Shared stock status (the stock Editors' names for
+  // "Managed by head office"); null before 20261019c is run.
+  const [shared, setShared] = useState(null);
   const byName = orgCtx?.userName || null;
 
   const reload = useCallback(async (keepId) => {
@@ -113,11 +117,13 @@ export default function StockItems({ orgCtx = null }) {
     if (loc && loc !== locId) setLocId(loc);
     const ready = await areasReady(loc);
     setAreasOn(ready);
-    const [{ data: its }, { data: sups }, areaRes, holdRes] = await Promise.all([
+    const [{ data: its }, { data: sups }, areaRes, holdRes, sharedRes] = await Promise.all([
       fetchInventoryItems(loc), fetchSuppliers(loc),
       ready ? fetchAreas(loc) : Promise.resolve({ data: [] }),
       ready ? fetchAreaHoldings(loc) : Promise.resolve({ data: {} }),
+      fetchSharedStockStatus(loc),
     ]);
+    setShared(sharedRes?.data || null);
     setItems(its || []);
     setSuppliers(sups || []);
     setAreas(areaRes.data || []);
@@ -314,13 +320,20 @@ export default function StockItems({ orgCtx = null }) {
                   <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--t1)' }}>{draft.currentCost != null ? money(Number(draft.onHand || 0) * Number(draft.currentCost)) : '—'}</div>
                 </div>
               </div>
-              {draft.id && (
+              {draft.id && !draft.companyRef && (
                 <button onClick={toggleArchive} style={{ padding: '8px 14px', borderRadius: 8, cursor: 'pointer', background: 'var(--bg2)', border: '1px solid var(--bdr)', color: 'var(--t2)', fontSize: 13 }}>
                   {draft.archivedAt ? 'Restore' : 'Archive'}
                 </button>
               )}
             </div>
 
+            {draft.companyRef && (
+              <div style={{ margin: '10px 22px 0', padding: '9px 12px', borderRadius: 10, fontSize: 12.5, lineHeight: 1.45, color: 'var(--t1)',
+                background: 'var(--blu-d, var(--bg2))', border: '1px solid color-mix(in srgb, var(--blu, #4A8CFF) 40%, transparent)' }}>
+                <b>Managed by head office.</b> Name, unit, category, SKU, barcode, allergens, VAT, shelf life, its packs and its supplier prices are set by the company
+                {shared?.editors ? <> (ask {shared.editors})</> : null}. Par, area, notes, made here, tracking and the preferred supplier are this site's own and save here.
+              </div>
+            )}
             {/* tabs */}
             <div style={{ display: 'flex', gap: 4, padding: '10px 22px 0', borderBottom: '1px solid var(--bdr)' }}>
               {/* v5.5.925 — the tabs follow what the item IS. A made-here item has no
@@ -337,7 +350,7 @@ export default function StockItems({ orgCtx = null }) {
             </div>
 
             <div style={{ flex: 1, overflowY: 'auto', padding: '20px 22px', minHeight: 0 }}>
-              {tab === 'General' && <GeneralTab draft={draft} upd={upd} onSave={saveGeneral} saving={saving} areas={areasOn ? areas : null} savedAreaId={items.find(i => i.id === draft.id)?.areaId || null} holdings={holdings[draft.id] || {}} />}
+              {tab === 'General' && <GeneralTab locked={!!draft.companyRef} draft={draft} upd={upd} onSave={saveGeneral} saving={saving} areas={areasOn ? areas : null} savedAreaId={items.find(i => i.id === draft.id)?.areaId || null} holdings={holdings[draft.id] || {}} />}
               {tab === 'Stock' && <StockTab draft={draft} locId={locId} onChanged={() => reload(draft.id)} showToast={showToast} areas={areasOn ? areas : null} holdings={holdings[draft.id] || {}} />}
               {tab === 'Dimension & Measure' && <DimensionTab draft={draft} locId={locId} onChanged={() => reload(draft.id)} showToast={showToast} />}
               {tab === 'Units' && <UnitsTab draft={draft} locId={locId} onChanged={() => reload(draft.id)} showToast={showToast} />}
@@ -352,7 +365,7 @@ export default function StockItems({ orgCtx = null }) {
 }
 
 // ── General tab ───────────────────────────────────────────────────────────────
-function GeneralTab({ draft, upd, onSave, saving, areas = null, savedAreaId = null, holdings = {} }) {
+function GeneralTab({ draft, upd, onSave, saving, areas = null, savedAreaId = null, holdings = {}, locked = false }) {
   const taxRates = useStore(s => s.taxRates) || [];
   // 16 Oct 2026: with the migration run, "Storage location" is a dropdown of the venue's areas
   // (one area per item). The legacy text is kept and shown read only when it matches no area,
@@ -364,7 +377,7 @@ function GeneralTab({ draft, upd, onSave, saving, areas = null, savedAreaId = nu
   const oldAreaName = areasOn ? (areas.find(a => a.id === savedAreaId)?.name || '') : '';
   return (
     <div style={{ maxWidth: 640 }}>
-      <Field label="Name"><input value={draft.name} onChange={e => upd('name', e.target.value)} style={fieldStyle} placeholder="e.g. Coca-Cola 330ml can" /></Field>
+      <Field label="Name"><input value={draft.name} disabled={locked} onChange={e => upd('name', e.target.value)} style={fieldStyle} placeholder="e.g. Coca-Cola 330ml can" /></Field>
 
       <Field label="Type">
         <div style={{ display: 'flex', gap: 8 }}>
@@ -382,9 +395,9 @@ function GeneralTab({ draft, upd, onSave, saving, areas = null, savedAreaId = nu
       </Field>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-        <Field label="Base (stocking/costing) unit"><UnitSelect value={draft.baseUnit} onChange={v => upd('baseUnit', v)} style={{ width: '100%' }} /></Field>
-        <Field label="Category"><input value={draft.category || ''} onChange={e => upd('category', e.target.value)} style={fieldStyle} placeholder="e.g. Soft drinks" /></Field>
-        <Field label="Accounting group"><input value={draft.accountingGroup || ''} onChange={e => upd('accountingGroup', e.target.value)} style={fieldStyle} placeholder="e.g. Beverages" /></Field>
+        <Field label="Base (stocking/costing) unit">{locked ? <div style={{ ...fieldStyle, opacity: 0.6 }}>{draft.baseUnit}</div> : <UnitSelect value={draft.baseUnit} onChange={v => upd('baseUnit', v)} style={{ width: '100%' }} />}</Field>
+        <Field label="Category"><input value={draft.category || ''} disabled={locked} onChange={e => upd('category', e.target.value)} style={fieldStyle} placeholder="e.g. Soft drinks" /></Field>
+        <Field label="Accounting group"><input value={draft.accountingGroup || ''} disabled={locked} onChange={e => upd('accountingGroup', e.target.value)} style={fieldStyle} placeholder="e.g. Beverages" /></Field>
         {areasOn ? (
           <Field label="Stock area">
             <select value={draft.areaId || ''} onChange={e => upd('areaId', e.target.value || null)} style={fieldStyle}>
@@ -402,10 +415,10 @@ function GeneralTab({ draft, upd, onSave, saving, areas = null, savedAreaId = nu
         ) : (
           <Field label="Storage location"><input value={draft.storageLocation || ''} onChange={e => upd('storageLocation', e.target.value)} style={fieldStyle} placeholder="e.g. Dry store" /></Field>
         )}
-        <Field label="Shelf life (days)"><input type="number" min="0" value={draft.shelfLifeDays ?? ''} onChange={e => upd('shelfLifeDays', e.target.value)} style={fieldStyle} /></Field>
-        <Field label="SKU / code"><input value={draft.sku || ''} onChange={e => upd('sku', e.target.value)} style={fieldStyle} /></Field>
+        <Field label="Shelf life (days)"><input type="number" min="0" value={draft.shelfLifeDays ?? ''} disabled={locked} onChange={e => upd('shelfLifeDays', e.target.value)} style={fieldStyle} /></Field>
+        <Field label="SKU / code"><input value={draft.sku || ''} disabled={locked} onChange={e => upd('sku', e.target.value)} style={fieldStyle} /></Field>
         <Field label="Purchase VAT (input tax)">
-          <select value={draft.purchaseTaxRateId || ''} onChange={e => upd('purchaseTaxRateId', e.target.value || null)} style={fieldStyle}>
+          <select value={draft.purchaseTaxRateId || ''} disabled={locked} onChange={e => upd('purchaseTaxRateId', e.target.value || null)} style={fieldStyle}>
             <option value="">No VAT / zero-rated</option>
             {taxRates.filter(r => r.active !== false).map(r => <option key={r.id} value={r.id}>{formatRateLabel(r)}</option>)}
           </select>
@@ -431,7 +444,7 @@ function GeneralTab({ draft, upd, onSave, saving, areas = null, savedAreaId = nu
             const lbl = a.label || a.name || a;
             const on = (draft.allergens || []).includes(id);
             return (
-              <button key={id} onClick={() => upd('allergens', on ? draft.allergens.filter(x => x !== id) : [...(draft.allergens || []), id])}
+              <button key={id} disabled={locked} onClick={() => upd('allergens', on ? draft.allergens.filter(x => x !== id) : [...(draft.allergens || []), id])}
                 style={{ fontSize: 12, padding: '5px 10px', borderRadius: 6, cursor: 'pointer', background: on ? 'var(--bg3)' : 'var(--bg2)', color: on ? 'var(--t1)' : 'var(--t3)', border: '1px solid ' + (on ? 'var(--acc)' : 'var(--bdr)') }}>
                 {lbl}
               </button>
@@ -678,7 +691,8 @@ function DimensionTab({ draft, locId, onChanged, showToast }) {
         {(draft.conversions || []).map(c => (
           <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 10, background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 7, padding: '8px 12px' }}>
             <span style={{ fontSize: 13, color: 'var(--t1)' }}>{c.fromQty} {c.fromUnit} = {c.toQty} {c.toUnit}</span>
-            <button onClick={() => remove(c.id)} style={{ marginLeft: 'auto', background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer', fontSize: 16 }}>×</button>
+            {c.companyRef ? <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--t3)' }}>head office</span>
+              : <button onClick={() => remove(c.id)} style={{ marginLeft: 'auto', background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer', fontSize: 16 }}>×</button>}
           </div>
         ))}
       </div>
@@ -729,7 +743,8 @@ function UnitsTab({ draft, locId, onChanged, showToast }) {
   const remove = async (id) => {
     const { error } = await deletePackagingFormat(id, locId);
     reportSave('packaging unit delete', error);
-    if (error) { showToast?.('Unit NOT removed', 'error'); return; }
+    // v5.11.79: a pack a recipe uses cannot be deleted (20261019b); say why, in the database's words.
+    if (error) { showToast?.(/used in a recipe/i.test(error.message || '') ? error.message : 'Unit NOT removed', 'error'); return; }
     onChanged();
   };
   const makeDefault = async (id, kind) => {
@@ -764,9 +779,10 @@ function UnitsTab({ draft, locId, onChanged, showToast }) {
             <span style={{ fontSize: 13, color: 'var(--t1)', fontWeight: 600, minWidth: 90 }}>1 {p.name}</span>
             <span style={{ fontSize: 12, color: 'var(--t3)' }}>= {sizeLabel(p)}</span>
             <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
-              {p.isCountDefault ? <span style={badge('count')}>📋 count</span> : <button onClick={() => makeDefault(p.id, 'count')} style={ghostBtn}>set count</button>}
-              {p.isPurchaseDefault ? <span style={badge('buy')}>🛒 buy</span> : <button onClick={() => makeDefault(p.id, 'purchase')} style={ghostBtn}>set buy</button>}
-              <button onClick={() => remove(p.id)} style={{ background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer', fontSize: 16 }}>×</button>
+              {p.isCountDefault ? <span style={badge('count')}>📋 count</span> : !p.companyRef && !draft.companyRef && <button onClick={() => makeDefault(p.id, 'count')} style={ghostBtn}>set count</button>}
+              {p.isPurchaseDefault ? <span style={badge('buy')}>🛒 buy</span> : !p.companyRef && !draft.companyRef && <button onClick={() => makeDefault(p.id, 'purchase')} style={ghostBtn}>set buy</button>}
+              {p.companyRef ? <span style={{ fontSize: 11, color: 'var(--t3)' }}>head office</span>
+                : <button onClick={() => remove(p.id)} style={{ background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer', fontSize: 16 }}>×</button>}
             </div>
           </div>
         ))}
@@ -898,8 +914,10 @@ function SuppliersTab({ draft, suppliers, locId, onChanged, showToast }) {
             {sp.isPreferred
               ? <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--acc)', padding: '3px 8px', borderRadius: 20, background: 'var(--acc-d, rgba(249,115,22,0.12))' }}>Preferred</span>
               : <button onClick={() => setPreferred(sp)} style={{ fontSize: 11, padding: '4px 9px', borderRadius: 6, background: 'var(--bg2)', border: '1px solid var(--bdr)', color: 'var(--t2)', cursor: 'pointer' }}>Make preferred</button>}
-            <button onClick={() => editRow(sp)} style={{ background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer', fontSize: 13 }}>Edit</button>
-            <button onClick={() => removeRow(sp)} style={{ background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer', fontSize: 16 }}>×</button>
+            {sp.companyRef ? <span style={{ fontSize: 11, color: 'var(--t3)' }}>head office price</span> : <>
+              <button onClick={() => editRow(sp)} style={{ background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer', fontSize: 13 }}>Edit</button>
+              <button onClick={() => removeRow(sp)} style={{ background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer', fontSize: 16 }}>×</button>
+            </>}
           </div>
         ))}
       </div>

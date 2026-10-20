@@ -28,6 +28,8 @@ import { normaliseSections } from '../lib/sectionPlan';
 import MenuManager from './sections/MenuManager';
 // v5.11.75: the Multi site menu is its own chunk, loaded only when a login added by name opens it.
 const MultiSiteMenu = lazy(() => import('./sections/msm/MultiSiteMenu'));
+// v5.11.80: Multi site stock (Shared stock), its own chunk, loaded only when a stock person opens it.
+const MultiSiteStock = lazy(() => import('./sections/stock/MultiSiteStock'));
 import FloorPlanBuilder from './sections/FloorPlanBuilder';
 import DeviceProfiles from './sections/DeviceProfiles';
 import DeviceRegistry from './sections/DeviceRegistry';
@@ -133,6 +135,7 @@ const NAV = [
   { id:'menu',       label:'Menu manager',    icon:'🍽',  group:'Configuration' },
   // The top bar title only: the sidebar row comes from NAV_IA and shows only to people ServOS added.
   { id:'multi-site-menu', label:'Multi site menu', icon:'🍽', group:'Configuration' },
+  { id:'multi-site-stock', label:'Multi site stock', icon:'📦', group:'Configuration' },
   { id:'floorplan',  label:'Floor plan',      icon:'⬚',  group:'Configuration' },
   { id:'stock-overview', label:'Stock overview', icon:'📦',  group:'Configuration' },
   { id:'inventory',  label:'Daily counts',    icon:'📦',  group:'Configuration' },
@@ -427,6 +430,21 @@ export default function BackOfficeApp() {
       .catch((e) => { console.warn('[BackOfficeApp] Multi site menu access not read:', e?.message); });
     return () => { live = false; };
   }, [msmOrgId, msmUserId, msmAccessTry]);
+  // MULTI SITE STOCK (v5.11.80): the stock Editors and Viewers are a list of their own
+  // (stock_my_access, fails closed); null until it answers, so the entry stays hidden.
+  const [mssAccess, setMssAccess] = useState(null);
+  const [mssAccessTry, setMssAccessTry] = useState(0);
+  useEffect(() => {
+    if (isMock) return undefined;
+    setMssAccess(null);
+    if (!msmUserId) return undefined;
+    let live = true;
+    import('../lib/stock/company/stockCompanyApi')
+      .then(({ stockCompanyApi }) => stockCompanyApi.access(msmOrgId))
+      .then((a) => { if (live && a) setMssAccess(a); })
+      .catch((e) => { console.warn('[BackOfficeApp] Multi site stock access not read:', e?.message); });
+    return () => { live = false; };
+  }, [msmOrgId, msmUserId, mssAccessTry]);
   // Which of this venue's products and option groups the group menu manages (design 1.8, round 2
   // 1.10): the sharing engine skips them and Menu Manager says so. Read for everyone who uses the venue (not only the people added),
   // only once the feature is installed; empty for a company that is not switched on.
@@ -440,8 +458,8 @@ export default function BackOfficeApp() {
     return () => { live = false; };
   }, [msmAccess?.installed, msmLocationId]);
   const access = useMemo(
-    () => (isMock ? { ...EVERYTHING, multiSiteMenu: msmAccess } : (orgCtx && !orgCtx.loadFailed ? { role: orgCtx.role, sections: orgCtx.boSections, multiSiteMenu: msmAccess } : null)),
-    [orgCtx, msmAccess],
+    () => (isMock ? { ...EVERYTHING, multiSiteMenu: msmAccess, sharedStock: mssAccess } : (orgCtx && !orgCtx.loadFailed ? { role: orgCtx.role, sections: orgCtx.boSections, multiSiteMenu: msmAccess, sharedStock: mssAccess } : null)),
+    [orgCtx, msmAccess, mssAccess],
   );
   // RENDER GUARD: every screen below is chosen by `section`, and `section` can only ever be a
   // route this login may open (a blocked or unknown route becomes the first allowed one, or null).
@@ -1118,6 +1136,11 @@ export default function BackOfficeApp() {
           {section === 'multi-site-menu' && (
             <Suspense fallback={<div style={{ padding:24, color:'var(--t3)', fontSize:13 }}>Loading the Multi site menu…</div>}>
               <MultiSiteMenu access={msmAccess} orgCtx={orgCtx} onAccessLost={() => setMsmAccessTry((n) => n + 1)} />
+            </Suspense>
+          )}
+          {section === 'multi-site-stock' && (
+            <Suspense fallback={<div style={{ padding:24, color:'var(--t3)', fontSize:13 }}>Loading Multi site stock…</div>}>
+              <MultiSiteStock access={mssAccess} onAccessLost={() => setMssAccessTry((n) => n + 1)} />
             </Suspense>
           )}
           {section === 'floorplan'  && <FloorPlanBuilder />}

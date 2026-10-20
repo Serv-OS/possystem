@@ -8,6 +8,10 @@
 //
 // Auth: a signed-in Back Office user with access to the PO's location (checked against
 // user_locations with the caller's OWN JWT, so RLS does the fencing), or the service role.
+// v5.11.79: an OWNER who reaches the venue through the owner rule (no link row) is let in too, the
+// same answer as the database's user_accessible_locations() (_shared/stockOfficeReach.js). Each line
+// now carries the supplier's own product code (supplier_products.supplier_sku) so the supplier can
+// pick the order without guessing.
 //
 // ⚠ Edge functions deploy MANUALLY:
 //   npx supabase functions deploy po-send --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
@@ -16,6 +20,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { secondStepRefusal } from '../_shared/second-step.ts';
 // v5.11.65: the requested delivery day in words ('Fri 16 Oct 2026'), not the raw database string.
 import { fmtYmd } from '../_shared/venueDate.js';
+import { officeReachesVenue } from '../_shared/stockOfficeReach.js';
 
 // CORS is inlined per-function in this codebase — there is no shared cors module.
 const corsHeaders = {
@@ -58,7 +63,17 @@ Deno.serve(async (req) => {
     const lres = await fetch(`${SUPABASE_URL}/rest/v1/user_locations?select=location_id&user_id=eq.${u.id}&location_id=eq.${encodeURIComponent(location_id)}&limit=1`,
       { headers: { authorization: `Bearer ${bearer}`, apikey } });
     const rows = lres.ok ? await lres.json() : [];
-    if (!Array.isArray(rows) || !rows.length) return json({ error: `not authorized for location ${location_id || '(none sent)'}` }, 403);
+    const linked = Array.isArray(rows) && rows.length > 0;
+    let reach = officeReachesVenue({ user: u, profile: null, linked, venueOrgId: null });
+    if (!reach.ok) {
+      // No link row: the owner of the venue's company, or a super admin (read with the service role).
+      const [{ data: prof }, { data: venue }] = await Promise.all([
+        admin.from('user_profiles').select('role, org_id').eq('id', u.id).maybeSingle(),
+        admin.from('locations').select('org_id').eq('id', location_id).maybeSingle(),
+      ]);
+      reach = officeReachesVenue({ user: u, profile: prof || null, linked, venueOrgId: venue?.org_id || null });
+    }
+    if (!reach.ok) return json({ error: `not authorized for location ${location_id || '(none sent)'}` }, 403);
   }
 
   // ── Load the order, its lines, the supplier and the venue name.
@@ -75,11 +90,21 @@ Deno.serve(async (req) => {
     .eq('location_id', location_id).eq('id', po.supplier_id).maybeSingle();
   if (!supplier?.email) return json({ error: 'supplier_has_no_email' }, 422);
 
+  // v5.11.79: the supplier's own product code for each line (the pack the line was ordered in).
+  const spIds = [...new Set(lines.map((l) => l.supplier_product_id).filter(Boolean))];
+  const skuBySp: Record<string, string> = {};
+  if (spIds.length) {
+    const { data: sps } = await admin.from('supplier_products').select('id,supplier_sku').eq('location_id', location_id).in('id', spIds);
+    for (const sp of sps ?? []) if (sp.supplier_sku) skuBySp[sp.id] = String(sp.supplier_sku);
+  }
+  const anyCode = lines.some((l) => l.supplier_product_id && skuBySp[l.supplier_product_id]);
+
   // ── Compose. Plain table, no branding games — a supplier wants the list, not a leaflet.
   const venue = locRow?.name || 'Our venue';
   const ref = po.reference || po_id.slice(0, 8);
   const rows = lines.map((l) => `
     <tr>
+      ${anyCode ? `<td style="padding:6px 10px;border-bottom:1px solid #ddd;font-family:monospace">${esc(skuBySp[l.supplier_product_id] || '')}</td>` : ''}
       <td style="padding:6px 10px;border-bottom:1px solid #ddd">${esc(l.description)}</td>
       <td style="padding:6px 10px;border-bottom:1px solid #ddd;text-align:right">${Number(l.qty_packs)}</td>
       <td style="padding:6px 10px;border-bottom:1px solid #ddd">${Number(l.pack_qty)}×${Number(l.inner_qty)}${esc(l.inner_unit)}</td>
@@ -94,6 +119,7 @@ Deno.serve(async (req) => {
     <p style="margin:0 0 14px;font-size:14px"><b>Deliver to:</b> ${esc(venue)}${locRow?.address ? `, ${esc(locRow.address)}` : ''}</p>
     <table style="border-collapse:collapse;width:100%;font-size:14px">
       <thead><tr style="text-align:left;color:#555">
+        ${anyCode ? '<th style="padding:6px 10px;border-bottom:2px solid #333">Your code</th>' : ''}
         <th style="padding:6px 10px;border-bottom:2px solid #333">Item</th>
         <th style="padding:6px 10px;border-bottom:2px solid #333;text-align:right">Packs</th>
         <th style="padding:6px 10px;border-bottom:2px solid #333">Pack</th>

@@ -47,7 +47,7 @@ export {
 // collapsible accordion of existing routes.
 export const NAV_IA = [
   { label:'Overview',   icon:'home',      single:'overview' },
-  { label:'Menu',       icon:'list',      children:[['menu','Items & modifiers'],['multi-site-menu','Multi site menu'],['discounts','Discounts'],['tax','Tax & VAT'],['challenge21','Challenge ID']] },
+  { label:'Menu',       icon:'list',      children:[['menu','Items & modifiers'],['multi-site-menu','Multi site menu'],['multi-site-stock','Multi site stock'],['discounts','Discounts'],['tax','Tax & VAT'],['challenge21','Challenge ID']] },
   { label:'Floor plan', icon:'floor',     single:'floorplan' },
   { label:'Inventory',  icon:'inventory', children:[['stock-overview','Overview'],['stock-items','Stock items'],['stock-areas','Stock areas'],['stock-transfers','Transfers'],['stock-counts','Stock counts'],['wastage','Wastage'],['inventory','Daily counts'],['stock-reports','Reports']] },
   { label:'Produce',    icon:'inventory', children:[['recipes','Recipes'],['batches','Batches']] },
@@ -132,14 +132,21 @@ export function sectionKeyOfRoute(routeId) {
 // which fails closed). Owners and ServOS staff are NOT let in automatically. Anything else
 // (not read yet, not installed, a failed read, switched off) is no.
 export const MSM_ROUTE = 'multi-site-menu';
+// MULTI SITE STOCK (v5.11.80): beside the Multi site menu, with its own list of people (stock Editors
+// and Viewers, a separate list from the menu people): profile.sharedStock.canOpen, read with
+// stock_my_access (lib/stock/company/stockCompanyData.js access, which fails closed).
+export const MSS_ROUTE = 'multi-site-stock';
 const ROUTE_GATES = Object.freeze({
   [MSM_ROUTE]: (profile) => !!profile && typeof profile === 'object' && profile.multiSiteMenu?.canOpen === true,
+  [MSS_ROUTE]: (profile) => !!profile && typeof profile === 'object' && profile.sharedStock?.canOpen === true,
 });
+/** Routes with a gate of their own (people added by name in Company Admin). */
+export const GATED_ROUTES = Object.freeze(Object.keys(ROUTE_GATES));
 
 // ── Beta features (18 Oct 2026, Peter: a small BETA tag next to the feature's name) ────────
 // The routes whose sidebar row, top bar title and page heading carry the BETA tag. The tag is
 // src/components/BetaTag.js; the screens ask isBetaRoute() and render it for these routes only.
-export const BETA_ROUTES = new Set([MSM_ROUTE]);
+export const BETA_ROUTES = new Set([MSM_ROUTE, MSS_ROUTE]);
 export function isBetaRoute(routeId) {
   return typeof routeId === 'string' && BETA_ROUTES.has(routeId);
 }

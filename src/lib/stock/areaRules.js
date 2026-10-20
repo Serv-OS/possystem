@@ -192,21 +192,27 @@ const normKey = (s) => String(s ?? '').trim().toLowerCase().replace(/\s+/g, ' ')
  */
 export function matchTransferLines(lines, receiverItems) {
   const live = (receiverItems || []).filter((i) => i && !i.archivedAt);
+  // v5.11.79 (stock plan 4.8): every live item per SKU and per name, not the first one. When two of
+  // the receiver's items share the SKU (or, with no SKU match, the name) the receiver must pick:
+  // the first match never wins silently. Such a line comes back unmatched with `ambiguous` listing
+  // the ids it could be.
   const bySku = new Map(); const byName = new Map();
-  for (const i of live) {
-    const sku = normKey(i.sku); const name = normKey(i.name);
-    if (sku && !bySku.has(sku)) bySku.set(sku, i.id);
-    if (name && !byName.has(name)) byName.set(name, i.id);
-  }
+  const add = (m, k, id) => { if (!k) return; const a = m.get(k) || []; a.push(id); m.set(k, a); };
+  for (const i of live) { add(bySku, normKey(i.sku), i.id); add(byName, normKey(i.name), i.id); }
   const out = []; const unmatched = [];
   for (const l of lines || []) {
     if (!l) continue;
     if (l.dropped) { out.push({ ...l, matchedBy: null }); continue; }
     if (l.toInventoryItemId && live.some((i) => i.id === l.toInventoryItemId)) { out.push({ ...l, matchedBy: 'kept' }); continue; }
     const sku = normKey(l.skuSnapshot); const name = normKey(l.nameSnapshot);
-    const id = (sku && bySku.get(sku)) || (name && byName.get(name)) || null;
-    if (id) out.push({ ...l, toInventoryItemId: id, matchedBy: sku && bySku.get(sku) === id ? 'sku' : 'name' });
-    else { out.push({ ...l, toInventoryItemId: null, matchedBy: null }); unmatched.push(l.id); }
+    const skuIds = (sku && bySku.get(sku)) || [];
+    const nameIds = (name && byName.get(name)) || [];
+    const ids = skuIds.length ? skuIds : nameIds;
+    if (ids.length === 1) out.push({ ...l, toInventoryItemId: ids[0], matchedBy: skuIds.length ? 'sku' : 'name' });
+    else {
+      out.push({ ...l, toInventoryItemId: null, matchedBy: null, ...(ids.length > 1 ? { ambiguous: [...ids] } : {}) });
+      unmatched.push(l.id);
+    }
   }
   return { lines: out, unmatched };
 }
