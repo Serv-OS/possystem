@@ -13,7 +13,11 @@ test('matches by family first: masters, suffixed copies, a demoted master, maste
   const p = proposeImport(importSites(), { idGen: idGen() });
   assert.equal(p.masterSite, A, 'the site holding most masters sets the central values');
   const fam = p.review.family.map((f) => p.products.find((x) => x.id === f.productId).name).sort();
-  assert.deepEqual(fam, ['Cola', 'Large latte', 'Latte', 'Mocha', 'Oat milk', 'Tea']);
+  // 20 Oct review fix: a size is never a line of its own; it follows its product.
+  assert.deepEqual(fam, ['Cola', 'Latte', 'Mocha', 'Oat milk', 'Tea']);
+  const large = p.products.find((x) => x.name === 'Large latte');
+  assert.ok(!p.review.family.some((f) => f.productId === large.id), 'Large latte is not a line of its own');
+  assert.equal(large.parent_product_id, p.products.find((x) => x.name === 'Latte').id, 'it is a size under Latte');
   const mocha = p.products.find((x) => x.name === 'Mocha');
   assert.equal(p.productSites.filter((s) => s.product_id === mocha.id).length, 3, 'the demoted master still matches its copies by suffix');
   assert.equal(mocha.family_base, 'm-mocha');
@@ -32,18 +36,25 @@ test('a same name product outside any family is only proposed, and must be ticke
   assert.ok(built.check.ok);
 });
 
-test('only at one site: a normal product on at that site only, archived ones left out by default', () => {
+// 20 Oct review fix: a switched off product at one site is in no list at all: it is counted once
+// and stays as it is (a person sees an archived row as deleted).
+test('only at one site: a normal product on at that site only; a switched off one is in no list', () => {
   const p = proposeImport(importSites(), { idGen: idGen() });
-  const old = p.review.onlyOne.find((o) => o.name === 'Old special');
-  const pie = p.review.onlyOne.find((o) => o.name === 'Pie');
-  assert.equal(old.defaultChoice, 'leave');
+  const r = p.review;
+  const inList = [...r.family, ...r.name, ...r.onlyOne, ...r.differentNames].map((e) => p.products.find((x) => x.id === e.productId)?.name);
+  assert.ok(!inList.includes('Old special'), 'Old special is in no list');
+  assert.ok(!r.clashes.some((c) => c.name === 'Old special'));
+  assert.ok(!p.productSites.some((s) => s.venue_item_id === 'l-old-b'), 'and has no product site row');
+  assert.equal(r.switchedOff.count, 1);
+  assert.equal(r.switchedOff.bySite[B], 1);
+  const pie = r.onlyOne.find((o) => o.name === 'Pie');
   assert.equal(pie.defaultChoice, 'extra');
   const built = buildCentral(p, importSites(), {}, { idGen: idGen('g') });
-  assert.equal(byName(built.central, 'Old special'), undefined, 'left out: stays the venue\'s own');
+  assert.equal(byName(built.central, 'Old special'), undefined, 'stays the venue\'s own');
   assert.equal(byName(built.central, 'Pie').site_only_location_id, null, 'no "site only extra" (UI issue 6)');
   assert.deepEqual(built.central.productSites.filter((s) => s.product_id === byName(built.central, 'Pie').id).map((s) => s.location_id), [C], 'on at its one site, no row elsewhere');
-  assert.ok(built.dropped.includes(old.productId));
-  assert.match(reviewWords(p.review), /6 already shared between sites, 1 with the same name at several sites/);
+  assert.deepEqual(built.dropped, [], 'nothing is left out by default');
+  assert.equal(reviewWords(p.review), '5 products already shared between sites, 1 set up separately at several sites, 1 only at one site.');
 });
 
 test('default price is the most common across sites; every other site gets an override', () => {
@@ -131,7 +142,8 @@ test('a venue\'s second menu (catering) is never pulled in: only the chosen menu
   assert.ok(p.products.some((x) => x.name === 'Oat milk'), 'a sub item used as an option still matches');
 });
 
-test('a family clash matches the copy on sale, never an archived duplicate', () => {
+// 20 Oct review fix: an archived duplicate never clashes (only two copies ON SALE do); it is counted.
+test('an archived duplicate of a shared product is matched past, never a clash', () => {
   const v = venues();
   const b = v[B];
   const copy = b.items.find((i) => i.id === `m-latte_${sfx(B)}`);
@@ -141,8 +153,8 @@ test('a family clash matches the copy on sale, never an archived duplicate', () 
   const latte = p.products.find((x) => x.name === 'Latte');
   const atB = p.productSites.find((s) => s.product_id === latte.id && s.location_id === B);
   assert.equal(atB.venue_item_id, `m-latte_${sfx(B)}`, 'the copy on sale is matched');
-  const clash = p.review.clashes.find((c) => c.location_id === B);
-  assert.equal(clash.matchedId, `m-latte_${sfx(B)}`);
+  assert.equal(p.review.clashes.find((c) => c.location_id === B), undefined, 'no clash at B: the duplicate is switched off');
+  assert.equal(p.review.switchedOff.bySite[B], 2, 'counted with Old special');
 });
 
 test('17 Oct recheck: a row with no Standard price is KEPT as "no price": nothing left out, zero writes', () => {
@@ -156,7 +168,7 @@ test('17 Oct recheck: a row with no Standard price is KEPT as "no price": nothin
   assert.equal(built.check.writes, 0, 'switching on and importing writes nothing at any site');
   const plain = importSites(venues());
   const base = buildCentral(proposeImport(plain, { idGen: idGen() }), plain, {}, { idGen: idGen('g') });
-  assert.deepEqual(built.dropped, base.dropped, 'nothing more is left out (only the archived one site row, as always)');
+  assert.deepEqual(built.dropped, base.dropped, 'nothing more is left out (nothing is, by default)');
   const colaB = siteOf(built.central, 'Cola', B);
   assert.deepEqual([colaB.kept.no_price, colaB.price], [true, null], 'Cola keeps no price at B');
   assert.equal(siteOf(built.central, 'Tea', A).kept.no_price, true);

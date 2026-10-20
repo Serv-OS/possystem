@@ -5,14 +5,19 @@
 // fixture (src/lib/msm/msmImport.test.js): shared families, masters demoted to local, master_id
 // equal to its own id, null masters, copies with no category, products archived at one venue.
 //
-// HOW IT MATCHES (strongest first, design section 2)
+// HOW IT MATCHES (strongest first, design section 2; review fix 20 Oct 2026, v5.11.83)
+//   Products first, then the sizes under each matched product: a size is never a line of its own
+//   and follows its product (same family, else the same normalised name, under that product).
 //   1. Same shared family: master_id, or the id with its `_<8 hex>` venue suffix removed.
-//   2. Same normalised name (lower case, punctuation gone, "&" as "and"), same type and the same
-//      parent for sizes. Shown side by side; must be ticked.
-//   3. Only at one site: brought in as a product on at that one site, or Leave out (stays the
-//      venue's own, not managed).
-//      Archived local only rows default to Leave out.
-//   Clashes (two products with one name at one site) are listed and must be settled by hand.
+//   2. Same normalised name (lower case, punctuation gone, "&" as "and"). A site's own product
+//      with the name of ONE shared product joins it by name; the same name at several sites is
+//      set up separately. Either way the person picks Same product, Keep separate or Leave out.
+//      A row that joined by name never sets the shared product's values.
+//   3. Only at one site (on sale there): brought in as a product on at that one site, or Leave
+//      out (stays the venue's own, not managed).
+//   Switched off (archived) rows never match by name and never clash: they only ride along,
+//   off, inside a shared product, and are otherwise counted and left as they are.
+//   Clashes (two products ON SALE with one name at one site) are listed with what happens.
 //
 // WHAT IT KEEPS (design review, blocker 3)
 //   Shared lets a venue keep its own category, photo and names. The central model has one of
@@ -271,8 +276,18 @@ export function finalizeOptionSites(central, entries) {
  *   sites    [{ location_id, name, venue_menu_id, raw }]   raw = readVenueRaw(...) shape
  *   opts     { idGen }
  * Returns a proposal: { masterSite, sites, categories, catSites, groups, groupSites, products,
- *   productSites, review: { family, name, differentNames, onlyOne, clashes, categoryNames } }.
- * Nothing is linked for the name only matches until the person ticks them (buildCentral).
+ *   productSites, review }. review (20 Oct review fix, products only, sizes nested):
+ *   family          [{ productId, sites, onAt }]               shared products, linked for you
+ *   name            [{ productId, joined, sites, byName, namesakes, names, apart, restore }]
+ *                   set up separately (or joining a shared product) by name: linked only when the
+ *                   person picks Same product; `apart` is what comes in for Keep separate
+ *   differentNames  [{ productId, names, groupName }]         names ON SALE that differ
+ *   onlyOne         [{ productId, location_id, name, defaultChoice: 'extra', namesakes }]
+ *   clashes         [{ kind, level, location_id, name, parentName, copies }]   ON SALE rows only
+ *   switchedOff     { count, sizeCopies, bySite }             never listed, only counted
+ *   rowForms        { 'loc|venue_item_id': { optionOnly, type, usedBy } }
+ *   categoryNames
+ * Nothing is linked for the name matches until the person picks Same product (buildCentral).
  */
 export function proposeImport(sites, opts = {}) {
   const idGen = opts.idGen || defaultUuid;
@@ -326,114 +341,176 @@ export function proposeImport(sites, opts = {}) {
     }
   }
 
-  // ── Products: families first ──
-  const all = [];   // { loc, row }
+  // ── The rows in scope ──
+  const all = [];                          // { loc, row }
+  const rowAt = new Map();                 // `loc|id` -> { loc, row }
   for (const s of S) {
     const keep = keepBySite.get(s.location_id);
-    for (const row of listOf(s.raw.items)) if (row && keep.has(row.id) && !String(row.id).startsWith('demo-')) all.push({ loc: s.location_id, row });
-  }
-  const families = new Map();
-  for (const x of all) {
-    const f = familyOf(x.row);
-    if (!families.has(f)) families.set(f, []);
-    families.get(f).push(x);
-  }
-  const groupsOfItems = [];          // [{ kind: 'family'|'name'|'one', members: [{loc,row}] }]
-  const leftovers = [];
-  const clashes = [];
-  for (const [fam, members] of families) {
-    const locs = new Set(members.map((m) => m.loc));
-    if (locs.size !== members.length) {
-      // Two rows of one family at one site: a clash, settled by hand.
-      const byLoc = new Map();
-      for (const m of members) { if (!byLoc.has(m.loc)) byLoc.set(m.loc, []); byLoc.get(m.loc).push(m); }
-      // Per site, the copy actually on sale is matched: on and in the menu, else on, else the first.
-      // The rest are left as the venue's own.
-      const pick = (loc, ms) => ms.find((m) => m.row.archived !== true && inMenuItem(loc, m.row)) || ms.find((m) => m.row.archived !== true) || ms[0];
-      for (const [loc, ms] of byLoc) if (ms.length > 1) clashes.push({ location_id: loc, name: pick(loc, ms).row.name, ids: ms.map((m) => m.row.id), family: fam, matchedId: pick(loc, ms).row.id });
-      const firsts = [...byLoc.entries()].map(([loc, ms]) => pick(loc, ms));
-      if (firsts.length > 1) groupsOfItems.push({ kind: 'family', members: firsts });
-      else leftovers.push(firsts[0]);
-      continue;
+    for (const row of listOf(s.raw.items)) {
+      if (!row || !keep.has(row.id) || String(row.id).startsWith('demo-')) continue;
+      const x = { loc: s.location_id, row };
+      all.push(x);
+      rowAt.set(keyOf(s.location_id, row.id), x);
     }
-    if (members.length > 1) groupsOfItems.push({ kind: 'family', members });
-    else leftovers.push(members[0]);
   }
-  // Name matches among the leftovers: same normalised name, same type, same parent family.
-  const parentFam = (x) => {
-    const pid = x.row.parent_id;
-    if (!pid) return '';
-    const p = all.find((y) => y.loc === x.loc && y.row.id === pid);
-    return p ? familyOf(p.row) : `?${pid}`;
-  };
-  const byName = new Map();
-  for (const x of leftovers) {
-    const k = `${normName(x.row.menu_name || x.row.name)}|${x.row.type || 'simple'}|${parentFam(x)}`;
-    if (!byName.has(k)) byName.set(k, []);
-    byName.get(k).push(x);
+  const live = (x) => x.row.archived !== true;
+  // A row's parent AT ITS SITE (a row naming itself has none). A row with a parent is a size.
+  const parentOf = (x) => (x.row.parent_id && x.row.parent_id !== x.row.id ? rowAt.get(keyOf(x.loc, x.row.parent_id)) || null : null);
+  const childrenOf = new Map();            // `loc|parentId` -> [x]
+  for (const x of all) { const p = parentOf(x); if (!p) continue; const k = keyOf(p.loc, p.row.id); if (!childrenOf.has(k)) childrenOf.set(k, []); childrenOf.get(k).push(x); }
+  // Families that are only ever a size: a size row somewhere and no top level row ON SALE anywhere.
+  // A switched off top level copy of such a family is a size that lost its product at that site.
+  const sizeFamilies = new Set(all.filter((x) => parentOf(x)).map((x) => familyOf(x.row)));
+  const liveTopFamilies = new Set(all.filter((x) => !parentOf(x) && live(x)).map((x) => familyOf(x.row)));
+  const orphanFamilies = new Set([...sizeFamilies].filter((f) => !liveTopFamilies.has(f)));
+  const shown = (x) => String(x.row.menu_name || x.row.name || '').trim();
+  const optionOnly = (row) => row.type === 'subitem' && row.sold_alone !== true;
+  const nameKey = (x) => normName(shown(x));
+  const suffix = (loc) => String(loc || '').slice(-8);
+  const pickAt = (loc, ms, fam) => ms.find((m) => live(m) && inMenuItem(loc, m.row)) || ms.find(live) || ms.find((m) => m.row.id === `${fam}_${suffix(loc)}`) || ms[0];
+  const groupBy = (xs, f) => { const m = new Map(); for (const x of xs) { const k = f(x); if (!m.has(k)) m.set(k, []); m.get(k).push(x); } return m; };
+  const newGroup = (kind, level, parent, members, extra = {}) => ({ kind, level, parent, members, byName: new Set(), restore: new Map(), namesakes: 0, ...extra });
+
+  const switchedOff = [];                  // switched off top level rows that stay as they are
+  const clashes = [];                      // { kind: 'copies'|'shared'|'name', level, location_id, parent, rows, chosen }
+  // Rows that came into a shared product BY NAME, and every size under such a row. They never vote
+  // for the shared product's values (its master, name, price, channels, VAT).
+  const joinedRows = new Set();
+
+  // One level of matching: the products, or the sizes under ONE product group.
+  //   1. Same shared family (switched off copies ride along, off at that site; a family with no row
+  //      on sale anywhere stays as it is). Two rows of a family ON SALE at one site: a clash.
+  //   2. Rows left over (all on sale): the same name as ONE shared group with no row on sale at
+  //      their site joins it, by name; the same name as two or more shared groups joins none (it
+  //      could be either); else the same name at several sites, by name; else one site.
+  //   Two rows ON SALE with one name at one site: a clash; they stay the site's own.
+  function matchLevel(rows, level, parent) {
+    if (level === 'size') for (const x of rows) { const p = parentOf(x); if (p && joinedRows.has(p)) joinedRows.add(x); }
+    const made = [];
+    const leftovers = [];
+    for (const [fam, ms] of groupBy(rows, (x) => familyOf(x.row))) {
+      if (!ms.some(live)) { if (level === 'product') switchedOff.push(...ms); continue; }
+      const firsts = [];
+      for (const [loc, at] of groupBy(ms, (x) => x.loc)) {
+        const chosen = pickAt(loc, at, fam);
+        firsts.push(chosen);
+        if (at.length < 2) continue;
+        const onSale = at.filter(live);
+        if (onSale.length > 1) clashes.push({ kind: 'copies', level, location_id: loc, parent, rows: onSale, chosen });
+        // The other rows stay the site's own: one on sale is in the clash, a switched off one is counted.
+        if (level === 'product') for (const m of at) if (m !== chosen && !live(m)) switchedOff.push(m);
+      }
+      if (firsts.length > 1) made.push(newGroup('family', level, parent, firsts));
+      else leftovers.push(firsts[0]);
+    }
+    const index = new Map();
+    for (const g of made) for (const m of g.members) if (live(m)) { const k = nameKey(m); if (!index.has(k)) index.set(k, new Set()); index.get(k).add(g); }
+    for (const [k, xs] of groupBy(leftovers, nameKey)) {
+      const hits = [...(index.get(k) || [])];
+      if (hits.length === 1) {
+        const G = hits[0];
+        const free = [];
+        for (const x of xs) {
+          const at = G.members.find((m) => m.loc === x.loc);
+          if (at && live(at)) clashes.push({ kind: 'shared', level, location_id: x.loc, parent, rows: [at, x], chosen: at }); else free.push(x);
+        }
+        for (const [loc, at] of groupBy(free, (x) => x.loc)) {
+          if (at.length > 1) { clashes.push({ kind: 'name', level, location_id: loc, parent, rows: at, chosen: null }); continue; }
+          const x = at[0];
+          const i = G.members.findIndex((m) => m.loc === loc);
+          if (i >= 0) { G.restore.set(loc, G.members[i]); G.members[i] = x; } else G.members.push(x);
+          G.byName.add(loc);
+          joinedRows.add(x);
+        }
+        continue;
+      }
+      // No shared group of that name, or two or more (it could be either: none is joined).
+      const one = [];
+      for (const [loc, at] of groupBy(xs, (x) => x.loc)) {
+        if (at.length > 1) clashes.push({ kind: 'name', level, location_id: loc, parent, rows: at, chosen: null }); else one.push(at[0]);
+      }
+      if (one.length > 1) made.push(newGroup('name', level, parent, one, { byName: new Set(one.map((x) => x.loc)), namesakes: hits.length }));
+      else if (one.length === 1) made.push(newGroup('one', level, parent, one, { namesakes: hits.length }));
+    }
+    return made;
   }
-  for (const [, xs] of byName) {
-    const locs = new Set(xs.map((x) => x.loc));
-    if (xs.length > 1 && locs.size === xs.length) groupsOfItems.push({ kind: 'name', members: xs });
-    else if (xs.length > 1) {
-      // Same name twice at one site: a clash; each stays its own.
-      const byLoc = new Map();
-      for (const x of xs) { if (!byLoc.has(x.loc)) byLoc.set(x.loc, []); byLoc.get(x.loc).push(x); }
-      for (const [loc, ms] of byLoc) if (ms.length > 1) clashes.push({ location_id: loc, name: ms[0].row.name, ids: ms.map((m) => m.row.id), matchedId: null });
-      for (const x of xs) groupsOfItems.push({ kind: 'one', members: [x] });
-    } else groupsOfItems.push({ kind: 'one', members: xs });
+
+  // Products: every row with no product above it at its site. A switched off copy of a size that
+  // lost its product (its family has no top level row on sale anywhere) never comes in: it stays
+  // as it is (switching it on later would otherwise publish a size as a product there).
+  const tops = [];
+  for (const x of all) {
+    if (parentOf(x)) continue;
+    if (!live(x) && orphanFamilies.has(familyOf(x.row))) { switchedOff.push(x); continue; }
+    tops.push(x);
+  }
+  const productGroups = matchLevel(tops, 'product', null);
+  const groupsOfItems = [...productGroups];
+  // Sizes follow their product, level by level (a size of a size too).
+  const sizesUnder = (g) => g.members.flatMap((m) => childrenOf.get(keyOf(m.loc, m.row.id)) || []);
+  let parents = productGroups;
+  for (let depth = 0; parents.length && depth < 5; depth++) {
+    const next = [];
+    for (const g of parents) { const kids = sizesUnder(g); if (kids.length) next.push(...matchLevel(kids, 'size', g)); }
+    groupsOfItems.push(...next);
+    parents = next;
   }
 
   // ── Central products from each group ──
+  const siteRaw = new Map(S.map((s) => [s.location_id, s.raw]));
   const products = [];
   const productSites = [];
   const itemKeyToCentral = new Map();
-  const review = { family: [], name: [], differentNames: [], onlyOne: [], clashes, categoryNames };
   for (const g of groupsOfItems) {
-    const id = idGen();
-    const members = g.members;
-    for (const m of members) itemKeyToCentral.set(keyOf(m.loc, m.row.id), id);
-    // The master row: the bare master id, else the master site's copy, else the first.
-    const master = members.find((m) => m.row.id === familyOf(m.row) && !m.row.master_id) || members.find((m) => m.loc === masterSite) || members[0];
-    products.push({ id, _group: g, _master: master });
-    const names = new Set(members.map((m) => (m.row.menu_name || m.row.name || '').trim()));
-    if (g.kind === 'family') review.family.push({ productId: id, sites: members.length });
-    if (g.kind === 'name') review.name.push({ productId: id, sites: members.length, names: members.map((m) => ({ location_id: m.loc, id: m.row.id, name: m.row.menu_name || m.row.name })) });
-    if (names.size > 1) review.differentNames.push({ productId: id, names: members.map((m) => ({ location_id: m.loc, name: m.row.menu_name || m.row.name })) });
-    if (g.kind === 'one') review.onlyOne.push({ productId: id, location_id: members[0].loc, archived: members[0].row.archived === true, name: members[0].row.menu_name || members[0].row.name, defaultChoice: members[0].row.archived === true ? 'leave' : 'extra' });
+    g.id = idGen();
+    for (const m of g.members) itemKeyToCentral.set(keyOf(m.loc, m.row.id), g.id);
   }
 
   // ── Option groups: those the products use (and the groups their options ask next) ──
   const ig = importGroups({ sites: S, siteOrder, keepBySite, itemKeyToCentral, idGen, masterSite });
   const { groups, groupSites, groupKeyToCentral } = ig;
 
-  // ── Fill in each product from its master row and the sites ──
-  const siteRaw = new Map(S.map((s) => [s.location_id, s.raw]));
-  for (const p of products) {
-    const { _group: g, _master: m } = p;
-    const r = m.row;
-    const raw = siteRaw.get(m.loc);
+  // Fill one group into a product and its site rows (the same rules for the linked and the apart
+  // forms). Only the group's OWN rows vote: a row that joined by name (and its sizes) never sets
+  // the shared product's master, name, price or VAT, and can only EMPTY a channel default (below),
+  // never set one. extraRows (a switched off copy put
+  // back) get a site row and keep nothing yet: settleKept works out what they keep.
+  function fill(g, extraRows = []) {
+    const members = g.members;
+    const own = members.filter((m) => !joinedRows.has(m));
+    const base = own.length ? own : members;
+    const baseSet = new Set(base);
+    const pool = base.some(live) ? base.filter(live) : base;
+    // The master row: the bare master id, else the master site's copy, else the first.
+    const master = pool.find((m) => m.row.id === familyOf(m.row) && !m.row.master_id) || pool.find((m) => m.loc === masterSite) || pool[0];
+    const r = master.row;
+    const raw = siteRaw.get(master.loc);
     const rate = r.tax_rate_id ? rateOf(raw, r.tax_rate_id) : null;
-    // Default price: the most common across sites, a tie takes the master's.
+    // Default price: the most common across the group's own rows, a tie takes the master's.
     const counts = new Map();
-    for (const x of g.members) {
-      const pp = toPence(x.row.pricing?.base);
-      if (pp === null || Number.isNaN(pp)) continue;
-      counts.set(pp, (counts.get(pp) || 0) + 1);
-    }
+    for (const x of base) { const pp = toPence(x.row.pricing?.base); if (pp === null || Number.isNaN(pp)) continue; counts.set(pp, (counts.get(pp) || 0) + 1); }
     const masterP = toPence(r.pricing?.base);
     let best = masterP, bestN = -1;
     for (const [pp, n] of counts) if (n > bestN || (n === bestN && pp === masterP)) { best = pp; bestN = n; }
-    // Channel defaults only where every site agrees on a value.
+    // Channel defaults only where EVERY row that can get a site row in this product agrees on a
+    // value: its own rows, the rows that joined by name and the switched off copies that can be
+    // put back. A row with a different price, or none, for a channel makes that channel's default
+    // empty, so each row keeps its own (an empty default never sets a shared value, and a row
+    // with no price of its own for a channel cannot say so under a default).
     const defaultChannels = {};
+    const channelRows = [...new Set([...members, ...g.restore.values(), ...extraRows])];
     for (const k of CHANNELS) {
-      const vals = g.members.map((x) => toPence(x.row.pricing?.[k]));
+      const vals = channelRows.map((x) => toPence(x.row.pricing?.[k]));
       defaultChannels[k] = vals.length && vals.every((v) => v != null && v === vals[0]) ? fromPence(vals[0]) : null;
     }
-    Object.assign(p, {
-      category_id: r.cat ? catKeyToCentral.get(keyOf(m.loc, r.cat)) || null : null,
-      extra_category_ids: listOf(r.cats).map((c) => catKeyToCentral.get(keyOf(m.loc, c))).filter(Boolean),
-      parent_product_id: r.parent_id ? itemKeyToCentral.get(keyOf(m.loc, r.parent_id)) || null : null,
+    // The group's name: the most common name on the sites' menus (switched off copies do not
+    // count), the master's on a tie.
+    const groupName = mostCommon(pool.map(shown), (v) => v, shown(master)) || shown(master);
+    const p = {
+      id: g.id,
+      category_id: r.cat ? catKeyToCentral.get(keyOf(master.loc, r.cat)) || null : null,
+      extra_category_ids: listOf(r.cats).map((c) => catKeyToCentral.get(keyOf(master.loc, c))).filter(Boolean),
+      parent_product_id: g.parent ? g.parent.id : null,
       type: r.type || 'simple',
       name: r.name ?? r.menu_name ?? 'Item', menu_name: r.menu_name ?? null, receipt_name: r.receipt_name ?? null,
       kitchen_name: r.kitchen_name ?? null, description: r.description ?? '',
@@ -443,7 +520,7 @@ export function proposeImport(sites, opts = {}) {
       allergens: listOf(r.allergens), tags: listOf(r.tags), image: r.image ?? null,
       modifier_groups: listOf(r.assigned_modifier_groups).map((a) => {
         if (!a || !a.groupId) return null;
-        const gid = groupKeyToCentral.get(keyOf(m.loc, a.groupId));
+        const gid = groupKeyToCentral.get(keyOf(master.loc, a.groupId));
         return gid ? { ...a, groupId: gid } : null;
       }).filter(Boolean),
       visibility: r.visibility ?? null, sold_alone: !!r.sold_alone, item_code: r.item_code ?? null,
@@ -453,40 +530,120 @@ export function proposeImport(sites, opts = {}) {
       archived: false, sort_order: r.sort_order ?? 0,
       family_base: familyOf(r),
       tax_by_type: null,
-    });
-    // VAT by order type (sizes follow their product's, worked out below).
-    const tax = r.parent_id ? { taxByType: null, kept: new Map() } : importTaxByType(g.members, (loc) => siteRaw.get(loc)?.taxRates || [], m.loc);
+    };
+    if (groupName && groupName !== shown(master)) { p.name = groupName; p.menu_name = groupName; }
+    // VAT by order type (a size follows its product's; it keeps only what differs, below).
+    const tax = g.parent ? { taxByType: null, kept: new Map() } : importTaxByType(base, (loc) => siteRaw.get(loc)?.taxRates || [], master.loc);
     p.tax_by_type = tax.taxByType;
-    p._taxKept = tax.kept;
-    for (const x of g.members) {
+    const rowsOut = [];
+    for (const x of [...members, ...extraRows]) {
       const pp = toPence(x.row.pricing?.base);
       const channel = {};
-      for (const k of CHANNELS) {
-        const v = toPence(x.row.pricing?.[k]);
-        if (v != null && defaultChannels[k] == null) channel[k] = fromPence(v);
-      }
-      productSites.push({
+      for (const k of CHANNELS) { const v = toPence(x.row.pricing?.[k]); if (v != null && defaultChannels[k] == null) channel[k] = fromPence(v); }
+      const ps = {
         product_id: p.id, location_id: x.loc, venue_item_id: x.row.id, active: x.row.archived !== true,
         price: pp == null || pp === best ? null : fromPence(pp),
         channel_prices: Object.keys(channel).length ? channel : null,
-        kept: p._taxKept.has(x.loc) ? { tax_overrides: p._taxKept.get(x.loc) } : {},
-      });
+        kept: baseSet.has(x) && tax.kept.has(x.loc) ? { tax_overrides: tax.kept.get(x.loc) } : {},
+      };
+      // A size follows its product's row at its site (17 Oct recheck: publish writes the product's
+      // four keys to every size, as Menu Manager cascades them), so a size keeps only the keys
+      // that differ from its product's row there.
+      if (g.parent) {
+        const parentRow = x.row.parent_id ? listOf(siteRaw.get(x.loc)?.items).find((i) => i && i.id === x.row.parent_id) : null;
+        const kept = sizeKeptTax(x.row, parentRow);
+        if (kept) ps.kept = { ...ps.kept, tax_overrides: kept };
+      }
+      rowsOut.push(ps);
     }
+    return { product: p, sites: rowsOut, groupName };
   }
-  // A size follows its product's row at its site (17 Oct recheck: publish writes the product's
-  // four keys to every size, as Menu Manager cascades them), so a size keeps only the keys that
-  // differ from its product's row there.
-  for (const p of products) {
-    if (!p.parent_product_id) continue;
-    for (const x of p._group.members) {
-      const parentRow = x.row.parent_id ? listOf(siteRaw.get(x.loc)?.items).find((i) => i && i.id === x.row.parent_id) : null;
-      const kept = sizeKeptTax(x.row, parentRow);
-      if (!kept) continue;
-      const ps = productSites.find((r) => r.product_id === p.id && r.location_id === x.loc);
-      if (ps) ps.kept = { ...ps.kept, tax_overrides: kept };
+  const filled = new Map();
+  for (const g of groupsOfItems) {
+    const f = fill(g);
+    filled.set(g, f);
+    products.push(f.product);
+    productSites.push(...f.sites);
+  }
+
+  // ── How each venue row is sold there: on its own, or only as an option (and in which groups) ──
+  const rowForms = {};
+  for (const s of S) {
+    const loc = s.location_id;
+    const assigned = new Set();
+    for (const x of all) if (x.loc === loc && live(x)) for (const a of listOf(x.row.assigned_modifier_groups)) { const id = typeof a === 'string' ? a : a?.groupId; if (id) assigned.add(id); }
+    const usedBy = new Map();
+    for (const gr of listOf(s.raw.groups)) {
+      if (!gr || !assigned.has(gr.id)) continue;
+      for (const o of listOf(gr.options)) {
+        if (!o || !o.itemId) continue;
+        if (!usedBy.has(o.itemId)) usedBy.set(o.itemId, []);
+        const names = usedBy.get(o.itemId);
+        const nm = String(gr.name ?? 'Options').trim() || 'Options';
+        if (!names.includes(nm)) names.push(nm);
+      }
     }
+    for (const x of all) if (x.loc === loc) rowForms[keyOf(loc, x.row.id)] = { optionOnly: optionOnly(x.row), type: x.row.type || 'simple', usedBy: usedBy.get(x.row.id) || [] };
   }
-  for (const p of products) { delete p._group; delete p._master; delete p._taxKept; }
+
+  // ── The person's lists (products only: every size is shown under its product) ──
+  const topGroups = groupsOfItems.filter((g) => g.level === 'product');
+  const review = { family: [], name: [], differentNames: [], onlyOne: [], clashes: [], switchedOff: null, rowForms, categoryNames };
+  for (const g of topGroups) {
+    const onAt = g.members.filter(live).map((m) => m.loc);
+    if (g.kind === 'family') review.family.push({ productId: g.id, sites: g.members.length, onAt });
+    if (g.kind === 'one') review.onlyOne.push({ productId: g.id, location_id: g.members[0].loc, name: shown(g.members[0]), defaultChoice: 'extra', namesakes: g.namesakes });
+    const liveNames = g.members.filter(live).map((m) => ({ location_id: m.loc, name: shown(m) }));
+    if (new Set(liveNames.map((n) => normName(n.name))).size > 1) review.differentNames.push({ productId: g.id, names: liveNames, groupName: filled.get(g).groupName });
+  }
+  // Name matches, each with its APART form: what comes in when it is not linked (each site's own
+  // product, built from its own row, with its own sizes under it), and the switched off copy that
+  // goes back where a row joined a shared product in its place. Their ids are taken after the
+  // option groups', so the default import's ids do not move.
+  const descendants = (g) => groupsOfItems.filter((s) => { for (let p = s.parent; p; p = p.parent) if (p === g) return true; return false; });
+  for (const g of topGroups) {
+    if (!g.byName.size) continue;
+    const apart = { products: [], productSites: [] };
+    for (const loc of g.byName) {
+      const x = g.members.find((m) => m.loc === loc);
+      const ownG = newGroup('one', 'product', null, [x], { id: idGen() });
+      const made = new Map([[g, ownG]]);
+      for (const s of descendants(g)) {
+        const at = s.members.find((m) => m.loc === loc);
+        if (!at || !made.has(s.parent)) continue;
+        made.set(s, newGroup('one', 'size', made.get(s.parent), [at], { id: idGen() }));
+      }
+      for (const og of made.values()) { const f = fill(og); apart.products.push(f.product); apart.productSites.push(...f.sites); }
+    }
+    const back = [...g.restore.values()];
+    const restore = back.length ? fill(g, back).sites.slice(g.members.length) : [];
+    review.name.push({
+      productId: g.id, joined: g.kind === 'family', sites: g.members.length, byName: [...g.byName], namesakes: g.namesakes,
+      names: g.members.filter((m) => g.byName.has(m.loc)).map((m) => ({ location_id: m.loc, id: m.row.id, name: shown(m) })),
+      apart, restore,
+    });
+  }
+  // Clashes, with the words the screen needs (each copy with its price, category, whether it is
+  // on the menu and the option groups that use it).
+  const catLabelAt = (loc, id) => listOf(siteRaw.get(loc)?.categories).find((c) => c.id === id)?.label || null;
+  for (const c of clashes) {
+    const parentName = c.parent ? (filled.get(c.parent)?.groupName || null) : null;
+    review.clashes.push({
+      kind: c.kind, level: c.level, location_id: c.location_id, name: shown(c.rows[0]), parentName,
+      copies: c.rows.map((x) => ({
+        id: x.row.id, name: shown(x), price: x.row.pricing?.base ?? null, category: catLabelAt(x.loc, x.row.cat),
+        optionOnly: optionOnly(x.row), onMenu: inMenuItem(x.loc, x.row), comesIn: x === c.chosen,
+        usedBy: rowForms[keyOf(x.loc, x.row.id)]?.usedBy || [],
+      })),
+    });
+  }
+  // Switched off products that stay as they are (counted, never listed). A switched off copy of a
+  // size that lost its product is not a product: counted apart.
+  const offProducts = switchedOff.filter((x) => !orphanFamilies.has(familyOf(x.row)));
+  const bySite = {};
+  for (const x of offProducts) bySite[x.loc] = (bySite[x.loc] || 0) + 1;
+  review.switchedOff = { count: offProducts.length, sizeCopies: switchedOff.length - offProducts.length, bySite };
+
   return {
     masterSite, sites: S.map((s) => ({ location_id: s.location_id, venue_menu_id: s.venue_menu_id, name: s.name })),
     categories, catSites, groups, groupSites, options: ig.options, optionSites: [], optionEntries: ig.entries,
@@ -534,39 +691,66 @@ export function touchRefresh(central) {
  * self check.
  *   proposal   proposeImport(...)
  *   sites      the same sites array (for the raw rows)
- *   decisions  { leaveOut: [productId], rejectName: [productId], names: { productId: name },
- *                onlyOne: { productId: 'extra' | 'leave' } }
+ *   decisions  { leaveOut: [productId], rejectName: [productId], leaveName: [productId],
+ *                names: { productId: name }, onlyOne: { productId: 'extra' | 'leave' } }
+ *              Empty decisions link every name match (Same product).
+ * A product left out takes its sizes with it. A name match Kept separate (rejectName) comes in
+ * APART: each site's own product with its own sizes (review.name[].apart). A name match Left out
+ * (leaveName) brings none of its name matched rows in. Either way a switched off copy a row stood
+ * in for goes back (review.name[].restore), and a product of the match left with no row on sale
+ * goes, with its sizes.
  * Returns { central, check: { ok, writes, problems: [words] }, dropped }.
  */
-export function buildCentral(proposal, sites, decisions = {}, opts = {}) {
-  const idGen = opts.idGen || defaultUuid;
+export function buildCentral(proposal, sites, decisions = {}) {
+  const parentOfP = new Map(listOf(proposal.products).map((p) => [p.id, p.parent_product_id || null]));
+  // Every product under one of `ids` (its sizes, and theirs), closed.
+  const closeOver = (ids) => {
+    const out = new Set(ids);
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const [id, parent] of parentOfP) if (parent && out.has(parent) && !out.has(id)) { out.add(id); grew = true; }
+    }
+    return out;
+  };
   const leave = new Set(decisions.leaveOut || []);
-  for (const o of proposal.review.onlyOne) {
+  for (const o of listOf(proposal.review.onlyOne)) {
     const choice = (decisions.onlyOne || {})[o.productId] || o.defaultChoice;
     if (choice === 'leave') leave.add(o.productId);
   }
+  for (const id of closeOver(leave)) leave.add(id);
+  const dropped = new Set(leave);
   let products = proposal.products.filter((p) => !leave.has(p.id)).map((p) => ({ ...p }));
   let productSites = proposal.productSites.filter((ps) => !leave.has(ps.product_id)).map((ps) => ({ ...ps, kept: { ...(ps.kept || {}) } }));
-  // A name match the person did not tick: each site's row becomes its own product, on at that site.
-  const reject = new Set((decisions.rejectName || []).filter((id) => proposal.review.name.some((n) => n.productId === id)));
-  for (const pid of reject) {
-    const base = products.find((p) => p.id === pid);
-    const rows = productSites.filter((ps) => ps.product_id === pid);
-    if (!base || !rows.length) continue;
-    products = products.filter((p) => p.id !== pid);
-    productSites = productSites.filter((ps) => ps.product_id !== pid);
-    for (const ps of rows) {
-      const nid = idGen();
-      products.push({ ...base, id: nid, site_only_location_id: null, family_base: ps.venue_item_id.replace(/_[0-9a-f]{8}$/i, '') });
-      productSites.push({ ...ps, product_id: nid, price: null, kept: {} });
+  // Name matches not linked: the rows that matched by name leave the linked product (and its
+  // sizes); Keep separate brings them in apart, Leave out does not.
+  const reject = new Set(decisions.rejectName || []);
+  const leaveName = new Set(decisions.leaveName || []);
+  for (const n of listOf(proposal.review.name)) {
+    const out = leaveName.has(n.productId);
+    if (!out && !reject.has(n.productId)) continue;
+    const locs = new Set(n.byName);
+    const under = closeOver([n.productId]);
+    productSites = productSites.filter((ps) => !(under.has(ps.product_id) && locs.has(ps.location_id)));
+    if (!leave.has(n.productId)) productSites.push(...listOf(n.restore).map((ps) => ({ ...ps, kept: { ...(ps.kept || {}) } })));
+    // A product of the match with no row on sale left goes, with its sizes: its switched off rows
+    // stay as they are, as for any family with nothing on sale.
+    const onSale = new Set(productSites.filter((ps) => ps.active !== false).map((ps) => ps.product_id));
+    const gone = closeOver([...under].filter((id) => !onSale.has(id) && products.some((p) => p.id === id)));
+    products = products.filter((p) => !gone.has(p.id));
+    productSites = productSites.filter((ps) => !gone.has(ps.product_id));
+    if (out) {
+      if (!n.joined) for (const id of gone) dropped.add(id);
+      continue;
     }
+    products.push(...listOf(n.apart?.products).map((p) => ({ ...p })));
+    productSites.push(...listOf(n.apart?.productSites).map((ps) => ({ ...ps, kept: { ...(ps.kept || {}) } })));
   }
   // Chosen central names.
   for (const [pid, name] of Object.entries(decisions.names || {})) {
     const p = products.find((x) => x.id === pid);
     if (p && name && String(name).trim()) { p.name = String(name).trim(); p.menu_name = String(name).trim(); }
   }
-  // Sizes whose parent was left out lose their parent link centrally (each site keeps its own).
+  // Never expected (sizes follow their product): a size whose product is not in the group menu.
   const ids = new Set(products.map((p) => p.id));
   for (const p of products) if (p.parent_product_id && !ids.has(p.parent_product_id)) p.parent_product_id = null;
   // Options pointing at a product that was left out keep their item at the venue only (the site
@@ -582,7 +766,7 @@ export function buildCentral(proposal, sites, decisions = {}, opts = {}) {
   };
   central.optionSites = finalizeOptionSites(central, proposal.optionEntries || []);
   const check = settleKept(central, sites);
-  return { central, check, dropped: [...leave] };
+  return { central, check, dropped: [...dropped] };
 }
 
 /**
@@ -768,14 +952,19 @@ export function refreshGroupsPayload(central, sites, opts = {}) {
   return { ok: true, payload, check: { ok: true, writes: 0, problems: [] }, counts, words: `${counts.groups} option group${counts.groups === 1 ? '' : 's'} and ${counts.options} option${counts.options === 1 ? '' : 's'} brought in. Nothing changes at any site.` };
 }
 
-/** The review's headline numbers, in words. */
+/**
+ * The review's headline, in words: products, never sizes. Every part after the first is left out
+ * when it is 0.
+ */
+const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 export function reviewWords(review) {
   const r = review || {};
   const n = (a) => listOf(a).length;
   return [
-    `${n(r.family)} already shared between sites`,
-    `${n(r.name)} with the same name at several sites (tick the ones that are the same)`,
-    `${n(r.onlyOne)} only at one site`,
-    ...(n(r.clashes) ? [`${n(r.clashes)} clash${n(r.clashes) === 1 ? '' : 'es'} to settle by hand`] : []),
-  ].join(', ');
+    `${plural(n(r.family), 'product')} already shared between sites`,
+    ...(n(r.name) ? [`${n(r.name)} set up separately at several sites`] : []),
+    ...(n(r.differentNames) ? [`${n(r.differentNames)} with different names`] : []),
+    ...(n(r.onlyOne) ? [`${n(r.onlyOne)} only at one site`] : []),
+    ...(n(r.clashes) ? [plural(n(r.clashes), 'clash', 'clashes')] : []),
+  ].join(', ') + '.';
 }
