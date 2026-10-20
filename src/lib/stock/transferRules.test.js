@@ -231,8 +231,10 @@ test('pin: deliveries land in the chosen area, else the receiving area (purchasi
   assert.match(src, /async function landingArea\(locationId, chosen\) \{\s+if \(chosen\) return chosen;\s+const \{ data \} = await fetchReceivingArea\(locationId\);\s+return data \|\| null;/);
   assert.match(src, /export const receivePurchaseOrder = async \(poId, locationId = null, receipts = null, \{ areaId = null \} = \{\}\)/);
   assert.match(src, /export const postInvoice = async \(header, lines, locationId = null, \{ areaId = null \} = \{\}\)/);
-  assert.match(src, /sourceType, sourceId, idempotencyKey: idemKey, areaId: areaId \|\| null,/, 'applyReceipt passes the area to postStockMovement');
-  assert.equal((src.match(/, landIn\);/g) || []).length, 2, 'both receive paths (order and invoice) pass the landing area');
+  // v5.11.84 (multi site stock Drop 0): both receive paths are the one database call only (the old
+  // browser applyReceipt is gone), and each passes the landing area to it.
+  assert.equal((src.match(/p_area_id: landIn \|\| null/g) || []).length, 2, 'both receive paths (order and invoice) pass the landing area');
+  assert.doesNotMatch(src, /applyReceipt/);
   const areasSrc = code(read('./areas.js'));
   assert.match(areasSrc, /export const fetchReceivingArea = async[\s\S]*?const ok = await areasReady\(locationId\);\s+if \(!ok\) return \{ data: null, error: null \};/, 'no area before the migration, so nothing changes');
   const dataSrc = code(read('./data.js'));

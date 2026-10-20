@@ -69,13 +69,25 @@ test('a price of 0 or less never sets a cost, whatever the rule', () => {
 });
 
 test('the item screen never writes cost; price saves follow the venue rule (source)', () => {
-  const src = read('./data.js');
-  const row = src.slice(src.indexOf('const itemToRow = '), src.indexOf('const supplierFromRow = '));
+  // v5.11.84 (Drop 0): the row mappers and writers live in saveRules.js; data.js uses them.
+  const rules = read('./saveRules.js');
+  const row = rules.slice(rules.indexOf('export const itemToRow = '), rules.indexOf('export const supplierFromRow = '));
+  assert.ok(row.length > 100, 'itemToRow found');
   assert.doesNotMatch(row, /current_cost\s*:/, 'itemToRow carries no current_cost');
+  const save = rules.slice(rules.indexOf('export function itemSaveArgs('), rules.indexOf('export function supplierSaveArgs('));
+  assert.ok(save.length > 100, 'itemSaveArgs found');
+  assert.doesNotMatch(save, /current_cost|on_hand|org_id/, 'the item save sends no cost, no on hand and no company id');
+  const src = read('./data.js');
+  // the browser price rule runs only on the direct write path (before the save functions exist)
   const rc = src.slice(src.indexOf('export async function recomputeItemCost('));
   assert.match(rc, /const \{ data: rule \} = await fetchCostRule\(locationId\);/);
   assert.match(rc, /priceSetsCost\(\{ rule, newCost: chosenCost, currentCost: prev, everReceived: \(rec \|\| \[\]\)\.length > 0 \}\)/);
-  assert.match(src, /from\('stock_site_settings'\)\.select\('cost_rule'\)/);
+  // the rule is read through stock_cost_rule (site override, else company rule); the table only before it exists
+  const fetchRule = src.slice(src.indexOf('export const fetchCostRule'), src.indexOf('export const saveCostRule'));
+  assert.match(fetchRule, /callSave\(supabase, 'stock_cost_rule', \{ p_location_id: locationId \}\)/);
+  assert.ok(fetchRule.indexOf("'stock_cost_rule'") < fetchRule.indexOf("from('stock_site_settings').select('cost_rule')"), 'the function first, the table only when it is missing');
+  const saveRule = src.slice(src.indexOf('export const saveCostRule'), src.indexOf('export async function recomputeItemCost('));
+  assert.match(saveRule, /saveOrDirect\(supabase, 'stock_save_cost_rule', \{\s+p_org: null, p_rule: normCostRule\(rule\), p_override_location: null, p_location: locationId,/);
 });
 
 // ── below zero and unknown cost never drag the average (plan 1.3, 4.5, 11.5 item 3) ──────────────────
@@ -121,16 +133,21 @@ test('waste tags and words: "No recipe: stock not taken off", never a refusal', 
   assert.equal(wasteTagText(null), '');
 });
 
-test('both waste writers go through the one database call and fall back only when it is missing (source)', () => {
+test('both waste writers are the one database call only; a database without it is told it needs the update (source)', () => {
   const src = read('./waste.js');
   const menu = src.slice(src.indexOf('export const logMenuItemWaste'), src.indexOf('export const logWaste'));
   assert.match(menu, /supabase\.rpc\('stock_record_waste', \{ p_location_id: locationId, p_event: event, p_lines: rpcLines \}\)/);
   assert.match(menu, /const rpcLines = menuItemId \? null : /, 'a menu product is exploded by the database (p_lines null)');
   assert.match(menu, /menu_item_id: menuItemId \? String\(menuItemId\) : null/, 'the product id goes on the waste row');
-  assert.match(menu, /if \(!isMissingFunctionError\(rpcErr\)\) return \{ data: null, error: rpcErr \};/, 'only a missing function falls back');
   const item = src.slice(src.indexOf('export const logWaste'));
   assert.match(item, /supabase\.rpc\('stock_record_waste', \{/);
   assert.match(item, /kind: 'item', inventory_item_id: inventoryItemId/);
+  // v5.11.84 (multi site stock Drop 0): the old browser writers are gone (they never ran once
+  // 20261019b was in). A missing function writes nothing and says so.
+  for (const body of [menu, item]) {
+    assert.match(body, /if \(isMissingFunctionError\(rpcErr\)\) return \{ data: null, error: new Error\(`Waste not recorded\. \$\{NEEDS_UPDATE\}`\) \};/);
+    assert.doesNotMatch(body, /from\('waste_events'\)\.insert|postStockMovement\(/, 'no direct waste row or movement left');
+  }
 });
 
 // ── opening count (plan 4.6) ──────────────────────────────────────────────────────────────────────
@@ -162,17 +179,29 @@ test('approval words: needs a cost, approved, opening lines, a repeat', () => {
   assert.equal(approvalOutcome(null).ok, false);
 });
 
-test('count approval is one database call; the old line by line path runs only when it is missing (source)', () => {
+test('count approval is one database call with a manager PIN; no browser path is left (source)', () => {
   const src = read('./counts.js');
   const fn = src.slice(src.indexOf('export const approveCount'));
+  // v5.11.84 (multi site stock Drop 0, plan 4.17): the PIN call first, the call without a PIN only
+  // when the PIN call is missing (before 0a), and nothing in the browser after that.
+  const pinCall = fn.indexOf("supabase.rpc('stock_approve_count_pin'");
   const rpc = fn.indexOf("supabase.rpc('approve_stock_count'");
-  const old = fn.indexOf('const ready = await areasReady(locationId);');
-  assert.ok(rpc > 0 && rpc < old, 'the one call comes first');
-  assert.match(fn, /if \(!isMissingFunctionError\(rpcErr\)\) return \{ error: rpcErr \};/);
+  assert.ok(pinCall > 0 && rpc > pinCall, 'the PIN call comes first');
+  assert.match(fn, /p_pin: String\(pin \|\| ''\)/);
+  assert.match(fn, /if \(pres && pres\.ok === false && pres\.pin\) return \{ error: new Error\(pres\.error \|\| 'That PIN is not a manager at this venue\.'\), pinRefused: true, data: pres \};/);
+  assert.match(fn, /if \(!isMissingFunctionError\(pErr\)\) return \{ error: pErr \};/, 'only a missing PIN call goes on to the call without one');
+  assert.match(fn, /if \(isMissingFunctionError\(rpcErr\)\) return \{ error: new Error\(`Not approved\. \$\{NEEDS_UPDATE\}`\) \};/);
   assert.match(fn, /p_costs: costs && Object\.keys\(costs\)\.length \? costs : null/);
+  assert.doesNotMatch(fn, /postStockMovement|countApprovalPlan|status: 'APPROVED'/, 'the line by line browser path is gone');
   const screen = read('../../backoffice/sections/StockCounts.jsx');
-  assert.match(screen, /const \{ error, data: outcome, needsCost \} = await approveCount\(active\.id, locId, \{/);
+  assert.match(screen, /const \{ error, data: outcome, needsCost, pinRefused \} = await approveCount\(active\.id, locId, \{/);
+  assert.match(screen, /onProgress: \(p\) => setPosting\(p\), costs, pin: r\.pin \|\| '',/);
   assert.match(screen, /review\.needsCost && review\.needsCost\.length > 0 && \(/, 'the screen asks for the missing costs');
+  // the PIN field on the review, and a short PIN never reaches the database (it is not a wrong try)
+  assert.match(screen, /Manager PIN\s+<input type="password" inputMode="numeric" autoComplete="off" value=\{review\.pin \|\| ''\}/);
+  assert.match(screen, /String\(review\.pin \|\| ''\)\.length < 4/);
+  // a refused PIN wrote nothing: the moves already made stay recorded, the PIN box is cleared
+  assert.match(screen, /if \(pinRefused\) \{\s+\/\/[^\n]*\n\s+setReview\(prev => \(\{ \.\.\.\(prev \|\| r\), movesDone: true, movedCount, pin: '' \}\)\);/);
 });
 
 // ── purchasing (plan 4.9, 11.5 item 3) ───────────────────────────────────────────────────────────────
@@ -219,15 +248,20 @@ test('an invoice for items an order from that supplier brought in lately points 
   assert.equal(got[0].overlap, 1);
 });
 
-test('receives and invoices are one database call each; the old browser path only when the call is missing (source)', () => {
+test('receives and invoices are one database call each; no browser cost writer is left (source)', () => {
   const src = read('./purchasing.js');
   const recv = src.slice(src.indexOf('export const receivePurchaseOrder'), src.indexOf('export const createOrdersFromBasket'));
   assert.match(recv, /supabase\.rpc\('stock_receive', \{/);
-  assert.match(recv, /if \(accepted > 0 && !oneCall\) \{/, 'the line by line post runs only without the one call');
   assert.ok(recv.indexOf("supabase.rpc('stock_receive'") < recv.indexOf("from('po_lines').update("), 'stock goes in before any order line changes');
+  // v5.11.84 (multi site stock Drop 0): the old browser receive (applyReceipt) wrote cost with no
+  // REVALUE. It is gone: a database without the call writes nothing and says so.
+  assert.match(recv, /if \(rpcErr && isMissingFunctionError\(rpcErr\)\) return \{ error: new Error\(`Nothing was received\. \$\{NEEDS_UPDATE\}`\) \};/);
+  assert.doesNotMatch(src, /applyReceipt|costAfterReceipt|from\('item_cost_history'\)|current_cost: newAvg/, 'no cost is written from the browser');
   const inv = src.slice(src.indexOf('export const postInvoice'));
   assert.match(inv, /supabase\.rpc\('stock_post_invoice', \{/);
   assert.match(inv, /po_id: header\.poId \|\| null/, 'an invoice can be kept as the paperwork of a received order');
+  assert.match(inv, /if \(rpcErr && isMissingFunctionError\(rpcErr\)\) return \{ data: null, error: new Error\(`Nothing was posted\. \$\{NEEDS_UPDATE\}`\) \};/);
+  assert.doesNotMatch(inv, /from\('supplier_invoices'\)\.insert|from\('supplier_invoice_lines'\)\.insert/, 'no direct invoice write left');
   const fpo = src.slice(src.indexOf('export const fetchPurchaseOrders'), src.indexOf('export const savePurchaseOrder'));
   assert.match(fpo, /readAllPagesResult\('order lines'/, 'order lines in pages of 1,000');
   assert.match(fpo, /\.in\('po_id', ids\)/, 'only the lines of the orders on screen');

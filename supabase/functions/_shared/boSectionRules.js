@@ -151,3 +151,80 @@ export function sectionsFromAnswer(value) {
   if (value === null) return null;
   return Array.isArray(value) ? storedSections(value) : undefined;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Stock control (multi site stock, Drop 0; Peter's decision 1, 20 Oct 2026). Not a role: a per login
+// setting with three levels, stored in user_profiles.stock_control (null means 'sites').
+//   sites       site work at the sites the login reaches (every login that is not an owner)
+//   sites_full  plus price here, supplier here, adding company items to its own sites
+//   all         edits the company stock list for every site
+// Owners OF THAT COMPANY and ServOS staff are always 'all'. The level is always per company: an owner
+// of company A linked into company B as a manager is 'sites' in B, and a role owner with no company
+// is 'sites' everywhere. The database answers the same in public.stock_level(p_uid, p_org)
+// (20261021a); supabase/tests/stock_native/run.mjs checks the two agree for every test login.
+// Drop 0 changes nobody's rights: the screens use the server's level (stock_site_scope), and these
+// helpers exist for the tests and for Team (Drop 1). Pass the company of the VENUE being edited
+// (orgCtx.venueOrgId), never the login's own org. EVERYTHING_ROLES above is not changed by any of this.
+// A profile here is { role, org_id, stock_control, sections } (orgId, stockControl and bo_sections
+// are read too). Pure, like the rest of this file.
+
+/** The three Stock control levels, lowest first. A stored null means 'sites'. */
+export const STOCK_LEVELS = Object.freeze(['sites', 'sites_full', 'all']);
+
+const sameOrg = (a, b) => typeof a === 'string' && typeof b === 'string' && a !== '' && a.toLowerCase() === b.toLowerCase();
+const orgOf = (p) => (p.org_id !== undefined ? p.org_id : p.orgId);
+const storedLevelOf = (p) => (p.stock_control !== undefined ? p.stock_control : p.stockControl);
+// Exactly the database's tests (user_profiles.role = 'super_admin' / 'owner', no case folding).
+const isStaff = (p) => p.role === 'super_admin';
+const isOwnerOf = (p, companyOrgId) => p.role === 'owner' && sameOrg(orgOf(p), companyOrgId);
+
+/**
+ * The Stock control level of a login in ONE company: 'sites', 'sites_full' or 'all'.
+ *   ServOS staff: 'all'. Owner whose profile org is that company: 'all'.
+ *   Profile org is that company: the stored level (null, or anything unknown, is 'sites').
+ *   Anything else (another company, no company, no profile, no company named): 'sites'.
+ */
+export function stockLevelOf(profile, companyOrgId) {
+  if (!profile || typeof profile !== 'object') return 'sites';
+  if (isStaff(profile)) return 'all';
+  if (!sameOrg(orgOf(profile), companyOrgId)) return 'sites';
+  if (profile.role === 'owner') return 'all';
+  const stored = storedLevelOf(profile);
+  return STOCK_LEVELS.includes(stored) ? stored : 'sites';
+}
+
+/** The Back Office sections rule of the stock saves: owners of that company and staff pass; anyone
+ *  else passes when their stored list is null (everything) or holds the section. Fails closed. */
+function stockSectionOk(profile, sectionKey, companyOrgId) {
+  if (!BO_SECTION_KEYS.includes(sectionKey)) return false;
+  if (isStaff(profile) || isOwnerOf(profile, companyOrgId)) return true;
+  const sections = 'sections' in profile ? profile.sections : profile.bo_sections;
+  if (sections === null) return true;
+  return Array.isArray(sections) && sections.includes(sectionKey);
+}
+
+/**
+ * Drop 1 rule: may this login change a COMPANY field (name, unit, packs, recipes, company prices) of
+ * a record in that company, from the screen of `sectionKey` ('inventory', 'produce', 'purchasing')?
+ *   one site company (multi === false): the sections rule only (exactly today's rights);
+ *   multi site company (or not known to be one site): the sections rule and level 'all'.
+ * Reach (which sites the login may open) is the caller's to check.
+ */
+export function canEditCompany(profile, sectionKey, multi, companyOrgId) {
+  if (!profile || typeof profile !== 'object') return false;
+  if (!stockSectionOk(profile, sectionKey, companyOrgId)) return false;
+  if (multi === false) return true;
+  return stockLevelOf(profile, companyOrgId) === 'all';
+}
+
+/**
+ * Drop 1 rule: may this login set a site price (price here, supplier here, on at a site, stop
+ * ordering) in that company? One site company (multi === false): yes. Multi site company (or not
+ * known to be one site): level 'sites_full' or 'all'. Reach is the caller's to check.
+ */
+export function canEditSitePrice(profile, multi, companyOrgId) {
+  if (!profile || typeof profile !== 'object') return false;
+  if (multi === false) return true;
+  const level = stockLevelOf(profile, companyOrgId);
+  return level === 'sites_full' || level === 'all';
+}

@@ -287,14 +287,18 @@ test('buildCostingCtx and buildDepletionCtx hand back the first failed read as c
   assert.doesNotMatch(src, /\] = await Promise\.all\(\[\s*supabase\.from\('menu_item_recipes'\)/, 'depletion reads are kept as `reads`');
 });
 
-test('the ledger writes a product waste with no lines, and still posts a movement per line when there are any', () => {
+test('the ledger writes a product waste with no lines, and the database takes a movement off per line when there are any', () => {
   const src = read('./waste.js');
   assert.doesNotMatch(src, /Nothing to deduct from stock/);
-  assert.match(src, /const lines = usableIngredientLines\(ingredients\)/);
-  assert.match(src, /buildMenuWasteRow\(\{ locationId, productName, qty, salePrice, ingredients: lines, costById, reason, note, source \}\)/);
-  assert.match(src, /for \(const l of lines\) \{\s*await postStockMovement\(/, 'stock venues still deduct per ingredient');
-  // Costs are only fetched when there is something to cost (no query at a venue with no stock).
-  assert.match(src, /if \(lines\.length\) \{\s*const ids = /);
+  // v5.11.84 (multi site stock Drop 0): the database is the one waste writer (stock_record_waste,
+  // since v5.11.79). A product is exploded by the database through its recipe; a basket of loose
+  // ingredient lines goes with only the usable lines; a product with none is still recorded.
+  assert.match(src, /const rpcLines = menuItemId \? null : usableIngredientLines\(ingredients\)\.map\(\(l\) => \(\{ item_id: l\.inventoryItemId, qty_base: Number\(l\.qtyBase\) \}\)\);/);
+  assert.match(src, /return \{ data: res && res\.id \? \{ id: res\.id \} : res, error: null, tag: res\?\.tag \|\| null, costValue: res\?\.cost_value \?\? null \};/, 'the tag (no recipe, nothing to deduct) comes back to the till');
+  // the old browser writer (a waste row, then a movement per ingredient) is gone: it never ran
+  // once 20261019b was in, and a refused movement could leave a waste row with nothing taken off.
+  assert.doesNotMatch(src, /buildMenuWasteRow|postStockMovement|from\('waste_events'\)\.insert/);
+  assert.match(src, /Waste not recorded\. \$\{NEEDS_UPDATE\}/, 'a database without the call is told it needs the update');
 });
 
 test('the Waste button is always in the till tab bar and Back Office Wastage points a no stock venue at menu waste', () => {

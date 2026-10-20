@@ -12,19 +12,24 @@
  * the same item can no longer give a wrong average), and writes the movement, the cost history (with
  * the supplier pack and the price paid per pack) and the cost together. Stock below zero or an
  * unknown cost takes the delivery price, never an average. A duplicate invoice number from the same
- * supplier is refused, and an invoice for an order already received is kept as paperwork. Before
- * 20261019b is run those calls are missing and the old browser path below runs.
+ * supplier is refused, and an invoice for an order already received is kept as paperwork.
+ *
+ * v5.11.84 (multi site stock Drop 0): the old browser receive and invoice paths are gone. They never
+ * ran once 20261019b was in, and each wrote cost with no REVALUE. A database with neither call is
+ * told it needs the update and nothing is written. An archived unit bridge or supplier price is not
+ * used for a new receive or invoice, and the invoice scan sends the signed in session.
  */
 
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
 import { convert } from './conversion.js';
-import { costAfterReceipt } from './costing.js';
-import { postStockMovement, fetchTaxRateMap } from './data.js';
+import { fetchTaxRateMap } from './data.js';
 import { fetchReceivingArea } from './areas.js';
 import { purchaseNet } from '../tax.js';
 import { cleanFnError, poTotals, unreceivableLines, receiveRefusalText, poReceiptLines, packLabel } from './purchasingRules.js';
 import { isMissingFunctionError, invoiceOutcome } from './phase0Rules.js';
 import { readAllPagesResult } from '../pagedRead.js';
+import { NEEDS_UPDATE } from './saveRules.js';
+import { liveOrAll } from './companyData.js';
 
 const nowIso = () => new Date().toISOString();
 async function ensureLoc(locationId) {
@@ -40,7 +45,11 @@ async function itemMap(locationId, ids) {
   if (!uniq.length) return {};
   const [{ data: items }, { data: convs }] = await Promise.all([
     supabase.from('inventory_items').select('id, name, base_unit, on_hand, current_cost, cost_method').eq('location_id', locationId).in('id', uniq),
-    supabase.from('inventory_item_conversions').select('*').eq('location_id', locationId).in('inventory_item_id', uniq),
+    // v5.11.84 (Drop 0): an archived unit bridge is not used for a new receive or invoice
+    liveOrAll((live) => {
+      const q = supabase.from('inventory_item_conversions').select('*').eq('location_id', locationId).in('inventory_item_id', uniq);
+      return live ? q.is('archived_at', null) : q;
+    }),
   ]);
   const convByItem = {};
   (convs || []).forEach((c) => { (convByItem[c.inventory_item_id] ??= []).push({ fromQty: Number(c.from_qty), fromUnit: c.from_unit, toQty: Number(c.to_qty), toUnit: c.to_unit }); });
@@ -64,42 +73,6 @@ async function landingArea(locationId, chosen) {
   if (chosen) return chosen;
   const { data } = await fetchReceivingArea(locationId);
   return data || null;
-}
-
-/**
- * Apply one receipt to an item: post PURCHASE_RECEIPT (+qtyBase at unitCostPerBase)
- * and update moving-average cost. Idempotent on idemKey (skips cost update on dupe).
- * areaId (16 Oct 2026): the area the stock lands in; null lets the database decide.
- */
-async function applyReceipt(locationId, item, itemId, recvBase, unitCostPerBase, sourceType, sourceId, idemKey, areaId = null) {
-  if (!(recvBase > 0)) return;
-  // v5.5.726: a ZERO/missing unit cost must NOT re-cost the item. A manager-raised PO (or any
-  // un-priced line) has no price until the invoice — zeroing current_cost corrupts COGS
-  // (LAST_COST → 0) or dilutes the moving average toward 0. Value the movement at the item's KNOWN
-  // current cost so stock valuation stays sensible, move the stock in, but leave current_cost alone;
-  // the invoice / receiving price fills the real cost later.
-  const priced = unitCostPerBase > 0;
-  const movementCost = priced ? unitCostPerBase : (Number(item.currentCost) || 0);
-  const res = await postStockMovement({
-    inventoryItemId: itemId, qtyBase: recvBase, unitCost: movementCost, movementType: 'PURCHASE_RECEIPT',
-    sourceType, sourceId, idempotencyKey: idemKey, areaId: areaId || null,
-  }, locationId);
-  if (res?.data?.duplicate) return; // already received — don't re-cost
-  if (!priced) { item.onHand += recvBase; return; }   // stock in, cost untouched
-  // one rule with the Manager app's receive (_shared/stockCosting.js)
-  const newAvg = costAfterReceipt({ costMethod: item.costMethod, onHandQty: item.onHand, currentAvg: item.currentCost, receivedQty: recvBase, receivedUnitCost: unitCostPerBase });
-  await supabase.from('item_cost_history').update({ effective_to: nowIso() })
-    .eq('location_id', locationId).eq('inventory_item_id', itemId).is('effective_to', null);
-  await supabase.from('item_cost_history').insert({
-    location_id: locationId, inventory_item_id: itemId, base_unit_cost: newAvg,
-    // v5.5.923: label the source honestly — Price changes shows it, and "invoice" for a
-    // delivery received against an order was a lie.
-    source: sourceType === 'purchase_order' ? 'PO_RECEIPT' : 'INVOICE', effective_from: nowIso(),
-  });
-  await supabase.from('inventory_items').update({ current_cost: newAvg, updated_at: nowIso() })
-    .eq('location_id', locationId).eq('id', itemId);
-  // keep the local snapshot current in case the same item appears twice in one receipt
-  item.onHand += recvBase; item.currentCost = newAvg;
 }
 
 // ── Purchase orders ───────────────────────────────────────────────────────────
@@ -231,10 +204,9 @@ export const setPOStatus = async (poId, status, locationId = null) => {
  *   idempotency keys and qty_received. Never call it from here.
  * - One receipt per line under the EXISTING key `po:<poId>:<lineId>`. A line receives
  *   once; retries dedupe server-side. Collect final qty+price BEFORE calling.
- * - One shared itemMap for the whole loop: applyReceipt mutates its item snapshot so
- *   the same item on two lines moving-averages correctly.
- * - The zero-price guard in applyReceipt stays: a line left at £0 moves stock at the
- *   item's known cost and does NOT re-cost it.
+ * - The stock and cost of every line go in ONE database call (stock_receive) before any order
+ *   line changes; a line left at £0 moves stock at the item's known cost and does NOT re-cost it
+ *   (the database's rule since v5.11.79).
  */
 /**
  * Can this order be received at all? The same line check receivePurchaseOrder runs, with no
@@ -283,7 +255,6 @@ export const receivePurchaseOrder = async (poId, locationId = null, receipts = n
   }
   // v5.11.79: every line's stock and cost in ONE database call, before any order line is touched
   // (all or nothing; a retry posts nothing twice: the keys stay po:<order>:<line>).
-  let oneCall = false;
   {
     const perPackOf = {};
     for (const l of lines) {
@@ -300,12 +271,11 @@ export const receivePurchaseOrder = async (poId, locationId = null, receipts = n
         p_location_id: locationId, p_source_type: 'purchase_order', p_source_id: String(poId), p_lines: rpcLines,
         p_area_id: landIn || null, p_notes: null,
       });
-      if (!rpcErr && res?.ok !== false) oneCall = true;
-      else if (!rpcErr) return { error: new Error(res?.error || 'The receive was refused. Nothing was received.') };
-      else if (!isMissingFunctionError(rpcErr)) return { error: new Error(`Nothing was received: ${rpcErr.message || rpcErr}`) };
-    } else {
-      oneCall = true;   // nothing to bring in (every line shorted): only the order lines change
+      if (!rpcErr && res?.ok === false) return { error: new Error(res?.error || 'The receive was refused. Nothing was received.') };
+      if (rpcErr && isMissingFunctionError(rpcErr)) return { error: new Error(`Nothing was received. ${NEEDS_UPDATE}`) };
+      if (rpcErr) return { error: new Error(`Nothing was received: ${rpcErr.message || rpcErr}`) };
     }
+    // nothing to bring in (every line shorted): only the order lines change
   }
   const ratesById = receipts ? await fetchTaxRateMap(locationId) : null;
   const shorted = [];
@@ -322,12 +292,6 @@ export const receivePurchaseOrder = async (poId, locationId = null, receipts = n
     try { baseContentPerPack = convert(Number(l.pack_qty) * Number(l.inner_qty), l.inner_unit, item.baseUnit, { itemConversions: item.conversions }); }
     catch { continue; }
     if (!(baseContentPerPack > 0)) continue;
-    if (accepted > 0 && !oneCall) {
-      // before 20261019b: the old browser path, line by line
-      const recvBase = accepted * baseContentPerPack;
-      const unitCostPerBase = price / baseContentPerPack;
-      await applyReceipt(locationId, item, l.inventory_item_id, recvBase, unitCostPerBase, 'purchase_order', poId, `po:${poId}:${l.id}`, landIn);
-    }
     if (byLine) {
       const rate = Number(ratesById[l.purchase_tax_rate_id] || 0);
       const netLine = accepted * price;
@@ -445,12 +409,24 @@ export const fetchInvoices = async (locationId = null, limit = 100) => {
   return { data: (data || []).map(invFromRow), error };
 };
 
-/** Send an invoice image to the Claude-vision OCR endpoint. Returns parsed JSON. */
-export const scanInvoice = async (imageBase64, mediaType) => {
+/**
+ * Send an invoice image to the Claude-vision OCR endpoint. Returns parsed JSON.
+ * v5.11.84 (multi site stock Drop 0): the endpoint checks who is asking. The call sends this
+ * session's access token (Authorization: Bearer) and the venue it scans for; the server refuses a
+ * request with no sign in, and a venue the login does not reach.
+ */
+export const scanInvoice = async (imageBase64, mediaType, locationId = null) => {
   try {
+    const loc = await ensureLoc(locationId).catch(() => null);
+    let token = null;
+    if (!isMock && supabase) {
+      try { token = (await supabase.auth.getSession())?.data?.session?.access_token || null; } catch { token = null; }
+    }
+    const headers = { 'content-type': 'application/json' };
+    if (token) headers.authorization = `Bearer ${token}`;
     const res = await fetch('/api/stock-invoice-scan', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ image: imageBase64, media_type: mediaType || 'image/jpeg' }),
+      method: 'POST', headers,
+      body: JSON.stringify({ image: imageBase64, media_type: mediaType || 'image/jpeg', location_id: loc || null }),
     });
     const j = await res.json().catch(() => ({}));
     if (!res.ok) return { error: j.error || `Scan failed (${res.status})` };
@@ -476,9 +452,13 @@ export const postInvoice = async (header, lines, locationId = null, { areaId = n
     // the supplier pack each matched line was bought in (preferred first), for the price paid report
     const spByItem = {};
     if (header.supplierId && matchedIds.length) {
-      const { data: sps } = await supabase.from('supplier_products').select('id, inventory_item_id, pack_qty, inner_qty, inner_unit, is_preferred')
-        .eq('location_id', locationId).eq('supplier_id', header.supplierId).in('inventory_item_id', matchedIds)
-        .order('is_preferred', { ascending: false }).order('created_at').order('id');
+      // v5.11.84 (Drop 0): never an archived supplier price
+      const { data: sps } = await liveOrAll((live) => {
+        let q = supabase.from('supplier_products').select('id, inventory_item_id, pack_qty, inner_qty, inner_unit, is_preferred')
+          .eq('location_id', locationId).eq('supplier_id', header.supplierId).in('inventory_item_id', matchedIds);
+        if (live) q = q.is('archived_at', null);
+        return q.order('is_preferred', { ascending: false }).order('created_at').order('id');
+      });
       (sps || []).forEach((sp) => { if (!spByItem[sp.inventory_item_id]) spByItem[sp.inventory_item_id] = sp; });
     }
     const rpcLines = [];
@@ -516,47 +496,9 @@ export const postInvoice = async (header, lines, locationId = null, { areaId = n
       },
       p_lines: rpcLines, p_receipts: receipts, p_area_id: landIn || null,
     });
-    if (!rpcErr || !isMissingFunctionError(rpcErr)) {
-      const outcome = invoiceOutcome(res, rpcErr, receipts.length);
-      if (!outcome.ok) return { data: null, error: new Error(outcome.text), code: outcome.code || null };
-      return { data: res?.invoice_id ? { id: res.invoice_id } : null, error: null, stock: res?.stock !== false, text: outcome.text };
-    }
+    if (rpcErr && isMissingFunctionError(rpcErr)) return { data: null, error: new Error(`Nothing was posted. ${NEEDS_UPDATE}`) };
+    const outcome = invoiceOutcome(res, rpcErr, receipts.length);
+    if (!outcome.ok) return { data: null, error: new Error(outcome.text), code: outcome.code || null };
+    return { data: res?.invoice_id ? { id: res.invoice_id } : null, error: null, stock: res?.stock !== false, text: outcome.text };
   }
-  const { data: inv, error } = await supabase.from('supplier_invoices').insert({
-    location_id: locationId, supplier_id: header.supplierId || null, invoice_number: header.invoiceNumber || null,
-    invoice_date: header.invoiceDate || null, status: 'POSTED', ocr_confidence: header.ocrConfidence ?? null,
-    subtotal: header.subtotal ?? null, tax: header.tax ?? null, total: header.total ?? null,
-    raw_json: header.rawJson || null, image_path: header.imagePath || null, posted_at: nowIso(),
-  }).select().maybeSingle();
-  if (error || !inv) return { data: null, error: error || new Error('Invoice save failed') };
-
-  const ratesById = await fetchTaxRateMap(locationId);
-  const map = await itemMap(locationId, lines.map(l => l.matchedItemId));
-  const lineRows = [];
-  for (let i = 0; i < lines.length; i++) {
-    const l = lines[i];
-    const rate = Number(ratesById[l.purchaseTaxRateId] || 0);
-    // Resolve the NET line total ONCE here: strip VAT only when the line is flagged inc-VAT.
-    // Everything stored/costed downstream (line_total, unit cost, moving avg) is then NET.
-    const raw = l.lineTotal != null ? Number(l.lineTotal) : (Number(l.qty) * Number(l.unitPrice));
-    const netLine = purchaseNet(raw, l.priceIncludesTax === true, rate) ?? 0;
-    const lineTax = Math.round(netLine * rate * 100) / 100;
-    lineRows.push({
-      location_id: locationId, invoice_id: inv.id, matched_item_id: l.matchedItemId || null,
-      description: l.description || null, qty: Number(l.qty) || 0, unit: l.unit || 'each',
-      unit_price: Number(l.unitPrice) || 0, line_total: Math.round(netLine * 100) / 100,
-      purchase_tax_rate_id: l.purchaseTaxRateId || null, line_tax: lineTax,
-      flags: l.flags || [], sort_order: i,
-    });
-    const item = map[l.matchedItemId];
-    if (!item || !(Number(l.qty) > 0)) continue;
-    let qtyBase;
-    try { qtyBase = convert(Number(l.qty), l.unit || item.baseUnit, item.baseUnit, { itemConversions: item.conversions }); }
-    catch { continue; }
-    if (!(qtyBase > 0)) continue;
-    const unitCostPerBase = netLine / qtyBase;
-    await applyReceipt(locationId, item, l.matchedItemId, qtyBase, unitCostPerBase, 'supplier_invoice', inv.id, `inv:${inv.id}:${l.matchedItemId}:${i}`, landIn);
-  }
-  if (lineRows.length) await supabase.from('supplier_invoice_lines').insert(lineRows);
-  return { data: invFromRow(inv), error: null };
 };

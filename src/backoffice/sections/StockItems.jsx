@@ -36,7 +36,7 @@ import { fetchParLevels, upsertParLevel } from '../../lib/stock/counts';
 import { areasReady, fetchAreas, fetchAreaHoldings, assignItemArea } from '../../lib/stock/areas';
 import { legacyAreaFor, areasBelowZero } from '../../lib/stock/areaRules';
 import { reportSave } from '../../lib/saveHealth';
-import { fetchRecipes, upsertRecipe, replaceRecipeLines, recomputeMadeItemCost } from '../../lib/stock/recipes';
+import { fetchRecipes, saveRecipeWithLines } from '../../lib/stock/recipes';
 import { toBase, fromBase, unitOptions, formatToken, unitLabel, displayInUnits } from '../../lib/stock/uom';
 
 const KINDS = [
@@ -87,6 +87,12 @@ const labelStyle = { display: 'block', fontSize: 11, fontWeight: 700, color: 'va
 function Field({ label, children }) {
   return <div style={{ marginBottom: 14 }}><label style={labelStyle}>{label}</label>{children}</div>;
 }
+
+// v5.11.84 (multi site stock Drop 0): every save on this screen goes through a database save
+// function that checks the screen's Back Office section (Inventory), and sends back the version of
+// the row it loaded, so a change saved by someone else meanwhile is said instead of overwritten.
+const INV = Object.freeze({ section: 'inventory' });
+const versionIn = (rows, id) => (rows || []).find(r => r.id === id)?.rowVersion ?? null;
 
 export default function StockItems({ orgCtx = null }) {
   const showToast = useStore(s => s.showToast);
@@ -155,7 +161,7 @@ export default function StockItems({ orgCtx = null }) {
   const saveGeneral = async () => {
     if (!draft?.name?.trim()) { showToast?.('Name is required', 'error'); return; }
     setSaving(true);
-    const { data, error } = await upsertInventoryItem(draft, locId);
+    const { data, error } = await upsertInventoryItem(draft, locId, INV);
     setSaving(false);
     reportSave('stock item', error);
     if (error) { showToast?.('Save failed: ' + error.message, 'error'); return; }
@@ -165,7 +171,7 @@ export default function StockItems({ orgCtx = null }) {
     const before = items.find(i => i.id === savedId)?.areaId || null;
     const after = draft.areaId || null;
     if (areasOn && savedId && before !== after) {
-      const { data: moved, error: aErr } = await assignItemArea(savedId, after, { moveHolding: draft.moveHolding !== false, byName, item: draft }, locId);
+      const { data: moved, error: aErr } = await assignItemArea(savedId, after, { moveHolding: draft.moveHolding !== false, byName, item: draft, ...INV }, locId);
       reportSave('stock item area', aErr);
       if (aErr) {
         // the area row is written first and the holding moved second: say which half failed
@@ -185,7 +191,7 @@ export default function StockItems({ orgCtx = null }) {
   const changeRowArea = async (it, nextArea) => {
     const next = nextArea || null;
     if ((it.areaId || null) === next) return;
-    const { data: moved, error } = await assignItemArea(it.id, next, { moveHolding: true, byName, item: it }, locId);
+    const { data: moved, error } = await assignItemArea(it.id, next, { moveHolding: true, byName, item: it, ...INV }, locId);
     reportSave('stock item area', error);
     if (error) {
       showToast?.(moved?.areaSaved
@@ -200,7 +206,7 @@ export default function StockItems({ orgCtx = null }) {
   const toggleArchive = async () => {
     if (!draft?.id) return;
     const next = !draft.archivedAt;
-    const { error } = await setInventoryItemArchived(draft.id, next, locId);
+    const { error } = await setInventoryItemArchived(draft.id, next, locId, { ...INV, version: draft.rowVersion });
     reportSave('stock item archive', error);
     if (error) { showToast?.(error.message, 'error'); return; }
     showToast?.(next ? 'Archived' : 'Restored', 'info');
@@ -518,7 +524,7 @@ function StockTab({ draft, locId, onChanged, showToast, areas = null, holdings =
     const nextBase = { parLevel: conv(edit.parLevel), reorderPoint: conv(edit.reorderPoint) };
     const prevBase = parBase;
     setParBase(nextBase);
-    const { error } = await upsertParLevel(draft.id, nextBase, locId);
+    const { error } = await upsertParLevel(draft.id, nextBase, locId, INV);
     reportSave('par level', error);
     // Par/reorder drive suggested ordering and the low-stock alert — a rejected value
     // left in the box would have staff ordering to a number the system doesn't hold.
@@ -649,7 +655,7 @@ function DimensionTab({ draft, locId, onChanged, showToast }) {
 
   const add = async () => {
     if (!(Number(row.fromQty) > 0) || !(Number(row.toQty) > 0)) { showToast?.('Enter both quantities', 'error'); return; }
-    const { error, partial } = await upsertItemConversion({ inventoryItemId: draft.id, ...row }, locId);
+    const { error, partial } = await upsertItemConversion({ inventoryItemId: draft.id, ...row }, locId, INV);
     reportSave('unit conversion', error);
     if (error) { showToast?.(error.message, 'error'); return; }
     // `partial` means the bridge saved but its cost recompute did not. Clear the form and
@@ -660,7 +666,7 @@ function DimensionTab({ draft, locId, onChanged, showToast }) {
     onChanged();
   };
   const remove = async (id) => {
-    const { error } = await deleteItemConversion(id, draft.id, locId);
+    const { error } = await deleteItemConversion(id, draft.id, locId, { ...INV, version: versionIn(draft.conversions, id) });
     reportSave('unit conversion delete', error);
     if (error) { showToast?.('Bridge NOT removed — recipe conversions still use it', 'error'); return; }
     onChanged();
@@ -715,7 +721,7 @@ function UnitsTab({ draft, locId, onChanged, showToast }) {
     const isFirst = formats.length === 0;
     setAdding(true);
     try {
-      const { error } = await upsertPackagingFormat({ inventoryItemId: draft.id, name: row.name.trim(), qtyInBase, parentFormatId, isCountDefault: isFirst, isPurchaseDefault: isFirst }, locId);
+      const { error } = await upsertPackagingFormat({ inventoryItemId: draft.id, name: row.name.trim(), qtyInBase, parentFormatId, isCountDefault: isFirst, isPurchaseDefault: isFirst }, locId, INV);
       reportSave('packaging unit', error);
       if (error) { showToast?.('Could not add unit: ' + (error.message || error), 'error'); return; }
       showToast?.(`Unit added: ${row.name.trim()}`, 'success');
@@ -727,14 +733,14 @@ function UnitsTab({ draft, locId, onChanged, showToast }) {
     } finally { setAdding(false); }
   };
   const remove = async (id) => {
-    const { error } = await deletePackagingFormat(id, locId);
+    const { error } = await deletePackagingFormat(id, locId, { ...INV, version: versionIn(formats, id) });
     reportSave('packaging unit delete', error);
     // v5.11.79: a pack a recipe uses cannot be deleted (20261019b); say why, in the database's words.
     if (error) { showToast?.(/used in a recipe/i.test(error.message || '') ? error.message : 'Unit NOT removed', 'error'); return; }
     onChanged();
   };
   const makeDefault = async (id, kind) => {
-    const { error } = await setUnitDefault(id, draft.id, kind, locId);
+    const { error } = await setUnitDefault(id, draft.id, kind, locId, { ...INV, version: versionIn(formats, id) });
     reportSave('default unit', error);
     // The buy default decides the quantities and prices that go onto purchase orders,
     // so a badge that moved without the row moving would misprice every future PO.
@@ -829,9 +835,9 @@ function SuppliersTab({ draft, suppliers, locId, onChanged, showToast }) {
       packQty: 1, innerQty: content, innerUnit: draft.baseUnit, packPrice: Number(row.packPrice),
       packDescription: `${Number(row.buyQty) > 1 ? Number(row.buyQty) + ' ' : ''}${unitLabel(row.buyUnit, uomItem)}`,
       purchaseTaxRateId: row.purchaseTaxRateId || null, priceIncludesTax: row.priceIncludesTax === true,
-      isPreferred: row.isPreferred,
+      isPreferred: row.isPreferred, rowVersion: row.rowVersion ?? null,
     };
-    const { error, partial } = await upsertSupplierProduct(sp, locId);
+    const { error, partial } = await upsertSupplierProduct(sp, locId, INV);
     reportSave('supplier pack', error);
     if (error) { showToast?.(error.message, 'error'); return; }
     // The pack saved; only its cost recompute didn't. Close the form regardless — leaving
@@ -847,17 +853,17 @@ function SuppliersTab({ draft, suppliers, locId, onChanged, showToast }) {
         buyUnit = formatToken(f.id); buyQty = Math.round((sp.innerQty / f.qtyInBase) * 1000) / 1000; break;
       }
     }
-    setRow({ id: sp.id, inventoryItemId: draft.id, supplierId: sp.supplierId, supplierSku: sp.supplierSku || '', buyQty, buyUnit, packPrice: sp.packPrice, priceIncludesTax: sp.priceIncludesTax === true, purchaseTaxRateId: sp.purchaseTaxRateId || '', isPreferred: sp.isPreferred });
+    setRow({ id: sp.id, inventoryItemId: draft.id, supplierId: sp.supplierId, supplierSku: sp.supplierSku || '', buyQty, buyUnit, packPrice: sp.packPrice, priceIncludesTax: sp.priceIncludesTax === true, purchaseTaxRateId: sp.purchaseTaxRateId || '', isPreferred: sp.isPreferred, rowVersion: sp.rowVersion ?? null });
     setAdding(true);
   };
   const removeRow = async (sp) => {
-    const { error } = await deleteSupplierProduct(sp.id, draft.id, locId);
+    const { error } = await deleteSupplierProduct(sp.id, draft.id, locId, { ...INV, version: sp.rowVersion });
     reportSave('supplier pack delete', error);
     if (error) { showToast?.('Supplier pack NOT removed — it still sets this cost', 'error'); return; }
     onChanged();
   };
   const setPreferred = async (sp) => {
-    const { error, partial } = await upsertSupplierProduct({ ...sp, inventoryItemId: draft.id, isPreferred: true }, locId);
+    const { error, partial } = await upsertSupplierProduct({ ...sp, inventoryItemId: draft.id, isPreferred: true }, locId, INV);
     reportSave('preferred supplier pack', error);
     // The preferred pack IS this item's cost — a badge that moved on screen only
     // would leave every recipe costed off the old pack.
@@ -869,7 +875,7 @@ function SuppliersTab({ draft, suppliers, locId, onChanged, showToast }) {
   };
   const addSupplier = async () => {
     if (!newSupplier.trim()) return;
-    const { data, error } = await upsertSupplier({ name: newSupplier.trim() }, locId);
+    const { data, error } = await upsertSupplier({ name: newSupplier.trim() }, locId, INV);
     reportSave('supplier', error);
     if (error) { showToast?.(error.message, 'error'); return; }
     setNewSupplier('');
@@ -1012,24 +1018,30 @@ function RecipeTab({ draft, items, locId, showToast, onChanged }) {
     const keep = lines.filter(l => l.componentItemId && Number(l.qty) > 0);
     if (!keep.length) { showToast?.('Add at least one ingredient', 'error'); return; }
     setSaving(true);
-    const { data: saved, error } = await upsertRecipe({
-      ...(recipe?.id ? { id: recipe.id } : {}),
+    // v5.11.84 (multi site stock Drop 0): the recipe, its lines and this item's cost roll up in ONE
+    // call (saveRecipeWithLines, stock_save_recipe), so saved lines are never reported as lost.
+    const res = await saveRecipeWithLines({
+      ...(recipe?.id ? { id: recipe.id, rowVersion: recipe.rowVersion ?? null } : {}),
       name: recipe?.name || `${draft.name} (batch)`, recipeType: recipe?.recipeType || 'BATCH', outputItemId: draft.id,
       yieldQty: Number(yieldQty) || 1, yieldUnit: yieldUnit || draft.baseUnit || 'each',
       wastagePct: recipe?.wastagePct ?? 0, gpTargetPct: recipe?.gpTargetPct ?? null,
       method: recipe?.method || null, photo: recipe?.photo || null, status: recipe?.status || 'active',
-    }, locId);
+      lines: keep.map((l, i) => ({
+        componentItemId: l.componentItemId, qty: Number(l.qty), unit: l.unit || 'each', sortOrder: i,
+        usablePct: l.usablePct == null ? 100 : Number(l.usablePct), note: l.note || null, orderTypes: l.orderTypes || null,
+      })),
+    }, locId, INV);
+    const saved = res.stage === 'recipe' ? null : res.data;
+    const error = res.stage === 'recipe' ? res.error : null;
     reportSave('recipe', error);
     if (error || !saved) { setSaving(false); showToast?.(error?.message || 'Recipe save failed', 'error'); return; }
-    const { error: e2 } = await replaceRecipeLines(saved.id, keep.map((l, i) => ({
-      componentItemId: l.componentItemId, qty: Number(l.qty), unit: l.unit || 'each', sortOrder: i,
-      usablePct: l.usablePct == null ? 100 : Number(l.usablePct), note: l.note || null, orderTypes: l.orderTypes || null,
-    })), locId);
+    // the next save from this tab carries the recipe it just wrote (a new recipe is not added twice)
+    setRecipe(r => ({ ...(r || {}), id: saved.id, rowVersion: saved.rowVersion ?? null }));
+    const e2 = res.stage === 'lines' ? res.error : null;
     reportSave('recipe ingredients', e2);
     if (e2) { setSaving(false); showToast?.(e2.message, 'error'); return; }
     // Roll the component costs up into this item so its valuation is real, and SAY when it did not.
-    let rc = { ok: false };
-    try { rc = await recomputeMadeItemCost(draft.id, locId); } catch { rc = { ok: false }; }
+    const rc = { ok: res.costOk !== false };
     setSaving(false);
     if (rc?.ok) showToast?.('Recipe saved. Cost updated from ingredients.', 'success');
     else showToast?.('Recipe saved, but the cost was NOT recalculated: check every ingredient has a price and a unit it understands.', 'warning');

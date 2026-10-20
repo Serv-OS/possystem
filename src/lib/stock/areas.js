@@ -20,6 +20,8 @@ import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supab
 import { readAllPagesResult } from '../pagedRead.js';
 import { transferReference, USUAL_SIX, normaliseAreaName } from './areaRules.js';
 import { displayInUnits } from './uom.js';
+import { areaPatch, SECTIONS } from './saveRules.js';
+import { callSave } from './companyData.js';
 
 const nowIso = () => new Date().toISOString();
 
@@ -306,10 +308,22 @@ export const moveHoldingBetweenAreas = async ({ inventoryItemId, fromAreaId, toA
  * re homes those movements and rebuilds the cache row as the area row is written, so nothing
  * here has to post it and the next count cannot find it twice. Returns { data: { movedQty }, error }.
  */
-export const assignItemArea = async (inventoryItemId, areaId, { moveHolding = true, byName = null, item = null } = {}, locationId = null) => {
+export const assignItemArea = async (inventoryItemId, areaId, { moveHolding = true, byName = null, item = null, section = null } = {}, locationId = null) => {
   if (isMock || !supabase) return { data: { movedQty: 0 }, error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: new Error('No locationId') };
+  // v5.11.84 (multi site stock Drop 0): ONE save function (stock_save_item_site) sets the area and,
+  // when the old area still holds stock and moveHolding is on, moves that holding as a within venue
+  // transfer in the same transaction, so the area and the holding can never end up half changed.
+  // Before the database has the function the steps below run as before.
+  const r = await callSave(supabase, 'stock_save_item_site', {
+    p_item: inventoryItemId, p_location: locationId, p_patch: areaPatch(areaId, { moveHolding, byName }),
+    p_version: null, p_section: section || SECTIONS.inventory,
+  });
+  if (!r.missing) {
+    if (r.error) return { data: null, error: r.error };
+    return { data: { movedQty: Number(r.data?.moved_qty) || 0 }, error: null };
+  }
   const { data: cur, error: curErr } = await supabase.from('inventory_item_areas').select('id, area_id')
     .eq('location_id', locationId).eq('inventory_item_id', inventoryItemId).eq('is_primary', true).maybeSingle();
   if (curErr) return { data: null, error: curErr };

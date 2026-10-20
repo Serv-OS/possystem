@@ -8,7 +8,17 @@
  *     unit, unit_price, line_total}], subtotal, tax, total, confidence }
  * v5.11.64: code is the supplier's product code as printed (null when none), so a line can be
  * matched by SKU before its name (purchasingRules.matchScannedLine).
+ *
+ * v5.11.82 (multi site stock Drop 0, plan 7.7 and 9.6): WHO MAY SCAN. Until now anyone on the
+ * internet could post an image here and spend the vision key. Now the request must carry
+ * `Authorization: Bearer <the session's access token>` and `location_id` in the body (the web app's
+ * scanInvoice sends both): a signed in login that reaches that venue (stock_reach_locations(), else
+ * user_accessible_locations(), asked with the login's own token), or a Manager or Ops phone paired
+ * to that venue (the Manager app's Kitchen tab scans a delivery note). No token or any other
+ * anonymous session: 401. A venue the login does not reach: 403. The check is api/_userAuth.js.
  */
+
+import { requireVenueUser } from './_userAuth.js';
 
 const SYSTEM = `You extract structured data from a supplier invoice or delivery note for a UK hospitality business.
 Return ONLY a single JSON object, no prose, no code fences. Shape:
@@ -25,6 +35,9 @@ Rules: qty is the number of packs/units billed; unit is the pack/measure word as
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+  // v5.11.82: the sign in check comes before anything else is read or spent.
+  const who = await requireVenueUser(req, { locationId: req.body?.location_id ?? null });
+  if (!who.ok) return res.status(who.status).json({ error: who.error });
   const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
   if (!ANTHROPIC_API_KEY) return res.status(500).json({ error: 'Invoice scanning not configured (no API key)' });
 

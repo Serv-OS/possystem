@@ -135,12 +135,18 @@ test('moving average with stock below zero takes the received cost, on both rece
   const shared = await import('../../../supabase/functions/_shared/stockCosting.js');
   assert.equal(shared.movingAverageCost, movingAverageCost);
   assert.equal(shared.costAfterReceipt, costAfterReceipt);
+  // v5.11.84 (multi site stock Drop 0): the Manager app receive is the database's one call too
+  // (stock_receive); its old fallback average in manager-approve is gone.
   const approve = readFileSync(resolve(here, '../../../supabase/functions/manager-approve/index.ts'), 'utf8');
-  assert.match(approve, /import \{ costAfterReceipt \} from '\.\.\/_shared\/stockCosting\.js';/);
-  assert.match(approve, /newAvg = costAfterReceipt\(/);
+  assert.match(approve, /sb\.rpc\('stock_receive', \{/);
+  assert.doesNotMatch(approve, /newAvg = /, 'no average is worked out on the phone path');
   assert.doesNotMatch(approve, /\|\| 1\)/, 'no inline average with a denominator that falls to 1');
+  // v5.11.84 (multi site stock Drop 0): the Back Office receive is the database's one call
+  // (stock_receive, 20261019b), which works the average out from the LOCKED on hand with the same
+  // rule; the browser copy (applyReceipt) never ran once that call was in and is gone.
   const purchasing = readFileSync(resolve(here, './purchasing.js'), 'utf8');
-  assert.match(purchasing, /newAvg = costAfterReceipt\(/);
+  assert.match(purchasing, /supabase\.rpc\('stock_receive', \{/);
+  assert.doesNotMatch(purchasing, /costAfterReceipt|current_cost: newAvg/, 'no average is worked out or written in the browser');
 });
 
 // ── Crate-of-24 flowing through to a recipe's cost and GP ────────────────────

@@ -2,19 +2,23 @@
  * stock/waste.js — log wastage and post it to the stock ledger.
  * Recording waste posts a WASTE movement (negative, valued at current cost) and
  * an audit row in waste_events. Idempotent per event id.
+ *
+ * v5.11.84 (multi site stock Drop 0): both writers are the one database call (stock_record_waste)
+ * only. The old browser paths never ran once 20261019b was in; a database without the call is told
+ * it needs the update and nothing is written.
  */
 
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
 import { isTrainingMode } from '../trainingMode';
 import { toBase, unitLabel } from './uom.js';
-import { postStockMovement } from './data.js';
-import { buildMenuWasteRow, usableIngredientLines } from './menuWaste.js';
+import { usableIngredientLines } from './menuWaste.js';
 import { isMissingFunctionError, newUuid } from './phase0Rules.js';
 import { readAllPagesResult } from '../pagedRead.js';
+import { NEEDS_UPDATE } from './saveRules.js';
+import { liveOrAll } from './companyData.js';
 
 export const WASTE_REASONS = ['Spoilage', 'Out of date', 'Prep / trim', 'Over-production', 'Breakage / spill', 'Staff meal', 'Customer return', 'Training', 'Other'];
 
-const nowIso = () => new Date().toISOString();
 async function ensureLoc(locationId) {
   if (!locationId || locationId === 'loc-demo') locationId = getActiveLocationSync();
   if (!locationId || locationId === 'loc-demo') locationId = await getLocationId().catch(() => null);
@@ -113,8 +117,7 @@ export const logMenuItemWaste = async ({ menuItemId = null, productName, qty, sa
   // v5.11.79 (stock plan Phase 0, 4.7 and 11.5 item 8): ONE database call. The database explodes
   // this one product through its recipe (the same rule as central depletion), writes the waste row
   // with the product id and every WASTE movement together, and NEVER refuses: a product with no
-  // recipe is recorded with the lost sale and tagged "No recipe: stock not taken off". Before
-  // 20261019b is run the call is missing and the old path below runs (also never refusing).
+  // recipe is recorded with the lost sale and tagged "No recipe: stock not taken off".
   const n = Number(qty) || 1;
   const event = {
     id: newUuid(), kind: 'menu', menu_item_id: menuItemId ? String(menuItemId) : null, item_name: productName,
@@ -124,30 +127,8 @@ export const logMenuItemWaste = async ({ menuItemId = null, productName, qty, sa
   const rpcLines = menuItemId ? null : usableIngredientLines(ingredients).map((l) => ({ item_id: l.inventoryItemId, qty_base: Number(l.qtyBase) }));
   const { data: res, error: rpcErr } = await supabase.rpc('stock_record_waste', { p_location_id: locationId, p_event: event, p_lines: rpcLines });
   if (!rpcErr) return { data: res && res.id ? { id: res.id } : res, error: null, tag: res?.tag || null, costValue: res?.cost_value ?? null };
-  if (!isMissingFunctionError(rpcErr)) return { data: null, error: rpcErr };
-  const lines = usableIngredientLines(ingredients);
-
-  // Current (net) cost per ingredient → total stock cost of the waste (only when there are lines).
-  const costById = {};
-  if (lines.length) {
-    const ids = [...new Set(lines.map(l => l.inventoryItemId))];
-    const { data: rows } = await supabase.from('inventory_items').select('id, current_cost').eq('location_id', locationId).in('id', ids);
-    (rows || []).forEach(r => { costById[r.id] = r.current_cost == null ? 0 : Number(r.current_cost); });
-  }
-
-  const row = buildMenuWasteRow({ locationId, productName, qty, salePrice, ingredients: lines, costById, reason, note, source });
-  const { data: ev, error } = await supabase.from('waste_events').insert(row).select().maybeSingle();
-  if (error || !ev) return { data: null, error: error || new Error('Could not log waste') };
-
-  for (const l of lines) {
-    await postStockMovement({
-      inventoryItemId: l.inventoryItemId, qtyBase: -Number(l.qtyBase),
-      unitCost: costById[l.inventoryItemId] == null ? null : costById[l.inventoryItemId],
-      movementType: 'WASTE', sourceType: 'waste', sourceId: ev.id,
-      idempotencyKey: `waste:${ev.id}:${l.inventoryItemId}`, notes: reason || 'waste',
-    }, locationId);
-  }
-  return { data: ev, error: null };
+  if (isMissingFunctionError(rpcErr)) return { data: null, error: new Error(`Waste not recorded. ${NEEDS_UPDATE}`) };
+  return { data: null, error: rpcErr };
 };
 
 /** Log waste of an inventory item: writes waste_events + posts a WASTE movement. */
@@ -160,10 +141,15 @@ export const logWaste = async ({ inventoryItemId, qty, unit, reason, note, sourc
   if (!locationId) return { data: null, error: new Error('No locationId') };
   if (!(Number(qty) > 0)) return { data: null, error: new Error('Quantity must be > 0') };
 
+  // v5.11.84 (Drop 0): an archived unit bridge or pack is not offered (archived_at, before 0a: all)
+  const live = (table, cols) => liveOrAll((on) => {
+    const q = supabase.from(table).select(cols).eq('location_id', locationId).eq('inventory_item_id', inventoryItemId);
+    return on ? q.is('archived_at', null) : q;
+  });
   const [{ data: item }, { data: convs }, { data: packs }] = await Promise.all([
     supabase.from('inventory_items').select('name, base_unit, current_cost').eq('location_id', locationId).eq('id', inventoryItemId).maybeSingle(),
-    supabase.from('inventory_item_conversions').select('*').eq('location_id', locationId).eq('inventory_item_id', inventoryItemId),
-    supabase.from('item_packaging_formats').select('id, name, qty_in_base').eq('location_id', locationId).eq('inventory_item_id', inventoryItemId),
+    live('inventory_item_conversions', '*'),
+    live('item_packaging_formats', 'id, name, qty_in_base'),
   ]);
   if (!item) return { data: null, error: new Error('Item not found') };
   // shape an item ctx the uom resolver understands: friendly packs + unit bridges.
@@ -176,7 +162,6 @@ export const logWaste = async ({ inventoryItemId, qty, unit, reason, note, sourc
   let qtyBase;
   try { qtyBase = toBase(Number(qty), token, itemCtx); }
   catch { return { data: null, error: new Error(`Can't convert ${unitLabel(token, itemCtx)} to ${item.base_unit} — add a unit bridge on the item`) }; }
-  const costValue = qtyBase * (item.current_cost == null ? 0 : Number(item.current_cost));
 
   // v5.11.79: the waste row and its WASTE movement in ONE database call (stock_record_waste,
   // 20261019b), so a refused movement can never leave a waste row with no stock taken off.
@@ -187,17 +172,6 @@ export const logWaste = async ({ inventoryItemId, qty, unit, reason, note, sourc
     p_lines: [{ item_id: inventoryItemId, qty_base: qtyBase }],
   });
   if (!rpcErr) return { data: res && res.id ? { id: res.id } : res, error: null };
-  if (!isMissingFunctionError(rpcErr)) return { data: null, error: rpcErr };
-
-  const { data: ev, error } = await supabase.from('waste_events').insert({
-    location_id: locationId, inventory_item_id: inventoryItemId, item_name: item.name, qty: Number(qty), unit: unitLabel(token, itemCtx),
-    qty_base: qtyBase, reason: reason || null, note: note || null, cost_value: costValue, source,
-  }).select().maybeSingle();
-  if (error || !ev) return { data: null, error: error || new Error('Could not log waste') };
-
-  await postStockMovement({
-    inventoryItemId, qtyBase: -qtyBase, unitCost: item.current_cost == null ? null : Number(item.current_cost),
-    movementType: 'WASTE', sourceType: 'waste', sourceId: ev.id, idempotencyKey: `waste:${ev.id}`, notes: reason || 'waste',
-  }, locationId);
-  return { data: ev, error: null };
+  if (isMissingFunctionError(rpcErr)) return { data: null, error: new Error(`Waste not recorded. ${NEEDS_UPDATE}`) };
+  return { data: null, error: rpcErr };
 };

@@ -3,7 +3,7 @@
 // Write actions for the ServOS Manager app (?mode=manager) that a PAIRED, ANONYMOUS device can't do
 // directly (wf_* tables are RLS-fenced to Back Office users). Service-role writes, DOUBLE-fenced:
 //   1) the DEVICE/caller must be authorized for the location — a claimed+active ops_device, OR a BO
-//      user with user_locations, OR a super_admin (mirrors manager-snapshot's requireManager).
+//      user who reaches the venue (mirrors manager-snapshot's requireManager).
 //   2) the ACTING OPERATOR is resolved SERVER-SIDE from the supplied PIN (re-matched against
 //      staff_members for this location — never a client-supplied id) and must be approval-capable
 //      — role Manager/Owner OR the manager_approvals permission.
@@ -19,8 +19,22 @@
 //            hours/break/pay maths runs in workforce-clock via its service-role staff_id seam)
 //            'po.raise' (an order for one supplier in that supplier's packs and prices, v5.11.64)
 //            'po.receive' (goods in from the phone: stock, costs, temperature record, v5.11.64)
-//   pin is optional for a Back Office user (user_locations / super_admin): that signed-in user
-//   is the accountable operator instead.
+//            'stock.areas' | 'stock.items' | 'stock.count_open' | 'stock.count_sheet' | 'stock.count_save' |
+//            'stock.count_approve' | 'stock.waste' (v5.11.84, multi site stock Drop 0: counting by
+//            area and waste on the phone, re landed from Phase 1b; the steps live in _shared/stockPhone.js)
+//   pin is optional for a Back Office user who reaches the venue: that signed-in user is the
+//   accountable operator instead (never for stock.count_approve, which always needs a manager PIN).
+//
+// v5.11.84 (multi site stock Drop 0, plan 6.2 and 4.23): WHO REACHES THE VENUE, two answers.
+//   * Every action: officeReachesVenue (_shared/stockOfficeReach.js), the database's own rule: a link
+//     row, a super admin, or the owner of the venue's company. Owners who reach a site by the owner
+//     rule were refused here before; nothing else widens.
+//   * po.raise, po.receive and stock.* only: stockOfficeReachesVenue, which adds a login whose Stock
+//     control is 'all' in the venue's own company. So such a login never gains timesheet.clock_out,
+//     timesheet.approve or timeoff.decide at a site it is not linked to.
+//   * The staff PIN rule for the phone's stock steps: any active staff PIN at the venue may open the
+//     areas, the item list and a count, save figures and log waste; only stock.count_approve needs a
+//     manager PIN (role manager or owner, or the manager_approvals permission).
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { secondStepRefusal } from '../_shared/second-step.ts';
@@ -28,9 +42,11 @@ import { writeWfAudit } from '../_shared/wfAudit.js';
 // v5.11.64: ONE copy of the purchasing rules with the Order pad (pack choice, pack content, net
 // price, order totals, next delivery day) and ONE unit conversion engine with Back Office receiving.
 import { nextDeliveryYmd, packContent, packsForBase, netPackPrice, poTotals, unreceivableLines, receiveRefusalText, poReceiptLines } from '../_shared/purchasingRules.js';
-// v5.11.65: ONE moving average rule with Back Office receiving (applyReceipt); the inline copy here
-// wrote 4.00 where Back Office wrote 1.20 when stock was below zero.
-import { costAfterReceipt } from '../_shared/stockCosting.js';
+// v5.11.84: the two reach rules (everything / stock only) and the facts they read.
+import { officeReachesVenue, stockOfficeReachesVenue, readOfficeReachFacts } from '../_shared/stockOfficeReach.js';
+// v5.11.84: counting and waste on the phone (multi site stock Drop 0), one copy of the steps; liveOrAll
+// leaves archived packs, bridges and supplier prices out (all rows before 20261021a).
+import * as stockPhone from '../_shared/stockPhone.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -44,36 +60,48 @@ const ymd = (d: Date, tz: string) => new Intl.DateTimeFormat('en-CA', { timeZone
 // A chilled delivery over this is rejected: the same threshold as the Ops Deliveries screen (ACCEPT_MAX).
 const DELIVERY_ACCEPT_MAX_C = 8;
 
-// v5.8.21: a signed-in Back Office user acting from the Workforce screens has no
-// staff PIN. If the bearer is a user with access to the venue, they are the
-// accountable operator (audit records their user id + email).
-async function boOperator(req: Request, loc: string): Promise<{ id: string; name?: string; role?: string; permissions?: string[] } | null> {
-  const token = (req.headers.get('Authorization') ?? '').replace('Bearer ', '');
-  if (!token) return null;
+// The bearer of the request, read once: the service role, a signed in user, or nobody.
+type Caller = { token: string; service: boolean; user: any | null };
+async function callerOf(req: Request): Promise<Caller> {
+  const token = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim();
+  if (!token) return { token: '', service: false, user: null };
+  if (token === SERVICE_ROLE) return { token, service: true, user: null };
   const { data: { user } } = await sb.auth.getUser(token);
+  return { token, service: false, user: user ?? null };
+}
+
+// The stock work a Stock control 'all' login may do at a site it is not linked to (plan 6.2).
+const isStockAction = (action: string) => action === 'po.raise' || action === 'po.receive' || action.startsWith('stock.');
+
+// Does this signed in Back Office user reach the venue? officeReachesVenue for every action;
+// stockOfficeReachesVenue (adds Stock control 'all' in the venue's own company) for stock actions only.
+async function officeReaches(user: any, loc: string, stockAction: boolean): Promise<boolean> {
+  if (!user || user.is_anonymous) return false;
+  const facts = await readOfficeReachFacts(sb, user, loc);
+  return (stockAction ? stockOfficeReachesVenue(facts) : officeReachesVenue(facts)).ok;
+}
+
+// v5.8.21: a signed-in Back Office user acting from the Workforce screens has no
+// staff PIN. If the bearer is a user who reaches the venue, they are the
+// accountable operator (audit records their user id + email).
+// v5.11.84: "reaches" is the database's rule (link, super admin, owner of the venue's company),
+// plus Stock control 'all' for stock actions only.
+async function boOperator(caller: Caller, loc: string, stockAction: boolean): Promise<{ id: string; name?: string; role?: string; permissions?: string[] } | null> {
+  const user = caller.user;
   if (!user || user.is_anonymous) return null;
-  const [{ data: ul }, { data: prof }] = await Promise.all([
-    sb.from('user_locations').select('location_id').eq('user_id', user.id).eq('location_id', loc).maybeSingle(),
-    sb.from('user_profiles').select('role, full_name').eq('id', user.id).maybeSingle(),
-  ]);
-  if (!ul && prof?.role !== 'super_admin') return null;
+  if (!(await officeReaches(user, loc, stockAction))) return null;
+  const { data: prof } = await sb.from('user_profiles').select('full_name').eq('id', user.id).maybeSingle();
   return { id: user.id, name: (prof as any)?.full_name || user.email || 'Back Office user', role: 'manager', permissions: ['manager_approvals'] };
 }
 
 // Device/caller authorized for this location? (same fence as manager-snapshot)
-async function deviceAuthorized(req: Request, loc: string): Promise<boolean> {
-  const token = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim();
-  if (!token) return false;
-  if (token === SERVICE_ROLE) return true;
-  const { data: { user } } = await sb.auth.getUser(token);
+async function deviceAuthorized(caller: Caller, loc: string, stockAction: boolean): Promise<boolean> {
+  if (caller.service) return true;
+  const user = caller.user;
   if (!user) return false;
   const { data: dev } = await sb.from('ops_devices').select('id').eq('device_uid', user.id).eq('location_id', loc).eq('active', true).not('claimed_at', 'is', null).maybeSingle();
   if (dev) return true;
-  const [{ data: ul }, { data: prof }] = await Promise.all([
-    sb.from('user_locations').select('location_id').eq('user_id', user.id).eq('location_id', loc).maybeSingle(),
-    sb.from('user_profiles').select('role').eq('id', user.id).maybeSingle(),
-  ]);
-  return !!(ul || prof?.role === 'super_admin');
+  return officeReaches(user, loc, stockAction);
 }
 
 // Resolve the acting operator by PIN, SERVER-SIDE — never trust a client-supplied operator id. The
@@ -124,10 +152,19 @@ Deno.serve(async (req) => {
   // po.raise creates a NEW entity (no target); the approve/decide actions operate on one.
   if (action !== 'po.raise' && !target_id) return json({ error: 'action and target_id required' }, 400);
 
-  if (!(await deviceAuthorized(req, loc))) return json({ error: 'no access to this location' }, 403);
-  const op = pin ? await resolveOperator(loc, pin) : await boOperator(req, loc);
+  const stockAction = isStockAction(String(action));
+  const caller = await callerOf(req);
+  if (!(await deviceAuthorized(caller, loc, stockAction))) return json({ error: 'no access to this location' }, 403);
+  // v5.11.80: a count approval always needs a manager PIN, a Back Office login included (the Back
+  // Office's own approval goes through stock_approve_count_pin, with its five wrong tries rule).
+  if (action === 'stock.count_approve' && !pin) return json({ error: 'PIN required' }, 403);
+  const op = pin ? await resolveOperator(loc, pin) : await boOperator(caller, loc, stockAction);
   if (!op) return json({ error: pin ? 'PIN not recognised' : 'PIN required' }, 403);
-  if (!canApprove(op)) return json({ error: 'not allowed to approve' }, 403);
+  // v5.11.84 (plan 4.23): any active staff PIN at the venue opens the phone's stock steps (areas,
+  // items, a count, saving figures, waste); only the count approval, and every other action, needs
+  // a manager PIN.
+  const staffPinEnough = String(action).startsWith('stock.') && action !== 'stock.count_approve';
+  if (!staffPinEnough && !canApprove(op)) return json({ error: 'not allowed to approve' }, 403);
 
   try {
     // ── v5.8.21 timesheet.clock_out ─────────────────────────────────────────
@@ -232,13 +269,15 @@ Deno.serve(async (req) => {
       const itemIds = [...new Set(lines.map((l: any) => l.inventory_item_id))] as string[];
       // wf_audit's (location_id, org_id) must be a real pair from locations (INVARIANTS), so the org
       // comes from the venue, before anything is written; the timezone gives the venue's "today".
+      // v5.11.84 (multi site stock Drop 0, plan 5.4): an archived supplier price or unit bridge is never
+      // offered (archived_at comes with 20261021a; before it every row is read, as before).
       const [{ data: owned }, { data: packRows }, { data: rateRows }, { data: locRow }, { data: convRows }] = await Promise.all([
         sb.from('inventory_items').select('id, name, base_unit, default_supplier_id, purchase_tax_rate_id').eq('location_id', loc).in('id', itemIds),
-        sb.from('supplier_products').select('id, inventory_item_id, supplier_id, pack_qty, inner_qty, inner_unit, pack_price, is_preferred, purchase_tax_rate_id, price_includes_tax')
-          .eq('location_id', loc).eq('supplier_id', supplierId).in('inventory_item_id', itemIds).order('is_preferred', { ascending: false }).order('created_at').order('id'),
+        stockPhone.liveOrAll((live: boolean) => stockPhone.liveFilter(sb.from('supplier_products').select('id, inventory_item_id, supplier_id, pack_qty, inner_qty, inner_unit, pack_price, is_preferred, purchase_tax_rate_id, price_includes_tax')
+          .eq('location_id', loc).eq('supplier_id', supplierId).in('inventory_item_id', itemIds), live).order('is_preferred', { ascending: false }).order('created_at').order('id')),
         sb.from('tax_rates').select('id, rate').eq('location_id', loc),
         sb.from('locations').select('org_id, timezone').eq('id', loc).maybeSingle(),
-        sb.from('inventory_item_conversions').select('inventory_item_id, from_qty, from_unit, to_qty, to_unit').eq('location_id', loc).in('inventory_item_id', itemIds),
+        stockPhone.liveOrAll((live: boolean) => stockPhone.liveFilter(sb.from('inventory_item_conversions').select('inventory_item_id, from_qty, from_unit, to_qty, to_unit').eq('location_id', loc).in('inventory_item_id', itemIds), live)),
       ]);
       const itemBy: Record<string, any> = {};
       for (const it of owned ?? []) itemBy[it.id] = it;
@@ -356,7 +395,8 @@ Deno.serve(async (req) => {
       const itemIds = [...new Set(lines.map((l: any) => l.inventory_item_id).filter(Boolean))] as string[];
       const [{ data: items }, { data: convs }, { data: rateRows }] = await Promise.all([
         itemIds.length ? sb.from('inventory_items').select('id, name, base_unit, on_hand, current_cost, cost_method').eq('location_id', loc).in('id', itemIds) : Promise.resolve({ data: [] }),
-        itemIds.length ? sb.from('inventory_item_conversions').select('*').eq('location_id', loc).in('inventory_item_id', itemIds) : Promise.resolve({ data: [] }),
+        // v5.11.84 (Drop 0): an archived unit bridge is not used for a new receive (every row before 20261021a)
+        itemIds.length ? stockPhone.liveOrAll((live: boolean) => stockPhone.liveFilter(sb.from('inventory_item_conversions').select('*').eq('location_id', loc).in('inventory_item_id', itemIds), live)) : Promise.resolve({ data: [] }),
         sb.from('tax_rates').select('id, rate').eq('location_id', loc),
       ]);
       const convBy: Record<string, any[]> = {};
@@ -398,9 +438,10 @@ Deno.serve(async (req) => {
       // v5.11.79 (stock plan Phase 0, 11.5 item 3): every line's stock and cost in ONE database call
       // (stock_receive, 20261019b): items locked in id order, the average worked out from the LOCKED
       // on hand, the cost history keeping the supplier pack and the price paid per pack. Same keys
-      // po:<order>:<line> as Back Office, so the two can never post one line twice. Before 20261019b
-      // is run the call is missing and the line by line path below runs, as before.
-      let oneCall = false;
+      // po:<order>:<line> as Back Office, so the two can never post one line twice.
+      // v5.11.84 (multi site stock Drop 0, plan 5.4): the old line by line path (a movement, then the
+      // average worked out here and written to item_cost_history and current_cost with no REVALUE) is
+      // gone. It never ran once 20261019b was in. A database without the call books nothing and says so.
       {
         const rcpt: Record<string, any> = {};
         for (const [lineId, r] of Object.entries(byLine)) rcpt[lineId] = { qtyPacks: r?.qty_packs ?? 0, unitPrice: r?.unit_price };
@@ -408,16 +449,15 @@ Deno.serve(async (req) => {
           key: x.key, item_id: x.item_id, qty_base: x.qty_base, unit_cost: x.unit_cost,
           supplier_product_id: x.supplier_product_id, pack_price: x.pack_price, pack_label: x.pack_label,
         }));
-        if (!stockLines.length) oneCall = true;
-        else {
+        if (stockLines.length) {
           const { data: rres, error: rErr } = await sb.rpc('stock_receive', {
             p_location_id: loc, p_source_type: 'purchase_order', p_source_id: po.id, p_lines: stockLines, p_area_id: null,
             p_notes: `Received in the Manager app by ${op.name || 'manager'}`,
           });
           const missing = rErr && /PGRST202|42883|could not find the function|does not exist/i.test(`${rErr.code || ''} ${rErr.message || ''}`);
-          if (rErr && !missing) { console.error('[po.receive] stock_receive', rErr.message); return json({ error: `could not book the order into stock: ${rErr.message}`, done: false }, 500); }
-          if (!rErr && (rres as any)?.ok === false) return json({ error: (rres as any)?.error || 'the receive was refused', done: false }, 400);
-          oneCall = !rErr;
+          if (missing) return json({ error: 'could not book the order into stock: this needs a database update. Nothing was received. Ask ServOS to run it.', done: false }, 503);
+          if (rErr) { console.error('[po.receive] stock_receive', rErr.message); return json({ error: `could not book the order into stock: ${rErr.message}`, done: false }, 500); }
+          if ((rres as any)?.ok === false) return json({ error: (rres as any)?.error || 'the receive was refused', done: false }, 400);
         }
       }
 
@@ -425,37 +465,11 @@ Deno.serve(async (req) => {
       const shorted: any[] = [];
       let received = 0;
       for (const l of lines) {
-        const item = map[l.inventory_item_id];
         const r = byLine[String(l.id)];
         const ordered = Number(l.qty_packs) || 0;
         const accepted = Math.max(0, Number(r?.qty_packs ?? 0) || 0);
         const price = r?.unit_price != null && r.unit_price !== '' ? Number(r.unit_price) : (Number(l.unit_price) || 0);
-        const perPack = perPackOf[l.id];
-        if (accepted > 0 && oneCall) received++;
-        if (accepted > 0 && !oneCall) {
-          const recvBase = accepted * perPack;
-          const unitCostPerBase = price / perPack;
-          // applyReceipt (purchasing.js lines 50 to 80): a zero price moves the stock in at the item's
-          // known cost and never re-costs it; a real price moves the average (or replaces it, LAST_COST).
-          const priced = unitCostPerBase > 0;
-          const { data: mv, error: mvErr } = await sb.rpc('post_stock_movement', {
-            p_location_id: loc, p_inventory_item_id: l.inventory_item_id, p_qty_base: recvBase, p_movement_type: 'PURCHASE_RECEIPT',
-            p_unit_cost: priced ? unitCostPerBase : (item.currentCost || 0), p_source_type: 'purchase_order', p_source_id: po.id,
-            p_idempotency_key: `po:${po.id}:${l.id}`, p_occurred_at: null, p_created_by: null,
-            p_notes: `Received in the Manager app by ${op.name || 'manager'}`,
-          });
-          if (mvErr) { console.error('[po.receive] movement', mvErr.message); return json({ error: `could not book ${l.description || 'a line'} into stock: ${mvErr.message}`, done: false }, 500); }
-          const duplicate = !!(mv as any)?.duplicate;
-          if (!duplicate && priced) {
-            const newAvg = costAfterReceipt({ costMethod: item.costMethod, onHandQty: item.onHand, currentAvg: item.currentCost, receivedQty: recvBase, receivedUnitCost: unitCostPerBase });
-            await sb.from('item_cost_history').update({ effective_to: nowIso() }).eq('location_id', loc).eq('inventory_item_id', l.inventory_item_id).is('effective_to', null);
-            await sb.from('item_cost_history').insert({ location_id: loc, inventory_item_id: l.inventory_item_id, base_unit_cost: newAvg, source: 'PO_RECEIPT', effective_from: nowIso() });
-            await sb.from('inventory_items').update({ current_cost: newAvg, updated_at: nowIso() }).eq('location_id', loc).eq('id', l.inventory_item_id);
-            item.currentCost = newAvg;
-          }
-          if (!duplicate) item.onHand += recvBase;
-          received++;
-        }
+        if (accepted > 0) received++;
         const rate = l.purchase_tax_rate_id ? (ratesById[l.purchase_tax_rate_id] || 0) : 0;
         const net = accepted * price;
         const lineTax = Math.round(net * rate * 100) / 100;
@@ -516,6 +530,43 @@ Deno.serve(async (req) => {
           temperature_c: tempC, in_range: inRange, delivery_id: del.id, invoice_id: invoiceId, scanned: !!body.scan, subtotal: r2(subtotal), tax: r2(tax), by: op.name ?? op.id });
       if (auditErr) return auditFailed('The receive', { received: true, balance_reference: balance?.reference || null });
       return json({ ok: true, received, shorted: shorted.length, balance_reference: balance?.reference || null, invoice_id: invoiceId, delivery_id: del.id });
+    }
+
+    // -- v5.11.84 stock on the phone (multi site stock Drop 0, plan 4.23, re landed from Phase 1b) --
+    // Count by area with each figure's own time, saved as you go (one line per count, item and area:
+    // a figure sent twice updates the line); approve in ONE database call (approve_stock_count,
+    // 20261019b) with a manager PIN (checked above), the PIN holder stored on the count; waste through
+    // stock_record_waste. Every step is fenced to this location by the service role reads.
+    if (String(action).startsWith('stock.')) {
+      const { data: locRow } = await sb.from('locations').select('org_id').eq('id', loc).maybeSingle();
+      const orgId = locRow?.org_id || null;
+      const who = op.name || 'manager';
+      let out: any;
+      if (action === 'stock.areas') out = await stockPhone.areas(sb, loc);
+      else if (action === 'stock.count_open') out = await stockPhone.openCount(sb, loc, String(target_id), who);
+      else if (action === 'stock.items') out = await stockPhone.items(sb, loc, Math.max(0, Number(body.offset) || 0));
+      else if (action === 'stock.count_sheet') out = await stockPhone.sheet(sb, loc, String(target_id), Math.max(0, Number(body.offset) || 0));
+      else if (action === 'stock.count_save') out = await stockPhone.save(sb, loc, String(target_id), body.entries, { sentAt: body.sent_at || null });
+      else if (action === 'stock.count_approve') {
+        out = await stockPhone.approve(sb, loc, String(target_id), who, { id: op.id, name: op.name || null });
+        // first count of an item with no cost anywhere: answered (not refused) so the phone can name
+        // the items and send the manager to Back Office, where a cost can be typed
+        if (out?.code === 'needs_cost') return json({ ok: false, code: 'needs_cost', needs_cost: out.needs_cost || [], error: out.error }, 200);
+        if (!out?.error && out?.ok !== false) {
+          if (!out?.duplicate && out?.pin_holder_saved === false) console.error(`[manager-approve] stock.count_approve ${target_id}: the PIN holder was not stored on the count`);
+          const auditErr = await audit(loc, orgId, op, 'stock.count_approve', 'stock_counts', String(target_id), null, { by: who, posted: out?.posted ?? null, opening: out?.opening ?? null, duplicate: !!out?.duplicate });
+          if (auditErr) return auditFailed('The count approval', { approved: true });
+        }
+      } else if (action === 'stock.waste') {
+        out = await stockPhone.waste(sb, loc, { ...body, item_id: target_id }, who);
+        if (!out?.error && out?.ok !== false) {
+          const auditErr = await audit(loc, orgId, op, 'stock.waste', 'waste_events', String(out?.id || target_id), null, { by: who, item: target_id, qty_base: body.qty_base, reason: body.reason || null });
+          if (auditErr) return auditFailed('The waste', { recorded: true });
+        }
+      } else return json({ error: 'unknown action' }, 400);
+      if (out?.error) return json({ error: out.error }, 400);
+      if (out?.ok === false) return json({ error: out.error || 'not done' }, 400);
+      return json({ ...out, ok: true });
     }
 
     return json({ error: 'unknown action' }, 400);
