@@ -10,7 +10,13 @@ set -e
 source ~/.zshrc >/dev/null 2>&1
 OUT="$1"; shift
 [ -z "$OUT" ] || [ "$#" -lt 1 ] && { echo "usage: fetch_demo.sh <out.json> <org id> [...]"; exit 2; }
-case "$OUT" in "$(git rev-parse --show-toplevel 2>/dev/null)"*) echo "write the copy outside the repo"; exit 2;; esac
+# outside THIS repo (found from the script's own folder, so it works from any folder; a run from a
+# folder that is not a repo used to refuse every path)
+OUT="${OUT:A}"
+TOP="$(git -C "${0:A:h}" rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -n "$TOP" ]; then
+  case "$OUT" in "$TOP"/*) echo "write the copy outside the repo"; exit 2;; esac
+fi
 ORGS=$(printf "'%s'," "$@"); ORGS="${ORGS%,}"
 LOCS="(select id from public.locations where org_id in ($ORGS))"
 TMP=$(mktemp -d)

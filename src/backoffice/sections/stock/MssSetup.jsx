@@ -7,6 +7,8 @@
 //   3. Link site items: a site's own rows that look like company rows join them only when ticked.
 //   4. Switch everything on at every site, or make a site the same as another.
 //   5. Import a CSV of items, packs or prices into the draft (checked first, row by row).
+//   Add a site (round 1): a site new to the company in one step: the usual six areas now, and it
+//   stocks exactly what a chosen site stocks from the next publish.
 
 import { useState } from 'react';
 import { Btn, Notice, SiteChecklist, Segmented, ConfirmDialog } from '../msm/msmUi';
@@ -24,6 +26,8 @@ export default function MssSetup({ api, orgId, canEdit, sites, setNote, refreshD
   const [from, setFrom] = useState(null);
   const [to, setTo] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [newSite, setNewSite] = useState(null);
+  const [likeSite, setLikeSite] = useState(null);
   const say = (r, good) => { if (!r.ok) setNote({ tone: 'bad', text: r.words }); else setNote({ tone: 'good', text: good(r.data) }); return r.ok; };
 
   const addAreas = async () => {
@@ -63,9 +67,29 @@ export default function MssSetup({ api, orgId, canEdit, sites, setNote, refreshD
     if (say(r, (d) => `${d.staged} changes in the draft: ${sites.find((s) => s.id === to)?.name} will stock what ${sites.find((s) => s.id === from)?.name} stocks.`)) refreshDraft();
   };
 
+  const addSite = async () => {
+    setBusy(true);
+    const a = await api.addAreas(orgId, [newSite]);
+    if (!a.ok) { setBusy(false); setNote({ tone: 'bad', text: a.words }); return; }
+    const c = await api.copySites(orgId, likeSite, newSite);
+    setBusy(false);
+    const n = sites.find((x) => x.id === newSite)?.name; const l = sites.find((x) => x.id === likeSite)?.name;
+    if (say(c, (d) => `${n}: ${a.data?.added || 0} areas added now; ${d.staged} changes in the draft so it stocks exactly what ${l} stocks. Publish, then count each item there once (an Opening count).`)) refreshDraft();
+  };
+
   if (!canEdit) return <div style={ui.card}>Only stock Editors can set things up.</div>;
   return (
     <div style={{ display: 'grid', gap: 14 }}>
+      <div style={ui.card}>
+        <div style={ui.h2}>Add a site</div>
+        <div style={{ ...ui.sub, marginBottom: 10 }}>A site new to the company: the usual six areas now, and it stocks exactly what the site you pick stocks, from the next publish. Its stock starts at 0, so count each item there once (an Opening count).</div>
+        <div style={{ ...ui.row, flexWrap: 'wrap', gap: 10 }}>
+          <SiteSelect sites={sites} value={newSite} onChange={setNewSite} placeholder="The new site" />
+          <SiteSelect sites={sites} value={likeSite} onChange={setLikeSite} placeholder="stocks what this site stocks" />
+          <Btn kind="primary" disabled={busy || !newSite || !likeSite || newSite === likeSite} onClick={addSite}>Set it up</Btn>
+        </div>
+      </div>
+
       <div style={ui.card}>
         <div style={ui.h2}>1. The usual six areas</div>
         <div style={{ ...ui.sub, marginBottom: 10 }}>Cellar, Walk in fridge, Freezer, Dry store, Bar, Kitchen, at each chosen site that does not have one of that kind. Do this before publishing items: a new item lands in its usual area.</div>

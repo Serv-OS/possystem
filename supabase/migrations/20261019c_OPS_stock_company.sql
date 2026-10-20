@@ -6,7 +6,8 @@
 -- #  NEEDS 20261017 (Multi site menu), 20261018c (central stock) and          #
 -- #  20261019b (stock Phase 0) first. One transaction: any error and nothing  #
 -- #  changes. Safe to run twice. Run OUTSIDE UK service: five stock tables    #
--- #  get a new empty column and three small triggers (lock wait 3 s).         #
+-- #  get a new empty column, 15 lock triggers (3 on each) plus one on         #
+-- #  locations, and one small index on packs (lock wait 3 s).                 #
 -- ############################################################################
 --
 -- WHY (multi site stock plan, 18 Oct 2026, section 7 "Phase 1" and "Phase 1b", 4.1 to 4.3, 4.9 to
@@ -50,21 +51,29 @@
 --   Server pages for the grids (100 items a page, each item's sites packed into one value).
 --   Site side: msm_stock_site_status (Managed by head office, the Editors, what changed), the usual
 --     six areas from head office, and the manager PIN on count approval (stock_approve_count_pin;
---     approve_stock_count is no longer open to Back Office logins directly, the service role keeps it
---     for the Manager app, which checks the PIN itself).
+--     approve_stock_count is no longer open to Back Office logins directly; the service role keeps it
+--     for the Manager app's manager-approve, which asks for a manager PIN on every count approval).
+--   Cost after publish (plan 4.5): for the items whose supplier price a publish added or changed at a
+--     site, that site's OWN cost rule runs in the same transaction: price list sites (the default)
+--     follow the price; deliveries sites only for an item never received or with no cost. Never 0.
+--     Undo puts the cost back while nothing has moved it since.
 --
--- NEVER PUBLISHED OVER: on hand, current cost, the ledger, pars, areas (except a new item's first
---   area), counts, orders, invoices, waste, production, preferred supplier (set only when an item
---   first reaches a site), a supplier's account number, order email, delivery days, cut off and
+-- NEVER PUBLISHED OVER: on hand, current cost (only the site's own cost rule moves it, above), the
+--   ledger, pars, areas (except a new item's first area), counts, orders, invoices, waste,
+--   production, preferred supplier (set only when an item first reaches a site), a supplier's account number, order email, delivery days, cut off and
 --   minimum order (set only when the supplier first reaches a site). Nothing is ever deleted at a
 --   site by publish ("off here" archives); Undo deletes only the rows its own publish inserted and
 --   nothing has used since.
 --
 -- ORDER FOR PETER
+--   0. 20261019b (stock Phase 0) runs first: this file stops in words without it.
 --   1. Merge v5.11.80 and deploy the app (the count screen asks for the manager PIN through the new
---      call and falls back to the old one while this file has not run).
+--      call and falls back to the old one while this file has not run). Reload every open Back
+--      Office tab: a tab still on 5.11.79 cannot approve counts once this file has run.
 --   2. Run this file on Ops, outside service. Read the check row at the bottom.
---   3. Company Admin: Shared stock on for the demo company, add yourself as stock Editor.
+--   3. Deploy the manager-approve edge function (after 20261019b and this file): the phone's Count
+--      stock reads company_ref and archived_at, which this file adds.
+--   4. Company Admin: Shared stock on for the demo company, add yourself as stock Editor.
 --
 -- UNDO: 20261019c_OPS_stock_company_ROLLBACK.sql (drops only what this file made; site rows keep
 --   their company_ref values harmlessly if any publish ran, the columns are dropped by the rollback).
@@ -152,6 +161,43 @@ begin
   end loop;
 end
 $idx$;
+
+-- Indexes on the columns that point at a site's stock rows. Undo removes the rows its publish added
+-- (5,000 items, packs and prices a site at the target scale), and each delete checks every table
+-- that points at the row: without these, each check reads that whole table (the ledger included), so
+-- one site's Undo took 90 s and more. Small tables today (the ledger has about 2,300 rows), so each
+-- is made in a moment; a missing table is skipped.
+do $fkidx$
+declare
+  r record;
+begin
+  for r in
+    select * from (values
+      ('stock_movements_item_fk_idx', 'stock_movements', 'inventory_item_id', null),
+      ('stock_count_lines_item_fk_idx', 'stock_count_lines', 'inventory_item_id', null),
+      ('par_levels_item_fk_idx', 'par_levels', 'inventory_item_id', null),
+      ('po_lines_item_fk_idx', 'po_lines', 'inventory_item_id', 'inventory_item_id is not null'),
+      ('po_lines_sp_fk_idx', 'po_lines', 'supplier_product_id', 'supplier_product_id is not null'),
+      ('stock_transfer_lines_item_fk_idx', 'stock_transfer_lines', 'inventory_item_id', null),
+      ('stock_transfer_lines_to_item_fk_idx', 'stock_transfer_lines', 'to_inventory_item_id', 'to_inventory_item_id is not null'),
+      ('waste_events_item_fk_idx', 'waste_events', 'inventory_item_id', 'inventory_item_id is not null'),
+      ('supplier_invoice_lines_item_fk_idx', 'supplier_invoice_lines', 'matched_item_id', 'matched_item_id is not null'),
+      ('item_cost_history_sp_fk_idx', 'item_cost_history', 'supplier_product_id', 'supplier_product_id is not null'),
+      ('item_pack_fmt_parent_idx', 'item_packaging_formats', 'parent_format_id', 'parent_format_id is not null'),
+      ('purchase_orders_supplier_fk_idx', 'purchase_orders', 'supplier_id', 'supplier_id is not null'),
+      ('supplier_invoices_supplier_fk_idx', 'supplier_invoices', 'supplier_id', 'supplier_id is not null'),
+      ('deliveries_supplier_fk_idx', 'deliveries', 'supplier_id', 'supplier_id is not null'),
+      ('recipe_lines_loc_unit_idx', 'recipe_lines', 'location_id, unit', null)
+    ) as t(name, tbl, cols, pred)
+  loop
+    if to_regclass('public.' || r.tbl) is not null and to_regclass('public.' || r.name) is null
+       and not exists (select 1 from unnest(string_to_array(replace(r.cols, ' ', ''), ',')) c
+                        where not exists (select 1 from information_schema.columns x where x.table_schema = 'public' and x.table_name = r.tbl and x.column_name = c)) then
+      execute format('create index %I on public.%I (%s)%s', r.name, r.tbl, r.cols, coalesce(' where ' || r.pred, ''));
+    end if;
+  end loop;
+end
+$fkidx$;
 
 -- ============================================================================
 -- 2. TABLES
@@ -513,7 +559,43 @@ begin
 end
 $guards$;
 
--- Base unit lock: once any site has a movement for the item, its base unit stays.
+-- Base unit lock. Quantities at a site carry no unit of their own (on hand, the ledger, count lines
+-- of any status, pars, open orders and transfers, the site's own packs are all in the base unit), so
+-- once a site row is in use its base unit stays. msm_stock__site_item_in_use: one site row;
+-- msm_stock__unit_in_use: any linked site row of a company item that is not in p_unit already (p_unit
+-- null: any). The company lock, the writer and the health check share it; Undo, or a publish back to
+-- a site's own unit, passes while no site row in use would change.
+create or replace function public.msm_stock__site_item_in_use(p_loc uuid, p_item uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $fn$
+  select exists (select 1 from inventory_items t where t.id = p_item and t.location_id = p_loc and coalesce(t.on_hand, 0) <> 0)
+      or exists (select 1 from stock_movements m where m.location_id = p_loc and m.inventory_item_id = p_item)
+      or exists (select 1 from stock_count_lines l where l.location_id = p_loc and l.inventory_item_id = p_item)
+      or exists (select 1 from par_levels pl where pl.location_id = p_loc and pl.inventory_item_id = p_item)
+      or exists (select 1 from po_lines l where l.inventory_item_id = p_item)
+      or exists (select 1 from stock_transfer_lines l where l.inventory_item_id = p_item or l.to_inventory_item_id = p_item)
+      or exists (select 1 from item_packaging_formats x where x.inventory_item_id = p_item and x.location_id = p_loc
+                  and x.company_ref is null and x.archived_at is null);
+$fn$;
+
+create or replace function public.msm_stock__unit_in_use(p_item uuid, p_unit text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $fn$
+  select exists (select 1 from msm_stock_item_sites s
+                   join inventory_items t on t.id = s.venue_item_id and t.location_id = s.location_id
+                  where s.item_id = p_item and s.venue_item_id is not null and s.unlinked_at is null
+                    and t.base_unit is distinct from p_unit
+                    and public.msm_stock__site_item_in_use(s.location_id, t.id));
+$fn$;
+
 create or replace function public.msm_stock_base_unit_lock()
 returns trigger
 language plpgsql
@@ -521,12 +603,9 @@ security definer
 set search_path = public
 as $fn$
 begin
-  if new.base_unit is distinct from old.base_unit and exists (
-       select 1 from msm_stock_item_sites s
-         join stock_movements m on m.location_id = s.location_id and m.inventory_item_id = s.venue_item_id
-        where s.item_id = old.id and s.venue_item_id is not null) then
-    raise exception '% has stock movements at a site, so its base unit (%) cannot change. Make a new item instead.', old.name, old.base_unit
-      using errcode = '55000';
+  if new.base_unit is distinct from old.base_unit and public.msm_stock__unit_in_use(old.id, new.base_unit) then
+    raise exception '% has stock, counts, pars or orders in % at a site, so its base unit cannot change to %. Make a new item instead.',
+      old.name, old.base_unit, new.base_unit using errcode = '55000';
   end if;
   return new;
 end
@@ -1197,6 +1276,25 @@ as $fn$
     or exists (select 1 from msm_stock_changes c where c.draft_id = p_draft and c.target = p_kind and c.entity_id = p_id and c.data ? '_new');
 $fn$;
 
+-- A draft holds at most 40,000 changes: that publishes well inside the 8 s limit and the Review screen
+-- can page through it. Every way into the draft checks this last (the whole call is refused).
+create or replace function public.msm_stock__draft_cap(p_draft uuid)
+returns void
+language plpgsql
+stable
+security definer
+set search_path = public
+as $fn$
+declare
+  n integer := (select count(*) from msm_stock_changes c where c.draft_id = p_draft);
+begin
+  if n > 40000 then
+    raise exception 'That would put % changes in the draft, and a draft holds at most 40,000. Pick fewer sites or items, or change the company row instead (one change reaches every site). Nothing was added.',
+      to_char(n, 'FM999,999,999') using errcode = '54000';
+  end if;
+end
+$fn$;
+
 -- Stage changes into the company's open draft (merged per target, entity and site).
 -- p_changes: [{target, entity_id, location_id?, data, remove?}], at most 2,000 a call.
 create or replace function public.msm_stock_stage(p_org uuid, p_changes jsonb)
@@ -1288,6 +1386,7 @@ begin
     raise exception 'A new stock item needs a name and a base unit; a new pack a name and a size; a new supplier price its item, supplier, unit and price.'
       using errcode = '22023';
   end if;
+  perform public.msm_stock__draft_cap(v_draft);
   return jsonb_build_object('draft_id', v_draft, 'staged', n,
                             'changes', (select count(*) from msm_stock_changes x where x.draft_id = v_draft));
 end
@@ -1435,27 +1534,27 @@ begin
                   when t.archived_at is not null then 'that site item is archived'
                   when t.base_unit <> i.base_unit then format('its unit is %s, the company item''s is %s', t.base_unit, i.base_unit)
                   else 'it is linked to another company item already' end) as words
-      from msm_stock_changes c
+      from (select c0.*, count(*) over (partition by c0.location_id, c0.data ->> 'link') as same_link
+              from msm_stock_changes c0
+             where c0.draft_id = p_draft and c0.target = 'item_site' and c0.data ->> 'link' is not null) c
       join msm_stock_items i on i.id = c.entity_id
       join locations l on l.id = c.location_id
       left join inventory_items t on t.id = (c.data ->> 'link')::uuid and t.location_id = c.location_id
-     where c.draft_id = p_draft and c.target = 'item_site' and c.data ->> 'link' is not null
-       and (t.id is null or t.company_ref is not null or t.archived_at is not null or t.base_unit <> i.base_unit
-            or exists (select 1 from msm_stock_changes c2 where c2.draft_id = p_draft and c2.target = 'item_site' and c2.location_id = c.location_id
-                        and c2.data ->> 'link' = c.data ->> 'link' and c2.entity_id <> c.entity_id)
+     where (t.id is null or t.company_ref is not null or t.archived_at is not null or t.base_unit <> i.base_unit
+            or c.same_link > 1
             or exists (select 1 from msm_stock_item_sites s where s.location_id = c.location_id and s.venue_item_id = t.id and s.item_id <> c.entity_id)
             or exists (select 1 from msm_stock_item_sites s where s.location_id = c.location_id and s.item_id = c.entity_id
                         and s.venue_item_id is not null and s.venue_item_id <> t.id))
     union all
     select format('%s at %s: that site supplier cannot be linked (not found, archived, or linked already)', coalesce(m.name, 'a supplier'), coalesce(l.name, 'a site'))
-      from msm_stock_changes c
+      from (select c0.*, count(*) over (partition by c0.location_id, c0.data ->> 'link') as same_link
+              from msm_stock_changes c0
+             where c0.draft_id = p_draft and c0.target = 'supplier_site' and c0.data ->> 'link' is not null) c
       join msm_suppliers m on m.id = c.entity_id
       join locations l on l.id = c.location_id
       left join suppliers t on t.id = (c.data ->> 'link')::uuid and t.location_id = c.location_id
-     where c.draft_id = p_draft and c.target = 'supplier_site' and c.data ->> 'link' is not null
-       and (t.id is null or t.company_ref is not null or t.archived_at is not null
-            or exists (select 1 from msm_stock_changes c2 where c2.draft_id = p_draft and c2.target = 'supplier_site' and c2.location_id = c.location_id
-                        and c2.data ->> 'link' = c.data ->> 'link' and c2.entity_id <> c.entity_id)
+     where (t.id is null or t.company_ref is not null or t.archived_at is not null
+            or c.same_link > 1
             or exists (select 1 from msm_supplier_sites s where s.location_id = c.location_id and s.venue_supplier_id = t.id and s.supplier_id <> c.entity_id)
             or exists (select 1 from msm_supplier_sites s where s.location_id = c.location_id and s.supplier_id = c.entity_id
                         and s.venue_supplier_id is not null and s.venue_supplier_id <> t.id))
@@ -1554,38 +1653,36 @@ begin
 
   -- 9e. pack, bridge and price links must sit on the item (and supplier) linked at that site
   select string_agg(x.words, '; ') into v_bad from (
+    -- driven by the draft's own link ticks (not by every site row of the company: 50 sites x 5,000)
     select format('a pack link at %s does not belong to that item there', coalesce(l.name, 'a site')) as words
-      from msm_stock_pack_sites s
+      from msm_stock_changes c
+      join msm_stock_pack_sites s on s.pack_id = c.entity_id and s.location_id = c.location_id and s.org_id = p_org
       join msm_stock_packs p on p.id = s.pack_id
       join locations l on l.id = s.location_id
       left join msm_stock_item_sites isx on isx.item_id = p.item_id and isx.location_id = s.location_id
       left join item_packaging_formats t on t.id = s.venue_format_id and t.location_id = s.location_id
-     where s.org_id = p_org and s.venue_format_id is not null
-       and exists (select 1 from msm_stock_changes c where c.draft_id = p_draft and c.target = 'pack_site' and c.entity_id = s.pack_id
-                    and c.location_id = s.location_id and c.data ->> 'link' is not null)
+     where c.draft_id = p_draft and c.target = 'pack_site' and c.data ->> 'link' is not null and s.venue_format_id is not null
        and (t.id is null or t.company_ref is not null or t.inventory_item_id is distinct from isx.venue_item_id)
     union all
     select format('a unit bridge link at %s does not belong to that item there', coalesce(l.name, 'a site'))
-      from msm_stock_bridge_sites s
+      from msm_stock_changes c
+      join msm_stock_bridge_sites s on s.bridge_id = c.entity_id and s.location_id = c.location_id and s.org_id = p_org
       join msm_stock_bridges b on b.id = s.bridge_id
       join locations l on l.id = s.location_id
       left join msm_stock_item_sites isx on isx.item_id = b.item_id and isx.location_id = s.location_id
       left join inventory_item_conversions t on t.id = s.venue_conversion_id and t.location_id = s.location_id
-     where s.org_id = p_org and s.venue_conversion_id is not null
-       and exists (select 1 from msm_stock_changes c where c.draft_id = p_draft and c.target = 'bridge_site' and c.entity_id = s.bridge_id
-                    and c.location_id = s.location_id and c.data ->> 'link' is not null)
+     where c.draft_id = p_draft and c.target = 'bridge_site' and c.data ->> 'link' is not null and s.venue_conversion_id is not null
        and (t.id is null or t.company_ref is not null or t.inventory_item_id is distinct from isx.venue_item_id)
     union all
     select format('a supplier price link at %s is not for that item and supplier there', coalesce(l.name, 'a site'))
-      from msm_supplier_product_sites s
+      from msm_stock_changes c
+      join msm_supplier_product_sites s on s.sp_id = c.entity_id and s.location_id = c.location_id and s.org_id = p_org
       join msm_supplier_products sp on sp.id = s.sp_id
       join locations l on l.id = s.location_id
       left join msm_stock_item_sites isx on isx.item_id = sp.item_id and isx.location_id = s.location_id
       left join msm_supplier_sites ssx on ssx.supplier_id = sp.supplier_id and ssx.location_id = s.location_id
       left join supplier_products t on t.id = s.venue_supplier_product_id and t.location_id = s.location_id
-     where s.org_id = p_org and s.venue_supplier_product_id is not null
-       and exists (select 1 from msm_stock_changes c where c.draft_id = p_draft and c.target = 'sp_site' and c.entity_id = s.sp_id
-                    and c.location_id = s.location_id and c.data ->> 'link' is not null)
+     where c.draft_id = p_draft and c.target = 'sp_site' and c.data ->> 'link' is not null and s.venue_supplier_product_id is not null
        and (t.id is null or t.company_ref is not null or t.inventory_item_id is distinct from isx.venue_item_id
             or t.supplier_id is distinct from ssx.venue_supplier_id)
     limit 10) x;
@@ -1604,10 +1701,62 @@ $fn$;
 --   write true: writes it, one statement per table and kind, the busy items table last, and keeps one
 --   before and after row per changed row in msm_stock_version_rows (Undo).
 --   detail true (with write false): also the first 200 differing rows side by side (drift review).
--- Never written: on hand, current_cost, cost_method, pars, movements, counts, orders, invoices,
--- transfers, waste, production, is_preferred and default_supplier_id after insert, supplier site
--- values after insert. A site row of an item switched off (or archived) is archived, never deleted;
--- an item the site still holds stock of stays live (and is listed).
+-- Never written: on hand, cost_method, pars, movements, counts, orders, invoices, transfers, waste,
+-- production, is_preferred and default_supplier_id after insert, supplier site values after insert.
+-- current_cost only by the site's own cost rule, for items whose supplier price this write adds or
+-- changes (msm_stock__cost_plan). A site row of an item switched off (or archived) is archived, never
+-- deleted; an item the site still holds stock of stays live, with its packs and prices (and is
+-- listed), and is archived by the next publish after it reaches zero.
+-- A VAT rate row as words for the screens ("20%"); null when there is none.
+create or replace function public.msm_stock__rate_words(p_rate_id uuid)
+returns text
+language sql
+stable
+security definer
+set search_path = public
+as $fn$
+  select trim(trailing '.' from trim(trailing '0' from to_char(r.rate * 100, 'FM990.000'))) || '%'
+    from tax_rates r where r.id = p_rate_id;
+$fn$;
+
+-- Cost here (plan 4.5, one cost rule): the site's own rule over _w_price (the prices the site has, or
+-- will have once written) for the items in _w_cost. The preferred live price, else the cheapest; net
+-- of VAT only when the price includes VAT; per base unit through the item's units and bridges, as the
+-- Back Office price save works it out (data.js recomputeItemCost); never 0. Price list sites follow
+-- it; deliveries sites only for an item with no cost yet or never received. Fills _w_newcost with the
+-- items whose cost moves. Owner only: msm_stock__sync_site calls it (plan and write).
+create or replace function public.msm_stock__cost_plan(p_loc uuid, p_rule text)
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  n integer;
+begin
+  drop table if exists _w_newcost;
+  create temp table _w_newcost on commit drop as
+  select c.item, c.name, c.prev, c.cost, c.sp_id, c.net, gen_random_uuid() as hist_id
+    from (select distinct on (p.item) p.item, wi.name, t.current_cost as prev, p.sp_id, n.net, round(n.net / q.qb, 5) as cost
+            from _w_price p
+            join _w_items wi on wi.vid = p.item
+            left join inventory_items t on t.id = p.item and t.location_id = p_loc
+            cross join lateral (select case when p.inc
+                                             then p.pack_price / (1 + coalesce((select r.rate from tax_rates r where r.id = coalesce(p.rate_id, wi.purchase_tax_rate_id)), 0))
+                                             else p.pack_price end as net) n
+            cross join lateral (select public.stock_convert_qty(p.pack_qty * p.inner_qty, p.inner_unit, wi.base_unit, array[p.item]) as qb) q
+           where p.item in (select c.item from _w_cost c)
+             and q.qb > 0 and n.net > 0 and round(n.net / q.qb, 5) > 0
+           order by p.item, p.pref desc, n.net / q.qb, p.sp_id) c
+   where c.prev is distinct from c.cost
+     and (p_rule = 'price_list' or coalesce(c.prev, 0) = 0
+          or not exists (select 1 from stock_movements m where m.location_id = p_loc and m.inventory_item_id = c.item
+                          and m.movement_type = 'PURCHASE_RECEIPT'));
+  get diagnostics n = row_count;
+  return n;
+end
+$fn$;
+
 create or replace function public.msm_stock__sync_site(p_org uuid, p_loc uuid, p_version uuid, p_write boolean, p_detail boolean default false)
 returns jsonb
 language plpgsql
@@ -1620,9 +1769,42 @@ declare
   v_detail jsonb := '[]'::jsonb;
   v_writes integer := 0;
   n integer;
+  v_bad text;
+  v_rule text := coalesce((select s.cost_rule from stock_site_settings s where s.location_id = p_loc), 'price_list');
 begin
   if p_write then
     perform set_config('servos.stock_publish', txid_current()::text, true);
+    -- The site rows this write may ARCHIVE (switched off here, or archived by head office) or give a
+    -- NEW BASE UNIT are locked first, in id order (2 s lock wait, set by the runner: a busy site gives
+    -- way). The plan below then reads their stock as it is: an item a delivery or a sale has just moved
+    -- is held, never archived with stock, and a row in use in its unit never changes unit.
+    drop table if exists _w_site_rows;
+    create temp table _w_site_rows on commit drop as
+    select s.venue_item_id as vid, i.name, i.base_unit, (coalesce(s.active, i.all_sites) and not i.archived) as alive
+      from msm_stock_item_sites s
+      cross join lateral (select i.name, i.base_unit, i.all_sites, i.archived from msm_stock_items i
+                           where i.id = s.item_id and i.org_id = p_org limit 1) i
+     where s.location_id = p_loc and s.unlinked_at is null and s.venue_item_id is not null;
+    perform 1 from inventory_items t
+      join _w_site_rows x on x.vid = t.id
+     where t.location_id = p_loc and t.archived_at is null
+       and (t.base_unit is distinct from x.base_unit or not x.alive)
+     order by t.id
+     for no key update of t;
+    select string_agg(format('%s is counted in %s at %s and has stock, counts, pars or orders there, so it cannot change to %s',
+                             x.name, x.site_unit, (select l.name from locations l where l.id = p_loc), x.base_unit), '; ')
+      into v_bad
+      from (with d as materialized (
+              select x.name, t.id, t.base_unit as site_unit, x.base_unit
+                from _w_site_rows x
+                join inventory_items t on t.id = x.vid and t.location_id = p_loc
+               where t.base_unit is distinct from x.base_unit)
+            select d.* from d where public.msm_stock__site_item_in_use(p_loc, d.id)
+             order by d.name limit 5) x;
+    if v_bad is not null then
+      raise exception 'Not written at this site: %. Undo that version in History (the company row goes back), or make a new item instead.', v_bad
+        using errcode = '55000';
+    end if;
   end if;
 
   -- -- items ---------------------------------------------------------------
@@ -1648,8 +1830,8 @@ begin
     left join inventory_items t on t.id = s.venue_item_id and t.location_id = p_loc
    where i.org_id = p_org and s.unlinked_at is null
      and (t.id is not null or (coalesce(s.active, i.all_sites) and not i.archived));
+  update _w_items set vid = gen_random_uuid() where vid is null;
   if p_write then
-    update _w_items set vid = gen_random_uuid() where vid is null;
     insert into msm_stock_version_company (version_id, tbl, entity_id, location_key, op, before)
     select p_version, 'item_site', w.cid, p_loc, case when w.map_new then 'insert' else 'update' end, to_jsonb(s)
       from _w_items w left join msm_stock_item_sites s on s.item_id = w.cid and s.location_id = p_loc
@@ -1676,8 +1858,8 @@ begin
     left join suppliers t on t.id = s.venue_supplier_id and t.location_id = p_loc
    where m.org_id = p_org and s.unlinked_at is null
      and (t.id is not null or (coalesce(s.active, m.all_sites) and not m.archived));
+  update _w_sups set vid = gen_random_uuid() where vid is null;
   if p_write then
-    update _w_sups set vid = gen_random_uuid() where vid is null;
     insert into msm_stock_version_company (version_id, tbl, entity_id, location_key, op, before)
     select p_version, 'supplier_site', w.cid, p_loc, case when w.map_new then 'insert' else 'update' end, to_jsonb(s)
       from _w_sups w left join msm_supplier_sites s on s.supplier_id = w.cid and s.location_id = p_loc
@@ -1693,10 +1875,10 @@ begin
   drop table if exists _w_packs;
   create temp table _w_packs on commit drop as
   select p.id as cid, ps.venue_format_id as vid, (t.id is null) as is_new, (ps.pack_id is null) as map_new,
-         (wi.alive and not p.archived and not coalesce(ps.off, false)) as alive,
+         ((wi.alive or wi.held) and not p.archived and not coalesce(ps.off, false)) as alive,
          wi.vid as inventory_item_id, p.name, p.qty_in_base, p.parent_pack_id, null::uuid as parent_format_id,
          p.is_count_default, p.is_purchase_default,
-         case when wi.alive and not p.archived and not coalesce(ps.off, false) then null::timestamptz
+         case when (wi.alive or wi.held) and not p.archived and not coalesce(ps.off, false) then null::timestamptz
               when t.id is null then null::timestamptz
               when t.archived_at is not null then t.archived_at else v_now end as archived_at
     from msm_stock_packs p
@@ -1708,9 +1890,9 @@ begin
   drop table if exists _w_bridges;
   create temp table _w_bridges on commit drop as
   select b.id as cid, bs.venue_conversion_id as vid, (t.id is null) as is_new, (bs.bridge_id is null) as map_new,
-         (wi.alive and not b.archived and not coalesce(bs.off, false)) as alive,
+         ((wi.alive or wi.held) and not b.archived and not coalesce(bs.off, false)) as alive,
          wi.vid as inventory_item_id, b.from_qty, b.from_unit, b.to_qty, b.to_unit,
-         case when wi.alive and not b.archived and not coalesce(bs.off, false) then null::timestamptz
+         case when (wi.alive or wi.held) and not b.archived and not coalesce(bs.off, false) then null::timestamptz
               when t.id is null then null::timestamptz
               when t.archived_at is not null then t.archived_at else v_now end as archived_at
     from msm_stock_bridges b
@@ -1719,9 +1901,9 @@ begin
     left join inventory_item_conversions t on t.id = bs.venue_conversion_id and t.location_id = p_loc
    where b.org_id = p_org and bs.unlinked_at is null
      and (t.id is not null or (wi.alive and not b.archived and not coalesce(bs.off, false)));
+  update _w_packs set vid = gen_random_uuid() where vid is null;
+  update _w_bridges set vid = gen_random_uuid() where vid is null;
   if p_write then
-    update _w_packs set vid = gen_random_uuid() where vid is null;
-    update _w_bridges set vid = gen_random_uuid() where vid is null;
     insert into msm_stock_version_company (version_id, tbl, entity_id, location_key, op, before)
     select p_version, 'pack_site', w.cid, p_loc, case when w.map_new then 'insert' else 'update' end, to_jsonb(ps)
       from _w_packs w left join msm_stock_pack_sites ps on ps.pack_id = w.cid and ps.location_id = p_loc
@@ -1747,7 +1929,7 @@ begin
   drop table if exists _w_sps;
   create temp table _w_sps on commit drop as
   select sp.id as cid, x.venue_supplier_product_id as vid, (t.id is null) as is_new, (x.sp_id is null) as map_new,
-         (wi.alive and ws.alive and not sp.archived and not coalesce(x.off, false)) as alive,
+         ((wi.alive or wi.held) and ws.alive and not sp.archived and not coalesce(x.off, false)) as alive,
          ws.vid as supplier_id, wi.vid as inventory_item_id, sp.supplier_sku, sp.pack_description, sp.pack_qty, sp.inner_qty, sp.inner_unit,
          coalesce(x.pack_price, sp.pack_price) as pack_price, sp.price_includes_tax,
          case when sp.purchase_tax_rate is null then null::uuid
@@ -1755,7 +1937,7 @@ begin
                    and (select r.rate from tax_rates r where r.id = t.purchase_tax_rate_id) = sp.purchase_tax_rate then t.purchase_tax_rate_id
               else (select r.id from tax_rates r where r.location_id = p_loc and coalesce(r.active, true) and r.rate = sp.purchase_tax_rate
                      order by r.is_default desc nulls last, r.name, r.id limit 1) end as purchase_tax_rate_id,
-         case when wi.alive and ws.alive and not sp.archived and not coalesce(x.off, false) then null::timestamptz
+         case when (wi.alive or wi.held) and ws.alive and not sp.archived and not coalesce(x.off, false) then null::timestamptz
               when t.id is null then null::timestamptz
               when t.archived_at is not null then t.archived_at else v_now end as archived_at,
          sp.first_choice, sp.created_at, wi.is_new as item_is_new
@@ -1766,8 +1948,8 @@ begin
     left join supplier_products t on t.id = x.venue_supplier_product_id and t.location_id = p_loc
    where sp.org_id = p_org and x.unlinked_at is null
      and (t.id is not null or (wi.alive and ws.alive and not sp.archived and not coalesce(x.off, false)));
+  update _w_sps set vid = gen_random_uuid() where vid is null;
   if p_write then
-    update _w_sps set vid = gen_random_uuid() where vid is null;
     insert into msm_stock_version_company (version_id, tbl, entity_id, location_key, op, before)
     select p_version, 'sp_site', w.cid, p_loc, case when w.map_new then 'insert' else 'update' end, to_jsonb(x)
       from _w_sps w left join msm_supplier_product_sites x on x.sp_id = w.cid and x.location_id = p_loc
@@ -1777,6 +1959,41 @@ begin
     select w.cid, p_org, p_loc, w.vid from _w_sps w where w.map_new;
     update msm_supplier_product_sites s set venue_supplier_product_id = w.vid, updated_at = now()
       from _w_sps w where s.sp_id = w.cid and s.location_id = p_loc and s.venue_supplier_product_id is null;
+  end if;
+
+  -- -- cost here (plan 4.5): the items whose supplier price this publish adds, changes or switches off
+  --    here, and the items new here. Their cost follows the SITE's own rule after the write.
+  drop table if exists _w_cost;
+  create temp table _w_cost on commit drop as
+  select w.inventory_item_id as item
+    from _w_sps w left join supplier_products t on t.id = w.vid and t.location_id = p_loc
+   where (w.alive and w.is_new)
+      or (not w.is_new and ((t.pack_price, t.pack_qty, t.inner_qty, t.inner_unit, coalesce(t.price_includes_tax, false), t.archived_at)
+                              is distinct from (w.pack_price, w.pack_qty, w.inner_qty, w.inner_unit, coalesce(w.price_includes_tax, false), w.archived_at)
+                            or (coalesce(w.price_includes_tax, false) and t.purchase_tax_rate_id is distinct from w.purchase_tax_rate_id)))
+  union
+  select w.vid from _w_items w where w.is_new and w.alive;
+  drop table if exists _w_price;
+  create temp table _w_price (item uuid, sp_id uuid, pack_price numeric, pack_qty numeric, inner_qty numeric, inner_unit text,
+                              inc boolean, rate_id uuid, pref boolean) on commit drop;
+  if not p_write then
+    -- the prices the site will have: the company's as planned (a new one is preferred as the writer
+    -- makes it) and the site's own live ones
+    insert into _w_price
+    select w.inventory_item_id, w.vid, w.pack_price, w.pack_qty, w.inner_qty, w.inner_unit, coalesce(w.price_includes_tax, false), w.purchase_tax_rate_id,
+           case when w.is_new then w.rk = 1 and not exists (select 1 from supplier_products e where e.location_id = p_loc and e.inventory_item_id = w.inventory_item_id
+                                                             and e.is_preferred and e.archived_at is null)
+                else coalesce((select t.is_preferred from supplier_products t where t.id = w.vid and t.location_id = p_loc), false) end
+      from (select x.*, case when x.is_new then row_number() over (partition by x.inventory_item_id, x.is_new order by x.first_choice desc, x.created_at, x.cid) end as rk
+              from _w_sps x where x.alive) w
+     where w.inventory_item_id in (select c.item from _w_cost c);
+    insert into _w_price
+    select s.inventory_item_id, s.id, s.pack_price, s.pack_qty, s.inner_qty, s.inner_unit, coalesce(s.price_includes_tax, false), s.purchase_tax_rate_id,
+           coalesce(s.is_preferred, false)
+      from supplier_products s
+     where s.location_id = p_loc and s.archived_at is null and s.inventory_item_id in (select c.item from _w_cost c)
+       and not exists (select 1 from _w_sps w where w.vid = s.id);
+    perform public.msm_stock__cost_plan(p_loc, v_rule);
   end if;
 
   -- -- what would change ----------------------------------------------------
@@ -1816,6 +2033,15 @@ begin
                         where sp.org_id = p_org and not sp.archived
                           and not exists (select 1 from _w_sups ws where ws.cid = sp.supplier_id and ws.alive))
   ) into v_counts;
+  if not p_write then
+    v_counts := v_counts || jsonb_build_object(
+      'cost_rule', v_rule,
+      'costs_changed', (select count(*) from _w_newcost),
+      'costs', (select coalesce(jsonb_agg(jsonb_build_object('name', c.name, 'before', c.prev, 'after', c.cost, 'new', c.prev is null)
+                                          order by c.rk), '[]'::jsonb)
+                  from (select x.*, row_number() over (order by (x.prev is null), abs(x.cost - coalesce(x.prev, 0)) / nullif(x.prev, 0) desc nulls last, x.name) as rk
+                          from _w_newcost x) c where c.rk <= 10));
+  end if;
   v_counts := v_counts || jsonb_build_object('writes',
       (v_counts ->> 'items_new')::int + (v_counts ->> 'items_changed')::int + (v_counts ->> 'packs_new')::int + (v_counts ->> 'packs_changed')::int
     + (v_counts ->> 'bridges_new')::int + (v_counts ->> 'bridges_changed')::int + (v_counts ->> 'suppliers_new')::int
@@ -1826,11 +2052,13 @@ begin
       select * from (
         select 'item' as kind, w.vid as row_id, w.cid as company_id, w.name as name,
                public.msm_stock__pick(to_jsonb(t), array['name', 'category', 'accounting_group', 'base_unit', 'allergens', 'sku', 'barcode',
-                                                         'shelf_life_days', 'returns_to_shelf', 'purchase_tax_rate_id', 'archived_at']) as site,
+                                                         'shelf_life_days', 'returns_to_shelf', 'archived_at'])
+                 || jsonb_build_object('vat', public.msm_stock__rate_words(t.purchase_tax_rate_id)) as site,
                jsonb_build_object('name', w.name, 'category', w.category, 'accounting_group', w.accounting_group, 'base_unit', w.base_unit,
                                   'allergens', w.allergens, 'sku', w.sku, 'barcode', w.barcode, 'shelf_life_days', w.shelf_life_days,
-                                  'returns_to_shelf', w.returns_to_shelf, 'purchase_tax_rate_id', w.purchase_tax_rate_id, 'archived_at', w.archived_at) as company,
-               (t.company_ref is null) as linking
+                                  'returns_to_shelf', w.returns_to_shelf, 'vat', public.msm_stock__rate_words(w.purchase_tax_rate_id),
+                                  'archived_at', w.archived_at) as company,
+               (t.company_ref is null) as linking, t.updated_at as site_changed_at
           from _w_items w join inventory_items t on t.id = w.vid and t.location_id = p_loc
          where not w.is_new and (t.company_ref, t.name, t.category, t.accounting_group, t.base_unit, t.allergens, t.sku, t.barcode,
                                 t.shelf_life_days, t.returns_to_shelf, t.purchase_tax_rate_id, t.archived_at)
@@ -1841,18 +2069,20 @@ begin
                public.msm_stock__pick(to_jsonb(t), array['name', 'contact_name', 'phone', 'payment_terms_days', 'archived_at']),
                jsonb_build_object('name', w.name, 'contact_name', w.contact_name, 'phone', w.phone, 'payment_terms_days', w.payment_terms_days,
                                   'archived_at', w.archived_at),
-               (t.company_ref is null)
+               (t.company_ref is null), t.updated_at
           from _w_sups w join suppliers t on t.id = w.vid and t.location_id = p_loc
          where not w.is_new and (t.company_ref, t.name, t.contact_name, t.phone, t.payment_terms_days, t.archived_at)
                             is distinct from (w.cid, w.name, w.contact_name, w.phone, w.payment_terms_days, w.archived_at)
         union all
         select 'price', w.vid, w.cid, coalesce(w.pack_description, w.supplier_sku, 'supplier pack'),
                public.msm_stock__pick(to_jsonb(t), array['supplier_sku', 'pack_description', 'pack_qty', 'inner_qty', 'inner_unit', 'pack_price',
-                                                         'price_includes_tax', 'purchase_tax_rate_id', 'archived_at']),
+                                                         'price_includes_tax', 'archived_at'])
+                 || jsonb_build_object('vat', public.msm_stock__rate_words(t.purchase_tax_rate_id)),
                jsonb_build_object('supplier_sku', w.supplier_sku, 'pack_description', w.pack_description, 'pack_qty', w.pack_qty,
                                   'inner_qty', w.inner_qty, 'inner_unit', w.inner_unit, 'pack_price', w.pack_price,
-                                  'price_includes_tax', w.price_includes_tax, 'purchase_tax_rate_id', w.purchase_tax_rate_id, 'archived_at', w.archived_at),
-               (t.company_ref is null)
+                                  'price_includes_tax', w.price_includes_tax, 'vat', public.msm_stock__rate_words(w.purchase_tax_rate_id),
+                                  'archived_at', w.archived_at),
+               (t.company_ref is null), t.updated_at
           from _w_sps w join supplier_products t on t.id = w.vid and t.location_id = p_loc
          where not w.is_new and (t.company_ref, t.supplier_id, t.inventory_item_id, t.supplier_sku, t.pack_description, t.pack_qty,
                                 t.inner_qty, t.inner_unit, t.pack_price, t.price_includes_tax, t.purchase_tax_rate_id, t.archived_at)
@@ -2000,6 +2230,16 @@ begin
           w.pack_price, w.price_includes_tax, w.purchase_tax_rate_id, w.archived_at);
   get diagnostics n = row_count; v_writes := v_writes + n;
 
+  -- cost here: the site's own rule over the prices as they are now written (applied last, below)
+  if exists (select 1 from _w_cost) then
+    insert into _w_price
+    select s.inventory_item_id, s.id, s.pack_price, s.pack_qty, s.inner_qty, s.inner_unit, coalesce(s.price_includes_tax, false), s.purchase_tax_rate_id,
+           coalesce(s.is_preferred, false)
+      from supplier_products s
+     where s.location_id = p_loc and s.archived_at is null and s.inventory_item_id in (select c.item from _w_cost c);
+  end if;
+  perform public.msm_stock__cost_plan(p_loc, v_rule);
+
   -- items new in this run: their preferred supplier (insert only) and their first area (exactly one
   -- live area of the usual kind at the site; otherwise the site picks)
   update inventory_items t
@@ -2043,10 +2283,31 @@ begin
      and (t.company_ref, t.name, t.category, t.accounting_group, t.base_unit, t.allergens, t.sku, t.barcode, t.shelf_life_days,
           t.returns_to_shelf, t.purchase_tax_rate_id, t.archived_at)
          is distinct from (w.cid, w.name, w.category, w.accounting_group, w.base_unit, w.allergens, w.sku, w.barcode, w.shelf_life_days,
-          w.returns_to_shelf, w.purchase_tax_rate_id, w.archived_at);
+          w.returns_to_shelf, w.purchase_tax_rate_id, w.archived_at)
+     and (w.archived_at is null or t.archived_at is not null or coalesce(t.on_hand, 0) = 0);
   get diagnostics n = row_count; v_writes := v_writes + n;
 
-  return v_counts || jsonb_build_object('written', v_writes);
+  -- cost here, last: only items whose cost the site's own rule moves (never 0); one row each for
+  -- Undo (the cost before, the cost history rows it closed, the one it opened)
+  insert into msm_stock_version_rows (version_id, location_id, tbl, row_id, op, before, after)
+  select p_version, p_loc, 'item_cost', c.item, 'update',
+         jsonb_build_object('current_cost', c.prev, 'open_history',
+           (select coalesce(jsonb_agg(h.id), '[]'::jsonb) from item_cost_history h
+             where h.location_id = p_loc and h.inventory_item_id = c.item and h.effective_to is null)),
+         jsonb_build_object('current_cost', c.cost, 'history_id', c.hist_id, 'name', c.name)
+    from _w_newcost c
+  on conflict do nothing;
+  update item_cost_history h set effective_to = v_now
+    from _w_newcost c
+   where h.location_id = p_loc and h.inventory_item_id = c.item and h.effective_to is null;
+  insert into item_cost_history (id, location_id, inventory_item_id, supplier_product_id, pack_price, base_unit_cost, source, effective_from)
+  select c.hist_id, p_loc, c.item, c.sp_id, round(c.net, 4), c.cost, 'CATALOG', v_now from _w_newcost c;
+  update inventory_items t set current_cost = c.cost
+    from _w_newcost c
+   where t.id = c.item and t.location_id = p_loc and t.current_cost is distinct from c.cost;
+  get diagnostics n = row_count;
+
+  return v_counts || jsonb_build_object('written', v_writes, 'costs_set', n);
 end
 $fn$;
 
@@ -2115,6 +2376,23 @@ begin
       format('%s is bought in %s but counted in %s, and there is no unit bridge between them. Add one on the item.', r.name, r.inner_unit, r.base_unit)));
   end loop;
 
+  -- base unit: the company's unit differs from the site row's while that row is in use there (its
+  -- stock, counts, pars and orders are figures in the site's unit)
+  for r in
+    with d as materialized (
+      select h.name, t.id, t.base_unit as site_unit, h.base_unit
+        from _h_on h
+        join inventory_items t on t.id = h.venue_item_id and t.location_id = p_loc
+       where t.base_unit is distinct from h.base_unit)
+    select d.name, d.site_unit, d.base_unit from d
+     where public.msm_stock__site_item_in_use(p_loc, d.id)
+     order by d.name limit 5
+  loop
+    v_block := v_block || jsonb_build_array(jsonb_build_object('code', 'unit_in_use', 'words',
+      format('%s is counted in %s at %s and has stock, counts, pars or orders there, so it cannot change to %s. Undo that change, or make a new item instead.',
+             r.name, r.site_unit, v_site, r.base_unit)));
+  end loop;
+
   -- warnings
   select count(*) into v_new from _h_on h
    where not exists (select 1 from inventory_items t where t.id = h.venue_item_id and t.location_id = p_loc);
@@ -2143,6 +2421,30 @@ begin
       format('Some supplier prices do not go to %s because their supplier is not on there.', v_site)));
   end if;
   return jsonb_build_object('block', v_block, 'warn', v_warn);
+end
+$fn$;
+
+-- Fresh statistics before a big draft is frozen: right after Start from a site or a big staging the
+-- planner still thinks these tables are empty, and the freeze then ran past 8 s (1.5 s once analysed).
+create or replace function public.msm_stock__fresh_stats(p_draft uuid, p_frozen boolean)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+begin
+  if p_draft is not null and (select count(*) from msm_stock_changes c where c.draft_id = p_draft) > 2000 then
+    if not p_frozen then
+      analyze public.msm_stock_changes;
+    else
+      analyze public.msm_stock_items;
+      analyze public.msm_stock_item_sites;
+      analyze public.msm_stock_packs;
+      analyze public.msm_suppliers;
+      analyze public.msm_supplier_sites;
+      analyze public.msm_supplier_products;
+    end if;
+  end if;
 end
 $fn$;
 
@@ -2176,6 +2478,7 @@ begin
   perform public.msm_stock__require_viewer(p_org);
   select d.id into v_draft from msm_stock_drafts d where d.org_id = p_org and d.status = 'open';
   v_changes := coalesce((select count(*) from msm_stock_changes c where c.draft_id = v_draft), 0);
+  perform public.msm_stock__fresh_stats(v_draft, false);
   begin
     if v_draft is not null then
       perform public.msm_stock__freeze(p_org, v_draft, null);
@@ -2316,8 +2619,10 @@ begin
   if v_draft is null or not exists (select 1 from msm_stock_changes c where c.draft_id = v_draft) then
     raise exception 'There is nothing to publish: no changes are staged.' using errcode = '22023';
   end if;
+  perform public.msm_stock__fresh_stats(v_draft, false);
   v_version := public.msm_stock__new_version(p_org, 'publish', v_draft, null, p_when, p_note);
   perform public.msm_stock__freeze(p_org, v_draft, v_version);
+  perform public.msm_stock__fresh_stats(v_draft, true);
   for v_loc in select public.msm_stock__sites(p_org) loop
     v_h := public.msm_stock__health(p_org, v_loc);
     if jsonb_array_length(v_h -> 'block') > 0 then
@@ -2463,57 +2768,14 @@ begin
 end
 $fn$;
 
--- Is a site row still only what the version made (nothing has used it since)?
-create or replace function public.msm_stock__unused(p_tbl text, p_id uuid, p_version uuid, p_loc uuid)
-returns boolean
-language plpgsql
-stable
-security definer
-set search_path = public
-as $fn$
-begin
-  if p_tbl = 'inventory_items' then
-    return not exists (select 1 from stock_movements m where m.location_id = p_loc and m.inventory_item_id = p_id)
-       and not exists (select 1 from item_cost_history h where h.inventory_item_id = p_id)
-       and not exists (select 1 from stock_count_lines l where l.inventory_item_id = p_id)
-       and not exists (select 1 from po_lines l where l.inventory_item_id = p_id)
-       and not exists (select 1 from recipe_lines l where l.component_item_id = p_id)
-       and not exists (select 1 from recipes r where r.output_item_id = p_id)
-       and not exists (select 1 from stock_transfer_lines l where l.inventory_item_id = p_id or l.to_inventory_item_id = p_id)
-       and not exists (select 1 from waste_events w where w.inventory_item_id = p_id)
-       and not exists (select 1 from supplier_invoice_lines l where l.matched_item_id = p_id)
-       and not exists (select 1 from par_levels pl where pl.inventory_item_id = p_id)
-       and not exists (select 1 from item_packaging_formats x where x.inventory_item_id = p_id
-                        and not exists (select 1 from msm_stock_version_rows r where r.version_id = p_version and r.row_id = x.id and r.op = 'insert'))
-       and not exists (select 1 from inventory_item_conversions x where x.inventory_item_id = p_id
-                        and not exists (select 1 from msm_stock_version_rows r where r.version_id = p_version and r.row_id = x.id and r.op = 'insert'))
-       and not exists (select 1 from supplier_products x where x.inventory_item_id = p_id
-                        and not exists (select 1 from msm_stock_version_rows r where r.version_id = p_version and r.row_id = x.id and r.op = 'insert'))
-       and not exists (select 1 from inventory_item_areas x where x.inventory_item_id = p_id
-                        and not exists (select 1 from msm_stock_version_rows r where r.version_id = p_version and r.row_id = x.id and r.op = 'insert'))
-       and not exists (select 1 from inventory_item_area_stock x where x.inventory_item_id = p_id and x.on_hand <> 0);
-  elsif p_tbl = 'suppliers' then
-    return not exists (select 1 from purchase_orders o where o.supplier_id = p_id)
-       and not exists (select 1 from supplier_invoices i where i.supplier_id = p_id)
-       and not exists (select 1 from inventory_items i where i.default_supplier_id = p_id
-                        and not exists (select 1 from msm_stock_version_rows r where r.version_id = p_version and r.row_id = i.id and r.op = 'insert'))
-       and not exists (select 1 from supplier_products x where x.supplier_id = p_id
-                        and not exists (select 1 from msm_stock_version_rows r where r.version_id = p_version and r.row_id = x.id and r.op = 'insert'));
-  elsif p_tbl = 'supplier_products' then
-    return not exists (select 1 from po_lines l where l.supplier_product_id = p_id)
-       and not exists (select 1 from item_cost_history h where h.supplier_product_id = p_id)
-       and not exists (select 1 from supplier_invoice_lines l where l.supplier_product_id = p_id);
-  elsif p_tbl = 'item_packaging_formats' then
-    return not exists (select 1 from recipe_lines l where l.location_id = p_loc and l.unit = '@' || p_id::text)
-       and not exists (select 1 from item_packaging_formats x where x.parent_format_id = p_id
-                        and not exists (select 1 from msm_stock_version_rows r where r.version_id = p_version and r.row_id = x.id and r.op = 'insert'));
-  else
-    return true;
-  end if;
-end
-$fn$;
-
--- One site of an Undo: put back what version p_of changed there.
+-- One site of an Undo: put back what version p_of changed there. Set based (a first publish to a site
+-- added 5,000 items, packs and prices: one statement per table and kind, never one per row).
+--   0. cost here: back to what it was where the publish's own cost row is still the open one and
+--      the cost is still the publish's (a delivery or a count since decides, and is kept);
+--   1. changed rows back to their before image (company columns only; on hand and preferred untouched);
+--   2. rows it added: removed when nothing has used them since; otherwise archived and handed to the
+--      site (company_ref cleared). A row is used when the ledger, a cost, a count, a par, an order, an
+--      invoice, a transfer, waste, a recipe or production points at it, or a row it holds was used.
 create or replace function public.msm_stock__undo_site(p_undo uuid, p_of uuid, p_loc uuid)
 returns jsonb
 language plpgsql
@@ -2522,12 +2784,37 @@ set search_path = public
 as $fn$
 declare
   t text;
-  r record;
   n integer := 0;
   m integer;
+  k integer;
 begin
   perform set_config('servos.stock_publish', txid_current()::text, true);
-  -- 1. changed rows back to their before image (company columns only; on hand, cost, preferred untouched)
+
+  -- 0. cost here
+  drop table if exists _u_cost;
+  create temp table _u_cost on commit drop as
+  select vr.row_id as item, (vr.before ->> 'current_cost')::numeric as old_cost, (vr.after ->> 'current_cost')::numeric as new_cost,
+         (vr.after ->> 'history_id')::uuid as hist_id,
+         array(select (x #>> '{}')::uuid from jsonb_array_elements(coalesce(vr.before -> 'open_history', '[]'::jsonb)) x) as reopen
+    from msm_stock_version_rows vr
+    join inventory_items it on it.id = vr.row_id and it.location_id = p_loc
+   where vr.version_id = p_of and vr.location_id = p_loc and vr.tbl = 'item_cost'
+     and it.current_cost is not distinct from (vr.after ->> 'current_cost')::numeric
+     and exists (select 1 from item_cost_history h where h.id = (vr.after ->> 'history_id')::uuid and h.effective_to is null);
+  insert into msm_stock_version_rows (version_id, location_id, tbl, row_id, op, before, after)
+  select p_undo, p_loc, 'item_cost', c.item, 'restore', jsonb_build_object('current_cost', c.new_cost), jsonb_build_object('current_cost', c.old_cost)
+    from _u_cost c
+  on conflict do nothing;
+  delete from item_cost_history h using _u_cost c where h.id = c.hist_id and h.location_id = p_loc;
+  update item_cost_history h set effective_to = null
+    from _u_cost c
+   where h.location_id = p_loc and h.inventory_item_id = c.item and h.id = any(c.reopen);
+  update inventory_items it set current_cost = c.old_cost
+    from _u_cost c
+   where it.id = c.item and it.location_id = p_loc;
+  get diagnostics m = row_count; n := n + m;
+
+  -- 1. changed rows back to their before image
   foreach t in array array['suppliers', 'item_packaging_formats', 'inventory_item_conversions', 'supplier_products', 'inventory_items'] loop
     execute format(
       'insert into public.msm_stock_version_rows (version_id, location_id, tbl, row_id, op, before, after)
@@ -2544,40 +2831,104 @@ begin
       (select string_agg('r.' || c, ', ') from unnest(public.msm_stock__cols(t)) c)) using p_of, p_loc;
     get diagnostics m = row_count; n := n + m;
   end loop;
-  -- 2. inserted rows: removed when unused, else archived and handed to the site (company_ref cleared)
-  for r in
-    select vr.tbl, vr.row_id from msm_stock_version_rows vr
-     where vr.version_id = p_of and vr.location_id = p_loc and vr.op = 'insert'
-     order by case vr.tbl when 'inventory_item_areas' then 1 when 'supplier_products' then 2 when 'item_packaging_formats' then 3
-                          when 'inventory_item_conversions' then 4 when 'inventory_items' then 5 else 6 end,
-              vr.row_id
-  loop
-    if r.tbl = 'inventory_item_areas' then
-      delete from inventory_item_areas a where a.id = r.row_id and a.location_id = p_loc
-        and not exists (select 1 from inventory_item_area_stock s join inventory_item_areas a2 on a2.id = r.row_id
-                         where s.inventory_item_id = a2.inventory_item_id and s.area_id = a2.area_id and s.on_hand <> 0)
-        and not exists (select 1 from stock_movements mv join inventory_item_areas a2 on a2.id = r.row_id
-                         where mv.location_id = p_loc and mv.inventory_item_id = a2.inventory_item_id);
-      get diagnostics m = row_count;
-      if m > 0 then
-        insert into msm_stock_version_rows (version_id, location_id, tbl, row_id, op) values (p_undo, p_loc, r.tbl, r.row_id, 'delete') on conflict do nothing;
-      end if;
-      n := n + m;
-      continue;
-    end if;
-    if public.msm_stock__unused(r.tbl, r.row_id, p_of, p_loc) then
-      execute format('delete from public.%I x where x.id = $1 and x.location_id = $2', r.tbl) using r.row_id, p_loc;
-      get diagnostics m = row_count;
-      if m > 0 then
-        insert into msm_stock_version_rows (version_id, location_id, tbl, row_id, op) values (p_undo, p_loc, r.tbl, r.row_id, 'delete') on conflict do nothing;
-      end if;
-    else
-      execute format('update public.%I x set archived_at = coalesce(x.archived_at, now()), company_ref = null where x.id = $1 and x.location_id = $2',
-                     r.tbl) using r.row_id, p_loc;
-      get diagnostics m = row_count;
-      insert into msm_stock_version_rows (version_id, location_id, tbl, row_id, op) values (p_undo, p_loc, r.tbl, r.row_id, 'archive') on conflict do nothing;
-    end if;
-    n := n + m;
+
+  -- 2. rows it added: which are used
+  drop table if exists _u_ins;
+  create temp table _u_ins on commit drop as
+  select vr.tbl, vr.row_id, true as unused
+    from msm_stock_version_rows vr
+   where vr.version_id = p_of and vr.location_id = p_loc and vr.op = 'insert'
+     and vr.tbl in ('inventory_item_areas', 'supplier_products', 'item_packaging_formats', 'inventory_item_conversions', 'inventory_items', 'suppliers');
+  create index on _u_ins (row_id);
+  analyze _u_ins;
+
+  -- an area row: its stock there, or any movement of the item here
+  update _u_ins u set unused = false from inventory_item_areas a
+   where u.tbl = 'inventory_item_areas' and a.id = u.row_id and a.location_id = p_loc
+     and (exists (select 1 from inventory_item_area_stock st where st.inventory_item_id = a.inventory_item_id and st.area_id = a.area_id and st.on_hand <> 0)
+          or exists (select 1 from stock_movements mv where mv.location_id = p_loc and mv.inventory_item_id = a.inventory_item_id));
+  -- a supplier price: an order line, a cost row or an invoice line
+  update _u_ins u set unused = false where u.tbl = 'supplier_products' and exists (select 1 from po_lines l where l.supplier_product_id = u.row_id);
+  update _u_ins u set unused = false where u.tbl = 'supplier_products' and exists (select 1 from item_cost_history h where h.supplier_product_id = u.row_id);
+  update _u_ins u set unused = false where u.tbl = 'supplier_products'
+     and u.row_id in (select l.supplier_product_id from supplier_invoice_lines l where l.location_id = p_loc and l.supplier_product_id is not null);
+  -- a pack: a recipe line in that pack
+  update _u_ins u set unused = false where u.tbl = 'item_packaging_formats'
+     and ('@' || u.row_id::text) in (select l.unit from recipe_lines l where l.location_id = p_loc and l.unit like '@%');
+  -- a pack holding a pack the site added
+  update _u_ins u set unused = false where u.tbl = 'item_packaging_formats'
+     and exists (select 1 from item_packaging_formats x where x.parent_format_id = u.row_id and x.location_id = p_loc
+                  and not exists (select 1 from _u_ins v where v.row_id = x.id));
+  -- an item
+  update _u_ins u set unused = false where u.tbl = 'inventory_items' and exists (select 1 from stock_movements mv where mv.location_id = p_loc and mv.inventory_item_id = u.row_id);
+  update _u_ins u set unused = false where u.tbl = 'inventory_items' and exists (select 1 from item_cost_history h where h.inventory_item_id = u.row_id);
+  update _u_ins u set unused = false where u.tbl = 'inventory_items' and exists (select 1 from stock_count_lines l where l.location_id = p_loc and l.inventory_item_id = u.row_id);
+  update _u_ins u set unused = false where u.tbl = 'inventory_items' and exists (select 1 from par_levels pl where pl.location_id = p_loc and pl.inventory_item_id = u.row_id);
+  update _u_ins u set unused = false where u.tbl = 'inventory_items' and exists (select 1 from po_lines l where l.inventory_item_id = u.row_id);
+  update _u_ins u set unused = false where u.tbl = 'inventory_items' and exists (select 1 from recipe_lines l where l.component_item_id = u.row_id);
+  update _u_ins u set unused = false where u.tbl = 'inventory_items' and exists (select 1 from recipes r where r.output_item_id = u.row_id);
+  update _u_ins u set unused = false where u.tbl = 'inventory_items' and exists (select 1 from stock_transfer_lines l where l.inventory_item_id = u.row_id);
+  update _u_ins u set unused = false where u.tbl = 'inventory_items' and exists (select 1 from stock_transfer_lines l where l.to_inventory_item_id = u.row_id);
+  update _u_ins u set unused = false where u.tbl = 'inventory_items' and exists (select 1 from waste_events w where w.inventory_item_id = u.row_id);
+  update _u_ins u set unused = false where u.tbl = 'inventory_items' and exists (select 1 from supplier_invoice_lines l where l.matched_item_id = u.row_id);
+  update _u_ins u set unused = false where u.tbl = 'inventory_items' and exists (select 1 from production_batches b where b.output_item_id = u.row_id);
+  update _u_ins u set unused = false where u.tbl = 'inventory_items'
+     and exists (select 1 from inventory_item_area_stock st where st.inventory_item_id = u.row_id and st.on_hand <> 0);
+  -- an item with a row of the site's own on it (not one this version added)
+  update _u_ins u set unused = false where u.tbl = 'inventory_items'
+     and exists (select 1 from item_packaging_formats x where x.inventory_item_id = u.row_id and not exists (select 1 from _u_ins v where v.row_id = x.id));
+  update _u_ins u set unused = false where u.tbl = 'inventory_items'
+     and exists (select 1 from inventory_item_conversions x where x.inventory_item_id = u.row_id and not exists (select 1 from _u_ins v where v.row_id = x.id));
+  update _u_ins u set unused = false where u.tbl = 'inventory_items'
+     and exists (select 1 from supplier_products x where x.inventory_item_id = u.row_id and not exists (select 1 from _u_ins v where v.row_id = x.id));
+  update _u_ins u set unused = false where u.tbl = 'inventory_items'
+     and exists (select 1 from inventory_item_areas x where x.inventory_item_id = u.row_id and not exists (select 1 from _u_ins v where v.row_id = x.id));
+  -- a supplier
+  update _u_ins u set unused = false where u.tbl = 'suppliers' and exists (select 1 from purchase_orders o where o.supplier_id = u.row_id);
+  update _u_ins u set unused = false where u.tbl = 'suppliers' and exists (select 1 from supplier_invoices i where i.supplier_id = u.row_id);
+  update _u_ins u set unused = false where u.tbl = 'suppliers'
+     and exists (select 1 from inventory_items i where i.default_supplier_id = u.row_id and i.location_id = p_loc and not exists (select 1 from _u_ins v where v.row_id = i.id));
+  update _u_ins u set unused = false where u.tbl = 'suppliers'
+     and exists (select 1 from supplier_products x where x.supplier_id = u.row_id and not exists (select 1 from _u_ins v where v.row_id = x.id));
+  -- a row kept by the site keeps what it hangs on: a pack inside a kept pack, and the item and supplier
+  -- of a kept pack, bridge or price (else removing them would take the kept row with them)
+  for k in 1 .. 5 loop
+    update _u_ins u set unused = false where u.tbl = 'item_packaging_formats' and u.unused
+       and exists (select 1 from item_packaging_formats x join _u_ins c on c.row_id = x.id and not c.unused where x.parent_format_id = u.row_id);
+    get diagnostics m = row_count;
+    exit when m = 0;
+  end loop;
+  update _u_ins u set unused = false where u.tbl = 'inventory_items' and u.unused
+     and (exists (select 1 from item_packaging_formats x join _u_ins c on c.row_id = x.id and not c.unused where x.inventory_item_id = u.row_id)
+       or exists (select 1 from inventory_item_conversions x join _u_ins c on c.row_id = x.id and not c.unused where x.inventory_item_id = u.row_id)
+       or exists (select 1 from supplier_products x join _u_ins c on c.row_id = x.id and not c.unused where x.inventory_item_id = u.row_id));
+  update _u_ins u set unused = false where u.tbl = 'suppliers' and u.unused
+     and exists (select 1 from supplier_products x join _u_ins c on c.row_id = x.id and not c.unused where x.supplier_id = u.row_id);
+
+  -- 2b. remove the unused rows, children first; archive the used ones (area rows that were used stay)
+  with d as (
+    delete from inventory_item_areas a using _u_ins u
+     where u.tbl = 'inventory_item_areas' and u.unused and a.id = u.row_id and a.location_id = p_loc
+    returning a.id)
+  insert into msm_stock_version_rows (version_id, location_id, tbl, row_id, op)
+  select p_undo, p_loc, 'inventory_item_areas', d.id, 'delete' from d on conflict do nothing;
+  get diagnostics m = row_count; n := n + m;
+  foreach t in array array['supplier_products', 'item_packaging_formats', 'inventory_item_conversions', 'inventory_items', 'suppliers'] loop
+    execute format(
+      'with d as (delete from public.%1$I x using _u_ins u
+                   where u.tbl = %1$L and u.unused and x.id = u.row_id and x.location_id = $1
+                  returning x.id)
+       insert into public.msm_stock_version_rows (version_id, location_id, tbl, row_id, op)
+       select $2, $1, %1$L, d.id, ''delete'' from d on conflict do nothing', t) using p_loc, p_undo;
+    get diagnostics m = row_count; n := n + m;
+    execute format(
+      'with a as (update public.%1$I x set archived_at = coalesce(x.archived_at, now()), company_ref = null
+                    from _u_ins u
+                   where u.tbl = %1$L and not u.unused and x.id = u.row_id and x.location_id = $1
+                  returning x.id)
+       insert into public.msm_stock_version_rows (version_id, location_id, tbl, row_id, op)
+       select $2, $1, %1$L, a.id, ''archive'' from a on conflict do nothing', t) using p_loc, p_undo;
+    get diagnostics m = row_count; n := n + m;
   end loop;
   return jsonb_build_object('written', n);
 end
@@ -2697,11 +3048,21 @@ begin
              last_error = 'The site was busy (a sale or a delivery held a stock item), so it gave way. Trying again next minute.'
        where id = p_vs;
       v_status := 'waiting';
+    when sqlstate '55000' then
+      -- our own refusal, in words (a base unit in use at the site): trying again will not help
+      update msm_stock_version_sites
+         set status = 'failed', last_error = left(sqlerrm, 400), due_at = now()
+       where id = p_vs;
+      v_status := 'failed';
     when others then
+      -- the screens show words; the database's own text is kept for ServOS in counts.error_detail
       update msm_stock_version_sites
          set status = case when attempts >= 5 then 'failed' else 'waiting' end,
              due_at = now() + interval '1 minute' * least(attempts, 10),
-             last_error = left(sqlerrm, 400)
+             last_error = case when attempts >= 5
+                               then 'This site could not be written, so nothing changed there. Undo the version, or ask ServOS (History keeps the detail).'
+                               else 'This site could not be written this time, so nothing changed there. It tries again in a few minutes.' end,
+             counts = counts || jsonb_build_object('error_detail', left(sqlerrm, 400), 'error_code', sqlstate)
        where id = p_vs;
       v_status := 'failed';
   end;
@@ -2891,15 +3252,110 @@ begin
   values (v_version, p_org, p_loc, 'done', now(), n_items + n_packs + n_bridges + n_sups + n_sps, now(),
           jsonb_build_object('items', n_items, 'packs', n_packs, 'bridges', n_bridges, 'suppliers', n_sups, 'prices', n_sps));
   perform public.msm_stock__refresh_version(v_version);
+  -- the company tables went from empty to the whole list: fresh statistics for the next publish
+  analyze public.msm_stock_items;
+  analyze public.msm_stock_item_sites;
+  analyze public.msm_stock_packs;
+  analyze public.msm_suppliers;
+  analyze public.msm_supplier_products;
   return jsonb_build_object('ok', true, 'version_id', v_version, 'items', n_items, 'packs', n_packs, 'bridges', n_bridges,
                             'suppliers', n_sups, 'prices', n_sps, 'self_check_writes', 0);
 end
 $fn$;
 
 -- Suggested links at a site: its own live rows that look like a company row (nothing links until an
--- editor ticks it). Items by SKU and base unit, then name and base unit; suppliers by name; packs,
--- bridges and prices of an item (and supplier) that is linked or suggested, by name and size.
--- Answers one page of each (at most p_limit each, 500 by default).
+-- editor ticks it). Items by SKU and base unit, then name and base unit (two equality joins, so 5,000
+-- items answer in well under a second); suppliers by name; packs, bridges and prices of an item (and
+-- supplier) that is linked or suggested with one choice, by name and size. One set, shared by the
+-- page below and by "tick every single match". venue_price and company_price: a price's two figures
+-- (the site's own price is kept when the link is ticked).
+create or replace function public.msm_stock__link_pairs(p_org uuid, p_loc uuid)
+returns table (kind text, company_id uuid, company_name text, venue_id uuid, venue_name text, why text,
+               choices bigint, venue_choices bigint, venue_price numeric, company_price numeric)
+language sql
+stable
+security definer
+set search_path = public
+as $fn$
+  with free_items as materialized (
+    select t.id, t.name, t.base_unit, lower(btrim(t.name)) as nkey, nullif(lower(btrim(t.sku)), '') as skey
+      from inventory_items t
+     where t.location_id = p_loc and t.archived_at is null and t.company_ref is null
+       and not exists (select 1 from msm_stock_item_sites s where s.location_id = p_loc and s.venue_item_id = t.id)
+  ), comp_items as materialized (
+    select i.id, i.name, i.base_unit, lower(btrim(i.name)) as nkey, nullif(lower(btrim(i.sku)), '') as skey
+      from msm_stock_items i
+     where i.org_id = p_org and not i.archived
+       and not exists (select 1 from msm_stock_item_sites s where s.item_id = i.id and s.location_id = p_loc and s.venue_item_id is not null)
+  ), item_m as (
+    select i.id as company_id, i.name as company_name, t.id as venue_id, t.name as venue_name, 'Same SKU and unit'::text as why
+      from comp_items i join free_items t on t.skey = i.skey and t.base_unit = i.base_unit
+    union all
+    select i.id, i.name, t.id, t.name, 'Same name and unit'::text
+      from comp_items i join free_items t on t.nkey = i.nkey and t.base_unit = i.base_unit
+     where not coalesce(t.skey = i.skey, false)
+  ), item_c as materialized (
+    select m.*, count(*) over (partition by m.company_id) as choices, count(*) over (partition by m.venue_id) as venue_choices from item_m m
+  ), item_pairs as materialized (
+    select s.item_id as company_id, s.venue_item_id as venue_id from msm_stock_item_sites s
+     where s.location_id = p_loc and s.org_id = p_org and s.venue_item_id is not null and s.unlinked_at is null
+    union all select c.company_id, c.venue_id from item_c c where c.choices = 1 and c.venue_choices = 1
+  ), sup_c as materialized (
+    select m.id as company_id, m.name as company_name, t.id as venue_id, t.name as venue_name, 'Same name'::text as why,
+           count(*) over (partition by m.id) as choices, count(*) over (partition by t.id) as venue_choices
+      from msm_suppliers m
+      join suppliers t on t.location_id = p_loc and t.archived_at is null and t.company_ref is null and lower(btrim(t.name)) = lower(btrim(m.name))
+     where m.org_id = p_org and not m.archived
+       and not exists (select 1 from msm_supplier_sites s where s.supplier_id = m.id and s.location_id = p_loc and s.venue_supplier_id is not null)
+       and not exists (select 1 from msm_supplier_sites s where s.location_id = p_loc and s.venue_supplier_id = t.id)
+  ), sup_pairs as materialized (
+    select s.supplier_id as company_id, s.venue_supplier_id as venue_id from msm_supplier_sites s
+     where s.location_id = p_loc and s.org_id = p_org and s.venue_supplier_id is not null and s.unlinked_at is null
+    union all select c.company_id, c.venue_id from sup_c c where c.choices = 1 and c.venue_choices = 1
+  ), sp_c as (
+    select sp.id as company_id, coalesce(sp.pack_description, sp.supplier_sku, 'supplier pack') as company_name, t.id as venue_id,
+           coalesce(t.pack_description, t.supplier_sku, 'supplier pack') as venue_name, 'Same item, supplier and pack'::text as why,
+           count(*) over (partition by sp.id) as choices, count(*) over (partition by t.id) as venue_choices,
+           t.pack_price as venue_price, sp.pack_price as company_price
+      from msm_supplier_products sp
+      join item_pairs ip on ip.company_id = sp.item_id
+      join sup_pairs su on su.company_id = sp.supplier_id
+      join supplier_products t on t.location_id = p_loc and t.inventory_item_id = ip.venue_id and t.supplier_id = su.venue_id
+                              and t.archived_at is null and t.company_ref is null
+                              and t.pack_qty = sp.pack_qty and t.inner_qty = sp.inner_qty and t.inner_unit = sp.inner_unit
+     where sp.org_id = p_org and not sp.archived
+       and not exists (select 1 from msm_supplier_product_sites x where x.sp_id = sp.id and x.location_id = p_loc and x.venue_supplier_product_id is not null)
+       and not exists (select 1 from msm_supplier_product_sites x where x.location_id = p_loc and x.venue_supplier_product_id = t.id)
+  ), pack_c as (
+    select p.id as company_id, p.name as company_name, t.id as venue_id, t.name as venue_name, 'Same item, name and size'::text as why,
+           count(*) over (partition by p.id) as choices, count(*) over (partition by t.id) as venue_choices
+      from msm_stock_packs p
+      join item_pairs ip on ip.company_id = p.item_id
+      join item_packaging_formats t on t.location_id = p_loc and t.inventory_item_id = ip.venue_id and t.archived_at is null and t.company_ref is null
+                                   and lower(btrim(t.name)) = lower(btrim(p.name)) and t.qty_in_base = p.qty_in_base
+     where p.org_id = p_org and not p.archived
+       and not exists (select 1 from msm_stock_pack_sites x where x.pack_id = p.id and x.location_id = p_loc and x.venue_format_id is not null)
+       and not exists (select 1 from msm_stock_pack_sites x where x.location_id = p_loc and x.venue_format_id = t.id)
+  ), bridge_c as (
+    select b.id as company_id, format('%s %s = %s %s', b.from_qty, b.from_unit, b.to_qty, b.to_unit) as company_name, t.id as venue_id,
+           format('%s %s = %s %s', t.from_qty, t.from_unit, t.to_qty, t.to_unit) as venue_name, 'Same item and units'::text as why,
+           count(*) over (partition by b.id) as choices, count(*) over (partition by t.id) as venue_choices
+      from msm_stock_bridges b
+      join item_pairs ip on ip.company_id = b.item_id
+      join inventory_item_conversions t on t.location_id = p_loc and t.inventory_item_id = ip.venue_id and t.archived_at is null and t.company_ref is null
+                                       and t.from_unit = b.from_unit and t.to_unit = b.to_unit and t.from_qty = b.from_qty and t.to_qty = b.to_qty
+     where b.org_id = p_org and not b.archived
+       and not exists (select 1 from msm_stock_bridge_sites x where x.bridge_id = b.id and x.location_id = p_loc and x.venue_conversion_id is not null)
+       and not exists (select 1 from msm_stock_bridge_sites x where x.location_id = p_loc and x.venue_conversion_id = t.id)
+  )
+  select 'item', c.company_id, c.company_name, c.venue_id, c.venue_name, c.why, c.choices, c.venue_choices, null::numeric, null::numeric from item_c c
+  union all select 'supplier', c.company_id, c.company_name, c.venue_id, c.venue_name, c.why, c.choices, c.venue_choices, null, null from sup_c c
+  union all select 'price', c.company_id, c.company_name, c.venue_id, c.venue_name, c.why, c.choices, c.venue_choices, c.venue_price, c.company_price from sp_c c
+  union all select 'pack', c.company_id, c.company_name, c.venue_id, c.venue_name, c.why, c.choices, c.venue_choices, null, null from pack_c c
+  union all select 'bridge', c.company_id, c.company_name, c.venue_id, c.venue_name, c.why, c.choices, c.venue_choices, null, null from bridge_c c;
+$fn$;
+
+-- One page of each kind (at most p_limit each, 500 by default), with each kind's total.
 create or replace function public.msm_stock_link_candidates(p_org uuid, p_loc uuid, p_offset integer default 0, p_limit integer default 500)
 returns jsonb
 language plpgsql
@@ -2914,92 +3370,37 @@ declare
 begin
   perform public.msm_stock__require_viewer(p_org);
   if not public.msm_stock__venue_in_org(p_loc, p_org) then raise exception 'That site is not in this company.' using errcode = '22023'; end if;
-  with free_items as (
-    select t.* from inventory_items t
-     where t.location_id = p_loc and t.archived_at is null and t.company_ref is null
-       and not exists (select 1 from msm_stock_item_sites s where s.location_id = p_loc and s.venue_item_id = t.id)
-  ), item_c as (
-    select i.id as company_id, i.name as company_name, t.id as venue_id, t.name as venue_name,
-           case when i.sku is not null and lower(btrim(i.sku)) = lower(btrim(t.sku)) then 'Same SKU and unit' else 'Same name and unit' end as why,
-           count(*) over (partition by i.id) as choices,
-           count(*) over (partition by t.id) as venue_choices
-      from msm_stock_items i
-      join free_items t on t.base_unit = i.base_unit
-                       and ((i.sku is not null and t.sku is not null and lower(btrim(i.sku)) = lower(btrim(t.sku)))
-                         or ((i.sku is null or t.sku is null or lower(btrim(i.sku)) <> lower(btrim(t.sku))) and lower(btrim(i.name)) = lower(btrim(t.name))))
-     where i.org_id = p_org and not i.archived
-       and not exists (select 1 from msm_stock_item_sites s where s.item_id = i.id and s.location_id = p_loc and s.venue_item_id is not null)
-  ), item_pairs as (
-    select s.item_id as company_id, s.venue_item_id as venue_id from msm_stock_item_sites s
-     where s.location_id = p_loc and s.org_id = p_org and s.venue_item_id is not null and s.unlinked_at is null
-    union all select company_id, venue_id from item_c where choices = 1 and venue_choices = 1
-  ), sup_c as (
-    select m.id as company_id, m.name as company_name, t.id as venue_id, t.name as venue_name, 'Same name'::text as why,
-           count(*) over (partition by m.id) as choices,
-           count(*) over (partition by t.id) as venue_choices
-      from msm_suppliers m
-      join suppliers t on t.location_id = p_loc and t.archived_at is null and t.company_ref is null and lower(btrim(t.name)) = lower(btrim(m.name))
-     where m.org_id = p_org and not m.archived
-       and not exists (select 1 from msm_supplier_sites s where s.supplier_id = m.id and s.location_id = p_loc and s.venue_supplier_id is not null)
-       and not exists (select 1 from msm_supplier_sites s where s.location_id = p_loc and s.venue_supplier_id = t.id)
-  ), sup_pairs as (
-    select s.supplier_id as company_id, s.venue_supplier_id as venue_id from msm_supplier_sites s
-     where s.location_id = p_loc and s.org_id = p_org and s.venue_supplier_id is not null and s.unlinked_at is null
-    union all select company_id, venue_id from sup_c where choices = 1 and venue_choices = 1
-  ), sp_c as (
-    select sp.id as company_id, coalesce(sp.pack_description, sp.supplier_sku, 'supplier pack') as company_name, t.id as venue_id,
-           coalesce(t.pack_description, t.supplier_sku, 'supplier pack') as venue_name, 'Same item, supplier and pack'::text as why,
-           count(*) over (partition by sp.id) as choices,
-           count(*) over (partition by t.id) as venue_choices
-      from msm_supplier_products sp
-      join item_pairs ip on ip.company_id = sp.item_id
-      join sup_pairs su on su.company_id = sp.supplier_id
-      join supplier_products t on t.location_id = p_loc and t.inventory_item_id = ip.venue_id and t.supplier_id = su.venue_id
-                              and t.archived_at is null and t.company_ref is null
-                              and t.pack_qty = sp.pack_qty and t.inner_qty = sp.inner_qty and t.inner_unit = sp.inner_unit
-     where sp.org_id = p_org and not sp.archived
-       and not exists (select 1 from msm_supplier_product_sites x where x.sp_id = sp.id and x.location_id = p_loc and x.venue_supplier_product_id is not null)
-       and not exists (select 1 from msm_supplier_product_sites x where x.location_id = p_loc and x.venue_supplier_product_id = t.id)
-  ), pack_c as (
-    select p.id as company_id, p.name as company_name, t.id as venue_id, t.name as venue_name, 'Same item, name and size'::text as why,
-           count(*) over (partition by p.id) as choices,
-           count(*) over (partition by t.id) as venue_choices
-      from msm_stock_packs p
-      join item_pairs ip on ip.company_id = p.item_id
-      join item_packaging_formats t on t.location_id = p_loc and t.inventory_item_id = ip.venue_id and t.archived_at is null and t.company_ref is null
-                                   and lower(btrim(t.name)) = lower(btrim(p.name)) and t.qty_in_base = p.qty_in_base
-     where p.org_id = p_org and not p.archived
-       and not exists (select 1 from msm_stock_pack_sites x where x.pack_id = p.id and x.location_id = p_loc and x.venue_format_id is not null)
-       and not exists (select 1 from msm_stock_pack_sites x where x.location_id = p_loc and x.venue_format_id = t.id)
-  ), bridge_c as (
-    select b.id as company_id, format('%s %s = %s %s', b.from_qty, b.from_unit, b.to_qty, b.to_unit) as company_name, t.id as venue_id,
-           format('%s %s = %s %s', t.from_qty, t.from_unit, t.to_qty, t.to_unit) as venue_name, 'Same item and units'::text as why,
-           count(*) over (partition by b.id) as choices,
-           count(*) over (partition by t.id) as venue_choices
-      from msm_stock_bridges b
-      join item_pairs ip on ip.company_id = b.item_id
-      join inventory_item_conversions t on t.location_id = p_loc and t.inventory_item_id = ip.venue_id and t.archived_at is null and t.company_ref is null
-                                       and t.from_unit = b.from_unit and t.to_unit = b.to_unit and t.from_qty = b.from_qty and t.to_qty = b.to_qty
-     where b.org_id = p_org and not b.archived
-       and not exists (select 1 from msm_stock_bridge_sites x where x.bridge_id = b.id and x.location_id = p_loc and x.venue_conversion_id is not null)
-       and not exists (select 1 from msm_stock_bridge_sites x where x.location_id = p_loc and x.venue_conversion_id = t.id)
-  )
+  with c as materialized (select * from public.msm_stock__link_pairs(p_org, p_loc))
   select jsonb_build_object(
     'items', (select coalesce(jsonb_agg(to_jsonb(x) order by x.company_name, x.venue_name), '[]'::jsonb)
-                from (select * from item_c order by company_name, company_id, venue_id offset v_off limit v_lim) x),
-    'items_total', (select count(*) from item_c),
-    'suppliers', (select coalesce(jsonb_agg(to_jsonb(x) order by x.company_name), '[]'::jsonb) from (select * from sup_c order by company_name limit v_lim) x),
-    'packs', (select coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb) from (select * from pack_c order by company_name limit v_lim) x),
-    'bridges', (select coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb) from (select * from bridge_c order by company_name limit v_lim) x),
-    'prices', (select coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb) from (select * from sp_c order by company_name limit v_lim) x),
-    'prices_total', (select count(*) from sp_c))
+                from (select c.company_id, c.company_name, c.venue_id, c.venue_name, c.why, c.choices, c.venue_choices from c where c.kind = 'item'
+                       order by c.company_name, c.company_id, c.venue_id offset v_off limit v_lim) x),
+    'items_total', (select count(*) from c where c.kind = 'item'),
+    'suppliers', (select coalesce(jsonb_agg(to_jsonb(x) order by x.company_name), '[]'::jsonb)
+                    from (select c.company_id, c.company_name, c.venue_id, c.venue_name, c.why, c.choices, c.venue_choices from c where c.kind = 'supplier'
+                           order by c.company_name, c.company_id limit v_lim) x),
+    'suppliers_total', (select count(*) from c where c.kind = 'supplier'),
+    'packs', (select coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb)
+                from (select c.company_id, c.company_name, c.venue_id, c.venue_name, c.why, c.choices, c.venue_choices from c where c.kind = 'pack'
+                       order by c.company_name, c.company_id limit v_lim) x),
+    'packs_total', (select count(*) from c where c.kind = 'pack'),
+    'bridges', (select coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb)
+                  from (select c.company_id, c.company_name, c.venue_id, c.venue_name, c.why, c.choices, c.venue_choices from c where c.kind = 'bridge'
+                         order by c.company_name, c.company_id limit v_lim) x),
+    'bridges_total', (select count(*) from c where c.kind = 'bridge'),
+    'prices', (select coalesce(jsonb_agg(to_jsonb(x)), '[]'::jsonb)
+                 from (select c.company_id, c.company_name, c.venue_id, c.venue_name, c.why, c.choices, c.venue_choices, c.venue_price, c.company_price
+                         from c where c.kind = 'price' order by c.company_name, c.company_id limit v_lim) x),
+    'prices_total', (select count(*) from c where c.kind = 'price'))
   into v_out;
   return v_out;
 end
 $fn$;
 
--- Stage every suggested link that has exactly one choice (items, suppliers, then their packs, bridges
--- and prices), as ticks in the draft. Nothing is written at the site until publish.
+-- Tick every suggested link that has exactly one choice (items, suppliers, packs, bridges, prices),
+-- every one of them in one set based statement (not page by page). A price that differs keeps the
+-- site's own figure (it becomes that site's price for the company row). Nothing is written at the
+-- site until publish.
 create or replace function public.msm_stock_stage_links(p_org uuid, p_loc uuid)
 returns jsonb
 language plpgsql
@@ -3007,40 +3408,29 @@ security definer
 set search_path = public
 as $fn$
 declare
-  v_c jsonb;
-  v_changes jsonb := '[]'::jsonb;
-  v_off integer := 0;
-  v_page jsonb;
+  v_draft uuid;
+  n integer;
 begin
   perform public.msm_stock__require_editor(p_org);
-  loop
-    v_page := public.msm_stock_link_candidates(p_org, p_loc, v_off, 500);
-    v_changes := v_changes || coalesce((select jsonb_agg(jsonb_build_object('target', 'item_site', 'entity_id', x ->> 'company_id', 'location_id', p_loc,
-                                         'data', jsonb_build_object('link', x ->> 'venue_id', 'active', true)))
-                                          from jsonb_array_elements(v_page -> 'items') x where (x ->> 'choices')::int = 1 and (x ->> 'venue_choices')::int = 1), '[]'::jsonb);
-    if v_off = 0 then
-      v_c := v_page;
-    end if;
-    v_off := v_off + 500;
-    exit when v_off >= (v_page ->> 'items_total')::int;
-  end loop;
-  v_changes := v_changes
-    || coalesce((select jsonb_agg(jsonb_build_object('target', 'supplier_site', 'entity_id', x ->> 'company_id', 'location_id', p_loc,
-                                    'data', jsonb_build_object('link', x ->> 'venue_id', 'active', true)))
-                   from jsonb_array_elements(v_c -> 'suppliers') x where (x ->> 'choices')::int = 1 and (x ->> 'venue_choices')::int = 1), '[]'::jsonb)
-    || coalesce((select jsonb_agg(jsonb_build_object('target', 'pack_site', 'entity_id', x ->> 'company_id', 'location_id', p_loc,
-                                    'data', jsonb_build_object('link', x ->> 'venue_id')))
-                   from jsonb_array_elements(v_c -> 'packs') x where (x ->> 'choices')::int = 1 and (x ->> 'venue_choices')::int = 1), '[]'::jsonb)
-    || coalesce((select jsonb_agg(jsonb_build_object('target', 'bridge_site', 'entity_id', x ->> 'company_id', 'location_id', p_loc,
-                                    'data', jsonb_build_object('link', x ->> 'venue_id')))
-                   from jsonb_array_elements(v_c -> 'bridges') x where (x ->> 'choices')::int = 1 and (x ->> 'venue_choices')::int = 1), '[]'::jsonb)
-    || coalesce((select jsonb_agg(jsonb_build_object('target', 'sp_site', 'entity_id', x ->> 'company_id', 'location_id', p_loc,
-                                    'data', jsonb_build_object('link', x ->> 'venue_id')))
-                   from jsonb_array_elements(v_c -> 'prices') x where (x ->> 'choices')::int = 1 and (x ->> 'venue_choices')::int = 1), '[]'::jsonb);
-  if jsonb_array_length(v_changes) = 0 then
-    return jsonb_build_object('staged', 0);
-  end if;
-  return public.msm_stock_stage(p_org, v_changes);
+  if not public.msm_stock__venue_in_org(p_loc, p_org) then raise exception 'That site is not in this company.' using errcode = '22023'; end if;
+  v_draft := public.msm_stock__open_draft(p_org);
+  insert into msm_stock_changes as x (draft_id, org_id, target, entity_id, location_id, location_key, data, created_by)
+  select v_draft, p_org,
+         case c.kind when 'item' then 'item_site' when 'supplier' then 'supplier_site' when 'pack' then 'pack_site'
+                     when 'bridge' then 'bridge_site' else 'sp_site' end,
+         c.company_id, p_loc, p_loc,
+         case when c.kind in ('item', 'supplier') then jsonb_build_object('link', c.venue_id, 'active', true)
+              when c.kind = 'price' and c.venue_price is distinct from c.company_price
+                then jsonb_build_object('link', c.venue_id, 'pack_price', round(c.venue_price, 4))
+              else jsonb_build_object('link', c.venue_id) end,
+         auth.uid()
+    from public.msm_stock__link_pairs(p_org, p_loc) c
+   where c.choices = 1 and c.venue_choices = 1
+  on conflict (draft_id, target, entity_id, location_key) do update set data = x.data || excluded.data, updated_at = now();
+  get diagnostics n = row_count;
+  update msm_stock_drafts set updated_at = now() where id = v_draft;
+  perform public.msm_stock__draft_cap(v_draft);
+  return jsonb_build_object('staged', n, 'changes', (select count(*) from msm_stock_changes c where c.draft_id = v_draft));
 end
 $fn$;
 
@@ -3117,11 +3507,14 @@ begin
       get diagnostics m = row_count; n := n + m;
     end if;
   end if;
+  perform public.msm_stock__draft_cap(v_draft);
   return jsonb_build_object('staged', n, 'changes', (select count(*) from msm_stock_changes c where c.draft_id = v_draft));
 end
 $fn$;
 
--- "Same as site X": stage site p_to to stock exactly the items and suppliers p_from has on.
+-- "Same as site X": stage site p_to to stock exactly the items and suppliers p_from has on. A row p_to
+-- has that p_from has none of goes back to following the company row's every site switch, as p_from
+-- does (so p_to has nothing p_from has not).
 create or replace function public.msm_stock_copy_sites(p_org uuid, p_from uuid, p_to uuid)
 returns jsonb
 language plpgsql
@@ -3143,8 +3536,19 @@ begin
   union all
   select v_draft, p_org, 'supplier_site', s.supplier_id, p_to, p_to, jsonb_build_object('active', s.active), auth.uid()
     from msm_supplier_sites s where s.org_id = p_org and s.location_id = p_from and s.unlinked_at is null
+  union all
+  select v_draft, p_org, 'item_site', s.item_id, p_to, p_to, jsonb_build_object('active', null, 'made_here', false), auth.uid()
+    from msm_stock_item_sites s
+   where s.org_id = p_org and s.location_id = p_to and s.unlinked_at is null and (s.active is not null or s.made_here)
+     and not exists (select 1 from msm_stock_item_sites f where f.item_id = s.item_id and f.location_id = p_from)
+  union all
+  select v_draft, p_org, 'supplier_site', s.supplier_id, p_to, p_to, jsonb_build_object('active', null), auth.uid()
+    from msm_supplier_sites s
+   where s.org_id = p_org and s.location_id = p_to and s.unlinked_at is null and s.active is not null
+     and not exists (select 1 from msm_supplier_sites f where f.supplier_id = s.supplier_id and f.location_id = p_from)
   on conflict (draft_id, target, entity_id, location_key) do update set data = x.data || excluded.data, updated_at = now();
   get diagnostics n = row_count;
+  perform public.msm_stock__draft_cap(v_draft);
   return jsonb_build_object('staged', n);
 end
 $fn$;
@@ -3239,6 +3643,7 @@ begin
                          left join msm_stock_item_sites s on s.item_id = i.id and s.location_id = l.id
                          left join inventory_items t on t.id = s.venue_item_id and t.location_id = l.id
                         where l.org_id = p_org), '[]'::jsonb),
+    'unit_locked', public.msm_stock__unit_in_use(i.id, null),
     'used_in', jsonb_build_object(
       'recipes', (select count(distinct rl.recipe_id) from msm_stock_item_sites s join recipe_lines rl on rl.component_item_id = s.venue_item_id and rl.location_id = s.location_id
                    where s.item_id = i.id),
@@ -3349,11 +3754,78 @@ begin
   if not exists (select 1 from msm_stock_versions v where v.id = p_version and v.org_id = p_org) then
     raise exception 'That version was not found.' using errcode = '22023';
   end if;
+  -- each row with a name for the screen (the row as it is now, else the name the version kept)
   return jsonb_build_object(
     'total', (select count(*) from msm_stock_version_rows r where r.version_id = p_version and r.location_id = p_loc),
-    'rows', coalesce((select jsonb_agg(to_jsonb(r) order by r.tbl, r.row_id) from (
+    'rows', coalesce((select jsonb_agg(to_jsonb(r) || jsonb_build_object('name', coalesce(
+        case r.tbl
+          when 'inventory_items' then (select t.name from inventory_items t where t.id = r.row_id)
+          when 'item_cost' then (select t.name from inventory_items t where t.id = r.row_id)
+          when 'suppliers' then (select t.name from suppliers t where t.id = r.row_id)
+          when 'item_packaging_formats' then (select i.name || ': ' || t.name from item_packaging_formats t join inventory_items i on i.id = t.inventory_item_id where t.id = r.row_id)
+          when 'inventory_item_conversions' then (select i.name || ': ' || t.from_qty::float8 || ' ' || t.from_unit || ' = ' || t.to_qty::float8 || ' ' || t.to_unit
+                                                    from inventory_item_conversions t join inventory_items i on i.id = t.inventory_item_id where t.id = r.row_id)
+          when 'supplier_products' then (select i.name || ' from ' || su.name from supplier_products t join inventory_items i on i.id = t.inventory_item_id
+                                           join suppliers su on su.id = t.supplier_id where t.id = r.row_id)
+          when 'inventory_item_areas' then (select i.name || ' in ' || a.name from inventory_items i, storage_areas a
+                                              where i.id = (r.after ->> 'item')::uuid and a.id = (r.after ->> 'area_id')::uuid)
+        end, r.after ->> 'name', r.before ->> 'name', r.after ->> 'pack_description', r.before ->> 'pack_description'))
+        order by r.tbl, r.row_id) from (
         select * from msm_stock_version_rows r where r.version_id = p_version and r.location_id = p_loc
          order by r.tbl, r.row_id offset greatest(coalesce(p_offset, 0), 0) limit least(greatest(coalesce(p_limit, 200), 1), 500)) r), '[]'::jsonb));
+end
+$fn$;
+
+-- The Review screen's page of the open draft, each change with the names it is about (the item, the
+-- supplier, the pack, the site), from the company rows or from the draft itself for new ones.
+create or replace function public.msm_stock_draft_rows(p_org uuid, p_offset integer default 0, p_limit integer default 300)
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public
+as $fn$
+declare
+  v_draft uuid;
+begin
+  perform public.msm_stock__require_viewer(p_org);
+  select d.id into v_draft from msm_stock_drafts d where d.org_id = p_org and d.status = 'open';
+  if v_draft is null then
+    return jsonb_build_object('total', 0, 'rows', '[]'::jsonb);
+  end if;
+  return jsonb_build_object(
+    'total', (select count(*) from msm_stock_changes c where c.draft_id = v_draft),
+    'rows', coalesce((
+      select jsonb_agg(jsonb_build_object('id', c.id, 'target', c.target, 'entity_id', c.entity_id, 'location_id', c.location_id,
+               'site_name', l.name, 'data', c.data, 'updated_at', c.updated_at,
+               'item_name', coalesce((select i.name from msm_stock_items i where i.id = k.item_id),
+                                     (select d.data ->> 'name' from msm_stock_changes d where d.draft_id = v_draft and d.target = 'item' and d.entity_id = k.item_id)),
+               'supplier_name', coalesce((select m.name from msm_suppliers m where m.id = k.supplier_id),
+                                         (select d.data ->> 'name' from msm_stock_changes d where d.draft_id = v_draft and d.target = 'supplier' and d.entity_id = k.supplier_id)),
+               'pack_name', case when c.target in ('pack', 'pack_site')
+                                 then coalesce((select p.name from msm_stock_packs p where p.id = c.entity_id),
+                                               (select d.data ->> 'name' from msm_stock_changes d where d.draft_id = v_draft and d.target = 'pack' and d.entity_id = c.entity_id)) end,
+               'parent_pack_name', case when c.data ->> 'parent_pack_id' is not null
+                                        then coalesce((select p.name from msm_stock_packs p where p.id = (c.data ->> 'parent_pack_id')::uuid),
+                                                      (select d.data ->> 'name' from msm_stock_changes d where d.draft_id = v_draft and d.target = 'pack'
+                                                          and d.entity_id = (c.data ->> 'parent_pack_id')::uuid)) end)
+             order by c.updated_at, c.id)
+        from (select * from msm_stock_changes x where x.draft_id = v_draft order by x.updated_at, x.id
+               offset greatest(coalesce(p_offset, 0), 0) limit least(greatest(coalesce(p_limit, 300), 1), 500)) c
+        left join locations l on l.id = c.location_id
+        cross join lateral (
+          select case when c.target in ('item', 'item_site') then c.entity_id
+                      when c.target in ('pack', 'pack_site') then coalesce((select p.item_id from msm_stock_packs p where p.id = c.entity_id),
+                        (select (d.data ->> 'item_id')::uuid from msm_stock_changes d where d.draft_id = v_draft and d.target = 'pack' and d.entity_id = c.entity_id))
+                      when c.target in ('bridge', 'bridge_site') then coalesce((select b.item_id from msm_stock_bridges b where b.id = c.entity_id),
+                        (select (d.data ->> 'item_id')::uuid from msm_stock_changes d where d.draft_id = v_draft and d.target = 'bridge' and d.entity_id = c.entity_id))
+                      when c.target in ('sp', 'sp_site') then coalesce((select sp.item_id from msm_supplier_products sp where sp.id = c.entity_id),
+                        (select (d.data ->> 'item_id')::uuid from msm_stock_changes d where d.draft_id = v_draft and d.target = 'sp' and d.entity_id = c.entity_id))
+                 end as item_id,
+                 case when c.target in ('supplier', 'supplier_site') then c.entity_id
+                      when c.target in ('sp', 'sp_site') then coalesce((select sp.supplier_id from msm_supplier_products sp where sp.id = c.entity_id),
+                        (select (d.data ->> 'supplier_id')::uuid from msm_stock_changes d where d.draft_id = v_draft and d.target = 'sp' and d.entity_id = c.entity_id))
+                 end as supplier_id) k), '[]'::jsonb));
 end
 $fn$;
 
@@ -3436,6 +3908,12 @@ begin
      and (p_sp_ids is null or sp.id = any(p_sp_ids)) and (p_supplier is null or sp.supplier_id = p_supplier)
      and (p_sites is null or l.id is not null);
   select count(*) into v_n from _pc;
+  -- one row per price per chosen site: 5,000 prices at 50 sites would be 250,000 rows, more than a
+  -- draft can publish or the Review screen can show. Refused in words, at preview already.
+  if v_n > 40000 then
+    raise exception 'That is % prices at % sites, more than the 40,000 one draft can hold. Pick fewer sites or prices, or change the company price instead (one change reaches every site).',
+      to_char((select count(distinct c.sp_id) from _pc c), 'FM999,999,999'), coalesce(array_length(p_sites, 1), 1) using errcode = '54000';
+  end if;
   select coalesce(jsonb_agg(to_jsonb(r)), '[]'::jsonb) into v_rows from (select * from _pc order by item_name, supplier_name limit 200) r;
   if p_preview then
     return jsonb_build_object('rows', v_rows, 'total', v_n, 'staged', 0);
@@ -3446,6 +3924,7 @@ begin
          coalesce(c.location_id, '00000000-0000-0000-0000-000000000000'::uuid), jsonb_build_object('pack_price', c.new_price), auth.uid()
     from _pc c
   on conflict (draft_id, target, entity_id, location_key) do update set data = x.data || excluded.data, updated_at = now();
+  perform public.msm_stock__draft_cap(v_draft);
   return jsonb_build_object('rows', v_rows, 'total', v_n, 'staged', v_n);
 end
 $fn$;
@@ -3497,6 +3976,12 @@ begin
   if v_kind is null then raise exception 'That import has no rows.' using errcode = '22023'; end if;
   select count(*) into v_n from msm_stock_import_rows r where r.import_id = p_import;
 
+  drop table if exists _imp_draft;
+  create temp table _imp_draft on commit drop as
+  select c.entity_id as id, nullif(lower(btrim(c.data ->> 'sku')), '') as sku, lower(btrim(c.data ->> 'name')) as name, c.data ->> 'base_unit' as base_unit,
+         c.updated_at as at
+    from msm_stock_changes c join msm_stock_drafts d on d.id = c.draft_id and d.org_id = p_org and d.status = 'open'
+   where c.target = 'item' and c.data ? '_new' and v_kind in ('packs', 'prices');
   drop table if exists _imp;
   create temp table _imp on commit drop as
   select r.row_no, r.data, nullif(btrim(r.data ->> 'name'), '') as name, nullif(btrim(r.data ->> 'sku'), '') as sku,
@@ -3508,7 +3993,8 @@ begin
   if v_kind = 'items' then
     update _imp x set match_id = coalesce(
         (select i.id from msm_stock_items i where i.org_id = p_org and x.sku is not null and lower(i.sku) = lower(x.sku) order by i.created_at, i.id limit 1),
-        (select i.id from msm_stock_items i where i.org_id = p_org and lower(btrim(i.name)) = lower(x.name) order by i.created_at, i.id limit 1));
+        (select i.id from msm_stock_items i where i.org_id = p_org and lower(btrim(i.name)) = lower(x.name) order by i.created_at, i.id limit 1))
+     where true;
     update _imp x set error = case
         when x.name is null then 'name is empty'
         when x.match_id is null and x.base_unit is null then 'base_unit is empty (g, kg, ml, l, each)'
@@ -3518,7 +4004,8 @@ begin
         when nullif(btrim(x.data ->> 'purchase_vat'), '') is not null and (nullif(btrim(x.data ->> 'purchase_vat'), '') !~ '^[0-9]+(\.[0-9]+)?$'
              or (x.data ->> 'purchase_vat')::numeric >= 100) then 'purchase_vat must be a percent such as 20'
         when nullif(btrim(x.data ->> 'shelf_life_days'), '') is not null and nullif(btrim(x.data ->> 'shelf_life_days'), '') !~ '^[0-9]+$' then 'shelf_life_days must be a whole number'
-        else null end;
+        else null end
+     where true;
     update _imp x set error = 'the same item is twice in the file (same SKU, or same name with no SKU)'
       from (select y.row_no, row_number() over (partition by case when y.sku is not null then 's:' || lower(y.sku) else 'n:' || lower(y.name) end
                                                 order by y.row_no) as rn
@@ -3527,24 +4014,38 @@ begin
   elsif v_kind = 'packs' then
     update _imp x set item_id = coalesce(
         (select i.id from msm_stock_items i where i.org_id = p_org and lower(i.sku) = lower(x.item_ref) limit 1),
-        (select i.id from msm_stock_items i where i.org_id = p_org and lower(btrim(i.name)) = lower(x.item_ref) order by i.created_at, i.id limit 1));
-    update _imp x set match_id = (select p.id from msm_stock_packs p where p.item_id = x.item_id and lower(btrim(p.name)) = lower(x.name) limit 1);
+        (select i.id from msm_stock_items i where i.org_id = p_org and lower(btrim(i.name)) = lower(x.item_ref) order by i.created_at, i.id limit 1),
+        (select n.id from _imp_draft n where n.sku = lower(x.item_ref) order by n.at, n.id limit 1),
+        (select n.id from _imp_draft n where n.name = lower(x.item_ref) order by n.at, n.id limit 1))
+     where true;
+    update _imp x set match_id = (select p.id from msm_stock_packs p where p.item_id = x.item_id and lower(btrim(p.name)) = lower(x.name) limit 1)
+     where true;
     update _imp x set error = case
         when x.item_id is null then format('item "%s" is not a company stock item (use its SKU or exact name)', coalesce(x.item_ref, ''))
         when x.name is null then 'name is empty'
         when nullif(btrim(x.data ->> 'qty_in_base'), '') is null or btrim(x.data ->> 'qty_in_base') !~ '^[0-9]+(\.[0-9]+)?$'
              or (x.data ->> 'qty_in_base')::numeric <= 0 then 'qty_in_base must be a number above 0'
-        else null end;
+        else null end
+     where true;
   else
     update _imp x set item_id = coalesce(
         (select i.id from msm_stock_items i where i.org_id = p_org and lower(i.sku) = lower(x.item_ref) limit 1),
-        (select i.id from msm_stock_items i where i.org_id = p_org and lower(btrim(i.name)) = lower(x.item_ref) order by i.created_at, i.id limit 1)),
-      supplier_id = (select m.id from msm_suppliers m where m.org_id = p_org and lower(btrim(m.name)) = lower(x.supplier_name) order by m.created_at, m.id limit 1);
+        (select i.id from msm_stock_items i where i.org_id = p_org and lower(btrim(i.name)) = lower(x.item_ref) order by i.created_at, i.id limit 1),
+        (select n.id from _imp_draft n where n.sku = lower(x.item_ref) order by n.at, n.id limit 1),
+        (select n.id from _imp_draft n where n.name = lower(x.item_ref) order by n.at, n.id limit 1)),
+      supplier_id = coalesce(
+        (select m.id from msm_suppliers m where m.org_id = p_org and lower(btrim(m.name)) = lower(x.supplier_name) order by m.created_at, m.id limit 1),
+        (select c.entity_id from msm_stock_changes c join msm_stock_drafts d on d.id = c.draft_id and d.org_id = p_org and d.status = 'open'
+          where c.target = 'supplier' and c.data ? '_new' and lower(btrim(c.data ->> 'name')) = lower(x.supplier_name) order by c.updated_at, c.entity_id limit 1))
+     where true;
     update _imp x set match_id = (select sp.id from msm_supplier_products sp where sp.item_id = x.item_id and sp.supplier_id = x.supplier_id
                                      and ((nullif(btrim(x.data ->> 'supplier_sku'), '') is not null and lower(sp.supplier_sku) = lower(btrim(x.data ->> 'supplier_sku')))
                                        or (nullif(btrim(x.data ->> 'supplier_sku'), '') is null and lower(coalesce(sp.pack_description, '')) = lower(coalesce(btrim(x.data ->> 'pack_description'), ''))))
                                    order by sp.created_at, sp.id limit 1)
      where x.item_id is not null and x.supplier_id is not null;
+    update _imp x set base_unit = coalesce((select i.base_unit from msm_stock_items i where i.id = x.item_id),
+                                           (select n.base_unit from _imp_draft n where n.id = x.item_id))
+     where x.item_id is not null;
     update _imp x set error = case
         when x.item_id is null then format('item "%s" is not a company stock item (use its SKU or exact name)', coalesce(x.item_ref, ''))
         when x.supplier_name is null then 'supplier is empty'
@@ -3553,7 +4054,8 @@ begin
              then format('inner_unit "%s" is not a unit', x.data ->> 'inner_unit')
         when coalesce(nullif(btrim(x.data ->> 'pack_qty'), ''), '1') !~ '^[0-9]+(\.[0-9]+)?$' or coalesce(nullif(btrim(x.data ->> 'inner_qty'), ''), '1') !~ '^[0-9]+(\.[0-9]+)?$'
              then 'pack_qty and inner_qty must be numbers'
-        else null end;
+        else null end
+     where true;
   end if;
 
   update _imp x set error = format('this row and row %s change the same company row', d.first_row)
@@ -3570,7 +4072,7 @@ begin
   end if;
 
   if v_kind = 'items' then
-    update _imp set match_id = coalesce(match_id, gen_random_uuid());
+    update _imp set match_id = coalesce(match_id, gen_random_uuid()) where true;
     drop table if exists _imp_new;
     create temp table _imp_new on commit drop as select match_id from _imp x where not exists (select 1 from msm_stock_items i where i.id = x.match_id);
     v_changes := (select jsonb_agg(jsonb_build_object('target', 'item', 'entity_id', x.match_id, 'data',
@@ -3603,10 +4105,15 @@ begin
       || (select jsonb_agg(jsonb_build_object('target', 'sp', 'entity_id', coalesce(x.match_id, gen_random_uuid()), 'data',
         jsonb_strip_nulls(jsonb_build_object('item_id', x.item_id, 'supplier_id', x.supplier_id,
           'supplier_sku', nullif(btrim(x.data ->> 'supplier_sku'), ''), 'pack_description', nullif(btrim(x.data ->> 'pack_description'), ''),
-          'pack_qty', coalesce((nullif(btrim(x.data ->> 'pack_qty'), ''))::numeric, 1), 'inner_qty', coalesce((nullif(btrim(x.data ->> 'inner_qty'), ''))::numeric, 1),
-          'inner_unit', coalesce(lower(nullif(btrim(x.data ->> 'inner_unit'), '')), (select i.base_unit from msm_stock_items i where i.id = x.item_id)),
+          'pack_qty', case when x.match_id is null then coalesce((nullif(btrim(x.data ->> 'pack_qty'), ''))::numeric, 1)
+                           else (nullif(btrim(x.data ->> 'pack_qty'), ''))::numeric end,
+          'inner_qty', case when x.match_id is null then coalesce((nullif(btrim(x.data ->> 'inner_qty'), ''))::numeric, 1)
+                            else (nullif(btrim(x.data ->> 'inner_qty'), ''))::numeric end,
+          'inner_unit', case when x.match_id is null then coalesce(lower(nullif(btrim(x.data ->> 'inner_unit'), '')), x.base_unit)
+                             else lower(nullif(btrim(x.data ->> 'inner_unit'), '')) end,
           'pack_price', (x.data ->> 'pack_price')::numeric,
-          'price_includes_tax', lower(coalesce(x.data ->> 'includes_vat', '')) in ('yes', 'true', '1', 'y')))
+          'price_includes_tax', case when nullif(btrim(x.data ->> 'includes_vat'), '') is null then case when x.match_id is null then false end
+                                     else lower(btrim(x.data ->> 'includes_vat')) in ('yes', 'true', '1', 'y') end))
         || case when x.match_id is null then '{"_new": true}'::jsonb else '{}'::jsonb end))
       from _imp x);
   end if;
@@ -3617,6 +4124,7 @@ begin
     from jsonb_array_elements(coalesce(v_changes, '[]'::jsonb)) e
   on conflict (draft_id, target, entity_id, location_key) do update set data = x.data || excluded.data, updated_at = now();
   update msm_stock_drafts set updated_at = now() where id = v_draft;
+  perform public.msm_stock__draft_cap(v_draft);
   delete from msm_stock_import_rows r where r.import_id = p_import;
   return jsonb_build_object('rows', v_n, 'errors', '[]'::jsonb, 'error_count', 0, 'staged', jsonb_array_length(coalesce(v_changes, '[]'::jsonb)),
                             'changes', (select count(*) from msm_stock_changes c where c.draft_id = v_draft));
@@ -3689,9 +4197,54 @@ begin
 end
 $fn$;
 
+-- Costs for an opening count (plan 4.6: "the site's cost if known, else the company price, else a
+-- price entered on the count"). For each counted item at the count's site that has no cost yet: its
+-- preferred live supplier price there (else the cheapest), per base unit, net of VAT when the price
+-- includes it; with no price there, the average cost here of the same company item at the company's
+-- other sites (in the same base unit). { item id: cost }, never 0. approve_stock_count still puts the
+-- site's own cost first and a typed cost over these. The Manager app (service role) and the PIN call
+-- below use it; logins cannot call it.
+create or replace function public.msm_stock_opening_costs(p_count_id uuid)
+returns jsonb
+language sql
+stable
+security definer
+set search_path = public
+as $fn$
+  with c as (
+    select s.location_id from stock_counts s where s.id = p_count_id
+  ), it as (
+    select distinct t.id, t.base_unit, t.purchase_tax_rate_id, t.company_ref
+      from stock_count_lines l
+      join c on c.location_id = l.location_id
+      join inventory_items t on t.id = l.inventory_item_id and t.location_id = c.location_id
+     where l.count_id = p_count_id and l.counted_qty is not null and coalesce(t.current_cost, 0) = 0
+  ), price as (
+    select distinct on (i.id) i.id, round(n.net / q.qb, 5) as cost
+      from it i
+      join c on true
+      join supplier_products sp on sp.location_id = c.location_id and sp.inventory_item_id = i.id and sp.archived_at is null
+      cross join lateral (select case when coalesce(sp.price_includes_tax, false)
+                                      then sp.pack_price / (1 + coalesce((select r.rate from tax_rates r where r.id = coalesce(sp.purchase_tax_rate_id, i.purchase_tax_rate_id)), 0))
+                                      else sp.pack_price end as net) n
+      cross join lateral (select public.stock_convert_qty(sp.pack_qty * sp.inner_qty, sp.inner_unit, i.base_unit, array[i.id]) as qb) q
+     where q.qb > 0 and n.net > 0 and round(n.net / q.qb, 5) > 0
+     order by i.id, sp.is_preferred desc nulls last, n.net / q.qb, sp.id
+  ), company_avg as (
+    select i.id, round(avg(o.current_cost), 5) as cost
+      from it i
+      join inventory_items o on o.company_ref = i.company_ref and o.id <> i.id and o.base_unit = i.base_unit and o.current_cost > 0
+     where i.company_ref is not null and not exists (select 1 from price p where p.id = i.id)
+     group by i.id
+  )
+  select coalesce(jsonb_object_agg(x.id, x.cost), '{}'::jsonb)
+    from (select p.id, p.cost from price p union all select a.id, a.cost from company_avg a where a.cost > 0) x;
+$fn$;
+
 -- Count approval with a manager PIN (4.6, Phase 1). The Back Office login must reach the venue; the
 -- PIN must be an active Manager or Owner at that venue (or have manager_approvals). Five wrong PINs in
--- 15 minutes and the login waits. Preview needs no PIN.
+-- 15 minutes and the login waits; an empty PIN is not a try. Preview needs no PIN. An opening count
+-- is costed by msm_stock_opening_costs, a cost typed on the screen wins.
 create or replace function public.stock_approve_count_pin(p_count_id uuid, p_pin text, p_approved_by_name text default null,
   p_approval_note text default null, p_costs jsonb default null, p_preview boolean default false)
 returns jsonb
@@ -3703,12 +4256,18 @@ declare
   v_loc uuid := (select c.location_id from stock_counts c where c.id = p_count_id);
   v_staff record;
   v_res jsonb;
+  v_costs jsonb;
 begin
   if v_loc is null or not public.stock_office_reaches(v_loc) then
     raise exception 'That count was not found, or this login cannot approve counts at its venue.' using errcode = '42501';
   end if;
+  v_costs := public.msm_stock_opening_costs(p_count_id)
+             || case when jsonb_typeof(p_costs) = 'object' then p_costs else '{}'::jsonb end;
   if p_preview then
-    return public.approve_stock_count(p_count_id, p_approved_by_name, p_approval_note, p_costs, true);
+    return public.approve_stock_count(p_count_id, p_approved_by_name, p_approval_note, v_costs, true);
+  end if;
+  if btrim(coalesce(p_pin, '')) = '' then
+    return jsonb_build_object('ok', false, 'error', 'Type the manager PIN first.', 'pin', 'missing');
   end if;
   if (select count(*) from stock_pin_tries t where t.location_id = v_loc and t.user_id is not distinct from auth.uid()
         and t.tried_at > now() - interval '15 minutes') >= 5 then
@@ -3718,11 +4277,11 @@ begin
    where s.location_id = v_loc and s.pin = btrim(coalesce(p_pin, '')) and coalesce(s.active, true)
      and (lower(coalesce(s.role, '')) in ('manager', 'owner') or coalesce(s.permissions, '[]'::jsonb) ? 'manager_approvals')
    order by s.created_at limit 1;
-  if v_staff.id is null or btrim(coalesce(p_pin, '')) = '' then
+  if v_staff.id is null then
     insert into stock_pin_tries (user_id, location_id) values (auth.uid(), v_loc);
     return jsonb_build_object('ok', false, 'error', 'That PIN is not a manager at this venue.', 'pin', 'wrong');
   end if;
-  v_res := public.approve_stock_count(p_count_id, coalesce(nullif(btrim(p_approved_by_name), ''), v_staff.name), p_approval_note, p_costs, false);
+  v_res := public.approve_stock_count(p_count_id, coalesce(nullif(btrim(p_approved_by_name), ''), v_staff.name), p_approval_note, v_costs, false);
   return v_res || jsonb_build_object('approved_by_pin', v_staff.name);
 end
 $fn$;
@@ -3743,8 +4302,11 @@ begin
     'public.msm_stock__open_draft(uuid)', 'public.msm_stock__entity_ok(uuid,uuid,text,uuid)', 'public.msm_stock__freeze(uuid,uuid,uuid)',
     'public.msm_stock__sync_site(uuid,uuid,uuid,boolean,boolean)', 'public.msm_stock__health(uuid,uuid)', 'public.msm_stock__sites(uuid)',
     'public.msm_stock__next_quiet(uuid)', 'public.msm_stock__new_version(uuid,text,uuid,uuid,text,text)', 'public.msm_stock__refresh_version(uuid)',
-    'public.msm_stock__busy_words(uuid)', 'public.msm_stock__unused(text,uuid,uuid,uuid)', 'public.msm_stock__undo_site(uuid,uuid,uuid)',
-    'public.msm_stock__run_site(bigint)', 'public.msm_stock__require_viewer(uuid)', 'public.msm_stock__require_editor(uuid)'] loop
+    'public.msm_stock__busy_words(uuid)', 'public.msm_stock__undo_site(uuid,uuid,uuid)',
+    'public.msm_stock__run_site(bigint)', 'public.msm_stock__require_viewer(uuid)', 'public.msm_stock__require_editor(uuid)',
+    'public.msm_stock__site_item_in_use(uuid,uuid)', 'public.msm_stock__unit_in_use(uuid,text)', 'public.msm_stock__draft_cap(uuid)',
+    'public.msm_stock__rate_words(uuid)', 'public.msm_stock__cost_plan(uuid,text)', 'public.msm_stock__fresh_stats(uuid,boolean)',
+    'public.msm_stock__link_pairs(uuid,uuid)'] loop
     execute format('revoke all on function %s from public, anon, authenticated, service_role', f);
   end loop;
   -- the trigger helper runs as the caller (INVOKER): the API roles keep EXECUTE on these two only
@@ -3768,7 +4330,8 @@ begin
     'public.msm_stock_site_cards(uuid)', 'public.msm_stock_site_drift(uuid,uuid)',
     'public.msm_stock_change_prices(uuid,uuid[],uuid,numeric,numeric,uuid[],boolean)',
     'public.msm_stock_import_stage(uuid,uuid,text,integer,jsonb)', 'public.msm_stock_import_commit(uuid,uuid,boolean)',
-    'public.msm_stock_add_areas(uuid,uuid[])', 'public.stock_approve_count_pin(uuid,text,text,text,jsonb,boolean)'] loop
+    'public.msm_stock_add_areas(uuid,uuid[])', 'public.stock_approve_count_pin(uuid,text,text,text,jsonb,boolean)',
+    'public.msm_stock_draft_rows(uuid,integer,integer)'] loop
     execute format('revoke all on function %s from public, anon', f);
     execute format('grant execute on function %s to authenticated', f);
   end loop;
@@ -3777,8 +4340,12 @@ begin
   -- the site screens (Back Office and the Manager app's service role) ask this one
   revoke all on function public.msm_stock_site_status(uuid) from public, anon;
   grant execute on function public.msm_stock_site_status(uuid) to authenticated, service_role;
+  -- opening count costs: the Manager app (service role) asks before it approves; logins get them
+  -- inside stock_approve_count_pin
+  revoke all on function public.msm_stock_opening_costs(uuid) from public, anon, authenticated;
+  grant execute on function public.msm_stock_opening_costs(uuid) to service_role;
   -- count approval: Back Office logins now go through the PIN; the service role (the Manager app,
-  -- which checks the PIN itself) keeps the direct call
+  -- which asks for a manager PIN itself) keeps the direct call
   revoke all on function public.approve_stock_count(uuid, text, text, jsonb, boolean) from public, anon, authenticated;
   grant execute on function public.approve_stock_count(uuid, text, text, jsonb, boolean) to service_role;
 end
@@ -3793,7 +4360,7 @@ notify pgrst, 'reload schema';
 
 -- ============================================================================
 -- 19. VISIBLE CHECK (the SQL editor shows this last result). Expected on Ops:
---   tables 20 | functions 63 | lock_triggers 15 | cron_job 1 | internals_open_to_api 0 |
+--   tables 20 | functions 71 | lock_triggers 15 | cron_job 1 | internals_open_to_api 0 |
 --   approve_open_to_logins 0 | companies_on 0 | company_rows 0 | stock_sums (per venue: unchanged by this file)
 -- ============================================================================
 select

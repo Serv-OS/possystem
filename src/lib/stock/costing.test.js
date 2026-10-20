@@ -419,3 +419,21 @@ test('drive-thru: a latte costs like a takeaway latte until the recipe gets its 
   near(costBreakdownByPurchasedItem(own, ctx, 'drive-thru').byItem.tray, 0.12);
   near(costBreakdownByPurchasedItem(recipe, ctx, 'drive-thru').byItem.cup, 0.06);
 });
+
+// v5.11.80 round 1 (TF): a supplier price head office switched off at the site never sets the cost
+test('chooseCostSource: the preferred LIVE price; a switched off one is skipped even when preferred', async () => {
+  const { chooseCostSource } = await import('./costing.js');
+  const company = { id: 'sp-company', pack_price: 5, pack_qty: 1, inner_qty: 100, inner_unit: 'each', is_preferred: true, archived_at: '2026-10-19T05:00:00Z' };
+  const own = { id: 'sp-own', pack_price: 4, pack_qty: 1, inner_qty: 100, inner_unit: 'each', is_preferred: false, archived_at: null };
+  const r = chooseCostSource({ sps: [company, own], baseUnit: 'each' });
+  assert.equal(r.chosen.id, 'sp-own');
+  assert.ok(Math.abs(r.cost - 0.04) < 1e-12, `cost ${r.cost}`);
+  // live and preferred wins over a cheaper live one
+  const pref = { ...company, archived_at: null };
+  assert.equal(chooseCostSource({ sps: [own, pref], baseUnit: 'each' }).chosen.id, 'sp-company');
+  // a switched off unit bridge does not convert
+  const g = { id: 'g', pack_price: 12, pack_qty: 1, inner_qty: 1200, inner_unit: 'g', is_preferred: true };
+  assert.equal(chooseCostSource({ sps: [g], baseUnit: 'each', bridges: [{ from_qty: 1, from_unit: 'each', to_qty: 12, to_unit: 'g', archived_at: '2026-10-19T05:00:00Z' }] }), null);
+  assert.ok(Math.abs(chooseCostSource({ sps: [g], baseUnit: 'each', bridges: [{ from_qty: 1, from_unit: 'each', to_qty: 12, to_unit: 'g' }] }).cost - 0.12) < 1e-9);
+  assert.equal(chooseCostSource({ sps: [] , baseUnit: 'each' }), null);
+});

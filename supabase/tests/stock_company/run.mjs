@@ -68,6 +68,20 @@ function stop() {
 }
 process.on('uncaughtException', (e) => { console.error(e); stop(); process.exit(2); });
 
+// Ops preloads pg-safeupdate for the API login (authenticator): an UPDATE or DELETE with no WHERE is
+// refused there, inside plpgsql too. safeupdate_guard.c is a small stand in, built with this
+// cluster's pg_config and preloaded for authenticator only (STOCK1_NO_GUARD=1 skips it, and says so).
+const GUARD = join(dir, process.platform === 'darwin' ? 'safeupdate_guard.dylib' : 'safeupdate_guard.so');
+let guardOn = false;
+if (!process.env.STOCK1_NO_GUARD) {
+  const cfg = (a) => spawnSync(bin('pg_config'), [a], { env, encoding: 'utf8' }).stdout.trim();
+  const flags = process.platform === 'darwin' ? ['-bundle', '-undefined', 'dynamic_lookup'] : ['-shared', '-fPIC'];
+  const cpp = cfg('--cppflags').split(/\s+/).filter(Boolean);
+  const cc = spawnSync('cc', [...flags, ...cpp, `-I${cfg('--includedir-server')}`, '-o', GUARD, join(here, 'safeupdate_guard.c')], { env, encoding: 'utf8' });
+  if (cc.status !== 0) { console.error('could not build the safeupdate stand in (set STOCK1_NO_GUARD=1 to run without it):\n', cc.stderr); stop(); process.exit(2); }
+  guardOn = true;
+}
+
 let DB = 'postgres';
 function psql({ login = 'postgres', db = DB, input, args = [], allowFail = false }) {
   const r = spawnSync(bin('psql'), ['-h', dir, '-p', port, '-U', login, '-d', db, '-v', 'ON_ERROR_STOP=1', '-X', '-q', '-At', ...args],
@@ -186,7 +200,11 @@ const SUMS = (loc) => sql(`select json_build_object(
   'area_stock', (select coalesce(sum(on_hand), 0) from inventory_item_area_stock where location_id = '${loc}'),
   'counts', (select count(*) from stock_counts where location_id = '${loc}'),
   'preferred', (select coalesce(json_agg(json_build_object('i', id, 's', default_supplier_id) order by id), '[]') from inventory_items where location_id = '${loc}' and default_supplier_id is not null))`);
-const QTY_SUMS = (loc) => { const j = JSON.parse(SUMS(loc)); delete j.items; delete j.preferred; delete j.costs; return JSON.stringify(j); };
+// Quantities, the ledger, pars, areas and counts (cost is checked on its own: since round 1 a publish
+// runs the site's own cost rule for the items whose supplier price it adds or changes, plan 4.5).
+const QTY_SUMS = (loc) => { const j = JSON.parse(SUMS(loc)); delete j.items; delete j.preferred; delete j.costs; delete j.cost; return JSON.stringify(j); };
+const COSTS = (loc) => sql(`select coalesce(json_object_agg(id, current_cost order by id), '{}') from inventory_items where location_id = '${loc}'`);
+const keptCosts = (before, after) => { const b = JSON.parse(before), a = JSON.parse(after); return Object.keys(b).every((k) => !(k in a) || String(a[k]) === String(b[k])); };
 // Every site row of the five tables at a venue, whole rows (Undo restores exactly).
 const SNAP = (loc) => sql(`select json_build_object(
   'items', (select coalesce(json_agg(t order by t.id), '[]') from inventory_items t where t.location_id = '${loc}'),
@@ -205,6 +223,8 @@ function baseDb(name) {
   sql(`create database ${name}`);
   DB = name;
   sqlFile(join(P0, 'schema.sql'));
+  sqlFile(join(here, 'live_indexes.sql'));
+  if (guardOn) sql(`alter role authenticator set session_preload_libraries = '${GUARD}'`);
   sqlFile(join(FLIVE, 'helpers.sql'));
   sql(`revoke all on function public.user_accessible_locations() from public;
        grant execute on function public.user_accessible_locations() to anon, authenticated, service_role;
@@ -316,7 +336,7 @@ function finish() {
 const section = (n, title) => { if (n > STOP_AT) finish(); console.log(`\n${title}`); };
 const migText = readFileSync(MIGRATION, 'utf8');
 const rbText = readFileSync(ROLLBACK, 'utf8');
-console.log(`\nMulti site stock Phase 1 proof (seed ${SEED}${QUICK ? ', quick' : ''})`);
+console.log(`\nMulti site stock Phase 1 proof (seed ${SEED}${QUICK ? ', quick' : ''}; ${guardOn ? 'safeupdate stand in on for authenticator' : 'NO safeupdate stand in'})`);
 
 // == 0. The file itself ===============================================================================
 section(0, '0. The file');
@@ -511,6 +531,7 @@ const a2Before = SUMS(A2);
 const a2SnapBefore = SNAP(A2);
 const a2QtyBefore = QTY_SUMS(A2);
 const a1QtyAt6 = QTY_SUMS(A1);
+const a1CostsAt6 = COSTS(A1);
 let pubVersion;
 {
   const c = callJ('viewerA', `select public.msm_stock_link_candidates('${ORG_A}', '${A2}')`);
@@ -539,23 +560,38 @@ let pubVersion;
   runDue(20);
   const st = sql(`select string_agg(l.name || ':' || s.status, ',' order by l.name) from msm_stock_version_sites s join locations l on l.id = s.location_id where s.version_id = '${pubVersion}'`);
   ok(/Location 2:done/.test(st) && /Provo:nothing/.test(st) && /New shop:nothing/.test(st), `the runner wrote Location 2 and found nothing to do at the others (${st})`);
-  ok(QTY_SUMS(A2) === a2QtyBefore, 'Location 2: no quantity, cost, ledger, par, area or count changed');
-  ok(JSON.parse(SUMS(A2)).items === JSON.parse(a2Before).items + 3, 'Location 2 has 3 new stock items (new rows, on hand 0, no cost)');
-  ok(num(`select count(*) from inventory_items where location_id = '${A2}' and company_ref is not null and on_hand = 0 and current_cost is null and id not in ('${I.beans2}', '${I.cups2}')`) === 3,
-    'the new rows start at 0 on hand and no cost (the opening count sets those)');
-  ok(sql(`select name from inventory_items where id = '${I.beans2}'`) === 'Coffee beans' && near(cost(I.beans2), 17.5) && near(onHandOf(I.beans2), 3),
-    'the linked beans take the company name and keep their own on hand and cost');
+  ok(QTY_SUMS(A2) === a2QtyBefore, 'Location 2: no quantity, ledger, par, area or count changed');
+  ok(JSON.parse(SUMS(A2)).items === JSON.parse(a2Before).items + 3, 'Location 2 has 3 new stock items (new rows, on hand 0)');
+  ok(num(`select count(*) from inventory_items where location_id = '${A2}' and company_ref is not null and on_hand = 0 and id not in ('${I.beans2}', '${I.cups2}')`) === 3,
+    'the new rows start at 0 on hand (the opening count sets that)');
+  const newCost = (name) => sql(`select coalesce(current_cost::text, 'none') from inventory_items where location_id = '${A2}' and name = '${name}' and company_ref is not null`);
+  ok(near(newCost('Whole milk'), 0.0011) && newCost('Vanilla syrup') === 'none' && newCost('Lemons') === 'none',
+    `cost here follows Location 2's own rule (price list, the default): new Whole milk takes 6.60 for 6 x 1 l = 0.0011 a ml; syrup and lemons have no price, so no cost until their opening count (${newCost('Whole milk')}, ${newCost('Vanilla syrup')}, ${newCost('Lemons')})`);
+  ok(sql(`select name from inventory_items where id = '${I.beans2}'`) === 'Coffee beans' && near(onHandOf(I.beans2), 3) && near(cost(I.beans2), 18),
+    `the linked beans take the company name and keep their own on hand; the company price (18.00 a kg) is their price at Location 2 now, so on price list their cost follows it (17.50 to ${cost(I.beans2)})`);
+  ok(near(cost(I.cups2), 0.06), 'the linked cups keep their cost: their own price is kept (below)');
+  ok(num(`select count(*) from item_cost_history h join inventory_items t on t.id = h.inventory_item_id where t.location_id = '${A2}' and h.source = 'CATALOG' and h.effective_to is null`) === 2,
+    'each cost the rule set has its open cost history row (2)');
+  {
+    const pc = p2?.costs || [];
+    ok(p2?.costs_changed === 2 && pc.some((x) => x.name === 'Coffee beans' && near(x.before, 17.5) && near(x.after, 18)) && pc.some((x) => x.name === 'Whole milk' && x.new && near(x.after, 0.0011)),
+      `the preview showed cost here before and after, as written (${JSON.stringify(pc).slice(0, 160)})`);
+  }
   ok(sql(`select default_supplier_id from inventory_items where id = '${I.cups2}'`) === SUP.dairy2, 'a linked item keeps its own preferred supplier');
   ok(num(`select count(*) from inventory_items t where t.location_id = '${A2}' and t.company_ref is not null and t.default_supplier_id is not null and t.id not in ('${I.beans2}', '${I.cups2}')`) >= 1,
     'a new item gets a preferred supplier once, when it first arrives');
   ok(sql(`select purchase_tax_rate_id from inventory_items where id = '${I.beans2}'`) === TAX.a2std, 'VAT 20% is Location 2\'s own 20% rate row');
   ok(sql(`select email || '|' || account_number from suppliers where id = '${SUP.dairy2}'`) === 'l2@dairy.test|L2-9', 'the linked supplier keeps its own order email and account number');
-  ok(num(`select pack_price from supplier_products where id = '${SP.cups2}'`) === 5.0, 'the linked supplier pack takes the company price (5.40 to 5.00): a price, never a cost');
+  ok(near(num(`select pack_price from supplier_products where id = '${SP.cups2}'`), 5.4) && sql(`select company_ref is not null from supplier_products where id = '${SP.cups2}'`) === 't'
+     && near(num(`select s.pack_price from msm_supplier_product_sites s join msm_supplier_products p on p.id = s.sp_id where s.location_id = '${A2}' and p.supplier_sku = 'D-CUP100'`), 5.4),
+    'the linked supplier pack keeps Location 2\'s own price (5.40; the company\'s is 5.00): it is kept as Location 2\'s price for the company row');
   ok(num(`select count(*) from inventory_item_areas a join inventory_items t on t.id = a.inventory_item_id where t.location_id = '${A2}' and t.name = 'Whole milk' and t.company_ref is not null`) === 1,
     'a new item lands in the site\'s one area of its usual kind (Bar)');
   ok(planOf(ORG_A, A2).writes === 0 && planOf(ORG_A, A1).writes === 0, 'I8: a re publish plans zero writes at both sites');
-  ok(QTY_SUMS(A1) === a1QtyAt6, 'Provo: no quantity, cost or ledger change');
+  ok(QTY_SUMS(A1) === a1QtyAt6 && keptCosts(a1CostsAt6, COSTS(A1)), 'Provo: no quantity, cost or ledger change');
   ok(SUMS(B1) === sumsBefore.B1, 'the other company is untouched');
+  // a copy of this moment for the round 1 checks (section 19)
+  psql({ db: 'postgres', input: 'drop database if exists s1_r1; create database s1_r1 template s1_main;' });
 }
 function onHandOf(item) { return num(`select on_hand from inventory_items where id = '${item}'`); }
 function cost(item) { return num(`select current_cost from inventory_items where id = '${item}'`); }
@@ -567,6 +603,7 @@ let renameVersion;
   const milkC = sql(`select id from msm_stock_items where name = 'Whole milk'`);
   let r = callJ('editorA', `select public.msm_stock_stage('${ORG_A}', ${jlit([{ target: 'item', entity_id: milkC, data: { name: 'Whole milk 4%', category: 'Dairy and eggs' } }])})`);
   ok(r.j?.staged === 1, 'one change staged');
+  const a2Costs7 = COSTS(A2);
   r = callJ('editorA', `select public.msm_stock_publish('${ORG_A}', 'night')`);
   renameVersion = r.j?.version_id;
   const due = sql(`select string_agg(l.name || '=' || to_char(s.due_at at time zone l.timezone, 'HH24:MI'), ',' order by l.name) from msm_stock_version_sites s join locations l on l.id = s.location_id where s.version_id = '${renameVersion}'`);
@@ -579,7 +616,7 @@ let renameVersion;
   runDue(20);
   ok(sql(`select name from inventory_items where id = '${I.milk}'`) === 'Whole milk 4%' && sql(`select name from inventory_items where location_id = '${A2}' and company_ref = '${milkC}'`) === 'Whole milk 4%',
     'Publish now: both sites carry the new name');
-  ok(QTY_SUMS(A2) === a2QtyBefore, 'still no quantity, cost or ledger change at Location 2');
+  ok(QTY_SUMS(A2) === a2QtyBefore && COSTS(A2) === a2Costs7, 'still no quantity, cost or ledger change at Location 2');
   ok(num(`select count(*) from msm_stock_version_rows where version_id = '${renameVersion}' and op = 'update'`) === 2, 'one before and after row per changed row (2)');
   ok(planOf(ORG_A, A1).writes === 0 && planOf(ORG_A, A2).writes === 0, 'a re publish plans zero writes');
 }
@@ -765,7 +802,7 @@ section(15, '15. Random drafts (property run)');
   let good = 0;
   const runs = QUICK ? 6 : 15;
   for (let k = 0; k < runs; k++) {
-    const before = { a1: SNAP(A1), a2: SNAP(A2), q1: QTY_SUMS(A1), q2: QTY_SUMS(A2), pending: planOf(ORG_A, A1).writes + planOf(ORG_A, A2).writes };
+    const before = { a1: SNAP(A1), a2: SNAP(A2), q1: QTY_SUMS(A1), q2: QTY_SUMS(A2), c1: COSTS(A1), c2: COSTS(A2), pending: planOf(ORG_A, A1).writes + planOf(ORG_A, A2).writes };
     const changes = [];
     for (let j = 0; j < 4; j++) {
       const it = comp[Math.floor(rand() * comp.length)];
@@ -781,7 +818,8 @@ section(15, '15. Random drafts (property run)');
     if (!r.j?.ok) { console.log('   publish refused:', r.message.slice(0, 120)); continue; }
     runDue(20);
     const z = planOf(ORG_A, A1).writes + planOf(ORG_A, A2).writes;
-    const q = QTY_SUMS(A1) === before.q1 && QTY_SUMS(A2) === before.q2;
+    // quantities and the ledger never move; no price changes here, so no cost of a row that was there moves
+    const q = QTY_SUMS(A1) === before.q1 && QTY_SUMS(A2) === before.q2 && keptCosts(before.c1, COSTS(A1)) && keptCosts(before.c2, COSTS(A2));
     r = callJ('editorA', `select public.msm_stock_undo('${ORG_A}', '${r.j.version_id}')`);
     runDue(20);
     const back = SNAP(A1) === before.a1 && SNAP(A2) === before.a2;
@@ -838,10 +876,11 @@ await (async () => {
   const one = items[17];
   callJ('editorBig', `select public.msm_stock_stage('${ORG_BIG}', ${jlit([{ target: 'sp', entity_id: one.sp, data: { pack_price: 99.5 } }])})`);
   r = callJ('editorBig', `select public.msm_stock_publish('${ORG_BIG}', 'now')`);
+  ok(r.j?.ok === true, `one price change published (${r.j?.ok ? r.ms + ' ms' : r.message.slice(0, 200)})`);
   const v2 = r.j?.version_id;
   const t1 = Date.now();
   loops = 0;
-  while (num(`select count(*) from msm_stock_version_sites where version_id = '${v2}' and status = 'waiting'`) > 0 && loops < 50) { runDue(45); loops++; }
+  while (v2 && num(`select count(*) from msm_stock_version_sites where version_id = '${v2}' and status = 'waiting'`) > 0 && loops < 50) { runDue(45); loops++; }
   const oneTotal = (Date.now() - t1) / 1000;
   ok(oneTotal < 600 && num(`select count(*) from supplier_products t join locations l on l.id = t.location_id where l.org_id = '${ORG_BIG}' and t.pack_price = 99.5`) === SCALE_SITES,
     `one price change reaches all ${SCALE_SITES} sites in ${oneTotal.toFixed(1)} s (under 10 minutes)`);
@@ -864,16 +903,75 @@ await (async () => {
   ok(cards.j?.length === SCALE_SITES && cards.j.every((c) => !c.waiting && c.central === 'central'), 'every site card says in step, and every site is central');
   const z = planOf(ORG_BIG, sql(`select id from locations where org_id = '${ORG_BIG}' order by name limit 1`));
   ok(z.writes === 0, 'I8 at scale: a re publish plans zero writes');
+
+  // the draft cap (40,000): a price per item per chosen site, or a tick per item per chosen site, is refused in words
+  const allSites = `(select array_agg(id) from locations where org_id = '${ORG_BIG}')`;
+  let cp = asCaller('editorBig', `select public.msm_stock_change_prices('${ORG_BIG}', null, null, 5, null, ${allSites}, true)`);
+  ok(cp.sqlstate === '54000' && /40,000/.test(cp.message),
+    `Change prices for every price at all ${SCALE_SITES} chosen sites (${SCALE_ITEMS * SCALE_SITES} rows) is refused in words, at preview (${cp.message.slice(0, 80)})`);
+  cp = asCaller('editorBig', `select public.msm_stock_stage_sites('${ORG_BIG}', null, ${allSites}, false, false)`);
+  ok(cp.sqlstate === '54000' && num(`select count(*) from msm_stock_changes c join msm_stock_drafts d on d.id = c.draft_id where d.org_id = '${ORG_BIG}' and d.status = 'open'`) === 0,
+    'and so is a tick per item at every chosen site; nothing is added to the draft');
+
+  // linking a site that already has its own 5,000 items, each with a pack and a supplier price
+  const OWN = randomUUID();
+  sql(`insert into locations (id, org_id, name, timezone) values ('${OWN}', '${ORG_BIG}', 'Site own', 'Europe/London');
+       insert into tax_rates (location_id, name, rate, is_default) values ('${OWN}', 'VAT', 0.2, true);
+       insert into storage_areas (location_id, name, kind) values ('${OWN}', 'Bar', 'bar'), ('${OWN}', 'Kitchen', 'kitchen');
+       insert into suppliers (location_id, name) values ('${OWN}', 'Big Dairy'), ('${OWN}', 'Big Dry Goods');
+       insert into inventory_items (location_id, org_id, name, base_unit, sku, current_cost, on_hand)
+         select '${OWN}', '${ORG_BIG}', 'Own ' || n, case when n % 3 = 0 then 'kg' else 'each' end, 'BIG-' || n, 1, 0 from generate_series(0, ${SCALE_ITEMS - 1}) n;
+       insert into item_packaging_formats (location_id, inventory_item_id, name, qty_in_base) select '${OWN}', t.id, 'Case', 12 from inventory_items t where t.location_id = '${OWN}';
+       insert into supplier_products (location_id, inventory_item_id, supplier_id, pack_qty, inner_qty, inner_unit, pack_price, is_preferred)
+         select '${OWN}', t.id, (select s.id from suppliers s where s.location_id = '${OWN}'
+                                   and s.name = case when substr(t.sku, 5)::int % 2 = 0 then 'Big Dairy' else 'Big Dry Goods' end), 1, 12, t.base_unit, 11, true
+           from inventory_items t where t.location_id = '${OWN}';
+       analyze inventory_items; analyze item_packaging_formats; analyze supplier_products;`);
+  const lc = callJ('editorBig', `select public.msm_stock_link_candidates('${ORG_BIG}', '${OWN}')`);
+  ok(lc.status === 0 && lc.ms < 1000 && lc.j?.items_total === SCALE_ITEMS && lc.j?.packs_total === SCALE_ITEMS && lc.j?.prices_total === SCALE_ITEMS,
+    `link candidates at a site with ${SCALE_ITEMS} own items, as the Editor: ${lc.ms} ms (${lc.j?.items_total} items, ${lc.j?.packs_total} packs, ${lc.j?.prices_total} prices; ${lc.message || 'ok'})`);
+  const sl = callJ('editorBig', `select public.msm_stock_stage_links('${ORG_BIG}', '${OWN}')`);
+  ok(sl.status === 0 && sl.ms < 8000 && sl.j?.staged === SCALE_ITEMS * 3 + 2,
+    `every single match ticked in one call: ${sl.j?.staged} (items, packs, prices, 2 suppliers) in ${sl.ms} ms (${sl.message || 'ok'})`);
+  const lp = callJ('editorBig', `select public.msm_stock_publish('${ORG_BIG}', 'now', 'link Site own')`);
+  ok(lp.j?.ok === true && lp.ms < 8000, `that publish in ${lp.ms} ms (${lp.message || 'ok'})`);
+  loops = 0;
+  while (lp.j?.version_id && num(`select count(*) from msm_stock_version_sites where version_id = '${lp.j.version_id}' and status = 'waiting'`) > 0 && loops < 50) { runDue(45); loops++; }
+  ok(num(`select count(*) from inventory_items where location_id = '${OWN}' and company_ref is not null`) === SCALE_ITEMS
+     && num(`select count(*) from inventory_items where location_id = '${OWN}'`) === SCALE_ITEMS
+     && num(`select count(*) from (select inventory_item_id from item_packaging_formats where location_id = '${OWN}' and archived_at is null group by 1 having count(*) > 1) x`) === 0
+     && num(`select count(*) from (select inventory_item_id from supplier_products where location_id = '${OWN}' and archived_at is null group by 1 having count(*) > 1) x`) === 0
+     && num(`select count(*) from supplier_products where location_id = '${OWN}' and pack_price = 11`) === SCALE_ITEMS,
+    `all ${SCALE_ITEMS} own items joined their company rows: no second item, pack or price, and each keeps its own price (11)`);
+
+  // Undo, newest first, down to the first publish of the whole list (every site, every row it added)
+  const undoTimes = [];
+  for (const v of sql(`select id from msm_stock_versions where org_id = '${ORG_BIG}' and kind = 'publish' order by version_no desc`).split('\n').filter(Boolean)) {
+    const u = callJ('editorBig', `select public.msm_stock_undo('${ORG_BIG}', '${v}')`);
+    if (!u.j?.ok) { ok(false, `undo refused: ${u.message.slice(0, 120)}`); break; }
+    loops = 0;
+    while (num(`select count(*) from msm_stock_version_sites where version_id = '${u.j.undo_version_id}' and status = 'waiting'`) > 0 && loops < 200) { runDue(45); loops++; }
+    undoTimes.push(sql(`select coalesce(max(extract(epoch from done_at - started_at)), 0)::numeric(10,1) || '|' || count(*) filter (where status = 'failed')
+                          from msm_stock_version_sites where version_id = '${u.j.undo_version_id}'`));
+  }
+  const worstUndo = Math.max(...undoTimes.map((x) => Number(x.split('|')[0])));
+  ok(undoTimes.length === 3 && undoTimes.every((x) => x.endsWith('|0')) && worstUndo < 30,
+    `Undo of the link, the price and the first publish: slowest site ${worstUndo} s (under 30 s), no site failed (${undoTimes.join(', ')})`);
+  ok(num(`select count(*) from inventory_items t join locations l on l.id = t.location_id where l.org_id = '${ORG_BIG}' and t.location_id <> '${OWN}'`) === 0
+     && num(`select count(*) from inventory_items where location_id = '${OWN}' and company_ref is null`) === SCALE_ITEMS
+     && num(`select count(*) from supplier_products where location_id = '${OWN}' and pack_price = 11 and company_ref is null`) === SCALE_ITEMS,
+    `every row the first publish added at the ${SCALE_SITES} sites is gone; Site own has its own ${SCALE_ITEMS} items and prices back`);
 })();
 
 // == 17. Rollback, and the paste again =====================================================================================
 section(17, '17. Rollback');
 {
-  const before = { A1: QTY_SUMS(A1), A2: QTY_SUMS(A2), B1: SUMS(B1) };
+  const before = { A1: QTY_SUMS(A1), A2: QTY_SUMS(A2), B1: SUMS(B1), c1: COSTS(A1), c2: COSTS(A2) };
   const rb = psql({ args: ['-1', '-f', ROLLBACK], allowFail: true });
   const rr = rb.stdout.trim().split('\n').pop().split('|');
   ok(rb.status === 0 && rr.slice(0, 6).join('|') === '0|0|0|0|0|1', `the rollback applies; check ${rr.join('|')}`);
-  ok(QTY_SUMS(A1) === before.A1 && QTY_SUMS(A2) === before.A2 && SUMS(B1) === before.B1, 'no quantity, cost or ledger row changed');
+  ok(QTY_SUMS(A1) === before.A1 && QTY_SUMS(A2) === before.A2 && SUMS(B1) === before.B1 && COSTS(A1) === before.c1 && COSTS(A2) === before.c2,
+    'no quantity, cost or ledger row changed');
   ok(num(`select count(*) from stock_depletion_mode where mode = 'central'`) >= 3, 'every venue keeps its central mode');
   ok(sql(`select has_function_privilege('authenticated', 'public.approve_stock_count(uuid,text,text,jsonb,boolean)'::regprocedure, 'execute')`) === 't',
     'count approval is open to Back Office logins again (as 20261019b)');
@@ -891,5 +989,233 @@ section(18, '18. The file stops, changing nothing, without what it needs');
   ok(r.status !== 0 && /Run 20261017|not the Ops/.test(r.stderr) && sql(`select count(*) from pg_class where relname = 'stock_company'`) === '0',
     `without the Multi site menu and Phase 0 it stops in words (${(/ERROR:\s*(.*)/.exec(r.stderr) || [])[1]?.slice(0, 80)})`);
 }
+
+// == 19. Round 1 review fixes (each on a fresh copy of the database as it was after section 6) =========
+section(19, '19. Round 1 fixes: each on a copy of the database after section 6');
+function fresh(name) {
+  psql({ db: 'postgres', input: `drop database if exists ${name} with (force); create database ${name} template s1_r1;` });
+  DB = name;
+}
+function oneShotAs(callerKey, body) {
+  const c = CALLERS[callerKey];
+  const lines = callerLines(c);
+  lines.push(body.trim().replace(/;?$/, ';'), 'commit;');
+  return oneShot(c.login, lines.join('\n') + '\n');
+}
+const pj = (text) => { try { return JSON.parse(text); } catch { return null; } };
+const cid = (name) => sql(`select id from msm_stock_items where org_id = '${ORG_A}' and name = '${name}'`);
+const siteItem = (loc, name) => sql(`select t.id from inventory_items t join msm_stock_items c on c.id = t.company_ref where t.location_id = '${loc}' and c.name = '${name}'`);
+const newCount = (loc, startedAgo = '30 minutes') => {
+  const r = callJ('service', `with x as (insert into stock_counts (location_id, name, count_type, status, storage_area, started_at)
+     values ('${loc}', 'Phone count: whole venue', 'FULL', 'DRAFT', 'all', now() - interval '${startedAgo}') returning id) select to_json(x.id) from x`);
+  return r.j;
+};
+await (async () => {
+  // -- TA: a phone recount typed offline keeps the time it was typed (two writes as stockPhone.save makes them)
+  fresh('r1_ta');
+  {
+    sql(`update stock_movements set occurred_at = now() - interval '2 hours' where location_id = '${A1}'`);  // the seed delivery, well before the count
+    const start = onHandOf(I.cups);
+    const c = newCount(A1);
+    asCaller('service', `insert into stock_count_lines (location_id, count_id, inventory_item_id, counted_qty, counted_at)
+       values ('${A1}', '${c}', '${I.cups}', ${start}, now() - interval '20 minutes')`);
+    sql(`select public._stock_post('${A1}', '${I.cups}', -20, 'SALE_DEPLETION', 'closed_check', 'ta-1', 'sale:ta-1:${I.cups}', now() - interval '15 minutes', null, null, null, true)`);
+    sql(`select public._stock_post('${A1}', '${I.cups}', -15, 'SALE_DEPLETION', 'closed_check', 'ta-2', 'sale:ta-2:${I.cups}', now() - interval '8 minutes', null, null, null, true)`);
+    // the signal comes back: the figure, then the time it was typed (the figure unchanged, so the database keeps it)
+    asCaller('service', `update stock_count_lines set counted_qty = ${start - 20} where count_id = '${c}' and inventory_item_id = '${I.cups}'`);
+    asCaller('service', `update stock_count_lines set counted_at = now() - interval '10 minutes' where count_id = '${c}' and inventory_item_id = '${I.cups}'`);
+    const lag = num(`select round(extract(epoch from now() - counted_at)) from stock_count_lines where count_id = '${c}'`);
+    const ap = callJ('service', `select public.approve_stock_count('${c}', 'Phone', 'Approved on the phone', null, false)`);
+    ok(lag >= 590 && ap.j?.ok === true && near(onHandOf(I.cups), start - 35),
+      `TA: a recount sent late keeps the time it was typed (${lag} s ago); on hand ${onHandOf(I.cups)} = the recount less the 15 sold after it (no sales added back)`);
+  }
+
+  // -- TB: switched off at a site while a delivery commits: held, never archived with stock
+  fresh('r1_tb');
+  {
+    const lem2 = siteItem(A2, 'Lemons');
+    callJ('editorA', `select public.msm_stock_stage('${ORG_A}', ${jlit([{ target: 'item_site', entity_id: cid('Lemons'), location_id: A2, data: { active: false } }])})`);
+    const pub = callJ('editorA', `select public.msm_stock_publish('${ORG_A}', 'now', 'Lemons off at Location 2')`);
+    const po = randomUUID();
+    const recv = oneShotAs('boA2', `select public.stock_receive('${A2}', 'purchase_order', '${po}', ${jlit([{ key: `po:${po}:1`, item_id: lem2, qty_base: 10, unit_cost: 0.3 }])});
+       select pg_sleep(1.2)`);
+    await sleep(300);
+    const run = oneShot('postgres', 'call public.msm_stock_run_due(30);');
+    const [a] = await Promise.all([recv, run]);
+    runDue(20);
+    const row = pj(sql(`select json_build_object('on_hand', on_hand, 'archived', archived_at is not null) from inventory_items where id = '${lem2}'`));
+    const vs = pj(sql(`select json_build_object('status', status, 'held', counts ->> 'items_held') from msm_stock_version_sites where version_id = '${pub.j?.version_id}' and location_id = '${A2}'`));
+    ok(a.code === 0 && near(row?.on_hand, 10) && row?.archived === false && vs?.held === '1',
+      `TB: a delivery of 10 lands while the runner writes "off at Location 2": the item is held, not archived (on hand ${row?.on_hand}, archived ${row?.archived}, held ${vs?.held})`);
+    // archive Coffee beans at head office: Provo holds 6 and Location 2 holds 3, so both hold it, with its pack and price
+    callJ('editorA', `select public.msm_stock_stage('${ORG_A}', ${jlit([{ target: 'item', entity_id: cid('Coffee beans'), data: { archived: true } }])})`);
+    const ar = callJ('editorA', `select public.msm_stock_publish('${ORG_A}', 'now', 'archive beans')`);
+    runDue(20);
+    ok(ar.j?.ok === true && sql(`select archived_at is null from inventory_items where id = '${I.beans}'`) === 't'
+       && sql(`select archived_at is null from item_packaging_formats where id = '${PACK.beansBag}'`) === 't'
+       && sql(`select archived_at is null from supplier_products where id = '${SP.beans}'`) === 't',
+      'an archived item a site still holds stays live there WITH its count pack and supplier price (it is counted down)');
+  }
+
+  // -- TH: a base unit change waiting for 05:00, then a delivery at the site: that site fails in words, nothing x1000
+  fresh('r1_th');
+  {
+    const syr2 = siteItem(A2, 'Vanilla syrup'); const syr1 = siteItem(A1, 'Vanilla syrup');
+    callJ('editorA', `select public.msm_stock_stage('${ORG_A}', ${jlit([{ target: 'item', entity_id: cid('Vanilla syrup'), data: { base_unit: 'l' } }])})`);
+    const pub = callJ('editorA', `select public.msm_stock_publish('${ORG_A}', 'night', 'syrup in litres')`);
+    ok(pub.j?.ok === true, `TH: the change publishes while no site uses the item yet (${pub.message || 'ok'})`);
+    const po = randomUUID();
+    const rc = callJ('boA2', `select public.stock_receive('${A2}', 'purchase_order', '${po}', ${jlit([{ key: `po:${po}:1`, item_id: syr2, qty_base: 700, unit_cost: 0.01 }])})`);
+    const pv = callJ('viewerA', `select public.msm_stock_preview('${ORG_A}', array['${A2}']::uuid[])`);
+    const hb = (pv.j?.sites?.[0]?.health?.block || []).map((b) => b.words).join(' ');
+    ok(rc.status === 0 && /Vanilla syrup is counted in ml at Location 2/.test(hb), `the preview now names it as a block (${hb.slice(0, 110)})`);
+    callJ('editorA', `select public.msm_stock_run_now('${ORG_A}', '${pub.j?.version_id}')`);
+    runDue(20);
+    const st = pj(sql(`select json_build_object('status', status, 'attempts', attempts, 'err', last_error) from msm_stock_version_sites where version_id = '${pub.j?.version_id}' and location_id = '${A2}'`));
+    const row = pj(sql(`select json_build_object('on_hand', on_hand, 'unit', base_unit) from inventory_items where id = '${syr2}'`));
+    ok(st?.status === 'failed' && st?.attempts === 1 && /cannot change to l/.test(st?.err || '') && row?.unit === 'ml' && near(row?.on_hand, 700),
+      `Location 2 fails at once, in words, and keeps 700 ml (${row?.on_hand} ${row?.unit}; ${String(st?.err).slice(0, 90)})`);
+    ok(sql(`select base_unit from inventory_items where id = '${syr1}'`) === 'l', 'Provo, where nothing uses it, was written in litres');
+    const u = callJ('editorA', `select public.msm_stock_undo('${ORG_A}', '${pub.j?.version_id}')`);
+    runDue(20);
+    ok(u.j?.ok === true && sql(`select base_unit from msm_stock_items where id = '${cid('Vanilla syrup')}'`) === 'ml'
+       && sql(`select base_unit from inventory_items where id = '${syr1}'`) === 'ml' && sql(`select base_unit from inventory_items where id = '${syr2}'`) === 'ml',
+      `Undo works: the company row and Provo are back in ml (${u.message || 'ok'})`);
+  }
+
+  // -- TI: a draft count line, or a par, in the site's unit stops a base unit change (nothing is booked x1000)
+  fresh('r1_ti');
+  {
+    const syr2 = siteItem(A2, 'Vanilla syrup');
+    const c = newCount(A2);
+    asCaller('service', `insert into stock_count_lines (location_id, count_id, inventory_item_id, counted_qty) values ('${A2}', '${c}', '${syr2}', 1500)`);
+    callJ('editorA', `select public.msm_stock_stage('${ORG_A}', ${jlit([{ target: 'item', entity_id: cid('Vanilla syrup'), data: { base_unit: 'l' } }])})`);
+    let r = asCaller('editorA', `select public.msm_stock_publish('${ORG_A}', 'now', 'syrup in litres')`);
+    ok(r.sqlstate === '55000' && /base unit cannot change to l/.test(r.message) && sql(`select base_unit from msm_stock_items where id = '${cid('Vanilla syrup')}'`) === 'ml',
+      `TI: a draft count line typed in ml stops the change, in words (${r.message.slice(0, 100)})`);
+    asCaller('service', `delete from stock_count_lines where count_id = '${c}'`);
+    sql(`insert into par_levels (location_id, inventory_item_id, par_level) values ('${A2}', '${syr2}', 2000)`);
+    r = asCaller('editorA', `select public.msm_stock_publish('${ORG_A}', 'now', 'syrup in litres')`);
+    ok(r.sqlstate === '55000' && /base unit/.test(r.message), 'and so does a par in ml');
+    const d = callJ('viewerA', `select public.msm_stock_item_detail('${ORG_A}', '${cid('Vanilla syrup')}')`);
+    ok(d.j?.unit_locked === true, 'the item sheet locks the base unit by the same rule (unit_locked)');
+  }
+
+  // -- TD: an opening count at a price list site is costed with no typed cost (phone and Back Office)
+  fresh('r1_td');
+  {
+    const milk2n = siteItem(A2, 'Whole milk'); const lem2 = siteItem(A2, 'Lemons');
+    const c = newCount(A2);
+    asCaller('service', `insert into stock_count_lines (location_id, count_id, inventory_item_id, counted_qty) values ('${A2}', '${c}', '${milk2n}', 6000), ('${A2}', '${c}', '${lem2}', 10)`);
+    const oc = callJ('service', `select public.msm_stock_opening_costs('${c}')`);
+    ok(oc.j && !(milk2n in oc.j) && near(oc.j[lem2], 0.3), `TD: opening costs: lemons (no price at Location 2) take the company average cost here, 0.30 from Provo; milk has its cost already (${JSON.stringify(oc.j)})`);
+    const ap = callJ('service', `select public.approve_stock_count('${c}', 'Phone', 'Approved on the phone', ${lit(JSON.stringify(oc.j))}::jsonb, false)`);
+    ok(ap.j?.ok === true && near(num(`select value_delta from stock_movements where inventory_item_id = '${milk2n}' and movement_type = 'OPENING_BALANCE'`), 6.6)
+       && near(num(`select value_delta from stock_movements where inventory_item_id = '${lem2}' and movement_type = 'OPENING_BALANCE'`), 3),
+      `the phone approves it with no cost typed: milk 6,000 ml at 0.0011 = 6.60, lemons 10 at 0.30 = 3.00 (${JSON.stringify(ap.j).slice(0, 80)})`);
+    const r = asCaller('boA1', `select public.msm_stock_opening_costs('${c}')`);
+    ok(r.sqlstate === '42501', 'a Back Office login cannot call it directly (it gets it inside the PIN approval)');
+  }
+
+  // -- the cost rule after a company price change: price list sites follow it, deliveries sites do not; Undo puts it back
+  fresh('r1_cost');
+  {
+    const spc = sql(`select id from msm_supplier_products where org_id = '${ORG_A}' and supplier_sku = 'D-CUP100'`);
+    let r = callJ('editorA', `select public.msm_stock_change_prices('${ORG_A}', array['${spc}']::uuid[], null, 10, null, null, false)`);
+    const pv = callJ('viewerA', `select public.msm_stock_preview('${ORG_A}', array['${A1}']::uuid[])`);
+    const pc = pv.j?.sites?.[0]?.plan?.costs || [];
+    ok(pc.some((x) => x.name === 'Cups' && near(x.before, 0.05) && near(x.after, 0.055)), `the preview shows Cups cost here at Provo 0.05 to 0.055 (${JSON.stringify(pc).slice(0, 100)})`);
+    r = callJ('editorA', `select public.msm_stock_publish('${ORG_A}', 'now', 'Cups +10%')`);
+    runDue(20);
+    ok(near(cost(I.cups), 0.055) && near(cost(I.cups2), 0.06) && near(num(`select pack_price from supplier_products where id = '${SP.cups}'`), 5.5),
+      `Provo (price list) follows the company price: Cups 0.05 to ${cost(I.cups)}; Location 2 keeps its own price and cost (${cost(I.cups2)})`);
+    ok(num(`select count(*) from item_cost_history where inventory_item_id = '${I.cups}' and source = 'CATALOG' and effective_to is null and base_unit_cost = 0.055`) === 1,
+      'with its cost history row');
+    callJ('editorA', `select public.msm_stock_undo('${ORG_A}', '${r.j?.version_id}')`);
+    runDue(20);
+    ok(near(cost(I.cups), 0.05) && num(`select count(*) from item_cost_history where inventory_item_id = '${I.cups}' and base_unit_cost = 0.055`) === 0,
+      `Undo puts the price and the cost back (${cost(I.cups)}) and removes the cost row it made`);
+  }
+  fresh('r1_cost2');
+  {
+    sql(`insert into stock_site_settings (location_id, cost_rule) values ('${A1}', 'deliveries')`);
+    const spc = sql(`select id from msm_supplier_products where org_id = '${ORG_A}' and supplier_sku = 'D-CUP100'`);
+    callJ('editorA', `select public.msm_stock_change_prices('${ORG_A}', array['${spc}']::uuid[], null, 10, null, null, false)`);
+    callJ('editorA', `select public.msm_stock_publish('${ORG_A}', 'now', 'Cups +10%')`);
+    runDue(20);
+    ok(near(cost(I.cups), 0.05) && near(num(`select pack_price from supplier_products where id = '${SP.cups}'`), 5.5),
+      `a deliveries site takes the new price but keeps the cost (Cups were received there): ${cost(I.cups)}`);
+  }
+
+  // -- CSV: a price only file keeps each price's pack size and VAT flag; packs and prices can name items new in the draft
+  fresh('r1_csv');
+  {
+    sql(`update msm_supplier_products set price_includes_tax = true where supplier_sku = 'D-MILK6'`);
+    const imp = randomUUID();
+    asCaller('editorA', `select public.msm_stock_import_stage('${ORG_A}', '${imp}', 'prices', 1, ${jlit([{ supplier: 'Dairy Co', item: 'MILK', supplier_sku: 'D-MILK6', pack_price: '7.20' }])})`);
+    let r = callJ('editorA', `select public.msm_stock_import_commit('${ORG_A}', '${imp}', false)`);
+    const st = pj(sql(`select c.data from msm_stock_changes c join msm_stock_drafts d on d.id = c.draft_id and d.status = 'open' where c.target = 'sp'`));
+    ok(r.j?.staged === 1 && st && !('pack_qty' in st) && !('inner_qty' in st) && !('inner_unit' in st) && !('price_includes_tax' in st) && near(st.pack_price, 7.2),
+      `a price only CSV stages the price alone (${JSON.stringify(st)})`);
+    r = callJ('editorA', `select public.msm_stock_publish('${ORG_A}', 'now')`);
+    runDue(20);
+    const sp = pj(sql(`select json_build_object('q', pack_qty, 'i', inner_qty, 'u', inner_unit, 'p', pack_price, 'vat', price_includes_tax) from supplier_products where id = '${SP.milk}'`));
+    ok(sp?.q === 6 && sp?.i === 1 && sp?.u === 'l' && sp?.p === 7.2 && sp?.vat === true, `after publish Provo's milk price is 6 x 1 l at 7.20, VAT included still (${JSON.stringify(sp)})`);
+    const i2 = randomUUID();
+    asCaller('editorA', `select public.msm_stock_import_stage('${ORG_A}', '${i2}', 'items', 1, ${jlit([{ name: 'Oat milk', sku: 'OAT', base_unit: 'l' }])})`);
+    callJ('editorA', `select public.msm_stock_import_commit('${ORG_A}', '${i2}', false)`);
+    const i3 = randomUUID();
+    asCaller('editorA', `select public.msm_stock_import_stage('${ORG_A}', '${i3}', 'packs', 1, ${jlit([{ item: 'OAT', name: 'Carton', qty_in_base: '1' }])})`);
+    const pk = callJ('editorA', `select public.msm_stock_import_commit('${ORG_A}', '${i3}', false)`);
+    const i4 = randomUUID();
+    asCaller('editorA', `select public.msm_stock_import_stage('${ORG_A}', '${i4}', 'prices', 1, ${jlit([{ supplier: 'Dairy Co', item: 'Oat milk', pack_qty: '6', pack_price: '9' }])})`);
+    const pr = callJ('editorA', `select public.msm_stock_import_commit('${ORG_A}', '${i4}', false)`);
+    ok(pk.j?.error_count === 0 && pk.j?.staged === 1 && pr.j?.error_count === 0 && pr.j?.staged === 1,
+      `packs and prices can name an item that is only in the draft so far (${pk.j?.errors?.[0]?.error || 'ok'}; ${pr.j?.errors?.[0]?.error || 'ok'})`);
+    const nsp = pj(sql(`select c.data from msm_stock_changes c join msm_stock_drafts d on d.id = c.draft_id and d.status = 'open' where c.target = 'sp' and c.data ? '_new'`));
+    ok(nsp?.inner_unit === 'l' && nsp?.inner_qty === 1 && nsp?.price_includes_tax === false, `a new price still gets its defaults (unit l from the draft item) (${JSON.stringify(nsp)})`);
+  }
+
+  // -- "Make this site the same as": exactly (an item on only at the target goes back to following)
+  fresh('r1_same');
+  {
+    const straws = randomUUID();
+    sql(`insert into msm_stock_items (id, org_id, name, base_unit) values ('${straws}', '${ORG_A}', 'Straws', 'each');
+         insert into msm_stock_item_sites (item_id, org_id, location_id, active) values ('${straws}', '${ORG_A}', '${A3}', true);`);
+    const r = callJ('editorA', `select public.msm_stock_copy_sites('${ORG_A}', '${A1}', '${A3}')`);
+    const ch = sql(`select c.data::text from msm_stock_changes c join msm_stock_drafts d on d.id = c.draft_id and d.status = 'open' where c.target = 'item_site' and c.entity_id = '${straws}' and c.location_id = '${A3}'`);
+    ok(r.status === 0 && /"active": null/.test(ch), `Straws, on only at New shop, follow the company switch again, as at Provo (${ch})`);
+  }
+
+  // -- blank PIN taps are not tries; the draft and History name what they are about; drift shows VAT as a percent
+  fresh('r1_words');
+  {
+    const c = randomUUID();
+    sql(`insert into stock_counts (id, location_id, name, count_type, status) values ('${c}', '${A1}', 'Spot', 'SPOT', 'DRAFT');
+         insert into stock_count_lines (location_id, count_id, inventory_item_id, sort_order) values ('${A1}', '${c}', '${I.beans}', 0);`);
+    asCaller('boA1', `update stock_count_lines set counted_qty = 6 where count_id = '${c}'`);
+    for (let i = 0; i < 6; i++) asCaller('boA1', `select public.stock_approve_count_pin('${c}', '')`);
+    const r = callJ('boA1', `select public.stock_approve_count_pin('${c}', '4321')`);
+    ok(r.j?.ok === true && num(`select count(*) from stock_pin_tries`) === 0, `six empty Approve taps are not wrong PINs: the right PIN still approves (${JSON.stringify(r.j).slice(0, 60)})`);
+    const spc = sql(`select id from msm_supplier_products where supplier_sku = 'D-CUP100'`);
+    callJ('editorA', `select public.msm_stock_stage('${ORG_A}', ${jlit([{ target: 'sp_site', entity_id: spc, location_id: A1, data: { pack_price: 4.8 } },
+      { target: 'item', entity_id: cid('Lemons'), data: { category: 'Citrus' } }])})`);
+    const dr = callJ('viewerA', `select public.msm_stock_draft_rows('${ORG_A}')`);
+    const spRow = dr.j?.rows?.find((x) => x.target === 'sp_site');
+    ok(dr.j?.total === 2 && spRow?.item_name === 'Cups' && spRow?.supplier_name === 'Dairy Co' && spRow?.site_name === 'Provo'
+       && dr.j.rows.find((x) => x.target === 'item')?.item_name === 'Lemons', `the draft page names each change (${spRow?.item_name} from ${spRow?.supplier_name} at ${spRow?.site_name})`);
+    sql(`update inventory_items set purchase_tax_rate_id = '${TAX.a2red}' where id = '${I.beans2}'`);
+    const dv = callJ('viewerA', `select public.msm_stock_site_drift('${ORG_A}', '${A2}')`);
+    const beans = (dv.j?.detail || []).find((x) => x.kind === 'item' && x.name === 'Coffee beans');
+    ok(beans && beans.site.vat === '5%' && beans.company.vat === '20%' && !('purchase_tax_rate_id' in beans.site) && beans.site_changed_at,
+      `the drift view shows VAT as 5% against 20%, not ids, and when the site last changed the row (${JSON.stringify(beans?.site?.vat)} / ${JSON.stringify(beans?.company?.vat)})`);
+    const v = sql(`select id from msm_stock_versions where org_id = '${ORG_A}' and kind = 'publish' order by version_no desc limit 1`);
+    const vr = callJ('viewerA', `select public.msm_stock_version_rows_page('${ORG_A}', '${v}', '${A2}')`);
+    ok((vr.j?.rows || []).length > 0 && vr.j.rows.every((x) => x.name), `History rows carry a name each (${(vr.j?.rows || []).slice(0, 3).map((x) => x.name).join(', ')})`);
+    const h = callJ('editorA', `select public.msm_stock_stage_sites('${ORG_A}', null, array['${A1}','${A2}','${A3}']::uuid[], false, false)`);
+    ok(h.status === 0, 'a normal staging is under the draft cap');
+  }
+  DB = 's1_main';
+})();
 
 finish();

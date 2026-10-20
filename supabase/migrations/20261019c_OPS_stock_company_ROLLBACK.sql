@@ -12,6 +12,8 @@
 --     had none. A pack, unit bridge or supplier price that a publish switched OFF at a site comes back
 --     as live there (its archived_at goes with the column). Every site row stays where it is: rows a
 --     publish inserted are kept as that site's own rows; on hand, cost and the ledger are untouched.
+--   * Drops the indexes it added for Undo (stock_movements_item_fk_idx and the others named below).
+--     Costs a publish set by a site's own cost rule stay as they are (they are the site's costs).
 --   * Count approval: approve_stock_count is open to Back Office logins again (as 20261019b left it).
 --   * Central stock: every venue keeps its mode (central stays central). Nothing here touches
 --     stock_depletion_mode.
@@ -96,6 +98,23 @@ drop table if exists public.msm_stock_items cascade;
 drop table if exists public.msm_stock_members cascade;
 drop table if exists public.stock_company cascade;
 drop table if exists public.stock_pin_tries cascade;
+
+-- the indexes this file added for Undo's deletes (round 1); the company_ref indexes go with their columns
+drop index if exists public.stock_movements_item_fk_idx;
+drop index if exists public.stock_count_lines_item_fk_idx;
+drop index if exists public.par_levels_item_fk_idx;
+drop index if exists public.po_lines_item_fk_idx;
+drop index if exists public.po_lines_sp_fk_idx;
+drop index if exists public.stock_transfer_lines_item_fk_idx;
+drop index if exists public.stock_transfer_lines_to_item_fk_idx;
+drop index if exists public.waste_events_item_fk_idx;
+drop index if exists public.supplier_invoice_lines_item_fk_idx;
+drop index if exists public.item_cost_history_sp_fk_idx;
+drop index if exists public.item_pack_fmt_parent_idx;
+drop index if exists public.purchase_orders_supplier_fk_idx;
+drop index if exists public.supplier_invoices_supplier_fk_idx;
+drop index if exists public.deliveries_supplier_fk_idx;
+drop index if exists public.recipe_lines_loc_unit_idx;
 
 -- the site columns (each only when there)
 do $cols$

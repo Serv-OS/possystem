@@ -64,6 +64,9 @@ export function createStockCompanyData({ client, report = () => {} } = {}) {
     linkCandidates: (orgId, locationId, { offset = 0, limit = 500 } = {}) =>
       rpc('msm_stock_link_candidates', { p_org: orgId, p_loc: locationId, p_offset: offset, p_limit: limit }),
 
+    /** One page of the open draft for the Review screen, each change with its names. { total, rows } */
+    draftRows: (orgId, { offset = 0, limit = 300 } = {}) => rpc('msm_stock_draft_rows', { p_org: orgId, p_offset: offset, p_limit: limit }),
+
     /** The open draft's staged changes (every page). { ok, data: rows } */
     async draft(orgId) {
       if (!client) return ok([]);

@@ -89,7 +89,7 @@ export default function MultiSiteStock({ access, onAccessLost }) {
   }
   if (!orgId) return <div style={ui.page}><div style={ui.card}>This login is not a stock Editor or Viewer of a company.</div></div>;
 
-  const shared = { api, orgId, canEdit, sites, draft, refreshDraft, stage, setNote, setTab, bump, reload };
+  const shared = { api, orgId, canEdit, sites, draft, draftErr, refreshDraft, stage, setNote, setTab, bump, reload };
   return (
     <div style={ui.page}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>

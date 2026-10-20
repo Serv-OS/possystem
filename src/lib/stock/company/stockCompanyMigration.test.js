@@ -48,9 +48,15 @@ test('the lock on company rows: WHEN on company columns only, never on hand or c
   assert.match(SQL, /current_setting\('servos\.stock_publish', true\), ''\) = txid_current\(\)::text and current_user = 'postgres'/);
 });
 
-test('publish never writes a fact: no on hand, cost, ledger, par, count, order or invoice write in the writer', () => {
+test('publish never writes a fact: no on hand, ledger, par, count, order or invoice write in the writer; cost only by the site\'s own rule', () => {
   const w = SQL.slice(SQL.indexOf('create or replace function public.msm_stock__sync_site'), SQL.indexOf('-- 11. HEALTH CHECK'));
-  assert.doesNotMatch(w, /update inventory_items t\s+set[^;]*(on_hand|current_cost)\s*=/);
+  assert.doesNotMatch(w, /update inventory_items t\s+set[^;]*on_hand\s*=/);
+  // current_cost: the ONE write is the site's own cost rule's answer (msm_stock__cost_plan, plan 4.5)
+  const costWrites = [...w.matchAll(/update inventory_items t\s+set[^;]*current_cost\s*=[^;]*;/g)].map((m) => m[0]);
+  assert.equal(costWrites.length, 1);
+  assert.match(costWrites[0], /set current_cost = c\.cost\s+from _w_newcost c/);
+  assert.match(SQL, /create or replace function public\.msm_stock__cost_plan\(p_loc uuid, p_rule text\)/);
+  assert.match(SQL, /p_rule = 'price_list' or coalesce\(c\.prev, 0\) = 0/, 'deliveries sites: only an item with no cost or never received');
   assert.doesNotMatch(w, /insert into (stock_movements|par_levels|stock_counts|purchase_orders|supplier_invoices|waste_events)/);
   assert.match(w, /on_hand, current_cost\)\s+select[\s\S]*?w\.cid, 0, null/, 'a new item starts at 0 on hand and no cost');
   assert.match(w, /-- the busy table last/);
@@ -79,4 +85,28 @@ test('every new table has row level security and the second step', () => {
   for (const t of tables) assert.ok(SQL.includes(`'${t}'`), `${t} is in the RLS list`);
   assert.match(SQL, /create policy second_step_fence on public\.%I as restrictive/);
   for (const t of tables) assert.match(RB, new RegExp(`drop table if exists public\\.${t} cascade;`), t);
+});
+
+test('round 1: no UPDATE or DELETE without a WHERE (Ops preloads safeupdate for the API login)', () => {
+  const body = SQL.replace(/--[^\n]*/g, '');
+  for (const st of body.split(';')) {
+    const m = /(?:^|[\s(])(update\s+(?!of\b)[a-z_.]+\s+(?:[a-z]+\s+)?set\b|delete\s+from\b)/i.exec(st);
+    if (!m) continue;
+    const rest = st.slice(m.index);
+    if (/do update set/i.test(rest) && !/^\s*update\s+[a-z_.]+\s+(?:[a-z]+\s+)?set/i.test(rest.trim())) continue;
+    assert.match(rest, /\bwhere\b/i, rest.slice(0, 120));
+  }
+});
+
+test('round 1: the base unit lock covers counts, pars, orders and own packs; a draft is capped; FK indexes for Undo', () => {
+  assert.match(SQL, /create or replace function public\.msm_stock__site_item_in_use\(p_loc uuid, p_item uuid\)/);
+  for (const t of ['stock_movements', 'stock_count_lines', 'par_levels', 'po_lines', 'stock_transfer_lines', 'item_packaging_formats']) {
+    assert.ok(SQL.slice(SQL.indexOf('msm_stock__site_item_in_use(p_loc uuid'), SQL.indexOf('create or replace function public.msm_stock__unit_in_use')).includes(t), t);
+  }
+  assert.match(SQL, /if new\.base_unit is distinct from old\.base_unit and public\.msm_stock__unit_in_use\(old\.id, new\.base_unit\)/);
+  assert.match(SQL, /if n > 40000 then/);
+  for (const i of ['stock_movements_item_fk_idx', 'item_pack_fmt_parent_idx', 'recipe_lines_loc_unit_idx']) {
+    assert.ok(SQL.includes(`'${i}'`), i);
+    assert.match(RB, new RegExp(`drop index if exists public\\.${i};`), i);
+  }
 });

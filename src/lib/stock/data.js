@@ -11,7 +11,7 @@
  */
 
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
-import { packBaseUnitCost } from './costing.js';
+import { packBaseUnitCost, chooseCostSource } from './costing.js';
 import { purchaseNet } from '../tax.js';
 import { readAllPagesResult } from '../pagedRead.js';
 import { normDeliveryDays } from './purchasingRules.js';
@@ -21,6 +21,8 @@ import { readUsagePages, weekdayProfile, usageRates, weekdayProfileFromDowRows }
 
 /** stock_site_settings is not there yet (20261019b not run): read as the default, never an error. */
 const isMissingTableError = (e) => /42P01|PGRST205|relation .* does not exist|Could not find the table/i.test(`${e?.code || ''} ${e?.message || ''}`);
+/** A column this database does not have yet (archived_at before 20261019c). */
+const isMissingColumnError = (e) => /42703|PGRST204|column .* does not exist/i.test(`${e?.code || ''} ${e?.message || ''}`);
 
 const nowIso = () => new Date().toISOString();
 
@@ -703,33 +705,28 @@ export async function recomputeItemCost(itemId, locationId = null) {
   if (!itemId) return { ok: false, error: new Error('no item id') };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { ok: false, error: new Error('no location resolved') };
+  // v5.11.80: only LIVE prices and unit bridges (one head office switched off here has archived_at).
+  // Before 20261019c the column is not there: read without the filter (nothing is switched off then).
+  const liveRead = async (table) => {
+    const q = () => supabase.from(table).select('*').eq('location_id', locationId).eq('inventory_item_id', itemId);
+    const r = await q().is('archived_at', null);
+    return r.error && isMissingColumnError(r.error) ? q() : r;
+  };
   const [{ data: itemRows }, { data: sps }, { data: convs }, ratesById] = await Promise.all([
     supabase.from('inventory_items').select('*').eq('location_id', locationId).eq('id', itemId).limit(1),
-    supabase.from('supplier_products').select('*').eq('location_id', locationId).eq('inventory_item_id', itemId),
-    supabase.from('inventory_item_conversions').select('*').eq('location_id', locationId).eq('inventory_item_id', itemId),
+    liveRead('supplier_products'),
+    liveRead('inventory_item_conversions'),
     fetchTaxRateMap(locationId),
   ]);
   const item = itemRows?.[0];
   if (!item) return { ok: false, error: new Error('inventory item not found or not readable') };
   if (!sps || !sps.length) return { ok: true, unchanged: true };
-  const bridges = (convs || []).map((c) => ({ fromQty: Number(c.from_qty), fromUnit: c.from_unit, toQty: Number(c.to_qty), toUnit: c.to_unit }));
   // NET pack price per supplier: strip VAT only when the price was entered inc-VAT.
   const netOfSp = (sp) => purchaseNet(Number(sp.pack_price), sp.price_includes_tax === true,
     Number(ratesById[sp.purchase_tax_rate_id || item.purchase_tax_rate_id] || 0));
-
-  let chosen = null, chosenCost = Infinity, chosenNetPack = null;
-  for (const sp of sps) {
-    let bc; const netPack = netOfSp(sp);
-    try {
-      bc = packBaseUnitCost({
-        packPrice: netPack, packQty: Number(sp.pack_qty), innerQty: Number(sp.inner_qty),
-        innerUnit: sp.inner_unit, baseUnit: item.base_unit, itemConversions: bridges,
-      }).baseUnitCost;
-    } catch { continue; }
-    if (sp.is_preferred) { chosen = sp; chosenCost = bc; chosenNetPack = netPack; break; }
-    if (bc < chosenCost) { chosen = sp; chosenCost = bc; chosenNetPack = netPack; }
-  }
-  if (!chosen || !Number.isFinite(chosenCost)) return { ok: true, unchanged: true };
+  const pick = chooseCostSource({ sps, baseUnit: item.base_unit, bridges: convs || [], netOf: netOfSp });
+  if (!pick) return { ok: true, unchanged: true };
+  const { chosen, cost: chosenCost, netPack: chosenNetPack } = pick;
 
   const prev = item.current_cost == null ? null : Number(item.current_cost);
   // v5.11.79: the venue's cost rule. Price list (default): the price sets the cost, as before.

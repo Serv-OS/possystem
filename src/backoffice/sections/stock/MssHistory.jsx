@@ -9,14 +9,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Btn, Pill, Modal, ConfirmDialog } from '../msm/msmUi';
 import { ui } from '../msm/msmStyle';
-import { versionWords } from '../../../lib/stock/company/stockCompanyRules';
+import { versionWords, versionRowWords } from '../../../lib/stock/company/stockCompanyRules';
 import { t, fmtWhen } from './mssShared';
 import { Pager } from './mssCommon';
 
 const SITE_TONE = { done: 'good', nothing: 'neutral', waiting: 'warn', running: 'blue', failed: 'bad', cancelled: 'neutral' };
 const SITE_WORDS = { done: 'written', nothing: 'nothing to change', waiting: 'waiting', running: 'writing now', failed: 'failed', cancelled: 'cancelled' };
-const TBL = { inventory_items: 'Stock item', item_packaging_formats: 'Pack', inventory_item_conversions: 'Unit bridge', suppliers: 'Supplier',
-  supplier_products: 'Supplier price', inventory_item_areas: 'Area' };
 
 export default function MssHistory({ api, orgId, canEdit, setNote, bump, refreshDraft, reload }) {
   const [rows, setRows] = useState([]);
@@ -78,14 +76,17 @@ export default function MssHistory({ api, orgId, canEdit, setNote, bump, refresh
           <table style={t.table}>
             <thead><tr><th style={t.th}>What</th><th style={t.th}>How</th><th style={t.th}>Before</th><th style={t.th}>After</th></tr></thead>
             <tbody>
-              {detail.rows.map((r) => (
-                <tr key={`${r.tbl}-${r.row_id}`}>
-                  <td style={t.td}>{TBL[r.tbl] || r.tbl}</td>
-                  <td style={t.td}>{r.op}</td>
-                  <td style={{ ...t.td, ...t.grey, maxWidth: 300, wordBreak: 'break-word' }}>{r.before ? Object.entries(r.before).filter(([k]) => k !== 'updated_at').map(([k, val]) => `${k}: ${JSON.stringify(val)}`).join('; ') : ''}</td>
-                  <td style={{ ...t.td, maxWidth: 300, wordBreak: 'break-word' }}>{r.after ? Object.entries(r.after).map(([k, val]) => `${k}: ${JSON.stringify(val)}`).join('; ') : ''}</td>
-                </tr>
-              ))}
+              {detail.rows.map((r) => {
+                const w = versionRowWords(r, fmtWhen);
+                return (
+                  <tr key={`${r.tbl}-${r.row_id}`}>
+                    <td style={t.td}>{w.what}</td>
+                    <td style={t.td}>{w.how}</td>
+                    <td style={{ ...t.td, ...t.grey, maxWidth: 300, wordBreak: 'break-word' }}>{w.before}</td>
+                    <td style={{ ...t.td, maxWidth: 300, wordBreak: 'break-word' }}>{w.after}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </Modal>

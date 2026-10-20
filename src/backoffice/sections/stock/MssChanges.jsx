@@ -12,25 +12,22 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Btn, Pill, Notice, ConfirmDialog, Modal } from '../msm/msmUi';
 import { ui } from '../msm/msmStyle';
-import { planWords, healthLines, siteCardWords } from '../../../lib/stock/company/stockCompanyRules';
+import { planWords, healthLines, siteCardWords, changeWords, costLines, showDiscardAll, FIELD_WORDS } from '../../../lib/stock/company/stockCompanyRules';
 import { t, fmtWhen } from './mssShared';
 
-const TARGET_WORDS = { item: 'Stock item', item_site: 'Item at a site', pack: 'Pack', pack_site: 'Pack at a site', bridge: 'Unit bridge', bridge_site: 'Unit bridge at a site',
-  supplier: 'Supplier', supplier_site: 'Supplier at a site', sp: 'Supplier price', sp_site: 'Price at a site' };
-const describe = (c, siteName) => {
-  const d = c.data || {};
-  const what = Object.entries(d).filter(([k]) => k !== '_new').map(([k, v]) => {
-    if (k === 'link') return 'link to the site\'s own row';
-    if (k === 'active') return v == null ? 'follows every site' : (v ? 'on' : 'off');
-    if (k === 'all_sites') return v ? 'on at every site' : 'not at every site';
-    if (k === 'archived') return v ? 'archived' : 'brought back';
-    return `${k.replace(/_/g, ' ')} ${Array.isArray(v) ? v.join(', ') : (v ?? 'cleared')}`;
-  }).join(', ');
-  return `${d._new ? 'New ' : ''}${TARGET_WORDS[c.target] || c.target}${d.name ? `: ${d.name}` : ''}${c.location_id ? ` at ${siteName(c.location_id)}` : ''}${what ? `: ${what}` : ''}`;
-};
-
-export default function MssChanges({ api, orgId, canEdit, sites, draft, refreshDraft, setNote, bump, reload }) {
-  const siteName = useCallback((id) => sites.find((s) => s.id === id)?.name || 'a site', [sites]);
+export default function MssChanges({ api, orgId, canEdit, sites, draft, draftErr, refreshDraft, setNote, bump, reload }) {
+  // the Review list is a page from the server with names (never the raw draft rows, never ids)
+  const [page, setPage] = useState({ total: null, rows: [] });
+  const [pageErr, setPageErr] = useState('');
+  useEffect(() => {
+    let live = true;
+    api.draftRows(orgId, { limit: 300 }).then((r) => {
+      if (!live) return;
+      if (r.ok) { setPage({ total: Number(r.data?.total) || 0, rows: r.data?.rows || [] }); setPageErr(''); } else setPageErr(r.words);
+    });
+    return () => { live = false; };
+  }, [api, orgId, draft, reload]);
+  const total = page.total != null ? page.total : draft.length;
   // { rows: [{ location_id, name, plan, health }], done, total, error, draft }: a preview is shown only for the draft it was made from
   const [previewState, setPreview] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -93,22 +90,24 @@ export default function MssChanges({ api, orgId, canEdit, sites, draft, refreshD
     <div style={{ display: 'grid', gap: 14 }}>
       <div style={ui.card}>
         <div style={{ ...ui.row, marginBottom: 8, flexWrap: 'wrap' }}>
-          <div style={{ ...ui.h2, flex: 1 }}>The draft: {draft.length} change{draft.length === 1 ? '' : 's'}</div>
-          <Btn onClick={runPreview} disabled={busy || !draft.length}>{busy ? 'Working…' : 'Preview every site'}</Btn>
-          {canEdit && <Btn kind="primary" disabled={busy || !draft.length || !preview || preview.error || blocks.length > 0 || preview.done < preview.total} onClick={() => setAsking('night')}>Publish tonight</Btn>}
-          {canEdit && <Btn disabled={busy || !draft.length || !preview || preview.error || blocks.length > 0 || preview.done < preview.total} onClick={() => setAsking('now')}>Publish now</Btn>}
-          {canEdit && draft.length > 0 && <Btn kind="danger" onClick={() => setAsking('discard')}>Discard all</Btn>}
+          <div style={{ ...ui.h2, flex: 1 }}>The draft: {total} change{total === 1 ? '' : 's'}</div>
+          <Btn onClick={runPreview} disabled={busy || !total}>{busy ? 'Working…' : 'Preview every site'}</Btn>
+          {canEdit && <Btn kind="primary" disabled={busy || !total || !preview || preview.error || blocks.length > 0 || preview.done < preview.total} onClick={() => setAsking('night')}>Publish tonight</Btn>}
+          {canEdit && <Btn disabled={busy || !total || !preview || preview.error || blocks.length > 0 || preview.done < preview.total} onClick={() => setAsking('now')}>Publish now</Btn>}
+          {/* Discard all stays even when the draft cannot be read (too big, or a failed read) */}
+          {showDiscardAll({ canEdit, total, readError: draftErr || pageErr }) && <Btn kind="danger" onClick={() => setAsking('discard')}>Discard all</Btn>}
         </div>
-        {!draft.length && <div style={ui.sub}>Nothing in the draft. Edits in Stock items and Suppliers and prices land here first.</div>}
-        {draft.length > 0 && !preview && <div style={{ ...ui.sub, marginBottom: 8 }}>Preview first: it shows what each site gets and anything that would stop the publish.</div>}
+        {(draftErr || pageErr) && <div style={{ marginBottom: 8 }}><Notice tone="bad">Could not read the whole draft ({draftErr || pageErr}). Discard all still empties it.</Notice></div>}
+        {!total && !draftErr && <div style={ui.sub}>Nothing in the draft. Edits in Stock items and Suppliers and prices land here first.</div>}
+        {total > 0 && !preview && <div style={{ ...ui.sub, marginBottom: 8 }}>Preview first: it shows what each site gets and anything that would stop the publish.</div>}
         <div style={{ maxHeight: 260, overflowY: 'auto' }}>
-          {draft.slice(0, 300).map((c) => (
+          {page.rows.map((c) => (
             <div key={c.id} style={{ ...ui.row, padding: '5px 0', borderTop: '1px solid var(--bdr)', fontSize: 12.5 }}>
-              <span style={{ flex: 1 }}>{describe(c, siteName)}</span>
+              <span style={{ flex: 1 }}>{changeWords(c)}</span>
               {canEdit && <Btn small onClick={() => removeOne(c)}>Remove</Btn>}
             </div>
           ))}
-          {draft.length > 300 && <div style={t.grey}>and {draft.length - 300} more</div>}
+          {total > page.rows.length && <div style={t.grey}>and {total - page.rows.length} more</div>}
         </div>
       </div>
 
@@ -122,6 +121,7 @@ export default function MssChanges({ api, orgId, canEdit, sites, draft, refreshD
             return (
               <div key={s.location_id} style={{ padding: '7px 0', borderTop: '1px solid var(--bdr)', fontSize: 13 }}>
                 <div>{planWords(s.name, s.plan)}</div>
+                {costLines(s.plan).length > 0 && <div style={t.grey}>Cost here, before and after: {costLines(s.plan).join('; ')}{Number(s.plan?.costs_changed) > costLines(s.plan).length ? `; and ${Number(s.plan.costs_changed) - costLines(s.plan).length} more` : ''}.</div>}
                 {h.warns.map((w) => <div key={w} style={{ ...t.grey, color: 'var(--amber, #F5A623)' }}>{w}</div>)}
                 {h.blocks.map((w) => <div key={w} style={{ ...t.grey, color: 'var(--red)' }}>{w}</div>)}
               </div>
@@ -165,11 +165,8 @@ export default function MssChanges({ api, orgId, canEdit, sites, draft, refreshD
   );
 }
 
-const FIELD_WORDS = { name: 'Name', category: 'Category', accounting_group: 'Accounting group', base_unit: 'Base unit', allergens: 'Allergens', sku: 'SKU', barcode: 'Barcode',
-  shelf_life_days: 'Shelf life', returns_to_shelf: 'Back on the shelf', purchase_tax_rate_id: 'VAT rate', archived_at: 'Archived', contact_name: 'Contact', phone: 'Phone',
-  payment_terms_days: 'Terms', supplier_sku: 'Supplier SKU', pack_description: 'Pack', pack_qty: 'Packs', inner_qty: 'Holds', inner_unit: 'Unit', pack_price: 'Price',
-  price_includes_tax: 'Includes VAT' };
-const show = (v) => (v == null ? '' : Array.isArray(v) ? v.join(', ') : typeof v === 'boolean' ? (v ? 'yes' : 'no') : String(v));
+const show = (k, v) => (v == null ? '' : k === 'archived_at' ? fmtWhen(v) : Array.isArray(v) ? v.join(', ') : typeof v === 'boolean' ? (v ? 'yes' : 'no') : String(v));
+const label = (k) => { const w = FIELD_WORDS[k] || k.replace(/_/g, ' '); return w.charAt(0).toUpperCase() + w.slice(1); };
 
 function DriftView({ api, orgId, canEdit, drift, setNote, refreshDraft, onClose }) {
   const rows = drift.data?.detail || [];
@@ -192,15 +189,15 @@ function DriftView({ api, orgId, canEdit, drift, setNote, refreshDraft, onClose 
       footer={canEdit && rows.length ? <Btn kind="primary" onClick={putBack}>Put the company's back (next publish)</Btn> : null}>
       {!rows.length && <div style={ui.sub}>Stock in step: nothing differs here.</div>}
       {rows.map((r) => {
-        const keys = Object.keys(r.company || {}).filter((k) => JSON.stringify(r.site?.[k] ?? null) !== JSON.stringify(r.company?.[k] ?? null));
+        const keys = Object.keys(r.company || {}).filter((k) => !/_id$/.test(k) && JSON.stringify(r.site?.[k] ?? null) !== JSON.stringify(r.company?.[k] ?? null));
         return (
           <div key={`${r.kind}-${r.row_id}`} style={{ padding: '8px 0', borderTop: '1px solid var(--bdr)' }}>
             <div style={{ ...ui.row, marginBottom: 4 }}>
-              <b style={{ flex: 1 }}>{r.name} <span style={t.grey}>({r.kind}{r.linking ? ', joining the company row' : ''})</span></b>
+              <b style={{ flex: 1 }}>{r.name} <span style={t.grey}>({{ item: 'stock item', supplier: 'supplier', price: 'supplier price' }[r.kind] || 'row'}{r.linking ? ', joining the company row' : ''}{r.site_changed_at ? `, last changed at the site ${fmtWhen(r.site_changed_at, drift.site.timezone || undefined)}` : ''})</span></b>
               {canEdit && !r.linking && r.company_id && <Btn small onClick={() => keep(r)}>Keep the site's</Btn>}
             </div>
             <table style={t.table}><tbody>
-              {keys.map((k) => <tr key={k}><td style={{ ...t.td, width: 160, ...t.grey }}>{FIELD_WORDS[k] || k}</td><td style={t.td}>{show(r.site?.[k])}</td><td style={t.td}><b>{show(r.company?.[k])}</b></td></tr>)}
+              {keys.map((k) => <tr key={k}><td style={{ ...t.td, width: 160, ...t.grey }}>{label(k)}</td><td style={t.td}>{show(k, r.site?.[k]) || 'none'}</td><td style={t.td}><b>{show(k, r.company?.[k]) || 'none'}</b></td></tr>)}
             </tbody></table>
           </div>
         );

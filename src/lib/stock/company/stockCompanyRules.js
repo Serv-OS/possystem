@@ -74,8 +74,101 @@ export function planWords(siteName, plan) {
   if (changed) parts.push(`${changed} changed`);
   let out = `${name}: ${parts.join('; ')}.`;
   if (n(p.items_off)) out += ` ${plural(n(p.items_off), 'item')} switched off here.`;
-  if (n(p.items_held)) out += ` ${plural(n(p.items_held), 'item')} still held here stay${n(p.items_held) === 1 ? 's' : ''} live until counted to zero.`;
-  return `${out} No stock quantities change.`;
+  if (n(p.items_held)) out += ` ${plural(n(p.items_held), 'item')} still held here stay${n(p.items_held) === 1 ? 's' : ''} live (with their packs and prices) and are archived by the next publish after they are counted to zero.`;
+  out += ' No stock quantities change.';
+  if (n(p.costs_changed)) {
+    out += ` Cost here moves for ${plural(n(p.costs_changed), 'item')} (${p.cost_rule === 'deliveries' ? 'deliveries rule: only items never received' : 'this site follows its price list'}).`;
+  }
+  return out;
+}
+
+/** Discard all stays offered whenever the draft has rows OR cannot be read (too big, a failed read). */
+export const showDiscardAll = ({ canEdit = false, total = 0, readError = '' } = {}) => !!canEdit && (Number(total) > 0 || !!readError);
+
+/** The preview's cost here before and after, one line each: "Cups: 0.05 to 0.055". */
+export function costLines(plan, fmt = (v) => String(Number(Number(v).toFixed(5)))) {
+  const list = Array.isArray(plan?.costs) ? plan.costs : [];
+  return list.map((c) => (c.new || c.before == null ? `${c.name}: new here, cost ${fmt(c.after)}` : `${c.name}: ${fmt(c.before)} to ${fmt(c.after)}`));
+}
+
+const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+const AREA_WORDS = { cellar: 'Cellar', walk_in: 'Walk in fridge', fridge: 'Fridge', freezer: 'Freezer', dry_store: 'Dry store', bar: 'Bar', kitchen: 'Kitchen', other: 'Other' };
+export const FIELD_WORDS = Object.freeze({
+  name: 'name', category: 'category', accounting_group: 'accounting group', base_unit: 'base unit', allergens: 'allergens', sku: 'SKU',
+  barcode: 'barcode', shelf_life_days: 'shelf life (days)', purchase_tax_rate: 'VAT', vat: 'VAT', default_area_kind: 'usual area',
+  returns_to_shelf: 'can go back on the shelf', notes: 'notes', all_sites: 'every site', archived: 'archived', archived_at: 'archived',
+  qty_in_base: 'holds', is_count_default: 'count pack', is_purchase_default: 'buying pack', contact_name: 'contact', contact_email: 'email',
+  phone: 'phone', payment_terms_days: 'payment terms (days)', supplier_sku: 'supplier SKU', pack_description: 'pack', pack_qty: 'packs',
+  inner_qty: 'each holds', inner_unit: 'unit', pack_price: 'price', price_includes_tax: 'price includes VAT', first_choice: 'first choice',
+  account_number: 'account number', order_email: 'order email', delivery_days: 'delivery days', cutoff_time: 'cut off',
+  min_order_value: 'minimum order', made_here: 'made here', off: 'off here', current_cost: 'cost here', on_hand: 'on hand',
+});
+const HIDDEN = new Set(['_new', 'item_id', 'supplier_id', 'parent_pack_id', 'link', 'company_ref', 'updated_at', 'open_history', 'history_id', 'item', 'area_id']);
+const hiddenKey = (k) => HIDDEN.has(k) || /_id$/.test(k);
+
+/** One value in words: yes or no, a VAT percent, an area name, a list; never an id. */
+export function valueWords(key, v, fmtWhen = (iso) => iso) {
+  if (v == null || v === '') return 'cleared';
+  if (typeof v === 'boolean') return v ? 'yes' : 'no';
+  if (key === 'purchase_tax_rate') return ratePercent(v) || 'none';
+  if (key === 'default_area_kind') return AREA_WORDS[v] || String(v);
+  if (key === 'archived_at') return fmtWhen(v) || 'yes';
+  if (Array.isArray(v)) return v.length ? v.join(', ') : 'none';
+  if (typeof v === 'object') return '';
+  const t = String(v);
+  return UUID.test(t) ? '' : t;
+}
+
+/** The fields of a change or a version row in words, ids and bookkeeping left out. */
+export function fieldWords(data, fmtWhen) {
+  return Object.entries(data || {}).filter(([k]) => !hiddenKey(k))
+    .map(([k, v]) => [FIELD_WORDS[k] || k.replace(/_/g, ' '), valueWords(k, v, fmtWhen)])
+    .filter(([, w]) => w !== '')
+    .map(([k, w]) => `${k} ${w}`).join(', ');
+}
+
+const KIND_WORDS = { item: 'Stock item', item_site: 'Stock item', pack: 'Pack', pack_site: 'Pack', bridge: 'Unit bridge', bridge_site: 'Unit bridge',
+  supplier: 'Supplier', supplier_site: 'Supplier', sp: 'Supplier price', sp_site: 'Price' };
+
+/**
+ * A staged change in words, from msm_stock_draft_rows (each row carries item_name, supplier_name,
+ * pack_name, parent_pack_name, site_name): "Price: Cups from Dairy Co at Provo: price 4.8". Never an id.
+ */
+export function changeWords(c) {
+  const d = (c && c.data) || {};
+  const item = c?.item_name || 'an item';
+  const sup = c?.supplier_name || 'a supplier';
+  const subject = {
+    item: item, item_site: item, pack: `${item}, pack ${c?.pack_name || d.name || ''}`.trim(), pack_site: `${item}, pack ${c?.pack_name || ''}`.trim(),
+    bridge: `${item}`, bridge_site: `${item}`, supplier: c?.supplier_name || d.name || 'a supplier', supplier_site: c?.supplier_name || 'a supplier',
+    sp: `${item} from ${sup}`, sp_site: `${item} from ${sup}`,
+  }[c?.target] || item;
+  const bits = [];
+  if (d.link) bits.push('joins the site\'s own row');
+  if ('active' in d) bits.push(d.active == null ? 'follows every site' : (d.active ? 'on here' : 'off here'));
+  if (c?.target === 'bridge' && d.from_qty != null) bits.push(`${d.from_qty} ${d.from_unit} = ${d.to_qty} ${d.to_unit}`);
+  if (d.parent_pack_id) bits.push(`inside ${c?.parent_pack_name || 'another pack'}`);
+  const rest = { ...d };
+  for (const k of ['active', 'from_qty', 'from_unit', 'to_qty', 'to_unit']) delete rest[k];
+  const f = fieldWords(rest);
+  if (f) bits.push(f);
+  return `${d._new ? 'New ' : ''}${KIND_WORDS[c?.target] || 'Change'}: ${subject}${c?.site_name ? ` at ${c.site_name}` : ''}${bits.length ? `: ${bits.join(', ')}` : ''}`;
+}
+
+const TABLE_WORDS = { inventory_items: 'Stock item', item_packaging_formats: 'Pack', inventory_item_conversions: 'Unit bridge', suppliers: 'Supplier',
+  supplier_products: 'Supplier price', inventory_item_areas: 'Area', item_cost: 'Cost here' };
+const OP_WORDS = { insert: 'Added', update: 'Changed', link: 'Joined the company row', unlink: 'Became the site\'s own', restore: 'Put back',
+  delete: 'Removed', archive: 'Archived, kept by the site' };
+
+/** One History row in words: { what, how, before, after }, from msm_stock_version_rows_page. */
+export function versionRowWords(r, fmtWhen = (iso) => iso) {
+  const x = r || {};
+  return {
+    what: `${TABLE_WORDS[x.tbl] || 'Row'}${x.name ? `: ${x.name}` : ''}`,
+    how: OP_WORDS[x.op] || 'Changed',
+    before: fieldWords(x.before, fmtWhen),
+    after: fieldWords(x.after, fmtWhen),
+  };
 }
 
 /** The health check's answer as two lists of words. */
@@ -85,7 +178,10 @@ export function healthLines(health) {
   return { blocks: words(h.block), warns: words(h.warn) };
 }
 
-/** A site card: "Stock in step" or what waits (5.2 site cards). Returns { tone, words }. */
+/**
+ * A site card: "Stock in step" or what waits (5.2 site cards). Returns { tone, words }. A wait time is
+ * on the SITE's clock (card.timezone), never the viewer's: fmtTime(iso, timeZone).
+ */
 export function siteCardWords(card, fmtTime = (iso) => iso) {
   const c = card || {};
   if (c.waiting) {
@@ -93,7 +189,7 @@ export function siteCardWords(card, fmtTime = (iso) => iso) {
     if (w.status === 'failed') return { tone: 'bad', words: `Version ${w.version_no} failed here: ${w.last_error || 'see History'}` };
     if (w.status === 'running') return { tone: 'blue', words: `Version ${w.version_no} is being written now` };
     if (w.last_error) return { tone: 'warn', words: `Version ${w.version_no} waits: ${w.last_error}` };
-    return { tone: 'warn', words: `Version ${w.version_no} waits until ${fmtTime(w.due_at)}` };
+    return { tone: 'warn', words: `Version ${w.version_no} waits until ${fmtTime(w.due_at, c.timezone || undefined)}${c.name ? ` on ${c.name}'s clock` : ''}` };
   }
   if (c.last) return { tone: 'good', words: `Stock in step (version ${c.last.version_no})` };
   return { tone: 'neutral', words: 'Nothing published here yet' };

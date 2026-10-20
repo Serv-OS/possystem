@@ -156,7 +156,9 @@ function ItemSheet({ api, orgId, canEdit, draft, stage, id, create, onClose }) {
   };
   const item = detail?.item || {};
   const used = detail?.used_in || {};
-  const lockedUnit = !create && (detail?.sites || []).some((s) => s.linked && Number(s.on_hand) !== 0);
+  // the database's own rule (msm_stock__unit_in_use): stock, movements, counts, pars, orders or the
+  // site's own packs in that unit at any site fix it; before the sheet has loaded, on hand decides
+  const lockedUnit = !create && (detail?.unit_locked != null ? !!detail.unit_locked : (detail?.sites || []).some((s) => s.linked && Number(s.on_hand) !== 0));
   const addPack = async () => {
     const qty = Number(pack.qty);
     if (!pack.name.trim() || !(qty > 0)) { setErr('A pack needs a name and how many base units it holds.'); return; }
@@ -186,7 +188,7 @@ function ItemSheet({ api, orgId, canEdit, draft, stage, id, create, onClose }) {
       <fieldset disabled={!canEdit} style={{ border: 'none', padding: 0, margin: 0 }}>
         <Field label="Name"><input value={form.name} onChange={(e) => upd('name', e.target.value)} style={ui.input} /></Field>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-          <Field label="Base unit" hint={lockedUnit ? 'Fixed: a site holds stock of it' : 'Counted and costed in this'}>
+          <Field label="Base unit" hint={lockedUnit ? 'Fixed: a site has stock, counts, pars or orders of it in this unit' : 'Counted and costed in this'}>
             <select value={form.base_unit} disabled={lockedUnit} onChange={(e) => upd('base_unit', e.target.value)} style={ui.input}>{UNITS.map((u) => <option key={u} value={u}>{u}</option>)}</select>
           </Field>
           <Field label="Category"><input value={form.category} onChange={(e) => upd('category', e.target.value)} style={ui.input} /></Field>
@@ -274,7 +276,7 @@ function ItemSheet({ api, orgId, canEdit, draft, stage, id, create, onClose }) {
       {asking === 'archive' && (
         <ConfirmDialog title={`Archive ${item.name}?`} danger yes="Archive it"
           words={held.length
-            ? `It is archived at sites holding none. ${held.map((s) => `${s.name} holds ${fmtNum(s.on_hand, item.base_unit)}`).join('; ')}: count it to zero or write it off there, and it is archived then.`
+            ? `It is archived at sites holding none. ${held.map((s) => `${s.name} holds ${fmtNum(s.on_hand, item.base_unit)}`).join('; ')}: it stays live there, with its pack and price, so it can be counted down. Count it to zero or write it off there; the next publish after that archives it.`
             : 'It is archived at every site when you publish. Its history stays.'}
           onYes={async () => { setAsking(null); const r = await stage([{ target: 'item', entity_id: itemId, data: { archived: true } }], `${item.name}: archived in the draft.`); if (r.ok) onClose(); }}
           onNo={() => setAsking(null)} />

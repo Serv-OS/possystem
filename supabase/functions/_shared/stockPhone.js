@@ -9,18 +9,36 @@
 //   openCount(sb, loc, areaId, who)      an open count of one area (or the whole venue), reused today
 //   sheet(sb, loc, countId, offset)      the items to count there, 500 a page, with what is counted
 //   save(sb, loc, countId, entries)      entries saved as you go: each with the time it was counted
-//   approve(sb, loc, countId, who)       the areas marked complete, then ONE database call
+//   approve(sb, loc, countId, who)       the areas marked complete, the opening costs, then ONE database call
 //   items(sb, loc, offset)               every live item, 500 a page (waste needs no count)
 //   waste(sb, loc, body, who)            a stock item waste through stock_record_waste
 //
 // Counted time: the phone sends when each figure was typed. A figure saved late (a dropped signal)
 // keeps that time, never later than now and never before the count started; a phone clock more than
-// 10 minutes out is not trusted and the server time is used. The database stamps a changed figure
-// itself (20261019b), so a recount is always "now".
+// 10 minutes out is not trusted and the server time is used. A first figure is inserted with its
+// time. A RECOUNT is two writes: the figure (the database stamps a changed figure with its own clock,
+// 20261019b), then the time it was typed with the figure unchanged, which the database keeps for the
+// service role. If that second write fails the line keeps the save time and the save says so.
+//
+// Reads past the 1,000 row cap (PostgREST answers at most 1,000 rows): packs and saved lines are read
+// in pages of 1,000 until a short page comes back.
 
 export const PAGE = 500;
 export const MAX_ENTRIES = 200;
 export const CLOCK_SLACK_MS = 10 * 60 * 1000;
+export const ROW_CAP = 1000;
+
+/** Every row of a read, in pages of ROW_CAP (build() makes a fresh query, ordered). { data, error } */
+export async function readAll(build, max = 20) {
+  const out = [];
+  for (let p = 0; p < max; p++) {
+    const { data, error } = await build().range(p * ROW_CAP, p * ROW_CAP + ROW_CAP - 1);
+    if (error) return { data: null, error };
+    out.push(...(data || []));
+    if (!data || data.length < ROW_CAP) return { data: out, error: null };
+  }
+  return { data: null, error: { message: 'too many rows' } };
+}
 
 const isUuid = (v) => typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
 
@@ -117,10 +135,11 @@ export async function sheet(sb, loc, countId, offset = 0) {
   const { data: items, error } = await q;
   if (error) return { error: 'could not read the items' };
   const itemIds = (items || []).map((i) => i.id);
-  const [{ data: packs }, { data: lines }] = await Promise.all([
-    itemIds.length ? sb.from('item_packaging_formats').select('inventory_item_id, name, qty_in_base, is_count_default').eq('location_id', loc).in('inventory_item_id', itemIds).is('archived_at', null).limit(1000) : Promise.resolve({ data: [] }),
-    itemIds.length ? sb.from('stock_count_lines').select('inventory_item_id, area_id, counted_qty, counted_at').eq('location_id', loc).eq('count_id', c.id).in('inventory_item_id', itemIds).limit(1000) : Promise.resolve({ data: [] }),
+  const [{ data: packs, error: pErr }, { data: lines, error: lErr }] = await Promise.all([
+    itemIds.length ? readAll(() => sb.from('item_packaging_formats').select('id, inventory_item_id, name, qty_in_base, is_count_default').eq('location_id', loc).in('inventory_item_id', itemIds).is('archived_at', null).order('id')) : Promise.resolve({ data: [] }),
+    itemIds.length ? readAll(() => sb.from('stock_count_lines').select('id, inventory_item_id, area_id, counted_qty, counted_at').eq('location_id', loc).eq('count_id', c.id).in('inventory_item_id', itemIds).order('id')) : Promise.resolve({ data: [] }),
   ]);
+  if (pErr || lErr) return { error: 'could not read the packs or the figures saved so far' };
   const packBy = {};
   for (const p of packs || []) if (p.is_count_default || !packBy[p.inventory_item_id]) packBy[p.inventory_item_id] = { name: p.name, qty: Number(p.qty_in_base) };
   const lineBy = {};
@@ -140,9 +159,10 @@ export async function items(sb, loc, offset = 0) {
     .is('archived_at', null).eq('is_tracked', true).order('name').order('id').range(offset, offset + PAGE - 1);
   if (error) return { error: 'could not read the items' };
   const ids = (data || []).map((i) => i.id);
-  const { data: packs } = ids.length
-    ? await sb.from('item_packaging_formats').select('inventory_item_id, name, qty_in_base, is_count_default').eq('location_id', loc).in('inventory_item_id', ids).is('archived_at', null).limit(1000)
+  const { data: packs, error: pErr } = ids.length
+    ? await readAll(() => sb.from('item_packaging_formats').select('id, inventory_item_id, name, qty_in_base, is_count_default').eq('location_id', loc).in('inventory_item_id', ids).is('archived_at', null).order('id'))
     : { data: [] };
+  if (pErr) return { error: 'could not read the packs' };
   const packBy = {};
   for (const p of packs || []) if (p.is_count_default || !packBy[p.inventory_item_id]) packBy[p.inventory_item_id] = { name: p.name, qty: Number(p.qty_in_base) };
   return { more: (data || []).length === PAGE, items: (data || []).map((i) => ({ id: i.id, name: i.name, base_unit: i.base_unit, sku: i.sku, barcode: i.barcode, count_pack: packBy[i.id] || null, head_office: !!i.company_ref })) };
@@ -156,14 +176,16 @@ export async function save(sb, loc, countId, rawEntries, { sentAt = null, now = 
   if (!clean.ok) return { error: clean.error };
   const area = c.storage_area && c.storage_area !== 'all' ? c.storage_area : null;
   const itemIds = [...new Set(clean.entries.map((e) => e.item_id))];
-  const [{ data: items }, { data: lines }] = await Promise.all([
+  const [{ data: items }, { data: lines, error: lErr }] = await Promise.all([
     sb.from('inventory_items').select('id, on_hand, current_cost').eq('location_id', loc).in('id', itemIds),
-    sb.from('stock_count_lines').select('id, inventory_item_id, area_id, counted_qty').eq('location_id', loc).eq('count_id', c.id).in('inventory_item_id', itemIds),
+    readAll(() => sb.from('stock_count_lines').select('id, inventory_item_id, area_id, counted_qty').eq('location_id', loc).eq('count_id', c.id).in('inventory_item_id', itemIds).order('id')),
   ]);
+  if (lErr) return { error: 'could not read the figures saved so far' };
   const itemBy = Object.fromEntries((items || []).map((i) => [i.id, i]));
   if (clean.entries.some((e) => !itemBy[e.item_id])) return { error: 'a figure is for an item that is not at this venue' };
   let saved = 0;
   const inserts = [];
+  const sent = sentAt || new Date(now).toISOString();
   for (const e of clean.entries) {
     const lineArea = e.area_id || area;
     const line = (lines || []).find((l) => l.inventory_item_id === e.item_id && (l.area_id || null) === lineArea);
@@ -171,12 +193,16 @@ export async function save(sb, loc, countId, rawEntries, { sentAt = null, now = 
       if (Number(line.counted_qty) === e.qty_base) { saved++; continue; }
       const { error } = await sb.from('stock_count_lines').update({ counted_qty: e.qty_base }).eq('location_id', loc).eq('id', line.id);
       if (error) return { error: `could not save a figure: ${error.message}`, saved };
+      // then when it was typed: the figure is unchanged on this write, so the database keeps the time
+      const at = countedAt({ clientAt: e.counted_at, sentAt: sent, now, startedAt: c.started_at });
+      const { error: tErr } = await sb.from('stock_count_lines').update({ counted_at: at }).eq('location_id', loc).eq('id', line.id);
+      if (tErr) return { error: `a figure saved, but not the time it was counted (it reads as now): ${tErr.message}`, saved: saved + 1 };
       saved++;
     } else {
       const it = itemBy[e.item_id];
       inserts.push({ location_id: loc, count_id: c.id, inventory_item_id: e.item_id, area_id: lineArea, counted_qty: e.qty_base,
         expected_qty: Number(it.on_hand) || 0, unit_cost: it.current_cost == null ? null : Number(it.current_cost),
-        counted_at: countedAt({ clientAt: e.counted_at, sentAt: sentAt || new Date(now).toISOString(), now, startedAt: c.started_at }) });
+        counted_at: countedAt({ clientAt: e.counted_at, sentAt: sent, now, startedAt: c.started_at }) });
     }
   }
   if (inserts.length) {
@@ -193,8 +219,17 @@ export async function approve(sb, loc, countId, who) {
   if (c.status === 'APPROVED') return { ok: true, duplicate: true };
   await sb.from('stock_count_areas').update({ status: 'complete', completed_by_name: who || null, completed_at: new Date().toISOString() })
     .eq('location_id', loc).eq('count_id', c.id).eq('status', 'open');
-  const { data, error } = await sb.rpc('approve_stock_count', { p_count_id: c.id, p_approved_by_name: who || null, p_approval_note: 'Approved on the phone', p_costs: null, p_preview: false });
+  // an opening count is costed on the server (the site's price, else the company's average cost):
+  // the phone has no place to type a cost. Before 20261019c the call is not there and nothing is sent.
+  const { data: costs, error: cErr } = await sb.rpc('msm_stock_opening_costs', { p_count_id: c.id });
+  const given = !cErr && costs && typeof costs === 'object' ? Object.entries(costs).filter(([k, v]) => isUuid(k) && Number(v) > 0) : [];
+  const pCosts = given.length ? Object.fromEntries(given.map(([k, v]) => [k, Number(v)])) : null;
+  const { data, error } = await sb.rpc('approve_stock_count', { p_count_id: c.id, p_approved_by_name: who || null, p_approval_note: 'Approved on the phone', p_costs: pCosts, p_preview: false });
   if (error) return { error: `could not approve: ${error.message}` };
+  if (data && data.code === 'needs_cost') {
+    const names = (data.needs_cost || []).map((x) => x.name).filter(Boolean).slice(0, 5).join(', ');
+    return { ...data, error: `${names || 'Some items'} ${data.needs_cost?.length === 1 ? 'has' : 'have'} no cost here yet (no price, and no other site has a cost). Add a supplier price in Back Office, or approve this count there with a cost.` };
+  }
   return data || { ok: false, error: 'no answer' };
 }
 

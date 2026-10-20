@@ -14,7 +14,15 @@ STOCK1_STOP_AT=6 STOCK1_KEEP=1 node supabase/tests/stock_company/run.mjs --quick
                                                      # stop after section 6 and keep the database (prints psql)
 ```
 
-`initdb`, `pg_ctl` and `psql` from PATH or `/opt/homebrew/bin`. Exit code 0 only when every check holds.
+`initdb`, `pg_ctl`, `psql` and `pg_config` from PATH or `/opt/homebrew/bin`, and a C compiler (`cc`). Exit code 0
+only when every check holds.
+
+**Like Ops (round 1):** `live_indexes.sql` adds the indexes the Ops stock tables have on live (read from
+`pg_indexes` with `read_only: true`), so the planner reads as it does there. `safeupdate_guard.c` is a small
+stand in for pg-safeupdate, which Ops preloads for the API login: the harness builds it with the cluster's
+`pg_config` and preloads it for `authenticator` only, so an UPDATE or DELETE with no WHERE inside a function
+fails here as it would on Ops (`STOCK1_NO_GUARD=1` runs without it and says so in the first line).
+`STOCK1_MIGRATION` / `STOCK1_ROLLBACK` run the proof against another copy of the file (the before run).
 
 ## How a call is made
 
@@ -29,7 +37,7 @@ manager, a bound till, a stranger, the bare anon key, the service role.
 
 0. The file: ASCII only, bare statements, no menu function (change sets, runner, guard) created or
    replaced, no menu table altered.
-1. The paste applies in one transaction; the check row reads `20 | 63 | 15 | 1 | 0 | 0 | 0 | 0 | stock_sums`;
+1. The paste applies in one transaction; the check row reads `20 | 71 | 15 | 1 | 0 | 0 | 0 | 0 | stock_sums`;
    every function that was there before has the same body after; no stock row moves; a second paste
    reads the same; the lock trigger's WHEN clause names company columns only; the planner and the
    runner cannot be run through the API; a Back Office login can no longer approve a count without the PIN.
@@ -48,8 +56,10 @@ manager, a bound till, a stranger, the bare anon key, the service role.
 6. Location 2: links suggested (SKU and unit, then name and unit; a different unit is not), ticked,
    items switched on, preview rolled back, publish now through the runner: no quantity, cost, ledger,
    par, area or count change; linked rows keep their own stock, cost and preferred supplier; new rows
-   start at 0 and no cost, get a preferred supplier once and their usual area; VAT maps to the site's
-   own rate row; I8: a re publish plans zero writes.
+   start at 0 on hand, get a preferred supplier once and their usual area; cost here follows the site's own
+   rule (price list: a new item with a price takes its cost from it; a linked item whose price is new there
+   too), each with its cost history row, as the preview showed before and after; a linked price keeps the
+   site's own figure; VAT maps to the site's own rate row; I8: a re publish plans zero writes.
 7. A change scheduled for 05:00 on each site's clock; nothing runs before; another publish waits in
    words; Run now; one before and after row per changed row.
 8. Undo: only the newest; company rows back at once; sites back within the minute; Location 2 back
@@ -69,9 +79,21 @@ manager, a bound till, a stranger, the bare anon key, the service role.
 16. Scale: 50 sites, 5,000 company items each with a pack and a supplier price, staged through the
     API in calls of 2,000; "every site" is one change per item; preview of 5 sites and publish each
     under the 8 s limit; first publish per site under 30 s; one change reaches 50 sites well under 10
-    minutes; every screen read under 1 s and one row (never past the 1,000 row cap).
+    minutes; every screen read under 1 s and one row (never past the 1,000 row cap). Round 1: Change prices
+    at every chosen site, or a tick per item at every chosen site, is refused in words (a draft holds at most
+    40,000); a site with its own 5,000 items, packs and prices is linked (candidates under 1 s, one staging
+    call under 8 s, one publish), with no second item, pack or price; then Undo of the link, the price and
+    the first publish at every site, each site under 30 s, every added row gone.
 17. The rollback, then the paste again.
 18. Without its prerequisites the file stops in words and changes nothing.
+19. Round 1 fixes, each on a fresh copy of the database after section 6: a phone recount sent late keeps the
+    time it was typed (TA); a delivery landing while an item is switched off keeps it live (TB), and an
+    archived item a site holds keeps its pack and price; a base unit change waiting for 05:00 fails, in words,
+    at a site that started using it, the preview names it, Undo works (TH); a draft count line or a par stops
+    a base unit change, and the item sheet locks it (TI); an opening count is costed with nothing typed
+    (TD); a company price change moves cost at a price list site, not at a deliveries site, and Undo puts it
+    back; a price only CSV keeps each pack size and VAT flag, and packs and prices can name draft items;
+    "same as" is exact; empty PIN taps are not tries; the draft, History and drift name things (no ids).
 
 ## The rehearsal on a copy of real stock (read only)
 

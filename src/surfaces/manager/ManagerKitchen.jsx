@@ -237,15 +237,17 @@ export default function ManagerKitchen({ ctx }) {
   );
 
   if (stockOpen) return <ManagerStock ctx={ctx} onClose={() => setStockOpen(false)} />;
+  // only where there is stock to count: the snapshot's head count, else (an older snapshot) any item with a par
+  const hasStock = snap?.kitchen?.trackedItems != null ? snap.kitchen.trackedItems > 0 : items.length > 0;
 
   return (
     <div style={L.s.page2}>
       <Header title="Kitchen" sub="Stock · deliveries · prep" />
-      <button onClick={() => setStockOpen(true)} className="sv-glass" data-testid="manager-stock-open"
+      {hasStock && <button onClick={() => setStockOpen(true)} className="sv-glass" data-testid="manager-stock-open"
         style={{ marginTop: 12, width: '100%', padding: '14px 16px', borderRadius: 14, border: '1px solid var(--bdr)', cursor: 'pointer', color: 'var(--t1)', fontWeight: 800, fontSize: 14, fontFamily: 'inherit', textAlign: 'left', ...L.s.span }}>
         Count stock or log waste
         <div style={{ fontSize: 12, color: 'var(--t3)', fontWeight: 500 }}>By area, with the barcode, saved as you go; approve with a manager PIN</div>
-      </button>
+      </button>}
       {!snap && !err && <div style={{ color: 'var(--t3)', padding: 16, ...mono, ...L.s.span }}>Loading…</div>}
       {err && <div className="sv-glass" style={{ padding: 16, marginTop: 12, color: 'var(--t3)', fontSize: 13, ...L.s.span }}>Couldn’t load stock ({err}).</div>}
 

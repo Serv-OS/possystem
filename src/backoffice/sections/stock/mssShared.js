@@ -21,10 +21,14 @@ export const t = {
 
 export const fmtNum = (v, unit = '') => (v == null || !Number.isFinite(Number(v)) ? '' : `${Math.round(Number(v) * 1000) / 1000}${unit ? ` ${unit}` : ''}`);
 
-export const fmtWhen = (iso) => {
+/** A time in words. timeZone: a site's own clock (a site card says when it runs THERE, never on the
+ *  viewer's clock: Peter in California sees Location 2's 05:00 as 05:00). */
+export const fmtWhen = (iso, timeZone = undefined) => {
   if (!iso) return '';
   const d = new Date(iso);
-  return Number.isFinite(d.getTime()) ? d.toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+  if (!Number.isFinite(d.getTime())) return '';
+  const opts = { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' };
+  try { return d.toLocaleString('en-GB', timeZone ? { ...opts, timeZone } : opts); } catch { return d.toLocaleString('en-GB', opts); }
 };
 
 /** Text box to a number or null ("" stays null). */

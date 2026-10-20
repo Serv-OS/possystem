@@ -135,7 +135,10 @@ const SUMS = (loc) => sql(`select json_build_object(
   'value', (select coalesce(sum(value_delta), 0) from stock_movements where location_id = '${loc}'),
   'area_stock', (select coalesce(sum(on_hand), 0) from inventory_item_area_stock where location_id = '${loc}'),
   'pars', (select coalesce(sum(par_level), 0) from par_levels where location_id = '${loc}'))`);
-const QTY = (loc) => { const j = JSON.parse(SUMS(loc)); for (const k of ['items', 'packs', 'bridges', 'suppliers', 'prices']) delete j[k]; return JSON.stringify(j); };
+// quantities, the ledger, area stock and pars (cost on its own: since round 1 a publish runs the
+// site's own cost rule for the items whose supplier price it adds or changes, plan 4.5)
+const QTY = (loc) => { const j = JSON.parse(SUMS(loc)); for (const k of ['items', 'packs', 'bridges', 'suppliers', 'prices', 'cost']) delete j[k]; return JSON.stringify(j); };
+const COSTS = (loc) => JSON.parse(sql(`select coalesce(json_object_agg(id, current_cost), '{}') from inventory_items where location_id = '${loc}'`));
 const SNAP = (loc) => sql(`select md5(json_build_object(
   'items', (select coalesce(json_agg(t order by t.id), '[]') from inventory_items t where t.location_id = '${loc}'),
   'packs', (select coalesce(json_agg(t order by t.id), '[]') from item_packaging_formats t where t.location_id = '${loc}'),
@@ -146,7 +149,7 @@ const SNAP = (loc) => sql(`select md5(json_build_object(
 const plan = (loc) => JSON.parse(sql(`select public.msm_stock__sync_site('${ORG}', '${loc}', null, false, true)`));
 const runDue = () => sql('call public.msm_stock_run_due(30);');
 
-const before = { start: SUMS(START), other: SUMS(OTHER), others: others.map(SUMS), snapStart: SNAP(START), snapOther: SNAP(OTHER), qtyOther: QTY(OTHER) };
+const before = { start: SUMS(START), other: SUMS(OTHER), others: others.map(SUMS), snapStart: SNAP(START), snapOther: SNAP(OTHER), qtyOther: QTY(OTHER), costsOther: COSTS(OTHER) };
 console.log('\n1. Start from the first site');
 const st = asEditor(`select public.msm_stock_start_from_site('${ORG}', '${START}')`);
 ok(st.j?.ok === true && st.j.self_check_writes === 0, `Start from a site: ${st.j ? `${st.j.items} items, ${st.j.packs} packs, ${st.j.bridges} bridges, ${st.j.suppliers} suppliers, ${st.j.prices} prices` : st.error}`);
@@ -168,7 +171,15 @@ ok(pub.j?.ok === true, `published (${pub.error || `version ${pub.j?.version_no}`
 runDue();
 const state = sql(`select string_agg(status, ',') from msm_stock_version_sites where version_id = ${lit(pub.j?.version_id)}`);
 ok(/done/.test(state) && !/failed|waiting/.test(state), `the runner wrote it (${state})`);
-ok(QTY(OTHER) === before.qtyOther, 'second site: no quantity, cost, ledger, area stock or par changed');
+ok(QTY(OTHER) === before.qtyOther, 'second site: no quantity, ledger, area stock or par changed');
+{
+  const set = JSON.parse(sql(`select coalesce(json_object_agg(row_id, after ->> 'current_cost'), '{}') from msm_stock_version_rows where location_id = '${OTHER}' and tbl = 'item_cost'`));
+  const now = COSTS(OTHER);
+  const moved = Object.keys(now).filter((k) => String(now[k]) !== String(before.costsOther[k] ?? null));
+  const linked = moved.filter((k) => k in before.costsOther);
+  ok(moved.every((k) => k in set && Number(set[k]) === Number(now[k])) && linked.every((k) => Number(now[k]) > 0),
+    `second site: a cost moved only where the site's own price list rule set it, each with its Undo row (${moved.length - linked.length} new items costed from their price, ${linked.length} linked items whose price is new there)`);
+}
 ok(SUMS(START) === before.start, 'start site: every check row still identical');
 ok(others.every((l, i) => SUMS(l) === before.others[i]), 'the other company: identical');
 const after = JSON.parse(SUMS(OTHER));

@@ -44,7 +44,11 @@ export default function ManagerStock({ ctx, onClose }) {
   useEffect(() => {
     if (!pin || areas) return undefined;
     let live = true;
-    call('stock.areas', 'areas').then((r) => { if (!live) return; if (r?.ok) setAreas(r); else setErr(r?.error || 'Could not read the areas'); });
+    call('stock.areas', 'areas').then((r) => {
+      if (!live) return;
+      if (r?.ok) setAreas(r);
+      else setErr(/unknown action/i.test(r?.error || '') ? 'Counting on the phone is not ready at this venue yet: the server update for it is still to come.' : (r?.error || 'Could not read the areas'));
+    });
     return () => { live = false; };
   }, [pin, areas, call]);
 

@@ -130,6 +130,9 @@ Deno.serve(async (req) => {
   if (action !== 'po.raise' && !target_id) return json({ error: 'action and target_id required' }, 400);
 
   if (!(await deviceAuthorized(req, loc))) return json({ error: 'no access to this location' }, 403);
+  // v5.11.80: a count approval always needs a manager PIN, a Back Office login included (the Back
+  // Office's own approval goes through stock_approve_count_pin, with its five wrong tries rule).
+  if (action === 'stock.count_approve' && !pin) return json({ error: 'PIN required' }, 403);
   const op = pin ? await resolveOperator(loc, pin) : await boOperator(req, loc);
   if (!op) return json({ error: pin ? 'PIN not recognised' : 'PIN required' }, 403);
   if (!canApprove(op)) return json({ error: 'not allowed to approve' }, 403);
