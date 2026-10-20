@@ -49,23 +49,16 @@ test('approvalOutcomeText says what happened in plain words', () => {
 
 test('approveCount checks every write and only then marks the count APPROVED', () => {
   const src = readFileSync(resolve(here, './counts.js'), 'utf8');
-  assert.match(src, /import \{ countApprovalPlan, approvalOutcomeText \} from '\.\/countRules\.js';/);
-  // 16 Oct 2026 (stock areas): the posts go through a pool of 3 in flight; a refused movement or
-  // line update records the failure, no new post starts after it, and the approval stops.
-  assert.match(src, /if \(mv\?\.error\) \{ failure = failure \|\| \{ error: mv\.error, item: names\[a\.itemId\] \|\| null \}; return; \}/, 'a refused movement stops the approval');
-  assert.match(src, /if \(lineErr\) failure = failure \|\| \{ error: lineErr, item: names\[a\.itemId\] \|\| null \};/, 'a refused line update stops the approval');
-  assert.match(src, /if \(failure\) return \{ error: new Error\(approvalOutcomeText\(\{ posted, total, failedItem: failure\.item, error: failure\.error \}\)\), data: \{ posted, total \} \};/);
-  assert.match(src, /if \(headErr\) return \{ error: headErr/, 'the APPROVED write itself is checked');
-  const approved = src.indexOf("status: 'APPROVED'");
-  const posts = src.indexOf('await Promise.all(plan.adjustments.map');
-  assert.ok(posts > 0 && approved > posts, 'APPROVED is written after the adjustments, never before');
-  // v5.11.65: the toast counts movements, not counted lines. 12 counted, 10 matched = "2 lines
-  // adjusted"; every line matched = "no stock moved" (reachable: the plan is not empty).
-  assert.match(src, /const total = plan\.adjustments\.filter\(a => a\.delta !== 0\)\.length;/);
-  const postedAt = src.indexOf('posted++;');
-  const deltaIf = src.indexOf('if (a.delta !== 0) {');
-  const lineUpd = src.indexOf("update({ variance_qty: a.varQty })");
-  assert.ok(deltaIf > 0 && postedAt > deltaIf && postedAt < lineUpd, 'posted++ sits inside the delta branch, before the variance write');
+  // v5.11.82 (multi site stock Drop 0): approval is ONE database call (stock_approve_count_pin, else
+  // approve_stock_count), all or nothing: the database posts every adjustment, checks each one, and
+  // marks the count APPROVED last, in one transaction. The old browser loop (a post per line, then
+  // the APPROVED write) never ran once 20261019b was in and is gone; countApprovalPlan and
+  // approvalOutcomeText stay as the pure rules (tested here) the words are built from.
+  const fn = src.slice(src.indexOf('export const approveCount'));
+  assert.ok(fn.indexOf("supabase.rpc('stock_approve_count_pin'") > 0, 'the one call with a PIN');
+  assert.ok(fn.indexOf("supabase.rpc('approve_stock_count'") > fn.indexOf("supabase.rpc('stock_approve_count_pin'"), 'the call without a PIN only after it');
+  assert.doesNotMatch(fn, /postStockMovement|status: 'APPROVED'|Promise\.all\(plan\.adjustments/, 'no browser post or APPROVED write is left');
+  assert.match(fn, /const outcome = approvalOutcome\(res\);\s+if \(!outcome\.ok\) return \{ error: new Error\(outcome\.text\), needsCost: outcome\.needsCost \|\| null, data: res \};/, 'a refusal from the database is never read as approved');
   // and the words a count with no differences gets, through the caller's own numbers
   const plan = countApprovalPlan(
     [{ id: 'l1', inventory_item_id: 'a', expected_qty: 5, counted_qty: 5 }, { id: 'l2', inventory_item_id: 'b', expected_qty: 2, counted_qty: 2 }],

@@ -21,7 +21,7 @@ import { getValidAccessToken, xeroApi, XERO_API } from '../_shared/xero.ts';
 import { claimSyncRun, readSyncRow } from '../_shared/syncRun.ts';
 import { shortHash } from '../_shared/xeroPostingPlan.js';
 import { secondStepRefusal } from '../_shared/second-step.ts';
-import { officeReachesVenue } from '../_shared/stockOfficeReach.js';
+import { officeReachesVenue, stockOfficeReachesVenue, readOfficeReachFacts } from '../_shared/stockOfficeReach.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -44,12 +44,12 @@ async function requireAccess(req: Request, opsLocationId: string): Promise<{ ok:
   if (!caller) return { ok: false, res: json({ error: 'Invalid token' }, 401) };
   // v5.11.79: the database's own rule (user_accessible_locations): a link row, a super admin, or the
   // OWNER of the venue's company with no link row (_shared/stockOfficeReach.js). Owners were refused.
-  const [{ data: ul }, { data: prof }, { data: venue }] = await Promise.all([
-    sb.from('user_locations').select('location_id').eq('user_id', caller.id).eq('location_id', opsLocationId).maybeSingle(),
-    sb.from('user_profiles').select('role, org_id').eq('id', caller.id).maybeSingle(),
-    sb.from('locations').select('org_id').eq('id', opsLocationId).maybeSingle(),
-  ]);
-  const reach = officeReachesVenue({ user: caller, profile: prof || null, linked: !!ul, venueOrgId: venue?.org_id || null });
+  // v5.11.82 (multi site stock Drop 0, plan 6.2): a supplier bill is stock work, so this takes the
+  // STOCK reach: the same, plus a login whose Stock control is 'all' in the venue's own company
+  // (stockOfficeReachesVenue; officeReachesVenue is unchanged for everything else).
+  const facts = await readOfficeReachFacts(sb, caller, opsLocationId);
+  const office = officeReachesVenue(facts);
+  const reach = office.ok ? office : stockOfficeReachesVenue(facts);
   if (!reach.ok) return { ok: false, res: json({ error: 'No access to this location' }, 403) };
   return { ok: true };
 }

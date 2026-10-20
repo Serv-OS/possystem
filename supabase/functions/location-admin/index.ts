@@ -38,6 +38,14 @@
 //   save_reader_settings      { ops_location_id, patch:{...} }  → location_reader_settings upsert
 //                                                                (six columns, database fence stage 1 P2)
 //
+// THE VENUE CLOCK (v5.11.82, multi site stock Drop 0, plan 7.3 step 15)
+//   The Ops database keeps its own copy of each venue's clock (venue_clock: timezone and business
+//   day start), because stock day totals are bucketed in the Ops database and it cannot read the
+//   Platform. After save_location changes timezone or business_day_start on the Platform row, the
+//   new clock is sent to Ops (venue_clock_sync, service role, keyed by the Platform row's
+//   ops_location_id). A failure there is logged and never fails the save: the stock-nightly run
+//   copies every venue's clock again each night.
+//
 // Requires migration 20260806_PLATFORM_location_rpcs.sql on the platform DB
 // (location_branding_merge / challenge21_reset).
 
@@ -412,6 +420,34 @@ async function resolvePlatformLocation(opsLocationId: string) {
   return data;
 }
 
+// v5.11.82: send the venue's clock to the Ops copy (venue_clock_sync, 20261021a). Never throws and
+// never fails the caller: a missing function (before 20261021a) or any error is logged only.
+// 'HH:MM' or null; a Platform time column reads back as 'HH:MM:SS'.
+const clockTime = (v: unknown): string | null => {
+  const m = /^\s*(\d{1,2}):(\d{2})/.exec(String(v ?? ''));
+  return m ? `${m[1].padStart(2, '0')}:${m[2]}` : null;
+};
+async function syncVenueClock(loc: { id: string; ops_location_id?: string | null }, ops: string): Promise<void> {
+  try {
+    const { data: cur, error: readErr } = await platformAdmin.from('locations')
+      .select('timezone, business_day_start').eq('id', loc.id).maybeSingle();
+    if (readErr || !cur) { console.error('[location-admin] venue clock: could not read the saved clock', readErr?.message || 'no row'); return; }
+    // venue_clock.timezone is required: a venue with none on the Platform keeps its Ops clock row
+    // (or the nightly lists it as having no clock), never a guessed zone
+    if (!(cur as any).timezone) { console.error('[location-admin] venue clock: the venue has no timezone, nothing sent'); return; }
+    const row = {
+      ops_location_id: loc.ops_location_id || ops,
+      platform_location_id: loc.id,
+      timezone: (cur as any).timezone || null,
+      business_day_start: clockTime((cur as any).business_day_start),
+    };
+    const { error } = await opsAdmin.rpc('venue_clock_sync', { p_rows: [row] });
+    if (error) console.error('[location-admin] venue clock: venue_clock_sync', error.message);
+  } catch (e) {
+    console.error('[location-admin] venue clock', String((e as Error)?.message || e));
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock; // docs/SECOND_STEP.md
@@ -476,6 +512,7 @@ Deno.serve(async (req) => {
       return json({ error: error.message }, 500);
     }
     if (!data) return json({ error: 'update matched 0 rows' }, 500);
+    if ('timezone' in row || 'business_day_start' in row) await syncVenueClock(loc, ops);
     return json({ ok: true, location: data });
   }
 

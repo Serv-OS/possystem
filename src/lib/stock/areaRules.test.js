@@ -585,18 +585,15 @@ test('data.js: fetchInventoryItems reads in pages, postStockMovement sends p_are
   assert.doesNotMatch(fetchBody, /\.select\('\*'\)\.eq\('location_id', locationId\)\.order\('name'\)/, 'no unpaged items read left');
 });
 
-test('counts.js: lines carry their area, keys use both shapes, posts go through a pool of 3, APPROVED after the posts', () => {
+test('counts.js: lines carry their area, approval is one database call, line inserts are chunked and checked', () => {
   const src = code(read('./counts.js'));
-  assert.match(src, /import \{ resolveCountScope, adjustmentKey, chunkArray, INSERT_CHUNK, POST_IN_FLIGHT, countNameFor \} from '\.\/areaRules\.js';/);
-  assert.match(src, /idempotencyKey: adjustmentKey\(countId, a\.itemId, ready \? a\.areaId : null\),/);
-  assert.match(src, /areaId: ready \? a\.areaId : null,/, 'the area is sent only once the migration has run');
-  assert.match(src, /const plan = countApprovalPlan\(lines, onHand, cost, areaOnHand\);/);
-  assert.match(src, /const gate = limiter\(POST_IN_FLIGHT\);/);
-  assert.match(src, /await Promise\.all\(plan\.adjustments\.map\(\(a\) => gate\(\(\) => postOne\(a\)\)\)\);/);
-  assert.match(src, /if \(failure\) return;/, 'the first failure stops new posts');
-  const posts = src.indexOf('await Promise.all(plan.adjustments.map');
-  const approved = src.indexOf("status: 'APPROVED'");
-  assert.ok(posts > 0 && approved > posts, 'APPROVED is written after the adjustments, never before');
+  assert.match(src, /import \{ resolveCountScope, chunkArray, INSERT_CHUNK, countNameFor \} from '\.\/areaRules\.js';/);
+  // v5.11.82 (multi site stock Drop 0): the browser approval loop (a post per line through a pool
+  // of 3, then APPROVED) is gone; the database approves in one call, keyed per count, item and area
+  // the same way (approve_stock_count, 20261019b), all or nothing.
+  const approve = src.slice(src.indexOf('export const approveCount'));
+  assert.ok(approve.indexOf("supabase.rpc('stock_approve_count_pin'") > 0);
+  assert.doesNotMatch(approve, /postStockMovement|limiter\(|status: 'APPROVED'/);
   assert.match(src, /for \(const chunk of chunkArray\(lines, INSERT_CHUNK\)\) \{\s+const \{ data: ins, error: lineErr \} = await supabase\.from\('stock_count_lines'\)\.insert\(chunk\)\.select\('id'\);/, 'lines insert 200 a request and every insert is checked');
   assert.match(src, /export const markAreaComplete = async/);
   assert.match(src, /readAllPagesResult\('count lines'/, 'the lines read is paged');

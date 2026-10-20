@@ -16,7 +16,7 @@ import {
   sectionKeyOfRoute, sectionKeyOfRow, routesOfRow, buildRouteSections,
   sectionsToStore, sectionsToTicks, describeSections, canEditSectionsFor,
   checkSections, storedSections, withinSections, sameSections, sectionsFromAnswer, isEverythingRole,
-  isSectionsColumnMissing, missingProfileColumn, readProfileRow, sectionsFromProfileRow, PROFILE_COLUMNS,
+  isSectionsColumnMissing, missingProfileColumn, readProfileRow, sectionsFromProfileRow, PROFILE_COLUMNS, OPTIONAL_PROFILE_COLUMNS,
   canSwitchLoginOn, MSM_ROUTE, routeGateOk,
 } from './boSections.js';
 import { planLoginSections } from '../../supabase/functions/_shared/boSectionRules.js';
@@ -317,7 +317,7 @@ test('readProfileRow: reads the list; not installed = everyone opens everything'
   const asked = [];
   const ok = await readProfileRow(async (cols) => { asked.push(cols); return { data: { role: 'manager', org_id: 'o', location_id: 'l', bo_access: true, bo_sections: ['team'] }, error: null }; });
   assert.deepEqual(asked, [PROFILE_COLUMNS.join(', ')]);
-  assert.equal(asked[0], 'role, org_id, location_id, bo_access, bo_sections');
+  assert.equal(asked[0], 'role, org_id, location_id, bo_access, bo_sections, stock_control');
   assert.equal(ok.ok, true);
   assert.equal(ok.sectionsInstalled, true);
   assert.deepEqual(sectionsFromProfileRow(ok.row, ok.sectionsInstalled), ['team']);
@@ -328,7 +328,7 @@ test('readProfileRow: reads the list; not installed = everyone opens everything'
     asked2.push(cols);
     return cols.includes('bo_sections') ? { data: null, error: missing('bo_sections') } : { data: { role: 'manager', org_id: 'o', location_id: 'l', bo_access: true }, error: null };
   });
-  assert.deepEqual(asked2, ['role, org_id, location_id, bo_access, bo_sections', 'role, org_id, location_id, bo_access']);
+  assert.deepEqual(asked2, ['role, org_id, location_id, bo_access, bo_sections, stock_control', 'role, org_id, location_id, bo_access, stock_control']);
   assert.equal(old.ok, true);
   assert.equal(old.sectionsInstalled, false);
   assert.equal(sectionsFromProfileRow(old.row, old.sectionsInstalled), null, 'everything, as before 8 Oct 2026');
@@ -342,9 +342,48 @@ test('readProfileRow: reads the list; not installed = everyone opens everything'
     return { data: { role: 'owner', org_id: 'o', location_id: 'l' }, error: null };
   });
   assert.equal(asked3.length, 3);
-  assert.equal(asked3[2], 'role, org_id, location_id');
+  assert.equal(asked3[2], 'role, org_id, location_id, stock_control');
   assert.equal(older.ok, true);
   assert.equal(older.sectionsInstalled, false);
+});
+
+test('readProfileRow: a database without stock_control (before Drop 0a, or after its rollback) never locks Back Office (v5.11.82)', async () => {
+  assert.ok(PROFILE_COLUMNS.includes('stock_control'), 'the Stock control setting is read with the profile');
+  assert.ok(OPTIONAL_PROFILE_COLUMNS.includes('stock_control'), 'and the read may go without it');
+  assert.equal(missingProfileColumn(missing('stock_control')), 'stock_control');
+  assert.equal(missingProfileColumn({ code: 'PGRST204', message: "Could not find the 'stock_control' column of 'user_profiles' in the schema cache" }), 'stock_control');
+  const asked = [];
+  const res = await readProfileRow(async (cols) => {
+    asked.push(cols);
+    return cols.includes('stock_control')
+      ? { data: null, error: missing('stock_control') }
+      : { data: { role: 'manager', org_id: 'o', location_id: 'l', bo_access: true, bo_sections: ['inventory'] }, error: null };
+  });
+  assert.equal(res.ok, true, 'the login opens Back Office as before');
+  assert.equal(res.row.stock_control, undefined, 'no setting: the database answers the level itself');
+  assert.equal(res.sectionsInstalled, true, 'section access is still read and applied');
+  assert.deepEqual(sectionsFromProfileRow(res.row, res.sectionsInstalled), ['inventory']);
+  assert.deepEqual(asked, ['role, org_id, location_id, bo_access, bo_sections, stock_control', 'role, org_id, location_id, bo_access, bo_sections']);
+  // every optional column missing at once: four reads, then the profile, never "could not load"
+  let n = 0;
+  const oldest = await readProfileRow(async (cols) => {
+    n += 1;
+    for (const c of ['stock_control', 'bo_access', 'bo_sections']) if (cols.includes(c)) return { data: null, error: missing(c) };
+    return { data: { role: 'owner', org_id: 'o', location_id: 'l' }, error: null };
+  });
+  assert.equal(oldest.ok, true);
+  assert.equal(n, 4);
+  // the same missing column twice is still a failure (no loop), as for bo_sections
+  let m = 0;
+  const loop = await readProfileRow(async () => { m += 1; return { data: null, error: missing('stock_control') }; });
+  assert.equal(loop.ok, false);
+  assert.equal(m, 2);
+  // the Back Office keeps the setting on orgCtx with the venue's company (null when missing)
+  const bo = read('../backoffice/BackOfficeApp.jsx');
+  assert.match(bo, /stockControl: profile\.stock_control \?\? null,/);
+  assert.match(bo, /supabase\.from\('locations'\)\.select\('name, org_id, status'\)/);
+  assert.match(bo, /venueOrgId = locRes\.data\?\.org_id \|\| null;/);
+  assert.match(bo, /venueOrgId: null, stockControl: null,/, 'a failed profile read carries neither');
 });
 
 test('readProfileRow fails closed: any other failure is "could not load", never a retry that widens', async () => {

@@ -7,6 +7,19 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.82',
+    date: '21 Oct 2026',
+    items: [
+      "Stock, the foundation for multi site stock (Drop 0). Every stock item, supplier, supplier pack, unit, conversion and recipe now also has a company record, so a company with more than one site can later share one stock list. Nothing changes on screen and nobody's rights change: one site and multi site companies see the same Stock items, Suppliers, Recipes and Counts screens as before. Linking Provo and Location 2 moves no stock figure, cost or count. Needs the database updates 20261021a (and its revalue file), then 20261022a after one service.",
+      "Stock saves are one step each in the database: saving an item, a supplier, a supplier pack, a unit, a conversion or a recipe writes the record and its company record together, and works the item's cost out in the same step (a cost change on stock you hold is now booked in the stock value too). A recipe, its ingredients and its till product link save together, so a saved recipe can never again say Ingredients NOT saved. If someone else saved the same record a moment before you, the screen says who and asks you to reload instead of writing over their change.",
+      "Removing a supplier pack, a unit or a conversion now archives it: past orders and the cost history keep it, and no screen offers it again. A unit a recipe uses, a conversion a recipe or a supplier pack needs, and an item a recipe uses or that still holds stock cannot be archived, and the screen says why. Removing a recipe also stops its till product taking stock off.",
+      "Par, reorder point and minimum save together, so saving par and reorder on the Stock tab no longer clears the minimum. Changing an item's area moves its stock to the new area in the same step.",
+      "Stock counts: a manager PIN approves a count again, in Back Office and on the phone. The database checks the PIN against the venue's managers, stops after five wrong PINs in 15 minutes, and keeps who approved it.",
+      "Manager app, Kitchen: Count stock or log waste on the phone, by area, with the barcode or a search. Each figure is kept on the phone first and sent as you go, so a dropped signal loses nothing, and figures are never sent twice.",
+      "The invoice scan now checks who is asking: Back Office sends the signed in login and the venue, and the scan refuses anyone not signed in or a venue the login does not reach.",
+    ],
+  },
+  {
     v: '5.11.81',
     date: '19 Oct 2026',
     items: [

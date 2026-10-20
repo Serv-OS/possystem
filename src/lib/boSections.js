@@ -271,9 +271,12 @@ export function canSwitchLoginOn(targetSections, mySections) {
 // section access is not installed, and everyone opens everything, exactly as before 8 Oct 2026.
 // ANY other failure (the network, a refusal, no row) must never widen access: the caller shows
 // "Could not load your access. Try again." and no sidebar at all.
-export const PROFILE_COLUMNS = Object.freeze(['role', 'org_id', 'location_id', 'bo_access', 'bo_sections']);
+// v5.11.82 (multi site stock Drop 0): stock_control is read too (the login's Stock control setting,
+// decision 1), and it is OPTIONAL: a web build that reaches a database before Drop 0a, or after its
+// rollback drops the column, must never lock anyone out of Back Office. Missing reads as null.
+export const PROFILE_COLUMNS = Object.freeze(['role', 'org_id', 'location_id', 'bo_access', 'bo_sections', 'stock_control']);
 /** The columns the read may go without, and only when the database names that very column. */
-export const OPTIONAL_PROFILE_COLUMNS = Object.freeze(['bo_sections', 'bo_access']);
+export const OPTIONAL_PROFILE_COLUMNS = Object.freeze(['bo_sections', 'bo_access', 'stock_control']);
 
 /** The optional column this error says is missing, or null for any other error. */
 export function missingProfileColumn(error, alreadyDropped = []) {
@@ -283,7 +286,7 @@ export function missingProfileColumn(error, alreadyDropped = []) {
 
 /**
  * Read the profile through `readColumns(columnList)` (the caller's own Supabase read, which
- * answers { data, error }). At most three reads.
+ * answers { data, error }). At most four reads (one more per optional column the database lacks).
  *   { ok: true, row, sectionsInstalled }   sectionsInstalled false = the column is not there yet
  *   { ok: false, error }                   stop: nothing is known about this login
  */

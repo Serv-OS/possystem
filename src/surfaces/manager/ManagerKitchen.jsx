@@ -25,6 +25,8 @@ import { money } from '../../lib/currency';
 import { Header, Stat, SectionTitle, mono } from './ui';
 import { Icon } from '../../components/ServOSIcons';
 import { useLayout } from './useLayout';
+// v5.11.82 (multi site stock Drop 0, plan 4.23): count by area and log waste on the phone.
+import ManagerStock from './ManagerStock';
 
 const DEL_PILL = { pending: ['Expected', 'var(--orn)'], overdue: ['Overdue', 'var(--red)'], accepted: ['Arrived', 'var(--grn)'], rejected: ['Rejected', 'var(--red)'] };
 const ACCEPT_MAX_C = 8;   // the Ops Deliveries threshold; the server (manager-approve) holds the same figure
@@ -64,6 +66,7 @@ export default function ManagerKitchen({ ctx }) {
   const [recvErr, setRecvErr] = useState('');
   const [recvBusy, setRecvBusy] = useState(false);
   const [recvDone, setRecvDone] = useState({});  // poId -> message (received this session)
+  const [stockOpen, setStockOpen] = useState(false);
 
   const today = venueDay(snap);
   const unlockPin = (fail) => { if (poEntry.length >= 4) setPoPin(poEntry); else fail?.('Enter your 4 to 6 digit PIN'); };
@@ -105,7 +108,7 @@ export default function ManagerKitchen({ ctx }) {
     setScanBusy(true); setRecvErr('');
     try {
       const b64 = await fileToBase64(f);
-      const { data, error } = await scanInvoice(b64, f.type);
+      const { data, error } = await scanInvoice(b64, f.type, loc);
       if (error) { setRecvErr(`Could not read the note: ${typeof error === 'string' ? error : error.message || 'try a clearer photo'}. You can still type what arrived.`); return; }
       setScanFile({ b64, type: f.type || 'image/jpeg' });
       // match every read line to this order: supplier SKU, then our SKU, then the name
@@ -233,9 +236,18 @@ export default function ManagerKitchen({ ctx }) {
       style={{ width, padding: '8px 9px', borderRadius: 10, border: '1px solid var(--bdr)', background: 'var(--inset, transparent)', color: 'var(--t1)', fontSize: 14, fontWeight: 700, textAlign: 'right', fontFamily: 'var(--font-mono)', outline: 'none', ...extra }} />
   );
 
+  if (stockOpen) return <ManagerStock ctx={ctx} onClose={() => setStockOpen(false)} />;
+  // only where there is stock to count: the snapshot's head count, else (an older snapshot) any item with a par
+  const hasStock = snap?.kitchen?.trackedItems != null ? snap.kitchen.trackedItems > 0 : items.length > 0;
+
   return (
     <div style={L.s.page2}>
       <Header title="Kitchen" sub="Stock · deliveries · prep" />
+      {hasStock && <button onClick={() => setStockOpen(true)} className="sv-glass" data-testid="manager-stock-open"
+        style={{ marginTop: 12, width: '100%', padding: '14px 16px', borderRadius: 14, border: '1px solid var(--bdr)', cursor: 'pointer', color: 'var(--t1)', fontWeight: 800, fontSize: 14, fontFamily: 'inherit', textAlign: 'left', ...L.s.span }}>
+        Count stock or log waste
+        <div style={{ fontSize: 12, color: 'var(--t3)', fontWeight: 500 }}>By area, with the barcode, saved as you go; approve with a manager PIN</div>
+      </button>}
       {!snap && !err && <div style={{ color: 'var(--t3)', padding: 16, ...mono, ...L.s.span }}>Loading…</div>}
       {err && <div className="sv-glass" style={{ padding: 16, marginTop: 12, color: 'var(--t3)', fontSize: 13, ...L.s.span }}>Couldn’t load stock ({err}).</div>}
 

@@ -21,8 +21,7 @@ import { componentUnitCost, foodCostPct, gpAmount, gpPct, RECIPE_ORDER_TYPES, OR
 import { toBase, unitOptions } from '../../lib/stock/uom';
 import { fetchInventoryItems } from '../../lib/stock/data';
 import {
-  fetchRecipes, upsertRecipe, replaceRecipeLines, setRecipeArchived,
-  linkMenuItemRecipe, buildCostingCtx, recomputeMadeItemCost, costRecipeWith,
+  fetchRecipes, saveRecipeWithLines, setRecipeArchived, buildCostingCtx, costRecipeWith,
 } from '../../lib/stock/recipes';
 import { resolveTaxRate, netOf } from '../../lib/tax';
 import { reportSave } from '../../lib/saveHealth';
@@ -156,17 +155,21 @@ export default function Recipes() {
     if (draft.recipeType === 'PREP' && !draft.outputItemId) { showToast?.('Choose the made-here item this prep produces', 'error'); return; }
     if (!draft.name?.trim()) upd('name', draft.recipeType === 'MENU' ? 'Dish' : 'Prep');
     setSaving(true);
-    const { data, error } = await upsertRecipe({ ...draft, name: draft.name?.trim() || (draft.recipeType === 'MENU' ? menuMeta.label(menuMeta.byId[String(draft.menuItemId)] || {}) : 'Prep') }, locId);
+    // v5.11.82 (multi site stock Drop 0, plan 4.5): the recipe, its lines and the menu product link
+    // in ONE call (saveRecipeWithLines, stock_save_recipe), which also re costs a made item. It saves
+    // all of it or none of it, so a saved recipe is never reported as "Ingredients NOT saved".
+    const res = await saveRecipeWithLines({ ...draft, name: draft.name?.trim() || (draft.recipeType === 'MENU' ? menuMeta.label(menuMeta.byId[String(draft.menuItemId)] || {}) : 'Prep') }, locId, { section: 'produce' });
+    const { data, error } = res.stage === 'recipe' ? { data: null, error: res.error } : { data: res.data, error: null };
     reportSave('recipe', error);
     if (error) { setSaving(false); showToast?.('Save failed: ' + error.message, 'error'); return; }
     const rid = data?.id || draft.id;
     // The ingredients ARE the recipe — "Recipe saved" over a rejected line write is
     // how a dish ends up costed at zero.
-    const { error: lineErr } = await replaceRecipeLines(rid, draft.lines, locId);
+    const lineErr = res.stage === 'lines' ? res.error : null;
     reportSave('recipe ingredients', lineErr);
     if (lineErr) { setSaving(false); showToast?.('Ingredients NOT saved — the recipe is incomplete', 'error'); return; }
     if (draft.recipeType === 'MENU' && draft.menuItemId) {
-      const { error: linkErr } = await linkMenuItemRecipe(draft.menuItemId, rid, draft.portion || 1, locId);
+      const linkErr = res.stage === 'link' ? res.error : null;
       reportSave('recipe → menu item link', linkErr);
       if (linkErr) { setSaving(false); showToast?.('Saved, but NOT linked to the menu product — cost & GP won’t show', 'error'); return; }
     }
@@ -175,7 +178,7 @@ export default function Recipes() {
     // cost; and a roll up that failed was never said.
     let costNote = '';
     if (draft.outputItemId) {
-      const rc = await recomputeMadeItemCost(draft.outputItemId, locId);
+      const rc = { ok: res.costOk !== false };
       if (!rc?.ok) costNote = '. The item cost was NOT recalculated: check every ingredient has a price and a unit it understands';
     }
     setSaving(false); showToast?.(`Recipe saved${costNote}`, costNote ? 'warning' : 'success');
@@ -184,7 +187,7 @@ export default function Recipes() {
   const archive = async () => {
     if (!draft?.id) return;
     if (!confirm('Remove this recipe?')) return;
-    const { error } = await setRecipeArchived(draft.id, true, locId);
+    const { error } = await setRecipeArchived(draft.id, true, locId, { section: 'produce', version: draft.rowVersion });
     reportSave('recipe archive', error);
     // Don't clear the editor on a refused archive — the recipe is still costing dishes.
     if (error) { showToast?.('Recipe NOT removed', 'error'); return; }

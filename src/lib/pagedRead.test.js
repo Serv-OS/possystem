@@ -466,6 +466,22 @@ test('pin: the shared report loaders read through the pager, with a unique order
   assert.doesNotMatch(stock, /\.limit\(/);
 });
 
+test('pin: the Drop 0 archived filters keep every stock read paged, and never widen on a failure (v5.11.82)', () => {
+  // fetchInventoryItems leaves archived packs, bridges and supplier prices out of the rows it read
+  // in pages (so a database without the column reads exactly as before).
+  const items = fnBody(read('./stock/data.js'), 'fetchInventoryItems');
+  assert.match(items, /readAllPagesResult\(what, \(first\) => \{/);
+  assert.match(items, /const convs = liveOnly\(convRes\.data\), sps = liveOnly\(spRes\.data\), packs = liveOnly\(packRes\.data\);/);
+  assert.doesNotMatch(items, /\.limit\(\s*\d/, 'no capped read');
+  // the supplier count's pack read is still paged, with the filter inside each page
+  const counts = read('./stock/counts.js');
+  const sup = counts.slice(counts.indexOf("? liveOrAll((live) => readAllPagesResult('supplier packs'"), counts.indexOf(': Promise.resolve({ data: [], error: null }),'));
+  assert.match(sup, /if \(live\) q = q\.is\('archived_at', null\);\s+return q\.order\('id'\);/);
+  // liveOrAll retries without the filter ONLY when the database names the archived_at column
+  const helper = read('./stock/companyData.js');
+  assert.match(helper, /if \(first\?\.error && isMissingColumnError\(first\.error, 'archived_at'\)\) return run\(false\);/);
+});
+
 test('pin: no report screen keeps a bare .limit above 1,000 or passes a row cap to the loaders', () => {
   const dir = new URL('../backoffice/sections/reports/', import.meta.url);
   const files = fs.readdirSync(dir).filter((f) => /\.jsx?$/.test(f) && !f.includes('.test.'))

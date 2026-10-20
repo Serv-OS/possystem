@@ -344,11 +344,17 @@ export default function StockCounts({ orgCtx = null }) {
     // v5.11.79: the costs the manager typed for items counted for the first time (opening stock is
     // never valued at 0), plus what the screen already knows for them (openingCosts, tested).
     const { costs } = openingCosts(r.needsCost || [], itemsById, r.typedCosts || {});
-    const { error, data: outcome, needsCost } = await approveCount(active.id, locId, {
+    const { error, data: outcome, needsCost, pinRefused } = await approveCount(active.id, locId, {
       approvedByName: loginName, approvalNote: r.gate.ok ? null : r.gate.note,
-      onProgress: (p) => setPosting(p), costs,
+      onProgress: (p) => setPosting(p), costs, pin: r.pin || '',
     });
     setPosting(null); setBusy(false);
+    if (pinRefused) {
+      // Nothing was written: the PIN was not a manager's here (or too many wrong ones).
+      setReview(prev => ({ ...(prev || r), movesDone: true, movedCount, pin: '' }));
+      showToast?.(error?.message || 'That PIN is not a manager at this venue.', 'error');
+      return;
+    }
     if (needsCost && needsCost.length) {
       // Nothing was written. Ask for a cost per item, keep the moves already recorded.
       const known = openingCosts(needsCost, itemsById, r.typedCosts || {});
@@ -558,9 +564,17 @@ export default function StockCounts({ orgCtx = null }) {
                   })}
                 </div>
               )}
+              {/* v5.11.82 (multi site stock Drop 0, plan 4.17): a manager PIN approves a count. */}
+              <label style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10, fontSize: 12.5, color: 'var(--t1)', marginBottom: 10 }}>
+                Manager PIN
+                <input type="password" inputMode="numeric" autoComplete="off" value={review.pin || ''} placeholder="PIN"
+                  onChange={e => { const v = e.target.value.replace(/\D/g, '').slice(0, 8); setReview(r => ({ ...r, pin: v })); }}
+                  style={{ width: 110, padding: '6px 8px', borderRadius: 8, border: '1px solid var(--bdr)', background: 'var(--bg1)', color: 'var(--t1)', fontFamily: 'var(--font-mono)' }} />
+              </label>
               <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
                 <button onClick={() => setReview(null)} disabled={busy} style={ghost}>Not yet</button>
-                <button onClick={runApproval} disabled={busy || (!review.gate.ok && !review.confirmIncomplete)} style={{ ...ghost, background: 'var(--grn, #16a34a)', color: '#fff', border: 0, fontWeight: 700, opacity: (busy || (!review.gate.ok && !review.confirmIncomplete)) ? 0.6 : 1 }}>
+                {/* an empty or short PIN never reaches the database (it is not a wrong try) */}
+                <button onClick={runApproval} disabled={busy || (!review.gate.ok && !review.confirmIncomplete) || String(review.pin || '').length < 4} style={{ ...ghost, background: 'var(--grn, #16a34a)', color: '#fff', border: 0, fontWeight: 700, opacity: (busy || (!review.gate.ok && !review.confirmIncomplete) || String(review.pin || '').length < 4) ? 0.6 : 1 }}>
                   {posting ? postingText(posting.done, posting.total) : busy ? 'Approving...' : 'Approve and reconcile stock'}
                 </button>
               </div>

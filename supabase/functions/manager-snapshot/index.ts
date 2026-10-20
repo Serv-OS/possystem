@@ -9,8 +9,13 @@
 // fenced by location + caller.
 //
 //   POST { action:'snapshot', ops_location_id }  — token in Authorization header.
-// Auth: the device claimed to THIS location (ops_devices.device_uid = auth.uid()), OR a BO user with
-// user_locations for it, OR super_admin. Single venue only — multi-site rollups stay in Back Office.
+// Auth: the device claimed to THIS location (ops_devices.device_uid = auth.uid()), OR a BO user who
+// reaches it. Single venue only: multi site rollups stay in Back Office.
+// v5.11.82 (multi site stock Drop 0, plan 6.2): "reaches" is the database's own rule
+// (officeReachesVenue: a link row, a super admin, or the owner of the venue's company; owners were
+// refused before). A login that reaches the venue ONLY through Stock control 'all' in its company
+// (stockOfficeReachesVenue) gets the stock blocks only (kitchen: items, deliveries, batches and the
+// tracked item count), never sales, the floor, the team or the Ops counts: scope 'stock' in the answer.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { secondStepRefusal } from '../_shared/second-step.ts';
@@ -18,6 +23,9 @@ import { pagedRows } from '../_shared/pagedRows.js';
 import { SALES_CHECK_COLS, emptySales, addCheckSales, addRefundSales, refundMadeAt } from '../_shared/snapshotSales.js';
 // v5.11.64: the pack rule, pack content and net pack price are the Order pad's own (one copy).
 import { pickSupplierProduct, packContent, packContentInBase, netPackPrice } from '../_shared/purchasingRules.js';
+// v5.11.82: the two reach rules (everything / stock only), and archived rows left out of choices.
+import { officeReachesVenue, stockOfficeReachesVenue, readOfficeReachFacts } from '../_shared/stockOfficeReach.js';
+import { liveOrAll, liveFilter } from '../_shared/stockPhone.js';
 
 // A refund counts on the day it was MADE, so older checks that carry one are read too: the same
 // reach as Daily trading (trading-report REFUND_LOOKBACK_DAYS) and the Owner app (8 Oct 2026).
@@ -33,21 +41,22 @@ const r2 = (n: number) => Math.round(n * 100) / 100;
 const ymd = (d: Date, tz: string) => new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
 const ms = (v: any) => { if (v == null) return null; const t = typeof v === 'number' ? v : Date.parse(v); return Number.isFinite(t) ? t : null; };
 
-async function requireManager(req: Request, loc: string): Promise<{ ok: true } | { ok: false; res: Response }> {
+// scope 'all': the whole snapshot. scope 'stock': the stock blocks only (plan 6.2).
+type Access = { ok: true; scope: 'all' | 'stock' } | { ok: false; res: Response };
+async function requireManager(req: Request, loc: string): Promise<Access> {
   const token = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim();
   if (!token) return { ok: false, res: json({ error: 'auth required' }, 401) };
-  if (token === SERVICE_ROLE) return { ok: true };
+  if (token === SERVICE_ROLE) return { ok: true, scope: 'all' };
   const { data: { user } } = await sb.auth.getUser(token);
   if (!user) return { ok: false, res: json({ error: 'invalid session' }, 401) };
   // Paired device claimed to this location (and not decommissioned)?
   const { data: dev } = await sb.from('ops_devices').select('id').eq('device_uid', user.id).eq('location_id', loc).eq('active', true).not('claimed_at', 'is', null).maybeSingle();
-  if (dev) return { ok: true };
-  // BO user with access, or super admin?
-  const [{ data: ul }, { data: prof }] = await Promise.all([
-    sb.from('user_locations').select('location_id').eq('user_id', user.id).eq('location_id', loc).maybeSingle(),
-    sb.from('user_profiles').select('role').eq('id', user.id).maybeSingle(),
-  ]);
-  if (ul || prof?.role === 'super_admin') return { ok: true };
+  if (dev) return { ok: true, scope: 'all' };
+  // A Back Office user who reaches the venue: a link row, a super admin, or the owner of its company.
+  const facts = await readOfficeReachFacts(sb, user, loc);
+  if (officeReachesVenue(facts).ok) return { ok: true, scope: 'all' };
+  // Stock control 'all' in the venue's own company: the stock blocks and nothing else.
+  if (stockOfficeReachesVenue(facts).ok) return { ok: true, scope: 'stock' };
   return { ok: false, res: json({ error: 'no access to this location' }, 403) };
 }
 
@@ -60,6 +69,9 @@ Deno.serve(async (req) => {
   const loc = body?.ops_location_id;
   if (!loc) return json({ error: 'ops_location_id required' }, 400);
   const acc = await requireManager(req, loc); if (!acc.ok) return acc.res;
+  // v5.11.82: false for a login that reaches the venue only through Stock control 'all' (plan 6.2):
+  // sales, the floor, the team and the Ops counts are not even read for it.
+  const full = acc.scope === 'all';
 
   try {
     // Venue metadata (timezone for "today", currency).
@@ -82,7 +94,9 @@ Deno.serve(async (req) => {
     // v5.10.2: the timesheets read carries `id`. Each punch sends it as the target of the Team
     // tab's Clock out (manager-approve 'timesheet.clock_out'); without it the button (v5.8.21)
     // never rendered (snapshotSales.test.js pins it).
-    const [checks, olderRefunds, { data: fc }, tsRows, shifts, staff, sess, ftables] = await Promise.all([
+    const [checks, olderRefunds, { data: fc }, tsRows, shifts, staff, sess, ftables] = !full
+      ? [[], [], { data: null }, [], [], [], [], []] as any[]
+      : await Promise.all([
       pagedRows('closed checks', () => sb.from('closed_checks').select(SALES_CHECK_COLS).eq('location_id', loc).gte('closed_at', startIso).order('closed_at').order('id')),
       // Older checks that carry a refund (few): only their refunds are read, never their sales.
       pagedRows('older refunds', () => sb.from('closed_checks').select(SALES_CHECK_COLS).eq('location_id', loc).gte('closed_at', refundsSinceIso).lt('closed_at', startIso).neq('refunds', '[]').order('closed_at').order('id')),
@@ -96,7 +110,7 @@ Deno.serve(async (req) => {
     // v5.5.990 — the Manager app used to hardcode 'a break is due after 6h with
     // none logged', blind to age and to the venue's own policy. Ship both so it
     // uses the same rule as the Back Office.
-    const { data: vsRow } = await sb.from('wf_venue_settings').select('settings').eq('location_id', loc).maybeSingle();
+    const { data: vsRow } = full ? await sb.from('wf_venue_settings').select('settings').eq('location_id', loc).maybeSingle() : { data: null };
     const breakPolicy = (vsRow?.settings ?? {}) as Record<string, unknown>;
     // table_id on a session IS the floor_tables.id → resolve the friendly label ("T2", "B3", …).
     const tableLabel: Record<string, string> = {};
@@ -181,7 +195,7 @@ Deno.serve(async (req) => {
     //    Surfaced for the Team tab's approvals (the UI gates display on the team_approvals flag; writes
     //    go through the manager-approve edge fn). Isolated: never break the rest of the snapshot. ──
     let pendingTimesheets: any[] = [], pendingTimeOff: any[] = [];
-    try {
+    if (full) try {
       const since = new Date(now.getTime() - 14 * 24 * 3600 * 1000).toISOString();
       const [{ data: pts }, { data: pto }] = await Promise.all([
         sb.from('wf_timesheets').select('id, staff_id, clock_in, clock_out, break_taken, status')
@@ -222,14 +236,17 @@ Deno.serve(async (req) => {
           pagedRows('stock items', () => sb.from('inventory_items').select('id, name, kind, on_hand, base_unit, default_supplier_id, purchase_tax_rate_id')
             .eq('location_id', loc).in('id', ids).is('archived_at', null).order('id')),
           pagedRows('suppliers', () => sb.from('suppliers').select('id, name, delivery_days').eq('location_id', loc).order('id')),
-          pagedRows('supplier packs', () => sb.from('supplier_products')
+          // v5.11.82 (multi site stock Drop 0, plan 5.4): an archived supplier price is never offered
+          // (archived_at comes with 20261021a; before it every row is read, as before)
+          liveOrAll((live: boolean) => pagedRows('supplier packs', () => liveFilter(sb.from('supplier_products')
             .select('id, inventory_item_id, supplier_id, supplier_sku, pack_description, pack_qty, inner_qty, inner_unit, pack_price, is_preferred, purchase_tax_rate_id, price_includes_tax, created_at')
-            .eq('location_id', loc).in('inventory_item_id', ids).order('is_preferred', { ascending: false }).order('created_at').order('id')),
+            .eq('location_id', loc).in('inventory_item_id', ids), live).order('is_preferred', { ascending: false }).order('created_at').order('id'))),
           pagedRows('tax rates', () => sb.from('tax_rates').select('id, rate').eq('location_id', loc).order('id')),
           // the item's cross dimension bridges: the pack content is sent in the item's base unit too
           // (perPackBase), so the phone divides a shortfall in base units by a matching figure
-          pagedRows('unit conversions', () => sb.from('inventory_item_conversions').select('inventory_item_id, from_qty, from_unit, to_qty, to_unit')
-            .eq('location_id', loc).in('inventory_item_id', ids).order('id')),
+          // v5.11.82 (Drop 0): an archived unit bridge does not convert
+          liveOrAll((live: boolean) => pagedRows('unit conversions', () => liveFilter(sb.from('inventory_item_conversions').select('inventory_item_id, from_qty, from_unit, to_qty, to_unit')
+            .eq('location_id', loc).in('inventory_item_id', ids), live).order('id'))),
         ]);
         const convBy: Record<string, any[]> = {};
         for (const c of convs) (convBy[c.inventory_item_id] ??= []).push({ fromQty: Number(c.from_qty), fromUnit: c.from_unit, toQty: Number(c.to_qty), toUnit: c.to_unit });
@@ -276,9 +293,19 @@ Deno.serve(async (req) => {
       }
     } catch { kitchenItems = []; }
 
+    // v5.11.82 (multi site stock Drop 0, plan 4.23): how many live tracked stock items the venue has
+    // (one head count): the phone shows Count stock only where there is stock to count. null when the
+    // read fails (the phone then falls back to the items with a par).
+    let trackedItems: number | null = null;
+    try {
+      const { count, error } = await sb.from('inventory_items').select('id', { count: 'exact', head: true })
+        .eq('location_id', loc).is('archived_at', null).eq('is_tracked', true);
+      trackedItems = error ? null : (count ?? 0);
+    } catch { trackedItems = null; }
+
     // ── Ops: cheap headline counts for the Home tile (full detail lives in the Ops tab). Isolated. ──
     let ops = { openMaintenance: 0, activeAlerts: 0 };
-    try {
+    if (full) try {
       const [maint, al] = await Promise.all([
         pagedRows('maintenance requests', () => sb.from('maintenance_requests').select('status').eq('location_id', loc).order('id')),
         pagedRows('alerts', () => sb.from('ops_alerts').select('id').eq('location_id', loc).eq('status', 'sent').order('id')),
@@ -405,9 +432,14 @@ Deno.serve(async (req) => {
 
     return json({
       ok: true, location_id: loc, venueName: locRow?.name || '', tz, today,   // today = the venue's calendar day (v5.11.64: the Kitchen tab marks orders due today / overdue with it)
-      money, floor, team: { punches, shifts: teamShifts, ratesMinor, pendingTimesheets, pendingTimeOff, breakPolicy },
-      kitchen: { items: kitchenItems, deliveries: kitchenDeliveries, batches: kitchenBatches },
-      ops,
+      // v5.11.82: 'stock' for a login that reaches the venue only through Stock control 'all': the
+      // money, floor, team and ops blocks are null (the Manager app shows nothing for a null block)
+      scope: full ? 'all' : 'stock', currency,
+      money: full ? money : null,
+      floor: full ? floor : null,
+      team: full ? { punches, shifts: teamShifts, ratesMinor, pendingTimesheets, pendingTimeOff, breakPolicy } : null,
+      kitchen: { items: kitchenItems, deliveries: kitchenDeliveries, batches: kitchenBatches, trackedItems },
+      ops: full ? ops : null,
       generated_at: new Date().toISOString(),
     });
   } catch (e) {

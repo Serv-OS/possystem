@@ -603,7 +603,7 @@ export default function BackOfficeApp() {
       if (stale) return;
       if (!read.ok) {
         console.error('[BackOfficeApp] user_profiles query failed:', read.error?.message);
-        setOrgCtx({ loadFailed: true, role: null, boAccess: false, boSections: [], sectionsInstalled: false, orgId: null, orgName: 'Serv OS', locationId: null, locationName: null, userId: authUser?.id || null, userName: authUser?.email || null });
+        setOrgCtx({ loadFailed: true, role: null, boAccess: false, boSections: [], sectionsInstalled: false, orgId: null, orgName: 'Serv OS', locationId: null, locationName: null, venueOrgId: null, stockControl: null, userId: authUser?.id || null, userName: authUser?.email || null });
         return;
       }
       profile = read.row;
@@ -663,17 +663,21 @@ export default function BackOfficeApp() {
       // Step 3: fetch org + location names separately (can fail gracefully)
       let orgName = 'Serv OS';
       let locationName = null;
+      // v5.11.82 (multi site stock Drop 0): the company of the VENUE being managed (locations.org_id),
+      // which is not always the login's own profile org. Stock control is per company (decision 1).
+      let venueOrgId = null;
       try {
         const [orgRes, locRes] = await Promise.all([
           profile.org_id
             ? supabase.from('organisations').select('name').eq('id', profile.org_id).single()
             : Promise.resolve({ data: null }),
           effectiveLocId
-            ? supabase.from('locations').select('name').eq('id', effectiveLocId).single()
+            ? supabase.from('locations').select('name, org_id, status').eq('id', effectiveLocId).single()
             : Promise.resolve({ data: null }),
         ]);
         if (orgRes.data?.name) orgName = orgRes.data.name;
         if (locRes.data?.name) locationName = locRes.data.name;
+        venueOrgId = locRes.data?.org_id || null;
       } catch (e) { console.warn('[BackOfficeApp] org/location name lookup failed:', e?.message); }
       if (stale) return;
 
@@ -688,6 +692,12 @@ export default function BackOfficeApp() {
         orgName,
         locationId: effectiveLocId,
         locationName,
+        // v5.11.82 (multi site stock Drop 0): the venue's company and this login's Stock control
+        // setting (null = sites; owners of that company and ServOS staff are always all). Read only
+        // in Drop 0: nobody's rights change until the Drop 1 screens show the levels. A database
+        // without the column yet reads as null (lib/boSections.js OPTIONAL_PROFILE_COLUMNS).
+        venueOrgId,
+        stockControl: profile.stock_control ?? null,
         userId: authUser?.id || null,
         userName: profile.full_name || authUser?.email || null,
       });

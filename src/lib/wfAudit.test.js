@@ -120,16 +120,19 @@ test('every wf_audit write in the edge functions goes through the chain writer',
   const calls = ma.match(/await audit\(/g) || [];
   const checked = ma.match(/const auditErr = await audit\(/g) || [];
   // v5.11.64: po.receive audits a rejected delivery and a receive (two more).
-  assert.equal(calls.length, 6, 'timesheet.clock_out, timesheet.approve, timeoff.decide, po.raise, po.reject_delivery, po.receive');
+  // v5.11.82 (multi site stock Drop 0): stock.count_approve and stock.waste (counting and waste on
+  // the phone) audit too. Opening a count and saving figures are not audited (no stock moves).
+  assert.equal(calls.length, 8, 'timesheet.clock_out, timesheet.approve, timeoff.decide, po.raise, po.reject_delivery, po.receive, stock.count_approve, stock.waste');
   assert.equal(checked.length, calls.length, 'an audit result is ignored');
-  assert.equal((ma.match(/if \(auditErr\)/g) || []).length, 6);
+  assert.equal((ma.match(/if \(auditErr\)/g) || []).length, 8);
+  for (const action of ['stock.count_approve', 'stock.waste']) assert.match(ma, new RegExp(`const auditErr = await audit\\(loc, orgId, op, '${action.replace('.', '\\.')}'`), action);
 });
 
 test("manager-approve's audit failure words do not send the Manager app back to the PIN pad", () => {
   // ManagerTeam onResult and ManagerKitchen submitPO clear the PIN on /pin|not allowed|approve/i.
   const ma = read('manager-approve');
   const whats = [...ma.matchAll(/auditFailed\('([^']+)'/g)].map((m) => m[1]);
-  assert.deepEqual(whats, ['The clock out', 'The timesheet sign off', 'The time off decision', 'The rejection', 'The receive']);
+  assert.deepEqual(whats, ['The clock out', 'The timesheet sign off', 'The time off decision', 'The rejection', 'The receive', 'The count approval', 'The waste']);
   const template = ma.match(/error: `\$\{what\} ([^`]+)`/)[1];
   for (const w of whats) assert.doesNotMatch(`${w} ${template}`, /pin|not allowed|approve/i);
   for (const m of ma.matchAll(/error: [`'](Order \$\{reference\}[^`']*|could not raise the order: its audit record did not save)[`']/g)) {

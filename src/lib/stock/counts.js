@@ -14,15 +14,14 @@
  */
 
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
-import { postStockMovement } from './data.js';
-import { countApprovalPlan, approvalOutcomeText } from './countRules.js';
-import { resolveCountScope, adjustmentKey, chunkArray, INSERT_CHUNK, POST_IN_FLIGHT, countNameFor } from './areaRules.js';
+import { resolveCountScope, chunkArray, INSERT_CHUNK, countNameFor } from './areaRules.js';
 import { areasReady, fetchAreas, fetchItemAreas, fetchAreaHoldings } from './areas.js';
 import { countName } from '../venueDate.js';
 import { getLocationConfig } from '../locationTime';
 import { readAllPagesResult } from '../pagedRead.js';
-import { limiter } from '../../../supabase/functions/_shared/pagedRows.js';
 import { approvalOutcome, isMissingFunctionError } from './phase0Rules.js';
+import { parPatch, NEEDS_UPDATE, SECTIONS } from './saveRules.js';
+import { saveOrDirect, liveOrAll } from './companyData.js';
 
 const nowIso = () => new Date().toISOString();
 async function ensureLoc(locationId) {
@@ -49,15 +48,27 @@ export const fetchParLevels = async (locationId = null) => {
   return { data: map, error };
 };
 
-export const upsertParLevel = async (inventoryItemId, par, locationId = null) => {
+/**
+ * Save an item's par, reorder point and minimum. v5.11.82 (multi site stock Drop 0): one save
+ * function (stock_save_item_site) that writes all three together and keeps a figure the screen did
+ * not send (the old upsert wrote min_level null every time the Stock tab saved par and reorder).
+ * Before the database has it: today's upsert.
+ */
+export const upsertParLevel = async (inventoryItemId, par, locationId = null, opts = {}) => {
   if (isMock || !supabase) return { error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { error: new Error('No locationId') };
-  const num = (v) => (v === '' || v == null ? null : Number(v));
-  return supabase.from('par_levels').upsert({
-    location_id: locationId, inventory_item_id: inventoryItemId,
-    par_level: num(par.parLevel), reorder_point: num(par.reorderPoint), min_level: num(par.minLevel), updated_at: nowIso(),
-  }, { onConflict: 'location_id,inventory_item_id' });
+  const r = await saveOrDirect(supabase, 'stock_save_item_site', {
+    p_item: inventoryItemId, p_location: locationId, p_patch: parPatch(par), p_version: null,
+    p_section: opts.section || SECTIONS.inventory,
+  }, () => {
+    const num = (v) => (v === '' || v == null ? null : Number(v));
+    return supabase.from('par_levels').upsert({
+      location_id: locationId, inventory_item_id: inventoryItemId,
+      par_level: num(par.parLevel), reorder_point: num(par.reorderPoint), min_level: num(par.minLevel), updated_at: nowIso(),
+    }, { onConflict: 'location_id,inventory_item_id' });
+  });
+  return { data: r.data ?? null, error: r.error || null };
 };
 
 // ── counts ──────────────────────────────────────────────────────────────────
@@ -175,9 +186,14 @@ export const createCount = async ({ name, countType = 'FULL', storageArea, itemI
     fetchAreas(locationId),
     fetchItemAreas(locationId),
     fetchAreaHoldings(locationId),
+    // v5.11.82 (Drop 0): an archived supplier price never puts its item on a supplier's count
     type === 'SUPPLIER' && supplierId
-      ? readAllPagesResult('supplier packs', (first) => supabase.from('supplier_products')
-        .select('inventory_item_id, supplier_id', first ? { count: 'exact' } : undefined).eq('location_id', locationId).eq('supplier_id', supplierId).order('id'))
+      ? liveOrAll((live) => readAllPagesResult('supplier packs', (first) => {
+        let q = supabase.from('supplier_products')
+          .select('inventory_item_id, supplier_id', first ? { count: 'exact' } : undefined).eq('location_id', locationId).eq('supplier_id', supplierId);
+        if (live) q = q.is('archived_at', null);
+        return q.order('id');
+      }))
       : Promise.resolve({ data: [], error: null }),
   ]);
   const readErr = itemsRes.error || areasRes.error || itemAreasRes.error || holdingsRes.error || spRes.error;
@@ -305,98 +321,49 @@ export const deleteCount = async (countId, locationId = null) => {
 };
 
 /**
- * Approve a count: for every counted line, post a STOCK_COUNT_ADJ that moves the holding to
- * the counted figure (delta = counted minus what the system holds now: that area's holding for
- * a line with an area, the item's on hand for a line without), idempotent per count, item and
- * area, and record the variance. Marks the count APPROVED with the approver's name and note.
+ * Approve a count: ONE database call moves every counted line's holding to the counted figure, works
+ * each line out from the moment it was counted, records the variance and marks the count APPROVED
+ * with the approver's name and note (all or nothing; a retry posts nothing twice).
  *
- * 16 Oct 2026: the posts go through a pool of 3 in flight (a Full count at a 1,000 item venue is
- * 2,000 to 3,000 lines; one after another was 8 to 15 minutes), `onProgress({ done, total })`
- * feeds the button, and the first failure stops new posts. A retry cannot post a line twice.
+ * v5.11.79 (stock plan Phase 0, 11.5 item 1 and 4.6): approve_stock_count (20261019b). The first
+ * count of an item posts Opening stock (out of The Gap), valued at a real cost, never 0: with no cost
+ * known the call answers needs_cost and nothing is written, and the screen asks the manager for one
+ * (`costs`: { itemId: cost per base unit }).
+ * v5.11.82 (multi site stock Drop 0, plan 4.17): a manager PIN approves the count
+ * (stock_approve_count_pin, 0a): the database checks the PIN against the venue's managers, refuses
+ * after five wrong ones in 15 minutes and stores who it was. Before 0a that call is missing and the
+ * call without a PIN runs, as in v5.11.81. The old line by line browser path is gone (it never ran
+ * once 20261019b was in): a database with neither call is told it needs the update.
  */
-export const approveCount = async (countId, locationId = null, { approvedByName = null, approvalNote = null, onProgress = null, costs = null } = {}) => {
+export const approveCount = async (countId, locationId = null, { approvedByName = null, approvalNote = null, costs = null, pin = null } = {}) => {
   if (isMock || !supabase) return { error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { error: new Error('No locationId') };
-  // v5.11.79 (stock plan Phase 0, 11.5 item 1 and 4.6): ONE database call (approve_stock_count,
-  // 20261019b). Each line is worked out from the moment it was counted, so sales made while the count
-  // was running are never added back; the first count of an item posts Opening stock (out of The
-  // Gap), valued at a real cost, never 0: with no cost known the call answers needs_cost and nothing
-  // is written, and the screen asks the manager for one (`costs`: { itemId: cost per base unit }).
-  // All or nothing, and a retry posts nothing twice. Before 20261019b is run the call is missing and
-  // the old line by line path below runs.
-  {
-    const { data: res, error: rpcErr } = await supabase.rpc('approve_stock_count', {
-      p_count_id: countId, p_approved_by_name: approvedByName || null, p_approval_note: approvalNote || null,
-      p_costs: costs && Object.keys(costs).length ? costs : null, p_preview: false,
-    });
-    if (!rpcErr) {
-      const outcome = approvalOutcome(res);
-      if (!outcome.ok) return { error: new Error(outcome.text), needsCost: outcome.needsCost || null, data: res };
-      return { error: null, data: { posted: Number(res?.posted) || 0, total: Number(res?.total) || 0, opening: Number(res?.opening) || 0,
-        varianceValue: res?.variance_value ?? null, openingValue: res?.opening_value ?? null, uncounted: res?.uncounted ?? null,
-        duplicate: !!res?.duplicate, text: outcome.text, oneCall: true } };
-    }
-    if (!isMissingFunctionError(rpcErr)) return { error: rpcErr };
-  }
-  const ready = await areasReady(locationId);
-  const linesRes = await readAllPagesResult('count lines', (first) => supabase.from('stock_count_lines')
-    .select('*', first ? { count: 'exact' } : undefined).eq('location_id', locationId).eq('count_id', countId).order('sort_order').order('id'));
-  if (linesRes.error) return { error: linesRes.error };
-  const lines = linesRes.data || [];
-  if (!lines.length) return { error: new Error('No lines') };
-  const ids = [...new Set(lines.map(l => l.inventory_item_id))];
-  const onHand = {}; const cost = {}; const names = {};
-  for (const chunk of chunkArray(ids, 200)) {
-    const { data: items, error: iErr } = await supabase.from('inventory_items').select('id, name, on_hand, current_cost').eq('location_id', locationId).in('id', chunk);
-    if (iErr) return { error: iErr };
-    (items || []).forEach(i => { onHand[i.id] = Number(i.on_hand) || 0; cost[i.id] = i.current_cost == null ? 0 : Number(i.current_cost); names[i.id] = i.name; });
-  }
-  // That area's holding NOW, for every line that has an area (the cache the posting function keeps).
-  let areaOnHand = null;
-  if (ready && lines.some((l) => l.area_id)) {
-    const { data: holdings, error: hErr } = await fetchAreaHoldings(locationId);
-    if (hErr) return { error: hErr };
-    areaOnHand = {};
-    for (const [itemId, areas] of Object.entries(holdings || {})) for (const [areaId, qty] of Object.entries(areas)) areaOnHand[`${itemId}:${areaId}`] = qty;
-  }
-  // v5.11.65: the plan is worked out first (countRules, tested), then EVERY write is checked.
-  // The old loop awaited each write and read none of the results, so a refused movement still
-  // ended in "Count approved" with some adjustments missing. The first failure stops the
-  // approval and the count stays open; a retry cannot post a line twice (one key per count+item+area).
-  const plan = countApprovalPlan(lines, onHand, cost, areaOnHand);
-  if (!plan.adjustments.length) return { error: new Error('Nothing has been counted on this sheet yet') };
-  // v5.11.65: posted and total count MOVEMENTS, not counted lines. A sheet of 12 lines where 10
-  // matched the shelf reads "2 lines adjusted", and one where every line matched reads "no stock
-  // moved" (approvalOutcomeText), instead of "12 lines adjusted".
-  const total = plan.adjustments.filter(a => a.delta !== 0).length;
-  let posted = 0;
-  let failure = null;
-  const gate = limiter(POST_IN_FLIGHT);
-  const tell = () => { try { onProgress?.({ done: posted, total }); } catch { /* the screen's problem */ } };
-  const postOne = async (a) => {
-    if (failure) return;
-    if (a.delta !== 0) {
-      const mv = await postStockMovement({
-        inventoryItemId: a.itemId, qtyBase: a.delta, movementType: 'STOCK_COUNT_ADJ',
-        sourceType: 'stock_count', sourceId: countId, idempotencyKey: adjustmentKey(countId, a.itemId, ready ? a.areaId : null),
-        notes: 'Stock count', areaId: ready ? a.areaId : null,
-      }, locationId);
-      if (mv?.error) { failure = failure || { error: mv.error, item: names[a.itemId] || null }; return; }
-      posted++; tell();
-    }
-    const { error: lineErr } = await supabase.from('stock_count_lines').update({ variance_qty: a.varQty }).eq('location_id', locationId).eq('id', a.lineId);
-    if (lineErr) failure = failure || { error: lineErr, item: names[a.itemId] || null };
+  const pCosts = costs && Object.keys(costs).length ? costs : null;
+  const done = (res, extra = '') => {
+    const outcome = approvalOutcome(res);
+    if (!outcome.ok) return { error: new Error(outcome.text), needsCost: outcome.needsCost || null, data: res };
+    return { error: null, data: { posted: Number(res?.posted) || 0, total: Number(res?.total) || 0, opening: Number(res?.opening) || 0,
+      varianceValue: res?.variance_value ?? null, openingValue: res?.opening_value ?? null, uncounted: res?.uncounted ?? null,
+      duplicate: !!res?.duplicate, text: `${outcome.text}${extra}`, oneCall: true } };
   };
-  await Promise.all(plan.adjustments.map((a) => gate(() => postOne(a))));
-  if (failure) return { error: new Error(approvalOutcomeText({ posted, total, failedItem: failure.item, error: failure.error })), data: { posted, total } };
-  const { data: head, error: headErr } = await supabase.from('stock_counts')
-    .update({
-      status: 'APPROVED', approved_at: nowIso(), variance_value: plan.varianceValue, updated_at: nowIso(),
-      ...(ready ? { approved_by_name: approvedByName || null, approval_note: approvalNote || null } : {}),
-    })
-    .eq('location_id', locationId).eq('id', countId).select('id');
-  if (headErr) return { error: headErr, data: { posted, total } };
-  if (!head?.length) return { error: new Error('The adjustments posted but the count could not be marked approved. Approve again (nothing will post twice).'), data: { posted, total } };
-  return { error: null, data: { posted, total, varianceValue: plan.varianceValue, uncounted: plan.uncounted } };
+  {
+    const { data: pres, error: pErr } = await supabase.rpc('stock_approve_count_pin', {
+      p_count_id: countId, p_pin: String(pin || ''), p_approved_by_name: approvedByName || null, p_approval_note: approvalNote || null,
+      p_costs: pCosts, p_preview: false,
+    });
+    if (!pErr) {
+      // Nothing was written: the PIN was missing, wrong or locked out.
+      if (pres && pres.ok === false && pres.pin) return { error: new Error(pres.error || 'That PIN is not a manager at this venue.'), pinRefused: true, data: pres };
+      return done(pres, pres?.approved_by_pin ? ` Approved by ${pres.approved_by_pin}.` : '');
+    }
+    if (!isMissingFunctionError(pErr)) return { error: pErr };
+  }
+  const { data: res, error: rpcErr } = await supabase.rpc('approve_stock_count', {
+    p_count_id: countId, p_approved_by_name: approvedByName || null, p_approval_note: approvalNote || null,
+    p_costs: costs && Object.keys(costs).length ? costs : null, p_preview: false,
+  });
+  if (!rpcErr) return done(res);
+  if (isMissingFunctionError(rpcErr)) return { error: new Error(`Not approved. ${NEEDS_UPDATE}`) };
+  return { error: rpcErr };
 };

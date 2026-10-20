@@ -45,7 +45,9 @@ export default function Suppliers() {
   const save = async () => {
     if (!draft.name.trim()) { showToast?.('Name required', 'error'); return; }
     setSaving(true);
-    const { data, error } = await upsertSupplier(draft, locId);
+    // v5.11.82 (multi site stock Drop 0): one save function (stock_save_supplier) saves every field
+    // of this form, named as a Purchasing save, with the version of the row this form loaded.
+    const { data, error } = await upsertSupplier(draft, locId, { section: 'purchasing' });
     setSaving(false);
     reportSave('supplier', error);
     if (error) { showToast?.(error.message, 'error'); return; }
@@ -54,7 +56,7 @@ export default function Suppliers() {
   };
   const archive = async () => {
     if (!draft?.id) return;
-    const { error } = await setSupplierArchived(draft.id, true, locId);
+    const { error } = await setSupplierArchived(draft.id, true, locId, { section: 'purchasing', version: draft.rowVersion });
     reportSave('supplier archive', error);
     // Don't clear the pane on a refused archive — the supplier is still orderable.
     if (error) { showToast?.(`"${draft.name}" was NOT archived`, 'error'); return; }
