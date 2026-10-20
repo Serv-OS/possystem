@@ -7,6 +7,19 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.83',
+    date: '20 Oct 2026',
+    items: [
+      "Multi site menu, setting it up (Check the matches): every line is now a product, with its category and its sizes under it. A size is never a line of its own and always goes with its product: leaving a product out takes its sizes too, and a product set up separately at several sites brings its own sizes. The menu list in step 1 counts products, not sizes.",
+      "Deleted or switched off products are no longer listed anywhere in the set up: not as clashes, not under One site only, not as name matches. They stay exactly as they are at the site, and one line at the top says how many there are. A switched off copy only comes along, switched off, inside a product that is already shared.",
+      "Clashes are now only two products ON SALE with the same name at one site. Each copy shows its price, category, whether it is on the menu and the options that use it, and one sentence says what happens and what you can do. The words follow your choices: if you leave out the copy that would come in, the line says neither goes in the group menu. The list says Worth a look instead of Needs you, because there is nothing to choose there.",
+      "Name only is now Set up separately: for each product pick Same product, Keep separate or Leave out. Each choice says in words what it does and which sites a group price change would reach, with each site's own price and sizes. A site's own product that joins a shared one by name can no longer set the shared product's price, photo, category or VAT.",
+      "Already shared says where each product is on sale, how each site sells it (on its own, with sizes, or only as an option inside other products) and which sites charge their own prices (only sites where it is on sale count); products used only as options are listed under their own heading. Different names shows the group menu name to pick and each site's own name today. One site only lists only products on sale at one site, with the option groups that use them.",
+      "With every product left out, step 3 now says there is nothing to make and Make the group menu cannot be pressed, instead of offering an empty group menu.",
+      "Nothing changes at any site: the check still proves that publishing straight after makes 0 changes at 0 sites, whatever is picked. A product only gets a group price for an order type (dine in, takeaway and so on) when every site's row agrees on it, including a site's own product that joins by name and a switched off copy that comes back, so a site with no price of its own for that order type keeps having none. No database update and no edge function deploy are needed (msm-publish carries the new set up code but works exactly as before).",
+    ],
+  },
+  {
     v: '5.11.81',
     date: '19 Oct 2026',
     items: [

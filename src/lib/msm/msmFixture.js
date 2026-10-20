@@ -123,3 +123,104 @@ export function idGen(prefix = 'f') {
   let n = 0;
   return () => `${prefix}0000000-0000-4000-8000-${String(++n).padStart(12, '0')}`;
 }
+
+// ── The first import's review (20 Oct 2026, v5.11.83) ─────────────────────────
+// venues() plus what a real estate's review has to get right: products with SIZES (a size is never
+// a line of its own), switched off junk with repeated names (never listed, never a clash), a size
+// copy that lost its product, a site's own product next to the shared one (a clash) or in place of
+// a switched off shared copy (a join by name), and names that differ only by "&" and "and".
+//   * Cookie (set up separately at A and B) with sizes: Small at both (a trailing space and
+//     another type at B, its own price there), Large only at A
+//   * C's own Oat milk joins the shared one by name; C's own live Tea stands in for C's
+//     switched off shared Tea copy
+//   * C's own live Cola next to the shared Cola on sale there (a clash); a second live Mocha copy
+//     at C with no category (a clash)
+//   * switched off: White twice at B, an old Cola at A, an old Latte copy at B, New size at C
+//   * an orphan: C's switched off copy of the Large latte size, with no parent
+//   * C's shared Cola is called Coca Cola there; Cheese & Onion at A is Cheese and Onion at B
+export function venuesForReview() {
+  const v = venues();
+  const S = (base, loc) => `${base}_${sfx(loc)}`;
+  const clone = (loc, id, over = {}) => ({ ...v[loc].items.find((i) => i.id === id), ...over });
+  const base = v[A].items.find((i) => i.id === 'l-cookie-a');
+  const bc = v[B].items.find((i) => i.id === 'l-cookie-b');
+  v[A].items.push({ ...base, id: 'l-cookie-a-s', name: 'Small', menu_name: 'Small', parent_id: 'l-cookie-a', pricing: { base: 1.2 } });
+  v[A].items.push({ ...base, id: 'l-cookie-a-l', name: 'Large', menu_name: 'Large', parent_id: 'l-cookie-a', pricing: { base: 1.8 } });
+  v[B].items.push({ ...bc, id: 'l-cookie-b-s', name: 'Small ', menu_name: 'Small ', type: 'modifiable', parent_id: 'l-cookie-b', pricing: { base: 1.3 } });
+  v[C].items.push({ ...clone(B, S('m-oat', B)), id: 'l-oat-c', master_id: null, cat: S('cat-hot', C), location_id: C });
+  v[C].items.push({ ...clone(C, S('m-tea', C)), id: 'l-tea-c', master_id: null, archived: false, pricing: { base: 2.1 } });
+  v[C].items.push({ ...clone(C, S('m-cola', C)), id: 'l-cola-c2', master_id: null, pricing: { base: 2 }, cat: 'cat-c-own' });
+  v[C].items.push({ ...clone(C, S('m-mocha', C)), id: 'm-mocha-old', master_id: 'm-mocha', cat: null, cats: [] });
+  v[B].items.push({ ...bc, id: 'l-white-1', name: 'White', menu_name: 'White', archived: true, type: 'modifiable' });
+  v[B].items.push({ ...bc, id: 'l-white-2', name: 'White', menu_name: 'White', archived: true, type: 'modifiable' });
+  v[A].items.push({ ...base, id: 'l-cola-old', name: 'Cola', menu_name: 'Cola', archived: true });
+  v[B].items.push({ ...clone(B, S('m-latte', B)), id: 'm-latte-old', archived: true, sort_order: -1 });
+  v[C].items.push({ ...base, id: 'l-newsize-c', name: 'New size', menu_name: 'New size', archived: true, cat: null, pricing: { base: 0 }, location_id: C });
+  v[C].items.push({ ...clone(A, 'm-latte-l'), id: S('m-latte-l', C), master_id: 'm-latte-l', parent_id: null, archived: true, cat: S('cat-hot', C), location_id: C });
+  const colaC = v[C].items.find((i) => i.id === S('m-cola', C));
+  colaC.name = 'Coca Cola';
+  colaC.menu_name = 'Coca Cola';
+  v[A].items.push({ ...base, id: 'm-cheese', name: 'Cheese & Onion', menu_name: 'Cheese & Onion', scope: 'shared' });
+  v[B].items.push({ ...bc, id: S('m-cheese', B), name: 'Cheese and Onion', menu_name: 'Cheese and Onion', master_id: 'm-cheese', scope: 'shared' });
+  return v;
+}
+
+// A site's own row that joins a shared product by name must never set that product's values: B's
+// Tea copy at 2.20, C's own live Tea (in place of C's switched off copy) at 2.20 with its own
+// photo, a family size Small under the shared Tea (A and B, 0.30) and C's own Small (0.40).
+export function withJoinedMaster(v) {
+  const S = (base, loc) => `${base}_${sfx(loc)}`;
+  v[B].items.find((i) => i.id === S('m-tea', B)).pricing = { base: 2.2 };
+  const teaC = v[C].items.find((i) => i.id === S('m-tea', C));
+  let own = v[C].items.find((i) => i.id === 'l-tea-c');
+  if (!own) { own = { ...teaC, id: 'l-tea-c', master_id: null, archived: false }; v[C].items.push(own); }
+  own.pricing = { base: 2.2 };
+  own.image = 'own.png';
+  const teaA = v[A].items.find((i) => i.id === 'm-tea');
+  const teaB = v[B].items.find((i) => i.id === S('m-tea', B));
+  v[A].items.push({ ...teaA, id: 'm-tea-s', name: 'Small', menu_name: 'Small', master_id: null, parent_id: 'm-tea', pricing: { base: 0.3 } });
+  v[B].items.push({ ...teaB, id: S('m-tea-s', B), name: 'Small', menu_name: 'Small', master_id: 'm-tea-s', parent_id: S('m-tea', B), pricing: { base: 0.3 } });
+  v[C].items.push({ ...own, id: 'l-tea-c-s', name: 'Small', menu_name: 'Small', image: null, parent_id: 'l-tea-c', pricing: { base: 0.4 } });
+  return v;
+}
+
+// A shared product sold differently by site: Herbal tea is an option only sub item inside Tea's
+// "Tea choice" group at A and C, and sold on its own with sizes Small and Large at B.
+export function withMixedForms(v) {
+  const S = (base, loc) => `${base}_${sfx(loc)}`;
+  const hot = { [A]: 'cat-hot', [B]: S('cat-hot', B), [C]: S('cat-hot', C) };
+  const rateOf = (loc) => v[loc].taxRates[0].id;
+  const herb = (loc) => ({
+    ...v[A].items.find((i) => i.id === 'm-oat'), id: loc === A ? 'm-herb' : S('m-herb', loc), location_id: loc, name: 'Herbal tea', menu_name: 'Herbal tea',
+    master_id: loc === A ? null : 'm-herb', cat: hot[loc], type: 'subitem', sold_alone: false, pricing: { base: 0.5 }, tax_rate_id: rateOf(loc), assigned_modifier_groups: [],
+  });
+  for (const loc of [A, C]) {
+    v[loc].items.push(herb(loc));
+    const gid = loc === A ? 'mgd-teachoice' : S('mgd-teachoice', loc);
+    v[loc].groups.push({ id: gid, location_id: loc, name: 'Tea choice', min: 0, max: 1, selection_type: 'single', sort_order: 1, options: [{ id: `opt-herb-${sfx(loc)}`, name: 'Herbal tea', price: 0.5, itemId: herb(loc).id }] });
+    // Assigned to every Tea there (C's shared copy is switched off; its own live Tea, if any, uses it).
+    for (const tea of v[loc].items.filter((i) => [loc === A ? 'm-tea' : S('m-tea', loc), 'l-tea-c'].includes(i.id))) {
+      tea.assigned_modifier_groups = [...(tea.assigned_modifier_groups || []), { groupId: gid }];
+    }
+  }
+  const atB = { ...herb(B), type: 'variants', sold_alone: true, pricing: { base: 2.5 } };
+  v[B].items.push(atB);
+  v[B].items.push({ ...atB, id: 'l-herb-b-s', name: 'Small', menu_name: 'Small', master_id: null, type: 'simple', parent_id: atB.id, pricing: { base: 2.5 } });
+  v[B].items.push({ ...atB, id: 'l-herb-b-l', name: 'Large', menu_name: 'Large', master_id: null, type: 'simple', parent_id: atB.id, pricing: { base: 3 } });
+  return v;
+}
+
+// Two shared products called Toast (in different categories) at A and B, and C's own live Toast:
+// it could be either, so it joins neither.
+export function withTwoNamesakes(v) {
+  const S = (base, loc) => `${base}_${sfx(loc)}`;
+  const cats = { [A]: ['cat-hot', 'cat-cold'], [B]: [S('cat-hot', B), S('cat-cold', B)] };
+  const base = v[A].items.find((i) => i.id === 'm-cola');
+  for (const [n, fam] of [[0, 'm-toast1'], [1, 'm-toast2']]) {
+    for (const loc of [A, B]) {
+      v[loc].items.push({ ...base, id: loc === A ? fam : S(fam, loc), location_id: loc, name: 'Toast', menu_name: 'Toast', master_id: loc === A ? null : fam, cat: cats[loc][n], pricing: { base: 1 + n }, tax_rate_id: v[loc].taxRates[0].id });
+    }
+  }
+  v[C].items.push({ ...base, id: 'l-toast-c', location_id: C, name: 'Toast', menu_name: 'Toast', master_id: null, cat: 'cat-c-own', pricing: { base: 1.5 }, tax_rate_id: v[C].taxRates[0].id });
+  return v;
+}
