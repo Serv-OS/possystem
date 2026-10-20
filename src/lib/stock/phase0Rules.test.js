@@ -416,15 +416,17 @@ test('an invoice carries the screen\'s own id, made once per scan, and a repeat 
   assert.match(pur, /const \{ error: lineErr \} = await supabase\.from\('po_lines'\)\.insert\(lrows\);/, 'a failed order line save is said');
 });
 
-test('version and changelog say 5.11.79, name the database update, plain words', async () => {
+test('version is 5.11.79 or later and the 5.11.79 changelog entry names the update, plain words', async () => {
   const { VERSION } = await import('../version.js');
-  assert.equal(VERSION, '5.11.79');
+  const num = (v) => v.split('.').map(Number).reduce((a, n) => a * 1000 + n, 0);
+  assert.ok(num(VERSION) >= num('5.11.79'), `version ${VERSION} is at least 5.11.79`);
   const { CHANGELOG } = await import('../changelog.js');
-  assert.equal(CHANGELOG[0].v, '5.11.79');
-  assert.ok(CHANGELOG[0].items.some((t) => /20261019b/.test(t)), 'the changelog names the database update');
-  assert.ok(CHANGELOG[0].items.some((t) => /every venue has used it since 5\.11\.78/.test(t)), 'and says central stock is 5.11.78\'s, nothing switched here');
-  assert.ok(CHANGELOG[0].items.some((t) => /newest count stands/.test(t)) && CHANGELOG[0].items.some((t) => /pages of 1,000 items/.test(t)), 'and names the round 1 fixes');
-  for (const t of CHANGELOG[0].items) assert.doesNotMatch(t, /[–—]/, 'no dashes as punctuation');
+  const entry = CHANGELOG.find((e) => e.v === '5.11.79');
+  assert.ok(entry, 'the 5.11.79 entry is kept');
+  assert.ok(entry.items.some((t) => /20261019b/.test(t)), 'the changelog names the database update');
+  assert.ok(entry.items.some((t) => /every venue has used it since 5\.11\.78/.test(t)), 'and says central stock is 5.11.78\'s, nothing switched here');
+  assert.ok(entry.items.some((t) => /newest count stands/.test(t)) && entry.items.some((t) => /pages of 1,000 items/.test(t)), 'and names the round 1 fixes');
+  for (const t of entry.items) assert.doesNotMatch(t, /[–—]/, 'no dashes as punctuation');
 });
 
 test('the till path dates a sale at its own time, never ahead of the clock (11.5 item 2)', async () => {
