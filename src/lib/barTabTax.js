@@ -20,7 +20,7 @@ import { computeCheckTotals } from './payments/checkTotals.js';
 import { evaluateAutoDiscounts, toAppliedDiscount } from './discountEngine.js';
 import { buildScheduleCtx } from './scheduleCtx.js';
 import { computeOrderTaxUnified, taxCtxHasConfig } from './taxCompute.js';
-import { creditDiscountsFromPayment } from './taxBasis.js';
+import { creditDiscountsFromPayment, shownCheckDiscounts } from './taxBasis.js';
 import { taxForChargedGoods } from './headlessTax.js';
 import { isUsableBreakdown } from './taxShare.js';
 import { roundVat } from './taxRule.js';
@@ -32,7 +32,7 @@ import { roundVat } from './taxRule.js';
  * checkout's promo / loyalty credits lower the added-on tax; no credits = the pre-v5.9.12 call.
  * `tax` is the full breakdown, even inclusive-only, for the checkout screen's VAT lines.
  */
-export function tabBill(tab, taxCtx, creditDiscounts = [], { discountRules = null, timezone } = {}) {
+export function tabBill(tab, taxCtx, creditDiscounts = [], { discountRules = null, timezone, checkDiscounts = [] } = {}) {
   const items = (tab?.rounds || []).flatMap(r => (r.items || []).filter(i => !i.voided));
   // 19 Oct 2026 (v5.11.78, channel parity): the venue's automatic deals run on a tab exactly as on
   // the counter and a table (the till's 'pos' rules, the same engine call computeCheckTotals
@@ -43,7 +43,14 @@ export function tabBill(tab, taxCtx, creditDiscounts = [], { discountRules = nul
     ? evaluateAutoDiscounts(items, discountRules, 'pos', buildScheduleCtx(timezone)).map(toAppliedDiscount)
     : [];
   const autoTotal = autoDiscounts.reduce((s, d) => s + (Number(d.value) || 0), 0);
-  const basisDiscounts = [...autoDiscounts, ...(Array.isArray(creditDiscounts) ? creditDiscounts : [])];
+  // v5.11.81 (channel parity, confirmed minor: "bar tabs cannot take a manual discount"): the check
+  // discounts staff put on the tab (BarSurface, the till's DiscountModal), taken off as the till
+  // takes a check discount (computeCheckTotals: a percent of the lines, an amount as typed, never
+  // past the bill). None: exactly the bill before.
+  const manual = Array.isArray(checkDiscounts) ? checkDiscounts.filter(Boolean) : [];
+  const linesGross = items.reduce((s, i) => s + (Number(i.price) || 0) * (i.qty || 1), 0);
+  const manualTotal = manual.length ? shownCheckDiscounts(manual, linesGross).reduce((s, v) => s + v, 0) : 0;
+  const basisDiscounts = [...manual, ...autoDiscounts, ...(Array.isArray(creditDiscounts) ? creditDiscounts : [])];
   let bd = null;
   try {
     bd = computeOrderTaxUnified(items, taxCtx, 'bar-tab',
@@ -52,13 +59,15 @@ export function tabBill(tab, taxCtx, creditDiscounts = [], { discountRules = nul
   catch (e) { console.error("[tax] bar tab bill: the tax could not be worked out:", e?.message || e); bd = null; }   // 8 Oct 2026: logged, never silent; never a guessed charge
   const exclusiveTax = Number(bd?.exclusiveTax) || 0;
   const active = exclusiveTax > 0;
-  const goods = autoTotal > 0 ? Math.max(0, (tab?.total || 0) - autoTotal) : (tab?.total || 0);
+  const off = autoTotal + manualTotal;
+  const goods = off > 0 ? Math.max(0, (tab?.total || 0) - off) : (tab?.total || 0);
   return {
     taxBreakdown: active ? bd : null,
     tax: bd,                          // always: CheckoutModal shows UK "of which VAT" from it
     exclusiveTax: active ? exclusiveTax : 0,
     total: active ? +((goods + exclusiveTax).toFixed(2)) : goods,
     autoDiscounts,                    // the deal lines the tab's record books (discounts[])
+    checkDiscount: manualTotal,       // v5.11.81: what the manual check discounts took off
   };
 }
 
@@ -71,7 +80,7 @@ export function tabBill(tab, taxCtx, creditDiscounts = [], { discountRules = nul
  * @returns {{ taxAmount: number|null, taxBreakdown: object }|null}  null = stamp nothing (as before)
  *   taxAmount is rounded once with the one rule (taxRule.roundVat, 8 Oct 2026); the record stays raw.
  */
-export function tabCloseTax(items, taxCtx, { bill = null, paymentInfo = {}, discountRules = null, timezone } = {}) {
+export function tabCloseTax(items, taxCtx, { bill = null, paymentInfo = {}, discountRules = null, timezone, checkDiscounts = [] } = {}) {
   try {
     // Added-on (US) tax: the record the bill charged, unchanged since v5.9.12.
     if (bill?.taxBreakdown) return { taxAmount: roundVat(bill.taxBreakdown.totalTax), taxBreakdown: bill.taxBreakdown };
@@ -82,7 +91,7 @@ export function tabCloseTax(items, taxCtx, { bill = null, paymentInfo = {}, disc
     // charged after them (computeCheckTotals evaluates and scales, as on every till close).
     const t = computeCheckTotals({
       items: live,
-      checkDiscounts: [],
+      checkDiscounts: Array.isArray(checkDiscounts) ? checkDiscounts : [],   // v5.11.81: the tab's manual discounts
       covers: 1,
       orderType: 'bar-tab',
       ...(Array.isArray(discountRules) && discountRules.length ? { discountRules, timezone } : {}),

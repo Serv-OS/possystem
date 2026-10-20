@@ -16,7 +16,7 @@ import {
   normalizeCode, hmacLookup,
 } from '../_shared/gift-card-utils.ts';
 import { callerIsStaffFor, recordAuthority } from '../_shared/loyalty-utils.ts';
-import { classifyGiftLookup, decideGiftLookupAuthority, codeHolderView } from '../_shared/gift-authority.ts';
+import { classifyGiftLookup, decideGiftLookupAuthority, codeHolderView, isFullGiftCode } from '../_shared/gift-authority.ts';
 import { authorityLogRow } from '../_shared/loyalty-authority.ts';
 
 Deno.serve(async (req) => {
@@ -126,9 +126,10 @@ Deno.serve(async (req) => {
     // the name search.
     const fullSearch = authority.view === 'full';
 
-    // 1. Looks like a full 16-char code?
+    // 1. Looks like a full 16-char code? v5.11.81: any 16 letters or digits (gift-authority
+    // isFullGiftCode, the till's and Back Office's gate since v5.11.67), never only the issuing alphabet.
     const cleaned = q.replace(/[\s-]/g, '').toUpperCase();
-    if (/^[A-Z2-9]{16}$/.test(cleaned)) {
+    if (isFullGiftCode(cleaned)) {
       const { data: config } = await platformAdmin
         .from('gift_brand_config')
         .select('hmac_secret, currency')
@@ -157,7 +158,7 @@ Deno.serve(async (req) => {
     }
 
     // 2. If no full-code match, try by last4 (2-4 uppercase chars)
-    if (fullSearch && !card && /^[A-Z2-9]{2,4}$/i.test(cleaned)) {
+    if (fullSearch && !card && /^[A-Z0-9]{2,4}$/i.test(cleaned)) {
       const { data } = await platformAdmin
         .from('gift_cards')
         .select('*')

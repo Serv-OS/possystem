@@ -22,6 +22,7 @@ import { stageGiftCard } from './giftCommit.js';
 import { kioskOrderItem } from './kioskLine.js';
 import { kioskRewardTapCheck, kioskRewardMissingItems, kioskLoyaltyCreditMinor } from './kioskLoyaltyReward.js';
 import { eligibleItemNames } from './loyaltyMenuMatch.js';
+import { promoBasketValue } from './promoBasis.js';
 
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -241,6 +242,19 @@ export function kioskGiftLookupResult(body, now = Date.now()) {
 }
 
 /**
+ * The basket a kiosk promo code is checked, valued and recorded on (v5.11.81, Peter 19 Oct 2026:
+ * "kiosk yes"). The till's and the server's one figure (lib/promoBasis.js): the goods after the
+ * automatic deals, before tip and tax. The new design checked the code on the goods BEFORE the
+ * deals, the old design on the grand total with the tip in it, and both recorded it on the goods
+ * before the deals, so a 10% code on a meal deal took more off at the kiosk than at the till.
+ * The new design checks with this; the old design's code box and submitOrder's redeem call
+ * promoBasketValue({ discountedSub: discountedSubtotal }) in KioskApp, the same figure.
+ */
+export function kioskPromoBasket(discountedSubtotal) {
+  return promoBasketValue({ discountedSub: discountedSubtotal });
+}
+
+/**
  * A promo-redeem validate reply as a kiosk result.
  *   { promo } | { errorKey, vars } | { failed: true } (network) | { notValid: true }
  */
@@ -262,6 +276,27 @@ export function kioskPromoResult(code, reply) {
   }
   if (body.reason === 'min_spend') return { errorKey: 'k2.code.minSpend', vars: { amount: num(body.min_spend) } };
   return { notValid: true };
+}
+
+/**
+ * v5.11.81 (round 1 fix, "classic kiosk keeps a free item code after the item is removed"): what the
+ * OLD design's Continue does with a staged code before the pay screen. The code is checked again
+ * whenever the basket (value and lines, promoBasis.promoCheckKey) is not the one it was checked on:
+ *   { action: 'go', promo }      still valid at the same amount (promo carries the new checkedOn)
+ *   { action: 'update', promo }  valid at a NEW amount: stay, so the guest sees the new total
+ *   { action: 'drop' }           no longer valid (free item gone, min spend, ...): stay, code removed
+ *   { action: 'go', promo }      network failure: keep the code (the server checks it at redeem),
+ *                                as the new design does
+ * No check needed (no code, or the same basket) is { action: 'go', promo: staged }.
+ */
+export function classicPromoContinue(staged, key, reply = undefined) {
+  if (!staged || staged.checkedOn === key) return { action: 'go', promo: staged || null };
+  if (reply === undefined) return { action: 'check' };
+  const r = kioskPromoResult(staged.code, reply);
+  if (r.failed) return { action: 'go', promo: staged };
+  if (!r.promo) return { action: 'drop' };
+  const promo = { ...staged, ...r.promo, checkedOn: key };
+  return Math.abs(num(r.promo.amount) - num(staged.amount)) > 1e-9 ? { action: 'update', promo } : { action: 'go', promo };
 }
 
 /**

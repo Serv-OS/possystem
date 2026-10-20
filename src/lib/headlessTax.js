@@ -27,6 +27,7 @@ import { checkDiscountAmount } from './taxBasis.js';
 import { computeOrderTaxUnified } from './taxCompute.js';
 import { modsTotal } from './channelMoney.js';
 import { sizeTaxRefs } from './taxRefs.js';
+import { lineCategories } from './lineCategories.js';
 import { isUsableBreakdown, scaleTaxRecord } from './taxShare.js';
 import { roundVat, TAX_FALLBACK_REASONS } from './taxRule.js';
 
@@ -141,7 +142,11 @@ export function qrTaxLines(items, menuItems = []) {
       out.taxRateId = refs.taxRateId;
       out.taxOverrides = refs.taxOverrides;
       out.taxProfileId = refs.taxProfileId;
-      if (out.cat == null && !(Array.isArray(out.cats) && out.cats.length)) out.cat = mi.cat ?? (Array.isArray(mi.cats) ? mi.cats[0] : null) ?? null;
+      // v5.11.81 round 1: a size takes its PRODUCT's category (lineCategories, the till's rule).
+      if (out.cat == null && !(Array.isArray(out.cats) && out.cats.length)) {
+        const lc = lineCategories(mi, menuItems);
+        out.cat = lc.cat ?? (lc.cats ? lc.cats[0] : null) ?? null;
+      }
     } else if (!(i.taxRateId ?? i.tax_rate_id) && !i.taxFallback) {
       out.taxFallback = { reason: TAX_FALLBACK_REASONS.ITEM_NOT_ON_MENU, rateId: null };
     }
@@ -202,6 +207,48 @@ export function qrTabCloseFields(rounds, runningTotal, ctx = {}) {
   const goods = +((Number(runningTotal) || 0) - tip - service).toFixed(2);
   const tax = qrCloseTax(rows.flatMap((r) => (Array.isArray(r?.items) ? r.items : [])), ctx, { paidGoods: goods });
   return { tip, service, subtotal: +(goods - tax.exclusiveTax).toFixed(2), ...tax };
+}
+
+/**
+ * v5.11.81 (partly fixed major): the automatic deal lines a QR check books, from what the SERVER
+ * applied when each round was placed (customer.order_pricing.auto_rules: { rule_id, name,
+ * saving_minor }), summed per rule over the rounds. The money already came off each round (the page
+ * charged the goods after the deal); this records the deal on the check, as the till's close books
+ * its AUTO lines, so Shifts, Servers, Exceptions and the Z report show it and the daily VAT check
+ * reads the goods charged. Every QR tab close wrote `discounts: []`. A round placed by an old page
+ * (no order_pricing) adds nothing. The same shape toAppliedDiscount gives the till.
+ */
+export function qrTabDealLines(rows) {
+  const byRule = new Map();
+  for (const r of (Array.isArray(rows) ? rows : [])) {
+    const rules = r?.customer?.order_pricing?.auto_rules;
+    for (const x of (Array.isArray(rules) ? rules : [])) {
+      const minor = Math.max(0, Math.round(Number(x?.saving_minor) || 0));
+      if (!minor) continue;
+      const id = x?.rule_id != null ? String(x.rule_id) : String(x?.name || 'deal');
+      const e = byRule.get(id) || { id, label: x?.name || 'Deal', minor: 0 };
+      e.minor += minor;
+      byRule.set(id, e);
+    }
+  }
+  return [...byRule.values()].map((e) => ({
+    id: e.id, label: e.label, type: 'amount', value: e.minor / 100, amount: e.minor / 100,
+    scope: 'check', isAuto: true, source: 'auto',
+  }));
+}
+
+/**
+ * v5.11.81 (round 1 fix, "QR tab closes book deal lines on a subtotal that is already after the
+ * deal"): the subtotal a QR close books when it books the deal lines. Each round's money is already
+ * after its deal, so the money a close works its subtotal out from (charged less tip, service and
+ * added tax) is NET of the deals. Reports work out net sales as subtotal less discounts
+ * (salesStats, report_day_sums), so the deal came off twice: 2 pizzas at 10.00 with a 5.00 deal,
+ * charged 15.00, reported net 10. The deal total goes back on: gross goods at menu price, as QR pay
+ * now and the till book them (subtotal 20, discount 5, net 15). No deal lines: the same subtotal.
+ */
+export function qrGrossSubtotal(netSubtotal, deals) {
+  const dealTotal = (Array.isArray(deals) ? deals : []).reduce((s, d) => s + Math.max(0, Number(d?.amount) || 0), 0);
+  return +((Number(netSubtotal) || 0) + dealTotal).toFixed(2);
 }
 
 /**

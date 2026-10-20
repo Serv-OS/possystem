@@ -482,7 +482,61 @@ test('promo chip labels: server fallbacks become keys, a venue label shows as wr
   // An older promo object with no type (or none at all) shows its label.
   assert.deepEqual(kioskPromoLabel({ label: '£5 off' }), { text: '£5 off' });
   assert.deepEqual(kioskPromoLabel(null), { text: '' });
-  // The fallbacks here are the ones the server builds.
-  const server = fs.readFileSync(new URL('../../supabase/functions/_shared/promo.ts', import.meta.url), 'utf8');
+  // The fallbacks here are the ones the server builds (v5.11.81: in _shared/promoMath.js, which promo.ts calls).
+  const server = fs.readFileSync(new URL('../../supabase/functions/_shared/promoMath.js', import.meta.url), 'utf8');
   for (const s of ['`${v}% off`', '`£${v.toFixed(2)} off`', "'Free item'", "'Free delivery'", '`${v} bonus points`', "'Offer'"]) assert.ok(server.includes(s), s);
+});
+
+// ── v5.11.81 round 1 fix: a code is checked again when the basket's LINES change (both designs) ──────
+// A free item code is worth the item's price. Checked with the coffee in the basket, it stayed on
+// after the coffee was removed (old design: never checked again; new design: the key was the basket
+// value only, so a swap at the same price kept it). The reader then charged 1.30 for a 4.50 cake and
+// the redeem refused the code (free_item_not_in_basket): the use was not recorded, the code stayed
+// usable. Runs the server's own maths (_shared/promoMath.js) as the validate answer.
+test('promo re-check: removing or swapping the free item drops the code before the pay screen', async () => {
+  const { promoDiscountForBasket, promoBasketLines } = await import('../../supabase/functions/_shared/promoMath.js');
+  const { promoBasketValue, promoCheckKey } = await import('./promoBasis.js');
+  const { classicPromoContinue } = await import('./kioskCheckout.js');
+  const line = (id, cat, p, qty = 1) => ({ key: `${id}:{}`, item: { id, cat }, variant: null, linePrice: p, qty, lineTotal: p * qty });
+  const offer = { reward_type: 'free_item', reward_value: 0, reward_item_id: 'latte' };
+  const sub = (cart) => +cart.reduce((s, l) => s + l.lineTotal, 0).toFixed(2);
+  const keyOf = (cart) => promoCheckKey(promoBasketValue({ discountedSub: sub(cart) }), promoBasketLines(cart));
+  const validate = (cart) => {
+    const d = promoDiscountForBasket(offer, { subtotal: promoBasketValue({ discountedSub: sub(cart) }), lines: promoBasketLines(cart) });
+    return d.missing
+      ? { httpOk: true, body: { valid: false, reason: 'free_item_not_in_basket' } }
+      : { httpOk: true, body: { valid: true, code_id: 'c1', discount: { amount: d.amount, label: 'Free item' } } };
+  };
+  const atCode = [line('latte', 'hot', 3.2), line('cake', 'bakery', 4.5)];
+  const staged = { code: 'FREECOFFEE', code_id: 'c1', amount: 3.2, checkedOn: keyOf(atCode) };
+  // Same basket: straight on, no call.
+  assert.deepEqual(classicPromoContinue(staged, keyOf(atCode)), { action: 'go', promo: staged });
+  // The coffee removed: a check is needed, and the server's answer drops the code.
+  const cakeOnly = [line('cake', 'bakery', 4.5)];
+  assert.equal(classicPromoContinue(staged, keyOf(cakeOnly)).action, 'check');
+  assert.equal(classicPromoContinue(staged, keyOf(cakeOnly), validate(cakeOnly)).action, 'drop');
+  // The coffee swapped for a flat white at the same price: the key changes too (it was the same).
+  const swapped = [line('flatwhite', 'hot', 3.2), line('cake', 'bakery', 4.5)];
+  assert.equal(sub(swapped), sub(atCode), 'the same basket value');
+  assert.notEqual(keyOf(swapped), keyOf(atCode), 'but not the same basket');
+  assert.equal(classicPromoContinue(staged, keyOf(swapped), validate(swapped)).action, 'drop');
+  // A second coffee added: still valid, same amount, goes on with the new key.
+  const two = [line('latte', 'hot', 3.2, 2), line('cake', 'bakery', 4.5)];
+  const go = classicPromoContinue(staged, keyOf(two), validate(two));
+  assert.equal(go.action, 'go');
+  assert.equal(go.promo.checkedOn, keyOf(two));
+  // A network failure keeps the code (the server checks it at redeem), as the new design does.
+  assert.equal(classicPromoContinue(staged, keyOf(cakeOnly), { networkError: true }).action, 'go');
+  // A new amount stays on the screen so the guest sees the new total.
+  const pct = classicPromoContinue({ ...staged, amount: 1 }, keyOf(two), validate(two));
+  assert.equal(pct.action, 'update');
+  assert.equal(pct.promo.amount, 3.2);
+  // Wiring: the old design's Continue runs the check; the new design's key holds the lines.
+  const app = fs.readFileSync(new URL('../surfaces/KioskApp.jsx', import.meta.url), 'utf8');
+  assert.match(app, /<button onClick=\{continueToPay\} disabled=\{giftApplying \|\| promoChecking\}/);
+  assert.match(app, /const first = classicPromoContinue\(promoApplied, key\);/);
+  assert.match(app, /checkedOn: promoCheckKey\(promoBasket, promoLines\),/);
+  const hook = fs.readFileSync(new URL('../surfaces/kiosk/useKioskCheckout.js', import.meta.url), 'utf8');
+  assert.match(hook, /const promoKey = promoKeyFor\(promoApplied, promoBasket, customerId, promoLines\);/);
+  assert.match(hook, /promo \? `\$\{promo\.code\}\|\$\{promoCheckKey\(subtotal, lines\)\}\|\$\{customerId \|\| ''\}` : null/);
 });

@@ -44,7 +44,7 @@ import {
 // Database fence stage 1, fix round 2: writes that must change a row are counted and kept while
 // this till is not linked; no card capture starts on a till that is not linked.
 import { mustChangeRow, mustChangeRows } from '../lib/rowWrites';
-import { qrCloseTax, qrTabService } from '../lib/headlessTax';
+import { qrCloseTax, qrTabService, qrTabDealLines, qrGrossSubtotal } from '../lib/headlessTax';
 import { taxCtxHasConfig } from '../lib/taxCompute';
 import { confirmLinkBeforeCard } from '../lib/deviceLink';
 import { holdPaymentBusy } from '../lib/paymentBusy';
@@ -552,6 +552,23 @@ export default function OrdersHub() {
   // again. Staff close it here: the rounds leave the queue and ONE check books only what the
   // capture took (lib/orderPayment.js shortTabClosedCheck, one id per hold, so it can never book
   // twice). The rest is taken on the till as its own sale.
+  // v5.11.81 (partly fixed major): a QR tab closed on the till earns stamps and points for the phone
+  // on the tab, as a till sale does (store.attributeOrderToCustomer, by the check's own id). A tab
+  // earned nothing: it has no check until it is closed, and no close ever asked.
+  const earnQrSale = (record) => {
+    const c = record?.customer || {};
+    if (!c.phone || !record?.id) return;
+    try {
+      useStore.getState().attributeOrderToCustomer?.({
+        customer: { name: c.name || null, phone: c.phone, email: c.email || null },
+        orderRecord: { id: record.id, ref: record.ref, items: record.items || [], total: record.total, source: 'qr' },
+        // v5.11.81 round 1: each round was counted when the page placed it (attribute_public_order),
+        // so the close earns only, never a second visit and the revenue again.
+        countOrder: false,
+      })?.catch?.((e) => console.warn('[OrdersHub] QR earn:', e?.message || e));
+    } catch (e) { console.warn('[OrdersHub] QR earn:', e?.message || e); }
+  };
+
   const closeShortQrTab = async (tab, short) => {
     const check = shortTabClosedCheck(tab, short, { taxFor: (paidGoods) => qrCloseTax(tab.allItems, qrTaxCtx(), { paidGoods }) });
     if (!check) { showToast('This tab has no card payment on record. Close it with a manager.', 'error'); return; }
@@ -580,6 +597,7 @@ export default function OrdersHub() {
       if (ccErr && String(ccErr.code || '') !== '23505') {
         showToast(`⚠ The tab is closed but its sale did not save to history: ${ccErr.message || 'unknown error'}`, 'error', 12000);
       } else {
+        if (!ccErr) earnQrSale(check);   // v5.11.81: the tab earns (never twice: a duplicate close books nothing)
         showToast(`Table ${tab.tableLabel}: closed, ${money(short.paidMinor / 100)} booked from the guest's card`
           + (short.restMinor > 0 ? `. Take ${money(short.restMinor / 100)} on the till.` : ''), 'success', 9000);
       }
@@ -808,7 +826,7 @@ export default function OrdersHub() {
         // 27 Sep 2026: the VAT on what this close took (tax_amount was null). A capture short of the
         // bill books only its share; QR round totals include any added-on (US) tax, taken out of subtotal.
         const qrTax = qrCloseTax(tab.allItems, qrTaxCtx(), { paidGoods: totalCollected - tabTip - surcharge - tabService });
-        const { error: ccErr } = await writeClosedCheckRow(supabase, {
+        const tabCheck = {
           id: `chk-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
           ref: tab.firstRow?.ref || tab.payment_intent_id,
           location_id: tab.firstRow?.location_id || null,
@@ -827,11 +845,12 @@ export default function OrdersHub() {
           // 19 Oct 2026 (v5.11.78): stored in the till's line contract, options inside the price
           // (channelMoney.foldLineMods), so every report and a part refund read the whole line.
           items: foldLineMods(tab.allItems).map(i => ({ ...i, voided: false })),
-          discounts: [],
+          discounts: qrTabDealLines(tab.rows),   // v5.11.81: the deals the server applied to each round
           // v5.8.9: each round carries customer.tip and its total INCLUDES it.
           // Booking tab.total as subtotal with tip: 0 charged the guest a tip
           // the venue then kept as sales. Split it back out.
-          subtotal: +(tab.total - tabTip - tabService - qrTax.exclusiveTax).toFixed(2),
+          // v5.11.81 round 1: gross goods (the deals added back), or reports take the deal off twice.
+          subtotal: qrGrossSubtotal(tab.total - tabTip - tabService - qrTax.exclusiveTax, qrTabDealLines(tab.rows)),
           service: +(surcharge + tabService).toFixed(2),
           tip: tabTip, tax_amount: qrTax.taxAmount,
           ...(qrTax.taxBreakdown ? { tax_breakdown: qrTax.taxBreakdown } : {}),
@@ -861,10 +880,13 @@ export default function OrdersHub() {
           table_id: tab.tableId || null,
           table_label: `Table ${tab.tableLabel}`,
           source: 'qr',
-        }, { tag: 'forceCloseQrTab' });
+        };
+        const { error: ccErr } = await writeClosedCheckRow(supabase, tabCheck, { tag: 'forceCloseQrTab' });
         if (ccErr) {
           closedCheckError = ccErr.message || JSON.stringify(ccErr);
           console.error('[forceCloseQrTab] closed_checks insert FAILED:', ccErr);
+        } else {
+          earnQrSale(tabCheck);   // v5.11.81: the tab earns for the phone on it
         }
       } catch (e) {
         closedCheckError = e?.message || 'unknown error';
@@ -1022,7 +1044,7 @@ export default function OrdersHub() {
         const qrTip = Number(o.customer?.tip) || 0;
         const qrService = qrTabService([o]);   // 19 Oct 2026 (v5.11.78): the round's QR service charge is service
         const qrTax = qrCloseTax(o.items, qrTaxCtx(), { paidGoods: captureAmount - qrTip - surcharge - qrService });
-        const { error: ccErr } = await writeClosedCheckRow(supabase, {
+        const oneCheck = {
           id: `chk-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
           ref: o.ref,
           location_id: o.location_id || null,
@@ -1031,8 +1053,9 @@ export default function OrdersHub() {
           order_type: 'dine-in',
           customer: { ...o.customer, tab_closed_at: new Date().toISOString(), surcharge_applied: surcharge },
           items: foldLineMods(o.items || []).map(i => ({ ...i, voided: false })),   // 19 Oct 2026: the till's line contract
-          discounts: [],
-          subtotal: +((Number(o.total) || 0) - qrTip - qrService - qrTax.exclusiveTax).toFixed(2),   // v5.8.9: o.total includes the tip
+          discounts: qrTabDealLines([o]),   // v5.11.81: the deal the server applied to this round
+          // v5.8.9: o.total includes the tip. v5.11.81 round 1: gross goods (the deal added back).
+          subtotal: qrGrossSubtotal((Number(o.total) || 0) - qrTip - qrService - qrTax.exclusiveTax, qrTabDealLines([o])),
           service: +(surcharge + qrService).toFixed(2),   // the auto-surcharge and the round's QR service charge
           tip: qrTip, tax_amount: qrTax.taxAmount,
           ...(qrTax.taxBreakdown ? { tax_breakdown: qrTax.taxBreakdown } : {}),
@@ -1047,8 +1070,10 @@ export default function OrdersHub() {
           table_id: null,
           table_label: o.customer?.tableLabel ? `Table ${o.customer.tableLabel}` : null,
           source: 'qr',
-        }, { tag: 'OrdersHub force-close' });
+        };
+        const { error: ccErr } = await writeClosedCheckRow(supabase, oneCheck, { tag: 'OrdersHub force-close' });
         if (ccErr) console.warn('[OrdersHub force-close] closed_checks insert:', ccErr.message);
+        else earnQrSale(oneCheck);   // v5.11.81: the tab earns for the phone on it
       } catch (e) { console.warn('[OrdersHub force-close] closed_checks insert:', e?.message); }
       updateQueueStatus(o.ref, 'collected');
       showToast(

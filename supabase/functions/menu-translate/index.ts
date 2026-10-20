@@ -35,6 +35,9 @@
 //
 // Only venues with a kiosk on the new design are translated in the background. The Back
 // Office button passes reason 'button', which translates regardless.
+// v5.11.81 (channel parity round 2): the online page, QR and catering show the translations too,
+// so a venue that has pressed the button once (it holds rows) is kept up to date in the
+// background as well, with or without a kiosk (menu_translate_cron calls it, migration 20261020a).
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import {
@@ -121,9 +124,14 @@ Deno.serve(async (req) => {
   // ── Eligibility: a kiosk on the new design, unless the Back Office button asked ──
   const { data: profiles } = await opsAdmin.from('device_profiles').select('id')
     .eq('location_id', locationId).eq('kiosk_new_design', true).limit(1);
-  const eligible = Array.isArray(profiles) && profiles.length > 0;
+  let eligible = Array.isArray(profiles) && profiles.length > 0;
+  if (!eligible) {
+    // v5.11.81: a venue that asked for translations once (it holds rows) stays up to date.
+    const { data: held } = await opsAdmin.from('menu_translations').select('id').eq('location_id', locationId).limit(1);
+    eligible = Array.isArray(held) && held.length > 0;
+  }
   if (!eligible && reason !== 'button' && action !== 'status') {
-    return json({ location_id: locationId, skipped: 'no kiosk on the new design at this venue' });
+    return json({ location_id: locationId, skipped: 'no kiosk on the new design and no translations at this venue' });
   }
 
   // ── The venue's text and what is translated already ──

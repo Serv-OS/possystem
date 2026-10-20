@@ -230,7 +230,8 @@ test('promo codes: exact match only, never a wildcard or a prefix, never another
   assert.deepEqual(planSaveOffer(null, null, ORG), { ok: true, mode: 'insert' });
   assert.equal(planSaveOffer('offer-x', { id: 'offer-x', org_id: ORG2 }, ORG).status, 404, 'another company\'s offer is never taken over');
   const src = fnSrc('promo-redeem');
-  assert.equal((src.match(/await evaluate\(body\?\.code, locationId, customerId, subtotal\)/g) || []).length, 2, 'validate and redeem share the lookup');
+  // v5.11.81: with the basket's lines (_shared/promoMath.js).
+  assert.equal((src.match(/await evaluate\(body\?\.code, locationId, customerId, subtotal, basket\)/g) || []).length, 2, 'validate and redeem share the lookup');
 });
 
 test('the venue org comes from the Ops row (Platform locations has no org_id)', () => {
@@ -359,7 +360,8 @@ test('the till waits for its device link before earn, redeem and refund, and re-
   const helper = store.slice(at, at + 1400);
   assert.ok(helper.indexOf('await whenDeviceClaimed();') < helper.indexOf('let res = await send();'));
   assert.ok(helper.includes('if (res && res.status === 403) {') && helper.includes('await claimPairedDeviceOnBoot();'));
-  assert.ok(store.includes("const res = await postLoyaltyWithDeviceLink('loyalty-earn', earnBody);"));
+  // v5.11.81: the earn's transport failure is parked durably (commitRedemptions parkEarn), so the call sits in a try.
+  assert.ok(store.includes("try { res = await postLoyaltyWithDeviceLink('loyalty-earn', earnBody); }"));
   assert.ok(store.includes("const res = await postLoyaltyWithDeviceLink('loyalty-refund', {"));
   assert.ok(store.includes('...(memberTokenFor(customerId) ? { member_token: memberTokenFor(customerId) } : {}),'), 'kiosk earn carries the member token');
   const cr = read('./commitRedemptions.js');
@@ -367,7 +369,7 @@ test('the till waits for its device link before earn, redeem and refund, and re-
   assert.ok(commit.indexOf('await _deviceHooks.waitForClaim();') < commit.indexOf('result = await post(call.fn, call.body, { functionsUrl, token });'));
   assert.ok(commit.includes('if (!o.ok && loyaltyCall && result.res?.status === 403 && _deviceHooks.reclaim) {'));
   assert.ok(cr.includes('member_token: String(memberTokenOf(spec))'));
-  assert.ok(cr.includes("|| (res.status === 403 && j?.code === 'loyalty_authority'),"), 'a refusal by the fence stays in the replay queue');
+  assert.ok(cr.includes("|| (res.status === 403 && j?.code === 'loyalty_authority')"), 'a refusal by the fence stays in the replay queue');
 });
 
 test('online checkout: the member id from customer.id, the member token to redeem and earn, the summary lookup', () => {

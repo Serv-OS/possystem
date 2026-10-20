@@ -179,7 +179,10 @@ test('the storefront (online and QR, one surface) builds its sections with this 
   assert.ok(src.includes('if (!itemInSection(i, sectionTrees.get(catId) || catId)) return false;'));
   // and the card filter around it is the one copied into `cards` above
   assert.ok(src.includes('if (i.parent_id || i.archived || i.sold_alone === false) return false;'));
-  assert.ok(src.includes('if (activeAllergens.length && (i.allergens || []).some(a => activeAllergens.includes(a))) return false;'));
+  // v5.11.81 (channel parity round 2): the Back Office "Visible on" switches are read through the
+  // one channel rule, and allergens are MARKED on the card, never hidden (the kiosk's rule).
+  assert.ok(src.includes('if (!channelVisible(i, visibleChannel, priceType)) return false;'));
+  assert.ok(!src.includes('activeAllergens.includes(a))) return false;'), 'an allergen never hides a product');
   // the old exact match must not come back
   assert.doesNotMatch(src, /i\.cat === catId/);
 });

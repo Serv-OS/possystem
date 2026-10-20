@@ -12,6 +12,8 @@ import { Sx, money } from './MShellStyles';
 import MAllergenPicker from './MAllergenPicker';
 import MVoiceOrder from './MVoiceOrder';
 import { resolveItemPrice, variantFromPrice } from '../../lib/menuPricing';
+import { channelVisible } from '../../lib/channelMenu';
+import { isOptionOnlyItem } from '../../lib/menuRules';
 
 // categoryLinks: the menu_category_links rows MPOSSurface resolved the active
 // menu with (store links, or its early-boot backstop fetch). Same list, same
@@ -90,8 +92,12 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
   // v5.5.144: do NOT filter out 86'd items here — the ItemRow renderer below
   // shows them greyed-out with an OUT OF STOCK pill instead of vanishing,
   // matching the main POS behaviour and what every customer surface does.
+  // v5.11.81 (channel parity round 2): the till's own product rule (POSSurface): an archived row,
+  // an option only sub item, or a product with Back Office "Visible on" POS off is not on the phone
+  // either (lib/channelMenu.js channelVisible, lib/menuRules.js isOptionOnlyItem).
+  const onPhone = (i) => !!i && !i.hidden && !i.parentId && !i.archived && !isOptionOnlyItem(i) && channelVisible(i, 'mpos');
   const itemsForCategory = (catId) => (menuItems || []).filter(i =>
-    !i.hidden && !i.parentId &&
+    onPhone(i) &&
     (i.cat === catId || (Array.isArray(i.cats) && i.cats.includes(catId)))
   );
 
@@ -122,7 +128,7 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
       // v5.5.144: 86'd items stay in the search results so customers/staff
       // can still see them (greyed out + OUT OF STOCK pill), matching the
       // category-list behaviour and the main POS.
-      .filter(i => !i.hidden && !i.parentId)
+      .filter(onPhone)
       .filter(itemBelongsToActiveMenu)
       .filter(i =>
         (i.name || '').toLowerCase().includes(q) ||

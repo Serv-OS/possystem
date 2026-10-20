@@ -45,18 +45,22 @@ test('a part refund inside what the card took gives back its own share of the VA
   assert.equal(refundTaxAmount(chk, bd), 0.25);   // 1.67 x 1.5 / 10 (was 1.67 x 1.5 / 2 = 1.25)
 });
 
-test('refunding the £3 item: the card gives back at most £2, and the VAT on £2 of £10', () => {
+// v5.11.81 (round 1 fix, "kiosk and online part refunds stop at the card part"): a refund is
+// capped at the whole BILL (refundBillOf: the tenders, 10.00 here), never the card part `total`
+// (2.00). The gift card gets its share back (giftPartRefundPlan) and the card leg is still capped
+// at the 2.00 it took (the store's per leg cap), so the card never gives back more than it was paid.
+test('refunding the £3 item: the refund is the £3 line, and the VAT inside £3 of £10', () => {
   const chk = readerGiftSplit();
   const bd = refundBreakdown(chk, { items: [{ ...chk.items[1], refundQty: 1 }] });
-  assert.equal(bd.amount, 2);                    // clamped to what the card took
-  assert.equal(refundTaxAmount(chk, bd), 0.33);  // was 1.67, every penny of the VAT
+  assert.equal(bd.amount, 3);                    // the line, no longer clamped to the 2.00 card part
+  assert.equal(refundTaxAmount(chk, bd), 0.5);   // 1.67 x 3 / 10
 });
 
-test('a full refund of the card part gives back only the card part of the VAT', () => {
+test('a full refund of a reader close paid partly by gift card gives back the whole bill and all its VAT', () => {
   const chk = readerGiftSplit();
   const bd = refundBreakdown(chk, { isFullRefund: true });
-  assert.equal(bd.amount, 2);
-  assert.equal(refundTaxAmount(chk, bd), 0.33);
+  assert.equal(bd.amount, 10);
+  assert.equal(refundTaxAmount(chk, bd), 1.67);
 });
 
 test('a tip on the reader leg stays out of the basis', () => {
@@ -98,7 +102,7 @@ test('a check whose tax is all added on (US) still returns the breakdown figure'
 test('refundCheck uses refundTaxAmount; the History loaders carry tenders', () => {
   const store = fs.readFileSync(path.join(here, '../../store/index.js'), 'utf8');
   assert.match(store, /const taxRefunded = refundTaxAmount\(chkBefore, bd, \{ items: refundItems, taxRates: get\(\)\.taxRates \}\);/);
-  assert.match(store, /toMinor as toMinorAmt, refundTaxAmount,\n\} from '\.\.\/lib\/payments\/refundMath';/);
+  assert.match(store, /retryableLegs, refundTaxAmount, chargedGoodsOf,\n {2}refundBillOf,\n\} from '\.\.\/lib\/payments\/refundMath';/);
   assert.doesNotMatch(store, /amount \/ Number\(chkBefore\.total\)/);
   // 28 Sep 2026: both loaders map tenders through the shared row map (closedCheckRefundFields).
   const db = fs.readFileSync(path.join(here, '../db.js'), 'utf8');

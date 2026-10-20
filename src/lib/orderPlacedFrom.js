@@ -63,7 +63,10 @@ export function placedOrderForTill(o) {
   const amount = Math.round(num(c.promo_discount) * 100) / 100;
   const code = c.promo_code ? String(c.promo_code) : 'PROMO';
   const promo = amount > 0
-    ? { code, amount, type: 'amount', value: amount, label: `Promo ${c.promo_code || ''}`.trim(), alreadyRedeemed: true, orderRef }
+    ? { code, amount, type: 'amount', value: amount, label: `Promo ${c.promo_code || ''}`.trim(), alreadyRedeemed: true, orderRef,
+      // v5.11.81: the order its use was recorded under (catering stores it), so a full refund of
+      // the till's sale can give the code back (promoRelease.js).
+      ...(c.check_id ? { redemptionOrderId: String(c.check_id) } : {}) }
     : null;
   return { items: foldLineMods(items), promo, deliveryQuote };
 }

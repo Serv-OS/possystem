@@ -66,13 +66,16 @@ export function kioskVariant(parent, child) {
 export function kioskLineTaxRefs(l) {
   // 19 Oct 2026 (v5.11.78, channel parity): the rate and per order type overrides come from the one
   // shared size rule (lib/taxRefs.js sizeTaxRefs), which the till, the QR close, the online, QR
-  // and catering pages and the HubRise close also call. The profile keeps the kiosk's own rule
-  // (the size's, else its product's), so every kiosk figure is exactly what it was.
+  // and catering pages and the HubRise close also call.
+  // v5.11.81 (Peter, 19 Oct 2026: "kiosk yes"): the tax PROFILE follows the same rule too: a size's
+  // own profile, else none on the line, so the venue's cascade (the size's id, then its category,
+  // then the venue default) decides exactly as on the till. The kiosk gave a size its product's
+  // profile, so a US Cola Large under a Cola product with its own profile was taxed 0.32 at the
+  // kiosk and 0.36 at the till, online and on HubRise. No live size sat in that case.
   const item = l?.item || {};
   const v = l?.variant || null;
   const refs = v ? sizeTaxRefs(v, item) : sizeTaxRefs(item, null);
-  const profileOf = (row) => row?.taxProfileId ?? row?.tax_profile_id ?? null;
-  return { taxRateId: refs.taxRateId, taxOverrides: refs.taxOverrides, taxProfileId: (v ? (profileOf(v) || profileOf(item)) : profileOf(item)) || null };
+  return { taxRateId: refs.taxRateId, taxOverrides: refs.taxOverrides, taxProfileId: refs.taxProfileId || null };
 }
 
 /** The id whose RECIPE this line depletes: the size when picked, else the item. */
@@ -182,7 +185,7 @@ export function kioskCartUsage(cart) {
  * customer_orders record. Price is the basket line price (size price plus
  * modifiers), never a separate size price, so nothing can count it twice.
  */
-export function kioskOrderItem(l) {
+export function kioskOrderItem(l, i) {
   const v = l.variant || null;
   return {
     id: v ? v.id : l.item.id,
@@ -225,6 +228,12 @@ export function kioskOrderItem(l) {
     status: 'sent',
     fired: true,
     course: 1,
+    // v5.11.81: the line's id, the one the basket's automatic deals name (KioskApp autoDiscounts:
+    // uid = the line's key, else l<position>), as every till line carries one. The saved deal then
+    // finds its lines again: the daily VAT check and a refund take a deal's VAT and money off the
+    // lines it hit (taxShare.inclusiveTaxOnChargedLines). Only when written from the basket
+    // (cart.map passes the position).
+    ...(Number.isInteger(i) ? { uid: l.key || `l${i}` } : {}),
   };
 }
 

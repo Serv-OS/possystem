@@ -41,7 +41,7 @@
 //
 // PURE: no imports beyond taxShare.js, taxRule.js and customerRates.js (the words), runs under node --test.
 
-import { isUsableBreakdown, inclusiveTaxOnCharged } from './taxShare.js';
+import { isUsableBreakdown, inclusiveTaxOnCharged, inclusiveTaxOnChargedLines } from './taxShare.js';
 import { roundVat } from './taxRule.js';
 import { CUSTOMER_RATES_WORDS } from './customerRates.js';
 
@@ -106,9 +106,26 @@ export function publicCheckTaxFields(tax, opts = {}) {
  * alone must never count as a discount). Added-on (US) tax already carries the offer in its
  * basis and is never scaled.
  */
-export function offerChargedTax(tax, goods, charged, offer) {
+export function offerChargedTax(tax, goods, charged, offer, byLine = null) {
   if (!(Number(offer) > 0)) return tax;
+  // v5.11.81: given the lines, the offers and the seam, a deal on some lines takes VAT off those
+  // lines' rates only, as at the till (taxShare.inclusiveTaxOnChargedLines; otherwise the same record).
+  if (byLine && Array.isArray(byLine.lines) && typeof byLine.retax === 'function') {
+    return inclusiveTaxOnChargedLines(tax, byLine.lines, byLine.discounts || [], charged, byLine.retax, goods);
+  }
   return inclusiveTaxOnCharged(tax, goods, charged);
+}
+
+/**
+ * v5.11.81: the online page's record for a bill with an automatic offer: on what each line was
+ * charged when a deal on some lines meets more than one rate (as at the till), else exactly
+ * offerScaledTax (the v5.5.787 record, byte for byte).
+ */
+export function offerTaxForOnline(tax, { lines, discounts, goods, charged, retax } = {}) {
+  if (!tax) return tax;
+  const byLine = inclusiveTaxOnChargedLines(tax, lines, discounts || [], charged, retax);
+  if (byLine && byLine.byLine) return byLine;
+  return Number(goods) > 0 ? offerScaledTax(tax, Number(charged) / Number(goods)) : tax;
 }
 
 /**

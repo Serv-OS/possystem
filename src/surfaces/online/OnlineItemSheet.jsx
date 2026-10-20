@@ -10,6 +10,10 @@ import { money } from '../../lib/currency';
 import { dietaryBadges, DIET_LABELS } from '../../lib/dietary';
 import { orderOptionFlow, flowOrderedMods } from '../../lib/optionFlow';
 import { sizeOrMainOptions, subitemNameIndex } from '../../lib/menuRules';
+// v5.11.81 (channel parity round 2): the venue's menu translations (shown only, the order keeps the
+// English) and the kiosk's allergen rule (a product with an avoided allergen is marked, never hidden).
+import { useMenuText, itemName as tItemName, itemDescription as tItemDescription, groupName as tGroupName, optionName as tOptionName } from '../../lib/menuText';
+import { unsafeAllergenIds, itemAllergenIds } from '../../lib/kioskAllergens';
 
 // priceFor: the surface's own unit price rule, so the sheet total is the same
 // number the card shows and the cart line charges. Defaults to the plain base
@@ -37,7 +41,8 @@ const extraLabel = (n, prefix = '+') => {
 //   extraPrices     priceFor returns what is EXTRA on top of a package, so
 //                   sizes, options and the button read "+£x" or "Included"
 // All of these default to the storefront's behaviour.
-export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs = [], eightySixIds = [], stockLevels = {}, cart = [], priceFor = basePriceOf, onClose, onAdd, lockQty = false, addLabel = null, notesMax = 200, strictRequired = false, extraPrices = false, defaultImage = null }) {
+export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs = [], eightySixIds = [], stockLevels = {}, cart = [], priceFor = basePriceOf, onClose, onAdd, lockQty = false, addLabel = null, notesMax = 200, strictRequired = false, extraPrices = false, defaultImage = null, avoidAllergens = [] }) {
+  useMenuText();
   const [qty, setQty]               = useState(1);
   const [modGroups, setModGroups]   = useState([]);  // top-level groups assigned to item
   const [allModGroups, setAllModGroups] = useState([]); // includes nested sub-groups (lookup)
@@ -469,7 +474,19 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
   const muted    = theme.isLight ? '#6b6b70' : '#a0a0a8';
   const cardBdr  = theme.isLight ? '#ececef' : '#2a2a30';
   const inputBg  = theme.isLight ? '#f5f5f7' : '#1f1f24';
-  const display  = effectiveItem.menu_name || effectiveItem.name;
+  // Shown in the guest's language when the venue has it (lib/menuText.js); the line added keeps the
+  // English name (onAdd above builds it from menu_name / name).
+  const display  = tItemName(effectiveItem) || effectiveItem.menu_name || effectiveItem.name;
+  const avoidHits = useMemo(() => {
+    if (!Array.isArray(avoidAllergens) || !avoidAllergens.length) return [];
+    const rows = Array.isArray(allItems) ? allItems : [];
+    const picked = [];
+    for (const v of Object.values(selections || {})) for (const o of (Array.isArray(v) ? v : [v])) if (o && (o.itemId || o.item_id)) picked.push(o.itemId || o.item_id);
+    for (const o of Object.values(subPicks || {})) if (o && (o.itemId || o.item_id)) picked.push(o.itemId || o.item_id);
+    const extra = picked.map((id) => rows.find((r) => r && r.id === id)).filter(Boolean);
+    const sizes = selectedVariant ? [selectedVariant] : (variants || []);
+    return unsafeAllergenIds({ allergens: [...itemAllergenIds(item), ...extra.flatMap((r) => itemAllergenIds(r))] }, avoidAllergens, sizes);
+  }, [avoidAllergens, allItems, selections, subPicks, selectedVariant, variants, item]);
   const heroImg  = productImage(item, null) || productImage(effectiveItem, defaultImage);
   // GF/V/VG/DF from menu_items.tags — variant's own tags, else the base item's.
   const ownDiet    = dietaryBadges(effectiveItem);
@@ -535,9 +552,20 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
               ))}
             </div>
           )}
-          {item.description && (
+          {tItemDescription(item) && (
             <div style={{ fontSize: 14, color: muted, lineHeight: 1.55, marginBottom: 18 }}>
-              {item.description}
+              {tItemDescription(item)}
+            </div>
+          )}
+
+          {/* v5.11.81: the allergens the guest asked to avoid, on this product, its size or a picked
+              option's item (the kiosk's rule, lib/kioskAllergens.js), said before it is added. */}
+          {avoidHits.length > 0 && (
+            <div style={{
+              padding: '12px 14px', borderRadius: 12, background: '#fee2e2', border: '2px solid #ef4444',
+              marginBottom: 18, fontSize: 13, fontWeight: 800, color: '#991b1b', lineHeight: 1.5,
+            }}>
+              ⚠ This contains <span style={{ textTransform: 'capitalize' }}>{avoidHits.join(', ')}</span>, which you asked to avoid. Please check with the venue before ordering.
             </div>
           )}
 
@@ -599,14 +627,14 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
               const value = instSelections[ig.id];
               const required = instRequired(ig);
               return (
-                <Section key={ig.id} title={ig.name} meta={required ? 'Required' : 'Optional'} required={required} erroring={errors.includes(ig.id)}>
+                <Section key={ig.id} title={tGroupName({ ...ig, __isInstructionGroup: true }) || ig.name} meta={required ? 'Required' : 'Optional'} required={required} erroring={errors.includes(ig.id)}>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                     {(ig.options || []).map(opt => {
                       const label = typeof opt === 'string' ? opt : (opt.label || opt.name);
                       const checked = value === label;
                       return (
                         <OptionRow key={label}
-                          label={label}
+                          label={tOptionName({ ...ig, __isInstructionGroup: true }, { name: label }) || label}
                           priceDelta={0}
                           checked={checked}
                           onClick={() => setInstSelections(s => ({
@@ -634,7 +662,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
               const totalPicked = qtyTotalForGroup(g.id);
               return (
                 <Section key={g.id}
-                  title={g.name}
+                  title={tGroupName(g) || g.name}
                   meta={`Pick ${min === max ? `${min}` : `${min}-${max}`} · ${totalPicked}/${max} chosen`}
                   required={required}
                   erroring={erroring}>
@@ -645,7 +673,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
                       const canAdd = totalPicked < max;
                       return (
                         <QtyOptionRow key={optKey} media={resolveOptMedia(opt)}
-                          option={opt} count={count} canAdd={canAdd} is86={optIs86(opt)}
+                          option={{ ...opt, name: tOptionName(g, opt) || opt.name, label: tOptionName(g, opt) || opt.label }} count={count} canAdd={canAdd} is86={optIs86(opt)}
                           onInc={() => { setErrors([]); setQtyPicks(s => ({ ...s, [g.id]: { ...(s[g.id] || {}), [optKey]: count + 1 } })); }}
                           onDec={() => { setErrors([]); setQtyPicks(s => ({ ...s, [g.id]: { ...(s[g.id] || {}), [optKey]: Math.max(0, count - 1) } })); }}
                           theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
@@ -658,7 +686,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
 
             return (
               <Section key={g.id}
-                title={g.name}
+                title={tGroupName(g) || g.name}
                 meta={required ? `Required${max > 1 ? ` · pick up to ${max}` : ''}` : (max > 1 ? `Pick up to ${max}` : 'Optional')}
                 required={required}
                 erroring={erroring}>
@@ -691,7 +719,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
                     return (
                       <div key={opt.id || opt.name}>
                         <OptionRow
-                          label={opt.name || opt.label}
+                          label={tOptionName(g, opt) || opt.name || opt.label}
                           media={resolveOptMedia(opt)}
                           priceDelta={Number(opt.price) || 0}
                           checked={checked}
@@ -705,14 +733,14 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
                             paddingLeft: 12, borderLeft: `2px solid ${theme.accent}55`,
                           }}>
                             <div style={{ fontSize: 12, fontWeight: 700, color: theme.fg, marginBottom: 6 }}>
-                              {subGroup.name}
+                              {tGroupName(subGroup) || subGroup.name}
                             </div>
                             {(subGroup.options || []).map(sopt => {
                               const sChecked = subPick?.id === sopt.id;
                               return (
                                 <div key={sopt.id || sopt.name} style={{ marginBottom: 6 }}>
                                   <OptionRow
-                                    label={sopt.name || sopt.label}
+                                    label={tOptionName(subGroup, sopt) || sopt.name || sopt.label}
                                     priceDelta={Number(sopt.price) || 0}
                                     checked={sChecked}
                                     onClick={() => setSubPicks(s => ({ ...s, [subKey]: sChecked ? null : sopt }))}
@@ -886,14 +914,14 @@ function VariantRow({ variant, active, price, onClick, theme, cardBdr, inputBg, 
       </div>
       <div style={{ flex: 1, minWidth: 0, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 4 }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-          <span style={{ fontSize: 14, fontWeight: 700, flex: 1, minWidth: 0 }}>{variant.menu_name || variant.name}</span>
+          <span style={{ fontSize: 14, fontWeight: 700, flex: 1, minWidth: 0 }}>{tItemName(variant) || variant.menu_name || variant.name}</span>
           <span style={{ fontSize: 14, fontWeight: 800 }}>{extraPrices ? extraLabel(price) : money(price)}</span>
         </div>
-        {variant.description && (
+        {tItemDescription(variant) && (
           <div style={{ fontSize: 12, opacity: 0.7, lineHeight: 1.45,
             display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
           }}>
-            {variant.description}
+            {tItemDescription(variant)}
           </div>
         )}
         {allergens.length > 0 && (

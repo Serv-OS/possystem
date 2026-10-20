@@ -12,6 +12,7 @@
 // the History reprint) would book the whole undiscounted VAT again, so it takes these as booked.
 
 import { roundVat } from './taxRule.js';
+import { chargedLineValues, sharesDiffer } from '../../supabase/functions/_shared/lineCharged.js';
 
 // 8 Oct 2026: the one rounding rule (half up to the penny on the true value), as every channel.
 const round2 = (n) => roundVat(n) ?? 0;
@@ -73,6 +74,48 @@ export function inclusiveTaxOnCharged(tax, goods, charged) {
   const c = Number(charged);
   if (!(g > 0) || !Number.isFinite(c) || !(c < g)) return tax;
   return scaleTaxRecord(tax, Math.max(0, c) / g) || tax;
+}
+
+/**
+ * v5.11.81 (channel parity: "a targeted discount takes VAT off its own lines' rates only"): UK VAT
+ * on what each LINE was charged. A discount that names its lines (an item discount, a deal's
+ * appliedItems) comes off those lines; the rest is spread pro rata (_shared/lineCharged.js, the tax
+ * basis's own steps). When every line keeps the same share, or the bill has one rate, it is exactly
+ * inclusiveTaxOnCharged (the same object or the same scaled record, byte for byte). Otherwise the
+ * VAT is worked out again on the charged lines (`retax(lines)`: the seam over the lines at what
+ * each was charged) and the record is marked as a share of the goods listed (booked, never redone
+ * from the items).
+ * @param tax        the seam's record over the lines at full price
+ * @param items      the bill's lines (voided ones are left out here)
+ * @param discounts  the check's discounts (manual and deals; never promo or loyalty credits)
+ * @param charged    what the bill charges for the goods (computeCheckTotals discountedSub)
+ * @param retax      (lines) => the seam's record for those lines
+ * @param goodsIn    the goods the caller always scaled by (optional; else the lines' own), so the
+ *                   one share answer stays the caller's old figure byte for byte
+ */
+export function inclusiveTaxOnChargedLines(tax, items, discounts, charged, retax, goodsIn = null) {
+  if (!isUsableBreakdown(tax) || tax.hasExclusiveTax) return tax;
+  const live = (Array.isArray(items) ? items : []).filter((i) => i && !i.voided);
+  const goods = goodsIn != null && Number.isFinite(Number(goodsIn)) ? Number(goodsIn) : linesGoods(live);
+  const c = Number(charged);
+  if (!(goods > 0) || !Number.isFinite(c) || !(c < goods)) return tax;
+  const rated = (Array.isArray(tax.breakdown) ? tax.breakdown : []).filter((b) => b && b.rate);
+  const values = chargedLineValues(live, discounts);
+  if (rated.length <= 1 || !sharesDiffer(values) || typeof retax !== 'function') return inclusiveTaxOnCharged(tax, goods, c);
+  let t2 = null;
+  try {
+    t2 = retax(live.map((i, n) => {
+      const { discount: _own, ...rest } = i;
+      void _own;
+      return { ...rest, price: values.net[n] / (i.qty || 1) };
+    }));
+  } catch { t2 = null; }
+  if (!isUsableBreakdown(t2) || t2.hasExclusiveTax) return inclusiveTaxOnCharged(tax, goods, c);
+  const out = { ...t2, totalTax: round2(Number(t2.totalTax)), exclusiveTax: 0, share: Math.max(0, Math.min(1, c / goods)), byLine: true };
+  delete out.lineTaxes;
+  delete out.serviceTax;
+  delete out.deliveryTax;
+  return out;
 }
 
 /** The undiscounted goods of a list of lines (price x qty, voided lines left out), as the seam taxes them. */
