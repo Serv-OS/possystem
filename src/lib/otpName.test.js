@@ -8,8 +8,10 @@ import { twilioName, sameServiceName } from '../../supabase/functions/_shared/ot
 const here = path.dirname(fileURLToPath(import.meta.url));
 const read = (rel) => fs.readFileSync(path.join(here, '..', '..', rel), 'utf8');
 
-test('a code text name is what Twilio shows: trimmed and cut to 30 characters', () => {
-  assert.equal(twilioName('  Coffee Shop  Station Road North End  '), 'Coffee Shop  Station Road Nort');
+test('a code text name is what Twilio accepts: one space between words, trimmed, cut to 30 characters', () => {
+  assert.equal(twilioName('  Coffee Shop  Station Road North End  '), 'Coffee Shop Station Road North');
+  assert.equal(twilioName('Coffee Shop   Preston'), 'Coffee Shop Preston', 'a triple space becomes one');
+  assert.equal(twilioName('Coffee\tShop\nLeeds'), 'Coffee Shop Leeds');
   assert.equal(twilioName(null), '');
 });
 
@@ -19,6 +21,13 @@ test('a code may only go out from a service that already carries this venue\'s o
   assert.equal(sameServiceName('Demo Cafe', 'Coffee Shop Leeds'), false, 'another venue\'s name');
   assert.equal(sameServiceName(null, 'Coffee Shop Leeds'), false, 'a name that could not be read');
   assert.equal(sameServiceName('', ''), false, 'no name at all');
+});
+
+test('every name that goes to Twilio passes through the one rule (source)', () => {
+  const src = read('supabase/functions/_shared/twilio-verify.ts');
+  assert.match(src, /import \{ twilioName \} from '\.\/otpName\.js'/);
+  assert.equal((src.match(/twilioName\(/g) || []).length, 3, 'create, send and rename');
+  assert.doesNotMatch(src, /\.slice\(0, 30\)/, 'no second copy of the 30 character cut');
 });
 
 test('the loyalty code send never falls back to the shared service under another venue\'s name (source)', () => {
