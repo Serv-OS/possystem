@@ -13,6 +13,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { buildGiftTheme, fetchGiftBranding, formatAmount } from '../gift/giftHelpers';
 import { firstNameOf } from '../../lib/customerInitials';
 import { readProfileReply, customerAfterSave, isSignInAgain } from '../../lib/portalProfileReply';
+import { portalLoyaltyView } from '../../lib/portalLoyaltyView';
 
 const OPS_URL = import.meta.env.VITE_SUPABASE_URL;
 const OPS_ANON = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -33,6 +34,7 @@ async function callPortal(body) {
     // is gone (joined into another one, or deleted), so the portal signs in again, no alert.
     const err = new Error(data?.error || `HTTP ${res.status}`);
     err.code = data?.code || null;
+    err.status = res.status;
     throw err;
   }
   return data;
@@ -42,7 +44,7 @@ async function callPortal(body) {
 const SESSION_KEY = 'rpos-loyalty-session';
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 function storeSession(token, companyId) {
-  try { localStorage.setItem(SESSION_KEY, JSON.stringify({ token, companyId, at: Date.now() })); } catch {}
+  try { localStorage.setItem(SESSION_KEY, JSON.stringify({ token, companyId, at: Date.now() })); } catch { /* no storage (private window): signed in for this visit only */ }
 }
 function loadSession() {
   try {
@@ -58,7 +60,7 @@ function loadSession() {
   } catch { return null; }
 }
 function clearSession() {
-  try { localStorage.removeItem(SESSION_KEY); } catch {}
+  try { localStorage.removeItem(SESSION_KEY); } catch { /* no storage: nothing to clear */ }
 }
 
 export default function CustomerPortal({ location }) {
@@ -153,24 +155,63 @@ export default function CustomerPortal({ location }) {
     }
   }, [location?.company_id]);
 
-  const refreshData = useCallback(async (tkn) => {
+  // When the account was last read, so coming back to the page reads it again at most once a minute.
+  const lastReadRef = useRef(0);
+  // Goes up on every sign out: a read still on its way for the member who signed out is dropped
+  // (it would otherwise put their account back on screen after "Not you? Sign out").
+  const sessionEpochRef = useRef(0);
+
+  // quiet (21 Oct 2026): a read in the background, when the member comes back to the page. A
+  // failed one keeps what is on screen (a phone waking up with no signal is not a sign out); only a
+  // session the server refuses (401) signs out.
+  const refreshData = useCallback(async (tkn, opts = {}) => {
+    lastReadRef.current = Date.now();
+    const epoch = sessionEpochRef.current;
     try {
       const data = await callPortal({
         action: 'refresh',
         token: tkn || token,
       });
+      if (epoch !== sessionEpochRef.current) return;
       if (data.customer) setCustomer(data.customer);
-      if (data.loyalty) setLoyalty(data.loyalty);
+      // Since 21 Oct 2026 refresh answers in exactly the shape a sign in does (loyalty-otp
+      // memberAccount): loyalty is null when the company has turned loyalty off.
+      if ('loyalty' in data) setLoyalty(data.loyalty ?? null);
       if (data.gift_cards) setGiftCards(data.gift_cards);
       if (data.stamp_cards) setStampCards(data.stamp_cards);
       setScreen('dashboard');
     } catch (e) {
-      // Token expired — back to login
+      if (epoch !== sessionEpochRef.current) return;
+      if (opts.quiet && e?.status !== 401) return;
+      // Token expired, or its profile is gone: back to login
       clearSession();
       setToken(null);
+      setCustomer(null);
+      setLoyalty(null);
+      setGiftCards([]);
+      setStampCards([]);
       setScreen('login');
+      if (opts.quiet && e?.code === 'sign_in_again') setError(e.message || '');
     }
   }, [token, location?.company_id]);
+
+  // An open tab never shows old stamps for long (21 Oct 2026): the portal used to read the
+  // account only when it opened. Coming back to the page (it shows again, or gets focus) reads it
+  // again, at most once a minute.
+  useEffect(() => {
+    if (screen !== 'dashboard' || !token) return undefined;
+    const onBack = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      if (Date.now() - lastReadRef.current < 60 * 1000) return;
+      refreshData(token, { quiet: true });
+    };
+    document.addEventListener('visibilitychange', onBack);
+    window.addEventListener('focus', onBack);
+    return () => {
+      document.removeEventListener('visibilitychange', onBack);
+      window.removeEventListener('focus', onBack);
+    };
+  }, [screen, token, refreshData]);
 
   // ── Send OTP ─────────────────────────────────────────────────────────
   const sendOtp = async () => {
@@ -232,6 +273,7 @@ export default function CustomerPortal({ location }) {
         code: otpCode,
       });
       if (data.verified && data.token) {
+        lastReadRef.current = Date.now();
         setToken(data.token);
         storeSession(data.token, location.company_id);
         setCustomer(data.customer);
@@ -280,6 +322,7 @@ export default function CustomerPortal({ location }) {
 
   // ── Logout ────────────────────────────────────────────────────────────
   const logout = () => {
+    sessionEpochRef.current += 1;
     clearSession();
     setToken(null);
     setCustomer(null);
@@ -436,7 +479,7 @@ function LoginScreen({ t, phone, setPhone, loading, error, onSubmit }) {
     <Card t={t}>
       <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Welcome</div>
       <div style={{ fontSize: 13, color: t.textMuted, marginBottom: 20, lineHeight: 1.5 }}>
-        Enter your mobile number to access your loyalty points, rewards, and gift cards.
+        Enter your mobile number to see your loyalty rewards and gift cards.
       </div>
 
       <label style={{ fontSize: 12, fontWeight: 600, color: t.textMuted, marginBottom: 6, display: 'block' }}>
@@ -488,7 +531,7 @@ function LoginScreen({ t, phone, setPhone, loading, error, onSubmit }) {
 // ═══════════════════════════════════════════════════════════════════════════
 // REGISTER FORM SCREEN — collect details BEFORE OTP verification
 // ═══════════════════════════════════════════════════════════════════════════
-function RegisterFormScreen({ t, location, loading, error, onSubmit }) {
+function RegisterFormScreen({ t, loading, error, onSubmit }) {
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [email, setEmail] = useState('');
@@ -516,7 +559,7 @@ function RegisterFormScreen({ t, location, loading, error, onSubmit }) {
     <Card t={t}>
       <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Create your account</div>
       <div style={{ fontSize: 13, color: t.textMuted, marginBottom: 20, lineHeight: 1.5 }}>
-        Fill in your details to join our loyalty programme and start earning points & rewards.
+        Fill in your details to join our loyalty programme and start collecting rewards.
       </div>
 
       {/* First name + Last name side by side */}
@@ -615,7 +658,7 @@ function RegisterFormScreen({ t, location, loading, error, onSubmit }) {
       </button>
 
       <div style={{ fontSize: 11, color: t.textDim, marginTop: 12, textAlign: 'center', lineHeight: 1.5 }}>
-        By joining, you agree to receive points and rewards. You can opt out at any time from your profile.
+        By joining, you agree to collect rewards with us. You can opt out at any time from your profile.
       </div>
 
       {/* Link to sign-in */}
@@ -799,7 +842,7 @@ function RegisterScreen({ t, location, token, customer, loyalty, onComplete, onS
         </button>
 
         <div style={{ fontSize: 11, color: t.textDim, marginTop: 12, textAlign: 'center', lineHeight: 1.5 }}>
-          By joining, you agree to receive points and rewards. You can opt out at any time from your profile.
+          By joining, you agree to collect rewards with us. You can opt out at any time from your profile.
         </div>
       </Card>
     </>
@@ -923,29 +966,29 @@ function OtpScreen({ t, phone, otpCode, setOtpCode, loading, error, onVerify, on
 // DASHBOARD
 // ═══════════════════════════════════════════════════════════════════════════
 function Dashboard({ t, location, customer, loyalty, giftCards, stampCards, tab, setTab, onRefresh, onLogout, token, walletAvail, walletLoading, addToWallet, onProfileReply, onSignInAgain }) {
-  // Loyalty feature flags — a venue can run points-only, stamps-only, or both.
-  // Treat a missing/undefined flag as enabled; only hide when EXPLICITLY false.
-  const pointsEnabled = loyalty?.points_enabled !== false;
-  const stampsEnabled = loyalty?.stamps_enabled !== false;
-
-  const hasStamps = stampsEnabled && stampCards && stampCards.length > 0;
-  // Earned stamp-card rewards must surface even on a stamps-only venue (the Rewards tab used
-  // to be points-gated, so a completed card's free item was invisible — the original bug).
-  const hasStampRewards = (loyalty?.stamp_rewards || []).length > 0;
+  // 21 Oct 2026: ONE view of what the company runs, stamps, points or both (portalLoyaltyView).
+  // Before, a missing flag counted as ON, so a stamps only company showed "0 loyalty points" after
+  // a sign in. A flag the server did not send is now read from the data, never taken as points.
+  const view = useMemo(() => portalLoyaltyView({ loyalty, stampCards, customer }), [loyalty, stampCards, customer]);
+  const pointsEnabled = view.showPoints;
   const tabs = [
     { id: 'home', label: 'Home', icon: '🏠' },
-    ...(pointsEnabled || hasStampRewards ? [{ id: 'rewards', label: 'Rewards', icon: '🎁' }] : []),
-    ...(hasStamps ? [{ id: 'stamps', label: 'Stamps', icon: '☕' }] : []),
-    ...(pointsEnabled ? [{ id: 'history', label: 'History', icon: '📋' }] : []),
+    // Earned stamp-card rewards must surface even on a stamps-only venue (the Rewards tab used
+    // to be points-gated, so a completed card's free item was invisible: the original bug).
+    ...(view.tabs.rewards ? [{ id: 'rewards', label: 'Rewards', icon: '🎁' }] : []),
+    ...(view.tabs.stamps ? [{ id: 'stamps', label: 'Stamps', icon: '☕' }] : []),
+    ...(view.tabs.history ? [{ id: 'history', label: 'History', icon: '📋' }] : []),
     { id: 'cards', label: 'Gift Cards', icon: '💳' },
     { id: 'profile', label: 'Profile', icon: '👤' },
   ];
+  // A tab the company does not run (points off) is never shown, even if it was open before.
+  const activeTab = tabs.some(tb => tb.id === tab) ? tab : 'home';
 
   return (
     <>
-      {/* Points hero */}
-      {loyalty && pointsEnabled && tab === 'home' && (
-        <PointsHero t={t} loyalty={loyalty} customer={customer} />
+      {/* What this company runs, big and plain: stamps, points or both */}
+      {loyalty && activeTab === 'home' && (
+        <LoyaltyHero t={t} view={view} loyalty={loyalty} customer={customer} onLogout={onLogout} />
       )}
 
       {/* Tab bar */}
@@ -956,9 +999,9 @@ function Dashboard({ t, location, customer, loyalty, giftCards, stampCards, tab,
         {tabs.map(tb => (
           <button key={tb.id} onClick={() => setTab(tb.id)} style={{
             flex: 1, minWidth: 0, padding: '10px 6px', borderRadius: t.radius - 4,
-            border: `1px solid ${tab === tb.id ? t.accent : t.border}`,
-            background: tab === tb.id ? t.accent : 'transparent',
-            color: tab === tb.id ? t.accentText : t.textMuted,
+            border: `1px solid ${activeTab === tb.id ? t.accent : t.border}`,
+            background: activeTab === tb.id ? t.accent : 'transparent',
+            color: activeTab === tb.id ? t.accentText : t.textMuted,
             fontSize: 11, fontWeight: 700, cursor: 'pointer',
             display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
             whiteSpace: 'nowrap',
@@ -969,68 +1012,173 @@ function Dashboard({ t, location, customer, loyalty, giftCards, stampCards, tab,
         ))}
       </div>
 
-      {tab === 'home' && <HomeTab t={t} loyalty={loyalty} customer={customer} giftCards={giftCards} stampCards={stampCards} setTab={setTab} walletAvail={walletAvail} walletLoading={walletLoading} addToWallet={addToWallet} pointsEnabled={pointsEnabled} stampsEnabled={stampsEnabled} />}
-      {tab === 'rewards' && (pointsEnabled || hasStampRewards) && <RewardsTab t={t} loyalty={loyalty} pointsEnabled={pointsEnabled} />}
-      {tab === 'stamps' && stampsEnabled && <StampCardsTab t={t} stampCards={stampCards} />}
-      {tab === 'history' && pointsEnabled && <HistoryTab t={t} loyalty={loyalty} />}
-      {tab === 'cards' && <GiftCardsTab t={t} giftCards={giftCards} />}
+      {activeTab === 'home' && <HomeTab t={t} view={view} loyalty={loyalty} giftCards={giftCards} setTab={setTab} walletAvail={walletAvail} walletLoading={walletLoading} addToWallet={addToWallet} />}
+      {activeTab === 'rewards' && <RewardsTab t={t} loyalty={loyalty} pointsEnabled={pointsEnabled} stampRewards={view.stampRewards} />}
+      {activeTab === 'stamps' && <StampCardsTab t={t} cards={view.cards} />}
+      {activeTab === 'history' && <HistoryTab t={t} loyalty={loyalty} />}
+      {activeTab === 'cards' && <GiftCardsTab t={t} giftCards={giftCards} />}
       {/* Keyed on the profile: after a join the form starts again from the joined account's details. */}
-      {tab === 'profile' && <ProfileTab key={customer?.id || 'me'} t={t} customer={customer} loyalty={loyalty} token={token} location={location} onRefresh={onRefresh} onLogout={onLogout} pointsEnabled={pointsEnabled} onProfileReply={onProfileReply} onSignInAgain={onSignInAgain} />}
+      {activeTab === 'profile' && <ProfileTab key={customer?.id || 'me'} t={t} customer={customer} loyalty={loyalty} token={token} location={location} onRefresh={onRefresh} onLogout={onLogout} pointsEnabled={pointsEnabled} onProfileReply={onProfileReply} onSignInAgain={onSignInAgain} />}
     </>
   );
 }
 
-// ── Points Hero ──────────────────────────────────────────────────────────
-function PointsHero({ t, loyalty, customer }) {
+// ── Loyalty hero (21 Oct 2026) ───────────────────────────────────────────
+// The top of the home page says, big and plain, what this company's loyalty is (stamps, points or
+// both) with the member's stamps or points under it. It used to be a points block for everyone,
+// so a stamps only company showed "0 loyalty points" (Peter, Coffee Boy). The member code and the
+// end of the phone show for every member, so a member on a second account can see it and staff
+// can find the same account in Back Office.
+function LoyaltyHero({ t, view, loyalty, customer, onLogout }) {
+  const first = firstNameOf(customer?.name);
   return (
     <div style={{
       background: `linear-gradient(135deg, ${t.accent}, ${t.accentHover})`,
-      borderRadius: t.radius + 4, padding: '28px 24px', marginBottom: 20,
+      borderRadius: t.radius + 4, padding: '24px 18px', marginBottom: 20,
       color: t.accentText, textAlign: 'center',
     }}>
-      {firstNameOf(customer?.name) && (
-        <div style={{ fontSize: 14, fontWeight: 600, opacity: 0.85, marginBottom: 4 }}>
-          Welcome back, {firstNameOf(customer?.name)}
+      {first && (
+        <div style={{ fontSize: 16, fontWeight: 700, opacity: 0.9 }}>
+          Welcome back, {first}
         </div>
       )}
-      <div style={{ fontSize: 48, fontWeight: 900, lineHeight: 1 }}>
-        {(loyalty.points_balance || 0).toLocaleString()}
-      </div>
-      <div style={{ fontSize: 14, fontWeight: 600, opacity: 0.8, marginTop: 4 }}>
-        loyalty points
-      </div>
-      {loyalty.tier && (
+      {view.collects && (
         <div style={{
-          display: 'inline-flex', alignItems: 'center', gap: 5, marginTop: 12,
-          padding: '5px 14px', borderRadius: 99,
-          background: 'rgba(255,255,255,0.2)', fontSize: 12, fontWeight: 700,
+          display: 'inline-block', marginTop: 10, padding: '7px 16px', borderRadius: 99,
+          background: 'rgba(255,255,255,0.22)', border: `1px solid ${t.accentText}40`,
+          fontSize: 15, fontWeight: 800,
         }}>
-          {loyalty.tier.icon || '⭐'} {loyalty.tier.name}
-          {loyalty.tier.multiplier > 1 && <span style={{ opacity: 0.75 }}> · {loyalty.tier.multiplier}x points</span>}
+          You collect: {view.collects}
         </div>
       )}
-      {loyalty.member_code && (
-        <div style={{ fontSize: 11, marginTop: 12, opacity: 0.6, fontFamily: 'monospace', letterSpacing: '0.05em' }}>
-          {loyalty.member_code}
+
+      {view.showPoints && (
+        <div style={{ marginTop: 16 }}>
+          <div style={{ fontSize: 48, fontWeight: 900, lineHeight: 1 }}>
+            {view.points.toLocaleString()}
+          </div>
+          <div style={{ fontSize: 14, fontWeight: 600, opacity: 0.85, marginTop: 4 }}>
+            loyalty points
+          </div>
+          {loyalty.tier && (
+            <div style={{
+              display: 'inline-flex', alignItems: 'center', gap: 5, marginTop: 12,
+              padding: '5px 14px', borderRadius: 99,
+              background: 'rgba(255,255,255,0.2)', fontSize: 12, fontWeight: 700,
+            }}>
+              {loyalty.tier.icon || '⭐'} {loyalty.tier.name}
+              {loyalty.tier.multiplier > 1 && <span style={{ opacity: 0.75 }}> · {loyalty.tier.multiplier}x points</span>}
+            </div>
+          )}
+        </div>
+      )}
+
+      {view.showStamps && view.main && (
+        <HeroStampCard t={t} card={view.main} compact={view.showPoints} />
+      )}
+
+      {view.mode === 'none' && (
+        <div style={{ marginTop: 14, fontSize: 14, fontWeight: 600, opacity: 0.9 }}>
+          There are no stamps or points to collect right now.
+        </div>
+      )}
+
+      {view.identityLine && (
+        <div style={{ fontSize: 12, marginTop: 16, opacity: 0.8, letterSpacing: '0.02em' }}>
+          {view.identityLine}
+        </div>
+      )}
+      <button onClick={onLogout} style={{
+        background: 'none', border: 'none', color: 'inherit', opacity: 0.8,
+        textDecoration: 'underline', fontSize: 12, marginTop: 4, cursor: 'pointer', padding: 4,
+      }}>
+        Not you? Sign out
+      </button>
+    </div>
+  );
+}
+
+// The main stamp card inside the hero: the stamps as big dots, "4 of 10 stamps", what is left to
+// go, and any reward ready to use. compact when points show above it.
+function HeroStampCard({ t, card, compact = false }) {
+  return (
+    <div style={{
+      marginTop: 16, padding: compact ? '12px 12px 14px' : '16px 12px 18px',
+      borderRadius: t.radius, background: 'rgba(255,255,255,0.14)',
+    }}>
+      <div style={{ fontSize: 15, fontWeight: 800 }}>{card.icon} {card.name}</div>
+      <StampDots t={t} dots={card.dots} icon={card.icon} onAccent size={compact ? 26 : 32} />
+      <div style={{ fontSize: compact ? 22 : 30, fontWeight: 900, marginTop: 12, lineHeight: 1.1 }}>
+        {card.countText}
+      </div>
+      <div style={{ fontSize: 15, fontWeight: 700, marginTop: 6, opacity: 0.92 }}>
+        {card.toGoText}
+      </div>
+      {card.ready > 0 ? (
+        <div style={{
+          marginTop: 12, padding: '10px 12px', borderRadius: 12,
+          background: '#ffffff', color: '#16191c', fontSize: 15, fontWeight: 800,
+        }}>
+          🎁 {card.readyText}. Ask at the till to use it.
+        </div>
+      ) : (
+        <div style={{ marginTop: 10, fontSize: 13, fontWeight: 700, opacity: 0.85 }}>
+          {card.readyText}
+        </div>
+      )}
+      {card.finished > 0 && (
+        <div style={{ marginTop: 6, fontSize: 12, opacity: 0.8 }}>
+          {card.summaryText}
         </div>
       )}
     </div>
   );
 }
 
+// One dot per stamp, filled ones show the card's icon. onAccent: drawn on the hero's colour.
+function StampDots({ t, dots, icon, onAccent = false, size = 30 }) {
+  const filled = dots.filter(Boolean).length;
+  return (
+    <div role="img" aria-label={`${filled} of ${dots.length} stamps`} style={{
+      display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 6, marginTop: 12,
+    }}>
+      {dots.map((on, i) => (
+        <div key={i} style={{
+          width: size, height: size, borderRadius: '50%', boxSizing: 'border-box',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: Math.round(size * 0.5), lineHeight: 1,
+          background: on ? (onAccent ? '#ffffff' : `${t.accent}22`) : 'transparent',
+          border: on
+            ? `2px solid ${onAccent ? t.accentText : t.accent}`
+            : `2px dashed ${onAccent ? `${t.accentText}80` : `${t.textMuted}60`}`,
+        }}>
+          {on ? icon : ''}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── Home Tab ─────────────────────────────────────────────────────────────
-function HomeTab({ t, loyalty, customer, giftCards, stampCards, setTab, walletAvail, walletLoading, addToWallet, pointsEnabled = true, stampsEnabled = true }) {
-  const rewardsAvail = (loyalty?.rewards_available?.length || 0)
-    + (loyalty?.stamp_rewards || []).reduce((s, r) => s + (r.available || 0), 0);
+function HomeTab({ t, view, loyalty, giftCards, setTab, walletAvail, walletLoading, addToWallet }) {
   const giftActive = giftCards?.length || 0;
   const totalBalance = giftCards.reduce((s, c) => s + (c.balance || 0), 0);
-  const activeStamps = stampsEnabled ? (stampCards || []).filter(sc => sc.stamps_collected > 0) : [];
 
   // Platform detection for showing relevant wallet button
   const isIOS = typeof navigator !== 'undefined' && /iPhone|iPad|iPod/.test(navigator.userAgent);
   const isAndroid = typeof navigator !== 'undefined' && /Android/.test(navigator.userAgent);
   const showApple = walletAvail.apple && (isIOS || (!isIOS && !isAndroid));
   const showGoogle = walletAvail.google && (isAndroid || (!isIOS && !isAndroid));
+
+  // Tiles follow what the company runs (21 Oct 2026): no points tiles when points are off. Visits
+  // is every visit at the company's sites, the same number Back Office shows.
+  const rewardsTab = view.tabs.rewards ? 'rewards' : (view.tabs.stamps ? 'stamps' : null);
+  const tiles = [];
+  if (view.showPoints) tiles.push({ key: 'earned', label: 'Points earned', value: view.pointsEarned.toLocaleString(), icon: '📈' });
+  if (loyalty && view.mode !== 'none') tiles.push({ key: 'ready', label: 'Rewards ready', value: view.rewardsReady, icon: '🎁', onClick: rewardsTab ? () => setTab(rewardsTab) : undefined });
+  if (view.visits != null) tiles.push({ key: 'visits', label: 'Visits', value: view.visits, icon: '🏪' });
+  tiles.push({ key: 'gift', label: 'Gift cards', value: giftActive, icon: '💳', onClick: () => setTab('cards') });
+  const pointsRewards = view.showPoints ? (loyalty?.rewards_available || []) : [];
 
   return (
     <>
@@ -1073,45 +1221,34 @@ function HomeTab({ t, loyalty, customer, giftCards, stampCards, setTab, walletAv
       )}
 
       {/* Quick stats */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 16 }}>
-        {pointsEnabled && <StatCard t={t} label="Total earned" value={(loyalty?.points_earned_total || 0).toLocaleString()} icon="📈" />}
-        <StatCard t={t} label="Visits" value={loyalty?.visit_count || 0} icon="🏪" />
-        {pointsEnabled && <StatCard t={t} label="Rewards ready" value={rewardsAvail} icon="🎁" onClick={() => setTab('rewards')} />}
-        <StatCard t={t} label="Gift cards" value={giftActive} icon="💳" onClick={() => setTab('cards')} />
+      <div style={{ display: 'grid', gridTemplateColumns: tiles.length === 3 ? '1fr 1fr 1fr' : '1fr 1fr', gap: 10, marginBottom: 16 }}>
+        {tiles.map(tl => <StatCard key={tl.key} t={t} label={tl.label} value={tl.value} icon={tl.icon} onClick={tl.onClick} />)}
       </div>
 
-      {/* Stamp card progress preview */}
-      {activeStamps.length > 0 && (
+      {/* Rewards ready to use: free items from finished stamp cards, and points rewards when points are on */}
+      {view.rewardsReady > 0 && (
         <Card t={t} style={{ marginBottom: 14 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <div style={{ fontSize: 14, fontWeight: 700 }}>Stamp cards</div>
-            <button onClick={() => setTab('stamps')} style={{ background:'none', border:'none', color: t.accent, fontSize: 12, fontWeight: 600, cursor:'pointer', padding: 0 }}>
-              View all →
-            </button>
+            <div style={{ fontSize: 14, fontWeight: 700 }}>Ready to use</div>
+            {rewardsTab && (
+              <button onClick={() => setTab(rewardsTab)} style={{ background:'none', border:'none', color: t.accent, fontSize: 12, fontWeight: 600, cursor:'pointer', padding: 0 }}>
+                View all →
+              </button>
+            )}
           </div>
-          {activeStamps.slice(0, 2).map(sc => (
-            <div key={sc.id} style={{ padding: '8px 0', borderTop: `1px solid ${t.border}` }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                <span style={{ fontSize: 18 }}>{sc.icon}</span>
-                <span style={{ fontSize: 13, fontWeight: 600 }}>{sc.name}</span>
-                <span style={{ marginLeft: 'auto', fontSize: 12, color: t.textMuted }}>{sc.stamps_collected}/{sc.stamps_required}</span>
+          {view.stampRewards.map(sr => (
+            <div key={`s-${sr.program_id}`} style={{
+              display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0',
+              borderTop: `1px solid ${t.border}`,
+            }}>
+              <span style={{ fontSize: 22 }}>🎟️</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 14, fontWeight: 700 }}>{sr.name}{sr.available > 1 ? ` ×${sr.available}` : ''}</div>
+                <div style={{ fontSize: 12, color: t.textMuted }}>From a finished stamp card. Ask at the till to use it.</div>
               </div>
-              <StampProgressBar t={t} collected={sc.stamps_collected} required={sc.stamps_required} />
             </div>
           ))}
-        </Card>
-      )}
-
-      {/* Available rewards preview */}
-      {pointsEnabled && rewardsAvail > 0 && (
-        <Card t={t} style={{ marginBottom: 14 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <div style={{ fontSize: 14, fontWeight: 700 }}>Ready to redeem</div>
-            <button onClick={() => setTab('rewards')} style={{ background:'none', border:'none', color: t.accent, fontSize: 12, fontWeight: 600, cursor:'pointer', padding: 0 }}>
-              View all →
-            </button>
-          </div>
-          {loyalty.rewards_available.slice(0, 3).map(r => (
+          {pointsRewards.slice(0, 3).map(r => (
             <div key={r.id} style={{
               display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0',
               borderTop: `1px solid ${t.border}`,
@@ -1121,6 +1258,26 @@ function HomeTab({ t, loyalty, customer, giftCards, stampCards, setTab, walletAv
                 <div style={{ fontSize: 13, fontWeight: 600 }}>{r.name}</div>
                 <div style={{ fontSize: 11, color: t.textMuted }}>{r.points_cost} pts</div>
               </div>
+            </div>
+          ))}
+        </Card>
+      )}
+
+      {/* Every other stamp card the company runs (the main one is in the header), at 0 stamps too */}
+      {view.otherCards.length > 0 && (
+        <Card t={t} style={{ marginBottom: 14 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+            <div style={{ fontSize: 14, fontWeight: 700 }}>More stamp cards</div>
+            <button onClick={() => setTab('stamps')} style={{ background:'none', border:'none', color: t.accent, fontSize: 12, fontWeight: 600, cursor:'pointer', padding: 0 }}>
+              View all →
+            </button>
+          </div>
+          {view.otherCards.map(sc => (
+            <div key={sc.id} style={{ padding: '12px 0 4px', borderTop: `1px solid ${t.border}`, marginTop: 8, textAlign: 'center' }}>
+              <div style={{ fontSize: 14, fontWeight: 700 }}>{sc.icon} {sc.name}</div>
+              <StampDots t={t} dots={sc.dots} icon={sc.icon} size={24} />
+              <div style={{ fontSize: 15, fontWeight: 800, marginTop: 8 }}>{sc.countText}</div>
+              <div style={{ fontSize: 12, color: t.textMuted, marginTop: 2 }}>{sc.toGoText}</div>
             </div>
           ))}
         </Card>
@@ -1160,13 +1317,14 @@ function HomeTab({ t, loyalty, customer, giftCards, stampCards, setTab, walletAv
 }
 
 // ── Rewards Tab ──────────────────────────────────────────────────────────
-function RewardsTab({ t, loyalty, pointsEnabled = true }) {
+function RewardsTab({ t, loyalty, pointsEnabled = true, stampRewards: stampRewardsIn = null }) {
   if (!loyalty) return <Card t={t}><EmptyState icon="🎁" text="Loyalty not available yet" /></Card>;
 
-  const available = loyalty.rewards_available || [];
-  const all = loyalty.all_rewards || [];
+  // Points rewards only when the company runs points (21 Oct 2026).
+  const available = pointsEnabled ? (loyalty.rewards_available || []) : [];
+  const all = pointsEnabled ? (loyalty.all_rewards || []) : [];
   const locked = all.filter(r => !available.find(a => a.id === r.id));
-  const stampRewards = loyalty.stamp_rewards || [];
+  const stampRewards = stampRewardsIn || loyalty.stamp_rewards || [];
 
   return (
     <>
@@ -1182,7 +1340,7 @@ function RewardsTab({ t, loyalty, pointsEnabled = true }) {
                     {sr.name}{sr.available > 1 ? ` ×${sr.available}` : ''}
                   </div>
                   <div style={{ fontSize: 12, color: t.textMuted, marginTop: 2 }}>
-                    Stamp card complete — show this at the till to redeem
+                    From a finished stamp card. Ask at the till to use it.
                   </div>
                 </div>
               </div>
@@ -1210,7 +1368,7 @@ function RewardsTab({ t, loyalty, pointsEnabled = true }) {
       )}
 
       {all.length === 0 && stampRewards.length === 0 && (
-        <Card t={t}><EmptyState icon="🎁" text="No rewards set up yet. Keep earning points!" /></Card>
+        <Card t={t}><EmptyState icon="🎁" text={pointsEnabled ? 'No rewards set up yet. Keep earning points!' : 'No rewards ready yet.'} /></Card>
       )}
     </>
   );
@@ -1308,19 +1466,10 @@ function HistoryTab({ t, loyalty }) {
   );
 }
 
-// ── Stamp Progress Bar ──────────────────────────────────────────────────
-function StampProgressBar({ t, collected, required }) {
-  const pct = Math.min((collected / required) * 100, 100);
-  return (
-    <div style={{ height: 6, borderRadius: 3, background: t.border, overflow: 'hidden' }}>
-      <div style={{ height: '100%', borderRadius: 3, background: t.accent, width: `${pct}%`, transition: 'width .3s' }} />
-    </div>
-  );
-}
-
 // ── Stamp Cards Tab ─────────────────────────────────────────────────────
-function StampCardsTab({ t, stampCards }) {
-  if (!stampCards || stampCards.length === 0) {
+// cards: portalLoyaltyView's cards, in plain words (stamps, what is left, rewards ready and used).
+function StampCardsTab({ t, cards }) {
+  if (!cards || cards.length === 0) {
     return (
       <Card t={t}>
         <div style={{ textAlign: 'center', padding: '20px 0' }}>
@@ -1336,7 +1485,7 @@ function StampCardsTab({ t, stampCards }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      {stampCards.map(sc => (
+      {cards.map(sc => (
         <StampCardVisual key={sc.id} t={t} card={sc} />
       ))}
     </div>
@@ -1344,12 +1493,8 @@ function StampCardsTab({ t, stampCards }) {
 }
 
 function StampCardVisual({ t, card }) {
-  const { icon, name, description, stamps_required, stamps_collected, reward_description, completed_count } = card;
-  const stamps = [];
-  for (let i = 0; i < stamps_required; i++) {
-    stamps.push(i < stamps_collected);
-  }
-  const cols = Math.min(stamps_required + 1, 6);
+  const { icon, name, description, need, dots } = card;
+  const cols = Math.min(need + 1, 6);
 
   return (
     <div style={{
@@ -1369,7 +1514,7 @@ function StampCardVisual({ t, card }) {
       <div style={{
         display: 'grid', gridTemplateColumns: `repeat(${cols}, 1fr)`, gap: 6, marginBottom: 12,
       }}>
-        {stamps.map((filled, i) => (
+        {dots.map((filled, i) => (
           <div key={i} style={{
             aspectRatio: '1', borderRadius: t.radius - 4, display: 'flex', alignItems: 'center', justifyContent: 'center',
             background: filled ? `${t.accent}22` : `${t.textMuted}10`,
@@ -1390,27 +1535,26 @@ function StampCardVisual({ t, card }) {
         </div>
       </div>
 
-      {/* Progress text */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div style={{ fontSize: 12, color: t.textMuted }}>
-          {stamps_collected}/{stamps_required} stamps · {stamps_required - stamps_collected} to go
-        </div>
-        {completed_count > 0 && (
-          <div style={{ fontSize: 11, fontWeight: 700, color: t.accent, padding: '2px 8px', borderRadius: 12, background: `${t.accent}15` }}>
-            {completed_count}× completed
-          </div>
-        )}
-      </div>
+      {/* Progress in plain words (21 Oct 2026): the count big, then what is left */}
+      <div style={{ fontSize: 20, fontWeight: 900 }}>{card.countText}</div>
+      <div style={{ fontSize: 13, fontWeight: 600, color: t.textMuted, marginTop: 2 }}>{card.toGoText}</div>
 
-      {/* Reward info */}
+      {/* Rewards: ready now, and (when a card was ever finished) how many cards and how many used.
+          A bare "1x completed" read as a free drink still owed when it was already used. */}
       <div style={{
         marginTop: 10, padding: '8px 12px', borderRadius: t.radius - 4,
-        background: `${t.accent}08`, border: `1px dashed ${t.accent}30`,
+        background: card.ready > 0 ? `${t.accent}22` : `${t.accent}08`,
+        border: card.ready > 0 ? `2px solid ${t.accent}` : `1px dashed ${t.accent}30`,
         display: 'flex', alignItems: 'center', gap: 6,
       }}>
         <span style={{ fontSize: 14 }}>🎁</span>
-        <span style={{ fontSize: 12, fontWeight: 600 }}>Reward: {reward_description || 'Free item'}</span>
+        <span style={{ fontSize: 13, fontWeight: card.ready > 0 ? 800 : 600 }}>{card.readyText}</span>
       </div>
+      {card.finished > 0 && (
+        <div style={{ fontSize: 12, color: t.textMuted, marginTop: 8 }}>
+          {card.summaryText}
+        </div>
+      )}
     </div>
   );
 }

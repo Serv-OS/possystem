@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { stampSummary, stampDots, stampChip, showPoints } from './stampSummary.js';
+import { stampSummary, stampDots, stampChip, showPoints, stampCardWords } from './stampSummary.js';
 
 const read = (rel) => fs.readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
 
@@ -46,4 +46,12 @@ test('pins: the lookup carries the stamps and flags to the display, and the disp
   assert.match(disp, /\{showPoints\(result\) && /);
   assert.match(disp, /data-stamp-card/);
   assert.match(disp, /\{s\.have\} of \{s\.need\}/);
+});
+
+test('stampCardWords: finished cards, rewards used and ready now, in plain words (21 Oct 2026)', () => {
+  // One card finished, its reward used: "1x completed" used to read as one reward owed.
+  assert.deepEqual(stampCardWords({ finished: 1, ready: 0 }), { finished: 'Cards finished: 1', used: 'Rewards used: 1', ready: 'Ready now: 0', usedCount: 1 });
+  assert.deepEqual(stampCardWords({ finished: 3, ready: 2 }), { finished: 'Cards finished: 3', used: 'Rewards used: 1', ready: 'Ready now: 2', usedCount: 1 });
+  assert.deepEqual(stampCardWords({}), { finished: 'Cards finished: 0', used: 'Rewards used: 0', ready: 'Ready now: 0', usedCount: 0 });
+  assert.equal(stampCardWords({ finished: 1, ready: 5 }).usedCount, 0, 'never below 0');
 });

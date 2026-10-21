@@ -9,7 +9,6 @@
 //   - CSV export of current filter
 
 import { useEffect, useMemo, useState, useRef } from 'react';
-import { useStore } from '../../store';
 import { supabase, platformSupabase, isMock, getLocationId, getActiveLocationSync } from '../../lib/supabase';
 import { customerSearchOr, mergeCustomerRows, enrichCustomer, CUSTOMER_PAGE_SIZE, customerListCaption, idChunks } from '../../lib/customersQuery';
 import { reportSave } from '../../lib/saveHealth';
@@ -19,6 +18,7 @@ import {
   stampAdjustBody, STAMP_ADJUST_FN, STAMP_ADJUST_MAX, newAdjustRequestId, mergeAdjustedCard, rewardsAvailable, redeemedByProgram,
   rewardsAvailableText, canAdjustStamps, adjustErrorText,
 } from '../../lib/stampAdjust';   // 30 Sep 2026: adjust a registered customer's stamps by hand
+import { stampCardWords } from '../../lib/stampSummary';   // 21 Oct 2026: the same words as the loyalty app
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
@@ -119,6 +119,9 @@ export default function Customers() {
   const [tierMap, setTierMap] = useState({});           // v5.5.223: tier_id → tier record
   const [stampDataMap, setStampDataMap] = useState({}); // v5.5.257: customer_id → { programs, cards }
   const [stampPrograms, setStampPrograms] = useState([]); // v5.5.257: all active stamp programs
+  // 21 Oct 2026: what the company runs (Platform loyalty_config), so the detail panel shows no
+  // points rows at a stamps only company. null until read (then shown as before: points on).
+  const [loyaltyFlags, setLoyaltyFlags] = useState(null);
   const [loadError, setLoadError] = useState('');       // v5.9.78: a failed read is not "no customers"
   const [searching, setSearching] = useState(false);     // v5.9.78: a server search is in flight
   const [orgId, setOrgId] = useState(null);               // 26 Sep 2026: for the merge search and the clash lookup
@@ -264,6 +267,14 @@ export default function Customers() {
               .limit(1).maybeSingle();
 
             if (platLoc?.company_id) {
+              // 21 Oct 2026: points on or off for this company (the rule loyalty-balance uses).
+              platformSupabase.from('loyalty_config').select('enabled, points_enabled, stamps_enabled')
+                .eq('company_id', platLoc.company_id).maybeSingle()
+                .then(({ data: cfg, error: cfgErr }) => {
+                  if (cfgErr || !cfg) return;
+                  const on = cfg.enabled !== false;
+                  setLoyaltyFlags({ pointsOn: on && cfg.points_enabled !== false, stampsOn: on && cfg.stamps_enabled !== false });
+                }, () => {});
               // v5.5.257: stamp card programs (a handful per company).
               let progs = [];
               try {
@@ -542,7 +553,7 @@ export default function Customers() {
       </div>
 
       {/* Right: detail panel */}
-      {selected && <DetailPanel customer={selected} loyalty={loyaltyMap[selected.id]} tier={loyaltyMap[selected.id]?.tier_id ? tierMap[loyaltyMap[selected.id].tier_id] : null} stampCards={stampDataMap[selected.id] || []} stampPrograms={stampPrograms} orgId={orgId} canMerge={canMerge} canAdjust={canAdjust} onMerged={handleMerged} onStampCardChanged={(custId, card) => {
+      {selected && <DetailPanel customer={selected} loyalty={loyaltyMap[selected.id]} tier={loyaltyMap[selected.id]?.tier_id ? tierMap[loyaltyMap[selected.id].tier_id] : null} stampCards={stampDataMap[selected.id] || []} stampPrograms={stampPrograms} pointsOn={loyaltyFlags?.pointsOn !== false} orgId={orgId} canMerge={canMerge} canAdjust={canAdjust} onMerged={handleMerged} onStampCardChanged={(custId, card) => {
         // 30 Sep 2026: the balance the function answered with replaces the card on screen at once.
         setStampDataMap((m) => ({ ...m, [custId]: mergeAdjustedCard(m[custId], custId, orgRef.current.companyId, card) }));
       }} onClose={() => setSelectedId(null)} onChanged={(updated) => {
@@ -579,24 +590,32 @@ function SortHeader({ col, sortBy, sortDir, onClick, align = 'left', children })
   );
 }
 
-function DetailPanel({ customer, loyalty, tier, stampCards = [], stampPrograms = [], orgId = null, canMerge = false, canAdjust = false, onMerged, onStampCardChanged, onClose, onChanged, onDeleted }) {
+function DetailPanel({ customer, loyalty, tier, stampCards = [], stampPrograms = [], pointsOn = true, orgId = null, canMerge = false, canAdjust = false, onMerged, onStampCardChanged, onClose, onChanged, onDeleted }) {
   const [orders, setOrders] = useState([]);
   // 30 Sep 2026: rewards available = completed cards MINUS redeem rows (the same sum loyalty-balance
   // and the till make), so the card here reads the same as the checkout. { program_id: count }.
   const [redeemed, setRedeemed] = useState({});
+  // 21 Oct 2026: until the redeem rows are read, "ready now" is not known. Showing completed cards
+  // as ready in that moment (or after a failed read) is how a used free drink looks owed.
+  const [redeemStatus, setRedeemStatus] = useState('loading');   // loading | ok | failed
+  const redeemedLoaded = redeemStatus === 'ok';
   const [adjusting, setAdjusting] = useState(null);   // the programme whose adjust form is open
   useEffect(() => {
     let alive = true;
     setRedeemed({});
-    if (isMock || !supabase || !stampPrograms.length) return undefined;
+    setRedeemStatus('loading');
+    if (isMock || !supabase || !stampPrograms.length) { setRedeemStatus('ok'); return undefined; }
     supabase.from('stamp_transactions').select('program_id, type').eq('customer_id', customer.id).eq('type', 'redeem').limit(1000)
       .then(({ data, error }) => {
         if (!alive) return;
-        if (error) { console.warn('[DetailPanel] redeem rows:', error.message); return; }
+        if (error) { console.warn('[DetailPanel] redeem rows:', error.message); setRedeemStatus('failed'); return; }
         setRedeemed(redeemedByProgram(data || []));
-      }, () => {});
+        setRedeemStatus('ok');
+      }, () => { if (alive) setRedeemStatus('failed'); });
     return () => { alive = false; };
   }, [customer.id, stampPrograms.length]);
+  // 21 Oct 2026: rewards ready on every stamp card (completed minus redeem rows), for a stamps only company's stat.
+  const stampsReady = stampPrograms.reduce((n, prog) => n + rewardsAvailable(stampCards.find((sc) => sc.program_id === prog.id), redeemed[prog.id] || 0), 0);
   const [merge, setMerge] = useState(null);   // 26 Sep 2026: { other } while the merge panel is open
   const [clash, setClash] = useState(null);   // 26 Sep 2026: { field, holder } after a save hit a unique index
   const [reload, setReload] = useState(0);    // 26 Sep 2026: a merge into THIS customer brings in orders and gift cards
@@ -782,7 +801,12 @@ function DetailPanel({ customer, loyalty, tier, stampCards = [], stampPrograms =
             )}
           </div>
         </div>
-        <Stat label="Points" value={loyalty ? (loyalty.points_balance || 0) : '—'} color={loyalty ? 'var(--acc)' : 'var(--t4)'}/>
+        {pointsOn ? (
+          <Stat label="Points" value={loyalty ? (loyalty.points_balance || 0) : '—'} color={loyalty ? 'var(--acc)' : 'var(--t4)'}/>
+        ) : (
+          // 21 Oct 2026: a stamps only company has no points to show; rewards ready is what staff are asked.
+          <Stat label="Rewards ready" value={redeemedLoaded ? stampsReady : '…'} color={redeemedLoaded && stampsReady > 0 ? 'var(--acc)' : 'var(--t4)'}/>
+        )}
         <Stat label="Gift cards" value={giftCards.length} color={giftCards.length > 0 ? 'var(--grn,#4caf50)' : 'var(--t4)'}/>
       </div>
 
@@ -792,13 +816,18 @@ function DetailPanel({ customer, loyalty, tier, stampCards = [], stampPrograms =
           <div style={{ fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:8 }}>Loyalty details</div>
           <div style={{ display:'flex', flexDirection:'column', gap:6, fontSize:12 }}>
             <Row label="Member code" value={loyalty.member_code || '—'}/>
-            <Row label="Points balance" value={loyalty.points_balance || 0}/>
-            <Row label="Total earned" value={loyalty.points_earned_total || 0}/>
-            <Row label="Total redeemed" value={loyalty.points_redeemed_total || 0}/>
-            <Row label="Loyalty visits" value={loyalty.visit_count || 0}/>
-            {loyalty.lifetime_spend_minor > 0 && <Row label="Loyalty spend" value={fmtMoney((loyalty.lifetime_spend_minor || 0) / 100)}/>}
+            {/* 21 Oct 2026: the points rows only when the company runs points. "Loyalty visits" was
+                0 next to Total visits 6 at Coffee Boy: loyalty-earn counts a visit there only when
+                the sale earns points, so at a stamps only company it never moves. Total visits
+                (top) is every visit at every site. */}
+            {!pointsOn && <Row label="Collects" value="Stamps only (points are off)"/>}
+            {pointsOn && <Row label="Points balance" value={loyalty.points_balance || 0}/>}
+            {pointsOn && <Row label="Total earned" value={loyalty.points_earned_total || 0}/>}
+            {pointsOn && <Row label="Total redeemed" value={loyalty.points_redeemed_total || 0}/>}
+            {pointsOn && <Row label="Visits that earned points" value={loyalty.visit_count || 0}/>}
+            {pointsOn && loyalty.lifetime_spend_minor > 0 && <Row label="Spend that earned points" value={fmtMoney((loyalty.lifetime_spend_minor || 0) / 100)}/>}
             <Row label="Enrolled" value={fmtDate(loyalty.enrolled_at)}/>
-            {loyalty.last_earn_at && <Row label="Last earned" value={fmtRel(loyalty.last_earn_at)}/>}
+            {pointsOn && loyalty.last_earn_at && <Row label="Last earned" value={fmtRel(loyalty.last_earn_at)}/>}
             {tier && <Row label="Tier" value={tier.name}/>}
           </div>
         </div>
@@ -814,19 +843,17 @@ function DetailPanel({ customer, loyalty, tier, stampCards = [], stampPrograms =
               const collected = card?.stamps_collected || 0;
               const completed = card?.completed_count || 0;
               const available = rewardsAvailable(card, redeemed[prog.id] || 0);
+              // 21 Oct 2026: plain words, the same as the loyalty app. "1x completed" next to "No
+              // reward yet" read as a free drink still owed when it was already used.
+              const words = stampCardWords({ finished: completed, ready: available });
               const pct = Math.min(100, Math.round((collected / prog.stamps_required) * 100));
               return (
                 <div key={prog.id} style={{ padding:'10px 12px', background:'var(--bg2)', borderRadius:8, border:'1px solid var(--bdr)' }}>
                   <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
                     <span style={{ fontSize:18 }}>{prog.icon || '☕'}</span>
                     <span style={{ fontSize:12, fontWeight:700, color:'var(--t1)', flex:1 }}>{prog.name}</span>
-                    {completed > 0 && (
-                      <span style={{ fontSize:10, fontWeight:700, color:'var(--grn,#4caf50)', padding:'1px 6px', borderRadius:4, background:'rgba(76,175,80,0.12)' }}>
-                        {completed}× completed
-                      </span>
-                    )}
-                    <span style={{ fontSize:10, fontWeight:700, color: available > 0 ? 'var(--acc)' : 'var(--t4)', padding:'1px 6px', borderRadius:4, background: available > 0 ? 'var(--acc-d, var(--bg3))' : 'var(--bg3)' }}>
-                      {rewardsAvailableText(available)}
+                    <span style={{ fontSize:10, fontWeight:700, color: redeemedLoaded && available > 0 ? 'var(--acc)' : 'var(--t4)', padding:'1px 6px', borderRadius:4, background: redeemedLoaded && available > 0 ? 'var(--acc-d, var(--bg3))' : 'var(--bg3)' }}>
+                      {redeemedLoaded ? words.ready : (redeemStatus === 'failed' ? 'Rewards could not be checked' : 'Checking rewards…')}
                     </span>
                     {canAdjust && loyalty && adjusting !== prog.id && (
                       <button onClick={() => setAdjusting(prog.id)} style={btnSmall}>Adjust</button>
@@ -839,6 +866,9 @@ function DetailPanel({ customer, loyalty, tier, stampCards = [], stampPrograms =
                     <span style={{ fontWeight:600 }}>{collected}/{prog.stamps_required} stamps</span>
                     {card?.last_stamp_at && <span>Last: {new Date(card.last_stamp_at).toLocaleDateString('en-GB', { day:'2-digit', month:'short' })}</span>}
                   </div>
+                  {completed > 0 && redeemedLoaded && (
+                    <div style={{ fontSize:11, color:'var(--t2)', marginTop:3, fontWeight:600 }}>{words.finished} · {words.used} · {words.ready}</div>
+                  )}
                   {prog.reward_description && <div style={{ fontSize:10, color:'var(--t4)', marginTop:2 }}>Reward: {prog.reward_description}</div>}
                   {adjusting === prog.id && (
                     <StampAdjustForm customer={customer} program={prog} card={card} available={available}
@@ -1245,6 +1275,14 @@ function MergePanel({ current, orgId, initialOther = null, onClose, onMerged }) 
                   <div key={`r${i}`} style={{ padding:'9px 12px', borderRadius:8, background:'rgba(235,97,97,.10)', border:'1px solid rgba(235,97,97,.35)', color:'var(--red,#cc5959)', fontSize:12, fontWeight:600 }}>{r.message}</div>
                 ))}
                 {phonesDiffer && (
+                  // 21 Oct 2026: a member signs in to the loyalty app with their phone. Keeping the
+                  // other number split a member in two: their next sign in made a new,
+                  // empty account and their next stamp went there.
+                  <div style={{ fontSize:12, color:'var(--t2)', lineHeight:1.5 }}>
+                    Keep the phone the customer signs in to the loyalty app with. Ask them if you are not sure. The other number can no longer sign in: if they use it, the app starts a new, empty account.
+                  </div>
+                )}
+                {phonesDiffer && (
                   <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center', fontSize:12 }}>
                     <span style={{ color:'var(--t3)' }}>Keep the phone:</span>
                     {[['target', preview.target?.phone], ['source', preview.source?.phone]].map(([k, ph]) => (
@@ -1412,7 +1450,7 @@ function TopPerLocation({ customers, locations }) {
   );
 }
 
-function MultiLocation({ customers, locations }) {
+function MultiLocation({ customers }) {
   const buckets = useMemo(() => {
     const counts = {};
     customers.forEach(c => {
@@ -1492,13 +1530,15 @@ function CrossSell({ customers, locations }) {
 }
 
 function Dormant({ customers }) {
+  // The moment the tab opened (read once, so the list does not change on every render).
+  const [openedAt] = useState(() => Date.now());
   const dormant = useMemo(() => {
-    const cutoff = Date.now() - 90 * 86400000;
+    const cutoff = openedAt - 90 * 86400000;
     return customers
       .filter(c => c.lastVisit && new Date(c.lastVisit).getTime() < cutoff && c.totalSpend > 0)
       .sort((a, b) => b.totalSpend - a.totalSpend)
       .slice(0, 100);
-  }, [customers]);
+  }, [customers, openedAt]);
 
   if (dormant.length === 0) return <EmptyMsg label="No dormant high-spenders" sub="No customers with lifetime spend who haven't visited in 90+ days. Healthy retention!"/>;
 
