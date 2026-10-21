@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.91',
+    date: '21 Oct 2026',
+    items: [
+      "Loyalty sign in code texts: a venue whose name has a double space (for example two spaces between two words) could not get its own text service, because Twilio refuses such a name. Names now go to Twilio with one space between words, so every venue gets its service and its own name in the text.",
+    ],
+  },
+  {
     v: '5.11.90',
     date: '21 Oct 2026',
     items: [

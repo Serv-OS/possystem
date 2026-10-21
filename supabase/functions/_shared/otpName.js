@@ -5,9 +5,13 @@
 // A venue's code must carry the name set in Back Office for THAT venue, never another venue's.
 // Pure, tested in src/lib/otpName.test.js.
 
-/** What Twilio will show for a name: trimmed and cut to 30 characters. */
+/**
+ * What Twilio will accept and show for a name: whitespace runs collapsed to one space (Twilio
+ * refuses a FriendlyName with a double space: "Invalid parameter: FriendlyName", found 21 Oct
+ * 2026 on "Coffee Boy  Preston"), trimmed and cut to 30 characters.
+ */
 export function twilioName(name) {
-  return String(name || '').trim().slice(0, 30);
+  return String(name || '').replace(/\s+/g, ' ').trim().slice(0, 30);
 }
 
 /**
