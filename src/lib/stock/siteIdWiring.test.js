@@ -325,7 +325,9 @@ const MAIN_SHA = {
   'backoffice/sections/Batches.jsx': '570b260356a6b6023294116207d11f85cc3514e3b45e9f93425c33825f2731fb',
   'backoffice/sections/OrderPad.jsx': '80255c600c51dde811b5bd2581cff78ad09219ca4d6c2c392203850601c3f9d3',
   'backoffice/sections/Recipes.jsx': '79c0e3ee3e44b1caef5301c204380ecf1a2c1d6436a0a55cbc7b2f37d3cb88cf',
-  'components/PosWasteModal.jsx': '124ba00c2c42d0bb8cc821d8c4e54e14be1a2c37e7a5584ca6b7e17cd7b6d1a8',
+  // v5.11.90: the drainer release changed this modal for every company (dish waste always goes
+  // through stock_record_waste, no browser fallback), so the pin is that text, not 5.11.84's.
+  'components/PosWasteModal.jsx': '208284d512d5ffe746511c9de13fee17b0524cf6620d6de942cbec7f29eb5e5f',
 };
 
 test('one site companies: every edited screen is main\'s text once its inert Drop 1 edits are undone (sha256)', () => {

@@ -145,7 +145,7 @@ for (const t of ORDER) {
   ok(r.status === 0 && num(`select count(*) from public.${t}`) === rows.length, `${t}: ${rows.length} rows loaded${r.status ? `: ${short(r.stderr)}` : ''}`);
 }
 ok(notLoaded.length === 0, `every live column of the copy exists here with a type it loads into (${notLoaded.join('; ') || 'all'}${d1Left.length ? `; Drop 1's ${d1Left.join(', ')} left for step 6` : ''})`);
-ok(D1_LIVE === d1Left.length > 0, `Drop 1's columns are in the copy exactly when it was taken after Drop 1 ran live (${d1Left.length} columns)`);
+ok(D1_LIVE === (d1Left.length > 0), `Drop 1's columns are in the copy exactly when it was taken after Drop 1 ran live (${d1Left.length} columns)`);
 const unknown = Object.keys(demo).filter((t) => !ORDER.includes(t) && !['organisations', 'locations'].includes(t) && (demo[t] || []).length);
 ok(unknown.length === 0, `every table of the copy is loaded (${unknown.join(', ') || 'all'})`);
 if (LINKED) {
