@@ -20,7 +20,8 @@
 // needed. The portal sends this token on subsequent requests (refresh / update_profile).
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { startVerification, checkVerification, verifyConfigured, createVerifyService, setVerifyServiceName } from '../_shared/twilio-verify.ts';
+import { startVerification, checkVerification, verifyConfigured, createVerifyService, setVerifyServiceName, getVerifyServiceName } from '../_shared/twilio-verify.ts';
+import { sameServiceName } from '../_shared/otpName.js';
 import { createSessionToken as mintSessionToken, verifySessionToken as readSessionToken } from '../_shared/loyalty-session.ts';
 import { giftCardRecipientFilter, memberGiftCards, MEMBER_GIFT_CARD_COLUMNS } from '../_shared/giftCardMatch.ts';
 import { resolveSenderForOrg } from '../_shared/sending-domain.ts';
@@ -651,10 +652,27 @@ Deno.serve(async (req) => {
     let serviceSid = sidRes.status === 'fulfilled' ? sidRes.value : null;
     let createdNow = false;
     if (!serviceSid) {
-      serviceSid = await ensureVerifySid(companyId, locationId, venueName);
+      // Twice: a one off Twilio hiccup must not send a venue's code under someone else's name.
+      serviceSid = (await ensureVerifySid(companyId, locationId, venueName)) || (await ensureVerifySid(companyId, locationId, venueName));
       createdNow = !!serviceSid;
     }
-    if (serviceSid && !createdNow) await setVerifyServiceName(venueName, serviceSid);
+    if (serviceSid && !createdNow) {
+      const renamed = await setVerifyServiceName(venueName, serviceSid);
+      if (!renamed.ok) console.error('[loyalty-otp] service rename failed:', { serviceSid, venueName, error: renamed.error });
+    }
+    // 21 Oct 2026 (Peter: "the messages come from what is set in Back Office"): with no service of
+    // its own, this venue's code may go out from the shared service ONLY if that service already
+    // carries this venue's name. The shared service is never renamed (it would change every other
+    // venue's texts), so otherwise the send is refused and the cause is logged. A customer who
+    // cannot sign in for a minute is better than a code text carrying another venue's name.
+    if (!serviceSid) {
+      const sharedName = await getVerifyServiceName();
+      if (!sameServiceName(sharedName, venueName)) {
+        console.error('[loyalty-otp] refused: no Verify service for this venue and the shared one carries another name', { companyId, locationId, venueName, sharedName });
+        return json({ error: 'We could not send your code just now. Please try again in a minute.', detail: 'no text service for this venue yet', shared_name: sharedName }, 503);
+      }
+    }
+    console.log('[loyalty-otp] send', { serviceSid: serviceSid || 'shared', venueName, locationId });
 
     const r = await startVerification(phone!, { channel: 'sms', friendlyName: venueName, serviceSid: serviceSid || undefined });
     if (!r.ok) {
