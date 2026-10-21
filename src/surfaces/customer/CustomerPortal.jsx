@@ -1045,7 +1045,7 @@ function LoyaltyHero({ t, view, loyalty, customer, onLogout }) {
       {view.collects && (
         <div style={{
           display: 'inline-block', marginTop: 10, padding: '7px 16px', borderRadius: 99,
-          background: 'rgba(255,255,255,0.22)', border: `1px solid ${t.accentText}40`,
+          background: `${t.accentText}38`, border: `1px solid ${t.accentText}40`,
           fontSize: 15, fontWeight: 800,
         }}>
           You collect: {view.collects}
@@ -1064,7 +1064,7 @@ function LoyaltyHero({ t, view, loyalty, customer, onLogout }) {
             <div style={{
               display: 'inline-flex', alignItems: 'center', gap: 5, marginTop: 12,
               padding: '5px 14px', borderRadius: 99,
-              background: 'rgba(255,255,255,0.2)', fontSize: 12, fontWeight: 700,
+              background: `${t.accentText}33`, fontSize: 12, fontWeight: 700,
             }}>
               {loyalty.tier.icon || '⭐'} {loyalty.tier.name}
               {loyalty.tier.multiplier > 1 && <span style={{ opacity: 0.75 }}> · {loyalty.tier.multiplier}x points</span>}
@@ -1104,7 +1104,7 @@ function HeroStampCard({ t, card, compact = false }) {
   return (
     <div style={{
       marginTop: 16, padding: compact ? '12px 12px 14px' : '16px 12px 18px',
-      borderRadius: t.radius, background: 'rgba(255,255,255,0.14)',
+      borderRadius: t.radius, background: `${t.accentText}24`,
     }}>
       <div style={{ fontSize: 15, fontWeight: 800 }}>{card.icon} {card.name}</div>
       <StampDots t={t} dots={card.dots} icon={card.icon} onAccent size={compact ? 26 : 32} />
@@ -1117,7 +1117,7 @@ function HeroStampCard({ t, card, compact = false }) {
       {card.ready > 0 ? (
         <div style={{
           marginTop: 12, padding: '10px 12px', borderRadius: 12,
-          background: '#ffffff', color: '#16191c', fontSize: 15, fontWeight: 800,
+          background: t.accentText, color: t.accent, fontSize: 15, fontWeight: 800,
         }}>
           🎁 {card.readyText}. Ask at the till to use it.
         </div>
@@ -1147,7 +1147,7 @@ function StampDots({ t, dots, icon, onAccent = false, size = 30 }) {
           width: size, height: size, borderRadius: '50%', boxSizing: 'border-box',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           fontSize: Math.round(size * 0.5), lineHeight: 1,
-          background: on ? (onAccent ? '#ffffff' : `${t.accent}22`) : 'transparent',
+          background: on ? (onAccent ? t.accentText : `${t.accent}22`) : 'transparent',
           border: on
             ? `2px solid ${onAccent ? t.accentText : t.accent}`
             : `2px dashed ${onAccent ? `${t.accentText}80` : `${t.textMuted}60`}`,
