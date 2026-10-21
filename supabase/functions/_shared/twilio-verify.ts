@@ -130,6 +130,23 @@ export async function setVerifyServiceName(name: string, serviceSid?: string): P
   }
 }
 
+// Read a Verify service's CURRENT friendly name (the name Twilio stamps into the code SMS).
+// Used before any send from the shared fallback service: a venue's code must never go out under
+// another venue's name (Peter, 21 Oct 2026). Returns null when it cannot be read.
+export async function getVerifyServiceName(serviceSid?: string): Promise<string | null> {
+  const sid = serviceSid || VERIFY_SERVICE_SID;
+  if (!sid || !SID || !TOKEN) return null;
+  try {
+    const res = await fetch(`https://verify.twilio.com/v2/Services/${sid}`, { headers: { 'Authorization': authHeader() } });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) return null;
+    const name = (j as { friendly_name?: string })?.friendly_name;
+    return typeof name === 'string' ? name : null;
+  } catch {
+    return null;
+  }
+}
+
 // Check a code. ok===true (status 'approved') means the code was correct. Twilio enforces expiry
 // and per-verification attempt limits itself (404 once expired/consumed, 429 on too many checks).
 export async function checkVerification(to: string, codeInput: string, serviceSid?: string): Promise<VerifyResult> {

@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.90',
+    date: '21 Oct 2026',
+    items: [
+      "Loyalty sign in code texts: a venue's code is only ever sent under that venue's own name, the one set in Back Office under Messages. A venue with no text service of its own used to fall back to a shared service that carried another venue's name. Now the service is made for the venue (with a second try), and if that still fails the send is refused with a clear message and the cause is logged, never sent under someone else's name.",
+    ],
+  },
+  {
     v: '5.11.89',
     date: '21 Oct 2026',
     items: [
