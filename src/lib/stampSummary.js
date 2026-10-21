@@ -42,3 +42,27 @@ export function stampChip(summary) {
 export function showPoints({ pointsEnabled = true, points } = {}) {
   return pointsEnabled !== false && points != null;
 }
+
+/**
+ * A stamp card's finished cards and rewards in plain words (21 Oct 2026). Back Office and the
+ * loyalty app both use these, so they always say the same thing.
+ *
+ * Peter read Back Office's "1x completed" next to "No reward yet" as one free drink still owed.
+ * completed_count counts every card ever finished, not rewards on hand: the free drink from a
+ * finished card may already be used. ready is completed_count minus the redeem rows, the one rule
+ * every screen uses (stampAdjust.rewardsAvailable, loyalty-balance, loyalty-otp).
+ *
+ * @param {{ finished?: number, ready?: number }} card
+ * @returns {{ finished: string, used: string, ready: string, usedCount: number }}
+ */
+export function stampCardWords({ finished, ready } = {}) {
+  const f = Math.max(0, Math.floor(Number(finished) || 0));
+  const r = Math.max(0, Math.floor(Number(ready) || 0));
+  const used = Math.max(0, f - r);
+  return {
+    finished: `Cards finished: ${f}`,
+    used: `Rewards used: ${used}`,
+    ready: `Ready now: ${r}`,
+    usedCount: used,
+  };
+}
