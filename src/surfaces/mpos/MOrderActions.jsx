@@ -56,7 +56,7 @@ export default function MOrderActions({ onClose }) {
     const entry = {
       id: `${d.id}-${Date.now()}`,
       label: d.label, type: d.type, value: d.value, scope: 'check',
-      // v5.11.85 (20261023a): the preset's id and kind, as the till's DiscountModal sends them
+      // v5.11.90 (20261023a): the preset's id and kind, as the till's DiscountModal sends them
       presetId: d.id, kind: d.kind ?? null,
       appliedBy: manager?.name || staff?.name || 'MPOS',
     };

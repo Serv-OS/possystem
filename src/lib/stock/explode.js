@@ -1,7 +1,7 @@
 /**
  * explode.js: turn sold menu items into the stock-item quantities they consume.
  *
- * Pure (no I/O). PREVIEW ONLY since v5.11.85 (the drainer release, 20261023a): no sale path uses
+ * Pure (no I/O). PREVIEW ONLY since v5.11.90 (the drainer release, 20261023a): no sale path uses
  * it. The database's stock_explode is the one stock rule for every channel (the till, the reader,
  * kiosk, online, QR, catering, pay at table, MPOS, HubRise, ezCater, refunds, voids and dish waste
  * through stock_record_waste); deplete.js no longer posts and PosWasteModal no longer falls back to

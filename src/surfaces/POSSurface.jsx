@@ -16,6 +16,7 @@ import { linkedCategoryIdSet, categoryVisibleInMenu, allowedCategoryIds, itemInA
 import { supabase } from '../lib/supabase';
 import { pushReaderDisplay, clearReaderDisplay, cacheReaderDisplaySetting } from '../lib/readerDisplay';
 import { publishDisplay, getCustomerDisplayMode, displayUsesReader, displayUsesScreen, cacheCustomerDisplayMode, onCustomerPhone, publishLoyalty, onRedeemReward, isLoyaltyEnabled } from '../lib/customerDisplay';
+import { displayLinesFor, readerLinesFor } from '../lib/displayLines';
 import { captureLoyaltyByPhone, fetchCustomerByPhone } from '../lib/customerLookup';
 import { getAssignedNetworkReader } from '../lib/networkReader';
 import { CATEGORIES, MENU_ITEMS as SEED_MENU_ITEMS, ALLERGENS, QUICK_IDS, CAT_META } from '../data/seed';
@@ -588,30 +589,11 @@ export default function POSSurface() {
   const _prevItemCountRef = useRef(0);
   const _loyaltyEnabledRef = useRef(null); // v5.5.369: broadcast to the customer display so its keypad shows reliably; null = not yet resolved (v5.7.70 — never broadcast a guess)
   useEffect(() => {
-    const nonVoided = (items || []).filter(i => !i.voided);
-    const lineItems = nonVoided.map(i => {
-      const unitMods = (i.mods || []).reduce((s, m) => s + (Number(m.price) || 0), 0);
-      const unit = (Number(i.price) || 0) + unitMods - (Number(i.discountAmount) || 0);
-      return {
-        description: String(i.menuName || i.name || 'Item').slice(0, 60),
-        amount: Math.max(0, Math.round(unit * 100)),
-        quantity: Math.max(1, Number(i.qty) || 1),
-      };
-    });
+    // v5.11.88 (21 Oct 2026): a line's price already includes its paid options (lib/displayLines.js),
+    // so the reader lines and the display lines no longer add the option prices on again.
+    const lineItems = readerLinesFor(items);
     // Richer items for the dedicated customer-display screen (vs the reader's flat lines).
-    const displayItems = nonVoided.map(i => {
-      const unitMods = (i.mods || []).reduce((s, m) => s + (Number(m.price) || 0), 0);
-      const unit = (Number(i.price) || 0) + unitMods - (Number(i.discountAmount) || 0);
-      const qty = Math.max(1, Number(i.qty) || 1);
-      return {
-        uid: i.uid,
-        name: i.menuName || i.name || 'Item',
-        qty,
-        lineTotal: Math.max(0, unit * qty),
-        mods: (i.mods || []).map(m => ({ label: m.label, price: Number(m.price) || 0 })),
-        notes: i.notes || '',
-      };
-    });
+    const displayItems = displayLinesFor(items);
     const totalMinor = Math.round(((total || 0)) * 100);
     const mode = getCustomerDisplayMode();
     const prevCount = _prevItemCountRef.current;

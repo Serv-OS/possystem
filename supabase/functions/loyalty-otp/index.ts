@@ -53,7 +53,6 @@ const platformAdmin = createClient(
   { auth: { autoRefreshToken: false, persistSession: false } },
 );
 
-const OPS_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const OTP_SECRET = Deno.env.get('OTP_HMAC_SECRET') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? 'fallback-secret';
 
 // ── Per-LOCATION Verify service ─────────────────────────────────────────
@@ -164,9 +163,18 @@ async function giftCardsForProvenPhone(companyId: string, provenPhone: string | 
 }
 
 // ── The signed in member's account, as verify answers it ────────────────
-// Shared by verify and by update_profile's automatic join (27 Sep 2026), so the joined account
-// reaches the portal in exactly the shape a fresh sign in gives. `phone` is the phone the member
-// PROVED with the code: gift cards are matched on it and nothing else (18 Sep 2026).
+// Shared by verify, by update_profile's automatic join (27 Sep 2026) and, since 21 Oct 2026, by
+// refresh, so the portal gets ONE shape whether the member just signed in or reloaded the page.
+// `phone` is the phone the member PROVED with the code: gift cards are matched on it and nothing
+// else (18 Sep 2026).
+//
+// 21 Oct 2026 (Peter, Coffee Boy: "they have points off but on the main loyalty page it says zero
+// points"): the loyalty object now carries loyalty_enabled, points_enabled and stamps_enabled,
+// worked out exactly as loyalty-balance does. Without them the portal, the kiosk and online
+// checkout all took points as ON after a sign in, and a stamps only company showed "0 loyalty
+// points". It also carries `visits`, every visit at the company's sites (the same number Back
+// Office shows as Total visits): visit_count only counts visits that earned points, so it is 0 at
+// a stamps only company.
 async function memberAccount(customer: any, companyId: string, phone: string | null) {
   // ── Get/create loyalty membership ────────────────────────────────
   let loyaltyData: any = null;
@@ -174,6 +182,7 @@ async function memberAccount(customer: any, companyId: string, phone: string | n
   let rewards: any[] = [];
   let allRewards: any[] = [];
   let recentTx: any[] = [];
+  let flags = { loyalty_enabled: false, points_enabled: false, stamps_enabled: false };
 
   try {
     // Check if loyalty is enabled
@@ -184,6 +193,10 @@ async function memberAccount(customer: any, companyId: string, phone: string | n
       .maybeSingle();
 
     if (config?.enabled) {
+      // The same rule as loyalty-balance: each half is on unless it is switched off.
+      const pointsOn = config.points_enabled !== false;
+      flags = { loyalty_enabled: true, points_enabled: pointsOn, stamps_enabled: config.stamps_enabled !== false };
+
       // Get or create membership
       let { data: membership } = await platformAdmin
         .from('customer_loyalty')
@@ -193,7 +206,8 @@ async function memberAccount(customer: any, companyId: string, phone: string | n
         .maybeSingle();
 
       if (!membership) {
-        // Auto-enroll
+        // Auto-enroll. The welcome bonus is points, so only a company that runs points gives it.
+        const bonus = pointsOn ? (config.registration_bonus || 0) : 0;
         const memberCode = generateMemberCode();
         const { data: newMember } = await platformAdmin
           .from('customer_loyalty')
@@ -201,8 +215,8 @@ async function memberAccount(customer: any, companyId: string, phone: string | n
             customer_id: customer.id,
             company_id: companyId,
             member_code: memberCode,
-            points_balance: config.registration_bonus || 0,
-            points_earned_total: config.registration_bonus || 0,
+            points_balance: bonus,
+            points_earned_total: bonus,
             referral_code: generateReferralCode(),
           })
           .select('*')
@@ -249,6 +263,19 @@ async function memberAccount(customer: any, companyId: string, phone: string | n
     console.warn('[loyalty-otp] loyalty data fetch failed:', e);
   }
 
+  // ── Visits at every site of the company (21 Oct 2026) ─────────────
+  // The customer row belongs to the company's organisation, so its customer_locations rows are its
+  // visits at every site: the same sum Back Office shows as Total visits. null when unread.
+  let visits: number | null = null;
+  try {
+    const { data: locRows, error: visitErr } = await opsAdmin
+      .from('customer_locations')
+      .select('visit_count')
+      .eq('customer_id', customer.id)
+      .limit(500);
+    if (!visitErr) visits = (locRows || []).reduce((n: number, r: any) => n + Math.max(0, Number(r.visit_count) || 0), 0);
+  } catch { /* the tile falls back to what the app had */ }
+
   // ── Get linked gift cards (proven phone only) ────────────────────
   // `phone` is the number Twilio just approved the code for; the customer row was found by it.
   const giftCards = await giftCardsForProvenPhone(companyId, phone);
@@ -283,39 +310,54 @@ async function memberAccount(customer: any, companyId: string, phone: string | n
     }
   } catch {}
 
-  // Earned stamp rewards = completed cards − redeem-ledger rows (ops stamp_transactions).
-  // Kiosk + online read this payload: without it a completed card is invisible at checkout.
+  // Earned stamp rewards = completed cards minus redeem ledger rows (ops stamp_transactions), the
+  // rule loyalty-balance and Back Office use. Kiosk + online read this payload: without it a
+  // completed card is invisible at checkout. 21 Oct 2026: EVERY card carries rewards_available
+  // (0 when none), read in ONE grouped query, so the portal shows the same "ready now" number as
+  // Back Office whether the member just signed in or reloaded.
   const stampRewardsVerify: any[] = [];
   try {
     const withCompleted = stampCardsVerify.filter((sc: any) => (sc.completed_count || 0) > 0);
+    const redeemedByProg: Record<string, number> = {};
+    const cfgMap: Record<string, any> = {};
     if (withCompleted.length) {
-      const { data: cfgs } = await platformAdmin
-        .from('stamp_card_programs')
-        .select('id, reward_config')
-        .in('id', withCompleted.map((sc: any) => sc.id));
-      const cfgMap: Record<string, any> = {};
-      (cfgs || []).forEach((c: any) => { cfgMap[c.id] = c.reward_config || {}; });
-      for (const sc of withCompleted) {
-        const { count } = await opsAdmin
+      const ids = withCompleted.map((sc: any) => sc.id);
+      const [{ data: redeems, error: redeemErr }, { data: cfgs }] = await Promise.all([
+        opsAdmin
           .from('stamp_transactions')
-          .select('id', { count: 'exact', head: true })
+          .select('program_id')
           .eq('customer_id', customer.id)
-          .eq('program_id', sc.id)
-          .eq('type', 'redeem');
-        const available = Math.max(0, (sc.completed_count || 0) - (count || 0));
-        sc.rewards_available = available;
-        if (available > 0) {
-          stampRewardsVerify.push({
-            program_id: sc.id,
-            name: sc.reward_description || sc.name,
-            reward_type: sc.reward_type || 'free_item',
-            reward_config: cfgMap[sc.id] || {},
-            available,
-          });
-        }
+          .eq('type', 'redeem')
+          .in('program_id', ids)
+          .limit(5000),
+        platformAdmin
+          .from('stamp_card_programs')
+          .select('id, reward_config')
+          .in('id', ids),
+      ]);
+      // An unread ledger must never show a used reward as ready: say none ready instead.
+      if (redeemErr) throw redeemErr;
+      for (const r of (redeems || [])) redeemedByProg[r.program_id] = (redeemedByProg[r.program_id] || 0) + 1;
+      (cfgs || []).forEach((c: any) => { cfgMap[c.id] = c.reward_config || {}; });
+    }
+    stampCardsVerify = stampCardsVerify.map((sc: any) => ({
+      ...sc,
+      rewards_available: Math.max(0, (sc.completed_count || 0) - (redeemedByProg[sc.id] || 0)),
+    }));
+    for (const sc of stampCardsVerify) {
+      if (sc.rewards_available > 0) {
+        stampRewardsVerify.push({
+          program_id: sc.id,
+          name: sc.reward_description || sc.name,
+          reward_type: sc.reward_type || 'free_item',
+          reward_config: cfgMap[sc.id] || {},
+          available: sc.rewards_available,
+        });
       }
     }
-  } catch {}
+  } catch {
+    stampCardsVerify = stampCardsVerify.map((sc: any) => ({ ...sc, rewards_available: 0 }));
+  }
 
   return {
     customer: {
@@ -327,12 +369,17 @@ async function memberAccount(customer: any, companyId: string, phone: string | n
       marketing_opt_in: customer.marketing_opt_in || false,
     },
     loyalty: loyaltyData ? {
+      enrolled: true,
+      // 21 Oct 2026: what the company runs, so every screen shows only that (see above).
+      ...flags,
       member_code: loyaltyData.member_code,
       points_balance: loyaltyData.points_balance,
       points_earned_total: loyaltyData.points_earned_total,
       points_redeemed_total: loyaltyData.points_redeemed_total,
       visit_count: loyaltyData.visit_count,
+      visits,
       enrolled_at: loyaltyData.enrolled_at,
+      last_earn_at: loyaltyData.last_earn_at || null,
       tier: tier ? {
         name: tier.name,
         color: tier.color,
@@ -360,6 +407,8 @@ async function memberAccount(customer: any, companyId: string, phone: string | n
         type: tx.type, points: tx.points, created_at: tx.created_at,
       })),
     } : null,
+    // The flags at the top level too (kiosk and online read data.loyalty?.points_enabled ?? data.points_enabled).
+    ...flags,
     gift_cards: giftCards,
     stamp_cards: stampCardsVerify,
   };
@@ -718,6 +767,11 @@ Deno.serve(async (req) => {
   }
 
   // ── ACTION: REFRESH (use session token to get updated data) ─────────
+  // 21 Oct 2026: answered by memberAccount, exactly like verify. Refresh used to fetch loyalty
+  // over HTTP from loyalty-balance and read the stamp cards with a second copy of the query, so
+  // the same member saw one home page after signing in ("0 loyalty points" at a stamps only
+  // company) and another after a reload. The session token is checked here, which is the same
+  // proof loyalty-balance asked for (x-member-token).
   if (action === 'refresh') {
     const token = body.token as string;
     if (!token) return json({ error: 'token required' }, 400);
@@ -725,71 +779,23 @@ Deno.serve(async (req) => {
     const session = await verifySessionToken(token);
     if (!session) return json({ error: 'Invalid or expired session' }, 401);
 
-    // Fetch fresh loyalty data
-    const balanceUrl = `${OPS_URL}/functions/v1/loyalty-balance`
-      + `?customer_id=${encodeURIComponent(session.customerId)}&company_id=${encodeURIComponent(session.companyId)}`;
-    // The member's own token proves to loyalty-balance that this is the member (18 Sep 2026: the
-    // full reply needs staff, a paired device or the member; report first, see loyalty-authority).
-    const balRes = await fetch(balanceUrl, { headers: { 'x-member-token': token } });
-    if (!balRes.ok) return json({ error: 'Failed to fetch loyalty data' }, 500);
-    const loyaltyData = await balRes.json();
-
     // Fetch customer profile (single source of truth for all profile data)
-    const { data: cust } = await opsAdmin
+    const { data: cust, error: custErr } = await opsAdmin
       .from('customers')
-      .select('id, name, email, phone, birthday, marketing_opt_in')
+      .select('id, name, email, phone, birthday, marketing_opt_in, deleted_at')
       .eq('id', session.customerId)
       .maybeSingle();
+    if (custErr) return json({ error: 'Failed to fetch loyalty data' }, 500);
+    // The profile is gone (joined into another one by staff, or deleted): sign in again, and
+    // verify finds whoever holds the phone now.
+    if (!cust || cust.deleted_at) return json({ error: JOIN_MESSAGES.signed_out, code: 'sign_in_again' }, 401);
 
     // Gift cards: the phone PROVEN at sign in, carried on the token. A token minted before the
     // phone was added (at most 24 hours old) falls back to the customer's stored phone, which is
     // the number that row was found by at sign in; update_profile cannot change it.
     const provenPhone = session.phone || cust?.phone || null;
-    const giftCards = await giftCardsForProvenPhone(session.companyId, provenPhone);
 
-    // Fetch stamp card programs + customer progress
-    let stampCards: any[] = [];
-    try {
-      const { data: programs } = await platformAdmin
-        .from('stamp_card_programs')
-        .select('id, name, description, icon, stamps_required, reward_type, reward_description, active')
-        .eq('company_id', session.companyId)
-        .eq('active', true)
-        .order('created_at');
-      if (programs && programs.length > 0) {
-        const progIds = programs.map((p: any) => p.id);
-        const { data: progress } = await platformAdmin
-          .from('customer_stamp_cards')
-          .select('program_id, stamps_collected, completed_count, last_stamp_at')
-          .eq('customer_id', session.customerId)
-          .eq('company_id', session.companyId)
-          .in('program_id', progIds);
-        const progressMap: Record<string, any> = {};
-        (progress || []).forEach((p: any) => { progressMap[p.program_id] = p; });
-        stampCards = programs.map((p: any) => ({
-          id: p.id,
-          name: p.name,
-          description: p.description,
-          icon: p.icon || '☕',
-          stamps_required: p.stamps_required,
-          reward_type: p.reward_type,
-          reward_description: p.reward_description,
-          stamps_collected: progressMap[p.id]?.stamps_collected || 0,
-          completed_count: progressMap[p.id]?.completed_count || 0,
-          last_stamp_at: progressMap[p.id]?.last_stamp_at || null,
-        }));
-      }
-    } catch {}
-
-    return json({
-      customer: cust ? {
-        id: cust.id, name: cust.name, email: cust.email, phone: cust.phone,
-        birthday: cust.birthday || null, marketing_opt_in: cust.marketing_opt_in || false,
-      } : null,
-      loyalty: loyaltyData,
-      gift_cards: giftCards,
-      stamp_cards: stampCards,
-    });
+    return json(await memberAccount(cust, session.companyId, provenPhone));
   }
 
   // ── ACTION: UPDATE PROFILE ─────────────────────────────────────────

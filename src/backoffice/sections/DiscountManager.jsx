@@ -7,7 +7,7 @@ import { reportSave } from '../../lib/saveHealth';
 import { upsertDiscount, deleteDiscount, upsertDiscountRule, deleteDiscountRule } from '../../lib/db';
 import { money, currencySymbol } from '../../lib/currency';
 import { selectOnFocus } from '../../lib/selectOnFocus';
-// v5.11.85 (20261023a): what a preset is for (Staff, Comp, Loyalty), shared with the till and SyncBridge.
+// v5.11.90 (20261023a): what a preset is for (Staff, Comp, Loyalty), shared with the till and SyncBridge.
 import { DISCOUNT_KIND_LABELS, DISCOUNT_KIND_HELP, DISCOUNT_KIND_NOT_SAVED, cleanDiscountKind } from '../../lib/discountKinds';
 
 /* ── Style constants (match TaxManager / LocationSettings pattern) ────────── */
@@ -184,7 +184,7 @@ function DiscountForm({ discount, categories, onSave, onCancel }) {
         </div>
       )}
 
-      {/* v5.11.85 (20261023a): what the discount is for. The till copies it onto the check, so the
+      {/* v5.11.90 (20261023a): what the discount is for. The till copies it onto the check, so the
           stock reports can show staff food, comps and loyalty rewards on their own line. */}
       <div style={{ marginBottom:14 }}>
         <label style={S.label}>Kind</label>
@@ -618,7 +618,7 @@ export default function DiscountManager() {
     setDiscounts(mapped);
     syncToStore(mapped, null);
     setEditingDiscount(null);
-    // v5.11.85: the database has no kind column yet (20261023a not run). Everything else saved; a
+    // v5.11.90: the database has no kind column yet (20261023a not run). Everything else saved; a
     // kind that was picked was not kept, so say so. An ordinary discount lost nothing.
     if (kindNotSaved && cleanDiscountKind(form.kind)) { showToast?.(DISCOUNT_KIND_NOT_SAVED, 'warning'); return; }
     showToast?.(`"${form.name}" saved`, 'success');

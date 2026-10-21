@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // run.mjs: proves Drop 0 of multi site stock (supabase/migrations/20261021a_OPS_stock_native_0a.sql,
-// its revalue file, 20261022a_OPS_stock_native_0b.sql and the three rollbacks) on a local, throwaway
-// PostgreSQL 17 shaped like Ops, before Peter runs anything. It never connects to Supabase.
+// its revalue file, 20261022a_OPS_stock_native_0b.sql and the three rollbacks) and then Drop 1
+// (20261024a_OPS_stock_native_1.sql and its rollback, sections 19 to 25 in drop1.mjs) on a local, throwaway
+// PostgreSQL 17 shaped like Ops, before Peter runs anything. It never connects to Supabase. The order is
+// Peter's: 0a, its revalue file, 0b, then Drop 1.
 //
 //   node supabase/tests/stock_native/run.mjs --base-only   the base database only: every real migration
 //                                                          Peter already ran, as he ran it (green before
@@ -13,13 +15,16 @@
 //                                                          the drainer release (20261023a) instead of
 //                                                          sections 2 to 18: section 1, then drainer.mjs
 //                                                          (sections 19 to 29) on Drop 0 as it is live
+//                                                          (0a and its revalue; copies with 0b, and with
+//                                                          0b and Drop 1, the live state since 21 Oct)
 //   node supabase/tests/stock_native/run.mjs --drainer --before-only --quick
 //                                                          only the drainer parts that need no drainer
 //                                                          file (the basket before, the v1 figures, speed
 //                                                          before): green before the file exists
 //
 //   STOCKN_MIGRATION, STOCKN_ROLLBACK, STOCKN_REVALUE, STOCKN_REVALUE_ROLLBACK, STOCKN_0B,
-//   STOCKN_0B_ROLLBACK   other copies of the six files (default: the repo's supabase/migrations)
+//   STOCKN_0B_ROLLBACK, STOCKN_D1, STOCKN_D1_ROLLBACK
+//                        other copies of the eight files (default: the repo's supabase/migrations)
 //   STOCKN_DRAINER, STOCKN_DRAINER_ROLLBACK   other copies of 20261023a and its rollback (same default)
 //   STOCKN_KEEP=1        keep the cluster at the end and print how to reach it
 //   STOCKN_STOP_AT=n     stop after section n
@@ -42,6 +47,7 @@ import {
 import { CHANNEL_SETUP, channelEvents, refundEvent, drainSql, bookedSql } from './channels.mjs';
 import { stockLevelOf } from '../../functions/_shared/boSectionRules.js';
 import { drainerProof } from './drainer.mjs';
+import { drop1Sections } from './drop1.mjs';
 
 const BASE_ONLY = process.argv.includes('--base-only');
 const BEFORE_ONLY = process.argv.includes('--before-only');
@@ -58,6 +64,8 @@ const FILES = {
   rvRb: process.env.STOCKN_REVALUE_ROLLBACK || MIG('20261021a_OPS_stock_native_0a_revalue_ROLLBACK.sql'),
   b: process.env.STOCKN_0B || MIG('20261022a_OPS_stock_native_0b.sql'),
   bRb: process.env.STOCKN_0B_ROLLBACK || MIG('20261022a_OPS_stock_native_0b_ROLLBACK.sql'),
+  d1: process.env.STOCKN_D1 || MIG('20261024a_OPS_stock_native_1.sql'),
+  d1Rb: process.env.STOCKN_D1_ROLLBACK || MIG('20261024a_OPS_stock_native_1_ROLLBACK.sql'),
   d: process.env.STOCKN_DRAINER || MIG('20261023a_OPS_stock_drainer_v2.sql'),
   dRb: process.env.STOCKN_DRAINER_ROLLBACK || MIG('20261023a_OPS_stock_drainer_v2_ROLLBACK.sql'),
 };
@@ -178,7 +186,7 @@ const pathOf = (sig) => sql(`select coalesce((select substr(x, 13) from unnest(p
 const LIVE_POLICIES = [...readFileSync(join(here, 'live_policies.sql'), 'utf8')
   .matchAll(/create policy (\S+) on public\.(\S+) as (\S+) for (\S+)/g)].map((m) => `${m[2]}.${m[1]}`).sort();
 
-console.log(`\nMulti site stock ${DRAINER ? 'drainer release' : 'Drop 0'} proof (seed ${SEED}${QUICK ? ', quick' : ''}${BASE_ONLY ? ', base only' : ''}${BEFORE_ONLY ? ', before only' : ''}; ${c.guardOn ? 'pg-safeupdate stand in on for authenticator' : 'NO pg-safeupdate stand in'})`);
+console.log(`\nMulti site stock ${DRAINER ? 'drainer release' : 'Drop 0 and Drop 1'} proof (seed ${SEED}${QUICK ? ', quick' : ''}${BASE_ONLY ? ', base only' : ''}${BEFORE_ONLY ? ', before only' : ''}; ${c.guardOn ? 'pg-safeupdate stand in on for authenticator' : 'NO pg-safeupdate stand in'})`);
 
 // == 1. The base database ======================================================================================
 section(1, '1. The base database: Ops shaped, every real migration Peter ran, in his order');
@@ -1398,5 +1406,12 @@ await guarded('rollback', () => {
   if (existsSync(FILES.b)) { const x = c.paste(FILES.b); ok(x.status === 0, `0b applies again (${x.status ? short(x.stderr, 300) : 'ok'})`); }
   ok(VENUES.every(onHandEqLedger) && VENUES.every((v) => ledgerGap(v) < 0.01), 'on hand equals the ledger and ledger value equals the books at every venue at the end');
 });
+
+// == 19 to 25. Drop 1, after 0a, its revalue file and 0b (drop1.mjs) =========================================================================
+{
+  const haveD1 = existsSync(FILES.d1) && existsSync(FILES.d1Rb);
+  ok(haveD1, `the Drop 1 files are there (${FILES.d1}, ${FILES.d1Rb})`);
+  if (haveD1) await drop1Sections({ c, ok, section, guarded, FILES, QUICK, SCALE_SITES, SCALE_ITEMS });
+}
 
 finish();

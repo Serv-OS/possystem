@@ -25,28 +25,32 @@
  *     picked (stock_record_waste, preview). Recording is one database call that explodes that product
  *     and writes the waste row (with the product id) and its stock movements together.
  *
- * v5.11.85 (the drainer release, 20261023a): the old fallback is gone. Dish waste always goes
+ * v5.11.90 (the drainer release, 20261023a): the old fallback is gone. Dish waste always goes
  * through the database (stock_record_waste), the one stock rule every channel uses. If that call is
  * missing the screen says "Stock data did not load, close and try again" and Record is disabled,
  * exactly as for any failed read; the till never works the stock out from its own recipe copy.
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { useStore } from '../store';
 import { getActiveLocationSync } from '../lib/supabase';
 import { money } from '../lib/currency';
 import { logMenuItemWaste, fetchWasteLinks, previewMenuWaste, WASTE_REASONS } from '../lib/stock/waste';
 import { listWasteProducts, wasteTag, stockPresence } from '../lib/stock/menuWaste';
 import { wasteTagText } from '../lib/stock/phase0Rules';
+import { useSiteStockContext } from '../lib/stock/siteContext';
 
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1.5px solid var(--bdr2)', borderRadius: 10, padding: '12px 12px', fontSize: 15, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit' };
 const lbl = { fontSize: 11, fontWeight: 800, color: 'var(--t4)', textTransform: 'uppercase', letterSpacing: '.07em', display: 'block', marginBottom: 6 };
 const DEFAULT_REASON = WASTE_REASONS.includes('Breakage / spill') ? 'Breakage / spill' : WASTE_REASONS[0];
 const qtyWords = (q) => `${Math.round(Number(q) * 100) / 100}`;
 
+// v5.11.89 (multi site stock Drop 1, map 4.18): the site comes first (Back Office Wastage passes the
+// picker's site); the till passes its own paired venue, which is also what it resolved before, so
+// nothing changes at the till. A site that is not the signed in venue lists ITS products
+// (siteContext.js), never the store's.
 export default function PosWasteModal({ open, onClose, locationId, showToast }) {
-  const menuItems = useStore(s => s.menuItems) || [];
-  const loc = getActiveLocationSync() || locationId || null;
+  const loc = locationId || getActiveLocationSync() || null;
+  const { menuItems } = useSiteStockContext(loc);
   // v5.11.79: which products have a recipe (menu item id -> true), from the links only.
   const [links, setLinks] = useState(null);
   // 26 Sep 2026: stock items that are not archived: only live ones say "this venue runs stock".
@@ -93,7 +97,7 @@ export default function PosWasteModal({ open, onClose, locationId, showToast }) 
   }, [q, products]);
 
   // The stock the picked product takes off, worked out by the database for this ONE product
-  // (v5.11.79). v5.11.85: a missing call is "not loaded" (the failure line, Record disabled), never
+  // (v5.11.79). v5.11.90: a missing call is "not loaded" (the failure line, Record disabled), never
   // a guess from the browser's own copy of the recipes.
   const previewKey = product ? `${product.id}|${qty}` : '';
   useEffect(() => {

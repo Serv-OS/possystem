@@ -559,7 +559,7 @@ export default function SyncBridge({ onSyncPulse }) {
                 categoryIds: d.category_ids || [],
                 requiresManager: d.requires_manager ?? false,
                 active: d.active, sortOrder: d.sort_order ?? 0,
-                // v5.11.85 (20261023a): Staff, Comp or Loyalty, copied onto the check discount (null before the column exists)
+                // v5.11.90 (20261023a): Staff, Comp or Loyalty, copied onto the check discount (null before the column exists)
                 kind: cleanDiscountKind(d.kind),
               }));
               if (readMayReplace(rulesRes, { trusted: discTrusted })) patch.discountRules = rulesRes.data.map(r => ({

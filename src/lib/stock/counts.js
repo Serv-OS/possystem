@@ -21,7 +21,7 @@ import { getLocationConfig } from '../locationTime';
 import { readAllPagesResult } from '../pagedRead.js';
 import { approvalOutcome, isMissingFunctionError } from './phase0Rules.js';
 import { parPatch, NEEDS_UPDATE, SECTIONS } from './saveRules.js';
-import { saveOrDirect, liveOrAll } from './companyData.js';
+import { callSave, liveOrAll } from './companyData.js';
 
 const nowIso = () => new Date().toISOString();
 async function ensureLoc(locationId) {
@@ -52,21 +52,15 @@ export const fetchParLevels = async (locationId = null) => {
  * Save an item's par, reorder point and minimum. v5.11.84 (multi site stock Drop 0): one save
  * function (stock_save_item_site) that writes all three together and keeps a figure the screen did
  * not send (the old upsert wrote min_level null every time the Stock tab saved par and reorder).
- * Before the database has it: today's upsert.
+ * v5.11.89 (Drop 1): the function only; a database without it needs an update, never a direct write.
  */
 export const upsertParLevel = async (inventoryItemId, par, locationId = null, opts = {}) => {
   if (isMock || !supabase) return { error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { error: new Error('No locationId') };
-  const r = await saveOrDirect(supabase, 'stock_save_item_site', {
+  const r = await callSave(supabase, 'stock_save_item_site', {
     p_item: inventoryItemId, p_location: locationId, p_patch: parPatch(par), p_version: null,
     p_section: opts.section || SECTIONS.inventory,
-  }, () => {
-    const num = (v) => (v === '' || v == null ? null : Number(v));
-    return supabase.from('par_levels').upsert({
-      location_id: locationId, inventory_item_id: inventoryItemId,
-      par_level: num(par.parLevel), reorder_point: num(par.reorderPoint), min_level: num(par.minLevel), updated_at: nowIso(),
-    }, { onConflict: 'location_id,inventory_item_id' });
   });
   return { data: r.data ?? null, error: r.error || null };
 };

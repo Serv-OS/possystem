@@ -23,6 +23,7 @@ import { matchScannedLine } from '../../lib/stock/purchasingRules';
 import { newUuid } from '../../lib/stock/phase0Rules';
 import { xeroStatus, xeroPushBill } from '../../lib/xero';
 import { PageHeader, ReportTable, useSort, sortRows, SubToolbar, Tag, Money } from './reports/reportKit';
+import { useSiteStockContext } from '../../lib/stock/siteContext';
 
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 5 };
@@ -38,15 +39,18 @@ const candidatesFor = (items, supplierId) => items.filter(it => !it.archivedAt).
 });
 const guessMatch = (line, cands) => matchScannedLine(line, cands).match?.item || null;
 
-export default function Invoices() {
+// v5.11.89 (multi site stock Drop 1): siteId is the picker's site (the signed in venue for a one site
+// company). Another site's invoice is worked out on THAT site's tax rates (siteContext.js), never the
+// signed in venue's: their ids never match and every line would post at 0% VAT.
+export default function Invoices({ siteId = null } = {}) {
   const showToast = useStore(s => s.showToast);
-  const taxRates = useStore(s => s.taxRates) || [];
+  const { taxRates } = useSiteStockContext(siteId);
   const ratesById = useMemo(() => { const m = {}; taxRates.forEach(r => { m[r.id] = r; }); return m; }, [taxRates]);
   const lineRateDec = useCallback((l) => Number(ratesById[l.purchaseTaxRateId]?.rate || 0), [ratesById]);
   const rawLineOf = (l) => (l.lineTotal != null ? Number(l.lineTotal) : Number(l.qty) * Number(l.unitPrice));
   // NET line total: strip VAT only when the operator flagged the line inc-VAT.
   const netLineOf = useCallback((l) => purchaseNet(rawLineOf(l), l.priceIncludesTax === true, lineRateDec(l)) ?? 0, [lineRateDec]);
-  const [locId, setLocId] = useState(getActiveLocationSync());
+  const [locId, setLocId] = useState(siteId || getActiveLocationSync());
   const [suppliers, setSuppliers] = useState([]);
   const [items, setItems] = useState([]);
   const [history, setHistory] = useState([]);
@@ -100,7 +104,7 @@ export default function Invoices() {
     reader.onload = async () => {
       const b64 = String(reader.result).split(',')[1];
       setScanning(true);
-      const { data, error } = await scanInvoice(b64, f.type);
+      const { data, error } = await scanInvoice(b64, f.type, locId);
       setScanning(false);
       // v5.11.65: scanInvoice answers { error: '<text>' }; reading .message off a string gave an empty toast
       if (error) { showToast?.(typeof error === 'string' ? error : (error.message || 'Could not read the invoice'), 'error'); return; }

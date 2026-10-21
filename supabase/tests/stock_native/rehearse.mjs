@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// rehearse.mjs: Drop 0 on a LOCAL copy of the real stock rows (map 7.9: "link of a copy of Provo and
-// Location 2 with the check row identical"). It never writes to Supabase.
+// rehearse.mjs: Drop 0 and then Drop 1 on a LOCAL copy of the real stock rows (map 7.9: "link of a copy of
+// Provo and Location 2 with the check row identical"). It never writes to Supabase.
 //
 //   zsh supabase/tests/stock_native/fetch_demo.sh /some/scratch/demo.json a59a6d97-ffaa-470e-8bb7-04cba789f335 fcbddcfd-a025-407b-9727-9e9139250767
-//   STOCKN_DEMO=/some/scratch/demo.json node supabase/tests/stock_native/rehearse.mjs              0a, the revalue file, 0b
+//   STOCKN_DEMO=/some/scratch/demo.json node supabase/tests/stock_native/rehearse.mjs              0a, the revalue file, 0b, Drop 1, then the drainer release
 //   STOCKN_DEMO=/some/scratch/demo.json node supabase/tests/stock_native/rehearse.mjs --base-only  load the copy only
 //
 // The base database is built exactly as run.mjs builds it (base.mjs: every real migration Peter ran,
@@ -16,14 +16,19 @@
 // writer plans zero writes at every venue; the live figures of contract section 0 and 5.3 (26 shared
 // items, 4 suppliers, 25 supplier items, recipe pairs 1 / 5 / 2, 55 packs, 7 bridges); then the
 // revalue file (Provo about 94.37, Location 2 about 30.48; ledger value = books to the penny) and 0b
-// with its dry run as a manager linked to Provo. Exit code 0 only when every check holds.
+// with its dry run as a manager linked to Provo; then Drop 1 (20261024a) and its check row against contract
+// 1.11 (a59a6d97: multi, 12 categories, 51 items with one and 4 without, 47 order rules, 10 with no order
+// by, 5 suppliers with no cut off; fcbddcfd: one site, 1, 1, 0, 0, 0, 1), its levels dry run as that
+// manager, nothing at the sites moving, then its rollback and Drop 1 again. Exit code 0 only when every
+// check holds.
 //
-// The drainer release (20261023a, step 4b) runs on a copy taken after the revalue file, before 0b (as
-// live): the check row (v2 gives v1's answer on every live check, refund and recipe line), the sales
-// rule (_sales_check_parts against the JS checkSalesParts) on every check of STOCKN_CHECKS, the day
-// totals the paste queued (stock_day_sums_check and sales_day_sums_check ok), stock_drainer_health, a
-// replay of those checks as new sales before and after the release (identical movements, waste and
-// outbox events, part refunds with no uid aside: D4), and its rollback (the seven live bodies back).
+// The drainer release (20261023a, step 7) then runs on a copy of the live state as it is now (0a, its
+// revalue file, 0b and Drop 1 in; Drop 1 ran live on 21 Oct 2026): the check row (v2 gives v1's answer on
+// every live check, refund and recipe line), the sales rule (_sales_check_parts against the JS
+// checkSalesParts) on every check of STOCKN_CHECKS, the day totals the paste queued (stock_day_sums_check
+// and sales_day_sums_check ok), stock_drainer_health, a replay of those checks as new sales before and
+// after the release (identical movements, waste and outbox events, part refunds with no uid aside: D4),
+// and its rollback (the seven live bodies back).
 //
 //   zsh supabase/tests/stock_native/fetch_checks.sh /some/scratch/checks.json a59a6d97-ffaa-470e-8bb7-04cba789f335
 //   STOCKN_DEMO=... STOCKN_CHECKS=/some/scratch/checks.json node supabase/tests/stock_native/rehearse.mjs --drainer
@@ -36,7 +41,11 @@
 // is. Step 3 then proves what 0a left on the real rows instead of linking them again: every site row has
 // its company record, no company row without a site, the writer re plans zero writes, the twins, the
 // archived keg and Location 2's nested packs; step 4 proves a second revalue paste refuses and changes
-// nothing, and the ledger value still equals the books to the penny. Steps 4b and 5 are the same.
+// nothing, and the ledger value still equals the books to the penny. Steps 5, 6 and 7 are the same.
+// A copy taken after Drop 1 ran live (21 Oct 2026) also carries Drop 1's four columns on 0a's tables
+// (stock_co_items.category_id, stock_co_item_sites.paused_from and paused_until,
+// stock_co_site_groups.row_version): the loader leaves those out (the base has 0a only, as before
+// Drop 1) and step 6 makes them again as the SQL editor did.
 
 import { readFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -55,6 +64,8 @@ const FILES = {
   a: process.env.STOCKN_MIGRATION || MIG('20261021a_OPS_stock_native_0a.sql'),
   rv: process.env.STOCKN_REVALUE || MIG('20261021a_OPS_stock_native_0a_revalue.sql'),
   b: process.env.STOCKN_0B || MIG('20261022a_OPS_stock_native_0b.sql'),
+  d1: process.env.STOCKN_D1 || MIG('20261024a_OPS_stock_native_1.sql'),
+  d1Rb: process.env.STOCKN_D1_ROLLBACK || MIG('20261024a_OPS_stock_native_1_ROLLBACK.sql'),
   d: process.env.STOCKN_DRAINER || MIG('20261023a_OPS_stock_drainer_v2.sql'),
   dRb: process.env.STOCKN_DRAINER_ROLLBACK || MIG('20261023a_OPS_stock_drainer_v2_ROLLBACK.sql'),
 };
@@ -112,20 +123,29 @@ const ORDER = ['organisations', 'locations', 'tax_rates', 'storage_areas', 'inve
   'stock_co_bridges', 'stock_co_bridge_sites', 'stock_co_suppliers', 'stock_co_supplier_sites', 'stock_co_supplier_items', 'stock_co_supplier_item_sites',
   'stock_co_recipes', 'stock_co_recipe_lines', 'stock_co_recipe_sites', 'venue_clock', 'stock_periods', 'stock_period_snapshots'];
 const CO_TABLES = ORDER.slice(ORDER.indexOf('stock_co_settings'));
+// Drop 1 ran live on 21 Oct 2026: a copy taken since carries its four columns on 0a's tables. The base
+// has 0a only (as before Drop 1), so they are left out here and step 6 makes them again as the SQL
+// editor did; any other missing column is a failure, as before.
+const D1_COLS = { stock_co_items: ['category_id'], stock_co_item_sites: ['paused_from', 'paused_until'], stock_co_site_groups: ['row_version'] };
+const D1_LIVE = (demo.stock_co_items || []).some((r) => r && Object.prototype.hasOwnProperty.call(r, 'category_id'));
+if (D1_LIVE) info('the copy was taken after Drop 1 ran live (its company items carry category_id): Drop 1\'s four columns are left out of the load and made again by step 6');
 const notLoaded = [];
+const d1Left = [];
 for (const t of ORDER) {
   const rows = demo[t];
   if (!rows || !rows.length) continue;
   const have = new Set(sql(`select string_agg(column_name, ',') from information_schema.columns where table_schema = 'public' and table_name = '${t}'`).split(','));
   const keys = [...new Set(rows.flatMap((r) => Object.keys(r)))];
-  const absent = keys.filter((k) => !have.has(k));
+  const absent = keys.filter((k) => !have.has(k) && !(D1_COLS[t] || []).includes(k));
   if (absent.length) notLoaded.push(`${t}: ${absent.join(', ')}`);
+  for (const k of keys.filter((kk) => !have.has(kk) && (D1_COLS[t] || []).includes(kk))) d1Left.push(`${t}.${k}`);
   const cols = keys.filter((k) => have.has(k)).map((k) => `"${k}"`).join(', ');
   const r = c.psql({ input: `set session_replication_role = replica;
     insert into public.${t} (${cols}) select ${cols} from json_populate_recordset(null::public.${t}, ${lit(JSON.stringify(rows))}::json);`, allowFail: true });
   ok(r.status === 0 && num(`select count(*) from public.${t}`) === rows.length, `${t}: ${rows.length} rows loaded${r.status ? `: ${short(r.stderr)}` : ''}`);
 }
-ok(notLoaded.length === 0, `every live column of the copy exists here with a type it loads into (${notLoaded.join('; ') || 'all'})`);
+ok(notLoaded.length === 0, `every live column of the copy exists here with a type it loads into (${notLoaded.join('; ') || 'all'}${d1Left.length ? `; Drop 1's ${d1Left.join(', ')} left for step 6` : ''})`);
+ok(D1_LIVE === d1Left.length > 0, `Drop 1's columns are in the copy exactly when it was taken after Drop 1 ran live (${d1Left.length} columns)`);
 const unknown = Object.keys(demo).filter((t) => !ORDER.includes(t) && !['organisations', 'locations'].includes(t) && (demo[t] || []).length);
 ok(unknown.length === 0, `every table of the copy is loaded (${unknown.join(', ') || 'all'})`);
 if (LINKED) {
@@ -270,14 +290,7 @@ function linkedSteps() {
   } else ok(false, 'the revalue file is there');
 }
 
-console.log('\n4b. The drainer release (20261023a) on a copy: 0a and its revalue in, 0b not (as live)');
-if (!existsSync(FILES.d)) {
-  if (DRAINER) ok(false, `the drainer file is there (${FILES.d})`);
-  else info(`the drainer file is not there yet (${FILES.d}): step skipped (--drainer makes this a failure)`);
-} else {
-  drainerStep();
-}
-
+// Step 7 (run after Drop 1, below): the drainer release on a copy of the live state.
 function drainerStep() {
   const tf = (v) => v === 't' || v === true;
   const md5Of = (sig) => sql(`select md5(btrim(regexp_replace(p.prosrc, '\\s+', ' ', 'g'))) from pg_proc p where p.oid = to_regprocedure('${sig}')`);
@@ -492,4 +505,53 @@ if (existsSync(FILES.b)) {
   console.log(`     ${short(x, 500)}`);
   ok(x.approve_open_to_logins === 'f' && x.dry_run_name_refused === 't' && x.dry_run_on_hand_refused === 't', 'approval closed to logins; the dry run refused a rename and an on hand change');
 } else ok(false, 'the 0b file is there');
+
+console.log('\n6. Drop 1 (20261024a) after 0b, as the SQL editor runs it, then its rollback and Drop 1 again');
+if (existsSync(FILES.d1) && existsSync(FILES.d1Rb)) {
+  const ORG_B = 'fcbddcfd-a025-407b-9727-9e9139250767';
+  const pre = Object.fromEntries(venues.map((v) => [v, venueFigures(c, v)]));
+  const r = c.paste(FILES.d1);
+  ok(r.status === 0, `Drop 1 applies (${r.status ? short(r.stderr, 800) : `${r.ms} ms`})`);
+  const rr = (r.sets[r.sets.length - 1] || { rows: [] }).rows;
+  for (const x of rr) console.log(`     ${short(x, 900)}`);
+  const by = (o) => rr.find((x) => x.org_id === o) || {};
+  const nums = (x, cols) => cols.map((k) => x[k]).join(',');
+  const COLS = ['multi', 'categories_seeded', 'items_with_category', 'items_without_category', 'order_rules_seeded', 'order_rules_without_order_by',
+    'suppliers_without_cutoff', 'bad_delivery_day_values', 'order_rules_round_trip_bad'];
+  ok(nums(by(ORG_T), COLS) === 't,12,51,4,47,10,5,0,0', `a59a6d97: ${nums(by(ORG_T), COLS)} (contract 1.11: t,12,51,4,47,10,5,0,0)`);
+  if (demo.locations.some((l) => l.org_id === ORG_B)) ok(nums(by(ORG_B), COLS) === 'f,1,1,0,0,0,1,0,0', `fcbddcfd: ${nums(by(ORG_B), COLS)} (contract 1.11: f,1,1,0,0,0,1,0,0)`);
+  ok(rr.every((x) => x.replaced_functions === '24' && x.new_functions === '29' && x.internals_open_to_api === 'f' && x.anon_can_save === 'f'
+     && x.site_rows_changed === '0' && x.logins_changed === 'f'), 'every row: 24 replaced, 29 new, internals closed, the anon key saves nothing, no site row or login changed');
+  ok(by(ORG_T).levels_on === 'refused, par ok', `the levels dry run as the Provo manager: ${by(ORG_T).levels_on}`);
+  for (const v of venues) {
+    const d = figureDiff(pre[v], venueFigures(c, v));
+    ok(d.length === 0, `${vname[v]}: every count, sum, on hand, cost, ledger line, area holding, par and recipe base quantity identical (${d.join(', ') || 'none differ'})`);
+  }
+  const trip = num(`select count(*) from suppliers s cross join lateral public.stock_co__derive_days(s.id) d where s.company_ref is not null
+                      and ((select coalesce(array_agg(x order by x), '{}') from jsonb_array_elements_text(s.delivery_days) x)
+                           is distinct from (select coalesce(array_agg(x order by x), '{}') from jsonb_array_elements_text(d.delivery_days) x)
+                           or nullif(s.cutoff_time, '') is distinct from d.cutoff_time)`);
+  ok(trip === 0, `every live site supplier row reads back its exact delivery day codes (as a set) and cut off from its order rules (${trip} differ)`);
+  for (const v of venues) {
+    const ps = pj(sql(`select public.stock_co__sync_site('${v}', null, null, false, true)`)); const pr = pj(sql(`select public.stock_co__sync_recipes('${v}', null, false, true)`));
+    ok(ps?.writes === 0 && pr?.writes === 0, `${vname[v]}: the writer still plans zero writes (${ps?.writes}, ${pr?.writes})`);
+  }
+  const rb = c.paste(FILES.d1Rb);
+  const x = ((rb.sets[rb.sets.length - 1] || { rows: [] }).rows[0]) || {};
+  console.log(`     rollback: ${short(x, 400)}`);
+  ok(rb.status === 0 && x.bodies_restored === '24' && x.drop1_left === '0' && x.site_rows_changed === '0', 'the rollback: the 24 Drop 0 bodies back, nothing of Drop 1 left, no site row changed');
+  const again = c.paste(FILES.d1);
+  ok(again.status === 0, `Drop 1 applies again after its rollback (${again.status ? short(again.stderr, 400) : 'ok'})`);
+} else ok(false, 'the Drop 1 files are there');
+
+console.log('\n7. The drainer release (20261023a) on a copy of the live state: 0a, its revalue file, 0b and Drop 1 in');
+if (!existsSync(FILES.d)) {
+  if (DRAINER) ok(false, `the drainer file is there (${FILES.d})`);
+  else info(`the drainer file is not there yet (${FILES.d}): step skipped (--drainer makes this a failure)`);
+} else {
+  ok(num('select count(*) from stock_native_backup') === 31 && num(`select count(*) from stock_native_backup where left(name, 3) = 'd1:'`) === 24
+     && num(`select count(*) from information_schema.columns where table_schema = 'public' and table_name = 'stock_co_items' and column_name = 'category_id'`) === 1,
+    'the copy is at the live state: 0a\'s seven and Drop 1\'s 24 backup rows, Drop 1\'s columns in');
+  drainerStep();
+}
 done();

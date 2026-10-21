@@ -2601,7 +2601,7 @@ export const upsertDiscount = async (discount, locationId = null) => {
     requires_manager: discount.requiresManager ?? discount.requires_manager ?? false,
     active:           discount.active ?? true,
     sort_order:       discount.sortOrder ?? discount.sort_order ?? 0,
-    // v5.11.85 (20261023a): Staff, Comp or Loyalty (null = an ordinary discount). The till copies it
+    // v5.11.90 (20261023a): Staff, Comp or Loyalty (null = an ordinary discount). The till copies it
     // onto the check discount; the database's sales day totals count those lines on their own.
     kind:             cleanDiscountKind(discount.kind),
     updated_at:       new Date().toISOString(),

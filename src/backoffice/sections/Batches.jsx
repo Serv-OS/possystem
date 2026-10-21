@@ -22,7 +22,10 @@ import { PageHeader, PrimaryBtn, ReportTable, Money, Tag } from './reports/repor
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 5 };
 
-export default function Batches() {
+// v5.11.89 (multi site stock Drop 1): siteId is the picker's site (always the signed in venue for a one
+// site company). All three reads and every production call name it, so a batch completed with the
+// picker on another site is found and posted THERE (completePlannedBatch read the signed in venue).
+export default function Batches({ siteId = null } = {}) {
   // v5.5.931 — "needed today" suggestion inputs
   const [needed, setNeeded] = useState([]);
   const [queueTab, setQueueTab] = useState('todo');   // todo | done | all
@@ -35,18 +38,19 @@ export default function Batches() {
   const [todayYmd, setTodayYmd] = useState(buildScheduleCtx(null).ymd);
   const [venueTz, setVenueTz] = useState(null);   // v5.11.65: every date on this screen is the venue's, in words
   const loadQueue = async () => {
-    const loc = getActiveLocationSync() || await getLocationId().catch(() => null);
+    const loc = siteId || getActiveLocationSync() || await getLocationId().catch(() => null);
     if (!loc) return;
     try { const tz = (await getLocationConfig(loc))?.timezone || null; setVenueTz(tz); setTodayYmd(buildScheduleCtx(tz).ymd); } catch { /* London default stands */ }
     await ensureTodaysPlannedBatches(loc);              // the schedule BUILDS the batches
     const { data } = await fetchBatches(loc, 300);
     setQueue(data || []);
   };
-  // eslint-disable-next-line react-hooks/set-state-in-effect
+  // eslint-disable-next-line react-hooks/set-state-in-effect, react-hooks/exhaustive-deps
   useEffect(() => { loadQueue(); }, []);
   const doComplete = async () => {
     if (!completing || !(Number(actualIn) > 0)) return;
-    const { error } = await completePlannedBatch(completing.id, Number(actualIn));
+    const loc = siteId || getActiveLocationSync() || await getLocationId().catch(() => null);
+    const { error } = await completePlannedBatch(completing.id, Number(actualIn), loc);
     if (error) { showToast?.(error.message, 'error'); return; }
     showToast?.(`Made ${actualIn} ${completing.outputUnit} — stock updated`, 'success');
     setCompleting(null); setActualIn(''); loadQueue();
@@ -63,7 +67,7 @@ export default function Batches() {
   const r1 = (v) => Math.round(Number(v) * 10) / 10;
   useEffect(() => {
     (async () => {
-      const loc = getActiveLocationSync() || await getLocationId().catch(() => null);
+      const loc = siteId || getActiveLocationSync() || await getLocationId().catch(() => null);
       if (!loc || isMock || !supabase) return;
       // v5.7.24 — the plan preview's "today" is the VENUE's weekday (project
       // invariant), matching ensureTodaysPlannedBatches since v5.7.22.
@@ -99,10 +103,10 @@ export default function Batches() {
       out.sort((a, b) => b.topUp - a.topUp);
       setNeeded(out);
     })();
-  }, []);
+  }, [siteId]);
 
   const showToast = useStore(s => s.showToast);
-  const [locId, setLocId] = useState(getActiveLocationSync());
+  const [locId, setLocId] = useState(siteId || getActiveLocationSync());
   const [recipes, setRecipes] = useState([]);
   const [items, setItems] = useState([]);
   const [ctx, setCtx] = useState({ itemsById: {}, recipesByOutputItem: {} });

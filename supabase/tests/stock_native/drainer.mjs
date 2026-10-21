@@ -318,7 +318,7 @@ export async function drainerProof(x) {
   };
 
   // ==================================================================================================
-  section(19, '19. The drainer base: Drop 0 as live (0a and its revalue file), the basket rows, the history; and a copy with 0b');
+  section(19, '19. The drainer base: Drop 0 as live (0a and its revalue file), the basket rows, the history; copies with 0b, and with 0b and Drop 1 (live since 21 Oct 2026)');
   let baseOk = false;
   await guarded('drainer base', () => {
     c.createFrom('n_d0', 'n_base');
@@ -360,6 +360,24 @@ export async function drainerProof(x) {
     c.use('n_d0b');
     r = c.paste(FILES.b);
     ok(r.status === 0, `the copy with 0b: 0b applies (${r.status ? short(r.stderr, 300) : `${r.ms} ms`})`);
+    // the live state since 21 Oct 2026: Drop 1 (20261024a) after 0b; the release goes in on top of it
+    c.createFrom('n_d1', 'n_d0b');
+    c.use('n_d1');
+    ok(existsSync(FILES.d1), `the Drop 1 file is there (${FILES.d1})`);
+    r = c.paste(FILES.d1);
+    ok(r.status === 0, `the copy with 0b and Drop 1: Drop 1 applies (${r.status ? short(r.stderr, 300) : `${r.ms} ms`})`);
+    ok(num(`select count(*) from stock_native_backup`) === 31 && num(`select count(*) from stock_native_backup where left(name, 3) = 'd1:'`) === 24,
+      'Drop 1 left its 24 backup rows beside 0a\'s seven (as live)');
+    const off1 = [...REPLACED.map(([s, m]) => [s, m]), ...CHECKED_ONLY].filter(([sig, md5]) => md5Of(sig) !== md5).map(([sig]) => `${sig.slice(7, sig.indexOf('('))} ${md5Of(sig)}`);
+    ok(off1.length === 0, `Drop 1 leaves all 28 bodies the release replaces or checks at their live md5 (${off1.join(', ') || 'all'})`);
+    ok(REPLACED.every(([sig, , sp, acl]) => pathOf(sig) === sp && aclOf(sig) === acl), 'and the seven replaced bodies keep their live search_path and grants after Drop 1');
+    const pre1 = pj(sql(`select json_build_object(
+        'not_yet', to_regclass('public.stock_sale_takes') is null and to_regclass('public.stock_co_option_rules') is null
+                  and not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'discounts' and column_name = 'kind')
+                  and not exists (select 1 from pg_trigger where tgname = 'stock_movements_day_sums_ins'),
+        'no_mv_trigger', not exists (select 1 from pg_trigger where tgrelid = 'public.stock_movements'::regclass and not tgisinternal),
+        'd1', to_regclass('public.stock_order_rules') is not null and to_regclass('public.stock_co_categories') is not null)`));
+    ok(pre1 && Object.values(pre1).every(Boolean), `after Drop 1 everything the drainer's guard asks for still holds, and nothing of the release is in (${short(pre1)})`);
     baseOk = true;
   });
   if (!baseOk) return;
@@ -368,7 +386,7 @@ export async function drainerProof(x) {
   section(20, '20. The every channel basket before the release (v1), without and with 0b');
   const before = {};
   const t0 = Date.now() - 10 * 60000;
-  for (const [db, label] of [['n_d0', 'v1'], ['n_d0b', 'v1 with 0b']]) {
+  for (const [db, label] of [['n_d0', 'v1'], ['n_d0b', 'v1 with 0b'], ['n_d1', 'v1 with 0b and Drop 1']]) {
     await guarded(`basket ${label}`, () => {
       c.createFrom(`n_bk1_${db}`, db);
       c.use(`n_bk1_${db}`);
@@ -381,6 +399,7 @@ export async function drainerProof(x) {
     });
   }
   if (before.n_d0 && before.n_d0b) basketCompare('0b changes no stock: v1 with 0b against v1 without', before.n_d0, before.n_d0b);
+  if (before.n_d0b && before.n_d1) basketCompare('Drop 1 changes no stock: v1 with 0b and Drop 1 against v1 with 0b', before.n_d0b, before.n_d1);
 
   // the deliberate cases' base (part A, a sale booked before the release) and the speed base, both
   // made now so the v1 half runs whether or not the drainer file is there
@@ -416,9 +435,10 @@ export async function drainerProof(x) {
                          where c.location_id = '${v}' and c.closed_at > now() - interval '7 days' and public.stock_js_key(x -> 'id') is not null),
             'lines', (select count(*) from recipe_lines where location_id = '${v}'))`));
       }
-      for (const [db, label] of [['n_d0', 'without 0b'], ['n_d0b', 'with 0b']]) {
+      for (const [db, label] of [['n_d0', 'without 0b'], ['n_d0b', 'with 0b'], ['n_d1', 'with 0b and Drop 1']]) {
         c.use(db);
         const fnBefore = FNS();
+        const otherRows = num(`select count(*) from stock_native_backup`);   // 0a's seven, and Drop 1's 24 where it is in
         c.createFrom(`n_dr_${db}`, db);
         c.use(`n_dr_${db}`);
         const r = c.paste(FILES.d);
@@ -451,8 +471,8 @@ export async function drainerProof(x) {
           `${label}: of ${Object.keys(fnBefore).length} functions that were there, exactly the seven named ones changed (${changed.join(', ')})`);
         const bk = pj(sql(`select json_object_agg(name, md5) from stock_native_backup where left(name, 11) = 'drainer_v2:'`)) || {};
         ok(REPLACED.every(([s, md5]) => bk[`drainer_v2:${s.slice(7, s.indexOf('('))}`] === md5) && Object.keys(bk).length === 7
-           && num(`select count(*) from stock_native_backup where left(name, 11) <> 'drainer_v2:'`) === 7,
-          `${label}: the seven bodies are backed up as drainer_v2:<name> with their live md5; 0a's own seven rows are untouched`);
+           && num(`select count(*) from stock_native_backup where left(name, 11) <> 'drainer_v2:'`) === otherRows,
+          `${label}: the seven bodies are backed up as drainer_v2:<name> with their live md5; the ${otherRows} rows already there (0a's seven${otherRows > 7 ? ` and Drop 1's ${otherRows - 7}` : ''}) are untouched`);
         ok(num(`select count(*) from stock_native_backup b where left(b.name, 11) = 'drainer_v2:' and b.body like 'CREATE OR REPLACE FUNCTION public.%'`) === 7, `${label}: each backup is the pg_get_functiondef text`);
         pasted = true;
       }
@@ -622,7 +642,7 @@ export async function drainerProof(x) {
   section(23, '23. The every channel basket after the release: identical movements, waste, outbox events and net of VAT');
   const after = {};
   if (AFTER && pasted) {
-    for (const [db, label] of [['n_d0', 'v2'], ['n_d0b', 'v2 with 0b']]) {
+    for (const [db, label] of [['n_d0', 'v2'], ['n_d0b', 'v2 with 0b'], ['n_d1', 'v2 with 0b and Drop 1']]) {
       await guarded(`basket ${label}`, () => {
         c.createFrom(`n_bk2_${db}`, `n_dr_${db}`);
         c.use(`n_bk2_${db}`);
@@ -1417,6 +1437,29 @@ export async function drainerProof(x) {
         ok(last.length === 3 && last.every((w) => Number(w.explode_differences) === 0 && Number(w.bodies_replaced) === 7 && Number(w.bodies_backed_up) === 7),
           `and its check row is clean again (${short(last.map((w) => `${w.venue} ${w.bodies_replaced}/${w.bodies_backed_up}`))})`);
       }
+    });
+    // the same rollback on the live state (0b and Drop 1 in): the seven bodies back, Drop 1 untouched
+    await guarded('rollback with 0b and Drop 1', () => {
+      c.createFrom('n_rb1', 'n_dr_n_d1');
+      c.use('n_rb1');
+      const r = c.paste(FILES.dRb);
+      ok(r.status === 0, `with 0b and Drop 1: the drainer rollback applies (${r.status ? short(r.stderr, 500) : `${r.ms} ms`})`);
+      if (r.status !== 0) return;
+      const row = ((r.sets[r.sets.length - 1] || { rows: [] }).rows[0]) || {};
+      ok(Number(row.bodies_restored) === 7 && Number(row.triggers_left) === 0 && Number(row.functions_left) === 0 && Number(row.tables_left) === 0 && !tf(row.drain_job),
+        `with 0b and Drop 1: bodies restored 7, triggers 0, functions 0, tables 0, no drain job (${short(row, 300)})`);
+      ok(REPLACED.every(([sig, md5, sp, acl]) => md5Of(sig) === md5 && pathOf(sig) === sp && aclOf(sig) === acl), 'with 0b and Drop 1: the seven bodies are the live ones again (md5, search_path, grants)');
+      ok(num(`select count(*) from stock_native_backup where left(name, 11) = 'drainer_v2:'`) === 0 && num(`select count(*) from stock_native_backup`) === 31
+         && num(`select count(*) from stock_native_backup where left(name, 3) = 'd1:'`) === 24 && tableExists('stock_order_rules') && tableExists('stock_co_categories'),
+        'with 0b and Drop 1: its backup rows are gone; 0a\'s seven and Drop 1\'s 24 stay, and Drop 1\'s tables are untouched');
+      c.use('n_d1');
+      const base = FNS();
+      c.use('n_rb1');
+      const now = FNS();
+      const diff = [...new Set([...Object.keys(base), ...Object.keys(now)])].filter((k) => base[k] !== now[k]);
+      ok(diff.length === 0, `with 0b and Drop 1: every function is exactly the Drop 1 database's again (${diff.join(', ') || 'none differ'})`);
+      const again = c.paste(FILES.d);
+      ok(again.status === 0, `with 0b and Drop 1: the release applies again after its rollback (${again.status ? short(again.stderr, 400) : `${again.ms} ms`})`);
     });
   }
 }

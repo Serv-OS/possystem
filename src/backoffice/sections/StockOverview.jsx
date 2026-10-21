@@ -1,8 +1,16 @@
 /**
- * StockOverview — the landing page for stock control (Inventory → Overview).
- * A guided, at-a-glance hub: stock value, a step-by-step setup checklist with live
- * status, "needs attention" prompts, and a live movement feed. Reads existing data
- * only (no migration). Designed to make the whole system feel like a guided process.
+ * StockOverview: the landing page for stock control (Inventory > Overview).
+ * A guided, at a glance hub: stock value, a step by step setup checklist with live status, "needs
+ * attention" prompts, and a live movement feed. Reads existing data only.
+ *
+ * Multi site stock, Drop 1 (map 4.21, contract 3.5):
+ *   one site company: exactly today's screen (StockOverviewSite below is today's body with four
+ *     small changes, each a no op for a one site company; goLiveRules.test.js undoes them and
+ *     checks the hash against main's text);
+ *   multi site company on All sites or a group: OverviewAllSites (needs attention across sites, set
+ *     up health, go live, the company stock settings);
+ *   multi site company with one site picked: this body for that site, with the company cost rule
+ *     (SiteCostRuleCard) in place of the site's own and the site's go live plan (GoLivePlanCard).
  */
 
 import { useState, useEffect, useCallback } from 'react';
@@ -19,16 +27,40 @@ import { fetchPurchaseOrders } from '../../lib/stock/purchasing';
 import { areasReady, fetchAreas, fetchAreaHoldings } from '../../lib/stock/areas';
 import { areasBelowZero, countStatusText } from '../../lib/stock/areaRules';
 import { fetchCounts } from '../../lib/stock/counts';
+import { overviewMode } from '../../lib/stock/goLiveRules';
+import { useSiteStockContext } from '../../lib/stock/siteContext';
+import { useStockScope } from '../StockScope';
+import OverviewAllSites from './stock/OverviewAllSites';
+import GoLivePlanCard from './stock/GoLivePlanCard';
+import { SiteCostRuleCard } from './stock/CompanySettingsCard';
 
 const card = { background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 14, padding: 18 };
 
 // 8 Oct 2026: canOpen is the Back Office section access rule (lib/boSections.js). A button that
 // opens Produce or Purchasing is left out for a login that is not shown that part: never a dead
 // button. The setter it is handed refuses a blocked route anyway (belt and braces).
-export default function StockOverview({ setSection, canOpen = () => true }) {
-  const menuItems = useStore(s => s.menuItems) || [];
+// Drop 1: which Overview (goLiveRules.js overviewMode). The scope still loading shows today's
+// Loading line; a one site company (or a scope that failed) gets today's body on today's venue.
+export default function StockOverview({ setSection, canOpen = () => true, siteId = null }) {
+  const sc = useStockScope();
+  const mode = overviewMode(sc);
+  if (mode === 'loading') return <div style={{ padding: 26, color: 'var(--t3)' }}>Loading…</div>;
+  if (mode === 'all') return <OverviewAllSites setSection={setSection} canOpen={canOpen} />;
+  return <StockOverviewSite setSection={setSection} canOpen={canOpen} siteId={mode === 'site' ? (siteId || sc.oneSite.id) : siteId} multi={mode === 'site'} />;
+}
+
+// The menu the "without a recipe" counts read: the store (the signed in venue), exactly today; in a
+// multi site company with another site picked, that site's own products (map 3.4).
+function useSiteMenu(siteId, multi) {
+  const storeMenu = useStore(s => s.menuItems);
+  const site = useSiteStockContext(multi ? siteId : null);
+  return (multi ? site.menuItems : storeMenu) || [];
+}
+
+function StockOverviewSite({ setSection, canOpen = () => true, siteId = null, multi = false }) {
+  const menuItems = useSiteMenu(siteId, multi);
   const showToast = useStore(s => s.showToast);
-  const [locId, setLocId] = useState(getActiveLocationSync());
+  const [locId, setLocId] = useState(siteId || getActiveLocationSync());
   const [d, setD] = useState(null);
   // v5.11.79 (stock plan 4.5, decision 2): where cost comes from at this venue.
   const [costRule, setCostRule] = useState(null);
@@ -158,7 +190,8 @@ export default function StockOverview({ setSection, canOpen = () => true }) {
 
         {/* Right column: attention + activity */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-          {costRule && (
+          {multi && <GoLivePlanCard siteId={locId} />}
+          {multi ? <SiteCostRuleCard siteId={locId} /> : costRule && (
             <div style={card} data-testid="stock-cost-rule">
               <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--t1)', marginBottom: 6 }}>Cost here</div>
               {COST_RULES.map((r) => (

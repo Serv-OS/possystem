@@ -11,7 +11,7 @@ export const NO_DISCOUNTS_TEXT = 'No discounts set up for this venue. Add them i
 
 /**
  * The venue's own active discounts, in Back Office order, as { id, label, type, value, requiresManager,
- * scope, categoryIds, kind }. kind (v5.11.85): 'staff', 'comp', 'loyalty' or null, carried onto the
+ * scope, categoryIds, kind }. kind (v5.11.90): 'staff', 'comp', 'loyalty' or null, carried onto the
  * check discount with the preset's id so the sales day totals can tell staff food, comps and loyalty.
  */
 export function venueDiscountList(discountPresets) {

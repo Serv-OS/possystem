@@ -1,5 +1,5 @@
 /**
- * discountKinds.test.js: what a discount preset is for (v5.11.85, the drainer release, 20261023a).
+ * discountKinds.test.js: what a discount preset is for (v5.11.90, the drainer release, 20261023a).
  *
  * A Back Office preset can be Staff, Comp or Loyalty (discounts.kind, null = ordinary). The till,
  * the bar tab and MPOS copy the preset's id and kind onto the check discount (presetId, kind), so

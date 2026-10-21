@@ -667,7 +667,13 @@ test('loyalty-enroll and loyalty-otp: enrolment needs authority; gift cards only
   assert.ok(!otp.includes('recipient_name'), 'never matches a card by name');
   assert.ok(!otp.includes('recipient_email'), 'never matches a card by email (update_profile sets it unverified)');
   assert.ok(otp.includes('createSessionToken(customer.id, companyId, phone)'), 'the token carries the proven phone');
-  assert.ok(otp.includes("{ headers: { 'x-member-token': token } }"), 'the portal refresh proves the member to loyalty-balance');
+  // 21 Oct 2026: refresh no longer asks loyalty-balance (with the member token) over HTTP. It
+  // checks the member's own token itself, first, and reads only that token's customer and company.
+  const refresh = otp.slice(otp.indexOf("if (action === 'refresh') {"), otp.indexOf("if (action === 'update_profile') {"));
+  const tokenAt = refresh.indexOf('const session = await verifySessionToken(token);');
+  assert.ok(tokenAt > 0 && refresh.includes("if (!session) return json({ error: 'Invalid or expired session' }, 401);"), 'the portal refresh proves the member with their token');
+  assert.ok(refresh.indexOf(".eq('id', session.customerId)") > tokenAt, 'and reads only the customer the token names');
+  assert.ok(refresh.indexOf('memberAccount(cust, session.companyId, provenPhone)') > tokenAt, 'in the company the token names');
 });
 
 test('promo codes: exact match inside the venue\'s own org, never a wildcard; offers are never taken over', () => {
