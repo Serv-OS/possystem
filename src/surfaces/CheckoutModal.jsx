@@ -27,6 +27,7 @@ import { tillTenders, splitTenders } from '../lib/accounting/tenders';
 import { declineLine } from '../lib/declineMessage';
 import { money, currencySymbol, stripeCurrency, getActiveCurrencyCode } from '../lib/currency';
 import { publishDisplay, displayUsesScreen, publishTipRequest, onCustomerTip } from '../lib/customerDisplay';
+import { displayLinesFor } from '../lib/displayLines';
 import { isTrainingMode } from '../lib/trainingMode';
 import { applyBookingPayment } from '../lib/bookings/applyBookingPayment';   // 16 Oct 2026: the amount used, surplus flagged
 import PaxTerminal from './PaxTerminal';
@@ -179,13 +180,8 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
     if (!displayUsesScreen()) return;
     const { restState: rs, state: ss, items: its } = payRef.current;
     if (rs === 'success' || ss === 'approved') return;
-    const di = (its || []).filter(it => it && it.price != null).map(it => {
-      const unitMods = (it.mods || []).reduce((s, m) => s + (Number(m.price) || 0), 0);
-      const qty = Math.max(1, Number(it.qty) || 1);
-      return { uid: it.uid, name: it.menuName || it.name || 'Item', qty,
-        lineTotal: Math.max(0, ((Number(it.price) || 0) + unitMods) * qty),
-        mods: (it.mods || []).map(m => ({ label: m.label, price: Number(m.price) || 0 })), notes: it.notes || '' };
-    });
+    // v5.11.88: the line price already includes paid options (lib/displayLines.js).
+    const di = displayLinesFor((its || []).filter(it => it && it.price != null));
     const cartTotal = di.reduce((s, it) => s + (Number(it.lineTotal) || 0), 0);
     publishDisplay(di.length
       ? { state: 'active', items: di, total: cartTotal, currency: getActiveCurrencyCode() }

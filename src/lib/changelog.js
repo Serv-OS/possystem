@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.88',
+    date: '21 Oct 2026',
+    items: [
+      "Customer display: a line with a paid option (Skinny, oat milk, a shot) now shows the price the till charges. It used to add the option price on again, so a 2.20 latte with a 0.70 option showed 2.90 on the line while the total said 2.20. The card reader's own screen had the same line maths and is fixed the same way.",
+      "Customer display and reader screen: a line with an item discount now shows the discounted line, the way the till charges it. It used to show the full price on the line while the total was right.",
+    ],
+  },
+  {
     v: '5.11.84',
     date: '21 Oct 2026',
     items: [
