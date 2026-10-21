@@ -21,6 +21,28 @@ export const CHANGELOG = [
     ],
   },
   {
+    v: '5.11.88',
+    date: '21 Oct 2026',
+    items: [
+      "Customer display: a line with a paid option (Skinny, oat milk, a shot) now shows the price the till charges. It used to add the option price on again, so a 2.20 latte with a 0.70 option showed 2.90 on the line while the total said 2.20. The card reader's own screen had the same line maths and is fixed the same way.",
+      "Customer display and reader screen: a line with an item discount now shows the discounted line, the way the till charges it. It used to show the full price on the line while the total was right.",
+    ],
+  },
+  {
+    v: '5.11.87',
+    date: '21 Oct 2026',
+    items: [
+      "Loyalty app, the home page now says what the business runs. A big header reads You collect: Stamps (or Points, or Points and stamps). At a stamps only business it shows the stamp card itself: the stamps as big dots, 4 of 10 stamps, 6 more stamps for your Free Drink, and any free drink ready to use. It never shows 0 loyalty points when points are off. A points business sees its points as before; a business with both sees the points and the main stamp card.",
+      "Why it said 0 points: right after signing in, the app was not told that points were off, so it showed points. After a reload it was told, so the same customer saw two different home pages. Signing in, joining and reloading now all give the app the same answer, and the kiosk and online checkout get it too.",
+      "Loyalty app: the tiles and tabs follow the same rule. With points off there is no Points earned tile and no History tab, and the Rewards tab shows only when a free item is ready. Every stamp card shows on the home page, including one at 0 stamps. Visits is now every visit at the business's sites, the same number as Total visits in Back Office (it said 0 at stamps only businesses).",
+      "Loyalty app: the header shows the member code and the last 4 digits of the phone, with Not you? Sign out. A customer who signed in with a second number can see they are in a different account (4 digits, because two numbers can share the last 3), and staff can find the same member code in Back Office. The app also reads the account again when the customer comes back to an open page (at most once a minute), so it does not show old stamps.",
+      "Stamp cards, the same words in Back Office and the app: Cards finished, Rewards used and Ready now, instead of 1x completed next to No reward yet (which read as one free drink still owed when it was already used). Ready now is cards finished minus rewards used, the rule the till already uses. Back Office waits for the used rewards before it shows Ready now.",
+      "Back Office customer details: at a business with points off, the points rows are gone and the Points box shows Rewards ready instead. Loyalty visits is now called Visits that earned points, because it only counts sales that earned points; Total visits at the top counts every visit.",
+      "Back Office, merging two customers with different phones now says: keep the phone the customer signs in to the loyalty app with. The other number can no longer sign in, and if they use it the app starts a new, empty account. That is how one member ended up with their stamps split over two accounts. This release does not join them: until staff merge the two in Customers (keeping the number they sign in with), the app keeps showing the second account's stamps.",
+      "Needs the loyalty-otp edge function deployed (it only adds fields, so the app works before and after). No database update.",
+    ],
+  },
+  {
     v: '5.11.84',
     date: '21 Oct 2026',
     items: [
@@ -12740,7 +12762,7 @@ export const CHANGELOG = [
     version: '4.6.8', date: '22 Apr 2026', label: 'Printed dockets respect course rules: held courses stay held; fire prints a marker',
     changes: [
       'Fix: Initial Send now only prints FIRED items on the physical docket. createKdsTickets already flags courses 0+1 as fired on send and leaves 2+ as held, but the print dispatch was passing every item regardless — held courses were printing on the initial docket as if they had fired. Filter at both table and walk-in sendToKitchen branches (store/index.js:1220 and :1259) now passes items.filter(i=>i.fired) to routePrintJob so the printed docket matches the KDS view.',
-      'Feature: fireCourse now emits a minimal "FIRE COURSE N" marker docket to every production centre that has items in the newly-fired course. New buildFireCourseTicket in printer.js prints centre name, time, table label, and the course number — no items, no mods. New printService.printFireCourseTicket mirrors printKitchenTicket for transport/retry. routePrintJob branches on job.type===\"fire-marker\" to pick the right ticket builder and idempotency key. Courses 0+1 are skipped (already printed on send). Bar-tab rounds are unaffected — they have no course flow.',
+      'Feature: fireCourse now emits a minimal "FIRE COURSE N" marker docket to every production centre that has items in the newly-fired course. New buildFireCourseTicket in printer.js prints centre name, time, table label, and the course number — no items, no mods. New printService.printFireCourseTicket mirrors printKitchenTicket for transport/retry. routePrintJob branches on job.type==="fire-marker" to pick the right ticket builder and idempotency key. Courses 0+1 are skipped (already printed on send). Bar-tab rounds are unaffected — they have no course flow.',
     ],
   },
   {
@@ -12754,7 +12776,7 @@ export const CHANGELOG = [
     version: '4.6.6', date: '22 Apr 2026', label: 'Bar tab flow + floor plan drag persistence',
     changes: [
       'Fix: Bar tab name input in OrderTypeModal tab_pick step was rendering at 0px wide (invisible). v4.6.3 added width:auto+minWidth:0 to the INPUT, but the Open button next to it still had width:100% from the sendBtn helper, claiming the full flex-basis and leaving no space for the input to grow into. Override width:auto and flexShrink:0 on the button at OrderTypeModal.jsx:324 so it sizes to its content (~80px) and the input gets the remaining flex room.',
-      'Fix: OpenTabModal in BarSurface was listing every table in the \"Link to table\" dropdown regardless of floor-plan section. Filter at BarSurface.jsx:44 now scopes to tables where section===\"bar\" AND status is open/available, matching the intent that a bar tab should only link to bar-section tables.',
+      'Fix: OpenTabModal in BarSurface was listing every table in the "Link to table" dropdown regardless of floor-plan section. Filter at BarSurface.jsx:44 now scopes to tables where section==="bar" AND status is open/available, matching the intent that a bar tab should only link to bar-section tables.',
       'Fix: Dragging a table in the Floor Plan Builder was corrupting every other field on the DB row. updateTableLayout called upsertFloorTable({id,...patch}) with just the changed fields (e.g. {x,y} from a drag), and upsertFloorTable defaults any unspecified column (w/h→80, shape→rect, section→null, label→undefined, max_covers→4) before upserting. Result: every mousemove wiped label/size/shape/section on the DB. After a refresh hydration read the corrupted rows and every table came back as an 80×80 unlabelled rect with no section — visually stacked and overlapping. Fix at store/index.js:713 reads the freshly-merged table from state and upserts the full object so unchanged columns stay unchanged.',
     ],
   },
@@ -12781,7 +12803,7 @@ export const CHANGELOG = [
   {
     version: '4.6.3', date: '21 Apr 2026', label: 'Open on queued walk-in loaded items; bar-tab name input visible',
     changes: [
-      'Fix: OrdersHub.openOrder else-branch (non-table, non-tab: walk-in / takeaway / delivery / counter) was only calling setSurface(\"pos\") — it never populated walkInOrder, customer, or orderType. The POS rendered an empty cart every time even though the queued order had items. Now calls useStore.setState() with the queued data before navigating. Diagnosis used the React-fiber store inspection trick: traversing document.getElementById(\"root\")[__reactContainer$] found the live Zustand state and showed walkInOrder:null, orderQueue intact with items — proving the bug was in the Open handler not the data.',
+      'Fix: OrdersHub.openOrder else-branch (non-table, non-tab: walk-in / takeaway / delivery / counter) was only calling setSurface("pos") — it never populated walkInOrder, customer, or orderType. The POS rendered an empty cart every time even though the queued order had items. Now calls useStore.setState() with the queued data before navigating. Diagnosis used the React-fiber store inspection trick: traversing document.getElementById("root")[__reactContainer$] found the live Zustand state and showed walkInOrder:null, orderQueue intact with items — proving the bug was in the Open handler not the data.',
       'Fix: Bar tab name input in OrderTypeModal tab_pick step was collapsing to ~26px square next to Open button. Root cause: the base inp style has width:100%, and when merged with flex:1 for that specific input, width:100% fought flex sizing and the browser collapsed to padding-width. Added width:auto, minWidth:0 to the inline style override at OrderTypeModal.jsx:321 so flex can size it freely.',
     ],
   },
