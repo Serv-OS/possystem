@@ -9,9 +9,18 @@
 //   node supabase/tests/stock_native/run.mjs --quick       the whole proof, 10 sites in the scale part
 //   node supabase/tests/stock_native/run.mjs               the whole proof, 50 sites and 5,000 items
 //   --seed=N                                               replay the random runs of that seed
+//   node supabase/tests/stock_native/run.mjs --drainer --quick
+//                                                          the drainer release (20261023a) instead of
+//                                                          sections 2 to 18: section 1, then drainer.mjs
+//                                                          (sections 19 to 29) on Drop 0 as it is live
+//   node supabase/tests/stock_native/run.mjs --drainer --before-only --quick
+//                                                          only the drainer parts that need no drainer
+//                                                          file (the basket before, the v1 figures, speed
+//                                                          before): green before the file exists
 //
 //   STOCKN_MIGRATION, STOCKN_ROLLBACK, STOCKN_REVALUE, STOCKN_REVALUE_ROLLBACK, STOCKN_0B,
 //   STOCKN_0B_ROLLBACK   other copies of the six files (default: the repo's supabase/migrations)
+//   STOCKN_DRAINER, STOCKN_DRAINER_ROLLBACK   other copies of 20261023a and its rollback (same default)
 //   STOCKN_KEEP=1        keep the cluster at the end and print how to reach it
 //   STOCKN_STOP_AT=n     stop after section n
 //   STOCKN_NO_GUARD=1    run without the pg-safeupdate stand in (and say so)
@@ -32,8 +41,11 @@ import {
 } from './fixtures.mjs';
 import { CHANNEL_SETUP, channelEvents, refundEvent, drainSql, bookedSql } from './channels.mjs';
 import { stockLevelOf } from '../../functions/_shared/boSectionRules.js';
+import { drainerProof } from './drainer.mjs';
 
 const BASE_ONLY = process.argv.includes('--base-only');
+const BEFORE_ONLY = process.argv.includes('--before-only');
+const DRAINER = process.argv.includes('--drainer') || BEFORE_ONLY;
 const QUICK = process.argv.includes('--quick');
 const SEED = Number((process.argv.find((a) => a.startsWith('--seed=')) || '').slice(7)) || (Date.now() % 1000000);
 const SCALE_SITES = QUICK ? 10 : 50;
@@ -46,6 +58,8 @@ const FILES = {
   rvRb: process.env.STOCKN_REVALUE_ROLLBACK || MIG('20261021a_OPS_stock_native_0a_revalue_ROLLBACK.sql'),
   b: process.env.STOCKN_0B || MIG('20261022a_OPS_stock_native_0b.sql'),
   bRb: process.env.STOCKN_0B_ROLLBACK || MIG('20261022a_OPS_stock_native_0b_ROLLBACK.sql'),
+  d: process.env.STOCKN_DRAINER || MIG('20261023a_OPS_stock_drainer_v2.sql'),
+  dRb: process.env.STOCKN_DRAINER_ROLLBACK || MIG('20261023a_OPS_stock_drainer_v2_ROLLBACK.sql'),
 };
 if (!BASE_ONLY && !existsSync(FILES.a)) {
   console.error(`0a is not there yet: ${FILES.a}\nRun with --base-only for the base database, or set STOCKN_MIGRATION to a copy of 0a.`);
@@ -65,7 +79,7 @@ process.on('uncaughtException', (e) => { console.error(e); c.stop(); process.exi
 const sql = (q, o) => c.sql(q, o);
 const num = (q, o) => c.num(q, o);
 function finish() {
-  console.log(`\n${failures === 0 ? 'PASS' : 'FAIL'}: ${checks - failures}/${checks} checks${failures ? `, ${failures} failed` : ''} (seed ${SEED}${QUICK ? ', quick' : ''}${BASE_ONLY ? ', base only' : ''})`);
+  console.log(`\n${failures === 0 ? 'PASS' : 'FAIL'}: ${checks - failures}/${checks} checks${failures ? `, ${failures} failed` : ''} (seed ${SEED}${QUICK ? ', quick' : ''}${BASE_ONLY ? ', base only' : ''}${DRAINER ? `, drainer release${BEFORE_ONLY ? ' before only' : ''}` : ''})`);
   if (failures) for (const f of failed.slice(0, 40)) console.log(`  - ${short(f, 200)}`);
   if (process.env.STOCKN_KEEP) { console.log(`kept: psql -h ${c.dir} -p ${c.port} -U postgres -d ${c.DB}`); process.exit(failures === 0 ? 0 : 1); }
   c.stop();
@@ -164,7 +178,7 @@ const pathOf = (sig) => sql(`select coalesce((select substr(x, 13) from unnest(p
 const LIVE_POLICIES = [...readFileSync(join(here, 'live_policies.sql'), 'utf8')
   .matchAll(/create policy (\S+) on public\.(\S+) as (\S+) for (\S+)/g)].map((m) => `${m[2]}.${m[1]}`).sort();
 
-console.log(`\nMulti site stock Drop 0 proof (seed ${SEED}${QUICK ? ', quick' : ''}${BASE_ONLY ? ', base only' : ''}; ${c.guardOn ? 'pg-safeupdate stand in on for authenticator' : 'NO pg-safeupdate stand in'})`);
+console.log(`\nMulti site stock ${DRAINER ? 'drainer release' : 'Drop 0'} proof (seed ${SEED}${QUICK ? ', quick' : ''}${BASE_ONLY ? ', base only' : ''}${BEFORE_ONLY ? ', before only' : ''}; ${c.guardOn ? 'pg-safeupdate stand in on for authenticator' : 'NO pg-safeupdate stand in'})`);
 
 // == 1. The base database ======================================================================================
 section(1, '1. The base database: Ops shaped, every real migration Peter ran, in his order');
@@ -309,6 +323,15 @@ let chanBefore = null;
   ok(bad === 0, `${runs} random sales, receipts and waste on the base: on hand equals the ledger quantity after every one (seed ${SEED})`);
 }
 if (BASE_ONLY) finish();
+
+// == 19 to 29. The drainer release (drainer.mjs), on Drop 0 as it is live, instead of sections 2 to 18 ==============
+if (DRAINER) {
+  await drainerProof({
+    c, ok, near, short, pj, sql, num, asCaller, asCallerAsync, callJ, outcome, guarded, section, FILES, QUICK, BEFORE_ONLY,
+    onHandEqLedger, md5Of, aclOf, pathOf, canExec, fnExists, tableExists, FNS, runChannels,
+  });
+  finish();
+}
 
 // == 2. The paste ===================================================================================================
 section(2, '2. 0a as the SQL editor runs it (one transaction) on the base database');

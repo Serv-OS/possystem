@@ -5,9 +5,15 @@
 // "Happy hour" nobody had set up anywhere. A till now shows ONLY the venue's own discounts
 // from Back Office (store.discountPresets, loaded per venue by SyncBridge), and nothing else.
 
+import { cleanDiscountKind } from './discountKinds.js';
+
 export const NO_DISCOUNTS_TEXT = 'No discounts set up for this venue. Add them in Back Office, under Discounts.';
 
-/** The venue's own active discounts, in Back Office order, as { id, label, type, value, requiresManager, scope, categoryIds }. */
+/**
+ * The venue's own active discounts, in Back Office order, as { id, label, type, value, requiresManager,
+ * scope, categoryIds, kind }. kind (v5.11.85): 'staff', 'comp', 'loyalty' or null, carried onto the
+ * check discount with the preset's id so the sales day totals can tell staff food, comps and loyalty.
+ */
 export function venueDiscountList(discountPresets) {
   return (Array.isArray(discountPresets) ? discountPresets : [])
     .filter((d) => d && d.active !== false && Number(d.value) > 0)
@@ -21,5 +27,6 @@ export function venueDiscountList(discountPresets) {
       requiresManager: !!(d.requiresManager ?? d.requires_manager),
       scope: d.scope || 'global',
       categoryIds: d.categoryIds || d.category_ids || [],
+      kind: cleanDiscountKind(d.kind),
     }));
 }

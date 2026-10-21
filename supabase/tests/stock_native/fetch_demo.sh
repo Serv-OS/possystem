@@ -46,6 +46,21 @@ rows stock_transfers "t.location_id in $LOCS" "created_by_name,sent_by_name,rece
 rows production_batches "t.location_id in $LOCS" "notes"
 rows prep_schedule "t.location_id in $LOCS" ""
 rows deliveries "t.location_id in $LOCS" "checked_by_name,rejection_reason"
+# After 0a ran live (20 Oct 2026) the site rows carry company_ref, so the copy also needs the company
+# records 0a made and the venue clock: rehearse.mjs then loads the copy onto a base with 0a in, as live.
+q has0a "select (to_regclass('public.stock_co_items') is not null) as r"
+if grep -q 'true' "$TMP/has0a.json"; then
+  for t in stock_co_settings stock_co_site_groups stock_co_items stock_co_packs stock_co_bridges stock_co_supplier_items stock_co_recipes; do
+    rows "$t" "t.org_id in ($ORGS)" "notes"
+  done
+  for t in stock_co_item_sites stock_co_pack_sites stock_co_bridge_sites stock_co_supplier_sites stock_co_supplier_item_sites stock_co_recipe_sites \
+           stock_co_site_settings venue_clock stock_periods stock_period_snapshots; do
+    rows "$t" "t.location_id in $LOCS" ""
+  done
+  rows stock_co_suppliers "t.org_id in ($ORGS)" "contact_name,phone,email,notes"
+  rows stock_co_recipe_lines "t.org_id in ($ORGS)" "note"
+fi
+rm -f "$TMP/has0a.json"
 q menu_items "select jsonb_build_object('id', id, 'location_id', location_id, 'name', name, 'type', type, 'parent_id', parent_id, 'master_id', master_id, 'archived', archived, 'org_id', org_id, 'scope', scope) as r from public.menu_items where location_id in $LOCT"
 q msm_company "select to_jsonb(t) as r from public.msm_company t where org_id in ($ORGS)"
 q msm_menus "select jsonb_build_object('id', id, 'org_id', org_id, 'name', name, 'status', status) as r from public.msm_menus where org_id in ($ORGS)"

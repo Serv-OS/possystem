@@ -7,6 +7,8 @@ import { reportSave } from '../../lib/saveHealth';
 import { upsertDiscount, deleteDiscount, upsertDiscountRule, deleteDiscountRule } from '../../lib/db';
 import { money, currencySymbol } from '../../lib/currency';
 import { selectOnFocus } from '../../lib/selectOnFocus';
+// v5.11.85 (20261023a): what a preset is for (Staff, Comp, Loyalty), shared with the till and SyncBridge.
+import { DISCOUNT_KIND_LABELS, DISCOUNT_KIND_HELP, DISCOUNT_KIND_NOT_SAVED, cleanDiscountKind } from '../../lib/discountKinds';
 
 /* ── Style constants (match TaxManager / LocationSettings pattern) ────────── */
 const S = {
@@ -34,6 +36,7 @@ const S = {
 
 const EMPTY_DISCOUNT = {
   name:'', type:'percent', value:'', scope:'global', categoryIds:[], requiresManager:false, active:true,
+  kind:null,
 };
 
 const EMPTY_RULE = {
@@ -180,6 +183,16 @@ function DiscountForm({ discount, categories, onSave, onCancel }) {
           <CategoryPicker selected={form.categoryIds} onChange={v => f('categoryIds', v)} categories={categories} />
         </div>
       )}
+
+      {/* v5.11.85 (20261023a): what the discount is for. The till copies it onto the check, so the
+          stock reports can show staff food, comps and loyalty rewards on their own line. */}
+      <div style={{ marginBottom:14 }}>
+        <label style={S.label}>Kind</label>
+        <select style={S.select} value={form.kind || ''} onChange={e => f('kind', cleanDiscountKind(e.target.value))}>
+          {Object.entries(DISCOUNT_KIND_LABELS).map(([k, label]) => <option key={k || 'none'} value={k}>{label}</option>)}
+        </select>
+        <div style={{ fontSize:11, color:'var(--t3)', marginTop:5, lineHeight:1.4 }}>{DISCOUNT_KIND_HELP}</div>
+      </div>
 
       <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:18 }}>
         <label style={{ ...S.label, marginBottom:0 }}>Requires manager PIN</label>
@@ -535,6 +548,8 @@ export default function DiscountManager() {
           scope: d.scope, categoryIds: d.category_ids || [],
           requiresManager: d.requires_manager, active: d.active,
           sortOrder: d.sort_order ?? 0,
+          // null until 20261023a adds the column, so the screen works on a database that is behind
+          kind: cleanDiscountKind(d.kind),
         })));
         setRules((rulesRes.data || []).map(r => ({
           id: r.id, name: r.name, active: r.active, locationId: r.location_id ?? null,
@@ -578,7 +593,7 @@ export default function DiscountManager() {
       showToast?.(`"${form.name}" was NOT saved — could not resolve this location`, 'error');
       return;
     }
-    const { error } = await upsertDiscount(form, locationId);
+    const { error, kindNotSaved } = await upsertDiscount(form, locationId);
     reportSave('discount', error);
     if (error) {
       // Nothing local changed yet, so there is nothing to roll back — just don't pretend.
@@ -598,10 +613,14 @@ export default function DiscountManager() {
       id: d.id, name: d.name, type: d.type, value: parseFloat(d.value), locationId: d.location_id ?? null,
       scope: d.scope, categoryIds: d.category_ids || [],
       requiresManager: d.requires_manager, active: d.active, sortOrder: d.sort_order ?? 0,
+      kind: cleanDiscountKind(d.kind),
     }));
     setDiscounts(mapped);
     syncToStore(mapped, null);
     setEditingDiscount(null);
+    // v5.11.85: the database has no kind column yet (20261023a not run). Everything else saved; a
+    // kind that was picked was not kept, so say so. An ordinary discount lost nothing.
+    if (kindNotSaved && cleanDiscountKind(form.kind)) { showToast?.(DISCOUNT_KIND_NOT_SAVED, 'warning'); return; }
     showToast?.(`"${form.name}" saved`, 'success');
   };
 
@@ -762,6 +781,11 @@ export default function DiscountManager() {
                     {disc.requiresManager && (
                       <span style={{ ...S.badge, background:'rgba(232,160,32,.1)', color:'var(--acc)', border:'1px solid var(--acc-b)' }}>
                         🔑 Manager
+                      </span>
+                    )}
+                    {cleanDiscountKind(disc.kind) && (
+                      <span style={{ ...S.badge, background:'var(--bg3)', color:'var(--t2)', border:'1px solid var(--bdr)' }}>
+                        {DISCOUNT_KIND_LABELS[cleanDiscountKind(disc.kind)]}
                       </span>
                     )}
                   </div>

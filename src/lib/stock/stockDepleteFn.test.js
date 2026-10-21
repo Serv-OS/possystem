@@ -1,23 +1,29 @@
 /**
- * stockDepleteFn.test.js: the stock-deplete edge function driven end to end in node (18 Oct 2026,
- * v5.11.76, stock fences). It posts stock movements with the service role, so who may ask is
- * proven here: a stranger is refused before a single recipe is read; a bound till, a Back Office
- * login and the service role are served. v5.11.77: an online customer is refused even for a check
- * stored as a PAID online order (anyone can write such a check with the public key; probe A4).
+ * stockDepleteFn.test.js: the stock-deplete edge function, RETIRED in the drainer release
+ * (migration 20261023a, multi site stock map 8.1 step 6, drainer contract 3.4 and 4.2), driven end
+ * to end in node.
  *
- * The Deno file is imported directly (node strips the types). Its esm.sh import is mapped to a
- * stub whose createClient hands back fakes: the service role client (the function's own tables)
- * or, when a caller token rides in the headers, the caller's client, whose only question is the
- * database's reach rule (stock_caller_reaches, or accessible_location_ids before 20261018a).
- * Against the code on main before v5.11.76 the refusal cases here fail: it served everybody.
+ * The database takes stock off every channel itself, so the function answers every POST with
+ * 200 { "retired": true }: whoever asks (no token, the bare public key, a till, a Back Office login,
+ * the service role, a stranger) and whatever they send (a sale, a reverse, a bad body, no body).
+ * Proven here: no database client is made, no key or setting is read, no header and no body is
+ * read, no network call goes out, nothing is read or posted. OPTIONS still answers the CORS
+ * preflight and any other method is still refused, as before.
+ *
+ * The Deno file is imported directly (node strips the types). Every door it could use is a spy:
+ * the esm.sh client import (mapped to a stub that counts createClient calls, should the import
+ * ever come back), Deno.env.get, globalThis.fetch, and each request's headers and body readers.
+ * Against the code on main before the drainer release (v5.11.84) the load, POST and source tests
+ * here fail (it read its keys, built a client, asked who the caller was, read the recipe tables and
+ * posted movements); the OPTIONS and 405 tests pass on both, because those answers did not change.
  */
 
 import { test, before, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { registerHooks } from 'node:module';
-import {
-  authoriseStockDeplete, callerReachesVenue, isVenueId,
-} from '../../../supabase/functions/_shared/stockDepleteCaller.js';
+import { fileURLToPath } from 'node:url';
 
 registerHooks({
   resolve(spec, ctx, next) {
@@ -28,242 +34,158 @@ registerHooks({
   },
 });
 
+const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
+const FN = path.join(ROOT, 'supabase/functions/stock-deplete/index.ts');
+const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
+
 const LOC = '7218c716-eeb4-4f96-b284-f3500823595c';
-const OTHER = '0d2c7a1e-5b7f-4c1e-9a55-2b8f3c1d9e01';
 const ENV = { SUPABASE_URL: 'http://ops.test', SUPABASE_SERVICE_ROLE_KEY: 'service-key', SUPABASE_ANON_KEY: 'anon-key' };
-const TOKENS = { till: 'tok-till', bo: 'tok-bo', stranger: 'tok-stranger', kioskElsewhere: 'tok-kiosk-other', customer: 'tok-customer' };
+const TOKENS = { till: 'tok-till', bo: 'tok-bo', stranger: 'tok-stranger', customer: 'tok-customer' };
+const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'authorization, x-client-info, apikey, content-type' };
 
-// -- the fakes -------------------------------------------------------------------------
-const state = { reads: [], posts: [], reachCalls: [], reach: null, checks: [], logs: [] };
-
-function opsTables() {
-  return {
-    inventory_items: [{ id: 'inv-milk', base_unit: 'each', location_id: LOC }, { id: 'inv-oat', base_unit: 'each', location_id: LOC }],
-    inventory_item_conversions: [],
-    item_packaging_formats: [],
-    menu_item_recipes: [
-      { menu_item_id: 'latte', recipe_id: 'r-latte', portion: 1, location_id: LOC },
-      { menu_item_id: 'oat-shot', recipe_id: 'r-oat', portion: 1, location_id: LOC },
-    ],
-    recipes: [{ id: 'r-latte', wastage_pct: 0, location_id: LOC, archived_at: null }, { id: 'r-oat', wastage_pct: 0, location_id: LOC, archived_at: null }],
-    recipe_lines: [
-      { recipe_id: 'r-latte', component_item_id: 'inv-milk', qty: 1, unit: 'each', usable_pct: 100, order_types: null, location_id: LOC },
-      { recipe_id: 'r-oat', component_item_id: 'inv-oat', qty: 1, unit: 'each', usable_pct: 100, order_types: null, location_id: LOC },
-    ],
-    closed_checks: state.checks,
-  };
-}
-
-function opsDb() {
-  const tables = opsTables();
-  return {
-    rpc: async (fn, args) => {
-      if (fn === 'post_stock_movement') { state.posts.push(args); return { data: { id: `m${state.posts.length}` }, error: null }; }
-      return { data: null, error: { code: 'PGRST202', message: `no function ${fn}` } };
-    },
-    from(table) {
-      state.reads.push(table);
-      const filters = [];
-      let single = false;
-      const run = () => {
-        const rows = (table === 'closed_checks' ? state.checks : tables[table] || []).filter((r) => filters.every((f) => f(r)));
-        return single ? { data: rows[0] ? { ...rows[0] } : null, error: null } : { data: rows.map((r) => ({ ...r })), error: null };
-      };
-      const b = {
-        select() { return b; },
-        eq(c, v) { filters.push((r) => String(r[c]) === String(v)); return b; },
-        is(c, v) { filters.push((r) => (v === null ? r[c] == null : r[c] === v)); return b; },
-        maybeSingle() { single = true; return b; },
-        then(resolve, reject) { return Promise.resolve().then(run).then(resolve, reject); },
-      };
-      return b;
-    },
-  };
-}
-
-function callerDb(token) {
-  return {
-    rpc: async (fn, args) => {
-      state.reachCalls.push({ token, fn, args });
-      return state.reach(token, fn, args);
-    },
-    from() { throw new Error('the caller client is only ever asked the reach rule'); },
-  };
-}
-
-// The database after 20261018a: the till and the Back Office login reach LOC, the kiosk reaches OTHER.
-const reachAfter = (token, fn, args) => {
-  if (fn !== 'stock_caller_reaches') return { data: null, error: { code: 'PGRST202', message: 'no function' } };
-  const where = { [TOKENS.till]: [LOC], [TOKENS.bo]: [LOC], [TOKENS.kioskElsewhere]: [OTHER] }[token] || [];
-  return { data: where.includes(args.p_location_id), error: null };
-};
-// The database before 20261018a: no stock_caller_reaches, the set from accessible_location_ids.
-const reachBefore = (token, fn) => {
-  if (fn === 'stock_caller_reaches') return { data: null, error: { code: 'PGRST202', message: 'Could not find the function public.stock_caller_reaches(p_location_id) in the schema cache' } };
-  if (fn === 'accessible_location_ids') {
-    const where = { [TOKENS.till]: [LOC], [TOKENS.bo]: [LOC, OTHER] }[token] || [];
-    return { data: where.map((id) => ({ accessible_location_ids: id })), error: null };
-  }
-  return { data: null, error: { code: 'PGRST202', message: 'no function' } };
-};
-
+// -- the spies -------------------------------------------------------------------------
+const state = { clients: 0, envReads: [], fetches: [], headerReads: 0, bodyReads: 0 };
 let handler;
-before(async () => {
-  globalThis.__mkClient = (url, key, opts) => {
-    const auth = opts?.global?.headers?.Authorization;
-    if (auth) return callerDb(String(auth).replace(/^Bearer\s+/i, ''));
-    assert.equal(key, ENV.SUPABASE_SERVICE_ROLE_KEY, 'the only client without a caller token is the service role');
-    return opsDb();
-  };
-  globalThis.Deno = { env: { get: (k) => ENV[k] }, serve: (h) => { handler = h; } };
-  const warn = console.warn;
-  console.warn = (...a) => { if (String(a[0]).startsWith('[stock-deplete]')) state.logs.push(a.join(' ')); else warn(...a); };
-  await import('../../../supabase/functions/stock-deplete/index.ts');
-});
-
-beforeEach(() => {
-  state.reads = []; state.posts = []; state.reachCalls = []; state.reach = reachAfter; state.logs = [];
-  state.checks.length = 0;
-});
-
-const BODY = { location_id: LOC, check_id: 'chk-1', items: [{ itemId: 'latte', qty: 2, mods: [{ itemId: 'oat-shot', qty: 1 }] }], order_type: 'takeaway' };
-async function call(body, { token = null, apikey = 'anon-key' } = {}) {
-  const headers = { 'content-type': 'application/json', apikey };
-  if (token) headers.authorization = `Bearer ${token}`;
-  const res = await handler(new Request('http://fn.test/stock-deplete', { method: 'POST', headers, body: JSON.stringify(body) }));
-  return { status: res.status, body: await res.json() };
+let atLoad;   // what the import itself did, with every spy on
+function reset() {
+  state.clients = 0; state.envReads = []; state.fetches = []; state.headerReads = 0; state.bodyReads = 0;
 }
-const recipeReads = () => state.reads.filter((t) => t !== 'closed_checks');
-const posted = () => Object.fromEntries(state.posts.map((p) => [p.p_inventory_item_id, p.p_qty_base]));
+
+before(async () => {
+  globalThis.__mkClient = () => { state.clients += 1; throw new Error('a retired function makes no database client'); };
+  globalThis.Deno = {
+    env: { get: (k) => { state.envReads.push(k); return ENV[k]; } },
+    serve: (h) => { handler = h; },
+  };
+  globalThis.fetch = async (url) => { state.fetches.push(String(url)); throw new Error('a retired function makes no network call'); };
+  await import('../../../supabase/functions/stock-deplete/index.ts');
+  atLoad = { clients: state.clients, envReads: [...state.envReads], fetches: [...state.fetches] };
+});
+
+beforeEach(reset);
+
+// A Request whose header and body readers count every read.
+function spiedRequest(method, { token = null, apikey = 'anon-key', body } = {}) {
+  const headers = { 'content-type': 'application/json' };
+  if (apikey) headers.apikey = apikey;
+  if (token) headers.authorization = `Bearer ${token}`;
+  const init = { method, headers };
+  if (body !== undefined) init.body = typeof body === 'string' ? body : JSON.stringify(body);
+  const req = new Request('http://fn.test/stock-deplete', init);
+  const get = req.headers.get.bind(req.headers);
+  const has = req.headers.has.bind(req.headers);
+  req.headers.get = (...a) => { state.headerReads += 1; return get(...a); };
+  req.headers.has = (...a) => { state.headerReads += 1; return has(...a); };
+  for (const reader of ['json', 'text', 'arrayBuffer', 'formData', 'blob']) {
+    const own = req[reader].bind(req);
+    req[reader] = (...a) => { state.bodyReads += 1; return own(...a); };
+  }
+  return req;
+}
+
+async function call(method, opts = {}) {
+  const res = await handler(spiedRequest(method, opts));
+  const text = await res.text();
+  let body = text;
+  try { body = JSON.parse(text); } catch { /* the preflight answers plain text */ }
+  return { status: res.status, body, headers: Object.fromEntries(res.headers.entries()) };
+}
+
+function nothingTouched(what) {
+  assert.equal(state.clients, 0, `${what}: no database client is made`);
+  assert.deepEqual(state.envReads, [], `${what}: no key or setting is read`);
+  assert.deepEqual(state.fetches, [], `${what}: no network call goes out`);
+  assert.equal(state.headerReads, 0, `${what}: no header (no token, no key) is read`);
+  assert.equal(state.bodyReads, 0, `${what}: the body is not read`);
+}
+
+const SALE = { location_id: LOC, check_id: 'chk-1', items: [{ itemId: 'latte', qty: 2, mods: [{ itemId: 'oat-shot', qty: 1 }] }], order_type: 'takeaway' };
 
 // -- the function, end to end ------------------------------------------------------------
-test('a stranger is refused, and nothing is read or posted', async () => {
-  const r = await call(BODY, { token: TOKENS.stranger });
-  assert.equal(r.status, 403);
-  assert.equal(r.body.code, 'stock_caller');
-  assert.equal(r.body.reason, 'not_this_venue');
-  assert.deepEqual(state.posts, []);
-  assert.deepEqual(recipeReads(), [], 'no recipe table is read for a refused caller');
-  assert.deepEqual(state.reachCalls.map((c) => c.fn), ['stock_caller_reaches']);
-  assert.equal(state.logs.length, 1, 'one refusal line in the function log');
-  assert.match(state.logs[0], /refused .*not_this_venue/);
+test('loading the module reads nothing: no key, no client, no network; Deno.serve(handler) starts it', () => {
+  assert.equal(typeof handler, 'function', 'Deno.serve(handler) is still how it starts');
+  assert.deepEqual(atLoad, { clients: 0, envReads: [], fetches: [] });
+  const src = read('supabase/functions/stock-deplete/index.ts');
+  assert.match(src, /^Deno\.serve\(handler\);$/m);
+  assert.doesNotMatch(src, /Deno\.env/, 'no key or setting is read, at load or per call');
 });
 
-test('the bare public key (no session) is refused', async () => {
-  const r = await call(BODY, { token: 'anon-key' });
-  assert.equal(r.status, 403);
-  assert.deepEqual(state.posts, []);
-});
-
-test('no Authorization header at all is refused', async () => {
-  const r = await call(BODY);
-  assert.equal(r.status, 403);
-  assert.deepEqual(state.reachCalls, [], 'with no token there is nobody to ask about');
-  assert.deepEqual(state.posts, []);
-});
-
-test('a bound till of the venue is served with the lines it sent', async () => {
-  const r = await call(BODY, { token: TOKENS.till });
-  assert.equal(r.status, 200);
-  assert.equal(r.body.depleted, 2);
-  assert.deepEqual(posted(), { 'inv-milk': -2, 'inv-oat': -2 });
-  assert.deepEqual(state.reachCalls[0].args, { p_location_id: LOC });
-  assert.equal(state.posts[0].p_idempotency_key, 'sale:chk-1:inv-milk', 'the movement key is unchanged');
-});
-
-test('a Back Office login of the venue is served, reverse included', async () => {
-  const r = await call({ ...BODY, reverse: true }, { token: TOKENS.bo });
-  assert.equal(r.status, 200);
-  assert.deepEqual(posted(), { 'inv-milk': 2, 'inv-oat': 2 });
-  assert.equal(state.posts[0].p_movement_type, 'RETURN');
-});
-
-test('a kiosk bound to ANOTHER venue is refused at this one (an old till pairing in its browser)', async () => {
-  const r = await call(BODY, { token: TOKENS.kioskElsewhere });
-  assert.equal(r.status, 403);
-  assert.deepEqual(state.posts, []);
-});
-
-test('the service role is served without asking the database who it is', async () => {
-  const r = await call(BODY, { token: ENV.SUPABASE_SERVICE_ROLE_KEY });
-  assert.equal(r.status, 200);
-  assert.deepEqual(state.reachCalls, []);
-  assert.deepEqual(posted(), { 'inv-milk': -2, 'inv-oat': -2 });
-});
-
-test('v5.11.77: a check stored as a paid online order is no longer a door: the customer is refused, nothing read or posted', async () => {
-  // Anyone holding the public key can write this row (closed_checks insert policy with check true).
-  for (const chk of [
-    { id: 'chk-1', location_id: LOC, source: 'online', status: 'paid', voided: false, order_type: 'collection', items: [{ itemId: 'latte', qty: 100 }] },
-    { id: 'chk-1', location_id: LOC, source: 'qr', status: 'paid', voided: false, items: [{ itemId: 'latte', qty: 1 }] },
-    { id: 'chk-1', location_id: LOC, source: 'catering', status: 'paid', voided: false, items: [{ itemId: 'latte', qty: 1 }] },
-  ]) {
-    state.checks.length = 0; state.posts = []; state.reads = [];
-    state.checks.push(chk);
-    for (const token of [TOKENS.customer, TOKENS.stranger, null]) {
-      const r = await call(BODY, { token });
-      assert.equal(r.status, 403, `${chk.source} with ${token}`);
-      assert.equal(r.body.reason, 'not_this_venue');
-    }
-    assert.deepEqual(state.posts, [], 'nothing posted');
-    assert.deepEqual(state.reads, [], 'not even the stored check is read');
+test('every caller gets 200 { retired: true } and nothing is read or posted', async () => {
+  const callers = {
+    'no token': { token: null, apikey: null },
+    'the bare public key': { token: ENV.SUPABASE_ANON_KEY },
+    'a bound till': { token: TOKENS.till },
+    'a Back Office login': { token: TOKENS.bo },
+    'the service role': { token: ENV.SUPABASE_SERVICE_ROLE_KEY, apikey: ENV.SUPABASE_SERVICE_ROLE_KEY },
+    'a stranger': { token: TOKENS.stranger },
+    'an online customer': { token: TOKENS.customer },
+  };
+  for (const [who, opts] of Object.entries(callers)) {
+    reset();
+    const r = await call('POST', { ...opts, body: SALE });
+    assert.equal(r.status, 200, who);
+    assert.deepEqual(r.body, { retired: true }, who);
+    assert.equal(r.headers['content-type'], 'application/json', who);
+    for (const [k, v] of Object.entries(CORS)) assert.equal(r.headers[k], v, `${who}: ${k}`);
+    nothingTouched(who);
   }
 });
 
-test('an online customer cannot reverse', async () => {
-  state.checks.push({ id: 'chk-1', location_id: LOC, source: 'online', status: 'paid', voided: false, items: [{ itemId: 'latte', qty: 1 }] });
-  const r = await call({ ...BODY, reverse: true }, { token: TOKENS.customer });
-  assert.equal(r.status, 403);
-  assert.equal(r.body.reason, 'reverse_needs_venue');
-  assert.deepEqual(state.posts, []);
+test('whatever is sent: a reverse, a bad venue, no items, bad JSON or no body at all, the same answer', async () => {
+  const bodies = {
+    'a reverse (put stock back)': { ...SALE, reverse: true },
+    'a location that is not a venue id': { ...SALE, location_id: 'loc-demo' },
+    'no items': { ...SALE, items: [] },
+    'not JSON': '{ this is not json',
+    'no body': undefined,
+  };
+  for (const [what, body] of Object.entries(bodies)) {
+    reset();
+    const r = await call('POST', { token: TOKENS.till, body });
+    assert.equal(r.status, 200, what);
+    assert.deepEqual(r.body, { retired: true }, what);
+    nothingTouched(what);
+  }
 });
 
-test('before 20261018a runs: the same answer from accessible_location_ids', async () => {
-  state.reach = reachBefore;
-  const till = await call(BODY, { token: TOKENS.till });
-  assert.equal(till.status, 200);
-  assert.deepEqual(state.reachCalls.map((c) => c.fn), ['stock_caller_reaches', 'accessible_location_ids']);
-  state.posts = []; state.reachCalls = [];
-  const stranger = await call(BODY, { token: TOKENS.stranger });
-  assert.equal(stranger.status, 403);
-  assert.deepEqual(state.posts, []);
+test('OPTIONS answers the CORS preflight as before', async () => {
+  const r = await call('OPTIONS', { token: null, apikey: null });
+  assert.equal(r.status, 200);
+  assert.equal(r.body, 'ok');
+  for (const [k, v] of Object.entries(CORS)) assert.equal(r.headers[k], v, k);
+  nothingTouched('the preflight');
 });
 
-test('any other failure of the reach question refuses (fails closed)', async () => {
-  state.reach = () => ({ data: null, error: { code: '500', message: 'upstream timeout' } });
-  const r = await call(BODY, { token: TOKENS.till });
-  assert.equal(r.status, 403);
-  assert.deepEqual(state.reachCalls.map((c) => c.fn), ['stock_caller_reaches'], 'no fallback on a real error');
-  assert.deepEqual(state.posts, []);
+test('any other method is still refused (405), and nothing is read', async () => {
+  for (const method of ['GET', 'PUT', 'DELETE']) {
+    reset();
+    const r = await call(method, { token: TOKENS.till });
+    assert.equal(r.status, 405, method);
+    assert.deepEqual(r.body, { error: 'method not allowed' }, method);
+    nothingTouched(method);
+  }
 });
 
-test('a location that is not a venue id is a bad request, before anyone is asked', async () => {
-  const r = await call({ ...BODY, location_id: 'loc-demo' }, { token: TOKENS.till });
-  assert.equal(r.status, 400);
-  assert.deepEqual(state.reachCalls, []);
-  const empty = await call({ ...BODY, items: [] }, { token: TOKENS.till });
-  assert.equal(empty.status, 400);
+// -- the source: nothing left that could take stock off -----------------------------------
+test('the source keeps no client, no reads, no posts, no recipe rule and no caller rule', () => {
+  const src = read('supabase/functions/stock-deplete/index.ts');
+  assert.doesNotMatch(src, /createClient|supabase-js/, 'no database client');
+  assert.doesNotMatch(src, /\.rpc\(|\.from\(|post_stock_movement/, 'no read, no post');
+  assert.doesNotMatch(src, /\bfetch\(/, 'no network call');
+  assert.doesNotMatch(src, /\bimport\b/, 'imports nothing');
+  assert.doesNotMatch(src, /buildCtx|inventory_items|recipe_lines|menu_item_recipes|item_packaging_formats|inventory_item_conversions/, 'the unpaged reads are gone');
+  assert.doesNotMatch(src, /\bUNITS\b|function (convert|toBase|globalFactor)\b/, 'the unit table copy is gone');
+  assert.doesNotMatch(src, /authoriseStockDeplete|stockDepleteCaller|req\.json|req\.headers/, 'no caller rule, no header or body read');
+  assert.match(src, /json\(\{ retired: true \}\)/);
+  assert.match(src, /--no-verify-jwt/, 'the deploy line keeps the public door (old kiosks call it with the public key)');
+  assert.ok(fs.statSync(FN).isFile());
 });
 
-// -- the rule, unit by unit ---------------------------------------------------------------
-test('isVenueId: only a uuid', () => {
-  assert.equal(isVenueId(LOC), true);
-  assert.equal(isVenueId(LOC.toUpperCase()), true);
-  for (const v of ['', 'loc-demo', `${LOC},x`, null, undefined, 42]) assert.equal(isVenueId(v), false, String(v));
-});
-
-test('callerReachesVenue: any doubt is no', async () => {
-  const db = (answer) => ({ rpc: async () => answer });
-  assert.equal(await callerReachesVenue(db({ data: true, error: null }), LOC), true);
-  assert.equal(await callerReachesVenue(db({ data: false, error: null }), LOC), false);
-  assert.equal(await callerReachesVenue(db({ data: 'true', error: null }), LOC), false, 'only a real boolean true');
-  assert.equal(await callerReachesVenue(db({ data: null, error: { code: '42501', message: 'permission denied' } }), LOC), false);
-  assert.equal(await callerReachesVenue({ rpc: async () => { throw new Error('network'); } }, LOC), false);
-  assert.equal(await callerReachesVenue(db({ data: true, error: null }), 'not-a-venue'), false);
-  assert.equal(await callerReachesVenue(null, LOC), false);
-});
-
-test('authoriseStockDeplete: an empty service key never matches an empty token', async () => {
-  const d = await authoriseStockDeplete({ authorization: 'Bearer ', serviceKey: '', makeCallerDb: () => null, ops: opsDb(), body: BODY });
-  assert.equal(d.ok, false);
+test('the caller rule file is deleted and nothing in the edge functions imports it', () => {
+  assert.equal(fs.existsSync(path.join(ROOT, 'supabase/functions/_shared/stockDepleteCaller.js')), false);
+  const dir = path.join(ROOT, 'supabase/functions');
+  const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(d, e.name)) : [path.join(d, e.name)]));
+  for (const file of walk(dir).filter((f) => /\.(ts|js|mjs)$/.test(f))) {
+    assert.doesNotMatch(fs.readFileSync(file, 'utf8'), /stockDepleteCaller/, path.relative(ROOT, file));
+  }
 });

@@ -68,6 +68,11 @@ export default function DiscountModal({ items, subtotal, onConfirm, onCancel, ch
       itemUids: scopeVal==='items' ? activeItems.map(i=>i.uid) : null,
       // v5.10.0: a name tag, never the staff record (that carried the manager's PIN onto the check).
       amount, manager: approverStamp(mgr),
+      // v5.11.85 (20261023a): which Back Office preset this came from and what it is for (Staff, Comp,
+      // Loyalty), so the sales day totals count staff food, comps and rewards. A custom one carries
+      // neither. The amount, label, type, value and scope above are unchanged, so totals never move.
+      presetId: selected==='custom' ? null : (preset?.id ?? null),
+      kind: selected==='custom' ? null : (preset?.kind ?? null),
     });
   };
 

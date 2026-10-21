@@ -1,7 +1,12 @@
 /**
- * explode.js — turn sold menu items into the stock-item quantities they consume.
+ * explode.js: turn sold menu items into the stock-item quantities they consume.
  *
- * Pure (no I/O). Used by stock/deplete.js to post SALE_DEPLETION movements.
+ * Pure (no I/O). PREVIEW ONLY since v5.11.85 (the drainer release, 20261023a): no sale path uses
+ * it. The database's stock_explode is the one stock rule for every channel (the till, the reader,
+ * kiosk, online, QR, catering, pay at table, MPOS, HubRise, ezCater, refunds, voids and dish waste
+ * through stock_record_waste); deplete.js no longer posts and PosWasteModal no longer falls back to
+ * it, so today no screen imports it either. It stays, logic unchanged, as the browser copy of the
+ * rule for previews and their tests until Drop 2 swaps the previews to stock_recipe_cost.
  *
  * Model: deplete the DIRECT components of a dish recipe. A made sub-recipe used as
  * a component is depleted as the made item itself (not recursed to its raws) —

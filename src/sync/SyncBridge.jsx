@@ -17,6 +17,7 @@ import { retryPendingRedemptions } from '../lib/commitRedemptions';
 import { flushVenueMessageTaps } from '../lib/venueMessageTaps';
 import { confirmVenueMessage } from '../lib/venueMessages';
 import { fetchMenuCategoryLinks } from '../lib/db';
+import { cleanDiscountKind } from '../lib/discountKinds';
 import { startSessionReconciler, stopSessionReconciler } from './SessionReconciler';
 import { startQueueReconciler, stopQueueReconciler } from './QueueReconciler';
 import { startTerminalJobReconciler, stopTerminalJobReconciler } from './TerminalJobReconciler';
@@ -558,6 +559,8 @@ export default function SyncBridge({ onSyncPulse }) {
                 categoryIds: d.category_ids || [],
                 requiresManager: d.requires_manager ?? false,
                 active: d.active, sortOrder: d.sort_order ?? 0,
+                // v5.11.85 (20261023a): Staff, Comp or Loyalty, copied onto the check discount (null before the column exists)
+                kind: cleanDiscountKind(d.kind),
               }));
               if (readMayReplace(rulesRes, { trusted: discTrusted })) patch.discountRules = rulesRes.data.map(r => ({
                 id: r.id, name: r.name, active: r.active, locationId,

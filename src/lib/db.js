@@ -41,6 +41,7 @@ import { saveTableChecked, openOrdersFor, readFloorPlan } from './tablePlanDb';
 import { saveSectionsChecked } from './sectionPlan';
 import { mustChangeRow } from './rowWrites';
 import { patchPendingCheck } from '../sync/DataSafe';
+import { cleanDiscountKind, isMissingKindColumn } from './discountKinds.js';
 import { readManagedAt, gateFor } from './msm/msmManaged.js';
 
 // 27 Sep 2026: the venue a Back Office menu, modifier group or discount write falls back to when
@@ -2600,9 +2601,20 @@ export const upsertDiscount = async (discount, locationId = null) => {
     requires_manager: discount.requiresManager ?? discount.requires_manager ?? false,
     active:           discount.active ?? true,
     sort_order:       discount.sortOrder ?? discount.sort_order ?? 0,
+    // v5.11.85 (20261023a): Staff, Comp or Loyalty (null = an ordinary discount). The till copies it
+    // onto the check discount; the database's sales day totals count those lines on their own.
+    kind:             cleanDiscountKind(discount.kind),
     updated_at:       new Date().toISOString(),
   };
   const result = await supabase.from('discounts').upsert(dbRow, { onConflict: 'id' });
+  // Before 20261023a is run the column is not there: save everything else once more without it, and
+  // say so (kindNotSaved), so the Discounts screen never breaks on a database that is behind.
+  if (result.error && isMissingKindColumn(result.error)) {
+    const { kind: _kind, ...withoutKind } = dbRow;
+    const retry = await supabase.from('discounts').upsert(withoutKind, { onConflict: 'id' });
+    if (retry.error) console.error('[DB] discounts upsert failed:', retry.error.message);
+    return { ...retry, kindNotSaved: true };
+  }
   if (result.error) console.error('[DB] discounts upsert failed:', result.error.message);
   return result;
 };

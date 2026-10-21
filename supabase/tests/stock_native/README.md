@@ -1,7 +1,7 @@
-# stock_native: the Drop 0 proof (multi site stock, native records)
+# stock_native: the Drop 0 and drainer release proofs (multi site stock, native records)
 
-Local, throwaway PostgreSQL 17 only. Nothing here connects to Supabase except `fetch_demo.sh`,
-which READS (Management API, `read_only: true`) and writes its copy outside the repo.
+Local, throwaway PostgreSQL 17 only. Nothing here connects to Supabase except `fetch_demo.sh` and
+`fetch_checks.sh`, which READ (Management API, `read_only: true`) and write their copies outside the repo.
 
 ## Run it
 
@@ -12,18 +12,29 @@ node supabase/tests/stock_native/run.mjs                # the whole proof, 50 si
 node supabase/tests/stock_native/run.mjs --seed=1234    # replay the random runs of a seed
 
 zsh supabase/tests/stock_native/fetch_demo.sh /some/scratch/demo.json a59a6d97-ffaa-470e-8bb7-04cba789f335 fcbddcfd-a025-407b-9727-9e9139250767
-STOCKN_DEMO=/some/scratch/demo.json node supabase/tests/stock_native/rehearse.mjs              # 0a, revalue, 0b on the live rows
+STOCKN_DEMO=/some/scratch/demo.json node supabase/tests/stock_native/rehearse.mjs              # 0a, revalue, the drainer release, 0b on the live rows
 STOCKN_DEMO=/some/scratch/demo.json node supabase/tests/stock_native/rehearse.mjs --base-only  # load the copy only
 
 node --test src/lib/stock/stockNativeMigration.test.js  # the CI text test of the six files
+
+# the drainer release (20261023a), on Drop 0 as it is live (0a and its revalue file in)
+node supabase/tests/stock_native/run.mjs --drainer --before-only --quick   # what needs no drainer file (green before it exists)
+node supabase/tests/stock_native/run.mjs --drainer --quick                 # the whole drainer proof, 10 speed sites
+node supabase/tests/stock_native/run.mjs --drainer                         # 50 speed sites, 3,000 checks
+
+zsh supabase/tests/stock_native/fetch_checks.sh /some/scratch/checks.json a59a6d97-ffaa-470e-8bb7-04cba789f335   # the test company only
+STOCKN_DEMO=/some/scratch/demo.json STOCKN_CHECKS=/some/scratch/checks.json node supabase/tests/stock_native/rehearse.mjs --drainer
+
+node --test src/lib/stock/stockDrainerMigration.test.js  # the CI text test of the release and its rollback
 ```
 
 Exit code 0 only when every check holds. Needs `/opt/homebrew/bin` (initdb, pg_ctl, postgres, psql,
 pg_config) and a C compiler (the pg-safeupdate stand in).
 
 Environment: `STOCKN_MIGRATION`, `STOCKN_ROLLBACK`, `STOCKN_REVALUE`, `STOCKN_REVALUE_ROLLBACK`,
-`STOCKN_0B`, `STOCKN_0B_ROLLBACK` point at other copies of the six files (default: this repo's
-`supabase/migrations`); `STOCKN_KEEP=1` keeps the cluster and prints how to reach it;
+`STOCKN_0B`, `STOCKN_0B_ROLLBACK`, `STOCKN_DRAINER`, `STOCKN_DRAINER_ROLLBACK` point at other copies of
+the eight files (default: this repo's `supabase/migrations`); `STOCKN_CHECKS` (rehearse.mjs only) a copy
+made by `fetch_checks.sh`; `STOCKN_KEEP=1` keeps the cluster and prints how to reach it;
 `STOCKN_STOP_AT=n` stops after section n; `STOCKN_NO_GUARD=1` runs without the pg-safeupdate stand in
 (and says so); `STOCKN_PGPORT` fixes the port.
 
@@ -117,6 +128,89 @@ file must close (Provo 1.00, Location 2 2.00).
     directly, the writer pass and the drainer still working under the locks, approval closed.
 18. The rollbacks one by one and all three, no number moving, then everything applied again.
 
+## The drainer release (drainer.mjs, run.mjs --drainer)
+
+Section 1 builds the base database as above; then, instead of sections 2 to 18, Drop 0 is put in as it
+is live (0a and its revalue file; one copy also with 0b) and the drainer release is proved on copies:
+
+19. The base: 0a and the revalue applied, the basket's rows added the way a demo file adds them, Drop 0's
+    channels booked as the history the release compares, the 7 replaced and 21 checked bodies at their
+    live md5, search_path and grants, everything the guard asks for there and nothing of the release.
+20. The every channel basket (map 9.1, drainer contract 6.2; channels.mjs `basketEvents`) BEFORE the
+    release, without and with 0b, booked by each channel's own writer at Provo, Location 2 and the one
+    site venue: till cash, card, split, send to terminal, bar tab, kiosk, online, QR pay now and open
+    tab, catering dated ahead (plain, part refunded before the event and netted, voided before the
+    event), pay at table, MPOS, HubRise (and its cancel), ezCater, part refunds with and without a uid,
+    a full refund, a refund the processor refused (undo), a sealed item going back to the shelf, a money
+    only refund, a void after making and before sending, a booking check and a demo id check (skipped),
+    staff discounts (check and item level, by preset and by label), a comp, loyalty by tender, by kind
+    and the legacy credit, a promo tender, a modifier with its own recipe, a pack line dish, drive thru,
+    gift card and booking deposit tenders. What v1 books is checked case by case.
+21. The paste: the check row (contract 5.4, every column), its refusals (a second paste, before 0a, not
+    Ops, a changed replaced or checked body, no pg_cron), and the in migration proof refusing a real
+    difference (an archived recipe still linked with live sales, a recipe line on an archived pack).
+22. What it made: discounts.kind and its CHECK, stock_day_sums.demo and its key, the queue columns and
+    indexes, the three tables (RLS, grants, read rules, fences, no write policy, not in realtime), the
+    option rule shape CHECK and org guard, the nine triggers, every function's language, definer,
+    volatility, search_path, exact grants, result shape and arguments, the cron job.
+23. The basket AFTER the release, without and with 0b: every movement, waste row and outbox event
+    (flags included) identical to v1, net of VAT identical (the JS rule), `_sales_check_parts` giving the
+    JS integers on every basket check, one stock_sale_takes row per sale that reached the posting step
+    with per unit amounts adding up to the movements and each line's theoretical cost, no new flag.
+24. The deliberate changes (map 8.1, contract 6.1), each with v1's and v2's figures side by side:
+    archived recipe, item, pack and bridge (D1); made to order three levels down, a loop, the depth cap,
+    no recipe, per site (D2); oat milk replacing milk at two sites (different units), no cheese, remove
+    winning over replace, options on the dish's own recipe only, a rule with no site row (D3); a part
+    refund after a recipe change giving back what the sale took (2 of 3), refunded food booked as waste
+    and the sealed juice back on the shelf, an unmatched refund line, a refund with no uid (the sale's
+    average), a sale booked before the release (refund_by_recipe), a full refund, a refused takes row
+    never undoing the sale (D4, D6); stock_drainer_health naming every one of them.
+25. Stock day totals: the paste queues every venue day that holds a movement (history 20, 45, 54 and
+    60 days back included) and nothing else but today and the two days before; equal to the ledger on
+    every venue day of the whole ledger; the demo markers; after inserts, updates (quantity, day, type,
+    a many row update) and deletes; a day the totals never held (rows written with no trigger) gets a
+    late row, a delete and a moving update, each queues the day (reason late) and the drain makes it
+    whole, while an update that moves no figure and a row dated yesterday queue nothing; a post during a rebuild waits
+    at most 500 ms and its day goes to the repair queue; a forced error (and a refusing repair queue)
+    never stops the post; no delta lost to a rebuild during sales; the drain's backoff; two drains at
+    once; an unknown clock (clock_known false), the clock arriving, a changed day start, the same clock
+    again; a minute either side of a day start; stock_drainer_health's every field.
+26. Sales day totals: every column of every basket row against an independent oracle (qty, gross, net,
+    discounts, rewards, tax, theoretical cost, staff, comp, loyalty); sales_day_sums_check per day (net
+    = the rule = the JS, theoretical cost = the ledger's sale value); `_sales_check_parts` against the JS
+    on 40 parity rows (every tender and legacy path); `_sales_js_round` and `_sales_js_num`; a till close
+    while the queue is locked or refusing still writes the check.
+27. Speed: the drainer with every trigger off (v1) and on (v2), clean and busy (sales injected all
+    through, and with the release day total rebuilds and drains beside it): every check done, 0 dead,
+    the rate printed against 15,000 checks an hour company wide, the day totals equal to the ledger at
+    every site after, one takes row per check, stock_drainer_health and sales_day_sums_check at scale.
+28. Who may do what: the option tables' read rules per login, the second step fence, the anon key,
+    stock_sale_takes and every internal closed (owner, till, anon, even the service role for the
+    internals), the service role's rebuild under 8 s, discounts.kind written by a Back Office login under
+    the live rules (refused without the second step and by the anon key), the 3 s anon limit.
+29. The rollbacks: 0a's refused while the release is in; the release's own (its check row, the seven
+    bodies back at their live md5, search_path and grants, every function exactly the base's, the old
+    day totals key, the tables, triggers, job and backup rows gone, discounts.kind kept), the basket
+    after it matching v1 again, then the release applying again.
+
+`--before-only` runs 19, 20, the v1 half of 24 and the v1 speed: green before the drainer file exists.
+
+0a ran live on 20 Oct 2026, so a copy fetched since then is taken AFTER 0a: its site rows carry
+company_ref, and fetch_demo.sh then also copies 0a's company records (the stock_co_ tables) and the
+venue clock. rehearse.mjs sees that, puts 0a on the empty base first (as on Ops) and loads the copy
+with every live column. Step 3 then proves what 0a left on the real rows instead of linking them again
+(every site row has its company record, no company row without a site, the writer re plans zero
+writes, the twins, the archived keg, Location 2's nested packs, on hand equal to the ledger), and step 4
+proves a second revalue paste refuses and changes nothing, with the ledger value equal to the books to
+the penny. A copy taken before 0a (such as the one of 20 Oct) still runs the link and revalue checks.
+
+rehearse.mjs step 4b runs the release on a copy of the live rows taken after the revalue file (before
+0b, as live): the check row with every difference 0, every venue day of the real ledger queued and
+checked after the drain, a late row on the oldest day queued and rebuilt whole, stock_drainer_health,
+the rollback; with `STOCKN_CHECKS` also the sales rule on every real check and a
+replay of those checks as new sales before and after the release (identical movements, waste and
+outbox events; part refunds with no uid shown aside, never giving back more than the sale took).
+
 ## Files
 
 | File | What |
@@ -125,8 +219,12 @@ file must close (Provo 1.00, Location 2 2.00).
 | base.mjs | the cluster, the psql helpers, the base database builder, the figures every link check compares |
 | fixtures.mjs | ids, logins, devices and stock rows, and what 0a must find on them |
 | channels.mjs | one sale per order channel, as each writer writes it, drained by the real drainer |
-| rehearse.mjs | 0a, revalue and 0b on a copy of the live rows |
-| fetch_demo.sh | the read only copy (written outside the repo; names of people left out) |
+| drainer.mjs | the drainer release proof, sections 19 to 29 (run.mjs --drainer) |
+| drainer_fixtures.mjs | the rows the drainer proof adds: the basket's extra rows and presets, the deliberate cases, the speed company, the sales rule parity rows |
+| live_discounts.sql | public.discounts as Ops has it (RLS, grants, the two live policies), for the discounts.kind role tests |
+| rehearse.mjs | 0a, revalue and 0b on a copy of the live rows (or, on a copy taken after 0a, what 0a and the revalue left); the drainer release on a copy before 0b (step 4b) |
+| fetch_demo.sh | the read only copy, with 0a's company records and the venue clock once 0a is live (written outside the repo; names of people left out) |
+| fetch_checks.sh | a read only copy of one company's recent closed checks, only the fields the stock and sales rules read (written outside the repo; nothing that names a person) |
 | extra_schema.sql, live_shape.sql, live_policies.sql, live/ | the live shapes and texts (no rows) |
 | live_indexes.sql, safeupdate_guard.c | from the Phase 1 harness (live indexes, the pg-safeupdate stand in) |
 

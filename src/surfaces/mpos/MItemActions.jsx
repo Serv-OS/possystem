@@ -45,7 +45,8 @@ export default function MItemActions({ item, onClose }) {
 
   // ── Action: apply discount ───────────────────────────────────────────────
   const commitDiscount = (d) => {
-    addItemDiscount(activeTableId || null, item.uid, { id:d.id, label:d.label, type:d.type, value:d.value });
+    // v5.11.85 (20261023a): the preset's id and kind ride along, as on the till (totals unchanged)
+    addItemDiscount(activeTableId || null, item.uid, { id:d.id, label:d.label, type:d.type, value:d.value, presetId:d.id, kind:d.kind ?? null });
     close();
   };
   const applyDiscount = (d) => {

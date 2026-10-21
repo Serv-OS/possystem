@@ -17,6 +17,10 @@
 //      (stock totals equal the ledger; sales gross, discounts, voids and tax equal report_day_sums).
 //   3. Upkeep (stock_nightly_upkeep): PIN tries older than a day purged; a site item archived at zero
 //      after Stop ordering when no live recipe there uses it; company rows left with no site archived.
+//   4. The drainer's health (drainer release, 20261023a, contract 3.5): stock_drainer_health, read
+//      only, kept in the answer as drainer_health (the morning after check reads the same function).
+//      Before 20261023a runs it reads { "missing": true }; any other failure is kept there as
+//      { "error" }. This step never fails the run (it adds nothing to errors and never sets ok false).
 // The answer is a summary, also written to the function log as one line ('[stock-nightly] summary').
 //
 // Reads are paged past the 1,000 row cap. Nothing here writes a table directly: every write is one of
@@ -28,7 +32,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { pagedRows } from '../_shared/pagedRows.js';
 import { CRON_KEY_HEADER, isServiceRoleBearer } from '../_shared/cronKey.js';
-import { NIGHTLY_KEY_CHECK, NIGHTLY_BUDGET_MS, NIGHTLY_CONCURRENCY, nightlyAccess, clockRows, nightlyDay, mapLimit, isUuid } from './rules.js';
+import { NIGHTLY_KEY_CHECK, NIGHTLY_BUDGET_MS, NIGHTLY_CONCURRENCY, DRAINER_HEALTH, nightlyAccess, clockRows, nightlyDay, mapLimit, isUuid, drainerHealthOf } from './rules.js';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -135,6 +139,14 @@ Deno.serve(async (req) => {
     summary.upkeep = await call('stock_nightly_upkeep');
   } catch (e) {
     errors.push(`upkeep: ${errText(e)}`);
+  }
+
+  // 4. The drainer's health, after upkeep, with the service role. Read only; never fails the run.
+  try {
+    const { data, error } = await ops.rpc(DRAINER_HEALTH);
+    summary.drainer_health = drainerHealthOf({ data, error });
+  } catch (e) {
+    summary.drainer_health = drainerHealthOf({ error: { message: errText(e) } });
   }
 
   summary.ok = errors.length === 0;

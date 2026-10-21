@@ -2267,7 +2267,7 @@ export default function POSSurface() {
               // Item-level: apply to each selected item
               disc.itemUids?.forEach(uid => {
                 const item = items.find(i=>i.uid===uid);
-                if (item) addItemDiscount(activeTableId, uid, { id:`disc-${uid}`, label:disc.label, type:disc.type, value:disc.value });
+                if (item) addItemDiscount(activeTableId, uid, { id:`disc-${uid}`, label:disc.label, type:disc.type, value:disc.value, presetId:disc.presetId ?? null, kind:disc.kind ?? null });
               });
             }
             showToast(`${disc.label} applied`, 'success');
