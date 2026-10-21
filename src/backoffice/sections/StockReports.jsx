@@ -16,7 +16,6 @@
  */
 
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { useStore } from '../../store';
 import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
 import { getLocationConfig } from '../../lib/locationTime';
 import { money, currencySymbol, signedMoney } from '../../lib/currency';
@@ -33,6 +32,7 @@ import { displayInUnits } from '../../lib/stock/uom';
 import { areasReady, fetchAreas, fetchAreaHoldings } from '../../lib/stock/areas';
 import { stockByAreaRows } from '../../lib/stock/areaRules';
 import { resolveTaxRate, netOf } from '../../lib/tax';
+import { useSiteStockContext } from '../../lib/stock/siteContext';
 import {
   Money, Signed, Tag, BarCell, RankChip, GradedChip, gradeOf,
   KpiBand, Callout, Chips, SegToggle, SearchField, PeriodControl, Tabs,
@@ -60,10 +60,11 @@ function ExportBtn({ rows, headers, name }) {
   );
 }
 
-export default function StockReports() {
-  const menuItems = useStore(s => s.menuItems) || [];
-  const taxRates = useStore(s => s.taxRates) || [];
-  const [locId, setLocId] = useState(getActiveLocationSync());
+// v5.11.86 (multi site stock Drop 1): siteId is the picker's site (the signed in venue for a one site
+// company). Another site's menu and tax rates are that site's own (siteContext.js), never the store's.
+export default function StockReports({ siteId = null } = {}) {
+  const { menuItems, taxRates } = useSiteStockContext(siteId);
+  const [locId, setLocId] = useState(siteId || getActiveLocationSync());
   const [tab, setTab] = useState('Valuation');
   const [items, setItems] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
@@ -196,7 +197,7 @@ export default function StockReports() {
       {!loading && tab === 'Valuation'   && <Valuation items={items} supplierName={supplierName}/>}
       {!loading && tab === 'By area'     && <ByArea items={items} byArea={byArea} onRefresh={loadByArea}/>}
       {!loading && tab === 'Recipe GP'   && <RecipeGP recipes={recipes} ctx={ctx} menuItems={menuItems} taxRates={taxRates}/>}
-      {!loading && tab === 'Production'  && <ProductionReport itemName={itemName} venueTz={clock.timezone}/>}
+      {!loading && tab === 'Production'  && <ProductionReport itemName={itemName} venueTz={clock.timezone} locId={locId}/>}
       {!loading && rangeBusy && <div style={{ color:'var(--t3)', fontSize:13 }}>{loadingText(rangeLoad)}</div>}
       {!loading && rangeBad && (
         <div style={{ color:'var(--t2)', fontSize:14, padding:'24px 0' }}>
@@ -424,12 +425,13 @@ const TYPE_TONE = (label) => /waste/i.test(label) ? 'warn' : /count/i.test(label
 // wrote (planned qty, actual qty, ingredient cost, output unit cost, lot, who/when).
 // The ledger reports already count the stock effect (PRODUCTION_OUTPUT inbound,
 // PRODUCTION_CONSUME outbound) — this view explains it batch by batch.
-function ProductionReport({ itemName, venueTz }) {
+function ProductionReport({ itemName, venueTz, locId = null }) {
   const [days, setDays] = useState(30);
   const [batches, setBatches] = useState(null);
+  // v5.11.86: the batches of the screen's site (it read the signed in venue whatever the picker said)
   useEffect(() => {
-    fetchBatches(null, 500).then(({ data }) => setBatches(data || []));
-  }, []);
+    fetchBatches(locId || null, 500).then(({ data }) => setBatches(data || []));
+  }, [locId]);
   const view = useMemo(() => {
     const since = Date.now() - days * 86400000;
     return (batches || []).filter(b => b.status === 'COMPLETED' && b.producedAt && new Date(b.producedAt).getTime() >= since);

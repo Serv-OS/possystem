@@ -35,6 +35,7 @@ import { countName, fmtVenueDateTime } from '../../lib/venueDate';
 import { reportSave } from '../../lib/saveHealth';
 import NumberField from '../../components/NumberField';
 import StockItemPicker from '../../components/StockItemPicker';
+import { useStockScope } from '../StockScope';
 
 // v5.11.65 (15 Oct 2026 audit): the quantity boxes are the shared NumberField (wide enough for
 // "12.55", unit inside the box, no spinner); every date is the venue's, in words; a reopened
@@ -47,9 +48,12 @@ const fieldStyle = { background: 'var(--bg2)', color: 'var(--t1)', border: '1px 
 const chip = (on) => ({ fontSize: 11, padding: '4px 9px', borderRadius: 5, cursor: 'pointer', fontFamily: 'inherit', background: on ? 'var(--bg3)' : 'transparent', color: on ? 'var(--t1)' : 'var(--t3)', border: '1px solid ' + (on ? 'var(--bg3)' : 'var(--bdr2, var(--bdr))') });
 const ghost = { padding: '6px 12px', borderRadius: 8, cursor: 'pointer', fontFamily: 'inherit', background: 'var(--bg2)', border: '1px solid var(--bdr)', color: 'var(--t1)', fontSize: 12 };
 
-export default function StockCounts({ orgCtx = null }) {
+// v5.11.86 (multi site stock Drop 1): siteId is the picker's site (always the signed in venue for a
+// one site company); "Start a count" on Stock items opens the new count panel once (takeOpenNew).
+export default function StockCounts({ orgCtx = null, siteId = null }) {
   const showToast = useStore(s => s.showToast);
-  const [locId, setLocId] = useState(getActiveLocationSync());
+  const { takeOpenNew } = useStockScope();
+  const [locId, setLocId] = useState(siteId || getActiveLocationSync());
   const [items, setItems] = useState([]);
   const [counts, setCounts] = useState([]);
   const [active, setActive] = useState(null);   // { ...count, lines, areas }
@@ -89,6 +93,9 @@ export default function StockCounts({ orgCtx = null }) {
   // the first load runs after this render settles (never a setState straight inside the effect)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { const t = setTimeout(reload, 0); return () => clearTimeout(t); }, []);
+  // "Start a count" from Stock items: the new count panel opens once, on this site.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (takeOpenNew('stock-counts')) setTimeout(() => setStarting(true), 0); }, []);
 
   const itemsById = useMemo(() => { const m = {}; (items || []).forEach(i => { m[i.id] = i; }); return m; }, [items]);
   const itemName = useCallback((id) => itemsById[id]?.name || '(item)', [itemsById]);

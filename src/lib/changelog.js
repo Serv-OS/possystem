@@ -7,6 +7,20 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.86',
+    date: '21 Oct 2026',
+    items: [
+      "Stock, one company stock list for companies with more than one site (Drop 1). A company with one site sees exactly the same screens, words and buttons as before: no site picker, no Sites column, no new rows in the sidebar.",
+      "Site picker: on Inventory, Produce and Purchasing a company with more than one site picks All sites, a group of sites, or one site. Screens that work one site at a time (counts, waste, transfers, areas, recipes, batches, the Order pad, orders, price changes, invoices and reports) ask which site first, and always work on the site in the picker.",
+      "Stock items: one list for the whole company. The Sites column shows where each item is stocked (All 3, 2 of 3, Leeds, Local to Leeds); click it to tick a site on or off. The Sites grid shows every site's price side by side. Tick items to add them to sites, remove them, stop ordering and run them out, set par, change category, pause, change prices, archive or export. Categories are one list for every site. Import a CSV file or an export from Nory or MarketMan, with a check screen before anything changes. Copy a site sets up a new site from an old one, on hand 0.",
+      "Each item has its own page: Details, Packs, Suppliers, Sites, Used in and Changes. The Sites tab sets, for each site, the supplier and the price there, par, reorder and minimum, the area, whether it is counted, and whether it is purchased or made there. Unticking a site offers two choices: stop ordering and run it out, or remove it now (only when the site holds none and no recipe there uses it). Rows are archived, never deleted.",
+      "Suppliers: one list for the whole company. Each supplier has Details, Sites (which sites can order, with each site's account number, order email and minimum order), Order rules (delivery days and order by times per site, with Copy to all sites), Items (prices, next price, Change prices, Import price list, Pause at sites) and Changes.",
+      "Who can change what now follows Stock control on the Team screen. Their sites: counts, orders, deliveries, waste, transfers, batches, pars and local items at their own sites. Their sites, full control: also the price and the supplier at their own sites. All sites: the company stock list. Owners of the company and ServOS staff always have All sites. Anyone else sees a lock line saying who to ask, with Suggest a change. Recipes in a company with more than one site can only be changed by logins with company rights in Produce.",
+      "Stock overview on All sites: Needs attention for every site, Set up health with a Fix button, the Go live plan of each new site, and the company cost rule. Location settings has Site groups for the picker. A paused item is never suggested on the Order pad and an order with it is refused, in Back Office and the manager app.",
+      "If someone saved the same record a moment before you, the screen says who changed what and lets you keep their version or save yours on top. Nothing on these screens moves an on hand, cost, ledger or count figure by itself, and no login is changed. Needs the database update 20261024a (after 20261022a), then manager-approve and stock-nightly deployed.",
+    ],
+  },
+  {
     v: '5.11.84',
     date: '21 Oct 2026',
     items: [

@@ -21,9 +21,10 @@ const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)
 const UNIT_OPTS = Object.entries(UNITS).map(([code, u]) => ({ code, ...u }));
 const DIM_ORDER = [DIMENSIONS.COUNT, DIMENSIONS.WEIGHT, DIMENSIONS.VOLUME];
 
-export default function Wastage() {
+// v5.11.86 (multi site stock Drop 1): siteId is the picker's site (the signed in venue for a one site company).
+export default function Wastage({ siteId = null } = {}) {
   const showToast = useStore(s => s.showToast);
-  const [locId, setLocId] = useState(getActiveLocationSync());
+  const [locId, setLocId] = useState(siteId || getActiveLocationSync());
   const [items, setItems] = useState([]);
   // 26 Sep 2026: a failed items read must not read as "no stock items are set up".
   const [itemsError, setItemsError] = useState(false);
@@ -145,7 +146,7 @@ export default function Wastage() {
           ))}</tbody>
         </table>
       )}
-      <PosWasteModal open={showProductWaste} onClose={() => { setShowProductWaste(false); reload(); }} showToast={showToast} />
+      <PosWasteModal open={showProductWaste} onClose={() => { setShowProductWaste(false); reload(); }} locationId={locId} showToast={showToast} />
     </div>
   );
 }

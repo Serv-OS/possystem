@@ -27,8 +27,9 @@ const PRICE_SOURCES = new Set(['PO_RECEIPT', 'INVOICE', 'CATALOG']);
 const SOURCE_LABEL = { PO_RECEIPT: 'Delivery', INVOICE: 'Invoice', CATALOG: 'Catalogue' };
 const field = { background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 
-export default function PriceChanges() {
-  const [locId, setLocId] = useState(getActiveLocationSync());
+// v5.11.86 (multi site stock Drop 1): siteId is the picker's site (the signed in venue for a one site company).
+export default function PriceChanges({ siteId = null } = {}) {
+  const [locId, setLocId] = useState(siteId || getActiveLocationSync());
   const [rows, setRows] = useState(null);
   const [items, setItems] = useState([]);
   const [q, setQ] = useState('');

@@ -569,8 +569,12 @@ test('the migration (16 Oct review fixes): first area re homes unassigned stock,
   // areas.js: the usual six are compared by the same rule
   const areasSrc = code(read('./areas.js'));
   assert.match(areasSrc, /const have = new Set\(\(existing \|\| \[\]\)\.map\(\(a\) => normaliseAreaName\(a\.name\)\)\);/);
-  assert.match(areasSrc, /could not be moved: \$\{mv\.error\.message/, 'the refusal still names the cause');
-  assert.match(areasSrc, /its \$\{qtyWords\(qty, item\)\} could not be moved/, 'the moved figure is said in the item\'s unit');
+  // v5.11.86 (multi site stock Drop 1): the area and its holding move in ONE database call
+  // (stock_save_item_site, area patch); the browser steps that moved the holding after the area
+  // (and named the figure when that second step failed) were the Drop 0 fallback and are gone.
+  const assign = areasSrc.slice(areasSrc.indexOf('export const assignItemArea'), areasSrc.indexOf('export const bulkAssignItemArea'));
+  assert.match(assign, /callSave\(supabase, 'stock_save_item_site', \{\s+p_item: inventoryItemId, p_location: locationId, p_patch: areaPatch\(areaId, \{ moveHolding, byName \}\),/);
+  assert.doesNotMatch(assign, /from\('inventory_item_areas'\)|moveHoldingBetweenAreas\(/, 'no direct area write and no second step');
 });
 
 test('data.js: fetchInventoryItems reads in pages, postStockMovement sends p_area_id only when the areas are known to be ready', () => {
@@ -606,8 +610,11 @@ test('areas.js: the probe reads one row and treats only a missing relation as no
   assert.match(src, /supabase\.from\('storage_areas'\)\.select\('id'\)\.limit\(1\)/);
   assert.match(src, /_ready = isMissingRelationError\(error\) \? false : null;/, 'any other failure is "unknown", never "ready"');
   assert.match(src, /export function areasReadySync\(\) \{ return _ready; \}/);
-  for (const w of ['Archive area', 'Set receiving area', 'Reorder areas', 'Item area change', 'Item area save', 'Clear item area', 'Add the usual six'])
+  // v5.11.86 (Drop 1): the item area writes ('Item area change', 'Item area save', 'Clear item area')
+  // were the Drop 0 fallback of assignItemArea and are gone; the area writes left still ask for rows.
+  for (const w of ['Archive area', 'Set receiving area', 'Reorder areas', 'Add the usual six'])
     assert.ok(src.includes(`zeroRows('${w}'`), w);
+  assert.doesNotMatch(src, /from\('inventory_item_areas'\)\.(insert|update|delete|upsert)\(/, 'no direct item area write');
   assert.match(src, /supabase\.rpc\('post_stock_transfer_leg', \{ p_transfer_id: head\.id, p_leg: 'both', p_by_name: byName \|\| null \}\)/, 'a within venue move is one transfer, both legs, one transaction');
   assert.match(src, /readAllPagesResult\('item areas'/); assert.match(src, /readAllPagesResult\('area holdings'/);
 });

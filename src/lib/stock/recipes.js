@@ -2,18 +2,23 @@
  * stock/recipes.js — data layer for recipes, sub-recipes and the menu↔recipe link.
  *
  * Recipes cost up from stock items via the pure engine in costing.js. This module
- * fetches/writes the recipe tables and assembles the CostingCtx the engine needs
- * ({ itemsById, recipesByOutputItem }). Same house pattern as stock/data.js.
+ * fetches the recipe tables, saves through the database save functions and assembles the
+ * CostingCtx the engine needs ({ itemsById, recipesByOutputItem }). Same house pattern as
+ * stock/data.js.
+ *
+ * v5.11.86 (multi site stock Drop 1): 0b is live, so the Drop 0 fallbacks are gone: the old four
+ * call recipe save (upsertRecipe, replaceRecipeLines, linkMenuItemRecipe's upsert,
+ * recomputeMadeItemCost writing the cost from the browser) and the direct archive, link and unlink
+ * writes. A database without a save function answers 'This needs a database update. Ask ServOS to
+ * run it.', never a direct write.
  */
 
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
-import { componentUnitCost, computeRecipe } from './costing.js';
+import { computeRecipe } from './costing.js';
 import { firstReadError } from './menuWaste.js';
 import { readAllPagesResult } from '../pagedRead.js';
 import { archiveArgs, versionOf, SECTIONS } from './saveRules.js';
-import { saveOrDirect, runRecipeSave } from './companyData.js';
-
-const nowIso = () => new Date().toISOString();
+import { callSave, runRecipeSave } from './companyData.js';
 
 /**
  * v5.11.79 (stock plan Phase 0, 1,000 row cap): every recipe and costing read in pages of 1,000
@@ -42,15 +47,6 @@ const recipeFromRow = (r) => ({
   method: r.method, photo: r.photo, status: r.status, archivedAt: r.archived_at,
   // v5.11.84 (multi site stock Drop 0): the version the save sends back, and the company record behind it
   rowVersion: versionOf(r.row_version), companyRef: r.company_ref || null,
-});
-const recipeToRow = (rc, locationId) => ({
-  ...(rc.id ? { id: rc.id } : {}),
-  location_id: locationId, name: (rc.name || '').trim(),
-  recipe_type: rc.recipeType || 'MENU', output_item_id: rc.outputItemId || null,
-  yield_qty: Number(rc.yieldQty) || 1, yield_unit: rc.yieldUnit || 'each',
-  wastage_pct: Number(rc.wastagePct) || 0,
-  gp_target_pct: rc.gpTargetPct == null || rc.gpTargetPct === '' ? null : Number(rc.gpTargetPct),
-  method: rc.method || null, photo: rc.photo || null, status: rc.status || 'active', updated_at: nowIso(),
 });
 const lineFromRow = (r) => ({
   id: r.id, recipeId: r.recipe_id, componentItemId: r.component_item_id,
@@ -94,24 +90,15 @@ export const fetchRecipes = async (locationId = null) => {
  * produces (with a REVALUE when stock is held) and never leaves the lines half replaced. Used by
  * Recipes.jsx `save` and the Stock items Recipe tab, which keep their toasts word for word.
  * Answer: { data: { id, rowVersion }, error, stage, costOk } (companyData.js runRecipeSave):
- * stage 'recipe' nothing saved; 'lines' and 'link' only on the old four call path; costOk false is
- * the "cost was NOT recalculated" warning. Before the database has stock_save_recipe the old four
- * calls run (upsertRecipe, replaceRecipeLines, linkMenuItemRecipe, recomputeMadeItemCost).
+ * stage 'recipe' nothing saved (a database without the function says it needs an update); costOk
+ * false is the "cost was NOT recalculated" warning.
  * opts.section: 'produce' (Recipes) or 'inventory' (the made item's own Recipe tab).
  */
 export const saveRecipeWithLines = async (draft, locationId = null, opts = {}) => {
   if (isMock || !supabase) return { data: null, error: null, stage: null, costOk: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: new Error('No locationId'), stage: 'recipe', costOk: null };
-  return runRecipeSave({ client: supabase, upsertRecipe, replaceRecipeLines, linkMenuItemRecipe, recomputeMadeItemCost }, draft, locationId, opts);
-};
-
-/** The not installed fallback of saveRecipeWithLines only (Drop 0); removed in Drop 1. */
-export const upsertRecipe = async (recipe, locationId = null) => {
-  if (isMock || !supabase) return { data: null, error: null };
-  locationId = await ensureLoc(locationId);
-  if (!locationId) return { data: null, error: new Error('No locationId') };
-  return supabase.from('recipes').upsert(recipeToRow(recipe, locationId)).select().maybeSingle();
+  return runRecipeSave({ client: supabase }, draft, locationId, opts);
 };
 
 /**
@@ -122,53 +109,31 @@ export const setRecipeArchived = async (id, archived, locationId = null, opts = 
   if (isMock || !supabase) return { data: null, error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: new Error('No locationId') };
-  const r = await saveOrDirect(supabase, 'stock_archive_recipe', archiveArgs('p_recipe', id, archived, opts, SECTIONS.produce),
-    () => supabase.from('recipes').update({ archived_at: archived ? nowIso() : null, updated_at: nowIso() })
-      .eq('location_id', locationId).eq('id', id));
+  const r = await callSave(supabase, 'stock_archive_recipe', archiveArgs('p_recipe', id, archived, opts, SECTIONS.produce));
   return { data: r.data ?? null, error: r.error || null };
 };
 
-/** Replace a recipe's lines wholesale (delete then insert). The not installed fallback only (Drop 0). */
-export const replaceRecipeLines = async (recipeId, lines, locationId = null) => {
-  if (isMock || !supabase) return { error: null };
-  locationId = await ensureLoc(locationId);
-  if (!locationId) return { error: new Error('No locationId') };
-  const del = await supabase.from('recipe_lines').delete().eq('location_id', locationId).eq('recipe_id', recipeId);
-  if (del.error) return { error: del.error };
-  const rows = (lines || []).filter(l => l.componentItemId && Number(l.qty) > 0).map((l, i) => ({
-    location_id: locationId, recipe_id: recipeId, component_item_id: l.componentItemId,
-    qty: Number(l.qty), unit: l.unit, usable_pct: l.usablePct == null ? 100 : Number(l.usablePct),
-    sort_order: i, note: l.note || null,
-    // null = applies to all order types (the shared base); an array scopes it to those types.
-    order_types: Array.isArray(l.orderTypes) && l.orderTypes.length ? l.orderTypes : null,
-  }));
-  if (!rows.length) return { error: null };
-  return supabase.from('recipe_lines').insert(rows);
-};
-
-/** Link a till product to a recipe. v5.11.84 (Drop 0): stock_link_menu_item, today's upsert as the fallback. */
+/** Link a till product to a recipe: stock_link_menu_item (v5.11.84 Drop 0; Drop 1: no direct write). */
 export const linkMenuItemRecipe = async (menuItemId, recipeId, portion = 1, locationId = null, opts = {}) => {
   if (isMock || !supabase) return { error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { error: new Error('No locationId') };
-  const r = await saveOrDirect(supabase, 'stock_link_menu_item', {
+  const r = await callSave(supabase, 'stock_link_menu_item', {
     p_location: locationId, p_menu_item_id: String(menuItemId), p_recipe: recipeId, p_portion: Number(portion) || 1,
     p_section: opts.section || SECTIONS.produce,
-  }, () => supabase.from('menu_item_recipes').upsert({
-    location_id: locationId, menu_item_id: String(menuItemId), recipe_id: recipeId, portion: Number(portion) || 1,
-  }, { onConflict: 'location_id,menu_item_id' }));
+  });
   return { data: r.data ?? null, error: r.error || null };
 };
 
-/** Unlink a till product. v5.11.84 (Drop 0): stock_link_menu_item with no recipe, today's delete as the fallback. */
+/** Unlink a till product: stock_link_menu_item with no recipe (v5.11.84 Drop 0; Drop 1: no direct delete). */
 export const unlinkMenuItem = async (menuItemId, locationId = null, opts = {}) => {
   if (isMock || !supabase) return { error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { error: new Error('No locationId') };
-  const r = await saveOrDirect(supabase, 'stock_link_menu_item', {
+  const r = await callSave(supabase, 'stock_link_menu_item', {
     p_location: locationId, p_menu_item_id: String(menuItemId), p_recipe: null, p_portion: 1,
     p_section: opts.section || SECTIONS.produce,
-  }, () => supabase.from('menu_item_recipes').delete().eq('location_id', locationId).eq('menu_item_id', String(menuItemId)));
+  });
   return { data: r.data ?? null, error: r.error || null };
 };
 
@@ -226,35 +191,6 @@ export const buildCostingCtx = async (locationId = null) => {
     };
   });
   return { itemsById, recipesByOutputItem, error: firstReadError(reads) };
-};
-
-/**
- * Recompute a MADE item's current_cost from its PREP recipe roll-up and persist it
- * (inventory_items.current_cost + an item_cost_history row, source RECIPE_ROLLUP).
- * Call after saving a PREP recipe so dependent costs reflect the change.
- * v5.11.84 (Drop 0): the not installed fallback of saveRecipeWithLines only. With the save
- * functions in, stock_save_recipe re costs the made item in the database (stock_recost_made_items).
- */
-export const recomputeMadeItemCost = async (outputItemId, locationId = null) => {
-  if (isMock || !supabase || !outputItemId) return { ok: false };
-  locationId = await ensureLoc(locationId);
-  if (!locationId) return { ok: false };
-  const ctx = await buildCostingCtx(locationId);
-  let cost;
-  try { cost = componentUnitCost(outputItemId, ctx); } catch { return { ok: false }; }
-  if (!Number.isFinite(cost)) return { ok: false };
-  const { data: itemRows } = await supabase.from('inventory_items').select('current_cost').eq('location_id', locationId).eq('id', outputItemId).limit(1);
-  const prev = itemRows?.[0]?.current_cost == null ? null : Number(itemRows[0].current_cost);
-  if (prev != null && Math.abs(prev - cost) <= 1e-9) return { ok: true, unchanged: true, cost };
-  await supabase.from('item_cost_history').update({ effective_to: nowIso() })
-    .eq('location_id', locationId).eq('inventory_item_id', outputItemId).is('effective_to', null);
-  await supabase.from('item_cost_history').insert({
-    location_id: locationId, inventory_item_id: outputItemId, base_unit_cost: cost,
-    source: 'RECIPE_ROLLUP', effective_from: nowIso(),
-  });
-  await supabase.from('inventory_items').update({ current_cost: cost, updated_at: nowIso() })
-    .eq('location_id', locationId).eq('id', outputItemId);
-  return { ok: true, cost };
 };
 
 /**

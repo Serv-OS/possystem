@@ -1,7 +1,10 @@
 /**
  * saveContract.test.js: the stock saves keep their names, arguments and answers while their bodies
  * move to the database save functions (v5.11.84, multi site stock Drop 0, map 5.4 and 9.2).
- * Run: npm test.
+ * v5.11.86 (Drop 1): 0b is live and the Drop 0 fallbacks are gone. A database without a save
+ * function answers NEEDS_UPDATE; no browser path writes the catalogue tables directly any more.
+ * The one site screens are read where Drop 1 moved them (stock/items/StockItemsSplit.jsx and
+ * stock/suppliers/SuppliersSplit.jsx, the same text). Run: npm test.
  *
  * data.js and recipes.js import the browser Supabase client, which node cannot load, so the paths
  * are driven here through the same pieces those files are built from (companyData.js with a stand
@@ -11,10 +14,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { callSave, saveOrDirect, liveOrAll, runRecipeSave, readAll } from './companyData.js';
+import { callSave, liveOrAll, runRecipeSave, readAll } from './companyData.js';
 import { supplierSaveArgs, supplierFromRow, NEEDS_UPDATE } from './saveRules.js';
 
 const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
+// Drop 1 moved the one site screens whole (contract 3.2, 3.4); their text is today's.
+const ITEMS_SCREEN = '../../backoffice/sections/stock/items/StockItemsSplit.jsx';
+const SUPPLIERS_SCREEN = '../../backoffice/sections/stock/suppliers/SuppliersSplit.jsx';
 const LOC = '7d0c0000-0000-4000-8000-000000000001';
 const MISSING = { code: 'PGRST202', message: 'Could not find the function public.stock_save_item in the schema cache' };
 
@@ -38,7 +44,9 @@ test('callSave: a success, a missing function, a refusal, someone saving first, 
   assert.deepEqual(ok, { data: { ok: true, id: 'c1' }, error: null, missing: false, conflict: null });
   for (const err of [MISSING, { code: '42883', message: 'function does not exist' }]) {
     const m = await callSave(fakeClient({ stock_save_item: { data: null, error: err } }), 'stock_save_item', {});
-    assert.equal(m.missing, true); assert.equal(m.error, err);
+    assert.equal(m.missing, true);
+    assert.equal(m.error.message, NEEDS_UPDATE, 'Drop 1: the words the screen shows');
+    assert.equal(m.error.cause, err, 'the database answer rides along');
   }
   const refused = await callSave(fakeClient({ stock_save_item: { data: null, error: { code: '42501', message: 'Not allowed: this login does not reach Leeds.' } } }), 'stock_save_item', {});
   assert.equal(refused.missing, false, 'a refusal is never "not installed": no direct write behind it');
@@ -58,18 +66,13 @@ test('callSave: a success, a missing function, a refusal, someone saving first, 
   assert.match((await callSave(null, 'x', {})).error.message, /No database/);
 });
 
-test('saveOrDirect: today\'s direct write runs ONLY when the function is not there yet', async () => {
-  let direct = 0;
-  const run = () => { direct += 1; return { data: { id: 'row' }, error: null }; };
-  const viaRpc = await saveOrDirect(fakeClient({ stock_save_pack: { data: { ok: true }, error: null } }), 'stock_save_pack', {}, run);
-  assert.equal(viaRpc.via, 'rpc'); assert.equal(direct, 0);
-  const refused = await saveOrDirect(fakeClient({ stock_save_pack: { data: null, error: { code: '55000', message: 'This pack is used in a recipe, so it cannot be archived.' } } }), 'stock_save_pack', {}, run);
-  assert.equal(refused.via, 'rpc'); assert.equal(direct, 0, 'a refusal never falls back to a direct write');
-  assert.match(refused.error.message, /used in a recipe/);
-  const conflict = await saveOrDirect(fakeClient({ stock_save_pack: { data: { ok: false, conflict: { by_name: 'Second login' } }, error: null } }), 'stock_save_pack', {}, run);
-  assert.equal(conflict.via, 'rpc'); assert.equal(direct, 0, 'someone saving first is never overwritten by a direct write');
-  const old = await saveOrDirect(fakeClient({}), 'stock_save_pack', {}, run);
-  assert.equal(old.via, 'direct'); assert.equal(direct, 1); assert.deepEqual(old.data, { id: 'row' });
+test('Drop 1: no fallback. A missing save function answers NEEDS_UPDATE and nothing else runs', async () => {
+  const client = fakeClient({});
+  const r = await callSave(client, 'stock_save_pack', { p_pack: {} });
+  assert.equal(client.calls.length, 1, 'one call, nothing after it');
+  assert.equal(r.missing, true); assert.equal(r.error.message, NEEDS_UPDATE); assert.equal(r.data, null);
+  const src = read('./companyData.js');
+  assert.doesNotMatch(src, /saveOrDirect/, 'the Drop 0 fallback helper is deleted');
 });
 
 test('liveOrAll: archived rows left out; a database without the column reads as before', async () => {
@@ -109,8 +112,8 @@ const serverSaveSupplier = (args) => {
 };
 
 test('contract: upsertSupplier saves and reads back every Suppliers form field (one save, no field lost)', async () => {
-  // every field the Suppliers form edits (Suppliers.jsx blank() and its inputs)
-  const screen = read('../../backoffice/sections/Suppliers.jsx');
+  // every field the Suppliers form edits (SuppliersSplit.jsx blank() and its inputs)
+  const screen = read(SUPPLIERS_SCREEN);
   const blankFields = Object.keys(new Function(`return ${screen.match(/const blank = \(\) => (\(\{[^\n]*\}\));/)[1]}`)());
   assert.deepEqual(blankFields.sort(), ['accountNumber', 'contactName', 'cutoffTime', 'deliveryDays', 'email', 'minOrderValue', 'name', 'notes', 'paymentTermsDays', 'phone']);
   const edited = [...screen.matchAll(/upd\('(\w+)'/g)].map((m) => m[1]);
@@ -121,7 +124,7 @@ test('contract: upsertSupplier saves and reads back every Suppliers form field (
     accountNumber: 'AC-77', paymentTermsDays: '30', minOrderValue: '120.5', deliveryDays: ['mon', 'thu'], cutoffTime: '16:00', notes: 'Back door',
   };
   const client = fakeClient({ stock_save_supplier: serverSaveSupplier });
-  const r = await saveOrDirect(client, 'stock_save_supplier', supplierSaveArgs(form, LOC, { section: 'purchasing' }), () => { throw new Error('no direct write'); });
+  const r = await callSave(client, 'stock_save_supplier', supplierSaveArgs(form, LOC, { section: 'purchasing' }));
   assert.equal(client.calls.length, 1, 'ONE call');
   assert.equal(client.calls[0].args.p_version, 1, 'the version of the row the form loaded');
   assert.equal(client.calls[0].args.p_section, 'purchasing');
@@ -130,83 +133,63 @@ test('contract: upsertSupplier saves and reads back every Suppliers form field (
   for (const f of [...blankFields, 'id']) assert.deepEqual(back[f], want[f], f);
   // the same form saved new: no id, no version
   const fresh = fakeClient({ stock_save_supplier: serverSaveSupplier });
-  const n = await saveOrDirect(fresh, 'stock_save_supplier', supplierSaveArgs({ ...form, id: undefined, rowVersion: undefined }, LOC), () => null);
+  const n = await callSave(fresh, 'stock_save_supplier', supplierSaveArgs({ ...form, id: undefined, rowVersion: undefined }, LOC));
   assert.equal(fresh.calls[0].args.p_version, null);
   assert.equal(supplierFromRow(n.data.site_row).accountNumber, 'AC-77');
   // data.js builds exactly this call and reads the row back through the same mapper
   const data = read('./data.js');
   const fn = data.slice(data.indexOf('export const upsertSupplier'), data.indexOf('export const setSupplierArchived'));
-  assert.match(fn, /saveOrDirect\(supabase, 'stock_save_supplier', supplierSaveArgs\(supplier, locationId, opts\), async \(\) => \{/);
+  assert.match(fn, /const r = await callSave\(supabase, 'stock_save_supplier', supplierSaveArgs\(supplier, locationId, opts\)\);/);
   assert.match(fn, /const row = siteRowOf\(r\.data, 'site_supplier_id'\);\s+return \{ data: row \? supplierFromRow\(row\) : null, error: null, queued: r\.data\?\.queued \|\| \[\] \};/);
-  assert.match(fn, /supabase\.from\('suppliers'\)\.upsert\(supplierToRow\(supplier, locationId\)\)/, 'today\'s write stays as the fallback');
+  assert.doesNotMatch(fn, /supabase\.from\('suppliers'\)\.upsert\(/, 'Drop 1: no direct write behind it');
   assert.match(screen, /await upsertSupplier\(draft, locId, \{ section: 'purchasing' \}\)/);
 });
 
 // ── saveRecipeWithLines: recipe, lines and link in one call ───────────────────────────────────────
-const fallbacks = () => {
-  const log = [];
-  return {
-    log,
-    upsertRecipe: async (d) => { log.push('upsertRecipe'); return { data: { id: d.id || 'new-r' }, error: null }; },
-    replaceRecipeLines: async () => { log.push('replaceRecipeLines'); return { error: null }; },
-    linkMenuItemRecipe: async () => { log.push('linkMenuItemRecipe'); return { error: null }; },
-    recomputeMadeItemCost: async () => { log.push('recomputeMadeItemCost'); return { ok: true }; },
-  };
-};
 const dish = { id: 'r1', rowVersion: 3, recipeType: 'MENU', menuItemId: 'm7', portion: 1, name: 'Flat white', yieldQty: 1, yieldUnit: 'each', lines: [{ componentItemId: 'milk', qty: 200, unit: 'ml' }, { componentItemId: 'cup', qty: 1, unit: '@f1' }] };
 
 test('contract: saveRecipeWithLines saves recipe, lines and link in ONE call and never reports lost lines', async () => {
-  const fb = fallbacks();
   const client = fakeClient({ stock_save_recipe: { data: { ok: true, id: 'co', row_version: 4, site_recipe_id: 'r1', site_row: { id: 'r1', row_version: 4 }, lines_saved: 2, linked: true, cost: null, queued: [] }, error: null } });
-  const r = await runRecipeSave({ client, ...fb }, dish, LOC, { section: 'produce' });
+  const r = await runRecipeSave({ client }, dish, LOC, { section: 'produce' });
   assert.equal(client.calls.length, 1); assert.equal(client.calls[0].fn, 'stock_save_recipe');
   const args = client.calls[0].args;
   assert.equal(args.p_recipe.site_recipe_id, 'r1'); assert.equal(args.p_recipe.menu_item_id, 'm7', 'the till product link goes in the same call');
   assert.equal(args.p_lines.length, 2); assert.equal(args.p_version, 3); assert.equal(args.p_section, 'produce');
-  assert.deepEqual(fb.log, [], 'none of the old four calls');
   assert.equal(r.stage, null); assert.equal(r.error, null);
   assert.equal(r.data.id, 'r1'); assert.equal(r.data.rowVersion, 4);
   assert.equal(r.costOk, null, 'a dish makes no item: nothing to roll up');
   // a made item recipe: the cost answer drives the warning, exactly as before
   const batch = { recipeType: 'BATCH', outputItemId: 'soup', name: 'Soup', lines: [{ componentItemId: 'veg', qty: 1, unit: 'kg' }] };
-  const good = await runRecipeSave({ client: fakeClient({ stock_save_recipe: { data: { ok: true, site_recipe_id: 'r2', cost: { item_id: 'soup', ok: true } }, error: null } }), ...fallbacks() }, batch, LOC);
+  const good = await runRecipeSave({ client: fakeClient({ stock_save_recipe: { data: { ok: true, site_recipe_id: 'r2', cost: { item_id: 'soup', ok: true } }, error: null } }) }, batch, LOC);
   assert.equal(good.costOk, true);
-  const noCost = await runRecipeSave({ client: fakeClient({ stock_save_recipe: { data: { ok: true, site_recipe_id: 'r2', cost: { item_id: 'soup', ok: false } }, error: null } }), ...fallbacks() }, batch, LOC);
+  const noCost = await runRecipeSave({ client: fakeClient({ stock_save_recipe: { data: { ok: true, site_recipe_id: 'r2', cost: { item_id: 'soup', ok: false } }, error: null } }) }, batch, LOC);
   assert.equal(noCost.stage, null, 'the recipe and its lines DID save'); assert.equal(noCost.costOk, false);
   // a refusal or someone saving first: nothing saved, said once, at the recipe stage, never as lost lines
   for (const answer of [
     { data: null, error: { code: '42501', message: 'Not allowed: this screen cannot change recipes.' } },
     { data: { ok: false, conflict: { by_name: 'Second login' }, error: 'Second login saved this first at 10:00. Reload to see the change, then save again.' }, error: null },
   ]) {
-    const fbx = fallbacks();
-    const bad = await runRecipeSave({ client: fakeClient({ stock_save_recipe: answer }), ...fbx }, dish, LOC);
-    assert.equal(bad.stage, 'recipe'); assert.ok(bad.error); assert.deepEqual(fbx.log, []);
+    const c = fakeClient({ stock_save_recipe: answer });
+    const bad = await runRecipeSave({ client: c }, dish, LOC);
+    assert.equal(bad.stage, 'recipe'); assert.ok(bad.error); assert.equal(c.calls.length, 1);
   }
 });
 
-test('saveRecipeWithLines before the database has the function: today\'s four calls, in order, each stage said', async () => {
-  const fb = fallbacks();
-  const r = await runRecipeSave({ client: fakeClient({}), ...fb }, { ...dish, outputItemId: null }, LOC);
-  assert.deepEqual(fb.log, ['upsertRecipe', 'replaceRecipeLines', 'linkMenuItemRecipe']);
-  assert.equal(r.stage, null); assert.equal(r.data.id, 'r1'); assert.equal(r.via, 'direct');
-  const made = fallbacks();
-  const m = await runRecipeSave({ client: fakeClient({}), ...made }, { recipeType: 'PREP', outputItemId: 'sauce', name: 'Sauce', lines: [] }, LOC);
-  assert.deepEqual(made.log, ['upsertRecipe', 'replaceRecipeLines', 'recomputeMadeItemCost']);
-  assert.equal(m.costOk, true);
-  const lines = fallbacks(); lines.replaceRecipeLines = async () => ({ error: new Error('lock wait') });
-  const l = await runRecipeSave({ client: fakeClient({}), ...lines }, dish, LOC);
-  assert.equal(l.stage, 'lines', 'only the old path can lose the lines, and it says so');
-  const link = fallbacks(); link.linkMenuItemRecipe = async () => ({ error: new Error('refused') });
-  assert.equal((await runRecipeSave({ client: fakeClient({}), ...link }, dish, LOC)).stage, 'link');
-  const none = fallbacks(); none.upsertRecipe = async () => ({ data: null, error: null });
-  const n = await runRecipeSave({ client: fakeClient({}), ...none }, { ...dish, id: undefined }, LOC);
-  assert.equal(n.stage, 'recipe', 'a save that came back with no row is never carried on as saved');
+test('saveRecipeWithLines on a database without the function: NEEDS_UPDATE at the recipe stage, nothing else runs', async () => {
+  const client = fakeClient({});
+  const r = await runRecipeSave({ client }, { ...dish, outputItemId: 'sauce' }, LOC);
+  assert.equal(r.stage, 'recipe'); assert.equal(r.error.message, NEEDS_UPDATE); assert.equal(r.data, null);
+  assert.equal(client.calls.length, 1, 'only the save function was asked');
+  const recipes = read('./recipes.js');
+  for (const gone of ['export const upsertRecipe', 'export const replaceRecipeLines', 'export const recomputeMadeItemCost'])
+    assert.ok(!recipes.includes(gone), `${gone}: the Drop 0 fallback is deleted`);
+  assert.doesNotMatch(recipes, /\.(upsert|update|delete|insert)\(/, 'recipes.js writes nothing directly');
 });
 
 test('the recipe screens: one saveRecipeWithLines call each, the same toasts, lost lines only on the old path (source)', () => {
   const recipes = read('./recipes.js');
   assert.match(recipes, /export const saveRecipeWithLines = async \(draft, locationId = null, opts = \{\}\) => \{/);
-  assert.match(recipes, /return runRecipeSave\(\{ client: supabase, upsertRecipe, replaceRecipeLines, linkMenuItemRecipe, recomputeMadeItemCost \}, draft, locationId, opts\);/);
+  assert.match(recipes, /return runRecipeSave\(\{ client: supabase \}, draft, locationId, opts\);/);
   const screen = read('../../backoffice/sections/Recipes.jsx');
   const save = screen.slice(screen.indexOf('  const save = async () => {'), screen.indexOf('  const archive = async () => {'));
   assert.equal((save.match(/saveRecipeWithLines\(/g) || []).length, 1, 'ONE call');
@@ -215,7 +198,7 @@ test('the recipe screens: one saveRecipeWithLines call each, the same toasts, lo
   for (const words of ["'Save failed: ' + error.message", "'Ingredients NOT saved", "'Saved, but NOT linked to the menu product", "'. The item cost was NOT recalculated: check every ingredient has a price and a unit it understands'"]) {
     assert.ok(save.includes(words), `the toast stays: ${words}`);
   }
-  const items = read('../../backoffice/sections/StockItems.jsx');
+  const items = read(ITEMS_SCREEN);
   const tab = items.slice(items.indexOf('function RecipeTab('), items.indexOf('function NeedSaveFirst('));
   assert.equal((tab.match(/saveRecipeWithLines\(/g) || []).length, 1);
   assert.doesNotMatch(tab, /upsertRecipe\(|replaceRecipeLines\(|recomputeMadeItemCost\(/);
@@ -226,7 +209,7 @@ test('the recipe screens: one saveRecipeWithLines call each, the same toasts, lo
   }
 });
 
-test('every browser catalogue write named in the map goes to its save function, with today\'s write only as the fallback (source)', () => {
+test('every browser catalogue write named in the map goes to its save function, and only to it (source)', () => {
   const data = read('./data.js');
   const body = (src, name, next) => src.slice(src.indexOf(name), next ? src.indexOf(next, src.indexOf(name) + 1) : undefined);
   const table = [
@@ -246,8 +229,8 @@ test('every browser catalogue write named in the map goes to its save function, 
   for (const [name, fn, direct] of table) {
     const b = body(data, name, '\nexport ');
     assert.ok(b.length > 50, name);
-    assert.match(b, new RegExp(`saveOrDirect\\(supabase, '${fn}', `), `${name} -> ${fn}`);
-    assert.ok(b.indexOf(`'${fn}'`) < b.indexOf(direct), `${name}: the save function first, today's write (${direct}) only as the fallback`);
+    assert.match(b, new RegExp(`callSave\\(supabase, '${fn}', `), `${name} -> ${fn}`);
+    assert.ok(!b.includes(direct), `${name}: Drop 1, no direct write (${direct}) behind it`);
   }
   // a delete is an archive from now on: the answer still carries the row id for the callers
   for (const name of ['export const deleteSupplierProduct', 'export const deleteItemConversion', 'export const deletePackagingFormat', 'export const setInventoryItemArchived', 'export const setSupplierArchived']) {
@@ -258,20 +241,29 @@ test('every browser catalogue write named in the map goes to its save function, 
     assert.match(body(data, name, '\nexport '), /return \{ data: [^\n]*, error: null, partial: null, queued: r\.data\?\.queued \|\| \[\] \};/, name);
   }
   const counts = read('./counts.js');
-  assert.match(body(counts, 'export const upsertParLevel', '\nexport '), /saveOrDirect\(supabase, 'stock_save_item_site', \{\s+p_item: inventoryItemId, p_location: locationId, p_patch: parPatch\(par\), p_version: null,/);
+  const parFn = body(counts, 'export const upsertParLevel', '\nexport ');
+  assert.match(parFn, /callSave\(supabase, 'stock_save_item_site', \{\s+p_item: inventoryItemId, p_location: locationId, p_patch: parPatch\(par\), p_version: null,/);
+  assert.doesNotMatch(parFn, /from\('par_levels'\)/, 'no direct par write');
   const areas = read('./areas.js');
   const assign = body(areas, 'export const assignItemArea', '\nexport ');
   assert.match(assign, /callSave\(supabase, 'stock_save_item_site', \{\s+p_item: inventoryItemId, p_location: locationId, p_patch: areaPatch\(areaId, \{ moveHolding, byName \}\),/);
-  assert.ok(assign.indexOf("'stock_save_item_site'") < assign.indexOf("from('inventory_item_areas')"), 'the old steps only when the function is missing');
+  assert.ok(!assign.includes("from('inventory_item_areas')"), 'Drop 1: no direct area steps');
   const recipes = read('./recipes.js');
-  assert.match(body(recipes, 'export const setRecipeArchived', '\nexport '), /saveOrDirect\(supabase, 'stock_archive_recipe', archiveArgs\('p_recipe', id, archived, opts, SECTIONS\.produce\),/);
-  assert.match(body(recipes, 'export const linkMenuItemRecipe', '\nexport '), /saveOrDirect\(supabase, 'stock_link_menu_item', \{/);
+  assert.match(body(recipes, 'export const setRecipeArchived', '\nexport '), /callSave\(supabase, 'stock_archive_recipe', archiveArgs\('p_recipe', id, archived, opts, SECTIONS\.produce\)\);/);
+  assert.match(body(recipes, 'export const linkMenuItemRecipe', '\nexport '), /callSave\(supabase, 'stock_link_menu_item', \{/);
   assert.match(body(recipes, 'export const unlinkMenuItem', '\nexport '), /p_recipe: null/);
   assert.equal(NEEDS_UPDATE, 'This needs a database update. Ask ServOS to run it.');
+  // nothing in the four data files writes a catalogue table directly any more
+  for (const [file, src] of [['data.js', data], ['counts.js', counts], ['areas.js', areas], ['recipes.js', recipes]]) {
+    for (const t of ['inventory_items', 'suppliers', 'supplier_products', 'inventory_item_conversions', 'item_packaging_formats', 'par_levels', 'inventory_item_areas', 'recipes', 'recipe_lines', 'menu_item_recipes', 'item_cost_history', 'stock_site_settings'])
+      assert.doesNotMatch(src, new RegExp(`from\\('${t}'\\)\\s*\\.(insert|update|upsert|delete)\\(`), `${file}: no direct write to ${t}`);
+    assert.doesNotMatch(src, /saveOrDirect/, `${file}: no fallback helper`);
+  }
+  assert.doesNotMatch(data, /export async function recomputeItemCost/, 'the browser cost step is gone: the database takes it');
 });
 
 test('each screen names its own section (Inventory, Produce, Purchasing) and sends the version it loaded (source)', () => {
-  const items = read('../../backoffice/sections/StockItems.jsx');
+  const items = read(ITEMS_SCREEN);
   assert.match(items, /const INV = Object\.freeze\(\{ section: 'inventory' \}\);/);
   for (const call of ['upsertInventoryItem(draft, locId, INV)', 'upsertParLevel(draft.id, nextBase, locId, INV)', "upsertSupplier({ name: newSupplier.trim() }, locId, INV)",
     'upsertSupplierProduct(sp, locId, INV)', 'setInventoryItemArchived(draft.id, next, locId, { ...INV, version: draft.rowVersion })',
@@ -279,7 +271,7 @@ test('each screen names its own section (Inventory, Produce, Purchasing) and sen
     assert.ok(items.includes(call), call);
   }
   assert.match(items, /isPreferred: row\.isPreferred, rowVersion: row\.rowVersion \?\? null,/, 'an edited supplier pack carries its version');
-  const suppliers = read('../../backoffice/sections/Suppliers.jsx');
+  const suppliers = read(SUPPLIERS_SCREEN);
   assert.match(suppliers, /setSupplierArchived\(draft\.id, true, locId, \{ section: 'purchasing', version: draft\.rowVersion \}\)/);
   const recipes = read('../../backoffice/sections/Recipes.jsx');
   assert.match(recipes, /setRecipeArchived\(draft\.id, true, locId, \{ section: 'produce', version: draft\.rowVersion \}\)/);

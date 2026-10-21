@@ -8,6 +8,7 @@ import { defaultOpeningHours, emptyOpeningHours, isOpenNow, formatHoursPreview }
 import { isValidSlug, suggestSlug } from '../../lib/customerUrl';
 import { CUSTOMER_ROOT } from '../../lib/env';
 import { CURRENCIES, money, setActiveCurrency } from '../../lib/currency';
+import SiteGroupsCard from './stock/SiteGroupsCard';
 
 // v5.7.29: the venue timezone drives EVERY business-time decision in the
 // system (menu schedules, dayparts, booking slots, report days, auto-capture
@@ -643,6 +644,7 @@ export default function LocationSettings() {
         {saved && <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>✓ Saved</span>}
         {error && <span style={{ fontSize:13, color:'var(--red)' }}>{error}</span>}
       </div>
+      <SiteGroupsCard />
     </div>
   );
 }

@@ -182,11 +182,58 @@ export function canOpenRoute(routeId, profile) {
   return !!key && allowed.includes(key);
 }
 
-/** The sidebar rows this login is shown. Everything = the list as it is. */
+// ── Labels for multi site companies (v5.11.86, multi site stock Drop 1, map 2.2) ────────────
+// The approved mockup calls Batches "Batch and prep" for a multi site company; a one site company
+// keeps "Batches" (Rule 2: one site companies see exactly today's sidebar). Applied by filterNav and
+// by the top bar title (routeLabel). The rows in NAV_IA keep today's labels.
+export const LABEL_WHEN_MULTI = Object.freeze({ batches: 'Batch and prep' });
+
+const stockMulti = (profile) => !!profile && typeof profile === 'object' && profile.stock?.multi === true;
+
+// The rows with every child in LABEL_WHEN_MULTI relabelled (a new row only where one changed).
+function withMultiLabels(rows) {
+  let changed = false;
+  const out = rows.map((row) => {
+    if (!row.children || !row.children.some((c) => Object.prototype.hasOwnProperty.call(LABEL_WHEN_MULTI, c[0]))) return row;
+    changed = true;
+    return { ...row, children: row.children.map((c) => (Object.prototype.hasOwnProperty.call(LABEL_WHEN_MULTI, c[0]) ? [c[0], LABEL_WHEN_MULTI[c[0]]] : c)) };
+  });
+  return changed ? out : rows;
+}
+
+/**
+ * The name a route shows in the top bar: its multi site label for a multi site company, else the
+ * caller's own label (today's NAV title), unchanged.
+ */
+export function routeLabel(routeId, fallback, profile) {
+  if (stockMulti(profile) && typeof routeId === 'string' && Object.prototype.hasOwnProperty.call(LABEL_WHEN_MULTI, routeId)) return LABEL_WHEN_MULTI[routeId];
+  return fallback;
+}
+
+/**
+ * profile.stock (map 2.2) from the stock site scope (src/lib/stock/siteScope.js): null while it
+ * loads, so ready is false and multi is false, and nothing a one site company has today changes.
+ */
+export function stockAccessOf(scope) {
+  return {
+    ready: !!scope,
+    multi: !!scope?.multi,
+    level: scope?.level || 'sites',
+    hasKitchen: (scope?.kitchens || []).length > 0,
+    reachesKitchen: (scope?.kitchens || []).length > 0,
+    sections: scope?.sections ?? null,
+  };
+}
+
+/**
+ * The sidebar rows this login is shown. Everything = the list as it is. A multi site company
+ * (profile.stock.multi) sees the LABEL_WHEN_MULTI names; anyone else gets the same rows back.
+ */
 export function filterNav(nav, profile) {
   const allowed = allowedKeys(profile);
   const rows = allowed === null ? nav : nav.filter((row) => { const key = sectionKeyOfRow(row); return !!key && allowed.includes(key); });
-  return withoutGatedChildren(rows, profile);
+  const shown = withoutGatedChildren(rows, profile);
+  return stockMulti(profile) ? withMultiLabels(shown) : shown;
 }
 
 /** Where a login lands: the first route of its first section in sidebar order, or null for none. */

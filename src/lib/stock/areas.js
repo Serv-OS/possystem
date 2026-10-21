@@ -19,7 +19,6 @@
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
 import { readAllPagesResult } from '../pagedRead.js';
 import { transferReference, USUAL_SIX, normaliseAreaName } from './areaRules.js';
-import { displayInUnits } from './uom.js';
 import { areaPatch, SECTIONS } from './saveRules.js';
 import { callSave } from './companyData.js';
 
@@ -36,12 +35,6 @@ const zeroRows = (what, data) => (!data || data.length === 0)
   ? new Error(`${what} matched 0 rows: RLS blocked it or the row no longer exists`)
   : null;
 const noRow = (what, row) => row ? null : new Error(`${what} returned no row: RLS blocked it or it matched nothing`);
-/** "24 Bottle" for a base quantity of a fetchInventoryItems item (its count pack, else its base unit); the bare figure when no item is known. */
-const qtyWords = (qtyBase, item) => {
-  if (!item) return String(qtyBase);
-  const d = displayInUnits(qtyBase, { baseUnit: item.baseUnit, formats: item.packaging || item.formats || [], itemConversions: item.conversions || [] });
-  return `${d.qty} ${d.label}`.trim();
-};
 
 // ── Feature detection ─────────────────────────────────────────────────────────
 /** True when the error says the table is not there yet (42P01, PGRST205, or the wording). */
@@ -315,48 +308,14 @@ export const assignItemArea = async (inventoryItemId, areaId, { moveHolding = tr
   // v5.11.84 (multi site stock Drop 0): ONE save function (stock_save_item_site) sets the area and,
   // when the old area still holds stock and moveHolding is on, moves that holding as a within venue
   // transfer in the same transaction, so the area and the holding can never end up half changed.
-  // Before the database has the function the steps below run as before.
+  // v5.11.86 (Drop 1): the function only; a database without it needs an update (no direct steps).
   const r = await callSave(supabase, 'stock_save_item_site', {
     p_item: inventoryItemId, p_location: locationId, p_patch: areaPatch(areaId, { moveHolding, byName }),
     p_version: null, p_section: section || SECTIONS.inventory,
   });
-  if (!r.missing) {
-    if (r.error) return { data: null, error: r.error };
-    return { data: { movedQty: Number(r.data?.moved_qty) || 0 }, error: null };
-  }
-  const { data: cur, error: curErr } = await supabase.from('inventory_item_areas').select('id, area_id')
-    .eq('location_id', locationId).eq('inventory_item_id', inventoryItemId).eq('is_primary', true).maybeSingle();
-  if (curErr) return { data: null, error: curErr };
-  const oldArea = cur?.area_id || null;
-  if ((oldArea || null) === (areaId || null)) return { data: { movedQty: 0, unchanged: true }, error: null };
-  if (!areaId) {
-    const { data, error } = await supabase.from('inventory_item_areas').delete()
-      .eq('location_id', locationId).eq('inventory_item_id', inventoryItemId).eq('is_primary', true).select('id');
-    return { data: { movedQty: 0 }, error: error || zeroRows('Clear item area', data) };
-  }
-  if (cur) {
-    const { data, error } = await supabase.from('inventory_item_areas').update({ area_id: areaId })
-      .eq('location_id', locationId).eq('id', cur.id).select('id');
-    const err = error || zeroRows('Item area change', data);
-    if (err) return { data: null, error: err };
-  } else {
-    const { data, error } = await supabase.from('inventory_item_areas')
-      .insert({ location_id: locationId, inventory_item_id: inventoryItemId, area_id: areaId, is_primary: true }).select('id');
-    const err = error || zeroRows('Item area save', data);
-    if (err) return { data: null, error: err };
-  }
-  let movedQty = 0;
-  if (moveHolding && oldArea) {
-    const { data: hold } = await supabase.from('inventory_item_area_stock').select('on_hand')
-      .eq('location_id', locationId).eq('inventory_item_id', inventoryItemId).eq('area_id', oldArea).maybeSingle();
-    const qty = Number(hold?.on_hand) || 0;
-    if (qty > 0) {
-      const mv = await moveHoldingBetweenAreas({ inventoryItemId, fromAreaId: oldArea, toAreaId: areaId, qtyBase: qty, note: 'Area changed', byName, item }, locationId);
-      if (mv.error) return { data: { movedQty: 0, areaSaved: true }, error: new Error(`Area changed, but its ${qtyWords(qty, item)} could not be moved: ${mv.error.message || mv.error}`) };
-      movedQty = qty;
-    }
-  }
-  return { data: { movedQty }, error: null };
+  if (r.error) return { data: null, error: r.error };
+  void item;   // kept for the callers (bulkAssignItemArea passes it); the database words the move
+  return { data: { movedQty: Number(r.data?.moved_qty) || 0 }, error: null };
 };
 
 /**

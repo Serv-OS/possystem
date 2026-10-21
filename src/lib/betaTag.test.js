@@ -51,7 +51,9 @@ test('Back Office shows the tag for a beta route only: the sidebar child row and
   const rowSrc = bo.slice(row, rowEnd);
   assert.match(rowSrc, /\{label\}\s*\{isBetaRoute\(id\) && <BetaTag \/>\}/, 'the tag follows the name and asks the route');
   // The top bar title: the section's name, then the tag when the open section is beta.
-  const top = bo.indexOf("{NAV.find(n => n.id === section)?.label");
+  // v5.11.86 (multi site stock Drop 1): today's NAV title through routeLabel ("Batch and prep" for a
+  // multi site company), the BETA tag after it as before.
+  const top = bo.indexOf("{routeLabel(section, NAV.find(n => n.id === section)?.label");
   assert.ok(top > 0);
   assert.match(bo.slice(top, bo.indexOf('</div>', top)), /\{isBetaRoute\(section\) && <BetaTag \/>\}/);
   // Nowhere is the tag rendered without asking the route.
