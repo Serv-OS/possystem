@@ -1,6 +1,6 @@
 /**
  * stock/companyData.js: how the browser talks to the stock save and read functions (v5.11.84
- * Drop 0, v5.11.86 Drop 1). The client is passed in, so node --test drives every path with a stand
+ * Drop 0, v5.11.89 Drop 1). The client is passed in, so node --test drives every path with a stand
  * in (saveContract.test.js, companyApi.test.js); data.js, recipes.js, counts.js, areas.js and
  * stockApi.js hand in the real one.
  *

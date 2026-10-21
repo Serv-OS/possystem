@@ -1,6 +1,6 @@
 // src/backoffice/components/WhichSiteDialog.jsx
 //
-// MULTI SITE STOCK (v5.11.86, Drop 1, mockup modal "which"): an action that belongs to one site
+// MULTI SITE STOCK (v5.11.89, Drop 1, mockup modal "which"): an action that belongs to one site
 // (Start a count, and the like) pressed while the picker is on All sites or a group asks which
 // site. Picking one moves the picker to it (StockScope askWhichSite).
 

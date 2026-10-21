@@ -1,6 +1,6 @@
 // src/backoffice/sections/stock/NewSiteBanner.jsx
 //
-// MULTI SITE STOCK (v5.11.86, Drop 1, map 3.3, mockup 2.13 banner): once a company gets its second
+// MULTI SITE STOCK (v5.11.89, Drop 1, map 3.3, mockup 2.13 banner): once a company gets its second
 // site, a login that edits the company list (level 'all') is told, once, that its stock can now be
 // shared. Dismissed per login and company (servos-stock-banner:<userId>:<orgId>), shown again only
 // when the company became multi site after that dismissal. Never shown to a one site company.

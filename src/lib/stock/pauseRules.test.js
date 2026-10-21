@@ -1,5 +1,5 @@
 /**
- * pauseRules.test.js: the paused item words and sets of Drop 1 (v5.11.86, multi site stock, map
+ * pauseRules.test.js: the paused item words and sets of Drop 1 (v5.11.89, multi site stock, map
  * 4.3), and the same words built on the server for the Manager app's po.raise (manager-approve).
  * Run: npm test. Synthetic ids and names only.
  */

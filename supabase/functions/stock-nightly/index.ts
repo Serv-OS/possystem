@@ -15,7 +15,7 @@
 //   2. Day totals. For every Ops venue that holds stock, the last business day that has fully ended
 //      on its own clock: stock_day_sums_rebuild and sales_day_sums_rebuild, then their checks
 //      (stock totals equal the ledger; sales gross, discounts, voids and tax equal report_day_sums).
-//   3. Set up health (v5.11.86, multi site stock Drop 1, 20261024a): for every venue that holds stock,
+//   3. Set up health (v5.11.89, multi site stock Drop 1, 20261024a): for every venue that holds stock,
 //      stock_nightly_health(p_location) runs the company list writer in check mode for that one site
 //      and keeps what is out of step in stock_co_site_health (Inventory > Overview, All sites: Set up
 //      health and its Fix). One call per venue, each under 8 s. It writes no site row and moves no

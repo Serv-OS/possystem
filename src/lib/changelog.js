@@ -7,7 +7,7 @@
 
 export const CHANGELOG = [
   {
-    v: '5.11.86',
+    v: '5.11.89',
     date: '21 Oct 2026',
     items: [
       "Stock, one company stock list for companies with more than one site (Drop 1). A company with one site sees exactly the same screens, words and buttons as before: no site picker, no Sites column, no new rows in the sidebar.",

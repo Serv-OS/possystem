@@ -39,7 +39,7 @@ const candidatesFor = (items, supplierId) => items.filter(it => !it.archivedAt).
 });
 const guessMatch = (line, cands) => matchScannedLine(line, cands).match?.item || null;
 
-// v5.11.86 (multi site stock Drop 1): siteId is the picker's site (the signed in venue for a one site
+// v5.11.89 (multi site stock Drop 1): siteId is the picker's site (the signed in venue for a one site
 // company). Another site's invoice is worked out on THAT site's tax rates (siteContext.js), never the
 // signed in venue's: their ids never match and every line would post at 0% VAT.
 export default function Invoices({ siteId = null } = {}) {

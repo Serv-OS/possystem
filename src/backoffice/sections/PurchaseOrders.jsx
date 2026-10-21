@@ -40,7 +40,7 @@ const tick = { fontSize: 12, color: 'var(--t3)', display: 'flex', alignItems: 'c
 const STATUS_TONE = { DRAFT: 'neutral', SENT: 'neutral', PARTIAL: 'warn', RECEIVED: 'good', CANCELLED: 'bad' };
 const NO_LINES_TEXT = "No lines yet. Add quantities to the supplier's items below.";
 
-// v5.11.86 (multi site stock Drop 1): siteId is the picker's site (the signed in venue for a one site
+// v5.11.89 (multi site stock Drop 1): siteId is the picker's site (the signed in venue for a one site
 // company). Another site's order is worked out on THAT site's tax rates (siteContext.js).
 export default function PurchaseOrders({ siteId = null } = {}) {
   const showToast = useStore(s => s.showToast);

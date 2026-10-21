@@ -1,7 +1,7 @@
 /**
  * saveContract.test.js: the stock saves keep their names, arguments and answers while their bodies
  * move to the database save functions (v5.11.84, multi site stock Drop 0, map 5.4 and 9.2).
- * v5.11.86 (Drop 1): 0b is live and the Drop 0 fallbacks are gone. A database without a save
+ * v5.11.89 (Drop 1): 0b is live and the Drop 0 fallbacks are gone. A database without a save
  * function answers NEEDS_UPDATE; no browser path writes the catalogue tables directly any more.
  * The one site screens are read where Drop 1 moved them (stock/items/StockItemsSplit.jsx and
  * stock/suppliers/SuppliersSplit.jsx, the same text). Run: npm test.

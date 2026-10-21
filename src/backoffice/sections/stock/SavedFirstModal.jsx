@@ -1,6 +1,6 @@
 // src/backoffice/sections/stock/SavedFirstModal.jsx
 //
-// MULTI SITE STOCK (v5.11.86, Drop 1, mockup modal "conflict"): someone saved the same record
+// MULTI SITE STOCK (v5.11.89, Drop 1, mockup modal "conflict"): someone saved the same record
 // first. Nothing was overwritten: the screen keeps what was typed, shows what changed, and the login
 // chooses Keep <First>'s (reload their version) or Save mine on top (save again with the new
 // version). Both changes stay in the log.

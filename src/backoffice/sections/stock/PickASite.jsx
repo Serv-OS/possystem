@@ -1,6 +1,6 @@
 // src/backoffice/sections/stock/PickASite.jsx
 //
-// MULTI SITE STOCK (v5.11.86, Drop 1, map 3.4): a screen that works one site at a time (Counts,
+// MULTI SITE STOCK (v5.11.89, Drop 1, map 3.4): a screen that works one site at a time (Counts,
 // Wastage, Transfers, Areas, Order pad, Orders, Invoices, Price changes, Recipes, Batches,
 // Inventory > Reports) shows this on All sites or a group, in place of the screen. Pressing a site
 // moves the picker there. A one site company never sees it (StockSiteGate).

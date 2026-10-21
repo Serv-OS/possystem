@@ -165,12 +165,12 @@ test('one site: the Team screen is main\'s file once the Stock control line is t
     '                    {stockMulti && stockControlAccess(sel.id, link)}\n',
   ]) { once(t, line); t = t.replace(line, ''); }
   // the teammate read: the stock columns ride along, today's read and fallbacks are unchanged
-  t = cut(t, '// v5.11.86 (multi site stock Drop 1, map 4.25): org_id and stock_control ride along', 'async function readLogins(ids) {');
+  t = cut(t, '// v5.11.89 (multi site stock Drop 1, map 4.25): org_id and stock_control ride along', 'async function readLogins(ids) {');
   once(t, '  let stockCols = ');
   t = cut(t, '  let stockCols = ', '  let hasSections = true;');
   t = t.replace('  let hasSections = true;', "  const read = (cols) => supabase.from('user_profiles').select(cols).in('id', ids);\n  let hasSections = true;");
-  t = cut(t, '  // v5.11.86 (multi site stock Drop 1, map 4.25): Stock control, a line on each login card', '  // v5.5.17: BO-access state.');
-  t = cut(t, '  // saveStockControl (v5.11.86)', '  // unlinkBOAccess:');
+  t = cut(t, '  // v5.11.89 (multi site stock Drop 1, map 4.25): Stock control, a line on each login card', '  // v5.5.17: BO-access state.');
+  t = cut(t, '  // saveStockControl (v5.11.89)', '  // unlinkBOAccess:');
   assert.equal(sha(t), '3464bc3e6a115703f38adb1cad9f4ee2ad1416c9fe9afb2a949720636033ed79', 'everything else is main\'s text byte for byte');
   // the one thing drawn is behind multi; the save is the database function and believes its answer
   assert.match(now, /const stockMulti = !isMock && stockScope\.ready && stockScope\.multi;/);

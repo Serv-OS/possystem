@@ -527,7 +527,7 @@ const bo = read('../backoffice/BackOfficeApp.jsx');
 const boCode = code(bo);
 
 test('BackOfficeApp: one list, and every way in goes through the guard', () => {
-  // v5.11.86 (multi site stock Drop 1): the stock helpers ride on the same line (map 2.4).
+  // v5.11.89 (multi site stock Drop 1): the stock helpers ride on the same line (map 2.4).
   assert.match(bo, /import \{ NAV_IA, EVERYTHING, canOpenRoute, guardRoute, filterNav, canPushToPos, readProfileRow, sectionsFromProfileRow, sectionKeyOfRoute, routeLabel, stockAccessOf \} from '\.\.\/lib\/boSections';/);
   assert.match(bo, /import \{ StockScopeProvider, StockSiteGate \} from '\.\/StockScope';/);
   assert.match(bo, /import StockSitePicker from '\.\/components\/StockSitePicker';/);
@@ -544,7 +544,7 @@ test('BackOfficeApp: one list, and every way in goes through the guard', () => {
   assert.match(boCode, /const setSection = \(next\) => \{\s+if \(!canOpenRoute\(next, access\)\) \{[\s\S]{0,220}?return;\s+\}\s+setAskedSection\(next\);\s+\};/);
   // Who is signed in: nobody until the profile has loaded, and nobody when it failed to load.
   // 17 Oct 2026: plus the Multi site menu answer (null until msm_my_access says otherwise).
-  // v5.11.86 (Drop 1): plus the stock site scope's facts (stockAccessOf: not ready, not multi while it loads).
+  // v5.11.89 (Drop 1): plus the stock site scope's facts (stockAccessOf: not ready, not multi while it loads).
   assert.match(boCode, /\(\) => \(isMock \? \{ \.\.\.EVERYTHING, multiSiteMenu: msmAccess, stock: stockAccess \} : \(orgCtx && !orgCtx\.loadFailed \? \{ role: orgCtx\.role, sections: orgCtx\.boSections, multiSiteMenu: msmAccess, stock: stockAccess \} : null\)\),\s+\[orgCtx, msmAccess, stockAccess\],/);
   assert.match(boCode, /const stockAccess = useMemo\(\(\) => stockAccessOf\(stockScope\), \[stockScope\]\);/);
   assert.match(boCode, /const \[stockScope, setStockScope\] = useState\(isMock \? MOCK_STOCK_SCOPE : null\);/);
@@ -705,7 +705,7 @@ test('it is described as a screen lock wherever the rule lives', () => {
 });
 
 test('Inventory overview and Online ordering: a button to another part the login is not shown is left out', () => {
-  // v5.11.86 (Drop 1): plus the picker's one site and a key, so a picker change remounts the screen.
+  // v5.11.89 (Drop 1): plus the picker's one site and a key, so a picker change remounts the screen.
   assert.match(boCode, /\{section === 'stock-overview' && <StockOverview setSection=\{setSection\} canOpen=\{canOpen\} siteId=\{stockSiteId\} key=\{stockSiteKey\} \/>\}/);
   assert.match(boCode, /\{section === 'online'\s+&& <OnlineOrdering setSection=\{setSection\} canOpen=\{canOpen\} \/>\}/);
   const stock = code(read('../backoffice/sections/StockOverview.jsx'));
@@ -827,7 +827,7 @@ test('Multi site menu: the screen reads the gate from the one access object, loa
   assert.match(bo, /section === 'multi-site-menu'/, 'rendered only through the guarded section');
 });
 
-// ── the stock site scope in the shell (v5.11.86, multi site stock Drop 1, map 3 and 8.2) ─────────
+// ── the stock site scope in the shell (v5.11.89, multi site stock Drop 1, map 3 and 8.2) ─────────
 
 test('BackOfficeApp: the stock screens get the picker\'s one site; one site companies get the signed in venue', () => {
   const shell = boCode.slice(boCode.indexOf('<div className="bo-page-shell">'), boCode.indexOf('{showLocationSwitcher &&'));

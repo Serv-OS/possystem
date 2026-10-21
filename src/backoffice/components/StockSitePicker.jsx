@@ -1,6 +1,6 @@
 // src/backoffice/components/StockSitePicker.jsx
 //
-// MULTI SITE STOCK (v5.11.86, Drop 1, map 3.1, mockup pickerHtml): the one site picker in the Back
+// MULTI SITE STOCK (v5.11.89, Drop 1, map 3.1, mockup pickerHtml): the one site picker in the Back
 // Office top bar, shown by BackOfficeApp only for a multi site company on an Inventory, Produce or
 // Purchasing screen (never Daily counts, never Reports). One select: All sites (N), the site groups,
 // the sites, and Show closed sites when the company has closed sites in reach. A login with one site

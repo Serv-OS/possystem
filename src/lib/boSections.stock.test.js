@@ -1,5 +1,5 @@
 // boSections.stock.test.js: the Back Office sidebar and titles with the stock site scope
-// (v5.11.86, multi site stock Drop 1, map 2.2, 2.4 and 9.2).
+// (v5.11.89, multi site stock Drop 1, map 2.2, 2.4 and 9.2).
 //
 // Rule 2: a one site company sees EXACTLY today's sidebar and titles, loading or not. A multi site
 // company sees one relabel (Batches reads "Batch and prep"); Drop 1 adds no route and no gate.

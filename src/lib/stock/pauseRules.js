@@ -1,5 +1,5 @@
 /**
- * stock/pauseRules.js: what "paused" means to the readers of Drop 1 (v5.11.86, multi site stock,
+ * stock/pauseRules.js: what "paused" means to the readers of Drop 1 (v5.11.89, multi site stock,
  * map 4.3 Pause). Pure: no React, no Supabase (pauseRules.test.js).
  *
  * A paused item is not suggested and cannot be ordered at that site (the Order pad, and the

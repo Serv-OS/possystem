@@ -1,6 +1,6 @@
 // src/lib/stock/drop1Review.test.js
 //
-// MULTI SITE STOCK (v5.11.86, Drop 1, the review fixes). Node cannot draw these screens, so this pins the
+// MULTI SITE STOCK (v5.11.89, Drop 1, the review fixes). Node cannot draw these screens, so this pins the
 // wiring the review asked for; the rules themselves are tested in itemListRules.test.js,
 // itemPageRules.test.js and stockNative1Migration.test.js, and what the database does in
 // supabase/tests/stock_native/drop1.mjs.

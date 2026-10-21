@@ -1,5 +1,5 @@
 /**
- * stock/siteScope.js: the site picker's rules for the stock screens (v5.11.86, multi site stock
+ * stock/siteScope.js: the site picker's rules for the stock screens (v5.11.89, multi site stock
  * Drop 1, integration map 3). Pure: no React, no Supabase, so node --test drives it
  * (siteScope.test.js, with seeded random runs).
  *

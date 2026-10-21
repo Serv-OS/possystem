@@ -78,7 +78,7 @@ test('the item screen never writes cost; price saves follow the venue rule (sour
   assert.ok(save.length > 100, 'itemSaveArgs found');
   assert.doesNotMatch(save, /current_cost|on_hand|org_id/, 'the item save sends no cost, no on hand and no company id');
   const src = read('./data.js');
-  // v5.11.86 (Drop 1): the browser cost step (recomputeItemCost, the price rule behind the direct
+  // v5.11.89 (Drop 1): the browser cost step (recomputeItemCost, the price rule behind the direct
   // writes) is gone with those writes; the database's cost step applies the venue rule.
   assert.doesNotMatch(src, /export async function recomputeItemCost\(/);
   assert.doesNotMatch(src, /from\('item_cost_history'\)\.(insert|update)\(|current_cost: chosenCost/, 'no cost is written from the browser');

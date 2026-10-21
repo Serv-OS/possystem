@@ -182,7 +182,7 @@ export function canOpenRoute(routeId, profile) {
   return !!key && allowed.includes(key);
 }
 
-// ── Labels for multi site companies (v5.11.86, multi site stock Drop 1, map 2.2) ────────────
+// ── Labels for multi site companies (v5.11.89, multi site stock Drop 1, map 2.2) ────────────
 // The approved mockup calls Batches "Batch and prep" for a multi site company; a one site company
 // keeps "Batches" (Rule 2: one site companies see exactly today's sidebar). Applied by filterNav and
 // by the top bar title (routeLabel). The rows in NAV_IA keep today's labels.

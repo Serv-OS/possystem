@@ -96,7 +96,7 @@ function SectionPicker({ ticks, onChange, disabled = false }) {
 // what it can open. bo_sections is dropped from the read ONLY when the database says that
 // column does not exist (section access not installed: everyone opens everything). It has its
 // own step so a missing bo_sections never takes bo_access down with it.
-// v5.11.86 (multi site stock Drop 1, map 4.25): org_id and stock_control ride along for the Stock
+// v5.11.89 (multi site stock Drop 1, map 4.25): org_id and stock_control ride along for the Stock
 // control line (shown only in a multi site company). stock_control is optional: a database without
 // the column (before 20261021a, or after its rollback) is asked again without it, the value reads as
 // null, and the list never fails because of it.
@@ -148,7 +148,7 @@ export default function StaffManager({ orgCtx = null } = {}) {
   const [editSections, setEditSections] = useState(null); // { staffId, ticks } | null
   const [sectionsBusy, setSectionsBusy] = useState(false);
 
-  // v5.11.86 (multi site stock Drop 1, map 4.25): Stock control, a line on each login card, ONLY in a
+  // v5.11.89 (multi site stock Drop 1, map 4.25): Stock control, a line on each login card, ONLY in a
   // multi site company (a one site company sees exactly today's card). The company is the venue's
   // (orgCtx.venueOrgId), never the viewer's own profile org. Change is offered to an owner of this
   // company or ServOS staff, for a login of this company that is not an owner and not their own;
@@ -661,7 +661,7 @@ export default function StaffManager({ orgCtx = null } = {}) {
     );
   };
 
-  // saveStockControl (v5.11.86): the ONLY way a person changes a login's Stock control is the
+  // saveStockControl (v5.11.89): the ONLY way a person changes a login's Stock control is the
   // database function set_stock_control. The screen believes its answer, not what it sent.
   const saveStockControl = async () => {
     if (!editStock || stockBusy) return;

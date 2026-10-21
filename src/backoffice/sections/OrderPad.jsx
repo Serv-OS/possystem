@@ -55,10 +55,10 @@ const HEADERS = ['Item', 'On hand', 'Use/day', 'Cover', 'Suggested', 'Order', 'S
 
 // Cover days walk the schedule from the VENUE's "today" (v5.7.24): see purchasingRules.js.
 
-// v5.11.86 (multi site stock Drop 1, map 4.3): nothing is paused until the read says so.
+// v5.11.89 (multi site stock Drop 1, map 4.3): nothing is paused until the read says so.
 const NO_PAUSES = new Map();
 
-// v5.11.86: siteId is the picker's site (always the signed in venue for a one site company). In a
+// v5.11.89: siteId is the picker's site (always the signed in venue for a one site company). In a
 // multi site company the pad reads which items are paused at that site today (stock_paused_items):
 // a paused line is grey with its words, never suggested, and Create orders refuses it. One site
 // companies make no extra call and see exactly today's pad.
@@ -103,7 +103,7 @@ export default function OrderPad({ siteId = null } = {}) {
     const cfg = await getLocationConfig(loc).catch(() => null);
     const byId = Object.fromEntries((its || []).map(i => [i.id, i]));
     const { byItem: oo, stale } = outstandingOnOrder(pos, byId, { todayYmd: buildScheduleCtx(cfg?.timezone).ymd });
-    // v5.11.86 (Drop 1): what is paused at this site today. Multi site companies only (a database
+    // v5.11.89 (Drop 1): what is paused at this site today. Multi site companies only (a database
     // before Drop 1 has no pause, so nothing is paused); a failed read holds the orders back.
     if (multi && loc) {
       const pr = await stockApi.pausedItems(loc);
@@ -145,7 +145,7 @@ export default function OrderPad({ siteId = null } = {}) {
     // usage for each real calendar day this order has to cover, starting tomorrow.
     // No profile (RPC not migrated / brand-new item) -> the flat average, as before.
     const prof = weekday?.[it.id];
-    // v5.11.86 (Drop 1): an item paused here today is never suggested: nothing is worked out for it.
+    // v5.11.89 (Drop 1): an item paused here today is never suggested: nothing is worked out for it.
     const pz = paused.get(it.id) || null;
     const sug = pz
       ? { needBase: 0, suggestedPacks: 0, covered: false, effCover: (Number(coverDays) || 0) + (Number(safetyDays) || 0), hasShape: false }
@@ -206,7 +206,7 @@ export default function OrderPad({ siteId = null } = {}) {
     // unit_price MUST be NET (ex-VAT); the PO line carries the rate so VAT is shown on the order.
     // The line mirrors the supplier pack (pack_qty x inner_qty in the pack's unit) so the
     // supplier reads "6 x 2 l" and receiving books the right base quantity.
-    // v5.11.86 (Drop 1): a line of an item paused here today is refused, naming it.
+    // v5.11.89 (Drop 1): a line of an item paused here today is refused, naming it.
     const pausedLines = Object.values(basket).flat().filter(({ r }) => r.paused);
     if (pausedLines.length) { showToast?.(pausedLines.map(({ r }) => pausedLineWords(r.it.name, r.paused, siteName(locId))).join(' '), 'error'); return; }
     if (pauseUnknown) { showToast?.('Could not check which items are paused here. Reload to try again.', 'error'); return; }

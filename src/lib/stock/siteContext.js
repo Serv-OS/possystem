@@ -1,6 +1,6 @@
 /**
  * stock/siteContext.js: the menu and tax rates of a site that is not the signed in venue
- * (v5.11.86, multi site stock Drop 1, map 3.4 "not the signed in venue's store").
+ * (v5.11.89, multi site stock Drop 1, map 3.4 "not the signed in venue's store").
  *
  * The store holds ONLY the signed in venue's menuItems and taxRates. With the picker on another
  * site, a screen that read them would post that site's invoice at the signed in venue's VAT ids

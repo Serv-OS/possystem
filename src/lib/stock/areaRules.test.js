@@ -569,7 +569,7 @@ test('the migration (16 Oct review fixes): first area re homes unassigned stock,
   // areas.js: the usual six are compared by the same rule
   const areasSrc = code(read('./areas.js'));
   assert.match(areasSrc, /const have = new Set\(\(existing \|\| \[\]\)\.map\(\(a\) => normaliseAreaName\(a\.name\)\)\);/);
-  // v5.11.86 (multi site stock Drop 1): the area and its holding move in ONE database call
+  // v5.11.89 (multi site stock Drop 1): the area and its holding move in ONE database call
   // (stock_save_item_site, area patch); the browser steps that moved the holding after the area
   // (and named the figure when that second step failed) were the Drop 0 fallback and are gone.
   const assign = areasSrc.slice(areasSrc.indexOf('export const assignItemArea'), areasSrc.indexOf('export const bulkAssignItemArea'));
@@ -610,7 +610,7 @@ test('areas.js: the probe reads one row and treats only a missing relation as no
   assert.match(src, /supabase\.from\('storage_areas'\)\.select\('id'\)\.limit\(1\)/);
   assert.match(src, /_ready = isMissingRelationError\(error\) \? false : null;/, 'any other failure is "unknown", never "ready"');
   assert.match(src, /export function areasReadySync\(\) \{ return _ready; \}/);
-  // v5.11.86 (Drop 1): the item area writes ('Item area change', 'Item area save', 'Clear item area')
+  // v5.11.89 (Drop 1): the item area writes ('Item area change', 'Item area save', 'Clear item area')
   // were the Drop 0 fallback of assignItemArea and are gone; the area writes left still ask for rows.
   for (const w of ['Archive area', 'Set receiving area', 'Reorder areas', 'Add the usual six'])
     assert.ok(src.includes(`zeroRows('${w}'`), w);

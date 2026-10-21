@@ -1,6 +1,6 @@
 // src/backoffice/StockScope.jsx
 //
-// MULTI SITE STOCK (v5.11.86, Drop 1, map 3.3 and 3.4): the site picker's scope handed down to the
+// MULTI SITE STOCK (v5.11.89, Drop 1, map 3.3 and 3.4): the site picker's scope handed down to the
 // stock screens. BackOfficeApp holds the data (the scope read once from stock_site_scope, and the
 // choice); this provider only passes it on, with the Which site dialog, the "show closed sites"
 // flag and the one shot "open a new count" flag of its own.

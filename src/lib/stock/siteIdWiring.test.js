@@ -1,5 +1,5 @@
 /**
- * siteIdWiring.test.js: every stock screen works on the site it is handed (v5.11.86, multi site
+ * siteIdWiring.test.js: every stock screen works on the site it is handed (v5.11.89, multi site
  * stock Drop 1, map 3.4 and 9.2). Run: npm test.
  *
  * 1. The wiring. Each screen takes `{ siteId = null }`, starts from `siteId || getActiveLocationSync()`,
@@ -203,26 +203,26 @@ const LOC = 'useState(siteId || getActiveLocationSync())';
 const LOC_MAIN = 'useState(getActiveLocationSync())';
 const IDENTITY = [
   ['backoffice/sections/StockTransfers.jsx', [
-    ['// v5.11.86 (multi site stock Drop 1): siteId is the picker\'s site (the signed in venue for a one site company).\nexport default function StockTransfers({ orgCtx = null, siteId = null }) {', 'export default function StockTransfers({ orgCtx = null }) {'],
+    ['// v5.11.89 (multi site stock Drop 1): siteId is the picker\'s site (the signed in venue for a one site company).\nexport default function StockTransfers({ orgCtx = null, siteId = null }) {', 'export default function StockTransfers({ orgCtx = null }) {'],
     [LOC, LOC_MAIN],
   ]],
   ['backoffice/sections/StockAreas.jsx', [
-    ['// v5.11.86 (multi site stock Drop 1): siteId is the picker\'s site (the signed in venue for a one site company).\nexport default function StockAreas({ orgCtx = null, siteId = null }) {', 'export default function StockAreas({ orgCtx = null }) {'],
+    ['// v5.11.89 (multi site stock Drop 1): siteId is the picker\'s site (the signed in venue for a one site company).\nexport default function StockAreas({ orgCtx = null, siteId = null }) {', 'export default function StockAreas({ orgCtx = null }) {'],
     [LOC, LOC_MAIN],
   ]],
   ['backoffice/sections/PriceChanges.jsx', [
-    ['// v5.11.86 (multi site stock Drop 1): siteId is the picker\'s site (the signed in venue for a one site company).\nexport default function PriceChanges({ siteId = null } = {}) {', 'export default function PriceChanges() {'],
+    ['// v5.11.89 (multi site stock Drop 1): siteId is the picker\'s site (the signed in venue for a one site company).\nexport default function PriceChanges({ siteId = null } = {}) {', 'export default function PriceChanges() {'],
     [LOC, LOC_MAIN],
   ]],
   ['backoffice/sections/Wastage.jsx', [
-    ['// v5.11.86 (multi site stock Drop 1): siteId is the picker\'s site (the signed in venue for a one site company).\nexport default function Wastage({ siteId = null } = {}) {', 'export default function Wastage() {'],
+    ['// v5.11.89 (multi site stock Drop 1): siteId is the picker\'s site (the signed in venue for a one site company).\nexport default function Wastage({ siteId = null } = {}) {', 'export default function Wastage() {'],
     [LOC, LOC_MAIN],
     // the modal resolved the signed in venue itself; it is handed the same venue now
     [' locationId={locId} showToast={showToast} />', ' showToast={showToast} />'],
   ]],
   ['backoffice/sections/StockCounts.jsx', [
     ['import StockItemPicker from \'../../components/StockItemPicker\';\nimport { useStockScope } from \'../StockScope\';', 'import StockItemPicker from \'../../components/StockItemPicker\';'],
-    ['// v5.11.86 (multi site stock Drop 1): siteId is the picker\'s site (always the signed in venue for a\n// one site company); "Start a count" on Stock items opens the new count panel once (takeOpenNew).\nexport default function StockCounts({ orgCtx = null, siteId = null }) {', 'export default function StockCounts({ orgCtx = null }) {'],
+    ['// v5.11.89 (multi site stock Drop 1): siteId is the picker\'s site (always the signed in venue for a\n// one site company); "Start a count" on Stock items opens the new count panel once (takeOpenNew).\nexport default function StockCounts({ orgCtx = null, siteId = null }) {', 'export default function StockCounts({ orgCtx = null }) {'],
     ['  const { takeOpenNew } = useStockScope();\n', ''],
     [LOC, LOC_MAIN],
     // takeOpenNew answers false unless Stock items' "Start a count" asked (never in a one site company)
@@ -230,7 +230,7 @@ const IDENTITY = [
   ]],
   ['backoffice/sections/Invoices.jsx', [
     ['\nimport { useSiteStockContext } from \'../../lib/stock/siteContext\';', ''],
-    ['// v5.11.86 (multi site stock Drop 1): siteId is the picker\'s site (the signed in venue for a one site\n// company). Another site\'s invoice is worked out on THAT site\'s tax rates (siteContext.js), never the\n// signed in venue\'s: their ids never match and every line would post at 0% VAT.\nexport default function Invoices({ siteId = null } = {}) {', 'export default function Invoices() {'],
+    ['// v5.11.89 (multi site stock Drop 1): siteId is the picker\'s site (the signed in venue for a one site\n// company). Another site\'s invoice is worked out on THAT site\'s tax rates (siteContext.js), never the\n// signed in venue\'s: their ids never match and every line would post at 0% VAT.\nexport default function Invoices({ siteId = null } = {}) {', 'export default function Invoices() {'],
     ['  const { taxRates } = useSiteStockContext(siteId);', '  const taxRates = useStore(s => s.taxRates) || [];'],
     [LOC, LOC_MAIN],
     // scanInvoice resolved the signed in venue when handed nothing: the same venue
@@ -238,24 +238,24 @@ const IDENTITY = [
   ]],
   ['backoffice/sections/PurchaseOrders.jsx', [
     ['\nimport { useSiteStockContext } from \'../../lib/stock/siteContext\';', ''],
-    ['// v5.11.86 (multi site stock Drop 1): siteId is the picker\'s site (the signed in venue for a one site\n// company). Another site\'s order is worked out on THAT site\'s tax rates (siteContext.js).\nexport default function PurchaseOrders({ siteId = null } = {}) {', 'export default function PurchaseOrders() {'],
+    ['// v5.11.89 (multi site stock Drop 1): siteId is the picker\'s site (the signed in venue for a one site\n// company). Another site\'s order is worked out on THAT site\'s tax rates (siteContext.js).\nexport default function PurchaseOrders({ siteId = null } = {}) {', 'export default function PurchaseOrders() {'],
     ['  const { taxRates } = useSiteStockContext(siteId);', '  const taxRates = useStore(s => s.taxRates) || [];'],
     [LOC, LOC_MAIN],
   ]],
   ['backoffice/sections/StockReports.jsx', [
     ['import { getActiveLocationSync, getLocationId } from \'../../lib/supabase\';', 'import { useStore } from \'../../store\';\nimport { getActiveLocationSync, getLocationId } from \'../../lib/supabase\';'],
     ['\nimport { useSiteStockContext } from \'../../lib/stock/siteContext\';', ''],
-    ['// v5.11.86 (multi site stock Drop 1): siteId is the picker\'s site (the signed in venue for a one site\n// company). Another site\'s menu and tax rates are that site\'s own (siteContext.js), never the store\'s.\nexport default function StockReports({ siteId = null } = {}) {\n  const { menuItems, taxRates } = useSiteStockContext(siteId);',
+    ['// v5.11.89 (multi site stock Drop 1): siteId is the picker\'s site (the signed in venue for a one site\n// company). Another site\'s menu and tax rates are that site\'s own (siteContext.js), never the store\'s.\nexport default function StockReports({ siteId = null } = {}) {\n  const { menuItems, taxRates } = useSiteStockContext(siteId);',
       'export default function StockReports() {\n  const menuItems = useStore(s => s.menuItems) || [];\n  const taxRates = useStore(s => s.taxRates) || [];'],
     [LOC, LOC_MAIN],
     [' locId={locId}/>}', '/>}'],
     ['function ProductionReport({ itemName, venueTz, locId = null }) {', 'function ProductionReport({ itemName, venueTz }) {'],
     // the signed in venue is what fetchBatches(null) resolved to
-    ['  // v5.11.86: the batches of the screen\'s site (it read the signed in venue whatever the picker said)\n  useEffect(() => {\n    fetchBatches(locId || null, 500).then(({ data }) => setBatches(data || []));\n  }, [locId]);',
+    ['  // v5.11.89: the batches of the screen\'s site (it read the signed in venue whatever the picker said)\n  useEffect(() => {\n    fetchBatches(locId || null, 500).then(({ data }) => setBatches(data || []));\n  }, [locId]);',
       '  useEffect(() => {\n    fetchBatches(null, 500).then(({ data }) => setBatches(data || []));\n  }, []);'],
   ]],
   ['backoffice/sections/Batches.jsx', [
-    ['// v5.11.86 (multi site stock Drop 1): siteId is the picker\'s site (always the signed in venue for a one\n// site company). All three reads and every production call name it, so a batch completed with the\n// picker on another site is found and posted THERE (completePlannedBatch read the signed in venue).\nexport default function Batches({ siteId = null } = {}) {', 'export default function Batches() {'],
+    ['// v5.11.89 (multi site stock Drop 1): siteId is the picker\'s site (always the signed in venue for a one\n// site company). All three reads and every production call name it, so a batch completed with the\n// picker on another site is found and posted THERE (completePlannedBatch read the signed in venue).\nexport default function Batches({ siteId = null } = {}) {', 'export default function Batches() {'],
     ['const loc = siteId || getActiveLocationSync() || await getLocationId().catch(() => null);\n    if (!loc) return;', 'const loc = getActiveLocationSync() || await getLocationId().catch(() => null);\n    if (!loc) return;'],
     ['  // eslint-disable-next-line react-hooks/set-state-in-effect, react-hooks/exhaustive-deps\n  useEffect(() => { loadQueue(); }, []);', '  // eslint-disable-next-line react-hooks/set-state-in-effect\n  useEffect(() => { loadQueue(); }, []);'],
     // completePlannedBatch resolved the signed in venue when handed nothing: the same venue
@@ -266,18 +266,18 @@ const IDENTITY = [
   ]],
   ['backoffice/sections/OrderPad.jsx', [
     ['\nimport { useStockScope } from \'../StockScope\';\nimport { stockApi } from \'../../lib/stock/stockApi\';\nimport { pausedMap, pauseWords, pausedLineWords } from \'../../lib/stock/pauseRules\';', ''],
-    ['// v5.11.86 (multi site stock Drop 1, map 4.3): nothing is paused until the read says so.\nconst NO_PAUSES = new Map();\n\n// v5.11.86: siteId is the picker\'s site (always the signed in venue for a one site company). In a\n// multi site company the pad reads which items are paused at that site today (stock_paused_items):\n// a paused line is grey with its words, never suggested, and Create orders refuses it. One site\n// companies make no extra call and see exactly today\'s pad.\nexport default function OrderPad({ siteId = null } = {}) {', 'export default function OrderPad() {'],
+    ['// v5.11.89 (multi site stock Drop 1, map 4.3): nothing is paused until the read says so.\nconst NO_PAUSES = new Map();\n\n// v5.11.89: siteId is the picker\'s site (always the signed in venue for a one site company). In a\n// multi site company the pad reads which items are paused at that site today (stock_paused_items):\n// a paused line is grey with its words, never suggested, and Create orders refuses it. One site\n// companies make no extra call and see exactly today\'s pad.\nexport default function OrderPad({ siteId = null } = {}) {', 'export default function OrderPad() {'],
     ['  const { multi, siteName } = useStockScope();\n', ''],
     [LOC, LOC_MAIN],
     ['  const [paused, setPaused] = useState(NO_PAUSES);         // site item id -> { everywhere, until }\n  const [pauseUnknown, setPauseUnknown] = useState(false); // the read failed: orders wait\n', ''],
     // multi is false: no call, paused stays empty
-    ['    // v5.11.86 (Drop 1): what is paused at this site today. Multi site companies only (a database\n    // before Drop 1 has no pause, so nothing is paused); a failed read holds the orders back.\n    if (multi && loc) {\n      const pr = await stockApi.pausedItems(loc);\n      setPaused(pr.error ? NO_PAUSES : pausedMap(pr.data?.rows));\n      setPauseUnknown(!!pr.error && !pr.needsUpdate);\n    }\n', ''],
+    ['    // v5.11.89 (Drop 1): what is paused at this site today. Multi site companies only (a database\n    // before Drop 1 has no pause, so nothing is paused); a failed read holds the orders back.\n    if (multi && loc) {\n      const pr = await stockApi.pausedItems(loc);\n      setPaused(pr.error ? NO_PAUSES : pausedMap(pr.data?.rows));\n      setPauseUnknown(!!pr.error && !pr.needsUpdate);\n    }\n', ''],
     ['  }, [locId, showToast, multi]);', '  }, [locId, showToast]);'],
     // nothing paused: suggestPacks runs for every line, exactly as before
-    ['    // v5.11.86 (Drop 1): an item paused here today is never suggested: nothing is worked out for it.\n    const pz = paused.get(it.id) || null;\n    const sug = pz\n      ? { needBase: 0, suggestedPacks: 0, covered: false, effCover: (Number(coverDays) || 0) + (Number(safetyDays) || 0), hasShape: false }\n      : suggestPacks(', '    const sug = suggestPacks('],
+    ['    // v5.11.89 (Drop 1): an item paused here today is never suggested: nothing is worked out for it.\n    const pz = paused.get(it.id) || null;\n    const sug = pz\n      ? { needBase: 0, suggestedPacks: 0, covered: false, effCover: (Number(coverDays) || 0) + (Number(safetyDays) || 0), hasShape: false }\n      : suggestPacks(', '    const sug = suggestPacks('],
     [', covered: sug.covered, paused: pz };', ', covered: sug.covered };'],
     [', supById, venueTz, paused]);', ', supById, venueTz]);'],
-    ['    // v5.11.86 (Drop 1): a line of an item paused here today is refused, naming it.\n    const pausedLines = Object.values(basket).flat().filter(({ r }) => r.paused);\n    if (pausedLines.length) { showToast?.(pausedLines.map(({ r }) => pausedLineWords(r.it.name, r.paused, siteName(locId))).join(\' \'), \'error\'); return; }\n    if (pauseUnknown) { showToast?.(\'Could not check which items are paused here. Reload to try again.\', \'error\'); return; }\n', ''],
+    ['    // v5.11.89 (Drop 1): a line of an item paused here today is refused, naming it.\n    const pausedLines = Object.values(basket).flat().filter(({ r }) => r.paused);\n    if (pausedLines.length) { showToast?.(pausedLines.map(({ r }) => pausedLineWords(r.it.name, r.paused, siteName(locId))).join(\' \'), \'error\'); return; }\n    if (pauseUnknown) { showToast?.(\'Could not check which items are paused here. Reload to try again.\', \'error\'); return; }\n', ''],
     // r.paused is null on every row: the same style, no words, the input enabled
     ['style={r.paused ? { color: \'var(--t4)\' } : { color: \'var(--t1)\' }}', 'style={{ color: \'var(--t1)\' }}'],
     ['{r.paused && <div style={{ fontSize: 11, fontWeight: 600, color: \'var(--amber, #F5A623)\', marginTop: 3 }}>{pauseWords({ siteName: siteName(locId), everywhere: r.paused.everywhere, until: r.paused.until })}</div>}', ''],
@@ -287,7 +287,7 @@ const IDENTITY = [
     ['\nimport { useSiteStockContext } from \'../../lib/stock/siteContext\';\nimport { useStockScope } from \'../StockScope\';\nimport LockLine from \'./stock/LockLine\';', ''],
     ['function UnitSelect({ value, onChange, width = 110, disabled = false }) {', 'function UnitSelect({ value, onChange, width = 110 }) {'],
     [' disabled={disabled} style={{ ...field, width, ...(disabled ? { opacity: 0.55 } : {}) }}>', ' style={{ ...field, width }}>'],
-    ['// v5.11.86 (multi site stock Drop 1): siteId is the picker\'s site (always the signed in venue for a one\n// site company, which sees exactly today\'s screen). Another site\'s menu and tax rates are its own\n// (siteContext.js), so a recipe is linked to a product that sells THERE. In a multi site company a\n// login without company rights in Produce sees the recipe read only under the lock line: the\n// database refuses those saves from Drop 1 (map 5.1), so no control looks editable.\nexport default function Recipes({ siteId = null } = {}) {', 'export default function Recipes() {'],
+    ['// v5.11.89 (multi site stock Drop 1): siteId is the picker\'s site (always the signed in venue for a one\n// site company, which sees exactly today\'s screen). Another site\'s menu and tax rates are its own\n// (siteContext.js), so a recipe is linked to a product that sells THERE. In a multi site company a\n// login without company rights in Produce sees the recipe read only under the lock line: the\n// database refuses those saves from Drop 1 (map 5.1), so no control looks editable.\nexport default function Recipes({ siteId = null } = {}) {', 'export default function Recipes() {'],
     ['  const { menuItems, taxRates } = useSiteStockContext(siteId);\n  const sc = useStockScope();\n  const locked = sc.multi && !sc.canEditCompany(\'produce\');', '  const menuItems = useStore(s => s.menuItems) || [];\n  const taxRates = useStore(s => s.taxRates) || [];'],
     [LOC, LOC_MAIN],
     // locked is false in a one site company: every guard, attribute and style below is inert
@@ -308,7 +308,7 @@ const IDENTITY = [
   ['components/PosWasteModal.jsx', [
     ['\nimport { useSiteStockContext } from \'../lib/stock/siteContext\';', ''],
     ['import { getActiveLocationSync } from \'../lib/supabase\';', 'import { useStore } from \'../store\';\nimport { getActiveLocationSync } from \'../lib/supabase\';'],
-    ['// v5.11.86 (multi site stock Drop 1, map 4.18): the site comes first (Back Office Wastage passes the\n// picker\'s site); the till passes its own paired venue, which is also what it resolved before, so\n// nothing changes at the till. A site that is not the signed in venue lists ITS products\n// (siteContext.js), never the store\'s.\n', ''],
+    ['// v5.11.89 (multi site stock Drop 1, map 4.18): the site comes first (Back Office Wastage passes the\n// picker\'s site); the till passes its own paired venue, which is also what it resolved before, so\n// nothing changes at the till. A site that is not the signed in venue lists ITS products\n// (siteContext.js), never the store\'s.\n', ''],
     ['  const loc = locationId || getActiveLocationSync() || null;\n  const { menuItems } = useSiteStockContext(loc);', '  const menuItems = useStore(s => s.menuItems) || [];\n  const loc = getActiveLocationSync() || locationId || null;'],
   ]],
 ];

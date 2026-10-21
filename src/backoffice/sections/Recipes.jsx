@@ -54,7 +54,7 @@ function UnitSelect({ value, onChange, width = 110, disabled = false }) {
   );
 }
 
-// v5.11.86 (multi site stock Drop 1): siteId is the picker's site (always the signed in venue for a one
+// v5.11.89 (multi site stock Drop 1): siteId is the picker's site (always the signed in venue for a one
 // site company, which sees exactly today's screen). Another site's menu and tax rates are its own
 // (siteContext.js), so a recipe is linked to a product that sells THERE. In a multi site company a
 // login without company rights in Produce sees the recipe read only under the lock line: the

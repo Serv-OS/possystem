@@ -1,6 +1,6 @@
 // src/backoffice/sections/stock/stockUi.jsx
 //
-// MULTI SITE STOCK (v5.11.86, Drop 1, contract 4.1): the one look of the company stock screens.
+// MULTI SITE STOCK (v5.11.89, Drop 1, contract 4.1): the one look of the company stock screens.
 // The Multi site menu pieces are already in the ServOS look, so they are re-exported from here, and
 // the table, cell and page pieces the stock screens share are added. Theme tokens only (light and
 // dark both work); never a fixed colour other than the token fallbacks; never window.confirm (use

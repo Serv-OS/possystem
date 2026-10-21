@@ -1,6 +1,6 @@
 // src/lib/stock/stockLinks.test.js
 //
-// MULTI SITE STOCK (v5.11.86, Drop 1, integrator): the company stock screens reach each other.
+// MULTI SITE STOCK (v5.11.89, Drop 1, integrator): the company stock screens reach each other.
 //   - StockScope's go(route, { open }) leaves one record waiting only for a route this login can
 //     open (the same canOpenRoute rule as BackOfficeApp's guarded setSection); takeOpen takes it
 //     once; peekOpen only looks.

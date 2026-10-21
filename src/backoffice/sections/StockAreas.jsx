@@ -28,7 +28,7 @@ const card = { background: 'var(--bg1)', border: '1px solid var(--bdr)', borderR
 
 export const NEEDS_UPDATE_TEXT = 'Stock areas need the 16 Oct database update. Ask ServOS to run it, then open this screen again.';
 
-// v5.11.86 (multi site stock Drop 1): siteId is the picker's site (the signed in venue for a one site company).
+// v5.11.89 (multi site stock Drop 1): siteId is the picker's site (the signed in venue for a one site company).
 export default function StockAreas({ orgCtx = null, siteId = null }) {
   const showToast = useStore(s => s.showToast);
   const [locId, setLocId] = useState(siteId || getActiveLocationSync());

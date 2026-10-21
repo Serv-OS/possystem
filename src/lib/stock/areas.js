@@ -308,7 +308,7 @@ export const assignItemArea = async (inventoryItemId, areaId, { moveHolding = tr
   // v5.11.84 (multi site stock Drop 0): ONE save function (stock_save_item_site) sets the area and,
   // when the old area still holds stock and moveHolding is on, moves that holding as a within venue
   // transfer in the same transaction, so the area and the holding can never end up half changed.
-  // v5.11.86 (Drop 1): the function only; a database without it needs an update (no direct steps).
+  // v5.11.89 (Drop 1): the function only; a database without it needs an update (no direct steps).
   const r = await callSave(supabase, 'stock_save_item_site', {
     p_item: inventoryItemId, p_location: locationId, p_patch: areaPatch(areaId, { moveHolding, byName }),
     p_version: null, p_section: section || SECTIONS.inventory,

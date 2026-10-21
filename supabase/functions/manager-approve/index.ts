@@ -58,7 +58,7 @@ const r2 = (n: number) => Math.round(n * 100) / 100;
 // the venue's calendar day (the same Intl reading manager-snapshot uses for `today`)
 const ymd = (d: Date, tz: string) => new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
 
-// v5.11.86 (multi site stock Drop 1, map 4.3 Pause): an item paused at a site cannot be ordered
+// v5.11.89 (multi site stock Drop 1, map 4.3 Pause): an item paused at a site cannot be ordered
 // there from the phone either. The words are the Order pad's (src/lib/stock/pauseRules.js
 // pauseWords), built here the same way; pauseRules.test.js runs both and compares them.
 // pause words (src/lib/stock/pauseRules.js): start
@@ -310,7 +310,7 @@ Deno.serve(async (req) => {
       if (itemIds.some((id) => !itemBy[id])) return json({ error: 'one or more items are not from this location' }, 400);
       const orgId = locRow?.org_id || null;
       if (!orgId) return json({ error: 'could not raise the order' }, 400);
-      // v5.11.86 (Drop 1): a line of an item paused at this site today is refused, in the Order pad's
+      // v5.11.89 (Drop 1): a line of an item paused at this site today is refused, in the Order pad's
       // words, before anything is written. A database before Drop 1 has no pause, so nothing is refused;
       // any other failure of the read refuses the order rather than guessing.
       const { data: pausedRes, error: pausedErr } = await sb.rpc('stock_paused_items', { p_location: loc });

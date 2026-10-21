@@ -60,7 +60,7 @@ function ExportBtn({ rows, headers, name }) {
   );
 }
 
-// v5.11.86 (multi site stock Drop 1): siteId is the picker's site (the signed in venue for a one site
+// v5.11.89 (multi site stock Drop 1): siteId is the picker's site (the signed in venue for a one site
 // company). Another site's menu and tax rates are that site's own (siteContext.js), never the store's.
 export default function StockReports({ siteId = null } = {}) {
   const { menuItems, taxRates } = useSiteStockContext(siteId);
@@ -428,7 +428,7 @@ const TYPE_TONE = (label) => /waste/i.test(label) ? 'warn' : /count/i.test(label
 function ProductionReport({ itemName, venueTz, locId = null }) {
   const [days, setDays] = useState(30);
   const [batches, setBatches] = useState(null);
-  // v5.11.86: the batches of the screen's site (it read the signed in venue whatever the picker said)
+  // v5.11.89: the batches of the screen's site (it read the signed in venue whatever the picker said)
   useEffect(() => {
     fetchBatches(locId || null, 500).then(({ data }) => setBatches(data || []));
   }, [locId]);

@@ -1,5 +1,5 @@
 /**
- * siteScope.test.js: the site picker's rules (v5.11.86, multi site stock Drop 1, map 3 and 9.2).
+ * siteScope.test.js: the site picker's rules (v5.11.89, multi site stock Drop 1, map 3 and 9.2).
  * Run: npm test. Synthetic ids and names only (the repo is public).
  *
  * The two promises checked over seeded random scopes: every choice resolves to sites inside this

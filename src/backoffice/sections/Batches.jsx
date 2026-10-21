@@ -22,7 +22,7 @@ import { PageHeader, PrimaryBtn, ReportTable, Money, Tag } from './reports/repor
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 5 };
 
-// v5.11.86 (multi site stock Drop 1): siteId is the picker's site (always the signed in venue for a one
+// v5.11.89 (multi site stock Drop 1): siteId is the picker's site (always the signed in venue for a one
 // site company). All three reads and every production call name it, so a batch completed with the
 // picker on another site is found and posted THERE (completePlannedBatch read the signed in venue).
 export default function Batches({ siteId = null } = {}) {

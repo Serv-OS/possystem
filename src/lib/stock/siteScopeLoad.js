@@ -1,6 +1,6 @@
 /**
  * stock/siteScopeLoad.js: reads the stock site scope once, after the Back Office profile lands
- * (v5.11.86, multi site stock Drop 1, map 3.2).
+ * (v5.11.89, multi site stock Drop 1, map 3.2).
  *
  * One call to stock_site_scope(p_location_id) for the signed in venue. A database without the
  * function (before Drop 0a), a refusal, any error or no answer within 6 s all answer the one site

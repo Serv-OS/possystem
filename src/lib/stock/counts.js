@@ -52,7 +52,7 @@ export const fetchParLevels = async (locationId = null) => {
  * Save an item's par, reorder point and minimum. v5.11.84 (multi site stock Drop 0): one save
  * function (stock_save_item_site) that writes all three together and keeps a figure the screen did
  * not send (the old upsert wrote min_level null every time the Stock tab saved par and reorder).
- * v5.11.86 (Drop 1): the function only; a database without it needs an update, never a direct write.
+ * v5.11.89 (Drop 1): the function only; a database without it needs an update, never a direct write.
  */
 export const upsertParLevel = async (inventoryItemId, par, locationId = null, opts = {}) => {
   if (isMock || !supabase) return { error: null };

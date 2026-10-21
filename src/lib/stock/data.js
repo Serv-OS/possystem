@@ -16,7 +16,7 @@
  * when cost moves while stock is held) on the server. Names, arguments and answers stay as they
  * were, so the screens do not change. A pack, bridge or supplier price that is archived is never
  * offered again (archived_at), and a delete is an archive.
- * v5.11.86 (Drop 1): 0b is live, so the Drop 0 fallbacks (today's direct writes, and the browser
+ * v5.11.89 (Drop 1): 0b is live, so the Drop 0 fallbacks (today's direct writes, and the browser
  * cost step recomputeItemCost behind them) are gone. A database without a save function answers
  * 'This needs a database update. Ask ServOS to run it.', never a direct write to a table.
  */
@@ -525,7 +525,7 @@ export const fetchCostRule = async (locationId = null) => {
 /**
  * Save the venue's cost rule. v5.11.84 (Drop 0): stock_save_cost_rule saves the company rule (for a
  * one site company that is the site's rule, and any Back Office login of the venue may change it,
- * as today). v5.11.86 (Drop 1): the function only; the database stamps who saved it.
+ * as today). v5.11.89 (Drop 1): the function only; the database stamps who saved it.
  */
 export const saveCostRule = async (rule, byName = null, locationId = null) => {
   if (isMock || !supabase) return { data: null, error: null };

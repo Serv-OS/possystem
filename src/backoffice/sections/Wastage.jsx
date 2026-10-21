@@ -21,7 +21,7 @@ const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)
 const UNIT_OPTS = Object.entries(UNITS).map(([code, u]) => ({ code, ...u }));
 const DIM_ORDER = [DIMENSIONS.COUNT, DIMENSIONS.WEIGHT, DIMENSIONS.VOLUME];
 
-// v5.11.86 (multi site stock Drop 1): siteId is the picker's site (the signed in venue for a one site company).
+// v5.11.89 (multi site stock Drop 1): siteId is the picker's site (the signed in venue for a one site company).
 export default function Wastage({ siteId = null } = {}) {
   const showToast = useStore(s => s.showToast);
   const [locId, setLocId] = useState(siteId || getActiveLocationSync());

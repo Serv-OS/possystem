@@ -112,7 +112,7 @@ import { money, currencySymbol } from '../lib/currency';
 import { subscribeSaveHealth } from '../lib/saveHealth';
 import { shouldRegate, sessionIdOf, idleTooLong, idleSignOutMessage, ACTIVITY_EVENTS } from '../lib/backOfficeSession';
 import { NAV_IA, EVERYTHING, canOpenRoute, guardRoute, filterNav, canPushToPos, readProfileRow, sectionsFromProfileRow, sectionKeyOfRoute, routeLabel, stockAccessOf } from '../lib/boSections';
-// v5.11.86 (multi site stock Drop 1): the site picker's scope, held here and handed to the stock screens.
+// v5.11.89 (multi site stock Drop 1): the site picker's scope, held here and handed to the stock screens.
 import { StockScopeProvider, StockSiteGate } from './StockScope';
 import StockSitePicker from './components/StockSitePicker';
 import { fetchStockSiteScope } from '../lib/stock/siteScopeLoad';
@@ -448,7 +448,7 @@ export default function BackOfficeApp() {
       .catch(() => { /* not read: nothing is skipped, as before */ });
     return () => { live = false; };
   }, [msmAccess?.installed, msmLocationId]);
-  // MULTI SITE STOCK (v5.11.86, Drop 1, map 3.3): the stock site scope, read once with
+  // MULTI SITE STOCK (v5.11.89, Drop 1, map 3.3): the stock site scope, read once with
   // stock_site_scope after the profile lands (6 s limit; a missing function, an error or no answer
   // is the one site scope of the signed in venue: today's screens). Held here, like msmAccess,
   // because this component needs it for `access.stock`, the sidebar labels, the top bar picker and
@@ -916,7 +916,7 @@ export default function BackOfficeApp() {
   const groups = [...new Set(NAV.map(n => n.group))];
   // The sidebar this login is shown: a section it may not open is not listed at all.
   const navRows = filterNav(NAV_IA, access);
-  // v5.11.86: the stock site picker, for a multi site company on Inventory, Produce and Purchasing
+  // v5.11.89: the stock site picker, for a multi site company on Inventory, Produce and Purchasing
   // (never Daily counts: that is the signed in venue's menu counter). One site companies: never.
   const showStockPicker = !!stockAccess.multi && ['inventory', 'produce', 'purchasing'].includes(sectionKeyOfRoute(section)) && section !== 'inventory';
 
@@ -1107,7 +1107,7 @@ export default function BackOfficeApp() {
       </div>
 
       {/* ── Main content ─────────────────────────────────── */}
-      {/* v5.11.86: the stock site scope for the top bar picker and every stock screen below. */}
+      {/* v5.11.89: the stock site scope for the top bar picker and every stock screen below. */}
       <StockScopeProvider value={{ scope: stockScope, choice: stockChoice, setChoice: chooseStockSite, access, userId: orgCtx?.userId || null, go: setSection, reload: () => setStockScopeTry((n) => n + 1) }} key={`${orgCtx?.userId || ''}:${orgCtx?.locationId || ''}`}>
       <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
         {/* Top bar */}

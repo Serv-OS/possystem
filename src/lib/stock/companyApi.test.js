@@ -1,6 +1,6 @@
 /**
  * companyApi.test.js: createStockApi, the one way the Drop 1 screens talk to the database
- * (v5.11.86, multi site stock Drop 1, contract 2.2). Run: npm test.
+ * (v5.11.89, multi site stock Drop 1, contract 2.2). Run: npm test.
  *
  * A stand in client records every call: each method names its function and sends exactly the
  * contract's arguments; a missing function is needsUpdate with the NEEDS_UPDATE words (never a

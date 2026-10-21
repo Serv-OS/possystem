@@ -1,6 +1,6 @@
 // src/backoffice/sections/stock/LockLine.jsx
 //
-// MULTI SITE STOCK (v5.11.86, Drop 1, map 4.22, mockup .lockline): the one line that tells a login
+// MULTI SITE STOCK (v5.11.89, Drop 1, map 4.22, mockup .lockline): the one line that tells a login
 // why company fields are greyed, and who to ask. The database refuses those saves (the Drop 1
 // guard and the 0b locks); this only says so before anyone tries, so no screen looks editable while
 // its save would be refused.
