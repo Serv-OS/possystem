@@ -26,6 +26,9 @@ import {
 import { resolveTaxRate, netOf } from '../../lib/tax';
 import { reportSave } from '../../lib/saveHealth';
 import { PageHeader } from './reports/reportKit';
+import { useSiteStockContext } from '../../lib/stock/siteContext';
+import { useStockScope } from '../StockScope';
+import LockLine from './stock/LockLine';
 
 const UNIT_OPTS = Object.entries(UNITS).map(([code, u]) => ({ code, ...u }));
 const DIM_ORDER = [DIMENSIONS.COUNT, DIMENSIONS.WEIGHT, DIMENSIONS.VOLUME];
@@ -39,9 +42,9 @@ const fmtCost = (v) => (v == null || !Number.isFinite(Number(v)) ? '—' : curre
 // Standard units in the same dimension as an item's base unit (so a litre item also offers ml/cl/pt).
 const sameDimGlobals = (baseUnit) => { const dim = UNITS[baseUnit]?.dimension; return UNIT_OPTS.filter(u => u.dimension === dim).map(u => u.code); };
 
-function UnitSelect({ value, onChange, width = 110 }) {
+function UnitSelect({ value, onChange, width = 110, disabled = false }) {
   return (
-    <select value={value || ''} onChange={e => onChange(e.target.value)} style={{ ...field, width }}>
+    <select value={value || ''} onChange={e => onChange(e.target.value)} disabled={disabled} style={{ ...field, width, ...(disabled ? { opacity: 0.55 } : {}) }}>
       {DIM_ORDER.map(dim => (
         <optgroup key={dim} label={dim[0] + dim.slice(1).toLowerCase()}>
           {UNIT_OPTS.filter(u => u.dimension === dim).map(u => <option key={u.code} value={u.code}>{u.code}</option>)}
@@ -51,11 +54,17 @@ function UnitSelect({ value, onChange, width = 110 }) {
   );
 }
 
-export default function Recipes() {
+// v5.11.89 (multi site stock Drop 1): siteId is the picker's site (always the signed in venue for a one
+// site company, which sees exactly today's screen). Another site's menu and tax rates are its own
+// (siteContext.js), so a recipe is linked to a product that sells THERE. In a multi site company a
+// login without company rights in Produce sees the recipe read only under the lock line: the
+// database refuses those saves from Drop 1 (map 5.1), so no control looks editable.
+export default function Recipes({ siteId = null } = {}) {
   const showToast = useStore(s => s.showToast);
-  const menuItems = useStore(s => s.menuItems) || [];
-  const taxRates = useStore(s => s.taxRates) || [];
-  const [locId, setLocId] = useState(getActiveLocationSync());
+  const { menuItems, taxRates } = useSiteStockContext(siteId);
+  const sc = useStockScope();
+  const locked = sc.multi && !sc.canEditCompany('produce');
+  const [locId, setLocId] = useState(siteId || getActiveLocationSync());
   const [recipes, setRecipes] = useState([]);
   const [items, setItems] = useState([]);
   const [ctx, setCtx] = useState({ itemsById: {}, recipesByOutputItem: {} });
@@ -152,6 +161,7 @@ export default function Recipes() {
   const rmLine = (i) => setDraft(d => ({ ...d, lines: d.lines.filter((_, j) => j !== i) }));
 
   const save = async () => {
+    if (locked) return;
     if (draft.recipeType === 'PREP' && !draft.outputItemId) { showToast?.('Choose the made-here item this prep produces', 'error'); return; }
     if (!draft.name?.trim()) upd('name', draft.recipeType === 'MENU' ? 'Dish' : 'Prep');
     setSaving(true);
@@ -185,7 +195,7 @@ export default function Recipes() {
     await reload(draft.recipeType === 'MENU' ? { menuItemId: draft.menuItemId } : { recipeId: rid });
   };
   const archive = async () => {
-    if (!draft?.id) return;
+    if (!draft?.id || locked) return;
     if (!confirm('Remove this recipe?')) return;
     const { error } = await setRecipeArchived(draft.id, true, locId, { section: 'produce', version: draft.rowVersion });
     reportSave('recipe archive', error);
@@ -198,6 +208,7 @@ export default function Recipes() {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, background: 'var(--bg0)' }}>
       <div style={{ flexShrink: 0, padding: '20px 22px 0' }}>
         <PageHeader eyebrow="PRODUCE" title="Recipes" subtitle="Build dish and prep recipes from your stock items — plate cost and GP update live against the menu price." />
+        {locked && <div style={{ marginBottom: 14 }}><LockLine entity={draft?.id ? 'recipe' : null} id={draft?.id || null} recordName={draft?.name || ''} /></div>}
       </div>
       {/* Two-pane master/detail. flex:1 + minHeight:0 keeps the header above it while both panes still scroll on their own. */}
       <div style={{ display: 'grid', gridTemplateColumns: '330px 1fr', flex: 1, minHeight: 0, borderTop: '1px solid var(--bdr)' }}>
@@ -210,7 +221,7 @@ export default function Recipes() {
           </div>
           <div style={{ position: 'relative' }}>
             <input value={search} onChange={e => setSearch(e.target.value)} placeholder={mode === 'dishes' ? 'Search menu products…' : 'Search prep recipes…'} style={{ ...field, paddingRight: mode === 'prep' ? 40 : 10 }} />
-            {mode === 'prep' && <button onClick={newPrep} title="New prep recipe" style={{ position: 'absolute', top: 4, right: 6, width: 28, height: 28, borderRadius: 6, background: 'var(--acc)', color: '#0b0c10', border: 0, fontSize: 18, cursor: 'pointer' }}>+</button>}
+            {mode === 'prep' && <button onClick={newPrep} disabled={locked} title="New prep recipe" style={{ position: 'absolute', top: 4, right: 6, width: 28, height: 28, borderRadius: 6, background: 'var(--acc)', color: '#0b0c10', border: 0, fontSize: 18, cursor: 'pointer', ...(locked ? { opacity: 0.55, cursor: 'default' } : {}) }}>+</button>}
           </div>
         </div>
 
@@ -262,26 +273,26 @@ export default function Recipes() {
                 <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 3 }}>{draft.recipeType === 'MENU' ? `Dish recipe${menuPrice != null ? ` · sells at ${money(menuPrice)}${menuPriceNet != null && menuPriceNet < menuPrice ? ` (${money(menuPriceNet)} ex VAT)` : ''}` : ''}` : 'Prep / sub-recipe'} · {draft.lines.length} ingredient{draft.lines.length === 1 ? '' : 's'}</div>
               </div>
               <RecipeStats draft={draft} cost={draft.recipeType === 'MENU' ? (costByType[otView === 'all' ? 'dine-in' : otView] || cost) : cost} menuPrice={menuPriceNet} viewType={otView} />
-              {draft.id && <button onClick={archive} style={{ padding: '8px 14px', borderRadius: 8, cursor: 'pointer', background: 'var(--bg2)', border: '1px solid var(--bdr)', color: 'var(--t2)', fontSize: 13 }}>Remove</button>}
+              {draft.id && <button onClick={archive} disabled={locked} style={{ padding: '8px 14px', borderRadius: 8, cursor: 'pointer', background: 'var(--bg2)', border: '1px solid var(--bdr)', color: 'var(--t2)', fontSize: 13, ...(locked ? { opacity: 0.55, cursor: 'default' } : {}) }}>Remove</button>}
             </div>
 
             <div style={{ flex: 1, overflowY: 'auto', padding: '20px 22px', minHeight: 0 }}>
               <div style={{ maxWidth: 780 }}>
                 {draft.recipeType === 'MENU' ? (
-                  <div style={{ marginBottom: 14, maxWidth: 200 }}><label style={lbl}>GP target %</label><input type="number" min="0" max="100" value={draft.gpTargetPct ?? ''} onChange={e => upd('gpTargetPct', e.target.value)} style={field} placeholder="e.g. 70" /></div>
+                  <div style={{ marginBottom: 14, maxWidth: 200 }}><label style={lbl}>GP target %</label><input type="number" min="0" max="100" value={draft.gpTargetPct ?? ''} onChange={e => upd('gpTargetPct', e.target.value)} disabled={locked} style={locked ? { ...field, opacity: 0.55 } : field} placeholder="e.g. 70" /></div>
                 ) : (
                   <>
-                    <div style={{ marginBottom: 14 }}><label style={lbl}>Recipe name</label><input value={draft.name} onChange={e => upd('name', e.target.value)} style={field} placeholder="e.g. Pizza dough" /></div>
+                    <div style={{ marginBottom: 14 }}><label style={lbl}>Recipe name</label><input value={draft.name} onChange={e => upd('name', e.target.value)} disabled={locked} style={locked ? { ...field, opacity: 0.55 } : field} placeholder="e.g. Pizza dough" /></div>
                     <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr', gap: 14, marginBottom: 14 }}>
                       <div><label style={lbl}>Produces (made item)</label>
-                        <select value={draft.outputItemId || ''} onChange={e => { const it = madeItems.find(m => m.id === e.target.value); upd('outputItemId', e.target.value || null); if (it) upd('yieldUnit', it.baseUnit); }} style={field}>
+                        <select value={draft.outputItemId || ''} onChange={e => { const it = madeItems.find(m => m.id === e.target.value); upd('outputItemId', e.target.value || null); if (it) upd('yieldUnit', it.baseUnit); }} disabled={locked} style={locked ? { ...field, opacity: 0.55 } : field}>
                           <option value="">— choose made-here item —</option>
                           {madeItems.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
                         </select>
                       </div>
-                      <div><label style={lbl}>Yield qty</label><input type="number" min="0" step="any" value={draft.yieldQty} onChange={e => upd('yieldQty', e.target.value)} style={field} /></div>
-                      <div><label style={lbl}>Yield unit</label><UnitSelect value={draft.yieldUnit} onChange={v => upd('yieldUnit', v)} width="100%" /></div>
-                      <div><label style={lbl}>Wastage %</label><input type="number" min="0" max="100" value={draft.wastagePct} onChange={e => upd('wastagePct', e.target.value)} style={field} /></div>
+                      <div><label style={lbl}>Yield qty</label><input type="number" min="0" step="any" value={draft.yieldQty} onChange={e => upd('yieldQty', e.target.value)} disabled={locked} style={locked ? { ...field, opacity: 0.55 } : field} /></div>
+                      <div><label style={lbl}>Yield unit</label><UnitSelect value={draft.yieldUnit} onChange={v => upd('yieldUnit', v)} width="100%" disabled={locked} /></div>
+                      <div><label style={lbl}>Wastage %</label><input type="number" min="0" max="100" value={draft.wastagePct} onChange={e => upd('wastagePct', e.target.value)} disabled={locked} style={locked ? { ...field, opacity: 0.55 } : field} /></div>
                     </div>
                   </>
                 )}
@@ -352,20 +363,20 @@ export default function Recipes() {
                             </div>
                           </div>
                           <span style={{ fontSize: 12, color: 'var(--t3)' }}>uses</span>
-                          <input type="number" min="0" step="any" value={l.qty} onChange={e => updLine(i, 'qty', e.target.value)} placeholder="qty" style={{ ...field, width: 72 }} />
+                          <input type="number" min="0" step="any" value={l.qty} onChange={e => updLine(i, 'qty', e.target.value)} disabled={locked} placeholder="qty" style={{ ...field, width: 72, ...(locked ? { opacity: 0.55 } : {}) }} />
                           {comp
-                            ? <select value={l.unit} onChange={e => updLine(i, 'unit', e.target.value)} style={{ ...field, width: 128 }}>
+                            ? <select value={l.unit} onChange={e => updLine(i, 'unit', e.target.value)} disabled={locked} style={{ ...field, width: 128, ...(locked ? { opacity: 0.55 } : {}) }}>
                                 {unitOptions(comp, sameDimGlobals(comp.baseUnit)).map(o => <option key={o.token} value={o.token}>{o.label}</option>)}
                               </select>
-                            : <UnitSelect value={l.unit} onChange={v => updLine(i, 'unit', v)} width={92} />}
+                            : <UnitSelect value={l.unit} onChange={v => updLine(i, 'unit', v)} width={92} disabled={locked} />}
                           <span style={{ fontSize: 13, color: 'var(--t3)' }}>=</span>
                           <span style={{ width: 74, textAlign: 'right', fontSize: 13, fontWeight: 600, color: convErr ? 'var(--red)' : 'var(--t1)' }}>{convErr ? 'unit?' : lc == null ? '—' : money(lc)}</span>
-                          <button onClick={() => rmLine(i)} style={{ background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer', fontSize: 16 }}>×</button>
+                          <button onClick={() => rmLine(i)} disabled={locked} style={{ background: 'transparent', border: 0, color: 'var(--t3)', cursor: 'pointer', fontSize: 16, ...(locked ? { opacity: 0.55, cursor: 'default' } : {}) }}>×</button>
                         </div>
                         {draft.recipeType === 'MENU' && (
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 7, paddingTop: 7, borderTop: '1px dashed var(--bdr)' }}>
                             <span style={{ fontSize: 11, color: 'var(--t3)' }}>Applies to</span>
-                            <AppliesTo value={l.orderTypes} onChange={(v) => updLine(i, 'orderTypes', v)} />
+                            <AppliesTo value={l.orderTypes} onChange={(v) => updLine(i, 'orderTypes', v)} disabled={locked} />
                             {!scoped && <span style={{ fontSize: 11, color: 'var(--t4)' }}>shared across every order type</span>}
                           </div>
                         )}
@@ -374,11 +385,11 @@ export default function Recipes() {
                     });
                   })()}
                 </div>
-                <IngredientPicker items={items} onPick={addLine} />
+                <IngredientPicker items={items} onPick={addLine} disabled={locked} />
 
-                <div style={{ marginTop: 16 }}><label style={lbl}>Method (optional)</label><textarea value={draft.method || ''} onChange={e => upd('method', e.target.value)} style={{ ...field, minHeight: 64, resize: 'vertical' }} /></div>
+                <div style={{ marginTop: 16 }}><label style={lbl}>Method (optional)</label><textarea value={draft.method || ''} onChange={e => upd('method', e.target.value)} disabled={locked} style={{ ...field, minHeight: 64, resize: 'vertical', ...(locked ? { opacity: 0.55 } : {}) }} /></div>
 
-                <button onClick={save} disabled={saving} style={{ marginTop: 16, padding: '10px 22px', borderRadius: 8, background: 'var(--acc)', color: '#0b0c10', border: 0, fontSize: 14, fontWeight: 700, cursor: 'pointer', opacity: saving ? 0.6 : 1 }}>
+                <button onClick={save} disabled={saving || locked} style={{ marginTop: 16, padding: '10px 22px', borderRadius: 8, background: 'var(--acc)', color: '#0b0c10', border: 0, fontSize: 14, fontWeight: 700, cursor: 'pointer', opacity: saving ? 0.6 : 1, ...(locked ? { opacity: 0.55, cursor: 'default' } : {}) }}>
                   {saving ? 'Saving…' : draft.id ? 'Save recipe' : 'Create recipe'}
                 </button>
               </div>
@@ -421,7 +432,7 @@ function RecipeStats({ draft, cost, menuPrice, viewType }) {
 
 // "Applies to" selector for a recipe line — which order types it counts toward. No selection (or
 // every type) = the shared base recipe (stored as null), so the line applies to every order type.
-function AppliesTo({ value, onChange }) {
+function AppliesTo({ value, onChange, disabled = false }) {
   const [open, setOpen] = useState(false);
   const sel = Array.isArray(value) && value.length ? value : null;
   const summary = !sel ? 'All order types' : sel.map(t => ORDER_TYPE_LABELS[t] || t).join(', ');
@@ -436,7 +447,7 @@ function AppliesTo({ value, onChange }) {
   );
   return (
     <div style={{ position: 'relative' }}>
-      <button onClick={() => setOpen(o => !o)} title="Choose which order types this ingredient applies to"
+      <button onClick={() => { if (!disabled) setOpen(o => !o); }} disabled={disabled} title="Choose which order types this ingredient applies to"
         style={{ fontSize: 11, fontWeight: 600, padding: '3px 9px', borderRadius: 20, cursor: 'pointer', border: '1px solid ' + (sel ? 'var(--acc)' : 'var(--bdr)'), background: 'var(--bg2)', color: sel ? 'var(--acc)' : 'var(--t2)' }}>
         {sel ? '🏷 ' : ''}{summary} ▾
       </button>
@@ -453,7 +464,7 @@ function AppliesTo({ value, onChange }) {
   );
 }
 
-function IngredientPicker({ items, onPick }) {
+function IngredientPicker({ items, onPick, disabled = false }) {
   const [q, setQ] = useState('');
   const [focused, setFocused] = useState(false);
   const matches = useMemo(() => {
@@ -462,7 +473,7 @@ function IngredientPicker({ items, onPick }) {
   }, [q, items]);
   return (
     <div style={{ position: 'relative' }}>
-      <input value={q} onChange={e => setQ(e.target.value)} onFocus={() => setFocused(true)} onBlur={() => setTimeout(() => setFocused(false), 150)} placeholder="Add an ingredient (search your stock items)…" style={field} />
+      <input value={q} onChange={e => setQ(e.target.value)} onFocus={() => setFocused(true)} onBlur={() => setTimeout(() => setFocused(false), 150)} placeholder="Add an ingredient (search your stock items)…" disabled={disabled} style={disabled ? { ...field, opacity: 0.55 } : field} />
       {focused && matches.length > 0 && (
         <div style={{ position: 'absolute', zIndex: 5, left: 0, right: 0, background: 'var(--bg2)', border: '1px solid var(--bdr)', borderRadius: 8, marginTop: 4, overflow: 'hidden', boxShadow: '0 10px 30px rgba(0,0,0,0.3)', maxHeight: 280, overflowY: 'auto' }}>
           {matches.map(i => (

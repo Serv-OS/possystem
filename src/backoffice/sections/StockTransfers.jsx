@@ -52,9 +52,10 @@ const chip = (on) => ({ fontSize: 11, padding: '4px 9px', borderRadius: 5, curso
 const statusColor = (s) => (s === 'DONE' || s === 'RECEIVED' ? 'var(--grn, #16a34a)' : s === 'CANCELLED' ? 'var(--t4)' : s === 'SENT' ? 'var(--amber, #F5A623)' : 'var(--t3)');
 const r3 = (v) => Math.round((Number(v) || 0) * 1000) / 1000;
 
-export default function StockTransfers({ orgCtx = null }) {
+// v5.11.89 (multi site stock Drop 1): siteId is the picker's site (the signed in venue for a one site company).
+export default function StockTransfers({ orgCtx = null, siteId = null }) {
   const showToast = useStore(s => s.showToast);
-  const [locId, setLocId] = useState(getActiveLocationSync());
+  const [locId, setLocId] = useState(siteId || getActiveLocationSync());
   const [ready, setReady] = useState(null);
   const [loading, setLoading] = useState(true);
   const [areas, setAreas] = useState([]);

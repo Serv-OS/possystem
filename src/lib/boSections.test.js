@@ -20,6 +20,7 @@ import {
   canSwitchLoginOn, MSM_ROUTE, routeGateOk,
 } from './boSections.js';
 import { planLoginSections } from '../../supabase/functions/_shared/boSectionRules.js';
+import { oneSiteScope } from './stock/siteScope.js';
 
 const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
 // Source without comments, so "the code never does X" reads statements only.
@@ -526,7 +527,12 @@ const bo = read('../backoffice/BackOfficeApp.jsx');
 const boCode = code(bo);
 
 test('BackOfficeApp: one list, and every way in goes through the guard', () => {
-  assert.match(bo, /import \{ NAV_IA, EVERYTHING, canOpenRoute, guardRoute, filterNav, canPushToPos, readProfileRow, sectionsFromProfileRow \} from '\.\.\/lib\/boSections';/);
+  // v5.11.89 (multi site stock Drop 1): the stock helpers ride on the same line (map 2.4).
+  assert.match(bo, /import \{ NAV_IA, EVERYTHING, canOpenRoute, guardRoute, filterNav, canPushToPos, readProfileRow, sectionsFromProfileRow, sectionKeyOfRoute, routeLabel, stockAccessOf \} from '\.\.\/lib\/boSections';/);
+  assert.match(bo, /import \{ StockScopeProvider, StockSiteGate \} from '\.\/StockScope';/);
+  assert.match(bo, /import StockSitePicker from '\.\/components\/StockSitePicker';/);
+  assert.match(bo, /import \{ fetchStockSiteScope \} from '\.\.\/lib\/stock\/siteScopeLoad';/);
+  assert.match(bo, /import \{ oneSiteOf, resolveChoice, readChoice, writeChoice \} from '\.\.\/lib\/stock\/siteScope';/);
   assert.doesNotMatch(boCode, /const NAV_IA\s*=/, 'the sidebar list is not copied into the screen');
   // RENDER GUARD: what shows is `section`, and `section` is only ever a route the login may open.
   assert.match(boCode, /const \[askedSection, setAskedSection\] = useState\('overview'\);/);
@@ -538,7 +544,14 @@ test('BackOfficeApp: one list, and every way in goes through the guard', () => {
   assert.match(boCode, /const setSection = \(next\) => \{\s+if \(!canOpenRoute\(next, access\)\) \{[\s\S]{0,220}?return;\s+\}\s+setAskedSection\(next\);\s+\};/);
   // Who is signed in: nobody until the profile has loaded, and nobody when it failed to load.
   // 17 Oct 2026: plus the Multi site menu answer (null until msm_my_access says otherwise).
-  assert.match(boCode, /\(\) => \(isMock \? \{ \.\.\.EVERYTHING, multiSiteMenu: msmAccess \} : \(orgCtx && !orgCtx\.loadFailed \? \{ role: orgCtx\.role, sections: orgCtx\.boSections, multiSiteMenu: msmAccess \} : null\)\)/);
+  // v5.11.89 (Drop 1): plus the stock site scope's facts (stockAccessOf: not ready, not multi while it loads).
+  assert.match(boCode, /\(\) => \(isMock \? \{ \.\.\.EVERYTHING, multiSiteMenu: msmAccess, stock: stockAccess \} : \(orgCtx && !orgCtx\.loadFailed \? \{ role: orgCtx\.role, sections: orgCtx\.boSections, multiSiteMenu: msmAccess, stock: stockAccess \} : null\)\),\s+\[orgCtx, msmAccess, stockAccess\],/);
+  assert.match(boCode, /const stockAccess = useMemo\(\(\) => stockAccessOf\(stockScope\), \[stockScope\]\);/);
+  assert.match(boCode, /const \[stockScope, setStockScope\] = useState\(isMock \? MOCK_STOCK_SCOPE : null\);/);
+  // demo mode is a one site company: the literal is exactly oneSiteScope(null, { failed: false })
+  const mock = boCode.match(/const MOCK_STOCK_SCOPE = Object\.freeze\((\{[^\n]*\})\);/);
+  assert.ok(mock, 'MOCK_STOCK_SCOPE is one frozen literal');
+  assert.deepEqual(new Function(`return (${mock[1]});`)(), oneSiteScope(null, { failed: false }), 'demo mode is a one site company');
   // Every screen in the page is chosen by `section` (never by the asked route, never unguarded).
   const shell = boCode.slice(boCode.indexOf('<div className="bo-page-shell">'), boCode.indexOf('{showLocationSwitcher &&'));
   const lines = shell.split('\n').filter((l) => /&& </.test(l));
@@ -692,10 +705,11 @@ test('it is described as a screen lock wherever the rule lives', () => {
 });
 
 test('Inventory overview and Online ordering: a button to another part the login is not shown is left out', () => {
-  assert.match(boCode, /\{section === 'stock-overview' && <StockOverview setSection=\{setSection\} canOpen=\{canOpen\} \/>\}/);
+  // v5.11.89 (Drop 1): plus the picker's one site and a key, so a picker change remounts the screen.
+  assert.match(boCode, /\{section === 'stock-overview' && <StockOverview setSection=\{setSection\} canOpen=\{canOpen\} siteId=\{stockSiteId\} key=\{stockSiteKey\} \/>\}/);
   assert.match(boCode, /\{section === 'online'\s+&& <OnlineOrdering setSection=\{setSection\} canOpen=\{canOpen\} \/>\}/);
   const stock = code(read('../backoffice/sections/StockOverview.jsx'));
-  assert.match(stock, /export default function StockOverview\(\{ setSection, canOpen = \(\) => true \}\)/);
+  assert.match(stock, /export default function StockOverview\(\{ setSection, canOpen = \(\) => true, siteId = null \}\)/);
   assert.match(stock, /const can = \(s\) => !!setSection && canOpen\(s\);/);
   // Produce and Purchasing are other sections: every button to them asks first.
   for (const l of stock.split('\n').filter((l) => /go\('recipes'\)|go\('suppliers'\)/.test(l))) assert.match(l, /can\('(recipes|suppliers)'\) \? \(\) => go\('(recipes|suppliers)'\) : null/, l.trim());
@@ -811,4 +825,53 @@ test('Multi site menu: the screen reads the gate from the one access object, loa
   assert.match(bo, /multiSiteMenu: msmAccess/, 'the access object carries the Multi site menu answer');
   assert.match(bo, /lazy\(\(\) => import\('\.\/sections\/msm\/MultiSiteMenu'\)\)/, 'the screen is its own chunk');
   assert.match(bo, /section === 'multi-site-menu'/, 'rendered only through the guarded section');
+});
+
+// ── the stock site scope in the shell (v5.11.89, multi site stock Drop 1, map 3 and 8.2) ─────────
+
+test('BackOfficeApp: the stock screens get the picker\'s one site; one site companies get the signed in venue', () => {
+  const shell = boCode.slice(boCode.indexOf('<div className="bo-page-shell">'), boCode.indexOf('{showLocationSwitcher &&'));
+  const want = [
+    "{section === 'stock-overview' && <StockOverview setSection={setSection} canOpen={canOpen} siteId={stockSiteId} key={stockSiteKey} />}",
+    "{section === 'stock-reports' && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <StockReports siteId={id} />}</StockSiteGate>}",
+    "{section === 'stock-counts' && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <StockCounts orgCtx={orgCtx} siteId={id} />}</StockSiteGate>}",
+    "{section === 'stock-areas' && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <StockAreas orgCtx={orgCtx} siteId={id} />}</StockSiteGate>}",
+    "{section === 'stock-transfers' && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <StockTransfers orgCtx={orgCtx} siteId={id} />}</StockSiteGate>}",
+    "{section === 'wastage'    && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <Wastage siteId={id} />}</StockSiteGate>}",
+    "{section === 'stock-items' && <StockItems orgCtx={orgCtx} siteId={stockSiteId} />}",
+    "{section === 'recipes'    && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <Recipes siteId={id} />}</StockSiteGate>}",
+    "{section === 'batches'    && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <Batches siteId={id} />}</StockSiteGate>}",
+    "{section === 'order-pad'  && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <OrderPad siteId={id} />}</StockSiteGate>}",
+    "{section === 'suppliers'  && <Suppliers siteId={stockSiteId} />}",
+    "{section === 'purchase-orders' && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <PurchaseOrders siteId={id} />}</StockSiteGate>}",
+    "{section === 'price-changes' && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <PriceChanges siteId={id} />}</StockSiteGate>}",
+    "{section === 'invoices'   && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <Invoices siteId={id} />}</StockSiteGate>}",
+  ];
+  for (const line of want) assert.ok(shell.includes(line), line);
+  assert.ok(shell.includes("{section === 'inventory'  && <Inventory />}"), 'Daily counts stays the signed in venue\'s, unchanged');
+  assert.doesNotMatch(boCode, /section === 'multi-site-stock'|'stock-gp'/, 'no new route in Drop 1');
+  // the one site: the signed in venue for a one site company and while loading (siteScope.oneSiteOf, tested)
+  assert.match(boCode, /const stockOneSite = oneSiteOf\(stockScope, stockChoice, orgCtx\?\.locationId \|\| null\);\s+const stockSiteId = stockOneSite\?\.id \?\? null;\s+const stockSiteKey = stockSiteId \|\| 'all';/);
+  assert.match(boCode, /const chooseStockSite = \(c\) => \{ setStockChoice\(c\); writeChoice\(orgCtx\?\.userId, stockScope\?\.orgId, c\); \};/);
+  // the scope is read once per login and venue, stale guarded, and the choice resolved against it
+  assert.match(boCode, /fetchStockSiteScope\(stockLocationId\)/);
+  assert.match(boCode, /if \(!live \|\| !scope\) return;\s+setStockScope\(scope\);\s+setStockChoice\(\(cur\) => resolveChoice\(scope, cur \|\| readChoice\(stockUserId, scope\.orgId\), stockLocationId\)\);/);
+  assert.match(boCode, /\}, \[stockUserId, stockLocationId, stockScopeTry\]\);/);
+  // the provider wraps the main column (top bar and page), keyed on the login and the venue
+  assert.match(boCode, /<StockScopeProvider value=\{\{ scope: stockScope, choice: stockChoice, setChoice: chooseStockSite, access, userId: orgCtx\?\.userId \|\| null, go: setSection, reload: \(\) => setStockScopeTry\(\(n\) => n \+ 1\) \}\} key=\{`\$\{orgCtx\?\.userId \|\| ''\}:\$\{orgCtx\?\.locationId \|\| ''\}`\}>/);
+  const top = bo.indexOf('<StockScopeProvider'), bar = bo.indexOf('{/* Top bar */}'), page = bo.indexOf('<div className="bo-page-shell">'), end = bo.indexOf('</StockScopeProvider>');
+  assert.ok(top > 0 && top < bar && bar < page && page < end && end < bo.indexOf('{showLocationSwitcher &&'), 'the top bar and the page are inside it');
+});
+
+test('BackOfficeApp: the site picker shows only for a multi site company, on Inventory, Produce and Purchasing, never Daily counts', () => {
+  assert.match(boCode, /const showStockPicker = !!stockAccess\.multi && \['inventory', 'produce', 'purchasing'\]\.includes\(sectionKeyOfRoute\(section\)\) && section !== 'inventory';/);
+  assert.equal((boCode.match(/<StockSitePicker \/>/g) || []).length, 1, 'one picker');
+  assert.match(boCode, /\{showStockPicker && <StockSitePicker \/>\}\s+\{routeLabel\(section, NAV\.find\(n => n\.id === section\)\?\.label \|\| \(section\?\.startsWith\('wf-'\) \? 'Workforce' : ''\), access\)\}\s+\{isBetaRoute\(section\) && <BetaTag \/>\}/);
+  // the picker never switches venue: no venue writes, no reload
+  const picker = read('../backoffice/components/StockSitePicker.jsx');
+  const pickerCode = code(picker);
+  assert.doesNotMatch(pickerCode, /rpos-bo-location|setResolvedLocationId|location\.reload|localStorage/);
+  for (const words of ['>Sites</label>', '`All sites (${allCount})`', 'label="Site groups"', 'label="Sites"', "'Show closed sites'", "'Hide closed sites'", 'Your site only']) assert.ok(picker.includes(words), words);
+  // a one site company: no picker at all (it renders nothing when not multi)
+  assert.match(pickerCode, /if \(!sc\.ready \|\| !sc\.multi\) return null;/);
 });

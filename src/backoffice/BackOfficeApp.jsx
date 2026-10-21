@@ -111,7 +111,12 @@ import VenueMessagePopup from '../components/VenueMessagePopup';
 import { money, currencySymbol } from '../lib/currency';
 import { subscribeSaveHealth } from '../lib/saveHealth';
 import { shouldRegate, sessionIdOf, idleTooLong, idleSignOutMessage, ACTIVITY_EVENTS } from '../lib/backOfficeSession';
-import { NAV_IA, EVERYTHING, canOpenRoute, guardRoute, filterNav, canPushToPos, readProfileRow, sectionsFromProfileRow } from '../lib/boSections';
+import { NAV_IA, EVERYTHING, canOpenRoute, guardRoute, filterNav, canPushToPos, readProfileRow, sectionsFromProfileRow, sectionKeyOfRoute, routeLabel, stockAccessOf } from '../lib/boSections';
+// v5.11.89 (multi site stock Drop 1): the site picker's scope, held here and handed to the stock screens.
+import { StockScopeProvider, StockSiteGate } from './StockScope';
+import StockSitePicker from './components/StockSitePicker';
+import { fetchStockSiteScope } from '../lib/stock/siteScopeLoad';
+import { oneSiteOf, resolveChoice, readChoice, writeChoice } from '../lib/stock/siteScope';
 // Its own line: boSections.test.js pins the import above word for word.
 import { isBetaRoute } from '../lib/boSections';
 import BetaTag from '../components/BetaTag';
@@ -124,6 +129,10 @@ import { dropAdminPlaceholder } from '../lib/masterTillDevice';
 // text, 1px gap) plus the list's own padding. Generous per row so nothing is ever clipped; the
 // transition only needs a ceiling. Pure, pinned by src/lib/boSidebar.test.js.
 export const navGroupMaxHeight = (rows) => Math.max(1, Number(rows) || 0) * 44 + 24;
+
+// Demo mode (no database): the stock screens are a one site company's, exactly today's screens
+// (the shape of siteScope.js oneSiteScope(null, { failed: false }); boSections.test.js holds them equal).
+const MOCK_STOCK_SCOPE = Object.freeze({ ready: true, failed: false, orgId: null, homeSite: null, openCount: 0, multiSince: null, multi: false, level: 'sites', sections: null, sites: [], closedSites: [], groups: [], kitchens: [], editors: [] });
 
 // Demo mode (no database): the Multi site menu opens on made up sites (src/lib/msm/msmDemo.js).
 const MOCK_MSM_ACCESS = Object.freeze({ installed: true, enabled: true, role: 'editor', orgId: 'org-demo', orgName: 'Demo company', canOpen: true, canEdit: true, companies: [], reason: null });
@@ -439,10 +448,45 @@ export default function BackOfficeApp() {
       .catch(() => { /* not read: nothing is skipped, as before */ });
     return () => { live = false; };
   }, [msmAccess?.installed, msmLocationId]);
+  // MULTI SITE STOCK (v5.11.89, Drop 1, map 3.3): the stock site scope, read once with
+  // stock_site_scope after the profile lands (6 s limit; a missing function, an error or no answer
+  // is the one site scope of the signed in venue: today's screens). Held here, like msmAccess,
+  // because this component needs it for `access.stock`, the sidebar labels, the top bar picker and
+  // the one site every stock screen is rendered on. The choice is the picker's (remembered per
+  // login and company under servos-stock-sites:, never an rpos- key).
+  const [stockScope, setStockScope] = useState(isMock ? MOCK_STOCK_SCOPE : null);
+  const [stockChoice, setStockChoice] = useState(null);
+  const [stockScopeTry, setStockScopeTry] = useState(0);
+  const stockUserId = orgCtx && !orgCtx.loadFailed ? orgCtx.userId || null : null;
+  const stockLocationId = orgCtx && !orgCtx.loadFailed ? orgCtx.locationId || null : null;
+  const stockScopeFor = useRef(null);
+  useEffect(() => {
+    if (isMock) return undefined;
+    // A different login or venue starts from nothing (the screens wait); a reload keeps what shows.
+    const forKey = `${stockUserId || ''}:${stockLocationId || ''}`;
+    if (stockScopeFor.current !== forKey) { stockScopeFor.current = forKey; setStockScope(null); setStockChoice(null); }
+    if (!stockUserId) return undefined;
+    let live = true;
+    fetchStockSiteScope(stockLocationId)
+      .then((scope) => {
+        if (!live || !scope) return;
+        setStockScope(scope);
+        setStockChoice((cur) => resolveChoice(scope, cur || readChoice(stockUserId, scope.orgId), stockLocationId));
+      })
+      .catch((e) => { console.warn('[BackOfficeApp] stock site scope not read:', e?.message); });
+    return () => { live = false; };
+  }, [stockUserId, stockLocationId, stockScopeTry]);
+  const stockAccess = useMemo(() => stockAccessOf(stockScope), [stockScope]);
   const access = useMemo(
-    () => (isMock ? { ...EVERYTHING, multiSiteMenu: msmAccess } : (orgCtx && !orgCtx.loadFailed ? { role: orgCtx.role, sections: orgCtx.boSections, multiSiteMenu: msmAccess } : null)),
-    [orgCtx, msmAccess],
+    () => (isMock ? { ...EVERYTHING, multiSiteMenu: msmAccess, stock: stockAccess } : (orgCtx && !orgCtx.loadFailed ? { role: orgCtx.role, sections: orgCtx.boSections, multiSiteMenu: msmAccess, stock: stockAccess } : null)),
+    [orgCtx, msmAccess, stockAccess],
   );
+  // The one site the stock screens work on: the signed in venue for a one site company (and while
+  // the scope loads), the picked site for a multi site company, null on All sites or a group.
+  const stockOneSite = oneSiteOf(stockScope, stockChoice, orgCtx?.locationId || null);
+  const stockSiteId = stockOneSite?.id ?? null;
+  const stockSiteKey = stockSiteId || 'all';
+  const chooseStockSite = (c) => { setStockChoice(c); writeChoice(orgCtx?.userId, stockScope?.orgId, c); };
   // RENDER GUARD: every screen below is chosen by `section`, and `section` can only ever be a
   // route this login may open (a blocked or unknown route becomes the first allowed one, or null).
   const section = guardRoute(askedSection, access);
@@ -872,6 +916,9 @@ export default function BackOfficeApp() {
   const groups = [...new Set(NAV.map(n => n.group))];
   // The sidebar this login is shown: a section it may not open is not listed at all.
   const navRows = filterNav(NAV_IA, access);
+  // v5.11.89: the stock site picker, for a multi site company on Inventory, Produce and Purchasing
+  // (never Daily counts: that is the signed in venue's menu counter). One site companies: never.
+  const showStockPicker = !!stockAccess.multi && ['inventory', 'produce', 'purchasing'].includes(sectionKeyOfRoute(section)) && section !== 'inventory';
 
   return (
     <div style={{
@@ -1060,6 +1107,8 @@ export default function BackOfficeApp() {
       </div>
 
       {/* ── Main content ─────────────────────────────────── */}
+      {/* v5.11.89: the stock site scope for the top bar picker and every stock screen below. */}
+      <StockScopeProvider value={{ scope: stockScope, choice: stockChoice, setChoice: chooseStockSite, access, userId: orgCtx?.userId || null, go: setSection, reload: () => setStockScopeTry((n) => n + 1) }} key={`${orgCtx?.userId || ''}:${orgCtx?.locationId || ''}`}>
       <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
         {/* Top bar */}
         <div style={{
@@ -1069,7 +1118,8 @@ export default function BackOfficeApp() {
           padding:'0 24px', flexShrink:0,
         }}>
           <div style={{ fontSize:16, fontWeight:600, color:'var(--t1)', letterSpacing:'-.015em', display:'flex', alignItems:'center', gap:8 }}>
-            {NAV.find(n => n.id === section)?.label || (section?.startsWith('wf-') ? 'Workforce' : '')}
+            {showStockPicker && <StockSitePicker />}
+            {routeLabel(section, NAV.find(n => n.id === section)?.label || (section?.startsWith('wf-') ? 'Workforce' : ''), access)}
             {isBetaRoute(section) && <BetaTag />}
           </div>
           <div style={{ display:'flex', alignItems:'center', gap:12 }}>
@@ -1132,15 +1182,15 @@ export default function BackOfficeApp() {
           )}
           {section === 'floorplan'  && <FloorPlanBuilder />}
           {section === 'inventory'  && <Inventory />}
-          {section === 'stock-overview' && <StockOverview setSection={setSection} canOpen={canOpen} />}
-          {section === 'stock-reports' && <StockReports />}
-          {section === 'stock-counts' && <StockCounts orgCtx={orgCtx} />}
-          {section === 'stock-areas' && <StockAreas orgCtx={orgCtx} />}
-          {section === 'stock-transfers' && <StockTransfers orgCtx={orgCtx} />}
-          {section === 'wastage'    && <Wastage />}
-          {section === 'stock-items' && <StockItems orgCtx={orgCtx} />}
-          {section === 'recipes'    && <Recipes />}
-          {section === 'batches'    && <Batches />}
+          {section === 'stock-overview' && <StockOverview setSection={setSection} canOpen={canOpen} siteId={stockSiteId} key={stockSiteKey} />}
+          {section === 'stock-reports' && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <StockReports siteId={id} />}</StockSiteGate>}
+          {section === 'stock-counts' && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <StockCounts orgCtx={orgCtx} siteId={id} />}</StockSiteGate>}
+          {section === 'stock-areas' && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <StockAreas orgCtx={orgCtx} siteId={id} />}</StockSiteGate>}
+          {section === 'stock-transfers' && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <StockTransfers orgCtx={orgCtx} siteId={id} />}</StockSiteGate>}
+          {section === 'wastage'    && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <Wastage siteId={id} />}</StockSiteGate>}
+          {section === 'stock-items' && <StockItems orgCtx={orgCtx} siteId={stockSiteId} />}
+          {section === 'recipes'    && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <Recipes siteId={id} />}</StockSiteGate>}
+          {section === 'batches'    && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <Batches siteId={id} />}</StockSiteGate>}
           {section === 'ops-overview'    && <OpsOverview setSection={setSection} />}
           {section === 'ops-temperature' && <OpsTemperature />}
           {section === 'ops-checklists'  && <OpsChecklists />}
@@ -1153,11 +1203,11 @@ export default function BackOfficeApp() {
           {section === 'ops-forms'       && <OpsForms />}
           {section === 'waitlist'          && <WaitlistConfig setSection={setSection} />}
           {section === 'waitlist-insights' && <WaitlistInsights />}
-          {section === 'order-pad'  && <OrderPad />}
-          {section === 'suppliers'  && <Suppliers />}
-          {section === 'purchase-orders' && <PurchaseOrders />}
-          {section === 'price-changes' && <PriceChanges />}
-          {section === 'invoices'   && <Invoices />}
+          {section === 'order-pad'  && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <OrderPad siteId={id} />}</StockSiteGate>}
+          {section === 'suppliers'  && <Suppliers siteId={stockSiteId} />}
+          {section === 'purchase-orders' && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <PurchaseOrders siteId={id} />}</StockSiteGate>}
+          {section === 'price-changes' && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <PriceChanges siteId={id} />}</StockSiteGate>}
+          {section === 'invoices'   && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <Invoices siteId={id} />}</StockSiteGate>}
           {section === 'profiles'   && <DeviceProfiles />}
           {section === 'devices'    && <DeviceRegistry />}
           {section === 'kiosks'     && <KioskRegistry />}
@@ -1197,6 +1247,7 @@ export default function BackOfficeApp() {
           {section === 'messages' && <MessageTemplates />}
         </div>
       </div>
+      </StockScopeProvider>
       {showLocationSwitcher && <LocationSwitcher onClose={() => setShowLocationSwitcher(false)} />}
       {/* left:236 clears the Back Office sidebar. The context differs from the
           till: a back office user has a login, not a PIN, and no terminal. */}

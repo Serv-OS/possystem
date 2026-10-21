@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// rehearse.mjs: Drop 0 on a LOCAL copy of the real stock rows (map 7.9: "link of a copy of Provo and
-// Location 2 with the check row identical"). It never writes to Supabase.
+// rehearse.mjs: Drop 0 and then Drop 1 on a LOCAL copy of the real stock rows (map 7.9: "link of a copy of
+// Provo and Location 2 with the check row identical"). It never writes to Supabase.
 //
 //   zsh supabase/tests/stock_native/fetch_demo.sh /some/scratch/demo.json a59a6d97-ffaa-470e-8bb7-04cba789f335 fcbddcfd-a025-407b-9727-9e9139250767
-//   STOCKN_DEMO=/some/scratch/demo.json node supabase/tests/stock_native/rehearse.mjs              0a, the revalue file, 0b
+//   STOCKN_DEMO=/some/scratch/demo.json node supabase/tests/stock_native/rehearse.mjs              0a, the revalue file, 0b, Drop 1
 //   STOCKN_DEMO=/some/scratch/demo.json node supabase/tests/stock_native/rehearse.mjs --base-only  load the copy only
 //
 // The base database is built exactly as run.mjs builds it (base.mjs: every real migration Peter ran,
@@ -16,7 +16,18 @@
 // writer plans zero writes at every venue; the live figures of contract section 0 and 5.3 (26 shared
 // items, 4 suppliers, 25 supplier items, recipe pairs 1 / 5 / 2, 55 packs, 7 bridges); then the
 // revalue file (Provo about 94.37, Location 2 about 30.48; ledger value = books to the penny) and 0b
-// with its dry run as a manager linked to Provo. Exit code 0 only when every check holds.
+// with its dry run as a manager linked to Provo; then Drop 1 (20261024a) and its check row against contract
+// 1.11 (a59a6d97: multi, 12 categories, 51 items with one and 4 without, 47 order rules, 10 with no order
+// by, 5 suppliers with no cut off; fcbddcfd: one site, 1, 1, 0, 0, 0, 1), its levels dry run as that
+// manager, nothing at the sites moving, then its rollback and Drop 1 again. Exit code 0 only when every
+// check holds.
+//
+// A copy taken AFTER 0a ran live (20 Oct 2026: its site rows carry company_ref, and fetch_demo.sh then
+// also copies the company records and the venue clock) is loaded onto a base with 0a already in, as Ops
+// is. Step 3 then proves what 0a left on the real rows instead of linking them again: every site row has
+// its company record, no company row without a site, the writer re plans zero writes, the twins, the
+// archived keg and Location 2's nested packs; step 4 proves a second revalue paste refuses and changes
+// nothing, and the ledger value still equals the books to the penny. Steps 5 and 6 are the same.
 
 import { readFileSync, existsSync } from 'node:fs';
 import {
@@ -31,10 +42,14 @@ const FILES = {
   a: process.env.STOCKN_MIGRATION || MIG('20261021a_OPS_stock_native_0a.sql'),
   rv: process.env.STOCKN_REVALUE || MIG('20261021a_OPS_stock_native_0a_revalue.sql'),
   b: process.env.STOCKN_0B || MIG('20261022a_OPS_stock_native_0b.sql'),
+  d1: process.env.STOCKN_D1 || MIG('20261024a_OPS_stock_native_1.sql'),
+  d1Rb: process.env.STOCKN_D1_ROLLBACK || MIG('20261024a_OPS_stock_native_1_ROLLBACK.sql'),
 };
 if (!BASE_ONLY && !existsSync(FILES.a)) { console.error(`0a is not there yet: ${FILES.a} (run with --base-only, or set STOCKN_MIGRATION)`); process.exit(2); }
 const demo = JSON.parse(readFileSync(DEMO, 'utf8'));
-const PROVO = '7218c716-eeb4-4f96-b284-f3500823595c';
+// the copy was taken after 0a ran live: its site rows carry company_ref
+const LINKED = (demo.inventory_items || []).some((r) => r && Object.prototype.hasOwnProperty.call(r, 'company_ref'));
+const PROVO ='7218c716-eeb4-4f96-b284-f3500823595c';
 const LOC2 = 'c3ebfa7f-61b3-4fbc-a192-e7e3949f370e';
 const ORG_T = 'a59a6d97-ffaa-470e-8bb7-04cba789f335';
 
@@ -61,6 +76,14 @@ baseSchema(c);
   c.sql(FENCE_TRIGGER);
   for (const f of BASE_MIGRATIONS) { r = applyMigration(c, f); ok(r.status === 0, `${f} applies${r.status ? `: ${short(r.stderr)}` : ''}`); }
   liveTail(c);
+  if (LINKED) {
+    // the copy was taken after 0a ran live: 0a goes in first on the empty base, as on Ops
+    info('the copy was taken after 0a ran live (its site rows carry company_ref): 0a goes in on the empty base first, as on Ops');
+    const p0 = c.paste(FILES.a);
+    ok(p0.status === 0, `0a applies on the empty base (${p0.status ? short(p0.stderr, 800) : `${p0.ms} ms`})`);
+    ok(num('select count(*) from stock_native_backup') === 7 && num('select count(*) from stock_co_items') === 0 && num('select count(*) from venue_clock') === 0,
+      '0a left its 7 backup rows and no company row or clock row of its own (the copy brings them)');
+  }
 }
 
 console.log('\n2. The copy of the live rows, loaded as it is (triggers off while loading)');
@@ -68,7 +91,12 @@ const ORDER = ['organisations', 'locations', 'tax_rates', 'storage_areas', 'inve
   'supplier_products', 'inventory_item_areas', 'inventory_item_area_stock', 'par_levels', 'stock_movements', 'recipes', 'recipe_lines', 'menu_items',
   'menu_item_recipes', 'msm_company', 'msm_menus', 'msm_products', 'msm_product_sites', 'item_cost_history', 'purchase_orders', 'po_lines', 'supplier_invoices',
   'supplier_invoice_lines', 'stock_counts', 'stock_count_lines', 'stock_count_areas', 'stock_transfers', 'stock_transfer_lines', 'production_batches',
-  'prep_schedule', 'deliveries', 'stock_site_settings', 'stock_depletion_mode', 'waste_events'];
+  'prep_schedule', 'deliveries', 'stock_site_settings', 'stock_depletion_mode', 'waste_events',
+  // 0a's own tables (only in a copy taken after 0a ran live)
+  'stock_co_settings', 'stock_co_site_settings', 'stock_co_site_groups', 'stock_co_items', 'stock_co_item_sites', 'stock_co_packs', 'stock_co_pack_sites',
+  'stock_co_bridges', 'stock_co_bridge_sites', 'stock_co_suppliers', 'stock_co_supplier_sites', 'stock_co_supplier_items', 'stock_co_supplier_item_sites',
+  'stock_co_recipes', 'stock_co_recipe_lines', 'stock_co_recipe_sites', 'venue_clock', 'stock_periods', 'stock_period_snapshots'];
+const CO_TABLES = ORDER.slice(ORDER.indexOf('stock_co_settings'));
 const notLoaded = [];
 for (const t of ORDER) {
   const rows = demo[t];
@@ -83,7 +111,15 @@ for (const t of ORDER) {
   ok(r.status === 0 && num(`select count(*) from public.${t}`) === rows.length, `${t}: ${rows.length} rows loaded${r.status ? `: ${short(r.stderr)}` : ''}`);
 }
 ok(notLoaded.length === 0, `every live column of the copy exists here with a type it loads into (${notLoaded.join('; ') || 'all'})`);
-const venues = demo.locations.filter((l) => (demo.inventory_items || []).some((i) => i.location_id === l.id) || (demo.suppliers || []).some((s) => s.location_id === l.id)).map((l) => l.id);
+const unknown = Object.keys(demo).filter((t) => !ORDER.includes(t) && !['organisations', 'locations'].includes(t) && (demo[t] || []).length);
+ok(unknown.length === 0, `every table of the copy is loaded (${unknown.join(', ') || 'all'})`);
+if (LINKED) {
+  ok(['stock_co_settings', 'stock_co_items', 'stock_co_item_sites', 'stock_co_recipes', 'stock_co_recipe_sites', 'venue_clock'].every((t) => (demo[t] || []).length > 0),
+    `the copy taken after 0a holds 0a's company records and the venue clock (${CO_TABLES.map((t) => `${t} ${(demo[t] || []).length}`).join(', ')})`);
+} else {
+  ok(CO_TABLES.every((t) => !(demo[t] || []).length), 'a copy taken before 0a holds no company record');
+}
+const venues =demo.locations.filter((l) => (demo.inventory_items || []).some((i) => i.location_id === l.id) || (demo.suppliers || []).some((s) => s.location_id === l.id)).map((l) => l.id);
 const vname = Object.fromEntries(demo.locations.map((l) => [l.id, l.name]));
 const before = Object.fromEntries(venues.map((v) => [v, venueFigures(c, v)]));
 for (const v of venues) {
@@ -93,6 +129,10 @@ for (const v of venues) {
 ok(venues.includes(PROVO) && venues.includes(LOC2), 'the copy holds Provo and Location 2');
 if (BASE_ONLY) done();
 
+if (LINKED) linkedSteps(); else { linkSteps(); revalueStep(); }
+
+// Steps 3 and 4 on a copy taken BEFORE 0a: 0a links the copy, then the revalue file.
+function linkSteps() {
 console.log('\n3. 0a as the SQL editor runs it');
 const paste = c.paste(FILES.a);
 ok(paste.status === 0, `0a applies (${paste.status ? short(paste.stderr, 800) : `${paste.ms} ms`})`);
@@ -140,6 +180,9 @@ for (const v of venues) {
   }
 }
 
+}
+
+function revalueStep() {
 console.log('\n4. The revalue file');
 if (existsSync(FILES.rv)) {
   const r = c.paste(FILES.rv);
@@ -152,6 +195,65 @@ if (existsSync(FILES.rv)) {
   const gap = num(`select coalesce(max(abs(coalesce((select sum(m.value_delta) from stock_movements m where m.inventory_item_id = i.id), 0) - i.on_hand * coalesce(i.current_cost, 0))), 0) from inventory_items i`);
   ok(gap < 0.01, `every item's ledger value equals on hand times cost, to the penny (largest gap ${gap})`);
 } else ok(false, 'the revalue file is there');
+}
+
+// Steps 3 and 4 on a copy taken AFTER 0a ran live: what 0a and the revalue left on the real rows.
+function linkedSteps() {
+  console.log('\n3. 0a is in on the copy (it ran live): what it left on the real rows');
+  for (const v of venues) {
+    const x = pj(sql(`select json_build_object(
+      'site_rows_without_company_ref',
+        (select count(*) from inventory_items t where t.location_id = '${v}' and t.company_ref is null)
+        + (select count(*) from suppliers t where t.location_id = '${v}' and t.company_ref is null)
+        + (select count(*) from supplier_products t where t.location_id = '${v}' and t.company_ref is null)
+        + (select count(*) from item_packaging_formats t where t.location_id = '${v}' and t.company_ref is null)
+        + (select count(*) from inventory_item_conversions t where t.location_id = '${v}' and t.company_ref is null)
+        + (select count(*) from recipes t where t.location_id = '${v}' and t.company_ref is null),
+      'company_rows_without_sites',
+        (select count(*) from stock_co_items c where c.org_id = l.org_id and not exists (select 1 from stock_co_item_sites s where s.item_id = c.id))
+        + (select count(*) from stock_co_suppliers c where c.org_id = l.org_id and not exists (select 1 from stock_co_supplier_sites s where s.supplier_id = c.id))
+        + (select count(*) from stock_co_supplier_items c where c.org_id = l.org_id and not exists (select 1 from stock_co_supplier_item_sites s where s.supplier_item_id = c.id))
+        + (select count(*) from stock_co_packs c where c.org_id = l.org_id and not exists (select 1 from stock_co_pack_sites s where s.pack_id = c.id))
+        + (select count(*) from stock_co_bridges c where c.org_id = l.org_id and not exists (select 1 from stock_co_bridge_sites s where s.bridge_id = c.id))
+        + (select count(*) from stock_co_recipes c where c.org_id = l.org_id and not exists (select 1 from stock_co_recipe_sites s where s.recipe_id = c.id)),
+      'clock', (select count(*) from venue_clock k where k.location_id = l.id),
+      'settings', (select count(*) from stock_co_settings s where s.org_id = l.org_id)) from locations l where l.id = '${v}'`)) || {};
+    ok(Number(x.site_rows_without_company_ref) === 0 && Number(x.company_rows_without_sites) === 0,
+      `${vname[v]}: every site row has its company record, no company row without a site (${x.site_rows_without_company_ref}, ${x.company_rows_without_sites})`);
+    ok(Number(x.clock) === 1 && Number(x.settings) === 1, `${vname[v]}: its venue clock row and its company settings row are there (${x.clock}, ${x.settings})`);
+    const ps = pj(sql(`select public.stock_co__sync_site('${v}', null, null, false, true)`)); const pr = pj(sql(`select public.stock_co__sync_recipes('${v}', null, false, true)`));
+    ok(ps?.writes === 0 && pr?.writes === 0, `${vname[v]}: the writer re plans zero writes on the live rows (${ps?.writes}, ${pr?.writes})`);
+  }
+  const sh = pj(sql(`select json_build_object(
+      'items', (select count(*) from stock_co_items c where c.org_id = '${ORG_T}' and (select count(*) from stock_co_item_sites s where s.item_id = c.id) >= 2),
+      'suppliers', (select count(*) from stock_co_suppliers c where c.org_id = '${ORG_T}' and (select count(*) from stock_co_supplier_sites s where s.supplier_id = c.id) >= 2),
+      'supplier_items', (select count(*) from stock_co_supplier_items c where c.org_id = '${ORG_T}' and (select count(*) from stock_co_supplier_item_sites s where s.supplier_item_id = c.id) >= 2),
+      'loc2_packs', (select count(*) from item_packaging_formats where location_id = '${LOC2}'),
+      'loc2_bridges', (select count(*) from inventory_item_conversions where location_id = '${LOC2}'))`)) || {};
+  info(`shared now: ${sh.items} items, ${sh.suppliers} suppliers, ${sh.supplier_items} supplier items (0a on 20 Oct: 26, 4, 25); Location 2 holds ${sh.loc2_packs} packs and ${sh.loc2_bridges} bridges (0a filled 55 and 7)`);
+  const twins = pj(sql(`select coalesce(json_agg(json_build_object('name', name, 'n', n, 'refs', refs)), '[]') from (
+      select name, base_unit, count(*) as n, count(distinct company_ref) as refs from inventory_items
+       where location_id = '${PROVO}' and archived_at is null group by name, base_unit having count(*) > 1) z`)) || [];
+  ok(twins.length > 0 && twins.every((x) => x.n === x.refs), `Provo's twins (same name and unit) stay apart, one company item each (${short(twins)})`);
+  const keg = sql(`select coalesce(string_agg((c.archived_at is not null)::text || ':' || i.on_hand, ','), '') from inventory_items i join stock_co_items c on c.id = i.company_ref where i.location_id = '${PROVO}' and i.archived_at is not null and i.on_hand <> 0`);
+  ok(keg !== '' && keg.split(',').every((x) => x.startsWith('true:')), `archived items still holding stock are archived company items, linked (${keg})`);
+  const nested = num(`select count(*) from item_packaging_formats p join item_packaging_formats q on q.id = p.parent_format_id where p.location_id = '${LOC2}' and q.location_id <> '${LOC2}'`);
+  const nestedHere = num(`select count(*) from item_packaging_formats p where p.location_id = '${LOC2}' and p.parent_format_id is not null`);
+  ok(nested === 0 && nestedHere > 0, `the ${nestedHere} nested packs at Location 2 point at Location 2's own parents`);
+  for (const v of venues) ok(num(`select count(*) from inventory_items i where i.location_id = '${v}' and i.on_hand <> coalesce((select sum(m.qty_base) from stock_movements m where m.inventory_item_id = i.id), 0)`) === 0,
+    `${vname[v]}: every item's on hand equals its ledger`);
+
+  console.log('\n4. The revalue file (it ran live): a second paste refuses');
+  if (existsSync(FILES.rv)) {
+    ok(num(`select count(*) from stock_movements where source_type = 'opening_revalue'`) > 0, 'the copy holds the opening revalue rows the live paste wrote');
+    const r = c.paste(FILES.rv);
+    ok(r.status !== 0 && /has run already/.test(r.stderr), `a second paste refuses (${short(r.error || r.stderr, 200)})`);
+    const diff = venues.flatMap((v) => figureDiff(before[v], venueFigures(c, v)).map((k) => `${vname[v]} ${k}`));
+    ok(diff.length === 0, `and changes nothing (${diff.join(', ') || 'every figure identical'})`);
+    const gap = num(`select coalesce(max(abs(coalesce((select sum(m.value_delta) from stock_movements m where m.inventory_item_id = i.id), 0) - i.on_hand * coalesce(i.current_cost, 0))), 0) from inventory_items i`);
+    ok(gap < 0.01, `every item's ledger value equals on hand times cost, to the penny (largest gap ${gap})`);
+  } else ok(false, 'the revalue file is there');
+}
 
 console.log('\n5. 0b (its dry run as a manager linked to Provo)');
 if (existsSync(FILES.b)) {
@@ -164,4 +266,42 @@ if (existsSync(FILES.b)) {
   console.log(`     ${short(x, 500)}`);
   ok(x.approve_open_to_logins === 'f' && x.dry_run_name_refused === 't' && x.dry_run_on_hand_refused === 't', 'approval closed to logins; the dry run refused a rename and an on hand change');
 } else ok(false, 'the 0b file is there');
+
+console.log('\n6. Drop 1 (20261024a) after 0b, as the SQL editor runs it, then its rollback and Drop 1 again');
+if (existsSync(FILES.d1) && existsSync(FILES.d1Rb)) {
+  const ORG_B = 'fcbddcfd-a025-407b-9727-9e9139250767';
+  const pre = Object.fromEntries(venues.map((v) => [v, venueFigures(c, v)]));
+  const r = c.paste(FILES.d1);
+  ok(r.status === 0, `Drop 1 applies (${r.status ? short(r.stderr, 800) : `${r.ms} ms`})`);
+  const rr = (r.sets[r.sets.length - 1] || { rows: [] }).rows;
+  for (const x of rr) console.log(`     ${short(x, 900)}`);
+  const by = (o) => rr.find((x) => x.org_id === o) || {};
+  const nums = (x, cols) => cols.map((k) => x[k]).join(',');
+  const COLS = ['multi', 'categories_seeded', 'items_with_category', 'items_without_category', 'order_rules_seeded', 'order_rules_without_order_by',
+    'suppliers_without_cutoff', 'bad_delivery_day_values', 'order_rules_round_trip_bad'];
+  ok(nums(by(ORG_T), COLS) === 't,12,51,4,47,10,5,0,0', `a59a6d97: ${nums(by(ORG_T), COLS)} (contract 1.11: t,12,51,4,47,10,5,0,0)`);
+  if (demo.locations.some((l) => l.org_id === ORG_B)) ok(nums(by(ORG_B), COLS) === 'f,1,1,0,0,0,1,0,0', `fcbddcfd: ${nums(by(ORG_B), COLS)} (contract 1.11: f,1,1,0,0,0,1,0,0)`);
+  ok(rr.every((x) => x.replaced_functions === '24' && x.new_functions === '29' && x.internals_open_to_api === 'f' && x.anon_can_save === 'f'
+     && x.site_rows_changed === '0' && x.logins_changed === 'f'), 'every row: 24 replaced, 29 new, internals closed, the anon key saves nothing, no site row or login changed');
+  ok(by(ORG_T).levels_on === 'refused, par ok', `the levels dry run as the Provo manager: ${by(ORG_T).levels_on}`);
+  for (const v of venues) {
+    const d = figureDiff(pre[v], venueFigures(c, v));
+    ok(d.length === 0, `${vname[v]}: every count, sum, on hand, cost, ledger line, area holding, par and recipe base quantity identical (${d.join(', ') || 'none differ'})`);
+  }
+  const trip = num(`select count(*) from suppliers s cross join lateral public.stock_co__derive_days(s.id) d where s.company_ref is not null
+                      and ((select coalesce(array_agg(x order by x), '{}') from jsonb_array_elements_text(s.delivery_days) x)
+                           is distinct from (select coalesce(array_agg(x order by x), '{}') from jsonb_array_elements_text(d.delivery_days) x)
+                           or nullif(s.cutoff_time, '') is distinct from d.cutoff_time)`);
+  ok(trip === 0, `every live site supplier row reads back its exact delivery day codes (as a set) and cut off from its order rules (${trip} differ)`);
+  for (const v of venues) {
+    const ps = pj(sql(`select public.stock_co__sync_site('${v}', null, null, false, true)`)); const pr = pj(sql(`select public.stock_co__sync_recipes('${v}', null, false, true)`));
+    ok(ps?.writes === 0 && pr?.writes === 0, `${vname[v]}: the writer still plans zero writes (${ps?.writes}, ${pr?.writes})`);
+  }
+  const rb = c.paste(FILES.d1Rb);
+  const x = ((rb.sets[rb.sets.length - 1] || { rows: [] }).rows[0]) || {};
+  console.log(`     rollback: ${short(x, 400)}`);
+  ok(rb.status === 0 && x.bodies_restored === '24' && x.drop1_left === '0' && x.site_rows_changed === '0', 'the rollback: the 24 Drop 0 bodies back, nothing of Drop 1 left, no site row changed');
+  const again = c.paste(FILES.d1);
+  ok(again.status === 0, `Drop 1 applies again after its rollback (${again.status ? short(again.stderr, 400) : 'ok'})`);
+} else ok(false, 'the Drop 1 files are there');
 done();

@@ -78,16 +78,17 @@ test('the item screen never writes cost; price saves follow the venue rule (sour
   assert.ok(save.length > 100, 'itemSaveArgs found');
   assert.doesNotMatch(save, /current_cost|on_hand|org_id/, 'the item save sends no cost, no on hand and no company id');
   const src = read('./data.js');
-  // the browser price rule runs only on the direct write path (before the save functions exist)
-  const rc = src.slice(src.indexOf('export async function recomputeItemCost('));
-  assert.match(rc, /const \{ data: rule \} = await fetchCostRule\(locationId\);/);
-  assert.match(rc, /priceSetsCost\(\{ rule, newCost: chosenCost, currentCost: prev, everReceived: \(rec \|\| \[\]\)\.length > 0 \}\)/);
+  // v5.11.89 (Drop 1): the browser cost step (recomputeItemCost, the price rule behind the direct
+  // writes) is gone with those writes; the database's cost step applies the venue rule.
+  assert.doesNotMatch(src, /export async function recomputeItemCost\(/);
+  assert.doesNotMatch(src, /from\('item_cost_history'\)\.(insert|update)\(|current_cost: chosenCost/, 'no cost is written from the browser');
   // the rule is read through stock_cost_rule (site override, else company rule); the table only before it exists
   const fetchRule = src.slice(src.indexOf('export const fetchCostRule'), src.indexOf('export const saveCostRule'));
   assert.match(fetchRule, /callSave\(supabase, 'stock_cost_rule', \{ p_location_id: locationId \}\)/);
   assert.ok(fetchRule.indexOf("'stock_cost_rule'") < fetchRule.indexOf("from('stock_site_settings').select('cost_rule')"), 'the function first, the table only when it is missing');
-  const saveRule = src.slice(src.indexOf('export const saveCostRule'), src.indexOf('export async function recomputeItemCost('));
-  assert.match(saveRule, /saveOrDirect\(supabase, 'stock_save_cost_rule', \{\s+p_org: null, p_rule: normCostRule\(rule\), p_override_location: null, p_location: locationId,/);
+  const saveRule = src.slice(src.indexOf('export const saveCostRule'));
+  assert.match(saveRule, /callSave\(supabase, 'stock_save_cost_rule', \{\s+p_org: null, p_rule: normCostRule\(rule\), p_override_location: null, p_location: locationId,/);
+  assert.doesNotMatch(saveRule, /from\('stock_site_settings'\)/, 'Drop 1: the function only');
 });
 
 // ── below zero and unknown cost never drag the average (plan 1.3, 4.5, 11.5 item 3) ──────────────────

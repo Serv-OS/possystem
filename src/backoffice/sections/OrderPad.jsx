@@ -36,6 +36,9 @@ import { pickSupplierProduct } from '../../lib/stock/costing';
 import { outstandingOnOrder } from '../../lib/stock/onOrder';
 import { coverDaysFromSchedule, nextDeliveryYmd, normDeliveryDays, packContent, packContentInBase, suggestPacks, createOrdersToast, DAY_LABEL } from '../../lib/stock/purchasingRules';
 import { PageHeader, PrimaryBtn, SearchField, Chips } from './reports/reportKit';
+import { useStockScope } from '../StockScope';
+import { stockApi } from '../../lib/stock/stockApi';
+import { pausedMap, pauseWords, pausedLineWords } from '../../lib/stock/pauseRules';
 
 const USAGE_DAYS = 28;
 const r2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
@@ -52,9 +55,19 @@ const HEADERS = ['Item', 'On hand', 'Use/day', 'Cover', 'Suggested', 'Order', 'S
 
 // Cover days walk the schedule from the VENUE's "today" (v5.7.24): see purchasingRules.js.
 
-export default function OrderPad() {
+// v5.11.89 (multi site stock Drop 1, map 4.3): nothing is paused until the read says so.
+const NO_PAUSES = new Map();
+
+// v5.11.89: siteId is the picker's site (always the signed in venue for a one site company). In a
+// multi site company the pad reads which items are paused at that site today (stock_paused_items):
+// a paused line is grey with its words, never suggested, and Create orders refuses it. One site
+// companies make no extra call and see exactly today's pad.
+export default function OrderPad({ siteId = null } = {}) {
   const showToast = useStore(s => s.showToast);
-  const [locId, setLocId] = useState(getActiveLocationSync());
+  const { multi, siteName } = useStockScope();
+  const [locId, setLocId] = useState(siteId || getActiveLocationSync());
+  const [paused, setPaused] = useState(NO_PAUSES);         // site item id -> { everywhere, until }
+  const [pauseUnknown, setPauseUnknown] = useState(false); // the read failed: orders wait
   const [items, setItems] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
   const [pars, setPars] = useState({});
@@ -90,8 +103,15 @@ export default function OrderPad() {
     const cfg = await getLocationConfig(loc).catch(() => null);
     const byId = Object.fromEntries((its || []).map(i => [i.id, i]));
     const { byItem: oo, stale } = outstandingOnOrder(pos, byId, { todayYmd: buildScheduleCtx(cfg?.timezone).ymd });
+    // v5.11.89 (Drop 1): what is paused at this site today. Multi site companies only (a database
+    // before Drop 1 has no pause, so nothing is paused); a failed read holds the orders back.
+    if (multi && loc) {
+      const pr = await stockApi.pausedItems(loc);
+      setPaused(pr.error ? NO_PAUSES : pausedMap(pr.data?.rows));
+      setPauseUnknown(!!pr.error && !pr.needsUpdate);
+    }
     setItems(its || []); setSuppliers(sup || []); setPars(par || {}); setUsage(rate || {}); setWeekday(wk); setOnOrder(oo); setStaleOrders(stale); setLoading(false);
-  }, [locId, showToast]);
+  }, [locId, showToast, multi]);
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, []);
 
   const supById = useMemo(() => { const m = {}; suppliers.forEach(s => { m[s.id] = s; }); return m; }, [suppliers]);
@@ -125,9 +145,13 @@ export default function OrderPad() {
     // usage for each real calendar day this order has to cover, starting tomorrow.
     // No profile (RPC not migrated / brand-new item) -> the flat average, as before.
     const prof = weekday?.[it.id];
-    const sug = suggestPacks({ onHand, onOrder: oo, avgDaily, profile: prof, todayDow, coverDays, safetyDays, par, perPack: sp ? perPack : null });
-    return { it, allSps, sp, perPack, onHand, avgDaily, prof: sug.hasShape ? prof : null, par, oo, sched, coverDays, effCover: sug.effCover, needBase: sug.needBase, suggestedPacks: sug.suggestedPacks, covered: sug.covered };
-  }); }, [items, usage, weekday, pars, onOrder, days, safetyDays, supplierOverride, supById, venueTz]);
+    // v5.11.89 (Drop 1): an item paused here today is never suggested: nothing is worked out for it.
+    const pz = paused.get(it.id) || null;
+    const sug = pz
+      ? { needBase: 0, suggestedPacks: 0, covered: false, effCover: (Number(coverDays) || 0) + (Number(safetyDays) || 0), hasShape: false }
+      : suggestPacks({ onHand, onOrder: oo, avgDaily, profile: prof, todayDow, coverDays, safetyDays, par, perPack: sp ? perPack : null });
+    return { it, allSps, sp, perPack, onHand, avgDaily, prof: sug.hasShape ? prof : null, par, oo, sched, coverDays, effCover: sug.effCover, needBase: sug.needBase, suggestedPacks: sug.suggestedPacks, covered: sug.covered, paused: pz };
+  }); }, [items, usage, weekday, pars, onOrder, days, safetyDays, supplierOverride, supById, venueTz, paused]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -182,6 +206,10 @@ export default function OrderPad() {
     // unit_price MUST be NET (ex-VAT); the PO line carries the rate so VAT is shown on the order.
     // The line mirrors the supplier pack (pack_qty x inner_qty in the pack's unit) so the
     // supplier reads "6 x 2 l" and receiving books the right base quantity.
+    // v5.11.89 (Drop 1): a line of an item paused here today is refused, naming it.
+    const pausedLines = Object.values(basket).flat().filter(({ r }) => r.paused);
+    if (pausedLines.length) { showToast?.(pausedLines.map(({ r }) => pausedLineWords(r.it.name, r.paused, siteName(locId))).join(' '), 'error'); return; }
+    if (pauseUnknown) { showToast?.('Could not check which items are paused here. Reload to try again.', 'error'); return; }
     const lines = Object.values(basket).flat().map(({ r, n }) => ({
       supplierId: r.sp.supplierId, inventoryItemId: r.it.id, description: r.it.name,
       qtyPacks: n, packQty: Number(r.sp.packQty) || 1, innerQty: Number(r.sp.innerQty) || 1,
@@ -304,8 +332,8 @@ export default function OrderPad() {
                 // Last row drops its rule so it doesn't cut across the card's rounded base.
                 const cell = ri === filtered.length - 1 ? { ...td, borderBottom: 'none' } : td;
                 return (
-                  <tr key={r.it.id} style={{ color: 'var(--t1)' }}>
-                    <td style={{ ...cell, fontWeight: 500 }}>{r.it.name}{low && <span style={{ color: 'var(--red)', fontSize: 10.5, fontWeight: 700, marginLeft: 7, padding: '2px 6px', borderRadius: 6, background: 'var(--red-d)', border: '1px solid var(--red-b)', textTransform: 'uppercase', letterSpacing: '.04em' }}>low</span>}</td>
+                  <tr key={r.it.id} style={r.paused ? { color: 'var(--t4)' } : { color: 'var(--t1)' }}>
+                    <td style={{ ...cell, fontWeight: 500 }}>{r.it.name}{low && <span style={{ color: 'var(--red)', fontSize: 10.5, fontWeight: 700, marginLeft: 7, padding: '2px 6px', borderRadius: 6, background: 'var(--red-d)', border: '1px solid var(--red-b)', textTransform: 'uppercase', letterSpacing: '.04em' }}>low</span>}{r.paused && <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--amber, #F5A623)', marginTop: 3 }}>{pauseWords({ siteName: siteName(locId), everywhere: r.paused.everywhere, until: r.paused.until })}</div>}</td>
                     <td style={{ ...cell, ...numCell, textAlign: 'right' }}>
                       {oh.qty} <span style={{ color: 'var(--t4)' }}>{oh.label}</span>
                       {/* What is already on open orders. Without this a correct suggested 0 looked broken. */}
@@ -334,7 +362,7 @@ export default function OrderPad() {
                     <td style={{ ...cell, ...numCell, textAlign: 'right', fontWeight: r.suggestedPacks > 0 ? 700 : 400, color: r.suggestedPacks > 0 ? 'var(--acc)' : 'var(--t4)' }}>{r.sp ? r.suggestedPacks : '—'}</td>
                     <td style={{ ...cell, textAlign: 'right' }}>
                       {r.sp
-                        ? <input type="number" min="0" value={n} onChange={e => setQty(q => ({ ...q, [r.it.id]: e.target.value }))} placeholder="0" style={{ ...field, ...numCell, width: 64, textAlign: 'right' }} />
+                        ? <input type="number" min="0" value={n} onChange={e => setQty(q => ({ ...q, [r.it.id]: e.target.value }))} disabled={!!r.paused} placeholder="0" style={{ ...field, ...numCell, width: 64, textAlign: 'right' }} />
                         : <span style={{ fontSize: 11, color: 'var(--red)' }}>no supplier</span>}
                     </td>
                     <td style={{ ...cell, color: 'var(--t3)' }}>

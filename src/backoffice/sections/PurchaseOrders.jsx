@@ -31,6 +31,7 @@ import { reportSave } from '../../lib/saveHealth';
 import { fmtYmd } from '../../lib/venueDate';
 import NumberField from '../../components/NumberField';
 import { PageHeader, PrimaryBtn, Tag, SearchField } from './reports/reportKit';
+import { useSiteStockContext } from '../../lib/stock/siteContext';
 
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 5 };
@@ -39,10 +40,12 @@ const tick = { fontSize: 12, color: 'var(--t3)', display: 'flex', alignItems: 'c
 const STATUS_TONE = { DRAFT: 'neutral', SENT: 'neutral', PARTIAL: 'warn', RECEIVED: 'good', CANCELLED: 'bad' };
 const NO_LINES_TEXT = "No lines yet. Add quantities to the supplier's items below.";
 
-export default function PurchaseOrders() {
+// v5.11.89 (multi site stock Drop 1): siteId is the picker's site (the signed in venue for a one site
+// company). Another site's order is worked out on THAT site's tax rates (siteContext.js).
+export default function PurchaseOrders({ siteId = null } = {}) {
   const showToast = useStore(s => s.showToast);
-  const taxRates = useStore(s => s.taxRates) || [];
-  const [locId, setLocId] = useState(getActiveLocationSync());
+  const { taxRates } = useSiteStockContext(siteId);
+  const [locId, setLocId] = useState(siteId || getActiveLocationSync());
   const [pos, setPos] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
   const [items, setItems] = useState([]);

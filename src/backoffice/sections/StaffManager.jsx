@@ -9,8 +9,11 @@ import { isMissingRpc } from '../../lib/deviceFence';
 import {
   BO_SECTION_KEYS, SECTIONS, FRANCHISEE_SECTIONS, allowedKeys, isEverythingRole, canEditSectionsFor,
   sectionsToStore, sectionsToTicks, describeSections, sameSections, withinSections, sectionsFromAnswer,
-  isSectionsColumnMissing, canSwitchLoginOn,
+  isSectionsColumnMissing, canSwitchLoginOn, missingProfileColumn,
 } from '../../lib/boSections';
+import { useStockScope } from '../StockScope';
+import { stockApi } from '../../lib/stock/stockApi';
+import { STOCK_CONTROL_CHOICES, stockControlLine, canChangeStockControl, savedWords } from '../../lib/stock/stockControlWords';
 
 const ROLES = ['Manager','Server','Bartender','Cashier','Kitchen','Host'];
 const ROLE_COLORS = { Manager:'#e8a020', Server:'#3b82f6', Bartender:'#22c55e', Cashier:'#a855f7', Kitchen:'#ef4444', Host:'#7C5CFF' };
@@ -93,9 +96,21 @@ function SectionPicker({ ticks, onChange, disabled = false }) {
 // what it can open. bo_sections is dropped from the read ONLY when the database says that
 // column does not exist (section access not installed: everyone opens everything). It has its
 // own step so a missing bo_sections never takes bo_access down with it.
+// v5.11.89 (multi site stock Drop 1, map 4.25): org_id and stock_control ride along for the Stock
+// control line (shown only in a multi site company). stock_control is optional: a database without
+// the column (before 20261021a, or after its rollback) is asked again without it, the value reads as
+// null, and the list never fails because of it.
 async function readLogins(ids) {
   if (!ids.length) return [];
-  const read = (cols) => supabase.from('user_profiles').select(cols).in('id', ids);
+  let stockCols = ', org_id, stock_control';
+  const read = async (cols) => {
+    let res = await supabase.from('user_profiles').select(`${cols}${stockCols}`).in('id', ids);
+    if (res?.error && stockCols.includes('stock_control') && missingProfileColumn(res.error, ['bo_sections', 'bo_access']) === 'stock_control') {
+      stockCols = ', org_id';
+      res = await supabase.from('user_profiles').select(`${cols}${stockCols}`).in('id', ids);
+    }
+    return res;
+  };
   let hasSections = true;
   let { data, error } = await read('id, email, role, bo_access, bo_sections');
   if (error && isSectionsColumnMissing(error)) {
@@ -111,6 +126,9 @@ async function readLogins(ids) {
     authUserId: p.id, email: p.email, boAccess: p.bo_access !== false, role: p.role ?? null,
     // null = everything, a list = only those, undefined = could not be read (never shown as everything).
     sections: hasSections ? sectionsFromAnswer(p.bo_sections) : null,
+    // The login's own company (undefined: not read) and its Stock control (null = Their sites).
+    orgId: p.org_id === undefined ? undefined : (p.org_id ?? null),
+    stockControl: p.stock_control ?? null,
   }));
 }
 
@@ -129,6 +147,17 @@ export default function StaffManager({ orgCtx = null } = {}) {
   const [grantTicks, setGrantTicks] = useState(() => [...BO_SECTION_KEYS]);
   const [editSections, setEditSections] = useState(null); // { staffId, ticks } | null
   const [sectionsBusy, setSectionsBusy] = useState(false);
+
+  // v5.11.89 (multi site stock Drop 1, map 4.25): Stock control, a line on each login card, ONLY in a
+  // multi site company (a one site company sees exactly today's card). The company is the venue's
+  // (orgCtx.venueOrgId), never the viewer's own profile org. Change is offered to an owner of this
+  // company or ServOS staff, for a login of this company that is not an owner and not their own;
+  // the database decides again in set_stock_control, whatever this screen shows.
+  const stockScope = useStockScope();
+  const stockMulti = !isMock && stockScope.ready && stockScope.multi;
+  const stockCompanyId = orgCtx?.venueOrgId || stockScope.orgId || null;
+  const [editStock, setEditStock] = useState(null); // { staffId, level } | null
+  const [stockBusy, setStockBusy] = useState(false);
 
   // v5.5.17: BO-access state. Each staff member can optionally be linked to
   // an auth user (user_profiles.id stored in staff_members.auth_user_id).
@@ -632,6 +661,73 @@ export default function StaffManager({ orgCtx = null } = {}) {
     );
   };
 
+  // saveStockControl (v5.11.89): the ONLY way a person changes a login's Stock control is the
+  // database function set_stock_control. The screen believes its answer, not what it sent.
+  const saveStockControl = async () => {
+    if (!editStock || stockBusy) return;
+    const { staffId, level } = editStock;
+    const link = authLinks[staffId];
+    if (!link) return;
+    setStockBusy(true);
+    const r = await stockApi.setStockControl(link.authUserId, level);
+    setStockBusy(false);
+    if (r.error) { showToast(r.error.message || 'Not saved. Try again.', 'error', 9000); return; }
+    if (r.data?.ok !== true || r.data?.level !== level) { showToast('Not saved. Reload the page and check.', 'error', 9000); return; }
+    setAuthLinks(prev => (prev[staffId] ? { ...prev, [staffId]: { ...prev[staffId], stockControl: level === 'sites' ? null : level } } : prev));
+    setEditStock(null);
+    showToast(savedWords(level), 'success', 5000);
+  };
+
+  // The Stock control line of a login (multi site companies only), under What can they open?
+  const stockControlAccess = (staffId, link) => {
+    const target = { id: link.authUserId, role: link.role, org_id: link.orgId, stock_control: link.stockControl };
+    const line = stockControlLine({ profile: target, companyOrgId: stockCompanyId });
+    const change = canChangeStockControl({ caller: { id: myId, role: myRole, orgId: orgCtx?.orgId ?? null }, target, companyOrgId: stockCompanyId });
+    const editing = change.ok && editStock?.staffId === staffId;
+    return (
+      <div data-testid="bo-stock-control" style={{ borderTop:'1px solid var(--bdr)', paddingTop:10, marginBottom:8 }}>
+        <div style={{ display:'flex', alignItems:'flex-start', gap:10 }}>
+          <div style={{ flex:1 }}>
+            <div style={{ fontSize:12, fontWeight:700, color:'var(--t1)', marginBottom:2 }}>Stock control</div>
+            <div style={{ fontSize:12, color: line.level === null ? 'var(--red)' : 'var(--t2)', fontWeight:600 }}>{line.words}</div>
+            {!change.ok && change.why && <div style={{ fontSize:10, color:'var(--t3)', marginTop:3 }}>{change.why}</div>}
+          </div>
+          {change.ok && !editing && (
+            <button onClick={()=>setEditStock({ staffId, level: line.level || 'sites' })}
+              style={{ padding:'4px 10px', borderRadius:7, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:11, fontWeight:600 }}>Change</button>
+          )}
+        </div>
+        {editing && (
+          <div style={{ marginTop:10 }}>
+            <div role="radiogroup" aria-label="Stock control" style={{ display:'flex', flexDirection:'column', gap:6 }}>
+              {STOCK_CONTROL_CHOICES.map(c => {
+                const on = editStock.level === c.level;
+                return (
+                  <label key={c.level} style={{ display:'flex', alignItems:'flex-start', gap:9, padding:'8px 11px', borderRadius:8, cursor: stockBusy ? 'default' : 'pointer',
+                    border:`1.5px solid ${on?'var(--acc)':'var(--bdr)'}`, background:on?'var(--acc-d)':'var(--bg3)' }}>
+                    <input type="radio" name={`stock-control-${staffId}`} checked={on} disabled={stockBusy}
+                      onChange={()=>setEditStock({ staffId, level: c.level })} style={{ marginTop:2 }} />
+                    <span style={{ flex:1 }}>
+                      <span style={{ display:'block', fontSize:12, fontWeight:700, color:on?'var(--acc)':'var(--t1)' }}>{c.label}</span>
+                      <span style={{ display:'block', fontSize:11, color:'var(--t3)', marginTop:2, lineHeight:1.4 }}>{c.words}</span>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+            <div style={{ display:'flex', gap:8, marginTop:10 }}>
+              <button onClick={()=>setEditStock(null)} disabled={stockBusy} style={{ flex:1, padding:'8px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:12 }}>Cancel</button>
+              <button onClick={saveStockControl} disabled={stockBusy}
+                style={{ flex:2, padding:'8px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:13, fontWeight:800, opacity:stockBusy ? .5 : 1 }}>
+                {stockBusy ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   // unlinkBOAccess: clears auth_user_id from staff_members. Does NOT delete
   // the auth user — they can still exist in user_profiles, just unlinked
   // from this staff member. Useful when a person leaves the business.
@@ -821,6 +917,7 @@ export default function StaffManager({ orgCtx = null } = {}) {
                       )}
                     </div>
                     {sectionAccess(sel.id, link)}
+                    {stockMulti && stockControlAccess(sel.id, link)}
                     <div style={{ display:'flex', gap:6, justifyContent:'flex-end' }}>
                       <button
                         onClick={()=>unlinkBOAccess(sel.id)}

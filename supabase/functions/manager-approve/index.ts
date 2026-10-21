@@ -57,6 +57,28 @@ const nowIso = () => new Date().toISOString();
 const r2 = (n: number) => Math.round(n * 100) / 100;
 // the venue's calendar day (the same Intl reading manager-snapshot uses for `today`)
 const ymd = (d: Date, tz: string) => new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+
+// v5.11.89 (multi site stock Drop 1, map 4.3 Pause): an item paused at a site cannot be ordered
+// there from the phone either. The words are the Order pad's (src/lib/stock/pauseRules.js
+// pauseWords), built here the same way; pauseRules.test.js runs both and compares them.
+// pause words (src/lib/stock/pauseRules.js): start
+const PAUSE_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function pauseDay(v: unknown): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(v ?? ''));
+  if (!m) return '';
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return '';
+  return `${day} ${PAUSE_MONTHS[month - 1]}`;
+}
+function pauseWordsOf(p: { siteName?: string; everywhere?: boolean; until?: string | null }): string {
+  const site = String(p?.siteName ?? '').trim();
+  const where = p?.everywhere ? 'everywhere' : (site ? `at ${site}` : '');
+  const day = pauseDay(p?.until);
+  return ['Paused', where, day ? `until ${day}` : ''].filter(Boolean).join(' ');
+}
+// pause words: end
+const isMissingFn = (e: any) => !!e && /PGRST202|42883|could not find the function|function .* does not exist/i.test(`${e.code || ''} ${e.message || ''}`);
 // A chilled delivery over this is rejected: the same threshold as the Ops Deliveries screen (ACCEPT_MAX).
 const DELIVERY_ACCEPT_MAX_C = 8;
 
@@ -276,7 +298,7 @@ Deno.serve(async (req) => {
         stockPhone.liveOrAll((live: boolean) => stockPhone.liveFilter(sb.from('supplier_products').select('id, inventory_item_id, supplier_id, pack_qty, inner_qty, inner_unit, pack_price, is_preferred, purchase_tax_rate_id, price_includes_tax')
           .eq('location_id', loc).eq('supplier_id', supplierId).in('inventory_item_id', itemIds), live).order('is_preferred', { ascending: false }).order('created_at').order('id')),
         sb.from('tax_rates').select('id, rate').eq('location_id', loc),
-        sb.from('locations').select('org_id, timezone').eq('id', loc).maybeSingle(),
+        sb.from('locations').select('org_id, timezone, name').eq('id', loc).maybeSingle(),
         stockPhone.liveOrAll((live: boolean) => stockPhone.liveFilter(sb.from('inventory_item_conversions').select('inventory_item_id, from_qty, from_unit, to_qty, to_unit').eq('location_id', loc).in('inventory_item_id', itemIds), live)),
       ]);
       const itemBy: Record<string, any> = {};
@@ -288,6 +310,19 @@ Deno.serve(async (req) => {
       if (itemIds.some((id) => !itemBy[id])) return json({ error: 'one or more items are not from this location' }, 400);
       const orgId = locRow?.org_id || null;
       if (!orgId) return json({ error: 'could not raise the order' }, 400);
+      // v5.11.89 (Drop 1): a line of an item paused at this site today is refused, in the Order pad's
+      // words, before anything is written. A database before Drop 1 has no pause, so nothing is refused;
+      // any other failure of the read refuses the order rather than guessing.
+      const { data: pausedRes, error: pausedErr } = await sb.rpc('stock_paused_items', { p_location: loc });
+      if (pausedErr && !isMissingFn(pausedErr)) {
+        console.error('[po.raise] paused items read', pausedErr.message);
+        return json({ error: 'Could not check which items are paused. Try again.' }, 400);
+      }
+      const pausedBy: Record<string, any> = {};
+      for (const r of (pausedErr ? [] : (pausedRes?.rows ?? []))) if (r && r.site_item_id) pausedBy[r.site_item_id] = r;
+      const paused = itemIds.filter((id) => pausedBy[id])
+        .map((id) => `${itemBy[id].name}: ${pauseWordsOf({ siteName: locRow?.name || '', everywhere: pausedBy[id].everywhere === true, until: pausedBy[id].until || null })}.`);
+      if (paused.length) return json({ error: paused.join(' ') }, 400);
       const ratesById: Record<string, number> = {};
       for (const r of rateRows ?? []) ratesById[r.id] = Number(r.rate) || 0;
       // the camelCase pack shape the pad reads (src/lib/stock/data.js spFromRow)
