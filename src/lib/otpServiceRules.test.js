@@ -215,7 +215,8 @@ test('the new words in the rules module and the changelog entry carry no dashes'
   assert.doesNotMatch(rules, NO_DASH);
   const log = read('src/lib/changelog.js');
   const entry = log.slice(log.indexOf("v: '5.11.94'"), log.indexOf("v: '5.11.90'"));
-  assert.ok(entry.length > 100, 'the 5.11.94 entry is at the top');
+  assert.ok(entry.length > 100, 'the 5.11.94 entry is there');
   assert.doesNotMatch(entry, NO_DASH);
-  assert.match(read('src/lib/version.js'), /VERSION = '5\.11\.94'/);
+  // 5.11.95: no version pin here, or every later release fails this test.
+  assert.ok(log.indexOf("v: '5.11.94'") > 0, 'the 5.11.94 entry is kept');
 });

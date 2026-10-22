@@ -150,6 +150,7 @@ export default function KioskFlowV2({
   };
 
   const onEatIn = () => {
+    engine.setCounterPicked?.(false);
     engine.setOrderType('dineIn');
     if (model.eatInLeadsTo === 'table') {
       setStartStep('table');
@@ -159,7 +160,16 @@ export default function KioskFlowV2({
     leaveStart();
   };
   const onTakeaway = () => {
+    engine.setCounterPicked?.(false);
     engine.setOrderType('takeaway');
+    engine.setTableNumber('');
+    leaveStart();
+  };
+  // v5.11.95 Counter collect (lib/counterOrder.js): books as eat in with no table (dine in tax),
+  // never asks for a table; only the words on the screens and the ready text change.
+  const onCounterCollect = () => {
+    engine.setCounterPicked?.(true);
+    engine.setOrderType('dineIn');
     engine.setTableNumber('');
     leaveStart();
   };
@@ -260,6 +270,8 @@ export default function KioskFlowV2({
         tableNumber={engine.tableNumber}
         onEatIn={onEatIn}
         onTakeaway={onTakeaway}
+        counterLabel={engine.counterCollect?.kiosk ? engine.counterCollect.label : null}
+        onCounterCollect={onCounterCollect}
         onPickTable={onPickTable}
         onNoTable={onNoTable}
         onChangeMode={() => setStartStep('mode')}
@@ -346,6 +358,7 @@ export default function KioskFlowV2({
           pointsMasked: checkout.phoneE164 ? checkout.masked : '',
           loyaltyEnabled: engine.loyaltyEnabled === true,
           hasAlcohol: checkout.hasAlcohol,
+          counter: engine.counterPicked === true,
         })}
         onDone={() => engine.resetSession('done')}
         onCountdownEnd={() => engine.resetSession('countdown')}
@@ -464,13 +477,13 @@ function ItemSheet({ engine, primary, api, onLineAllergens, onClose }) {
  * and Cancel always works.
  */
 function PlaceholderScreen({ engine, onBack, onCancel }) {
-  const labels = kioskModeLabels({ orderType: engine.orderType, tableNumber: engine.tableNumber });
+  const labels = kioskModeLabels({ orderType: engine.orderType, tableNumber: engine.tableNumber, counterLabel: engine.counterPicked ? engine.counterCollect?.label : null });
   return (
     <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '26px 28px', background: '#FFFFFF', borderBottom: '1px solid rgba(0,0,0,.07)' }}>
         {onBack ? <KioskBackButton onClick={onBack} /> : null}
         <div style={{ display: 'flex', flexDirection: 'column' }}>
-          <div style={{ fontSize: 26, fontWeight: 800, color: 'var(--k2Ink)' }}>{t(labels.titleKey)}</div>
+          <div style={{ fontSize: 26, fontWeight: 800, color: 'var(--k2Ink)' }}>{labels.title || t(labels.titleKey)}</div>
           <div style={{ fontSize: 17, color: 'var(--k2InkSubtle)' }}>{tf(labels.subKey, labels.vars)}</div>
         </div>
         <div style={{ flex: 1 }} />

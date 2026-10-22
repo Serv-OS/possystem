@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.95',
+    date: '22 Oct 2026',
+    items: [
+      "Counter collect: a new way to order that the customer collects at the counter. Back Office, Channels, Online ordering has a Counter collect box: the name customers see (for example Collect at counter, blank shows Counter collect), a switch for the kiosk and a switch for the counter QR code, with its own Save button.",
+      "Kiosk (both designs): a third tile next to Eat in and Take away, with the venue's name for it. It books as eat in with no table, so price and VAT are the dine in ones (Peter: Table ordering dine in, Counter collect dine in, Collection takeaway, Takeaway takeaway), exactly as an eat in, sit anywhere kiosk order today, and the kiosk card payment code is unchanged. It never asks for a table, and the customer can ask for the ready text.",
+      "Counter QR code: <venue>.serv-os.app/counter, downloadable from the same box. Customers scan it, order, pay and collect at the counter, with no table. It only takes orders while the venue is open, uses the QR tipping rule and needs QR ordering on. It books as dine in with no table too. Table QR codes are unchanged, and online ordering is unchanged.",
+      "The ready text for these orders now says: your order is ready to collect at the counter. A company's own ready text template, when it has one, is still used instead. Needs the location-admin and order-notify functions deployed before the Back Office box will save. No database update.",
+    ],
+  },
+  {
     v: '5.11.94',
     date: '22 Oct 2026',
     items: [

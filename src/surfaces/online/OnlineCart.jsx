@@ -5,6 +5,7 @@
 import { computeOrderTaxUnified } from '../../lib/taxCompute';
 import { breakdownIsExclusive, taxTermFor } from '../../lib/receiptTax';   // v5.7.34: rate-null guards + VAT/Sales Tax wording
 import { money } from '../../lib/currency';
+import { orderTypeChip } from '../../lib/counterOrder';
 
 // checkoutDisabledReason (v5.5.802): when set, the Checkout button is disabled and
 // the reason shows above the CTAs — used while the venue is closed with no
@@ -60,9 +61,7 @@ export default function OnlineCart({ cart, theme, orderType, taxRates = [], taxC
           {/* v5.5.154: order-type-aware label. dine-in (QR) is neither
               collection nor delivery — it's eat-in at the table. */}
           <div style={{ fontSize: 12, fontWeight: 700, color: muted, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-            {orderType === 'dine-in'    ? 'Dine-in'
-              : orderType === 'collection' ? 'Collection'
-              : 'Delivery'}
+            {orderTypeChip(orderType).label}
           </div>
         </div>
 

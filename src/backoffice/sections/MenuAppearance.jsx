@@ -226,7 +226,10 @@ export default function MenuAppearance() {
       // Send only the keys this editor owns. The edge fn merges them server-side
       // over the row's CURRENT online_branding, so we can no longer clobber keys
       // another screen (Review card) wrote after this page loaded.
-      const patch = { ...branding, brand_color: mt.brandColor, header_style: mt.headerStyle, logo_shape: mt.logoShape, show_open_status: mt.showOpenStatus, logo_url: branding.logo_url || null, hero_url: branding.hero_url || null, background: branding.background || null };
+      // v5.11.95: Counter collect (online_branding.collection) is owned by Online ordering's own
+      // box. Never resent from here, or a tab opened earlier would switch it back.
+      const { collection: _counterCollect, ...ownBranding } = branding;
+      const patch = { ...ownBranding, brand_color: mt.brandColor, header_style: mt.headerStyle, logo_shape: mt.logoShape, show_open_status: mt.showOpenStatus, logo_url: branding.logo_url || null, hero_url: branding.hero_url || null, background: branding.background || null };
       const { data, error } = await patchBranding(opsLocId, patch);
       if (error) throw error;
       if (!data) throw new Error('Save returned no branding — reload the page and try again.');
