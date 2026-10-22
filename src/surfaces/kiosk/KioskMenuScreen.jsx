@@ -76,7 +76,7 @@ export default function KioskMenuScreen({
   const count = kioskSectionItemCount(sections);
 
   useMenuText();   // venue text in the customer's language
-  const labels = kioskModeLabels({ orderType, tableNumber });
+  const labels = kioskModeLabels({ orderType, tableNumber, counterLabel: engine.counterPicked ? engine.counterCollect?.label : null });
   const marked = allergenFilter instanceof Set ? allergenFilter.size : 0;
   const addCtx = { items, eightySixIds, dailyCounts, allergenFilter, instructionDefs, groupRules };
 
@@ -85,7 +85,7 @@ export default function KioskMenuScreen({
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '26px 28px', background: '#FFFFFF', borderBottom: '1px solid rgba(0,0,0,.07)', flex: 'none' }}>
         <KioskBackButton onClick={onBack} />
         <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-          <div style={{ fontSize: 26, fontWeight: 800, color: 'var(--k2Ink)' }}>{t(labels.titleKey)}</div>
+          <div style={{ fontSize: 26, fontWeight: 800, color: 'var(--k2Ink)' }}>{labels.title || t(labels.titleKey)}</div>
           <div style={{ fontSize: 17, color: 'var(--k2InkSubtle)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{tf(labels.subKey, labels.vars)}</div>
         </div>
         <div style={{ flex: 1 }} />

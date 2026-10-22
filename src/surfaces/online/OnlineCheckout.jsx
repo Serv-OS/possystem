@@ -48,6 +48,7 @@ import VatGateNotice from './VatGateNotice';
 import { creditDiscounts } from '../../lib/taxBasis';
 import { breakdownIsExclusive, taxTermFor } from '../../lib/receiptTax';   // v5.7.34: rate-null guards + VAT/Sales Tax wording
 import { money, stripeCurrency } from '../../lib/currency';
+import { orderTypeChip, tipModuleFor } from '../../lib/counterOrder';
 import { eligibleMatcher, eligibleItemNames, eligibleOrderLines } from '../../lib/loyaltyMenuMatch';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
@@ -90,7 +91,7 @@ function decrementOnlineStock(cart, locationId) {
 // ever fall inside opening windows) and the ASAP option isn't offered.
 // vatGate / onRetryRates (8 Oct 2026): ratesGate's answer from the surface (null when the venue's
 // tax rates are in) and the way to load them again. Payment never opens while it is shut.
-export default function OnlineCheckout({ cart, theme, location, orderType, loyalty, taxRates = [], taxCtx = null, onClose, onPlaced, onOpenLoyalty, onLoyaltyVerified, orderAheadOnly = false, menuItems = [], menuId = null, categories = [], vatGate = null, onRetryRates = null }) {
+export default function OnlineCheckout({ cart, theme, location, orderType, loyalty, taxRates = [], taxCtx = null, onClose, onPlaced, onOpenLoyalty, onLoyaltyVerified, orderAheadOnly = false, counter = false, counterLabel = null, menuItems = [], menuId = null, categories = [], vatGate = null, onRetryRates = null }) {
   const opsLocationId = location.ops_location_id || location.id; // ops DB
   const platformLocationId = location.id;                         // platform DB
   const tz = location.timezone || 'Europe/London';
@@ -106,7 +107,8 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   // Ordering > Tipping on online orders). Online never took a tip before: every
   // write below carried tip: 0. Off by default, so nothing changes for a venue
   // that has not chosen to ask.
-  const tipRule = useMemo(() => tipRuleFor(location, 'online'), [location]);
+  // v5.11.95: the counter QR reads the QR tipping rule (lib/counterOrder.js tipModuleFor).
+  const tipRule = useMemo(() => tipRuleFor(location, tipModuleFor({ counter })), [location, counter]);
   const [tipKey, setTipKey] = useState(() => tipInitialKey(tipRule));
   const [customTip, setCustomTip] = useState('');
   // Separate setting, separate job: when the kitchen STARTS a pre-order.
@@ -474,6 +476,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       // ticket/receipt/reports show them and downstream routing knows self vs courier.
       ...(isDelivery && deliveryQuote?.available ? { delivery_fee: deliveryFeeMinor / 100, delivery_mode: deliveryQuote.mode || 'self' } : {}),
       ...(notes.trim() ? { notes: notes.trim() } : {}),
+      // v5.11.95 Counter collect: the ready text says "ready to collect at the counter"
+      // (supabase/functions/_shared/counterCollect.js). Kept by place_public_order.
+      ...(counter ? { counter_collect: true } : {}),
     };
     // v5.5.128: include cat / cats / parentId on the queued items so the
     // operator-side production routing (routeKioskOrderPrints → centresForItem)
@@ -1588,7 +1593,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
               {step === 'pay' ? 'Payment' : step === 'rewards' ? 'Rewards' : step === 'gift' ? 'Gift Card' : 'Checkout'}
             </div>
             <div style={{ fontSize: 12, color: muted, marginTop: 2 }}>
-              {isDelivery ? 'Delivery' : 'Collection'} · {cart.length} item{cart.length === 1 ? '' : 's'} · {money(subtotal)}
+              {orderTypeChip(orderType, { counterLabel }).label} · {cart.length} item{cart.length === 1 ? '' : 's'} · {money(subtotal)}
               {autoDiscountMinor > 0 ? ` · Offers -${money((autoDiscountMinor / 100))}` : ''}
               {giftApplied ? ` · Gift card -${money((giftApplied.applied / 100))}` : ''}
               {promoApplied ? ` · ${promoApplied.code} -${money((promoAppliedMinor / 100))}` : ''}
@@ -2042,7 +2047,15 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
 
           {/* 2. When? */}
           <SectionTitle>When?</SectionTitle>
-          {orderAheadOnly ? (
+          {counter ? (
+            // v5.11.95: the counter QR is always ASAP and only open while the venue is.
+            <div style={{
+              background: inputBg, border: `1.5px solid ${cardBdr}`, borderRadius: 12,
+              padding: '11px 14px', fontSize: 13, fontWeight: 600, lineHeight: 1.5,
+            }}>
+              ⚡ As soon as it's ready, about {leadMin} min. We'll text you when it's ready to collect at the counter.
+            </div>
+          ) : orderAheadOnly ? (
             <div style={{
               background: inputBg, border: `1.5px solid ${cardBdr}`, borderRadius: 12,
               padding: '11px 14px', fontSize: 13, fontWeight: 600, lineHeight: 1.5,

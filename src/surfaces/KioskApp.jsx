@@ -77,6 +77,7 @@ import { usePaymentBusy } from '../lib/usePaymentBusy';
 import { kioskLineKeyV2, repriceKioskCart } from '../lib/kioskBasket';
 import { kioskCardEligible, itemInCategory, kioskLegacyCategoryShown } from '../lib/kioskMenu';
 import { setActiveMemberSession } from '../lib/memberSession.js';
+import { loadCounterCollect } from './kiosk/kioskApi';
 // networkReader import removed — kiosk payment now uses server-side edge function directly
 // v5.5.871: card payment is processor-aware — Stripe reader (edge fn) OR Ryft PAX
 // terminal (the same "send to terminal" job path the POS/Table-Pay use).
@@ -897,6 +898,19 @@ export default function KioskApp({ kioskId, onUnpair }) {
   // v5.11.81: the classic kiosk's language picker now changes the venue's menu text too (the new
   // design's KioskV2Root loads its own). No rows, or English: the menu stays as typed.
   useClassicKioskMenuWords(lang, locationId, !newDesign);
+  // v5.11.95 Counter collect (lib/counterOrder.js): the venue's extra tile, for both designs.
+  // Off until read, and off when the read fails, so the start screen never shows a dead tile.
+  const [counterCollectCfg, setCounterCollectCfg] = useState(null);
+  // The tile books as eat in with no table, dine in tax (the card path guard keeps submitOrder and
+  // the totals byte for byte); this only says the customer picked it, for the screens' words.
+  const [counterPicked, setCounterPicked] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    loadCounterCollect(locationId)
+      .then((c) => { if (alive) setCounterCollectCfg(c || null); })
+      .catch(() => { if (alive) setCounterCollectCfg(null); });
+    return () => { alive = false; };
+  }, [locationId]);
 
   // New kiosk design only (build spec D2): the card screen pauses the idle timer while the
   // reader is live, the order is saving or staff are needed (lib/kioskFlow.js
@@ -1463,6 +1477,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
       kioskId, deviceName: device?.name || '', profile, locationId, companyId, kioskTz,
       items, categories, visibleCategories, railCategories, activeMenuId, eightySixIds, dailyCounts,
       screen, setScreen, orderType, setOrderType, tableNumber, setTableNumber,
+      counterCollect: counterCollectCfg, counterPicked, setCounterPicked,
       selectedCategoryId, setSelectedCategoryId, selectedItem, setSelectedItem,
       allergenFilter, setAllergenFilter,
       cart, setCart, addToCart, updateCartQty, cartItemCount, cartItemUsage,
@@ -1500,7 +1515,8 @@ export default function KioskApp({ kioskId, onUnpair }) {
     <KioskVatGateContext.Provider value={kioskVatGateCtx}>
     <div onPointerDown={resetIdle} onKeyDown={resetIdle} onInput={resetIdle} data-kiosk-theme={isLight ? "light" : "dark"} style={kioskShell(brandColor, effectiveBg, brandAccent)}>
       {screen === 'attract' && <ScreenAttract brandName={brandName} brandColor={brandColor} brandAccent={brandAccent} brandLogoUrl={brandLogoUrl} attractVideoUrl={attractVideoUrl} avgWaitMinutes={avgWaitMinutes} banner={bannerFor('attract')} ctaLabel={labelTapToOrder} onStart={() => { resetIdle(); setScreen('orderType'); }} />}
-      {screen === 'orderType' && <ScreenOrderType brandColor={brandColor} brandLogoUrl={brandLogoUrl} brandName={brandName} tableMode={tableMode} lang={lang} onOpenLanguagePicker={() => setShowLangPicker(true)} loyaltyEnabled={loyaltyEnabled} customerName={customerName} onLoyaltySignIn={() => { setLoyaltyReturnScreen('orderType'); setScreen('loyalty'); }} onPick={(t) => {
+      {screen === 'orderType' && <ScreenOrderType brandColor={brandColor} brandLogoUrl={brandLogoUrl} brandName={brandName} tableMode={tableMode} counterLabel={counterCollectCfg?.kiosk ? counterCollectCfg.label : null} lang={lang} onOpenLanguagePicker={() => setShowLangPicker(true)} loyaltyEnabled={loyaltyEnabled} customerName={customerName} onLoyaltySignIn={() => { setLoyaltyReturnScreen('orderType'); setScreen('loyalty'); }} onPick={(t, how) => {
+        setCounterPicked(how?.counter === true);   // v5.11.95 Counter collect (eat in, no table)
         // v5.11.81 round 1: Back from the menu keeps the basket, so switching eat in and take away
         // reprices it for the new order type, as the till and the new design (KioskFlowV2) do. A
         // take away latte (2.80, 0%) stayed 2.80 and was then taxed at the eat in 20%.
@@ -1508,7 +1524,8 @@ export default function KioskApp({ kioskId, onUnpair }) {
         setOrderType(t);
         // v5.8.76: every eat in mode asks for a number (lib/kioskFlow.js kioskStartModel): the table
         // plan (either), a typed table number (enter) or the number on a flag (dispense).
-        if (t === 'dineIn' && (tableMode === 'enter' || tableMode === 'either' || tableMode === 'dispense')) setScreen('tableNumber');
+        if (how?.counter === true) { setTableNumber(''); setScreen('menu'); }
+        else if (t === 'dineIn' && (tableMode === 'enter' || tableMode === 'either' || tableMode === 'dispense')) setScreen('tableNumber');
         else setScreen('menu');
       }} onBack={() => setScreen('attract')} onCancel={resetSession} />}
       {screen === 'tableNumber' && <ScreenTableNumber brandColor={brandColor} locationId={locationId} tableMode={tableMode} value={tableNumber} onChange={setTableNumber} onContinue={() => setScreen('menu')} onBack={() => setScreen('orderType')} onCancel={resetSession} />}
@@ -1673,8 +1690,9 @@ function shade(hex, percent) {
 // Light surface, brand logo at top, outline cards with line-art
 // SVG icons in brand color, language picker pill at the bottom.
 // ============================================================
-function ScreenOrderType({ brandColor, brandLogoUrl, brandName, tableMode, lang, onOpenLanguagePicker, onPick, onBack, onCancel, loyaltyEnabled, customerName, onLoyaltySignIn }) {
+function ScreenOrderType({ brandColor, brandLogoUrl, brandName, tableMode, counterLabel = null, lang, onOpenLanguagePicker, onPick, onBack, onCancel, loyaltyEnabled, customerName, onLoyaltySignIn }) {
   const dineInAvailable = tableMode !== 'none';
+  const tileCount = (dineInAvailable ? 2 : 1) + (counterLabel ? 1 : 0);
   const langMeta = getLanguageMeta(lang);
   // Force re-render of t() strings when lang changes (parent already
   // subscribes via useKioskLang, but listing lang in deps for clarity).
@@ -1718,10 +1736,10 @@ function ScreenOrderType({ brandColor, brandLogoUrl, brandName, tableMode, lang,
       <div style={{ flex: 1, padding: '0 6vw', display: 'flex', alignItems: 'center' }}>
         <div style={{
           display: 'grid',
-          gridTemplateColumns: dineInAvailable ? 'repeat(2, minmax(0, 1fr))' : 'minmax(0, 1fr)',
+          gridTemplateColumns: `repeat(${tileCount}, minmax(0, 1fr))`,
           gap: 'clamp(14px, 2.5vw, 24px)',
           width: '100%',
-          maxWidth: 720,
+          maxWidth: tileCount > 2 ? 980 : 720,
           marginLeft: 'auto',
           marginRight: 'auto',
         }}>
@@ -1739,6 +1757,15 @@ function ScreenOrderType({ brandColor, brandLogoUrl, brandName, tableMode, lang,
             </div>
             <div style={otCardLabel(brandColor)}>{t('orderType.takeaway')}</div>
           </button>
+          {/* v5.11.95 Counter collect: the venue's own name, shown as typed (lib/counterOrder.js). */}
+          {counterLabel ? (
+            <button onClick={() => onPick('dineIn', { counter: true })} style={otOutlineCard(brandColor)} aria-label={counterLabel}>
+              <div style={otIconWrap()}>
+                <TakeawayIcon color={brandColor} />
+              </div>
+              <div style={otCardLabel(brandColor)}>{counterLabel}</div>
+            </button>
+          ) : null}
         </div>
       </div>
 

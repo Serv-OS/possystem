@@ -99,6 +99,10 @@ async function measure() {
       stockBacklog: body.stockBacklog || [],
       stockDead: body.stockDead || [],
       stockHeld: body.stockHeld || [],
+      // v5.11.94 loyalty code texts: venues not set up, and whether the nightly check ran and finished
+      otpNotReady: body.otpNotReady || [],
+      otpAuditStale: body.otpAuditStale || null,
+      otpAuditIncomplete: body.otpAuditIncomplete || null,
     };
   }
 

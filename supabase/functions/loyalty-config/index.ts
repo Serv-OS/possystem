@@ -8,9 +8,10 @@
 // Also returns rewards catalog and tiers for the "full config" read.
 
 import {
-  cors, json, platformAdmin, authenticateCaller, resolveCompanyForLocation,
+  cors, json, platformAdmin, opsAdmin, authenticateCaller, resolveCompanyForLocation,
   getOrCreateConfig, requireStaff,
 } from '../_shared/loyalty-utils.ts';
+import { auditVenues } from '../_shared/otpService.ts';
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -101,7 +102,20 @@ Deno.serve(async (req) => {
 
     if (error) return json({ error: error.message }, 500);
 
-    return json({ config: data });
+    // 22 Oct 2026 (v5.11.94): loyalty switched on means customers will sign in with a code text
+    // at every venue of the company, so every venue's own Twilio Verify service (the name in that
+    // text) is made or checked now, not on the first customer's sign in. Best effort, a few
+    // seconds at most; the answer carries the result per venue.
+    let services: unknown = null;
+    if (patch.enabled === true && data?.enabled === true) {
+      try {
+        services = await auditVenues({ ops: opsAdmin, platform: platformAdmin, companyId, fix: true, budgetMs: 8000, by: 'loyalty_on' });
+      } catch (e) {
+        console.error('[loyalty-config] text services after loyalty on', String((e as Error)?.message || e));
+      }
+    }
+
+    return json({ config: data, services });
   }
 
   return json({ error: 'method not allowed' }, 405);

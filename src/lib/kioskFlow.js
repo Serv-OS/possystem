@@ -220,7 +220,12 @@ export function kioskStartFooterKey({ loyaltyEnabled, smsEnabled } = {}) {
  * Eat in with a table shows the table, eat in with no table says sit anywhere,
  * take away says collect at the counter.
  */
-export function kioskModeLabels({ orderType, tableNumber } = {}) {
+export function kioskModeLabels({ orderType, tableNumber, counterLabel = null } = {}) {
+  // v5.11.95 Counter collect: the venue's own name for it, shown as typed (lib/counterOrder.js).
+  // It books as eat in with no table (lib/counterOrder.js), so it is keyed on dineIn.
+  if (orderType === 'dineIn' && counterLabel) {
+    return { title: counterLabel, titleKey: 'k2.menu.eatIn', subKey: 'k2.menu.collect', vars: {} };
+  }
   if (orderType === 'dineIn') {
     const table = typeof tableNumber === 'string' ? tableNumber.trim() : '';
     return table
@@ -273,11 +278,14 @@ export function nextCountdown(n) {
  * pointsKey is null when there is no points line. It says "will be added", never "added":
  * points are earned after this screen shows.
  */
-export function kioskDoneModel({ orderType = null, tableNumber = '', textSent = false, pointsMasked = '', loyaltyEnabled = false, hasAlcohol = false } = {}) {
+export function kioskDoneModel({ orderType = null, tableNumber = '', textSent = false, pointsMasked = '', loyaltyEnabled = false, hasAlcohol = false, counter = false } = {}) {
   const table = typeof tableNumber === 'string' ? tableNumber.trim() : String(tableNumber ?? '').trim();
   let messageKey;
   let messageVars = {};
-  if (orderType === 'dineIn') {
+  if (orderType === 'dineIn' && counter === true && !table) {
+    // v5.11.95 Counter collect: eat in with no table, collected at the counter (lib/counterOrder.js).
+    messageKey = textSent === true ? 'k2.done.takeawayText' : 'k2.done.takeaway';
+  } else if (orderType === 'dineIn') {
     if (table) { messageKey = 'k2.done.eatInTable'; messageVars = { table }; } else messageKey = textSent === true ? 'k2.done.eatInAnywhereText' : 'k2.done.eatInAnywhere';
   } else {
     messageKey = textSent === true ? 'k2.done.takeawayText' : 'k2.done.takeaway';

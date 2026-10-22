@@ -13,6 +13,16 @@
 //   → checks the code via Twilio Verify, then returns customer + loyalty data
 //   → returns { verified: true, token: '<session_token>', customer: {...}, loyalty: {...} }
 //
+// POST action=ensure_service (22 Oct 2026, staff of the venue, the service role or the nightly job's key):
+//   { action: 'ensure_service', location_id: '<ops id>', fix?: true }
+//   → makes or repairs the venue's own Twilio Verify service, answers its state in plain words
+// POST action=audit (the service role or the nightly job's key; staff for their own company_id):
+//   { action: 'audit', fix?: true, company_id?: 'uuid' }
+//   → every venue in the Platform database: ensure, record (Ops loyalty_otp_service_audit),
+//     alert on the activity feed when still not right. pg_cron job loyalty-otp-audit, 04:10 UTC.
+//   Deploy with --no-verify-jwt (as today: the kiosk and portal send the public key; the cron job
+//   sends only the x-cron-key header).
+//
 // Code generation, delivery, expiry, and per-verification attempt limits are all handled by
 // Twilio Verify (see _shared/twilio-verify.ts) — we no longer generate/store/compare codes. This
 // fixes raw-A2P deliverability blocks (e.g. carrier/fraud error 30453).
@@ -20,8 +30,12 @@
 // needed. The portal sends this token on subsequent requests (refresh / update_profile).
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { startVerification, checkVerification, verifyConfigured, createVerifyService, setVerifyServiceName, getVerifyServiceName } from '../_shared/twilio-verify.ts';
+import { startVerification, checkVerification, verifyConfigured, getVerifyServiceName } from '../_shared/twilio-verify.ts';
 import { sameServiceName } from '../_shared/otpName.js';
+import { ensureVenueService, auditVenues, recordVenueResult, recordAuditRun } from '../_shared/otpService.ts';
+import { AUDIT_KEY_CHECK, auditAccess, isUuid, sendShouldRecord } from '../_shared/otpServiceRules.js';
+import { CRON_KEY_HEADER, isServiceRoleBearer } from '../_shared/cronKey.js';
+import { createCallerFacts } from '../_shared/callerFacts.ts';
 import { createSessionToken as mintSessionToken, verifySessionToken as readSessionToken } from '../_shared/loyalty-session.ts';
 import { giftCardRecipientFilter, memberGiftCards, MEMBER_GIFT_CARD_COLUMNS } from '../_shared/giftCardMatch.ts';
 import { resolveSenderForOrg } from '../_shared/sending-domain.ts';
@@ -34,7 +48,7 @@ import {
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-cron-key',
 };
 const json = (b: unknown, s = 200) =>
   new Response(JSON.stringify(b), {
@@ -42,9 +56,10 @@ const json = (b: unknown, s = 200) =>
     headers: { ...cors, 'Content-Type': 'application/json' },
   });
 
+const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const opsAdmin = createClient(
   Deno.env.get('SUPABASE_URL') ?? '',
-  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
+  SERVICE_ROLE,
   { auth: { autoRefreshToken: false, persistSession: false } },
 );
 
@@ -62,8 +77,13 @@ const OTP_SECRET = Deno.env.get('OTP_HMAC_SECRET') ?? Deno.env.get('SUPABASE_SER
 // sister venues (a multi-site company saw location B's name on location A's codes). The VA… sid
 // is stored as a hidden config row in message_templates (message_type
 // 'loyalty_otp_service:<locationId>'; legacy company-wide rows use the bare type) — invisible to
-// the BO editor (which only lists types registered in message-types.ts). Locations without a row
-// fall back to the shared env service and get their own created on their next OTP send.
+// the BO editor (which only lists types registered in message-types.ts).
+//
+// 22 Oct 2026 (v5.11.94): the service is made and kept right by ONE shared module,
+// _shared/otpService.ts (ensureVenueService), used by the send below, by the new ensure_service
+// and audit actions here, by message-templates (Save name, Reset, the Fix button), by
+// location-admin (a rename), provision-location (a new venue) and loyalty-config (loyalty switched
+// on). A pg_cron job (migration 20261022b, Ops) runs the audit every night at 04:10 UTC.
 const VERIFY_SID_TYPE = 'loyalty_otp_service';
 const sidRowType = (locationId?: string | null) =>
   locationId ? `${VERIFY_SID_TYPE}:${locationId}` : VERIFY_SID_TYPE;
@@ -84,29 +104,72 @@ async function getVerifySidRow(companyId: string, rowType: string): Promise<stri
   }
 }
 
-async function ensureVerifySid(companyId: string, locationId: string | null, desiredName: string): Promise<string | null> {
-  const rowType = sidRowType(locationId);
-  const existing = await getVerifySidRow(companyId, rowType);
-  if (existing) return existing;
-  const created = await createVerifyService(desiredName);
-  if (!created.ok || !created.sid) {
-    console.error('[loyalty-otp] create verify service failed:', created.error);
-    return null; // fall back to the shared service — codes still deliver
+// ── Who may ask about a venue's text service ────────────────────────────
+// loyalty-otp is public (the kiosk and the portal call it with the bare public key), so the two
+// service actions decide for themselves: the service role, the pg_cron job's key (asked of the
+// database: loyalty_otp_cron_ok, 20261022b), or a signed in member of staff for the venue or
+// company asked about. Any other caller is refused. Staff is the rule the money functions use
+// (callerFacts.ts): a user_locations link, a verified super admin, or a Platform company role.
+const facts = createCallerFacts({
+  ops: opsAdmin, platform: platformAdmin, env: (name) => Deno.env.get(name),
+  otpSecret: OTP_SECRET, json,
+});
+
+async function signedInCaller(req: Request): Promise<any | null> {
+  const raw = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim();
+  if (!raw || raw === SERVICE_ROLE) return null;
+  try {
+    const { data: { user } } = await opsAdmin.auth.getUser(raw);
+    return user ?? null;
+  } catch {
+    return null;
   }
-  // Race-safe store: (company_id, message_type, channel) is UNIQUE, so if two sends race,
-  // one insert loses — re-read and use the winner's sid.
-  const { error } = await platformAdmin.from('message_templates').insert({
-    company_id: companyId,
-    message_type: rowType,
-    channel: 'sms',
-    body_text: created.sid,
-    enabled: true,
-  });
-  if (error) {
-    const winner = await getVerifySidRow(companyId, rowType);
-    return winner || created.sid;
+}
+
+async function serviceActionAccess(req: Request, scope: { locationId: string | null; companyId: string | null }) {
+  const service = isServiceRoleBearer(req.headers.get('Authorization'), SERVICE_ROLE);
+  const key = String(req.headers.get(CRON_KEY_HEADER) ?? '').trim();
+  let check: { data: unknown; error: unknown } | null = null;
+  let staff = false;
+  if (!service && key) {
+    const r = await opsAdmin.rpc(AUDIT_KEY_CHECK, { p_key: key });
+    check = { data: r.data, error: r.error };
+  } else if (!service) {
+    const user = await signedInCaller(req);
+    if (user && (scope.locationId || scope.companyId)) staff = await facts.callerIsStaffFor(user, scope.locationId, scope.companyId);
   }
-  return created.sid;
+  return auditAccess({ service, staff, key, check });
+}
+
+// ensure_service { location_id, fix? }: one venue's service, made or repaired, answered in full.
+// audit { fix?, company_id? }: every venue in the Platform database; staff may run it for their
+// own company only (company_id required and the caller must be staff of one of its venues).
+async function handleServiceAction(req: Request, body: Record<string, unknown>, action: string): Promise<Response> {
+  const fix = body.fix !== false;
+  if (action === 'ensure_service') {
+    const locationId = typeof body.location_id === 'string' ? body.location_id.trim() : '';
+    if (!isUuid(locationId)) return json({ error: 'location_id required' }, 400);
+    const access = await serviceActionAccess(req, { locationId, companyId: null });
+    if (!access.ok) return json({ error: access.reason === 'needs_database_update' ? 'This needs a database update (20261022b).' : 'not authorised', reason: access.reason }, access.status);
+    // The company is resolved from the venue's Platform row, never read from the body.
+    const result = await ensureVenueService({ ops: opsAdmin, platform: platformAdmin, opsLocationId: locationId, fix });
+    console.log('[loyalty-otp] ensure_service', JSON.stringify({ by: access.by, ...result, words: undefined }));
+    return json({ ...result, by: access.by });
+  }
+  const companyId = typeof body.company_id === 'string' && isUuid(body.company_id) ? body.company_id : null;
+  const access = await serviceActionAccess(req, { locationId: null, companyId });
+  if (!access.ok) return json({ error: access.reason === 'needs_database_update' ? 'This needs a database update (20261022b).' : 'not authorised', reason: access.reason }, access.status);
+  if (access.by === 'staff' && !companyId) return json({ error: 'company_id required' }, 400);
+  try {
+    const summary = await auditVenues({ ops: opsAdmin, platform: platformAdmin, fix, companyId, by: access.by || 'unknown' });
+    return json(summary);
+  } catch (e) {
+    // A run that threw still leaves its row, so the watchdog hears of it (not only this log).
+    const error = String((e as Error)?.message || e);
+    console.error('[loyalty-otp] audit crashed', error);
+    await recordAuditRun(opsAdmin, { ok: false, errors: [`crashed: ${error}`] }, { companyId, fix, by: access.by || 'unknown' });
+    return json({ ok: false, error: 'The check could not finish.', detail: error }, 500);
+  }
 }
 
 // Every Verify service this company has (all locations + legacy company row), newest first —
@@ -567,6 +630,11 @@ Deno.serve(async (req) => {
   const rawPhone = body.phone as string;
   const companyId = body.company_id as string;
 
+  // 22 Oct 2026: the two service actions are for staff, the service role and the nightly job, not
+  // for customers. They decide who is calling themselves (handleServiceAction), before the phone
+  // and company checks below, which are for a customer signing in.
+  if (action === 'ensure_service' || action === 'audit') return handleServiceAction(req, body, action);
+
   // v5.5.258: Token-based actions (refresh, update_profile) don't need
   // phone/company_id — the token carries both. Skip validation for them
   // so the 24h session persistence actually works (previously, refreshData
@@ -602,9 +670,10 @@ Deno.serve(async (req) => {
 
     // Resolve the venue name so the code SMS reads "Your <venue> verification code is ...".
     // NOTE: in practice Twilio stamps the Verify SERVICE's friendly name into the SMS and ignores
-    // this per-request CustomFriendlyName — the name that actually shows is synced onto the
-    // service by message-templates save/reset (setVerifyServiceName). We still pass it here as
-    // belt-and-braces: if Twilio ever honours it, it resolves to the same name.
+    // this per-request CustomFriendlyName. The name that actually shows is put onto the venue's
+    // own service by ensureVenueService below (and by every Back Office path that changes the
+    // name). We still pass it here as belt and braces: if Twilio ever honours it, it resolves to
+    // the same name.
     // Chain: operator override → ops locations.name → platform company name → generic label.
     const locationId = (body.location_id as string | undefined) || null;
     let venueName = '';
@@ -643,35 +712,44 @@ Deno.serve(async (req) => {
     if (!venueName && coRes.status === 'fulfilled' && coRes.value?.data?.name) venueName = coRes.value.data.name;
     if (!venueName) venueName = 'our venue';
 
-    // Send from THIS LOCATION's own Verify service (created on first use) so the SMS carries this
-    // venue's name — Twilio stamps the SERVICE's friendly name into the message. Stamp the current
-    // name on every send (idempotent) so BO/venue-name edits always take effect. Only owned
-    // services are renamed — never the shared fallback (renaming it would change everyone's SMS).
-    // The rename MUST complete before startVerification (the SMS renders the service's CURRENT
-    // name) — but it's skipped when the service was just CREATED, since creation already named it.
+    // Send from THIS LOCATION's own Verify service so the SMS carries this venue's name (Twilio
+    // stamps the SERVICE's friendly name into the message). 22 Oct 2026 (v5.11.94): ONE shared
+    // module does the work (ensureVenueService): it reads the venue's current service name from
+    // Twilio, creates a service when the venue has none (twice if need be), recreates one Twilio
+    // no longer has, and renames one that has drifted from the Back Office name, all BEFORE the
+    // send (the SMS renders the service's CURRENT name). Only the venue's own service is ever
+    // renamed, never the shared fallback. A service that could not be read keeps its row and is
+    // used as it is when it exists (the name check below decides if the send may go on).
     let serviceSid = sidRes.status === 'fulfilled' ? sidRes.value : null;
-    let createdNow = false;
-    if (!serviceSid) {
-      // Twice: a one off Twilio hiccup must not send a venue's code under someone else's name.
-      serviceSid = (await ensureVerifySid(companyId, locationId, venueName)) || (await ensureVerifySid(companyId, locationId, venueName));
-      createdNow = !!serviceSid;
-    }
-    if (serviceSid && !createdNow) {
-      const renamed = await setVerifyServiceName(venueName, serviceSid);
-      if (!renamed.ok) console.error('[loyalty-otp] service rename failed:', { serviceSid, venueName, error: renamed.error });
+    let notReady: string | null = null;
+    // The company the kiosk sent is only compared with the venue's own (Platform row): a pair that
+    // does not match, or a venue the Platform does not know, makes nothing (wrong_company,
+    // not_provisioned) and falls to the refusal below.
+    let ensured: Awaited<ReturnType<typeof ensureVenueService>> | null = null;
+    if (locationId) {
+      ensured = await ensureVenueService({ ops: opsAdmin, platform: platformAdmin, opsLocationId: locationId, companyId, fix: true });
+      if (ensured.state === 'ready') serviceSid = ensured.service_sid;
+      else if (ensured.state === 'twilio_unreadable' && ensured.service_sid) serviceSid = ensured.service_sid;
+      else { serviceSid = null; notReady = ensured.words; }
+      if (ensured.state !== 'ready') console.error('[loyalty-otp] venue text service not ready', JSON.stringify({ companyId, locationId, state: ensured.state, action_taken: ensured.action_taken, twilio_error: ensured.twilio_error }));
     }
     // 21 Oct 2026 (Peter: "the messages come from what is set in Back Office"): with no service of
     // its own, this venue's code may go out from the shared service ONLY if that service already
     // carries this venue's name. The shared service is never renamed (it would change every other
     // venue's texts), so otherwise the send is refused and the cause is logged. A customer who
-    // cannot sign in for a minute is better than a code text carrying another venue's name.
+    // cannot sign in for a minute is better than a code text carrying another venue's name. The
+    // same refusal covers a service whose name could not be put right (22 Oct 2026).
     if (!serviceSid) {
       const sharedName = await getVerifyServiceName();
       if (!sameServiceName(sharedName, venueName)) {
-        console.error('[loyalty-otp] refused: no Verify service for this venue and the shared one carries another name', { companyId, locationId, venueName, sharedName });
-        return json({ error: 'We could not send your code just now. Please try again in a minute.', detail: 'no text service for this venue yet', shared_name: sharedName }, 503);
+        console.error('[loyalty-otp] refused: no ready Verify service for this venue and the shared one carries another name', { companyId, locationId, venueName, sharedName, notReady });
+        // Into the audit table at once: the watchdog then says so within minutes, not next morning.
+        if (ensured && sendShouldRecord(ensured, true)) await recordVenueResult(opsAdmin, ensured, 'send');
+        return json({ error: 'We could not send your code just now. Please try again in a minute.', detail: notReady || 'no text service for this venue yet', shared_name: sharedName }, 503);
       }
     }
+    // A repair made just now (a service made, recreated or renamed) clears an earlier refusal's row.
+    if (ensured && sendShouldRecord(ensured, false)) await recordVenueResult(opsAdmin, ensured, 'send');
     console.log('[loyalty-otp] send', { serviceSid: serviceSid || 'shared', venueName, locationId });
 
     const r = await startVerification(phone!, { channel: 'sms', friendlyName: venueName, serviceSid: serviceSid || undefined });
@@ -900,7 +978,7 @@ Deno.serve(async (req) => {
     return json({ updated: true, email_saved: true });
   }
 
-  return json({ error: 'Unknown action. Use: send, verify, refresh, update_profile' }, 400);
+  return json({ error: 'Unknown action. Use: send, verify, refresh, update_profile, ensure_service, audit' }, 400);
 });
 
 // ── Code generators (same as loyalty-utils.ts) ───────────────────────────

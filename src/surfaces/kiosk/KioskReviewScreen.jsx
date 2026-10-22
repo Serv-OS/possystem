@@ -45,9 +45,12 @@ export default function KioskReviewScreen({
   } = engine;
 
   const table = typeof tableNumber === 'string' ? tableNumber.trim() : '';
-  const whereText = orderType === 'dineIn'
-    ? (table ? tf('k2.review.whereEatInTable', { table }) : t('k2.review.whereEatInAnywhere'))
-    : t('k2.review.whereTakeaway');
+  // v5.11.95 Counter collect shows the venue's own name for it (lib/counterOrder.js).
+  const whereText = orderType === 'dineIn' && !table && engine.counterPicked && engine.counterCollect?.label
+    ? `${engine.counterCollect.label} · ${t('k2.menu.collect')}`
+    : orderType === 'dineIn'
+      ? (table ? tf('k2.review.whereEatInTable', { table }) : t('k2.review.whereEatInAnywhere'))
+      : t('k2.review.whereTakeaway');
   const showTextRow = checkout.smsEnabled && checkout.textAllowed;
   const showRewardRow = loyaltyEnabled && !!customerPhone && !!checkout.phoneE164 && !!companyId;
   const covered = kioskChargeTotal(grandTotal) <= 0;

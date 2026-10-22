@@ -30,6 +30,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { resolveAndRender, wrapInEmailHtml } from '../_shared/template-resolver.ts';
 import { resolveSenderFrom, type Sender } from '../_shared/sending-domain.ts';
 import { collectionLabel } from '../_shared/collection-label.ts';
+import { isCounterCollectOrder, counterReadyText, kioskTileOn } from '../_shared/counterCollect.js';
 import {
   parseNotifyPayload, scopeToOrder, scopeToOtherVenues, ledgerClaimFor, isMissingTableError,
   legacyLedgerBlocks, LEGACY_LEDGER_TABLE,
@@ -303,14 +304,19 @@ Deno.serve(async (req) => {
     currency = (loc as Record<string, unknown>)?.currency as string | null;
   } catch { /* name is best-effort */ }
   let companyId: string | null = null;
+  // v5.11.95 Counter collect: the venue's kiosk tile switch rides on the same read.
+  let venueKioskTile = false;
   try {
     const { data: pl } = await platformAdmin
       .from('locations')
-      .select('company_id')
+      .select('company_id, online_branding')
       .or(`ops_location_id.eq.${locationId},id.eq.${locationId}`)
       .maybeSingle();
     if (pl?.company_id) companyId = String(pl.company_id);
+    venueKioskTile = kioskTileOn(pl);
   } catch { /* templates fall back to defaults */ }
+  // v5.11.95 Counter collect (kiosk tile, counter QR link): "ready to collect at the counter".
+  const counterCollect = isCounterCollectOrder(order, { kioskTileOn: venueKioskTile });
 
   // Minutes between placing the order and the promised time. collection_time is
   // a venue wall-clock "HH:MM", so both sides are read in the venue timezone and
@@ -372,6 +378,8 @@ Deno.serve(async (req) => {
       if (!smsBody) {
         smsBody = event === 'confirmed'
           ? `Thanks ${firstName}! Order #${ref} confirmed at ${venueName}. Total: ${mergeData.order_total}.`
+          : counterCollect
+            ? counterReadyText({ firstName, ref, shortRef: kioskV2 ? shortRef(ref) : null, venueName })
           : kioskV2
             ? `Your order ${shortRef(ref)} is ready to collect at ${venueName}.`
             : driveThru
