@@ -17,6 +17,9 @@
 //   mix                           8 Oct 2026: item sales by sales group (Food, Drinks, Other
 //                                 sales) with each group's share, and the comparison span's
 //                                 share for the change in points (_shared/salesMix.js)
+//   stock, stock_reason           v5.11.92 (multi site stock Drop 4a): the venue's stock block
+//                                 from stock_report_league over the same business days, or null
+//                                 and why ("the stock blocks" at the end of this file)
 // Live orders and open tables are always "now".
 //
 // NET AND GROSS. 16 Oct 2026, Peter: "the owner app needs a switch to show net or gross sales".
@@ -82,6 +85,7 @@ import {
   addCheckItems, topItems, rankItems, periodTotals, rollupTotals, compareOf, groupCompare, hhmm, r2,
 } from './ownerPeriod.js';
 import { makeMixResolver, categoriesOfSite, newMix, addCheckToMix, mixView, mixRollup, catFamilyKey, nameAcross } from './salesMix.js';
+import { officeReachesVenue } from './stockOfficeReach.js';
 
 /** Requests in flight at once, for the whole snapshot. */
 export const MAX_READS = 8;
@@ -89,7 +93,9 @@ export const MAX_READS = 8;
 export const OWNER_API = 2;
 // 16 Oct 2026: 'gross' = every sales figure the app shows also comes including VAT (the Net /
 // Gross switch). An app looks for it before it offers Gross, and shows net with a word if not.
-export const OWNER_FEATURES = ['period', 'business_day', 'compare', 'by_currency', 'detail', 'mix', 'gross'];
+// v5.11.92 (multi site stock Drop 4a): 'stock' = each venue carries a stock block (or a reason it
+// has none) and the venue detail a Stock card, from the head office report functions (below).
+export const OWNER_FEATURES = ['period', 'business_day', 'compare', 'by_currency', 'detail', 'mix', 'gross', 'stock'];
 // 8 Oct 2026, Sales mix: the periods whose comparison span is read WITH items, for each group's
 // change in share ("Food +3 pts"). Today adds a day of the heavy column, a week up to seven, a
 // month up to 31 per venue. The coordinator may drop 'month' after a live timing: a period left
@@ -436,7 +442,7 @@ export async function buildOwnerSnapshot({ ops, opsIds, meta, now = new Date(), 
   const fcFrom = least(all.map((p) => p.range.from)), fcTo = most(all.map((p) => p.today));
   const tsFrom = new Date(least(all.map((p) => p.startMs)) - DAY_MS).toISOString(), tsTo = new Date(most(all.map((p) => p.endMs)) + DAY_MS).toISOString();
 
-  const [, , , , firstDays, fcRows, ts, oq, sess] = await Promise.all([
+  const [, , , , firstDays, fcRows, ts, oq, sess, stockBy] = await Promise.all([
     Promise.all(opsIds.map(salesOf)),
     Promise.all(opsIds.map(itemsOf)),
     Promise.all(opsIds.map(cmpItemsOf)),
@@ -446,6 +452,10 @@ export async function buildOwnerSnapshot({ ops, opsIds, meta, now = new Date(), 
     gate(() => pagedRows('timesheets', () => ops.from('wf_timesheets').select('location_id, clock_in, clock_out, pay_amount, status').in('location_id', opsIds).gte('clock_in', tsFrom).lt('clock_in', tsTo).order('clock_in').order('id'))),
     gate(() => pagedRows('open orders', () => ops.from('order_queue').select('location_id, status').in('location_id', opsIds).order('location_id').order('ref'))),
     gate(() => pagedRows('open tables', () => ops.from('active_sessions').select('location_id').in('location_id', opsIds).order('id'))),
+    // v5.11.92 (multi site stock Drop 4a): the stock block per venue, from stock_report_league as
+    // the service role, over the period's business days. Never throws: a venue without a true
+    // figure carries stock null and the reason.
+    stockBlocks({ ops, opsIds, meta, plan, gate }),
   ]);
   const firstDay = Object.fromEntries(opsIds.map((id, i) => [id, firstDays[i]]));
 
@@ -539,6 +549,9 @@ export async function buildOwnerSnapshot({ ops, opsIds, meta, now = new Date(), 
       compare: { period, ...compare },
       week_compare: { period: 'week', ...week },
       week_range: rangeOut(d.week, d.weekCut),
+      // v5.11.92 (multi site stock Drop 4a): the Stock line's figures, or null and why.
+      stock: stockBy[id]?.stock ?? null,
+      stock_reason: stockBy[id]?.stock_reason ?? null,
     };
   }).sort((a, b) => b.period_totals.net_sales - a.period_totals.net_sales);
 
@@ -857,7 +870,7 @@ export async function buildOwnerDetail({ ops, opsIds, meta, target, currency = n
 
   const all = ids.map((id) => plan[id]);
   const tsFrom = new Date(Math.min(...all.map((p) => p.startMs)) - DAY_MS).toISOString(), tsTo = new Date(Math.max(...all.map((p) => p.endMs)) + DAY_MS).toISOString();
-  const [, , , , firstDays, ts, vs] = await Promise.all([
+  const [, , , , firstDays, ts, vs, stockOut] = await Promise.all([
     Promise.all(ids.map(periodOf)),
     Promise.all(ids.map(cmpOf)),
     Promise.all(ids.map(otherOf)),
@@ -865,6 +878,10 @@ export async function buildOwnerDetail({ ops, opsIds, meta, target, currency = n
     Promise.all(ids.map((id) => firstSaleDay(ops, id, plan[id], gate))),
     gate(() => pagedRows('timesheets', () => ops.from('wf_timesheets').select('id, location_id, clock_in, clock_out, pay_amount, actual_hours, status').in('location_id', ids).gte('clock_in', tsFrom).lt('clock_in', tsTo).order('clock_in').order('id'))),
     gate(() => pagedRows('labour targets', () => ops.from('wf_venue_settings').select('location_id, labour_target_pct').in('location_id', ids).order('location_id'))),
+    // v5.11.92 (multi site stock Drop 4a): the Stock card for ONE venue (the league row and the
+    // attention rows from stock_report_dashboard). The group has no stock card: currencies and
+    // companies are never added together here.
+    scope.kind === 'venue' ? stockDetailOf({ ops, id: ids[0], meta, plan, gate }) : Promise.resolve({ stock: null, stock_reason: null }),
   ]);
 
   // Labour: approved and paid timesheets on the business day of the shift (as Daily trading).
@@ -939,6 +956,203 @@ export async function buildOwnerDetail({ ops, opsIds, meta, target, currency = n
         cost: r2(lab.cost), hours: r2(lab.hours), shifts: lab.shifts, net_sales: r2(sales.net),
         pct: sales.net > 0 ? r2(lab.cost / sales.net * 100) : null, target_pct: targetPct,
       } : null,
+      // v5.11.92 (multi site stock Drop 4a): the Stock card, or null and why (null with no reason
+      // for the group, which has none).
+      stock: stockOut.stock,
+      stock_reason: stockOut.stock_reason,
     },
+  };
+}
+
+// ── the stock blocks (v5.11.92, multi site stock Drop 4a, contract section 5) ─────────────────
+//
+// Each venue card carries a Stock line and the venue screen a Stock card, read from the head
+// office report functions (stock_report_league for the cards, stock_report_dashboard for one
+// venue's card: migration 20261026a) as the service role, once per company and period, over the
+// same business days as the sales figures (plan[id].range). The numbers are the database's: stored
+// day totals, demo history left out, each venue on its own clock, targets as red, amber, green.
+// Nothing is worked out here. index.ts has already fenced the venue list with the owner rule
+// (ownerVenueIds), so the service role call is trusted for reach, as the contract says.
+//
+// A venue gets `stock: null` with `stock_reason` when there is nothing true to show:
+//   not_installed   the report function is not there yet (an app ahead of 20261026a)
+//   no_stock        the venue holds no stock item row, or sits in no company
+//   failed          a read failed (said so, never shown as a zero)
+// The snapshot never fails because of stock.
+
+export const STOCK_LEAGUE = 'stock_report_league';
+export const STOCK_DASHBOARD = 'stock_report_dashboard';
+export const STOCK_REASONS = Object.freeze(['not_installed', 'no_stock', 'failed']);
+/** The report functions take 1 to 50 sites a call (stock_report_guard): a bigger company is asked in groups. */
+export const STOCK_SITES_PER_CALL = 50;
+
+// The function is missing (PostgREST PGRST202, Postgres 42883, or its words).
+function missingFunction(error) {
+  if (!error) return false;
+  const code = String(error.code || '');
+  const msg = String(error.message || '');
+  return code === 'PGRST202' || code === '42883' || /could not find the function|function .*does not exist|schema cache/i.test(msg);
+}
+const numOrNull = (v) => (v === null || v === undefined || v === '' ? null : (Number.isFinite(Number(v)) ? Number(v) : null));
+const intOf = (v) => Math.max(0, Math.floor(Number(v) || 0));
+
+/**
+ * The venues an Owner app login sees: officeReachesVenue's rule, as a list. Its user_locations rows
+ * UNION every venue of its own company when it is an owner (user_profiles.role 'owner' and org_id
+ * equal to the venue's); a super admin reaches everything it is handed. Never the Stock control
+ * branch (the Owner app shows sales). An anonymous or missing user sees nothing.
+ * 21 Oct 2026: owner-snapshot read user_locations only, so Coffee Boy owners linked to 2 or 5 of
+ * their 7 sites saw 2 or 5. Pure: index.ts hands in the rows it read.
+ * @param {{ user: any, profile: { role?: string, org_id?: string } | null, linkedIds: string[],
+ *           companyVenues: { id: string, org_id?: string | null }[] }} a
+ * @returns {string[]}
+ */
+export function ownerVenueIds({ user = null, profile = null, linkedIds = [], companyVenues = [] } = {}) {
+  const linked = new Set((Array.isArray(linkedIds) ? linkedIds : []).filter((id) => typeof id === 'string' && id));
+  const out = [];
+  const seen = new Set();
+  const add = (id, venueOrgId) => {
+    if (seen.has(id)) return;
+    if (!officeReachesVenue({ user, profile, linked: linked.has(id), venueOrgId }).ok) return;
+    seen.add(id);
+    out.push(id);
+  };
+  for (const id of linked) add(id, null);
+  for (const v of Array.isArray(companyVenues) ? companyVenues : []) if (v && typeof v.id === 'string' && v.id) add(v.id, v.org_id ?? null);
+  return out;
+}
+
+/**
+ * One league row (stock_report_league rows[], contract 1.6.3) as the app's stock block. Every
+ * figure is the database's; a missing one is null, never 0. `rag` is the database's colour per
+ * metric ('green' | 'amber' | 'red' | null) from stock_targets or the defaults.
+ */
+export function stockBlockOf(row, fallbackCurrency = null) {
+  if (!row || typeof row !== 'object') return null;
+  return {
+    value: numOrNull(row.stock_value_now),
+    gp_pct_theo: numOrNull(row.gp_pct_theo), gp_pct_actual: numOrNull(row.gp_pct_actual),
+    gap_pct: numOrNull(row.gap_pct), waste_pct: numOrNull(row.waste_pct), comps_pct: numOrNull(row.comps_pct),
+    days_on_hand: numOrNull(row.days_on_hand),
+    last_full_count_day: typeof row.last_full_count_day === 'string' && row.last_full_count_day ? row.last_full_count_day.slice(0, 10) : null,
+    last_full_count_words: typeof row.last_full_count_words === 'string' ? row.last_full_count_words : null,
+    below_par_count: intOf(row.below_par_count), negative_count: intOf(row.negative_count),
+    no_recipe_pct: numOrNull(row.no_recipe_pct), sales_net: numOrNull(row.sales_net),
+    purchases: numOrNull(row.purchases), budget: numOrNull(row.budget), kitchen: row.kitchen === true,
+    rag: row.rag && typeof row.rag === 'object' && !Array.isArray(row.rag) ? row.rag : {},
+    currency: String(row.currency || fallbackCurrency || 'GBP').trim().toUpperCase(),
+  };
+}
+
+// The venues' companies (locations.org_id), read with the service role. Throws on a failed read.
+async function venueOrgs(ops, ids, gate) {
+  const rows = await gate(() => pagedRows('venue companies', () => ops.from('locations').select('id, org_id').in('id', ids).order('id')));
+  const out = {};
+  for (const id of ids) out[id] = null;
+  for (const r of rows) if (r?.id && ids.includes(r.id)) out[r.id] = r.org_id || null;
+  return out;
+}
+
+// True when the venue holds any stock item row (archived ones included): the stock-nightly rule.
+async function holdsStock(ops, id, gate) {
+  const { data, error } = await gate(() => ops.from('inventory_items').select('id').eq('location_id', id).limit(1));
+  if (error) throw new Error(`Could not read stock items: ${error.message}`);
+  return (data || []).length > 0;
+}
+
+// One report call as the service role: { data }, or { reason } ('not_installed' | 'failed').
+async function stockCall(ops, fn, args, gate) {
+  if (typeof ops?.rpc !== 'function') return { reason: 'failed', words: 'the client cannot call a function' };
+  let res;
+  try { res = await gate(() => ops.rpc(fn, args)); } catch (e) { return { reason: 'failed', words: String(e?.message || e) }; }
+  if (res?.error) return { reason: missingFunction(res.error) ? 'not_installed' : 'failed', words: String(res.error.message || res.error.code || 'failed') };
+  return { data: res?.data ?? null };
+}
+
+const reportArgs = (org, ids, range) => ({ p_org: org, p_sites: ids, p_from: range.from, p_to: range.to, p_opts: { between_counts: false } });
+
+/**
+ * The stock block per venue for the snapshot's cards: one stock_report_league call per company
+ * and period (venues of one company on the same business days share a call).
+ * @returns {Promise<Record<string, { stock: object | null, stock_reason: string | null }>>}
+ */
+export async function stockBlocks({ ops, opsIds, meta, plan, gate }) {
+  const out = {};
+  const ids = Array.isArray(opsIds) ? opsIds : [];
+  const set = (id, stock, reason) => { out[id] = stock ? { stock, stock_reason: null } : { stock: null, stock_reason: reason }; };
+  if (!ids.length) return out;
+  let orgs;
+  try { orgs = await venueOrgs(ops, ids, gate); } catch (e) {
+    console.warn(`[owner-snapshot] stock: ${String(e?.message || e)}`);
+    for (const id of ids) set(id, null, 'failed');
+    return out;
+  }
+  const holds = await Promise.all(ids.map((id) => holdsStock(ops, id, gate).then((h) => h, () => null)));
+  const groups = new Map();
+  ids.forEach((id, i) => {
+    if (holds[i] === null) { set(id, null, 'failed'); return; }
+    if (holds[i] === false || !orgs[id]) { set(id, null, 'no_stock'); return; }
+    const range = plan?.[id]?.range;
+    if (!range?.from || !range?.to) { set(id, null, 'failed'); return; }
+    const base = `${orgs[id]}|${range.from}|${range.to}`;
+    let n = 0;
+    while (groups.has(`${base}|${n}`) && groups.get(`${base}|${n}`).ids.length >= STOCK_SITES_PER_CALL) n += 1;
+    const key = `${base}|${n}`;
+    if (!groups.has(key)) groups.set(key, { org: orgs[id], range, ids: [] });
+    groups.get(key).ids.push(id);
+  });
+  await Promise.all([...groups.values()].map(async (g) => {
+    const res = await stockCall(ops, STOCK_LEAGUE, reportArgs(g.org, g.ids, g.range), gate);
+    if (res.reason) {
+      if (res.reason === 'failed') console.warn(`[owner-snapshot] ${STOCK_LEAGUE} ${g.org}: ${res.words}`);
+      for (const id of g.ids) set(id, null, res.reason);
+      return;
+    }
+    const rows = Array.isArray(res.data?.rows) ? res.data.rows : [];
+    const demo = res.data?.meta?.demo_left_out === true;
+    for (const id of g.ids) {
+      const row = rows.find((r) => String(r?.location_id) === String(id));
+      if (!row) { set(id, null, 'failed'); continue; }
+      set(id, { ...stockBlockOf(row, meta?.[id]?.currency), demo_left_out: demo }, null);
+    }
+  }));
+  return out;
+}
+
+/**
+ * The Stock card for one venue: its league row plus the attention rows and the not posted count,
+ * from one stock_report_dashboard call over the period's business days.
+ * @returns {Promise<{ stock: object | null, stock_reason: string | null }>}
+ */
+export async function stockDetailOf({ ops, id, meta, plan, gate }) {
+  let orgs;
+  let holds;
+  try { [orgs, holds] = await Promise.all([venueOrgs(ops, [id], gate), holdsStock(ops, id, gate)]); } catch (e) {
+    console.warn(`[owner-snapshot] stock detail ${id}: ${String(e?.message || e)}`);
+    return { stock: null, stock_reason: 'failed' };
+  }
+  if (!holds || !orgs[id]) return { stock: null, stock_reason: 'no_stock' };
+  const range = plan?.[id]?.range;
+  if (!range?.from || !range?.to) return { stock: null, stock_reason: 'failed' };
+  const res = await stockCall(ops, STOCK_DASHBOARD, reportArgs(orgs[id], [id], range), gate);
+  if (res.reason) {
+    if (res.reason === 'failed') console.warn(`[owner-snapshot] ${STOCK_DASHBOARD} ${id}: ${res.words}`);
+    return { stock: null, stock_reason: res.reason };
+  }
+  const league = Array.isArray(res.data?.rows?.league) ? res.data.rows.league : [];
+  const row = league.find((r) => String(r?.location_id) === String(id));
+  if (!row) return { stock: null, stock_reason: 'failed' };
+  const attention = (Array.isArray(res.data?.rows?.attention) ? res.data.rows.attention : [])
+    .filter((a) => a && typeof a === 'object' && (a.location_id == null || String(a.location_id) === String(id)))
+    .map((a) => ({ kind: String(a.kind || ''), count: intOf(a.count), words: typeof a.words === 'string' ? a.words : null, ref: a.ref ?? null }));
+  const total = (Array.isArray(res.data?.totals) ? res.data.totals : []).find((t) => String(t?.location_id) === String(id)) || null;
+  return {
+    stock: {
+      ...stockBlockOf(row, meta?.[id]?.currency),
+      demo_left_out: res.data?.meta?.demo_left_out === true,
+      not_posted: total ? { count: intOf(total.not_posted_count), value: numOrNull(total.not_posted_value) } : null,
+      attention,
+    },
+    stock_reason: null,
   };
 }

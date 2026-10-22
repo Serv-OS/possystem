@@ -24,6 +24,8 @@
 
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { getActiveLocationSync } from '../../../lib/supabase';
+// v5.11.92 (multi site stock Drop 4a): the words on a Stock and GP tile that waits for a later Drop.
+import { LATER_WORDS } from '../../../lib/stock/reportLink';
 
 /* ── Icons ───────────────────────────────────────────────────────────────── */
 const svg = (size, sw, kids) => (
@@ -124,9 +126,43 @@ export const CATEGORIES = [
     id: 'inventory', label: 'Inventory reports', short: 'Inventory', icon: '🗃', glyph: 'inventory',
     description: 'Stock valuation, recipe margins and the variance gap.',
     // Opens the full Inventory → Reports screen (its own section), not an in-shell report.
+    // v5.11.92 (Drop 4a): for a multi site company that screen forwards to Reports > Stock and GP, so
+    // the tile opens stock-gp when the login may open it (multiSection, resolved by sectionOf below);
+    // the id stays, so pins and recents survive.
     reports: [
-      { id:'stock_reports', label:'Inventory reports', section:'stock-reports',
+      { id:'stock_reports', label:'Inventory reports', section:'stock-reports', multiSection:'stock-gp',
         desc:'Valuation · recipe GP / food-cost % · movements ledger · theoretical-vs-actual gap' },
+    ],
+  },
+  {
+    // v5.11.92 (multi site stock Drop 4a, contract 2.3): the head office reports, in the shell. Every
+    // tile is gated on stock-gp (a multi site company whose stock scope has loaded, in a login with
+    // Inventory, Produce or Purchasing), so one site companies and Reports only franchisees never see
+    // the category. A tile with `later` waits for a later Drop: greyed, with its line, and never opens.
+    id: 'stock', label: 'Stock and GP', short: 'Stock and GP', icon: '📦', glyph: 'inventory',
+    description: 'Head office stock reports: every site side by side and the company total, on each venue\'s own business day.',
+    reports: [
+      { id:'stock_home', label:'Head office dashboard', desc:'Cards, key items, the site league and every report', gate:'stock-gp' },
+      { id:'stock_value', label:'Stock value', desc:'Any past date, by site, category, area or legal company', gate:'stock-gp' },
+      { id:'stock_movement', label:'Stock movement', desc:'Opening to closing, between two counts', gate:'stock-gp' },
+      { id:'stock_gap', label:'Theoretical against actual', desc:'The gap per site and top items', gate:'stock-gp' },
+      { id:'stock_cogs', label:'Cost of sales and GP', desc:'Food, drink, other; flash GP with labour', gate:'stock-gp' },
+      { id:'stock_product_gp', label:'Product GP and menu engineering', desc:'Adds up to site GP', gate:'stock-gp' },
+      { id:'stock_waste', label:'Waste', desc:'By reason, item and person', gate:'stock-gp' },
+      { id:'stock_purchases', label:'Purchases', desc:'Supplier by site grid, reliability', gate:'stock-gp' },
+      { id:'stock_prices', label:'Price paid and price changes', desc:'Spread across sites, overcharges', gate:'stock-gp' },
+      { id:'stock_off_contract', label:'Off contract spend', desc:'Protects rebates', gate:'stock-gp', later:'purchasing' },
+      { id:'stock_budget', label:'Purchase budget', desc:'Per site and week', gate:'stock-gp', later:'purchasing' },
+      { id:'stock_transfers', label:'Transfers and central kitchen', desc:'Fill rate, shorts, recharges', gate:'stock-gp', later:'purchasing' },
+      { id:'stock_count_compliance', label:'Count compliance', desc:'Due, on time, late, missed', gate:'stock-gp', later:'purchasing' },
+      { id:'stock_days_on_hand', label:'Days on hand, slow and dead stock', desc:'With Transfer to suggestions', gate:'stock-gp' },
+      { id:'stock_par', label:'Par and availability', desc:'Below par, stock outs, negatives', gate:'stock-gp' },
+      { id:'stock_key_ratios', label:'Key item ratios', desc:'Milk, beans, cups, buns', gate:'stock-gp' },
+      { id:'stock_setup_health', label:'Setup health and recipe coverage', desc:'No recipe sales, sites out of step', gate:'stock-gp' },
+      { id:'stock_batches', label:'Batches and production', desc:'Yield and batch variance', gate:'stock-gp' },
+      { id:'stock_recipe_cost', label:'Recipe cost alerts', desc:'Cost rises and their cause', gate:'stock-gp', later:'recipes' },
+      { id:'stock_allergens', label:'Allergen matrix', desc:'Per site menu', gate:'stock-gp', later:'recipes' },
+      { id:'stock_month_end', label:'Month end pack', desc:'From the locked snapshot, to Xero', gate:'stock-gp', later:'purchasing' },
     ],
   },
   {
@@ -167,6 +203,15 @@ export const REPORT_INDEX = (() => {
 const ALL_REPORTS = CATEGORIES.flatMap(c => c.reports.map(r => ({ ...r, cat: c.id, catLabel: c.label })));
 const REPORT_BY_ID = Object.fromEntries(ALL_REPORTS.map(r => [r.id, r]));
 const GLYPH_BY_CAT = Object.fromEntries(CATEGORIES.map(c => [c.id, c.glyph]));
+
+/**
+ * v5.11.92 (Drop 4a): the Back Office section a tile opens. A tile with a `multiSection` opens it
+ * when this login may (the Inventory reports tile opens Stock and GP for a multi site company), else
+ * its `section`; a tile with neither renders in the shell (null). Not exported (fast refresh).
+ */
+function sectionOf(r, canOpen) {
+  return r?.multiSection && typeof canOpen === 'function' && canOpen(r.multiSection) ? r.multiSection : (r?.section || null);
+}
 
 /* ── Pins + recents (per venue, localStorage; UI preference only) ─────────── */
 const lsKey = (kind) => `rpos-reports-${kind}:${getActiveLocationSync() || 'default'}`;
@@ -259,17 +304,22 @@ function ReportRow({ r, q, showCat, pinned, counts, onOpen, onTogglePin }) {
   const [hov, setHov] = useState(false);
   const [pinHov, setPinHov] = useState(false);
   const n = r.signalKey ? counts[r.signalKey] : 0;
+  // v5.11.92 (Drop 4a): a Stock and GP tile that waits for a later Drop is greyed, says which update
+  // brings it, and does not open.
+  const later = r.later ? LATER_WORDS[r.later] : null;
+  const open = () => { if (!later) onOpen(r); };
   return (
     <div
-      role="button" tabIndex={0}
-      onClick={()=>onOpen(r)}
-      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(r); } }}
+      role="button" tabIndex={0} aria-disabled={later ? true : undefined}
+      onClick={open}
+      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } }}
       onMouseEnter={()=>setHov(true)} onMouseLeave={()=>setHov(false)}
       style={{
         display:'flex', alignItems:'center', gap:13, padding:'15px 15px',
-        background: hov ? 'var(--bg2)' : 'var(--bg1)',
-        border:`1px solid ${hov ? 'var(--acc-b)' : 'var(--bdr)'}`, borderRadius:14, cursor:'pointer',
-        boxShadow: hov ? '0 10px 24px -16px rgba(0,0,0,.6)' : 'none',
+        background: hov && !later ? 'var(--bg2)' : 'var(--bg1)',
+        border:`1px solid ${hov && !later ? 'var(--acc-b)' : 'var(--bdr)'}`, borderRadius:14, cursor: later ? 'default' : 'pointer',
+        boxShadow: hov && !later ? '0 10px 24px -16px rgba(0,0,0,.6)' : 'none',
+        opacity: later ? .6 : 1,
         transition:'border-color .13s, box-shadow .13s, background .13s',
       }}>
       <div style={{ display:'flex', flexDirection:'column', minWidth:0, flex:1, gap:3 }}>
@@ -285,6 +335,7 @@ function ReportRow({ r, q, showCat, pinned, counts, onOpen, onTogglePin }) {
           <SignalChip n={n} word={r.signalWord} tone={r.tone}/>
         </div>
         <div style={{ fontSize:12.5, color:'var(--t3)', fontWeight:400, lineHeight:1.4 }}>{r.desc}</div>
+        {later && <div style={{ fontSize:12, color:'var(--t4)', fontWeight:600 }}>{later}</div>}
       </div>
       <button
         onClick={e => { e.stopPropagation(); onTogglePin(r.id); }}
@@ -309,11 +360,18 @@ export default function Catalog({ onOpen, counts = {}, canOpen }) {
   // 8 Oct 2026 (Back Office section access, lib/boSections.js): two tiles open another part of
   // Back Office (Inventory reports, Marketing report). A login that is not shown that part does
   // not get the tile: not in a category, not in search, not from an old pin or recent.
+  // v5.11.92 (Drop 4a): a tile may carry a `gate` too (the Stock and GP category: stock-gp), asked
+  // with the same canOpen and failing closed when there is none to ask; a tile whose section depends
+  // on the login (multiSection) is resolved here, once, so opening it goes to the right place.
   const { CATS, ALL, BY_ID } = useMemo(() => {
-    const shown = (r) => !r.section || !canOpen || canOpen(r.section);
-    const all = ALL_REPORTS.filter(shown);
+    const shown = (r) => {
+      const s = sectionOf(r, canOpen);
+      return (!s || !canOpen || canOpen(s)) && (!r.gate || (!!canOpen && canOpen(r.gate)));
+    };
+    const resolved = (r) => (r.multiSection ? { ...r, section: sectionOf(r, canOpen) } : r);
+    const all = ALL_REPORTS.filter(shown).map(resolved);
     return {
-      CATS: CATEGORIES.map(c => ({ ...c, reports: c.reports.filter(shown) })).filter(c => c.reports.length > 0),
+      CATS: CATEGORIES.map(c => ({ ...c, reports: c.reports.filter(shown).map(resolved) })).filter(c => c.reports.length > 0),
       ALL: all,
       BY_ID: Object.fromEntries(all.map(r => [r.id, r])),
     };
@@ -349,6 +407,7 @@ export default function Catalog({ onOpen, counts = {}, canOpen }) {
   });
 
   const open = (r) => {
+    if (r?.later) return;   // v5.11.92: a tile that waits for a later Drop never opens (nor from a pin or recent)
     setRecent(prev => { const next = [r.id, ...prev.filter(x => x !== r.id)].slice(0, 6); lsWrite('recent', next); return next; });
     onOpen(r);
   };

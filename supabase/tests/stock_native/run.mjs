@@ -29,6 +29,12 @@
 //                                                          the drainer and Drop 2 as pastes, then Drop 3
 //   node supabase/tests/stock_native/run.mjs --drop3 --all  sections 2 to 25, Drop 2's 30 to 38, then 40 to 49
 //   STOCKN_D3, STOCKN_D3_ROLLBACK                          other copies of 20261027a and its rollback
+//   node supabase/tests/stock_native/run.mjs --drop4a --quick
+//                                                          Drop 4a (20261026a, the head office reports):
+//                                                          section 1, then 0a, its revalue file, 0b, Drop 1,
+//                                                          the drainer, Drop 2 and Drop 3 as pastes (the
+//                                                          live order), then 4a and drop4a.mjs (sections
+//                                                          30 to 37)
 //   node supabase/tests/stock_native/run.mjs --drainer --before-only --quick
 //                                                          only the drainer parts that need no drainer
 //                                                          file (the basket before, the v1 figures, speed
@@ -38,6 +44,8 @@
 //   STOCKN_0B_ROLLBACK, STOCKN_D1, STOCKN_D1_ROLLBACK
 //                        other copies of the eight files (default: the repo's supabase/migrations)
 //   STOCKN_DRAINER, STOCKN_DRAINER_ROLLBACK   other copies of 20261023a and its rollback (same default)
+//   STOCKN_D4A, STOCKN_D4A_ROLLBACK           other copies of 20261026a and its rollback (same default)
+//   STOCKN_D4A_ONLY=33,35                     with --drop4a: only those of sections 31 to 37 (30 always runs)
 //   STOCKN_KEEP=1        keep the cluster at the end and print how to reach it
 //   STOCKN_STOP_AT=n     stop after section n
 //   STOCKN_NO_GUARD=1    run without the pg-safeupdate stand in (and say so)
@@ -56,12 +64,13 @@ import {
   ORG_T, PROVO, LOC2, ORG_S, SOLO, ORG_G, G, ORG_X, X1, U, DEV, AR, TAX, I, PACK, CONV, SUP, SP, R, M, EXPECT, CALLERS,
   seedSql, stockSql, id,
 } from './fixtures.mjs';
-import { CHANNEL_SETUP, channelEvents, refundEvent, drainSql, bookedSql } from './channels.mjs';
+import { CHANNEL_SETUP, channelEvents, refundEvent, drainSql, bookedSql, BASKET_SETUP } from './channels.mjs';
 import { stockLevelOf } from '../../functions/_shared/boSectionRules.js';
 import { drainerProof } from './drainer.mjs';
 import { drop1Sections } from './drop1.mjs';
-import { drop2Sections } from './drop2.mjs';
-import { drop3Sections } from './drop3.mjs';
+import { drop2Sections, D2_SHAPE } from './drop2.mjs';
+import { drop3Sections, D3_SHAPE, LIVE_SECOND_STEP_MD5 } from './drop3.mjs';
+import { drop4aSections } from './drop4a.mjs';
 
 const BASE_ONLY = process.argv.includes('--base-only');
 const BEFORE_ONLY = process.argv.includes('--before-only');
@@ -69,6 +78,7 @@ const DRAINER = process.argv.includes('--drainer') || BEFORE_ONLY;
 const DROP2 = process.argv.includes('--drop2');
 const DROP3 = process.argv.includes('--drop3');
 const ALL = process.argv.includes('--all');
+const DROP4A = process.argv.includes('--drop4a');
 const QUICK = process.argv.includes('--quick');
 const SEED = Number((process.argv.find((a) => a.startsWith('--seed=')) || '').slice(7)) || (Date.now() % 1000000);
 const SCALE_SITES = QUICK ? 10 : 50;
@@ -89,6 +99,8 @@ const FILES = {
   d2Rb: process.env.STOCKN_D2_ROLLBACK || MIG('20261025a_OPS_stock_native_2_ROLLBACK.sql'),
   d3: process.env.STOCKN_D3 || MIG('20261027a_OPS_stock_native_3.sql'),
   d3Rb: process.env.STOCKN_D3_ROLLBACK || MIG('20261027a_OPS_stock_native_3_ROLLBACK.sql'),
+  d4: process.env.STOCKN_D4A || MIG('20261026a_OPS_stock_native_4a.sql'),
+  d4Rb: process.env.STOCKN_D4A_ROLLBACK || MIG('20261026a_OPS_stock_native_4a_ROLLBACK.sql'),
 };
 if (!BASE_ONLY && !existsSync(FILES.a)) {
   console.error(`0a is not there yet: ${FILES.a}\nRun with --base-only for the base database, or set STOCKN_MIGRATION to a copy of 0a.`);
@@ -108,7 +120,7 @@ process.on('uncaughtException', (e) => { console.error(e); c.stop(); process.exi
 const sql = (q, o) => c.sql(q, o);
 const num = (q, o) => c.num(q, o);
 function finish() {
-  console.log(`\n${failures === 0 ? 'PASS' : 'FAIL'}: ${checks - failures}/${checks} checks${failures ? `, ${failures} failed` : ''} (seed ${SEED}${QUICK ? ', quick' : ''}${BASE_ONLY ? ', base only' : ''}${DRAINER ? `, drainer release${BEFORE_ONLY ? ' before only' : ''}` : ''})`);
+  console.log(`\n${failures === 0 ? 'PASS' : 'FAIL'}: ${checks - failures}/${checks} checks${failures ? `, ${failures} failed` : ''} (seed ${SEED}${QUICK ? ', quick' : ''}${BASE_ONLY ? ', base only' : ''}${DRAINER ? `, drainer release${BEFORE_ONLY ? ' before only' : ''}` : ''}${DROP4A ? ', Drop 4a' : ''})`);
   if (failures) for (const f of failed.slice(0, 40)) console.log(`  - ${short(f, 200)}`);
   if (process.env.STOCKN_KEEP) { console.log(`kept: psql -h ${c.dir} -p ${c.port} -U postgres -d ${c.DB}`); process.exit(failures === 0 ? 0 : 1); }
   c.stop();
@@ -353,6 +365,42 @@ let chanBefore = null;
 }
 if (BASE_ONLY) finish();
 
+// == 30 to 37. Drop 4a (drop4a.mjs): after 0a, its revalue file, 0b, Drop 1, the drainer, Drop 2 and Drop 3 as pastes ======
+// The live order on the night 4a runs (Drop 2 and Drop 3 went live before it). The shapes and the harness
+// stand ins are the ones drop2.mjs and drop3.mjs paste with, in the same places.
+if (DROP4A) {
+  const need = [['0a', FILES.a], ['its revalue file', FILES.rv], ['0b', FILES.b], ['Drop 1', FILES.d1], ['the drainer release', FILES.d],
+    ['Drop 2', FILES.d2], ['Drop 3', FILES.d3], ['4a', FILES.d4], ['the 4a rollback', FILES.d4Rb]];
+  const missing = need.filter(([, f]) => !existsSync(f));
+  ok(missing.length === 0, `the nine files are there (${missing.map(([n, f]) => `${n}: ${f}`).join('; ') || 'all'})`);
+  if (missing.length === 0) {
+    c.createFrom('n_d4pre', 'n_base');
+    c.use('n_d4pre');
+    let applied = true;
+    const step = (label, x) => {
+      ok(x.status === 0, `${label} applies as Peter ran it (${x.status ? short(x.stderr, 300) : `${x.ms} ms`})`);
+      applied = applied && x.status === 0;
+    };
+    for (const [label, f] of need.slice(0, 2)) step(label, c.paste(f));
+    c.sqlFile(join(here, 'live_discounts.sql'));
+    c.psql({ input: BASKET_SETUP });
+    for (const [label, f] of need.slice(2, 4)) step(label, c.paste(f));
+    c.psql({ input: D2_SHAPE });
+    step('the drainer release (20261023a), after Drop 1', c.paste(FILES.d));
+    // a copy as it was before Drop 2: section 30 shows 4a never needed Drop 2
+    c.createFrom('n_d4_nod2', 'n_d4pre');
+    c.psql({ input: D3_SHAPE });
+    step('Drop 2 (20261025a)', c.paste(FILES.d2));
+    // Drop 3 pins second_step_ok() at its live md5; the harness stand in is not the live text, so it is
+    // pasted with the stand in's md5 in its place, exactly as drop3.mjs does (every other body is the file's)
+    const standIn = md5Of('public.second_step_ok()');
+    const d3Raw = readFileSync(FILES.d3, 'utf8');
+    ok(d3Raw.includes(LIVE_SECOND_STEP_MD5), `Drop 3 pins second_step_ok() at its live md5; pasted here with the stand in's (${standIn})`);
+    step('Drop 3 (20261027a)', c.paste(null, { input: d3Raw.replace(LIVE_SECOND_STEP_MD5, standIn) }));
+    if (applied) await drop4aSections({ c, ok, section, guarded, FILES, QUICK, SEED, NO_D2_DB: 'n_d4_nod2' });
+  }
+  finish();
+}
 // == 30 to 38. Drop 2 (drop2.mjs): 0a, its revalue file, 0b, Drop 1 and the drainer as pastes, then Drop 2 ===========
 // With --all the Drop 0, Drop 1 and drainer proofs run first (sections 2 to 29), then these.
 if (DROP2 && !ALL) {

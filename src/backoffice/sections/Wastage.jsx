@@ -29,6 +29,7 @@ const DIM_ORDER = [DIMENSIONS.COUNT, DIMENSIONS.WEIGHT, DIMENSIONS.VOLUME];
 // v5.11.89 (multi site stock Drop 1): siteId is the picker's site (the signed in venue for a one site company).
 export default function Wastage({ siteId = null } = {}) {
   const showToast = useStore(s => s.showToast);
+  const { openReport, canOpenReports } = useStockScope();
   const [locId, setLocId] = useState(siteId || getActiveLocationSync());
   const [items, setItems] = useState([]);
   // 26 Sep 2026: a failed items read must not read as "no stock items are set up".
@@ -90,6 +91,11 @@ export default function Wastage({ siteId = null } = {}) {
   return (
     <div style={{ height: '100%', overflowY: 'auto', background: 'var(--bg0)', padding: '22px 26px', maxWidth: 900 }}>
       <h1 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 4px', color: 'var(--t1)' }}>Wastage</h1>
+      {/* v5.11.92 (Drop 4a, contract 2.4): the link renders nothing for a one site company (canOpenReports false), so its HTML is today's. */}
+      {canOpenReports && locId && (
+        <button type="button" onClick={() => openReport({ report: 'stock_waste', sites: { kind: 'sites', ids: [locId] }, period: 'last-week' })}
+          style={{ background: 'transparent', border: 'none', padding: '0 0 6px', color: 'var(--acc)', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>See the report</button>
+      )}
       <div style={{ fontSize: 13, color: 'var(--t3)', marginBottom: 18 }}>Record spoilage, breakage, over-production etc. It comes off stock and is valued at cost — and counts as explained loss, so it doesn’t show up as a mystery in “The Gap”.</div>
 
       {/* Log form */}

@@ -47,7 +47,7 @@ export const D3_BODIES = readFileSync(join(here, '..', '..', 'migrations', '2026
   .split('\n').map((l) => /^\s+\('(public\.[a-z0-9_]+\([^)]*\))', '([0-9a-f]{32})'\)/.exec(l)).filter(Boolean).map((m) => [m[1], m[2]]);
 export const D3_REPLACED = ['stock_post_invoice', 'stock_receive', 'stock_record_waste', 'stock_approve_count_pin', 'post_stock_transfer_leg',
   'stock_needs_attention', 'stock_save_recipe', 'stock_co__recipe_on_at', 'stock_recipe_detail', 'stock_recipe_card'];
-const LIVE_SECOND_STEP_MD5 = '5027ed5a5c5ca0b6f03a1d414998dfeb';
+export const LIVE_SECOND_STEP_MD5 = '5027ed5a5c5ca0b6f03a1d414998dfeb';
 
 // contract 1.2: grants and read rules of the 25 tables
 const AS = ['authenticated', 'service_role'];

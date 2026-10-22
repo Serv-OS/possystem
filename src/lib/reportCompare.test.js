@@ -433,3 +433,65 @@ test('a custom range that runs past today counts only its days so far', () => {
   assert.equal(future.yet, 'so far');
   assert.equal(compareChip(0, 500, future).text, 'No sales so far');
 });
+
+// ── v5.11.92 (multi site stock Drop 4a, contract 2.3): the same period last year ───────────────
+
+import { LAST_YEAR_DAYS } from './reportCompare.js';
+
+// A compare as plain text (the instants as ISO strings), the shape cmp() answers.
+const plainOf = (c) => c && { ...c, from: c.from.toISOString(), to: c.to.toISOString() };
+
+test('same period last year: the same business days 364 days back, so the weekdays line up', () => {
+  assert.equal(LAST_YEAR_DAYS, 364);
+  const now = '2026-09-28T16:00:00Z';   // Mon 28 Sep 2026, 17:00 BST
+  const lastWeek = getPeriodRange('last-week', null, LEEDS, at(now));
+  const c = compareRange('last-week', lastWeek, at(now), { mode: 'last_year' });
+  assert.equal(c.fromDay, '2025-09-22', 'a Monday, like 21 Sep 2026');
+  assert.equal(c.toDay, '2025-09-28');
+  assert.equal(c.from.toISOString(), '2025-09-22T05:30:00.000Z');
+  assert.equal(c.to.toISOString(), '2025-09-29T05:29:59.999Z', 'a finished period: the whole last day');
+  assert.equal(c.label, 'vs the same days last year');
+  assert.equal(c.nothing, 'Nothing last year to compare with');
+  assert.equal(c.detail, 'Mon 22 Sep to Sun 28 Sep');
+  assert.equal(c.cut, false);
+  assert.equal(c.yet, null);
+  // a period still trading is cut at the same time of day on its last day
+  const thisWeek = getPeriodRange('this-week', null, LEEDS, at(now));
+  const t = compareRange('this-week', thisWeek, at(now), { mode: 'last_year' });
+  assert.deepEqual([t.fromDay, t.toDay], ['2025-09-29', '2025-09-29']);
+  assert.equal(t.to.toISOString(), '2025-09-29T16:00:00.000Z', '17:00 BST last year too');
+  assert.equal(t.cut, true);
+  assert.equal(t.yet, 'this week');
+  assert.equal(t.label, 'vs the same days last year');
+  // this month and today carry their own "yet"
+  assert.equal(compareRange('this-month', getPeriodRange('this-month', null, LEEDS, at(now)), at(now), { mode: 'last_year' }).yet, 'this month');
+  assert.equal(compareRange('today', getPeriodRange('today', null, LEEDS, at(now)), at(now), { mode: 'last_year' }).yet, 'today');
+  assert.equal(compareRange('today', getPeriodRange('today', null, LEEDS, at(now)), at(now), { mode: 'last_year' }).fromDay, '2025-09-29');
+  // a custom range of 91 days (between two counts) goes back whole
+  const span = getPeriodRange('between-counts', null, LEEDS, at(now));
+  const s = compareRange('between-counts', span, at(now), { mode: 'last_year' });
+  assert.deepEqual([s.fromDay, s.toDay], ['2025-07-01', '2025-09-29']);
+  assert.equal(s.yet, 'so far');
+  // the chip words work with it
+  assert.equal(compareChip(0, 500, c).text, 'No sales in this period');
+  assert.equal(compareChip(100, 0, c).title, 'Nothing last year to compare with (Mon 22 Sep to Sun 28 Sep)');
+});
+
+test('every existing call keeps the previous period: no mode, mode prev and an empty options object all agree', () => {
+  const now = '2026-09-28T16:00:00Z';
+  for (const id of ['today', 'yesterday', 'this-week', 'last-week', 'this-month', 'last-month', 'last-7', 'last-30']) {
+    const range = getPeriodRange(id, null, LEEDS, at(now));
+    const plain = cmp(id, LEEDS, now);
+    assert.deepEqual(plainOf(compareRange(id, range, at(now), { mode: 'prev' })), plain, `${id}: mode prev`);
+    assert.deepEqual(plainOf(compareRange(id, range, at(now), {})), plain, `${id}: empty options`);
+    assert.deepEqual(plainOf(compareRange(id, range, at(now), { mode: 'sideways' })), plain, `${id}: an unknown mode is the default`);
+    assert.notDeepEqual(plainOf(compareRange(id, range, at(now), { mode: 'last_year' })), plain, `${id}: last year differs`);
+  }
+  // getPeriodRange's own compare is still the previous period
+  assert.equal(getPeriodRange('last-week', null, LEEDS, at(now)).compare.label, 'vs the week before');
+  // a service range always compares with last week, whatever the mode
+  const lunch = getPeriodRange('service:today:lunch', null, LEEDS, at('2026-09-28T13:00:00Z'));
+  assert.deepEqual(plainOf(compareRange('service:today:lunch', lunch, at('2026-09-28T13:00:00Z'), { mode: 'last_year' })),
+    plainOf(compareRange('service:today:lunch', lunch, at('2026-09-28T13:00:00Z'))));
+  assert.equal(compareRange('last-week', { fromDay: 'x', toDay: 'y' }, at(now), { mode: 'last_year' }), null, 'no days: null, as before');
+});

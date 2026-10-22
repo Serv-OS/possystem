@@ -22,6 +22,8 @@ import { money } from '../../../lib/currency';
 import { fetchInventoryItems } from '../../../lib/stock/data';
 import { readAllPagesResult, faultText } from '../../../lib/pagedRead';
 import { PageHeader, Tag } from '../reports/reportKit';
+// v5.11.92 (multi site stock Drop 4a, contract 2.4): "See the report" opens Reports > Stock and GP > Price paid and price changes.
+import { useStockScope } from '../../StockScope';
 
 // v5.11.65: this screen is about what SUPPLIERS charge. A recipe roll up (a made item's cost moving
 // because an ingredient did) topped the list as +100% with no supplier involved, and the source
@@ -32,6 +34,7 @@ const field = { background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid
 
 // v5.11.89 (multi site stock Drop 1): siteId is the picker's site (the signed in venue for a one site company).
 export default function PriceChangesSite({ siteId = null } = {}) {
+  const { openReport, canOpenReports } = useStockScope();
   const [locId, setLocId] = useState(siteId || getActiveLocationSync());
   const [rows, setRows] = useState(null);
   const [items, setItems] = useState([]);
@@ -109,7 +112,12 @@ export default function PriceChangesSite({ siteId = null } = {}) {
   return (
     <div style={{ padding: '22px 26px', maxWidth: 980 }}>
       <PageHeader eyebrow="PURCHASING" title="Price changes"
-        subtitle="How each product's cost has moved — biggest movers first. Prices per pack, from every priced delivery and invoice." />
+        subtitle="How each product's cost has moved — biggest movers first. Prices per pack, from every priced delivery and invoice.">
+        {canOpenReports && locId && (
+          <button type="button" onClick={() => openReport({ report: 'stock_prices', sites: { kind: 'sites', ids: [locId] }, period: 'last-week' })}
+            style={{ background: 'transparent', border: 'none', padding: 0, color: 'var(--acc)', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>See the report</button>
+        )}
+      </PageHeader>
       <div style={{ display: 'flex', gap: 10, margin: '14px 0', alignItems: 'center', flexWrap: 'wrap' }}>
         <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search product…" style={{ ...field, width: 220 }} />
         <select value={days} onChange={e => setDays(Number(e.target.value))} style={{ ...field, cursor: 'pointer' }}>

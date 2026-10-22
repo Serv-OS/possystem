@@ -393,6 +393,10 @@ export default function CompanyItemList({ orgCtx, onOpen }) {
       {!oneId && <div style={{ marginBottom: 14 }}><NewSiteBanner /></div>}
       <PageHead title="Stock items" sub={sub}>
         {!oneId && <Segmented value={mode} onChange={setMode} options={[{ value: 'list', label: 'List' }, { value: 'grid', label: 'Sites grid' }]} />}
+        {/* v5.11.92 (Drop 4a, contract 2.4): the one site view links to Reports > Stock and GP > Stock value at that site, as of today there. */}
+        {oneId && sc.canOpenReports && (
+          <Btn kind="link" onClick={() => sc.openReport({ report: 'stock_value', sites: { kind: 'sites', ids: [oneId] }, period: 'last-week', at: ymdInTz(new Date(), tz || 'Europe/London') })}>See the report</Btn>
+        )}
         {sc.canOpen('stock-counts') && <Btn onClick={startCount}>Start a count</Btn>}
         {editor && <Btn onClick={() => setModal({ kind: 'categories' })}>Categories</Btn>}
         {editor && <MenuButton label="Import" items={importItems} small={false} />}

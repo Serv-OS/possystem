@@ -7,6 +7,21 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.98',
+    date: '23 Oct 2026',
+    items: [
+      "Stock, head office reports for companies with more than one site (Drop 4a). Back Office > Reports > Stock and GP is the one home for stock reports. Inventory > Reports opens it for a company with more than one site. A company with one site sees exactly the same Inventory > Reports as before, and no new rows.",
+      "Head office dashboard: cards for sales, GP % (actual and theoretical), the gap, loyalty, staff and comps, purchases, stock value and sales not yet posted to stock. Key item tiles (for example milk per milk drink, recipe against actual). A league of every site, coloured red, amber or green against your targets; click a site for its own dashboard, or a number for the report behind it. Needs attention, with Fix for a site out of step. GP by food, drink and other. All 20 stock reports, and the rules behind every number.",
+      "14 reports, every site side by side or the company total: Stock value (any past day, by category, area or legal company), Stock movement (opening to closing, between two counts, down to each movement and its document), Theoretical against actual, Cost of sales and GP (with flash GP and labour), Product GP and menu engineering, Waste, Purchases, Price paid and price changes, Days on hand and slow stock (with Transfer to suggestions), Par and availability, Key item ratios, Setup health and Batches. Recipe cost alerts and the Allergen matrix say Comes with the recipes update. Off contract, budget, transfers, count compliance and month end say Comes with the purchasing update.",
+      "The rules: product GP adds up to site GP. Loyalty, staff and comps sit on their own line, with GP before and after them. Every venue uses its own business day. Two currencies are never added together. Every opening and closing figure says Counted or Estimated (ledger). Demo history is left out and the report says so: on days that hold a demo sale, a site's sales and GP are not shown. A sale and its theoretical cost sit on the same day, a catering order dated ahead too. Product GP counts only the days every sale had its plate cost saved. A locked period is read from its snapshot. Numbers come from the stored day totals.",
+      "Targets: set green and amber for GP, gap, waste, comps, days on hand and sales with no recipe, for the company and for any site (owners and Stock control All sites). Until you save one, the built in defaults colour the league.",
+      "Compare with the previous period or the same days last year. Export: under 1,000 rows the file saves at once; bigger reports build in the background and wait for you under Your exports for 7 days. Share copies a link that opens the same report with the same sites, period, compare and layout.",
+      "See the report links on Stock items, an approved count, Waste and Price changes, and a Head office dashboard button on the Stock overview, all only for a company with more than one site.",
+      "Owner app: each venue card has a Stock line (stock value, GP, gap, waste, last count), and the venue screen has a Stock card. An owner now sees every venue of their own company.",
+      "Needs the drainer database update (20261023a) first, then 20261026a after UK close, then the report-export and owner-snapshot edge functions deployed. Sales history for the last 13 months fills in at 15 days a minute after the update.",
+    ],
+  },
+  {
     v: '5.11.97',
     date: '22 Oct 2026',
     items: [

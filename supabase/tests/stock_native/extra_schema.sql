@@ -283,3 +283,37 @@ create table if not exists public.activity_events (
 create index if not exists activity_events_loc_idx on public.activity_events (location_id, created_at desc);
 alter table public.activity_events enable row level security;
 create policy "allow all" on public.activity_events for all using (true) with check (true);
+
+-- == Drop 4a (20261026a) reads these; the base schema did not have them ===============================
+-- storage.buckets, storage.objects and storage.foldername as Supabase Storage has them (the live table
+-- carries the restrictive second_step_fence for ALL, as the stock tables do). The API roles hold the
+-- table grants and row level security decides, as live.
+create schema if not exists storage;
+create table if not exists storage.buckets (id text primary key, name text not null, owner uuid, public boolean default false, avif_autodetection boolean default false,
+  file_size_limit bigint, allowed_mime_types text[], owner_id text, created_at timestamptz default now(), updated_at timestamptz default now());
+create table if not exists storage.objects (id uuid primary key default gen_random_uuid(), bucket_id text references storage.buckets(id), name text, owner uuid,
+  created_at timestamptz default now(), updated_at timestamptz default now(), last_accessed_at timestamptz default now(), metadata jsonb,
+  path_tokens text[] generated always as (string_to_array(name, '/')) stored, version text, owner_id text, user_metadata jsonb);
+create or replace function storage.foldername(name text) returns text[] language sql immutable as $$
+  select (string_to_array(name, '/'))[1 : array_length(string_to_array(name, '/'), 1) - 1]
+$$;
+grant usage on schema storage to anon, authenticated, service_role;
+grant select on storage.buckets to anon, authenticated, service_role;
+grant select, insert, update, delete on storage.objects to anon, authenticated, service_role;
+grant execute on function storage.foldername(text) to anon, authenticated, service_role;
+alter table storage.objects enable row level security;
+create policy second_step_fence on storage.objects as restrictive for all to authenticated
+  using ((select public.second_step_ok())) with check ((select public.second_step_ok()));
+
+-- Workforce timesheets (the Flash GP labour line) and the Xero connection of a venue (the legal
+-- company view of stock value): the live columns the reports read, 21 Oct 2026.
+create table if not exists public.wf_timesheets (id uuid primary key default gen_random_uuid(), location_id uuid not null, org_id uuid, shift_id uuid, staff_id uuid,
+  clock_in timestamptz, clock_out timestamptz, break_taken integer, scheduled_hours numeric, actual_hours numeric, variance numeric, effective_rate numeric,
+  rate_source text, currency character(3), pay_amount numeric, status text default 'pending', approved_by uuid, approved_at timestamptz,
+  created_at timestamptz default now(), updated_at timestamptz default now());
+create table if not exists public.xero_connections (id uuid primary key default gen_random_uuid(), location_id uuid not null, tenant_id text, tenant_name text,
+  access_token text, refresh_token text, expires_at timestamptz, scopes text, connected_by uuid, created_at timestamptz default now(), updated_at timestamptz default now());
+alter table public.wf_timesheets enable row level security;
+alter table public.xero_connections enable row level security;
+revoke all on table public.wf_timesheets from public, anon, authenticated, service_role;
+revoke all on table public.xero_connections from public, anon, authenticated, service_role;

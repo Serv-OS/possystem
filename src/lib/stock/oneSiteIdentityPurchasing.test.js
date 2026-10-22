@@ -128,7 +128,16 @@ const PO_EDITS = [
   { moved: 'export default function PurchaseOrdersSite(', was: 'export default function PurchaseOrders(' },
 ];
 const INV_EDITS = [{ moved: 'export default function InvoicesSite(', was: 'export default function Invoices(' }];
-const PC_EDITS = [{ moved: 'export default function PriceChangesSite(', was: 'export default function PriceChanges(' }];
+const PC_EDITS = [
+  { moved: 'export default function PriceChangesSite(', was: 'export default function PriceChanges(' },
+  // Multi site stock Drop 4a (v5.11.98, contract 2.4): "See the report" on the Cost per unit screen renders
+  // nothing for a one site company (canOpenReports is false there): undone here, so the text is main's again
+  { moved: "import { PageHeader, Tag } from '../reports/reportKit';\n// v5.11.92 (multi site stock Drop 4a, contract 2.4): \"See the report\" opens Reports > Stock and GP > Price paid and price changes.\nimport { useStockScope } from '../../StockScope';\n",
+    was: "import { PageHeader, Tag } from '../reports/reportKit';\n" },
+  { moved: '  const { openReport, canOpenReports } = useStockScope();\n', was: '' },
+  { moved: 'delivery and invoice.">\n        {canOpenReports && locId && (\n          <button type="button" onClick={() => openReport({ report: \'stock_prices\', sites: { kind: \'sites\', ids: [locId] }, period: \'last-week\' })}\n            style={{ background: \'transparent\', border: \'none\', padding: 0, color: \'var(--acc)\', fontSize: 13, fontWeight: 700, cursor: \'pointer\', fontFamily: \'inherit\' }}>See the report</button>\n        )}\n      </PageHeader>',
+    was: 'delivery and invoice." />' },
+];
 
 test('PurchaseOrdersSite is main\'s PurchaseOrders.jsx moved whole: undo the five edits and the sha256 is main\'s', () => {
   assert.equal(sha(undo(read(PO_SITE), PO_EDITS)), PIN.po);

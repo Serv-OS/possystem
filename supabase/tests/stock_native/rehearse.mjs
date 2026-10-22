@@ -41,6 +41,25 @@
 // msm and login row as before; its rollback (the 15 bodies back by md5) and Drop 2 again. STOCKN_D2 and
 // STOCKN_D2_ROLLBACK point at other copies of the two files.
 //
+// Drop 3 (20261027a, step 9) then runs on another copy: the drainer file and Drop 2 first, then Drop 3 as one
+// paste, its check row (contract 1.9), every venue figure, menu and login row as before; its rollback and Drop 3
+// again. STOCKN_D3 and STOCKN_D3_ROLLBACK point at other copies of the two files.
+//
+// Drop 4a (20261026a, the head office reports, step 10, with --drop4a) then runs on a drainer copy once its
+// queue is drained: the check row of contract 1.8 (a59a6d97 multi, dashboard_ms under 5000, demo_left_out
+// true when the copy holds demo history; a one site company 'skipped'; every row 3 tables, 26 functions,
+// internals closed, the anon key reading nothing, bucket, policy, cron job and vault key there, no site row
+// or login changed), the league of the test company as the Owner app asks, then its rollback and 4a again
+// (4a needs neither Drop 2 nor Drop 3). Then in the live order (the drainer, Drop 2 and Drop 3 ran live
+// before 4a): the drainer, Drop 2, Drop 3, then 4a, the check row, the dashboard against product GP, a day
+// on which every sale has its takes, then its rollback and 4a again.
+//
+//   STOCKN_DEMO=... STOCKN_CHECKS=... node supabase/tests/stock_native/rehearse.mjs --drainer --drop4a
+//
+// --drop4a fails when the 4a files are missing. STOCKN_D4A and STOCKN_D4A_ROLLBACK point at other copies.
+// The step also checks the dashboard on Provo and Location 2 says "Demo history left out" and that each
+// site's GP is the sum of its product GP.
+//
 // A copy taken AFTER 0a ran live (20 Oct 2026: its site rows carry company_ref, and fetch_demo.sh then
 // also copies the company records and the venue clock) is loaded onto a base with 0a already in, as Ops
 // is. Step 3 then proves what 0a left on the real rows instead of linking them again: every site row has
@@ -61,8 +80,9 @@ import {
 } from './base.mjs';
 import { jsParts, REPLACED } from './drainer.mjs';
 import { insertRow, basketBookedSql } from './channels.mjs';
+import { venueDay } from './drop4a.mjs';
 import { D2_REPLACED, D2_SHAPE } from './drop2.mjs';
-import { D3_SHAPE, D3_BODIES, D3_REPLACED } from './drop3.mjs';
+import { D3_SHAPE, D3_BODIES, D3_REPLACED, LIVE_SECOND_STEP_MD5 } from './drop3.mjs';
 
 const BASE_ONLY = process.argv.includes('--base-only');
 const DEMO = process.env.STOCKN_DEMO;
@@ -79,8 +99,11 @@ const FILES = {
   d2Rb: process.env.STOCKN_D2_ROLLBACK || MIG('20261025a_OPS_stock_native_2_ROLLBACK.sql'),
   d3: process.env.STOCKN_D3 || MIG('20261027a_OPS_stock_native_3.sql'),
   d3Rb: process.env.STOCKN_D3_ROLLBACK || MIG('20261027a_OPS_stock_native_3_ROLLBACK.sql'),
+  d4: process.env.STOCKN_D4A || MIG('20261026a_OPS_stock_native_4a.sql'),
+  d4Rb: process.env.STOCKN_D4A_ROLLBACK || MIG('20261026a_OPS_stock_native_4a_ROLLBACK.sql'),
 };
 const DRAINER = process.argv.includes('--drainer');
+const DROP4A = process.argv.includes('--drop4a');
 const CHECKS = process.env.STOCKN_CHECKS || null;
 if (!BASE_ONLY && !existsSync(FILES.a)) { console.error(`0a is not there yet: ${FILES.a} (run with --base-only, or set STOCKN_MIGRATION)`); process.exit(2); }
 const demo = JSON.parse(readFileSync(DEMO, 'utf8'));
@@ -146,26 +169,38 @@ if (D1_LIVE) info('the copy was taken after Drop 1 ran live (its company items c
 const D2_COLS = { stock_co_items: ['facts_source'], stock_co_supplier_items: ['facts_checked_by_name'], stock_co_recipes: ['updated_by'], stock_co_recipe_sites: ['why_on', 'linked_at'] };
 const D2_LIVE = (demo.stock_co_recipe_sites || []).some((r) => r && Object.prototype.hasOwnProperty.call(r, 'why_on'));
 if (D2_LIVE) info('the copy was taken after Drop 2 ran live (its recipe sites carry why_on): Drop 2\'s five columns are left out of the load and made again by steps 8 and 9');
+// Drop 3 ran live on 22 Oct 2026 (v5.11.96): a copy taken since carries its new columns on the live tables
+// (purchase_orders, po_lines, supplier_invoices, stock_counts, waste_events, stock_transfers,
+// stock_transfer_lines, stock_co_suppliers, stock_co_settings; the list is read from the file's own
+// "add column if not exists" lines). The base has no Drop 3, so they are left out here exactly like Drop 2's
+// and steps 9 and 10 make them again as the SQL editor did; any other missing column is still a failure.
+const D3_COLS = {};
+if (existsSync(FILES.d3)) {
+  for (const m of readFileSync(FILES.d3, 'utf8').matchAll(/^alter table public\.([a-z0-9_]+) add column if not exists ([a-z0-9_]+)/gm)) (D3_COLS[m[1]] ||= []).push(m[2]);
+}
 const notLoaded = [];
 const d1Left = [];
 const d2Left = [];
+const d3Left = [];
 for (const t of ORDER) {
   const rows = demo[t];
   if (!rows || !rows.length) continue;
   const have = new Set(sql(`select string_agg(column_name, ',') from information_schema.columns where table_schema = 'public' and table_name = '${t}'`).split(','));
   const keys = [...new Set(rows.flatMap((r) => Object.keys(r)))];
-  const absent = keys.filter((k) => !have.has(k) && !(D1_COLS[t] || []).includes(k) && !(D2_COLS[t] || []).includes(k));
+  const absent = keys.filter((k) => !have.has(k) && !(D1_COLS[t] || []).includes(k) && !(D2_COLS[t] || []).includes(k) && !(D3_COLS[t] || []).includes(k));
   if (absent.length) notLoaded.push(`${t}: ${absent.join(', ')}`);
   for (const k of keys.filter((kk) => !have.has(kk) && (D1_COLS[t] || []).includes(kk))) d1Left.push(`${t}.${k}`);
   for (const k of keys.filter((kk) => !have.has(kk) && (D2_COLS[t] || []).includes(kk))) d2Left.push(`${t}.${k}`);
+  for (const k of keys.filter((kk) => !have.has(kk) && (D3_COLS[t] || []).includes(kk))) d3Left.push(`${t}.${k}`);
   const cols = keys.filter((k) => have.has(k)).map((k) => `"${k}"`).join(', ');
   const r = c.psql({ input: `set session_replication_role = replica;
     insert into public.${t} (${cols}) select ${cols} from json_populate_recordset(null::public.${t}, ${lit(JSON.stringify(rows))}::json);`, allowFail: true });
   ok(r.status === 0 && num(`select count(*) from public.${t}`) === rows.length, `${t}: ${rows.length} rows loaded${r.status ? `: ${short(r.stderr)}` : ''}`);
 }
-ok(notLoaded.length === 0, `every live column of the copy exists here with a type it loads into (${notLoaded.join('; ') || 'all'}${d1Left.length ? `; Drop 1's ${d1Left.join(', ')} left for step 6` : ''}${d2Left.length ? `; Drop 2's ${d2Left.join(', ')} left for steps 8 and 9` : ''})`);
+ok(notLoaded.length === 0, `every live column of the copy exists here with a type it loads into (${notLoaded.join('; ') || 'all'}${d1Left.length ? `; Drop 1's ${d1Left.join(', ')} left for step 6` : ''}${d2Left.length ? `; Drop 2's ${d2Left.join(', ')} left for steps 8, 9 and 10` : ''}${d3Left.length ? `; Drop 3's ${d3Left.join(', ')} left for steps 9 and 10` : ''})`);
 ok(D1_LIVE === (d1Left.length > 0), `Drop 1's columns are in the copy exactly when it was taken after Drop 1 ran live (${d1Left.length} columns)`);
 ok(D2_LIVE === (d2Left.length > 0) && (!D2_LIVE || d2Left.length === 5), `Drop 2's columns are in the copy exactly when it was taken after Drop 2 ran live (${d2Left.length} columns)`);
+if (d3Left.length) info(`the copy was taken after Drop 3 ran live: ${d3Left.length} of its columns left out of the load, made again by steps 9 and 10`);
 const unknown = Object.keys(demo).filter((t) => !ORDER.includes(t) && !['organisations', 'locations'].includes(t) && (demo[t] || []).length);
 ok(unknown.length === 0, `every table of the copy is loaded (${unknown.join(', ') || 'all'})`);
 if (LINKED) {
@@ -707,4 +742,268 @@ console.log('\n9. Drop 3 (20261027a) on a copy of the live state: the drainer an
 if (!existsSync(FILES.d3)) info(`the Drop 3 file is not there yet (${FILES.d3}): step skipped`);
 else if (!existsSync(FILES.d2) || !existsSync(FILES.d)) ok(false, 'the drainer and Drop 2 files are there: Drop 3 refuses without them');
 else drop3Step();
+
+console.log('\n10. Drop 4a (20261026a) on the drainer copy, its queue drained: the check row, the league, the rollback, 4a again; then in the live order');
+if (!DROP4A) info('--drop4a not given: step skipped');
+else if (!existsSync(FILES.d4) || !existsSync(FILES.d4Rb)) ok(false, `the 4a files are there (${FILES.d4}, ${FILES.d4Rb})`);
+else drop4aStep();
 done();
+
+function drop4aStep() {
+  const tf = (v) => v === 't' || v === true;
+  // the live state on the night 4a runs: the copy, the drainer release in, the copy's checks as they are
+  c.use('n_demo');
+  c.createFrom('n_d4', 'n_demo');
+  c.use('n_d4');
+  c.sqlFile(join(here, 'live_discounts.sql'));
+  const dr = c.paste(FILES.d);
+  ok(dr.status === 0, `the drainer release applies on the copy (${dr.status ? short(dr.stderr, 400) : `${dr.ms} ms`})`);
+  if (dr.status) return;
+  if (CHECKS && existsSync(CHECKS)) {
+    const rows = (JSON.parse(readFileSync(CHECKS, 'utf8')).closed_checks || []).filter((r) => venues.includes(r.location_id));
+    const have = new Set(sql(`select string_agg(column_name, ',') from information_schema.columns where table_schema = 'public' and table_name = 'closed_checks'`).split(','));
+    const cols = [...new Set(rows.flatMap((r) => Object.keys(r)))].filter((k) => have.has(k)).map((k) => `"${k}"`).join(', ');
+    if (rows.length) {
+      const r = c.psql({ input: `set session_replication_role = replica;
+        insert into public.closed_checks (${cols}) select ${cols} from json_populate_recordset(null::public.closed_checks, ${lit(JSON.stringify(rows))}::json);`, allowFail: true });
+      ok(r.status === 0, `${rows.length} closed checks of the copy loaded as they are (no day totals yet: the backfill's work)${r.status ? `: ${short(r.stderr, 300)}` : ''}`);
+    }
+  } else info('no STOCKN_CHECKS: the backfill has no checks to queue');
+  let runs = 0;
+  for (; runs < 400 && num(`select (select count(*) from stock_day_sums_repair where due_at <= now()) + (select count(*) from sales_day_sums_queue where due_at <= now())`) > 0; runs++) {
+    sql('call public.stock_day_sums_drain(40, 50);');
+  }
+  ok(num(`select (select count(*) from stock_day_sums_repair) + (select count(*) from sales_day_sums_queue where due_at <= now())`) === 0, `the drainer's queue drained first, as live (${runs} runs)`);
+  const demoOrgs = new Set(sql(`select coalesce(string_agg(distinct l.org_id::text, ','), '') from stock_day_sums s join locations l on l.id = s.location_id where s.demo`).split(',').filter(Boolean));
+  const r = c.paste(FILES.d4);
+  ok(r.status === 0, `4a applies (${r.status ? short(r.stderr, 800) : `${r.ms} ms`})`);
+  if (r.status) return;
+  const rows = (r.sets[r.sets.length - 1] || { rows: [] }).rows;
+  for (const x of rows) console.log(`     ${short(x, 900)}`);
+  const orgs = sql(`select coalesce(string_agg(distinct l.org_id::text, ',' order by l.org_id::text), '') from locations l where exists (select 1 from inventory_items i where i.location_id = l.id)`).split(',').filter(Boolean);
+  ok(rows.length === orgs.length, `one check row per company that holds stock (${rows.length} of ${orgs.length})`);
+  for (const x of rows) {
+    const multi = tf(x.multi);
+    ok(x.new_tables === '3' && x.new_functions === '26' && x.internals_open_to_api === 'f' && x.anon_can_read_reports === 'f' && x.bucket_ok === 't' && x.policy_ok === 't'
+       && x.cron_job === 't' && x.vault_key === 't' && x.site_rows_changed === '0' && x.logins_changed === 'f',
+      `${x.org_id.slice(0, 8)}: 3 tables, 26 functions, internals closed, the anon key reads nothing, bucket, policy, cron job, vault key; no site row or login changed`);
+    ok(multi ? Number(x.dashboard_ms) < 5000 && tf(x.demo_left_out) === demoOrgs.has(x.org_id) : x.dashboard_ms === 'skipped',
+      `${x.org_id.slice(0, 8)}: multi ${x.multi}, dashboard_ms ${x.dashboard_ms}${multi ? ` (under 5000), demo_left_out ${x.demo_left_out}` : ' (one site company)'}`);
+    info(`${x.org_id.slice(0, 8)}: backfill ${x.backfill_days_queued} venue days queued, about ${x.backfill_minutes} minutes`);
+  }
+  if (rows.some((x) => x.org_id === ORG_T)) ok(tf(rows.find((x) => x.org_id === ORG_T).multi), 'a59a6d97 is multi site (contract 1.8)');
+  // the backfill drained (time moved on), as the drainer's drain does it a minute at a time live
+  sql(`update sales_day_sums_queue set due_at = now() - interval '1 second' where reason = 'drop4a_backfill'`);
+  let bruns = 0;
+  for (; bruns < 400 && num(`select count(*) from sales_day_sums_queue where due_at <= now()`) > 0; bruns++) sql('call public.stock_day_sums_drain(40, 50);');
+  ok(num(`select count(*) from sales_day_sums_queue where reason = 'drop4a_backfill'`) === 0, `the backfill drains (${bruns} runs)`);
+  const sites = sql(`select string_agg(id::text, ',' order by name) from locations where org_id = '${ORG_T}' and coalesce(status, 'active') = 'active'`).split(',').filter(Boolean);
+  if (sites.length) {
+    const lg = c.psql({ input: `begin; select set_config('request.jwt.claims', '{"role":"service_role"}', true) \\g /dev/null
+      set local role service_role; set local statement_timeout = '8s';
+      select public.stock_report_league('${ORG_T}', array[${sites.map((x) => `'${x}'`).join(',')}]::uuid[], current_date - 30, current_date, null, null, 1000); commit;`, allowFail: true });
+    const j = pj((lg.stdout || '').trim().split('\n').filter(Boolean).pop());
+    ok(lg.status === 0 && j && j.rows.length === sites.length && j.meta.demo_left_out === demoOrgs.has(ORG_T),
+      `the league of the test company as the Owner app asks it (service role, the 8 s limit): ${j ? j.rows.length : 0} sites${j ? `, ${j.rows.map((x) => `${x.site} sales ${x.sales_net} gap ${x.gap_pct}%`).join('; ')}` : `: ${short(lg.stderr, 300)}`}`);
+    // each site's sales against the one sales rule (JS) over the copy's real checks, each on its venue day
+    if (j && CHECKS && existsSync(CHECKS)) {
+      const clk = Object.fromEntries((pj(sql(`select json_agg(json_build_object('loc', l.id, 'tz', coalesce(c.timezone, nullif(l.timezone, ''), 'Europe/London'), 'start', to_char(coalesce(c.day_start, '06:00'), 'HH24:MI')))
+                                               from locations l left join venue_clock c on c.location_id = l.id where l.org_id = '${ORG_T}'`)) || []).map((x) => [x.loc, x]));
+      const win = pj(sql(`select json_build_object('from', (current_date - 30)::text, 'to', current_date::text)`));
+      const real = (JSON.parse(readFileSync(CHECKS, 'utf8')).closed_checks || []).filter((r) => sites.includes(r.location_id));
+      const bad = []; const left = [];
+      for (const site of j.rows) {
+        const k = clk[site.location_id];
+        const inWin = real.filter((r) => r.location_id === site.location_id && !(r.voided === true || ['void', 'voided'].includes(r.status || '')))
+          .filter((r) => { const d = venueDay(Date.parse(r.closed_at) / 1000, k.tz, k.start); return d >= win.from && d <= win.to; });
+        // a check the demo files wrote (id demo-) in the days: the site's sales cannot be told from it
+        // (sales_day_sums keeps no demo flag), so the league leaves them out and says so (null)
+        const demoHere = inWin.some((r) => String(r.id).startsWith('demo-'));
+        const flagged = (j.meta.windows || []).find((w) => w.location_id === site.location_id)?.demo_sales === true;
+        if (demoHere !== flagged) bad.push(`${site.site}: ${inWin.filter((r) => String(r.id).startsWith('demo-')).length} demo checks in the days, demo_sales ${flagged}`);
+        else if (demoHere) { if (site.sales_net != null || site.gp_pct_theo != null) bad.push(`${site.site}: demo sales in the days but sales ${site.sales_net}`); else left.push(site.site); }
+        else {
+          const want = inWin.reduce((t, r) => t + jsParts(r).net_minor, 0) / 100;
+          if (Math.abs(Number(site.sales_net) - want) > 0.011) bad.push(`${site.site} ${site.sales_net} want ${want.toFixed(2)}`);
+        }
+      }
+      ok(bad.length === 0, `each site's sales in the league = the one sales rule over the copy's real checks, on each venue's own business day; a site with demo checks in the days has its sales left out (${bad.join('; ') || `${j.rows.map((x) => `${x.site} ${x.sales_net}`).join(', ')}${left.length ? `; demo sales left out at ${left.join(', ')}` : ''}`})`);
+    }
+  }
+  // the dashboard on Provo and Location 2 as the head office opens it: "Demo history left out"; each
+  // site's sales are the sum of its products' sales (the same spread rule as report_day_sums); the
+  // product GP site row is the sum of its products' GP; and from each site's takes_from day (the first
+  // day the drainer wrote what each sale took off) the dashboard's site GP is the sum of product GP.
+  // Before takes_from a product's plate cost is not known (never a 100% GP), so with known = true the
+  // window must start on or after takes_from. The copy holds no logins, so the guard is passed with the
+  // service role claim and the call runs as the database owner (product_gp is granted to authenticated
+  // only; who may call what is section 32 of run.mjs).
+  const dashGp = (label, from, to, known) => {
+    const both = [PROVO, LOC2];
+    const svcJ = (q) => {
+      const r = c.psql({ input: `begin; select set_config('request.jwt.claims', '{"role":"service_role"}', true) \\g /dev/null
+        set local statement_timeout = '8s';
+        select ${q}; commit;`, allowFail: true });
+      return { status: r.status, stderr: r.stderr, j: pj((r.stdout || '').trim().split('\n').filter(Boolean).pop()) };
+    };
+    const call = (name, opts, after) => svcJ(`public.stock_report_${name}('${ORG_T}', array['${PROVO}', '${LOC2}']::uuid[], ${from}, ${to}, ${opts ? `'${JSON.stringify(opts)}'::jsonb` : 'null'}, ${after ? `${lit(JSON.stringify(after))}::jsonb` : 'null'}, 1000)`);
+    const dash = call('dashboard', null, null);
+    ok(dash.status === 0 && dash.j && dash.j.meta && dash.j.meta.demo_left_out === true,
+      `${label}the dashboard on Provo and Location 2 says "Demo history left out" (meta.demo_left_out ${dash.j ? dash.j.meta?.demo_left_out : short(dash.stderr, 300)})`);
+    const prows = []; let after = null; let pages = 0; let perr = null; let pg = null;
+    for (;;) {
+      const r = call('product_gp', { level: 'site_product' }, after);
+      if (r.status !== 0 || !r.j) { perr = short(r.stderr, 300); break; }
+      pages++; if (!pg) pg = r.j; prows.push(...(r.j.rows || []));
+      if (!r.j.next || pages >= 400) break;
+      after = r.j.next;
+    }
+    const tot = (ans, loc) => ((ans && ans.totals) || []).find((t) => t.location_id === loc) || {};
+    const win = pj(sql(`select json_build_object('from', (${from})::text, 'to', (${to})::text)`));
+    const bad = []; const said = [];
+    for (const loc of both) {
+      const name = loc === PROVO ? 'Provo' : 'Location 2';
+      const mine = prows.filter((r) => r.location_id === loc);
+      const kn = mine.filter((r) => r.theo_cost != null);
+      const pNet = mine.reduce((t, r) => t + Number(r.sales_net || 0), 0);
+      // product GP is over the sales with a plate cost (known_net: from takes_from on)
+      const pGp = kn.reduce((t, r) => t + Number(r.known_net ?? r.sales_net ?? 0) - Number(r.theo_cost), 0);
+      const d = tot(dash.j, loc); const ps = tot(pg, loc);
+      const takes = ps.known_from || null;
+      // demo checks in the days (the copy's are): sales and GP left out, no product rows, words
+      if ((dash.j?.meta?.windows || []).find((w) => w.location_id === loc)?.demo_sales === true) {
+        if (known) bad.push(`${name}: demo sales in a window that must have none`);
+        else if (d.sales_net !== null || d.gp_pct_theo !== null || d.demo_sales !== true || ps.gp !== null || ps.demo_sales !== true || mine.length
+                 || !(dash.j.meta.notes || []).includes(`Demo sales on these days at ${name}: its sales and GP are not shown`)) {
+          bad.push(`${name}: demo sales in the days, but sales ${d.sales_net}, GP ${ps.gp}, ${mine.length} product rows`);
+        } else said.push(`${name}: demo sales in the days, so its sales and GP are not shown (no product row, "Demo sales on these days at ${name}")`);
+        continue;
+      }
+      const dGp = Number(d.sales_net || 0) - Number(d.theo_cost || 0);
+      if (Math.abs(Number(d.sales_net || 0) - pNet) > 0.011 || Math.abs(Number(ps.sales_net || 0) - pNet) > 0.011) bad.push(`${name}: sales dashboard ${d.sales_net}, product site row ${ps.sales_net}, sum of ${mine.length} products ${pNet.toFixed(2)}`);
+      if (kn.length ? Math.abs(Number(ps.gp) - pGp) > 0.011 : ps.gp != null) bad.push(`${name}: product GP site row ${ps.gp}, sum of ${kn.length} known products ${pGp.toFixed(2)}`);
+      if (takes && takes <= win.from) {
+        if (Math.abs(dGp - pGp) > 0.011 || kn.length !== mine.length) bad.push(`${name}: dashboard GP ${dGp.toFixed(2)}, sum of product GP ${pGp.toFixed(2)} (${kn.length} of ${mine.length} products with a plate cost)`);
+        else said.push(`${name} GP ${dGp.toFixed(2)} = ${mine.length} products`);
+      } else if (known) bad.push(`${name}: plate costs known from ${takes || 'never'}, the window starts ${win.from}`);
+      else said.push(`${name} sales ${pNet.toFixed(2)} = ${mine.length} products; plate cost not known before ${takes || 'the first sale the drainer takes off'} (GP ${ps.gp == null ? 'not shown' : ps.gp})`);
+    }
+    ok(!perr && dash.status === 0 && bad.length === 0, `${label}the dashboard's site figures = the sum of product figures at Provo and Location 2, ${win.from} to ${win.to} (${perr || bad.join('; ') || `${said.join('; ')}; ${pages} page(s)`})`);
+  };
+  dashGp('', 'current_date - 30', 'current_date', false);
+  // the days after the last demo check of the copy: the real checks only, every figure shown
+  if (CHECKS && existsSync(CHECKS)) {
+    const last = (JSON.parse(readFileSync(CHECKS, 'utf8')).closed_checks || []).filter((r) => [PROVO, LOC2].includes(r.location_id) && String(r.id).startsWith('demo-'))
+      .map((r) => r.closed_at).sort().pop();
+    if (last) {
+      const after = sql(`select (greatest((public.stock_co__venue_day('${PROVO}', '${last}'::timestamptz)).business_day, (public.stock_co__venue_day('${LOC2}', '${last}'::timestamptz)).business_day) + 1)::text`);
+      if (after <= sql('select current_date::text')) dashGp(`after the last demo check (${after} on): `, `'${after}'::date`, 'current_date', false);
+      else info(`the copy's last demo check is today: no day after it to rehearse`);
+    }
+  }
+  const rb = c.paste(FILES.d4Rb);
+  const x = ((rb.sets[rb.sets.length - 1] || { rows: [] }).rows[0]) || {};
+  console.log(`     rollback: ${short(x, 400)}`);
+  ok(rb.status === 0 && x.functions_left === '0' && x.tables_left === '0' && x.bucket_left === 'f' && x.cron_left === 'f', 'the rollback: nothing of 4a left (functions, tables, bucket, cron job)');
+  const again = c.paste(FILES.d4);
+  ok(again.status === 0, `4a applies again after its rollback (${again.status ? short(again.stderr, 400) : 'ok'})`);
+
+  // the live order since 22 Oct 2026: the drainer release, Drop 2 AND Drop 3 are live before 4a. 4a needs
+  // neither (the steps above prove that); here it runs on top of them as Peter will run it.
+  if (!existsSync(FILES.d2) || !existsSync(FILES.d3)) { ok(false, `the Drop 2 and Drop 3 files are there, so 4a is rehearsed in the live order (${FILES.d2}, ${FILES.d3})`); return; }
+  c.use('n_demo');
+  c.createFrom('n_d4live', 'n_demo');
+  c.use('n_d4live');
+  c.sqlFile(join(here, 'live_discounts.sql'));
+  // what the harness database lacks of the live Ops shape that Drop 2 reads (as steps 8 and 9)
+  c.psql({ input: D2_SHAPE });
+  const dl = c.paste(FILES.d);
+  ok(dl.status === 0, `live order: the drainer release applies (${dl.status ? short(dl.stderr, 400) : `${dl.ms} ms`})`);
+  if (dl.status) return;
+  const d2 = c.paste(FILES.d2);
+  ok(d2.status === 0, `live order: Drop 2 (20261025a) applies after the drainer (${d2.status ? short(d2.stderr, 400) : `${d2.ms} ms`})`);
+  if (d2.status) return;
+  // Drop 3 as step 9 pastes it: the live shapes it reads, and the harness stand in's md5 of second_step_ok()
+  // in place of the live one it pins (every other body is the file's)
+  c.psql({ input: D3_SHAPE });
+  const ssMd5 = sql(`select md5(btrim(regexp_replace(p.prosrc, '\\s+', ' ', 'g'))) from pg_proc p where p.oid = to_regprocedure('public.second_step_ok()')`);
+  const d3 = c.paste(null, { input: readFileSync(FILES.d3, 'utf8').replace(LIVE_SECOND_STEP_MD5, ssMd5) });
+  ok(d3.status === 0, `live order: Drop 3 (20261027a) applies after Drop 2 (${d3.status ? short(d3.stderr, 400) : `${d3.ms} ms`})`);
+  if (d3.status) return;
+  if (CHECKS && existsSync(CHECKS)) {
+    const rows = (JSON.parse(readFileSync(CHECKS, 'utf8')).closed_checks || []).filter((r) => venues.includes(r.location_id));
+    const have = new Set(sql(`select string_agg(column_name, ',') from information_schema.columns where table_schema = 'public' and table_name = 'closed_checks'`).split(','));
+    const cols = [...new Set(rows.flatMap((r) => Object.keys(r)))].filter((k) => have.has(k)).map((k) => `"${k}"`).join(', ');
+    if (rows.length) {
+      const r2 = c.psql({ input: `set session_replication_role = replica;
+        insert into public.closed_checks (${cols}) select ${cols} from json_populate_recordset(null::public.closed_checks, ${lit(JSON.stringify(rows))}::json);`, allowFail: true });
+      ok(r2.status === 0, `live order: ${rows.length} closed checks of the copy loaded${r2.status ? `: ${short(r2.stderr, 300)}` : ''}`);
+    }
+  }
+  for (let k = 0; k < 400 && num(`select (select count(*) from stock_day_sums_repair where due_at <= now()) + (select count(*) from sales_day_sums_queue where due_at <= now())`) > 0; k++) sql('call public.stock_day_sums_drain(40, 50);');
+  const d4l = c.paste(FILES.d4);
+  ok(d4l.status === 0, `live order: 4a applies on top of the drainer, Drop 2 and Drop 3 (${d4l.status ? short(d4l.stderr, 800) : `${d4l.ms} ms`})`);
+  if (d4l.status) return;
+  const lrows = (d4l.sets[d4l.sets.length - 1] || { rows: [] }).rows;
+  const lt = lrows.find((y) => y.org_id === ORG_T) || {};
+  ok(lrows.length === orgs.length && lrows.every((y) => y.new_tables === '3' && y.new_functions === '26' && y.internals_open_to_api === 'f' && y.anon_can_read_reports === 'f'
+       && y.site_rows_changed === '0' && y.logins_changed === 'f') && tf(lt.multi) && Number(lt.dashboard_ms) < 5000 && tf(lt.demo_left_out),
+    `live order: the check row as before (a59a6d97 multi ${lt.multi}, dashboard_ms ${lt.dashboard_ms}, demo_left_out ${lt.demo_left_out}; no site row or login changed)`);
+  sql(`update sales_day_sums_queue set due_at = now() - interval '1 second' where reason = 'drop4a_backfill'`);
+  for (let k = 0; k < 400 && num(`select count(*) from sales_day_sums_queue where due_at <= now()`) > 0; k++) sql('call public.stock_day_sums_drain(40, 50);');
+  dashGp('live order: ', 'current_date - 30', 'current_date', false);
+  // the copy's checks sold again through the drainer as NEW sales (ids d4-<n>, closed in the last hour, as
+  // the drainer takes a sale), then moved whole (movements, takes, checks) to a quiet venue day ten days
+  // before the first movement or check of either site and that day's totals rebuilt: a day on which every
+  // sale has its takes, so the site GP from the ledger and the sum of product GP from the takes must
+  // agree to the penny, and takes_from is that day. Today keeps the old rule's sales only.
+  if (CHECKS && existsSync(CHECKS)) {
+    const quiet = sql(`select (least((select min(occurred_at) from stock_movements where location_id in ('${PROVO}', '${LOC2}')),
+                                      (select min(closed_at) from closed_checks where location_id in ('${PROVO}', '${LOC2}')))::date - 10)::text`);
+    const t1 = Date.now() - 60 * 60000;
+    const real = (JSON.parse(readFileSync(CHECKS, 'utf8')).closed_checks || []).filter((r) => [PROVO, LOC2].includes(r.location_id));
+    const sales = real.map((r, k) => {
+      const y = { ...r, id: `d4-${k + 1}`, ref: `D4${k + 1}`, closed_at: new Date(t1 + k * 1000).toISOString(), refunds: [], status: r.voided ? r.status : 'paid', refunded: false };
+      delete y.tax_breakdown;
+      return y;
+    });
+    let bad = 0;
+    for (let k = 0; k < sales.length; k += 100) {
+      if (c.psql({ input: sales.slice(k, k + 100).map((y) => `${insertRow(y)};`).join('\n'), allowFail: true }).status) bad++;
+    }
+    for (let k = 0; k < 30 && num(`select count(*) from stock_outbox where status = 'pending' and due_at <= now()`) > 0; k++) sql('call public.stock_outbox_drain(10, 200, 0.05, true);');
+    const takes = num(`select count(*) from stock_sale_takes where check_id like 'd4-%'`);
+    const shift = `(now() - timestamptz '${quiet} 11:00:00+00')`;
+    const mv = c.psql({ input: `set session_replication_role = replica;
+      update stock_movements set occurred_at = occurred_at - ${shift} where location_id in ('${PROVO}', '${LOC2}') and source_id like 'd4-%';
+      update stock_sale_takes set occurred_at = occurred_at - ${shift} where location_id in ('${PROVO}', '${LOC2}') and check_id like 'd4-%';
+      update closed_checks set closed_at = closed_at - ${shift} where id like 'd4-%';
+      set session_replication_role = origin;
+      select public.stock_day_sums_rebuild(l, '${quiet}'::date, current_date + 1), public.sales_day_sums_rebuild(l, '${quiet}'::date, current_date + 1)
+        from unnest(array['${PROVO}', '${LOC2}']::uuid[]) l;`, allowFail: true });
+    const onDay = num(`select count(*) from stock_movements m cross join lateral public.stock_co__venue_day(m.location_id, m.occurred_at) d
+                        where m.source_id like 'd4-%' and m.movement_type = 'SALE_DEPLETION' and d.business_day = '${quiet}'`);
+    ok(bad === 0 && takes > 0 && mv.status === 0 && onDay > 0,
+      `live order: ${sales.length} of the copy's checks sold again through the drainer (${takes} with takes) and moved to ${quiet} (${onDay} take off movements on that day)${mv.status ? `: ${short(mv.stderr, 300)}` : ''}`);
+    const tfs = [PROVO, LOC2].map((l) => sql(`select coalesce(public.stock_rp__takes_from('${l}')::text, 'none')`));
+    ok(tfs.every((d) => d === quiet), `live order: takes_from is ${quiet} at both sites (${tfs.join(', ')})`);
+    dashGp('live order, every sale with its takes: ', `'${quiet}'::date`, `'${quiet}'::date`, true);
+    // and a sale taken off by the old rule earlier on the first take day moves takes_from to the next day
+    // (the night the release goes live), so no window claims a plate cost it does not have
+    const early = c.psql({ input: `set session_replication_role = replica;
+      insert into stock_movements (location_id, inventory_item_id, qty_base, unit_cost, value_delta, movement_type, source_type, source_id, occurred_at, idempotency_key)
+      select m.location_id, m.inventory_item_id, -1, m.unit_cost, -coalesce(m.unit_cost, 0), 'SALE_DEPLETION', 'sale', 'd4old-1', timestamptz '${quiet} 07:00:00+00', 'd4old-1:1'
+        from stock_movements m where m.location_id = '${PROVO}' and m.source_id like 'd4-%' and m.movement_type = 'SALE_DEPLETION' limit 1;`, allowFail: true });
+    const nextDay = sql(`select ('${quiet}'::date + 1)::text`);
+    const tfp = sql(`select coalesce(public.stock_rp__takes_from('${PROVO}')::text, 'none')`);
+    ok(early.status === 0 && tfp === nextDay && sql(`select public.stock_rp__takes_from('${LOC2}')::text`) === quiet,
+      `live order: an old rule sale earlier on ${quiet} at Provo moves its takes_from to ${nextDay} (${tfp}); Location 2 keeps ${quiet}${early.status ? `: ${short(early.stderr, 300)}` : ''}`);
+  } else info('no STOCKN_CHECKS: the site GP against product GP from the takes is not rehearsed on real baskets');
+  // its rollback in the live order leaves Drop 2 and Drop 3 as they were; then 4a again
+  const lrb = c.paste(FILES.d4Rb);
+  const lx = ((lrb.sets[lrb.sets.length - 1] || { rows: [] }).rows[0]) || {};
+  ok(lrb.status === 0 && lx.functions_left === '0' && lx.tables_left === '0' && sql(`select to_regclass('public.recipe_cost_daily') is not null and to_regclass('public.stock_po_approvals') is not null`) === 't',
+    `live order: the 4a rollback leaves nothing of 4a and Drop 2 and Drop 3 in place (${lrb.status ? short(lrb.stderr, 300) : short(lx, 300)})`);
+  const lagain = c.paste(FILES.d4);
+  ok(lagain.status === 0, `live order: 4a applies again after its rollback (${lagain.status ? short(lagain.stderr, 400) : 'ok'})`);
+}

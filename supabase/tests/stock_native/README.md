@@ -27,6 +27,12 @@ zsh supabase/tests/stock_native/fetch_checks.sh /some/scratch/checks.json a59a6d
 STOCKN_DEMO=/some/scratch/demo.json STOCKN_CHECKS=/some/scratch/checks.json node supabase/tests/stock_native/rehearse.mjs --drainer
 
 node --test src/lib/stock/stockDrainerMigration.test.js  # the CI text test of the release and its rollback
+
+# Drop 4a (20261026a, the head office reports), after 0a, revalue, 0b, Drop 1, the drainer, Drop 2 and Drop 3 (the live order)
+node supabase/tests/stock_native/run.mjs --drop4a --quick   # sections 30 to 37, 10 sites in the speed part
+node supabase/tests/stock_native/run.mjs --drop4a           # 50 sites by 500 items by 31 days
+STOCKN_DEMO=/some/scratch/demo.json STOCKN_CHECKS=/some/scratch/checks.json node supabase/tests/stock_native/rehearse.mjs --drainer --drop4a
+node --test src/lib/stock/stockNative4aMigration.test.js    # the CI text test of 4a and its rollback
 ```
 
 Exit code 0 only when every check holds. Needs `/opt/homebrew/bin` (initdb, pg_ctl, postgres, psql,
@@ -304,6 +310,31 @@ wf_staff, xero_connections, ezcater_order_links, the storage schema stand in).
 - 48 alerts staged once; keyset pages at scale under 1 s; the runner with 1,000 standing orders under 8 s a call
 - 49 every channel basket identical before and after; the rollback; Drop 3 again; the rollback refuses a REQUESTED transfer
 
+## Drop 4a (drop4a.mjs, run.mjs --drop4a)
+
+`run.mjs --drop4a` builds section 1, then pastes 0a, its revalue file, 0b, Drop 1, the drainer (20261023a),
+Drop 2 (20261025a) and Drop 3 (20261027a) as the SQL editor ran them live (with the shapes and the
+second_step_ok() stand in md5 that drop2.mjs and drop3.mjs use), then proves 4a. A copy from before Drop 2 is
+kept too: section 30 shows 4a applies on it (4a needs neither Drop 2 nor Drop 3). `STOCKN_D4A` and `STOCKN_D4A_ROLLBACK` point at other copies of the 4a files; `STOCKN_D4A_ONLY=33,35`
+runs only those of sections 31 to 37 (section 30, the paste, always runs).
+
+| Section | What it proves |
+|---|---|
+| 30 | the guard's refusals (no Drop 1, no drainer, a second run, a changed body, not Ops); 4a also applies without Drop 2; the check row, every column; nothing at the sites or logins moves; the sales history backfill queued 15 venue days a minute, newest first, and drained |
+| 31 | the three tables (RLS, grants, read rules, the fence, no write policy), the private bucket and its owner folder policy, the vault key and its check, the cron job and its sender (posts only when there is work), every function's definer, search path and grants |
+| 32 | the report guard with real roles and claims: owner, Stock control all, a sites manager, another company, every device and customer session, the anon key, no second step, the service role, 51 sites, 401 days; on all sixteen reports |
+| 33 | every figure against an oracle worked out here from the raw ledger and the checks (each venue day from venue_clock in JS) on a seeded world through the real drainer; then the UK (25 Oct 2026) and US (1 Nov 2026) clock changes, a UK and a US site, two currencies never added |
+| 34 | demo history left out, counted or estimated, own cost rule, sales not yet posted, a locked period read from its snapshot, part locked |
+| 35 | every drill level paged at 3 a page with ties, totals on every page, the 1,000 cap, columns on every row |
+| 36 | 50 sites by 500 items by 31 days of day totals: every report under 5 s as the owner under the 8 s limit; a 400 day range |
+| 37 | exports through the queue to part files (the edge function's own CSV rules), the download check, cancel, expiry, one at a time, 20 a day, reach lost at run time; the rollback and 4a again, every number unchanged |
+
+rehearse.mjs step 10 (`--drop4a`) runs 4a on a drainer copy once its queue is drained: the check row of
+contract 1.8, the league as the Owner app asks it, the rollback, then 4a again; then in the live order (the
+drainer, Drop 2, Drop 3, then 4a) the check row, the dashboard against product GP, a day on which every sale
+has its takes, the rollback and 4a again. A copy taken after Drop 2 or Drop 3 ran live carries their new
+columns; the loader leaves those out (named in step 2) and the pastes make them again.
+
 ## Files
 
 | File | What |
@@ -314,6 +345,7 @@ wf_staff, xero_connections, ezcater_order_links, the storage schema stand in).
 | fixtures.mjs | ids, logins, devices and stock rows, and what 0a must find on them |
 | channels.mjs | one sale per order channel, as each writer writes it, drained by the real drainer |
 | drainer.mjs | the drainer release proof, sections 19 to 29 (run.mjs --drainer) |
+| drop4a.mjs | sections 30 to 37: Drop 4a, the head office reports (run.mjs --drop4a) |
 | drainer_fixtures.mjs | the rows the drainer proof adds: the basket's extra rows and presets, the deliberate cases, the speed company, the sales rule parity rows |
 | live_discounts.sql | public.discounts as Ops has it (RLS, grants, the two live policies), for the discounts.kind role tests |
 | rehearse.mjs | 0a, revalue, 0b and Drop 1 on a copy of the live rows (or, on a copy taken after 0a, what 0a and the revalue left, then 0b and Drop 1), then the drainer release on that live state (step 7) |

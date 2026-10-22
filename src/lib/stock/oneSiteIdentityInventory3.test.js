@@ -71,12 +71,30 @@ const RESTORE = {
    "                    <div style={{ fontSize: 11, color: 'var(--t3)' }}>{[l.skuSnapshot, l.dropped ? 'dropped' : receiving ? (l.matchedBy === 'sku' ? 'matched by SKU' : l.matchedBy === 'name' ? 'matched by name' : l.matchedBy === 'kept' ? 'matched' : l.toInventoryItemId ? 'matched by hand' : (l.ambiguous?.length ? `${l.ambiguous.length} of your items match: pick one` : 'no match yet')) : null].filter(Boolean).join(' · ')}</div>"],
   ],
 };
+// Multi site stock Drop 4a (v5.11.98, contract 2.4): the "See the report" links on an approved count and on
+// Wastage. Each renders nothing for a one site company (canOpenReports is false there), so they are taken
+// out first ([newText, oldText], each found exactly once), then the Drop 3 lines and pairs as above.
+const D4A = {
+  'StockCounts.jsx': [
+    ['  // v5.11.92 (Drop 4a, contract 2.4): an approved count links to Reports > Stock and GP > Theoretical against actual.\n  const { takeOpenNew, openReport, canOpenReports } = useStockScope();\n', '  const { takeOpenNew } = useStockScope();\n'],
+    ['            {approved && canOpenReports && locId && (\n              <button type="button" onClick={() => openReport({ report: \'stock_gap\', sites: { kind: \'sites\', ids: [locId] }, period: \'between-counts\' })}\n                style={{ background: \'transparent\', border: \'none\', padding: 0, color: \'var(--acc)\', fontSize: 12, fontWeight: 700, cursor: \'pointer\', fontFamily: \'inherit\' }}>See the gap report</button>\n            )}\n', ''],
+  ],
+  'Wastage.jsx': [
+    ['  const { openReport, canOpenReports } = useStockScope();\n', ''],
+    ['      {/* v5.11.92 (Drop 4a, contract 2.4): the link renders nothing for a one site company (canOpenReports false), so its HTML is today\'s. */}\n      {canOpenReports && locId && (\n        <button type="button" onClick={() => openReport({ report: \'stock_waste\', sites: { kind: \'sites\', ids: [locId] }, period: \'last-week\' })}\n          style={{ background: \'transparent\', border: \'none\', padding: \'0 0 6px\', color: \'var(--acc)\', fontSize: 13, fontWeight: 700, cursor: \'pointer\', fontFamily: \'inherit\' }}>See the report</button>\n      )}\n', ''],
+  ],
+  'StockTransfers.jsx': [],
+};
 // contract 3.3: at most 8 changed lines on Stock counts and Transfers
 const MAX_PAIRS = { 'StockCounts.jsx': 8, 'Wastage.jsx': 8, 'StockTransfers.jsx': 8 };
 
 function mainText(file) {
   const src = fs.readFileSync(at(file), 'utf8');
   let text = src.slice(src.indexOf('import '));
+  for (const [now, was] of D4A[file]) {
+    assert.equal(text.split(now).length - 1, 1, `${file}: the Drop 4a lines are there exactly once: ${now.trim().slice(0, 90)}`);
+    text = text.replace(now, () => was);
+  }
   text = text.split('\n').filter((l) => !MARK.test(l)).join('\n');
   for (const [now, was] of RESTORE[file]) {
     assert.equal(text.split(now).length - 1, 1, `${file}: the changed line is there exactly once: ${now.trim().slice(0, 90)}`);
