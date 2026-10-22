@@ -22,6 +22,16 @@ export function verifyConfigured(): boolean {
   return !!(SID && TOKEN && VERIFY_SERVICE_SID);
 }
 
+/** The account credentials are set (a per venue service can be made and read without the shared sid). */
+export function verifyCredentialsPresent(): boolean {
+  return !!(SID && TOKEN);
+}
+
+/** The shared fallback service's sid ('' when unset). Read so it is never renamed or recreated (22 Oct 2026). */
+export function sharedVerifySid(): string {
+  return VERIFY_SERVICE_SID;
+}
+
 function authHeader(): string {
   return 'Basic ' + btoa(`${SID}:${TOKEN}`);
 }
@@ -146,6 +156,26 @@ export async function getVerifyServiceName(serviceSid?: string): Promise<string 
     return typeof name === 'string' ? name : null;
   } catch {
     return null;
+  }
+}
+
+// Read a Verify service as a whole (22 Oct 2026, v5.11.94): the nightly check and the Fix button
+// need to tell a service that is GONE (404: recreate it) from one that could not be read just now
+// (keep the row, say so). getVerifyServiceName above folds both into null, which is right for the
+// send path (never send under an unknown name) and wrong for a repair.
+export async function readVerifyService(serviceSid: string): Promise<{ status: 'found' | 'missing' | 'unreadable'; name: string | null; error?: string }> {
+  const sid = String(serviceSid || '').trim();
+  if (!sid) return { status: 'unreadable', name: null, error: 'no service sid' };
+  if (!SID || !TOKEN) return { status: 'unreadable', name: null, error: 'Twilio not configured' };
+  try {
+    const res = await fetch(`https://verify.twilio.com/v2/Services/${sid}`, { headers: { 'Authorization': authHeader() } });
+    const j = await res.json().catch(() => ({}));
+    if (res.status === 404) return { status: 'missing', name: null, error: (j as { message?: string })?.message || 'Twilio HTTP 404' };
+    if (!res.ok) return { status: 'unreadable', name: null, error: (j as { message?: string })?.message || `Twilio HTTP ${res.status}` };
+    const name = (j as { friendly_name?: string })?.friendly_name;
+    return { status: 'found', name: typeof name === 'string' ? name : '' };
+  } catch (e) {
+    return { status: 'unreadable', name: null, error: (e as Error)?.message || String(e) };
   }
 }
 

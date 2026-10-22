@@ -124,7 +124,46 @@ export const SIGNALS = Object.freeze({
     title: 'Stock events are waiting for a person',
     fix: 'Back Office, Stock control, the rows that need a person: Release the genuine sales. A row that keeps appearing from an unknown session is worth a look at who is writing checks for that venue.',
   },
+  // v5.11.94 loyalty code texts (migration 20261022b). Each venue's sign in code text carries the
+  // name of its own Twilio Verify service; a venue without a ready one has its codes REFUSED
+  // (never sent under another venue's name, the 21 Oct 2026 incident). The nightly check
+  // (04:10 UTC) and every refused send write the venue's state to loyalty_otp_service_audit, and
+  // each run leaves a row in loyalty_otp_audit_runs. A customer who cannot sign in is a morning
+  // problem, not a 3am one: the till still sells, and the fix is a button in Back Office.
+  otp_not_ready: {
+    severity: WARN,
+    say: (f) => `Customers at ${f.venue} cannot get a loyalty sign in code text: the venue's text service is not set up (${otpStateWords(f.detail)}). Their codes are refused, never sent under another venue's name.`,
+    title: 'Loyalty code texts are not set up',
+    fix: "Back Office at that venue, Messages, Verification code: the line under the name says why. Press Fix. If it stays amber, the words shown are the text provider's own. The nightly check also tries again at 04:10 UTC.",
+  },
+  otp_audit_stale: {
+    severity: WARN,
+    minutes: 26 * 60,
+    say: (f) => `${f.detail || 'The nightly check has not run'}. While it lasts nobody is checking that every venue's code texts carry its own name.`,
+    title: 'The nightly loyalty code text check is not running',
+    fix: "Ops SQL editor: select * from loyalty_otp_audit_runs order by id desc limit 3; then the job: select status, return_message, start_time from cron.job_run_details where jobid in (select jobid from cron.job where jobname = 'loyalty-otp-audit') order by start_time desc limit 3; and the answer it got: select status_code, content from net._http_response order by id desc limit 5. Run it by hand: select public.loyalty_otp_audit_send();",
+  },
+  otp_audit_incomplete: {
+    severity: WARN,
+    say: (f) => `The last nightly check of the venues' code text services did not finish: ${f.detail || 'no reason recorded'}.`,
+    title: 'The nightly loyalty code text check did not finish',
+    fix: 'Ops SQL editor: select * from loyalty_otp_audit_runs order by id desc limit 1; read errors. Then run it again: select public.loyalty_otp_audit_send();',
+  },
 });
+
+/** Plain words for a venue's code text service state (otpServiceRules.js venueWords, short). */
+export function otpStateWords(state) {
+  switch (String(state || '')) {
+    case 'no_service': return 'it has no text service of its own';
+    case 'points_at_shared': return 'it points at the shared text service, which carries another name';
+    case 'missing_on_twilio': return 'its text service no longer exists at the text provider';
+    case 'name_drift': return 'its text service carries a different name from Back Office';
+    case 'twilio_unreadable': return 'the text provider could not be read';
+    case 'no_name': return 'the venue has no name';
+    case 'not_configured': return 'the text provider is not configured on the server';
+    default: return state ? `state ${String(state)}` : 'reason not recorded';
+  }
+}
 
 /**
  * The time windows the QUERIES use, in minutes.
@@ -148,10 +187,12 @@ export const WINDOWS = Object.freeze({
   orders_open: { olderThan: 45, within: 24 * 60 },
   stock_backlog: { olderThan: 10 },
   stock_held: { olderThan: 60 },
+  // The nightly check runs at 04:10 UTC: 26 hours lets one late run through and no more.
+  otp_audit_stale: { olderThan: 26 * 60 },
 });
 
 /** Signals that are about the system as a whole, not about one venue's count. */
-const ALWAYS = Object.freeze({ db_unreachable: true, watchdog_broken: true });
+const ALWAYS = Object.freeze({ db_unreachable: true, watchdog_broken: true, otp_audit_stale: true, otp_audit_incomplete: true });
 
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
@@ -167,6 +208,9 @@ const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
  *   stockBacklog?: Array<{ venue: string, count: number }>,
  *   stockDead?: Array<{ venue: string, count: number }>,
  *   stockHeld?: Array<{ venue: string, count: number }>,
+ *   otpNotReady?: Array<{ venue: string, count: number, detail?: string }>,
+ *   otpAuditStale?: string|null,
+ *   otpAuditIncomplete?: string|null,
  * }} measured
  * @returns {Array<{ key: string, signal: string, severity: string, venue: string, count: number, title: string, body: string, fix: string }>}
  */
@@ -213,6 +257,9 @@ export function evaluate(measured = {}) {
   for (const r of measured.stockBacklog || []) add('stock_backlog', r.venue, r.count);
   for (const r of measured.stockDead || []) add('stock_dead', r.venue, r.count);
   for (const r of measured.stockHeld || []) add('stock_held', r.venue, r.count);
+  for (const r of measured.otpNotReady || []) add('otp_not_ready', r.venue, r.count, r.detail);
+  if (measured.otpAuditStale) add('otp_audit_stale', null, 1, String(measured.otpAuditStale));
+  if (measured.otpAuditIncomplete) add('otp_audit_incomplete', null, 1, String(measured.otpAuditIncomplete));
   return out;
 }
 

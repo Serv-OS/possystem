@@ -15,6 +15,9 @@
 //
 //   POST { windows: {...} }  with header  x-watchdog-token: <WATCHDOG_TOKEN>
 //   → { ok: true, cardStranded: [{venue,count}], ticketsLost: [...], printStuck: [...], ordersOpen: [...] }
+//   v5.11.94 adds otpNotReady: [{venue,count,detail}] (venues whose loyalty code texts are
+//   refused; detail is the state, never a name or a provider message), otpAuditStale and
+//   otpAuditIncomplete (null, or one line saying the nightly check did not run or did not finish).
 //
 // WHAT THE ANSWERS MEAN, because the watchdog decides what to shout from them:
 //   200 ok:true         measured; findings inside
@@ -132,6 +135,46 @@ Deno.serve(async (req) => {
       return [...counts.entries()].map(([venue, count]) => ({ venue, count }));
     };
 
+    // v5.11.94 loyalty code texts (migration 20261022b). Venues whose sign in code texts are
+    // refused (their own text service is not ready), and whether the nightly check (04:10 UTC)
+    // ran and finished. These are read from two service role only tables. Unlike the counts
+    // above, a failed read here is never a 503: a query of ours that is wrong must not wake
+    // anybody saying the database is down. It is said as "could not be read", for the morning.
+    const otpStaleMin = clamp(w.otp_audit_stale?.olderThan, 60, 10080, 26 * 60);
+    const [otpRowsRes, otpRunRes] = await Promise.all([
+      realVenues(admin.from('loyalty_otp_service_audit').select('location_id, state')).eq('ok', false).limit(500),
+      admin.from('loyalty_otp_audit_runs').select('ran_at, ok, errors, skipped').is('company_id', null).eq('fix', true)
+        .order('ran_at', { ascending: false }).limit(1),
+    ]);
+    const missingTable = (e: { code?: string; message?: string } | null) =>
+      !!e && (e.code === 'PGRST205' || e.code === '42P01' || /could not find the table|does not exist/i.test(e.message ?? ''));
+    let otpAuditStale: string | null = null;
+    let otpAuditIncomplete: string | null = null;
+    const otpByVenue = new Map<string, { venue: string; count: number; states: Set<string> }>();
+    if (missingTable(otpRowsRes.error) || missingTable(otpRunRes.error)) {
+      otpAuditStale = 'The nightly loyalty code text check is not installed: database update 20261022b has not run on the Ops database';
+    } else if (otpRowsRes.error || otpRunRes.error) {
+      otpAuditStale = `The nightly loyalty code text check could not be read: ${(otpRowsRes.error || otpRunRes.error)?.message ?? 'unknown'}`;
+    } else {
+      for (const r of (otpRowsRes.data ?? []) as Array<{ location_id: string; state: string }>) {
+        const name = names.get(String(r.location_id)) ?? 'an unnamed venue';
+        const v = otpByVenue.get(name) ?? { venue: name, count: 0, states: new Set<string>() };
+        v.count += 1;
+        v.states.add(String(r.state || ''));
+        otpByVenue.set(name, v);
+      }
+      const last = ((otpRunRes.data ?? []) as Array<{ ran_at: string; ok: boolean; errors: unknown; skipped: number }>)[0];
+      const lastAt = last ? new Date(last.ran_at).getTime() : NaN;
+      if (!last) otpAuditStale = 'The nightly loyalty code text check has never run';
+      else if (!Number.isFinite(lastAt) || lastAt < Date.now() - otpStaleMin * 60_000) {
+        otpAuditStale = `The nightly loyalty code text check last ran ${Number.isFinite(lastAt) ? Math.round((Date.now() - lastAt) / 3_600_000) + ' hours ago' : 'at an unknown time'}`;
+      } else if (!last.ok) {
+        const errs = Array.isArray(last.errors) ? (last.errors as unknown[]).map(String) : [];
+        if (errs.length) otpAuditIncomplete = errs.slice(0, 2).join('; ').slice(0, 240);
+        else if (Number(last.skipped) > 0) otpAuditIncomplete = `${last.skipped} venue${Number(last.skipped) === 1 ? ' was' : 's were'} not reached in time`;
+      }
+    }
+
     return json({
       ok: true,
       at: new Date().toISOString(),
@@ -145,6 +188,9 @@ Deno.serve(async (req) => {
       stockDead: byVenue(stockBy((r) => r.dead)),
       stockHeld: byVenue(stockBy((r) => r.held_old)),
       stockWatchAvailable: !stockRes.error,
+      otpNotReady: [...otpByVenue.values()].map((v) => ({ venue: v.venue, count: v.count, detail: [...v.states].join(', ') })),
+      otpAuditStale,
+      otpAuditIncomplete,
     });
   } catch (e) {
     // Threw rather than answered: the database is not reachable from here.

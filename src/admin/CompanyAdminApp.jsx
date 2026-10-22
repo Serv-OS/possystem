@@ -246,6 +246,8 @@ function AdminPanel({ authUser }) {
   // v5.5.310: provision the Platform DB mirror (company + location) for an ops
   // location id. Idempotent server-side. Logs but doesn't block on failure —
   // the ops location is already created; provisioning can be retried.
+  // Returns { ok, service }: `service` is the venue's loyalty code text service after provisioning
+  // (22 Oct 2026, { ok, state, words }), null when the function did not answer.
   const provisionLocation = async (opsLocationId) => {
     try {
       const token = await getAccessToken();
@@ -256,8 +258,26 @@ function AdminPanel({ authUser }) {
       });
       const pr = await resp.json().catch(() => ({}));
       if (!resp.ok) console.warn('[provisionLocation] failed:', pr?.error);
-      return resp.ok;
-    } catch (pe) { console.warn('[provisionLocation] threw:', pe?.message); return false; }
+      const service = pr?.service || null;
+      return { ok: resp.ok, service };
+    } catch (pe) { console.warn('[provisionLocation] threw:', pe?.message); return { ok: false, service: null }; }
+  };
+
+  // 22 Oct 2026: a venue's loyalty code texts carry its name. After a rename, loyalty-otp
+  // ensure_service renames (or makes) the venue's own text service and answers in plain words.
+  // Best effort: the nightly check and Back Office's Fix button cover a refusal.
+  const ensureOtpService = async (opsLocationId) => {
+    try {
+      const token = await getAccessToken();
+      const resp = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/loyalty-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ action: 'ensure_service', location_id: opsLocationId }),
+      });
+      const r = await resp.json().catch(() => ({}));
+      if (!resp.ok) { console.warn('[ensureOtpService] refused:', r?.error); return null; }
+      return r || null;
+    } catch (e) { console.warn('[ensureOtpService] threw:', e?.message); return null; }
   };
 
   // ── Rename org ──────────────────────────────────────────────────────────────
@@ -314,10 +334,13 @@ function AdminPanel({ authUser }) {
   // ── Rename location ──────────────────────────────────────────────────────────
   const saveRenameLocation = async () => {
     if (!editingLoc?.name?.trim()) return;
-    await sbFetch(`locations?id=eq.${editingLoc.id}`, { method:'PATCH', body:{ name: editingLoc.name.trim() }, prefer:'' });
+    const renamedId = editingLoc.id;
+    await sbFetch(`locations?id=eq.${renamedId}`, { method:'PATCH', body:{ name: editingLoc.name.trim() }, prefer:'' });
     setEditingLoc(null);
     await loadLocations(selectedOrg.id);
-    ok('✓ Location renamed');
+    const service = await ensureOtpService(renamedId);
+    if (service && service.ok === false) err(`✓ Location renamed, but ${service.words} Open Back Office > Messages > Verification code and press Fix.`);
+    else ok(`✓ Location renamed${service?.words ? `. ${service.words}` : ''}`);
   };
 
   // ── Delete location ──────────────────────────────────────────────────────────
@@ -382,7 +405,7 @@ function AdminPanel({ authUser }) {
     // cards, online ordering, QR, Challenge 21, message templates and location
     // settings can resolve its company. Without this the location errors with
     // "No platform row found for ops location ...".
-    await provisionLocation(loc.id);
+    const provisioned = await provisionLocation(loc.id);
     const maxDevices = parseInt(form.maxDevices) || 3;
     await sbFetch('subscriptions', { method:'POST', body:{ org_id:selectedOrg.id, location_id:loc.id, plan:'free', gmv_this_month:0, billing_period_start:new Date().toISOString().slice(0,10) } });
     await sbFetch('location_features', { method:'POST', body:{ location_id:loc.id, feature:'max_devices', enabled:true, price_per_month:maxDevices } });
@@ -396,9 +419,11 @@ function AdminPanel({ authUser }) {
       insertRows: (rows) => sbFetch('tax_rates', { method:'POST', body: rows }),
     });
     const taxWords = seedWords(taxSeed, `"${loc.name}"`);
+    const serviceWords = provisioned?.service?.words || '';
     setWorking(false);
     if (!taxSeed.ok) err(`✓ "${loc.name}" created, but ${taxWords}`);
-    else ok(`✓ "${loc.name}" created${taxWords ? `. ${taxWords}` : ''}`);
+    else if (provisioned?.service && provisioned.service.ok === false) err(`✓ "${loc.name}" created, but ${serviceWords} Open Back Office > Messages > Verification code and press Fix.`);
+    else ok(`✓ "${loc.name}" created${taxWords ? `. ${taxWords}` : ''}${serviceWords ? `. ${serviceWords}` : ''}`);
     setForm(p => ({ ...p, locName:'', locAddress:'', maxDevices:'' }));
     setSection('org-detail');
     await loadLocations(selectedOrg.id);

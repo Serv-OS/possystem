@@ -64,16 +64,28 @@ export default function MultiLocation() {
           showToast(`Location NOT saved — ${opsFail.message}`, 'error');
           return;
         }
+        let serviceNote = null;
         try {
           // Via the location-admin edge fn (service_role) — the browser no longer
           // holds UPDATE on platform.locations. It resolves the platform row from
           // the ops id (ops_location_id first, then legacy id).
-          const { data: pRow, error: pErr } = await saveLocation(editId, { name });
+          const { data: pRow, service, error: pErr } = await saveLocation(editId, { name });
           if (pErr) throw pErr;
           if (!pRow) throw new Error('the platform DB returned no row');
+          // 22 Oct 2026: the venue's loyalty code texts carry its name, so the rename also renames
+          // the venue's own text service. When that could not be done the operator is told where
+          // the Fix button is, and the nightly check tries again.
+          if (service && service.ok === false) {
+            serviceNote = `${service.words} Open Messages > Verification code and press Fix.`;
+          }
         } catch (e) {
           reportSave('location (online ordering name)', e);
           showToast('Saved, but the online-ordering name didn’t sync — try again', 'error');
+          setView('overview');
+          return;
+        }
+        if (serviceNote) {
+          showToast(`Location updated. ${serviceNote}`, 'error');
           setView('overview');
           return;
         }
