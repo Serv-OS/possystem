@@ -66,7 +66,7 @@ test('a marker that is not an object is not a shell', () => {
 // ── the two inputs that can reach the camera ────────────────────────────────
 
 test('no photo input anywhere hard codes capture again', () => {
-  for (const rel of ['../surfaces/OperationsSurface.jsx', '../backoffice/sections/Invoices.jsx']) {
+  for (const rel of ['../surfaces/OperationsSurface.jsx', '../backoffice/sections/purchasing/InvoicesSite.jsx']) {
     const src = read(rel);
     // Comments may name the attribute; an element may not carry it.
     const code = src.replace(/\{\/\*[\s\S]*?\*\/\}/g, '').replace(/\/\/[^\n]*/g, '');

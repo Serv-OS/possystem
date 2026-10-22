@@ -36,6 +36,7 @@ import { Btn, Pill, Modal, Sheet, Popover, SiteChecklist, Field, Notice, TableWr
 import LockLine from '../LockLine';
 import UntickChoiceModal from './UntickChoiceModal';
 import StockTab from './StockTab';
+import ParByWeekdayPopover from './ParByWeekdayPopover';
 
 const HINTS = Object.freeze({
   price: 'What this site is charged for the pack. Grey means it follows the company price.',
@@ -106,6 +107,7 @@ export default function ItemSitesTab({ detail, reload, focusSiteId = null, orgCt
    * saved, or { error } (never a bare false, so CellInput shows the words, never the saved tick).
    * A typed cell (cell: true) shows the words under itself; a select or tick shows them under the row.
    */
+  const [byDay, setByDay] = useState(null); // v5.11.96 (Drop 3): the By day popover's site
   const saveSite = async (m, patch, okWords, key, { cell = false } = {}) => {
     setBusy(key);
     setRowError(m.siteId, null);
@@ -357,6 +359,8 @@ export default function ItemSitesTab({ detail, reload, focusSiteId = null, orgCt
                     <CellInput value={m[k]} width={60} ariaLabel={`${k === 'par' ? 'Par' : k === 'reorder' ? 'Reorder at' : 'Min'} at ${m.name}`}
                       disabled={!m.canFacts || busy === `${m.siteId}|${k}`} onCommit={(v) => commitPar(m, k, v)} />
                     <span style={unitWord}>{packWordFor(m[k] ?? 2, m.countPack, item.base_unit)}</span>
+                    {k === 'par' && m.canFacts && <Btn small kind="link" onClick={() => setByDay(m)} title={`Par by day of the week, or days of cover, at ${m.name}`}>By day</Btn>}
+                    {k === 'par' && byDay?.siteId === m.siteId && (() => { const row = (detail?.sites || []).find((x) => x.location_id === m.siteId) || {}; return <ParByWeekdayPopover item={item} site={{ siteId: m.siteId, name: m.name, parByWeekday: row.par_by_weekday || null, coverDays: row.cover_days ?? null, unit: item.base_unit }} onSave={(patch) => saveSite(m, patch, `Par by day saved for ${m.name}.`, `${m.siteId}|par`)} onClose={() => setByDay(null)} />; })()}
                   </td>
                 ))}
                 <td style={{ ...tdStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>

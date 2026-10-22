@@ -3,10 +3,13 @@
  *
  *  1. Choose the file. It is read here (importMappers.js): a Nory or MarketMan export is told apart
  *     by its headings, and every kind the file holds is found (stock items, suppliers, supplier
- *     items and prices, pars). A recipe file is only skipped: recipes come with the recipe update.
+ *     items and prices, pars and, from Drop 2, recipes: one ingredient a line, grouped into one
+ *     row per recipe).
  *  2. The rows go up in chunks of 2,000 (stock_import_stage) and the database checks each one.
- *  3. The check screen: '<n> new items, <n> price changes, <n> problems', the columns that were not
- *     used, every row with what will happen to it, and the sites new items start at.
+ *  3. The check screen: '<n> new items, <n> price changes, <n> problems' (plus '<n> new recipes,
+ *     <n> changed recipes' when the file has recipes), the columns that were not used, every row
+ *     with what will happen to it, and the sites new items start at. A recipe is never linked to a
+ *     till product on import: Recipe missing offers that with one click.
  *  4. Import: the save queue does it (stock_import_commit); '<done> of <total> rows done'.
  * Nothing is written to a site until Import, and nothing writes an on hand, a cost or the ledger
  * except through the normal cost step.
@@ -21,7 +24,7 @@ import { stockApi } from '../../../../lib/stock/stockApi';
 import { pollJobs } from '../../../../lib/stock/companyData';
 import { parseCsv, detectSource, mapFile, stageFile, chunk, missingWords, unusedWords, fileRowOf } from '../../../../lib/stock/importMappers';
 import {
-  importCountWords, importKey, importKindsWords, importProblems, importProgressWords, importRecipeRows, stageWithSupplier,
+  importCountWords, importKey, importKindsWords, importProblems, importProgressWords, stageWithSupplier,
 } from '../../../../lib/stock/itemListRules';
 import { useStockScope } from '../../../StockScope';
 import { Btn, Modal, Segmented, SiteChecklist, Field, Notice, Pill, WindowedList, ErrorLine, ui } from '../stockUi';
@@ -146,8 +149,8 @@ export default function ImportModal({ orgId, sites, kind = null, source = null, 
 
   const counts = check?.counts || {};
   const problems = importProblems(counts) || checkRows.filter((r) => r.action === 'problem').length;
-  // The database counts actions, not kinds; the file's own count says how many recipe rows it skips.
-  const recipes = importRecipeRows(counts) || importRecipeRows(fileCounts);
+  // The file's own count of recipes, for the line under the headline while the database counts actions.
+  const recipesInFile = Number(fileCounts?.recipe) || 0;
   const title = supplier ? `Import price list for ${supplier.name}` : 'Import';
   const done = job?.status === 'done';
   const failed = job?.status === 'failed';
@@ -167,11 +170,11 @@ export default function ImportModal({ orgId, sites, kind = null, source = null, 
         <>
           {!source && <div style={{ marginBottom: 12 }}><Segmented value={from} onChange={setFrom} options={SOURCES} /></div>}
           <Field label="File" hint={from === 'csv'
-            ? 'A CSV file with headings in the first row: stock items, suppliers, supplier items and prices, or pars.'
+            ? 'A CSV file with headings in the first row: stock items, suppliers, supplier items and prices, pars, or recipes (one ingredient a line).'
             : 'The export file from Nory or MarketMan, saved as CSV.'}>
             <input type="file" accept=".csv,text/csv" onChange={(e) => { setFile(e.target.files?.[0] || null); setError(null); }} aria-label="File" />
           </Field>
-          <div style={ui.sub}>Nothing changes until you press Import on the next screen. Recipes come in with the recipe update.</div>
+          <div style={ui.sub}>Nothing changes until you press Import on the next screen. Imported recipes are not linked to a till product: Recipe missing offers that.</div>
         </>
       )}
 
@@ -181,7 +184,7 @@ export default function ImportModal({ orgId, sites, kind = null, source = null, 
         <>
           <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 6 }}>{importCountWords(counts)}</div>
           {found && <div style={{ ...ui.sub, marginBottom: 4 }}>This file has: {found}.</div>}
-          {recipes > 0 && <div style={{ ...ui.sub, marginBottom: 4 }}>Recipes come in with the recipe update. {recipes === 1 ? '1 recipe row is' : `${recipes} recipe rows are`} skipped.</div>}
+          {recipesInFile > 0 && <div style={{ ...ui.sub, marginBottom: 4 }}>{recipesInFile === 1 ? '1 recipe' : `${recipesInFile} recipes`} in the file. Each recipe's lines are checked against your stock items by name or SKU. No till product is linked on import.</div>}
           {unknown.length > 0 && <div style={{ ...ui.sub, marginBottom: 4 }}>{unusedWords(unknown)}</div>}
           {readProblems.length > 0 && (
             <div style={{ ...ui.sub, marginBottom: 4 }}>

@@ -109,6 +109,9 @@ export default function CompanyAdmin() {
     // so loyalty, gift cards, online ordering, QR, Challenge 21, message
     // templates and location settings can resolve its company. Without this the
     // location errors with "No platform row found for ops location ...".
+    // 22 Oct 2026: provision-location also makes the venue's own loyalty code text service
+    // and says how it went (`service.words`); shown in the result line.
+    let serviceWords = '';
     try {
       const { data: { session } } = await supabase.auth.getSession();
       const resp = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/provision-location`, {
@@ -118,6 +121,7 @@ export default function CompanyAdmin() {
       });
       const pr = await resp.json().catch(() => ({}));
       if (!resp.ok) console.warn('[CompanyAdmin] provision-location failed:', pr?.error);
+      if (pr?.service && pr.service.words) serviceWords = pr.service.words;
     } catch (pe) { console.warn('[CompanyAdmin] provision-location threw:', pe?.message); }
 
     // If the current user has no location/org assigned yet, assign them to this
@@ -159,7 +163,7 @@ export default function CompanyAdmin() {
     const taxWords = seedWords(taxSeed, `"${loc.name}"`);
 
     setWorking(false);
-    setSuccess(`✓ Location "${loc.name}" created${taxWords ? `. ${taxWords}` : ''}`);
+    setSuccess(`✓ Location "${loc.name}" created${taxWords ? `. ${taxWords}` : ''}${serviceWords ? `. ${serviceWords}` : ''}`);
     if (!taxSeed.ok) setError(taxWords);
     setForm(f => ({ ...f, locName: '', locAddress: '' }));
     await loadLocations(selectedOrg.id);

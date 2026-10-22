@@ -30,8 +30,12 @@ export function qrFileName(label) {
   return `qr-table-${base}.jpg`;
 }
 
-/** Draw one labelled table QR and return it as a JPEG data URL. Async (QR encode). */
-export async function renderTableQrJpeg({ url, label, footer }) {
+/**
+ * Draw one labelled table QR and return it as a JPEG data URL. Async (QR encode).
+ * `title` replaces the big "Table <label>" line with the venue's own words (v5.11.97: the
+ * Counter collect QR prints exactly what the venue typed, never "Table ...").
+ */
+export async function renderTableQrJpeg({ url, label, footer, title = null }) {
   const qrCanvas = document.createElement('canvas');
   await QRCode.toCanvas(qrCanvas, url, { width: 720, margin: 2, errorCorrectionLevel: 'M' });
   const out = document.createElement('canvas');
@@ -45,8 +49,15 @@ export async function renderTableQrJpeg({ url, label, footer }) {
   ctx.textAlign = 'center';
   ctx.font = '700 28px -apple-system, system-ui, sans-serif';
   ctx.fillText('SCAN TO ORDER', QR_W / 2, 830);
-  ctx.font = '900 84px -apple-system, system-ui, sans-serif';
-  ctx.fillText(`Table ${label || '?'}`, QR_W / 2, 920);
+  const big = title ? String(title) : `Table ${label || '?'}`;
+  // Long venue words shrink to fit the card rather than run off its edges.
+  let size = 84;
+  ctx.font = `900 ${size}px -apple-system, system-ui, sans-serif`;
+  while (size > 36 && ctx.measureText(big).width > QR_W - 60) {
+    size -= 4;
+    ctx.font = `900 ${size}px -apple-system, system-ui, sans-serif`;
+  }
+  ctx.fillText(big, QR_W / 2, 920);
   ctx.font = '500 18px -apple-system, system-ui, sans-serif';
   ctx.fillStyle = '#666';
   ctx.fillText(String(footer || ''), QR_W / 2, 970);

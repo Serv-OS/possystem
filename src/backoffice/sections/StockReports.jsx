@@ -25,6 +25,8 @@ import { toCsv, downloadCsv } from './reports/_csv';
 import { fetchInventoryItems, fetchMovementsRange, fetchSuppliers, movementLabel } from '../../lib/stock/data';
 import { fetchBatches } from '../../lib/stock/production';
 import { fetchRecipes, buildCostingCtx, costRecipeWith } from '../../lib/stock/recipes';
+import { stockApi } from '../../lib/stock/stockApi';
+import { readPlateCostMap } from '../../lib/stock/plateCostsRead';
 import { foodCostPct, gpAmount, gpPct, costBreakdownByPurchasedItem, resolveItemSupplierId } from '../../lib/stock/costing';
 import { fetchClosedChecksRange } from '../../lib/db';
 import { loadingText, faultText } from '../../lib/pagedRead';
@@ -70,6 +72,7 @@ export default function StockReports({ siteId = null } = {}) {
   const [suppliers, setSuppliers] = useState([]);
   const [recipes, setRecipes] = useState([]);
   const [ctx, setCtx] = useState({ itemsById: {}, recipesByOutputItem: {} });
+  const [plateCosts, setPlateCosts] = useState(null);   // v5.11.93: { data: Map, needsUpdate, error } from stock_plate_costs
   // v5.11.65: From/To are venue days and the range runs business day to business day (06:00
   // to 06:00 by default), never the device's midnight or the UTC date. Until the venue clock
   // arrives the London default stands; it is replaced as soon as the config is read.
@@ -106,10 +109,11 @@ export default function StockReports({ siteId = null } = {}) {
       setClock({ timezone: tz, businessDayStart: cfg?.businessDayStart || '06:00' });
       setFrom(daysAgoYmd(30, tz)); setTo(daysAgoYmd(0, tz));
     }).catch(() => {});
-    const [{ data: its }, { data: recs }, c, sup] = await Promise.all([
+    const [{ data: its }, { data: recs }, c, sup, pc] = await Promise.all([
       fetchInventoryItems(loc), fetchRecipes(loc), buildCostingCtx(loc), fetchSuppliers(loc).catch(() => ({ data: [] })),
+      readPlateCostMap(stockApi, loc),   // v5.11.93 (Drop 2): the database's plate costs for Recipe GP
     ]);
-    setItems(its || []); setRecipes(recs || []); setCtx(c); setSuppliers(sup?.data || []); setLoading(false);
+    setItems(its || []); setRecipes(recs || []); setCtx(c); setSuppliers(sup?.data || []); setPlateCosts(pc); setLoading(false);
   }, [locId]);
   useEffect(() => { loadBase(); /* eslint-disable-next-line */ }, []);
 
@@ -196,7 +200,7 @@ export default function StockReports({ siteId = null } = {}) {
       {loading && <div style={{ color:'var(--t3)', fontSize:13 }}>Loading…</div>}
       {!loading && tab === 'Valuation'   && <Valuation items={items} supplierName={supplierName}/>}
       {!loading && tab === 'By area'     && <ByArea items={items} byArea={byArea} onRefresh={loadByArea}/>}
-      {!loading && tab === 'Recipe GP'   && <RecipeGP recipes={recipes} ctx={ctx} menuItems={menuItems} taxRates={taxRates}/>}
+      {!loading && tab === 'Recipe GP'   && <RecipeGP recipes={recipes} ctx={ctx} menuItems={menuItems} taxRates={taxRates} plateCosts={plateCosts}/>}
       {!loading && tab === 'Production'  && <ProductionReport itemName={itemName} venueTz={clock.timezone} locId={locId}/>}
       {!loading && rangeBusy && <div style={{ color:'var(--t3)', fontSize:13 }}>{loadingText(rangeLoad)}</div>}
       {!loading && rangeBad && (
@@ -313,7 +317,15 @@ function Valuation({ items, supplierName }) {
   );
 }
 /* ── 2. Recipe GP ───────────────────────────────────────────────────────────*/
-function RecipeGP({ recipes, ctx, menuItems, taxRates = [] }) {
+// v5.11.93 (multi site stock Drop 2, contract 3.1): the plate cost of a linked recipe is the
+// database's (stock_plate_costs, the same figure the drainer and the recipe screens use). Today's
+// maths run only before the migration (needsUpdate). A read that failed shows no cost, never a wrong one.
+const plateCostOf = (pc, r, ctx) => {
+  if (!pc || pc.needsUpdate) { const c = costRecipeWith(r, ctx); return c?.error ? null : c.totalCost; }
+  if (!pc.data || !r.menuItemId) return null;
+  return pc.data.get(String(r.menuItemId)) ?? null;
+};
+function RecipeGP({ recipes, ctx, menuItems, taxRates = [], plateCosts = null }) {
   const [filter, setFilter] = useState('all');
   const [sort, onSort] = useSort('gpPct');
   const byId = useMemo(() => { const m = {}; menuItems.forEach(mi => { m[String(mi.id)] = mi; }); return m; }, [menuItems]);
@@ -356,8 +368,7 @@ function RecipeGP({ recipes, ctx, menuItems, taxRates = [] }) {
     if (mi.type === 'subitem') return false;
     return true;
   }).map(r => {
-    const c = costRecipeWith(r, ctx);
-    const plate = c?.error ? null : c.totalCost;
+    const plate = plateCostOf(plateCosts, r, ctx);
     const price = netSell(byId[String(r.menuItemId)]);
     const ok = price != null && plate != null && price > 0;
     return {
@@ -368,7 +379,7 @@ function RecipeGP({ recipes, ctx, menuItems, taxRates = [] }) {
       target: r.gpTargetPct ?? null,
       unpriced: plate != null && !(price > 0),
     };
-  }), [recipes, ctx, byId, netSell, variantParentIds]);
+  }), [recipes, ctx, byId, netSell, variantParentIds, plateCosts]);
 
   const filtered = useMemo(() => filter === 'below'
     ? base.filter(r => r.gpPct != null && r.gpPct < (r.target ?? 60))
@@ -400,6 +411,7 @@ function RecipeGP({ recipes, ctx, menuItems, taxRates = [] }) {
   const csv = base.map(r => ({ dish:r.dish, price:r.price ?? '', cost:r.cost ?? '', foodPct:r.foodPct ?? '', gp:r.gp ?? '', gpPct:r.gpPct ?? '', target:r.target ?? '' }));
   return (
     <div>
+      {plateCosts?.error && !plateCosts.needsUpdate && <Callout>Could not read plate costs from the database ({plateCosts.error.message}). Reload to try again.</Callout>}
       <KpiBand items={[
         { label:'Average GP %', value: avg == null ? '—' : `${avg.toFixed(1)}%`, sub:`across ${priced.length} priced dish${priced.length===1?'':'es'}` },
         { label:'Best margin', value: best ? `${best.gpPct}%` : '—', sub: best?.dish, tone: best ? 'good' : undefined },

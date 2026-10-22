@@ -6,8 +6,8 @@
 //     once; peekOpen only looks.
 //   - A supplier's Items tab opens an item's page, and an item's Suppliers tab opens a supplier's
 //     page, each only when the login can open that route.
-//   - Both routers open a record asked for on arrival, on the multi site branch only: a one site
-//     company's branch comes first and is untouched.
+//   - The routers open a record asked for on arrival, on the multi site branch only: a one site
+//     company's branch comes first and is untouched (Drop 2, v5.11.93: Recipes too, { recipeId, tab }).
 // Run: npm test.
 
 import { test } from 'node:test';
@@ -21,6 +21,7 @@ const read = (rel) => fs.readFileSync(path.join(here, rel), 'utf8');
 const SCOPE = read('../../backoffice/StockScope.jsx');
 const ITEMS = read('../../backoffice/sections/StockItems.jsx');
 const SUPPLIERS = read('../../backoffice/sections/Suppliers.jsx');
+const RECIPES = read('../../backoffice/sections/Recipes.jsx');   // v5.11.93 (Drop 2): the recipes router opens a record too
 const SUPPLIER_ITEMS = read('../../backoffice/sections/stock/suppliers/SupplierItemsTab.jsx');
 const ITEM_SUPPLIERS = read('../../backoffice/sections/stock/items/ItemSuppliersTab.jsx');
 const USED_IN = read('../../backoffice/sections/stock/items/ItemUsedInTab.jsx');
@@ -39,7 +40,7 @@ test('StockScope: a record waits only for a route this login can open, and is ta
 });
 
 test('the routers open a record asked for only after the one site branch', () => {
-  for (const [src, route, key] of [[ITEMS, 'stock-items', 'itemId'], [SUPPLIERS, 'suppliers', 'id']]) {
+  for (const [src, route, key] of [[ITEMS, 'stock-items', 'itemId'], [SUPPLIERS, 'suppliers', 'id'], [RECIPES, 'recipes', 'recipeId']]) {
     const body = src.slice(src.indexOf('export default function '));
     const oneSite = body.indexOf('if (!sc.multi) return ');
     const arrival = body.indexOf(`if (!open && sc.peekOpen?.('${route}')?.${key}) return <OpenOnArrival take={sc.takeOpen} onOpen={setOpen} />;`);
@@ -59,7 +60,21 @@ test('a supplier\'s Items tab opens the item page; an item\'s Suppliers tab open
 });
 
 test('no em or en dash in this test or the files it reads', () => {
-  for (const src of [SCOPE, ITEMS, SUPPLIERS, SUPPLIER_ITEMS, ITEM_SUPPLIERS, USED_IN, LIST, read('./stockLinks.test.js')]) {
+  for (const src of [SCOPE, ITEMS, SUPPLIERS, RECIPES, SUPPLIER_ITEMS, ITEM_SUPPLIERS, USED_IN, LIST, read('./stockLinks.test.js')]) {
     assert.doesNotMatch(src, /[\u2013\u2014]/);
   }
+});
+
+test('Drop 3 (v5.11.96): the Overview alerts go to their screen with the record, and Transfers opens one on arrival', () => {
+  const overview = read('../../backoffice/sections/stock/OverviewAllSites.jsx');
+  // a site at a time route moves the picker to the alert's site first; every alert asks canOpen
+  assert.match(overview, /const SITE_ROUTES = new Set\(\['stock-counts', 'stock-transfers'\]\);/);
+  // the alert's focus in the shape each screen reads (map 8.4 step 13: a price rise focuses its row)
+  assert.match(overview, /sc\.go\(a\.route, \{ open: normFocus\(a\.route, a\.focus\) \}\);/);
+  assert.match(overview, /\{sc\.canOpen\(a\.route\) && <Btn small kind="soft" onClick=\{\(\) => follow\(a\)\}>Open<\/Btn>\}/);
+  const transfers = read('../../backoffice/sections/StockTransfers.jsx');
+  // { transferId } from an alert or Deliveries, taken once, only on the multi site lines
+  assert.match(transfers, /const o = sc\.takeOpen\?\.\('stock-transfers'\); if \(o\?\.transferId\) setTimeout\(\(\) => setView\(\{ kind: 'open', id: o\.transferId \}\), 0\);[^\n]*\/\/ d3 multi/);
+  // the go() rule is the guarded one: a route the login cannot open leaves nothing waiting
+  assert.match(SCOPE, /openRef\.current = allowed && open \? \{ route, value: open \} : null;/);
 });

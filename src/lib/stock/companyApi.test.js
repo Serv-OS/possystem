@@ -1,6 +1,7 @@
 /**
- * companyApi.test.js: createStockApi, the one way the Drop 1 screens talk to the database
- * (v5.11.89, multi site stock Drop 1, contract 2.2). Run: npm test.
+ * companyApi.test.js: createStockApi, the one way the Drop 1 and Drop 2 screens talk to the database
+ * (v5.11.89, multi site stock Drop 1, contract 2.2; v5.11.93 Drop 2 adds the recipe, batch and prep,
+ * allergen and plate cost calls). Run: npm test.
  *
  * A stand in client records every call: each method names its function and sends exactly the
  * contract's arguments; a missing function is needsUpdate with the NEEDS_UPDATE words (never a
@@ -9,13 +10,16 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createStockApi, callRead, callSave, pollJobs, answerOf, needsUpdateError } from './companyData.js';
+import { createStockApi, callRead, callSave, pollJobs, answerOf, needsUpdateError, sectionOfEntity, ymdDaysAgo, inboxPathOf, INBOX_BUCKET } from './companyData.js';
 import { NEEDS_UPDATE } from './saveRules.js';
 
 const ORG = 'b1000000-0000-4000-8000-000000000001';
 const L1 = 'a1000000-0000-4000-8000-000000000001';
 const L2 = 'a1000000-0000-4000-8000-000000000002';
 const IT = 'e1000000-0000-4000-8000-000000000001';
+const RC = 'c1000000-0000-4000-8000-000000000001';   // a company recipe id (Drop 2)
+const PO = 'd1000000-0000-4000-8000-000000000001';   // a purchase order (Drop 3)
+const TR = 'f1000000-0000-4000-8000-000000000001';   // a transfer (Drop 3)
 
 /** rpc answers by function name (a value or a function of the args), and table answers by table. */
 function fakeClient({ rpc = {}, tables = {} } = {}) {
@@ -107,6 +111,135 @@ const CASES = [
   [(a) => a.setStockControl('u1', 'sites_full'), 'set_stock_control', { p_user: 'u1', p_level: 'sites_full' }],
   [(a) => a.suggestChange('item', IT, 'Shelf life is 7 days'), 'stock_suggest_change', { p_entity: 'item', p_id: IT, p_text: 'Shelf life is 7 days' }],
   [(a) => a.resyncSite(L2), 'stock_resync_site', { p_loc: L2 }],
+  // ── Drop 2 (v5.11.93, contract 2.2): recipes, batch and prep, allergens ──
+  [(a) => a.recipesPage({ orgId: ORG, sites: [L1], search: 'burger', filters: { kind: 'dish', on_at: L1 }, after: { k: 'b', id: RC } }), 'stock_recipes_page',
+    { p_org: ORG, p_sites: [L1], p_search: 'burger', p_filters: { kind: 'dish', on_at: L1 }, p_after: { k: 'b', id: RC }, p_limit: 100 }],
+  [(a) => a.recipesPage({ orgId: ORG }), 'stock_recipes_page', { p_org: ORG, p_sites: null, p_search: null, p_filters: null, p_after: null, p_limit: 100 }],
+  [(a) => a.recipesPage({ orgId: ORG, limit: 20 }), 'stock_recipes_page', { p_org: ORG, p_sites: null, p_search: null, p_filters: null, p_after: null, p_limit: 20 }],
+  [(a) => a.recipeDetail(RC), 'stock_recipe_detail', { p_recipe: RC }],
+  [(a) => a.recipeCost(RC), 'stock_recipe_cost', { p_recipe: RC, p_sites: null, p_order_type: null }],
+  [(a) => a.recipeCost(RC, [L1, L2], 'takeaway'), 'stock_recipe_cost', { p_recipe: RC, p_sites: [L1, L2], p_order_type: 'takeaway' }],
+  [(a) => a.plateCosts(L1), 'stock_plate_costs', { p_loc: L1, p_after: null, p_limit: 1000 }],
+  [(a) => a.plateCosts(L1, 'm-0400'), 'stock_plate_costs', { p_loc: L1, p_after: 'm-0400', p_limit: 1000 }],
+  [(a) => a.recipeMissing({ orgId: ORG, sites: [L2], after: { k: 'x', id: 'm9' } }), 'stock_recipe_missing', { p_org: ORG, p_sites: [L2], p_after: { k: 'x', id: 'm9' }, p_limit: 100 }],
+  [(a) => a.recipeMissing({ orgId: ORG }), 'stock_recipe_missing', { p_org: ORG, p_sites: null, p_after: null, p_limit: 100 }],
+  [(a) => a.recipeFacts(RC), 'stock_recipe_facts', { p_recipe: RC, p_sites: null }],
+  [(a) => a.recipeFacts(RC, [L1]), 'stock_recipe_facts', { p_recipe: RC, p_sites: [L1] }],
+  [(a) => a.recipeCard(L1, { menuItemId: 'm1' }), 'stock_recipe_card', { p_loc: L1, p_menu_item_id: 'm1', p_recipe: null }],
+  [(a) => a.recipeCard(L1, { recipeId: RC }), 'stock_recipe_card', { p_loc: L1, p_menu_item_id: null, p_recipe: RC }],
+  [(a) => a.recipeCard(L1), 'stock_recipe_card', { p_loc: L1, p_menu_item_id: null, p_recipe: null }],
+  [(a) => a.prepList(L1), 'stock_prep_list', { p_loc: L1, p_day: null }],
+  [(a) => a.prepList(L1, '2026-11-02'), 'stock_prep_list', { p_loc: L1, p_day: '2026-11-02' }],
+  [(a) => a.batchHow({ orgId: ORG, sites: [L1, L2], search: 'sauce', after: { k: 's', id: RC } }), 'stock_batch_how', { p_org: ORG, p_sites: [L1, L2], p_search: 'sauce', p_after: { k: 's', id: RC }, p_limit: 100 }],
+  [(a) => a.batchHow({ orgId: ORG }), 'stock_batch_how', { p_org: ORG, p_sites: null, p_search: null, p_after: null, p_limit: 100 }],
+  [(a) => a.menuProducts(ORG), 'stock_recipe_menu_products', { p_org: ORG, p_search: null, p_after: null, p_limit: 100 }],
+  [(a) => a.menuProducts(ORG, 'latte', { k: 'l', id: 'p1' }), 'stock_recipe_menu_products', { p_org: ORG, p_search: 'latte', p_after: { k: 'l', id: 'p1' }, p_limit: 100 }],
+  [(a) => a.saveRecipe({ recipe: { id: RC, name: 'Test Burger', location_id: L1 }, lines: [{ component_item_id: IT, qty: 1, unit: 'each' }], version: 3 }), 'stock_save_recipe',
+    { p_recipe: { id: RC, name: 'Test Burger', location_id: L1 }, p_lines: [{ component_item_id: IT, qty: 1, unit: 'each' }], p_version: 3, p_section: 'produce' }],
+  [(a) => a.saveRecipe({ recipe: { name: 'Test Burger', kind: 'dish' }, sites: [{ location_id: L1, on: true, menu_item_id: 'm1' }] }), 'stock_save_recipe',
+    { p_recipe: { name: 'Test Burger', kind: 'dish', sites: [{ location_id: L1, on: true, menu_item_id: 'm1' }] }, p_lines: null, p_version: null, p_section: 'produce' }],
+  [(a) => a.saveRecipe({ recipe: { id: RC, gp_target_pct: 70 }, version: 4, section: 'inventory' }), 'stock_save_recipe', { p_recipe: { id: RC, gp_target_pct: 70 }, p_lines: null, p_version: 4, p_section: 'inventory' }],
+  [(a) => a.archiveRecipe(RC, 5), 'stock_archive_recipe', { p_recipe: RC, p_version: 5, p_archived: true, p_section: 'produce' }],
+  [(a) => a.archiveRecipe(RC, 5, false), 'stock_archive_recipe', { p_recipe: RC, p_version: 5, p_archived: false, p_section: 'produce' }],
+  [(a) => a.setRecipeSites(RC, [{ location_id: L2, on: true, menu_item_id: null }], 5), 'stock_set_recipe_sites', { p_recipe: RC, p_changes: [{ location_id: L2, on: true, menu_item_id: null }], p_version: 5, p_section: 'produce' }],
+  [(a) => a.setRecipeSites(RC, null, null), 'stock_set_recipe_sites', { p_recipe: RC, p_changes: [], p_version: null, p_section: 'produce' }],
+  [(a) => a.linkProducts([{ location_id: L1, menu_item_id: 'm1', recipe_id: RC }]), 'stock_recipe_link_products', { p_links: [{ location_id: L1, menu_item_id: 'm1', recipe_id: RC }], p_section: 'produce' }],
+  [(a) => a.batchSetHow(RC, L2, 'to_order', 6), 'stock_batch_set_how', { p_recipe: RC, p_loc: L2, p_how: 'to_order', p_version: 6, p_section: 'produce' }],
+  [(a) => a.saveOptionRule({ recipe_id: RC, kind: 'remove', option_name: 'No cheese', removes_item_id: IT }), 'stock_save_option_rule',
+    { p_rule: { recipe_id: RC, kind: 'remove', option_name: 'No cheese', removes_item_id: IT }, p_version: null, p_section: 'produce' }],
+  [(a) => a.saveOptionRule({ id: 'r1', recipe_id: RC, kind: 'replace' }, 2), 'stock_save_option_rule', { p_rule: { id: 'r1', recipe_id: RC, kind: 'replace' }, p_version: 2, p_section: 'produce' }],
+  [(a) => a.archiveOptionRule('r1', 2), 'stock_archive_option_rule', { p_id: 'r1', p_version: 2, p_archived: true, p_section: 'produce' }],
+  [(a) => a.archiveOptionRule('r1', 2, false), 'stock_archive_option_rule', { p_id: 'r1', p_version: 2, p_archived: false, p_section: 'produce' }],
+  [(a) => a.swapIngredient({ mode: 'swap', from_item_id: IT, to_item_id: 'e2' }), 'stock_swap_ingredient', { p_spec: { mode: 'swap', from_item_id: IT, to_item_id: 'e2' }, p_preview: true, p_section: 'produce' }],
+  [(a) => a.swapIngredient({ mode: 'amount', from_item_id: IT, factor: 1.2 }, { preview: false }), 'stock_swap_ingredient', { p_spec: { mode: 'amount', from_item_id: IT, factor: 1.2 }, p_preview: false, p_section: 'produce' }],
+  [(a) => a.makeSizes(RC, [{ name: 'Large', factor: 1.4 }], 3), 'stock_make_sizes', { p_recipe: RC, p_sizes: [{ name: 'Large', factor: 1.4 }], p_version: 3, p_section: 'produce' }],
+  [(a) => a.prepTick(L1, RC, 2), 'stock_prep_tick', { p_loc: L1, p_recipe: RC, p_qty: 2, p_section: 'produce' }],
+  [(a) => a.prepTick(L1, RC, 1.5, 'inventory'), 'stock_prep_tick', { p_loc: L1, p_recipe: RC, p_qty: 1.5, p_section: 'inventory' }],
+  [(a) => a.prepUntick('t1'), 'stock_prep_untick', { p_id: 't1' }],
+  [(a) => a.factsSignoff(L1, 'm1'), 'stock_facts_signoff', { p_loc: L1, p_menu_item_id: 'm1', p_section: 'produce' }],
+  [(a) => a.factsSignoff(L2, 'm2', 'inventory'), 'stock_facts_signoff', { p_loc: L2, p_menu_item_id: 'm2', p_section: 'inventory' }],
+  [(a) => a.makeCompanyRecord('recipe', RC, 2), 'stock_make_company_record', { p_entity: 'recipe', p_id: RC, p_version: 2, p_section: 'produce' }],
+  [(a) => a.saveSupplierItem({ id: 'si1', allergens: ['milk'], may_contain: ['nuts'], diets: ['vegetarian'], ingredients_text: 'Milk', nutrition: { kcal: 60 } }, 3), 'stock_save_supplier_item',
+    { p_si: { id: 'si1', allergens: ['milk'], may_contain: ['nuts'], diets: ['vegetarian'], ingredients_text: 'Milk', nutrition: { kcal: 60 } }, p_version: 3, p_section: 'purchasing' }],
+  // ── Drop 3 (v5.11.96, contract 2.2) ──
+  [(a) => a.orderPadContext(L1), 'stock_order_pad_context', { p_loc: L1 }],
+  [(a) => a.submitOrder(PO), 'stock_po_submit', { p_po: PO, p_section: 'purchasing' }],
+  [(a) => a.decideOrder(PO, 'approve'), 'stock_po_decide', { p_po: PO, p_decision: 'approve', p_note: null, p_section: 'purchasing' }],
+  [(a) => a.decideOrder(PO, 'send_back', 'Fewer cups'), 'stock_po_decide', { p_po: PO, p_decision: 'send_back', p_note: 'Fewer cups', p_section: 'purchasing' }],
+  [(a) => a.createOrdersMany(ORG, [{ location_id: L1, supplier_id: 's1', lines: [] }]), 'stock_create_orders_many',
+    { p_org: ORG, p_orders: [{ location_id: L1, supplier_id: 's1', lines: [] }], p_section: 'purchasing' }],
+  [(a) => a.saveStandingOrder({ location_id: L1, supplier_id: 's1', delivery_dows: [1, 3] }), 'stock_save_standing_order',
+    { p_so: { location_id: L1, supplier_id: 's1', delivery_dows: [1, 3] }, p_version: null, p_section: 'purchasing' }],
+  [(a) => a.saveStandingOrder({ id: 'so1' }, 4), 'stock_save_standing_order', { p_so: { id: 'so1' }, p_version: 4, p_section: 'purchasing' }],
+  [(a) => a.editStandingRun('so1', '2026-10-23'), 'stock_edit_standing_run', { p_so: 'so1', p_delivery_day: '2026-10-23', p_lines: null, p_skip: false }],
+  [(a) => a.editStandingRun('so1', '2026-10-23', { skip: true }), 'stock_edit_standing_run', { p_so: 'so1', p_delivery_day: '2026-10-23', p_lines: null, p_skip: true }],
+  [(a) => a.editStandingRun('so1', '2026-10-23', { lines: [{ inventory_item_id: IT, qty_packs: 2 }] }), 'stock_edit_standing_run',
+    { p_so: 'so1', p_delivery_day: '2026-10-23', p_lines: [{ inventory_item_id: IT, qty_packs: 2 }], p_skip: false }],
+  [(a) => a.saveDeliveryException({ scope: 'company', name: 'Christmas Day' }), 'stock_save_delivery_exception',
+    { p_ex: { scope: 'company', name: 'Christmas Day' }, p_version: null, p_section: 'purchasing' }],
+  [(a) => a.saveOrderList({ location_id: L1, name: 'Monday' }, 2), 'stock_save_order_list', { p_list: { location_id: L1, name: 'Monday' }, p_version: 2 }],
+  [(a) => a.dueToOrder({ orgId: ORG, sites: [L1, L2], after: { at: 'x' } }), 'stock_due_to_order', { p_org: ORG, p_sites: [L1, L2], p_after: { at: 'x' }, p_limit: 100 }],
+  [(a) => a.dueToOrder({ orgId: ORG }), 'stock_due_to_order', { p_org: ORG, p_sites: null, p_after: null, p_limit: 100 }],
+  [(a) => a.ordersPage({ orgId: ORG, sites: [L1], status: 'SENT', filters: { search: 'milk' } }), 'stock_orders_page',
+    { p_org: ORG, p_sites: [L1], p_status: 'SENT', p_filters: { search: 'milk' }, p_after: null, p_limit: 100 }],
+  [(a) => a.deliveriesBoard({ orgId: ORG, sites: [L1] }), 'stock_deliveries_board', { p_org: ORG, p_sites: [L1], p_after: null, p_limit: 100 }],
+  [(a) => a.invoicesPage({ orgId: ORG, filters: { match_status: 'both' } }), 'stock_invoices_page', { p_org: ORG, p_sites: null, p_filters: { match_status: 'both' }, p_after: null, p_limit: 100 }],
+  [(a) => a.missingInvoices({ orgId: ORG, sites: [L2] }), 'stock_missing_invoices', { p_org: ORG, p_sites: [L2], p_after: null, p_limit: 100 }],
+  [(a) => a.matchInvoice('i1'), 'stock_invoice_match', { p_invoice: 'i1' }],
+  [(a) => a.approveInvoices(['i1', 'i2']), 'stock_invoices_approve', { p_ids: ['i1', 'i2'], p_note: null }],
+  [(a) => a.splitInvoice('i1', [{ location_id: L1, amount: 10 }]), 'stock_invoice_split', { p_invoice: 'i1', p_splits: [{ location_id: L1, amount: 10 }] }],
+  [(a) => a.inboxPage({ orgId: ORG }), 'stock_invoice_inbox_page', { p_org: ORG, p_status: 'waiting', p_after: null, p_limit: 100 }],
+  [(a) => a.inboxPage({ orgId: ORG, status: 'placed', after: { id: 'x' } }), 'stock_invoice_inbox_page', { p_org: ORG, p_status: 'placed', p_after: { id: 'x' }, p_limit: 100 }],
+  [(a) => a.inboxPlace('b1', L1), 'stock_inbox_place', { p_inbox: 'b1', p_location: L1, p_company_supplier: null }],
+  [(a) => a.inboxIgnore('b1'), 'stock_inbox_ignore', { p_inbox: 'b1' }],
+  [(a) => a.inboxAddress(ORG), 'stock_inbox_address', { p_org: ORG }],
+  [(a) => a.saveCreditRequest({ location_id: L1, reason: 'short' }), 'stock_save_credit_request', { p_req: { location_id: L1, reason: 'short' }, p_version: null }],
+  [(a) => a.setCreditStatus('cr1', 'written_off', 2, 'Small'), 'stock_credit_set_status', { p_id: 'cr1', p_status: 'written_off', p_version: 2, p_note: 'Small' }],
+  [(a) => a.saveCreditNote({ location_id: L1, amount: 4 }), 'stock_save_credit_note', { p_note: { location_id: L1, amount: 4 } }],
+  [(a) => a.creditsPage({ orgId: ORG, status: 'asked' }), 'stock_credits_page', { p_org: ORG, p_sites: null, p_status: 'asked', p_after: null, p_limit: 100 }],
+  [(a) => a.priceChangesPage({ orgId: ORG, sites: [L1], filters: { rise_over_pct: 5 } }), 'stock_price_changes_page',
+    { p_org: ORG, p_sites: [L1], p_filters: { rise_over_pct: 5 }, p_after: null, p_limit: 100 }],
+  [(a) => a.makeCompanyPrice('si1', L1, 3), 'stock_make_company_price', { p_si: 'si1', p_location: L1, p_version: 3, p_section: 'purchasing' }],
+  [(a) => a.budgetStatus(L1), 'stock_budget_status', { p_site: L1, p_week: null }],
+  [(a) => a.budgetBoard(ORG, [L1, L2], '2026-10-20'), 'stock_budget_board', { p_org: ORG, p_sites: [L1, L2], p_week: '2026-10-20' }],
+  [(a) => a.saveBudget({ location_id: null, rule: 'fixed', amount: 2600 }), 'stock_save_budget', { p_budget: { location_id: null, rule: 'fixed', amount: 2600 }, p_version: null }],
+  [(a) => a.salesHistory(L1), 'stock_sales_history', { p_loc: L1, p_days: 84 }],
+  [(a) => a.salesHistory(L1, 28), 'stock_sales_history', { p_loc: L1, p_days: 28 }],
+  [(a) => a.forecastWeek(L1, '2026-10-20'), 'stock_forecast_week', { p_loc: L1, p_week_start: '2026-10-20' }],
+  [(a) => a.saveForecast(L1, [{ day: '2026-10-22', amount: 900, reason: 'weather' }]), 'stock_save_forecast',
+    { p_loc: L1, p_days: [{ day: '2026-10-22', amount: 900, reason: 'weather' }], p_hours: null }],
+  [(a) => a.saveForecastSource(L2, L1, 0.8), 'stock_save_forecast_source', { p_loc: L2, p_from: L1, p_scale: 0.8, p_version: null }],
+  [(a) => a.saveForecastSource(L2, null, null, 2), 'stock_save_forecast_source', { p_loc: L2, p_from: null, p_scale: null, p_version: 2 }],
+  [(a) => a.countDue(ORG, [L1]), 'stock_count_due', { p_org: ORG, p_sites: [L1], p_day: null }],
+  [(a) => a.saveCountPlan({ name: 'Full count', every: 'week' }), 'stock_save_count_plan', { p_plan: { name: 'Full count', every: 'week' }, p_version: null }],
+  [(a) => a.saveCountTemplate({ name: 'Bar' }, [{ item_id: IT, sort_order: 1 }], [{ location_id: L1 }], 2), 'stock_save_count_template',
+    { p_tpl: { name: 'Bar' }, p_lines: [{ item_id: IT, sort_order: 1 }], p_sites: [{ location_id: L1 }], p_version: 2 }],
+  [(a) => a.templateForSite('t1', L1), 'stock_template_for_site', { p_template: 't1', p_loc: L1 }],
+  [(a) => a.saveShelfOrder('t1', L1, [IT]), 'stock_save_shelf_order', { p_template: 't1', p_loc: L1, p_item_ids: [IT] }],
+  [(a) => a.secondApproveCount('c1'), 'stock_second_approve_count', { p_count_id: 'c1', p_note: null }],
+  [(a) => a.lockPeriod(L1, '2026-09-01', '2026-09-30'), 'stock_lock_period', { p_loc: L1, p_from: '2026-09-01', p_to: '2026-09-30' }],
+  [(a) => a.unlockPeriod('p1', 'A late invoice'), 'stock_unlock_period', { p_period: 'p1', p_reason: 'A late invoice' }],
+  [(a) => a.wasteReasons(L1), 'stock_waste_reasons', { p_loc: L1 }],
+  [(a) => a.freshCloseDownList(L1), 'stock_fresh_closedown_list', { p_loc: L1, p_day: null }],
+  [(a) => a.requestTransfer({ from: L1, to: L2, lines: [{ company_item_id: IT, qty_base: 2 }], reason: 'Ran out' }), 'stock_request_transfer',
+    { p_from: L1, p_to: L2, p_lines: [{ company_item_id: IT, qty_base: 2 }], p_reason: 'Ran out', p_note: null }],
+  [(a) => a.fulfilRequest(TR), 'stock_fulfil_request', { p_transfer: TR, p_lines: null }],
+  [(a) => a.fulfilRequest(TR, [{ line_id: 'l1', qty_base: 1 }]), 'stock_fulfil_request', { p_transfer: TR, p_lines: [{ line_id: 'l1', qty_base: 1 }] }],
+  [(a) => a.disputeTransfer(TR, 'Two short'), 'stock_dispute_transfer', { p_transfer: TR, p_note: 'Two short' }],
+  [(a) => a.transferLeg(TR, 'refuse'), 'post_stock_transfer_leg', { p_transfer_id: TR, p_leg: 'refuse', p_by_name: null }],
+  [(a) => a.transferLeg(TR, 'resolve', 'Area manager'), 'post_stock_transfer_leg', { p_transfer_id: TR, p_leg: 'resolve', p_by_name: 'Area manager' }],
+  [(a) => a.transferMatches(TR), 'stock_transfer_matches', { p_transfer: TR }],
+  [(a) => a.saveTransferList({ location_id: L1, name: 'Tuesday run' }), 'stock_save_transfer_list', { p_list: { location_id: L1, name: 'Tuesday run' }, p_version: null }],
+  [(a) => a.setSiteKind(L2, 'central_kitchen'), 'stock_set_site_kind', { p_loc: L2, p_kind: 'central_kitchen' }],
+  [(a) => a.kitchenOrdersIn(L2, '2026-10-23'), 'stock_kitchen_orders_in', { p_kitchen: L2, p_day: '2026-10-23' }],
+  [(a) => a.kitchenPlan(L2, '2026-10-23'), 'stock_kitchen_plan', { p_kitchen: L2, p_day: '2026-10-23' }],
+  [(a) => a.kitchenIngredients(L2, '2026-10-23'), 'stock_kitchen_ingredients', { p_kitchen: L2, p_day: '2026-10-23' }],
+  [(a) => a.kitchenTick(L2, RC, 12), 'stock_kitchen_tick', { p_kitchen: L2, p_recipe: RC, p_qty: 12, p_day: null }],
+  [(a) => a.kitchenUntick('k1'), 'stock_kitchen_untick', { p_id: 'k1' }],
+  [(a) => a.kitchenPick(PO, [{ po_line_id: 'pl1', qty_packs_sent: 2 }]), 'stock_kitchen_pick', { p_po: PO, p_lines: [{ po_line_id: 'pl1', qty_packs_sent: 2 }] }],
+  [(a) => a.setRecipeRestricted(RC, true, L2, 3), 'stock_set_recipe_restricted', { p_recipe: RC, p_restricted: true, p_kitchen: L2, p_version: 3 }],
+  [(a) => a.saveRecipeSecret(RC, 'Fold gently', 4), 'stock_save_recipe_secret', { p_recipe: RC, p_method: 'Fold gently', p_version: 4 }],
+  [(a) => a.rechargeStatement(ORG, '2026-09-01'), 'stock_recharge_statement', { p_org: ORG, p_month: '2026-09-01' }],
 ];
 
 test('every method calls its own function with exactly the contract\'s arguments', async () => {
@@ -184,6 +317,55 @@ test('the table reads: the columns, filters, order and the 1,000 row cap; a miss
   assert.deepEqual(c.queries[5].steps, [['select', 'id, location_id, kind, status'], ['in', 'status', ['waiting', 'running']], ['overlaps', 'entity_ids', [IT]], ['limit', 100]]);
   const gone = await createStockApi(fakeClient({ tables: { stock_co_categories: { data: null, error: { code: '42P01', message: 'relation "stock_co_categories" does not exist' } } } })).categories(ORG);
   assert.equal(gone.needsUpdate, true); assert.equal(gone.error.message, NEEDS_UPDATE);
+});
+
+test('Drop 2 table reads: the facts of a site (every column, at most 200 ids) and one recipe\'s cost history', async () => {
+  const c = fakeClient({ tables: { menu_item_stock_facts: { data: [{ location_id: L1, menu_item_id: 'm1', allergens: ['milk'] }], error: null } } });
+  const api = createStockApi(c);
+  const all = await api.menuStockFacts(L1);
+  assert.deepEqual(all.data, [{ location_id: L1, menu_item_id: 'm1', allergens: ['milk'] }]);
+  assert.equal(c.queries[0].table, 'menu_item_stock_facts');
+  assert.deepEqual(c.queries[0].steps, [['select', '*'], ['eq', 'location_id', L1], ['order', 'menu_item_id'], ['limit', 1000]], 'no ids: the whole site, 1,000 rows at most');
+  await api.menuStockFacts(L1, ['m1', 7, 'm1', null, '']);
+  assert.deepEqual(c.queries[1].steps, [['select', '*'], ['eq', 'location_id', L1], ['in', 'menu_item_id', ['m1', '7']], ['order', 'menu_item_id'], ['limit', 1000]], 'ids as text, once each, nothing empty');
+  const many = Array.from({ length: 250 }, (_, i) => `m${i}`);
+  await api.menuStockFacts(L1, many);
+  assert.equal(c.queries[2].steps[2][2].length, 200, 'at most 200 ids a read');
+  assert.deepEqual((await api.menuStockFacts(L1, [])).data, [], 'ids given but none: no read');
+  assert.equal(c.queries.length, 3);
+  // the location is text in that table, so a uuid object is sent as its text
+  await api.menuStockFacts({ toString: () => L2 });
+  assert.deepEqual(c.queries[3].steps[1], ['eq', 'location_id', L2]);
+  // a database before Drop 2 has no facts table: needs an update, never a broken screen
+  const gone = await createStockApi(fakeClient({ tables: { menu_item_stock_facts: { data: null, error: { code: 'PGRST205', message: "Could not find the table 'public.menu_item_stock_facts'" } } } })).menuStockFacts(L1);
+  assert.equal(gone.needsUpdate, true); assert.equal(gone.error.message, NEEDS_UPDATE);
+  // the cost history: one recipe at one site, the last 90 days, newest first, at most 400 rows
+  const h = fakeClient({ tables: { recipe_cost_daily: { data: [{ day: '2026-10-20', cost: 2.1 }], error: null } } });
+  const hist = await createStockApi(h).recipeCostHistory(RC, L1);
+  assert.deepEqual(hist.data, [{ day: '2026-10-20', cost: 2.1 }]);
+  assert.equal(h.queries[0].table, 'recipe_cost_daily');
+  const steps = h.queries[0].steps;
+  assert.deepEqual(steps.slice(0, 3), [['select', 'day, cost, cost_per_yield, sale_price_net, gp_pct, missing'], ['eq', 'recipe_id', RC], ['eq', 'location_id', L1]]);
+  assert.equal(steps[3][0], 'gte'); assert.equal(steps[3][1], 'day');
+  assert.match(steps[3][2], /^\d{4}-\d{2}-\d{2}$/, 'the lower bound is a day');
+  assert.equal(steps[3][2], ymdDaysAgo(90), 'ninety days back by default');
+  assert.deepEqual(steps.slice(4), [['order', 'day', { ascending: false }], ['limit', 400]]);
+  await createStockApi(h).recipeCostHistory(RC, L1, 30);
+  assert.equal(h.queries[1].steps[3][2], ymdDaysAgo(30));
+  assert.match((await createStockApi(null).menuStockFacts(L1)).error.message, /No database/);
+});
+
+test('sectionOfEntity and ymdDaysAgo: the section a company record change is named as; a day lower bound', () => {
+  assert.equal(sectionOfEntity('item'), 'inventory');
+  assert.equal(sectionOfEntity('supplier'), 'purchasing');
+  assert.equal(sectionOfEntity('recipe'), 'produce');
+  assert.equal(sectionOfEntity('anything else'), 'inventory');
+  const now = Date.UTC(2026, 9, 21, 15, 0, 0);   // 21 Oct 2026 15:00 UTC
+  assert.equal(ymdDaysAgo(0, now), '2026-10-21');
+  assert.equal(ymdDaysAgo(90, now), '2026-07-23');
+  assert.equal(ymdDaysAgo(-5, now), '2026-10-21', 'never a day in the future');
+  assert.equal(ymdDaysAgo('abc', now), '2026-10-21', 'junk is today');
+  assert.equal(ymdDaysAgo(1.9, now), '2026-10-20', 'whole days');
 });
 
 test('integrator reads: every site\'s tax rates and the site groups with their versions', async () => {
@@ -274,4 +456,93 @@ test('stockApi.js is the one browser instance (source)', async () => {
   assert.doesNotMatch(data, /saveOrDirect/, 'the Drop 0 fallback is gone');
   assert.doesNotMatch(data, /\.from\(table\)\.(insert|update|upsert|delete)\(/);
   assert.doesNotMatch(data, /[\u2013\u2014]/);
+});
+
+// ── Drop 3 (v5.11.96, contract 2.2): table reads and the inbox upload ──
+
+test('Drop 3 table reads: columns, filters, order and caps; a missing table needs an update', async () => {
+  const c = fakeClient();
+  const api = createStockApi(c);
+  await api.deliveryExceptions(ORG);
+  await api.standingOrders(L1);
+  await api.standingOrders(L1, 's1');
+  await api.invoiceSplits('i1');
+  await api.countPlans(ORG);
+  await api.countTemplates(ORG);
+  await api.periods(L1);
+  await api.transferLists(L1);
+  const steps = c.queries.map((q) => [q.table, q.steps]);
+  assert.deepEqual(steps, [
+    ['stock_delivery_exceptions', [['select', '*'], ['eq', 'org_id', ORG], ['is', 'archived_at', null], ['gte', 'to_day', ymdDaysAgo(7)], ['order', 'from_day'], ['limit', 1000]]],
+    ['stock_standing_orders', [['select', '*, stock_standing_order_lines(*)'], ['eq', 'location_id', L1], ['order', 'name'], ['limit', 200]]],
+    ['stock_standing_orders', [['select', '*, stock_standing_order_lines(*)'], ['eq', 'location_id', L1], ['eq', 'supplier_id', 's1'], ['order', 'name'], ['limit', 200]]],
+    ['supplier_invoice_site_splits', [['select', '*'], ['eq', 'invoice_id', 'i1'], ['limit', 100]]],
+    ['stock_count_plans', [['select', '*'], ['eq', 'org_id', ORG], ['is', 'archived_at', null], ['order', 'name'], ['limit', 200]]],
+    ['stock_count_templates', [['select', '*, stock_count_template_lines(item_id, sort_order), stock_count_template_sites(location_id, group_id)'], ['eq', 'org_id', ORG], ['is', 'archived_at', null], ['order', 'name'], ['limit', 200]]],
+    ['stock_periods', [['select', '*, stock_period_snapshots(metrics)'], ['eq', 'location_id', L1], ['order', 'from_day', { ascending: false }], ['limit', 60]]],
+    ['stock_transfer_lists', [['select', '*'], ['eq', 'location_id', L1], ['is', 'archived_at', null], ['order', 'name'], ['limit', 200]]],
+  ]);
+  // never a write
+  for (const q of c.queries) for (const [step] of q.steps) assert.ok(!['insert', 'update', 'upsert', 'delete'].includes(step), `${q.table}: ${step}`);
+  const gone = await createStockApi(fakeClient({ tables: { stock_count_plans: { data: null, error: { code: '42P01', message: 'relation "stock_count_plans" does not exist' } } } })).countPlans(ORG);
+  assert.equal(gone.needsUpdate, true); assert.equal(gone.error.message, NEEDS_UPDATE);
+  assert.match((await createStockApi(null).periods(L1)).error.message, /No database/);
+});
+
+test('inboxPathOf: org/<org>/<id>.<ext>, the extension lower case; nothing usable is null', () => {
+  assert.equal(inboxPathOf(ORG, 'Invoice 42.PDF', 'u1'), `org/${ORG}/u1.pdf`);
+  assert.equal(inboxPathOf(ORG, 'scan.jpeg', 'u1'), `org/${ORG}/u1.jpeg`);
+  assert.equal(inboxPathOf(ORG, 'no extension', 'u1'), `org/${ORG}/u1`);
+  assert.equal(inboxPathOf(ORG, 'weird.tar.gz!', 'u1'), `org/${ORG}/u1`);
+  assert.equal(inboxPathOf(ORG, '../../x.pdf', 'u1'), `org/${ORG}/u1.pdf`, 'the name never becomes part of the path');
+  assert.equal(inboxPathOf(null, 'a.pdf', 'u1'), null);
+  assert.equal(inboxPathOf(ORG, 'a.pdf', ''), null);
+  assert.equal(inboxPathOf('a/b', 'a.pdf', 'u1'), null);
+  assert.equal(inboxPathOf(ORG, 'a.pdf', 'x/y'), null);
+  assert.equal(INBOX_BUCKET, 'stock-invoice-inbox');
+});
+
+test('inboxUpload: the file into the bucket under the company, then stock_inbox_add; inboxFileUrl: a 5 minute link', async () => {
+  const uploads = [];
+  const signed = [];
+  const c = fakeClient({ rpc: { stock_inbox_add: { data: { ok: true, id: 'b1' }, error: null } } });
+  c.storage = { from: (bucket) => ({
+    upload: async (path, file, opts) => { uploads.push({ bucket, path, file, opts }); return { data: { path }, error: null }; },
+    createSignedUrl: async (path, secs) => { signed.push({ bucket, path, secs }); return { data: { signedUrl: `https://x/${path}` }, error: null }; },
+  }) };
+  const file = { name: 'Bill.pdf', type: 'application/pdf' };
+  const r = await createStockApi(c).inboxUpload(ORG, file);
+  assert.equal(r.error, null); assert.deepEqual(r.data, { ok: true, id: 'b1' });
+  assert.equal(uploads.length, 1);
+  assert.equal(uploads[0].bucket, 'stock-invoice-inbox');
+  assert.match(uploads[0].path, new RegExp(`^org/${ORG}/[0-9a-f-]+\\.pdf$`));
+  assert.equal(uploads[0].file, file);
+  assert.deepEqual(uploads[0].opts, { contentType: 'application/pdf', upsert: false });
+  assert.deepEqual(c.calls, [{ fn: 'stock_inbox_add', args: { p_org: ORG, p_file_path: uploads[0].path, p_file_name: 'Bill.pdf', p_mime: 'application/pdf' } }]);
+  // a failed upload: no database call
+  const c2 = fakeClient({ rpc: { stock_inbox_add: { data: { ok: true }, error: null } } });
+  c2.storage = { from: () => ({ upload: async () => ({ data: null, error: { message: 'The object exceeded the maximum allowed size' } }) }) };
+  const bad = await createStockApi(c2).inboxUpload(ORG, file);
+  assert.match(bad.error.message, /maximum allowed size/); assert.equal(c2.calls.length, 0);
+  // no file, no storage
+  assert.equal((await createStockApi(c).inboxUpload(ORG, null)).error.message, 'Pick a file to upload.');
+  assert.match((await createStockApi(fakeClient()).inboxUpload(ORG, file)).error.message, /No database/);
+  // the signed link
+  const u = await createStockApi(c).inboxFileUrl(`org/${ORG}/u1.pdf`);
+  assert.equal(u.data, `https://x/org/${ORG}/u1.pdf`);
+  assert.deepEqual(signed, [{ bucket: 'stock-invoice-inbox', path: `org/${ORG}/u1.pdf`, secs: 300 }]);
+});
+
+test('Drop 3 refusals come back as the database words: the waste PIN, the second approval, the raiser', async () => {
+  const api = createStockApi(fakeClient({ rpc: {
+    stock_po_decide: { data: null, error: { code: '42501', message: 'You raised this order. Another manager approves it.' } },
+    stock_second_approve_count: { data: { ok: false, error: 'You gave the first approval. Someone else gives the second.' }, error: null },
+    stock_po_submit: { data: { ok: true, needs_approval: true, limit: 800, amount: 912.5, approvers: ['Area manager'] }, error: null },
+  } }));
+  const d = await api.decideOrder(PO, 'approve');
+  assert.equal(d.error.message, 'You raised this order. Another manager approves it.'); assert.equal(d.needsUpdate, false);
+  const s2 = await api.secondApproveCount('c1');
+  assert.equal(s2.error.message, 'You gave the first approval. Someone else gives the second.');
+  const sub = await api.submitOrder(PO);
+  assert.equal(sub.error, null); assert.equal(sub.data.needs_approval, true);
 });

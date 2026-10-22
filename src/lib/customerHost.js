@@ -97,6 +97,7 @@ export function parseCustomerLocation(loc, { customerRoot, readStoredSlug } = {}
   // /gift             → gift (purchase page)
   // /gift/balance     → gift_balance (balance check)
   // /gift/success     → gift_success (post-purchase confirmation)
+  // /counter          → counter (counter pickup QR: eat in or take away, no table)
   // anything else with a slug → online
   let mode = null;
   let tableId = null;
@@ -121,6 +122,9 @@ export function parseCustomerLocation(loc, { customerRoot, readStoredSlug } = {}
     mode = 'wifi';
   } else if (pathname === '/catering' || pathname.startsWith('/catering/')) {
     mode = 'catering';
+  } else if (pathname === '/counter' || pathname.startsWith('/counter/')) {
+    // v5.11.95: the counter pickup QR (lib/counterOrder.js). Eat in or take away, no table.
+    mode = 'counter';
   } else if (pathname === '/waitlist/status' || pathname.startsWith('/waitlist/status')) {
     // F2: guest live status page (deep-linked via the token in the surface) — must come
     // BEFORE the bare /waitlist branch so the more specific path wins.
@@ -143,6 +147,7 @@ export function parseCustomerLocation(loc, { customerRoot, readStoredSlug } = {}
     else if (surface === 'review')    mode = 'review';
     else if (surface === 'wifi')      mode = 'wifi';
     else if (surface === 'catering')  mode = 'catering';
+    else if (surface === 'counter')   mode = 'counter';
     else if (surface === 'waitlist_status') mode = 'waitlist_status';
     else if (surface === 'waitlist')  mode = 'waitlist';
     else if (surface === 'book')      mode = 'book';

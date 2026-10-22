@@ -21,6 +21,16 @@
  * pack_qty × inner_qty like everywhere else, delivery days written as numbers are read, each
  * order is born with its expected delivery date, the On hand cell shows what is already on
  * order (so a suggested 0 explains itself), and the toast speaks plain English.
+ *
+ * v5.11.96 (multi site stock Drop 3, contract 3.2): ONE change for every company: the expected date
+ * and the cover follow the one delivery rule (nextDelivery, coverFromRules), so an order placed after
+ * the order by time is dated for the next delivery. Everything else new is for multi site companies
+ * only and every line of it carries the marker comment `d3 multi` (the one site proof removes those
+ * lines: src/lib/stock/oneSiteIdentityPurchasing.test.js): on All sites the Which site card with
+ * Order for many sites; at one site the order pad context (rules, budget, lists, standing orders,
+ * approval limits), the next delivery line, the budget bar, forecast use and the par for the delivery
+ * day, the basket rules under each supplier, Saved lists and Repeat, and Send through the database's
+ * submit (approval, kitchen or email).
  */
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
@@ -34,7 +44,17 @@ import { fetchParLevels } from '../../lib/stock/counts';
 import { fetchPurchaseOrders, createOrdersFromBasket, setPOStatus, fnErrorText } from '../../lib/stock/purchasing';
 import { pickSupplierProduct } from '../../lib/stock/costing';
 import { outstandingOnOrder } from '../../lib/stock/onOrder';
-import { coverDaysFromSchedule, nextDeliveryYmd, normDeliveryDays, packContent, packContentInBase, suggestPacks, createOrdersToast, DAY_LABEL } from '../../lib/stock/purchasingRules';
+import { coverFromRules, nextDelivery, rulesFromDeliveryDays, daysAfter, normDeliveryDays, packContent, packContentInBase, suggestPacks, createOrdersToast, DAY_LABEL } from '../../lib/stock/purchasingRules';
+import { basketRules, padSupplierOf, padNext, parForDay, basketFromLines, linesOfBasket, lastOrderTo, scaleOverDays, moneyWords } from '../../lib/stock/purchasingRules'; // d3 multi
+import { historyFromRows, suggestForecast, baselineFor } from '../../../supabase/functions/_shared/salesForecast.js'; // d3 multi
+import { PAD_WORDS, HEADERS_MULTI_OF, standingPillWords, submitToast } from '../../lib/stock/purchasingWords'; // d3 multi
+import { Pill, Notice, Modal, Btn, ui } from './stock/stockUi'; // d3 multi
+import OrderPadWhichSite from './purchasing/OrderPadWhichSite'; // d3 multi
+import OrderPadHeaderLine from './purchasing/OrderPadHeaderLine'; // d3 multi
+import BudgetBar from './purchasing/BudgetBar'; // d3 multi
+import BasketRulesLine from './purchasing/BasketRulesLine'; // d3 multi
+import SavedListsMenu from './purchasing/SavedListsMenu'; // d3 multi
+import OrderManySites from './purchasing/OrderManySites'; // d3 multi
 import { PageHeader, PrimaryBtn, SearchField, Chips } from './reports/reportKit';
 import { useStockScope } from '../StockScope';
 import { stockApi } from '../../lib/stock/stockApi';
@@ -52,6 +72,42 @@ const numCell = { fontVariantNumeric: 'tabular-nums' };
 const th = { padding: '11px 14px', borderBottom: '1px solid var(--bdr)', fontWeight: 600, color: 'var(--t3)', textAlign: 'left', fontSize: 11.5, textTransform: 'uppercase', letterSpacing: '.05em', whiteSpace: 'nowrap' };
 const td = { padding: '11px 14px', borderBottom: '1px solid var(--bdr)', verticalAlign: 'middle' };
 const HEADERS = ['Item', 'On hand', 'Use/day', 'Cover', 'Suggested', 'Order', 'Supplier', 'Line £ (ex VAT)'];
+const HEADERS_ONE = HEADERS; // d3 multi: the screen swaps in the multi site columns (HEADERS_MULTI_OF) by name
+// The forecast over the usual same weekday sales for the next 7 venue days (1 when unknown). // d3 multi
+async function padScale(loc, ctx, tz) { // d3 multi
+  const days = daysAfter(ctx?.now?.ymd || buildScheduleCtx(tz).ymd, 7); // d3 multi
+  if (!days.length) return 1; // d3 multi
+  const [h, w] = await Promise.all([stockApi.salesHistory(loc, 56), stockApi.forecastWeek(loc, days[0])]); // d3 multi
+  if (h.error) return 1; // d3 multi
+  const history = historyFromRows(h.data?.rows); // d3 multi
+  const suggested = suggestForecast(history, days); // d3 multi
+  const saved = Object.fromEntries((w.error ? [] : (w.data?.days || [])).filter((d) => d && d.amount != null).map((d) => [String(d.day).slice(0, 10), Number(d.amount)])); // d3 multi
+  const forecast = Object.fromEntries(days.map((d) => [d, saved[d] ?? suggested[d]?.amount ?? 0])); // d3 multi
+  const baseline = Object.fromEntries(days.map((d) => [d, baselineFor(history, d)])); // d3 multi
+  return scaleOverDays(days, forecast, baseline); // d3 multi
+} // d3 multi
+// One supplier's basket at this site: its total, the basket rules and the standing lines due. // d3 multi
+function MultiBasket({ basket, ctx, supName, spNet, itemName }) { // d3 multi
+  const groups = Object.entries(basket); // d3 multi
+  if (!groups.length) return null; // d3 multi
+  return ( // d3 multi
+    <div style={{ width: '100%', display: 'grid', gap: 6 }}>{/* // d3 multi */}
+      {groups.map(([sid, ls]) => { // d3 multi
+        const s = padSupplierOf(ctx, sid); // d3 multi
+        const goods = ls.reduce((t, { r, n }) => t + n * spNet(r.sp), 0); // d3 multi
+        const rules = basketRules({ goods, minOrder: s?.min_order_value, maxOrder: s?.max_order_value, fee: s?.delivery_fee, feeWaivedOverMin: s?.fee_waived_over_min === true, approvalLimit: s?.approval_limit }); // d3 multi
+        const standing = (s?.standing || []).filter((x) => x && x.status !== 'skipped'); // d3 multi
+        return ( // d3 multi
+          <div key={sid} style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', fontSize: 12.5 }}>{/* // d3 multi */}
+            <b>{supName(sid)}</b> <span style={{ fontVariantNumeric: 'tabular-nums' }}>{moneyWords(goods)}</span>{/* // d3 multi */}
+            <BasketRulesLine rules={rules} />{/* // d3 multi */}
+            {standing.flatMap((so) => (so.lines || []).map((l) => <Pill key={`${so.standing_order_id}:${l.inventory_item_id}`} tone="blue">{itemName(l.inventory_item_id)}: {standingPillWords(l.qty_packs)}</Pill>))}{/* // d3 multi */}
+          </div> // d3 multi
+        ); // d3 multi
+      })}{/* // d3 multi */}
+    </div> // d3 multi
+  ); // d3 multi
+} // d3 multi
 
 // Cover days walk the schedule from the VENUE's "today" (v5.7.24): see purchasingRules.js.
 
@@ -62,7 +118,16 @@ const NO_PAUSES = new Map();
 // multi site company the pad reads which items are paused at that site today (stock_paused_items):
 // a paused line is grey with its words, never suggested, and Create orders refuses it. One site
 // companies make no extra call and see exactly today's pad.
-export default function OrderPad({ siteId = null } = {}) {
+export default function OrderPad({ siteId = null, orgCtx = null } = {}) { // d3 multi
+  const sc = useStockScope(); // d3 multi
+  const [many, setMany] = useState(false); // d3 multi
+  if (sc.multi && !siteId) return (<>{/* // d3 multi */}
+    <OrderPadWhichSite sites={(sc.sites || []).filter((x) => x.kind !== 'central_kitchen' && !(sc.kitchens || []).includes(x.id))} onPick={(id) => sc.setChoice({ kind: 'site', id })} onMany={sc.canEditCompany('purchasing') ? () => setMany(true) : null} />{/* // d3 multi */}
+    {many && <OrderManySites orgCtx={orgCtx} onClose={() => setMany(false)} />}{/* // d3 multi */}
+  </>); // d3 multi
+  return <OrderPadScreen key={siteId || 'home'} siteId={siteId} />; // d3 multi
+} // d3 multi
+function OrderPadScreen({ siteId = null } = {}) {
   const showToast = useStore(s => s.showToast);
   const { multi, siteName } = useStockScope();
   const [locId, setLocId] = useState(siteId || getActiveLocationSync());
@@ -87,6 +152,13 @@ export default function OrderPad({ siteId = null } = {}) {
   // v5.7.24 — suggestions key off the VENUE's "today" (project invariant);
   // null until resolved, and buildScheduleCtx(null) is the Europe/London default.
   const [venueTz, setVenueTz] = useState(null);
+  const [ctx, setCtx] = useState(null); // d3 multi: stock_order_pad_context (one read, multi only)
+  const [ctxError, setCtxError] = useState(null); // d3 multi
+  const [fScale, setFScale] = useState(1); // d3 multi: forecast over the usual days
+  const [recent, setRecent] = useState([]); // d3 multi: this site's recent orders, for Repeat
+  const [listName, setListName] = useState(null); // d3 multi: the Save as a list box
+  const [nowMs, setNowMs] = useState(() => Date.now()); // d3 multi
+  useEffect(() => { if (!multi) return undefined; const t = setInterval(() => setNowMs(Date.now()), 30000); return () => clearInterval(t); }, [multi]); // d3 multi
 
   const reload = useCallback(async () => {
     const loc = locId || getActiveLocationSync() || await getLocationId().catch(() => null);
@@ -109,6 +181,10 @@ export default function OrderPad({ siteId = null } = {}) {
       const pr = await stockApi.pausedItems(loc);
       setPaused(pr.error ? NO_PAUSES : pausedMap(pr.data?.rows));
       setPauseUnknown(!!pr.error && !pr.needsUpdate);
+      const cx = await stockApi.orderPadContext(loc); // d3 multi
+      setCtx(cx.error ? null : (cx.data || null)); setCtxError(cx.error && !cx.needsUpdate ? cx.error : null); // d3 multi
+      setFScale(cx.error ? 1 : await padScale(loc, cx.data, cfg?.timezone)); // d3 multi
+      setRecent(pos || []); // d3 multi
     }
     setItems(its || []); setSuppliers(sup || []); setPars(par || {}); setUsage(rate || {}); setWeekday(wk); setOnOrder(oo); setStaleOrders(stale); setLoading(false);
   }, [locId, showToast, multi]);
@@ -116,6 +192,10 @@ export default function OrderPad({ siteId = null } = {}) {
 
   const supById = useMemo(() => { const m = {}; suppliers.forEach(s => { m[s.id] = s; }); return m; }, [suppliers]);
   const supName = useCallback((id) => supById[id]?.name || '—', [supById]);
+  const ctxItems = useMemo(() => new Map((ctx?.items || []).map((x) => [x.inventory_item_id, x])), [ctx]); // d3 multi
+  const multiRules = useCallback((sid) => { const sup = multi ? padSupplierOf(ctx, sid) : null; return sup && Array.isArray(sup.rules) && sup.rules.length ? { rules: sup.rules, exceptions: sup.exceptions || [] } : {}; }, [multi, ctx]); // d3 multi
+  const nextOf = useCallback((sid) => padNext(padSupplierOf(ctx, sid), buildScheduleCtx(venueTz), ctx?.tz || venueTz), [ctx, venueTz]); // d3 multi
+  const multiSug = useCallback((it, sp) => { if (!multi || !sp) return {}; const x = ctxItems.get(it.id); const nx = nextOf(sp.supplierId); return { forecastScale: fScale, deliveryDow: nx ? nx.deliveryDow : undefined, ...(x?.par_by_weekday ? { parByWeekday: x.par_by_weekday } : {}), ...(Number(x?.cover_days) > 0 ? { coverDaysPar: Number(x.cover_days) } : {}) }; }, [multi, ctxItems, nextOf, fScale]); // d3 multi
 
   // v5.5.925 — you don't ORDER a made-here item, you MAKE it. A burger patty in a
   // supplier ordering list was the production model leaking into purchasing; its
@@ -137,7 +217,7 @@ export default function OrderPad({ siteId = null } = {}) {
     const avgDaily = usage[it.id] || 0;
     const par = pars[it.id]?.parLevel ?? null;
     const oo = onOrder[it.id] || 0;
-    const sched = sp ? coverDaysFromSchedule(supById[sp.supplierId]?.deliveryDays, todayDow) : null;
+    const sched = sp ? coverFromRules({ rules: rulesFromDeliveryDays(supById[sp.supplierId]?.deliveryDays, supById[sp.supplierId]?.cutoffTime), nowVenue: buildScheduleCtx(venueTz), ...multiRules(sp.supplierId) }) : null;
     const coverDays = sched != null ? sched : days;
     // v5.5.926 — WALK THE ACTUAL DAYS, don't multiply a flat average. A venue selling
     // 12 on Fridays and 3 on Tuesdays was told "6.4/day": over-ordered for Monday,
@@ -149,9 +229,9 @@ export default function OrderPad({ siteId = null } = {}) {
     const pz = paused.get(it.id) || null;
     const sug = pz
       ? { needBase: 0, suggestedPacks: 0, covered: false, effCover: (Number(coverDays) || 0) + (Number(safetyDays) || 0), hasShape: false }
-      : suggestPacks({ onHand, onOrder: oo, avgDaily, profile: prof, todayDow, coverDays, safetyDays, par, perPack: sp ? perPack : null });
+      : suggestPacks({ onHand, onOrder: oo, avgDaily, profile: prof, todayDow, coverDays, safetyDays, par, perPack: sp ? perPack : null, ...multiSug(it, sp) });
     return { it, allSps, sp, perPack, onHand, avgDaily, prof: sug.hasShape ? prof : null, par, oo, sched, coverDays, effCover: sug.effCover, needBase: sug.needBase, suggestedPacks: sug.suggestedPacks, covered: sug.covered, paused: pz };
-  }); }, [items, usage, weekday, pars, onOrder, days, safetyDays, supplierOverride, supById, venueTz, paused]);
+  }); }, [items, usage, weekday, pars, onOrder, days, safetyDays, supplierOverride, supById, venueTz, paused, multiRules, multiSug]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -195,6 +275,15 @@ export default function OrderPad({ siteId = null } = {}) {
   const basketVat = useMemo(() => Object.values(basket).flat().reduce((s, { r, n }) => s + n * spNet(r.sp) * Number(r.sp.vatRate || 0), 0), [basket]);
   const basketCount = Object.values(basket).flat().length;
   const supplierCount = Object.keys(basket).length;
+  const HEADERS = multi ? HEADERS_MULTI_OF(supplierFilter !== 'all' ? nextOf(supplierFilter)?.deliveryDow ?? null : null) : HEADERS_ONE; // d3 multi
+  const headNext = useMemo(() => { if (!multi) return null; const ids = supplierFilter !== 'all' ? [supplierFilter] : (ctx?.suppliers || []).map((x) => x.supplier_id); const all = ids.map((sid) => ({ sid, nx: nextOf(sid) })); const withNext = all.filter((x) => x.nx).sort((a, b) => String(a.nx.orderByAt).localeCompare(String(b.nx.orderByAt))); if (withNext.length) return { ...withNext[0].nx, supplierName: supName(withNext[0].sid) }; return supplierFilter !== 'all' ? { noRules: true, supplierName: supName(supplierFilter) } : null; }, [multi, supplierFilter, ctx, nextOf, supName]); // d3 multi
+  const hasLimit = (ctx?.suppliers || []).some((x) => x && x.approval_limit != null); // d3 multi
+  const parOf = (r) => { const x = ctxItems.get(r.it.id); const nx = r.sp ? nextOf(r.sp.supplierId) : null; const dp = parForDay(x?.par_by_weekday, nx?.deliveryDow); if (dp != null) return dp; if (Number(x?.cover_days) > 0 && r.avgDaily > 0) return r.avgDaily * fScale * Number(x.cover_days); return r.par; }; // d3 multi
+  const itemName = (id) => (items.find((i) => i.id === id)?.name || 'item'); // d3 multi
+  const fillFrom = (lines) => { const b = basketFromLines(lines, items); setQty((q) => ({ ...q, ...b.qty })); setSupplierOverride((o) => ({ ...o, ...b.override })); if (b.missing) showToast?.(`${b.missing} line${b.missing === 1 ? ' is' : 's are'} not on this site's pad and were left out.`, 'info'); }; // d3 multi
+  const repeatLast = () => { const o = lastOrderTo(recent, supplierFilter); if (!o) { showToast?.(`No earlier order to ${supName(supplierFilter)} here.`, 'info'); return; } fillFrom(o.lines); }; // d3 multi
+  const basketLines = () => Object.values(basket).flat().map(({ r, n }) => ({ inventoryItemId: r.it.id, supplierProductId: r.sp.id, qtyPacks: n })); // d3 multi
+  const saveList = async () => { const name = String(listName || '').trim(); if (!name) { showToast?.('Give the list a name.', 'error'); return; } const res = await stockApi.saveOrderList({ location_id: locId, name, supplier_id: supplierFilter !== 'all' ? supplierFilter : null, lines: linesOfBasket(basketLines()) }); if (res.error) { showToast?.(res.error.message, 'error'); return; } setListName(null); showToast?.(`Saved the list ${name}.`, 'success'); await reload(); }; // d3 multi
   // flag suppliers under their minimum order value
   const minWarnings = useMemo(() => Object.entries(basket).map(([sid, ls]) => {
     const min = supById[sid]?.minOrderValue;
@@ -202,6 +291,36 @@ export default function OrderPad({ siteId = null } = {}) {
     return (min > 0 && val < min) ? { name: supName(sid), val, min } : null;
   }).filter(Boolean), [basket, supById, supName]);
 
+  // Multi site Send: make the drafts, then the database decides (approval, kitchen or email). // d3 multi
+  const sendMulti = async () => { // d3 multi
+    const groups = Object.entries(basket); // d3 multi
+    for (const [sid, ls] of groups) { const sup = padSupplierOf(ctx, sid); const goods = ls.reduce((t, { r, n }) => t + n * spNet(r.sp), 0); if (basketRules({ goods, maxOrder: sup?.max_order_value }).overMax) { showToast?.(`Over the maximum ${moneyWords(sup.max_order_value)} for ${supName(sid)}. Split the order or ask head office.`, 'error'); return; } } // d3 multi
+    const kp = ctx?.kitchen_prices || {}; // d3 multi
+    const lines = groups.flatMap(([, ls]) => ls).map(({ r, n }) => ({ supplierId: r.sp.supplierId, supplierProductId: r.sp.id, inventoryItemId: r.it.id, description: r.it.name, qtyPacks: n, packQty: Number(r.sp.packQty) || 1, innerQty: Number(r.sp.innerQty) || 1, innerUnit: r.sp.innerUnit || r.it.baseUnit, unitPrice: kp[r.sp.id] != null ? Number(kp[r.sp.id]) : spNet(r.sp), purchaseTaxRateId: r.sp.purchaseTaxRateId || r.it.purchaseTaxRateId || null })); // d3 multi
+    if (!lines.length) { showToast?.('Add some quantities first', 'error'); return; } // d3 multi
+    setBusy(true); // d3 multi
+    const tomorrow = daysAfter(buildScheduleCtx(venueTz).ymd, 1)[0]; // d3 multi
+    const expectedDateBySupplier = Object.fromEntries(groups.map(([sid]) => [sid, nextOf(sid)?.deliveryYmd || nextDelivery({ rules: rulesFromDeliveryDays(supById[sid]?.deliveryDays, supById[sid]?.cutoffTime), nowVenue: buildScheduleCtx(venueTz) })?.deliveryYmd || tomorrow])); // d3 multi
+    const { data, error } = await createOrdersFromBasket(lines, 'DRAFT', locId, { expectedDateBySupplier }); // d3 multi
+    if (error) { setBusy(false); showToast?.(error.message, 'error'); return; } // d3 multi
+    let sent = 0, approvals = 0, internal = 0; const failed = []; // d3 multi
+    const poIds = data.poIds || [], supplierIds = data.supplierIds || []; // d3 multi
+    for (let i = 0; i < poIds.length; i++) { // d3 multi
+      const sub = await stockApi.submitOrder(poIds[i]); // d3 multi
+      if (sub.error && !sub.needsUpdate) { failed.push({ supplier: supName(supplierIds[i]), reason: sub.error.message }); continue; } // d3 multi
+      if (sub.data?.needs_approval) { approvals++; continue; } // d3 multi
+      if (sub.data?.internal) { internal++; continue; } // d3 multi
+      const { data: res, error: sendErr } = await supabase.functions.invoke('po-send', { body: { po_id: poIds[i], location_id: locId } }); // d3 multi
+      if (!sendErr && res?.ok) sent++; // d3 multi
+      else { failed.push({ supplier: supName(supplierIds[i]), reason: await fnErrorText(res, sendErr, 'the email could not be sent'), email: supById[supplierIds[i]]?.email || null }); await setPOStatus(poIds[i], 'SENT', locId); } // d3 multi
+    } // d3 multi
+    setBusy(false); // d3 multi
+    if (failed.length) showToast?.(`${submitToast({ sent, approvals, internal })} ${createOrdersToast({ created: poIds.length, emailed: sent, failed, fallback: 'the email could not be sent' })}`, 'error'); // d3 multi
+    else if (approvals && !sent && !internal) showToast?.(`${PAD_WORDS.sentForApprovalBold}${PAD_WORDS.sentForApproval}`, 'success'); // d3 multi
+    else if (sent && !approvals && !internal) showToast?.(`${PAD_WORDS.orderSentBold}${PAD_WORDS.orderSent}`, 'success'); // d3 multi
+    else showToast?.(submitToast({ sent, approvals, internal }), 'success'); // d3 multi
+    setQty({}); await reload(); // d3 multi
+  }; // d3 multi
   const createOrders = async () => {
     // unit_price MUST be NET (ex-VAT); the PO line carries the rate so VAT is shown on the order.
     // The line mirrors the supplier pack (pack_qty x inner_qty in the pack's unit) so the
@@ -210,6 +329,7 @@ export default function OrderPad({ siteId = null } = {}) {
     const pausedLines = Object.values(basket).flat().filter(({ r }) => r.paused);
     if (pausedLines.length) { showToast?.(pausedLines.map(({ r }) => pausedLineWords(r.it.name, r.paused, siteName(locId))).join(' '), 'error'); return; }
     if (pauseUnknown) { showToast?.('Could not check which items are paused here. Reload to try again.', 'error'); return; }
+    if (multi) return sendMulti(); // d3 multi
     const lines = Object.values(basket).flat().map(({ r, n }) => ({
       supplierId: r.sp.supplierId, inventoryItemId: r.it.id, description: r.it.name,
       qtyPacks: n, packQty: Number(r.sp.packQty) || 1, innerQty: Number(r.sp.innerQty) || 1,
@@ -222,7 +342,7 @@ export default function OrderPad({ siteId = null } = {}) {
     // (tomorrow when they have no schedule), on the venue's calendar.
     const todayYmd = buildScheduleCtx(venueTz).ymd;
     const expectedDateBySupplier = {};
-    Object.keys(basket).forEach(sid => { expectedDateBySupplier[sid] = nextDeliveryYmd(supById[sid]?.deliveryDays, todayYmd); });
+    Object.keys(basket).forEach(sid => { expectedDateBySupplier[sid] = nextDelivery({ rules: rulesFromDeliveryDays(supById[sid]?.deliveryDays, supById[sid]?.cutoffTime), nowVenue: buildScheduleCtx(venueTz) })?.deliveryYmd || daysAfter(todayYmd, 1)[0]; });
     // v5.5.922 — CREATE MEANS SEND. One click: each supplier's order is emailed to them on the
     // spot and lands in Orders as awaiting delivery. A supplier with no email on file cannot be
     // emailed, so that order is marked sent instead (it still counts as on-order) and the toast
@@ -261,7 +381,7 @@ export default function OrderPad({ siteId = null } = {}) {
       <div style={{ flexShrink: 0, padding: '22px 26px 14px' }}>
         <PageHeader
           eyebrow="PURCHASING"
-          title="Order pad"
+          title={multi ? `Order pad · ${siteName(locId)}` : 'Order pad'}
           subtitle="Suggested quantities cover you to each supplier’s next delivery (plus a safety buffer). Fill from the forecast, tweak, and the basket splits into one order per supplier."
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--bg1)', border: '1px solid var(--bdr2)', borderRadius: 12, padding: '7px 12px' }}>
@@ -276,6 +396,7 @@ export default function OrderPad({ siteId = null } = {}) {
           <PrimaryBtn onClick={fillSuggested}>Fill from forecast</PrimaryBtn>
           <button onClick={clearAll} style={ghostBtn}>Clear</button>
         </PageHeader>
+        {multi && <OrderPadHeaderLine next={headNext} nowMs={nowMs} />}{/* // d3 multi */}
 
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
           <SearchField value={search} onChange={setSearch} placeholder="Search items…" width={220} />
@@ -299,6 +420,10 @@ export default function OrderPad({ siteId = null } = {}) {
             <span>{staleOrders.length} open order{staleOrders.length === 1 ? '' : 's'} more than a week past due ({staleOrders.map(s => `${supName(s.supplierId)}${s.reference ? ` ${s.reference}` : ''}`).join(', ')}) {staleOrders.length === 1 ? 'is' : 'are'} not counted as on order. Receive or cancel {staleOrders.length === 1 ? 'it' : 'them'} in Orders.</span>
           </div>
         )}
+        {multi && ctxError && <div role="alert" style={{ ...ui.err, marginTop: 10 }}>{ctxError.message || String(ctxError)}</div>}{/* // d3 multi */}
+        {multi && <BudgetBar budget={ctx?.budget} basketTotal={basketTotal} />}{/* // d3 multi */}
+        {multi && hasLimit && <div style={{ marginTop: 10 }}><Notice tone="info"><b>{PAD_WORDS.approvalsNoticeBold}</b>{PAD_WORDS.approvalsNotice}<b>{PAD_WORDS.approvalsNoticeSend}</b>{PAD_WORDS.approvalsNoticeEnd}</Notice></div>}{/* // d3 multi */}
+        {multi && (ctx?.pending_approvals || []).length > 0 && <div style={{ marginTop: 10, fontSize: 12.5, color: 'var(--t2)' }}><Pill tone="warn">Waiting approval</Pill> {ctx.pending_approvals.map((x) => x.reference || 'Order').join(', ')}</div>}{/* // d3 multi */}
       </div>
 
       {/* Scroll pane. minHeight:0 keeps this the only scroller so the sticky <thead>
@@ -341,6 +466,7 @@ export default function OrderPad({ siteId = null } = {}) {
                         <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 3, whiteSpace: 'nowrap' }} title="Outstanding on open orders (Orders screen)">+{r2(o.qty)} {o.label} on order</div>
                       ); })()}
                     </td>
+                    {!multi && ( // d3 multi
                     <td style={{ ...cell, ...numCell, textAlign: 'right', color: 'var(--t3)' }}>
                       {r.avgDaily > 0 || r.prof ? `${r2(use.qty)} ${use.label}` : '—'}
                       {/* v5.5.934: the old strip rendered "M0 T0 W0…" — seven 9px letter+number
@@ -356,9 +482,14 @@ export default function OrderPad({ siteId = null } = {}) {
                         </div>;
                       })()}
                     </td>
+                    )}{/* // d3 multi */}
+                    {multi && <td style={{ ...cell, ...numCell, textAlign: 'right', color: 'var(--t3)' }}>{r.avgDaily > 0 || r.prof ? `${r2(displayInUnits(r.avgDaily * fScale, uom).qty)} ${use.label}` : ''}</td>}{/* // d3 multi */}
+                    {!multi && ( // d3 multi
                     <td style={{ ...cell, ...numCell, textAlign: 'right', color: 'var(--t4)', fontSize: 12 }} title={r.sched != null ? `Covers to the supplier’s second delivery (${nextDel.map(d => DAY_LABEL[d] || d).join('/')}) + ${safetyDays}d safety` : `No delivery schedule: default ${days}d + ${safetyDays}d safety`}>
                       {r.effCover}d{r.sched != null ? ' 🚚' : ''}
                     </td>
+                    )}{/* // d3 multi */}
+                    {multi && <td style={{ ...cell, ...numCell, textAlign: 'right', color: 'var(--t3)', fontSize: 12 }}>{(() => { const pv = parOf(r); if (pv == null) return ''; const d = displayInUnits(pv, uom); return `${r2(d.qty)} ${d.label}`; })()}</td>}{/* // d3 multi */}
                     <td style={{ ...cell, ...numCell, textAlign: 'right', fontWeight: r.suggestedPacks > 0 ? 700 : 400, color: r.suggestedPacks > 0 ? 'var(--acc)' : 'var(--t4)' }}>{r.sp ? r.suggestedPacks : '—'}</td>
                     <td style={{ ...cell, textAlign: 'right' }}>
                       {r.sp
@@ -390,12 +521,21 @@ export default function OrderPad({ siteId = null } = {}) {
           {basketCount === 0 ? 'Nothing in the basket yet' : <><b>{basketCount}</b> line{basketCount === 1 ? '' : 's'} · <b>{supplierCount}</b> supplier{supplierCount === 1 ? '' : 's'} · <b style={numCell}>{money(basketTotal)}</b> <span style={{ color: 'var(--t3)' }}>ex VAT{basketVat > 0.005 ? ` · VAT ${money(basketVat)} · pay ${money(basketTotal + basketVat)}` : ''}</span></>}
         </div>
         {supplierCount > 0 && <div style={{ fontSize: 12, color: 'var(--t3)' }}>{Object.entries(basket).map(([sid, ls]) => `${supName(sid)} (${ls.length})`).join(' · ')}</div>}
+        {multi && <MultiBasket basket={basket} ctx={ctx} supName={supName} spNet={spNet} itemName={itemName} />}{/* // d3 multi */}
         {/* --amber is only declared under [data-skin="servos"], so keep reportKit's fallback. */}
+        {!multi && (<>{/* // d3 multi */}
         {minWarnings.length > 0 && <div style={{ fontSize: 12, color: 'var(--amber, #F5A623)', padding: '5px 10px', borderRadius: 9, background: 'color-mix(in srgb, var(--amber, #F5A623) 14%, transparent)' }}>⚠ below min order: {minWarnings.map(w => `${w.name} ${money(w.val)}/${money(w.min)}`).join(' · ')}</div>}
+        </>)}{/* // d3 multi */}
+        {!multi && ( // d3 multi
         <button onClick={createOrders} disabled={busy || basketCount === 0} style={{ marginLeft: 'auto', padding: '11px 22px', borderRadius: 12, background: basketCount ? 'var(--grn)' : 'var(--bg3)', color: basketCount ? '#0b0c10' : 'var(--t4)', border: 0, fontFamily: 'inherit', fontSize: 14, fontWeight: 700, cursor: basketCount ? 'pointer' : 'default', flexShrink: 0 }}>
           {busy ? 'Creating…' : `Create ${supplierCount || ''} order${supplierCount === 1 ? '' : 's'}`}
         </button>
+        )}{/* // d3 multi */}
+        {multi && <span style={{ marginLeft: 'auto' }} />}{/* // d3 multi */}
+        {multi && <SavedListsMenu lists={ctx?.lists || []} onPick={(l) => fillFrom(l.lines)} onSave={() => setListName('')} onRepeat={repeatLast} canSave={basketCount > 0} canRepeat={supplierFilter !== 'all'} />}{/* // d3 multi */}
+        {multi && <Btn kind="primary" onClick={createOrders} disabled={busy || basketCount === 0} style={{ padding: '11px 22px', fontSize: 14 }}>{busy ? 'Sending…' : PAD_WORDS.sendOrder}</Btn>}{/* // d3 multi */}
       </div>
+      {multi && listName !== null && <Modal title={PAD_WORDS.saveAsList} onClose={() => setListName(null)} width={420} footer={<><Btn onClick={() => setListName(null)}>Cancel</Btn><Btn kind="primary" onClick={saveList}>Save list</Btn></>}><input autoFocus aria-label="List name" value={listName} onChange={(e) => setListName(e.target.value)} placeholder="Monday dry goods" style={ui.input} /></Modal>}{/* // d3 multi */}
     </div>
   );
 }

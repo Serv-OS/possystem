@@ -2,8 +2,12 @@
 // (v5.11.89, multi site stock Drop 1, map 2.2, 2.4 and 9.2; v5.11.92, Drop 4a, contract 2.2).
 //
 // Rule 2: a one site company sees EXACTLY today's sidebar and titles, loading or not. A multi site
-// company sees one relabel (Batches reads "Batch and prep") and, since Drop 4a, one route swap:
-// Reports > Stock and GP (stock-gp) opens and Inventory > Reports (stock-reports) forwards to it.
+// company sees one relabel (Batches reads "Batch and prep"); Drop 1 adds no route and no gate.
+// v5.11.96 (Drop 3, contract 3.1): six routes join, each gated to a multi site company whose scope is
+// read: Due to order, Forecast, Deliveries, Credits, Budgets, and Central kitchen (only with a
+// kitchen, for head office or a login that reaches the kitchen).
+// Drop 4a adds one route swap for a multi site company: Reports > Stock and GP (stock-gp) opens and
+// Inventory > Reports (stock-reports) forwards to it.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -16,9 +20,15 @@ import { oneSiteScope } from './stock/siteScope.js';
 const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
 const allRoutes = NAV_IA.flatMap(routesOfRow);
 const without = (nav, ids) => nav.map((r) => (r.children ? { ...r, children: r.children.filter((c) => !ids.includes(c[0])) } : r));
-// What a profile with no stock scope sees: today's sidebar less the Multi site menu and Stock and GP.
-const NAV_TODAY = without(NAV_IA, [MSM_ROUTE, STOCK_GP_ROUTE]);
+const STOCK_GATED = ['central-kitchen', 'due-to-order', 'forecast', 'stock-deliveries', 'credits', 'budgets'];
+// The Drop 4a pair: Stock and GP opens and Inventory > Reports forwards, for a multi site company only.
 const GATED = [STOCK_GP_ROUTE, STOCK_REPORTS_ROUTE];
+// What a profile with no multi site stock scope sees: today's sidebar less the Multi site menu, the
+// Drop 3 stock routes and Stock and GP; added by name, less only the stock routes.
+const NAV_NO_MSM = without(NAV_IA, [MSM_ROUTE, ...STOCK_GATED, STOCK_GP_ROUTE]);
+const NAV_NO_STOCK3 = without(NAV_IA, [...STOCK_GATED, STOCK_GP_ROUTE]);
+const PURCHASING_MULTI = [['order-pad', 'Order pad'], ['due-to-order', 'Due to order'], ['forecast', 'Forecast'], ['suppliers', 'Suppliers'],
+  ['purchase-orders', 'Orders'], ['stock-deliveries', 'Deliveries'], ['invoices', 'Invoices'], ['credits', 'Credits'], ['price-changes', 'Price changes'], ['budgets', 'Budgets']];
 
 const PEOPLE = {
   owner: { role: 'owner', sections: null },
@@ -30,11 +40,15 @@ const PEOPLE = {
   nothing: { role: 'manager', sections: [] },
 };
 const MULTI = { org_id: 'o', multi: true, level: 'all', sites: [{ id: 'a' }, { id: 'b' }], kitchens: [], sections: null };
+const MULTI_KITCHEN = { ...MULTI, kitchens: ['k'], sites: [{ id: 'a' }, { id: 'k' }] };
 const STOCK = {
   loading: stockAccessOf(null),
   failed: stockAccessOf(oneSiteScope('a')),
   oneSite: stockAccessOf({ ...oneSiteScope('a', { failed: false }), level: 'all' }),
   multi: stockAccessOf(MULTI),
+  kitchenAll: stockAccessOf(MULTI_KITCHEN),
+  kitchenSiteHere: stockAccessOf({ ...MULTI_KITCHEN, level: 'sites' }),
+  kitchenSiteAway: stockAccessOf({ ...MULTI_KITCHEN, level: 'sites', sites: [{ id: 'a' }, { id: 'b' }] }),
 };
 // Does this login's section list reach stock (Inventory, Produce or Purchasing, or everything)?
 const allowsStock = (p) => { const a = allowedKeys(p); return a === null || ['inventory', 'produce', 'purchasing'].some((k) => a.includes(k)); };
@@ -42,8 +56,12 @@ const allowsStock = (p) => { const a = allowedKeys(p); return a === null || ['in
 test('stockAccessOf: null while loading (ready false, multi false); the scope\'s facts once read', () => {
   assert.deepEqual(STOCK.loading, { ready: false, multi: false, level: 'sites', hasKitchen: false, reachesKitchen: false, sections: null });
   assert.equal(STOCK.failed.ready, true); assert.equal(STOCK.failed.multi, false);
-  assert.deepEqual(stockAccessOf({ multi: true, level: 'sites_full', kitchens: ['k1'], sections: ['inventory'] }),
+  assert.deepEqual(stockAccessOf({ multi: true, level: 'sites_full', kitchens: ['k1'], sites: [{ id: 'k1' }], sections: ['inventory'] }),
     { ready: true, multi: true, level: 'sites_full', hasKitchen: true, reachesKitchen: true, sections: ['inventory'] });
+  // Drop 3: reachesKitchen is a kitchen among the login's own sites, not any kitchen in the company
+  assert.deepEqual(stockAccessOf({ multi: true, level: 'sites', kitchens: ['k1'], sites: [{ id: 'a' }], sections: null }),
+    { ready: true, multi: true, level: 'sites', hasKitchen: true, reachesKitchen: false, sections: null });
+  assert.equal(stockAccessOf({ multi: true, kitchens: ['k1'] }).reachesKitchen, false, 'no sites: reaches no kitchen');
 });
 
 test('one site company (and while the scope loads or fails): the filtered sidebar is today\'s, row for row', () => {
@@ -57,10 +75,17 @@ test('one site company (and while the scope loads or fails): the filtered sideba
       assert.equal(STOCK_REPORTS_ALIAS(STOCK_REPORTS_ROUTE, withStock), STOCK_REPORTS_ROUTE, `${who}, ${state}: Inventory > Reports stays itself`);
     }
   }
-  // the owner's sidebar is NAV_IA less the Multi site menu and Stock and GP, as before Drop 4a less one row
-  assert.deepEqual(filterNav(NAV_IA, { ...PEOPLE.owner, stock: STOCK.oneSite }), NAV_TODAY);
+  // the owner's sidebar is NAV_IA less the Multi site menu, the Drop 3 stock routes and Stock and GP;
+  // added by name, less only the stock routes (Stock and GP still hidden)
+  assert.deepEqual(filterNav(NAV_IA, { ...PEOPLE.owner, stock: STOCK.oneSite }), NAV_NO_MSM);
   const named = { ...PEOPLE.owner, multiSiteMenu: { canOpen: true }, stock: STOCK.oneSite };
-  assert.deepEqual(filterNav(NAV_IA, named), without(NAV_IA, [STOCK_GP_ROUTE]), 'added by name: today\'s sidebar, Stock and GP still hidden');
+  assert.deepEqual(filterNav(NAV_IA, named), NAV_NO_STOCK3, 'added by name: today\'s sidebar, Stock and GP still hidden');
+  for (const id of STOCK_GATED) for (const stock of [STOCK.loading, STOCK.failed, STOCK.oneSite]) assert.equal(canOpenRoute(id, { ...PEOPLE.owner, stock }), false, id);
+  // a multi site company whose scope is not ready yet: still no
+  for (const id of STOCK_GATED) assert.equal(canOpenRoute(id, { ...PEOPLE.owner, stock: { ...STOCK.kitchenAll, ready: false } }), false, `${id} while loading`);
+  // Purchasing stays today's five
+  const purchasing = filterNav(NAV_IA, { ...PEOPLE.owner, stock: STOCK.oneSite }).find((r) => r.label === 'Purchasing');
+  assert.deepEqual(purchasing.children, [['order-pad', 'Order pad'], ['suppliers', 'Suppliers'], ['purchase-orders', 'Orders'], ['invoices', 'Invoices'], ['price-changes', 'Price changes']]);
   // and the labels stay today's
   const produce = filterNav(NAV_IA, { ...PEOPLE.owner, stock: STOCK.oneSite }).find((r) => r.label === 'Produce');
   assert.deepEqual(produce.children, [['recipes', 'Recipes'], ['batches', 'Batches']]);
@@ -69,30 +94,46 @@ test('one site company (and while the scope loads or fails): the filtered sideba
   assert.equal(canOpenRoute(STOCK_REPORTS_ROUTE, { ...PEOPLE.owner, stock: STOCK.oneSite }), true);
 });
 
-test('multi site company: the Produce row reads "Batch and prep"; Stock and GP opens and Inventory > Reports forwards; nothing else moves', () => {
+test('multi site company: "Batch and prep", the 10 Purchasing screens in order, Central kitchen only with a kitchen; Stock and GP opens and Inventory > Reports forwards', () => {
   assert.deepEqual({ ...LABEL_WHEN_MULTI }, { batches: 'Batch and prep' });
   assert.ok(Object.isFrozen(LABEL_WHEN_MULTI));
+  const want = (label, kitchen, profile) => NAV_IA.find((r) => r.label === label).children
+    .filter((c) => c[0] !== MSM_ROUTE && (kitchen || c[0] !== 'central-kitchen'))
+    // Drop 4a: Inventory > Reports forwards; Stock and GP shows for a login whose sections reach stock
+    .filter((c) => c[0] !== STOCK_REPORTS_ROUTE && (c[0] !== STOCK_GP_ROUTE || allowsStock(profile)))
+    .map(([id, l]) => [id, LABEL_WHEN_MULTI[id] || l]);
   for (const [who, profile] of Object.entries(PEOPLE)) {
     const today = filterNav(NAV_IA, profile);
-    const withStock = { ...profile, stock: STOCK.multi };
-    const multi = filterNav(NAV_IA, withStock);
-    assert.deepEqual(multi.map((r) => r.label), today.map((r) => r.label), `${who}: the same groups`);
-    for (let i = 0; i < today.length; i++) {
-      let want = today[i].children ? today[i].children.filter(([id]) => id !== STOCK_REPORTS_ROUTE).map(([id, label]) => [id, LABEL_WHEN_MULTI[id] || label]) : undefined;
-      if (want && today[i].label === 'Reports' && allowsStock(profile)) want = [want[0], [STOCK_GP_ROUTE, 'Stock and GP'], ...want.slice(1)];
-      assert.deepEqual(multi[i].children, want, `${who}: ${today[i].label}`);
+    for (const [state, stock, kitchen] of [['multi', STOCK.multi, false], ['kitchen', STOCK.kitchenAll, true]]) {
+      const withStock = { ...profile, stock };
+      const multi = filterNav(NAV_IA, withStock);
+      assert.deepEqual(multi.map((r) => r.label), today.map((r) => r.label), `${who}, ${state}: the same groups`);
+      for (const row of multi) if (row.children) assert.deepEqual(row.children, want(row.label, kitchen, profile), `${who}, ${state}: ${row.label}`);
+      for (const id of allRoutes) {
+        // a gated stock route opens exactly when its section's first screen does (and Central kitchen needs a kitchen);
+        // Stock and GP opens for a login with Reports and a stock section; Inventory > Reports closes (it forwards)
+        const expected = id === 'central-kitchen' ? kitchen && canOpenRoute('recipes', profile)
+          : STOCK_GATED.includes(id) ? canOpenRoute('order-pad', profile)
+          : id === STOCK_GP_ROUTE ? canOpenRoute('reports', profile) && allowsStock(profile)
+          : id === STOCK_REPORTS_ROUTE ? false
+          : canOpenRoute(id, profile);
+        assert.equal(canOpenRoute(id, withStock), expected, `${who}, ${state}: ${id}`);
+      }
+      assert.ok(GATED.every((id) => allRoutes.includes(id)));
+      assert.equal(STOCK_REPORTS_ALIAS(STOCK_REPORTS_ROUTE, withStock), STOCK_GP_ROUTE, `${who}, ${state}: the alias`);
+      assert.equal(guardRoute('batches', withStock), guardRoute('batches', profile));
     }
-    for (const id of allRoutes.filter((r) => !GATED.includes(r))) assert.equal(canOpenRoute(id, withStock), canOpenRoute(id, profile), `${who}: no new gate on ${id}`);
-    // the two gated routes: Stock and GP opens for a login with Reports and a stock section; Inventory > Reports closes
-    assert.equal(canOpenRoute(STOCK_GP_ROUTE, withStock), canOpenRoute('reports', profile) && allowsStock(profile), `${who}: stock-gp`);
-    assert.equal(canOpenRoute(STOCK_REPORTS_ROUTE, withStock), false, `${who}: stock-reports forwards`);
-    assert.equal(STOCK_REPORTS_ALIAS(STOCK_REPORTS_ROUTE, withStock), STOCK_GP_ROUTE, `${who}: the alias`);
-    assert.equal(guardRoute('batches', withStock), guardRoute('batches', profile));
   }
-  const produce = filterNav(NAV_IA, { ...PEOPLE.owner, stock: STOCK.multi }).find((r) => r.label === 'Produce');
-  assert.deepEqual(produce.children, [['recipes', 'Recipes'], ['batches', 'Batch and prep']]);
+  const owner = (stock) => filterNav(NAV_IA, { ...PEOPLE.owner, stock });
+  assert.deepEqual(owner(STOCK.multi).find((r) => r.label === 'Purchasing').children, PURCHASING_MULTI);
+  assert.deepEqual(owner(STOCK.multi).find((r) => r.label === 'Produce').children, [['recipes', 'Recipes'], ['batches', 'Batch and prep']]);
+  assert.deepEqual(owner(STOCK.kitchenAll).find((r) => r.label === 'Produce').children, [['recipes', 'Recipes'], ['batches', 'Batch and prep'], ['central-kitchen', 'Central kitchen']]);
+  // a site level login sees Central kitchen only when one of its own sites is the kitchen
+  assert.deepEqual(owner(STOCK.kitchenSiteHere).find((r) => r.label === 'Produce').children.map((c) => c[0]), ['recipes', 'batches', 'central-kitchen']);
+  assert.deepEqual(owner(STOCK.kitchenSiteAway).find((r) => r.label === 'Produce').children.map((c) => c[0]), ['recipes', 'batches']);
+  assert.equal(canOpenRoute('central-kitchen', { ...PEOPLE.owner, stock: STOCK.kitchenSiteAway }), false);
   // NAV_IA itself is never changed
-  assert.deepEqual(NAV_IA.find((r) => r.label === 'Produce').children, [['recipes', 'Recipes'], ['batches', 'Batches']]);
+  assert.deepEqual(NAV_IA.find((r) => r.label === 'Produce').children, [['recipes', 'Recipes'], ['batches', 'Batches'], ['central-kitchen', 'Central kitchen']]);
   assert.deepEqual(NAV_IA.find((r) => r.label === 'Reports').children[1], [STOCK_GP_ROUTE, 'Stock and GP'], 'second under Reports, after All reports');
   assert.deepEqual(NAV_IA.find((r) => r.label === 'Inventory').children.at(-1), [STOCK_REPORTS_ROUTE, 'Reports'], 'Inventory > Reports is still a sidebar route');
 });
@@ -128,11 +169,12 @@ test('the alias opens Stock and GP only when the company is multi site AND the s
   assert.equal(canOpenRoute(STOCK_REPORTS_ROUTE, noReports), false, 'and the old route is closed too: the screen says so');
 });
 
-test('Drop 4a adds exactly stock-gp: no multi-site-stock, the BETA list is exactly the Multi site menu', () => {
+test('Drop 3 adds exactly six routes and Drop 4a exactly stock-gp: no multi-site-stock, the BETA list is exactly the Multi site menu', () => {
   assert.ok(!allRoutes.includes('multi-site-stock'), 'Menu > Multi site stock never comes back');
   assert.ok(allRoutes.includes(STOCK_GP_ROUTE));
   assert.deepEqual([...BETA_ROUTES], [MSM_ROUTE]);
-  assert.equal(allRoutes.length, 94, 'the 93 routes of v5.11.84 plus stock-gp');
+  assert.equal(allRoutes.length, 100, 'the 93 routes of v5.11.84 plus the 6 of Drop 3 plus stock-gp');
+  for (const id of STOCK_GATED) assert.ok(allRoutes.includes(id), id);
   assert.doesNotMatch(read('./boSections.js'), /multi-site-stock/);
   assert.equal(STOCK_GP_ROUTE, 'stock-gp');
   assert.equal(STOCK_REPORTS_ROUTE, 'stock-reports');

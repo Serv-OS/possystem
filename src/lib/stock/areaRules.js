@@ -189,8 +189,11 @@ const normKey = (s) => String(s ?? '').trim().toLowerCase().replace(/\s+/g, ' ')
  * Match the sender's lines to the receiver's items: normalised SKU first, then normalised
  * name, never an archived item. Lines carry { id, skuSnapshot, nameSnapshot, toInventoryItemId, dropped }.
  * Returns { lines: [{ ...line, toInventoryItemId, matchedBy }], unmatched: [lineIds] }.
+ * v5.11.96 (multi site stock Drop 3): `byCompany` (optional, { lineId: receiver item id } from
+ * stock_transfer_matches rows whose how is 'company') is tried first: the same company item at the
+ * receiving site wins over SKU and name. Without it the answer is exactly as before.
  */
-export function matchTransferLines(lines, receiverItems) {
+export function matchTransferLines(lines, receiverItems, byCompany = null) {
   const live = (receiverItems || []).filter((i) => i && !i.archivedAt);
   // v5.11.79 (stock plan 4.8): every live item per SKU and per name, not the first one. When two of
   // the receiver's items share the SKU (or, with no SKU match, the name) the receiver must pick:
@@ -204,6 +207,8 @@ export function matchTransferLines(lines, receiverItems) {
     if (!l) continue;
     if (l.dropped) { out.push({ ...l, matchedBy: null }); continue; }
     if (l.toInventoryItemId && live.some((i) => i.id === l.toInventoryItemId)) { out.push({ ...l, matchedBy: 'kept' }); continue; }
+    const co = byCompany && Object.prototype.hasOwnProperty.call(byCompany, l.id) ? byCompany[l.id] : null;
+    if (co && live.some((i) => i.id === co)) { out.push({ ...l, toInventoryItemId: co, matchedBy: 'company' }); continue; }
     const sku = normKey(l.skuSnapshot); const name = normKey(l.nameSnapshot);
     const skuIds = (sku && bySku.get(sku)) || [];
     const nameIds = (name && byName.get(name)) || [];

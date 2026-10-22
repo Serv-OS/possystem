@@ -137,7 +137,8 @@ test('readOfficeReachFacts reads the link, the profile and the venue company; no
 test('manager-approve: the everything rule for every action, the stock rule only for po.raise, po.receive and stock.* (source)', () => {
   const src = code(read('supabase/functions/manager-approve/index.ts'));
   assert.match(src, /import \{ officeReachesVenue, stockOfficeReachesVenue, readOfficeReachFacts \} from '\.\.\/_shared\/stockOfficeReach\.js';/);
-  assert.match(src, /const isStockAction = \(action: string\) => action === 'po\.raise' \|\| action === 'po\.receive' \|\| action\.startsWith\('stock\.'\);/);
+  // v5.11.96 (Drop 3): transfers, the central kitchen, shop buys, the close down and forecast edits are stock work too.
+  assert.match(src, /const isStockAction = \(action: string\) => action === 'po\.raise' \|\| action === 'po\.receive' \|\| action\.startsWith\('stock\.'\)\s+\|\| action\.startsWith\('transfer\.'\) \|\| action\.startsWith\('kitchen\.'\) \|\| action === 'shop\.buy' \|\| action === 'waste\.closedown' \|\| action === 'forecast\.edit';/);
   assert.match(src, /return \(stockAction \? stockOfficeReachesVenue\(facts\) : officeReachesVenue\(facts\)\)\.ok;/);
   // both fences ask the same question with the same action kind
   assert.match(src, /const stockAction = isStockAction\(String\(action\)\);/);
@@ -153,7 +154,10 @@ test('manager-approve: the everything rule for every action, the stock rule only
 test('manager-approve: the staff PIN rule (any staff PIN for the phone\'s stock steps, a manager PIN to approve a count) (source)', () => {
   const src = code(read('supabase/functions/manager-approve/index.ts'));
   assert.match(src, /if \(action === 'stock\.count_approve' && !pin\) return json\(\{ error: 'PIN required' \}, 403\);/);
-  assert.match(src, /const staffPinEnough = String\(action\)\.startsWith\('stock\.'\) && action !== 'stock\.count_approve';/);
+  // v5.11.96 (Drop 3): any staff PIN also opens the kitchen reads, the plan's Done ticks and the close down
+  // (waste, like stock.waste); transfers, shop buys and forecast edits still need a manager PIN.
+  assert.match(src, /const STAFF_PIN_ACTIONS = new Set\(\['kitchen\.orders_in', 'kitchen\.plan', 'kitchen\.done', 'waste\.closedown'\]\);/);
+  assert.match(src, /const staffPinEnough = \(String\(action\)\.startsWith\('stock\.'\) && action !== 'stock\.count_approve'\) \|\| STAFF_PIN_ACTIONS\.has\(String\(action\)\);/);
   assert.match(src, /if \(!staffPinEnough && !canApprove\(op\)\) return json\(\{ error: 'not allowed to approve' \}, 403\);/);
   // the PIN check comes before the try block that runs any action
   assert.ok(src.indexOf('const staffPinEnough') < src.indexOf("if (action === 'timesheet.clock_out')"));
@@ -191,7 +195,8 @@ test('manager-snapshot: the everything rule for the whole snapshot; Stock contro
   assert.match(src, /floor: full \? floor : null,/);
   assert.match(src, /team: full \? \{ punches, shifts: teamShifts, ratesMinor, pendingTimesheets, pendingTimeOff, breakPolicy \} : null,/);
   assert.match(src, /ops: full \? ops : null,/);
-  assert.match(src, /kitchen: \{ items: kitchenItems, deliveries: kitchenDeliveries, batches: kitchenBatches, trackedItems \},/);
+  // v5.11.96 (Drop 3): a kitchen order in deliveries says internal, and the Drop 3 blocks ride on the kitchen line.
+  assert.match(src, /kitchen: \{ items: kitchenItems, deliveries: kitchenDeliveries\.map\(\(d: any\) => \(internalSup\.has\(String\(d\.supplierId\)\) \? \{ \.\.\.d, internal: true \} : d\)\), batches: kitchenBatches, trackedItems, recipes: kitchenRecipes,\s+orderBy: kitchenOrderBy, approvals: kitchenApprovals, transfers: kitchenTransfers, closedown: kitchenClosedown, ordersIn: kitchenOrdersIn \},/);
   // the phone's Count stock button reads the tracked item count
   assert.match(src, /\.select\('id', \{ count: 'exact', head: true \}\)\s+\.eq\('location_id', loc\)\.is\('archived_at', null\)\.eq\('is_tracked', true\);/);
   // archived supplier prices and bridges are left out of the order lists; the open order pack codes keep them (history)

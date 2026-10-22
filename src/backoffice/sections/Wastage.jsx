@@ -4,7 +4,7 @@
  * wastage migration (20260622b_wastage.sql).
  */
 
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useStore } from '../../store';
 import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
 import { getLocationConfig } from '../../lib/locationTime';
@@ -15,8 +15,11 @@ import { fetchInventoryItems } from '../../lib/stock/data';
 import PosWasteModal from '../../components/PosWasteModal';
 import { logWaste, fetchWaste, WASTE_REASONS } from '../../lib/stock/waste';
 import { countLiveStockItems } from '../../lib/stock/menuWaste';
-// v5.11.92 (multi site stock Drop 4a, contract 2.4): "See the report" opens Reports > Stock and GP > Waste.
-import { useStockScope } from '../StockScope';
+import { useWasteReasons, startReason } from '../../lib/stock/wasteReasons'; // d3 multi
+import { stockApi } from '../../lib/stock/stockApi'; // d3 multi
+import ManagerPinPrompt from '../../components/ManagerPinPrompt'; // d3 multi
+import FreshCloseDown from './stock/FreshCloseDown'; // d3 multi
+import { useStockScope } from '../StockScope'; // d3 multi
 
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 5 };
@@ -38,6 +41,15 @@ export default function Wastage({ siteId = null } = {}) {
   const [row, setRow] = useState({ item: null, qty: '', unit: 'each', reason: WASTE_REASONS[0], note: '' });
   const [busy, setBusy] = useState(false);
   const [venueTz, setVenueTz] = useState(null);
+  // v5.11.96 (multi site stock Drop 3): the company's waste reasons (today's list for a one site company and // d3 multi
+  // before the database update), the manager PIN asked for only when the database says so (no limit is set // d3 multi
+  // anywhere today), and the End of day fresh close down for a multi site company. // d3 multi
+  const sc = useStockScope(); // d3 multi
+  const { reasons } = useWasteReasons(sc.multi ? locId : null, stockApi); // d3 multi
+  const reasonNow = reasons.includes(row.reason) ? row.reason : startReason(reasons); // d3 multi
+  const pinNow = useRef(null); // d3 multi
+  const [pinAsk, setPinAsk] = useState(null); // d3 multi
+  const [closeDown, setCloseDown] = useState(false); // d3 multi
 
   const reload = useCallback(async () => {
     const loc = locId || getActiveLocationSync() || await getLocationId().catch(() => null);
@@ -64,12 +76,15 @@ export default function Wastage({ siteId = null } = {}) {
     if (!row.item) { showToast?.('Pick an item', 'error'); return; }
     if (!(Number(row.qty) > 0)) { showToast?.('Enter a quantity', 'error'); return; }
     setBusy(true);
-    const { error, training } = await logWaste({ inventoryItemId: row.item.id, qty: row.qty, unit: row.unit, reason: row.reason, note: row.note }, locId);
+    const { error, training, pin: pinState } = await logWaste({ inventoryItemId: row.item.id, qty: row.qty, unit: row.unit, reason: reasonNow, note: row.note, pin: pinNow.current }, locId);
     setBusy(false);
+    pinNow.current = null; // d3 multi
+    if (pinState) { setPinAsk({ words: error?.message || '', error: pinState === 'needed' ? null : error?.message || null }); return; } // d3 multi
+    setPinAsk(null); // d3 multi
     if (error) { showToast?.(error.message, 'error'); return; }
     // 26 Sep 2026: on a Training Mode device logWaste writes nothing; never say "Waste logged".
     showToast?.(training ? 'Training mode: waste not recorded' : 'Waste logged', training ? 'info' : 'success');
-    setRow({ item: null, qty: '', unit: 'each', reason: WASTE_REASONS[0], note: '' });
+    setRow({ item: null, qty: '', unit: 'each', reason: startReason(reasons), note: '' });
     await reload();
   };
 
@@ -93,6 +108,7 @@ export default function Wastage({ siteId = null } = {}) {
           <button onClick={() => setShowProductWaste(true)} style={{ padding: '7px 13px', borderRadius: 8, background: 'var(--bg2)', border: '1px solid var(--bdr)', color: 'var(--t1)', fontSize: 12.5, fontWeight: 600, cursor: 'pointer' }}>
             Waste a menu item…
           </button>
+          {sc.multi && <button onClick={() => setCloseDown(true)} style={{ marginLeft: 8, padding: '7px 13px', borderRadius: 8, background: 'var(--bg2)', border: '1px solid var(--bdr)', color: 'var(--t1)', fontSize: 12.5, fontWeight: 600, cursor: 'pointer' }}>End of day</button>}{/* d3 multi */}
         </div>
         {!row.item ? (
           // 26 Sep 2026, Peter: "should be able to waste without stock". With no stock items
@@ -121,8 +137,8 @@ export default function Wastage({ siteId = null } = {}) {
               </select>
             </div>
             <div><label style={lbl}>Reason</label>
-              <select value={row.reason} onChange={e => setRow(r => ({ ...r, reason: e.target.value }))} style={{ ...field, width: 160 }}>
-                {WASTE_REASONS.map(r => <option key={r} value={r}>{r}</option>)}
+              <select value={reasonNow} onChange={e => setRow(r => ({ ...r, reason: e.target.value }))} style={{ ...field, width: 160 }}>
+                {reasons.map(r => <option key={r} value={r}>{r}</option>)}
               </select>
             </div>
             <div style={{ flex: 1, minWidth: 140 }}><label style={lbl}>Note</label><input value={row.note} onChange={e => setRow(r => ({ ...r, note: e.target.value }))} style={field} placeholder="optional" /></div>
@@ -155,6 +171,8 @@ export default function Wastage({ siteId = null } = {}) {
         </table>
       )}
       <PosWasteModal open={showProductWaste} onClose={() => { setShowProductWaste(false); reload(); }} locationId={locId} showToast={showToast} />
+      {pinAsk && <ManagerPinPrompt words={pinAsk.words} error={pinAsk.error} busy={busy} onCancel={() => setPinAsk(null)} onPin={(pin) => { pinNow.current = pin; submit(); }} />}{/* d3 multi */}
+      {closeDown && <FreshCloseDown siteId={locId} onClose={() => setCloseDown(false)} onDone={() => { setCloseDown(false); reload(); }} />}{/* d3 multi */}
     </div>
   );
 }

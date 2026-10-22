@@ -24,7 +24,12 @@ import { KDS_NOTE_MAX, cleanKdsNote } from '../../lib/kds/kdsOrderNote';
 import { kdsVisibleNote } from '../../lib/kioskStaffFlags';
 import { scaled, breakableWords, fitFontSize } from '../../lib/kds/kdsFit';
 import { BUMP_NOT_SAVED } from '../../lib/kds/kdsLinkHealth';
-import { C, SANS, MONO, LATE_PULSE } from './kdsStyles';
+import { C, SANS, MONO, LATE_PULSE, ghostBtn } from './kdsStyles';
+// v5.11.93 (multi site stock Drop 2): the recipe card for staff, from the item in the pop out.
+import { getActiveLocationSync } from '../../lib/supabase';
+import KdsRecipeCard from './KdsRecipeCard';
+
+const recipeBtn = { ...ghostBtn(false), padding: '8px 16px', minHeight: 40, font: `600 14px ${SANS}`, flex: 'none', alignSelf: 'flex-start' };
 
 const HELD_TIMER = { label: 'ON HOLD', c: '#AEB8B3', bg: 'rgba(255,255,255,.07)' };
 
@@ -179,7 +184,8 @@ function TickBox({ ticked, onTick, size, big, disabled = false }) {
   );
 }
 
-function LineRow({ line, big, z, onTick, canTick, showTick }) {
+// onRecipe (v5.11.93, the pop out only): opens the recipe card of the till product on this line.
+function LineRow({ line, big, z, onTick, canTick, showTick, onRecipe = null }) {
   const done = line.bumped;
   return (
     <div style={{
@@ -208,6 +214,9 @@ function LineRow({ line, big, z, onTick, canTick, showTick }) {
           <div style={{ font: `700 ${z.allergen}px ${MONO}`, letterSpacing: big ? 0 : '.06em', color: C.allergen, overflowWrap: 'anywhere' }}>⚠ {line.allergen}</div>
         )}
       </div>
+      {big && onRecipe && line.itemId ? (
+        <button type="button" className="kds-ghost" onClick={() => onRecipe(line.itemId)} style={recipeBtn}>Recipe</button>
+      ) : null}
     </div>
   );
 }
@@ -478,6 +487,8 @@ export function KdsTicketModal({ view, mins, settings, mode = 'live', onClose, o
   const timer = timerProps(view, mins, settings, mode);
   const canTick = mode === 'live' && !held;
   const note = kdsVisibleNote(view.note, show.notes);
+  // v5.11.93: the till product whose recipe card is open over this ticket (null: none).
+  const [recipeFor, setRecipeFor] = useState(null);
 
   return (
     <div onClick={onClose} style={{
@@ -485,6 +496,7 @@ export function KdsTicketModal({ view, mins, settings, mode = 'live', onClose, o
       display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 44, zIndex: 20,
     }}>
       <div onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" style={{
+        position: 'relative',
         width: 1040, maxWidth: '100%', maxHeight: '100%', background: C.modal, border: `1px solid ${C.modalEdge}`,
         borderRadius: 22, overflow: 'hidden', display: 'flex', flexDirection: 'column',
         boxShadow: '0 40px 90px rgba(0,0,0,.6)', animation: 'kdsKfade .16s ease',
@@ -514,11 +526,14 @@ export function KdsTicketModal({ view, mins, settings, mode = 'live', onClose, o
             <div key={g.course} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               {show.course && <CourseChip label={g.label} accent={accent} font={z.course} big />}
               {g.lines.map(l => (
-                <LineRow key={l.index} line={l} big z={z} canTick={canTick} showTick={mode === 'live'} onTick={() => onBumpItem(view.id, l.index)} />
+                <LineRow key={l.index} line={l} big z={z} canTick={canTick} showTick={mode === 'live'} onTick={() => onBumpItem(view.id, l.index)} onRecipe={setRecipeFor} />
               ))}
             </div>
           ))}
         </div>
+        {recipeFor && (
+          <KdsRecipeCard locationId={getActiveLocationSync()} menuItemId={recipeFor} onClose={() => setRecipeFor(null)} />
+        )}
 
         <div style={{ flex: 'none', padding: '18px 26px', display: 'flex', gap: 12, flexWrap: 'wrap', borderTop: `1px solid ${C.line}`, background: 'rgba(255,255,255,.02)' }}>
           <button type="button" className="kds-ghost" onClick={onClose} style={modalGhost}>Close</button>

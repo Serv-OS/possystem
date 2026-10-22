@@ -613,6 +613,7 @@ export const IMPORT_KINDS = Object.freeze([
   { kind: 'supplier', key: 'suppliers', label: 'Suppliers' },
   { kind: 'supplier_item', key: 'supplier_items', label: 'Supplier items and prices' },
   { kind: 'par', key: 'pars', label: 'Pars' },
+  { kind: 'recipe', key: 'recipes', label: 'Recipes' },
 ]);
 export const importKey = (kind) => IMPORT_KINDS.find((k) => k.kind === kind || k.key === kind)?.key || null;
 export const importKind = (key) => IMPORT_KINDS.find((k) => k.kind === key || k.key === key)?.kind || null;
@@ -630,10 +631,17 @@ const allOf = (counts, action) => {
   return ['item', 'supplier', 'supplier_item', 'par', 'recipe'].reduce((t, k) => t + countOf(c, k, action), 0);
 };
 
+// A recipe count the server answers: its own total ('new_recipes'), else the per kind shape.
+const hasRecipeCount = (c, flat, action) => isNum(c?.[flat]) || (c?.recipe && typeof c.recipe === 'object' && isNum(c.recipe[action]))
+  || isNum(c?.[`recipe:${action}`]) || isNum(c?.[`recipe_${action}`]);
+const recipeCount = (c, flat, action) => (isNum(c?.[flat]) ? Number(c[flat]) : countOf(c, 'recipe', action));
+
 /**
  * The check screen line '<n> new items, <n> price changes, <n> problems' from the job counts. The
  * counts are read per kind and action ({ item: { new: 3 } }, 'item:new' or 'item_new'); the
- * problems figure also takes a flat { problem: n }.
+ * problems figure also takes a flat { problem: n }. Drop 2: when the server counts recipes
+ * (new_recipes, changed_recipes, or the per kind recipe counts) the line goes on
+ * ', <n> new recipes, <n> changed recipes'; a file with no recipes keeps the Drop 1 line.
  */
 export function importCountWords(counts) {
   // stock_import_stage answers { rows, new, change, same, skip, problem, new_items, price_changes }
@@ -642,7 +650,11 @@ export function importCountWords(counts) {
   const newItems = isNum(c.new_items) ? Number(c.new_items) : countOf(counts, 'item', 'new');
   const priceChanges = isNum(c.price_changes) ? Number(c.price_changes) : countOf(counts, 'supplier_item', 'change') + countOf(counts, 'supplier_item', 'new');
   const problems = allOf(counts, 'problem');
-  return `${plural(newItems, 'new item')}, ${plural(priceChanges, 'price change')}, ${plural(problems, 'problem')}`;
+  let words = `${plural(newItems, 'new item')}, ${plural(priceChanges, 'price change')}, ${plural(problems, 'problem')}`;
+  if (hasRecipeCount(c, 'new_recipes', 'new') || hasRecipeCount(c, 'changed_recipes', 'change')) {
+    words += `, ${plural(recipeCount(c, 'new_recipes', 'new'), 'new recipe')}, ${plural(recipeCount(c, 'changed_recipes', 'change'), 'changed recipe')}`;
+  }
+  return words;
 }
 
 /**
@@ -650,7 +662,7 @@ export function importCountWords(counts) {
  * ['items', 'supplier_items'] -> 'stock items and supplier items and prices'.
  */
 export function importKindsWords(order) {
-  const words = (order || []).map((k) => (k === 'recipes' || k === 'recipe' ? 'recipes (skipped)' : (IMPORT_KINDS.find((x) => x.key === k || x.kind === k)?.label || '').toLowerCase())).filter(Boolean);
+  const words = (order || []).map((k) => (IMPORT_KINDS.find((x) => x.key === k || x.kind === k)?.label || '').toLowerCase()).filter(Boolean);
   if (words.length <= 1) return words[0] || '';
   return `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}`;
 }
@@ -668,13 +680,6 @@ export function stageWithSupplier(rows, supplier) {
     if (!name || r?.kind !== 'supplier_item' || String(r?.data?.supplier || '').trim()) return r;
     return { ...r, data: { ...(r.data || {}), supplier: name } };
   });
-}
-
-/** Recipe rows in the file (skipped: 'Recipes come in with the recipe update.'). */
-export function importRecipeRows(counts) {
-  const c = counts || {};
-  if (isNum(c.recipe)) return Number(c.recipe);
-  return ['new', 'change', 'same', 'skip', 'problem'].reduce((t, a) => t + countOf(c, 'recipe', a), 0);
 }
 
 /** '<done> of <total> rows done' from one queue row's progress. */

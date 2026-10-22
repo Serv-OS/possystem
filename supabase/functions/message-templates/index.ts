@@ -6,24 +6,35 @@
 // POST body: { action, location_id, ... }
 //
 // Actions:
-//   list     — all types with custom template or default merged in
-//   save     — upsert a custom template for (company, type, channel)
-//   reset    — delete a custom template, reverting to default
-//   preview  — render a template with sample merge-tag data
+//   list            all types with custom template or default merged in
+//   save            upsert a custom template for (company, type, channel)
+//   reset           delete a custom template, reverting to default
+//   preview         render a template with sample merge-tag data
+//   service_status  (loyalty_otp) the state of this venue's code text service, read only
+//   fix_service     (loyalty_otp) make or repair this venue's code text service
 //
-// Auth: Ops DB user JWT (resolves company via location_id).
-// Deploys to Ops DB project (tbetcegmszzotrwdtqhi).
+// Auth: Ops DB user JWT (resolves company via location_id). Since 22 Oct 2026 (v5.11.94) every
+// write, and the two service actions, also need the caller to be a member of staff for the venue
+// (a user_locations link, a verified super admin, a Platform company role, or an owner inside
+// their own organisation). authenticateCaller only proves a JWT, and anyone gets one with the
+// public key: before this, any session with a valid location id could rewrite a venue's messages.
+// Deploys to Ops DB project (tbetcegmszzotrwdtqhi), --no-verify-jwt as today.
 
 import {
   cors, json, platformAdmin, opsAdmin,
   authenticateCaller, resolveCompanyForLocation,
 } from '../_shared/gift-card-utils.ts';
+import { callerIsStaffFor } from '../_shared/loyalty-utils.ts';
+import { isVenueWriter } from '../_shared/venueWriter.js';
 import {
   MESSAGE_TYPES, CATEGORIES,
   getMessageType, getDefaultTemplate, buildSampleData,
 } from '../_shared/message-types.ts';
 import { substituteTags, wrapInEmailHtml } from '../_shared/template-resolver.ts';
-import { setVerifyServiceName } from '../_shared/twilio-verify.ts';
+import { ensureVenueService, recordVenueResult } from '../_shared/otpService.ts';
+import { recordable } from '../_shared/otpServiceRules.js';
+
+const STAFF_ACTIONS = new Set(['save', 'reset', 'service_status', 'fix_service']);
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -47,6 +58,14 @@ Deno.serve(async (req) => {
   if (companyResult instanceof Response) return companyResult;
   const companyId = companyResult as string;
 
+  // Who may change a venue's messages: staff of that venue (the money functions' rule) or an
+  // owner inside their own organisation (the venue settings rule). Never an anonymous session.
+  if (STAFF_ACTIONS.has(action)) {
+    const user = authResult.user;
+    const allowed = (await callerIsStaffFor(user, locationId, companyId)) || (await isVenueWriter(opsAdmin, user, locationId));
+    if (!allowed) return json({ error: 'Only staff of this venue can change its messages.' }, 403);
+  }
+
   switch (action) {
     case 'list':
       return handleList(companyId, locationId);
@@ -56,10 +75,40 @@ Deno.serve(async (req) => {
       return handleReset(companyId, body);
     case 'preview':
       return handlePreview(companyId, body);
+    case 'service_status':
+      return handleService(companyId, body, false);
+    case 'fix_service':
+      return handleService(companyId, body, true);
     default:
       return json({ error: `Unknown action: ${action}` }, 400);
   }
 });
+
+// ── THE CODE TEXT SERVICE (22 Oct 2026) ──────────────────────────────────────
+// The name in a loyalty code text is the Twilio Verify SERVICE's friendly name, and each venue has
+// its own service. ensureVenueService (_shared/otpService.ts) reads what Twilio has, compares it
+// with the name this venue should carry (the override saved here, else the venue name), and when
+// `fix` is set makes or repairs the service. Back Office shows the answer under Messages >
+// Verification code with a Fix button; Save name and Reset below run the same repair.
+
+// What Back Office just saw (a status read, a Fix, a Save, a Reset) is the venue's real state, so
+// it goes into the audit table too: the watchdog then clears (or raises) its morning item without
+// waiting for the night.
+async function venueService(companyId: string, locationId: string, fix: boolean) {
+  const service = await ensureVenueService({ ops: opsAdmin, platform: platformAdmin, opsLocationId: locationId, companyId, fix });
+  if (recordable(service)) await recordVenueResult(opsAdmin, service, 'staff');
+  return service;
+}
+
+async function handleService(companyId: string, body: Record<string, unknown>, fix: boolean) {
+  const messageType = String(body.message_type || 'loyalty_otp');
+  const mt = getMessageType(messageType);
+  if (!mt || !mt.nameEditable) return json({ error: `${messageType} has no text service` }, 400);
+  const locationId = String(body.location_id || '');
+  const service = await venueService(companyId, locationId, fix);
+  if (fix) console.log('[message-templates] fix_service', JSON.stringify({ ...service, words: undefined }));
+  return json({ ok: true, service });
+}
 
 // ── LIST ─────────────────────────────────────────────────────────────────────
 // Returns every message type with its channels, merge tags, and either the
@@ -211,39 +260,20 @@ async function handleSave(companyId: string, body: Record<string, unknown>) {
   }
 
   // Name-editable provider types (loyalty_otp): the name that actually shows in the code SMS is
-  // the Twilio Verify SERVICE's friendly name — push the saved name to THIS LOCATION's own
-  // service. Never touch the shared fallback or another location's service. If this location has
-  // no service yet, skip — its next OTP send creates one named from this override.
+  // the Twilio Verify SERVICE's friendly name. The saved name goes onto THIS LOCATION's own
+  // service now, through the one shared repair: a venue with no service yet gets one made here
+  // (22 Oct 2026; it used to wait for the next customer's sign in, and when that failed the code
+  // went out under another venue's name). Never the shared fallback or another venue's service.
   if (mt.nameEditable) {
-    const ownSid = await getLocationVerifySid(companyId, saveLocationId);
-    if (ownSid) {
-      const tw = await setVerifyServiceName(cleanBody, ownSid);
-      if (!tw.ok) {
-        console.error('[message-templates] verify rename failed:', tw.error);
-        return json({ error: `Name saved, but updating the SMS service failed: ${tw.error}. Try again.` }, 502);
-      }
+    const service = await venueService(companyId, saveLocationId, true);
+    if (!service.ok) {
+      console.error('[message-templates] text service not ready after save:', JSON.stringify({ ...service, words: undefined }));
+      return json({ error: `Name saved, but the text service is not ready: ${service.words} Try again.`, service }, 502);
     }
+    return json({ ok: true, id: data.id, service });
   }
 
   return json({ ok: true, id: data.id });
-}
-
-// This location's own Twilio Verify service sid — hidden config row written by loyalty-otp
-// (message_type 'loyalty_otp_service:<locationId>'; see that function for the full scheme).
-async function getLocationVerifySid(companyId: string, locationId: string): Promise<string | null> {
-  try {
-    const { data } = await platformAdmin
-      .from('message_templates')
-      .select('body_text')
-      .eq('company_id', companyId)
-      .eq('message_type', `loyalty_otp_service:${locationId}`)
-      .eq('channel', 'sms')
-      .maybeSingle();
-    const sid = String(data?.body_text || '').trim();
-    return sid.startsWith('VA') ? sid : null;
-  } catch {
-    return null;
-  }
 }
 
 // ── RESET ────────────────────────────────────────────────────────────────────
@@ -278,19 +308,13 @@ async function handleReset(companyId: string, body: Record<string, unknown>) {
     return json({ error: `Reset failed: ${error.message}` }, 500);
   }
 
-  // Name-editable provider types: "reset" means "use the venue name" — revert THIS LOCATION's own
-  // Twilio Verify service to ops locations.name. Never rename the shared fallback service.
+  // Name-editable provider types: "reset" means "use the venue name". The same repair as save puts
+  // the venue name onto THIS LOCATION's own Twilio Verify service (made here when it has none).
+  // Never the shared fallback service. The reset stands whatever Twilio says; the answer says it.
   if (mt.nameEditable) {
-    const ownSid = await getLocationVerifySid(companyId, locationId);
-    let venueName = '';
-    if (locationId) {
-      const { data: loc } = await opsAdmin.from('locations').select('name').eq('id', locationId).maybeSingle();
-      if (loc?.name) venueName = loc.name;
-    }
-    if (ownSid && venueName) {
-      const tw = await setVerifyServiceName(venueName, ownSid);
-      if (!tw.ok) console.error('[message-templates] verify rename on reset failed:', tw.error);
-    }
+    const service = await venueService(companyId, locationId, true);
+    if (!service.ok) console.error('[message-templates] text service not ready after reset:', JSON.stringify({ ...service, words: undefined }));
+    return json({ ok: true, service });
   }
 
   return json({ ok: true });

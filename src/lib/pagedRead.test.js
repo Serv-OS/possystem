@@ -489,7 +489,7 @@ test('pin: no report screen keeps a bare .limit above 1,000 or passes a row cap 
     .concat([
       '../backoffice/sections/BOReports.jsx', '../backoffice/sections/StockReports.jsx',
       '../backoffice/sections/Transactions.jsx', '../backoffice/sections/WaitlistInsights.jsx',
-      '../backoffice/sections/PriceChanges.jsx', '../backoffice/sections/Challenge21Report.jsx',
+      '../backoffice/sections/purchasing/PriceChangesSite.jsx', '../backoffice/sections/Challenge21Report.jsx',
     ]);
   assert.ok(files.length > 25, 'the reports folder was found');
   for (const f of files) {
@@ -565,7 +565,7 @@ test('pin: no report throws the pager\'s error away', () => {
   assert.match(cash, /setFault\(isTooManyRows\(err\) \? 'too_long' : 'failed'\)/);
   assert.match(cash, /if \(fault\) \{\s+return <EmptyState icon="⚠" message=\{faultText\(fault\)\}\/>;/);
 
-  const price = read('../backoffice/sections/PriceChanges.jsx');
+  const price = read('../backoffice/sections/purchasing/PriceChangesSite.jsx');
   assert.match(price, /\{ data: hist, error: histErr, tooMany \}/);
   assert.match(price, /setFault\(tooMany \? 'too_long' : 'failed'\)/);
   assert.match(price, /rows != null && !fault && view\.length === 0/, 'a fault is not "no price movements"');

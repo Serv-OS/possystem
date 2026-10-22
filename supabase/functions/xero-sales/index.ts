@@ -788,6 +788,8 @@ Deno.serve(async (req) => {
   if (req.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
   let body: any = {};
   try { body = await req.json(); } catch { /* ignore */ }
+  // v5.11.96 (multi site stock Drop 3, contract 3.5): the monthly recharge, its own path.
+  if (body.action === 'recharge_invoice') return rechargeInvoice(req, body);
   const locationId = body.locationId || body.location_id;
   if (!locationId) return json({ error: 'locationId required' }, 400);
   const acc = await requireAccess(req, locationId);
@@ -994,3 +996,75 @@ Deno.serve(async (req) => {
     return json({ ...base, error: msg }, 500);
   }
 });
+
+// -- v5.11.96 (multi site stock Drop 3, contract 3.5, F13, decision 6): the monthly recharge invoice ----
+// POST { action: 'recharge_invoice', orgId, month: 'YYYY-MM-01', fromLocationId, toLocationId } -> { ok, xero_invoice_id }
+// A DRAFT sales invoice (ACCREC) in the SENDING site's Xero organisation for what the receiving site
+// paid for kitchen orders and transfers between two legal companies that month, then
+// stock_recharge_record. The amount is never taken from the browser: it is read from
+// stock_recharge_statement as the caller, which also proves the caller is a company editor (owner or
+// Stock control All sites); anyone else is refused by the database. A draft is never approved here,
+// so the accountant checks it in Xero. Sent twice, Xero gets one invoice (the idempotency key and the
+// month already recorded). Nothing else in this function changes.
+async function rechargeInvoice(req: Request, body: any): Promise<Response> {
+  const token = (req.headers.get('Authorization') || '').replace('Bearer ', '').trim();
+  if (!token || token === SERVICE_ROLE) return json({ error: 'Only a signed in Back Office user can send a recharge.' }, 403);
+  const { data: { user } } = await sb.auth.getUser(token);
+  if (!user || (user as any).is_anonymous) return json({ error: 'Invalid token' }, 401);
+  const { orgId, month } = body || {};
+  const from = body?.from || body?.fromLocationId || null;   // the same keys xero-bills recharge_bill takes
+  const to = body?.to || body?.toLocationId || null;
+  if (!orgId || !from || !to || !isYmd(month)) return json({ error: 'orgId, month, from and to are needed.' }, 400);
+  const asCaller = createClient(SUPABASE_URL, Deno.env.get('SUPABASE_ANON_KEY') ?? '', {
+    global: { headers: { Authorization: `Bearer ${token}` } }, auth: { autoRefreshToken: false, persistSession: false },
+  });
+  const { data: statement, error: stErr } = await asCaller.rpc('stock_recharge_statement', { p_org: orgId, p_month: month });
+  if (stErr) return json({ error: stErr.message || 'Could not read the recharge statement.' }, /42501/.test(String(stErr.code || '')) ? 403 : 400);
+  const rows = Array.isArray(statement) ? statement : (Array.isArray((statement as any)?.rows) ? (statement as any).rows : []);
+  const row = rows.find((r: any) => r.from_location_id === from && r.to_location_id === to);
+  if (!row) return json({ error: 'Nothing to recharge between these two sites that month.' }, 404);
+  if (!row.from_tenant) return json({ error: `${row.from_name || 'The sending site'}: No Xero company set.` }, 400);
+  if (row.posted?.xero_invoice_id) return json({ ok: true, already: true, xero_invoice_id: row.posted.xero_invoice_id });
+  const amount = Math.round(Number(row.amount || 0) * 100) / 100;
+  if (!(amount > 0)) return json({ error: 'The recharge for that month is 0.' }, 400);
+  const byName = String(user.email || 'Back Office user');
+  const record = (invoiceId: string | null, error: string | null) => sb.rpc('stock_recharge_record', {
+    p_org: orgId, p_month: month, p_from: from, p_to: to, p_amount: amount,
+    p_invoice: invoiceId, p_bill: row.posted?.xero_bill_id || null, p_error: error, p_by_name: byName,
+  });
+  try {
+    const { accessToken, tenantId } = await getValidAccessToken(sb, from, CLIENT_ID, CLIENT_SECRET);
+    const api = (path: string, init?: any) => xeroApi(accessToken, tenantId, path, init);
+    const contactName = String(row.to_tenant_name || row.to_name || 'Group site').slice(0, 250);
+    const found = await api(`/Contacts?where=${encodeURIComponent(`Name=="${contactName.replace(/"/g, '')}"`)}`);
+    let contactId = found?.Contacts?.[0]?.ContactID || null;
+    if (!contactId) {
+      const made = await api('/Contacts', { method: 'PUT', body: JSON.stringify({ Name: contactName }) });
+      contactId = made?.Contacts?.[0]?.ContactID || null;
+    }
+    if (!contactId) throw new Error('Xero did not make the contact for the receiving site.');
+    const { data: cfg } = await sb.from('xero_config').select('sales_account_code, detail').eq('location_id', from).maybeSingle();
+    const accountCode = String(cfg?.detail?.salesAccountCode || cfg?.sales_account_code || '200');
+    const [y, m] = String(month).split('-').map(Number);
+    const lastDay = new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10);
+    const monthWords = new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+    const res = await api('/Invoices', {
+      method: 'PUT',
+      idempotencyKey: `recharge:${orgId}:${month}:${from}:${to}:invoice`,
+      body: JSON.stringify({ Invoices: [{
+        Type: 'ACCREC', Status: 'DRAFT', Contact: { ContactID: contactId }, Date: lastDay, DueDate: addDays(lastDay, 30),
+        LineAmountTypes: 'Exclusive', Reference: `Recharge ${monthWords}`.slice(0, 255),
+        LineItems: [{ Description: `Central kitchen and stock transfers to ${row.to_name || 'the site'}, ${monthWords} (${Number(row.lines) || 0} lines)`, Quantity: 1, UnitAmount: amount, AccountCode: accountCode }],
+      }] }),
+    });
+    const invoiceId = res?.Invoices?.[0]?.InvoiceID || null;
+    if (!invoiceId) throw new Error('Xero did not answer with an invoice.');
+    const { error: recErr } = await record(invoiceId, null);
+    if (recErr) return json({ ok: true, xero_invoice_id: invoiceId, warning: `In Xero, but not recorded here: ${recErr.message}` });
+    return json({ ok: true, xero_invoice_id: invoiceId });
+  } catch (e) {
+    const msg = (e as Error)?.message || String(e);
+    await record(null, msg.slice(0, 500));
+    return json({ error: msg }, 502);
+  }
+}

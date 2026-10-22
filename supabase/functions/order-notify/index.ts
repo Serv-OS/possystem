@@ -30,6 +30,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { resolveAndRender, wrapInEmailHtml } from '../_shared/template-resolver.ts';
 import { resolveSenderFrom, type Sender } from '../_shared/sending-domain.ts';
 import { collectionLabel } from '../_shared/collection-label.ts';
+import { isCounterCollectOrder, counterReadyText, kioskTileOn } from '../_shared/counterCollect.js';
 import {
   parseNotifyPayload, scopeToOrder, scopeToOtherVenues, ledgerClaimFor, isMissingTableError,
   legacyLedgerBlocks, LEGACY_LEDGER_TABLE,
@@ -138,9 +139,12 @@ function shortRef(ref: string): string {
 // closed_checks is written before order_queue, so the kiosk id is there by the time the
 // INSERT trigger calls us. Any error, a missing row or a missing column reads as false,
 // which keeps today's behaviour.
-async function kioskNewDesign(order: Record<string, unknown>): Promise<boolean> {
+// The kiosk's own profile row (select *, so a column a migration has not added yet is simply
+// absent rather than failing the read), or null. Read for the new design and, since v5.11.97,
+// the kiosk's Counter collect tile.
+async function kioskProfile(order: Record<string, unknown>): Promise<Record<string, unknown> | null> {
   try {
-    if (String(order.source || '') !== 'kiosk') return false;
+    if (String(order.source || '') !== 'kiosk') return null;
     const { data: cc } = await opsAdmin
       .from('closed_checks')
       .select('kiosk_id')
@@ -151,19 +155,19 @@ async function kioskNewDesign(order: Record<string, unknown>): Promise<boolean> 
       .limit(1)
       .maybeSingle();
     const kioskId = (cc as Record<string, unknown> | null)?.kiosk_id;
-    if (!kioskId) return false;
+    if (!kioskId) return null;
     const { data: dev } = await opsAdmin.from('devices').select('profile_id').eq('id', String(kioskId)).maybeSingle();
     const profileId = (dev as Record<string, unknown> | null)?.profile_id;
-    if (!profileId) return false;
+    if (!profileId) return null;
     const { data: prof, error } = await opsAdmin
       .from('device_profiles')
-      .select('kiosk_new_design')
+      .select('*')
       .eq('id', String(profileId))
       .maybeSingle();
-    if (error) return false;
-    return (prof as Record<string, unknown> | null)?.kiosk_new_design === true;
+    if (error) return null;
+    return (prof as Record<string, unknown> | null) || null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -218,7 +222,8 @@ Deno.serve(async (req) => {
   const orderContact = (order.customer || {}) as Record<string, unknown>;
   const kioskHasContact = source === 'kiosk'
     && !!(normalisePhone(String(orderContact.phone || '')) || String(orderContact.email || '').trim());
-  const kioskV2 = kioskHasContact ? await kioskNewDesign(order) : false;
+  const kioskProf = kioskHasContact ? await kioskProfile(order) : null;
+  const kioskV2 = kioskProf?.kiosk_new_design === true;
   if (event === 'confirmed' && kioskV2) return json({ ok: true, skipped: KIOSK_READY_ONLY });
 
   // ── v5.5.952 replay guards (live incident 30 Jul: a stale POS re-inserted week-old
@@ -311,6 +316,9 @@ Deno.serve(async (req) => {
       .maybeSingle();
     if (pl?.company_id) companyId = String(pl.company_id);
   } catch { /* templates fall back to defaults */ }
+  // Counter collect (the kiosk tile from that kiosk's own settings, the counter QR link): "ready
+  // to collect at the counter" (v5.11.95; the kiosk switch per kiosk since v5.11.97).
+  const counterCollect = isCounterCollectOrder(order, { kioskTileOn: kioskTileOn(kioskProf) });
 
   // Minutes between placing the order and the promised time. collection_time is
   // a venue wall-clock "HH:MM", so both sides are read in the venue timezone and
@@ -372,6 +380,8 @@ Deno.serve(async (req) => {
       if (!smsBody) {
         smsBody = event === 'confirmed'
           ? `Thanks ${firstName}! Order #${ref} confirmed at ${venueName}. Total: ${mergeData.order_total}.`
+          : counterCollect
+            ? counterReadyText({ firstName, ref, shortRef: kioskV2 ? shortRef(ref) : null, venueName })
           : kioskV2
             ? `Your order ${shortRef(ref)} is ready to collect at ${venueName}.`
             : driveThru

@@ -17,12 +17,20 @@
 // (stockOfficeReachesVenue) gets the stock blocks only (kitchen: items, deliveries, batches and the
 // tracked item count), never sales, the floor, the team or the Ops counts: scope 'stock' in the answer.
 
+// v5.11.96 (multi site stock Drop 3, contract 3.4): new stock blocks for the phone's sheets:
+// kitchen.orderBy (next delivery and order by time per supplier, from the order pad context or the
+// supplier's days and cut off; items keep delivery_days for old builds), kitchen.approvals (orders
+// waiting at this site), kitchen.transfers (waiting to be received here, requested of us, and the
+// company's other sites), kitchen.closedown (today's short life items), kitchen.ordersIn (central
+// kitchens only) and stock.alerts (the unacked stock bell rows of the last 24 hours, at most 20). A
+// central kitchen order in deliveries carries internal: true (it arrives as a transfer).
+
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { secondStepRefusal } from '../_shared/second-step.ts';
 import { pagedRows } from '../_shared/pagedRows.js';
 import { SALES_CHECK_COLS, emptySales, addCheckSales, addRefundSales, refundMadeAt } from '../_shared/snapshotSales.js';
 // v5.11.64: the pack rule, pack content and net pack price are the Order pad's own (one copy).
-import { pickSupplierProduct, packContent, packContentInBase, netPackPrice } from '../_shared/purchasingRules.js';
+import { pickSupplierProduct, packContent, packContentInBase, netPackPrice, nextDelivery, rulesFromDeliveryDays } from '../_shared/purchasingRules.js';
 // v5.11.84: the two reach rules (everything / stock only), and archived rows left out of choices.
 import { officeReachesVenue, stockOfficeReachesVenue, readOfficeReachFacts } from '../_shared/stockOfficeReach.js';
 import { liveOrAll, liveFilter } from '../_shared/stockPhone.js';
@@ -430,6 +438,142 @@ Deno.serve(async (req) => {
       }
     } catch { kitchenBatches = []; }
 
+    // ── Kitchen: the products with a live recipe link at this venue (v5.11.93, multi site stock
+    //    Drop 2), for the Recipe cards sheet: [{ menu_item_id, name }], at most 500, names from
+    //    menu_items. Isolated: a failure, or a database before the recipe tables, gives []. ──
+    let kitchenRecipes: any[] = [];
+    try {
+      const { data: links } = await sb.from('menu_item_recipes').select('menu_item_id, recipe_id').eq('location_id', loc).order('id').limit(500);
+      const recipeIds = [...new Set((links ?? []).map((l: any) => l.recipe_id).filter(Boolean))];
+      const live = new Set<string>();
+      for (let i = 0; i < recipeIds.length; i += 100) {
+        const { data: rs } = await sb.from('recipes').select('id').in('id', recipeIds.slice(i, i + 100)).is('archived_at', null);
+        for (const r of (rs ?? [])) live.add(String(r.id));
+      }
+      const itemIds = [...new Set((links ?? []).filter((l: any) => live.has(String(l.recipe_id))).map((l: any) => String(l.menu_item_id)))];
+      const names: Record<string, string> = {};
+      for (let i = 0; i < itemIds.length; i += 100) {
+        const { data: mis } = await sb.from('menu_items').select('id, name, menu_name, archived').in('id', itemIds.slice(i, i + 100)).eq('location_id', loc);
+        for (const m of (mis ?? [])) if (!m.archived) names[String(m.id)] = m.menu_name || m.name || 'Product';
+      }
+      kitchenRecipes = itemIds.filter((id) => names[id]).map((id) => ({ menu_item_id: id, name: names[id] }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    } catch { kitchenRecipes = []; }
+
+    // ── v5.11.96 (multi site stock Drop 3, contract 3.4): the stock blocks the phone's new sheets read.
+    //    Each is isolated (a failure, or a database before Drop 3, gives null or [] and never breaks the
+    //    rest), and each is a stock block, so a Stock control 'all' login gets them too.
+    //    orderBy: the next delivery and order by time per supplier (the order pad context's rules and
+    //    exceptions, else the supplier's delivery days and cut off; delivery_days stays on items for
+    //    old builds). approvals: orders waiting at this site. transfers: waiting to be received here and
+    //    requested of us. closedown: today's short life items. ordersIn: a central kitchen's orders for
+    //    today. alerts: the unacked stock bell rows of the last 24 hours (the Home needNow list). ──
+    const actor = { uid: null, name: 'Manager app', staff_id: null, location_id: loc };
+    let kitchenOrderBy: any[] = [];
+    try {
+      const { data: ctx, error: ctxErr } = await sb.rpc('stock_order_pad_context', { p_loc: loc, p_actor: actor });
+      if (!ctxErr && ctx && Array.isArray((ctx as any).suppliers)) {
+        kitchenOrderBy = (ctx as any).suppliers.map((x: any) => ({
+          supplierId: x.supplier_id, name: x.name || '', internal: !!x.internal_location_id,
+          deliveryDay: x.next?.delivery_day || null, orderByAt: x.next?.order_by_at || null,
+          orderByYmd: x.next?.order_by_ymd || null, orderByHm: x.next?.order_by_hm || null, minutesLeft: x.next?.minutes_left ?? null,
+          approvalLimit: x.approval_limit ?? null,
+        }));
+      } else {
+        let { data: sups, error: supErr } = await sb.from('suppliers').select('id, name, delivery_days, cutoff_time').eq('location_id', loc).order('name').limit(200);
+        if (supErr) ({ data: sups } = await sb.from('suppliers').select('id, name, delivery_days').eq('location_id', loc).order('name').limit(200));
+        const hm = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(now);
+        kitchenOrderBy = (sups ?? []).map((su: any) => {
+          const n = nextDelivery({ rules: rulesFromDeliveryDays(su.delivery_days, su.cutoff_time ?? null), exceptions: [], nowVenue: { ymd: today, hm } });
+          return { supplierId: su.id, name: su.name || '', internal: false, deliveryDay: n?.deliveryYmd || null, orderByAt: n?.orderByAt || null,
+            orderByYmd: n?.orderByYmd || null, orderByHm: n?.orderByHm || null, minutesLeft: n?.minutesLeft ?? null, approvalLimit: null };
+        });
+      }
+    } catch { kitchenOrderBy = []; }
+
+    let kitchenApprovals: any[] = [];
+    try {
+      const { data: ap, error: apErr } = await sb.from('stock_po_approvals')
+        .select('po_id, status, step, amount, limit_amount, order_by_at, raised_by_name, supplier_id').eq('location_id', loc)
+        .in('status', ['waiting', 'sent_back']).order('order_by_at', { ascending: true }).limit(50);
+      if (!apErr) {
+        const poIds = (ap ?? []).map((a: any) => a.po_id);
+        const refBy: Record<string, string> = {};
+        if (poIds.length) {
+          const { data: pos } = await sb.from('purchase_orders').select('id, reference').eq('location_id', loc).in('id', poIds);
+          for (const p of pos ?? []) refBy[p.id] = p.reference || '';
+        }
+        kitchenApprovals = (ap ?? []).map((a: any) => ({ poId: a.po_id, reference: refBy[a.po_id] || null, status: a.status, step: a.step,
+          amount: a.amount == null ? null : Number(a.amount), limit: a.limit_amount == null ? null : Number(a.limit_amount), orderByAt: a.order_by_at || null, raisedByName: a.raised_by_name || null }));
+      }
+    } catch { kitchenApprovals = []; }
+
+    let kitchenTransfers: any = { sites: [], incoming: [], requested: [] };
+    try {
+      const [inc, req2] = await Promise.all([
+        sb.from('stock_transfers').select('id, reference, location_id, status, kind, sent_at, sent_by_name, reason').eq('to_location_id', loc).eq('status', 'SENT').order('sent_at', { ascending: true }).limit(50),
+        sb.from('stock_transfers').select('id, reference, to_location_id, status, requested_by_name, requested_at, reason, note').eq('location_id', loc).eq('status', 'REQUESTED').order('requested_at', { ascending: true }).limit(50),
+      ]);
+      const incoming = inc.error ? [] : (inc.data ?? []);
+      const ids = incoming.map((t: any) => t.id);
+      const linesBy: Record<string, any[]> = {};
+      if (ids.length) {
+        // paged past the 1,000 row cap; before Drop 3 there is no lot or use by column, so the plain read
+        let rows: any[];
+        try {
+          rows = await pagedRows('transfer lines', () => sb.from('stock_transfer_lines').select('id, transfer_id, name_snapshot, base_unit, qty_base, lot_code, use_by_at').in('transfer_id', ids).order('sort_order').order('id'));
+        } catch {
+          rows = await pagedRows('transfer lines', () => sb.from('stock_transfer_lines').select('id, transfer_id, name_snapshot, base_unit, qty_base').in('transfer_id', ids).order('sort_order').order('id'));
+        }
+        for (const l of rows) (linesBy[l.transfer_id] ??= []).push({ id: l.id, name: l.name_snapshot || 'Item', unit: l.base_unit || '', qtyBase: Number(l.qty_base) || 0, lotCode: l.lot_code || null, useByAt: l.use_by_at || null });
+      }
+      const siteIds = [...new Set([...incoming.map((t: any) => t.location_id), ...(req2.error ? [] : (req2.data ?? [])).map((t: any) => t.to_location_id)].filter(Boolean))];
+      const nameBy: Record<string, string> = {};
+      if (siteIds.length) {
+        const { data: ls2 } = await sb.from('locations').select('id, name').in('id', siteIds);
+        for (const l of ls2 ?? []) nameBy[l.id] = l.name || '';
+      }
+      // the other open sites of this company, for Send and Request on the phone
+      let sites: any[] = [];
+      const { data: me } = await sb.from('locations').select('org_id').eq('id', loc).maybeSingle();
+      if (me?.org_id) {
+        const { data: co } = await sb.from('locations').select('id, name, status').eq('org_id', me.org_id).order('name').limit(60);
+        sites = (co ?? []).filter((l: any) => l.id !== loc && (l.status == null || l.status === 'active')).map((l: any) => ({ id: l.id, name: l.name || '' }));
+      }
+      kitchenTransfers = {
+        sites,
+        incoming: incoming.map((t: any) => ({ id: t.id, reference: t.reference || null, fromName: nameBy[t.location_id] || '', kind: t.kind || 'transfer', sentAt: t.sent_at || null, sentByName: t.sent_by_name || null, reason: t.reason || null, lines: linesBy[t.id] || [] })),
+        requested: (req2.error ? [] : (req2.data ?? [])).map((t: any) => ({ id: t.id, reference: t.reference || null, toName: nameBy[t.to_location_id] || '', requestedByName: t.requested_by_name || null, requestedAt: t.requested_at || null, reason: t.reason || null, note: t.note || null })),
+      };
+    } catch { kitchenTransfers = { sites: [], incoming: [], requested: [] }; }
+
+    let kitchenClosedown: number | null = null;
+    try {
+      const { data: cd, error: cdErr } = await sb.rpc('stock_fresh_closedown_list', { p_loc: loc, p_day: today, p_actor: actor });
+      if (!cdErr) kitchenClosedown = (Array.isArray(cd) ? cd : ((cd as any)?.rows || [])).length;
+    } catch { kitchenClosedown = null; }
+
+    let kitchenOrdersIn: any = null;
+    try {
+      const { data: kind, error: kindErr } = await sb.from('stock_co_site_settings').select('site_kind').eq('location_id', loc).maybeSingle();
+      if (!kindErr && kind?.site_kind === 'central_kitchen') {
+        const { data: oi, error: oiErr } = await sb.rpc('stock_kitchen_orders_in', { p_kitchen: loc, p_day: today, p_actor: actor });
+        const rows = oiErr ? [] : (Array.isArray(oi) ? oi : ((oi as any)?.rows || []));
+        kitchenOrdersIn = { day: today, orders: rows.length, toPick: rows.filter((o: any) => !o.transfer_id).length };
+      }
+    } catch { kitchenOrdersIn = null; }
+
+    let stockAlerts: any[] = [];
+    try {
+      const { data: al, error: alErr } = await sb.from('activity_events').select('id, kind, severity, title, body, ref_id, created_at')
+        .eq('location_id', loc).like('kind', 'stock_%').is('acked_at', null).gte('created_at', new Date(now.getTime() - 86400000).toISOString())
+        .order('created_at', { ascending: false }).limit(20);
+      if (!alErr) stockAlerts = (al ?? []).map((a: any) => ({ id: a.id, kind: String(a.kind || '').replace(/^stock_/, ''), severity: a.severity, title: a.title, body: a.body || null, refId: a.ref_id || null, at: a.created_at }));
+    } catch { stockAlerts = []; }
+
+    // a central kitchen order arrives as a transfer: the phone opens Transfers for it, never Receive
+    const internalSup = new Set(kitchenOrderBy.filter((x: any) => x.internal).map((x: any) => String(x.supplierId)));
+
     return json({
       ok: true, location_id: loc, venueName: locRow?.name || '', tz, today,   // today = the venue's calendar day (v5.11.64: the Kitchen tab marks orders due today / overdue with it)
       // v5.11.84: 'stock' for a login that reaches the venue only through Stock control 'all': the
@@ -438,7 +582,9 @@ Deno.serve(async (req) => {
       money: full ? money : null,
       floor: full ? floor : null,
       team: full ? { punches, shifts: teamShifts, ratesMinor, pendingTimesheets, pendingTimeOff, breakPolicy } : null,
-      kitchen: { items: kitchenItems, deliveries: kitchenDeliveries, batches: kitchenBatches, trackedItems },
+      kitchen: { items: kitchenItems, deliveries: kitchenDeliveries.map((d: any) => (internalSup.has(String(d.supplierId)) ? { ...d, internal: true } : d)), batches: kitchenBatches, trackedItems, recipes: kitchenRecipes,
+        orderBy: kitchenOrderBy, approvals: kitchenApprovals, transfers: kitchenTransfers, closedown: kitchenClosedown, ordersIn: kitchenOrdersIn },
+      stock: { alerts: stockAlerts },
       ops: full ? ops : null,
       generated_at: new Date().toISOString(),
     });

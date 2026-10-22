@@ -18,6 +18,8 @@ import { renderTableQrJpeg, qrFileName, saveHref, buildQrPdf, savePdf } from '..
 import { prepMinutes } from '../../lib/prepTime';
 import { TIP_DEFAULTS, normaliseTipRule, parsePctList } from '../../lib/tipping';
 import MenuTranslations from './MenuTranslations';
+import { patchBranding } from '../../lib/locationAdmin';
+import { COUNTER_PATH, COUNTER_DEFAULT_LABEL, COUNTER_LABEL_MAX, counterCollect, counterCollectPatch } from '../../lib/counterOrder';
 
 // Reuses the existing receipt-assets bucket with an online/ prefix so logo
 // + hero uploads don't collide with the receipt branding's logo/QR assets.
@@ -105,6 +107,12 @@ export default function OnlineOrdering({ setSection, canOpen = () => true }) {
   const [qrTabSurchargePct,   setQrTabSurchargePct]   = useState(0);
   const [qrTabSurchargeFixed, setQrTabSurchargeFixed] = useState(0);
   const [qrTabForceCloseMin,  setQrTabForceCloseMin]  = useState(0);     // 0 = manual only
+  // v5.11.97 Counter collect QR (lib/counterOrder.js): part of QR ordering, saved by this page's
+  // Save (online_branding.collection through location-admin patch_branding). The kiosk's own
+  // switch lives in Kiosk settings.
+  const [counterQr,      setCounterQr]      = useState(false);
+  const [counterQrLabel, setCounterQrLabel] = useState('');
+  const counterQrSavedRef = useRef({ qr: false, label: '' });
   const [tables, setTables] = useState([]);
   const [downloading, setDownloading] = useState(false);
   const [uploadingLogo, setUploadingLogo] = useState(false);
@@ -150,6 +158,10 @@ export default function OnlineOrdering({ setSection, canOpen = () => true }) {
           if (!alive) return;
           setRow(r);
           if (r) {
+            const cc = counterCollect(r);
+            const ccLabel = r.online_branding?.collection?.label || '';
+            setCounterQr(cc.qr); setCounterQrLabel(ccLabel);
+            counterQrSavedRef.current = { qr: cc.qr, label: ccLabel };
             setBranding({
               ...BLANK_BRANDING,
               ...(r.online_branding || {}),
@@ -331,6 +343,13 @@ export default function OnlineOrdering({ setSection, canOpen = () => true }) {
         qr:     normaliseTipRule(tipQr, TIP_DEFAULTS.qr),
       },
     });
+    // v5.11.97: stop at the first failed write, so the page never says "Save failed" after the
+    // QR and Counter collect settings below did save.
+    if (err || !data) {
+      setSaving(false);
+      setError(err ? (err.message || 'Save failed') : 'Update returned 0 rows — reload this page, the venue record may have moved.');
+      return;
+    }
 
     // v5.5.153: QR settings save now SURFACES errors to the BO UI instead
     // of silently swallowing them. Most common cause was the column
@@ -368,6 +387,21 @@ export default function OnlineOrdering({ setSection, canOpen = () => true }) {
       }
       setSaving(false);
       return;
+    }
+
+    // v5.11.97 Counter collect QR: sent only when it changed, through patch_branding (merged
+    // server side, so nothing else on online_branding moves).
+    const ccNow = { qr: counterQr === true, label: (counterQrLabel || '').replace(/\s+/g, ' ').trim() };
+    const ccWas = counterQrSavedRef.current;
+    if (ccNow.qr !== ccWas.qr || ccNow.label !== (ccWas.label || '').replace(/\s+/g, ' ').trim()) {
+      const { data: b, error: be } = await patchBranding(opsLocId, counterCollectPatch(ccNow));
+      if (be || !b) {
+        setError('Counter collect QR could not save: ' + (be?.message || 'no answer') + '. Try again.');
+        setSaving(false);
+        return;
+      }
+      counterQrSavedRef.current = { qr: ccNow.qr, label: b.collection?.label || '' };
+      setRow((r0) => (r0 ? { ...r0, online_branding: b } : r0));
     }
 
     setSaving(false);
@@ -575,7 +609,9 @@ export default function OnlineOrdering({ setSection, canOpen = () => true }) {
         tables={tables}
         downloading={downloading} setDownloading={setDownloading}
         tipOnline={tipOnline} setTipOnline={setTipOnline}
-        tipQr={tipQr} setTipQr={setTipQr}/>
+        tipQr={tipQr} setTipQr={setTipQr}
+        counterQr={counterQr} setCounterQr={setCounterQr}
+        counterQrLabel={counterQrLabel} setCounterQrLabel={setCounterQrLabel}/>
 
       {/* Save */}
       <div style={{ display:'flex', alignItems:'center', gap:12 }}>
@@ -610,6 +646,7 @@ function QrSettingsBlock({
   // lives in OnlineOrdering. They were referenced here without being passed,
   // which threw "tipOnline is not defined" the moment the page opened.
   tipOnline, setTipOnline, tipQr, setTipQr,
+  counterQr, setCounterQr, counterQrLabel, setCounterQrLabel,
 }) {
   const showsTabSettings = paymentMode === 'open_tab' || paymentMode === 'both';
   const buildQrUrl = (table) => {
@@ -789,6 +826,9 @@ function QrSettingsBlock({
           </div>
         </div>
       )}
+
+      {/* v5.11.97 Counter collect QR: one code for the counter, no table. */}
+      <CounterQrBox slug={slug} on={counterQr} setOn={setCounterQr} label={counterQrLabel} setLabel={setCounterQrLabel} />
 
       {/* QR codes */}
       <div style={{ marginTop: 18 }}>
@@ -1038,6 +1078,63 @@ const S = {
   link: { background:'transparent', border:'none', color:'var(--acc)', textDecoration:'underline', cursor:'pointer', fontFamily:'inherit', padding:0, fontSize:'inherit' },
 };
 
+
+// v5.11.97 Counter collect QR (lib/counterOrder.js), inside QR ordering. The customer scans it at
+// the counter, orders and pays, and collects at the counter: eat in, no table, dine in tax, the
+// QR tipping rule, open hours only. The card prints exactly the words typed here.
+function CounterQrBox({ slug, on, setOn, label, setLabel }) {
+  const name = (label || '').replace(/\s+/g, ' ').trim() || COUNTER_DEFAULT_LABEL;
+  const url = slug ? customerUrl(slug, COUNTER_PATH) : '';
+  const qrKey = on && url ? `${url}|${name}` : '';
+  const [drawn, setDrawn] = useState({ key: '', img: null });
+  useEffect(() => {
+    let cancelled = false;
+    if (!qrKey) return undefined;
+    renderTableQrJpeg({ url, title: name, footer: `${slug}.${CUSTOMER_ROOT}` })
+      .then((d) => { if (!cancelled) setDrawn({ key: qrKey, img: d }); })
+      .catch(() => { if (!cancelled) setDrawn({ key: qrKey, img: null }); });
+    return () => { cancelled = true; };
+  }, [qrKey, url, name, slug]);
+  const img = drawn.key === qrKey ? drawn.img : null;
+  const fileName = `qr-${name.replace(/[^a-z0-9-]+/gi, '_').replace(/^_+|_+$/g, '').toLowerCase() || 'counter'}.jpg`;
+
+  return (
+    <div style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid var(--bdr)' }}>
+      <div style={{ ...S.label, marginBottom: 2 }}>Counter collect QR</div>
+      <div style={{ fontSize: 11.5, color: 'var(--t4)', lineHeight: 1.55, marginBottom: 10 }}>
+        One QR code for the counter, the wall or the tables, with no table number. The customer orders, pays,
+        and collects at the counter. Taxed as eat in. If they give their mobile, the text says their order is
+        ready to collect at the counter. The kiosk has its own Counter collect switch in Kiosk settings.
+      </div>
+      <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer', marginBottom: 10 }}>
+        <input type="checkbox" checked={!!on} onChange={(e) => setOn(e.target.checked)} />
+        Turn on the Counter collect QR
+      </label>
+      {on && (
+        <>
+          <Field label="Words customers see" value={label} onChange={(v) => setLabel(String(v).slice(0, COUNTER_LABEL_MAX))}
+            placeholder={COUNTER_DEFAULT_LABEL}
+            help={`Shown on the menu, the checkout and the printed QR card, exactly as typed. Blank shows ${COUNTER_DEFAULT_LABEL}.`}/>
+          {url ? (
+            <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap', padding: 12, marginTop: 10, background: 'var(--bg2)', border: '1px solid var(--bdr2)', borderRadius: 10 }}>
+              {img ? <img src={img} alt={`QR card: ${name}`} style={{ width: 88, height: 110, objectFit: 'contain', borderRadius: 6, background: '#fff' }} /> : null}
+              <div style={{ minWidth: 0, flex: '1 1 200px' }}>
+                <div style={{ fontSize: 12, color: 'var(--t3)', wordBreak: 'break-all', marginBottom: 8 }}>{url}</div>
+                <button type="button" disabled={!img} onClick={() => img && saveHref(img, fileName)}
+                  style={{ ...S.btn, background: 'var(--bg3)', color: 'var(--t1)', fontSize: 12, padding: '8px 14px', opacity: img ? 1 : 0.4 }}>
+                  {img ? '⬇ Download QR card' : 'Preparing…'}
+                </button>
+                <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 6 }}>Press Save settings below before customers scan it.</div>
+              </div>
+            </div>
+          ) : (
+            <div style={{ fontSize: 12, color: 'var(--t4)', marginTop: 8 }}>Set a web address (slug) in Location settings to get the QR code.</div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 
 // v5.8.8: one editor for a module's tipping rule. Percentages are typed as a
 // list; the pre-selected chip must be one of them or it is cleared.

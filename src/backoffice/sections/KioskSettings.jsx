@@ -21,6 +21,7 @@ import { kioskPrimary, kioskPalette, parseCssColor, contrastWithWhite, DESIGN_GR
 import KioskTipping from './KioskTipping';
 import MenuTranslations from './MenuTranslations';
 import { terminalProcessor } from '../../lib/payments/terminalProcessor.js';
+import { COUNTER_DEFAULT_LABEL, COUNTER_LABEL_MAX, counterLabel, counterLabelToSave } from '../../lib/counterOrder';
 
 // v5.8.76 (Peter, 15 Sep 2026): one eat in mode per kiosk, in plain words, the same for both kiosk
 // designs. The stored values are unchanged (lib/kioskFlow.js kioskStartModel explains each).
@@ -91,6 +92,8 @@ export default function KioskSettings({ kioskId, onBack }) {
           kiosk_category_photos:   prof?.kiosk_category_photos   ?? true,
           kiosk_new_design:        prof?.kiosk_new_design        ?? false,
           kiosk_sms_enabled:       prof?.kiosk_sms_enabled       ?? false,
+          kiosk_counter_collect:       prof?.kiosk_counter_collect       ?? false,
+          kiosk_label_counter_collect: prof?.kiosk_label_counter_collect ?? '',
         });
       }
 
@@ -115,6 +118,8 @@ export default function KioskSettings({ kioskId, onBack }) {
   const designColumn = !!profile && Object.prototype.hasOwnProperty.call(profile, 'kiosk_new_design');
   const designReady = KIOSK_NEW_DESIGN_READY && designColumn;
   const smsReady = !!profile && Object.prototype.hasOwnProperty.call(profile, 'kiosk_sms_enabled');
+  // v5.11.97 Counter collect (lib/counterOrder.js): only once 20261028a has added the columns.
+  const counterReady = !!profile && Object.prototype.hasOwnProperty.call(profile, 'kiosk_counter_collect');
   // The page shows the new design's settings only while this profile uses it.
   const v2 = designReady && draft.kiosk_new_design === true;
 
@@ -147,6 +152,8 @@ export default function KioskSettings({ kioskId, onBack }) {
         kiosk_category_photos:   draft.kiosk_category_photos !== false,
         kiosk_new_design:        draft.kiosk_new_design === true,
         kiosk_sms_enabled:       draft.kiosk_sms_enabled === true,
+        kiosk_counter_collect:       draft.kiosk_counter_collect === true,
+        kiosk_label_counter_collect: counterLabelToSave(draft.kiosk_label_counter_collect),
       };
       // v5.7.9: an omitted column keeps its DB value, so a stale tab saving a
       // branding tweak can never clobber the kiosk's menu pin.
@@ -157,6 +164,8 @@ export default function KioskSettings({ kioskId, onBack }) {
       // Same rule for the new design switches: only when the column exists and was changed here.
       if (!designReady || !touchedRef.current.has('kiosk_new_design')) delete patch.kiosk_new_design;
       if (!smsReady || !touchedRef.current.has('kiosk_sms_enabled')) delete patch.kiosk_sms_enabled;
+      if (!counterReady || !touchedRef.current.has('kiosk_counter_collect')) delete patch.kiosk_counter_collect;
+      if (!counterReady || !touchedRef.current.has('kiosk_label_counter_collect')) delete patch.kiosk_label_counter_collect;
       const { error } = await supabase.from('device_profiles').update(patch).eq('id', profile.id);
       if (error) throw error;
       setSuccess('Saved. Refresh the kiosk to see changes.');
@@ -537,6 +546,8 @@ export default function KioskSettings({ kioskId, onBack }) {
               </div>
             </Field>}
 
+            <CounterCollectRow v2={v2} ready={counterReady} draft={draft} setField={setField} />
+
             {v2 ? <KioskTipping opsLocationId={device.location_id} /> : <Field label="Tip presets (%)" hint="Customer sees these as quick-pick buttons before pay">
               <div style={{ display: 'flex', gap: 10 }}>
                 {[0, 1, 2].map(i => (
@@ -739,9 +750,10 @@ function DesignPreview({ draft, deviceName }) {
       </div>
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 14 }}>
         <div style={{ fontSize: 20, fontWeight: 800, lineHeight: 1.05, letterSpacing: '-0.03em' }}>Where are you eating today?</div>
-        <div style={{ display: 'grid', gridTemplateColumns: draft.kiosk_table_mode === 'none' ? '1fr' : '1fr 1fr', gap: 8 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: `repeat(${(draft.kiosk_table_mode === 'none' ? 1 : 2) + (draft.kiosk_counter_collect === true ? 1 : 0)}, minmax(0, 1fr))`, gap: 8 }}>
           {draft.kiosk_table_mode !== 'none' ? <div style={tile}><span style={{ width: 22, height: 22, borderRadius: 999, border: `2px solid ${primary}` }} /><span style={{ fontSize: 15, fontWeight: 800 }}>Eat in</span></div> : null}
           <div style={tile}><span style={{ width: 22, height: 22, borderRadius: 6, border: `2px solid ${primary}` }} /><span style={{ fontSize: 15, fontWeight: 800 }}>Take away</span></div>
+          {draft.kiosk_counter_collect === true ? <div style={tile}><span style={{ width: 22, height: 22, borderRadius: 6, border: `2px solid ${primary}` }} /><span style={{ fontSize: 15, fontWeight: 800 }}>{counterLabel(draft.kiosk_label_counter_collect)}</span></div> : null}
         </div>
       </div>
       <div style={{ background: primary, color: onPrimary, borderRadius: 999, padding: '8px 0', textAlign: 'center', fontSize: 15, fontWeight: 800 }}>Tap to start</div>
@@ -814,6 +826,31 @@ function ToggleRow({ checked, onChange, title, desc }) {
 }
 
 // v5.8.65: same shape as ToggleRow with Back Office sized text (16px title, 15px description).
+// v5.11.97 Counter collect on this kiosk (lib/counterOrder.js): a third start tile with the
+// venue's own words, booked as eat in with no table (dine in tax), collected at the counter.
+function CounterCollectRow({ v2, ready, draft, setField }) {
+  if (!ready) {
+    return <div style={{ fontSize: v2 ? 15 : 12, color: 'var(--t3)', lineHeight: 1.45 }}>Counter collect needs the database update 20261028a first.</div>;
+  }
+  const on = draft.kiosk_counter_collect === true;
+  const desc = 'A third button next to Eat in and Take away. The customer orders, pays and collects at the counter. Taxed as eat in, no table. If they add their mobile, the text says their order is ready to collect at the counter.';
+  const Row = v2 ? LargeToggleRow : ToggleRow;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <Row checked={on} onChange={(val) => setField('kiosk_counter_collect', val)} title="Counter collect" desc={desc} />
+      {on ? (
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: v2 ? 15 : 12, color: 'var(--t2)' }}>
+          Words on the button
+          <input value={draft.kiosk_label_counter_collect || ''} maxLength={COUNTER_LABEL_MAX}
+            placeholder={COUNTER_DEFAULT_LABEL}
+            onChange={(e) => setField('kiosk_label_counter_collect', e.target.value)} style={inp()} />
+          <span style={{ fontSize: v2 ? 14 : 11, color: 'var(--t3)' }}>Exactly what customers see, for example Collect at counter. Blank shows {COUNTER_DEFAULT_LABEL}.</span>
+        </label>
+      ) : null}
+    </div>
+  );
+}
+
 function LargeToggleRow({ checked, onChange, title, desc }) {
   return (
     <button type="button" role="switch" aria-checked={!!checked} onClick={() => onChange(!checked)} style={{

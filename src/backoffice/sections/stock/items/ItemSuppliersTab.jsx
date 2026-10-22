@@ -8,16 +8,26 @@
 //                           SKU, pack, packs per case, price, VAT; stock_save_supplier_item in the
 //                           company form (a new supplier first through stock_save_supplier).
 //   Main                    sets main_supplier_item_id through stock_save_item.
+//   What is in it           (Drop 2, contract 3.4) an expander under each row: the 14 allergens, May
+//                           contain, Diets, the ingredient list and nutrition per 100 g on THAT
+//                           supplier item (items/WhatIsInIt.jsx), because each site's allergens come
+//                           from what it buys.
+//   The allergen rule       (Drop 2) every supplier item on one stock item must declare the same
+//                           allergens. When two differ (stock_item_detail facts.differ) a Notice
+//                           says which has what, with 'Make it a new item' (items/MakeNewItemModal.jsx).
 // A login that cannot change company records sees the table and no buttons (LockLine on ItemPage).
 
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../../../store';
 import { useStockScope } from '../../../StockScope';
 import { stockApi } from '../../../../lib/stock/stockApi';
 import { UNITS, DIMENSIONS } from '../../../../lib/stock/units';
 import { countPackOf, packAmount, packPrice, moneyText } from '../../../../lib/stock/packPrice';
 import { nextPriceWords, vatChoices, sameRate, queuedNote } from '../../../../lib/stock/itemPageRules';
+import { allergenWords, differRule, factsOf } from '../../../../lib/stock/factsRules';
 import { Btn, Pill, Sheet, Field, Notice, TableWrap, Th, Td, EmptyLine, useConfirm, ui } from '../stockUi';
+import WhatIsInIt from './WhatIsInIt';
+import MakeNewItemModal from './MakeNewItemModal';
 
 const UNIT_OPTS = Object.entries(UNITS).map(([code, u]) => ({ code, ...u }));
 const DIM_ORDER = [DIMENSIONS.COUNT, DIMENSIONS.WEIGHT, DIMENSIONS.VOLUME];
@@ -32,7 +42,7 @@ const blankRow = (baseUnit) => ({
   pack_qty: '1', pack_description: '', pack_price: '', purchase_vat_rate: null, price_includes_tax: false, paused: false, rowVersion: null,
 });
 
-export default function ItemSuppliersTab({ detail, editable = false, reload, homeSiteId = null }) {
+export default function ItemSuppliersTab({ detail, editable = false, reload, homeSiteId = null, tz = null }) {
   const sc = useStockScope();
   const showToast = useStore((s) => s.showToast);
   const storeRates = useStore((s) => s.taxRates);
@@ -40,10 +50,17 @@ export default function ItemSuppliersTab({ detail, editable = false, reload, hom
   const countPack = countPackOf(detail);
   const [editing, setEditing] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [openFacts, setOpenFacts] = useState(() => new Set());
+  const [makeNew, setMakeNew] = useState(null);
   const [confirm, confirmDialog] = useConfirm();
   const say = (words, tone = 'success') => { try { showToast?.(words, tone); } catch { /* no toast, no harm */ } };
   const rows = (detail?.supplier_items || []).filter((s) => s && !s.archived_at);
   const currencyHere = (sc.siteById && typeof sc.siteById.get === 'function' ? sc.siteById.get(homeSiteId)?.currency : null) || null;
+  // the allergen rule: two live supplier items with different allergen sets (the database's facts.differ)
+  const rule = differRule(detail?.facts, item.name);
+  const ruleSi = rule ? (rows.find((s) => s.id === rule.supplierItemId) || rows.find((s) => s.supplier_name === rule.supplierB) || null) : null;
+  const toggleFacts = (id) => setOpenFacts((set) => { const next = new Set(set); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+  const cols = 9 + (editable ? 1 : 0);
 
   const makeMain = async (si) => {
     setBusy(true);
@@ -72,10 +89,17 @@ export default function ItemSuppliersTab({ detail, editable = false, reload, hom
 
   return (
     <div>
+      {rule && (
+        <div style={{ marginBottom: 12 }}>
+          <Notice tone="warn" actions={editable && ruleSi ? [{ label: 'Make it a new item', kind: 'primary', onClick: () => setMakeNew(ruleSi), disabled: busy }] : null}>
+            {rule.words}
+          </Notice>
+        </div>
+      )}
       {rows.length === 0 ? (
         <div style={ui.card}><EmptyLine>No supplier yet. {editable ? 'Press + Add another supplier to add one.' : ''}</EmptyLine></div>
       ) : (
-        <TableWrap minWidth={960}>
+        <TableWrap minWidth={1100}>
           <thead>
             <tr>
               <Th>Supplier</Th>
@@ -85,6 +109,7 @@ export default function ItemSuppliersTab({ detail, editable = false, reload, hom
               <Th right>Company price</Th>
               <Th>Next price</Th>
               <Th>Main</Th>
+              <Th>What is in it</Th>
               <Th>Status</Th>
               {editable && <Th />}
             </tr>
@@ -93,35 +118,54 @@ export default function ItemSuppliersTab({ detail, editable = false, reload, hom
             {rows.map((si) => {
               const main = item.main_supplier_item_id === si.id;
               const each = packPrice(si.unit_price, countPack, si.currency);
+              const facts = factsOf(si);
+              const open = openFacts.has(si.id);
               return (
-                <tr key={si.id}>
-                  <Td strong>
-                    {sc.canOpen?.('suppliers') && si.supplier_id
-                      ? <button type="button" style={linkBtn} title={`Open ${si.supplier_name} in Suppliers`} onClick={() => sc.go('suppliers', { open: { id: si.supplier_id, tab: 'items' } })}>{si.supplier_name}</button>
-                      : si.supplier_name}
-                  </Td>
-                  <Td>{si.supplier_product_name || <span style={{ color: 'var(--t4)' }}>None</span>}</Td>
-                  <Td>{si.sku || ''}</Td>
-                  <Td>{packWords(si)}</Td>
-                  <Td right num>
-                    {each || moneyText(si.pack_price, si.currency)}
-                    {each && <div style={small}>{moneyText(si.pack_price, si.currency)} for {packWords(si)}{si.price_includes_tax ? ' (VAT in)' : ''}</div>}
-                  </Td>
-                  <Td grey={!si.next_price}>{nextPriceWords(si.next_price, si.currency, countPack, factorOf(si))}</Td>
-                  <Td>
-                    {main ? <span aria-label="Main supplier" style={{ color: 'var(--acc)', fontWeight: 800 }}>✓</span>
-                      : (editable ? <Btn small kind="link" disabled={busy} onClick={() => makeMain(si)}>Make main</Btn> : null)}
-                  </Td>
-                  <Td>{si.paused ? <Pill tone="warn">Paused</Pill> : <Pill tone="good">Available</Pill>}</Td>
-                  {editable && (
+                <Fragment key={si.id}>
+                  <tr>
+                    <Td strong>
+                      {sc.canOpen?.('suppliers') && si.supplier_id
+                        ? <button type="button" style={linkBtn} title={`Open ${si.supplier_name} in Suppliers`} onClick={() => sc.go('suppliers', { open: { id: si.supplier_id, tab: 'items' } })}>{si.supplier_name}</button>
+                        : si.supplier_name}
+                    </Td>
+                    <Td>{si.supplier_product_name || <span style={{ color: 'var(--t4)' }}>None</span>}</Td>
+                    <Td>{si.sku || ''}</Td>
+                    <Td>{packWords(si)}</Td>
+                    <Td right num>
+                      {each || moneyText(si.pack_price, si.currency)}
+                      {each && <div style={small}>{moneyText(si.pack_price, si.currency)} for {packWords(si)}{si.price_includes_tax ? ' (VAT in)' : ''}</div>}
+                    </Td>
+                    <Td grey={!si.next_price}>{nextPriceWords(si.next_price, si.currency, countPack, factorOf(si))}</Td>
                     <Td>
-                      <div style={{ ...ui.row, gap: 4, justifyContent: 'flex-end' }}>
-                        <Btn small kind="ghost" disabled={busy} onClick={() => setEditing(rowOf(si))}>Edit</Btn>
-                        <Btn small kind="ghost" disabled={busy} onClick={() => remove(si)}>Take off</Btn>
+                      {main ? <span aria-label="Main supplier" style={{ color: 'var(--acc)', fontWeight: 800 }}>✓</span>
+                        : (editable ? <Btn small kind="link" disabled={busy} onClick={() => makeMain(si)}>Make main</Btn> : null)}
+                    </Td>
+                    <Td>
+                      <button type="button" style={linkBtn} aria-expanded={open} onClick={() => toggleFacts(si.id)}>{open ? 'Hide' : 'What is in it'}</button>
+                      <div style={{ ...small, whiteSpace: 'normal', maxWidth: 220 }}>
+                        {facts.allergens.length ? allergenWords(facts.allergens) : 'No allergens yet'}
+                        {facts.checked_at ? '' : ' · Not checked yet'}
                       </div>
                     </Td>
+                    <Td>{si.paused ? <Pill tone="warn">Paused</Pill> : <Pill tone="good">Available</Pill>}</Td>
+                    {editable && (
+                      <Td>
+                        <div style={{ ...ui.row, gap: 4, justifyContent: 'flex-end' }}>
+                          <Btn small kind="ghost" disabled={busy} onClick={() => setEditing(rowOf(si))}>Edit</Btn>
+                          <Btn small kind="ghost" disabled={busy} onClick={() => remove(si)}>Take off</Btn>
+                        </div>
+                      </Td>
+                    )}
+                  </tr>
+                  {open && (
+                    <tr>
+                      <td colSpan={cols} style={{ padding: 0, borderBottom: '1px solid var(--bdr)', background: 'var(--bg1)' }}>
+                        <WhatIsInIt key={`${si.id}:${si.row_version ?? 0}`} detail={detail} supplierItem={si} editable={editable} reload={reload} tz={tz}
+                          onMakeNewItem={editable && rows.length > 1 ? (s) => setMakeNew(s) : null} />
+                      </td>
+                    </tr>
                   )}
-                </tr>
+                </Fragment>
               );
             })}
           </tbody>
@@ -136,6 +180,10 @@ export default function ItemSuppliersTab({ detail, editable = false, reload, hom
         <SupplierPackSheet detail={detail} start={editing} homeSiteId={homeSiteId} currency={currencyHere}
           rates={storeRates || []} onClose={() => setEditing(null)}
           onSaved={(words, tone) => { setEditing(null); say(words, tone); reload?.(); }} />
+      )}
+      {makeNew && (
+        <MakeNewItemModal detail={detail} supplierItem={makeNew} onClose={() => setMakeNew(null)}
+          onDone={() => { setMakeNew(null); reload?.(); }} />
       )}
       {confirmDialog}
     </div>

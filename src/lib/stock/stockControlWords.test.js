@@ -143,9 +143,19 @@ test('one site: Location settings is main\'s file plus one import and one card l
   const now = readSrc('backoffice/sections/LocationSettings.jsx');
   const IMPORT = "import SiteGroupsCard from './stock/SiteGroupsCard';\n";
   const CARD = '      <SiteGroupsCard />\n';
+  // Drop 2: the Show calories setting is its own card, so main's file stays whole.
+  const CAL_IMPORT = "import CaloriesCard from './stock/CaloriesCard';\n";
+  const CAL_CARD = '      <CaloriesCard />\n';
   once(now, IMPORT);
   once(now, CARD);
-  assert.equal(sha(now.replace(IMPORT, '').replace(CARD, '')), '4b6a266b789b8862c3a4a363e20b5c8050e5ed7e92bc5309c1c111278170563e');
+  // Drop 3: the site kind card (What this site is) is its own card too.
+  const KIND_IMPORT = "import SiteKindCard from './stock/SiteKindCard';\n";
+  const KIND_CARD = '      <SiteKindCard locationId={location?.ops_location_id || location?.id || null} />\n';
+  once(now, CAL_IMPORT);
+  once(now, CAL_CARD);
+  once(now, KIND_IMPORT);
+  once(now, KIND_CARD);
+  assert.equal(sha(now.replace(IMPORT, '').replace(CARD, '').replace(CAL_IMPORT, '').replace(CAL_CARD, '').replace(KIND_IMPORT, '').replace(KIND_CARD, '')), '4b6a266b789b8862c3a4a363e20b5c8050e5ed7e92bc5309c1c111278170563e');
   const card = readSrc('backoffice/sections/stock/SiteGroupsCard.jsx');
   assert.ok(card.includes('export default function SiteGroupsCard() {\n  const sc = useStockScope();\n  if (!groupsCardShows(sc)) return null;\n'), 'nothing at all before the scope says multi and All sites');
 });

@@ -10,6 +10,7 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { money } from '../../lib/currency';
 import { dietaryBadges } from '../../lib/dietary';
+import { kcalWords, KCAL_NOTE_EN } from '../../lib/menuStockFacts';   // v5.11.93 (multi site stock Drop 2)
 import { productImage } from '../../lib/productImage';
 import { resolveBoardPrice } from '../../lib/menuPricing';
 import { boardSizes, boardColors, sizeRuns, sizeName, packBoard, fitFont, scaledFont, boardSpacing } from '../../lib/menuBoardSections';
@@ -95,11 +96,13 @@ export function BoardHeader({ theme = {}, name = '', basePx = 0 }) {
   );
 }
 
+// v5.11.93 (multi site stock Drop 2): theme.kcalNote (set by the TV when the venue shows calories)
+// adds the 2,000 kcal line once, in the footer.
 export function BoardFooter({ theme = {}, live = false, pages = 1, page = 0, basePx = 0 }) {
   const c = boardColors(theme);
   return (
     <div style={{ ...(basePx > 0 ? { fontSize: `${basePx * 0.32}px` } : {}), flex: '0 0 auto', borderTop: `0.04em solid ${c.muted}33`, marginTop: '0.5em', paddingTop: '0.4em', display: 'flex', justifyContent: 'space-between', alignItems: 'center', ...(basePx > 0 ? {} : { fontSize: '0.32em' }), color: c.muted }}>
-      <span>{theme.footerNote || 'Please ask staff about the 14 allergens.'}</span>
+      <span>{theme.footerNote || 'Please ask staff about the 14 allergens.'}{theme.kcalNote === true ? ` · ${KCAL_NOTE_EN}` : ''}</span>
       {pages > 1 && (
         <span style={{ display: 'flex', gap: '.5em', alignItems: 'center' }} aria-label={`Page ${page + 1} of ${pages}`}>
           {Array.from({ length: pages }, (_, k) => <span key={k} style={{ width: '.6em', height: '.6em', borderRadius: '50%', background: k === page ? c.heading : `${c.muted}66`, display: 'inline-block' }} />)}
@@ -152,6 +155,12 @@ function Under({ it, disp, sz, c }) {
       {disp.showAllergens && Array.isArray(it.allergens) && it.allergens.length > 0 && (
         <div style={{ fontSize: `${sz.item * 0.6}em`, color: c.muted, lineHeight: 1.3, marginTop: '.25em', textTransform: 'capitalize', opacity: 0.9 }}>
           Allergens: {it.allergens.join(', ')}
+        </div>
+      )}
+      {/* v5.11.93 (multi site stock Drop 2): '<n> kcal' where the venue shows calories (from the stock recipe). */}
+      {disp.showCalories && it.kcal != null && (
+        <div style={{ fontSize: `${sz.item * 0.6}em`, color: c.muted, lineHeight: 1.3, marginTop: '.25em', opacity: 0.9 }}>
+          {kcalWords(it.kcal)}
         </div>
       )}
     </>

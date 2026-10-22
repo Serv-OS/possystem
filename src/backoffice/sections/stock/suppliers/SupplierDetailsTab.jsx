@@ -77,6 +77,15 @@ export default function SupplierDetailsTab({ detail, editable, reload, onArchive
     await reload();
   };
 
+  // v5.11.96 (multi site stock Drop 3): "No delivery fee over the minimum" saves on its own, at once
+  // (fee_waived_over_min), with the version this tab read.
+  const saveWaiver = async (on) => {
+    const r = await send({ fee_waived_over_min: on === true }, version);
+    if (r.error) { setError(r.error); return; }
+    showToast?.(on ? 'No delivery fee over the minimum.' : 'The delivery fee is charged on every order.', 'success');
+    await reload();
+  };
+
   // SavedFirstModal says "Saved on top of <First>'s version..." itself, and only when this answers
   // with no error: a refused save never gets a toast.
   const saveOnTop = async () => {
@@ -138,6 +147,10 @@ export default function SupplierDetailsTab({ detail, editable, reload, onArchive
           {text('max_order_value', { inputMode: 'decimal' })}
           {text('delivery_fee', { inputMode: 'decimal' })}
         </div>
+        <label style={{ ...ui.row, fontSize: 13, marginBottom: 12, cursor: locked ? 'default' : 'pointer', opacity: locked ? 0.55 : 1 }}>
+          <input type="checkbox" checked={s.fee_waived_over_min === true} disabled={locked || busy} onChange={(e) => saveWaiver(e.target.checked)} />
+          <span>No delivery fee over the minimum</span>
+        </label>
         <Field label={labelOf('order_method')}>
           <div style={{ display: 'grid', gap: 6 }}>
             {ORDER_METHODS.map((m) => (

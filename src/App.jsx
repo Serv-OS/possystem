@@ -203,7 +203,7 @@ export default function App() {
   // customers never see the device pairing / mode selector screens.
   // Operator URLs (?mode=pos / mpos / office / admin / kiosk) take
   // precedence so an operator on the same hostname still gets their tools.
-  const CUSTOMER_MODES = ['online', 'qr', 'gift', 'gift_balance', 'gift_success', 'account', 'review', 'wifi', 'catering', 'waitlist', 'waitlist_status', 'book'];
+  const CUSTOMER_MODES = ['online', 'qr', 'gift', 'gift_balance', 'gift_success', 'account', 'review', 'wifi', 'catering', 'waitlist', 'waitlist_status', 'book', 'counter'];
   const urlMode = new URLSearchParams(window.location.search).get('mode');
   // Public Workforce contract-signing page: /sign/<token>
   const signMatch = window.location.pathname.match(/^\/sign\/([A-Za-z0-9_-]{8,})/);
@@ -240,7 +240,9 @@ export default function App() {
   // ?mode=readerdemo is deliberately NOT persisted: it is a sales prop opened ad
   // hoc on a laptop, and making it the browser's sticky default mode would turn
   // the owner's next plain visit into a fake card reader.
-  if (urlMode && urlMode !== storedMode && urlMode !== 'readerdemo') {
+  // v5.11.96: a Back Office link from a stock alert (?mode=office&go=...) opened from a till's bell is
+  // not persisted either: the till stays a till on its next load.
+  if (urlMode && urlMode !== storedMode && urlMode !== 'readerdemo' && !new URLSearchParams(window.location.search).get('go')) {
     localStorage.setItem('rpos-device-mode', urlMode);
   }
 

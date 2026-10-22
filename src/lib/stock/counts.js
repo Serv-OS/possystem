@@ -22,6 +22,7 @@ import { readAllPagesResult } from '../pagedRead.js';
 import { approvalOutcome, isMissingFunctionError } from './phase0Rules.js';
 import { parPatch, NEEDS_UPDATE, SECTIONS } from './saveRules.js';
 import { callSave, liveOrAll } from './companyData.js';
+import { shelfSortLines } from './countPlanRules.js';
 
 const nowIso = () => new Date().toISOString();
 async function ensureLoc(locationId) {
@@ -66,12 +67,25 @@ export const upsertParLevel = async (inventoryItemId, par, locationId = null, op
 };
 
 // ── counts ──────────────────────────────────────────────────────────────────
+
+// v5.11.96 (Drop 3): plan_id and template_id go on the new count only when given (a multi site
+// company's From a template card); every other count is inserted exactly as before.
+const drop3Links = (templateId, planId) => ({
+  ...(templateId ? { template_id: templateId } : {}),
+  ...(planId ? { plan_id: planId } : {}),
+});
 const countFromRow = (r) => ({
   id: r.id, locationId: r.location_id, name: r.name, countType: r.count_type, status: r.status,
   storageArea: r.storage_area, startedAt: r.started_at, submittedAt: r.submitted_at, approvedAt: r.approved_at,
   varianceValue: r.variance_value == null ? null : Number(r.variance_value), createdAt: r.created_at,
   supplierId: r.supplier_id || null, approvalNote: r.approval_note || null,
   startedByName: r.started_by_name || null, approvedByName: r.approved_by_name || null,
+  // v5.11.96 (multi site stock Drop 3): the plan and template it came from, and the second approval
+  // (null before 20261027a: the columns are simply not there)
+  planId: r.plan_id || null, templateId: r.template_id || null,
+  secondApprovalNeededAt: r.second_approval_needed_at || null, firstApprovedBy: r.first_approved_by || null,
+  firstApprovedByName: r.first_approved_by_name || null, secondApprovedAt: r.second_approved_at || null,
+  secondApprovedByName: r.second_approved_by_name || null,
   areas: [],
 });
 const lineFromRow = (r) => ({
@@ -135,7 +149,7 @@ export const fetchCount = async (countId, locationId = null) => {
  * and cost; inserts lines 200 a request with every insert checked; writes one stock_count_areas
  * row per area on the sheet. Before the migration: the 15 Oct behaviour, one line per item.
  */
-export const createCount = async ({ name, countType = 'FULL', storageArea, itemIds, areaIds, supplierId, startedByName, items: givenItems, tz: givenTz }, locationId = null) => {
+export const createCount = async ({ name, countType = 'FULL', storageArea, itemIds, areaIds, supplierId, startedByName, items: givenItems, tz: givenTz, templateId = null, planId = null }, locationId = null) => {
   if (isMock || !supabase) return { data: null, error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: new Error('No locationId') };
@@ -159,6 +173,7 @@ export const createCount = async ({ name, countType = 'FULL', storageArea, itemI
     const { data: c, error } = await supabase.from('stock_counts').insert({
       location_id: locationId, name: name || countName(new Date(), tz, legacyType, storageArea), count_type: legacyType, status: 'DRAFT', storage_area: storageArea || null,
       ...(ready ? { started_by_name: startedByName || null } : {}),
+      ...drop3Links(templateId, planId),
     }).select().maybeSingle();
     if (error || !c) return { data: null, error: error || new Error('Could not start count') };
     const lines = ids.map((id, i) => ({
@@ -200,6 +215,8 @@ export const createCount = async ({ name, countType = 'FULL', storageArea, itemI
   const supplierProducts = (spRes.data || []).map((r) => (r.inventoryItemId ? r : { inventoryItemId: r.inventory_item_id, supplierId: r.supplier_id }));
   const areas = areasRes.data || [];
   const scope = resolveCountScope({ type, areaIds, supplierId, itemIds }, { items, itemAreas: itemAreasRes.data || {}, holdings: holdingsRes.data || {}, supplierProducts, areas });
+  // v5.11.96 (Drop 3): a count from a template walks the site's shelf order (itemIds come in that order)
+  if (templateId && itemIds && itemIds.length) scope.lines = shelfSortLines(scope.lines, itemIds);
   if (!scope.lines.length) return { data: null, error: new Error('Nothing to count: no tracked items match that choice') };
 
   let supplierName = null;
@@ -212,6 +229,7 @@ export const createCount = async ({ name, countType = 'FULL', storageArea, itemI
   const { data: c, error } = await supabase.from('stock_counts').insert({
     location_id: locationId, name: finalName, count_type: type, status: 'DRAFT', storage_area: storageArea || null,
     supplier_id: type === 'SUPPLIER' ? (supplierId || null) : null, started_by_name: startedByName || null,
+    ...drop3Links(templateId, planId),
   }).select().maybeSingle();
   if (error || !c) return { data: null, error: error || new Error('Could not start count') };
 
@@ -349,6 +367,11 @@ export const approveCount = async (countId, locationId = null, { approvedByName 
     if (!pErr) {
       // Nothing was written: the PIN was missing, wrong or locked out.
       if (pres && pres.ok === false && pres.pin) return { error: new Error(pres.error || 'That PIN is not a manager at this venue.'), pinRefused: true, data: pres };
+      // v5.11.96 (Drop 3, I7): over the company's limit nothing posts; the count waits for a second approval
+      if (pres && pres.ok === false && pres.waiting) {
+        return { error: new Error(pres.error || 'Waiting for a second approval.'), waiting: pres.waiting, data: pres,
+          varianceValue: pres.variance_value ?? null, limit: pres.limit ?? null };
+      }
       return done(pres, pres?.approved_by_pin ? ` Approved by ${pres.approved_by_pin}.` : '');
     }
     if (!isMissingFunctionError(pErr)) return { error: pErr };

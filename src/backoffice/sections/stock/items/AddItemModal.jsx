@@ -84,6 +84,11 @@ export default function AddItemModal({ orgCtx = null, local = false, presetSites
   const save = async () => {
     const plan = addItemPlan(form, { local, siteIds: chosen, localSiteId });
     if (plan.error) { setError(plan.error); return; }
+    // Drop 2 (contract 3.4): with a supplier picked, the allergen chips go on the supplier pack (what
+    // is in it comes from what you buy); the database rolls them up to the item. With no supplier they
+    // stay on the item as before.
+    const allergensOnPack = !!(plan.si && Array.isArray(plan.item.allergens) && plan.item.allergens.length);
+    if (allergensOnPack) { plan.si.allergens = plan.item.allergens; delete plan.item.allergens; }
     setBusy(true); setError('');
     const made = await stockApi.saveItem({ item: plan.item, sites: plan.sites, version: null });
     if (made.error) { setBusy(false); setError(made.error.message); return; }
@@ -96,7 +101,7 @@ export default function AddItemModal({ orgCtx = null, local = false, presetSites
     }
     if (id && plan.si) {
       const s = await stockApi.saveSupplierItem({ ...plan.si, item_id: id, location_id: at }, null, 'inventory');
-      if (s.error) missed.push(`The supplier and its price did not save: ${s.error.message}`);
+      if (s.error) missed.push(`The supplier${allergensOnPack ? ', its price and the allergens' : ' and its price'} did not save: ${s.error.message}`);
     }
     setBusy(false);
     const n = local ? 1 : (made.data?.sites || plan.sites || []).length;

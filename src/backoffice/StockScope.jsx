@@ -8,9 +8,10 @@
 // Rule 2: a one site company (multi false) always works on the signed in venue with today's rights.
 // A screen rendered with no provider (alone, or in a test) gets that same one site answer.
 
-import { createContext, Fragment, useCallback, useContext, useMemo, useRef, useState } from 'react';
+import { createContext, Fragment, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { oneSiteScope, scopeAnswer, scopeName } from '../lib/stock/siteScope';
 import { canOpenRoute } from '../lib/boSections';
+import { readBoLink } from '../lib/stock/stockAlertLinks';
 import WhichSiteDialog from './components/WhichSiteDialog';
 import PickASite from './sections/stock/PickASite';
 
@@ -92,6 +93,24 @@ export function StockScopeProvider({ value, children }) {
   // setSection; canOpenReports says whether the link is shown at all (the stock-gp gate).
   const canOpenReports = !!access && canOpenRoute('stock-gp', access);
   const openReportTo = useCallback((link) => { if (link && typeof link === 'object') openReport(link); }, [openReport]);
+
+  // Drop 3 (map 8.4 step 13): a link from a stock alert (the email, the till's bell) opens Back Office
+  // as ?mode=office&go=<route>&open=<focus>: once the scope and the rights are known, go there with the
+  // row in focus through the guarded route change, then take the two words off the address.
+  const linkDone = useRef(false);
+  useEffect(() => {
+    if (linkDone.current || !base.ready || !access || typeof window === 'undefined') return;
+    linkDone.current = true;
+    const link = readBoLink(window.location.search);
+    if (!link) return;
+    try {
+      const u = new URL(window.location.href);
+      u.searchParams.delete('go');
+      u.searchParams.delete('open');
+      window.history.replaceState(window.history.state, '', u.toString());
+    } catch { /* the address keeps them; harmless */ }
+    goTo(link.route, { open: link.focus });
+  }, [base.ready, access, goTo]);
 
   const answer = useMemo(() => ({
     ...base,

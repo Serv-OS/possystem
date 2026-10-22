@@ -1,17 +1,15 @@
 /**
- * centralMode.js: the till's side of central stock depletion (v5.11.77, migration 20261018c).
+ * centralMode.js: the venue's stock depletion mode, in words (v5.11.77, migration 20261018c).
  *
- * Pure, no I/O. The database now takes stock off every booked check at a venue switched to
- * 'central' (or 'paused'), from the check itself, through an outbox the pg_cron drainer posts.
- * At such a venue the till must not post its own SALE_DEPLETION or RETURN: the door in
- * post_stock_movement would answer {skipped: 'central'} anyway, but skipping saves the recipe
- * reads and the round trips. deplete.js reads the venue mode once a minute through
- * stock_venue_mode and asks these helpers what to do.
+ * Pure, no I/O. The database takes stock off every booked check, from the check itself, through an
+ * outbox the pg_cron drainer posts. Since v5.11.78 (20261019) every venue is central from the moment
+ * it is created; 'browser' is only a deliberate back out by ServOS (stock_central_switch), and since
+ * v5.11.92 (the drainer release, 20261023a) the till never posts sale stock in ANY mode: deplete.js
+ * is a set of no ops and tillShouldDeplete answers false for every mode. A 'browser' venue simply
+ * takes no sale stock off until ServOS switches it back on.
  *
- * No row for a venue, a missing RPC (the migration not run yet), or any error = 'browser':
- * the till keeps depleting exactly as before (the door answers skipped central if the venue is
- * in fact central). Since v5.11.78 (20261019) every venue is central from the moment it is created;
- * 'browser' is only a deliberate back out (stock_central_switch).
+ * No row for a venue, a missing RPC or any error still reads as 'browser' (modeFromRpc), which now
+ * only changes the words on the Back Office stock screens.
  */
 
 export const STOCK_MODES = Object.freeze(['browser', 'central', 'paused']);
@@ -31,9 +29,13 @@ export function isCentralMode(mode) {
   return mode === 'central' || mode === 'paused';
 }
 
-/** Should deplete.js run its own explosion and posts for this venue? */
-export function tillShouldDeplete(mode) {
-  return !isCentralMode(mode);
+/**
+ * Should the till run its own explosion and posts for this venue? Never, since v5.11.92 (20261023a):
+ * the database is the one stock rule for every channel, so the answer is false for every mode.
+ */
+// eslint-disable-next-line no-unused-vars
+export function tillShouldDeplete(_mode) {
+  return false;
 }
 
 /**
@@ -51,9 +53,9 @@ export function healthWords(h) {
   const needsPerson = Array.isArray(h.needs_person) ? h.needs_person : [];
   let title, sub, tone = 'ok';
   if (mode === 'browser') {
-    title = 'Stock comes off at the till';
-    // Since v5.11.78 (20261019) every venue is central; browser is a back out by ServOS.
-    sub = 'Each till takes stock off when it closes a check. Kiosk, online, QR and delivery sales do not move stock here. Every venue uses central stock; this venue was put back on the till path by ServOS.';
+    // Since v5.11.92 (20261023a) the till never takes stock off; browser is a switch off by ServOS.
+    title = 'Stock does not come off at this venue';
+    sub = 'The database takes stock off every channel. This venue was switched off by ServOS, so no sale takes stock off here until it is switched back on.';
     tone = 'muted';
   } else {
     title = mode === 'paused' ? 'Central stock depletion is paused' : 'Stock comes off every booked check';

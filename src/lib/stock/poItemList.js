@@ -15,7 +15,7 @@
  * drift from the pad.
  */
 
-import { coverDaysFromSchedule, packContent, packContentInBase, suggestPacks } from './purchasingRules.js';
+import { coverFromRules, rulesFromDeliveryDays, packContent, packContentInBase, suggestPacks } from './purchasingRules.js';
 
 /** The Order pad's defaults for a supplier with no delivery schedule, and the safety buffer. */
 export const DEFAULT_COVER_DAYS = 7;
@@ -24,6 +24,24 @@ export const DEFAULT_SAFETY_DAYS = 1;
 /** Lower case, accents folded, so "creme" finds "Crème" and "SKU-12" finds "sku-12". */
 export function foldText(s) {
   return String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+}
+
+// A Sunday: REF_SUNDAY + n days is a date whose weekday is n (only the day count is used).
+const REF_SUNDAY = [2026, 9, 18];
+const refYmd = (dow) => { const t = new Date(Date.UTC(REF_SUNDAY[0], REF_SUNDAY[1], REF_SUNDAY[2] + (((Number(dow) || 0) % 7) + 7) % 7)); return t.toISOString().slice(0, 10); };
+
+/**
+ * Days of cover for one supplier (v5.11.96, multi site stock Drop 3): the one delivery rule
+ * (coverFromRules). With the venue clock, the cut off counts: after it, the next delivery is the one
+ * after. Without it (an older caller that knows only today's weekday) the cover is counted from
+ * tomorrow with no cut off, which is exactly the old coverDaysFromSchedule answer. null when the
+ * supplier has no delivery days (the caller's default cover).
+ */
+export function coverOf({ deliveryDays = [], todayDow = 0, rules = null, cutoffTime = null, exceptions = [], nowVenue = null } = {}) {
+  if (nowVenue && nowVenue.ymd) {
+    return coverFromRules({ rules: Array.isArray(rules) && rules.length ? rules : rulesFromDeliveryDays(deliveryDays, cutoffTime), exceptions, nowVenue });
+  }
+  return coverFromRules({ rules: rulesFromDeliveryDays(deliveryDays, null), nowVenue: { ymd: refYmd(todayDow), hm: '00:00' } });
 }
 
 /** NET (ex VAT) pack price, the cost basis fetchInventoryItems already resolved. */
@@ -61,6 +79,12 @@ export function supplierPack(it, supplierId) {
  * @param {object} [args.weekday]    { itemId: [sun..sat avg daily base] } or null
  * @param {Array}  [args.deliveryDays]  the supplier's delivery days
  * @param {number} [args.todayDow]   venue JS day of week (0 = Sun)
+ * @param {Array}  [args.rules]      v5.11.96: the site's order rules (stock_order_rules shape); else
+ *                                   made from deliveryDays and cutoffTime (rulesFromDeliveryDays)
+ * @param {string} [args.cutoffTime] v5.11.96: the supplier's cut off, with deliveryDays
+ * @param {Array}  [args.exceptions] v5.11.96: delivery exceptions (nextDelivery's shape)
+ * @param {object} [args.nowVenue]   v5.11.96: { ymd, hm } venue clock; without it the cover is
+ *                                   counted from tomorrow as before (no cut off known)
  * @param {number} [args.coverDays]  default cover when the supplier has no schedule
  * @param {number} [args.safetyDays]
  * @returns {Array} rows, unsorted (see sortPoItemRows)
@@ -68,10 +92,11 @@ export function supplierPack(it, supplierId) {
 export function buildPoItemRows({
   items = [], supplierId = null, lines = [], pars = {}, onOrder = {}, usage = {}, weekday = null,
   deliveryDays = [], todayDow = 0, coverDays = DEFAULT_COVER_DAYS, safetyDays = DEFAULT_SAFETY_DAYS,
+  rules = null, cutoffTime = null, exceptions = [], nowVenue = null,
 } = {}) {
   const lineByItem = new Map();
   (lines || []).forEach((l, i) => { if (l?.inventoryItemId && !lineByItem.has(l.inventoryItemId)) lineByItem.set(l.inventoryItemId, { line: l, index: i }); });
-  const sched = coverDaysFromSchedule(deliveryDays, todayDow);
+  const sched = coverOf({ deliveryDays, todayDow, rules, cutoffTime, exceptions, nowVenue });
   const cover = sched != null ? sched : (Number(coverDays) || DEFAULT_COVER_DAYS);
   const rows = [];
   const listed = new Set();

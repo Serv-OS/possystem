@@ -32,15 +32,18 @@ const KEYS = ['overview', 'menu', 'floorplan', 'inventory', 'produce', 'purchasi
 const allRoutes = NAV_IA.flatMap(routesOfRow);
 // 17 Oct 2026: the Multi site menu has a gate of its own on top of its section (only people
 // ServOS added by name). Every rule below about "a section, all of it" means every route but that one.
+// v5.11.96 (multi site stock Drop 3, map 2.2 and 2.4): six more routes carry a gate of their own,
+// open only to a company with 2 or more open sites once its stock scope is read. A login with no
+// stock scope (every profile below) is not shown them; boSections.stock.test.js covers the rest.
 // v5.11.92 (multi site stock Drop 4a): Reports > Stock and GP has a gate too (a multi site company
 // whose stock scope has loaded, in a login with Inventory, Produce or Purchasing). A profile with no
-// stock scope at all, like every person below, never sees it: the sidebar is today's less those two.
-const HIDDEN_WITHOUT = [MSM_ROUTE, STOCK_GP_ROUTE];
-const ungated = allRoutes.filter((id) => !HIDDEN_WITHOUT.includes(id));
+// stock scope at all, like every person below, never sees it either.
+const STOCK_GATED = ['central-kitchen', 'due-to-order', 'forecast', 'stock-deliveries', 'credits', 'budgets'];
+const GATED = [MSM_ROUTE, ...STOCK_GATED, STOCK_GP_ROUTE];
+const ungated = allRoutes.filter((id) => !GATED.includes(id));
 const without = (nav, ids) => nav.map((r) => (r.children ? { ...r, children: r.children.filter((c) => !ids.includes(c[0])) } : r));
-const NAV_NO_MSM = without(NAV_IA, [MSM_ROUTE]);
-const NAV_NO_GP = without(NAV_IA, [STOCK_GP_ROUTE]);
-const NAV_TODAY = without(NAV_IA, HIDDEN_WITHOUT);
+const NAV_NO_MSM = without(NAV_IA, GATED);
+const NAV_NO_STOCK3 = without(NAV_IA, [...STOCK_GATED, STOCK_GP_ROUTE]);
 const MULTI_STOCK = { ready: true, multi: true, level: 'all', hasKitchen: false, reachesKitchen: false, sections: null };
 
 // The people in the story.
@@ -63,7 +66,7 @@ test('15 sections, the decided keys, in sidebar order', () => {
 });
 
 test('the route map is built from the sidebar: every route in exactly one section', () => {
-  assert.equal(allRoutes.length, 94);   // 16 Oct 2026: stock-areas and stock-transfers under Inventory; 17 Oct: multi-site-menu under Menu; v5.11.92: stock-gp under Reports
+  assert.equal(allRoutes.length, 100);   // 16 Oct 2026: stock-areas and stock-transfers under Inventory; 17 Oct: multi-site-menu under Menu; v5.11.96: the 6 Drop 3 stock routes; v5.11.92 (Drop 4a): stock-gp under Reports
   assert.equal(new Set(allRoutes).size, allRoutes.length, 'no route listed twice');
   const map = buildRouteSections(NAV_IA);
   assert.equal(map.size, allRoutes.length);
@@ -114,9 +117,9 @@ test('null is everything; owners and ServOS staff ignore any list', () => {
     assert.equal(canOpenRoute('admin', who), true, 'a route in no section stays open to an unlimited login');
     assert.equal(canOpenRoute('wf-anything', who), true);
     assert.equal(firstAllowedRoute(who), 'overview');
-    assert.deepEqual(filterNav(NAV_IA, who), NAV_TODAY, 'the sidebar as it is, less the Multi site menu and Stock and GP (no stock scope)');
+    assert.deepEqual(filterNav(NAV_IA, who), NAV_NO_MSM, 'the sidebar as it is, less the Multi site menu, the gated stock routes and Stock and GP (no stock scope)');
     const named = { ...who, multiSiteMenu: { canOpen: true } };
-    assert.deepEqual(filterNav(NAV_IA, named), NAV_NO_GP, 'added by name: the sidebar exactly as it is, less Stock and GP');
+    assert.deepEqual(filterNav(NAV_IA, named), NAV_NO_STOCK3, 'added by name: the sidebar as it is, less the gated stock routes and Stock and GP');
     assert.equal(guardRoute('menu', who), 'menu');
     // v5.11.92: a multi site company whose stock scope has loaded sees Stock and GP, and Inventory >
     // Reports is gone from its sidebar (the route forwards to Stock and GP: STOCK_REPORTS_ALIAS).
@@ -124,7 +127,8 @@ test('null is everything; owners and ServOS staff ignore any list', () => {
     assert.equal(canOpenRoute(STOCK_GP_ROUTE, multi), true);
     assert.equal(canOpenRoute(STOCK_REPORTS_ROUTE, multi), false);
     // (a multi site company also reads "Batch and prep": LABEL_WHEN_MULTI, pinned in boSections.stock.test.js)
-    const relabelled = without(NAV_IA, [MSM_ROUTE, STOCK_REPORTS_ROUTE]).map((r) => (r.children ? { ...r, children: r.children.map(([id, label]) => [id, LABEL_WHEN_MULTI[id] || label]) } : r));
+    // (no kitchen in MULTI_STOCK, so the Drop 3 Central kitchen stays hidden; its other five routes show)
+    const relabelled = without(NAV_IA, [MSM_ROUTE, STOCK_REPORTS_ROUTE, 'central-kitchen']).map((r) => (r.children ? { ...r, children: r.children.map(([id, label]) => [id, LABEL_WHEN_MULTI[id] || label]) } : r));
     assert.deepEqual(filterNav(NAV_IA, multi), relabelled);
     assert.equal(STOCK_REPORTS_ALIAS(STOCK_REPORTS_ROUTE, multi), STOCK_GP_ROUTE);
     assert.equal(STOCK_REPORTS_ALIAS(STOCK_REPORTS_ROUTE, who), STOCK_REPORTS_ROUTE, 'no stock scope: as asked');
@@ -207,7 +211,7 @@ test('one section each: that section, all of it, and no other', () => {
     const who = { role: 'manager', sections: [key] };
     assert.deepEqual(filterNav(NAV_IA, who).map((r) => r.label), [row.label]);
     assert.equal(firstAllowedRoute(who), routesOfRow(row)[0]);
-    for (const id of allRoutes) assert.equal(canOpenRoute(id, who), routesOfRow(row).includes(id) && !HIDDEN_WITHOUT.includes(id), `${key} / ${id}`);
+    for (const id of allRoutes) assert.equal(canOpenRoute(id, who), routesOfRow(row).includes(id) && !GATED.includes(id), `${key} / ${id}`);
   }
 });
 
@@ -890,13 +894,22 @@ test('BackOfficeApp: the stock screens get the picker\'s one site; one site comp
     "{section === 'stock-transfers' && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <StockTransfers orgCtx={orgCtx} siteId={id} />}</StockSiteGate>}",
     "{section === 'wastage'    && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <Wastage siteId={id} />}</StockSiteGate>}",
     "{section === 'stock-items' && <StockItems orgCtx={orgCtx} siteId={stockSiteId} />}",
-    "{section === 'recipes'    && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <Recipes siteId={id} />}</StockSiteGate>}",
-    "{section === 'batches'    && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <Batches siteId={id} />}</StockSiteGate>}",
-    "{section === 'order-pad'  && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <OrderPad siteId={id} />}</StockSiteGate>}",
+    // v5.11.93 (Drop 2): no gate on Recipes and Batches: their routers show the company view on All sites
+    "{section === 'recipes'    && <Recipes orgCtx={orgCtx} siteId={stockSiteId} />}",
+    "{section === 'batches'    && <Batches orgCtx={orgCtx} siteId={stockSiteId} />}",
     "{section === 'suppliers'  && <Suppliers siteId={stockSiteId} />}",
-    "{section === 'purchase-orders' && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <PurchaseOrders siteId={id} />}</StockSiteGate>}",
-    "{section === 'price-changes' && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <PriceChanges siteId={id} />}</StockSiteGate>}",
-    "{section === 'invoices'   && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <Invoices siteId={id} />}</StockSiteGate>}",
+    // v5.11.96 (Drop 3, contract 3.1): the Purchasing routers pick the site view or the company view
+    // themselves; Order pad leaves StockSiteGate for the Which site card on All sites (decision 19)
+    "{section === 'purchase-orders' && <PurchaseOrders orgCtx={orgCtx} siteId={stockSiteId} />}",
+    "{section === 'price-changes' && <PriceChanges orgCtx={orgCtx} siteId={stockSiteId} />}",
+    "{section === 'invoices'   && <Invoices orgCtx={orgCtx} siteId={stockSiteId} />}",
+    "{section === 'order-pad'  && <OrderPad siteId={stockSiteId} orgCtx={orgCtx} />}",
+    "{section === 'due-to-order' && <DueToOrder orgCtx={orgCtx} />}",
+    "{section === 'forecast'   && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <Forecast orgCtx={orgCtx} siteId={id} />}</StockSiteGate>}",
+    "{section === 'stock-deliveries' && <StockDeliveries orgCtx={orgCtx} />}",
+    "{section === 'credits'    && <Credits orgCtx={orgCtx} />}",
+    "{section === 'budgets'    && <Budgets orgCtx={orgCtx} />}",
+    "{section === 'central-kitchen' && <CentralKitchen orgCtx={orgCtx} />}",
   ];
   for (const line of want) assert.ok(shell.includes(line), line);
   assert.ok(shell.includes("{section === 'inventory'  && <Inventory />}"), 'Daily counts stays the signed in venue\'s, unchanged');

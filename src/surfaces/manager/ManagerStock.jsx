@@ -9,12 +9,16 @@
 //     same figures twice. Approve is ONE call with a manager PIN (manager-approve
 //     stock.count_approve, approve_stock_count in the database). Any staff PIN opens the sheet.
 //   * Waste: pick an item, the amount, a reason, PIN. Stock comes off at once.
+//   * v5.11.96 (multi site stock Drop 3): waste over the venue's set value asks for a manager PIN (the
+//     database asks; manager-approve proves the PIN and passes only the PIN holder on). A count over
+//     the second approval value shows 'Waiting for a second approval': the second approval is given in
+//     Back Office (decision 17), so the phone has no button for it.
 // The camera scan uses the browser's BarcodeDetector where the phone has it; a Bluetooth or USB
 // scanner types into the search box and works everywhere.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { managerApprove } from '../../lib/manager/data';
-import { queueEntry, pendingEntries, flushEntries, findByCode, toBaseQty, qtyWords, phoneStockNotReady } from '../../lib/manager/stockPhone';
+import { queueEntry, pendingEntries, flushEntries, findByCode, toBaseQty, qtyWords, phoneStockNotReady, pinAsked } from '../../lib/manager/stockPhone';
 import { Header, SectionTitle, mono } from './ui';
 import { useLayout } from './useLayout';
 
@@ -41,6 +45,9 @@ export default function ManagerStock({ ctx, onClose }) {
   const [approvePin, setApprovePin] = useState('');
   const [wasteItem, setWasteItem] = useState(null);
   const [waste, setWaste] = useState({ qty: '', inPacks: true, reason: REASONS[0], note: '' });
+  const [wastePin, setWastePin] = useState(null);     // v5.11.96: { kind, words } when the database asks for a manager PIN
+  const [wasteMgr, setWasteMgr] = useState('');
+  const [waiting, setWaiting] = useState('');        // v5.11.96: 'Waiting for a second approval. Over £500.'
   const call = useCallback((action, target, extra) => managerApprove(loc, pin, action, target, extra), [loc, pin]);
 
   useEffect(() => {
@@ -129,6 +136,7 @@ export default function ManagerStock({ ctx, onClose }) {
     const r = await managerApprove(loc, approvePin, 'stock.count_approve', count.id);
     setBusy(false);
     if (!r?.ok) {
+      if (r?.waiting === 'second_approval') { setWaiting(`Waiting for a second approval. ${String(r.error || '').replace(/\s*Waiting for a second approval\.?/, '').trim()}`.trim()); return; }
       if (r?.code === 'needs_cost' || r?.needs_cost) { setErr(`Counted here for the first time with no cost: ${(r.needs_cost || []).map((n) => n.name).join(', ')}. Approve it in Back Office, where you can type a cost.`); return; }
       setErr(r?.error || 'Not approved'); return;
     }
@@ -136,13 +144,17 @@ export default function ManagerStock({ ctx, onClose }) {
     setCount(null); setItems([]); setApprovePin(''); setAreas(null);
   };
 
-  const logWaste = async () => {
+  const logWaste = async (managerPin = null) => {
     const base = toBaseQty(waste.qty, wasteItem, waste.inPacks);
     if (!base) { setErr('Type how much was wasted'); return; }
     setBusy(true);
-    const r = await call('stock.waste', wasteItem.id, { id: newId(), qty: Number(waste.qty), unit: waste.inPacks && wasteItem.count_pack ? wasteItem.count_pack.name : wasteItem.base_unit, qty_base: base, reason: waste.reason, note: waste.note || null });
+    const r = await call('stock.waste', wasteItem.id, { id: waste.id || newId(), qty: Number(waste.qty), unit: waste.inPacks && wasteItem.count_pack ? wasteItem.count_pack.name : wasteItem.base_unit, qty_base: base, reason: waste.reason, note: waste.note || null, ...(managerPin ? { manager_pin: managerPin } : {}) });
     setBusy(false);
+    // v5.11.96 (Drop 3, J5): over the set value the database asks for a manager PIN
+    const asked = pinAsked(r);
+    if (asked) { setWastePin({ kind: asked, words: r.error }); setWasteMgr(''); return; }
     if (!r?.ok) { setErr(r?.error || 'Not recorded'); return; }
+    setWastePin(null);
     setMsg(`${qtyWords(base, wasteItem)} of ${wasteItem.name} logged as waste.`);
     setWasteItem(null); setWaste({ qty: '', inPacks: true, reason: REASONS[0], note: '' });
   };
@@ -167,6 +179,7 @@ export default function ManagerStock({ ctx, onClose }) {
       <Header title="Stock" sub={count ? count.name : mode === 'waste' ? 'Log waste' : 'Count · waste'} />
       {msg && <div className="sv-glass" style={{ padding: 12, marginTop: 10, fontSize: 13, color: 'var(--grn)' }}>{msg}</div>}
       {err && <div className="sv-glass" style={{ padding: 12, marginTop: 10, fontSize: 13, color: 'var(--red)' }}>{err}</div>}
+      {waiting && <div className="sv-glass" style={{ padding: 12, marginTop: 10, fontSize: 13, color: 'var(--orn)', fontWeight: 700 }}>{waiting} Back Office gives the second approval.</div>}
 
       {!mode && (
         <div style={{ display: 'grid', gap: 10, marginTop: 12 }}>
@@ -244,9 +257,21 @@ export default function ManagerStock({ ctx, onClose }) {
               </div>
               <select value={waste.reason} onChange={(e) => setWaste((w) => ({ ...w, reason: e.target.value }))} style={box}>{REASONS.map((r) => <option key={r}>{r}</option>)}</select>
               <input value={waste.note} onChange={(e) => setWaste((w) => ({ ...w, note: e.target.value }))} placeholder="Note (optional)" style={box} />
+              {wastePin && (
+                <div style={{ display: 'grid', gap: 6, padding: 10, borderRadius: 10, border: '1px solid var(--orn)' }}>
+                  <div style={{ fontSize: 13, fontWeight: 800 }}>Manager PIN</div>
+                  <div style={{ fontSize: 12, color: 'var(--t2)' }}>{wastePin.words || 'This needs a manager PIN.'}</div>
+                  {wastePin.kind !== 'locked' && (
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <input value={wasteMgr} type="password" inputMode="numeric" placeholder="Manager PIN" aria-label="Manager PIN" onChange={(e) => setWasteMgr(e.target.value.replace(/\D/g, '').slice(0, 8))} style={{ ...box, width: 160, ...mono }} />
+                      <button disabled={busy || wasteMgr.length < 4} onClick={() => logWaste(wasteMgr)} style={btn('var(--grn)')}>Approve</button>
+                    </div>
+                  )}
+                </div>
+              )}
               <div style={{ display: 'flex', gap: 8 }}>
-                <button disabled={busy} onClick={logWaste} style={btn('var(--red)')}>{busy ? 'Saving…' : 'Log waste'}</button>
-                <button onClick={() => setWasteItem(null)} style={btn('var(--t3)')}>Cancel</button>
+                <button disabled={busy} onClick={() => logWaste()} style={btn('var(--red)')}>{busy ? 'Saving…' : 'Log waste'}</button>
+                <button onClick={() => { setWasteItem(null); setWastePin(null); }} style={btn('var(--t3)')}>Cancel</button>
               </div>
             </div>
           )}

@@ -28,7 +28,7 @@ STOCKN_DEMO=/some/scratch/demo.json STOCKN_CHECKS=/some/scratch/checks.json node
 
 node --test src/lib/stock/stockDrainerMigration.test.js  # the CI text test of the release and its rollback
 
-# Drop 4a (20261026a, the head office reports), after 0a, revalue, 0b, Drop 1 and the drainer release (Peter's live order)
+# Drop 4a (20261026a, the head office reports), after 0a, revalue, 0b, Drop 1, the drainer, Drop 2 and Drop 3 (the live order)
 node supabase/tests/stock_native/run.mjs --drop4a --quick   # sections 30 to 37, 10 sites in the speed part
 node supabase/tests/stock_native/run.mjs --drop4a           # 50 sites by 500 items by 31 days
 STOCKN_DEMO=/some/scratch/demo.json STOCKN_CHECKS=/some/scratch/checks.json node supabase/tests/stock_native/rehearse.mjs --drainer --drop4a
@@ -258,15 +258,69 @@ stock_drainer_health, the rollback; with `STOCKN_CHECKS` also the sales rule on 
 replay of those checks as new sales before and after the release (identical movements, waste and
 outbox events; part refunds with no uid shown aside, never giving back more than the sale took).
 
+## Drop 2 (drop2.mjs, run.mjs --drop2)
+
+`node supabase/tests/stock_native/run.mjs --drop2 --quick` builds section 1, then pastes 0a, its revalue file, 0b, Drop 1
+(20261024a) and the drainer file (20261023a) in Peter's order, then proves 20261025a and its rollback in sections 30 to 38.
+Until the drainer merges, point STOCKN_DRAINER and STOCKN_DRAINER_ROLLBACK at a copy of the branch files.
+`--quick` uses 10 sites and 600 recipes in the scale part; without it 50 sites, 3,000 recipes and 30,000 lines.
+
+- 30 the paste: refused without Drop 1, without the drainer, with a changed body, off Ops, and on a second run; the
+  check row; no site row, login, menu or msm row written; every item keeps its own allergens; one facts row per link
+- 31 the five tables (RLS, SELECT grants, read rule, fence, no write policy), the columns, the trigger, the one msm
+  index, the 24 functions (definer, search path, exact grants), every stock_co__ helper closed to the API
+- 32 stock_co__allergen_ids and stock_co__norm_name against their JS twins (200 values each); stock_co__recipe_total
+  against costing.js computeRecipe on random recipes at three depths with usable %, wastage, order types, bridges
+  and a cycle; stock_plate_costs against plateCosts
+- 33 every Stock control level allowed or refused as the guard says; set recipe sites, option rules, sizes, swap,
+  batch how, prep ticks, Checked; nothing moved a number
+- 34 facts: a supplier item change rebuilds every product using it, the union never drops an allergen (random
+  changes), Checked, typed allergens, the HubRise fingerprint, the kcal worked example
+- 35 the Multi site menu queue: one runner call after a publish; already selling waits under Recipe missing; a
+  failing scan is one failed row and the runner carries on
+- 36 recipe cards (bound KDS and till at their own venue only), the prep list, batch how
+- 37 scale: keyset pages, the cost at every site, the nightly, the facts rebuild at 1,000 links, set recipe sites at
+  every site with the runner finishing the rest
+- 38 numbers unchanged; the rollback (15 bodies back by md5, every function as before); Drop 2 again
+
+## Drop 3 (drop3.mjs, run.mjs --drop3)
+
+`node supabase/tests/stock_native/run.mjs --drop3 --quick` builds section 1, then pastes 0a, its revalue file, 0b, Drop 1,
+the drainer and Drop 2 as the SQL editor runs them, then 20261027a (Drop 3, never 20261026a). `--drop3` without `--quick`
+uses 50 sites by 20 suppliers and 1,000 standing orders in section 48; `--drop3 --all` runs sections 2 to 25 and Drop 2's
+30 to 38 first. `STOCKN_D3` and `STOCKN_D3_ROLLBACK` point at other copies. The harness stand in of `second_step_ok()` is
+not the live text, so the paste pins the stand in's md5 in place of the live one (section 40 says so); every other
+pinned body is the live text. `D3_SHAPE` adds the live shapes Drop 3 reads that the base lacks (wf_sales_forecast,
+wf_staff, xero_connections, ezcater_order_links, the storage schema stand in).
+
+- 40 the paste: refused without Drop 2, with a changed body, off Ops, on a second run; the check row of contract 1.9;
+  no number, login or menu row changes
+- 41 the 25 tables (RLS, exact grants, read rule, fence, no write policy), the 41 columns, the CHECK swap, the triggers,
+  cron and vault, the bucket policies, every function's grants; the anon key refused but the waste reasons' device branch
+- 42 `stock_co__next_delivery` against the contract 2.3 model (and purchasingRules.js `nextDelivery` when it is there) on
+  2,000 random rule sets, exceptions and clocks around 25 Oct and 1 Nov; the cut off minute; no cut off
+- 43 submit, approvals, the guard, send back, send anyway, cancel, the runner at 60 and 30 minutes and the order by time,
+  the maximum, the fee, orders for many sites, one site companies, every Stock control level
+- 44 standing orders with the site's edits, bank holiday, paused, held supplier, nothing twice, the phone branch
+- 45 the invoice price rule at one site, agreed prices and credit requests, the 3 way match, missing invoices, splits,
+  the lock, make company price, one site invoices byte for byte
+- 46 second approval, if not counted zero, locked periods, waste PIN on the till and the phone, 5 wrong PINs lock
+- 47 requests, fulfil, receive by company item, refuse, dispute and resolve; a kitchen order received once only; the
+  production plan; kitchen only recipes; recharges; a kitchen standing order
+- 48 alerts staged once; keyset pages at scale under 1 s; the runner with 1,000 standing orders under 8 s a call
+- 49 every channel basket identical before and after; the rollback; Drop 3 again; the rollback refuses a REQUESTED transfer
+
 ## Drop 4a (drop4a.mjs, run.mjs --drop4a)
 
-Until PR 315 is on main, point `STOCKN_DRAINER` and `STOCKN_DRAINER_ROLLBACK` at a copy of the drainer
-files. `STOCKN_D4A` and `STOCKN_D4A_ROLLBACK` point at other copies of the 4a files; `STOCKN_D4A_ONLY=33,35`
+`run.mjs --drop4a` builds section 1, then pastes 0a, its revalue file, 0b, Drop 1, the drainer (20261023a),
+Drop 2 (20261025a) and Drop 3 (20261027a) as the SQL editor ran them live (with the shapes and the
+second_step_ok() stand in md5 that drop2.mjs and drop3.mjs use), then proves 4a. A copy from before Drop 2 is
+kept too: section 30 shows 4a applies on it (4a needs neither Drop 2 nor Drop 3). `STOCKN_D4A` and `STOCKN_D4A_ROLLBACK` point at other copies of the 4a files; `STOCKN_D4A_ONLY=33,35`
 runs only those of sections 31 to 37 (section 30, the paste, always runs).
 
 | Section | What it proves |
 |---|---|
-| 30 | the guard's refusals (no Drop 1, no drainer, a second run, a changed body, not Ops; no Drop 2 table needed); the check row, every column; nothing at the sites or logins moves; the sales history backfill queued 15 venue days a minute, newest first, and drained |
+| 30 | the guard's refusals (no Drop 1, no drainer, a second run, a changed body, not Ops); 4a also applies without Drop 2; the check row, every column; nothing at the sites or logins moves; the sales history backfill queued 15 venue days a minute, newest first, and drained |
 | 31 | the three tables (RLS, grants, read rules, the fence, no write policy), the private bucket and its owner folder policy, the vault key and its check, the cron job and its sender (posts only when there is work), every function's definer, search path and grants |
 | 32 | the report guard with real roles and claims: owner, Stock control all, a sites manager, another company, every device and customer session, the anon key, no second step, the service role, 51 sites, 401 days; on all sixteen reports |
 | 33 | every figure against an oracle worked out here from the raw ledger and the checks (each venue day from venue_clock in JS) on a seeded world through the real drainer; then the UK (25 Oct 2026) and US (1 Nov 2026) clock changes, a UK and a US site, two currencies never added |
@@ -275,8 +329,11 @@ runs only those of sections 31 to 37 (section 30, the paste, always runs).
 | 36 | 50 sites by 500 items by 31 days of day totals: every report under 5 s as the owner under the 8 s limit; a 400 day range |
 | 37 | exports through the queue to part files (the edge function's own CSV rules), the download check, cancel, expiry, one at a time, 20 a day, reach lost at run time; the rollback and 4a again, every number unchanged |
 
-rehearse.mjs step 8 (`--drop4a`) runs 4a on the drainer copy of step 7 once its queue is drained, as live:
-the check row of contract 1.8, the league as the Owner app asks it, the rollback, then 4a again.
+rehearse.mjs step 10 (`--drop4a`) runs 4a on a drainer copy once its queue is drained: the check row of
+contract 1.8, the league as the Owner app asks it, the rollback, then 4a again; then in the live order (the
+drainer, Drop 2, Drop 3, then 4a) the check row, the dashboard against product GP, a day on which every sale
+has its takes, the rollback and 4a again. A copy taken after Drop 2 or Drop 3 ran live carries their new
+columns; the loader leaves those out (named in step 2) and the pastes make them again.
 
 ## Files
 

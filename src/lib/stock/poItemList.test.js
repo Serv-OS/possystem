@@ -289,3 +289,32 @@ test('no long dashes in the module or its words', async () => {
   const src = readFileSync(new URL('./poItemList.js', import.meta.url), 'utf8');
   assert.equal(/[\u2013\u2014]/.test(src), false, 'poItemList.js carries a long dash');
 });
+
+// v5.11.96 (multi site stock Drop 3, contract 2.3): the cover is the one delivery rule (coverFromRules).
+import { coverOf } from './poItemList.js';
+import fs from 'node:fs';
+import { coverDaysFromSchedule } from './purchasingRules.js';
+
+test('coverOf: with only today\'s weekday it is exactly the old coverDaysFromSchedule', () => {
+  const schedules = [['tue', 'thu'], [1, 2, 3, 4, 5, 6], ['mon'], ['sun'], [], null, ['noday'], ['fri', 'sat', 'sun']];
+  for (const days of schedules) {
+    for (let dow = 0; dow < 7; dow++) {
+      assert.equal(coverOf({ deliveryDays: days, todayDow: dow }), coverDaysFromSchedule(days, dow), `${JSON.stringify(days)} on day ${dow}`);
+    }
+  }
+});
+
+test('coverOf: with the venue clock the cut off counts', () => {
+  // Wed 21 Oct 2026; Tue and Thu deliveries ordered by the day before at 14:00
+  assert.equal(coverOf({ deliveryDays: ['tue', 'thu'], cutoffTime: '14:00', nowVenue: { ymd: '2026-10-21', hm: '10:00' } }), 6);
+  assert.equal(coverOf({ deliveryDays: ['tue', 'thu'], cutoffTime: '14:00', nowVenue: { ymd: '2026-10-21', hm: '15:00' } }), 8);
+  const rules = [{ delivery_dow: 4, order_by_dow: 4, order_by_time: '06:00' }];
+  assert.equal(coverOf({ rules, nowVenue: { ymd: '2026-10-22', hm: '05:00' } }), 7, 'the rows win over the columns');
+  assert.equal(coverOf({ deliveryDays: [], nowVenue: { ymd: '2026-10-22', hm: '05:00' } }), null);
+});
+
+test('buildPoItemRows reads the cover through coverOf (no old rule left)', () => {
+  const src = fs.readFileSync(new URL('./poItemList.js', import.meta.url), 'utf8');
+  assert.match(src, /const sched = coverOf\(\{ deliveryDays, todayDow, rules, cutoffTime, exceptions, nowVenue \}\);/);
+  assert.doesNotMatch(src, /coverDaysFromSchedule\(/);
+});

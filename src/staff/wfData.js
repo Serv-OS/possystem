@@ -1059,12 +1059,22 @@ export async function autoAssignTraining(member, locationId, orgId, assignedBy) 
 export async function loadForecast(locationId, fromIso, toIso) {
   if (isMock || !supabase) { const a = lsGet('forecast'); const m = {}; a.forEach(r => { m[r.date] = Number(r.amount || 0); }); return m; }
   if (!locationId) return {};
-  let q = supabase.from('wf_sales_forecast').select('forecast_date, amount').eq('location_id', locationId);
-  if (fromIso) q = q.gte('forecast_date', fromIso);
-  if (toIso) q = q.lte('forecast_date', toIso);
-  const { data, error } = await q;
+  // v5.11.96 (multi site stock Drop 3): the reason and who edited a day come too (the Forecast screen
+  // writes them; the rota shows the reason under the amount). A database before Drop 3 has neither
+  // column, so the read is asked again without them and every reason reads as null.
+  const read = (cols) => {
+    let q = supabase.from('wf_sales_forecast').select(cols).eq('location_id', locationId);
+    if (fromIso) q = q.gte('forecast_date', fromIso);
+    if (toIso) q = q.lte('forecast_date', toIso);
+    return q;
+  };
+  let { data, error } = await read('forecast_date, amount, reason, edited_by_name');
+  if (error && /reason|edited_by_name|column/i.test(error.message || '')) ({ data, error } = await read('forecast_date, amount'));
   if (error) { console.warn('[wf] loadForecast:', error.message); return {}; }
   const m = {}; (data || []).forEach(r => { m[r.forecast_date] = Number(r.amount || 0); });
+  // the reasons ride on the map out of sight (not enumerable), so every sum of the map is unchanged
+  const reasons = {}; (data || []).forEach(r => { reasons[r.forecast_date] = { reason: r.reason ?? null, editedByName: r.edited_by_name ?? null }; });
+  Object.defineProperty(m, 'reasons', { value: reasons, enumerable: false });
   return m;
 }
 export async function saveForecast(dateIso, amount, locationId, orgId) {

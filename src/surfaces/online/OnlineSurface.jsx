@@ -29,6 +29,8 @@ import { itemAllergenIds, unsafeAllergenIds } from '../../lib/kioskAllergens';
 import { useMenuText, itemName as tItemName, itemDescription as tItemDescription, categoryLabel as tCategoryLabel } from '../../lib/menuText';
 import { loadMenuTranslationRows, customerMenuLang, applyMenuLang, languageLabel } from '../../lib/menuTextLoad';
 import { readAllRows } from '../../lib/venueMenuRead';
+// v5.11.93 (multi site stock Drop 2): the stock facts laid over the products; kcal where the venue shows calories.
+import { withFacts, showCalories as venueShowsCalories, KCAL_NOTE_EN } from '../../lib/menuStockFacts';
 import { onlineSectionTrees, itemInSection } from '../../lib/onlineMenuTree';
 import { kitchenOverride, receiptOverride } from '../../lib/itemDisplay';
 import { lineTaxRefsFor } from '../../lib/taxRefs';
@@ -46,6 +48,7 @@ import QrCheckout from '../qr/QrCheckout';
 import TabResumeScreen from '../qr/TabResumeScreen';
 import JoinTabScreen from '../qr/JoinTabScreen';
 import { money } from '../../lib/currency';
+import { COUNTER_TYPE, counterCollect, orderTypeChip } from '../../lib/counterOrder';
 import MenuHeader from '../menu/MenuHeader';
 import { readTheme, deriveVars, DISPLAY_FONT } from '../menu/menuTheme';
 
@@ -58,13 +61,17 @@ import { isLightBackground, sheetThemeFrom } from './sheetTheme';
 // Shows a persistent closed banner, swaps the "Open now" pill, and gates checkout:
 // canOrderAhead → checkout forced to a scheduled slot (no ASAP); otherwise the
 // cart stays browsable but pay is disabled with the reason.
-export default function OnlineSurface({ location, mode = 'online', tableId = null, tableLabel = null, closedInfo = null }) {
+export default function OnlineSurface({ location, mode = 'online', tableId = null, tableLabel = null, closedInfo = null, counter = false }) {
   // v5.5.145: same surface drives both /?surface=online (collection/delivery)
   // and /?surface=qr&t=T5 (table-side). Mode flips a few small pieces:
   // welcome screen, sticky header chip, hero pills, checkout component,
   // default order type. Everything else (menu / cart / item sheet / cart /
   // OrderTracker / 86 awareness) is identical.
   const isQr = mode === 'qr';
+  // v5.11.95 Counter collect (/counter, lib/counterOrder.js): this online page fixed on the
+  // venue's Counter collect, ASAP only, no table, with the venue's name for it.
+  const isCounter = !isQr && counter === true;
+  const counterName = isCounter ? counterCollect(location).label : null;
   const opsLocationId = location.ops_location_id || location.id;
   const onlineMenuId  = location.online_menu_id || null;
   // v5.11.81 round 1: start the venue's table service rule read as the QR menu loads, so the QR
@@ -118,6 +125,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   const [justOpenedCode, setJustOpenedCode] = useState(null); // show the opener their code after opening
   const [branding, setBranding]     = useState(null);
   const [defaultImage, setDefaultImage] = useState(null);   // v5.9.55: venue logo for products without a photo
+  const [showKcal, setShowKcal] = useState(false);          // v5.11.93: the venue's Show calories setting
   const [instGroupDefs, setInstGroupDefs] = useState([]); // from config_pushes snapshot — there's no instruction_groups DB table
   const [loading, setLoading]       = useState(true);
   const [openItem, setOpenItem]     = useState(null);
@@ -140,7 +148,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   const [paymentNotice, setPaymentNotice] = useState(''); // 'cancel' | 'verify_failed' | ''
   // v5.5.145: QR mode skips the welcome/order-type picker — table-side is
   // always dine-in. Online mode keeps the existing welcome flow.
-  const [orderType, setOrderType]   = useState(isQr ? 'dine-in' : null);
+  const [orderType, setOrderType]   = useState(isQr ? 'dine-in' : (counter === true ? COUNTER_TYPE : null));
   const [showLoyalty, setShowLoyalty] = useState(false);
   const [loyalty, setLoyalty]       = useState(null); // { phone, verified, customer?, loyalty?, giftCards?, stampCards?, token? }
   const [cart, setCart]             = useState([]);
@@ -391,11 +399,15 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           supabase.from('menus').select('*').eq('location_id', opsLocationId).order('sort_order'),
         ]);
         if (!alive) return;
-        const itemsData      = iRes.value?.data || [];
+        // v5.11.93 (multi site stock Drop 2): the stock facts laid over the products (the allergens
+        // the recipe at this site adds, kcal); a failed facts read keeps the typed rows.
+        const itemsData      = await withFacts(supabase, opsLocationId, iRes.value?.data || []);
+        if (!alive) return;
         const categoriesData = cRes.value?.data || [];
         const linksData      = mRes.value?.data || null;
         const brandingData   = lRes.value?.data?.receipt_branding || null;
         setDefaultImage(resolveDefaultProductImage(lRes.status === 'fulfilled' ? lRes.value?.data?.pos_settings : null));
+        setShowKcal(venueShowsCalories(lRes.status === 'fulfilled' ? lRes.value?.data?.pos_settings : null));
         const snap           = pRes.value?.data || null; // v5.5.891: row IS { instructionGroupDefs } now
 
         // The menu filter (home menu, links, sub categories follow their parent; the POS rule) is
@@ -961,8 +973,9 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           </div>
         )}
         <OrderTracker tz={location?.timezone || 'Europe/London'} orderRef={trackerRef} locationId={opsLocationId} theme={theme}
+          counter={isCounter}
           trackKey={trackKey}
-          onClose={() => { setTrackerRef(null); setTrackKey(null); setUnverifiedNotice(null); if (!isQr) setOrderType(null); }}/>
+          onClose={() => { setTrackerRef(null); setTrackKey(null); setUnverifiedNotice(null); if (!isQr && !isCounter) setOrderType(null); }}/>
       </>
     );
   }
@@ -1035,16 +1048,16 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             {/* Order-type pill — online only (QR is always dine-in at the table) */}
             {!isQr && (
-              <button onClick={() => setOrderType(null)} className="op-btn" style={{
+              <button onClick={() => { if (!isCounter) setOrderType(null); }} className="op-btn" style={{
                 padding: '6px 12px', borderRadius: 99,
                 background: `${theme.accent}18`, color: theme.fg,
                 border: `1px solid ${theme.accent}55`,
                 fontSize: 12, fontWeight: 800, fontFamily: 'inherit', cursor: 'pointer',
                 display: 'inline-flex', alignItems: 'center', gap: 6,
               }}>
-                <span>{orderType === 'collection' ? '🥡' : '🚴'}</span>
-                <span>{orderType === 'collection' ? 'Collection' : 'Delivery'}</span>
-                <span style={{ opacity: 0.5, fontSize: 11 }}>↓</span>
+                <span>{orderTypeChip(orderType, { counterLabel: counterName }).icon}</span>
+                <span>{orderTypeChip(orderType, { counterLabel: counterName }).label}</span>
+                {!isCounter && <span style={{ opacity: 0.5, fontSize: 11 }}>↓</span>}
               </button>
             )}
 
@@ -1123,6 +1136,11 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
             ⚠ Items containing <b>{activeAllergens.join(', ')}</b> are marked on the menu. Always confirm with the venue if you have a severe allergy.
           </div>
         </div>
+      )}
+
+      {/* v5.11.93 (multi site stock Drop 2): the 2,000 kcal line once, where the venue shows calories. */}
+      {showKcal && (
+        <div style={{ maxWidth: 1100, margin: '0 auto', padding: '12px 20px 0', fontSize: 12, color: '#64748b', fontWeight: 600 }}>{KCAL_NOTE_EN}</div>
       )}
 
       {/* MENU body */}
@@ -1206,7 +1224,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         <OnlineItemSheet
           defaultImage={defaultImage}
           item={openItem} theme={theme} allItems={items} priceFor={priceFor}
-          avoidAllergens={activeAllergens}
+          avoidAllergens={activeAllergens} showCalories={showKcal}
           instGroupDefs={instGroupDefs}
           eightySixIds={eightySixIds}
           stockLevels={stockLevels} cart={cart}
@@ -1245,6 +1263,8 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           vatGate={vatGate} /* 8 Oct 2026: no payment while the rates are not loaded */
           onRetryRates={retryRates}
           orderAheadOnly={!!closedInfo}
+          counter={isCounter}
+          counterLabel={counterName}
           onClose={() => setShowCheckout(false)}
           onOpenLoyalty={() => { setShowCheckout(false); setShowLoyalty(true); }}
           onLoyaltyVerified={(ph, data) => { setLoyalty({ phone: ph, verified: true, ...data }); }}

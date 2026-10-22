@@ -62,6 +62,10 @@ export default function MessageTemplates() {
   const [previewData, setPreviewData] = useState(null);
   const [showPreview, setShowPreview] = useState(false);
   const [loadingPreview, setLoadingPreview] = useState(false);
+  // 22 Oct 2026: the state of this venue's loyalty code text service (the Twilio Verify service
+  // whose name is stamped into the code text). { loading, result: { ok, state, words, name }, error }.
+  const [serviceStatus, setServiceStatus] = useState(null);
+  const [fixing, setFixing] = useState(false);
   const bodyRef = useRef(null);
 
   // ── Load templates ────────────────────────────────────────────────────────
@@ -117,6 +121,35 @@ export default function MessageTemplates() {
     setPreviewData(null);
   };
 
+  // ── The code text service (loyalty_otp) ───────────────────────────────────
+
+  const loadServiceStatus = useCallback(async (typeKey) => {
+    setServiceStatus({ loading: true, result: null, error: null });
+    try {
+      const data = await callApi('service_status', { message_type: typeKey });
+      setServiceStatus({ loading: false, result: data?.service || null, error: null });
+    } catch (e) {
+      setServiceStatus({ loading: false, result: null, error: e.message });
+    }
+  }, []);
+
+  const handleFixService = async () => {
+    if (!selectedType) return;
+    try {
+      setFixing(true);
+      const data = await callApi('fix_service', { message_type: selectedType });
+      const service = data?.service || null;
+      setServiceStatus({ loading: false, result: service, error: null });
+      if (service?.ok) showToast?.('Text service ready', 'success');
+      else showToast?.(service?.words || 'The text service is still not set up', 'error');
+    } catch (e) {
+      setServiceStatus(s => ({ ...(s || {}), loading: false, error: e.message }));
+      showToast?.(`Fix failed: ${e.message}`, 'error');
+    } finally {
+      setFixing(false);
+    }
+  };
+
   // ── Save template ─────────────────────────────────────────────────────────
 
   const handleSave = async () => {
@@ -129,21 +162,26 @@ export default function MessageTemplates() {
       setDirty(false);
       return;
     }
+    const nameEditable = !!currentMt?.nameEditable;
     try {
       setSaving(true);
-      await callApi('save', {
+      const data = await callApi('save', {
         message_type: selectedType,
         channel: selectedChannel,
         subject: selectedChannel === 'email' ? editSubject : null,
         body_text: editBody,
         enabled: editEnabled,
       });
-      showToast?.('Template saved', 'success');
+      // The save answers with the text service's state after the rename (22 Oct 2026).
+      if (data?.service) setServiceStatus({ loading: false, result: data.service, error: null });
+      showToast?.(nameEditable ? 'Name saved' : 'Template saved', 'success');
       setDirty(false);
       // Reload and re-select from fresh data (avoids stale closure)
       await loadTemplates(selectedType, selectedChannel);
     } catch (e) {
       showToast?.(`Save failed: ${e.message}`, 'error');
+      // The name row may be saved while the text service refused: show its state now.
+      if (nameEditable) loadServiceStatus(selectedType);
     } finally {
       setSaving(false);
     }
@@ -161,11 +199,12 @@ export default function MessageTemplates() {
     }
     try {
       setSaving(true);
-      await callApi('reset', {
+      const data = await callApi('reset', {
         message_type: selectedType,
         channel: selectedChannel,
       });
-      showToast?.('Reset to default', 'success');
+      if (data?.service) setServiceStatus({ loading: false, result: data.service, error: null });
+      showToast?.(mt?.nameEditable ? 'Using your venue name' : 'Reset to default', 'success');
       setDirty(false);
       await loadTemplates(selectedType, selectedChannel);
     } catch (e) {
@@ -223,19 +262,43 @@ export default function MessageTemplates() {
   const currentTpl = currentMt?.templates?.[selectedChannel];
   const charCount = selectedChannel === 'sms' ? editBody.length : 0;
   const smsSegments = selectedChannel === 'sms' ? Math.ceil(charCount / 160) || 1 : 0;
+  const nameEditableType = currentMt?.nameEditable ? currentMt.type : null;
+
+  // The text service's state, read when the Verification code type is opened (never on every
+  // screen open: it asks the text provider).
+  useEffect(() => {
+    if (nameEditableType) loadServiceStatus(nameEditableType);
+    else setServiceStatus(null);
+  }, [nameEditableType, loadServiceStatus]);
 
   // Provider-managed types (e.g. loyalty_otp via Twilio Verify) have a fixed body — build a live
-  // read-only preview from that fixed body. The venue_name slot reflects the name being typed
-  // (or "your venue name" when blank); other tags use their example values.
+  // read-only preview from that fixed body. The venue_name slot shows the name the text service
+  // really carries when it is ready and nothing is being typed (what the customer sees, cut to 30
+  // characters), else the name being typed (or "your venue name" when blank); other tags use their
+  // example values.
   const providerCh = currentMt?.channels?.[0];
   const providerFixedBody = currentMt?.providerManaged
     ? String(currentMt.templates?.[providerCh]?.fixedBody || currentMt.templates?.[providerCh]?.body_text || '')
     : '';
+  const serviceResult = serviceStatus?.result || null;
+  const serviceReady = !!serviceResult && serviceResult.state === 'ready';
   const providerPreviewText = providerFixedBody.replace(/\{\{(\w+)\}\}/g, (_m, k) => {
-    if (k === 'venue_name') return (editBody && editBody.trim()) || 'your venue name';
+    if (k === 'venue_name') {
+      if (!dirty && serviceReady && serviceResult.name) return String(serviceResult.name).trim().slice(0, 30);
+      return (editBody && editBody.trim().slice(0, 30)) || 'your venue name';
+    }
     const tag = currentMt.mergeTags.find(t => t.tag === k);
     return tag ? tag.example : `{{${k}}}`;
   });
+  const serviceDot = serviceStatus?.loading ? 'var(--t4)'
+    : serviceResult?.ok ? '#22c55e'
+    : serviceResult ? '#f59e0b'
+    : 'var(--t4)';
+  const serviceWords = serviceStatus?.loading ? 'Checking the text service...'
+    : serviceResult?.words ? serviceResult.words
+    : serviceStatus?.error ? `Could not check: ${serviceStatus.error}`
+    : '';
+  const serviceFixable = !!serviceResult && !serviceResult.ok && !['not_configured'].includes(serviceResult.state);
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -382,6 +445,33 @@ export default function MessageTemplates() {
                     <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 6 }}>
                       {editBody.length}/30 · appears as the business name inside the code text
                     </div>
+                    {/* The text service itself: ready as "<name>", or not set up and why, with Fix. */}
+                    {serviceWords && (
+                      <div style={{
+                        display: 'flex', alignItems: 'center', gap: 10, marginTop: 12,
+                        padding: '10px 12px', borderRadius: 8,
+                        background: 'var(--bg2)', border: '1px solid var(--bdr)',
+                      }}>
+                        <span style={{ width: 10, height: 10, borderRadius: '50%', background: serviceDot, flexShrink: 0 }} />
+                        <span style={{ flex: 1, fontSize: 13, lineHeight: 1.45, color: 'var(--t1)' }}>
+                          {serviceWords}
+                        </span>
+                        {(serviceFixable || serviceStatus?.error) && (
+                          <button
+                            onClick={handleFixService}
+                            disabled={fixing || saving}
+                            style={{
+                              padding: '8px 16px', fontSize: 13, fontWeight: 700, whiteSpace: 'nowrap',
+                              background: 'var(--acc)', color: '#0b0c10',
+                              border: 'none', borderRadius: 8, cursor: fixing ? 'default' : 'pointer',
+                              opacity: fixing ? 0.6 : 1,
+                            }}
+                          >
+                            {fixing ? 'Fixing...' : (serviceResult?.state === 'twilio_unreadable' || serviceStatus?.error) ? 'Try again' : 'Fix'}
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
 

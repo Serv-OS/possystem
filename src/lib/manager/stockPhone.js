@@ -112,3 +112,13 @@ export function qtyWords(base, item) {
 export function phoneStockNotReady(error) {
   return /unknown action/i.test(String(error || ''));
 }
+
+/**
+ * v5.11.96 (multi site stock Drop 3, J5): the database asked for a manager PIN on waste over the
+ * venue's set value. 'needed' (ask for it), 'wrong' (not a manager here), 'locked' (5 wrong tries in
+ * 15 minutes), or null when the answer is not about a PIN.
+ */
+export function pinAsked(answer) {
+  const p = answer && answer.ok === false ? String(answer.pin || '') : '';
+  return ['needed', 'wrong', 'locked'].includes(p) ? p : null;
+}

@@ -14,6 +14,7 @@ import { bucketShiftsBySection, UNASSIGNED } from '../../../staff/rotaSections.j
 import { caseDone, missingSteps, normalizeCase } from './WfOnboarding';
 import { hoursOf, resolveRate, resolveRateOn, labourPct, venueBreakPolicy } from '../../../staff/labour';
 import { checkProposed, fillCoverage, suggestForecast, openWindowsOn, DEFAULT_RULES } from '../../../staff/rotaRules';
+import { forecastReasonWords } from '../../../lib/stock/purchasingWords';
 import { getLocationConfig } from '../../../lib/locationTime';
 // Clash logic (shift overlap = hard block; approved leave / unavailable day =
 // soft warning, place anyway) is pure + unit-tested in wfClash.js.
@@ -311,6 +312,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   const [wk, setWk] = useState(week);
   const [shifts, setShifts] = useState([]);
   const [forecast, setForecast] = useState({});   // { iso: amount }
+  const [forecastReasons, setForecastReasons] = useState({}); // v5.11.96 (Drop 3): { iso: { reason, editedByName } } from the Forecast screen
   const [actual, setActual] = useState({});        // { iso: amount }
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);    // { staff, day, shift }
@@ -370,6 +372,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
       ]);
       setShifts(sh || []);
       setForecast(fc || {});
+      setForecastReasons(fc?.reasons || {});
       setActual(ac || {});
       if (sc) setSecs(sc);
       setTimesheets(ts || []);
@@ -1098,6 +1101,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
                       className="mono"
                       style={{ width: 64, textAlign: 'center', background: 'transparent', border: '1px solid var(--bdr)', borderRadius: 8, padding: '4px 6px', fontSize: 12, color: 'var(--t1)', outline: 'none' }}
                     />
+                    {forecastReasons[d.iso]?.reason && <div title={forecastReasons[d.iso].editedByName ? `Edited by ${forecastReasons[d.iso].editedByName}` : undefined} style={{ marginTop: 3, fontSize: 10, color: 'var(--t4)' }}>{forecastReasonWords(forecastReasons[d.iso].reason)}</div>}
                     {suggested[d.iso] && Number(forecast[d.iso] || 0) !== suggested[d.iso].amount && (
                       <div title={`Learned from the last ${suggested[d.iso].samples} ${d.label}s. Click to use it; type over it any time.`}
                         onClick={() => saveForecastCell(d.iso, String(suggested[d.iso].amount))}

@@ -93,6 +93,20 @@ begin
 end
 $guard$;
 
+-- 20261023a: the drainer release reads 0a's tables, so its own rollback runs first.
+do $drainer_first$
+begin
+  if to_regclass('public.stock_sale_takes') is not null then
+    raise exception 'The drainer release (20261023a) is still in. Run 20261023a_OPS_stock_drainer_v2_ROLLBACK.sql first. Nothing was changed.';
+  end if;
+  if to_regclass('public.stock_native_backup') is not null then
+    if exists (select 1 from public.stock_native_backup b where left(b.name, 11) = 'drainer_v2:') then
+      raise exception 'The drainer release (20261023a) is still in. Run 20261023a_OPS_stock_drainer_v2_ROLLBACK.sql first. Nothing was changed.';
+    end if;
+  end if;
+end
+$drainer_first$;
+
 set local lock_timeout = '3s';
 set local statement_timeout = '300s';
 

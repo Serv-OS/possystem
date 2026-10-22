@@ -1,10 +1,10 @@
 // drop4a.mjs: proves Drop 4a of multi site stock (supabase/migrations/20261026a_OPS_stock_native_4a.sql and
 // its rollback: the head office reports) on the throwaway Ops shaped database run.mjs built, after 0a, its
-// revalue file, 0b, Drop 1 (20261024a) and the drainer release (20261023a), Peter's live order. It never
-// connects to Supabase. run.mjs --drop4a calls drop4aSections() after its section 1.
+// revalue file, 0b, Drop 1 (20261024a), the drainer release (20261023a), Drop 2 (20261025a) and Drop 3
+// (20261027a), the live order on the night 4a runs. It never connects to Supabase. run.mjs --drop4a calls drop4aSections() after its section 1.
 //
 //   30  the paste: the guard's refusals (no Drop 1, no drainer, a second run, a changed body, not Ops),
-//       no Drop 2 table needed; the check row (every column); no site row, ledger row, login or link
+//       no Drop 2 table needed (a copy from before Drop 2); the check row (every column); no site row, ledger row, login or link
 //       changed; the sales history backfill queued 15 venue days a minute, newest first; the drain
 //       finishing it
 //   31  every new table (RLS, grants, read rule, fence, no write policy), the bucket and its owner path
@@ -106,7 +106,8 @@ export async function drop4aSections(ctx) {
   const near = (a, b, eps = PENNY) => a != null && b != null && Math.abs(Number(a) - Number(b)) <= eps;
   const ONLY = (process.env.STOCKN_D4A_ONLY || '').split(',').filter(Boolean).map(Number);
   const want = (n) => !ONLY.length || ONLY.includes(n);
-  const PRE = c.DB;   // 0a, its revalue file, 0b, Drop 1 and the drainer in: the live state on the night 4a runs
+  const PRE = c.DB;   // 0a, its revalue file, 0b, Drop 1, the drainer, Drop 2 and Drop 3 in: the live state on the night 4a runs
+  const NO_D2 = ctx.NO_D2_DB || null;   // the same before Drop 2 (run.mjs makes it)
 
   // -- callers, as run.mjs makes them (authenticator, SET ROLE, claims, the live limits) ---------------------
   const anonSession = (sub) => ({ sub, role: 'authenticated', is_anonymous: true, aud: 'authenticated' });
@@ -198,9 +199,17 @@ export async function drop4aSections(ctx) {
     ok(drained > 0 && num(`select count(*) from stock_day_sums_repair`) + num(`select count(*) from sales_day_sums_queue where due_at <= now()`) === 0,
       `the drainer's queue is drained first, as it is live before 4a runs (${drained} runs)`);
     sql('analyze;');
-    ok(!tableExists('recipe_cost_daily') && !tableExists('menu_item_stock_facts') && !tableExists('stock_targets'),
-      'the database has no Drop 2 table (recipe_cost_daily, menu_item_stock_facts) and no 4a table: 4a must not need Drop 2');
-    for (const [sig, m5] of D4A_CHECKED) ok(md5Of(sig) === m5, `${sig.slice(7, sig.indexOf('('))}: the body 4a checks has the md5 the drainer leaves live (${md5Of(sig)})`);
+    ok(tableExists('recipe_cost_daily') && tableExists('menu_item_stock_facts') && tableExists('stock_po_approvals') && !tableExists('stock_targets'),
+      'Drop 2 (recipe_cost_daily, menu_item_stock_facts) and Drop 3 (stock_po_approvals) are in, as live, and no 4a table');
+    for (const [sig, m5] of D4A_CHECKED) ok(md5Of(sig) === m5, `${sig.slice(7, sig.indexOf('('))}: the body 4a checks has the md5 that is live after the drainer, Drop 2 and Drop 3 (${md5Of(sig)})`);
+    // 4a never needed Drop 2: on the copy from before Drop 2 it applies too
+    if (NO_D2) {
+      c.createFrom('n_d4_nod2_paste', NO_D2);
+      c.use('n_d4_nod2_paste');
+      const r0 = c.paste(FILES.d4);
+      ok(r0.status === 0 && !tableExists('recipe_cost_daily') && tableExists('stock_targets'), `4a applies without Drop 2 too (${r0.status ? short(r0.stderr, 300) : `${r0.ms} ms`})`);
+      c.use(PRE);
+    }
     // the refusals, each on its own copy
     const refusal = (name, prep, words, extra = '') => {
       c.createFrom(name, PRE);
@@ -1018,8 +1027,12 @@ export async function drop4aSections(ctx) {
     ok(near(types.reduce((s, t) => s + Number(t.sales_net), 0), coRows(db)[0]?.sales_net) && types.every((t) => t.actual_cost === null),
       `GP by type: food, drink and other add up to the company sales (${types.map((t) => `${t.type} ${t.sales_net}`).join(', ')}); actual by type comes with counts by type`);
     const att = db.rows?.attention || [];
-    ok(att.some((a) => a.kind === 'negative_stock' && a.location_id === PROVO) && att.some((a) => a.kind === 'demo_history') && att.some((a) => a.kind === 'below_minimum'),
-      `needs attention: ${[...new Set(att.map((a) => a.kind))].join(', ')}`);
+    // negative stock at exactly the sites the rows hold it, with their count (the random world decides which
+    // site goes below zero: seed 557316 leaves Provo above it, so the site is never assumed)
+    const negAt = Object.fromEntries(both.map((loc) => [loc, num(`select count(*) from inventory_items where location_id = '${loc}' and archived_at is null and on_hand < 0`)]));
+    const negOk = both.every((loc) => { const a = att.find((x) => x.kind === 'negative_stock' && x.location_id === loc); return negAt[loc] > 0 ? !!a && Number(a.count) === negAt[loc] : !a; });
+    ok(negOk && both.some((loc) => negAt[loc] > 0) && att.some((a) => a.kind === 'demo_history') && att.some((a) => a.kind === 'below_minimum'),
+      `needs attention: ${[...new Set(att.map((a) => a.kind))].join(', ')}; negative stock where the rows have it (${both.map((loc) => `${VNAME[loc]} ${negAt[loc]}`).join(', ')})`);
     ok((db.rows?.league || []).length === 2 && (db.rows.league || []).every((l) => 'last_full_count_words' in l && 'below_par_count' in l), 'the league is in the dashboard answer, one row a site');
   });
 

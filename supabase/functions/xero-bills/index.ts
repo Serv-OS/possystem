@@ -15,6 +15,16 @@
 //
 //   POST { locationId, invoiceId, dryRun? } -> { ok, xeroInvoiceID, link, attached }
 // Deploy --no-verify-jwt (own auth, location-fenced).
+//
+// v5.11.96 (multi site stock Drop 3, contract 3.5): each line's account code is the item's company
+// category accounting_code (stock_co_categories) when it has one, else the mapped purchases account
+// as before; the venue's site tracking (xero_config mapping.tracking, checked against Xero's active
+// tracking options) goes on every line; an invoice split by site (supplier_invoice_site_splits) is one
+// bill with a line per site split, each with that site's tracking; after a bill is sent the invoice
+// is locked (supplier_invoices.locked_at, service role; the database refuses edits after that).
+// New action recharge_bill: a draft ACCPAY bill in the RECEIVING site's Xero organisation for one
+// month's central kitchen or cross company transfers, then stock_recharge_record.
+//   POST { action: 'recharge_bill', orgId, month, fromLocationId, toLocationId } -> { ok, xeroBillID }
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { getValidAccessToken, xeroApi, XERO_API } from '../_shared/xero.ts';
@@ -75,12 +85,93 @@ async function resolvePurchasesAccount(token: string, tenantId: string, mapped?:
 const extFromPath = (p: string) => (p.split('.').pop() || 'jpg').toLowerCase();
 const mimeFor = (ext: string) => ({ jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', heic: 'image/heic', pdf: 'application/pdf' } as Record<string, string>)[ext] || 'application/octet-stream';
 
+// v5.11.96: the site tracking of one venue, checked against Xero's active options (the same check as
+// _shared/xeroInvoicePost.ts checkTracking, which is not exported). null when the venue has none.
+async function siteTracking(token: string, tenantId: string, mapping: any): Promise<{ Name: string; Option: string } | null> {
+  const tr = mapping?.tracking || {};
+  if (tr.none || !(tr.categoryName && tr.optionName)) return null;
+  const res = await xeroApi(token, tenantId, '/TrackingCategories');
+  const cats: any[] = res?.TrackingCategories || [];
+  const cat = cats.find((c) => (tr.categoryId && c.TrackingCategoryID === tr.categoryId) || c.Name === tr.categoryName);
+  if (!cat || String(cat.Status || 'ACTIVE').toUpperCase() !== 'ACTIVE') throw new HttpError(`The tracking category "${tr.categoryName}" is not active in Xero. Choose it again under VAT and accounts, Site tracking.`, 400);
+  const opt = (cat.Options || []).find((o: any) => (tr.optionId && o.TrackingOptionID === tr.optionId) || o.Name === tr.optionName);
+  if (!opt || String(opt.Status || 'ACTIVE').toUpperCase() !== 'ACTIVE') throw new HttpError(`The tracking option "${tr.optionName}" is not active in Xero. Choose it again under VAT and accounts, Site tracking.`, 400);
+  return { Name: cat.Name, Option: opt.Name };
+}
+
+// v5.11.96: item id -> its company category's accounting code (only the items that have one).
+async function categoryCodes(itemIds: string[]): Promise<Record<string, string>> {
+  const ids = [...new Set(itemIds.filter(Boolean))].slice(0, 1000);
+  if (!ids.length) return {};
+  const { data: items } = await sb.from('inventory_items').select('id, company_ref').in('id', ids);
+  const refs = [...new Set((items || []).map((i: any) => i.company_ref).filter(Boolean))];
+  if (!refs.length) return {};
+  const { data: cos } = await sb.from('stock_co_items').select('id, category_id').in('id', refs);
+  const catIds = [...new Set((cos || []).map((c: any) => c.category_id).filter(Boolean))];
+  if (!catIds.length) return {};
+  const { data: cats } = await sb.from('stock_co_categories').select('id, accounting_code').in('id', catIds);
+  const codeOfCat: Record<string, string> = {};
+  for (const c of cats || []) if (c.accounting_code && String(c.accounting_code).trim()) codeOfCat[c.id] = String(c.accounting_code).trim();
+  const catOfCo: Record<string, string> = {};
+  for (const c of cos || []) if (c.category_id) catOfCo[c.id] = c.category_id;
+  const out: Record<string, string> = {};
+  for (const i of items || []) { const code = codeOfCat[catOfCo[i.company_ref]]; if (code) out[i.id] = code; }
+  return out;
+}
+
+// v5.11.96: a draft bill in the receiving site's organisation for one month of recharges. The amount
+// is read from stock_recharge_statement AS THE CALLER (company editors only), never from the body.
+async function rechargeBill(req: Request, body: any): Promise<Response> {
+  const { orgId, month, fromLocationId, toLocationId } = body || {};
+  if (!orgId || !month || !fromLocationId || !toLocationId) return json({ error: 'orgId, month, fromLocationId and toLocationId required' }, 400);
+  const token = (req.headers.get('Authorization') || '').replace('Bearer ', '').trim();
+  if (!token || token === SERVICE_ROLE) return json({ error: 'Sign in to send recharges.' }, 401);
+  const acc = await requireAccess(req, toLocationId);
+  if (!acc.ok) return acc.res;
+  const asCaller = createClient(SUPABASE_URL, Deno.env.get('SUPABASE_ANON_KEY') ?? '', { global: { headers: { Authorization: `Bearer ${token}` } }, auth: { autoRefreshToken: false, persistSession: false } });
+  const { data: st, error: stErr } = await asCaller.rpc('stock_recharge_statement', { p_org: orgId, p_month: month });
+  if (stErr) return json({ error: stErr.message }, 403);
+  const rows: any[] = Array.isArray(st) ? st : (st?.rows || []);
+  const row = rows.find((r) => r.from_location_id === fromLocationId && r.to_location_id === toLocationId);
+  if (!row) return json({ error: 'Nothing to recharge between these sites this month.' }, 404);
+  if (row.posted?.xero_bill_id) return json({ ok: true, already: true, xeroBillID: row.posted.xero_bill_id });
+  const amount = money(row.amount);
+  let billId: string | null = null;
+  let err: string | null = null;
+  try {
+    const { accessToken, tenantId } = await getValidAccessToken(sb, toLocationId, CLIENT_ID, CLIENT_SECRET);
+    const { data: cfgRow } = await sb.from('xero_config').select('mapping').eq('location_id', toLocationId).maybeSingle();
+    const map = cfgRow?.mapping || {};
+    const account = await resolvePurchasesAccount(accessToken, tenantId, map.purchasesAccount);
+    const tracking = await siteTracking(accessToken, tenantId, map);
+    const contactId = await findOrCreateContact(accessToken, tenantId, String(row.from_name || 'Central kitchen'));
+    const ref = `ServOS recharge ${String(month).slice(0, 7)}`;
+    const payload = { Invoices: [{
+      Type: 'ACCPAY', Contact: { ContactID: contactId }, Date: String(month).slice(0, 10), Reference: ref,
+      LineAmountTypes: 'Exclusive', Status: 'DRAFT',
+      LineItems: [{ Description: `Goods from ${row.from_name || 'the central kitchen'}, ${String(month).slice(0, 7)} (${row.lines || 0} lines)`, Quantity: 1, UnitAmount: amount, AccountCode: account, TaxType: map.purchaseTax || 'NONE', ...(tracking ? { Tracking: [tracking] } : {}) }],
+    }] };
+    const idem = `servos-recharge-bill-${orgId}-${String(month).slice(0, 7)}-${fromLocationId}-${toLocationId}-${shortHash(JSON.stringify(payload))}`;
+    const res = await xeroApi(accessToken, tenantId, '/Invoices', { method: 'PUT', body: JSON.stringify(payload), idempotencyKey: idem });
+    billId = res?.Invoices?.[0]?.InvoiceID || null;
+    if (!billId) err = 'Xero did not return a bill id';
+  } catch (e) { err = (e as Error)?.message || String(e); }
+  const { error: recErr } = await sb.rpc('stock_recharge_record', {
+    p_org: orgId, p_month: month, p_from: fromLocationId, p_to: toLocationId, p_amount: amount,
+    p_invoice: null, p_bill: billId, p_error: err, p_by_name: body.byName || null,
+  });
+  if (err) return json({ error: err }, 502);
+  if (recErr) return json({ ok: true, xeroBillID: billId, warning: `The bill is in Xero but could not be recorded: ${recErr.message}` });
+  return json({ ok: true, xeroBillID: billId });
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   const secondStepBlock = await secondStepRefusal(req); if (secondStepBlock) return secondStepBlock; // docs/SECOND_STEP.md
   if (req.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
   let body: any = {};
   try { body = await req.json(); } catch { /* ignore */ }
+  if (body?.action === 'recharge_bill') return await rechargeBill(req, body);
   const { locationId, invoiceId, dryRun } = body;
   if (!locationId || !invoiceId) return json({ error: 'locationId and invoiceId required' }, 400);
   const acc = await requireAccess(req, locationId);
@@ -121,15 +212,43 @@ Deno.serve(async (req) => {
 
     // Bill lines: stored NET (line_total ex VAT) → Exclusive; per-line VAT comes from
     // the Xero TaxType. If no lines exist, one summary line from the invoice totals.
-    const li = (lines || []).length
-      ? (lines || []).map((l: any) => ({
-          Description: [l.description, l.qty && l.unit ? `(${l.qty} ${l.unit})` : null].filter(Boolean).join(' ') || 'Line',
+    // v5.11.96: the account code is the item's company category code when it has one; the site
+    // tracking goes on every line; a split invoice is one line per site split with its tracking.
+    const tracking = await siteTracking(accessToken, tenantId, map);
+    const withTracking = (line: any, tr: any) => (tr ? { ...line, Tracking: [tr] } : line);
+    const codes = await categoryCodes((lines || []).map((l: any) => l.matched_item_id));
+    const { data: splits } = await sb.from('supplier_invoice_site_splits').select('location_id, amount, tax, basis, note').eq('invoice_id', invoiceId).limit(100);
+    let li: any[];
+    if ((splits || []).length) {
+      const siteIds = [...new Set((splits || []).map((x: any) => x.location_id))];
+      const [{ data: siteCfg }, { data: siteRows }] = await Promise.all([
+        sb.from('xero_config').select('location_id, mapping').in('location_id', siteIds),
+        sb.from('locations').select('id, name').in('id', siteIds),
+      ]);
+      const mapOf: Record<string, any> = Object.fromEntries((siteCfg || []).map((c: any) => [c.location_id, c.mapping || {}]));
+      const nameOf: Record<string, string> = Object.fromEntries((siteRows || []).map((r: any) => [r.id, r.name]));
+      li = [];
+      for (const x of splits || []) {
+        const tr = x.location_id === locationId ? tracking : await siteTracking(accessToken, tenantId, mapOf[x.location_id] || {});
+        li.push(withTracking({
+          Description: `Supplier invoice ${inv.invoice_number || ''}, ${nameOf[x.location_id] || 'site'} share`.replace(/\s+,/, ','),
           Quantity: 1,
-          UnitAmount: money(l.line_total),
+          UnitAmount: money((Number(x.amount) || 0) - (Number(x.tax) || 0)),
           AccountCode: purchasesAccount,
           TaxType: purchaseTax,
-        }))
-      : [{ Description: `Supplier invoice ${inv.invoice_number || ''}`.trim(), Quantity: 1, UnitAmount: money(inv.subtotal ?? inv.total), AccountCode: purchasesAccount, TaxType: purchaseTax }];
+        }, tr));
+      }
+    } else {
+      li = (lines || []).length
+        ? (lines || []).map((l: any) => withTracking({
+            Description: [l.description, l.qty && l.unit ? `(${l.qty} ${l.unit})` : null].filter(Boolean).join(' ') || 'Line',
+            Quantity: 1,
+            UnitAmount: money(l.line_total),
+            AccountCode: codes[l.matched_item_id] || purchasesAccount,
+            TaxType: purchaseTax,
+          }, tracking))
+        : [withTracking({ Description: `Supplier invoice ${inv.invoice_number || ''}`.trim(), Quantity: 1, UnitAmount: money(inv.subtotal ?? inv.total), AccountCode: purchasesAccount, TaxType: purchaseTax }, tracking)];
+    }
 
     const dateStr = inv.invoice_date || new Date().toISOString().slice(0, 10);
     const dueDays = Number(supplier?.payment_terms_days) || 30;
@@ -186,6 +305,12 @@ Deno.serve(async (req) => {
       } catch (e) { console.warn('[xero-bills] attach failed:', (e as Error)?.message); }
     }
 
+    // v5.11.96: once the bill is in Xero the invoice is locked (the database refuses edits after
+    // this, except from the service role). Best effort: the bill exists either way.
+    if (!inv.locked_at) {
+      const { error: lockErr } = await sb.from('supplier_invoices').update({ locked_at: new Date().toISOString() }).eq('id', invoiceId).eq('location_id', locationId);
+      if (lockErr) console.warn('[xero-bills] lock failed:', lockErr.message);
+    }
     const link = `https://go.xero.com/AccountsPayable/View.aspx?InvoiceID=${bill.InvoiceID}`;
     await run.finish('ok', { xero_id: bill.InvoiceID, detail: { postings: { ...run.postings, bill: { status: 'posted', id: bill.InvoiceID } }, supplierName, total: bill.Total, attached, link, error: null } }, { ok: true });
     return json({ ok: true, xeroInvoiceID: bill.InvoiceID, total: bill.Total, supplierName, attached, link });

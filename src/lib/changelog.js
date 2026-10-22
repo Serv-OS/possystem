@@ -7,7 +7,7 @@
 
 export const CHANGELOG = [
   {
-    v: '5.11.92',
+    v: '5.11.98',
     date: '23 Oct 2026',
     items: [
       "Stock, head office reports for companies with more than one site (Drop 4a). Back Office > Reports > Stock and GP is the one home for stock reports. Inventory > Reports opens it for a company with more than one site. A company with one site sees exactly the same Inventory > Reports as before, and no new rows.",
@@ -19,6 +19,91 @@ export const CHANGELOG = [
       "See the report links on Stock items, an approved count, Waste and Price changes, and a Head office dashboard button on the Stock overview, all only for a company with more than one site.",
       "Owner app: each venue card has a Stock line (stock value, GP, gap, waste, last count), and the venue screen has a Stock card. An owner now sees every venue of their own company.",
       "Needs the drainer database update (20261023a) first, then 20261026a after UK close, then the report-export and owner-snapshot edge functions deployed. Sales history for the last 13 months fills in at 15 days a minute after the update.",
+    ],
+  },
+  {
+    v: '5.11.97',
+    date: '22 Oct 2026',
+    items: [
+      "Counter collect settings are now where each channel is set up. Kiosk: Back Office, Kiosk settings, Customer flow has a Counter collect switch and the words on its button, per kiosk, with the button in the live preview. QR: Back Office, Online ordering, inside QR ordering, a Counter collect QR switch, its words and the QR card download, saved with the page's own Save settings. The separate Counter collect box is gone. The kiosk switch needs the database update 20261028a; until it runs the switch is hidden and no kiosk shows the button.",
+      "The printed Counter collect QR card now shows exactly the words typed, never Table in front of them, and long words shrink to fit the card.",
+      "Customers are told to collect at the counter at every step: the kiosk done screen says it will be ready to collect at the counter (all seven kiosk languages), the classic kiosk basket says Pick up order, and the online tracker after a counter QR order says ready to collect at the counter around its time, then Ready. Collect it at the counter. The ready text is unchanged: ready to collect at the counter.",
+      "The ready text now checks the switch on the kiosk the order came from, so another kiosk at the same venue keeps its own text. Nothing else in the order flow changes: price, VAT (eat in), tickets and payments are as in 5.11.95.",
+    ],
+  },
+  {
+    v: '5.11.96',
+    date: '22 Oct 2026',
+    items: [
+      "Stock, purchasing and the central kitchen for companies with more than one site (Drop 3). A company with one site keeps exactly today's Order pad, Orders, Invoices, Price changes, Stock counts, Waste and Transfers screens. The one change for everyone: the order pad works out the next delivery from the supplier's order rules, and an order after the cut off asks for the next delivery.",
+      "Purchasing gets new screens for companies with 2 or more open sites: Due to order, Forecast, Deliveries, Credits and Budgets, plus a company view of Orders, Invoices and Price changes. The order pad shows the order by time, a weekly budget bar, the par for the delivery day, the minimum order and delivery fee, saved lists and Order for many sites.",
+      "Approvals: an order over the supplier's limit at that site waits for another manager of the site (never the person who raised it) or head office. It is passed up at 60 and 30 minutes, and at the order by time it is sent as sent unapproved (a company setting, on by default). Suppliers can have standing orders, bank holidays and other days with no delivery. A supplier with no cut off is ordered by midnight the day before.",
+      "Invoices: a price change on an invoice moves that site's price only. With agreed prices it raises a credit request and the price stays. Invoices are matched against the order and the delivery, can be split across sites, and are locked once sent to Xero, with the site on every Xero line.",
+      "Counts and waste: count plans and templates with a shelf order, a second approval over the company's limit, locked periods, and an End of day close down for fresh food. Waste over the limit asks for a manager PIN on the till, in Back Office and on the Manager app. Waste reasons are set for the whole company.",
+      "Transfers: a site can request stock from another site, and the sender fulfils or refuses it. A receiver can dispute a transfer and the sender resolves it. Lot and use by ride on each line.",
+      "Central kitchen (Produce): a production plan, Orders in, Ingredients needed, Pick and send with a delivery note and labels, and monthly recharges to Xero. A kitchen order is received only through its transfer, never also as a delivery. Kitchen only recipes are never shown to other sites' managers.",
+      "Alerts go to the bell, SMS and email. The Manager app gains Transfers, Shop buy, End of day, Forecast and, at a kitchen, Orders in, Production plan and Pick and send. Forecast edits show on the rota with their reason.",
+      "Nothing on these screens moves an on hand, cost, ledger or count figure by itself, and every order channel is unchanged. Needs the database update 20261027a (after 20261025a), then the po-send, send-receipt, po-cutoff-run, stock-notify, invoice-inbox, xero-bills, xero-sales, manager-approve and manager-snapshot edge function deploys, which Peter runs. If anything is wrong, 20261027a_OPS_stock_native_3_ROLLBACK.sql puts the database back.",
+    ],
+  },
+  {
+    v: '5.11.95',
+    date: '22 Oct 2026',
+    items: [
+      "Counter collect: a new way to order that the customer collects at the counter. Back Office, Channels, Online ordering has a Counter collect box: the name customers see (for example Collect at counter, blank shows Counter collect), a switch for the kiosk and a switch for the counter QR code, with its own Save button.",
+      "Kiosk (both designs): a third tile next to Eat in and Take away, with the venue's name for it. It books as eat in with no table, so price and VAT are the dine in ones (Peter: Table ordering dine in, Counter collect dine in, Collection takeaway, Takeaway takeaway), exactly as an eat in, sit anywhere kiosk order today, and the kiosk card payment code is unchanged. It never asks for a table, and the customer can ask for the ready text.",
+      "Counter QR code: <venue>.serv-os.app/counter, downloadable from the same box. Customers scan it, order, pay and collect at the counter, with no table. It only takes orders while the venue is open, uses the QR tipping rule and needs QR ordering on. It books as dine in with no table too. Table QR codes are unchanged, and online ordering is unchanged.",
+      "The ready text for these orders now says: your order is ready to collect at the counter. A company's own ready text template, when it has one, is still used instead. Needs the location-admin and order-notify functions deployed before the Back Office box will save. No database update.",
+    ],
+  },
+  {
+    v: '5.11.94',
+    date: '22 Oct 2026',
+    items: [
+      "Loyalty sign in code texts: the text service that carries a venue's name is now made the moment it is needed, not on a customer's first sign in. A new venue gets one when it is set up, a renamed venue has its service renamed at once, saving or resetting the business name under Messages makes or renames it, and switching loyalty on sets up every venue of the company. A venue that still has no service, or whose name has drifted, is repaired before each code is sent, and the send is refused (never sent under another name) if that fails.",
+      "Back Office > Messages > Verification code now shows the state of the venue's text service: a green dot with 'Text service: ready as \"<name>\"', or an amber dot with the reason and a Fix button. The preview bubble shows the name the customer will really see, cut to the 30 characters the text allows.",
+      "Every night at 04:10 UTC a check runs over every venue (the kiosk, online and QR ordering ask for code texts whatever the loyalty switch says): it makes or repairs what is wrong, records each venue's state (and the text provider's exact words when it refused) in the database, and raises an item on the venue's activity feed when something is still not right, at most once a week per venue. Needs database update 20261022b on the Ops database.",
+      "Messages can now only be changed by staff of the venue (or an owner inside their own company). Before this any signed in session with a valid venue id could save or reset a venue's message templates.",
+      "The overnight watchdog now says, in a morning GitHub issue, when a venue's code texts are not set up (with the reason and the Fix button to press), when the nightly check did not finish, and when it has not run for over 26 hours. A code that is refused is recorded at once, so the watchdog hears of it within minutes.",
+      "Safety: a code text request that names a company the venue does not belong to, or a venue that is not set up on the platform, now makes nothing (it used to be able to make text services and rows under any company). Setting up a location now needs a signed in login, and only a login that may write at the venue gets its text service made and its details back. A check run by one company's staff only lists that company's rows.",
+    ],
+  },
+  {
+    v: '5.11.93',
+    date: '21 Oct 2026',
+    items: [
+      "Stock, recipes for companies with more than one site (Drop 2). A company with one site keeps exactly today's Recipes and Batches screens, with one new line under the ingredients: the allergens the recipe holds, and a Checked button.",
+      "Recipes: one list for the whole company, with a Recipe missing tab for products that sell with no recipe. Each match waits for one click (Link matched); nothing is linked by itself. Each recipe has its own page: Details, Ingredients, Sites, Allergens and nutrition, Recipe card and Changes. Tick a recipe on or off at a site, pick its till product, Make sizes, Swap an ingredient, Clone, and options such as oat milk in place of milk.",
+      "Batch and prep: one grid of every batch recipe with Bought in, Made here or Made to order for each site. Each site gets a Prep list with Done ticks on the venue day, and batch and PPDS labels on the Label printer.",
+      "Allergens and calories: each supplier item has What is in it (allergens, May contain, diets, ingredients and nutrition). Every recipe using it shows them at every site. An allergen is never taken off by itself: a warning asks someone to check. The till item info, kiosk, online, QR, catering, booking widget, menu boards, print menu and HubRise all read them. Show calories in Location settings turns on kcal and the 2,000 kcal line.",
+      "Recipe cards on the till, the kitchen screen and the Manager app, at that venue only, with no costs. Plate costs in Menu Manager, the Multi site menu and Stock reports now come from the database. Adding a product to a site in the Multi site menu ticks its company recipe there.",
+      "Nothing on these screens moves an on hand, cost, ledger or count figure by itself, and no login is changed. Needs the database update 20261025a (after 20261024a and the stock drainer update), then manager-snapshot, manager-approve, booking-widget, msm-publish, hubrise-catalog-push, hubrise-reconcile and stock-nightly deployed.",
+    ],
+  },
+  {
+    v: '5.11.92',
+    date: '22 Oct 2026',
+    items: [
+      "Stock, the drainer release (database update 20261023a). The database is now the one place stock comes off for a sale, on every channel: the till (every way of closing a check), the card reader, kiosk, online, QR, catering at its event time, pay at table, MPOS, HubRise orders and ezCater. The till no longer takes stock off itself at any venue, and the old stock-deplete function now only answers that it is retired. Every channel takes off the same stock and books the same sales net of VAT as before.",
+      "What changes on purpose: an archived recipe that is still linked takes nothing off, and a recipe line on an archived item, pack or conversion is left out. An item set to Made to order at a site takes off its own ingredients instead, at any depth. Options that replace or remove an ingredient (oat milk instead of whole milk, no cheese) take off the right items once Drop 2 lets you set them up. A part refund gives back what that sale took, even after the recipe changed. Refunded food is still booked as waste, and sealed goods go back on the shelf only when the item is set to.",
+      "Stock and sales day totals now keep themselves up to date as each sale, refund or stock movement is booked, on each venue's own business day, with what each sold line cost in stock, so product GP adds up to site GP. On the night the update goes in, every past stock day is totalled from the stock ledger, and a stock movement dated back onto an older day (a till that sent late, a count, a demo file) has that whole day worked out again, so a stock day total is never only part counted. A problem with a total never holds up a sale: it waits in a queue and is tried again every minute.",
+      "Till waste: a dish is always wasted through the database, by the same rule as a sale. If the database does not answer, the screen says Stock data did not load and Record waits, instead of working the stock out on the till.",
+      "Back Office, Discounts: each discount now has a Kind: Ordinary discount, Staff food and drink, Comp (on the house) or Loyalty reward. The till, bar tabs and MPOS copy the discount and its kind onto the check, so stock reports can show staff food, comps and loyalty rewards on their own line. Prices and totals do not change. Until the database update is in, a discount still saves and the screen says the kind was not kept.",
+      "Needs the database update 20261023a, pasted by Peter after UK close on its own night (after 20261024a, never the same night as another database update), then the stock-deplete and stock-nightly edge function deploys, which Peter runs. If anything is wrong, 20261023a_OPS_stock_drainer_v2_ROLLBACK.sql puts the old stock rule back.",
+    ],
+  },
+  {
+    v: '5.11.91',
+    date: '21 Oct 2026',
+    items: [
+      "Loyalty sign in code texts: a venue whose name has a double space (for example two spaces between two words) could not get its own text service, because Twilio refuses such a name. Names now go to Twilio with one space between words, so every venue gets its service and its own name in the text.",
+    ],
+  },
+  {
+    v: '5.11.90',
+    date: '21 Oct 2026',
+    items: [
+      "Loyalty sign in code texts: a venue's code is only ever sent under that venue's own name, the one set in Back Office under Messages. A venue with no text service of its own used to fall back to a shared service that carried another venue's name. Now the service is made for the venue (with a second try), and if that still fails the send is refused with a clear message and the cause is logged, never sent under someone else's name.",
     ],
   },
   {
