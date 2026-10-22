@@ -226,7 +226,7 @@ export default function MenuAppearance() {
       // Send only the keys this editor owns. The edge fn merges them server-side
       // over the row's CURRENT online_branding, so we can no longer clobber keys
       // another screen (Review card) wrote after this page loaded.
-      // v5.11.97: Counter collect (online_branding.collection) is owned by Online ordering's own
+      // v5.11.95: Counter collect (online_branding.collection) is owned by Online ordering's own
       // box. Never resent from here, or a tab opened earlier would switch it back.
       const { collection: _counterCollect, ...ownBranding } = branding;
       const patch = { ...ownBranding, brand_color: mt.brandColor, header_style: mt.headerStyle, logo_shape: mt.logoShape, show_open_status: mt.showOpenStatus, logo_url: branding.logo_url || null, hero_url: branding.hero_url || null, background: branding.background || null };

@@ -112,7 +112,7 @@ export default function CustomerBoot({ slug, mode, tableId }) {
   if (mode === 'qr' && !loc.qr_enabled) {
     return <CustomerShell><ErrorState icon="🚫" title="Table-side ordering not available" body={<>Please order with a server.</>}/></CustomerShell>;
   }
-  // v5.11.97 Counter collect: the counter link works once QR ordering and its Counter collect
+  // v5.11.95 Counter collect: the counter link works once QR ordering and its Counter collect
   // switch are both on (lib/counterOrder.js).
   if (mode === 'counter' && !(loc.qr_enabled && counterCollect(loc).qr)) {
     return <CustomerShell><ErrorState icon="🚫" title="Ordering from your phone is not available" body={<>Please order at the counter.</>}/></CustomerShell>;
@@ -153,7 +153,7 @@ export default function CustomerBoot({ slug, mode, tableId }) {
   // gain open-tab pre-auth in commit 2).
   if (mode === 'online') return <OnlineSurface location={loc}/>;
   if (mode === 'qr')     return <OnlineSurface location={loc} mode="qr" tableId={tableId} tableLabel={tableId}/>;
-  // v5.11.97 Counter collect: collected at the counter, no table. While closed it falls to the
+  // v5.11.95 Counter collect: collected at the counter, no table. While closed it falls to the
   // closed banner above (it never takes an order for later).
   if (mode === 'counter') return <OnlineSurface location={loc} counter/>;
   return <CustomerShell location={loc}><QrStub location={loc} tableId={tableId}/></CustomerShell>;

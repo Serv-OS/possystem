@@ -116,7 +116,7 @@ export async function loadTipping(locationId) {
 }
 
 /**
- * v5.11.97 Counter collect: the venue's { kiosk, qr, label } (lib/counterOrder.js). Off when
+ * v5.11.95 Counter collect: the venue's { kiosk, qr, label } (lib/counterOrder.js). Off when
  * unreadable, so a failed read only hides the extra tile.
  */
 export async function loadCounterCollect(locationId) {

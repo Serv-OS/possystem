@@ -52,6 +52,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { cleanReaderSettingsPatch } from '../_shared/readerSettingsPatch.js';
 import { secondStepRefusal } from '../_shared/second-step.ts';
+import { ensureVenueService } from '../_shared/otpService.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -146,7 +147,7 @@ const BRANDING_SUBFIELDS = new Map<string, Map<string, 's' | 'b'>>([
   ['portal', new Map<string, 's' | 'b'>([['scheme', 's'], ['background', 's'], ['show_hero', 'b']])],
   // MenuAppearance.jsx:287-291
   ['gift', new Map<string, 's' | 'b'>([['card_art_url', 's']])],
-  // v5.11.97 Counter collect (src/lib/counterOrder.js): the kiosk tile and the counter QR link,
+  // v5.11.95 Counter collect (src/lib/counterOrder.js): the kiosk tile and the counter QR link,
   // switched on per channel, with the venue's name for it. OnlineOrdering.jsx Counter collect box.
   ['collection', new Map<string, 's' | 'b'>([['kiosk', 'b'], ['qr', 'b'], ['label', 's']])],
 ]);
@@ -516,7 +517,19 @@ Deno.serve(async (req) => {
     }
     if (!data) return json({ error: 'update matched 0 rows' }, 500);
     if ('timezone' in row || 'business_day_start' in row) await syncVenueClock(loc, ops);
-    return json({ ok: true, location: data });
+    // 22 Oct 2026 (v5.11.94): a renamed venue's loyalty code texts must carry the new name at
+    // once. The venue's own Twilio Verify service is renamed (or made) now, through the one
+    // shared repair; the answer carries the result for the screen to show. It never fails the
+    // save: the nightly audit and the next send try again, and Back Office has a Fix button.
+    let service: unknown = null;
+    if ('name' in row) {
+      try {
+        service = await ensureVenueService({ ops: opsAdmin, platform: platformAdmin, opsLocationId: loc.ops_location_id || ops, companyId: loc.company_id || null, fix: true });
+      } catch (e) {
+        console.error('[location-admin] text service after rename', String((e as Error)?.message || e));
+      }
+    }
+    return json({ ok: true, location: data, service });
   }
 
   // ── patch_branding ────────────────────────────────────────────────────────

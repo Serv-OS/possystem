@@ -107,7 +107,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   // Ordering > Tipping on online orders). Online never took a tip before: every
   // write below carried tip: 0. Off by default, so nothing changes for a venue
   // that has not chosen to ask.
-  // v5.11.97: the counter QR reads the QR tipping rule (lib/counterOrder.js tipModuleFor).
+  // v5.11.95: the counter QR reads the QR tipping rule (lib/counterOrder.js tipModuleFor).
   const tipRule = useMemo(() => tipRuleFor(location, tipModuleFor({ counter })), [location, counter]);
   const [tipKey, setTipKey] = useState(() => tipInitialKey(tipRule));
   const [customTip, setCustomTip] = useState('');
@@ -476,7 +476,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       // ticket/receipt/reports show them and downstream routing knows self vs courier.
       ...(isDelivery && deliveryQuote?.available ? { delivery_fee: deliveryFeeMinor / 100, delivery_mode: deliveryQuote.mode || 'self' } : {}),
       ...(notes.trim() ? { notes: notes.trim() } : {}),
-      // v5.11.97 Counter collect: the ready text says "ready to collect at the counter"
+      // v5.11.95 Counter collect: the ready text says "ready to collect at the counter"
       // (supabase/functions/_shared/counterCollect.js). Kept by place_public_order.
       ...(counter ? { counter_collect: true } : {}),
     };
@@ -2048,7 +2048,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           {/* 2. When? */}
           <SectionTitle>When?</SectionTitle>
           {counter ? (
-            // v5.11.97: the counter QR is always ASAP and only open while the venue is.
+            // v5.11.95: the counter QR is always ASAP and only open while the venue is.
             <div style={{
               background: inputBg, border: `1.5px solid ${cardBdr}`, borderRadius: 12,
               padding: '11px 14px', fontSize: 13, fontWeight: 600, lineHeight: 1.5,

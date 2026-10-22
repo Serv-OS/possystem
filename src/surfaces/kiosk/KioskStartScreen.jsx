@@ -21,7 +21,7 @@ export default function KioskStartScreen({
   footerKey = null, showBackToOrder = false, onBackToOrder,
 }) {
   const showTables = step === 'table' && !model.takeawayOnly;
-  // v5.11.97 Counter collect: a third tile with the venue's name for it (lib/counterOrder.js).
+  // v5.11.95 Counter collect: a third tile with the venue's name for it (lib/counterOrder.js).
   const tileCount = (model.takeawayOnly ? 1 : 2) + (counterLabel ? 1 : 0);
 
   return (

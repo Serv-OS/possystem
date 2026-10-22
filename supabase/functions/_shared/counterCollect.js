@@ -1,6 +1,6 @@
 // supabase/functions/_shared/counterCollect.js
 //
-// COUNTER COLLECT (22 Oct 2026, v5.11.97): which order the ready text sends to the counter.
+// COUNTER COLLECT (22 Oct 2026, v5.11.95): which order the ready text sends to the counter.
 // Pure, no Deno: imported by order-notify and tested from src/lib/counterOrder.test.js.
 // The setting and the order are described in src/lib/counterOrder.js.
 //

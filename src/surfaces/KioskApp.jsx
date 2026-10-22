@@ -898,7 +898,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
   // v5.11.81: the classic kiosk's language picker now changes the venue's menu text too (the new
   // design's KioskV2Root loads its own). No rows, or English: the menu stays as typed.
   useClassicKioskMenuWords(lang, locationId, !newDesign);
-  // v5.11.97 Counter collect (lib/counterOrder.js): the venue's extra tile, for both designs.
+  // v5.11.95 Counter collect (lib/counterOrder.js): the venue's extra tile, for both designs.
   // Off until read, and off when the read fails, so the start screen never shows a dead tile.
   const [counterCollectCfg, setCounterCollectCfg] = useState(null);
   // The tile books as eat in with no table, dine in tax (the card path guard keeps submitOrder and
@@ -1516,7 +1516,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
     <div onPointerDown={resetIdle} onKeyDown={resetIdle} onInput={resetIdle} data-kiosk-theme={isLight ? "light" : "dark"} style={kioskShell(brandColor, effectiveBg, brandAccent)}>
       {screen === 'attract' && <ScreenAttract brandName={brandName} brandColor={brandColor} brandAccent={brandAccent} brandLogoUrl={brandLogoUrl} attractVideoUrl={attractVideoUrl} avgWaitMinutes={avgWaitMinutes} banner={bannerFor('attract')} ctaLabel={labelTapToOrder} onStart={() => { resetIdle(); setScreen('orderType'); }} />}
       {screen === 'orderType' && <ScreenOrderType brandColor={brandColor} brandLogoUrl={brandLogoUrl} brandName={brandName} tableMode={tableMode} counterLabel={counterCollectCfg?.kiosk ? counterCollectCfg.label : null} lang={lang} onOpenLanguagePicker={() => setShowLangPicker(true)} loyaltyEnabled={loyaltyEnabled} customerName={customerName} onLoyaltySignIn={() => { setLoyaltyReturnScreen('orderType'); setScreen('loyalty'); }} onPick={(t, how) => {
-        setCounterPicked(how?.counter === true);   // v5.11.97 Counter collect (eat in, no table)
+        setCounterPicked(how?.counter === true);   // v5.11.95 Counter collect (eat in, no table)
         // v5.11.81 round 1: Back from the menu keeps the basket, so switching eat in and take away
         // reprices it for the new order type, as the till and the new design (KioskFlowV2) do. A
         // take away latte (2.80, 0%) stayed 2.80 and was then taxed at the eat in 20%.
@@ -1757,7 +1757,7 @@ function ScreenOrderType({ brandColor, brandLogoUrl, brandName, tableMode, count
             </div>
             <div style={otCardLabel(brandColor)}>{t('orderType.takeaway')}</div>
           </button>
-          {/* v5.11.97 Counter collect: the venue's own name, shown as typed (lib/counterOrder.js). */}
+          {/* v5.11.95 Counter collect: the venue's own name, shown as typed (lib/counterOrder.js). */}
           {counterLabel ? (
             <button onClick={() => onPick('dineIn', { counter: true })} style={otOutlineCard(brandColor)} aria-label={counterLabel}>
               <div style={otIconWrap()}>

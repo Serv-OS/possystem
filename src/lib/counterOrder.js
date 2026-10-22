@@ -1,6 +1,6 @@
 // src/lib/counterOrder.js
 //
-// COUNTER COLLECT (22 Oct 2026, v5.11.97). PURE, tested in counterOrder.test.js.
+// COUNTER COLLECT (22 Oct 2026, v5.11.95). PURE, tested in counterOrder.test.js.
 //
 // Peter, with a venue about to go live: "we need a collection option on the kiosk that can be
 // renamed - this needs to work on the QR codes also but not online ordering ... need to be able

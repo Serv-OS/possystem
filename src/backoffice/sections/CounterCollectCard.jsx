@@ -1,6 +1,6 @@
 // src/backoffice/sections/CounterCollectCard.jsx
 //
-// v5.11.97 COUNTER COLLECT (lib/counterOrder.js). Back Office, Channels, Online ordering.
+// v5.11.95 COUNTER COLLECT (lib/counterOrder.js). Back Office, Channels, Online ordering.
 // The venue's extra order option, collected at the counter: a tile on the kiosk and the counter
 // QR link (<slug>.serv-os.app/counter), each switched on here, with the venue's own name for it.
 // The ready text says "ready to collect at the counter". Online ordering is not changed.

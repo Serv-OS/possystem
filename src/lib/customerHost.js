@@ -123,7 +123,7 @@ export function parseCustomerLocation(loc, { customerRoot, readStoredSlug } = {}
   } else if (pathname === '/catering' || pathname.startsWith('/catering/')) {
     mode = 'catering';
   } else if (pathname === '/counter' || pathname.startsWith('/counter/')) {
-    // v5.11.97: the counter pickup QR (lib/counterOrder.js). Eat in or take away, no table.
+    // v5.11.95: the counter pickup QR (lib/counterOrder.js). Eat in or take away, no table.
     mode = 'counter';
   } else if (pathname === '/waitlist/status' || pathname.startsWith('/waitlist/status')) {
     // F2: guest live status page (deep-linked via the token in the surface) — must come

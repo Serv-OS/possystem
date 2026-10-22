@@ -68,7 +68,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   // default order type. Everything else (menu / cart / item sheet / cart /
   // OrderTracker / 86 awareness) is identical.
   const isQr = mode === 'qr';
-  // v5.11.97 Counter collect (/counter, lib/counterOrder.js): this online page fixed on the
+  // v5.11.95 Counter collect (/counter, lib/counterOrder.js): this online page fixed on the
   // venue's Counter collect, ASAP only, no table, with the venue's name for it.
   const isCounter = !isQr && counter === true;
   const counterName = isCounter ? counterCollect(location).label : null;

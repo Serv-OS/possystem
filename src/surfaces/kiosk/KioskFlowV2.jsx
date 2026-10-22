@@ -165,7 +165,7 @@ export default function KioskFlowV2({
     engine.setTableNumber('');
     leaveStart();
   };
-  // v5.11.97 Counter collect (lib/counterOrder.js): books as eat in with no table (dine in tax),
+  // v5.11.95 Counter collect (lib/counterOrder.js): books as eat in with no table (dine in tax),
   // never asks for a table; only the words on the screens and the ready text change.
   const onCounterCollect = () => {
     engine.setCounterPicked?.(true);

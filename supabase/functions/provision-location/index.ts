@@ -12,10 +12,27 @@
 // for the location's org, then upserts the platform location.
 //
 // Body: { ops_location_id: string }
-// Returns: { ok, company_id, platform_location_id, created_company, created_location }
+// Returns: { ok, company_id, platform_location_id, created_company, created_location, service }
+//
+// 22 Oct 2026 (v5.11.94): once the Platform row exists, the
+// venue's own Twilio Verify service (the name in its loyalty code texts) is made here, so a new
+// venue is ready before its first customer signs in. `service` carries the result in plain words.
+// Best effort: a Twilio refusal never fails the provision (the nightly audit and Back Office's Fix
+// button pick it up).
+//
+// Who may call (22 Oct 2026, review): a signed in, NOT anonymous login (an anonymous session is
+// what the kiosk, online and QR surfaces hold, and anyone can make one with the public key). The
+// text service step, and the `service` answer, need more: a login that may write at this venue
+// (isVenueWriter: a user_locations link, a super admin, an owner inside their own organisation)
+// or staff of it (callerIsStaffFor: also a Platform company role). Anyone else gets the provision
+// as before and `service: null`: no Twilio call, and no service facts handed back.
+// Every venue is in scope now, whatever its company's loyalty switch says (otpService.ts).
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { secondStepRefusal } from '../_shared/second-step.ts';
+import { ensureVenueService } from '../_shared/otpService.ts';
+import { createCallerFacts } from '../_shared/callerFacts.ts';
+import { isVenueWriter } from '../_shared/venueWriter.js';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -34,6 +51,17 @@ const platformAdmin = createClient(
   Deno.env.get('PLATFORM_SUPABASE_SERVICE_ROLE_KEY') ?? '',
   { auth: { autoRefreshToken: false, persistSession: false } },
 );
+const facts = createCallerFacts({
+  ops: opsAdmin, platform: platformAdmin, env: (name: string) => Deno.env.get(name),
+  otpSecret: Deno.env.get('OTP_HMAC_SECRET') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '', json,
+});
+
+/** May this login set up the venue's text service (a Twilio write) and read its facts? */
+async function mayEnsureService(caller: any, opsLocationId: string, companyId: string | null): Promise<boolean> {
+  if (!caller || caller.is_anonymous) return false;
+  if (await isVenueWriter(opsAdmin, caller, opsLocationId)) return true;
+  try { return await facts.callerIsStaffFor(caller, opsLocationId, companyId); } catch { return false; }
+}
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -47,6 +75,9 @@ Deno.serve(async (req) => {
   if (!authHeader) return json({ error: 'Unauthorized' }, 401);
   const { data: { user: caller } } = await opsAdmin.auth.getUser(authHeader.replace('Bearer ', ''));
   if (!caller) return json({ error: 'Invalid token' }, 401);
+  // Provisioning is done from Back Office (an owner adding a venue) or the admin portal (a super
+  // admin), both real logins. An anonymous session never provisions anything.
+  if (caller.is_anonymous) return json({ error: 'Sign in to set up a location.' }, 403);
 
   let body: { ops_location_id?: string };
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
@@ -141,11 +172,25 @@ Deno.serve(async (req) => {
     createdLocation = true;
   }
 
+  // 4. The venue's code text service. Best effort, and only for a login that may write at this
+  //    venue (see the header): anyone else gets service null, with no Twilio call.
+  let service: unknown = null;
+  if (await mayEnsureService(caller, opsLocationId, companyId)) {
+    try {
+      service = await ensureVenueService({ ops: opsAdmin, platform: platformAdmin, opsLocationId, companyId, fix: true });
+    } catch (e) {
+      console.error('[provision-location] text service', String((e as Error)?.message || e));
+    }
+  } else {
+    console.warn('[provision-location] text service skipped: the caller may not write at this venue', JSON.stringify({ user: caller.id, ops_location_id: opsLocationId }));
+  }
+
   return json({
     ok: true,
     company_id: companyId,
     platform_location_id: platformLocationId,
     created_company: createdCompany,
     created_location: createdLocation,
+    service,
   });
 });

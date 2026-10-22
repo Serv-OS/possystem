@@ -578,7 +578,7 @@ export default function OnlineOrdering({ setSection, canOpen = () => true }) {
         tipOnline={tipOnline} setTipOnline={setTipOnline}
         tipQr={tipQr} setTipQr={setTipQr}/>
 
-      {/* v5.11.97 Counter collect: kiosk tile + counter QR link, saved on its own button. */}
+      {/* v5.11.95 Counter collect: kiosk tile + counter QR link, saved on its own button. */}
       <CounterCollectCard key={row?.id || 'none'} S={S} row={row} opsLocId={opsLocId}
         onSaved={(b) => setRow((r) => (r ? { ...r, online_branding: b } : r))}/>
 

@@ -304,7 +304,7 @@ Deno.serve(async (req) => {
     currency = (loc as Record<string, unknown>)?.currency as string | null;
   } catch { /* name is best-effort */ }
   let companyId: string | null = null;
-  // v5.11.97 Counter collect: the venue's kiosk tile switch rides on the same read.
+  // v5.11.95 Counter collect: the venue's kiosk tile switch rides on the same read.
   let venueKioskTile = false;
   try {
     const { data: pl } = await platformAdmin
@@ -315,7 +315,7 @@ Deno.serve(async (req) => {
     if (pl?.company_id) companyId = String(pl.company_id);
     venueKioskTile = kioskTileOn(pl);
   } catch { /* templates fall back to defaults */ }
-  // v5.11.97 Counter collect (kiosk tile, counter QR link): "ready to collect at the counter".
+  // v5.11.95 Counter collect (kiosk tile, counter QR link): "ready to collect at the counter".
   const counterCollect = isCounterCollectOrder(order, { kioskTileOn: venueKioskTile });
 
   // Minutes between placing the order and the promised time. collection_time is

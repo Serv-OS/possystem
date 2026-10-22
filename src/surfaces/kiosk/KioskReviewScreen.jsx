@@ -45,7 +45,7 @@ export default function KioskReviewScreen({
   } = engine;
 
   const table = typeof tableNumber === 'string' ? tableNumber.trim() : '';
-  // v5.11.97 Counter collect shows the venue's own name for it (lib/counterOrder.js).
+  // v5.11.95 Counter collect shows the venue's own name for it (lib/counterOrder.js).
   const whereText = orderType === 'dineIn' && !table && engine.counterPicked && engine.counterCollect?.label
     ? `${engine.counterCollect.label} · ${t('k2.menu.collect')}`
     : orderType === 'dineIn'
