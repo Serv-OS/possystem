@@ -70,12 +70,14 @@ test('stock/costing.js: RECIPE_ORDER_TYPES, labels and the normaliser', () => {
   has(read('./stock/explode.js'), 'lineAppliesToOrderType(line, orderType, mr.lines)', 'explode.js (the till path reads the recipe like costing and the edge fn)');
 });
 
-test('supabase/functions/stock-deplete/index.ts mirrors costing.js', () => {
+test('supabase/functions/stock-deplete/index.ts is retired: no copy of the order type rule is left to drift', () => {
+  // Drainer release (20261023a, map 8.1 step 6): the database's stock_explode is the one stock rule
+  // for every channel, drive thru included, so the edge copy that had to mirror costing.js is gone.
   const ts = read('../../supabase/functions/stock-deplete/index.ts');
-  has(ts, "drivethru: 'drive-thru'", 'ORDER_TYPE_ALIASES');
-  has(ts, "drivethrough: 'drive-thru'", 'ORDER_TYPE_ALIASES');
-  has(ts, "recipeNamesOrderType(recipeLines, 'drive-thru')", 'lineAppliesToOrderType');
-  has(ts, 'lineAppliesToOrderType(line, orderType, mr.lines)', 'explode');
+  has(ts, 'json({ retired: true })', 'the retired answer');
+  for (const gone of [/ORDER_TYPE_ALIASES/, /drivethru|drivethrough|drive-thru/, /function\s+(normaliseOrderType|recipeNamesOrderType|lineAppliesToOrderType|explode)\b/]) {
+    assert.doesNotMatch(ts, gone, `stock-deplete keeps no ${gone}`);
+  }
 });
 
 test('supabase/migrations/20260917_OPS_drive_thru_order_screens.sql maps drivethru for the TVs', () => {

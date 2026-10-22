@@ -576,7 +576,8 @@ test('the nightly run asks every venue that holds stock for its set up health, a
   assert.deepEqual(health.map((c) => c.args).sort((a, b) => a.p_location.localeCompare(b.p_location)), [{ p_location: V1 }, { p_location: V2 }], 'each venue that holds stock, once, with only p_location');
   const names = ops.calls.map((c) => c.name);
   assert.ok(names.lastIndexOf('sales_day_sums_check') < names.indexOf('stock_nightly_health'), 'after the day totals');
-  assert.equal(names[names.length - 1], 'stock_nightly_upkeep', 'upkeep still runs, last');
+  // v5.11.92: the drainer health read follows upkeep, so upkeep is no longer the last call.
+  assert.ok(names.includes('stock_nightly_upkeep') && names.lastIndexOf('stock_nightly_health') < names.indexOf('stock_nightly_upkeep'), 'upkeep still runs, after every venue');
   assert.equal(r.body.ok, false, 'a real failure is a failed step');
   assert.ok(r.body.errors.some((e) => e.startsWith(`stock_nightly_health ${V2}: canceling statement`)), JSON.stringify(r.body.errors));
   assert.equal(r.body.health.checked, 1);

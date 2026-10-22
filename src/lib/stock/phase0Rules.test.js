@@ -464,13 +464,13 @@ test('version is 5.11.79 or later and the 5.11.79 changelog entry names the upda
   for (const t of entry.items) assert.doesNotMatch(t, /[–—]/, 'no dashes as punctuation');
 });
 
-test('the till path dates a sale at its own time, never ahead of the clock (11.5 item 2)', async () => {
+test('a sale is dated at its own time, never ahead of the clock (11.5 item 2); the till no longer posts it', async () => {
   const src = read('./deplete.js');
-  assert.match(src, /sourceType: 'closed_check', sourceId: key, idempotencyKey: `sale:\$\{key\}:\$\{invId\}`, occurredAt,/);
-  // the pure helper, without importing deplete.js (it pulls the browser supabase client)
-  const body = src.slice(src.indexOf('export function saleTimeOf('), src.indexOf('\n}\n', src.indexOf('export function saleTimeOf(')) + 2);
-  // eslint-disable-next-line no-new-func
-  const saleTimeOf = new Function(`${body.replace('export function', 'return function')}`)();
+  // v5.11.92 (the drainer release, 20261023a): deplete.js no longer posts. The database books the
+  // sale from the check at the check's own close time; saleTimeOf stays as the pure rule.
+  assert.doesNotMatch(src, /postStockMovement|sourceType: 'closed_check'|idempotencyKey: `sale:/, 'the till posts no sale movement');
+  assert.doesNotMatch(src, /^import /m, 'deplete.js pulls nothing in, so it imports under node');
+  const { saleTimeOf } = await import('./deplete.js');
   const now = Date.parse('2026-10-19T12:00:00Z');
   assert.equal(saleTimeOf({ closedAt: now - 3600000 }, now), '2026-10-19T11:00:00.000Z');
   assert.equal(saleTimeOf({ closed_at: '2026-10-19T11:30:00Z' }, now), '2026-10-19T11:30:00.000Z');

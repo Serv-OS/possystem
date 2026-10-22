@@ -3,7 +3,7 @@
 // Provo and Location 2 with the check row identical"). It never writes to Supabase.
 //
 //   zsh supabase/tests/stock_native/fetch_demo.sh /some/scratch/demo.json a59a6d97-ffaa-470e-8bb7-04cba789f335 fcbddcfd-a025-407b-9727-9e9139250767
-//   STOCKN_DEMO=/some/scratch/demo.json node supabase/tests/stock_native/rehearse.mjs              0a, the revalue file, 0b, Drop 1
+//   STOCKN_DEMO=/some/scratch/demo.json node supabase/tests/stock_native/rehearse.mjs              0a, the revalue file, 0b, Drop 1, then the drainer release
 //   STOCKN_DEMO=/some/scratch/demo.json node supabase/tests/stock_native/rehearse.mjs --base-only  load the copy only
 //
 // The base database is built exactly as run.mjs builds it (base.mjs: every real migration Peter ran,
@@ -22,18 +22,40 @@
 // manager, nothing at the sites moving, then its rollback and Drop 1 again. Exit code 0 only when every
 // check holds.
 //
+// The drainer release (20261023a, step 7) then runs on a copy of the live state as it is now (0a, its
+// revalue file, 0b and Drop 1 in; Drop 1 ran live on 21 Oct 2026): the check row (v2 gives v1's answer on
+// every live check, refund and recipe line), the sales rule (_sales_check_parts against the JS
+// checkSalesParts) on every check of STOCKN_CHECKS, the day totals the paste queued (stock_day_sums_check
+// and sales_day_sums_check ok), stock_drainer_health, a replay of those checks as new sales before and
+// after the release (identical movements, waste and outbox events, part refunds with no uid aside: D4),
+// and its rollback (the seven live bodies back).
+//
+//   zsh supabase/tests/stock_native/fetch_checks.sh /some/scratch/checks.json a59a6d97-ffaa-470e-8bb7-04cba789f335
+//   STOCKN_DEMO=... STOCKN_CHECKS=/some/scratch/checks.json node supabase/tests/stock_native/rehearse.mjs --drainer
+//
+// --drainer fails when the drainer file is missing (without it the step is skipped then). STOCKN_DRAINER
+// and STOCKN_DRAINER_ROLLBACK point at other copies of the two files.
+//
 // A copy taken AFTER 0a ran live (20 Oct 2026: its site rows carry company_ref, and fetch_demo.sh then
 // also copies the company records and the venue clock) is loaded onto a base with 0a already in, as Ops
 // is. Step 3 then proves what 0a left on the real rows instead of linking them again: every site row has
 // its company record, no company row without a site, the writer re plans zero writes, the twins, the
 // archived keg and Location 2's nested packs; step 4 proves a second revalue paste refuses and changes
-// nothing, and the ledger value still equals the books to the penny. Steps 5 and 6 are the same.
+// nothing, and the ledger value still equals the books to the penny. Steps 5, 6 and 7 are the same.
+// A copy taken after Drop 1 ran live (21 Oct 2026) also carries Drop 1's four columns on 0a's tables
+// (stock_co_items.category_id, stock_co_item_sites.paused_from and paused_until,
+// stock_co_site_groups.row_version): the loader leaves those out (the base has 0a only, as before
+// Drop 1) and step 6 makes them again as the SQL editor did.
 
 import { readFileSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { join } from 'node:path';
 import {
   startCluster, baseSchema, applyMigration, liveTail, BASE_MIGRATIONS, FENCE_FILE, FENCE_TRIGGER, MIG,
-  venueFigures, figureDiff, lit,
+  venueFigures, figureDiff, lit, here,
 } from './base.mjs';
+import { jsParts, REPLACED } from './drainer.mjs';
+import { insertRow, basketBookedSql } from './channels.mjs';
 
 const BASE_ONLY = process.argv.includes('--base-only');
 const DEMO = process.env.STOCKN_DEMO;
@@ -44,12 +66,16 @@ const FILES = {
   b: process.env.STOCKN_0B || MIG('20261022a_OPS_stock_native_0b.sql'),
   d1: process.env.STOCKN_D1 || MIG('20261024a_OPS_stock_native_1.sql'),
   d1Rb: process.env.STOCKN_D1_ROLLBACK || MIG('20261024a_OPS_stock_native_1_ROLLBACK.sql'),
+  d: process.env.STOCKN_DRAINER || MIG('20261023a_OPS_stock_drainer_v2.sql'),
+  dRb: process.env.STOCKN_DRAINER_ROLLBACK || MIG('20261023a_OPS_stock_drainer_v2_ROLLBACK.sql'),
 };
+const DRAINER = process.argv.includes('--drainer');
+const CHECKS = process.env.STOCKN_CHECKS || null;
 if (!BASE_ONLY && !existsSync(FILES.a)) { console.error(`0a is not there yet: ${FILES.a} (run with --base-only, or set STOCKN_MIGRATION)`); process.exit(2); }
 const demo = JSON.parse(readFileSync(DEMO, 'utf8'));
 // the copy was taken after 0a ran live: its site rows carry company_ref
 const LINKED = (demo.inventory_items || []).some((r) => r && Object.prototype.hasOwnProperty.call(r, 'company_ref'));
-const PROVO ='7218c716-eeb4-4f96-b284-f3500823595c';
+const PROVO = '7218c716-eeb4-4f96-b284-f3500823595c';
 const LOC2 = 'c3ebfa7f-61b3-4fbc-a192-e7e3949f370e';
 const ORG_T = 'a59a6d97-ffaa-470e-8bb7-04cba789f335';
 
@@ -97,20 +123,29 @@ const ORDER = ['organisations', 'locations', 'tax_rates', 'storage_areas', 'inve
   'stock_co_bridges', 'stock_co_bridge_sites', 'stock_co_suppliers', 'stock_co_supplier_sites', 'stock_co_supplier_items', 'stock_co_supplier_item_sites',
   'stock_co_recipes', 'stock_co_recipe_lines', 'stock_co_recipe_sites', 'venue_clock', 'stock_periods', 'stock_period_snapshots'];
 const CO_TABLES = ORDER.slice(ORDER.indexOf('stock_co_settings'));
+// Drop 1 ran live on 21 Oct 2026: a copy taken since carries its four columns on 0a's tables. The base
+// has 0a only (as before Drop 1), so they are left out here and step 6 makes them again as the SQL
+// editor did; any other missing column is a failure, as before.
+const D1_COLS = { stock_co_items: ['category_id'], stock_co_item_sites: ['paused_from', 'paused_until'], stock_co_site_groups: ['row_version'] };
+const D1_LIVE = (demo.stock_co_items || []).some((r) => r && Object.prototype.hasOwnProperty.call(r, 'category_id'));
+if (D1_LIVE) info('the copy was taken after Drop 1 ran live (its company items carry category_id): Drop 1\'s four columns are left out of the load and made again by step 6');
 const notLoaded = [];
+const d1Left = [];
 for (const t of ORDER) {
   const rows = demo[t];
   if (!rows || !rows.length) continue;
   const have = new Set(sql(`select string_agg(column_name, ',') from information_schema.columns where table_schema = 'public' and table_name = '${t}'`).split(','));
   const keys = [...new Set(rows.flatMap((r) => Object.keys(r)))];
-  const absent = keys.filter((k) => !have.has(k));
+  const absent = keys.filter((k) => !have.has(k) && !(D1_COLS[t] || []).includes(k));
   if (absent.length) notLoaded.push(`${t}: ${absent.join(', ')}`);
+  for (const k of keys.filter((kk) => !have.has(kk) && (D1_COLS[t] || []).includes(kk))) d1Left.push(`${t}.${k}`);
   const cols = keys.filter((k) => have.has(k)).map((k) => `"${k}"`).join(', ');
   const r = c.psql({ input: `set session_replication_role = replica;
     insert into public.${t} (${cols}) select ${cols} from json_populate_recordset(null::public.${t}, ${lit(JSON.stringify(rows))}::json);`, allowFail: true });
   ok(r.status === 0 && num(`select count(*) from public.${t}`) === rows.length, `${t}: ${rows.length} rows loaded${r.status ? `: ${short(r.stderr)}` : ''}`);
 }
-ok(notLoaded.length === 0, `every live column of the copy exists here with a type it loads into (${notLoaded.join('; ') || 'all'})`);
+ok(notLoaded.length === 0, `every live column of the copy exists here with a type it loads into (${notLoaded.join('; ') || 'all'}${d1Left.length ? `; Drop 1's ${d1Left.join(', ')} left for step 6` : ''})`);
+ok(D1_LIVE === (d1Left.length > 0), `Drop 1's columns are in the copy exactly when it was taken after Drop 1 ran live (${d1Left.length} columns)`);
 const unknown = Object.keys(demo).filter((t) => !ORDER.includes(t) && !['organisations', 'locations'].includes(t) && (demo[t] || []).length);
 ok(unknown.length === 0, `every table of the copy is loaded (${unknown.join(', ') || 'all'})`);
 if (LINKED) {
@@ -119,7 +154,7 @@ if (LINKED) {
 } else {
   ok(CO_TABLES.every((t) => !(demo[t] || []).length), 'a copy taken before 0a holds no company record');
 }
-const venues =demo.locations.filter((l) => (demo.inventory_items || []).some((i) => i.location_id === l.id) || (demo.suppliers || []).some((s) => s.location_id === l.id)).map((l) => l.id);
+const venues = demo.locations.filter((l) => (demo.inventory_items || []).some((i) => i.location_id === l.id) || (demo.suppliers || []).some((s) => s.location_id === l.id)).map((l) => l.id);
 const vname = Object.fromEntries(demo.locations.map((l) => [l.id, l.name]));
 const before = Object.fromEntries(venues.map((v) => [v, venueFigures(c, v)]));
 for (const v of venues) {
@@ -255,6 +290,210 @@ function linkedSteps() {
   } else ok(false, 'the revalue file is there');
 }
 
+// Step 7 (run after Drop 1, below): the drainer release on a copy of the live state.
+function drainerStep() {
+  const tf = (v) => v === 't' || v === true;
+  const md5Of = (sig) => sql(`select md5(btrim(regexp_replace(p.prosrc, '\\s+', ' ', 'g'))) from pg_proc p where p.oid = to_regprocedure('${sig}')`);
+  let checks = [];
+  if (CHECKS) {
+    ok(existsSync(CHECKS), `the copy of the checks is there (STOCKN_CHECKS ${CHECKS})`);
+    if (existsSync(CHECKS)) checks = (JSON.parse(readFileSync(CHECKS, 'utf8')).closed_checks || []).filter((r) => venues.includes(r.location_id));
+  } else info('no STOCKN_CHECKS (fetch_checks.sh): the in migration proof has recipe lines only, no live baskets; no sales rule parity, no replay');
+  c.sql('select 1');
+  c.createFrom('n_dr', 'n_demo');
+  c.use('n_dr');
+  c.sqlFile(join(here, 'live_discounts.sql'));
+  const loadChecks = (rows) => {
+    if (!rows.length) return 0;
+    const have = new Set(sql(`select string_agg(column_name, ',') from information_schema.columns where table_schema = 'public' and table_name = 'closed_checks'`).split(','));
+    const cols = [...new Set(rows.flatMap((r) => Object.keys(r)))].filter((k) => have.has(k)).map((k) => `"${k}"`).join(', ');
+    const r = c.psql({ input: `set session_replication_role = replica;
+      insert into public.closed_checks (${cols}) select ${cols} from json_populate_recordset(null::public.closed_checks, ${lit(JSON.stringify(rows))}::json);`, allowFail: true });
+    if (r.status) info(short(r.stderr, 400));
+    return num(`select count(*) from public.closed_checks`);
+  };
+  if (checks.length) ok(loadChecks(checks) === checks.length, `${checks.length} closed checks of the copy loaded as they are (no outbox events: live the outbox is empty)`);
+  // what the in migration proof must count
+  const exp = Object.fromEntries(venues.map((v) => [v, pj(sql(`select json_build_object(
+      'live', (select count(*) from closed_checks c where c.location_id = '${v}' and c.closed_at > now() - interval '7 days' and not (coalesce(c.voided, false) or coalesce(c.status, '') in ('void', 'voided'))),
+      'all', (select count(*) from closed_checks c where c.location_id = '${v}' and c.closed_at > now() - interval '7 days'),
+      'refunds', (select count(*) from closed_checks c, jsonb_array_elements(case when jsonb_typeof(c.refunds) = 'array' then c.refunds else '[]'::jsonb end) x
+                   where c.location_id = '${v}' and c.closed_at > now() - interval '7 days' and public.stock_js_key(x -> 'id') is not null),
+      'lines', (select count(*) from recipe_lines where location_id = '${v}'))`))]));
+  // every venue day of the real ledger, on the venue clock in force (the paste must queue each one)
+  const ledgerDays = (v) => sql(`select coalesce(string_agg(distinct d.business_day::text, ','), '') from stock_movements m
+     cross join lateral public.stock_co__venue_day(m.location_id, m.occurred_at) d where m.location_id = '${v}'`).split(',').filter(Boolean).sort();
+  const had = Object.fromEntries(venues.map((v) => [v, ledgerDays(v)]));
+  const paste = c.paste(FILES.d);
+  ok(paste.status === 0, `the release applies (${paste.status ? short(paste.stderr, 800) : `${paste.ms} ms`})`);
+  if (paste.status) return;
+  const rows = (paste.sets[paste.sets.length - 1] || { rows: [] }).rows;
+  for (const r of rows) console.log(`     ${r.venue}: ${short(r, 900)}`);
+  ok(rows.length === venues.length, `one check row per venue that holds stock (${rows.length})`);
+  for (const r of rows) {
+    const e = exp[r.location_id] || {};
+    const n = (k) => Number(r[k]);
+    ok(n('explode_differences') === 0 && n('skipped_flag_differences') === 0 && n('refund_differences') === 0 && n('base_qty_differences') === 0,
+      `${vname[r.location_id]}: v2 gives v1's answer on every live check, refund and recipe line (differences ${n('explode_differences')}, ${n('skipped_flag_differences')}, ${n('refund_differences')}, ${n('base_qty_differences')})`);
+    ok(n('checks_compared') >= e.live && n('checks_compared') <= e.all && n('refunds_compared') === e.refunds && n('recipe_lines_compared') === e.lines,
+      `${vname[r.location_id]}: compared checks ${r.checks_compared} (${e.live} sold, ${e.all} in all), refunds ${r.refunds_compared} (${e.refunds}), recipe lines ${r.recipe_lines_compared} (${e.lines})`);
+    ok(n('bodies_replaced') === 7 && n('bodies_backed_up') === 7 && n('new_tables') === 3 && tf(r.discounts_kind) && n('day_sums_triggers') === 3 && n('sales_enqueue_triggers') === 2
+       && n('clock_triggers') === 2 && n('option_guard_triggers') === 2 && tf(r.drain_job) && !tf(r.internals_open_to_api) && n('takes_rows') === 0,
+      `${vname[r.location_id]}: bodies 7 and 7, tables 3, discounts.kind, triggers 3, 2, 2, 2, drain job, internals closed, no takes yet`);
+  }
+  // the one sales rule on every real row: the SQL port gives the JS integers
+  if (checks.length) {
+    const got = pj(sql(`select coalesce(json_object_agg(c.id, to_jsonb(p)), '{}') from closed_checks c cross join lateral public._sales_check_parts(c) p`)) || {};
+    const all = pj(sql(`select coalesce(json_agg(to_jsonb(c)), '[]') from closed_checks c`)) || [];
+    const off = all.filter((row) => {
+      const w = jsParts(row); const g = got[row.id] || {};
+      return ['gross_minor', 'tax_minor', 'net_minor', 'reward_minor', 'reward_tax_minor'].some((k) => Number(g[k]) !== w[k]) || g.charged_nothing !== w.charged_nothing || g.legacy !== w.legacy;
+    });
+    ok(off.length === 0 && all.length === checks.length, `_sales_check_parts gives the JS checkSalesParts integers on all ${all.length} real checks (${off.slice(0, 3).map((x) => `${x.id} ${short(got[x.id])} want ${short(jsParts(x))}`).join('; ') || 'all equal'})`);
+  }
+  // the day totals the paste queued, rebuilt by the drain
+  const queued = pj(sql(`select json_build_object('s', (select coalesce(json_agg(json_build_object('l', location_id, 'd', business_day)), '[]') from stock_day_sums_repair),
+                                                  'q', (select coalesce(json_agg(json_build_object('l', location_id, 'd', business_day)), '[]') from sales_day_sums_queue))`));
+  info(`the paste queued ${queued.s.length} stock days and ${queued.q.length} sales days`);
+  const missed = venues.flatMap((v) => had[v].filter((d) => !queued.s.some((x) => x.l === v && x.d === d)).map((d) => `${vname[v]} ${d}`));
+  ok(missed.length === 0, `the paste queued every venue day that holds a movement, the whole real ledger (${venues.map((v) => `${vname[v]} ${had[v].length}`).join(', ')}${missed.length ? `; missing ${missed.slice(0, 5).join(', ')}` : ''})`);
+  for (let k = 0; k < 20 && num(`select (select count(*) from stock_day_sums_repair where due_at <= now()) + (select count(*) from sales_day_sums_queue where due_at <= now())`) > 0; k++) sql('call public.stock_day_sums_drain(30, 50);');
+  ok(num(`select (select count(*) from stock_day_sums_repair) + (select count(*) from sales_day_sums_queue)`) === 0, 'the drain rebuilds every queued day (both queues empty, none in backoff)');
+  const sBad = queued.s.map((x) => ({ ...x, r: pj(sql(`select public.stock_day_sums_check('${x.l}', '${x.d}')`)) })).filter((x) => !x.r?.ok);
+  ok(queued.s.length > 0 && sBad.length === 0, `stock_day_sums_check ok on every queued venue day (${sBad.length ? short(sBad, 400) : `${queued.s.length} days`})`);
+  const qBad = queued.q.map((x) => ({ ...x, r: pj(sql(`select public.sales_day_sums_check('${x.l}', '${x.d}')`)) }))
+    .filter((x) => !x.r?.ok || x.r.net_checked !== true || Math.abs(Number(x.r.net?.sums) - Number(x.r.net?.rule)) > 0.001);
+  ok(qBad.length === 0, `sales_day_sums_check ok on every queued venue day: gross, discounts, voids and tax against report_day_sums, net by the one sales rule (${qBad.length ? short(qBad, 400) : `${queued.q.length} days`})`);
+  const h = pj(sql('select public.stock_drainer_health()')) || {};
+  for (const z of h.venues || []) console.log(`     health ${vname[z.location_id] || z.location_id}: ${short(z, 600)}`);
+  const hv = (h.venues || []).filter((z) => venues.includes(z.location_id));
+  ok(hv.length > 0 && hv.every((z) => Number(z.dead) === 0 && Number(z.lines_on_archived) === 0 && Number(z.foreign_pack_lines) === 0 && Number(z.to_order_loops) === 0
+     && Number(z.repair_failing) === 0 && Number(z.sales_queue_failing) === 0),
+    `stock_drainer_health on the live copy: no dead event, no recipe line on an archived row, no foreign pack line, no made to order loop, no failing day (health ok ${h.ok})`);
+  // a late row on the real ledger: a figure dated back onto the oldest venue day queues that day
+  // (late) and the drain rebuilds it whole from the ledger
+  const lv = venues.find((v) => had[v].length > 0 && had[v][0] < sql(`select (d.business_day - 1)::text from public.stock_co__venue_day('${v}', now()) d`));
+  if (lv) {
+    const d0 = had[lv][0];
+    const item = sql(`select id from inventory_items where location_id = '${lv}' and archived_at is null order by id limit 1`);
+    sql(`select public._post_stock_movement('${lv}', '${item}', -1, 'MANUAL_ADJ', 0.01, 'rehearsal_late', null, 'rh-late:1',
+      (select public.stock_co__day_start_at('${d0}'::date, k.day_start, k.timezone) from public.stock_co__clock_of('${lv}') k) + interval '2 hours', null, null, null)`);
+    // what the post booked: the row, and 0a's late count adjustment (dated at the count) when an
+    // approved count of that item came after it; each of their days before yesterday must be queued
+    const booked = pj(sql(`select coalesce(json_agg(json_build_object('key', m.idempotency_key, 'd', d.business_day, 'old',
+        d.business_day < (select t.business_day - 1 from public.stock_co__venue_day('${lv}', now()) t)) order by d.business_day), '[]')
+      from stock_movements m cross join lateral public.stock_co__venue_day(m.location_id, m.occurred_at) d
+     where m.location_id = '${lv}' and m.idempotency_key in ('rh-late:1', 'late:rh-late:1')`)) || [];
+    const want = [...new Set(booked.filter((x) => x.old).map((x) => `${x.d} late`))].sort().join(', ');
+    const lq = sql(`select coalesce(string_agg(business_day::text || ' ' || reason, ', ' order by business_day), '') from stock_day_sums_repair`);
+    for (let k = 0; k < 20 && num(`select count(*) from stock_day_sums_repair where due_at <= now()`) > 0; k++) sql('call public.stock_day_sums_drain(30, 50);');
+    const lk = [...new Set(booked.map((x) => x.d))].map((d) => ({ d, r: pj(sql(`select public.stock_day_sums_check('${lv}', '${d}')`)) }));
+    ok(booked.some((x) => x.key === 'rh-late:1' && x.d === d0) && lq === want && lk.every((x) => x.r?.ok === true) && num(`select count(*) from stock_day_sums_repair`) === 0,
+      `a late row on the real ledger (${vname[lv]}, ${d0}, its oldest day; ${booked.length} movements booked, ${booked.map((x) => x.key).join(' and ')}): every day it moved is queued (${lq || 'none'}) and rebuilt whole by the drain (${short(lk, 300)})`);
+  } else info('no venue of the copy has a movement before yesterday: the late row step is skipped');
+  if (checks.length) replay(checks);
+  // its rollback on the copy: the seven live bodies back
+  if (existsSync(FILES.dRb)) {
+    c.use('n_dr');
+    const rb = c.paste(FILES.dRb);
+    ok(rb.status === 0, `the drainer rollback applies on the copy (${rb.status ? short(rb.stderr, 500) : `${rb.ms} ms`})`);
+    const rr = ((rb.sets[rb.sets.length - 1] || { rows: [] }).rows[0]) || {};
+    console.log(`     ${short(rr, 400)}`);
+    ok(REPLACED.every(([sig, m5]) => md5Of(sig) === m5), 'the seven bodies have their live md5 again');
+  } else ok(!DRAINER, `the drainer rollback file is there (${FILES.dRb})`);
+  c.use('n_demo');
+}
+
+// The copy's checks booked again as NEW sales (ids rh-<n>, so the demo id gate books them; closed in the
+// last hour; refunds sent afterwards as the till sends them), on a copy without the release and on a copy
+// with it: every movement, waste row and outbox event identical, except the part refunds whose lines
+// carry no uid (contract D4: the sale's own average per unit, which differs from today's only when one
+// menu item was sold with different options in one check).
+function replay(rows) {
+  const t0 = Date.now() - 60 * 60000;
+  const ids = new Map(rows.map((r, k) => [r.id, `rh-${k + 1}`]));
+  const sales = rows.map((r, k) => {
+    const x = { ...r, id: ids.get(r.id), ref: `RH${k + 1}`, closed_at: new Date(t0 + k * 1000).toISOString(), refunds: [], status: r.voided ? r.status : 'paid', refunded: false };
+    delete x.tax_breakdown;
+    return x;
+  });
+  const refunds = rows.flatMap((r) => (Array.isArray(r.refunds) ? r.refunds : []).filter((e) => e && typeof e === 'object' && e.id != null)
+    .map((e, j) => ({ id: ids.get(r.id), status: r.status, e: { ...e, timestamp: t0 + 50 * 60000 + j * 1000 } })));
+  // part refunds (not isFullRefund) with a line that carries no uid: D4 may give back another figure
+  const noUid = new Set(refunds.filter((x) => !(x.e.isFullRefund === true || x.e.isFullRefund === 'true')
+    && (Array.isArray(x.e.items) ? x.e.items : []).some((l) => l && typeof l === 'object' && (l.uid == null || l.uid === ''))).map((x) => String(x.e.id)));
+  const drainAll = () => { for (let k = 0; k < 30 && num(`select count(*) from stock_outbox where status = 'pending' and due_at <= now()`) > 0; k++) sql('call public.stock_outbox_drain(10, 200, 0.05, true);'); };
+  const out = {};
+  for (const [label, withRelease] of [['v1', false], ['v2', true]]) {
+    c.use('n_demo');
+    c.createFrom(`n_rh_${label}`, 'n_demo');
+    c.use(`n_rh_${label}`);
+    if (withRelease) {
+      c.sqlFile(join(here, 'live_discounts.sql'));
+      const r = c.paste(FILES.d);
+      ok(r.status === 0, `replay ${label}: the release applies`);
+    } else c.sqlFile(join(here, 'live_discounts.sql'));
+    let bad = 0;
+    for (let k = 0; k < sales.length; k += 100) {
+      const chunk = sales.slice(k, k + 100).map((x) => `${insertRow(x)};`).join('\n');
+      if (c.psql({ input: chunk, allowFail: true }).status) bad++;
+    }
+    drainAll();
+    for (const x of refunds) {
+      const r = c.psql({ input: `update closed_checks set refunds = coalesce(refunds, '[]'::jsonb) || ${lit(JSON.stringify([x.e]))}::jsonb, status = ${lit(x.status === 'refunded' ? 'refunded' : 'partial_refund')} where id = ${lit(x.id)}`, allowFail: true });
+      if (r.status) bad++;
+    }
+    drainAll();
+    ok(bad === 0, `replay ${label}: ${sales.length} checks and ${refunds.length} refunds written`);
+    out[label] = pj(sql(basketBookedSql('rh', t0)));
+    const st = pj(sql(`select json_object_agg(status, n) from (select status, count(*) n from stock_outbox where left(check_id, 3) = 'rh-' group by status) z`)) || {};
+    info(`replay ${label}: ${out[label].movements.length} movements, ${out[label].waste.length} waste rows, outbox ${short(st)}`);
+  }
+  const keyRef = (m) => String(m.key).split(':')[2];
+  // a waste row belongs to the refund whose WASTE movement made it (waste_events.id = md5(key)::uuid)
+  const md5uuid = (t) => { const h = createHash('md5').update(t).digest('hex'); return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`; };
+  const wasteRef = (set) => new Map((set.movements || []).filter((m) => m.type === 'WASTE').map((m) => [md5uuid(m.key), keyRef(m)]));
+  const aside = { movements: (r) => noUid.has(keyRef(r)), outbox: (r) => r.kind === 'refund' && noUid.has(String(r.ref)) };
+  for (const part of ['movements', 'waste', 'outbox']) {
+    const pick = (set) => {
+      const wr = wasteRef(set);
+      const out2 = part === 'waste' ? (set[part] || []).filter((r) => !noUid.has(wr.get(r.id))) : (set[part] || []).filter((r) => !aside[part](r));
+      return out2.map((r) => JSON.stringify(r));
+    };
+    const a = pick(out.v1); const b = pick(out.v2);
+    const sa = new Set(a); const sb = new Set(b);
+    const onlyA = a.filter((r) => !sb.has(r)); const onlyB = b.filter((r) => !sa.has(r));
+    ok(onlyA.length === 0 && onlyB.length === 0, `replay: identical ${part} before and after the release (${a.length} rows${noUid.size ? `; the ${noUid.size} part refunds with no uid aside (D4)` : ''}; only before ${short(onlyA.slice(0, 2), 500)}; only after ${short(onlyB.slice(0, 2), 500)})`);
+  }
+  // D4 (part refunds with no uid): what came back, before and after; never more than the sale took
+  if (noUid.size) {
+    const back = (set, ref) => (set.movements || []).filter((m) => keyRef(m) === ref && (m.type === 'RETURN' || (m.type === 'SALE_DEPLETION' && Number(m.qty) > 0)))
+      .reduce((o, m) => ({ ...o, [m.item]: (o[m.item] || 0) + Number(m.qty) }), {});
+    const took = (set, check) => (set.movements || []).filter((m) => m.check === check && m.key.startsWith(`sale:${check}:`))
+      .reduce((o, m) => ({ ...o, [m.item]: (o[m.item] || 0) - Number(m.qty) }), {});
+    const over = [];
+    const lines = [];
+    for (const x of refunds.filter((y) => noUid.has(String(y.e.id)))) {
+      const b1 = back(out.v1, String(x.e.id)); const b2 = back(out.v2, String(x.e.id)); const t = took(out.v2, x.id);
+      for (const [it, q] of Object.entries(b2)) if (q > (t[it] || 0) + 1e-4) over.push(`${x.e.id} ${it.slice(0, 8)} ${q} > ${t[it] || 0}`);
+      lines.push(`${x.e.id}: ${Object.keys(b1).length} items ${Object.values(b1).reduce((s2, q) => s2 + q, 0).toFixed(4)} / ${Object.keys(b2).length} items ${Object.values(b2).reduce((s2, q) => s2 + q, 0).toFixed(4)}`);
+    }
+    info(`part refunds with no uid (D4: the sale's own average per unit), given back before / after: ${lines.slice(0, 8).join('; ')}`);
+    ok(over.length === 0, `D4 on the replay: no part refund gives back more of an item than its sale took (${over.slice(0, 3).join('; ') || 'none'})`);
+  }
+  // the day totals kept live on real menus: equal to the ledger once the drain has run
+  c.use('n_rh_v2');
+  for (let k = 0; k < 20 && num(`select (select count(*) from stock_day_sums_repair where due_at <= now()) + (select count(*) from sales_day_sums_queue where due_at <= now())`) > 0; k++) sql('call public.stock_day_sums_drain(30, 50);');
+  const days = pj(sql(`select coalesce(json_agg(distinct jsonb_build_object('l', m.location_id, 'd', d.business_day)), '[]') from stock_movements m
+                         cross join lateral public.stock_co__venue_day(m.location_id, m.occurred_at) d where left(m.source_id, 3) = 'rh-'`)) || [];
+  const dBad = days.map((x) => ({ ...x, r: pj(sql(`select public.stock_day_sums_check('${x.l}', '${x.d}')`)) })).filter((x) => !x.r?.ok);
+  ok(days.length > 0 && dBad.length === 0, `replay v2: stock_day_sums equals the ledger on every venue day the replay touched (${dBad.length ? short(dBad, 400) : `${days.length} days`})`);
+  const takes = num(`select count(*) from stock_sale_takes where left(check_id, 3) = 'rh-'`);
+  const saleEvents = num(`select count(*) from stock_outbox where left(check_id, 3) = 'rh-' and kind = 'sale' and status = 'done' and not ('cancelled_before_made' = any (coalesce(flags, '{}')))`);
+  ok(takes === saleEvents, `replay v2: one stock_sale_takes row per sale event booked (${takes} of ${saleEvents})`);
+  c.use('n_demo');
+}
+
 console.log('\n5. 0b (its dry run as a manager linked to Provo)');
 if (existsSync(FILES.b)) {
   const mgr = '10000000-0000-4000-8000-0000000000a1';
@@ -304,4 +543,15 @@ if (existsSync(FILES.d1) && existsSync(FILES.d1Rb)) {
   const again = c.paste(FILES.d1);
   ok(again.status === 0, `Drop 1 applies again after its rollback (${again.status ? short(again.stderr, 400) : 'ok'})`);
 } else ok(false, 'the Drop 1 files are there');
+
+console.log('\n7. The drainer release (20261023a) on a copy of the live state: 0a, its revalue file, 0b and Drop 1 in');
+if (!existsSync(FILES.d)) {
+  if (DRAINER) ok(false, `the drainer file is there (${FILES.d})`);
+  else info(`the drainer file is not there yet (${FILES.d}): step skipped (--drainer makes this a failure)`);
+} else {
+  ok(num('select count(*) from stock_native_backup') === 31 && num(`select count(*) from stock_native_backup where left(name, 3) = 'd1:'`) === 24
+     && num(`select count(*) from information_schema.columns where table_schema = 'public' and table_name = 'stock_co_items' and column_name = 'category_id'`) === 1,
+    'the copy is at the live state: 0a\'s seven and Drop 1\'s 24 backup rows, Drop 1\'s columns in');
+  drainerStep();
+}
 done();
