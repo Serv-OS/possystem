@@ -29,7 +29,7 @@ import { itemAllergenIds, unsafeAllergenIds } from '../../lib/kioskAllergens';
 import { useMenuText, itemName as tItemName, itemDescription as tItemDescription, categoryLabel as tCategoryLabel } from '../../lib/menuText';
 import { loadMenuTranslationRows, customerMenuLang, applyMenuLang, languageLabel } from '../../lib/menuTextLoad';
 import { readAllRows } from '../../lib/venueMenuRead';
-// v5.11.91 (multi site stock Drop 2): the stock facts laid over the products; kcal where the venue shows calories.
+// v5.11.93 (multi site stock Drop 2): the stock facts laid over the products; kcal where the venue shows calories.
 import { withFacts, showCalories as venueShowsCalories, KCAL_NOTE_EN } from '../../lib/menuStockFacts';
 import { onlineSectionTrees, itemInSection } from '../../lib/onlineMenuTree';
 import { kitchenOverride, receiptOverride } from '../../lib/itemDisplay';
@@ -120,7 +120,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   const [justOpenedCode, setJustOpenedCode] = useState(null); // show the opener their code after opening
   const [branding, setBranding]     = useState(null);
   const [defaultImage, setDefaultImage] = useState(null);   // v5.9.55: venue logo for products without a photo
-  const [showKcal, setShowKcal] = useState(false);          // v5.11.91: the venue's Show calories setting
+  const [showKcal, setShowKcal] = useState(false);          // v5.11.93: the venue's Show calories setting
   const [instGroupDefs, setInstGroupDefs] = useState([]); // from config_pushes snapshot — there's no instruction_groups DB table
   const [loading, setLoading]       = useState(true);
   const [openItem, setOpenItem]     = useState(null);
@@ -394,7 +394,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           supabase.from('menus').select('*').eq('location_id', opsLocationId).order('sort_order'),
         ]);
         if (!alive) return;
-        // v5.11.91 (multi site stock Drop 2): the stock facts laid over the products (the allergens
+        // v5.11.93 (multi site stock Drop 2): the stock facts laid over the products (the allergens
         // the recipe at this site adds, kcal); a failed facts read keeps the typed rows.
         const itemsData      = await withFacts(supabase, opsLocationId, iRes.value?.data || []);
         if (!alive) return;
@@ -1132,7 +1132,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         </div>
       )}
 
-      {/* v5.11.91 (multi site stock Drop 2): the 2,000 kcal line once, where the venue shows calories. */}
+      {/* v5.11.93 (multi site stock Drop 2): the 2,000 kcal line once, where the venue shows calories. */}
       {showKcal && (
         <div style={{ maxWidth: 1100, margin: '0 auto', padding: '12px 20px 0', fontSize: 12, color: '#64748b', fontWeight: 600 }}>{KCAL_NOTE_EN}</div>
       )}

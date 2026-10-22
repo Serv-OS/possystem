@@ -70,7 +70,7 @@ function applyStockRow(s, row) {
 }
 
 /**
- * v5.11.91 (multi site stock Drop 2): a push snapshot with the venue's stock facts read fresh
+ * v5.11.93 (multi site stock Drop 2): a push snapshot with the venue's stock facts read fresh
  * (lib/menuStockFacts.js), so what the till applies carries today's allergens and kcal, not the
  * ones of the moment the push was built. The products already on this till take the same facts
  * (never fewer allergens, no price or name touched). Back Office windows keep their typed rows.
@@ -247,7 +247,7 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       });
       if (!isNewerPush(push, lastConfigPushAt)) return;
       if (snapshot) {
-        // v5.11.91 (multi site stock Drop 2, open question 6, Peter: yes): the till reads the stock
+        // v5.11.93 (multi site stock Drop 2, open question 6, Peter: yes): the till reads the stock
         // facts again on every push, so a checked allergen or a kcal figure reaches it without a
         // new push. One paged read; a failed read keeps the snapshot exactly as it came.
         const fresh = await withPushFacts(store, snapshot, locationId);
@@ -309,7 +309,7 @@ export function startRealtime(store, locationId = LOCATION_ID) {
           return data?.snapshot || null;
         },
         deliver: async (snap) => {
-          const fresh = await withPushFacts(store, snap, locationId);   // v5.11.91: the facts, as a live push
+          const fresh = await withPushFacts(store, snap, locationId);   // v5.11.93: the facts, as a live push
           store.getState().setConfigUpdate(fresh);
           if (isUnattendedDevice(localStorage)) store.getState().applyConfigUpdate();
           else msmWatchFor(store).take(fresh);

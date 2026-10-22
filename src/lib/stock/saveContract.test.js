@@ -190,7 +190,7 @@ test('the recipe screens: one saveRecipeWithLines call each, the same toasts, lo
   const recipes = read('./recipes.js');
   assert.match(recipes, /export const saveRecipeWithLines = async \(draft, locationId = null, opts = \{\}\) => \{/);
   assert.match(recipes, /return runRecipeSave\(\{ client: supabase \}, draft, locationId, opts\);/);
-  const screen = read('../../backoffice/sections/produce/RecipesSite.jsx');   // v5.11.91 (Drop 2): the one site screen moved whole
+  const screen = read('../../backoffice/sections/produce/RecipesSite.jsx');   // v5.11.93 (Drop 2): the one site screen moved whole
   const save = screen.slice(screen.indexOf('  const save = async () => {'), screen.indexOf('  const archive = async () => {'));
   assert.equal((save.match(/saveRecipeWithLines\(/g) || []).length, 1, 'ONE call');
   assert.doesNotMatch(save, /upsertRecipe\(|replaceRecipeLines\(|linkMenuItemRecipe\(|recomputeMadeItemCost\(/, 'none of the four old calls');

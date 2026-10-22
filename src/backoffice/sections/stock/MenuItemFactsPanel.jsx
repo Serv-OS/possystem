@@ -1,6 +1,6 @@
 // src/backoffice/sections/stock/MenuItemFactsPanel.jsx
 //
-// The read only 'From the recipe at this site' panel (v5.11.91, multi site stock Drop 2, contract
+// The read only 'From the recipe at this site' panel (v5.11.93, multi site stock Drop 2, contract
 // 3.6 and 4.5), shown under the allergen chips in Menu Manager and, per site, in the Multi site
 // menu's product sheet. It reads ONE facts row (menu_item_stock_facts, through
 // stockApi.menuStockFacts) and says what the stock recipe linked at this site adds: allergens,

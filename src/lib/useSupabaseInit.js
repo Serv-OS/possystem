@@ -107,7 +107,7 @@ export default function useSupabaseInit() {
       // 27 Sep 2026 (review round 4): the product fields with no database column (variantLabel,
       // the pizza fields: lib/menuItemWrite.js ITEM_EXTRA_KEYS) came with the last push; this read
       // cannot have them, so each row keeps them from the row it replaces (withItemExtras).
-      // v5.11.91 (multi site stock Drop 2): a till lays the stock facts over its products before
+      // v5.11.93 (multi site stock Drop 2): a till lays the stock facts over its products before
       // they reach the store (the allergens the recipe at this site adds, kcal; lib/menuStockFacts.js
       // withFacts). A failed facts read keeps the typed rows. Back Office keeps the typed rows on
       // purpose: its Menu Manager must never write a recipe's allergen onto the menu row.

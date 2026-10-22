@@ -27,7 +27,7 @@ import { Icon } from '../../components/ServOSIcons';
 import { useLayout } from './useLayout';
 // v5.11.84 (multi site stock Drop 0, plan 4.23): count by area and log waste on the phone.
 import ManagerStock from './ManagerStock';
-// v5.11.91 (multi site stock Drop 2): recipe cards for staff on the phone.
+// v5.11.93 (multi site stock Drop 2): recipe cards for staff on the phone.
 import ManagerRecipeCard from './ManagerRecipeCard';
 
 const DEL_PILL = { pending: ['Expected', 'var(--orn)'], overdue: ['Overdue', 'var(--red)'], accepted: ['Arrived', 'var(--grn)'], rejected: ['Rejected', 'var(--red)'] };
@@ -60,7 +60,7 @@ export default function ManagerKitchen({ ctx }) {
   // Receive (one open order) — manager-approve po.receive.
   const [delOpen, setDelOpen] = useState(null);  // the order (snapshot deliveries row) whose sheet is open
   const [recv, setRecv] = useState({});          // lineId -> { qtyPacks, unitPrice }
-  const [recipesOpen, setRecipesOpen] = useState(false);   // v5.11.91: the Recipe cards sheet
+  const [recipesOpen, setRecipesOpen] = useState(false);   // v5.11.93: the Recipe cards sheet
   const [tempC, setTempC] = useState('');
   const [dryGoods, setDryGoods] = useState(false);
   const [scan, setScan] = useState(null);        // { header, matched: { [lineId]: { readQty, readPrice, diffQty, diffPrice } }, unmatched: [] }
@@ -243,7 +243,7 @@ export default function ManagerKitchen({ ctx }) {
   if (recipesOpen) return <ManagerRecipeCard ctx={ctx} onClose={() => setRecipesOpen(false)} />;
   // only where there is stock to count: the snapshot's head count, else (an older snapshot) any item with a par
   const hasStock = snap?.kitchen?.trackedItems != null ? snap.kitchen.trackedItems > 0 : items.length > 0;
-  // v5.11.91: only where a till product has a live recipe link (the snapshot lists them)
+  // v5.11.93: only where a till product has a live recipe link (the snapshot lists them)
   const recipeCount = Array.isArray(snap?.kitchen?.recipes) ? snap.kitchen.recipes.length : 0;
 
   return (

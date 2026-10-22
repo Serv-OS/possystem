@@ -1,6 +1,6 @@
 // src/lib/recipeCard.js
 //
-// The recipe card for staff (v5.11.91, multi site stock Drop 2, contract 3.6 and 1.7): what the
+// The recipe card for staff (v5.11.93, multi site stock Drop 2, contract 3.6 and 1.7): what the
 // till's item info, the KDS pop out and the Manager app show from stock_recipe_card(p_loc,
 // p_menu_item_id, p_recipe). The card carries the build (lines in the unit as written), the
 // method steps, allergens, may contain, kcal, use by days and whether the facts were checked at

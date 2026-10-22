@@ -14,7 +14,7 @@ import { sizeOrMainOptions, subitemNameIndex } from '../../lib/menuRules';
 // English) and the kiosk's allergen rule (a product with an avoided allergen is marked, never hidden).
 import { useMenuText, itemName as tItemName, itemDescription as tItemDescription, groupName as tGroupName, optionName as tOptionName } from '../../lib/menuText';
 import { unsafeAllergenIds, itemAllergenIds } from '../../lib/kioskAllergens';
-// v5.11.91 (multi site stock Drop 2): kcal and the 2,000 kcal line where the venue shows calories;
+// v5.11.93 (multi site stock Drop 2): kcal and the 2,000 kcal line where the venue shows calories;
 // 'May contain' and 'Allergens being checked' from the stock recipe linked at this site.
 import { kcalWords, mayContainWords, KCAL_NOTE_EN, ALLERGEN_CHECK_EN } from '../../lib/menuStockFacts';
 
@@ -48,7 +48,7 @@ const extraLabel = (n, prefix = '+') => {
 // All of these default to the storefront's behaviour.
 export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs = [], eightySixIds = [], stockLevels = {}, cart = [], priceFor = basePriceOf, onClose, onAdd, lockQty = false, addLabel = null, notesMax = 200, strictRequired = false, extraPrices = false, defaultImage = null, avoidAllergens = [], showCalories = false }) {
   useMenuText();
-  const facts = item?.stockFacts || null;   // v5.11.91: the stock recipe's facts at this site, when any
+  const facts = item?.stockFacts || null;   // v5.11.93: the stock recipe's facts at this site, when any
   const [qty, setQty]               = useState(1);
   const [modGroups, setModGroups]   = useState([]);  // top-level groups assigned to item
   const [allModGroups, setAllModGroups] = useState([]); // includes nested sub-groups (lookup)
@@ -564,7 +564,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
             </div>
           )}
 
-          {/* v5.11.91: '<n> kcal' and the 2,000 kcal line, where the venue shows calories. */}
+          {/* v5.11.93: '<n> kcal' and the 2,000 kcal line, where the venue shows calories. */}
           {showCalories && item?.kcal != null && (
             <div style={{ fontSize: 13, color: muted, lineHeight: 1.5, marginBottom: 16 }}>
               <b>{kcalWords(item.kcal)}</b> · {KCAL_NOTE_EN}

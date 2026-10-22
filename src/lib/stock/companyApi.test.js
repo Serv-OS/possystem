@@ -1,6 +1,6 @@
 /**
  * companyApi.test.js: createStockApi, the one way the Drop 1 and Drop 2 screens talk to the database
- * (v5.11.89, multi site stock Drop 1, contract 2.2; v5.11.91 Drop 2 adds the recipe, batch and prep,
+ * (v5.11.89, multi site stock Drop 1, contract 2.2; v5.11.93 Drop 2 adds the recipe, batch and prep,
  * allergen and plate cost calls). Run: npm test.
  *
  * A stand in client records every call: each method names its function and sends exactly the
@@ -109,7 +109,7 @@ const CASES = [
   [(a) => a.setStockControl('u1', 'sites_full'), 'set_stock_control', { p_user: 'u1', p_level: 'sites_full' }],
   [(a) => a.suggestChange('item', IT, 'Shelf life is 7 days'), 'stock_suggest_change', { p_entity: 'item', p_id: IT, p_text: 'Shelf life is 7 days' }],
   [(a) => a.resyncSite(L2), 'stock_resync_site', { p_loc: L2 }],
-  // ── Drop 2 (v5.11.91, contract 2.2): recipes, batch and prep, allergens ──
+  // ── Drop 2 (v5.11.93, contract 2.2): recipes, batch and prep, allergens ──
   [(a) => a.recipesPage({ orgId: ORG, sites: [L1], search: 'burger', filters: { kind: 'dish', on_at: L1 }, after: { k: 'b', id: RC } }), 'stock_recipes_page',
     { p_org: ORG, p_sites: [L1], p_search: 'burger', p_filters: { kind: 'dish', on_at: L1 }, p_after: { k: 'b', id: RC }, p_limit: 100 }],
   [(a) => a.recipesPage({ orgId: ORG }), 'stock_recipes_page', { p_org: ORG, p_sites: null, p_search: null, p_filters: null, p_after: null, p_limit: 100 }],

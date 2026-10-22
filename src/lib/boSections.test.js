@@ -839,7 +839,7 @@ test('BackOfficeApp: the stock screens get the picker\'s one site; one site comp
     "{section === 'stock-transfers' && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <StockTransfers orgCtx={orgCtx} siteId={id} />}</StockSiteGate>}",
     "{section === 'wastage'    && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <Wastage siteId={id} />}</StockSiteGate>}",
     "{section === 'stock-items' && <StockItems orgCtx={orgCtx} siteId={stockSiteId} />}",
-    // v5.11.91 (Drop 2): no gate on Recipes and Batches: their routers show the company view on All sites
+    // v5.11.93 (Drop 2): no gate on Recipes and Batches: their routers show the company view on All sites
     "{section === 'recipes'    && <Recipes orgCtx={orgCtx} siteId={stockSiteId} />}",
     "{section === 'batches'    && <Batches orgCtx={orgCtx} siteId={stockSiteId} />}",
     "{section === 'order-pad'  && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <OrderPad siteId={id} />}</StockSiteGate>}",

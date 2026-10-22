@@ -2,7 +2,7 @@ import { useState, useRef } from 'react';
 import { useStore } from '../store';
 import { ALLERGENS, CAT_META } from '../data/seed';
 import { money } from '../lib/currency';
-// v5.11.91 (multi site stock Drop 2): the recipe card for staff comes from the stock recipe linked at
+// v5.11.93 (multi site stock Drop 2): the recipe card for staff comes from the stock recipe linked at
 // this site (stock_recipe_card, read with the till's own device session; lib/recipeCard.js). The
 // seed's ITEM_RECIPES stays in src/data/seed.js for the demo venue but is no longer read here.
 import { supabase, getActiveLocationSync } from '../lib/supabase';
@@ -155,7 +155,7 @@ export default function ItemInfoModal({ item, is86, onToggle86, onClose, onAddTo
             </div>
           </div>
 
-          {/* v5.11.91: '<n> kcal' when the recipe card or the stock facts carry it */}
+          {/* v5.11.93: '<n> kcal' when the recipe card or the stock facts carry it */}
           {kcalLine && (
             <div style={{ display:'flex', gap:12, marginTop:10 }}>
               <div style={{ fontSize:11, color:'var(--t4)', display:'flex', alignItems:'center', gap:4 }}><span>⚡</span>{kcalLine}</div>
@@ -246,7 +246,7 @@ export default function ItemInfoModal({ item, is86, onToggle86, onClose, onAddTo
             </>
           )}
 
-          {/* ── Recipe tab (v5.11.91: the stock recipe card for staff) ── */}
+          {/* ── Recipe tab (v5.11.93: the stock recipe card for staff) ── */}
           {tab==='recipe' && recipe && (
             <>
               {/* The build, in the unit as written */}

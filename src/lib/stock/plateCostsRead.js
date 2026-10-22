@@ -1,5 +1,5 @@
 /**
- * stock/plateCostsRead.js: plate costs from the database (v5.11.91, multi site stock Drop 2,
+ * stock/plateCostsRead.js: plate costs from the database (v5.11.93, multi site stock Drop 2,
  * contract 3.1). stock_plate_costs answers one row per live till product link at a site
  * ({ menu_item_id, site_recipe_id, recipe_id, cost }), 1,000 a page keyed on menu_item_id, the same
  * figure the drainer and the reports use. Pure: the api (stockApi, or a stand in) is handed in, so

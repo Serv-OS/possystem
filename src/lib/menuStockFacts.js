@@ -1,6 +1,6 @@
 // src/lib/menuStockFacts.js
 //
-// The web side of the stock facts (v5.11.91, multi site stock Drop 2, contract 3.6). The merge
+// The web side of the stock facts (v5.11.93, multi site stock Drop 2, contract 3.6). The merge
 // rule itself lives in supabase/functions/_shared/menuStockFacts.js (one copy for the browser and
 // the edge functions); this file re exports it and adds the two reads a channel makes:
 //

@@ -1,6 +1,6 @@
 /**
  * stock/batchLabel.js: the words on a batch label and a PPDS label (multi site stock Drop 2,
- * v5.11.91, design 2.7 and 2.11, map 4.6 and 8.3 step 7).
+ * v5.11.93, design 2.7 and 2.11, map 4.6 and 8.3 step 7).
  *
  * PURE: no DOM, no Supabase, no React. Everything here is a printDoc document (DocBuilder, the
  * same ops every printer model understands) or plain words, so node --test drives every line

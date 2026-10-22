@@ -920,7 +920,7 @@ class PrintService {
     return { ok: false, error: 'No kitchen printer configured' };
   }
 
-  // Multi site stock Drop 2 (v5.11.91, contract 3.3): one label on the Label printer role
+  // Multi site stock Drop 2 (v5.11.93, contract 3.3): one label on the Label printer role
   // (PrinterRegistry 'label'). `doc` is a printDoc document, or a function (printer, spec) that
   // builds one at that printer's column count (lib/labelPrint.js passes the batch and PPDS label
   // builders of lib/stock/batchLabel.js). Same transport, retry and audit row as every other job.

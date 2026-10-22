@@ -1,10 +1,24 @@
 // node --test: the pure rules of the stock-nightly run (supabase/functions/stock-nightly/rules.js,
 // v5.11.84, multi site stock Drop 0, plan 7.3 step 15). The run itself is driven end to end in
-// stockEdgeRoles.test.js.
+// stockEdgeRoles.test.js. Drainer release (20261023a, contract 3.5): the run also reads
+// stock_drainer_health after upkeep and keeps the answer as drainer_health; that step is driven end
+// to end here (index.ts loaded as it ships, node strips the types, the client import is a stand in).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { nightlyAccess, clockRows, clockTime, nightlyDay, mapLimit, isMissingFunction, NIGHTLY_KEY_CHECK } from '../../../supabase/functions/stock-nightly/rules.js';
+import { registerHooks } from 'node:module';
+import {
+  nightlyAccess, clockRows, clockTime, nightlyDay, mapLimit, isMissingFunction, drainerHealthOf, NIGHTLY_KEY_CHECK, DRAINER_HEALTH,
+} from '../../../supabase/functions/stock-nightly/rules.js';
+
+registerHooks({
+  resolve(spec, ctx, next) {
+    if (spec.startsWith('https://esm.sh/@supabase/supabase-js')) {
+      return { url: 'data:text/javascript,export const createClient = (...a) => globalThis.__nightlyClient(...a);', shortCircuit: true };
+    }
+    return next(spec, ctx);
+  },
+});
 
 const read = (rel) => fs.readFileSync(new URL(`../../../${rel}`, import.meta.url), 'utf8');
 const OPS1 = '10000000-0000-4000-8000-000000000001';
@@ -96,4 +110,177 @@ test('the run calls the contract functions with the contract arguments, and writ
   assert.match(src, /--no-verify-jwt/, 'the deploy line says no JWT (pg_net sends only the key)');
   // every list read pages past the 1,000 row cap
   for (const what of ['Platform locations', 'venues', 'venue clocks']) assert.match(src, new RegExp(`pagedRows\\('${what}'`), what);
+});
+
+// -- drainer release (20261023a): the drainer's health in the run summary --------------------
+
+test('drainerHealthOf: the answer as given, { missing: true } before 20261023a, any other failure kept as words', () => {
+  assert.equal(DRAINER_HEALTH, 'stock_drainer_health');
+  const answer = { ok: true, at: '2026-10-24T03:41:00Z', venues: [{ location_id: OPS1, mode: 'central', dead: 0 }] };
+  assert.equal(drainerHealthOf({ data: answer, error: null }), answer, 'the database answer itself, untouched');
+  const notOk = { ok: false, at: '2026-10-24T03:41:00Z', venues: [{ location_id: OPS1, dead: 2 }] };
+  assert.deepEqual(drainerHealthOf({ data: notOk }), notOk, 'an unhealthy answer is kept as it is');
+  assert.deepEqual(drainerHealthOf({ error: { code: 'PGRST202', message: 'Could not find the function public.stock_drainer_health without parameters in the schema cache' } }), { missing: true });
+  assert.deepEqual(drainerHealthOf({ error: { code: '42883', message: 'function public.stock_drainer_health() does not exist' } }), { missing: true });
+  assert.deepEqual(drainerHealthOf({ error: { code: '57014', message: 'canceling statement due to statement timeout' } }),
+    { error: 'stock_drainer_health: canceling statement due to statement timeout', code: '57014' });
+  assert.deepEqual(drainerHealthOf({ error: { code: '42501' } }), { error: 'stock_drainer_health: 42501', code: '42501' });
+  for (const data of [null, undefined, [], 'ok', 7]) {
+    assert.deepEqual(drainerHealthOf({ data }), { error: 'stock_drainer_health: no answer', code: null }, String(data));
+  }
+  assert.deepEqual(drainerHealthOf(), { error: 'stock_drainer_health: no answer', code: null });
+});
+
+test('the run reads the drainer health after upkeep, with its own service role client (source)', () => {
+  const src = read('supabase/functions/stock-nightly/index.ts');
+  const upkeep = src.indexOf("call('stock_nightly_upkeep')");
+  const health = src.indexOf('await ops.rpc(DRAINER_HEALTH)');
+  assert.ok(upkeep > 0 && health > upkeep, 'health is read after upkeep');
+  assert.ok(health < src.indexOf('summary.ok = errors.length === 0'), 'and before the summary is closed');
+  assert.match(src, /const ops = createClient\(SUPABASE_URL, SERVICE_ROLE,/, 'ops is the service role client');
+  assert.match(src, /summary\.drainer_health = drainerHealthOf\(\{ data, error \}\)/);
+  const step = src.slice(health, src.indexOf('summary.ok = errors.length === 0'));
+  assert.doesNotMatch(step, /errors\.push/, 'the health step never adds to errors');
+});
+
+// The run end to end: index.ts as it ships, against stand in databases.
+const ENV = {
+  SUPABASE_URL: 'https://ops.test', SUPABASE_SERVICE_ROLE_KEY: 'service-key',
+  PLATFORM_SUPABASE_URL: 'https://platform.test', PLATFORM_SUPABASE_SERVICE_ROLE_KEY: 'platform-key',
+};
+const missing = (name) => ({ data: null, error: { code: 'PGRST202', message: `Could not find the function public.${name} without parameters in the schema cache` } });
+
+function fakeDb({ tables = {}, rpc = {} } = {}) {
+  const log = [];
+  const from = (table) => {
+    const st = { filters: [], range: null, limit: null };
+    const run = () => {
+      log.push({ table });
+      let rows = (tables[table] || []).filter((r) => st.filters.every((f) => f(r)));
+      if (st.range) rows = rows.slice(st.range[0], st.range[1] + 1);
+      if (st.limit != null) rows = rows.slice(0, st.limit);
+      return { data: rows.map((r) => ({ ...r })), error: null };
+    };
+    const q = {
+      select() { return q; },
+      order() { return q; },
+      eq(k, v) { st.filters.push((r) => r[k] === v); return q; },
+      in(k, v) { st.filters.push((r) => v.includes(r[k])); return q; },
+      limit(n) { st.limit = n; return q; },
+      range(a, b) { st.range = [a, b]; return q; },
+      then(res, rej) { return Promise.resolve().then(run).then(res, rej); },
+    };
+    return q;
+  };
+  return {
+    log, from,
+    rpc: async (name, args) => {
+      log.push({ rpc: name, args });
+      const f = rpc[name];
+      return f ? f(args) : missing(name);
+    },
+  };
+}
+
+const dbs = {};
+const clients = [];
+let nightly;
+async function loadNightly() {
+  if (nightly) return nightly;
+  globalThis.__nightlyClient = (url, key) => {
+    clients.push({ url, key });
+    return new Proxy({}, { get: (_t, prop) => dbs[url][prop] });
+  };
+  globalThis.Deno = { env: { get: (k) => ENV[k] }, serve: (h) => { nightly = h; } };
+  await import('../../../supabase/functions/stock-nightly/index.ts');
+  assert.equal(typeof nightly, 'function', 'Deno.serve was called');
+  return nightly;
+}
+
+const OPS_TABLES = {
+  locations: [{ id: OPS1, timezone: 'Europe/London' }, { id: OPS2, timezone: 'America/Denver' }],
+  inventory_items: [{ id: 'inv-1', location_id: OPS1 }],
+  venue_clock: [{ location_id: OPS1, timezone: 'Europe/London', day_start: '06:00:00' }],
+};
+const PLATFORM_TABLES = { locations: [{ id: PL1, ops_location_id: OPS1, timezone: 'Europe/London', business_day_start: '06:00:00' }] };
+const HEALTHY_STEPS = {
+  venue_clock_sync: () => ({ data: { ok: true, upserted: 1, mismatches: [], missing: [] }, error: null }),
+  stock_day_sums_rebuild: () => ({ data: { ok: true, days: 1, rows: 3 }, error: null }),
+  sales_day_sums_rebuild: () => ({ data: { ok: true, days: 1, rows: 2 }, error: null }),
+  stock_day_sums_check: () => ({ data: { ok: true }, error: null }),
+  sales_day_sums_check: () => ({ data: { ok: true, net_checked: true }, error: null }),
+  stock_nightly_upkeep: () => ({ data: { pin_tries_purged: 0, site_items_archived: 0, company_rows_archived: 0 }, error: null }),
+};
+
+async function runNightly(rpc) {
+  const handler = await loadNightly();
+  const ops = fakeDb({ tables: OPS_TABLES, rpc: { ...HEALTHY_STEPS, ...rpc } });
+  dbs[ENV.SUPABASE_URL] = ops;
+  dbs[ENV.PLATFORM_SUPABASE_URL] = fakeDb({ tables: PLATFORM_TABLES });
+  const log0 = console.log;
+  console.log = (...a) => { if (!String(a[0]).startsWith('[stock-nightly]')) log0(...a); };   // the run's one summary line
+  let res;
+  try {
+    res = await handler(new Request('https://ops.test/functions/v1/stock-nightly', {
+      method: 'POST', headers: { 'content-type': 'application/json', Authorization: `Bearer ${ENV.SUPABASE_SERVICE_ROLE_KEY}` }, body: JSON.stringify({ action: 'run' }),
+    }));
+  } finally { console.log = log0; }
+  const rpcs = ops.log.filter((x) => x.rpc).map((x) => x.rpc);
+  return { status: res.status, body: await res.json(), rpcs, log: ops.log };
+}
+
+test('the run keeps the drainer health answer as drainer_health, read once after upkeep with the service role', async () => {
+  const answer = { ok: true, at: '2026-10-24T03:41:00Z', venues: [{ location_id: OPS1, mode: 'central', pending: 0, held: 0, dead: 0 }] };
+  const asked = [];
+  const r = await runNightly({ stock_drainer_health: (args) => { asked.push(args); return { data: answer, error: null }; } });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.ok, true, JSON.stringify(r.body.errors));
+  assert.deepEqual(r.body.drainer_health, answer);
+  assert.deepEqual(r.rpcs.filter((n) => n === DRAINER_HEALTH), [DRAINER_HEALTH], 'asked once');
+  assert.equal(r.rpcs.indexOf(DRAINER_HEALTH), r.rpcs.indexOf('stock_nightly_upkeep') + 1, 'straight after upkeep');
+  assert.equal(asked[0]?.p_location, undefined, 'every venue (no venue named)');
+  // the client the health is read with is the Ops one, made with the service role key
+  assert.ok(clients.some((c) => c.url === ENV.SUPABASE_URL && c.key === ENV.SUPABASE_SERVICE_ROLE_KEY));
+  assert.ok(!clients.some((c) => c.url === ENV.SUPABASE_URL && c.key !== ENV.SUPABASE_SERVICE_ROLE_KEY), 'no other Ops client');
+});
+
+test('an unhealthy drainer answer is kept as it is and does not fail the run', async () => {
+  const answer = { ok: false, at: '2026-10-24T03:41:00Z', venues: [{ location_id: OPS1, dead: 3, repair_failing: 1 }] };
+  const r = await runNightly({ stock_drainer_health: () => ({ data: answer, error: null }) });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.ok, true);
+  assert.deepEqual(r.body.errors, []);
+  assert.deepEqual(r.body.drainer_health, answer);
+});
+
+test('before 20261023a runs (PGRST202 or 42883) the summary says { missing: true } and the run is still ok', async () => {
+  let r = await runNightly({});
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body.drainer_health, { missing: true });
+  assert.equal(r.body.ok, true);
+  assert.deepEqual(r.body.errors, []);
+  r = await runNightly({ stock_drainer_health: () => ({ data: null, error: { code: '42883', message: 'function public.stock_drainer_health() does not exist' } }) });
+  assert.deepEqual(r.body.drainer_health, { missing: true });
+  assert.equal(r.body.ok, true);
+});
+
+test('any other health failure is recorded in the summary and never fails the run', async () => {
+  let r = await runNightly({ stock_drainer_health: () => ({ data: null, error: { code: '57014', message: 'canceling statement due to statement timeout' } }) });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.ok, true, 'the run is not failed by a health read');
+  assert.deepEqual(r.body.errors, []);
+  assert.deepEqual(r.body.drainer_health, { error: 'stock_drainer_health: canceling statement due to statement timeout', code: '57014' });
+  r = await runNightly({ stock_drainer_health: () => { throw new Error('network down'); } });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.ok, true);
+  assert.match(r.body.drainer_health.error, /network down/);
+  // the other steps failing does not stop the health read either
+  r = await runNightly({
+    stock_nightly_upkeep: () => ({ data: null, error: { message: 'boom' } }),
+    stock_drainer_health: () => ({ data: { ok: true, venues: [] }, error: null }),
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.ok, false, 'upkeep failed, so the run says so');
+  assert.ok(r.body.errors.some((e) => /upkeep: stock_nightly_upkeep: boom/.test(e)));
+  assert.deepEqual(r.body.drainer_health, { ok: true, venues: [] }, 'the health is still read and kept');
 });

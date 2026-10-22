@@ -1,6 +1,6 @@
 // src/backoffice/sections/stock/CaloriesCard.jsx
 //
-// Show calories (v5.11.91, multi site stock Drop 2, contract 3.6 and decision 12): one venue
+// Show calories (v5.11.93, multi site stock Drop 2, contract 3.6 and decision 12): one venue
 // setting, locations.pos_settings.show_calories, read by the kiosk, online ordering, QR, catering,
 // the printed menu and the menu boards. Shown in Location settings for every company, multi and
 // one site alike.

@@ -13,7 +13,7 @@ import { reportSave } from '../../lib/saveHealth';
 import { fetchMenuCategories, fetchMenuItems } from '../../lib/db';
 import { DEFAULT_PRINT_CONFIG, PRINT_FONTS, PAPER } from '../../lib/printMenu';
 import { buildMenuPdf } from '../../lib/printMenuPdf';
-// v5.11.91 (multi site stock Drop 2): the stock facts laid over the products (allergens the recipe at
+// v5.11.93 (multi site stock Drop 2): the stock facts laid over the products (allergens the recipe at
 // this site adds, kcal); the Calories toggle starts from the venue's Show calories setting.
 import { withFacts, showCalories as venueShowsCalories } from '../../lib/menuStockFacts';
 
@@ -104,12 +104,12 @@ export default function PrintMenu() {
         .filter(x => !x.parent_id && !x.is_special)
         .map(x => ({ ...x, name: x.label ?? x.name ?? 'Category' }))
         .sort((a, z) => (a.sort_order || 0) - (z.sort_order || 0)));
-      // v5.11.91: the stock facts ride the products (never fewer allergens than typed).
+      // v5.11.93: the stock facts ride the products (never fewer allergens than typed).
       setItems(await withFacts(supabase, id, it?.data || []));
       const loc = locRes?.data || {};
       setVenueName(loc.name || 'Menu');
       setCurrencySymbol(CUR[String(loc.currency || 'gbp').toLowerCase()] || '£');
-      // v5.11.91: the Calories toggle starts from the venue's Show calories setting; a saved print
+      // v5.11.93: the Calories toggle starts from the venue's Show calories setting; a saved print
       // config that has its own answer keeps it.
       const kcalDefault = venueShowsCalories(loc.pos_settings);
       const saved = (loc.print_menu_config && typeof loc.print_menu_config === 'object') ? loc.print_menu_config : null;

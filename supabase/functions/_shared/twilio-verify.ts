@@ -12,6 +12,8 @@
 //   TWILIO_AUTH_TOKEN
 //   TWILIO_VERIFY_SERVICE_SID   ← NEW: create a Verify Service in the Twilio console and set this.
 
+import { twilioName } from './otpName.js';
+
 const SID = Deno.env.get('TWILIO_ACCOUNT_SID') ?? '';
 const TOKEN = Deno.env.get('TWILIO_AUTH_TOKEN') ?? '';
 const VERIFY_SERVICE_SID = Deno.env.get('TWILIO_VERIFY_SERVICE_SID') ?? '';
@@ -44,7 +46,7 @@ const friendlyNameBlockedSids = new Set<string>();
 // Returns the VA… sid. Services are free; billing is per verification.
 export async function createVerifyService(name: string): Promise<{ ok: boolean; sid?: string; error?: string }> {
   if (!SID || !TOKEN) return { ok: false, error: 'Twilio not configured' };
-  const clean = String(name || '').trim().slice(0, 30) || 'our venue';
+  const clean = twilioName(name) || 'our venue';
   const form = new URLSearchParams();
   form.append('FriendlyName', clean);
   try {
@@ -76,7 +78,7 @@ export async function startVerification(
     const form = new URLSearchParams();
     form.append('To', to);
     form.append('Channel', opts.channel || 'sms');
-    if (withFriendly && opts.friendlyName) form.append('CustomFriendlyName', opts.friendlyName.slice(0, 30));
+    if (withFriendly && opts.friendlyName) form.append('CustomFriendlyName', twilioName(opts.friendlyName));
     const res = await fetch(`https://verify.twilio.com/v2/Services/${svc}/Verifications`, {
       method: 'POST',
       headers: { 'Authorization': authHeader(), 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -112,7 +114,7 @@ export async function startVerification(
 // Called when the operator saves/resets the business name in BO → Messages → Verification Code.
 export async function setVerifyServiceName(name: string, serviceSid?: string): Promise<VerifyResult> {
   if (!verifyConfigured() && !serviceSid) return { ok: false, error: 'Verify not configured', code: 'not_configured' };
-  const clean = String(name || '').trim().slice(0, 30);
+  const clean = twilioName(name);
   if (!clean) return { ok: false, error: 'name required', code: 'invalid' };
   const form = new URLSearchParams();
   form.append('FriendlyName', clean);
@@ -127,6 +129,23 @@ export async function setVerifyServiceName(name: string, serviceSid?: string): P
     return { ok: true };
   } catch (e) {
     return { ok: false, error: (e as Error)?.message || String(e), code: 'send_failed' };
+  }
+}
+
+// Read a Verify service's CURRENT friendly name (the name Twilio stamps into the code SMS).
+// Used before any send from the shared fallback service: a venue's code must never go out under
+// another venue's name (Peter, 21 Oct 2026). Returns null when it cannot be read.
+export async function getVerifyServiceName(serviceSid?: string): Promise<string | null> {
+  const sid = serviceSid || VERIFY_SERVICE_SID;
+  if (!sid || !SID || !TOKEN) return null;
+  try {
+    const res = await fetch(`https://verify.twilio.com/v2/Services/${sid}`, { headers: { 'Authorization': authHeader() } });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) return null;
+    const name = (j as { friendly_name?: string })?.friendly_name;
+    return typeof name === 'string' ? name : null;
+  } catch {
+    return null;
   }
 }
 

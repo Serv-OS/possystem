@@ -45,7 +45,7 @@ import { rankQuickPicks, DAYPARTS } from '../../lib/quickRank';
 import { getLocationConfig } from '../../lib/locationTime';
 // v4.7.8: per-menu pricing tier UI (item-level)
 import PerMenuPricingTiers from './PerMenuPricingTiers';
-import MenuItemFactsPanel from './stock/MenuItemFactsPanel';   // v5.11.91 (multi site stock Drop 2): 'From the recipe at this site'
+import MenuItemFactsPanel from './stock/MenuItemFactsPanel';   // v5.11.93 (multi site stock Drop 2): 'From the recipe at this site'
 import MenuImportModal from '../components/MenuImportModal';
 // v5.8.65: category kiosk photo (saves on its own, not part of CatModal's form)
 import CategoryPhotoField from '../components/CategoryPhotoField';
@@ -1714,7 +1714,7 @@ function ListItemView({ items, menuItems, selItemId, setSelItemId, catColor, add
 // Returns { [menuItemId]: plateCost } once recipes + costing context load.
 // `null` while loading so the UI can stay quiet rather than flashing "No recipe"
 // on every row before the data arrives.
-// v5.11.91 (multi site stock Drop 2, contract 3.1): the costs come from the database first
+// v5.11.93 (multi site stock Drop 2, contract 3.1): the costs come from the database first
 // (stock_plate_costs, the same figure the drainer and the reports use); a database before Drop 2
 // answers needsUpdate and today's maths run instead. Any other refusal shows no cost, never a wrong one.
 function useRecipeCosts() {
@@ -3646,7 +3646,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                 );
               })}
             </div>
-            {/* v5.11.91 (multi site stock Drop 2): read only, what the stock recipe linked at this
+            {/* v5.11.93 (multi site stock Drop 2): read only, what the stock recipe linked at this
                 venue adds (menu_item_stock_facts). Never written by a menu save. */}
             <MenuItemFactsPanel locationId={tabVenue()} menuItemId={item.id} />
           </div>

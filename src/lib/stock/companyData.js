@@ -13,7 +13,7 @@
  *   pollJobs(api, ids, onTick)      follows save queue jobs every 3 s until each is done or failed
  *   createStockApi(client)          every call the Drop 1 and Drop 2 screens make, one answer shape
  *
- * Drop 2 (v5.11.91, contract 2.2): the recipe, batch and prep, allergen and plate cost calls join the
+ * Drop 2 (v5.11.93, contract 2.2): the recipe, batch and prep, allergen and plate cost calls join the
  * same object (recipesPage, recipeDetail, recipeCost, plateCosts, recipeMissing, recipeFacts,
  * recipeCard, prepList, batchHow, menuProducts, menuStockFacts, recipeCostHistory, saveRecipe,
  * archiveRecipe, setRecipeSites, linkProducts, batchSetHow, saveOptionRule, archiveOptionRule,
@@ -264,7 +264,7 @@ export function createStockApi(client) {
     setStockControl: (userId, level) => save('set_stock_control', { p_user: userId, p_level: level }),
     suggestChange: (entity, id, text) => save('stock_suggest_change', { p_entity: entity, p_id: id, p_text: text }),
     resyncSite: (locationId) => save('stock_resync_site', { p_loc: locationId }),
-    // ── the Drop 2 calls (v5.11.91, contract 2.2): recipes, batch and prep, allergens ──
+    // ── the Drop 2 calls (v5.11.93, contract 2.2): recipes, batch and prep, allergens ──
     // reads
     recipesPage: ({ orgId, sites = null, search = null, filters = null, after = null, limit = 100 } = {}) =>
       read('stock_recipes_page', { p_org: orgId, p_sites: nil(sites), p_search: search || null, p_filters: filters || null, p_after: after || null, p_limit: limit }),

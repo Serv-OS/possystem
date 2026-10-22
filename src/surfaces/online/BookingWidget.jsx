@@ -30,7 +30,7 @@ import { AdyenCheckout, Dropin, Card, ApplePay, GooglePay } from '@adyen/adyen-w
 import '@adyen/adyen-web/styles/adyen.css';
 import { supabase, ensureAuthToken, isMock } from '../../lib/supabase';
 import { normalisePhone } from '../../lib/customerLookup';
-import { withFacts } from '../../lib/menuStockFacts';   // v5.11.91 (multi site stock Drop 2): the stock facts on the choices
+import { withFacts } from '../../lib/menuStockFacts';   // v5.11.93 (multi site stock Drop 2): the stock facts on the choices
 import { readTheme, deriveVars, readableOn, DISPLAY_FONT, BODY_FONT } from '../menu/menuTheme';
 import MenuHeader from '../menu/MenuHeader';
 import OnlineItemSheet from './OnlineItemSheet';
@@ -311,7 +311,7 @@ function useGuestMenu(locationId, enabled, optionItemIds, slot = null) {
             links = la || NO_ROWS;
           } catch { links = NO_ROWS; }
         }
-        // v5.11.91: the allergens the recipe at this site adds ride the items (lib/menuStockFacts.js
+        // v5.11.93: the allergens the recipe at this site adds ride the items (lib/menuStockFacts.js
         // withFacts, never fewer than typed); a failed facts read keeps the typed rows.
         const itemRows = iOk ? await withFacts(supabase, menuKey, iRes.value.data || NO_ROWS) : NO_ROWS;
         res = { key: menuKey, items: itemRows, instGroupDefs: Array.isArray(defs) ? defs : NO_ROWS, failed: !iOk, menus, cats, links };

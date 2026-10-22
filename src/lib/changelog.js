@@ -7,7 +7,7 @@
 
 export const CHANGELOG = [
   {
-    v: '5.11.91',
+    v: '5.11.93',
     date: '21 Oct 2026',
     items: [
       "Stock, recipes for companies with more than one site (Drop 2). A company with one site keeps exactly today's Recipes and Batches screens, with one new line under the ingredients: the allergens the recipe holds, and a Checked button.",
@@ -16,6 +16,32 @@ export const CHANGELOG = [
       "Allergens and calories: each supplier item has What is in it (allergens, May contain, diets, ingredients and nutrition). Every recipe using it shows them at every site. An allergen is never taken off by itself: a warning asks someone to check. The till item info, kiosk, online, QR, catering, booking widget, menu boards, print menu and HubRise all read them. Show calories in Location settings turns on kcal and the 2,000 kcal line.",
       "Recipe cards on the till, the kitchen screen and the Manager app, at that venue only, with no costs. Plate costs in Menu Manager, the Multi site menu and Stock reports now come from the database. Adding a product to a site in the Multi site menu ticks its company recipe there.",
       "Nothing on these screens moves an on hand, cost, ledger or count figure by itself, and no login is changed. Needs the database update 20261025a (after 20261024a and the stock drainer update), then manager-snapshot, manager-approve, booking-widget, msm-publish, hubrise-catalog-push, hubrise-reconcile and stock-nightly deployed.",
+    ],
+  },
+  {
+    v: '5.11.92',
+    date: '22 Oct 2026',
+    items: [
+      "Stock, the drainer release (database update 20261023a). The database is now the one place stock comes off for a sale, on every channel: the till (every way of closing a check), the card reader, kiosk, online, QR, catering at its event time, pay at table, MPOS, HubRise orders and ezCater. The till no longer takes stock off itself at any venue, and the old stock-deplete function now only answers that it is retired. Every channel takes off the same stock and books the same sales net of VAT as before.",
+      "What changes on purpose: an archived recipe that is still linked takes nothing off, and a recipe line on an archived item, pack or conversion is left out. An item set to Made to order at a site takes off its own ingredients instead, at any depth. Options that replace or remove an ingredient (oat milk instead of whole milk, no cheese) take off the right items once Drop 2 lets you set them up. A part refund gives back what that sale took, even after the recipe changed. Refunded food is still booked as waste, and sealed goods go back on the shelf only when the item is set to.",
+      "Stock and sales day totals now keep themselves up to date as each sale, refund or stock movement is booked, on each venue's own business day, with what each sold line cost in stock, so product GP adds up to site GP. On the night the update goes in, every past stock day is totalled from the stock ledger, and a stock movement dated back onto an older day (a till that sent late, a count, a demo file) has that whole day worked out again, so a stock day total is never only part counted. A problem with a total never holds up a sale: it waits in a queue and is tried again every minute.",
+      "Till waste: a dish is always wasted through the database, by the same rule as a sale. If the database does not answer, the screen says Stock data did not load and Record waits, instead of working the stock out on the till.",
+      "Back Office, Discounts: each discount now has a Kind: Ordinary discount, Staff food and drink, Comp (on the house) or Loyalty reward. The till, bar tabs and MPOS copy the discount and its kind onto the check, so stock reports can show staff food, comps and loyalty rewards on their own line. Prices and totals do not change. Until the database update is in, a discount still saves and the screen says the kind was not kept.",
+      "Needs the database update 20261023a, pasted by Peter after UK close on its own night (after 20261024a, never the same night as another database update), then the stock-deplete and stock-nightly edge function deploys, which Peter runs. If anything is wrong, 20261023a_OPS_stock_drainer_v2_ROLLBACK.sql puts the old stock rule back.",
+    ],
+  },
+  {
+    v: '5.11.91',
+    date: '21 Oct 2026',
+    items: [
+      "Loyalty sign in code texts: a venue whose name has a double space (for example two spaces between two words) could not get its own text service, because Twilio refuses such a name. Names now go to Twilio with one space between words, so every venue gets its service and its own name in the text.",
+    ],
+  },
+  {
+    v: '5.11.90',
+    date: '21 Oct 2026',
+    items: [
+      "Loyalty sign in code texts: a venue's code is only ever sent under that venue's own name, the one set in Back Office under Messages. A venue with no text service of its own used to fall back to a shared service that carried another venue's name. Now the service is made for the venue (with a second try), and if that still fails the send is refused with a clear message and the cause is logged, never sent under someone else's name.",
     ],
   },
   {

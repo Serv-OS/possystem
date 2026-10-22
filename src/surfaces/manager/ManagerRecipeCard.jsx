@@ -1,6 +1,6 @@
 // src/surfaces/manager/ManagerRecipeCard.jsx
 //
-// Recipe cards on the phone (v5.11.91, multi site stock Drop 2, contract 3.6 and map 4.23). Opened
+// Recipe cards on the phone (v5.11.93, multi site stock Drop 2, contract 3.6 and map 4.23). Opened
 // from the Kitchen tab. Any active staff PIN at the venue opens it (as the other stock reads);
 // search a product with a live recipe link (the snapshot's kitchen.recipes), tap it, and the card
 // comes back through manager-approve 'stock.recipe_card' (the service role reads

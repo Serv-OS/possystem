@@ -104,7 +104,7 @@ export default function KioskMenuScreen({
         </button>
         <KioskCancelPill onClick={onCancel} />
       </div>
-      {/* v5.11.91 (multi site stock Drop 2): the 2,000 kcal line once, where the venue shows calories. */}
+      {/* v5.11.93 (multi site stock Drop 2): the 2,000 kcal line once, where the venue shows calories. */}
       {engine.showCalories === true ? (
         <div style={{ padding: '10px 28px 0', fontSize: 17, color: 'var(--k2InkSubtle)', flex: 'none' }}>{t('product.kcalNote')}</div>
       ) : null}

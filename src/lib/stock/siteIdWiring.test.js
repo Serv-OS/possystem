@@ -22,7 +22,7 @@
  *    signed in venue): the HTML is main's, byte for byte. The picker, the banner and the gate draw
  *    nothing new for a one site company.
  *
- * 4. Multi site stock Drop 2 (v5.11.91): today's Recipes and Batches screens moved whole into
+ * 4. Multi site stock Drop 2 (v5.11.93): today's Recipes and Batches screens moved whole into
  *    produce/RecipesSite.jsx and produce/BatchesSite.jsx (the routers Recipes.jsx and Batches.jsx send
  *    a one site company there). The wiring and identity checks read the moved files: the Drop 2 move
  *    edits (paths one folder deeper, the new name, the RecipeFactsLine import and render line) are
@@ -263,20 +263,20 @@ const IDENTITY = [
     // the signed in venue is what fetchBatches(null) resolved to
     ['  // v5.11.89: the batches of the screen\'s site (it read the signed in venue whatever the picker said)\n  useEffect(() => {\n    fetchBatches(locId || null, 500).then(({ data }) => setBatches(data || []));\n  }, [locId]);',
       '  useEffect(() => {\n    fetchBatches(null, 500).then(({ data }) => setBatches(data || []));\n  }, []);'],
-    // v5.11.91 (multi site stock Drop 2): Recipe GP's plate costs come from the database (the same
+    // v5.11.93 (multi site stock Drop 2): Recipe GP's plate costs come from the database (the same
     // maths, stock_plate_costs); before the migration the read says needsUpdate and today's path runs
     ['\nimport { stockApi } from \'../../lib/stock/stockApi\';\nimport { readPlateCostMap } from \'../../lib/stock/plateCostsRead\';', ''],
-    ['\n  const [plateCosts, setPlateCosts] = useState(null);   // v5.11.91: { data: Map, needsUpdate, error } from stock_plate_costs', ''],
+    ['\n  const [plateCosts, setPlateCosts] = useState(null);   // v5.11.93: { data: Map, needsUpdate, error } from stock_plate_costs', ''],
     ['c, sup, pc] = await Promise.all([', 'c, sup] = await Promise.all(['],
-    ['\n      readPlateCostMap(stockApi, loc),   // v5.11.91 (Drop 2): the database\'s plate costs for Recipe GP', ''],
+    ['\n      readPlateCostMap(stockApi, loc),   // v5.11.93 (Drop 2): the database\'s plate costs for Recipe GP', ''],
     ['setSuppliers(sup?.data || []); setPlateCosts(pc); setLoading(false);', 'setSuppliers(sup?.data || []); setLoading(false);'],
     [' taxRates={taxRates} plateCosts={plateCosts}/>}', ' taxRates={taxRates}/>}'],
-    ['// v5.11.91 (multi site stock Drop 2, contract 3.1): the plate cost of a linked recipe is the\n// database\'s (stock_plate_costs, the same figure the drainer and the recipe screens use). Today\'s\n// maths run only before the migration (needsUpdate). A read that failed shows no cost, never a wrong one.\nconst plateCostOf = (pc, r, ctx) => {\n  if (!pc || pc.needsUpdate) { const c = costRecipeWith(r, ctx); return c?.error ? null : c.totalCost; }\n  if (!pc.data || !r.menuItemId) return null;\n  return pc.data.get(String(r.menuItemId)) ?? null;\n};\nfunction RecipeGP({ recipes, ctx, menuItems, taxRates = [], plateCosts = null }) {', 'function RecipeGP({ recipes, ctx, menuItems, taxRates = [] }) {'],
+    ['// v5.11.93 (multi site stock Drop 2, contract 3.1): the plate cost of a linked recipe is the\n// database\'s (stock_plate_costs, the same figure the drainer and the recipe screens use). Today\'s\n// maths run only before the migration (needsUpdate). A read that failed shows no cost, never a wrong one.\nconst plateCostOf = (pc, r, ctx) => {\n  if (!pc || pc.needsUpdate) { const c = costRecipeWith(r, ctx); return c?.error ? null : c.totalCost; }\n  if (!pc.data || !r.menuItemId) return null;\n  return pc.data.get(String(r.menuItemId)) ?? null;\n};\nfunction RecipeGP({ recipes, ctx, menuItems, taxRates = [], plateCosts = null }) {', 'function RecipeGP({ recipes, ctx, menuItems, taxRates = [] }) {'],
     ['    const plate = plateCostOf(plateCosts, r, ctx);\n', '    const c = costRecipeWith(r, ctx);\n    const plate = c?.error ? null : c.totalCost;\n'],
     ['  }), [recipes, ctx, byId, netSell, variantParentIds, plateCosts]);', '  }), [recipes, ctx, byId, netSell, variantParentIds]);'],
     ['      {plateCosts?.error && !plateCosts.needsUpdate && <Callout>Could not read plate costs from the database ({plateCosts.error.message}). Reload to try again.</Callout>}\n', ''],
   ]],
-  // v5.11.91 (Drop 2): today's Batches.jsx lives in produce/BatchesSite.jsx; the move edits are undone first
+  // v5.11.93 (Drop 2): today's Batches.jsx lives in produce/BatchesSite.jsx; the move edits are undone first
   ['backoffice/sections/produce/BatchesSite.jsx', [
     ['export default function BatchesSite({ siteId = null } = {}) {', 'export default function Batches({ siteId = null } = {}) {'],
     ['from \'../reports/reportKit\'', 'from \'./reports/reportKit\''],
@@ -309,7 +309,7 @@ const IDENTITY = [
     ['{r.paused && <div style={{ fontSize: 11, fontWeight: 600, color: \'var(--amber, #F5A623)\', marginTop: 3 }}>{pauseWords({ siteName: siteName(locId), everywhere: r.paused.everywhere, until: r.paused.until })}</div>}', ''],
     [' disabled={!!r.paused} placeholder="0"', ' placeholder="0"'],
   ]],
-  // v5.11.91 (Drop 2): today's Recipes.jsx lives in produce/RecipesSite.jsx with the RecipeFactsLine import
+  // v5.11.93 (Drop 2): today's Recipes.jsx lives in produce/RecipesSite.jsx with the RecipeFactsLine import
   // and render line (the read only allergen line and Checked button, map 4.5); the move edits are undone first
   ['backoffice/sections/produce/RecipesSite.jsx', [
     ['                {draft.id && <RecipeFactsLine siteId={locId} recipeId={draft.id} menuItemId={draft.recipeType === \'MENU\' ? draft.menuItemId : null} />}\n', ''],
@@ -363,7 +363,9 @@ const MAIN_SHA = {
   'backoffice/sections/produce/BatchesSite.jsx': 'e1823ac578bc1964c1d77f8b9381273b84033fe408fe42bfc013705c6430d718',   // from the first import line (the moved file's comment is new)
   'backoffice/sections/OrderPad.jsx': '80255c600c51dde811b5bd2581cff78ad09219ca4d6c2c392203850601c3f9d3',
   'backoffice/sections/produce/RecipesSite.jsx': 'b24f073d44369903c38f7a317da52f95d6ba94058f4b7c080ed8d27fefe34f87',   // from the first import line (the moved file's comment is new)
-  'components/PosWasteModal.jsx': '124ba00c2c42d0bb8cc821d8c4e54e14be1a2c37e7a5584ca6b7e17cd7b6d1a8',
+  // v5.11.92: the drainer release changed this modal for every company (dish waste always goes
+  // through stock_record_waste, no browser fallback), so the pin is that text, not 5.11.84's.
+  'components/PosWasteModal.jsx': 'e5969f614a54d87dcd77498bdb126a5f718f8404b4504f5b74c55697a6f2d128',
 };
 
 test('one site companies: every edited screen is main\'s text once its inert Drop 1 edits are undone (sha256)', () => {

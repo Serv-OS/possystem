@@ -1,4 +1,4 @@
-// node --test: the recipe card read and its pure words (lib/recipeCard.js, v5.11.91, multi site
+// node --test: the recipe card read and its pure words (lib/recipeCard.js, v5.11.93, multi site
 // stock Drop 2, contract 3.6). The client is a stand in; card null hides the tab or button.
 
 import test from 'node:test';

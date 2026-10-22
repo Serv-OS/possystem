@@ -599,7 +599,7 @@ Deno.serve(async (req) => {
           if (auditErr) return auditFailed('The waste', { recorded: true });
         }
       } else if (action === 'stock.recipe_card') {
-        // v5.11.91 (multi site stock Drop 2, contract 3.6): the recipe card for staff (build, method,
+        // v5.11.93 (multi site stock Drop 2, contract 3.6): the recipe card for staff (build, method,
         // allergens, kcal; never a cost), read as the service role for THIS venue only
         // (stock_recipe_card(p_loc, p_menu_item_id), migration 20261025a). target_id is the till
         // product. A staff PIN is enough, as for the other stock reads. Before 20261025a the

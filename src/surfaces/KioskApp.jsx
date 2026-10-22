@@ -35,7 +35,7 @@ import { resolveItemPrice, variantFromPrice, refusesNoPriceLine } from '../lib/m
 import { depleteForSaleServer } from '../lib/stock/deplete';
 import KioskProductModal from './KioskProductModal';
 import KioskCategoryTile from './kiosk/KioskCategoryTile';
-// v5.11.91 (multi site stock Drop 2): the stock facts (allergens the recipe at this site adds, kcal)
+// v5.11.93 (multi site stock Drop 2): the stock facts (allergens the recipe at this site adds, kcal)
 // laid over the products, and the venue's Show calories setting (Ops locations.pos_settings).
 import { withFacts, showCalories as venueShowsCalories } from '../lib/menuStockFacts';
 import { kioskLineSlot } from '../lib/channelMenu';
@@ -185,10 +185,10 @@ function useKioskMenu(profile, locationId, tz = 'Europe/London', reloadKey = 0, 
           // menu_categories / menu_items select('*') reads above (tax_profile_id).
           supabase.from('tax_profiles').select('*').eq('location_id', locationId).order('sort_order'),
           supabase.from('tax_profile_lines').select('*').eq('location_id', locationId).order('sort_order'),
-          // v5.11.91: Show calories (Ops locations.pos_settings.show_calories). A failed read shows none.
+          // v5.11.93: Show calories (Ops locations.pos_settings.show_calories). A failed read shows none.
           supabase.from('locations').select('pos_settings').eq('id', locationId).maybeSingle().then(r => r, () => ({ data: null })),
         ]);
-        // v5.11.91 (multi site stock Drop 2): the stock facts laid over the products (the allergens
+        // v5.11.93 (multi site stock Drop 2): the stock facts laid over the products (the allergens
         // the recipe at this site adds, kcal). A failed facts read keeps the typed rows.
         const iRes = Array.isArray(iRes0?.data) && iRes0.data.length
           ? { ...iRes0, data: await withFacts(supabase, locationId, iRes0.data) }
@@ -465,7 +465,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
   // 18 Oct 2026 follow up: { screen, cartCount } for a re read that lands (kept just below the basket).
   const msmIdleRef = useRef(null);
   const { items, categories, menus, links, taxRates, taxProfiles, venueDefaultTaxProfileId, activeMenuId, loading: menuLoading, error: menuError, ratesState, retryRates, reloadDone: msmReloadDone } = useKioskMenu(profile, locationId, kioskTz, msmReload, msmIdleRef);
-  // v5.11.91 (multi site stock Drop 2): Show calories (pos_settings.show_calories), set by useKioskMenu.
+  // v5.11.93 (multi site stock Drop 2): Show calories (pos_settings.show_calories), set by useKioskMenu.
   const showKcal = useStore(s => s.kioskShowCalories) === true;
   // v5.7.34: local tax context for the unified seam — built from the kiosk's
   // own fetches (profiles + raw tax_profile_id columns + venue default).
@@ -1480,7 +1480,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
       categoryPhotos, categoryPhotoOrigin, idleTimeoutSec, lang,
       resetIdle, resetSession, idleWarning, warningCountdown,
       setIdlePaused, deviceLocationId: device?.location_id || null,
-      // v5.11.91 (multi site stock Drop 2): kcal and the 2,000 kcal line where the venue shows calories.
+      // v5.11.93 (multi site stock Drop 2): kcal and the 2,000 kcal line where the venue shows calories.
       showCalories: showKcal,
     };
     // 8 Oct 2026 (VAT audit, Fix 2): the VAT gate rides a context so LinkedScreenPay (a module level

@@ -29,7 +29,7 @@ import { memo, useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { resolveDefaultProductImage } from '../lib/productImage';
 import { supabase, isMock, ensureAuthToken } from '../lib/supabase';
 import { fetchMenuCategories, fetchMenuItems, fetch86List, fetchMenus, fetchMenuCategoryLinks } from '../lib/db';
-// v5.11.91 (multi site stock Drop 2): the stock facts (allergens the recipe at this site adds, kcal)
+// v5.11.93 (multi site stock Drop 2): the stock facts (allergens the recipe at this site adds, kcal)
 // laid over the products, and the venue's Show calories setting (pos_settings.show_calories).
 import { readAllRows } from '../lib/venueMenuRead';
 import { mergeStockFacts, showCalories as venueShowsCalories } from '../lib/menuStockFacts';
@@ -299,7 +299,7 @@ export default function MenuBoardSurface() {
       const [boardRes, catsRes, itemsRes, sixRes, factsRes, psRes] = await Promise.all([
         supabase.from('menu_boards').select('*').eq('id', effectiveBoardId).maybeSingle(),
         fetchMenuCategories(id), fetchMenuItems(id), fetch86List(id),
-        // v5.11.91: both optional. A failed facts read keeps the typed allergens (rows null, nothing
+        // v5.11.93: both optional. A failed facts read keeps the typed allergens (rows null, nothing
         // merged); a failed settings read keeps the last Show calories answer.
         readAllRows(() => supabase.from('menu_item_stock_facts').select('*').eq('location_id', id).order('menu_item_id')),
         supabase.from('locations').select('pos_settings').eq('id', id).maybeSingle().then((r) => r, () => ({ data: null, error: true })),
@@ -316,11 +316,11 @@ export default function MenuBoardSurface() {
       const next = {
         board,
         cats: catsRes?.data || [],
-        // v5.11.91: the stock facts laid over the products (never fewer allergens than typed).
+        // v5.11.93: the stock facts laid over the products (never fewer allergens than typed).
         items: mergeStockFacts(itemsRes?.data || [], factsRes?.rows || []),
         // A failed sold out read keeps the last sold out list, not "nothing is sold out".
         six: sixRes?.error ? new Set(dataRef.current?.six || []) : new Set((sixRes?.data || []).map((r) => r.item_id)),
-        // v5.11.91: Show calories; a failed read keeps the last answer, never flips it off.
+        // v5.11.93: Show calories; a failed read keeps the last answer, never flips it off.
         showCalories: psRes?.error || !psRes?.data ? (dataRef.current?.showCalories === true) : venueShowsCalories(psRes.data.pos_settings),
         menus: [], links: [], tz: null, children: [],
       };
@@ -384,7 +384,7 @@ export default function MenuBoardSurface() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'eighty_six', filter: `location_id=eq.${locId}` }, reload)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'menu_items', filter: `location_id=eq.${locId}` }, reload)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'menu_boards', filter: `location_id=eq.${locId}` }, reload)
-      // v5.11.91 (multi site stock Drop 2): a checked allergen or a new kcal figure reaches the board
+      // v5.11.93 (multi site stock Drop 2): a checked allergen or a new kcal figure reaches the board
       // without a push (the facts table is stock owned; the 90 s poll is the safety net).
       .on('postgres_changes', { event: '*', schema: 'public', table: 'menu_item_stock_facts', filter: `location_id=eq.${locId}` }, reload)
       .subscribe();
@@ -530,10 +530,10 @@ function PlaylistClock({ data, seq }) {
 // re-renders as a change starts, and a render here rebuilds theme and disp, which refits the
 // board; with the same data and board nothing has changed, so neither mounted board refits.
 export const BoardView = memo(function BoardView({ data, board }) {
-  // v5.11.91 (multi site stock Drop 2): the 2,000 kcal line rides the theme to the footer (kcalNote)
+  // v5.11.93 (multi site stock Drop 2): the 2,000 kcal line rides the theme to the footer (kcalNote)
   // when the venue shows calories, so the footer call stays the same for the TV and the preview.
   const theme = { ...DEFAULT_THEME, ...(board?.theme || {}), ...(data?.showCalories === true ? { kcalNote: true } : {}) };
-  // v5.11.91: Show calories is the venue's setting (data.showCalories, from pos_settings), not a board option.
+  // v5.11.93: Show calories is the venue's setting (data.showCalories, from pos_settings), not a board option.
   const disp = { ...DEFAULT_DISPLAY, ...(board?.display_options || {}), showCalories: data?.showCalories === true };
   const mode = board?.mode || 'menu';
   const orientation = board?.orientation || 'landscape';

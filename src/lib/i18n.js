@@ -97,7 +97,7 @@ const STRINGS = {
     'product.anythingElse.placeholder': 'e.g. no ice, light sauce, allergy notes…',
     'product.addToOrder': 'Add to order',
     'product.loading': 'Loading…',
-    // v5.11.91 (multi site stock Drop 2): calories and the stock recipe's allergen facts on every channel.
+    // v5.11.93 (multi site stock Drop 2): calories and the stock recipe's allergen facts on every channel.
     'product.kcal': '{n} kcal',
     'product.kcalNote': 'Adults need around 2,000 kcal a day',
     'product.mayContain': 'May contain: {list}',

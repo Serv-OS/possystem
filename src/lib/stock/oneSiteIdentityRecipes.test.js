@@ -1,6 +1,6 @@
 // src/lib/stock/oneSiteIdentityRecipes.test.js
 //
-// Multi site stock Drop 2 (v5.11.91, contract 3.1): a ONE SITE company keeps exactly today's Recipes
+// Multi site stock Drop 2 (v5.11.93, contract 3.1): a ONE SITE company keeps exactly today's Recipes
 // screen (Wing Fest Birmingham, one site, one recipe, is the check), plus only the read only allergen
 // line and the Checked button (RecipeFactsLine) under the ingredient lines.
 //

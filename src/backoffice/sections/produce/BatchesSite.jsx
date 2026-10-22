@@ -1,6 +1,6 @@
 /**
  * BatchesSite: the one site Batches screen (Produce, Batches), today's src/backoffice/sections/
- * Batches.jsx moved here whole in multi site stock Drop 2 (v5.11.91). A one site company sees exactly
+ * Batches.jsx moved here whole in multi site stock Drop 2 (v5.11.93). A one site company sees exactly
  * this screen; Batches.jsx is now the router that sends it here, and shows a multi site company the
  * Batch and prep grid (every site) or this screen inside the site tools (one site picked).
  *

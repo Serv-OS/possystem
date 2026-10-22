@@ -1,6 +1,6 @@
 /**
  * Batches (Produce > Batches, 'Batch and prep' for a multi site company): the router (multi site
- * stock Drop 2, v5.11.91, contract 3.1).
+ * stock Drop 2, v5.11.93, contract 3.1).
  *
  *   scope not loaded yet  the Loading line
  *   one site company      BatchesSite: today's screen, byte for byte

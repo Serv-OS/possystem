@@ -5,7 +5,7 @@
 // kept for the session. A site whose costing did not read is "failed", never zero: a product
 // there shows no GP figure rather than a wrong one (lib/msm/msmMargin.js).
 //
-// v5.11.91 (multi site stock Drop 2, contract 3.1): the costs come from the database
+// v5.11.93 (multi site stock Drop 2, contract 3.1): the costs come from the database
 // (stock_plate_costs through stockApi.plateCosts, paged by `next` until null), the same figure the
 // drainer and the reports use, built into the same Map(venueItemId -> cost) the grid, the product
 // sheet and Change prices read. A database before Drop 2 answers needsUpdate and today's maths run

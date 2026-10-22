@@ -20,7 +20,7 @@ import { t, tf } from '../../lib/i18n';
 import { money } from '../../lib/currency';
 import { itemName, itemDescription, groupName, optionName, useMenuText } from '../../lib/menuText';
 import { itemAllergenIds, kioskAllergenLabels, allergenIdsOfLists, sheetUnsafeIds } from '../../lib/kioskAllergens';
-// v5.11.91 (multi site stock Drop 2): kcal and the 2,000 kcal line where the venue shows calories;
+// v5.11.93 (multi site stock Drop 2): kcal and the 2,000 kcal line where the venue shows calories;
 // 'May contain' and 'Allergens being checked' from the stock recipe linked at this site.
 import { kcalWords, mayContainWords, KCAL_NOTE_KEY, ALLERGEN_CHECK_KEY } from '../../lib/menuStockFacts';
 import { KioskCloseButton, KioskPhoto } from './KioskChrome';
@@ -33,7 +33,7 @@ export default function KioskItemSheet(props) {
     stockErr, tryAdd, onCancel, showError, allItems = [], avoidAllergens = null, ackRequired = false, onPickAllergens,
     selections, nestedSelections, subGroupsCache, resolveOpt, showCalories = false,
   } = props;
-  const facts = item?.stockFacts || null;   // v5.11.91: the stock recipe's facts at this site, when any
+  const facts = item?.stockFacts || null;   // v5.11.93: the stock recipe's facts at this site, when any
 
   // The picked options' own allergens (options, nested picks), as the modal resolves them.
   const optionIds = useMemo(() => {

@@ -430,7 +430,7 @@ Deno.serve(async (req) => {
       }
     } catch { kitchenBatches = []; }
 
-    // ── Kitchen: the products with a live recipe link at this venue (v5.11.91, multi site stock
+    // ── Kitchen: the products with a live recipe link at this venue (v5.11.93, multi site stock
     //    Drop 2), for the Recipe cards sheet: [{ menu_item_id, name }], at most 500, names from
     //    menu_items. Isolated: a failure, or a database before the recipe tables, gives []. ──
     let kitchenRecipes: any[] = [];

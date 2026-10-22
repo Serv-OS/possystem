@@ -1,6 +1,6 @@
 /**
  * stock/prepList.js: the Prep list and the Batch and prep grid rules (multi site stock Drop 2,
- * v5.11.91, design 2.7, map 4.6, mockup scrBatch).
+ * v5.11.93, design 2.7, map 4.6, mockup scrBatch).
  *
  * PURE: no React, no Supabase, so node --test drives every line (prepList.test.js).
  *

@@ -11,7 +11,7 @@
  * of the 14 stays as its own lower case id: it is still listed on the item, it just can
  * never be picked on the allergen sheet.
  *
- * v5.11.91 (multi site stock Drop 2): the 14 ids, the alias table, normaliseAllergenId and
+ * v5.11.93 (multi site stock Drop 2): the 14 ids, the alias table, normaliseAllergenId and
  * isUkAllergen moved word for word to supabase/functions/_shared/allergenIds.js, so the till, the
  * edge functions and the SQL twin (stock_co__allergen_ids) share one list. Re exported here.
  */

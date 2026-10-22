@@ -25,7 +25,7 @@ import { kdsVisibleNote } from '../../lib/kioskStaffFlags';
 import { scaled, breakableWords, fitFontSize } from '../../lib/kds/kdsFit';
 import { BUMP_NOT_SAVED } from '../../lib/kds/kdsLinkHealth';
 import { C, SANS, MONO, LATE_PULSE, ghostBtn } from './kdsStyles';
-// v5.11.91 (multi site stock Drop 2): the recipe card for staff, from the item in the pop out.
+// v5.11.93 (multi site stock Drop 2): the recipe card for staff, from the item in the pop out.
 import { getActiveLocationSync } from '../../lib/supabase';
 import KdsRecipeCard from './KdsRecipeCard';
 
@@ -184,7 +184,7 @@ function TickBox({ ticked, onTick, size, big, disabled = false }) {
   );
 }
 
-// onRecipe (v5.11.91, the pop out only): opens the recipe card of the till product on this line.
+// onRecipe (v5.11.93, the pop out only): opens the recipe card of the till product on this line.
 function LineRow({ line, big, z, onTick, canTick, showTick, onRecipe = null }) {
   const done = line.bumped;
   return (
@@ -487,7 +487,7 @@ export function KdsTicketModal({ view, mins, settings, mode = 'live', onClose, o
   const timer = timerProps(view, mins, settings, mode);
   const canTick = mode === 'live' && !held;
   const note = kdsVisibleNote(view.note, show.notes);
-  // v5.11.91: the till product whose recipe card is open over this ticket (null: none).
+  // v5.11.93: the till product whose recipe card is open over this ticket (null: none).
   const [recipeFor, setRecipeFor] = useState(null);
 
   return (

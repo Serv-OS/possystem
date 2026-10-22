@@ -24,7 +24,7 @@ import { createLocationCatalog, putCatalog, uploadCatalogImage } from './hubrise
 import { buildCatalog } from './hubrise-map.ts';
 import { resyncInventory } from './hubrise-ingest.ts';
 import { catalogPayloadKey } from './hubriseAutoSync.js';
-// v5.11.91 (multi site stock Drop 2): the allergens the stock recipe at this site adds ride the
+// v5.11.93 (multi site stock Drop 2): the allergens the stock recipe at this site adds ride the
 // items into the catalogue (hubrise-map reads it.allergens; never fewer than typed). The menu
 // fingerprint (hubrise_menu_fingerprint, 20261025a) covers the facts table, so the automatic run
 // notices a facts change.
@@ -97,7 +97,7 @@ export async function pushCatalog(sb: any, loc: string, force = false, { onlyIfC
   ]);
   // Cooking-instruction groups live in the latest config-push snapshot, not a table.
   const instructionGroups = snapRow?.snapshot?.instructionGroupDefs || [];
-  // v5.11.91: the stock facts of this venue's products. Optional: a database before 20261025a has
+  // v5.11.93: the stock facts of this venue's products. Optional: a database before 20261025a has
   // no table, and a failed read publishes the typed allergens as before.
   let facts: any[] = [];
   try { facts = await readAll(() => sb.from('menu_item_stock_facts').select('*').eq('location_id', loc).order('menu_item_id'), 'stock facts'); }

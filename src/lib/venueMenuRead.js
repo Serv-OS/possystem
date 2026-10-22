@@ -21,7 +21,7 @@ import {
 } from './rowMapping.js';
 import { ITEM_EXTRA_KEYS } from './menuItemWrite.js';
 import { ownVenueRates, taggedVenueRows } from './venueTaxRates.js';
-// v5.11.91 (multi site stock Drop 2): the one merge rule for the stock facts (allergens the recipe
+// v5.11.93 (multi site stock Drop 2): the one merge rule for the stock facts (allergens the recipe
 // at this site adds, kcal), shared with the edge copy (venueMenuCore.js) so both snapshots agree.
 import { mergeStockFacts } from '../../supabase/functions/_shared/menuStockFacts.js';
 
@@ -55,7 +55,7 @@ export async function readAllRows(make, { page = PAGE, max = 50 } = {}) {
  *   venueDefaultTaxProfileId  undefined when the venue row could not be read
  *   itemIds            EVERY menu_items id at the venue, archived included (so a product
  *                      archived elsewhere is never mistaken for one this tab never saved)
- *   stockFacts         v5.11.91 (multi site stock Drop 2): the venue's menu_item_stock_facts rows
+ *   stockFacts         v5.11.93 (multi site stock Drop 2): the venue's menu_item_stock_facts rows
  *                      (the allergens and kcal the stock recipe linked at this site adds), or
  *                      null when they could not be read. Optional: a failed leg never fails the
  *                      read, and a database before 20261025a simply has none. The snapshot
@@ -83,7 +83,7 @@ export async function readVenueMenu(client, locationId) {
     readAllRows(() => from('menu_items').select('id').eq('location_id', locationId).order('id')),
     readAllRows(() => from('modifier_groups').select('*').eq('location_id', locationId).order('sort_order').order('id')),
     readAllRows(() => from('tax_rates').select('*').eq('location_id', locationId).eq('active', true).order('rate', { ascending: false }).order('id')),
-    // v5.11.91: the seventh leg, optional (not in `legs` below): the stock facts of this venue's products.
+    // v5.11.93: the seventh leg, optional (not in `legs` below): the stock facts of this venue's products.
     readAllRows(() => from('menu_item_stock_facts').select('*').eq('location_id', locationId).order('menu_item_id')),
   ]);
   const legs = { menus, categories: cats, items, 'item ids': ids, 'modifier groups': groups, 'tax rates': rates };
@@ -336,7 +336,7 @@ export function unsavedWords(unsaved) {
  * 27 Sep 2026 (tax root cause port): the rates are the read venue's own and nothing else
  * (read.locationId, lib/venueTaxRates.js taggedVenueRows). Every Leeds push from 26 Sep 06:47
  * carried Train Station's rates because the snapshot copied whatever the page held.
- * v5.11.91 (multi site stock Drop 2): the stock facts read with the menu (read.stockFacts) are laid
+ * v5.11.93 (multi site stock Drop 2): the stock facts read with the menu (read.stockFacts) are laid
  * over the products, so the tills get the allergens the recipe at this site adds and the kcal
  * figure. Never a cost or a method: the facts table holds neither.
  */

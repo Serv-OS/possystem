@@ -1,4 +1,4 @@
-// node --test: the stock facts every channel lays over its menu rows (v5.11.91, multi site stock
+// node --test: the stock facts every channel lays over its menu rows (v5.11.93, multi site stock
 // Drop 2, contract 3.6): the shared alias table and id order, the merge rule (never fewer
 // allergens than typed), Show calories, the kcal words through i18n, the paged facts read and
 // withFacts (never throws), and the four new i18n keys in every language block.

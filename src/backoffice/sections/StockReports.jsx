@@ -72,7 +72,7 @@ export default function StockReports({ siteId = null } = {}) {
   const [suppliers, setSuppliers] = useState([]);
   const [recipes, setRecipes] = useState([]);
   const [ctx, setCtx] = useState({ itemsById: {}, recipesByOutputItem: {} });
-  const [plateCosts, setPlateCosts] = useState(null);   // v5.11.91: { data: Map, needsUpdate, error } from stock_plate_costs
+  const [plateCosts, setPlateCosts] = useState(null);   // v5.11.93: { data: Map, needsUpdate, error } from stock_plate_costs
   // v5.11.65: From/To are venue days and the range runs business day to business day (06:00
   // to 06:00 by default), never the device's midnight or the UTC date. Until the venue clock
   // arrives the London default stands; it is replaced as soon as the config is read.
@@ -111,7 +111,7 @@ export default function StockReports({ siteId = null } = {}) {
     }).catch(() => {});
     const [{ data: its }, { data: recs }, c, sup, pc] = await Promise.all([
       fetchInventoryItems(loc), fetchRecipes(loc), buildCostingCtx(loc), fetchSuppliers(loc).catch(() => ({ data: [] })),
-      readPlateCostMap(stockApi, loc),   // v5.11.91 (Drop 2): the database's plate costs for Recipe GP
+      readPlateCostMap(stockApi, loc),   // v5.11.93 (Drop 2): the database's plate costs for Recipe GP
     ]);
     setItems(its || []); setRecipes(recs || []); setCtx(c); setSuppliers(sup?.data || []); setPlateCosts(pc); setLoading(false);
   }, [locId]);
@@ -317,7 +317,7 @@ function Valuation({ items, supplierName }) {
   );
 }
 /* ── 2. Recipe GP ───────────────────────────────────────────────────────────*/
-// v5.11.91 (multi site stock Drop 2, contract 3.1): the plate cost of a linked recipe is the
+// v5.11.93 (multi site stock Drop 2, contract 3.1): the plate cost of a linked recipe is the
 // database's (stock_plate_costs, the same figure the drainer and the recipe screens use). Today's
 // maths run only before the migration (needsUpdate). A read that failed shows no cost, never a wrong one.
 const plateCostOf = (pc, r, ctx) => {

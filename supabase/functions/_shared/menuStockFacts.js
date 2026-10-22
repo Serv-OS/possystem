@@ -1,6 +1,6 @@
 // supabase/functions/_shared/menuStockFacts.js
 //
-// The ONE merge rule for the stock facts a till product carries at one site (v5.11.91, multi site
+// The ONE merge rule for the stock facts a till product carries at one site (v5.11.93, multi site
 // stock Drop 2, contract 3.6; table menu_item_stock_facts, migration 20261025a). Every channel
 // reads the menu rows it always has and lays the facts over them here: the till (boot read and
 // Push to POS snapshot), the kiosk, online and QR, catering, the booking widget, the menu boards,

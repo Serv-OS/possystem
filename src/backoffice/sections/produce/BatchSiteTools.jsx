@@ -1,5 +1,5 @@
 /**
- * The strip over a MULTI SITE company's one site Batches screen (multi site stock Drop 2, v5.11.91,
+ * The strip over a MULTI SITE company's one site Batches screen (multi site stock Drop 2, v5.11.93,
  * contract 3.3): Prep list (today's suggested amounts, with Done ticks) and Print labels (the batch
  * label and the PPDS label on the Label printer role). The children (produce/BatchesSite.jsx,
  * today's screen) render under it unchanged.

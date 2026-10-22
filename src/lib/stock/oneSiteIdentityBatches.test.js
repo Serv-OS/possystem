@@ -1,6 +1,6 @@
 // src/lib/stock/oneSiteIdentityBatches.test.js
 //
-// Multi site stock Drop 2 (v5.11.91, contract 3.1): a ONE SITE company keeps exactly today's Batches
+// Multi site stock Drop 2 (v5.11.93, contract 3.1): a ONE SITE company keeps exactly today's Batches
 // screen. produce/BatchesSite.jsx is main 3cde2fbd's src/backoffice/sections/Batches.jsx moved whole.
 //
 //  1. The text proof: undo the path and name edits on the text from its first import line and the

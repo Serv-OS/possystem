@@ -275,7 +275,7 @@ export function ticketLine(item, index) {
     index,
     qty: Number(item?.qty) || 0,
     name: String(item?.name || 'Item'),
-    // v5.11.91 (multi site stock Drop 2): the till product, so the pop out can open its recipe card.
+    // v5.11.93 (multi site stock Drop 2): the till product, so the pop out can open its recipe card.
     itemId: item?.itemId ?? item?.id ?? null,
     mods,
     allergen: allergens.length ? allergens.join(' · ') : null,

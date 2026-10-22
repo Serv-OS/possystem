@@ -10,7 +10,7 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { money } from '../../lib/currency';
 import { dietaryBadges } from '../../lib/dietary';
-import { kcalWords, KCAL_NOTE_EN } from '../../lib/menuStockFacts';   // v5.11.91 (multi site stock Drop 2)
+import { kcalWords, KCAL_NOTE_EN } from '../../lib/menuStockFacts';   // v5.11.93 (multi site stock Drop 2)
 import { productImage } from '../../lib/productImage';
 import { resolveBoardPrice } from '../../lib/menuPricing';
 import { boardSizes, boardColors, sizeRuns, sizeName, packBoard, fitFont, scaledFont, boardSpacing } from '../../lib/menuBoardSections';
@@ -96,7 +96,7 @@ export function BoardHeader({ theme = {}, name = '', basePx = 0 }) {
   );
 }
 
-// v5.11.91 (multi site stock Drop 2): theme.kcalNote (set by the TV when the venue shows calories)
+// v5.11.93 (multi site stock Drop 2): theme.kcalNote (set by the TV when the venue shows calories)
 // adds the 2,000 kcal line once, in the footer.
 export function BoardFooter({ theme = {}, live = false, pages = 1, page = 0, basePx = 0 }) {
   const c = boardColors(theme);
@@ -157,7 +157,7 @@ function Under({ it, disp, sz, c }) {
           Allergens: {it.allergens.join(', ')}
         </div>
       )}
-      {/* v5.11.91 (multi site stock Drop 2): '<n> kcal' where the venue shows calories (from the stock recipe). */}
+      {/* v5.11.93 (multi site stock Drop 2): '<n> kcal' where the venue shows calories (from the stock recipe). */}
       {disp.showCalories && it.kcal != null && (
         <div style={{ fontSize: `${sz.item * 0.6}em`, color: c.muted, lineHeight: 1.3, marginTop: '.25em', opacity: 0.9 }}>
           {kcalWords(it.kcal)}

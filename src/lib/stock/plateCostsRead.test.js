@@ -1,5 +1,5 @@
 /**
- * plateCostsRead.test.js: plate costs from the database (v5.11.91, multi site stock Drop 2,
+ * plateCostsRead.test.js: plate costs from the database (v5.11.93, multi site stock Drop 2,
  * contract 3.1). Run: npm test. Synthetic ids and amounts: the repo is public.
  */
 

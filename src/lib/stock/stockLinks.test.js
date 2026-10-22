@@ -7,7 +7,7 @@
 //   - A supplier's Items tab opens an item's page, and an item's Suppliers tab opens a supplier's
 //     page, each only when the login can open that route.
 //   - The routers open a record asked for on arrival, on the multi site branch only: a one site
-//     company's branch comes first and is untouched (Drop 2, v5.11.91: Recipes too, { recipeId, tab }).
+//     company's branch comes first and is untouched (Drop 2, v5.11.93: Recipes too, { recipeId, tab }).
 // Run: npm test.
 
 import { test } from 'node:test';
@@ -21,7 +21,7 @@ const read = (rel) => fs.readFileSync(path.join(here, rel), 'utf8');
 const SCOPE = read('../../backoffice/StockScope.jsx');
 const ITEMS = read('../../backoffice/sections/StockItems.jsx');
 const SUPPLIERS = read('../../backoffice/sections/Suppliers.jsx');
-const RECIPES = read('../../backoffice/sections/Recipes.jsx');   // v5.11.91 (Drop 2): the recipes router opens a record too
+const RECIPES = read('../../backoffice/sections/Recipes.jsx');   // v5.11.93 (Drop 2): the recipes router opens a record too
 const SUPPLIER_ITEMS = read('../../backoffice/sections/stock/suppliers/SupplierItemsTab.jsx');
 const ITEM_SUPPLIERS = read('../../backoffice/sections/stock/items/ItemSuppliersTab.jsx');
 const USED_IN = read('../../backoffice/sections/stock/items/ItemUsedInTab.jsx');

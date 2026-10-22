@@ -1,5 +1,5 @@
 /**
- * Print labels (multi site stock Drop 2, v5.11.91, design 2.7 and 2.11, map 4.6 and 8.3 step 7,
+ * Print labels (multi site stock Drop 2, v5.11.93, design 2.7 and 2.11, map 4.6 and 8.3 step 7,
  * contract 3.3): the batch label and the PPDS label on the Label printer role (Hardware, Printers).
  *
  *   mode 'batch'  pick a recent batch made at this site (production_batches) or type the label:

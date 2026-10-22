@@ -1,6 +1,6 @@
 // supabase/functions/_shared/allergenIds.js
 //
-// The one allergen alias table (v5.11.91, multi site stock Drop 2, contract 3.6). Moved word for
+// The one allergen alias table (v5.11.93, multi site stock Drop 2, contract 3.6). Moved word for
 // word from src/lib/kioskAllergens.js (lines 16 to 58 as they were), so the till, the kiosk, the
 // edge functions and the SQL twin (stock_co__allergen_ids, migration 20261025a) share one list.
 // src/lib/kioskAllergens.js re exports everything here; its own functions stay there.

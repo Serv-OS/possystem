@@ -1,9 +1,11 @@
 /**
  * centralDepletion.test.js: the till's side of central stock depletion (v5.11.77, 20261018c), and
  * the pins that keep the release honest: the migration and its rollback exist, are ASCII only,
- * carry no begin or commit of their own and end with a visible check; deplete.js asks the venue
- * mode before it posts; the online checkout sends its options; the trading report sums signed
- * stock values; the changelog keeps the 5.11.77 entry. Run: npm test.
+ * carry no begin or commit of their own and end with a visible check; the online checkout sends its
+ * options; the trading report sums signed stock values; the changelog keeps the 5.11.77 entry.
+ * v5.11.92 (the drainer release, 20261023a): the till never posts sale stock in any mode, so
+ * tillShouldDeplete is false for every mode and every deplete.js entry point is a no op with no
+ * reads. Run: npm test.
  */
 
 import { test } from 'node:test';
@@ -27,10 +29,12 @@ test('no row, a missing RPC, a refusal or rubbish all read as browser: the old p
   assert.deepEqual(STOCK_MODES, ['browser', 'central', 'paused']);
 });
 
-test('the till depletes only at a browser venue; central and paused leave it to the database', () => {
-  assert.equal(tillShouldDeplete('browser'), true);
-  assert.equal(tillShouldDeplete('central'), false);
-  assert.equal(tillShouldDeplete('paused'), false);
+test('v5.11.92: the till never depletes, in any mode; the database books every channel', () => {
+  // was: browser true (the till path). Since 20261023a the database is the one stock rule, so a
+  // venue ServOS switched back to browser takes no sale stock off at all, never the till's copy.
+  for (const mode of [...STOCK_MODES, 'sideways', '', null, undefined, modeFromRpc({ data: 'browser' }), modeFromRpc(undefined)]) {
+    assert.equal(tillShouldDeplete(mode), false, `tillShouldDeplete(${JSON.stringify(mode)}) is false`);
+  }
   assert.equal(isCentralMode('central'), true);
   assert.equal(isCentralMode('paused'), true);
   assert.equal(isCentralMode('browser'), false);
@@ -40,7 +44,11 @@ test('the till depletes only at a browser venue; central and paused leave it to 
 test('health words: browser venue, healthy central venue, backlog, held and dead rows', () => {
   const b = healthWords({ mode: 'browser', pending: 0 });
   assert.equal(b.tone, 'muted');
-  assert.match(b.title, /at the till/);
+  // v5.11.92: a browser venue no longer takes stock off at the till; it takes none until switched back on
+  assert.equal(b.title, 'Stock does not come off at this venue');
+  assert.equal(b.sub, 'The database takes stock off every channel. This venue was switched off by ServOS, so no sale takes stock off here until it is switched back on.');
+  assert.doesNotMatch(b.title, /at the till/);
+  for (const t of [b.title, b.sub]) assert.doesNotMatch(t, /[\u2013\u2014]/, 'no dashes as punctuation');
   const h = healthWords({ mode: 'central', pending: 0, oldest_pending_s: 0, held: 0, dead: 0, done_24h: 12, needs_person: [] });
   assert.equal(h.tone, 'ok');
   assert.match(h.sub, /12 checks booked in the last 24 hours/);
@@ -74,19 +82,48 @@ test('held reasons are plain words with the thing to do', () => {
   assert.match(heldReason({ flags: ['netted_refund_failed'] }), /by hand/);
 });
 
-test('deplete.js asks the venue mode before every post, and skips at a central venue', () => {
+test('v5.11.92: deplete.js reads nothing, asks no venue mode and posts nothing (source)', () => {
   const src = read('./deplete.js');
-  assert.match(src, /import \{ modeFromRpc, tillShouldDeplete, MODE_TTL_MS \} from '\.\/centralMode\.js'/);
-  assert.match(src, /fetchStockVenueMode/);
-  // each till entry point checks before it does anything with stock
-  for (const fn of ['depleteForSale', 'reverseForSale']) {
-    const body = src.slice(src.indexOf(`export async function ${fn}(`));
-    const check = body.indexOf('tillShouldDeplete(await venueModeFor(loc))');
-    const post = Math.min(...['postStockMovement(', 'explodeBasket('].map((k) => body.indexOf(k)).filter((i) => i > 0));
-    assert.ok(check > 0 && check < post, `${fn} checks the venue mode before it posts`);
+  // was: it imported the recipe book, the data layer, explode.js and centralMode.js, read the venue
+  // mode once a minute and posted SALE_DEPLETION and RETURN rows at a browser venue.
+  assert.doesNotMatch(src, /^import /m, 'no imports at all: no supabase client, no recipes, no data layer');
+  for (const gone of ['recipes.js', 'data.js', 'explode.js', 'centralMode.js', 'supabase', 'fetchStockVenueMode', 'buildDepletionCtx', 'explodeBasket', 'postStockMovement', 'venueModeFor', 'tillShouldDeplete(', 'getActiveLocationSync', 'functions.invoke']) {
+    assert.ok(!src.includes(gone), `deplete.js no longer mentions ${gone}`);
   }
-  // any failure reading the mode is 'browser', never a thrown error into the sale path
-  assert.match(src, /catch \{ mode = 'browser'; \}/);
+  assert.doesNotMatch(src, /movementType|idempotencyKey|SALE_DEPLETION'|'RETURN'/, 'no movement is built here');
+  // every export callers use is still there, with the same names and arguments
+  assert.match(src, /^export async function depleteForSale\(_check\) \{ \/\* the database books every channel's checks \*\/ \}$/m);
+  assert.match(src, /^export async function reverseForSale\(_check, _refundItems, _refundId\) \{ \/\* the database books every refund \*\/ \}$/m);
+  assert.match(src, /^export function invalidateVenueMode\(\) \{/m);
+  assert.match(src, /^export function invalidateDepletionCtx\(\) \{/m);
+  assert.match(src, /^export function saleTimeOf\(check, nowMs = Date\.now\(\)\) \{/m);
+  // the store still calls them on every close and refund (store/index.js is not edited; the calls do nothing)
+  const store = read('../../store/index.js');
+  assert.match(store, /import \{ depleteForSale, reverseForSale \} from '\.\.\/lib\/stock\/deplete';/);
+});
+
+test('v5.11.92: every deplete.js entry point is a no op that never throws and never reads', async () => {
+  const dep = await import('./deplete.js');
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (...a) => { calls.push(a); throw new Error('no read may happen'); };
+  try {
+    const check = { id: 'chk-1', items: [{ uid: 'u1', itemId: 'latte', qty: 2, mods: [{ itemId: 'oat', qty: 1 }] }], orderType: 'takeaway', closedAt: Date.now() };
+    for (const args of [[check], [null], [undefined], [{}], [{ items: 'rubbish' }]]) {
+      assert.equal(await dep.depleteForSale(...args), undefined);
+      assert.equal(await dep.depleteForSaleServer(...args), undefined);
+    }
+    assert.equal(await dep.reverseForSale(check, [{ itemId: 'latte', refundQty: 1 }], 'r1'), undefined);
+    assert.equal(await dep.reverseForSale(null, null, null), undefined);
+    assert.equal(await dep.reverseForSale(), undefined);
+    assert.equal(dep.invalidateVenueMode(), undefined);
+    assert.equal(dep.invalidateDepletionCtx(), undefined);
+  } finally { globalThis.fetch = realFetch; }
+  assert.equal(calls.length, 0, 'nothing was fetched');
+  // saleTimeOf stays pure
+  const now = Date.parse('2026-10-19T12:00:00Z');
+  assert.equal(dep.saleTimeOf({ closedAt: now - 60000 }, now), '2026-10-19T11:59:00.000Z');
+  assert.equal(dep.saleTimeOf({ closedAt: now + 3600000 }, now), null);
 });
 
 test('v5.11.79: the kiosk and online browser stock calls are gone (the database books those checks)', () => {
@@ -146,4 +183,20 @@ test('the changelog keeps the 5.11.77 entry', async () => {
   assert.ok(e.items.some((t) => /20261018c/.test(t)), 'the changelog names the database update');
   assert.ok(e.items.some((t) => /Nothing changes at any venue until ServOS switches it on/.test(t)), 'and says what 5.11.77 shipped');
   for (const t of e.items) assert.doesNotMatch(t, /[–—]/, 'no dashes as punctuation');
+});
+
+test('v5.11.92: the version and the drainer release changelog entry, in plain words', async () => {
+  const { VERSION } = await import('../version.js');
+  const num = (v) => v.split('.').map(Number).reduce((a, n) => a * 1000 + n, 0);
+  assert.ok(num(VERSION) >= num('5.11.92'), `version ${VERSION} is at least 5.11.92`);
+  const { CHANGELOG } = await import('../changelog.js');
+  const e = CHANGELOG.find((x) => x.v === '5.11.92');
+  assert.ok(e, 'the 5.11.92 entry is there');
+  const all = e.items.join(' ');
+  assert.match(all, /20261023a/, 'names the database update');
+  assert.match(all, /The till no longer takes stock off itself at any venue/, 'the retired till path');
+  assert.match(all, /stock-deplete function now only answers that it is retired/, 'the retired edge path');
+  assert.match(all, /each discount now has a Kind/, 'the Kind on Discounts');
+  assert.match(all, /stock-deplete and stock-nightly edge function deploys, which Peter runs/, 'who runs the SQL and the deploys');
+  for (const t of e.items) assert.doesNotMatch(t, /[\u2013\u2014]/, 'no dashes as punctuation');
 });

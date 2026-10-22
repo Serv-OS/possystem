@@ -1,5 +1,5 @@
 /**
- * The Prep list of one site (multi site stock Drop 2, v5.11.91, design 2.7, map 4.6, contract 3.3).
+ * The Prep list of one site (multi site stock Drop 2, v5.11.93, design 2.7, map 4.6, contract 3.3).
  *
  * Today's suggested amounts, through recipes, less what is on the shelf (stock_prep_list: made
  * items whose how at this site is Made here, for the venue's business day). The kitchen ticks each

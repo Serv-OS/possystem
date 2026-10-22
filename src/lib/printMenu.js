@@ -16,7 +16,7 @@
 // Dietary badge resolution (GF/V/VG/DF from item tags) — shared with the
 // menu board + online storefront via src/lib/dietary.js (pure, no DOM).
 import { dietaryBadges } from './dietary';
-// v5.11.91 (multi site stock Drop 2): '<n> kcal' per item and the 2,000 kcal line, where the venue
+// v5.11.93 (multi site stock Drop 2): '<n> kcal' per item and the 2,000 kcal line, where the venue
 // shows calories (the figures come from the stock recipe linked at this site).
 import { kcalWords, KCAL_NOTE_EN } from '../../supabase/functions/_shared/menuStockFacts.js';
 
@@ -47,7 +47,7 @@ export const DEFAULT_PRINT_CONFIG = {
   showAllergens: true,
   showPrice: true,
   showDietary: false,        // GF/V/VG badges from tags
-  showCalories: false,       // '<n> kcal' per item and the 2,000 kcal line once (v5.11.91; starts from the venue's Show calories)
+  showCalories: false,       // '<n> kcal' per item and the 2,000 kcal line once (v5.11.93; starts from the venue's Show calories)
   leaders: true,             // dotted leader between name and price
   fontScale: 1,              // overall text size — 0.9 (S) | 1 (M) | 1.15 (L)
   itemGap: 6,                // px — vertical space below each item

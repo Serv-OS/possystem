@@ -1,6 +1,6 @@
 // src/surfaces/kds/KdsRecipeCard.jsx
 //
-// The recipe card for staff on the kitchen screen (v5.11.91, multi site stock Drop 2, contract 3.6):
+// The recipe card for staff on the kitchen screen (v5.11.93, multi site stock Drop 2, contract 3.6):
 // opened from the Recipe button on an item in the ticket pop out. It reads stock_recipe_card with
 // the KDS's own device session (the function's device branch: a bound kds, pos or handheld device
 // at its own venue; anyone else is refused and the card says so). The build and the method in the
