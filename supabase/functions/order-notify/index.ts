@@ -30,7 +30,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { resolveAndRender, wrapInEmailHtml } from '../_shared/template-resolver.ts';
 import { resolveSenderFrom, type Sender } from '../_shared/sending-domain.ts';
 import { collectionLabel } from '../_shared/collection-label.ts';
-import { isCounterCollectOrder, counterReadyText } from '../_shared/counterCollect.js';
+import { isCounterCollectOrder, counterReadyText, kioskTileOn } from '../_shared/counterCollect.js';
 import {
   parseNotifyPayload, scopeToOrder, scopeToOtherVenues, ledgerClaimFor, isMissingTableError,
   legacyLedgerBlocks, LEGACY_LEDGER_TABLE,
@@ -212,8 +212,6 @@ Deno.serve(async (req) => {
   if (event === 'ready' && String(order.type || '') === 'delivery') return json({ ok: true, skipped: 'delivery uses courier tracking' });
   // Drive thru (16 Sep 2026): keyed on the literal type, so every other order reads exactly as before.
   const driveThru = String(order.type || '') === 'drive-thru';
-  // v5.11.97 Counter collect (kiosk tile, counter QR link): "ready to collect at the counter".
-  const counterCollect = isCounterCollectOrder(order);
 
   // New kiosk design: the ready text only. Nothing is claimed for the skipped event.
   // The three design lookups run only for a kiosk order that has a phone or an email: with no
@@ -306,14 +304,19 @@ Deno.serve(async (req) => {
     currency = (loc as Record<string, unknown>)?.currency as string | null;
   } catch { /* name is best-effort */ }
   let companyId: string | null = null;
+  // v5.11.97 Counter collect: the venue's kiosk tile switch rides on the same read.
+  let venueKioskTile = false;
   try {
     const { data: pl } = await platformAdmin
       .from('locations')
-      .select('company_id')
+      .select('company_id, online_branding')
       .or(`ops_location_id.eq.${locationId},id.eq.${locationId}`)
       .maybeSingle();
     if (pl?.company_id) companyId = String(pl.company_id);
+    venueKioskTile = kioskTileOn(pl);
   } catch { /* templates fall back to defaults */ }
+  // v5.11.97 Counter collect (kiosk tile, counter QR link): "ready to collect at the counter".
+  const counterCollect = isCounterCollectOrder(order, { kioskTileOn: venueKioskTile });
 
   // Minutes between placing the order and the promised time. collection_time is
   // a venue wall-clock "HH:MM", so both sides are read in the venue timezone and

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   COUNTER_DEFAULT_LABEL, COUNTER_TYPE, counterLabel, counterCollect, counterCollectPatch, orderTypeChip, tipModuleFor,
 } from './counterOrder.js';
-import { isCounterCollectOrder, counterReadyText } from '../../supabase/functions/_shared/counterCollect.js';
+import { isCounterCollectOrder, counterReadyText, kioskTileOn } from '../../supabase/functions/_shared/counterCollect.js';
 import { parseCustomerLocation } from './customerHost.js';
 import { kioskTextAllowed, kioskSubmitArgs } from './kioskCheckout.js';
 import { kioskModeLabels, kioskDoneModel } from './kioskFlow.js';
@@ -66,16 +66,22 @@ test('the counter link opens the counter page; table links and the bare host are
 });
 
 test('the ready text goes to the counter for kiosk collection and marked web orders only', () => {
-  // Every kiosk pickup is at the counter: take away (and the tile, which books as take away), eat in anywhere.
-  assert.equal(isCounterCollectOrder({ source: 'kiosk', type: 'takeaway', customer: { phone: '+44' } }), true);
-  assert.equal(isCounterCollectOrder({ source: 'kiosk', type: 'dine-in', customer: {} }), true);
+  // Kiosk: the tile books as dine in, so only at a venue with the kiosk tile on, and only dine in.
+  assert.equal(isCounterCollectOrder({ source: 'kiosk', type: 'dine-in', customer: { phone: '+44' } }, { kioskTileOn: true }), true);
+  assert.equal(isCounterCollectOrder({ source: 'kiosk', type: 'takeaway', customer: { phone: '+44' } }, { kioskTileOn: true }), false);
+  // A venue that never switched it on: every kiosk text exactly as before.
+  assert.equal(isCounterCollectOrder({ source: 'kiosk', type: 'dine-in', customer: { phone: '+44' } }), false);
+  assert.equal(isCounterCollectOrder({ source: 'kiosk', type: 'takeaway' }), false);
+  assert.equal(kioskTileOn({ online_branding: { collection: { kiosk: true } } }), true);
+  assert.equal(kioskTileOn({ online_branding: { collection: { kiosk: 'yes', qr: true } } }), false);
+  assert.equal(kioskTileOn(null), false);
   assert.equal(isCounterCollectOrder({ source: 'online', type: 'dine-in', customer: { counter_collect: true } }), true);
   // Online ordering's own Collection, QR at a table, the till and delivery keep their own text.
   assert.equal(isCounterCollectOrder({ source: 'online', type: 'collection', customer: {} }), false);
   assert.equal(isCounterCollectOrder({ source: 'qr', type: 'dine-in', customer: { tableId: 'T5' } }), false);
   assert.equal(isCounterCollectOrder({ source: 'pos', type: 'takeaway', customer: {} }), false);
   assert.equal(isCounterCollectOrder({ source: 'online', type: 'delivery', customer: { counter_collect: true } }), false);
-  assert.equal(isCounterCollectOrder({ source: 'kiosk', type: 'delivery' }), false);
+  assert.equal(isCounterCollectOrder({ source: 'kiosk', type: 'delivery' }, { kioskTileOn: true }), false);
   assert.equal(isCounterCollectOrder(null), false);
 });
 

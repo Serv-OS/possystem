@@ -4,22 +4,27 @@
 // Pure, no Deno: imported by order-notify and tested from src/lib/counterOrder.test.js.
 // The setting and the order are described in src/lib/counterOrder.js.
 //
-// Every kiosk order the customer collects is picked up at the counter: take away, the Counter
-// collect tile (which books as take away) and eat in with no table. Eat in at a table never gets
-// a text (lib/kioskCheckout.js kioskTextAllowed), so the counter wording is true for every kiosk
-// text. A web order is Counter collect only when the counter link marked it
-// (customer.counter_collect), so online ordering's own Collection keeps its own text.
+// A kiosk Counter collect order books as eat in with no table ('dine-in'), and the kiosk's order
+// row carries nothing else (its submitOrder is held byte for byte by the card path guard). So a
+// kiosk 'dine-in' order reads as Counter collect only at a venue that switched the kiosk tile on
+// (online_branding.collection.kiosk): every other venue's kiosk text is exactly as before. A kiosk
+// order only carries a phone for the ready text when it has no table (kioskTextAllowed).
+// A web order is Counter collect only when the counter link marked it (customer.counter_collect),
+// so online ordering's own Collection keeps its own text.
 
-export function isCounterCollectOrder(order) {
+export function isCounterCollectOrder(order, { kioskTileOn = false } = {}) {
   if (!order) return false;
   const type = String(order.type || '');
+  if (String(order.source || '') === 'kiosk') return kioskTileOn === true && type === 'dine-in';
   if (type === 'delivery' || type === 'drive-thru') return false;
-  if (String(order.source || '') === 'kiosk') {
-    const c = order.customer && typeof order.customer === 'object' ? order.customer : {};
-    return !(type === 'dine-in' && String(c.tableNumber || c.table || order.table_label || '').trim());
-  }
   const c = order.customer && typeof order.customer === 'object' ? order.customer : {};
   return c.counter_collect === true;
+}
+
+/** The venue's kiosk tile switch from its platform locations row (src/lib/counterOrder.js). */
+export function kioskTileOn(platformRow) {
+  const c = platformRow && platformRow.online_branding && platformRow.online_branding.collection;
+  return !!(c && typeof c === 'object' && c.kiosk === true);
 }
 
 /** The ready text's fallback wording when the company has no template of its own. */
