@@ -146,6 +146,9 @@ const BRANDING_SUBFIELDS = new Map<string, Map<string, 's' | 'b'>>([
   ['portal', new Map<string, 's' | 'b'>([['scheme', 's'], ['background', 's'], ['show_hero', 'b']])],
   // MenuAppearance.jsx:287-291
   ['gift', new Map<string, 's' | 'b'>([['card_art_url', 's']])],
+  // v5.11.97 Counter collect (src/lib/counterOrder.js): the kiosk tile and the counter QR link,
+  // switched on per channel, with the venue's name for it. OnlineOrdering.jsx Counter collect box.
+  ['collection', new Map<string, 's' | 'b'>([['kiosk', 'b'], ['qr', 'b'], ['label', 's']])],
 ]);
 
 const BRANDING_MAX_BYTES = 64 * 1024;   // whole patch, serialised

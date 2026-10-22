@@ -18,6 +18,7 @@ import { renderTableQrJpeg, qrFileName, saveHref, buildQrPdf, savePdf } from '..
 import { prepMinutes } from '../../lib/prepTime';
 import { TIP_DEFAULTS, normaliseTipRule, parsePctList } from '../../lib/tipping';
 import MenuTranslations from './MenuTranslations';
+import CounterCollectCard from './CounterCollectCard';
 
 // Reuses the existing receipt-assets bucket with an online/ prefix so logo
 // + hero uploads don't collide with the receipt branding's logo/QR assets.
@@ -576,6 +577,10 @@ export default function OnlineOrdering({ setSection, canOpen = () => true }) {
         downloading={downloading} setDownloading={setDownloading}
         tipOnline={tipOnline} setTipOnline={setTipOnline}
         tipQr={tipQr} setTipQr={setTipQr}/>
+
+      {/* v5.11.97 Counter collect: kiosk tile + counter QR link, saved on its own button. */}
+      <CounterCollectCard key={row?.id || 'none'} S={S} row={row} opsLocId={opsLocId}
+        onSaved={(b) => setRow((r) => (r ? { ...r, online_branding: b } : r))}/>
 
       {/* Save */}
       <div style={{ display:'flex', alignItems:'center', gap:12 }}>

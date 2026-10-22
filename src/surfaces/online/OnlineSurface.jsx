@@ -48,6 +48,7 @@ import QrCheckout from '../qr/QrCheckout';
 import TabResumeScreen from '../qr/TabResumeScreen';
 import JoinTabScreen from '../qr/JoinTabScreen';
 import { money } from '../../lib/currency';
+import { COUNTER_TYPE, counterCollect, orderTypeChip } from '../../lib/counterOrder';
 import MenuHeader from '../menu/MenuHeader';
 import { readTheme, deriveVars, DISPLAY_FONT } from '../menu/menuTheme';
 
@@ -60,13 +61,17 @@ import { isLightBackground, sheetThemeFrom } from './sheetTheme';
 // Shows a persistent closed banner, swaps the "Open now" pill, and gates checkout:
 // canOrderAhead → checkout forced to a scheduled slot (no ASAP); otherwise the
 // cart stays browsable but pay is disabled with the reason.
-export default function OnlineSurface({ location, mode = 'online', tableId = null, tableLabel = null, closedInfo = null }) {
+export default function OnlineSurface({ location, mode = 'online', tableId = null, tableLabel = null, closedInfo = null, counter = false }) {
   // v5.5.145: same surface drives both /?surface=online (collection/delivery)
   // and /?surface=qr&t=T5 (table-side). Mode flips a few small pieces:
   // welcome screen, sticky header chip, hero pills, checkout component,
   // default order type. Everything else (menu / cart / item sheet / cart /
   // OrderTracker / 86 awareness) is identical.
   const isQr = mode === 'qr';
+  // v5.11.97 Counter collect (/counter, lib/counterOrder.js): this online page fixed on the
+  // venue's Counter collect, ASAP only, no table, with the venue's name for it.
+  const isCounter = !isQr && counter === true;
+  const counterName = isCounter ? counterCollect(location).label : null;
   const opsLocationId = location.ops_location_id || location.id;
   const onlineMenuId  = location.online_menu_id || null;
   // v5.11.81 round 1: start the venue's table service rule read as the QR menu loads, so the QR
@@ -143,7 +148,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   const [paymentNotice, setPaymentNotice] = useState(''); // 'cancel' | 'verify_failed' | ''
   // v5.5.145: QR mode skips the welcome/order-type picker — table-side is
   // always dine-in. Online mode keeps the existing welcome flow.
-  const [orderType, setOrderType]   = useState(isQr ? 'dine-in' : null);
+  const [orderType, setOrderType]   = useState(isQr ? 'dine-in' : (counter === true ? COUNTER_TYPE : null));
   const [showLoyalty, setShowLoyalty] = useState(false);
   const [loyalty, setLoyalty]       = useState(null); // { phone, verified, customer?, loyalty?, giftCards?, stampCards?, token? }
   const [cart, setCart]             = useState([]);
@@ -969,7 +974,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         )}
         <OrderTracker tz={location?.timezone || 'Europe/London'} orderRef={trackerRef} locationId={opsLocationId} theme={theme}
           trackKey={trackKey}
-          onClose={() => { setTrackerRef(null); setTrackKey(null); setUnverifiedNotice(null); if (!isQr) setOrderType(null); }}/>
+          onClose={() => { setTrackerRef(null); setTrackKey(null); setUnverifiedNotice(null); if (!isQr && !isCounter) setOrderType(null); }}/>
       </>
     );
   }
@@ -1042,16 +1047,16 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             {/* Order-type pill — online only (QR is always dine-in at the table) */}
             {!isQr && (
-              <button onClick={() => setOrderType(null)} className="op-btn" style={{
+              <button onClick={() => { if (!isCounter) setOrderType(null); }} className="op-btn" style={{
                 padding: '6px 12px', borderRadius: 99,
                 background: `${theme.accent}18`, color: theme.fg,
                 border: `1px solid ${theme.accent}55`,
                 fontSize: 12, fontWeight: 800, fontFamily: 'inherit', cursor: 'pointer',
                 display: 'inline-flex', alignItems: 'center', gap: 6,
               }}>
-                <span>{orderType === 'collection' ? '🥡' : '🚴'}</span>
-                <span>{orderType === 'collection' ? 'Collection' : 'Delivery'}</span>
-                <span style={{ opacity: 0.5, fontSize: 11 }}>↓</span>
+                <span>{orderTypeChip(orderType, { counterLabel: counterName }).icon}</span>
+                <span>{orderTypeChip(orderType, { counterLabel: counterName }).label}</span>
+                {!isCounter && <span style={{ opacity: 0.5, fontSize: 11 }}>↓</span>}
               </button>
             )}
 
@@ -1257,6 +1262,8 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           vatGate={vatGate} /* 8 Oct 2026: no payment while the rates are not loaded */
           onRetryRates={retryRates}
           orderAheadOnly={!!closedInfo}
+          counter={isCounter}
+          counterLabel={counterName}
           onClose={() => setShowCheckout(false)}
           onOpenLoyalty={() => { setShowCheckout(false); setShowLoyalty(true); }}
           onLoyaltyVerified={(ph, data) => { setLoyalty({ phone: ph, verified: true, ...data }); }}

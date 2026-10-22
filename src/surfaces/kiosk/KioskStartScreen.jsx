@@ -17,9 +17,12 @@ export default function KioskStartScreen({
   onOpenLanguage, showLanguage = true, showCancel = false, onCancel,
   tables, tableNumber = '',
   onEatIn, onTakeaway, onPickTable, onNoTable, onChangeMode,
+  counterLabel = null, onCounterCollect,
   footerKey = null, showBackToOrder = false, onBackToOrder,
 }) {
   const showTables = step === 'table' && !model.takeawayOnly;
+  // v5.11.97 Counter collect: a third tile with the venue's name for it (lib/counterOrder.js).
+  const tileCount = (model.takeawayOnly ? 1 : 2) + (counterLabel ? 1 : 0);
 
   return (
     <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', padding: '64px 56px 48px', animation: 'kfade .28s ease' }}>
@@ -41,7 +44,7 @@ export default function KioskStartScreen({
           </div>
 
           {!showTables && (
-            <div style={{ display: 'grid', gridTemplateColumns: model.takeawayOnly ? '1fr' : '1fr 1fr', gap: 28 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: `repeat(${tileCount}, minmax(0, 1fr))`, gap: 28 }}>
               {!model.takeawayOnly && (
                 <ModeTile
                   icon={<CutleryIcon size={92} color="var(--k2PrimaryInk)" />}
@@ -56,6 +59,14 @@ export default function KioskStartScreen({
                 sub={t('k2.start.takeawaySub')}
                 onClick={onTakeaway}
               />
+              {counterLabel ? (
+                <ModeTile
+                  icon={<BagIcon size={92} color="var(--k2PrimaryInk)" />}
+                  label={counterLabel}
+                  sub={t('k2.menu.collect')}
+                  onClick={onCounterCollect}
+                />
+              ) : null}
             </div>
           )}
 

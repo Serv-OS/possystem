@@ -30,6 +30,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { resolveAndRender, wrapInEmailHtml } from '../_shared/template-resolver.ts';
 import { resolveSenderFrom, type Sender } from '../_shared/sending-domain.ts';
 import { collectionLabel } from '../_shared/collection-label.ts';
+import { isCounterCollectOrder, counterReadyText } from '../_shared/counterCollect.js';
 import {
   parseNotifyPayload, scopeToOrder, scopeToOtherVenues, ledgerClaimFor, isMissingTableError,
   legacyLedgerBlocks, LEGACY_LEDGER_TABLE,
@@ -211,6 +212,8 @@ Deno.serve(async (req) => {
   if (event === 'ready' && String(order.type || '') === 'delivery') return json({ ok: true, skipped: 'delivery uses courier tracking' });
   // Drive thru (16 Sep 2026): keyed on the literal type, so every other order reads exactly as before.
   const driveThru = String(order.type || '') === 'drive-thru';
+  // v5.11.97 Counter collect (kiosk tile, counter QR link): "ready to collect at the counter".
+  const counterCollect = isCounterCollectOrder(order);
 
   // New kiosk design: the ready text only. Nothing is claimed for the skipped event.
   // The three design lookups run only for a kiosk order that has a phone or an email: with no
@@ -372,6 +375,8 @@ Deno.serve(async (req) => {
       if (!smsBody) {
         smsBody = event === 'confirmed'
           ? `Thanks ${firstName}! Order #${ref} confirmed at ${venueName}. Total: ${mergeData.order_total}.`
+          : counterCollect
+            ? counterReadyText({ firstName, ref, shortRef: kioskV2 ? shortRef(ref) : null, venueName })
           : kioskV2
             ? `Your order ${shortRef(ref)} is ready to collect at ${venueName}.`
             : driveThru
