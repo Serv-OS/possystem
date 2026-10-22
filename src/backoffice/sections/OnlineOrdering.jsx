@@ -343,6 +343,13 @@ export default function OnlineOrdering({ setSection, canOpen = () => true }) {
         qr:     normaliseTipRule(tipQr, TIP_DEFAULTS.qr),
       },
     });
+    // v5.11.97: stop at the first failed write, so the page never says "Save failed" after the
+    // QR and Counter collect settings below did save.
+    if (err || !data) {
+      setSaving(false);
+      setError(err ? (err.message || 'Save failed') : 'Update returned 0 rows — reload this page, the venue record may have moved.');
+      return;
+    }
 
     // v5.5.153: QR settings save now SURFACES errors to the BO UI instead
     // of silently swallowing them. Most common cause was the column

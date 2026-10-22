@@ -1558,7 +1558,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
       {/* Database fence stage 1, fix round 2: ScreenPay (which starts the reader on mount) mounts
           only once the server says this kiosk is linked (surfaces/kiosk/KioskPayLinkGate.jsx). */}
       {screen === 'pay' && <KioskPayLinkGate brandColor={brandColor} onBack={() => { setSubmitError(null); setScreen('gift'); }} onCancel={resetSession}><KioskVatGate brandColor={brandColor} onBack={() => { setSubmitError(null); setScreen('gift'); }} onCancel={resetSession}><ScreenPay brandColor={brandColor} total={grandTotal} loyaltyCredit={loyaltyCredit} giftCardCredit={giftCardCredit} promoCredit={promoCredit} promoApplied={promoApplied} locationId={locationId} kioskId={kioskId} cart={cart} submitting={submitting} error={submitError} onPaid={(paid) => submitOrder(customerName, customerPhone, paid)} ensureCheckId={ensureCheckId} heldPayment={heldCardPayment} onBack={() => { setSubmitError(null); setScreen('gift'); }} loyaltyRedemption={loyaltyRedemption} onCancel={resetSession} /></KioskVatGate></KioskPayLinkGate>}
-      {screen === 'done' && <ScreenDone brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} orderNumber={orderNumber} orderType={orderType} tableNumber={tableNumber} avgWaitMinutes={avgWaitMinutes} banner={bannerFor('done')} onDone={resetSession} />}
+      {screen === 'done' && <ScreenDone brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} orderNumber={orderNumber} orderType={orderType} tableNumber={tableNumber} counterPicked={counterPicked} avgWaitMinutes={avgWaitMinutes} banner={bannerFor('done')} onDone={resetSession} />}
 
       {/* v5.4.0: Allergen picker overlay */}
       {showAllergenPicker && (
@@ -4991,7 +4991,7 @@ function detailsInputStyle() {
 // ============================================================
 // SCREEN: DONE (order number reveal)
 // ============================================================
-function ScreenDone({ brandColor, customerName, customerPhone, orderNumber, orderType, tableNumber, avgWaitMinutes, banner, onDone }) {
+function ScreenDone({ brandColor, customerName, customerPhone, orderNumber, orderType, tableNumber, counterPicked = false, avgWaitMinutes, banner, onDone }) {
   const phoneMasked = customerPhone ? customerPhone.replace(/^(.{3}).+(.{3})$/, '$1*** *** $2') : null;
   // The Done screen uses a fixed celebration-green gradient regardless of kiosk theme,
   // so text must be white-on-dark in both light and dark modes.
@@ -5012,7 +5012,9 @@ function ScreenDone({ brandColor, customerName, customerPhone, orderNumber, orde
         {/* Short display form — must match what prints on the receipt in the customer's hand. */}
         <div style={{ fontSize: 'clamp(120px, 22vw, 220px)', fontWeight: 900, letterSpacing: '-0.05em', lineHeight: 0.9, marginBottom: 20, fontVariantNumeric: 'tabular-nums', color: W }}>{shortOrderRef(orderNumber) || '—'}</div>
         <div style={{ fontSize: 16, color: Wm, maxWidth: 360, lineHeight: 1.5, marginBottom: 8 }}>
-          {orderType === 'dineIn' && tableNumber ? 'Your order will be brought to table ' + tableNumber + '.' : 'We will call your number when ready.'}
+          {orderType === 'dineIn' && tableNumber ? 'Your order will be brought to table ' + tableNumber + '.'
+            : counterPicked ? "We will call your number when it's ready to collect at the counter."   /* v5.11.97 Counter collect */
+            : 'We will call your number when ready.'}
         </div>
         {avgWaitMinutes ? <div style={{ fontSize: 13, color: Wm, marginBottom: 40 }}>Average wait: {avgWaitMinutes} mins</div> : null}
         {phoneMasked && (
