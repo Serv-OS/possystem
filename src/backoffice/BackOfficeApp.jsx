@@ -1189,8 +1189,8 @@ export default function BackOfficeApp() {
           {section === 'stock-transfers' && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <StockTransfers orgCtx={orgCtx} siteId={id} />}</StockSiteGate>}
           {section === 'wastage'    && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <Wastage siteId={id} />}</StockSiteGate>}
           {section === 'stock-items' && <StockItems orgCtx={orgCtx} siteId={stockSiteId} />}
-          {section === 'recipes'    && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <Recipes siteId={id} />}</StockSiteGate>}
-          {section === 'batches'    && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <Batches siteId={id} />}</StockSiteGate>}
+          {section === 'recipes'    && <Recipes orgCtx={orgCtx} siteId={stockSiteId} />}
+          {section === 'batches'    && <Batches orgCtx={orgCtx} siteId={stockSiteId} />}
           {section === 'ops-overview'    && <OpsOverview setSection={setSection} />}
           {section === 'ops-temperature' && <OpsTemperature />}
           {section === 'ops-checklists'  && <OpsChecklists />}

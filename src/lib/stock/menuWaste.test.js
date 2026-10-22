@@ -210,7 +210,7 @@ test('the till modal never hides the menu, never refuses, and asks the database 
   const src = read('../../components/PosWasteModal.jsx');
   assert.doesNotMatch(src, /noRecipesAtAll/, 'the "No recipes are linked yet" dead end is gone');
   assert.doesNotMatch(src, />No recipes are linked yet/, 'rendered text, not the comment that says it is gone');
-  assert.match(src, /import \{ listWasteProducts, wasteTag, countLiveStockItems, stockPresence \} from '\.\.\/lib\/stock\/menuWaste'/, 'the list and the rules are the shared pure helpers');
+  assert.match(src, /import \{ listWasteProducts, wasteTag, stockPresence \} from '\.\.\/lib\/stock\/menuWaste'/, 'the list and the rules are the shared pure helpers');
   assert.match(src, /listWasteProducts\(menuItems, links\)/);
   assert.doesNotMatch(src, /wasteRefusal/, 'nothing refuses a waste any more');
   assert.doesNotMatch(src, /isn’t linked to a recipe yet/, 'the old refusal toast is gone');
@@ -218,11 +218,20 @@ test('the till modal never hides the menu, never refuses, and asks the database 
   // the till reads which products have a recipe, never the recipe book, on open
   assert.match(src, /fetchWasteLinks\(loc\)\.then/);
   assert.doesNotMatch(src.slice(src.indexOf('fetchWasteLinks(loc).then'), src.indexOf('fetchWasteLinks(loc).then') + 400), /buildDepletionCtx/);
-  // the one product's lines come from the database (preview), the recipe book only as a fallback
+  // the one product's lines come from the database (preview), and only from there
   assert.match(src, /previewMenuWaste\(\{ menuItemId: product\.id, qty: n \}, loc\)/);
-  assert.match(src, /if \(r\.missing\) \{\s*const \[c, inv\] = await Promise\.all\(\[buildDepletionCtx\(loc\), fetchInventoryItems\(loc\)\]\);/);
-  // the record is one call with the product id; no refusal branch before it
-  assert.match(src, /menuItemId: product\.id, productName: product\.label/);
+  // v5.11.92 (the drainer release, 20261023a): the fallback to the browser's recipe copy is gone. A
+  // missing database call is "not loaded": the failure line shows and Record is disabled.
+  assert.match(src, /if \(r\.missing\) \{ setLoadFailed\(true\); return; \}/);
+  assert.match(src, /if \(r\.error \|\| !r\.data\) \{ setLoadFailed\(true\); return; \}/);
+  for (const gone of ['buildDepletionCtx', 'explodeBasket', 'fetchInventoryItems', 'displayInUnits', 'countLiveStockItems', 'fromLegacy', 'setLegacy', 'legacy']) {
+    assert.ok(!src.includes(gone), `PosWasteModal no longer has ${gone}`);
+  }
+  assert.doesNotMatch(src, /from '\.\.\/lib\/stock\/(explode|recipes|data|uom)'/, 'no import of the browser stock engine or the item reads');
+  // the record is one call with the product id; no refusal branch before it; the database explodes
+  // the dish (stock_record_waste), so no ingredient lines are sent from the till
+  assert.match(src, /menuItemId: product\.id, productName: product\.label, qty: n, salePrice: product\.price,\n\s+reason, note: note\.trim\(\) \|\| null, source: 'pos',/);
+  assert.doesNotMatch(src, /ingredients:/, 'logMenuItemWaste is called without ingredients');
   assert.match(src, /const tag = product && shown \? wasteTag\(\{ hasStock, linked: product\.linked, rows: shown\.rows \}\) : null;/);
   assert.match(src, /\{hasStock && !p\.linked &&/);
   assert.match(src, /\{tag && <div[^>]*>\{wasteTagText\(/, 'a plain note why nothing comes off stock, never a refusal');
@@ -254,9 +263,10 @@ test('stock items with no recipe linked at all get one amber line under the head
 
 test('Training Mode: neither waste writer commits anything, and both screens say so', () => {
   // in Training Mode "NOTHING the device does is committed" (lib/trainingMode.js). Waste without stock made the
-  // product write reachable at every no stock venue, so both writers gate like deplete.js.
+  // product write reachable at every no stock venue, so both writers gate on Training Mode (as the
+  // till's old sale path did until v5.11.92 retired it; deplete.js now writes nothing at all).
   const src = read('./waste.js');
-  assert.match(src, /^import \{ isTrainingMode \} from '\.\.\/trainingMode';$/m, 'same import as stock/deplete.js');
+  assert.match(src, /^import \{ isTrainingMode \} from '\.\.\/trainingMode';$/m, 'the Training Mode gate import');
   const gate = String.raw`  if \(isMock \|\| !supabase\) return \{ data: null, error: null \};\n(?:  \/\/[^\n]*\n)*  if \(isTrainingMode\(\)\) return \{ data: null, error: null, training: true \};\n  locationId = await ensureLoc\(locationId\);`;
   assert.match(src, new RegExp(String.raw`export const logMenuItemWaste = async [^\n]*\n` + gate), 'logMenuItemWaste: gate right after the isMock guard, before any read or write');
   assert.match(src, new RegExp(String.raw`export const logWaste = async [^\n]*\n` + gate), 'logWaste: the same gate');

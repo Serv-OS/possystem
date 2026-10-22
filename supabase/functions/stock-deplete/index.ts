@@ -1,203 +1,33 @@
 // supabase/functions/stock-deplete/index.ts
 //
-// v5.5.583 — Server-side stock depletion for kiosk/online sales.
-// Kiosk & online run as anonymous users that can't read recipe/inventory tables
-// under RLS, so the client-side deplete (src/lib/stock/deplete.js) no-ops there.
-// This function runs with the service role: it explodes the sold menu items through
-// their recipes into ingredient quantities and posts SALE_DEPLETION (or RETURN)
-// movements to the stock ledger via post_stock_movement (idempotent per check+item).
-// Mirrors the pure logic in src/lib/stock/{uom,explode}.js — keep them in step.
+// RETIRED (drainer release, migration 20261023a, multi site stock map 8.1 step 6, contract 3.4).
 //
-// POST { location_id, check_id, items:[{itemId, qty}], reverse?:bool }
-// Auth: verify_jwt=false. v5.11.76 (18 Oct 2026, stock fences): served only for the service role,
-// a session the database says can reach the venue (Back Office login, owner, super admin, or a
-// till, kiosk or ops tablet bound to it). v5.11.77: the "paid online order" door is gone (a
-// stranger could write the check it trusted with the public key). Everything else is refused
-// (403) before any read. The rule and its reasons: ../_shared/stockDepleteCaller.js. Needs a
-// REDEPLOY to take effect.
-
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { authoriseStockDeplete } from '../_shared/stockDepleteCaller.js';
+// The database takes stock off every order channel itself (the stock outbox and its drainer,
+// 20261018c, rebuilt in 20261023a): the till, the card reader, kiosk, online, QR, catering, pay at
+// table, MPOS, HubRise and ezCater checks, their refunds and voids. Every venue is central since
+// 20261019, so this function had nothing left to do: the database's central door already answered
+// every movement it posted with skipped central.
+//
+// What it does now: any POST answers 200 { "retired": true } with the same CORS headers as before;
+// OPTIONS answers the CORS preflight as before; any other method is refused (405) as before. No
+// database client is made, no key or login is read, the request body is not read, nothing is
+// read or written. Old kiosk builds still call it after a sale and never read the answer, so for
+// them the call is done.
+//
+// Gone with it: its own copy of the unit table and the recipe rule, the unpaged reads of every
+// stock and recipe table of a venue, the movement posts, and the caller rule (its shared file is
+// deleted: only this function and its test used it).
+// Proven in node by src/lib/stock/stockDepleteFn.test.js.
+//
+// Deploy (Peter): npx supabase functions deploy stock-deplete --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
 
-// ── unit factors (mirror src/lib/stock/units.js) ─────────────────────────────
-const UNITS: Record<string, { dim: string; toCanonical: number }> = {
-  each: { dim: 'COUNT', toCanonical: 1 }, dozen: { dim: 'COUNT', toCanonical: 12 },
-  mg: { dim: 'WEIGHT', toCanonical: 0.001 }, g: { dim: 'WEIGHT', toCanonical: 1 }, kg: { dim: 'WEIGHT', toCanonical: 1000 },
-  oz: { dim: 'WEIGHT', toCanonical: 28.349523125 }, lb: { dim: 'WEIGHT', toCanonical: 453.59237 },
-  ml: { dim: 'VOLUME', toCanonical: 1 }, cl: { dim: 'VOLUME', toCanonical: 10 }, l: { dim: 'VOLUME', toCanonical: 1000 },
-  floz: { dim: 'VOLUME', toCanonical: 28.4130625 }, pt: { dim: 'VOLUME', toCanonical: 568.26125 }, gal: { dim: 'VOLUME', toCanonical: 4546.09 },
-};
-const norm = (u: string) => String(u ?? '').trim().toLowerCase();
-function globalFactor(a: string, b: string): number | null {
-  const ua = UNITS[norm(a)], ub = UNITS[norm(b)];
-  if (!ua || !ub || ua.dim !== ub.dim) return null;
-  return ua.toCanonical / ub.toCanonical;
-}
-// convert with same-dimension factors + per-item cross-dimension bridges (BFS)
-function convert(qty: number, from: string, to: string, bridges: any[] = []): number {
-  const f = norm(from), t = norm(to);
-  if (f === t) return qty;
-  const direct = globalFactor(f, t);
-  if (direct != null) return qty * direct;
-  const nodes = new Set([f, t]);
-  for (const b of bridges) { nodes.add(norm(b.fromUnit)); nodes.add(norm(b.toUnit)); }
-  const arr = [...nodes];
-  const adj = new Map<string, { to: string; factor: number }[]>();
-  const add = (a: string, b: string, fac: number) => { if (!(fac > 0)) return; (adj.get(a) ?? adj.set(a, []).get(a)!).push({ to: b, factor: fac }); };
-  for (let i = 0; i < arr.length; i++) for (let j = 0; j < arr.length; j++) if (i !== j) { const g = globalFactor(arr[i], arr[j]); if (g != null) add(arr[i], arr[j], g); }
-  for (const b of bridges) { const fu = norm(b.fromUnit), tu = norm(b.toUnit), fq = Number(b.fromQty), tq = Number(b.toQty); if (fu && tu && fq > 0 && tq > 0) { add(fu, tu, tq / fq); add(tu, fu, fq / tq); } }
-  const q = [[f, 1]] as [string, number][]; const seen = new Set([f]);
-  while (q.length) { const [u, acc] = q.shift()!; if (u === t) return qty * acc; for (const e of adj.get(u) ?? []) if (!seen.has(e.to)) { seen.add(e.to); q.push([e.to, acc * e.factor]); } }
-  throw new Error(`no conversion ${f}->${t}`);
-}
-function toBase(qty: number, token: string, item: any): number {
-  if (typeof token === 'string' && token.startsWith('@')) {
-    const id = token.slice(1);
-    const fmt = (item.formats || []).find((x: any) => String(x.id) === id);
-    if (!fmt || !(Number(fmt.qtyInBase) > 0)) throw new Error('unknown pack');
-    return qty * Number(fmt.qtyInBase);
-  }
-  return convert(qty, token, item.baseUnit, item.itemConversions || []);
-}
-
-const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
-const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
-const ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY') ?? '';
-
-async function buildCtx(sb: any, loc: string) {
-  const [items, convs, packs, links, recipes, lines] = await Promise.all([
-    sb.from('inventory_items').select('id, base_unit').eq('location_id', loc),
-    sb.from('inventory_item_conversions').select('*').eq('location_id', loc),
-    sb.from('item_packaging_formats').select('id, inventory_item_id, qty_in_base').eq('location_id', loc),
-    sb.from('menu_item_recipes').select('menu_item_id, recipe_id, portion').eq('location_id', loc),
-    sb.from('recipes').select('id, wastage_pct').eq('location_id', loc).is('archived_at', null),
-    sb.from('recipe_lines').select('recipe_id, component_item_id, qty, unit, usable_pct, order_types').eq('location_id', loc),
-  ]);
-  const convBy: Record<string, any[]> = {};
-  (convs.data || []).forEach((c: any) => { (convBy[c.inventory_item_id] ??= []).push({ fromQty: Number(c.from_qty), fromUnit: c.from_unit, toQty: Number(c.to_qty), toUnit: c.to_unit }); });
-  const fmtBy: Record<string, any[]> = {};
-  (packs.data || []).forEach((p: any) => { (fmtBy[p.inventory_item_id] ??= []).push({ id: p.id, qtyInBase: Number(p.qty_in_base) }); });
-  const itemsById: Record<string, any> = {};
-  (items.data || []).forEach((it: any) => { itemsById[it.id] = { baseUnit: it.base_unit, itemConversions: convBy[it.id] || [], formats: fmtBy[it.id] || [] }; });
-  const wastageBy: Record<string, number> = {};
-  (recipes.data || []).forEach((r: any) => { wastageBy[r.id] = Number(r.wastage_pct) || 0; });
-  const linesBy: Record<string, any[]> = {};
-  (lines.data || []).forEach((l: any) => { (linesBy[l.recipe_id] ??= []).push({ componentItemId: l.component_item_id, qty: Number(l.qty), unit: l.unit, usablePct: l.usable_pct == null ? 100 : Number(l.usable_pct), orderTypes: Array.isArray(l.order_types) && l.order_types.length ? l.order_types : null }); });
-  const menuRecipes: Record<string, any> = {};
-  (links.data || []).forEach((k: any) => { menuRecipes[String(k.menu_item_id)] = { lines: linesBy[k.recipe_id] || [], portion: Number(k.portion) || 1, wastagePct: wastageBy[k.recipe_id] || 0 }; });
-  return { itemsById, menuRecipes };
-}
-
-// A line with no order_types (null/[]) applies to every order type; a tagged line only to the
-// listed types. No order type → default to dine-in/base (mirror src/lib/stock/costing.js).
-// Drive thru (16 Sep 2026): 'drivethru', 'drive_thru', 'driveThru' and 'drive-through' fold to
-// 'drive-thru' (separators are stripped first). A line tagged 'takeaway' also applies to a
-// drive-thru sale UNLESS some line on the same recipe names 'drive-thru', in which case the
-// recipe has its own drive-thru packaging and only lines tagged 'drive-thru' (or untagged)
-// apply. Only the literal 'drive-thru' order type takes that branch; every other type reads
-// exactly its own tag. Same logic as costing.js normaliseOrderType, recipeNamesOrderType and
-// lineAppliesToOrderType: change both together. This function needs a REDEPLOY to pick it up.
-const ORDER_TYPE_ALIASES: Record<string, string> = { dinein: 'dine-in', eatin: 'dine-in', counter: 'dine-in', bar: 'dine-in', drivethru: 'drive-thru', drivethrough: 'drive-thru' };
-function normaliseOrderType(orderType: string | null): string {
-  if (!orderType) return 'dine-in';
-  const lower = String(orderType).trim().toLowerCase();
-  return ORDER_TYPE_ALIASES[lower.replace(/[\s_-]/g, '')] || lower;
-}
-function recipeNamesOrderType(recipeLines: any[] | null, orderType: string): boolean {
-  if (!Array.isArray(recipeLines)) return false;
-  return recipeLines.some((l: any) => Array.isArray(l?.orderTypes) && l.orderTypes.includes(orderType));
-}
-function lineAppliesToOrderType(line: any, orderType: string | null, recipeLines: any[] | null = null): boolean {
-  const ot = line?.orderTypes;
-  if (!Array.isArray(ot) || ot.length === 0) return true;
-  const key = normaliseOrderType(orderType);
-  if (ot.includes(key)) return true;
-  if (key === 'drive-thru' && ot.includes('takeaway')) return !recipeNamesOrderType(recipeLines, 'drive-thru');
-  return false;
-}
-
-function explode(items: { itemId: string; qty: number }[], ctx: any, orderType: string | null = null): Record<string, number> {
-  const out: Record<string, number> = {};
-  for (const it of items) {
-    const mr = ctx.menuRecipes[String(it.itemId)];
-    if (!mr) continue;
-    const n = Number(it.qty) || 0;
-    if (n <= 0) continue;
-    const mult = n * (Number(mr.portion) || 1) * (1 + (Number(mr.wastagePct) || 0) / 100);
-    for (const line of mr.lines || []) {
-      if (!lineAppliesToOrderType(line, orderType, mr.lines)) continue;
-      const comp = ctx.itemsById[line.componentItemId];
-      if (!comp) continue;
-      let qtyBase: number;
-      try { qtyBase = toBase(Number(line.qty), line.unit, comp); } catch { continue; }
-      const usable = (line.usablePct == null ? 100 : Number(line.usablePct)) / 100;
-      if (!(usable > 0)) continue;
-      out[line.componentItemId] = (out[line.componentItemId] || 0) + (qtyBase / usable) * mult;
-    }
-  }
-  return out;
-}
-
-Deno.serve(async (req) => {
+function handler(req: Request): Response {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
-  let body: any;
-  try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
+  return json({ retired: true });
+}
 
-  const sb = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { autoRefreshToken: false, persistSession: false } });
-  // Who is asking (v5.11.76). The caller's own token asks the database whether it reaches the venue.
-  const apikey = req.headers.get('apikey') || ANON_KEY;
-  const auth = await authoriseStockDeplete({
-    authorization: req.headers.get('Authorization'),
-    serviceKey: SERVICE_ROLE,
-    makeCallerDb: (token: string) => createClient(SUPABASE_URL, apikey, {
-      global: { headers: { Authorization: `Bearer ${token}` } },
-      auth: { autoRefreshToken: false, persistSession: false },
-    }),
-    body,
-  });
-  if (!auth.ok) {
-    if (auth.status === 403) console.warn('[stock-deplete] refused', JSON.stringify({ reason: auth.reason, location_id: String(body?.location_id || '').slice(0, 40) }));
-    return json({ error: auth.error, code: 'stock_caller', reason: auth.reason }, auth.status);
-  }
-  const loc = auth.locationId;
-  const checkId = auth.checkId;
-  const items = auth.items;          // the service role or a session that reaches the venue
-  const reverse = auth.reverse;
-  const orderType = auth.orderType;  // scopes order-type-specific lines (e.g. takeaway cup)
-
-  try {
-    const ctx = await buildCtx(sb, loc);
-    if (!Object.keys(ctx.menuRecipes).length) return json({ ok: true, depleted: 0, note: 'no recipes' });
-    // v5.5.935: modifier sub-items (a chosen bun) ride in as mods[{itemId,qty}] and
-    // deplete like extra lines — same rule as the client engine.
-    const flat: { itemId: string; qty: number }[] = [];
-    for (const i of items as any[]) {
-      const q = Number(i.qty) || 1;
-      flat.push({ itemId: i.itemId, qty: q });
-      for (const m of (Array.isArray(i.mods) ? i.mods : [])) {
-        if (m && m.itemId) flat.push({ itemId: m.itemId, qty: (Number(m.qty) || 1) * q });
-      }
-    }
-    const agg = explode(flat, ctx, orderType);
-    let posted = 0;
-    for (const [invId, qtyBase] of Object.entries(agg)) {
-      if (!(qtyBase > 0)) continue;
-      const { error } = await sb.rpc('post_stock_movement', {
-        p_location_id: loc, p_inventory_item_id: invId,
-        p_qty_base: reverse ? qtyBase : -qtyBase,
-        p_movement_type: reverse ? 'RETURN' : 'SALE_DEPLETION',
-        p_unit_cost: null, p_source_type: reverse ? 'online_refund' : 'online_sale', p_source_id: checkId,
-        p_idempotency_key: `${reverse ? 'return' : 'sale'}:${checkId}:${invId}`,
-        p_occurred_at: null, p_created_by: null, p_notes: null,
-      });
-      if (!error) posted++;
-    }
-    return json({ ok: true, depleted: posted });
-  } catch (e) {
-    return json({ error: e instanceof Error ? e.message : String(e) }, 500);
-  }
-});
+Deno.serve(handler);

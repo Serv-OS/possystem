@@ -24,6 +24,11 @@ import { createLocationCatalog, putCatalog, uploadCatalogImage } from './hubrise
 import { buildCatalog } from './hubrise-map.ts';
 import { resyncInventory } from './hubrise-ingest.ts';
 import { catalogPayloadKey } from './hubriseAutoSync.js';
+// v5.11.93 (multi site stock Drop 2): the allergens the stock recipe at this site adds ride the
+// items into the catalogue (hubrise-map reads it.allergens; never fewer than typed). The menu
+// fingerprint (hubrise_menu_fingerprint, 20261025a) covers the facts table, so the automatic run
+// notices a facts change.
+import { mergeStockFacts } from './menuStockFacts.js';
 
 const EMPTY_CATALOG = { variants: [], categories: [], products: [], option_lists: [], deals: [], discounts: [], charges: [] };
 const PAGE = 1000;
@@ -92,6 +97,12 @@ export async function pushCatalog(sb: any, loc: string, force = false, { onlyIfC
   ]);
   // Cooking-instruction groups live in the latest config-push snapshot, not a table.
   const instructionGroups = snapRow?.snapshot?.instructionGroupDefs || [];
+  // v5.11.93: the stock facts of this venue's products. Optional: a database before 20261025a has
+  // no table, and a failed read publishes the typed allergens as before.
+  let facts: any[] = [];
+  try { facts = await readAll(() => sb.from('menu_item_stock_facts').select('*').eq('location_id', loc).order('menu_item_id'), 'stock facts'); }
+  catch (e) { console.warn('[hubrise-catalog] stock facts not read, typed allergens published:', e instanceof Error ? e.message : e); facts = []; }
+  const itemsWithFacts = mergeStockFacts(items || [], facts) as any[];
 
   // Menu selection: if the operator picked which menu(s) publish to HubRise, restrict to
   // those and resolve each item's DELIVERY price from that menu's tier; otherwise publish
@@ -126,9 +137,9 @@ export async function pushCatalog(sb: any, loc: string, force = false, { onlyIfC
   // cached on hubrise_connections.catalog_image_ids, keyed per item on the source URL at
   // upload time. Same URL -> reuse the id; changed URL -> re-upload.
   let cached: Record<string, { id: string; url: string }> = (!force && conn.catalog_image_ids) || {};
-  const wanted = (items || []).filter((it: any) => publishedProduct(it) && (!publishIds || publishIds.has(String(it.id))) && it.image);
+  const wanted = itemsWithFacts.filter((it: any) => publishedProduct(it) && (!publishIds || publishIds.has(String(it.id))) && it.image);
   const build = (imageIdByItem: Record<string, string>) => buildCatalog({
-    categories: cats, items: items || [], modifierGroups: groups || [],
+    categories: cats, items: itemsWithFacts, modifierGroups: groups || [],
     currency: conn.currency || 'GBP', publishIds, itemMenuId, channel: 'delivery',
     instructionGroups, imageIdByItem, taxRates: taxRates || [],
   });

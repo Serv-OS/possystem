@@ -9,6 +9,7 @@ import {
   parseCsv, chunk, ratePercent, parseRatePercent, CSV_COLUMNS, IMPORT_KINDS, STAGE_KIND, ALIASES, FIELD_WORDS, headKey,
   detectSource, fileKinds, rowsFor, csvRowsFor, mapNory, mapMarketMan, mapFile, missingWords, unusedWords,
   unitOf, numberOf, moneyOf, vatRateOf, yesNoOf, timeOf, daysOf, packOf, typeOf, allergensOf, siteLookup, sitesOf,
+  recipeKindOf, foodKindOf, pctOf, orderTypesOf,
   KIND_BLOCK, fileRowOf, toStageRows, stageFile,
 } from './importMappers.js';
 
@@ -23,8 +24,9 @@ const SHAPES = {
   supplier_item: ['supplier', 'item', 'item_sku', 'supplier_sku', 'supplier_product_name', 'pack_description', 'pack_qty', 'inner_qty', 'inner_unit',
     'pack_price', 'currency', 'purchase_vat_rate', 'price_includes_tax', 'site'],
   par: ['item', 'item_sku', 'site', 'par_level', 'reorder_point', 'min_level'],
-  recipe: ['name'],
+  recipe: ['name', 'kind', 'food_kind', 'yield_qty', 'yield_unit', 'output_item', 'lines', 'sites', 'till_product'],
 };
+const LINE_KEYS = ['item', 'item_sku', 'qty', 'unit', 'usable_pct', 'order_types'];
 const sameKeys = (row) => assert.deepEqual(Object.keys(row.data).sort(), [...SHAPES[row.kind]].sort(), `${row.kind} row ${row.row_no}`);
 
 // -- the sample files ------------------------------------------------------------------------
@@ -78,7 +80,26 @@ const MARKETMAN_FILE = [
   'Coffee beans 1kg,Coffee,KG,6,2,Demo Roasters,DR-BEAN,1,,18.50,,0,,North Site,18.5',
 ].join('\n');
 
-const RECIPES_FILE = ['Recipe name,Ingredient,Qty,Unit', 'Flat white,Whole milk 2L,180,ml', 'Flat white,Coffee beans 1kg,18,g'].join('\n');
+// A ServOS recipe file (Drop 2): one ingredient a line; the recipe's own fields ride on any of its
+// lines; a line with no recipe name belongs to the recipe above it.
+const RECIPES_FILE = [
+  'Recipe name,Kind,Type,Ingredient,Qty,Unit,Usable %,Order types,Yield,Yield unit,Made item,Sites,Till product',
+  'Flat white,Dish,Drink,Whole milk 2L,180,ml,,,1,portion,,North Site; South Site,Flat White',
+  ',,,Coffee beans 1kg,18,g,,takeaway; dine-in,,,,,',
+  'Tomato sauce,Batch,Food,Plum tomatoes,2.5,kg,92%,,2,l,Tomato sauce,All,',
+  'Tomato sauce,,,Olive oil,100,ML,,,,,,,',
+  'Tomato sauce,,,Basil,x,g,,,,,,,',
+].join('\n');
+const NORY_RECIPES = [
+  'Recipe name,Recipe type,Ingredient,Quantity,UOM,Portions',
+  'House granola,Sub recipe,Rolled oats,1.2,KG,10',
+  'House granola,Sub recipe,Honey,200,g,10',
+].join('\n');
+const MARKETMAN_RECIPES = [
+  'Menu Item,Ingredient,Quantity,UOM Name,Portions',
+  'Americano,Coffee beans 1kg,18,GR,1',
+  'Americano,Paper cups 12oz,1,EA,1',
+].join('\n');
 
 // -- reading the file --------------------------------------------------------------------------
 
@@ -108,10 +129,15 @@ test('the Phase 1 helpers: chunks of 2,000, VAT as a percent and back', () => {
   assert.ok(Number.isNaN(parseRatePercent('100')));
 });
 
-test('the kinds and their fields: Drop 1 imports items, suppliers, supplier items and pars; recipes only to skip', () => {
+test('the kinds and their fields: items, suppliers, supplier items, pars and (Drop 2) recipes for real', () => {
   assert.deepEqual([...IMPORT_KINDS], ['items', 'suppliers', 'supplier_items', 'pars', 'recipes']);
   assert.deepEqual({ ...STAGE_KIND }, { items: 'item', suppliers: 'supplier', supplier_items: 'supplier_item', pars: 'par', recipes: 'recipe' });
-  assert.equal(CSV_COLUMNS.recipes.skip, true);
+  assert.equal(CSV_COLUMNS.recipes.skip, undefined, 'recipes are no longer skipped');
+  assert.deepEqual([...CSV_COLUMNS.recipes.required], ['name', 'ingredient', 'qty', 'unit']);
+  assert.deepEqual([...CSV_COLUMNS.recipes.fields], ['name', 'kind', 'type', 'ingredient', 'item_sku', 'qty', 'unit', 'usable_pct', 'order_types', 'yield_qty', 'yield_unit', 'made_item', 'sites', 'till_product']);
+  for (const src of ['csv', 'nory', 'marketman']) for (const f of ['name', 'ingredient', 'qty', 'unit', 'yield_qty']) assert.ok(ALIASES[src].recipes[f]?.length, `${src} recipes ${f}`);
+  assert.ok(ALIASES.nory.recipes.qty.includes('quantity') && ALIASES.nory.recipes.unit.includes('uom') && ALIASES.nory.recipes.yield_qty.includes('portions'));
+  assert.ok(ALIASES.marketman.recipes.name.includes('recipe name') && ALIASES.marketman.recipes.ingredient.includes('ingredient'));
   for (const k of IMPORT_KINDS) {
     for (const f of CSV_COLUMNS[k].fields) assert.ok(FIELD_WORDS[f], `${k}.${f} has plain words`);
     for (const f of CSV_COLUMNS[k].required) assert.ok(CSV_COLUMNS[k].fields.includes(f));
@@ -304,12 +330,109 @@ test('an export with one row per site: one company price, and a site\'s own pric
   assert.deepEqual(ours.rows.map((x) => x.site), ['North Site', 'South Site', 'West Site']);
 });
 
-test('a recipe file is recognised and staged only to be skipped (Drop 2 brings recipes)', () => {
+test('a ServOS recipe file: one ingredient a line, the name filled down, ONE staged row per recipe with its lines (Drop 2)', () => {
   const m = mapFile(parseCsv(RECIPES_FILE));
   assert.deepEqual(m.order, ['recipes']);
-  const { rows, counts } = stageFile(m);
-  assert.deepEqual(counts, { recipe: 1 }, 'one recipe, its ingredient lines folded');
-  assert.deepEqual(rows, [{ row_no: KIND_BLOCK.recipe + 2, kind: 'recipe', data: { name: 'Flat white' }, sites: null }]);
+  assert.deepEqual(m.unknown, []);
+  const read = csvRowsFor('recipes', parseCsv(RECIPES_FILE));
+  assert.equal(read.rows.length, 5, 'every ingredient line stays: nothing is folded');
+  assert.equal(read.merged, 0);
+  assert.equal(read.rows[1].name, 'Flat white', 'a line with no name belongs to the recipe above it');
+  assert.deepEqual(read.missing, []);
+  const problems = [];
+  const rows = toStageRows('recipes', read.rows, { siteIdByName: SITES, problems });
+  assert.equal(rows.length, 2, 'one staged row per recipe');
+  for (const r of rows) { sameKeys(r); for (const l of r.data.lines) assert.deepEqual(Object.keys(l).sort(), [...LINE_KEYS].sort()); }
+  const [fw, ts] = rows;
+  assert.equal(fw.row_no, 2, 'the recipe\'s first line in the file');
+  assert.equal(fw.kind, 'recipe');
+  assert.deepEqual(fw.data, {
+    name: 'Flat white', kind: 'dish', food_kind: 'drink', yield_qty: 1, yield_unit: 'each', output_item: null, till_product: 'Flat White',
+    lines: [
+      { item: 'Whole milk 2L', item_sku: null, qty: 180, unit: 'ml', usable_pct: null, order_types: [] },
+      { item: 'Coffee beans 1kg', item_sku: null, qty: 18, unit: 'g', usable_pct: null, order_types: ['takeaway', 'dine-in'] },
+    ],
+    sites: ['North Site', 'South Site'],
+  });
+  assert.deepEqual(fw.sites, [N1, N2], 'the sites it names, as ids');
+  assert.equal(ts.row_no, 4);
+  assert.deepEqual(ts.data, {
+    name: 'Tomato sauce', kind: 'batch', food_kind: 'food', yield_qty: 2, yield_unit: 'l', output_item: 'Tomato sauce', till_product: null,
+    lines: [
+      { item: 'Plum tomatoes', item_sku: null, qty: 2.5, unit: 'kg', usable_pct: 92, order_types: [] },
+      { item: 'Olive oil', item_sku: null, qty: 100, unit: 'ml', usable_pct: null, order_types: [] },
+      { item: 'Basil', item_sku: null, qty: null, unit: 'g', usable_pct: null, order_types: [] },
+    ],
+    sites: ['All'],
+  });
+  assert.deepEqual(ts.sites, [N1, N2], 'All = every site');
+  assert.deepEqual(problems.map((p) => p.words), ['Row 6: "x" is not an amount. Left empty.']);
+  // the whole file: its own block of row numbers, and a count the check screen can show
+  const staged = stageFile(m, { siteIdByName: SITES });
+  assert.deepEqual(staged.counts, { recipe: 2 });
+  assert.deepEqual(staged.rows.map((r) => r.row_no), [KIND_BLOCK.recipe + 2, KIND_BLOCK.recipe + 4]);
+  assert.equal(staged.problems.length, 1);
+  // a recipe file without a unit column says so in plain words
+  assert.equal(missingWords(csvRowsFor('recipes', parseCsv('Recipe,Ingredient,Qty\nSoup,Onion,2')).missing), 'These columns are missing: Unit.');
+  // a 'Type' column that says Batch or Prep is the kind, not food or drink
+  const typed = toStageRows('recipes', csvRowsFor('recipes', parseCsv('Recipe name,Type,Ingredient,Qty,Unit\nStock,Prep,Bones,2,kg')).rows, { problems: [] });
+  assert.equal(typed[0].data.kind, 'prep');
+  assert.equal(typed[0].data.food_kind, null);
+  // a unit ServOS does not know goes as typed, so the database can say so (or match a pack name)
+  const odd = toStageRows('recipes', csvRowsFor('recipes', parseCsv('Recipe name,Ingredient,Qty,Unit\nLatte,Oat drink 1L,1,carton')).rows, {});
+  assert.equal(odd[0].data.lines[0].unit, 'carton');
+  // a site that does not exist, a kind or a yield that cannot be read: said, and left empty
+  const said = [];
+  const bad = toStageRows('recipes', csvRowsFor('recipes', parseCsv('Recipe name,Kind,Ingredient,Qty,Unit,Yield,Sites\nSoup,Starter,Onion,2,kg,lots,Far Site')).rows, { siteIdByName: SITES, problems: said });
+  assert.equal(bad[0].data.kind, 'dish');
+  assert.equal(bad[0].data.yield_qty, null);
+  assert.deepEqual(bad[0].data.sites, ['Far Site']);
+  assert.deepEqual(bad[0].sites, [], 'no known site: an empty list, as every other kind (the problem line names it)');
+  assert.equal(toStageRows('recipes', csvRowsFor('recipes', parseCsv('Recipe name,Ingredient,Qty,Unit\nSoup,Onion,2,kg')).rows, { siteIdByName: SITES })[0].sites, null, 'no sites column: the job\'s ticked sites apply');
+  assert.deepEqual(said.map((p) => p.words), ['Row 2: kind "Starter" is not Dish, Batch or Prep. Read as Dish.', 'Row 2: "lots" is not a yield. Left empty.', 'Row 2: no site called "Far Site".']);
+});
+
+test('Nory and MarketMan recipe exports: recipe name, ingredient, quantity, uom and portions', () => {
+  const nory = mapNory('recipes', parseCsv(NORY_RECIPES));
+  assert.deepEqual(nory.missing, []);
+  const n = toStageRows('recipes', nory.rows, {});
+  assert.equal(n.length, 1);
+  assert.equal(n[0].data.name, 'House granola');
+  assert.equal(n[0].data.kind, 'prep', 'Sub recipe is a prep');
+  assert.equal(n[0].data.yield_qty, 10, 'Portions is the yield');
+  assert.deepEqual(n[0].data.lines.map((l) => [l.item, l.qty, l.unit]), [['Rolled oats', 1.2, 'kg'], ['Honey', 200, 'g']]);
+  const mm = mapMarketMan('recipes', parseCsv(MARKETMAN_RECIPES));
+  assert.deepEqual(mm.missing, []);
+  const m = toStageRows('recipes', mm.rows, {});
+  assert.equal(m[0].data.name, 'Americano', 'Menu Item is the recipe name');
+  assert.equal(m[0].data.kind, 'dish');
+  assert.deepEqual(m[0].data.lines.map((l) => [l.item, l.qty, l.unit]), [['Coffee beans 1kg', 18, 'g'], ['Paper cups 12oz', 1, 'each']]);
+  assert.deepEqual(fileKinds('marketman', parseCsv(MARKETMAN_RECIPES)[0]), ['recipes']);
+  assert.deepEqual(fileKinds('nory', parseCsv(NORY_RECIPES)[0]), ['recipes']);
+});
+
+test('recipe values as people type them: kind, type, percent, order types', () => {
+  assert.equal(recipeKindOf('Dish'), 'dish');
+  assert.equal(recipeKindOf('menu item'), 'dish');
+  assert.equal(recipeKindOf('BATCH'), 'batch');
+  assert.equal(recipeKindOf('Sub-recipe'), 'prep');
+  assert.equal(recipeKindOf('prep'), 'prep');
+  assert.equal(recipeKindOf(''), null);
+  assert.equal(recipeKindOf('Starter'), undefined);
+  assert.equal(foodKindOf('Food'), 'food');
+  assert.equal(foodKindOf('Beverage'), 'drink');
+  assert.equal(foodKindOf('Meal deal'), 'meal_deal');
+  assert.equal(foodKindOf('combo'), 'meal_deal');
+  assert.equal(foodKindOf(null), null);
+  assert.equal(foodKindOf('Packaging'), undefined);
+  assert.equal(pctOf('92%'), 92);
+  assert.equal(pctOf(' 0 '), 0);
+  assert.equal(pctOf(''), null);
+  assert.ok(Number.isNaN(pctOf('120')));
+  assert.ok(Number.isNaN(pctOf('lots')));
+  assert.deepEqual(orderTypesOf('Takeaway; Dine-in, takeaway'), ['takeaway', 'dine-in']);
+  assert.deepEqual(orderTypesOf(''), []);
+  assert.deepEqual(orderTypesOf('delivery and collection'), ['delivery', 'collection']);
 });
 
 test('a file of several kinds stages every item before the supplier items and pars that name it', () => {

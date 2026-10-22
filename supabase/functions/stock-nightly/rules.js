@@ -14,12 +14,16 @@
 //   nightlyDay      the business day a venue rebuilds: the last one that has fully ended on its own
 //                   clock (venue_clock, else the Ops timezone and 06:00, the house default start).
 //   mapLimit        run an async step over a list, a few at a time.
+//   drainerHealthOf the drainer's health answer (stock_drainer_health, 20261023a) as the run summary
+//                   keeps it: the answer itself; { missing: true } before 20261023a runs; any other
+//                   failure as { error }. Never fails the run.
 
 import { lastCompletedBusinessDay, DEFAULT_DAY_START, DEFAULT_VENUE_TZ, venueZone } from '../_shared/businessDay.js';
 
 export const NIGHTLY_KEY_CHECK = 'stock_nightly_cron_ok';
 export const NIGHTLY_BUDGET_MS = 120000;   // venues not started by then are named as skipped
 export const NIGHTLY_CONCURRENCY = 3;
+export const DRAINER_HEALTH = 'stock_drainer_health';   // read only, service role only (20261023a)
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const isUuid = (v) => typeof v === 'string' && UUID_RE.test(v);
@@ -101,4 +105,22 @@ export async function mapLimit(list, limit, fn) {
   };
   await Promise.all(Array.from({ length: Math.max(1, Math.min(limit || 1, items.length)) }, worker));
   return out;
+}
+
+/**
+ * The summary's drainer_health from one rpc(DRAINER_HEALTH) answer ({ data, error }). The answer
+ * as the database gave it; { missing: true } when the function is not there yet (PGRST202 or 42883,
+ * before 20261023a); any other failure, or no answer, as { error } in plain words. Never throws: a
+ * health read never fails the run.
+ * @param {{ data?: any, error?: any }} [answer]
+ * @returns {any}
+ */
+export function drainerHealthOf({ data = null, error = null } = {}) {
+  if (error && isMissingFunction(error)) return { missing: true };
+  if (error) {
+    const words = String(error.message || error.code || 'unknown error');
+    return { error: `${DRAINER_HEALTH}: ${words}`, code: error.code ? String(error.code) : null };
+  }
+  if (data && typeof data === 'object' && !Array.isArray(data)) return data;
+  return { error: `${DRAINER_HEALTH}: no answer`, code: null };
 }

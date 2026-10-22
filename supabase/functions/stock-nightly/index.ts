@@ -21,8 +21,18 @@
 //      health and its Fix). One call per venue, each under 8 s. It writes no site row and moves no
 //      number. A database before 20261024a has no such function: the step is skipped and said so,
 //      never counted as a failure. Any other failure is named and the run goes on.
+//   3b. Recipes (v5.11.93, multi site stock Drop 2, 20261025a): for every venue that holds stock,
+//      stock_nightly_recipes(p_location): today's recipe_cost_daily rows for every live recipe on at
+//      the site, the stock facts (menu_item_stock_facts) rebuilt, and the two recipe line counts
+//      written into Set up health. One call per venue, each under 8 s; a database before 20261025a
+//      has no such function and the step is skipped and said so; any other failure is named and the
+//      run goes on. It writes no menu row and moves no number.
 //   4. Upkeep (stock_nightly_upkeep): PIN tries older than a day purged; a site item archived at zero
 //      after Stop ordering when no live recipe there uses it; company rows left with no site archived.
+//   5. The drainer's health (drainer release, 20261023a, contract 3.5): stock_drainer_health, read
+//      only, kept in the answer as drainer_health (the morning after check reads the same function).
+//      Before 20261023a runs it reads { "missing": true }; any other failure is kept there as
+//      { "error" }. This step never fails the run (it adds nothing to errors and never sets ok false).
 // The answer is a summary, also written to the function log as one line ('[stock-nightly] summary').
 //
 // Reads are paged past the 1,000 row cap. Nothing here writes a table directly: every write is one of
@@ -34,7 +44,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { pagedRows } from '../_shared/pagedRows.js';
 import { CRON_KEY_HEADER, isServiceRoleBearer } from '../_shared/cronKey.js';
-import { NIGHTLY_KEY_CHECK, NIGHTLY_BUDGET_MS, NIGHTLY_CONCURRENCY, nightlyAccess, clockRows, nightlyDay, mapLimit, isUuid, isMissingFunction } from './rules.js';
+import { NIGHTLY_KEY_CHECK, NIGHTLY_BUDGET_MS, NIGHTLY_CONCURRENCY, DRAINER_HEALTH, nightlyAccess, clockRows, nightlyDay, mapLimit, isUuid, isMissingFunction, drainerHealthOf } from './rules.js';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -163,11 +173,49 @@ Deno.serve(async (req) => {
           venues: health };
   }
 
+  // 3b. Recipes (v5.11.93, multi site stock Drop 2): costs, facts and the two line counts per venue.
+  //     Out of time: the rest wait for tomorrow. A failure is logged and never stops the run.
+  if (stockHolders && stockHolders.length) {
+    let missing = false;
+    const recipes = await mapLimit(stockHolders, NIGHTLY_CONCURRENCY, async (v) => {
+      if (missing) return { location_id: v.id, skipped: 'needs database update' };
+      if (Date.now() - started > NIGHTLY_BUDGET_MS) return { location_id: v.id, skipped: 'out of time: runs again tomorrow' };
+      let data: any = null;
+      let error: any = null;
+      try { ({ data, error } = await ops.rpc('stock_nightly_recipes', { p_location: v.id })); } catch (e) { error = { message: errText(e) }; }
+      if (error && isMissingFunction(error)) { missing = true; return { location_id: v.id, skipped: 'needs database update' }; }
+      if (error) {
+        console.warn(`[stock-nightly] recipes ${v.id}: ${errText(error)}`);
+        errors.push(`stock_nightly_recipes ${v.id}: ${errText(error)}`);
+        return { location_id: v.id, ok: false, error: errText(error) };
+      }
+      return {
+        location_id: v.id, business_day: data?.business_day ?? null, recipes_costed: data?.recipes_costed ?? null,
+        facts_rows: data?.facts_rows ?? null, needs_check: data?.needs_check ?? null,
+        bad_pack_lines: data?.bad_pack_lines ?? null, archived_under_live: data?.archived_under_live ?? null,
+      };
+    });
+    summary.recipes = missing
+      ? { skipped: 'This needs a database update (20261025a). Recipes were not costed and the facts were not rebuilt.' }
+      : { costed: recipes.filter((r: any) => r && !r.skipped && r.ok !== false).length,
+          needs_check: recipes.reduce((n: number, r: any) => n + (Number(r?.needs_check) || 0), 0),
+          skipped: recipes.filter((r: any) => r && r.skipped).map((r: any) => r.location_id),
+          venues: recipes };
+  }
+
   // 4. Upkeep.
   try {
     summary.upkeep = await call('stock_nightly_upkeep');
   } catch (e) {
     errors.push(`upkeep: ${errText(e)}`);
+  }
+
+  // 5. The drainer's health, after upkeep, with the service role. Read only; never fails the run.
+  try {
+    const { data, error } = await ops.rpc(DRAINER_HEALTH);
+    summary.drainer_health = drainerHealthOf({ data, error });
+  } catch (e) {
+    summary.drainer_health = drainerHealthOf({ error: { message: errText(e) } });
   }
 
   summary.ok = errors.length === 0;
