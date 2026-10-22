@@ -8,16 +8,28 @@
 //       - The report component itself
 //   - State: view, period, customRange, serverFilter, orderTypeFilter
 //   - Data: rangeChecks (current period), prevChecks (previous period) — fetched on period change.
+//
+// v5.11.92 (multi site stock Drop 4a, contract 2.3): the same shell is Reports > Stock and GP for a
+// multi site company (BackOfficeApp renders it on 'stock-gp' with initialView 'stock_home'). A stock
+// view (an id starting stock_) reads nothing from the closed checks: its figures are the database's,
+// from the stored day totals, through the report component it mounts (one stock_report_* call each,
+// src/lib/stock/reportsData.js). Its sites come from the stock site scope (every open site this login
+// reaches by its Stock control level, the site groups, closed sites on request), its period from the
+// stock pills (whole business days, between two counts, the company's week start), its compare from
+// a second call (previous period or the same days last year), and it lays sites side by side or as
+// the company total. Each screen has one Export and one Share, both the report's own (StockReportFrame):
+// the share link keeps the report's filters on screen (drill site, tab, toggles), never a figure.
 
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { useStore } from '../../store';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
 import { fetchClosedChecksRange, fetchKDSTicketsRange } from '../../lib/db';
 import { loadingText, TOO_LONG_TEXT, rowBudget, CHECK_ROWS_ON_SCREEN } from '../../lib/pagedRead';
-import { buildPeriods, getPeriodRange, periodLabel, applyFilters, uniqueServers, uniqueOrderTypes, uniqueSources, SOURCE_LABEL, dayOfCheck, reportClock } from './reports/_filters';
+import { buildPeriods, buildStockPeriods, STOCK_PERIODS, getPeriodRange, periodLabel, applyFilters, uniqueServers, uniqueOrderTypes, uniqueSources, SOURCE_LABEL, dayOfCheck, reportClock } from './reports/_filters';
 import {
   buildReportScope, connectedSites, sitesForView, siteRange, itemCapLine, figuresFrom, totalsByCurrency, totalsWords,
   choiceKey, readSiteChoice, writeSiteChoice, resolveTicked, toggleTicked, choiceFor,
+  stockReportScope, stockSitesLabel, tickedGroup,
 } from '../../lib/reportScope.js';
 import { loadScopeRows, loadScopeDaySums, tagRows } from '../../lib/reportScopeLoad.js';
 import { fetchReportScopeData, probeDaySums } from '../../lib/reportSites.js';
@@ -26,6 +38,12 @@ import SitesControl, { SiteNote } from './reports/SitesControl';
 import { getLocationConfig } from '../../lib/locationTime';
 import { compareRange, compareMoves, prevTopUp, notLoaded, COMPARE_STEP_MS } from '../../lib/reportCompare.js';
 import Catalog, { CATEGORIES, REPORT_INDEX } from './reports/Catalog';
+import { SegToggle } from './reports/reportKit';
+import { useStockScope } from '../StockScope';
+import { stockApi } from '../../lib/stock/stockApi';
+import { stockReportsApi } from '../../lib/stock/stockReportsApi';
+import { isStockReportId, reportFnOf, EXPORTABLE_REPORTS, STOCK_LATER, LATER_WORDS, writeShareLink, applyShareLink } from '../../lib/stock/reportLink';
+import { LaterTile } from './reports/_stockKit';
 import SalesSummary from './reports/SalesSummary';
 import Exceptions   from './reports/Exceptions';
 import Payments     from './reports/Payments';
@@ -52,6 +70,24 @@ import LoyaltyReport from './reports/LoyaltyReport';
 import BookingsReport from './reports/BookingsReport';
 import BookingPaymentsReport from './reports/BookingPaymentsReport';
 import Transactions  from './Transactions';
+// v5.11.92 (Drop 4a): the Stock and GP screens (web-dashboard and web-reports own these files).
+import StockDashboard from './reports/StockDashboard';
+import StockValue from './reports/StockValue';
+import StockMovement from './reports/StockMovement';
+import StockGap from './reports/StockGap';
+import StockCogs from './reports/StockCogs';
+import StockProductGP from './reports/StockProductGP';
+import StockWaste from './reports/StockWaste';
+import StockPurchases from './reports/StockPurchases';
+import StockPrices from './reports/StockPrices';
+import StockDaysOnHand from './reports/StockDaysOnHand';
+import StockPar from './reports/StockPar';
+import StockKeyRatios from './reports/StockKeyRatios';
+import StockSetupHealth from './reports/StockSetupHealth';
+import StockBatches from './reports/StockBatches';
+import StockRecipeCost from './reports/StockRecipeCost';
+import StockAllergens from './reports/StockAllergens';
+import ExportStatus from './reports/ExportStatus';
 import { money } from '../../lib/currency';
 
 // Money in the signed in site's currency (the Back Office currency). A report showing
@@ -64,6 +100,12 @@ const fmtN = n => (n || 0).toLocaleString();
 const browserStore = () => { try { return window.localStorage; } catch { return null; } };
 const NO_SCOPE_DATA = { userId: null, locations: [], readableIds: null, clocks: {} };
 const NO_SITES = [];
+const NO_IDS = [];
+
+// v5.11.92: a Stock and GP view (its id starts stock_). It reads none of the shell's closed checks.
+const STOCK_VIEWS = (v) => typeof v === 'string' && v.startsWith('stock_');
+const COMPARE_MODES = [{ id: 'prev', label: 'Previous period' }, { id: 'last_year', label: 'Same period last year' }];
+const LAYOUTS = [{ id: 'side', label: 'Side by side' }, { id: 'total', label: 'Company total' }];
 
 // 5 Oct 2026: which fault, if any, blanks this report. The reports below read their own data
 // (their own loaders, not the shell's closed checks), so a period too long for the shell does
@@ -72,6 +114,7 @@ const NO_SITES = [];
 // checks, so an empty ticket list then is not "no kitchen tickets", it is the same fault.
 const OWN_DATA_VIEWS = new Set(['payroll', 'daily_trading', 'bookings', 'booking_payments', 'location_compare', 'cash_drawer', 'open']);
 function faultFor(view, loadFault, kdsFault) {
+  if (STOCK_VIEWS(view)) return null;
   if (OWN_DATA_VIEWS.has(view) || view.startsWith('loyalty_')) return null;
   if (view === 'kds_perf') return kdsFault || loadFault || null;
   return loadFault || null;
@@ -79,16 +122,45 @@ function faultFor(view, loadFault, kdsFault) {
 
 // 8 Oct 2026: canOpen is the Back Office section access rule (lib/boSections.js). A tile that
 // opens another part of Back Office is left out for a login that is not shown that part.
-export default function BOReports({ setSection, canOpen } = {}) {
-  const { tables, taxRates, closedChecks: storeChecks } = useStore();
+// v5.11.92: initialView 'stock_home' is Reports > Stock and GP; stockLink is one report to open with
+// its filters (a "See the report" link or a share link), applied once after the stock scope is in.
+export default function BOReports({ setSection, canOpen, initialView = 'catalog', stockLink = null, onLinkUsed } = {}) {
+  const { tables, taxRates, closedChecks: storeChecks, showToast } = useStore();
 
-  const [view, setView]               = useState('catalog'); // 'catalog' or a report id
-  const [period, setPeriod]           = useState('today');
+  const [view, setView]               = useState(initialView); // 'catalog' or a report id
+  const [period, setPeriod]           = useState(STOCK_VIEWS(initialView) ? 'this-week' : 'today');
   const [customRange, setCustomRange] = useState({ from: null, to: null });
   const [homeConfig, setHomeConfig] = useState(null);  // v4.6.24: the signed in site's config
   const [serverFilter, setServerFilter]       = useState('all');
   const [orderTypeFilter, setOrderTypeFilter] = useState('all');
   const [sourceFilter, setSourceFilter]       = useState('all'); // v5.5.140: pos / kiosk / online / qr
+  const isStock = STOCK_VIEWS(view);
+
+  // ── Stock and GP (v5.11.92): the stock site scope, the layout, the compare, the link ──────────
+  const stock = useStockScope();
+  const stockReady = !!stock.ready && !!stock.multi;
+  const [stockTicked, setStockTicked] = useState(null);      // null = follow the top bar picker's choice
+  const [stockShowClosed, setStockShowClosed] = useState(false);
+  const [compareMode, setCompareMode] = useState('prev');    // 'prev' | 'last_year'
+  const [layout, setLayout] = useState('side');              // 'side' | 'total'
+  const [stockOpts, setStockOpts] = useState(null);          // a report's own options from a link or a drill
+  const [stockWeekStart, setStockWeekStart] = useState(null); // stock_co_settings.week_start (null = Monday)
+  const [exportJob, setExportJob] = useState(null);          // { id, report, label, from, to }: a background export being built
+  const pickerIds = useMemo(() => (stock.scopeSites || []).map((s) => s.id).filter(Boolean), [stock.scopeSites]);
+  const stockScope = useMemo(() => (stockReady ? stockReportScope(stock, stockTicked ?? pickerIds, stockShowClosed) : null),
+    [stockReady, stock, stockTicked, pickerIds, stockShowClosed]);
+  const stockSites = stockScope ? stockScope.tickedIds : NO_IDS;
+  // The company's week start, read once per company when a stock view is on (the pills' "This week").
+  useEffect(() => {
+    if (!isStock || !stock.orgId) return undefined;
+    let live = true;
+    stockApi.settings(stock.orgId).then((r) => { if (live) setStockWeekStart(r.data?.settings?.week_start ?? 1); }).catch(() => { if (live) setStockWeekStart(1); });
+    return () => { live = false; };
+  }, [isStock, stock.orgId]);
+  // A stock view only takes a stock period: anything else (a service, last 7 days) becomes this week.
+  useEffect(() => {
+    if (isStock && !STOCK_PERIODS.some((p) => p.id === period)) setPeriod('this-week');
+  }, [isStock, period]);
 
   // Opening a catalog tile: most reports render in-shell (setView), but some tiles
   // point at full Back Office sections that live in their own group (e.g. Inventory
@@ -99,8 +171,19 @@ export default function BOReports({ setSection, canOpen } = {}) {
       if (setSection) setSection(r.section);
       return;
     }
-    setView(typeof r === 'string' ? r : r?.id);
+    const id = typeof r === 'string' ? r : r?.id;
+    if (STOCK_VIEWS(id)) setStockOpts(null);
+    setView(id);
   };
+  // v5.11.92: a stock report opened from the dashboard or another stock report, with its options and,
+  // for a league row click, the one site. A tile that waits for a later Drop never opens.
+  const openStockView = (id, opts = null, sites = null) => {
+    if (!isStockReportId(id) || STOCK_LATER[id]) return;
+    setStockOpts(opts && typeof opts === 'object' ? opts : null);
+    if (Array.isArray(sites) && sites.length) setStockTicked(sites.map(String));
+    setView(id);
+  };
+  const pickStockSites = (ids) => { setStockTicked(Array.isArray(ids) ? ids.map(String) : null); };
 
   // v4.6.24: Load location timezone + businessDayStart + service periods so reports
   // can honour real business-day boundaries and service-period grouping.
@@ -203,6 +286,12 @@ export default function BOReports({ setSection, canOpen } = {}) {
     const builtAt = Date.now();
     return { ...getPeriodRange(period, customRange, locationConfig, builtAt), builtAt };
   }, [period, customRange, locationConfig]);
+  // v5.11.92: a stock view's range is the same period on the same clock, with the company's week
+  // start, and its compare is the second call's days (previous period, or the same days last year).
+  const stockRange = useMemo(() => (
+    isStock ? getPeriodRange(period, customRange, { ...(locationConfig || {}), weekStart: stockWeekStart ?? 1 }, range.builtAt) : null
+  ), [isStock, period, customRange, locationConfig, stockWeekStart, range.builtAt]);
+  const stockCompare = useMemo(() => (stockRange ? compareRange(period, stockRange, range.builtAt, { mode: compareMode }) : null), [stockRange, period, compareMode, range.builtAt]);
 
   // v5.11.29, the one percent rule (Peter, 5 Oct 2026): a comparison cut at "the same time
   // of day" has to MOVE with the clock. The current side grows by itself (live sales are
@@ -249,8 +338,9 @@ export default function BOReports({ setSection, canOpen } = {}) {
   const figures = figuresFrom(view, shellSites, range, daySumsOn);
   const wantTickets = shellSites.length <= 1 || view === 'kds_perf';
   // What the read depends on besides the period: which sites, and how they are read. A view
-  // change alone (same sites, same way) does not read again, as before.
-  const loadKey = `${homeId || ''}|${shellSites.map(s => s.id).join(',')}|${capLine ? 'cap' : figures}|${wantTickets ? 'k' : ''}`;
+  // change alone (same sites, same way) does not read again, as before. v5.11.92: a stock view
+  // reads nothing, and leaving one for a sales report reads again.
+  const loadKey = `${homeId || ''}|${shellSites.map(s => s.id).join(',')}|${capLine ? 'cap' : figures}|${wantTickets ? 'k' : ''}|${isStock ? 'stock' : ''}`;
 
   useEffect(() => {
     prevSeq.current += 1; prevHeld.current = null;
@@ -288,6 +378,8 @@ export default function BOReports({ setSection, canOpen } = {}) {
         setActiveLocId(homeOnly ? homeId : null);
         setLiveOn(homeOnly);
         const nothing = () => { setRangeChecks([]); setPrevChecks([]); setKdsTickets([]); };
+        // v5.11.92: a Stock and GP view reads no closed checks at all (its component asks the database).
+        if (STOCK_VIEWS(view)) { nothing(); setPrevLoaded(false); setLoadingRange(false); return; }
         // The 7 day line shows in place of the report: nothing is read.
         if (capLine) { nothing(); setPrevLoaded(false); setLoadingRange(false); return; }
         if (figures === 'sums') {
@@ -478,6 +570,84 @@ export default function BOReports({ setSection, canOpen } = {}) {
     sites.length > 1 && scope ? totalsByCurrency(filtered, scope) : null
   ), [sites, scope, filtered]);
 
+  // ── Stock and GP: the link, the export, the share (v5.11.92, contract 2.3 and 4) ─────────────
+  // A link (a "See the report" button or a share link) is applied once the stock scope is in: the
+  // report, its sites (inside this login's scope: applyShareLink), period, compare, layout and options.
+  useEffect(() => {
+    if (!stockLink || !stockReady) return;
+    if (isStockReportId(stockLink.report) && !STOCK_LATER[stockLink.report]) {
+      setView(stockLink.report);
+      setPeriod(STOCK_PERIODS.some((p) => p.id === stockLink.period) ? stockLink.period : 'this-week');
+      setCustomRange(stockLink.custom?.from && stockLink.custom?.to ? { from: stockLink.custom.from, to: stockLink.custom.to } : { from: null, to: null });
+      setCompareMode(stockLink.compare === 'last_year' ? 'last_year' : 'prev');
+      setLayout(stockLink.layout === 'total' ? 'total' : 'side');
+      setStockTicked(applyShareLink(stockLink, stock, stock.homeSite));
+      const opts = { ...(stockLink.opts && typeof stockLink.opts === 'object' ? stockLink.opts : {}), ...(stockLink.at ? { at: stockLink.at } : {}) };
+      setStockOpts(Object.keys(opts).length ? opts : null);
+    }
+    onLinkUsed?.();
+    // The link is applied once, as it arrives; the scope and the callback are read then.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stockLink, stockReady]);
+  const toast = (words, kind = 'success') => { try { showToast?.(words, kind); } catch { /* a toast never breaks a report */ } };
+  // Export all rows as a file: the database builds it in the background (stock_report_export_start),
+  // ExportStatus follows it. reportName is the function name ('gap'); the screen may pass its own.
+  const startExport = async (reportName = null, args = null) => {
+    const fn = reportName || reportFnOf(view);
+    if (!fn || !EXPORTABLE_REPORTS.includes(fn)) { toast('That report cannot be exported.', 'error'); return; }
+    if (!stockScope || !stockRange) return;
+    const callArgs = args || {
+      org: stock.orgId, sites: stockScope.tickedIds, from: stockRange.fromDay, to: stockRange.toDay,
+      opts: { ...(stockOpts || {}), between_counts: !!stockRange.betweenCounts },
+    };
+    const r = await stockReportsApi.exportStart(fn, callArgs);
+    if (r.error) { toast(r.error.message || 'The export did not start.', 'error'); return; }
+    if (r.data?.job_id) { setExportJob({ id: r.data.job_id, report: fn, label: REPORT_INDEX[view]?.label || view, from: callArgs.from, to: callArgs.to }); toast('Building your file. It shows here when it is ready.', 'info'); }
+  };
+  // A share link keeps the sites (by id), period, compare, layout, the stock value date and the
+  // report's options: never a site name, never a figure.
+  const shareLink = (opts = null) => {
+    if (!stockScope) return;
+    const group = tickedGroup(stockScope);
+    const sitesPart = stockScope.allTicked ? { kind: 'all' } : group ? { kind: 'group', id: group.id } : { kind: 'sites', ids: stockScope.tickedIds };
+    // Only a plain options object is kept: a Share button hands its click event here, never options.
+    const plain = !!opts && typeof opts === 'object' && Object.getPrototypeOf(opts) === Object.prototype;
+    const o = { ...(stockOpts || {}), ...(plain ? opts : {}) };
+    const { at = null, ...rest } = o;
+    const link = writeShareLink({ report: view, sites: sitesPart, period, custom: customRange, compare: compareMode, layout, at, opts: rest });
+    if (!link) return;
+    const url = `${window.location.origin}${window.location.pathname}${link}`;
+    const done = () => toast('Link copied. It keeps the sites, period, compare and layout.');
+    const failed = () => toast('Could not copy the link. Copy it from the address bar instead.', 'error');
+    try { navigator.clipboard.writeText(url).then(done, failed); } catch { failed(); }
+  };
+  // A report screen runs its own export (useExportFlow: the CSV at once, or its own background job and
+  // panel) and then tells the shell what it did ({ report, args, mode: 'now' | 'file', jobId }). The
+  // shell starts nothing more for that (no second job); only the header button starts one itself.
+  const exportDone = (info) => {
+    if (info && typeof info === 'object' && (info.mode === 'now' || info.mode === 'file')) return;
+    if (typeof info === 'string') startExport(info);
+  };
+  const stockProps = useMemo(() => ({
+    orgId: stock.orgId,
+    sites: stockSites,
+    siteById: stock.siteById,
+    groups: stockScope ? stockScope.groups : [],
+    range: stockRange ? { fromDay: stockRange.fromDay, toDay: stockRange.toDay, betweenCounts: !!stockRange.betweenCounts } : null,
+    compare: stockCompare ? { from: stockCompare.fromDay, to: stockCompare.toDay, label: stockCompare.label, detail: stockCompare.detail, nothing: stockCompare.nothing, mode: compareMode } : null,
+    layout,
+    level: stock.level,
+    canFix: stock.level === 'all',
+    initialOpts: stockOpts,
+    onOpenReport: openStockView,
+    onSites: pickStockSites,
+    onExport: exportDone,
+    onShare: shareLink,
+    api: stockReportsApi,
+    // the callbacks close over this render's state on purpose: they read the latest filters when pressed
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [stock.orgId, stock.siteById, stock.level, stockSites, stockScope, stockRange, stockCompare, compareMode, layout, stockOpts]);
+
   const current = REPORT_INDEX[view];
   const categoryForView = current ? CATEGORIES.find(c => c.id === current.category) : null;
   const needsCustomPick = period === 'custom' && (!customRange.from || !customRange.to);
@@ -491,14 +661,22 @@ export default function BOReports({ setSection, canOpen } = {}) {
     );
   }
 
+  // v5.11.92: from a stock report, back goes to the dashboard this shell opened on; from the dashboard
+  // (or any report opened from the catalog) back goes to the catalog.
+  const backView = isStock && view !== 'stock_home' && STOCK_VIEWS(initialView) ? 'stock_home' : 'catalog';
+  const periodPills = isStock ? buildStockPeriods(locationConfig) : buildPeriods(locationConfig);
+  const shownRange = isStock && stockRange ? stockRange : range;
+  const periodWords = isStock && period === 'between-counts' ? 'each site between its last two full counts' : periodLabel(period, customRange, shownRange);
+  const stockLater = isStock && STOCK_LATER[view] ? LATER_WORDS[STOCK_LATER[view]] : null;
+
   // Detail view (filter row + the selected report)
   return (
-    <div style={{ padding:'20px 24px', maxWidth:1100, flex:1, overflow:'auto', minHeight:0, width:'100%', boxSizing:'border-box' }}>
+    <div style={{ padding:'20px 24px', maxWidth: isStock ? 1400 : 1100, flex:1, overflow:'auto', minHeight:0, width:'100%', boxSizing:'border-box' }}>
       {/* Breadcrumb + back */}
-      <button onClick={() => setView('catalog')} style={{
+      <button onClick={() => setView(backView)} style={{
         border:'none', background:'transparent', cursor:'pointer', fontFamily:'inherit',
         color:'var(--t3)', fontSize:12, padding:0, marginBottom:10,
-      }}>← Back to reports</button>
+      }}>{backView === 'stock_home' ? '← Back to the dashboard' : '← Back to reports'}</button>
       <div style={{ display:'flex', alignItems:'flex-end', justifyContent:'space-between', marginBottom:14, flexWrap:'wrap', gap:12 }}>
         <div>
           <div style={{ fontSize:11, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', fontWeight:700, display:'flex', alignItems:'center', gap:6 }}>
@@ -506,24 +684,35 @@ export default function BOReports({ setSection, canOpen } = {}) {
             <span>{current?.label || view}</span>
           </div>
           <div style={{ fontSize:22, fontWeight:800, color:'var(--t1)', marginTop:2, letterSpacing:'-.01em' }}>
-            {buildPeriods(locationConfig).find(p => p.id === period)?.label}
-            <span style={{ color:'var(--t4)', fontWeight:400, fontSize:14, marginLeft:10 }}>{periodLabel(period, customRange, range)}</span>
+            {periodPills.find(p => p.id === period)?.label}
+            <span style={{ color:'var(--t4)', fontWeight:400, fontSize:14, marginLeft:10 }}>{periodWords}</span>
           </div>
-          <div style={{ fontSize:12, color:'var(--t3)', marginTop:4, visibility: (viewSites.mode === 'all' && scope?.hasChoice) || daySums || capLine ? 'hidden' : 'visible' }}>
-            {filtered.length} checks · {moneyTotals && (moneyTotals.length > 1 || moneyTotals.some(t => !t.currency))
-              ? totalsWords(moneyTotals, scope, money)
-              : fmt(totalRevenue)} revenue
-            {(serverFilter !== 'all' || orderTypeFilter !== 'all' || sourceFilter !== 'all') && (
-              <span style={{ color:'var(--acc)', marginLeft:6 }}>· filtered</span>
-            )}
-          </div>
+          {isStock ? (
+            <div style={{ fontSize:12, color:'var(--t3)', marginTop:4 }} data-testid="stock-shell-line">
+              {stockScope ? stockSitesLabel(stockScope) : 'Sites'} · each venue on its own business day{stockCompare ? ` · compared with ${stockCompare.label.replace(/^vs /, '')}` : ''}
+            </div>
+          ) : (
+            <div style={{ fontSize:12, color:'var(--t3)', marginTop:4, visibility: (viewSites.mode === 'all' && scope?.hasChoice) || daySums || capLine ? 'hidden' : 'visible' }}>
+              {filtered.length} checks · {moneyTotals && (moneyTotals.length > 1 || moneyTotals.some(t => !t.currency))
+                ? totalsWords(moneyTotals, scope, money)
+                : fmt(totalRevenue)} revenue
+              {(serverFilter !== 'all' || orderTypeFilter !== 'all' || sourceFilter !== 'all') && (
+                <span style={{ color:'var(--acc)', marginLeft:6 }}>· filtered</span>
+              )}
+            </div>
+          )}
         </div>
+        {isStock && (
+          <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+            <SegToggle value={layout} onChange={setLayout} options={LAYOUTS}/>
+          </div>
+        )}
       </div>
 
       {/* Filter row */}
       <div style={{ display:'flex', gap:10, marginBottom:20, flexWrap:'wrap', alignItems:'center' }}>
         <div style={{ display:'flex', gap:4, background:'var(--bg3)', padding:3, borderRadius:10, flexWrap:'wrap' }}>
-          {buildPeriods(locationConfig).map(p => (
+          {periodPills.map(p => (
             <button key={p.id} onClick={() => setPeriod(p.id)} style={{
               padding:'5px 12px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', border:'none',
               background: period === p.id ? 'var(--bg1)' : 'transparent',
@@ -533,11 +722,21 @@ export default function BOReports({ setSection, canOpen } = {}) {
             }}>{p.label}</button>
           ))}
         </div>
-        {/* 5 Oct 2026: which sites. Hidden for a login with one site. */}
-        <SitesControl scope={scope} disabled={viewSites.mode === 'all'}
-          onToggle={(id) => pickSites(toggleTicked(scope.tickedIds, id, scope.sites))}
-          onAll={() => pickSites(scope.sites.map(s => s.id))}
-          onOnlyHome={() => pickSites([scope.homeId])}/>
+        {/* 5 Oct 2026: which sites. Hidden for a login with one site. v5.11.92: a stock view's sites
+            are the stock scope's, with the site groups and the closed sites on request. */}
+        {isStock ? (
+          <SitesControl scope={stockScope} groups={stockScope?.groups || []} closedSites={stockScope?.closedSites || []}
+            showClosed={stockShowClosed} onShowClosed={setStockShowClosed}
+            onGroup={(id) => { const g = (stockScope?.groups || []).find(x => x.id === id); if (g) pickStockSites(g.locationIds); }}
+            onToggle={(id) => pickStockSites(toggleTicked(stockScope.tickedIds, id, stockScope.sites))}
+            onAll={() => pickStockSites(stockScope.sites.map(s => s.id))}
+            onOnlyHome={() => pickStockSites(stockScope.homeId && stockScope.sites.some(s => s.id === stockScope.homeId) ? [stockScope.homeId] : [stockScope.sites[0]?.id].filter(Boolean))}/>
+        ) : (
+          <SitesControl scope={scope} disabled={viewSites.mode === 'all'}
+            onToggle={(id) => pickSites(toggleTicked(scope.tickedIds, id, scope.sites))}
+            onAll={() => pickSites(scope.sites.map(s => s.id))}
+            onOnlyHome={() => pickSites([scope.homeId])}/>
+        )}
         {period === 'custom' && (
           <>
             <input type="date" value={customRange.from || ''} onChange={e => setCustomRange(r => ({ ...r, from: e.target.value }))} style={inputSt}/>
@@ -545,13 +744,18 @@ export default function BOReports({ setSection, canOpen } = {}) {
             <input type="date" value={customRange.to   || ''} onChange={e => setCustomRange(r => ({ ...r, to:   e.target.value }))} style={inputSt}/>
           </>
         )}
-        {servers.length > 1 && (
+        {isStock && (
+          <select value={compareMode} onChange={e => setCompareMode(e.target.value)} style={selectSt} aria-label="Compare with">
+            {COMPARE_MODES.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+          </select>
+        )}
+        {!isStock && servers.length > 1 && (
           <select value={serverFilter} onChange={e => setServerFilter(e.target.value)} style={selectSt}>
             <option value="all">All servers</option>
             {servers.map(s => <option key={s} value={s}>{s}</option>)}
           </select>
         )}
-        {orderTypes.length > 1 && (
+        {!isStock && orderTypes.length > 1 && (
           <select value={orderTypeFilter} onChange={e => setOrderTypeFilter(e.target.value)} style={selectSt}>
             <option value="all">All order types</option>
             {orderTypes.map(t => <option key={t} value={t}>{t}</option>)}
@@ -560,7 +764,7 @@ export default function BOReports({ setSection, canOpen } = {}) {
         {/* v5.5.140: order source filter — POS / Kiosk / Online / QR.
             Hidden when only one source is present so the filter row stays tidy
             for venues that haven't enabled multi-channel ordering yet. */}
-        {sources.length > 1 && (
+        {!isStock && sources.length > 1 && (
           <select value={sourceFilter} onChange={e => setSourceFilter(e.target.value)} style={selectSt}>
             <option value="all">All sources</option>
             {sources.map(s => <option key={s} value={s}>{SOURCE_LABEL[s] || s}</option>)}
@@ -568,12 +772,40 @@ export default function BOReports({ setSection, canOpen } = {}) {
         )}
       </div>
 
-      <SiteNote note={viewSites.note} choices={viewSites.choices} value={viewSites.sites[0]?.id} onPick={pickOneSite}/>
+      {!isStock && <SiteNote note={viewSites.note} choices={viewSites.choices} value={viewSites.sites[0]?.id} onPick={pickOneSite}/>}
+      {isStock && exportJob && <ExportStatus api={stockReportsApi} jobId={exportJob.id} label={exportJob.label} report={exportJob.report} from={exportJob.from} to={exportJob.to} onClose={() => setExportJob(null)}/>}
 
       {needsCustomPick ? (
         <div style={{ textAlign:'center', padding:'48px 0', color:'var(--t4)', fontSize:13 }}>
           Pick a start and end date to load the custom range.
         </div>
+      ) : isStock ? (
+        !stock.ready || !locationConfig ? (
+          <div style={{ textAlign:'center', padding:'48px 0', color:'var(--t4)', fontSize:13 }}>Loading…</div>
+        ) : !stockReady ? (
+          <div style={{ textAlign:'center', padding:'48px 0', color:'var(--t2)', fontSize:14 }}>Stock and GP is for a company with two or more sites. Inventory &gt; Reports has this venue's stock reports.</div>
+        ) : stockLater ? (
+          <LaterTile words={stockLater} title={current?.label || view}/>
+        ) : (
+          <>
+            {view === 'stock_home' && <StockDashboard {...stockProps}/>}
+            {view === 'stock_value' && <StockValue {...stockProps}/>}
+            {view === 'stock_movement' && <StockMovement {...stockProps}/>}
+            {view === 'stock_gap' && <StockGap {...stockProps}/>}
+            {view === 'stock_cogs' && <StockCogs {...stockProps}/>}
+            {view === 'stock_product_gp' && <StockProductGP {...stockProps}/>}
+            {view === 'stock_waste' && <StockWaste {...stockProps}/>}
+            {view === 'stock_purchases' && <StockPurchases {...stockProps}/>}
+            {view === 'stock_prices' && <StockPrices {...stockProps}/>}
+            {view === 'stock_days_on_hand' && <StockDaysOnHand {...stockProps}/>}
+            {view === 'stock_par' && <StockPar {...stockProps}/>}
+            {view === 'stock_key_ratios' && <StockKeyRatios {...stockProps}/>}
+            {view === 'stock_setup_health' && <StockSetupHealth {...stockProps}/>}
+            {view === 'stock_batches' && <StockBatches {...stockProps}/>}
+            {view === 'stock_recipe_cost' && <StockRecipeCost {...stockProps}/>}
+            {view === 'stock_allergens' && <StockAllergens {...stockProps}/>}
+          </>
+        )
       ) : (loadingRange || !locationConfig || !scopeReady) ? (
         /* 6 Oct 2026 (review): the scope wait is loading too. The read does not start until the
            scope is in (up to its 6 second fallback), and until then the rows are null: without
@@ -624,8 +856,6 @@ export default function BOReports({ setSection, canOpen } = {}) {
 
 const selectSt = { padding:'6px 10px', borderRadius:8, background:'var(--bg3)', border:'1px solid var(--bdr)', color:'var(--t2)', fontSize:12, cursor:'pointer', fontFamily:'inherit' };
 const inputSt  = { padding:'5px 10px', borderRadius:8, background:'var(--bg3)', border:'1px solid var(--bdr)', color:'var(--t2)', fontSize:12, fontFamily:'inherit' };
-const tileSt   = { padding:'14px 16px', background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12 };
-const lblSt    = { fontSize:10, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:6 };
 
 function LegacyOpen({ openOrders, fmt }) {
   if (openOrders.length === 0) {

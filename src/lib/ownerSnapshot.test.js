@@ -22,7 +22,8 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildOwnerSnapshot, buildOwnerDetail, detailScope, venueMeta, cmpCut, firstTradingDay, hasOpeningDay, MAX_READS, OWNER_FEATURES, OPENING_MIN_SALES, MIX_CMP_PERIODS } from '../../supabase/functions/_shared/ownerSnapshot.js';
+import fs from 'node:fs';
+import { buildOwnerSnapshot, buildOwnerDetail, detailScope, venueMeta, cmpCut, firstTradingDay, hasOpeningDay, MAX_READS, OWNER_FEATURES, OPENING_MIN_SALES, MIX_CMP_PERIODS, ownerVenueIds, stockBlockOf, stockBlocks, STOCK_LEAGUE, STOCK_DASHBOARD, STOCK_REASONS, STOCK_SITES_PER_CALL } from '../../supabase/functions/_shared/ownerSnapshot.js';
 import { pagedEach, limiter } from '../../supabase/functions/_shared/pagedRows.js';
 import { SALES_CHECK_COLS } from '../../supabase/functions/_shared/snapshotSales.js';
 import { periodRange, addDays } from '../../supabase/functions/_shared/ownerPeriod.js';
@@ -35,7 +36,7 @@ const cmp = (a, b) => {
   return x < y ? -1 : x > y ? 1 : 0;
 };
 
-function fakeOps(tables, { cap = 1000, failWhen = null, wait = 0 } = {}) {
+function fakeOps(tables, { cap = 1000, failWhen = null, wait = 0, rpc = null } = {}) {
   const log = [];
   const state = { inFlight: 0, peak: 0 };
   const run = async (q) => {
@@ -73,7 +74,14 @@ function fakeOps(tables, { cap = 1000, failWhen = null, wait = 0 } = {}) {
     };
     return b;
   };
-  return { from, log, state };
+  // v5.11.92: a database function call (the stock blocks). Logged as { rpc, args }; with no `rpc`
+  // stand in the function is missing (PGRST202), as a database before 20261026a answers.
+  const rpcCall = async (fn, args) => {
+    log.push({ rpc: fn, args });
+    if (!rpc) return { data: null, error: { code: 'PGRST202', message: `Could not find the function public.${fn} in the schema cache` } };
+    return await rpc(fn, args);
+  };
+  return { from, log, state, rpc: rpcCall };
 }
 
 // ── rows ─────────────────────────────────────────────────────────────────────
@@ -88,7 +96,8 @@ const chk = (loc, closedAt, { gross = 12, items = [{ name: 'Latte', qty: 1, pric
   items, ...rest,
 });
 const many = (n, loc, at, extra) => Array.from({ length: n }, () => chk(loc, at, extra));
-const tables = (t) => ({ closed_checks: [], wf_sales_forecast: [], wf_timesheets: [], order_queue: [], active_sessions: [], menu_categories: [], wf_venue_settings: [], xero_config: [], ...t });
+// v5.11.92: locations and inventory_items are what the stock blocks read; empty, a venue is 'no_stock'.
+const tables = (t) => ({ closed_checks: [], wf_sales_forecast: [], wf_timesheets: [], order_queue: [], active_sessions: [], menu_categories: [], wf_venue_settings: [], xero_config: [], locations: [], inventory_items: [], ...t });
 // A day that starts at midnight (Barnsley Train Station's does). The 06:30 venues are further down.
 const LEEDS = { name: 'Leeds', tz: 'Europe/London', currency: 'GBP', dayStart: '00:00' };
 const PROVO = { name: 'Provo', tz: 'America/Denver', currency: 'USD', dayStart: '00:00' };
@@ -164,7 +173,8 @@ const TODAY_AS_BEFORE = {
   top_items: [{ name: 'Latte', qty: 6, rev: 21 }, { name: 'Brownie', qty: 3, rev: 15 }],
 };
 // What 5 Oct 2026 (and the 8 Oct 2026 sales mix) added to a venue: taken off before the old shape is compared.
-const split = ({ day_start, first_sale_date, compare, week_compare, week_range, mix, ...old }) => ({ old, added: { day_start, first_sale_date, compare, week_compare, week_range, mix } });
+// v5.11.92: stock and stock_reason (the Owner app's Stock line) are added fields too.
+const split = ({ day_start, first_sale_date, compare, week_compare, week_range, mix, stock, stock_reason, ...old }) => ({ old, added: { day_start, first_sale_date, compare, week_compare, week_range, mix, stock, stock_reason } });
 const splitRollup = ({ compare, week_compare, currency, currencies, by_currency, mix, ...old }) => ({ old, added: { compare, week_compare, currency, currencies, by_currency, mix } });
 
 test('Today (and an older app that sends no period) answers what the function always answered', async () => {
@@ -1268,7 +1278,7 @@ test('detail pages like the snapshot: a busy week is every check once, and a fai
 test('the function says what it can do, so an app can tell an old one', () => {
   // An owner-snapshot from before 5 Oct 2026 sends no `features`, no `compare` and ignores
   // `detail`. The app looks for these names before it shows the screens that need them.
-  for (const f of ['period', 'business_day', 'compare', 'by_currency', 'detail', 'mix']) assert.ok(OWNER_FEATURES.includes(f), f);
+  for (const f of ['period', 'business_day', 'compare', 'by_currency', 'detail', 'mix', 'gross', 'stock']) assert.ok(OWNER_FEATURES.includes(f), f);
 });
 
 // ── 16 Oct 2026: the Net / Gross switch ─────────────────────────────────────
@@ -1332,4 +1342,225 @@ test('16 Oct 2026: the detail call sends every chart and list including VAT too'
   for (const r of [...d.order_types, ...d.channels]) assert.ok(r.gross >= r.net, JSON.stringify(r));
   assert.equal(d.totals.avg_check_gross, Math.round(d.totals.gross_sales / d.totals.orders * 100) / 100);
   assert.equal(d.compare.gross_sales, d.totals.gross_sales);
+});
+
+// ── the stock blocks (v5.11.92, multi site stock Drop 4a, contract section 5) ─────────────────
+//
+// Each venue carries `stock` (the Owner app's Stock line) from ONE stock_report_league call per
+// company over the period's business days, as the service role; the venue detail carries
+// `detail.stock` from stock_report_dashboard. The numbers are the database's; here the stand in
+// answers them. A venue with nothing true to show gets stock null and the reason, and the snapshot
+// never fails because of stock.
+
+const ORG = 'org-00000000-0000-4000-8000-000000000001';
+const ORG2 = 'org-00000000-0000-4000-8000-000000000002';
+const leagueRow = (id, extra = {}) => ({
+  location_id: id, site: 'Site A', currency: 'GBP', sales_net: 18420, gp_pct_theo: 74.1, gp_pct_actual: 72.8, gap_pct: 1.3, waste_pct: 1.9, comps_pct: 0.8,
+  purchases: 4880, budget: null, stock_value_now: '3210.00', days_on_hand: 6.2, last_full_count_day: '2026-09-28', last_full_count_words: 'Mon 28 Sep',
+  no_recipe_pct: 2.1, below_par_count: 4, negative_count: 0, kitchen: false,
+  rag: { gp_pct: 'green', gap_pct: 'green', waste_pct: 'green', comps_pct: 'green', days_on_hand: 'green' }, ...extra,
+});
+// The block the app reads for leagueRow('L'): numbers as numbers, the database's colours, nothing worked out.
+const BLOCK = {
+  value: 3210, gp_pct_theo: 74.1, gp_pct_actual: 72.8, gap_pct: 1.3, waste_pct: 1.9, comps_pct: 0.8, days_on_hand: 6.2,
+  last_full_count_day: '2026-09-28', last_full_count_words: 'Mon 28 Sep', below_par_count: 4, negative_count: 0, no_recipe_pct: 2.1, sales_net: 18420,
+  purchases: 4880, budget: null, kitchen: false, rag: { gp_pct: 'green', gap_pct: 'green', waste_pct: 'green', comps_pct: 'green', days_on_hand: 'green' }, currency: 'GBP',
+};
+const stockTables = (t, ids = ['L']) => ({ ...t, locations: ids.map((id) => ({ id, org_id: ORG })), inventory_items: ids.map((id) => ({ id: `item-${id}`, location_id: id })) });
+const missingFn = (fn) => ({ data: null, error: { code: 'PGRST202', message: `Could not find the function public.${fn}` } });
+const leagueFor = (rowsBy) => (fn, args) => {
+  if (fn !== STOCK_LEAGUE) return missingFn(fn);
+  const rows = args.p_sites.map((id) => rowsBy[id]).filter(Boolean);
+  return { data: { meta: { demo_left_out: true, mixed_currency: false }, totals: [], rows, next: null }, error: null };
+};
+
+test('v5.11.92: the stock block per venue comes from one stock_report_league call per company over the period\'s business days', async () => {
+  assert.ok(OWNER_FEATURES.includes('stock'));
+  assert.deepEqual(STOCK_REASONS, ['not_installed', 'no_stock', 'failed']);
+  const ops = fakeOps(stockTables(leeds()), { rpc: leagueFor({ L: leagueRow('L') }) });
+  const snap = await build(ops, 'week');
+  const l = snap.locations[0];
+  const calls = ops.log.filter((q) => q.rpc);
+  assert.deepEqual(calls, [{ rpc: 'stock_report_league', args: { p_org: ORG, p_sites: ['L'], p_from: l.range.from, p_to: l.range.to, p_opts: { between_counts: false } } }],
+    'one call for the company, over the venue\'s own business days for the period');
+  assert.equal(l.stock_reason, null);
+  assert.deepEqual(l.stock, { ...BLOCK, demo_left_out: true });
+  // the reads behind it: the venues' companies once, one small stock items read per venue
+  assert.equal(ops.log.filter((q) => q.table === 'locations').length, 1);
+  assert.deepEqual(ops.log.filter((q) => q.table === 'inventory_items').map((q) => [q.filters[0].col, q.filters[0].val, q.limit]), [['location_id', 'L', 1]]);
+  // every request still goes through the one gate
+  assert.ok(ops.state.peak <= MAX_READS);
+  // the sales figures beside it are untouched
+  assert.equal(l.today.orders, 3);
+});
+
+test('v5.11.92: the reasons: not installed, no stock, failed; the snapshot never fails because of stock', async (t) => {
+  // A failed stock read is named in the function log; here the log is kept quiet and counted.
+  const warned = [];
+  const realWarn = console.warn;
+  console.warn = (...a) => warned.push(a.join(' '));
+  t.after(() => { console.warn = realWarn; });
+  // before 20261026a the function is missing: said so (the app shows "Stock reports need a ServOS update")
+  const old = await build(fakeOps(stockTables(leeds())), 'today');
+  assert.deepEqual([old.locations[0].stock, old.locations[0].stock_reason], [null, 'not_installed']);
+  assert.equal(old.locations[0].today.orders, 3, 'the sales are answered as ever');
+  // the report failed: said so, never a zero
+  const bad = await build(fakeOps(stockTables(leeds()), { rpc: () => ({ data: null, error: { code: '57014', message: 'canceling statement due to statement timeout' } }) }), 'today');
+  assert.deepEqual([bad.locations[0].stock, bad.locations[0].stock_reason], [null, 'failed']);
+  // the call itself threw
+  const threw = await build(fakeOps(stockTables(leeds()), { rpc: () => { throw new Error('socket closed'); } }), 'today');
+  assert.equal(threw.locations[0].stock_reason, 'failed');
+  // no stock item at the venue: no call is made at all
+  const none = fakeOps({ ...stockTables(leeds()), inventory_items: [] }, { rpc: leagueFor({ L: leagueRow('L') }) });
+  assert.equal((await build(none, 'today')).locations[0].stock_reason, 'no_stock');
+  assert.equal(none.log.filter((q) => q.rpc).length, 0);
+  // a venue in no company: no call
+  const noOrg = fakeOps({ ...stockTables(leeds()), locations: [{ id: 'L', org_id: null }] }, { rpc: leagueFor({ L: leagueRow('L') }) });
+  assert.equal((await build(noOrg, 'today')).locations[0].stock_reason, 'no_stock');
+  assert.equal(noOrg.log.filter((q) => q.rpc).length, 0);
+  // the companies read failed: the venue says failed, the sales are still answered
+  const broken = fakeOps(stockTables(leeds()), { rpc: leagueFor({ L: leagueRow('L') }), failWhen: (q) => q.table === 'locations' });
+  const b = await build(broken, 'today');
+  assert.equal(b.locations[0].stock_reason, 'failed');
+  assert.equal(b.locations[0].today.orders, 3);
+  // the stock items read failed for the venue
+  const items = await build(fakeOps(stockTables(leeds()), { rpc: leagueFor({ L: leagueRow('L') }), failWhen: (q) => q.table === 'inventory_items' }), 'today');
+  assert.equal(items.locations[0].stock_reason, 'failed');
+  // the venue is not in the answer's rows: failed, never another venue's row
+  const missing = await build(fakeOps(stockTables(leeds()), { rpc: leagueFor({ OTHER: leagueRow('OTHER') }) }), 'today');
+  assert.equal(missing.locations[0].stock_reason, 'failed');
+  // the plain tables (no venue holds stock) keep the shape with the reason
+  const plain = await build(fakeOps(leeds()), 'today');
+  assert.deepEqual([plain.locations[0].stock, plain.locations[0].stock_reason], [null, 'no_stock']);
+  // every failed read was named in the log, with the function and the database's words; a missing function was not
+  assert.equal(warned.length, 3, warned.join('\n'));
+  assert.ok(warned.some((w) => w.includes('stock_report_league') && w.includes('statement timeout')));
+  assert.ok(warned.some((w) => w.includes('socket closed')));
+  assert.ok(warned.some((w) => w.includes('Could not read venue companies')));
+  assert.ok(!warned.some((w) => w.includes('Could not find the function')), 'not installed is a reason, not a warning');
+});
+
+test('v5.11.92: venues of one company share a call, another company gets its own, and each venue takes its own row and currency', async () => {
+  const t = {
+    ...leeds(),
+    locations: [{ id: 'L', org_id: ORG }, { id: 'M', org_id: ORG }, { id: 'P', org_id: ORG2 }],
+    inventory_items: [{ id: 'i1', location_id: 'L' }, { id: 'i2', location_id: 'M' }, { id: 'i3', location_id: 'P' }],
+  };
+  const ops = fakeOps(t, { rpc: leagueFor({
+    L: leagueRow('L'),
+    M: leagueRow('M', { site: 'Site B', stock_value_now: 2050, gap_pct: 3.1, waste_pct: 2.8, rag: { gap_pct: 'red', waste_pct: 'amber' } }),
+    P: leagueRow('P', { site: 'Site C', currency: 'USD', stock_value_now: 900, kitchen: true, rag: 'not an object', below_par_count: '2' }),
+  }) });
+  const snap = await buildOwnerSnapshot({ ops, opsIds: ['L', 'M', 'P'], meta: { L: LEEDS, M: { ...LEEDS, name: 'Morley' }, P: PROVO }, now: NOW, period: 'today' });
+  const calls = ops.log.filter((q) => q.rpc);
+  assert.equal(calls.length, 2, 'one call per company');
+  const sitesByOrg = Object.fromEntries(calls.map((c) => [c.args.p_org, c.args.p_sites]));
+  assert.deepEqual(sitesByOrg[ORG], ['L', 'M']);
+  assert.deepEqual(sitesByOrg[ORG2], ['P']);
+  const by = Object.fromEntries(snap.locations.map((l) => [l.ops_location_id, l]));
+  assert.equal(by.L.stock.value, 3210);
+  assert.deepEqual([by.M.stock.value, by.M.stock.gap_pct, by.M.stock.waste_pct, by.M.stock.rag], [2050, 3.1, 2.8, { gap_pct: 'red', waste_pct: 'amber' }]);
+  assert.deepEqual([by.P.stock.value, by.P.stock.currency, by.P.stock.kitchen, by.P.stock.rag, by.P.stock.below_par_count], [900, 'USD', true, {}, 2]);
+  for (const id of ['L', 'M', 'P']) assert.equal(by[id].stock_reason, null);
+});
+
+test('v5.11.92: a company with more than 50 venues is asked in groups of 50 (the report functions take 1 to 50 sites)', async () => {
+  assert.equal(STOCK_SITES_PER_CALL, 50);
+  const ids = Array.from({ length: 51 }, (_, i) => `V${String(i).padStart(2, '0')}`);
+  const ops = fakeOps({ locations: ids.map((id) => ({ id, org_id: ORG })), inventory_items: ids.map((id) => ({ id: `item-${id}`, location_id: id })) },
+    { rpc: leagueFor(Object.fromEntries(ids.map((id) => [id, leagueRow(id)]))) });
+  const plan = Object.fromEntries(ids.map((id) => [id, { range: { from: '2026-10-13', to: '2026-10-19' } }]));
+  const out = await stockBlocks({ ops, opsIds: ids, meta: {}, plan, gate: (fn) => fn() });
+  const calls = ops.log.filter((q) => q.rpc);
+  assert.deepEqual(calls.map((c) => c.args.p_sites.length).sort((a, b) => a - b), [1, 50]);
+  assert.deepEqual(calls.flatMap((c) => c.args.p_sites).sort(), ids, 'every venue asked once');
+  for (const id of ids) assert.equal(out[id].stock_reason, null, id);
+  assert.equal(out.V50.stock.value, 3210);
+});
+
+test('v5.11.92: stockBlockOf reads one league row as the app\'s block: numbers as numbers, a missing figure null, never 0', () => {
+  assert.deepEqual(stockBlockOf(leagueRow('L')), BLOCK);
+  const bare = stockBlockOf({ location_id: 'L' }, 'usd');
+  assert.deepEqual(bare, {
+    value: null, gp_pct_theo: null, gp_pct_actual: null, gap_pct: null, waste_pct: null, comps_pct: null, days_on_hand: null,
+    last_full_count_day: null, last_full_count_words: null, below_par_count: 0, negative_count: 0, no_recipe_pct: null, sales_net: null,
+    purchases: null, budget: null, kitchen: false, rag: {}, currency: 'USD',
+  });
+  assert.equal(stockBlockOf({ location_id: 'L', currency: 'gbp' }, 'USD').currency, 'GBP', 'the row\'s own currency wins');
+  assert.equal(stockBlockOf({ gp_pct_actual: 'not a number' }).gp_pct_actual, null);
+  assert.equal(stockBlockOf({ last_full_count_day: '2026-09-28T00:00:00' }).last_full_count_day, '2026-09-28');
+  assert.equal(stockBlockOf(null), null);
+  assert.equal(stockBlockOf('x'), null);
+});
+
+test('v5.11.92: the venue screen\'s Stock card: one stock_report_dashboard call for the venue, its league row, its attention rows, the not posted count; the group has none', async () => {
+  const dash = (fn, args) => {
+    if (fn !== STOCK_DASHBOARD) return missingFn(fn);
+    assert.deepEqual(args.p_sites, ['L']);
+    return { data: {
+      meta: { demo_left_out: false },
+      totals: [{ location_id: 'L', site: 'Site A', currency: 'GBP', not_posted_count: 2, not_posted_value: '24.50' }, { location_id: null, currency: 'GBP', not_posted_count: 2, not_posted_value: 24.5 }],
+      rows: {
+        league: [leagueRow('L')], by_type: [], key_items: [],
+        attention: [
+          { kind: 'below_minimum', location_id: 'L', site: 'Site A', count: 3, words: '3 items below minimum', ref: null },
+          { kind: 'negative_stock', location_id: 'OTHER', site: 'Elsewhere', count: 9, words: 'never this venue\'s' },
+          { kind: 'demo_history', location_id: null, count: 1, words: 'Demo history left out', ref: { a: 1 } },
+        ],
+      },
+      next: null,
+    }, error: null };
+  };
+  const ops = fakeOps(stockTables(detailTables()), { rpc: dash });
+  const { detail: d } = await detailOf(ops);
+  const calls = ops.log.filter((q) => q.rpc);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].args, { p_org: ORG, p_sites: ['L'], p_from: d.range.from, p_to: d.range.to, p_opts: { between_counts: false } });
+  assert.equal(d.stock_reason, null);
+  assert.deepEqual(d.stock, {
+    ...BLOCK, demo_left_out: false, not_posted: { count: 2, value: 24.5 },
+    attention: [
+      { kind: 'below_minimum', count: 3, words: '3 items below minimum', ref: null },
+      { kind: 'demo_history', count: 1, words: 'Demo history left out', ref: { a: 1 } },
+    ],
+  });
+  // the seven reports are still there beside it
+  assert.equal(typeof d.totals.net_sales, 'number');
+  assert.ok(Array.isArray(d.hours));
+  // the group: no card and no call (companies and currencies are never added together)
+  const g = fakeOps(stockTables(detailTables()), { rpc: dash });
+  const { detail: gd } = await detailOf(g, { target: 'group' });
+  assert.deepEqual([gd.stock, gd.stock_reason], [null, null]);
+  assert.equal(g.log.filter((q) => q.rpc).length, 0);
+  // before 20261026a
+  const { detail: od } = await detailOf(fakeOps(stockTables(detailTables())));
+  assert.deepEqual([od.stock, od.stock_reason], [null, 'not_installed']);
+  // no stock at the venue
+  const { detail: nd } = await detailOf(fakeOps({ ...stockTables(detailTables()), inventory_items: [] }, { rpc: dash }));
+  assert.deepEqual([nd.stock, nd.stock_reason], [null, 'no_stock']);
+  // the venue missing from the league
+  const { detail: md } = await detailOf(fakeOps(stockTables(detailTables()), { rpc: (fn) => (fn === STOCK_DASHBOARD ? { data: { rows: { league: [], attention: [] }, totals: [] }, error: null } : missingFn(fn)) }));
+  assert.deepEqual([md.stock, md.stock_reason], [null, 'failed']);
+});
+
+test('v5.11.92: ownerVenueIds is the office reach rule as a list: links, plus the whole company for an owner, everything handed in for a super admin, nothing for a device', () => {
+  const user = { id: 'u1' };
+  const company = [{ id: 'A', org_id: ORG }, { id: 'B', org_id: ORG }, { id: 'C', org_id: ORG2 }];
+  assert.deepEqual(ownerVenueIds({ user, profile: { role: 'manager', org_id: ORG }, linkedIds: ['A'], companyVenues: company }), ['A'], 'a manager sees their links only');
+  assert.deepEqual(ownerVenueIds({ user, profile: { role: 'manager', org_id: ORG, stock_control: 'all' }, linkedIds: ['A'], companyVenues: company }), ['A'], 'Stock control all never widens the Owner app: it shows sales');
+  assert.deepEqual(ownerVenueIds({ user, profile: { role: 'owner', org_id: ORG }, linkedIds: ['A'], companyVenues: company }), ['A', 'B'], 'an owner sees every venue of their own company, once each, never another company\'s');
+  assert.deepEqual(ownerVenueIds({ user, profile: { role: 'owner', org_id: ORG }, linkedIds: ['C'], companyVenues: company }), ['C', 'A', 'B'], 'a link into another company stays a link');
+  assert.deepEqual(ownerVenueIds({ user, profile: { role: 'owner', org_id: null }, linkedIds: ['A'], companyVenues: company }), ['A'], 'an owner with no company is their links');
+  assert.deepEqual(ownerVenueIds({ user, profile: { role: 'super_admin' }, linkedIds: [], companyVenues: company }), ['A', 'B', 'C']);
+  assert.deepEqual(ownerVenueIds({ user: { id: 'd', is_anonymous: true }, profile: { role: 'owner', org_id: ORG }, linkedIds: ['A'], companyVenues: company }), [], 'a device session sees nothing');
+  assert.deepEqual(ownerVenueIds({ user: null, profile: null, linkedIds: ['A'], companyVenues: company }), []);
+  assert.deepEqual(ownerVenueIds({}), []);
+  assert.deepEqual(ownerVenueIds({ user, profile: { role: 'owner', org_id: ORG }, linkedIds: ['A', 'A', null, 7], companyVenues: [{ id: 'A', org_id: ORG }, { org_id: ORG }, null] }), ['A'], 'junk and repeats are dropped');
+  // index.ts builds the list this way and reads the two things it needs, never the Stock control branch
+  const src = fs.readFileSync(new URL('../../supabase/functions/owner-snapshot/index.ts', import.meta.url), 'utf8');
+  assert.match(src, /select\('role, org_id'\)\.eq\('id', user\.id\)/);
+  assert.match(src, /from\('locations'\)\.select\('id, org_id'\)\.eq\('org_id', prof\.org_id\)/);
+  assert.match(src, /if \(prof\?\.role === 'owner' && prof\?\.org_id\) \{/);
+  assert.match(src, /opsIds = ownerVenueIds\(\{ user, profile: prof \?\? null, linkedIds, companyVenues \}\);/);
+  assert.doesNotMatch(src, /stock_control/);
 });

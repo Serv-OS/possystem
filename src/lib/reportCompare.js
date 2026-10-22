@@ -88,6 +88,10 @@ function lastDayOfMonthBefore(ymd) {
  *             { kind:'service', serviceStart, serviceEnd, shiftName, from, to }
  *             (what getPeriodRange in reports/_filters.js builds)
  *   nowMs     for tests
+ *   opts      { mode } (v5.11.92, multi site stock Drop 4a): 'prev' (the default, the rule above)
+ *             or 'last_year', the same business days 52 weeks earlier (364 days back, so Monday
+ *             is set against a Monday), cut at the same time of day while the period trades.
+ *             A service range always compares with last week. Every existing call keeps 'prev'.
  *
  * Returns null when the range has no days, else:
  *   { from, to }        real instants, both inclusive (to is the last ms compared)
@@ -99,7 +103,9 @@ function lastDayOfMonthBefore(ymd) {
  *                       still trading, null once it is finished
  *   cut                 true when the comparison stops part way through its last day
  */
-export function compareRange(periodId, range, nowMs = Date.now()) {
+export const LAST_YEAR_DAYS = 364;
+
+export function compareRange(periodId, range, nowMs = Date.now(), { mode = 'prev' } = {}) {
   if (!isYmd(range?.fromDay) || !isYmd(range?.toDay) || range.toDay < range.fromDay) return null;
   const tz  = venueZone(range.timeZone);
   const bds = range.dayStart || '00:00';
@@ -169,6 +175,15 @@ export function compareRange(periodId, range, nowMs = Date.now()) {
   };
   const daysBefore = (yet) => build(addDays(fromDay, -nDays), addDays(fromDay, -1), true,
     nDays === 7 && mondayIndex(fromDay) === 0 ? 'the week before' : `the ${nDays} days before`, yet);
+
+  // ── Same period last year (v5.11.92, Stock and GP) ─────────────────────────────────────
+  // The same business days 52 weeks back: the weekdays line up, and a period still trading is
+  // cut at the same time of day on its last day. The words are fixed, whatever the period.
+  if (mode === 'last_year') {
+    const yet = id === 'this-month' ? 'this month' : id === 'this-week' ? 'this week' : nDays === 1 ? 'today' : 'so far';
+    const r = build(addDays(fromDay, -LAST_YEAR_DAYS), addDays(toDay, -LAST_YEAR_DAYS), true, 'the same days last year', yet);
+    return { ...r, nothing: 'Nothing last year to compare with' };
+  }
 
   switch (id) {
     case 'yesterday':

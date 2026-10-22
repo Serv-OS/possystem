@@ -5,14 +5,21 @@
 //
 // Hidden when the login has one site: nothing to choose, nothing to explain.
 // The rules (who is connected, what is ticked) are in src/lib/reportScope.js; this only draws.
+//
+// v5.11.92 (multi site stock Drop 4a, contract 2.3): optional site groups ("Group: North (4 sites)"
+// ticks exactly the group's sites) above the site list, and a "Show closed sites" tick at the bottom
+// when the scope has closed sites. Reports > Stock and GP hands these in from the stock scope; every
+// other report passes nothing new and reads exactly as before. The Side by side segment lives in
+// the shell, not here.
 
 import { useEffect, useRef, useState } from 'react';
 import { sitesLabel } from '../../../lib/reportScope.js';
 
 const btnSt = { padding:'6px 10px', borderRadius:8, background:'var(--bg3)', border:'1px solid var(--bdr)', color:'var(--t2)', fontSize:12, cursor:'pointer', fontFamily:'inherit', display:'inline-flex', alignItems:'center', gap:6 };
 const rowSt = { display:'flex', alignItems:'center', gap:8, padding:'7px 10px', fontSize:12, color:'var(--t1)', cursor:'pointer', borderRadius:6 };
+const groupBtnSt = { ...rowSt, width:'100%', background:'transparent', border:'none', fontFamily:'inherit', textAlign:'left' };
 
-export default function SitesControl({ scope, onToggle, onAll, onOnlyHome, disabled = false }) {
+export default function SitesControl({ scope, onToggle, onAll, onOnlyHome, disabled = false, groups = [], onGroup, showClosed = false, onShowClosed, closedSites = [] }) {
   const [open, setOpen] = useState(false);
   const box = useRef(null);
   useEffect(() => {
@@ -24,6 +31,8 @@ export default function SitesControl({ scope, onToggle, onAll, onOnlyHome, disab
 
   if (!scope?.hasChoice) return null;
   const ticked = new Set(scope.tickedIds);
+  const groupRows = Array.isArray(groups) ? groups.filter(g => g && g.id && (g.locationIds || []).length > 0) : [];
+  const tickedGroupId = groupRows.find(g => g.locationIds.length === ticked.size && g.locationIds.every(id => ticked.has(String(id))))?.id || null;
   return (
     <div ref={box} style={{ position:'relative' }}>
       <button type="button" disabled={disabled} onClick={() => setOpen(o => !o)} aria-haspopup="true" aria-expanded={open}
@@ -40,13 +49,35 @@ export default function SitesControl({ scope, onToggle, onAll, onOnlyHome, disab
             All sites
             <span style={{ marginLeft:'auto', color:'var(--t4)', fontWeight:400 }}>{scope.tickedIds.length} of {scope.sites.length}</span>
           </label>
+          {groupRows.length > 0 && (
+            <div style={{ borderBottom:'1px solid var(--bdr)', marginBottom:4, paddingBottom:4 }}>
+              {groupRows.map(g => {
+                const on = g.id === tickedGroupId;
+                return (
+                  <button key={g.id} type="button" role="menuitemradio" aria-checked={on} onClick={() => onGroup?.(g.id)}
+                    style={{ ...groupBtnSt, fontWeight: on ? 700 : 400, color: on ? 'var(--acc)' : 'var(--t1)' }}>
+                    <span>Group: {g.name}</span>
+                    <span style={{ marginLeft:'auto', fontSize:10, color:'var(--t4)' }}>{g.locationIds.length} site{g.locationIds.length === 1 ? '' : 's'}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
           {scope.sites.map(s => (
             <label key={s.id} style={rowSt}>
               <input type="checkbox" checked={ticked.has(s.id)} onChange={() => onToggle(s.id)}/>
               <span>{s.name}</span>
+              {s.closed && <span style={{ fontSize:10, color:'var(--t4)' }}>closed</span>}
               {s.isHome && <span style={{ marginLeft:'auto', fontSize:10, color:'var(--t4)' }}>signed in</span>}
             </label>
           ))}
+          {closedSites.length > 0 && onShowClosed && (
+            <label style={{ ...rowSt, borderTop:'1px solid var(--bdr)', borderRadius:0, marginTop:4, color:'var(--t3)' }}>
+              <input type="checkbox" checked={!!showClosed} onChange={(e) => onShowClosed(e.target.checked)}/>
+              Show closed sites
+              <span style={{ marginLeft:'auto', fontSize:10, color:'var(--t4)' }}>{closedSites.length}</span>
+            </label>
+          )}
           <div style={{ padding:'6px 10px 4px', fontSize:10, color:'var(--t4)', lineHeight:1.5 }}>
             Each site is read on its own clock and business day. Refunds and receipts stay with the site you are signed in to.
           </div>

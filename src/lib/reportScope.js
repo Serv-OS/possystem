@@ -60,6 +60,14 @@ export const REPORT_SITE_MODE = {
   payroll: 'home', daily_trading: 'home', cash_drawer: 'home',
   zreport: 'home', open: 'home',
   location_compare: 'all',
+  // v5.11.92 (multi site stock Drop 4a): Reports > Stock and GP. Every one of the 21 reads every
+  // site asked for from the stored day totals (the database checks the login reaches each one);
+  // the sites come from the stock scope (stockReportScope below), not from the closed checks scope.
+  stock_home: 'multi', stock_value: 'multi', stock_movement: 'multi', stock_gap: 'multi', stock_cogs: 'multi',
+  stock_product_gp: 'multi', stock_waste: 'multi', stock_purchases: 'multi', stock_prices: 'multi',
+  stock_off_contract: 'multi', stock_budget: 'multi', stock_transfers: 'multi', stock_count_compliance: 'multi',
+  stock_days_on_hand: 'multi', stock_par: 'multi', stock_key_ratios: 'multi', stock_setup_health: 'multi',
+  stock_batches: 'multi', stock_recipe_cost: 'multi', stock_allergens: 'multi', stock_month_end: 'multi',
 };
 
 // One site ON PURPOSE (a slip, a drawer, or an action that belongs to one site). The note
@@ -252,11 +260,96 @@ export function canShowCombinedTotal(scope, sites = scope?.ticked) {
   return cur.length === 1 && !!cur[0];
 }
 
-/** The words on the Sites control: "Leeds", "All sites (6)", "3 of 6 sites". */
+/** The group whose sites are exactly the ticked ones, when the scope carries groups; else null. */
+export function tickedGroup(scope) {
+  const ticked = (scope?.tickedIds || []).map(String);
+  if (ticked.length < 1) return null;
+  const want = [...ticked].sort().join(',');
+  return (Array.isArray(scope?.groups) ? scope.groups : []).find((g) => {
+    const ids = (g?.locationIds || g?.location_ids || []).map(String);
+    return ids.length > 0 && [...new Set(ids)].sort().join(',') === want;
+  }) || null;
+}
+
+/**
+ * The words on the Sites control: "Leeds", "All sites (6)", "3 of 6 sites". v5.11.92: a scope
+ * that carries site groups (the stock scope) says the group's name when the ticked set is exactly
+ * a group ("North").
+ */
 export function sitesLabel(scope) {
   const n = scope?.ticked?.length || 0, all = scope?.sites?.length || 0;
   if (n <= 1) return scope?.ticked?.[0]?.name || 'This site';
-  return n === all ? `All sites (${all})` : `${n} of ${all} sites`;
+  if (n === all) return `All sites (${all})`;
+  const group = tickedGroup(scope);
+  return group ? group.name : `${n} of ${all} sites`;
+}
+
+// ── the stock scope as a report scope (v5.11.92, multi site stock Drop 4a, contract 2.3) ─────
+//
+// Reports > Stock and GP reads its sites from the stock site scope (stock_site_scope: every open
+// site this login reaches through its Stock control level, the site groups, the closed sites), not
+// from the closed checks scope above: a Stock control "All sites" manager reaches sites it has no
+// user_locations row for. The database checks the same reach again on every call.
+
+/**
+ * @param {object} stock      useStockScope()'s answer, or the raw scope: { sites, closedSites,
+ *                            groups, level, homeSite }
+ * @param {string[]|null} tickedIds   the sites ticked on the control; null = the default
+ * @param {boolean} showClosed        list the closed sites too
+ * Returns { sites, ticked, tickedIds, hasChoice, allTicked, homeId, home, groups, closedSites,
+ * currencies, canShowCombinedTotal, siteOf, currencyOf }. The default ticks: every open site for
+ * Stock control 'all', else the signed in venue when it is in the list, else the first site.
+ */
+export function stockReportScope(stock, tickedIds = null, showClosed = false) {
+  const open = Array.isArray(stock?.sites) ? stock.sites : [];
+  const closedRows = Array.isArray(stock?.closedSites) ? stock.closedSites : [];
+  const closedIds = new Set(closedRows.map((s) => String(s.id)));
+  const homeId = stock?.homeSite != null && stock.homeSite !== '' ? String(stock.homeSite) : null;
+  const shape = (s) => ({
+    id: String(s.id), name: tidyName(s.name) || 'Site', currency: upper(s.currency), kind: s.kind || null,
+    closed: closedIds.has(String(s.id)), isHome: String(s.id) === homeId,
+  });
+  const sites = [...open, ...(showClosed ? closedRows : [])].filter((s) => s && s.id != null).map(shape);
+  const ids = sites.map((s) => s.id);
+  const wanted = Array.isArray(tickedIds) ? tickedIds.map(String) : null;
+  let ticked = wanted ? ids.filter((id) => wanted.includes(id)) : [];
+  if (!ticked.length) {
+    const openIds = sites.filter((s) => !s.closed).map((s) => s.id);
+    if (stock?.level === 'all' && openIds.length > 1) ticked = openIds;
+    else if (homeId && ids.includes(homeId)) ticked = [homeId];
+    else ticked = openIds.length ? [openIds[0]] : ids.slice(0, 1);
+  }
+  const groups = (Array.isArray(stock?.groups) ? stock.groups : [])
+    .map((g) => ({ id: String(g.id), name: String(g.name || ''), locationIds: (g.locationIds || g.location_ids || []).map(String).filter((id) => ids.includes(id)) }))
+    .filter((g) => g.locationIds.length > 0);
+  const byId = new Map(sites.map((s) => [s.id, s]));
+  const tickedSites = sites.filter((s) => ticked.includes(s.id));
+  const scope = {
+    sites,
+    ticked: tickedSites,
+    tickedIds: ticked,
+    hasChoice: sites.length > 1,
+    allTicked: sites.length > 0 && ticked.length === sites.length,
+    homeId,
+    home: byId.get(homeId) || null,
+    groups,
+    closedSites: closedRows.filter((s) => s && s.id != null).map(shape),
+    siteOf: (id) => byId.get(String(id)) || null,
+    currencyOf: (id) => byId.get(String(id))?.currency || null,
+  };
+  scope.currencies = currenciesInScope(scope);
+  scope.canShowCombinedTotal = canShowCombinedTotal(scope);
+  return scope;
+}
+
+/** The words in a Stock and GP header: 'All sites', the group's name, one site's name, or '3 of 6'. */
+export function stockSitesLabel(scope) {
+  const n = scope?.ticked?.length || 0, all = scope?.sites?.length || 0;
+  if (n === 0) return 'No sites';
+  if (n === 1) return scope.ticked[0].name || 'This site';
+  if (n === all) return 'All sites';
+  const group = tickedGroup(scope);
+  return group ? group.name : `${n} of ${all}`;
 }
 
 // ── which sites one report is shown ──────────────────────────────────────────

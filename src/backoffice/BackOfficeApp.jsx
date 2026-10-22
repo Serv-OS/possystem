@@ -111,7 +111,9 @@ import VenueMessagePopup from '../components/VenueMessagePopup';
 import { money, currencySymbol } from '../lib/currency';
 import { subscribeSaveHealth } from '../lib/saveHealth';
 import { shouldRegate, sessionIdOf, idleTooLong, idleSignOutMessage, ACTIVITY_EVENTS } from '../lib/backOfficeSession';
-import { NAV_IA, EVERYTHING, canOpenRoute, guardRoute, filterNav, canPushToPos, readProfileRow, sectionsFromProfileRow, sectionKeyOfRoute, routeLabel, stockAccessOf } from '../lib/boSections';
+import { NAV_IA, EVERYTHING, canOpenRoute, guardRoute, filterNav, canPushToPos, readProfileRow, sectionsFromProfileRow, sectionKeyOfRoute, routeLabel, stockAccessOf, STOCK_REPORTS_ALIAS } from '../lib/boSections';
+// v5.11.92 (multi site stock Drop 4a): a Stock and GP share link in the address bar, read once.
+import { readShareLink } from '../lib/stock/reportLink';
 // v5.11.89 (multi site stock Drop 1): the site picker's scope, held here and handed to the stock screens.
 import { StockScopeProvider, StockSiteGate } from './StockScope';
 import StockSitePicker from './components/StockSitePicker';
@@ -178,6 +180,8 @@ const NAV = [
   { id:'staff',      label:'Staff & access',  icon:'👥',  group:'Configuration' },
   { id:'printing',   label:'Production printing',   icon:'🖨',  group:'Configuration' },
   { id:'reports',    label:'Reports',           icon:'📊',  group:'Analytics' },
+  // v5.11.92 (multi site stock Drop 4a): the head office reports, under Reports for a multi site company.
+  { id:'stock-gp', label:'Stock and GP', icon:'📊', group:'Analytics' },
   { id:'card-payments', label:'Card payments',  icon:'💳',  group:'Analytics' },
   { id:'shift',      label:'Shift',             icon:'⏱', group:'Analytics' },
   { id:'eod',        label:'Close day',        icon:'🔒',  group:'Analytics' },
@@ -492,14 +496,35 @@ export default function BackOfficeApp() {
   const section = guardRoute(askedSection, access);
   // SETTER GUARD: every link and button that changes the screen calls this, here and in the
   // screens that are handed it. A route this login may not open is refused and they stay put.
+  // v5.11.92 (multi site stock Drop 4a, map 2.3): Inventory > Reports forwards to Reports > Stock and
+  // GP for a multi site company whose stock scope has loaded (STOCK_REPORTS_ALIAS); the one guard
+  // then decides on the routed name, as for every other route.
   const setSection = (next) => {
-    if (!canOpenRoute(next, access)) {
+    const routed = STOCK_REPORTS_ALIAS(next, access);
+    if (!canOpenRoute(routed, access)) {
       useStore.getState().showToast?.('You do not have access to that part of Back Office.', 'error');
       return;
     }
-    setAskedSection(next);
+    setAskedSection(routed);
   };
   const canOpen = useCallback((routeId) => canOpenRoute(routeId, access), [access]);
+  // v5.11.92 (Drop 4a, contract 2.2): one report to open in Stock and GP with its filters (a "See the
+  // report" link on a stock screen, or a share link in the address bar). Held until BOReports has
+  // applied it once (onLinkUsed), then cleared. The guard still decides: openStockReport goes
+  // through setSection, so a login that may not open Stock and GP stays where it is.
+  const [stockReportLink, setStockReportLink] = useState(null);
+  const openStockReport = (link) => { setStockReportLink(link); setSection('stock-gp'); };
+  // The address bar is read ONCE, after the stock scope is in (the gate needs it), and only for a
+  // Stock and GP share link (readShareLink answers null for anything else). Nothing else is read.
+  const shareLinkRead = useRef(false);
+  useEffect(() => {
+    if (!stockAccess.ready || shareLinkRead.current) return;
+    shareLinkRead.current = true;
+    const link = readShareLink(window.location.search);
+    if (link) openStockReport(link);
+    // openStockReport is a plain closure over this render's setSection; it runs once, so it is not a dep.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stockAccess.ready]);
   const [showLocationSwitcher, setShowLocationSwitcher] = useState(false);
   const [showSupport, setShowSupport] = useState(false);
   // v5.5.367 ServOS: which nav accordion is open (single-open); auto-opens the
@@ -1108,7 +1133,7 @@ export default function BackOfficeApp() {
 
       {/* ── Main content ─────────────────────────────────── */}
       {/* v5.11.89: the stock site scope for the top bar picker and every stock screen below. */}
-      <StockScopeProvider value={{ scope: stockScope, choice: stockChoice, setChoice: chooseStockSite, access, userId: orgCtx?.userId || null, go: setSection, reload: () => setStockScopeTry((n) => n + 1) }} key={`${orgCtx?.userId || ''}:${orgCtx?.locationId || ''}`}>
+      <StockScopeProvider value={{ scope: stockScope, choice: stockChoice, setChoice: chooseStockSite, access, userId: orgCtx?.userId || null, go: setSection, reload: () => setStockScopeTry((n) => n + 1), openReport: openStockReport }} key={`${orgCtx?.userId || ''}:${orgCtx?.locationId || ''}`}>
       <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
         {/* Top bar */}
         <div style={{
@@ -1229,6 +1254,7 @@ export default function BackOfficeApp() {
           {section === 'staff'      && <StaffManager orgCtx={orgCtx} />}
           {section === 'printing'   && <PrintRouting />}
           {section === 'reports'    && <BOReports setSection={setSection} canOpen={canOpen} />}
+          {section === 'stock-gp' && <BOReports setSection={setSection} canOpen={canOpen} initialView="stock_home" stockLink={stockReportLink} onLinkUsed={() => setStockReportLink(null)} key="stock-gp" />}
           {section === 'card-payments' && <CardPayments />}
           {section === 'shift'      && <Shift />}
           {section === 'eod'        && <EODClose />}

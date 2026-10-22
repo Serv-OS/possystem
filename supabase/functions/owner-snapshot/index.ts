@@ -2,7 +2,7 @@
 //
 // The owner phone app's data engine. Given a back-office user's token it resolves
 // every location they can access and returns a compact top-down snapshot for each,
-// plus a combined rollup — in one round trip (mobile-friendly).
+// plus a combined rollup, in one round trip (mobile-friendly).
 //
 // Per location, on the venue's own clock, for the period asked for (2 Oct 2026, Peter: "On the
 // owner app I want to be able to have quick filters for today, this week, this month."):
@@ -41,6 +41,18 @@
 // 16 Oct 2026, the Net / Gross switch: every sales figure also comes including VAT, beside the
 // net one it always sent ('gross' in `features`); see _shared/ownerSnapshot.js "NET AND GROSS".
 //
+// v5.11.92 (multi site stock Drop 4a, 21 Oct 2026):
+//   • WHICH VENUES. The list was user_locations rows only, so a Coffee Boy owner linked to 2 or 5 of
+//     the 7 sites saw 2 or 5. It is now the office reach rule (_shared/stockOfficeReach.js
+//     officeReachesVenue, the database's user_accessible_locations): the link rows UNION every venue
+//     of the login's own company when its role is owner; a super admin as before (capped at 50).
+//     Never the Stock control branch: the Owner app shows sales, so a Stock control 'all' manager
+//     still sees only the venues they are linked to. The list is built by ownerVenueIds (pure).
+//   • STOCK. Each venue carries `stock` (value, GP %, gap %, waste %, comps %, days on hand, last
+//     full count, below par, red amber green) from stock_report_league, or `stock: null` with a
+//     `stock_reason`; the detail call adds `detail.stock` with the attention rows. 'stock' in
+//     `features`. See _shared/ownerSnapshot.js "the stock blocks".
+//
 // The reads and the sums live in _shared/ownerSnapshot.js (run by `npm test` against a stand
 // in database); the date rules in _shared/ownerPeriod.js.
 
@@ -48,7 +60,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { secondStepRefusal } from '../_shared/second-step.ts';
 import { ownerPeriod } from '../_shared/ownerPeriod.js';
 import { buildOwnerSnapshot } from '../_shared/ownerSnapshot.js';
-import { buildOwnerDetail, venueMeta, OWNER_API, OWNER_FEATURES } from '../_shared/ownerSnapshot.js';
+import { buildOwnerDetail, venueMeta, ownerVenueIds, OWNER_API, OWNER_FEATURES } from '../_shared/ownerSnapshot.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -71,8 +83,10 @@ Deno.serve(async (req) => {
   const { data: { user } } = await opsAdmin.auth.getUser(token);
   if (!user) return json({ error: 'invalid session' }, 401);
 
-  // Accessible ops locations: user_locations, or every location for super_admin (capped).
-  const { data: prof } = await opsAdmin.from('user_profiles').select('role').eq('id', user.id).maybeSingle();
+  // Accessible ops locations (v5.11.92): the office reach rule. A super admin: every location
+  // (capped). Anyone else: their user_locations rows, plus every venue of their own company when
+  // their role is owner (ownerVenueIds applies officeReachesVenue to each candidate).
+  const { data: prof } = await opsAdmin.from('user_profiles').select('role, org_id').eq('id', user.id).maybeSingle();
   const isSuper = prof?.role === 'super_admin';
   let opsIds: string[] = [];
   if (isSuper) {
@@ -80,7 +94,14 @@ Deno.serve(async (req) => {
     opsIds = (data ?? []).map((l: any) => l.id);
   } else {
     const { data } = await opsAdmin.from('user_locations').select('location_id').eq('user_id', user.id);
-    opsIds = [...new Set((data ?? []).map((r: any) => r.location_id))];
+    const linkedIds = [...new Set((data ?? []).map((r: any) => r.location_id))] as string[];
+    let companyVenues: { id: string; org_id: string | null }[] = [];
+    if (prof?.role === 'owner' && prof?.org_id) {
+      const { data: own, error: ownErr } = await opsAdmin.from('locations').select('id, org_id').eq('org_id', prof.org_id).order('id');
+      if (ownErr) return json({ error: `Could not read the company's venues: ${ownErr.message}` }, 500);
+      companyVenues = (own ?? []).map((l: any) => ({ id: l.id, org_id: l.org_id ?? null }));
+    }
+    opsIds = ownerVenueIds({ user, profile: prof ?? null, linkedIds, companyVenues });
   }
   if (!opsIds.length) {
     const none = await buildOwnerSnapshot({ ops: opsAdmin, opsIds: [], meta: {}, period });

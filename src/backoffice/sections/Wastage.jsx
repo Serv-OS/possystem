@@ -15,6 +15,8 @@ import { fetchInventoryItems } from '../../lib/stock/data';
 import PosWasteModal from '../../components/PosWasteModal';
 import { logWaste, fetchWaste, WASTE_REASONS } from '../../lib/stock/waste';
 import { countLiveStockItems } from '../../lib/stock/menuWaste';
+// v5.11.92 (multi site stock Drop 4a, contract 2.4): "See the report" opens Reports > Stock and GP > Waste.
+import { useStockScope } from '../StockScope';
 
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
 const lbl = { display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 5 };
@@ -24,6 +26,7 @@ const DIM_ORDER = [DIMENSIONS.COUNT, DIMENSIONS.WEIGHT, DIMENSIONS.VOLUME];
 // v5.11.89 (multi site stock Drop 1): siteId is the picker's site (the signed in venue for a one site company).
 export default function Wastage({ siteId = null } = {}) {
   const showToast = useStore(s => s.showToast);
+  const { openReport, canOpenReports } = useStockScope();
   const [locId, setLocId] = useState(siteId || getActiveLocationSync());
   const [items, setItems] = useState([]);
   // 26 Sep 2026: a failed items read must not read as "no stock items are set up".
@@ -73,6 +76,11 @@ export default function Wastage({ siteId = null } = {}) {
   return (
     <div style={{ height: '100%', overflowY: 'auto', background: 'var(--bg0)', padding: '22px 26px', maxWidth: 900 }}>
       <h1 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 4px', color: 'var(--t1)' }}>Wastage</h1>
+      {/* v5.11.92 (Drop 4a, contract 2.4): the link renders nothing for a one site company (canOpenReports false), so its HTML is today's. */}
+      {canOpenReports && locId && (
+        <button type="button" onClick={() => openReport({ report: 'stock_waste', sites: { kind: 'sites', ids: [locId] }, period: 'last-week' })}
+          style={{ background: 'transparent', border: 'none', padding: '0 0 6px', color: 'var(--acc)', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>See the report</button>
+      )}
       <div style={{ fontSize: 13, color: 'var(--t3)', marginBottom: 18 }}>Record spoilage, breakage, over-production etc. It comes off stock and is valued at cost — and counts as explained loss, so it doesn’t show up as a mystery in “The Gap”.</div>
 
       {/* Log form */}

@@ -213,14 +213,26 @@ const IDENTITY = [
   ['backoffice/sections/PriceChanges.jsx', [
     ['// v5.11.89 (multi site stock Drop 1): siteId is the picker\'s site (the signed in venue for a one site company).\nexport default function PriceChanges({ siteId = null } = {}) {', 'export default function PriceChanges() {'],
     [LOC, LOC_MAIN],
+    // v5.11.92 (Drop 4a, contract 2.4): "See the report" renders nothing for a one site company (canOpenReports false)
+    ['import { PageHeader, Tag } from \'./reports/reportKit\';\n// v5.11.92 (multi site stock Drop 4a, contract 2.4): "See the report" opens Reports > Stock and GP > Price paid and price changes.\nimport { useStockScope } from \'../StockScope\';', 'import { PageHeader, Tag } from \'./reports/reportKit\';'],
+    ['  const { openReport, canOpenReports } = useStockScope();\n', ''],
+    ['delivery and invoice.">\n        {canOpenReports && locId && (\n          <button type="button" onClick={() => openReport({ report: \'stock_prices\', sites: { kind: \'sites\', ids: [locId] }, period: \'last-week\' })}\n            style={{ background: \'transparent\', border: \'none\', padding: 0, color: \'var(--acc)\', fontSize: 13, fontWeight: 700, cursor: \'pointer\', fontFamily: \'inherit\' }}>See the report</button>\n        )}\n      </PageHeader>', 'delivery and invoice." />'],
   ]],
   ['backoffice/sections/Wastage.jsx', [
     ['// v5.11.89 (multi site stock Drop 1): siteId is the picker\'s site (the signed in venue for a one site company).\nexport default function Wastage({ siteId = null } = {}) {', 'export default function Wastage() {'],
     [LOC, LOC_MAIN],
     // the modal resolved the signed in venue itself; it is handed the same venue now
     [' locationId={locId} showToast={showToast} />', ' showToast={showToast} />'],
+    // v5.11.92 (Drop 4a, contract 2.4): "See the report" renders nothing for a one site company (canOpenReports false)
+    ['import { countLiveStockItems } from \'../../lib/stock/menuWaste\';\n// v5.11.92 (multi site stock Drop 4a, contract 2.4): "See the report" opens Reports > Stock and GP > Waste.\nimport { useStockScope } from \'../StockScope\';', 'import { countLiveStockItems } from \'../../lib/stock/menuWaste\';'],
+    ['  const { openReport, canOpenReports } = useStockScope();\n', ''],
+    ['      {/* v5.11.92 (Drop 4a, contract 2.4): the link renders nothing for a one site company (canOpenReports false), so its HTML is today\'s. */}\n      {canOpenReports && locId && (\n        <button type="button" onClick={() => openReport({ report: \'stock_waste\', sites: { kind: \'sites\', ids: [locId] }, period: \'last-week\' })}\n          style={{ background: \'transparent\', border: \'none\', padding: \'0 0 6px\', color: \'var(--acc)\', fontSize: 13, fontWeight: 700, cursor: \'pointer\', fontFamily: \'inherit\' }}>See the report</button>\n      )}\n', ''],
   ]],
   ['backoffice/sections/StockCounts.jsx', [
+    // v5.11.92 (Drop 4a, contract 2.4) first, so the Drop 1 takeOpenNew line below is there to undo: the
+    // "See the gap report" link renders nothing for a one site company (canOpenReports false)
+    ['  // v5.11.92 (Drop 4a, contract 2.4): an approved count links to Reports > Stock and GP > Theoretical against actual.\n  const { takeOpenNew, openReport, canOpenReports } = useStockScope();\n', '  const { takeOpenNew } = useStockScope();\n'],
+    ['            {approved && canOpenReports && locId && (\n              <button type="button" onClick={() => openReport({ report: \'stock_gap\', sites: { kind: \'sites\', ids: [locId] }, period: \'between-counts\' })}\n                style={{ background: \'transparent\', border: \'none\', padding: 0, color: \'var(--acc)\', fontSize: 12, fontWeight: 700, cursor: \'pointer\', fontFamily: \'inherit\' }}>See the gap report</button>\n            )}\n', ''],
     ['import StockItemPicker from \'../../components/StockItemPicker\';\nimport { useStockScope } from \'../StockScope\';', 'import StockItemPicker from \'../../components/StockItemPicker\';'],
     ['// v5.11.89 (multi site stock Drop 1): siteId is the picker\'s site (always the signed in venue for a\n// one site company); "Start a count" on Stock items opens the new count panel once (takeOpenNew).\nexport default function StockCounts({ orgCtx = null, siteId = null }) {', 'export default function StockCounts({ orgCtx = null }) {'],
     ['  const { takeOpenNew } = useStockScope();\n', ''],

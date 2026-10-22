@@ -40,6 +40,20 @@ export const PERIODS = [
   { id:'custom',     label:'Custom'       },
 ];
 
+// v5.11.92 (multi site stock Drop 4a, contract 2.3): the periods of Reports > Stock and GP. The
+// stored day totals are whole business days, so no service pills and no rolling 7 or 30 days;
+// "Between two counts" is each site's window between its last two full approved counts (the
+// database resolves it per site inside the 90 days the range covers).
+export const STOCK_PERIODS = [
+  ...PERIODS.filter(p => !['last-7', 'last-30'].includes(p.id)),
+  { id:'between-counts', label:'Between two counts' },
+];
+// The stock period pills: the same list for every venue config (no service pills).
+// eslint-disable-next-line no-unused-vars
+export function buildStockPeriods(config) {
+  return STOCK_PERIODS;
+}
+
 // v4.6.24: Build the filter row pills given the location config. Injects one
 // pill per configured service period BEFORE the static list — most specific
 // choices appear first. If config.shifts is empty, returns just PERIODS.
@@ -79,6 +93,22 @@ export function dayText(ymd, opts) {
 // 0 = Sunday … 6 = Saturday, for a calendar date (no clock involved).
 export function weekdayOf(ymd) {
   return (mondayIndex(ymd) + 1) % 7;
+}
+
+// v5.11.92 (Drop 4a): the company's week start, 0 Sunday to 6 Saturday. Anything that is not one
+// of those (and every report that has no stock settings) is Monday, so no other report moves.
+export function weekStartOf(config) {
+  const raw = config?.weekStart;
+  if (raw == null || raw === '') return 1;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 && n <= 6 ? n : 1;
+}
+
+// Days since the week began, for a week that starts on `weekStart` (0 Sunday to 6 Saturday):
+// 0 on the first day of the week, 6 on the last. No week start = Monday, today's answer.
+export function weekIndex(ymd, weekStart) {
+  const ws = weekStartOf({ weekStart });
+  return (weekdayOf(ymd) - ws + 7) % 7;
 }
 
 // The clock a venue's reports run on: { timeZone, dayStart } from its config
@@ -170,12 +200,17 @@ export function getPeriodRange(periodId, custom, config = {}, nowMs = Date.now()
       const y = addDays(today, -1);
       return days(y, y);
     }
+    // v5.11.92: the week begins on config.weekStart (the company's choice, Stock and GP only); with
+    // no weekStart the answer is today's, Monday (weekIndex = mondayIndex then).
     case 'this-week':
-      return days(addDays(today, -mondayIndex(today)), today);
+      return days(addDays(today, -weekIndex(today, config?.weekStart)), today);
     case 'last-week': {
-      const monday = addDays(today, -mondayIndex(today) - 7);
+      const monday = addDays(today, -weekIndex(today, config?.weekStart) - 7);
       return days(monday, addDays(monday, 6));
     }
+    // v5.11.92 (Drop 4a): the span the database resolves each site's last two full counts inside.
+    case 'between-counts':
+      return { ...days(addDays(today, -90), today), betweenCounts: true };
     case 'this-month':
       return days(`${today.slice(0, 7)}-01`, today);
     case 'last-month': {

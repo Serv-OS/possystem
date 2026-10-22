@@ -58,7 +58,7 @@ export const NAV_IA = [
   { label:'Customers',  icon:'customers', children:[['customers','Customers'],['promotions','Promotions'],['segments','Segments'],['campaigns','Campaigns'],['quicksend','Quick send'],['workflows','Automations'],['marketing-reports','Marketing report'],['compliance','Marketing compliance'],['wifi','WiFi'],['reviews','Reviews'],['loyalty','Loyalty'],['giftcards','Gift cards'],['messages','Messages']] },
   { label:'Channels',   icon:'channels',  children:[['online','Online ordering'],['catering','Catering ordering'],['catering-orders','Advance orders'],['hubrise','3rd Party orders'],['uber-direct','Delivery'],['deliveries-live','Deliveries (live)'],['waitlist','Tables Ready'],['table-bookings','Table bookings'],['packages','Packages & events'],['menu-appearance','Appearance'],['kiosks','Kiosks'],['menuboards','Menu boards'],['order-screens','Order screens'],['print-menu','Print menu']] },
   { label:'Hardware',   icon:'hardware',  children:[['devices','Terminals'],['profiles','Device profiles'],['printers','Printers'],['printing','Production printing'],['cardreaders','Card readers'],['cashdrawers','Cash drawers'],['network','Network & sync']] },
-  { label:'Reports',    icon:'reports',   children:[['reports','All reports'],['shift','Shifts'],['eod','Close day'],['pettycash','Petty cash'],['waitlist-insights','Tables Ready']] },
+  { label:'Reports',    icon:'reports',   children:[['reports','All reports'],['stock-gp','Stock and GP'],['shift','Shifts'],['eod','Close day'],['pettycash','Petty cash'],['waitlist-insights','Tables Ready']] },
   { label:'Card payments', icon:'card',   single:'card-payments' },
   { label:'Settings',   icon:'settings',  children:[['location','Location settings'],['security','Sign in security'],['servos-messages','Messages from ServOS'],['receipt','Receipt'],['sending-domain','Email domain'],['xero','Xero (accounting)'],['ai','AI assistant']] },
 ];
@@ -132,9 +132,33 @@ export function sectionKeyOfRoute(routeId) {
 // which fails closed). Owners and ServOS staff are NOT let in automatically. Anything else
 // (not read yet, not installed, a failed read, switched off) is no.
 export const MSM_ROUTE = 'multi-site-menu';
+
+// ── Stock and GP (v5.11.92, multi site stock Drop 4a, contract 2.2) ────────────────────────
+// Reports > Stock and GP is the head office reports home for a MULTI SITE company: it opens once
+// the stock site scope has loaded (profile.stock.ready) and says the company has two or more open
+// sites (profile.stock.multi), for a login whose Back Office sections include one of Inventory,
+// Produce or Purchasing (or every section). Inventory > Reports (stock-reports) forwards there for
+// that company (STOCK_REPORTS_ALIAS in setSection) and its own gate closes, so one route holds the
+// stock reports. While the scope is still loading both gates keep today's answer: stock-reports
+// open, stock-gp hidden, so nothing a one site company has disappears for a moment.
+export const STOCK_GP_ROUTE = 'stock-gp';
+export const STOCK_REPORTS_ROUTE = 'stock-reports';
+const stockMulti = (profile) => !!profile && typeof profile === 'object' && profile.stock?.multi === true;
+const stockReadyMulti = (profile) => stockMulti(profile) && profile.stock.ready === true;
+const sectionsAllowStock = (p) => { const a = allowedKeys(p); return a === null || ['inventory', 'produce', 'purchasing'].some((k) => a.includes(k)); };
+
 const ROUTE_GATES = Object.freeze({
   [MSM_ROUTE]: (profile) => !!profile && typeof profile === 'object' && profile.multiSiteMenu?.canOpen === true,
+  [STOCK_GP_ROUTE]: (p) => stockReadyMulti(p) && sectionsAllowStock(p),
+  [STOCK_REPORTS_ROUTE]: (p) => !stockReadyMulti(p),
 });
+
+/**
+ * The route to open for the one asked: Inventory > Reports (stock-reports) becomes Reports > Stock
+ * and GP (stock-gp) for a multi site company once its scope is ready; every other route, and a
+ * one site company, is left exactly as asked. canOpenRoute still decides after this.
+ */
+export const STOCK_REPORTS_ALIAS = (next, profile) => (next === STOCK_REPORTS_ROUTE && stockReadyMulti(profile) ? STOCK_GP_ROUTE : next);
 
 // ── Beta features (18 Oct 2026, Peter: a small BETA tag next to the feature's name) ────────
 // The routes whose sidebar row, top bar title and page heading carry the BETA tag. The tag is
@@ -187,8 +211,6 @@ export function canOpenRoute(routeId, profile) {
 // keeps "Batches" (Rule 2: one site companies see exactly today's sidebar). Applied by filterNav and
 // by the top bar title (routeLabel). The rows in NAV_IA keep today's labels.
 export const LABEL_WHEN_MULTI = Object.freeze({ batches: 'Batch and prep' });
-
-const stockMulti = (profile) => !!profile && typeof profile === 'object' && profile.stock?.multi === true;
 
 // The rows with every child in LABEL_WHEN_MULTI relabelled (a new row only where one changed).
 function withMultiLabels(rows) {

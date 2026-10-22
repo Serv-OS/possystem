@@ -52,7 +52,8 @@ const ghost = { padding: '6px 12px', borderRadius: 8, cursor: 'pointer', fontFam
 // one site company); "Start a count" on Stock items opens the new count panel once (takeOpenNew).
 export default function StockCounts({ orgCtx = null, siteId = null }) {
   const showToast = useStore(s => s.showToast);
-  const { takeOpenNew } = useStockScope();
+  // v5.11.92 (Drop 4a, contract 2.4): an approved count links to Reports > Stock and GP > Theoretical against actual.
+  const { takeOpenNew, openReport, canOpenReports } = useStockScope();
   const [locId, setLocId] = useState(siteId || getActiveLocationSync());
   const [items, setItems] = useState([]);
   const [counts, setCounts] = useState([]);
@@ -399,6 +400,10 @@ export default function StockCounts({ orgCtx = null, siteId = null }) {
           <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0, color: 'var(--t1)' }}>{active.name}</h1>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             {areasOn && !approved && <button onClick={() => refreshActive()} title="Re read the sheet: other counters' figures and completed areas" style={ghost}>Refresh</button>}
+            {approved && canOpenReports && locId && (
+              <button type="button" onClick={() => openReport({ report: 'stock_gap', sites: { kind: 'sites', ids: [locId] }, period: 'between-counts' })}
+                style={{ background: 'transparent', border: 'none', padding: 0, color: 'var(--acc)', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>See the gap report</button>
+            )}
             <span style={{ fontSize: 11, fontWeight: 700, color: approved ? 'var(--grn, #16a34a)' : 'var(--t3)' }}>{active.status}</span>
           </div>
         </div>

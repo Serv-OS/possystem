@@ -17,7 +17,7 @@ import {
   sectionsToStore, sectionsToTicks, describeSections, canEditSectionsFor,
   checkSections, storedSections, withinSections, sameSections, sectionsFromAnswer, isEverythingRole,
   isSectionsColumnMissing, missingProfileColumn, readProfileRow, sectionsFromProfileRow, PROFILE_COLUMNS, OPTIONAL_PROFILE_COLUMNS,
-  canSwitchLoginOn, MSM_ROUTE, routeGateOk,
+  canSwitchLoginOn, MSM_ROUTE, routeGateOk, STOCK_GP_ROUTE, STOCK_REPORTS_ROUTE, STOCK_REPORTS_ALIAS, LABEL_WHEN_MULTI,
 } from './boSections.js';
 import { planLoginSections } from '../../supabase/functions/_shared/boSectionRules.js';
 import { oneSiteScope } from './stock/siteScope.js';
@@ -32,8 +32,16 @@ const KEYS = ['overview', 'menu', 'floorplan', 'inventory', 'produce', 'purchasi
 const allRoutes = NAV_IA.flatMap(routesOfRow);
 // 17 Oct 2026: the Multi site menu has a gate of its own on top of its section (only people
 // ServOS added by name). Every rule below about "a section, all of it" means every route but that one.
-const ungated = allRoutes.filter((id) => id !== MSM_ROUTE);
-const NAV_NO_MSM = NAV_IA.map((r) => (r.children ? { ...r, children: r.children.filter((c) => c[0] !== MSM_ROUTE) } : r));
+// v5.11.92 (multi site stock Drop 4a): Reports > Stock and GP has a gate too (a multi site company
+// whose stock scope has loaded, in a login with Inventory, Produce or Purchasing). A profile with no
+// stock scope at all, like every person below, never sees it: the sidebar is today's less those two.
+const HIDDEN_WITHOUT = [MSM_ROUTE, STOCK_GP_ROUTE];
+const ungated = allRoutes.filter((id) => !HIDDEN_WITHOUT.includes(id));
+const without = (nav, ids) => nav.map((r) => (r.children ? { ...r, children: r.children.filter((c) => !ids.includes(c[0])) } : r));
+const NAV_NO_MSM = without(NAV_IA, [MSM_ROUTE]);
+const NAV_NO_GP = without(NAV_IA, [STOCK_GP_ROUTE]);
+const NAV_TODAY = without(NAV_IA, HIDDEN_WITHOUT);
+const MULTI_STOCK = { ready: true, multi: true, level: 'all', hasKitchen: false, reachesKitchen: false, sections: null };
 
 // The people in the story.
 const OWNER = { role: 'owner', sections: null };
@@ -55,7 +63,7 @@ test('15 sections, the decided keys, in sidebar order', () => {
 });
 
 test('the route map is built from the sidebar: every route in exactly one section', () => {
-  assert.equal(allRoutes.length, 93);   // 16 Oct 2026: stock-areas and stock-transfers under Inventory; 17 Oct: multi-site-menu under Menu
+  assert.equal(allRoutes.length, 94);   // 16 Oct 2026: stock-areas and stock-transfers under Inventory; 17 Oct: multi-site-menu under Menu; v5.11.92: stock-gp under Reports
   assert.equal(new Set(allRoutes).size, allRoutes.length, 'no route listed twice');
   const map = buildRouteSections(NAV_IA);
   assert.equal(map.size, allRoutes.length);
@@ -106,10 +114,23 @@ test('null is everything; owners and ServOS staff ignore any list', () => {
     assert.equal(canOpenRoute('admin', who), true, 'a route in no section stays open to an unlimited login');
     assert.equal(canOpenRoute('wf-anything', who), true);
     assert.equal(firstAllowedRoute(who), 'overview');
-    assert.deepEqual(filterNav(NAV_IA, who), NAV_NO_MSM, 'the sidebar as it is, less the Multi site menu');
+    assert.deepEqual(filterNav(NAV_IA, who), NAV_TODAY, 'the sidebar as it is, less the Multi site menu and Stock and GP (no stock scope)');
     const named = { ...who, multiSiteMenu: { canOpen: true } };
-    assert.equal(filterNav(NAV_IA, named), NAV_IA, 'added by name: the sidebar exactly as it is');
+    assert.deepEqual(filterNav(NAV_IA, named), NAV_NO_GP, 'added by name: the sidebar exactly as it is, less Stock and GP');
     assert.equal(guardRoute('menu', who), 'menu');
+    // v5.11.92: a multi site company whose stock scope has loaded sees Stock and GP, and Inventory >
+    // Reports is gone from its sidebar (the route forwards to Stock and GP: STOCK_REPORTS_ALIAS).
+    const multi = { ...who, stock: MULTI_STOCK };
+    assert.equal(canOpenRoute(STOCK_GP_ROUTE, multi), true);
+    assert.equal(canOpenRoute(STOCK_REPORTS_ROUTE, multi), false);
+    // (a multi site company also reads "Batch and prep": LABEL_WHEN_MULTI, pinned in boSections.stock.test.js)
+    const relabelled = without(NAV_IA, [MSM_ROUTE, STOCK_REPORTS_ROUTE]).map((r) => (r.children ? { ...r, children: r.children.map(([id, label]) => [id, LABEL_WHEN_MULTI[id] || label]) } : r));
+    assert.deepEqual(filterNav(NAV_IA, multi), relabelled);
+    assert.equal(STOCK_REPORTS_ALIAS(STOCK_REPORTS_ROUTE, multi), STOCK_GP_ROUTE);
+    assert.equal(STOCK_REPORTS_ALIAS(STOCK_REPORTS_ROUTE, who), STOCK_REPORTS_ROUTE, 'no stock scope: as asked');
+    assert.equal(STOCK_REPORTS_ALIAS('menu', multi), 'menu');
+    assert.equal(canOpenRoute(STOCK_GP_ROUTE, who), false, 'no stock scope: hidden');
+    assert.equal(canOpenRoute(STOCK_REPORTS_ROUTE, who), true, 'no stock scope: Inventory > Reports as today');
   }
 });
 
@@ -120,6 +141,18 @@ test('Mo: exactly Team, Workforce, Customers and Reports, every screen in them, 
   const mine = rows.flatMap(routesOfRow);
   assert.equal(mine.length, 1 + 13 + 13 + 5);
   for (const id of mine) assert.equal(canOpenRoute(id, MO), true, `Mo opens ${id}`);
+  // v5.11.92: Reports only, even in a multi site company, never shows Stock and GP (it needs
+  // Inventory, Produce or Purchasing), and the count above stays.
+  const moMulti = { ...MO, stock: MULTI_STOCK };
+  assert.equal(canOpenRoute(STOCK_GP_ROUTE, moMulti), false);
+  assert.equal(filterNav(NAV_IA, moMulti).flatMap(routesOfRow).length, 1 + 13 + 13 + 5);
+  assert.equal(STOCK_REPORTS_ALIAS(STOCK_REPORTS_ROUTE, moMulti), STOCK_GP_ROUTE, 'the alias is just a name; canOpenRoute refuses it next');
+  assert.equal(canOpenRoute(STOCK_GP_ROUTE, { role: 'manager', sections: ['inventory'], stock: MULTI_STOCK }), false, 'Inventory alone: no Reports section');
+  assert.equal(canOpenRoute(STOCK_GP_ROUTE, { role: 'manager', sections: ['inventory', 'reports'], stock: MULTI_STOCK }), true);
+  assert.equal(canOpenRoute(STOCK_GP_ROUTE, { role: 'manager', sections: ['purchasing', 'reports'], stock: MULTI_STOCK }), true);
+  assert.equal(canOpenRoute(STOCK_GP_ROUTE, { role: 'owner', sections: null, stock: { ...MULTI_STOCK, ready: false } }), false, 'while the scope loads: hidden');
+  assert.equal(canOpenRoute(STOCK_REPORTS_ROUTE, { role: 'owner', sections: null, stock: { ...MULTI_STOCK, ready: false } }), true, 'while the scope loads: today\'s route stays');
+  assert.equal(canOpenRoute(STOCK_GP_ROUTE, { role: 'owner', sections: null, stock: { ...MULTI_STOCK, multi: false } }), false, 'one site company: never');
   for (const id of allRoutes.filter((r) => !mine.includes(r))) {
     assert.equal(canOpenRoute(id, MO), false, `Mo must not open ${id}`);
     assert.equal(guardRoute(id, MO), 'staff', `${id} lands on Team`);
@@ -174,7 +207,7 @@ test('one section each: that section, all of it, and no other', () => {
     const who = { role: 'manager', sections: [key] };
     assert.deepEqual(filterNav(NAV_IA, who).map((r) => r.label), [row.label]);
     assert.equal(firstAllowedRoute(who), routesOfRow(row)[0]);
-    for (const id of allRoutes) assert.equal(canOpenRoute(id, who), routesOfRow(row).includes(id) && id !== MSM_ROUTE, `${key} / ${id}`);
+    for (const id of allRoutes) assert.equal(canOpenRoute(id, who), routesOfRow(row).includes(id) && !HIDDEN_WITHOUT.includes(id), `${key} / ${id}`);
   }
 });
 
@@ -528,7 +561,9 @@ const boCode = code(bo);
 
 test('BackOfficeApp: one list, and every way in goes through the guard', () => {
   // v5.11.89 (multi site stock Drop 1): the stock helpers ride on the same line (map 2.4).
-  assert.match(bo, /import \{ NAV_IA, EVERYTHING, canOpenRoute, guardRoute, filterNav, canPushToPos, readProfileRow, sectionsFromProfileRow, sectionKeyOfRoute, routeLabel, stockAccessOf \} from '\.\.\/lib\/boSections';/);
+  // v5.11.92 (Drop 4a): and the Inventory > Reports alias (STOCK_REPORTS_ALIAS) with them.
+  assert.match(bo, /import \{ NAV_IA, EVERYTHING, canOpenRoute, guardRoute, filterNav, canPushToPos, readProfileRow, sectionsFromProfileRow, sectionKeyOfRoute, routeLabel, stockAccessOf, STOCK_REPORTS_ALIAS \} from '\.\.\/lib\/boSections';/);
+  assert.match(bo, /import \{ readShareLink \} from '\.\.\/lib\/stock\/reportLink';/);
   assert.match(bo, /import \{ StockScopeProvider, StockSiteGate \} from '\.\/StockScope';/);
   assert.match(bo, /import StockSitePicker from '\.\/components\/StockSitePicker';/);
   assert.match(bo, /import \{ fetchStockSiteScope \} from '\.\.\/lib\/stock\/siteScopeLoad';/);
@@ -540,8 +575,10 @@ test('BackOfficeApp: one list, and every way in goes through the guard', () => {
   assert.equal((boCode.match(/askedSection/g) || []).length, 2, 'the asked route is read in ONE place: the guard');
   // SETTER GUARD: the raw setter is called in TWO places only: behind canOpenRoute, and the
   // SIGNED_OUT reset to the fixed 'overview' (never a route somebody asked for).
-  assert.deepEqual([...boCode.matchAll(/setAskedSection\(([^)]*)\)/g)].map((m) => m[1]), ['next', "'overview'"], 'the raw setter');
-  assert.match(boCode, /const setSection = \(next\) => \{\s+if \(!canOpenRoute\(next, access\)\) \{[\s\S]{0,220}?return;\s+\}\s+setAskedSection\(next\);\s+\};/);
+  // v5.11.92 (Drop 4a): Inventory > Reports is routed to Stock and GP for a multi site company
+  // (STOCK_REPORTS_ALIAS) BEFORE the one guard decides; the raw setter still gets the guarded route.
+  assert.deepEqual([...boCode.matchAll(/setAskedSection\(([^)]*)\)/g)].map((m) => m[1]), ['routed', "'overview'"], 'the raw setter');
+  assert.match(boCode, /const setSection = \(next\) => \{\s+const routed = STOCK_REPORTS_ALIAS\(next, access\);\s+if \(!canOpenRoute\(routed, access\)\) \{[\s\S]{0,220}?return;\s+\}\s+setAskedSection\(routed\);\s+\};/);
   // Who is signed in: nobody until the profile has loaded, and nobody when it failed to load.
   // 17 Oct 2026: plus the Multi site menu answer (null until msm_my_access says otherwise).
   // v5.11.89 (Drop 1): plus the stock site scope's facts (stockAccessOf: not ready, not multi while it loads).
@@ -568,9 +605,15 @@ test('BackOfficeApp: one list, and every way in goes through the guard', () => {
   assert.match(boCode, /const navRows = filterNav\(NAV_IA, access\);/);
   assert.match(boCode, /\{navRows\.map\(sec => \{/);
   assert.doesNotMatch(boCode, /\{NAV_IA\.map\(/);
-  // Nothing in this file remembers a route or takes one from the address bar.
+  // Nothing in this file remembers a route or takes one from the address bar: the one read of the
+  // address bar is the Stock and GP share link (v5.11.92), read once after the stock scope is in,
+  // and its route reaches the screen only through the guarded setSection.
   assert.doesNotMatch(boCode, /localStorage\.(get|set)Item\('rpos-bo-section/);
   assert.doesNotMatch(boCode, /searchParams\.get\('section'\)|location\.hash/);
+  assert.match(boCode, /const link = readShareLink\(window\.location\.search\);\s+if \(link\) openStockReport\(link\);/);
+  assert.equal((boCode.match(/window\.location\.search|location\.search/g) || []).length, 1, 'the address bar is read in one place');
+  assert.match(boCode, /const openStockReport = \(link\) => \{ setStockReportLink\(link\); setSection\('stock-gp'\); \};/);
+  assert.match(boCode, /\}, \[stockAccess\.ready\]\);/, 'read once the stock scope is ready');
 });
 
 test('BackOfficeApp: the two things in the top bar that belong to no section', () => {
@@ -607,7 +650,12 @@ test('BackOfficeApp: links on Overview and in Reports to a part the login is not
   assert.match(boCode, /\{canOpen\('admin'\)\s+\? <>Go to <button onClick=\{\(\) => setSection\('admin'\)\}/);
   assert.match(boCode, /\{section === 'reports'\s+&& <BOReports setSection=\{setSection\} canOpen=\{canOpen\} \/>\}/);
   const catalog = code(read('../backoffice/sections/reports/Catalog.jsx'));
-  assert.match(catalog, /const shown = \(r\) => !r\.section \|\| !canOpen \|\| canOpen\(r\.section\);/);
+  // v5.11.92 (Drop 4a): a tile may also carry a gate (the Stock and GP category: stock-gp), checked
+  // with the same canOpen; a gate with no canOpen to ask fails closed. The Inventory reports tile
+  // opens Stock and GP when the login may open it, else today's Inventory > Reports (sectionOf).
+  assert.match(catalog, /const shown = \(r\) => \{\s+const s = sectionOf\(r, canOpen\);\s+return \(!s \|\| !canOpen \|\| canOpen\(s\)\) && \(!r\.gate \|\| \(!!canOpen && canOpen\(r\.gate\)\)\);\s+\};/);
+  assert.match(catalog, /function sectionOf\(r, canOpen\) \{\s+return r\?\.multiSection && typeof canOpen === 'function' && canOpen\(r\.multiSection\) \? r\.multiSection : \(r\?\.section \|\| null\);\s+\}/);
+  assert.match(catalog, /id:'stock_reports', label:'Inventory reports', section:'stock-reports', multiSection:'stock-gp',/);
   const inside = catalog.slice(catalog.indexOf('export default function Catalog('));
   const afterMemo = inside.slice(inside.indexOf('}, [canOpen]);'));
   assert.doesNotMatch(afterMemo, /\bALL_REPORTS\b|\bCATEGORIES\.|\bREPORT_BY_ID\b/, 'the catalog renders the filtered lists only');
@@ -616,7 +664,10 @@ test('BackOfficeApp: links on Overview and in Reports to a part the login is not
   // 17 Oct 2026 (Multi site menu round 2): Menu Manager gets it too, for "Open the Multi site menu"
   // on a lock note, shown only when canOpen('multi-site-menu').
   assert.match(boCode, /\{section === 'menu'\s+&& <MenuManager setSection=\{setSection\} canOpen=\{canOpen\} \/>\}/);
-  assert.equal((shell.match(/setSection=\{setSection\}/g) || []).length, 7);
+  // v5.11.92 (Drop 4a): Reports > Stock and GP is the same reports shell, opened on the head office
+  // dashboard, handed the share link once (stockLink) and keyed apart from All reports.
+  assert.match(boCode, /\{section === 'stock-gp' && <BOReports setSection=\{setSection\} canOpen=\{canOpen\} initialView="stock_home" stockLink=\{stockReportLink\} onLinkUsed=\{\(\) => setStockReportLink\(null\)\} key="stock-gp" \/>\}/);
+  assert.equal((shell.match(/setSection=\{setSection\}/g) || []).length, 8);
 });
 
 // ── the Team screen ─────────────────────────────────────────────────────────
@@ -849,7 +900,7 @@ test('BackOfficeApp: the stock screens get the picker\'s one site; one site comp
   ];
   for (const line of want) assert.ok(shell.includes(line), line);
   assert.ok(shell.includes("{section === 'inventory'  && <Inventory />}"), 'Daily counts stays the signed in venue\'s, unchanged');
-  assert.doesNotMatch(boCode, /section === 'multi-site-stock'|'stock-gp'/, 'no new route in Drop 1');
+  assert.doesNotMatch(boCode, /section === 'multi-site-stock'/, 'Menu > Multi site stock never comes back (v5.11.92 adds stock-gp under Reports instead)');
   // the one site: the signed in venue for a one site company and while loading (siteScope.oneSiteOf, tested)
   assert.match(boCode, /const stockOneSite = oneSiteOf\(stockScope, stockChoice, orgCtx\?\.locationId \|\| null\);\s+const stockSiteId = stockOneSite\?\.id \?\? null;\s+const stockSiteKey = stockSiteId \|\| 'all';/);
   assert.match(boCode, /const chooseStockSite = \(c\) => \{ setStockChoice\(c\); writeChoice\(orgCtx\?\.userId, stockScope\?\.orgId, c\); \};/);
@@ -858,7 +909,8 @@ test('BackOfficeApp: the stock screens get the picker\'s one site; one site comp
   assert.match(boCode, /if \(!live \|\| !scope\) return;\s+setStockScope\(scope\);\s+setStockChoice\(\(cur\) => resolveChoice\(scope, cur \|\| readChoice\(stockUserId, scope\.orgId\), stockLocationId\)\);/);
   assert.match(boCode, /\}, \[stockUserId, stockLocationId, stockScopeTry\]\);/);
   // the provider wraps the main column (top bar and page), keyed on the login and the venue
-  assert.match(boCode, /<StockScopeProvider value=\{\{ scope: stockScope, choice: stockChoice, setChoice: chooseStockSite, access, userId: orgCtx\?\.userId \|\| null, go: setSection, reload: \(\) => setStockScopeTry\(\(n\) => n \+ 1\) \}\} key=\{`\$\{orgCtx\?\.userId \|\| ''\}:\$\{orgCtx\?\.locationId \|\| ''\}`\}>/);
+  // v5.11.92 (Drop 4a): plus openReport, the "See the report" links' way into Stock and GP.
+  assert.match(boCode, /<StockScopeProvider value=\{\{ scope: stockScope, choice: stockChoice, setChoice: chooseStockSite, access, userId: orgCtx\?\.userId \|\| null, go: setSection, reload: \(\) => setStockScopeTry\(\(n\) => n \+ 1\), openReport: openStockReport \}\} key=\{`\$\{orgCtx\?\.userId \|\| ''\}:\$\{orgCtx\?\.locationId \|\| ''\}`\}>/);
   const top = bo.indexOf('<StockScopeProvider'), bar = bo.indexOf('{/* Top bar */}'), page = bo.indexOf('<div className="bo-page-shell">'), end = bo.indexOf('</StockScopeProvider>');
   assert.ok(top > 0 && top < bar && bar < page && page < end && end < bo.indexOf('{showLocationSwitcher &&'), 'the top bar and the page are inside it');
 });

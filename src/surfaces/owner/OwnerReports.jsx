@@ -20,6 +20,12 @@
 // read). Payment mix is money taken (VAT in) whatever the switch; Top items and the Sales mix
 // money are till prices, as Product mix; labour is a share of net sales. Each card says so, in
 // words from ownerBasis.reportNotes.
+//   8 Stock                v5.11.92 (multi site stock Drop 4a): stock value, GP % theoretical and
+//                          actual, gap %, waste %, loyalty staff and comps %, days on hand, last
+//                          full count, below par, each with the database's red, amber, green, then
+//                          what needs attention. From detail.stock (stock_report_dashboard for the
+//                          venue); hidden when the function sends none, the reason when it gives one.
+//                          The group screen has no stock card (companies are never added together).
 
 import { useState } from 'react';
 import {
@@ -27,6 +33,7 @@ import {
 } from '../../lib/ownerDetail';
 import { detailRows, noteFor } from '../../lib/ownerMix';
 import { basisHours, basisWeek, basisRows, reportNotes } from '../../lib/ownerBasis';
+import { stockTiles, attentionRows, stockNote, stockCardNote } from '../../lib/ownerStock';
 import { ReportCard, Empty, BarLine, Tabs } from './ui';
 import { money, smallCaps, linkBtn } from './style';
 
@@ -46,6 +53,7 @@ export default function OwnerReports({ detail, period, basis = 'net', range, cur
       <ExceptionsCard ex={detail.exceptions} m={m} note={notes.exceptions} />
       <ItemsCard items={detail.items} m={m} />
       <LabourCard labour={detail.labour} m={m} />
+      <StockCard stock={detail.stock} reason={detail.stock_reason} currency={currency} />
     </>
   );
 }
@@ -304,6 +312,39 @@ function LabourCard({ labour, m }) {
         <Tile label="Hours" value={v.hours} />
         <Tile label="Shifts" value={v.shifts} />
       </div>
+    </ReportCard>
+  );
+}
+
+// ── 8. Stock ─────────────────────────────────────────────────────────────────
+// v5.11.92 (multi site stock Drop 4a). The figures and their colours are the function's own
+// (detail.stock, from stock_report_dashboard); src/lib/ownerStock.js only finds the words. A
+// function from before the stock block sends no detail.stock and the card is not drawn at all; a
+// venue with nothing true to show gets its reason in grey.
+function StockCard({ stock, reason, currency }) {
+  if (!stock) {
+    const note = stockNote(reason);
+    return note ? <ReportCard title="Stock"><Empty>{note}</Empty></ReportCard> : null;
+  }
+  const tiles = stockTiles(stock, currency);
+  const rows = attentionRows(stock.attention);
+  return (
+    <ReportCard title="Stock" note={stockCardNote(stock)}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8 }}>
+        {tiles.map((t) => (
+          <div key={t.key} style={{ background: 'var(--bg2)', borderRadius: 10, padding: '8px 10px' }}>
+            <div style={{ fontSize: 15, fontWeight: 800, lineHeight: 1.15, color: t.tone }}>{t.text}</div>
+            <div style={{ ...smallCaps, fontSize: 9.5, marginTop: 2 }}>{t.label}</div>
+          </div>
+        ))}
+      </div>
+      {rows.length > 0 && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ ...smallCaps, marginBottom: 4 }}>Needs attention</div>
+          {rows.map((r) => <Row key={r.kind} left={r.words ? `${r.label}: ${r.words}` : r.label} right={String(r.count)} />)}
+        </div>
+      )}
+      {!rows.length && <div style={{ fontSize: 12, color: 'var(--t4)', marginTop: 12 }}>Nothing needs attention at this venue.</div>}
     </ReportCard>
   );
 }

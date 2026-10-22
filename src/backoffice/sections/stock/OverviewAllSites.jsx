@@ -38,9 +38,9 @@ async function readAttention(orgId, ids) {
 }
 
 // setSection and canOpen: the guarded route setter and the Back Office section rule, as today's
-// Overview has them. Drop 1's cards only move the picker (Open) or queue a Fix, so neither is used
-// yet; they are taken so Drop 4's Head office dashboard button (map 4.21) can ask canOpen first.
-// eslint-disable-next-line no-unused-vars
+// Overview has them. Drop 1's cards only move the picker (Open) or queue a Fix; v5.11.92 (Drop 4a,
+// map 4.21, contract 2.4) adds the Head office dashboard button beside the heading, shown only when
+// this login may open Reports > Stock and GP (canOpen('stock-gp')), opened through the guarded setter.
 export default function OverviewAllSites({ setSection, canOpen = () => true }) {
   const sc = useStockScope();
   const showToast = useStore((s) => s.showToast);
@@ -102,7 +102,9 @@ export default function OverviewAllSites({ setSection, canOpen = () => true }) {
 
   return (
     <div style={{ ...ui.page, height: '100%', overflowY: 'auto' }} data-testid="stock-overview-all-sites">
-      <PageHead title="Stock control" sub="Every site at a glance." />
+      <PageHead title="Stock control" sub="Every site at a glance.">
+        {!!setSection && canOpen('stock-gp') && <Btn kind="primary" onClick={() => setSection('stock-gp')}>Head office dashboard</Btn>}
+      </PageHead>
       <ErrorLine error={error} />
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 340px), 1fr))', gap: 18, alignItems: 'start' }}>
         <div style={card} data-testid="stock-needs-attention">

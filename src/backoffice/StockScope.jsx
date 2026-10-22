@@ -30,10 +30,13 @@ const DEFAULT_ANSWER = Object.freeze({
   peekOpen: () => null,
   canOpen: () => false,
   reload: noop,
+  // v5.11.92 (Drop 4a): "See the report" has nowhere to go without a provider.
+  openReport: noop,
+  canOpenReports: false,
 });
 
 export function StockScopeProvider({ value, children }) {
-  const { scope = null, choice = null, setChoice = noop, access = null, userId = null, go = noop, reload = noop } = value || {};
+  const { scope = null, choice = null, setChoice = noop, access = null, userId = null, go = noop, reload = noop, openReport = noop } = value || {};
   const [showClosed, setShowClosed] = useState(false);
   const [asking, setAsking] = useState(null);   // { label, resolve }
   const openNewRef = useRef(null);
@@ -83,6 +86,12 @@ export function StockScopeProvider({ value, children }) {
   }, []);
   // The same record without taking it (pure: safe in a state initializer, which StrictMode runs twice).
   const peekOpen = useCallback((route) => (openRef.current && openRef.current.route === route ? openRef.current.value : null), []);
+  // v5.11.92 (Drop 4a, contract 2.4): "See the report" on a stock screen opens Reports > Stock and GP
+  // on one report with the filters given ({ report, sites, period, at, opts }: reportLink.js). The
+  // provider's openReport is BackOfficeApp's openStockReport, which goes through the guarded
+  // setSection; canOpenReports says whether the link is shown at all (the stock-gp gate).
+  const canOpenReports = !!access && canOpenRoute('stock-gp', access);
+  const openReportTo = useCallback((link) => { if (link && typeof link === 'object') openReport(link); }, [openReport]);
 
   const answer = useMemo(() => ({
     ...base,
@@ -96,7 +105,9 @@ export function StockScopeProvider({ value, children }) {
     peekOpen,
     canOpen,
     reload,
-  }), [base, setChoice, showClosed, askWhichSite, goTo, takeOpenNew, takeOpen, peekOpen, canOpen, reload]);
+    openReport: openReportTo,
+    canOpenReports,
+  }), [base, setChoice, showClosed, askWhichSite, goTo, takeOpenNew, takeOpen, peekOpen, canOpen, reload, openReportTo, canOpenReports]);
 
   return (
     <StockScopeContext.Provider value={answer}>
@@ -113,7 +124,7 @@ export function StockScopeProvider({ value, children }) {
  * { ready, failed, multi, level, orgId, userId, homeSite, multiSince, sites, closedSites, groups,
  *   editors, editorsText, choice, setChoice, showClosed, setShowClosed, scopeSites, oneSite, isAll,
  *   isGroup, group, siteById, siteName, canEditCompany, canEditSite, askWhichSite, go, takeOpenNew,
- *   takeOpen, peekOpen, canOpen, reload }
+ *   takeOpen, peekOpen, canOpen, reload, openReport, canOpenReports }
  */
 // eslint-disable-next-line react-refresh/only-export-components
 export function useStockScope() {

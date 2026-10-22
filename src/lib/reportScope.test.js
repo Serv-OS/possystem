@@ -27,7 +27,7 @@ import {
   connectedSites, buildReportScope, choiceKey, readSiteChoice, writeSiteChoice, resolveTicked, toggleTicked, choiceFor,
   isMulti, currenciesInScope, canShowCombinedTotal, sitesLabel, sitesForView, siteModeFor, siteRange, rangeDayCount,
   itemCapLine, figuresFrom, totalsByCurrency, totalsWords, groupCompare, groupCompareWords, MIXED_COMPARE_TEXT,
-  REPORT_SITE_MODE, ITEM_CAP_TEXT,
+  REPORT_SITE_MODE, ITEM_CAP_TEXT, stockReportScope, stockSitesLabel, tickedGroup,
 } from './reportScope.js';
 import { getPeriodRange, venueRange } from '../backoffice/sections/reports/_filters.js';
 
@@ -355,9 +355,16 @@ test('several ticked: a report that is not multi site ready shows ONE site with 
 test('the flag list covers every report in the shell, and an unknown one is the signed in site', () => {
   for (const id of ['summary', 'exceptions', 'payments', 'daypart', 'shifts', 'payroll', 'items', 'item_trend', 'daily_trend',
     'daily_trading', 'menu_eng', 'servers', 'tips', 'order_types', 'order_sources', 'tables', 'bookings', 'kds_perf', 'zreport',
-    'tax', 'location_compare', 'cash_drawer', 'transactions', 'open']) {
+    'tax', 'location_compare', 'cash_drawer', 'transactions', 'open',
+    // v5.11.92 (multi site stock Drop 4a): the 21 Stock and GP reports, every one multi site
+    'stock_home', 'stock_value', 'stock_movement', 'stock_gap', 'stock_cogs', 'stock_product_gp', 'stock_waste', 'stock_purchases',
+    'stock_prices', 'stock_off_contract', 'stock_budget', 'stock_transfers', 'stock_count_compliance', 'stock_days_on_hand', 'stock_par',
+    'stock_key_ratios', 'stock_setup_health', 'stock_batches', 'stock_recipe_cost', 'stock_allergens', 'stock_month_end']) {
     assert.ok(REPORT_SITE_MODE[id], id);
   }
+  const stockIds = Object.keys(REPORT_SITE_MODE).filter((id) => id.startsWith('stock_'));
+  assert.equal(stockIds.length, 21, 'the 21 Stock and GP ids');
+  for (const id of stockIds) assert.equal(REPORT_SITE_MODE[id], 'multi', id);
   assert.equal(siteModeFor('loyalty_points'), 'home');
   assert.equal(siteModeFor('something_new'), 'home');
   assert.equal(siteModeFor('catalog'), 'home');
@@ -457,9 +464,16 @@ test('pin: for the signed in site the shell hands on the same config, range and 
 
 test('pin: every report in the shell gets the optional multi site props, and the control is by the period filter', () => {
   const bo = read('../backoffice/sections/BOReports.jsx');
-  const lines = bo.split('\n').filter((l) => /^\s+\{view(\.startsWith\('loyalty_'\)| === '[a-z_]+')\s+&& </.test(l));
+  const all = bo.split('\n').filter((l) => /^\s+\{view(\.startsWith\('loyalty_'\)| === '[a-z_]+')\s+&& </.test(l));
+  // v5.11.92 (multi site stock Drop 4a): the Stock and GP views read nothing from the closed checks,
+  // so they get the stock props (the stock scope's sites, the stored day totals' api) instead.
+  const stockLines = all.filter((l) => /\{view === 'stock_/.test(l));
+  const lines = all.filter((l) => !/\{view === 'stock_/.test(l));
   assert.ok(lines.length >= 25, `found ${lines.length} report lines`);
   for (const l of lines) assert.match(l, /\{\.\.\.siteProps\}\/>\}$/, l.trim().slice(0, 60));
+  assert.equal(stockLines.length, 16, 'the dashboard, 13 reports and the two recipes update tiles');
+  for (const l of stockLines) assert.match(l, /\{\.\.\.stockProps\}\/>\}$/, l.trim().slice(0, 60));
+  assert.doesNotMatch(bo, /\{view === 'stock_(off_contract|budget|transfers|count_compliance|month_end)'/, 'the purchasing update tiles never render in 4a');
   assert.match(bo, /<SitesControl scope=\{scope\} disabled=\{viewSites\.mode === 'all'\}/);
   assert.match(bo, /<SiteNote note=\{viewSites\.note\} choices=\{viewSites\.choices\}/);
   assert.match(bo, /writeSiteChoice\(browserStore\(\), choiceKey\(scope\.userId, scope\.companyId\), choiceFor\(ids, scope\.sites\)\)/);
@@ -483,4 +497,99 @@ test('pin: the overview compares the scope\'s sites, per currency, on one row bu
   assert.match(read('./db.js'), /const budget = o\.budget \|\| rowBudget\(CHECK_ROWS_ON_SCREEN\);/);
   // the one rule for "my sites": what the database lets the login read
   assert.match(read('./reportSites.js'), /supabase\.rpc\('accessible_location_ids'\)/);
+});
+
+// ── v5.11.92 (multi site stock Drop 4a, contract 2.3): the stock scope as a report scope ──────
+
+const SA = 'a1000000-0000-4000-8000-000000000001';
+const SB = 'a1000000-0000-4000-8000-000000000002';
+const SC = 'a1000000-0000-4000-8000-000000000003';
+const SD = 'a1000000-0000-4000-8000-000000000004';
+const GN = 'c1000000-0000-4000-8000-000000000001';
+const STOCK = {
+  ready: true, multi: true, level: 'sites', homeSite: SB, orgId: 'o1',
+  sites: [{ id: SA, name: ' North  Street ', currency: 'gbp', kind: null }, { id: SB, name: 'River Side', currency: 'GBP', kind: null }, { id: SC, name: 'Harbour', currency: 'USD', kind: 'central_kitchen' }],
+  closedSites: [{ id: SD, name: 'Old Town', currency: 'GBP', kind: null }],
+  groups: [{ id: GN, name: 'North', locationIds: [SA, SB], sortOrder: 0 }, { id: 'c1000000-0000-4000-8000-000000000002', name: 'Gone', locationIds: ['b1000000-0000-4000-8000-000000000009'], sortOrder: 1 }],
+};
+
+test('stockReportScope: every open site in reach, the home marked, names tidied, currencies upper case', () => {
+  const s = stockReportScope(STOCK, null, false);
+  assert.deepEqual(s.sites.map((x) => x.id), [SA, SB, SC]);
+  assert.deepEqual(s.sites.map((x) => x.name), ['North Street', 'River Side', 'Harbour']);
+  assert.deepEqual(s.sites.map((x) => x.currency), ['GBP', 'GBP', 'USD']);
+  assert.deepEqual(s.sites.map((x) => x.isHome), [false, true, false]);
+  assert.deepEqual(s.sites.map((x) => x.closed), [false, false, false]);
+  assert.equal(s.sites[2].kind, 'central_kitchen');
+  assert.equal(s.homeId, SB);
+  assert.equal(s.home.name, 'River Side');
+  assert.equal(s.hasChoice, true);
+  // the default for a 'sites' login: the signed in venue
+  assert.deepEqual(s.tickedIds, [SB]);
+  assert.equal(s.allTicked, false);
+  assert.deepEqual(s.currencies, ['GBP']);
+  assert.equal(s.canShowCombinedTotal, true);
+  // the groups whose sites are in the list; a group of sites not in reach is dropped
+  assert.deepEqual(s.groups, [{ id: GN, name: 'North', locationIds: [SA, SB] }]);
+  // closed sites are listed apart, and in the list only when asked
+  assert.deepEqual(s.closedSites.map((x) => x.id), [SD]);
+  const withClosed = stockReportScope(STOCK, [SD], true);
+  assert.deepEqual(withClosed.sites.map((x) => x.id), [SA, SB, SC, SD]);
+  assert.deepEqual(withClosed.tickedIds, [SD]);
+  assert.equal(withClosed.sites[3].closed, true);
+  assert.equal(s.siteOf(SC).name, 'Harbour');
+  assert.equal(s.currencyOf(SC), 'USD');
+  assert.equal(s.siteOf('nope'), null);
+});
+
+test('stockReportScope: the ticks asked for, inside the list; nothing left = the default; level all starts on every site', () => {
+  assert.deepEqual(stockReportScope(STOCK, [SA, SC], false).tickedIds, [SA, SC]);
+  assert.deepEqual(stockReportScope(STOCK, [SD], false).tickedIds, [SB], 'a closed site not shown: back to the default');
+  assert.deepEqual(stockReportScope(STOCK, ['b1000000-0000-4000-8000-000000000009'], false).tickedIds, [SB]);
+  const all = stockReportScope({ ...STOCK, level: 'all' }, null, false);
+  assert.deepEqual(all.tickedIds, [SA, SB, SC]);
+  assert.equal(all.allTicked, true);
+  assert.deepEqual(all.currencies, ['GBP', 'USD']);
+  assert.equal(all.canShowCombinedTotal, false, 'two currencies: never one total');
+  // level all with the closed sites shown: still every OPEN site by default
+  assert.deepEqual(stockReportScope({ ...STOCK, level: 'all' }, null, true).tickedIds, [SA, SB, SC]);
+  // no home in the list: the first open site
+  assert.deepEqual(stockReportScope({ ...STOCK, homeSite: 'zz' }, null, false).tickedIds, [SA]);
+  // one site in reach: that site, no choice
+  const one = stockReportScope({ ...STOCK, sites: [STOCK.sites[1]], groups: [] }, null, false);
+  assert.deepEqual(one.tickedIds, [SB]);
+  assert.equal(one.hasChoice, false);
+  assert.equal(one.allTicked, true);
+  // nothing at all
+  const none = stockReportScope(null, null, false);
+  assert.deepEqual(none.sites, []);
+  assert.deepEqual(none.tickedIds, []);
+  assert.equal(none.hasChoice, false);
+  assert.equal(none.home, null);
+});
+
+test('stockSitesLabel and sitesLabel: All sites, the group name, one site, or n of m', () => {
+  assert.equal(stockSitesLabel(stockReportScope({ ...STOCK, level: 'all' }, null, false)), 'All sites');
+  assert.equal(stockSitesLabel(stockReportScope(STOCK, [SA, SB], false)), 'North');
+  assert.equal(stockSitesLabel(stockReportScope(STOCK, [SB], false)), 'River Side');
+  assert.equal(stockSitesLabel(stockReportScope(STOCK, [SA, SC], false)), '2 of 3');
+  assert.equal(stockSitesLabel(stockReportScope(null, null, false)), 'No sites');
+  // the control's label says the group too, and keeps its words for everything else
+  assert.equal(sitesLabel(stockReportScope(STOCK, [SA, SB], false)), 'North');
+  assert.equal(sitesLabel(stockReportScope(STOCK, [SA, SC], false)), '2 of 3 sites');
+  assert.equal(sitesLabel(stockReportScope({ ...STOCK, level: 'all' }, null, false)), 'All sites (3)');
+  assert.equal(sitesLabel(stockReportScope(STOCK, [SB], false)), 'River Side');
+  // a group that happens to be every site reads as All sites
+  const two = { ...STOCK, sites: STOCK.sites.slice(0, 2) };
+  assert.equal(sitesLabel(stockReportScope(two, [SA, SB], false)), 'All sites (2)');
+  assert.equal(stockSitesLabel(stockReportScope(two, [SA, SB], false)), 'All sites');
+  // tickedGroup: exact match only, in any order
+  assert.equal(tickedGroup(stockReportScope(STOCK, [SB, SA], false)).name, 'North');
+  assert.equal(tickedGroup(stockReportScope(STOCK, [SA], false)), null);
+  assert.equal(tickedGroup({ tickedIds: [SA, SB], groups: null }), null);
+  assert.equal(tickedGroup({ tickedIds: [], groups: [{ id: 'g', locationIds: [] }] }), null);
+  // the closed checks scope has no groups: its label is exactly as before
+  const s = scopeOf({ tickedIds: ['hudds', 'leeds'] });
+  assert.equal(tickedGroup(s), null);
+  assert.equal(sitesLabel(s), '2 of 6 sites');
 });

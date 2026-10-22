@@ -307,3 +307,75 @@ test('Tables Ready insights use the venue zone too', () => {
   assert.match(wi, /getPeriodRange\(periodId, custom, \{ timezone: venueTz \}\)/);
   assert.match(wi, /if \(venueTz === undefined\) return;/);
 });
+
+// ── v5.11.92 (multi site stock Drop 4a, contract 2.3): the Stock and GP periods ─────────────
+
+import { STOCK_PERIODS, buildStockPeriods, weekStartOf, weekIndex, PERIODS } from './_filters.js';
+
+test('the stock periods: whole business days only, plus Between two counts; the same list for every venue', () => {
+  assert.deepEqual(STOCK_PERIODS.map((p) => p.id), ['today', 'yesterday', 'this-week', 'last-week', 'this-month', 'last-month', 'custom', 'between-counts']);
+  assert.equal(STOCK_PERIODS.find((p) => p.id === 'between-counts').label, 'Between two counts');
+  assert.ok(!STOCK_PERIODS.some((p) => p.id === 'last-7' || p.id === 'last-30'));
+  assert.ok(!STOCK_PERIODS.some((p) => p.isService));
+  for (const cfg of [undefined, null, {}, LEEDS, PROVO]) assert.equal(buildStockPeriods(cfg), STOCK_PERIODS, 'no service pills, whatever the config');
+  assert.deepEqual(PERIODS.map((p) => p.id), ['today', 'yesterday', 'this-week', 'last-week', 'this-month', 'last-month', 'last-7', 'last-30', 'custom'], 'the sales periods are untouched');
+});
+
+test('the company week start: 0 Sunday to 6 Saturday; anything else is Monday', () => {
+  assert.equal(weekStartOf({ weekStart: 0 }), 0);
+  assert.equal(weekStartOf({ weekStart: 6 }), 6);
+  assert.equal(weekStartOf({ weekStart: '3' }), 3);
+  for (const bad of [undefined, null, {}, { weekStart: null }, { weekStart: 7 }, { weekStart: -1 }, { weekStart: 1.5 }, { weekStart: 'monday' }]) assert.equal(weekStartOf(bad), 1, JSON.stringify(bad));
+  // Monday 28 Sep 2026
+  assert.equal(weekIndex('2026-09-28', 1), 0);
+  assert.equal(weekIndex('2026-09-28', 0), 1, 'a week that starts on Sunday: Monday is its second day');
+  assert.equal(weekIndex('2026-09-28', 6), 2, 'a week that starts on Saturday');
+  assert.equal(weekIndex('2026-09-27', 1), 6, 'Sunday is the last day of a Monday week');
+  assert.equal(weekIndex('2026-09-27', 0), 0);
+  assert.equal(weekIndex('2026-09-28', undefined), 0, 'no week start: Monday');
+});
+
+test('This week and Last week begin on the company\'s week start; with no weekStart the answer is today\'s (Monday)', () => {
+  const now = at('2026-09-28T16:00:00Z');   // Monday 28 Sep, 17:00 BST
+  const plainWeek = everyBrowser(() => getPeriodRange('this-week', null, LEEDS, now));
+  const plainLast = everyBrowser(() => getPeriodRange('last-week', null, LEEDS, now));
+  // no weekStart, a null one, and Monday itself: exactly today's answer, so no other report moves
+  for (const cfg of [LEEDS, { ...LEEDS, weekStart: null }, { ...LEEDS, weekStart: 1 }, { ...LEEDS, weekStart: 'x' }]) {
+    assert.deepEqual(everyBrowser(() => getPeriodRange('this-week', null, cfg, now)), plainWeek, JSON.stringify(cfg.weekStart));
+    assert.deepEqual(everyBrowser(() => getPeriodRange('last-week', null, cfg, now)), plainLast, JSON.stringify(cfg.weekStart));
+  }
+  assert.deepEqual([plainWeek.fromDay, plainWeek.toDay], ['2026-09-28', '2026-09-28']);
+  assert.deepEqual([plainLast.fromDay, plainLast.toDay], ['2026-09-21', '2026-09-27']);
+  // a Sunday week
+  const sun = everyBrowser(() => getPeriodRange('this-week', null, { ...LEEDS, weekStart: 0 }, now));
+  assert.deepEqual([sun.fromDay, sun.toDay], ['2026-09-27', '2026-09-28']);
+  assert.equal(sun.from, '2026-09-27T05:30:00.000Z', 'the venue clock still decides the instants');
+  const sunLast = everyBrowser(() => getPeriodRange('last-week', null, { ...LEEDS, weekStart: 0 }, now));
+  assert.deepEqual([sunLast.fromDay, sunLast.toDay], ['2026-09-20', '2026-09-26']);
+  assert.equal(sunLast.compare.fromDay, '2026-09-13', 'compared with the week before, the same days');
+  assert.equal(sunLast.compare.toDay, '2026-09-19');
+  // a Saturday week
+  const sat = everyBrowser(() => getPeriodRange('this-week', null, { ...LEEDS, weekStart: 6 }, now));
+  assert.deepEqual([sat.fromDay, sat.toDay], ['2026-09-26', '2026-09-28']);
+  const satLast = everyBrowser(() => getPeriodRange('last-week', null, { ...LEEDS, weekStart: 6 }, now));
+  assert.deepEqual([satLast.fromDay, satLast.toDay], ['2026-09-19', '2026-09-25']);
+  // every other period ignores the week start
+  for (const id of ['today', 'yesterday', 'this-month', 'last-month', 'last-7', 'last-30']) {
+    assert.deepEqual(everyBrowser(() => getPeriodRange(id, null, { ...LEEDS, weekStart: 0 }, now)), everyBrowser(() => getPeriodRange(id, null, LEEDS, now)), id);
+  }
+  assert.deepEqual(everyBrowser(() => getPeriodRange('custom', { from: '2026-09-01', to: '2026-09-07' }, { ...LEEDS, weekStart: 0 }, now)),
+    everyBrowser(() => getPeriodRange('custom', { from: '2026-09-01', to: '2026-09-07' }, LEEDS, now)));
+});
+
+test('Between two counts spans the 90 days to today and says so; the database finds each site\'s two counts inside it', () => {
+  const now = at('2026-10-20T12:00:00Z');   // Tue 20 Oct 2026, 13:00 BST
+  const r = everyBrowser(() => getPeriodRange('between-counts', null, LEEDS, now));
+  assert.equal(r.betweenCounts, true);
+  assert.equal(r.fromDay, '2026-07-22');
+  assert.equal(r.toDay, '2026-10-20');
+  assert.equal(r.from, '2026-07-22T05:30:00.000Z');
+  assert.equal(r.timeZone, 'Europe/London');
+  assert.ok(r.compare, 'a compare still comes with it');
+  // every other period carries no betweenCounts flag
+  for (const id of ['today', 'last-week', 'custom']) assert.equal(everyBrowser(() => getPeriodRange(id, { from: '2026-10-01', to: '2026-10-02' }, LEEDS, now)).betweenCounts, undefined, id);
+});

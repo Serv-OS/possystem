@@ -38,6 +38,12 @@
 // showed before). Every sales figure, comparison, average and chart follows it, each with a small
 // "Including VAT" or "Excluding VAT" line under it. The figures are the function's (gross beside
 // net from the same check parts); the picking and the words are src/lib/ownerBasis.js.
+//
+// v5.11.92 (multi site stock Drop 4a, 21 Oct 2026): a STOCK LINE under every venue card's stats,
+// 'Stock £3,210 · GP 72.8% · gap 1.3% · waste 1.9% · last count Mon 13 Oct', the gap and the waste
+// coloured by the database's own targets (red, amber, green). Only from a function that sends the
+// stock block ('stock' in features); a venue with nothing true to show gets the reason in grey.
+// The figures are the function's (src/lib/ownerStock.js finds the words and the colours).
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { supabase, isMock } from '../lib/supabase';
@@ -58,6 +64,7 @@ import { cardBar, allOtherByCurrency } from '../lib/ownerMix';
 import {
   BASIS_CHIPS, grossNeedsUpdate, readStoredBasis, storeBasis, shownBasis, basisCompare, cardLines, topItemsNote, salesHeading, venueSales, rollupSales,
 } from '../lib/ownerBasis';
+import { canStock, stockLine, stockNote } from '../lib/ownerStock';
 import OwnerDetail from './owner/OwnerDetail';
 import MixBar from './owner/MixBar';
 import { money, toneColor, periodChip, periodChipOn } from './owner/style';
@@ -346,6 +353,8 @@ function Dashboard({ theme, onToggleTheme }) {
   // currency with nothing set up anywhere stays quiet; its group card carries the one hint.
   const mixOn = canMix(data);
   const quietBy = allOtherByCurrency(groups);
+  // v5.11.92: the Stock line, only from a function that sends the stock block.
+  const stockOn = canStock(data);
   // The numbers on screen are for another period than the lit chip: they stay, dimmed, under
   // their own labels, until an answer for the chip lands. NOT only while the call is running:
   // a This month call that failed left Today's figures at full brightness under a lit
@@ -416,7 +425,7 @@ function Dashboard({ theme, onToggleTheme }) {
 
           {/* ── Per-venue cards ── */}
           {data?.locations?.map(l => <VenueCard key={l.ops_location_id} l={l} showName={multi} period={shown} basis={basis} showDates={shown !== 'today' && !dates}
-            bar={mixOn ? cardBar(l.mix, { quiet: !!quietBy[l.currency] }) : null} onOpen={() => openDetail(venueTarget(l))} />)}
+            bar={mixOn ? cardBar(l.mix, { quiet: !!quietBy[l.currency] }) : null} stockOn={stockOn} onOpen={() => openDetail(venueTarget(l))} />)}
         </div>
       )}
     </>
@@ -494,7 +503,7 @@ function Mini({ label, value, tone }) {
   );
 }
 
-function VenueCard({ l, showName, period, basis, showDates, onOpen, bar }) {
+function VenueCard({ l, showName, period, basis, showDates, onOpen, bar, stockOn = false }) {
   const t = venueView(l, period);
   const copy = PERIOD_COPY[t.period];
   const fpct = t.forecast_pct;
@@ -539,6 +548,9 @@ function VenueCard({ l, showName, period, basis, showDates, onOpen, bar }) {
         <Stat label="Labour" value={t.labour_pct != null ? `${t.labour_pct}%` : '-'} tone={t.labour_pct > 35 ? 'var(--red)' : undefined} />
       </div>
 
+      {/* v5.11.92: the Stock line, from the function's stock block; the reason in grey when it has none. */}
+      {stockOn && <StockLine stock={l.stock} reason={l.stock_reason} currency={l.currency} />}
+
       <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
         <Chip>● {l.live.orders} live order{l.live.orders === 1 ? '' : 's'}</Chip>
         <Chip>▢ {l.live.tables} on floor</Chip>
@@ -569,6 +581,26 @@ function VenueCard({ l, showName, period, basis, showDates, onOpen, bar }) {
 // length), so a tap on the switch never makes a card change height.
 function BasisLine({ text }) {
   return <div style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 600, marginTop: 3 }}>{text}</div>;
+}
+
+// v5.11.92: one line of stock figures under the stats. Every figure is the function's; the gap
+// and the waste carry the database's red, amber, green. A venue with no block shows its reason.
+function StockLine({ stock, reason, currency }) {
+  const line = stockLine(stock, currency);
+  if (!line) {
+    const note = stockNote(reason);
+    return note ? <div style={{ fontSize: 12, color: 'var(--t4)', marginTop: 10 }}>{note}</div> : null;
+  }
+  return (
+    <div aria-label={`Stock: ${line.text}`} style={{ fontSize: 12.5, color: 'var(--t2)', marginTop: 10, lineHeight: 1.5 }}>
+      {line.parts.map((p, i) => (
+        <span key={p.key}>
+          {i > 0 && <span style={{ color: 'var(--t4)' }}> · </span>}
+          <span style={{ color: p.tone || 'var(--t2)', fontWeight: p.tone ? 700 : 600 }}>{p.text}</span>
+        </span>
+      ))}
+    </div>
+  );
 }
 
 function Stat({ label, value, tone }) {
