@@ -3,7 +3,7 @@
  * the pins that keep the release honest: the migration and its rollback exist, are ASCII only,
  * carry no begin or commit of their own and end with a visible check; the online checkout sends its
  * options; the trading report sums signed stock values; the changelog keeps the 5.11.77 entry.
- * v5.11.90 (the drainer release, 20261023a): the till never posts sale stock in any mode, so
+ * v5.11.92 (the drainer release, 20261023a): the till never posts sale stock in any mode, so
  * tillShouldDeplete is false for every mode and every deplete.js entry point is a no op with no
  * reads. Run: npm test.
  */
@@ -29,7 +29,7 @@ test('no row, a missing RPC, a refusal or rubbish all read as browser: the old p
   assert.deepEqual(STOCK_MODES, ['browser', 'central', 'paused']);
 });
 
-test('v5.11.90: the till never depletes, in any mode; the database books every channel', () => {
+test('v5.11.92: the till never depletes, in any mode; the database books every channel', () => {
   // was: browser true (the till path). Since 20261023a the database is the one stock rule, so a
   // venue ServOS switched back to browser takes no sale stock off at all, never the till's copy.
   for (const mode of [...STOCK_MODES, 'sideways', '', null, undefined, modeFromRpc({ data: 'browser' }), modeFromRpc(undefined)]) {
@@ -44,7 +44,7 @@ test('v5.11.90: the till never depletes, in any mode; the database books every c
 test('health words: browser venue, healthy central venue, backlog, held and dead rows', () => {
   const b = healthWords({ mode: 'browser', pending: 0 });
   assert.equal(b.tone, 'muted');
-  // v5.11.90: a browser venue no longer takes stock off at the till; it takes none until switched back on
+  // v5.11.92: a browser venue no longer takes stock off at the till; it takes none until switched back on
   assert.equal(b.title, 'Stock does not come off at this venue');
   assert.equal(b.sub, 'The database takes stock off every channel. This venue was switched off by ServOS, so no sale takes stock off here until it is switched back on.');
   assert.doesNotMatch(b.title, /at the till/);
@@ -82,7 +82,7 @@ test('held reasons are plain words with the thing to do', () => {
   assert.match(heldReason({ flags: ['netted_refund_failed'] }), /by hand/);
 });
 
-test('v5.11.90: deplete.js reads nothing, asks no venue mode and posts nothing (source)', () => {
+test('v5.11.92: deplete.js reads nothing, asks no venue mode and posts nothing (source)', () => {
   const src = read('./deplete.js');
   // was: it imported the recipe book, the data layer, explode.js and centralMode.js, read the venue
   // mode once a minute and posted SALE_DEPLETION and RETURN rows at a browser venue.
@@ -102,7 +102,7 @@ test('v5.11.90: deplete.js reads nothing, asks no venue mode and posts nothing (
   assert.match(store, /import \{ depleteForSale, reverseForSale \} from '\.\.\/lib\/stock\/deplete';/);
 });
 
-test('v5.11.90: every deplete.js entry point is a no op that never throws and never reads', async () => {
+test('v5.11.92: every deplete.js entry point is a no op that never throws and never reads', async () => {
   const dep = await import('./deplete.js');
   const calls = [];
   const realFetch = globalThis.fetch;
@@ -185,13 +185,13 @@ test('the changelog keeps the 5.11.77 entry', async () => {
   for (const t of e.items) assert.doesNotMatch(t, /[–—]/, 'no dashes as punctuation');
 });
 
-test('v5.11.90: the version and the drainer release changelog entry, in plain words', async () => {
+test('v5.11.92: the version and the drainer release changelog entry, in plain words', async () => {
   const { VERSION } = await import('../version.js');
   const num = (v) => v.split('.').map(Number).reduce((a, n) => a * 1000 + n, 0);
-  assert.ok(num(VERSION) >= num('5.11.90'), `version ${VERSION} is at least 5.11.90`);
+  assert.ok(num(VERSION) >= num('5.11.92'), `version ${VERSION} is at least 5.11.92`);
   const { CHANGELOG } = await import('../changelog.js');
-  const e = CHANGELOG.find((x) => x.v === '5.11.90');
-  assert.ok(e, 'the 5.11.90 entry is there');
+  const e = CHANGELOG.find((x) => x.v === '5.11.92');
+  assert.ok(e, 'the 5.11.92 entry is there');
   const all = e.items.join(' ');
   assert.match(all, /20261023a/, 'names the database update');
   assert.match(all, /The till no longer takes stock off itself at any venue/, 'the retired till path');

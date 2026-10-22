@@ -220,7 +220,7 @@ test('the till modal never hides the menu, never refuses, and asks the database 
   assert.doesNotMatch(src.slice(src.indexOf('fetchWasteLinks(loc).then'), src.indexOf('fetchWasteLinks(loc).then') + 400), /buildDepletionCtx/);
   // the one product's lines come from the database (preview), and only from there
   assert.match(src, /previewMenuWaste\(\{ menuItemId: product\.id, qty: n \}, loc\)/);
-  // v5.11.90 (the drainer release, 20261023a): the fallback to the browser's recipe copy is gone. A
+  // v5.11.92 (the drainer release, 20261023a): the fallback to the browser's recipe copy is gone. A
   // missing database call is "not loaded": the failure line shows and Record is disabled.
   assert.match(src, /if \(r\.missing\) \{ setLoadFailed\(true\); return; \}/);
   assert.match(src, /if \(r\.error \|\| !r\.data\) \{ setLoadFailed\(true\); return; \}/);
@@ -264,7 +264,7 @@ test('stock items with no recipe linked at all get one amber line under the head
 test('Training Mode: neither waste writer commits anything, and both screens say so', () => {
   // in Training Mode "NOTHING the device does is committed" (lib/trainingMode.js). Waste without stock made the
   // product write reachable at every no stock venue, so both writers gate on Training Mode (as the
-  // till's old sale path did until v5.11.90 retired it; deplete.js now writes nothing at all).
+  // till's old sale path did until v5.11.92 retired it; deplete.js now writes nothing at all).
   const src = read('./waste.js');
   assert.match(src, /^import \{ isTrainingMode \} from '\.\.\/trainingMode';$/m, 'the Training Mode gate import');
   const gate = String.raw`  if \(isMock \|\| !supabase\) return \{ data: null, error: null \};\n(?:  \/\/[^\n]*\n)*  if \(isTrainingMode\(\)\) return \{ data: null, error: null, training: true \};\n  locationId = await ensureLoc\(locationId\);`;

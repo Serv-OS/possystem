@@ -466,7 +466,7 @@ test('version is 5.11.79 or later and the 5.11.79 changelog entry names the upda
 
 test('a sale is dated at its own time, never ahead of the clock (11.5 item 2); the till no longer posts it', async () => {
   const src = read('./deplete.js');
-  // v5.11.90 (the drainer release, 20261023a): deplete.js no longer posts. The database books the
+  // v5.11.92 (the drainer release, 20261023a): deplete.js no longer posts. The database books the
   // sale from the check at the check's own close time; saleTimeOf stays as the pure rule.
   assert.doesNotMatch(src, /postStockMovement|sourceType: 'closed_check'|idempotencyKey: `sale:/, 'the till posts no sale movement');
   assert.doesNotMatch(src, /^import /m, 'deplete.js pulls nothing in, so it imports under node');

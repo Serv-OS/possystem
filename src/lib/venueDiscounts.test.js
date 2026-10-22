@@ -29,7 +29,7 @@ test('shows only active discounts with a value, in Back Office order', () => {
   assert.equal(comp.scope, 'category');
 });
 
-test('v5.11.90: each discount carries its kind (staff, comp, loyalty or null), from either spelling of the row', () => {
+test('v5.11.92: each discount carries its kind (staff, comp, loyalty or null), from either spelling of the row', () => {
   const list = venueDiscountList([
     { id: 'a', name: 'Staff meal', type: 'percent', value: 50, kind: 'staff', sortOrder: 1 },
     { id: 'b', name: 'Comp', type: 'percent', value: 100, kind: 'comp', sortOrder: 2 },

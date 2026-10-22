@@ -1,5 +1,5 @@
 /**
- * deplete.js: the till's old sale stock path, retired (v5.11.90, the drainer release, 20261023a).
+ * deplete.js: the till's old sale stock path, retired (v5.11.92, the drainer release, 20261023a).
  *
  * The database books every channel. Every closed check from the till (every close path), the card
  * reader, the kiosk, online, QR, catering at its event time, pay at table, MPOS, HubRise and ezCater

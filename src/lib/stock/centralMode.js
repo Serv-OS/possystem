@@ -4,7 +4,7 @@
  * Pure, no I/O. The database takes stock off every booked check, from the check itself, through an
  * outbox the pg_cron drainer posts. Since v5.11.78 (20261019) every venue is central from the moment
  * it is created; 'browser' is only a deliberate back out by ServOS (stock_central_switch), and since
- * v5.11.90 (the drainer release, 20261023a) the till never posts sale stock in ANY mode: deplete.js
+ * v5.11.92 (the drainer release, 20261023a) the till never posts sale stock in ANY mode: deplete.js
  * is a set of no ops and tillShouldDeplete answers false for every mode. A 'browser' venue simply
  * takes no sale stock off until ServOS switches it back on.
  *
@@ -30,7 +30,7 @@ export function isCentralMode(mode) {
 }
 
 /**
- * Should the till run its own explosion and posts for this venue? Never, since v5.11.90 (20261023a):
+ * Should the till run its own explosion and posts for this venue? Never, since v5.11.92 (20261023a):
  * the database is the one stock rule for every channel, so the answer is false for every mode.
  */
 // eslint-disable-next-line no-unused-vars
@@ -53,7 +53,7 @@ export function healthWords(h) {
   const needsPerson = Array.isArray(h.needs_person) ? h.needs_person : [];
   let title, sub, tone = 'ok';
   if (mode === 'browser') {
-    // Since v5.11.90 (20261023a) the till never takes stock off; browser is a switch off by ServOS.
+    // Since v5.11.92 (20261023a) the till never takes stock off; browser is a switch off by ServOS.
     title = 'Stock does not come off at this venue';
     sub = 'The database takes stock off every channel. This venue was switched off by ServOS, so no sale takes stock off here until it is switched back on.';
     tone = 'muted';

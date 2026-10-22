@@ -25,7 +25,7 @@
  *     picked (stock_record_waste, preview). Recording is one database call that explodes that product
  *     and writes the waste row (with the product id) and its stock movements together.
  *
- * v5.11.90 (the drainer release, 20261023a): the old fallback is gone. Dish waste always goes
+ * v5.11.92 (the drainer release, 20261023a): the old fallback is gone. Dish waste always goes
  * through the database (stock_record_waste), the one stock rule every channel uses. If that call is
  * missing the screen says "Stock data did not load, close and try again" and Record is disabled,
  * exactly as for any failed read; the till never works the stock out from its own recipe copy.
@@ -97,7 +97,7 @@ export default function PosWasteModal({ open, onClose, locationId, showToast }) 
   }, [q, products]);
 
   // The stock the picked product takes off, worked out by the database for this ONE product
-  // (v5.11.79). v5.11.90: a missing call is "not loaded" (the failure line, Record disabled), never
+  // (v5.11.79). v5.11.92: a missing call is "not loaded" (the failure line, Record disabled), never
   // a guess from the browser's own copy of the recipes.
   const previewKey = product ? `${product.id}|${qty}` : '';
   useEffect(() => {

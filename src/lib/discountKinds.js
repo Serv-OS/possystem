@@ -1,4 +1,4 @@
-// discountKinds.js: what a Back Office discount preset is for (v5.11.90, the drainer release, 20261023a).
+// discountKinds.js: what a Back Office discount preset is for (v5.11.92, the drainer release, 20261023a).
 //
 // Pure, no I/O. A preset can be marked Staff, Comp or Loyalty (column discounts.kind; null is an
 // ordinary discount). The till copies the preset's id and kind onto the check discount (presetId,
