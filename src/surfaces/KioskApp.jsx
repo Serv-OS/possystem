@@ -77,7 +77,7 @@ import { usePaymentBusy } from '../lib/usePaymentBusy';
 import { kioskLineKeyV2, repriceKioskCart } from '../lib/kioskBasket';
 import { kioskCardEligible, itemInCategory, kioskLegacyCategoryShown } from '../lib/kioskMenu';
 import { setActiveMemberSession } from '../lib/memberSession.js';
-import { loadCounterCollect } from './kiosk/kioskApi';
+import { kioskCounterCollect } from '../lib/counterOrder';
 // networkReader import removed — kiosk payment now uses server-side edge function directly
 // v5.5.871: card payment is processor-aware — Stripe reader (edge fn) OR Ryft PAX
 // terminal (the same "send to terminal" job path the POS/Table-Pay use).
@@ -898,19 +898,15 @@ export default function KioskApp({ kioskId, onUnpair }) {
   // v5.11.81: the classic kiosk's language picker now changes the venue's menu text too (the new
   // design's KioskV2Root loads its own). No rows, or English: the menu stays as typed.
   useClassicKioskMenuWords(lang, locationId, !newDesign);
-  // v5.11.95 Counter collect (lib/counterOrder.js): the venue's extra tile, for both designs.
-  // Off until read, and off when the read fails, so the start screen never shows a dead tile.
-  const [counterCollectCfg, setCounterCollectCfg] = useState(null);
+  // Counter collect (lib/counterOrder.js): this kiosk's own tile, from its profile (Kiosk
+  // settings, v5.11.97). Off for a profile row from before 20261028a.
+  const counterCollectCfg = useMemo(() => {
+    const k = kioskCounterCollect(profile);
+    return k.on ? { kiosk: true, label: k.label } : null;
+  }, [profile]);
   // The tile books as eat in with no table, dine in tax (the card path guard keeps submitOrder and
   // the totals byte for byte); this only says the customer picked it, for the screens' words.
   const [counterPicked, setCounterPicked] = useState(false);
-  useEffect(() => {
-    let alive = true;
-    loadCounterCollect(locationId)
-      .then((c) => { if (alive) setCounterCollectCfg(c || null); })
-      .catch(() => { if (alive) setCounterCollectCfg(null); });
-    return () => { alive = false; };
-  }, [locationId]);
 
   // New kiosk design only (build spec D2): the card screen pauses the idle timer while the
   // reader is live, the order is saving or staff are needed (lib/kioskFlow.js
@@ -1551,7 +1547,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
           onCancel={() => setScreen('menu')}
         />
       )}
-      {screen === 'cart' && <ScreenCart brandColor={brandColor} cart={cart} subtotal={subtotal} exclusiveTax={exclusiveTax} cartItemCount={cartItemCount} orderType={orderType} onUpdate={updateCartQty} onAddMore={() => setScreen('menu')} onContinue={() => setScreen('tip')} onShowAllergenPicker={() => setShowAllergenPicker(true)} onBack={() => setScreen('menu')} onCancel={resetSession} dailyCounts={dailyCounts} />}
+      {screen === 'cart' && <ScreenCart brandColor={brandColor} cart={cart} subtotal={subtotal} exclusiveTax={exclusiveTax} cartItemCount={cartItemCount} orderType={orderType} counterPicked={counterPicked} onUpdate={updateCartQty} onAddMore={() => setScreen('menu')} onContinue={() => setScreen('tip')} onShowAllergenPicker={() => setShowAllergenPicker(true)} onBack={() => setScreen('menu')} onCancel={resetSession} dailyCounts={dailyCounts} />}
       {screen === 'tip' && <ScreenTip brandColor={brandColor} subtotal={discountedSubtotal} tipPresets={tipPresets} tip={tip} onSetTip={setTip} onContinue={() => { if (loyaltyEnabled) setScreen('loyalty'); else setScreen('gift'); }} onBack={() => setScreen('cart')} onCancel={resetSession} />}
       {/* v5.5.219: loyalty/customer-details BEFORE pay so reward discount adjusts amount due */}
       {screen === 'loyalty' && <ScreenLoyalty brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} customerEmail={customerEmail} marketingOptIn={customerMarketingOptIn} locationId={locationId} companyId={companyId} goodsTotal={discountedSubtotal} dueMinor={Math.round(total * 100)} giftMinor={giftCardPayment?.applied || 0} cart={cart} categories={categories} loyaltyRedemption={loyaltyRedemption} loyaltyCredit={loyaltyCredit} onLoyaltyRedeem={setLoyaltyRedemption} verifiedLoyalty={verifiedLoyalty} onVerifiedLoyalty={setVerifiedLoyalty} onName={setCustomerName} onPhone={setCustomerPhone} onEmail={setCustomerEmail} onMarketingOptIn={setCustomerMarketingOptIn} onContinue={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'gift'); }} onSkip={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'gift'); }} submitting={submitting} placeOrderLabel={labelPlaceOrder} earlySignIn={!!loyaltyReturnScreen} onCancel={resetSession} />}
@@ -2770,8 +2766,9 @@ function iconBtnLg() {
 // Footer: "Items total" card + brand-color totals pill with item-count
 // badge + circular back button on the left.
 // ============================================================
-function ScreenCart({ brandColor, cart, subtotal, exclusiveTax = 0, cartItemCount, orderType, onUpdate, onAddMore, onContinue, onShowAllergenPicker, onBack, onCancel, dailyCounts = {} }) {
-  const isPickup = orderType === 'takeaway';
+function ScreenCart({ brandColor, cart, subtotal, exclusiveTax = 0, cartItemCount, orderType, counterPicked = false, onUpdate, onAddMore, onContinue, onShowAllergenPicker, onBack, onCancel, dailyCounts = {} }) {
+  // v5.11.97: Counter collect is eat in with no table, but the customer picks it up.
+  const isPickup = orderType === 'takeaway' || counterPicked === true;
   const titleKey = isPickup ? 'cart.title.pickup' : 'cart.title.dineIn';
   return (
     <div style={fullScreen()}>

@@ -20,7 +20,7 @@ const STEPS = [
   { key: 'collected',label: 'Collected', icon: '✅', desc: 'Enjoy!' },
 ];
 
-export default function OrderTracker({ orderRef, locationId, theme, onClose, tz = 'Europe/London', trackKey = null }) {
+export default function OrderTracker({ orderRef, locationId, theme, onClose, tz = 'Europe/London', trackKey = null, counter = false }) {
   const [order, setOrder] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
@@ -108,6 +108,10 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose, tz 
   }, [isCourier, orderRef, locationId]);
 
   const status = order?.status || 'received';
+  // v5.11.95 Counter collect (lib/counterOrder.js): opened from the counter link (the server's
+  // tracker row does not pass customer.counter_collect back), so the page says it, and the
+  // tracker tells the customer to collect at the counter.
+  const counterCollect = counter === true || order?.customer?.counter_collect === true;
   // 30 Sep 2026: a void from the till marks the row cancelled before it goes (store.voidQueueOrder).
   // Without this the page kept the last step lit and the customer turned up for food that was voided.
   const cancelled = status === 'cancelled';
@@ -202,7 +206,7 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose, tz 
                     {step.label}
                   </div>
                   <div style={{ fontSize: 12, color: muted, marginTop: 2 }}>
-                    {isCurrent ? step.desc : (reached ? '✓ Done' : '')}
+                    {isCurrent ? (counterCollect && step.key === 'ready' ? 'Ready. Collect it at the counter.' : step.desc) : (reached ? '✓ Done' : '')}
                   </div>
                 </div>
               </div>
@@ -309,7 +313,9 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose, tz 
                 {(() => { const when = collectionLabel(order.customer?.collection_at || order.collection_time, tz); return order.is_asap
                   ? (isDelivery
                       ? <>⚡ <b>ASAP</b> — leaving the kitchen around <b>{when}</b>. Your courier is arranged once it’s ready.</>
-                      : <>⚡ <b>ASAP</b> — ready for collection around <b>{when}</b></>)
+                      : counterCollect
+                        ? <>⚡ <b>ASAP</b> · ready to collect at the counter around <b>{when}</b></>
+                        : <>⚡ <b>ASAP</b> — ready for collection around <b>{when}</b></>)
                   : (isDelivery
                       ? <>🗓 Leaving the kitchen <b>{when}</b></>
                       : <>🗓 Collection <b>{when}</b></>); })()}

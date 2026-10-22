@@ -284,7 +284,7 @@ export function kioskDoneModel({ orderType = null, tableNumber = '', textSent = 
   let messageVars = {};
   if (orderType === 'dineIn' && counter === true && !table) {
     // v5.11.95 Counter collect: eat in with no table, collected at the counter (lib/counterOrder.js).
-    messageKey = textSent === true ? 'k2.done.takeawayText' : 'k2.done.takeaway';
+    messageKey = textSent === true ? 'k2.done.counterText' : 'k2.done.counter';
   } else if (orderType === 'dineIn') {
     if (table) { messageKey = 'k2.done.eatInTable'; messageVars = { table }; } else messageKey = textSent === true ? 'k2.done.eatInAnywhereText' : 'k2.done.eatInAnywhere';
   } else {
