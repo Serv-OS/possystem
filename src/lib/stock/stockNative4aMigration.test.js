@@ -138,7 +138,9 @@ test('the nine bodies 4a reads are checked by md5 and none is replaced or backed
   assert.doesNotMatch(noComments(T.d4), /insert\s+into\s+public\.stock_native_backup/i, 'nothing is backed up');
   // no function an earlier migration made is created again here
   const mine = new Set(fns(T.d4).map((f) => f.name));
-  const others = readdirSync(path(MIGS)).filter((f) => f.endsWith('.sql') && !f.startsWith('20261026a_'));
+  // v5.11.99: an EARLIER migration (a later one, 20261029a Reports align, replaces some 4a bodies on purpose,
+  // each checked by md5 and saved for its own rollback)
+  const others = readdirSync(path(MIGS)).filter((f) => f.endsWith('.sql') && !f.startsWith('20261026a_') && f < '20261029a');
   const clash = [];
   for (const f of others) {
     for (const m of noComments(read(`${MIGS}${f}`)).matchAll(/create\s+(?:or\s+replace\s+)?function\s+(?:public\.)?([a-z0-9_]+)\s*\(/gi)) {

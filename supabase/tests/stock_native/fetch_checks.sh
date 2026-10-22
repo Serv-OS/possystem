@@ -3,7 +3,13 @@
 # of rehearse.mjs (the in migration proof on real baskets, the sales rule parity on real rows, a replay
 # of real baskets before and after the release).
 #
-#   zsh supabase/tests/stock_native/fetch_checks.sh <out.json> <org id> [days, default 7]
+#   zsh supabase/tests/stock_native/fetch_checks.sh <out.json> <org id> [days, default 7] [venue id]
+#
+# 22 Oct 2026 (5.11.99, Reports align): with a venue id, that one venue of the company only (the Reports
+# align rehearsal reads one real venue's days to prove Stock and GP gives the P&L's net to the penny; keep
+# that copy in a scratch folder and delete it after). That copy also holds the venue's checks of the last
+# 400 days that carry a refund, so a refund made in the window on an older sale is there, as Daily
+# trading reads it.
 #
 # Uses the Supabase Management API query endpoint with "read_only": true (the token comes from
 # ~/.zshrc, never from this file). Writes one JSON file OUTSIDE the repo (keep it in a scratch folder):
@@ -16,8 +22,8 @@
 # on refunds, notes on lines, loyalty member codes, gift card codes, payment ids.
 set -e
 source ~/.zshrc >/dev/null 2>&1
-OUT="$1"; ORG="$2"; DAYS="${3:-7}"
-[ -z "$OUT" ] || [ -z "$ORG" ] && { echo "usage: fetch_checks.sh <out.json> <org id> [days]"; exit 2; }
+OUT="$1"; ORG="$2"; DAYS="${3:-7}"; VENUE="${4:-}"
+[ -z "$OUT" ] || [ -z "$ORG" ] && { echo "usage: fetch_checks.sh <out.json> <org id> [days] [venue id]"; exit 2; }
 OUT="${OUT:A}"
 TOP="$(git -C "${0:A:h}" rev-parse --show-toplevel 2>/dev/null || true)"
 if [ -n "$TOP" ]; then
@@ -25,12 +31,19 @@ if [ -n "$TOP" ]; then
 fi
 [[ "$ORG" =~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' ]] || { echo "not an org id: $ORG"; exit 2; }
 [[ "$DAYS" =~ '^[0-9]{1,2}$' ]] || { echo "days: a whole number under 100"; exit 2; }
+VFILTER=""
+LOOKBACK=""
+if [ -n "$VENUE" ]; then
+  LOOKBACK="or (c.refunds is not null and c.refunds <> '[]'::jsonb and c.closed_at >= now() - interval '400 days')"
+  [[ "$VENUE" =~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' ]] || { echo "not a venue id: $VENUE"; exit 2; }
+  VFILTER="and c.location_id = '$VENUE'"
+fi
 TMP=$(mktemp -d)
 read -r -d '' QUERY <<SQL || true
 with c as (
   select c.* from public.closed_checks c
-   where c.location_id in (select l.id::text from public.locations l where l.org_id = '$ORG')
-     and c.closed_at >= now() - interval '$DAYS days'
+   where c.location_id in (select l.id::text from public.locations l where l.org_id = '$ORG') $VFILTER
+     and (c.closed_at >= now() - interval '$DAYS days' $LOOKBACK)
    order by c.closed_at desc, c.id
    limit 5000
 )

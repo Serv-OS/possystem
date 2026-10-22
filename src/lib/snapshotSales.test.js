@@ -155,7 +155,8 @@ for (const fn of ['owner-snapshot', 'manager-snapshot']) {
     // is handed the page.
     const paged = [...src.matchAll(/paged(?:Rows|Each)\('([^']+)', \(\) => /g)].map((m) => {
       const q = src.slice(m.index + m[0].length);
-      return { what: m[1], q: q.slice(0, q.search(/\)(?:\)+[,;]|, \(rows\) =>)/) + 1) };
+      // v5.11.99: the page callback may be wrapped by the one demo rule (withoutDemoRows).
+      return { what: m[1], q: q.slice(0, q.search(/\)(?:\)+[,;]|, (?:withoutDemoRows\()?\(rows\) =>)/) + 1) };
     });
     assert.ok(paged.length >= 5, `${fn}: expected its paged reads, found ${paged.length}`);
     // Every closed_checks read pages, in closed_at then id order, and the sales read uses the tender columns.

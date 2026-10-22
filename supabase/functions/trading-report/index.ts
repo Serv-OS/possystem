@@ -19,6 +19,12 @@
 // A DAY is the venue business day (_shared/businessDay.js: platform locations.timezone and
 // business_day_start), the day Sales summary and Xero use (28 Sep 2026; it was midnight).
 //
+// 22 Oct 2026 (v5.11.99, Reports align): demo history is left out of every figure by the one demo
+// rule (_shared/demoHistory.js: checks with ids 'demo-', stock movements with demo keys), the same
+// rule Stock and GP uses, and the answer says so (demo_left_out, shown as "Demo history left out").
+// The stock costs are worked out by _shared/tradingSales.js ledgerDays, the code the cross report
+// parity test runs. A real venue has no demo rows: its figures are exactly what they were.
+//
 //   get          { ops_location_id, from, to }   (YYYY-MM-DD)
 //   set_forecast { ops_location_id, date, amount }
 //   save_settings{ ops_location_id, cogs_pct, daily_overhead }
@@ -26,7 +32,8 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { secondStepRefusal } from '../_shared/second-step.ts';
-import { tradingDays, timesheetDays } from '../_shared/tradingSales.js';
+import { tradingDays, timesheetDays, ledgerDays } from '../_shared/tradingSales.js';
+import { leaveOutDemo } from '../_shared/demoHistory.js';
 import { businessDayOf, businessDayWindow } from '../_shared/businessDay.js';
 import { venueClock } from '../_shared/accountingData.ts';
 
@@ -96,7 +103,7 @@ function rangeWindow(fromYmd: string, toYmd: string, clock: Clock) {
 // Sales and refunds per business day (_shared/tradingSales.js tradingDays): the goods the
 // customer paid for, after discounts and comps, less what went back on refunds, each on its
 // own day; loyalty and promo credit are discounts; service and tips are NOT sales.
-async function salesByDay(ops: string, fromYmd: string, toYmd: string, clock: Clock): Promise<Record<string, DaySales>> {
+async function salesByDay(ops: string, fromYmd: string, toYmd: string, clock: Clock, demo: { left: number } = { left: 0 }): Promise<Record<string, DaySales>> {
   const { fromIso, toIso } = rangeWindow(fromYmd, toYmd, clock);
   const since = new Date(Date.parse(fromIso) - REFUND_LOOKBACK_DAYS * DAY_MS).toISOString();
   const [saleRows, refundRows] = await Promise.all([
@@ -107,7 +114,10 @@ async function salesByDay(ops: string, fromYmd: string, toYmd: string, clock: Cl
       .eq('location_id', ops).gte('closed_at', since).lt('closed_at', toIso).neq('refunds', '[]')
       .order('closed_at').order('id')),
   ]);
-  return tradingDays({ saleRows, refundRows, dayOf: (ms: number) => businessDayOf(ms, clock.timezone, clock.dayStart) });
+  // v5.11.99: demo checks left out (sales and refunds alike), counted so the screen can say so.
+  const sales = leaveOutDemo(saleRows), refunds = leaveOutDemo(refundRows);
+  demo.left += sales.left + refunds.left;
+  return tradingDays({ saleRows: sales.rows, refundRows: refunds.rows, dayOf: (ms: number) => businessDayOf(ms, clock.timezone, clock.dayStart) });
 }
 
 Deno.serve(async (req) => {
@@ -177,7 +187,8 @@ Deno.serve(async (req) => {
 
     // sales (this range + same-weekday-last-year for the suggestion)
     const lyFrom = shift364(from), lyTo = shift364(to);
-    const [sales, lySales] = await Promise.all([salesByDay(ops, from, to, clock), salesByDay(ops, lyFrom, lyTo, clock)]);
+    const demo = { left: 0 };
+    const [sales, lySales] = await Promise.all([salesByDay(ops, from, to, clock, demo), salesByDay(ops, lyFrom, lyTo, clock)]);
 
     // forecasts
     const fc: Record<string, number> = {};
@@ -195,20 +206,15 @@ Deno.serve(async (req) => {
     const ts = await pagedRows('timesheets', () => opsAdmin.from('wf_timesheets').select('id, clock_in, clock_out, pay_amount, status').eq('location_id', ops).gte('clock_in', tsFrom).lt('clock_in', toIso).order('clock_in').order('id'));
     const labAct = timesheetDays({ timesheets: ts, dayOf });
 
-    // Stock-ledger costs per business day: SALE_DEPLETION = recipe COGS of what sold;
-    // WASTE = stock thrown away (a separate loss that also reduces operating profit).
-    const recipeCogs: Record<string, number> = {};
-    const wasteCost: Record<string, number> = {};
-    const mv = await pagedRows('stock movements', () => opsAdmin.from('stock_movements').select('value_delta, occurred_at, movement_type').eq('location_id', ops).in('movement_type', ['SALE_DEPLETION', 'WASTE']).gte('occurred_at', fromIso).lt('occurred_at', toIso).order('occurred_at').order('id'));
-    // v5.11.77: SIGNED. A sale takes stock off (value_delta negative), so its cost is -value_delta;
-    // a refund's reversal (SALE_DEPLETION with a positive value_delta, key unsale:...) and the undo
-    // of a refused refund come OFF the day's figure. Math.abs would have added them on.
-    for (const m of mv) {
-      const k = dayOf(Date.parse(m.occurred_at));
-      const v = -(Number(m.value_delta) || 0);
-      if (m.movement_type === 'WASTE') wasteCost[k] = (wasteCost[k] || 0) + v;
-      else recipeCogs[k] = (recipeCogs[k] || 0) + v;
-    }
+    // Stock-ledger costs per business day (_shared/tradingSales.js ledgerDays): SALE_DEPLETION =
+    // recipe COGS of what sold, signed, so a refund's unsale comes off; WASTE = stock thrown away
+    // (a separate loss that also reduces operating profit), refunded food included, once.
+    // v5.11.99: idempotency_key is read so demo movements are left out.
+    const mv = await pagedRows('stock movements', () => opsAdmin.from('stock_movements').select('value_delta, occurred_at, movement_type, idempotency_key').eq('location_id', ops).in('movement_type', ['SALE_DEPLETION', 'WASTE']).gte('occurred_at', fromIso).lt('occurred_at', toIso).order('occurred_at').order('id'));
+    const ledger = ledgerDays({ movements: mv, dayOf });
+    demo.left += ledger.demoLeft;
+    const recipeCogs = ledger.cogs;
+    const wasteCost = ledger.waste;
 
     const rows = days.map((d) => {
       const forecast = fc[d] ?? 0;
@@ -259,7 +265,9 @@ Deno.serve(async (req) => {
       gp_theo: sum('gp_theo'), gp_actual: sum('gp_actual'), op_theo: sum('op_theo'), op_actual: sum('op_actual'),
       labour_pct_actual: sum('actual_sales') > 0 ? Math.round(sum('labour_actual') / sum('actual_sales') * 10000) / 100 : null,
     };
-    return json({ ok: true, rows, totals, settings: { cogs_pct: cogsPct, cogs_basis: cogsBasis, daily_overhead: overhead, currency }, tz: clock.timezone, day_start: clock.dayStart });
+    // v5.11.99: demo_left_out true when demo checks or demo stock rows were left out (the screen
+    // shows "Demo history left out"); false at every real venue.
+    return json({ ok: true, rows, totals, settings: { cogs_pct: cogsPct, cogs_basis: cogsBasis, daily_overhead: overhead, currency }, tz: clock.timezone, day_start: clock.dayStart, demo_left_out: demo.left > 0 });
   } catch (e) {
     // A read that failed is never shown as a day of zero sales.
     return json({ error: (e as Error)?.message || 'Could not build the report' }, 500);

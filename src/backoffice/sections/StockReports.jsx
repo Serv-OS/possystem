@@ -411,6 +411,8 @@ function RecipeGP({ recipes, ctx, menuItems, taxRates = [], plateCosts = null })
   const csv = base.map(r => ({ dish:r.dish, price:r.price ?? '', cost:r.cost ?? '', foodPct:r.foodPct ?? '', gp:r.gp ?? '', gpPct:r.gpPct ?? '', target:r.target ?? '' }));
   return (
     <div>
+      {/* v5.11.99 (Reports align): the basis, so this GP is never read as the period's GP */}
+      <div style={{ fontSize: 11, color: 'var(--t4)', marginBottom: 8 }}>This venue only. GP here is each dish's menu price excluding VAT less its plate cost at today's costs: what a dish would make, not what was sold. GP over what was really sold, after refunds, is in Reports &gt; Stock and GP &gt; Product GP for a company with two or more sites.</div>
       {plateCosts?.error && !plateCosts.needsUpdate && <Callout>Could not read plate costs from the database ({plateCosts.error.message}). Reload to try again.</Callout>}
       <KpiBand items={[
         { label:'Average GP %', value: avg == null ? '—' : `${avg.toFixed(1)}%`, sub:`across ${priced.length} priced dish${priced.length===1?'':'es'}` },

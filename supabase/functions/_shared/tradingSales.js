@@ -39,9 +39,14 @@
 // of the shift), so an opener who clocks in at 06:00 for a 06:30 day stays on that day and a
 // closer working 18:00 to 02:00 stays on the night.
 //
-// PURE: imports only accountingDay.js (pure as well); runs under node --test and in Deno.
+// 22 Oct 2026 (v5.11.99, Reports align): the report's stock costs per day are worked out here too
+// (ledgerDays), so the P&L, Stock and GP and their parity test share one piece of maths, and demo
+// history is left out of every figure by the one demo rule (demoHistory.js).
+//
+// PURE: imports only accountingDay.js and demoHistory.js (pure as well); runs under node --test and in Deno.
 
 import { checkTenderParts, refundParts, isVoidedCheck, MONEY_KINDS, toMinor, checkTaxRecorded, moneyDiscounts } from './accountingDay.js';
+import { isDemoStockKey } from './demoHistory.js';
 
 /** The check's recorded discounts (closed_checks.discounts[].amount, major units) in minor units.
  *  19 Oct 2026 (v5.11.78): a promo code paid as a tender is not counted again (moneyDiscounts). */
@@ -201,4 +206,35 @@ export function timesheetDays({ timesheets = [], dayOf }) {
     acc[key] = (acc[key] || 0) + toMinor(t.pay_amount);
   }
   return Object.fromEntries(Object.entries(acc).map(([k, v]) => [k, v / 100]));
+}
+
+// ── stock costs ─────────────────────────────────────────────────────────────
+
+/**
+ * 22 Oct 2026 (v5.11.99): the stock ledger's costs per day, the Daily trading report's COGS and
+ * waste lines (moved here from trading-report so the parity test runs the report's own code).
+ *   movements  stock_movements rows: value_delta, occurred_at, movement_type, idempotency_key
+ *   dayOf      (ms) => 'YYYY-MM-DD', the venue business day
+ * SIGNED (v5.11.77): a sale takes stock off (value_delta negative), so its cost is -value_delta; a
+ * refund's reversal (SALE_DEPLETION with a positive value_delta, key unsale:...) and the undo of a
+ * refused refund come OFF the day's cost. The refunded food is booked as WASTE on the refund's
+ * day, so it is counted once, as waste (Peter 18 Oct: refunds never put food back in stock).
+ * Demo movements (demoHistory.isDemoStockKey) are left out and counted in demoLeft.
+ * @returns {{ cogs: Record<string, number>, waste: Record<string, number>, demoLeft: number }} major units, unrounded
+ */
+export function ledgerDays({ movements = [], dayOf }) {
+  const cogs = {};
+  const waste = {};
+  let demoLeft = 0;
+  for (const m of movements) {
+    if (!m) continue;
+    if (isDemoStockKey(m.idempotency_key)) { demoLeft += 1; continue; }
+    const ms = Date.parse(m.occurred_at);
+    if (!Number.isFinite(ms)) continue;
+    const k = dayOf(ms);
+    const v = -(Number(m.value_delta) || 0);
+    if (m.movement_type === 'WASTE') waste[k] = (waste[k] || 0) + v;
+    else if (m.movement_type === 'SALE_DEPLETION') cogs[k] = (cogs[k] || 0) + v;
+  }
+  return { cogs, waste, demoLeft };
 }

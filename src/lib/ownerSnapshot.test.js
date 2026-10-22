@@ -174,7 +174,8 @@ const TODAY_AS_BEFORE = {
 };
 // What 5 Oct 2026 (and the 8 Oct 2026 sales mix) added to a venue: taken off before the old shape is compared.
 // v5.11.92: stock and stock_reason (the Owner app's Stock line) are added fields too.
-const split = ({ day_start, first_sale_date, compare, week_compare, week_range, mix, stock, stock_reason, ...old }) => ({ old, added: { day_start, first_sale_date, compare, week_compare, week_range, mix, stock, stock_reason } });
+// v5.11.99 (Reports align): and demo_left_out (true only when demo checks were left out).
+const split = ({ day_start, first_sale_date, compare, week_compare, week_range, mix, stock, stock_reason, demo_left_out, ...old }) => ({ old, added: { day_start, first_sale_date, compare, week_compare, week_range, mix, stock, stock_reason, demo_left_out } });
 const splitRollup = ({ compare, week_compare, currency, currencies, by_currency, mix, ...old }) => ({ old, added: { compare, week_compare, currency, currencies, by_currency, mix } });
 
 test('Today (and an older app that sends no period) answers what the function always answered', async () => {

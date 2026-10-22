@@ -283,22 +283,38 @@ export function checkNetSales(check, range = null) {
  * A breakdown from the server day sums (src/lib/reportDaySums.js: a long period across several
  * sites). The database adds the stored subtotals and does not split a check by tender, so this
  * is the nearest reading: item sales are stored subtotals, loyalty rewards are the loyalty
- * tenders, their VAT is taken out pro rata, refunds are on the day of the sale. Marked estimated.
+ * tenders, their VAT is taken out pro rata. Marked estimated.
+ *
+ * 22 Oct 2026 (v5.11.99, Reports align): refunds come off on the day they were MADE, as Daily
+ * trading, the Owner app and Xero take them, when the caller hands in the sums' refundsMade (every
+ * caller here does): the goods that went back (amount less its tip and service) and their own VAT.
+ * Before, this estimate took a refund off the day of the SALE, so a long period cut across a
+ * refund made after the period showed it, and one made inside the period on an older sale did not.
+ * The sale side's VAT is the day's booked VAT with the sale day refunds' VAT put back, so a refund's
+ * VAT is taken off once, on its own day. Without refundsMade (an old caller) it is read as before.
  */
-export function breakdownFromDaySums(stats, byTender = {}, { currency = null } = {}) {
+export function breakdownFromDaySums(stats, byTender = {}, { currency = null, refundsMade = null } = {}) {
   const s = stats || {};
   const r2 = (x) => Math.round(x * 100) / 100;
   const items = num(s.gross), voids = num(s.voids), delivery = num(s.deliveryFees), discounts = num(s.discounts);
   const rewards = Math.max(0, num(byTender.loyalty));
-  const refunds = num(s.refundsItems);
-  const sales = r2(items - voids + delivery - discounts - rewards - refunds);
-  const before = sales + rewards;
-  const tax = r2(before > 0 ? num(s.tax) * (sales / before) : num(s.tax));
+  const made = refundsMade && typeof refundsMade === 'object' ? refundsMade : null;
+  // the refunds' goods, VAT, tips and service, on the day the refund was made (or, read as before, the sale's)
+  const refunds = made ? r2(num(made.amount) - num(made.tip) - num(made.service)) : num(s.refundsItems);
+  const refundTax = made ? num(made.tax) : 0;
+  const saleTax = made ? num(s.tax) + num(s.refundsTax) : num(s.tax);
+  const service = made ? num(s.service) + num(s.refundsService) - num(made.service) : num(s.service);
+  const tips = made ? num(s.tips) + num(s.refundsTip) - num(made.tip) : num(s.tips);
+  const beforeRefunds = items - voids + delivery - discounts - rewards;
+  const sales = r2(beforeRefunds - refunds);
+  const before = (made ? beforeRefunds : sales) + rewards;
+  const moneyTax = before > 0 ? saleTax * ((made ? beforeRefunds : sales) / before) : saleTax;
+  const tax = r2(moneyTax - refundTax);
   const usd = String(currency || '').toUpperCase() === 'USD';
   const out = {
-    items, voids, deliveryFees: delivery, discounts, recordedDiscounts: discounts, rewards, rewardsTax: r2(num(s.tax) - tax),
-    refunds, shelfSales: sales, addedTax: 0, sales, tax, net: r2(sales - tax), service: num(s.service), tips: num(s.tips),
-    collected: r2(sales + num(s.service) + num(s.tips)), count: num(s.count), covers: num(s.covers), voidCount: 0, refundCount: 0,
+    items, voids, deliveryFees: delivery, discounts, recordedDiscounts: discounts, rewards, rewardsTax: r2(saleTax - moneyTax),
+    refunds, shelfSales: sales, addedTax: 0, sales, tax, net: r2(sales - tax), service: r2(service), tips: r2(tips),
+    collected: r2(sales + service + tips), count: num(s.count), covers: num(s.covers), voidCount: 0, refundCount: made ? num(made.count) : 0,
     addedOn: false, taxWord: usd ? 'tax' : 'VAT', subtotalOff: [], discountOff: [], vatMissing: [], estimated: true,
   };
   for (const k of TENDER_ORDER) out[`tender_${k}`] = num(byTender[k]);

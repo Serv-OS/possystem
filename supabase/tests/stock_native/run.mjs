@@ -35,6 +35,11 @@
 //                                                          the drainer, Drop 2 and Drop 3 as pastes (the
 //                                                          live order), then 4a and drop4a.mjs (sections
 //                                                          30 to 37)
+//   node supabase/tests/stock_native/run.mjs --align --quick
+//                                                          Reports align (20261029a, release 5.11.99):
+//                                                          section 1, then 0a, its revalue file, 0b, Drop 1,
+//                                                          the drainer, Drop 2, Drop 3 and 4a as pastes (the
+//                                                          live order), then align.mjs (sections 50 to 53)
 //   node supabase/tests/stock_native/run.mjs --drainer --before-only --quick
 //                                                          only the drainer parts that need no drainer
 //                                                          file (the basket before, the v1 figures, speed
@@ -46,6 +51,7 @@
 //   STOCKN_DRAINER, STOCKN_DRAINER_ROLLBACK   other copies of 20261023a and its rollback (same default)
 //   STOCKN_D4A, STOCKN_D4A_ROLLBACK           other copies of 20261026a and its rollback (same default)
 //   STOCKN_D4A_ONLY=33,35                     with --drop4a: only those of sections 31 to 37 (30 always runs)
+//   STOCKN_ALIGN, STOCKN_ALIGN_ROLLBACK       other copies of 20261029a and its rollback (same default)
 //   STOCKN_KEEP=1        keep the cluster at the end and print how to reach it
 //   STOCKN_STOP_AT=n     stop after section n
 //   STOCKN_NO_GUARD=1    run without the pg-safeupdate stand in (and say so)
@@ -71,6 +77,7 @@ import { drop1Sections } from './drop1.mjs';
 import { drop2Sections, D2_SHAPE } from './drop2.mjs';
 import { drop3Sections, D3_SHAPE, LIVE_SECOND_STEP_MD5 } from './drop3.mjs';
 import { drop4aSections } from './drop4a.mjs';
+import { alignSections } from './align.mjs';
 
 const BASE_ONLY = process.argv.includes('--base-only');
 const BEFORE_ONLY = process.argv.includes('--before-only');
@@ -79,6 +86,7 @@ const DROP2 = process.argv.includes('--drop2');
 const DROP3 = process.argv.includes('--drop3');
 const ALL = process.argv.includes('--all');
 const DROP4A = process.argv.includes('--drop4a');
+const ALIGN = process.argv.includes('--align');
 const QUICK = process.argv.includes('--quick');
 const SEED = Number((process.argv.find((a) => a.startsWith('--seed=')) || '').slice(7)) || (Date.now() % 1000000);
 const SCALE_SITES = QUICK ? 10 : 50;
@@ -101,6 +109,8 @@ const FILES = {
   d3Rb: process.env.STOCKN_D3_ROLLBACK || MIG('20261027a_OPS_stock_native_3_ROLLBACK.sql'),
   d4: process.env.STOCKN_D4A || MIG('20261026a_OPS_stock_native_4a.sql'),
   d4Rb: process.env.STOCKN_D4A_ROLLBACK || MIG('20261026a_OPS_stock_native_4a_ROLLBACK.sql'),
+  al: process.env.STOCKN_ALIGN || MIG('20261029a_OPS_reports_align.sql'),
+  alRb: process.env.STOCKN_ALIGN_ROLLBACK || MIG('20261029a_OPS_reports_align_ROLLBACK.sql'),
 };
 if (!BASE_ONLY && !existsSync(FILES.a)) {
   console.error(`0a is not there yet: ${FILES.a}\nRun with --base-only for the base database, or set STOCKN_MIGRATION to a copy of 0a.`);
@@ -120,7 +130,7 @@ process.on('uncaughtException', (e) => { console.error(e); c.stop(); process.exi
 const sql = (q, o) => c.sql(q, o);
 const num = (q, o) => c.num(q, o);
 function finish() {
-  console.log(`\n${failures === 0 ? 'PASS' : 'FAIL'}: ${checks - failures}/${checks} checks${failures ? `, ${failures} failed` : ''} (seed ${SEED}${QUICK ? ', quick' : ''}${BASE_ONLY ? ', base only' : ''}${DRAINER ? `, drainer release${BEFORE_ONLY ? ' before only' : ''}` : ''}${DROP4A ? ', Drop 4a' : ''})`);
+  console.log(`\n${failures === 0 ? 'PASS' : 'FAIL'}: ${checks - failures}/${checks} checks${failures ? `, ${failures} failed` : ''} (seed ${SEED}${QUICK ? ', quick' : ''}${BASE_ONLY ? ', base only' : ''}${DRAINER ? `, drainer release${BEFORE_ONLY ? ' before only' : ''}` : ''}${DROP4A ? ', Drop 4a' : ''}${ALIGN ? ', Reports align' : ''})`);
   if (failures) for (const f of failed.slice(0, 40)) console.log(`  - ${short(f, 200)}`);
   if (process.env.STOCKN_KEEP) { console.log(`kept: psql -h ${c.dir} -p ${c.port} -U postgres -d ${c.DB}`); process.exit(failures === 0 ? 0 : 1); }
   c.stop();
@@ -368,11 +378,13 @@ if (BASE_ONLY) finish();
 // == 30 to 37. Drop 4a (drop4a.mjs): after 0a, its revalue file, 0b, Drop 1, the drainer, Drop 2 and Drop 3 as pastes ======
 // The live order on the night 4a runs (Drop 2 and Drop 3 went live before it). The shapes and the harness
 // stand ins are the ones drop2.mjs and drop3.mjs paste with, in the same places.
-if (DROP4A) {
+// == 50 to 53. Reports align (align.mjs): the same pastes, then 4a, then 20261029a (--align) ========================
+if (DROP4A || ALIGN) {
   const need = [['0a', FILES.a], ['its revalue file', FILES.rv], ['0b', FILES.b], ['Drop 1', FILES.d1], ['the drainer release', FILES.d],
-    ['Drop 2', FILES.d2], ['Drop 3', FILES.d3], ['4a', FILES.d4], ['the 4a rollback', FILES.d4Rb]];
+    ['Drop 2', FILES.d2], ['Drop 3', FILES.d3], ['4a', FILES.d4], ['the 4a rollback', FILES.d4Rb],
+    ...(ALIGN ? [['Reports align', FILES.al], ['the align rollback', FILES.alRb]] : [])];
   const missing = need.filter(([, f]) => !existsSync(f));
-  ok(missing.length === 0, `the nine files are there (${missing.map(([n, f]) => `${n}: ${f}`).join('; ') || 'all'})`);
+  ok(missing.length === 0, `the ${need.length} files are there (${missing.map(([n, f]) => `${n}: ${f}`).join('; ') || 'all'})`);
   if (missing.length === 0) {
     c.createFrom('n_d4pre', 'n_base');
     c.use('n_d4pre');
@@ -397,7 +409,8 @@ if (DROP4A) {
     const d3Raw = readFileSync(FILES.d3, 'utf8');
     ok(d3Raw.includes(LIVE_SECOND_STEP_MD5), `Drop 3 pins second_step_ok() at its live md5; pasted here with the stand in's (${standIn})`);
     step('Drop 3 (20261027a)', c.paste(null, { input: d3Raw.replace(LIVE_SECOND_STEP_MD5, standIn) }));
-    if (applied) await drop4aSections({ c, ok, section, guarded, FILES, QUICK, SEED, NO_D2_DB: 'n_d4_nod2' });
+    if (applied && ALIGN) await alignSections({ c, ok, section, guarded, FILES, QUICK, SEED });
+    else if (applied) await drop4aSections({ c, ok, section, guarded, FILES, QUICK, SEED, NO_D2_DB: 'n_d4_nod2' });
   }
   finish();
 }

@@ -23,7 +23,8 @@ export default function ManagerForecastEdit({ ctx, onClose }) {
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
-  const today = snap?.today || null;
+  // v5.11.99: the business day the Home tile uses (snap.businessDay), else the calendar day.
+  const today = snap?.money?.businessDay || snap?.businessDay || snap?.today || null;
 
   useEffect(() => {
     if (!pin || days) return undefined;

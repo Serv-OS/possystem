@@ -28,6 +28,7 @@
 
 import { money } from './currency.js';
 import { notLoaded } from './reportCompare.js';
+import { breakdownFromDaySums } from './salesBreakdown.js';
 
 /** More than one site on screen. */
 export const isSplit = (sites) => Array.isArray(sites) && sites.length > 1;
@@ -190,10 +191,13 @@ export function siteNameKey(siteId, name) {
  * check that is not voided: the same money byOrderType adds up (every live check has one
  * order type). Its tips are the tips as taken (byMethod), not net of refunds.
  */
+// v5.11.99 (Reports align): `revenue` is NET SALES (VAT, tips and service out, refunds off on
+// the day they were made), the Business summary's estimate from the same sums
+// (salesBreakdown.breakdownFromDaySums), never the sum of check totals.
 export function trendFromSums(sums) {
   const add = (map, f) => Object.values(map || {}).reduce((s, v) => s + (Number(v?.[f]) || 0), 0);
   return {
-    revenue: add(sums?.byOrderType, 'revenue'),
+    revenue: sums?.stats ? breakdownFromDaySums(sums.stats, sums.byTender || {}, { refundsMade: sums.refundsMade || null }).net : 0,
     covers: Number(sums?.stats?.covers) || 0,
     checks: Number(sums?.stats?.count) || 0,
     tips: add(sums?.byMethod, 'tips'),

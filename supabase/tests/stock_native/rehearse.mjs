@@ -57,6 +57,16 @@
 //   STOCKN_DEMO=... STOCKN_CHECKS=... node supabase/tests/stock_native/rehearse.mjs --drainer --drop4a
 //
 // --drop4a fails when the 4a files are missing. STOCKN_D4A and STOCKN_D4A_ROLLBACK point at other copies.
+//
+// Reports align (20261029a, release 5.11.99, step 11, with --drop4a --align) then runs on the live order copy
+// with 4a in: the check row, the rebuild it queued drained, then every venue day of the copy's checks: the
+// stored day totals (what Stock and GP reads) give the P&L's net sales (tradingSales.js tradingDays, demo left
+// out) to the penny and the day check is ok; Provo 16 Oct 2026 400.90; with STOCKN_CHECKS_VENUE (a copy of
+// one real venue's checks, fetch_checks.sh with its venue id) and STOCKN_VENUE_CLOCK (tz,day start) that
+// venue too (Coffee Boy Leeds 18, 19 and 20 Oct 2026: 821.52, 687.34, 645.12); then its rollback (the twelve
+// bodies back by md5) and align again.
+//
+//   STOCKN_DEMO=... STOCKN_CHECKS=... STOCKN_CHECKS_VENUE=... STOCKN_VENUE_CLOCK=Europe/London,06:30 node supabase/tests/stock_native/rehearse.mjs --drainer --drop4a --align
 // The step also checks the dashboard on Provo and Location 2 says "Demo history left out" and that each
 // site's GP is the sum of its product GP.
 //
@@ -81,6 +91,9 @@ import {
 import { jsParts, REPLACED } from './drainer.mjs';
 import { insertRow, basketBookedSql } from './channels.mjs';
 import { venueDay } from './drop4a.mjs';
+import { ALIGN_REPLACED } from './align.mjs';
+import { tradingDays } from '../../functions/_shared/tradingSales.js';
+import { leaveOutDemo } from '../../functions/_shared/demoHistory.js';
 import { D2_REPLACED, D2_SHAPE } from './drop2.mjs';
 import { D3_SHAPE, D3_BODIES, D3_REPLACED, LIVE_SECOND_STEP_MD5 } from './drop3.mjs';
 
@@ -101,9 +114,12 @@ const FILES = {
   d3Rb: process.env.STOCKN_D3_ROLLBACK || MIG('20261027a_OPS_stock_native_3_ROLLBACK.sql'),
   d4: process.env.STOCKN_D4A || MIG('20261026a_OPS_stock_native_4a.sql'),
   d4Rb: process.env.STOCKN_D4A_ROLLBACK || MIG('20261026a_OPS_stock_native_4a_ROLLBACK.sql'),
+  al: process.env.STOCKN_ALIGN || MIG('20261029a_OPS_reports_align.sql'),
+  alRb: process.env.STOCKN_ALIGN_ROLLBACK || MIG('20261029a_OPS_reports_align_ROLLBACK.sql'),
 };
 const DRAINER = process.argv.includes('--drainer');
 const DROP4A = process.argv.includes('--drop4a');
+const ALIGN = process.argv.includes('--align');
 const CHECKS = process.env.STOCKN_CHECKS || null;
 if (!BASE_ONLY && !existsSync(FILES.a)) { console.error(`0a is not there yet: ${FILES.a} (run with --base-only, or set STOCKN_MIGRATION)`); process.exit(2); }
 const demo = JSON.parse(readFileSync(DEMO, 'utf8'));
@@ -747,7 +763,104 @@ console.log('\n10. Drop 4a (20261026a) on the drainer copy, its queue drained: t
 if (!DROP4A) info('--drop4a not given: step skipped');
 else if (!existsSync(FILES.d4) || !existsSync(FILES.d4Rb)) ok(false, `the 4a files are there (${FILES.d4}, ${FILES.d4Rb})`);
 else drop4aStep();
+
+console.log('\n11. Reports align (20261029a) on the live order copy, 4a in: the check row, the rebuild drained, every venue day against the P&L rule; its rollback and align again');
+if (!ALIGN) info('--align not given: step skipped');
+else if (!DROP4A) ok(false, '--align runs on the 4a copy: give --drop4a too');
+else if (!existsSync(FILES.al) || !existsSync(FILES.alRb)) ok(false, `the align files are there (${FILES.al}, ${FILES.alRb})`);
+else alignStep();
 done();
+
+function alignStep() {
+  c.use('n_d4live');
+  if (sql(`select to_regclass('public.stock_targets') is not null`) !== 't') { ok(false, 'the live order copy has 4a in (step 10 ran to its end)'); return; }
+  // one real venue of another company, for its P&L days (its checks only: no stock rows are needed)
+  const EXTRA = process.env.STOCKN_CHECKS_VENUE || null;
+  let extra = null;
+  if (EXTRA && existsSync(EXTRA)) {
+    const rows = JSON.parse(readFileSync(EXTRA, 'utf8')).closed_checks || [];
+    const loc = rows[0]?.location_id;
+    const [tz, start] = String(process.env.STOCKN_VENUE_CLOCK || 'Europe/London,06:30').split(',');
+    if (loc) {
+      const org = '0a11a000-0000-4000-8000-000000000001';
+      const have = new Set(sql(`select string_agg(column_name, ',') from information_schema.columns where table_schema = 'public' and table_name = 'closed_checks'`).split(','));
+      const cols = [...new Set(rows.flatMap((r) => Object.keys(r)))].filter((k) => have.has(k)).map((k) => `"${k}"`).join(', ');
+      const r = c.psql({ input: `insert into organisations (id, name) values ('${org}', 'Another company') on conflict do nothing;
+        insert into locations (id, org_id, name, timezone, currency, status) values ('${loc}', '${org}', 'A real venue', '${tz}', 'GBP', 'active') on conflict do nothing;
+        insert into venue_clock (location_id, timezone, day_start, synced_at) values ('${loc}', '${tz}', '${start}', now()) on conflict (location_id) do update set timezone = excluded.timezone, day_start = excluded.day_start;
+        set session_replication_role = replica;
+        insert into public.closed_checks (${cols}) select ${cols} from json_populate_recordset(null::public.closed_checks, ${lit(JSON.stringify(rows))}::json) on conflict do nothing;
+        set session_replication_role = origin;`, allowFail: true });
+      ok(r.status === 0, `${rows.length} checks of one real venue loaded on its own clock (${tz} ${start})${r.status ? `: ${short(r.stderr, 300)}` : ''}`);
+      if (r.status === 0) extra = { loc, tz, start };
+    }
+  } else info('no STOCKN_CHECKS_VENUE: the real venue days (Coffee Boy Leeds) are proved by the check row on live only');
+  if (extra) {
+    // its day totals as the 4a backfill builds them (the old rule), so align has days to queue
+    sql(`select public.sales_day_sums_rebuild('${extra.loc}', g::date, g::date) from generate_series((select min(closed_at) from closed_checks where location_id = '${extra.loc}')::date, current_date, interval '1 day') g`);
+  }
+  for (let k = 0; k < 400 && num(`select (select count(*) from stock_day_sums_repair where due_at <= now()) + (select count(*) from sales_day_sums_queue where due_at <= now())`) > 0; k++) sql('call public.stock_day_sums_drain(40, 50);');
+  const md5Of = (sig) => sql(`select md5(btrim(regexp_replace(p.prosrc, '\\s+', ' ', 'g'))) from pg_proc p where p.oid = to_regprocedure('${sig}')`);
+  const live = ALIGN_REPLACED.filter(([sig, want]) => md5Of(sig) === want).length;
+  ok(live === ALIGN_REPLACED.length, `the twelve bodies align replaces are the live text on the copy (${live} of ${ALIGN_REPLACED.length})`);
+  const r = c.paste(FILES.al);
+  ok(r.status === 0, `Reports align applies (${r.status ? short(r.stderr, 900) : `${r.ms} ms`})`);
+  if (r.status) return;
+  const x = ((r.sets[r.sets.length - 1] || { rows: [] }).rows[0]) || {};
+  console.log(`     check row: ${short(x, 1500)}`);
+  ok(x.bodies_replaced === '12' && x.new_helpers === '6' && x.new_columns === '7' && x.waste_write_policies === '0' && x.backup_rows === '14'
+     && x.internals_open_to_api === 'f' && x.site_rows_changed === '0' && x.logins_changed === 'f',
+    `the check row: 12 bodies, 6 helpers, 7 columns, the waste write policies gone, 14 backup rows, internals closed, no site row or login changed; ${x.refund_days_queued} refund days and ${x.demo_days_queued} demo days queued (${x.backfill_minutes} minutes)`);
+  ok(x.provo_16_oct_net === '400.90', `Provo 16 Oct 2026 net by the new rule straight from the checks: ${x.provo_16_oct_net} (the P&L: 400.90)`);
+  if (extra) {
+    ok(x.leeds_18_oct_net === '821.52' && x.leeds_19_oct_net === '687.34' && x.leeds_20_oct_net === '645.12',
+      `Coffee Boy Leeds by the new rule straight from the checks: 18 Oct ${x.leeds_18_oct_net}, 19 Oct ${x.leeds_19_oct_net}, 20 Oct ${x.leeds_20_oct_net} (the P&L: 821.52, 687.34, 645.12)`);
+  }
+  sql(`update sales_day_sums_queue set due_at = now() - interval '1 second'`);
+  let runs = 0;
+  for (; runs < 400 && num(`select count(*) from sales_day_sums_queue where due_at <= now()`) > 0; runs++) sql('call public.stock_day_sums_drain(40, 50);');
+  ok(num(`select count(*) from sales_day_sums_queue`) === 0, `the rebuild drains (${runs} runs)`);
+  // every venue day of the copy's checks: the stored day totals against the P&L's own JS
+  const locs = [...venues, ...(extra ? [extra.loc] : [])];
+  for (const loc of locs) {
+    const clock = pj(sql(`select json_build_object('tz', coalesce(c.timezone, 'Europe/London'), 'start', to_char(coalesce(c.day_start, '06:00'), 'HH24:MI')) from venue_clock c where c.location_id = '${loc}'`)) || { tz: 'Europe/London', start: '06:00' };
+    const dayOf = (ms) => venueDay(ms / 1000, clock.tz, clock.start);
+    const rows = pj(sql(`select coalesce(json_agg(to_jsonb(c)), '[]') from closed_checks c where c.location_id = '${loc}' and c.id not like 'd4-%'`)) || [];
+    if (!rows.length) continue;
+    const nod = leaveOutDemo(rows);
+    const pl = tradingDays({ saleRows: nod.rows, refundRows: nod.rows, dayOf });
+    const sums = Object.fromEntries((pj(sql(`select coalesce(json_agg(json_build_array(business_day, round(sum_net, 2))), '[]') from (select business_day, sum(net) as sum_net from sales_day_sums where location_id = '${loc}' group by business_day) z`)) || []).map(([d, v]) => [d, Number(v)]));
+    const recent = Object.keys(pl).filter((d) => d >= addDaysYmd(sql('select current_date::text'), -12)).sort();
+    let bad = 0, cbad = 0; const eg = []; const others = [];
+    for (const d of recent) {
+      const want = Math.round(pl[d].net * 100) / 100;
+      if (Math.abs((sums[d] ?? 0) - want) > 0.005) { bad++; if (eg.length < 3) eg.push({ d, sums: sums[d], pl: want }); }
+      // the parts this release changed: net (the sale side) and refunds against their rules, and the plate
+      // cost against the ledger; the rest of the day check (gross, discounts, voids, tax against
+      // report_day_sums) is the drainer's, reported here as it is
+      const ck = pj(sql(`select public.sales_day_sums_check('${loc}', '${d}')`));
+      if (!ck || ck.net?.sums !== ck.net?.rule || ck.refunds?.sums !== ck.refunds?.rule || ck.theo?.sums !== ck.theo?.ledger) { cbad++; if (eg.length < 3) eg.push({ d, check: ck }); }
+      else if (!ck.ok) others.push(`${d}: ${short(Object.fromEntries(['gross', 'discounts', 'voids', 'tax'].filter((k) => ck[k] && JSON.stringify(Object.values(ck[k])[0]) !== JSON.stringify(Object.values(ck[k])[1])).map((k) => [k, ck[k]])), 200)}`);
+    }
+    const name = sql(`select name from locations where id = '${loc}'`);
+    ok(bad === 0 && cbad === 0, `${name}: ${recent.length} venue days, the stored net after refunds equals the P&L's net sales to the penny, demo left out (${nod.left} demo checks); the day check's net, refunds and plate cost agree every day${eg.length ? ` (${short(eg, 600)})` : ''}`);
+    if (others.length) info(`${name}: the drainer's own day check differs elsewhere on ${others.length} day(s), as before this release (stored subtotals and unrounded discounts against report_day_sums): ${others.join('; ')}`);
+    for (const [d, want] of [['2026-10-16', loc === '7218c716-eeb4-4f96-b284-f3500823595c' ? 400.90 : null], ['2026-10-18', extra && loc === extra.loc ? 821.52 : null],
+                             ['2026-10-19', extra && loc === extra.loc ? 687.34 : null], ['2026-10-20', extra && loc === extra.loc ? 645.12 : null]]) {
+      if (want == null || !(d in pl)) continue;
+      ok(Math.abs((sums[d] ?? 0) - want) < 0.005 && Math.abs(pl[d].net - want) < 0.005, `${name} ${d}: Stock and GP net ${sums[d]} = the P&L rule ${pl[d].net.toFixed(2)} = the live P&L ${want.toFixed(2)}`);
+    }
+  }
+  // its rollback, then align again
+  const rb = c.paste(FILES.alRb);
+  const y = ((rb.sets[rb.sets.length - 1] || { rows: [] }).rows[0]) || {};
+  console.log(`     rollback: ${short(y, 400)}`);
+  ok(rb.status === 0 && y.bodies_restored === '12' && y.policies_back === '2' && y.helpers_left === '0' && y.columns_left === '0' && y.site_rows_changed === '0',
+    `the rollback: the twelve bodies back by md5, the policies back, nothing of align left${rb.status ? `: ${short(rb.stderr, 300)}` : ''}`);
+  const again = c.paste(FILES.al);
+  ok(again.status === 0, `Reports align applies again after its rollback (${again.status ? short(again.stderr, 400) : 'ok'})`);
+}
+function addDaysYmd(ymd, n) { return new Date(Date.parse(`${ymd}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10); }
 
 function drop4aStep() {
   const tf = (v) => v === 't' || v === true;

@@ -153,7 +153,9 @@ test('figures are whole pence', () => {
 
 test('trading-report reads sales and refunds per business day, paged, with the tender columns', () => {
   const src = fs.readFileSync(path.join(here, '../../supabase/functions/trading-report/index.ts'), 'utf8');
-  assert.match(src, /import \{ tradingDays, timesheetDays \} from '\.\.\/_shared\/tradingSales\.js';/);
+  assert.match(src, /import \{ tradingDays, timesheetDays, ledgerDays \} from '\.\.\/_shared\/tradingSales\.js';/);
+  // v5.11.99 (Reports align): the one demo rule
+  assert.match(src, /import \{ leaveOutDemo \} from '\.\.\/_shared\/demoHistory\.js';/);
   assert.match(src, /import \{ businessDayOf, businessDayWindow \} from '\.\.\/_shared\/businessDay\.js';/);
   assert.match(src, /import \{ venueClock \} from '\.\.\/_shared\/accountingData\.ts';/);
   const cols = /const CHECK_COLS = '([^']+)'/.exec(src)?.[1] ?? '';
@@ -167,7 +169,7 @@ test('trading-report reads sales and refunds per business day, paged, with the t
   assert.ok(cols.split(',').map((s) => s.trim()).includes('ref'), 'CHECK_COLS is missing ref');
   assert.match(src, /pagedRows\('refunds', \(\) => opsAdmin\.from\('closed_checks'\)\.select\(CHECK_COLS\)\s*\.eq\('location_id', ops\)\.gte\('closed_at', since\)\.lt\('closed_at', toIso\)\.neq\('refunds', '\[\]'\)/);
   assert.match(src, /const REFUND_LOOKBACK_DAYS = 400;/);
-  assert.match(src, /return tradingDays\(\{ saleRows, refundRows, dayOf: \(ms: number\) => businessDayOf\(ms, clock\.timezone, clock\.dayStart\) \}\);/);
+  assert.match(src, /return tradingDays\(\{ saleRows: sales\.rows, refundRows: refunds\.rows, dayOf: \(ms: number\) => businessDayOf\(ms, clock\.timezone, clock\.dayStart\) \}\);/);
   assert.match(src, /const clock = await venueClock\(platformAdmin, ops\);/);
   assert.match(src, /const labAct = timesheetDays\(\{ timesheets: ts, dayOf \}\);/);
   assert.match(src, /select\('id, clock_in, clock_out, pay_amount, status'\)/);

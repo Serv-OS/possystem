@@ -439,7 +439,8 @@ test('the group percent carries the words only when every site compares to the s
   assert.doesNotMatch(MIXED_COMPARE_TEXT, /[\u2013\u2014]/);
   // both group chips use it
   assert.match(read('../backoffice/sections/reports/SiteSplit.jsx'), /const words = groupCompareWords\(vs\);\s+return \([\s\S]*?<CompareChip pct=\{g\.pct\} vs=\{words\.vs\}\/>/);
-  assert.match(read('../backoffice/sections/reports/LocationCompare.jsx'), /words: groupCompareWords\(g\.rows\.map\(r => prev\.compare\[r\.locationId\]\)\),/);
+  // v5.11.99: the comparison is prevNet (its net sales by the one rule), the same compare words.
+  assert.match(read('../backoffice/sections/reports/LocationCompare.jsx'), /words: groupCompareWords\(g\.rows\.map\(r => prevNet\.compare\[r\.locationId\]\)\),/);
   assert.match(read('../backoffice/sections/reports/LocationCompare.jsx'), /<CompareChip pct=\{g\.change\.pct\} vs=\{g\.change\.words\.vs\}\/>/);
 });
 

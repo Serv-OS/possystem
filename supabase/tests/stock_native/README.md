@@ -33,6 +33,14 @@ node supabase/tests/stock_native/run.mjs --drop4a --quick   # sections 30 to 37,
 node supabase/tests/stock_native/run.mjs --drop4a           # 50 sites by 500 items by 31 days
 STOCKN_DEMO=/some/scratch/demo.json STOCKN_CHECKS=/some/scratch/checks.json node supabase/tests/stock_native/rehearse.mjs --drainer --drop4a
 node --test src/lib/stock/stockNative4aMigration.test.js    # the CI text test of 4a and its rollback
+
+# Reports align (20261029a, release 5.11.99), after 4a in the live order (align.mjs, sections 50 to 53)
+node supabase/tests/stock_native/run.mjs --align --quick    # 6 days of the seeded world
+node supabase/tests/stock_native/run.mjs --align            # 12 days, 1,200 random refunds
+zsh supabase/tests/stock_native/fetch_checks.sh /some/scratch/venue.json <org id> 7 <venue id>   # one real venue, its refunds of 400 days
+STOCKN_DEMO=... STOCKN_CHECKS=... STOCKN_CHECKS_VENUE=/some/scratch/venue.json STOCKN_VENUE_CLOCK=Europe/London,06:30 \
+  node supabase/tests/stock_native/rehearse.mjs --drainer --drop4a --align
+node --test src/lib/reportsAlign.test.js                    # the cross report parity test (npm test runs it)
 ```
 
 Exit code 0 only when every check holds. Needs `/opt/homebrew/bin` (initdb, pg_ctl, postgres, psql,

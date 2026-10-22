@@ -328,9 +328,10 @@ function SalesSummarySites(props) {
     const cmp = p.compare?.from ? { fromMs: toMs(p.compare.from), toMs: toMs(p.compare.to) } : null;
     const opts = { currency: p.currency };
     return [p.id, {
-      cur:  p.sums ? breakdownFromDaySums(p.sums.totals.stats, p.sums.totals.byTender, opts)
+      // v5.11.99: the estimate takes refunds off on the day they were made (refundsMade), as the rows do.
+      cur:  p.sums ? breakdownFromDaySums(p.sums.totals.stats, p.sums.totals.byTender, { ...opts, refundsMade: p.sums.totals.refundsMade })
                    : salesBreakdown(p.rows, { ...opts, range, refundRows: applyFilters(lookback.rows[String(p.id)] || NONE, filters) }),
-      prev: p.sums ? (p.prevSums ? breakdownFromDaySums(p.prevSums.totals.stats, p.prevSums.totals.byTender, opts) : salesBreakdown([], opts))
+      prev: p.sums ? (p.prevSums ? breakdownFromDaySums(p.prevSums.totals.stats, p.prevSums.totals.byTender, { ...opts, refundsMade: p.prevSums.totals.refundsMade }) : salesBreakdown([], opts))
                    : salesBreakdown(p.prevRows, { ...opts, range: cmp, refundRows: applyFilters(prevLookback.rows[String(p.id)] || NONE, filters) }),
     }];
   })), [parts, lookback.rows, prevLookback.rows, filters]);
@@ -379,7 +380,7 @@ function SalesSummarySites(props) {
             <SiteMatrix block={b} rows={rows} first="Revenue breakdown" fmtN={fmtN}/>
             <div style={{ fontSize:11, color:'var(--t4)', marginTop:6, lineHeight:1.6 }}>
               {all.estimated
-                ? `Long periods across sites are added up by the database from stored subtotals, so these lines are the nearest reading. Pick 7 days or fewer for the exact figures.`
+                ? `Estimated: long periods across sites are added up by the database from stored subtotals, so these lines are the nearest reading. Refunds come off on the day they were made, as in Daily trading. Pick 7 days or fewer for the exact figures.`
                 : `Money collected: ${tenderLine(all, b.fmt)}. Item sales are the lines on each check (price x qty), not the stored subtotal.`}
             </div>
             {notes.map(n => <div key={n} style={{ fontSize:11, color:'var(--amber)', marginTop:4, lineHeight:1.5 }}>{n}</div>)}
