@@ -973,6 +973,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           </div>
         )}
         <OrderTracker tz={location?.timezone || 'Europe/London'} orderRef={trackerRef} locationId={opsLocationId} theme={theme}
+          counter={isCounter}
           trackKey={trackKey}
           onClose={() => { setTrackerRef(null); setTrackKey(null); setUnverifiedNotice(null); if (!isQr && !isCounter) setOrderType(null); }}/>
       </>

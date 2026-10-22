@@ -7,9 +7,14 @@
 // to say collect at counter - this needs to trigger a message to say your order is ready to
 // collect at the counter". Named "Counter collect".
 //
-// THE SETTING lives on the venue, in platform locations.online_branding.collection
-// ({ kiosk, qr, label }), which the kiosk and the QR page both already read and Back Office
-// writes through location-admin patch_branding (whitelisted there). No new column.
+// THE SETTINGS sit where each channel is set up (Peter, 22 Oct 2026: "it needs to be on the kiosk
+// settings to turn on for kiosk"), each with its own words:
+//   * Kiosk: per kiosk, Back Office Kiosk settings, Customer flow. device_profiles
+//     .kiosk_counter_collect + .kiosk_label_counter_collect (migration 20261028a).
+//   * QR: per venue, Back Office Online ordering, inside QR ordering, saved with the page.
+//     platform locations.online_branding.collection { qr, label }, through location-admin
+//     patch_branding (whitelisted there; the page's own Save sends it).
+// 5.11.95 kept both in one box on the Online ordering page; that box is gone.
 //
 // THE ORDER books as DINE IN with no table, on the kiosk and on the counter link alike. Peter,
 // 22 Oct 2026: "collect at counter should be treated as dine in also for all tax reasons":
@@ -40,20 +45,31 @@ export function counterLabel(raw) {
 }
 
 /**
- * The venue's Counter collect setting from a platform locations row (or its online_branding).
+ * The venue's Counter collect QR from a platform locations row (or its online_branding).
  * Off unless switched on: a venue that never saved it sees nothing new.
  */
 export function counterCollect(row) {
   const branding = row && typeof row === 'object' && 'online_branding' in row ? row.online_branding : row;
   const c = branding && typeof branding === 'object' ? branding.collection : null;
   const o = c && typeof c === 'object' ? c : {};
-  return { kiosk: o.kiosk === true, qr: o.qr === true, label: counterLabel(o.label) };
+  return { qr: o.qr === true, label: counterLabel(o.label) };
 }
 
-/** The patch Back Office sends to location-admin patch_branding. */
-export function counterCollectPatch({ kiosk = false, qr = false, label = '' } = {}) {
+/** A kiosk's own Counter collect tile, from its device_profiles row. Off before 20261028a runs. */
+export function kioskCounterCollect(profile) {
+  const p = profile && typeof profile === 'object' ? profile : {};
+  return { on: p.kiosk_counter_collect === true, label: counterLabel(p.kiosk_label_counter_collect) };
+}
+
+/** The words as saved: tidied, at most 40 characters, blank as null (the default then shows). */
+export function counterLabelToSave(label) {
   const s = typeof label === 'string' ? label.replace(/\s+/g, ' ').trim().slice(0, COUNTER_LABEL_MAX) : '';
-  return { collection: { kiosk: kiosk === true, qr: qr === true, label: s || null } };
+  return s || null;
+}
+
+/** The patch Online ordering's Save sends to location-admin patch_branding. */
+export function counterCollectPatch({ qr = false, label = '' } = {}) {
+  return { collection: { qr: qr === true, label: counterLabelToSave(label) } };
 }
 
 /** The words and icon the online page shows for an order type. */

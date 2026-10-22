@@ -22,7 +22,6 @@ import { supabase, platformSupabase, ensureAuthToken, setResolvedLocationId } fr
 import { logActivity } from '../../lib/activity';
 import { kioskOtpErrorKey } from '../../lib/kioskCheckout';
 import { useStore } from '../../store';
-import { counterCollect } from '../../lib/counterOrder';
 
 const OPS_URL = import.meta.env.VITE_SUPABASE_URL;
 const OPS_ANON = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -113,15 +112,6 @@ async function readPlatformLocation(locationId, columns) {
 export async function loadTipping(locationId) {
   const row = await readPlatformLocation(locationId, 'tipping_config');
   return row ? { ok: true, row } : { ok: false, row: null };
-}
-
-/**
- * v5.11.95 Counter collect: the venue's { kiosk, qr, label } (lib/counterOrder.js). Off when
- * unreadable, so a failed read only hides the extra tile.
- */
-export async function loadCounterCollect(locationId) {
-  const row = await readPlatformLocation(locationId, 'online_branding');
-  return counterCollect(row);
 }
 
 /** The Challenge 21 alcohol category ids ticked for this venue ([] when none, switched off or unreadable). */
@@ -255,7 +245,7 @@ export async function loadMenuTranslations(locationId, lang) {
 // No loadModifierGroups here: on a real kiosk the item sheet reads modifier_groups itself,
 // exactly as today's item screen does. The DEV preview passes one with sample data.
 const kioskApi = {
-  loadCurrency, loadTables, loadGroupRules, loadTipping, loadAlcoholCategoryIds, loadCounterCollect, loadMenuTranslations,
+  loadCurrency, loadTables, loadGroupRules, loadTipping, loadAlcoholCategoryIds, loadMenuTranslations,
   sendOtp, verifyOtp, lookupGift, validatePromo,
   logStaffAlert, adoptLocation, attributePointsOrder, setAttributionPolicy,
 };

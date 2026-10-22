@@ -1,33 +1,41 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  COUNTER_DEFAULT_LABEL, COUNTER_TYPE, counterLabel, counterCollect, counterCollectPatch, orderTypeChip, tipModuleFor,
+  COUNTER_DEFAULT_LABEL, COUNTER_TYPE, counterLabel, counterLabelToSave, counterCollect, counterCollectPatch, kioskCounterCollect, orderTypeChip, tipModuleFor,
 } from './counterOrder.js';
 import { isCounterCollectOrder, counterReadyText, kioskTileOn } from '../../supabase/functions/_shared/counterCollect.js';
 import { parseCustomerLocation } from './customerHost.js';
 import { kioskTextAllowed, kioskSubmitArgs } from './kioskCheckout.js';
 import { kioskModeLabels, kioskDoneModel } from './kioskFlow.js';
 
-test('Counter collect is off for a venue that never saved it, and named "Counter collect"', () => {
+test('the Counter collect QR is off for a venue that never saved it, and named "Counter collect"', () => {
   for (const row of [null, {}, { online_branding: null }, { online_branding: {} }, { online_branding: { collection: 'x' } }]) {
-    assert.deepEqual(counterCollect(row), { kiosk: false, qr: false, label: COUNTER_DEFAULT_LABEL });
+    assert.deepEqual(counterCollect(row), { qr: false, label: COUNTER_DEFAULT_LABEL });
   }
   assert.equal(COUNTER_DEFAULT_LABEL, 'Counter collect');
 });
 
-test('Counter collect reads each switch only when it is true, and the venue name tidied', () => {
+test('the QR switch reads only true, and the words are tidied', () => {
   const row = { online_branding: { collection: { kiosk: true, qr: 'yes', label: '  Collect   at counter ' } } };
-  assert.deepEqual(counterCollect(row), { kiosk: true, qr: false, label: 'Collect at counter' });
-  assert.deepEqual(counterCollect({ collection: { qr: true } }), { kiosk: false, qr: true, label: 'Counter collect' });
+  assert.deepEqual(counterCollect(row), { qr: false, label: 'Collect at counter' });
+  assert.deepEqual(counterCollect({ collection: { qr: true } }), { qr: true, label: 'Counter collect' });
   assert.equal(counterLabel('x'.repeat(60)).length, 40);
   assert.equal(counterLabel('   '), 'Counter collect');
 });
 
-test('the Back Office patch carries exactly the three whitelisted keys, blank name as null', () => {
-  assert.deepEqual(counterCollectPatch({ kiosk: true, qr: false, label: ' Collect at counter ' }),
-    { collection: { kiosk: true, qr: false, label: 'Collect at counter' } });
-  assert.deepEqual(counterCollectPatch({ kiosk: 1, qr: true, label: '' }),
-    { collection: { kiosk: false, qr: true, label: null } });
+test('the kiosk tile comes from that kiosk\'s own settings, off before the database update', () => {
+  assert.deepEqual(kioskCounterCollect({}), { on: false, label: 'Counter collect' });
+  assert.deepEqual(kioskCounterCollect(null), { on: false, label: 'Counter collect' });
+  assert.deepEqual(kioskCounterCollect({ kiosk_counter_collect: true, kiosk_label_counter_collect: 'Collect at counter' }),
+    { on: true, label: 'Collect at counter' });
+  assert.equal(kioskCounterCollect({ kiosk_counter_collect: 'true' }).on, false);
+  assert.equal(counterLabelToSave('  Grab   it here '), 'Grab it here');
+  assert.equal(counterLabelToSave('   '), null);
+});
+
+test('Online ordering\'s Save sends exactly the QR keys, blank words as null', () => {
+  assert.deepEqual(counterCollectPatch({ qr: true, label: ' Collect at counter ' }), { collection: { qr: true, label: 'Collect at counter' } });
+  assert.deepEqual(counterCollectPatch({ qr: 1, label: '' }), { collection: { qr: false, label: null } });
 });
 
 test('Counter collect books as dine in with no table on every channel (Peter: dine in for all tax reasons)', () => {
@@ -40,8 +48,8 @@ test('Counter collect books as dine in with no table on every channel (Peter: di
 });
 
 test('the done screen tells a Counter collect customer to collect, an eat in customer to find a seat', () => {
-  assert.equal(kioskDoneModel({ orderType: 'dineIn', counter: true, textSent: true }).messageKey, 'k2.done.takeawayText');
-  assert.equal(kioskDoneModel({ orderType: 'dineIn', counter: true }).messageKey, 'k2.done.takeaway');
+  assert.equal(kioskDoneModel({ orderType: 'dineIn', counter: true, textSent: true }).messageKey, 'k2.done.counterText');
+  assert.equal(kioskDoneModel({ orderType: 'dineIn', counter: true }).messageKey, 'k2.done.counter');
   assert.equal(kioskDoneModel({ orderType: 'dineIn' }).messageKey, 'k2.done.eatInAnywhere');
   assert.equal(kioskDoneModel({ orderType: 'dineIn', tableNumber: '4', counter: true }).messageKey, 'k2.done.eatInTable');
 });
@@ -72,8 +80,10 @@ test('the ready text goes to the counter for kiosk collection and marked web ord
   // A venue that never switched it on: every kiosk text exactly as before.
   assert.equal(isCounterCollectOrder({ source: 'kiosk', type: 'dine-in', customer: { phone: '+44' } }), false);
   assert.equal(isCounterCollectOrder({ source: 'kiosk', type: 'takeaway' }), false);
-  assert.equal(kioskTileOn({ online_branding: { collection: { kiosk: true } } }), true);
-  assert.equal(kioskTileOn({ online_branding: { collection: { kiosk: 'yes', qr: true } } }), false);
+  // The ready text reads the switch from the kiosk's own profile row (order-notify kioskProfile).
+  assert.equal(kioskTileOn({ kiosk_counter_collect: true }), true);
+  assert.equal(kioskTileOn({ kiosk_counter_collect: 'yes' }), false);
+  assert.equal(kioskTileOn({ kiosk_new_design: true }), false);
   assert.equal(kioskTileOn(null), false);
   assert.equal(isCounterCollectOrder({ source: 'online', type: 'dine-in', customer: { counter_collect: true } }), true);
   // Online ordering's own Collection, QR at a table, the till and delivery keep their own text.

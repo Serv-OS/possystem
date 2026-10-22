@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.97',
+    date: '22 Oct 2026',
+    items: [
+      "Counter collect settings are now where each channel is set up. Kiosk: Back Office, Kiosk settings, Customer flow has a Counter collect switch and the words on its button, per kiosk, with the button in the live preview. QR: Back Office, Online ordering, inside QR ordering, a Counter collect QR switch, its words and the QR card download, saved with the page's own Save settings. The separate Counter collect box is gone. The kiosk switch needs the database update 20261028a; until it runs the switch is hidden and no kiosk shows the button.",
+      "The printed Counter collect QR card now shows exactly the words typed, never Table in front of them, and long words shrink to fit the card.",
+      "Customers are told to collect at the counter at every step: the kiosk done screen says it will be ready to collect at the counter (all seven kiosk languages), the classic kiosk basket says Pick up order, and the online tracker after a counter QR order says ready to collect at the counter around its time, then Ready. Collect it at the counter. The ready text is unchanged: ready to collect at the counter.",
+      "The ready text now checks the switch on the kiosk the order came from, so another kiosk at the same venue keeps its own text. Nothing else in the order flow changes: price, VAT (eat in), tickets and payments are as in 5.11.95.",
+    ],
+  },
+  {
     v: '5.11.96',
     date: '22 Oct 2026',
     items: [

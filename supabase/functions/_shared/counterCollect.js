@@ -6,8 +6,8 @@
 //
 // A kiosk Counter collect order books as eat in with no table ('dine-in'), and the kiosk's order
 // row carries nothing else (its submitOrder is held byte for byte by the card path guard). So a
-// kiosk 'dine-in' order reads as Counter collect only at a venue that switched the kiosk tile on
-// (online_branding.collection.kiosk): every other venue's kiosk text is exactly as before. A kiosk
+// kiosk 'dine-in' order reads as Counter collect only from a kiosk whose own profile has the tile
+// on (device_profiles.kiosk_counter_collect): every other kiosk's text is exactly as before. A kiosk
 // order only carries a phone for the ready text when it has no table (kioskTextAllowed).
 // A web order is Counter collect only when the counter link marked it (customer.counter_collect),
 // so online ordering's own Collection keeps its own text.
@@ -21,10 +21,9 @@ export function isCounterCollectOrder(order, { kioskTileOn = false } = {}) {
   return c.counter_collect === true;
 }
 
-/** The venue's kiosk tile switch from its platform locations row (src/lib/counterOrder.js). */
-export function kioskTileOn(platformRow) {
-  const c = platformRow && platformRow.online_branding && platformRow.online_branding.collection;
-  return !!(c && typeof c === 'object' && c.kiosk === true);
+/** The kiosk's own tile switch, from its device_profiles row (src/lib/counterOrder.js). */
+export function kioskTileOn(profile) {
+  return !!(profile && typeof profile === 'object' && profile.kiosk_counter_collect === true);
 }
 
 /** The ready text's fallback wording when the company has no template of its own. */
