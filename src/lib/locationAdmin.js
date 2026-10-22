@@ -71,7 +71,9 @@ async function call(entity, body) {
  * Whitelisted column write. `patch` keys must all be on the function's
  * LOCATION_FIELDS list — an unknown or denied key rejects the whole call
  * (400 unknown_field) rather than being silently dropped.
- * Resolves { data: <echo of the patched columns>, error }.
+ * Resolves { data: <echo of the patched columns>, service, error }. `service` is
+ * the venue's loyalty code text service after a name save (22 Oct 2026:
+ * { ok, state, words, ... }), null for any other save.
  */
 export async function saveLocation(opsLocationId, patch) {
   const { data, error } = await call('location', {
@@ -79,7 +81,7 @@ export async function saveLocation(opsLocationId, patch) {
     ops_location_id: opsLocationId,
     patch,
   });
-  return { data: data?.location ?? null, error };
+  return { data: data?.location ?? null, service: data?.service ?? null, error };
 }
 
 /**

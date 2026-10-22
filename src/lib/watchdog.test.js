@@ -14,8 +14,9 @@ import { fileURLToPath } from 'node:url';
 
 import {
   evaluate, pages, alertDecision, resolved, smsText, runSummary,
-  SIGNALS, WINDOWS, PAGE, WARN, REMINDER_HOURS,
+  SIGNALS, WINDOWS, PAGE, WARN, REMINDER_HOURS, otpStateWords,
 } from '../../scripts/watchdog/checks.mjs';
+import { AUDIT_STALE_MINUTES } from '../../supabase/functions/_shared/otpServiceRules.js';
 
 const read = (rel) => fs.readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
 
@@ -345,4 +346,52 @@ test('the thresholds are the measured ones, and they are written down', () => {
   const src = read('../../scripts/watchdog/checks.mjs');
   assert.match(src, /0 in 30 days/, 'the evidence for each threshold is in the file');
   assert.match(src, /14 in 30 days/);
+});
+
+// v5.11.94 loyalty code texts (review, 22 Oct 2026): a venue whose codes are refused, or a nightly
+// check that did not run or did not finish, reached nobody but the venue's own feed. Now it is a
+// morning issue for Peter. Never a page: the till still sells and the fix is a button.
+test('loyalty code texts not set up at a venue: a morning issue with the reason and the Fix button, never a page', () => {
+  const findings = evaluate({ reachable: true, otpNotReady: [{ venue: 'Cafe Four', count: 1, detail: 'no_service' }] });
+  assert.equal(findings.length, 1);
+  const f = findings[0];
+  assert.deepEqual([f.signal, f.severity, f.key], ['otp_not_ready', WARN, 'otp_not_ready:Cafe Four']);
+  assert.match(f.body, /Customers at Cafe Four cannot get a loyalty sign in code text/);
+  assert.match(f.body, /no text service of its own/);
+  assert.match(f.fix, /Messages, Verification code/);
+  assert.match(f.fix, /Press Fix/);
+  assert.equal(alertDecision({ finding: f }).alert, false, 'no text at 3am');
+  assert.equal(pages(findings).length, 0);
+  assert.match(otpStateWords('name_drift'), /different name/);
+  assert.match(otpStateWords('weird'), /state weird/);
+});
+
+test('the nightly code text check not running, or not finishing, is said once for all venues', () => {
+  const stale = evaluate({ reachable: true, otpAuditStale: 'The nightly loyalty code text check last ran 30 hours ago' });
+  assert.deepEqual(stale.map((f) => [f.key, f.severity]), [['otp_audit_stale:all', WARN]]);
+  assert.match(stale[0].body, /last ran 30 hours ago\. While it lasts nobody is checking/);
+  assert.match(stale[0].fix, /loyalty_otp_audit_send\(\)/);
+  assert.equal(stale[0].title, SIGNALS.otp_audit_stale.title, 'no venue on a system wide line');
+  const inc = evaluate({ reachable: true, otpAuditIncomplete: 'audit table: permission denied' });
+  assert.deepEqual(inc.map((f) => f.key), ['otp_audit_incomplete:all']);
+  assert.match(inc[0].body, /did not finish: audit table: permission denied/);
+  assert.deepEqual(evaluate({ reachable: true, otpNotReady: [], otpAuditStale: null, otpAuditIncomplete: null }), []);
+  // a broken watchdog still says only that
+  assert.deepEqual(evaluate({ watchdogBroken: 'x', otpAuditStale: 'y' }).map((f) => f.signal), ['watchdog_broken']);
+});
+
+test('the code text window and words agree with the rules, and run.mjs and watchdog-status carry the three fields', () => {
+  assert.equal(WINDOWS.otp_audit_stale.olderThan, SIGNALS.otp_audit_stale.minutes);
+  assert.equal(SIGNALS.otp_audit_stale.minutes, AUDIT_STALE_MINUTES);
+  const run = read('../../scripts/watchdog/run.mjs');
+  for (const k of ['otpNotReady']) assert.match(run, new RegExp(String.raw`${k}: body\.${k} \|\| \[\]`));
+  for (const k of ['otpAuditStale', 'otpAuditIncomplete']) assert.match(run, new RegExp(String.raw`${k}: body\.${k} \|\| null`));
+  const fn = read('../../supabase/functions/watchdog-status/index.ts');
+  for (const k of ['otpNotReady', 'otpAuditStale', 'otpAuditIncomplete']) assert.ok(fn.includes(k), `${k} is answered by watchdog-status`);
+  const block = fn.slice(fn.indexOf('v5.11.94 loyalty code texts'), fn.indexOf('return json({\n      ok: true'));
+  assert.ok(block.length > 200);
+  assert.doesNotMatch(block, /return json|, 503\)/, 'a failed read of the code text tables is never dressed up as the database being down');
+  const src = read('../../scripts/watchdog/checks.mjs');
+  const words = src.slice(src.indexOf('otp_not_ready: {'), src.indexOf(' * The time windows the QUERIES use'));
+  assert.doesNotMatch(words, /[\u2013\u2014]/);
 });

@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.94',
+    date: '22 Oct 2026',
+    items: [
+      "Loyalty sign in code texts: the text service that carries a venue's name is now made the moment it is needed, not on a customer's first sign in. A new venue gets one when it is set up, a renamed venue has its service renamed at once, saving or resetting the business name under Messages makes or renames it, and switching loyalty on sets up every venue of the company. A venue that still has no service, or whose name has drifted, is repaired before each code is sent, and the send is refused (never sent under another name) if that fails.",
+      "Back Office > Messages > Verification code now shows the state of the venue's text service: a green dot with 'Text service: ready as \"<name>\"', or an amber dot with the reason and a Fix button. The preview bubble shows the name the customer will really see, cut to the 30 characters the text allows.",
+      "Every night at 04:10 UTC a check runs over every venue (the kiosk, online and QR ordering ask for code texts whatever the loyalty switch says): it makes or repairs what is wrong, records each venue's state (and the text provider's exact words when it refused) in the database, and raises an item on the venue's activity feed when something is still not right, at most once a week per venue. Needs database update 20261022b on the Ops database.",
+      "Messages can now only be changed by staff of the venue (or an owner inside their own company). Before this any signed in session with a valid venue id could save or reset a venue's message templates.",
+      "The overnight watchdog now says, in a morning GitHub issue, when a venue's code texts are not set up (with the reason and the Fix button to press), when the nightly check did not finish, and when it has not run for over 26 hours. A code that is refused is recorded at once, so the watchdog hears of it within minutes.",
+      "Safety: a code text request that names a company the venue does not belong to, or a venue that is not set up on the platform, now makes nothing (it used to be able to make text services and rows under any company). Setting up a location now needs a signed in login, and only a login that may write at the venue gets its text service made and its details back. A check run by one company's staff only lists that company's rows.",
+    ],
+  },
+  {
     v: '5.11.93',
     date: '21 Oct 2026',
     items: [

@@ -3,25 +3,10 @@
 // The one rule for the name in a loyalty code text (21 Oct 2026). Twilio stamps the Verify
 // SERVICE's friendly name (at most 30 characters) into "Your <name> verification code is ...".
 // A venue's code must carry the name set in Back Office for THAT venue, never another venue's.
-// Pure, tested in src/lib/otpName.test.js.
+//
+// 22 Oct 2026 (v5.11.94): the rules moved to otpServiceRules.js with the rest of the service rules
+// (what name a venue's service must carry, what to do when it is missing or drifted, who may run
+// the nightly check). This file re-exports the two names PR 317 introduced so its callers and its
+// test (src/lib/otpName.test.js) are unchanged.
 
-/**
- * What Twilio will accept and show for a name: whitespace runs collapsed to one space (Twilio
- * refuses a FriendlyName with a double space: "Invalid parameter: FriendlyName", found 21 Oct
- * 2026 on "Coffee Boy  Preston"), trimmed and cut to 30 characters.
- */
-export function twilioName(name) {
-  return String(name || '').replace(/\s+/g, ' ').trim().slice(0, 30);
-}
-
-/**
- * May a code for `venueName` go out from a service whose current name is `serviceName`?
- * Only when Twilio would show the same words (case does not matter). An unreadable service
- * name (null) is never good enough.
- */
-export function sameServiceName(serviceName, venueName) {
-  if (serviceName == null) return false;
-  const a = twilioName(serviceName).toLowerCase();
-  const b = twilioName(venueName).toLowerCase();
-  return !!a && a === b;
-}
+export { twilioName, sameServiceName } from './otpServiceRules.js';
