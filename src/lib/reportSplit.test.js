@@ -96,7 +96,8 @@ test('pin: every flipped report renders its one site view untouched when one sit
   // 16 Oct 2026 (one sales rule): and the range and site id, so refunds count on the day they
   // were made, as Daily trading and the Owner app take them.
   assert.match(read(dir + 'SalesSummary.jsx'), /function SalesSummaryOne\(\{ checks, prevChecks, fmt, fmtN, locationConfig, compare, sites, scope, onOpenReport, rangeFrom, rangeTo, locationId, filters \}\) \{/);
-  assert.match(read(dir + 'DailyTrend.jsx'), /function DailyTrendOne\(\{ checks, prevChecks = \[\], fmt, fmtN, range \}\) \{/);
+  // v5.11.99 (Reports align): and sites and the signed in site, only to read the older checks refunded in the range.
+  assert.match(read(dir + 'DailyTrend.jsx'), /function DailyTrendOne\(\{ checks, prevChecks = \[\], fmt, fmtN, range, sites, locationId \}\) \{/);
   assert.match(read(dir + 'Payments.jsx'), /function PaymentsOne\(\{ checks, fmt, fmtN \}\) \{/);
   assert.match(read(dir + 'Tables.jsx'), /function TablesOne\(\{ checks, fmt, fmtN \}\) \{/);
 });
@@ -265,14 +266,14 @@ const sumRow = (o) => daySumRow({ currency: 'GBP', timezone: 'Europe/London', da
 test('day sums mean what the browser figures mean: trend, order types, payments', () => {
   // Leeds, 2 Oct: 3 live checks (10 card dine in tip 1, 6 cash takeaway, 4 "Card " dine in) and a void
   const row = sumRow({
-    location_id: 'leeds', business_day: '2026-10-02', checks: 3, voided_checks: 1, covers: 5, total: 20, tips: 0.5,
+    location_id: 'leeds', business_day: '2026-10-02', checks: 3, voided_checks: 1, covers: 5, total: 20, tips: 0.5, gross: 20, tax: 3.33,
     by_order_type: { 'dine-in': { checks: 2, revenue: 14 }, takeaway: { checks: 1, revenue: 6 } },
     by_method: { card: { checks: 1, revenue: 10, tips: 1 }, cash: { checks: 1, revenue: 6, tips: 0 }, stripe_terminal: { checks: 1, revenue: 4, tips: 0 } },
   });
   const shaped = shapeDaySums([row], [{ id: 'leeds', name: 'Leeds', currency: 'GBP' }], { fromDay: '2026-10-02', toDay: '2026-10-03' });
   const day = shaped.sites[0].days[0];
-  // Daily trend: revenue = every live check's total; tips as taken (not net of refunds)
-  assert.deepEqual(trendFromSums(day), { revenue: 20, covers: 5, checks: 3, tips: 1, voids: 1 });
+  // Daily trend: revenue is net sales (v5.11.99: the Business summary's estimate, VAT out: 20 less 3.33); tips as taken
+  assert.deepEqual(trendFromSums(day), { revenue: 16.67, covers: 5, checks: 3, tips: 1, voids: 1 });
   assert.deepEqual(trendFromSums(shaped.sites[0].days[1]), { revenue: 0, covers: 0, checks: 0, tips: 0, voids: 0 }, 'a day with no sale is zeros, not missing');
   assert.deepEqual(trendFromSums(null), { revenue: 0, covers: 0, checks: 0, tips: 0, voids: 0 });
   assert.deepEqual(orderTypesFromSums(shaped.sites[0].totals), {

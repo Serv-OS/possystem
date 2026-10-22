@@ -326,14 +326,16 @@ test('Daily trend and Item trend build their days from the range and bucket on t
   const bo = read('../BOReports.jsx');
   // 5 Oct 2026: every report also gets the optional multi site props ({...siteProps}).
   assert.match(bo, /<ItemTrend {4}checks=\{filtered\} fmt=\{fmt\} fmtN=\{fmtN\} range=\{range\} \{\.\.\.siteProps\}\/>/);
-  assert.match(bo, /<DailyTrend {3}checks=\{filtered\} prevChecks=\{filteredPrev\} fmt=\{fmt\} fmtN=\{fmtN\} range=\{trendRange\} \{\.\.\.siteProps\}\/>/);
+  // v5.11.99 (Reports align): and the signed in site, for the older checks refunded in the range.
+  assert.match(bo, /<DailyTrend {3}checks=\{filtered\} prevChecks=\{filteredPrev\} fmt=\{fmt\} fmtN=\{fmtN\} range=\{trendRange\} locationId=\{activeLocId\} \{\.\.\.siteProps\}\/>/);
   // trendRange (v5.11.29) is the same range with the comparison as it stands now (it moves with the clock).
   assert.match(bo, /const trendRange\s+= useMemo\(\(\) => \(\{ \.\.\.range, compare: shownCompare \}\), \[range, shownCompare\]\);/);
   const dt = read('./DailyTrend.jsx');
   assert.match(dt, /rangeDays\(range\)/);
   assert.match(dt, /prevRangeDays\(range\)/);
   assert.match(dt, /const k = dayOfCheck\(c\.closedAt, clock\);/);
-  assert.match(dt, /buildDayBuckets\(prevChecks, prevDays, range\)/);
+  // v5.11.99: and the older checks refunded in the comparison (net sales, refunds on their day)
+  assert.match(dt, /buildDayBuckets\(prevChecks, prevDays, range, prevOlder\)/);
   const it = read('./ItemTrend.jsx');
   assert.match(it, /rangeDays\(range\)\.filter\(d => dowFilter === 'all' \|\| Number\(dowFilter\) === weekdayOf\(d\)\)/);
   assert.match(it, /const dayKey = dayOfCheck\(c\.closedAt, range\);/);

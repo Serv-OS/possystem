@@ -67,6 +67,23 @@ export const fetchWaste = async (fromIso, toIso, locationId = null) => {
 };
 
 /**
+ * v5.11.99 (Reports align): the stock ledger's WASTE movements of the same window, the one source of
+ * what waste cost (src/lib/stock/wasteLedger.js says why). Paged like fetchWaste; { data, error }.
+ */
+export const fetchWasteLedger = async (fromIso, toIso, locationId = null) => {
+  if (isMock || !supabase) return { data: [], error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: [], error: null };
+  return readAllPagesResult('waste ledger', (first) => {
+    let q = supabase.from('stock_movements').select('id, movement_type, source_type, source_id, idempotency_key, inventory_item_id, value_delta, occurred_at', first ? { count: 'exact' } : undefined)
+      .eq('location_id', locationId).eq('movement_type', 'WASTE');
+    if (fromIso) q = q.gte('occurred_at', fromIso);
+    if (toIso) q = q.lte('occurred_at', toIso);
+    return q.order('occurred_at', { ascending: false }).order('id');
+  });
+};
+
+/**
  * v5.11.79 (stock plan Phase 0, 11.5 item 8): what the till Waste screen needs up front, and no more:
  * which menu products have a recipe linked (one paged read of the links, never the recipe book)
  * and whether the venue runs stock at all (a head count of live stock items). Returns

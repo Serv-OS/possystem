@@ -459,12 +459,16 @@ const MAIN_SHA = {
   // v5.11.96 (Drop 3): moved whole into purchasing/ with a new leading comment, so hashed from the first import line
   // (the full file on f1a8f397 was 0f135b551349bb385ae13ec7d3d6ba293ef33810bfa7dc7b3618f19e328bb7e5)
   'backoffice/sections/PriceChanges.jsx': '4ad9f72203d17ba6c88d54de5443380a98a9d07088f86261354f80de962f4e36',
-  'backoffice/sections/Wastage.jsx': '33e365b386c8dc5203f683c68cecd20f0761a283758fcc2bda7a8117263ae42d',
+  // v5.11.99 (Reports align): the Wastage log values waste from the stock ledger for every company, so
+  // the pin is that text (5.11.84's was 33e365b3...).
+  'backoffice/sections/Wastage.jsx': '6a8def407a7d6caff38bb709a1cad974ad092c616ebf831430e0def626d79ed0',
   'backoffice/sections/StockCounts.jsx': '44a539c1f9993b6cdf9143ab0b433c0ccbdeec750333125efc922004a96b7ed9',
   // v5.11.96 (Drop 3): moved whole into purchasing/, hashed from the first import line (full file was f18b04a253ad2845fcc2a94e061b12a9b30fda49f32e14824278313ef6a2513f)
   'backoffice/sections/Invoices.jsx': '71ed5e4a30aa8c2fc4b2938282eb3b480d616a3928a13e8131495ed36830a039',
   'backoffice/sections/PurchaseOrders.jsx': '5f5aaa8b6610886b3889e4c3e1dfaa9143fca50a3a7da645afaef61739dda6e7',
-  'backoffice/sections/StockReports.jsx': '4d5ee256d24e938fa084a879d5f2252fd30b8865f58517f25088c331ea9010fc',
+  // v5.11.99 (Reports align): the Recipe GP tab says its basis (menu price less plate cost, this venue only)
+  // for every company, so the pin is that text (5.11.84's was 4d5ee256...).
+  'backoffice/sections/StockReports.jsx': '2b4446f43840b31e688526da4cc6b38242381e0adc759a01df17cb377d53b149',
   'backoffice/sections/produce/BatchesSite.jsx': 'e1823ac578bc1964c1d77f8b9381273b84033fe408fe42bfc013705c6430d718',   // from the first import line (the moved file's comment is new)
   'backoffice/sections/OrderPad.jsx': '80255c600c51dde811b5bd2581cff78ad09219ca4d6c2c392203850601c3f9d3',
   'backoffice/sections/produce/RecipesSite.jsx': 'b24f073d44369903c38f7a317da52f95d6ba94058f4b7c080ed8d27fefe34f87',   // from the first import line (the moved file's comment is new)

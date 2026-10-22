@@ -13,7 +13,10 @@ import { fmtVenueDateTime, daysAgoYmd, venueRangeIso } from '../../lib/venueDate
 import { UNITS, DIMENSIONS } from '../../lib/stock/units';
 import { fetchInventoryItems } from '../../lib/stock/data';
 import PosWasteModal from '../../components/PosWasteModal';
-import { logWaste, fetchWaste, WASTE_REASONS } from '../../lib/stock/waste';
+import { logWaste, fetchWaste, fetchWasteLedger, WASTE_REASONS } from '../../lib/stock/waste';
+// v5.11.99 (Reports align): waste at cost is the stock ledger's figure (one source for every report)
+import { wasteFromLedger } from '../../lib/stock/wasteLedger.js';
+import { DEMO_NOTE } from '../../../supabase/functions/_shared/demoHistory.js';
 import { countLiveStockItems } from '../../lib/stock/menuWaste';
 import { useWasteReasons, startReason } from '../../lib/stock/wasteReasons'; // d3 multi
 import { stockApi } from '../../lib/stock/stockApi'; // d3 multi
@@ -36,6 +39,7 @@ export default function Wastage({ siteId = null } = {}) {
   const [itemsError, setItemsError] = useState(false);
   const [showProductWaste, setShowProductWaste] = useState(false);
   const [log, setLog] = useState([]);
+  const [ledger, setLedger] = useState(null);   // v5.11.99: the window's WASTE movements (null: not read)
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState('');
   const [row, setRow] = useState({ item: null, qty: '', unit: 'each', reason: WASTE_REASONS[0], note: '' });
@@ -58,8 +62,8 @@ export default function Wastage({ siteId = null } = {}) {
     const cfg = await getLocationConfig(loc).catch(() => null);
     const tz = cfg?.timezone || null; setVenueTz(tz);
     const since = venueRangeIso(daysAgoYmd(30, tz), daysAgoYmd(0, tz), tz, cfg?.businessDayStart)?.fromIso || new Date(Date.now() - 30 * 86400000).toISOString();
-    const [its, { data: w }] = await Promise.all([fetchInventoryItems(loc), fetchWaste(since, null, loc)]);
-    setItems(its?.data || []); setItemsError(!!its?.error); setLog(w || []); setLoading(false);
+    const [its, { data: w }, mv] = await Promise.all([fetchInventoryItems(loc), fetchWaste(since, null, loc), fetchWasteLedger(since, null, loc)]);
+    setItems(its?.data || []); setItemsError(!!its?.error); setLog(w || []); setLedger(mv?.error ? null : (mv?.data || [])); setLoading(false);
   }, [locId]);
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, []);
 
@@ -68,8 +72,13 @@ export default function Wastage({ siteId = null } = {}) {
     if (!s) return [];
     return items.filter(i => !i.archivedAt && i.name.toLowerCase().includes(s)).slice(0, 8);
   }, [q, items]);
-  const total = useMemo(() => log.reduce((s, w) => s + (w.costValue || 0), 0), [log]);
-  const lostSaleTotal = useMemo(() => log.reduce((s, w) => s + (w.saleValue || 0), 0), [log]);
+  // v5.11.99 (Reports align): every row's cost and the total are the stock ledger's (the figure Daily
+  // trading, Stock and GP and the Owner app show), demo history left out. A row with no movement
+  // behind it (nothing came off stock) costs nothing. A failed ledger read shows no total, never a guess.
+  const wl = useMemo(() => wasteFromLedger({ events: log, movements: ledger || [] }), [log, ledger]);
+  const shown = wl.rows;
+  const total = ledger == null ? null : wl.total;
+  const lostSaleTotal = useMemo(() => shown.reduce((s, w) => s + (w.saleValue || 0), 0), [shown]);
 
   const pick = (it) => { setRow(r => ({ ...r, item: it, unit: it.baseUnit })); setQ(''); };
   const submit = async () => {
@@ -150,20 +159,21 @@ export default function Wastage({ siteId = null } = {}) {
       {/* Log */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
         <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>Last 30 days</div>
-        <div style={{ fontSize: 14, color: 'var(--t1)' }}>Waste at cost: <b style={{ color: 'var(--red, #ef4444)' }}>{money(total)}</b>{lostSaleTotal > 0 && <span> · lost sales: <b style={{ color: 'var(--red, #ef4444)' }}>{money(lostSaleTotal)}</b></span>}</div>
+        <div style={{ fontSize: 14, color: 'var(--t1)' }}>Waste at cost: <b style={{ color: 'var(--red, #ef4444)' }}>{total == null ? 'not read' : money(total)}</b>{lostSaleTotal > 0 && <span> · lost sales: <b style={{ color: 'var(--red, #ef4444)' }}>{money(lostSaleTotal)}</b></span>}</div>
       </div>
+      <div style={{ fontSize: 11, color: 'var(--t4)', marginBottom: 8 }}>Valued from the stock ledger, the same figure as Daily trading and Stock and GP. A row that took nothing off stock costs nothing.{wl.demoLeft > 0 ? ` ${DEMO_NOTE}.` : ''}</div>
       {loading && <div style={{ fontSize: 12, color: 'var(--t3)' }}>Loading…</div>}
-      {!loading && log.length === 0 && <div style={{ fontSize: 12, color: 'var(--t3)' }}>No waste logged yet.</div>}
-      {log.length > 0 && (
+      {!loading && shown.length === 0 && <div style={{ fontSize: 12, color: 'var(--t3)' }}>No waste logged yet.</div>}
+      {shown.length > 0 && (
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
           <thead><tr style={{ color: 'var(--t3)', textAlign: 'left' }}>{['Date', 'Item', 'Qty', 'Reason', 'Cost', 'Lost sale', 'Note'].map(h => <th key={h} style={{ padding: '6px 8px', borderBottom: '1px solid var(--bdr)', fontWeight: 600 }}>{h}</th>)}</tr></thead>
-          <tbody>{log.map(w => (
+          <tbody>{shown.map(w => (
             <tr key={w.id} style={{ color: 'var(--t1)' }}>
               <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', color: 'var(--t3)' }}>{fmtVenueDateTime(w.occurredAt, venueTz)}</td>
               <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)' }}>{w.itemName}</td>
               <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)' }}>{w.qty} {w.unit}</td>
               <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', color: 'var(--t3)' }}>{w.reason}</td>
-              <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)' }}>{w.costValue == null ? '—' : money(w.costValue)}</td>
+              <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)' }} title={w.onLedger ? undefined : 'Nothing came off stock'}>{ledger == null ? (w.costValue == null ? '—' : money(w.costValue)) : w.ledgerCost == null ? '—' : money(w.ledgerCost)}</td>
               <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', color: 'var(--t3)' }}>{w.saleValue == null ? '—' : money(w.saleValue)}</td>
               <td style={{ padding: '6px 8px', borderBottom: '1px solid var(--bg2)', color: 'var(--t3)' }}>{w.note || ''}</td>
             </tr>

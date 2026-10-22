@@ -15,6 +15,7 @@
 
 import { businessDayWindow, venueZone, DEFAULT_DAY_START } from './businessDay.js';
 import { buildAccountingDay } from './accountingDay.js';
+import { leaveOutDemo } from './demoHistory.js';
 
 const PAGE = 1000;
 // How far back a refunded check can have closed and still have a refund dated today.
@@ -130,8 +131,12 @@ export async function loadAccountingDay(ops: any, platform: any, locationId: str
     refundRows(ops, locationId, day.fromIso, day.toIso, !!opts.withItems),
     venueTaxRates(ops, locationId),
   ]);
-  const summary = buildAccountingDay({ day, saleRows: sale, refundRows: refund, venue: v, taxRates });
-  return { venue: v, day, summary, taxRates, ...(opts.keepRows ? { rows: { sale, refund } } : {}) };
+  // v5.11.99 (Reports align): a check the demo files wrote (id 'demo-', _shared/demoHistory.js) is
+  // never posted to Xero nor counted in a day: the one demo rule every report uses. A real venue
+  // has no such check, so its day is exactly what it was.
+  const saleNoDemo = leaveOutDemo(sale).rows, refundNoDemo = leaveOutDemo(refund).rows;
+  const summary = buildAccountingDay({ day, saleRows: saleNoDemo, refundRows: refundNoDemo, venue: v, taxRates });
+  return { venue: v, day, summary, taxRates, ...(opts.keepRows ? { rows: { sale: saleNoDemo, refund: refundNoDemo } } : {}) };
 }
 
 export type VenueSite = { name: string; onlineSlug: string | null; companyId: string | null; platformId: string | null; found: boolean };

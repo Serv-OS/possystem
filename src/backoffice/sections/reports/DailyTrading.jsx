@@ -9,7 +9,13 @@
 // 28 Sep 2026: refunds come off on the day they were made and show as their own line, and a
 // day is the venue's business day (business_day_start), like Sales summary and Xero.
 
+// 22 Oct 2026 (v5.11.99, Reports align): "Gross" meant three things across the reports (here: the
+// goods paid for, VAT in, BEFORE refunds; the Owner app: after refunds; the Business summary's
+// item sales: menu prices before discounts). Here it is now "Takings before refunds", so the Owner
+// app's Gross is the only Gross. Demo history is left out by trading-report (demo_left_out) and the
+// screen says so in the same words as every other report.
 import { useEffect, useState } from 'react';
+import { DEMO_NOTE } from '../../../../supabase/functions/_shared/demoHistory.js';
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';
 import { loadSettings as loadWfSettings } from '../../../staff/wfData';
 
@@ -119,6 +125,7 @@ export default function DailyTrading({ fromDay, toDay, fmt }) {
 
   return (
     <div style={S.wrap}>
+      {data.demo_left_out === true && <div style={{ fontSize: 11, color: 'var(--t4)', marginBottom: 8 }}>{DEMO_NOTE}</div>}
       {/* cost settings */}
       <div style={S.bar}>
         <div style={S.fld}><span style={S.lab}>COGS %</span>
@@ -137,7 +144,7 @@ export default function DailyTrading({ fromDay, toDay, fmt }) {
       {/* P&L ladder — full breakdown incl. VAT (this period, actual) */}
       <div style={S.ladder}>
         <div style={S.lTitle}>Period P&amp;L · actual</div>
-        <div style={S.lRow}><span>Gross takings <span style={{ color: 'var(--t4)' }}>(inc VAT)</span></span><span style={S.mono}>{money(totals.gross_sales)}</span></div>
+        <div style={S.lRow}><span>Takings before refunds <span style={{ color: 'var(--t4)' }}>(inc VAT)</span></span><span style={S.mono}>{money(totals.gross_sales)}</span></div>
         <div style={S.lRow}><span style={S.lLess}>less Refunds <span style={S.lHint}>(inc VAT) money given back{totals.refund_count ? `, ${totals.refund_count} refund${totals.refund_count === 1 ? '' : 's'}` : ''}</span></span><span style={{ ...S.mono, color: 'var(--red)' }}>−{money(totals.refunds || 0)}</span></div>
         <div style={S.lRow}><span style={S.lLess}>less VAT <span style={S.lHint}>— collected for HMRC, not income{totals.refund_vat ? ', after refunds' : ''}</span></span><span style={{ ...S.mono, color: 'var(--red)' }}>−{money(totals.vat)}</span></div>
         {/* 8 Oct 2026: a sale with no VAT recorded is counted 0 and named here, never hidden. */}
@@ -165,7 +172,7 @@ export default function DailyTrading({ fromDay, toDay, fmt }) {
         <div style={S.kpi}><div style={S.kLab}>Net sales</div><div style={S.kVal}>{money(totals.actual_sales)}</div>
           <div style={{ fontSize: 12, fontWeight: 700, ...sign(totals.actual_sales - totals.forecast) }}>{totals.actual_sales - totals.forecast >= 0 ? '+' : ''}{money(totals.actual_sales - totals.forecast)} vs forecast{vsFc(totals.actual_sales, totals.forecast) != null ? ` (${vsFcText(vsFc(totals.actual_sales, totals.forecast))})` : ''}</div></div>
         <div style={S.kpi}><div style={S.kLab}>VAT (to HMRC)</div><div style={S.kVal}>{money(totals.vat)}</div>
-          <div style={{ fontSize: 12, color: 'var(--t3)', fontWeight: 700 }}>gross {money(totals.gross_sales)}</div></div>
+          <div style={{ fontSize: 12, color: 'var(--t3)', fontWeight: 700 }}>takings before refunds {money(totals.gross_sales)}</div></div>
         <div style={S.kpi}><div style={S.kLab}>Labour target</div><div style={S.kVal}>{tgt != null ? `${tgt}%` : '—'}</div>
           <div style={{ fontSize: 12, color: 'var(--t3)', fontWeight: 700 }}>{tgt != null && totals.forecast > 0 ? `budget ${money(totals.forecast * tgt / 100)} on forecast` : 'set in Workforce settings'}</div></div>
         <div style={S.kpi}><div style={S.kLab}>Labour (predicted)</div><div style={S.kVal}>{money(labourPred)}</div>
@@ -181,7 +188,7 @@ export default function DailyTrading({ fromDay, toDay, fmt }) {
         <table style={S.table}>
           <thead><tr>
             <th style={{ ...S.th, ...S.thL }}>Day</th>
-            <th style={S.th}>Forecast</th><th style={S.th}>Gross (inc VAT)</th><th style={S.th}>Refunds</th><th style={S.th}>VAT</th><th style={S.th}>Net sales</th><th style={S.th}>vs forecast</th>
+            <th style={S.th}>Forecast</th><th style={S.th}>Takings before refunds (inc VAT)</th><th style={S.th}>Refunds</th><th style={S.th}>VAT</th><th style={S.th}>Net sales</th><th style={S.th}>vs forecast</th>
             <th style={S.th}>Labour (act / pred)</th><th style={S.th}>Labour % pred</th><th style={S.th}>Labour % act</th>
             <th style={S.th}>COGS</th><th style={S.th}>Waste</th><th style={S.th}>Op. profit</th>
           </tr></thead>
@@ -230,7 +237,7 @@ export default function DailyTrading({ fromDay, toDay, fmt }) {
           </tr></tfoot>
         </table>
       </div>
-      <div style={S.note}>{dayStart ? <>Each day runs from <b>{dayStart}</b> to {dayStart} the next morning (the venue’s business day, the same as Sales summary and Xero), so sales after midnight count on the night they belong to. </> : null}VAT is shown separately because it’s collected for HMRC — it’s never profit. Net sales (ex-VAT) are the P&amp;L basis: gross takings, less refunds, less VAT. Sales are what customers paid for the goods, after discounts and comps: loyalty rewards and promo codes are discounts, and tips and service charge are not sales. A refund comes off on the day it was made, not the day of the sale. Type a forecast (net) and press Enter, or tap “LY” for the same weekday last year. Labour shows actual / theoretical (rota): the rota on its shift date, a timesheet on the business day most of the shift falls in. Operating profit = net sales − COGS − waste − labour − overhead. Waste is stock thrown away (from the Wastage log), valued at cost. COGS basis is currently <b>{basis === 'recipe' ? 'recipe cost (actual ingredient cost from the stock ledger)' : `estimate (${cogs || '0'}% of sales)`}</b> — change it above.</div>
+      <div style={S.note}>{dayStart ? <>Each day runs from <b>{dayStart}</b> to {dayStart} the next morning (the venue’s business day, the same as Sales summary and Xero), so sales after midnight count on the night they belong to. </> : null}VAT is shown separately because it’s collected for HMRC — it’s never profit. Net sales (ex-VAT) are the P&amp;L basis: takings before refunds, less refunds, less VAT. Sales are what customers paid for the goods, after discounts and comps: loyalty rewards and promo codes are discounts, and tips and service charge are not sales. A refund comes off on the day it was made, not the day of the sale. Type a forecast (net) and press Enter, or tap “LY” for the same weekday last year. Labour shows actual / theoretical (rota): the rota on its shift date, a timesheet on the business day most of the shift falls in. Operating profit = net sales − COGS − waste − labour − overhead. Waste is stock thrown away, valued at cost, from the stock ledger: the same figure as the Wastage log and Stock and GP, refunded food included once. COGS basis is currently <b>{basis === 'recipe' ? 'recipe cost (actual ingredient cost from the stock ledger)' : `estimate (${cogs || '0'}% of sales)`}</b> — change it above.</div>
     </div>
   );
 }

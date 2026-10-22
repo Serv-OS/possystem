@@ -34,6 +34,12 @@ import { pickSupplierProduct, packContent, packContentInBase, netPackPrice, next
 // v5.11.84: the two reach rules (everything / stock only), and archived rows left out of choices.
 import { officeReachesVenue, stockOfficeReachesVenue, readOfficeReachFacts } from '../_shared/stockOfficeReach.js';
 import { liveOrAll, liveFilter } from '../_shared/stockPhone.js';
+// v5.11.99 (Reports align): the venue business day (the Owner app's and Daily trading's day), the
+// P&L labour rule and the one demo rule.
+import { businessDayOf, businessDayWindow } from '../_shared/businessDay.js';
+import { venueClock } from '../_shared/accountingData.ts';
+import { timesheetDayMs } from '../_shared/tradingSales.js';
+import { leaveOutDemo } from '../_shared/demoHistory.js';
 
 // A refund counts on the day it was MADE, so older checks that carry one are read too: the same
 // reach as Daily trading (trading-report REFUND_LOOKBACK_DAYS) and the Owner app (8 Oct 2026).
@@ -44,6 +50,8 @@ const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: 
 
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const sb = createClient(Deno.env.get('SUPABASE_URL') ?? '', SERVICE_ROLE, { auth: { autoRefreshToken: false, persistSession: false } });
+// v5.11.99: the Platform locations row holds the venue's time zone and business day start.
+const platform = createClient(Deno.env.get('PLATFORM_SUPABASE_URL') ?? '', Deno.env.get('PLATFORM_SUPABASE_SERVICE_ROLE_KEY') ?? '', { auth: { autoRefreshToken: false, persistSession: false } });
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
 const ymd = (d: Date, tz: string) => new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
@@ -90,8 +98,20 @@ Deno.serve(async (req) => {
     const tz = locRow?.timezone || 'Europe/London';
     const currency = vs?.currency || 'GBP';
     const now = new Date();
+    // The calendar date, for the kitchen blocks only (prep schedules and the close down list are
+    // kept by calendar date).
     const today = ymd(now, tz);
-    const startIso = new Date(now.getTime() - 36 * 3600 * 1000).toISOString(); // pad ±tz; filter to `today` below
+    // v5.11.99 (Reports align): money, labour, the forecast, the rota and the team are on the venue
+    // BUSINESS day (Platform locations: time zone and business_day_start), the day the Owner app,
+    // Daily trading, Back Office and Xero use. It was midnight to midnight on the Ops time zone, so
+    // between midnight and 06:30 the Manager app showed an empty new day while the Owner app still
+    // showed the day finishing. A failed read of the clock is an error: no day is cut on a guess.
+    const clock = full ? await venueClock(platform, loc) : null;
+    const dayOf = (msv: number) => businessDayOf(msv, clock!.timezone, clock!.dayStart);
+    const bizDay = clock ? dayOf(now.getTime()) : today;
+    const bizFromMs = clock ? businessDayWindow(bizDay, clock.timezone, clock.dayStart).fromMs : now.getTime() - 36 * 3600 * 1000;
+    // From a day before the business day starts: an opener's shift and every check of the day.
+    const startIso = new Date(Math.min(bizFromMs - 24 * 3600 * 1000, now.getTime() - 36 * 3600 * 1000)).toISOString();
     // 8 Oct 2026 (review): a refund made today on a sale older than those 36 hours comes off today
     // too, so the tile agrees with Daily trading (which reads refunds back 400 days) and the Owner app.
     const refundsSinceIso = new Date(now.getTime() - REFUND_LOOKBACK_DAYS * 86400000).toISOString();
@@ -108,9 +128,9 @@ Deno.serve(async (req) => {
       pagedRows('closed checks', () => sb.from('closed_checks').select(SALES_CHECK_COLS).eq('location_id', loc).gte('closed_at', startIso).order('closed_at').order('id')),
       // Older checks that carry a refund (few): only their refunds are read, never their sales.
       pagedRows('older refunds', () => sb.from('closed_checks').select(SALES_CHECK_COLS).eq('location_id', loc).gte('closed_at', refundsSinceIso).lt('closed_at', startIso).neq('refunds', '[]').order('closed_at').order('id')),
-      sb.from('wf_sales_forecast').select('forecast_date, amount').eq('location_id', loc).eq('forecast_date', today).maybeSingle(),
+      sb.from('wf_sales_forecast').select('forecast_date, amount').eq('location_id', loc).eq('forecast_date', bizDay).maybeSingle(),
       pagedRows('timesheets', () => sb.from('wf_timesheets').select('id, staff_id, clock_in, clock_out, break_taken, break_open_at, pay_amount, status, effective_rate').eq('location_id', loc).gte('clock_in', startIso).order('clock_in').order('id')),
-      pagedRows('shifts', () => sb.from('wf_shifts').select('staff_id, role_key, shift_date, start_time, finish_time, status').eq('location_id', loc).eq('shift_date', today).order('id')),
+      pagedRows('shifts', () => sb.from('wf_shifts').select('staff_id, role_key, shift_date, start_time, finish_time, status').eq('location_id', loc).eq('shift_date', bizDay).order('id')),
       pagedRows('staff', () => sb.from('wf_staff').select('id, name, dob').eq('location_id', loc).order('id')),
       pagedRows('open tables', () => sb.from('active_sessions').select('table_id, session').eq('location_id', loc).order('id')),
       pagedRows('tables', () => sb.from('floor_tables').select('id, label').eq('location_id', loc).order('id')),
@@ -126,21 +146,27 @@ Deno.serve(async (req) => {
 
     // ── Money (today, venue-local): what customers paid for the goods, VAT apart; voided checks
     //    count for nothing (_shared/snapshotSales.js, the same reading as owner-snapshot) ──
+    // v5.11.99: demo checks left out by the one demo rule (_shared/demoHistory.js).
+    const live = leaveOutDemo(checks), older = leaveOutDemo(olderRefunds);
+    const demoLeftOut = live.left + older.left > 0;
     const sales = emptySales();
-    for (const c of checks) if (ymd(new Date(c.closed_at), tz) === today) addCheckSales(sales, c);
+    for (const c of live.rows) { const t = Date.parse(c.closed_at); if (Number.isFinite(t) && dayOf(t) === bizDay) addCheckSales(sales, c); }
     // 8 Oct 2026: a refund made today comes off today, with its VAT (as Daily trading and Xero),
     // whether its sale closed today or weeks ago (olderRefunds, 8 Oct 2026 review).
-    for (const c of [...checks, ...olderRefunds]) {
+    for (const c of [...live.rows, ...older.rows]) {
       for (const e of (Array.isArray(c.refunds) ? c.refunds : [])) {
         const at = refundMadeAt(e, c);
-        if (at != null && ymd(new Date(at), tz) === today) addRefundSales(sales, e, c);
+        if (at != null && dayOf(at) === bizDay) addRefundSales(sales, e, c);
       }
     }
     const { net, vat, gross, orders, tips } = sales;
+    // v5.11.99: the P&L labour rule (_shared/tradingSales.js timesheetDays): approved and paid
+    // timesheets, each on the business day most of its shift falls in (timesheetDayMs).
     let labour = 0;
     for (const t of tsRows) {
       if (!['approved', 'paid'].includes(String(t.status))) continue;
-      if (!t.clock_in || ymd(new Date(t.clock_in), tz) !== today) continue;
+      const at = timesheetDayMs(t);
+      if (at == null || dayOf(at) !== bizDay) continue;
       labour += Number(t.pay_amount) || 0;
     }
     const forecast = Number(fc?.amount) || 0;
@@ -153,6 +179,8 @@ Deno.serve(async (req) => {
       labourTargetPct: vs?.labour_target_pct != null ? Number(vs.labour_target_pct) : null,
       // 8 Oct 2026: refunds made today (already off net and vat) and sales with no VAT recorded, named.
       refunds: r2(sales.refunds || 0), refundVat: r2(sales.refund_vat || 0), vatMissing: sales.vat_missing || 0, vatMissingRefs: sales.vat_missing_refs || [],
+      // v5.11.99: the business day the figures are for, and whether demo checks were left out.
+      businessDay: bizDay, demoLeftOut,
     };
 
     // ── Floor (active_sessions.session jsonb → floor.js input shape) ──
@@ -182,7 +210,7 @@ Deno.serve(async (req) => {
     // punches stay in for the day's team view. (tsRows is already bounded to clock_in within ~36h,
     // so a forgotten clock-out can't linger forever.)
     const punches = tsRows
-      .filter((t: any) => t.clock_in && (t.clock_out == null || ymd(new Date(t.clock_in), tz) === today))
+      .filter((t: any) => t.clock_in && (t.clock_out == null || dayOf(Date.parse(t.clock_in)) === bizDay))
       .map((t: any) => ({
         id: t.id, staffId: t.staff_id, name: nameOf[t.staff_id] || 'Staff',
         inMs: ms(t.clock_in), outMs: ms(t.clock_out),

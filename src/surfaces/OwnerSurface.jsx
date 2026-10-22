@@ -65,6 +65,7 @@ import {
   BASIS_CHIPS, grossNeedsUpdate, readStoredBasis, storeBasis, shownBasis, basisCompare, cardLines, topItemsNote, salesHeading, venueSales, rollupSales,
 } from '../lib/ownerBasis';
 import { canStock, stockLine, stockNote } from '../lib/ownerStock';
+import { DEMO_NOTE } from '../../supabase/functions/_shared/demoHistory.js';
 import OwnerDetail from './owner/OwnerDetail';
 import MixBar from './owner/MixBar';
 import { money, toneColor, periodChip, periodChipOn } from './owner/style';
@@ -550,6 +551,8 @@ function VenueCard({ l, showName, period, basis, showDates, onOpen, bar, stockOn
 
       {/* v5.11.92: the Stock line, from the function's stock block; the reason in grey when it has none. */}
       {stockOn && <StockLine stock={l.stock} reason={l.stock_reason} currency={l.currency} />}
+      {/* v5.11.99 (Reports align): demo checks left out of this venue's figures (the one demo rule). */}
+      {l.demo_left_out === true && <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 6 }}>{DEMO_NOTE}</div>}
 
       <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
         <Chip>● {l.live.orders} live order{l.live.orders === 1 ? '' : 's'}</Chip>

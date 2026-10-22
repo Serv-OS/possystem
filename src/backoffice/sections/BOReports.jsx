@@ -34,6 +34,9 @@ import {
 import { loadScopeRows, loadScopeDaySums, tagRows } from '../../lib/reportScopeLoad.js';
 import { fetchReportScopeData, probeDaySums } from '../../lib/reportSites.js';
 import { loadReportDaySums } from '../../lib/reportDaySums.js';
+// v5.11.99 (Reports align): demo history is left out of every sales report by the one demo rule.
+import { leaveOutDemo, DEMO_NOTE } from '../../../supabase/functions/_shared/demoHistory.js';
+import { demoChecksIn } from '../../lib/reportDemo.js';
 import SitesControl, { SiteNote } from './reports/SitesControl';
 import { getLocationConfig } from '../../lib/locationTime';
 import { compareRange, compareMoves, prevTopUp, notLoaded, COMPARE_STEP_MS } from '../../lib/reportCompare.js';
@@ -280,6 +283,7 @@ export default function BOReports({ setSection, canOpen, initialView = 'catalog'
   // percent stand still together, so it stays like for like.
   const [liveOn, setLiveOn] = useState(true);
   const [daySums, setDaySums] = useState(null);         // the server day sums, when a report draws from them
+  const [sumsDemo, setSumsDemo] = useState(false);      // v5.11.99: the day sums' period held a demo check (left out by the database)
 
   // builtAt = the moment this range (and the comparison inside it) was worked out.
   const range = useMemo(() => {
@@ -344,7 +348,7 @@ export default function BOReports({ setSection, canOpen, initialView = 'catalog'
 
   useEffect(() => {
     prevSeq.current += 1; prevHeld.current = null;
-    setDaySums(null);
+    setDaySums(null); setSumsDemo(false);
     if (isMock) { setRangeChecks([]); setPrevChecks([]); setKdsTickets([]); setPrevLoaded(true); return; }
     if (period === 'custom' && (!customRange.from || !customRange.to)) {
       setRangeChecks([]); setPrevChecks([]); setKdsTickets([]); setPrevLoaded(true); return;
@@ -391,7 +395,10 @@ export default function BOReports({ setSection, canOpen, initialView = 'catalog'
             // order type or source. So those filters go back to "all" (their dropdowns have
             // no rows to list anyway) and the figures are never a filtered total in disguise.
             setServerFilter('all'); setOrderTypeFilter('all'); setSourceFilter('all');
-            setDaySums(sums); nothing(); setPrevLoaded(!!sums.previous); setLoadingRange(false); return;
+            setDaySums(sums); nothing(); setPrevLoaded(!!sums.previous); setLoadingRange(false);
+            // v5.11.99: the database left any demo check out; say so when the period held one.
+            demoChecksIn(supabase, sites.map(s => ({ id: s.id, from: s.range.from, to: s.range.to }))).then(d => { if (!stale) setSumsDemo(d); });
+            return;
           }
         }
         // This period, the previous period (the percent chips) and the kitchen tickets are
@@ -480,7 +487,7 @@ export default function BOReports({ setSection, canOpen, initialView = 'catalog'
   // bleed. When activeLocId is set, ONLY include storeChecks that explicitly
   // match — checks without a locationId are excluded (they're legacy or from
   // another location that didn't stamp them).
-  const allChecks = useMemo(() => {
+  const allChecksRaw = useMemo(() => {
     const base = rangeChecks || [];
     // 5 Oct 2026: only while the signed in site alone is on screen (liveOn). The store holds
     // that one site's sales; merged under another site's report they would be the wrong site's.
@@ -497,7 +504,15 @@ export default function BOReports({ setSection, canOpen, initialView = 'catalog'
     if (!extras.length) return base;
     return [...extras, ...base].sort((a, b) => (b.closedAt || 0) - (a.closedAt || 0));
   }, [rangeChecks, storeChecks, range.from, range.to, activeLocId, liveOn, scope]);
-  const allPrev   = prevChecks  || [];
+  // v5.11.99 (Reports align, Peter 22 Oct: "leave demo days out"): the checks the demo files wrote
+  // are left out of every sales report here by the one demo rule (_shared/demoHistory.js), the rule
+  // Daily trading, Stock and GP, the Owner and Manager apps and Xero use. A real venue has none, so
+  // the same array comes back and nothing on its screens changes.
+  const demoCur  = useMemo(() => leaveOutDemo(allChecksRaw), [allChecksRaw]);
+  const demoPrev = useMemo(() => leaveOutDemo(prevChecks || []), [prevChecks]);
+  const allChecks = demoCur.rows;
+  const allPrev   = demoPrev.rows;
+  const demoNote  = demoCur.left + demoPrev.left > 0 || (!!daySums && sumsDemo);
   // What the chips are handed: the live comparison, or one marked "did not load".
   const shownCompare = useMemo(() => (compare ? (prevLoaded ? compare : notLoaded(compare)) : null), [compare, prevLoaded]);
   const trendRange   = useMemo(() => ({ ...range, compare: shownCompare }), [range, shownCompare]);
@@ -821,6 +836,7 @@ export default function BOReports({ setSection, canOpen, initialView = 'catalog'
         </div>
       ) : (
         <>
+          {demoNote && <div style={{ fontSize:11, color:'var(--t4)', margin:'0 0 8px' }}>{DEMO_NOTE}</div>}
           {view === 'summary'    && <SalesSummary checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig} compare={shownCompare} onOpenReport={openReport} rangeFrom={range.from} rangeTo={range.to} locationId={activeLocId} filters={reportFilters} {...siteProps}/>}
           {view === 'sales_mix'  && <SalesMix     checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig} compare={shownCompare} range={trendRange} canOpen={canOpen} {...siteProps}/>}
           {view === 'exceptions' && <Exceptions   checks={filtered} fmt={fmt} {...siteProps}/>}
@@ -830,7 +846,7 @@ export default function BOReports({ setSection, canOpen, initialView = 'catalog'
           {view === 'payroll'     && <PayrollReport fmt={fmt} {...siteProps}/>}
           {view === 'items'       && <ProductMix   checks={filtered} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig} {...siteProps}/>}
           {view === 'item_trend'  && <ItemTrend    checks={filtered} fmt={fmt} fmtN={fmtN} range={range} {...siteProps}/>}
-          {view === 'daily_trend' && <DailyTrend   checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} range={trendRange} {...siteProps}/>}
+          {view === 'daily_trend' && <DailyTrend   checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} range={trendRange} locationId={activeLocId} {...siteProps}/>}
           {view === 'daily_trading' && <DailyTrading fromDay={range.fromDay} toDay={range.toDay} fmt={fmt} {...siteProps}/>}
           {view === 'menu_eng'    && <MenuEngineering checks={filtered} fmt={fmt} fmtN={fmtN} {...siteProps}/>}
           {view === 'servers'     && <Servers      checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN} locationConfig={locationConfig} compare={shownCompare} {...siteProps}/>}

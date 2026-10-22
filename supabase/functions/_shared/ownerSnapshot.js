@@ -73,6 +73,11 @@
 //     requests in flight for the whole snapshot. The tills use the same PostgREST.
 // A read that fails throws. It is never shown as a period of zero sales.
 //
+// DEMO HISTORY. 22 Oct 2026 (v5.11.99, Reports align): checks the demo files wrote are left out of
+// every figure here by the one demo rule (_shared/demoHistory.js), as in Daily trading and Stock and
+// GP, and a venue (or the detail) that had one says so: demo_left_out true ("Demo history left out").
+// A real venue has none, so its figures are exactly what they were.
+//
 // PURE apart from the client it is handed; runs under node --test and in Deno.
 
 import { pagedRows, pagedEach, limiter } from './pagedRows.js';
@@ -86,6 +91,7 @@ import {
 } from './ownerPeriod.js';
 import { makeMixResolver, categoriesOfSite, newMix, addCheckToMix, mixView, mixRollup, catFamilyKey, nameAcross } from './salesMix.js';
 import { officeReachesVenue } from './stockOfficeReach.js';
+import { withoutDemoRows, isDemoCheck } from './demoHistory.js';
 
 /** Requests in flight at once, for the whole snapshot. */
 export const MAX_READS = 8;
@@ -287,7 +293,8 @@ async function firstSaleDay(ops, id, p, gate) {
       .eq('location_id', id).not('voided', 'is', true).order('closed_at').order('id')
       .range(page * FIRST_SALE_ROWS, (page + 1) * FIRST_SALE_ROWS - 1));
     if (error) throw new Error(`Could not read the first sale: ${error.message}`);
-    rows.push(...(data ?? []));
+    // v5.11.99: a demo check is never the first sale (demoHistory.js).
+    rows.push(...(data ?? []).filter((r) => !isDemoCheck(r)));
     if ((data ?? []).length < FIRST_SALE_ROWS || hasOpeningDay(rows, p.dayOf)) break;
   }
   return firstTradingDay(rows, p.dayOf);
@@ -334,6 +341,9 @@ export async function buildOwnerSnapshot({ ops, opsIds, meta, now = new Date(), 
   // One queue for every request this snapshot makes.
   const gate = limiter(maxReads);
   const opts = { gate };
+  // v5.11.99: the venues a demo check was left out of (demoHistory.js), for demo_left_out.
+  const demoLeft = {};
+  const markDemo = (id) => () => { demoLeft[id] = true; };
   // 8 Oct 2026, Sales mix (D2): every venue's menu categories and its Xero mapping, read before
   // the checks, make ONE resolver per venue, the very resolver the Back Office report and the
   // Xero invoice build, so an item sits in the same group on every surface. A venue with no
@@ -413,24 +423,24 @@ export async function buildOwnerSnapshot({ ops, opsIds, meta, now = new Date(), 
 
   const salesOf = (id) => Promise.all(windowsOf(plan[id], plan[id].salesDays, SLICE_DAYS[period]).map((w) =>
     pagedEach('closed checks', () => ops.from('closed_checks').select(SALES_CHECK_COLS)
-      .eq('location_id', id).gte('closed_at', w.from).lt('closed_at', w.to).order('closed_at').order('id'), (rows) => addSales(id, rows), opts)));
+      .eq('location_id', id).gte('closed_at', w.from).lt('closed_at', w.to).order('closed_at').order('id'), withoutDemoRows((rows) => addSales(id, rows), markDemo(id)), opts)));
   // Items for the period's own days only (today's, under Today): they are the heavy column.
   const itemsOf = (id) => Promise.all(windowsOf(plan[id], [{ from: plan[id].range.from, to: plan[id].today }], SLICE_DAYS[period]).map((w) =>
     pagedEach('items sold', () => ops.from('closed_checks').select('id, closed_at, status, voided, items')
-      .eq('location_id', id).gte('closed_at', w.from).lt('closed_at', w.to).order('closed_at').order('id'), (rows) => addItems(id, rows), opts)));
+      .eq('location_id', id).gte('closed_at', w.from).lt('closed_at', w.to).order('closed_at').order('id'), withoutDemoRows((rows) => addItems(id, rows), markDemo(id)), opts)));
   // 8 Oct 2026: the comparison span's items too, for the mix points, under MIX_CMP_PERIODS. The
   // span never overlaps the period, so no row is read twice with the heavy column; the same rows
   // were read with the sales columns by salesOf, which is cheap.
   const cmpItemsOf = (id) => (!MIX_CMP_PERIODS.includes(period) ? Promise.resolve([]) : Promise.all(windowsOf(plan[id], [{ from: plan[id].range.cmpFrom, to: plan[id].range.cmpTo }], SLICE_DAYS[period]).map((w) =>
     pagedEach('items sold', () => ops.from('closed_checks').select('id, closed_at, status, voided, items')
-      .eq('location_id', id).gte('closed_at', w.from).lt('closed_at', w.to).order('closed_at').order('id'), (rows) => addCmpItems(id, rows), opts))));
+      .eq('location_id', id).gte('closed_at', w.from).lt('closed_at', w.to).order('closed_at').order('id'), withoutDemoRows((rows) => addCmpItems(id, rows), markDemo(id)), opts))));
   // 8 Oct 2026 (review): checks closed before the sales windows that carry a refund (few: a handful
   // a day at most), back the same 400 days Daily trading reaches, so a refund made in the period on
   // an older sale comes off the day it was made here too. The sales windows cover their own.
   const refundsOf = (id) => pagedEach('older refunds', () => ops.from('closed_checks').select(SALES_CHECK_COLS)
     .eq('location_id', id).gte('closed_at', new Date(plan[id].startOf(least(plan[id].salesDays.map((d) => d.from))) - REFUND_LOOKBACK_DAYS * DAY_MS).toISOString())
     .lt('closed_at', new Date(plan[id].startOf(least(plan[id].salesDays.map((d) => d.from)))).toISOString()).neq('refunds', '[]')
-    .order('closed_at').order('id'), (rows) => addOlderRefunds(id, rows), opts);
+    .order('closed_at').order('id'), withoutDemoRows((rows) => addOlderRefunds(id, rows), markDemo(id)), opts);
 
   // Forecasts and timesheets for every venue in one read each: the widest dates any venue
   // needs, then each row is kept only if it falls in its own venue's period. A timesheet counts
@@ -552,6 +562,8 @@ export async function buildOwnerSnapshot({ ops, opsIds, meta, now = new Date(), 
       // v5.11.92 (multi site stock Drop 4a): the Stock line's figures, or null and why.
       stock: stockBy[id]?.stock ?? null,
       stock_reason: stockBy[id]?.stock_reason ?? null,
+      // v5.11.99: true when demo checks were left out of this venue's figures.
+      demo_left_out: !!demoLeft[id],
     };
   }).sort((a, b) => b.period_totals.net_sales - a.period_totals.net_sales);
 
@@ -736,6 +748,9 @@ export async function buildOwnerDetail({ ops, opsIds, meta, target, currency = n
   const gate = limiter(maxReads);
   const opts = { gate };
   const slice = SLICE_DAYS[period];
+  // v5.11.99: set when a demo check was left out of these figures (demoHistory.js).
+  const demoSeen = { left: false };
+  const markDemo = () => { demoSeen.left = true; };
   // Category names for the items (a line carries the category id, and ids differ venue to venue)
   // and, 8 Oct 2026, the rows the Sales mix resolver wants plus each venue's Xero mapping: one
   // resolver per venue (D2), and one family key per venue so a category's copies at several
@@ -853,20 +868,20 @@ export async function buildOwnerDetail({ ops, opsIds, meta, target, currency = n
 
   const periodOf = (id) => Promise.all(windowsOf(plan[id], [{ from: plan[id].range.from, to: plan[id].range.to }], slice).map((w) =>
     pagedEach('closed checks', () => ops.from('closed_checks').select(DETAIL_CHECK_COLS)
-      .eq('location_id', id).gte('closed_at', w.from).lt('closed_at', w.to).order('closed_at').order('id'), (rows) => addPeriod(id, rows, catOf), opts)));
+      .eq('location_id', id).gte('closed_at', w.from).lt('closed_at', w.to).order('closed_at').order('id'), withoutDemoRows((rows) => addPeriod(id, rows, catOf), markDemo), opts)));
   // The comparison span, with items for the mix points (8 Oct 2026); it never overlaps the period.
   const cmpSpan = (p) => ({ from: p.range.cmpFrom, to: p.range.cmpTo });
   const cmpOf = (id) => Promise.all(windowsOf(plan[id], [cmpSpan(plan[id])], slice).map((w) =>
     pagedEach('closed checks', () => ops.from('closed_checks').select(`${SALES_CHECK_COLS}, items`)
-      .eq('location_id', id).gte('closed_at', w.from).lt('closed_at', w.to).order('closed_at').order('id'), (rows) => addCmp(id, rows), opts)));
+      .eq('location_id', id).gte('closed_at', w.from).lt('closed_at', w.to).order('closed_at').order('id'), withoutDemoRows((rows) => addCmp(id, rows), markDemo), opts)));
   // Every other day that is needed (this week and last), with the sales columns only.
   const otherOf = (id) => Promise.all(windowsOf(plan[id], subtractDayRange(subtractDayRange(plan[id].salesDays, plan[id].range), cmpSpan(plan[id])), slice).map((w) =>
     pagedEach('closed checks', () => ops.from('closed_checks').select(SALES_CHECK_COLS)
-      .eq('location_id', id).gte('closed_at', w.from).lt('closed_at', w.to).order('closed_at').order('id'), (rows) => addOther(id, rows), opts)));
+      .eq('location_id', id).gte('closed_at', w.from).lt('closed_at', w.to).order('closed_at').order('id'), withoutDemoRows((rows) => addOther(id, rows), markDemo), opts)));
   // Older checks that carry a refund: the refund may have been made in this period.
   const refundsOf = (id) => pagedEach('refunds', () => ops.from('closed_checks').select(`${SALES_CHECK_COLS}, refunds`)
     .eq('location_id', id).gte('closed_at', new Date(plan[id].startMs - REFUND_LOOKBACK_DAYS * DAY_MS).toISOString()).lt('closed_at', new Date(plan[id].startMs).toISOString()).neq('refunds', '[]')
-    .order('closed_at').order('id'), (rows) => { for (const c of rows) addRefunds(id, c); }, opts);
+    .order('closed_at').order('id'), withoutDemoRows((rows) => { for (const c of rows) addRefunds(id, c); }, markDemo), opts);
 
   const all = ids.map((id) => plan[id]);
   const tsFrom = new Date(Math.min(...all.map((p) => p.startMs)) - DAY_MS).toISOString(), tsTo = new Date(Math.max(...all.map((p) => p.endMs)) + DAY_MS).toISOString();
@@ -960,6 +975,8 @@ export async function buildOwnerDetail({ ops, opsIds, meta, target, currency = n
       // for the group, which has none).
       stock: stockOut.stock,
       stock_reason: stockOut.stock_reason,
+      // v5.11.99: true when demo checks were left out of these figures.
+      demo_left_out: demoSeen.left,
     },
   };
 }

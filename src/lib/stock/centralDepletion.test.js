@@ -145,9 +145,12 @@ test('the data layer exposes the three RPCs by their migration names', () => {
 });
 
 test('the trading report sums signed stock values, so a refund reversal comes OFF recipe COGS', () => {
+  // v5.11.99 (Reports align): the loop moved to _shared/tradingSales.js ledgerDays, which the report calls.
   const src = read('../../../supabase/functions/trading-report/index.ts');
-  const i = src.indexOf('const recipeCogs');
-  const block = src.slice(i, src.indexOf('const rows = days.map', i));
+  assert.match(src, /const ledger = ledgerDays\(\{ movements: mv, dayOf \}\);/);
+  const shared = read('../../../supabase/functions/_shared/tradingSales.js');
+  const i = shared.indexOf('export function ledgerDays');
+  const block = shared.slice(i, shared.indexOf('return { cogs, waste, demoLeft };', i));
   assert.match(block, /const v = -\(Number\(m\.value_delta\) \|\| 0\);/);
   assert.doesNotMatch(block, /Math\.abs\(Number\(m\.value_delta\)/, 'Math.abs would add an unsale row to COGS');
 });

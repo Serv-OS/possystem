@@ -33,6 +33,14 @@
 //     like: only sites that have both sides count, "(5 of 6 sites, 1 new)".
 //   - The comparison is read after this period, on what is left of the same row budget. If
 //     it does not fit or does not load, this period still shows and the percent says so.
+//
+// 22 Oct 2026 (v5.11.99, Reports align): "Revenue" here was the sum of check totals (tips, service,
+// VAT and loyalty rewards inside), so it never matched Daily trading or the Business summary. Every
+// site's money is now NET SALES by the one sales rule (src/lib/salesBreakdown.js over
+// _shared/tradingSales.js): what customers paid for the goods, VAT out, tips and service out,
+// loyalty rewards out, less refunds on the day they were made (older sales refunded in the period
+// included, the same lookback as the Business summary). Avg check and Tip % are on net sales too.
+// Demo history is left out by the one demo rule (_shared/demoHistory.js) and the screen says so.
 
 import { useEffect, useMemo, useState } from 'react';
 import { fetchClosedChecksMultiRange } from '../../../lib/db';
@@ -44,6 +52,9 @@ import { money } from '../../../lib/currency';
 import { StatTile, ExportBtn, EmptyState, CompareChip } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
 import { venueRange } from './_filters';
+import { salesBreakdown } from '../../../lib/salesBreakdown';
+import { useRefundLookback, toMs } from './_refundLookback';
+import { leaveOutDemo, DEMO_NOTE } from '../../../../supabase/functions/_shared/demoHistory.js';
 
 const COLS = '40px 1.8fr 70px 70px 110px 80px 70px 70px 70px 90px 110px';
 
@@ -54,7 +65,8 @@ function median(arr) {
   return s.length % 2 === 0 ? (s[m - 1] + s[m]) / 2 : s[m];
 }
 
-function rollupByLocation(checks, locations) {
+// netOf(siteId) is the site's net sales by the one sales rule (see the top of the file).
+function rollupByLocation(checks, locations, netOf = () => 0) {
   const map = {};
   locations.forEach(l => { map[l.id] = {
     locationId: l.id, name: l.name || l.id, role: l.role, currency: l.currency || null,
@@ -67,13 +79,13 @@ function rollupByLocation(checks, locations) {
     if (!loc) return;
     if (c.status === 'voided') { loc.voidCount += 1; return; }
     loc.checks    += 1;
-    loc.revenue   += c.total || 0;
     loc.tips      += c.tip   || 0;
     loc.covers    += c.covers || 1;
     loc.refundCount   += (c.refunds   || []).length;
     loc.discountCount += (c.discounts || []).length;
   });
 
+  for (const r of Object.values(map)) r.revenue = netOf(r.locationId);
   return Object.values(map).map(r => {
     const totalEvents = r.checks + r.voidCount;
     return {
@@ -131,6 +143,11 @@ function computeAlerts(rows) {
 export default function LocationCompare({ range, period, periodLabelText, fmt, fmtN, scope }) {
   const [locations, setLocations] = useState(null);
   const [checks, setChecks]       = useState(null);
+  // v5.11.99: each site's own window (its business days on its clock) and its comparison's, and
+  // the comparison's checks, so net sales and refunds are read over exactly those instants.
+  const [wins, setWins]           = useState(null);
+  const [prevRows, setPrevRows]   = useState(null);
+  const [demoLeft, setDemoLeft]   = useState(false);
   // prev: { revenue: { [siteId]: money }, compare: { [siteId]: compareRange } }, or null
   // while it is not loaded (still reading, did not fit, failed). Null is never "no sales".
   const [prev, setPrev]           = useState(null);
@@ -143,7 +160,7 @@ export default function LocationCompare({ range, period, periodLabelText, fmt, f
     setLoading(true);
     setError(null);
     setProgress(null);
-    setPrev(null);
+    setPrev(null); setPrevRows(null); setWins(null); setDemoLeft(false);
     // 5 Oct 2026: every venue is read in full, in pages (it was the newest 1,000 checks a
     // venue). A read the period has moved on from stops and is dropped.
     let stale = false;
@@ -172,7 +189,11 @@ export default function LocationCompare({ range, period, periodLabelText, fmt, f
         });
         if (stale) return;
         if (res.error) throw res.error;
-        setChecks(res.data || []);
+        // v5.11.99: demo checks left out (the one demo rule), and the windows kept for net sales.
+        const cur = leaveOutDemo(res.data || []);
+        setWins(windows);
+        setDemoLeft(cur.left > 0);
+        setChecks(cur.rows);
         setLoading(false);
         // The comparison, quietly, after the figures are up. Only its totals are kept.
         const prevWindows = windows.filter(w => w.compare).map(w => ({ locationId: w.locationId, from: w.compare.from, to: w.compare.to }));
@@ -180,9 +201,10 @@ export default function LocationCompare({ range, period, periodLabelText, fmt, f
         try {
           const pres = await fetchClosedChecksMultiRange(prevWindows, { stop: () => stale, budget });
           if (stale || pres.error) return;
-          const revenue = Object.fromEntries(windows.map(w => [w.locationId, 0]));
-          for (const c of pres.data || []) if (c.status !== 'voided') revenue[c.locationId] += c.total || 0;
-          setPrev({ revenue, compare: Object.fromEntries(windows.map(w => [w.locationId, w.compare])) });
+          const prevCur = leaveOutDemo(pres.data || []);
+          if (prevCur.left) setDemoLeft(true);
+          setPrevRows(prevCur.rows);
+          setPrev({ compare: Object.fromEntries(windows.map(w => [w.locationId, w.compare])) });
         } catch (e) {
           // The comparison alone failed: this period stays up, the percent says not loaded.
           console.error('[LocationCompare] comparison failed', e);
@@ -201,10 +223,30 @@ export default function LocationCompare({ range, period, periodLabelText, fmt, f
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [range, period, scopeSites?.map(s => s.id).join(',')]);
 
+  // v5.11.99: net sales per site by the one rule. Refunds count on the day they were made, so the
+  // checks closed before each window that carry a refund are read too (the Business summary's hook).
+  const ids = useMemo(() => (wins || []).map(w => String(w.locationId)), [wins]);
+  const earliest = (list) => list.reduce((m, v) => { const t = toMs(v); return t != null && (m == null || t < m) ? t : m; }, null);
+  const lookback = useRefundLookback(ids, earliest((wins || []).map(w => w.from)));
+  const prevLookback = useRefundLookback(prevRows ? ids : [], earliest((wins || []).map(w => w.compare?.from)));
+  const netBy = useMemo(() => {
+    const out = { cur: {}, prev: {} };
+    if (!wins || !checks) return out;
+    const of = (list, id) => (list || []).filter(c => String(c.locationId) === id);
+    for (const w of wins) {
+      const id = String(w.locationId);
+      const currency = (locations || []).find(l => String(l.id) === id)?.currency || null;
+      out.cur[id] = salesBreakdown(of(checks, id), { range: { fromMs: toMs(w.from), toMs: toMs(w.to) }, refundRows: lookback.rows[id] || [], currency }).net;
+      if (prevRows && w.compare) out.prev[id] = salesBreakdown(of(prevRows, id), { range: { fromMs: toMs(w.compare.from), toMs: toMs(w.compare.to) }, refundRows: prevLookback.rows[id] || [], currency }).net;
+    }
+    return out;
+  }, [wins, checks, prevRows, locations, lookback.rows, prevLookback.rows]);
   const rows = useMemo(() =>
-    (checks && locations) ? rollupByLocation(checks, locations).sort((a, b) => b.revenue - a.revenue) : [],
-    [checks, locations]
+    (checks && locations) ? rollupByLocation(checks, locations, (id) => netBy.cur[String(id)] || 0).sort((a, b) => b.revenue - a.revenue) : [],
+    [checks, locations, netBy]
   );
+  // The comparison's net sales per site, once its checks are in (prev.revenue as before).
+  const prevNet = useMemo(() => (prev && prevRows ? { ...prev, revenue: Object.fromEntries((wins || []).map(w => [w.locationId, netBy.prev[String(w.locationId)] || 0])) } : null), [prev, prevRows, wins, netBy]);
 
   // One block per currency. Money in two currencies is never one number; a site whose
   // currency nobody knows sits with the Back Office currency only when there is no scope.
@@ -220,18 +262,18 @@ export default function LocationCompare({ range, period, periodLabelText, fmt, f
       }), { revenue: 0, covers: 0, checks: 0, tips: 0 });
       return {
         ...g, portfolio: total, alerts: computeAlerts(g.rows), revenueMedian: median(g.rows.map(r => r.revenue)),
-        change: prev ? {
-          ...groupCompare(g.rows.map(r => ({ current: r.revenue, previous: prev.revenue[r.locationId] }))),
+        change: prevNet ? {
+          ...groupCompare(g.rows.map(r => ({ current: r.revenue, previous: prevNet.revenue[r.locationId] }))),
           // The words only when every site of the block compares to the same thing (each is cut
           // on its own clock); 6 Oct 2026, it was the signed in site's words for every block.
-          words: groupCompareWords(g.rows.map(r => prev.compare[r.locationId])),
+          words: groupCompareWords(g.rows.map(r => prevNet.compare[r.locationId])),
         } : null,
         fmt: g.currency ? (n) => money(n || 0, g.currency) : fmt,
       };
     });
-  }, [rows, prev, fmt]);
+  }, [rows, prevNet, fmt]);
   const anyRevenue = rows.some(r => r.revenue !== 0);
-  const chipFor = (r) => compareChip(r.revenue, prev?.revenue?.[r.locationId], prev ? prev.compare[r.locationId] : notLoaded(null));
+  const chipFor = (r) => compareChip(r.revenue, prevNet?.revenue?.[r.locationId], prevNet ? prevNet.compare[r.locationId] : notLoaded(null));
 
   const onExport = () => {
     const csv = toCsv(rows, [
@@ -239,7 +281,7 @@ export default function LocationCompare({ range, period, periodLabelText, fmt, f
       { label:'Currency',  key: r => r.currency || '' },
       { label:'Checks',    key:'checks' },
       { label:'Covers',    key:'covers' },
-      { label:'Revenue',   key: r => r.revenue.toFixed(2) },
+      { label:'Net sales', key: r => r.revenue.toFixed(2) },
       { label:'Tips',      key: r => r.tips.toFixed(2) },
       { label:'Avg check', key: r => r.avgCheck.toFixed(2) },
       { label:'Tip %',     key: r => r.tipPct.toFixed(2) },
@@ -247,7 +289,7 @@ export default function LocationCompare({ range, period, periodLabelText, fmt, f
       { label:'Void %',    key: r => r.voidPct.toFixed(2) },
       { label:'Refund %',  key: r => r.refundPct.toFixed(2) },
       { label:'Change %',  key: r => { const c = chipFor(r); return c.kind === 'pct' ? c.pct.toFixed(1) : c.text; } },
-      { label:'Compared to', key: r => prev?.compare?.[r.locationId]?.detail || '' },
+      { label:'Compared to', key: r => prevNet?.compare?.[r.locationId]?.detail || '' },
     ]);
     downloadCsv(`location-compare-${new Date().toISOString().slice(0,10)}.csv`, csv);
   };
@@ -275,7 +317,7 @@ export default function LocationCompare({ range, period, periodLabelText, fmt, f
     );
   }
   if (!anyRevenue) {
-    return <EmptyState icon="📍" message={`${locations.length} locations accessible, but no revenue in this period.`}/>;
+    return <EmptyState icon="📍" message={`${locations.length} locations accessible, but no net sales in this period.`}/>;
   }
 
   return (
@@ -283,7 +325,8 @@ export default function LocationCompare({ range, period, periodLabelText, fmt, f
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom:12 }}>
         <div style={{ fontSize:11, color:'var(--t3)' }}>
           Every site, side by side: <strong style={{ color:'var(--t1)' }}>{locations.length}</strong> locations · {periodLabelText || 'today'}
-          <div style={{ color:'var(--t4)', marginTop:2 }}>Each location is read over these business days on its own clock (its time zone and day start).</div>
+          <div style={{ color:'var(--t4)', marginTop:2 }}>Each location is read over these business days on its own clock (its time zone and day start). Net sales exclude VAT, tips and service, after refunds, as in Daily trading.</div>
+          {demoLeft && <div style={{ color:'var(--t4)', marginTop:2 }}>{DEMO_NOTE}</div>}
         </div>
         <ExportBtn onClick={onExport}/>
       </div>
@@ -297,10 +340,10 @@ export default function LocationCompare({ range, period, periodLabelText, fmt, f
           )}
       {/* Portfolio tiles */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:10, marginBottom:18 }}>
-        <StatTile label="Portfolio revenue" value={g.fmt(g.portfolio.revenue)} color="var(--acc)" sub={`median site ${g.fmt(g.revenueMedian)}`}/>
+        <StatTile label="Portfolio net sales" value={g.fmt(g.portfolio.revenue)} color="var(--acc)" sub={`median site ${g.fmt(g.revenueMedian)}`}/>
         <StatTile label="Total covers"      value={fmtN(g.portfolio.covers)}   sub={`${g.rows.length} sites`}/>
         <StatTile label="Portfolio avg check" value={g.fmt(g.portfolio.checks ? g.portfolio.revenue / g.portfolio.checks : 0)}/>
-        <StatTile label="Total tips"        value={g.fmt(g.portfolio.tips)}   sub={g.portfolio.revenue ? `${((g.portfolio.tips/g.portfolio.revenue)*100).toFixed(1)}% of revenue` : null} color="var(--grn)"/>
+        <StatTile label="Total tips"        value={g.fmt(g.portfolio.tips)}   sub={g.portfolio.revenue ? `${((g.portfolio.tips/g.portfolio.revenue)*100).toFixed(1)}% of net sales` : null} color="var(--grn)"/>
       </div>
 
       {/* Exception alerts strip */}
@@ -335,7 +378,7 @@ export default function LocationCompare({ range, period, periodLabelText, fmt, f
           <span>Location</span>
           <span style={{ textAlign:'right' }}>Checks</span>
           <span style={{ textAlign:'right' }}>Covers</span>
-          <span style={{ textAlign:'right' }}>Revenue</span>
+          <span style={{ textAlign:'right' }}>Net sales</span>
           <span style={{ textAlign:'right' }}>Avg chk</span>
           <span style={{ textAlign:'right' }}>Tip %</span>
           <span style={{ textAlign:'right' }}>Void %</span>
@@ -368,7 +411,7 @@ export default function LocationCompare({ range, period, periodLabelText, fmt, f
                 {delta > 0 ? '+' : ''}{delta.toFixed(0)}%
               </span>
               <span style={{ textAlign:'right' }}>
-                <CompareChip values={[r.revenue, prev?.revenue?.[r.locationId]]} vs={prev ? prev.compare[r.locationId] : notLoaded(null)} short/>
+                <CompareChip values={[r.revenue, prevNet?.revenue?.[r.locationId]]} vs={prevNet ? prevNet.compare[r.locationId] : notLoaded(null)} short/>
               </span>
             </div>
           );
@@ -378,7 +421,7 @@ export default function LocationCompare({ range, period, periodLabelText, fmt, f
           {/* The group against its comparison, like for like */}
           <div style={{ marginTop:10, fontSize:12, color:'var(--t3)', display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
             <span>All {g.rows.length} sites:</span>
-            {!prev ? <span style={{ color:'var(--t4)' }}>comparison not loaded yet</span>
+            {!prevNet ? <span style={{ color:'var(--t4)' }}>comparison not loaded yet</span>
               : g.change.pct == null ? <span style={{ color:'var(--t4)' }}>nothing to compare with {g.change.fresh ? `(${g.change.fresh} new)` : ''}</span>
               : <><CompareChip pct={g.change.pct} vs={g.change.words.vs}/>{g.change.words.mixed && <span style={{ color:'var(--t4)' }}>{MIXED_COMPARE_TEXT}</span>}<span style={{ color:'var(--t4)' }}>· {g.fmt(g.change.previous)} then {g.change.text}</span></>}
           </div>

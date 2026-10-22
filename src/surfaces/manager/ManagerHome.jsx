@@ -14,6 +14,7 @@ import { syne, mono } from './ui';
 import { useLayout } from './useLayout';
 import { cols } from './layout';
 import { Icon } from '../../components/ServOSIcons';
+import { DEMO_NOTE } from '../../../supabase/functions/_shared/demoHistory.js';
 
 function HeroStat({ label, value, tone = 'var(--t1)' }) {
   const L = useLayout();
@@ -107,6 +108,8 @@ export default function ManagerHome({ ctx }) {
           <HeroStat label="Open" value={openCount} />
           <HeroStat label="On floor" value={covers || '—'} />
         </div>
+        {/* v5.11.99 (Reports align): today is the venue business day; demo checks are left out (the one demo rule). */}
+        {m.demoLeftOut === true && <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 8 }}>{DEMO_NOTE}</div>}
         </button>
       )}
 

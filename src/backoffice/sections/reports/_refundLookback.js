@@ -8,6 +8,9 @@
 
 import { useEffect, useState } from 'react';
 import { fetchRefundChecksBefore } from '../../../lib/db';
+// v5.11.99 (Reports align): the older checks are read by the one demo rule too (a demo check's
+// refund never comes off a real day). A real venue has none: the same rows.
+import { leaveOutDemo } from '../../../../supabase/functions/_shared/demoHistory.js';
 
 export const toMs = (v) => (v == null ? null : typeof v === 'number' ? v : v instanceof Date ? v.getTime() : Number.isFinite(Date.parse(v)) ? Date.parse(v) : null);
 
@@ -22,7 +25,7 @@ export function useRefundLookback(siteIds, rangeFrom) {
     Promise.all(ids.map((id) => fetchRefundChecksBefore(id, new Date(fromMs), { stop: () => !alive }).catch((e) => ({ data: null, error: e })))).then((results) => {
       if (!alive) return;
       const rows = {}, failed = [];
-      results.forEach((r, i) => { if (r && Array.isArray(r.data) && !r.error) rows[ids[i]] = r.data; else failed.push(ids[i]); });
+      results.forEach((r, i) => { if (r && Array.isArray(r.data) && !r.error) rows[ids[i]] = leaveOutDemo(r.data).rows; else failed.push(ids[i]); });
       setRead({ key, fromMs, rows, failed });
     });
     return () => { alive = false; };

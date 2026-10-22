@@ -4,6 +4,8 @@
 //   X-axis = popularity (units sold)
 //   Y-axis = contribution (avg price per unit — the margin proxy we have
 //            until COGS is captured on menu_items)
+// v5.11.99 (Reports align): the screen says so in plain words and points at Stock and GP,
+// Product GP, where GP is from the plate cost of what was sold, after refunds.
 // The median on each axis splits items into four quadrants:
 //   Stars        — high popularity, high contribution (promote, feature, protect)
 //   Plow Horses  — high popularity, low contribution (reengineer pricing, upsell to Stars)
@@ -140,7 +142,7 @@ function MenuEngineeringOne({ checks, fmt, fmtN, sites }) {
       </div>
 
       <div style={{ marginTop:14, padding:'10px 12px', background:'var(--bg3)', border:'1px dashed var(--bdr)', borderRadius:8, fontSize:11, color:'var(--t4)', lineHeight:1.7 }}>
-        ⓘ Contribution is proxied by average price per unit until we capture item cost on menu_items. Median splits are computed on the items in this period, so narrow date ranges move the thresholds — use a month or more for decisions.
+        ⓘ Margin here is the average price per unit (till prices, before discounts), not GP: no plate cost goes into it. For GP from the plate cost of what was sold, after refunds, use Reports, Stock and GP, Product GP (a company with two or more sites) or Inventory, Reports, Recipe GP. Median splits are computed on the items in this period, so narrow date ranges move the thresholds; use a month or more for decisions.
       </div>
     </div>
   );
@@ -338,7 +340,7 @@ function MenuEngineeringSites(props) {
         );
       }}</Blocks>
       <div style={{ padding:'10px 12px', background:'var(--bg3)', border:'1px dashed var(--bdr)', borderRadius:8, fontSize:11, color:'var(--t4)', lineHeight:1.7 }}>
-        ⓘ The group row of "All sites" classifies each product on the group's medians; the site rows classify each site's products on its own medians, as its single site report does, so the counts need not add up. Contribution is proxied by average price per unit. The CSV has every item per site, then the group.
+        ⓘ The group row of "All sites" classifies each product on the group's medians; the site rows classify each site's products on its own medians, as its single site report does, so the counts need not add up. Margin here is the average price per unit, not GP (Stock and GP, Product GP has GP from plate cost). The CSV has every item per site, then the group.
       </div>
     </div>
   );

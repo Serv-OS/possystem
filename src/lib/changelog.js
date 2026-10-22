@@ -7,6 +7,23 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.99',
+    date: '23 Oct 2026',
+    items: [
+      "Reports align: every report now shows the same figure by the same rule, the rule of Daily trading (the P&L). Net sales are what customers paid for the goods, without VAT, tips or service, and a refund comes off on the day it was made.",
+      "Stock and GP: net sales now take refunds off on the day of the refund, without VAT, exactly as Daily trading does. So GP %, waste %, comps %, labour %, the site league, the dashboard, Product GP and the Owner app's Stock line all move with it. Coffee Boy Leeds 18 Oct now reads 821.52, as Daily trading.",
+      "Stock and GP labour counts approved and paid timesheets only, on the business day most of the shift falls in, as Daily trading and the Owner app do. It used to count pending timesheets on the day of clock in.",
+      "Waste has one source, the stock ledger. The Wastage log, the Stock and GP Waste report, the dashboard, the league, the Owner app and Daily trading now all show the same waste figure. A waste entry that carries a cost but took nothing off stock is named and not counted. Waste can only be written together with its stock movement now.",
+      "Refunded food is counted once: what a refund gives back comes off the plate cost on the day of the refund, and the food is counted as waste. Stock and GP used to count it twice.",
+      "GP after loyalty, staff food and comps is now never more than GP before them: GP after takes their plate cost off, GP before leaves it in.",
+      "Manager app: Today is the venue's business day (06:30 to 06:30 at Coffee Boy), the same day as the Owner app and Back Office, for sales, labour, the forecast, the rota and the team. Labour uses the Daily trading rule.",
+      "Business summary across several sites over a long period: the estimate now takes refunds off on the day they were made, as Daily trading does, and still says it is estimated.",
+      "All sites overview and Daily trend: Revenue (the sum of check totals, with tips, service, VAT and loyalty rewards inside) is now Net sales by the one rule, and says so. Avg check and Tip % are on net sales too.",
+      "Clearer words: Daily trading says Takings before refunds where it said Gross, so Gross now means one thing, the Owner app's sales including VAT after refunds. Sales > Menu engineering says its margin is the average price, not GP, and points to Stock and GP > Product GP. Inventory > Reports > Recipe GP says it is menu price less plate cost at today's costs, for this venue only.",
+      "Demo history is now left out everywhere, by one rule: Daily trading, the Business summary, the Owner app, the Manager app, the Wastage log, All sites overview, Daily trend, menu engineering, Stock and GP and Xero daily sales. Each says Demo history left out when it left some out. Real venues have no demo history, so their figures are exactly as before.",
+    ],
+  },
+  {
     v: '5.11.98',
     date: '23 Oct 2026',
     items: [
