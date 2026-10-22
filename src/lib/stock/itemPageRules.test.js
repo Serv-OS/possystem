@@ -7,6 +7,7 @@ import {
   untickState, untickWords, recipesWords, holdsText, siteRowModel, priceFactor, priceHereFor,
   toPackQty, toBaseQty, parPatchFor, homeSiteOf, canEditItem, detailsDraft, detailsPatch,
   changeWords, whenWords, lastPaidWords, nextPriceWords, onTopRows, cloneSiteKinds, KIND_CHOICES,
+  factsLine, FACTS_LINE_LINK, factsChangeWords, nutritionWords,
 } from './itemPageRules.js';
 import { savedFirstWords } from './siteScope.js';
 
@@ -60,11 +61,45 @@ test('itemTabs: Details, Packs, Suppliers, Sites, Used in, Changes; no Sites tab
 
 test('FIELD_WORDS are plain words with no dash, and every Details field has one', () => {
   for (const k of ['name', 'category_id', 'type', 'base_unit', 'sku', 'barcode', 'purchase_vat_rate', 'shelf_life_days', 'notes',
-    'exclude_from_gp', 'key_item', 'returns_to_shelf', 'allergens', 'par_level', 'reorder_point', 'min_level', 'price_here']) {
+    'exclude_from_gp', 'key_item', 'returns_to_shelf', 'allergens', 'par_level', 'reorder_point', 'min_level', 'price_here',
+    // Drop 2: what is in a supplier item (change log entity supplier_item, fields allergens and facts)
+    'may_contain', 'diets', 'ingredients_text', 'nutrition', 'facts', 'facts_checked_at', 'facts_source']) {
     assert.ok(FIELD_WORDS[k], `no words for ${k}`);
   }
+  assert.equal(FIELD_WORDS.may_contain, 'May contain');
+  assert.equal(FIELD_WORDS.facts, 'What is in it');
   for (const v of Object.values(FIELD_WORDS)) assert.doesNotMatch(v, /[\u2013\u2014_]/);
   assert.ok(Object.isFrozen(FIELD_WORDS));
+});
+
+test('Drop 2 change log values: a facts object and nutrition in one line', () => {
+  const facts = { allergens: ['milk', 'Soya'], may_contain: ['nuts'], diets: ['vegetarian'], ingredients_text: 'Milk, salt', nutrition: { kcal: 120, salt_g: 0.4 } };
+  assert.equal(valueWords('facts', facts), 'Allergens: Milk, Soy; May contain: Tree nuts; Diets: Vegetarian; Ingredients: Milk, salt; Nutrition: 120 kcal, Salt 0.4 g');
+  assert.equal(valueWords('facts', { allergens: [] }), 'Allergens: none');
+  assert.equal(factsChangeWords(null), 'Allergens: none');
+  assert.equal(nutritionWords({ kcal: 310, fat_g: 8.2, fibre_g: null }), '310 kcal, Fat 8.2 g');
+  assert.equal(nutritionWords(null), 'None');
+  assert.equal(valueWords('nutrition', { protein_g: 9 }), 'Protein 9 g');
+  assert.equal(valueWords('facts_source', 'supplier_items'), 'The supplier items');
+  assert.equal(valueWords('facts_source', 'item'), 'The item itself');
+});
+
+test('factsLine: the Details allergen line when the allergens come from the supplier items (Drop 2)', () => {
+  const SI_MAIN2 = 'bbbbbbbb-0000-4000-8000-000000000011';
+  const SI_ALT2 = 'bbbbbbbb-0000-4000-8000-000000000012';
+  const d = {
+    item: { id: 'item-2', name: 'Cheddar', main_supplier_item_id: SI_MAIN2, allergens: ['milk'] },
+    facts: { allergens: ['milk', 'gluten'], source: 'supplier_items', needs_check: false, differ: false,
+      from: [{ supplier_item_id: SI_ALT2, supplier_name: 'Other Dairy', allergens: ['milk', 'gluten'], sites_on: 1 }, { supplier_item_id: SI_MAIN2, supplier_name: 'Freshways', allergens: ['milk'], sites_on: 3 }] },
+  };
+  assert.deepEqual(factsLine(d), { words: 'Allergens: Gluten, Milk \u00b7 from Freshways (3 sites), Other Dairy (1 site)', link: FACTS_LINE_LINK, needsCheck: false });
+  assert.equal(FACTS_LINE_LINK, 'Change them on the Suppliers tab');
+  assert.equal(factsLine({ ...d, facts: { ...d.facts, from: [d.facts.from[1]] } }).words, 'Allergens: Gluten, Milk \u00b7 from Freshways (3 sites)');
+  assert.equal(factsLine({ ...d, facts: { ...d.facts, allergens: [], from: [] } }).words, 'Allergens: Milk', 'no shown set yet: the item\'s own');
+  assert.equal(factsLine({ ...d, facts: { ...d.facts, needs_check: true } }).needsCheck, true);
+  assert.equal(factsLine({ ...d, facts: { ...d.facts, source: 'item' } }), null, 'no supplier item: the chips stay editable');
+  assert.equal(factsLine({ item: d.item }), null, 'a read without facts (before the migration): the chips as today');
+  assert.equal(factsLine(null), null);
 });
 
 test('conflictRows: the differing fields, in words, theirs and mine', () => {

@@ -4,11 +4,29 @@
 // (keyed by venue item id), so costs load one site at a time, only when GP is asked for, and are
 // kept for the session. A site whose costing did not read is "failed", never zero: a product
 // there shows no GP figure rather than a wrong one (lib/msm/msmMargin.js).
+//
+// v5.11.91 (multi site stock Drop 2, contract 3.1): the costs come from the database
+// (stock_plate_costs through stockApi.plateCosts, paged by `next` until null), the same figure the
+// drainer and the reports use, built into the same Map(venueItemId -> cost) the grid, the product
+// sheet and Change prices read. A database before Drop 2 answers needsUpdate and today's maths run
+// instead (fetchRecipes plus buildCostingCtx plus plateCosts), so a develop build before the
+// migration still shows GP. Any other refusal is "failed", as before.
 
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { fetchRecipes, buildCostingCtx } from '../../../lib/stock/recipes';
 import { plateCosts } from '../../../lib/msm/msmMargin';
+import { stockApi } from '../../../lib/stock/stockApi';
+import { readPlateCostMap, costOrFallback } from '../../../lib/stock/plateCostsRead';
 import { supabase } from '../../../lib/supabase';
+
+/** Today's maths for one site: every venue recipe costed in the browser, as before Drop 2. */
+async function todayCosts(loc) {
+  const [rec, ctx] = await Promise.all([fetchRecipes(loc), buildCostingCtx(loc)]);
+  if (rec.error || ctx.error) return { data: null, error: rec.error || ctx.error };
+  const recipes = new Map((rec.data || []).map((r) => [r.id, r]));
+  const links = (rec.data || []).filter((r) => r.menuItemId).map((r) => ({ menu_item_id: r.menuItemId, recipe_id: r.id, portion: r.portion }));
+  return { data: plateCosts(links, recipes, ctx), error: null };
+}
 
 export function useSiteCosts({ demo = null } = {}) {
   const [byLoc, setByLoc] = useState({});      // loc -> Map(venueItemId -> cost)
@@ -25,16 +43,14 @@ export function useSiteCosts({ demo = null } = {}) {
       let rates = null;
       if (demo) { costs = demo.costs(loc); rates = demo.taxRates ? demo.taxRates(loc) : null; }
       else {
-        const [rec, ctx, tr] = await Promise.all([
-          fetchRecipes(loc), buildCostingCtx(loc),
+        const [read, tr] = await Promise.all([
+          costOrFallback(() => readPlateCostMap(stockApi, loc), () => todayCosts(loc)),
           supabase ? supabase.from('tax_rates').select('id, name, rate, type, active').eq('location_id', loc).then((r) => r, () => ({ data: null })) : Promise.resolve({ data: null }),
         ]);
-        if (rec.error || ctx.error) throw rec.error || ctx.error;
+        if (read.error) throw read.error;
         // A failed rates read leaves the group's percent in use (never blocks the GP view).
         rates = Array.isArray(tr?.data) && !tr.error ? tr.data : null;
-        const recipes = new Map((rec.data || []).map((r) => [r.id, r]));
-        const links = (rec.data || []).filter((r) => r.menuItemId).map((r) => ({ menu_item_id: r.menuItemId, recipe_id: r.id, portion: r.portion }));
-        costs = plateCosts(links, recipes, ctx);
+        costs = read.data || new Map();
       }
       setByLoc((m) => ({ ...m, [loc]: costs }));
       if (rates) setRatesByLoc((m) => ({ ...m, [loc]: rates }));

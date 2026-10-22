@@ -21,6 +21,9 @@ import {
 } from './rowMapping.js';
 import { ITEM_EXTRA_KEYS } from './menuItemWrite.js';
 import { ownVenueRates, taggedVenueRows } from './venueTaxRates.js';
+// v5.11.91 (multi site stock Drop 2): the one merge rule for the stock facts (allergens the recipe
+// at this site adds, kcal), shared with the edge copy (venueMenuCore.js) so both snapshots agree.
+import { mergeStockFacts } from '../../supabase/functions/_shared/menuStockFacts.js';
 
 export const PAGE = 1000;   // the Data API's row cap per request; bigger menus are paged
 
@@ -52,12 +55,19 @@ export async function readAllRows(make, { page = PAGE, max = 50 } = {}) {
  *   venueDefaultTaxProfileId  undefined when the venue row could not be read
  *   itemIds            EVERY menu_items id at the venue, archived included (so a product
  *                      archived elsewhere is never mistaken for one this tab never saved)
+ *   stockFacts         v5.11.91 (multi site stock Drop 2): the venue's menu_item_stock_facts rows
+ *                      (the allergens and kcal the stock recipe linked at this site adds), or
+ *                      null when they could not be read. Optional: a failed leg never fails the
+ *                      read, and a database before 20261025a simply has none. The snapshot
+ *                      builder lays them over the products (menuSnapshotFromRead); the Back
+ *                      Office store keeps the typed rows (menuPatchFromRead), so a Menu Manager
+ *                      edit never writes a recipe's allergen onto the menu row.
  */
 export async function readVenueMenu(client, locationId) {
   const out = {
     ok: false, failed: [], error: null,
     menus: null, menuCategories: null, menuItems: null, modifierGroupDefs: null, taxRates: null,
-    taxProfiles: null, venueDefaultTaxProfileId: undefined, itemIds: null,
+    taxProfiles: null, venueDefaultTaxProfileId: undefined, itemIds: null, stockFacts: null,
     // 27 Sep 2026 (tax root cause port): the venue this read is for, so the snapshot built from
     // it carries only that venue's rates (menuSnapshotFromRead).
     locationId: locationId || null,
@@ -65,7 +75,7 @@ export async function readVenueMenu(client, locationId) {
   if (!client) { out.failed.push('database'); out.error = new Error('No database'); return out; }
   if (!locationId || locationId === 'loc-demo') { out.failed.push('location'); out.error = new Error('No location'); return out; }
   const from = (t) => client.from(t);
-  const [menus, cats, items, ids, groups, rates] = await Promise.all([
+  const [menus, cats, items, ids, groups, rates, facts] = await Promise.all([
     readAllRows(() => from('menus').select('*').eq('location_id', locationId).order('sort_order').order('id')),
     // v5.5.950: deterministic tie break, or equal sort orders shuffle between reads.
     readAllRows(() => from('menu_categories').select('*').eq('location_id', locationId).order('sort_order').order('label').order('id')),
@@ -73,6 +83,8 @@ export async function readVenueMenu(client, locationId) {
     readAllRows(() => from('menu_items').select('id').eq('location_id', locationId).order('id')),
     readAllRows(() => from('modifier_groups').select('*').eq('location_id', locationId).order('sort_order').order('id')),
     readAllRows(() => from('tax_rates').select('*').eq('location_id', locationId).eq('active', true).order('rate', { ascending: false }).order('id')),
+    // v5.11.91: the seventh leg, optional (not in `legs` below): the stock facts of this venue's products.
+    readAllRows(() => from('menu_item_stock_facts').select('*').eq('location_id', locationId).order('menu_item_id')),
   ]);
   const legs = { menus, categories: cats, items, 'item ids': ids, 'modifier groups': groups, 'tax rates': rates };
   for (const [name, r] of Object.entries(legs)) if (!r.rows) { out.failed.push(name); out.error = out.error || r.error; }
@@ -82,6 +94,7 @@ export async function readVenueMenu(client, locationId) {
   if (ids.rows) out.itemIds = new Set(ids.rows.map((r) => r.id));
   if (groups.rows) out.modifierGroupDefs = groups.rows.map(mapModifierGroupRow);
   if (rates.rows) out.taxRates = rates.rows.map(mapTaxRateRow);
+  out.stockFacts = facts.rows || null;
   // v5.7.33: tax profiles and the venue default. Optional: a push that cannot read them leaves
   // them out (a till keeps its own; absent is a no-op there), it never sends a guess.
   try {
@@ -323,11 +336,14 @@ export function unsavedWords(unsaved) {
  * 27 Sep 2026 (tax root cause port): the rates are the read venue's own and nothing else
  * (read.locationId, lib/venueTaxRates.js taggedVenueRows). Every Leeds push from 26 Sep 06:47
  * carried Train Station's rates because the snapshot copied whatever the page held.
+ * v5.11.91 (multi site stock Drop 2): the stock facts read with the menu (read.stockFacts) are laid
+ * over the products, so the tills get the allergens the recipe at this site adds and the kcal
+ * figure. Never a cost or a method: the facts table holds neither.
  */
 export function menuSnapshotFromRead(read, { extrasFrom = null } = {}) {
   return {
     menus: read.menus || [],
-    menuItems: withItemExtras(read.menuItems || [], extrasFrom),
+    menuItems: mergeStockFacts(withItemExtras(read.menuItems || [], extrasFrom), read.stockFacts),
     menuCategories: read.menuCategories || [],
     modifierGroupDefs: read.modifierGroupDefs || [],
     taxRates: read.locationId ? taggedVenueRows(read.taxRates || [], read.locationId) : (read.taxRates || []),

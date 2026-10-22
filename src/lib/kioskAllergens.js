@@ -3,65 +3,24 @@
  * items, dimmed with an Unsafe badge, never hide them; the chip uses the 14 UK allergens
  * from the menu editor so matching is exact).
  *
- * Pure: NO imports, so node:test can load it (kioskAllergens.test.js).
+ * Pure: its one import is the shared alias table, so node:test can load it (kioskAllergens.test.js).
  *
  * The menu editor stores the ids from src/data/seed.js ALLERGENS (gluten, milk, eggs ...).
  * Older rows and imports can hold other spellings ('dairy', 'Soya', 'tree nuts'), so every
  * value is read through normaliseAllergenId before it is compared. A value that is not one
  * of the 14 stays as its own lower case id: it is still listed on the item, it just can
  * never be picked on the allergen sheet.
+ *
+ * v5.11.91 (multi site stock Drop 2): the 14 ids, the alias table, normaliseAllergenId and
+ * isUkAllergen moved word for word to supabase/functions/_shared/allergenIds.js, so the till, the
+ * edge functions and the SQL twin (stock_co__allergen_ids) share one list. Re exported here.
  */
 
-// The 14 UK allergens, in the order the design's allergen sheet shows them.
-export const UK_ALLERGENS = Object.freeze([
-  'gluten', 'milk', 'eggs', 'fish', 'crustaceans', 'nuts', 'peanuts',
-  'soy', 'sesame', 'celery', 'mustard', 'sulphites', 'molluscs', 'lupin',
-]);
+import { UK_ALLERGENS, normaliseAllergenId } from '../../supabase/functions/_shared/allergenIds.js';
+
+export { UK_ALLERGENS, ALIASES, normaliseAllergenId, isUkAllergen, allergenIds } from '../../supabase/functions/_shared/allergenIds.js';
 
 const UK_SET = new Set(UK_ALLERGENS);
-
-// Other spellings seen in menu data, mapped to the menu editor id.
-const ALIASES = new Map(Object.entries({
-  'cereals containing gluten': 'gluten',
-  wheat: 'gluten',
-  dairy: 'milk',
-  lactose: 'milk',
-  egg: 'eggs',
-  soya: 'soy',
-  soybean: 'soy',
-  soybeans: 'soy',
-  shellfish: 'crustaceans',
-  crustacean: 'crustaceans',
-  'tree nuts': 'nuts',
-  'tree nut': 'nuts',
-  treenuts: 'nuts',
-  nut: 'nuts',
-  peanut: 'peanuts',
-  'sesame seeds': 'sesame',
-  'sulphur dioxide': 'sulphites',
-  'sulfur dioxide': 'sulphites',
-  sulphite: 'sulphites',
-  sulfites: 'sulphites',
-  sulfite: 'sulphites',
-  mollusc: 'molluscs',
-  mollusk: 'molluscs',
-  mollusks: 'molluscs',
-  lupine: 'lupin',
-}));
-
-/** The menu editor id for an allergen value ('Dairy' gives 'milk'), or '' for nothing. */
-export function normaliseAllergenId(value) {
-  if (value === null || value === undefined) return '';
-  const s = String(value).trim().toLowerCase().replace(/[\s_-]+/g, ' ');
-  if (!s) return '';
-  if (UK_SET.has(s)) return s;
-  return ALIASES.get(s) || s;
-}
-
-/** True when the id is one of the 14 UK allergens. */
-export function isUkAllergen(id) {
-  return UK_SET.has(id);
-}
 
 /** The item's allergens as normalised ids, without repeats. */
 export function itemAllergenIds(item) {

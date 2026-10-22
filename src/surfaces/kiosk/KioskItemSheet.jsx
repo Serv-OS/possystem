@@ -20,6 +20,9 @@ import { t, tf } from '../../lib/i18n';
 import { money } from '../../lib/currency';
 import { itemName, itemDescription, groupName, optionName, useMenuText } from '../../lib/menuText';
 import { itemAllergenIds, kioskAllergenLabels, allergenIdsOfLists, sheetUnsafeIds } from '../../lib/kioskAllergens';
+// v5.11.91 (multi site stock Drop 2): kcal and the 2,000 kcal line where the venue shows calories;
+// 'May contain' and 'Allergens being checked' from the stock recipe linked at this site.
+import { kcalWords, mayContainWords, KCAL_NOTE_KEY, ALLERGEN_CHECK_KEY } from '../../lib/menuStockFacts';
 import { KioskCloseButton, KioskPhoto } from './KioskChrome';
 import { MinusIcon, PlusIcon, TickIcon, WarningIcon } from './KioskIcons';
 
@@ -28,8 +31,9 @@ export default function KioskItemSheet(props) {
     item, loading, error, groups, qty, setQty, lineMaxQty, instructions, setInstructions,
     validation, isValid, variantGroup, pickedVariantOpt, totalPrice, basePrice, brandColor,
     stockErr, tryAdd, onCancel, showError, allItems = [], avoidAllergens = null, ackRequired = false, onPickAllergens,
-    selections, nestedSelections, subGroupsCache, resolveOpt,
+    selections, nestedSelections, subGroupsCache, resolveOpt, showCalories = false,
   } = props;
+  const facts = item?.stockFacts || null;   // v5.11.91: the stock recipe's facts at this site, when any
 
   // The picked options' own allergens (options, nested picks), as the modal resolves them.
   const optionIds = useMemo(() => {
@@ -122,10 +126,19 @@ export default function KioskItemSheet(props) {
               <div style={{ fontSize: 21, color: 'var(--k2InkSubtle)', marginTop: 6, lineHeight: 1.35 }}>{itemDescription(item)}</div>
             ) : null}
             <div style={{ fontSize: 26, fontWeight: 800, color: 'var(--k2AccentInk, var(--k2PrimaryInk))', marginTop: 10, fontVariantNumeric: 'tabular-nums' }}>{priceLine}</div>
+            {showCalories === true && item?.kcal != null ? (
+              <div style={{ fontSize: 19, color: 'var(--k2InkSubtle)', marginTop: 4, lineHeight: 1.35 }}>{kcalWords(item.kcal, t)} · {t(KCAL_NOTE_KEY)}</div>
+            ) : null}
             {allergenLabels.length > 0 ? (
               <div style={{ fontSize: 21, color: 'var(--k2InkBody)', marginTop: 8, lineHeight: 1.35 }}>
                 {tf('k2.sheet.allergens', { list: allergenLabels.join(', ') })}
               </div>
+            ) : null}
+            {facts?.mayContain?.length ? (
+              <div style={{ fontSize: 19, color: 'var(--k2InkSubtle)', marginTop: 4, lineHeight: 1.35 }}>{mayContainWords(kioskAllergenLabels(facts.mayContain, t), t)}</div>
+            ) : null}
+            {facts?.needsCheck ? (
+              <div style={{ fontSize: 19, color: 'var(--k2WarnInk)', fontWeight: 700, marginTop: 4, lineHeight: 1.35 }}>{t(ALLERGEN_CHECK_KEY)}</div>
             ) : null}
           </div>
           <KioskCloseButton onClick={onCancel} />

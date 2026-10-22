@@ -385,14 +385,16 @@ test('addItemSavedWords (contract 4.2)', () => {
 });
 
 // ── import ──
-test('import kinds: the staged kind and the importMappers CSV key, both ways', () => {
-  assert.deepEqual(R.IMPORT_KINDS.map((k) => [k.kind, k.key]), [['item', 'items'], ['supplier', 'suppliers'], ['supplier_item', 'supplier_items'], ['par', 'pars']]);
+test('import kinds: the staged kind and the importMappers CSV key, both ways (Drop 2 adds recipes)', () => {
+  assert.deepEqual(R.IMPORT_KINDS.map((k) => [k.kind, k.key]), [['item', 'items'], ['supplier', 'suppliers'], ['supplier_item', 'supplier_items'], ['par', 'pars'], ['recipe', 'recipes']]);
   assert.equal(R.importKey('supplier_item'), 'supplier_items');
   assert.equal(R.importKey('pars'), 'pars');
   assert.equal(R.importKind('items'), 'item');
   assert.equal(R.importKind('supplier_item'), 'supplier_item');
-  assert.equal(R.importKind('recipe'), null);
+  assert.equal(R.importKind('recipe'), 'recipe');
+  assert.equal(R.importKey('recipe'), 'recipes');
   assert.equal(R.importKey(null), null);
+  assert.equal(R.IMPORT_KINDS.find((k) => k.kind === 'recipe').label, 'Recipes');
 });
 
 test('importCountWords: "<n> new items, <n> price changes, <n> problems" from any of the count shapes', () => {
@@ -402,10 +404,16 @@ test('importCountWords: "<n> new items, <n> price changes, <n> problems" from an
   assert.equal(R.importCountWords(null), '0 new items, 0 price changes, 0 problems');
   assert.equal(R.importProblems({ problem: 4 }), 4);
   assert.equal(R.importProblems({ item: { problem: 1 }, par: { problem: 2 } }), 3);
-  assert.equal(R.importRecipeRows({ recipe: { skip: 9 } }), 9);
-  assert.equal(R.importRecipeRows({ recipe: 4 }), 4);
-  assert.equal(R.importRecipeRows({ 'recipe:skip': 2 }), 2);
-  assert.equal(R.importRecipeRows({}), 0);
+  assert.equal(R.importProblems({ recipe: { problem: 2 } }), 2, 'a recipe line the database refuses counts');
+  assert.equal(R.importRecipeRows, undefined, 'recipes are not skipped any more');
+});
+
+test('importCountWords: "<n> new recipes, <n> changed recipes" only when the server counts recipes (Drop 2)', () => {
+  assert.equal(R.importCountWords({ new_items: 9, price_changes: 6, problem: 3, new_recipes: 4, changed_recipes: 1 }), '9 new items, 6 price changes, 3 problems, 4 new recipes, 1 changed recipe');
+  assert.equal(R.importCountWords({ new_items: 0, price_changes: 0, problem: 0, new_recipes: 0, changed_recipes: 2 }), '0 new items, 0 price changes, 0 problems, 0 new recipes, 2 changed recipes');
+  assert.equal(R.importCountWords({ recipe: { new: 2, change: 0, same: 1 } }), '0 new items, 0 price changes, 0 problems, 2 new recipes, 0 changed recipes', 'the per kind shape');
+  assert.equal(R.importCountWords({ 'recipe:new': 1 }), '0 new items, 0 price changes, 0 problems, 1 new recipe, 0 changed recipes');
+  assert.equal(R.importCountWords({ rows: 1, new: 1, change: 0, same: 0, skip: 0, problem: 0, new_items: 1, price_changes: 0 }), '1 new item, 0 price changes, 0 problems', 'no recipes in the file: the Drop 1 line');
 });
 
 test('importCountWords: the exact counts stock_import_stage answers (20261024a)', () => {
@@ -419,7 +427,8 @@ test('importKindsWords: what the file holds, in words', () => {
   assert.equal(R.importKindsWords(['items']), 'stock items');
   assert.equal(R.importKindsWords(['items', 'supplier_items']), 'stock items and supplier items and prices');
   assert.equal(R.importKindsWords(['items', 'suppliers', 'pars']), 'stock items, suppliers and pars');
-  assert.equal(R.importKindsWords(['recipes']), 'recipes (skipped)');
+  assert.equal(R.importKindsWords(['recipes']), 'recipes');
+  assert.equal(R.importKindsWords(['items', 'recipes']), 'stock items and recipes');
   assert.equal(R.importKindsWords([]), '');
 });
 
@@ -447,7 +456,9 @@ test('stageWithSupplier: a price list row with no supplier is that supplier\'s',
 // ── the screens (source: node cannot render these without the browser pieces) ──
 const dir = new URL('../../backoffice/sections/stock/items/', import.meta.url);
 const MINE = ['CompanyItemList.jsx', 'SitesGrid.jsx', 'SitesPopover.jsx', 'BulkBar.jsx', 'AddToSitesModal.jsx', 'RemoveFromSitesModal.jsx', 'RunOutModal.jsx',
-  'SetParModal.jsx', 'ChangeCategoryModal.jsx', 'PauseModal.jsx', 'ChangePricesModal.jsx', 'CategoriesModal.jsx', 'AddItemModal.jsx', 'ImportModal.jsx', 'CopySiteModal.jsx'];
+  'SetParModal.jsx', 'ChangeCategoryModal.jsx', 'PauseModal.jsx', 'ChangePricesModal.jsx', 'CategoriesModal.jsx', 'AddItemModal.jsx', 'ImportModal.jsx', 'CopySiteModal.jsx',
+  // Drop 2 (web-items-facts): what is in a supplier item, and the allergen rule
+  'WhatIsInIt.jsx', 'MakeNewItemModal.jsx', 'ItemSuppliersTab.jsx', 'ItemDetailsTab.jsx'];
 const read = (f) => fs.readFileSync(new URL(f, dir), 'utf8');
 const code = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
 const rules = fs.readFileSync(new URL('./itemListRules.js', import.meta.url), 'utf8');
@@ -529,7 +540,8 @@ test('the modals: the contract words and the calls', () => {
   assert.match(prices, /disabled=\{busy \|\| !rows\.length\} onClick=\{apply\}/, 'Apply only after a preview with rows');
   assert.match(prices, /dateBoxWords\(fromDay, \{ set: 'From', empty: 'No day picked yet\.' \}\)/, 'the From a date box says whether a day is set');
   has('CategoriesModal.jsx', ['title="Categories"', 'sub="One list for every site. Each category can carry an accounting code and a GP target."', '<Th>Category</Th>', '<Th>Accounting code</Th>', '<Th right>GP target</Th>', '<Th right>Items</Th>', '+ Add a category', '>Archive<', 'stockApi.archiveCategory(']);
-  const imp = has('ImportModal.jsx', ["label: 'Import CSV'", "label: 'Import from Nory or MarketMan'", 'Recipes come in with the recipe update.', '{unusedWords(unknown)}', "'Import'", 'stockApi.importCommit(jobId, chosen)', 'stockApi.importCancel(', 'stageFile(mapped, { siteIdByName: sc.sites })']);
+  const imp = has('ImportModal.jsx', ["label: 'Import CSV'", "label: 'Import from Nory or MarketMan'", 'pars, or recipes (one ingredient a line)', 'No till product is linked on import.', '{unusedWords(unknown)}', "'Import'", 'stockApi.importCommit(jobId, chosen)', 'stockApi.importCancel(', 'stageFile(mapped, { siteIdByName: sc.sites })']);
+  assert.doesNotMatch(imp, /Recipes come in with the recipe update|importRecipeRows|skipped/, 'Drop 2: recipes import for real');
   assert.match(imp, /const STAGE_ROWS = 2000;/);
   assert.ok(imp.indexOf('stockApi.importStage(') < imp.indexOf('stockApi.importCheck(') || imp.indexOf('readCheck(id)') > imp.indexOf('stockApi.importStage('), 'stage, then the check screen');
   assert.ok(imp.indexOf('const commit = async') > imp.indexOf('const start = async'), 'Import only from the check screen');
@@ -540,6 +552,31 @@ test('the modals: the contract words and the calls', () => {
   const add = has('AddItemModal.jsx', ["'Add item'", 'Add a local item (${localName || \'this site\'} only)', 'label="Name"', 'label="Category"', 'label="Type"', 'label="Base unit"', 'label="Pack people use"', 'label="Supplier"', 'label="Supplier pack"', 'label="Price"', 'label="Allergens"', 'label="Sites" hint="Pre ticked from the picker.', '`Item saved. ${missed.join(\' \')}`']);
   const a = add.indexOf('stockApi.saveItem('); const b = add.indexOf('stockApi.savePack('); const c = add.indexOf('stockApi.saveSupplierItem(');
   assert.ok(a > 0 && a < b && b < c, 'the item first, then its pack, then its supplier item');
+  // Drop 2 (contract 3.4): with a supplier picked the chips go on the supplier pack, else on the item as before
+  assert.match(add, /if \(allergensOnPack\) \{ plan\.si\.allergens = plan\.item\.allergens; delete plan\.item\.allergens; \}/);
+  assert.ok(add.indexOf('allergensOnPack') < a, 'decided before the item saves');
+});
+
+test('What is in it, the allergen rule and Make it a new item: the contract words and the calls (Drop 2)', () => {
+  const has = (f, list) => { const src = read(f); for (const w of list) assert.ok(src.includes(w), `${f}: ${w}`); return src; };
+  const what = has('WhatIsInIt.jsx', ['export default function WhatIsInIt({ detail, supplierItem, editable = false, reload, onMakeNewItem = null, tz = null })',
+    '>What is in it<', 'label="Allergens"', 'label="May contain"', 'label="Diets"', 'label="Ingredients (in weight order)"', 'label="Nutrition per 100 g"',
+    '>Not checked yet<', 'checkedWords(facts.checked_by_name, facts.checked_at, tz)', 'savedFactsWords(item.name)', '>Make it a new item<',
+    "stockApi.saveSupplierItem({ id: si.id, location_id: homeSiteId || undefined, ...patch }, si.row_version ?? null, 'inventory')"]);
+  assert.match(what, /ALLERGEN_CHIPS, DIETS, NUTRITION_FIELDS/, 'the chips, diets and nutrition boxes come from factsRules');
+  assert.doesNotMatch(what, /allergens\.filter\(\(x\) => x !== id\)[^\n]*may_contain/, 'ticking off a chip only changes the draft: the database keeps the union');
+  const make = has('MakeNewItemModal.jsx', ['export default function MakeNewItemModal({ detail, supplierItem, onDone, onClose })', 'title="Make it a new item"', 'label="Name"',
+    'label="Sites"', '{OLD_PACK_WORDS}', "'Make it'", 'makeNewItemPlan(detail, si, { name, siteIds: chosen })', 'supplierItemSiteIds(si)']);
+  const i = make.indexOf('stockApi.saveItem('); const s = make.indexOf('stockApi.saveSupplierItem('); const x = make.indexOf('stockApi.archiveSupplierItem(');
+  assert.ok(i > 0 && i < s && s < x, 'the new item, then the copy of the pack, then the old pack archived (never deleted)');
+  assert.ok(make.indexOf('copy.error') < x, 'the old pack is archived only once its copy saved');
+  const sup = has('ItemSuppliersTab.jsx', ['<Th>What is in it</Th>', '>What is in it<', 'differRule(detail?.facts, item.name)', "label: 'Make it a new item'", '{rule.words}',
+    '<WhatIsInIt key={`${si.id}:${si.row_version ?? 0}`} detail={detail} supplierItem={si} editable={editable} reload={reload} tz={tz}', '<MakeNewItemModal detail={detail} supplierItem={makeNew}']);
+  assert.match(sup, /import WhatIsInIt from '\.\/WhatIsInIt';/);
+  assert.match(sup, /import MakeNewItemModal from '\.\/MakeNewItemModal';/);
+  const det = has('ItemDetailsTab.jsx', ['const allergenLine = sc.multi ? factsLine(detail) : null;', '{allergenLine.words}', "onTab('suppliers')", '{allergenLine.link}', '>Check again<']);
+  assert.match(det, /onTab = null \}\)/, 'ItemPage may pass onTab to switch to the Suppliers tab; without it the words still show');
+  assert.ok(det.includes('(ALLERGENS || []).map((a) => {'), 'the chips stay for an item with no supplier item');
 });
 
 test('the item rules file is pure: no React, no database (it imports only the units table and the pause words)', () => {

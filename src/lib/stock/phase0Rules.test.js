@@ -435,7 +435,8 @@ test('usage reads: one row per item, 1,000 items a page; the live reads are kept
   const data = read('./data.js');
   assert.match(data, /supabase\.rpc\('stock_usage_weekday_page', \{ p_location_id: locationId, p_weeks: weeks, p_after: after \}\)/);
   assert.match(data, /supabase\.rpc\('stock_usage_rates_page', \{ p_location_id: locationId, p_days: days, p_after: after \}\)/);
-  const batches = read('../../backoffice/sections/Batches.jsx');
+  // v5.11.91 (multi site stock Drop 2): today's Batches screen lives in produce/BatchesSite.jsx
+  const batches = read('../../backoffice/sections/produce/BatchesSite.jsx');
   assert.match(batches, /fetchUsageByWeekday\(8, loc\)/);
   assert.doesNotMatch(batches, /supabase\.rpc\('stock_usage_by_weekday'/, 'Batches no longer reads the capped one row per day answer');
 });

@@ -920,6 +920,22 @@ class PrintService {
     return { ok: false, error: 'No kitchen printer configured' };
   }
 
+  // Multi site stock Drop 2 (v5.11.91, contract 3.3): one label on the Label printer role
+  // (PrinterRegistry 'label'). `doc` is a printDoc document, or a function (printer, spec) that
+  // builds one at that printer's column count (lib/labelPrint.js passes the batch and PPDS label
+  // builders of lib/stock/batchLabel.js). Same transport, retry and audit row as every other job.
+  async printLabelDoc(doc, printerId = null, opts = {}) {
+    const printer = this._printerForRole('label', printerId);
+    if (!printer?.address) return { ok: false, error: 'No label printer set up. Add one under Hardware, Printers, with the Label printer role.' };
+    const built = typeof doc === 'function' ? doc(printer, resolvePrinterSpec(printer)) : doc;
+    const bytes = await encodeDocForPrinter(built, printer);
+    return this._submitJob(printer, 'label', bytes, {
+      idempotencyKey: opts.idempotencyKey,
+      metadata: { type: 'label', ...opts.metadata },
+      label: opts.label || 'Label',
+    });
+  }
+
   async printFireCourseTicket(ticketData, printerId = null, opts = {}) {
     const printer = this._printerForRole('kitchen', printerId);
     if (printer?.address) {

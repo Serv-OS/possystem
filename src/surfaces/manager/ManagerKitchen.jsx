@@ -27,6 +27,8 @@ import { Icon } from '../../components/ServOSIcons';
 import { useLayout } from './useLayout';
 // v5.11.84 (multi site stock Drop 0, plan 4.23): count by area and log waste on the phone.
 import ManagerStock from './ManagerStock';
+// v5.11.91 (multi site stock Drop 2): recipe cards for staff on the phone.
+import ManagerRecipeCard from './ManagerRecipeCard';
 
 const DEL_PILL = { pending: ['Expected', 'var(--orn)'], overdue: ['Overdue', 'var(--red)'], accepted: ['Arrived', 'var(--grn)'], rejected: ['Rejected', 'var(--red)'] };
 const ACCEPT_MAX_C = 8;   // the Ops Deliveries threshold; the server (manager-approve) holds the same figure
@@ -58,6 +60,7 @@ export default function ManagerKitchen({ ctx }) {
   // Receive (one open order) — manager-approve po.receive.
   const [delOpen, setDelOpen] = useState(null);  // the order (snapshot deliveries row) whose sheet is open
   const [recv, setRecv] = useState({});          // lineId -> { qtyPacks, unitPrice }
+  const [recipesOpen, setRecipesOpen] = useState(false);   // v5.11.91: the Recipe cards sheet
   const [tempC, setTempC] = useState('');
   const [dryGoods, setDryGoods] = useState(false);
   const [scan, setScan] = useState(null);        // { header, matched: { [lineId]: { readQty, readPrice, diffQty, diffPrice } }, unmatched: [] }
@@ -237,8 +240,11 @@ export default function ManagerKitchen({ ctx }) {
   );
 
   if (stockOpen) return <ManagerStock ctx={ctx} onClose={() => setStockOpen(false)} />;
+  if (recipesOpen) return <ManagerRecipeCard ctx={ctx} onClose={() => setRecipesOpen(false)} />;
   // only where there is stock to count: the snapshot's head count, else (an older snapshot) any item with a par
   const hasStock = snap?.kitchen?.trackedItems != null ? snap.kitchen.trackedItems > 0 : items.length > 0;
+  // v5.11.91: only where a till product has a live recipe link (the snapshot lists them)
+  const recipeCount = Array.isArray(snap?.kitchen?.recipes) ? snap.kitchen.recipes.length : 0;
 
   return (
     <div style={L.s.page2}>
@@ -247,6 +253,11 @@ export default function ManagerKitchen({ ctx }) {
         style={{ marginTop: 12, width: '100%', padding: '14px 16px', borderRadius: 14, border: '1px solid var(--bdr)', cursor: 'pointer', color: 'var(--t1)', fontWeight: 800, fontSize: 14, fontFamily: 'inherit', textAlign: 'left', ...L.s.span }}>
         Count stock or log waste
         <div style={{ fontSize: 12, color: 'var(--t3)', fontWeight: 500 }}>By area, with the barcode, saved as you go; approve with a manager PIN</div>
+      </button>}
+      {recipeCount > 0 && <button onClick={() => setRecipesOpen(true)} className="sv-glass" data-testid="manager-recipes-open"
+        style={{ marginTop: 12, width: '100%', padding: '14px 16px', borderRadius: 14, border: '1px solid var(--bdr)', cursor: 'pointer', color: 'var(--t1)', fontWeight: 800, fontSize: 14, fontFamily: 'inherit', textAlign: 'left', ...L.s.span }}>
+        Recipe cards
+        <div style={{ fontSize: 12, color: 'var(--t3)', fontWeight: 500 }}>Search a product and see its build, method and allergens</div>
       </button>}
       {!snap && !err && <div style={{ color: 'var(--t3)', padding: 16, ...mono, ...L.s.span }}>Loading…</div>}
       {err && <div className="sv-glass" style={{ padding: 16, marginTop: 12, color: 'var(--t3)', fontSize: 13, ...L.s.span }}>Couldn’t load stock ({err}).</div>}

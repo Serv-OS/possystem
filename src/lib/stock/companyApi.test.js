@@ -1,6 +1,7 @@
 /**
- * companyApi.test.js: createStockApi, the one way the Drop 1 screens talk to the database
- * (v5.11.89, multi site stock Drop 1, contract 2.2). Run: npm test.
+ * companyApi.test.js: createStockApi, the one way the Drop 1 and Drop 2 screens talk to the database
+ * (v5.11.89, multi site stock Drop 1, contract 2.2; v5.11.91 Drop 2 adds the recipe, batch and prep,
+ * allergen and plate cost calls). Run: npm test.
  *
  * A stand in client records every call: each method names its function and sends exactly the
  * contract's arguments; a missing function is needsUpdate with the NEEDS_UPDATE words (never a
@@ -9,13 +10,14 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createStockApi, callRead, callSave, pollJobs, answerOf, needsUpdateError } from './companyData.js';
+import { createStockApi, callRead, callSave, pollJobs, answerOf, needsUpdateError, sectionOfEntity, ymdDaysAgo } from './companyData.js';
 import { NEEDS_UPDATE } from './saveRules.js';
 
 const ORG = 'b1000000-0000-4000-8000-000000000001';
 const L1 = 'a1000000-0000-4000-8000-000000000001';
 const L2 = 'a1000000-0000-4000-8000-000000000002';
 const IT = 'e1000000-0000-4000-8000-000000000001';
+const RC = 'c1000000-0000-4000-8000-000000000001';   // a company recipe id (Drop 2)
 
 /** rpc answers by function name (a value or a function of the args), and table answers by table. */
 function fakeClient({ rpc = {}, tables = {} } = {}) {
@@ -107,6 +109,56 @@ const CASES = [
   [(a) => a.setStockControl('u1', 'sites_full'), 'set_stock_control', { p_user: 'u1', p_level: 'sites_full' }],
   [(a) => a.suggestChange('item', IT, 'Shelf life is 7 days'), 'stock_suggest_change', { p_entity: 'item', p_id: IT, p_text: 'Shelf life is 7 days' }],
   [(a) => a.resyncSite(L2), 'stock_resync_site', { p_loc: L2 }],
+  // ── Drop 2 (v5.11.91, contract 2.2): recipes, batch and prep, allergens ──
+  [(a) => a.recipesPage({ orgId: ORG, sites: [L1], search: 'burger', filters: { kind: 'dish', on_at: L1 }, after: { k: 'b', id: RC } }), 'stock_recipes_page',
+    { p_org: ORG, p_sites: [L1], p_search: 'burger', p_filters: { kind: 'dish', on_at: L1 }, p_after: { k: 'b', id: RC }, p_limit: 100 }],
+  [(a) => a.recipesPage({ orgId: ORG }), 'stock_recipes_page', { p_org: ORG, p_sites: null, p_search: null, p_filters: null, p_after: null, p_limit: 100 }],
+  [(a) => a.recipesPage({ orgId: ORG, limit: 20 }), 'stock_recipes_page', { p_org: ORG, p_sites: null, p_search: null, p_filters: null, p_after: null, p_limit: 20 }],
+  [(a) => a.recipeDetail(RC), 'stock_recipe_detail', { p_recipe: RC }],
+  [(a) => a.recipeCost(RC), 'stock_recipe_cost', { p_recipe: RC, p_sites: null, p_order_type: null }],
+  [(a) => a.recipeCost(RC, [L1, L2], 'takeaway'), 'stock_recipe_cost', { p_recipe: RC, p_sites: [L1, L2], p_order_type: 'takeaway' }],
+  [(a) => a.plateCosts(L1), 'stock_plate_costs', { p_loc: L1, p_after: null, p_limit: 1000 }],
+  [(a) => a.plateCosts(L1, 'm-0400'), 'stock_plate_costs', { p_loc: L1, p_after: 'm-0400', p_limit: 1000 }],
+  [(a) => a.recipeMissing({ orgId: ORG, sites: [L2], after: { k: 'x', id: 'm9' } }), 'stock_recipe_missing', { p_org: ORG, p_sites: [L2], p_after: { k: 'x', id: 'm9' }, p_limit: 100 }],
+  [(a) => a.recipeMissing({ orgId: ORG }), 'stock_recipe_missing', { p_org: ORG, p_sites: null, p_after: null, p_limit: 100 }],
+  [(a) => a.recipeFacts(RC), 'stock_recipe_facts', { p_recipe: RC, p_sites: null }],
+  [(a) => a.recipeFacts(RC, [L1]), 'stock_recipe_facts', { p_recipe: RC, p_sites: [L1] }],
+  [(a) => a.recipeCard(L1, { menuItemId: 'm1' }), 'stock_recipe_card', { p_loc: L1, p_menu_item_id: 'm1', p_recipe: null }],
+  [(a) => a.recipeCard(L1, { recipeId: RC }), 'stock_recipe_card', { p_loc: L1, p_menu_item_id: null, p_recipe: RC }],
+  [(a) => a.recipeCard(L1), 'stock_recipe_card', { p_loc: L1, p_menu_item_id: null, p_recipe: null }],
+  [(a) => a.prepList(L1), 'stock_prep_list', { p_loc: L1, p_day: null }],
+  [(a) => a.prepList(L1, '2026-11-02'), 'stock_prep_list', { p_loc: L1, p_day: '2026-11-02' }],
+  [(a) => a.batchHow({ orgId: ORG, sites: [L1, L2], search: 'sauce', after: { k: 's', id: RC } }), 'stock_batch_how', { p_org: ORG, p_sites: [L1, L2], p_search: 'sauce', p_after: { k: 's', id: RC }, p_limit: 100 }],
+  [(a) => a.batchHow({ orgId: ORG }), 'stock_batch_how', { p_org: ORG, p_sites: null, p_search: null, p_after: null, p_limit: 100 }],
+  [(a) => a.menuProducts(ORG), 'stock_recipe_menu_products', { p_org: ORG, p_search: null, p_after: null, p_limit: 100 }],
+  [(a) => a.menuProducts(ORG, 'latte', { k: 'l', id: 'p1' }), 'stock_recipe_menu_products', { p_org: ORG, p_search: 'latte', p_after: { k: 'l', id: 'p1' }, p_limit: 100 }],
+  [(a) => a.saveRecipe({ recipe: { id: RC, name: 'Test Burger', location_id: L1 }, lines: [{ component_item_id: IT, qty: 1, unit: 'each' }], version: 3 }), 'stock_save_recipe',
+    { p_recipe: { id: RC, name: 'Test Burger', location_id: L1 }, p_lines: [{ component_item_id: IT, qty: 1, unit: 'each' }], p_version: 3, p_section: 'produce' }],
+  [(a) => a.saveRecipe({ recipe: { name: 'Test Burger', kind: 'dish' }, sites: [{ location_id: L1, on: true, menu_item_id: 'm1' }] }), 'stock_save_recipe',
+    { p_recipe: { name: 'Test Burger', kind: 'dish', sites: [{ location_id: L1, on: true, menu_item_id: 'm1' }] }, p_lines: null, p_version: null, p_section: 'produce' }],
+  [(a) => a.saveRecipe({ recipe: { id: RC, gp_target_pct: 70 }, version: 4, section: 'inventory' }), 'stock_save_recipe', { p_recipe: { id: RC, gp_target_pct: 70 }, p_lines: null, p_version: 4, p_section: 'inventory' }],
+  [(a) => a.archiveRecipe(RC, 5), 'stock_archive_recipe', { p_recipe: RC, p_version: 5, p_archived: true, p_section: 'produce' }],
+  [(a) => a.archiveRecipe(RC, 5, false), 'stock_archive_recipe', { p_recipe: RC, p_version: 5, p_archived: false, p_section: 'produce' }],
+  [(a) => a.setRecipeSites(RC, [{ location_id: L2, on: true, menu_item_id: null }], 5), 'stock_set_recipe_sites', { p_recipe: RC, p_changes: [{ location_id: L2, on: true, menu_item_id: null }], p_version: 5, p_section: 'produce' }],
+  [(a) => a.setRecipeSites(RC, null, null), 'stock_set_recipe_sites', { p_recipe: RC, p_changes: [], p_version: null, p_section: 'produce' }],
+  [(a) => a.linkProducts([{ location_id: L1, menu_item_id: 'm1', recipe_id: RC }]), 'stock_recipe_link_products', { p_links: [{ location_id: L1, menu_item_id: 'm1', recipe_id: RC }], p_section: 'produce' }],
+  [(a) => a.batchSetHow(RC, L2, 'to_order', 6), 'stock_batch_set_how', { p_recipe: RC, p_loc: L2, p_how: 'to_order', p_version: 6, p_section: 'produce' }],
+  [(a) => a.saveOptionRule({ recipe_id: RC, kind: 'remove', option_name: 'No cheese', removes_item_id: IT }), 'stock_save_option_rule',
+    { p_rule: { recipe_id: RC, kind: 'remove', option_name: 'No cheese', removes_item_id: IT }, p_version: null, p_section: 'produce' }],
+  [(a) => a.saveOptionRule({ id: 'r1', recipe_id: RC, kind: 'replace' }, 2), 'stock_save_option_rule', { p_rule: { id: 'r1', recipe_id: RC, kind: 'replace' }, p_version: 2, p_section: 'produce' }],
+  [(a) => a.archiveOptionRule('r1', 2), 'stock_archive_option_rule', { p_id: 'r1', p_version: 2, p_archived: true, p_section: 'produce' }],
+  [(a) => a.archiveOptionRule('r1', 2, false), 'stock_archive_option_rule', { p_id: 'r1', p_version: 2, p_archived: false, p_section: 'produce' }],
+  [(a) => a.swapIngredient({ mode: 'swap', from_item_id: IT, to_item_id: 'e2' }), 'stock_swap_ingredient', { p_spec: { mode: 'swap', from_item_id: IT, to_item_id: 'e2' }, p_preview: true, p_section: 'produce' }],
+  [(a) => a.swapIngredient({ mode: 'amount', from_item_id: IT, factor: 1.2 }, { preview: false }), 'stock_swap_ingredient', { p_spec: { mode: 'amount', from_item_id: IT, factor: 1.2 }, p_preview: false, p_section: 'produce' }],
+  [(a) => a.makeSizes(RC, [{ name: 'Large', factor: 1.4 }], 3), 'stock_make_sizes', { p_recipe: RC, p_sizes: [{ name: 'Large', factor: 1.4 }], p_version: 3, p_section: 'produce' }],
+  [(a) => a.prepTick(L1, RC, 2), 'stock_prep_tick', { p_loc: L1, p_recipe: RC, p_qty: 2, p_section: 'produce' }],
+  [(a) => a.prepTick(L1, RC, 1.5, 'inventory'), 'stock_prep_tick', { p_loc: L1, p_recipe: RC, p_qty: 1.5, p_section: 'inventory' }],
+  [(a) => a.prepUntick('t1'), 'stock_prep_untick', { p_id: 't1' }],
+  [(a) => a.factsSignoff(L1, 'm1'), 'stock_facts_signoff', { p_loc: L1, p_menu_item_id: 'm1', p_section: 'produce' }],
+  [(a) => a.factsSignoff(L2, 'm2', 'inventory'), 'stock_facts_signoff', { p_loc: L2, p_menu_item_id: 'm2', p_section: 'inventory' }],
+  [(a) => a.makeCompanyRecord('recipe', RC, 2), 'stock_make_company_record', { p_entity: 'recipe', p_id: RC, p_version: 2, p_section: 'produce' }],
+  [(a) => a.saveSupplierItem({ id: 'si1', allergens: ['milk'], may_contain: ['nuts'], diets: ['vegetarian'], ingredients_text: 'Milk', nutrition: { kcal: 60 } }, 3), 'stock_save_supplier_item',
+    { p_si: { id: 'si1', allergens: ['milk'], may_contain: ['nuts'], diets: ['vegetarian'], ingredients_text: 'Milk', nutrition: { kcal: 60 } }, p_version: 3, p_section: 'purchasing' }],
 ];
 
 test('every method calls its own function with exactly the contract\'s arguments', async () => {
@@ -184,6 +236,55 @@ test('the table reads: the columns, filters, order and the 1,000 row cap; a miss
   assert.deepEqual(c.queries[5].steps, [['select', 'id, location_id, kind, status'], ['in', 'status', ['waiting', 'running']], ['overlaps', 'entity_ids', [IT]], ['limit', 100]]);
   const gone = await createStockApi(fakeClient({ tables: { stock_co_categories: { data: null, error: { code: '42P01', message: 'relation "stock_co_categories" does not exist' } } } })).categories(ORG);
   assert.equal(gone.needsUpdate, true); assert.equal(gone.error.message, NEEDS_UPDATE);
+});
+
+test('Drop 2 table reads: the facts of a site (every column, at most 200 ids) and one recipe\'s cost history', async () => {
+  const c = fakeClient({ tables: { menu_item_stock_facts: { data: [{ location_id: L1, menu_item_id: 'm1', allergens: ['milk'] }], error: null } } });
+  const api = createStockApi(c);
+  const all = await api.menuStockFacts(L1);
+  assert.deepEqual(all.data, [{ location_id: L1, menu_item_id: 'm1', allergens: ['milk'] }]);
+  assert.equal(c.queries[0].table, 'menu_item_stock_facts');
+  assert.deepEqual(c.queries[0].steps, [['select', '*'], ['eq', 'location_id', L1], ['order', 'menu_item_id'], ['limit', 1000]], 'no ids: the whole site, 1,000 rows at most');
+  await api.menuStockFacts(L1, ['m1', 7, 'm1', null, '']);
+  assert.deepEqual(c.queries[1].steps, [['select', '*'], ['eq', 'location_id', L1], ['in', 'menu_item_id', ['m1', '7']], ['order', 'menu_item_id'], ['limit', 1000]], 'ids as text, once each, nothing empty');
+  const many = Array.from({ length: 250 }, (_, i) => `m${i}`);
+  await api.menuStockFacts(L1, many);
+  assert.equal(c.queries[2].steps[2][2].length, 200, 'at most 200 ids a read');
+  assert.deepEqual((await api.menuStockFacts(L1, [])).data, [], 'ids given but none: no read');
+  assert.equal(c.queries.length, 3);
+  // the location is text in that table, so a uuid object is sent as its text
+  await api.menuStockFacts({ toString: () => L2 });
+  assert.deepEqual(c.queries[3].steps[1], ['eq', 'location_id', L2]);
+  // a database before Drop 2 has no facts table: needs an update, never a broken screen
+  const gone = await createStockApi(fakeClient({ tables: { menu_item_stock_facts: { data: null, error: { code: 'PGRST205', message: "Could not find the table 'public.menu_item_stock_facts'" } } } })).menuStockFacts(L1);
+  assert.equal(gone.needsUpdate, true); assert.equal(gone.error.message, NEEDS_UPDATE);
+  // the cost history: one recipe at one site, the last 90 days, newest first, at most 400 rows
+  const h = fakeClient({ tables: { recipe_cost_daily: { data: [{ day: '2026-10-20', cost: 2.1 }], error: null } } });
+  const hist = await createStockApi(h).recipeCostHistory(RC, L1);
+  assert.deepEqual(hist.data, [{ day: '2026-10-20', cost: 2.1 }]);
+  assert.equal(h.queries[0].table, 'recipe_cost_daily');
+  const steps = h.queries[0].steps;
+  assert.deepEqual(steps.slice(0, 3), [['select', 'day, cost, cost_per_yield, sale_price_net, gp_pct, missing'], ['eq', 'recipe_id', RC], ['eq', 'location_id', L1]]);
+  assert.equal(steps[3][0], 'gte'); assert.equal(steps[3][1], 'day');
+  assert.match(steps[3][2], /^\d{4}-\d{2}-\d{2}$/, 'the lower bound is a day');
+  assert.equal(steps[3][2], ymdDaysAgo(90), 'ninety days back by default');
+  assert.deepEqual(steps.slice(4), [['order', 'day', { ascending: false }], ['limit', 400]]);
+  await createStockApi(h).recipeCostHistory(RC, L1, 30);
+  assert.equal(h.queries[1].steps[3][2], ymdDaysAgo(30));
+  assert.match((await createStockApi(null).menuStockFacts(L1)).error.message, /No database/);
+});
+
+test('sectionOfEntity and ymdDaysAgo: the section a company record change is named as; a day lower bound', () => {
+  assert.equal(sectionOfEntity('item'), 'inventory');
+  assert.equal(sectionOfEntity('supplier'), 'purchasing');
+  assert.equal(sectionOfEntity('recipe'), 'produce');
+  assert.equal(sectionOfEntity('anything else'), 'inventory');
+  const now = Date.UTC(2026, 9, 21, 15, 0, 0);   // 21 Oct 2026 15:00 UTC
+  assert.equal(ymdDaysAgo(0, now), '2026-10-21');
+  assert.equal(ymdDaysAgo(90, now), '2026-07-23');
+  assert.equal(ymdDaysAgo(-5, now), '2026-10-21', 'never a day in the future');
+  assert.equal(ymdDaysAgo('abc', now), '2026-10-21', 'junk is today');
+  assert.equal(ymdDaysAgo(1.9, now), '2026-10-20', 'whole days');
 });
 
 test('integrator reads: every site\'s tax rates and the site groups with their versions', async () => {

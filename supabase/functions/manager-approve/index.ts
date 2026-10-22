@@ -598,6 +598,21 @@ Deno.serve(async (req) => {
           const auditErr = await audit(loc, orgId, op, 'stock.waste', 'waste_events', String(out?.id || target_id), null, { by: who, item: target_id, qty_base: body.qty_base, reason: body.reason || null });
           if (auditErr) return auditFailed('The waste', { recorded: true });
         }
+      } else if (action === 'stock.recipe_card') {
+        // v5.11.91 (multi site stock Drop 2, contract 3.6): the recipe card for staff (build, method,
+        // allergens, kcal; never a cost), read as the service role for THIS venue only
+        // (stock_recipe_card(p_loc, p_menu_item_id), migration 20261025a). target_id is the till
+        // product. A staff PIN is enough, as for the other stock reads. Before 20261025a the
+        // function is missing: said in words, never a throw. Nothing is written.
+        const { data, error } = await sb.rpc('stock_recipe_card', { p_loc: loc, p_menu_item_id: String(target_id) });
+        if (error) {
+          const missing = /PGRST202|42883|could not find the function|does not exist/i.test(`${error.code || ''} ${error.message || ''}`);
+          out = { error: missing ? 'Recipe cards need a database update (20261025a).' : (error.message || 'Could not read the recipe card') };
+        } else if (data && typeof data === 'object' && (data as any).ok === false) {
+          out = { error: (data as any).error || 'No recipe card here.' };
+        } else {
+          out = { card: data && typeof data === 'object' && !Array.isArray(data) ? data : null };
+        }
       } else return json({ error: 'unknown action' }, 400);
       if (out?.error) return json({ error: out.error }, 400);
       if (out?.ok === false) return json({ error: out.error || 'not done' }, 400);

@@ -48,6 +48,7 @@ import { ui, money } from './msmStyle';
 import { draftCount } from '../../../lib/msm/msmStatus';
 import { useConfirm } from './useConfirm';
 import MsmPhotoField from './MsmPhotoField';
+import MenuItemFactsPanel from '../stock/MenuItemFactsPanel';   // v5.11.91 (multi site stock Drop 2)
 
 const newId = () => (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID()
   : 'xxxxxxxx-xxxx-4xxx-8xxx-xxxxxxxxxxxx'.replace(/x/g, () => Math.floor(Math.random() * 16).toString(16)));
@@ -117,6 +118,7 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
   const [showGp, setShowGp] = useState(false);
   const [ticked, setTicked] = useState(() => new Set());
   const [example, setExample] = useState(() => ({ loc: sites[0]?.id || null, type: 'takeaway' }));
+  const [factsOpen, setFactsOpen] = useState(false);   // v5.11.91: the per site facts panels read only once opened
   const [confirm, confirmDialog] = useConfirm();
 
   useEffect(() => { if (showGp) costs.load(sites.map((s) => s.id)); }, [showGp, costs, sites]);
@@ -677,6 +679,18 @@ export default function MsmProductSheet({ live, eff, ix, sites, ctx, stage, edit
             })}
           </div>
         </Field>
+        {/* v5.11.91 (multi site stock Drop 2): read only, per site in reach, what the stock recipe linked
+            at each site adds (menu_item_stock_facts). One read per site, only once opened. */}
+        {p && !create && (
+          <details style={{ marginBottom: 14 }} onToggle={(e) => setFactsOpen(e.currentTarget.open)}>
+            <summary style={{ cursor: 'pointer', fontSize: 13, fontWeight: 650 }}>From the recipe at each site</summary>
+            <div style={{ ...ui.sub, marginTop: 6 }}>These come from the stock recipe linked at each site and are added to what is ticked above on every channel. They are never removed by themselves.</div>
+            {factsOpen && visibleSites.map((s) => {
+              const ps = ix.sites.get(`${p.id}|${s.id}`);
+              return ps?.venue_item_id ? <MenuItemFactsPanel key={s.id} locationId={s.id} menuItemId={ps.venue_item_id} siteName={s.name} /> : null;
+            })}
+          </details>
+        )}
         <div style={{ marginBottom: 14 }}>
           <MsmPhotoField value={form.image} productId={productId || ids.product} disabled={!editable} onChange={(url) => set('image', url)} />
         </div>

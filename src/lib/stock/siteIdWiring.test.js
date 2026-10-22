@@ -21,6 +21,16 @@
  *    a one site company the way Back Office renders it (StockScopeProvider, StockSiteGate, the
  *    signed in venue): the HTML is main's, byte for byte. The picker, the banner and the gate draw
  *    nothing new for a one site company.
+ *
+ * 4. Multi site stock Drop 2 (v5.11.91): today's Recipes and Batches screens moved whole into
+ *    produce/RecipesSite.jsx and produce/BatchesSite.jsx (the routers Recipes.jsx and Batches.jsx send
+ *    a one site company there). The wiring and identity checks read the moved files: the Drop 2 move
+ *    edits (paths one folder deeper, the new name, the RecipeFactsLine import and render line) are
+ *    undone first, then the Drop 1 edits, and the text from the first import line must be main
+ *    f1a8f397's (the leading comment of a moved file is new, so it is left out of the hash; the
+ *    oneSiteIdentity tests pin the moved files against main 3cde2fbd the same way). StockReports'
+ *    Recipe GP reads the database's plate costs (stock_plate_costs) in Drop 2: its edits are listed
+ *    too, and today's maths still run before the migration (needsUpdate).
  */
 
 import { test } from 'node:test';
@@ -88,7 +98,7 @@ const SCREENS = [
   'backoffice/sections/StockCounts.jsx', 'backoffice/sections/StockTransfers.jsx', 'backoffice/sections/StockAreas.jsx',
   'backoffice/sections/Wastage.jsx', 'backoffice/sections/StockReports.jsx', 'backoffice/sections/OrderPad.jsx',
   'backoffice/sections/PurchaseOrders.jsx', 'backoffice/sections/Invoices.jsx', 'backoffice/sections/PriceChanges.jsx',
-  'backoffice/sections/Recipes.jsx', 'backoffice/sections/Batches.jsx', 'components/PosWasteModal.jsx',
+  'backoffice/sections/produce/RecipesSite.jsx', 'backoffice/sections/produce/BatchesSite.jsx', 'components/PosWasteModal.jsx',
 ];
 
 /** Every call a screen makes to a lib/stock function that takes a location: [{ fn, args, idx, line }]. */
@@ -150,7 +160,7 @@ test('the scanner catches what v5.11.84 got wrong (it would fail main)', () => {
   const old = splitTop("completing.id, Number(actualIn)");
   assert.equal(old[2], undefined, 'completePlannedBatch(completing.id, Number(actualIn)) has no location');
   assert.equal(splitTop('null, 500')[0], 'null');
-  const batches = stockCalls('backoffice/sections/Batches.jsx');
+  const batches = stockCalls('backoffice/sections/produce/BatchesSite.jsx');
   assert.ok(batches.some((c) => c.fn === 'completePlannedBatch' && c.args[2] === 'loc'));
   const reports = stockCalls('backoffice/sections/StockReports.jsx');
   assert.ok(reports.some((c) => c.fn === 'fetchBatches' && c.args[0] === 'locId || null'));
@@ -167,8 +177,8 @@ test('each screen takes { siteId = null } and starts from it', () => {
     'backoffice/sections/PurchaseOrders.jsx': /export default function PurchaseOrders\(\{ siteId = null \} = \{\}\)/,
     'backoffice/sections/Invoices.jsx': /export default function Invoices\(\{ siteId = null \} = \{\}\)/,
     'backoffice/sections/PriceChanges.jsx': /export default function PriceChanges\(\{ siteId = null \} = \{\}\)/,
-    'backoffice/sections/Recipes.jsx': /export default function Recipes\(\{ siteId = null \} = \{\}\)/,
-    'backoffice/sections/Batches.jsx': /export default function Batches\(\{ siteId = null \} = \{\}\)/,
+    'backoffice/sections/produce/RecipesSite.jsx': /export default function RecipesSite\(\{ siteId = null \} = \{\}\)/,
+    'backoffice/sections/produce/BatchesSite.jsx': /export default function BatchesSite\(\{ siteId = null \} = \{\}\)/,
   };
   for (const [rel, sig] of Object.entries(starts)) {
     const src = readAbs(path.join(SRC, rel));
@@ -176,7 +186,7 @@ test('each screen takes { siteId = null } and starts from it', () => {
     assert.ok(src.includes('useState(siteId || getActiveLocationSync())'), `${rel}: starts from the site`);
     assert.doesNotMatch(src, /useState\(getActiveLocationSync\(\)\)/, `${rel}: no start from the signed in venue alone`);
   }
-  const batches = readAbs(path.join(SRC, 'backoffice/sections/Batches.jsx'));
+  const batches = readAbs(path.join(SRC, 'backoffice/sections/produce/BatchesSite.jsx'));
   assert.equal((batches.match(/siteId \|\| getActiveLocationSync\(\)/g) || []).length, 4, 'all three reads and the completion');
   assert.doesNotMatch(batches, /const loc = getActiveLocationSync\(\)/);
   const waste = readAbs(path.join(SRC, 'components/PosWasteModal.jsx'));
@@ -185,7 +195,7 @@ test('each screen takes { siteId = null } and starts from it', () => {
 });
 
 test('the store slice rule: another site\'s menu and tax rates are its own, never the store\'s', () => {
-  for (const rel of ['backoffice/sections/Invoices.jsx', 'backoffice/sections/PurchaseOrders.jsx', 'backoffice/sections/Recipes.jsx', 'backoffice/sections/StockReports.jsx', 'components/PosWasteModal.jsx']) {
+  for (const rel of ['backoffice/sections/Invoices.jsx', 'backoffice/sections/PurchaseOrders.jsx', 'backoffice/sections/produce/RecipesSite.jsx', 'backoffice/sections/StockReports.jsx', 'components/PosWasteModal.jsx']) {
     const src = stripComments(readAbs(path.join(SRC, rel)));
     assert.match(src, /useSiteStockContext\((siteId|loc)\)/, rel);
     assert.doesNotMatch(src, /useStore\(s => s\.(taxRates|menuItems)\)/, `${rel}: no store slice read directly`);
@@ -253,8 +263,24 @@ const IDENTITY = [
     // the signed in venue is what fetchBatches(null) resolved to
     ['  // v5.11.89: the batches of the screen\'s site (it read the signed in venue whatever the picker said)\n  useEffect(() => {\n    fetchBatches(locId || null, 500).then(({ data }) => setBatches(data || []));\n  }, [locId]);',
       '  useEffect(() => {\n    fetchBatches(null, 500).then(({ data }) => setBatches(data || []));\n  }, []);'],
+    // v5.11.91 (multi site stock Drop 2): Recipe GP's plate costs come from the database (the same
+    // maths, stock_plate_costs); before the migration the read says needsUpdate and today's path runs
+    ['\nimport { stockApi } from \'../../lib/stock/stockApi\';\nimport { readPlateCostMap } from \'../../lib/stock/plateCostsRead\';', ''],
+    ['\n  const [plateCosts, setPlateCosts] = useState(null);   // v5.11.91: { data: Map, needsUpdate, error } from stock_plate_costs', ''],
+    ['c, sup, pc] = await Promise.all([', 'c, sup] = await Promise.all(['],
+    ['\n      readPlateCostMap(stockApi, loc),   // v5.11.91 (Drop 2): the database\'s plate costs for Recipe GP', ''],
+    ['setSuppliers(sup?.data || []); setPlateCosts(pc); setLoading(false);', 'setSuppliers(sup?.data || []); setLoading(false);'],
+    [' taxRates={taxRates} plateCosts={plateCosts}/>}', ' taxRates={taxRates}/>}'],
+    ['// v5.11.91 (multi site stock Drop 2, contract 3.1): the plate cost of a linked recipe is the\n// database\'s (stock_plate_costs, the same figure the drainer and the recipe screens use). Today\'s\n// maths run only before the migration (needsUpdate). A read that failed shows no cost, never a wrong one.\nconst plateCostOf = (pc, r, ctx) => {\n  if (!pc || pc.needsUpdate) { const c = costRecipeWith(r, ctx); return c?.error ? null : c.totalCost; }\n  if (!pc.data || !r.menuItemId) return null;\n  return pc.data.get(String(r.menuItemId)) ?? null;\n};\nfunction RecipeGP({ recipes, ctx, menuItems, taxRates = [], plateCosts = null }) {', 'function RecipeGP({ recipes, ctx, menuItems, taxRates = [] }) {'],
+    ['    const plate = plateCostOf(plateCosts, r, ctx);\n', '    const c = costRecipeWith(r, ctx);\n    const plate = c?.error ? null : c.totalCost;\n'],
+    ['  }), [recipes, ctx, byId, netSell, variantParentIds, plateCosts]);', '  }), [recipes, ctx, byId, netSell, variantParentIds]);'],
+    ['      {plateCosts?.error && !plateCosts.needsUpdate && <Callout>Could not read plate costs from the database ({plateCosts.error.message}). Reload to try again.</Callout>}\n', ''],
   ]],
-  ['backoffice/sections/Batches.jsx', [
+  // v5.11.91 (Drop 2): today's Batches.jsx lives in produce/BatchesSite.jsx; the move edits are undone first
+  ['backoffice/sections/produce/BatchesSite.jsx', [
+    ['export default function BatchesSite({ siteId = null } = {}) {', 'export default function Batches({ siteId = null } = {}) {'],
+    ['from \'../reports/reportKit\'', 'from \'./reports/reportKit\''],
+    ['from \'../../../', 'from \'../../', 9],
     ['// v5.11.89 (multi site stock Drop 1): siteId is the picker\'s site (always the signed in venue for a one\n// site company). All three reads and every production call name it, so a batch completed with the\n// picker on another site is found and posted THERE (completePlannedBatch read the signed in venue).\nexport default function Batches({ siteId = null } = {}) {', 'export default function Batches() {'],
     ['const loc = siteId || getActiveLocationSync() || await getLocationId().catch(() => null);\n    if (!loc) return;', 'const loc = getActiveLocationSync() || await getLocationId().catch(() => null);\n    if (!loc) return;'],
     ['  // eslint-disable-next-line react-hooks/set-state-in-effect, react-hooks/exhaustive-deps\n  useEffect(() => { loadQueue(); }, []);', '  // eslint-disable-next-line react-hooks/set-state-in-effect\n  useEffect(() => { loadQueue(); }, []);'],
@@ -283,7 +309,16 @@ const IDENTITY = [
     ['{r.paused && <div style={{ fontSize: 11, fontWeight: 600, color: \'var(--amber, #F5A623)\', marginTop: 3 }}>{pauseWords({ siteName: siteName(locId), everywhere: r.paused.everywhere, until: r.paused.until })}</div>}', ''],
     [' disabled={!!r.paused} placeholder="0"', ' placeholder="0"'],
   ]],
-  ['backoffice/sections/Recipes.jsx', [
+  // v5.11.91 (Drop 2): today's Recipes.jsx lives in produce/RecipesSite.jsx with the RecipeFactsLine import
+  // and render line (the read only allergen line and Checked button, map 4.5); the move edits are undone first
+  ['backoffice/sections/produce/RecipesSite.jsx', [
+    ['                {draft.id && <RecipeFactsLine siteId={locId} recipeId={draft.id} menuItemId={draft.recipeType === \'MENU\' ? draft.menuItemId : null} />}\n', ''],
+    ['import RecipeFactsLine from \'./RecipeFactsLine\';\n', ''],
+    ['export default function RecipesSite({ siteId = null } = {}) {', 'export default function Recipes({ siteId = null } = {}) {'],
+    ['from \'../../StockScope\'', 'from \'../StockScope\''],
+    ['from \'../stock/LockLine\'', 'from \'./stock/LockLine\''],
+    ['from \'../reports/reportKit\'', 'from \'./reports/reportKit\''],
+    ['from \'../../../', 'from \'../../', 11],
     ['\nimport { useSiteStockContext } from \'../../lib/stock/siteContext\';\nimport { useStockScope } from \'../StockScope\';\nimport LockLine from \'./stock/LockLine\';', ''],
     ['function UnitSelect({ value, onChange, width = 110, disabled = false }) {', 'function UnitSelect({ value, onChange, width = 110 }) {'],
     [' disabled={disabled} style={{ ...field, width, ...(disabled ? { opacity: 0.55 } : {}) }}>', ' style={{ ...field, width }}>'],
@@ -313,6 +348,9 @@ const IDENTITY = [
   ]],
 ];
 // sha256 of each file on main (f1a8f397, v5.11.84), the text a one site company runs today.
+// The two moved files are hashed from their first import line: their leading comment was rewritten by the move.
+const BODY_ONLY = new Set(['backoffice/sections/produce/RecipesSite.jsx', 'backoffice/sections/produce/BatchesSite.jsx']);
+const bodyOf = (rel, text) => (BODY_ONLY.has(rel) ? text.slice(text.search(/^import /m)) : text);
 const MAIN_SHA = {
   'backoffice/sections/StockTransfers.jsx': 'dfacd4310789ca9e2f5f01a5c1ba94e24428f0ab1e394ed275a5089f001bf970',
   'backoffice/sections/StockAreas.jsx': 'f533a7cdf429dc85d9345664d64195724554993c9f1fa79d9653be946329d5c8',
@@ -322,15 +360,15 @@ const MAIN_SHA = {
   'backoffice/sections/Invoices.jsx': 'f18b04a253ad2845fcc2a94e061b12a9b30fda49f32e14824278313ef6a2513f',
   'backoffice/sections/PurchaseOrders.jsx': '5f5aaa8b6610886b3889e4c3e1dfaa9143fca50a3a7da645afaef61739dda6e7',
   'backoffice/sections/StockReports.jsx': '4d5ee256d24e938fa084a879d5f2252fd30b8865f58517f25088c331ea9010fc',
-  'backoffice/sections/Batches.jsx': '570b260356a6b6023294116207d11f85cc3514e3b45e9f93425c33825f2731fb',
+  'backoffice/sections/produce/BatchesSite.jsx': 'e1823ac578bc1964c1d77f8b9381273b84033fe408fe42bfc013705c6430d718',   // from the first import line (the moved file's comment is new)
   'backoffice/sections/OrderPad.jsx': '80255c600c51dde811b5bd2581cff78ad09219ca4d6c2c392203850601c3f9d3',
-  'backoffice/sections/Recipes.jsx': '79c0e3ee3e44b1caef5301c204380ecf1a2c1d6436a0a55cbc7b2f37d3cb88cf',
+  'backoffice/sections/produce/RecipesSite.jsx': 'b24f073d44369903c38f7a317da52f95d6ba94058f4b7c080ed8d27fefe34f87',   // from the first import line (the moved file's comment is new)
   'components/PosWasteModal.jsx': '124ba00c2c42d0bb8cc821d8c4e54e14be1a2c37e7a5584ca6b7e17cd7b6d1a8',
 };
 
 test('one site companies: every edited screen is main\'s text once its inert Drop 1 edits are undone (sha256)', () => {
   for (const [rel, edits] of IDENTITY) {
-    let text = readAbs(path.join(SRC, rel));
+    let text = bodyOf(rel, readAbs(path.join(SRC, rel)));
     for (const [now, main, times = 1] of edits) {
       const n = text.split(now).length - 1;
       assert.equal(n, times, `${rel}: "${now.slice(0, 70)}" is there ${times} time(s), found ${n}`);
@@ -397,6 +435,9 @@ if (transformSync) {
       const parent = context.parentURL;
       if ((specifier.startsWith('./') || specifier.startsWith('../')) && (inSrcUrl(parent) || MAIN_TEXT.has(parent))) {
         const base = new URL(specifier, parent.split('?')[0]);
+        // Drop 2: the allergen line under the recipe lines draws nothing until the database answers (and
+        // nothing at all before the migration), so it is a stand in here, as oneSiteIdentityRecipes.test.js has it
+        if (base.href === new URL('backoffice/sections/produce/RecipeFactsLine', SRC_URL).href) return { url: 'stub:facts-line', shortCircuit: true };
         for (const ext of ['', '.js', '.jsx', '/index.js', '/index.jsx']) {
           const u = new URL(base.href + ext);
           if (isFileUrl(u)) return { url: u.href, shortCircuit: true };
@@ -406,6 +447,7 @@ if (transformSync) {
       return next(specifier, context);
     },
     load(url, context, next) {
+      if (url === 'stub:facts-line') return { format: 'module', source: 'export default function RecipeFactsLine() { return null; }', shortCircuit: true };
       if (MAIN_TEXT.has(url)) return { format: 'module', source: compileJsx(url, MAIN_TEXT.get(url)), shortCircuit: true };
       if (inSrcUrl(url)) {
         const file = fileURLToPath(url.split('?')[0]);
@@ -420,7 +462,7 @@ if (transformSync) {
 
 /** main's text of a screen: today's file with its listed Drop 1 edits undone (the sha256 above pins it). */
 function mainTextOf(rel) {
-  let text = readAbs(path.join(SRC, rel));
+  let text = bodyOf(rel, readAbs(path.join(SRC, rel)));
   for (const [now, main] of IDENTITY.find(([r]) => r === rel)[1]) text = text.split(now).join(main);
   assert.equal(sha(text), MAIN_SHA[rel], `${rel}: main's text`);
   return text;
@@ -437,9 +479,11 @@ const RENDERED = [
   ['backoffice/sections/PurchaseOrders.jsx', {}],
   ['backoffice/sections/Invoices.jsx', {}],
   ['backoffice/sections/PriceChanges.jsx', {}],
-  ['backoffice/sections/Recipes.jsx', {}],
-  ['backoffice/sections/Batches.jsx', {}],
+  ['backoffice/sections/produce/RecipesSite.jsx', {}],
+  ['backoffice/sections/produce/BatchesSite.jsx', {}],
 ];
+// main's text of a moved file still imports from backoffice/sections/, so it is compiled from there
+const MAIN_HOME = { 'backoffice/sections/produce/RecipesSite.jsx': 'backoffice/sections/__main_Recipes.jsx', 'backoffice/sections/produce/BatchesSite.jsx': 'backoffice/sections/__main_Batches.jsx' };
 
 test('rendered: a one site company gets main\'s HTML on every edited screen, through the provider and the gate', { skip: transformSync ? false : 'rolldown is not installed here, so the JSX cannot be compiled (the sha256 proof above still holds)' }, async () => {
   const { StockScopeProvider, StockSiteGate } = await import(new URL('backoffice/StockScope.jsx', SRC_URL).href);
@@ -455,7 +499,7 @@ test('rendered: a one site company gets main\'s HTML on every edited screen, thr
   const access = { role: 'manager', sections: ['inventory', 'produce', 'purchasing'] };
   let screens = 0;
   for (const [rel, props] of RENDERED) {
-    const mainUrl = new URL(rel.replace(/([^/]+)\.jsx$/, '__main_$1.jsx'), SRC_URL).href;
+    const mainUrl = new URL(MAIN_HOME[rel] || rel.replace(/([^/]+)\.jsx$/, '__main_$1.jsx'), SRC_URL).href;
     MAIN_TEXT.set(mainUrl, mainTextOf(rel));
     const Main = (await import(mainUrl)).default;
     const Now = (await import(new URL(rel, SRC_URL).href)).default;
@@ -477,7 +521,7 @@ test('rendered: a one site company gets main\'s HTML on every edited screen, thr
   // the harness draws the live code: a multi site login without company rights in Produce sees the
   // Recipes lock line, which today's screen never had
   const multi = { ...read, multi: true, level: 'sites', editors: ['Test Owner'], sites: [read.sites[0], { id: 'site-two', name: 'Second Site', status: 'active' }] };
-  const Recipes = (await import(new URL('backoffice/sections/Recipes.jsx', SRC_URL).href)).default;
+  const Recipes = (await import(new URL('backoffice/sections/produce/RecipesSite.jsx', SRC_URL).href)).default;
   const locked = html(createElement(StockScopeProvider, { value: { scope: multi, choice: { kind: 'site', id: HOME }, setChoice: noop, access, userId: 'user-1', go: noop, reload: noop } },
     createElement(StockSiteGate, { oneSiteId: HOME }, (id) => createElement(Recipes, { siteId: id }))));
   assert.match(locked, /Set by head office\. Ask Test Owner to change it\./);

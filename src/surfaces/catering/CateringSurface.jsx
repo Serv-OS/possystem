@@ -25,6 +25,8 @@ import { itemAllergenIds, unsafeAllergenIds } from '../../lib/kioskAllergens';
 import { useMenuText, itemName as tItemName, itemDescription as tItemDescription, categoryLabel as tCategoryLabel } from '../../lib/menuText';
 import { loadMenuTranslationRows, customerMenuLang, applyMenuLang, languageLabel } from '../../lib/menuTextLoad';
 import { readAllRows } from '../../lib/venueMenuRead';
+// v5.11.91 (multi site stock Drop 2): the stock facts laid over the products; kcal where the venue shows calories.
+import { withFacts, showCalories as venueShowsCalories, kcalWords, KCAL_NOTE_EN } from '../../lib/menuStockFacts';
 import OnlineItemSheet from '../online/OnlineItemSheet';
 import OnlineCart from '../online/OnlineCart';
 import CateringCheckout from './CateringCheckout';
@@ -110,6 +112,7 @@ export default function CateringSurface({ location }) {
   const [nextDate, setNextDate] = useState(null);        // suggested next free date when the chosen one is full
   const [checkout, setCheckout] = useState(false);
   const [branding, setBranding] = useState(null);
+  const [showKcal, setShowKcal] = useState(false);   // v5.11.91: the venue's Show calories setting
   const [notice, setNotice] = useState('');     // why checkout is blocked (shown on the event card)
   const eventRef = useRef(null);
 
@@ -141,7 +144,8 @@ export default function CateringSurface({ location }) {
           supabase.from('config_pushes').select('snapshot->instructionGroupDefs').eq('location_id', opsId).order('created_at', { ascending: false }).limit(1).maybeSingle(), // v5.5.891: defs only, not the whole menu snapshot
           // v5.7.34: default_tax_profile_id rides the branding read — the venue
           // default the reviewer flagged missing (cascade step 4 on this surface).
-          supabase.from('locations').select('receipt_branding, default_tax_profile_id').eq('id', opsId).maybeSingle(),
+          // v5.11.91: pos_settings rides it too (Show calories).
+          supabase.from('locations').select('receipt_branding, default_tax_profile_id, pos_settings').eq('id', opsId).maybeSingle(),
           // v5.6.69: stock levels — OnlineItemSheet's numeric option cap (v5.5.872)
           // was INERT on catering because stockLevels was never passed.
           supabase.from('stock_levels').select('item_id, par, remaining').eq('location_id', opsId),
@@ -157,7 +161,10 @@ export default function CateringSurface({ location }) {
         // dropped home-menu categories with no link row (same bug OnlineSurface had, v5.5.786).
         setCats((catRows || []).filter((c) =>
           !menuIds.length || menuIds.includes(c.menu_id) || allow.has(c.id) || (c.parent_id && allow.has(c.parent_id))));
-        setItems(itemRows || []);
+        // v5.11.91 (multi site stock Drop 2): the stock facts laid over the products (the allergens
+        // the recipe at this site adds, kcal); a failed facts read keeps the typed rows.
+        setItems(await withFacts(supabase, opsId, itemRows || []));
+        setShowKcal(venueShowsCalories(brandRow?.pos_settings));
         // v5.11.81: a good first read is taken at once; anything else is left to the loader below.
         if (Array.isArray(taxRows) && taxRows.length) { setTaxRates(taxRows.filter((r) => r && r.active !== false)); setRatesState('ok'); }
         // v5.7.33: both reads must have succeeded - never keep line-less profiles.
@@ -428,6 +435,8 @@ export default function CateringSurface({ location }) {
             </button>
           </div>
         )}
+        {/* v5.11.91 (multi site stock Drop 2): the 2,000 kcal line once, where the venue shows calories. */}
+        {showKcal && <div style={{ marginBottom: 10, fontSize: 12.5, color: '#64748b', fontWeight: 600 }}>{KCAL_NOTE_EN}</div>}
         {/* Allergy filter — only when the menu carries allergen tags */}
         {knownAllergens.length > 0 && (
           <div style={{ marginBottom: 16 }}>
@@ -477,7 +486,7 @@ export default function CateringSurface({ location }) {
                             ⚠ {item.allergens.length === 1 ? item.allergens[0] : `${item.allergens.length} allergens`}
                           </div>
                         )}
-                        <div style={{ marginTop: 8, fontWeight: 800, color: theme.brand }}>{sold ? 'Sold out' : money(cardPrice(item), cur)}{!sold && limText && <span style={{ fontSize: 11.5, fontWeight: 600, color: '#94a3b8', marginLeft: 8 }}>{limText}</span>}</div>
+                        <div style={{ marginTop: 8, fontWeight: 800, color: theme.brand }}>{sold ? 'Sold out' : money(cardPrice(item), cur)}{!sold && limText && <span style={{ fontSize: 11.5, fontWeight: 600, color: '#94a3b8', marginLeft: 8 }}>{limText}</span>}{!sold && showKcal && item.kcal != null && <span style={{ fontSize: 11.5, fontWeight: 600, color: '#94a3b8', marginLeft: 8 }}>{kcalWords(item.kcal)}</span>}</div>
                       </div>
                     </button>
                   );
@@ -502,7 +511,7 @@ export default function CateringSurface({ location }) {
 
       {openItem && (
         <OnlineItemSheet item={openItem} theme={theme} allItems={items} instGroupDefs={instGroupDefs} eightySixIds={eightySix}
-          avoidAllergens={activeAllergens}
+          avoidAllergens={activeAllergens} showCalories={showKcal}
           stockLevels={stockLevels} cart={cart} priceFor={priceFor}
           onClose={() => setOpenItem(null)} onAdd={(it, mods, qty, notes) => { addToCart(it, mods, qty, notes); setOpenItem(null); }} />
       )}

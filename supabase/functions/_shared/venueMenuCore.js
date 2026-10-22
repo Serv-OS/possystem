@@ -13,6 +13,12 @@
 // mapper in src/lib/rowMapping.js and that test tells you to change this one too.
 //
 // Pure: the Supabase client is passed in. No Deno, no imports beyond this folder.
+//
+// v5.11.91 (multi site stock Drop 2): the stock facts (menu_item_stock_facts, the allergens and kcal
+// the recipe at this site adds) are read as an optional leg and laid over the products by the one
+// shared rule (./menuStockFacts.js), exactly as src/lib/venueMenuRead.js does for Push to POS.
+
+import { mergeStockFacts } from './menuStockFacts.js';
 
 // ── The row mappers (copies of src/lib/rowMapping.js, kept equal by test) ───
 
@@ -183,11 +189,11 @@ export function withItemExtras(rows, from, keys = ITEM_EXTRA_KEYS) {
   return changed ? out : rows;
 }
 
-// src/lib/venueMenuRead.js menuSnapshotFromRead.
+// src/lib/venueMenuRead.js menuSnapshotFromRead (the stock facts laid over the products, as there).
 export function menuSnapshotFromRead(read, { extrasFrom = null } = {}) {
   return {
     menus: read.menus || [],
-    menuItems: withItemExtras(read.menuItems || [], extrasFrom),
+    menuItems: mergeStockFacts(withItemExtras(read.menuItems || [], extrasFrom), read.stockFacts),
     menuCategories: read.menuCategories || [],
     modifierGroupDefs: read.modifierGroupDefs || [],
     taxRates: read.locationId ? taggedVenueRows(read.taxRates || [], read.locationId) : (read.taxRates || []),
@@ -229,7 +235,9 @@ export async function readAllRows(make, { page = PAGE, max = 50 } = {}) {
  * Everything publish needs about one venue, as the database holds it, in RAW rows (snake case):
  *   menus, categories, items (archived included), links (of this venue's menus), groups,
  *   taxRates (active), taxProfiles + taxProfileLines (null when unreadable), location
- *   (default_tax_profile_id, timezone, org_id, name), printRouting (row or null), printers.
+ *   (default_tax_profile_id, timezone, org_id, name), printRouting (row or null), printers,
+ *   stockFacts (v5.11.91: the venue's menu_item_stock_facts rows, or null; optional, never a
+ *   failed part).
  * ok is true only when every required part read. The orders match readVenueMenu so the menu part
  * of the snapshot is the same as Push to POS for the same rows.
  */
@@ -241,7 +249,7 @@ export async function readVenueRaw(client, locationId) {
     return out;
   }
   const from = (t) => client.from(t);
-  const [menus, cats, items, groups, rates, routing, printers, loc] = await Promise.all([
+  const [menus, cats, items, groups, rates, routing, printers, loc, facts] = await Promise.all([
     readAllRows(() => from('menus').select('*').eq('location_id', locationId).order('sort_order').order('id')),
     readAllRows(() => from('menu_categories').select('*').eq('location_id', locationId).order('sort_order').order('label').order('id')),
     readAllRows(() => from('menu_items').select('*').eq('location_id', locationId).order('sort_order').order('id')),
@@ -250,11 +258,14 @@ export async function readVenueRaw(client, locationId) {
     readAllRows(() => from('print_routing').select('*').eq('location_id', locationId).order('id')),
     readAllRows(() => from('printers').select('*').eq('location_id', locationId).order('id')),
     readAllRows(() => from('locations').select('id,org_id,name,timezone,default_tax_profile_id').eq('id', locationId).order('id')),
+    // v5.11.91: optional (not in `legs`): the stock facts of this venue's products.
+    readAllRows(() => from('menu_item_stock_facts').select('*').eq('location_id', locationId).order('menu_item_id')),
   ]);
   const legs = { menus, categories: cats, items, 'modifier groups': groups, 'tax rates': rates, 'print routing': routing, printers, venue: loc };
   for (const [name, r] of Object.entries(legs)) if (!r.rows) { out.failed.push(name); out.error = out.error || r.error; }
   out.menus = menus.rows; out.categories = cats.rows; out.items = items.rows; out.groups = groups.rows;
   out.taxRates = rates.rows; out.printers = printers.rows;
+  out.stockFacts = facts.rows || null;
   out.printRouting = routing.rows ? (routing.rows[0] || null) : null;
   out.location = loc.rows ? (loc.rows[0] || null) : null;
   if (loc.rows && !loc.rows.length) { out.failed.push('venue'); out.error = out.error || new Error('No such venue'); }
@@ -301,6 +312,7 @@ export function menuReadFromRaw(raw, { resort = false } = {}) {
     menuItems: sortIf((raw.items || []).filter((i) => i && i.archived === false)).map(mapMenuItemRow),
     modifierGroupDefs: sortIf(raw.groups || []).map(mapModifierGroupRow),
     taxRates: (raw.taxRates || []).map(mapTaxRateRow),
+    stockFacts: raw.stockFacts || null,
     ...(Array.isArray(raw.taxProfiles) && Array.isArray(raw.taxProfileLines)
       ? { taxProfiles: assembleTaxProfiles(raw.taxProfiles, raw.taxProfileLines) } : {}),
     ...(raw.location ? { venueDefaultTaxProfileId: raw.location.default_tax_profile_id || null } : {}),

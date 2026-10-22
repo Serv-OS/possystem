@@ -21,6 +21,7 @@ import { channelCancelAlert } from './ezcaterCatering';
 import { closedCheckRefundFields, closedCheckTaxFields, serverTipFields } from './closedCheckRefundFields';
 import { resolvePushSnapshot, isNewerPush } from './configPushReceive';
 import { createMsmTillWatch, startMsmCatchUp, isUnattendedDevice, markSeen } from './msm/msmTillWatch.js';
+import { fetchMenuStockFacts, mergeStockFacts } from './menuStockFacts.js';
 // v5.6.83: the same prepend-only ceiling the store applies. Cross-device inserts and
 // refund echoes land here, so capping only the local sale paths would still let a busy
 // venue grow this array without limit.
@@ -66,6 +67,27 @@ function applyStockRow(s, row) {
   const ids = new Set(s.eightySixIds || []);
   ids.add(row.item_id);
   return { dailyCounts, eightySixIds: Array.from(ids) };
+}
+
+/**
+ * v5.11.91 (multi site stock Drop 2): a push snapshot with the venue's stock facts read fresh
+ * (lib/menuStockFacts.js), so what the till applies carries today's allergens and kcal, not the
+ * ones of the moment the push was built. The products already on this till take the same facts
+ * (never fewer allergens, no price or name touched). Back Office windows keep their typed rows.
+ * A failed or empty read gives the snapshot back exactly as it came. Never throws.
+ */
+async function withPushFacts(store, snapshot, locationId) {
+  const items = snapshot?.menuItems;
+  if (!supabase || !Array.isArray(items) || !items.length || isBackOfficeMode()) return snapshot;
+  try {
+    const { rows } = await fetchMenuStockFacts(supabase, locationId);
+    if (!rows.length) return snapshot;
+    try { store.setState((s) => ({ menuItems: mergeStockFacts(s.menuItems || [], rows) })); } catch { /* the snapshot still carries them */ }
+    const merged = mergeStockFacts(items, rows);
+    return merged === items ? snapshot : { ...snapshot, menuItems: merged };
+  } catch {
+    return snapshot;
+  }
 }
 
 export function startRealtime(store, locationId = LOCATION_ID) {
@@ -225,12 +247,17 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       });
       if (!isNewerPush(push, lastConfigPushAt)) return;
       if (snapshot) {
+        // v5.11.91 (multi site stock Drop 2, open question 6, Peter: yes): the till reads the stock
+        // facts again on every push, so a checked allergen or a kcal figure reaches it without a
+        // new push. One paged read; a failed read keeps the snapshot exactly as it came.
+        const fresh = await withPushFacts(store, snapshot, locationId);
+        if (!isNewerPush(push, lastConfigPushAt)) return;
         const at = Date.parse(push?.created_at || '');
         if (Number.isFinite(at)) lastConfigPushAt = at;
-        store.getState().setConfigUpdate(snapshot);
+        store.getState().setConfigUpdate(fresh);
         // 17 Oct 2026 (Multi site menu): a head office push this till has now heard of (the catch
         // up below never reads it again).
-        if (snapshot?.pushSource?.kind === 'msm') { try { markSeen(localStorage, locationId, push); } catch { /* best effort */ } }
+        if (fresh?.pushSource?.kind === 'msm') { try { markSeen(localStorage, locationId, push); } catch { /* best effort */ } }
         // v5.5.311: Auto-apply on UNATTENDED surfaces (KDS / kiosk / orders /
         // MPOS) — nobody is there to click the ConfigSyncBanner, so without
         // this they never pick up new menu items / production-centre changes
@@ -253,7 +280,7 @@ export function startRealtime(store, locationId = LOCATION_ID) {
             // 17 Oct 2026 (Multi site menu, design step 5): a COUNTER till takes a head office
             // menu update by itself between sales (msm/msmTillWatch.js). An ordinary Push to POS
             // keeps the banner exactly as before (take() returns 'banner' for it).
-            msmWatchFor(store).take(snapshot);
+            msmWatchFor(store).take(fresh);
           }
         } catch { /* leave for manual banner */ }
       }
@@ -281,10 +308,11 @@ export function startRealtime(store, locationId = LOCATION_ID) {
           if (error) throw error;
           return data?.snapshot || null;
         },
-        deliver: (snap) => {
-          store.getState().setConfigUpdate(snap);
+        deliver: async (snap) => {
+          const fresh = await withPushFacts(store, snap, locationId);   // v5.11.91: the facts, as a live push
+          store.getState().setConfigUpdate(fresh);
           if (isUnattendedDevice(localStorage)) store.getState().applyConfigUpdate();
-          else msmWatchFor(store).take(snap);
+          else msmWatchFor(store).take(fresh);
         },
       });
     } catch { /* catch up is best effort; boot still reads the newest push */ }

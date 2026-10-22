@@ -63,6 +63,7 @@ import { promotePaidBooking, markPaymentNeedsRefund, isMissingColumnError, loadB
 // GUEST PRE ORDER CHOICES (10 Sep 2026): sizes and options on a pick are
 // validated here against the dish's real groups, never trusted from the page.
 import { sanitiseChoice, optionGroupIdsFor, matchChoice, MAX_CHOICE_NOTE } from '../_shared/preorderChoices.js';
+import { mergeStockFacts } from '../_shared/menuStockFacts.js';   // v5.11.91 (multi site stock Drop 2)
 import { phoneMatchKey, phoneRegionFromCurrency, phoneRawText } from '../_shared/phoneKey.js';
 import { readCustomerByPhone } from '../_shared/customerPhoneRead.js';
 // 16 Oct 2026: the guest's own change and cancel link (/book?manage=<token>).
@@ -320,7 +321,19 @@ async function choiceFieldsFor(locationId: string, picks: { itemId: unknown; var
       return picks.map(blankChoice);
     }
     // deno-lint-ignore no-explicit-any
-    const rows = (itemsRes.data || []) as any[];
+    let rows = (itemsRes.data || []) as any[];
+    // v5.11.91 (multi site stock Drop 2): the stock facts of this venue's products (the allergens the
+    // recipe at this site adds) laid over the rows by the one shared rule, as the page does. A
+    // database before 20261025a has no table, and a failed read keeps the typed rows.
+    // Only the picked dishes and sizes are read (at most 200 ids, one capped read).
+    try {
+      const factIds = [...new Set(picks.flatMap((p) => [p.itemId, p.variantItemId]).filter((x) => x != null && x !== '').map(String))].slice(0, 200);
+      const { data: facts, error: fErr } = factIds.length
+        ? await db.from('menu_item_stock_facts').select('*').eq('location_id', locationId).in('menu_item_id', factIds).order('menu_item_id').limit(1000)
+        : { data: [], error: null };
+      // deno-lint-ignore no-explicit-any
+      if (!fErr && Array.isArray(facts) && facts.length) rows = mergeStockFacts(rows, facts) as any[];
+    } catch { /* the typed allergens stand */ }
     if (snapRes.error) console.warn('[booking-widget] instruction groups read failed, instructions dropped:', snapRes.error.message);
     // deno-lint-ignore no-explicit-any
     const defsRaw = (snapRes.data as any)?.instructionGroupDefs;

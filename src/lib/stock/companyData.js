@@ -11,7 +11,13 @@
  *   runRecipeSave(deps, draft, loc) the recipe, its lines and its till link in one call
  *   readAll(build)                  a table read past the 1,000 row cap (lifted from Phase 1)
  *   pollJobs(api, ids, onTick)      follows save queue jobs every 3 s until each is done or failed
- *   createStockApi(client)          every call the Drop 1 screens make, one answer shape
+ *   createStockApi(client)          every call the Drop 1 and Drop 2 screens make, one answer shape
+ *
+ * Drop 2 (v5.11.91, contract 2.2): the recipe, batch and prep, allergen and plate cost calls join the
+ * same object (recipesPage, recipeDetail, recipeCost, plateCosts, recipeMissing, recipeFacts,
+ * recipeCard, prepList, batchHow, menuProducts, menuStockFacts, recipeCostHistory, saveRecipe,
+ * archiveRecipe, setRecipeSites, linkProducts, batchSetHow, saveOptionRule, archiveOptionRule,
+ * swapIngredient, makeSizes, prepTick, prepUntick, factsSignoff). Nothing else here changes.
  *
  * Drop 1: 0b is live, so the Drop 0 fallbacks are gone. A database without a function this build
  * calls answers NEEDS_UPDATE ('This needs a database update. Ask ServOS to run it.'), never a
@@ -249,15 +255,84 @@ export function createStockApi(client) {
     archiveCategory: (id, version = null, archived = true) => save('stock_archive_category', { p_id: id, p_version: nil(version), p_archived: archived !== false, p_section: 'inventory' }),
     saveSettings: (orgId, patch, version = null) => save('stock_save_settings', { p_org: orgId, p_patch: patch || {}, p_version: nil(version) }),
     saveCostRule: (orgId, rule, overrideLocationId = null) => save('stock_save_cost_rule', { p_org: orgId, p_rule: rule, p_override_location: overrideLocationId || null }),
+    // Drop 2: 'recipe' is allowed too (a local recipe made a company recipe), named as Produce.
     makeCompanyRecord: (entity, id, version = null) =>
-      save('stock_make_company_record', { p_entity: entity, p_id: id, p_version: nil(version), p_section: entity === 'supplier' ? 'purchasing' : 'inventory' }),
+      save('stock_make_company_record', { p_entity: entity, p_id: id, p_version: nil(version), p_section: sectionOfEntity(entity) }),
     saveGoLiveStep: (locationId, step, version = null) => save('stock_save_golive_step', { p_loc: locationId, p_step: step, p_version: nil(version) }),
     saveSiteGroup: (group) => save('stock_save_site_group', { p_group: group }),
     deleteSiteGroup: (id) => save('stock_delete_site_group', { p_id: id }),
     setStockControl: (userId, level) => save('set_stock_control', { p_user: userId, p_level: level }),
     suggestChange: (entity, id, text) => save('stock_suggest_change', { p_entity: entity, p_id: id, p_text: text }),
     resyncSite: (locationId) => save('stock_resync_site', { p_loc: locationId }),
+    // ── the Drop 2 calls (v5.11.91, contract 2.2): recipes, batch and prep, allergens ──
+    // reads
+    recipesPage: ({ orgId, sites = null, search = null, filters = null, after = null, limit = 100 } = {}) =>
+      read('stock_recipes_page', { p_org: orgId, p_sites: nil(sites), p_search: search || null, p_filters: filters || null, p_after: after || null, p_limit: limit }),
+    recipeDetail: (recipeId) => read('stock_recipe_detail', { p_recipe: recipeId }),
+    recipeCost: (recipeId, sites = null, orderType = null) =>
+      read('stock_recipe_cost', { p_recipe: recipeId, p_sites: nil(sites), p_order_type: orderType || null }),
+    // one page of a site's plate costs (1,000 links a call, keyset on menu_item_id); plateCostsRead.js pages it
+    plateCosts: (locationId, after = null) => read('stock_plate_costs', { p_loc: locationId, p_after: after || null, p_limit: PAGE_ROWS }),
+    recipeMissing: ({ orgId, sites = null, after = null } = {}) =>
+      read('stock_recipe_missing', { p_org: orgId, p_sites: nil(sites), p_after: after || null, p_limit: 100 }),
+    recipeFacts: (recipeId, sites = null) => read('stock_recipe_facts', { p_recipe: recipeId, p_sites: nil(sites) }),
+    recipeCard: (locationId, { menuItemId = null, recipeId = null } = {}) =>
+      read('stock_recipe_card', { p_loc: locationId, p_menu_item_id: menuItemId || null, p_recipe: recipeId || null }),
+    prepList: (locationId, day = null) => read('stock_prep_list', { p_loc: locationId, p_day: day || null }),
+    batchHow: ({ orgId, sites = null, search = null, after = null } = {}) =>
+      read('stock_batch_how', { p_org: orgId, p_sites: nil(sites), p_search: search || null, p_after: after || null, p_limit: 100 }),
+    menuProducts: (orgId, search = null, after = null) =>
+      read('stock_recipe_menu_products', { p_org: orgId, p_search: search || null, p_after: after || null, p_limit: 100 }),
+    // the facts a till product carries at one site (every column); ids at most 200, 1,000 rows a read
+    menuStockFacts: (locationId, ids = null) => {
+      const list = ids == null ? null : [...new Set((ids || []).filter((x) => x != null && x !== '').map(String))].slice(0, MAX_FACT_IDS);
+      if (list && !list.length) return Promise.resolve({ data: [], error: null, needsUpdate: false, conflict: null, queued: [] });
+      return table(() => {
+        let q = from('menu_item_stock_facts').select('*').eq('location_id', String(locationId));
+        if (list) q = q.in('menu_item_id', list);
+        return q.order('menu_item_id').limit(PAGE_ROWS);
+      });
+    },
+    // one recipe's cost at one site, newest day first, over the last `days` venue days (at most 400 rows)
+    recipeCostHistory: (recipeId, locationId, days = 90) => table(() => from('recipe_cost_daily')
+      .select('day, cost, cost_per_yield, sale_price_net, gp_pct, missing')
+      .eq('recipe_id', recipeId).eq('location_id', locationId).gte('day', ymdDaysAgo(days))
+      .order('day', { ascending: false }).limit(COST_HISTORY_ROWS)),
+    // saves
+    saveRecipe: ({ recipe, lines = null, sites = null, version = null, section = 'produce' } = {}) =>
+      save('stock_save_recipe', { p_recipe: { ...(recipe || {}), ...(sites ? { sites } : {}) }, p_lines: nil(lines), p_version: nil(version), p_section: section }),
+    archiveRecipe: (id, version, archived = true, section = 'produce') =>
+      save('stock_archive_recipe', { p_recipe: id, p_version: nil(version), p_archived: archived !== false, p_section: section }),
+    setRecipeSites: (recipeId, changes, version, section = 'produce') =>
+      save('stock_set_recipe_sites', { p_recipe: recipeId, p_changes: changes || [], p_version: nil(version), p_section: section }),
+    linkProducts: (links, section = 'produce') => save('stock_recipe_link_products', { p_links: links || [], p_section: section }),
+    batchSetHow: (recipeId, locationId, how, version) =>
+      save('stock_batch_set_how', { p_recipe: recipeId, p_loc: locationId, p_how: how, p_version: nil(version), p_section: 'produce' }),
+    saveOptionRule: (rule, version = null) => save('stock_save_option_rule', { p_rule: rule, p_version: nil(version), p_section: 'produce' }),
+    archiveOptionRule: (id, version, archived = true) =>
+      save('stock_archive_option_rule', { p_id: id, p_version: nil(version), p_archived: archived !== false, p_section: 'produce' }),
+    swapIngredient: (spec, { preview = true } = {}) => save('stock_swap_ingredient', { p_spec: spec, p_preview: preview !== false, p_section: 'produce' }),
+    makeSizes: (recipeId, sizes, version) => save('stock_make_sizes', { p_recipe: recipeId, p_sizes: sizes || [], p_version: nil(version), p_section: 'produce' }),
+    prepTick: (locationId, recipeId, qty, section = 'produce') => save('stock_prep_tick', { p_loc: locationId, p_recipe: recipeId, p_qty: qty, p_section: section }),
+    prepUntick: (id) => save('stock_prep_untick', { p_id: id }),
+    factsSignoff: (locationId, menuItemId, section = 'produce') => save('stock_facts_signoff', { p_loc: locationId, p_menu_item_id: menuItemId, p_section: section }),
   };
+}
+
+const MAX_FACT_IDS = 200;
+const COST_HISTORY_ROWS = 400;
+
+/** The Back Office section a company record change is named as: item Inventory, supplier Purchasing, recipe Produce. */
+export function sectionOfEntity(entity) {
+  if (entity === 'supplier') return 'purchasing';
+  if (entity === 'recipe') return 'produce';
+  return 'inventory';
+}
+
+/** 'YYYY-MM-DD' of `days` days before today (UTC): a lower bound for a history read, never a venue day rule. */
+export function ymdDaysAgo(days, now = Date.now()) {
+  const n = Math.max(0, Math.floor(Number(days) || 0));
+  return new Date(now - n * 86400000).toISOString().slice(0, 10);
 }
 
 const finishedJob = (j) => j && (j.status === 'done' || j.status === 'failed');

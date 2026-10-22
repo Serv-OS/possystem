@@ -12,6 +12,10 @@
 // clashes, the screen saves again on their version with no question.
 // A login that cannot change company records sees every field greyed (never hidden) under the lock
 // line drawn by ItemPage.
+// Drop 2 (contract 3.4): in a multi site company the allergens come from the supplier items (what
+// each site buys), so the chips become one read only line, 'Allergens: Milk, Gluten · from
+// Freshways (3 sites)', with 'Change them on the Suppliers tab'. The chips stay editable only when
+// the item has no supplier item (stock_item_detail facts.source 'item').
 
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../../../store';
@@ -20,9 +24,9 @@ import { useStockScope } from '../../../StockScope';
 import { stockApi } from '../../../../lib/stock/stockApi';
 import { UNITS, DIMENSIONS } from '../../../../lib/stock/units';
 import {
-  ITEM_TYPES, FIELD_WORDS, detailsDraft, detailsPatch, onTopRows, vatChoices, sameRate, queuedNote,
+  ITEM_TYPES, FIELD_WORDS, detailsDraft, detailsPatch, onTopRows, vatChoices, sameRate, queuedNote, factsLine,
 } from '../../../../lib/stock/itemPageRules';
-import { Btn, Field, ui } from '../stockUi';
+import { Btn, Pill, Field, ui } from '../stockUi';
 import SavedFirstModal from '../SavedFirstModal';
 import CategoriesModal from './CategoriesModal';
 
@@ -35,7 +39,7 @@ const DETAIL_WORDS = Object.freeze(Object.fromEntries(['name', 'category_id', 't
 const off = (locked) => (locked ? { opacity: 0.55, cursor: 'not-allowed' } : null);
 const tickRow = { display: 'flex', gap: 7, alignItems: 'center', fontSize: 13, color: 'var(--t2)' };
 
-export default function ItemDetailsTab({ detail, editable = false, reload, homeSiteId = null }) {
+export default function ItemDetailsTab({ detail, editable = false, reload, homeSiteId = null, onTab = null }) {
   const sc = useStockScope();
   const showToast = useStore((s) => s.showToast);
   const storeRates = useStore((s) => s.taxRates);
@@ -43,6 +47,8 @@ export default function ItemDetailsTab({ detail, editable = false, reload, homeS
   const orgId = item.org_id || sc.orgId || null;
   const locked = !editable;
   const unitLocked = detail?.unit_locked === true;
+  // the allergens come from the supplier items: one read only line instead of the chips (multi site only)
+  const allergenLine = sc.multi ? factsLine(detail) : null;
   const [draft, setDraft] = useState(() => detailsDraft(item));
   const [cats, setCats] = useState({ rows: [], error: null, loading: true });
   const [catsTry, setCatsTry] = useState(0);
@@ -167,6 +173,17 @@ export default function ItemDetailsTab({ detail, editable = false, reload, homeS
         <label style={{ ...tickRow, ...off(locked) }}><input type="checkbox" disabled={locked} checked={draft.returns_to_shelf} onChange={(e) => upd('returns_to_shelf', e.target.checked)} /> Can go back on the shelf after a refund</label>
       </div>
 
+      {allergenLine ? (
+        <Field label="Allergens" hint="From the supplier items each site buys. Every recipe using this item reads them.">
+          <div style={{ ...ui.lockline, gap: 8 }}>
+            <span style={{ color: 'var(--t1)' }}>{allergenLine.words}</span>
+            {allergenLine.needsCheck && <Pill tone="warn">Check again</Pill>}
+            {typeof onTab === 'function'
+              ? <Btn small kind="link" onClick={() => onTab('suppliers')}>{allergenLine.link}</Btn>
+              : <span>{allergenLine.link}</span>}
+          </div>
+        </Field>
+      ) : (
       <Field label="Allergens">
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
           {(ALLERGENS || []).map((a) => {
@@ -183,6 +200,7 @@ export default function ItemDetailsTab({ detail, editable = false, reload, homeS
           })}
         </div>
       </Field>
+      )}
 
       {editable && (
         <div style={{ ...ui.row, marginTop: 4 }}>

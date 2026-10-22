@@ -45,6 +45,7 @@ import { rankQuickPicks, DAYPARTS } from '../../lib/quickRank';
 import { getLocationConfig } from '../../lib/locationTime';
 // v4.7.8: per-menu pricing tier UI (item-level)
 import PerMenuPricingTiers from './PerMenuPricingTiers';
+import MenuItemFactsPanel from './stock/MenuItemFactsPanel';   // v5.11.91 (multi site stock Drop 2): 'From the recipe at this site'
 import MenuImportModal from '../components/MenuImportModal';
 // v5.8.65: category kiosk photo (saves on its own, not part of CatModal's form)
 import CategoryPhotoField from '../components/CategoryPhotoField';
@@ -55,6 +56,8 @@ import { orderOptionFlow } from '../../lib/optionFlow';
 // ex-VAT net-price basis as Inventory → Reports → Recipe GP, so the two screens
 // can never disagree about a dish's margin.
 import { fetchRecipes, buildCostingCtx, costRecipeWith } from '../../lib/stock/recipes';
+import { stockApi } from '../../lib/stock/stockApi';
+import { readPlateCostMap, costOrFallback } from '../../lib/stock/plateCostsRead';
 import { resolveTaxRate, netOf, formatRateLabel } from '../../lib/tax';
 import { productsWithoutOwnRate } from '../../lib/venueTaxRates';
 import { planBulkTax, bulkTaxWords, isSharedCopy, taxRefreshed } from '../../lib/bulkTax';
@@ -1711,6 +1714,9 @@ function ListItemView({ items, menuItems, selItemId, setSelItemId, catColor, add
 // Returns { [menuItemId]: plateCost } once recipes + costing context load.
 // `null` while loading so the UI can stay quiet rather than flashing "No recipe"
 // on every row before the data arrives.
+// v5.11.91 (multi site stock Drop 2, contract 3.1): the costs come from the database first
+// (stock_plate_costs, the same figure the drainer and the reports use); a database before Drop 2
+// answers needsUpdate and today's maths run instead. Any other refusal shows no cost, never a wrong one.
 function useRecipeCosts() {
   const [costs, setCosts] = useState(null);
   useEffect(() => {
@@ -1720,15 +1726,19 @@ function useRecipeCosts() {
         if (isMock) { if (alive) setCosts({}); return; }
         const loc = tabVenue() || await getLocationId().catch(() => null);
         if (!loc || loc === 'loc-demo') { if (alive) setCosts({}); return; }
-        const [recRes, ctx] = await Promise.all([fetchRecipes(loc), buildCostingCtx(loc)]);
+        const today = async () => {
+          const [recRes, ctx] = await Promise.all([fetchRecipes(loc), buildCostingCtx(loc)]);
+          const map = new Map();
+          (recRes?.data || []).forEach(r => {
+            if (r.recipeType !== 'MENU' || !r.menuItemId) return;
+            const c = costRecipeWith(r, ctx);
+            if (c && !c.error && Number.isFinite(c.totalCost)) map.set(String(r.menuItemId), c.totalCost);
+          });
+          return { data: map, error: null };
+        };
+        const read = await costOrFallback(() => readPlateCostMap(stockApi, loc), today);
         if (!alive) return;
-        const map = {};
-        (recRes?.data || []).forEach(r => {
-          if (r.recipeType !== 'MENU' || !r.menuItemId) return;
-          const c = costRecipeWith(r, ctx);
-          if (c && !c.error && Number.isFinite(c.totalCost)) map[String(r.menuItemId)] = c.totalCost;
-        });
-        setCosts(map);
+        setCosts(read.data ? Object.fromEntries(read.data) : {});
       } catch { if (alive) setCosts({}); }
     })();
     return () => { alive = false; };
@@ -3636,6 +3646,9 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                 );
               })}
             </div>
+            {/* v5.11.91 (multi site stock Drop 2): read only, what the stock recipe linked at this
+                venue adds (menu_item_stock_facts). Never written by a menu save. */}
+            <MenuItemFactsPanel locationId={tabVenue()} menuItemId={item.id} />
           </div>
           </MsmLocked>
         )}

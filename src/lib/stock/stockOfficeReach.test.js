@@ -191,7 +191,7 @@ test('manager-snapshot: the everything rule for the whole snapshot; Stock contro
   assert.match(src, /floor: full \? floor : null,/);
   assert.match(src, /team: full \? \{ punches, shifts: teamShifts, ratesMinor, pendingTimesheets, pendingTimeOff, breakPolicy \} : null,/);
   assert.match(src, /ops: full \? ops : null,/);
-  assert.match(src, /kitchen: \{ items: kitchenItems, deliveries: kitchenDeliveries, batches: kitchenBatches, trackedItems \},/);
+  assert.match(src, /kitchen: \{ items: kitchenItems, deliveries: kitchenDeliveries, batches: kitchenBatches, trackedItems, recipes: kitchenRecipes \},/);
   // the phone's Count stock button reads the tracked item count
   assert.match(src, /\.select\('id', \{ count: 'exact', head: true \}\)\s+\.eq\('location_id', loc\)\.is\('archived_at', null\)\.eq\('is_tracked', true\);/);
   // archived supplier prices and bridges are left out of the order lists; the open order pack codes keep them (history)

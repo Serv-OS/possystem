@@ -12,6 +12,8 @@
 
 import { jsPDF } from 'jspdf';
 import { PAPER, DEFAULT_PRINT_CONFIG, PRINT_FONTS, priceOf } from './printMenu.js';
+// v5.11.91 (multi site stock Drop 2): '<n> kcal' per item and the 2,000 kcal line once, where the venue shows calories.
+import { kcalWords, KCAL_NOTE_EN } from '../../supabase/functions/_shared/menuStockFacts.js';
 
 export { PAPER, DEFAULT_PRINT_CONFIG, PRINT_FONTS, priceOf };
 
@@ -86,6 +88,7 @@ export function buildMenuPdf(cfg, data) {
     if (c.showDescription && it.description) h += wrap(it.description, colW, 'italic', SZ.desc).length * lh(SZ.desc);
     if (variants.length) h += lh(SZ.variant);
     if (c.showAllergens && Array.isArray(it.allergens) && it.allergens.length) h += lh(SZ.alg);
+    if (c.showCalories && it.kcal != null && kcalWords(it.kcal)) h += lh(SZ.alg);
     return h + itemGap;
   }
   function catHeaderHeight(k) {
@@ -176,6 +179,7 @@ export function buildMenuPdf(cfg, data) {
       setFont('normal', SZ.variant, [70, 70, 70]); const vl = wrap(parts.join('    '), colW, 'normal', SZ.variant); doc.text(vl, x, yy + lh(SZ.variant) * 0.7); yy += vl.length * lh(SZ.variant);
     }
     if (c.showAllergens && Array.isArray(it.allergens) && it.allergens.length) { setFont('italic', SZ.alg, [138, 138, 138]); doc.text(`Allergens: ${it.allergens.join(', ')}`, x, yy + lh(SZ.alg) * 0.7); yy += lh(SZ.alg); }
+    if (c.showCalories && it.kcal != null && kcalWords(it.kcal)) { setFont('normal', SZ.alg, [138, 138, 138]); doc.text(kcalWords(it.kcal), x, yy + lh(SZ.alg) * 0.7); yy += lh(SZ.alg); }
     return yy + itemGap;
   }
 
@@ -217,6 +221,7 @@ export function buildMenuPdf(cfg, data) {
   // ── disclaimers + footer (full width, after the last content) ────────────────
   const notes = [];
   if (c.allergenNote.show && c.allergenNote.text) notes.push({ t: c.allergenNote.text, footer: false });
+  if (c.showCalories) notes.push({ t: KCAL_NOTE_EN, footer: false });   // v5.11.91: once, in the footer
   if (c.serviceNote.show && c.serviceNote.text) notes.push({ t: c.serviceNote.text, footer: false });
   if (c.footer) notes.push({ t: c.footer, footer: true });
   if (notes.length) {
