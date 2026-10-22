@@ -3,9 +3,10 @@
 // MULTI SITE STOCK, Drop 1 (migration 20261024a): reading an import file into the rows the database
 // stages (stock_import_stage). Map 4.3 and 8.2 step 11, design 2.4 and A18, contract 3.5.
 //
-//   A ServOS CSV, or an export from Nory or MarketMan, becomes rows of four kinds: items, suppliers,
-//   supplier items (a supplier's pack and price of an item) and pars. A recipe file is recognised
-//   only to be skipped ("Recipes come in with the recipe update.", Drop 2).
+//   A ServOS CSV, or an export from Nory or MarketMan, becomes rows of five kinds: items, suppliers,
+//   supplier items (a supplier's pack and price of an item), pars and, from Drop 2 (migration
+//   20261025a, contract 3.4), recipes: one ingredient a line in the file, grouped here into one
+//   staged row per recipe with its lines, kind, yield, made item, sites and till product.
 //   Nothing here writes or decides: the database checks every staged row (new, change, same, skip
 //   or problem) and the check screen shows its answer. These rules only read the file, match its
 //   headings to our fields, turn text into values ('1.38', '6 x 1L', 'Mon-Fri', '2pm') and say in
@@ -105,16 +106,18 @@ export function parseRatePercent(text) {
 
 /**
  * What each kind of file can carry (our field names). `required`: the file is refused for that kind
- * without them. `oneOf`: at least one of these too. `skip`: recognised only to be skipped.
+ * without them. `oneOf`: at least one of these too.
  * 'site' on items and suppliers is a location column (rows per site): the sites it names are where
- * the item is stocked, or where the supplier can deliver.
+ * the item is stocked, or where the supplier can deliver. A recipe file has one ingredient a line:
+ * name, ingredient, qty and unit are needed; kind (dish, batch, prep), type (food, drink, meal deal),
+ * yield, made item, sites and till product ride on any line of the recipe (the first value wins).
  */
 export const CSV_COLUMNS = Object.freeze({
   items: Object.freeze({ required: ['name'], fields: ['name', 'category', 'base_unit', 'type', 'sku', 'barcode', 'purchase_vat', 'allergens', 'shelf_life_days', 'count_pack', 'count_pack_size', 'sites', 'site'] }),
   suppliers: Object.freeze({ required: ['name'], fields: ['name', 'email', 'phone', 'contact_name', 'payment_terms_days', 'account_number', 'min_order_value', 'delivery_days', 'cutoff_time', 'sites', 'site'] }),
   supplier_items: Object.freeze({ required: ['supplier', 'item'], oneOf: ['pack_price', 'price_with_vat'], fields: ['supplier', 'item', 'item_sku', 'supplier_sku', 'supplier_product_name', 'pack_description', 'pack_size', 'pack_qty', 'inner_qty', 'inner_unit', 'base_unit', 'pack_price', 'price_with_vat', 'currency', 'purchase_vat', 'includes_vat', 'site', 'sites'] }),
   pars: Object.freeze({ required: ['item', 'site'], oneOf: ['par_level', 'reorder_point', 'min_level'], fields: ['item', 'item_sku', 'site', 'par_level', 'reorder_point', 'min_level'] }),
-  recipes: Object.freeze({ required: ['name'], fields: ['name'], skip: true }),
+  recipes: Object.freeze({ required: ['name', 'ingredient', 'qty', 'unit'], fields: ['name', 'kind', 'type', 'ingredient', 'item_sku', 'qty', 'unit', 'usable_pct', 'order_types', 'yield_qty', 'yield_unit', 'made_item', 'sites', 'till_product'] }),
 });
 
 export const IMPORT_KINDS = Object.freeze(['items', 'suppliers', 'supplier_items', 'pars', 'recipes']);
@@ -135,6 +138,8 @@ export const FIELD_WORDS = Object.freeze({
   pack_qty: 'Packs per case', inner_qty: 'Each pack holds', inner_unit: 'Unit of the pack', pack_price: 'Price',
   price_with_vat: 'Price with VAT', currency: 'Currency', includes_vat: 'Price includes VAT', par_level: 'Par',
   reorder_point: 'Reorder at', min_level: 'Min',
+  kind: 'Kind', ingredient: 'Ingredient', qty: 'Amount', unit: 'Unit', usable_pct: 'Usable %', order_types: 'Order types',
+  yield_qty: 'Yield', yield_unit: 'Yield unit', made_item: 'Made item', till_product: 'Till product',
 });
 
 /** 'These columns are missing: Supplier, Price.' ('' when none). oneOf groups read 'Par or Reorder at or Min'. */
@@ -208,7 +213,22 @@ const CSV_ALIASES = {
     reorder_point: ['reorder at', 'reorder point', 'reorder level', 'reorder'],
     min_level: ['min', 'minimum', 'min level', 'min on hand'],
   },
-  recipes: { name: ['recipe name', 'recipe', 'name', 'dish'] },
+  recipes: {
+    name: ['recipe name', 'recipe', 'name', 'dish'],
+    kind: ['kind', 'recipe kind', 'recipe type'],
+    type: ['type', 'food or drink', 'food type'],
+    ingredient: ['ingredient', 'ingredient name', 'item', 'stock item', 'component'],
+    item_sku: ['item sku', 'ingredient sku', 'sku', 'item code'],
+    qty: ['qty', 'quantity', 'amount', 'qty per portion'],
+    unit: ['unit', 'uom', 'unit of measure', 'measure'],
+    usable_pct: ['usable %', 'usable pct', 'usable percent', 'usable'],
+    order_types: ['order types', 'order type', 'applies to', 'channels'],
+    yield_qty: ['yield', 'yield qty', 'portions', 'makes', 'batch size'],
+    yield_unit: ['yield unit', 'portion unit', 'batch unit'],
+    made_item: ['made item', 'output item', 'makes item', 'produces'],
+    sites: ['sites', 'at sites', 'locations'],
+    till_product: ['till product', 'menu item', 'pos item', 'sold as', 'product'],
+  },
 };
 
 // Nory: no self serve stock export (its help page "What can I export from Nory and where?"); its
@@ -260,7 +280,23 @@ const NORY_ALIASES = {
     reorder_point: ['reorder level', 'reorder point'],
     min_level: ['minimum stock', 'min'],
   },
-  recipes: { name: ['recipe name', 'recipe', 'name'] },
+  // Nory recipe exports: Recipe name, Ingredient, Quantity, UOM, Portions (its help page's words).
+  recipes: {
+    name: ['recipe name', 'recipe', 'name'],
+    kind: ['recipe type', 'type', 'kind'],
+    type: ['food or drink', 'food type', 'category'],
+    ingredient: ['ingredient', 'ingredient name', 'item name', 'item'],
+    item_sku: ['item code', 'sku'],
+    qty: ['quantity', 'qty', 'amount'],
+    unit: ['uom', 'unit', 'unit of measure'],
+    usable_pct: ['usable %', 'yield %', 'usable'],
+    order_types: ['channels', 'order types'],
+    yield_qty: ['portions', 'yield', 'servings', 'batch size'],
+    yield_unit: ['portion unit', 'yield unit', 'batch unit'],
+    made_item: ['output item', 'produces', 'made item'],
+    sites: ['locations', 'sites'],
+    till_product: ['menu item', 'pos item', 'sold as'],
+  },
 };
 
 // MarketMan: the names of its inventory item export and API (GetInventoryItems: Name, CategoryName,
@@ -314,7 +350,24 @@ const MARKETMAN_ALIASES = {
     reorder_point: ['reorder point', 'reorder level'],
     min_level: ['min on hand', 'minimum on hand'],
   },
-  recipes: { name: ['recipe name', 'recipe', 'menu item', 'prep name'] },
+  // MarketMan recipe exports (menu items and preps): Recipe Name or Menu Item, Ingredient, Quantity,
+  // UOM, Portions.
+  recipes: {
+    name: ['recipe name', 'recipe', 'menu item', 'prep name', 'name'],
+    kind: ['recipe type', 'type', 'kind'],
+    type: ['food or drink', 'food type'],
+    ingredient: ['ingredient', 'ingredient name', 'item name', 'inventory item', 'inventory item name'],
+    item_sku: ['item code', 'sku'],
+    qty: ['quantity', 'qty', 'amount'],
+    unit: ['uom', 'uom name', 'unit'],
+    usable_pct: ['yield %', 'usable %', 'usable'],
+    order_types: ['channels', 'order types'],
+    yield_qty: ['portions', 'yield', 'servings', 'batch size'],
+    yield_unit: ['yield uom', 'portion uom', 'yield unit'],
+    made_item: ['prep item', 'output item', 'made item'],
+    sites: ['buyers', 'locations', 'sites'],
+    till_product: ['pos item', 'menu item name', 'sold as'],
+  },
 };
 
 /** The heading lists by source ('csv', 'nory', 'marketman'), then kind, then field. */
@@ -404,10 +457,12 @@ export function fileKinds(source, headerRow) {
 const low = (v) => String(v ?? '').trim().toLowerCase();
 
 // Is this row really one of this kind? An item list that names no supplier on a row makes no
-// supplier item there; a row with no par, reorder or min makes no par.
+// supplier item there; a row with no par, reorder or min makes no par. A recipe line needs an
+// ingredient (its recipe name may come from the line above, filled down in rowsFor).
 function hasContent(kind, r) {
   if (kind === 'supplier_items') return !!(r.supplier && r.item);
   if (kind === 'pars') return !!(r.item && r.site && (r.par_level || r.reorder_point || r.min_level));
+  if (kind === 'recipes') return !!(r.name && (r.ingredient || r.yield_qty || r.made_item || r.till_product));
   return !!r.name;
 }
 
@@ -473,11 +528,16 @@ export function rowsFor(source, kind, table) {
   const unknown = table[0].map((h, i) => (used.has(i) || !String(h ?? '').trim() ? null : String(h).trim())).filter(Boolean);
   const missing = missingOf(k, at);
   const raw = [];
+  let lastName = null;
   table.slice(1).forEach((r, idx) => {
     const o = { _row: idx + 2 };
     for (const [f, i] of Object.entries(at)) { const v = String(r?.[i] ?? '').trim(); if (v !== '') o[f] = v; }
+    // a recipe file writes the name once and leaves it empty on the lines under it: fill it down
+    if (k === 'recipes') { if (o.name) lastName = o.name; else if (lastName && o.ingredient) o.name = lastName; }
     if (hasContent(k, o)) raw.push(o);
   });
+  // recipe lines are never folded: every ingredient line stays (toStageRows groups them by recipe)
+  if (k === 'recipes') return { rows: raw, missing, unknown, merged: 0 };
   const { rows, merged } = dedupe(k, raw, { perSite: source === 'nory' || source === 'marketman' });
   return { rows, missing, unknown, merged };
 }
@@ -673,6 +733,52 @@ export function typeOf(text) {
   return TYPE_BY_WORD.get(t) || undefined;
 }
 
+const RECIPE_KINDS = {
+  dish: ['dish', 'dishes', 'menu', 'menu item', 'menu recipe', 'plate', 'product', 'sale', 'sales', 'sold'],
+  batch: ['batch', 'batches', 'batch recipe', 'bulk', 'production'],
+  prep: ['prep', 'preps', 'prep recipe', 'sub recipe', 'sub-recipe', 'subrecipe', 'component', 'intermediate'],
+};
+const RECIPE_KIND_BY_WORD = new Map(Object.entries(RECIPE_KINDS).flatMap(([k, words]) => words.map((w) => [w, k])));
+
+/** A recipe kind as typed ('Dish', 'BATCH', 'Sub recipe') to 'dish', 'batch' or 'prep'; null for empty; undefined when not one. */
+export function recipeKindOf(text) {
+  const t = String(text ?? '').trim().toLowerCase().replace(/[\s_]+/g, ' ');
+  if (!t) return null;
+  return RECIPE_KIND_BY_WORD.get(t) || RECIPE_KIND_BY_WORD.get(t.replace(/-/g, ' ')) || undefined;
+}
+
+const FOOD_KINDS = {
+  food: ['food', 'foods', 'kitchen', 'eat', 'meal', 'meals'],
+  drink: ['drink', 'drinks', 'beverage', 'beverages', 'bev', 'wet', 'bar', 'coffee', 'tea', 'alcohol', 'beer', 'wine', 'spirits', 'soft drinks'],
+  meal_deal: ['meal deal', 'meal_deal', 'meal-deal', 'deal', 'combo', 'bundle', 'set meal', 'set menu'],
+};
+const FOOD_KIND_BY_WORD = new Map(Object.entries(FOOD_KINDS).flatMap(([k, words]) => words.map((w) => [w, k])));
+
+/** A recipe type as typed ('Food', 'Beverage', 'Meal deal') to 'food', 'drink' or 'meal_deal'; null for empty; undefined when not one. */
+export function foodKindOf(text) {
+  const t = String(text ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+  if (!t) return null;
+  return FOOD_KIND_BY_WORD.get(t) || undefined;
+}
+
+/** A percent as typed ('92', '92%', '0.92' is NOT read as 92) to a number from 0 to 100; null for empty; NaN for junk. */
+export function pctOf(text) {
+  const t = String(text ?? '').replace('%', '').trim();
+  if (t === '') return null;
+  const v = Number(t);
+  if (!Number.isFinite(v) || v < 0 || v > 100) return Number.NaN;
+  return v;
+}
+
+/** Order types as typed ('Takeaway; Delivery', 'dine-in, takeaway') to lower case words, once each; [] for empty. */
+export function orderTypesOf(text) {
+  const out = [];
+  for (const part of String(text ?? '').split(/[;,/|]+|\s+and\s+/i).map((x) => x.trim().toLowerCase()).filter(Boolean)) {
+    if (!out.includes(part)) out.push(part);
+  }
+  return out;
+}
+
 /** Allergens as typed ('Milk; Gluten, soya') to the 14 ids; { ids, bad } (bad: words that are not one of the 14). */
 export function allergensOf(text) {
   const t = String(text ?? '').trim();
@@ -820,6 +926,78 @@ function parData(r, problems) {
   };
 }
 
+// One recipe line from one file row: { item, item_sku, qty, unit, usable_pct, order_types }, or null
+// when the row has no ingredient (a row that only carries the recipe's own fields).
+function recipeLine(r, problems) {
+  if (!str(r.ingredient)) return null;
+  const qty = numberOf(r.qty);
+  if (qty === null) say(problems, r._row, 'recipe', `${r.ingredient} has no amount. Left empty.`);
+  else if (!Number.isFinite(qty) || qty < 0) say(problems, r._row, 'recipe', `"${r.qty}" is not an amount. Left empty.`);
+  // a unit ServOS knows becomes its code; anything else goes as typed, so the database can say
+  // 'a unit ServOS does not know' or match it to a pack name
+  const u = unitOf(r.unit);
+  const usable = pctOf(r.usable_pct);
+  if (Number.isNaN(usable)) say(problems, r._row, 'recipe', `"${r.usable_pct}" is not a percent from 0 to 100. Left empty.`);
+  return {
+    item: str(r.ingredient), item_sku: str(r.item_sku),
+    qty: qty != null && Number.isFinite(qty) && qty >= 0 ? qty : null,
+    unit: u || str(r.unit),
+    usable_pct: Number.isNaN(usable) ? null : usable,
+    order_types: orderTypesOf(r.order_types),
+  };
+}
+
+// The recipe's own fields, from the first row of its group that carries each one.
+function recipeHead(rows, problems) {
+  const first = (f) => rows.find((r) => str(r[f]))?.[f] ?? null;
+  const firstRow = (f) => rows.find((r) => str(r[f]))?._row ?? rows[0]._row;
+  let kind = recipeKindOf(first('kind'));
+  let type = foodKindOf(first('type'));
+  // a 'Type' column that says Batch or Prep is the kind, not food or drink
+  if (type === undefined && kind == null && recipeKindOf(first('type')) !== undefined) { kind = recipeKindOf(first('type')); type = null; }
+  if (kind === undefined) { say(problems, firstRow('kind'), 'recipe', `kind "${first('kind')}" is not Dish, Batch or Prep. Read as Dish.`); kind = null; }
+  if (type === undefined) { say(problems, firstRow('type'), 'recipe', `type "${first('type')}" is not Food, Drink or Meal deal. Left empty.`); type = null; }
+  const y = numberOf(first('yield_qty'));
+  if (Number.isNaN(y) || (y != null && y <= 0)) say(problems, firstRow('yield_qty'), 'recipe', `"${first('yield_qty')}" is not a yield. Left empty.`);
+  const yu = unitOf(first('yield_unit'));
+  return {
+    name: str(first('name')),
+    kind: kind || 'dish',
+    food_kind: type || null,
+    yield_qty: y != null && Number.isFinite(y) && y > 0 ? y : null,
+    yield_unit: yu || str(first('yield_unit')),
+    output_item: str(first('made_item')),
+    till_product: str(first('till_product')),
+  };
+}
+
+/** One staged recipe per name: its lines in file order, the contract 1.5 `data` shape, and the sites it names. */
+function recipeRows(rows, { lookup, problems, rowBase }) {
+  const groups = new Map();
+  for (const r of rows) {
+    const key = low(r.name);
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(r);
+  }
+  const out = [];
+  for (const group of groups.values()) {
+    const head = recipeHead(group, problems);
+    const lines = group.map((r) => recipeLine(r, problems)).filter(Boolean);
+    if (!lines.length) say(problems, group[0]._row, 'recipe', `${head.name} has no ingredient lines.`);
+    const names = [...new Set(group.flatMap((r) => String(r.sites ?? '').split(/[;|]+/)).map((x) => x.trim()).filter(Boolean))];
+    const s = names.length ? sitesOf(names, lookup) : { ids: null, unknown: [] };
+    if (s.unknown.length) say(problems, group[0]._row, 'recipe', `no site called ${s.unknown.map((n) => `"${n}"`).join(', ')}.`);
+    out.push({
+      row_no: Math.trunc(Number(rowBase) || 0) + group[0]._row,
+      kind: 'recipe',
+      data: { ...head, lines, sites: names },
+      sites: s.ids,
+    });
+  }
+  return out;
+}
+
 /**
  * The rows of one kind as stock_import_stage takes them: [{ row_no, kind, data, sites }].
  *   kind: 'items' (or 'item'), 'suppliers', 'supplier_items', 'pars', 'recipes'
@@ -832,26 +1010,29 @@ function parData(r, problems) {
  *   rowBase: added to each file line (KIND_BLOCK when one file stages several kinds)
  * data has the contract shapes (item, supplier, supplier_item, par, recipe). sites is null when the
  * row names none (the job's ticked sites apply), or the ids it names.
+ * Recipes (Drop 2): the ingredient lines of one recipe name become ONE staged row with the contract
+ * 1.5 shape { name, kind, food_kind, yield_qty, yield_unit, output_item, lines: [{ item, item_sku,
+ * qty, unit, usable_pct, order_types }], sites: [names], till_product }; row_no is its first line.
  */
 export function toStageRows(kind, rows, { siteIdByName = null, problems = null, rowBase = 0 } = {}) {
   const k = fileKind(kind);
   const stageKind = STAGE_KIND[k];
   if (!stageKind) return [];
   const lookup = siteLookup(siteIdByName);
+  const numbered = (rows || []).map((r, i) => ({ ...r, _row: Number.isFinite(Number(r?._row)) ? Number(r._row) : i + 2 }));
+  if (k === 'recipes') return recipeRows(numbered, { lookup, problems, rowBase });
   const out = [];
-  (rows || []).forEach((r, i) => {
-    const row = { ...r, _row: Number.isFinite(Number(r?._row)) ? Number(r._row) : i + 2 };
+  numbered.forEach((row) => {
     let data;
     if (k === 'items') data = itemData(row, problems);
     else if (k === 'suppliers') data = supplierData(row, problems);
     else if (k === 'supplier_items') data = supplierItemData(row, problems);
-    else if (k === 'pars') data = parData(row, problems);
-    else data = { name: str(row.name) };
+    else data = parData(row, problems);
     // where it goes: the sites column, else (items, suppliers) the sites its rows named
     let cell = row.sites;
     if (!str(cell) && (k === 'items' || k === 'suppliers') && Array.isArray(row._sites) && row._sites.length) cell = row._sites;
     else if (!str(cell) && (k === 'items' || k === 'suppliers') && row.site) cell = [row.site];
-    const s = k === 'recipes' ? { ids: null, unknown: [] } : sitesOf(cell, lookup);
+    const s = sitesOf(cell, lookup);
     if (s.unknown.length) say(problems, row._row, stageKind, `no site called ${s.unknown.map((n) => `"${n}"`).join(', ')}.`);
     if ((k === 'pars' || k === 'supplier_items') && data.site && lookup.size && !lookup.has(data.site.toLowerCase()) && ![...lookup.values()].includes(data.site)) {
       say(problems, row._row, stageKind, `no site called "${data.site}".`);

@@ -13,6 +13,9 @@ import { reportSave } from '../../lib/saveHealth';
 import { fetchMenuCategories, fetchMenuItems } from '../../lib/db';
 import { DEFAULT_PRINT_CONFIG, PRINT_FONTS, PAPER } from '../../lib/printMenu';
 import { buildMenuPdf } from '../../lib/printMenuPdf';
+// v5.11.93 (multi site stock Drop 2): the stock facts laid over the products (allergens the recipe at
+// this site adds, kcal); the Calories toggle starts from the venue's Show calories setting.
+import { withFacts, showCalories as venueShowsCalories } from '../../lib/menuStockFacts';
 
 const CUR = { gbp: '£', usd: '$', eur: '€', aud: '$', cad: '$', nzd: '$' };
 
@@ -93,7 +96,7 @@ export default function PrintMenu() {
       const [c, it, locRes] = await Promise.all([
         fetchMenuCategories(id),
         fetchMenuItems(id),
-        supabase.from('locations').select('name, currency, print_menu_config').eq('id', id).maybeSingle(),
+        supabase.from('locations').select('name, currency, print_menu_config, pos_settings').eq('id', id).maybeSingle(),
       ]);
       // menu_categories stores the display name in `label` (not `name`); normalise so
       // the checklist AND the printed headers both read `name`.
@@ -101,14 +104,19 @@ export default function PrintMenu() {
         .filter(x => !x.parent_id && !x.is_special)
         .map(x => ({ ...x, name: x.label ?? x.name ?? 'Category' }))
         .sort((a, z) => (a.sort_order || 0) - (z.sort_order || 0)));
-      setItems(it?.data || []);
+      // v5.11.93: the stock facts ride the products (never fewer allergens than typed).
+      setItems(await withFacts(supabase, id, it?.data || []));
       const loc = locRes?.data || {};
       setVenueName(loc.name || 'Menu');
       setCurrencySymbol(CUR[String(loc.currency || 'gbp').toLowerCase()] || '£');
-      if (loc.print_menu_config && typeof loc.print_menu_config === 'object') {
-        setCfg({ ...DEFAULT_PRINT_CONFIG, ...loc.print_menu_config,
-          allergenNote: { ...DEFAULT_PRINT_CONFIG.allergenNote, ...(loc.print_menu_config.allergenNote || {}) },
-          serviceNote: { ...DEFAULT_PRINT_CONFIG.serviceNote, ...(loc.print_menu_config.serviceNote || {}) } });
+      // v5.11.93: the Calories toggle starts from the venue's Show calories setting; a saved print
+      // config that has its own answer keeps it.
+      const kcalDefault = venueShowsCalories(loc.pos_settings);
+      const saved = (loc.print_menu_config && typeof loc.print_menu_config === 'object') ? loc.print_menu_config : null;
+      if (saved || kcalDefault) {
+        setCfg({ ...DEFAULT_PRINT_CONFIG, showCalories: kcalDefault, ...(saved || {}),
+          allergenNote: { ...DEFAULT_PRINT_CONFIG.allergenNote, ...(saved?.allergenNote || {}) },
+          serviceNote: { ...DEFAULT_PRINT_CONFIG.serviceNote, ...(saved?.serviceNote || {}) } });
       }
       // Branding (logo + colour) lives on the platform location's online_branding.
       try {
@@ -300,6 +308,7 @@ export default function PrintMenu() {
             <Toggle on={cfg.showPrice} label="Prices" set={v => set({ showPrice: v })} />
             <Toggle on={cfg.leaders} label="Dotted line to the price" set={v => set({ leaders: v })} />
             <Toggle on={cfg.showAllergens} label="Allergens (per item)" set={v => set({ showAllergens: v })} />
+            <Toggle on={cfg.showCalories} label="Calories" set={v => set({ showCalories: v })} />
             <Toggle on={cfg.showDietary} label="Dietary badges (GF / V / VG)" set={v => set({ showDietary: v })} />
           </div>
 

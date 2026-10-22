@@ -57,7 +57,8 @@ export default function ItemUsedInTab({ detail }) {
     const on = (row.sites || []).filter((s) => s && s.on_here !== false).map((s) => s.location_id);
     const here = sc.oneSite?.id && on.includes(sc.oneSite.id) ? sc.oneSite.id : on.find((id) => scopeIds.includes(id));
     if (here) sc.setChoice({ kind: 'site', id: here });
-    sc.go('recipes');
+    // Drop 2: the recipe opens on its own page, on the Ingredients tab, at the site picked here.
+    sc.go('recipes', { open: { recipeId: row.recipe_id, tab: 'ingredients', siteId: here || null } });
   };
 
   return (

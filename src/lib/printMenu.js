@@ -16,6 +16,9 @@
 // Dietary badge resolution (GF/V/VG/DF from item tags) — shared with the
 // menu board + online storefront via src/lib/dietary.js (pure, no DOM).
 import { dietaryBadges } from './dietary';
+// v5.11.93 (multi site stock Drop 2): '<n> kcal' per item and the 2,000 kcal line, where the venue
+// shows calories (the figures come from the stock recipe linked at this site).
+import { kcalWords, KCAL_NOTE_EN } from '../../supabase/functions/_shared/menuStockFacts.js';
 
 export const PRINT_FONTS = {
   serif:      { label: 'Elegant serif',  css: "Georgia, 'Times New Roman', serif" },
@@ -44,6 +47,7 @@ export const DEFAULT_PRINT_CONFIG = {
   showAllergens: true,
   showPrice: true,
   showDietary: false,        // GF/V/VG badges from tags
+  showCalories: false,       // '<n> kcal' per item and the 2,000 kcal line once (v5.11.93; starts from the venue's Show calories)
   leaders: true,             // dotted leader between name and price
   fontScale: 1,              // overall text size — 0.9 (S) | 1 (M) | 1.15 (L)
   itemGap: 6,                // px — vertical space below each item
@@ -124,7 +128,9 @@ export function buildPrintMenuHtml(cfg, data) {
     }).join('')}</div>` : '';
     const alg = (c.showAllergens && Array.isArray(it.allergens) && it.allergens.length)
       ? `<div class="pm-alg">Allergens: ${esc(it.allergens.join(', '))}</div>` : '';
-    return `<div class="pm-item">${nameRow}${desc}${varHtml}${alg}</div>`;
+    const kcal = (c.showCalories && it.kcal != null && kcalWords(it.kcal))
+      ? `<div class="pm-kcal">${esc(kcalWords(it.kcal))}</div>` : '';
+    return `<div class="pm-item">${nameRow}${desc}${varHtml}${alg}${kcal}</div>`;
   };
 
   const catHtml = (k) => `
@@ -136,6 +142,7 @@ export function buildPrintMenuHtml(cfg, data) {
 
   const disclaimers = [
     c.allergenNote.show && c.allergenNote.text ? `<div class="pm-note">${esc(c.allergenNote.text)}</div>` : '',
+    c.showCalories ? `<div class="pm-note">${esc(KCAL_NOTE_EN)}</div>` : '',
     c.serviceNote.show && c.serviceNote.text ? `<div class="pm-note">${esc(c.serviceNote.text)}</div>` : '',
     c.footer ? `<div class="pm-footer">${esc(c.footer)}</div>` : '',
   ].filter(Boolean).join('');
@@ -272,6 +279,7 @@ export function buildPrintMenuHtml(cfg, data) {
   .pm-variants { font-size: ${z(10.5)}px; color: #444; margin-top: 2px; display: flex; flex-wrap: wrap; gap: 4px 12px; }
   .pm-variant b { font-weight: 700; }
   .pm-alg { font-size: ${z(9)}px; color: #8a8a8a; font-style: italic; margin-top: 1px; }
+  .pm-kcal { font-size: ${z(9)}px; color: #8a8a8a; margin-top: 1px; }
   .pm-notes { padding-top: 8px; border-top: 1px solid #ddd; margin-top: ${Math.max(10, sectionGap)}px; }
   .pm-note { font-size: ${z(9)}px; color: #777; margin-top: 3px; }
   .pm-footer { font-size: ${z(9.5)}px; color: #555; margin-top: 6px; text-align: center; font-weight: 600; }

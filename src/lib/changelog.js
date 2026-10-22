@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.93',
+    date: '21 Oct 2026',
+    items: [
+      "Stock, recipes for companies with more than one site (Drop 2). A company with one site keeps exactly today's Recipes and Batches screens, with one new line under the ingredients: the allergens the recipe holds, and a Checked button.",
+      "Recipes: one list for the whole company, with a Recipe missing tab for products that sell with no recipe. Each match waits for one click (Link matched); nothing is linked by itself. Each recipe has its own page: Details, Ingredients, Sites, Allergens and nutrition, Recipe card and Changes. Tick a recipe on or off at a site, pick its till product, Make sizes, Swap an ingredient, Clone, and options such as oat milk in place of milk.",
+      "Batch and prep: one grid of every batch recipe with Bought in, Made here or Made to order for each site. Each site gets a Prep list with Done ticks on the venue day, and batch and PPDS labels on the Label printer.",
+      "Allergens and calories: each supplier item has What is in it (allergens, May contain, diets, ingredients and nutrition). Every recipe using it shows them at every site. An allergen is never taken off by itself: a warning asks someone to check. The till item info, kiosk, online, QR, catering, booking widget, menu boards, print menu and HubRise all read them. Show calories in Location settings turns on kcal and the 2,000 kcal line.",
+      "Recipe cards on the till, the kitchen screen and the Manager app, at that venue only, with no costs. Plate costs in Menu Manager, the Multi site menu and Stock reports now come from the database. Adding a product to a site in the Multi site menu ticks its company recipe there.",
+      "Nothing on these screens moves an on hand, cost, ledger or count figure by itself, and no login is changed. Needs the database update 20261025a (after 20261024a and the stock drainer update), then manager-snapshot, manager-approve, booking-widget, msm-publish, hubrise-catalog-push, hubrise-reconcile and stock-nightly deployed.",
+    ],
+  },
+  {
     v: '5.11.92',
     date: '22 Oct 2026',
     items: [

@@ -207,6 +207,12 @@ test('ticketLine: allergens come out, item notes stay as modifier lines, object 
   assert.equal(l.qty, 2);
   assert.equal(l.index, 3);
   assert.equal(ticketLine({ name: 'X', mods: 'Oat milk' }).mods[0], 'Oat milk');
+  // v5.11.93 (multi site stock Drop 2): the till product id rides the line for the recipe card button
+  assert.equal(ticketLine({ name: 'X', itemId: 'm-1' }).itemId, 'm-1');
+  assert.equal(ticketLine({ name: 'X', id: 'm-2' }).itemId, 'm-2', 'an older row names it id');
+  assert.equal(ticketLine({ name: 'X', itemId: 'm-1', id: 'm-2' }).itemId, 'm-1', 'itemId wins');
+  assert.equal(ticketLine({ name: 'X' }).itemId, null);
+  assert.equal(l.itemId, null);
 });
 
 test('courseGroups: firing first, hold after, voided lines left off', () => {

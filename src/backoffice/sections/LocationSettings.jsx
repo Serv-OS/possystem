@@ -9,6 +9,7 @@ import { isValidSlug, suggestSlug } from '../../lib/customerUrl';
 import { CUSTOMER_ROOT } from '../../lib/env';
 import { CURRENCIES, money, setActiveCurrency } from '../../lib/currency';
 import SiteGroupsCard from './stock/SiteGroupsCard';
+import CaloriesCard from './stock/CaloriesCard';
 
 // v5.7.29: the venue timezone drives EVERY business-time decision in the
 // system (menu schedules, dayparts, booking slots, report days, auto-capture
@@ -551,6 +552,7 @@ export default function LocationSettings() {
         setClosedDateInput={setClosedDateInput}
       />
 
+      <CaloriesCard />
       {/* Online ordering / QR code surfaces — Phase 2 */}
       <OnlineOrderingCard
         locationName={location?.name}

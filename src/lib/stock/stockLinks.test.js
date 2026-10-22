@@ -6,8 +6,8 @@
 //     once; peekOpen only looks.
 //   - A supplier's Items tab opens an item's page, and an item's Suppliers tab opens a supplier's
 //     page, each only when the login can open that route.
-//   - Both routers open a record asked for on arrival, on the multi site branch only: a one site
-//     company's branch comes first and is untouched.
+//   - The routers open a record asked for on arrival, on the multi site branch only: a one site
+//     company's branch comes first and is untouched (Drop 2, v5.11.93: Recipes too, { recipeId, tab }).
 // Run: npm test.
 
 import { test } from 'node:test';
@@ -21,6 +21,7 @@ const read = (rel) => fs.readFileSync(path.join(here, rel), 'utf8');
 const SCOPE = read('../../backoffice/StockScope.jsx');
 const ITEMS = read('../../backoffice/sections/StockItems.jsx');
 const SUPPLIERS = read('../../backoffice/sections/Suppliers.jsx');
+const RECIPES = read('../../backoffice/sections/Recipes.jsx');   // v5.11.93 (Drop 2): the recipes router opens a record too
 const SUPPLIER_ITEMS = read('../../backoffice/sections/stock/suppliers/SupplierItemsTab.jsx');
 const ITEM_SUPPLIERS = read('../../backoffice/sections/stock/items/ItemSuppliersTab.jsx');
 const USED_IN = read('../../backoffice/sections/stock/items/ItemUsedInTab.jsx');
@@ -39,7 +40,7 @@ test('StockScope: a record waits only for a route this login can open, and is ta
 });
 
 test('the routers open a record asked for only after the one site branch', () => {
-  for (const [src, route, key] of [[ITEMS, 'stock-items', 'itemId'], [SUPPLIERS, 'suppliers', 'id']]) {
+  for (const [src, route, key] of [[ITEMS, 'stock-items', 'itemId'], [SUPPLIERS, 'suppliers', 'id'], [RECIPES, 'recipes', 'recipeId']]) {
     const body = src.slice(src.indexOf('export default function '));
     const oneSite = body.indexOf('if (!sc.multi) return ');
     const arrival = body.indexOf(`if (!open && sc.peekOpen?.('${route}')?.${key}) return <OpenOnArrival take={sc.takeOpen} onOpen={setOpen} />;`);
@@ -59,7 +60,7 @@ test('a supplier\'s Items tab opens the item page; an item\'s Suppliers tab open
 });
 
 test('no em or en dash in this test or the files it reads', () => {
-  for (const src of [SCOPE, ITEMS, SUPPLIERS, SUPPLIER_ITEMS, ITEM_SUPPLIERS, USED_IN, LIST, read('./stockLinks.test.js')]) {
+  for (const src of [SCOPE, ITEMS, SUPPLIERS, RECIPES, SUPPLIER_ITEMS, ITEM_SUPPLIERS, USED_IN, LIST, read('./stockLinks.test.js')]) {
     assert.doesNotMatch(src, /[\u2013\u2014]/);
   }
 });

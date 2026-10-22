@@ -1,8 +1,13 @@
 import { useState, useRef } from 'react';
 import { useStore } from '../store';
 import { ALLERGENS, CAT_META } from '../data/seed';
-import { ITEM_RECIPES } from '../data/seed';
 import { money } from '../lib/currency';
+// v5.11.93 (multi site stock Drop 2): the recipe card for staff comes from the stock recipe linked at
+// this site (stock_recipe_card, read with the till's own device session; lib/recipeCard.js). The
+// seed's ITEM_RECIPES stays in src/data/seed.js for the demo venue but is no longer read here.
+import { supabase, getActiveLocationSync } from '../lib/supabase';
+import { useRecipeCard, buildRows, cardSteps, cardKcalWords, portionHeading } from '../lib/recipeCard';
+import { kcalWords } from '../lib/menuStockFacts';
 
 // ── Set daily count numpad ────────────────────────────────────────────────────
 function CountSetter({ itemId, current, onClose }) {
@@ -76,7 +81,12 @@ export default function ItemInfoModal({ item, is86, onToggle86, onClose, onAddTo
   const { dailyCounts } = useStore();
   const [tab, setTab] = useState('info');   // info | recipe | count
   const m = CAT_META[item.cat] || {};
-  const recipe = ITEM_RECIPES[item.id];
+  // The card: null when nothing is linked here, when the database has no Drop 2 yet, or when this
+  // session may not see it (then the tab is hidden). Never a cost or a price.
+  const { card } = useRecipeCard(getActiveLocationSync(), item?.id, { client: supabase });
+  const recipe = card;
+  // '<n> kcal': from the card, else the figure the stock facts laid over the product (store row).
+  const kcalLine = cardKcalWords(card) || kcalWords(item?.kcal);
   const count  = dailyCounts[item.id];
 
   // v4.6.5 follow-up: long-press passes the bare menu item (no .variants array —
@@ -145,12 +155,10 @@ export default function ItemInfoModal({ item, is86, onToggle86, onClose, onAddTo
             </div>
           </div>
 
-          {/* Prep time if recipe exists */}
-          {recipe && (
+          {/* v5.11.93: '<n> kcal' when the recipe card or the stock facts carry it */}
+          {kcalLine && (
             <div style={{ display:'flex', gap:12, marginTop:10 }}>
-              {recipe.prepTime && <div style={{ fontSize:11, color:'var(--t4)', display:'flex', alignItems:'center', gap:4 }}><span>⏱</span>Prep {recipe.prepTime}m</div>}
-              {recipe.cookTime>0 && <div style={{ fontSize:11, color:'var(--t4)', display:'flex', alignItems:'center', gap:4 }}><span>🔥</span>Cook {recipe.cookTime}m</div>}
-              {recipe.calories && <div style={{ fontSize:11, color:'var(--t4)', display:'flex', alignItems:'center', gap:4 }}><span>⚡</span>{recipe.calories} kcal</div>}
+              <div style={{ fontSize:11, color:'var(--t4)', display:'flex', alignItems:'center', gap:4 }}><span>⚡</span>{kcalLine}</div>
             </div>
           )}
         </div>
@@ -178,13 +186,6 @@ export default function ItemInfoModal({ item, is86, onToggle86, onClose, onAddTo
           {/* ── Info tab ── */}
           {tab==='info' && (
             <>
-              {/* Story / extra description */}
-              {recipe?.story && (
-                <div style={{ padding:'12px 14px', background:'var(--bg3)', borderRadius:12, border:'1px solid var(--bdr)', marginBottom:16, fontSize:13, color:'var(--t2)', lineHeight:1.6, fontStyle:'italic' }}>
-                  "{recipe.story}"
-                </div>
-              )}
-
               {/* Allergens */}
               <div style={{ marginBottom:16 }}>
                 <div style={{ fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:8 }}>Allergens</div>
@@ -245,13 +246,13 @@ export default function ItemInfoModal({ item, is86, onToggle86, onClose, onAddTo
             </>
           )}
 
-          {/* ── Recipe tab ── */}
+          {/* ── Recipe tab (v5.11.93: the stock recipe card for staff) ── */}
           {tab==='recipe' && recipe && (
             <>
-              {/* Ingredients */}
+              {/* The build, in the unit as written */}
               <div style={{ marginBottom:20 }}>
-                <div style={{ fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:10 }}>Ingredients (1 portion)</div>
-                {recipe.recipe.map((r,i) => (
+                <div style={{ fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:10 }}>{portionHeading(recipe)}</div>
+                {buildRows(recipe).map((r,i) => (
                   <div key={i} style={{ display:'flex', alignItems:'baseline', gap:10, padding:'7px 0', borderBottom:'1px solid var(--bdr)' }}>
                     <div style={{ width:64, flexShrink:0, textAlign:'right' }}>
                       <span style={{ fontSize:13, fontWeight:800, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>
@@ -259,7 +260,7 @@ export default function ItemInfoModal({ item, is86, onToggle86, onClose, onAddTo
                       </span>
                       {r.unit && <span style={{ fontSize:11, color:'var(--t4)', marginLeft:3 }}>{r.unit}</span>}
                     </div>
-                    <div style={{ fontSize:13, color:'var(--t2)', flex:1 }}>{r.ingredient}</div>
+                    <div style={{ fontSize:13, color:'var(--t2)', flex:1 }}>{r.name}</div>
                   </div>
                 ))}
               </div>
@@ -267,7 +268,8 @@ export default function ItemInfoModal({ item, is86, onToggle86, onClose, onAddTo
               {/* Method */}
               <div>
                 <div style={{ fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:10 }}>Method</div>
-                {recipe.method.map((step, i) => (
+                {cardSteps(recipe.method).length === 0 && <div style={{ fontSize:12, color:'var(--t4)' }}>No method written yet.</div>}
+                {cardSteps(recipe.method).map((step, i) => (
                   <div key={i} style={{ display:'flex', gap:12, marginBottom:12 }}>
                     <div style={{ width:24, height:24, borderRadius:'50%', background:m.color?`${m.color}22`:'var(--bg3)', border:`1.5px solid ${m.color||'var(--bdr)'}`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:800, color:m.color||'var(--t3)', flexShrink:0, marginTop:1 }}>
                       {i+1}

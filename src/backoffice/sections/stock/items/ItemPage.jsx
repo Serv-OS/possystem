@@ -130,7 +130,7 @@ export default function ItemPage({ itemId, startTab = 'sites', focusSiteId = nul
   };
 
   const showLock = !editable && (tab === 'details' || tab === 'packs' || tab === 'suppliers');
-  const common = { detail, editable, reload: load, focusSiteId, orgCtx, homeSiteId, tz };
+  const common = { detail, editable, reload: load, focusSiteId, orgCtx, homeSiteId, tz, onTab: setTab };
   const title = (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
       <span>{item.name}</span>

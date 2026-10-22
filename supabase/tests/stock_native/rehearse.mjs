@@ -36,6 +36,11 @@
 // --drainer fails when the drainer file is missing (without it the step is skipped then). STOCKN_DRAINER
 // and STOCKN_DRAINER_ROLLBACK point at other copies of the two files.
 //
+// Drop 2 (20261025a, step 8) then runs on another copy of the live state: the drainer file first, as
+// Peter runs them, then Drop 2 as one paste and its check row (contract 1.11), every venue figure, menu,
+// msm and login row as before; its rollback (the 15 bodies back by md5) and Drop 2 again. STOCKN_D2 and
+// STOCKN_D2_ROLLBACK point at other copies of the two files.
+//
 // A copy taken AFTER 0a ran live (20 Oct 2026: its site rows carry company_ref, and fetch_demo.sh then
 // also copies the company records and the venue clock) is loaded onto a base with 0a already in, as Ops
 // is. Step 3 then proves what 0a left on the real rows instead of linking them again: every site row has
@@ -56,6 +61,7 @@ import {
 } from './base.mjs';
 import { jsParts, REPLACED } from './drainer.mjs';
 import { insertRow, basketBookedSql } from './channels.mjs';
+import { D2_REPLACED, D2_SHAPE } from './drop2.mjs';
 
 const BASE_ONLY = process.argv.includes('--base-only');
 const DEMO = process.env.STOCKN_DEMO;
@@ -68,6 +74,8 @@ const FILES = {
   d1Rb: process.env.STOCKN_D1_ROLLBACK || MIG('20261024a_OPS_stock_native_1_ROLLBACK.sql'),
   d: process.env.STOCKN_DRAINER || MIG('20261023a_OPS_stock_drainer_v2.sql'),
   dRb: process.env.STOCKN_DRAINER_ROLLBACK || MIG('20261023a_OPS_stock_drainer_v2_ROLLBACK.sql'),
+  d2: process.env.STOCKN_D2 || MIG('20261025a_OPS_stock_native_2.sql'),
+  d2Rb: process.env.STOCKN_D2_ROLLBACK || MIG('20261025a_OPS_stock_native_2_ROLLBACK.sql'),
 };
 const DRAINER = process.argv.includes('--drainer');
 const CHECKS = process.env.STOCKN_CHECKS || null;
@@ -291,6 +299,82 @@ function linkedSteps() {
 }
 
 // Step 7 (run after Drop 1, below): the drainer release on a copy of the live state.
+// Drop 2 (20261025a) on a copy of the live state, in Peter's order: the drainer file first (it ships
+// before Drop 2), then Drop 2 as one paste and its check row (contract 1.11), every venue figure, menu,
+// msm and login row as before; then its rollback (the 15 bodies back by md5, the facts table gone) and
+// Drop 2 again.
+function drop2Step() {
+  const tf = (v) => v === 't' || v === true;
+  const md5Of = (sig) => sql(`select md5(btrim(regexp_replace(p.prosrc, '\\s+', ' ', 'g'))) from pg_proc p where p.oid = to_regprocedure('${sig}')`);
+  const rowsMd5 = (tables) => tables.map((t) => sql(`select md5(coalesce(string_agg(t::text, '|' order by t::text), '')) from public.${t} t`)).join(',');
+  const menuMd5 = () => rowsMd5(['menu_items']);
+  const msmMd5 = () => rowsMd5(['msm_company', 'msm_menus', 'msm_products', 'msm_product_sites']);
+  const loginsMd5 = () => rowsMd5(['user_profiles', 'user_locations']);
+  c.sql('select 1');
+  c.createFrom('n_d2', 'n_demo');
+  c.use('n_d2');
+  c.sqlFile(join(here, 'live_discounts.sql'));
+  // the live Ops shape the base lacks and Drop 2 reads (msm_version_sites and the columns run.mjs adds too)
+  c.psql({ input: D2_SHAPE });
+  const dr = c.paste(FILES.d);
+  ok(dr.status === 0, `the drainer file applies first, as Peter runs it (${dr.status ? short(dr.stderr, 800) : `${dr.ms} ms`})`);
+  if (dr.status) { c.use('n_demo'); return; }
+  const pre = Object.fromEntries(venues.map((v) => [v, venueFigures(c, v)]));
+  const before = { menu: menuMd5(), msm: msmMd5(), logins: loginsMd5(),
+    links: num(`select count(*) from menu_item_recipes m join recipes t on t.id = m.recipe_id and t.archived_at is null and t.company_ref is not null`),
+    typed: pj(sql(`select coalesce(json_object_agg(org_id, n), '{}') from (select org_id, count(*) n from stock_co_items
+                     where jsonb_typeof(allergens) = 'array' and jsonb_array_length(allergens) > 0 group by org_id) x`)) || {} };
+  const r = c.paste(FILES.d2);
+  ok(r.status === 0, `Drop 2 applies as one paste on top (${r.status ? short(r.stderr, 900) : `${r.ms} ms`})`);
+  if (r.status) { c.use('n_demo'); return; }
+  const last = r.sets[r.sets.length - 1] || { cols: [], rows: [] };
+  const rr = last.rows;
+  for (const x of rr) console.log(`     ${short(x, 900)}`);
+  const want = ['org_id', 'multi', 'items_allergens_moved', 'supplier_items_with_allergens', 'items_keeping_own_allergens', 'rollup_unchanged', 'facts_rows',
+    'facts_needs_check', 'facts_checked', 'recipe_cost_rows', 'msm_cursor_set', 'msm_jobs', 'replaced_functions', 'new_functions', 'new_tables', 'msm_index',
+    'internals_open_to_api', 'anon_can_save', 'anon_reads_facts', 'anon_reads_cost', 'site_rows_changed', 'menu_rows_changed', 'logins_changed'];
+  ok(JSON.stringify(last.cols) === JSON.stringify(want), `the check row has contract 1.11's columns in order (${last.cols.join(',')})`);
+  const ORG_B = 'fcbddcfd-a025-407b-9727-9e9139250767';
+  const by = (o) => rr.find((x) => x.org_id === o) || {};
+  ok(tf(by(ORG_T).multi) && (!demo.locations.some((l) => l.org_id === ORG_B) || (rr.some((x) => x.org_id === ORG_B) && !tf(by(ORG_B).multi))),
+    `one row per company that holds stock: a59a6d97 multi, fcbddcfd one site (${rr.map((x) => `${x.org_id.slice(0, 8)} ${x.multi}`).join(', ')})`);
+  ok(rr.length > 0 && rr.every((w) => Number(w.replaced_functions) === 15 && Number(w.new_functions) === 24 && Number(w.new_tables) === 5 && tf(w.msm_index)
+    && !tf(w.internals_open_to_api) && !tf(w.anon_can_save) && tf(w.anon_reads_facts) && !tf(w.anon_reads_cost) && Number(w.site_rows_changed) === 0
+    && !tf(w.menu_rows_changed) && !tf(w.logins_changed) && Number(w.facts_needs_check) === 0 && Number(w.facts_checked) === 0 && tf(w.msm_cursor_set)
+    && Number(w.msm_jobs) === 0 && Number(w.recipe_cost_rows) === 0 && tf(w.rollup_unchanged)),
+  'every row: 15 replaced, 24 new, 5 tables, the msm index, internals closed, anon cannot save, anon reads facts and never cost, nothing changed, nothing to check');
+  ok(rr.reduce((s, w) => s + Number(w.facts_rows), 0) === before.links, `the first facts build made one row per live company till link (${before.links})`);
+  // contract 1.11's note has the two companies' moved counts the wrong way round (live on 21 Oct: the one
+  // site company holds the one stock item with typed allergens); the check is against the copy itself
+  ok(rr.every((w) => Number(w.items_allergens_moved) === Number(before.typed[w.org_id] || 0)),
+    `every company moved the allergens of exactly its items that had them typed (${rr.map((w) => `${w.org_id.slice(0, 8)} ${w.items_allergens_moved} of ${before.typed[w.org_id] || 0}`).join(', ')})`);
+  for (const v of venues) {
+    const d = figureDiff(pre[v], venueFigures(c, v));
+    ok(d.length === 0, `${vname[v]}: every count, sum, on hand, cost, ledger line, area holding, par and recipe base quantity identical after Drop 2 (${d.join(', ') || 'none differ'})`);
+  }
+  ok(menuMd5() === before.menu && msmMd5() === before.msm, 'no menu row and no msm row was written');
+  ok(loginsMd5() === before.logins, 'no login row was written');
+  if (!existsSync(FILES.d2Rb)) { ok(false, `the Drop 2 rollback file is there (${FILES.d2Rb})`); c.use('n_demo'); return; }
+  const rb = c.paste(FILES.d2Rb);
+  ok(rb.status === 0, `the Drop 2 rollback applies on the copy (${rb.status ? short(rb.stderr, 600) : `${rb.ms} ms`})`);
+  if (!rb.status) {
+    const x = ((rb.sets[rb.sets.length - 1] || { rows: [] }).rows[0]) || {};
+    console.log(`     rollback: ${short(x, 400)}`);
+    ok(Number(x.bodies_restored) === 15 && Number(x.site_rows_changed) === 0 && !tf(x.menu_rows_changed), 'its check row: 15 bodies restored, no site row, no menu row changed');
+    ok(D2_REPLACED.every(([sig, m5]) => md5Of(sig) === m5), 'the 15 bodies are back by md5');
+    ok(sql(`select to_regclass('public.menu_item_stock_facts') is null and to_regclass('public.recipe_cost_daily') is null`) === 't', 'the facts table and the new tables are gone');
+    ok(num(`select count(*) from stock_native_backup where left(name, 3) = 'd2:'`) === 0, 'the d2: backup rows are gone');
+    for (const v of venues) {
+      const d = figureDiff(pre[v], venueFigures(c, v));
+      ok(d.length === 0, `${vname[v]}: every figure identical after the rollback (${d.join(', ') || 'none differ'})`);
+    }
+    ok(menuMd5() === before.menu && msmMd5() === before.msm && loginsMd5() === before.logins, 'menu, msm and login rows as before');
+    const again = c.paste(FILES.d2);
+    ok(again.status === 0, `Drop 2 applies again after its rollback (${again.status ? short(again.stderr, 400) : 'ok'})`);
+  }
+  c.use('n_demo');
+}
+
 function drainerStep() {
   const tf = (v) => v === 't' || v === true;
   const md5Of = (sig) => sql(`select md5(btrim(regexp_replace(p.prosrc, '\\s+', ' ', 'g'))) from pg_proc p where p.oid = to_regprocedure('${sig}')`);
@@ -554,4 +638,9 @@ if (!existsSync(FILES.d)) {
     'the copy is at the live state: 0a\'s seven and Drop 1\'s 24 backup rows, Drop 1\'s columns in');
   drainerStep();
 }
+
+console.log('\n8. Drop 2 (20261025a) on a copy of the live state: the drainer file first, then Drop 2, its rollback and Drop 2 again');
+if (!existsSync(FILES.d2)) info(`the Drop 2 file is not there yet (${FILES.d2}): step skipped`);
+else if (!existsSync(FILES.d)) ok(false, `the drainer file is there (${FILES.d}): Drop 2 refuses without it`);
+else drop2Step();
 done();

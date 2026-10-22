@@ -43,6 +43,9 @@ import { money } from '../lib/currency';
 import { orderOptionFlow } from '../lib/optionFlow';
 import { resolveItemPrice, variantChildren, variantFromPrice } from '../lib/menuPricing';
 import { normalizeGroup, kioskSheetGroupHint } from '../lib/kioskGroupRules';
+// v5.11.93 (multi site stock Drop 2): kcal, 'May contain' and 'Allergens being checked' from the stock facts.
+import { kcalWords, mayContainWords, KCAL_NOTE_KEY, ALLERGEN_CHECK_KEY } from '../lib/menuStockFacts';
+import { kioskAllergenLabels } from '../lib/kioskAllergens';
 import {
   kioskOptionGroupPlan, kioskSheetGroupIds, kioskSheetInstructionIds, kioskSheetGroups,
   kioskPruneSelections, kioskPruneNestedSelections,
@@ -83,13 +86,20 @@ const NO_DEFS = [];
 //                     so the new design's allergen check can count them on the basket line
 //   fetchGroups : optional (ids) => Promise<{ data, error }> for the modifier_groups read;
 //                 unset reads Supabase exactly as before (the DEV preview passes sample data)
-export default function KioskProductModal({ item, allItems = [], brandColor, brandAccent, basePrice, addLabel, onAdd, onCancel, dailyCounts = {}, cartItemUsage = {}, orderType = 'dineIn', activeMenuId = null, look, avoidAllergens = null, ackRequired = false, onPickAllergens, fetchGroups, defaultImage = null }) {
+//   showCalories: v5.11.93 (multi site stock Drop 2): the venue's Show calories setting. KioskApp
+//                 passes it; the new design's sheet (KioskFlowV2) reads the same answer from the
+//                 store (kioskShowCalories, set by KioskApp when the venue row lands).
+export default function KioskProductModal({ item, allItems = [], brandColor, brandAccent, basePrice, addLabel, onAdd, onCancel, dailyCounts = {}, cartItemUsage = {}, orderType = 'dineIn', activeMenuId = null, look, avoidAllergens = null, ackRequired = false, onPickAllergens, fetchGroups, defaultImage = null, showCalories = null }) {
   const heroImage = productImage(item, defaultImage);
   // Subscribe to language changes so t() strings re-render if the customer
   // switches language while the modal is open.
   useKioskLang();
   useMenuText();   // the sheet's venue text follows the picked language (no effect on today's modal)
   const allInstructionDefs = useStore(s => s.instructionGroupDefs) || NO_DEFS;
+  const storeShowCalories = useStore(s => s.kioskShowCalories);
+  const kcalOn = (showCalories ?? storeShowCalories) === true;
+  const facts = item?.stockFacts || null;
+  const mayContainLine = facts?.mayContain?.length ? mayContainWords(kioskAllergenLabels(facts.mayContain, t), t) : '';
 
   // v5.5.285: Stock enforcement — cap qty selector and modifier selections
   // to the remaining stock minus what's already in the customer's cart.
@@ -658,6 +668,7 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
         allItems={allItems}
         avoidAllergens={avoidAllergens}
         ackRequired={ackRequired}
+        showCalories={kcalOn}
         onPickAllergens={onPickAllergens}
       />
     );
@@ -754,6 +765,13 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
             : money(Number(basePrice ?? 0))}
         </div>
 
+        {/* v5.11.93: kcal and the 2,000 kcal line, where the venue shows calories (from the stock recipe). */}
+        {kcalOn && item?.kcal != null && (
+          <div style={{ fontSize: 'clamp(15px, 1.7vw, 18px)', color: 'var(--kFgMuted)', fontWeight: 600, marginBottom: 'clamp(20px, 2.6vw, 28px)' }}>
+            {kcalWords(item.kcal, t)} · {t(KCAL_NOTE_KEY)}
+          </div>
+        )}
+
         {/* Allergens — icon + label, then comma list. Brand-color text matches reference. */}
         {Array.isArray(item?.allergens) && item.allergens.length > 0 && (
           <div style={{ marginBottom: 'clamp(24px, 3.2vw, 36px)' }}>
@@ -782,6 +800,12 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
               fontWeight: 600,
               textTransform: 'capitalize',
             }}>{item.allergens.join(', ')}</div>
+            {mayContainLine && (
+              <div style={{ fontSize: 'clamp(15px, 1.7vw, 18px)', color: 'var(--kFgMuted)', fontWeight: 600, marginTop: 6 }}>{mayContainLine}</div>
+            )}
+            {facts?.needsCheck && (
+              <div style={{ fontSize: 'clamp(15px, 1.7vw, 18px)', color: brandColor, fontWeight: 700, marginTop: 6 }}>{t(ALLERGEN_CHECK_KEY)}</div>
+            )}
           </div>
         )}
 

@@ -430,6 +430,28 @@ Deno.serve(async (req) => {
       }
     } catch { kitchenBatches = []; }
 
+    // ── Kitchen: the products with a live recipe link at this venue (v5.11.93, multi site stock
+    //    Drop 2), for the Recipe cards sheet: [{ menu_item_id, name }], at most 500, names from
+    //    menu_items. Isolated: a failure, or a database before the recipe tables, gives []. ──
+    let kitchenRecipes: any[] = [];
+    try {
+      const { data: links } = await sb.from('menu_item_recipes').select('menu_item_id, recipe_id').eq('location_id', loc).order('id').limit(500);
+      const recipeIds = [...new Set((links ?? []).map((l: any) => l.recipe_id).filter(Boolean))];
+      const live = new Set<string>();
+      for (let i = 0; i < recipeIds.length; i += 100) {
+        const { data: rs } = await sb.from('recipes').select('id').in('id', recipeIds.slice(i, i + 100)).is('archived_at', null);
+        for (const r of (rs ?? [])) live.add(String(r.id));
+      }
+      const itemIds = [...new Set((links ?? []).filter((l: any) => live.has(String(l.recipe_id))).map((l: any) => String(l.menu_item_id)))];
+      const names: Record<string, string> = {};
+      for (let i = 0; i < itemIds.length; i += 100) {
+        const { data: mis } = await sb.from('menu_items').select('id, name, menu_name, archived').in('id', itemIds.slice(i, i + 100)).eq('location_id', loc);
+        for (const m of (mis ?? [])) if (!m.archived) names[String(m.id)] = m.menu_name || m.name || 'Product';
+      }
+      kitchenRecipes = itemIds.filter((id) => names[id]).map((id) => ({ menu_item_id: id, name: names[id] }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    } catch { kitchenRecipes = []; }
+
     return json({
       ok: true, location_id: loc, venueName: locRow?.name || '', tz, today,   // today = the venue's calendar day (v5.11.64: the Kitchen tab marks orders due today / overdue with it)
       // v5.11.84: 'stock' for a login that reaches the venue only through Stock control 'all': the
@@ -438,7 +460,7 @@ Deno.serve(async (req) => {
       money: full ? money : null,
       floor: full ? floor : null,
       team: full ? { punches, shifts: teamShifts, ratesMinor, pendingTimesheets, pendingTimeOff, breakPolicy } : null,
-      kitchen: { items: kitchenItems, deliveries: kitchenDeliveries, batches: kitchenBatches, trackedItems },
+      kitchen: { items: kitchenItems, deliveries: kitchenDeliveries, batches: kitchenBatches, trackedItems, recipes: kitchenRecipes },
       ops: full ? ops : null,
       generated_at: new Date().toISOString(),
     });

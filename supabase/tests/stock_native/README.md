@@ -252,6 +252,31 @@ stock_drainer_health, the rollback; with `STOCKN_CHECKS` also the sales rule on 
 replay of those checks as new sales before and after the release (identical movements, waste and
 outbox events; part refunds with no uid shown aside, never giving back more than the sale took).
 
+## Drop 2 (drop2.mjs, run.mjs --drop2)
+
+`node supabase/tests/stock_native/run.mjs --drop2 --quick` builds section 1, then pastes 0a, its revalue file, 0b, Drop 1
+(20261024a) and the drainer file (20261023a) in Peter's order, then proves 20261025a and its rollback in sections 30 to 38.
+Until the drainer merges, point STOCKN_DRAINER and STOCKN_DRAINER_ROLLBACK at a copy of the branch files.
+`--quick` uses 10 sites and 600 recipes in the scale part; without it 50 sites, 3,000 recipes and 30,000 lines.
+
+- 30 the paste: refused without Drop 1, without the drainer, with a changed body, off Ops, and on a second run; the
+  check row; no site row, login, menu or msm row written; every item keeps its own allergens; one facts row per link
+- 31 the five tables (RLS, SELECT grants, read rule, fence, no write policy), the columns, the trigger, the one msm
+  index, the 24 functions (definer, search path, exact grants), every stock_co__ helper closed to the API
+- 32 stock_co__allergen_ids and stock_co__norm_name against their JS twins (200 values each); stock_co__recipe_total
+  against costing.js computeRecipe on random recipes at three depths with usable %, wastage, order types, bridges
+  and a cycle; stock_plate_costs against plateCosts
+- 33 every Stock control level allowed or refused as the guard says; set recipe sites, option rules, sizes, swap,
+  batch how, prep ticks, Checked; nothing moved a number
+- 34 facts: a supplier item change rebuilds every product using it, the union never drops an allergen (random
+  changes), Checked, typed allergens, the HubRise fingerprint, the kcal worked example
+- 35 the Multi site menu queue: one runner call after a publish; already selling waits under Recipe missing; a
+  failing scan is one failed row and the runner carries on
+- 36 recipe cards (bound KDS and till at their own venue only), the prep list, batch how
+- 37 scale: keyset pages, the cost at every site, the nightly, the facts rebuild at 1,000 links, set recipe sites at
+  every site with the runner finishing the rest
+- 38 numbers unchanged; the rollback (15 bodies back by md5, every function as before); Drop 2 again
+
 ## Files
 
 | File | What |

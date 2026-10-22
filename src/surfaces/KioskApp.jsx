@@ -35,6 +35,9 @@ import { resolveItemPrice, variantFromPrice, refusesNoPriceLine } from '../lib/m
 import { depleteForSaleServer } from '../lib/stock/deplete';
 import KioskProductModal from './KioskProductModal';
 import KioskCategoryTile from './kiosk/KioskCategoryTile';
+// v5.11.93 (multi site stock Drop 2): the stock facts (allergens the recipe at this site adds, kcal)
+// laid over the products, and the venue's Show calories setting (Ops locations.pos_settings).
+import { withFacts, showCalories as venueShowsCalories } from '../lib/menuStockFacts';
 import { kioskLineSlot } from '../lib/channelMenu';
 // v5.11.81 (channel parity round 2): the venue's menu words in the customer's language on the
 // classic kiosk too (the new design has had them since v5.8.82). Shown only: the order keeps English.
@@ -165,7 +168,7 @@ function useKioskMenu(profile, locationId, tz = 'Europe/London', reloadKey = 0, 
         // read's error was never looked at, so one failed read left an empty list and every sale
         // booked tax_amount null until a restart. They load in their own effect below
         // (loadCustomerRates: after the session, with retries) and gate the card screen.
-        const [iRes, cRes, mRes, pRes, tpRes, tlRes] = await Promise.all([
+        const [iRes0, cRes, mRes, pRes, tpRes, tlRes, psRes] = await Promise.all([
           supabase.from('menu_items').select('*').eq('location_id', locationId).eq('archived', false).order('sort_order'),
           supabase.from('menu_categories').select('*').eq('location_id', locationId).order('sort_order'),
           supabase.from('menus').select('*').eq('location_id', locationId).eq('is_active', true),
@@ -182,7 +185,18 @@ function useKioskMenu(profile, locationId, tz = 'Europe/London', reloadKey = 0, 
           // menu_categories / menu_items select('*') reads above (tax_profile_id).
           supabase.from('tax_profiles').select('*').eq('location_id', locationId).order('sort_order'),
           supabase.from('tax_profile_lines').select('*').eq('location_id', locationId).order('sort_order'),
+          // v5.11.93: Show calories (Ops locations.pos_settings.show_calories). A failed read shows none.
+          supabase.from('locations').select('pos_settings').eq('id', locationId).maybeSingle().then(r => r, () => ({ data: null })),
         ]);
+        // v5.11.93 (multi site stock Drop 2): the stock facts laid over the products (the allergens
+        // the recipe at this site adds, kcal). A failed facts read keeps the typed rows.
+        const iRes = Array.isArray(iRes0?.data) && iRes0.data.length
+          ? { ...iRes0, data: await withFacts(supabase, locationId, iRes0.data) }
+          : iRes0;
+        if (alive) {
+          const kcalOn = venueShowsCalories(psRes?.data?.pos_settings);
+          useStore.setState({ kioskShowCalories: kcalOn });   // KioskApp and the item sheet read it (KioskProductModal)
+        }
         // v5.7.34: the venue default profile (locations.default_tax_profile_id,
         // ops DB) — the read the reviewer flagged missing. Separate await so a
         // column-less older DB fails soft without killing the menu load.
@@ -451,6 +465,8 @@ export default function KioskApp({ kioskId, onUnpair }) {
   // 18 Oct 2026 follow up: { screen, cartCount } for a re read that lands (kept just below the basket).
   const msmIdleRef = useRef(null);
   const { items, categories, menus, links, taxRates, taxProfiles, venueDefaultTaxProfileId, activeMenuId, loading: menuLoading, error: menuError, ratesState, retryRates, reloadDone: msmReloadDone } = useKioskMenu(profile, locationId, kioskTz, msmReload, msmIdleRef);
+  // v5.11.93 (multi site stock Drop 2): Show calories (pos_settings.show_calories), set by useKioskMenu.
+  const showKcal = useStore(s => s.kioskShowCalories) === true;
   // v5.7.34: local tax context for the unified seam — built from the kiosk's
   // own fetches (profiles + raw tax_profile_id columns + venue default).
   const kioskTaxCtx = useMemo(() => buildLocalTaxCtx({
@@ -1464,6 +1480,8 @@ export default function KioskApp({ kioskId, onUnpair }) {
       categoryPhotos, categoryPhotoOrigin, idleTimeoutSec, lang,
       resetIdle, resetSession, idleWarning, warningCountdown,
       setIdlePaused, deviceLocationId: device?.location_id || null,
+      // v5.11.93 (multi site stock Drop 2): kcal and the 2,000 kcal line where the venue shows calories.
+      showCalories: showKcal,
     };
     // 8 Oct 2026 (VAT audit, Fix 2): the VAT gate rides a context so LinkedScreenPay (a module level
     // component, kept stable so ScreenPay never remounts) can read it. Shut = ScreenPay never mounts.
@@ -1502,6 +1520,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
           allItems={items}
           brandColor={brandColor}
           brandAccent={brandAccent}
+          showCalories={showKcal}
           addLabel={labelAddToOrder}
           basePrice={resolvePrice(selectedItem, orderType, activeMenuId)}
           orderType={orderType}

@@ -20,6 +20,7 @@
 import { countPackOf, packAmount, packPrice, packQtyWords, moneyText } from './packPrice.js';
 import { toBase } from './uom.js';
 import { fmtVenueDateTime, fmtVenueDate, fmtYmd } from '../venueDate.js';
+import { allergenWords, dietWords, factsOf, nutritionOf, NUTRITION_FIELDS } from './factsRules.js';
 
 const num = (v) => (v == null || v === '' ? null : (Number.isFinite(Number(v)) ? Number(v) : null));
 const round = (v, places = 3) => { const f = 10 ** places; return Math.round(Number(v) * f) / f; };
@@ -92,7 +93,19 @@ export const FIELD_WORDS = Object.freeze({
   created: 'Made',
   suggestion: 'Suggested change',
   lines: 'Recipe lines',
+  // Drop 2: what is in a supplier item (stock_co_supplier_items facts columns, change log field 'facts')
+  may_contain: 'May contain',
+  diets: 'Diets',
+  ingredients_text: 'Ingredients (in weight order)',
+  nutrition: 'Nutrition per 100 g',
+  facts: 'What is in it',
+  facts_checked_at: 'Checked',
+  facts_checked_by_name: 'Checked by',
+  facts_source: 'Allergens come from',
 });
+
+/** Where an item's allergens come from (stock_co_items.facts_source) in words. */
+export const FACTS_SOURCE_WORDS = Object.freeze({ supplier_items: 'The supplier items', item: 'The item itself' });
 
 /** Who did a change when no person did: the source in words. */
 export const SOURCE_WORDS = Object.freeze({
@@ -174,10 +187,35 @@ export function valueWords(field, value, opts = {}) {
   if (field === 'paused_from' || field === 'paused_until') return fmtYmd(value, { year: false });
   if (field === 'stop_ordering_at' || field === 'archived_at') return fmtVenueDate(value, opts.tz, { year: false }) || String(value);
   if (opts.names && typeof value === 'string' && opts.names[value]) return opts.names[value];
+  if (field === 'facts_source') return FACTS_SOURCE_WORDS[value] || String(value);
+  if (field === 'facts' && typeof value === 'object') return factsChangeWords(value);
+  if (field === 'nutrition' && typeof value === 'object') return nutritionWords(value);
   if (typeof value === 'string' && UUID.test(value)) return ID_WORDS[field] || 'Another one';
   if (typeof value === 'number') return trimNum(value);
   if (typeof value === 'object') return JSON.stringify(value);
   return String(value);
+}
+
+/** Nutrition per 100 g in one line: '120 kcal, Fat 3 g, Salt 0.4 g' (empty numbers left out); 'None' for nothing. */
+export function nutritionWords(value) {
+  const n = nutritionOf(value);
+  const parts = NUTRITION_FIELDS.filter((f) => n[f.key] != null).map((f) => (f.key === 'kcal' ? `${trimNum(n.kcal)} kcal` : `${f.label} ${trimNum(n[f.key])} ${f.unit}`));
+  return parts.length ? parts.join(', ') : 'None';
+}
+
+/**
+ * A change log 'facts' value (the before or after of What is in it) in one line:
+ * 'Allergens: Milk; May contain: Tree nuts; Diets: Vegetarian; Ingredients: ...; Nutrition: 120 kcal'.
+ */
+export function factsChangeWords(value) {
+  const f = factsOf(value);
+  const parts = [`Allergens: ${allergenWords(f.allergens)}`];
+  if (f.may_contain.length) parts.push(`May contain: ${allergenWords(f.may_contain)}`);
+  if (f.diets.length) parts.push(`Diets: ${dietWords(f.diets)}`);
+  if (f.ingredients_text) parts.push(`Ingredients: ${f.ingredients_text}`);
+  const n = nutritionWords(f.nutrition);
+  if (n !== 'None') parts.push(`Nutrition: ${n}`);
+  return parts.join('; ');
 }
 
 // ── Someone saved first ──────────────────────────────────────────────────────
@@ -680,6 +718,31 @@ export function whenWords(at, tz) {
 /** A short day on the venue's clock: '18 Oct'. */
 export function dayWords(at, tz) {
   return fmtVenueDate(at, tz, { year: false });
+}
+
+// ── The Details allergen line (Drop 2, contract 3.4 and 4.4) ─────────────────
+
+export const FACTS_LINE_LINK = 'Change them on the Suppliers tab';
+
+const sitesCount = (n) => `${Number(n) || 0} ${Number(n) === 1 ? 'site' : 'sites'}`;
+
+/**
+ * In a multi site company the item's allergen chips become one read only line when they come from
+ * the supplier items (stock_item_detail `facts.source` 'supplier_items'):
+ *   { words: 'Allergens: Milk, Gluten · from Freshways (3 sites)', link: 'Change them on the Suppliers tab', needsCheck }
+ * With more than one supplier item: 'from Freshways (3 sites), Brakes (1 site)', the main supplier
+ * first. Null when the chips stay editable (no supplier item, source 'item') or the read has no facts.
+ */
+export function factsLine(detail) {
+  const facts = detail?.facts;
+  if (!facts || facts.source !== 'supplier_items') return null;
+  const item = detail?.item || {};
+  const from = (Array.isArray(facts.from) ? facts.from : []).filter(Boolean);
+  const mainFirst = [...from].sort((a, b) => (a.supplier_item_id === item.main_supplier_item_id ? -1 : b.supplier_item_id === item.main_supplier_item_id ? 1 : 0));
+  const who = mainFirst.map((x) => `${x.supplier_name || 'a supplier'} (${sitesCount(x.sites_on)})`).join(', ');
+  const ids = Array.isArray(facts.allergens) && facts.allergens.length ? facts.allergens : (item.allergens || []);
+  const words = `Allergens: ${allergenWords(ids)}${who ? ` · from ${who}` : ''}`;
+  return { words, link: FACTS_LINE_LINK, needsCheck: facts.needs_check === true };
 }
 
 /** The Sites tab cell for Last paid: '£1.45, 18 Oct'; 'None' when nothing was paid here yet. */

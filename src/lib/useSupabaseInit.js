@@ -17,6 +17,7 @@ import {
 } from './db';
 import { mapMenuItemRow, mapTaxRateRow } from './rowMapping';
 import { withItemExtras } from './venueMenuRead';
+import { withFacts } from './menuStockFacts';
 import { ratesAfterRead } from './venueTaxRates';
 import { getLocationConfig, getBusinessDayStart } from './locationTime';
 import { refreshTablePlan } from '../sync/TablePlanSync';
@@ -106,7 +107,12 @@ export default function useSupabaseInit() {
       // 27 Sep 2026 (review round 4): the product fields with no database column (variantLabel,
       // the pizza fields: lib/menuItemWrite.js ITEM_EXTRA_KEYS) came with the last push; this read
       // cannot have them, so each row keeps them from the row it replaces (withItemExtras).
-      const { data: items } = await fetchMenuItems();
+      // v5.11.93 (multi site stock Drop 2): a till lays the stock facts over its products before
+      // they reach the store (the allergens the recipe at this site adds, kcal; lib/menuStockFacts.js
+      // withFacts). A failed facts read keeps the typed rows. Back Office keeps the typed rows on
+      // purpose: its Menu Manager must never write a recipe's allergen onto the menu row.
+      const { data: rows } = await fetchMenuItems();
+      const items = rows?.length && !isBackOfficeMode() ? await withFacts(supabase, locId, rows) : rows;
       if (items?.length && !(isBackOfficeMode() && useStore.getState().menuReadLocationId === locId)) {
         useStore.setState((s) => ({ menuItems: withItemExtras(items.map(mapMenuItemRow), s.menuItems) }));
       }
