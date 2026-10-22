@@ -9,6 +9,7 @@ import { isValidSlug, suggestSlug } from '../../lib/customerUrl';
 import { CUSTOMER_ROOT } from '../../lib/env';
 import { CURRENCIES, money, setActiveCurrency } from '../../lib/currency';
 import SiteGroupsCard from './stock/SiteGroupsCard';
+import SiteKindCard from './stock/SiteKindCard';
 import CaloriesCard from './stock/CaloriesCard';
 
 // v5.7.29: the venue timezone drives EVERY business-time decision in the
@@ -647,6 +648,7 @@ export default function LocationSettings() {
         {error && <span style={{ fontSize:13, color:'var(--red)' }}>{error}</span>}
       </div>
       <SiteGroupsCard />
+      <SiteKindCard locationId={location?.ops_location_id || location?.id || null} />
     </div>
   );
 }

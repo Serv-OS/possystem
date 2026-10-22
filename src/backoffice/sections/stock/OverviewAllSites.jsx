@@ -18,6 +18,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../../../store';
 import { useStockScope } from '../../StockScope';
+import { normFocus } from '../../../lib/stock/stockAlertLinks';
 import { stockApi } from '../../../lib/stock/stockApi';
 import { pollJobs } from '../../../lib/stock/companyData';
 import { attentionRows, healthRows, goLiveRows, siteChunks } from '../../../lib/stock/goLiveRules';
@@ -34,8 +35,16 @@ async function readAttention(orgId, ids) {
   if (!orgId || !parts.length) return { rows: [], error: null };
   const answers = await Promise.all(parts.map((p) => stockApi.needsAttention(orgId, p)));
   const bad = answers.find((a) => a.error);
-  return { rows: answers.flatMap((a) => (Array.isArray(a.data?.rows) ? a.data.rows : [])), error: bad ? bad.error : null };
+  return {
+    rows: answers.flatMap((a) => (Array.isArray(a.data?.rows) ? a.data.rows : [])),
+    // v5.11.96 (Drop 3): the purchasing, count, transfer, invoice and price rows, each with its route
+    alerts: answers.flatMap((a) => (Array.isArray(a.data?.alerts) ? a.data.alerts : [])).filter((x) => x && x.route && x.words),
+    error: bad ? bad.error : null,
+  };
 }
+
+// The routes that work one site at a time: the picker moves to the alert's site before going there.
+const SITE_ROUTES = new Set(['stock-counts', 'stock-transfers']);
 
 // setSection and canOpen: the guarded route setter and the Back Office section rule, as today's
 // Overview has them. Drop 1's cards only move the picker (Open) or queue a Fix, so neither is used
@@ -65,6 +74,12 @@ export default function OverviewAllSites({ setSection, canOpen = () => true }) {
   const mine = answer && answer.key === loadKey ? answer : null;
   const rows = mine ? mine.rows : null;
   const error = mine ? mine.error : null;
+  const alerts = mine ? (mine.alerts || []) : [];
+  // Drop 3: an alert's button goes to its screen with the record to open (StockScope go and takeOpen)
+  const follow = (a) => {
+    if (SITE_ROUTES.has(a.route) && a.location_id) sc.setChoice({ kind: 'site', id: a.location_id });
+    sc.go(a.route, { open: normFocus(a.route, a.focus) });
+  };
 
   const open = (siteId) => sc.setChoice({ kind: 'site', id: siteId });
 
@@ -108,7 +123,7 @@ export default function OverviewAllSites({ setSection, canOpen = () => true }) {
         <div style={card} data-testid="stock-needs-attention">
           <div style={cardTitle}>Needs attention</div>
           {rows === null && <EmptyLine>Loading{'…'}</EmptyLine>}
-          {rows !== null && !error && attention.length === 0 && <EmptyLine>Nothing needs attention at any site.</EmptyLine>}
+          {rows !== null && !error && attention.length === 0 && alerts.length === 0 && <EmptyLine>Nothing needs attention at any site.</EmptyLine>}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {attention.map((a) => (
               <div key={a.locationId} style={line}>
@@ -117,6 +132,15 @@ export default function OverviewAllSites({ setSection, canOpen = () => true }) {
                   <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>{a.words}</div>
                 </div>
                 <Btn small kind="soft" onClick={() => open(a.locationId)}>Open</Btn>
+              </div>
+            ))}
+            {alerts.map((a) => (
+              <div key={`${a.kind}:${a.location_id || ''}:${a.words}`} style={line}>
+                <div style={{ flex: '1 1 200px', minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--t1)' }}>{a.words}</div>
+                  {a.location_id && <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>{sc.siteName(a.location_id)}</div>}
+                </div>
+                {sc.canOpen(a.route) && <Btn small kind="soft" onClick={() => follow(a)}>Open</Btn>}
               </div>
             ))}
           </div>

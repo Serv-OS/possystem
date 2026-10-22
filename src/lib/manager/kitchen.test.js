@@ -82,3 +82,75 @@ test('orderPacksFor: the Raise order sheet starts in whole packs, not base units
   assert.equal(orderValue([e, a, n], { e: 1, a: 2, n: 5 }), 68.4);   // 32.40 + 2 x 18.00; no pack adds nothing
   assert.equal(orderValue([], {}), 0);
 });
+
+// -- v5.11.96 (multi site stock Drop 3): the phone's order by line, approvals, needNow and the sheets --
+import {
+  dowWord, dayWord, leftWords, orderByLine, raiseWords, approvalsLine, stockNeedNow, typedBase, receiveLines, pickedLines,
+  closeDownLines, shopBuyLines, FORECAST_REASONS, forecastDays,
+} from './kitchen.js';
+
+test('Drop 3: days and minutes in words', () => {
+  assert.equal(dowWord('2026-10-20'), 'Tue');
+  assert.equal(dowWord('2026-10-20T14:00'), 'Tue');
+  assert.equal(dowWord('x'), '');
+  assert.equal(dayWord('2026-10-22'), 'Thu 22 Oct');
+  assert.equal(leftWords(200), '3 h 20 m');
+  assert.equal(leftWords(45), '45 m');
+  assert.equal(leftWords(-5), '0 m');
+});
+
+test('Drop 3: the order by line (4.5), counting down from when the snapshot was made', () => {
+  const row = { deliveryDay: '2026-10-21', orderByAt: '2026-10-20T14:00', minutesLeft: 200 };
+  assert.equal(orderByLine(row), 'Order by Tue 14:00 (in 3 h 20 m)');
+  assert.equal(orderByLine(row, { nowMs: 10 * 60000, generatedMs: 0 }), 'Order by Tue 14:00 (in 3 h 10 m)');
+  assert.equal(orderByLine({ ...row, minutesLeft: 0 }), 'Order by Tue 14:00 (passed)');
+  assert.equal(orderByLine({ deliveryDay: '2026-10-21', orderByYmd: '2026-10-20', orderByHm: '23:59' }), 'Order by Tue 23:59');
+  assert.equal(orderByLine({ deliveryDay: '2026-10-21' }), 'Next delivery Wed 21 Oct');
+  assert.equal(orderByLine(null), '');
+  assert.equal(orderByLine({ deliveryDay: null }), '');
+});
+
+test('Drop 3: the words after a phone order', () => {
+  assert.equal(raiseWords({ ok: true, reference: 'MGR-1' }, { supplier: 'Bakers' }), 'Order MGR-1 sent to Bakers.');
+  assert.equal(raiseWords({ ok: true, needs_approval: true, approvers: ['Sam', 'Alex'] }), 'Sent for approval. Sam, Alex can approve it. It passes up 60 and 30 minutes before the cut off.');
+  assert.equal(raiseWords({ ok: true, needs_approval: true }), 'Sent for approval. Another manager approves it. It passes up 60 and 30 minutes before the cut off.');
+  assert.equal(raiseWords({ ok: true, internal: true }), 'The order is with the central kitchen. It arrives as a transfer.');
+  assert.equal(raiseWords({ ok: true, reference: 'MGR-2', emailed: false, email_error: 'supplier_has_no_email' }, { supplier: 'Bakers' }), 'Order MGR-2 is on order, but the email to Bakers did not go: supplier_has_no_email. Phone them.');
+  assert.equal(raiseWords({ ok: false }), '');
+  assert.equal(approvalsLine([{ status: 'waiting' }, { status: 'waiting' }, { status: 'sent_back' }]), '2 orders waiting for approval');
+  assert.equal(approvalsLine([]), '');
+});
+
+test('Drop 3: the Home needNow rows from the stock bell rows', () => {
+  const rows = stockNeedNow([
+    { id: 'a1', kind: 'approval_wait', refId: 'purchase-orders:p1' }, { id: 'a2', kind: 'approval_60', refId: 'purchase-orders:p1' },
+    { id: 'a3', kind: 'approval_wait', refId: 'purchase-orders:p2' }, { id: 'c1', kind: 'count_due' }, { id: 'c2', kind: 'count_due' },
+    { id: 't1', kind: 'transfer_waiting' }, { id: 'd1', kind: 'delivery_overdue' }, { id: 'o1', kind: 'order_by', title: 'Order by in 1 hour: Bakers' },
+    { id: 'x1', kind: 'price_rise' },
+  ]);
+  assert.deepEqual(rows.map((r) => r.words), ['2 orders waiting for approval', 'Count due today', 'Transfer waiting', 'Delivery overdue', 'Order by in 1 hour: Bakers']);
+  assert.deepEqual(stockNeedNow(null), []);
+});
+
+test('Drop 3: the sheet lines', () => {
+  assert.equal(typedBase('1,5'), 1.5);
+  assert.equal(typedBase(''), null);
+  assert.equal(typedBase('-1'), null);
+  assert.deepEqual(receiveLines({ lines: [{ id: 'l1', qtyBase: 10 }, { id: 'l2', qtyBase: 4 }] }, { l2: '3' }), [{ line_id: 'l1', qty_received_base: 10 }, { line_id: 'l2', qty_received_base: 3 }]);
+  assert.deepEqual(pickedLines({ i1: '2', i2: '0', i3: 'x' }), [{ inventory_item_id: 'i1', qty_base: 2 }]);
+  assert.deepEqual(pickedLines({ c1: '5' }, 'company_item_id'), [{ company_item_id: 'c1', qty_base: 5 }]);
+  assert.deepEqual(closeDownLines([{ inventory_item_id: 'i1' }, { inventory_item_id: 'i2' }], { i1: '0.5', i2: '0' }), [{ inventory_item_id: 'i1', qty_base: 0.5 }]);
+  assert.deepEqual(shopBuyLines([{ itemId: 'i1', name: 'Milk', qty: '2000', total: '1.80' }]), { lines: [{ inventory_item_id: 'i1', qty_base: 2000, line_total: 1.8 }], error: null, total: 1.8 });
+  assert.match(shopBuyLines([{ itemId: 'i1', name: 'Milk', qty: '', total: '1' }]).error, /^Milk: type how much/);
+  assert.match(shopBuyLines([{ itemId: 'i1', name: 'Milk', qty: '1', total: '' }]).error, /^Milk: type what it cost/);
+  assert.equal(shopBuyLines([]).error, 'Add what you bought.');
+});
+
+test('Drop 3: forecast edits need a reason when the figure changes (the database words)', () => {
+  assert.deepEqual(FORECAST_REASONS.map((r) => r.value), ['weather', 'local_event', 'booking', 'promotion', 'closure', 'other']);
+  const saved = [{ day: '2026-10-22', amount: 1000, reason: null }, { day: '2026-10-23', amount: null }];
+  assert.deepEqual(forecastDays(saved, { '2026-10-22': { amount: '1000' } }), { days: [], error: null });
+  assert.equal(forecastDays(saved, { '2026-10-22': { amount: '1200' } }).error, 'Pick a reason for Thu 22 Oct.');
+  assert.deepEqual(forecastDays(saved, { '2026-10-23': { amount: '900', reason: 'local_event', note: 'Fair' } }), { days: [{ day: '2026-10-23', amount: 900, reason: 'local_event', reason_note: 'Fair' }], error: null });
+  assert.equal(forecastDays(saved, { '2026-10-23': { amount: 'x' } }).error, 'Type a figure for Fri 23 Oct.');
+});

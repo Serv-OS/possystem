@@ -7,6 +7,21 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.96',
+    date: '22 Oct 2026',
+    items: [
+      "Stock, purchasing and the central kitchen for companies with more than one site (Drop 3). A company with one site keeps exactly today's Order pad, Orders, Invoices, Price changes, Stock counts, Waste and Transfers screens. The one change for everyone: the order pad works out the next delivery from the supplier's order rules, and an order after the cut off asks for the next delivery.",
+      "Purchasing gets new screens for companies with 2 or more open sites: Due to order, Forecast, Deliveries, Credits and Budgets, plus a company view of Orders, Invoices and Price changes. The order pad shows the order by time, a weekly budget bar, the par for the delivery day, the minimum order and delivery fee, saved lists and Order for many sites.",
+      "Approvals: an order over the supplier's limit at that site waits for another manager of the site (never the person who raised it) or head office. It is passed up at 60 and 30 minutes, and at the order by time it is sent as sent unapproved (a company setting, on by default). Suppliers can have standing orders, bank holidays and other days with no delivery. A supplier with no cut off is ordered by midnight the day before.",
+      "Invoices: a price change on an invoice moves that site's price only. With agreed prices it raises a credit request and the price stays. Invoices are matched against the order and the delivery, can be split across sites, and are locked once sent to Xero, with the site on every Xero line.",
+      "Counts and waste: count plans and templates with a shelf order, a second approval over the company's limit, locked periods, and an End of day close down for fresh food. Waste over the limit asks for a manager PIN on the till, in Back Office and on the Manager app. Waste reasons are set for the whole company.",
+      "Transfers: a site can request stock from another site, and the sender fulfils or refuses it. A receiver can dispute a transfer and the sender resolves it. Lot and use by ride on each line.",
+      "Central kitchen (Produce): a production plan, Orders in, Ingredients needed, Pick and send with a delivery note and labels, and monthly recharges to Xero. A kitchen order is received only through its transfer, never also as a delivery. Kitchen only recipes are never shown to other sites' managers.",
+      "Alerts go to the bell, SMS and email. The Manager app gains Transfers, Shop buy, End of day, Forecast and, at a kitchen, Orders in, Production plan and Pick and send. Forecast edits show on the rota with their reason.",
+      "Nothing on these screens moves an on hand, cost, ledger or count figure by itself, and every order channel is unchanged. Needs the database update 20261027a (after 20261025a), then the po-send, send-receipt, po-cutoff-run, stock-notify, invoice-inbox, xero-bills, xero-sales, manager-approve and manager-snapshot edge function deploys, which Peter runs. If anything is wrong, 20261027a_OPS_stock_native_3_ROLLBACK.sql puts the database back.",
+    ],
+  },
+  {
     v: '5.11.93',
     date: '21 Oct 2026',
     items: [

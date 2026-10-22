@@ -8,6 +8,7 @@ import {
   TRANSFER_STATUS_WORDS, TRANSFER_FILTERS, LEG_END_STATUS, staleLegError, uomCtxOf, transferUnitsFor, defaultTokenOf, fmtQtyOf,
   transferDirection, transferHeadline, transferMatchesFilter, validateTransferDraft, buildTransferLines,
   lineWarnings, transferValue, receivePlan, matchCandidates, receiveLineUpdates, linesText, cancelText, movedText, transferNote,
+  TRANSFER_REASONS, statusWords, hasShortLine, statusTone, transferFilters, lotLine, requestLinesOf,
 } from './transferRules.js';
 import { transferPlan, matchTransferLines, canReceive } from './areaRules.js';
 
@@ -64,7 +65,49 @@ test('transferMatchesFilter: open is sent or draft, done is done or received, ca
   assert.deepEqual(by('DONE'), ['all', 'done']);
   assert.deepEqual(by('RECEIVED'), ['all', 'done']);
   assert.deepEqual(by('CANCELLED'), ['all', 'cancelled']);
-  assert.deepEqual(Object.keys(TRANSFER_STATUS_WORDS).sort(), ['CANCELLED', 'DONE', 'DRAFT', 'RECEIVED', 'SENT']);
+  // v5.11.96 (Drop 3, decision 10): REQUESTED and DISPUTED are the only new statuses
+  assert.deepEqual(Object.keys(TRANSFER_STATUS_WORDS).sort(), ['CANCELLED', 'DISPUTED', 'DONE', 'DRAFT', 'RECEIVED', 'REQUESTED', 'SENT']);
+  assert.deepEqual(by('REQUESTED'), ['all']);
+});
+
+test('Drop 3 statusWords: a one site company reads today\'s words; multi reads In transit and Short', () => {
+  for (const status of ['DRAFT', 'SENT', 'RECEIVED', 'CANCELLED', 'DONE']) {
+    assert.equal(statusWords({ status, shortLines: 2 }), TRANSFER_STATUS_WORDS[status], `one site ${status}`);
+  }
+  assert.equal(statusWords({ status: 'SENT' }, { multi: true }), 'In transit');
+  assert.equal(statusWords({ status: 'RECEIVED', shortLines: 1 }, { multi: true }), 'Short');
+  assert.equal(statusWords({ status: 'DONE', lines: [{ shortQtyBase: 0.5 }] }, { multi: true }), 'Short');
+  assert.equal(statusWords({ status: 'RECEIVED', lines: [{ shortQtyBase: 2, dropped: true }] }, { multi: true }), 'Received', 'a dropped line is not short');
+  assert.equal(statusWords({ status: 'RECEIVED' }, { multi: true }), 'Received');
+  assert.equal(statusWords({ status: 'REQUESTED' }, { multi: true }), 'Requested');
+  assert.equal(statusWords({ status: 'DISPUTED' }, { multi: true }), 'Disputed');
+  assert.equal(statusWords({ status: 'ODD' }), 'ODD');
+  assert.equal(statusWords(null), '');
+  assert.equal(hasShortLine({ shortLines: '0' }), false);
+  assert.deepEqual(['Requested', 'In transit', 'Short', 'Disputed', 'Received', 'Draft'].map(statusTone), ['blue', 'blue', 'warn', 'bad', 'good', 'neutral']);
+});
+
+test('Drop 3 filters and reasons: Requested only for multi; one site keeps the very same list', () => {
+  assert.equal(transferFilters(), TRANSFER_FILTERS);
+  assert.equal(transferFilters({ multi: false }), TRANSFER_FILTERS);
+  assert.deepEqual(transferFilters({ multi: true }).map((f) => f.label), ['All', 'Not finished', 'Done', 'Cancelled', 'Requested']);
+  assert.equal(transferMatchesFilter({ status: 'REQUESTED' }, 'requested'), true);
+  assert.equal(transferMatchesFilter({ status: 'SENT' }, 'requested'), false);
+  assert.deepEqual([...TRANSFER_REASONS], ['Ran out', 'Too much here', 'Event or launch', 'Central kitchen', 'Other']);
+  assert.ok(Object.isFrozen(TRANSFER_REASONS));
+});
+
+test('Drop 3 lotLine and requestLinesOf', () => {
+  assert.equal(lotLine({ lotCode: 'L42', useByAt: '2026-10-24T10:00:00Z' }), 'Lot L42 · use by 24 Oct');
+  assert.equal(lotLine({ lotCode: 'L42' }), 'Lot L42');
+  assert.equal(lotLine({ useByAt: '2026-01-03T00:00:00Z' }), 'use by 3 Jan');
+  assert.equal(lotLine({ useByAt: 'not a date' }), '');
+  assert.equal(lotLine(), '');
+  assert.deepEqual(requestLinesOf([{ companyItemId: 'c1', qty: 2 }, { companyItemId: 'c1', qty: '1.5' }, { companyItemId: 'c2', qty: 0 }, { companyItemId: '', qty: 3 }, { companyItemId: 'c3', qty: 'x' }]),
+    { lines: [{ company_item_id: 'c1', qty_base: 3.5 }], error: null });
+  assert.equal(requestLinesOf([]).error, 'Add at least one item with an amount.');
+  const many = Array.from({ length: 301 }, (_, i) => ({ companyItemId: `c${i}`, qty: 1 }));
+  assert.equal(requestLinesOf(many).error, 'At most 300 items in one request.');
 });
 
 // ── the draft ─────────────────────────────────────────────────────────────────
@@ -215,7 +258,7 @@ test('pin: transfers.js writes the head and lines first, then ONE call per leg t
   assert.match(src, /postTransferLeg\(made\.data\.id, 'out', draft\.byName\)/, 'to another venue: the out leg at send');
   assert.match(src, /postTransferLeg\(transferId, 'in', byName\)/, 'receive: the in leg');
   assert.match(src, /postTransferLeg\(transferId, 'cancel', byName\)/, 'cancel: the sender takes it back');
-  assert.match(src, /import \{ staleLegError \} from '\.\/transferRules\.js';/);
+  assert.match(src, /import \{ staleLegError, requestLinesOf \} from '\.\/transferRules\.js';/);
   assert.match(src, /if \(data && data\.ok === false\) return \{ data, error: new Error\(data\.error \|\| 'The transfer was refused'\) \};\s+const stale = staleLegError\(leg, data\);\s+if \(stale\) return \{ data, error: new Error\(stale\) \};/, 'a duplicate answer with the wrong status is an error, so Receive and Send never toast success for stock that did not move');
   assert.match(src, /chunkArray\(lines, INSERT_CHUNK\)/, 'lines go in chunks of 200');
   assert.match(src, /data\?\.length === rows\.length \? null : new Error/, 'every chunk is checked for every row');
@@ -244,10 +287,11 @@ test('pin: deliveries land in the chosen area, else the receiving area (purchasi
 test('pin: the Ops tablet accept path and the Back Office panels go through receivePurchaseOrder / postInvoice with the landing area', () => {
   const ops = code(read('../ops/data.js'));
   assert.match(ops, /receivePurchaseOrder\(poId, locationId\)/, 'the tablet passes no area: receivePurchaseOrder resolves the receiving area itself');
-  const po = read('../../backoffice/sections/PurchaseOrders.jsx');
+  // v5.11.96 (Drop 3, contract 3.2): today's Orders and Invoices screens moved whole into purchasing/
+  const po = read('../../backoffice/sections/purchasing/PurchaseOrdersSite.jsx');
   assert.match(po, /receivePurchaseOrder\(draft\.id, locId, receipts, \{ areaId: landArea \|\| null \}\)/);
   assert.match(po, /setLandArea\(areas\.find\(a => a\.isReceiving\)\?\.id \|\| ''\)/, 'the Lands in dropdown defaults to the receiving area');
-  const inv = read('../../backoffice/sections/Invoices.jsx');
+  const inv = read('../../backoffice/sections/purchasing/InvoicesSite.jsx');
   assert.match(inv, /locId, \{ areaId: landArea \|\| null \}\)/);
   // the two older screens carry dashes from before; only the lines this change added are checked
   for (const f of [po, inv]) for (const line of f.split('\n')) if (/landArea|Lands in/.test(line)) noDashes(line, 'Lands in');

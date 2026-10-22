@@ -70,6 +70,14 @@ import PurchaseOrders from './sections/PurchaseOrders';
 import PriceChanges from './sections/PriceChanges';
 import Invoices from './sections/Invoices';
 import OrderPad from './sections/OrderPad';
+// v5.11.96 (multi site stock Drop 3): the multi site only Purchasing screens and Central kitchen are
+// their own chunks, loaded only when a company with 2 or more open sites opens them.
+const DueToOrder = lazy(() => import('./sections/purchasing/DueToOrder'));
+const Forecast = lazy(() => import('./sections/purchasing/Forecast'));
+const StockDeliveries = lazy(() => import('./sections/purchasing/StockDeliveries'));
+const Credits = lazy(() => import('./sections/purchasing/Credits'));
+const Budgets = lazy(() => import('./sections/purchasing/Budgets'));
+const CentralKitchen = lazy(() => import('./sections/produce/CentralKitchen'));
 import SupabaseSetup from '../lib/SupabaseSetup';
 import CompanyAdmin from './sections/CompanyAdmin';
 import AIAssistantSection from './sections/AIAssistantSection';
@@ -164,6 +172,12 @@ const NAV = [
   { id:'ops-documents',   label:'Documents',           icon:'📄', group:'Operations' },
   { id:'ops-forms',       label:'Forms',               icon:'📝', group:'Operations' },
   { id:'order-pad',  label:'Order pad',       icon:'🛒',  group:'Configuration' },
+  { id:'central-kitchen', label:'Central kitchen', icon:'🍲', group:'Configuration' },
+  { id:'due-to-order', label:'Due to order', icon:'🛒', group:'Configuration' },
+  { id:'forecast',   label:'Forecast',        icon:'📈',  group:'Configuration' },
+  { id:'stock-deliveries', label:'Deliveries', icon:'🚚', group:'Configuration' },
+  { id:'credits',    label:'Credits',         icon:'🧾',  group:'Configuration' },
+  { id:'budgets',    label:'Budgets',         icon:'📈',  group:'Configuration' },
   { id:'suppliers',  label:'Suppliers',       icon:'🚚',  group:'Configuration' },
   { id:'purchase-orders', label:'Orders', icon:'🧾', group:'Configuration' },
   { id:'price-changes', label:'Price changes', icon:'📈', group:'Configuration' },
@@ -1203,11 +1217,19 @@ export default function BackOfficeApp() {
           {section === 'ops-forms'       && <OpsForms />}
           {section === 'waitlist'          && <WaitlistConfig setSection={setSection} />}
           {section === 'waitlist-insights' && <WaitlistInsights />}
-          {section === 'order-pad'  && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <OrderPad siteId={id} />}</StockSiteGate>}
           {section === 'suppliers'  && <Suppliers siteId={stockSiteId} />}
-          {section === 'purchase-orders' && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <PurchaseOrders siteId={id} />}</StockSiteGate>}
-          {section === 'price-changes' && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <PriceChanges siteId={id} />}</StockSiteGate>}
-          {section === 'invoices'   && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <Invoices siteId={id} />}</StockSiteGate>}
+          {section === 'purchase-orders' && <PurchaseOrders orgCtx={orgCtx} siteId={stockSiteId} />}
+          {section === 'price-changes' && <PriceChanges orgCtx={orgCtx} siteId={stockSiteId} />}
+          {section === 'invoices'   && <Invoices orgCtx={orgCtx} siteId={stockSiteId} />}
+          {section === 'order-pad'  && <OrderPad siteId={stockSiteId} orgCtx={orgCtx} />}
+          <Suspense fallback={<div style={{ padding:24, color:'var(--t3)', fontSize:13 }}>Loading…</div>}>
+          {section === 'due-to-order' && <DueToOrder orgCtx={orgCtx} />}
+          {section === 'forecast'   && <StockSiteGate oneSiteId={stockSiteId}>{(id) => <Forecast orgCtx={orgCtx} siteId={id} />}</StockSiteGate>}
+          {section === 'stock-deliveries' && <StockDeliveries orgCtx={orgCtx} />}
+          {section === 'credits'    && <Credits orgCtx={orgCtx} />}
+          {section === 'budgets'    && <Budgets orgCtx={orgCtx} />}
+          {section === 'central-kitchen' && <CentralKitchen orgCtx={orgCtx} />}
+          </Suspense>
           {section === 'profiles'   && <DeviceProfiles />}
           {section === 'devices'    && <DeviceRegistry />}
           {section === 'kiosks'     && <KioskRegistry />}

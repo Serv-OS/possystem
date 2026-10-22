@@ -230,7 +230,9 @@ test('the till modal never hides the menu, never refuses, and asks the database 
   assert.doesNotMatch(src, /from '\.\.\/lib\/stock\/(explode|recipes|data|uom)'/, 'no import of the browser stock engine or the item reads');
   // the record is one call with the product id; no refusal branch before it; the database explodes
   // the dish (stock_record_waste), so no ingredient lines are sent from the till
-  assert.match(src, /menuItemId: product\.id, productName: product\.label, qty: n, salePrice: product\.price,\n\s+reason, note: note\.trim\(\) \|\| null, source: 'pos',/);
+  // v5.11.96 (Drop 3): the reason shown (the company list or today's) and the manager PIN when the database asked
+  assert.match(src, /menuItemId: product\.id, productName: product\.label, qty: n, salePrice: product\.price,\n\s+reason: reasonNow, note: note\.trim\(\) \|\| null, source: 'pos', pin: pinNow\.current,/);
+  assert.match(src, /if \(pinState\) \{ setPinAsk\(/, 'the PIN prompt shows only on the database\'s answer');
   assert.doesNotMatch(src, /ingredients:/, 'logMenuItemWaste is called without ingredients');
   assert.match(src, /const tag = product && shown \? wasteTag\(\{ hasStock, linked: product\.linked, rows: shown\.rows \}\) : null;/);
   assert.match(src, /\{hasStock && !p\.linked &&/);
@@ -270,14 +272,16 @@ test('Training Mode: neither waste writer commits anything, and both screens say
   const gate = String.raw`  if \(isMock \|\| !supabase\) return \{ data: null, error: null \};\n(?:  \/\/[^\n]*\n)*  if \(isTrainingMode\(\)\) return \{ data: null, error: null, training: true \};\n  locationId = await ensureLoc\(locationId\);`;
   assert.match(src, new RegExp(String.raw`export const logMenuItemWaste = async [^\n]*\n` + gate), 'logMenuItemWaste: gate right after the isMock guard, before any read or write');
   assert.match(src, new RegExp(String.raw`export const logWaste = async [^\n]*\n` + gate), 'logWaste: the same gate');
-  assert.equal(src.match(/if \(isTrainingMode\(\)\)/g).length, 2);
+  // v5.11.96 (Drop 3): the end of day close down is the third writer, with the same gate
+  assert.match(src, /export const logCloseDownWaste = async [^\n]*\n {2}if \(isMock \|\| !supabase\) return \{ data: null, error: null, count: 0 \};\n {2}if \(isTrainingMode\(\)\) return \{ data: null, error: null, training: true, count: 0 \};/);
+  assert.equal(src.match(/if \(isTrainingMode\(\)\)/g).length, 3);
   // The till modal closes as done but never says "Waste logged" for a training record.
   const modal = read('../../components/PosWasteModal.jsx');
-  assert.match(modal, /const \{ error, training, tag: savedTag \} = await logMenuItemWaste\(/);
+  assert.match(modal, /const \{ error, training, tag: savedTag, pin: pinState \} = await logMenuItemWaste\(/);
   assert.match(modal, /if \(training\) \{ showToast\?\.\('Training mode: waste not recorded', 'info'\); onClose\?\.\(\); return; \}\s*const why = [^\n]*\n\s*showToast\?\.\(`Waste logged/);
   // Back Office Wastage says the same for raw stock waste.
   const bo = read('../../backoffice/sections/Wastage.jsx');
-  assert.match(bo, /const \{ error, training \} = await logWaste\(/);
+  assert.match(bo, /const \{ error, training, pin: pinState \} = await logWaste\(/);
   assert.match(bo, /showToast\?\.\(training \? 'Training mode: waste not recorded' : 'Waste logged', training \? 'info' : 'success'\);/);
 });
 
@@ -304,7 +308,8 @@ test('the ledger writes a product waste with no lines, and the database takes a 
   // since v5.11.79). A product is exploded by the database through its recipe; a basket of loose
   // ingredient lines goes with only the usable lines; a product with none is still recorded.
   assert.match(src, /const rpcLines = menuItemId \? null : usableIngredientLines\(ingredients\)\.map\(\(l\) => \(\{ item_id: l\.inventoryItemId, qty_base: Number\(l\.qtyBase\) \}\)\);/);
-  assert.match(src, /return \{ data: res && res\.id \? \{ id: res\.id \} : res, error: null, tag: res\?\.tag \|\| null, costValue: res\?\.cost_value \?\? null \};/, 'the tag (no recipe, nothing to deduct) comes back to the till');
+  // v5.11.96 (Drop 3): a manager PIN answer (pinRefusal) comes back first; every other answer as before
+  assert.match(src, /return pinRefusal\(res\) \|\| \{ data: res && res\.id \? \{ id: res\.id \} : res, error: null, tag: res\?\.tag \|\| null, costValue: res\?\.cost_value \?\? null \};/, 'the tag (no recipe, nothing to deduct) comes back to the till');
   // the old browser writer (a waste row, then a movement per ingredient) is gone: it never ran
   // once 20261019b was in, and a refused movement could leave a waste row with nothing taken off.
   assert.doesNotMatch(src, /buildMenuWasteRow|postStockMovement|from\('waste_events'\)\.insert/);

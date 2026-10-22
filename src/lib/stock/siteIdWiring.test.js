@@ -31,6 +31,15 @@
  *    oneSiteIdentity tests pin the moved files against main 3cde2fbd the same way). StockReports'
  *    Recipe GP reads the database's plate costs (stock_plate_costs) in Drop 2: its edits are listed
  *    too, and today's maths still run before the migration (needsUpdate).
+ *
+ * 5. Multi site stock Drop 3 (v5.11.96): Stock counts, Wastage and Transfers carry Drop 3 lines (each
+ *    marked `d3 multi`) and a few changed lines; the till's waste modal reads the company's reasons
+ *    and asks for a PIN only on the database's answer. Those edits are undone first (D3 below; the
+ *    same tables as oneSiteIdentityInventory3.test.js, which pins them against main 4f15e759), then
+ *    the Drop 1 edits. Today's Invoices and Price changes screens moved whole into purchasing/ (their
+ *    move is undone the same way, hashed from the first import line). Order pad and Orders change
+ *    for multi site companies in place; their one site proof against main 4f15e759 is
+ *    oneSiteIdentityPurchasing.test.js (web-purchasing), which this file checks is there.
  */
 
 import { test } from 'node:test';
@@ -97,7 +106,8 @@ function locationParams(file) {
 const SCREENS = [
   'backoffice/sections/StockCounts.jsx', 'backoffice/sections/StockTransfers.jsx', 'backoffice/sections/StockAreas.jsx',
   'backoffice/sections/Wastage.jsx', 'backoffice/sections/StockReports.jsx', 'backoffice/sections/OrderPad.jsx',
-  'backoffice/sections/PurchaseOrders.jsx', 'backoffice/sections/Invoices.jsx', 'backoffice/sections/PriceChanges.jsx',
+  // v5.11.96 (Drop 3, contract 3.2): today's Orders, Invoices and Price changes screens moved whole into purchasing/
+  'backoffice/sections/purchasing/PurchaseOrdersSite.jsx', 'backoffice/sections/purchasing/InvoicesSite.jsx', 'backoffice/sections/purchasing/PriceChangesSite.jsx',
   'backoffice/sections/produce/RecipesSite.jsx', 'backoffice/sections/produce/BatchesSite.jsx', 'components/PosWasteModal.jsx',
 ];
 
@@ -173,10 +183,11 @@ test('each screen takes { siteId = null } and starts from it', () => {
     'backoffice/sections/StockAreas.jsx': /export default function StockAreas\(\{ orgCtx = null, siteId = null \}\)/,
     'backoffice/sections/Wastage.jsx': /export default function Wastage\(\{ siteId = null \} = \{\}\)/,
     'backoffice/sections/StockReports.jsx': /export default function StockReports\(\{ siteId = null \} = \{\}\)/,
-    'backoffice/sections/OrderPad.jsx': /export default function OrderPad\(\{ siteId = null \} = \{\}\)/,
-    'backoffice/sections/PurchaseOrders.jsx': /export default function PurchaseOrders\(\{ siteId = null \} = \{\}\)/,
-    'backoffice/sections/Invoices.jsx': /export default function Invoices\(\{ siteId = null \} = \{\}\)/,
-    'backoffice/sections/PriceChanges.jsx': /export default function PriceChanges\(\{ siteId = null \} = \{\}\)/,
+    // v5.11.96 (Drop 3, contract 3.2): the pad also takes orgCtx; the three moved screens keep their signature, renamed
+    'backoffice/sections/OrderPad.jsx': /export default function OrderPad\(\{ siteId = null, orgCtx = null \} = \{\}\)/,
+    'backoffice/sections/purchasing/PurchaseOrdersSite.jsx': /export default function PurchaseOrdersSite\(\{ siteId = null \} = \{\}\)/,
+    'backoffice/sections/purchasing/InvoicesSite.jsx': /export default function InvoicesSite\(\{ siteId = null \} = \{\}\)/,
+    'backoffice/sections/purchasing/PriceChangesSite.jsx': /export default function PriceChangesSite\(\{ siteId = null \} = \{\}\)/,
     'backoffice/sections/produce/RecipesSite.jsx': /export default function RecipesSite\(\{ siteId = null \} = \{\}\)/,
     'backoffice/sections/produce/BatchesSite.jsx': /export default function BatchesSite\(\{ siteId = null \} = \{\}\)/,
   };
@@ -195,7 +206,7 @@ test('each screen takes { siteId = null } and starts from it', () => {
 });
 
 test('the store slice rule: another site\'s menu and tax rates are its own, never the store\'s', () => {
-  for (const rel of ['backoffice/sections/Invoices.jsx', 'backoffice/sections/PurchaseOrders.jsx', 'backoffice/sections/produce/RecipesSite.jsx', 'backoffice/sections/StockReports.jsx', 'components/PosWasteModal.jsx']) {
+  for (const rel of ['backoffice/sections/purchasing/InvoicesSite.jsx', 'backoffice/sections/purchasing/PurchaseOrdersSite.jsx', 'backoffice/sections/produce/RecipesSite.jsx', 'backoffice/sections/StockReports.jsx', 'components/PosWasteModal.jsx']) {
     const src = stripComments(readAbs(path.join(SRC, rel)));
     assert.match(src, /useSiteStockContext\((siteId|loc)\)/, rel);
     assert.doesNotMatch(src, /useStore\(s => s\.(taxRates|menuItems)\)/, `${rel}: no store slice read directly`);
@@ -347,17 +358,97 @@ const IDENTITY = [
     ['  const loc = locationId || getActiveLocationSync() || null;\n  const { menuItems } = useSiteStockContext(loc);', '  const menuItems = useStore(s => s.menuItems) || [];\n  const loc = getActiveLocationSync() || locationId || null;'],
   ]],
 ];
+// ── 5. Drop 3 (v5.11.96): the one site text of each Drop 3 screen, before the Drop 1 edits are undone ──
+const D3_MARK = /\/\/ d3 multi|\{\/\* d3 multi \*\/\}/;
+// a moved screen: paths one folder deeper and the new name (contract 3.2 edits 2 and 3), undone
+const unmove = (name) => (t) => t.split(`function ${name}Site(`).join(`function ${name}(`).split("from '../../StockScope'").join("from '../StockScope'")
+  .split("from '../../../").join('\u0000').split("from '../").join("from './").split('\u0000').join("from '../../");
+const D3 = {
+  'backoffice/sections/StockCounts.jsx': { strip: true, pairs: [
+    ["    const { data, error } = await createCount({ name, countType: type, areaIds, supplierId, itemIds, startedByName, items, tz: venueTz, planId: sc.multi ? planFor(type) : null }, locId);",
+     "    const { data, error } = await createCount({ name, countType: type, areaIds, supplierId, itemIds, startedByName, items, tz: venueTz }, locId);"],
+    ["          loginName={loginName} onStart={startWithScope} onCancel={() => setStarting(false)} templates={sc.multi ? templates : null} onTemplate={startFromTemplate} />",
+     "          loginName={loginName} onStart={startWithScope} onCancel={() => setStarting(false)} />"],
+    ["function NewCountPanel({ areas, suppliers, items, holdings, venueTz, busy, loginName, onStart, onCancel, templates = null, onTemplate = null }) {",
+     "function NewCountPanel({ areas, suppliers, items, holdings, venueTz, busy, loginName, onStart, onCancel }) {"],
+  ] },
+  'backoffice/sections/Wastage.jsx': { strip: true, pairs: [
+    ["import { useState, useEffect, useMemo, useCallback, useRef } from 'react';",
+     "import { useState, useEffect, useMemo, useCallback } from 'react';"],
+    ["    const { error, training, pin: pinState } = await logWaste({ inventoryItemId: row.item.id, qty: row.qty, unit: row.unit, reason: reasonNow, note: row.note, pin: pinNow.current }, locId);",
+     "    const { error, training } = await logWaste({ inventoryItemId: row.item.id, qty: row.qty, unit: row.unit, reason: row.reason, note: row.note }, locId);"],
+    ["    setRow({ item: null, qty: '', unit: 'each', reason: startReason(reasons), note: '' });",
+     "    setRow({ item: null, qty: '', unit: 'each', reason: WASTE_REASONS[0], note: '' });"],
+    ["              <select value={reasonNow} onChange={e => setRow(r => ({ ...r, reason: e.target.value }))} style={{ ...field, width: 160 }}>",
+     "              <select value={row.reason} onChange={e => setRow(r => ({ ...r, reason: e.target.value }))} style={{ ...field, width: 160 }}>"],
+    ["                {reasons.map(r => <option key={r} value={r}>{r}</option>)}",
+     "                {WASTE_REASONS.map(r => <option key={r} value={r}>{r}</option>)}"],
+  ] },
+  'backoffice/sections/StockTransfers.jsx': { strip: true, pairs: [
+    ["        <NewTransfer locId={locId} areas={liveAreas} items={items} itemsById={itemsById} suppliers={suppliers} holdings={holdings} venues={venues.venues} byName={byName} multi={sc.multi} onRequest={() => setView({ kind: 'request' })}",
+     "        <NewTransfer locId={locId} areas={liveAreas} items={items} itemsById={itemsById} suppliers={suppliers} holdings={holdings} venues={venues.venues} byName={byName}"],
+    ["            {(sc.multi ? transferFilters({ multi: true }) : TRANSFER_FILTERS).map(f => <button key={f.id} style={chip(filter === f.id)} onClick={() => setFilter(f.id)}>{f.label}</button>)}",
+     "            {TRANSFER_FILTERS.map(f => <button key={f.id} style={chip(filter === f.id)} onClick={() => setFilter(f.id)}>{f.label}</button>)}"],
+    ["                  <span style={{ fontSize: 11, fontWeight: 700, color: statusColor(t.status), whiteSpace: 'nowrap' }}>{attention ? 'Receive' : (sc.multi ? statusWords({ ...t, shortLines: s.short }, { multi: true }) : (TRANSFER_STATUS_WORDS[t.status] || t.status))}</span>",
+     "                  <span style={{ fontSize: 11, fontWeight: 700, color: statusColor(t.status), whiteSpace: 'nowrap' }}>{attention ? 'Receive' : (TRANSFER_STATUS_WORDS[t.status] || t.status)}</span>"],
+    ["function NewTransfer({ locId, areas, items, itemsById, suppliers, holdings, venues, byName, onDone, onError, multi = false, onRequest = null }) {",
+     "function NewTransfer({ locId, areas, items, itemsById, suppliers, holdings, venues, byName, onDone, onError }) {"],
+    ["          <span style={{ fontSize: 12, fontWeight: 700, color: statusColor(t.status) }}>{sc.multi ? statusWords(t, { multi: true }) : (TRANSFER_STATUS_WORDS[t.status] || t.status)}</span>",
+     "          <span style={{ fontSize: 12, fontWeight: 700, color: statusColor(t.status) }}>{TRANSFER_STATUS_WORDS[t.status] || t.status}</span>"],
+    ["                    <div style={{ fontSize: 11, color: 'var(--t3)' }}>{[l.skuSnapshot, l.dropped ? 'dropped' : receiving ? (l.matchedBy === 'sku' ? 'matched by SKU' : l.matchedBy === 'name' ? 'matched by name' : l.matchedBy === 'kept' ? 'matched' : l.matchedBy === 'company' ? 'matched by company item' : l.toInventoryItemId ? 'matched by hand' : (l.ambiguous?.length ? `${l.ambiguous.length} of your items match: pick one` : 'no match yet')) : null].filter(Boolean).join(' · ')}</div>",
+     "                    <div style={{ fontSize: 11, color: 'var(--t3)' }}>{[l.skuSnapshot, l.dropped ? 'dropped' : receiving ? (l.matchedBy === 'sku' ? 'matched by SKU' : l.matchedBy === 'name' ? 'matched by name' : l.matchedBy === 'kept' ? 'matched' : l.toInventoryItemId ? 'matched by hand' : (l.ambiguous?.length ? `${l.ambiguous.length} of your items match: pick one` : 'no match yet')) : null].filter(Boolean).join(' · ')}</div>"],
+  ] },
+  'components/PosWasteModal.jsx': { strip: false, pairs: [
+    ["import { useEffect, useMemo, useRef, useState } from 'react';",
+     "import { useEffect, useMemo, useState } from 'react';"],
+    ["import { useSiteStockContext } from '../lib/stock/siteContext';\n// v5.11.96 (multi site stock Drop 3, contract 3.3): the company's waste reasons (stock_waste_reasons,\n// the device branch at the till; today's list when the company has none or the database has no\n// Drop 3) and the manager PIN, asked for only when the database answers that the waste is over the\n// company's limit. No limit is set anywhere today, so the till's flow is unchanged.\nimport { useWasteReasons, startReason } from '../lib/stock/wasteReasons';\nimport { stockApi } from '../lib/stock/stockApi';\nimport ManagerPinPrompt from './ManagerPinPrompt';\n",
+     "import { useSiteStockContext } from '../lib/stock/siteContext';\n"],
+    ["  const [busy, setBusy] = useState(false);\n  const { reasons } = useWasteReasons(open ? loc : null, stockApi);\n  const reasonNow = reasons.includes(reason) ? reason : startReason(reasons, DEFAULT_REASON);\n  const pinNow = useRef(null);\n  const [pinAsk, setPinAsk] = useState(null);\n",
+     "  const [busy, setBusy] = useState(false);\n"],
+    ["const { error, training, tag: savedTag, pin: pinState } = await logMenuItemWaste({",
+     "const { error, training, tag: savedTag } = await logMenuItemWaste({"],
+    ["        reason: reasonNow, note: note.trim() || null, source: 'pos', pin: pinNow.current,\n",
+     "        reason, note: note.trim() || null, source: 'pos',\n"],
+    ["      setBusy(false);\n      pinNow.current = null;\n      // over the company's limit nothing was written: ask for a manager PIN, then send it again\n      if (pinState) { setPinAsk({ words: error?.message || '', error: pinState === 'needed' ? null : error?.message || null }); return; }\n      setPinAsk(null);\n",
+     "      setBusy(false);\n"],
+    ["<select value={reasonNow} onChange={e => setReason(e.target.value)} style={field}>\n                  {reasons.map(r => <option key={r} value={r}>{r}</option>)}",
+     "<select value={reason} onChange={e => setReason(e.target.value)} style={field}>\n                  {WASTE_REASONS.map(r => <option key={r} value={r}>{r}</option>)}"],
+    ["        {pinAsk && <ManagerPinPrompt words={pinAsk.words} error={pinAsk.error} busy={busy} onCancel={() => setPinAsk(null)} onPin={(pin) => { pinNow.current = pin; submit(); }} />}\n",
+     ""],
+  ] },
+  'backoffice/sections/Invoices.jsx': { from: 'backoffice/sections/purchasing/InvoicesSite.jsx', undo: unmove('Invoices'), pairs: [] },
+  'backoffice/sections/PriceChanges.jsx': { from: 'backoffice/sections/purchasing/PriceChangesSite.jsx', undo: unmove('PriceChanges'), pairs: [] },
+};
+// changed in place for multi site companies by web-purchasing; proven against main 4f15e759 there
+const D3_ELSEWHERE = new Set(['backoffice/sections/OrderPad.jsx', 'backoffice/sections/PurchaseOrders.jsx']);
+/** A screen's text with its Drop 3 edits undone (main 4f15e759's text for a one site company). */
+function drop3Undone(rel) {
+  const d = D3[rel];
+  if (!d) return readAbs(path.join(SRC, rel));
+  let text = readAbs(path.join(SRC, d.from || rel));
+  if (d.strip) text = text.split('\n').filter((l) => !D3_MARK.test(l)).join('\n');
+  if (d.undo) text = d.undo(text);
+  for (const [now, was] of d.pairs) {
+    assert.equal(text.split(now).length - 1, 1, `${rel}: the Drop 3 line is there once: ${now.slice(0, 70)}`);
+    text = text.replace(now, () => was);
+  }
+  return text;
+}
+
 // sha256 of each file on main (f1a8f397, v5.11.84), the text a one site company runs today.
 // The two moved files are hashed from their first import line: their leading comment was rewritten by the move.
-const BODY_ONLY = new Set(['backoffice/sections/produce/RecipesSite.jsx', 'backoffice/sections/produce/BatchesSite.jsx']);
+const BODY_ONLY = new Set(['backoffice/sections/produce/RecipesSite.jsx', 'backoffice/sections/produce/BatchesSite.jsx', 'backoffice/sections/Invoices.jsx', 'backoffice/sections/PriceChanges.jsx']);
 const bodyOf = (rel, text) => (BODY_ONLY.has(rel) ? text.slice(text.search(/^import /m)) : text);
 const MAIN_SHA = {
   'backoffice/sections/StockTransfers.jsx': 'dfacd4310789ca9e2f5f01a5c1ba94e24428f0ab1e394ed275a5089f001bf970',
   'backoffice/sections/StockAreas.jsx': 'f533a7cdf429dc85d9345664d64195724554993c9f1fa79d9653be946329d5c8',
-  'backoffice/sections/PriceChanges.jsx': '0f135b551349bb385ae13ec7d3d6ba293ef33810bfa7dc7b3618f19e328bb7e5',
+  // v5.11.96 (Drop 3): moved whole into purchasing/ with a new leading comment, so hashed from the first import line
+  // (the full file on f1a8f397 was 0f135b551349bb385ae13ec7d3d6ba293ef33810bfa7dc7b3618f19e328bb7e5)
+  'backoffice/sections/PriceChanges.jsx': '4ad9f72203d17ba6c88d54de5443380a98a9d07088f86261354f80de962f4e36',
   'backoffice/sections/Wastage.jsx': '33e365b386c8dc5203f683c68cecd20f0761a283758fcc2bda7a8117263ae42d',
   'backoffice/sections/StockCounts.jsx': '44a539c1f9993b6cdf9143ab0b433c0ccbdeec750333125efc922004a96b7ed9',
-  'backoffice/sections/Invoices.jsx': 'f18b04a253ad2845fcc2a94e061b12a9b30fda49f32e14824278313ef6a2513f',
+  // v5.11.96 (Drop 3): moved whole into purchasing/, hashed from the first import line (full file was f18b04a253ad2845fcc2a94e061b12a9b30fda49f32e14824278313ef6a2513f)
+  'backoffice/sections/Invoices.jsx': '71ed5e4a30aa8c2fc4b2938282eb3b480d616a3928a13e8131495ed36830a039',
   'backoffice/sections/PurchaseOrders.jsx': '5f5aaa8b6610886b3889e4c3e1dfaa9143fca50a3a7da645afaef61739dda6e7',
   'backoffice/sections/StockReports.jsx': '4d5ee256d24e938fa084a879d5f2252fd30b8865f58517f25088c331ea9010fc',
   'backoffice/sections/produce/BatchesSite.jsx': 'e1823ac578bc1964c1d77f8b9381273b84033fe408fe42bfc013705c6430d718',   // from the first import line (the moved file's comment is new)
@@ -370,7 +461,8 @@ const MAIN_SHA = {
 
 test('one site companies: every edited screen is main\'s text once its inert Drop 1 edits are undone (sha256)', () => {
   for (const [rel, edits] of IDENTITY) {
-    let text = bodyOf(rel, readAbs(path.join(SRC, rel)));
+    if (D3_ELSEWHERE.has(rel)) continue;   // proven in oneSiteIdentityPurchasing.test.js (checked below)
+    let text = bodyOf(rel, drop3Undone(rel));
     for (const [now, main, times = 1] of edits) {
       const n = text.split(now).length - 1;
       assert.equal(n, times, `${rel}: "${now.slice(0, 70)}" is there ${times} time(s), found ${n}`);
@@ -464,7 +556,7 @@ if (transformSync) {
 
 /** main's text of a screen: today's file with its listed Drop 1 edits undone (the sha256 above pins it). */
 function mainTextOf(rel) {
-  let text = bodyOf(rel, readAbs(path.join(SRC, rel)));
+  let text = bodyOf(rel, drop3Undone(rel));
   for (const [now, main] of IDENTITY.find(([r]) => r === rel)[1]) text = text.split(now).join(main);
   assert.equal(sha(text), MAIN_SHA[rel], `${rel}: main's text`);
   return text;
@@ -477,8 +569,7 @@ const RENDERED = [
   ['backoffice/sections/StockAreas.jsx', { orgCtx: null }],
   ['backoffice/sections/Wastage.jsx', {}],
   ['backoffice/sections/StockReports.jsx', {}],
-  ['backoffice/sections/OrderPad.jsx', {}],
-  ['backoffice/sections/PurchaseOrders.jsx', {}],
+  // v5.11.96 (Drop 3): Order pad and Orders are drawn by oneSiteIdentityPurchasing.test.js (D3_ELSEWHERE)
   ['backoffice/sections/Invoices.jsx', {}],
   ['backoffice/sections/PriceChanges.jsx', {}],
   ['backoffice/sections/produce/RecipesSite.jsx', {}],
@@ -519,7 +610,7 @@ test('rendered: a one site company gets main\'s HTML on every edited screen, thr
     }
     screens += 1;
   }
-  assert.equal(screens, 11);
+  assert.equal(screens, 9);
   // the harness draws the live code: a multi site login without company rights in Produce sees the
   // Recipes lock line, which today's screen never had
   const multi = { ...read, multi: true, level: 'sites', editors: ['Test Owner'], sites: [read.sites[0], { id: 'site-two', name: 'Second Site', status: 'active' }] };
@@ -616,4 +707,14 @@ test('siteContext: only a site that is not the signed in venue is read; the sign
   const none = await fetchSiteStockContext(null);
   assert.deepEqual([none.menuItems, none.taxRates], [[], []]);
   assert.ok(none.error, 'no site: says so');
+});
+
+test('Drop 3: Order pad and Orders keep a one site proof against main 4f15e759 (oneSiteIdentityPurchasing.test.js)', () => {
+  const file = path.join(HERE, 'oneSiteIdentityPurchasing.test.js');
+  assert.ok(fs.existsSync(file), 'oneSiteIdentityPurchasing.test.js is there (web-purchasing, contract 3.2)');
+  const src = readAbs(file);
+  // contract 0: main 4f15e759's OrderPad.jsx and PurchaseOrders.jsx, from the first import line
+  assert.ok(src.includes('d4d5573525e8feac1068245f1be18365e7810c9269c4ce5ed2bdf00426b15559'), 'the OrderPad pin');
+  assert.ok(src.includes('bd6e0a75e18971b5bb69ce12473e6fde813558cff7dfcf94c29a077caa7cdf2b'), 'the PurchaseOrders pin');
+  assert.deepEqual([...D3_ELSEWHERE].sort(), ['backoffice/sections/OrderPad.jsx', 'backoffice/sections/PurchaseOrders.jsx']);
 });

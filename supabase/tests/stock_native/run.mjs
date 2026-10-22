@@ -23,6 +23,12 @@
 //                                                          and the drainer file as pastes, then Drop 2
 //   node supabase/tests/stock_native/run.mjs --drop2 --all  sections 2 to 25 first, then 30 to 38
 //   STOCKN_D2, STOCKN_D2_ROLLBACK                          other copies of 20261025a and its rollback
+//   node supabase/tests/stock_native/run.mjs --drop3 --quick
+//                                                          Drop 3 (20261027a, drop3.mjs sections 40 to 49):
+//                                                          section 1, then 0a, its revalue file, 0b, Drop 1,
+//                                                          the drainer and Drop 2 as pastes, then Drop 3
+//   node supabase/tests/stock_native/run.mjs --drop3 --all  sections 2 to 25, Drop 2's 30 to 38, then 40 to 49
+//   STOCKN_D3, STOCKN_D3_ROLLBACK                          other copies of 20261027a and its rollback
 //   node supabase/tests/stock_native/run.mjs --drainer --before-only --quick
 //                                                          only the drainer parts that need no drainer
 //                                                          file (the basket before, the v1 figures, speed
@@ -55,11 +61,13 @@ import { stockLevelOf } from '../../functions/_shared/boSectionRules.js';
 import { drainerProof } from './drainer.mjs';
 import { drop1Sections } from './drop1.mjs';
 import { drop2Sections } from './drop2.mjs';
+import { drop3Sections } from './drop3.mjs';
 
 const BASE_ONLY = process.argv.includes('--base-only');
 const BEFORE_ONLY = process.argv.includes('--before-only');
 const DRAINER = process.argv.includes('--drainer') || BEFORE_ONLY;
 const DROP2 = process.argv.includes('--drop2');
+const DROP3 = process.argv.includes('--drop3');
 const ALL = process.argv.includes('--all');
 const QUICK = process.argv.includes('--quick');
 const SEED = Number((process.argv.find((a) => a.startsWith('--seed=')) || '').slice(7)) || (Date.now() % 1000000);
@@ -79,6 +87,8 @@ const FILES = {
   dRb: process.env.STOCKN_DRAINER_ROLLBACK || MIG('20261023a_OPS_stock_drainer_v2_ROLLBACK.sql'),
   d2: process.env.STOCKN_D2 || MIG('20261025a_OPS_stock_native_2.sql'),
   d2Rb: process.env.STOCKN_D2_ROLLBACK || MIG('20261025a_OPS_stock_native_2_ROLLBACK.sql'),
+  d3: process.env.STOCKN_D3 || MIG('20261027a_OPS_stock_native_3.sql'),
+  d3Rb: process.env.STOCKN_D3_ROLLBACK || MIG('20261027a_OPS_stock_native_3_ROLLBACK.sql'),
 };
 if (!BASE_ONLY && !existsSync(FILES.a)) {
   console.error(`0a is not there yet: ${FILES.a}\nRun with --base-only for the base database, or set STOCKN_MIGRATION to a copy of 0a.`);
@@ -347,6 +357,11 @@ if (BASE_ONLY) finish();
 // With --all the Drop 0, Drop 1 and drainer proofs run first (sections 2 to 29), then these.
 if (DROP2 && !ALL) {
   await drop2Sections({ c, ok, near, short, section, guarded, FILES, QUICK, SEED, SCALE_SITES });
+  finish();
+}
+// == 40 to 49. Drop 3 (drop3.mjs): 0a, its revalue file, 0b, Drop 1, the drainer and Drop 2 as pastes, then Drop 3 ===
+if (DROP3 && !ALL) {
+  await drop3Sections({ c, ok, near, short, section, guarded, FILES, QUICK, SEED, SCALE_SITES });
   finish();
 }
 
@@ -1431,6 +1446,7 @@ await guarded('rollback', () => {
   ok(haveD1, `the Drop 1 files are there (${FILES.d1}, ${FILES.d1Rb})`);
   if (haveD1) await drop1Sections({ c, ok, section, guarded, FILES, QUICK, SCALE_SITES, SCALE_ITEMS });
 }
-if (DROP2) await drop2Sections({ c, ok, near, short, section, guarded, FILES, QUICK, SEED, SCALE_SITES });
+if (DROP2 || DROP3) await drop2Sections({ c, ok, near, short, section, guarded, FILES, QUICK, SEED, SCALE_SITES });
+if (DROP3) await drop3Sections({ c, ok, near, short, section, guarded, FILES, QUICK, SEED, SCALE_SITES });
 
 finish();

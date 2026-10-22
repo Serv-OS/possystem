@@ -50,8 +50,8 @@ export const NAV_IA = [
   { label:'Menu',       icon:'list',      children:[['menu','Items & modifiers'],['multi-site-menu','Multi site menu'],['discounts','Discounts'],['tax','Tax & VAT'],['challenge21','Challenge ID']] },
   { label:'Floor plan', icon:'floor',     single:'floorplan' },
   { label:'Inventory',  icon:'inventory', children:[['stock-overview','Overview'],['stock-items','Stock items'],['stock-areas','Stock areas'],['stock-transfers','Transfers'],['stock-counts','Stock counts'],['wastage','Wastage'],['inventory','Daily counts'],['stock-reports','Reports']] },
-  { label:'Produce',    icon:'inventory', children:[['recipes','Recipes'],['batches','Batches']] },
-  { label:'Purchasing', icon:'channels',  children:[['order-pad','Order pad'],['suppliers','Suppliers'],['purchase-orders','Orders'],['invoices','Invoices'],['price-changes','Price changes']] },
+  { label:'Produce',    icon:'inventory', children:[['recipes','Recipes'],['batches','Batches'],['central-kitchen','Central kitchen']] },
+  { label:'Purchasing', icon:'channels',  children:[['order-pad','Order pad'],['due-to-order','Due to order'],['forecast','Forecast'],['suppliers','Suppliers'],['purchase-orders','Orders'],['stock-deliveries','Deliveries'],['invoices','Invoices'],['credits','Credits'],['price-changes','Price changes'],['budgets','Budgets']] },
   { label:'Operations', icon:'inventory', children:[['ops-overview','Compliance'],['ops-temperature','Temperature'],['ops-checklists','Checklists'],['ops-prep','Prep schedule'],['ops-maintenance','Maintenance'],['ops-notifications','Alert rules'],['ops-compliance','Calendar'],['ops-documents','Documents'],['ops-forms','Forms'],['ops-devices','Devices']] },
   { label:'Team',       icon:'user',      single:'staff' },
   { label:'Workforce',  icon:'team',      children:[['wf-dashboard','Dashboard'],['wf-rota','Rota'],['wf-timesheets','Timesheets'],['wf-payroll','Payroll'],['wf-timeoff','Time off & availability'],['wf-staff','Staff'],['wf-onboarding','Onboarding'],['wf-compliance','Compliance'],['wf-training','Training'],['wf-pay','Positions & rates'],['wf-tronc','Tronc / tips'],['wf-announce','Announcements'],['wf-settings','Workforce settings']] },
@@ -132,8 +132,19 @@ export function sectionKeyOfRoute(routeId) {
 // which fails closed). Owners and ServOS staff are NOT let in automatically. Anything else
 // (not read yet, not installed, a failed read, switched off) is no.
 export const MSM_ROUTE = 'multi-site-menu';
+// Multi site stock Drop 3 (v5.11.96, map 2.2): the new Purchasing screens and Central kitchen open
+// only for a company with 2 or more open sites once the stock scope has loaded (Peter: one site
+// companies keep exactly today's screens). While the scope loads every one of these answers no.
+const stockMulti = (profile) => !!profile && typeof profile === 'object' && profile.stock?.multi === true;
+const stockReady = (p) => stockMulti(p) && p.stock?.ready === true;
 const ROUTE_GATES = Object.freeze({
   [MSM_ROUTE]: (profile) => !!profile && typeof profile === 'object' && profile.multiSiteMenu?.canOpen === true,
+  'central-kitchen': (p) => stockReady(p) && p.stock.hasKitchen === true && (p.stock.level === 'all' || p.stock.reachesKitchen === true),
+  'due-to-order': stockReady,
+  forecast: stockReady,
+  'stock-deliveries': stockReady,
+  credits: stockReady,
+  budgets: stockReady,
 });
 
 // ── Beta features (18 Oct 2026, Peter: a small BETA tag next to the feature's name) ────────
@@ -188,8 +199,6 @@ export function canOpenRoute(routeId, profile) {
 // by the top bar title (routeLabel). The rows in NAV_IA keep today's labels.
 export const LABEL_WHEN_MULTI = Object.freeze({ batches: 'Batch and prep' });
 
-const stockMulti = (profile) => !!profile && typeof profile === 'object' && profile.stock?.multi === true;
-
 // The rows with every child in LABEL_WHEN_MULTI relabelled (a new row only where one changed).
 function withMultiLabels(rows) {
   let changed = false;
@@ -220,7 +229,7 @@ export function stockAccessOf(scope) {
     multi: !!scope?.multi,
     level: scope?.level || 'sites',
     hasKitchen: (scope?.kitchens || []).length > 0,
-    reachesKitchen: (scope?.kitchens || []).length > 0,
+    reachesKitchen: (scope?.kitchens || []).some((id) => (scope?.sites || []).some((s) => s.id === id)),
     sections: scope?.sections ?? null,
   };
 }

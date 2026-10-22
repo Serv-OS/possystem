@@ -31,13 +31,20 @@
  * exactly as for any failed read; the till never works the stock out from its own recipe copy.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { getActiveLocationSync } from '../lib/supabase';
 import { money } from '../lib/currency';
 import { logMenuItemWaste, fetchWasteLinks, previewMenuWaste, WASTE_REASONS } from '../lib/stock/waste';
 import { listWasteProducts, wasteTag, stockPresence } from '../lib/stock/menuWaste';
 import { wasteTagText } from '../lib/stock/phase0Rules';
 import { useSiteStockContext } from '../lib/stock/siteContext';
+// v5.11.96 (multi site stock Drop 3, contract 3.3): the company's waste reasons (stock_waste_reasons,
+// the device branch at the till; today's list when the company has none or the database has no
+// Drop 3) and the manager PIN, asked for only when the database answers that the waste is over the
+// company's limit. No limit is set anywhere today, so the till's flow is unchanged.
+import { useWasteReasons, startReason } from '../lib/stock/wasteReasons';
+import { stockApi } from '../lib/stock/stockApi';
+import ManagerPinPrompt from './ManagerPinPrompt';
 
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1.5px solid var(--bdr2)', borderRadius: 10, padding: '12px 12px', fontSize: 15, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit' };
 const lbl = { fontSize: 11, fontWeight: 800, color: 'var(--t4)', textTransform: 'uppercase', letterSpacing: '.07em', display: 'block', marginBottom: 6 };
@@ -65,6 +72,10 @@ export default function PosWasteModal({ open, onClose, locationId, showToast }) 
   const [reason, setReason] = useState(DEFAULT_REASON);
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
+  const { reasons } = useWasteReasons(open ? loc : null, stockApi);
+  const reasonNow = reasons.includes(reason) ? reason : startReason(reasons, DEFAULT_REASON);
+  const pinNow = useRef(null);
+  const [pinAsk, setPinAsk] = useState(null);
 
   // Load which products have a recipe, and whether the venue runs stock, once when the modal opens.
   useEffect(() => {
@@ -132,11 +143,15 @@ export default function PosWasteModal({ open, onClose, locationId, showToast }) 
     if (!links || loadFailed) { showToast?.('Stock data did not load, close and try again', 'error'); return; }
     setBusy(true);
     try {
-      const { error, training, tag: savedTag } = await logMenuItemWaste({
+      const { error, training, tag: savedTag, pin: pinState } = await logMenuItemWaste({
         menuItemId: product.id, productName: product.label, qty: n, salePrice: product.price,
-        reason, note: note.trim() || null, source: 'pos',
+        reason: reasonNow, note: note.trim() || null, source: 'pos', pin: pinNow.current,
       }, loc);
       setBusy(false);
+      pinNow.current = null;
+      // over the company's limit nothing was written: ask for a manager PIN, then send it again
+      if (pinState) { setPinAsk({ words: error?.message || '', error: pinState === 'needed' ? null : error?.message || null }); return; }
+      setPinAsk(null);
       if (error) {
         // v5.5.928: never surface a raw RLS string to staff — it reads as gibberish and the
         // open modal gives no clue whether anything saved. (It has not: one call, all or nothing.)
@@ -216,8 +231,8 @@ export default function PosWasteModal({ open, onClose, locationId, showToast }) 
               </div>
               <div style={{ flex: 1 }}>
                 <label style={lbl}>Reason</label>
-                <select value={reason} onChange={e => setReason(e.target.value)} style={field}>
-                  {WASTE_REASONS.map(r => <option key={r} value={r}>{r}</option>)}
+                <select value={reasonNow} onChange={e => setReason(e.target.value)} style={field}>
+                  {reasons.map(r => <option key={r} value={r}>{r}</option>)}
                 </select>
               </div>
             </div>
@@ -258,6 +273,7 @@ export default function PosWasteModal({ open, onClose, locationId, showToast }) 
             </button>
           </>
         )}
+        {pinAsk && <ManagerPinPrompt words={pinAsk.words} error={pinAsk.error} busy={busy} onCancel={() => setPinAsk(null)} onPin={(pin) => { pinNow.current = pin; submit(); }} />}
       </div>
     </div>
   );

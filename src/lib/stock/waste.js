@@ -16,8 +16,23 @@ import { isMissingFunctionError, newUuid } from './phase0Rules.js';
 import { readAllPagesResult } from '../pagedRead.js';
 import { NEEDS_UPDATE } from './saveRules.js';
 import { liveOrAll } from './companyData.js';
+import { WASTE_REASONS } from './wasteReasons.js';
+import { pinAsk, END_OF_DAY_REASON } from './wasteReasons.js';
 
-export const WASTE_REASONS = ['Spoilage', 'Out of date', 'Prep / trim', 'Over-production', 'Breakage / spill', 'Staff meal', 'Customer return', 'Training', 'Other'];
+// v5.11.96 (Drop 3): the list moved to wasteReasons.js (pure, read by the company reasons hook); the same words.
+export { WASTE_REASONS };
+
+/**
+ * v5.11.96 (multi site stock Drop 3, map J5): over the company's limit stock_record_waste answers
+ * { ok: false, pin: 'needed' | 'wrong' | 'locked', error, limit } and writes nothing. That answer is
+ * an error with the database's words plus `pin` and `limit`, never "Waste logged". The PIN rides in
+ * the event (p_event.pin, never stored, decision 1). No limit is set anywhere live, so every company
+ * gets today's answer.
+ */
+function pinRefusal(res) {
+  const ask = pinAsk(res);
+  return ask ? { data: res, error: new Error(ask.words), pin: ask.state, limit: ask.limit } : null;
+}
 
 async function ensureLoc(locationId) {
   if (!locationId || locationId === 'loc-demo') locationId = getActiveLocationSync();
@@ -106,7 +121,7 @@ export const previewMenuWaste = async ({ menuItemId, qty }, locationId = null) =
  * and no movement posts because there is no stock to take it off. Venues with recipes
  * behave exactly as before.
  */
-export const logMenuItemWaste = async ({ menuItemId = null, productName, qty, salePrice, ingredients, reason, note, source = 'pos' }, locationId = null) => {
+export const logMenuItemWaste = async ({ menuItemId = null, productName, qty, salePrice, ingredients, reason, note, source = 'pos', pin = null }, locationId = null) => {
   if (isMock || !supabase) return { data: null, error: null };
   // 26 Sep 2026: in Training Mode "NOTHING the device does is committed" (lib/trainingMode.js). Waste without
   // stock made this insert reachable at every venue with no stock, so a practice waste on a
@@ -123,16 +138,17 @@ export const logMenuItemWaste = async ({ menuItemId = null, productName, qty, sa
     id: newUuid(), kind: 'menu', menu_item_id: menuItemId ? String(menuItemId) : null, item_name: productName,
     qty: n, unit: 'item', qty_base: n, reason: reason || null, note: note || null,
     sale_value: Math.round((Number(salePrice) || 0) * n * 100) / 100, source,
+    ...(pin ? { pin: String(pin) } : {}),
   };
   const rpcLines = menuItemId ? null : usableIngredientLines(ingredients).map((l) => ({ item_id: l.inventoryItemId, qty_base: Number(l.qtyBase) }));
   const { data: res, error: rpcErr } = await supabase.rpc('stock_record_waste', { p_location_id: locationId, p_event: event, p_lines: rpcLines });
-  if (!rpcErr) return { data: res && res.id ? { id: res.id } : res, error: null, tag: res?.tag || null, costValue: res?.cost_value ?? null };
+  if (!rpcErr) return pinRefusal(res) || { data: res && res.id ? { id: res.id } : res, error: null, tag: res?.tag || null, costValue: res?.cost_value ?? null };
   if (isMissingFunctionError(rpcErr)) return { data: null, error: new Error(`Waste not recorded. ${NEEDS_UPDATE}`) };
   return { data: null, error: rpcErr };
 };
 
 /** Log waste of an inventory item: writes waste_events + posts a WASTE movement. */
-export const logWaste = async ({ inventoryItemId, qty, unit, reason, note, source = 'backoffice' }, locationId = null) => {
+export const logWaste = async ({ inventoryItemId, qty, unit, reason, note, source = 'backoffice', pin = null }, locationId = null) => {
   if (isMock || !supabase) return { data: null, error: null };
   // 26 Sep 2026: same Training Mode gate as logMenuItemWaste (a waste row + a WASTE movement
   // are both commits). Back Office Wastage reads `training` for its toast.
@@ -168,10 +184,34 @@ export const logWaste = async ({ inventoryItemId, qty, unit, reason, note, sourc
   const { data: res, error: rpcErr } = await supabase.rpc('stock_record_waste', {
     p_location_id: locationId,
     p_event: { id: newUuid(), kind: 'item', inventory_item_id: inventoryItemId, item_name: item.name, qty: Number(qty),
-      unit: unitLabel(token, itemCtx), qty_base: qtyBase, reason: reason || null, note: note || null, source },
+      unit: unitLabel(token, itemCtx), qty_base: qtyBase, reason: reason || null, note: note || null, source, ...(pin ? { pin: String(pin) } : {}) },
     p_lines: [{ item_id: inventoryItemId, qty_base: qtyBase }],
   });
-  if (!rpcErr) return { data: res && res.id ? { id: res.id } : res, error: null };
+  if (!rpcErr) return pinRefusal(res) || { data: res && res.id ? { id: res.id } : res, error: null };
   if (isMissingFunctionError(rpcErr)) return { data: null, error: new Error(`Waste not recorded. ${NEEDS_UPDATE}`) };
   return { data: null, error: rpcErr };
+};
+
+/**
+ * v5.11.96 (Drop 3, J6): the end of day fresh close down. ONE stock_record_waste call books every
+ * line typed as left (reason 'End of day'); the database asks for the PIN over the limit exactly
+ * as for one waste. lines: [{ inventoryItemId, name, qtyBase, unit }] (qtyBase above 0 only).
+ * Returns { data, error, pin, limit, count }.
+ */
+export const logCloseDownWaste = async ({ lines, note = null, pin = null }, locationId = null) => {
+  if (isMock || !supabase) return { data: null, error: null, count: 0 };
+  if (isTrainingMode()) return { data: null, error: null, training: true, count: 0 };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: null, error: new Error('No locationId'), count: 0 };
+  const rows = (lines || []).filter((l) => l && l.inventoryItemId && Number(l.qtyBase) > 0);
+  if (!rows.length) return { data: null, error: new Error('Type what is left on at least one line.'), count: 0 };
+  const { data: res, error: rpcErr } = await supabase.rpc('stock_record_waste', {
+    p_location_id: locationId,
+    p_event: { id: newUuid(), kind: 'closedown', item_name: 'End of day', qty: rows.length, unit: 'item', reason: END_OF_DAY_REASON,
+      note: note || null, source: 'backoffice', ...(pin ? { pin: String(pin) } : {}) },
+    p_lines: rows.map((l) => ({ item_id: l.inventoryItemId, qty_base: Number(l.qtyBase) })),
+  });
+  if (!rpcErr) return pinRefusal(res) || { data: res, error: null, count: rows.length };
+  if (isMissingFunctionError(rpcErr)) return { data: null, error: new Error(`Waste not recorded. ${NEEDS_UPDATE}`), count: 0 };
+  return { data: null, error: rpcErr, count: 0 };
 };

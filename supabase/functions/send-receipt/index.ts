@@ -7,6 +7,11 @@
 // To plug in a real provider (Resend / Postmark / SendGrid / SES / Mailgun)
 // just add a sender function below and set RECEIPT_EMAIL_PROVIDER + the
 // matching API key secret. No UI/UX changes needed.
+//
+// v5.11.96 (multi site stock Drop 3, contract 3.5): optional `cc: string[]` and
+// `attachments: [{ filename, content_base64, mime }]` for all three providers (the purchase order
+// CSV and the supplier's CC list). With neither, each provider gets exactly today's request
+// (src/lib/stock/poSendRules.test.js pins it).
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.0';
 import { resolveSenderFrom, callerCanBrandForLocation, type Sender } from '../_shared/sending-domain.ts';
@@ -33,6 +38,27 @@ interface RequestBody {
   subject?: string;
   html: string;
   text?: string;
+  cc?: string[];
+  attachments?: Array<{ filename: string; content_base64: string; mime?: string }>;
+}
+
+// v5.11.96: the CC list and the attachments as sent: valid addresses only (at most 10), at most 5
+// files, 7 MB of base64 in all. Anything else is left out rather than failing the send.
+const EMAIL_OK = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+function ccOf(body: RequestBody): string[] {
+  return (Array.isArray(body.cc) ? body.cc : []).map((e) => String(e ?? '').trim()).filter((e) => EMAIL_OK.test(e)).slice(0, 10);
+}
+function filesOf(body: RequestBody): Array<{ filename: string; content_base64: string; mime: string }> {
+  const out: Array<{ filename: string; content_base64: string; mime: string }> = [];
+  let size = 0;
+  for (const a of (Array.isArray(body.attachments) ? body.attachments : []).slice(0, 5)) {
+    const content = String(a?.content_base64 ?? '');
+    if (!a?.filename || !content || !/^[A-Za-z0-9+/=\r\n]+$/.test(content)) continue;
+    size += content.length;
+    if (size > 7 * 1024 * 1024) break;
+    out.push({ filename: String(a.filename).slice(0, 120), content_base64: content.replace(/[\r\n]/g, ''), mime: String(a.mime || 'application/octet-stream') });
+  }
+  return out;
 }
 
 // Caller must be authenticated: service-role key (internal callers like
@@ -52,6 +78,9 @@ Deno.serve(async (req) => {
   if (req.method !== 'POST') return json({ error:'POST only' }, 405);
   let body: RequestBody;
   try { body = await req.json(); } catch { return json({ error:'invalid JSON' }, 400); }
+  // v5.11.96: cc and attachments are for the service role only (po-send, po-cutoff-run). A till, kiosk,
+  // online or other signed in caller sends exactly today's one address and html, whatever it adds.
+  if (!auth.isService) { delete body.cc; delete body.attachments; }
 
   if (!body?.to || !body?.html || !body?.location_id) {
     return json({ error:'missing required fields: location_id, to, html' }, 400);
@@ -141,6 +170,8 @@ async function sendViaResend(body: RequestBody, sender: Sender) {
     body: JSON.stringify({
       from: sender.from, to: body.to, subject: body.subject || 'Your receipt',
       html: body.html, text: body.text, ...(sender.replyTo ? { reply_to: sender.replyTo } : {}),
+      ...(ccOf(body).length ? { cc: ccOf(body) } : {}),
+      ...(filesOf(body).length ? { attachments: filesOf(body).map((f) => ({ filename: f.filename, content: f.content_base64 })) } : {}),
     }),
   });
   const j = await res.json();
@@ -158,6 +189,8 @@ async function sendViaPostmark(body: RequestBody, sender: Sender) {
     body: JSON.stringify({
       From: sender.from, To: body.to, Subject: body.subject || 'Your receipt',
       HtmlBody: body.html, TextBody: body.text, ...(sender.replyTo ? { ReplyTo: sender.replyTo } : {}),
+      ...(ccOf(body).length ? { Cc: ccOf(body).join(',') } : {}),
+      ...(filesOf(body).length ? { Attachments: filesOf(body).map((f) => ({ Name: f.filename, Content: f.content_base64, ContentType: f.mime })) } : {}),
     }),
   });
   const j = await res.json();
@@ -174,7 +207,7 @@ async function sendViaSendgrid(body: RequestBody, sender: Sender) {
   const res = await fetch('https://api.sendgrid.com/v3/mail/send', {
     method: 'POST',
     headers: { 'authorization': `Bearer ${key}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ personalizations: [{ to: [{ email: body.to }] }], from: { email: sender.email, ...(sender.name ? { name: sender.name } : {}) }, ...(sender.replyTo ? { reply_to: { email: (sender.replyTo.match(/<([^>]+)>/)?.[1] || sender.replyTo).trim() } } : {}), subject: body.subject || 'Your receipt', content }),
+    body: JSON.stringify({ personalizations: [{ to: [{ email: body.to }], ...(ccOf(body).length ? { cc: ccOf(body).map((email) => ({ email })) } : {}) }], from: { email: sender.email, ...(sender.name ? { name: sender.name } : {}) }, ...(sender.replyTo ? { reply_to: { email: (sender.replyTo.match(/<([^>]+)>/)?.[1] || sender.replyTo).trim() } } : {}), subject: body.subject || 'Your receipt', content, ...(filesOf(body).length ? { attachments: filesOf(body).map((f) => ({ content: f.content_base64, filename: f.filename, type: f.mime, disposition: 'attachment' })) } : {}) }),
   });
   if (!res.ok) { const t = await res.text().catch(() => ''); throw new Error(`SendGrid HTTP ${res.status} ${t.slice(0, 200)}`); }
   return { provider_message_id: res.headers.get('x-message-id') || undefined };

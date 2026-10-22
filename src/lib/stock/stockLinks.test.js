@@ -64,3 +64,17 @@ test('no em or en dash in this test or the files it reads', () => {
     assert.doesNotMatch(src, /[\u2013\u2014]/);
   }
 });
+
+test('Drop 3 (v5.11.96): the Overview alerts go to their screen with the record, and Transfers opens one on arrival', () => {
+  const overview = read('../../backoffice/sections/stock/OverviewAllSites.jsx');
+  // a site at a time route moves the picker to the alert's site first; every alert asks canOpen
+  assert.match(overview, /const SITE_ROUTES = new Set\(\['stock-counts', 'stock-transfers'\]\);/);
+  // the alert's focus in the shape each screen reads (map 8.4 step 13: a price rise focuses its row)
+  assert.match(overview, /sc\.go\(a\.route, \{ open: normFocus\(a\.route, a\.focus\) \}\);/);
+  assert.match(overview, /\{sc\.canOpen\(a\.route\) && <Btn small kind="soft" onClick=\{\(\) => follow\(a\)\}>Open<\/Btn>\}/);
+  const transfers = read('../../backoffice/sections/StockTransfers.jsx');
+  // { transferId } from an alert or Deliveries, taken once, only on the multi site lines
+  assert.match(transfers, /const o = sc\.takeOpen\?\.\('stock-transfers'\); if \(o\?\.transferId\) setTimeout\(\(\) => setView\(\{ kind: 'open', id: o\.transferId \}\), 0\);[^\n]*\/\/ d3 multi/);
+  // the go() rule is the guarded one: a route the login cannot open leaves nothing waiting
+  assert.match(SCOPE, /openRef\.current = allowed && open \? \{ route, value: open \} : null;/);
+});

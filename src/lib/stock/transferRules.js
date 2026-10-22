@@ -22,7 +22,10 @@ const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 const r4 = (v) => Math.round(num(v) * 10000) / 10000;
 const r3 = (v) => Math.round(num(v) * 1000) / 1000;
 
-export const TRANSFER_STATUS_WORDS = Object.freeze({ DRAFT: 'Draft', SENT: 'Sent', RECEIVED: 'Received', CANCELLED: 'Cancelled', DONE: 'Done' });
+// v5.11.96 (multi site stock Drop 3, decision 10): REQUESTED and DISPUTED are the only new statuses.
+export const TRANSFER_STATUS_WORDS = Object.freeze({ DRAFT: 'Draft', SENT: 'Sent', RECEIVED: 'Received', CANCELLED: 'Cancelled', DONE: 'Done', REQUESTED: 'Requested', DISPUTED: 'Disputed' });
+/** Why stock moves between sites (contract 4.3); stored as the words in stock_transfers.reason. */
+export const TRANSFER_REASONS = Object.freeze(['Ran out', 'Too much here', 'Event or launch', 'Central kitchen', 'Other']);
 export const TRANSFER_FILTERS = Object.freeze([
   { id: 'all', label: 'All' }, { id: 'open', label: 'Not finished' }, { id: 'done', label: 'Done' }, { id: 'cancelled', label: 'Cancelled' },
 ]);
@@ -89,9 +92,72 @@ export function transferHeadline(t, { homeId = null, areaName = () => '', venueN
   return `Incoming from ${venueName(t.locationId) || 'another venue'}`;
 }
 
+/**
+ * The status a row shows (Drop 3). A one site company sees TRANSFER_STATUS_WORDS exactly as today.
+ * A multi site company: SENT reads 'In transit'; a received (or done) transfer with a short line
+ * (t.shortLines > 0, or a line with shortQtyBase above 0) reads 'Short'.
+ */
+export function statusWords(t, { multi = false } = {}) {
+  if (!t) return '';
+  if (multi && t.status === 'SENT') return 'In transit';
+  if (multi && (t.status === 'RECEIVED' || t.status === 'DONE') && hasShortLine(t)) return 'Short';
+  return TRANSFER_STATUS_WORDS[t.status] || t.status || '';
+}
+
+/** True when a transfer has a line that did not all arrive. */
+export function hasShortLine(t) {
+  if (!t) return false;
+  if (num(t.shortLines) > 0) return true;
+  return (t.lines || []).some((l) => l && !l.dropped && num(l.shortQtyBase) > 0);
+}
+
+/** The pill tone of a status word (stockUi Pill tones, contract 4.1). */
+export function statusTone(word) {
+  if (word === 'Requested' || word === 'In transit') return 'blue';
+  if (word === 'Short') return 'warn';
+  if (word === 'Disputed') return 'bad';
+  if (word === 'Received' || word === 'Done') return 'good';
+  return 'neutral';
+}
+
+/** The list filters: today's four, plus 'Requested' for a multi site company. */
+export function transferFilters({ multi = false } = {}) {
+  return multi ? [...TRANSFER_FILTERS, { id: 'requested', label: 'Requested' }] : TRANSFER_FILTERS;
+}
+
+/** 'Lot L123 · use by 24 Oct' (either part alone when the other is missing; '' with neither). */
+export function lotLine({ lotCode = null, useByAt = null } = {}) {
+  const parts = [];
+  if (lotCode) parts.push(`Lot ${lotCode}`);
+  const d = useByAt ? new Date(useByAt) : null;
+  if (d && Number.isFinite(d.getTime())) parts.push(`use by ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`);
+  return parts.join(' · ');
+}
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/**
+ * A transfer request from the screen: [{ companyItemId, qty }] to stock_request_transfer's
+ * p_lines [{ company_item_id, qty_base }] (positive amounts only, at most 300, one row per item:
+ * the same item twice is added up). Returns { lines, error } with the refusal in words.
+ */
+export function requestLinesOf(picks) {
+  const byItem = new Map();
+  for (const p of picks || []) {
+    const id = p?.companyItemId ? String(p.companyItemId) : '';
+    const q = Number(p?.qty);
+    if (!id || !Number.isFinite(q) || q <= 0) continue;
+    byItem.set(id, r4((byItem.get(id) || 0) + q));
+  }
+  const lines = [...byItem].map(([company_item_id, qty_base]) => ({ company_item_id, qty_base }));
+  if (!lines.length) return { lines: [], error: 'Add at least one item with an amount.' };
+  if (lines.length > 300) return { lines: [], error: 'At most 300 items in one request.' };
+  return { lines, error: null };
+}
+
 /** Which rows a list filter keeps. */
 export function transferMatchesFilter(t, filter) {
   if (!t) return false;
+  if (filter === 'requested') return t.status === 'REQUESTED';
   if (filter === 'open') return t.status === 'SENT' || t.status === 'DRAFT';
   if (filter === 'done') return t.status === 'DONE' || t.status === 'RECEIVED';
   if (filter === 'cancelled') return t.status === 'CANCELLED';
@@ -217,8 +283,9 @@ export function shortOf(line, receiverItem) {
  * dropped, and every matched line's units convert).
  * Lines already matched by hand (toInventoryItemId set to a live item) are kept.
  */
-export function receivePlan(lines, receiverItems) {
-  const { lines: matched, unmatched } = matchTransferLines(lines, receiverItems);
+export function receivePlan(lines, receiverItems, byCompany = null) {
+  // v5.11.96 (Drop 3): byCompany (stock_transfer_matches, how 'company') is tried first; null is today
+  const { lines: matched, unmatched } = matchTransferLines(lines, receiverItems, byCompany);
   const byId = new Map((receiverItems || []).filter(Boolean).map((i) => [i.id, i]));
   const out = matched.map((l) => {
     const ri = l.toInventoryItemId ? byId.get(l.toInventoryItemId) : null;

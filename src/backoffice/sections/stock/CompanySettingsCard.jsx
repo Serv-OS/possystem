@@ -26,6 +26,8 @@ import { settingsOf, ruleAt } from '../../../lib/stock/goLiveRules';
 import { ownsCompany } from '../../../lib/stock/stockControlWords';
 import { Btn, ErrorLine, ui } from './stockUi';
 import LockLine from './LockLine';
+import { companyLimitsForm, companyLimitsPatch } from '../../../lib/stock/countPlanRules';
+import { reasonsToSave, moveReason, WASTE_REASONS } from '../../../lib/stock/wasteReasons';
 
 const card = { background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 14, padding: 18 };
 const AFTER = 'No cost changed now; the next price save or delivery follows it.';
@@ -143,7 +145,101 @@ export default function CompanySettingsCard({ orgId }) {
           )}
         </div>
       )}
+      <Drop3Settings orgId={company} editable={editable} />
       {!editable && <div style={{ marginTop: 12 }}><LockLine /></div>}
+    </div>
+  );
+}
+
+/**
+ * v5.11.96 (multi site stock Drop 3, contract 3.3 and 4.5): approvals at the order by time, the waste
+ * manager PIN limit, the count second approval limit, the invoice tolerance and the waste reasons,
+ * all through stock_save_settings (the Drop 1 keys, the row version checked). No number moves when a
+ * setting changes: the next order, waste, count or invoice follows it.
+ */
+function Drop3Settings({ orgId, editable }) {
+  const showToast = useStore((s) => s.showToast);
+  const [row, setRow] = useState(null);       // { orgId, settings }
+  const [form, setForm] = useState(null);
+  const [reasons, setReasons] = useState([]);
+  const [newReason, setNewReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [reloads, setReloads] = useState(0);
+  useEffect(() => {
+    if (!orgId) return undefined;
+    let live = true;
+    stockApi.settings(orgId).then((r) => {
+      if (!live) return;
+      if (r.error) { setError(r.error); return; }
+      const st = r.data?.settings || {};
+      setError(null); setRow({ orgId, settings: st }); setForm(companyLimitsForm(st));
+      setReasons(Array.isArray(st.waste_reasons) && st.waste_reasons.length ? st.waste_reasons.map(String) : []);
+    });
+    return () => { live = false; };
+  }, [orgId, reloads]);
+  if (error) return <div style={{ marginTop: 14 }}><ErrorLine error={error} /></div>;
+  if (!row || !form) return null;
+  const set = (patch) => setForm((f) => ({ ...f, ...patch }));
+  const save = async (extra = {}) => {
+    const p = companyLimitsPatch(form);
+    if (p.error) { showToast?.(p.error, 'error'); return; }
+    setBusy(true);
+    const r = await stockApi.saveSettings(orgId, { ...p.patch, waste_reasons: reasonsToSave(reasons), ...extra }, row.settings.row_version ?? null);
+    setBusy(false);
+    if (r.error) { showToast?.(`Not saved: ${r.error.message || r.error}`, 'error'); setReloads((n) => n + 1); return; }
+    showToast?.('Saved. The next order, waste, count or invoice follows it.', 'success');
+    setReloads((n) => n + 1);
+  };
+  const label = { fontSize: 13, fontWeight: 700, color: 'var(--t1)' };
+  const box = { ...ui.input, width: 110 };
+  const off = !editable || busy;
+  const shownReasons = reasons.length ? reasons : WASTE_REASONS;
+  return (
+    <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--bdr)', display: 'grid', gap: 12 }}>
+      <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', cursor: off ? 'default' : 'pointer' }}>
+        <input type="checkbox" checked={form.sendUnapproved} disabled={off} onChange={(e) => set({ sendUnapproved: e.target.checked })} />
+        <span><span style={label}>Send at the order by time when nobody approves</span>
+          <span style={{ display: 'block', fontSize: 11.5, color: 'var(--t3)', marginTop: 2 }}>The order is sent and marked "sent unapproved", so a delivery is never missed.</span></span>
+      </label>
+      <div>
+        <div style={label}>Waste over this value needs a manager PIN</div>
+        <input aria-label="Waste PIN limit" inputMode="decimal" value={form.wastePin} disabled={off} onChange={(e) => set({ wastePin: e.target.value })} placeholder="No limit" style={box} />
+      </div>
+      <div>
+        <div style={label}>Counts over this value need a second approval</div>
+        <input aria-label="Count second approval limit" inputMode="decimal" value={form.countSecond} disabled={off} onChange={(e) => set({ countSecond: e.target.value })} placeholder="No limit" style={box} />
+      </div>
+      <div>
+        <div style={label}>Invoice tolerance</div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <select aria-label="Tolerance kind" value={form.tolKind} disabled={off} onChange={(e) => set({ tolKind: e.target.value })} style={{ ...ui.input, width: 110 }}>
+            <option value="amount">Amount</option><option value="pct">%</option>
+          </select>
+          <input aria-label="Invoice tolerance" inputMode="decimal" value={form.tol} disabled={off} onChange={(e) => set({ tol: e.target.value })} placeholder="None" style={box} />
+        </div>
+      </div>
+      <div>
+        <div style={label}>Waste reasons</div>
+        <div style={{ fontSize: 11.5, color: 'var(--t3)', margin: '2px 0 6px' }}>{reasons.length ? 'Every site, the till and the phone offer these.' : 'Using the standard list. Add a reason to make your own.'}</div>
+        <div style={{ display: 'grid', gap: 4 }}>
+          {shownReasons.map((r, i) => (
+            <div key={r} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+              <span style={{ flex: 1 }}>{r}</span>
+              {editable && <Btn small kind="soft" disabled={busy || i === 0} onClick={() => setReasons(moveReason(shownReasons, i, -1))}>Up</Btn>}
+              {editable && <Btn small kind="soft" disabled={busy || i === shownReasons.length - 1} onClick={() => setReasons(moveReason(shownReasons, i, 1))}>Down</Btn>}
+              {editable && <Btn small kind="link" disabled={busy} onClick={() => setReasons(shownReasons.filter((x) => x !== r))}>Remove</Btn>}
+            </div>
+          ))}
+        </div>
+        {editable && (
+          <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
+            <input aria-label="New waste reason" value={newReason} onChange={(e) => setNewReason(e.target.value)} placeholder="Add a reason" style={{ ...ui.input, maxWidth: 220 }} />
+            <Btn small kind="soft" disabled={busy || !newReason.trim()} onClick={() => { setReasons(reasonsToSave([...shownReasons, newReason])); setNewReason(''); }}>Add</Btn>
+          </div>
+        )}
+      </div>
+      {editable && <div><Btn kind="primary" disabled={busy} onClick={() => save()}>{busy ? 'Saving...' : 'Save settings'}</Btn></div>}
     </div>
   );
 }

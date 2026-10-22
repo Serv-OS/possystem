@@ -22,8 +22,20 @@
 //            'stock.areas' | 'stock.items' | 'stock.count_open' | 'stock.count_sheet' | 'stock.count_save' |
 //            'stock.count_approve' | 'stock.waste' (v5.11.84, multi site stock Drop 0: counting by
 //            area and waste on the phone, re landed from Phase 1b; the steps live in _shared/stockPhone.js)
+//            v5.11.96 (multi site stock Drop 3, contract 3.4): 'transfer.send' | 'transfer.request' |
+//            'transfer.receive' | 'transfer.dispute' | 'kitchen.orders_in' | 'kitchen.plan' | 'kitchen.pick' |
+//            'kitchen.done' | 'shop.buy' | 'waste.closedown' | 'forecast.edit'
 //   pin is optional for a Back Office user who reaches the venue: that signed-in user is the
 //   accountable operator instead (never for stock.count_approve, which always needs a manager PIN).
+//
+// v5.11.96 (multi site stock Drop 3, contract 3.4, decision 4): po.raise writes a DRAFT order, asks the
+// database (stock_po_submit, as the service role with p_actor: the device and the PIN are proven here)
+// whether it needs approval, goes to a central kitchen or is sent, and then EMAILS it through the one
+// send path (_shared/poSend.ts), one site companies included: before this the phone marked an order
+// SENT and no supplier ever heard of it. The expected day is the next delivery by the order by rule
+// (an order after the cut off is for the following delivery, every company). po.receive refuses a
+// central kitchen order (it arrives as a transfer). The new actions pass p_actor = { uid, name,
+// staff_id, location_id } to the Drop 3 functions; every site they name is this venue.
 //
 // v5.11.84 (multi site stock Drop 0, plan 6.2 and 4.23): WHO REACHES THE VENUE, two answers.
 //   * Every action: officeReachesVenue (_shared/stockOfficeReach.js), the database's own rule: a link
@@ -41,12 +53,15 @@ import { secondStepRefusal } from '../_shared/second-step.ts';
 import { writeWfAudit } from '../_shared/wfAudit.js';
 // v5.11.64: ONE copy of the purchasing rules with the Order pad (pack choice, pack content, net
 // price, order totals, next delivery day) and ONE unit conversion engine with Back Office receiving.
-import { nextDeliveryYmd, packContent, packsForBase, netPackPrice, poTotals, unreceivableLines, receiveRefusalText, poReceiptLines } from '../_shared/purchasingRules.js';
+// v5.11.96 (Drop 3): the order by rule (nextDelivery over the supplier's rules), never nextDeliveryYmd.
+import { nextDelivery, rulesFromDeliveryDays, packContent, packsForBase, netPackPrice, poTotals, unreceivableLines, receiveRefusalText, poReceiptLines } from '../_shared/purchasingRules.js';
 // v5.11.84: the two reach rules (everything / stock only) and the facts they read.
 import { officeReachesVenue, stockOfficeReachesVenue, readOfficeReachFacts } from '../_shared/stockOfficeReach.js';
 // v5.11.84: counting and waste on the phone (multi site stock Drop 0), one copy of the steps; liveOrAll
 // leaves archived packs, bridges and supplier prices out (all rows before 20261021a).
 import * as stockPhone from '../_shared/stockPhone.js';
+// v5.11.96: the one purchase order email (po-send, po-cutoff-run and here).
+import { sendPurchaseOrder } from '../_shared/poSend.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -57,6 +72,11 @@ const nowIso = () => new Date().toISOString();
 const r2 = (n: number) => Math.round(n * 100) / 100;
 // the venue's calendar day (the same Intl reading manager-snapshot uses for `today`)
 const ymd = (d: Date, tz: string) => new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+// the venue's wall clock 'HH:MM' (the order by rule compares it with the cut off)
+const hmIn = (d: Date, tz: string) => new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(d);
+const plusDay = (ymdText: string) => new Date(Date.parse(`${ymdText}T00:00:00Z`) + 86400000).toISOString().slice(0, 10);
+const isMissingTable = (e: any) => !!e && /42P01|PGRST205|42703|PGRST204|does not exist|Could not find the table/i.test(`${e.code || ''} ${e.message || ''}`);
+const KITCHEN_ORDER_WORDS = 'This order arrives as a transfer from the central kitchen. Receive it in Transfers.';
 
 // v5.11.89 (multi site stock Drop 1, map 4.3 Pause): an item paused at a site cannot be ordered
 // there from the phone either. The words are the Order pad's (src/lib/stock/pauseRules.js
@@ -93,7 +113,15 @@ async function callerOf(req: Request): Promise<Caller> {
 }
 
 // The stock work a Stock control 'all' login may do at a site it is not linked to (plan 6.2).
-const isStockAction = (action: string) => action === 'po.raise' || action === 'po.receive' || action.startsWith('stock.');
+// v5.11.96 (Drop 3): transfers, the central kitchen, shop buys, the fresh close down and forecast edits
+// are stock work too.
+const isStockAction = (action: string) => action === 'po.raise' || action === 'po.receive' || action.startsWith('stock.')
+  || action.startsWith('transfer.') || action.startsWith('kitchen.') || action === 'shop.buy' || action === 'waste.closedown' || action === 'forecast.edit';
+// Actions that make something new (no target record) or read the venue as a whole.
+const NO_TARGET = new Set(['po.raise', 'transfer.send', 'transfer.request', 'kitchen.orders_in', 'kitchen.plan', 'kitchen.done', 'shop.buy', 'waste.closedown', 'forecast.edit']);
+// Any active staff PIN opens these (reads, waste, the plan's Done ticks); everything else needs a manager PIN.
+const STAFF_PIN_ACTIONS = new Set(['kitchen.orders_in', 'kitchen.plan', 'kitchen.done', 'waste.closedown']);
+
 
 // Does this signed in Back Office user reach the venue? officeReachesVenue for every action;
 // stockOfficeReachesVenue (adds Stock control 'all' in the venue's own company) for stock actions only.
@@ -130,11 +158,11 @@ async function deviceAuthorized(caller: Caller, loc: string, stockAction: boolea
 // shared paired device authenticates only the device; the approver's identity must be proven by their
 // PIN at the moment of approval (the PIN is matched against staff_members for this location). Service
 // role bypasses RLS so we read directly (the ops_pin_login RPC needs auth.uid(), which is null here).
-async function resolveOperator(loc: string, pin: string): Promise<{ id: string; name?: string; role?: string; permissions?: string[] } | null> {
+async function resolveOperator(loc: string, pin: string): Promise<{ id: string; name?: string; role?: string; permissions?: string[]; auth_user_id?: string | null } | null> {
   if (!pin) return null;
   // Prefer an active row (active!==false treats NULL as active, matching ops_pin_login's coalesce) so a
   // stale inactive duplicate can't shadow a live PIN. PINs are effectively unique per location in practice.
-  const { data: rows } = await sb.from('staff_members').select('id, name, role, permissions, active, org_id').eq('location_id', loc).eq('pin', String(pin)).limit(5);
+  const { data: rows } = await sb.from('staff_members').select('id, name, role, permissions, active, org_id, auth_user_id').eq('location_id', loc).eq('pin', String(pin)).limit(5);
   const op: any = (rows || []).find((r: any) => r.active !== false) || null;
   return op;
 }
@@ -172,7 +200,7 @@ Deno.serve(async (req) => {
   if (!loc) return json({ error: 'ops_location_id required' }, 400);
   if (!action) return json({ error: 'action required' }, 400);
   // po.raise creates a NEW entity (no target); the approve/decide actions operate on one.
-  if (action !== 'po.raise' && !target_id) return json({ error: 'action and target_id required' }, 400);
+  if (!NO_TARGET.has(String(action)) && !target_id) return json({ error: 'action and target_id required' }, 400);
 
   const stockAction = isStockAction(String(action));
   const caller = await callerOf(req);
@@ -185,8 +213,15 @@ Deno.serve(async (req) => {
   // v5.11.84 (plan 4.23): any active staff PIN at the venue opens the phone's stock steps (areas,
   // items, a count, saving figures, waste); only the count approval, and every other action, needs
   // a manager PIN.
-  const staffPinEnough = String(action).startsWith('stock.') && action !== 'stock.count_approve';
+  const staffPinEnough = (String(action).startsWith('stock.') && action !== 'stock.count_approve') || STAFF_PIN_ACTIONS.has(String(action));
   if (!staffPinEnough && !canApprove(op)) return json({ error: 'not allowed to approve' }, 403);
+
+  // v5.11.96 (Drop 3): who acts, for the database's phone branch (service role only): the login when
+  // a Back Office user acts, else the PIN holder's own login (staff_members.auth_user_id) so an order
+  // they raise on a shared phone cannot be approved by them in Back Office; the PIN holder's staff id
+  // when a PIN was given; and this venue.
+  const pinLogin = pin && UUID.test(String((op as any).auth_user_id || '')) ? String((op as any).auth_user_id) : null;
+  const actor = { uid: caller.user && !caller.user.is_anonymous ? caller.user.id : pinLogin, name: op.name || null, staff_id: pin ? op.id : null, location_id: loc };
 
   try {
     // ── v5.8.21 timesheet.clock_out ─────────────────────────────────────────
@@ -286,7 +321,8 @@ Deno.serve(async (req) => {
       // TENANT FENCE: the service-role client bypasses RLS, and the FKs to suppliers/inventory_items
       // are NOT location-composite — so we MUST verify every referenced row belongs to THIS location
       // before inserting, else a manager at venue A could write a PO against venue B's supplier/items.
-      const { data: sup } = await sb.from('suppliers').select('id, name, delivery_days').eq('id', supplierId).eq('location_id', loc).maybeSingle();
+      let { data: sup, error: supErr } = await sb.from('suppliers').select('id, name, delivery_days, cutoff_time').eq('id', supplierId).eq('location_id', loc).maybeSingle();
+      if (supErr && isMissingTable(supErr)) ({ data: sup } = await sb.from('suppliers').select('id, name, delivery_days').eq('id', supplierId).eq('location_id', loc).maybeSingle());
       if (!sup) return json({ error: 'supplier not found for this location' }, 400);
       const itemIds = [...new Set(lines.map((l: any) => l.inventory_item_id))] as string[];
       // wf_audit's (location_id, org_id) must be a real pair from locations (INVARIANTS), so the org
@@ -361,13 +397,31 @@ Deno.serve(async (req) => {
       if (problems.length) return json({ error: problems.join(' ') }, 400);
       if (!poLines.length) return json({ error: 'no lines to order' }, 400);
       const { lineTaxes, subtotal, tax } = poTotals(poLines, ratesById);
-      const venueToday = ymd(new Date(), locRow?.timezone || 'Europe/London');
-      const expectedDate = (typeof body.expected_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.expected_date)) ? body.expected_date : nextDeliveryYmd(sup.delivery_days, venueToday);
+      const tz = locRow?.timezone || 'Europe/London';
+      const venueToday = ymd(new Date(), tz);
+      // v5.11.96 (Drop 3): the next delivery by the order by rule. The order pad context (the site's
+      // rules and exceptions, multi site companies) first; else the supplier's delivery days and cut off
+      // (rulesFromDeliveryDays, every company). After the cut off it is the following delivery.
+      let next: any = null;
+      {
+        const { data: ctxRes, error: ctxErr } = await sb.rpc('stock_order_pad_context', { p_loc: loc, p_actor: actor });
+        if (!ctxErr && ctxRes && Array.isArray((ctxRes as any).suppliers)) {
+          const s0 = (ctxRes as any).suppliers.find((x: any) => x && x.supplier_id === supplierId);
+          if (s0?.next?.delivery_day) next = { deliveryYmd: s0.next.delivery_day, orderByAt: s0.next.order_by_at || null, minutesLeft: s0.next.minutes_left ?? null };
+        }
+        if (!next) {
+          const n = nextDelivery({ rules: rulesFromDeliveryDays(sup.delivery_days, (sup as any).cutoff_time ?? null), exceptions: [], nowVenue: { ymd: venueToday, hm: hmIn(new Date(), tz) } });
+          if (n?.deliveryYmd) next = { deliveryYmd: n.deliveryYmd, orderByAt: n.orderByAt || null, minutesLeft: n.minutesLeft ?? null };
+        }
+      }
+      // a supplier with no delivery days: tomorrow, as before
+      const expectedDate = (typeof body.expected_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.expected_date)) ? body.expected_date : (next?.deliveryYmd || plusDay(venueToday));
 
       const reference = 'MGR-' + Date.now().toString(36).toUpperCase();
+      // v5.11.96 (Drop 3): born DRAFT; stock_po_submit decides approval, kitchen or send.
       const { data: po, error: poErr } = await sb.from('purchase_orders').insert({
-        location_id: loc, supplier_id: supplierId, reference, status: 'SENT',
-        ordered_at: nowIso(), updated_at: nowIso(),
+        location_id: loc, supplier_id: supplierId, reference, status: 'DRAFT',
+        updated_at: nowIso(),
         expected_date: expectedDate,
         notes: `Raised from the Manager app by ${op.name || 'manager'}`,
         subtotal: r2(subtotal), tax,
@@ -394,7 +448,31 @@ Deno.serve(async (req) => {
         }
         return json({ error: 'could not raise the order: its audit record did not save' }, 500);
       }
-      return json({ ok: true, po_id: po.id, reference, subtotal: r2(subtotal), tax, expected_date: expectedDate });
+      const base = { po_id: po.id, reference, subtotal: r2(subtotal), tax, expected_date: expectedDate, order_by_at: next?.orderByAt || null };
+      // v5.11.96 (Drop 3): the database's checks (paused lines, the maximum, the kitchen price, the
+      // delivery fee, the approval limit). A database before Drop 3 has none: the order is sent.
+      const { data: sub, error: subErr } = await sb.rpc('stock_po_submit', { p_po: po.id, p_section: 'purchasing', p_actor: actor });
+      if (subErr && !isMissingFn(subErr)) {
+        await sb.from('purchase_orders').delete().eq('id', po.id).eq('status', 'DRAFT');
+        return json({ error: subErr.message || 'could not raise the order' }, 400);
+      }
+      const answer: any = subErr ? { send: true } : (sub || {});
+      if (answer.ok === false || answer.error) {
+        await sb.from('purchase_orders').delete().eq('id', po.id).eq('status', 'DRAFT');
+        return json({ error: answer.error || 'the order was refused' }, 400);
+      }
+      if (answer.internal) return json({ ok: true, ...base, internal: true });
+      if (answer.needs_approval) {
+        return json({ ok: true, ...base, needs_approval: true, limit: answer.limit ?? null, amount: answer.amount ?? null,
+          order_by_at: answer.order_by_at || base.order_by_at, approvers: Array.isArray(answer.approvers) ? answer.approvers : [] });
+      }
+      // Send: the one email path. A send that fails keeps the order on the books as sent, exactly as
+      // the Back Office pad does (it still counts as on order), and says why.
+      const sent = await sendPurchaseOrder(sb, { poId: po.id, locationId: loc, supabaseUrl: Deno.env.get('SUPABASE_URL') ?? '', serviceKey: SERVICE_ROLE,
+        by: { uid: actor.uid, name: actor.name } });
+      if (sent.ok) return json({ ok: true, ...base, emailed: true, to: sent.to });
+      await sb.from('purchase_orders').update({ status: 'SENT', ordered_at: nowIso(), updated_at: nowIso() }).eq('location_id', loc).eq('id', po.id).eq('status', 'DRAFT');
+      return json({ ok: true, ...base, emailed: false, email_error: sent.error || 'the email could not be sent' });
     }
 
     // ── po.receive (v5.11.64): goods in from the Manager app. target_id is the order. The phone
@@ -413,6 +491,14 @@ Deno.serve(async (req) => {
       const { data: po } = await sb.from('purchase_orders').select('*').eq('id', target_id).eq('location_id', loc).maybeSingle();
       if (!po) return json({ error: 'order not found for this location' }, 404);
       if (!['SENT', 'PARTIAL'].includes(po.status)) return json({ error: `this order is already ${String(po.status).toLowerCase()}` }, 409);
+      // v5.11.96 (Drop 3): a central kitchen order is received only through its transfer.
+      if (po.supplier_id) {
+        const { data: supRow, error: supRowErr } = await sb.from('suppliers').select('company_ref').eq('id', po.supplier_id).eq('location_id', loc).maybeSingle();
+        if (!supRowErr && supRow?.company_ref) {
+          const { data: co, error: coErr } = await sb.from('stock_co_suppliers').select('internal_location_id').eq('id', supRow.company_ref).maybeSingle();
+          if (!coErr && co?.internal_location_id) return json({ error: KITCHEN_ORDER_WORDS }, 409);
+        }
+      }
       const { data: lines } = await sb.from('po_lines').select('*').eq('location_id', loc).eq('po_id', po.id).order('sort_order').order('id');
       if (!lines?.length) return json({ error: 'the order has no lines' }, 400);
       const { data: locRow } = await sb.from('locations').select('org_id').eq('id', loc).maybeSingle();
@@ -587,13 +673,29 @@ Deno.serve(async (req) => {
         // first count of an item with no cost anywhere: answered (not refused) so the phone can name
         // the items and send the manager to Back Office, where a cost can be typed
         if (out?.code === 'needs_cost') return json({ ok: false, code: 'needs_cost', needs_cost: out.needs_cost || [], error: out.error }, 200);
+        // v5.11.96 (Drop 3, I7): over the set value it waits for a second approval in Back Office
+        // (answered, not refused: the phone shows 'Waiting for a second approval')
+        if (out?.waiting) return json({ ok: false, waiting: out.waiting, error: out.error, variance_value: out.variance_value ?? null, limit: out.limit ?? null }, 200);
         if (!out?.error && out?.ok !== false) {
           if (!out?.duplicate && out?.pin_holder_saved === false) console.error(`[manager-approve] stock.count_approve ${target_id}: the PIN holder was not stored on the count`);
           const auditErr = await audit(loc, orgId, op, 'stock.count_approve', 'stock_counts', String(target_id), null, { by: who, posted: out?.posted ?? null, opening: out?.opening ?? null, duplicate: !!out?.duplicate });
           if (auditErr) return auditFailed('The count approval', { approved: true });
         }
       } else if (action === 'stock.waste') {
-        out = await stockPhone.waste(sb, loc, { ...body, item_id: target_id }, who);
+        // v5.11.96 (Drop 3, J5): waste over the venue's set value needs a manager PIN. The phone
+        // proves it here and the database gets the PIN holder (approved_by_staff_*), never the PIN.
+        // A manager PIN that opened the sheet counts; otherwise the phone asks for one (manager_pin).
+        let approver: any = null;
+        if (body.manager_pin) {
+          const mgr = await resolveOperator(loc, String(body.manager_pin));
+          if (!mgr || !canApprove(mgr)) return json({ ok: false, pin: 'wrong', error: 'That PIN is not a manager at this venue.' }, 200);
+          approver = { id: mgr.id, name: mgr.name || null };
+        }
+        out = await stockPhone.waste(sb, loc, { ...body, item_id: target_id }, who, approver);
+        if (out?.ok === false && out?.pin === 'needed' && !approver && pin && canApprove(op)) {
+          out = await stockPhone.waste(sb, loc, { ...body, item_id: target_id }, who, { id: op.id, name: op.name || null });
+        }
+        if (out?.ok === false && out?.pin) return json({ ok: false, pin: out.pin, error: out.error, limit: out.limit ?? null }, 200);
         if (!out?.error && out?.ok !== false) {
           const auditErr = await audit(loc, orgId, op, 'stock.waste', 'waste_events', String(out?.id || target_id), null, { by: who, item: target_id, qty_base: body.qty_base, reason: body.reason || null });
           if (auditErr) return auditFailed('The waste', { recorded: true });
@@ -619,8 +721,229 @@ Deno.serve(async (req) => {
       return json({ ...out, ok: true });
     }
 
+    // -- v5.11.96 (multi site stock Drop 3, contract 3.4): transfers, the central kitchen, shop buys,
+    // the fresh close down and forecast edits on the phone. Each is ONE database call as the service
+    // role with p_actor (this venue, the PIN holder or the login); the database checks the rest.
+    if (action.startsWith('transfer.') || action.startsWith('kitchen.') || action === 'shop.buy' || action === 'waste.closedown' || action === 'forecast.edit') {
+      const { data: locRow } = await sb.from('locations').select('org_id, timezone, name').eq('id', loc).maybeSingle();
+      const orgId = locRow?.org_id || null;
+      const tz = locRow?.timezone || 'Europe/London';
+      const today = ymd(new Date(), tz);
+      const day = typeof body.day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.day) ? body.day : today;
+      const who = op.name || 'manager';
+      const rpc = async (fn: string, args: Record<string, unknown>) => {
+        const { data, error } = await sb.rpc(fn, args);
+        if (error) return { error: isMissingFn(error) ? 'This needs a database update (Drop 3). Nothing was changed.' : (error.message || 'not done') };
+        if (data && typeof data === 'object' && !Array.isArray(data) && (data as any).ok === false) return { error: (data as any).error || 'not done', answer: data };
+        return { data };
+      };
+      let res: any;
+      let auditWhat: string | null = null;
+      let auditAfter: any = null;
+      if (action === 'transfer.send') {
+        res = await phoneSendTransfer(loc, body, who);
+        auditWhat = 'transfer.send'; auditAfter = { to: body.to_location_id || null, lines: Array.isArray(body.lines) ? body.lines.length : 0 };
+      } else if (action === 'transfer.request') {
+        res = await rpc('stock_request_transfer', { p_from: body.from_location_id || null, p_to: loc, p_lines: Array.isArray(body.lines) ? body.lines.slice(0, 300) : [], p_reason: body.reason || null, p_note: body.note || null, p_actor: actor });
+        auditWhat = 'transfer.request'; auditAfter = { from: body.from_location_id || null };
+      } else if (action === 'transfer.receive') {
+        res = await phoneReceiveTransfer(loc, String(target_id), body, who);
+        auditWhat = 'transfer.receive';
+      } else if (action === 'transfer.dispute') {
+        res = await rpc('stock_dispute_transfer', { p_transfer: String(target_id), p_note: String(body.note || ''), p_actor: actor });
+        auditWhat = 'transfer.dispute'; auditAfter = { note: String(body.note || '').slice(0, 200) };
+      } else if (action === 'kitchen.orders_in') {
+        res = await rpc('stock_kitchen_orders_in', { p_kitchen: loc, p_day: day, p_actor: actor });
+        if (!res.error) res = { data: { day, orders: Array.isArray(res.data) ? res.data : (res.data?.rows || []) } };
+      } else if (action === 'kitchen.plan') {
+        res = await rpc('stock_kitchen_plan', { p_kitchen: loc, p_day: day, p_actor: actor });
+        if (!res.error) res = { data: { day, rows: Array.isArray(res.data) ? res.data : (res.data?.rows || []) } };
+      } else if (action === 'kitchen.pick') {
+        res = await rpc('stock_kitchen_pick', { p_po: String(target_id), p_lines: Array.isArray(body.lines) ? body.lines.slice(0, 300) : [], p_actor: actor });
+        auditWhat = 'kitchen.pick';
+      } else if (action === 'kitchen.done') {
+        res = await rpc('stock_kitchen_tick', { p_kitchen: loc, p_recipe: body.recipe_id || target_id || null, p_qty: Number(body.qty), p_day: null, p_actor: actor });
+      } else if (action === 'shop.buy') {
+        res = await phoneShopBuy(loc, body, who, today);
+        auditWhat = 'shop.buy'; auditAfter = { supplier_id: body.supplier_id || null, total: body.total ?? null };
+      } else if (action === 'waste.closedown') {
+        if (body.list) {
+          res = await rpc('stock_fresh_closedown_list', { p_loc: loc, p_day: day, p_actor: actor });
+          if (!res.error) res = { data: { day, rows: Array.isArray(res.data) ? res.data : (res.data?.rows || []) } };
+        } else {
+          let approver: any = null;
+          if (body.manager_pin) {
+            const mgr = await resolveOperator(loc, String(body.manager_pin));
+            if (!mgr || !canApprove(mgr)) return json({ ok: false, pin: 'wrong', error: 'That PIN is not a manager at this venue.' }, 200);
+            approver = { id: mgr.id, name: mgr.name || null };
+          } else if (pin && canApprove(op)) approver = { id: op.id, name: op.name || null };
+          res = await stockPhone.closeDown(sb, loc, body.lines, who, approver);
+          if (res?.ok === false && res?.pin) return json({ ok: false, pin: res.pin, error: res.error, limit: res.limit ?? null }, 200);
+          res = res?.error ? { error: res.error } : { data: res };
+          auditWhat = 'waste.closedown'; auditAfter = { lines: Array.isArray(body.lines) ? body.lines.length : 0 };
+        }
+      } else if (action === 'forecast.edit') {
+        if (body.read) res = { data: await phoneForecastRead(loc, day) };
+        else {
+          res = await rpc('stock_save_forecast', { p_loc: loc, p_days: Array.isArray(body.days) ? body.days.slice(0, 31) : [], p_hours: Array.isArray(body.hours) ? body.hours : null, p_actor: actor });
+          auditWhat = 'forecast.edit'; auditAfter = { days: Array.isArray(body.days) ? body.days.length : 0 };
+        }
+      } else return json({ error: 'unknown action' }, 400);
+      if (res?.error) return json({ error: res.error }, 400);
+      if (auditWhat) {
+        const data = res?.data;
+        const id = String((data && (data.transfer_id || data.id || data.invoice_id)) || target_id || loc);
+        const auditErr = await audit(loc, orgId, op, auditWhat, auditWhat.split('.')[0], id, null, { by: who, ...(auditAfter || {}) });
+        // the words avoid "PIN", "approve" and "not allowed" (the app would ask for the PIN again)
+        const what = ({ transfer: 'The transfer', kitchen: 'The pick', shop: 'The shop buy', waste: 'The close down', forecast: 'The forecast' } as Record<string, string>)[auditWhat.split('.')[0]] || 'It';
+        if (auditErr) return auditFailed(`${what}`, { answer: data ?? null });
+      }
+      const data = res?.data;
+      return json({ ...(data && typeof data === 'object' && !Array.isArray(data) ? data : { rows: data ?? null }), ok: true });
+    }
+
     return json({ error: 'unknown action' }, 400);
   } catch (e) {
     return json({ error: String((e as Error)?.message || e) }, 500);
   }
 });
+
+// -- v5.11.96 (Drop 3) phone steps that are more than one database call ------------------------------
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// transfer.send: the Back Office createTransfer shape (a DRAFT and its lines at this venue), then the
+// 'out' leg (stock leaves at this venue's cost, in transit). body: { to_location_id, reason?, note?,
+// lines: [{ inventory_item_id, qty_base }] }. The other venue must be in the same company.
+async function phoneSendTransfer(loc: string, body: any, who: string): Promise<any> {
+  const to = String(body.to_location_id || '');
+  if (!UUID.test(to) || to === loc) return { error: 'Pick the venue to send to.' };
+  const lines = (Array.isArray(body.lines) ? body.lines : []).filter((l: any) => l && UUID.test(String(l.inventory_item_id || '')) && Number(l.qty_base) > 0).slice(0, 300);
+  if (!lines.length) return { error: 'Add at least one line with a quantity.' };
+  const { data: locs } = await sb.from('locations').select('id, org_id').in('id', [loc, to]);
+  const orgOf: Record<string, string> = {};
+  for (const l of locs ?? []) orgOf[l.id] = l.org_id;
+  if (!orgOf[loc] || orgOf[loc] !== orgOf[to]) return { error: 'That venue is not in this company.' };
+  const ids = [...new Set(lines.map((l: any) => String(l.inventory_item_id)))];
+  const { data: items } = await sb.from('inventory_items').select('id, name, sku, base_unit').eq('location_id', loc).in('id', ids);
+  const itemBy: Record<string, any> = {};
+  for (const it of items ?? []) itemBy[it.id] = it;
+  if (ids.some((id) => !itemBy[id])) return { error: 'One or more items are not at this venue.' };
+  const reference = 'TR-' + Date.now().toString(36).toUpperCase();
+  const { data: head, error: hErr } = await sb.from('stock_transfers').insert({
+    location_id: loc, to_location_id: to, status: 'DRAFT', reference, note: body.note ? String(body.note).slice(0, 300) : null,
+    created_by_name: who, ...(body.reason ? { reason: String(body.reason).slice(0, 60) } : {}),
+  }).select('id').single();
+  if (hErr || !head) return { error: 'Could not save the transfer.' };
+  const rows = lines.map((l: any, i: number) => {
+    const it = itemBy[String(l.inventory_item_id)];
+    return { transfer_id: head.id, location_id: loc, to_location_id: to, inventory_item_id: it.id, name_snapshot: it.name || null,
+      sku_snapshot: it.sku || null, base_unit: it.base_unit || null, qty_base: Number(l.qty_base), sort_order: i };
+  });
+  const { error: lErr } = await sb.from('stock_transfer_lines').insert(rows);
+  if (lErr) { await sb.from('stock_transfers').delete().eq('id', head.id).eq('status', 'DRAFT'); return { error: 'Could not save the transfer lines.' }; }
+  const { data: leg, error: legErr } = await sb.rpc('post_stock_transfer_leg', { p_transfer_id: head.id, p_leg: 'out', p_by_name: who });
+  if (legErr || (leg as any)?.ok === false) return { error: `${reference} is saved but nothing moved: ${legErr?.message || (leg as any)?.error || 'refused'}. Open it in Back Office, Transfers.` };
+  return { data: { transfer_id: head.id, reference, status: 'SENT' } };
+}
+
+// transfer.receive: a SENT transfer to this venue. Each line is matched to this venue's item (the
+// kitchen pick and a request set it already; else by SKU, then by name), the received amount is
+// written (body.lines [{ line_id, qty_received_base }], else as sent), then the 'in' leg.
+async function phoneReceiveTransfer(loc: string, transferId: string, body: any, who: string): Promise<any> {
+  const { data: t } = await sb.from('stock_transfers').select('id, status, to_location_id, reference').eq('id', transferId).maybeSingle();
+  if (!t || t.to_location_id !== loc) return { error: 'Transfer not found for this venue.' };
+  if (t.status !== 'SENT') return { error: `This transfer is ${String(t.status).toLowerCase()}.` };
+  const { data: lines } = await sb.from('stock_transfer_lines').select('id, name_snapshot, sku_snapshot, qty_base, to_inventory_item_id, lot_code, use_by_at').eq('transfer_id', transferId).order('sort_order');
+  const want: Record<string, number> = {};
+  for (const r of (Array.isArray(body.lines) ? body.lines : [])) if (r && r.line_id != null && Number(r.qty_received_base) >= 0) want[String(r.line_id)] = Number(r.qty_received_base);
+  const { data: mine } = await sb.from('inventory_items').select('id, name, sku').eq('location_id', loc).is('archived_at', null).limit(1000);
+  const bySku: Record<string, string> = {};
+  const byName: Record<string, string> = {};
+  for (const it of mine ?? []) {
+    if (it.sku) bySku[String(it.sku).trim().toLowerCase()] ??= it.id;
+    if (it.name) byName[String(it.name).trim().toLowerCase()] ??= it.id;
+  }
+  const lots: any[] = [];
+  for (const l of lines ?? []) {
+    const match = l.to_inventory_item_id || (l.sku_snapshot && bySku[String(l.sku_snapshot).trim().toLowerCase()]) || (l.name_snapshot && byName[String(l.name_snapshot).trim().toLowerCase()]) || null;
+    if (!match) return { error: `${l.name_snapshot || 'An item'} has no match here. Receive it in Back Office, Transfers.` };
+    const got = want[String(l.id)] ?? Number(l.qty_base);
+    const { error } = await sb.from('stock_transfer_lines').update({ to_inventory_item_id: match, qty_received_base: got, dropped: false }).eq('transfer_id', transferId).eq('id', l.id);
+    if (error) return { error: 'Could not save what arrived.' };
+    if (l.lot_code || l.use_by_at) lots.push({ name: l.name_snapshot, lot_code: l.lot_code || null, use_by_at: l.use_by_at || null });
+  }
+  const { data: leg, error: legErr } = await sb.rpc('post_stock_transfer_leg', { p_transfer_id: transferId, p_leg: 'in', p_by_name: who });
+  if (legErr) return { error: legErr.message || 'The receive was refused.' };
+  if ((leg as any)?.ok === false) return { error: (leg as any).error || 'The receive was refused.' };
+  return { data: { transfer_id: transferId, reference: t.reference, received: true, lots } };
+}
+
+// shop.buy: bought at a shop and received with no order (stock_post_invoice with shop_buy true and a
+// supplier row of this venue). body: { supplier_id, receipt_number?, total?, client_id?,
+// lines: [{ inventory_item_id, qty_base, line_total }], scan?: { image_base64, media_type } }.
+async function phoneShopBuy(loc: string, body: any, who: string, today: string): Promise<any> {
+  const supplierId = String(body.supplier_id || '');
+  if (!UUID.test(supplierId)) return { error: 'Pick the shop or supplier.' };
+  const { data: sup } = await sb.from('suppliers').select('id').eq('id', supplierId).eq('location_id', loc).maybeSingle();
+  if (!sup) return { error: 'supplier not found for this location' };
+  const raw = (Array.isArray(body.lines) ? body.lines : []).filter((l: any) => l && UUID.test(String(l.inventory_item_id || '')) && Number(l.qty_base) > 0).slice(0, 100);
+  if (!raw.length) return { error: 'Add what you bought.' };
+  const ids = [...new Set(raw.map((l: any) => String(l.inventory_item_id)))];
+  const { data: items } = await sb.from('inventory_items').select('id, name, base_unit').eq('location_id', loc).in('id', ids);
+  const itemBy: Record<string, any> = {};
+  for (const it of items ?? []) itemBy[it.id] = it;
+  if (ids.some((id) => !itemBy[id])) return { error: 'one or more items are not from this location' };
+  let imagePath: string | null = null;
+  if (body.scan && typeof body.scan.image_base64 === 'string' && body.scan.image_base64.length) {
+    try {
+      const mediaType = String(body.scan.media_type || 'image/jpeg');
+      const ext = mediaType === 'application/pdf' ? 'pdf' : mediaType === 'image/png' ? 'png' : mediaType === 'image/webp' ? 'webp' : 'jpg';
+      const path = `${loc}/shop/${Date.now()}.${ext}`;
+      const bytes = Uint8Array.from(atob(body.scan.image_base64), (c) => c.charCodeAt(0));
+      const up = await sb.storage.from('invoice-scans').upload(path, bytes, { contentType: mediaType, upsert: false });
+      if (!up.error) imagePath = path; else console.error('[shop.buy] receipt upload', up.error.message);
+    } catch (e) { console.error('[shop.buy] receipt upload', String((e as Error)?.message || e)); }
+  }
+  const pLines: any[] = [];
+  const receipts: any[] = [];
+  let total = 0;
+  raw.forEach((l: any, i: number) => {
+    const it = itemBy[String(l.inventory_item_id)];
+    const qty = Number(l.qty_base);
+    const lineTotal = Math.max(0, Math.round((Number(l.line_total) || 0) * 100) / 100);
+    total += lineTotal;
+    pLines.push({ matched_item_id: it.id, description: it.name || null, qty, unit: it.base_unit || 'each', unit_price: qty > 0 ? Math.round((lineTotal / qty) * 10000) / 10000 : 0,
+      line_total: lineTotal, purchase_tax_rate_id: null, line_tax: 0, flags: ['shop_buy'], supplier_product_id: null });
+    receipts.push({ line_index: i, item_id: it.id, qty_base: qty, unit_cost: qty > 0 ? lineTotal / qty : 0, supplier_product_id: null, pack_price: null, pack_label: it.base_unit || null });
+  });
+  const { data, error } = await sb.rpc('stock_post_invoice', {
+    p_location_id: loc,
+    p_invoice: {
+      client_id: typeof body.client_id === 'string' && UUID.test(body.client_id) ? body.client_id : null,
+      supplier_id: supplierId, invoice_number: body.receipt_number ? String(body.receipt_number).slice(0, 60) : null, invoice_date: today,
+      subtotal: Math.round(total * 100) / 100, tax: 0, total: body.total != null && Number.isFinite(Number(body.total)) ? Number(body.total) : Math.round(total * 100) / 100,
+      raw_json: { source: 'manager_app', by: who }, image_path: imagePath, po_id: null, shop_buy: true,
+    },
+    p_lines: pLines, p_receipts: receipts, p_area_id: null,
+  });
+  if (error) return { error: isMissingFn(error) ? 'This needs a database update. Nothing was booked.' : (error.message || 'Could not book the shop buy.') };
+  if ((data as any)?.ok === false) return { error: (data as any).error || 'The shop buy was refused.' };
+  return { data: { ...(data && typeof data === 'object' ? data : {}), booked: raw.length } };
+}
+
+// forecast.edit with read: the saved forecast for the 7 days from `day` (stock_forecast_week is a
+// Back Office read; the phone reads the same table as the service role, this venue only).
+async function phoneForecastRead(loc: string, day: string): Promise<any> {
+  const to = new Date(Date.parse(`${day}T00:00:00Z`) + 6 * 86400000).toISOString().slice(0, 10);
+  let { data, error } = await sb.from('wf_sales_forecast').select('forecast_date, amount, reason, reason_note, edited_by_name')
+    .eq('location_id', loc).gte('forecast_date', day).lte('forecast_date', to).order('forecast_date');
+  if (error && isMissingTable(error)) ({ data } = await sb.from('wf_sales_forecast').select('forecast_date, amount').eq('location_id', loc).gte('forecast_date', day).lte('forecast_date', to).order('forecast_date'));
+  const days = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(Date.parse(`${day}T00:00:00Z`) + i * 86400000).toISOString().slice(0, 10);
+    const row = (data ?? []).find((r: any) => r.forecast_date === d) || null;
+    days.push({ day: d, amount: row ? Number(row.amount) : null, reason: row?.reason || null, reason_note: row?.reason_note || null, edited_by_name: row?.edited_by_name || null });
+  }
+  return { days };
+}

@@ -36,6 +36,14 @@ import { reportSave } from '../../lib/saveHealth';
 import NumberField from '../../components/NumberField';
 import StockItemPicker from '../../components/StockItemPicker';
 import { useStockScope } from '../StockScope';
+import { stockApi } from '../../lib/stock/stockApi'; // d3 multi
+import { templateItemsForCount } from '../../lib/stock/countPlanRules'; // d3 multi
+import { Segmented } from './stock/stockUi'; // d3 multi
+import CountDueStrip from './stock/CountDueStrip'; // d3 multi
+import CountPlansPanel from './stock/CountPlansPanel'; // d3 multi
+import CountTemplatesPanel from './stock/CountTemplatesPanel'; // d3 multi
+import SecondApprovalLine from './stock/SecondApprovalLine'; // d3 multi
+import LockPeriodModal from './stock/LockPeriodModal'; // d3 multi
 
 // v5.11.65 (15 Oct 2026 audit): the quantity boxes are the shared NumberField (wide enough for
 // "12.55", unit inside the box, no spinner); every date is the venue's, in words; a reopened
@@ -53,6 +61,15 @@ const ghost = { padding: '6px 12px', borderRadius: 8, cursor: 'pointer', fontFam
 export default function StockCounts({ orgCtx = null, siteId = null }) {
   const showToast = useStore(s => s.showToast);
   const { takeOpenNew } = useStockScope();
+  // v5.11.96 (multi site stock Drop 3): the due strip, plans and templates, second approval and locked // d3 multi
+  // periods. Every line added for it carries the marker; a one site company runs today's screen. // d3 multi
+  const sc = useStockScope(); // d3 multi
+  const editor = sc.multi && !!sc.canEditCompany?.('inventory'); // d3 multi
+  const [tab, setTab] = useState('counts'); // d3 multi
+  const [lockOpen, setLockOpen] = useState(false); // d3 multi
+  const [plans, setPlans] = useState([]); // d3 multi
+  const [templates, setTemplates] = useState([]); // d3 multi
+  const [waitLimit, setWaitLimit] = useState(null); // d3 multi
   const [locId, setLocId] = useState(siteId || getActiveLocationSync());
   const [items, setItems] = useState([]);
   const [counts, setCounts] = useState([]);
@@ -96,6 +113,22 @@ export default function StockCounts({ orgCtx = null, siteId = null }) {
   // "Start a count" from Stock items: the new count panel opens once, on this site.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { if (takeOpenNew('stock-counts')) setTimeout(() => setStarting(true), 0); }, []);
+  const atSite = useCallback((siteIds, groupIds) => { // d3 multi
+    const sites = (siteIds || []).filter(Boolean); const groups = (groupIds || []).filter(Boolean); // d3 multi
+    if (!sites.length && !groups.length) return true; // d3 multi
+    return sites.includes(locId) || (sc.groups || []).some((g) => groups.includes(g.id) && (g.locationIds || []).includes(locId)); // d3 multi
+  }, [locId, sc.groups]); // d3 multi
+  useEffect(() => { // d3 multi
+    let live = true; // d3 multi
+    if (!sc.multi || !sc.orgId) return () => { live = false; }; // d3 multi
+    Promise.all([stockApi.countPlans(sc.orgId), stockApi.countTemplates(sc.orgId)]).then(([p, t]) => { // d3 multi
+      if (!live) return; // d3 multi
+      setPlans(p.error ? [] : (p.data || []).filter((x) => x.active !== false && atSite(x.sites, x.group_ids))); // d3 multi
+      setTemplates(t.error ? [] : (t.data || []).filter((x) => { const rows = x.stock_count_template_sites || []; return atSite(rows.map((r) => r.location_id), rows.map((r) => r.group_id)); })); // d3 multi
+    }); // d3 multi
+    return () => { live = false; }; // d3 multi
+  }, [sc.multi, sc.orgId, atSite]); // d3 multi
+  const planFor = (type, templateId = null) => plans.find((p) => (templateId ? p.template_id === templateId : !p.template_id && p.count_type === type))?.id || null; // d3 multi
 
   const itemsById = useMemo(() => { const m = {}; (items || []).forEach(i => { m[i.id] = i; }); return m; }, [items]);
   const itemName = useCallback((id) => itemsById[id]?.name || '(item)', [itemsById]);
@@ -233,7 +266,7 @@ export default function StockCounts({ orgCtx = null, siteId = null }) {
     if (open && window.confirm(`"${open.name}" is still open. Carry on with that count instead of starting another?`)) { setStarting(false); openCount(open.id); return; }
     setBusy(true);
     keepName(startedByName);
-    const { data, error } = await createCount({ name, countType: type, areaIds, supplierId, itemIds, startedByName, items, tz: venueTz }, locId);
+    const { data, error } = await createCount({ name, countType: type, areaIds, supplierId, itemIds, startedByName, items, tz: venueTz, planId: sc.multi ? planFor(type) : null }, locId);
     setBusy(false);
     reportSave('stock count', error);
     if (error) { showToast?.(error.message, 'error'); if (!data) return; }
@@ -242,6 +275,18 @@ export default function StockCounts({ orgCtx = null, siteId = null }) {
     if (data) openCount(data.id);
   };
 
+  const startFromTemplate = async (tpl, startedByName) => { // d3 multi
+    setBusy(true); // d3 multi
+    const r = await stockApi.templateForSite(tpl.id, locId); // d3 multi
+    const { itemIds } = templateItemsForCount(r.data); // d3 multi
+    if (r.error || !itemIds.length) { setBusy(false); showToast?.(r.error?.message || 'None of this template\'s items are counted here.', 'error'); return; } // d3 multi
+    keepName(startedByName); // d3 multi
+    const { data, error } = await createCount({ name: tpl.name, countType: 'SPOT', itemIds, startedByName, items, tz: venueTz, templateId: tpl.id, planId: planFor('SPOT', tpl.id) }, locId); // d3 multi
+    setBusy(false); // d3 multi
+    reportSave('stock count', error); // d3 multi
+    if (error) { showToast?.(error.message, 'error'); if (!data) return; } // d3 multi
+    setStarting(false); await reload(); if (data) openCount(data.id); // d3 multi
+  }; // d3 multi
   // ── editing ──
   const onEdit = (lineId, token, v) => { setEdits(e => ({ ...e, [lineId]: { ...(e[lineId] || {}), [token]: v } })); setDirty(d => ({ ...d, [lineId]: true })); };
   const clearDirty = (ids) => setDirty(d => { const n = { ...d }; ids.forEach(id => { delete n[id]; }); return n; });
@@ -362,6 +407,13 @@ export default function StockCounts({ orgCtx = null, siteId = null }) {
       showToast?.(error?.message || 'That PIN is not a manager at this venue.', 'error');
       return;
     }
+    if (outcome?.waiting) { // d3 multi
+      // over the company's limit nothing posted: the count waits for a second approval (stock_second_approve_count) // d3 multi
+      setReview(null); setWaitLimit(outcome.limit ?? null); // d3 multi
+      showToast?.(error?.message || 'Waiting for a second approval.', 'info'); // d3 multi
+      const { data: fresh } = await fetchCount(active.id, locId); if (fresh) setActive(fresh); // d3 multi
+      return; // d3 multi
+    } // d3 multi
     if (needsCost && needsCost.length) {
       // Nothing was written. Ask for a cost per item, keep the moves already recorded.
       const known = openingCosts(needsCost, itemsById, r.typedCosts || {});
@@ -409,6 +461,7 @@ export default function StockCounts({ orgCtx = null, siteId = null }) {
           {approved && active.approvedByName && <span> · approved by {active.approvedByName}</span>}
           {approved && active.approvalNote && <span style={{ color: 'var(--amber, #F5A623)' }}> · {active.approvalNote}</span>}
         </div>
+        {!approved && active.secondApprovalNeededAt && <div style={{ marginBottom: 10 }}><SecondApprovalLine count={active} limit={waitLimit} onApproved={async () => { const { data } = await fetchCount(active.id, locId); setActive(data); setEdits({}); await reload(); }} /></div>}{/* d3 multi */}
 
         {/* search and filters over the whole sheet (in memory) */}
         {(active.lines.length > 12 || hasAreas) && (
@@ -599,6 +652,9 @@ export default function StockCounts({ orgCtx = null, siteId = null }) {
     );
   }
 
+  const companyTabs = editor ? <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 14 }}><Segmented value={tab} onChange={setTab} options={[{ value: 'counts', label: 'Counts' }, { value: 'plans', label: 'Plans' }, { value: 'templates', label: 'Templates' }]} /><button onClick={() => setLockOpen(true)} style={{ ...ghost, marginLeft: 'auto' }}>Lock period</button></div> : null; // d3 multi
+  const lockModal = lockOpen ? <LockPeriodModal siteId={locId} onClose={() => setLockOpen(false)} /> : null; // d3 multi
+  if (editor && tab !== 'counts') return <div style={{ height: '100%', overflowY: 'auto', background: 'var(--bg0)', padding: '22px 26px', maxWidth: 900 }}><h1 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 12px', color: 'var(--t1)' }}>Stock counts</h1>{companyTabs}{tab === 'plans' ? <CountPlansPanel orgCtx={orgCtx} /> : <CountTemplatesPanel orgCtx={orgCtx} />}{lockModal}</div>; // d3 multi
   // ── Count list ──
   return (
     <div style={{ height: '100%', overflowY: 'auto', background: 'var(--bg0)', padding: '22px 26px', maxWidth: 760 }}>
@@ -607,10 +663,13 @@ export default function StockCounts({ orgCtx = null, siteId = null }) {
         <button onClick={() => (areasOn ? setStarting(s => !s) : startLegacy())} disabled={busy || items.length === 0} style={{ padding: '10px 18px', borderRadius: 9, background: 'var(--acc)', color: '#fff', border: 0, fontSize: 14, fontWeight: 700, cursor: 'pointer', opacity: (busy || !items.length) ? 0.6 : 1 }}>{starting ? 'Close' : '+ New count'}</button>
       </div>
       <div style={{ fontSize: 13, color: 'var(--t3)', marginBottom: 18 }}>Count what you physically have; Approve reconciles the system to your count and records the variance (feeds “The Gap” report).{areasOn && areas.length > 0 ? ' Count area by area, by supplier, or spot check a few items; each area is marked complete by whoever counted it, then the whole count is approved.' : ''}</div>
+      {companyTabs}{/* d3 multi */}
+      {sc.multi && <CountDueStrip siteId={locId} />}{/* d3 multi */}
+      {lockModal}{/* d3 multi */}
       {items.length === 0 && <div style={{ fontSize: 13, color: 'var(--t3)' }}>Add some stock items first (Inventory, Stock items).</div>}
       {starting && areasOn && (
         <NewCountPanel areas={areas} suppliers={suppliers} items={items.filter(i => !i.archivedAt)} holdings={holdings} venueTz={venueTz} busy={busy}
-          loginName={loginName} onStart={startWithScope} onCancel={() => setStarting(false)} />
+          loginName={loginName} onStart={startWithScope} onCancel={() => setStarting(false)} templates={sc.multi ? templates : null} onTemplate={startFromTemplate} />
       )}
       {counts.length === 0 && items.length > 0 && <div style={{ fontSize: 13, color: 'var(--t3)' }}>No counts yet. Press “New count” to walk the shelves.</div>}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -651,7 +710,7 @@ export default function StockCounts({ orgCtx = null, siteId = null }) {
 }
 
 /** The New count flow: type, scope, name, Start. */
-function NewCountPanel({ areas, suppliers, items, holdings, venueTz, busy, loginName, onStart, onCancel }) {
+function NewCountPanel({ areas, suppliers, items, holdings, venueTz, busy, loginName, onStart, onCancel, templates = null, onTemplate = null }) {
   const [type, setType] = useState('FULL');
   const [areaIds, setAreaIds] = useState([]);
   const [supplierId, setSupplierId] = useState('');
@@ -684,6 +743,7 @@ function NewCountPanel({ areas, suppliers, items, holdings, venueTz, busy, login
           );
         })}
       </div>
+      {templates && templates.length > 0 && <div style={{ marginBottom: 14 }}><div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 6 }}>From a template</div><div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8 }}>{templates.map(t => <button key={t.id} onClick={() => onTemplate?.(t, by.trim() || loginName || null)} disabled={busy} style={cardStyle(false, busy)}><div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>{t.name}</div><div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>In this site's shelf order</div></button>)}</div></div>}{/* d3 multi */}
       {type === 'AREA' && (
         <div style={{ marginBottom: 14 }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 6 }}>Which areas</div>

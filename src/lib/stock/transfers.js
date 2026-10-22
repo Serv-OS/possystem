@@ -21,9 +21,10 @@
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
 import { readAllPagesResult } from '../pagedRead.js';
 import { transferReference, chunkArray, INSERT_CHUNK } from './areaRules.js';
-import { staleLegError } from './transferRules.js';
+import { staleLegError, requestLinesOf } from './transferRules.js';
 import { areasReady, fetchTransfer } from './areas.js';
 import { fetchReportScopeData } from '../reportSites.js';
+import { stockApi } from './stockApi.js';
 
 async function ensureLoc(locationId) {
   if (!locationId || locationId === 'loc-demo') locationId = getActiveLocationSync();
@@ -66,15 +67,17 @@ export const fetchTransferLineSummary = async (locationId = null) => {
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: {}, error: null };
   const { data, error } = await readAllPagesResult('transfer lines', (first) => supabase.from('stock_transfer_lines')
-    .select('id, transfer_id, qty_base, qty_received_base, unit_cost, dropped', first ? { count: 'exact' } : undefined)
+    .select('id, transfer_id, qty_base, qty_received_base, unit_cost, dropped, short_qty_base', first ? { count: 'exact' } : undefined)
     .or(`location_id.eq.${locationId},to_location_id.eq.${locationId}`)
     .order('transfer_id').order('id'));
   if (error) return { data: {}, error };
   const out = {};
   (data || []).forEach((r) => {
-    const s = (out[r.transfer_id] ??= { lines: 0, dropped: 0, value: 0 });
+    const s = (out[r.transfer_id] ??= { lines: 0, dropped: 0, value: 0, short: 0 });
     s.lines += 1;
     if (r.dropped) { s.dropped += 1; return; }
+    // v5.11.96 (Drop 3): a received line that did not all arrive (the 'Short' word for multi site companies)
+    if (Number(r.short_qty_base) > 0) s.short += 1;
     const qty = Number(r.qty_received_base ?? r.qty_base) || 0;
     s.value += Math.max(0, qty) * (Number(r.unit_cost) || 0);
   });
@@ -101,6 +104,8 @@ export const createTransfer = async (draft, locationId = null) => {
     location_id: locationId, to_location_id: toLocationId,
     from_area_id: draft.fromAreaId || null, to_area_id: toLocationId ? (draft.toAreaId || null) : (draft.toAreaId || null),
     status: 'DRAFT', reference, note: draft.note || null, created_by_name: draft.byName || null,
+    // v5.11.96 (Drop 3): why it moves, only when a multi site screen gave one (the column is new)
+    ...(draft.reason ? { reason: String(draft.reason) } : {}),
   }).select().maybeSingle();
   const hErr = headErr || noRow('Transfer save', head);
   if (hErr) return { data: null, error: hErr };
@@ -185,3 +190,96 @@ export const receiveTransfer = async (transferId, byName = null) => postTransfer
 
 /** The sender takes a transfer back (CANCELLED; a SENT one puts its stock back in the from area). */
 export const cancelTransfer = async (transferId, byName = null) => postTransferLeg(transferId, 'cancel', byName);
+
+// ── v5.11.96 (multi site stock Drop 3, contract 3.3): requests, disputes, and the new columns ──
+// Each is ONE stockApi call; the database decides who may (the receiving site asks, the sending site
+// fulfils, refuses and resolves). None of these moves stock: the existing out and in legs do.
+
+// A refusal inside the answer ({ ok: false, error }) is already an error with the database's words.
+const legAnswer = (r) => ({ data: r.data, error: r.error, needsUpdate: r.needsUpdate });
+
+/** The receiving site (to) asks another site (from): picks [{ companyItemId, qty }]. */
+export const requestTransfer = async ({ from, to, picks, reason = null, note = null }) => {
+  const { lines, error } = requestLinesOf(picks);
+  if (error) return { data: null, error: new Error(error) };
+  if (!from || !to) return { data: null, error: new Error('Pick the site to ask.') };
+  return stockApi.requestTransfer({ from, to, lines, reason, note });
+};
+
+/** The sending site turns a request into a draft (optionally changing amounts), then sends it with the out leg. */
+export const fulfilRequest = async (transferId, lines = null, byName = null) => {
+  const f = await stockApi.fulfilRequest(transferId, lines);
+  if (f.error) return f;
+  return postTransferLeg(transferId, 'out', byName);
+};
+
+/** The sending site says no to a request (REQUESTED to CANCELLED). */
+export const refuseRequest = async (transferId, byName = null) => legAnswer(await stockApi.transferLeg(transferId, 'refuse', byName));
+
+/** The receiving site says a received transfer is wrong (paperwork only: the shorts were booked at receive). */
+export const disputeTransfer = async (transferId, note) => {
+  if (!String(note ?? '').trim()) return { data: null, error: new Error('Say what is wrong.') };
+  return stockApi.disputeTransfer(transferId, String(note).trim());
+};
+
+/** The sending site settles a dispute (DISPUTED to RECEIVED). */
+export const resolveTransfer = async (transferId, byName = null) => legAnswer(await stockApi.transferLeg(transferId, 'resolve', byName));
+
+/**
+ * The Drop 3 columns of these transfers (areas.js maps today's columns only): { [id]: { kind,
+ * reason, requestedByName, requestedAt, disputeNote, disputedAt, resolvedAt, resolvedByName,
+ * purchaseOrderId } }. At most 100 ids. A database without Drop 3 answers {} (needsUpdate true).
+ */
+export const fetchTransferExtras = async (transferIds) => {
+  const ids = [...new Set((transferIds || []).filter(Boolean).map(String))].slice(0, 100);
+  if (isMock || !supabase || !ids.length) return { data: {}, error: null };
+  const { data, error } = await supabase.from('stock_transfers')
+    .select('id, kind, reason, requested_by_name, requested_at, dispute_note, disputed_at, resolved_at, resolved_by_name, purchase_order_id')
+    .in('id', ids).limit(100);
+  if (error) return { data: {}, error, needsUpdate: /column|42703|PGRST204/i.test(`${error.code || ''} ${error.message || ''}`) };
+  const out = {};
+  (data || []).forEach((r) => {
+    out[r.id] = { kind: r.kind || 'transfer', reason: r.reason || null, requestedByName: r.requested_by_name || null, requestedAt: r.requested_at || null,
+      disputeNote: r.dispute_note || null, disputedAt: r.disputed_at || null, resolvedAt: r.resolved_at || null,
+      resolvedByName: r.resolved_by_name || null, purchaseOrderId: r.purchase_order_id || null };
+  });
+  return { data: out, error: null };
+};
+
+/** Lot, use by and the amount asked for, per line of one transfer: { [lineId]: { lotCode, useByAt, requestedQtyBase } }. */
+export const fetchTransferLineExtras = async (transferId) => {
+  if (isMock || !supabase || !transferId) return { data: {}, error: null };
+  const { data, error } = await readAllPagesResult('transfer line lots', (first) => supabase.from('stock_transfer_lines')
+    .select('id, lot_code, use_by_at, requested_qty_base', first ? { count: 'exact' } : undefined).eq('transfer_id', transferId).order('id'));
+  if (error) return { data: {}, error };
+  const out = {};
+  (data || []).forEach((r) => {
+    out[r.id] = { lotCode: r.lot_code || null, useByAt: r.use_by_at || null, requestedQtyBase: r.requested_qty_base == null ? null : Number(r.requested_qty_base) };
+  });
+  return { data: out, error: null };
+};
+
+/** { lineId: receiving item id } for the lines stock_transfer_matches matched by company item (matchTransferLines byCompany). */
+export const fetchCompanyMatches = async (transferId) => {
+  const r = await stockApi.transferMatches(transferId);
+  if (r.error) return { data: null, error: r.error, needsUpdate: r.needsUpdate };
+  const map = {};
+  (Array.isArray(r.data) ? r.data : []).forEach((m) => { if (m && m.how === 'company' && m.line_id && m.to_inventory_item_id) map[m.line_id] = m.to_inventory_item_id; });
+  return { data: map, error: null };
+};
+
+/**
+ * This site's company items: { toSite: { companyItemId: siteItemId }, toCompany: { siteItemId:
+ * companyItemId } } from stock_co_item_sites (paged, 1,000 a page). Saved transfer lists and requests
+ * name company items; the send screen works in this site's items.
+ */
+export const fetchCompanyItemMap = async (locationId) => {
+  const none = { toSite: {}, toCompany: {} };
+  if (isMock || !supabase || !locationId) return { data: none, error: null };
+  const { data, error } = await readAllPagesResult('company items here', (first) => supabase.from('stock_co_item_sites')
+    .select('item_id, site_item_id', first ? { count: 'exact' } : undefined).eq('location_id', locationId).order('site_item_id'));
+  if (error) return { data: none, error };
+  const out = { toSite: {}, toCompany: {} };
+  (data || []).forEach((r) => { out.toSite[r.item_id] = r.site_item_id; out.toCompany[r.site_item_id] = r.item_id; });
+  return { data: out, error: null };
+};
