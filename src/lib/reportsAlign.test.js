@@ -287,7 +287,11 @@ test('pin: Daily trading leaves demo out of sales, refunds and the ledger, and i
 
 test('pin: the Manager app is on the business day, the P&L labour rule and the demo rule', () => {
   const src = read('../../supabase/functions/manager-snapshot/index.ts');
-  assert.match(src, /const clock = full \? await venueClock\(platform, loc\) : null;/);
+  // The venue clock, with the venue's own zone when the Platform row is missing and the calendar day
+  // when the clock cannot be read (review fix), and the rota for both days before the day starts.
+  assert.match(src, /const c = await venueClock\(platform, loc\);/);
+  assert.match(src, /clock = \{ timezone: c\.found \? c\.timezone : tz/);
+  assert.match(src, /in\('shift_date', bizDay === today \? \[today\] : \[bizDay, today\]\)/);
   assert.match(src, /const live = leaveOutDemo\(checks\), older = leaveOutDemo\(olderRefunds\);/);
   assert.match(src, /if \(Number\.isFinite\(t\) && dayOf\(t\) === bizDay\) addCheckSales\(sales, c\);/);
   assert.match(src, /if \(at != null && dayOf\(at\) === bizDay\) addRefundSales\(sales, e, c\);/);

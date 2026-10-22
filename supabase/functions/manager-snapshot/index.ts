@@ -105,9 +105,20 @@ Deno.serve(async (req) => {
     // BUSINESS day (Platform locations: time zone and business_day_start), the day the Owner app,
     // Daily trading, Back Office and Xero use. It was midnight to midnight on the Ops time zone, so
     // between midnight and 06:30 the Manager app showed an empty new day while the Owner app still
-    // showed the day finishing. A failed read of the clock is an error: no day is cut on a guess.
-    const clock = full ? await venueClock(platform, loc) : null;
-    const dayOf = (msv: number) => businessDayOf(msv, clock!.timezone, clock!.dayStart);
+    // showed the day finishing. A missing Platform row keeps the venue's own Ops time zone; a failed
+    // read of the clock falls back to the calendar day on that zone (the pre 5.11.99 day), so the
+    // floor and kitchen tabs never go down with it.
+    let clock: { timezone: string; dayStart: string } | null = null;
+    if (full) {
+      try {
+        const c = await venueClock(platform, loc);
+        clock = { timezone: c.found ? c.timezone : tz, dayStart: c.found ? c.dayStart : '00:00' };
+      } catch (e) {
+        console.warn('[manager-snapshot] venue clock unreadable, calendar day used:', (e as Error)?.message);
+        clock = null;
+      }
+    }
+    const dayOf = (msv: number) => (clock ? businessDayOf(msv, clock.timezone, clock.dayStart) : ymd(new Date(msv), tz));
     const bizDay = clock ? dayOf(now.getTime()) : today;
     const bizFromMs = clock ? businessDayWindow(bizDay, clock.timezone, clock.dayStart).fromMs : now.getTime() - 36 * 3600 * 1000;
     // From a day before the business day starts: an opener's shift and every check of the day.
@@ -130,7 +141,9 @@ Deno.serve(async (req) => {
       pagedRows('older refunds', () => sb.from('closed_checks').select(SALES_CHECK_COLS).eq('location_id', loc).gte('closed_at', refundsSinceIso).lt('closed_at', startIso).neq('refunds', '[]').order('closed_at').order('id')),
       sb.from('wf_sales_forecast').select('forecast_date, amount').eq('location_id', loc).eq('forecast_date', bizDay).maybeSingle(),
       pagedRows('timesheets', () => sb.from('wf_timesheets').select('id, staff_id, clock_in, clock_out, break_taken, break_open_at, pay_amount, status, effective_rate').eq('location_id', loc).gte('clock_in', startIso).order('clock_in').order('id')),
-      pagedRows('shifts', () => sb.from('wf_shifts').select('staff_id, role_key, shift_date, start_time, finish_time, status').eq('location_id', loc).eq('shift_date', bizDay).order('id')),
+      // The business day's rota AND the calendar day's: between midnight and the day start the
+      // business day is still yesterday, and the early opener sits on today's calendar rota.
+      pagedRows('shifts', () => sb.from('wf_shifts').select('staff_id, role_key, shift_date, start_time, finish_time, status').eq('location_id', loc).in('shift_date', bizDay === today ? [today] : [bizDay, today]).order('id')),
       pagedRows('staff', () => sb.from('wf_staff').select('id, name, dob').eq('location_id', loc).order('id')),
       pagedRows('open tables', () => sb.from('active_sessions').select('table_id, session').eq('location_id', loc).order('id')),
       pagedRows('tables', () => sb.from('floor_tables').select('id, label').eq('location_id', loc).order('id')),
