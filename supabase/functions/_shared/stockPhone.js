@@ -22,6 +22,8 @@
 // 20261019b), then the time it was typed with the figure unchanged, which the database keeps for the
 // service role. If that second write fails the line keeps the save time and the save says so.
 //
+// Drop 3 (v5.11.96): waste() takes the manager the phone proved for waste over the venue's set value
+// (approved_by_staff_*, never the PIN), and closeDown() books the end of day fresh close down in one call.
 // Drop 0 fixes:
 //   * ONE line per count, item and area. 20261021a adds the unique index stock_count_lines_one_per_area
 //     (count, item, coalesce(area, zero)), so two phones, or two overlapping sends, can never post a
@@ -245,14 +247,17 @@ export async function sheet(sb, loc, countId, offset = 0) {
 
 /** Every live tracked item of the venue, 500 a page (for waste: no count is opened). */
 export async function items(sb, loc, offset = 0) {
-  const { data, error } = await sb.from('inventory_items').select('id, name, base_unit, sku, barcode').eq('location_id', loc)
+  // v5.11.96 (Drop 3): company_ref rides along (a transfer request names the company item)
+  const read = (cols) => sb.from('inventory_items').select(cols).eq('location_id', loc)
     .is('archived_at', null).eq('is_tracked', true).order('name').order('id').range(offset, offset + PAGE - 1);
+  let { data, error } = await read('id, name, base_unit, sku, barcode, company_ref');
+  if (error && isMissingNewColumn(error)) ({ data, error } = await read('id, name, base_unit, sku, barcode'));
   if (error) return { error: 'could not read the items' };
   const ids = (data || []).map((i) => i.id);
   const { data: packs, error: pErr } = await readPacks(sb, loc, ids);
   if (pErr) return { error: 'could not read the packs' };
   const packBy = packsByItem(packs);
-  return { more: (data || []).length === PAGE, items: (data || []).map((i) => ({ id: i.id, name: i.name, base_unit: i.base_unit, sku: i.sku, barcode: i.barcode, count_pack: packBy[i.id] || null })) };
+  return { more: (data || []).length === PAGE, items: (data || []).map((i) => ({ id: i.id, name: i.name, base_unit: i.base_unit, sku: i.sku, barcode: i.barcode, company_ref: i.company_ref || null, count_pack: packBy[i.id] || null })) };
 }
 
 const isUniqueClash = (error) => !!error && (String(error.code || '') === '23505' || /duplicate key value/i.test(String(error.message || '')));
@@ -339,6 +344,79 @@ export async function save(sb, loc, countId, rawEntries, { sentAt = null, now = 
  * Approve on the phone. pinner: the staff member whose manager PIN approved it ({ id, name }),
  * written to the count as the PIN holder once approve_stock_count has said yes.
  */
+const MONTH3 = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const SYMBOL = { GBP: '£', USD: '$', EUR: '€', AUD: '$', CAD: '$', NZD: '$' };
+/** '£500' / '$12.50' for a limit in the venue's currency. */
+export function limitWords(n, currency = 'GBP') {
+  const v = Number(n);
+  const sym = SYMBOL[String(currency || '').toUpperCase()] || '£';
+  return `${sym}${Math.abs(v % 1) < 0.005 ? String(Math.round(v)) : v.toFixed(2)}`;
+}
+/** '24 Oct' for a 'YYYY-MM-DD'. */
+export function dMon(ymd) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(ymd || ''));
+  return m ? `${Number(m[3])} ${MONTH3[Number(m[2]) - 1]}` : '';
+}
+
+/**
+ * v5.11.96 (multi site stock Drop 3, contract 1.5 stock_approve_count_pin (a) to (c)): the phone's count
+ * approval runs approve_stock_count as the service role, so the three Drop 3 count rules are checked
+ * here before it, with the database's own words:
+ *   * a count whose first counted line is on or before a locked period's end is refused;
+ *   * a plan whose rule is 'zero' sets every uncounted line to 0 first (a person pressed Approve);
+ *   * over the site's (else the company's) second approval value, nothing posts: the count is marked
+ *     waiting, the first approver is stored, and the company editors are told (stock_notify_sent).
+ * A database before Drop 3 has none of these columns: the gate answers null and today's approval runs.
+ */
+export async function drop3CountGate(sb, loc, c, pCosts, pinner = null) {
+  const { data: row, error } = await sb.from('stock_counts')
+    .select('plan_id, second_approved_at, second_approval_needed_at').eq('location_id', loc).eq('id', c.id).maybeSingle();
+  if (error || !row) return null;
+  const { data: locRow } = await sb.from('locations').select('org_id, timezone, currency, name').eq('id', loc).maybeSingle();
+  const tz = locRow?.timezone || 'Europe/London';
+  // (c) locked period
+  const { data: periods } = await sb.from('stock_periods').select('to_day, locked_at, unlocked_at').eq('location_id', loc).order('to_day', { ascending: false }).limit(20);
+  const lockedUntil = (periods || []).filter((p) => p.locked_at && !p.unlocked_at).map((p) => String(p.to_day)).sort().pop() || null;
+  if (lockedUntil) {
+    const { data: first } = await sb.from('stock_count_lines').select('counted_at').eq('count_id', c.id).order('counted_at', { ascending: true }).limit(1);
+    const at = first && first[0] && first[0].counted_at ? first[0].counted_at : null;
+    const day = at ? new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(at)) : null;
+    if (day && day <= lockedUntil) return { ok: false, error: `That count is in a locked period (to ${dMon(lockedUntil)}). Ask head office to unlock it.` };
+  }
+  // (a) a 'zero' plan: every uncounted line is 0
+  if (row.plan_id) {
+    const { data: plan } = await sb.from('stock_count_plans').select('if_not_counted').eq('id', row.plan_id).maybeSingle();
+    if (plan && plan.if_not_counted === 'zero') {
+      await sb.from('stock_count_lines').update({ counted_qty: 0, counted_at: new Date().toISOString() }).eq('count_id', c.id).is('counted_qty', null);
+    }
+  }
+  if (row.second_approved_at) return null;
+  // (b) a second approval over the set value
+  const [{ data: siteSet }, { data: coSet }] = await Promise.all([
+    sb.from('stock_co_site_settings').select('count_second_approval_over').eq('location_id', loc).maybeSingle(),
+    locRow?.org_id ? sb.from('stock_co_settings').select('count_second_approval_over').eq('org_id', locRow.org_id).maybeSingle() : Promise.resolve({ data: null }),
+  ]);
+  const raw = siteSet?.count_second_approval_over ?? coSet?.count_second_approval_over ?? null;
+  const limit = raw == null ? null : Number(raw);
+  if (limit == null || !Number.isFinite(limit)) return null;
+  const { data: prev } = await sb.rpc('approve_stock_count', { p_count_id: c.id, p_approved_by_name: null, p_approval_note: null, p_costs: pCosts, p_preview: true });
+  const variance = prev && prev.variance_value != null ? Number(prev.variance_value) : null;
+  if (variance == null || !(Math.abs(variance) > limit)) return null;
+  const words = `Over ${limitWords(limit, locRow?.currency)}. Waiting for a second approval.`;
+  if (!row.second_approval_needed_at) {
+    await sb.from('stock_counts').update({
+      second_approval_needed_at: new Date().toISOString(), first_approved_by: null,
+      first_approved_by_name: pinner && pinner.name ? String(pinner.name) : null,
+      first_approved_by_staff_id: pinner && isUuid(pinner.id) ? pinner.id : null,
+    }).eq('location_id', loc).eq('id', c.id);
+    if (locRow?.org_id) {
+      await sb.from('stock_notify_sent').insert({ org_id: locRow.org_id, location_id: loc, kind: 'count_second_approval', ref: String(c.id),
+        payload: { site_name: locRow.name || null, amount: Math.abs(variance), limit, count_id: c.id, currency_symbol: limitWords(0, locRow.currency).slice(0, 1) } });
+    }
+  }
+  return { ok: false, waiting: 'second_approval', error: words, variance_value: variance, limit };
+}
+
 export async function approve(sb, loc, countId, who, pinner = null) {
   const c = await countOf(sb, loc, countId);
   if (!c) return { error: 'count not found for this location' };
@@ -350,6 +428,10 @@ export async function approve(sb, loc, countId, who, pinner = null) {
   const { data: costs, error: cErr } = await sb.rpc('stock_opening_costs', { p_count_id: c.id });
   const given = !cErr && costs && typeof costs === 'object' ? Object.entries(costs).filter(([k, v]) => isUuid(k) && Number(v) > 0) : [];
   const pCosts = given.length ? Object.fromEntries(given.map(([k, v]) => [k, Number(v)])) : null;
+  // v5.11.96 (multi site stock Drop 3): the count rules stock_approve_count_pin keeps for Back Office
+  // hold on the phone too (locked period, "use zero" plans, a second approval over the set value).
+  const gate = await drop3CountGate(sb, loc, c, pCosts, pinner);
+  if (gate) return gate;
   const { data, error } = await sb.rpc('approve_stock_count', { p_count_id: c.id, p_approved_by_name: who || null, p_approval_note: 'Approved on the phone', p_costs: pCosts, p_preview: false });
   if (error) return { error: `could not approve: ${error.message}` };
   if (data && data.code === 'needs_cost') {
@@ -370,18 +452,55 @@ export async function approve(sb, loc, countId, who, pinner = null) {
   return { ...out, approved_by_pin: pinner?.name || who || null, pin_holder_saved: pinHolderSaved };
 }
 
-export async function waste(sb, loc, body, who) {
+export async function waste(sb, loc, body, who, approver = null) {
   const item = body?.item_id;
   if (!isUuid(item)) return { error: 'pick a stock item' };
   const qtyBase = Number(body?.qty_base);
   if (!(qtyBase > 0)) return { error: 'the amount wasted must be more than 0' };
+  // v5.11.96 (multi site stock Drop 3, J5): over the venue's set value the database asks for a
+  // manager. manager-approve proves the manager's PIN itself and passes the PIN holder here
+  // (approved_by_staff_*); the PIN never travels to the database. Without an approver the
+  // database's answer { ok: false, pin: 'needed', error, limit } comes back as it is.
+  const stamped = approver && isUuid(approver.id) ? { approved_by_staff_id: approver.id, approved_by_staff_name: approver.name ? String(approver.name).slice(0, 120) : null } : {};
   const { data, error } = await sb.rpc('stock_record_waste', {
     p_location_id: loc,
     p_event: { id: isUuid(body?.id) ? body.id : undefined, kind: 'item', inventory_item_id: item, qty: Number(body?.qty) || qtyBase,
       unit: String(body?.unit || 'base'), qty_base: qtyBase, reason: String(body?.reason || 'Other').slice(0, 60),
-      note: body?.note ? String(body.note).slice(0, 300) : (who ? `Logged on the phone by ${who}` : null), source: 'manager' },
+      note: body?.note ? String(body.note).slice(0, 300) : (who ? `Logged on the phone by ${who}` : null), source: 'manager', ...stamped },
     p_lines: null,
   });
   if (error) return { error: `could not record the waste: ${error.message}` };
   return data || { ok: true };
+}
+
+export const CLOSEDOWN_MAX = 300;
+
+/**
+ * v5.11.96 (multi site stock Drop 3, J6): the end of day fresh close down on the phone. What is left
+ * of today's short life items is booked as waste in ONE stock_record_waste call (reason 'End of day'),
+ * with the manager the phone proved when the total is over the venue's set value.
+ * lines: [{ inventory_item_id, qty_base }] (0 or empty lines are left out).
+ */
+export async function closeDown(sb, loc, rawLines, who, approver = null) {
+  const lines = [];
+  const seen = new Set();
+  for (const l of (Array.isArray(rawLines) ? rawLines : [])) {
+    const id = l?.inventory_item_id;
+    const qty = Math.round(Number(l?.qty_base) * 10000) / 10000;
+    if (!isUuid(id) || !(qty > 0) || seen.has(id)) continue;
+    seen.add(id);
+    lines.push({ item_id: id, qty_base: qty });
+    if (lines.length >= CLOSEDOWN_MAX) break;
+  }
+  if (!lines.length) return { error: 'Type what is left on at least one line.' };
+  const stamped = approver && isUuid(approver.id) ? { approved_by_staff_id: approver.id, approved_by_staff_name: approver.name ? String(approver.name).slice(0, 120) : null } : {};
+  const { data, error } = await sb.rpc('stock_record_waste', {
+    p_location_id: loc,
+    p_event: { kind: 'closedown', item_name: 'End of day fresh close down', qty: lines.length, unit: 'items', reason: 'End of day',
+      note: who ? `Booked on the phone by ${who}` : null, source: 'manager', ...stamped },
+    p_lines: lines,
+  });
+  if (error) return { error: `could not book the close down: ${error.message}` };
+  if (data && data.ok === false) return data;
+  return { ...(data || {}), ok: true, booked: lines.length };
 }

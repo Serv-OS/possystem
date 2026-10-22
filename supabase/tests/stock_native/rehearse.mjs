@@ -62,6 +62,7 @@ import {
 import { jsParts, REPLACED } from './drainer.mjs';
 import { insertRow, basketBookedSql } from './channels.mjs';
 import { D2_REPLACED, D2_SHAPE } from './drop2.mjs';
+import { D3_SHAPE, D3_BODIES, D3_REPLACED } from './drop3.mjs';
 
 const BASE_ONLY = process.argv.includes('--base-only');
 const DEMO = process.env.STOCKN_DEMO;
@@ -76,6 +77,8 @@ const FILES = {
   dRb: process.env.STOCKN_DRAINER_ROLLBACK || MIG('20261023a_OPS_stock_drainer_v2_ROLLBACK.sql'),
   d2: process.env.STOCKN_D2 || MIG('20261025a_OPS_stock_native_2.sql'),
   d2Rb: process.env.STOCKN_D2_ROLLBACK || MIG('20261025a_OPS_stock_native_2_ROLLBACK.sql'),
+  d3: process.env.STOCKN_D3 || MIG('20261027a_OPS_stock_native_3.sql'),
+  d3Rb: process.env.STOCKN_D3_ROLLBACK || MIG('20261027a_OPS_stock_native_3_ROLLBACK.sql'),
 };
 const DRAINER = process.argv.includes('--drainer');
 const CHECKS = process.env.STOCKN_CHECKS || null;
@@ -137,23 +140,32 @@ const CO_TABLES = ORDER.slice(ORDER.indexOf('stock_co_settings'));
 const D1_COLS = { stock_co_items: ['category_id'], stock_co_item_sites: ['paused_from', 'paused_until'], stock_co_site_groups: ['row_version'] };
 const D1_LIVE = (demo.stock_co_items || []).some((r) => r && Object.prototype.hasOwnProperty.call(r, 'category_id'));
 if (D1_LIVE) info('the copy was taken after Drop 1 ran live (its company items carry category_id): Drop 1\'s four columns are left out of the load and made again by step 6');
+// Drop 2 ran live on 22 Oct 2026 (v5.11.93): a copy taken since carries its five columns on 0a's tables. The
+// base has no Drop 2, so they are left out here and steps 8 and 9 make them again as the SQL editor did; any
+// other missing column is still a failure.
+const D2_COLS = { stock_co_items: ['facts_source'], stock_co_supplier_items: ['facts_checked_by_name'], stock_co_recipes: ['updated_by'], stock_co_recipe_sites: ['why_on', 'linked_at'] };
+const D2_LIVE = (demo.stock_co_recipe_sites || []).some((r) => r && Object.prototype.hasOwnProperty.call(r, 'why_on'));
+if (D2_LIVE) info('the copy was taken after Drop 2 ran live (its recipe sites carry why_on): Drop 2\'s five columns are left out of the load and made again by steps 8 and 9');
 const notLoaded = [];
 const d1Left = [];
+const d2Left = [];
 for (const t of ORDER) {
   const rows = demo[t];
   if (!rows || !rows.length) continue;
   const have = new Set(sql(`select string_agg(column_name, ',') from information_schema.columns where table_schema = 'public' and table_name = '${t}'`).split(','));
   const keys = [...new Set(rows.flatMap((r) => Object.keys(r)))];
-  const absent = keys.filter((k) => !have.has(k) && !(D1_COLS[t] || []).includes(k));
+  const absent = keys.filter((k) => !have.has(k) && !(D1_COLS[t] || []).includes(k) && !(D2_COLS[t] || []).includes(k));
   if (absent.length) notLoaded.push(`${t}: ${absent.join(', ')}`);
   for (const k of keys.filter((kk) => !have.has(kk) && (D1_COLS[t] || []).includes(kk))) d1Left.push(`${t}.${k}`);
+  for (const k of keys.filter((kk) => !have.has(kk) && (D2_COLS[t] || []).includes(kk))) d2Left.push(`${t}.${k}`);
   const cols = keys.filter((k) => have.has(k)).map((k) => `"${k}"`).join(', ');
   const r = c.psql({ input: `set session_replication_role = replica;
     insert into public.${t} (${cols}) select ${cols} from json_populate_recordset(null::public.${t}, ${lit(JSON.stringify(rows))}::json);`, allowFail: true });
   ok(r.status === 0 && num(`select count(*) from public.${t}`) === rows.length, `${t}: ${rows.length} rows loaded${r.status ? `: ${short(r.stderr)}` : ''}`);
 }
-ok(notLoaded.length === 0, `every live column of the copy exists here with a type it loads into (${notLoaded.join('; ') || 'all'}${d1Left.length ? `; Drop 1's ${d1Left.join(', ')} left for step 6` : ''})`);
+ok(notLoaded.length === 0, `every live column of the copy exists here with a type it loads into (${notLoaded.join('; ') || 'all'}${d1Left.length ? `; Drop 1's ${d1Left.join(', ')} left for step 6` : ''}${d2Left.length ? `; Drop 2's ${d2Left.join(', ')} left for steps 8 and 9` : ''})`);
 ok(D1_LIVE === (d1Left.length > 0), `Drop 1's columns are in the copy exactly when it was taken after Drop 1 ran live (${d1Left.length} columns)`);
+ok(D2_LIVE === (d2Left.length > 0) && (!D2_LIVE || d2Left.length === 5), `Drop 2's columns are in the copy exactly when it was taken after Drop 2 ran live (${d2Left.length} columns)`);
 const unknown = Object.keys(demo).filter((t) => !ORDER.includes(t) && !['organisations', 'locations'].includes(t) && (demo[t] || []).length);
 ok(unknown.length === 0, `every table of the copy is loaded (${unknown.join(', ') || 'all'})`);
 if (LINKED) {
@@ -372,6 +384,53 @@ function drop2Step() {
     const again = c.paste(FILES.d2);
     ok(again.status === 0, `Drop 2 applies again after its rollback (${again.status ? short(again.stderr, 400) : 'ok'})`);
   }
+  c.use('n_demo');
+}
+
+// Drop 3 (20261027a) on a copy of the live state, in Peter's order: the drainer file and Drop 2 first, then
+// Drop 3 as one paste and its check row (contract 1.9: a59a6d97 and cd97f0f0 multi, every other row not; every
+// row 10 replaced, 66 new, 25 tables, 41 columns), every venue figure, menu and login row as before; then its
+// rollback (the 10 bodies back by md5) and Drop 3 again. The harness stand in of second_step_ok() is not the
+// live text, so the paste pins the stand in's md5 in its place (said so).
+function drop3Step() {
+  const tf = (v) => v === 't' || v === true;
+  const md5Of = (sig) => sql(`select md5(btrim(regexp_replace(p.prosrc, '\\s+', ' ', 'g'))) from pg_proc p where p.oid = to_regprocedure('${sig}')`);
+  const rowsMd5 = (tables) => tables.map((x) => sql(`select md5(coalesce(string_agg(t::text, '|' order by t::text), '')) from public.${x} t`)).join(',');
+  c.sql('select 1');
+  c.createFrom('n_d3', 'n_demo');
+  c.use('n_d3');
+  c.sqlFile(join(here, 'live_discounts.sql'));
+  c.psql({ input: D2_SHAPE });
+  for (const [f, name] of [[FILES.d, 'the drainer file'], [FILES.d2, 'Drop 2']]) {
+    const r0 = c.paste(f);
+    ok(r0.status === 0, `${name} applies first, as Peter runs it (${r0.status ? short(r0.stderr, 600) : `${r0.ms} ms`})`);
+    if (r0.status) { c.use('n_demo'); return; }
+  }
+  c.psql({ input: D3_SHAPE });
+  const text = readFileSync(FILES.d3, 'utf8').replace('5027ed5a5c5ca0b6f03a1d414998dfeb', md5Of('public.second_step_ok()'));
+  const pre = Object.fromEntries(venues.map((v) => [v, venueFigures(c, v)]));
+  const before = { menu: rowsMd5(['menu_items']), logins: rowsMd5(['user_profiles', 'user_locations']) };
+  const r = c.paste(null, { input: text });
+  ok(r.status === 0, `Drop 3 applies as one paste on top (${r.status ? short(r.stderr, 900) : `${r.ms} ms`})`);
+  if (r.status) { c.use('n_demo'); return; }
+  const rr = (r.sets[r.sets.length - 1] || { rows: [] }).rows;
+  for (const x of rr) console.log(`     ${short(x, 900)}`);
+  ok(tf((rr.find((x) => x.org_id === ORG_T) || {}).multi) && rr.every((w) => Number(w.replaced_functions) === 10 && Number(w.new_functions) === 66
+    && Number(w.new_tables) === 25 && Number(w.new_columns) === 41 && Number(w.cron_jobs) === 2 && Number(w.vault_keys) === 2 && !tf(w.internals_open_to_api)
+    && !tf(w.anon_can_save) && Number(w.site_kinds) === 0 && Number(w.internal_suppliers) === 0 && Number(w.approvals) === 0 && Number(w.notify_rows) === 0
+    && Number(w.site_rows_changed) === 0 && !tf(w.orders_changed) && !tf(w.menu_rows_changed) && !tf(w.logins_changed)),
+    'the check row as contract 1.9 expects (a59a6d97 multi; every row 10, 66, 25, 41, nothing made, nothing changed)');
+  for (const v of venues) {
+    const d = figureDiff(pre[v], venueFigures(c, v));
+    ok(d.length === 0, `${vname[v]}: every figure identical after Drop 3 (${d.join(', ') || 'none differ'})`);
+  }
+  ok(rowsMd5(['menu_items']) === before.menu && rowsMd5(['user_profiles', 'user_locations']) === before.logins, 'no menu row and no login row was written');
+  const rb = c.paste(FILES.d3Rb);
+  const x = ((rb.sets[rb.sets.length - 1] || { rows: [] }).rows[0]) || {};
+  ok(rb.status === 0 && Number(x.bodies_restored) === 10 && Number(x.tables_dropped) === 25, `the Drop 3 rollback applies on the copy (${rb.status ? short(rb.stderr, 400) : short(x, 300)})`);
+  ok(D3_BODIES.filter(([s]) => D3_REPLACED.includes(s.slice(7, s.indexOf('(')))).every(([s, m5]) => md5Of(s) === m5), 'the 10 bodies are back by md5');
+  const again = c.paste(null, { input: text });
+  ok(again.status === 0, `Drop 3 applies again after its rollback (${again.status ? short(again.stderr, 400) : 'ok'})`);
   c.use('n_demo');
 }
 
@@ -643,4 +702,9 @@ console.log('\n8. Drop 2 (20261025a) on a copy of the live state: the drainer fi
 if (!existsSync(FILES.d2)) info(`the Drop 2 file is not there yet (${FILES.d2}): step skipped`);
 else if (!existsSync(FILES.d)) ok(false, `the drainer file is there (${FILES.d}): Drop 2 refuses without it`);
 else drop2Step();
+
+console.log('\n9. Drop 3 (20261027a) on a copy of the live state: the drainer and Drop 2 first, then Drop 3, its rollback and Drop 3 again');
+if (!existsSync(FILES.d3)) info(`the Drop 3 file is not there yet (${FILES.d3}): step skipped`);
+else if (!existsSync(FILES.d2) || !existsSync(FILES.d)) ok(false, 'the drainer and Drop 2 files are there: Drop 3 refuses without them');
+else drop3Step();
 done();

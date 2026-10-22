@@ -21,6 +21,8 @@ import {
 import { siteRows } from '../../../../lib/stock/supplierListRules';
 import { Btn, Popover, Notice, ui, TableWrap, Th, Td, ErrorLine, EmptyLine, useConfirm } from '../stockUi';
 import LockLine from '../LockLine';
+import StandingOrdersPanel from './StandingOrdersPanel';
+import DeliveryExceptionsPanel from './DeliveryExceptionsPanel';
 
 function CellView({ rules, dow }) {
   const c = cellModel(rules, dow);
@@ -107,6 +109,7 @@ export default function SupplierOrderRulesTab({ detail, reload }) {
   const [fromId, setFromId] = useState(null);
   const [copying, setCopying] = useState(false);
   const [skipped, setSkipped] = useState([]);
+  const [exceptions, setExceptions] = useState(false); // v5.11.96 (Drop 3): the Exceptions and holidays panel
   const from = rows.find((r) => r.site.id === fromId) || rows.find((r) => (r.link?.rules || []).length) || rows[0] || null;
 
   const copy = async () => {
@@ -131,7 +134,9 @@ export default function SupplierOrderRulesTab({ detail, reload }) {
   return (
     <div>
       {confirmDialog}
+      <div style={{ marginBottom: 12 }}><Notice tone="info"><b>When each site gets deliveries.</b> One source for the Order pad's dates, the order by reminders, approval cut offs and the order email.</Notice></div>
       {!editor && <div style={{ marginBottom: 12 }}><LockLine entity="supplier" id={s.id} recordName={s.name} kind="company" /></div>}
+      <div style={{ ...ui.row, marginBottom: 12 }}><Btn small onClick={() => setExceptions(true)}>Exceptions and holidays</Btn></div>
       {editor && rows.length > 1 && (
         <div style={{ ...ui.row, flexWrap: 'wrap', marginBottom: 12 }}>
           <select value={from?.site.id || ''} onChange={(e) => setFromId(e.target.value)} aria-label="Site to copy from" style={{ ...ui.input, width: 220 }}>
@@ -181,6 +186,8 @@ export default function SupplierOrderRulesTab({ detail, reload }) {
         </TableWrap>
       )}
       {editor && rows.length > 0 && <div style={{ ...ui.sub, marginTop: 10 }}>Press a day to set a delivery and its order by time.</div>}
+      <StandingOrdersPanel detail={detail} reload={reload} />
+      {exceptions && <DeliveryExceptionsPanel orgId={sc.orgId} supplier={s} onClose={() => setExceptions(false)} />}
     </div>
   );
 }

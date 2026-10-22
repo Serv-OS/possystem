@@ -13,9 +13,16 @@
 // then our SKU, then name; differences are highlighted; a temperature over 8 C turns Receive into
 // Reject; PIN to confirm. Stock, costs, the goods in record and the order status update exactly as
 // Back Office receiving does.
+//
+// v5.11.96 (multi site stock Drop 3, contract 3.4): the order sheet shows the order by line and the
+// server's answer (sent, sent for approval, gone to the central kitchen); the expected day is the next
+// delivery by the order by rule (nextDelivery: after the cut off it is the following delivery). New
+// buttons open Transfers, Shop buy, End of day and Forecast, and at a central kitchen Orders in,
+// Production plan and Pick and send. A central kitchen order arrives as a transfer, so it is never
+// received here as a delivery.
 import { useState } from 'react';
-import { belowPar, bySupplier, groupBatches, qtyText, orderPacksFor, orderValue } from '../../lib/manager/kitchen';
-import { nextDeliveryYmd, matchScannedLine } from '../../lib/stock/purchasingRules';
+import { belowPar, bySupplier, groupBatches, qtyText, orderPacksFor, orderValue, orderByLine, raiseWords, approvalsLine } from '../../lib/manager/kitchen';
+import { nextDelivery, rulesFromDeliveryDays, matchScannedLine } from '../../lib/stock/purchasingRules';
 import { localToUtcMs } from '../../lib/venueDate';
 import { scanInvoice } from '../../lib/stock/purchasing';
 import { photoInputProps, photoButtonLabel } from '../../lib/cameraCapture';
@@ -29,6 +36,12 @@ import { useLayout } from './useLayout';
 import ManagerStock from './ManagerStock';
 // v5.11.93 (multi site stock Drop 2): recipe cards for staff on the phone.
 import ManagerRecipeCard from './ManagerRecipeCard';
+// v5.11.96 (multi site stock Drop 3): the new phone sheets.
+import ManagerTransfers from './ManagerTransfers';
+import ManagerShopBuy from './ManagerShopBuy';
+import ManagerCloseDown from './ManagerCloseDown';
+import ManagerForecastEdit from './ManagerForecastEdit';
+import ManagerKitchenCentral from './ManagerKitchenCentral';
 
 const DEL_PILL = { pending: ['Expected', 'var(--orn)'], overdue: ['Overdue', 'var(--red)'], accepted: ['Arrived', 'var(--grn)'], rejected: ['Rejected', 'var(--red)'] };
 const ACCEPT_MAX_C = 8;   // the Ops Deliveries threshold; the server (manager-approve) holds the same figure
@@ -70,6 +83,7 @@ export default function ManagerKitchen({ ctx }) {
   const [recvBusy, setRecvBusy] = useState(false);
   const [recvDone, setRecvDone] = useState({});  // poId -> message (received this session)
   const [stockOpen, setStockOpen] = useState(false);
+  const [sheet, setSheet] = useState(null);       // v5.11.96: 'transfers' | 'shop' | 'closedown' | 'forecast' | 'orders' | 'plan' | 'pick'
 
   const today = venueDay(snap);
   const unlockPin = (fail) => { if (poEntry.length >= 4) setPoPin(poEntry); else fail?.('Enter your 4 to 6 digit PIN'); };
@@ -88,7 +102,7 @@ export default function ManagerKitchen({ ctx }) {
     setPoBusy(true); setPoErr('');
     const r = await managerRaisePO(loc, poPin, { supplierId: lines[0]?.supplierId || null, supplierName: sup, lines: order });
     setPoBusy(false);
-    if (r?.ok) { setPoDone((d) => ({ ...d, [sup]: { reference: r.reference, expectedDate: r.expected_date || null, subtotal: r.subtotal } })); setPoFor(null); refreshSnap?.(); }
+    if (r?.ok) { setPoDone((d) => ({ ...d, [sup]: { reference: r.reference, expectedDate: r.expected_date || null, subtotal: r.subtotal, words: raiseWords(r, { supplier: sup }), waiting: !!r.needs_approval } })); setPoFor(null); refreshSnap?.(); }
     else if (isPinErr(r?.error)) { setPoPin(''); setPoEntry(''); setPoErr(r?.error || 'PIN not recognised'); }
     else setPoErr(r?.error || 'Could not raise the order');
   };
@@ -240,11 +254,32 @@ export default function ManagerKitchen({ ctx }) {
   );
 
   if (stockOpen) return <ManagerStock ctx={ctx} onClose={() => setStockOpen(false)} />;
+  if (sheet === 'transfers') return <ManagerTransfers ctx={ctx} onClose={() => setSheet(null)} />;
+  if (sheet === 'shop') return <ManagerShopBuy ctx={ctx} onClose={() => setSheet(null)} />;
+  if (sheet === 'closedown') return <ManagerCloseDown ctx={ctx} onClose={() => setSheet(null)} />;
+  if (sheet === 'forecast') return <ManagerForecastEdit ctx={ctx} onClose={() => setSheet(null)} />;
+  if (sheet === 'orders' || sheet === 'plan' || sheet === 'pick') return <ManagerKitchenCentral ctx={ctx} tab={sheet} onClose={() => setSheet(null)} />;
   if (recipesOpen) return <ManagerRecipeCard ctx={ctx} onClose={() => setRecipesOpen(false)} />;
   // only where there is stock to count: the snapshot's head count, else (an older snapshot) any item with a par
   const hasStock = snap?.kitchen?.trackedItems != null ? snap.kitchen.trackedItems > 0 : items.length > 0;
   // v5.11.93: only where a till product has a live recipe link (the snapshot lists them)
   const recipeCount = Array.isArray(snap?.kitchen?.recipes) ? snap.kitchen.recipes.length : 0;
+  // v5.11.96 (Drop 3): the new sheets show once the snapshot carries the Drop 3 blocks (a server before
+  // Drop 3 sends none, so an older server shows exactly today's tab)
+  const d3 = Array.isArray(snap?.kitchen?.orderBy);
+  const orderByOf = (supplierId) => (snap?.kitchen?.orderBy || []).find((x) => x.supplierId === supplierId) || null;
+  const generatedMs = snap?.generated_at ? Date.parse(snap.generated_at) : null;
+  const atKitchen = !!snap?.kitchen?.ordersIn;
+  const waitingWords = approvalsLine(snap?.kitchen?.approvals);
+  const transfersIn = (snap?.kitchen?.transfers?.incoming || []).length;
+  const closedownCount = Number(snap?.kitchen?.closedown) || 0;
+  const sheetBtn = (key, title, sub, testId) => (
+    <button key={key} onClick={() => setSheet(key)} className="sv-glass" data-testid={testId}
+      style={{ marginTop: 12, width: '100%', padding: '14px 16px', borderRadius: 14, border: '1px solid var(--bdr)', cursor: 'pointer', color: 'var(--t1)', fontWeight: 800, fontSize: 14, fontFamily: 'inherit', textAlign: 'left', ...L.s.span }}>
+      {title}
+      <div style={{ fontSize: 12, color: 'var(--t3)', fontWeight: 500 }}>{sub}</div>
+    </button>
+  );
 
   return (
     <div style={L.s.page2}>
@@ -259,6 +294,14 @@ export default function ManagerKitchen({ ctx }) {
         Recipe cards
         <div style={{ fontSize: 12, color: 'var(--t3)', fontWeight: 500 }}>Search a product and see its build, method and allergens</div>
       </button>}
+      {d3 && atKitchen && sheetBtn('orders', 'Orders in', `${snap.kitchen.ordersIn.orders || 0} site order${snap.kitchen.ordersIn.orders === 1 ? '' : 's'} today${snap.kitchen.ordersIn.toPick ? `, ${snap.kitchen.ordersIn.toPick} to pick` : ''}`, 'manager-kitchen-orders-in')}
+      {d3 && atKitchen && sheetBtn('plan', 'Production plan', 'What to make today, with Done ticks', 'manager-kitchen-plan')}
+      {d3 && atKitchen && sheetBtn('pick', 'Pick and send', 'Amounts sent per site order, then Send', 'manager-kitchen-pick')}
+      {d3 && sheetBtn('transfers', 'Transfers', transfersIn ? `${transfersIn} waiting to be received` : 'Receive, send or request stock', 'manager-transfers-open')}
+      {d3 && sheetBtn('shop', 'Shop buy', 'Bought at a shop: book it into stock with the receipt', 'manager-shop-buy-open')}
+      {d3 && closedownCount > 0 && sheetBtn('closedown', 'End of day', `${closedownCount} short life item${closedownCount === 1 ? '' : 's'} to close down`, 'manager-closedown-open')}
+      {d3 && sheetBtn('forecast', 'Forecast', 'The sales forecast for the next 7 days', 'manager-forecast-open')}
+      {d3 && waitingWords && <div className="sv-glass" style={{ marginTop: 12, padding: '12px 14px', borderRadius: 14, border: '1px solid var(--orn)', color: 'var(--orn)', fontWeight: 700, fontSize: 13, ...L.s.span }}>{waitingWords}</div>}
       {!snap && !err && <div style={{ color: 'var(--t3)', padding: 16, ...mono, ...L.s.span }}>Loading…</div>}
       {err && <div className="sv-glass" style={{ padding: 16, marginTop: 12, color: 'var(--t3)', fontSize: 13, ...L.s.span }}>Couldn’t load stock ({err}).</div>}
 
@@ -281,7 +324,11 @@ export default function ManagerKitchen({ ctx }) {
           {supplierNames.map((sup) => {
             const lines = groups[sup];
             const sheetValue = orderValue(lines, poQty);
-            const expected = nextDeliveryYmd(lines[0]?.deliveryDays, today);
+            // v5.11.96 (Drop 3): the server's next delivery for this supplier, else the order by rule over
+            // its delivery days (an older snapshot): after the cut off it is the following delivery
+            const ob = orderByOf(lines[0]?.supplierId);
+            const expected = ob?.deliveryDay || nextDelivery({ rules: rulesFromDeliveryDays(lines[0]?.deliveryDays, null), nowVenue: { ymd: today, hm: new Intl.DateTimeFormat('en-GB', { timeZone: snap?.tz || 'Europe/London', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date()) } })?.deliveryYmd || null;
+            const obWords = orderByLine(ob, { generatedMs });
             const lineCount = lines.filter((i) => i.pack && (Number(poQty[i.itemId]) || 0) > 0).length;
             const canRaise = sup !== 'Unassigned' && lines.some((i) => i.pack);
             return (
@@ -307,12 +354,14 @@ export default function ManagerKitchen({ ctx }) {
                   <div className="sv-glass" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', borderRadius: 14, border: '1px solid var(--grn-b)' }}>
                     <Icon name="check" size={15} style={{ color: 'var(--grn)', flexShrink: 0 }} />
                     <div style={{ fontSize: 12.5, color: 'var(--grn)', fontWeight: 700 }}>
-                      Order {poDone[sup].reference} raised{poDone[sup].subtotal != null ? ` · ${money(poDone[sup].subtotal)} ex VAT` : ''}{poDone[sup].expectedDate ? ` · expected ${shortDate(poDone[sup].expectedDate)}` : ''}. It is under On order · incoming.
+                      {poDone[sup].words || `Order ${poDone[sup].reference} raised.`}
+                      <div style={{ fontWeight: 500, marginTop: 2 }}>{[poDone[sup].subtotal != null ? `${money(poDone[sup].subtotal)} ex VAT` : '', poDone[sup].expectedDate ? `expected ${shortDate(poDone[sup].expectedDate)}` : '', poDone[sup].waiting ? '' : 'under On order · incoming'].filter(Boolean).join(' · ')}</div>
                     </div>
                   </div>
                 ) : poFor === sup ? (
                   <div className="sv-glass" style={{ padding: 14, borderRadius: 14, border: '1px solid var(--acc-b, var(--bdr))', ...L.s.orderSheet }}>
-                    <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 10 }}>Order from {sup}</div>
+                    <div style={{ fontSize: 13, fontWeight: 800, marginBottom: obWords ? 2 : 10 }}>Order from {sup}</div>
+                    {obWords && <div style={{ fontSize: 11.5, color: 'var(--t3)', marginBottom: 10, ...mono }}>{obWords}</div>}
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                       {lines.map((i) => {
                         const q = Number(poQty[i.itemId]) || 0;
@@ -384,7 +433,7 @@ export default function ManagerKitchen({ ctx }) {
                   const open = delOpen?.id === d.id;
                   return (
                     <div key={d.id} style={{ display: 'contents' }}>
-                    <button onClick={() => (open ? setDelOpen(null) : openDelivery(d))} className="sv-glass"
+                    <button onClick={() => (d.internal ? setSheet('transfers') : open ? setDelOpen(null) : openDelivery(d))} className="sv-glass"
                       style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 14, border: open ? '1px solid var(--acc-b, var(--bdr))' : '1px solid var(--bdr)', cursor: 'pointer', textAlign: 'left', color: 'var(--t1)', fontFamily: 'inherit', width: '100%' }}>
                       <Icon name="delivery" size={16} style={{ color: 'var(--t3)', flexShrink: 0 }} />
                       <div style={{ flex: 1, minWidth: 0 }}>
@@ -393,7 +442,7 @@ export default function ManagerKitchen({ ctx }) {
                           {d.lines} line{d.lines === 1 ? '' : 's'} · {when}{d.value ? ` · ${money(d.value)}` : ''}
                         </div>
                       </div>
-                      <span style={{ fontSize: 11, fontWeight: 700, color: pillCol, ...mono }}>{pillLabel}</span>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: pillCol, ...mono }}>{d.internal ? 'Arrives as a transfer' : pillLabel}</span>
                     </button>
 
                     {open && (

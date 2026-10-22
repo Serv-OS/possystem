@@ -442,7 +442,7 @@ test('usage reads: one row per item, 1,000 items a page; the live reads are kept
 });
 
 test('an invoice carries the screen\'s own id, made once per scan, and a repeat is answered in words', () => {
-  const inv = read('../../backoffice/sections/Invoices.jsx');
+  const inv = read('../../backoffice/sections/purchasing/InvoicesSite.jsx');
   assert.match(inv, /header: \{ clientId: newUuid\(\),/);
   const pur = read('./purchasing.js');
   assert.match(pur, /client_id: header\.clientId \|\| null,/);

@@ -277,6 +277,33 @@ Until the drainer merges, point STOCKN_DRAINER and STOCKN_DRAINER_ROLLBACK at a 
   every site with the runner finishing the rest
 - 38 numbers unchanged; the rollback (15 bodies back by md5, every function as before); Drop 2 again
 
+## Drop 3 (drop3.mjs, run.mjs --drop3)
+
+`node supabase/tests/stock_native/run.mjs --drop3 --quick` builds section 1, then pastes 0a, its revalue file, 0b, Drop 1,
+the drainer and Drop 2 as the SQL editor runs them, then 20261027a (Drop 3, never 20261026a). `--drop3` without `--quick`
+uses 50 sites by 20 suppliers and 1,000 standing orders in section 48; `--drop3 --all` runs sections 2 to 25 and Drop 2's
+30 to 38 first. `STOCKN_D3` and `STOCKN_D3_ROLLBACK` point at other copies. The harness stand in of `second_step_ok()` is
+not the live text, so the paste pins the stand in's md5 in place of the live one (section 40 says so); every other
+pinned body is the live text. `D3_SHAPE` adds the live shapes Drop 3 reads that the base lacks (wf_sales_forecast,
+wf_staff, xero_connections, ezcater_order_links, the storage schema stand in).
+
+- 40 the paste: refused without Drop 2, with a changed body, off Ops, on a second run; the check row of contract 1.9;
+  no number, login or menu row changes
+- 41 the 25 tables (RLS, exact grants, read rule, fence, no write policy), the 41 columns, the CHECK swap, the triggers,
+  cron and vault, the bucket policies, every function's grants; the anon key refused but the waste reasons' device branch
+- 42 `stock_co__next_delivery` against the contract 2.3 model (and purchasingRules.js `nextDelivery` when it is there) on
+  2,000 random rule sets, exceptions and clocks around 25 Oct and 1 Nov; the cut off minute; no cut off
+- 43 submit, approvals, the guard, send back, send anyway, cancel, the runner at 60 and 30 minutes and the order by time,
+  the maximum, the fee, orders for many sites, one site companies, every Stock control level
+- 44 standing orders with the site's edits, bank holiday, paused, held supplier, nothing twice, the phone branch
+- 45 the invoice price rule at one site, agreed prices and credit requests, the 3 way match, missing invoices, splits,
+  the lock, make company price, one site invoices byte for byte
+- 46 second approval, if not counted zero, locked periods, waste PIN on the till and the phone, 5 wrong PINs lock
+- 47 requests, fulfil, receive by company item, refuse, dispute and resolve; a kitchen order received once only; the
+  production plan; kitchen only recipes; recharges; a kitchen standing order
+- 48 alerts staged once; keyset pages at scale under 1 s; the runner with 1,000 standing orders under 8 s a call
+- 49 every channel basket identical before and after; the rollback; Drop 3 again; the rollback refuses a REQUESTED transfer
+
 ## Files
 
 | File | What |

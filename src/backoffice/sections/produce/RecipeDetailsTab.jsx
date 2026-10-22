@@ -10,6 +10,12 @@
 // differ and nothing is overwritten; "Save mine on top" sends this screen against their version.
 // A login that cannot change company recipes sees every field greyed (never hidden) under the lock
 // line drawn by RecipePage.
+//
+// v5.11.96 (multi site stock Drop 3, contract 3.4, F11): Kitchen only. For a batch or prep recipe in a
+// company with a central kitchen, company editors see a 'Kitchen only' switch with the kitchen
+// (stock_set_recipe_restricted): the recipe is then made only at that kitchen, its method and cost
+// sit where site managers cannot read them, and the method box saves through stock_save_recipe_secret.
+// Other logins see 'Made by <kitchen>. The method is kept by the kitchen.'
 
 import { useMemo, useState } from 'react';
 import { useStore } from '../../../store';
@@ -24,6 +30,8 @@ import { Btn, Field, ui } from '../stock/stockUi';
 import SavedFirstModal from '../stock/SavedFirstModal';
 import AddItemModal from '../stock/items/AddItemModal';
 import { ItemSearch, SearchPick } from './RecipeLinesEditor';
+import { useCompanyKitchens } from '../stock/SiteKindCard';
+import { Switch } from '../stock/stockUi';
 
 const UNIT_OPTS = Object.entries(UNITS).map(([code, u]) => ({ code, ...u }));
 const DIM_ORDER = [DIMENSIONS.COUNT, DIMENSIONS.WEIGHT, DIMENSIONS.VOLUME];
@@ -142,6 +150,11 @@ export default function RecipeDetailsTab({ detail, editable = false, reload, org
   const say = (words, tone = 'success') => { try { showToast?.(words, tone); } catch { /* no toast, no harm */ } };
   const sitesOn = useMemo(() => (detail?.sites || []).filter((s) => s.on).map((s) => s.location_id), [detail]);
   const costSite = costSiteOf(detail, sc.homeSite);
+  // v5.11.96 (Drop 3): Kitchen only
+  const kitchens = useCompanyKitchens(sc);
+  const restricted = recipe.restricted === true;
+  const kitchenName = recipe.kitchen_name || sc.siteName?.(recipe.kitchen_location_id) || 'the central kitchen';
+  const showKitchen = sc.multi && kitchens.length > 0 && (recipe.kind === 'batch' || recipe.kind === 'prep' || draft.kind === 'batch' || draft.kind === 'prep');
 
   // Someone saved first: read their version and list the fields where the two versions differ.
   // Nothing of theirs clashes with this screen: save again on their version, no question.
@@ -168,6 +181,13 @@ export default function RecipeDetailsTab({ detail, editable = false, reload, org
       return true;
     }
     setSaving(true);
+    // v5.11.96 (Drop 3): a kitchen only recipe keeps its method with the kitchen (stock_save_recipe_secret)
+    if (restricted && Object.prototype.hasOwnProperty.call(patch, 'method')) {
+      const sec = await stockApi.saveRecipeSecret(recipe.id, patch.method ?? null, recipe.secret_row_version ?? null);
+      if (sec.error) { setSaving(false); say(sec.error.message || 'The method did not save.', 'error'); return false; }
+      delete patch.method;
+      if (!Object.keys(patch).length) { setSaving(false); say('Saved. The method is kept by the kitchen.'); reload?.(); return true; }
+    }
     const r = await stockApi.saveRecipe({ recipe: { id: recipe.id, location_id: costSite || undefined, ...patch }, version: versionOverride ?? detail?.row_version ?? recipe.row_version ?? null, section: 'produce' });
     setSaving(false);
     if (r.conflict) { await openConflict(r.conflict, again && !onTop); return false; }
@@ -181,6 +201,9 @@ export default function RecipeDetailsTab({ detail, editable = false, reload, org
 
   return (
     <div style={ui.card}>
+      {showKitchen && (
+        <KitchenOnly recipe={recipe} editable={editable} kitchens={kitchens} restricted={restricted} kitchenName={kitchenName} reload={reload} say={say} />
+      )}
       <RecipeDetailsFields draft={draft} onChange={setDraft} locked={locked || saving} orgId={orgId} orgCtx={orgCtx} sitesOn={sitesOn} menuProduct={detail?.menu_product || null} />
       {editable && (
         <div style={{ ...ui.row, marginTop: 4 }}>
@@ -193,6 +216,38 @@ export default function RecipeDetailsTab({ detail, editable = false, reload, org
           onSaveMine={() => save(conflict.version, true, conflict.fresh || recipe, false)}
           onClose={() => setConflict(null)} />
       )}
+    </div>
+  );
+}
+
+// v5.11.96 (multi site stock Drop 3, F11): the Kitchen only switch and the kitchen it belongs to.
+function KitchenOnly({ recipe, editable, kitchens, restricted, kitchenName, reload, say }) {
+  const [kitchenId, setKitchenId] = useState(recipe.kitchen_location_id || kitchens[0]?.id || '');
+  const [busy, setBusy] = useState(false);
+  if (!editable) {
+    if (!restricted) return null;
+    return <div style={{ ...ui.sub, marginBottom: 12, color: 'var(--t2)' }}>Made by {kitchenName}. The method is kept by the kitchen.</div>;
+  }
+  const flip = async (on) => {
+    if (on && !kitchenId) { say('Pick the kitchen first.', 'error'); return; }
+    setBusy(true);
+    const r = await stockApi.setRecipeRestricted(recipe.id, on, on ? kitchenId : (recipe.kitchen_location_id || kitchenId || null), recipe.row_version ?? null);
+    setBusy(false);
+    if (r.conflict) { say('Someone saved this recipe first. Reload it, then try again.', 'error'); return; }
+    if (r.error) { say(r.error.message || 'It did not save.', 'error'); return; }
+    say(on ? `Kitchen only. Made at ${kitchens.find((k) => k.id === kitchenId)?.name || 'the kitchen'}; other sites buy it from the kitchen.` : 'Every site can make this recipe again.');
+    reload?.();
+  };
+  return (
+    <div style={{ ...ui.row, flexWrap: 'wrap', marginBottom: 14, padding: '10px 12px', borderRadius: 10, background: 'var(--bg2)' }}>
+      <Switch on={restricted} disabled={busy} onChange={flip} ariaLabel="Kitchen only" />
+      <b style={{ color: 'var(--t1)' }}>Kitchen only</b>
+      {kitchens.length > 1 ? (
+        <select value={kitchenId} disabled={busy || restricted} onChange={(e) => setKitchenId(e.target.value)} aria-label="Kitchen" style={{ ...ui.input, width: 'auto' }}>
+          {kitchens.map((k) => <option key={k.id} value={k.id}>{k.name}</option>)}
+        </select>
+      ) : <span style={ui.sub}>{kitchens[0]?.name}</span>}
+      <span style={ui.sub}>{restricted ? 'Method and cost sit where site managers cannot read them. Sites hold the batch as a bought in item.' : 'Only the kitchen makes it; other sites buy it from the kitchen.'}</span>
     </div>
   );
 }

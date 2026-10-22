@@ -660,3 +660,31 @@ test('stockByAreaRows: a holding per area in order, Unassigned only when the tot
   const none = stockByAreaRows(items, areas, { milk: { [FRIDGE]: 10 }, beans: { [DRY]: 5 }, cups: { [DRY]: 100 } });
   assert.equal(none.showUnassigned, false, 'no Unassigned column when every item adds up');
 });
+
+test('matchTransferLines byCompany (v5.11.96, Drop 3): the company item wins first; a dead or missing id falls back; none passed is today', () => {
+  const receiver = [
+    { id: 'r1', name: 'Whole milk 2 L', sku: 'MILK2' },
+    { id: 'r2', name: 'Oat milk', sku: 'OAT' },
+    { id: 'r3', name: 'Old milk', sku: 'OLD', archivedAt: '2026-01-01' },
+  ];
+  const lines = [
+    { id: 'a', nameSnapshot: 'Milk (sender name)', skuSnapshot: 'OAT' },
+    { id: 'b', nameSnapshot: 'Oat milk', skuSnapshot: '' },
+    { id: 'c', nameSnapshot: 'Nothing like it', skuSnapshot: '' },
+    { id: 'd', nameSnapshot: 'Whole milk 2 L', dropped: true },
+  ];
+  const today = matchTransferLines(lines, receiver);
+  assert.deepEqual(matchTransferLines(lines, receiver, null), today, 'no map: byte for byte today');
+  assert.deepEqual(matchTransferLines(lines, receiver, {}), today);
+  const got = matchTransferLines(lines, receiver, { a: 'r1', b: 'r3', c: 'zz', d: 'r2' });
+  assert.deepEqual(got.lines.map((l) => [l.id, l.toInventoryItemId ?? null, l.matchedBy]), [
+    ['a', 'r1', 'company'],   // the company item beats the SKU
+    ['b', 'r2', 'name'],      // an archived company match falls back to name
+    ['c', null, null],        // an unknown id falls back, still unmatched
+    ['d', null, null],        // dropped stays dropped
+  ]);
+  assert.deepEqual(got.unmatched, ['c']);
+  // a line already matched by hand is kept even when the map says otherwise
+  const kept = matchTransferLines([{ id: 'k', toInventoryItemId: 'r2', nameSnapshot: 'x' }], receiver, { k: 'r1' });
+  assert.equal(kept.lines[0].toInventoryItemId, 'r2'); assert.equal(kept.lines[0].matchedBy, 'kept');
+});

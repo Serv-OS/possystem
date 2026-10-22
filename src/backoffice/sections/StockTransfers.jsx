@@ -40,6 +40,11 @@ import { reportSave } from '../../lib/saveHealth';
 import { NEEDS_UPDATE_TEXT } from './StockAreas';
 import StockItemPicker from '../../components/StockItemPicker';
 import NumberField from '../../components/NumberField';
+import { useStockScope } from '../StockScope'; // d3 multi
+import { statusWords, transferFilters, lotLine, TRANSFER_REASONS } from '../../lib/stock/transferRules'; // d3 multi
+import { fulfilRequest, refuseRequest, disputeTransfer, resolveTransfer, fetchTransferExtras, fetchTransferLineExtras, fetchCompanyMatches, fetchCompanyItemMap } from '../../lib/stock/transfers'; // d3 multi
+import TransferRequestPanel from './stock/TransferRequestPanel'; // d3 multi
+import TransferListsPicker from './stock/TransferListsPicker'; // d3 multi
 
 const fieldStyle = { background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit' };
 const btn = { padding: '8px 14px', borderRadius: 8, cursor: 'pointer', background: 'var(--bg2)', border: '1px solid var(--bdr)', color: 'var(--t1)', fontSize: 13, fontFamily: 'inherit' };
@@ -69,6 +74,10 @@ export default function StockTransfers({ orgCtx = null, siteId = null }) {
   const [view, setView] = useState({ kind: 'list' });
   const [filter, setFilter] = useState('all');
   const byName = orgCtx?.userName || null;
+  // v5.11.96 (multi site stock Drop 3): requests, reasons, saved lists, In transit and Short, disputes, // d3 multi
+  // lot and use by. Every line added for it carries the marker; a one site company runs today's screen. // d3 multi
+  const sc = useStockScope(); // d3 multi
+  const [extras, setExtras] = useState({}); // d3 multi
 
   const reload = useCallback(async () => {
     const loc = locId || getActiveLocationSync() || await getLocationId().catch(() => null);
@@ -91,6 +100,14 @@ export default function StockTransfers({ orgCtx = null, siteId = null }) {
   // the first load runs after this render settles (never a setState straight inside the effect)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { const t = setTimeout(reload, 0); return () => clearTimeout(t); }, []);
+  useEffect(() => { // d3 multi
+    let live = true; // d3 multi
+    if (!sc.multi || !rows.length) return () => { live = false; }; // d3 multi
+    fetchTransferExtras(rows.map(r => r.id)).then(r => { if (live) setExtras(r.data || {}); }); // d3 multi
+    return () => { live = false; }; // d3 multi
+  }, [sc.multi, rows]); // d3 multi
+  // arriving from an alert or Deliveries ({ transferId }): open that transfer once // d3 multi
+  useEffect(() => { const o = sc.takeOpen?.('stock-transfers'); if (o?.transferId) setTimeout(() => setView({ kind: 'open', id: o.transferId }), 0); }, [sc.takeOpen]); // d3 multi
 
   const liveAreas = useMemo(() => areas.filter(a => !a.archivedAt), [areas]);
   const itemsById = useMemo(() => { const m = {}; items.forEach(i => { m[i.id] = i; }); return m; }, [items]);
@@ -114,10 +131,11 @@ export default function StockTransfers({ orgCtx = null, siteId = null }) {
       </div>
       {ready === false && <div style={{ fontSize: 13, color: 'var(--t3)' }}>{NEEDS_UPDATE_TEXT}</div>}
       {ready && view.kind === 'new' && (
-        <NewTransfer locId={locId} areas={liveAreas} items={items} itemsById={itemsById} suppliers={suppliers} holdings={holdings} venues={venues.venues} byName={byName}
+        <NewTransfer locId={locId} areas={liveAreas} items={items} itemsById={itemsById} suppliers={suppliers} holdings={holdings} venues={venues.venues} byName={byName} multi={sc.multi} onRequest={() => setView({ kind: 'request' })}
           onDone={async (text) => { showToast?.(text, 'success'); setView({ kind: 'list' }); await reload(); }}
           onError={(text) => showToast?.(text, 'error')} />
       )}
+      {ready && view.kind === 'request' && <TransferRequestPanel siteId={locId} onClose={() => setView({ kind: 'list' })} onDone={async () => { setView({ kind: 'list' }); await reload(); }} />}{/* d3 multi */}
       {ready && view.kind === 'open' && (
         <TransferDetail id={view.id} locId={locId} areas={liveAreas} areaName={areaName} venueName={venueName} items={items} itemsById={itemsById} byName={byName} venueTz={venueTz}
           onChanged={async (text, tone = 'success') => { if (text) showToast?.(text, tone); await reload(); }} />
@@ -130,7 +148,7 @@ export default function StockTransfers({ orgCtx = null, siteId = null }) {
             </div>
           )}
           <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 12 }}>
-            {TRANSFER_FILTERS.map(f => <button key={f.id} style={chip(filter === f.id)} onClick={() => setFilter(f.id)}>{f.label}</button>)}
+            {(sc.multi ? transferFilters({ multi: true }) : TRANSFER_FILTERS).map(f => <button key={f.id} style={chip(filter === f.id)} onClick={() => setFilter(f.id)}>{f.label}</button>)}
             <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--t3)', alignSelf: 'center' }}>{shown.length} of {rows.length}</span>
           </div>
           {shown.length === 0 && <div style={{ fontSize: 13, color: 'var(--t3)' }}>{rows.length ? 'No transfers match this filter.' : 'No transfers yet. New transfer moves stock from one area to another, or sends it to another venue.'}</div>}
@@ -151,8 +169,9 @@ export default function StockTransfers({ orgCtx = null, siteId = null }) {
                     <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>
                       {s.lines} line{s.lines === 1 ? '' : 's'}{s.dropped ? `, ${s.dropped} dropped` : ''} · {money(s.value)} · {fmtVenueDateTime(when, venueTz)}{who ? ` · ${who}` : ''}{t.note ? ` · ${t.note}` : ''}
                     </div>
+                    {sc.multi && (t.status === 'REQUESTED' || extras[t.id]?.reason) && <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>{t.status === 'REQUESTED' && String(t.locationId) === String(locId) ? `Requested by ${venueName(t.toLocationId) || 'another venue'}` : ''}{t.status === 'REQUESTED' && String(t.locationId) === String(locId) && extras[t.id]?.reason ? ' · ' : ''}{extras[t.id]?.reason || ''}</div>}{/* d3 multi */}
                   </div>
-                  <span style={{ fontSize: 11, fontWeight: 700, color: statusColor(t.status), whiteSpace: 'nowrap' }}>{attention ? 'Receive' : (TRANSFER_STATUS_WORDS[t.status] || t.status)}</span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: statusColor(t.status), whiteSpace: 'nowrap' }}>{attention ? 'Receive' : (sc.multi ? statusWords({ ...t, shortLines: s.short }, { multi: true }) : (TRANSFER_STATUS_WORDS[t.status] || t.status))}</span>
                 </button>
               );
             })}
@@ -164,7 +183,7 @@ export default function StockTransfers({ orgCtx = null, siteId = null }) {
 }
 
 // ── New transfer ──────────────────────────────────────────────────────────────
-function NewTransfer({ locId, areas, items, itemsById, suppliers, holdings, venues, byName, onDone, onError }) {
+function NewTransfer({ locId, areas, items, itemsById, suppliers, holdings, venues, byName, onDone, onError, multi = false, onRequest = null }) {
   const receiving = areas.find(a => a.isReceiving)?.id || '';
   const [mode, setMode] = useState('within');
   const [fromAreaId, setFromAreaId] = useState(receiving || areas[0]?.id || '');
@@ -173,9 +192,26 @@ function NewTransfer({ locId, areas, items, itemsById, suppliers, holdings, venu
   const [note, setNote] = useState('');
   const [picks, setPicks] = useState({});   // itemId -> { qty, token }
   const [busy, setBusy] = useState(false);
+  const [reason, setReason] = useState(''); // d3 multi
+  const fromSavedList = async (list) => { // d3 multi
+    const map = coMap || (await fetchCompanyItemMap(locId)).data; // d3 multi
+    const next = {}; // d3 multi
+    (list?.lines || []).forEach((l) => { const id = map?.toSite?.[l.company_item_id]; const it = id && itemsById[id]; if (!it) return; const tok = defaultTokenOf(it); const q = fromBase(Number(l.qty_base) || 0, tok, uomCtxOf(it)); next[id] = q == null ? { qty: String(l.qty_base ?? ''), token: it.baseUnit } : { qty: String(r3(q)), token: tok }; }); // d3 multi
+    if (list?.to_location_id && venues.some(v => v.id === list.to_location_id)) setToLocationId(list.to_location_id); // d3 multi
+    setPicks(next); // d3 multi
+    if (!Object.keys(next).length) onError('None of the list\'s items are stocked here.'); // d3 multi
+  }; // d3 multi
+  const [coMap, setCoMap] = useState(null); // d3 multi
+  useEffect(() => { // d3 multi
+    let live = true; // d3 multi
+    if (!multi || mode !== 'venue' || coMap) return () => { live = false; }; // d3 multi
+    fetchCompanyItemMap(locId).then(r => { if (live && !r.error) setCoMap(r.data); }); // d3 multi
+    return () => { live = false; }; // d3 multi
+  }, [multi, mode, coMap, locId]); // d3 multi
   const liveItems = useMemo(() => items.filter(i => !i.archivedAt && i.isTracked !== false), [items]);
   const selected = useMemo(() => Object.keys(picks), [picks]);
   const built = useMemo(() => buildTransferLines(picks, itemsById), [picks, itemsById]);
+  const toSavedList = () => ({ to_location_id: toLocationId || null, lines: built.lines.map(l => ({ company_item_id: coMap?.toCompany?.[l.inventoryItemId], qty_base: Number(l.qtyBase) })).filter(l => l.company_item_id && l.qty_base > 0) }); // d3 multi
   const fromName = areas.find(a => a.id === fromAreaId)?.name || '';
   const toName = areas.find(a => a.id === toAreaId)?.name || '';
   const warnings = useMemo(() => lineWarnings(built.lines, fromAreaId, { holdings, itemsById, areaName: fromName || 'This area', fmt: (q, it) => (it ? fmtQtyOf(q, it) : String(r3(q))) }), [built.lines, fromAreaId, holdings, itemsById, fromName]);
@@ -198,6 +234,7 @@ function NewTransfer({ locId, areas, items, itemsById, suppliers, holdings, venu
   const submit = async () => {
     if (built.errors.length) { onError(built.errors[0].message); return; }
     const draft = { mode, fromAreaId: fromAreaId || null, toAreaId: mode === 'within' ? (toAreaId || null) : null, toLocationId: mode === 'venue' ? toLocationId : null, note, byName, lines: built.lines };
+    if (multi && mode === 'venue' && reason) draft.reason = reason; // d3 multi
     const refusal = validateTransferDraft(draft, { homeId: locId, hasAreas: areas.length > 0 });
     if (refusal) { onError(refusal); return; }
     setBusy(true);
@@ -216,6 +253,7 @@ function NewTransfer({ locId, areas, items, itemsById, suppliers, holdings, venu
           <div style={{ display: 'flex', gap: 5, marginBottom: 12 }}>
             <button style={chip(mode === 'within')} onClick={() => setMode('within')}>Within this venue</button>
             <button style={chip(mode === 'venue')} onClick={() => setMode('venue')} disabled={!venues.length} title={venues.length ? '' : 'No other venue of your company is open to this login'}>To another venue</button>
+            {multi && onRequest && <button style={chip(false)} onClick={onRequest}>Request from another venue</button>}{/* d3 multi */}
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             <div>
@@ -248,6 +286,8 @@ function NewTransfer({ locId, areas, items, itemsById, suppliers, holdings, venu
             <span style={lbl}>Note (optional)</span>
             <input value={note} onChange={e => setNote(e.target.value)} placeholder="Why, or what to look out for" style={{ ...fieldStyle, width: '100%' }} />
           </div>
+          {multi && mode === 'venue' && <div style={{ marginTop: 10 }}><span style={lbl}>Reason</span><select value={reason} onChange={e => setReason(e.target.value)} style={{ ...fieldStyle, width: '100%' }}><option value="">Pick a reason (optional)</option>{TRANSFER_REASONS.map(r => <option key={r} value={r}>{r}</option>)}</select></div>}{/* d3 multi */}
+          {multi && mode === 'venue' && <div style={{ marginTop: 10 }}><TransferListsPicker siteId={locId} onPick={fromSavedList} onSave={toSavedList} /></div>}{/* d3 multi */}
         </div>
         <div style={card}>
           <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)', marginBottom: 8 }}>Items</div>
@@ -325,6 +365,19 @@ function TransferDetail({ id, locId, areas, areaName, venueName, items, itemsByI
     setPlan(receivePlan(t.lines, items));
     setLandArea(t.toAreaId || areas.find(a => a.isReceiving)?.id || '');
   }, [t, receiving, items, areas]);
+  const sc = useStockScope(); // d3 multi
+  const [lineExtras, setLineExtras] = useState({}); // d3 multi
+  const [disputing, setDisputing] = useState(null); // d3 multi
+  const [tx, setTx] = useState(null); // d3 multi
+  useEffect(() => { // d3 multi
+    let live = true; // d3 multi
+    if (!sc.multi || !t) return () => { live = false; }; // d3 multi
+    fetchTransferLineExtras(t.id).then(r => { if (live) setLineExtras(r.data || {}); }); // d3 multi
+    fetchTransferExtras([t.id]).then(r => { if (live) setTx(r.data?.[t.id] || null); }); // d3 multi
+    // the receiving site's item by company item first (stock_transfer_matches), then SKU and name as today // d3 multi
+    if (receiving) fetchCompanyMatches(t.id).then(r => { if (live && r.data && Object.keys(r.data).length) setPlan(receivePlan(t.lines, items, r.data)); }); // d3 multi
+    return () => { live = false; }; // d3 multi
+  }, [sc.multi, t, receiving, items]); // d3 multi
 
   if (loading) return <div style={{ padding: 20, color: 'var(--t3)' }}>Loading...</div>;
   if (!t) return <div style={{ padding: 20, color: 'var(--t3)' }}>This transfer could not be found, or this login cannot open its venue.</div>;
@@ -388,6 +441,16 @@ function TransferDetail({ id, locId, areas, areaName, venueName, items, itemsByI
     await onChanged(`${t.reference || 'Transfer'} ${res.data?.status === 'DONE' ? 'moved' : 'sent'}`);
     await load();
   };
+  const act = async (run, done) => { // d3 multi
+    setBusy(true); const res = await run(); setBusy(false); // d3 multi
+    reportSave('stock transfer', res.error); // d3 multi
+    if (res.error) { onChanged(res.error.message || 'That did not save', 'error'); return; } // d3 multi
+    setDisputing(null); await onChanged(done); await load(); // d3 multi
+  }; // d3 multi
+  const doFulfil = () => act(() => fulfilRequest(t.id, null, byName), `${t.reference || 'Transfer'} sent to ${venueName(t.toLocationId) || 'the other venue'}.`); // d3 multi
+  const doRefuse = () => act(() => refuseRequest(t.id, byName), `${t.reference || 'Request'} refused. ${venueName(t.toLocationId) || 'The other venue'} is told.`); // d3 multi
+  const doDispute = () => act(() => disputeTransfer(t.id, disputing), `${t.reference || 'Transfer'} disputed. ${venueName(t.locationId) || 'The sending venue'} is told.`); // d3 multi
+  const doResolve = () => act(() => resolveTransfer(t.id, byName), `${t.reference || 'Transfer'} resolved.`); // d3 multi
 
   const when = (ts) => (ts ? fmtVenueDateTime(ts, venueTz) : '');
   return (
@@ -395,7 +458,7 @@ function TransferDetail({ id, locId, areas, areaName, venueName, items, itemsByI
       <div style={card}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
           <div style={{ fontSize: 17, fontWeight: 700, color: 'var(--t1)' }}>{t.reference || 'Transfer'} · {transferHeadline(t, { homeId: locId, areaName, venueName })}</div>
-          <span style={{ fontSize: 12, fontWeight: 700, color: statusColor(t.status) }}>{TRANSFER_STATUS_WORDS[t.status] || t.status}</span>
+          <span style={{ fontSize: 12, fontWeight: 700, color: statusColor(t.status) }}>{sc.multi ? statusWords(t, { multi: true }) : (TRANSFER_STATUS_WORDS[t.status] || t.status)}</span>
         </div>
         <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 6, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
           <span>Made {when(t.createdAt)}{t.createdByName ? ` by ${t.createdByName}` : ''}</span>
@@ -405,13 +468,19 @@ function TransferDetail({ id, locId, areas, areaName, venueName, items, itemsByI
           <span>{linesText(lines)} · {money(value)}</span>
         </div>
         {t.note && <div style={{ fontSize: 12.5, color: 'var(--t2)', marginTop: 6 }}>{t.note}</div>}
+        {sc.multi && tx && (tx.reason || tx.requestedByName || tx.disputeNote) && <div style={{ fontSize: 12.5, color: 'var(--t2)', marginTop: 6 }}>{[t.status === 'REQUESTED' ? `Requested by ${venueName(t.toLocationId) || 'another venue'}${tx.requestedByName ? ` (${tx.requestedByName})` : ''}` : null, tx.reason ? `Reason: ${tx.reason}` : null, tx.disputeNote ? `Disputed: ${tx.disputeNote}` : null, tx.resolvedAt ? `Resolved${tx.resolvedByName ? ` by ${tx.resolvedByName}` : ''}` : null].filter(Boolean).join(' · ')}</div>}{/* d3 multi */}
         {t.status === 'DRAFT' && mine && (
           <div style={{ fontSize: 12.5, color: 'var(--amber, #F5A623)', marginTop: 8 }}>Saved but not posted: nothing has moved yet. {dir === 'within' ? 'Move' : 'Send'} it now, or cancel it.</div>
         )}
         <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
           {t.status === 'DRAFT' && mine && <button style={accBtn} disabled={busy} onClick={doRetry}>{dir === 'within' ? 'Move stock now' : 'Send now'}</button>}
           {(t.status === 'DRAFT' || t.status === 'SENT') && mine && <button style={quiet} disabled={busy} onClick={doCancel}>{t.status === 'SENT' ? 'Cancel and take the stock back' : 'Cancel'}</button>}
+          {sc.multi && t.status === 'REQUESTED' && mine && <button style={accBtn} disabled={busy} onClick={doFulfil}>Fulfil</button>}{/* d3 multi */}
+          {sc.multi && t.status === 'REQUESTED' && mine && <button style={quiet} disabled={busy} onClick={doRefuse}>Refuse</button>}{/* d3 multi */}
+          {sc.multi && dir === 'incoming' && (t.status === 'RECEIVED' || t.status === 'DONE') && disputing === null && <button style={btn} disabled={busy} onClick={() => setDisputing('')}>Dispute</button>}{/* d3 multi */}
+          {sc.multi && t.status === 'DISPUTED' && mine && <button style={accBtn} disabled={busy} onClick={doResolve}>Resolve</button>}{/* d3 multi */}
         </div>
+        {sc.multi && disputing !== null && <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap', alignItems: 'center' }}><input autoFocus value={disputing} onChange={e => setDisputing(e.target.value)} placeholder="What is wrong?" aria-label="What is wrong?" style={{ ...fieldStyle, flex: '1 1 240px' }} /><button style={quiet} disabled={busy} onClick={() => setDisputing(null)}>Cancel</button><button style={accBtn} disabled={busy || !disputing.trim()} onClick={doDispute}>{busy ? 'Saving...' : 'Dispute'}</button></div>}{/* d3 multi */}
       </div>
 
       {receiving && plan && (
@@ -459,7 +528,8 @@ function TransferDetail({ id, locId, areas, areaName, venueName, items, itemsByI
                 <tr key={l.id} style={{ borderTop: '1px solid var(--bdr)', opacity: l.dropped ? 0.55 : 1 }}>
                   <td style={{ padding: '10px 14px', color: tone }}>
                     <div>{l.nameSnapshot || itemsById[l.inventoryItemId]?.name || 'Item'}</div>
-                    <div style={{ fontSize: 11, color: 'var(--t3)' }}>{[l.skuSnapshot, l.dropped ? 'dropped' : receiving ? (l.matchedBy === 'sku' ? 'matched by SKU' : l.matchedBy === 'name' ? 'matched by name' : l.matchedBy === 'kept' ? 'matched' : l.toInventoryItemId ? 'matched by hand' : (l.ambiguous?.length ? `${l.ambiguous.length} of your items match: pick one` : 'no match yet')) : null].filter(Boolean).join(' · ')}</div>
+                    <div style={{ fontSize: 11, color: 'var(--t3)' }}>{[l.skuSnapshot, l.dropped ? 'dropped' : receiving ? (l.matchedBy === 'sku' ? 'matched by SKU' : l.matchedBy === 'name' ? 'matched by name' : l.matchedBy === 'kept' ? 'matched' : l.matchedBy === 'company' ? 'matched by company item' : l.toInventoryItemId ? 'matched by hand' : (l.ambiguous?.length ? `${l.ambiguous.length} of your items match: pick one` : 'no match yet')) : null].filter(Boolean).join(' · ')}</div>
+                    {sc.multi && lotLine(lineExtras[l.id] || {}) && <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>{lotLine(lineExtras[l.id])}</div>}{/* d3 multi */}
                     {/* v5.11.79: units that cannot convert, and what did not arrive (booked at the sender) */}
                     {receiving && l.unitProblem && <div style={{ fontSize: 11, color: 'var(--amber, #F5A623)', marginTop: 2 }}>{l.unitProblem}</div>}
                     {receiving && ri && !l.dropped && !l.unitProblem && (() => { const sh = shortOf(l, ri); return sh > 0 ? <div style={{ fontSize: 11, color: 'var(--amber, #F5A623)', marginTop: 2 }}>{`Short ${fmtQtyOf(sh, ri)}: booked at ${venueName(t.locationId) || 'the sending venue'} as waste, Short on transfer`}</div> : null; })()}

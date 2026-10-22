@@ -2,10 +2,13 @@
 // Takings hero (ex-VAT) + a "need you now" bar + a 2×2 live status bento (Floor · Team · Ops · Kitchen),
 // each role-gated and tapping to its tab. Everything reuses the shared snapshot (ctx.snap) + the same
 // tested engines the detail tabs use, so the numbers always agree. No new backend.
+// v5.11.96 (multi site stock Drop 3, contract 3.4): the stock bell rows of the last 24 hours (snapshot
+// stock.alerts) join the need bar: '2 orders waiting for approval', 'Count due today', 'Transfer
+// waiting', 'Delivery overdue', 'Order by in 1 hour: <supplier>'. They tap to the Kitchen tab.
 import { classifyFloor } from '../../lib/manager/floor';
 import { onShiftNow, noShows, breaksDue } from '../../lib/manager/team';
 import { venueBreakPolicy } from '../../staff/breaks.js';
-import { belowPar } from '../../lib/manager/kitchen';
+import { belowPar, stockNeedNow } from '../../lib/manager/kitchen';
 import { money } from '../../lib/currency';
 import { syne, mono } from './ui';
 import { useLayout } from './useLayout';
@@ -67,6 +70,7 @@ export default function ManagerHome({ ctx }) {
   if (flags.team_live && noshow.length) needNow.push({ label: `${noshow.length} no-show${noshow.length > 1 ? 's' : ''}`, go: () => setTab('team') });
   if (flags.team_live && breaks.length) needNow.push({ label: `${breaks.length} break${breaks.length > 1 ? 's' : ''} due`, go: () => setTab('team') });
   if (flags.ops_checks && opsAlerts) needNow.push({ label: `${opsAlerts} ops alert${opsAlerts > 1 ? 's' : ''}`, go: goOpsAlerts });
+  if (flags.kitchen) for (const row of stockNeedNow(snap?.stock?.alerts)) needNow.push({ label: row.words, go: () => setTab('kitchen') });
 
   // iPad: from 1000 wide the hero and the need bar sit left of the tiles (styles only, see layout.js).
   const showHero = !!(flags.reports_view && m);

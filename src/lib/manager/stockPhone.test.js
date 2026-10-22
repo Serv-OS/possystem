@@ -108,3 +108,14 @@ test('the Kitchen tab opens counting only where there is stock; the sheet is the
     assert.doesNotMatch(text, /[\u2013\u2014]/, `${name}: no long dashes`);
   }
 });
+
+// v5.11.96 (multi site stock Drop 3, J5): the PIN answers of waste over the set value.
+import { pinAsked } from './stockPhone.js';
+test('Drop 3: the database asked for a manager PIN', () => {
+  assert.equal(pinAsked({ ok: false, pin: 'needed', error: 'Over £25 needs a manager PIN.' }), 'needed');
+  assert.equal(pinAsked({ ok: false, pin: 'wrong' }), 'wrong');
+  assert.equal(pinAsked({ ok: false, pin: 'locked' }), 'locked');
+  assert.equal(pinAsked({ ok: false, error: 'boom' }), null);
+  assert.equal(pinAsked({ ok: true, pin: 'needed' }), null);
+  assert.equal(pinAsked(null), null);
+});

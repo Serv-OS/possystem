@@ -11,6 +11,7 @@ import { fetchRecentActivity, ackActivity, eventFromRow } from '../lib/activity'
 import { liveRow } from '../lib/liveRow';
 import { Icon } from './ServOSIcons';
 import { useStore } from '../store';
+import { parseRefId, boLink } from '../lib/stock/stockAlertLinks';
 
 const KIND = {
   order:  { icon: 'orders',    tone: 'var(--acc)' },
@@ -40,6 +41,14 @@ const agoOf = (iso) => {
   const m = Math.floor(s / 60); if (m < 60) return `${m}m`;
   const h = Math.floor(m / 60); if (h < 24) return `${h}h`;
   return `${Math.floor(h / 24)}d`;
+};
+
+// v5.11.96 (multi site stock Drop 3): a stock alert opens Back Office on its screen with the row in
+// focus (a price rise opens Price changes on that row), in a new tab so the till stays where it is.
+const stockLinkOf = (e) => {
+  if (e?.refType !== 'stock' || typeof window === 'undefined') return null;
+  const r = parseRefId(e.refId);
+  return r ? boLink(window.location.origin, r.route, r.focus) : null;
 };
 
 export default function ActivityFeed() {
@@ -124,6 +133,7 @@ export default function ActivityFeed() {
                   <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--t1)' }}>{e.title}</div>
                   {e.body && <div style={{ fontSize: 12, color: 'var(--t2)', marginTop: 1 }}>{e.body}</div>}
                   <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 3, fontFamily: 'var(--font-mono)' }}>{agoOf(e.createdAt)}{e.actorName ? ` · ${e.actorName}` : ''}</div>
+                  {stockLinkOf(e) && <a href={stockLinkOf(e)} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-block', marginTop: 5, fontSize: 12, fontWeight: 700, color: 'var(--acc)' }}>Open in Back Office</a>}
                 </div>
                 <button onClick={() => dismiss(e)} title="Dismiss" style={{ alignSelf: 'center', padding: action ? '6px 12px' : '4px 8px', borderRadius: 999, border: action ? '1px solid var(--grn-b, rgba(21,194,106,.3))' : '1px solid var(--bdr)', background: 'none', cursor: 'pointer', color: action ? 'var(--acc)' : 'var(--t3)', fontWeight: 800, fontSize: action ? 12 : 14, fontFamily: 'inherit', flexShrink: 0, lineHeight: 1 }}>{action ? 'Done' : '✕'}</button>
               </div>

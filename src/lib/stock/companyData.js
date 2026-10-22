@@ -19,6 +19,12 @@
  * archiveRecipe, setRecipeSites, linkProducts, batchSetHow, saveOptionRule, archiveOptionRule,
  * swapIngredient, makeSizes, prepTick, prepUntick, factsSignoff). Nothing else here changes.
  *
+ * Drop 3 (v5.11.96, contract 2.2): purchasing (order pad context, approvals, many sites, standing
+ * orders, delivery exceptions, saved lists, due to order, the company orders, deliveries, invoices,
+ * the inbox, credits, supplier prices, budgets), the forecast, counts (plans, templates, shelf order,
+ * second approval, locked periods), waste reasons and the fresh close down, transfer requests, and
+ * the central kitchen. Same answer shape; nothing else here changes.
+ *
  * Drop 1: 0b is live, so the Drop 0 fallbacks are gone. A database without a function this build
  * calls answers NEEDS_UPDATE ('This needs a database update. Ask ServOS to run it.'), never a
  * direct write to a table. Nothing here decides who may save: the database does (stock_co__guard).
@@ -316,7 +322,150 @@ export function createStockApi(client) {
     prepTick: (locationId, recipeId, qty, section = 'produce') => save('stock_prep_tick', { p_loc: locationId, p_recipe: recipeId, p_qty: qty, p_section: section }),
     prepUntick: (id) => save('stock_prep_untick', { p_id: id }),
     factsSignoff: (locationId, menuItemId, section = 'produce') => save('stock_facts_signoff', { p_loc: locationId, p_menu_item_id: menuItemId, p_section: section }),
+    // ── the Drop 3 calls (v5.11.96, contract 2.2) ──
+    // purchasing
+    orderPadContext: (locationId) => read('stock_order_pad_context', { p_loc: locationId }),
+    submitOrder: (poId) => save('stock_po_submit', { p_po: poId, p_section: 'purchasing' }),
+    decideOrder: (poId, decision, note = null) => save('stock_po_decide', { p_po: poId, p_decision: decision, p_note: nil(note), p_section: 'purchasing' }),
+    createOrdersMany: (orgId, orders) => save('stock_create_orders_many', { p_org: orgId, p_orders: orders || [], p_section: 'purchasing' }),
+    saveStandingOrder: (so, version = null) => save('stock_save_standing_order', { p_so: so, p_version: nil(version), p_section: 'purchasing' }),
+    editStandingRun: (soId, deliveryDay, { lines = null, skip = false } = {}) =>
+      save('stock_edit_standing_run', { p_so: soId, p_delivery_day: deliveryDay, p_lines: nil(lines), p_skip: skip === true }),
+    saveDeliveryException: (ex, version = null) => save('stock_save_delivery_exception', { p_ex: ex, p_version: nil(version), p_section: 'purchasing' }),
+    deliveryExceptions: (orgId) => table(() => from('stock_delivery_exceptions').select('*')
+      .eq('org_id', orgId).is('archived_at', null).gte('to_day', ymdDaysAgo(7)).order('from_day').limit(PAGE_ROWS)),
+    standingOrders: (locationId, supplierId = null) => table(() => {
+      let q = from('stock_standing_orders').select('*, stock_standing_order_lines(*)').eq('location_id', locationId);
+      if (supplierId) q = q.eq('supplier_id', supplierId);
+      return q.order('name').limit(STANDING_ROWS);
+    }),
+    saveOrderList: (list, version = null) => save('stock_save_order_list', { p_list: list, p_version: nil(version) }),
+    dueToOrder: ({ orgId, sites = null, after = null } = {}) =>
+      read('stock_due_to_order', { p_org: orgId, p_sites: nil(sites), p_after: after || null, p_limit: 100 }),
+    ordersPage: ({ orgId, sites = null, status = null, filters = null, after = null } = {}) =>
+      read('stock_orders_page', { p_org: orgId, p_sites: nil(sites), p_status: status || null, p_filters: filters || null, p_after: after || null, p_limit: 100 }),
+    deliveriesBoard: ({ orgId, sites = null, after = null } = {}) =>
+      read('stock_deliveries_board', { p_org: orgId, p_sites: nil(sites), p_after: after || null, p_limit: 100 }),
+    invoicesPage: ({ orgId, sites = null, filters = null, after = null } = {}) =>
+      read('stock_invoices_page', { p_org: orgId, p_sites: nil(sites), p_filters: filters || null, p_after: after || null, p_limit: 100 }),
+    missingInvoices: ({ orgId, sites = null, after = null } = {}) =>
+      read('stock_missing_invoices', { p_org: orgId, p_sites: nil(sites), p_after: after || null, p_limit: 100 }),
+    matchInvoice: (invoiceId) => save('stock_invoice_match', { p_invoice: invoiceId }),
+    approveInvoices: (ids, note = null) => save('stock_invoices_approve', { p_ids: ids || [], p_note: nil(note) }),
+    splitInvoice: (invoiceId, splits) => save('stock_invoice_split', { p_invoice: invoiceId, p_splits: splits || [] }),
+    invoiceSplits: (invoiceId) => table(() => from('supplier_invoice_site_splits').select('*').eq('invoice_id', invoiceId).limit(100)),
+    inboxPage: ({ orgId, status = 'waiting', after = null } = {}) =>
+      read('stock_invoice_inbox_page', { p_org: orgId, p_status: status, p_after: after || null, p_limit: 100 }),
+    inboxPlace: (inboxId, locationId, companySupplierId = null) =>
+      save('stock_inbox_place', { p_inbox: inboxId, p_location: locationId, p_company_supplier: companySupplierId || null }),
+    inboxIgnore: (inboxId) => save('stock_inbox_ignore', { p_inbox: inboxId }),
+    inboxAddress: (orgId) => save('stock_inbox_address', { p_org: orgId }),
+    inboxUpload: async (orgId, file) => {
+      const store = client?.storage;
+      if (!store || typeof store.from !== 'function') return noDb();
+      const path = file ? inboxPathOf(orgId, file.name, newId()) : null;
+      if (!path) return { data: null, error: new Error('Pick a file to upload.'), needsUpdate: false, conflict: null, queued: [] };
+      let up;
+      try { up = await store.from(INBOX_BUCKET).upload(path, file, { contentType: file?.type || undefined, upsert: false }); } catch (e) { up = { data: null, error: e }; }
+      if (up?.error) return { data: null, error: up.error, needsUpdate: false, conflict: null, queued: [] };
+      return save('stock_inbox_add', { p_org: orgId, p_file_path: path, p_file_name: file?.name || null, p_mime: file?.type || null });
+    },
+    inboxFileUrl: async (path) => {
+      const store = client?.storage;
+      if (!store || typeof store.from !== 'function') return noDb();
+      let r;
+      try { r = await store.from(INBOX_BUCKET).createSignedUrl(path, 300); } catch (e) { r = { data: null, error: e }; }
+      if (r?.error) return { data: null, error: r.error, needsUpdate: false, conflict: null, queued: [] };
+      return { data: r?.data?.signedUrl || null, error: null, needsUpdate: false, conflict: null, queued: [] };
+    },
+    saveCreditRequest: (req, version = null) => save('stock_save_credit_request', { p_req: req, p_version: nil(version) }),
+    setCreditStatus: (id, status, version, note = null) => save('stock_credit_set_status', { p_id: id, p_status: status, p_version: nil(version), p_note: nil(note) }),
+    saveCreditNote: (note) => save('stock_save_credit_note', { p_note: note }),
+    creditsPage: ({ orgId, sites = null, status = null, after = null } = {}) =>
+      read('stock_credits_page', { p_org: orgId, p_sites: nil(sites), p_status: status || null, p_after: after || null, p_limit: 100 }),
+    priceChangesPage: ({ orgId, sites = null, filters = null, after = null } = {}) =>
+      read('stock_price_changes_page', { p_org: orgId, p_sites: nil(sites), p_filters: filters || null, p_after: after || null, p_limit: 100 }),
+    makeCompanyPrice: (siId, locationId, version) =>
+      save('stock_make_company_price', { p_si: siId, p_location: locationId, p_version: nil(version), p_section: 'purchasing' }),
+    budgetStatus: (locationId, week = null) => read('stock_budget_status', { p_site: locationId, p_week: week || null }),
+    budgetBoard: (orgId, sites = null, week = null) => read('stock_budget_board', { p_org: orgId, p_sites: nil(sites), p_week: week || null }),
+    saveBudget: (budget, version = null) => save('stock_save_budget', { p_budget: budget, p_version: nil(version) }),
+    // forecast
+    salesHistory: (locationId, days = 84) => read('stock_sales_history', { p_loc: locationId, p_days: days }),
+    forecastWeek: (locationId, weekStart) => read('stock_forecast_week', { p_loc: locationId, p_week_start: weekStart }),
+    saveForecast: (locationId, days, hours = null) => save('stock_save_forecast', { p_loc: locationId, p_days: days || [], p_hours: nil(hours) }),
+    saveForecastSource: (locationId, fromId, scale, version = null) =>
+      save('stock_save_forecast_source', { p_loc: locationId, p_from: fromId || null, p_scale: nil(scale), p_version: nil(version) }),
+    // counts, waste, periods
+    countDue: (orgId, sites = null, day = null) => read('stock_count_due', { p_org: orgId, p_sites: nil(sites), p_day: day || null }),
+    countPlans: (orgId) => table(() => from('stock_count_plans').select('*')
+      .eq('org_id', orgId).is('archived_at', null).order('name').limit(PLAN_ROWS)),
+    saveCountPlan: (plan, version = null) => save('stock_save_count_plan', { p_plan: plan, p_version: nil(version) }),
+    countTemplates: (orgId) => table(() => from('stock_count_templates')
+      .select('*, stock_count_template_lines(item_id, sort_order), stock_count_template_sites(location_id, group_id)')
+      .eq('org_id', orgId).is('archived_at', null).order('name').limit(PLAN_ROWS)),
+    saveCountTemplate: (tpl, lines, sites, version = null) =>
+      save('stock_save_count_template', { p_tpl: tpl, p_lines: lines || [], p_sites: sites || [], p_version: nil(version) }),
+    templateForSite: (templateId, locationId) => read('stock_template_for_site', { p_template: templateId, p_loc: locationId }),
+    saveShelfOrder: (templateId, locationId, itemIds) => save('stock_save_shelf_order', { p_template: templateId, p_loc: locationId, p_item_ids: itemIds || [] }),
+    secondApproveCount: (countId, note = null) => save('stock_second_approve_count', { p_count_id: countId, p_note: nil(note) }),
+    periods: (locationId) => table(() => from('stock_periods').select('*, stock_period_snapshots(metrics)')
+      .eq('location_id', locationId).order('from_day', { ascending: false }).limit(PERIOD_ROWS)),
+    lockPeriod: (locationId, fromDay, toDay) => save('stock_lock_period', { p_loc: locationId, p_from: fromDay, p_to: toDay }),
+    unlockPeriod: (periodId, reason) => save('stock_unlock_period', { p_period: periodId, p_reason: nil(reason) }),
+    wasteReasons: (locationId) => read('stock_waste_reasons', { p_loc: locationId }),
+    freshCloseDownList: (locationId, day = null) => read('stock_fresh_closedown_list', { p_loc: locationId, p_day: day || null }),
+    // transfers
+    requestTransfer: ({ from: fromId, to, lines, reason = null, note = null } = {}) =>
+      save('stock_request_transfer', { p_from: fromId, p_to: to, p_lines: lines || [], p_reason: reason || null, p_note: note || null }),
+    fulfilRequest: (transferId, lines = null) => save('stock_fulfil_request', { p_transfer: transferId, p_lines: nil(lines) }),
+    disputeTransfer: (transferId, note) => save('stock_dispute_transfer', { p_transfer: transferId, p_note: nil(note) }),
+    transferLeg: (transferId, leg, byName = null) => save('post_stock_transfer_leg', { p_transfer_id: transferId, p_leg: leg, p_by_name: byName || null }),
+    transferMatches: (transferId) => read('stock_transfer_matches', { p_transfer: transferId }),
+    transferLists: (locationId) => table(() => from('stock_transfer_lists').select('*')
+      .eq('location_id', locationId).is('archived_at', null).order('name').limit(PLAN_ROWS)),
+    saveTransferList: (list, version = null) => save('stock_save_transfer_list', { p_list: list, p_version: nil(version) }),
+    // central kitchen
+    setSiteKind: (locationId, kind) => save('stock_set_site_kind', { p_loc: locationId, p_kind: kind }),
+    kitchenOrdersIn: (kitchenId, day) => read('stock_kitchen_orders_in', { p_kitchen: kitchenId, p_day: day }),
+    kitchenPlan: (kitchenId, day) => read('stock_kitchen_plan', { p_kitchen: kitchenId, p_day: day }),
+    kitchenIngredients: (kitchenId, day) => read('stock_kitchen_ingredients', { p_kitchen: kitchenId, p_day: day }),
+    kitchenTick: (kitchenId, recipeId, qty, day = null) => save('stock_kitchen_tick', { p_kitchen: kitchenId, p_recipe: recipeId, p_qty: qty, p_day: day || null }),
+    kitchenUntick: (id) => save('stock_kitchen_untick', { p_id: id }),
+    kitchenPick: (poId, lines) => save('stock_kitchen_pick', { p_po: poId, p_lines: lines || [] }),
+    setRecipeRestricted: (recipeId, restricted, kitchenId, version) =>
+      save('stock_set_recipe_restricted', { p_recipe: recipeId, p_restricted: restricted === true, p_kitchen: kitchenId || null, p_version: nil(version) }),
+    saveRecipeSecret: (recipeId, method, version) => save('stock_save_recipe_secret', { p_recipe: recipeId, p_method: nil(method), p_version: nil(version) }),
+    rechargeStatement: (orgId, month) => read('stock_recharge_statement', { p_org: orgId, p_month: month }),
   };
+}
+
+// Drop 3 read caps (contract 2.2): standing orders 200, plans, templates and lists 200, periods 60.
+const STANDING_ROWS = 200;
+const PLAN_ROWS = 200;
+const PERIOD_ROWS = 60;
+
+/** The private bucket Back Office uploads invoices into (contract 1.2). */
+export const INBOX_BUCKET = 'stock-invoice-inbox';
+
+/** A fresh uuid for an upload's file name (the browser's own; tests pass their own id). */
+function newId() {
+  const c = globalThis.crypto;
+  if (c && typeof c.randomUUID === 'function') return c.randomUUID();
+  return `${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 10)}`;
+}
+
+/**
+ * Where an inbox upload goes: 'org/<orgId>/<id>.<ext>' (the bucket's own read and insert policies
+ * check the second folder is the company). The extension is the file's own, lower case, letters and
+ * digits only, at most 5; none when the name has none. Null when the company or id is missing.
+ */
+export function inboxPathOf(orgId, fileName, id) {
+  const org = String(orgId ?? '').trim();
+  const key = String(id ?? '').trim();
+  if (!org || !key || /[/\\]/.test(org) || /[/\\]/.test(key)) return null;
+  const m = /\.([A-Za-z0-9]{1,5})$/.exec(String(fileName ?? '').trim());
+  return `org/${org}/${key}${m ? `.${m[1].toLowerCase()}` : ''}`;
 }
 
 const MAX_FACT_IDS = 200;

@@ -140,27 +140,6 @@ export function fillCoverage({ existing = [], accepted = [], sections = [], ...c
   return { added, gaps };
 }
 
-/**
- * Learned sales forecast: for each target date, the recency weighted average of the same
- * weekday over the history (days with no sales are closed days and are ignored), nudged by
- * the recent trend (last 4 weeks against the 4 before, clamped). Rounded to the nearest 10.
- * Returns { iso: { amount, samples } }; a date with no history is absent.
- */
-export function suggestForecast(history = {}, targetIsos = [], { decay = 0.85 } = {}) {
-  const days = Object.keys(history).filter(k => Number(history[k]) > 0).sort();
-  if (!days.length) return {};
-  const last = ordinal(days[days.length - 1]);
-  const sumBetween = (from, to) => days.reduce((t, k) => { const o = ordinal(k); return o > from && o <= to ? t + Number(history[k]) : t; }, 0);
-  const recent = sumBetween(last - 28, last), before = sumBetween(last - 56, last - 28);
-  const trend = before > 0 && recent > 0 ? Math.min(1.15, Math.max(0.85, recent / before)) : 1;
-  const out = {};
-  for (const iso of targetIsos) {
-    const wd = dayIdx(iso);
-    const same = days.filter(k => dayIdx(k) === wd && ordinal(k) < ordinal(iso)).reverse();   // newest first
-    if (!same.length) continue;
-    let num = 0, den = 0;
-    same.forEach((k, i) => { const w = Math.pow(decay, i); num += w * Number(history[k]); den += w; });
-    out[iso] = { amount: Math.round((num / den) * trend / 10) * 10, samples: same.length };
-  }
-  return out;
-}
+// suggestForecast lives in supabase/functions/_shared/salesForecast.js (multi site stock Drop 3,
+// v5.11.96): one forecast for the rota and for stock. Re exported here so the rota is unchanged.
+export { suggestForecast } from '../../supabase/functions/_shared/salesForecast.js';

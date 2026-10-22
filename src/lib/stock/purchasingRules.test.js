@@ -252,3 +252,113 @@ test('one copy of the rules: src re-exports _shared, and the edge functions impo
   // the shared conversion engine reads the shared unit table, not the browser copy
   assert.match(read('../../../supabase/functions/_shared/stockConversion.js'), /from '\.\/stockUnits\.js';/);
 });
+
+// v5.11.96 (multi site stock Drop 3, contract 2.3): every caller of the old delivery rules listed in
+// contract section 0 now calls nextDelivery or coverFromRules; the two old exports stay for old
+// phone builds only, and nothing in the repo calls them.
+test('Drop 3: every delivery rule caller uses nextDelivery or coverFromRules, never the old two', () => {
+  const callers = {
+    '../../backoffice/sections/OrderPad.jsx': ['nextDelivery(', 'coverFromRules('],
+    '../../backoffice/sections/purchasing/PurchaseOrdersSite.jsx': ['nextDelivery('],
+    './poItemList.js': ['coverFromRules('],
+    '../../surfaces/manager/ManagerKitchen.jsx': ['nextDelivery('],
+    '../../../supabase/functions/manager-approve/index.ts': ['nextDelivery('],
+  };
+  for (const [path, wants] of Object.entries(callers)) {
+    const src = read(path);
+    for (const w of wants) assert.ok(src.includes(w), `${path} calls ${w}`);
+    assert.doesNotMatch(src, /\bnextDeliveryYmd\(|\bcoverDaysFromSchedule\(/, `${path} no longer calls the old rules`);
+  }
+  assert.doesNotMatch(read('../../backoffice/sections/PurchaseOrders.jsx'), /nextDeliveryYmd|coverDaysFromSchedule/, 'the router holds no rule');
+  // the two old exports are still there, unchanged, for old phone builds
+  assert.equal(typeof coverDaysFromSchedule, 'function');
+  assert.equal(typeof nextDeliveryYmd, 'function');
+});
+
+// v5.11.96 (Drop 3): the multi site Order pad's context helpers.
+import {
+  padSupplierOf, fromDbNext, padNext, parForDay, basketFromLines, linesOfBasket, lastOrderTo, manyOrdersPlan, scaleOverDays, daysAfter,
+} from './purchasingRules.js';
+
+test('Drop 3 pad: the context supplier, its next delivery from the rules or the database', () => {
+  const ctx = { suppliers: [{ supplier_id: 's1', rules: [{ delivery_dow: 4, order_by_dow: 3, order_by_time: '14:00:00' }], exceptions: [], next: null },
+    { supplier_id: 's2', rules: [], next: { delivery_day: '2026-10-23', order_by_at: '2026-10-22T13:00:00Z', order_by_ymd: '2026-10-22', order_by_hm: '14:00', minutes_left: 30 } }] };
+  assert.equal(padSupplierOf(ctx, 's2').supplier_id, 's2');
+  assert.equal(padSupplierOf(ctx, 'x'), null);
+  const n1 = padNext(padSupplierOf(ctx, 's1'), { ymd: '2026-10-21', hm: '10:00' });
+  assert.equal(n1.deliveryYmd, '2026-10-22');
+  assert.equal(n1.orderByHm, '14:00', 'a Postgres time reads as HH:MM');
+  const n2 = padNext(padSupplierOf(ctx, 's2'), { ymd: '2026-10-22', hm: '13:30' });
+  assert.equal(n2.deliveryYmd, '2026-10-23');
+  assert.equal(n2.orderByAt, '2026-10-22T14:00');
+  assert.equal(n2.orderByMs, Date.parse('2026-10-22T13:00:00Z'));
+  assert.equal(fromDbNext(null), null);
+  assert.equal(fromDbNext({ delivery_day: '2026-10-23', order_by_ymd: '2026-10-22', order_by_hm: '24:00' }).orderByAt, '2026-10-23T00:00');
+  // the database's wording of midnight (00:00 on the delivery day) reads as the screens' (24:00 the day before)
+  { const m = fromDbNext({ delivery_day: '2026-10-24', order_by_ymd: '2026-10-24', order_by_hm: '00:00' }); assert.deepEqual([m.orderByYmd, m.orderByHm, m.orderByAt], ['2026-10-23', '24:00', '2026-10-24T00:00']); }
+  assert.equal(padNext(null), null);
+});
+
+test('Drop 3 pad: par for the day, lists and repeats into the basket, the last order', () => {
+  assert.equal(parForDay({ 3: 12, '5': '4' }, 3), 12);
+  assert.equal(parForDay({ 3: 12, '5': '4' }, 5), 4);
+  assert.equal(parForDay({ 3: 12 }, 1), null);
+  assert.equal(parForDay(null, 1), null);
+  const items = [{ id: 'i1', supplierProducts: [{ id: 'p1' }, { id: 'p2' }] }, { id: 'i2', supplierProducts: [] }];
+  assert.deepEqual(basketFromLines([
+    { inventory_item_id: 'i1', supplier_product_id: 'p2', qty_packs: 3 },
+    { inventoryItemId: 'i2', qtyPacks: 1 },
+    { inventory_item_id: 'gone', qty_packs: 2 },
+    { inventory_item_id: 'i1', supplier_product_id: 'nope', qty_packs: 1 },
+  ], items), { qty: { i1: 4, i2: 1 }, override: { i1: 'p2' }, missing: 1 });
+  assert.deepEqual(linesOfBasket([{ inventoryItemId: 'i1', supplierProductId: 'p1', qtyPacks: '2' }, { inventoryItemId: 'i2', qtyPacks: 0 }]),
+    [{ inventory_item_id: 'i1', supplier_product_id: 'p1', qty_packs: 2 }]);
+  const orders = [
+    { id: 'a', supplierId: 's1', status: 'RECEIVED', orderedAt: '2026-10-10T10:00:00Z', lines: [{}] },
+    { id: 'b', supplierId: 's1', status: 'CANCELLED', orderedAt: '2026-10-20T10:00:00Z', lines: [{}] },
+    { id: 'c', supplierId: 's1', status: 'SENT', orderedAt: '2026-10-15T10:00:00Z', lines: [{}] },
+    { id: 'd', supplierId: 's2', status: 'SENT', orderedAt: '2026-10-21T10:00:00Z', lines: [{}] },
+  ];
+  assert.equal(lastOrderTo(orders, 's1').id, 'c');
+  assert.equal(lastOrderTo(orders, 's9'), null);
+});
+
+test('Drop 3 many sites: one order per site and supplier, the supplier here first, problems named', () => {
+  const detail = {
+    item: { name: 'Beans 1 kg' },
+    sites: [{ location_id: 'A', site_item_id: 'ia', supplier_here: { supplier_item_id: 'si2' } }, { location_id: 'B', site_item_id: 'ib', supplier_here: null }],
+    supplier_items: [
+      { id: 'si1', supplier_id: 'c1', supplier_name: 'Roaster', sites: [{ location_id: 'A', site_supplier_product_id: 'pa1' }, { location_id: 'B', site_supplier_product_id: 'pb1' }] },
+      { id: 'si2', supplier_id: 'c2', supplier_name: 'Wholesale', sites: [{ location_id: 'A', site_supplier_product_id: 'pa2' }] },
+    ],
+  };
+  const contexts = { A: { suppliers: [{ supplier_id: 'sa1', company_supplier_id: 'c1' }, { supplier_id: 'sa2', company_supplier_id: 'c2' }] }, B: { suppliers: [{ supplier_id: 'sb1', company_supplier_id: 'c1' }] }, C: { suppliers: [] } };
+  const plan = manyOrdersPlan([{ detail, qtyBySite: { A: 2, B: 3, C: 1, D: 0 } }], contexts, (id) => `Site ${id}`);
+  assert.deepEqual(plan.orders, [
+    { location_id: 'A', supplier_id: 'sa2', lines: [{ inventory_item_id: 'ia', supplier_product_id: 'pa2', qty_packs: 2 }] },
+    { location_id: 'B', supplier_id: 'sb1', lines: [{ inventory_item_id: 'ib', supplier_product_id: 'pb1', qty_packs: 3 }] },
+  ]);
+  assert.deepEqual(plan.problems, ['Beans 1 kg is not at Site C.']);
+  const off = manyOrdersPlan([{ detail: { ...detail, supplier_items: [{ ...detail.supplier_items[0], sites: [{ location_id: 'B', site_supplier_product_id: 'pb1', paused: true }] }] }, qtyBySite: { B: 1 } }], contexts, (id) => `Site ${id}`);
+  assert.deepEqual(off.problems, ['Beans 1 kg has no supplier at Site B.']);
+  const unticked = manyOrdersPlan([{ detail, qtyBySite: { B: 1 } }], { B: { suppliers: [] } }, (id) => `Site ${id}`);
+  assert.deepEqual(unticked.problems, ['Roaster is not ticked at Site B.']);
+});
+
+test('Drop 3 pad: the forecast scale over the next days', () => {
+  assert.deepEqual(daysAfter('2026-10-30', 3), ['2026-10-31', '2026-11-01', '2026-11-02']);
+  assert.deepEqual(daysAfter('bad'), []);
+  assert.equal(scaleOverDays(['a', 'b'], { a: 150, b: 150 }, { a: 100, b: 100 }), 1.5);
+  assert.equal(scaleOverDays(['a', 'b'], { a: 150 }, { a: 100, b: 100 }), 1.5, 'a day with no forecast is left out');
+  assert.equal(scaleOverDays(['a'], {}, { a: 100 }), 1);
+  assert.equal(scaleOverDays(['a'], { a: 1000 }, { a: 100 }), 4);
+});
+
+import { parsFromTyped } from './purchasingRules.js';
+test('Drop 3: the By day boxes as par_by_weekday', () => {
+  assert.deepEqual(parsFromTyped({ 1: '12', 2: '', 5: ' 4.5 ', 0: '0' }), { value: { 0: 0, 1: 12, 5: 4.5 } });
+  assert.deepEqual(parsFromTyped({ 1: '', 2: '  ' }), { value: null });
+  assert.deepEqual(parsFromTyped({ 1: 'lots' }), { error: 'Each par is a number, 0 or more.' });
+  assert.deepEqual(parsFromTyped({ 1: '-2' }), { error: 'Each par is a number, 0 or more.' });
+  assert.deepEqual(parsFromTyped(null), { value: null });
+});

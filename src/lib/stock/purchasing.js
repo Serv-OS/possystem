@@ -226,6 +226,74 @@ export const checkReceivable = async (poId, locationId = null) => {
   return { error: bad.length ? new Error(receiveRefusalText(bad)) : null };
 };
 
+// ── v5.11.96 (multi site stock Drop 3, contract 3.2 and 1.7): a central kitchen order ────────────
+// arrives as a transfer and is received ONLY in Transfers, never also as a delivery. The database
+// refuses it too (stock_receive, stock_post_invoice); this says so before anything is tried.
+
+/** The words for a kitchen order received as a delivery (contract 1.7). */
+export const KITCHEN_RECEIVE_WORDS = 'This order arrives as a transfer from the central kitchen. Receive it in Transfers.';
+
+/**
+ * Is this site supplier row the central kitchen (its company supplier has an internal_location_id)?
+ * false when it is not, or when it cannot be read (a database before Drop 1 has no company supplier;
+ * the database's own refusal still stands).
+ */
+export const supplierIsInternal = async (supplierId) => {
+  if (isMock || !supabase || !supplierId) return false;
+  try {
+    const { data: sup } = await supabase.from('suppliers').select('company_ref').eq('id', supplierId).maybeSingle();
+    if (!sup?.company_ref) return false;
+    const { data: co, error } = await supabase.from('stock_co_suppliers').select('internal_location_id').eq('id', sup.company_ref).maybeSingle();
+    return !error && !!co?.internal_location_id;
+  } catch { return false; }
+};
+
+/**
+ * Save what has arrived so far on a delivery without booking it (Deliveries, "Save for later"):
+ * po_lines.qty_draft per line. No stock, cost or order status moves until Finish
+ * (receivePurchaseOrder). draft: { [lineId]: packs or null }. A database before Drop 3 has no
+ * qty_draft column: the NEEDS_UPDATE words, nothing written.
+ */
+export const savePartReceive = async (poId, draft, locationId = null) => {
+  if (isMock || !supabase) return { error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { error: new Error('No locationId') };
+  const entries = Object.entries(draft || {}).slice(0, 300);
+  for (const [lineId, qty] of entries) {
+    const v = qty === '' || qty === null || qty === undefined ? null : Number(qty);
+    if (v !== null && !(Number.isFinite(v) && v >= 0)) return { error: new Error('Type a number of packs, 0 or more.') };
+    const { error } = await supabase.from('po_lines').update({ qty_draft: v }).eq('location_id', locationId).eq('po_id', poId).eq('id', lineId);
+    if (error) {
+      if (/qty_draft/.test(error.message || '') && /column|schema cache/i.test(error.message || '')) return { error: new Error(`Nothing was saved. ${NEEDS_UPDATE}`) };
+      return { error: new Error(`Nothing more was saved: ${error.message || error}`) };
+    }
+  }
+  return { error: null, data: { saved: entries.length } };
+};
+
+/**
+ * Head office ordering for many sites (G14): one database call makes every DRAFT order and runs the
+ * submit rules on each (stock_create_orders_many through stockApi.createOrdersMany), then each order
+ * the database says to send is emailed through po-send. orders: [{ location_id, supplier_id, lines:
+ * [{ inventory_item_id, supplier_product_id, qty_packs }] }]. Answer { data: { orders, emailed,
+ * failed: [{ po_id, location_id, reason }] }, error }.
+ */
+export const createOrdersManyAndSend = async (api, orgId, orders) => {
+  if (!api || typeof api.createOrdersMany !== 'function') return { data: null, error: new Error('No database') };
+  const r = await api.createOrdersMany(orgId, orders);
+  if (r.error) return { data: null, error: r.error, needsUpdate: r.needsUpdate };
+  const list = Array.isArray(r.data?.orders) ? r.data.orders : [];
+  let emailed = 0;
+  const failed = [];
+  for (const o of list) {
+    if (!o?.send || !o.po_id) continue;
+    const { data: res, error: sendErr } = await supabase.functions.invoke('po-send', { body: { po_id: o.po_id, location_id: o.location_id } });
+    if (!sendErr && res?.ok) emailed++;
+    else failed.push({ po_id: o.po_id, location_id: o.location_id, reason: await fnErrorText(res, sendErr, 'the email could not be sent') });
+  }
+  return { data: { orders: list, emailed, failed }, error: null };
+};
+
 export const receivePurchaseOrder = async (poId, locationId = null, receipts = null, { areaId = null } = {}) => {
   if (isMock || !supabase) return { error: null };
   locationId = await ensureLoc(locationId);
@@ -237,6 +305,8 @@ export const receivePurchaseOrder = async (poId, locationId = null, receipts = n
     supabase.from('purchase_orders').select('*').eq('location_id', locationId).eq('id', poId).maybeSingle(),
   ]);
   if (!lines?.length) return { error: new Error('No lines') };
+  // v5.11.96 (Drop 3): a central kitchen order is received only through its transfer.
+  if (poRow?.supplier_id && await supplierIsInternal(poRow.supplier_id)) return { error: new Error(KITCHEN_RECEIVE_WORDS) };
   const byLine = receipts ? Object.fromEntries(receipts.map(r => [String(r.lineId), r])) : null;
   const map = await itemMap(locationId, lines.map(l => l.inventory_item_id));
   // v5.5.923 — REFUSE rather than silently swallow. The loop below skips any line whose item
