@@ -166,6 +166,8 @@ drop trigger if exists stock_co_d3_org_guard on public.supplier_invoice_site_spl
 -- 6. the inbox bucket's two policies (the bucket and its files stay)
 drop policy if exists stock_invoice_inbox_files_read on storage.objects;
 drop policy if exists stock_invoice_inbox_files_add on storage.objects;
+-- the upload check the policy called (20261029b); the policy is gone first, so nothing calls it
+drop function if exists public.stock_invoice_inbox_upload_ok(text);
 drop policy if exists stock_co_recipe_secrets_read on public.stock_co_recipe_secrets;
 
 -- 7. every function 20261027a made, by exact signature

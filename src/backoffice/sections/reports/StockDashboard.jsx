@@ -29,7 +29,7 @@ import StockTargetsPanel from './StockTargetsPanel';
 import {
   RULES_LINE, DEMO_LINE, DEMO_SALES_LINE, NOT_SHOWN, PER_CURRENCY_LINE, REPORTS_NOTE, BY_TYPE_ACTUAL_NOTE, GP_MODES,
   cardBlocks, compareRowFor, compareTotalsOf, dashboardArgs, subLine, scopeWords, periodWords,
-  groupAttention, attentionSitesWords, byTypeRows, reportGrid, wholeMoney, pctText, siteNameOf,
+  groupAttention, attentionSitesWords, attentionWhere, byTypeRows, reportGrid, wholeMoney, pctText, siteNameOf,
 } from '../../../lib/stock/dashboardRules';
 
 const cardsGrid = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12, marginBottom: 16 };
@@ -189,6 +189,7 @@ export default function StockDashboard({
                         <Pill tone={g.kind === 'demo_history' ? 'neutral' : 'warn'}>{g.count.toLocaleString('en-GB')}</Pill>
                         <span style={{ ...note, flex: 1 }}>{attentionSitesWords(g.sites)}</span>
                       </div>
+                      {attentionWhere(g) && <div style={{ ...note, marginTop: 3 }}>{g.sites.length === 1 && g.sites[0].words ? `${g.sites[0].words} ` : ''}{attentionWhere(g)}.</div>}
                       {g.fixable && (
                         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
                           {g.sites.map((s) => {

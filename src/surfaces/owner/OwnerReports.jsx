@@ -320,7 +320,8 @@ function LabourCard({ labour, m }) {
 // v5.11.92 (multi site stock Drop 4a). The figures and their colours are the function's own
 // (detail.stock, from stock_report_dashboard); src/lib/ownerStock.js only finds the words. A
 // function from before the stock block sends no detail.stock and the card is not drawn at all; a
-// venue with nothing true to show gets its reason in grey.
+// venue with nothing true to show gets its reason in grey. v5.11.100: a venue with no stock
+// ('no_stock') draws no card at all (stockNote answers null), so it appears once the venue holds stock.
 function StockCard({ stock, reason, currency }) {
   if (!stock) {
     const note = stockNote(reason);

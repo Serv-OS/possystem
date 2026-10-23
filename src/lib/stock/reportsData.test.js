@@ -220,3 +220,35 @@ test('menuProducts: the key item search reads live menu_items at the sites asked
   const none = await api.menuProducts({ sites: [L1], search: 'l' });
   assert.deepEqual(none.data, []);
 });
+
+// v5.11.100 (Drop 4b): the closing stock journal goes through xero-stock-journal, only 'preview' or 'send'
+test('monthEndJournal: preview and send through xero-stock-journal; words come back as errors; nothing else is called', async () => {
+  const { monthEndJournalCall, createStockReportsApi } = await import('./reportsData.js');
+  const calls = [];
+  const client = (answer) => ({ functions: { invoke: async (name, opts) => { calls.push([name, opts.body]); return answer; } } });
+  const ok = await monthEndJournalCall(client({ data: { status: 'ready', amount: 120.5 }, error: null }), 'preview', { orgId: 'o', from: '2026-09-01', to: '2026-09-30', tenantId: 't' });
+  assert.deepEqual(calls[0], ['xero-stock-journal', { orgId: 'o', from: '2026-09-01', to: '2026-09-30', tenantId: 't', action: 'preview' }]);
+  assert.deepEqual(ok.data, { status: 'ready', amount: 120.5 });
+  assert.equal(ok.error, null);
+  const words = await monthEndJournalCall(client({ data: { error: 'This month was already sent to Xero.' }, error: null }), 'send', {});
+  assert.equal(words.error.message, 'This month was already sent to Xero.');
+  const refused = await monthEndJournalCall(client({ data: null, error: Object.assign(new Error('Edge Function returned a non-2xx status code'), { context: { json: async () => ({ error: 'Lock the month at every site of Leeds Ltd first.' }) } }) }), 'send', {});
+  assert.equal(refused.error.message, 'Lock the month at every site of Leeds Ltd first.');
+  const n = calls.length;
+  const bad = await monthEndJournalCall(client({ data: {}, error: null }), 'post', {});
+  assert.equal(calls.length, n, 'an unknown action never calls the function');
+  assert.match(bad.error.message, /preview or send/);
+  assert.match((await monthEndJournalCall(null, 'preview', {})).error.message, /No database/);
+  assert.equal(typeof createStockReportsApi(client({ data: {}, error: null })).monthEndJournal, 'function');
+});
+
+// v5.11.100 review: the Month end By legal company tab reads the journal's own legal companies (every site of each)
+test('monthEndLegal: one call of stock_month_end_journal with the org and the month', async () => {
+  const { createStockReportsApi } = await import('./reportsData.js');
+  const calls = [];
+  const api = createStockReportsApi({ rpc: async (fn, args) => { calls.push([fn, args]); return { data: { legal: [{ tenant_id: 't', amount: 12.5 }] }, error: null }; }, from: () => ({}) });
+  const r = await api.monthEndLegal('o1', '2026-09-01', '2026-09-30');
+  assert.deepEqual(calls, [['stock_month_end_journal', { p_org: 'o1', p_from: '2026-09-01', p_to: '2026-09-30' }]]);
+  assert.equal(r.error, null);
+  assert.equal(r.data.legal[0].amount, 12.5);
+});
