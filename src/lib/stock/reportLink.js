@@ -26,8 +26,6 @@ export const STOCK_REPORT_IDS = Object.freeze([
 
 /** The report ids that wait for a later Drop, and which update brings them. */
 export const STOCK_LATER = Object.freeze({
-  stock_off_contract: 'purchasing', stock_budget: 'purchasing', stock_transfers: 'purchasing',
-  stock_count_compliance: 'purchasing', stock_month_end: 'purchasing',
   stock_recipe_cost: 'recipes', stock_allergens: 'recipes',
 });
 
@@ -53,9 +51,13 @@ export function reportFnOf(id) {
   return id === 'stock_home' ? 'dashboard' : id.slice('stock_'.length);
 }
 
-/** The report names stock_report_export_start accepts (1.5): every 4a function but the dashboard and attention. */
+/**
+ * The report names stock_report_export_start accepts (1.5): every 4a function but the dashboard and attention,
+ * and (v5.11.100, Drop 4b) the five purchasing reports.
+ */
 export const EXPORTABLE_REPORTS = Object.freeze(['value', 'movement', 'gap', 'cogs', 'product_gp', 'waste', 'purchases', 'prices',
-  'days_on_hand', 'par', 'key_ratios', 'setup_health', 'batches', 'league']);
+  'days_on_hand', 'par', 'key_ratios', 'setup_health', 'batches', 'league',
+  'off_contract', 'budget', 'transfers', 'count_compliance', 'month_end']);
 
 /** May this report id be exported as a file? */
 export function canExportReport(id) {

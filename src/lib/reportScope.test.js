@@ -472,9 +472,10 @@ test('pin: every report in the shell gets the optional multi site props, and the
   const lines = all.filter((l) => !/\{view === 'stock_/.test(l));
   assert.ok(lines.length >= 25, `found ${lines.length} report lines`);
   for (const l of lines) assert.match(l, /\{\.\.\.siteProps\}\/>\}$/, l.trim().slice(0, 60));
-  assert.equal(stockLines.length, 16, 'the dashboard, 13 reports and the two recipes update tiles');
+  // v5.11.100 (Drop 4b): the five purchasing reports render too (off contract, budget, transfers, count compliance, month end)
+  assert.equal(stockLines.length, 21, 'the dashboard, 18 reports and the two recipes update tiles');
   for (const l of stockLines) assert.match(l, /\{\.\.\.stockProps\}\/>\}$/, l.trim().slice(0, 60));
-  assert.doesNotMatch(bo, /\{view === 'stock_(off_contract|budget|transfers|count_compliance|month_end)'/, 'the purchasing update tiles never render in 4a');
+  for (const id of ['off_contract', 'budget', 'transfers', 'count_compliance', 'month_end']) assert.match(bo, new RegExp(`\\{view === 'stock_${id}'`), id);
   assert.match(bo, /<SitesControl scope=\{scope\} disabled=\{viewSites\.mode === 'all'\}/);
   assert.match(bo, /<SiteNote note=\{viewSites\.note\} choices=\{viewSites\.choices\}/);
   assert.match(bo, /writeSiteChoice\(browserStore\(\), choiceKey\(scope\.userId, scope\.companyId\), choiceFor\(ids, scope\.sites\)\)/);

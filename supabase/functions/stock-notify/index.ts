@@ -15,6 +15,14 @@
 // a row that is not waiting, or that another run claimed, is skipped. No ops_alerts row and no phone
 // push (decision 3; Peter: SMS, email and the bell first).
 //
+// 5.11.100 (Drop 4b, contract 5): kind 'weekly', the weekly email. stock_notify_due stages one row per
+// open site and one company row a week (on each venue's clock, after the count plan deadline). For it,
+// this function asks stock_report_league (service role) for the row's sites and week, builds the email
+// (stockNotifyRules.weeklyEmail: the company pack to head office, each site's own line to its managers,
+// 'Count not in' where a count is late) and emails it. No bell and no text for weekly. Every other kind
+// is sent exactly as before.
+// MARKER 5.11.100 stock-notify weekly
+//
 //   POST (no body)  header x-cron-key: <the vault key>, or the service role bearer
 //   answers { ok, sent, failed }
 //
@@ -23,7 +31,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { CRON_KEY_HEADER, isServiceRoleBearer } from '../_shared/cronKey.js';
-import { cronAccess, sendable, planSend, bellRow, outcomeOf } from '../_shared/stockNotifyRules.js';
+import { cronAccess, sendable, planSend, bellRow, outcomeOf, channelsOf } from '../_shared/stockNotifyRules.js';
 
 // the Back Office the alert email links to (the row in focus); APP_ORIGIN overrides it
 const APP_ORIGIN = Deno.env.get('APP_ORIGIN') || 'https://app.serv-os.app';
@@ -81,8 +89,22 @@ Deno.serve(async (req) => {
       if (attempts >= MAX_ATTEMPTS) failed++;
       continue;
     }
-    const plan = planSend(row, targets || {}, { origin: APP_ORIGIN });
-    if (!plan.bell.length) {
+    // 5.11.100: the weekly email reads the week's league (service role) for the row's sites.
+    const weekly = row.kind === 'weekly';
+    let league: any = null;
+    if (weekly) {
+      const p = row.payload || {};
+      const sites = row.location_id ? [row.location_id] : (Array.isArray(p.site_ids) ? p.site_ids : []);
+      const { data: lg, error: lErr } = await sb.rpc('stock_report_league', { p_org: row.org_id, p_sites: sites, p_from: p.week_start, p_to: p.week_end, p_opts: null, p_after: null, p_limit: 1000 });
+      if (lErr) {
+        await sb.from('stock_notify_sent').update({ last_error: `the week's figures: ${lErr.message}`.slice(0, 500), ...(attempts >= MAX_ATTEMPTS ? { status: 'failed' } : {}) }).eq('id', row.id);
+        if (attempts >= MAX_ATTEMPTS) failed++;
+        continue;
+      }
+      league = lg;
+    }
+    const plan = planSend(row, targets || {}, { origin: APP_ORIGIN, league });
+    if (!weekly && !plan.bell.length) {
       await sb.from('stock_notify_sent').update({ status: 'skipped', last_error: 'no site to tell' }).eq('id', row.id);
       continue;
     }
@@ -93,15 +115,19 @@ Deno.serve(async (req) => {
       const { data: ev, error: evErr } = await sb.from('activity_events').insert(bellRow(row.kind, row.payload || {}, loc)).select('id').single();
       if (!evErr && ev?.id) bellIds.push(String(ev.id));
     }
-    const sendLoc = row.location_id || plan.bell[0];
+    const sendLoc = row.location_id || plan.bell[0] || (weekly && Array.isArray(row.payload?.site_ids) ? row.payload.site_ids[0] : undefined);
     let smsSent = 0;
     let emailSent = 0;
     for (const s of plan.sms) if (await invokeFn('send-sms', { to: s.to, message: s.text, location_id: sendLoc, type: 'status_update' })) smsSent++;
     for (const m of plan.email) if (await invokeFn('send-receipt', { location_id: sendLoc, to: m.to, subject: m.subject, html: m.html })) emailSent++;
 
-    const out = outcomeOf({ bellIds, smsSent, smsTried: plan.sms.length, emailSent, emailTried: plan.email.length });
+    const out = outcomeOf({ bellIds, smsSent, smsTried: plan.sms.length, emailSent, emailTried: plan.email.length, emailOnly: !channelsOf(row.kind).bell });
+    if (out.status === 'skipped') {
+      await sb.from('stock_notify_sent').update({ status: 'skipped', last_error: out.error }).eq('id', row.id);
+      continue;
+    }
     if (out.status === 'sent') {
-      await sb.from('stock_notify_sent').update({ status: 'sent', sent_at: new Date().toISOString(), bell_event_id: bellIds[0], last_error: out.error }).eq('id', row.id);
+      await sb.from('stock_notify_sent').update({ status: 'sent', sent_at: new Date().toISOString(), bell_event_id: bellIds[0] ?? null, last_error: out.error }).eq('id', row.id);
       sent++;
     } else {
       await sb.from('stock_notify_sent').update({ last_error: out.error, ...(attempts >= MAX_ATTEMPTS ? { status: 'failed' } : {}) }).eq('id', row.id);

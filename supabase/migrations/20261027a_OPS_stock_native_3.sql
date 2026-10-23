@@ -937,10 +937,34 @@ on conflict (id) do nothing;
 create policy stock_invoice_inbox_files_read on storage.objects as permissive for select to authenticated
   using (bucket_id = 'stock-invoice-inbox' and (storage.foldername(name))[1] = 'org'
          and (storage.foldername(name))[2] in (select public.stock_reach_orgs()));
+-- 23 Oct 2026 (repo mirror of the live storage fix, 20261029b): the upload rule calls one check that
+-- signed in logins may run. It never calls stock_level() itself: Postgres checks EXECUTE on every
+-- function a storage rule names for every upload in every bucket, and signed in logins cannot run
+-- stock_level(), so the first text of this rule broke every upload. A re-run after the rollback makes
+-- the safe rule. (o = v_org::text: stock_reach_orgs() answers text; the 23 Oct live text compared a uuid,
+-- which 20261030a corrects.)
+create or replace function public.stock_invoice_inbox_upload_ok(p_name text)
+returns boolean
+language plpgsql
+stable
+security definer
+set search_path = public, pg_temp
+as $fn$
+declare
+  v_parts text[] := storage.foldername(p_name);
+  v_org uuid;
+begin
+  if v_parts is null or v_parts[1] is distinct from 'org' then return false; end if;
+  if v_parts[2] is null or not (v_parts[2] ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') then return false; end if;
+  v_org := v_parts[2]::uuid;
+  if not exists (select 1 from public.stock_reach_orgs() o where o = v_org::text) then return false; end if;
+  return coalesce(public.stock_level(auth.uid(), v_org) = 'all', false);
+end
+$fn$;
+revoke all on function public.stock_invoice_inbox_upload_ok(text) from public, anon, authenticated, service_role;
+grant execute on function public.stock_invoice_inbox_upload_ok(text) to authenticated;
 create policy stock_invoice_inbox_files_add on storage.objects as permissive for insert to authenticated
-  with check (bucket_id = 'stock-invoice-inbox' and (storage.foldername(name))[1] = 'org'
-              and (storage.foldername(name))[2] in (select public.stock_reach_orgs())
-              and public.stock_level(auth.uid(), ((storage.foldername(name))[2])::uuid) = 'all');
+  with check (bucket_id = 'stock-invoice-inbox' and public.stock_invoice_inbox_upload_ok(name));
 
 -- ============================================================================
 -- STEP 3. HELPERS AND TRIGGERS (owner only, the stock_co__ prefix; contract 1.4 and 1.6)

@@ -7,6 +7,26 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.100',
+    date: '24 Oct 2026',
+    items: [
+      "Stock, the rest of the head office reports for companies with more than one site (Drop 4b). Back Office > Reports > Stock and GP now has every report working: the five that said Comes with the purchasing update open now. A company with one site sees exactly the same screens as before.",
+      "Off contract spend: per site, spend from posted invoices with a supplier that is not one of the item's contract suppliers, local items and shop buys, and lines above the agreed price. By supplier, by item, each line and the weekly trend.",
+      "Purchase budget: budget, spent, percent used and what is left per site and per week, beside forecast and actual sales (net sales after refunds, the Daily trading rule). Red when over. The league and the dashboard show spent of budget too.",
+      "Transfers and central kitchen: sent and received per site (the same figures as Stock movement), in transit, short, disputed and requests. A from and to grid, every transfer with its status, the central kitchen's fill rate, shorts, on time, internal sales and margin, made, kitchen stock and waste, and the recharges between legal companies.",
+      "Count compliance: counts due by your count plans and how each went (on time, late, missed), the last full count, lines counted against estimated, minutes a count, variance at approval and second approvals, with a calendar of every site.",
+      "Month end pack per legal company: opening and closing stock, purchases, transfers, recharges, waste, goods received not invoiced, credits still owed and in transit, read from the locked month. A closing stock journal for each legal company goes to Xero as a DRAFT when you press Send, never by itself. If Xero was connected without permission for journals, the screen says Reconnect Xero to allow stock journals.",
+      "Stock value: an In transit column (sent to a site and not yet received) and a Total. The company value takes the central kitchen markup out, so stock at a site is valued at what it cost the group; each site keeps its own cost.",
+      "Purchases: orders sent unapproved, lines added at the door (substitutions), credit notes, invoices after credit notes and deliveries with no invoice yet. Price paid: overcharges asked, credit notes received and amounts written off, each and by supplier.",
+      "Needs attention on the dashboard: missed counts, orders waiting for approval or sent unapproved, invoices that need a site, deliveries with no invoice after 7 days, transfers not received after 2 days, price rises over 5% and counts waiting for a second approval.",
+      "A locked month now keeps every figure the reports read, so every Stock and GP report shows the locked figures for it, even after a back dated delivery or a price change.",
+      "Weekly stock email: each Monday (your week start), after the count plan deadline on each venue's own clock, or as soon as a site has counted, head office gets the company pack and each manager their own site. A site that has not counted says Count not in.",
+      "Owner app: a venue with no stock no longer shows a Stock card or Stock line. It appears by itself once the venue holds stock.",
+      "Storage: the 23 Oct fix for uploads is now in the code, with a check that fails if any storage rule ever calls a function the signed in user cannot run again. The invoice inbox upload check is corrected.",
+      "Needs the database update 20261030a after UK close, then the xero-stock-journal and stock-notify functions deployed.",
+    ],
+  },
+  {
     v: '5.11.99',
     date: '23 Oct 2026',
     items: [

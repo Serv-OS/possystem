@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
-  canStock, STOCK_NOTES, stockNote, stockTone, pctWords, daysWords, dayWords, moneyWords, stockLine, stockTiles, attentionRows, stockCardNote, ATTENTION_LABELS,
+  canStock, STOCK_NOTES, SILENT_STOCK_REASONS, stockNote, stockTone, pctWords, daysWords, dayWords, moneyWords, stockLine, stockTiles, attentionRows, stockCardNote, ATTENTION_LABELS,
 } from './ownerStock.js';
 
 const read = (p) => fs.readFileSync(fileURLToPath(new URL(p, import.meta.url)), 'utf8');
@@ -23,9 +23,11 @@ test('the feature and the reasons: only a function that says stock draws anythin
   assert.equal(canStock({ features: ['period', 'compare', 'stock'] }), true);
   assert.equal(canStock({ features: ['period', 'compare'] }), false);
   assert.equal(canStock(null), false);
-  assert.deepEqual(STOCK_NOTES, { not_installed: 'Stock reports need a ServOS update', no_stock: 'No stock at this venue', failed: 'Stock could not be read' });
+  assert.deepEqual(STOCK_NOTES, { not_installed: 'Stock reports need a ServOS update', failed: 'Stock could not be read' });
   assert.equal(stockNote('not_installed'), 'Stock reports need a ServOS update');
-  assert.equal(stockNote('no_stock'), 'No stock at this venue');
+  // v5.11.100: a venue with no stock draws nothing (no card, no line, no note)
+  assert.equal(stockNote('no_stock'), null);
+  assert.deepEqual(SILENT_STOCK_REASONS, ['no_stock']);
   assert.equal(stockNote('failed'), 'Stock could not be read');
   assert.equal(stockNote(null), null);
   assert.equal(stockNote('anything else'), null, 'never a made up reason');

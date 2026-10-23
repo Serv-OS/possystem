@@ -10,7 +10,7 @@ import {
   CARD_COMPARE, cardsOf, cardBlocks, compareRowFor,
   tileRows, tileOf, countNoun,
   LEAGUE_COLUMNS, leagueCell, leagueSortValue, sortLeague,
-  ATTENTION_KINDS, groupAttention, attentionSitesWords,
+  ATTENTION_KINDS, groupAttention, attentionSitesWords, attentionRoute, attentionWhere,
   byTypeRows,
   scopeWords, periodWords, compareWords, subLine,
   dashboardArgs, compareTotalsOf, reportGrid,
@@ -138,8 +138,14 @@ test('the seven cards, the mockup\'s words: GP mode and cost mode, pills from th
   assert.equal(by.comps.sub, '0.8% of sales, own line');
   assert.equal(by.comps.tone, null, 'the comps card has no pill: it is its own line, not a judgement');
   assert.equal(by.purchases.value, '£7,520');
-  assert.equal(by.purchases.sub, 'budget comes with the purchasing update');
+  assert.equal(by.purchases.sub, 'no budget set', 'v5.11.100: budgets exist (Purchasing, Budgets); none set says so');
   assert.equal(by.purchases.tone, null);
+  // v5.11.100 (Drop 4b): with a budget, the card says what was ordered of it, coloured by the server's budget rag
+  const withBudget = Object.fromEntries(cardsOf({ ...company, budget: 8000, budget_spent: 8400, rag: { ...(company.rag || {}), budget_pct: 'red' } }, { mode: 'gp' }).map((c) => [c.key, c]));
+  assert.equal(withBudget.purchases.sub, '£8,400 ordered of £8,000 budget');
+  assert.equal(withBudget.purchases.tone, 'bad');
+  const under = Object.fromEntries(cardsOf({ ...company, budget: 8000, budget_spent: 6000, rag: { ...(company.rag || {}), budget_pct: 'green' } }, { mode: 'gp' }).map((c) => [c.key, c]));
+  assert.equal(under.purchases.tone, 'good');
   assert.equal(by.stock.value, '£5,260');
   assert.equal(by.stock.sub, 'days on hand 7.1');
   assert.equal(by.stock.report, 'stock_value');
@@ -160,7 +166,7 @@ test('the seven cards, the mockup\'s words: GP mode and cost mode, pills from th
   assert.equal(usd.sales.value, '$1,200', 'the row\'s own currency');
   assert.equal(usd.gap.value, '-0.8% of sales');
   assert.equal(usd.gap.sub, '$10 surplus · waste 1.9%');
-  assert.equal(usd.purchases.sub, 'of $800 budget');
+  assert.equal(usd.purchases.sub, '$900 ordered of $800 budget', 'v5.11.100: with no budget_spent the purchases stand in');
   assert.equal(usd.purchases.tone, 'bad', 'over budget');
   assert.equal(cardsOf({ ...companyUsd, purchases: 700 }).find((c) => c.key === 'purchases').tone, 'good');
 });
@@ -238,7 +244,7 @@ test('key item tiles: the company row per ratio, recipe against actual, the coun
 test('the league: 13 columns exactly, the mockup\'s cells, a central kitchen row, the pills', () => {
   assert.deepEqual(LEAGUE_COLUMNS.map((c) => c.label), ['Site', 'Sales', 'GP % theo', 'GP % actual', 'Gap %', 'Waste %', 'Comps %', 'Purchases against budget', 'Stock value', 'Days on hand', 'Last full count', 'No recipe sales', 'Below par']);
   assert.deepEqual(LEAGUE_COLUMNS.filter((c) => c.rag).map((c) => c.key), ['gap_pct', 'waste_pct'], 'rag pills on Gap and Waste (Purchases Over and Last full count have their own rules)');
-  assert.deepEqual(LEAGUE_COLUMNS.map((c) => c.report), [null, 'stock_cogs', 'stock_cogs', 'stock_cogs', 'stock_gap', 'stock_waste', 'stock_cogs', 'stock_purchases', 'stock_value', 'stock_days_on_hand', 'stock_movement', 'stock_setup_health', 'stock_par']);
+  assert.deepEqual(LEAGUE_COLUMNS.map((c) => c.report), [null, 'stock_cogs', 'stock_cogs', 'stock_cogs', 'stock_gap', 'stock_waste', 'stock_cogs', 'stock_budget', 'stock_value', 'stock_days_on_hand', 'stock_movement', 'stock_setup_health', 'stock_par']);
   const col = (key) => LEAGUE_COLUMNS.find((c) => c.key === key);
   const row = { ...site2, last_full_count_day: '2026-10-12', last_full_count_words: 'Mon 12 Oct', no_recipe_pct: 6.5, below_par_count: 9 };
   assert.deepEqual(leagueCell(row, col('site')), { text: 'South Site', grey: false, pill: null, report: null });
@@ -247,8 +253,8 @@ test('the league: 13 columns exactly, the mockup\'s cells, a central kitchen row
   assert.deepEqual(leagueCell(row, col('gap_pct')), { text: '3.1%', grey: false, pill: { text: '3.1%', tone: 'bad' }, report: 'stock_gap' });
   assert.deepEqual(leagueCell(row, col('waste_pct')).pill, { text: '2.8%', tone: 'warn' });
   assert.equal(leagueCell(row, col('comps_pct')).pill, null);
-  assert.deepEqual(leagueCell(row, col('purchases')), { text: '£2,640 of £2,500', grey: false, pill: { text: 'Over', tone: 'bad' }, report: 'stock_purchases' });
-  assert.deepEqual(leagueCell(site1, col('purchases')), { text: '£4,880', grey: false, pill: null, report: 'stock_purchases' }, 'no budget yet: the amount alone');
+  assert.deepEqual(leagueCell(row, col('purchases')), { text: '£2,640 of £2,500', grey: false, pill: { text: 'Over', tone: 'bad' }, report: 'stock_budget' });
+  assert.deepEqual(leagueCell(site1, col('purchases')), { text: '£4,880', grey: false, pill: null, report: 'stock_budget' }, 'no budget yet: the amount alone');
   assert.deepEqual(leagueCell(row, col('stock_value_now')).text, '£2,050');
   assert.deepEqual(leagueCell(row, col('days_on_hand')).text, '8.4');
   assert.deepEqual(leagueCell({ ...row, days_on_hand: null }, col('days_on_hand')), { text: 'No use', grey: true, pill: null, report: 'stock_days_on_hand' });
@@ -314,7 +320,22 @@ test('needs attention: grouped by kind in the fixed order, counts added, Fix onl
   // v5.11.92 integration: a kind opens its report on the right tab (negative stock on Negative stock).
   assert.deepEqual(g.map((x) => x.opts), [{ level: 'negative' }, null, null, null]);
   assert.deepEqual(groupAttention(null), []);
-  assert.deepEqual(ATTENTION_KINDS.map((k) => k.kind), ['negative_stock', 'below_minimum', 'out_of_step', 'invoice_review', 'clock_disagrees', 'demo_history', 'not_posted']);
+  assert.deepEqual(ATTENTION_KINDS.map((k) => k.kind), ['negative_stock', 'below_minimum', 'out_of_step', 'invoice_review', 'clock_disagrees', 'demo_history', 'not_posted',
+    'count_missed', 'count_second_approval', 'approval_waiting', 'sent_unapproved', 'invoice_unplaced', 'invoice_missing', 'transfer_overdue', 'price_rise']);
+  // v5.11.100 (Drop 4b): the new kinds say where they are set right; the database's ref.route wins
+  const d4 = groupAttention([
+    { kind: 'approval_waiting', location_id: S1, site: 'North Site', count: 2, words: '2 orders waiting for approval.', ref: { site: S1, kind: 'approval_waiting', route: 'purchase-orders' } },
+    { kind: 'invoice_unplaced', location_id: null, site: 'Company', count: 1, words: '1 invoices need a site.', ref: null },
+    { kind: 'transfer_overdue', location_id: S2, site: 'South Site', count: 1, words: '1 transfers not received after 2 days.', ref: null },
+  ]);
+  assert.deepEqual(d4.map((x) => [x.kind, attentionRoute(x), attentionWhere(x)]), [
+    ['approval_waiting', 'purchase-orders', 'Set it right in Purchasing, Orders'],
+    ['invoice_unplaced', 'invoices', 'Set it right in Purchasing, Invoices'],
+    ['transfer_overdue', 'stock-transfers', 'Set it right in Inventory, Transfers'],
+  ]);
+  assert.deepEqual(d4[2].opts, { level: 'list', status: 'SENT' });
+  assert.equal(d4[2].report, 'stock_transfers');
+  assert.equal(attentionWhere({ kind: 'negative_stock', sites: [] }), '');
   assert.equal(attentionSitesWords(g[0].sites), 'North Site: 3, South Site: 1');
   assert.equal(attentionSitesWords([{ site: 'A', count: 1 }, { site: 'B', count: 2 }, { site: 'C', count: 3 }, { site: 'D', count: 4 }]), 'A: 1, B: 2 and 2 more');
   assert.equal(attentionSitesWords([]), '');
@@ -654,3 +675,19 @@ test('demo sales and an unknown comps cost read as words on the cards and in the
   assert.equal(leagueCell(row, col('gp_pct_theo')).text, '');
 });
 
+
+// v5.11.100 (Drop 4b): the league's Purchases against budget cell reads what was ordered of the budget
+test('league budget cell: ordered of budget, Over in red and Near in amber by the server rag, purchases alone with no budget', () => {
+  const colB = LEAGUE_COLUMNS.find((c) => c.kind === 'budget');
+  assert.equal(colB.report, 'stock_budget');
+  const over = leagueCell({ currency: 'GBP', purchases: 900, budget: 1000, budget_spent: 1100, rag: { budget_pct: 'red' } }, colB);
+  assert.equal(over.text, '£1,100 of £1,000');
+  assert.deepEqual(over.pill, { text: 'Over', tone: 'bad' });
+  const near = leagueCell({ currency: 'GBP', purchases: 900, budget: 1000, budget_spent: 1020, rag: { budget_pct: 'amber' } }, colB);
+  assert.deepEqual(near.pill, { text: 'Near', tone: 'warn' });
+  const none = leagueCell({ currency: 'GBP', purchases: 900, budget: null, budget_spent: null }, colB);
+  assert.equal(none.text, '£900');
+  assert.equal(none.pill, null);
+  const words = leagueCell({ last_full_count_day: '2026-10-13', last_full_count_words: 'Mon 13 Oct, late' }, LEAGUE_COLUMNS.find((c) => c.kind === 'day'));
+  assert.equal(words.text, 'Mon 13 Oct, late');
+});

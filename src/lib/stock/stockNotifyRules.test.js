@@ -9,21 +9,23 @@ import {
 
 const DASH = /[\u2013\u2014]/;
 
-test('the twelve kinds are the ledger CHECK list (contract 1.2 stock_notify_sent)', () => {
-  assert.deepEqual([...NOTIFY_KINDS], ['order_by', 'approval_wait', 'approval_60', 'approval_30', 'sent_unapproved', 'price_rise', 'invoice_unplaced', 'count_due', 'count_missed', 'count_second_approval', 'transfer_waiting', 'delivery_overdue']);
+test('the thirteen kinds are the ledger CHECK list (contract 1.2 stock_notify_sent, plus weekly from 5.11.100)', () => {
+  assert.deepEqual([...NOTIFY_KINDS], ['order_by', 'approval_wait', 'approval_60', 'approval_30', 'sent_unapproved', 'price_rise', 'invoice_unplaced', 'count_due', 'count_missed', 'count_second_approval', 'transfer_waiting', 'delivery_overdue', 'weekly']);
   assert.equal(isNotifyKind('order_by'), true);
-  assert.equal(isNotifyKind('weekly'), false);
+  assert.equal(isNotifyKind('weekly'), true);
+  assert.equal(isNotifyKind('monthly'), false);
   assert.equal(isNotifyKind(null), false);
 });
 
-test('channels follow the map 4.23 table: bell always, SMS only at 30 minutes, email for five kinds', () => {
+test('channels follow the map 4.23 table: bell always (not weekly), SMS only at 30 minutes, email for five kinds and weekly', () => {
   const sms = NOTIFY_KINDS.filter((k) => channelsOf(k).sms);
   const email = NOTIFY_KINDS.filter((k) => channelsOf(k).email);
   const needNow = NOTIFY_KINDS.filter((k) => channelsOf(k).needNow);
   assert.deepEqual(sms, ['approval_30']);
-  assert.deepEqual(email, ['order_by', 'sent_unapproved', 'price_rise', 'invoice_unplaced', 'count_missed']);
+  assert.deepEqual(email, ['order_by', 'sent_unapproved', 'price_rise', 'invoice_unplaced', 'count_missed', 'weekly']);
   assert.deepEqual(needNow, ['order_by', 'approval_wait', 'approval_60', 'approval_30', 'count_due', 'count_missed', 'transfer_waiting', 'delivery_overdue']);
-  assert.ok(NOTIFY_KINDS.every((k) => channelsOf(k).bell));
+  assert.ok(NOTIFY_KINDS.every((k) => channelsOf(k).bell === (k !== 'weekly')));
+  assert.deepEqual(channelsOf('weekly'), { bell: false, sms: false, email: true, needNow: false });
   assert.deepEqual(channelsOf('nope'), { bell: false, sms: false, email: false, needNow: false });
   assert.equal(audienceOf('approval_wait'), 'approvers');
   assert.equal(audienceOf('count_second_approval'), 'company_editors');
@@ -110,7 +112,8 @@ test('planSend: one text and one email per person, flags respected, bad contacts
 test('never twice: only a waiting row of a known kind is sent; the bell decides sent', () => {
   assert.equal(sendable({ status: 'waiting', kind: 'count_due' }), true);
   assert.equal(sendable({ status: 'sent', kind: 'count_due' }), false);
-  assert.equal(sendable({ status: 'waiting', kind: 'weekly' }), false);
+  assert.equal(sendable({ status: 'waiting', kind: 'weekly' }), true, 'weekly is a kind from 5.11.100');
+  assert.equal(sendable({ status: 'waiting', kind: 'monthly' }), false);
   assert.equal(sendable(null), false);
   assert.deepEqual(outcomeOf({ bellIds: ['e1'], smsSent: 1, smsTried: 1 }), { status: 'sent', error: null });
   assert.deepEqual(outcomeOf({ bellIds: ['e1'], emailSent: 1, emailTried: 2 }), { status: 'sent', error: '1 of 2 emails failed' });

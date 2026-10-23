@@ -9,7 +9,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
@@ -135,6 +135,77 @@ export const ANSWERS = {
   },
 };
 
+/**
+ * v5.11.100 (Drop 4b, contract_4b sections 1 and 2): what supabase/migrations/20261030a_OPS_stock_native_4b.sql
+ * adds. `adds` extends a 4a answer (the same function, replaced in 4b); the five new functions are whole
+ * answers. The 4b pin test below checks every key against the 4b file.
+ */
+export const ANSWERS_4B = {
+  value: { adds: { totals: ['in_transit', 'in_transit_count', 'total_value', 'internal_margin', 'company_value'], levels: { legal: ['in_transit', 'internal_margin'] } } },
+  purchases: { adds: { totals: ['sent_unapproved_value', 'credit_notes', 'invoiced_after_credits', 'invoice_missing'], levels: { order: ['sent_unapproved', 'substitutions'] } } },
+  prices: {
+    adds: {
+      totals: ['overcharge_asked', 'credits_received', 'written_off', 'credit_requests'],
+      levels: {
+        credits: ['request_id', 'location_id', 'supplier_name', 'reason', 'status', 'amount', 'received', 'created_at', 'invoice_number'],
+        credit_suppliers: ['supplier_name', 'location_id', 'asked', 'received', 'written_off', 'requests'],
+      },
+    },
+  },
+  off_contract: {
+    totals: ['spend', 'off_contract', 'off_pct', 'not_contract', 'local', 'over_agreed', 'over_agreed_lines', 'lines', 'invoices'],
+    levels: {
+      supplier: ['location_id', 'supplier_name', 'spend', 'off_contract', 'not_contract', 'local', 'over_agreed'],
+      item: ['company_item_id', 'inventory_item_id', 'location_id', 'name', 'spend', 'off_contract', 'over_agreed', 'why'],
+      line: ['line_id', 'invoice_id', 'invoice_number', 'invoice_date', 'location_id', 'supplier_name', 'name', 'qty', 'unit_price', 'agreed_price', 'line_total', 'why', 'over_by'],
+      week: ['location_id', 'week_start', 'spend', 'off_contract', 'off_pct'],
+    },
+  },
+  budget: {
+    totals: ['budget', 'spent', 'pct_used', 'left', 'over', 'forecast', 'sales_net', 'spent_pct_sales', 'rule', 'rag'],
+    levels: { week: ['location_id', 'week_start', 'days', 'budget', 'spent', 'pct_used', 'left', 'over', 'forecast', 'sales_net'] },
+  },
+  transfers: {
+    totals: ['sent_out', 'received_in', 'in_transit', 'in_transit_count', 'short', 'short_lines', 'disputed', 'requests_open', 'transfers'],
+    levels: {
+      grid: ['from_location_id', 'to_location_id', 'from_site', 'to_site', 'value', 'sent_value', 'transfers'],
+      list: ['id', 'reference', 'kind', 'status', 'words', 'from_location_id', 'to_location_id', 'from_site', 'to_site', 'sent_at', 'received_at', 'value', 'short_value', 'lines'],
+      kitchen: ['kitchen_location_id', 'kitchen', 'location_id', 'site', 'orders', 'ordered_qty', 'sent_qty', 'fill_rate', 'short_lines', 'on_time_pct',
+        'internal_sales', 'kitchen_cost', 'margin', 'made_value', 'planned_qty', 'kitchen_stock_value', 'kitchen_waste'],
+      recharges: ['from_tenant', 'to_tenant', 'from_legal', 'to_legal', 'amount', 'transfers'],
+    },
+  },
+  count_compliance: {
+    totals: ['due', 'on_time', 'late', 'missed', 'waiting', 'last_full', 'last_full_words', 'counts', 'lines_counted', 'lines_estimated', 'counted_pct',
+      'minutes_avg', 'variance_value', 'second_approvals'],
+    levels: {
+      calendar: ['location_id', 'day', 'plan_id', 'plan_name', 'status', 'count_id'],
+      count: ['count_id', 'location_id', 'name', 'count_type', 'started_at', 'submitted_at', 'approved_at', 'approved_by_name', 'minutes', 'lines', 'counted',
+        'estimated', 'variance_value', 'second_approved_by_name', 'plan_name'],
+    },
+  },
+  month_end: {
+    totals: ['locked', 'locked_at', 'opening_value', 'closing_value', 'movement', 'purchases', 'transfers_in', 'transfers_out', 'waste_value', 'recharges_in',
+      'recharges_out', 'grni', 'credits_outstanding', 'in_transit', 'legal_company', 'tenant_id'],
+    levels: {
+      legal: ['tenant_id', 'legal_company', 'currency', 'sites', 'locked_all', 'opening_value', 'closing_value', 'internal_margin', 'movement', 'purchases',
+        'waste_value', 'grni', 'credits_outstanding', 'recharges_in', 'recharges_out', 'journal'],
+      category: ['location_id', 'category_id', 'name', 'closing_value'],
+    },
+  },
+};
+
+/** The answer a screen reads: the 4a fixture with the 4b additions, or a 4b answer whole. */
+const answerOf = (fn) => {
+  const a = ANSWERS[fn];
+  const b = ANSWERS_4B[fn];
+  if (!a) return b;
+  if (!b?.adds) return a;
+  const levels = { ...a.levels };
+  for (const [lv, keys] of Object.entries(b.adds.levels || {})) levels[lv] = [...(levels[lv] || []), ...keys];
+  return { ...a, totals: [...a.totals, ...(b.adds.totals || [])], levels };
+};
+
 /** Component file to the function it calls (contract 3.4). */
 const COMPONENTS = {
   'StockValue.jsx': 'value',
@@ -150,6 +221,12 @@ const COMPONENTS = {
   'StockKeyRatios.jsx': 'key_ratios',
   'StockSetupHealth.jsx': 'setup_health',
   'StockBatches.jsx': 'batches',
+  // v5.11.100 (Drop 4b)
+  'StockOffContract.jsx': 'off_contract',
+  'StockBudget.jsx': 'budget',
+  'StockTransfersReport.jsx': 'transfers',
+  'StockCountCompliance.jsx': 'count_compliance',
+  'StockMonthEnd.jsx': 'month_end',
 };
 const PLACEHOLDERS = ['StockRecipeCost.jsx', 'StockAllergens.jsx'];
 // Contract 3.4's props plus initialOpts, the options a share link or a drill hands the screen (the
@@ -174,7 +251,7 @@ const isScreenKey = (k) => k.startsWith('_') || k.startsWith('cat:') || k.starts
 
 test('the fixture names every 4a report function once and the totals carry no long dashes', () => {
   assert.deepEqual(Object.keys(ANSWERS).sort(), ['batches', 'cogs', 'days_on_hand', 'gap', 'key_ratios', 'movement', 'par', 'prices', 'product_gp', 'purchases', 'setup_health', 'value', 'waste']);
-  assert.deepEqual(new Set(Object.values(COMPONENTS)), new Set(Object.keys(ANSWERS)));
+  assert.deepEqual(new Set(Object.values(COMPONENTS)), new Set([...Object.keys(ANSWERS), ...Object.keys(ANSWERS_4B)]));
   for (const [fn, a] of Object.entries(ANSWERS)) {
     assert.ok(a.totals.length > 0, fn);
     assert.ok(Object.keys(a.levels).length > 0, fn);
@@ -185,7 +262,7 @@ test('the fixture names every 4a report function once and the totals carry no lo
 for (const [file, fn] of Object.entries(COMPONENTS)) {
   test(`${file} reads only keys stock_report_${fn} answers`, () => {
     const src = read(file);
-    const allowed = union(ANSWERS[fn]);
+    const allowed = union(answerOf(fn));
     const windowKeys = new Set(WINDOW_KEYS);
     const bad = [];
     for (const k of keysRead(src)) {
@@ -248,8 +325,22 @@ test('the lines the contract names are on the screens that show them', () => {
   assert.match(read('StockCogs.jsx'), /Loyalty, staff and comps/);
   assert.match(read('StockProductGP.jsx'), /Plate cost not known before/);
   assert.match(read('StockProductGP.jsx'), /classifyProducts|engineeringSummary/);
-  assert.match(read('StockPurchases.jsx'), /Sent unapproved and substitutions come with the purchasing update/);
-  assert.match(read('StockPrices.jsx'), /Overcharges and credits come with the purchasing update/);
+  // v5.11.100 (Drop 4b): the purchasing update is here, so no screen says it is coming
+  for (const f of ['StockPurchases.jsx', 'StockPrices.jsx', 'StockValue.jsx']) assert.doesNotMatch(read(f), /purchasing update/, f);
+  assert.match(read('StockPurchases.jsx'), /col\('sent_unapproved', 'Sent unapproved'/);
+  assert.match(read('StockPurchases.jsx'), /col\('substitutions', 'Substitutions'/);
+  assert.match(read('StockPrices.jsx'), /level: tab/);
+  assert.match(read('StockPrices.jsx'), /id: 'credits', label: 'Credits'/);
+  assert.match(read('StockValue.jsx'), /col\('in_transit', 'In transit'/);
+  assert.match(read('StockValue.jsx'), /Internal kitchen margin taken out/);
+  const me = read('StockMonthEnd.jsx');
+  assert.match(me, /monthEndJournal\('preview'/);
+  assert.match(me, /monthEndJournal\('send'/);
+  assert.match(me, /Reconnect Xero to allow stock journals\./);
+  assert.match(me, /Lock the month at every site first\./);
+  assert.match(me, /await confirm\(/, 'Send asks first (ConfirmDialog), never by itself');
+  assert.doesNotMatch(code(me), /useEffect/, 'nothing is sent or read from Xero on its own: only a press');
+  assert.match(read('StockCountCompliance.jsx'), /CountCalendar/);
   assert.match(read('StockWaste.jsx'), /Refunded food/);
   assert.match(read('StockWaste.jsx'), /End of day close down/);
   assert.match(read('StockDaysOnHand.jsx'), /transferWords/);
@@ -308,6 +399,28 @@ test('every fixture key is a key the migration answers (the fixture follows the 
   }
   assert.match(fns.stock_report_setup_health, /'health_lines'/, 'the site health lines come in meta.health_lines');
   assert.match(fns.stock_report_movement, /'waste_value', pg\.waste/, 'movement answers waste_value (the contract table said waste)');
+});
+
+const MIGRATION_4B = resolve(here, '../../../supabase/migrations/20261030a_OPS_stock_native_4b.sql');
+test('every Drop 4b fixture key is a key the 4b migration answers', { skip: !existsSync(MIGRATION_4B) && 'the 4b migration is not written yet' }, () => {
+  const sql = readFileSync(MIGRATION_4B, 'utf8');
+  const fns = { ...fnBodies(readFileSync(MIGRATION, 'utf8')), ...fnBodies(sql) };
+  const shared = new Set();
+  for (const n of SHARED) if (fns[n]) for (const k of jsonKeys(fns[n])) shared.add(k);
+  // the 4b helpers (stock_rp__*) the new reports build their rows with
+  for (const [n, body] of Object.entries(fnBodies(sql))) if (n.startsWith('stock_rp__')) for (const k of jsonKeys(body)) shared.add(k);
+  for (const [fn, b] of Object.entries(ANSWERS_4B)) {
+    const body = fnBodies(sql)[`stock_report_${fn}`];
+    assert.ok(body, `stock_report_${fn} is in the 4b migration`);
+    const a = b.adds || b;
+    const keys = jsonKeys(body);
+    const missing = [...a.totals || [], ...Object.values(a.levels || {}).flat()].filter((k) => !keys.has(k) && !shared.has(k));
+    assert.deepEqual(missing, [], `stock_report_${fn} (4b) never answers: ${missing.join(', ')}`);
+    for (const level of Object.keys(a.levels || {})) {
+      if (fn === 'value' && level === 'legal') continue;
+      assert.match(body, new RegExp(`'${level}'`), `stock_report_${fn} knows the level ${level}`);
+    }
+  }
 });
 
 test('a header click sorts the rows on screen: no report function takes a sort, so none is sent', () => {
