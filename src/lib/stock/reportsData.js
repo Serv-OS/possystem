@@ -110,6 +110,9 @@ export function createStockReportsApi(client, { functionsUrl = null } = {}) {
     menuProducts: (args) => searchMenuProducts(client, args),
     // ── v5.11.100 (Drop 4b): the closing stock journal (xero-stock-journal: 'preview' or 'send') ──
     monthEndJournal: (action, body = {}) => monthEndJournalCall(client, action, body),
+    // the legal companies of the whole company for a month, as the journal counts them (every site of
+    // each legal company, closed ones that still held stock too): the same sites and amount the send uses
+    monthEndLegal: (orgId, fromDay, to) => read('stock_month_end_journal', { p_org: nil(orgId), p_from: nil(fromDay), p_to: nil(to) }),
   };
 }
 

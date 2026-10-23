@@ -22,6 +22,7 @@ export const STATUS_WORDS = Object.freeze({
   sent: 'Sent to Xero as a draft. Your accountant posts it in Xero.',
   ready: 'Ready to send to Xero as a draft.',
   already: 'This month was already sent to Xero.',
+  sending: 'This journal is already being sent.',
   nothing: 'No change in stock: nothing to send.',
   accounts: 'Pick the stock account and the stock movement account.',
 });
@@ -111,6 +112,8 @@ export function needsReconnect(err) {
 export function journalStatus(legal) {
   if (!legal) return { status: 'not_connected', words: STATUS_WORDS.not_connected };
   if (legal.already && legal.already.xero_journal_id) return { status: 'sent', words: STATUS_WORDS.sent };
+  // 5.11.100 review: a send is claimed before Xero is called; while it runs nobody sends again
+  if (legal.status === 'sending' || legal.journal?.status === 'sending') return { status: 'sending', words: STATUS_WORDS.sending };
   if (!legal.connection_location_id || !legal.tenant_id) return { status: 'not_connected', words: STATUS_WORDS.not_connected };
   if (legal.scopes_ok === false) return { status: 'needs_reconnect', words: STATUS_WORDS.needs_reconnect };
   if (!legal.locked_all) return { status: 'not_locked', words: `Lock the month at every site of ${legal.legal_company || 'this legal company'} first.` };
@@ -129,6 +132,7 @@ export function statusWords(status, legalName = null) {
 export function sendRefusal(legal, { stockAccount, movementAccount } = {}) {
   const st = journalStatus(legal);
   if (st.status === 'sent') return STATUS_WORDS.already;
+  if (st.status === 'sending') return STATUS_WORDS.sending;
   if (st.status !== 'ready') return st.words;
   if (!Number.isFinite(round2(legal.amount)) || round2(legal.amount) === 0) return STATUS_WORDS.nothing;
   if (!stockAccount || !movementAccount) return STATUS_WORDS.accounts;

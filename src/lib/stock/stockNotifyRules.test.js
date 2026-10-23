@@ -47,7 +47,7 @@ test('days and money in words', () => {
 });
 
 test('every kind has plain words with no dash, and a staged title wins', () => {
-  const p = { site_name: 'North', supplier_name: 'Bakers', amount: 950, limit: 800, raised_by_name: 'Sam', order_by_hm: '14:00', delivery_day: '2026-10-22', item_name: 'Milk', pct: 7.25, plan_name: 'Full count', due_by: '10:00:00', reference: 'TR-1', from_name: 'Kitchen', from_email: 'bills@example.test' };
+  const p = { site_name: 'North', supplier_name: 'Bakers', amount: 950, limit: 800, raised_by_name: 'Sam', order_by_hm: '14:00', delivery_day: '2026-10-22', item_name: 'Milk', pct: 7.25, plan_name: 'Full count', due_by: '10:00:00', reference: 'TR-1', from_name: 'Kitchen', from_email: 'bills@harness-mail.co.uk' };
   for (const k of NOTIFY_KINDS) {
     const w = wordsOf(k, p);
     assert.ok(w.title.length > 3, k);
@@ -92,9 +92,9 @@ test('planSend: one text and one email per person, flags respected, bad contacts
     bell: [{ location_id: 'L1' }, { location_id: 'L1' }, { location_id: 'L2' }],
     people: [
       { user_id: 'u1', mobile: '07700 900123', email: 'A@Example.test', sms: true, email_on: true },
-      { user_id: 'u2', mobile: '+447700900123', email: 'a@example.test', sms: true, email_on: true },
+      { user_id: 'u2', mobile: '+447700900123', email: 'a@harness-mail.co.uk', sms: true, email_on: true },
       { user_id: 'u3', mobile: '12', email: 'not an email', sms: true, email_on: true },
-      { user_id: 'u4', mobile: '07700 900999', email: 'c@example.test', sms: false, email_on: false },
+      { user_id: 'u4', mobile: '07700 900999', email: 'c@harness-mail.co.uk', sms: false, email_on: false },
     ],
   };
   const thirty = planSend({ kind: 'approval_30', location_id: 'L1', payload: { site_name: 'North', supplier_name: 'Bakers' } }, targets);
@@ -103,7 +103,7 @@ test('planSend: one text and one email per person, flags respected, bad contacts
   assert.equal(thirty.email.length, 0, 'no email at 30 minutes');
   const missed = planSend({ kind: 'count_missed', location_id: 'L1', payload: {} }, targets);
   assert.equal(missed.sms.length, 0);
-  assert.deepEqual(missed.email.map((m) => m.to), ['a@example.test']);
+  assert.deepEqual(missed.email.map((m) => m.to), ['a@harness-mail.co.uk']);
   // no bell sites from the database: the row's own site
   assert.deepEqual(planSend({ kind: 'count_due', location_id: 'L9', payload: {} }, { people: [] }).bell, ['L9']);
   assert.deepEqual(planSend({ kind: 'nope', location_id: 'L9' }, targets), { bell: [], sms: [], email: [], words: { title: 'Stock alert', body: '' } });
@@ -207,7 +207,7 @@ test('stock-notify: a wrong key is refused; a waiting row rings the bell, texts 
     activity_events: [],
   }, {
     stock_notify_cron_ok: ({ p_key }) => ({ data: p_key === 'right', error: null }),
-    stock_notify_targets: () => ({ data: { bell: [{ location_id: 'L1' }], people: [{ user_id: 'u1', mobile: '07700 900123', email: 'a@example.test', sms: true, email_on: true }] }, error: null }),
+    stock_notify_targets: () => ({ data: { bell: [{ location_id: 'L1' }], people: [{ user_id: 'u1', mobile: '07700 900123', email: 'a@harness-mail.co.uk', sms: true, email_on: true }] }, error: null }),
   });
   const handler = await loadFn('stock-notify', db);
   assert.equal((await call(handler, { 'x-cron-key': 'wrong' })).status, 401);
@@ -315,10 +315,10 @@ test('the bell row and the email link carry the route and the focus, and the Bac
   assert.deepEqual(readBoLink(new URL(link).search), { route: 'price-changes', focus: payload.focus });
   assert.equal(readBoLink('?mode=office'), null);
   assert.equal(readBoLink('?go=../x'), null);
-  const plan = planSend({ kind: 'price_rise', location_id: 'L2', payload }, { people: [{ email: 'boss@example.test' }] }, { origin: 'https://app.example.test' });
+  const plan = planSend({ kind: 'price_rise', location_id: 'L2', payload }, { people: [{ email: 'boss@harness-mail.co.uk' }] }, { origin: 'https://app.example.test' });
   assert.equal(plan.email.length, 1);
   assert.ok(plan.email[0].html.includes(`href="${link.replace(/&/g, '&amp;')}"`), plan.email[0].html);
   assert.equal(routeOf('price_rise'), 'price-changes');
-  const noLink = planSend({ kind: 'price_rise', location_id: 'L2', payload }, { people: [{ email: 'boss@example.test' }] });
+  const noLink = planSend({ kind: 'price_rise', location_id: 'L2', payload }, { people: [{ email: 'boss@harness-mail.co.uk' }] });
   assert.doesNotMatch(noLink.email[0].html, /href=/, 'no origin: no link');
 });

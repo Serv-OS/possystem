@@ -9,7 +9,7 @@
 // it as a draft until the accountant posts it. Figures are stock_report_month_end's; the journal
 // is the xero-stock-journal edge function's.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { StockReportFrame, SiteTotalsTable, DrillTable, StockLoading, StockError, useStockReport } from './_stockKit';
 import { TabBar, Btn, Pill, EmptyLine, Notice, useConfirm } from '../stock/stockUi';
 import { useExportFlow } from './ExportStatus';
@@ -44,6 +44,7 @@ const JOURNAL_WORDS = {
   needs_reconnect: 'Reconnect Xero to allow stock journals.',
   ready: 'Ready to send to Xero as a draft.',
   sent: 'Sent to Xero as a draft.',
+  sending: 'This journal is already being sent.',
 };
 const isMonthStart = (v) => typeof v === 'string' && /^\d{4}-\d{2}-01$/.test(v);
 
@@ -57,7 +58,9 @@ function JournalBox({ row, orgId, from, to, api, onSent }) {
   const [error, setError] = useState(null);
   const [sent, setSent] = useState(null);
   const j = row.journal || {};
-  const status = sent ? 'sent' : (preview?.status && preview.status !== 'ready' ? preview.status : j.status) || 'not_locked';
+  const status = sent ? 'sent' : (preview?.status && preview.status !== 'ready' ? preview.status : (row.status || j.status)) || 'not_locked';
+  // the server's amount for this legal company (every site of it), the same the send uses
+  const serverAmount = row.amount ?? row.movement;
   const cur = row.currency;
   const missing = (row.sites || []).filter((s) => s && s.locked === false).map((s) => s.site).filter(Boolean);
   const canCall = typeof api?.monthEndJournal === 'function';
@@ -75,7 +78,7 @@ function JournalBox({ row, orgId, from, to, api, onSent }) {
   };
   const send = async () => {
     if (!accounts.stockAccount || !accounts.movementAccount) { setError(new Error('Pick the stock account and the stock movement account.')); return; }
-    const amount = preview?.amount ?? row.movement;
+    const amount = preview?.amount ?? serverAmount;
     const ok = await confirm({
       title: `Send the closing stock journal for ${row.legal_company || 'this company'}?`,
       words: `${money(amount || 0, cur)} for ${monthWords(from)} goes to Xero as a DRAFT manual journal. Nothing is posted until your accountant posts it in Xero.`,
@@ -86,6 +89,7 @@ function JournalBox({ row, orgId, from, to, api, onSent }) {
     const res = await api.monthEndJournal('send', { ...body, ...accounts });
     setBusy(null);
     if (res.error) { setError(res.error); return; }
+    if (res.data && res.data.ok === false) { setError(new Error(res.data.error || JOURNAL_WORDS[res.data.status] || 'Not sent.')); return; }
     setSent(res.data || { status: 'sent' });
     onSent?.();
   };
@@ -106,7 +110,7 @@ function JournalBox({ row, orgId, from, to, api, onSent }) {
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
         <b style={{ fontSize: 14 }}>{row.legal_company || 'Not connected to Xero'}</b>
         <Pill tone={status === 'sent' ? 'good' : status === 'ready' ? 'neutral' : 'warn'}>{status === 'sent' ? 'Draft in Xero' : status === 'ready' ? 'Ready' : 'Not yet'}</Pill>
-        <span style={{ fontSize: 12.5, color: 'var(--t3)' }}>Closing stock journal, {monthWords(from)}: movement {money(row.movement || 0, cur)}</span>
+        <span style={{ fontSize: 12.5, color: 'var(--t3)' }}>Closing stock journal, {monthWords(from)}: movement {money(serverAmount || 0, cur)}{Array.isArray(row.sites) ? `, ${row.sites.length} ${row.sites.length === 1 ? 'site' : 'sites'}` : ''}</span>
       </div>
       <div style={{ fontSize: 13, color: 'var(--t2)' }}>{(status === j.status && j.words) || JOURNAL_WORDS[status] || ''}</div>
       {status === 'not_locked' && missing.length > 0 && (
@@ -174,7 +178,28 @@ export default function StockMonthEnd({ orgId, sites, siteById, range, compare, 
   }));
   const notes = notesOf(meta, [DRAFT_LINE]);
   const options = [...(thisMonth ? [{ ...thisMonth, label: `${monthWords(thisMonth.from)} (not over yet)` }] : []), ...months];
-  const legalRows = tab === 'legal' ? shownRows : [];
+  // By legal company: the journal's own answer (every site of each legal company, whatever sites are
+  // picked above), so the header, the confirm and the send count the same sites and the same amount.
+  const [legal, setLegal] = useState({ key: null, rows: null, error: null });
+  const legalKey = tab === 'legal' && orgId ? `${orgId}|${month.from}|${month.to}|${tick}` : null;
+  useEffect(() => {
+    if (!legalKey || typeof api?.monthEndLegal !== 'function') return undefined;
+    let live = true;
+    api.monthEndLegal(orgId, month.from, month.to).then((res) => {
+      if (!live) return;
+      setLegal({ key: legalKey, rows: res.error ? null : (Array.isArray(res.data?.legal) ? res.data.legal : []), error: res.error || null });
+    });
+    return () => { live = false; };
+  }, [legalKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const serverLegal = legal.key === legalKey ? legal : { rows: null, error: null };
+  const legalRows = tab === 'legal'
+    ? (serverLegal.rows ? withSites(serverLegal.rows, meta, siteById).map((r) => ({
+        ...r,
+        _sites: Array.isArray(r.sites) ? r.sites.map((s) => s.site || nameOf(s.location_id)).join(', ') : '',
+        _locked: r.locked_all === true ? 'Every site' : 'Not every site',
+        _journal: r.journal ? (r.journal.words || JOURNAL_WORDS[r.journal.status] || '') : (r.words || ''),
+      })) : [])
+    : [];
 
   return (
     <StockReportFrame title={TITLE} sub={SUB} meta={meta} extraLines={notes} onExport={ex.run} exportLabel={ex.atOnce ? 'Export CSV' : 'Export all rows as a file'} onShare={onShare ? share : undefined}>
@@ -201,14 +226,16 @@ export default function StockMonthEnd({ orgId, sites, siteById, range, compare, 
           </div>
           {tab === 'legal' && (
             <div style={{ display: 'grid', gap: 12, margin: '14px 0' }}>
-              {legalRows.length === 0 && <EmptyLine>No legal company in these sites.</EmptyLine>}
+              {serverLegal.error && <EmptyLine>{serverLegal.error.message || String(serverLegal.error)}</EmptyLine>}
+              {!serverLegal.error && serverLegal.rows && legalRows.length === 0 && <EmptyLine>No legal company in this company.</EmptyLine>}
+              {!serverLegal.error && serverLegal.rows && <div style={{ fontSize: 12.5, color: 'var(--t3)' }}>Each legal company counts every one of its sites, whatever sites are picked above.</div>}
               {legalRows.map((r) => (
                 <JournalBox key={r.tenant_id || 'none'} row={r} orgId={orgId} from={month.from} to={month.to} api={api} onSent={() => setTick((n) => n + 1)} />
               ))}
             </div>
           )}
           {tab !== 'site' && (
-            <DrillTable columns={tab === 'legal' ? LEGAL_COLS : CATEGORY_COLS} rows={sortLoaded(shownRows, sort, SORT_KEYS)} next={next} onMore={more} busy={moreBusy} capped={capped}
+            <DrillTable columns={tab === 'legal' ? LEGAL_COLS : CATEGORY_COLS} rows={sortLoaded(tab === 'legal' ? legalRows : shownRows, sort, SORT_KEYS)} next={tab === 'legal' ? null : next} onMore={more} busy={moreBusy} capped={capped}
               sort={sort} onSort={(k) => setSort((s) => toggleSort(s, k))} empty="Nothing to show for this month." />
           )}
           {tab === 'site' && <EmptyLine>Pick By legal company for the closing stock journals, or By category for closing stock by category.</EmptyLine>}

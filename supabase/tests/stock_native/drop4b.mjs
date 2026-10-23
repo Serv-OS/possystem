@@ -63,7 +63,8 @@ const HELPERS = ['public.stock_rp__legal_of(uuid)', 'public.stock_rp__in_transit
   'public.stock_rp__budget(uuid,date,date,boolean)', 'public.stock_rp__grni(uuid[],date)', 'public.stock_rp__credits_out(uuid[],date)',
   'public.stock_rp__recharges(uuid[],date,date)', 'public.stock_rp__budget_merge(uuid,jsonb,jsonb,date,date)', 'public.stock_rp__count_merge(uuid,jsonb,date)',
   'public.stock_rp__purchase_extra(uuid[],date,date,boolean)', 'public.stock_rp__credit_figures(uuid[],date,date)', 'public.stock_rp__notes_4b(jsonb)',
-  'public.stock_rp__oc_lines(uuid[],date,date)', 'public.stock_rp__margin_same_legal(uuid,date)', 'public.stock_co__weekly_stage()'];
+  'public.stock_rp__oc_lines(uuid[],date,date)', 'public.stock_rp__margin_same_legal(uuid,date)', 'public.stock_co__weekly_stage()',
+  'public.stock_co__notify_email_ok(text)'];
 // the table rule guard (the same query the 4b asserts run and the release folder reads live)
 export const POLICY_GUARD_SQL = `
 with pol as (
@@ -224,11 +225,11 @@ export async function drop4bSections(ctx) {
     const rows = lastRows(r);
     for (const x of rows) console.log(`     check row: ${short(x, 900)}`);
     const t = rows.find((x) => x.org_id === ORG_T) || {};
-    ok(t.multi === 't' && t.bodies_moved === '11' && t.renamed_kept === '8' && t.new_functions === '22' && t.new_tables === '1' && t.weekly_kind === 't'
+    ok(t.multi === 't' && t.bodies_moved === '11' && t.renamed_kept === '8' && t.new_functions === '24' && t.new_tables === '1' && t.weekly_kind === 't'
        && t.internals_open_to_api === 'f' && t.anon_can_read_reports === 'f' && t.table_rules_ok === 't' && t.storage_upload_ok === 't'
        && t.backup_rows === '12' && t.budget_ok === 't' && Number(t.legal_rows) >= 1 && Number(t.dashboard_ms) < 5000 && Number(t.month_end_ms) < 5000
        && t.site_rows_changed === '0' && t.logins_changed === 'f',
-      'the check row (test company): 11 bodies moved, 8 renamed and kept, 22 new functions, 1 table, the weekly kind, internals closed, table rules ok, uploads ok, 12 backup rows, budget on every card, the timed calls under 5 s, no site row or login changed');
+      'the check row (test company): 11 bodies moved, 8 renamed and kept, 24 new functions, 1 table, the weekly kind, internals closed, table rules ok, uploads ok, 12 backup rows, budget on every card, the timed calls under 5 s, no site row or login changed');
     ok(rows.every((x) => x.site_rows_changed === '0' && x.logins_changed === 'f') && rows.some((x) => x.multi === 'f' && x.dashboard_ms === 'skipped'),
       `every company row: no site row or login changed; a one site company is skipped (${rows.length} rows)`);
     for (const [sig, was] of D4B_LIVE_MD5.slice(0, 11)) ok(md5Of(sig) !== was, `${sig.slice(7, 60)} is the 4b body now`);
@@ -293,6 +294,7 @@ export async function drop4bSections(ctx) {
       'public.stock_report_export_start(text,jsonb)': 'authenticated,postgres', 'public.stock_lock_period(uuid,date,date)': 'authenticated,postgres',
       'public.stock_month_end_journal(uuid,date,date)': 'authenticated,postgres,service_role',
       'public.stock_month_end_journal_record(uuid,date,date,text,jsonb)': 'postgres,service_role',
+      'public.stock_month_end_journal_claim(uuid,date,date,text,uuid,text)': 'postgres,service_role',
       'public.stock_notify_due()': 'postgres', 'public.stock_notify_targets(bigint)': 'postgres,service_role',
       ...Object.fromEntries(HELPERS.map((h) => [h, 'postgres'])), 'public.stock_rp__snapshot(uuid,date,date)': 'postgres',
     };
@@ -338,13 +340,36 @@ export async function drop4bSections(ctx) {
     ok(r0.status !== 0 && r0.sqlstate === '42501', `a signed in login cannot record a journal (${outcome(r0)})`);
     c.createFrom('n_4b_jr', 'n_4b');
     c.use('n_4b_jr');
+    // one send at a time: the month is claimed before Xero is called
+    const claim = (who) => callJ(who, `select public.stock_month_end_journal_claim('${ORG_T}', '${WIN.from}', '${WIN.to}', 'tenant-a', '${U.ownerT}', 'Owner T')`);
+    const c0 = claim('ownerT');
+    const c1 = claim('service');
+    const c2 = claim('service');
+    ok(c0.sqlstate === '42501' && c1.status === 0 && c2.sqlstate === '55000' && /already being sent/.test(c2.message)
+       && rep('ownerT', 'month_end', { ...WIN, opts: { level: 'legal' } }).j?.rows?.[0]?.journal?.status === 'sending',
+      `the claim: a login cannot; the service role claims once; a second claim while sending is refused ("${short(c2.message, 60)}"); the month end says it is being sent`);
     const r1 = rec('service', { status: 'failed', error: 'Xero said no', stock_account: '630', movement_account: '310' });
+    const c3 = claim('service');
+    ok(r1.status === 0 && c3.status === 0, 'a failed send frees the month: it can be claimed again');
     const r2 = rec('service', { status: 'sent', xero_journal_id: 'mj-1', amount: 12.34, sent_by_name: 'Owner T' });
     const r3 = rec('service', { status: 'sent', xero_journal_id: 'mj-2' });
     const row = pj(sql(`select row_to_json(j) from stock_month_end_journals j where org_id = '${ORG_T}'`)) || {};
     ok(r1.status === 0 && r2.status === 0 && r3.sqlstate === '55000' && /already sent to Xero/.test(r3.message) && row.status === 'sent' && row.xero_journal_id === 'mj-1'
        && row.stock_account === '630' && row.last_error === null && num(`select count(*) from stock_month_end_journals`) === 1,
       `the service role records a failed send, then the sent one (accounts kept), and never a second (${outcome(r3)})`);
+    const c4 = claim('service');
+    ok(c4.sqlstate === '55000' && /already sent to Xero/.test(c4.message), `a sent month cannot be claimed again (${outcome(c4)})`);
+    // every site of the legal company counts, a site closed since that still holds stock too; one site says site
+    c.createFrom('n_4b_cl', 'n_4b');
+    c.use('n_4b_cl');
+    sql(`update locations set status = 'closed' where id = '${LOC2}'`);
+    const jc = callJ('ownerT', `select public.stock_month_end_journal('${ORG_T}', '${WIN.from}', '${WIN.to}')`).j?.legal?.[0] || {};
+    ok((jc.location_ids || []).length === 2 && /\(2 sites\)$/.test(jc.narration || ''), `a site closed since, still holding stock, is in the journal (${(jc.location_ids || []).length} sites, "${jc.narration}")`);
+    sql(`delete from xero_connections where location_id = '${LOC2}'`);
+    const j1s = (callJ('ownerT', `select public.stock_month_end_journal('${ORG_T}', '${WIN.from}', '${WIN.to}')`).j?.legal || []).find((x) => x.tenant_id === 'tenant-a') || {};
+    ok(/\(1 site\)$/.test(j1s.narration || '') && Array.isArray(j1s.sites) && j1s.sites.length === 1 && 'grni' in j1s,
+      `one site: "${j1s.narration}"; the journal rows carry the month end figures the screen shows`);
+    c.use('n_4b_jr');
     const me = rep('ownerT', 'month_end', { ...WIN, opts: { level: 'legal' } });
     ok(me.j?.rows?.[0]?.journal?.status === 'sent' && me.j.rows[0].journal.xero_journal_id === 'mj-1' && /^Sent to Xero as a draft on /.test(me.j.rows[0].journal.words),
       `the month end shows it sent: "${me.j?.rows?.[0]?.journal?.words}"`);
@@ -491,6 +516,24 @@ export async function drop4bSections(ctx) {
   await guarded('weekly', () => {
     c.createFrom('n_4b_wk', 'n_4b');
     c.use('n_4b_wk');
+    // people with real looking addresses; the HubRise integration login (an owner, as live has it) and a test
+    // address that must never be emailed; a site with no stock and a demo venue with stock, never staged
+    const HUB = id('10000000', 'b4b1');
+    const NOSTOCK = id('e9900000', 1);
+    const DEMOV = id('e9900000', 2);
+    sql(`update user_profiles set email = 'owner-t@harness-mail.co.uk' where id = '${U.ownerT}';
+         update user_profiles set email = 'head-office@harness-mail.co.uk' where id = '${U.mgrAll}';
+         update user_profiles set email = 'provo-manager@harness-mail.co.uk' where id = '${U.mgrProvo}';
+         update wf_staff set email = null where pos_user_id in ('${U.ownerT}', '${U.mgrAll}', '${U.mgrProvo}');
+         insert into user_profiles (id, org_id, location_id, role, email, full_name) values
+           ('${HUB}', '${ORG_T}', '${PROVO}', 'owner', 'integration@hubrise.com', 'HubRise integration');
+         insert into user_locations (user_id, location_id, role) values ('${HUB}', '${PROVO}', 'owner'), ('${U.ownerT}', '${PROVO}', 'owner') on conflict do nothing;
+         insert into locations (id, org_id, name, currency, timezone, status, is_demo) values
+           ('${NOSTOCK}', '${ORG_T}', 'Site with no stock', 'GBP', 'Europe/London', 'active', false),
+           ('${DEMOV}', '${ORG_T}', 'Demo venue', 'GBP', 'Europe/London', 'active', true);
+         insert into venue_clock (location_id, timezone, day_start, synced_at) values ('${NOSTOCK}', 'Europe/London', '06:00', now()), ('${DEMOV}', 'Europe/London', '06:00', now())
+           on conflict (location_id) do nothing;
+         insert into inventory_items (location_id, org_id, name, kind, base_unit, on_hand, current_cost) values ('${DEMOV}', '${ORG_T}', 'Demo item', 'PURCHASED', 'each', 3, 1);`);
     const dow = (ymd) => new Date(`${ymd}T00:00:00Z`).getUTCDay();
     const setWeek = (ws, due) => sql(`select set_config('servos.stock_co_write', txid_current()::text, true);
                                       update stock_co_settings set week_start = ${ws} where org_id = '${ORG_T}';
@@ -533,6 +576,24 @@ export async function drop4bSections(ctx) {
        && !tc.people.some((p) => p.user_id === U.mgrProvo) && tc.people.every((p) => p.sms === false),
       `the company email: owners and Stock control all, no bell, no text (${tc.people?.length} people)`);
     ok(ts.bell.length === 0 && ts.people.some((p) => p.user_id === U.mgrProvo), `the Provo email: the logins linked to Provo (${ts.people?.length} people)`);
+    const allPeople = [tc, ...[PROVO, LOC2].map((l) => tg(idOf(l)))].flatMap((t) => t.people || []);
+    ok(!allPeople.some((p) => p.user_id === HUB || /hubrise|example\.test/i.test(p.email || '')),
+      `the HubRise integration login and test addresses are never a recipient (${allPeople.length} emails, none of them)`);
+    ok(allPeople.filter((p) => p.user_id === U.ownerT).length === 1 && !ts.people.some((p) => p.user_id === U.ownerT || p.user_id === U.mgrAll),
+      'an owner linked to a site gets one email (the company one), never also the site one');
+    ok(num(`select count(*) from stock_notify_sent where kind = 'weekly' and location_id in ('${NOSTOCK}', '${DEMOV}')`) === 0
+       && !(pj(sql(`select payload -> 'site_ids' from stock_notify_sent where kind = 'weekly' and location_id is null`)) || []).some((x) => x === NOSTOCK || x === DEMOV),
+      'a site with no stock and a demo venue are never staged, nor in the company email');
+    // the same person rule on every other kind (the Drop 3 body, then the filter): a price rise to company editors
+    sql(`insert into stock_notify_sent (org_id, location_id, kind, ref, payload) values ('${ORG_T}', '${PROVO}', 'price_rise', 'pr-hub-${HUB}', '{}')`);
+    const pr = tg(sql(`select id from stock_notify_sent where ref = 'pr-hub-${HUB}'`));
+    ok(Array.isArray(pr.people) && pr.people.length > 0 && !pr.people.some((p) => p.user_id === HUB && p.email_on !== false) && pr.people.some((p) => p.user_id === U.ownerT),
+      `a Drop 3 alert (price rise to company editors): the owner yes, the HubRise login never emailed (${pr.people?.length} people)`);
+    const okWords = (e) => sql(`select public.stock_co__notify_email_ok(${lit(e)})`) === 't';
+    const ADDR = [['a.person@coffee-shop.co.uk', true], ['integration@hubrise.com', false], ['x@eu.hubrise.com', false], ['bob@example.com', false], ['a@b.test', false],
+      ['a@b.invalid', false], ['a@host.local', false], ['noreply@coffee.co.uk', false], ['no-reply@coffee.co.uk', false], ['not an address', false], ['', false]];
+    const wrong = ADDR.filter(([e, want]) => okWords(e) !== want).map(([e]) => e);
+    ok(wrong.length === 0, `stock_co__notify_email_ok answers as its JS twin on ${ADDR.length} addresses (${wrong.join(', ') || 'all'})`);
     const other = callJ('service', `select public.stock_notify_targets(${sql(`select id from stock_notify_sent where kind <> 'weekly' order by id limit 1`) || 0})`);
     ok(other.status === 0, 'every other kind still answers through the Drop 3 body');
     const due = asCaller('sqlEditor', 'select public.stock_notify_due()');

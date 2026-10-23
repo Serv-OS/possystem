@@ -241,3 +241,14 @@ test('monthEndJournal: preview and send through xero-stock-journal; words come b
   assert.match((await monthEndJournalCall(null, 'preview', {})).error.message, /No database/);
   assert.equal(typeof createStockReportsApi(client({ data: {}, error: null })).monthEndJournal, 'function');
 });
+
+// v5.11.100 review: the Month end By legal company tab reads the journal's own legal companies (every site of each)
+test('monthEndLegal: one call of stock_month_end_journal with the org and the month', async () => {
+  const { createStockReportsApi } = await import('./reportsData.js');
+  const calls = [];
+  const api = createStockReportsApi({ rpc: async (fn, args) => { calls.push([fn, args]); return { data: { legal: [{ tenant_id: 't', amount: 12.5 }] }, error: null }; }, from: () => ({}) });
+  const r = await api.monthEndLegal('o1', '2026-09-01', '2026-09-30');
+  assert.deepEqual(calls, [['stock_month_end_journal', { p_org: 'o1', p_from: '2026-09-01', p_to: '2026-09-30' }]]);
+  assert.equal(r.error, null);
+  assert.equal(r.data.legal[0].amount, 12.5);
+});

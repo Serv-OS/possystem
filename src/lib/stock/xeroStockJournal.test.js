@@ -112,8 +112,9 @@ test('the function text: DRAFT only, never POSTED or AUTHORISED, the marker, the
 // -- the function as it ships ---------------------------------------------------------------------
 const ENV = { SUPABASE_URL: 'https://ops.test', SUPABASE_SERVICE_ROLE_KEY: 'svc-key', SUPABASE_ANON_KEY: 'anon-key', XERO_CLIENT_ID: 'cid', XERO_CLIENT_SECRET: 'sec' };
 
-function stand({ legal, user = { id: 'u1', email: 'boss@example.test' }, journals = [] }) {
+function stand({ legal, user = { id: 'u1', email: 'boss@example.test' }, journals = [], claim = 'free' }) {
   const log = [];
+  let claimState = claim;
   const tables = {
     xero_connections: [{ location_id: 'L1', tenant_id: 't1', tenant_name: 'North Ltd', access_token: 'xat', refresh_token: 'xrt', expires_at: new Date(Date.now() + 3600e3).toISOString(), scopes: 'accounting.manualjournals' }],
     stock_month_end_journals: journals,
@@ -135,7 +136,13 @@ function stand({ legal, user = { id: 'u1', email: 'boss@example.test' }, journal
     rpc: async (name, args) => {
       log.push({ rpc: name, args, as: key === 'anon-key' ? `user:${opts?.global?.headers?.Authorization}` : 'service' });
       if (name === 'stock_month_end_journal') return { data: { legal: [legal] }, error: null };
-      if (name === 'stock_month_end_journal_record') return { data: { ok: true }, error: null };
+      if (name === 'stock_month_end_journal_claim') {
+        if (claimState === 'sending') return { data: null, error: { code: '55000', message: 'This journal is already being sent.' } };
+        if (claimState === 'sent') return { data: null, error: { code: '55000', message: 'This month was already sent to Xero.' } };
+        claimState = 'sending';
+        return { data: { ok: true, status: 'sending' }, error: null };
+      }
+      if (name === 'stock_month_end_journal_record') { claimState = args.p_patch.status === 'sent' ? 'sent' : 'free'; return { data: { ok: true }, error: null }; }
       return { data: null, error: { message: 'no' } };
     },
   });
@@ -193,6 +200,9 @@ test('xero-stock-journal: no login refused; preview reads accounts; send puts ON
   assert.equal(mj[0].body.ManualJournals[0].Status, 'DRAFT');
   assert.equal(mj[0].headers['xero-tenant-id'], 't1');
   assert.equal(mj[0].headers['Idempotency-Key'], 'sj:t1:2026-10-01:630:330:245.10:11111111');
+  const claimAt = st.log.findIndex((x) => x.rpc === 'stock_month_end_journal_claim');
+  const recAt = st.log.findIndex((x) => x.rpc === 'stock_month_end_journal_record');
+  assert.ok(claimAt >= 0 && claimAt < recAt && st.log[claimAt].as === 'service', 'the month is claimed (service role) before Xero is called and recorded after');
   const rec = st.log.find((x) => x.rpc === 'stock_month_end_journal_record');
   assert.equal(rec.as, 'service');
   assert.equal(rec.args.p_patch.status, 'sent');
@@ -227,5 +237,29 @@ test('xero-stock-journal: not locked, not connected, missing scope and a Xero 40
     assert.equal(sent.error, 'This month was already sent to Xero.');
     const bad = await post(await loadFn(stand({ legal: LEGAL })), { ...BODY, action: 'send', from: 'x' });
     assert.equal(bad.status, 400);
+  } finally { globalThis.fetch = fetch0; }
+});
+
+test('xero-stock-journal: one send at a time: a second send while one is sending never reaches Xero; a failure frees the month', async () => {
+  const fetch0 = globalThis.fetch;
+  let puts = 0;
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith('/ManualJournals')) { puts++; return new Response('{"Message":"bad account"}', { status: 400 }); }
+    return new Response('nope', { status: 404 });
+  };
+  try {
+    const busy = await (await post(await loadFn(stand({ legal: LEGAL, claim: 'sending' })), { ...BODY, action: 'send', stockAccount: '630', movementAccount: '330' })).json();
+    assert.deepEqual(busy, { ok: false, status: 'sending', error: 'This journal is already being sent.' });
+    assert.equal(puts, 0, 'never called Xero while another send runs');
+    const st = stand({ legal: LEGAL });
+    const h = await loadFn(st);
+    const failed = await (await post(h, { ...BODY, action: 'send', stockAccount: '630', movementAccount: '330' })).json();
+    assert.equal(failed.ok, false);
+    assert.equal(puts, 1);
+    assert.equal(st.log.filter((x) => x.rpc === 'stock_month_end_journal_record').pop().args.p_patch.status, 'failed', 'the failure releases the claim');
+    await post(h, { ...BODY, action: 'send', stockAccount: '631', movementAccount: '330' });
+    assert.equal(puts, 2, 'after a failure the month can be sent again (other accounts)');
+    const sending = await (await post(await loadFn(stand({ legal: { ...LEGAL, status: 'sending' } })), { ...BODY, action: 'send', stockAccount: '630', movementAccount: '330' })).json();
+    assert.equal(sending.error, 'This journal is already being sent.');
   } finally { globalThis.fetch = fetch0; }
 });

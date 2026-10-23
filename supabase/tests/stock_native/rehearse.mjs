@@ -797,10 +797,10 @@ function drop4bStep() {
   const rows = (r.sets[r.sets.length - 1] || { rows: [] }).rows;
   for (const x of rows) console.log(`     check row: ${short(x, 900)}`);
   const t = rows.find((x) => x.org_id === ORG_T) || {};
-  ok(t.multi === 't' && t.bodies_moved === '11' && t.renamed_kept === '8' && t.new_functions === '22' && t.new_tables === '1' && t.weekly_kind === 't'
+  ok(t.multi === 't' && t.bodies_moved === '11' && t.renamed_kept === '8' && t.new_functions === '24' && t.new_tables === '1' && t.weekly_kind === 't'
      && t.internals_open_to_api === 'f' && t.anon_can_read_reports === 'f' && t.storage_upload_ok === 't' && t.backup_rows === '12' && t.budget_ok === 't'
      && Number(t.dashboard_ms) < 5000 && Number(t.month_end_ms) < 5000 && t.site_rows_changed === '0' && t.logins_changed === 'f',
-    `the check row of the test company: 11 bodies, 8 renamed and kept, 22 functions, 1 table, the weekly kind, internals closed, uploads ok, the timed calls ${t.dashboard_ms} and ${t.month_end_ms} ms, no site row or login changed`);
+    `the check row of the test company: 11 bodies, 8 renamed and kept, 24 functions, 1 table, the weekly kind, internals closed, uploads ok, the timed calls ${t.dashboard_ms} and ${t.month_end_ms} ms, no site row or login changed`);
   ok(rows.every((x) => x.site_rows_changed === '0' && x.logins_changed === 'f') && rows.filter((x) => x.multi === 'f').every((x) => x.dashboard_ms === 'skipped'),
     `every company row: nothing at the sites or logins moved; one site companies skipped (${rows.length} rows)`);
   const guard = pj(sql(POLICY_GUARD_SQL)) || [];

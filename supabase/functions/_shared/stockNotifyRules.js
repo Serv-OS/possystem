@@ -223,6 +223,25 @@ export function toE164(p) {
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/**
+ * 5.11.100: may a stock alert be emailed to this address? Never to a login that is not a person (the
+ * HubRise integration login, system and test logins) or an address that cannot be real. The SQL twin is
+ * public.stock_co__notify_email_ok (20261030a), which stock_notify_targets applies to every kind; this is
+ * the second fence. Refused: anything that is not one valid address; hubrise.com and its subdomains;
+ * example.com, example.org, example.net; domains ending .test, .invalid, .local or .example; local parts
+ * noreply, no-reply, donotreply, do-not-reply.
+ */
+const EMAIL_OK_RE = /^[a-z0-9._%+'-]+@[a-z0-9.-]+\.[a-z]{2,}$/;
+export function notifyEmailOk(email) {
+  const e = String(email ?? '').trim().toLowerCase();
+  if (!EMAIL_OK_RE.test(e)) return false;
+  const [local, domain] = e.split('@');
+  if (/(^|\.)hubrise\.com$/.test(domain) || /(^|\.)example\.(com|org|net)$/.test(domain)) return false;
+  if (/\.(test|invalid|local|example)$/.test(domain)) return false;
+  if (/^(no-?reply|do-?not-?reply)$/.test(local)) return false;
+  return true;
+}
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
 /** The SMS text: 'ServOS stock: <title>. <body>' within 320 characters. */
@@ -267,7 +286,7 @@ export function planSend(row, targets, { origin = null, league = null } = {}) {
     }
     if (ch.email && person?.email_on !== false) {
       const to = String(person?.email || '').trim().toLowerCase();
-      if (EMAIL_RE.test(to)) mails.add(to);
+      if (EMAIL_RE.test(to) && notifyEmailOk(to)) mails.add(to);
     }
   }
   const text = smsText(words);

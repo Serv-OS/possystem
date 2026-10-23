@@ -215,7 +215,7 @@ create table public.stock_month_end_journals (
   to_day            date not null,
   tenant_id         text not null,
   tenant_name       text,
-  status            text not null check (status in ('sent', 'failed')),
+  status            text not null check (status in ('sending', 'sent', 'failed')),
   xero_journal_id   text,
   amount            numeric(14,2),
   stock_account     text,
@@ -228,7 +228,7 @@ create table public.stock_month_end_journals (
   updated_at        timestamptz not null default now(),
   unique (org_id, period, tenant_id)
 );
-comment on table public.stock_month_end_journals is 'Multi site stock Drop 4b (20261030a): the closing stock journal sent to Xero as a DRAFT for one legal company and month. Written only by stock_month_end_journal_record (the xero-stock-journal edge function, service role). A login reads its own companies.';
+comment on table public.stock_month_end_journals is 'Multi site stock Drop 4b (20261030a): the closing stock journal sent to Xero as a DRAFT for one legal company and month. sending = claimed before the Xero call (one at a time), sent, or failed (may be sent again). Written only by stock_month_end_journal_claim and stock_month_end_journal_record (the xero-stock-journal edge function, service role). A login reads its own companies.';
 alter table public.stock_month_end_journals enable row level security;
 revoke all on table public.stock_month_end_journals from public, anon, authenticated, service_role;
 grant select on table public.stock_month_end_journals to authenticated, service_role;
@@ -276,8 +276,8 @@ as $fn$
    limit 1;
 $fn$;
 
--- The legal company of a site: its Xero organisation (the recharge statement's rule: the oldest
--- connection row of that site). Null when the site is not connected to Xero.
+-- The legal company of a site: its Xero organisation (the recharge statement's rule: the newest
+-- connection row of that site, by created_at). Null when the site is not connected to Xero.
 create or replace function public.stock_rp__legal_of(p_site uuid)
 returns table(tenant_id text, tenant_name text)
 language sql
@@ -2030,14 +2030,17 @@ begin
              'grni', round(gj.gr, 2), 'credits_outstanding', round(gj.co, 2), 'recharges_in', round(gj.ri, 2), 'recharges_out', round(gj.ro, 2),
              'in_transit', round(gj.it, 2), 'connection_location_id', gj.conn, 'scopes_ok', coalesce(gj.scopes_ok, false),
              'journal', jsonb_build_object(
-               'status', case when gj.j ->> 'status' = 'sent' then 'sent' when gj.tenant_id is null or gj.conn is null then 'not_connected'
+               'status', case when gj.j ->> 'status' = 'sent' then 'sent'
+                              when gj.j ->> 'status' = 'sending' and (gj.j ->> 'updated_at')::timestamptz > now() - interval '10 minutes' then 'sending'
+                              when gj.tenant_id is null or gj.conn is null then 'not_connected'
                               when not gj.locked_all then 'not_locked' when not coalesce(gj.scopes_ok, false) then 'needs_reconnect' else 'ready' end,
                'xero_journal_id', gj.j ->> 'xero_journal_id', 'sent_at', gj.j ->> 'sent_at', 'sent_by_name', gj.j ->> 'sent_by_name',
                'amount', coalesce((gj.j ->> 'amount')::numeric, round((gj.cv - gj.mc) - (gj.ov - gj.mo), 2)),
                'stock_account', gj.j ->> 'stock_account', 'movement_account', gj.j ->> 'movement_account', 'last_error', gj.j ->> 'last_error',
                'missing_lock', (select coalesce(jsonb_agg(x ->> 'site' order by x ->> 'site'), '[]'::jsonb) from jsonb_array_elements(gj.sites) x
                                  where not coalesce((x ->> 'locked')::boolean, false)),
-               'words', case when gj.j ->> 'status' = 'sent' then 'Sent to Xero as a draft on ' || to_char((gj.j ->> 'sent_at')::timestamptz, 'FMDD Mon')
+               'words', case when gj.j ->> 'status' = 'sending' and (gj.j ->> 'updated_at')::timestamptz > now() - interval '10 minutes' then 'Being sent to Xero now.'
+                             when gj.j ->> 'status' = 'sent' then 'Sent to Xero as a draft on ' || to_char((gj.j ->> 'sent_at')::timestamptz, 'FMDD Mon')
                                                                 || coalesce(' by ' || (gj.j ->> 'sent_by_name'), '') || '.'
                              when gj.tenant_id is null or gj.conn is null then 'Connect this legal company to Xero first.'
                              when not gj.locked_all then 'Lock the month at every site first.'
@@ -2107,7 +2110,14 @@ declare
   v_g     jsonb;
   v_a     jsonb;
 begin
-  v_sites := array(select l.id from locations l where l.org_id = p_org and coalesce(l.status, 'active') = 'active' order by l.name, l.id limit 50);
+  -- every site of the company: open ones, and a site closed since that still held or moved stock from
+  -- the day before the month (its opening stock belongs in the journal); demo history is left out by the report
+  v_sites := array(select l.id from locations l
+                    where l.org_id = p_org
+                      and (coalesce(l.status, 'active') = 'active'
+                           or exists (select 1 from inventory_items i where i.location_id = l.id and coalesce(i.on_hand, 0) <> 0)
+                           or exists (select 1 from stock_day_sums d where d.location_id = l.id and d.demo = false and d.business_day >= p_from - 1))
+                    order by l.name, l.id limit 50);
   if p_org is null or cardinality(v_sites) = 0 then
     raise exception 'Pick 1 to 50 sites.' using errcode = '22023';
   end if;
@@ -2122,17 +2132,18 @@ begin
   v_g := public.stock_report_guard(p_org, v_sites);
   v_a := public.stock_report_month_end(p_org, v_sites, p_from, p_to, jsonb_build_object('level', 'legal'), null, 1000);
   return jsonb_build_object('org_id', p_org, 'from', p_from, 'to', p_to,
-    'legal', (select coalesce(jsonb_agg(jsonb_build_object(
+    'legal', (select coalesce(jsonb_agg(r - 'journal' || jsonb_build_object(
                 'tenant_id', r -> 'tenant_id', 'legal_company', r -> 'legal_company', 'currency', r -> 'currency',
                 'location_ids', (select coalesce(jsonb_agg(x -> 'location_id'), '[]'::jsonb) from jsonb_array_elements(r -> 'sites') x),
                 'connection_location_id', r -> 'connection_location_id', 'scopes_ok', r -> 'scopes_ok', 'locked_all', r -> 'locked_all',
                 'missing_lock', r -> 'journal' -> 'missing_lock', 'opening_value', r -> 'opening_value', 'closing_value', r -> 'closing_value',
                 'internal_margin', r -> 'internal_margin', 'movement', r -> 'movement', 'amount', round((r ->> 'movement')::numeric, 2),
-                'status', r -> 'journal' -> 'status', 'words', r -> 'journal' -> 'words',
+                'status', r -> 'journal' -> 'status', 'words', r -> 'journal' -> 'words', 'journal', r -> 'journal',
                 'already', case when r -> 'journal' ->> 'status' = 'sent'
                                 then jsonb_build_object('xero_journal_id', r -> 'journal' -> 'xero_journal_id', 'sent_at', r -> 'journal' -> 'sent_at',
                                                         'sent_by_name', r -> 'journal' -> 'sent_by_name') end,
-                'narration', 'Closing stock ' || to_char(p_to, 'FMDD Mon YYYY') || ', ServOS (' || jsonb_array_length(r -> 'sites') || ' sites)')
+                'narration', 'Closing stock ' || to_char(p_to, 'FMDD Mon YYYY') || ', ServOS (' || jsonb_array_length(r -> 'sites')
+                             || case when jsonb_array_length(r -> 'sites') = 1 then ' site)' else ' sites)' end)
                 order by r ->> 'currency', r ->> 'legal_company'), '[]'::jsonb)
                 from jsonb_array_elements(v_a -> 'rows') r));
 end
@@ -2180,6 +2191,47 @@ begin
          last_error = excluded.last_error, updated_at = now()
   returning id into v_id;
   return jsonb_build_object('ok', true, 'id', v_id, 'status', v_status);
+end
+$fn$;
+
+-- stock_month_end_journal_claim: one send at a time for a legal company and month (service role only).
+-- xero-stock-journal claims BEFORE it calls Xero: a row in 'sending'. A second send while one is sending
+-- is refused 55000 'This journal is already being sent.' (a claim older than 10 minutes is taken over:
+-- the call that made it died). A sent month is refused for good. On a Xero failure the function records
+-- 'failed' (stock_month_end_journal_record), which frees the month to be sent again.
+create or replace function public.stock_month_end_journal_claim(p_org uuid, p_from date, p_to date, p_tenant text, p_by uuid, p_by_name text)
+returns jsonb
+language plpgsql
+volatile
+security definer
+set search_path = public, pg_temp
+as $fn$
+declare
+  v_row stock_month_end_journals;
+  v_name text;
+begin
+  if public._fence_api_role() <> 'service_role' then
+    raise exception 'That record was not found, or this login cannot change it.' using errcode = '42501';
+  end if;
+  if p_org is null or p_from is null or p_to is null or nullif(p_tenant, '') is null then
+    raise exception 'Say which company, month and legal company.' using errcode = '22023';
+  end if;
+  perform pg_advisory_xact_lock(hashtext('stock_month_end_journal:' || p_org::text || ':' || p_from::text || ':' || p_tenant));
+  select * into v_row from stock_month_end_journals j where j.org_id = p_org and j.period = p_from and j.tenant_id = p_tenant for update;
+  if v_row.status = 'sent' then
+    raise exception 'This month was already sent to Xero.' using errcode = '55000';
+  end if;
+  if v_row.status = 'sending' and v_row.updated_at > now() - interval '10 minutes' then
+    raise exception 'This journal is already being sent.' using errcode = '55000';
+  end if;
+  select x.tenant_name into v_name from xero_connections x join locations l on l.id = x.location_id
+   where l.org_id = p_org and x.tenant_id = p_tenant order by x.updated_at desc nulls last limit 1;
+  insert into stock_month_end_journals (org_id, period, to_day, tenant_id, tenant_name, status, sent_by, sent_by_name, last_error)
+  values (p_org, p_from, p_to, p_tenant, v_name, 'sending', p_by, nullif(p_by_name, ''), null)
+  on conflict (org_id, period, tenant_id) do update
+     set status = 'sending', to_day = excluded.to_day, sent_by = excluded.sent_by, sent_by_name = excluded.sent_by_name,
+         last_error = null, updated_at = now();
+  return jsonb_build_object('ok', true, 'status', 'sending');
 end
 $fn$;
 
@@ -2292,7 +2344,8 @@ $fn$;
 -- that just ended on each venue's clock (stock_co_settings.week_start), one row per open site once
 -- that venue is past its count deadline (the earliest due_by of a daily count plan, or a weekly one
 -- due on the first day of the new week, else 10:00) or has approved a count since the week's last
--- day; then one company row once every open site has its row. Only within a day of the deadline, so a
+-- day; then one company row once every such site has its row. Only sites that hold stock and are not
+-- demo venues: no email ever says there are no figures. Only within a day of the deadline, so a
 -- late night never sends an old week. Never raises: a problem is a warning and the alerts go on.
 create or replace function public.stock_co__weekly_stage()
 returns integer
@@ -2325,7 +2378,12 @@ begin
      order by x.org_id
   loop
     v_ws := coalesce((select cs.week_start from stock_co_settings cs where cs.org_id = o.org_id), 1) % 7;
-    v_sites := array(select l.id from locations l where l.org_id = o.org_id and coalesce(l.status, 'active') = 'active' order by l.name, l.id limit 50);
+    -- the sites the email is about: open, holding stock (the Owner app's rule: a stock item row), never a
+    -- demo venue. A site with no stock has no figures to send, so it gets no email.
+    v_sites := array(select l.id from locations l
+                      where l.org_id = o.org_id and coalesce(l.status, 'active') = 'active' and not coalesce(l.is_demo, false)
+                        and exists (select 1 from inventory_items i where i.location_id = l.id)
+                      order by l.name, l.id limit 50);
     v_first := null;
     for s in select l.id, l.name, l.currency from locations l where l.id = any(v_sites) order by l.name, l.id loop
       v_today := public.stock_co__today(s.id);
@@ -2358,7 +2416,7 @@ begin
       end if;
     end loop;
     -- the company row, once every open site has its row for that week
-    if v_first is not null and cardinality(v_sites) >= 2
+    if v_first is not null and cardinality(v_sites) >= 1
        and (select count(*) from stock_notify_sent n where n.kind = 'weekly' and n.location_id = any(v_sites)
               and n.ref = n.location_id::text || ':' || v_first::text) >= cardinality(v_sites)
        and now() < (v_first + 9)::timestamp then
@@ -2402,9 +2460,33 @@ begin
 end
 $fn$;
 
--- stock_notify_targets: the weekly email goes by email only (no bell): the company row to the owners
--- and the Stock control 'all' logins of the company, a site row to the logins linked to that site.
--- Every other kind: the Drop 3 body.
+-- Who may be emailed a stock alert (map 4.23): one valid address that belongs to a person. Never the
+-- HubRise integration login, a system or test login, or an address that cannot be real: hubrise.com
+-- and its subdomains, example.com, example.org, example.net, a domain ending .test, .invalid, .local
+-- or .example, and noreply or do-not-reply local parts. The JS twin is stockNotifyRules.notifyEmailOk.
+create or replace function public.stock_co__notify_email_ok(p_email text)
+returns boolean
+language sql
+immutable
+security definer
+set search_path = public, pg_temp
+as $fn$
+  select coalesce(
+           lower(btrim(p_email)) ~ '^[a-z0-9._%+''-]+@[a-z0-9.-]+[.][a-z]{2,}$'
+           and not (split_part(lower(btrim(p_email)), '@', 2) ~ '(^|[.])hubrise[.]com$')
+           and not (split_part(lower(btrim(p_email)), '@', 2) ~ '(^|[.])example[.](com|org|net)$')
+           and not (split_part(lower(btrim(p_email)), '@', 2) ~ '[.](test|invalid|local|example)$')
+           and not (split_part(lower(btrim(p_email)), '@', 1) ~ '^(no-?reply|do-?not-?reply)$'),
+         false);
+$fn$;
+
+-- stock_notify_targets: who gets one staged alert.
+--   weekly, the company row: the owners and the Stock control 'all' logins of the company (people only).
+--   weekly, a site row: the logins linked to that site whose Back Office sections let them open Stock and
+--     GP (no sections set, or inventory, produce or purchasing), and who are not on the company row, so an
+--     owner of six sites gets one email, never seven. Email only, no bell.
+--   every other kind: the Drop 3 body, then the same person rule: an address that is not a person's is
+--     taken off (email off), and someone left with neither an email nor a mobile is not told at all.
 create or replace function public.stock_notify_targets(p_id bigint)
 returns jsonb
 language plpgsql
@@ -2414,26 +2496,39 @@ set search_path = public, pg_temp
 as $fn$
 declare
   v stock_notify_sent;
+  v_d3 jsonb;
 begin
   if not public.stock_co__is_service() then
     raise exception 'That record was not found, or this login cannot change it.' using errcode = '42501';
   end if;
   select * into v from stock_notify_sent n where n.id = p_id;
   if v.id is null or v.kind is distinct from 'weekly' then
-    return public.stock_co__notify_targets_d3(p_id);
+    v_d3 := public.stock_co__notify_targets_d3(p_id);
+    if v_d3 is null or jsonb_typeof(v_d3 -> 'people') <> 'array' then
+      return v_d3;
+    end if;
+    return v_d3 || jsonb_build_object('people', coalesce((
+      select jsonb_agg(case when public.stock_co__notify_email_ok(x ->> 'email') then x
+                            else x || jsonb_build_object('email', null, 'email_on', false) end order by o)
+        from jsonb_array_elements(v_d3 -> 'people') with ordinality as z(x, o)
+       where public.stock_co__notify_email_ok(x ->> 'email') or nullif(btrim(coalesce(x ->> 'mobile', '')), '') is not null), '[]'::jsonb));
   end if;
   return jsonb_build_object(
     'bell', '[]'::jsonb,
     'people', coalesce((select jsonb_agg(jsonb_build_object('user_id', p.id, 'name', coalesce(nullif(btrim(p.full_name), ''), p.email),
-                                                            'email', coalesce(w.email, p.email), 'mobile', w.mobile,
-                                                            'sms', false, 'email_on', coalesce(w.email, p.email) is not null)
+                                                            'email', p.addr, 'mobile', null, 'sms', false, 'email_on', true)
                                          order by p.id)
-                          from (select up.* from user_profiles up
+                          from (select up.id, up.full_name, up.email, coalesce(w.email, up.email) as addr
+                                  from user_profiles up
+                                  left join lateral (select ws.email from wf_staff ws where ws.pos_user_id = up.id
+                                                      order by (ws.status = 'active') desc, ws.created_at limit 1) w on true
                                  where (v.location_id is null and up.org_id = v.org_id and (up.role = 'owner' or up.stock_control = 'all'))
-                                    or (v.location_id is not null and up.id in (select ul.user_id from user_locations ul where ul.location_id = v.location_id))
+                                    or (v.location_id is not null
+                                        and up.id in (select ul.user_id from user_locations ul where ul.location_id = v.location_id)
+                                        and not coalesce(up.org_id = v.org_id and (up.role = 'owner' or up.stock_control = 'all'), false)
+                                        and (up.bo_sections is null or up.bo_sections && array['inventory', 'produce', 'purchasing']::text[]))
                                  order by up.id limit 50) p
-                          left join lateral (select ws.email, ws.mobile from wf_staff ws where ws.pos_user_id = p.id
-                                              order by (ws.status = 'active') desc, ws.created_at limit 1) w on true), '[]'::jsonb));
+                         where public.stock_co__notify_email_ok(p.addr)), '[]'::jsonb));
 end
 $fn$;
 
@@ -2467,6 +2562,7 @@ revoke all on function public.stock_rp__notes_4b(jsonb) from public, anon, authe
 revoke all on function public.stock_rp__oc_lines(uuid[], date, date) from public, anon, authenticated, service_role;
 revoke all on function public.stock_rp__margin_same_legal(uuid, date) from public, anon, authenticated, service_role;
 revoke all on function public.stock_co__weekly_stage() from public, anon, authenticated, service_role;
+revoke all on function public.stock_co__notify_email_ok(text) from public, anon, authenticated, service_role;
 -- the public names
 revoke all on function public.stock_report_league(uuid, uuid[], date, date, jsonb, jsonb, integer) from public, anon, authenticated, service_role;
 revoke all on function public.stock_report_dashboard(uuid, uuid[], date, date, jsonb, jsonb, integer) from public, anon, authenticated, service_role;
@@ -2482,6 +2578,7 @@ revoke all on function public.stock_report_month_end(uuid, uuid[], date, date, j
 revoke all on function public.stock_report_export_start(text, jsonb) from public, anon, authenticated, service_role;
 revoke all on function public.stock_month_end_journal(uuid, date, date) from public, anon, authenticated, service_role;
 revoke all on function public.stock_month_end_journal_record(uuid, date, date, text, jsonb) from public, anon, authenticated, service_role;
+revoke all on function public.stock_month_end_journal_claim(uuid, date, date, text, uuid, text) from public, anon, authenticated, service_role;
 revoke all on function public.stock_lock_period(uuid, date, date) from public, anon, authenticated, service_role;
 revoke all on function public.stock_notify_due() from public, anon, authenticated, service_role;
 revoke all on function public.stock_notify_targets(bigint) from public, anon, authenticated, service_role;
@@ -2503,6 +2600,7 @@ grant execute on function public.stock_lock_period(uuid, date, date) to authenti
 -- the month end journal: head office (its own check) and the xero-stock-journal edge function
 grant execute on function public.stock_month_end_journal(uuid, date, date) to authenticated, service_role;
 grant execute on function public.stock_month_end_journal_record(uuid, date, date, text, jsonb) to service_role;
+grant execute on function public.stock_month_end_journal_claim(uuid, date, date, text, uuid, text) to service_role;
 -- the stock-notify edge function
 grant execute on function public.stock_notify_targets(bigint) to service_role;
 -- nobody but postgres (pg_cron): stock_notify_due, stock_co__weekly_stage, stock_co__notify_due_d3
@@ -2518,7 +2616,7 @@ begin
     from pg_proc p
    where p.pronamespace = 'public'::regnamespace
      and (p.proname ~ '^stock_rp__' or p.proname ~ '^stock_report_' or p.proname ~ '^stock_month_end_'
-          or p.proname in ('stock_co__weekly_stage', 'stock_co__notify_due_d3', 'stock_co__notify_targets_d3', 'stock_notify_due', 'stock_notify_targets', 'stock_lock_period'))
+          or p.proname in ('stock_co__weekly_stage', 'stock_co__notify_email_ok', 'stock_co__notify_due_d3', 'stock_co__notify_targets_d3', 'stock_notify_due', 'stock_notify_targets', 'stock_lock_period'))
      and has_function_privilege('anon', p.oid, 'execute');
   if v_bad is not null then
     raise exception 'The anon key can run a stock report function (%). Nothing was changed. Send this line to Claude.', v_bad;
@@ -2526,12 +2624,13 @@ begin
   select string_agg(p.oid::regprocedure::text, ', ' order by p.proname) into v_bad
     from pg_proc p
    where p.pronamespace = 'public'::regnamespace
-     and (p.proname ~ '^stock_rp__' or p.proname in ('stock_co__weekly_stage', 'stock_co__notify_due_d3', 'stock_co__notify_targets_d3', 'stock_notify_due'))
+     and (p.proname ~ '^stock_rp__' or p.proname in ('stock_co__weekly_stage', 'stock_co__notify_email_ok', 'stock_co__notify_due_d3', 'stock_co__notify_targets_d3', 'stock_notify_due'))
      and (has_function_privilege('authenticated', p.oid, 'execute') or has_function_privilege('service_role', p.oid, 'execute'));
   if v_bad is not null then
     raise exception 'An API login can run a stock internal (%). Nothing was changed. Send this line to Claude.', v_bad;
   end if;
-  if has_function_privilege('authenticated', 'public.stock_month_end_journal_record(uuid,date,date,text,jsonb)', 'execute') then
+  if has_function_privilege('authenticated', 'public.stock_month_end_journal_record(uuid,date,date,text,jsonb)', 'execute')
+     or has_function_privilege('authenticated', 'public.stock_month_end_journal_claim(uuid,date,date,text,uuid,text)', 'execute') then
     raise exception 'A signed in login can record a Xero journal. Nothing was changed. Send this line to Claude.';
   end if;
   if exists (select 1 from pg_policies p where p.schemaname = 'public' and p.tablename = 'stock_month_end_journals'
@@ -2640,9 +2739,9 @@ $timed_4b$;
 
 -- ============================================================================
 -- VISIBLE CHECK (the SQL editor shows this last result; paste it back to Claude). One row per company
--- that holds stock. Expected live: a59a6d97 and cd97f0f0 multi true, dashboard_ms and month_end_ms
--- under 5000, budget_ok true, legal_rows 1 or more; fcbddcfd multi false, 'skipped'. Every row:
--- bodies_moved 11, renamed_kept 8, new_functions 22, new_tables 1, weekly_kind true,
+-- that holds stock. Expected live: a59a6d97 multi true, dashboard_ms and month_end_ms under 5000,
+-- budget_ok true, legal_rows 2; fcbddcfd multi false, 'skipped' (league_rows 1, legal_rows and budget_ok
+-- empty). Every row: bodies_moved 11, renamed_kept 8, new_functions 24, new_tables 1, weekly_kind true,
 -- internals_open_to_api false, anon_can_read_reports false, table_rules_ok true,
 -- storage_upload_ok true, backup_rows 12, site_rows_changed 0, logins_changed false.
 -- ============================================================================
@@ -2675,14 +2774,15 @@ select o.org_id,
           ('public.stock_rp__credits_out(uuid[],date)'), ('public.stock_rp__recharges(uuid[],date,date)'), ('public.stock_rp__budget_merge(uuid,jsonb,jsonb,date,date)'),
           ('public.stock_rp__count_merge(uuid,jsonb,date)'), ('public.stock_rp__purchase_extra(uuid[],date,date,boolean)'),
           ('public.stock_rp__credit_figures(uuid[],date,date)'), ('public.stock_rp__notes_4b(jsonb)'), ('public.stock_rp__oc_lines(uuid[],date,date)'),
-          ('public.stock_rp__margin_same_legal(uuid,date)'), ('public.stock_co__weekly_stage()')) f(sig)
+          ('public.stock_rp__margin_same_legal(uuid,date)'), ('public.stock_co__weekly_stage()'), ('public.stock_co__notify_email_ok(text)'),
+          ('public.stock_month_end_journal_claim(uuid,date,date,text,uuid,text)')) f(sig)
          where to_regprocedure(f.sig) is not null) as new_functions,
        (case when to_regclass('public.stock_month_end_journals') is not null then 1 else 0 end) as new_tables,
        exists (select 1 from pg_constraint c where c.conrelid = 'public.stock_notify_sent'::regclass and c.conname = 'stock_notify_sent_kind_check'
                 and pg_get_constraintdef(c.oid) like '%weekly%') as weekly_kind,
        exists (select 1 from pg_proc p
                 where p.pronamespace = 'public'::regnamespace
-                  and (p.proname ~ '^stock_rp__' or p.proname in ('stock_co__weekly_stage', 'stock_co__notify_due_d3', 'stock_co__notify_targets_d3', 'stock_notify_due'))
+                  and (p.proname ~ '^stock_rp__' or p.proname in ('stock_co__weekly_stage', 'stock_co__notify_email_ok', 'stock_co__notify_due_d3', 'stock_co__notify_targets_d3', 'stock_notify_due'))
                   and (has_function_privilege('anon', p.oid, 'execute') or has_function_privilege('authenticated', p.oid, 'execute')
                        or has_function_privilege('service_role', p.oid, 'execute'))) as internals_open_to_api,
        exists (select 1 from pg_proc p

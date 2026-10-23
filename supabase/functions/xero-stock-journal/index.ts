@@ -116,15 +116,30 @@ Deno.serve(async (req) => {
   } catch (e) {
     return json({ ok: false, status: st.status, error: errText(e) });
   }
+  const byName = (user as any).user_metadata?.full_name || user.email || null;
   const record = (patch: Record<string, unknown>) => sb.rpc('stock_month_end_journal_record', {
     p_org: orgId, p_from: from, p_to: to, p_tenant: String(tenantId),
     p_patch: { amount: legal.amount, stock_account: stockAccount, movement_account: movementAccount, sent_by: user.id,
-               sent_by_name: (user as any).user_metadata?.full_name || user.email || null, ...patch },
+               sent_by_name: byName, ...patch },
   });
+  // Claim the legal company's month BEFORE calling Xero (one send at a time, whatever the accounts): a
+  // second call while this one runs is refused 'This journal is already being sent.', a sent month for good.
+  const { error: claimErr } = await sb.rpc('stock_month_end_journal_claim', {
+    p_org: orgId, p_from: from, p_to: to, p_tenant: String(tenantId), p_by: user.id, p_by_name: byName,
+  });
+  if (claimErr) {
+    const msg = String(claimErr.message || '');
+    if (/already being sent/i.test(msg)) return json({ ok: false, status: 'sending', error: STATUS_WORDS.sending });
+    if (/already sent/i.test(msg)) return json({ ok: false, status: 'sent', error: STATUS_WORDS.already });
+    return json({ ok: false, status: st.status, error: msg || 'Could not start the send.' }, 400);
+  }
   let xeroId: string | null = null;
   try {
     const { accessToken, tenantId: tid } = await getValidAccessToken(sb, String(legal.connection_location_id), CLIENT_ID, CLIENT_SECRET);
-    if (String(tid) !== String(tenantId)) return json({ ok: false, status: 'not_connected', error: STATUS_WORDS.not_connected });
+    if (String(tid) !== String(tenantId)) {
+      await record({ status: 'failed', error: STATUS_WORDS.not_connected });
+      return json({ ok: false, status: 'not_connected', error: STATUS_WORDS.not_connected });
+    }
     const ans = await xeroApi(accessToken, String(tid), '/ManualJournals', {
       method: 'PUT', body: JSON.stringify(journal), idempotencyKey: journalKey(String(orgId), String(from), String(tenantId), { stockAccount, movementAccount, amount: legal.amount }),
     });

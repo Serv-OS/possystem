@@ -185,6 +185,8 @@ drop function public.stock_rp__notes_4b(jsonb);
 drop function public.stock_rp__oc_lines(uuid[], date, date);
 drop function public.stock_rp__margin_same_legal(uuid, date);
 drop function public.stock_co__weekly_stage();
+drop function public.stock_co__notify_email_ok(text);
+drop function public.stock_month_end_journal_claim(uuid, date, date, text, uuid, text);
 
 -- ---------------------------------------------------------------- 5. the weekly rows and the alert kind CHECK
 create temp table _stock_native4b_rb (metric text, value integer) on commit drop;
@@ -233,7 +235,8 @@ select
      ('public.stock_rp__budget(uuid,date,date,boolean)'), ('public.stock_rp__grni(uuid[],date)'), ('public.stock_rp__credits_out(uuid[],date)'),
      ('public.stock_rp__recharges(uuid[],date,date)'), ('public.stock_rp__budget_merge(uuid,jsonb,jsonb,date,date)'), ('public.stock_rp__count_merge(uuid,jsonb,date)'),
      ('public.stock_rp__purchase_extra(uuid[],date,date,boolean)'), ('public.stock_rp__credit_figures(uuid[],date,date)'), ('public.stock_rp__notes_4b(jsonb)'),
-     ('public.stock_rp__oc_lines(uuid[],date,date)'), ('public.stock_rp__margin_same_legal(uuid,date)'), ('public.stock_co__weekly_stage()')) f(sig)
+     ('public.stock_rp__oc_lines(uuid[],date,date)'), ('public.stock_rp__margin_same_legal(uuid,date)'), ('public.stock_co__weekly_stage()'), ('public.stock_co__notify_email_ok(text)'),
+     ('public.stock_month_end_journal_claim(uuid,date,date,text,uuid,text)')) f(sig)
     where to_regprocedure(f.sig) is not null) as functions_left,
   (case when to_regclass('public.stock_month_end_journals') is null then 0 else 1 end) as tables_left,
   exists (select 1 from pg_constraint c where c.conrelid = 'public.stock_notify_sent'::regclass and c.conname = 'stock_notify_sent_kind_check'

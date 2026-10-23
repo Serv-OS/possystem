@@ -191,6 +191,9 @@ export const ANSWERS_4B = {
       legal: ['tenant_id', 'legal_company', 'currency', 'sites', 'locked_all', 'opening_value', 'closing_value', 'internal_margin', 'movement', 'purchases',
         'waste_value', 'grni', 'credits_outstanding', 'recharges_in', 'recharges_out', 'journal'],
       category: ['location_id', 'category_id', 'name', 'closing_value'],
+      // 5.11.100 review: the By legal company tab reads stock_month_end_journal's legal rows (every site of
+      // each legal company): the month end legal row plus the journal's own keys
+      journal: ['status', 'amount', 'words', 'narration', 'location_ids', 'connection_location_id', 'scopes_ok', 'missing_lock', 'already'],
     },
   },
 };
@@ -339,7 +342,12 @@ test('the lines the contract names are on the screens that show them', () => {
   assert.match(me, /Reconnect Xero to allow stock journals\./);
   assert.match(me, /Lock the month at every site first\./);
   assert.match(me, /await confirm\(/, 'Send asks first (ConfirmDialog), never by itself');
-  assert.doesNotMatch(code(me), /useEffect/, 'nothing is sent or read from Xero on its own: only a press');
+  // the only effect reads the legal companies from the database (stock_month_end_journal); Xero is read
+  // (preview) and written (send) only on a press
+  const effects = [...code(me).matchAll(/useEffect\(\(\) => \{[\s\S]*?\}, \[[^\]]*\]\)/g)].map((m) => m[0]);
+  assert.equal(effects.length, 1, 'one effect: the legal companies of the month');
+  assert.match(effects[0], /api\.monthEndLegal\(/);
+  assert.doesNotMatch(effects[0], /monthEndJournal\(/, 'nothing is sent or read from Xero on its own: only a press');
   assert.match(read('StockCountCompliance.jsx'), /CountCalendar/);
   assert.match(read('StockWaste.jsx'), /Refunded food/);
   assert.match(read('StockWaste.jsx'), /End of day close down/);
@@ -409,6 +417,8 @@ test('every Drop 4b fixture key is a key the 4b migration answers', { skip: !exi
   for (const n of SHARED) if (fns[n]) for (const k of jsonKeys(fns[n])) shared.add(k);
   // the 4b helpers (stock_rp__*) the new reports build their rows with
   for (const [n, body] of Object.entries(fnBodies(sql))) if (n.startsWith('stock_rp__')) for (const k of jsonKeys(body)) shared.add(k);
+  // the journal's legal rows (the Month end By legal company tab reads them)
+  if (fnBodies(sql).stock_month_end_journal) for (const k of jsonKeys(fnBodies(sql).stock_month_end_journal)) shared.add(k);
   for (const [fn, b] of Object.entries(ANSWERS_4B)) {
     const body = fnBodies(sql)[`stock_report_${fn}`];
     assert.ok(body, `stock_report_${fn} is in the 4b migration`);
@@ -418,6 +428,7 @@ test('every Drop 4b fixture key is a key the 4b migration answers', { skip: !exi
     assert.deepEqual(missing, [], `stock_report_${fn} (4b) never answers: ${missing.join(', ')}`);
     for (const level of Object.keys(a.levels || {})) {
       if (fn === 'value' && level === 'legal') continue;
+      if (fn === 'month_end' && level === 'journal') continue;
       assert.match(body, new RegExp(`'${level}'`), `stock_report_${fn} knows the level ${level}`);
     }
   }

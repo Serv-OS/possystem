@@ -33,7 +33,7 @@ const NEW_FUNCS = [
   'stock_rp__grni(uuid[], date)', 'stock_rp__credits_out(uuid[], date)', 'stock_rp__recharges(uuid[], date, date)',
   'stock_rp__budget_merge(uuid, jsonb, jsonb, date, date)', 'stock_rp__count_merge(uuid, jsonb, date)', 'stock_rp__purchase_extra(uuid[], date, date, boolean)',
   'stock_rp__credit_figures(uuid[], date, date)', 'stock_rp__notes_4b(jsonb)', 'stock_rp__oc_lines(uuid[], date, date)', 'stock_rp__margin_same_legal(uuid, date)',
-  'stock_co__weekly_stage()',
+  'stock_co__weekly_stage()', 'stock_co__notify_email_ok(text)', 'stock_month_end_journal_claim(uuid, date, date, text, uuid, text)',
 ];
 const RENAMES = [
   ['stock_report_league', 'stock_rp__league_4a'], ['stock_report_dashboard', 'stock_rp__dashboard_4a'], ['stock_report_attention', 'stock_rp__attention_4a'],
@@ -101,6 +101,7 @@ test('every function made or renamed is revoked from public, anon, authenticated
   assert.equal(by.stock_report_dashboard, 'authenticated, service_role');
   assert.equal(by.stock_month_end_journal, 'authenticated, service_role');
   assert.equal(by.stock_month_end_journal_record, 'service_role');
+  assert.equal(by.stock_month_end_journal_claim, 'service_role');
   assert.equal(by.stock_notify_targets, 'service_role');
   for (const n of grants.map(([x]) => x)) assert.ok(!/^stock_rp__|^stock_co__/.test(n), `no internal is granted: ${n}`);
   assert.ok(!/grant execute on function public\.[a-z_0-9]+\([^)]*\) to [a-z_, ]*anon/.test(T.fwd), 'nothing to anon');

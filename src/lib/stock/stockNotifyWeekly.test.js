@@ -64,11 +64,11 @@ test('weeklyEmail, site row: that site only, no company line', () => {
 });
 
 test('planSend: weekly emails each person once with no bell; outcome by the emails', () => {
-  const targets = { bell: [], people: [{ email: 'Boss@Example.test', email_on: true, mobile: '07700 900123', sms: true }, { email: 'boss@example.test' }, { email: 'off@example.test', email_on: false }, { email: 'nope' }] };
+  const targets = { bell: [], people: [{ email: 'Boss@Example.test', email_on: true, mobile: '07700 900123', sms: true }, { email: 'boss@harness-mail.co.uk' }, { email: 'off@harness-mail.co.uk', email_on: false }, { email: 'nope' }] };
   const plan = planSend({ kind: 'weekly', location_id: null, payload: PAYLOAD }, targets, { league: LEAGUE, origin: 'https://app.example.test' });
   assert.deepEqual(plan.bell, []);
   assert.deepEqual(plan.sms, []);
-  assert.deepEqual(plan.email.map((e) => e.to), ['boss@example.test']);
+  assert.deepEqual(plan.email.map((e) => e.to), ['boss@harness-mail.co.uk']);
   assert.match(plan.email[0].html, /South &lt;Bar&gt;/);
   const site = planSend({ kind: 'weekly', location_id: 'A', payload: { ...PAYLOAD, site_name: 'North' } }, targets, { league: LEAGUE });
   assert.doesNotMatch(site.email[0].html, /South/);
@@ -142,7 +142,7 @@ test('stock-notify: a weekly row asks the league for its week, emails once, ring
     ],
     activity_events: [],
   }, {
-    stock_notify_targets: ({ p_id }) => ({ data: { bell: [], people: p_id === 1 ? [{ email: 'boss@example.test', email_on: true }] : [] }, error: null }),
+    stock_notify_targets: ({ p_id }) => ({ data: { bell: [], people: p_id === 1 ? [{ email: 'boss@harness-mail.co.uk', email_on: true }] : [] }, error: null }),
     stock_report_league: (args) => ({ data: LEAGUE, error: null, args }),
   });
   const handler = await loadFn('stock-notify', db);
@@ -158,7 +158,7 @@ test('stock-notify: a weekly row asks the league for its week, emails once, ring
   assert.deepEqual(league[1].p_sites, ['B'], 'a site row asks for its own site');
   assert.equal(db.tables.activity_events.length, 0, 'no bell for weekly');
   assert.deepEqual(sent.map((x) => x.url), ['https://ops.test/functions/v1/send-receipt']);
-  assert.equal(sent[0].body.to, 'boss@example.test');
+  assert.equal(sent[0].body.to, 'boss@harness-mail.co.uk');
   assert.equal(sent[0].body.location_id, 'A', 'the company row sends as its first site');
   assert.match(sent[0].body.html, /Count not in/);
   assert.equal(db.tables.stock_notify_sent[0].status, 'sent');
@@ -166,7 +166,7 @@ test('stock-notify: a weekly row asks the league for its week, emails once, ring
   assert.equal(db.tables.stock_notify_sent[1].status, 'skipped', 'nobody to email');
 
   const db2 = fakeDb({ stock_notify_sent: [{ id: 5, org_id: 'o1', location_id: null, kind: 'weekly', ref: 'o1:w', payload: PAYLOAD, status: 'waiting', attempts: 2 }], activity_events: [] }, {
-    stock_notify_targets: () => ({ data: { bell: [], people: [{ email: 'boss@example.test' }] }, error: null }),
+    stock_notify_targets: () => ({ data: { bell: [], people: [{ email: 'boss@harness-mail.co.uk' }] }, error: null }),
     stock_report_league: () => ({ data: null, error: { message: 'timeout' } }),
   });
   const h2 = await loadFn('stock-notify', db2);
@@ -180,4 +180,18 @@ test('stock-notify carries the 5.11.100 marker and still needs a bell for every 
   assert.match(src, /\/\/ MARKER 5\.11\.100 stock-notify weekly/);
   assert.match(src, /if \(!weekly && !plan\.bell\.length\)/);
   assert.doesNotMatch(src, DASH);
+});
+
+// 5.11.100 review: never email a login that is not a person (the HubRise integration login), or an address
+// that cannot be real. The SQL twin is stock_co__notify_email_ok (20261030a, proven equal in drop4b.mjs 65).
+test('notifyEmailOk: people yes; integration, example, test and no reply addresses never', async () => {
+  const { notifyEmailOk, planSend } = await import('../../../supabase/functions/_shared/stockNotifyRules.js');
+  for (const [e, want] of [['a.person@coffee-shop.co.uk', true], ['Boss@Example.co.uk', true], ['integration@hubrise.com', false], ['x@eu.hubrise.com', false],
+    ['bob@example.com', false], ['bob@example.org', false], ['a@b.test', false], ['a@b.invalid', false], ['a@host.local', false], ['noreply@coffee.co.uk', false],
+    ['no-reply@coffee.co.uk', false], ['donotreply@coffee.co.uk', false], ['not an address', false], ['', false], [null, false]]) {
+    assert.equal(notifyEmailOk(e), want, String(e));
+  }
+  const row = { kind: 'price_rise', location_id: 'L1', payload: { item_name: 'Milk', pct: 6, site_name: 'Leeds' } };
+  const plan = planSend(row, { bell: [{ location_id: 'L1' }], people: [{ email: 'integration@hubrise.com', email_on: true }, { email: 'owner@coffee.co.uk', email_on: true }] });
+  assert.deepEqual(plan.email.map((m) => m.to), ['owner@coffee.co.uk'], 'planSend drops the integration login too');
 });
