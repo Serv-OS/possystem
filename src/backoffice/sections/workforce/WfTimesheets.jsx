@@ -99,7 +99,8 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
         wf.loadShifts(ctx.locationId, range.from, range.to),
         wf.loadTimesheets(ctx.locationId, range.from, range.to),
       ]);
-      setShifts((sh || []).filter(s => s.status === 'published'));
+      // v5.11.101: an open shift (nobody on it yet) has nobody to pay: no timesheet row for it.
+      setShifts((sh || []).filter(s => s.status === 'published' && s.staffId));
       setSheets(ts || []);
     } catch (e) {
       showToast?.('Could not load timesheets: ' + e.message, 'error');

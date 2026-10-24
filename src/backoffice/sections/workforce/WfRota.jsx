@@ -1059,7 +1059,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
         <OpenShiftModal
           days={wk.days} day={openEditing.day} shift={openEditing.shift} roles={roles} sections={secs}
           templates={templates} saving={saving} defaultBreakMins={breakPolicy.defaultMins}
-          onSave={saveOpenShift} onDelete={removeShift} onClose={() => setOpenEditing(null)}
+          onSave={saveOpenShift} onDelete={(sh) => { setOpenEditing(null); removeShift(sh); }} onClose={() => setOpenEditing(null)}
         />
       )}
       {tplOpen && (

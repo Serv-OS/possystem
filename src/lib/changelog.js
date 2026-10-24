@@ -7,6 +7,22 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.101',
+    date: '24 Oct 2026',
+    items: [
+      "Workforce, open shifts: a manager can put a shift on the rota with nobody on it yet (Rota, Add an open shift: the day, the position, the times). When the rota is published, everyone in that position who could take it gets a text, and it shows in their staff app to claim.",
+      "Workforce, swaps: in the staff app, Can't do this shift on any of your shifts. Open it to everyone in your position, or offer it to one colleague, who can accept or decline. It stays your shift until someone takes it.",
+      "A new setting, Workforce settings, Shift claims and swaps: Need manager approval (the default) or Happen straight away. With approval, a claim waits on the Rota and in the Manager app (Team, Approvals); approve or decline, and both people get a text. The first claim wins: two people tapping at once can never both get the same shift.",
+      "Every claim is checked by the server, never the phone: the right position, at this venue, no overlap with your other shifts, not on approved leave, not marked unavailable that day, under the most hours a week the venue sets (Workforce settings), and the shift has not started. A manager's approval checks it all again. Every claim, swap and decision is recorded with who and when.",
+      "Staff app: My availability. Set Available, Preferred or Unavailable for each day of the week; your manager sees it on the rota, and you cannot claim an open shift on a day you marked unavailable.",
+      "US sites: the venue's currency decides its country, as it already decides the money. A US venue (currency USD) gets dollars everywhere in Workforce and the staff app, US dates and 12 hour times in the staff app, phone numbers read as US numbers, SSN last 4 and the payroll provider's employee ID instead of the NI number, no bank details (the payroll provider holds them), Form I-9, Form W-4 and the food handler permit instead of Right to Work, twice a month pay periods (1st to 15th, 16th to month end), a US payroll export (employee ID, regular hours, overtime hours over 40 a week, tips, no bank details), US federal holidays, and holiday accrual off for now. No new switch: it follows the venue.",
+      "Phone numbers: a US number typed as 801 555 1234 now texts +1 801 555 1234. It used to become a UK number nobody has. UK numbers read exactly as before. This covers rota texts, announcements and every new open shift and swap text.",
+      "Pay premiums, applied at last: set extra pay for weekend hours, bank holiday hours and night hours (with the night window) in Workforce settings, Pay premiums. Payroll adds it as its own line and the rota's planned cost includes it. Where two apply the higher one is paid, never both; hourly pay only, for positions marked premium eligible. No venue has premiums set today, so every figure is exactly as before until you set one.",
+      "UK venues: pay, holiday at 12.07% and the BACS export are unchanged.",
+      "Needs the database update 20261031a (Peter runs it after UK close) and the staff-portal, manager-approve, manager-snapshot, workforce-compute and workforce-clock functions deployed.",
+    ],
+  },
+  {
     v: '5.11.100',
     date: '24 Oct 2026',
     items: [
