@@ -108,7 +108,34 @@ export function createStockReportsApi(client, { functionsUrl = null } = {}) {
     exportDownloadUrl: (jobId) => `${base}/report-export?action=download&job=${encodeURIComponent(String(jobId ?? ''))}`,
     // ── the key item editor's 'Chosen products' search (menu_items at the sites in scope, at most 50) ──
     menuProducts: (args) => searchMenuProducts(client, args),
+    // ── v5.11.100 (Drop 4b): the closing stock journal (xero-stock-journal: 'preview' or 'send') ──
+    monthEndJournal: (action, body = {}) => monthEndJournalCall(client, action, body),
+    // the legal companies of the whole company for a month, as the journal counts them (every site of
+    // each legal company, closed ones that still held stock too): the same sites and amount the send uses
+    monthEndLegal: (orgId, fromDay, to) => read('stock_month_end_journal', { p_org: nil(orgId), p_from: nil(fromDay), p_to: nil(to) }),
   };
+}
+
+/**
+ * One call of the xero-stock-journal edge function as the signed in login: { data, error }. A refusal
+ * the function sends with words ({ error: 'Lock the month at every site of ... first.' }) comes back as
+ * error with those words; a status answer ({ status: 'needs_reconnect', words }) comes back as data.
+ * It never sends anything by itself: 'send' runs only when a person presses Send.
+ */
+export async function monthEndJournalCall(client, action, body = {}) {
+  const fail = (e) => ({ data: null, error: e instanceof Error ? e : new Error(String(e || 'The closing stock journal call failed.')), needsUpdate: false, conflict: null, queued: [] });
+  if (!client?.functions || typeof client.functions.invoke !== 'function') return fail('No database');
+  if (action !== 'preview' && action !== 'send') return fail('Pick preview or send.');
+  let res;
+  try { res = await client.functions.invoke('xero-stock-journal', { body: { ...(body || {}), action } }); } catch (e) { return fail(e); }
+  if (res?.error) {
+    let words = null;
+    try { const j = await res.error.context?.json?.(); words = j?.error || j?.words || null; } catch { /* the body was not JSON */ }
+    return fail(words || res.error.message || 'The closing stock journal call failed.');
+  }
+  const d = res?.data ?? null;
+  if (d && typeof d === 'object' && typeof d.error === 'string' && d.error) return fail(d.error);
+  return { data: d, error: null, needsUpdate: false, conflict: null, queued: [] };
 }
 
 /** A job that will not change again. */

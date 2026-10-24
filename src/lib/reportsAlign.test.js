@@ -347,3 +347,37 @@ test('pin: the SQL release puts the rules where this test holds them (20261029a)
   const rb = read('../../supabase/migrations/20261029a_OPS_reports_align_ROLLBACK.sql');
   assert.ok([...rb].every((ch) => ch.charCodeAt(0) < 128) && !rb.includes('!'), 'the rollback: ASCII only, no exclamation mark');
 });
+
+// v5.11.100 (Drop 4b): the new Stock and GP reports that show a figure another report shows read it by the
+// same rule, from the same place, never their own copy. The local PostgreSQL proof that the figures are equal
+// is supabase/tests/stock_native/drop4b.mjs section 64 (budget sales = Cost of sales, transfers = Stock
+// movement, month end closing, opening and purchases = Stock movement, month end waste = Waste, league budget =
+// Purchase budget); this pins where each one is read.
+test('pin: the Drop 4b reports read every overlapping figure by the Reports align rule (20261030a)', () => {
+  const mig = read('../../supabase/migrations/20261030a_OPS_stock_native_4b.sql');
+  const fn = (name) => {
+    const m = new RegExp(`create or replace function public\\.${name}\\([\\s\\S]*?\\n\\$fn\\$;`).exec(mig);
+    assert.ok(m, `${name} is in the file`);
+    return m[0];
+  };
+  // net sales after refunds, demo history left out: the site figures every Stock and GP report reads (align's v3 day totals)
+  const budget = fn('stock_report_budget');
+  assert.match(budget, /v_fig := public\.stock_rp__site_figures\(v_g, v_win\);/);
+  assert.match(budget, /'sales_net', \(f ->> 'sales_net'\)::numeric/);
+  assert.match(budget, /case when pg\.sd then null else coalesce\(\(select round\(sum\(d\.net\), 2\) from sales_day_sums d/, 'a week with demo sales not yet rebuilt shows no sales, as every Stock and GP report');
+  // waste, purchases, opening and closing: the stock ledger through the site figures (and a locked period's snapshot)
+  const me = fn('stock_report_month_end');
+  for (const k of ['closing_value', 'purchases', 'transfers_in', 'transfers_out', 'waste_value']) assert.match(me, new RegExp(`\\(s\\.f ->> '${k}'\\)::numeric`));
+  // transfers in and out: the ledger, as Stock movement
+  const tr = fn('stock_report_transfers');
+  assert.match(tr, /'sent_out', round\(coalesce\(\(f ->> 'transfers_out'\)::numeric, 0\), 2\), 'received_in', round\(coalesce\(\(f ->> 'transfers_in'\)::numeric, 0\), 2\)/);
+  // the league and the dashboard budget: the one budget rule (stock_rp__budget), also behind Purchase budget
+  assert.match(fn('stock_rp__budget_merge'), /public\.stock_rp__budget\(w\.loc, w\.f, w\.tt, false\)/);
+  assert.match(budget, /cross join lateral public\.stock_rp__budget\(s\.id, p_from, p_to, true\) b/);
+  // no new report adds up closed checks, timesheets or waste rows of its own
+  for (const n of ['stock_report_off_contract', 'stock_report_budget', 'stock_report_transfers', 'stock_report_count_compliance', 'stock_report_month_end']) {
+    const b = fn(n);
+    assert.doesNotMatch(b, /from closed_checks|from wf_timesheets|from waste_events/, `${n} reads no sales, labour or waste of its own`);
+  }
+  assert.ok([...mig].every((ch) => ch.charCodeAt(0) < 128) && !mig.includes('!'), 'ASCII only, no exclamation mark');
+});

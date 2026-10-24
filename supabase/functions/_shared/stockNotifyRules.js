@@ -14,7 +14,7 @@
 export const NOTIFY_KINDS = Object.freeze([
   'order_by', 'approval_wait', 'approval_60', 'approval_30', 'sent_unapproved',
   'price_rise', 'invoice_unplaced', 'count_due', 'count_missed', 'count_second_approval',
-  'transfer_waiting', 'delivery_overdue',
+  'transfer_waiting', 'delivery_overdue', 'weekly',
 ]);
 
 // kind -> { audience, sms, email, needNow, severity, route, focus }
@@ -31,6 +31,9 @@ const TABLE = Object.freeze({
   count_second_approval: { audience: 'company_editors', sms: false, email: false, needNow: false, severity: 'info', route: 'stock-counts' },
   transfer_waiting:      { audience: 'receiving_site', sms: false, email: false, needNow: true,  severity: 'info', route: 'stock-transfers' },
   delivery_overdue:      { audience: 'site_managers', sms: false, email: false, needNow: true,  severity: 'warn', route: 'stock-deliveries' },
+  // 5.11.100 (Drop 4b, contract 5): the weekly email. Email only (no bell, no text): the company pack to
+  // head office, each site's own line to its managers. Staged by stock_notify_due on each venue's clock.
+  weekly:                { audience: 'weekly', bell: false, sms: false, email: true,  needNow: false, severity: 'info', route: 'stock-gp' },
 });
 
 export const isNotifyKind = (k) => Object.prototype.hasOwnProperty.call(TABLE, String(k || ''));
@@ -39,7 +42,7 @@ export const isNotifyKind = (k) => Object.prototype.hasOwnProperty.call(TABLE, S
 export function channelsOf(kind) {
   const t = TABLE[kind];
   if (!t) return { bell: false, sms: false, email: false, needNow: false };
-  return { bell: true, sms: t.sms, email: t.email, needNow: t.needNow };
+  return { bell: t.bell !== false, sms: t.sms, email: t.email, needNow: t.needNow };
 }
 
 /** Who a kind is for, in the table's words (the database picks the people). */
@@ -116,6 +119,10 @@ export function wordsOf(kind, payload = {}) {
       return { title: 'Transfer waiting', body: `${clean(p.from_name || 'A site')} sent ${ref || 'stock'} to ${site}. Receive it in Transfers.` };
     case 'delivery_overdue':
       return { title: 'Delivery overdue', body: `${sup} at ${site}${day ? ` was due ${day}` : ' is late'}.` };
+    case 'weekly': {
+      const ws = dayShort(p.week_start);
+      return { title: `Weekly stock: week of ${ws || 'last week'}`, body: p.site_name ? `${clean(p.site_name)}: last week's stock and GP.` : 'Every site: last week\'s stock and GP.' };
+    }
     default:
       return { title: 'Stock alert', body: '' };
   }
@@ -216,6 +223,25 @@ export function toE164(p) {
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/**
+ * 5.11.100: may a stock alert be emailed to this address? Never to a login that is not a person (the
+ * HubRise integration login, system and test logins) or an address that cannot be real. The SQL twin is
+ * public.stock_co__notify_email_ok (20261030a), which stock_notify_targets applies to every kind; this is
+ * the second fence. Refused: anything that is not one valid address; hubrise.com and its subdomains;
+ * example.com, example.org, example.net; domains ending .test, .invalid, .local or .example; local parts
+ * noreply, no-reply, donotreply, do-not-reply.
+ */
+const EMAIL_OK_RE = /^[a-z0-9._%+'-]+@[a-z0-9.-]+\.[a-z]{2,}$/;
+export function notifyEmailOk(email) {
+  const e = String(email ?? '').trim().toLowerCase();
+  if (!EMAIL_OK_RE.test(e)) return false;
+  const [local, domain] = e.split('@');
+  if (/(^|\.)hubrise\.com$/.test(domain) || /(^|\.)example\.(com|org|net)$/.test(domain)) return false;
+  if (/\.(test|invalid|local|example)$/.test(domain)) return false;
+  if (/^(no-?reply|do-?not-?reply)$/.test(local)) return false;
+  return true;
+}
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
 /** The SMS text: 'ServOS stock: <title>. <body>' within 320 characters. */
@@ -238,16 +264,19 @@ export function emailOf(words, link = null) {
  * targets is stock_notify_targets' answer. Numbers and addresses are sent once each; a person whose
  * sms or email flag is false is skipped for that channel; bad numbers and addresses are left out.
  */
-export function planSend(row, targets, { origin = null } = {}) {
+export function planSend(row, targets, { origin = null, league = null } = {}) {
   const kind = row?.kind;
   const ch = channelsOf(kind);
   const words = wordsOf(kind, row?.payload || {});
   const out = { bell: [], sms: [], email: [], words };
-  if (!ch.bell) return out;
-  const bellSites = new Set();
-  for (const b of (targets?.bell || [])) if (b?.location_id) bellSites.add(String(b.location_id));
-  if (!bellSites.size && row?.location_id) bellSites.add(String(row.location_id));
-  out.bell = [...bellSites];
+  // 5.11.100: a kind with no bell (the weekly email) still sends its email.
+  if (!ch.bell && !ch.email) return out;
+  if (ch.bell) {
+    const bellSites = new Set();
+    for (const b of (targets?.bell || [])) if (b?.location_id) bellSites.add(String(b.location_id));
+    if (!bellSites.size && row?.location_id) bellSites.add(String(row.location_id));
+    out.bell = [...bellSites];
+  }
   const phones = new Set();
   const mails = new Set();
   for (const person of (targets?.people || [])) {
@@ -257,12 +286,14 @@ export function planSend(row, targets, { origin = null } = {}) {
     }
     if (ch.email && person?.email_on !== false) {
       const to = String(person?.email || '').trim().toLowerCase();
-      if (EMAIL_RE.test(to)) mails.add(to);
+      if (EMAIL_RE.test(to) && notifyEmailOk(to)) mails.add(to);
     }
   }
   const text = smsText(words);
   const p = row?.payload || {};
-  const mail = emailOf(words, origin ? boLink(origin, TABLE[kind]?.route, p.focus || TABLE[kind]?.focus || p.po_id || p.transfer_id || p.count_id || null) : null);
+  const mail = kind === 'weekly'
+    ? weeklyEmail({ payload: { ...p, location_id: p.location_id || row?.location_id || null }, league, origin })
+    : emailOf(words, origin ? boLink(origin, TABLE[kind]?.route, p.focus || TABLE[kind]?.focus || p.po_id || p.transfer_id || p.count_id || null) : null);
   out.sms = [...phones].map((to) => ({ to, text }));
   out.email = [...mails].map((to) => ({ to, subject: mail.subject, html: mail.html }));
   return out;
@@ -273,8 +304,17 @@ export function sendable(row) {
   return !!row && row.status === 'waiting' && isNotifyKind(row.kind);
 }
 
-/** How a send went for the ledger: 'sent' when the bell landed (the bell is the record), else 'failed'. */
-export function outcomeOf({ bellIds = [], smsSent = 0, smsTried = 0, emailSent = 0, emailTried = 0 } = {}) {
+/**
+ * How a send went for the ledger: 'sent' when the bell landed (the bell is the record), else 'failed'.
+ * 5.11.100: a kind with no bell (weekly, emailOnly) is 'sent' when at least one email went, 'skipped'
+ * when there was nobody to email, else 'failed' (tried again by the attempts rule).
+ */
+export function outcomeOf({ bellIds = [], smsSent = 0, smsTried = 0, emailSent = 0, emailTried = 0, emailOnly = false } = {}) {
+  if (emailOnly) {
+    if (!emailTried) return { status: 'skipped', error: 'nobody to email' };
+    if (!emailSent) return { status: 'failed', error: `${emailTried} of ${emailTried} emails failed` };
+    return { status: 'sent', error: emailTried > emailSent ? `${emailTried - emailSent} of ${emailTried} emails failed` : null };
+  }
   const errors = [];
   if (smsTried > smsSent) errors.push(`${smsTried - smsSent} of ${smsTried} texts failed`);
   if (emailTried > emailSent) errors.push(`${emailTried - emailSent} of ${emailTried} emails failed`);
@@ -304,4 +344,57 @@ export function sendJobStep(job, result, nowIso) {
   const lastError = String(result?.error || 'send failed').slice(0, 500);
   if (attempts >= SEND_JOB_MAX_ATTEMPTS || result?.final === true) return { patch: { status: 'failed', attempts, last_error: lastError }, alert: true };
   return { patch: { attempts, last_error: lastError }, alert: false };
+}
+
+// -- 5.11.100 (Drop 4b, contract 5): the weekly email ----------------------------------------------
+
+const num = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+const pctWords = (v) => { const n = num(v); return n == null ? '' : `${Math.round(n * 10) / 10}%`; };
+
+/**
+ * The weekly email: { subject, html }. payload is the staged row's (week_start, week_end, site_ids,
+ * count_in, currency_symbol, site_name, location_id: set on a site row); league is stock_report_league's
+ * answer for those sites and that week. A company row lists every site and the company line; a site row
+ * its own line only. A site whose count is not in says 'Count not in'. Every value is escaped.
+ */
+export function weeklyEmail({ payload = {}, league = null, origin = null } = {}) {
+  const p = payload || {};
+  const sym = p.currency_symbol || '£';
+  const money = (v) => (num(v) == null ? '' : moneyWords(Math.round(num(v) * 100) / 100, sym));
+  const countIn = p.count_in && typeof p.count_in === 'object' ? p.count_in : {};
+  const siteRow = p.location_id ? String(p.location_id) : null;
+  const ws = dayShort(p.week_start);
+  const we = dayShort(p.week_end);
+  const rows = (Array.isArray(league?.rows) ? league.rows : []).filter((r) => r && r.location_id != null && (!siteRow || String(r.location_id) === siteRow));
+  const company = siteRow ? [] : (Array.isArray(league?.totals) ? league.totals : []).filter((r) => r && r.location_id == null);
+  const title = clean(p.title) || `Weekly stock: week of ${ws || 'last week'}`;
+  const th = (t) => `<th style="text-align:left;padding:6px 8px;border-bottom:1px solid #ddd;font-size:12px;color:#555">${esc(t)}</th>`;
+  const td = (t, bold = false) => `<td style="padding:6px 8px;border-bottom:1px solid #eee;font-size:13px${bold ? ';font-weight:bold' : ''}">${esc(t)}</td>`;
+  const countWords = (r) => {
+    const id = String(r.location_id);
+    if (Object.prototype.hasOwnProperty.call(countIn, id) && countIn[id] === false) return 'Count not in';
+    return clean(r.last_full_count_words || '') || 'Count in';
+  };
+  const budgetWords = (r) => (num(r.budget) == null ? 'No budget' : `${money(r.budget_spent ?? r.purchases)} of ${money(r.budget)}`);
+  const line = (r, isCompany = false) => `<tr>${[
+    td(isCompany ? `Company${r.currency ? ` (${r.currency})` : ''}` : clean(r.site || ''), isCompany),
+    td(money(r.sales_net)), td(pctWords(r.gp_pct_theo)), td(pctWords(r.gp_pct_actual)), td(pctWords(r.gap_pct)), td(pctWords(r.waste_pct)),
+    td(money(r.purchases)), td(isCompany ? (num(r.budget) == null ? '' : budgetWords(r)) : budgetWords(r)), td(money(r.stock_value_now)),
+    td(isCompany ? '' : countWords(r)),
+  ].join('')}</tr>`;
+  const head = `<tr>${['Site', 'Sales', 'GP % theo', 'GP % actual', 'Gap %', 'Waste %', 'Purchases', 'Budget', 'Stock value', 'Count'].map(th).join('')}</tr>`;
+  const body = rows.length
+    ? `<table style="border-collapse:collapse;width:100%">${head}${rows.map((r) => line(r)).join('')}${company.map((r) => line(r, true)).join('')}</table>`
+    : '<p style="margin:0;color:#333">No stock figures for this week.</p>';
+  const late = rows.filter((r) => countWords(r) === 'Count not in').map((r) => clean(r.site || ''));
+  const lateLine = late.length ? `<p style="margin:10px 0 0;color:#333">Count not in at ${esc(late.join(', '))}. Their closing figures are estimated from the ledger.</p>` : '';
+  const link = origin ? boLink(origin, 'stock-gp') : null;
+  const open = link ? `<p style="margin:14px 0 0"><a href="${esc(link)}" style="color:#0F1211;font-weight:bold">Open Stock and GP in Back Office</a></p>` : '';
+  const scope = siteRow ? clean(p.site_name || rows[0]?.site || 'Your site') : 'Every site';
+  return {
+    subject: `ServOS stock: ${title}`.slice(0, 200),
+    html: `<div style="font-family:Arial,sans-serif;max-width:760px"><h3 style="margin:0 0 6px">${esc(title)}</h3>`
+      + `<p style="margin:0 0 10px;color:#333">${esc(scope)}, ${esc(ws)} to ${esc(we)}. Net sales after refunds, demo history left out.</p>`
+      + `${body}${lateLine}${open}<p style="margin:14px 0 0;color:#777;font-size:12px">Sent by ServOS stock every week. Open Back Office for the full reports.</p></div>`,
+  };
 }

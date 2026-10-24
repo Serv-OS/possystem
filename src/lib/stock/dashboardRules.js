@@ -29,7 +29,8 @@ export const REPORTS_NOTE = 'Same controls on every one: sites, period, compare,
 export const CHOOSE_KEY_ITEMS = 'Choose your key items';
 export const KEY_ITEMS_HINT = 'Coffee groups usually track milk per milk drink, beans per shot and cups against cup drinks sold';
 export const BY_TYPE_ACTUAL_NOTE = 'Actual cost by type comes with counts by type';
-export const BUDGET_LATER = 'budget comes with the purchasing update';
+// v5.11.100 (Drop 4b): budgets are set in Purchasing, Budgets; a site or window with none says so.
+export const BUDGET_LATER = 'no budget set';
 export const READ_ONLY_TARGETS = 'Only a Stock control All sites login can change targets and key items. You can read them.';
 export const KEY_ITEMS_FULL = 'That is 20 key items. Archive one first.';
 export const MAX_KEY_ITEMS = 20;
@@ -169,6 +170,7 @@ export function cardsOf(row, { mode = 'gp', currency = null } = {}) {
   const gapMoney = gapValue == null ? '' : gapValue > 0 ? `${wholeMoney(gapValue, cur)} surplus` : wholeMoney(-gapValue, cur);
   const wastePct = pctText(r.waste_pct) || '0.0%';
   const budget = num(r.budget);
+  const spent = num(r.budget_spent);
   const purchases = num(r.purchases);
   const days = num(r.days_on_hand);
   const notPosted = num(r.not_posted_count) || 0;
@@ -212,8 +214,8 @@ export function cardsOf(row, { mode = 'gp', currency = null } = {}) {
     {
       key: 'purchases', label: 'Purchases',
       value: wholeMoney(purchases, cur) || wholeMoney(0, cur),
-      sub: budget == null ? BUDGET_LATER : `of ${wholeMoney(budget, cur)} budget`,
-      tone: budget == null ? null : (purchases || 0) > budget ? 'bad' : 'good',
+      sub: budget == null ? BUDGET_LATER : `${wholeMoney(spent ?? purchases ?? 0, cur)} ordered of ${wholeMoney(budget, cur)} budget`,
+      tone: budget == null ? null : (toneOf(rag.budget_pct) || ((spent ?? purchases ?? 0) > budget ? 'bad' : 'good')),
       report: 'stock_purchases', compare: CARD_COMPARE.purchases,
     },
     {
@@ -325,7 +327,7 @@ export const LEAGUE_COLUMNS = Object.freeze([
   Object.freeze({ key: 'gap_pct', label: 'Gap %', kind: 'pct', rag: 'gap_pct', report: 'stock_gap' }),
   Object.freeze({ key: 'waste_pct', label: 'Waste %', kind: 'pct', rag: 'waste_pct', report: 'stock_waste' }),
   Object.freeze({ key: 'comps_pct', label: 'Comps %', kind: 'pct', report: 'stock_cogs' }),
-  Object.freeze({ key: 'purchases', label: 'Purchases against budget', kind: 'budget', report: 'stock_purchases', hint: 'Budget comes with the purchasing update' }),
+  Object.freeze({ key: 'purchases', label: 'Purchases against budget', kind: 'budget', report: 'stock_budget', hint: 'Ordered this period against the purchase budget' }),
   Object.freeze({ key: 'stock_value_now', label: 'Stock value', kind: 'money', report: 'stock_value' }),
   Object.freeze({ key: 'days_on_hand', label: 'Days on hand', kind: 'qty', report: 'stock_days_on_hand' }),
   Object.freeze({ key: 'last_full_count_day', label: 'Last full count', kind: 'day', report: 'stock_movement' }),
@@ -364,11 +366,15 @@ export function leagueCell(row, col) {
       return out;
     }
     case 'budget': {
-      const p = num(r.purchases);
+      // v5.11.100 (Drop 4b): the spend against the budget is what was ordered in the window (the
+      // Order pad rule, budget_spent); before a budget is set it shows the purchases alone.
       const b = num(r.budget);
+      const p = b != null && num(r.budget_spent) != null ? num(r.budget_spent) : num(r.purchases);
       if (p == null) return out;
       out.text = b == null ? wholeMoney(p, cur) : `${wholeMoney(p, cur)} of ${wholeMoney(b, cur)}`;
-      if (b != null && p > b) out.pill = { text: 'Over', tone: 'bad' };
+      const tone = b == null ? null : toneOf(rag.budget_pct) || (p > b ? 'bad' : null);
+      if (tone === 'bad') out.pill = { text: 'Over', tone: 'bad' };
+      else if (tone === 'warn') out.pill = { text: 'Near', tone: 'warn' };
       return out;
     }
     case 'qty': {
@@ -437,7 +443,44 @@ export const ATTENTION_KINDS = Object.freeze([
   Object.freeze({ kind: 'clock_disagrees', label: 'Clocks that disagree', report: 'stock_setup_health' }),
   Object.freeze({ kind: 'demo_history', label: 'Demo history', report: null }),
   Object.freeze({ kind: 'not_posted', label: 'Sales not yet posted to stock', report: null }),
+  // v5.11.100 (Drop 4b): the purchasing, counts and transfers kinds (stock_report_attention).
+  Object.freeze({ kind: 'count_missed', label: 'Counts missed', report: 'stock_count_compliance', opts: Object.freeze({ level: 'calendar' }) }),
+  Object.freeze({ kind: 'count_second_approval', label: 'Counts waiting for a second approval', report: 'stock_count_compliance', opts: Object.freeze({ level: 'count' }) }),
+  Object.freeze({ kind: 'approval_waiting', label: 'Orders waiting for approval', report: null }),
+  Object.freeze({ kind: 'sent_unapproved', label: 'Orders sent unapproved', report: 'stock_purchases', opts: Object.freeze({ level: 'order' }) }),
+  Object.freeze({ kind: 'invoice_unplaced', label: 'Invoices that need a site', report: null }),
+  Object.freeze({ kind: 'invoice_missing', label: 'Deliveries with no invoice', report: 'stock_purchases', opts: Object.freeze({ level: 'order' }) }),
+  Object.freeze({ kind: 'transfer_overdue', label: 'Transfers not received', report: 'stock_transfers', opts: Object.freeze({ level: 'list', status: 'SENT' }) }),
+  Object.freeze({ kind: 'price_rise', label: 'Price rises over 5%', report: 'stock_prices', opts: Object.freeze({ level: 'change' }) }),
 ]);
+
+/**
+ * Where a kind is set right in Back Office (the attention row's ref.route from the database, else
+ * this list): 'stock-counts', 'purchase-orders', 'invoices', 'stock-transfers', 'price-changes'.
+ */
+export const ATTENTION_ROUTES = Object.freeze({
+  count_missed: 'stock-counts', count_second_approval: 'stock-counts', approval_waiting: 'purchase-orders', sent_unapproved: 'purchase-orders',
+  invoice_unplaced: 'invoices', invoice_missing: 'invoices', transfer_overdue: 'stock-transfers', price_rise: 'price-changes',
+});
+
+/** Where each route sits in Back Office, in the sidebar's words. */
+export const ROUTE_WORDS = Object.freeze({
+  'stock-counts': 'Inventory, Counts', 'purchase-orders': 'Purchasing, Orders', invoices: 'Purchasing, Invoices',
+  'stock-transfers': 'Inventory, Transfers', 'price-changes': 'Purchasing, Price changes',
+});
+
+/** 'Set it right in Purchasing, Orders' for an attention group, '' when it has no route. */
+export function attentionWhere(group) {
+  const w = ROUTE_WORDS[attentionRoute(group)];
+  return w ? `Set it right in ${w}` : '';
+}
+
+/** The Back Office route of an attention group: its first row's ref.route, else the kind's own. */
+export function attentionRoute(group) {
+  const g = group || {};
+  const fromRow = asList(g.sites).map((x) => x?.ref?.route).find((r) => typeof r === 'string' && /^[a-z][a-z0-9-]*$/.test(r));
+  return fromRow || ATTENTION_ROUTES[g.kind] || null;
+}
 
 const kindLabel = (kind) => {
   const k = String(kind || '').trim().replace(/_/g, ' ');

@@ -6,7 +6,9 @@
 // of that day), never worked out here. 'Negative stock' and 'Archived items still holding stock'
 // sit on their own lines and never reduce a total. 'Counted' or 'Estimated (ledger)' on every site.
 // For a multi site company this screen absorbs today's Valuation and By area (StockReports.jsx
-// stays for one site companies).
+// stays for one site companies). v5.11.100 (Drop 4b): stock in transit to each site (sent, not yet
+// received, at the sender's cost) and the total; the company value takes the central kitchen's
+// markup out (decision 5), site rows keep each site's own cost.
 
 import { useState } from 'react';
 import { StockReportFrame, SiteTotalsTable, DrillTable, StockLoading, StockError, useStockReport } from './_stockKit';
@@ -20,6 +22,8 @@ const SUB = 'Any past date, by site, category, area or legal company. Ledger val
 
 const TOTALS = [
   col('stock_value', 'Stock value', 'money'),
+  col('in_transit', 'In transit', 'money', { hint: 'sent here, not yet received' }),
+  col('total_value', 'Total', 'money'),
   col('negative_value', 'Negative stock', 'money', { hint: 'shown apart, never taken off' }),
   col('archived_holding_value', 'Archived items still holding stock', 'money'),
   col('items', 'Items', 'int'),
@@ -29,7 +33,10 @@ const ITEM_COLS = [
   col('name', 'Item'), col('category', 'Category'), col('_qty', 'On hand', 'qty'), col('cost', 'Cost', 'money'), col('value', 'Value', 'money'),
   col('_archived', 'Archived', 'text'),
 ];
-const LEGAL_COLS = [col('legal_company', 'Legal company'), col('stock_value', 'Stock value', 'money'), col('negative_value', 'Negative stock', 'money'), col('sites', 'Sites', 'int')];
+const LEGAL_COLS = [
+  col('legal_company', 'Legal company'), col('stock_value', 'Stock value', 'money'), col('in_transit', 'In transit', 'money'),
+  col('internal_margin', 'Kitchen margin taken out', 'money'), col('negative_value', 'Negative stock', 'money'), col('sites', 'Sites', 'int'),
+];
 const VIEWS = [{ value: 'category', label: 'By category' }, { value: 'area', label: 'By area' }, { value: 'legal', label: 'By legal company' }];
 const SORT_KEYS = { _qty: 'qty', _archived: 'archived' };
 const isDay = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
@@ -102,6 +109,12 @@ export default function StockValue({ orgId, sites, siteById, range, compare, lay
               <div key={t.currency || i}>
                 Negative stock {money(t.negative_value || 0, t.currency)} and archived items still holding stock {money(t.archived_holding_value || 0, t.currency)}
                 {t.currency ? ` (${t.currency})` : ''}: shown apart, never taken off the total.
+                {t.company_value != null && (
+                  <div>
+                    Internal kitchen margin taken out: {money(t.internal_margin || 0, t.currency)}. Company value {money(t.company_value, t.currency)}
+                    {' '}(stock and in transit at what it cost the group).
+                  </div>
+                )}
               </div>
             ))}
           </div>
