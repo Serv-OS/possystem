@@ -18,6 +18,9 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { secondStepRefusal } from '../_shared/second-step.ts';
 import { writeWfAudit } from '../_shared/wfAudit.js';
+// v5.11.101: the venue's region (currency, US overtime) and the pay premiums, applied at last.
+import { regionPack } from '../_shared/regionPack.js';
+import { premiumFor, anyPremium, overtimeSplit } from '../_shared/payPremiums.js';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -68,8 +71,13 @@ function allocate(pool: number, rows: { staff_id: string; hours: number; points:
 }
 
 async function orgFor(loc: string): Promise<string | null> {
-  const { data } = await admin.from('locations').select('org_id').eq('id', loc).single();
-  return data?.org_id ?? null;
+  return (await venueOf(loc)).org_id;
+}
+
+/** The venue's company, currency and timezone (v5.11.101: tronc and payroll in the venue's money). */
+async function venueOf(loc: string): Promise<{ org_id: string | null; currency: string; timezone: string }> {
+  const { data } = await admin.from('locations').select('org_id, currency, timezone').eq('id', loc).single();
+  return { org_id: data?.org_id ?? null, currency: String(data?.currency || 'GBP').toUpperCase(), timezone: data?.timezone || 'Europe/London' };
 }
 
 /** Enforce the tenant fence: caller must have access to the location (or be super_admin). */
@@ -104,7 +112,11 @@ Deno.serve(async (req) => {
   if (!location_id) return json({ error: 'location_id required' }, 400);
   if (!(await assertAccess(user, String(location_id)))) return json({ error: 'forbidden' }, 403);
 
-  const org = await orgFor(location_id);
+  const venue = await venueOf(location_id);
+  const org = venue.org_id;
+  const pack = regionPack({ currency: venue.currency });
+  const cur = pack.currency;      // GBP for a UK venue: every row and audit line reads as before
+  const sym = pack.currencySymbol;
 
   try {
     // ── TRONC RUN ────────────────────────────────────────────────────────────
@@ -118,8 +130,9 @@ Deno.serve(async (req) => {
       // Immutability check + shifts + roles + (fallback) timesheets/staff — independent → in parallel.
       const [{ data: existing }, { data: shifts }, { data: roles }, { data: tsheets }, { data: staffRows }] = await Promise.all([
         admin.from('wf_tronc_runs').select('id, status').eq('location_id', location_id).eq('week_start', week_start).maybeSingle(),
+        // v5.11.101: an open shift (nobody on it) shares no tips.
         admin.from('wf_shifts').select('staff_id, computed_hours, role_key')
-          .eq('location_id', location_id).gte('shift_date', week_start).lte('shift_date', weekEnd).eq('status', 'published'),
+          .eq('location_id', location_id).gte('shift_date', week_start).lte('shift_date', weekEnd).eq('status', 'published').not('staff_id', 'is', null),
         admin.from('wf_roles').select('key, tronc_weight').eq('location_id', location_id),
         admin.from('wf_timesheets').select('staff_id, actual_hours')
           .eq('location_id', location_id).in('status', ['approved', 'paid']).gte('clock_in', week_start).lt('clock_in', weekEndExcl),
@@ -152,7 +165,7 @@ Deno.serve(async (req) => {
 
       const res = allocate(poolNum, rows);
       const { data: run, error: runErr } = await admin.from('wf_tronc_runs').insert({
-        location_id, org_id: org, week_start, currency: 'GBP', pool: poolNum,
+        location_id, org_id: org, week_start, currency: cur, pool: poolNum,
         units_total: res.totalUnits, point_value: res.pointValue, total_paid: res.totalPaid, residual: res.residual,
         status: 'run', lines: res.lines,
       }).select().single();
@@ -160,14 +173,14 @@ Deno.serve(async (req) => {
 
       const lineRows = res.lines.map(l => ({
         run_id: run.id, location_id, org_id: org, staff_id: l.staff_id,
-        hours: round2(l.hours), points: l.points, units: l.units, share_pct: l.sharePct, payout: l.payout, currency: 'GBP',
+        hours: round2(l.hours), points: l.points, units: l.units, share_pct: l.sharePct, payout: l.payout, currency: cur,
       }));
       const { error: linesErr } = await admin.from('wf_tronc_lines').insert(lineRows);
       if (linesErr) { await admin.from('wf_tronc_runs').delete().eq('id', run.id); return json({ error: linesErr.message }, 500); }
 
       await writeAudit(location_id, org, 'tronc.run', {
-        actorId: user.id, amount: res.totalPaid, currency: 'GBP', entity: 'wf_tronc_runs', entityId: run.id,
-        reason: `pool £${poolNum.toFixed(2)} over ${rows.length} staff, residual £${res.residual.toFixed(2)}`,
+        actorId: user.id, amount: res.totalPaid, currency: cur, entity: 'wf_tronc_runs', entityId: run.id,
+        reason: `pool ${sym}${poolNum.toFixed(2)} over ${rows.length} staff, residual ${sym}${res.residual.toFixed(2)}`,
         after: { week_start, pool: poolNum, total_paid: res.totalPaid },
       });
       return json({ ok: true, run_id: run.id, pool: poolNum, total_paid: res.totalPaid, residual: res.residual, point_value: res.pointValue, lines: res.lines });
@@ -177,6 +190,9 @@ Deno.serve(async (req) => {
     // Salaried/fixed staff get a fixed entitlement (28 days) tracked separately,
     // so they are skipped here.
     if (action === 'accrual.run') {
+      // v5.11.101: the 12.07% accrual is a UK rule (holidayRules 'uk'); a US venue has no statutory
+      // accrual, so it is off there for now and nothing is written.
+      if (pack.holidayRules !== 'uk') return json({ ok: true, accrued: 0, hours: 0, rate: 0, off: 'Holiday accrual is off for US venues.' });
       const { data: settings } = await admin.from('wf_venue_settings').select('accrual_rate').eq('location_id', location_id).maybeSingle();
       const rate = Number(settings?.accrual_rate ?? 0.1207);
       // Classify staff: salaried (contract_type='salaried' or a salaried role with no hourly rate) → no accrual.
@@ -207,7 +223,7 @@ Deno.serve(async (req) => {
         return {
           location_id, org_id: org, staff_id: t.staff_id, kind: 'accrual', accrued_hours: hrs,
           accrued_pay: t.effective_rate != null ? round2(hrs * Number(t.effective_rate)) : null,
-          accrual_rate: rate, currency: t.currency || 'GBP', source_timesheet_id: t.id,
+          accrual_rate: rate, currency: t.currency || cur, source_timesheet_id: t.id,
         };
       });
       if (toInsert.length) {
@@ -336,7 +352,7 @@ Deno.serve(async (req) => {
         const { error: ledErr } = await admin.from('wf_holiday_accrual').insert({
           location_id, org_id: org, staff_id: req.staff_id, kind: 'taken',
           accrued_hours: -hours, accrued_pay: rate > 0 ? round2(-hours * rate) : null,
-          currency: 'GBP', source_time_off_id: time_off_id,
+          currency: cur, source_time_off_id: time_off_id,
           note: `${days} day${days === 1 ? '' : 's'}${leaveDays && days !== Number(req.days || 0) ? ` of ${req.days} requested` : ''} ${req.start_date} → ${req.end_date} @ ${dayHours}h/day${avgUsed ? ' (52-wk avg)' : ''}`,
         });
         if (ledErr && !String(ledErr.message).includes('duplicate key')) {
@@ -406,10 +422,10 @@ Deno.serve(async (req) => {
         admin.from('wf_payroll_runs').select('id, created_at, totals').eq('location_id', location_id).eq('period_start', from).maybeSingle(),
         admin.from('wf_timesheets').select('id').eq('location_id', location_id).eq('status', 'pending')
           .gte('clock_in', `${from}T00:00:00`).lte('clock_in', `${to}T23:59:59`),
-        admin.from('wf_venue_settings').select('settings').eq('location_id', location_id).maybeSingle(),
+        admin.from('wf_venue_settings').select('settings, premiums').eq('location_id', location_id).maybeSingle(),
         // Base pay from APPROVED + already-PAID timesheets (paid rows keep the
         // preview of a closed period faithful to what was actually paid).
-        admin.from('wf_timesheets').select('id, staff_id, actual_hours, effective_rate, paid_break_mins, pay_amount, clock_in, status')
+        admin.from('wf_timesheets').select('id, staff_id, actual_hours, effective_rate, rate_source, paid_break_mins, pay_amount, clock_in, clock_out, status')
           .eq('location_id', location_id).in('status', ['approved', 'paid'])
           .gte('clock_in', `${from}T00:00:00`).lte('clock_in', `${to}T23:59:59`),
         admin.from('wf_tronc_runs').select('id, week_start, status, pool, total_paid')
@@ -443,6 +459,37 @@ Deno.serve(async (req) => {
         const b = base[t.staff_id] ?? (base[t.staff_id] = { hours: 0, pay: 0 });
         b.hours += hrs; b.pay += pay;
       });
+      // v5.11.101: PAY PREMIUMS (Workforce settings), saved since the Workforce build and never applied
+      // until now. Weekend, public holiday and night premiums on hourly pay for positions marked premium
+      // eligible; the higher one where two apply (_shared/payPremiums.js, one rule with the rota cost).
+      // A venue with no premiums set (every venue on 24 Oct 2026) adds nothing and its lines read as before.
+      const premiums = (vs as any)?.premiums ?? {};
+      const premium: Record<string, { hours: number; pay: number }> = {};
+      const withPremiums = anyPremium(premiums);
+      if (withPremiums) {
+        const [{ data: stRows }, { data: roleRows }] = await Promise.all([
+          admin.from('wf_staff').select('id, role_key').eq('location_id', location_id),
+          admin.from('wf_roles').select('key, premium_eligible').eq('location_id', location_id),
+        ]);
+        const roleOf: Record<string, string> = {}; (stRows ?? []).forEach((x: any) => { roleOf[x.id] = x.role_key; });
+        const eligibleRole: Record<string, boolean> = {}; (roleRows ?? []).forEach((x: any) => { eligibleRole[x.key] = x.premium_eligible !== false; });
+        (tss ?? []).forEach((t: any) => {
+          if (!t.clock_in || !t.clock_out) return;
+          const rk = roleOf[t.staff_id];
+          const r = premiumFor({
+            startMs: t.clock_in, endMs: t.clock_out, workedHours: Number(t.actual_hours || 0), rate: Number(t.effective_rate || 0),
+            premiums, tz: venue.timezone, country: pack.country,
+            eligible: rk ? (eligibleRole[rk] ?? true) : true, hourly: t.rate_source !== 'salaried',
+          });
+          if (!r.pay) return;
+          const p = premium[t.staff_id] ?? (premium[t.staff_id] = { hours: 0, pay: 0 });
+          p.hours += r.hours; p.pay += r.pay;
+        });
+      }
+      // v5.11.101: US venues: regular and overtime hours by work week (federal: over 40), for the payroll
+      // provider's export. Hours only; the provider pays the overtime rate.
+      const overtime = pack.overtimeWeeklyHours ? overtimeSplit(tss ?? [], pack.overtimeWeeklyHours, venue.timezone) : null;
+
       const troncTips: Record<string, number> = {};
       const runIds = (runs ?? []).map((r: any) => r.id);
       if (runIds.length) {
@@ -532,14 +579,19 @@ Deno.serve(async (req) => {
         const tronc = round2(troncTips[id] ?? 0);
         const direct = round2(directTips[id] ?? 0);
         const hol = holiday[id] ?? { hours: 0, pay: 0 };
-        return {
+        const prem = premium[id] ?? { hours: 0, pay: 0 };
+        const line: Record<string, any> = {
           staff_id: id, hours: round2(b.hours), pay: round2(b.pay),
           holiday_hours: round2(hol.hours), holiday_pay: round2(hol.pay),
           tips_tronc: tronc, tips_direct: direct, tips: round2(tronc + direct),
-          total: round2(b.pay + hol.pay + tronc + direct),
+          total: round2(b.pay + round2(prem.pay) + hol.pay + tronc + direct),
         };
+        // Only a venue that pays premiums or overtime carries these keys: every other line is as before.
+        if (withPremiums) { line.premium_hours = round2(prem.hours); line.premium_pay = round2(prem.pay); }
+        if (overtime) { line.regular_hours = overtime[id]?.regular ?? 0; line.overtime_hours = overtime[id]?.overtime ?? 0; }
+        return line as { staff_id: string; hours: number; pay: number; holiday_hours: number; holiday_pay: number; tips_tronc: number; tips_direct: number; tips: number; total: number; premium_pay?: number };
       }).sort((a, b) => b.total - a.total);
-      const totals = {
+      const totals: Record<string, number> = {
         pay: round2(staff.reduce((a, s) => a + s.pay, 0)),
         holiday_pay: round2(staff.reduce((a, s) => a + (s.holiday_pay || 0), 0)),
         tips_tronc: round2(staff.reduce((a, s) => a + s.tips_tronc, 0)),
@@ -547,12 +599,14 @@ Deno.serve(async (req) => {
         tips: round2(staff.reduce((a, s) => a + s.tips, 0)),
         total: round2(staff.reduce((a, s) => a + s.total, 0)),
       };
+      if (withPremiums) totals.premium_pay = round2(staff.reduce((a, s) => a + (s.premium_pay || 0), 0));
       const payload = {
         ok: true, from, to, staff, totals,
         policy: { tipMode, directPct: Math.round(directShare * 100), allocator, troncmasterName: policy.troncmasterName ?? null },
         unattributedTips: round2(unattributedTips),
         pendingTimesheets: pendingCount,
         closedRun: existingRun ? { id: existingRun.id, created_at: existingRun.created_at } : null,
+        region: { country: pack.country, currency: cur, overtimeWeeklyHours: pack.overtimeWeeklyHours, payrollExport: pack.payrollExport },
         tronc: { runs: (runs ?? []).map((r: any) => ({ week_start: r.week_start, status: r.status, total_paid: r.total_paid })), missingWeeks },
       };
       if (!closing) return json(payload);
@@ -577,8 +631,8 @@ Deno.serve(async (req) => {
       }
 
       await writeAudit(location_id, org, 'payroll.close', {
-        actorId: user.id, amount: totals.total, currency: 'GBP', entity: 'wf_payroll_runs', entityId: run.id,
-        reason: `period ${from} – ${to}: ${staff.length} staff, pay £${totals.pay.toFixed(2)} + tips £${totals.tips.toFixed(2)}; ${tsIds.length} timesheet(s) marked paid`,
+        actorId: user.id, amount: totals.total, currency: cur, entity: 'wf_payroll_runs', entityId: run.id,
+        reason: `period ${from} – ${to}: ${staff.length} staff, pay ${sym}${totals.pay.toFixed(2)} + tips ${sym}${totals.tips.toFixed(2)}; ${tsIds.length} timesheet(s) marked paid`,
         after: { period_start: from, period_end: to, totals, timesheets_paid: tsIds.length },
       });
       return json({ ...payload, closedRun: { id: run.id, created_at: run.created_at }, timesheetsPaid: tsIds.length });

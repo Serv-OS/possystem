@@ -124,9 +124,10 @@ test('every wf_audit write in the edge functions goes through the chain writer',
   // the phone) audit too. Opening a count and saving figures are not audited (no stock moves).
   // v5.11.96 (multi site stock Drop 3): the phone's transfer, kitchen, shop buy, close down and
   // forecast steps share one audit call, so there is one more.
-  assert.equal(calls.length, 9, 'timesheet.clock_out, timesheet.approve, timeoff.decide, po.raise, po.reject_delivery, po.receive, stock.count_approve, stock.waste, the Drop 3 steps');
+  // v5.11.101: swap.decide (a manager approves or declines a shift claim or swap) audits too.
+  assert.equal(calls.length, 10, 'timesheet.clock_out, timesheet.approve, timeoff.decide, swap.decide, po.raise, po.reject_delivery, po.receive, stock.count_approve, stock.waste, the Drop 3 steps');
   assert.equal(checked.length, calls.length, 'an audit result is ignored');
-  assert.equal((ma.match(/if \(auditErr\)/g) || []).length, 9);
+  assert.equal((ma.match(/if \(auditErr\)/g) || []).length, 10);
   assert.match(ma, /const auditErr = await audit\(loc, orgId, op, auditWhat, /, 'the Drop 3 steps audit');
   for (const action of ['stock.count_approve', 'stock.waste']) assert.match(ma, new RegExp(`const auditErr = await audit\\(loc, orgId, op, '${action.replace('.', '\\.')}'`), action);
 });

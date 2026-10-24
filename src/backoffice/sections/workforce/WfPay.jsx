@@ -9,6 +9,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, Badge, RoleChip, money, th, td, inputStyle, labelStyle, groupColor, GRP_SECTION, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
+import { activeRegionPack } from '../../../lib/regionPack';
 
 const PAY_TYPES = [
   { v: 'hourly', lbl: 'Hourly' },
@@ -308,12 +309,12 @@ function RoleEditor({ role, busy, onClose, onSave, onDelete }) {
           <div style={{ display: 'flex', gap: 12 }}>
             {draft.payType === 'salaried' ? (
               <div style={{ flex: 1 }}>
-                <label style={labelStyle}>Salary (£/yr)</label>
+                <label style={labelStyle}>Salary ({activeRegionPack().currencySymbol}/yr)</label>
                 <input style={inputStyle} type="number" step="100" value={draft.salary ?? ''} placeholder="28000" onChange={e => set({ salary: e.target.value })} />
               </div>
             ) : (
               <div style={{ flex: 1 }}>
-                <label style={labelStyle}>Base rate (£/h)</label>
+                <label style={labelStyle}>Base rate ({activeRegionPack().currencySymbol}/h)</label>
                 <input style={inputStyle} type="number" step="0.01" value={draft.rate ?? ''} placeholder="12.50" disabled={draft.payType === 'ageBanded'} onChange={e => set({ rate: e.target.value })} />
               </div>
             )}

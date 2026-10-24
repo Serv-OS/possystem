@@ -28,8 +28,13 @@ import WfCompliance, { DOC_LABEL, DOC_GROUP, GROUP_ORDER, GROUP_LABEL } from './
 import WfTraining from './workforce/WfTraining';
 import WfAnnouncements from './workforce/WfAnnouncements';
 import WfSettings from './workforce/WfSettings';
+import { activeRegionPack, venueMoney } from '../../lib/regionPack';
 
-const money = (n, dp = 0) => '£' + Number(n || 0).toLocaleString('en-GB', { minimumFractionDigits: dp, maximumFractionDigits: dp });
+// v5.11.101: the venue's money and region (the region pack follows the venue's currency). A UK venue
+// reads byte for byte as before.
+const money = (n, dp = 0) => venueMoney(n, dp);
+const rateText = (r) => `${venueMoney(r, 2)}/h`;
+const salaryText = (a) => `${activeRegionPack().currencySymbol}${Math.round(a / 1000)}k/yr`;
 const HUE = { mgmt: 250, bar: 200, floor: 150, kitchen: 38, door: 285 };
 const groupColor = grp => `oklch(var(--cat-l) var(--cat-c) ${HUE[grp] ?? 250})`;
 const GRP_SECTION = { bar: 'Bar', floor: 'Floor', kitchen: 'Kitchen', door: 'Door', mgmt: 'Management' };
@@ -305,9 +310,9 @@ function WfStaff({ staff, roles = ROLES, holidayHours = {}, onAdd, onView, onEdi
         <tbody>
           {staff.map(s => {
             const role = roles[s.role];
-            const baseRate = role ? (role.rate != null ? `£${Number(role.rate).toFixed(2)}/h` : (role.salary ? `£${Math.round(role.salary / 1000)}k/yr` : '—')) : '—';
+            const baseRate = role ? (role.rate != null ? rateText(role.rate) : (role.salary ? salaryText(role.salary) : '—')) : '—';
             const hasOverride = s.rateOverride != null && s.rateOverride !== '';
-            const rateLbl = hasOverride ? `£${Number(s.rateOverride).toFixed(2)}/h` : baseRate;
+            const rateLbl = hasOverride ? rateText(s.rateOverride) : baseRate;
             return (
               <tr key={s.id}>
                 <td style={td}><button onClick={() => onView?.(s)} title="View profile" style={{ display: 'flex', alignItems: 'center', gap: 9, background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}><span style={{ width: 28, height: 28, borderRadius: '50%', background: 'var(--inset)', border: '1px solid var(--inset-border)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 700, color: 'var(--t3)', flexShrink: 0 }}>{initials(s.name)}</span><b style={{ fontWeight: 600, color: 'var(--t1)', borderBottom: '1px dotted var(--bdr2)' }}>{s.name}</b></button></td>
@@ -338,9 +343,11 @@ function AddStaffModal({ locName, staff, roles = ROLES, sections = [], onClose, 
   const isEdit = !!staff;
   const roleOpts = Object.entries(roles);
   const ec = (isEdit && staff.emergencyContact) || {};
+  const pack = activeRegionPack();
+  const usFields = pack.payrollFields.includes('ssnLast4');
   const [f, setF] = useState(isEdit
-    ? { name: staff.name || '', role: staff.role || roleOpts[0]?.[0] || 'server', contractType: staff.contractType || 'partTime', mobile: staff.mobile || '', email: staff.email || '', dob: staff.dob || '', startDate: staff.startDate || '', rateOverride: staff.rateOverride != null ? String(staff.rateOverride) : '', address: staff.address || '', niNumber: staff.niNumber || '', ecName: ec.name || '', ecPhone: ec.phone || '', ecRelation: ec.relationship || '' }
-    : { name: '', role: roleOpts[0]?.[0] || 'server', contractType: 'partTime', mobile: '', email: '', dob: '', startDate: '', rateOverride: '', address: '', niNumber: '', ecName: '', ecPhone: '', ecRelation: '' });
+    ? { name: staff.name || '', role: staff.role || roleOpts[0]?.[0] || 'server', contractType: staff.contractType || 'partTime', mobile: staff.mobile || '', email: staff.email || '', dob: staff.dob || '', startDate: staff.startDate || '', rateOverride: staff.rateOverride != null ? String(staff.rateOverride) : '', address: staff.address || '', niNumber: staff.niNumber || '', ecName: ec.name || '', ecPhone: ec.phone || '', ecRelation: ec.relationship || '', ...(usFields ? { ssnLast4: staff.ssnLast4 || '', payrollEmployeeId: staff.payrollEmployeeId || '' } : {}) }
+    : { name: '', role: roleOpts[0]?.[0] || 'server', contractType: 'partTime', mobile: '', email: '', dob: '', startDate: '', rateOverride: '', address: '', niNumber: '', ecName: '', ecPhone: '', ecRelation: '', ...(usFields ? { ssnLast4: '', payrollEmployeeId: '' } : {}) });
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
   // v5.5.993 — which sections this person works in. Never settable before,
   // so the column was empty everywhere and anything keyed on it was dead.
@@ -363,7 +370,7 @@ function AddStaffModal({ locName, staff, roles = ROLES, sections = [], onClose, 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
           <div style={{ gridColumn: '1 / -1' }}><label style={labelStyle}>Full name</label><input style={inputStyle} value={f.name} onChange={e => set('name', e.target.value)} placeholder="e.g. Jordan Lee" autoFocus /></div>
           <div><label style={labelStyle}>Position</label><select style={inputStyle} value={f.role} onChange={e => set('role', e.target.value)}>{roleOpts.map(([k, r]) => <option key={k} value={k}>{r.lbl}</option>)}</select></div>
-          <div><label style={labelStyle}>Pay rate override (£/h)</label><input style={inputStyle} value={f.rateOverride} onChange={e => set('rateOverride', e.target.value.replace(/[^0-9.]/g, ''))} placeholder={roleRate != null ? `Position default £${Number(roleRate).toFixed(2)}` : 'Position default'} inputMode="decimal" /></div>
+          <div><label style={labelStyle}>Pay rate override ({pack.currencySymbol}/h)</label><input style={inputStyle} value={f.rateOverride} onChange={e => set('rateOverride', e.target.value.replace(/[^0-9.]/g, ''))} placeholder={roleRate != null ? `Position default ${venueMoney(roleRate, 2)}` : 'Position default'} inputMode="decimal" /></div>
           <div><label style={labelStyle}>Contract</label><select style={inputStyle} value={f.contractType} onChange={e => set('contractType', e.target.value)}><option value="zeroHours">Zero hours</option><option value="partTime">Part time</option><option value="fullTime">Full time</option><option value="salaried">Salaried</option></select></div>
           {sections.length > 0 && (
             <div style={{ gridColumn: '1 / -1' }}>
@@ -388,16 +395,23 @@ function AddStaffModal({ locName, staff, roles = ROLES, sections = [], onClose, 
               </div>
             </div>
           )}
-          <div><label style={labelStyle}>Mobile (SMS)</label><input style={inputStyle} value={f.mobile} onChange={e => set('mobile', e.target.value)} placeholder="+44 7700 900000" /></div>
+          <div><label style={labelStyle}>Mobile (SMS)</label><input style={inputStyle} value={f.mobile} onChange={e => set('mobile', e.target.value)} placeholder={pack.country === 'US' ? '(801) 555-1234' : '+44 7700 900000'} /></div>
           <div><label style={labelStyle}>Email</label><input style={inputStyle} value={f.email} onChange={e => set('email', e.target.value)} placeholder="name@email.com" /></div>
           <div><label style={labelStyle}>Date of birth</label><input style={inputStyle} type="date" value={f.dob} onChange={e => set('dob', e.target.value)} /></div>
           <div><label style={labelStyle}>Start date</label><input style={inputStyle} type="date" value={f.startDate} onChange={e => set('startDate', e.target.value)} /></div>
           <div style={{ gridColumn: '1 / -1' }}><label style={labelStyle}>Home address</label><input style={inputStyle} value={f.address} onChange={e => set('address', e.target.value)} placeholder="House, street, town, postcode" /></div>
+          {usFields ? (<>
+            <div><label style={labelStyle}>SSN (last 4 only)</label><input style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} value={f.ssnLast4} onChange={e => set('ssnLast4', e.target.value.replace(/\D/g, '').slice(0, 4))} placeholder="1234" inputMode="numeric" />
+              <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 4 }}>Never the whole number.</div></div>
+            <div><label style={labelStyle}>Payroll employee ID</label><input style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} value={f.payrollEmployeeId} onChange={e => set('payrollEmployeeId', e.target.value.slice(0, 40))} placeholder="From your payroll provider" />
+              <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 4 }}>Included in the US payroll export.</div></div>
+          </>) : (
           <div style={{ gridColumn: '1 / -1' }}><label style={labelStyle}>National Insurance number</label><input style={{ ...inputStyle, fontFamily: 'var(--font-mono)', textTransform: 'uppercase' }} value={f.niNumber} onChange={e => set('niNumber', e.target.value.toUpperCase().replace(/[^A-Z0-9 ]/g, '').slice(0, 13))} placeholder="QQ 12 34 56 C" />
             <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 4 }}>Needed by your payroll company — included in the payroll export.</div></div>
+          )}
           <div style={{ gridColumn: '1 / -1', marginTop: 4 }}><div className="mono" style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--acc)' }}>Emergency contact</div></div>
           <div><label style={labelStyle}>Contact name</label><input style={inputStyle} value={f.ecName} onChange={e => set('ecName', e.target.value)} placeholder="e.g. Sam Lee" /></div>
-          <div><label style={labelStyle}>Contact phone</label><input style={inputStyle} value={f.ecPhone} onChange={e => set('ecPhone', e.target.value)} placeholder="+44 7700 900000" /></div>
+          <div><label style={labelStyle}>Contact phone</label><input style={inputStyle} value={f.ecPhone} onChange={e => set('ecPhone', e.target.value)} placeholder={pack.country === 'US' ? '(801) 555-1234' : '+44 7700 900000'} /></div>
           <div style={{ gridColumn: '1 / -1' }}><label style={labelStyle}>Relationship</label><input style={inputStyle} value={f.ecRelation} onChange={e => set('ecRelation', e.target.value)} placeholder="e.g. Partner, Parent" /></div>
         </div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 9, marginTop: 20 }}>
@@ -466,8 +480,9 @@ function StaffDetailModal({ staff: s, roles = ROLES, ctx, showToast, onClose, on
     return () => { live = false; };
   }, [s.id, ctx.locationId]);
 
-  const baseRate = role ? (role.rate != null ? `£${Number(role.rate).toFixed(2)}/h` : (role.salary ? `£${Math.round(role.salary / 1000)}k/yr` : '—')) : '—';
-  const payRate = s.rateOverride != null && s.rateOverride !== '' ? `£${Number(s.rateOverride).toFixed(2)}/h (override)` : baseRate;
+  const baseRate = role ? (role.rate != null ? rateText(role.rate) : (role.salary ? salaryText(role.salary) : '—')) : '—';
+  const payRate = s.rateOverride != null && s.rateOverride !== '' ? `${rateText(s.rateOverride)} (override)` : baseRate;
+  const pack = activeRegionPack();
   const fields = [
     ['Position', role?.lbl || s.role || '—'], ['Pay rate', payRate],
     ['Contract', CONTRACT_LABEL[s.contractType] || s.contractType || '—'], ['Status', s.status || 'active'],
@@ -475,7 +490,9 @@ function StaffDetailModal({ staff: s, roles = ROLES, ctx, showToast, onClose, on
     ['Date of birth', s.dob || '—'], ['Start date', s.startDate || '—'],
     ['Address', s.address || '—'],
     ['Emergency contact', s.emergencyContact ? `${s.emergencyContact.name || '—'}${s.emergencyContact.phone ? ` · ${s.emergencyContact.phone}` : ''}${s.emergencyContact.relationship ? ` (${s.emergencyContact.relationship})` : ''}` : '—'],
-    ['NI number', s.niNumber || '—'],
+    // v5.11.101: the payroll fields follow the venue (UK: NI number; US: SSN last 4 and the payroll id).
+    ...(pack.payrollFields.includes('niNumber') ? [['NI number', s.niNumber || '—']] : []),
+    ...(pack.payrollFields.includes('ssnLast4') ? [['SSN (last 4)', s.ssnLast4 ? `***-**-${s.ssnLast4}` : '—'], ['Payroll employee ID', s.payrollEmployeeId || '—']] : []),
   ];
 
   return (
@@ -507,8 +524,10 @@ function StaffDetailModal({ staff: s, roles = ROLES, ctx, showToast, onClose, on
           </div>
         </div>
 
-        <SectionTitle>Bank details (for payroll)</SectionTitle>
-        <BankPanel s={s} ctx={ctx} showToast={showToast} onPatch={onPatch} />
+        {pack.bankDetails ? <>
+          <SectionTitle>Bank details (for payroll)</SectionTitle>
+          <BankPanel s={s} ctx={ctx} showToast={showToast} onPatch={onPatch} />
+        </> : <div style={{ fontSize: 12, color: 'var(--t3)', marginBottom: 16 }}>Bank details are held by your payroll provider for a US venue, so they are not kept here.</div>}
 
         <SectionTitle>Contract</SectionTitle>
         <ContractPanel s={s} role={role} onb={data.onb} loading={data.loading} ctx={ctx} showToast={showToast}

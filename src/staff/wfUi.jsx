@@ -6,8 +6,11 @@
 
 import { Icon } from '../components/ServOSIcons';
 import { ROLES } from './seed';
+import { venueMoney } from '../lib/regionPack';
 
-export const money = (n, dp = 0) => '£' + Number(n || 0).toLocaleString('en-GB', { minimumFractionDigits: dp, maximumFractionDigits: dp });
+// v5.11.101: the venue's money (the region pack follows the venue's currency). A UK venue reads
+// byte for byte as before ("£1,234"); a US venue reads "$1,234".
+export const money = (n, dp = 0) => venueMoney(n, dp);
 export const HUE = { mgmt: 250, bar: 200, floor: 150, kitchen: 38, door: 285 };
 export const groupColor = grp => `oklch(var(--cat-l) var(--cat-c) ${HUE[grp] ?? 250})`;
 export const cellTint = (col, a) => `color-mix(in oklch, ${col} ${a}%, transparent)`;

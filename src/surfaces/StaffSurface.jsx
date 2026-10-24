@@ -18,6 +18,10 @@ import { staffSupabase as supabase, isMock } from '../lib/supabase';
 import { Icon } from '../components/ServOSIcons';
 import ClockCard from '../staff/ClockCard';
 import { MIN_PASSWORD_LENGTH } from '../lib/secondStep/rules';
+// v5.11.101: open shifts, swaps and availability; money and dates the venue's way (region pack).
+import { CantDoPanel, SwapsSection, AvailabilityCard } from '../staff/StaffShiftSwaps';
+import { dayText, timeText } from '../staff/staffDates';
+import { wfMoneyText } from '../lib/regionPack';
 
 const glass = { padding: '14px 16px', borderRadius: 16 };
 
@@ -31,8 +35,11 @@ async function callPortal(body, jwt) {
   return j;
 }
 
-const fmtDay = iso => new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
-const fmtStamp = (iso) => iso ? new Date(iso).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—';
+// v5.11.101: the venue's locale (en-GB for a UK venue, as before; en-US for a US one), from the
+// snapshot's region. Set once per snapshot, read by every date on this surface.
+let LOCALE = 'en-GB';
+const fmtDay = iso => new Date(iso + 'T00:00:00').toLocaleDateString(LOCALE, { weekday: 'short', day: 'numeric', month: 'short' });
+const fmtStamp = (iso) => iso ? new Date(iso).toLocaleString(LOCALE, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—';
 const hm = h => { const m = Math.round((Number(h) || 0) * 60); return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m`; };
 
 export default function StaffSurface() {
@@ -81,6 +88,7 @@ export default function StaffSurface() {
     if (!jwt) { setStage('login'); return; }
     try {
       const s = await callPortal({ action: 'snapshot' }, jwt);
+      LOCALE = s?.region?.locale || 'en-GB';
       setSnap(s); setStage('app');
     } catch (e) {
       // An expired or revoked staff login → back to the login screen. This
@@ -346,6 +354,9 @@ async function withJwt(body) {
 
 function ShiftsTab({ snap, onChanged }) {
   const shifts = snap?.shifts || [];
+  const [cantDo, setCantDo] = useState(null);      // v5.11.101: shift id with the "Can't do this shift" panel open
+  const [swapMsg, setSwapMsg] = useState('');
+  const upIds = new Set(snap?.swaps?.upShiftIds || []);
   const leave = snap?.leave || { accruedHours: 0, requests: [] };
   const [requesting, setRequesting] = useState(false);
   const [form, setForm] = useState({ type: 'holiday', from: '', to: '', note: '' });
@@ -360,17 +371,29 @@ function ShiftsTab({ snap, onChanged }) {
       {!shifts.length
         ? <div className="sv-glass" style={glass}>No published shifts in the next two weeks. When the rota is published, they show here.</div>
         : shifts.map((s, i) => (
-          <div key={i} className="sv-glass" style={{ ...glass, display: 'flex', alignItems: 'center', gap: 12 }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 14.5, fontWeight: 800 }}>{fmtDay(s.date)}</div>
-              {s.section && <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: 2 }}>{s.section}</div>}
+          <div key={s.id || i} className="sv-glass" style={glass}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 14.5, fontWeight: 800 }}>{dayText(s.date, LOCALE)}</div>
+                {s.section && <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: 2 }}>{s.section}</div>}
+              </div>
+              <div style={{ textAlign: 'right' }}>
+                <div className="mono" style={{ fontSize: 15, fontWeight: 700 }}>{timeText(s.start, LOCALE)} to {timeText(s.finish, LOCALE)}</div>
+                {s.breakMins > 0 && <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 2 }}>{s.breakMins}m break</div>}
+              </div>
             </div>
-            <div style={{ textAlign: 'right' }}>
-              <div className="mono" style={{ fontSize: 15, fontWeight: 700 }}>{s.start}–{s.finish}</div>
-              {s.breakMins > 0 && <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 2 }}>{s.breakMins}m break</div>}
-            </div>
+            {/* v5.11.101: put it up for someone else (the venue setting decides if a manager approves the swap). */}
+            {s.id && snap?.swaps && (upIds.has(s.id)
+              ? <div style={{ fontSize: 11.5, color: 'var(--amber)', marginTop: 8 }}>Up for someone to take. It stays yours until they do. See My swaps below.</div>
+              : cantDo === s.id
+                ? <CantDoPanel shift={s} colleagues={snap.swaps.colleagues} myRole={s.roleKey || snap?.me?.role} call={withJwt}
+                    onClose={() => setCantDo(null)} onDone={async (m) => { setCantDo(null); setSwapMsg(m); await onChanged(); }} />
+                : <button onClick={() => { setCantDo(s.id); setSwapMsg(''); }} style={{ marginTop: 8, background: 'none', border: 'none', padding: 0, color: 'var(--acc)', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>Can't do this shift</button>)}
           </div>
         ))}
+      {swapMsg && <div className="sv-glass" style={{ ...glass, color: 'var(--grn)', fontSize: 13, fontWeight: 700 }}>{swapMsg}</div>}
+      <SwapsSection swaps={snap?.swaps} locale={LOCALE} call={withJwt} onChanged={onChanged} />
+      {snap?.swaps && <AvailabilityCard key={JSON.stringify(snap?.availability?.perDay || [])} availability={snap?.availability} call={withJwt} onChanged={onChanged} />}
 
       {/* ── Time off ── */}
       <div className="sv-glass" style={{ ...glass, marginTop: 6 }}>
@@ -665,7 +688,7 @@ function MeTab({ snap, onSaved }) {
               <div>
                 <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--t4)' }}>Pay rate</div>
                 <div className="mono" style={{ fontSize: 15, fontWeight: 800, marginTop: 2 }}>
-                  {snap.payRate.kind === 'hourly' ? `£${Number(snap.payRate.rate).toFixed(2)}/h` : `£${Math.round(snap.payRate.annual / 1000)}k/yr`}
+                  {snap.payRate.kind === 'hourly' ? `${wfMoneyText(snap.payRate.rate, 2, snap?.region?.currency || 'GBP')}/h` : `${snap?.region?.currencySymbol || '£'}${Math.round(snap.payRate.annual / 1000)}k/yr`}
                 </div>
               </div>
             )}
@@ -700,6 +723,10 @@ function MeTab({ snap, onSaved }) {
         )}
       </div>
 
+      {/* v5.11.101: a US venue pays through its payroll provider, which holds bank details. */}
+      {snap?.region?.bankDetails === false ? (
+        <div className="sv-glass" style={{ ...glass, fontSize: 12.5, color: 'var(--t2)' }}>Your pay goes through the venue's payroll provider, which holds your bank details. Ask your manager to change them.</div>
+      ) : (
       <div className="sv-glass" style={glass} ref={bankRef}>
         <RowHead title="Bank details" onEdit={() => { setForm({ sortCode: '', account: '', accountName: me.bankAccountName || '' }); setEditing(editing === 'bank' ? null : 'bank'); }} open={editing === 'bank'} />
         {editing !== 'bank' ? (
@@ -717,6 +744,7 @@ function MeTab({ snap, onSaved }) {
           </div>
         )}
       </div>
+      )}
     </div>
   );
 }

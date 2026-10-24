@@ -1,0 +1,27 @@
+{
+  "note": "One list of claim cases, run over the JavaScript rules (src/lib/openShiftRules.test.js) and over the database judge (run.mjs). Days are offsets from the venue's today. People: C bar (the claimer), Q bar, P bar (an owner), D kitchen, L bar leaver, X bar at another venue.",
+  "cases": [
+    { "name": "an open shift in my position", "expect": null, "shift": { "day": 2, "start": "17:00", "finish": "22:00" }, "claimer": "C" },
+    { "name": "a draft shift", "expect": "not_published", "shift": { "day": 2, "start": "17:00", "finish": "22:00", "status": "draft" }, "claimer": "C" },
+    { "name": "yesterday", "expect": "past", "shift": { "day": -1, "start": "17:00", "finish": "22:00" }, "claimer": "C" },
+    { "name": "a leaver", "expect": "not_on_team", "shift": { "day": 2, "start": "17:00", "finish": "22:00" }, "claimer": "L" },
+    { "name": "someone at another venue", "expect": "not_on_team", "shift": { "day": 2, "start": "17:00", "finish": "22:00" }, "claimer": "X" },
+    { "name": "my own shift", "expect": "own", "shift": { "day": 2, "start": "17:00", "finish": "22:00", "owner": "C" }, "request": { "kind": "drop", "status": "open", "from": "C" }, "claimer": "C" },
+    { "name": "the wrong position", "expect": "role", "shift": { "day": 2, "start": "17:00", "finish": "22:00" }, "claimer": "D" },
+    { "name": "someone's shift nobody put up", "expect": "not_offered", "shift": { "day": 2, "start": "17:00", "finish": "22:00", "owner": "P" }, "claimer": "C" },
+    { "name": "offered to someone else", "expect": "offered_elsewhere", "shift": { "day": 2, "start": "17:00", "finish": "22:00", "owner": "P" }, "request": { "kind": "offer", "status": "open", "from": "P", "to": "Q" }, "claimer": "C" },
+    { "name": "offered to me", "expect": null, "shift": { "day": 2, "start": "17:00", "finish": "22:00", "owner": "P" }, "request": { "kind": "offer", "status": "open", "from": "P", "to": "C" }, "claimer": "C" },
+    { "name": "dropped to everyone", "expect": null, "shift": { "day": 2, "start": "17:00", "finish": "22:00", "owner": "P" }, "request": { "kind": "drop", "status": "open", "from": "P" }, "claimer": "C" },
+    { "name": "dropped by someone no longer on it", "expect": "not_offered", "shift": { "day": 2, "start": "17:00", "finish": "22:00", "owner": "P" }, "request": { "kind": "drop", "status": "open", "from": "Q" }, "claimer": "C" },
+    { "name": "someone already asked", "expect": "taken", "shift": { "day": 2, "start": "17:00", "finish": "22:00" }, "request": { "kind": "claim", "status": "pending", "to": "Q" }, "claimer": "C" },
+    { "name": "overlaps my evening shift", "expect": "overlap", "shift": { "day": 2, "start": "17:00", "finish": "22:00" }, "claimer": "C", "others": [{ "day": 2, "start": "18:00", "finish": "23:00" }] },
+    { "name": "overlaps my overnight shift from the day before", "expect": "overlap", "shift": { "day": 2, "start": "02:00", "finish": "06:00" }, "claimer": "C", "others": [{ "day": 1, "start": "22:00", "finish": "03:00" }] },
+    { "name": "my shift ends as this one starts", "expect": null, "shift": { "day": 2, "start": "17:00", "finish": "22:00" }, "claimer": "C", "others": [{ "day": 2, "start": "12:00", "finish": "17:00" }] },
+    { "name": "my no show shift does not count", "expect": null, "shift": { "day": 2, "start": "17:00", "finish": "22:00" }, "claimer": "C", "others": [{ "day": 2, "start": "18:00", "finish": "23:00", "status": "no_show" }] },
+    { "name": "on approved leave", "expect": "leave", "shift": { "day": 2, "start": "17:00", "finish": "22:00" }, "claimer": "C", "leave": [{ "fromDay": 1, "toDay": 3, "status": "approved" }] },
+    { "name": "leave still waiting", "expect": null, "shift": { "day": 2, "start": "17:00", "finish": "22:00" }, "claimer": "C", "leave": [{ "fromDay": 1, "toDay": 3, "status": "pending" }] },
+    { "name": "marked unavailable that weekday", "expect": "unavailable", "shift": { "day": 2, "start": "17:00", "finish": "22:00" }, "claimer": "C", "unavailable": true },
+    { "name": "over the weekly hours cap", "expect": "hours_cap", "shift": { "day": 2, "start": "17:00", "finish": "22:00" }, "claimer": "C", "cap": 10, "others": [{ "day": 2, "start": "06:00", "finish": "12:00" }] },
+    { "name": "under the weekly hours cap", "expect": null, "shift": { "day": 2, "start": "17:00", "finish": "22:00" }, "claimer": "C", "cap": 12, "others": [{ "day": 2, "start": "06:00", "finish": "12:00" }] }
+  ]
+}

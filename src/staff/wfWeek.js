@@ -4,6 +4,8 @@
 // seed week so shifts persist against real calendar dates (wf_shifts.shift_date).
 // All dates are local-formatted YYYY-MM-DD (no UTC shift).
 
+import { publicHolidays } from '../../supabase/functions/_shared/publicHolidays.js';
+
 const LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 /** Local YYYY-MM-DD (avoids the toISOString UTC off-by-one). */
@@ -63,61 +65,16 @@ const fmtD = x => x.toLocaleDateString('en-GB', { day: 'numeric', month: 'short'
 // For "paid on the last working day". Scotland (2 Jan, St Andrew's Day) and
 // Northern Ireland (St Patrick's Day, Battle of the Boyne) differ — this is the
 // England & Wales set and the Settings screen says so rather than implying UK-wide.
+// v5.11.101: the calendar moved to supabase/functions/_shared/publicHolidays.js
+// (the bank holiday pay premium reads the same one); the set is unchanged.
+// v5.11.101: a US venue skips US federal holidays instead (cfg.country, from payCfgFrom).
 
-/** Easter Sunday for a Gregorian year (Anonymous Gregorian algorithm). */
-function easterSunday(y) {
-  const a = y % 19, b = Math.floor(y / 100), c = y % 100;
-  const d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25);
-  const g = Math.floor((b - f + 1) / 3), h = (19 * a + b - d - g + 15) % 30;
-  const i = Math.floor(c / 4), k = c % 4;
-  const l = (32 + 2 * e + 2 * i - h - k) % 7;
-  const m = Math.floor((a + 11 * h + 22 * l) / 451);
-  return new Date(y, Math.floor((h + l - 7 * m + 114) / 31) - 1, ((h + l - 7 * m + 114) % 31) + 1);
-}
-
-/** Nth (or last, n = -1) weekday `dow` of a month. */
-function nthDow(y, month, dow, n) {
-  if (n === -1) {
-    const d = new Date(y, month + 1, 0);            // last day of the month
-    d.setDate(d.getDate() - ((d.getDay() - dow + 7) % 7));
-    return d;
-  }
-  const d = new Date(y, month, 1);
-  d.setDate(1 + ((dow - d.getDay() + 7) % 7) + (n - 1) * 7);
-  return d;
-}
-
-const _holidays = new Map();
-/** England & Wales bank holidays for a year, as a Set of YYYY-MM-DD. */
-function bankHolidays(year) {
-  if (_holidays.has(year)) return _holidays.get(year);
-  const easter = easterSunday(year);
-  const rel = n => { const d = new Date(easter); d.setDate(easter.getDate() + n); return d; };
-  const set = new Set([
-    rel(-2),                          // Good Friday
-    rel(1),                           // Easter Monday
-    nthDow(year, 4, 1, 1),            // first Monday in May
-    nthDow(year, 4, 1, -1),           // last Monday in May
-    nthDow(year, 7, 1, -1),           // last Monday in August
-  ].map(ymd));
-  // Fixed dates get a substitute weekday when they land on a weekend; the
-  // substitute is the next weekday not already taken (so 25/26 Dec on a
-  // Sat/Sun become Mon 27 + Tue 28, which is the actual rule).
-  [new Date(year, 0, 1), new Date(year, 11, 25), new Date(year, 11, 26)].forEach(d => {
-    const s = new Date(d);
-    while (s.getDay() === 0 || s.getDay() === 6 || set.has(ymd(s))) s.setDate(s.getDate() + 1);
-    set.add(ymd(s));
-  });
-  _holidays.set(year, set);
-  return set;
-}
-
-/** `d`, or the nearest working day before it (weekends + bank holidays skipped). */
-export function prevWorkingDay(d) {
+/** `d`, or the nearest working day before it (weekends + public holidays of the country skipped). */
+export function prevWorkingDay(d, country = 'UK') {
   const out = new Date(d);
   for (let i = 0; i < 21; i++) {                    // longest real run of non-working days is ~4
     const dow = out.getDay();
-    if (dow !== 0 && dow !== 6 && !bankHolidays(out.getFullYear()).has(ymd(out))) return out;
+    if (dow !== 0 && dow !== 6 && !publicHolidays(country, out.getFullYear()).has(ymd(out))) return out;
     out.setDate(out.getDate() - 1);
   }
   return out;
@@ -128,6 +85,18 @@ export function payPeriod(cfg = {}, ref = new Date()) {
   const type = cfg.payPeriodType || 'monthly';
   const d = new Date(ref); d.setHours(0, 0, 0, 0);
 
+  // v5.11.101: semi-monthly (US): the 1st to the 15th, then the 16th to the last day of the
+  // month. payDay = days after the period ends (as the fixed lengths), moved to the working day
+  // before when the venue asks for it. No anchor needed: the calendar fixes both halves.
+  if (type === 'semimonthly') {
+    const first = d.getDate() <= 15;
+    const start = new Date(d.getFullYear(), d.getMonth(), first ? 1 : 16);
+    const end = first ? new Date(d.getFullYear(), d.getMonth(), 15) : new Date(d.getFullYear(), d.getMonth() + 1, 0);
+    let payDate = new Date(end); payDate.setDate(end.getDate() + Math.max(0, Number(cfg.payDay) || 0));
+    if (cfg.payDayShift === 'prevWorkingDay') payDate = prevWorkingDay(payDate, cfg.country || 'UK');
+    return { startIso: ymd(start), endIso: ymd(end), payDateIso: ymd(payDate), label: `${fmtD(start)} – ${fmtD(end)}` };
+  }
+
   const len = PERIOD_LEN[type];
   if (len && cfg.payPeriodAnchor) {
     const anchor = new Date(cfg.payPeriodAnchor + 'T00:00:00');
@@ -135,7 +104,7 @@ export function payPeriod(cfg = {}, ref = new Date()) {
     const start = new Date(anchor); start.setDate(anchor.getDate() + k * len);
     const end = new Date(start); end.setDate(start.getDate() + len - 1);
     let payDate = new Date(end); payDate.setDate(end.getDate() + Math.max(0, Number(cfg.payDay) || 0));
-    if (cfg.payDayShift === 'prevWorkingDay') payDate = prevWorkingDay(payDate);
+    if (cfg.payDayShift === 'prevWorkingDay') payDate = prevWorkingDay(payDate, cfg.country || 'UK');
     return { startIso: ymd(start), endIso: ymd(end), payDateIso: ymd(payDate), label: `${fmtD(start)} – ${fmtD(end)}` };
   }
 
@@ -163,7 +132,7 @@ export function payPeriod(cfg = {}, ref = new Date()) {
     payDate = at(base.getMonth());
     if (payDate < start) payDate = at(base.getMonth() + 1);                     // never before the period opens
   }
-  if (cfg.payDayShift === 'prevWorkingDay') payDate = prevWorkingDay(payDate);
+  if (cfg.payDayShift === 'prevWorkingDay') payDate = prevWorkingDay(payDate, cfg.country || 'UK');
   return { startIso: ymd(start), endIso: ymd(end), payDateIso: ymd(payDate), label: `${fmtD(start)} – ${fmtD(end)}` };
 }
 
@@ -171,9 +140,11 @@ export function payPeriod(cfg = {}, ref = new Date()) {
  *  knobs live in the `settings` jsonb bag (same home as COGS%/overhead) rather
  *  than as their own columns. One builder so Timesheets, Payroll and the
  *  Settings preview can never disagree about which period payroll runs on. */
-export function payCfgFrom(settings) {
+export function payCfgFrom(settings, country) {
   const bag = settings?.settings || {};
   return {
+    // v5.11.101: whose public holidays "the previous working day" skips ('UK' when not given).
+    ...(country ? { country } : {}),
     payPeriodType: settings?.payPeriodType || 'monthly',
     payPeriodStartDay: settings?.payPeriodStartDay ?? 1,
     payPeriodAnchor: settings?.payPeriodAnchor || null,
@@ -187,6 +158,13 @@ export function payCfgFrom(settings) {
 export function shiftPayPeriod(cfg, currentStartIso, n) {
   if (typeof cfg === 'number' || typeof cfg === 'string') cfg = { payPeriodType: 'monthly', payPeriodStartDay: cfg };
   const d = new Date(currentStartIso + 'T00:00:00');
+  if (cfg?.payPeriodType === 'semimonthly') {
+    // Half months: step from the period's start (the 1st or the 16th) by n halves.
+    const half = d.getDate() >= 16 ? 1 : 0;
+    const k = d.getMonth() * 2 + half + n;
+    const month = Math.floor(k / 2), second = ((k % 2) + 2) % 2 === 1;
+    return payPeriod(cfg, new Date(d.getFullYear(), month, second ? 16 : 1));
+  }
   const len = PERIOD_LEN[cfg?.payPeriodType || 'monthly'];
   if (len && cfg?.payPeriodAnchor) d.setDate(d.getDate() + n * len);
   else d.setMonth(d.getMonth() + n);

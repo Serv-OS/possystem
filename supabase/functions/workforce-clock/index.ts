@@ -51,6 +51,16 @@ async function orgFor(loc: string): Promise<string | null> {
   return data?.org_id ?? null;
 }
 
+/** v5.11.101: the timesheet's currency is the venue's (it was always 'GBP', a US venue too).
+ *  Never refuses a clock in: any failure reads 'GBP', as before. */
+async function currencyOf(loc: string): Promise<string> {
+  try {
+    const { data } = await admin.from('locations').select('currency').eq('id', loc).maybeSingle();
+    const c = String(data?.currency || '').toUpperCase();
+    return /^[A-Z]{3}$/.test(c) ? c : 'GBP';
+  } catch { return 'GBP'; }
+}
+
 /** Effective hourly rate for a wf_staff member: override → role base → salaried equiv. */
 async function resolveRate(staff: any, loc: string): Promise<{ rate: number; source: string }> {
   if (staff.rate_override != null) return { rate: Number(staff.rate_override), source: 'override' };
@@ -86,14 +96,16 @@ function stateOf(open: any): { state: string; since: string | null; onBreak: boo
 // How many onboarding steps are genuinely open, derived from EVIDENCE — the
 // stored steps array goes stale (it predates POS access / bank details landing
 // via other paths). An explicitly-complete stored step still counts as done.
-function openOnboardingSteps(row: any, staff: any): number {
+// v5.11.101: bankDetails false (a US venue: the payroll provider holds bank details) = the bank
+// step is never open.
+function openOnboardingSteps(row: any, staff: any, bankDetails = true): number {
   if (!row) return 0;
   const meta = row.meta || {};
   const done: Record<string, boolean> = {
     offer: !!(meta.offerAccepted || meta.offerSentAt),
     contract: !!meta.signature,
     rtw: !!meta.rtwPath,
-    bank: !!(meta.bankMasked || staff?.bank_account_masked),
+    bank: !bankDetails || !!(meta.bankMasked || staff?.bank_account_masked),
     posUser: !!staff?.pos_user_id,
   };
   (Array.isArray(row.steps) ? row.steps : []).forEach((st: any) => {
@@ -199,7 +211,7 @@ Deno.serve(async (req) => {
           due: a.due_date,
           overdue: !!(a.due_date && a.due_date < todayIso),
         }));
-        const onboardingOpen = openOnboardingSteps(onbRows?.[0], staff);
+        const onboardingOpen = openOnboardingSteps(onbRows?.[0], staff, (await currencyOf(location_id)) !== 'USD');
         outstanding = { training, onboardingOpen, total: training.length + onboardingOpen };
       } catch (e) { console.error('[workforce-clock] outstanding:', (e as Error).message); }
       // Does this venue want the till to offer a shift start on first sign-in?
@@ -225,11 +237,12 @@ Deno.serve(async (req) => {
       let rate = shift?.effective_rate != null ? Number(shift.effective_rate) : null;
       let source = shift?.rate_source ?? null;
       if (rate == null) { const r = await resolveRate(staff, location_id); rate = r.rate; source = r.source; }
+      const currency = await currencyOf(location_id);
       const { error } = await admin.from('wf_timesheets').insert({
         location_id, org_id: org, staff_id: staff.id, shift_id: shift?.id ?? null,
         clock_in: now.toISOString(), break_taken: 0,
         scheduled_hours: shift?.computed_hours ?? null,
-        effective_rate: rate, rate_source: source, currency: 'GBP', status: 'pending',
+        effective_rate: rate, rate_source: source, currency, status: 'pending',
       });
       if (error) return json({ error: error.message }, 500);
       return json({ ok: true, staff: who, state: 'in', since: now.toISOString() });

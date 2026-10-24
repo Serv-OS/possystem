@@ -231,8 +231,9 @@ Deno.serve(async (req) => {
         dob: dobOf[t.staff_id] || null,
       }));
     const parseShiftMs = (date: string, time: string) => (date && time ? ms(`${date}T${time}`) : null);
+    // v5.11.101: an open shift (nobody on it yet) is no one's no show.
     const teamShifts = shifts
-      .filter((sh: any) => String(sh.status) === 'published')
+      .filter((sh: any) => String(sh.status) === 'published' && sh.staff_id)
       .map((sh: any) => ({
         staffId: sh.staff_id, name: nameOf[sh.staff_id] || 'Staff', role: sh.role_key || null,
         startMs: parseShiftMs(sh.shift_date, sh.start_time), endMs: parseShiftMs(sh.shift_date, sh.finish_time),
@@ -243,7 +244,28 @@ Deno.serve(async (req) => {
     // ── Approvals inbox (pending) — completed-but-unapproved timesheets (last 14d) + pending time-off.
     //    Surfaced for the Team tab's approvals (the UI gates display on the team_approvals flag; writes
     //    go through the manager-approve edge fn). Isolated: never break the rest of the snapshot. ──
-    let pendingTimesheets: any[] = [], pendingTimeOff: any[] = [];
+    let pendingTimesheets: any[] = [], pendingTimeOff: any[] = [], pendingSwaps: any[] = [];
+    // v5.11.101: shift claims and swaps waiting for a manager (venue setting: need manager approval).
+    // Their own try: a venue before 20261031a (no kind column) answers an error here and the rest of
+    // the approvals still load.
+    if (full) try {
+      const { data: sw, error: swErr } = await sb.from('wf_swap_requests')
+        .select('id, shift_id, kind, from_staff_id, to_staff_id, note, claimed_at, shift_snapshot')
+        .eq('location_id', loc).eq('status', 'pending').not('shift_id', 'is', null).order('claimed_at', { ascending: true }).limit(100);
+      if (swErr) throw swErr;
+      const shiftIds = (sw ?? []).map((r: any) => r.shift_id);
+      const { data: swShifts } = shiftIds.length
+        ? await sb.from('wf_shifts').select('id, shift_date, start_time, finish_time, role_key').in('id', shiftIds).eq('location_id', loc)
+        : { data: [] };
+      const shOf: Record<string, any> = {}; for (const x of swShifts ?? []) shOf[x.id] = x;
+      pendingSwaps = (sw ?? []).filter((r: any) => shOf[r.shift_id]).map((r: any) => ({
+        id: r.id, kind: r.kind, note: r.note || null,
+        toName: nameOf[r.to_staff_id] || 'Staff', fromName: r.from_staff_id ? (nameOf[r.from_staff_id] || 'Staff') : null,
+        date: shOf[r.shift_id].shift_date, start: String(shOf[r.shift_id].start_time || '').slice(0, 5),
+        finish: String(shOf[r.shift_id].finish_time || '').slice(0, 5), role: shOf[r.shift_id].role_key || null,
+        claimedAt: r.claimed_at,
+      }));
+    } catch { pendingSwaps = []; }
     if (full) try {
       const since = new Date(now.getTime() - 14 * 24 * 3600 * 1000).toISOString();
       const [{ data: pts }, { data: pto }] = await Promise.all([
@@ -622,7 +644,7 @@ Deno.serve(async (req) => {
       scope: full ? 'all' : 'stock', currency,
       money: full ? money : null,
       floor: full ? floor : null,
-      team: full ? { punches, shifts: teamShifts, ratesMinor, pendingTimesheets, pendingTimeOff, breakPolicy } : null,
+      team: full ? { punches, shifts: teamShifts, ratesMinor, pendingTimesheets, pendingTimeOff, pendingSwaps, breakPolicy } : null,
       kitchen: { items: kitchenItems, deliveries: kitchenDeliveries.map((d: any) => (internalSup.has(String(d.supplierId)) ? { ...d, internal: true } : d)), batches: kitchenBatches, trackedItems, recipes: kitchenRecipes,
         orderBy: kitchenOrderBy, approvals: kitchenApprovals, transfers: kitchenTransfers, closedown: kitchenClosedown, ordersIn: kitchenOrdersIn },
       stock: { alerts: stockAlerts },

@@ -13,15 +13,24 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { Icon } from '../../../components/ServOSIcons';
+import { activeCountry, activeRegionPack, venueMoney } from '../../../lib/regionPack';
 import { Card, EmptyState, Badge, th, td, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
 import { payPeriod, payCfgFrom, shiftPayPeriod } from '../../../staff/wfWeek';
 
-const money = (n, dp = 2) => '£' + Number(n || 0).toLocaleString('en-GB', { minimumFractionDigits: dp, maximumFractionDigits: dp });
+// v5.11.101: the venue's money (a UK venue reads exactly as before).
+const money = (n, dp = 2) => venueMoney(n, dp);
 const fmtDay = iso => new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
 
 export default function WfPayroll({ ctx, staff = [], roles, sections, settings, week, showToast }) {
-  const payCfg = useMemo(() => payCfgFrom(settings), [settings]);
+  const payCfg = useMemo(() => payCfgFrom(settings, activeCountry()), [settings]);
+  // v5.11.101: the export and the columns follow the venue (BACS for the UK; the US payroll
+  // provider's columns, no bank details, for a US venue).
+  const pack = activeRegionPack();
+  const usExport = pack.payrollExport === 'us_payroll';
+  // Premiums show (table and file) only for a venue that pays them; every other venue's table and
+  // BACS file are exactly as before.
+  const withPrem = !!run?.staff?.some(r => r.premium_pay != null);
 
   const [period, setPeriod] = useState(() => payPeriod(payCfg));
   const [run, setRun] = useState(null);     // { staff, totals, tronc } | null
@@ -81,6 +90,36 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
     } finally { setClosing(false); }
   }
 
+  // v5.11.101: the US export: the payroll provider's employee id, regular and overtime hours (over 40
+  // in a work week, the federal rule), tips. No bank details: the provider holds them.
+  function exportUsCsv(esc) {
+    const names = (id) => {
+      const s = staffById[id] || {};
+      const parts = String(s.name || nameOf(id)).trim().split(/\s+/);
+      return [parts.slice(0, -1).join(' ') || parts[0] || '', parts.length > 1 ? parts[parts.length - 1] : ''];
+    };
+    const rows = [
+      ['Employee ID', 'First name', 'Last name', 'SSN last 4', 'Period start', 'Period end', 'Regular hours', 'Overtime hours', 'Gross wages', ...(withPrem ? ['Premium pay'] : []), 'Tips (direct)', 'Tips (pooled)', 'Total'],
+      ...run.staff.map(r => {
+        const s = staffById[r.staff_id] || {};
+        const [first, last] = names(r.staff_id);
+        return [s.payrollEmployeeId || '', first, last, s.ssnLast4 || '', period.startIso, period.endIso,
+          Number(r.regular_hours ?? r.hours ?? 0).toFixed(2), Number(r.overtime_hours || 0).toFixed(2), Number(r.pay || 0).toFixed(2),
+          ...(withPrem ? [Number(r.premium_pay || 0).toFixed(2)] : []), Number(r.tips_direct || 0).toFixed(2), Number(r.tips_tronc || 0).toFixed(2), Number(r.total || 0).toFixed(2)];
+      }),
+      [],
+      ['Notes for payroll:'],
+      ['Overtime hours are hours over 40 in a Monday to Sunday work week (federal FLSA). Gross wages are at the straight rate; apply the overtime rate and any state rules in your payroll provider.'],
+      ['Tips belong to staff and are reported separately from wages. Managers and supervisors must not receive pooled tips (FLSA). Tip credit rules vary by state.'],
+    ];
+    const blob = new Blob([rows.map(r => r.map(esc).join(',')).join('\n')], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `payroll-us-${period.startIso}-to-${period.endIso}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
   // Bureau-ready CSV (BrightPay-style identity: name + NI number). Tips are
   // SEPARATE pay elements from wages — tronc-allocated tips are PAYE'd but
   // NIC-free only when an independent troncmaster decides shares (HMRC E24);
@@ -92,20 +131,21 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
     // (or tab/CR) is treated as a live formula by Excel/Sheets. A name like
     // "=cmd|..." in a staff record would otherwise execute on open.
     const esc = v => { let s = String(v ?? ''); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return `"${s.replace(/"/g, '""')}"`; };
-    const isUK = (settings?.currency || 'GBP') === 'GBP';
+    if (usExport) { exportUsCsv(esc); return; }
+    const isUK = pack.country === 'UK';
     const troncFree = isUK && run.policy?.allocator === 'troncmaster';
     const troncCol = !isUK ? 'Pooled tips' : troncFree ? 'Tronc tips (PAYE, no NIC - independent troncmaster)' : 'Pooled tips (PAYE + NIC - employer allocated)';
     const directCol = !isUK ? 'Direct tips' : troncFree ? 'Direct tips via tronc (PAYE, no NIC)' : 'Direct tips (PAYE + NIC - employer allocated)';
     const rows = [
-      ['First name', 'Surname', 'NI number', 'Period start', 'Period end', 'Hours', 'Basic pay', 'Holiday hours', 'Holiday pay', troncCol, directCol, 'Gross total', 'Account name', 'Sort code', 'Account number'],
+      ['First name', 'Surname', 'NI number', 'Period start', 'Period end', 'Hours', 'Basic pay', ...(withPrem ? ['Premium pay'] : []), 'Holiday hours', 'Holiday pay', troncCol, directCol, 'Gross total', 'Account name', 'Sort code', 'Account number'],
       ...run.staff.map(r => {
         const s = staffById[r.staff_id] || {};
         const parts = String(s.name || nameOf(r.staff_id)).trim().split(/\s+/);
         const first = parts.slice(0, -1).join(' ') || parts[0] || '';
         const last = parts.length > 1 ? parts[parts.length - 1] : '';
-        return [first, last, s.niNumber || '', period.startIso, period.endIso, r.hours.toFixed(2), r.pay.toFixed(2), Number(r.holiday_hours || 0).toFixed(2), Number(r.holiday_pay || 0).toFixed(2), r.tips_tronc.toFixed(2), r.tips_direct.toFixed(2), r.total.toFixed(2), s.bankAccountName || '', s.bankSortCode || '', s.bankAccount || s.bankMasked || ''];
+        return [first, last, s.niNumber || '', period.startIso, period.endIso, r.hours.toFixed(2), r.pay.toFixed(2), ...(withPrem ? [Number(r.premium_pay || 0).toFixed(2)] : []), Number(r.holiday_hours || 0).toFixed(2), Number(r.holiday_pay || 0).toFixed(2), r.tips_tronc.toFixed(2), r.tips_direct.toFixed(2), r.total.toFixed(2), s.bankAccountName || '', s.bankSortCode || '', s.bankAccount || s.bankMasked || ''];
       }),
-      ['TOTAL', '', '', '', '', '', run.totals.pay.toFixed(2), '', Number(run.totals.holiday_pay || 0).toFixed(2), run.totals.tips_tronc.toFixed(2), run.totals.tips_direct.toFixed(2), run.totals.total.toFixed(2), '', '', ''],
+      ['TOTAL', '', '', '', '', '', run.totals.pay.toFixed(2), ...(withPrem ? [Number(run.totals.premium_pay || 0).toFixed(2)] : []), '', Number(run.totals.holiday_pay || 0).toFixed(2), run.totals.tips_tronc.toFixed(2), run.totals.tips_direct.toFixed(2), run.totals.total.toFixed(2), '', '', ''],
       [],
       ['Notes for payroll:'],
       [isUK ? 'Tips are separate pay elements and must not count toward National Minimum Wage.' : 'Tips are reported separately from wages; managers/supervisors must not receive pooled tips (FLSA). State tip-credit rules vary.'],
@@ -188,7 +228,7 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
         {run && run.policy && (
           <div style={{ fontSize: 11.5, color: 'var(--t4)', marginBottom: 12 }}>
             Tipping policy: {run.policy.tipMode === 'direct' ? 'card tips go to the seller' : run.policy.tipMode === 'hybrid' ? `seller keeps ${run.policy.directPct}% of their tips, rest pooled` : 'all card tips pooled'}
-            {(settings?.currency || 'GBP') === 'GBP'
+            {pack.country === 'UK'
               ? <> · allocation by {run.policy.allocator === 'troncmaster' ? 'independent troncmaster — tips are PAYE-taxed but NIC-free (HMRC E24); do not adjust these figures' : 'the business — tips attract employee + employer NICs'} · tips never count toward National Minimum Wage.</>
               : <> · US FLSA: tips belong to staff — managers/supervisors can't receive pooled tips; tips are reported separately from wages and tip-credit rules vary by state.</>}
           </div>
@@ -217,9 +257,11 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
                 <thead>
                   <tr>
                     <th style={th}>Staff</th>
-                    <th style={th}>Bank</th>
+                    {!usExport && <th style={th}>Bank</th>}
                     <th style={{ ...th, textAlign: 'right' }}>Hours</th>
+                    {usExport && <th style={{ ...th, textAlign: 'right' }}>Overtime</th>}
                     <th style={{ ...th, textAlign: 'right' }}>Base pay</th>
+                    {withPrem && <th style={{ ...th, textAlign: 'right' }}>Premiums</th>}
                     <th style={{ ...th, textAlign: 'right' }}>Holiday</th>
                     <th style={{ ...th, textAlign: 'right' }}>Tips (direct)</th>
                     <th style={{ ...th, textAlign: 'right' }}>Tips (pooled)</th>
@@ -230,16 +272,18 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
                   {run.staff.map(r => (
                     <tr key={r.staff_id}>
                       <td style={td}>{nameOf(r.staff_id)}</td>
-                      <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 11.5, color: bankOf(r.staff_id) ? 'var(--t3)' : 'var(--red)' }}>
+                      {!usExport && <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 11.5, color: bankOf(r.staff_id) ? 'var(--t3)' : 'var(--red)' }}>
                         {/* v5.5.973: show the ACCOUNT NAME above the numbers — it is what
                             the payer checks against the bank's payee warning. */}
                         {staffById[r.staff_id]?.bankAccountName && bankOf(r.staff_id) && (
                           <div style={{ fontFamily: 'inherit', color: 'var(--t2)', fontWeight: 600 }}>{staffById[r.staff_id].bankAccountName}</div>
                         )}
                         {bankOf(r.staff_id) || 'No bank on file'}
-                      </td>
+                      </td>}
                       <td style={{ ...td, textAlign: 'right' }} className="mono">{Number(r.hours || 0).toFixed(2)}</td>
+                      {usExport && <td style={{ ...td, textAlign: 'right' }} className="mono">{Number(r.overtime_hours || 0).toFixed(2)}</td>}
                       <td style={{ ...td, textAlign: 'right' }} className="mono">{money(r.pay)}</td>
+                      {withPrem && <td style={{ ...td, textAlign: 'right' }} className="mono" title={r.premium_hours ? `${Number(r.premium_hours).toFixed(1)}h at a premium` : undefined}>{r.premium_pay ? money(r.premium_pay) : <span style={{ color: 'var(--t4)' }}>—</span>}</td>}
                       <td style={{ ...td, textAlign: 'right' }} className="mono" title={r.holiday_hours ? `${Number(r.holiday_hours).toFixed(1)}h paid holiday` : undefined}>
                         {r.holiday_pay ? money(r.holiday_pay) : <span style={{ color: 'var(--t4)' }}>—</span>}
                       </td>
@@ -255,6 +299,7 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
                     <td style={{ ...td, borderBottom: 'none' }} />
                     <td style={{ ...td, borderBottom: 'none' }} />
                     <td style={{ ...td, textAlign: 'right', fontWeight: 700, borderBottom: 'none' }} className="mono">{money(run.totals.pay)}</td>
+                    {withPrem && <td style={{ ...td, textAlign: 'right', fontWeight: 700, borderBottom: 'none' }} className="mono">{money(run.totals.premium_pay || 0)}</td>}
                     <td style={{ ...td, textAlign: 'right', fontWeight: 700, borderBottom: 'none' }} className="mono">{money(run.totals.holiday_pay || 0)}</td>
                     <td style={{ ...td, textAlign: 'right', fontWeight: 700, borderBottom: 'none' }} className="mono">{money(run.totals.tips_direct)}</td>
                     <td style={{ ...td, textAlign: 'right', fontWeight: 700, borderBottom: 'none' }} className="mono">{money(run.totals.tips_tronc)}</td>
@@ -264,7 +309,7 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
               </table>
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14 }}>
-              <button className="btn btn-ghost btn-sm" onClick={exportCsv}><Icon name="tag" size={14} /> Export CSV (BACS)</button>
+              <button className="btn btn-ghost btn-sm" onClick={exportCsv}><Icon name="tag" size={14} /> {usExport ? 'Export CSV (US payroll)' : 'Export CSV (BACS)'}</button>
             </div>
           </>
         )}

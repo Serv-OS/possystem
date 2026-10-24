@@ -15,6 +15,9 @@
 //
 //   POST { action, ops_location_id, pin, target_id, decision?, heal? }   (token in Authorization)
 //   actions: 'timesheet.approve' | 'timeoff.decide' (decision: 'approved' | 'denied')
+//            'swap.decide' (v5.11.101: a shift claim or swap waiting for a manager; decision:
+//            'approved' | 'declined'; the database judge wf_swap_decide checks every rule again
+//            under a lock, then the claimer and the person giving the shift up are texted)
 //            'timesheet.clock_out' (v5.8.21: a manager clocks a member of staff out; the
 //            hours/break/pay maths runs in workforce-clock via its service-role staff_id seam)
 //            'po.raise' (an order for one supplier in that supplier's packs and prices, v5.11.64)
@@ -62,6 +65,10 @@ import { officeReachesVenue, stockOfficeReachesVenue, readOfficeReachFacts } fro
 import * as stockPhone from '../_shared/stockPhone.js';
 // v5.11.96: the one purchase order email (po-send, po-cutoff-run and here).
 import { sendPurchaseOrder } from '../_shared/poSend.ts';
+// v5.11.101: open shifts and swaps. The rules' words and texts, and the one way staff are told.
+import { problemText, textYours, textTaken, textDeclined } from '../_shared/openShiftRules.js';
+import { regionPack } from '../_shared/regionPack.js';
+import { notifyStaff } from '../_shared/staffNotify.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -298,6 +305,40 @@ Deno.serve(async (req) => {
       const auditErr = await audit(loc, lv.org_id, op, `timeoff.${status}`, 'wf_time_off', target_id, { status: lv.status }, { status });
       if (auditErr) return auditFailed('The time off decision');
       return json({ ok: true });
+    }
+
+    // ── v5.11.101 swap.decide: a manager approves or declines a shift claim or swap that waits for
+    //    them (venue setting: need manager approval). The manager is proven here (PIN, or a Back Office
+    //    login that reaches the venue); the database decides whether it can still happen. ──
+    if (action === 'swap.decide') {
+      const d = decision === 'approved' ? 'approved' : decision === 'declined' ? 'declined' : null;
+      if (!d) return json({ error: 'decision must be approved or declined' }, 400);
+      if (!UUID.test(String(target_id))) return json({ error: 'request not found' }, 404);
+      const { data: r, error } = await sb.rpc('wf_swap_decide', { p_location_id: loc, p_request_id: target_id, p_decision: d, p_actor: { id: String(op.id), name: op.name || null } });
+      if (error) return json({ error: error.message }, 500);
+      if (!r?.ok) return json({ error: problemText(r?.code, 'manager'), code: r?.code }, 409);
+      const [{ data: venue }, { data: shRow }] = await Promise.all([
+        sb.from('locations').select('id, name, currency, org_id').eq('id', loc).maybeSingle(),
+        r.shift_id ? sb.from('wf_shifts').select('shift_date, start_time, finish_time').eq('id', r.shift_id).maybeSingle() : Promise.resolve({ data: null }),
+      ]);
+      const ids = [r.to_staff_id, r.from_staff_id].filter(Boolean);
+      const { data: people } = ids.length ? await sb.from('wf_staff').select('id, name, mobile').in('id', ids) : { data: [] };
+      const who = (id: string) => (people || []).find((p: any) => p.id === id) || null;
+      const auditErr = await audit(loc, venue?.org_id ?? null, op, `swap.${d}`, 'wf_swap_requests', String(target_id), { status: 'pending' }, { status: d === 'approved' ? 'approved' : 'declined', shift_id: r.shift_id, to_staff_id: r.to_staff_id, from_staff_id: r.from_staff_id, by: op.name ?? op.id });
+      if (venue && shRow) {
+        const country = regionPack({ currency: venue.currency }).country;
+        const sh = { date: shRow.shift_date, start: String(shRow.start_time).slice(0, 5), finish: String(shRow.finish_time).slice(0, 5) };
+        const taker = r.to_staff_id ? who(r.to_staff_id) : null;
+        const giver = r.from_staff_id ? who(r.from_staff_id) : null;
+        if (d === 'approved') {
+          if (taker) await notifyStaff(venue, [taker], textYours(venue.name, sh, country), { ref: String(target_id) });
+          if (giver) await notifyStaff(venue, [giver], textTaken(venue.name, taker?.name, sh, country), { ref: String(target_id) });
+        } else {
+          await notifyStaff(venue, [taker, giver].filter(Boolean) as any[], textDeclined(venue.name, sh, country), { ref: String(target_id) });
+        }
+      }
+      if (auditErr) return auditFailed(d === 'approved' ? 'The swap' : 'The decline');
+      return json({ ok: true, outcome: r.outcome });
     }
 
     // ── po.raise: a purchase order for one supplier from the Manager Kitchen tab. Writes the SAME

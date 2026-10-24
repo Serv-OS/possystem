@@ -12,6 +12,7 @@
 
 import { useState, useEffect, useMemo, Fragment } from 'react';
 import { Icon } from '../../../components/ServOSIcons';
+import { activeCountry } from '../../../lib/regionPack';
 import { Card, EmptyState, Badge, RoleChip, money, th, td, inputStyle, labelStyle, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
 import { hoursOf, resolveRate, breakShortfall, venueBreakPolicy, grossFromNet } from '../../../staff/labour';
@@ -77,7 +78,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
     return () => { alive = false; };
   }, [ctx?.locationId, shifts]);
 
-  const payCfg = useMemo(() => payCfgFrom(settings), [settings]);
+  const payCfg = useMemo(() => payCfgFrom(settings, activeCountry()), [settings]);
   const [mode, setMode] = useState('week'); // week | period
   const [statusFilter, setStatusFilter] = useState('all'); // all | pending | approved | paid
   const [wk, setWk] = useState(() => buildWeek());

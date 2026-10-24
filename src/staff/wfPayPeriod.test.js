@@ -87,3 +87,22 @@ test('fixed-length periods honour the working-day shift', () => {
   assert.equal(p.endIso, '2026-06-25');
   assert.equal(p.payDateIso, '2026-06-26');            // +3d = Sun 28 → Fri 26
 });
+
+// v5.11.101: semi-monthly (US): the 1st to the 15th, the 16th to the last day of the month.
+test('semi-monthly: halves of the month, stepping both ways across months and years', async () => {
+  const { payPeriod: pp, shiftPayPeriod: sp } = await import('./wfWeek.js');
+  const cfg = { payPeriodType: 'semimonthly', payDay: 5 };
+  let p = pp(cfg, new Date(2026, 1, 10));
+  assert.equal(p.startIso, '2026-02-01'); assert.equal(p.endIso, '2026-02-15'); assert.equal(p.payDateIso, '2026-02-20');
+  p = pp(cfg, new Date(2026, 1, 16));
+  assert.equal(p.startIso, '2026-02-16'); assert.equal(p.endIso, '2026-02-28');
+  p = pp(cfg, new Date(2028, 1, 29));
+  assert.equal(p.endIso, '2028-02-29');
+  assert.equal(sp(cfg, '2026-02-16', 1).startIso, '2026-03-01');
+  assert.equal(sp(cfg, '2026-03-01', -1).startIso, '2026-02-16');
+  assert.equal(sp(cfg, '2026-01-01', -1).startIso, '2025-12-16');
+  assert.equal(sp(cfg, '2025-12-16', 1).startIso, '2026-01-01');
+  assert.equal(sp(cfg, '2026-01-01', 4).startIso, '2026-03-01');
+  // Pay on the working day before when it lands on a weekend: 15 Aug 2026 + 0 days is a Saturday.
+  assert.equal(pp({ payPeriodType: 'semimonthly', payDay: 0, payDayShift: 'prevWorkingDay' }, new Date(2026, 7, 3)).payDateIso, '2026-08-14');
+});

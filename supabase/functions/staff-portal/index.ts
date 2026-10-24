@@ -19,6 +19,9 @@
 //                                              answers ok — no account enumeration.
 //   snapshot      (Bearer = staff JWT)         Their profile, next shifts (14d),
 //                                              announcements, timesheets (28d).
+//   shift_claim / shift_drop / swap_cancel / swap_decline / availability_set   (Bearer)
+//                                              v5.11.101 open shifts and swaps (openShifts.ts):
+//                                              every change judged by the database.
 //   update_details{ patch } (Bearer)           Address / emergency contact / bank.
 //                                              Bank changes are audited AND pinged
 //                                              to the venue activity feed — a bank
@@ -30,6 +33,9 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { secondStepRefusal } from '../_shared/second-step.ts';
+// v5.11.101: open shifts, swaps, availability and the venue's region pack (openShifts.ts).
+import { venueFacts, regionForApp, swapsSnapshot, handleSwapAction } from './openShifts.ts';
+import { regionPack } from '../_shared/regionPack.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -217,14 +223,16 @@ async function audit(staff: any, action: string, before: unknown, after: unknown
 // How many onboarding steps are genuinely open, derived from EVIDENCE — the
 // stored steps array goes stale (it predates POS access / bank details landing
 // via other paths). An explicitly-complete stored step still counts as done.
-function openOnboardingSteps(row: any, staff: any): number {
+// v5.11.101: bankDetails false (a US venue: the payroll provider holds bank details) = the bank
+// step is never open.
+function openOnboardingSteps(row: any, staff: any, bankDetails = true): number {
   if (!row) return 0;
   const meta = row.meta || {};
   const done: Record<string, boolean> = {
     offer: !!(meta.offerAccepted || meta.offerSentAt),
     contract: !!meta.signature,
     rtw: !!meta.rtwPath,
-    bank: !!(meta.bankMasked || staff?.bank_account_masked),
+    bank: !bankDetails || !!(meta.bankMasked || staff?.bank_account_masked),
     posUser: !!staff?.pos_user_id,
   };
   (Array.isArray(row.steps) ? row.steps : []).forEach((st: any) => {
@@ -320,7 +328,7 @@ Deno.serve(async (req) => {
       ]);
       const training = (tr ?? []).map((a: any) => ({ name: a.wf_training_modules?.name || 'Training', due: a.due_date, overdue: !!(a.due_date && a.due_date < today) }));
       const { data: stRow } = await admin.from('wf_staff').select('pos_user_id, bank_account_masked').eq('id', staff_id).maybeSingle();
-      const onbOpen = openOnboardingSteps(onbRows?.[0], stRow);
+      const onbOpen = openOnboardingSteps(onbRows?.[0], stRow, regionPack({ currency: (await venueFacts(admin, location_id)).currency }).bankDetails);
       return json({ ok: true, training, onboardingOpen: onbOpen, total: training.length + onbOpen });
     }
 
@@ -479,6 +487,11 @@ Deno.serve(async (req) => {
     const staff = await staffFromJwt(req);
     if (!staff) return json({ error: 'not signed in' }, 401);
 
+    // v5.11.101: claim, drop (can't do this shift / offer to a colleague), cancel, decline an offer,
+    // set my weekly availability. The database judges every change (openShifts.ts).
+    const swapAnswer = await handleSwapAction(admin, staff, action, body);
+    if (swapAnswer) return json(swapAnswer.body, swapAnswer.status);
+
     // ── clock_status / clock_punch: geofenced clocking from the staff app ────
     // The venue is ALWAYS staff.location_id, never anything the caller sends.
     if (action === 'clock_status') {
@@ -573,7 +586,7 @@ Deno.serve(async (req) => {
       const monthAgo = new Date(Date.now() - 28 * 86400000).toISOString();
       const fortnightAgo = new Date(Date.now() - 14 * 86400000).toISOString();
       const [{ data: shifts }, { data: ts }, { data: ann }, { data: onbRows }, { data: trainRows }] = await Promise.all([
-        admin.from('wf_shifts').select('shift_date, start_time, finish_time, break_mins, section, status')
+        admin.from('wf_shifts').select('id, shift_date, start_time, finish_time, break_mins, section, status, role_key')
           .eq('staff_id', staff.id).eq('status', 'published').gte('shift_date', today).lte('shift_date', horizon)
           .order('shift_date').limit(50),
         admin.from('wf_timesheets').select('clock_in, clock_out, break_taken, actual_hours, pay_amount, status')
@@ -597,6 +610,13 @@ Deno.serve(async (req) => {
           ? admin.from('wf_roles').select('base_rate, salary_annual').eq('location_id', staff.location_id).eq('key', staff.role_key).maybeSingle()
           : Promise.resolve({ data: null }),
       ]);
+      // v5.11.101: the venue's region (money, dates, which payroll fields), open shifts and swaps,
+      // and my weekly availability. Isolated: a failure here never takes the rest of the app down.
+      const venue = await venueFacts(admin, staff.location_id);
+      const pack = regionPack({ currency: venue.currency });
+      let swapPart: any = { swaps: null, availability: { perDay: [] } };
+      try { swapPart = await swapsSnapshot(admin, staff, venue); }
+      catch (e) { console.error('[staff-portal] swaps snapshot:', (e as Error).message); }
       const accruedHours = (accrual ?? []).reduce((a: number, r: any) => a + (Number(r.accrued_hours) || 0), 0);
       const payRate = staff.rate_override != null
         ? { kind: 'hourly', rate: Number(staff.rate_override), source: 'personal' }
@@ -622,8 +642,10 @@ Deno.serve(async (req) => {
             signUrl: !signed && contractReady && meta.signToken ? `${APP_BASE}/sign/${meta.signToken}` : null,
             waiting: !signed && !contractReady ? 'Your manager is preparing it' : null,
           },
-          { key: 'rtw', label: 'Upload your Right to Work', done: !!meta.rtwPath, action: !meta.rtwPath ? 'rtw' : null },
-          { key: 'bank', label: 'Add your bank details', done: !!meta.bankMasked || !!staff.bank_account_masked, action: (!meta.bankMasked && !staff.bank_account_masked) ? 'bank' : null },
+          // v5.11.101: the work document follows the venue (Right to Work in the UK, Form I-9 in the US).
+          { key: 'rtw', label: `Upload your ${pack.workDocLabel}`, done: !!meta.rtwPath, action: !meta.rtwPath ? 'rtw' : null },
+          // A US venue pays through its payroll provider, which holds bank details: no bank step.
+          ...(pack.bankDetails ? [{ key: 'bank', label: 'Add your bank details', done: !!meta.bankMasked || !!staff.bank_account_masked, action: (!meta.bankMasked && !staff.bank_account_masked) ? 'bank' : null }] : []),
           { key: 'posUser', label: 'Till access', done: !!staff.pos_user_id, waiting: !staff.pos_user_id ? 'Your manager sets this up' : null },
         ];
         onboarding = { open: steps.some(s => !s.done), steps };
@@ -666,7 +688,7 @@ Deno.serve(async (req) => {
           bankMasked: staff.bank_account_masked || null, bankSortCode: staff.bank_sort_code || null,
           bankAccountName: staff.bank_account_name || null,
         },
-        shifts: (shifts ?? []).map((s: any) => ({ date: s.shift_date, start: String(s.start_time || '').slice(0, 5), finish: String(s.finish_time || '').slice(0, 5), breakMins: s.break_mins || 0, section: s.section })),
+        shifts: (shifts ?? []).map((s: any) => ({ id: s.id, roleKey: s.role_key || null, date: s.shift_date, start: String(s.start_time || '').slice(0, 5), finish: String(s.finish_time || '').slice(0, 5), breakMins: s.break_mins || 0, section: s.section })),
         timesheets: (ts ?? []).map((t: any) => ({ in: t.clock_in, out: t.clock_out, breakMins: t.break_taken || 0, hours: t.actual_hours != null ? Number(t.actual_hours) : null, pay: t.pay_amount != null ? Number(t.pay_amount) : null, status: t.status })),
         announcements,
         onboarding,
@@ -676,6 +698,9 @@ Deno.serve(async (req) => {
           requests: (leave ?? []).map((l: any) => ({ id: l.id, type: l.type, from: l.start_date, to: l.end_date, days: l.days != null ? Number(l.days) : null, note: l.note, status: l.status, at: l.created_at })),
         },
         payRate,
+        region: regionForApp(venue),
+        swaps: swapPart.swaps,
+        availability: swapPart.availability,
       });
     }
 
@@ -781,9 +806,11 @@ Deno.serve(async (req) => {
       // Mirrors the manager-side upload exactly: one current doc per person per
       // type, lands 'pending' — a manager approves it in Compliance (that IS
       // the RTW check), and the onboarding step follows the evidence.
+      // v5.11.101: the work document follows the venue: 'RTW' in the UK, 'I9' (Form I-9) in the US.
+      const workDoc = regionPack({ currency: (await venueFacts(admin, staff.location_id)).currency }).requiredDocs[0];
       const { data: existingDoc } = await admin.from('wf_documents').select('id')
-        .eq('staff_id', staff.id).eq('type', 'RTW').limit(1);
-      const docRow = { location_id: staff.location_id, org_id: staff.org_id, staff_id: staff.id, type: 'RTW', file_url: path, status: 'pending', updated_at: new Date().toISOString() };
+        .eq('staff_id', staff.id).eq('type', workDoc).limit(1);
+      const docRow = { location_id: staff.location_id, org_id: staff.org_id, staff_id: staff.id, type: workDoc, file_url: path, status: 'pending', updated_at: new Date().toISOString() };
       const w = existingDoc?.[0]
         ? await admin.from('wf_documents').update(docRow).eq('id', existingDoc[0].id)
         : await admin.from('wf_documents').insert(docRow);
@@ -811,6 +838,9 @@ Deno.serve(async (req) => {
           ? { name: ec.name || null, phone: ec.phone || null, relationship: ec.relationship || null } : null;
       }
       let bankChanged = false;
+      if (p.bank !== undefined && !regionPack({ currency: (await venueFacts(admin, staff.location_id)).currency }).bankDetails) {
+        return json({ error: 'Your payroll provider holds your bank details. Ask your manager.' }, 400);
+      }
       if (p.bank !== undefined) {
         const digits = String(p.bank.account || '').replace(/\D/g, '');
         const sort = String(p.bank.sortCode || '').replace(/[^0-9]/g, '').replace(/(\d{2})(\d{2})(\d{2})/, '$1-$2-$3');

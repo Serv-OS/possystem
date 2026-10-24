@@ -1,4 +1,4 @@
-// ManagerTeam — live (who's on, no-shows, breaks due, live labour £) + Approvals (timesheets + time
+// ManagerTeam — live (who's on, no-shows, breaks due, live labour £) + Approvals (timesheets, shift swaps (v5.11.101) + time
 // off). Approvals are management WRITES: they go through the double-fenced manager-approve edge fn
 // (device authorised for the venue + the PIN'd operator is approval-capable) and append to wf_audit.
 // Pure flags come from timesheets.js; the approvals inbox comes from the shared snapshot.
@@ -79,7 +79,9 @@ export default function ManagerTeam({ ctx }) {
 
   const pendingTs = (team?.pendingTimesheets || []).filter((t) => !done[t.id]);
   const pendingTo = (team?.pendingTimeOff || []).filter((l) => !done[l.id]);
-  const pendingCount = pendingTs.length + pendingTo.length;
+  // v5.11.101: shift claims and swaps waiting for a manager (venue setting: need manager approval).
+  const pendingSw = (team?.pendingSwaps || []).filter((w) => !done[w.id]);
+  const pendingCount = pendingTs.length + pendingTo.length + pendingSw.length;
 
   // A rejected PIN re-locks the section (the cached PIN was wrong / the person isn't allowed).
   const onResult = (r) => {
@@ -113,6 +115,14 @@ export default function ManagerTeam({ ctx }) {
     const worked = Math.max(0, Math.round((endMs - startMs) / 60000) - (Number(eform.breakMins) || 0));
     const rateMinor = team?.ratesMinor?.[t.staffId];
     return { worked, pay: rateMinor ? (worked / 60) * (rateMinor / 100) : null };
+  };
+  // v5.11.101: approve or decline a claim or swap. The server checks every rule again under a lock and
+  // texts both people; a refusal (an overlap since, the shift started) shows its words here.
+  const decideSw = async (id, decision) => {
+    setActing(`sw-${id}-${decision}`); setActErr('');
+    const r = await managerApprove(loc, pin, 'swap.decide', id, { decision });
+    setActing(null);
+    if (onResult(r)) { setDone((d) => ({ ...d, [id]: true })); refreshSnap?.(); }
   };
   const decideTo = async (id, decision) => {
     setActing(`to-${id}-${decision}`); setActErr('');
@@ -256,6 +266,32 @@ export default function ManagerTeam({ ctx }) {
                     );
                   })}
 
+              {pendingSw.map((w) => {
+                const busyOk = acting === `sw-${w.id}-approved`, busyNo = acting === `sw-${w.id}-declined`;
+                return (
+                  <div key={w.id} className="sv-glass" style={{ padding: '12px 14px', borderRadius: 14, marginBottom: 8 }}>
+                    <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                      <Icon name="team" size={15} style={{ color: 'var(--uv, var(--acc))' }} />
+                      <span style={{ fontSize: 14, fontWeight: 700 }}>{w.toName}</span>
+                      <span style={{ fontSize: 11, color: 'var(--t3)' }}>{w.kind === 'claim' ? 'wants an open shift' : `takes over from ${w.fromName || 'a colleague'}`}</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2, ...mono }}>
+                      {dayLbl(w.date, tz)} · {w.start} to {w.finish}{w.role ? ` · ${w.role}` : ''}
+                    </div>
+                    {w.note && <div style={{ fontSize: 12, color: 'var(--t2)', marginTop: 4 }}>{w.note}</div>}
+                    <div style={{ display: 'flex', gap: 8, marginTop: 10, ...L.s.decideRow }}>
+                      <button onClick={() => decideSw(w.id, 'declined')} disabled={busyOk || busyNo} className="sv-glass"
+                        style={{ flex: 1, padding: '9px', borderRadius: 12, border: '1px solid var(--bdr)', cursor: 'pointer', color: 'var(--t2)', fontWeight: 700, fontSize: 12.5, fontFamily: 'inherit', ...L.s.decideBtn }}>
+                        {busyNo ? '…' : 'Decline'}
+                      </button>
+                      <button onClick={() => decideSw(w.id, 'approved')} disabled={busyOk || busyNo} className="sv-glass"
+                        style={{ flex: 1, padding: '9px', borderRadius: 12, border: '1px solid var(--grn-b)', cursor: 'pointer', color: 'var(--grn)', fontWeight: 800, fontSize: 12.5, fontFamily: 'inherit', ...L.s.decideBtn }}>
+                        {busyOk ? '…' : 'Approve'}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
               {pendingTo.map((l) => {
                 const busyOk = acting === `to-${l.id}-approved`, busyNo = acting === `to-${l.id}-denied`;
                 return (
