@@ -97,3 +97,12 @@ test('a manager decision: manager-approve, a manager PIN or a Back Office login,
   assert.doesNotMatch(ma, /STAFF_PIN_ACTIONS = new Set\(\[[^\]]*swap/);
   assert.ok(!ma.includes("isStockAction = (action: string) => action === 'swap"), 'not a stock action');
 });
+
+test('the region follows the venue on the server too: Location settings copies a currency change to the Ops row', () => {
+  const la = read('supabase/functions/location-admin/index.ts');
+  assert.match(la, /if \('currency' in row && row\.currency\) \{\s+try \{\s+const \{ error: curErr \} = await opsAdmin\.from\('locations'\)\.update\(\{ currency: row\.currency \}\)\.eq\('id', ops\);/);
+  // The server reads the venue's region from that row (never a client value).
+  for (const fn of ['supabase/functions/staff-portal/openShifts.ts', 'supabase/functions/workforce-compute/index.ts']) {
+    assert.match(read(fn), /from\('locations'\)\.select\('[^']*currency[^']*'\)/, fn);
+  }
+});

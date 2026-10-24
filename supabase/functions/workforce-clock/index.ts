@@ -1,4 +1,5 @@
 // supabase/functions/workforce-clock
+// MARKER 5.11.101 workforce-clock venue currency
 //
 // Server-side time clock for the dedicated clock surface (mode=clock). Paired
 // clock devices authenticate ANONYMOUSLY, so they cannot write wf_timesheets

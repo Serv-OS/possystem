@@ -1,4 +1,5 @@
 // supabase/functions/workforce-compute
+// MARKER 5.11.101 workforce-compute premiums and region
 //
 // Server-side compute for pay-critical Workforce maths. The client NEVER
 // computes money for persistence — it calls this function, which runs with the

@@ -1,4 +1,5 @@
 // supabase/functions/manager-approve/index.ts
+// MARKER 5.11.101 manager-approve swap.decide
 //
 // Write actions for the ServOS Manager app (?mode=manager) that a PAIRED, ANONYMOUS device can't do
 // directly (wf_* tables are RLS-fenced to Back Office users). Service-role writes, DOUBLE-fenced:

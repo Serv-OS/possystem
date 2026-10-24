@@ -1,4 +1,5 @@
 // supabase/functions/manager-snapshot/index.ts
+// MARKER 5.11.101 manager-snapshot pending swaps
 //
 // Single-venue data engine for the ServOS Manager app (?mode=manager). One round trip returns the
 // PAIRED location's "today" money + the live floor + live team, for a paired device (anon) or a BO
