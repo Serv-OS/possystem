@@ -67,8 +67,9 @@ import * as stockPhone from '../_shared/stockPhone.js';
 // v5.11.96: the one purchase order email (po-send, po-cutoff-run and here).
 import { sendPurchaseOrder } from '../_shared/poSend.ts';
 // v5.11.101: open shifts and swaps. The rules' words and texts, and the one way staff are told.
-import { problemText, textYours, textTaken, textDeclined } from '../_shared/openShiftRules.js';
+import { problemText, textYours, textTaken, textDeclined, textStillUp } from '../_shared/openShiftRules.js';
 import { regionPack } from '../_shared/regionPack.js';
+import { sheetPay, anyPremium } from '../_shared/payPremiums.js';
 import { notifyStaff } from '../_shared/staffNotify.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
@@ -266,7 +267,7 @@ Deno.serve(async (req) => {
 
     if (action === 'timesheet.approve') {
       const { data: ts } = await sb.from('wf_timesheets')
-        .select('id, location_id, org_id, status, clock_in, clock_out, break_taken, scheduled_hours, effective_rate')
+        .select('id, location_id, org_id, staff_id, status, clock_in, clock_out, break_taken, scheduled_hours, effective_rate, rate_source')
         .eq('id', target_id).maybeSingle();
       if (!ts || ts.location_id !== loc) return json({ error: 'timesheet not found for this location' }, 404);
       const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -286,6 +287,23 @@ Deno.serve(async (req) => {
           patch.actual_hours = actual;
           patch.variance = scheduled != null ? round2(actual - scheduled) : null;
           patch.pay_amount = round2(actual * (ts.effective_rate != null ? Number(ts.effective_rate) : 0));
+          // v5.11.101: the venue's pay premiums by the one rule (payroll, the clock, Back Office), so
+          // reports that read pay_amount agree with payroll. No premiums set: the line above stands.
+          try {
+            const { data: vsRow } = await sb.from('wf_venue_settings').select('premiums').eq('location_id', loc).maybeSingle();
+            if (anyPremium((vsRow as any)?.premiums)) {
+              const [{ data: locRow }, { data: stRow }] = await Promise.all([
+                sb.from('locations').select('timezone, currency').eq('id', loc).maybeSingle(),
+                sb.from('wf_staff').select('role_key').eq('id', ts.staff_id).maybeSingle(),
+              ]);
+              const { data: roleRow } = stRow?.role_key
+                ? await sb.from('wf_roles').select('premium_eligible').eq('location_id', loc).eq('key', stRow.role_key).maybeSingle()
+                : { data: null };
+              patch.pay_amount = sheetPay({ clockIn, clockOut, actualHours: actual, paidBreakMins: 0, rate: ts.effective_rate != null ? Number(ts.effective_rate) : 0,
+                rateSource: ts.rate_source ?? null, premiums: (vsRow as any).premiums, tz: locRow?.timezone || 'Europe/London',
+                country: regionPack({ currency: locRow?.currency || 'GBP' }).country, eligible: roleRow ? roleRow.premium_eligible !== false : true }).pay;
+            }
+          } catch (e) { console.error('[manager-approve] premium:', (e as Error).message); }
         }
       }
       const { error } = await sb.from('wf_timesheets').update(patch).eq('id', target_id).eq('location_id', loc);
@@ -315,6 +333,21 @@ Deno.serve(async (req) => {
       const d = decision === 'approved' ? 'approved' : decision === 'declined' ? 'declined' : null;
       if (!d) return json({ error: 'decision must be approved or declined' }, 400);
       if (!UUID.test(String(target_id))) return json({ error: 'request not found' }, 404);
+      // Nobody decides a swap they are part of: the PIN holder's till user (wf_staff.pos_user_id) or
+      // login (portal_user_id), or the Back Office login and the till users linked to it.
+      const { data: req0 } = await sb.from('wf_swap_requests').select('to_staff_id, from_staff_id').eq('id', target_id).eq('location_id', loc).maybeSingle();
+      const partIds = [req0?.to_staff_id, req0?.from_staff_id].filter(Boolean);
+      if (partIds.length) {
+        const loginIds = new Set([caller.user && !caller.user.is_anonymous ? caller.user.id : null, (op as any).auth_user_id || null].filter(Boolean).map(String));
+        const tillIds = new Set(pin ? [String(op.id)] : []);
+        if (caller.user && !caller.user.is_anonymous) {
+          const { data: mine } = await sb.from('staff_members').select('id').eq('location_id', loc).eq('auth_user_id', caller.user.id);
+          for (const m of mine || []) tillIds.add(String(m.id));
+        }
+        const { data: parts } = await sb.from('wf_staff').select('id, pos_user_id, portal_user_id').in('id', partIds);
+        const isSelf = (parts || []).some((p: any) => (p.pos_user_id && tillIds.has(String(p.pos_user_id))) || (p.portal_user_id && loginIds.has(String(p.portal_user_id))));
+        if (isSelf) return json({ error: problemText('self', 'manager'), code: 'self' }, 409);
+      }
       const { data: r, error } = await sb.rpc('wf_swap_decide', { p_location_id: loc, p_request_id: target_id, p_decision: d, p_actor: { id: String(op.id), name: op.name || null } });
       if (error) return json({ error: error.message }, 500);
       if (!r?.ok) return json({ error: problemText(r?.code, 'manager'), code: r?.code }, 409);
@@ -325,7 +358,9 @@ Deno.serve(async (req) => {
       const ids = [r.to_staff_id, r.from_staff_id].filter(Boolean);
       const { data: people } = ids.length ? await sb.from('wf_staff').select('id, name, mobile').in('id', ids) : { data: [] };
       const who = (id: string) => (people || []).find((p: any) => p.id === id) || null;
-      const auditErr = await audit(loc, venue?.org_id ?? null, op, `swap.${d}`, 'wf_swap_requests', String(target_id), { status: 'pending' }, { status: d === 'approved' ? 'approved' : 'declined', shift_id: r.shift_id, to_staff_id: r.to_staff_id, from_staff_id: r.from_staff_id, by: op.name ?? op.id });
+      // The decline is recorded here even when the request goes back up (a claim on a dropped shift:
+      // outcome 'reopened', the request open again with nobody on it).
+      const auditErr = await audit(loc, venue?.org_id ?? null, op, `swap.${d}`, 'wf_swap_requests', String(target_id), { status: 'pending', to_staff_id: r.to_staff_id }, { status: r.outcome === 'assigned' ? 'approved' : r.outcome === 'reopened' ? 'open' : 'declined', outcome: r.outcome, shift_id: r.shift_id, to_staff_id: r.to_staff_id, from_staff_id: r.from_staff_id, by: op.name ?? op.id });
       if (venue && shRow) {
         const country = regionPack({ currency: venue.currency }).country;
         const sh = { date: shRow.shift_date, start: String(shRow.start_time).slice(0, 5), finish: String(shRow.finish_time).slice(0, 5) };
@@ -334,6 +369,9 @@ Deno.serve(async (req) => {
         if (d === 'approved') {
           if (taker) await notifyStaff(venue, [taker], textYours(venue.name, sh, country), { ref: String(target_id) });
           if (giver) await notifyStaff(venue, [giver], textTaken(venue.name, taker?.name, sh, country), { ref: String(target_id) });
+        } else if (r.outcome === 'reopened') {
+          if (taker) await notifyStaff(venue, [taker], textDeclined(venue.name, sh, country), { ref: String(target_id) });
+          if (giver) await notifyStaff(venue, [giver], textStillUp(venue.name, taker?.name, sh, country), { ref: String(target_id) });
         } else {
           await notifyStaff(venue, [taker, giver].filter(Boolean) as any[], textDeclined(venue.name, sh, country), { ref: String(target_id) });
         }

@@ -23,7 +23,8 @@
 --      wf_swap_cancel, wf_swap_decline and wf_swap_decide. Each locks the shift, checks every rule
 --      (published, not started, on the team here, the right position, offered to this person,
 --      nobody else waiting, no overlap with their other shifts, not on approved leave, not marked
---      unavailable that weekday, under the venue's weekly hours cap) and the first claim wins.
+--      unavailable that weekday, under the venue's weekly hours cap, onboarding finished, as the rota
+--      requires before it schedules anyone) and the first claim wins.
 --      The venue setting (Workforce settings, Shift claims and swaps) decides whether a claim
 --      happens straight away or waits for a manager; with no setting a manager approves.
 --      SECURITY DEFINER, callable by the service role only (the staff-portal and manager-approve
@@ -53,7 +54,7 @@ begin
   if to_regclass('public.wf_shifts') is null or to_regclass('public.wf_swap_requests') is null
      or to_regclass('public.wf_staff') is null or to_regclass('public.wf_venue_settings') is null
      or to_regclass('public.wf_time_off') is null or to_regclass('public.wf_availability') is null
-     or to_regclass('public.wf_roles') is null then
+     or to_regclass('public.wf_roles') is null or to_regclass('public.wf_onboarding') is null then
     raise exception 'The Workforce tables are missing. Nothing was changed.';
   end if;
   if to_regprocedure('public.wf_shift_claim(uuid,uuid)') is not null
@@ -125,6 +126,41 @@ returns numeric language sql immutable set search_path = public, pg_temp as $f$
       - (p_shift.shift_date + p_shift.start_time))) / 3600.0 - coalesce(p_shift.break_mins, 0) / 60.0))
 $f$;
 
+-- Is this person's onboarding unfinished? The same rule as _shared/onboardingOpen.js (the staff
+-- app and the Time Clock): their newest wf_onboarding row, each step done by its evidence or by a
+-- step marked complete. p_bank_details false (a US venue) = the bank step is never open. No row:
+-- nothing open. The rota will not schedule such a person (WfRota onboardingBlock), so they cannot
+-- claim a shift either.
+create function public._wf_onboarding_open(p_staff_id uuid, p_bank_details boolean)
+returns boolean language plpgsql stable security definer set search_path = public, pg_temp as $f$
+declare
+  o public.wf_onboarding;
+  st public.wf_staff;
+  v_meta jsonb;
+  v_steps jsonb;
+begin
+  select * into o from public.wf_onboarding where staff_id = p_staff_id order by created_at desc limit 1;
+  if not found then return false; end if;
+  select * into st from public.wf_staff where id = p_staff_id;
+  v_meta := case when jsonb_typeof(o.meta) = 'object' then o.meta else '{}'::jsonb end;
+  v_steps := case when jsonb_typeof(o.steps) = 'array' then o.steps else '[]'::jsonb end;
+  -- A value counts as present when it is not missing, null, false, 0 or '' (as the JavaScript rule reads it).
+  return exists (
+    select 1 from (values
+      ('offer', coalesce(v_meta -> 'offerAccepted' not in ('null'::jsonb, 'false'::jsonb, '0'::jsonb, '""'::jsonb), false)
+             or coalesce(v_meta -> 'offerSentAt' not in ('null'::jsonb, 'false'::jsonb, '0'::jsonb, '""'::jsonb), false)),
+      ('contract', coalesce(v_meta -> 'signature' not in ('null'::jsonb, 'false'::jsonb, '0'::jsonb, '""'::jsonb), false)),
+      ('rtw', coalesce(v_meta -> 'rtwPath' not in ('null'::jsonb, 'false'::jsonb, '0'::jsonb, '""'::jsonb), false)),
+      ('bank', not coalesce(p_bank_details, true)
+             or coalesce(v_meta -> 'bankMasked' not in ('null'::jsonb, 'false'::jsonb, '0'::jsonb, '""'::jsonb), false)
+             or coalesce(nullif(st.bank_account_masked, ''), '') <> ''),
+      ('posUser', st.pos_user_id is not null)
+    ) d(k, ok)
+    where not d.ok
+      and not exists (select 1 from jsonb_array_elements(v_steps) e where e ->> 'key' = d.k and e ->> 'status' = 'complete'));
+end
+$f$;
+
 -- Why p_staff cannot take p_shift, or null. The same rules, in the same order, with the same
 -- codes as _shared/openShiftRules.js claimProblem. p_deciding: a manager is deciding the request,
 -- so the request's own state is not a reason.
@@ -155,6 +191,9 @@ begin
 
   select * into st from public.wf_staff where id = p_staff_id;
   if not found or st.status is distinct from 'active' or st.location_id is distinct from sh.location_id then return 'not_on_team'; end if;
+  if public._wf_onboarding_open(st.id, coalesce((select upper(l.currency) from public.locations l where l.id = sh.location_id), 'GBP') <> 'USD') then
+    return 'onboarding';
+  end if;
   if sh.staff_id is not null and sh.staff_id = st.id then return 'own'; end if;
   if sh.role_key is not null and st.role_key is distinct from sh.role_key then return 'role'; end if;
 
@@ -226,7 +265,12 @@ begin
          role_key = coalesce(sh.role_key, st.role_key),
          effective_rate = v_rate,
          rate_source = v_src,
-         computed_cost = case when v_rate is null then sh.computed_cost else round(public._wf_shift_hours(sh) * v_rate, 2) end,
+         -- The planned cost scales with the rate: it holds hours x rate plus the venue's pay premiums,
+         -- and a premium is a percent of the rate, so scaling keeps the premium exactly (the one rule,
+         -- _shared/payPremiums.js, as the rota computed it). With no cost or rate before: hours x rate.
+         computed_cost = case when v_rate is null then sh.computed_cost
+                              when coalesce(sh.effective_rate, 0) > 0 and sh.computed_cost is not null then round(sh.computed_cost * v_rate / sh.effective_rate, 2)
+                              else round(public._wf_shift_hours(sh) * v_rate, 2) end,
          updated_at = now()
    where id = sh.id;
 end
@@ -414,6 +458,14 @@ begin
     return jsonb_build_object('ok', false, 'code', 'shift_gone');
   end if;
   if p_decision = 'declined' then
+    -- A colleague's claim on a DROPPED shift (open to everyone in the position): declining that claim
+    -- puts the shift back up for someone else, nobody on the request. The decline itself is in the
+    -- audit (manager-approve writes it). A direct swap (an offer to one named colleague) or a claim on
+    -- an open shift closes; the open shift itself stays open for others.
+    if rq.kind = 'drop' then
+      update public.wf_swap_requests set status = 'open', to_staff_id = null, claimed_at = null, updated_at = now() where id = rq.id;
+      return jsonb_build_object('ok', true, 'outcome', 'reopened', 'shift_id', sh.id, 'from_staff_id', rq.from_staff_id, 'to_staff_id', rq.to_staff_id);
+    end if;
     update public.wf_swap_requests set status = 'declined', decided_at = now(), decided_how = 'manager',
            decided_by_id = v_by_id, decided_by_name = v_by_name, updated_at = now() where id = rq.id;
     return jsonb_build_object('ok', true, 'outcome', 'declined', 'shift_id', sh.id, 'from_staff_id', rq.from_staff_id, 'to_staff_id', rq.to_staff_id);
@@ -436,7 +488,7 @@ declare
   f text;
 begin
   foreach f in array array[
-    'public._wf_shift_hours(public.wf_shifts)', 'public._wf_claim_problem(uuid,uuid,uuid,boolean)',
+    'public._wf_shift_hours(public.wf_shifts)', 'public._wf_onboarding_open(uuid,boolean)', 'public._wf_claim_problem(uuid,uuid,uuid,boolean)',
     'public._wf_assign(uuid,uuid)', 'public._wf_shift_snapshot(public.wf_shifts)',
     'public.wf_shift_claim(uuid,uuid)', 'public.wf_shift_drop(uuid,uuid,uuid,text)',
     'public.wf_swap_cancel(uuid,uuid)', 'public.wf_swap_decline(uuid,uuid)',
@@ -461,7 +513,7 @@ grant select, insert, update, delete on public.wf_swap_requests to service_role;
 notify pgrst, 'reload schema';
 
 -- VISIBLE CHECK. Expected: staff_id_optional true, new_request_columns 8, staff_columns 2,
--- judge_functions 9, judge_open_to_api false, direct_write_policies 0, anon_can_read false,
+-- judge_functions 10, judge_open_to_api false, direct_write_policies 0, anon_can_read false,
 -- authenticated_can_write false, authenticated_can_read true, live_requests 1 (the Provo test row).
 select
   (select is_nullable = 'YES' from information_schema.columns
@@ -472,10 +524,10 @@ select
   (select count(*)::int from information_schema.columns
     where table_schema = 'public' and table_name = 'wf_staff' and column_name in ('payroll_employee_id', 'ssn_last4')) as staff_columns,
   (select count(*)::int from pg_proc p where p.pronamespace = 'public'::regnamespace
-    and p.proname in ('_wf_shift_hours', '_wf_claim_problem', '_wf_assign', '_wf_shift_snapshot', 'wf_shift_claim',
+    and p.proname in ('_wf_shift_hours', '_wf_onboarding_open', '_wf_claim_problem', '_wf_assign', '_wf_shift_snapshot', 'wf_shift_claim',
                       'wf_shift_drop', 'wf_swap_cancel', 'wf_swap_decline', 'wf_swap_decide')) as judge_functions,
   exists (select 1 from pg_proc p where p.pronamespace = 'public'::regnamespace
-    and p.proname in ('_wf_shift_hours', '_wf_claim_problem', '_wf_assign', '_wf_shift_snapshot', 'wf_shift_claim',
+    and p.proname in ('_wf_shift_hours', '_wf_onboarding_open', '_wf_claim_problem', '_wf_assign', '_wf_shift_snapshot', 'wf_shift_claim',
                       'wf_shift_drop', 'wf_swap_cancel', 'wf_swap_decline', 'wf_swap_decide')
     and (has_function_privilege('anon', p.oid, 'execute') or has_function_privilege('authenticated', p.oid, 'execute'))) as judge_open_to_api,
   (select count(*)::int from pg_policies where schemaname = 'public' and tablename = 'wf_swap_requests'

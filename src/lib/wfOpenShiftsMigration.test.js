@@ -12,7 +12,7 @@ import { readFileSync } from 'node:fs';
 const read = (p) => readFileSync(new URL(`../../${p}`, import.meta.url), 'utf8');
 const MIG = read('supabase/migrations/20261031a_OPS_wf_open_shifts.sql');
 const RB = read('supabase/migrations/20261031a_OPS_wf_open_shifts_ROLLBACK.sql');
-const JUDGE = ['_wf_shift_hours', '_wf_claim_problem', '_wf_assign', '_wf_shift_snapshot', 'wf_shift_claim', 'wf_shift_drop', 'wf_swap_cancel', 'wf_swap_decline', 'wf_swap_decide'];
+const JUDGE = ['_wf_shift_hours', '_wf_onboarding_open', '_wf_claim_problem', '_wf_assign', '_wf_shift_snapshot', 'wf_shift_claim', 'wf_shift_drop', 'wf_swap_cancel', 'wf_swap_decline', 'wf_swap_decide'];
 
 test('both files: ASCII only, no exclamation mark, Ops only guard, refuse a second run, 3 s lock wait', () => {
   for (const [name, s] of [['migration', MIG], ['rollback', RB]]) {
@@ -33,7 +33,7 @@ test('every judge function is SECURITY DEFINER where it touches rows, with a fix
     assert.ok(m, `${fn} sets its search path`);
     assert.ok(MIG.includes(`'public.${fn}(`), `${fn} is in the grants loop`);
   }
-  for (const fn of ['_wf_claim_problem', '_wf_assign', 'wf_shift_claim', 'wf_shift_drop', 'wf_swap_cancel', 'wf_swap_decline', 'wf_swap_decide']) {
+  for (const fn of ['_wf_onboarding_open', '_wf_claim_problem', '_wf_assign', 'wf_shift_claim', 'wf_shift_drop', 'wf_swap_cancel', 'wf_swap_decline', 'wf_swap_decide']) {
     assert.match(MIG, new RegExp(`create function public\\.${fn}\\([^)]*\\)\\s*returns \\w+ language plpgsql (stable )?security definer`), `${fn} is security definer`);
   }
   assert.match(MIG, /revoke all on function %s from public, anon, authenticated/);
@@ -105,4 +105,21 @@ test('the region follows the venue on the server too: Location settings copies a
   for (const fn of ['supabase/functions/staff-portal/openShifts.ts', 'supabase/functions/workforce-compute/index.ts']) {
     assert.match(read(fn), /from\('locations'\)\.select\('[^']*currency[^']*'\)/, fn);
   }
+});
+
+test('the reviewers\' rules: onboarding blocks a claim, a manager never decides their own swap, a declined claim on a dropped shift goes back up', () => {
+  assert.match(MIG, /if public\._wf_onboarding_open\(st\.id,[\s\S]{0,200}?<> 'USD'\) then\s+return 'onboarding';/);
+  const decide = MIG.slice(MIG.indexOf('create function public.wf_swap_decide'));
+  assert.match(decide, /if rq\.kind = 'drop' then\s+update public\.wf_swap_requests set status = 'open', to_staff_id = null, claimed_at = null/);
+  const ma = read('supabase/functions/manager-approve/index.ts');
+  const block = ma.slice(ma.indexOf("if (action === 'swap.decide')"), ma.indexOf('// ── po.raise'));
+  assert.ok(block.indexOf("code: 'self'") > 0 && block.indexOf("code: 'self'") < block.indexOf("sb.rpc('wf_swap_decide'"), 'refused before the database is asked');
+  assert.match(block, /pos_user_id && tillIds\.has/);
+  assert.match(block, /portal_user_id && loginIds\.has/);
+  assert.match(block, /r\.outcome === 'reopened'/);
+  const os = read('supabase/functions/staff-portal/openShifts.ts');
+  assert.match(os, /onboardingOpen: openOnboardingSteps\(onbOf\[p\.id\] \?\? null, p, bankDetails\)/, 'the open shift text skips unfinished onboarding');
+  const rota = read('src/backoffice/sections/workforce/WfRota.jsx');
+  assert.match(rota, /onboardingOpen: onboardingBlock\(p\.id\) \? 1 : 0/);
+  assert.match(rota, /timeZone: venueTz/, 'the venue clock decides what has started');
 });

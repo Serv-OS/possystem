@@ -34,6 +34,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { secondStepRefusal } from '../_shared/second-step.ts';
+import { openOnboardingSteps } from '../_shared/onboardingOpen.js';
 // v5.11.101: open shifts, swaps, availability and the venue's region pack (openShifts.ts).
 import { venueFacts, regionForApp, swapsSnapshot, handleSwapAction } from './openShifts.ts';
 import { regionPack } from '../_shared/regionPack.js';
@@ -224,23 +225,7 @@ async function audit(staff: any, action: string, before: unknown, after: unknown
 // How many onboarding steps are genuinely open, derived from EVIDENCE — the
 // stored steps array goes stale (it predates POS access / bank details landing
 // via other paths). An explicitly-complete stored step still counts as done.
-// v5.11.101: bankDetails false (a US venue: the payroll provider holds bank details) = the bank
-// step is never open.
-function openOnboardingSteps(row: any, staff: any, bankDetails = true): number {
-  if (!row) return 0;
-  const meta = row.meta || {};
-  const done: Record<string, boolean> = {
-    offer: !!(meta.offerAccepted || meta.offerSentAt),
-    contract: !!meta.signature,
-    rtw: !!meta.rtwPath,
-    bank: !bankDetails || !!(meta.bankMasked || staff?.bank_account_masked),
-    posUser: !!staff?.pos_user_id,
-  };
-  (Array.isArray(row.steps) ? row.steps : []).forEach((st: any) => {
-    if (st?.status === 'complete' && st.key in done) done[st.key] = true;
-  });
-  return Object.values(done).filter(v => !v).length;
-}
+// v5.11.101: one copy of the onboarding rule (_shared/onboardingOpen.js), the open shift rule's too.
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });

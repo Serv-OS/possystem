@@ -135,32 +135,92 @@ export function plannedPremium(shift, rate, premiums, { country = 'UK', eligible
   return premiumFor({ startMs: s, endMs: e, workedHours: worked, rate, premiums, tz: 'UTC', country, eligible, hourly });
 }
 
+/** The venue's calendar day of an instant ('YYYY-MM-DD'). */
+export function venueDay(instant, tz = 'Europe/London') {
+  const ms = typeof instant === 'number' ? instant : Date.parse(instant);
+  return Number.isFinite(ms) ? wallParts(ms, tz).iso : null;
+}
+
+/** The instant (ISO, UTC) the venue's day `dateIso` begins: its local midnight, clock changes included. */
+export function venueMidnightIso(dateIso, tz = 'Europe/London') {
+  const guess = Date.parse(`${dateIso}T00:00:00Z`);
+  const offsetAt = (ms) => {
+    const w = wallParts(ms, tz);
+    const wallMs = Date.parse(`${w.iso}T00:00:00Z`) + w.min * 60000;
+    return wallMs - Math.floor(ms / 60000) * 60000;   // venue wall clock minus UTC, at that instant
+  };
+  let t = guess - offsetAt(guess);
+  t = guess - offsetAt(t);                              // once more: the offset at the answer itself
+  return new Date(t).toISOString();
+}
+
+/** 'YYYY-MM-DD' plus n days. */
+const plusDays = (iso, n) => new Date(Date.parse(`${iso}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
+
+/** The first day of the work week holding `dateIso` (weekStartDow: 0 Sunday ... 6 Saturday; 1 Monday). */
+export function workweekStart(dateIso, weekStartDow = 1) {
+  const dow = new Date(`${dateIso}T00:00:00Z`).getUTCDay();
+  return plusDays(dateIso, -((dow - weekStartDow + 7) % 7));
+}
+
 /**
- * Overtime hours by work week (federal US rule, simple): hours over `weekly` in a Monday to Sunday
- * week. sheets: [{ staff_id, actual_hours, clock_in }] (venue local date of clock_in decides the week).
- * Returns { [staff_id]: { regular, overtime } }. weekly null or 0 = no overtime (the UK).
+ * The days to read so every work week touching the period [from, to] is whole: from the first day
+ * of the week holding `from` to the last day of the week holding `to` (venue days).
  */
-export function overtimeSplit(sheets, weekly, tz = 'Europe/London') {
+export function workweekSpan(from, to, weekStartDow = 1) {
+  return { from: workweekStart(from, weekStartDow), to: plusDays(workweekStart(to, weekStartDow), 6) };
+}
+
+/**
+ * Overtime hours by work week (federal US rule, simple): in each work week, the hours worked after the
+ * first `weekly` (40) are overtime, in the order they were worked. sheets: [{ staff_id, actual_hours,
+ * clock_in }]; the VENUE day of clock_in decides the week and the period. Pass every sheet of the
+ * whole work weeks touching the period (workweekSpan) and the period { from, to }: a week split by the
+ * period's edge is counted whole, and each period keeps only its own sheets' share (a week of 48 hours,
+ * 40 before the 15th and 8 after, puts 8 overtime hours in the second period, not 0 in each).
+ * Returns { [staff_id]: { regular, overtime } } for the period. weekly null or 0 = no overtime.
+ */
+export function overtimeSplit(sheets, weekly, tz = 'Europe/London', { weekStartDow = 1, from = null, to = null } = {}) {
   const out = {};
-  const byWeek = {};
-  for (const t of sheets || []) {
+  const inPeriod = (iso) => (!from || iso >= from) && (!to || iso <= to);
+  const rows = (sheets || [])
+    .filter((t) => t && t.staff_id)
+    .map((t) => ({ t, ms: Date.parse(t.clock_in), day: t.clock_in ? venueDay(t.clock_in, tz) : null }))
+    .sort((a, b) => (a.ms || 0) - (b.ms || 0));
+  const running = {};
+  for (const { t, day } of rows) {
     const hrs = Number(t.actual_hours) || 0;
-    const sid = t.staff_id;
-    if (!sid) continue;
-    const o = out[sid] ?? (out[sid] = { regular: 0, overtime: 0 });
-    if (!weekly || !t.clock_in) { o.regular += hrs; continue; }
-    const w = wallParts(Date.parse(t.clock_in), tz);
-    const d = new Date(`${w.iso}T00:00:00Z`);
-    d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
-    const key = `${sid}|${d.toISOString().slice(0, 10)}`;
-    byWeek[key] = (byWeek[key] || 0) + hrs;
-  }
-  for (const [key, hrs] of Object.entries(byWeek)) {
-    const sid = key.split('|')[0];
-    const o = out[sid];
-    o.regular += Math.min(hrs, weekly);
-    o.overtime += Math.max(0, hrs - weekly);
+    if (day && !inPeriod(day) && !weekly) continue;
+    const take = !day || inPeriod(day);
+    const o = take ? (out[t.staff_id] ?? (out[t.staff_id] = { regular: 0, overtime: 0 })) : null;
+    if (!weekly || !day) { if (o) o.regular += hrs; continue; }
+    const key = `${t.staff_id}|${workweekStart(day, weekStartDow)}`;
+    const before = running[key] || 0;
+    const after = before + hrs;
+    running[key] = after;
+    const ot = Math.max(0, after - weekly) - Math.max(0, before - weekly);
+    if (o) { o.regular += hrs - ot; o.overtime += ot; }
   }
   for (const o of Object.values(out)) { o.regular = r2(o.regular); o.overtime = r2(o.overtime); }
   return out;
+}
+
+/**
+ * ONE PAY RULE for a timesheet (v5.11.101), used by everything that writes wf_timesheets.pay_amount
+ * (workforce-clock at clock out, manager-approve when a manager edits and approves, Back Office
+ * Timesheets) and by payroll (workforce-compute: base pay plus the premium line). Every report's
+ * labour reads pay_amount (Daily trading, Stock and GP, the Owner and Manager apps), so reports and
+ * payroll agree on premiums.
+ *   base    = (worked hours + paid break minutes / 60) x rate, to the penny (exactly as before)
+ *   premium = premiumFor(...) on the worked hours (0 with no premiums set)
+ *   pay     = base + premium
+ * With no premiums set, pay is exactly the old figure.
+ */
+export function sheetPay({ clockIn, clockOut, actualHours, paidBreakMins = 0, rate, rateSource = null, premiums, tz, country, eligible = true }) {
+  const r = Number(rate) || 0;
+  const base = r2(Math.max(0, (Number(actualHours) || 0) + (Number(paidBreakMins) || 0) / 60) * r);
+  const prem = clockIn && clockOut
+    ? premiumFor({ startMs: clockIn, endMs: clockOut, workedHours: Number(actualHours) || 0, rate: r, premiums, tz, country, eligible, hourly: rateSource !== 'salaried' })
+    : { hours: 0, pay: 0 };
+  return { base, premium: prem.pay, premiumHours: prem.hours, pay: r2(base + prem.pay) };
 }

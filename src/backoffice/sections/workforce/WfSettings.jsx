@@ -102,6 +102,8 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
   // default) or 'instant'; and the most hours a week someone can reach by claiming (blank: no cap).
   const [swapApproval, setSwapApproval] = useState('manager');
   const [swapMaxHours, setSwapMaxHours] = useState('');
+  // v5.11.101: the day the work week starts (US overtime counts hours over 40 in a work week).
+  const [workweekStart, setWorkweekStart] = useState('1');
   // v5.11.101: pay premiums (wf_venue_settings.premiums), applied in payroll and the rota cost.
   const [premWeekend, setPremWeekend] = useState('');
   const [premHoliday, setPremHoliday] = useState('');
@@ -136,6 +138,7 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
     setTroncmasterName(sj.troncmasterName || '');
     setSwapApproval(sj.shiftSwaps?.approval === 'instant' ? 'instant' : 'manager');
     setSwapMaxHours(sj.shiftSwaps?.maxWeeklyHours != null ? String(sj.shiftSwaps.maxWeeklyHours) : '');
+    setWorkweekStart(String(Number.isInteger(Number(sj.workweekStart)) ? Number(sj.workweekStart) : 1));
     const pr = settings?.premiums || {};
     setPremWeekend(pr.weekend != null ? String(pr.weekend) : '');
     setPremHoliday(pr.bankHoliday != null ? String(pr.bankHoliday) : '');
@@ -217,6 +220,7 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
         tipAllocator,
         troncmasterName: troncmasterName.trim() || null,
         shiftSwaps: { approval: swapApproval === 'instant' ? 'instant' : 'manager', maxWeeklyHours: swapMaxHours === '' ? null : maxH },
+        workweekStart: Math.min(6, Math.max(0, parseInt(workweekStart, 10) || 0)),
       },
     };
     try {
@@ -373,6 +377,15 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
                 value={holidayDayHours} onChange={e => setHolidayDayHours(e.target.value)} disabled={savingVenue} />
               <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>What a day of leave is worth before someone has timesheet history. Once they have real worked weeks, their own 52-week average takes over automatically.</div>
             </div>
+            {pack.overtimeWeeklyHours ? (
+              <div>
+                <label style={labelStyle}>Work week starts</label>
+                <select style={inputStyle} value={workweekStart} onChange={e => setWorkweekStart(e.target.value)} disabled={savingVenue}>
+                  {['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map((d, i) => <option key={d} value={String(i)}>{d}</option>)}
+                </select>
+                <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>Overtime is hours over {pack.overtimeWeeklyHours} in a work week; a week across two pay periods is counted whole.</div>
+              </div>
+            ) : null}
             <div>
               <label style={labelStyle}>If the pay day is not a working day</label>
               <select style={inputStyle} value={payDayShift} onChange={e => setPayDayShift(e.target.value)} disabled={savingVenue}>

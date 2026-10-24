@@ -18,6 +18,9 @@ import * as wf from '../../../staff/wfData';
 import { hoursOf, resolveRate, breakShortfall, venueBreakPolicy, grossFromNet } from '../../../staff/labour';
 import { buildWeek, addWeeks, payPeriod, payCfgFrom, shiftPayPeriod, weekRangeLabel } from '../../../staff/wfWeek';
 import { getLocationConfig } from '../../../lib/locationTime';
+// v5.11.101: the one timesheet pay rule (base, plus the venue's pay premiums when it sets any), the
+// same as the clock, the Manager app and payroll, so reports (which read pay_amount) agree.
+import { sheetPay, anyPremium } from '../../../../supabase/functions/_shared/payPremiums.js';
 
 const VAR_TOL = 0.17; // ≈ ±10 min — beyond this we flag the variance.
 const round2 = n => Math.round((Number(n) || 0) * 100) / 100;
@@ -120,6 +123,16 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
     return m;
   }, [sheets]);
 
+  // Pay for a stretch of work: exactly the old formula when the venue sets no premiums.
+  const premiumsSet = settings?.premiums || {};
+  const withPremiums = anyPremium(premiumsSet);
+  function payFor({ clockIn, clockOut, actual, paidMins, rate, rateSource, staffId, roleKey }) {
+    if (!withPremiums || !clockIn || !clockOut) return round2(((actual ?? 0) + (paidMins || 0) / 60) * rate);
+    const role = roles?.map?.[roleKey] || roles?.map?.[staffMap[staffId]?.role] || null;
+    return sheetPay({ clockIn, clockOut, actualHours: actual ?? 0, paidBreakMins: paidMins || 0, rate, rateSource, premiums: premiumsSet,
+      tz, country: activeCountry(), eligible: role ? role.premiumEligible !== false : true }).pay;
+  }
+
   function rateFor(staffId, roleKey) {
     const s = staffMap[staffId];
     const role = roles?.map?.[roleKey] || (s && roles?.map?.[s.role]) || null;
@@ -131,7 +144,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
     const shiftIds = new Set((shifts || []).map(s => s.id));
     // Paid hours = net worked hours + any PAID break minutes (UK: the 20-min
     // statutory break may be unpaid — paying it is venue policy).
-    const payOf = (actual, paidMins, rate) => round2(((actual ?? 0) + (paidMins || 0) / 60) * rate);
+    const payOf = (actual, paidMins, rate, ts, staffId, roleKey, rateSource) => payFor({ clockIn: ts?.clockIn, clockOut: ts?.clockOut, actual, paidMins, rate, rateSource, staffId, roleKey });
     const out = (shifts || []).map(shift => {
       const ts = tsByShift[shift.id] || null;
       const scheduled = round2(shift.computedHours ?? hoursOf(shift.start, shift.finish) - (shift.breakMins || 0) / 60);
@@ -149,7 +162,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
         plannedBreakMins: shift.breakMins ?? null,
         paidBreak: ts ? (ts.paidBreakMins || 0) > 0 : false,
         breaks: ts?.breaks || [],
-        pay: ts ? payOf(actual, ts.paidBreakMins, rate) : null,
+        pay: ts ? payOf(actual, ts.paidBreakMins, rate, ts, shift.staffId, shift.roleKey, source) : null,
       };
     });
     (sheets || []).forEach(ts => {
@@ -173,11 +186,11 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
         plannedBreakMins: null,          // clock-only row: never rostered, so no plan to miss
         paidBreak: (ts.paidBreakMins || 0) > 0,
         breaks: ts.breaks || [],
-        pay: ts.payAmount != null && ts.status !== 'pending' ? round2(ts.payAmount) : payOf(actual, ts.paidBreakMins, eff),
+        pay: ts.payAmount != null && ts.status !== 'pending' ? round2(ts.payAmount) : payOf(actual, ts.paidBreakMins, eff, ts, ts.staffId, staffMap[ts.staffId]?.role, ts.rateSource || source),
       });
     });
     return out.sort((a, b) => String(a.date || '9999').localeCompare(String(b.date || '9999')) || String(staffMap[a.staffId]?.name || '').localeCompare(String(staffMap[b.staffId]?.name || '')));
-  }, [shifts, sheets, tsByShift, staffMap, roles, range.from, range.to, tz]);
+  }, [shifts, sheets, tsByShift, staffMap, roles, range.from, range.to, tz, settings?.premiums]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Status filter: pending also shows rota-only rows (a shift still needing a
   // timesheet IS pending work); approved/paid show only matching timesheets.
@@ -214,13 +227,15 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
   async function addForShift(r) {
     const breakMins = r.shift.breakMins || 0;
     const paidMins = paidBreaksDefault ? breakMins : 0;
+    const clockIn = stamp(r.shift.date, r.shift.start), clockOut = clockOutOf(r.shift.date, r.shift.start, r.shift.finish);
     try {
       const ts = await wf.saveTimesheet({
         shiftId: r.shift.id, staffId: r.shift.staffId,
-        clockIn: stamp(r.shift.date, r.shift.start), clockOut: clockOutOf(r.shift.date, r.shift.start, r.shift.finish),
+        clockIn, clockOut,
         breakTaken: breakMins, paidBreakMins: paidMins,
         scheduledHours: r.scheduled, actualHours: r.scheduled, variance: 0,
-        effectiveRate: r.rate, rateSource: r.rateSource, payAmount: round2((r.scheduled + paidMins / 60) * r.rate),
+        effectiveRate: r.rate, rateSource: r.rateSource,
+        payAmount: payFor({ clockIn, clockOut, actual: r.scheduled, paidMins, rate: r.rate, rateSource: r.rateSource, staffId: r.shift.staffId, roleKey: r.shift.roleKey }),
         status: 'pending',
       }, ctx.locationId, ctx.orgId);
       setSheets(prev => [ts, ...prev]);
@@ -256,7 +271,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
     const mins = Math.max(0, Math.round(Number(eform.breakMins) || 0));
     const actual = round2(Math.max(0, (new Date(clockOut) - new Date(clockIn)) / 3600000 - mins / 60));
     const paidMins = eform.paid ? mins : 0;
-    return { clockIn, clockOut, mins, paidMins, actual, pay: round2((actual + paidMins / 60) * r.rate) };
+    return { clockIn, clockOut, mins, paidMins, actual, pay: payFor({ clockIn, clockOut, actual, paidMins, rate: r.rate, rateSource: r.rateSource, staffId: r.staffId, roleKey: r.roleKey }) };
   }
   async function saveEdit(r) {
     const c = editCalc(r);
@@ -561,13 +576,15 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
             const paidMins = form.breakPaid ? breakMins : 0;
             const hrs = round2(hoursOf(form.start, form.finish) - breakMins / 60);
             const { rate, source } = rateFor(form.staffId, staffMap[form.staffId]?.role);
+            const clockIn = stamp(form.date, form.start), clockOut = clockOutOf(form.date, form.start, form.finish);
             try {
               const ts = await wf.saveTimesheet({
                 staffId: form.staffId,
-                clockIn: stamp(form.date, form.start), clockOut: clockOutOf(form.date, form.start, form.finish),
+                clockIn, clockOut,
                 breakTaken: breakMins, paidBreakMins: paidMins,
                 scheduledHours: null, actualHours: hrs, variance: null,
-                effectiveRate: rate, rateSource: source, payAmount: round2((hrs + paidMins / 60) * rate),
+                effectiveRate: rate, rateSource: source,
+                payAmount: payFor({ clockIn, clockOut, actual: hrs, paidMins, rate, rateSource: source, staffId: form.staffId, roleKey: staffMap[form.staffId]?.role }),
                 status: 'pending',
               }, ctx.locationId, ctx.orgId);
               setSheets(prev => [ts, ...prev]);

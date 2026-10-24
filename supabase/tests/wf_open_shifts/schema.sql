@@ -41,7 +41,7 @@ grant execute on function public.second_step_ok() to anon, authenticated, servic
 
 create table public.wf_staff (
   id uuid primary key default gen_random_uuid(), org_id uuid not null, location_id uuid not null, name text not null,
-  role_key text, status text not null default 'active', rate_override numeric(10,4), mobile text,
+  role_key text, status text not null default 'active', rate_override numeric(10,4), mobile text, pos_user_id uuid,
   bank_account_masked text, created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
   unique (id, org_id), foreign key (location_id, org_id) references public.locations (id, org_id));
 create table public.wf_roles (
@@ -72,6 +72,10 @@ create table public.wf_availability (
   id uuid primary key default gen_random_uuid(), location_id uuid not null, org_id uuid not null, staff_id uuid not null,
   week_start date, recurring boolean not null default true, per_day jsonb not null default '[]'::jsonb,
   created_at timestamptz not null default now(), updated_at timestamptz not null default now());
+create table public.wf_onboarding (
+  id uuid primary key default gen_random_uuid(), location_id uuid not null, org_id uuid not null, staff_id uuid not null,
+  role_key text, steps jsonb not null default '[]'::jsonb, status text not null default 'inProgress', meta jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now());
 create table public.wf_venue_settings (location_id uuid primary key, org_id uuid not null, settings jsonb not null default '{}'::jsonb);
 
 -- The touch trigger live has on wf_swap_requests and wf_shifts.
@@ -83,7 +87,7 @@ create trigger trg_wf_shifts_touch before update on public.wf_shifts for each ro
 do $rls$
 declare t text;
 begin
-  foreach t in array array['wf_staff', 'wf_roles', 'wf_shifts', 'wf_swap_requests', 'wf_time_off', 'wf_availability', 'wf_venue_settings'] loop
+  foreach t in array array['wf_staff', 'wf_roles', 'wf_shifts', 'wf_swap_requests', 'wf_time_off', 'wf_availability', 'wf_venue_settings', 'wf_onboarding'] loop
     execute format('alter table public.%I enable row level security', t);
     execute format('alter table public.%I force row level security', t);
     execute format('grant select, insert, update, delete on public.%I to anon, authenticated', t);

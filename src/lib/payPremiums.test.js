@@ -96,3 +96,46 @@ test('US overtime: hours over 40 in a Monday to Sunday week, per person', () => 
   // No weekly rule (the UK): everything regular.
   assert.deepEqual(overtimeSplit(sheets, null).a, { regular: 61, overtime: 0 });
 });
+
+test('sheetPay: with no premiums it is the old pay to the penny; with premiums base plus the premium', async () => {
+  const { sheetPay } = await import('../../supabase/functions/_shared/payPremiums.js');
+  const old = (actual, paidMins, rate) => Math.round(((actual ?? 0) + (paidMins || 0) / 60) * rate * 100) / 100;
+  for (const [a, p, r] of [[7.5, 0, 12.21], [6.33, 20, 11.44], [0, 0, 10], [12.75, 30, 15.5]]) {
+    assert.equal(sheetPay({ clockIn: '2026-10-24T09:00:00Z', clockOut: '2026-10-24T17:00:00Z', actualHours: a, paidBreakMins: p, rate: r, premiums: {} }).pay, old(a, p, r));
+  }
+  const s = sheetPay({ clockIn: '2026-10-24T10:00:00Z', clockOut: '2026-10-24T18:00:00Z', actualHours: 7.5, rate: 12, premiums: { weekend: 20 }, tz: 'UTC' });
+  assert.deepEqual([s.base, s.premium, s.pay], [90, 18, 108]);
+  assert.equal(sheetPay({ clockIn: '2026-10-24T10:00:00Z', clockOut: '2026-10-24T18:00:00Z', actualHours: 7.5, rate: 12, rateSource: 'salaried', premiums: { weekend: 20 }, tz: 'UTC' }).premium, 0);
+});
+
+test('US overtime across a semi-monthly edge: the work week is counted whole, each period keeps its own share', async () => {
+  const { overtimeSplit, workweekSpan } = await import('../../supabase/functions/_shared/payPremiums.js');
+  const tz = 'America/Los_Angeles';
+  // Week Mon 12 Oct to Sun 18 Oct 2026: 10h on 12, 13, 14, 15 (40h) then 8h on 16 and 17.
+  const sheets = ['12', '13', '14', '15'].map((d) => ({ staff_id: 'a', actual_hours: 10, clock_in: `2026-10-${d}T16:00:00Z` }))
+    .concat(['16', '17'].map((d) => ({ staff_id: 'a', actual_hours: 8, clock_in: `2026-10-${d}T16:00:00Z` })));
+  assert.deepEqual(workweekSpan('2026-10-16', '2026-10-31'), { from: '2026-10-12', to: '2026-11-01' });
+  assert.deepEqual(workweekSpan('2026-10-01', '2026-10-15'), { from: '2026-09-28', to: '2026-10-18' });
+  const first = overtimeSplit(sheets, 40, tz, { from: '2026-10-01', to: '2026-10-15' });
+  const second = overtimeSplit(sheets, 40, tz, { from: '2026-10-16', to: '2026-10-31' });
+  assert.deepEqual(first.a, { regular: 40, overtime: 0 });
+  assert.deepEqual(second.a, { regular: 0, overtime: 16 });   // the old split read 16 regular hours here
+  // A Sunday start work week (venue setting): 11 to 17 Oct holds all six sheets too.
+  assert.deepEqual(workweekSpan('2026-10-16', '2026-10-31', 0), { from: '2026-10-11', to: '2026-10-31' });
+  assert.deepEqual(overtimeSplit(sheets, 40, tz, { weekStartDow: 0, from: '2026-10-16', to: '2026-10-31' }).a, { regular: 0, overtime: 16 });
+});
+
+test('US evening shift on the last day of a period belongs to that period by the venue clock, not UTC', async () => {
+  const { overtimeSplit, venueDay, venueMidnightIso } = await import('../../supabase/functions/_shared/payPremiums.js');
+  const tz = 'America/Los_Angeles';
+  // 15 Oct 2026 at 18:00 in San Mateo is 16 Oct 01:00 UTC.
+  const sheet = { staff_id: 'b', actual_hours: 6, clock_in: '2026-10-16T01:00:00Z' };
+  assert.equal(venueDay(sheet.clock_in, tz), '2026-10-15');
+  assert.deepEqual(overtimeSplit([sheet], 40, tz, { from: '2026-10-01', to: '2026-10-15' }).b, { regular: 6, overtime: 0 });
+  assert.equal(overtimeSplit([sheet], 40, tz, { from: '2026-10-16', to: '2026-10-31' }).b, undefined);
+  // The venue's day boundaries as instants (what payroll reads timesheets between).
+  assert.equal(venueMidnightIso('2026-10-16', tz), '2026-10-16T07:00:00.000Z');   // PDT
+  assert.equal(venueMidnightIso('2026-11-02', tz), '2026-11-02T08:00:00.000Z');   // PST after 1 Nov
+  assert.equal(venueMidnightIso('2026-10-26', 'Europe/London'), '2026-10-26T00:00:00.000Z');
+  assert.equal(venueMidnightIso('2026-10-24', 'Europe/London'), '2026-10-23T23:00:00.000Z');
+});

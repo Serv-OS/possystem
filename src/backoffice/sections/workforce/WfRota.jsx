@@ -327,6 +327,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   const [aiBusy, setAiBusy] = useState(false);     // AI rota generation in progress
   const [aiReport, setAiReport] = useState(null);   // what the last build did: accepted, filled, rejected reasons, gaps
   const [openingHours, setOpeningHours] = useState(null);   // locations.opening_hours (rota rules)
+  const [venueTz, setVenueTz] = useState('Europe/London'); // v5.11.101: the venue clock (has an open shift started yet)
   const [history, setHistory] = useState({});       // { iso: sales } for the 8 weeks before this week (learned forecast)
   const [view, setView] = useState('staff');       // 'staff' | 'section'
   const [secs, setSecs] = useState(sections || []); // sections loaded fresh (Settings may have changed them)
@@ -350,7 +351,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   // Opening hours feed the rota rules (a shift outside them is rejected).
   useEffect(() => {
     let alive = true;
-    getLocationConfig(ctx.locationId).then(c => { if (alive) setOpeningHours(c?.opening_hours || null); }).catch(() => {});
+    getLocationConfig(ctx.locationId).then(c => { if (alive) { setOpeningHours(c?.opening_hours || null); setVenueTz(c?.timezone || 'Europe/London'); } }).catch(() => {});
     return () => { alive = false; };
   }, [ctx.locationId]);
   // Learned forecast: the 8 weeks of sales before the visible week.
@@ -566,8 +567,10 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   async function textOpenShifts(ids) {
     const fresh = shifts.filter(s => ids.includes(s.id) && !s.staffId);
     if (!fresh.length) return 0;
-    const now = new Date();
-    const todayIso = ymd(now), nowMin = now.getHours() * 60 + now.getMinutes();
+    // The VENUE's clock, never the browser's: a manager in California publishing a Leeds rota.
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: venueTz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+      .formatToParts(new Date()).map(x => [x.type, x.value]));
+    const todayIso = `${parts.year}-${parts.month}-${parts.day}`, nowMin = Number(parts.hour) * 60 + Number(parts.minute);
     const country = activeCountry();
     const people = (staff || []).map(p => ({ id: p.id, name: p.name, mobile: p.mobile, status: p.status || 'active', roleKey: p.role, locationId: ctx.locationId }));
     const sent = new Set();
@@ -578,6 +581,8 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
       const can = eligibleStaff(shift, people).filter(p => !claimProblem({
         shift, claimer: p, request: null, theirShifts: shifts.filter(x => x.staffId === p.id), leave: timeOff.filter(l => l.staffId === p.id),
         availability: (avail || []).find(a => a.staffId === p.id) || null, settings: settings?.settings || {}, todayIso, nowMin, country,
+        // The rota's own onboarding gate: someone it will not schedule is not texted an open shift.
+        onboardingOpen: onboardingBlock(p.id) ? 1 : 0,
       }));
       const results = await Promise.allSettled(can.filter(p => p.mobile).map(p => wf.sendStaffSms(p.mobile, msg, ctx.locationId, 'rota_notification', sh.id)));
       results.forEach((r, i) => { if (r.status === 'fulfilled' && r.value?.ok) { n++; sent.add(can[i].id); } });
@@ -682,7 +687,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
       status: 'draft', note: '',
       effectiveRate: rate, rateSource: source,
       computedHours: Math.round(hours * 100) / 100,
-      computedCost: Math.round(hours * rate * 100) / 100,
+      computedCost: Math.round((hours * rate + premiumOn({ date: dateIso, start: src.start, finish: src.finish, breakMins: src.breakMins || 0 }, rate, source, role)) * 100) / 100,
     };
     setSaving(true);
     try {
@@ -710,9 +715,14 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
         const idx = wk.days.findIndex(d => d.iso === s.date);
         // v5.11.101: an open shift copies as an open draft (nobody on it, same position and cost).
         if (idx >= 0 && !s.staffId) {
-          const copy = { staffId: null, roleKey: s.roleKey || null, date: target.days[idx].iso, start: s.start, finish: s.finish, breakMins: s.breakMins || 0,
-            sectionId: s.sectionId || null, section: s.section || null, status: 'draft', effectiveRate: s.effectiveRate ?? null, rateSource: s.rateSource || null,
-            computedHours: s.computedHours ?? null, computedCost: s.computedCost ?? null };
+          const oRole = roles.map[s.roleKey];
+          const { rate: oRate, source: oSource } = resolveRate(null, oRole);
+          const oHours = Math.max(0, hoursOf(s.start, s.finish) - (s.breakMins || 0) / 60);
+          const oDate = target.days[idx].iso;
+          const copy = { staffId: null, roleKey: s.roleKey || null, date: oDate, start: s.start, finish: s.finish, breakMins: s.breakMins || 0,
+            sectionId: s.sectionId || null, section: s.section || null, status: 'draft', effectiveRate: oRate, rateSource: oSource,
+            computedHours: Math.round(oHours * 100) / 100,
+            computedCost: Math.round((oHours * oRate + premiumOn({ date: oDate, start: s.start, finish: s.finish, breakMins: s.breakMins || 0 }, oRate, oSource, oRole)) * 100) / 100 };
           working.push(copy); toInsert.push(copy);
           continue;
         }
@@ -731,7 +741,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
           sectionId: s.sectionId || null, section: s.section || null, status: 'draft',
           effectiveRate: rate, rateSource: source,
           computedHours: Math.round(hours * 100) / 100,
-          computedCost: Math.round(hours * rate * 100) / 100,
+          computedCost: Math.round((hours * rate + premiumOn({ date: dateIso, start: s.start, finish: s.finish, breakMins: s.breakMins || 0 }, rate, source, role)) * 100) / 100,
         };
         working.push(copy);
         toInsert.push(copy);
@@ -911,7 +921,8 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
           staffId: s.id, roleKey: s.role, date: p.date, start: p.start, finish: p.finish, breakMins,
           section, sectionId: (secs || []).find(x => String(x.name || '').toLowerCase() === String(section || '').toLowerCase())?.id || null, status: 'draft',
           effectiveRate: rate, rateSource: source,
-          computedHours: Math.round(hours * 100) / 100, computedCost: Math.round(hours * rate * 100) / 100,
+          computedHours: Math.round(hours * 100) / 100,
+          computedCost: Math.round((hours * rate + premiumOn({ date: p.date, start: p.start, finish: p.finish, breakMins }, rate, source, role)) * 100) / 100,
         };
       });
       // ONE bulk insert instead of N sequential saves.

@@ -7,8 +7,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { openOnboardingSteps } from '../../supabase/functions/_shared/onboardingOpen.js';
 import { claimProblem, swapMode, claimHoursCap, spanMins, weekMonday, shiftWords, eligibleStaff, problemText,
-  textOpenShift, textOffered, textTaken, textYours, textAsked, textDeclined, textOfferDeclined, PROBLEM_WORDS, MANAGER_WORDS } from '../../supabase/functions/_shared/openShiftRules.js';
+  textOpenShift, textOffered, textTaken, textYours, textAsked, textDeclined, textOfferDeclined, textStillUp, PROBLEM_WORDS, MANAGER_WORDS } from '../../supabase/functions/_shared/openShiftRules.js';
 
 const { cases } = JSON.parse(readFileSync(new URL('../../supabase/tests/wf_open_shifts/cases.json', import.meta.url), 'utf8'));
 const TODAY = '2026-11-04';   // a Wednesday
@@ -34,7 +35,9 @@ function inputOf(k) {
   const leave = (k.leave || []).map(l => ({ status: l.status, startDate: plus(l.fromDay), endDate: plus(l.toDay) }));
   const availability = k.unavailable ? { perDay: [{ day: dayIdx(shift.date), state: 'unavailable' }] } : null;
   const settings = k.cap ? { shiftSwaps: { maxWeeklyHours: k.cap } } : {};
-  return { shift, claimer, request, theirShifts, leave, availability, settings, todayIso: TODAY, nowMin: 600 };
+  // The claimer's staff row has no till access and no bank details (as run.mjs seeds C).
+  const onboardingOpen = k.onboarding ? openOnboardingSteps(k.onboarding, { pos_user_id: null, bank_account_masked: null }, true) : 0;
+  return { shift, claimer, request, theirShifts, leave, availability, settings, todayIso: TODAY, nowMin: 600, onboardingOpen };
 }
 
 for (const k of cases) {
@@ -90,7 +93,7 @@ test('who hears about an open shift: active, this venue, this position, not the 
 
 test('texts: plain words, no dashes, no exclamation marks, the venue named', () => {
   const sh = { date: '2026-10-28', start: '17:00', finish: '23:00' };
-  const all = [textOpenShift('Leeds', sh), textOffered('Leeds', 'Jane Lee', sh), textTaken('Leeds', 'Sam Ray', sh), textYours('Leeds', sh), textAsked('Leeds', sh), textDeclined('Leeds', sh), textOfferDeclined('Leeds', 'Jo', sh), ...Object.values(PROBLEM_WORDS), ...Object.values(MANAGER_WORDS)];
+  const all = [textOpenShift('Leeds', sh), textOffered('Leeds', 'Jane Lee', sh), textTaken('Leeds', 'Sam Ray', sh), textYours('Leeds', sh), textAsked('Leeds', sh), textDeclined('Leeds', sh), textOfferDeclined('Leeds', 'Jo', sh), textStillUp('Leeds', 'Jo', sh), ...Object.values(PROBLEM_WORDS), ...Object.values(MANAGER_WORDS)];
   for (const t of all) {
     assert.ok(!/[–—!]/.test(t), t);
   }

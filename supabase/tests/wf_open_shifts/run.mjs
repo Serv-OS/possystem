@@ -126,7 +126,7 @@ try {
        insert into public.wf_swap_requests (location_id, org_id, shift_id, from_staff_id, status) values (${lit(A)}, ${lit(ORG)}, ${lit(id('5a000000', 99))}, ${lit(S.P)}, 'open');`);
   const mig = psql({ args: ['-1', '-f', MIGRATION] });
   const check = mig.stdout.trim().split('\n').pop();
-  ok(check === 't|8|2|9|f|0|f|f|t|1', `check row as documented (${check})`);
+  ok(check === 't|8|2|10|f|0|f|f|t|1', `check row as documented (${check})`);
   const again = psql({ args: ['-1', '-f', MIGRATION], allowFail: true });
   ok(again.status !== 0 && /has run already/.test(again.stderr), 'a second run is refused');
   ok(sql(`select count(*) from pg_proc where proname = 'wf_shift_claim'`) === '1', 'a second run changed nothing');
@@ -137,8 +137,9 @@ try {
   const dow = (iso) => Number(sql(`select extract(isodow from date ${lit(iso)})::int - 1`));
   for (const k of cases) {
     sql(`delete from public.wf_swap_requests where shift_id is distinct from ${lit(id('5a000000', 99))}; delete from public.wf_shifts where id <> ${lit(id('5a000000', 99))};
-         delete from public.wf_time_off; delete from public.wf_availability; delete from public.wf_venue_settings;`);
+         delete from public.wf_time_off; delete from public.wf_availability; delete from public.wf_venue_settings; delete from public.wf_onboarding;`);
     const date = plus(k.shift.day);
+    if (k.onboarding) sql(`insert into public.wf_onboarding (location_id, org_id, staff_id, meta, steps) values (${lit(A)}, ${lit(ORG)}, ${lit(S[k.claimer])}, ${lit(JSON.stringify(k.onboarding.meta))}, ${lit(JSON.stringify(k.onboarding.steps))})`);
     const shiftId = sql(`insert into public.wf_shifts (location_id, org_id, staff_id, role_key, shift_date, start_time, finish_time, status) values (${lit(A)}, ${lit(ORG)}, ${k.shift.owner ? lit(S[k.shift.owner]) : 'null'}, 'bar', ${lit(date)}, ${lit(k.shift.start)}, ${lit(k.shift.finish)}, ${lit(k.shift.status || 'published')}) returning id`);
     let reqId = null;
     if (k.request) {
@@ -278,10 +279,16 @@ try {
     ok(json(`select public.wf_swap_cancel(${lit(S.C)}, ${lit(drop2.request_id)})`).outcome === 'reopened', 'Cara withdraws: it goes back to waiting');
     ok(sql(`select status || '|' || coalesce(to_staff_id::text, '-') from public.wf_swap_requests where id = ${lit(drop2.request_id)}`) === 'open|-', 'open again with nobody on it');
     ok(json(`select public.wf_shift_claim(${lit(S.C)}, ${lit(sh)})`).outcome === 'pending', 'Cara claims it again');
-    ok(json(`select public.wf_swap_decide(${lit(A)}, ${lit(drop2.request_id)}, 'declined', '{"name":"Mo"}')`).outcome === 'declined', 'the manager declines');
+    ok(json(`select public.wf_swap_decide(${lit(A)}, ${lit(drop2.request_id)}, 'declined', '{"name":"Mo"}')`).outcome === 'reopened', 'the manager declines Cara on a dropped shift: it goes back up');
     ok(sql(`select staff_id from public.wf_shifts where id = ${lit(sh)}`) === S.P, 'Pat still has it after the decline');
-    const drop3 = json(`select public.wf_shift_drop(${lit(S.P)}, ${lit(sh)}, null, null)`);
-    ok(json(`select public.wf_swap_cancel(${lit(S.P)}, ${lit(drop3.request_id)})`).outcome === 'cancelled', 'Pat takes it back');
+    ok(sql(`select status || '|' || coalesce(to_staff_id::text, '-') from public.wf_swap_requests where id = ${lit(drop2.request_id)}`) === 'open|-', 'the request is open again with nobody on it');
+    ok(json(`select public.wf_shift_claim(${lit(S.Q)}, ${lit(sh)})`).outcome === 'pending', 'Quinn can claim it now');
+    ok(json(`select public.wf_swap_cancel(${lit(S.P)}, ${lit(drop2.request_id)})`).outcome === 'cancelled', 'Pat takes it back');
+    // A direct swap (an offer) declined by a manager closes.
+    const offer2 = json(`select public.wf_shift_drop(${lit(S.P)}, ${lit(sh)}, ${lit(S.Q)}, null)`);
+    ok(json(`select public.wf_shift_claim(${lit(S.Q)}, ${lit(sh)})`).outcome === 'pending', 'Quinn accepts an offer');
+    ok(json(`select public.wf_swap_decide(${lit(A)}, ${lit(offer2.request_id)}, 'declined', '{"name":"Mo"}')`).outcome === 'declined'
+      && sql(`select status from public.wf_swap_requests where id = ${lit(offer2.request_id)}`) === 'declined', 'a manager declining a direct swap closes it');
   }
   {
     const sh = openShift('11:00', '15:00', 3);

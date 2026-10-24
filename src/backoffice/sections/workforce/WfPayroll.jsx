@@ -28,15 +28,15 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
   // provider's columns, no bank details, for a US venue).
   const pack = activeRegionPack();
   const usExport = pack.payrollExport === 'us_payroll';
-  // Premiums show (table and file) only for a venue that pays them; every other venue's table and
-  // BACS file are exactly as before.
-  const withPrem = !!run?.staff?.some(r => r.premium_pay != null);
 
   const [period, setPeriod] = useState(() => payPeriod(payCfg));
   const [run, setRun] = useState(null);     // { staff, totals, tronc } | null
   const [computing, setComputing] = useState(false);
   const [closing, setClosing] = useState(false);
   const [history, setHistory] = useState([]); // closed wf_payroll_runs
+  // Premiums show (table and file) only for a venue that pays them; every other venue's table and
+  // BACS file are exactly as before. (Below the useState lines: `run` must exist first.)
+  const withPrem = !!run?.staff?.some(r => r.premium_pay != null);
   useEffect(() => { setPeriod(payPeriod(payCfg)); setRun(null); }, [payCfg]);
 
   const reloadHistory = async () => {
@@ -99,13 +99,14 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
       return [parts.slice(0, -1).join(' ') || parts[0] || '', parts.length > 1 ? parts[parts.length - 1] : ''];
     };
     const rows = [
-      ['Employee ID', 'First name', 'Last name', 'SSN last 4', 'Period start', 'Period end', 'Regular hours', 'Overtime hours', 'Gross wages', ...(withPrem ? ['Premium pay'] : []), 'Tips (direct)', 'Tips (pooled)', 'Total'],
+      ['Employee ID', 'First name', 'Last name', 'SSN last 4', 'Period start', 'Period end', 'Regular hours', 'Overtime hours', 'Gross wages', ...(withPrem ? ['Premium pay'] : []), 'Holiday hours', 'Holiday pay', 'Tips (direct)', 'Tips (pooled)', 'Total'],
       ...run.staff.map(r => {
         const s = staffById[r.staff_id] || {};
         const [first, last] = names(r.staff_id);
         return [s.payrollEmployeeId || '', first, last, s.ssnLast4 || '', period.startIso, period.endIso,
           Number(r.regular_hours ?? r.hours ?? 0).toFixed(2), Number(r.overtime_hours || 0).toFixed(2), Number(r.pay || 0).toFixed(2),
-          ...(withPrem ? [Number(r.premium_pay || 0).toFixed(2)] : []), Number(r.tips_direct || 0).toFixed(2), Number(r.tips_tronc || 0).toFixed(2), Number(r.total || 0).toFixed(2)];
+          ...(withPrem ? [Number(r.premium_pay || 0).toFixed(2)] : []), Number(r.holiday_hours || 0).toFixed(2), Number(r.holiday_pay || 0).toFixed(2),
+          Number(r.tips_direct || 0).toFixed(2), Number(r.tips_tronc || 0).toFixed(2), Number(r.total || 0).toFixed(2)];
       }),
       [],
       ['Notes for payroll:'],

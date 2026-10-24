@@ -77,6 +77,7 @@ export const PROBLEM_WORDS = {
   not_published: 'This shift is not on the published rota.',
   past: 'This shift has already started.',
   not_on_team: 'You are not on the team at this venue.',
+  onboarding: 'Your onboarding is not finished yet. Finish it in the staff app (Tasks) first.',
   own: 'This is already your shift.',
   role: 'This shift needs someone in its position.',
   not_offered: 'This shift is no longer up for grabs.',
@@ -92,12 +93,14 @@ export const PROBLEM_WORDS = {
   not_found: 'That request is no longer there.',
   not_pending: 'That request has already been decided.',
   shift_gone: 'The shift was deleted, so the request is closed.',
+  self: 'You cannot decide a swap you are part of. Ask another manager.',
 };
 
 /** The same codes in a manager's words (about the person who asked, not to them). */
 export const MANAGER_WORDS = {
   past: 'The shift has already started.',
   not_on_team: 'They are no longer on the team here.',
+  onboarding: 'Their onboarding is not finished yet.',
   role: 'They are not in this shift\'s position.',
   not_offered: 'The shift has changed hands since they asked.',
   overlap: 'They now have another shift that overlaps it.',
@@ -115,7 +118,7 @@ export function problemText(code, who = 'staff') {
 /**
  * Why `claimer` cannot take `shift`, or null when they can. The FIRST reason, in this order (the
  * database checks in the same order and answers with the same code):
- *   not_published, past, not_on_team, own, role, not_offered, offered_elsewhere, taken,
+ *   not_published, past, not_on_team, onboarding, own, role, not_offered, offered_elsewhere, taken,
  *   overlap, leave, unavailable, hours_cap
  *
  * @param {object} c
@@ -130,6 +133,8 @@ export function problemText(code, who = 'staff') {
  * @param {number} c.nowMin     the venue's minute of the day now
  * @param {string} [c.roleLabel] the position's name, for the words
  * @param {string} [c.country]  'UK' | 'US' (the words for days and times)
+ * @param {number|boolean} [c.onboardingOpen]  open onboarding steps (_shared/onboardingOpen.js): the
+ *                              rota will not schedule them, so they cannot claim either
  * @returns {{code:string, text:string}|null}
  */
 export function claimProblem(c) {
@@ -142,6 +147,7 @@ export function claimProblem(c) {
   if (!claimer || claimer.status !== 'active' || claimer.locationId !== shift.locationId) {
     return { code: 'not_on_team', text: 'You are not on the team at this venue.' };
   }
+  if (c.onboardingOpen) return { code: 'onboarding', text: PROBLEM_WORDS.onboarding };
   if (shift.staffId && shift.staffId === claimer.id) return { code: 'own', text: 'This is already your shift.' };
   if (shift.roleKey && claimer.roleKey !== shift.roleKey) {
     return { code: 'role', text: `This shift is for ${c.roleLabel || shift.roleKey}. It needs someone in that position.` };
@@ -198,3 +204,4 @@ export const textYours = (venue, sh, country) => `${venueOf(venue)}: the shift $
 export const textAsked = (venue, sh, country) => `${venueOf(venue)}: your request for the shift ${shiftWords(sh, country)} is with a manager. We will text you when they decide.`;
 export const textDeclined = (venue, sh, country) => `${venueOf(venue)}: a manager declined the change to the shift ${shiftWords(sh, country)}. Nothing has changed on the rota.`;
 export const textOfferDeclined = (venue, name, sh, country) => `${venueOf(venue)}: ${String(name || 'Your colleague').split(' ')[0]} cannot take your shift, ${shiftWords(sh, country)}. It is still yours. You can offer it to someone else in the staff app.`;
+export const textStillUp = (venue, name, sh, country) => `${venueOf(venue)}: a manager declined ${String(name || 'a colleague').split(' ')[0]} taking your shift, ${shiftWords(sh, country)}. It is still yours and still up for someone else to take.`;

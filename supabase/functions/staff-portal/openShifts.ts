@@ -12,6 +12,7 @@ import { claimProblem, swapMode, problemText, eligibleStaff, shiftWords,
 import { regionPack } from '../_shared/regionPack.js';
 import { writeWfAudit } from '../_shared/wfAudit.js';
 import { notifyStaff } from '../_shared/staffNotify.ts';
+import { openOnboardingSteps } from '../_shared/onboardingOpen.js';
 
 type Admin = any;
 type Venue = { id: string; name: string; currency: string; timezone: string; country: string; todayIso: string; nowMin: number };
@@ -45,7 +46,8 @@ const mapShift = (s: any) => s && ({
   section: s.section || null, computedHours: s.computed_hours != null ? Number(s.computed_hours) : null,
 });
 const mapReq = (r: any) => r && ({ id: r.id, shiftId: r.shift_id, kind: r.kind, status: r.status, fromStaffId: r.from_staff_id, toStaffId: r.to_staff_id, note: r.note || null });
-const mapStaff = (s: any) => ({ id: s.id, name: s.name, roleKey: s.role_key, status: s.status, locationId: s.location_id, mobile: s.mobile || null });
+const mapStaff = (s: any) => ({ id: s.id, name: s.name, roleKey: s.role_key, status: s.status, locationId: s.location_id, mobile: s.mobile || null,
+  bank_account_masked: s.bank_account_masked || null, pos_user_id: s.pos_user_id || null });
 const SHIFT_COLS = 'id, location_id, staff_id, role_key, shift_date, start_time, finish_time, break_mins, status, section, computed_hours';
 // Reasons that mean the shift is simply not for this person: it is left out of their list.
 const HIDDEN = new Set(['not_published', 'past', 'not_on_team', 'own', 'role', 'not_offered', 'offered_elsewhere']);
@@ -55,7 +57,7 @@ export async function swapsSnapshot(admin: Admin, staff: any, v: Venue) {
   const loc = staff.location_id;
   const horizon = addDays(v.todayIso, 21);
   const since = new Date(Date.now() - 14 * 86400000).toISOString();
-  const [{ data: live }, { data: mineRows }, { data: openRows }, { data: myShifts }, { data: team }, { data: roles }, { data: vs }, { data: av }, { data: leave }] = await Promise.all([
+  const [{ data: live }, { data: mineRows }, { data: openRows }, { data: myShifts }, { data: team }, { data: roles }, { data: vs }, { data: av }, { data: leave }, { data: onb }] = await Promise.all([
     admin.from('wf_swap_requests').select('id, shift_id, kind, status, from_staff_id, to_staff_id, note, created_at').eq('location_id', loc).in('status', ['open', 'pending']).limit(500),
     admin.from('wf_swap_requests').select('id, shift_id, kind, status, from_staff_id, to_staff_id, note, decided_how, decided_at, created_at, updated_at, shift_snapshot')
       .eq('location_id', loc).or(`from_staff_id.eq.${staff.id},to_staff_id.eq.${staff.id}`).gte('updated_at', since).order('updated_at', { ascending: false }).limit(40),
@@ -68,7 +70,10 @@ export async function swapsSnapshot(admin: Admin, staff: any, v: Venue) {
     admin.from('wf_venue_settings').select('settings').eq('location_id', loc).maybeSingle(),
     admin.from('wf_availability').select('per_day, updated_at, created_at').eq('staff_id', staff.id).order('updated_at', { ascending: false }).order('created_at', { ascending: false }).limit(1),
     admin.from('wf_time_off').select('status, start_date, end_date').eq('staff_id', staff.id).eq('status', 'approved'),
+    admin.from('wf_onboarding').select('meta, steps').eq('staff_id', staff.id).order('created_at', { ascending: false }).limit(1),
   ]);
+  // Onboarding not finished: the rota will not schedule them, so nothing is claimable (the same rule).
+  const onboardingOpen = openOnboardingSteps(onb?.[0] ?? null, staff, regionPack({ currency: v.currency }).bankDetails);
   const liveReqs = (live ?? []).map(mapReq);
   const reqByShift: Record<string, any> = {};
   for (const r of liveReqs) if (r.shiftId) reqByShift[r.shiftId] = r;
@@ -92,7 +97,7 @@ export async function swapsSnapshot(admin: Admin, staff: any, v: Venue) {
   const leaveRows = (leave ?? []).map((l: any) => ({ status: l.status, startDate: l.start_date, endDate: l.end_date }));
 
   const judge = (sh: any, rq: any) => claimProblem({ shift: sh, claimer: me, request: rq || null, theirShifts, leave: leaveRows, availability,
-    settings, todayIso: v.todayIso, nowMin: v.nowMin, roleLabel: roleLabel[sh.roleKey], country: v.country });
+    settings, todayIso: v.todayIso, nowMin: v.nowMin, roleLabel: roleLabel[sh.roleKey], country: v.country, onboardingOpen });
   const card = (sh: any, rq: any, why: any) => ({
     shiftId: sh.id, requestId: rq?.id || null, kind: rq?.kind === 'offer' ? 'offer' : sh.staffId ? 'drop' : 'open',
     date: sh.date, start: sh.start, finish: sh.finish, breakMins: sh.breakMins, section: sh.section,
@@ -146,17 +151,21 @@ async function auditSwap(admin: Admin, staff: any, action: string, entityId: str
 
 /** Who could take this shift now (the same rules), with their mobiles, for the "open shift" text. */
 async function whoCouldTake(admin: Admin, shift: any, ownerId: string | null, request: any, v: Venue) {
-  const { data: team } = await admin.from('wf_staff').select('id, name, role_key, status, location_id, mobile').eq('location_id', shift.locationId).eq('status', 'active').limit(1000);
+  const { data: team } = await admin.from('wf_staff').select('id, name, role_key, status, location_id, mobile, bank_account_masked, pos_user_id').eq('location_id', shift.locationId).eq('status', 'active').limit(1000);
   const people = eligibleStaff(shift, (team ?? []).map(mapStaff), ownerId);
   if (!people.length) return [];
   const ids = people.map((p: any) => p.id);
   const mon = addDays(shift.date, -7), sun = addDays(shift.date, 7);
-  const [{ data: sh }, { data: lv }, { data: av }, { data: vs }] = await Promise.all([
+  const [{ data: sh }, { data: lv }, { data: av }, { data: vs }, { data: onb }] = await Promise.all([
     admin.from('wf_shifts').select(SHIFT_COLS).in('staff_id', ids).in('status', ['draft', 'published']).gte('shift_date', mon).lte('shift_date', sun).limit(5000),
     admin.from('wf_time_off').select('staff_id, status, start_date, end_date').in('staff_id', ids).eq('status', 'approved').lte('start_date', shift.date).gte('end_date', shift.date),
     admin.from('wf_availability').select('staff_id, per_day, updated_at, created_at').in('staff_id', ids).order('updated_at', { ascending: false }),
     admin.from('wf_venue_settings').select('settings').eq('location_id', shift.locationId).maybeSingle(),
+    admin.from('wf_onboarding').select('staff_id, meta, steps, created_at').in('staff_id', ids).order('created_at', { ascending: false }),
   ]);
+  const onbOf: Record<string, any> = {};
+  for (const o of onb ?? []) if (!onbOf[o.staff_id]) onbOf[o.staff_id] = o;
+  const bankDetails = regionPack({ currency: v.currency }).bankDetails;
   const shiftsOf: Record<string, any[]> = {};
   for (const s of sh ?? []) (shiftsOf[s.staff_id] ||= []).push(mapShift(s));
   const availOf: Record<string, any> = {};
@@ -165,6 +174,7 @@ async function whoCouldTake(admin: Admin, shift: any, ownerId: string | null, re
     shift, claimer: p, request, theirShifts: shiftsOf[p.id] || [],
     leave: (lv ?? []).filter((l: any) => l.staff_id === p.id).map((l: any) => ({ status: l.status, startDate: l.start_date, endDate: l.end_date })),
     availability: availOf[p.id] || null, settings: vs?.settings ?? {}, todayIso: v.todayIso, nowMin: v.nowMin, country: v.country,
+    onboardingOpen: openOnboardingSteps(onbOf[p.id] ?? null, p, bankDetails),
   }));
 }
 

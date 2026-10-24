@@ -16,7 +16,7 @@
 --
 -- What it puts back: the three direct write policies on wf_swap_requests and the anon and
 -- authenticated grants as they were (select, insert, update, delete); staff_id and from_staff_id
--- required again. What it drops: the nine functions, the unique index and the status index, the
+-- required again. What it drops: the ten functions, the unique index and the status index, the
 -- eight request columns and their checks, and wf_staff.payroll_employee_id and ssn_last4 (any
 -- values typed into those two are lost).
 
@@ -55,6 +55,7 @@ drop function if exists public.wf_shift_claim(uuid, uuid);
 drop function if exists public._wf_shift_snapshot(public.wf_shifts);
 drop function if exists public._wf_assign(uuid, uuid);
 drop function if exists public._wf_claim_problem(uuid, uuid, uuid, boolean);
+drop function if exists public._wf_onboarding_open(uuid, boolean);
 drop function if exists public._wf_shift_hours(public.wf_shifts);
 
 drop index if exists public.wf_swap_requests_one_live;
@@ -108,7 +109,7 @@ select
   (select count(*)::int from information_schema.columns
     where table_schema = 'public' and table_name = 'wf_staff' and column_name in ('payroll_employee_id', 'ssn_last4')) as staff_columns_left,
   (select count(*)::int from pg_proc p where p.pronamespace = 'public'::regnamespace
-    and p.proname in ('_wf_shift_hours', '_wf_claim_problem', '_wf_assign', '_wf_shift_snapshot', 'wf_shift_claim',
+    and p.proname in ('_wf_shift_hours', '_wf_onboarding_open', '_wf_claim_problem', '_wf_assign', '_wf_shift_snapshot', 'wf_shift_claim',
                       'wf_shift_drop', 'wf_swap_cancel', 'wf_swap_decline', 'wf_swap_decide')) as judge_functions_left,
   (select count(*)::int from pg_policies where schemaname = 'public' and tablename = 'wf_swap_requests'
     and policyname in ('wf_swap_requests_rls_insert', 'wf_swap_requests_rls_update', 'wf_swap_requests_rls_delete')) as direct_write_policies,

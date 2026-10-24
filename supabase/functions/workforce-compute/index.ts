@@ -21,7 +21,7 @@ import { secondStepRefusal } from '../_shared/second-step.ts';
 import { writeWfAudit } from '../_shared/wfAudit.js';
 // v5.11.101: the venue's region (currency, US overtime) and the pay premiums, applied at last.
 import { regionPack } from '../_shared/regionPack.js';
-import { premiumFor, anyPremium, overtimeSplit } from '../_shared/payPremiums.js';
+import { premiumFor, anyPremium, overtimeSplit, venueMidnightIso, workweekSpan } from '../_shared/payPremiums.js';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -410,6 +410,13 @@ Deno.serve(async (req) => {
       const closing = action === 'payroll.close';
       const { from, to, pay_date } = body;
       if (!from || !to) return json({ error: 'from/to required' }, 400);
+      // v5.11.101: a US venue's period is its own days: timesheets and checks between the venue's
+      // midnights (a 6pm shift on the 15th in San Mateo is 1am UTC on the 16th and belongs to the 1st
+      // to 15th). A UK venue reads exactly the window it always did.
+      const nextDay = (iso: string) => new Date(Date.parse(`${iso}T00:00:00Z`) + 86400000).toISOString().slice(0, 10);
+      const localWindow = pack.country === 'US';
+      const fromTs = localWindow ? venueMidnightIso(from, venue.timezone) : `${from}T00:00:00`;
+      const toTs = localWindow ? new Date(Date.parse(venueMidnightIso(nextDay(to), venue.timezone)) - 1).toISOString() : `${to}T23:59:59`;
 
       // All five reads are independent — ONE parallel round instead of five
       // sequential round-trips (this endpoint is hit on every payroll view).
@@ -422,13 +429,13 @@ Deno.serve(async (req) => {
       ] = await Promise.all([
         admin.from('wf_payroll_runs').select('id, created_at, totals').eq('location_id', location_id).eq('period_start', from).maybeSingle(),
         admin.from('wf_timesheets').select('id').eq('location_id', location_id).eq('status', 'pending')
-          .gte('clock_in', `${from}T00:00:00`).lte('clock_in', `${to}T23:59:59`),
+          .gte('clock_in', fromTs).lte('clock_in', toTs),
         admin.from('wf_venue_settings').select('settings, premiums').eq('location_id', location_id).maybeSingle(),
         // Base pay from APPROVED + already-PAID timesheets (paid rows keep the
         // preview of a closed period faithful to what was actually paid).
         admin.from('wf_timesheets').select('id, staff_id, actual_hours, effective_rate, rate_source, paid_break_mins, pay_amount, clock_in, clock_out, status')
           .eq('location_id', location_id).in('status', ['approved', 'paid'])
-          .gte('clock_in', `${from}T00:00:00`).lte('clock_in', `${to}T23:59:59`),
+          .gte('clock_in', fromTs).lte('clock_in', toTs),
         admin.from('wf_tronc_runs').select('id, week_start, status, pool, total_paid')
           .eq('location_id', location_id).gte('week_start', from).lte('week_start', to).neq('status', 'draft'),
       ]);
@@ -489,7 +496,18 @@ Deno.serve(async (req) => {
       }
       // v5.11.101: US venues: regular and overtime hours by work week (federal: over 40), for the payroll
       // provider's export. Hours only; the provider pays the overtime rate.
-      const overtime = pack.overtimeWeeklyHours ? overtimeSplit(tss ?? [], pack.overtimeWeeklyHours, venue.timezone) : null;
+      // Every work week touching the period is read whole (the days before and after it too), so a
+      // week split by the period's edge counts its overtime once, in the period it fell in. The week
+      // starts on the venue's day (Workforce settings, Work week starts; Monday when not set).
+      let overtime: Record<string, { regular: number; overtime: number }> | null = null;
+      if (pack.overtimeWeeklyHours) {
+        const wsd = Number.isInteger(Number(policy.workweekStart)) && Number(policy.workweekStart) >= 0 && Number(policy.workweekStart) <= 6 ? Number(policy.workweekStart) : 1;
+        const span = workweekSpan(from, to, wsd);
+        const { data: weekSheets } = await admin.from('wf_timesheets').select('staff_id, actual_hours, clock_in, status')
+          .eq('location_id', location_id).in('status', ['approved', 'paid'])
+          .gte('clock_in', venueMidnightIso(span.from, venue.timezone)).lt('clock_in', venueMidnightIso(nextDay(span.to), venue.timezone));
+        overtime = overtimeSplit(weekSheets ?? [], pack.overtimeWeeklyHours, venue.timezone, { weekStartDow: wsd, from, to });
+      }
 
       const troncTips: Record<string, number> = {};
       const runIds = (runs ?? []).map((r: any) => r.id);
@@ -505,7 +523,7 @@ Deno.serve(async (req) => {
         const [{ data: checks }, { data: wfRows }] = await Promise.all([
           admin.from('closed_checks').select('tip, staff_id, server, status')
             .eq('location_id', String(location_id))
-            .gte('closed_at', `${from}T00:00:00`).lte('closed_at', `${to}T23:59:59`)
+            .gte('closed_at', fromTs).lte('closed_at', toTs)
             .neq('status', 'voided').gt('tip', 0),
           admin.from('wf_staff').select('id, name, pos_user_id').eq('location_id', location_id),
         ]);
