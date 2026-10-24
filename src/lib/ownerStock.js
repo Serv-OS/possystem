@@ -12,7 +12,8 @@
 //   * AN OLD FUNCTION. The app ships before the function is deployed. A function from before the
 //     stock block says so (no 'stock' in `features`) and the card shows nothing at all: never a
 //     wrong label. A function WITH the feature that has nothing true to show for a venue sends
-//     `stock: null` and a `stock_reason`, and the card shows that reason in grey (stockNote).
+//     `stock: null` and a `stock_reason`, and the card shows that reason in grey (stockNote), except
+//     'no_stock' (v5.11.100): a venue with no stock draws nothing at all.
 //   * Colours are the database's rag words ('green', 'amber', 'red'); a missing one is grey.
 //   * No em or en dash anywhere; money in the venue's own currency.
 //
@@ -23,14 +24,20 @@ import { hasFeature } from './ownerCompare.js';
 /** True when the snapshot's own function sends the stock block. */
 export const canStock = (snapshot) => hasFeature(snapshot, 'stock');
 
+// v5.11.100 (owner, 23 Oct 2026): a venue that holds no stock draws NOTHING (no card, no line, no
+// note), so the Stock card and line appear by themselves once the venue holds stock. Only a real
+// problem keeps its grey note: the function is too old, or the stock could not be read.
 export const STOCK_NOTES = Object.freeze({
   not_installed: 'Stock reports need a ServOS update',
-  no_stock: 'No stock at this venue',
   failed: 'Stock could not be read',
 });
 
-/** The grey words for a venue with no stock block, or null when there is no reason to show. */
+/** The reasons that draw nothing at all (the venue has no stock yet). */
+export const SILENT_STOCK_REASONS = Object.freeze(['no_stock']);
+
+/** The grey words for a venue with no stock block, or null when nothing is drawn (no stock, no reason). */
 export function stockNote(reason) {
+  if (SILENT_STOCK_REASONS.includes(reason)) return null;
   return STOCK_NOTES[reason] || null;
 }
 

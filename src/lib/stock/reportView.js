@@ -317,3 +317,56 @@ export function allRowsLoaded(rows, next) {
   return !next && Array.isArray(rows) && rows.length < PAGE_CAP;
 }
 
+
+// ── v5.11.100 (Drop 4b): business day arithmetic on 'YYYY-MM-DD' (UTC only, never the device clock) ──
+
+const ymdOk = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s.slice(0, 10));
+const ymdOf = (ms) => new Date(ms).toISOString().slice(0, 10);
+const msOf = (ymd) => Date.UTC(+ymd.slice(0, 4), +ymd.slice(5, 7) - 1, +ymd.slice(8, 10));
+
+/** The day n days after (or before) a business day; null for a bad day. */
+export function addDaysYmd(ymd, n) {
+  if (!ymdOk(ymd)) return null;
+  return ymdOf(msOf(ymd.slice(0, 10)) + Math.trunc(Number(n) || 0) * 86400000);
+}
+
+/** The first and last day of the month a business day is in: { from, to }; null for a bad day. */
+export function monthOf(ymd) {
+  if (!ymdOk(ymd)) return null;
+  const y = +ymd.slice(0, 4);
+  const m = +ymd.slice(5, 7);
+  return { from: ymdOf(Date.UTC(y, m - 1, 1)), to: ymdOf(Date.UTC(y, m, 0)) };
+}
+
+/** The month before the one a business day is in: { from, to }. */
+export function previousMonth(ymd) {
+  const m = monthOf(ymd);
+  return m ? monthOf(addDaysYmd(m.from, -1)) : null;
+}
+
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+/** 'September 2026' for any day of that month; '' for a bad day. */
+export function monthWords(ymd) {
+  if (!ymdOk(ymd)) return '';
+  return `${MONTH_NAMES[+ymd.slice(5, 7) - 1]} ${ymd.slice(0, 4)}`;
+}
+
+/** Every business day from `from` to `to` (both in), at most `cap` days; [] for a bad range. */
+export function daysOfRange(from, to, cap = 93) {
+  if (!ymdOk(from) || !ymdOk(to)) return [];
+  const out = [];
+  for (let ms = msOf(from.slice(0, 10)), end = msOf(to.slice(0, 10)); ms <= end && out.length < cap; ms += 86400000) out.push(ymdOf(ms));
+  return out;
+}
+
+/** The last n months ending with the one before `ymd`'s month, newest first: [{ from, to, label }]. */
+export function recentMonths(ymd, n = 13) {
+  const out = [];
+  let m = previousMonth(ymd);
+  for (let k = 0; m && k < n; k++) {
+    out.push({ ...m, label: monthWords(m.from) });
+    m = previousMonth(m.from);
+  }
+  return out;
+}

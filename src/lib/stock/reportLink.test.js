@@ -24,12 +24,13 @@ const B = 'a1000000-0000-4000-8000-000000000002';
 const C = 'a1000000-0000-4000-8000-000000000003';
 const G = 'c1000000-0000-4000-8000-000000000001';
 
-test('21 ids in the mockup order; 7 wait for a later Drop; the function names', () => {
+test('21 ids in the mockup order; 2 wait for a later Drop (the recipes update); the function names', () => {
   assert.equal(STOCK_REPORT_IDS.length, 21);
   assert.equal(new Set(STOCK_REPORT_IDS).size, 21);
   assert.equal(STOCK_REPORT_IDS[0], 'stock_home');
   assert.ok(Object.isFrozen(STOCK_REPORT_IDS) && Object.isFrozen(STOCK_LATER) && Object.isFrozen(LATER_WORDS));
-  assert.deepEqual(Object.keys(STOCK_LATER).sort(), ['stock_allergens', 'stock_budget', 'stock_count_compliance', 'stock_month_end', 'stock_off_contract', 'stock_recipe_cost', 'stock_transfers']);
+  // v5.11.100 (Drop 4b): the five purchasing reports are live; only the two recipes update tiles wait
+  assert.deepEqual(Object.keys(STOCK_LATER).sort(), ['stock_allergens', 'stock_recipe_cost']);
   assert.deepEqual(LATER_WORDS, { recipes: 'Comes with the recipes update', purchasing: 'Comes with the purchasing update' });
   assert.equal(STOCK_LATER.stock_recipe_cost, 'recipes');
   assert.equal(STOCK_LATER.stock_allergens, 'recipes');
@@ -45,10 +46,12 @@ test('21 ids in the mockup order; 7 wait for a later Drop; the function names', 
   assert.equal(reportFnOf('stock_product_gp'), 'product_gp');
   assert.equal(reportFnOf('stock_days_on_hand'), 'days_on_hand');
   assert.equal(reportFnOf('stock_recipe_cost'), null, 'a waiting tile makes no call');
-  assert.equal(reportFnOf('stock_month_end'), null);
+  assert.equal(reportFnOf('stock_month_end'), 'month_end');
+  assert.equal(reportFnOf('stock_count_compliance'), 'count_compliance');
   assert.equal(reportFnOf('nope'), null);
   // every live id but the dashboard is exportable, by the function name the database accepts
-  assert.deepEqual([...EXPORTABLE_REPORTS], ['value', 'movement', 'gap', 'cogs', 'product_gp', 'waste', 'purchases', 'prices', 'days_on_hand', 'par', 'key_ratios', 'setup_health', 'batches', 'league']);
+  assert.deepEqual([...EXPORTABLE_REPORTS], ['value', 'movement', 'gap', 'cogs', 'product_gp', 'waste', 'purchases', 'prices', 'days_on_hand', 'par', 'key_ratios', 'setup_health', 'batches', 'league',
+    'off_contract', 'budget', 'transfers', 'count_compliance', 'month_end']);
   for (const id of STOCK_REPORT_IDS) assert.equal(canExportReport(id), isLiveStockReport(id) && id !== 'stock_home', id);
   assert.equal(STOCK_GP_ROUTE, 'stock-gp');
 });

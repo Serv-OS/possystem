@@ -345,7 +345,9 @@ export async function drop3Sections(ctx) {
        && num(`select count(*) from vault.secrets where name in ('stock_notify_cron_key', 'po_cutoff_cron_key') and length(secret) >= 32`) === 2,
       'the two cron jobs every minute and their two vault keys');
     const objPol = sql(`select string_agg(policyname || ':' || cmd || ':' || coalesce(qual, '') || coalesce(with_check, ''), ' | ' order by policyname) from pg_policies where schemaname = 'storage' and tablename = 'objects'`);
-    ok(/stock_invoice_inbox_files_add:INSERT:.*foldername\(name\)/.test(objPol) && /stock_invoice_inbox_files_read:SELECT:.*foldername\(name\)/.test(objPol)
+    // 5.11.100: the add rule calls stock_invoice_inbox_upload_ok(name) (the 23 Oct fix, 20261029b), never stock_level()
+    ok(/stock_invoice_inbox_files_add:INSERT:.*stock_invoice_inbox_upload_ok\(name\)/.test(objPol) && !/stock_invoice_inbox_files_add:INSERT:[^|]*stock_level/.test(objPol)
+       && /stock_invoice_inbox_files_read:SELECT:.*foldername\(name\)/.test(objPol)
        && !/stock_invoice_inbox_files.*:(UPDATE|DELETE)/.test(objPol) && sql(`select public from storage.buckets where id = 'stock-invoice-inbox'`) === 'f',
       'the private inbox bucket: read and add policies on objects.name, no update or delete policy');
     const fns = sql(`select string_agg(p.oid::regprocedure::text, '|' order by 1) from pg_proc p where p.pronamespace = 'public'::regnamespace

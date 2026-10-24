@@ -90,6 +90,12 @@ import StockSetupHealth from './reports/StockSetupHealth';
 import StockBatches from './reports/StockBatches';
 import StockRecipeCost from './reports/StockRecipeCost';
 import StockAllergens from './reports/StockAllergens';
+// v5.11.100 (Drop 4b): the five purchasing reports.
+import StockOffContract from './reports/StockOffContract';
+import StockBudget from './reports/StockBudget';
+import StockTransfersReport from './reports/StockTransfersReport';
+import StockCountCompliance from './reports/StockCountCompliance';
+import StockMonthEnd from './reports/StockMonthEnd';
 import ExportStatus from './reports/ExportStatus';
 import { money } from '../../lib/currency';
 
@@ -812,6 +818,10 @@ export default function BOReports({ setSection, canOpen, initialView = 'catalog'
             {view === 'stock_waste' && <StockWaste {...stockProps}/>}
             {view === 'stock_purchases' && <StockPurchases {...stockProps}/>}
             {view === 'stock_prices' && <StockPrices {...stockProps}/>}
+            {view === 'stock_off_contract' && <StockOffContract {...stockProps}/>}
+            {view === 'stock_budget' && <StockBudget {...stockProps}/>}
+            {view === 'stock_transfers' && <StockTransfersReport {...stockProps}/>}
+            {view === 'stock_count_compliance' && <StockCountCompliance {...stockProps}/>}
             {view === 'stock_days_on_hand' && <StockDaysOnHand {...stockProps}/>}
             {view === 'stock_par' && <StockPar {...stockProps}/>}
             {view === 'stock_key_ratios' && <StockKeyRatios {...stockProps}/>}
@@ -819,6 +829,7 @@ export default function BOReports({ setSection, canOpen, initialView = 'catalog'
             {view === 'stock_batches' && <StockBatches {...stockProps}/>}
             {view === 'stock_recipe_cost' && <StockRecipeCost {...stockProps}/>}
             {view === 'stock_allergens' && <StockAllergens {...stockProps}/>}
+            {view === 'stock_month_end' && <StockMonthEnd {...stockProps}/>}
           </>
         )
       ) : (loadingRange || !locationConfig || !scopeReady) ? (

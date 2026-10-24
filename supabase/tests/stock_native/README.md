@@ -41,6 +41,13 @@ zsh supabase/tests/stock_native/fetch_checks.sh /some/scratch/venue.json <org id
 STOCKN_DEMO=... STOCKN_CHECKS=... STOCKN_CHECKS_VENUE=/some/scratch/venue.json STOCKN_VENUE_CLOCK=Europe/London,06:30 \
   node supabase/tests/stock_native/rehearse.mjs --drainer --drop4a --align
 node --test src/lib/reportsAlign.test.js                    # the cross report parity test (npm test runs it)
+
+# Drop 4b (20261030a, release 5.11.100), after 4a, Reports align and the storage fix 20261029b (drop4b.mjs, sections 60 to 68)
+node supabase/tests/stock_native/run.mjs --drop4b --quick   # 10 sites in the speed part
+node supabase/tests/stock_native/run.mjs --drop4b           # 50 sites by 500 items by 31 days
+STOCKN_DEMO=... STOCKN_CHECKS=... node supabase/tests/stock_native/rehearse.mjs --drainer --drop4a --align --drop4b
+node --test src/lib/stock/stockNative4bMigration.test.js     # the CI text test of 4b, its rollback and 20261029b
+node --test src/lib/stock/storagePolicyGuard.test.js         # no table rule may call a function its logins cannot run (23 Oct)
 ```
 
 Exit code 0 only when every check holds. Needs `/opt/homebrew/bin` (initdb, pg_ctl, postgres, psql,

@@ -92,6 +92,7 @@ import { jsParts, REPLACED } from './drainer.mjs';
 import { insertRow, basketBookedSql } from './channels.mjs';
 import { venueDay } from './drop4a.mjs';
 import { ALIGN_REPLACED } from './align.mjs';
+import { D4B_LIVE_MD5, D4B_REPORTS, POLICY_GUARD_SQL } from './drop4b.mjs';
 import { tradingDays } from '../../functions/_shared/tradingSales.js';
 import { leaveOutDemo } from '../../functions/_shared/demoHistory.js';
 import { D2_REPLACED, D2_SHAPE } from './drop2.mjs';
@@ -116,10 +117,14 @@ const FILES = {
   d4Rb: process.env.STOCKN_D4A_ROLLBACK || MIG('20261026a_OPS_stock_native_4a_ROLLBACK.sql'),
   al: process.env.STOCKN_ALIGN || MIG('20261029a_OPS_reports_align.sql'),
   alRb: process.env.STOCKN_ALIGN_ROLLBACK || MIG('20261029a_OPS_reports_align_ROLLBACK.sql'),
+  hf: process.env.STOCKN_STORAGE_FIX || MIG('20261029b_OPS_storage_inbox_upload_ok.sql'),
+  d4b: process.env.STOCKN_D4B || MIG('20261030a_OPS_stock_native_4b.sql'),
+  d4bRb: process.env.STOCKN_D4B_ROLLBACK || MIG('20261030a_OPS_stock_native_4b_ROLLBACK.sql'),
 };
 const DRAINER = process.argv.includes('--drainer');
 const DROP4A = process.argv.includes('--drop4a');
 const ALIGN = process.argv.includes('--align');
+const DROP4B = process.argv.includes('--drop4b');
 const CHECKS = process.env.STOCKN_CHECKS || null;
 if (!BASE_ONLY && !existsSync(FILES.a)) { console.error(`0a is not there yet: ${FILES.a} (run with --base-only, or set STOCKN_MIGRATION)`); process.exit(2); }
 const demo = JSON.parse(readFileSync(DEMO, 'utf8'));
@@ -769,7 +774,69 @@ if (!ALIGN) info('--align not given: step skipped');
 else if (!DROP4A) ok(false, '--align runs on the 4a copy: give --drop4a too');
 else if (!existsSync(FILES.al) || !existsSync(FILES.alRb)) ok(false, `the align files are there (${FILES.al}, ${FILES.alRb})`);
 else alignStep();
+
+console.log('\n12. Drop 4b (20261030a) on the live order copy, align in: the storage fix, the bodies as live, the check row, every new report and the parity; its rollback and 4b again');
+if (!DROP4B) info('--drop4b not given: step skipped');
+else if (!ALIGN) ok(false, '--drop4b runs on the align copy: give --drop4a --align too');
+else if (![FILES.hf, FILES.d4b, FILES.d4bRb].every((f) => existsSync(f))) ok(false, `the 4b files are there (${FILES.hf}, ${FILES.d4b}, ${FILES.d4bRb})`);
+else drop4bStep();
 done();
+
+function drop4bStep() {
+  c.use('n_d4live');
+  if (sql(`select to_regprocedure('public._sales_refund_parts(public.closed_checks,jsonb)') is not null`) !== 't') { ok(false, 'the live order copy has Reports align in (step 11 ran to its end)'); return; }
+  for (let k = 0; k < 400 && num(`select (select count(*) from stock_day_sums_repair where due_at <= now()) + (select count(*) from sales_day_sums_queue where due_at <= now())`) > 0; k++) sql('call public.stock_day_sums_drain(40, 50);');
+  const md5Of = (sig) => sql(`select md5(btrim(regexp_replace(p.prosrc, '\\s+', ' ', 'g'))) from pg_proc p where p.oid = to_regprocedure('${sig}')`);
+  const hf = c.paste(FILES.hf);
+  ok(hf.status === 0, `the storage fix (20261029b, as it ran live on 23 Oct) applies (${hf.status ? short(hf.stderr, 300) : 'ok'})`);
+  const diff = D4B_LIVE_MD5.filter(([sig, want]) => md5Of(sig) !== want).map(([sig]) => sig);
+  ok(diff.length === 0, `the ${D4B_LIVE_MD5.length} bodies 4b checks are the live text on the copy (${diff.join(', ') || 'all'})`);
+  const r = c.paste(FILES.d4b);
+  ok(r.status === 0, `Drop 4b applies as one paste (${r.status ? short(r.stderr, 900) : `${r.ms} ms`})`);
+  if (r.status) return;
+  const rows = (r.sets[r.sets.length - 1] || { rows: [] }).rows;
+  for (const x of rows) console.log(`     check row: ${short(x, 900)}`);
+  const t = rows.find((x) => x.org_id === ORG_T) || {};
+  ok(t.multi === 't' && t.bodies_moved === '11' && t.renamed_kept === '8' && t.new_functions === '24' && t.new_tables === '1' && t.weekly_kind === 't'
+     && t.internals_open_to_api === 'f' && t.anon_can_read_reports === 'f' && t.storage_upload_ok === 't' && t.backup_rows === '12' && t.budget_ok === 't'
+     && Number(t.dashboard_ms) < 5000 && Number(t.month_end_ms) < 5000 && t.site_rows_changed === '0' && t.logins_changed === 'f',
+    `the check row of the test company: 11 bodies, 8 renamed and kept, 24 functions, 1 table, the weekly kind, internals closed, uploads ok, the timed calls ${t.dashboard_ms} and ${t.month_end_ms} ms, no site row or login changed`);
+  ok(rows.every((x) => x.site_rows_changed === '0' && x.logins_changed === 'f') && rows.filter((x) => x.multi === 'f').every((x) => x.dashboard_ms === 'skipped'),
+    `every company row: nothing at the sites or logins moved; one site companies skipped (${rows.length} rows)`);
+  const guard = pj(sql(POLICY_GUARD_SQL)) || [];
+  ok(guard.length === 0, `no table rule on the copy calls a function its logins cannot run (${short(guard, 300) || 'none'})`);
+  // every new report and the parity, as the service role for the call (the reports run as the file's role here)
+  const sites = [PROVO, LOC2];
+  const today = sql(`select (public.stock_co__venue_day('${PROVO}', now())).business_day::text`);
+  const from = addDaysYmd(today, -30);
+  const rep = (name, opts = null) => pj(sql(`select set_config('request.jwt.claims', '{"role":"service_role"}', false);
+    select public.stock_report_${name}('${ORG_T}', array['${PROVO}','${LOC2}']::uuid[], '${from}', '${today}', ${opts ? `'${JSON.stringify(opts)}'::jsonb` : 'null'}, null, 1000);`).split('\n').filter(Boolean).pop());
+  const answers = {};
+  for (const n of [...D4B_REPORTS, 'cogs', 'movement', 'waste', 'league', 'value', 'purchases', 'prices', 'attention']) answers[n] = rep(n);
+  const failed = Object.entries(answers).filter(([, j]) => !j || !Array.isArray(j.totals)).map(([n]) => n);
+  ok(failed.length === 0, `every new report and every changed one answers on the real rows over 31 days (${failed.join(', ') || 'all ' + Object.keys(answers).length})`);
+  const row = (n, loc) => (answers[n]?.totals || []).find((x) => x.location_id === loc) || {};
+  const nearP = (a, b) => (a == null && b == null) || (a != null && b != null && Math.abs(Number(a) - Number(b)) < 0.0101);
+  for (const loc of sites) {
+    const name = loc === PROVO ? 'Provo' : 'Location 2';
+    ok(nearP(row('budget', loc).sales_net, row('cogs', loc).sales_net) && nearP(row('transfers', loc).received_in, row('movement', loc).transfers_in)
+       && nearP(row('transfers', loc).sent_out, row('movement', loc).transfers_out) && nearP(row('month_end', loc).closing_value, Number(row('movement', loc).closing_value))
+       && nearP(row('month_end', loc).waste_value, row('waste', loc).waste_value),
+      `${name} on the real rows: Purchase budget sales = Cost of sales (${row('budget', loc).sales_net}), transfers = Stock movement, month end closing = Stock movement, month end waste = Waste`);
+  }
+  const lg = (answers.league?.rows || []).every((x) => 'budget' in x && 'budget_spent' in x && typeof x.last_full_count_words === 'string');
+  ok(lg && (answers.value?.totals || []).every((x) => 'in_transit' in x), 'the league carries the budget and the count words; Stock value carries in transit');
+  // its rollback, then 4b again
+  const rb = c.paste(FILES.d4bRb);
+  const y = ((rb.sets[rb.sets.length - 1] || { rows: [] }).rows[0]) || {};
+  console.log(`     rollback: ${short(y, 400)}`);
+  ok(rb.status === 0 && y.bodies_restored === '11' && y.functions_left === '0' && y.tables_left === '0' && y.kind_check_back === 't' && y.site_rows_changed === '0',
+    `the rollback: the eleven bodies back, nothing of 4b left${rb.status ? `: ${short(rb.stderr, 300)}` : ''}`);
+  const back = D4B_LIVE_MD5.filter(([sig, want]) => md5Of(sig) !== want).map(([sig]) => sig);
+  ok(back.length === 0, `every body has its live md5 again (${back.join(', ') || 'all'})`);
+  const again = c.paste(FILES.d4b);
+  ok(again.status === 0, `Drop 4b applies again after its rollback (${again.status ? short(again.stderr, 400) : 'ok'})`);
+}
 
 function alignStep() {
   c.use('n_d4live');

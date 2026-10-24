@@ -171,7 +171,10 @@ test('every new function is revoked by name, then granted exactly as contract 1.
   const t = noComments(T.d3);
   const fns = bodies(T.d3).filter(([n]) => !REPLACED[n]);
   const names = fns.map(([n]) => n);
-  assert.deepEqual(names.filter((n) => !n.startsWith('stock_co__')).sort(), [...NEW_PUBLIC].sort());
+  // 5.11.100: the storage upload check (the 23 Oct fix, 20261029b) is made here too, so a re-run after the rollback
+  // makes the safe rule; it is not one of the 66 of contract 1.6 (its grant is checked below: signed in logins)
+  assert.deepEqual(names.filter((n) => !n.startsWith('stock_co__') && n !== 'stock_invoice_inbox_upload_ok').sort(), [...NEW_PUBLIC].sort());
+  assert.ok(names.includes('stock_invoice_inbox_upload_ok'), 'the storage upload check is made before the inbox rule');
   assert.equal(NEW_PUBLIC.length, 66);
   for (const [n, args] of fns) {
     const sig = `public.${n}(${argTypes(args)})`;

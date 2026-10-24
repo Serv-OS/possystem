@@ -1,6 +1,7 @@
 /** reportView.test.js: Drop 4a (web-reports). The display helpers the 15 Stock report screens share. Run: npm test */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   LATER_WORDS, PAGE_CAP, metaSite, siteNameOf, currencyOf, withSites, fmtPct, fmtQty, fmtInt,
   dayWords, weekWords, whenWords, rangeDaysCount, overrideValue, toggleSort, sortLoaded, documentWords, transferWords, fixWords,
@@ -216,4 +217,23 @@ test('notes and allRowsLoaded', () => {
   assert.equal(allRowsLoaded([{}, {}], null), true);
   assert.equal(allRowsLoaded([{}], { a: 1 }), false);
   assert.equal(allRowsLoaded(Array.from({ length: 1000 }, () => ({})), null), false, 'a full page may be the cap');
+});
+
+// v5.11.100 (Drop 4b): business day arithmetic for the month end and the count calendar (UTC only)
+test('month and day helpers never read the device clock and roll over months and years', async () => {
+  const v = await import('./reportView.js');
+  assert.equal(v.addDaysYmd('2026-10-31', 1), '2026-11-01');
+  assert.equal(v.addDaysYmd('2026-03-01', -1), '2026-02-28');
+  assert.equal(v.addDaysYmd('nope', 1), null);
+  assert.deepEqual(v.monthOf('2026-10-23'), { from: '2026-10-01', to: '2026-10-31' });
+  assert.deepEqual(v.monthOf('2028-02-10'), { from: '2028-02-01', to: '2028-02-29' });
+  assert.deepEqual(v.previousMonth('2026-01-15'), { from: '2025-12-01', to: '2025-12-31' });
+  assert.equal(v.monthWords('2026-09-01'), 'September 2026');
+  assert.deepEqual(v.daysOfRange('2026-10-30', '2026-11-02'), ['2026-10-30', '2026-10-31', '2026-11-01', '2026-11-02']);
+  assert.equal(v.daysOfRange('2026-01-01', '2026-12-31', 10).length, 10);
+  assert.deepEqual(v.daysOfRange('2026-10-05', '2026-10-01'), []);
+  const months = v.recentMonths('2026-10-23', 3);
+  assert.deepEqual(months.map((m) => m.from), ['2026-09-01', '2026-08-01', '2026-07-01']);
+  assert.equal(months[0].label, 'September 2026');
+  assert.doesNotMatch(readFileSync(new URL('./reportView.js', import.meta.url), 'utf8'), /\.(getHours|getDay|getDate|getMonth|getFullYear)\(/);
 });
