@@ -60,3 +60,28 @@ export async function notifyStaff(
   out.skipped += Math.max(0, targets.length - limit);
   return out;
 }
+
+// ── TEAM CHAT PUSH (5.11.102) ────────────────────────────────────────────────
+// MARKER 5.11.102 staffNotify chat push stub
+// team-chat calls this after a message is stored. Part 4 of 5.11.102 fills it in (_shared/push.ts:
+// APNs for the iOS staff app, Web Push for Android and the browser, never Firebase) and wires the same
+// push into sendOne above. Until then it sends nothing and says so. Never throws.
+export type ChatPushPayload = {
+  orgId: string;
+  conversationId: string;
+  conversationKind: string;
+  messageId: number | string;
+  senderMemberId: string;
+  senderName?: string | null;
+  preview?: string | null;
+  urgent?: boolean;
+  mentions?: string[];
+};
+export async function pushChatMessage(payload: ChatPushPayload): Promise<{ sent: number; skipped: number; reason?: string }> {
+  try {
+    void payload;
+    return { sent: 0, skipped: 0, reason: 'push is not set up yet (5.11.102 part 4)' };
+  } catch {
+    return { sent: 0, skipped: 0, reason: 'error' };
+  }
+}
