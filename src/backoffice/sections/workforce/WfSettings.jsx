@@ -12,21 +12,30 @@ import { Card, EmptyState, th, td, inputStyle, labelStyle, LoadingCard } from '.
 import * as wf from '../../../staff/wfData';
 import { payPeriod, shiftPayPeriod } from '../../../staff/wfWeek';
 import WfGeofenceCard from './WfGeofenceCard';
+import { activeRegionPack } from '../../../lib/regionPack';
+import { CURRENCIES as ALL_CURRENCIES } from '../../../lib/currency';
+
+// v5.11.101: pay period types and their names. Which ones a venue may pick follows the region pack
+// (a US venue adds semi-monthly). Fixed lengths roll on from an anchor; semi-monthly is the 1st to
+// the 15th and the 16th to the month end, so it needs no anchor.
+const PAY_TYPE_LABEL = { monthly: 'Monthly', weekly: 'Weekly', fortnightly: 'Fortnightly (2 weeks)', fourweekly: 'Every 4 weeks', semimonthly: 'Twice a month (1st to 15th, 16th to month end)' };
+const ANCHORED = ['weekly', 'fortnightly', 'fourweekly'];
 
 // Live "what you'll get" line under the pay-period fields — current period,
 // the next one, and the computed pay day, straight from the same function
 // "Run payroll" uses, so what you see here is exactly what payroll runs on.
-function PayPeriodPreview({ payType, payStartDay, payAnchor, payDayDom, payDayOffset, payDayMonthOffset, payDayShift }) {
+function PayPeriodPreview({ payType, payStartDay, payAnchor, payDayDom, payDayOffset, payDayMonthOffset, payDayShift, country }) {
   const fixed = payType !== 'monthly';
-  if (fixed && !payAnchor) return <div style={{ fontSize: 11.5, color: 'var(--t4)', marginTop: 10 }}>Set the first period start date to see the schedule.</div>;
+  if (ANCHORED.includes(payType) && !payAnchor) return <div style={{ fontSize: 11.5, color: 'var(--t4)', marginTop: 10 }}>Set the first period start date to see the schedule.</div>;
   const cfg = {
     payPeriodType: payType,
     payPeriodStartDay: parseInt(payStartDay, 10) || 1,
-    payPeriodAnchor: fixed ? payAnchor : null,
+    payPeriodAnchor: ANCHORED.includes(payType) ? payAnchor : null,
     payDay: fixed ? (payDayOffset === '' ? null : parseInt(payDayOffset, 10) || 0)
       : (payDayDom === '' ? null : parseInt(payDayDom, 10) || 0),
     payDayMonthOffset: parseInt(payDayMonthOffset, 10) || 0,
     payDayShift: payDayShift || 'none',
+    country,
   };
   let cur, next;
   try { cur = payPeriod(cfg); next = shiftPayPeriod(cfg, cur.startIso, 1); } catch { return null; }
@@ -39,11 +48,6 @@ function PayPeriodPreview({ payType, payStartDay, payAnchor, payDayDom, payDayOf
   );
 }
 
-const CURRENCIES = [
-  { v: 'GBP', lbl: 'GBP — British Pound (£)' },
-  { v: 'EUR', lbl: 'EUR — Euro (€)' },
-  { v: 'USD', lbl: 'USD — US Dollar ($)' },
-];
 const SALES_SOURCES = [
   { v: 'pos', lbl: 'POS — live till takings' },
   { v: 'manual', lbl: 'Manual — entered by managers' },
@@ -53,6 +57,8 @@ const SECTION_COLOURS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', 
 const pct = frac => Math.round(Number(frac || 0) * 1000) / 10; // fraction -> whole-ish %
 
 export default function WfSettings({ ctx, staff, roles, sections, settings, week, showToast, onSettingsSaved }) {
+  // v5.11.101: the region pack follows the venue (its currency, set in Location settings). No switch here.
+  const pack = activeRegionPack();
   const [loading, setLoading] = useState(true);
   const [secList, setSecList] = useState(sections || []);
   const [editing, setEditing] = useState(null); // section being added/edited
@@ -62,7 +68,7 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
   const [maxDaysInRow, setMaxDaysInRow] = useState('5');     // AI rota rule (settings.rotaRules)
   const [minRestHours, setMinRestHours] = useState('11');    // AI rota rule (settings.rotaRules)
   const [accrualRate, setAccrualRate] = useState('');
-  const [currency, setCurrency] = useState('GBP');
+  const currency = pack.currency;   // follows the venue (v5.11.101); was a separate Workforce choice
   const [salesSource, setSalesSource] = useState('pos');
   const [payStartDay, setPayStartDay] = useState('1');
   const [payType, setPayType] = useState('monthly');
@@ -92,6 +98,18 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
   const [tipAllocator, setTipAllocator] = useState('employer'); // employer | troncmaster
   const [troncmasterName, setTroncmasterName] = useState('');
   const [savingVenue, setSavingVenue] = useState(false);
+  // v5.11.101: open shifts and swaps. 'manager' (a manager approves every claim and swap, the
+  // default) or 'instant'; and the most hours a week someone can reach by claiming (blank: no cap).
+  const [swapApproval, setSwapApproval] = useState('manager');
+  const [swapMaxHours, setSwapMaxHours] = useState('');
+  // v5.11.101: the day the work week starts (US overtime counts hours over 40 in a work week).
+  const [workweekStart, setWorkweekStart] = useState('1');
+  // v5.11.101: pay premiums (wf_venue_settings.premiums), applied in payroll and the rota cost.
+  const [premWeekend, setPremWeekend] = useState('');
+  const [premHoliday, setPremHoliday] = useState('');
+  const [premNight, setPremNight] = useState('');
+  const [premNightFrom, setPremNightFrom] = useState('23:00');
+  const [premNightTo, setPremNightTo] = useState('06:00');
 
   // Seed venue form from props.settings
   useEffect(() => {
@@ -99,12 +117,11 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
     setMaxDaysInRow(String(settings?.settings?.rotaRules?.maxDaysInRow ?? 5));
     setMinRestHours(String(settings?.settings?.rotaRules?.minRestHours ?? 11));
     setAccrualRate(String(pct(settings?.accrualRate ?? 0.1207)));
-    setCurrency(settings?.currency || 'GBP');
     setSalesSource(settings?.salesSource || 'pos');
     setPayStartDay(String(settings?.payPeriodStartDay ?? 1));
     setPayType(settings?.payPeriodType || 'monthly');
     setPayAnchor(settings?.payPeriodAnchor || '');
-    const fixed = ['weekly', 'fortnightly', 'fourweekly'].includes(settings?.payPeriodType);
+    const fixed = ['weekly', 'fortnightly', 'fourweekly', 'semimonthly'].includes(settings?.payPeriodType);
     setPayDayDom(!fixed && settings?.payDay != null ? String(settings.payDay) : '');
     setPayDayOffset(fixed && settings?.payDay != null ? String(settings.payDay) : '');
     setPayDayMonthOffset(String(settings?.settings?.payDayMonthOffset ?? 0));
@@ -119,6 +136,15 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
     setDirectPct(sj.directPct != null ? String(sj.directPct) : '50');
     setTipAllocator(sj.tipAllocator === 'troncmaster' ? 'troncmaster' : 'employer');
     setTroncmasterName(sj.troncmasterName || '');
+    setSwapApproval(sj.shiftSwaps?.approval === 'instant' ? 'instant' : 'manager');
+    setSwapMaxHours(sj.shiftSwaps?.maxWeeklyHours != null ? String(sj.shiftSwaps.maxWeeklyHours) : '');
+    setWorkweekStart(String(Number.isInteger(Number(sj.workweekStart)) ? Number(sj.workweekStart) : 1));
+    const pr = settings?.premiums || {};
+    setPremWeekend(pr.weekend != null ? String(pr.weekend) : '');
+    setPremHoliday(pr.bankHoliday != null ? String(pr.bankHoliday) : '');
+    setPremNight(pr.night != null ? String(pr.night) : '');
+    setPremNightFrom(pr.nightFrom || '23:00');
+    setPremNightTo(pr.nightTo || '06:00');
   }, [settings]);
 
   // Sections: seed from props, reload fresh on mount / location change
@@ -149,7 +175,10 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
     if (!Number.isFinite(ac) || ac < 0 || ac > 100) { showToast('Accrual rate must be between 0 and 100%', 'error'); return; }
     const psd = Math.min(28, Math.max(1, parseInt(payStartDay, 10) || 1));
     const fixed = payType !== 'monthly';
-    if (fixed && !payAnchor) { showToast('Set the first period start date for a weekly/fortnightly pay period', 'error'); return; }
+    if (ANCHORED.includes(payType) && !payAnchor) { showToast('Set the first period start date for a weekly/fortnightly pay period', 'error'); return; }
+    const pctOf = (v) => { const n = Number(v); return v === '' || !Number.isFinite(n) || n <= 0 ? null : Math.min(500, n); };
+    const maxH = Number(swapMaxHours);
+    if (swapMaxHours !== '' && (!Number.isFinite(maxH) || maxH <= 0 || maxH > 168)) { showToast('Most hours a week must be between 1 and 168, or blank', 'error'); return; }
     setSavingVenue(true);
     const patch = {
       currency,
@@ -158,11 +187,15 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
       accrualRate: ac / 100,
       payPeriodType: payType,
       payPeriodStartDay: psd,
-      payPeriodAnchor: fixed ? payAnchor : null,
+      payPeriodAnchor: ANCHORED.includes(payType) ? payAnchor : null,
       payDay: fixed
         ? (payDayOffset === '' ? null : Math.max(0, parseInt(payDayOffset, 10) || 0))
         : (payDayDom === '' ? null : Math.min(28, Math.max(0, parseInt(payDayDom, 10) || 0))),
-      premiums: settings?.premiums || {},
+      // v5.11.101: only the premiums set are stored; blank or 0 is off.
+      premiums: Object.fromEntries(Object.entries({
+        weekend: pctOf(premWeekend), bankHoliday: pctOf(premHoliday), night: pctOf(premNight),
+        nightFrom: pctOf(premNight) ? premNightFrom : null, nightTo: pctOf(premNight) ? premNightTo : null,
+      }).filter(([, v]) => v != null)),
       settings: {
         ...(settings?.settings || {}),
         // AI rota rules: a built rota never breaks these (staff/rotaRules.js).
@@ -186,6 +219,8 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
         directPct: Math.min(100, Math.max(0, parseInt(directPct, 10) || 0)),
         tipAllocator,
         troncmasterName: troncmasterName.trim() || null,
+        shiftSwaps: { approval: swapApproval === 'instant' ? 'instant' : 'manager', maxWeeklyHours: swapMaxHours === '' ? null : maxH },
+        workweekStart: Math.min(6, Math.max(0, parseInt(workweekStart, 10) || 0)),
       },
     };
     try {
@@ -274,12 +309,12 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
               type="number" min="0" max="100" step="0.01" inputMode="decimal"
               value={accrualRate} onChange={e => setAccrualRate(e.target.value)} disabled={savingVenue}
             />
+            {pack.holidayRules !== 'uk' && <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>Off for US venues for now: there is no statutory accrual, so the accrual run writes nothing.</div>}
           </div>
           <div>
-            <label style={labelStyle}>Currency</label>
-            <select style={inputStyle} value={currency} onChange={e => setCurrency(e.target.value)} disabled={savingVenue}>
-              {CURRENCIES.map(c => <option key={c.v} value={c.v}>{c.lbl}</option>)}
-            </select>
+            <label style={labelStyle}>Currency and country</label>
+            <div style={{ ...inputStyle, display: 'flex', alignItems: 'center', color: 'var(--t2)' }}>{ALL_CURRENCIES[currency]?.label || currency} · {pack.countryName}</div>
+            <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>Follows the venue (Location settings). {pack.country === 'US' ? 'US payroll fields, I-9 and W-4, semi-monthly pay and 40 hour overtime are on.' : 'UK payroll fields, Right to Work and 12.07% holiday are on.'}</div>
           </div>
           <div>
             <label style={labelStyle}>Sales source</label>
@@ -296,10 +331,7 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
             <div>
               <label style={labelStyle}>Frequency</label>
               <select style={inputStyle} value={payType} onChange={e => setPayType(e.target.value)} disabled={savingVenue}>
-                <option value="monthly">Monthly</option>
-                <option value="weekly">Weekly</option>
-                <option value="fortnightly">Fortnightly (2 weeks)</option>
-                <option value="fourweekly">Every 4 weeks</option>
+                {[...new Set([...pack.payPeriods, payType])].map(t => <option key={t} value={t}>{PAY_TYPE_LABEL[t] || t}</option>)}
               </select>
             </div>
             {payType === 'monthly' ? (<>
@@ -316,12 +348,12 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
                 <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>0 = last day of the month.</div>
               </div>
             </>) : (<>
-              <div>
+              {ANCHORED.includes(payType) && <div>
                 <label style={labelStyle}>First period starts</label>
                 <input style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} type="date"
                   value={payAnchor} onChange={e => setPayAnchor(e.target.value)} disabled={savingVenue} />
                 <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>All later periods roll on from this date.</div>
-              </div>
+              </div>}
               <div>
                 <label style={labelStyle}>Paid (days after period ends)</label>
                 <input style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} type="number" min="0" max="28" step="1" inputMode="numeric" placeholder="0"
@@ -345,16 +377,83 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
                 value={holidayDayHours} onChange={e => setHolidayDayHours(e.target.value)} disabled={savingVenue} />
               <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>What a day of leave is worth before someone has timesheet history. Once they have real worked weeks, their own 52-week average takes over automatically.</div>
             </div>
+            {pack.overtimeWeeklyHours ? (
+              <div>
+                <label style={labelStyle}>Work week starts</label>
+                <select style={inputStyle} value={workweekStart} onChange={e => setWorkweekStart(e.target.value)} disabled={savingVenue}>
+                  {['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map((d, i) => <option key={d} value={String(i)}>{d}</option>)}
+                </select>
+                <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>Overtime is hours over {pack.overtimeWeeklyHours} in a work week; a week across two pay periods is counted whole.</div>
+              </div>
+            ) : null}
             <div>
               <label style={labelStyle}>If the pay day is not a working day</label>
               <select style={inputStyle} value={payDayShift} onChange={e => setPayDayShift(e.target.value)} disabled={savingVenue}>
                 <option value="none">Leave it (pay on the date)</option>
                 <option value="prevWorkingDay">Pay on the previous working day</option>
               </select>
-              <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>Skips weekends and <b>England &amp; Wales</b> bank holidays. Scotland and Northern Ireland differ.</div>
+              <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>{pack.country === 'US' ? <>Skips weekends and <b>US federal</b> holidays.</> : <>Skips weekends and <b>England &amp; Wales</b> bank holidays. Scotland and Northern Ireland differ.</>}</div>
             </div>
           </div>
-          <PayPeriodPreview payType={payType} payStartDay={payStartDay} payAnchor={payAnchor} payDayDom={payDayDom} payDayOffset={payDayOffset} payDayMonthOffset={payDayMonthOffset} payDayShift={payDayShift} />
+          <PayPeriodPreview payType={payType} payStartDay={payStartDay} payAnchor={payAnchor} payDayDom={payDayDom} payDayOffset={payDayOffset} payDayMonthOffset={payDayMonthOffset} payDayShift={payDayShift} country={pack.country} />
+        </div>
+
+        {/* ── v5.11.101: open shifts and swaps. Who decides when a member of staff claims an open
+              shift, or takes a colleague's ── */}
+        <div style={{ marginTop: 18, padding: '14px 16px', borderRadius: 12, background: 'var(--inset)', border: '1px solid var(--inset-border)' }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 4 }}>Shift claims and swaps</div>
+          <div style={{ fontSize: 11.5, color: 'var(--t3)', lineHeight: 1.6, marginBottom: 10 }}>
+            Staff claim open shifts and say when they cannot do a shift from the staff app. The checks always run: their position, no overlap with their other shifts, not on approved leave, not marked unavailable that day, and the hours cap below. The first claim wins.
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14 }}>
+            <div>
+              <label style={labelStyle}>Claims and swaps</label>
+              <select style={inputStyle} value={swapApproval} onChange={e => setSwapApproval(e.target.value)} disabled={savingVenue}>
+                <option value="manager">Need manager approval</option>
+                <option value="instant">Happen straight away</option>
+              </select>
+              <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>With approval, requests wait on the Rota and in the Manager app (Team).</div>
+            </div>
+            <div>
+              <label style={labelStyle}>Most hours a week by claiming</label>
+              <input style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} type="number" min="1" max="168" step="0.5" inputMode="decimal" placeholder="No cap"
+                value={swapMaxHours} onChange={e => setSwapMaxHours(e.target.value)} disabled={savingVenue} />
+              <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>{pack.country === 'US' ? 'Set 40 to keep claims out of overtime.' : 'For example 48, the working time limit.'}</div>
+            </div>
+          </div>
+        </div>
+
+        {/* ── v5.11.101: pay premiums, applied in payroll and in the rota's planned cost ── */}
+        <div style={{ marginTop: 18, padding: '14px 16px', borderRadius: 12, background: 'var(--inset)', border: '1px solid var(--inset-border)' }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 4 }}>Pay premiums</div>
+          <div style={{ fontSize: 11.5, color: 'var(--t3)', lineHeight: 1.6, marginBottom: 10 }}>
+            Extra pay, as a percent of the hourly rate, for hours worked at these times. Where two apply to the same hour the higher one is paid, never both. Hourly pay only, for positions marked premium eligible. Blank is off.
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 14 }}>
+            <div>
+              <label style={labelStyle}>Weekend %</label>
+              <input style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} type="number" min="0" max="500" step="0.5" inputMode="decimal" placeholder="Off"
+                value={premWeekend} onChange={e => setPremWeekend(e.target.value)} disabled={savingVenue} />
+            </div>
+            <div>
+              <label style={labelStyle}>{pack.country === 'US' ? 'Federal holiday %' : 'Bank holiday %'}</label>
+              <input style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} type="number" min="0" max="500" step="0.5" inputMode="decimal" placeholder="Off"
+                value={premHoliday} onChange={e => setPremHoliday(e.target.value)} disabled={savingVenue} />
+            </div>
+            <div>
+              <label style={labelStyle}>Night %</label>
+              <input style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} type="number" min="0" max="500" step="0.5" inputMode="decimal" placeholder="Off"
+                value={premNight} onChange={e => setPremNight(e.target.value)} disabled={savingVenue} />
+            </div>
+            <div>
+              <label style={labelStyle}>Night from</label>
+              <input style={inputStyle} type="time" value={premNightFrom} onChange={e => setPremNightFrom(e.target.value)} disabled={savingVenue || !premNight} />
+            </div>
+            <div>
+              <label style={labelStyle}>Night to</label>
+              <input style={inputStyle} type="time" value={premNightTo} onChange={e => setPremNightTo(e.target.value)} disabled={savingVenue || !premNight} />
+            </div>
+          </div>
         </div>
 
         {/* ── Tipping policy (Employment (Allocation of Tips) Act 2023) ──
@@ -411,7 +510,7 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
           {/* Live worked example — the rule in plain money, both framings. */}
           {(() => {
             const keep = tipMode === 'direct' ? 100 : tipMode === 'hybrid' ? Math.min(100, Math.max(0, parseInt(directPct, 10) || 0)) : 0;
-            const sym = currency === 'USD' ? '$' : currency === 'EUR' ? '€' : '£';
+            const sym = pack.currencySymbol;
             return (
               <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: 12, lineHeight: 1.7 }}>
                 <span style={{ fontWeight: 700, color: 'var(--t2)' }}>So with {sym}100 of card tips:</span>{' '}

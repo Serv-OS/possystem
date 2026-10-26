@@ -14,6 +14,7 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, Badge, RoleChip, initials, inputStyle, labelStyle, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
+import { activeRegionPack, docLabel } from '../../../lib/regionPack';
 import { inviteState } from '../../../lib/staffInvite';
 
 export const STEPS = [
@@ -66,7 +67,9 @@ export function normalizeCase(c, staff = null) {
     contract: meta.signature ? { status: 'complete', completedAt: meta.signature.signedAt || null }
       : (meta.contractHtml || meta.contractPath) ? { status: 'sent', completedAt: null } : null,
     // Either source counts — the staff record is the one that actually pays them.
-    bank: (meta.bankMasked || staff?.bankMasked) ? { status: 'complete', completedAt: meta.bankCapturedAt || null } : null,
+    // v5.11.101: a US venue pays through its payroll provider, which holds bank details: nothing to
+    // capture here, so the step is done by itself (and never holds someone off the rota).
+    bank: (meta.bankMasked || staff?.bankMasked || !activeRegionPack().bankDetails) ? { status: 'complete', completedAt: meta.bankCapturedAt || null } : null,
     posUser: staff?.posUserId ? { status: 'complete', completedAt: null } : null,
   };
   const steps = STEPS.map(({ key }) => {
@@ -267,17 +270,18 @@ function OnboardingCard({ c, member, rolesMap, ctx, showToast, markStep, patchCa
           <OfferAction c={c} member={member} role={rolesMap[member.role]} ctx={ctx} showToast={showToast} markStep={markStep} done={stepStatus('offer') === 'complete'} />
         </StepRow>
 
-        <StepRow done={stepStatus('rtw') === 'complete'} label="Right to Work" hint={meta.rtwPath ? 'Uploaded — approve in Compliance to complete the RTW check' : 'Upload their RTW document'}>
-          <UploadAction type="RTW" c={c} member={member} ctx={ctx} showToast={showToast} markStep={markStep} metaKey="rtwPath" stepKey="rtw" done={stepStatus('rtw') === 'complete'} />
+        {/* v5.11.101: the work document follows the venue (Right to Work in the UK, Form I-9 in the US). */}
+        <StepRow done={stepStatus('rtw') === 'complete'} label={activeRegionPack().workDocLabel} hint={meta.rtwPath ? `Uploaded. Approve it in Compliance to complete the ${activeRegionPack().workDocLabel} check` : `Upload their ${activeRegionPack().workDocLabel}`}>
+          <UploadAction type={activeRegionPack().requiredDocs[0]} c={c} member={member} ctx={ctx} showToast={showToast} markStep={markStep} metaKey="rtwPath" stepKey="rtw" done={stepStatus('rtw') === 'complete'} />
         </StepRow>
 
         <StepRow done={stepStatus('contract') === 'complete'} label="Contract" hint={meta.signature ? `Signed by ${meta.signature.name} · ${new Date(meta.signature.signedAt).toLocaleDateString('en-GB')}` : (meta.contractHtml || meta.contractPath) ? (meta.contractSentAt ? 'Emailed — awaiting signature (or Sign now)' : 'Ready — Sign now on device, or email it') : 'Generate from a template or upload a PDF'}>
           <ContractAction c={c} member={member} role={rolesMap[member.role]} ctx={ctx} showToast={showToast} patchCase={patchCase} />
         </StepRow>
 
-        <StepRow done={stepStatus('bank') === 'complete'} label="Bank details" hint={meta.bankMasked ? `On file · ${meta.bankMasked}` : 'Capture for payroll (stored masked)'}>
+        {activeRegionPack().bankDetails ? <StepRow done={stepStatus('bank') === 'complete'} label="Bank details" hint={meta.bankMasked ? `On file · ${meta.bankMasked}` : 'Capture for payroll (stored masked)'}>
           <BankAction c={c} member={member} ctx={ctx} showToast={showToast} markStep={markStep} done={stepStatus('bank') === 'complete'} />
-        </StepRow>
+        </StepRow> : null}
 
         <StepRow done={posDone} label="POS access" hint={posDone ? 'Till user created' : 'Set them up from Staff → Set as POS user'}>
           {posDone ? <Badge tone="green">Done</Badge> : <span style={{ fontSize: 12, color: 'var(--t4)' }}>In Staff</span>}
@@ -410,7 +414,7 @@ function UploadAction({ type, c, member, ctx, showToast, markStep, metaKey, step
       // (that's the actual RTW check), setting issued/expiry dates there.
       await wf.upsertStaffDocument({ staffId: member.id, type, fileUrl: path, status: 'pending' }, ctx.locationId, ctx.orgId).catch(() => {});
       await markStep(c, stepKey, 'complete', { [metaKey]: path });
-      showToast(`${type === 'RTW' ? 'Right to Work' : type} uploaded — approve it in Compliance to complete the check`, 'success');
+      showToast(`${docLabel(type)} uploaded. Approve it in Compliance to complete the check`, 'success');
     } catch (err) { showToast('Upload failed: ' + (err.message || 'error'), 'error'); }
     finally { setBusy(false); }
   };

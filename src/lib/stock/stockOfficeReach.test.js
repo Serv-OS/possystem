@@ -188,12 +188,13 @@ test('manager-snapshot: the everything rule for the whole snapshot; Stock contro
   assert.match(src, /const full = acc\.scope === 'all';/);
   // sales, team and floor are not even read for a stock only caller
   assert.match(src, /= !full\s+\? \[\[\], \[\], \{ data: null \}, \[\], \[\], \[\], \[\], \[\]\] as any\[\]\s+: await Promise\.all\(\[/);
-  assert.match(src, /let pendingTimesheets: any\[\] = \[\], pendingTimeOff: any\[\] = \[\];\s+if \(full\) try \{/);
+  // v5.11.101: the pending shift swaps join the approvals, behind the same gate.
+  assert.match(src, /let pendingTimesheets: any\[\] = \[\], pendingTimeOff: any\[\] = \[\], pendingSwaps: any\[\] = \[\];(\s*\/\/[^\n]*)*\s+if \(full\) try \{/);
   assert.match(src, /let ops = \{ openMaintenance: 0, activeAlerts: 0 \};\s+if \(full\) try \{/);
   // ...and never answered
   assert.match(src, /money: full \? money : null,/);
   assert.match(src, /floor: full \? floor : null,/);
-  assert.match(src, /team: full \? \{ punches, shifts: teamShifts, ratesMinor, pendingTimesheets, pendingTimeOff, breakPolicy \} : null,/);
+  assert.match(src, /team: full \? \{ punches, shifts: teamShifts, ratesMinor, pendingTimesheets, pendingTimeOff, pendingSwaps, breakPolicy \} : null,/);
   assert.match(src, /ops: full \? ops : null,/);
   // v5.11.96 (Drop 3): a kitchen order in deliveries says internal, and the Drop 3 blocks ride on the kitchen line.
   assert.match(src, /kitchen: \{ items: kitchenItems, deliveries: kitchenDeliveries\.map\(\(d: any\) => \(internalSup\.has\(String\(d\.supplierId\)\) \? \{ \.\.\.d, internal: true \} : d\)\), batches: kitchenBatches, trackedItems, recipes: kitchenRecipes,\s+orderBy: kitchenOrderBy, approvals: kitchenApprovals, transfers: kitchenTransfers, closedown: kitchenClosedown, ordersIn: kitchenOrdersIn \},/);

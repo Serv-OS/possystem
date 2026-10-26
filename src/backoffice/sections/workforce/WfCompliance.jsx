@@ -11,6 +11,7 @@ import { useState, useEffect, useMemo, useRef, Fragment } from 'react';
 import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, Badge, RoleChip, th, td, inputStyle, labelStyle, initials, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
+import { activeRegionPack, DOC_INFO } from '../../../lib/regionPack';
 
 /** Open a stored document via a short-lived signed URL (private bucket). */
 function ViewDocLink({ path }) {
@@ -24,23 +25,14 @@ function ViewDocLink({ path }) {
 }
 
 export const DOC_TYPES = ['RTW', 'foodHygieneL2', 'allergenTraining', 'SIA', 'firstAid', 'other'];
-export const DOC_LABEL = {
-  RTW: 'Right to Work',
-  foodHygieneL2: 'Food Hygiene L2',
-  allergenTraining: 'Allergen Training',
-  SIA: 'SIA Licence',
-  firstAid: 'First Aid',
-  other: 'Other',
-};
+// v5.11.101: every type any region uses (the region pack's DOC_INFO): a US venue adds Form I-9,
+// Form W-4 and the food handler permit. The UK labels are unchanged.
+export const DOC_LABEL = Object.fromEntries(Object.entries(DOC_INFO).map(([k, v]) => [k, v.label]));
 // v5.5.994 — the vault was one flat alphabetical list per person, so legal
 // documents (RTW, SIA) sat interleaved with training certificates. Grouped by
 // what the document IS: legal-to-employ vs evidence-of-training. 'other' gets
 // its own tail group rather than polluting either.
-export const DOC_GROUP = {
-  RTW: 'compliance', SIA: 'compliance',
-  foodHygieneL2: 'training', allergenTraining: 'training', firstAid: 'training',
-  other: 'other',
-};
+export const DOC_GROUP = Object.fromEntries(Object.entries(DOC_INFO).map(([k, v]) => [k, v.group]));
 export const GROUP_ORDER = ['compliance', 'training', 'other'];
 export const GROUP_LABEL = { compliance: 'Compliance', training: 'Training', other: 'Other' };
 const EXPIRING_DAYS = 30;
@@ -67,11 +59,13 @@ const STATUS_TONE = { valid: 'green', expiring: 'amber', expired: 'red', missing
 const STATUS_LBL = { valid: 'Valid', expiring: 'Expiring', expired: 'Expired', missing: 'Missing', pending: 'Pending review', rejected: 'Rejected' };
 const NEEDS_ATTENTION = new Set(['expiring', 'expired', 'missing', 'pending', 'rejected']);
 
-/** Required docs for a staff member: RTW always, SIA when role.requiresSIA. */
+/** Required docs for a staff member: the region's work documents (UK: Right to Work; US: Form I-9
+ *  and Form W-4), plus the SIA licence when the role requires it at a venue that uses it. */
 function requiredTypes(member, rolesMap) {
-  const req = ['RTW'];
+  const pack = activeRegionPack();
+  const req = [...pack.requiredDocs];
   const role = rolesMap && rolesMap[member.role];
-  if (role && role.requiresSIA) req.push('SIA');
+  if (role && role.requiresSIA && pack.documentTypes.includes('SIA')) req.push('SIA');
   return req;
 }
 
@@ -341,7 +335,7 @@ function AttentionBanner({ count }) {
 }
 
 function AddDocModal({ staff, ctx, onClose, onSave }) {
-  const [form, setForm] = useState({ staffId: (staff[0] && staff[0].id) || '', type: 'RTW', issuedOn: '', expiry: '', fileUrl: '', fileName: '' });
+  const [form, setForm] = useState({ staffId: (staff[0] && staff[0].id) || '', type: activeRegionPack().requiredDocs[0], issuedOn: '', expiry: '', fileUrl: '', fileName: '' });
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const valid = form.staffId && form.type;
   const [uploading, setUploading] = useState(false);
@@ -380,7 +374,7 @@ function AddDocModal({ staff, ctx, onClose, onSave }) {
           <select style={inputStyle} value={form.type} onChange={e => set('type', e.target.value)}>
             {GROUP_ORDER.map(g => (
               <optgroup key={g} label={GROUP_LABEL[g]}>
-                {DOC_TYPES.filter(t => (DOC_GROUP[t] || 'other') === g).map(t => <option key={t} value={t}>{DOC_LABEL[t]}</option>)}
+                {activeRegionPack().documentTypes.filter(t => (DOC_GROUP[t] || 'other') === g).map(t => <option key={t} value={t}>{DOC_LABEL[t]}</option>)}
               </optgroup>
             ))}
           </select>

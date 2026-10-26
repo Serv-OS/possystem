@@ -19,6 +19,12 @@ import { getLocationConfig } from '../../../lib/locationTime';
 // Clash logic (shift overlap = hard block; approved leave / unavailable day =
 // soft warning, place anyway) is pure + unit-tested in wfClash.js.
 import { findClash, clashWarnings } from '../../../staff/wfClash';
+// v5.11.101: open shifts and swaps (the card, the editor, the rules and the texts) and the pay
+// premiums in the planned cost (one rule with payroll).
+import { OpenShiftModal, OpenShiftsCard } from './WfOpenShifts';
+import { claimProblem, eligibleStaff, swapMode, textOpenShift } from '../../../../supabase/functions/_shared/openShiftRules.js';
+import { plannedPremium } from '../../../../supabase/functions/_shared/payPremiums.js';
+import { activeCountry } from '../../../lib/regionPack';
 
 const GRP_ORDER = ['mgmt', 'bar', 'floor', 'kitchen', 'door'];
 const TPL_COLOURS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#64748b'];
@@ -321,6 +327,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   const [aiBusy, setAiBusy] = useState(false);     // AI rota generation in progress
   const [aiReport, setAiReport] = useState(null);   // what the last build did: accepted, filled, rejected reasons, gaps
   const [openingHours, setOpeningHours] = useState(null);   // locations.opening_hours (rota rules)
+  const [venueTz, setVenueTz] = useState('Europe/London'); // v5.11.101: the venue clock (has an open shift started yet)
   const [history, setHistory] = useState({});       // { iso: sales } for the 8 weeks before this week (learned forecast)
   const [view, setView] = useState('staff');       // 'staff' | 'section'
   const [secs, setSecs] = useState(sections || []); // sections loaded fresh (Settings may have changed them)
@@ -333,6 +340,9 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   // effective date stamp the NEW rate at publish (resolveRateOn).
   const [rateChanges, setRateChanges] = useState([]);
   const [copyWeekOpen, setCopyWeekOpen] = useState(false);
+  const [swaps, setSwaps] = useState([]);              // v5.11.101: live claim and swap requests
+  const [openEditing, setOpenEditing] = useState(null); // { shift } | { day } for the open shift editor
+  const [deciding, setDeciding] = useState(null);       // request id being approved or declined
 
   const targetPct = settings?.labourTargetPct ?? 0.3;
   // Standard shifts (venue presets) live on wf_venue_settings.settings jsonb.
@@ -341,7 +351,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   // Opening hours feed the rota rules (a shift outside them is rejected).
   useEffect(() => {
     let alive = true;
-    getLocationConfig(ctx.locationId).then(c => { if (alive) setOpeningHours(c?.opening_hours || null); }).catch(() => {});
+    getLocationConfig(ctx.locationId).then(c => { if (alive) { setOpeningHours(c?.opening_hours || null); setVenueTz(c?.timezone || 'Europe/London'); } }).catch(() => {});
     return () => { alive = false; };
   }, [ctx.locationId]);
   // Learned forecast: the 8 weeks of sales before the visible week.
@@ -359,7 +369,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   async function reload(w) {
     setLoading(true);
     try {
-      const [sh, fc, ac, sc, ts, lv, av, rc, ob] = await Promise.all([
+      const [sh, fc, ac, sc, ts, lv, av, rc, ob, sw] = await Promise.all([
         wf.loadShifts(ctx.locationId, w.startIso, w.endIso),
         wf.loadForecast(ctx.locationId, w.startIso, w.endIso),
         wf.loadActualSales(ctx.locationId, w.startIso, w.endIso),
@@ -369,6 +379,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
         wf.loadAvailability(ctx.locationId),
         wf.loadRateChanges(ctx.locationId),
         wf.loadOnboarding(ctx.locationId),
+        wf.loadSwapRequests(ctx.locationId),
       ]);
       setShifts(sh || []);
       setForecast(fc || {});
@@ -379,6 +390,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
       setTimeOff(lv || []);
       setAvail(av || []);
       setRateChanges(rc || []);
+      setSwaps(sw || []);
       // Heal legacy label-keyed steps from meta evidence FIRST — the Onboarding
       // screen does this on load, and the gate must agree with what that screen
       // shows or a person displayed as "Completed" gets blocked here.
@@ -500,6 +512,84 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
       .sort((a, b) => (a.busy === b.busy ? a.name.localeCompare(b.name) : a.busy ? 1 : -1));
   }, [staff, shifts, onboardingBlock]);
 
+  // v5.11.101: the planned cost carries the venue's pay premiums (weekend, public holiday, night),
+  // by the same rule payroll pays them. With no premiums set (every venue today) it adds 0.
+  const premiumOn = (shiftLike, rate, source, role) => plannedPremium(shiftLike, rate, settings?.premiums || {},
+    { country: activeCountry(), eligible: role ? role.premiumEligible !== false : true, hourly: source !== 'salaried' }).pay;
+
+  // ── open shifts and swaps (v5.11.101) ───────────────────────────────────
+  const openShifts = useMemo(() => shifts.filter(s => !s.staffId).sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start)), [shifts]);
+  const shiftsById = useMemo(() => { const m = {}; shifts.forEach(s => { m[s.id] = s; }); return m; }, [shifts]);
+
+  async function saveOpenShift(payload) {
+    const existing = openEditing?.shift || null;
+    const role = roles.map[payload.roleKey];
+    const { rate, source } = resolveRate(null, role);
+    const hours = Math.max(0, hoursOf(payload.start, payload.finish) - payload.breakMins / 60);
+    const shiftLike = { date: payload.date, start: payload.start, finish: payload.finish, breakMins: payload.breakMins };
+    const next = {
+      ...(existing || {}),
+      id: existing?.id || 'tmp-' + Date.now(),
+      staffId: null, roleKey: payload.roleKey, date: payload.date,
+      start: payload.start, finish: payload.finish, breakMins: payload.breakMins,
+      sectionId: payload.sectionId || null, section: payload.section,
+      status: existing?.status || 'draft', note: existing?.note || '',
+      effectiveRate: rate, rateSource: source,
+      computedHours: Math.round(hours * 100) / 100,
+      computedCost: Math.round((hours * rate + premiumOn(shiftLike, rate, source, role)) * 100) / 100,
+    };
+    setSaving(true);
+    try {
+      const saved = await wf.saveShift(next, ctx.locationId, ctx.orgId);
+      setShifts(prev => [...prev.filter(x => x.id !== next.id), saved]);
+      setOpenEditing(null);
+      showToast(existing ? 'Open shift saved' : 'Open shift added as a draft. Publish the rota to put it up for grabs', 'success');
+    } catch (e) {
+      showToast('Save failed: ' + e.message, 'error');
+      reload(wk);
+    } finally { setSaving(false); }
+  }
+
+  async function decide(req, decision) {
+    setDeciding(req.id);
+    try {
+      await wf.decideSwap(ctx.locationId, req.id, decision);
+      showToast(decision === 'approved' ? 'Approved. The rota is updated and both people are texted' : 'Declined. Nothing changed on the rota', 'success');
+    } catch (e) {
+      showToast(e.message || 'Could not save that decision', 'error');
+    } finally {
+      setDeciding(null);
+      reload(wk);
+    }
+  }
+
+  /** Text everyone who could take each newly published open shift (the same rules as the claim). */
+  async function textOpenShifts(ids) {
+    const fresh = shifts.filter(s => ids.includes(s.id) && !s.staffId);
+    if (!fresh.length) return 0;
+    // The VENUE's clock, never the browser's: a manager in California publishing a Leeds rota.
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: venueTz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+      .formatToParts(new Date()).map(x => [x.type, x.value]));
+    const todayIso = `${parts.year}-${parts.month}-${parts.day}`, nowMin = Number(parts.hour) * 60 + Number(parts.minute);
+    const country = activeCountry();
+    const people = (staff || []).map(p => ({ id: p.id, name: p.name, mobile: p.mobile, status: p.status || 'active', roleKey: p.role, locationId: ctx.locationId }));
+    const sent = new Set();
+    let n = 0;
+    for (const sh of fresh) {
+      const shift = { ...sh, staffId: null, locationId: ctx.locationId, status: 'published' };
+      const msg = textOpenShift(ctx.locName || '', shift, country);
+      const can = eligibleStaff(shift, people).filter(p => !claimProblem({
+        shift, claimer: p, request: null, theirShifts: shifts.filter(x => x.staffId === p.id), leave: timeOff.filter(l => l.staffId === p.id),
+        availability: (avail || []).find(a => a.staffId === p.id) || null, settings: settings?.settings || {}, todayIso, nowMin, country,
+        // The rota's own onboarding gate: someone it will not schedule is not texted an open shift.
+        onboardingOpen: onboardingBlock(p.id) ? 1 : 0,
+      }));
+      const results = await Promise.allSettled(can.filter(p => p.mobile).map(p => wf.sendStaffSms(p.mobile, msg, ctx.locationId, 'rota_notification', sh.id)));
+      results.forEach((r, i) => { if (r.status === 'fulfilled' && r.value?.ok) { n++; sent.add(can[i].id); } });
+    }
+    return n;
+  }
+
   // ── handlers ────────────────────────────────────────────────────────────
   async function saveShift(payload) {
     const { day, shift } = editing;
@@ -528,7 +618,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
       status: shift?.status || 'draft', note: shift?.note || '',
       effectiveRate: rate, rateSource: source,
       computedHours: Math.round(hours * 100) / 100,
-      computedCost: Math.round(hours * rate * 100) / 100,
+      computedCost: Math.round((hours * rate + premiumOn({ date: day.iso, start: payload.start, finish: payload.finish, breakMins: payload.breakMins }, rate, source, role)) * 100) / 100,
     };
     setShifts(prev => { const o = prev.filter(x => x.id !== next.id); return [...o, next]; });
     setSaving(true);
@@ -597,7 +687,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
       status: 'draft', note: '',
       effectiveRate: rate, rateSource: source,
       computedHours: Math.round(hours * 100) / 100,
-      computedCost: Math.round(hours * rate * 100) / 100,
+      computedCost: Math.round((hours * rate + premiumOn({ date: dateIso, start: src.start, finish: src.finish, breakMins: src.breakMins || 0 }, rate, source, role)) * 100) / 100,
     };
     setSaving(true);
     try {
@@ -623,6 +713,19 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
       let skipped = 0, warned = 0;
       for (const s of shifts) {
         const idx = wk.days.findIndex(d => d.iso === s.date);
+        // v5.11.101: an open shift copies as an open draft (nobody on it, same position and cost).
+        if (idx >= 0 && !s.staffId) {
+          const oRole = roles.map[s.roleKey];
+          const { rate: oRate, source: oSource } = resolveRate(null, oRole);
+          const oHours = Math.max(0, hoursOf(s.start, s.finish) - (s.breakMins || 0) / 60);
+          const oDate = target.days[idx].iso;
+          const copy = { staffId: null, roleKey: s.roleKey || null, date: oDate, start: s.start, finish: s.finish, breakMins: s.breakMins || 0,
+            sectionId: s.sectionId || null, section: s.section || null, status: 'draft', effectiveRate: oRate, rateSource: oSource,
+            computedHours: Math.round(oHours * 100) / 100,
+            computedCost: Math.round((oHours * oRate + premiumOn({ date: oDate, start: s.start, finish: s.finish, breakMins: s.breakMins || 0 }, oRate, oSource, oRole)) * 100) / 100 };
+          working.push(copy); toInsert.push(copy);
+          continue;
+        }
         const person = staffById[s.staffId];
         if (idx < 0 || !person) { skipped++; continue; }             // leaver / out of week
         if (onboardingBlock(s.staffId)) { skipped++; continue; }     // onboarding gate
@@ -638,7 +741,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
           sectionId: s.sectionId || null, section: s.section || null, status: 'draft',
           effectiveRate: rate, rateSource: source,
           computedHours: Math.round(hours * 100) / 100,
-          computedCost: Math.round(hours * rate * 100) / 100,
+          computedCost: Math.round((hours * rate + premiumOn({ date: dateIso, start: s.start, finish: s.finish, breakMins: s.breakMins || 0 }, rate, source, role)) * 100) / 100,
         };
         working.push(copy);
         toInsert.push(copy);
@@ -699,7 +802,8 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
 
       // Notify each affected staff member of their week's shifts — by SMS AND
       // email (whichever contact details are on file), so no-one is missed.
-      const affected = new Set(shifts.filter(s => draftIds.includes(s.id)).map(s => s.staffId));
+      // Open shifts (nobody on them) are texted to who could take them, below.
+      const affected = new Set(shifts.filter(s => draftIds.includes(s.id) && s.staffId).map(s => s.staffId));
       const published = shifts.map(s => draftIds.includes(s.id) ? { ...s, status: 'published' } : s).filter(s => s.status === 'published');
       const dayLabel = iso => new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
       const nameOf = id => (staff.find(s => s.id === id) || {});
@@ -723,8 +827,12 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
         else if (!member.mobile && !member.email) noContact++;
         else failed++;
       }));
+      // v5.11.101: newly published open shifts go to everyone who could take them.
+      let openTexts = 0;
+      try { openTexts = await textOpenShifts(draftIds); } catch (e) { console.warn('[rota] open shift texts:', e?.message); }
       const bits = [];
       if (notified) bits.push(`notified ${notified}`);
+      if (openTexts) bits.push(`open shifts texted to ${openTexts}`);
       if (failed) bits.push(`${failed} failed`);
       if (noContact) bits.push(`${noContact} no contact details`);
       const tail = bits.length ? ` · ${bits.join(', ')}` : '';
@@ -813,7 +921,8 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
           staffId: s.id, roleKey: s.role, date: p.date, start: p.start, finish: p.finish, breakMins,
           section, sectionId: (secs || []).find(x => String(x.name || '').toLowerCase() === String(section || '').toLowerCase())?.id || null, status: 'draft',
           effectiveRate: rate, rateSource: source,
-          computedHours: Math.round(hours * 100) / 100, computedCost: Math.round(hours * rate * 100) / 100,
+          computedHours: Math.round(hours * 100) / 100,
+          computedCost: Math.round((hours * rate + premiumOn({ date: p.date, start: p.start, finish: p.finish, breakMins }, rate, source, role)) * 100) / 100,
         };
       });
       // ONE bulk insert instead of N sequential saves.
@@ -957,6 +1066,13 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
           onDuplicate={(sh) => { setEditing(null); setCopying(sh); }}
         />
       )}
+      {openEditing && (
+        <OpenShiftModal
+          days={wk.days} day={openEditing.day} shift={openEditing.shift} roles={roles} sections={secs}
+          templates={templates} saving={saving} defaultBreakMins={breakPolicy.defaultMins}
+          onSave={saveOpenShift} onDelete={(sh) => { setOpenEditing(null); removeShift(sh); }} onClose={() => setOpenEditing(null)}
+        />
+      )}
       {tplOpen && (
         <TemplatesModal templates={templates} sections={secs} saving={saving} defaultBreakMins={breakPolicy.defaultMins} onSave={saveTemplates} onClose={() => setTplOpen(false)} />
       )}
@@ -976,6 +1092,10 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
         {Header}
         {Modals}
         {LabourStrip}
+        <OpenShiftsCard openShifts={openShifts} requests={swaps} shiftsById={shiftsById} staffById={staffById} roles={roles}
+          mode={swapMode(settings?.settings)} deciding={deciding}
+          onAdd={() => setOpenEditing({ day: wk.days.find(d => d.isToday) || wk.days[0], shift: null })}
+          onEdit={(sh) => setOpenEditing({ shift: sh, day: null })} onDecide={decide} />
         {AiReport}
         {secs.length === 0 && !unassignedCount
           ? <EmptyState icon="floor" title="No sections yet" body="Create sections (Bar, Floor, Kitchen…) in Settings to track coverage per area. Then assign each shift to a section and we'll flag any day that's understaffed." />
@@ -1021,11 +1141,11 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
                                 return (
                                   <button
                                     key={s.id}
-                                    onClick={() => p && setEditing({ staff: p, day: d, shift: s })}
-                                    title={`${p?.name || 'Unknown'} · ${s.start}–${s.finish}${draft ? ' · draft' : ''}${sec.ghost ? ' · no section assigned' : ''}`}
+                                    onClick={() => (p ? setEditing({ staff: p, day: d, shift: s }) : !s.staffId && setOpenEditing({ shift: s, day: null }))}
+                                    title={`${p?.name || (s.staffId ? 'Unknown' : 'Open shift')} · ${s.start}–${s.finish}${draft ? ' · draft' : ''}${sec.ghost ? ' · no section assigned' : ''}`}
                                     style={{
                                       display: 'flex', alignItems: 'center', gap: 5, width: '100%', textAlign: 'left',
-                                      padding: '3px 5px', borderRadius: 7, cursor: p ? 'pointer' : 'default',
+                                      padding: '3px 5px', borderRadius: 7, cursor: p || !s.staffId ? 'pointer' : 'default',
                                       border: `1px ${draft ? 'dashed' : 'solid'} var(--inset-border)`,
                                       background: 'var(--inset)', color: 'var(--t1)', font: 'inherit', fontSize: 11,
                                     }}
@@ -1036,7 +1156,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
                                       fontSize: 8, fontWeight: 700, display: 'grid', placeItems: 'center',
                                     }}>{initials(p?.name)}</span>
                                     <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600 }}>
-                                      {(p?.name || 'Unknown').split(' ')[0]}
+                                      {(p?.name || (s.staffId ? 'Unknown' : 'Open')).split(' ')[0]}
                                     </span>
                                     <span className="mono" style={{ fontSize: 9.5, color: 'var(--t3)', flexShrink: 0 }}>{s.start}</span>
                                   </button>
@@ -1076,6 +1196,10 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
       <Card>
         {Header}
         {LabourStrip}
+        <OpenShiftsCard openShifts={openShifts} requests={swaps} shiftsById={shiftsById} staffById={staffById} roles={roles}
+          mode={swapMode(settings?.settings)} deciding={deciding}
+          onAdd={() => setOpenEditing({ day: wk.days.find(d => d.isToday) || wk.days[0], shift: null })}
+          onEdit={(sh) => setOpenEditing({ shift: sh, day: null })} onDecide={decide} />
         {AiReport}
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}>

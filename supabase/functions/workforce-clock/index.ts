@@ -1,4 +1,5 @@
 // supabase/functions/workforce-clock
+// MARKER 5.11.101 workforce-clock venue currency
 //
 // Server-side time clock for the dedicated clock surface (mode=clock). Paired
 // clock devices authenticate ANONYMOUSLY, so they cannot write wf_timesheets
@@ -26,6 +27,10 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { secondStepRefusal } from '../_shared/second-step.ts';
+import { openOnboardingSteps } from '../_shared/onboardingOpen.js';
+// v5.11.101: the one timesheet pay rule (base, plus the venue's pay premiums when it sets any).
+import { sheetPay, anyPremium } from '../_shared/payPremiums.js';
+import { regionPack } from '../_shared/regionPack.js';
 import { namedSheetId, openSheetFor } from '../_shared/clockSheet.js';
 
 const cors = {
@@ -49,6 +54,16 @@ const todayIso = () => new Date().toISOString().slice(0, 10);
 async function orgFor(loc: string): Promise<string | null> {
   const { data } = await admin.from('locations').select('org_id').eq('id', loc).single();
   return data?.org_id ?? null;
+}
+
+/** v5.11.101: the timesheet's currency is the venue's (it was always 'GBP', a US venue too).
+ *  Never refuses a clock in: any failure reads 'GBP', as before. */
+async function currencyOf(loc: string): Promise<string> {
+  try {
+    const { data } = await admin.from('locations').select('currency').eq('id', loc).maybeSingle();
+    const c = String(data?.currency || '').toUpperCase();
+    return /^[A-Z]{3}$/.test(c) ? c : 'GBP';
+  } catch { return 'GBP'; }
 }
 
 /** Effective hourly rate for a wf_staff member: override → role base → salaried equiv. */
@@ -86,21 +101,7 @@ function stateOf(open: any): { state: string; since: string | null; onBreak: boo
 // How many onboarding steps are genuinely open, derived from EVIDENCE — the
 // stored steps array goes stale (it predates POS access / bank details landing
 // via other paths). An explicitly-complete stored step still counts as done.
-function openOnboardingSteps(row: any, staff: any): number {
-  if (!row) return 0;
-  const meta = row.meta || {};
-  const done: Record<string, boolean> = {
-    offer: !!(meta.offerAccepted || meta.offerSentAt),
-    contract: !!meta.signature,
-    rtw: !!meta.rtwPath,
-    bank: !!(meta.bankMasked || staff?.bank_account_masked),
-    posUser: !!staff?.pos_user_id,
-  };
-  (Array.isArray(row.steps) ? row.steps : []).forEach((st: any) => {
-    if (st?.status === 'complete' && st.key in done) done[st.key] = true;
-  });
-  return Object.values(done).filter(v => !v).length;
-}
+// v5.11.101: one copy of the onboarding rule (_shared/onboardingOpen.js), the open shift rule's too.
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -199,7 +200,7 @@ Deno.serve(async (req) => {
           due: a.due_date,
           overdue: !!(a.due_date && a.due_date < todayIso),
         }));
-        const onboardingOpen = openOnboardingSteps(onbRows?.[0], staff);
+        const onboardingOpen = openOnboardingSteps(onbRows?.[0], staff, (await currencyOf(location_id)) !== 'USD');
         outstanding = { training, onboardingOpen, total: training.length + onboardingOpen };
       } catch (e) { console.error('[workforce-clock] outstanding:', (e as Error).message); }
       // Does this venue want the till to offer a shift start on first sign-in?
@@ -225,11 +226,12 @@ Deno.serve(async (req) => {
       let rate = shift?.effective_rate != null ? Number(shift.effective_rate) : null;
       let source = shift?.rate_source ?? null;
       if (rate == null) { const r = await resolveRate(staff, location_id); rate = r.rate; source = r.source; }
+      const currency = await currencyOf(location_id);
       const { error } = await admin.from('wf_timesheets').insert({
         location_id, org_id: org, staff_id: staff.id, shift_id: shift?.id ?? null,
         clock_in: now.toISOString(), break_taken: 0,
         scheduled_hours: shift?.computed_hours ?? null,
-        effective_rate: rate, rate_source: source, currency: 'GBP', status: 'pending',
+        effective_rate: rate, rate_source: source, currency, status: 'pending',
       });
       if (error) return json({ error: error.message }, 500);
       return json({ ok: true, staff: who, state: 'in', since: now.toISOString() });
@@ -272,7 +274,7 @@ Deno.serve(async (req) => {
       //     timesheets" but only BO-created ones honoured it).
       // OFF by default — no venue's pay records change until they opt in.
       const { data: vsRow } = await admin.from('wf_venue_settings')
-        .select('settings').eq('location_id', location_id).maybeSingle();
+        .select('settings, premiums').eq('location_id', location_id).maybeSingle();
       const vs = vsRow?.settings || {};
       let autoApplied = 0;
       if (breakTaken === 0 && vs.autoBreak === true) {
@@ -297,7 +299,22 @@ Deno.serve(async (req) => {
       // Paid-break venues pay the break minutes on top of worked hours — the
       // exact formula the timesheet editor uses (WfTimesheets editCalc).
       const paidBreakMins = vs.paidBreaks === true ? breakTaken : 0;
-      const pay = round2(Math.max(0, actual + paidBreakMins / 60) * rate);
+      let pay = round2(Math.max(0, actual + paidBreakMins / 60) * rate);
+      // v5.11.101: pay premiums (Workforce settings) by the one rule payroll uses, so every report's
+      // labour (which reads pay_amount) agrees with payroll. No premiums set: pay is exactly as above.
+      // Never refuses a clock out: any failure here keeps the base pay.
+      if (anyPremium((vsRow as any)?.premiums)) {
+        try {
+          const { data: locRow } = await admin.from('locations').select('timezone, currency').eq('id', location_id).maybeSingle();
+          let eligible = true;
+          if (staff?.role_key) {
+            const { data: roleRow } = await admin.from('wf_roles').select('premium_eligible').eq('location_id', location_id).eq('key', staff.role_key).maybeSingle();
+            eligible = roleRow ? roleRow.premium_eligible !== false : true;
+          }
+          pay = sheetPay({ clockIn: open.clock_in, clockOut: now.toISOString(), actualHours: actual, paidBreakMins, rate, rateSource: open.rate_source ?? null,
+            premiums: (vsRow as any).premiums, tz: locRow?.timezone || 'Europe/London', country: regionPack({ currency: locRow?.currency || 'GBP' }).country, eligible }).pay;
+        } catch (e) { console.error('[workforce-clock] premium:', (e as Error).message); }
+      }
       const update: Record<string, unknown> = {
         clock_out: now.toISOString(), break_taken: breakTaken, break_open_at: null,
         actual_hours: actual, variance, pay_amount: pay, status: 'pending',

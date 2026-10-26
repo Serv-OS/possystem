@@ -1,4 +1,5 @@
 // supabase/functions/location-admin/index.ts
+// MARKER 5.11.101 location-admin ops currency sync
 //
 // Back-office writes to the PLATFORM DB `locations` row.
 //
@@ -517,6 +518,16 @@ Deno.serve(async (req) => {
     }
     if (!data) return json({ error: 'update matched 0 rows' }, 500);
     if ('timezone' in row || 'business_day_start' in row) await syncVenueClock(loc, ops);
+    // v5.11.101: the Ops copy of the venue's currency follows the Platform one. The region pack
+    // (US sites: dollars, US phone numbers, US payroll) reads it on the server (staff-portal,
+    // workforce-compute, manager-approve, workforce-clock), so a venue switched to USD here must be
+    // a US venue there too. Never fails the save (the Platform row is the record).
+    if ('currency' in row && row.currency) {
+      try {
+        const { error: curErr } = await opsAdmin.from('locations').update({ currency: row.currency }).eq('id', ops);
+        if (curErr) console.error('[location-admin] ops currency sync:', curErr.message);
+      } catch (e) { console.error('[location-admin] ops currency sync:', String((e as Error)?.message || e)); }
+    }
     // 22 Oct 2026 (v5.11.94): a renamed venue's loyalty code texts must carry the new name at
     // once. The venue's own Twilio Verify service is renamed (or made) now, through the one
     // shared repair; the answer carries the result for the screen to show. It never fails the

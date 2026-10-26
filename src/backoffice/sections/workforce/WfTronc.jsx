@@ -8,6 +8,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, Badge, money, th, td, inputStyle, labelStyle, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
+import { activeRegionPack } from '../../../lib/regionPack';
 import { buildWeek, addWeeks, weekRangeLabel } from '../../../staff/wfWeek';
 
 const STATUS_TONE = { draft: 'grey', run: 'blue', exported: 'green' };
@@ -154,7 +155,7 @@ export default function WfTronc({ ctx, staff = [], roles, sections, settings, we
           </div>
           <div style={{ display: 'flex', alignItems: 'flex-end', gap: 10 }}>
             <div style={{ width: 170 }}>
-              <label style={labelStyle}>Tip pool (£)</label>
+              <label style={labelStyle}>Tip pool ({activeRegionPack().currencySymbol})</label>
               <input
                 style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }}
                 type="number"

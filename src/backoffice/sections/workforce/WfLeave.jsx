@@ -137,9 +137,10 @@ export default function WfLeave({ ctx, staff = [], roles, sections, settings, we
     if (running) return;
     setRunning(true);
     try {
-      await wf.invokeCompute('accrual.run', { location_id: ctx?.locationId });
+      const res = await wf.invokeCompute('accrual.run', { location_id: ctx?.locationId });
       setAccrual(await wf.loadAccrual(ctx?.locationId));
-      showToast?.('Holiday accrual run complete', 'success');
+      // v5.11.101: a US venue has no statutory accrual; the server says so and writes nothing.
+      showToast?.(res?.off || 'Holiday accrual run complete', res?.off ? 'info' : 'success');
     } catch (e) {
       showToast?.(e.message || 'Accrual run failed', 'error');
     } finally {

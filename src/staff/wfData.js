@@ -15,6 +15,8 @@
 // every flow is testable without a backend. Production always hits Supabase.
 
 import { supabase, isMock } from '../lib/supabase';
+import { toE164 as regionToE164, venueMoney } from '../lib/regionPack';
+import { getActiveCurrencyCode } from '../lib/currency';
 import { reportSave } from '../lib/saveHealth';
 import { ROLES as SEED_ROLES } from './seed';
 
@@ -104,18 +106,13 @@ export async function signedDocUrl(pathOrUrl, expiresIn = 120) {
   return data?.signedUrl || null;
 }
 
-/** Normalise a phone number to E.164 (UK-default). send-sms requires +44… and
- *  rejects local 07… numbers with a 400, so we convert before sending.
- *  07931129015 → +447931129015 · 00447… → +447… · already-+44 passes through. */
-export function toE164(raw) {
-  if (!raw) return null;
-  let s = String(raw).trim().replace(/[\s()\-.]/g, '');
-  if (s.startsWith('+')) return /^\+[1-9]\d{6,14}$/.test(s) ? s : null;
-  if (s.startsWith('00')) s = '+' + s.slice(2);
-  else if (s.startsWith('0')) s = '+44' + s.slice(1);   // UK local 07…/01… → +44…
-  else if (s.startsWith('44')) s = '+' + s;
-  else if (/^[1-9]\d{6,14}$/.test(s)) s = '+44' + s;    // bare national, no leading 0
-  return /^\+[1-9]\d{6,14}$/.test(s) ? s : null;
+/** Normalise a phone number to E.164 for send-sms (it refuses local numbers with a 400).
+ *  v5.11.101: read with the VENUE's country (the region pack follows the venue's currency). It was
+ *  UK only: a US local 801 555 1234 became +44801..., a number nobody has. A UK venue reads exactly
+ *  as before: 07931129015 → +447931129015 · 00447… → +447… · +E.164 passes through.
+ *  A US venue: 801 555 1234 / (801) 555-1234 → +18015551234. countryCode overrides ('44' | '1'). */
+export function toE164(raw, countryCode) {
+  return regionToE164(raw, countryCode);
 }
 
 /** Send one SMS via the send-sms edge function. Throws on failure; no-op in mock. */
@@ -205,6 +202,8 @@ function mapStaff(r) {
     bankSortCode: r.bank_sort_code || null, bankAccount: r.bank_account || null, bankMasked: r.bank_account_masked || null,
     bankAccountName: r.bank_account_name || null,
     niNumber: r.ni_number || null,
+    // v5.11.101: US payroll fields (region pack): the payroll provider's id and SSN last 4 only.
+    payrollEmployeeId: r.payroll_employee_id || null, ssnLast4: r.ssn_last4 || null,
     // The staff app: do they have a login yet, and is an invite still live? The
     // onboarding screen needs both to say "invite sent" or "send it again"
     // (21 Sep 2026: an invite only ever fired at the moment onboarding started,
@@ -218,9 +217,13 @@ function mapStaff(r) {
 export async function loadStaff(locationId) {
   if (isMock || !supabase) return lsGet('staff');
   if (!locationId) return [];
-  const { data, error } = await supabase.from('wf_staff')
-    .select('id,name,role_key,contract_type,mobile,email,dob,start_date,status,pos_user_id,section_ids,rate_override,contracted_week,weekly_hours_target,holiday_entitlement_days,address,emergency_contact,bank_sort_code,bank_account,bank_account_masked,bank_account_name,ni_number,portal_user_id,portal_invite_expires,created_at')
+  const COLS = 'id,name,role_key,contract_type,mobile,email,dob,start_date,status,pos_user_id,section_ids,rate_override,contracted_week,weekly_hours_target,holiday_entitlement_days,address,emergency_contact,bank_sort_code,bank_account,bank_account_masked,bank_account_name,ni_number,portal_user_id,portal_invite_expires,created_at';
+  const read = (cols) => supabase.from('wf_staff').select(cols)
     .eq('location_id', locationId).neq('status', 'leaver').order('created_at', { ascending: true });
+  // v5.11.101: the two US payroll columns come with 20261031a. Until it has run, read without them
+  // (a missing column would otherwise empty the whole staff list).
+  let { data, error } = await read(COLS + ',payroll_employee_id,ssn_last4');
+  if (error && /payroll_employee_id|ssn_last4|42703|PGRST204/i.test(`${error.code || ''} ${error.message || ''}`)) ({ data, error } = await read(COLS));
   if (error) { console.warn('[wf] loadStaff:', error.message); return []; }
   return (data || []).map(mapStaff);
 }
@@ -238,6 +241,13 @@ export async function saveStaff(member, locationId, orgId) {
   // NI number: only write when the form actually carried the field (avoid
   // wiping it from save paths that don't know about it).
   if (member.niNumber !== undefined) row.ni_number = member.niNumber || null;
+  // v5.11.101: US payroll fields, same "only when present" guard (the UK form never carries them).
+  if (member.payrollEmployeeId !== undefined) row.payroll_employee_id = String(member.payrollEmployeeId || '').trim().slice(0, 40) || null;
+  if (member.ssnLast4 !== undefined) {
+    const d = String(member.ssnLast4 || '').replace(/\D/g, '');
+    if (d && d.length !== 4) throw new Error('SSN last 4 must be exactly four digits');
+    row.ssn_last4 = d || null;
+  }
   // v5.5.993 — which section(s) this person works in. The column has existed
   // since the workforce build and was READ in three places, but no save path
   // ever wrote it and no screen ever offered it, so it was empty for every
@@ -499,7 +509,7 @@ export async function saveShift(shift, locationId, orgId) {
     start_time: shift.start, finish_time: shift.finish, break_mins: shift.breakMins || 0,
     status: shift.status || 'draft', note: shift.note || null,
     effective_rate: shift.effectiveRate ?? null, rate_source: shift.rateSource || null,
-    currency: shift.currency || 'GBP', computed_hours: shift.computedHours ?? null, computed_cost: shift.computedCost ?? null,
+    currency: shift.currency || getActiveCurrencyCode(), computed_hours: shift.computedHours ?? null, computed_cost: shift.computedCost ?? null,
   };
   const real = shift.id && !String(shift.id).startsWith('tmp-') && !String(shift.id).startsWith('wf-');
   if (real) row.id = shift.id;
@@ -522,6 +532,32 @@ export async function publishShifts(ids) {
   const { data, error } = await supabase.from('wf_shifts').update({ status: 'published' }).in('id', ids).select('id');
   const rows = data?.length || 0;
   checkWrite('rota publish', error || (rows !== ids.length ? new Error(`Published ${rows} of ${ids.length} shift(s) — the rest were rejected`) : null));
+}
+
+// ============================================================================
+// OPEN SHIFTS AND SWAPS (wf_swap_requests, v5.11.101). Back Office READS them
+// (its select policy); every change goes through the database judge, from the
+// staff app (staff-portal) or a manager's decision (manager-approve swap.decide,
+// which proves the Back Office login and checks every rule again under a lock).
+// ============================================================================
+const mapSwap = r => ({
+  id: r.id, shiftId: r.shift_id, kind: r.kind, status: r.status, fromStaffId: r.from_staff_id, toStaffId: r.to_staff_id,
+  note: r.note || null, claimedAt: r.claimed_at || null, decidedAt: r.decided_at || null, decidedHow: r.decided_how || null,
+  decidedByName: r.decided_by_name || null, snapshot: r.shift_snapshot || null, createdAt: r.created_at,
+});
+/** Live requests (open or waiting for a manager) at the venue. [] before 20261031a has run. */
+export async function loadSwapRequests(locationId) {
+  if (isMock || !supabase || !locationId) return [];
+  const { data, error } = await supabase.from('wf_swap_requests')
+    .select('id, shift_id, kind, status, from_staff_id, to_staff_id, note, claimed_at, decided_at, decided_how, decided_by_name, shift_snapshot, created_at')
+    .eq('location_id', locationId).in('status', ['open', 'pending']).order('created_at', { ascending: true }).limit(500);
+  if (error) { console.warn('[wf] loadSwapRequests:', error.message); return []; }
+  return (data || []).map(mapSwap);
+}
+/** A manager approves or declines a waiting claim or swap (decision 'approved' | 'declined'). */
+export async function decideSwap(locationId, requestId, decision) {
+  if (isMock || !supabase) return { ok: true, mock: true };
+  return invokeFn('manager-approve', { action: 'swap.decide', ops_location_id: locationId, target_id: requestId, decision });
 }
 
 // ============================================================================
@@ -560,7 +596,7 @@ export async function saveTimesheet(ts, locationId, orgId) {
     clock_in: ts.clockIn || null, clock_out: ts.clockOut || null, break_taken: ts.breakTaken || 0,
     breaks: Array.isArray(ts.breaks) ? ts.breaks : [], paid_break_mins: ts.paidBreakMins || 0,
     scheduled_hours: ts.scheduledHours ?? null, actual_hours: ts.actualHours ?? null, variance: ts.variance ?? null,
-    effective_rate: ts.effectiveRate ?? null, rate_source: ts.rateSource || null, currency: ts.currency || 'GBP',
+    effective_rate: ts.effectiveRate ?? null, rate_source: ts.rateSource || null, currency: ts.currency || getActiveCurrencyCode(),
     pay_amount: ts.payAmount ?? null, status: ts.status || 'pending',
   };
   const real = ts.id && !String(ts.id).startsWith('tmp-') && !String(ts.id).startsWith('wf-');
@@ -729,7 +765,7 @@ export async function saveShiftsBulk(shiftsArr, locationId, orgId) {
     section_id: s.sectionId || null, section: s.section || null,
     shift_date: s.date, start_time: s.start, finish_time: s.finish, break_mins: s.breakMins || 0,
     status: s.status || 'draft', premiums_applied: [], effective_rate: s.effectiveRate ?? null,
-    rate_source: s.rateSource || null, currency: 'GBP',
+    rate_source: s.rateSource || null, currency: getActiveCurrencyCode(),
     computed_hours: s.computedHours ?? null, computed_cost: s.computedCost ?? null,
   }));
   const { data, error } = await supabase.from('wf_shifts').insert(rows).select();
@@ -851,8 +887,9 @@ export function mergeTemplate(body, vars) {
 
 /** Build the merge variables for a staff member. */
 export function templateVars(staff, role, businessName) {
-  const rate = staff.rateOverride != null && staff.rateOverride !== '' ? `£${Number(staff.rateOverride).toFixed(2)} per hour`
-    : (role?.rate != null ? `£${Number(role.rate).toFixed(2)} per hour` : (role?.salary ? `£${Number(role.salary).toLocaleString()} per year` : 'to be confirmed'));
+  // v5.11.101: the venue's money (a UK venue reads "£12.50 per hour" as before).
+  const rate = staff.rateOverride != null && staff.rateOverride !== '' ? `${venueMoney(staff.rateOverride, 2)} per hour`
+    : (role?.rate != null ? `${venueMoney(role.rate, 2)} per hour` : (role?.salary ? `${venueMoney(role.salary, 0)} per year` : 'to be confirmed'));
   const ctMap = { zeroHours: 'Zero hours', partTime: 'Part time', fullTime: 'Full time', salaried: 'Salaried' };
   return {
     first_name: (staff.name || '').split(' ')[0] || 'there',
