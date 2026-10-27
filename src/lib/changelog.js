@@ -17,6 +17,23 @@ export const CHANGELOG = [
     ],
   },
   {
+    v: '5.11.102',
+    date: '26 Oct 2026',
+    items: [
+      "ServOS Team Chat, in the staff app: a new Chat tab with an unread count. Everyone at a venue is in its venue group automatically (people who work at two venues are in both, starters join, leavers leave). Direct messages with anyone in the company, groups, photos, replies, reactions, editing for 15 minutes, deleting, @mentions, muting a chat, and Seen by on announcements. A short privacy notice shows the first time.",
+      "Groups and announcements: managers make groups (a setting can let everyone), everyone in a position, and announcement groups where only admins post. An announcement can be marked Urgent.",
+      "A word filter on every message, photo caption and group name: English and Spanish, Standard by default (Strict and Custom too), slurs always blocked, and your own block and allow lists. A blocked message is refused, the sender is told This message has a word your team does not allow, and the text stays in the box. Card numbers and UK bank details are refused too.",
+      "An automatic check (on by default) flags bullying, harassment, threats and sexual comments after a message is sent, for a manager to look at. It never blocks or hides anything by itself.",
+      "Reports to check, in Back Office (Workforce, Team chat) and the Manager app (a new Chat tab, with a manager PIN): see the message and the few around it, then hide it, keep it, mute the person for 24 hours or switch chat off for them. Managers handle their own venues, owners every venue, and nobody handles a report about themselves. Direct messages stay private: an owner can open one only with a typed reason, which is logged.",
+      "Back Office, Workforce, Team chat: groups and members (pick people by venue and position, or add everyone at a venue), Reports to check, and for owners and Admins the chat settings, word lists, the moderation log (kept 6 years), export everything one person wrote, and open a direct message with a reason.",
+      "Settings: who makes groups, direct messages (anyone, same venue only, or off), the filter level, the automatic check, how long messages are kept (1, 2 or 3 years, 2 by default), a text message backup for urgent announcements, and quiet when off shift.",
+      "Push notifications, with no Firebase: the iPhone staff app (ServOS Staff build 5) through Apple directly, Android and the home screen app through the browser's own push service. Turn on notifications in the Chat tab. Quiet when off shift: only urgent announcements and a manager's @mention come through. Mutes are kept except for @mentions. An urgent announcement is texted to anyone the app could not reach.",
+      "Rota, swap and open shift texts now also arrive as a push on phones with the staff app. The text still goes as before.",
+      "Every chat change is checked by the server: the same company, a member of the chat, not muted, who may post, who may make groups. Nobody can read a chat they are not in, and two companies can never see each other.",
+      "Needs the database update 20261103a (Peter runs it after UK close), the push keys, and the team-chat, staff-portal and manager-approve functions deployed.",
+    ],
+  },
+  {
     v: '5.11.101',
     date: '24 Oct 2026',
     items: [

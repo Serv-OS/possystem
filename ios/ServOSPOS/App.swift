@@ -9,6 +9,11 @@ import SwiftUI
 /// fall back to the Supabase print_jobs queue (LAN print agent).
 @main
 struct ServOSPOSApp: App {
+    #if RPOS_PUSH
+    // 5.11.102: device tokens and notification taps (PushBridge.swift). Staff and Manager only.
+    @UIApplicationDelegateAdaptor(PushAppDelegate.self) var pushDelegate
+    #endif
+
     var body: some Scene {
         WindowGroup {
             ContentView()

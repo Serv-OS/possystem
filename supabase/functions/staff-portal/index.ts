@@ -1,5 +1,6 @@
 // supabase/functions/staff-portal/index.ts
 // MARKER 5.11.101 staff-portal open shifts and swaps
+// MARKER 5.11.102 staff-portal push beside the texts (through _shared/staffNotify.ts)
 //
 // The staff self-service app (?mode=staff) — server side. Staff see their own
 // shifts, announcements, timesheets and details from their own phone, so the

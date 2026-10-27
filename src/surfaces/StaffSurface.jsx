@@ -10,10 +10,12 @@
 // user has no BO access rows, so RLS shows them nothing — every read/write goes
 // through the staff-portal edge fn, which serves only THEIR data.
 //
-// Tabs: Shifts · News · Timesheets · Me. Training joins as a tab when the
+// Tabs: Shifts · Tasks · Chat · News · Sheets · Me. Training joins as a tab when the
 // training module lands (TRAINING_MODULE_PLAN.md).
+// 5.11.102: Chat (ServOS Team Chat, src/staff/StaffChat.jsx). Unlike the other tabs it reads the
+// database with this staff login (row level security: members only) and listens live.
 
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { staffSupabase as supabase, isMock } from '../lib/supabase';
 import { Icon } from '../components/ServOSIcons';
 import ClockCard from '../staff/ClockCard';
@@ -22,6 +24,11 @@ import { MIN_PASSWORD_LENGTH } from '../lib/secondStep/rules';
 import { CantDoPanel, SwapsSection, AvailabilityCard } from '../staff/StaffShiftSwaps';
 import { dayText, timeText } from '../staff/staffDates';
 import { wfMoneyText } from '../lib/regionPack';
+// MARKER 5.11.102 staff app chat tab
+import { ChatTab } from '../staff/StaffChat';
+import { useTeamChat } from '../staff/useTeamChat';
+import { staffChatSource } from '../staff/chatSource';
+import { unregisterPush } from '../lib/pushRegister';
 
 const glass = { padding: '14px 16px', borderRadius: 16 };
 
@@ -53,6 +60,21 @@ export default function StaffSurface() {
   const [refreshing, setRefreshing] = useState(false);
   // Per-device theme, same pattern as the Manager app. Dark is the default.
   const [dark, setDark] = useState(() => localStorage.getItem('staff-theme') !== 'light');
+  // 5.11.102: team chat. The store lives here so the tab bar badge counts while another tab is open.
+  const chatSource = useMemo(() => (stage === 'app' && !isMock && supabase ? staffChatSource(supabase) : null), [stage]);
+  const chat = useTeamChat(chatSource);
+  const [chatFull, setChatFull] = useState(false);   // a conversation is open: the tab bar steps aside for the composer
+  // A tapped notification: ?chat=<id> (a fresh start), the service worker's PUSH_OPEN, or the iOS shell.
+  const [chatOpenReq, setChatOpenReq] = useState(() => new URLSearchParams(window.location.search).get('chat'));
+  const [tabFromPush] = useState(() => (new URLSearchParams(window.location.search).get('chat') ? 'chat' : null));
+  useEffect(() => {
+    const go = (data) => { if (data?.conversation_id) { setChatOpenReq(String(data.conversation_id)); setTab('chat'); } };
+    const onSw = (e) => { if (e.data?.type === 'PUSH_OPEN') go(e.data.data); };
+    navigator.serviceWorker?.addEventListener?.('message', onSw);
+    window.__rposPushOpen = go;
+    return () => { navigator.serviceWorker?.removeEventListener?.('message', onSw); window.__rposPushOpen = undefined; };
+  }, []);
+  useEffect(() => { if (tabFromPush) setTab(tabFromPush); }, [tabFromPush]);
 
   // This surface was already written against env(safe-area-inset-*), but every
   // one of those was resolving to its 0px fallback: env() only reports real
@@ -190,7 +212,7 @@ export default function StaffSurface() {
             style={{ padding: '7px 10px', borderRadius: 999, border: '1px solid var(--bdr)', color: 'var(--t3)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, lineHeight: 1 }}>
             <span style={{ display: 'inline-block', animation: refreshing ? 'spin 0.9s linear infinite' : 'none' }}>↻</span>
           </button>
-          <button onClick={async () => { await supabase.auth.signOut(); setSnap(null); setStage('login'); }} className="sv-glass" style={{ padding: '7px 12px', borderRadius: 999, border: '1px solid var(--bdr)', color: 'var(--t3)', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>Sign out</button>
+          <button onClick={async () => { await unregisterPush(chat.call); await supabase.auth.signOut(); setSnap(null); setStage('login'); }} className="sv-glass" style={{ padding: '7px 12px', borderRadius: 999, border: '1px solid var(--bdr)', color: 'var(--t3)', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>Sign out</button>
         </div>
       }
     >
@@ -209,15 +231,16 @@ export default function StaffSurface() {
       )}
       {tab === 'shifts' && <ShiftsTab snap={snap} onChanged={loadSnapshot} />}
       {tab === 'tasks' && <TasksTab snap={snap} onChanged={loadSnapshot} goToMe={() => setTab('me')} />}
+      {tab === 'chat' && <ChatTab chat={chat} locale={LOCALE} onFullScreen={setChatFull} openRequest={chatOpenReq} onOpenHandled={() => setChatOpenReq(null)} />}
       {tab === 'news' && <NewsTab snap={snap} />}
       {tab === 'sheets' && <SheetsTab snap={snap} />}
       {tab === 'me' && <MeTab snap={snap} onSaved={loadSnapshot} />}
-      <nav style={{ position: 'fixed', left: 0, right: 0, bottom: 'calc(12px + env(safe-area-inset-bottom, 0px))', display: 'flex', justifyContent: 'center', pointerEvents: 'none', zIndex: 20 }}>
+      {!(tab === 'chat' && chatFull) && <nav style={{ position: 'fixed', left: 0, right: 0, bottom: 'calc(12px + env(safe-area-inset-bottom, 0px))', display: 'flex', justifyContent: 'center', pointerEvents: 'none', zIndex: 20 }}>
         <div className="sv-glass" style={{ display: 'flex', gap: 4, padding: 6, borderRadius: 999, pointerEvents: 'auto' }}>
-          {[['shifts', 'clock', 'Shifts'], ['tasks', 'check', 'Tasks'], ['news', 'status', 'News'], ['sheets', 'clipboard', 'Sheets'], ['me', 'team', 'Me']].map(([k, icon, lbl]) => (
+          {[['shifts', 'clock', 'Shifts'], ['tasks', 'check', 'Tasks'], ['chat', 'chat', 'Chat'], ['news', 'status', 'News'], ['sheets', 'clipboard', 'Sheets'], ['me', 'team', 'Me']].map(([k, icon, lbl]) => (
             <button key={k} onClick={() => setTab(k)} style={{
-              display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2, minWidth: 58,
-              padding: '8px 10px', borderRadius: 999, border: 'none', cursor: 'pointer', fontFamily: 'inherit',
+              display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2, minWidth: 50,
+              padding: '8px 7px', borderRadius: 999, border: 'none', cursor: 'pointer', fontFamily: 'inherit',
               background: tab === k ? 'var(--acc)' : 'transparent', color: tab === k ? '#fff' : 'var(--t2)', fontSize: 10.5, fontWeight: 700, position: 'relative',
             }}>
               <Icon name={icon} size={16} />{lbl}
@@ -228,10 +251,17 @@ export default function StaffSurface() {
                   fontSize: 9.5, fontWeight: 800, display: 'grid', placeItems: 'center',
                 }}>{outstanding}</span>
               )}
+              {k === 'chat' && chat.total > 0 && (
+                <span style={{
+                  position: 'absolute', top: 4, right: 6, minWidth: 16, height: 16, padding: '0 4px',
+                  borderRadius: 999, background: 'var(--red)', color: '#fff',
+                  fontSize: 9.5, fontWeight: 800, display: 'grid', placeItems: 'center',
+                }}>{chat.total > 99 ? '99+' : chat.total}</span>
+              )}
             </button>
           ))}
         </div>
-      </nav>
+      </nav>}
     </Shell>
   );
 }
