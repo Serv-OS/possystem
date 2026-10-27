@@ -2,7 +2,21 @@
  * Restaurant OS — AI API Proxy
  * Keeps the Anthropic API key server-side.
  * Validates requests so only allowed tools can be called.
+ *
+ * v5.11.104: WHO MAY ASK. Until now anyone who found this address could post a conversation and
+ * spend the Anthropic key. Now the request must carry `Authorization: Bearer <the session's access
+ * token>`, checked with Supabase Auth (api/_userAuth.js, the same check as the invoice scan):
+ *   - boh and rota run in Back Office: a signed in person. An anonymous session: 401.
+ *   - foh is the till's AI shift assistant. A till has no person signed in to Supabase Auth (staff
+ *     use a PIN); its session is the paired device's anonymous one, so foh also accepts a device
+ *     BOUND to the venue named in the body (location_id: the database's pos_accessible_location_keys,
+ *     the device arm of pos_can_access). An anonymous session that is not a bound device, or that
+ *     names no venue: 401.
+ *   - A signed in person who names a venue must reach it (user_accessible_locations): else 403.
+ * No token: 401, before the key is read or anything is spent.
  */
+
+import { requireUser } from './_userAuth.js';
 
 const ALLOWED_TOOLS_FOH = [
   'get_pos_health',
@@ -455,10 +469,19 @@ Return ONLY a JSON array — no prose, no explanation, no markdown code fences:
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
+  const { messages, mode = 'foh', location_id = null } = req.body || {};
+  // v5.11.104: the sign in check comes before anything else is read or spent.
+  const who = await requireUser(req, {
+    locationId: location_id,
+    venueRequired: false,
+    device: mode === 'foh' ? 'pos' : 'none',
+    signInMessage: 'Sign in to use the AI assistant.',
+  });
+  if (!who.ok) return res.status(who.status).json({ error: who.error });
+
   const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
   if (!ANTHROPIC_API_KEY) return res.status(500).json({ error: 'AI not configured' });
 
-  const { messages, mode = 'foh' } = req.body;
   if (!messages || !Array.isArray(messages)) return res.status(400).json({ error: 'Invalid request' });
 
   const isRota = mode === 'rota';

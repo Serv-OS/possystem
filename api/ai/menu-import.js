@@ -14,10 +14,18 @@
  *   base64     - file contents as base64 string (max ~7MB decoded to fit Vercel 10MB body limit)
  *
  * Response: { categories: [...], items: [...], notes: "..." }
+ *
+ * v5.11.104: WHO MAY ASK. Until now anyone who found this address could post a file and spend the
+ * Anthropic key. Now the request must carry `Authorization: Bearer <the session's access token>`
+ * (the Back Office sends it, with location_id, the venue whose menu is being imported), checked
+ * with Supabase Auth (api/_userAuth.js, the same check as the invoice scan): a signed in person,
+ * who must reach the venue named (user_accessible_locations) else 403. No token, or an anonymous
+ * session (a till, kiosk or customer): 401, before the key is read or anything is spent.
  */
 
 import ExcelJS from 'exceljs';
 import mammoth from 'mammoth';
+import { requireUser } from '../_userAuth.js';
 
 export const config = {
   api: {
@@ -136,6 +144,15 @@ If you genuinely cannot extract any menu structure (e.g. the document is blank o
 // ── Request handler ──────────────────────────────────────────────────────────
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+
+  // v5.11.104: the sign in check comes before anything else is read or spent.
+  const who = await requireUser(req, {
+    locationId: req.body?.location_id ?? null,
+    venueRequired: false,
+    device: 'none',
+    signInMessage: 'Sign in to Back Office to import a menu.',
+  });
+  if (!who.ok) return res.status(who.status).json({ error: who.error });
 
   const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
   if (!ANTHROPIC_API_KEY) return res.status(500).json({ error: 'AI not configured — missing ANTHROPIC_API_KEY' });

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { executeTool, executeConfirmedAction, WRITE_TOOLS } from '../lib/aiTools';
 import { useStore } from '../store';
+import { aiRequestInit } from '../lib/aiRequest';
 
 const API_ENDPOINT = '/api/ai';
 
@@ -127,13 +128,10 @@ export default function AIChat({ mode = 'foh', initialContext = '', placeholder 
   }, []);
 
   const sendToAPI = useCallback(async (msgs) => {
-    const res = await fetch(API_ENDPOINT, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: buildApiMessages(msgs), mode }),
-    });
+    // v5.11.104: the route checks who is asking; send this session's token and the venue.
+    const res = await fetch(API_ENDPOINT, await aiRequestInit({ messages: buildApiMessages(msgs), mode }));
     if (!res.ok) {
-      const err = await res.json();
+      const err = await res.json().catch(() => ({}));
       throw new Error(err.error || 'API error');
     }
     return res.json();

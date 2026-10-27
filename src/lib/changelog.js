@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.104',
+    date: '27 Oct 2026',
+    items: [
+      "Security: the AI assistant, the AI rota and the menu import now need a signed in user. Until now the two web addresses behind them checked nothing about who was asking, so anyone who found them could run up our AI bill. Each request now carries the session's own sign in token and the venue it works for; the server checks the token with Supabase Auth and refuses no sign in (401) or a venue that login does not reach (403) before anything is spent.",
+      "The till's AI shift assistant keeps working: a till has no person signed in to Supabase Auth (staff use a PIN), so the server accepts the paired till's own device session for that venue, and nothing else. A customer page, a stray session or an unpaired device is refused.",
+      "No behaviour change for signed in staff: Back Office AI, the AI rota and the menu import look and answer exactly as before.",
+      "Web app only: no database update and no edge function.",
+    ],
+  },
+  {
     v: '5.11.101',
     date: '24 Oct 2026',
     items: [
