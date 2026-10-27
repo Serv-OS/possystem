@@ -19,7 +19,7 @@
  * Anthropic key. Now the request must carry `Authorization: Bearer <the session's access token>`
  * (the Back Office sends it, with location_id, the venue whose menu is being imported), checked
  * with Supabase Auth (api/_userAuth.js, the same check as the invoice scan): a signed in person,
- * who must reach the venue named (user_accessible_locations) else 403. No token, or an anonymous
+ * who must reach at least one venue and the venue named (user_accessible_locations) else 403. No token, or an anonymous
  * session (a till, kiosk or customer): 401, before the key is read or anything is spent.
  */
 

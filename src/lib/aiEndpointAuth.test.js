@@ -14,14 +14,15 @@ const OTHER = '10000000-0000-4000-8000-000000000002';
 const req = (token) => ({ headers: token ? { authorization: `Bearer ${token}` } : {} });
 
 // A stand in for fetch: Auth knows some tokens; the database answers the reach and device questions.
-function fakeFetch({ users = {}, reach = {}, devices = {}, posKeys = {} } = {}) {
+function fakeFetch({ users = {}, reach = {}, devices = {}, posKeys = {}, reachMissing = false, fallback = {} } = {}) {
   const calls = [];
   const res = (status, body) => ({ status, ok: status >= 200 && status < 300, json: async () => body });
   const f = async (url, init) => {
     const token = String(init.headers.authorization || '').replace('Bearer ', '');
     calls.push({ url, token, apikey: init.headers.apikey, body: init.body });
     if (url === 'https://ops.test/auth/v1/user') return users[token] ? res(200, users[token]) : res(401, { msg: 'invalid JWT' });
-    if (url.endsWith('/rpc/stock_reach_locations')) return res(200, reach[token] || []);
+    if (url.endsWith('/rpc/stock_reach_locations')) return reachMissing ? res(404, { code: 'PGRST202', message: 'Could not find the function public.stock_reach_locations without parameters in the schema cache' }) : res(200, reach[token] || []);
+    if (url.endsWith('/rpc/user_accessible_locations')) return res(200, fallback[token] || []);
     if (url.endsWith('/rpc/pos_accessible_location_keys')) return res(200, posKeys[token] || []);
     if (url.endsWith('/rpc/ops_can_write')) return res(200, (devices[token] || []).includes(JSON.parse(init.body).p_location_id));
     return res(404, {});
@@ -34,6 +35,8 @@ const USERS = {
   'tok-till': { id: 'd1', is_anonymous: true },
   'tok-kiosk': { id: 'k1', is_anonymous: true },
   'tok-customer': { id: 'c1', is_anonymous: true },
+  'tok-signup': { id: 's1', is_anonymous: false, email: 'nobody@example.test' },
+  'tok-nofield': { id: 'n1' },
 };
 const AI = { venueRequired: false, device: 'pos', signInMessage: 'Sign in to use the AI assistant.', env: ENV };
 const BOH = { ...AI, device: 'none' };
@@ -53,7 +56,7 @@ test('a signed in person passes on their sign in alone when no venue is named, a
   const { f, calls } = fakeFetch({ users: USERS, reach: { 'tok-mgr': [LOC] } });
   const alone = await requireUser(req('tok-mgr'), { ...BOH, locationId: null, fetchImpl: f });
   assert.deepEqual([alone.ok, alone.via, alone.user.id], [true, 'user', 'u1']);
-  assert.equal(calls.length, 1, 'only Auth is asked when no venue is named');
+  assert.ok(calls.some((c) => c.url.endsWith('/rpc/stock_reach_locations')), 'the reach is asked even when no venue is named');
   const mine = await requireUser(req('tok-mgr'), { ...BOH, locationId: LOC, fetchImpl: f });
   assert.deepEqual([mine.ok, mine.via], [true, 'reach']);
   const theirs = await requireUser(req('tok-mgr'), { ...BOH, locationId: OTHER, fetchImpl: f });
@@ -85,6 +88,36 @@ test('the till\'s shift assistant (foh): only a device bound to the venue named;
   assert.deepEqual([customer.ok, customer.status], [false, 401]);
   const noVenue = await requireUser(req('tok-till'), { ...AI, locationId: null, fetchImpl: f });
   assert.deepEqual([noVenue.ok, noVenue.status], [false, 401], 'a device that names no venue cannot be checked, so it is refused');
+});
+
+test('a self registered login (signup is open) that reaches no venue: 403 on every mode and the menu import, with or without a venue named', async () => {
+  const { f, calls } = fakeFetch({ users: USERS, reach: { 'tok-mgr': [LOC] }, posKeys: { 'tok-signup': [LOC] } });
+  for (const opts of [{ ...AI }, { ...BOH }, { ...BOH, signInMessage: 'Sign in to Back Office to import a menu.' }]) {
+    const r = await requireUser(req('tok-signup'), { ...opts, locationId: null, fetchImpl: f });
+    assert.deepEqual([r.ok, r.status, r.error], [false, 403, 'Not allowed: this login reaches no venue.']);
+    const named = await requireUser(req('tok-signup'), { ...opts, locationId: LOC, fetchImpl: f });
+    assert.deepEqual([named.ok, named.status], [false, 403]);
+  }
+  assert.ok(!calls.some((c) => c.url.endsWith('/rpc/pos_accessible_location_keys')), 'a person is never let through the device arm');
+  const real = await requireUser(req('tok-mgr'), { ...BOH, locationId: null, fetchImpl: f });
+  assert.deepEqual([real.ok, real.via], [true, 'user'], 'a Back Office user with no selected venue keeps working');
+  const { f: old } = fakeFetch({ users: USERS, reachMissing: true, fallback: { 'tok-mgr': [LOC] } });
+  const before = await requireUser(req('tok-mgr'), { ...BOH, locationId: null, fetchImpl: old });
+  assert.deepEqual([before.ok, before.via], [true, 'user'], 'before 20261021a the reach is user_accessible_locations()');
+  const none = await requireUser(req('tok-signup'), { ...BOH, locationId: null, fetchImpl: old });
+  assert.equal(none.status, 403);
+});
+
+test('a user record with no is_anonymous field is treated as anonymous, never as a person', async () => {
+  const { f } = fakeFetch({ users: USERS, reach: { 'tok-nofield': [LOC] }, posKeys: { 'tok-nofield': [LOC] } });
+  const boh = await requireUser(req('tok-nofield'), { ...BOH, locationId: null, fetchImpl: f });
+  assert.deepEqual([boh.ok, boh.status], [false, 401]);
+  const named = await requireUser(req('tok-nofield'), { ...BOH, locationId: LOC, fetchImpl: f });
+  assert.deepEqual([named.ok, named.status], [false, 401]);
+  const foh = await requireUser(req('tok-nofield'), { ...AI, locationId: LOC, fetchImpl: f });
+  assert.deepEqual([foh.ok, foh.via], [true, 'device'], 'it can only pass the device arm, like any anonymous session');
+  const scan = await requireVenueUser(req('tok-nofield'), { locationId: LOC, env: ENV, fetchImpl: f });
+  assert.deepEqual([scan.ok, scan.status], [false, 401]);
 });
 
 test('Auth or the database not answering is a 503, never a pass', async () => {

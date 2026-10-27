@@ -19,7 +19,8 @@
  *
  * v5.11.104: the AI routes (api/ai.js, api/ai/menu-import.js) use the same helper through
  * requireUser(), which takes three choices the scan route does not need: a venue may be optional
- * (a signed in user is checked on their own, and the venue only when the body names one), the
+ * (a signed in user must still reach at least one venue; the venue named is checked when the body
+ * names one), the
  * device arm may be 'pos' (a till, kiosk or Ops phone BOUND to that venue: the database's
  * pos_accessible_location_keys(), the device arm of pos_can_access) or 'none' (a signed in person
  * only), and the sign in message names the feature. requireVenueUser() is unchanged for the scan.
@@ -79,7 +80,7 @@ const headersFor = (anon, token) => ({ apikey: anon, authorization: `Bearer ${to
  * Who is asking, and may they act for this venue?
  *   locationId     the venue named in the body (null when the body names none)
  *   venueRequired  true: a missing or malformed venue is a 400 (the scan route); false: a signed in
- *                  user with no venue passes on their sign in alone (the AI routes)
+ *                  user with no venue passes when they reach at least one venue (the AI routes)
  *   device         which anonymous sessions may pass, and only for the venue named:
  *                  'ops'  a Manager or Ops phone paired to it (ops_can_write)
  *                  'pos'  a till, kiosk or Ops phone bound to it (pos_accessible_location_keys)
@@ -102,7 +103,8 @@ export async function requireUser(req, { locationId = null, venueRequired = true
   if (venueRequired && !UUID_RE.test(loc)) return { ok: false, status: 400, error: 'location_id required' };
   if (loc && !UUID_RE.test(loc)) return { ok: false, status: 400, error: 'location_id must be a venue id' };
 
-  if (user.is_anonymous === true) {
+  // A missing is_anonymous never counts as a person: only an explicit false does.
+  if (user.is_anonymous !== false) {
     // a device bound to this venue, and nothing else; a device with no venue named is nothing
     if (device === 'none' || !loc) return { ok: false, status: 401, error: signInMessage };
     try {
@@ -117,7 +119,9 @@ export async function requireUser(req, { locationId = null, venueRequired = true
     return { ok: false, status: 401, error: signInMessage };
   }
 
-  if (!loc) return { ok: true, user, via: 'user' };
+  // A signed in person is always asked which venues they reach. Signup on the Ops Auth project is
+  // open, so a token alone proves an email address, not a venue: a login that reaches no venue at
+  // all is refused even when the body names none (v5.11.104 review).
   let reach;
   try {
     reach = await getJson(f, `${url}/rest/v1/rpc/stock_reach_locations`, { method: 'POST', headers: headersFor(anon, token), body: '{}' });
@@ -126,7 +130,12 @@ export async function requireUser(req, { locationId = null, venueRequired = true
     }
   } catch { return { ok: false, status: 503, error: 'Could not check which venues this login reaches. Try again.' }; }
   if (!reach.ok) return { ok: false, status: 503, error: 'Could not check which venues this login reaches. Try again.' };
-  if (!idList(reach.body).includes(loc)) return { ok: false, status: 403, error: 'Not allowed: this login does not reach that venue.' };
+  const reached = idList(reach.body);
+  if (!loc) {
+    if (reached.length === 0) return { ok: false, status: 403, error: 'Not allowed: this login reaches no venue.' };
+    return { ok: true, user, via: 'user' };
+  }
+  if (!reached.includes(loc)) return { ok: false, status: 403, error: 'Not allowed: this login does not reach that venue.' };
   return { ok: true, user, via: 'reach' };
 }
 

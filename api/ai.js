@@ -12,7 +12,8 @@
  *     BOUND to the venue named in the body (location_id: the database's pos_accessible_location_keys,
  *     the device arm of pos_can_access). An anonymous session that is not a bound device, or that
  *     names no venue: 401.
- *   - A signed in person who names a venue must reach it (user_accessible_locations): else 403.
+ *   - A signed in person must reach at least one venue (signup on the Auth project is open, so a
+ *     token alone proves an email address), and a venue they name (user_accessible_locations): else 403.
  * No token: 401, before the key is read or anything is spent.
  */
 
