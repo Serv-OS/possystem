@@ -9,7 +9,9 @@
 //   * a staff app login: wf_staff.portal_user_id = the login (leavers refused). Staff app logins
 //     have no user_profiles or user_locations rows.
 //   * a Back Office login: user_locations (its venues) or user_profiles.org_id (its company).
-//   Anonymous sign ins are refused. One person in two companies picks with body.org_id.
+//   * the Manager app: a paired device (ops_devices, claimed to body.ops_location_id) plus a
+//     manager's PIN at that venue (staff_members), as manager-snapshot and manager-approve check.
+//   Other anonymous sign ins are refused. One person in two companies picks with body.org_id.
 // The caller becomes a chat profile (public.chat_profile_for), and every database function is
 // handed that profile id; the DATABASE decides what it may do (staff, manager for their own
 // venues, owner or Admin for every venue; never across two companies). See 20261103a.
@@ -26,7 +28,8 @@
 // reach (docs/SECOND_STEP.md). The staff app's own actions are not checked (their own door).
 //
 // Actions (body.action):
-//   bootstrap, privacy.ok
+//   bootstrap, privacy.ok, inbox, thread, members.list (the Manager app reads through these)
+//   admin.groups, admin.members, people, reports.list, log.list, dm.list (running chat)
 //   send, edit, delete, react, read
 //   dm.open, group.create, group.rename, group.update, group.archive, members.add, members.remove,
 //   members.admin, leave, mute
@@ -149,9 +152,47 @@ async function resolveCaller(req: Request, body: any): Promise<Caller | Response
   const { data, error } = await admin.auth.getUser(jwt);
   const user = data?.user as any;
   if (error || !user) return json({ ok: false, code: 'signed_out', message: 'Please sign in again.' }, 401);
+  // The Manager app: a paired device (an anonymous sign in claimed to the venue) plus a manager's PIN.
+  if (body?.pin != null && isUuid(body?.ops_location_id)) return await pinCaller(String(user.id), body.ops_location_id, String(body.pin));
   if (user.is_anonymous) return json({ ok: false, code: 'not_allowed', message: CODE_TEXT.not_allowed }, 403);
-  const uid = String(user.id);
+  return await loginCaller(String(user.id), body);
+}
 
+// The Manager app's caller: the device must be claimed to this venue and still active (the
+// manager-snapshot rule), and the PIN must be a manager's at this venue (the manager-approve rule).
+// The PIN holder's chat profile is their own login's (staff_members.auth_user_id) when they have
+// one, else the Workforce record linked to the till user (wf_staff.pos_user_id). The database then
+// judges what that profile may do, as everywhere else.
+async function pinCaller(deviceUid: string, loc: string, pin: string): Promise<Caller | Response> {
+  const no = (code = 'not_allowed', message = CODE_TEXT.not_allowed) => json({ ok: false, code, message }, 403);
+  if (!/^\d{4,8}$/.test(pin)) return no('pin', 'PIN not recognised');
+  const { data: dev } = await admin.from('ops_devices').select('id').eq('device_uid', deviceUid).eq('location_id', loc)
+    .eq('active', true).not('claimed_at', 'is', null).maybeSingle();
+  if (!dev) return no();
+  const { data: rows } = await admin.from('staff_members').select('id, role, permissions, active, auth_user_id').eq('location_id', loc).eq('pin', pin).limit(5);
+  const op = (rows ?? []).find((r: any) => r.active !== false) as any;
+  if (!op) return no('pin', 'PIN not recognised');
+  const role = String(op.role || '').toLowerCase();
+  const perms = Array.isArray(op.permissions) ? op.permissions : [];
+  if (!(role === 'manager' || role === 'owner' || perms.includes('manager_approvals'))) return no();
+  const { data: locRow } = await admin.from('locations').select('org_id').eq('id', loc).maybeSingle();
+  const orgId = (locRow as any)?.org_id;
+  if (!isUuid(orgId)) return no('no_member', CODE_TEXT.no_member);
+  if (isUuid(op.auth_user_id)) {
+    const c = await loginCaller(op.auth_user_id, { org_id: orgId });
+    if (!(c instanceof Response)) return { ...c, hasBackOffice: false };
+  }
+  const { data: st } = await admin.from('wf_staff').select('id').eq('pos_user_id', op.id).eq('org_id', orgId).neq('status', 'leaver').limit(1);
+  const staffId = (st as any)?.[0]?.id;
+  if (!isUuid(staffId)) return no('no_member', 'Link this PIN to a staff record in Workforce first.');
+  const prof = await rpc('chat_profile_for', { p_org: orgId, p_staff: staffId, p_user: null, p_name: null });
+  if (!prof?.ok || !isUuid(prof.member_id)) return no('no_member', CODE_TEXT.no_member);
+  if (prof.created) await rpc('chat_sync_org', { p_org: orgId, p_staff: null });
+  return { uid: deviceUid, orgId, memberId: prof.member_id, staffId, hasBackOffice: false };
+}
+
+// A person's own login: a staff app login or a Back Office login.
+async function loginCaller(uid: string, body: any): Promise<Caller | Response> {
   const [{ data: staffRows }, { data: ul }, { data: prof }] = await Promise.all([
     admin.from('wf_staff').select('id, org_id').eq('portal_user_id', uid).neq('status', 'leaver').limit(5),
     admin.from('user_locations').select('location_id').eq('user_id', uid).limit(200),
@@ -240,7 +281,7 @@ async function aiCheck(orgId: string, messageId: number, text: string) {
 }
 
 // ── The door ─────────────────────────────────────────────────────────────────
-const SECOND_STEP_ACTIONS = new Set(['report.context', 'owner.open_dm', 'settings.save', 'words.get', 'words.save', 'export_person',
+const SECOND_STEP_ACTIONS = new Set(['report.context', 'reports.list', 'log.list', 'dm.list', 'owner.open_dm', 'settings.save', 'words.get', 'words.save', 'export_person',
   'mod.hide', 'mod.keep', 'mod.mute_person', 'mod.unmute_person', 'mod.remove', 'mod.chat_off', 'mod.chat_on']);
 
 Deno.serve(async (req) => {
@@ -261,6 +302,36 @@ Deno.serve(async (req) => {
         if (caller.hasBackOffice) await rpc('chat_sync_org', { p_org: caller.orgId, p_staff: null });
         return answer(await rpc('chat_whoami', { p_member: me }));
       }
+      // ── Reads for the Manager app (no personal login, so no row level security reads) ──
+      case 'inbox':
+        return answer(await rpc('chat_inbox', { p_member: me }));
+      case 'thread': {
+        const conv = uuidOrNull(body.conversation_id);
+        if (!conv) return refuse('bad_request');
+        return answer(await rpc('chat_thread', { p_member: me, p_conversation: conv, p_before: idOrNull(body.before), p_after: idOrNull(body.after), p_limit: 50 }));
+      }
+      case 'members.list': {
+        const conv = uuidOrNull(body.conversation_id);
+        if (!conv) return refuse('bad_request');
+        return answer(await rpc('chat_members_list', { p_member: me, p_conversation: conv }));
+      }
+      // ── Reads for running chat (Back Office, the Manager app) ──
+      case 'admin.groups':
+        return answer(await rpc('chat_admin_groups', { p_member: me }));
+      case 'admin.members': {
+        const conv = uuidOrNull(body.conversation_id);
+        if (!conv) return refuse('bad_request');
+        return answer(await rpc('chat_admin_members', { p_member: me, p_conversation: conv }));
+      }
+      case 'people':
+        return answer(await rpc('chat_people', { p_member: me, p_location: uuidOrNull(body.location_id), p_role_key: textOr(body.role_key, 60) || null }));
+      case 'reports.list':
+        return answer(await rpc('chat_reports_list', { p_member: me, p_status: body.status === 'all' ? 'all' : 'open', p_limit: 200 }));
+      case 'log.list':
+        return answer(await rpc('chat_log_list', { p_member: me, p_before: idOrNull(body.before), p_limit: 200 }));
+      case 'dm.list':
+        return answer(await rpc('chat_dm_list', { p_member: me }));
+
       case 'privacy.ok':
         return answer(await rpc('chat_privacy_ok', { p_member: me }));
 

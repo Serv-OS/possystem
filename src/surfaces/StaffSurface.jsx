@@ -15,7 +15,7 @@
 // 5.11.102: Chat (ServOS Team Chat, src/staff/StaffChat.jsx). Unlike the other tabs it reads the
 // database with this staff login (row level security: members only) and listens live.
 
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { staffSupabase as supabase, isMock } from '../lib/supabase';
 import { Icon } from '../components/ServOSIcons';
 import ClockCard from '../staff/ClockCard';
@@ -27,6 +27,7 @@ import { wfMoneyText } from '../lib/regionPack';
 // MARKER 5.11.102 staff app chat tab
 import { ChatTab } from '../staff/StaffChat';
 import { useTeamChat } from '../staff/useTeamChat';
+import { staffChatSource } from '../staff/chatSource';
 
 const glass = { padding: '14px 16px', borderRadius: 16 };
 
@@ -59,7 +60,8 @@ export default function StaffSurface() {
   // Per-device theme, same pattern as the Manager app. Dark is the default.
   const [dark, setDark] = useState(() => localStorage.getItem('staff-theme') !== 'light');
   // 5.11.102: team chat. The store lives here so the tab bar badge counts while another tab is open.
-  const chat = useTeamChat(stage === 'app');
+  const chatSource = useMemo(() => (stage === 'app' && !isMock && supabase ? staffChatSource(supabase) : null), [stage]);
+  const chat = useTeamChat(chatSource);
   const [chatFull, setChatFull] = useState(false);   // a conversation is open: the tab bar steps aside for the composer
 
   // This surface was already written against env(safe-area-inset-*), but every

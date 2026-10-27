@@ -8,16 +8,14 @@
 // LIVE: one realtime channel, filtered to the person's own chats (never every chat message in the
 // platform), plus a reload when the app comes back to the front, so a missed event is caught up.
 //
-// useTeamChat(enabled) (useTeamChat.js) lives in StaffSurface (the unread badge on the tab bar needs
+// useTeamChat(source) (useTeamChat.js) lives in StaffSurface or the Manager app (the unread badge on the tab bar needs
 // it while another tab is open); <ChatTab chat={...}/> draws it.
 
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
-import { staffSupabase as supabase } from '../lib/supabase';
-import { callChat } from './useTeamChat';
 import { Icon } from '../components/ServOSIcons';
 import {
   conversationTitle, kindLabel, messageText, previewText, mergeMessages, canEdit, canDelete, canReport, isMutedNow,
-  seenBy, mentionAt, insertMention, mentionIds, groupReactions, sortConversations, timeLabel, newClientId, PAGE_SIZE, REACTIONS, MSG_COLUMNS,
+  seenBy, mentionAt, insertMention, mentionIds, groupReactions, sortConversations, timeLabel, newClientId, PAGE_SIZE, REACTIONS,
 } from './chatModel';
 
 const MAX_PHOTO_BYTES = 8 * 1024 * 1024;
@@ -82,7 +80,7 @@ export function ChatTab({ chat, locale = 'en-GB', onFullScreen }) {
     );
   }
   if (who && !who.privacy_ok) {
-    return <PrivacyNotice who={who} onOk={async () => { const r = await callChat({ action: 'privacy.ok' }); if (r.ok) setWho({ ...who, privacy_ok: true }); }} />;
+    return <PrivacyNotice who={who} onOk={async () => { const r = await chat.call({ action: 'privacy.ok' }); if (r.ok) setWho({ ...who, privacy_ok: true }); }} />;
   }
   if (who?.chat_off) return <div className="sv-glass" style={{ padding: 18, borderRadius: 16, fontSize: 14, color: 'var(--t2)' }}>Chat is switched off for you. Please speak to your manager.</div>;
 
@@ -132,7 +130,7 @@ export function ChatTab({ chat, locale = 'en-GB', onFullScreen }) {
 }
 
 function NewChat({ chat, canGroup, onClose, onOpened }) {
-  const { me, profiles } = chat;
+  const { me, profiles, call } = chat;
   const [q, setQ] = useState('');
   const [group, setGroup] = useState(false);
   const [name, setName] = useState('');
@@ -143,13 +141,13 @@ function NewChat({ chat, canGroup, onClose, onOpened }) {
 
   const dm = async (id) => {
     setBusy(true); setErr('');
-    const r = await callChat({ action: 'dm.open', member_id: id });
+    const r = await call({ action: 'dm.open', member_id: id });
     setBusy(false);
     if (r.ok) onOpened(r.conversation_id); else setErr(r.message);
   };
   const makeGroup = async () => {
     setBusy(true); setErr('');
-    const r = await callChat({ action: 'group.create', kind: 'group', name: name.trim(), members: picked });
+    const r = await call({ action: 'group.create', kind: 'group', name: name.trim(), members: picked });
     setBusy(false);
     if (r.ok) onOpened(r.conversation_id); else setErr(r.message);
   };
@@ -184,7 +182,7 @@ function NewChat({ chat, canGroup, onClose, onOpened }) {
 
 // ── One conversation ──────────────────────────────────────────────────────────
 function Conversation({ chat, conv, title, locale, onBack }) {
-  const { me, profiles, mine, subscribe, markRead, reloadSoon } = chat;
+  const { me, profiles, mine, subscribe, markRead, reloadSoon, source, call } = chat;
   const [msgs, setMsgs] = useState([]);
   const [reactions, setReactions] = useState([]);
   const [members, setMembers] = useState([]);
@@ -215,26 +213,38 @@ function Conversation({ chat, conv, title, locale, onBack }) {
   const scrollEnd = () => setTimeout(() => endRef.current?.scrollIntoView({ block: 'end' }), 30);
 
   const loadPage = useCallback(async (beforeId) => {
-    let q = supabase.from('chat_messages').select(MSG_COLUMNS).eq('conversation_id', conv.id).order('id', { ascending: false }).limit(PAGE_SIZE);
-    if (beforeId) q = q.lt('id', beforeId);
-    const { data } = await q;
-    const page = data || [];
+    const { messages: page, reactions: rs } = await source.thread(conv.id, { before: beforeId || null });
     setMore(page.length === PAGE_SIZE);
     setMsgs((m) => mergeMessages(m, page));
     if (page.length) {
-      const ids = page.map((x) => x.id);
-      const { data: rs } = await supabase.from('chat_reactions').select('message_id, member_id, emoji').eq('conversation_id', conv.id).in('message_id', ids).limit(1000);
-      setReactions((r) => [...r.filter((x) => !ids.includes(x.message_id)), ...(rs || [])]);
+      const ids = page.map((x) => String(x.id));
+      setReactions((r) => [...r.filter((x) => !ids.includes(String(x.message_id))), ...rs]);
     }
     return page;
-  }, [conv.id]);
+  }, [conv.id, source]);
 
   const fetchMembers = useCallback(async () => {
-    const { data } = await supabase.from('chat_members').select('member_id, role, last_read_message_id, left_at').eq('conversation_id', conv.id).is('left_at', null).range(0, 999);
-    const list = data || [];
+    const list = await source.members(conv.id);
     setMembers(list);
     return list;
-  }, [conv.id]);
+  }, [conv.id, source]);
+
+  // No live channel (the Manager app): ask for anything newer every few seconds while on screen.
+  const newest = msgs.length ? msgs[msgs.length - 1].id : null;
+  useEffect(() => {
+    if (source.live || loading) return undefined;
+    const t = setInterval(async () => {
+      if (document.visibilityState !== 'visible') return;
+      const { messages, reactions: rs } = await source.thread(conv.id, { after: newest });
+      if (messages.length) {
+        setMsgs((m) => mergeMessages(m, messages));
+        setReactions((r) => [...r, ...rs]);
+        markRead(conv.id, messages[0].id);
+        scrollEnd();
+      }
+    }, 5000);
+    return () => clearInterval(t);
+  }, [source, loading, conv.id, newest, markRead]);
 
   useEffect(() => {
     let alive = true;   // one Conversation per chat (keyed by its id), so the state starts empty
@@ -271,10 +281,10 @@ function Conversation({ chat, conv, title, locale, onBack }) {
   useEffect(() => {
     const need = [...new Set(msgs.flatMap((m) => (Array.isArray(m.photos) ? m.photos.map((p) => p?.path) : [])).filter((p) => p && !photoUrls[p]))];
     if (!need.length) return;
-    callChat({ action: 'photo.urls', conversation_id: conv.id, paths: need.slice(0, 50) }).then((r) => {
+    call({ action: 'photo.urls', conversation_id: conv.id, paths: need.slice(0, 50) }).then((r) => {
       if (r.ok && r.urls) setPhotoUrls((u) => ({ ...u, ...r.urls }));
     });
-  }, [msgs, conv.id, photoUrls]);
+  }, [msgs, conv.id, photoUrls, call]);
 
   const mention = mentionAt(text, caret);
   const mentionList = mention ? members.filter((m) => m.member_id !== me && nameOf(m.member_id).toLowerCase().includes(mention.query)).slice(0, 6) : [];
@@ -284,9 +294,9 @@ function Conversation({ chat, conv, title, locale, onBack }) {
     if (file.size > MAX_PHOTO_BYTES) { setErr('That photo is too big (8 MB at most).'); return; }
     setErr('');
     const ext = (file.name.split('.').pop() || 'jpg').toLowerCase();
-    const u = await callChat({ action: 'photo.upload_url', conversation_id: conv.id, ext });
+    const u = await call({ action: 'photo.upload_url', conversation_id: conv.id, ext });
     if (!u.ok) { setErr(u.message); return; }
-    const { error } = await supabase.storage.from('chat-photos').uploadToSignedUrl(u.path, u.token, file);
+    const { error } = await source.upload(u.path, u.token, file);
     if (error) { setErr('The photo did not upload. Try again.'); return; }
     setPhotos((p) => [...p, { path: u.path, name: file.name }].slice(0, 10));
   };
@@ -298,9 +308,9 @@ function Conversation({ chat, conv, title, locale, onBack }) {
     setSending(true); setErr('');
     let r;
     if (editing) {
-      r = await callChat({ action: 'edit', message_id: editing.id, body });
+      r = await call({ action: 'edit', message_id: editing.id, body });
     } else {
-      r = await callChat({
+      r = await call({
         action: 'send', conversation_id: conv.id, body, photos: photos.map((p) => ({ path: p.path })),
         reply_to: replyTo?.id || null, urgent: conv.kind === 'announce' && urgent, client_id: clientId.current,
         mentions: mentionIds(body, members, profiles),
@@ -320,12 +330,12 @@ function Conversation({ chat, conv, title, locale, onBack }) {
     if (kind === 'reply') { setReplyTo(msg); setEditing(null); taRef.current?.focus(); return; }
     if (kind === 'edit') { setEditing(msg); setReplyTo(null); setText(msg.body || ''); taRef.current?.focus(); return; }
     let r;
-    if (kind === 'react') r = await callChat({ action: 'react', message_id: msg.id, emoji: extra.emoji, on: !extra.mine });
-    if (kind === 'delete') { if (!window.confirm('Delete this message for everyone?')) return; r = await callChat({ action: 'delete', message_id: msg.id }); }
+    if (kind === 'react') r = await call({ action: 'react', message_id: msg.id, emoji: extra.emoji, on: !extra.mine });
+    if (kind === 'delete') { if (!window.confirm('Delete this message for everyone?')) return; r = await call({ action: 'delete', message_id: msg.id }); }
     if (kind === 'report') {
       const reason = window.prompt('Why are you reporting this? A manager will look at it.') ;
       if (reason === null) return;
-      r = await callChat({ action: 'report', message_id: msg.id, reason });
+      r = await call({ action: 'report', message_id: msg.id, reason });
       if (r.ok) setErr('Thanks. A manager will look at it.');
     }
     if (r && !r.ok) setErr(r.message);
@@ -334,13 +344,13 @@ function Conversation({ chat, conv, title, locale, onBack }) {
 
   const mute = async (hours) => {
     setMenu(false);
-    const r = await callChat(hours ? { action: 'mute', conversation_id: conv.id, hours } : { action: 'mute', conversation_id: conv.id });
+    const r = await call(hours ? { action: 'mute', conversation_id: conv.id, hours } : { action: 'mute', conversation_id: conv.id });
     if (!r.ok) setErr(r.message); else reloadSoon();
   };
   const leave = async () => {
     setMenu(false);
     if (!window.confirm('Leave this chat?')) return;
-    const r = await callChat({ action: 'leave', conversation_id: conv.id });
+    const r = await call({ action: 'leave', conversation_id: conv.id });
     if (!r.ok) setErr(r.message); else { reloadSoon(); onBack(); }
   };
 

@@ -37,7 +37,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, '..', '..', '..');
 const MIGRATION = process.env.CHAT_MIGRATION || join(repo, 'supabase/migrations/20261103a_OPS_team_chat.sql');
 const ROLLBACK = process.env.CHAT_ROLLBACK || join(repo, 'supabase/migrations/20261103a_OPS_team_chat_ROLLBACK.sql');
-const EXPECT_CHECK = '11|37|3|f|f|6|0|t|3|t';
+const EXPECT_CHECK = '11|46|3|f|f|6|0|t|3|t';
 
 const bin = (name) => (existsSync(`/opt/homebrew/bin/${name}`) ? `/opt/homebrew/bin/${name}` : name);
 const env = { ...process.env, LC_ALL: 'en_US.UTF-8', PGOPTIONS: '-c client_min_messages=warning' };
@@ -318,6 +318,51 @@ try {
   ok(fn('chat_send', lit(MA.a1), lit(V1), lit(''), `'[{"path":"${ORG_B}/${V1}/x.jpg"}]'`, 'null', 'false', 'null', "'{}'").code === 'bad_photos', 'a photo path outside this company and group is refused');
   ok(fn('chat_send', lit(MA.a1), lit(V1), lit(''), `'[{"path":"${ORG_A}/${V1}/x.jpg","caption":"tonight"}]'`, 'null', 'false', 'null', "'{}'").ok === true, 'a photo in its own folder is fine');
   ok(fn('chat_send', lit(MA.a1), lit(V1), lit('   '), "'[]'", 'null', 'false', 'null', "'{}'").code === 'empty', 'an empty message is refused');
+
+  console.log('5b. reads for the server (the Manager app and Back Office)');
+  {
+    const SM = id('d0000000', 1), SP = id('c0000000', 800);
+    sql(`insert into public.staff_members (id, location_id, org_id, name, role, pin) values (${lit(SM)}, ${lit(LA2)}, ${lit(ORG_A)}, 'Pip Till', 'Manager', '4321');
+         insert into public.wf_staff (id, org_id, location_id, name, role_key, pos_user_id) values (${lit(SP)}, ${lit(ORG_A)}, ${lit(LA2)}, 'Pip Till', 'bar', ${lit(SM)})`);
+    const MP = M(SP);
+    const wp = fn('chat_whoami', lit(MP));
+    ok(wp.level === 'manager' && JSON.stringify(wp.manages) === JSON.stringify([LA2]), 'a manager on the till (PIN, no Back Office login) manages their own venue');
+    ok(fn('chat_mod', lit(MP), lit('mute_person'), 'null', 'null', lit(MA.a5), 'null', `now() + interval '1 minute'`, 'null').ok === true
+      && fn('chat_mod', lit(MP), lit('mute_person'), 'null', 'null', lit(MA.a2), 'null', 'null', 'null').code === 'not_allowed', 'and moderates Hudds people only');
+    fn('chat_mod', lit(MP), lit('unmute_person'), 'null', 'null', lit(MA.a5), 'null', 'null', 'null');
+    sql(`update public.staff_members set role = 'Server' where id = ${lit(SM)}`);
+    ok(fn('chat_whoami', lit(MP)).level === 'staff', 'a server on the till is staff');
+    const inbox = fn('chat_inbox', lit(MA.a1));
+    ok(inbox.ok && inbox.convs.some((c) => c.id === V1) && !inbox.convs.some((c) => c.id === VB || c.id === V2), 'the inbox lists my chats only');
+    ok(inbox.convs.find((c) => c.id === V1).last && inbox.convs.find((c) => c.id === V1).last.original_body === undefined, 'with the newest message, never the hidden text');
+    ok(inbox.profiles.every((p) => p.id && p.display_name) && !inbox.profiles.some((p) => p.id === MA.b1), 'names of my company only');
+    ok(fn('chat_inbox', lit(MA.b1)).convs.every((c) => c.org_id === ORG_B), 'the other company sees its own');
+    const th = fn('chat_thread', lit(MA.a1), lit(V1), 'null', 'null', '50');
+    ok(th.ok && th.messages.length > 0 && th.messages.every((m) => m.conversation_id === V1 && m.removed_body === undefined), 'a page of my chat');
+    ok(fn('chat_thread', lit(MA.a5), lit(V1), 'null', 'null', '50').code === 'not_member' && fn('chat_thread', lit(MA.b1), lit(V1), 'null', 'null', '50').code === 'not_found', 'not for a non member, nor another company');
+    const after = fn('chat_thread', lit(MA.a1), lit(V1), 'null', String(th.messages[0].id), '50');
+    ok(after.ok && after.messages.length === 0, 'a poll after the newest brings nothing new');
+    ok(fn('chat_members_list', lit(MA.a1), lit(V1)).members.length > 50 && fn('chat_members_list', lit(MA.b1), lit(V1)).code === 'not_found', 'members of my chat only');
+    const gA1 = fn('chat_admin_groups', lit(MO.mA1));
+    ok(gA1.ok && gA1.groups.some((g) => g.id === V1) && !gA1.groups.some((g) => g.id === V2) && !gA1.groups.some((g) => g.kind === 'dm'), 'Back Office groups: the Leeds manager sees Leeds groups, never DMs');
+    ok(fn('chat_admin_groups', lit(MO.oA)).groups.some((g) => g.id === V2) && !fn('chat_admin_groups', lit(MO.oB)).groups.some((g) => g.id === V1), 'the owner sees every group of the company, not another company');
+    ok(fn('chat_admin_groups', lit(MA.a1)).code === 'not_allowed', 'staff do not');
+    ok(fn('chat_admin_members', lit(MO.mA1), lit(V1)).members.length > 50 && fn('chat_admin_members', lit(MO.mA2), lit(V1)).code === 'not_allowed', 'members of a group for those who run it');
+    const ppl = fn('chat_people', lit(MO.mA1), lit(LA2), 'null');
+    ok(ppl.ok && ppl.people.some((p) => p.member_id === MA.a5) && !ppl.people.some((p) => p.member_id === MA.a1) && ppl.venues.length === 2, 'the picker filters by venue and lists the venues');
+    ok(fn('chat_people', lit(MO.mA1), 'null', lit('kitchen')).people.every((p) => p.role_key === 'kitchen'), 'and by position');
+    ok(fn('chat_people', lit(MA.a1), 'null', 'null').code === 'not_allowed', 'staff cannot list people this way');
+    const rl1 = fn('chat_reports_list', lit(MO.mA1), lit('all'), '100');
+    ok(rl1.ok && rl1.reports.some((r) => r.id === rep.report_id) && !rl1.reports.some((r) => r.id === rep2.report_id), 'reports: the Leeds manager sees Leeds reports, not the one about himself');
+    ok(fn('chat_reports_list', lit(MO.mA2), lit('all'), '100').reports.length === 0, 'the Hudds manager sees none of them');
+    const rlo = fn('chat_reports_list', lit(MO.oA), lit('all'), '100');
+    ok(rlo.reports.some((r) => r.id === rep2.report_id) && rlo.reports.find((r) => r.id === rep.report_id).text === 'you are useless', 'the owner sees both, with the reported text');
+    ok(fn('chat_reports_list', lit(MA.a1), 'null', '100').code === 'not_allowed' && fn('chat_reports_list', lit(MO.oB), lit('all'), '100').reports.length === 0, 'staff see none; nor does another company');
+    ok(fn('chat_log_list', lit(MO.oA), 'null', '50').log.length > 5 && fn('chat_log_list', lit(MO.mA1), 'null', '50').code === 'not_allowed', 'the log: owners only');
+    const dms = fn('chat_dm_list', lit(MO.oA));
+    ok(dms.ok && dms.dms.some((d) => d.id === dm.conversation_id) && JSON.stringify(dms).indexOf('saturday') === -1, 'the owner lists DMs (who and when, never what)');
+    ok(fn('chat_dm_list', lit(MO.mA1)).code === 'not_allowed', 'a manager cannot');
+  }
 
   console.log('6. automatic membership');
   const NEW = id('c0000000', 900);

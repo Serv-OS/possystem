@@ -40,9 +40,12 @@ create table public.user_profiles (id uuid primary key, org_id uuid, location_id
   bo_access boolean default true);
 create table public.wf_staff (
   id uuid primary key default gen_random_uuid(), org_id uuid not null, location_id uuid not null, name text not null,
-  role_key text, status text not null default 'active', venue_ids uuid[] not null default '{}', portal_user_id uuid, mobile text,
+  role_key text, status text not null default 'active', venue_ids uuid[] not null default '{}', portal_user_id uuid, pos_user_id uuid, mobile text,
   created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
   constraint wf_staff_id_org_id_key unique (id, org_id), foreign key (location_id, org_id) references public.locations (id, org_id));
+
+create table public.staff_members (id uuid primary key default gen_random_uuid(), location_id uuid, org_id uuid, name text, role text default 'Server',
+  pin text not null, active boolean default true, permissions jsonb not null default '[]'::jsonb, auth_user_id uuid);
 
 -- As live: Back Office logins read their own venues' staff; the tables the migration reads are not opened further here.
 alter table public.wf_staff enable row level security;

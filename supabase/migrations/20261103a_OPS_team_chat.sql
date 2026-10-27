@@ -46,7 +46,8 @@ begin
   if to_regclass('public.user_locations') is null or to_regclass('public.billing_state') is not null then
     raise exception 'This is not the Ops database (tbetcegmszzotrwdtqhi). Nothing was changed.';
   end if;
-  if to_regclass('public.wf_staff') is null or to_regclass('public.locations') is null or to_regclass('public.user_profiles') is null then
+  if to_regclass('public.wf_staff') is null or to_regclass('public.locations') is null or to_regclass('public.user_profiles') is null
+     or to_regclass('public.staff_members') is null then
     raise exception 'The staff and venue tables are missing. Nothing was changed.';
   end if;
   if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'wf_staff' and column_name = 'portal_user_id') then
@@ -319,6 +320,14 @@ begin
     mylocs := array(select distinct x from unnest(mylocs || array(
                 select ul.location_id from public.user_locations ul join public.locations l on l.id = ul.location_id
                  where ul.user_id = uid and l.org_id = p.org_id)) x where x is not null);
+  end if;
+  -- A manager on the till (staff_members, linked through wf_staff.pos_user_id: the Manager app's PIN)
+  -- is a manager of that venue even with no Back Office login.
+  if level = 'staff' and s.pos_user_id is not null then
+    locs := array(select distinct sm.location_id from public.staff_members sm join public.locations l on l.id = sm.location_id
+                   where sm.id = s.pos_user_id and coalesce(sm.active, true) and l.org_id = p.org_id
+                     and (lower(coalesce(sm.role, '')) in ('manager', 'owner') or coalesce(sm.permissions, '[]'::jsonb) ? 'manager_approvals'));
+    if cardinality(locs) > 0 then level := 'manager'; else locs := '{}'; end if;
   end if;
   if p.staff_id is null and level = 'staff' and cardinality(mylocs) = 0 then active := false; end if;
 end
@@ -1298,6 +1307,203 @@ end
 $f$;
 
 -- ============================================================================
+-- 7b. READS FOR THE SERVER (service role only)
+-- ============================================================================
+-- The Manager app runs on a paired device with a PIN, so it has no personal login and row level
+-- security shows it nothing: it reads its chats through these, as the PIN holder's profile. Back
+-- Office reads groups, reports and the log through the rest, each scoped by the database.
+
+-- My chats, with my marker, unread count, newest message, DM members and the company's names.
+create function public.chat_inbox(p_member uuid) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $f$
+declare
+  pw record;
+begin
+  select * into pw from public._chat_power(p_member);
+  if pw.org_id is null or not pw.active then return jsonb_build_object('ok', false, 'code', 'no_member'); end if;
+  if exists (select 1 from public.chat_person_state ps where ps.member_id = p_member and ps.chat_off) then return jsonb_build_object('ok', false, 'code', 'chat_off'); end if;
+  return jsonb_build_object('ok', true,
+    'convs', coalesce((select jsonb_agg(to_jsonb(c) || jsonb_build_object('my_role', m.role, 'muted_until', m.muted_until,
+                'last_read_message_id', m.last_read_message_id,
+                'unread', (select count(*) from public.chat_messages x where x.conversation_id = c.id and x.id > coalesce(m.last_read_message_id, 0)
+                             and x.sender_member_id is distinct from p_member),
+                'last', (select public._chat_message_json(x) from public.chat_messages x where x.conversation_id = c.id order by x.id desc limit 1))
+              order by c.last_message_at desc nulls last)
+       from public.chat_members m join public.chat_conversations c on c.id = m.conversation_id
+      where m.member_id = p_member and m.left_at is null and c.archived_at is null and c.org_id = pw.org_id), '[]'::jsonb),
+    'dm_members', coalesce((select jsonb_agg(jsonb_build_object('conversation_id', m2.conversation_id, 'member_id', m2.member_id))
+       from public.chat_members m1 join public.chat_conversations c on c.id = m1.conversation_id and c.kind = 'dm'
+       join public.chat_members m2 on m2.conversation_id = c.id
+      where m1.member_id = p_member and m1.left_at is null), '[]'::jsonb),
+    'profiles', coalesce((select jsonb_agg(jsonb_build_object('id', p.id, 'display_name', p.display_name, 'kind', p.kind) order by p.display_name)
+       from (select * from public.chat_profiles where org_id = pw.org_id order by display_name limit 3000) p), '[]'::jsonb));
+end
+$f$;
+
+-- One page of a chat I am in: newest first (p_before for older), or only those after p_after (a poll).
+create function public.chat_thread(p_member uuid, p_conversation uuid, p_before bigint, p_after bigint, p_limit integer) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $f$
+declare
+  g record;
+  v_limit int := least(greatest(coalesce(p_limit, 50), 1), 100);
+  v_msgs jsonb;
+begin
+  select * into g from public._chat_gate(p_member, p_conversation);
+  if g.code is not null then return jsonb_build_object('ok', false, 'code', g.code); end if;
+  select coalesce(jsonb_agg(public._chat_message_json(x) order by x.id desc), '[]'::jsonb) into v_msgs
+    from (select * from public.chat_messages where conversation_id = p_conversation
+            and (p_before is null or id < p_before) and (p_after is null or id > p_after) order by id desc limit v_limit) x;
+  return jsonb_build_object('ok', true, 'messages', v_msgs,
+    'reactions', coalesce((select jsonb_agg(jsonb_build_object('message_id', r.message_id, 'member_id', r.member_id, 'emoji', r.emoji))
+       from public.chat_reactions r where r.conversation_id = p_conversation
+        and r.message_id in (select (e->>'id')::bigint from jsonb_array_elements(v_msgs) e)), '[]'::jsonb));
+end
+$f$;
+
+-- The members of a chat I am in (names, admin, read marker for Seen by).
+create function public.chat_members_list(p_member uuid, p_conversation uuid) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $f$
+declare
+  g record;
+begin
+  select * into g from public._chat_gate(p_member, p_conversation);
+  if g.code is not null then return jsonb_build_object('ok', false, 'code', g.code); end if;
+  return jsonb_build_object('ok', true, 'members', coalesce((select jsonb_agg(jsonb_build_object('member_id', m.member_id, 'role', m.role,
+      'last_read_message_id', m.last_read_message_id, 'left_at', m.left_at))
+    from (select * from public.chat_members where conversation_id = p_conversation and left_at is null limit 3000) m), '[]'::jsonb));
+end
+$f$;
+
+-- Back Office: the groups this person runs. Owners every group of the company; managers their
+-- venues' groups and any group they are an admin of. Never DMs.
+create function public.chat_admin_groups(p_member uuid) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $f$
+declare
+  a record;
+begin
+  select * into a from public._chat_power(p_member);
+  if a.org_id is null or not a.active then return jsonb_build_object('ok', false, 'code', 'no_member'); end if;
+  if a.level = 'staff' then return jsonb_build_object('ok', false, 'code', 'not_allowed'); end if;
+  return jsonb_build_object('ok', true, 'groups', coalesce((select jsonb_agg(jsonb_build_object('id', c.id, 'kind', c.kind, 'name', c.name,
+      'description', c.description, 'location_id', c.location_id, 'role_key', c.role_key, 'post_policy', c.post_policy,
+      'archived_at', c.archived_at, 'last_message_at', c.last_message_at,
+      'members', (select count(*) from public.chat_members m where m.conversation_id = c.id and m.left_at is null)) order by c.kind, c.name)
+    from public.chat_conversations c
+   where c.org_id = a.org_id and c.kind <> 'dm'
+     and (a.level = 'owner' or c.location_id = any(a.locs)
+          or exists (select 1 from public.chat_members m where m.conversation_id = c.id and m.member_id = p_member and m.role = 'admin' and m.left_at is null))), '[]'::jsonb));
+end
+$f$;
+
+-- Back Office: the members of one group, with where they work and their position.
+create function public.chat_admin_members(p_member uuid, p_conversation uuid) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $f$
+declare
+  a record;
+  c public.chat_conversations;
+begin
+  select * into a from public._chat_power(p_member);
+  if a.org_id is null then return jsonb_build_object('ok', false, 'code', 'no_member'); end if;
+  select * into c from public.chat_conversations where id = p_conversation and org_id = a.org_id;
+  if not found or c.kind = 'dm' then return jsonb_build_object('ok', false, 'code', 'not_found'); end if;
+  if not public._chat_can_admin(p_member, c) then return jsonb_build_object('ok', false, 'code', 'not_allowed'); end if;
+  return jsonb_build_object('ok', true, 'members', coalesce((select jsonb_agg(jsonb_build_object('member_id', p.id, 'name', p.display_name, 'kind', p.kind,
+      'role', m.role, 'auto', m.auto, 'location_id', s.location_id, 'role_key', s.role_key) order by p.display_name)
+    from public.chat_members m join public.chat_profiles p on p.id = m.member_id left join public.wf_staff s on s.id = p.staff_id
+   where m.conversation_id = c.id and m.left_at is null), '[]'::jsonb));
+end
+$f$;
+
+-- Back Office: people to pick for a group, with venue and position filters, and the company's
+-- venues and positions for the filters. Managers and owners only.
+create function public.chat_people(p_member uuid, p_location uuid, p_role_key text) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $f$
+declare
+  a record;
+begin
+  select * into a from public._chat_power(p_member);
+  if a.org_id is null or not a.active then return jsonb_build_object('ok', false, 'code', 'no_member'); end if;
+  if a.level = 'staff' then return jsonb_build_object('ok', false, 'code', 'not_allowed'); end if;
+  return jsonb_build_object('ok', true,
+    'people', coalesce((select jsonb_agg(jsonb_build_object('member_id', p.id, 'name', p.display_name, 'kind', p.kind,
+        'location_id', s.location_id, 'venue_ids', to_jsonb(coalesce(s.venue_ids, '{}'::uuid[])), 'role_key', s.role_key) order by p.display_name)
+      from (select * from public.chat_profiles where org_id = a.org_id order by display_name limit 3000) p
+      left join public.wf_staff s on s.id = p.staff_id
+     where (p.staff_id is null or s.status <> 'leaver')
+       and (p_location is null or s.location_id = p_location or p_location = any(s.venue_ids))
+       and (nullif(p_role_key, '') is null or s.role_key = p_role_key)), '[]'::jsonb),
+    'venues', coalesce((select jsonb_agg(jsonb_build_object('id', l.id, 'name', l.name) order by l.name) from public.locations l where l.org_id = a.org_id), '[]'::jsonb),
+    'positions', coalesce((select jsonb_agg(distinct s.role_key) from public.wf_staff s where s.org_id = a.org_id and s.role_key is not null and s.status <> 'leaver'), '[]'::jsonb));
+end
+$f$;
+
+-- Reports to check, in this person's reach (managers: their venues' people and groups; owners: all;
+-- nobody sees a report about themselves). p_status: open (default) or all.
+create function public.chat_reports_list(p_member uuid, p_status text, p_limit integer) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $f$
+declare
+  a record;
+  v_limit int := least(greatest(coalesce(p_limit, 100), 1), 300);
+begin
+  select * into a from public._chat_power(p_member);
+  if a.org_id is null or not a.active then return jsonb_build_object('ok', false, 'code', 'no_member'); end if;
+  if a.level = 'staff' then return jsonb_build_object('ok', false, 'code', 'not_allowed'); end if;
+  return jsonb_build_object('ok', true, 'reports', coalesce((select jsonb_agg(x order by x->>'created_at' desc) from (
+    select jsonb_build_object('id', r.id, 'status', r.status, 'source', r.source, 'ai_label', r.ai_label, 'reason', r.reason,
+             'created_at', r.created_at, 'handled_at', r.handled_at, 'note', r.note, 'message_id', r.message_id,
+             'text', r.message_snapshot->>'body', 'photos', jsonb_array_length(coalesce(r.message_snapshot->'photos', '[]'::jsonb)),
+             'conversation_id', r.conversation_id, 'conversation_kind', c.kind, 'conversation_name', c.name,
+             'offender_member_id', r.offender_member_id, 'offender_name', po.display_name,
+             'reporter_name', pr.display_name, 'handled_by_name', ph.display_name,
+             'message_status', case when mm.id is null then 'gone' when mm.deleted_at is not null then 'deleted' else mm.status end) as x
+      from public.chat_reports r
+      left join public.chat_conversations c on c.id = r.conversation_id
+      left join public.chat_profiles po on po.id = r.offender_member_id
+      left join public.chat_profiles pr on pr.id = r.reporter_member_id
+      left join public.chat_profiles ph on ph.id = r.handled_by
+      left join public.chat_messages mm on mm.id = r.message_id
+     where r.org_id = a.org_id and (coalesce(p_status, 'open') = 'all' or r.status = 'open')
+       and public._chat_can_moderate(p_member, r.offender_member_id, c.location_id) is null
+     order by r.created_at desc limit v_limit) q), '[]'::jsonb));
+end
+$f$;
+
+-- The moderation log. Owners and Admins only.
+create function public.chat_log_list(p_member uuid, p_before bigint, p_limit integer) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $f$
+declare
+  a record;
+  v_limit int := least(greatest(coalesce(p_limit, 100), 1), 500);
+begin
+  select * into a from public._chat_power(p_member);
+  if a.org_id is null or not a.active then return jsonb_build_object('ok', false, 'code', 'no_member'); end if;
+  if a.level <> 'owner' then return jsonb_build_object('ok', false, 'code', 'not_allowed'); end if;
+  return jsonb_build_object('ok', true, 'log', coalesce((select jsonb_agg(jsonb_build_object('id', l.id, 'at', l.at, 'actor', l.actor_name,
+      'action', l.action, 'conversation_id', l.conversation_id, 'message_id', l.message_id, 'target', pt.display_name,
+      'reason', l.reason, 'detail', l.detail) order by l.id desc)
+    from (select * from public.chat_moderation_log where org_id = a.org_id and (p_before is null or id < p_before) order by id desc limit v_limit) l
+    left join public.chat_profiles pt on pt.id = l.target_member_id), '[]'::jsonb));
+end
+$f$;
+
+-- The company's DMs (who and when, never what), so an owner can pick one to open with a reason.
+create function public.chat_dm_list(p_member uuid) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $f$
+declare
+  a record;
+begin
+  select * into a from public._chat_power(p_member);
+  if a.org_id is null or not a.active then return jsonb_build_object('ok', false, 'code', 'no_member'); end if;
+  if a.level <> 'owner' then return jsonb_build_object('ok', false, 'code', 'not_allowed'); end if;
+  return jsonb_build_object('ok', true, 'dms', coalesce((select jsonb_agg(jsonb_build_object('id', c.id, 'last_message_at', c.last_message_at,
+      'names', (select jsonb_agg(p.display_name order by p.display_name) from public.chat_members m join public.chat_profiles p on p.id = m.member_id where m.conversation_id = c.id))
+      order by c.last_message_at desc nulls last)
+    from (select * from public.chat_conversations where org_id = a.org_id and kind = 'dm' order by last_message_at desc nulls last limit 500) c
+    where not exists (select 1 from public.chat_members m where m.conversation_id = c.id and m.member_id = p_member)), '[]'::jsonb));
+end
+$f$;
+
+-- ============================================================================
 -- 8. GRANTS AND ROW LEVEL SECURITY
 -- ============================================================================
 do $grants$
@@ -1371,7 +1577,7 @@ select public.chat_sync_org(o.org_id) from (select distinct org_id from public.l
 
 notify pgrst, 'reload schema';
 
--- VISIBLE CHECK. Expected: chat_tables 11, chat_functions 34, open_to_api 3 (the three read helpers,
+-- VISIBLE CHECK. Expected: chat_tables 11, chat_functions 46, open_to_api 3 (the three read helpers,
 -- authenticated only), anon_can_read false, authenticated_can_write false, member_policies 6,
 -- write_policies 0, venue_groups = the number of venues, realtime_tables 3 (0 where there is no
 -- supabase_realtime publication), staff_trigger true.
