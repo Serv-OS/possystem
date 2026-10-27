@@ -122,6 +122,9 @@ struct POSWebView: UIViewRepresentable {
         userContent.addUserScript(Self.selectionSuppressionScript)
         if Config.allowsLocation { userContent.addUserScript(Self.locationBridgeScript) }
         if Config.allowsPrinting { userContent.addUserScript(PrinterBridge.injectionScript) }
+        #if RPOS_PUSH
+        userContent.addUserScript(PushBridge.injectionScript)
+        #endif
         configuration.userContentController = userContent
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
@@ -162,6 +165,13 @@ struct POSWebView: UIViewRepresentable {
             context.coordinator.printerBridge = bridge
             userContent.add(bridge, name: PrinterBridge.handlerName)
         }
+
+        // App push (Staff and Manager targets, 5.11.102). The bridge is a singleton because the app
+        // delegate hands it the device token; it holds the web view weakly.
+        #if RPOS_PUSH
+        PushBridge.shared.webView = webView
+        userContent.add(PushBridge.shared, name: PushBridge.handlerName)
+        #endif
 
         webView.load(URLRequest(url: Config.appURL))
         return webView
@@ -275,6 +285,9 @@ struct POSWebView: UIViewRepresentable {
         // MARK: Load lifecycle + 5 second retry (parity with Android onReceivedError)
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            #if RPOS_PUSH
+            PushBridge.shared.pageReady()
+            #endif
             cancelRetry()
             setReconnecting(false)
         }

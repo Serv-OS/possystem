@@ -45,6 +45,8 @@ export const TABS = [
   { key: 'home',    flag: 'home',         label: 'Home',    icon: 'home' },
   { key: 'reports', flag: 'reports_view', label: 'Reports', icon: 'reports' },
   { key: 'team',    flag: 'team_live',    label: 'Team',    icon: 'team' },
+  // 5.11.102: Team chat and Reports to check (managers: the same people who approve).
+  { key: 'chat',    flag: 'team_approvals', label: 'Chat',  icon: 'chat' },
   { key: 'ops',     flag: 'ops_checks',   label: 'Ops',     icon: 'clipboard' },
   { key: 'kitchen', flag: 'kitchen',      label: 'Kitchen', icon: 'fire' },
 ];

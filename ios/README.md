@@ -25,6 +25,8 @@ iPad-first WebView wrappers around the PROD web app, mirroring the Android wrapp
 
 - **A FILE INPUT IS NOT getUserMedia (21 Sep 2026).** `<input type="file" capture="environment">` opens the camera picker itself and never reaches `requestMediaCapturePermissionFor`, so `RPOSAllowsCamera: false` cannot refuse it. A target with no `NSCameraUsageDescription` is TERMINATED by iOS the instant it is tapped, with no error: that is how the Manager app died on a checklist photo sign-off. The web app now reads `hasCamera` and leaves the attribute off when it is false (`src/lib/cameraCapture.js`), so an old build falls back to the photo library instead of dying. Any target that can reach a photo button needs the permission string.
 
+- **App push, no Firebase (5.11.102, Staff build 5 and Manager build 6).** Only these two targets compile `ServOSPOS/PushBridge.swift` (`RPOS_PUSH`) and carry `aps-environment` (entitlements in `project.yml`; automatic signing adds the Push capability, an App Store export signs it as production). A tap in the web app calls `window.RposPush.register()`; iOS asks permission, the shell hands back `window.__rposPushToken({ token, environment })` (`sandbox` for an Xcode debug build, `production` for TestFlight and the App Store) and the web app registers it with the team-chat edge function. The server sends straight to Apple with the .p8 key (secrets `APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_KEY_P8`; topics `co.posup.rpos.staff`, `co.posup.rpos.manager`). A tapped notification reaches the page as `window.__rposPushOpen(data)`.
+
 ## Per-app Info.plist keys (the contract)
 
 `ServOSPOS/Config.swift` reads these at runtime; the Swift sources contain NO per-app values.

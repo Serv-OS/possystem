@@ -28,6 +28,8 @@ import WfCompliance, { DOC_LABEL, DOC_GROUP, GROUP_ORDER, GROUP_LABEL } from './
 import WfTraining from './workforce/WfTraining';
 import WfAnnouncements from './workforce/WfAnnouncements';
 import WfSettings from './workforce/WfSettings';
+// 5.11.102: Team chat (groups, reports to check, settings, word lists, log, export, open a DM).
+import WfChat from './workforce/WfChat';
 import { activeRegionPack, venueMoney } from '../../lib/regionPack';
 
 // v5.11.101: the venue's money and region (the region pack follows the venue's currency). A UK venue
@@ -53,6 +55,7 @@ const SUBS = {
   'wf-pay': ['Positions & rates', 'Add, edit & remove positions and their pay'],
   'wf-tronc': ['Tronc / tips', 'Pooled tip distribution'],
   'wf-announce': ['Announcements', 'Team messaging'],
+  'wf-chat': ['Team chat', 'Groups, reports to check and chat settings'],
   'wf-settings': ['Workforce settings', 'Venues, roles & sections'],
 };
 
@@ -244,6 +247,7 @@ export default function Workforce({ section, orgCtx }) {
       {key === 'onboarding' && <WfOnboarding {...sectionProps} />}
       {key === 'announce' && <WfAnnouncements {...sectionProps} />}
       {key === 'settings' && <WfSettings {...sectionProps} />}
+      {key === 'chat' && <WfChat ctx={{ venueOrgId: orgCtx?.venueOrgId || null }} showToast={showToast} />}
 
       {viewing && <StaffDetailModal staff={viewing} roles={rolesMap} ctx={ctx} showToast={showToast} onClose={() => setViewing(null)} onEdit={(s) => { setViewing(null); setEditing(s); }} onSetPos={(s) => { setViewing(null); setPosFor(s); }}
         onPatch={(patch) => { setStaff(st => st.map(x => x.id === viewing.id ? { ...x, ...patch } : x)); setViewing(v => v ? { ...v, ...patch } : v); }} />}
