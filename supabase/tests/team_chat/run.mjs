@@ -37,7 +37,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, '..', '..', '..');
 const MIGRATION = process.env.CHAT_MIGRATION || join(repo, 'supabase/migrations/20261103a_OPS_team_chat.sql');
 const ROLLBACK = process.env.CHAT_ROLLBACK || join(repo, 'supabase/migrations/20261103a_OPS_team_chat_ROLLBACK.sql');
-const EXPECT_CHECK = '11|50|3|f|f|6|0|t|3|t';
+const EXPECT_CHECK = '11|53|3|f|f|6|0|t|3|t';
 
 const bin = (name) => (existsSync(`/opt/homebrew/bin/${name}`) ? `/opt/homebrew/bin/${name}` : name);
 const env = { ...process.env, LC_ALL: 'en_US.UTF-8', PGOPTIONS: '-c client_min_messages=warning' };
@@ -91,6 +91,18 @@ const svc = (q) => { const r = as('service_role', q); if (r.status !== 0) { cons
 const json = (q) => JSON.parse(svc(q) || 'null');
 const fn = (name, ...args) => json(`select public.${name}(${args.join(', ')})`);
 const read = (sub, q) => as('authenticated', q, { sub });
+// A Manager app call: team-chat sends the PIN holder and the paired venue as request headers.
+let mpHudds = null;
+function MP_HUDDS() {
+  if (mpHudds) return mpHudds;
+  const SM2 = id('d0000000', 2), SP2 = id('c0000000', 801);
+  sql(`insert into public.staff_members (id, location_id, org_id, name, role, pin) values (${lit(SM2)}, ${lit(id('a0000000', 2))}, ${lit(id('0a000000', 1))}, 'Hal Till', 'Manager', '5555');
+       insert into public.wf_staff (id, org_id, location_id, name, role_key, pos_user_id) values (${lit(SP2)}, ${lit(id('0a000000', 1))}, ${lit(id('a0000000', 2))}, 'Hal Till', 'bar', ${lit(SM2)})`);
+  mpHudds = sql(`select id from public.chat_profiles where staff_id = ${lit(SP2)}`);
+  return mpHudds;
+}
+const fnPin = (member, loc, name, ...args) => JSON.parse(as('service_role',
+  `select set_config('request.headers', ${lit(JSON.stringify({ 'x-chat-pin-member': member, 'x-chat-pin-location': loc }))}, true) \\g /dev/null\nselect public.${name}(${args.join(', ')})`).out || 'null');
 
 function concurrent(body) {
   return new Promise((resolve) => {
@@ -439,6 +451,76 @@ try {
     const sd = fn('chat_push_staff_devices', arr([S.a2, S.a5]));
     ok(sd.ok && sd.staff.length === 1 && sd.staff[0].staff_id === S.a2, 'rota messages find a staff member\'s phones');
     ok(read(U.a1, 'select public.chat_push_targets(1)').sqlstate === '42501', 'nobody but the server can ask who a push reaches');
+  }
+
+  console.log('5d. re-review: the PIN cap, one person on two profiles, private DMs');
+  {
+    // R1 / E1: an owner whose Workforce record is linked to a till user (the Manager app PIN profile).
+    const SMO = id('d0000000', 9), SO = id('c0000000', 910);
+    sql(`insert into public.staff_members (id, location_id, org_id, name, role, pin) values (${lit(SMO)}, ${lit(LA2)}, ${lit(ORG_A)}, 'Olive Till', 'Owner', '9999');
+         insert into public.wf_staff (id, org_id, location_id, name, role_key, pos_user_id, portal_user_id) values (${lit(SO)}, ${lit(ORG_A)}, ${lit(LA2)}, 'Olive Till', 'bar', ${lit(SMO)}, ${lit(U.oA)})`);
+    const MPO = M(SO);
+    ok(fn('chat_whoami', lit(MPO)).level === 'owner', 'E1 setup: without the PIN this profile is an owner (the staff app)');
+    const capped = fnPin(MPO, LA2, 'chat_whoami', lit(MPO));
+    ok(capped.level === 'manager' && JSON.stringify(capped.manages) === JSON.stringify([LA2]), 'R1: through the PIN it is a manager of the paired venue only');
+    ok(fnPin(MPO, LA1, 'chat_whoami', lit(MPO)).level === 'manager' && fnPin(MP_HUDDS(), LA1, 'chat_whoami', lit(MP_HUDDS())).level === 'staff', 'a PIN at a venue the person does not manage is staff');
+    const sec = fn('chat_group_create', lit(MO.mA1), lit('group'), lit('Leeds managers private'), 'null', 'null', 'null', 'null', arr([MA.a1]));
+    fn('chat_send', lit(MO.mA1), lit(sec.conversation_id), lit('private history line'), "'[]'", 'null', 'false', 'null', "'{}'");
+    ok(fnPin(MPO, LA2, 'chat_members_change', lit(MPO), lit(sec.conversation_id), lit('add'), arr([MPO])).code === 'not_allowed'
+      && fnPin(MPO, LA2, 'chat_thread', lit(MPO), lit(sec.conversation_id), 'null', 'null', '50').code === 'not_member', 'E1: the owner PIN cannot add itself to a private group nor read it');
+    ok(fnPin(MPO, LA2, 'chat_group_update', lit(MPO), lit(V2), `'{"name":"renamed by PIN"}'`).code === 'not_allowed'
+      && sql(`select name from public.chat_conversations where id = ${lit(V2)}`) !== 'renamed by PIN', 'E1b: nor rename the Hudds venue group');
+    ok(fnPin(MPO, LA2, 'chat_group_create', lit(MPO), lit('announce'), lit('Company wide'), 'null', 'null', 'null', 'null', "'{}'").code === 'not_allowed', 'E1c: nor make an announcement group');
+    ok(fnPin(MPO, LA2, 'chat_group_create', lit(MPO), lit('group'), lit('Till chat'), 'null', 'null', 'null', 'null', arr([MA.a5])).ok === true, 'a plain group is fine');
+    const hann = fn('chat_group_create', lit(MO.mA2), lit('announce'), lit('Hudds news'), 'null', lit(LA2), 'null', 'null', "'{}'");
+    ok(fnPin(MPO, LA2, 'chat_send', lit(MPO), lit(hann.conversation_id), lit('owner via till'), "'[]'", 'null', 'false', 'null', "'{}'").code === 'admins_only', 'R1: no posting in announcements through the PIN unless an admin of that group');
+    ok(fnPin(MPO, LA2, 'chat_send', lit(MPO), lit(V2), lit('urgent via till'), "'[]'", 'null', 'true', 'null', "'{}'").code === 'urgent_not_allowed', 'nor urgent');
+    ok(fn('chat_send', lit(MPO), lit(hann.conversation_id), lit('owner from the staff app'), "'[]'", 'null', 'false', 'null', "'{}'").ok === true, 'the same owner in the staff app still posts');
+    sql(`update public.wf_staff set status = 'leaver' where id = ${lit(SO)}`);
+    // E1d: a manager PIN profile and a private group at its own venue.
+    const g = fn('chat_group_create', lit(MO.mA2), lit('group'), lit('Hudds private'), 'null', lit(LA2), 'null', 'null', arr([MA.a5]));
+    fn('chat_send', lit(MA.a5), lit(g.conversation_id), lit('hudds secret'), "'[]'", 'null', 'false', 'null', "'{}'");
+    const MP2 = MP_HUDDS();
+    ok(fnPin(MP2, LA2, 'chat_members_change', lit(MP2), lit(g.conversation_id), lit('add'), arr([MP2])).code === 'not_allowed'
+      && fnPin(MP2, LA2, 'chat_thread', lit(MP2), lit(g.conversation_id), 'null', 'null', '50').code === 'not_member', 'E1d: a manager PIN cannot add itself to a private group at its venue');
+    ok(fnPin(MP2, LA2, 'chat_mod', lit(MP2), lit('mute_person'), 'null', 'null', lit(MA.a5), 'null', `now() + interval '1 minute'`, 'null').ok === true, 'but moderates people at the paired venue');
+    ok(fnPin(MP2, LA1, 'chat_mod', lit(MP2), lit('unmute_person'), 'null', 'null', lit(MA.a5), 'null', 'null', 'null').code === 'not_allowed', 'and nobody when paired elsewhere');
+    fn('chat_mod', lit(MO.oA), lit('unmute_person'), 'null', 'null', lit(MA.a5), 'null', 'null', 'null');
+    // R2 / E2: one login with a Back Office profile and a staff profile.
+    const UX = id('20000000', 9), SX = id('c0000000', 911);
+    sql(`insert into public.user_profiles (id, org_id, role, full_name) values (${lit(UX)}, ${lit(ORG_A)}, 'manager', 'Xena');
+         insert into public.user_locations (user_id, location_id, role) values (${lit(UX)}, ${lit(LA1)}, 'manager')`);
+    const MOX = office(ORG_A, UX, 'Xena').member_id;
+    fn('chat_sync_org', lit(ORG_A));
+    const mx = fn('chat_send', lit(MOX), lit(V1), lit('xena from back office'), "'[]'", 'null', 'false', 'null', "'{}'");
+    const rx = fn('chat_report', lit(MA.a1), mx.message.id, lit('about xena'));
+    sql(`insert into public.wf_staff (id, org_id, location_id, name, role_key, portal_user_id) values (${lit(SX)}, ${lit(ORG_A)}, ${lit(LA1)}, 'Xena', 'bar', ${lit(UX)})`);
+    const MSX = M(SX);
+    ok(fn('chat_whoami', lit(MSX)).level === 'manager', 'E2 setup: the staff profile of the same login is a manager too');
+    ok(fn('chat_mod', lit(MSX), lit('keep'), lit(rx.report_id), 'null', 'null', 'null', 'null', 'null').code === 'own_report'
+      && fn('chat_report_context', lit(MSX), lit(rx.report_id)).code === 'own_report', 'R2 E2: the same login on its staff profile cannot handle a report about its Back Office profile');
+    ok(!fn('chat_reports_list', lit(MSX), lit('all'), '100').reports.some((r) => r.id === rx.report_id), 'nor see it in Reports to check');
+    // The same email on a staff record and a Back Office profile; a till user's login.
+    const UE = id('20000000', 10), SE = id('c0000000', 912), SMA = id('d0000000', 10), SA2 = id('c0000000', 913);
+    sql(`insert into public.user_profiles (id, org_id, role, full_name, email) values (${lit(UE)}, ${lit(ORG_A)}, 'manager', 'Eve', 'Eve@Example.test');
+         insert into public.user_locations (user_id, location_id, role) values (${lit(UE)}, ${lit(LA1)}, 'manager');
+         insert into public.wf_staff (id, org_id, location_id, name, role_key, email) values (${lit(SE)}, ${lit(ORG_A)}, ${lit(LA1)}, 'Eve', 'bar', ' eve@example.test');
+         insert into public.staff_members (id, location_id, org_id, name, role, pin, auth_user_id) values (${lit(SMA)}, ${lit(LA1)}, ${lit(ORG_A)}, 'Eve Till', 'Server', '1212', ${lit(UE)});
+         insert into public.wf_staff (id, org_id, location_id, name, role_key, pos_user_id) values (${lit(SA2)}, ${lit(ORG_A)}, ${lit(LA1)}, 'Eve Till', 'bar', ${lit(SMA)})`);
+    const MOE = office(ORG_A, UE, 'Eve').member_id;
+    const me1 = fn('chat_send', lit(M(SE)), lit(V1), lit('eve on the floor'), "'[]'", 'null', 'false', 'null', "'{}'");
+    ok(fn('chat_mod', lit(MOE), lit('hide'), 'null', me1.message.id, 'null', 'null', 'null', 'null').code === 'own_report', 'R2: the same email (any case, spaces) is the same person');
+    const me2 = fn('chat_send', lit(M(SA2)), lit(V1), lit('eve on the till'), "'[]'", 'null', 'false', 'null', "'{}'");
+    ok(fn('chat_mod', lit(MOE), lit('hide'), 'null', me2.message.id, 'null', 'null', 'null', 'null').code === 'own_report', 'R2: so is the till user\'s own login');
+    ok(fn('chat_mod', lit(MO.mA1), lit('hide'), 'null', me2.message.id, 'null', 'null', 'null', 'null').ok === true, 'another manager still can');
+    fn('chat_mod', lit(MO.oA), lit('keep'), 'null', me2.message.id, 'null', 'null', 'null', 'null');
+    // R4 / E3i: a DM stays private.
+    const d = fn('chat_dm_open', lit(MA.a3), lit(MA.a5));
+    const dq = fn('chat_send', lit(MA.a3), lit(d.conversation_id), lit('quinn dm'), "'[]'", 'null', 'false', 'null', "'{}'");
+    ok(fn('chat_mod', lit(MO.mA1), lit('hide'), 'null', dq.message.id, 'null', 'null', 'null', 'null').code === 'report_needed'
+      && sql(`select status from public.chat_messages where id = ${dq.message.id}`) === 'visible', 'R4 E3i: no hiding a DM message nobody reported');
+    fn('chat_report', lit(MA.a5), dq.message.id, lit('not nice'));
+    ok(fn('chat_mod', lit(MO.mA1), lit('hide'), 'null', dq.message.id, 'null', 'null', 'null', 'null').ok === true, 'once it is reported, a manager of the sender can');
   }
 
   console.log('6. automatic membership');

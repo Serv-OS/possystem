@@ -55,7 +55,7 @@ test('the staff app login is matched through portal_user_id inside a SECURITY DE
 });
 
 test('every rpc the edge function calls is a function of the migration', () => {
-  const called = [...new Set([...FN.matchAll(/rpc\('(\w+)'/g)].map((m) => m[1]))];
+  const called = [...new Set([...FN.matchAll(/rpc2?\('(\w+)'/g)].map((m) => m[1]))];
   assert.ok(called.length >= 20, `calls ${called.length}`);
   for (const c of called) assert.ok(MIG.includes(`create function public.${c}(`), `${c} exists`);
 });
@@ -65,7 +65,7 @@ test('the edge function: the caller from the login, anonymous refused, the filte
   assert.match(FN, /is_anonymous/);
   assert.match(FN, /eq\('portal_user_id', uid\)\.neq\('status', 'leaver'\)/);
   const send = FN.slice(FN.indexOf("case 'send':"), FN.indexOf("case 'edit':"));
-  assert.ok(send.indexOf('checkMessage(') < send.indexOf("rpc('chat_send'"), 'the filter runs before the send');
+  assert.ok(send.indexOf('checkMessage(') < send.indexOf("rpc2('chat_send'") && send.includes("rpc2('chat_send'"), 'the filter runs before the send');
   for (const a of ['mod.hide', 'owner.open_dm', 'settings.save', 'words.save', 'export_person', 'report.context']) {
     assert.match(FN.match(/SECOND_STEP_ACTIONS = new Set\(\[[^\]]+\]\)/)[0], new RegExp(`'${a.replace('.', '\\.')}'`), `${a} needs the second step`);
   }
@@ -96,6 +96,7 @@ test('push: no Firebase anywhere, Apple and Web Push direct, push before the tex
   assert.doesNotMatch(notify, /pushedIds\.has\(p\.id\)/, 'nobody is skipped for the text because of a push');
   assert.match(notify, /const PUSH_CAP_MS = 3000;/);
   assert.ok(notify.indexOf('const pushing = pushStaff(') < notify.indexOf('await Promise.all(targets'), 'the push starts, then the texts are awaited');
+  assert.doesNotMatch(notify.slice(notify.indexOf('export async function notifyStaff'), notify.indexOf('async function pushStaff')), /await Promise\.race|await pushing|await capped/, 'the push is never awaited (R3)');
   assert.match(read("ios/project.yml"), /SWIFT_ACTIVE_COMPILATION_CONDITIONS: \$\(inherited\) RPOS_LOCATION RPOS_PUSH/, "DEBUG survives (A7)");
   assert.match(read('public/sw.js'), /addEventListener\('push'/);
   assert.doesNotMatch(read('src/lib/pushConfig.js'), /VAPID_PRIVATE_KEY=/, 'only the public key is in git');
@@ -107,6 +108,9 @@ test('review fix S2: the Manager app PIN never becomes a login, never reaches ow
   assert.match(pin, /eq\('pos_user_id', op\.id\)\.eq\('org_id', orgId\)/, 'only the till user\'s Workforce record in the paired venue\'s company');
   const never = FN.match(/PIN_NEVER = new Set\(\[([^\]]+)\]\)/)[1];
   for (const a of ['owner.open_dm', 'export_person', 'settings.save', 'words.get', 'words.save', 'log.list', 'dm.list', 'push.register']) assert.match(never, new RegExp(`'${a.replace('.', '\\.')}'`), a);
-  assert.match(FN, /if \(w\?\.level !== 'manager'\) return refuse/, 'moderation through a PIN is capped at manager');
+  assert.match(FN, /&& w\?\.level !== 'manager'\) return refuse\('not_allowed'\)/, 'moderation through a PIN is capped at manager');
+  assert.match(FN, /if \(w\?\.level === 'owner' && !OWNER_PIN_OK\.has\(action\)\) return refuse\('owner_pin'\)/, 'an owner\'s PIN only chats (R1)');
+  assert.match(FN, /'x-chat-pin-member': c\.memberId, 'x-chat-pin-location'/, 'the database gets the PIN cap (R1)');
+  assert.match(FN, /const db = caller\.viaPin \? pinDb\(caller\) : admin;/);
   assert.match(FN, /if \(want && !orgs\.has\(want\)\) return json/, 'no quiet fallback to another company');
 });

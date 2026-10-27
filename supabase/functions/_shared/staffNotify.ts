@@ -9,8 +9,9 @@
 //
 // PUSH AS WELL (5.11.102, review decision S5): each person with the staff app on their phone
 // (push_devices, through their chat profile) also gets an app push. The text still goes to everyone
-// as before: an accepted push is not a seen push. The push runs beside the texts and is given at most
-// PUSH_CAP_MS in all, so it can never slow a shift change down. sent counts texts, as before.
+// as before: an accepted push is not a seen push. The push runs beside the texts, is never awaited
+// and is given at most PUSH_CAP_MS in all, so it can never slow a shift change down. sent counts
+// texts, as before; pushed is not reported (it finishes after the answer).
 //
 // Never throws: a text that did not go is reported in the answer, and the shift change it is about
 // has already happened.
@@ -66,9 +67,11 @@ export async function notifyStaff(
   for (const r of results) { if (r) out.texted!++; else out.failed++; }
   out.skipped += Math.max(0, targets.length - limit);
   out.sent = out.texted!;
-  const left = Math.max(0, PUSH_CAP_MS - (Date.now() - started));
-  const pushed = await Promise.race([pushing, new Promise<Set<string>>((r) => setTimeout(() => r(new Set()), left))]);
-  out.pushed = pushed.size;
+  // MARKER 5.11.102 staffNotify re-review fix R3: never awaited. The push finishes after the answer
+  // (EdgeRuntime.waitUntil), at most PUSH_CAP_MS from the start, and never delays a text or the reply.
+  const capped = Promise.race([pushing, new Promise<Set<string>>((r) => setTimeout(() => r(new Set()), Math.max(0, PUSH_CAP_MS - (Date.now() - started))))]);
+  const rt = (globalThis as any).EdgeRuntime;
+  if (rt?.waitUntil) rt.waitUntil(capped); else capped.catch(() => {});
   return out;
 }
 

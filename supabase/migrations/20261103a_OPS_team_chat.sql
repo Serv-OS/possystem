@@ -282,6 +282,38 @@ create trigger chat_moderation_log_append_only before update or delete on public
 -- 2. WHO IS WHO
 -- ============================================================================
 
+-- THE MANAGER APP'S PIN (re-review fix R1, 5.11.102). team-chat sends a Manager app call with two
+-- request headers, x-chat-pin-member (the PIN holder's profile) and x-chat-pin-location (the paired
+-- venue); PostgREST hands them to the database in request.headers. They only ever take power away:
+-- that profile is at most a manager, of the paired venue only, never a group's admin by venue or
+-- rank, and makes plain groups only. A call without them is unchanged.
+create function public._chat_pin_member() returns uuid
+language sql stable set search_path = public, pg_temp as $f$
+  select case when v ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then v::uuid end
+    from (select coalesce(nullif(current_setting('request.headers', true), ''), '{}')::json ->> 'x-chat-pin-member' as v) q
+$f$;
+create function public._chat_pin_location() returns uuid
+language sql stable set search_path = public, pg_temp as $f$
+  select case when v ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then v::uuid end
+    from (select coalesce(nullif(current_setting('request.headers', true), ''), '{}')::json ->> 'x-chat-pin-location' as v) q
+$f$;
+
+-- Every login and email behind a profile (its own login, the staff app login, the till user's login,
+-- the emails on the staff record and the Back Office profile). Two profiles sharing any of them are
+-- the same person (re-review fix R2): used only to refuse, never to grant.
+create function public._chat_identity(p_member uuid) returns text[]
+language sql stable security definer set search_path = public, pg_temp as $f$
+  select coalesce(array_agg(distinct x) filter (where x is not null), '{}'::text[]) from (
+    select 'u:' || p.user_id::text as x from public.chat_profiles p where p.id = p_member
+    union all select 'u:' || s.portal_user_id::text from public.chat_profiles p join public.wf_staff s on s.id = p.staff_id where p.id = p_member
+    union all select 'u:' || sm.auth_user_id::text from public.chat_profiles p join public.wf_staff s on s.id = p.staff_id
+                join public.staff_members sm on sm.id = s.pos_user_id where p.id = p_member
+    union all select 'e:' || lower(nullif(btrim(s.email), '')) from public.chat_profiles p join public.wf_staff s on s.id = p.staff_id where p.id = p_member
+    union all select 'e:' || lower(nullif(btrim(up.email), '')) from public.chat_profiles p left join public.wf_staff s on s.id = p.staff_id
+                join public.user_profiles up on up.id = coalesce(p.user_id, s.portal_user_id) where p.id = p_member
+  ) q
+$f$;
+
 -- The power of one chat profile, read from the database (never from the caller):
 --   level   staff | manager | owner   (owner = an owner or Admin of the company, every venue)
 --   locs    the venues a manager handles (null for an owner: all)
@@ -336,6 +368,16 @@ begin
     if cardinality(locs) > 0 then level := 'manager'; else locs := '{}'; end if;
   end if;
   if p.staff_id is null and level = 'staff' and cardinality(mylocs) = 0 then active := false; end if;
+  -- MARKER 5.11.102 _chat_power re-review fix R1: a Manager app PIN call is capped at manager of
+  -- the paired venue (an owner too), and is staff anywhere else.
+  if p_member = public._chat_pin_member() then
+    if level in ('owner', 'manager') and (level = 'owner' or public._chat_pin_location() = any(locs))
+       and exists (select 1 from public.locations l where l.id = public._chat_pin_location() and l.org_id = p.org_id) then
+      level := 'manager'; locs := array[public._chat_pin_location()];
+    else
+      level := 'staff'; locs := '{}';
+    end if;
+  end if;
 end
 $f$;
 
@@ -394,6 +436,11 @@ begin
   if p_offender is not null then
     select * into o from public._chat_power(p_offender);
     if o.org_id is distinct from a.org_id then return 'not_found'; end if;
+    -- MARKER 5.11.102 _chat_can_moderate re-review fix R2: the same person on another profile
+    -- (one login, a staff record and a Back Office profile, a till user's login, an email).
+    if (a.uid is not null and a.uid = o.uid) or public._chat_identity(p_actor) && public._chat_identity(p_offender) then
+      return 'own_report';
+    end if;
     if a.level = 'owner' then return null; end if;
     if o.level = 'owner' then return 'not_allowed'; end if;
     if o.mylocs && a.locs then return null; end if;
@@ -836,6 +883,8 @@ begin
     return jsonb_build_object('ok', false, 'code', 'cross_company');
   end if;
   st := public._chat_settings(a.org_id);
+  -- MARKER 5.11.102 chat_group_create re-review fix R1: the Manager app's PIN makes plain groups only.
+  if p_member = public._chat_pin_member() and p_kind <> 'group' then return jsonb_build_object('ok', false, 'code', 'not_allowed'); end if;
   if p_kind = 'group' then
     if a.level = 'staff' and st.groups_by <> 'everyone' then return jsonb_build_object('ok', false, 'code', 'not_allowed'); end if;
   else
@@ -871,6 +920,8 @@ declare
 begin
   select * into a from public._chat_power(p_member);
   if a.org_id is distinct from c.org_id or not a.active then return false; end if;
+  -- MARKER 5.11.102 _chat_can_admin re-review fix R1: never through the Manager app's PIN.
+  if p_member = public._chat_pin_member() then return false; end if;
   if a.level = 'owner' then return true; end if;
   if a.level = 'manager' and c.location_id is not null and c.location_id = any(a.locs) then return true; end if;
   return exists (select 1 from public.chat_members m where m.conversation_id = c.id and m.member_id = p_member and m.left_at is null and m.role = 'admin')
@@ -1091,6 +1142,13 @@ begin
     end if;
   end if;
   if p_action = 'hide' and v_msg is null then return jsonb_build_object('ok', false, 'code', 'bad_message'); end if;
+  -- MARKER 5.11.102 chat_mod re-review decision R4: a DM stays private. Hiding a DM message needs an
+  -- open report on it; without one a manager hides only in groups.
+  if p_action = 'hide' and p_report is null and v_conv is not null
+     and exists (select 1 from public.chat_conversations x where x.id = v_conv and x.kind = 'dm')
+     and not exists (select 1 from public.chat_reports rr where rr.message_id = v_msg and rr.status = 'open') then
+    return jsonb_build_object('ok', false, 'code', 'report_needed');
+  end if;
   if p_action = 'keep' and p_report is null and v_msg is null then return jsonb_build_object('ok', false, 'code', 'bad_report'); end if;
   if v_offender is null then return jsonb_build_object('ok', false, 'code', 'bad_member'); end if;
   if v_conv is not null then
@@ -1693,7 +1751,7 @@ select public.chat_sync_org(o.org_id) from (select distinct org_id from public.l
 
 notify pgrst, 'reload schema';
 
--- VISIBLE CHECK. Expected: chat_tables 11, chat_functions 50, open_to_api 3 (the three read helpers,
+-- VISIBLE CHECK. Expected: chat_tables 11, chat_functions 53, open_to_api 3 (the three read helpers,
 -- authenticated only), anon_can_read false, authenticated_can_write false, member_policies 6,
 -- write_policies 0, venue_groups = the number of venues, realtime_tables 3 (0 where there is no
 -- supabase_realtime publication), staff_trigger true.

@@ -109,7 +109,8 @@ const CODE_TEXT: Record<string, string> = {
   bad_device: 'This phone could not be registered.',
   bad_request: 'Something was missing from that request.',
   mismatch: 'That does not match the report.',
-  owner_pin: 'As an owner, handle reports in Back Office.',
+  owner_pin: 'As an owner, use Back Office or the staff app for that.',
+  report_needed: 'Direct messages are private: a message there can be hidden only once someone reports it.',
   bad_endpoint: 'This browser\'s notifications service is not supported.',
 };
 const refuse = (code: string, extra: Record<string, unknown> = {}) => json({ ok: false, code, message: CODE_TEXT[code] ?? CODE_TEXT.not_allowed, ...extra });
@@ -121,10 +122,20 @@ function later(p: Promise<unknown>) {
   if (rt?.waitUntil) rt.waitUntil(safe);
 }
 
-async function rpc(name: string, args: Record<string, unknown>): Promise<any> {
-  const { data, error } = await admin.rpc(name, args);
+async function rpc(name: string, args: Record<string, unknown>, client: any = admin): Promise<any> {
+  const { data, error } = await client.rpc(name, args);
   if (error) throw new Error(`${name}: ${error.message}`);
   return data;
+}
+
+// MARKER 5.11.102 team-chat re-review fix R1: a Manager app call reaches the database with the PIN
+// holder's profile and the paired venue in two request headers, so the database itself caps that
+// profile (manager of the paired venue at most, never a group admin, plain groups only).
+function pinDb(c: Caller) {
+  return createClient(SUPABASE_URL, SERVICE_ROLE, {
+    auth: { autoRefreshToken: false, persistSession: false },
+    global: { headers: { 'x-chat-pin-member': c.memberId, 'x-chat-pin-location': String(c.pinLocation || '') } },
+  });
 }
 const answer = (data: any) => (data && data.ok === false ? refuse(String(data.code || 'not_allowed'), data.until ? { until: data.until } : {}) : json(data ?? { ok: true }));
 
@@ -149,7 +160,7 @@ async function filterOpts(orgId: string): Promise<FilterOpts> {
 }
 
 // ── Who is calling ───────────────────────────────────────────────────────────
-type Caller = { uid: string; orgId: string; memberId: string; staffId: string | null; hasBackOffice: boolean; viaPin?: boolean };
+type Caller = { uid: string; orgId: string; memberId: string; staffId: string | null; hasBackOffice: boolean; viaPin?: boolean; pinLocation?: string };
 
 async function resolveCaller(req: Request, body: any): Promise<Caller | Response> {
   const jwt = (req.headers.get('authorization') || '').replace(/^Bearer\s+/i, '');
@@ -192,7 +203,7 @@ async function pinCaller(deviceUid: string, loc: string, pin: string): Promise<C
   const prof = await rpc('chat_profile_for', { p_org: orgId, p_staff: staffId, p_user: null, p_name: null });
   if (!prof?.ok || !isUuid(prof.member_id)) return no('no_member', CODE_TEXT.no_member);
   if (prof.created) await rpc('chat_sync_org', { p_org: orgId, p_staff: null });
-  return { uid: deviceUid, orgId, memberId: prof.member_id, staffId, hasBackOffice: false, viaPin: true };
+  return { uid: deviceUid, orgId, memberId: prof.member_id, staffId, hasBackOffice: false, viaPin: true, pinLocation: loc };
 }
 
 // A person's own login: a staff app login or a Back Office login.
@@ -290,6 +301,8 @@ async function aiCheck(orgId: string, messageId: number, text: string) {
 const PIN_NEVER = new Set(['owner.open_dm', 'export_person', 'settings.save', 'words.get', 'words.save', 'log.list', 'dm.list',
   'push.register', 'push.unregister', 'admin.groups', 'admin.members', 'people']);
 const PIN_MANAGER_ONLY = new Set(['reports.list', 'report.context']);
+const OWNER_PIN_OK = new Set(['bootstrap', 'privacy.ok', 'inbox', 'thread', 'members.list', 'photo.urls', 'photo.upload_url',
+  'send', 'edit', 'delete', 'react', 'read', 'report', 'dm.open', 'mute', 'leave']);
 const SECOND_STEP_ACTIONS = new Set(['report.context', 'reports.list', 'log.list', 'dm.list', 'owner.open_dm', 'settings.save', 'words.get', 'words.save', 'export_person',
   'mod.hide', 'mod.keep', 'mod.mute_person', 'mod.unmute_person', 'mod.remove', 'mod.chat_off', 'mod.chat_on']);
 
@@ -305,54 +318,58 @@ Deno.serve(async (req) => {
     // tools or push, and an owner's PIN does not carry owner powers there (moderation stays in Back
     // Office for owners).
     if (caller.viaPin) {
-      if (PIN_NEVER.has(action)) return refuse('not_allowed');
-      if (PIN_MANAGER_ONLY.has(action) || action.startsWith('mod.')) {
-        const w = await rpc('chat_whoami', { p_member: caller.memberId });
-        if (w?.level !== 'manager') return refuse(w?.level === 'owner' ? 'owner_pin' : 'not_allowed');
-      }
+      if (PIN_NEVER.has(action) || action.startsWith('members.') || action.startsWith('group.') && action !== 'group.create') return refuse('not_allowed');
+      if (action === 'group.create' && body.kind !== 'group') return refuse('not_allowed');
+      // The person's own rank (without the cap): an owner's PIN only chats; a manager's PIN moderates
+      // the paired venue (the database caps it).
+      const w = await rpc('chat_whoami', { p_member: caller.memberId });
+      if (w?.level === 'owner' && !OWNER_PIN_OK.has(action)) return refuse('owner_pin');
+      if ((PIN_MANAGER_ONLY.has(action) || action.startsWith('mod.')) && w?.level !== 'manager') return refuse('not_allowed');
     }
     if (SECOND_STEP_ACTIONS.has(action) && caller.hasBackOffice) {
       const block = await secondStepRefusal(req); if (block) return block;
     }
     const me = caller.memberId;
+    const db = caller.viaPin ? pinDb(caller) : admin;
+    const rpc2 = (name: string, args: Record<string, unknown>) => rpc(name, args, db);
 
     switch (action) {
       case 'bootstrap': {
-        if (caller.hasBackOffice) await rpc('chat_sync_org', { p_org: caller.orgId, p_staff: null });
-        return answer(await rpc('chat_whoami', { p_member: me }));
+        if (caller.hasBackOffice) await rpc2('chat_sync_org', { p_org: caller.orgId, p_staff: null });
+        return answer(await rpc2('chat_whoami', { p_member: me }));
       }
       // ── Reads for the Manager app (no personal login, so no row level security reads) ──
       case 'inbox':
-        return answer(await rpc('chat_inbox', { p_member: me }));
+        return answer(await rpc2('chat_inbox', { p_member: me }));
       case 'thread': {
         const conv = uuidOrNull(body.conversation_id);
         if (!conv) return refuse('bad_request');
-        return answer(await rpc('chat_thread', { p_member: me, p_conversation: conv, p_before: idOrNull(body.before), p_after: idOrNull(body.after), p_limit: 50 }));
+        return answer(await rpc2('chat_thread', { p_member: me, p_conversation: conv, p_before: idOrNull(body.before), p_after: idOrNull(body.after), p_limit: 50 }));
       }
       case 'members.list': {
         const conv = uuidOrNull(body.conversation_id);
         if (!conv) return refuse('bad_request');
-        return answer(await rpc('chat_members_list', { p_member: me, p_conversation: conv }));
+        return answer(await rpc2('chat_members_list', { p_member: me, p_conversation: conv }));
       }
       // ── Reads for running chat (Back Office, the Manager app) ──
       case 'admin.groups':
-        return answer(await rpc('chat_admin_groups', { p_member: me }));
+        return answer(await rpc2('chat_admin_groups', { p_member: me }));
       case 'admin.members': {
         const conv = uuidOrNull(body.conversation_id);
         if (!conv) return refuse('bad_request');
-        return answer(await rpc('chat_admin_members', { p_member: me, p_conversation: conv }));
+        return answer(await rpc2('chat_admin_members', { p_member: me, p_conversation: conv }));
       }
       case 'people':
-        return answer(await rpc('chat_people', { p_member: me, p_location: uuidOrNull(body.location_id), p_role_key: textOr(body.role_key, 60) || null }));
+        return answer(await rpc2('chat_people', { p_member: me, p_location: uuidOrNull(body.location_id), p_role_key: textOr(body.role_key, 60) || null }));
       case 'reports.list':
-        return answer(await rpc('chat_reports_list', { p_member: me, p_status: body.status === 'all' ? 'all' : 'open', p_limit: 200 }));
+        return answer(await rpc2('chat_reports_list', { p_member: me, p_status: body.status === 'all' ? 'all' : 'open', p_limit: 200 }));
       case 'log.list':
-        return answer(await rpc('chat_log_list', { p_member: me, p_before: idOrNull(body.before), p_limit: 200 }));
+        return answer(await rpc2('chat_log_list', { p_member: me, p_before: idOrNull(body.before), p_limit: 200 }));
       case 'dm.list':
-        return answer(await rpc('chat_dm_list', { p_member: me }));
+        return answer(await rpc2('chat_dm_list', { p_member: me }));
 
       case 'privacy.ok':
-        return answer(await rpc('chat_privacy_ok', { p_member: me }));
+        return answer(await rpc2('chat_privacy_ok', { p_member: me }));
 
       case 'send': {
         const conv = uuidOrNull(body.conversation_id);
@@ -367,7 +384,7 @@ Deno.serve(async (req) => {
         const verdict = checkMessage({ body: text, captions: photos.map((p: any) => p.caption || '') }, opts);
         if (!verdict.ok) return refuse(verdict.code === 'word' ? 'blocked_word' : verdict.code);
         const clientId = typeof body.client_id === 'string' && /^[\w-]{1,64}$/.test(body.client_id) ? body.client_id : null;
-        const data = await rpc('chat_send', {
+        const data = await rpc2('chat_send', {
           p_member: me, p_conversation: conv, p_body: text, p_photos: photos, p_reply_to: idOrNull(body.reply_to),
           p_urgent: body.urgent === true, p_client_id: clientId, p_mentions: uuidList(body.mentions, 50),
         });
@@ -388,30 +405,30 @@ Deno.serve(async (req) => {
         if (text.length > 4000) return refuse('too_long');
         const verdict = checkMessage({ body: text }, await filterOpts(caller.orgId));
         if (!verdict.ok) return refuse(verdict.code === 'word' ? 'blocked_word' : verdict.code);
-        const data = await rpc('chat_edit', { p_member: me, p_message: id, p_body: text });
+        const data = await rpc2('chat_edit', { p_member: me, p_message: id, p_body: text });
         if (data?.ok) later(aiCheck(caller.orgId, id, text));
         return answer(data);
       }
       case 'delete': {
         const id = idOrNull(body.message_id);
         if (!id) return refuse('bad_request');
-        return answer(await rpc('chat_delete', { p_member: me, p_message: id }));
+        return answer(await rpc2('chat_delete', { p_member: me, p_message: id }));
       }
       case 'react': {
         const id = idOrNull(body.message_id);
         if (!id) return refuse('bad_request');
-        return answer(await rpc('chat_react', { p_member: me, p_message: id, p_emoji: textOr(body.emoji, 16), p_on: body.on !== false }));
+        return answer(await rpc2('chat_react', { p_member: me, p_message: id, p_emoji: textOr(body.emoji, 16), p_on: body.on !== false }));
       }
       case 'read': {
         const conv = uuidOrNull(body.conversation_id); const id = idOrNull(body.message_id);
         if (!conv || !id) return refuse('bad_request');
-        return answer(await rpc('chat_read', { p_member: me, p_conversation: conv, p_message: id }));
+        return answer(await rpc2('chat_read', { p_member: me, p_conversation: conv, p_message: id }));
       }
 
       case 'dm.open': {
         const other = uuidOrNull(body.member_id);
         if (!other) return refuse('bad_member');
-        return answer(await rpc('chat_dm_open', { p_member: me, p_other: other }));
+        return answer(await rpc2('chat_dm_open', { p_member: me, p_other: other }));
       }
       case 'group.create': {
         const opts = await filterOpts(caller.orgId);
@@ -420,7 +437,7 @@ Deno.serve(async (req) => {
           const v = checkName(t, opts);
           if (!v.ok) return refuse(v.code === 'word' ? 'blocked_word' : v.code);
         }
-        return answer(await rpc('chat_group_create', {
+        return answer(await rpc2('chat_group_create', {
           p_member: me, p_kind: textOr(body.kind, 20), p_name: name, p_description: description || null,
           p_location: uuidOrNull(body.location_id), p_role_key: textOr(body.role_key, 60) || null,
           p_post_policy: textOr(body.post_policy, 20) || null, p_members: uuidList(body.members),
@@ -444,7 +461,7 @@ Deno.serve(async (req) => {
             if (!v.ok) return refuse(v.code === 'word' ? 'blocked_word' : v.code);
           }
         }
-        return answer(await rpc('chat_group_update', { p_member: me, p_conversation: conv, p_patch: patch }));
+        return answer(await rpc2('chat_group_update', { p_member: me, p_conversation: conv, p_patch: patch }));
       }
       case 'members.add':
       case 'members.remove':
@@ -452,12 +469,12 @@ Deno.serve(async (req) => {
         const conv = uuidOrNull(body.conversation_id);
         if (!conv) return refuse('bad_request');
         const op = action === 'members.add' ? 'add' : action === 'members.remove' ? 'remove' : (body.admin === false ? 'member' : 'admin');
-        return answer(await rpc('chat_members_change', { p_member: me, p_conversation: conv, p_op: op, p_targets: uuidList(body.member_ids) }));
+        return answer(await rpc2('chat_members_change', { p_member: me, p_conversation: conv, p_op: op, p_targets: uuidList(body.member_ids) }));
       }
       case 'leave': {
         const conv = uuidOrNull(body.conversation_id);
         if (!conv) return refuse('bad_request');
-        return answer(await rpc('chat_leave', { p_member: me, p_conversation: conv }));
+        return answer(await rpc2('chat_leave', { p_member: me, p_conversation: conv }));
       }
       case 'mute': {
         const conv = uuidOrNull(body.conversation_id);
@@ -466,25 +483,25 @@ Deno.serve(async (req) => {
         if (typeof body.until === 'string' && !Number.isNaN(Date.parse(body.until))) until = new Date(body.until).toISOString();
         else if (typeof body.hours === 'number' && body.hours > 0) until = new Date(Date.now() + Math.min(body.hours, 24 * 366) * 3600000).toISOString();
         else if (body.forever === true) until = 'infinity';
-        return answer(await rpc('chat_mute', { p_member: me, p_conversation: conv, p_until: until }));
+        return answer(await rpc2('chat_mute', { p_member: me, p_conversation: conv, p_until: until }));
       }
 
       case 'report': {
         const id = idOrNull(body.message_id);
         if (!id) return refuse('bad_request');
-        return answer(await rpc('chat_report', { p_member: me, p_message: id, p_reason: textOr(body.reason, 500) || null }));
+        return answer(await rpc2('chat_report', { p_member: me, p_message: id, p_reason: textOr(body.reason, 500) || null }));
       }
       case 'report.context': {
         const rid = uuidOrNull(body.report_id);
         if (!rid) return refuse('bad_request');
-        return answer(await rpc('chat_report_context', { p_member: me, p_report: rid }));
+        return answer(await rpc2('chat_report_context', { p_member: me, p_report: rid }));
       }
       case 'mod.hide': case 'mod.keep': case 'mod.mute_person': case 'mod.unmute_person':
       case 'mod.remove': case 'mod.chat_off': case 'mod.chat_on': {
         let until: string | null = null;
         if (typeof body.until === 'string' && !Number.isNaN(Date.parse(body.until))) until = new Date(body.until).toISOString();
         else if (typeof body.hours === 'number' && body.hours > 0) until = new Date(Date.now() + Math.min(body.hours, 24 * 366) * 3600000).toISOString();
-        return answer(await rpc('chat_mod', {
+        return answer(await rpc2('chat_mod', {
           p_member: me, p_action: action.slice(4), p_report: uuidOrNull(body.report_id), p_message: idOrNull(body.message_id),
           p_target: uuidOrNull(body.member_id), p_conversation: uuidOrNull(body.conversation_id), p_until: until,
           p_note: textOr(body.note, 500) || null,
@@ -493,7 +510,7 @@ Deno.serve(async (req) => {
       case 'owner.open_dm': {
         const conv = uuidOrNull(body.conversation_id);
         if (!conv) return refuse('bad_request');
-        return answer(await rpc('chat_owner_open_dm', {
+        return answer(await rpc2('chat_owner_open_dm', {
           p_member: me, p_conversation: conv, p_reason: textOr(body.reason, 500), p_before: idOrNull(body.before),
           p_limit: Number.isFinite(body.limit) ? Math.round(body.limit) : 50,
         }));
@@ -501,12 +518,12 @@ Deno.serve(async (req) => {
 
       case 'settings.save': {
         const s = body.settings && typeof body.settings === 'object' ? body.settings : {};
-        const data = await rpc('chat_settings_save', { p_member: me, p_settings: s });
+        const data = await rpc2('chat_settings_save', { p_member: me, p_settings: s });
         optsCache.delete(caller.orgId);
         return answer(data);
       }
       case 'words.get': {
-        const who = await rpc('chat_whoami', { p_member: me });
+        const who = await rpc2('chat_whoami', { p_member: me });
         if (who?.level !== 'owner') return refuse('not_allowed');
         const { data, error } = await admin.from('chat_word_lists').select('kind, phrase').eq('org_id', caller.orgId).order('phrase').limit(1000);
         if (error) throw new Error(error.message);
@@ -515,14 +532,14 @@ Deno.serve(async (req) => {
       }
       case 'words.save': {
         const phrases = Array.isArray(body.phrases) ? body.phrases.filter((p: unknown) => typeof p === 'string').map((p: string) => p.slice(0, 81)).slice(0, 501) : [];
-        const data = await rpc('chat_words_save', { p_member: me, p_kind: textOr(body.kind, 10), p_phrases: phrases });
+        const data = await rpc2('chat_words_save', { p_member: me, p_kind: textOr(body.kind, 10), p_phrases: phrases });
         optsCache.delete(caller.orgId);
         return answer(data);
       }
       case 'export_person': {
         const target = uuidOrNull(body.member_id);
         if (!target) return refuse('bad_member');
-        return answer(await rpc('chat_export_person', { p_member: me, p_target: target, p_reason: textOr(body.reason, 500) }));
+        return answer(await rpc2('chat_export_person', { p_member: me, p_target: target, p_reason: textOr(body.reason, 500) }));
       }
 
       case 'push.register': {
@@ -532,13 +549,13 @@ Deno.serve(async (req) => {
         if (platform === 'webpush' && !webPushHostOk(token)) return refuse('bad_endpoint');
         const environment = platform === 'apns' && body.environment === 'sandbox' ? 'sandbox' : 'production';
         const app = platform === 'webpush' ? 'web' : (body.app === 'manager' ? 'manager' : 'staff');
-        return answer(await rpc('chat_push_register', { p_member: me, p_platform: platform, p_token: token, p_subscription: sub, p_environment: environment, p_app: app }));
+        return answer(await rpc2('chat_push_register', { p_member: me, p_platform: platform, p_token: token, p_subscription: sub, p_environment: environment, p_app: app }));
       }
       case 'push.unregister': {
         const platform = body.platform === 'apns' ? 'apns' : 'webpush';
         const token = platform === 'webpush' ? textOr(body.subscription?.endpoint ?? body.token, 1000) : textOr(body.token, 200).replace(/[^0-9a-f]/gi, '');
         if (!token) return refuse('bad_device');
-        return answer(await rpc('chat_push_unregister', { p_member: me, p_platform: platform, p_token: token }));
+        return answer(await rpc2('chat_push_unregister', { p_member: me, p_platform: platform, p_token: token }));
       }
       case 'photo.upload_url': {
         const conv = uuidOrNull(body.conversation_id);
