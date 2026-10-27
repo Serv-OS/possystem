@@ -276,12 +276,24 @@ export async function softDeleteStaff(id) {
   const { data, error } = await supabase.from('wf_staff').update({ status: 'leaver', leaver_date: today }).eq('id', id).select('id');
   checkWrite('staff leaver', error || (!data?.length ? new Error('Marking them as a leaver matched 0 rows — RLS blocked it, or the record is gone') : null));
 }
-export async function markPosUser(staffId, posUserId) {
+export async function markPosUser(staffId, posUserId, reason = 'Workforce: set up on the POS') {
   if (isMock || !supabase) { const a = lsGet('staff'); const i = a.findIndex(x => x.id === staffId); if (i >= 0) { a[i].posUserId = posUserId; lsSet('staff', a); } return; }
   // v5.6.2: this used to console.warn and carry on — the caller then told the
   // operator the person was a POS user while pos_user_id stayed null, which
   // also kept their onboarding "Till access" step pending forever.
-  const { error } = await supabase.from('wf_staff').update({ pos_user_id: posUserId }).eq('id', staffId);
+  // v5.11.104: pos_user_id is WHO the staff record is on the till (the Manager app PIN, clock
+  // punches, sales, team chat). The database no longer lets any Back Office login write it
+  // (20261104a: the column is revoked from the API and a trigger guards it). The one door is
+  // wf_staff_set_pos_user: an owner of the company (or the super admin), past the second sign in
+  // step; it checks the till user is this company's and not already somebody else's, and writes a
+  // wf_audit row. A manager gets the server's own words back ("Only an owner of this company...").
+  // Until the SQL has run the door does not exist (PGRST202 / 42883): write directly, as before.
+  const { error } = await supabase.rpc('wf_staff_set_pos_user', { p_staff_id: staffId, p_pos_user_id: posUserId, p_reason: reason });
+  if (error && (error.code === 'PGRST202' || error.code === '42883')) {
+    const direct = await supabase.from('wf_staff').update({ pos_user_id: posUserId }).eq('id', staffId);
+    checkWrite('staff', direct.error);
+    return;
+  }
   checkWrite('staff', error);
 }
 
