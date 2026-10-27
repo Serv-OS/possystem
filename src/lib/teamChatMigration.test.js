@@ -72,3 +72,12 @@ test('the edge function: the caller from the login, anonymous refused, the filte
   assert.match(FN, /MARKER 5\.11\.102 team-chat/);
   assert.match(FN, /AI_MODEL = 'claude-haiku-5-5'/);
 });
+
+test('the staff app reads exactly the message columns the migration grants (select * would be refused)', async () => {
+  const { MSG_COLUMNS } = await import('../staff/chatModel.js');
+  const granted = MIG.match(/grant select \(([^)]*)\)\s+on public\.chat_messages/)[1];
+  assert.equal(MSG_COLUMNS.replace(/\s/g, ''), granted.replace(/\s/g, ''));
+  for (const f of ['src/staff/StaffChat.jsx', 'src/staff/useTeamChat.js']) {
+    assert.doesNotMatch(read(f), /from\('chat_messages'\)\.select\('\*'\)/, f);
+  }
+});

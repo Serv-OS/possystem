@@ -167,6 +167,8 @@ try {
   ok(read(U.a1, 'select original_body from public.chat_messages').sqlstate === '42501' && read(U.a1, 'select removed_body from public.chat_messages').sqlstate === '42501',
     'the edited and removed text cannot be read through the API');
   ok(read(U.a1, 'select staff_id from public.chat_profiles').sqlstate === '42501', 'nor which staff record or login a profile is');
+  ok(read(U.a1, 'select * from public.chat_messages').sqlstate === '42501', 'select * on messages is refused (the apps list their columns)');
+  ok(read(U.a1, `select ${readFileSync(join(repo, 'src/staff/chatModel.js'), 'utf8').match(/MSG_COLUMNS = '([^']+)'/)[1]} from public.chat_messages`).status === 0, 'the columns the staff app lists are readable');
   const sendSql = `select public.chat_send(${lit(MA.a1)}, ${lit(V1)}, 'hi', '[]', null, false, null, '{}')`;
   ok(read(U.a1, sendSql).sqlstate === '42501' && as('anon', sendSql).sqlstate === '42501', 'neither anon nor a login can run chat_send itself');
   ok(read(U.a1, `select public.chat_sync_org(${lit(ORG_A)})`).sqlstate === '42501', 'nor the sync');
