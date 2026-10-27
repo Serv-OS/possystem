@@ -144,7 +144,7 @@ export default function CompanyAdmin() {
     // Create a subscription row for this location
     await supabase.from('subscriptions').insert({
       org_id: selectedOrg.id, location_id: loc.id,
-      plan: 'free', gmv_this_month: 0, billing_period_start: new Date().toISOString().slice(0,10),
+      plan: 'starter', monthly_fee: 99, gmv_this_month: 0, billing_period_start: new Date().toISOString().slice(0,10),
     });
 
     // 27 Sep 2026 (Peter: "for some reason every products tax rate has been removed ... please

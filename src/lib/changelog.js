@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.103',
+    date: '27 Oct 2026',
+    items: [
+      "Admin, plans: Starter at 99 GBP a month replaces Free for new venues. It covers the same as Free did: up to 8,000 GBP card volume a month and 2 devices. Growth (149 GBP) and Scale (299 GBP) are unchanged.",
+      "Venues already on Free stay on it at 0 GBP, shown as Free (old plan). The plan list offers it only to a venue already on it, and the volume check never tells a Free venue to move to Starter: moving each one is a choice made in Admin, Processing, Plan.",
+      "A venue added from now on starts on Starter at 99 GBP.",
+      "Admin, Revenue: the plan names follow the new list, and a line shows how many venues are on each plan.",
+      "Needs the payments-admin function deployed. No database update.",
+    ],
+  },
+  {
     v: '5.11.101',
     date: '24 Oct 2026',
     items: [

@@ -700,7 +700,7 @@ function SaasVenueRow({ venue, catalog, deviceNote, onSaved, onError }) {
           <label style={S.label}>Plan</label>
           <select value={plan} onChange={e => setPlan(e.target.value)} style={{ ...S.input, width: 170 }}>
             {!planKnown && <option value={venue.plan}>{venue.plan} (not in catalog)</option>}
-            {Object.entries(catalog?.plans ?? {}).map(([key, p]) => (
+            {Object.entries(catalog?.plans ?? {}).filter(([key, p]) => !p.legacy || key === venue.plan).map(([key, p]) => (
               <option key={key} value={key}>{p.monthly > 0 ? `${p.label} ${p.monthly} GBP` : p.label}</option>
             ))}
           </select>

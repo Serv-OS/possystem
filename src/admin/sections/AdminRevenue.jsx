@@ -79,8 +79,9 @@ function money(minor, cur = 'GBP') {
 // subscriptions.monthly_fee); saas_fee_minor stays pence like every other
 // money field in this table.
 const pounds = (v) => new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'GBP' }).format(Number(v) || 0);
-const PLAN_LABELS = { free: 'Free', growth: 'Growth', scale: 'Scale' };
+const PLAN_LABELS = { starter: 'Starter', growth: 'Growth', scale: 'Scale', free: 'Free (old plan)' };
 const planLabel = (p) => PLAN_LABELS[p] ?? p;
+const PLAN_ORDER = ['starter', 'growth', 'scale', 'free'];
 
 function saasBreakdown(s) {
   if (!s) return null;
@@ -214,6 +215,13 @@ export default function AdminRevenue() {
               hint="What Adyen charges us, from settlement reports — known only for payments a report has touched."
             />
           </div>
+
+          {Object.keys(saas.plans || {}).length > 0 && (
+            <div style={{ fontSize: 12.5, color: 'var(--t3)', marginBottom: 14 }}>
+              Venues by plan: {PLAN_ORDER.filter((k) => saas.plans[k]).concat(Object.keys(saas.plans).filter((k) => !PLAN_ORDER.includes(k)))
+                .map((k) => `${saas.plans[k]} ${planLabel(k)}`).join(' · ')}
+            </div>
+          )}
 
           {data.classified === false && (
             <div style={S.note}>

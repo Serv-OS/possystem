@@ -71,15 +71,20 @@ const platformAdmin = createClient(
 //        (ops subscriptions.monthly_fee is numeric pounds, e.g. '149.00')
 //      · volume_min / volume_max are MINOR UNITS (pence), because card volume
 //        is summed from platform adyen_payments.amount_minor
-//    Bands: Free covers up to £8,000 monthly card volume, Growth £8,000.01 to
+//    Bands: Starter covers up to £8,000 monthly card volume, Growth £8,000.01 to
 //    £15,000, Scale above £15,000. The bands are ADVISORY — the operator picks
 //    the plan manually and the system only recommends when they disagree.
+//    27 Oct 2026: Starter £99 replaced Free for new venues. Free stays as an OLD
+//    plan (legacy: true) so the venues already on it keep £0 until Peter moves
+//    each one; it is never recommended and only offered to a venue already on it.
+// MARKER 5.11.103 payments-admin Starter plan
 const SAAS_CATALOG = {
   plans: {
-    free:   { label: 'Free',   monthly: 0,   devices: 2,  volume_min: 0,       volume_max: 800000 },
-    growth: { label: 'Growth', monthly: 149, devices: 5,  volume_min: 800001,  volume_max: 1500000 },
-    scale:  { label: 'Scale',  monthly: 299, devices: 10, volume_min: 1500001, volume_max: null },
-  } as Record<string, { label: string; monthly: number; devices: number; volume_min: number; volume_max: number | null }>,
+    starter: { label: 'Starter',         monthly: 99,  devices: 2,  volume_min: 0,       volume_max: 800000 },
+    growth:  { label: 'Growth',          monthly: 149, devices: 5,  volume_min: 800001,  volume_max: 1500000 },
+    scale:   { label: 'Scale',           monthly: 299, devices: 10, volume_min: 1500001, volume_max: null },
+    free:    { label: 'Free (old plan)', monthly: 0,   devices: 2,  volume_min: 0,       volume_max: 800000, legacy: true },
+  } as Record<string, { label: string; monthly: number; devices: number; volume_min: number; volume_max: number | null; legacy?: boolean }>,
   extra_device_monthly: 39, // pounds per month, per device beyond the plan allowance
   hubrise_monthly: 45,      // pounds per month, per-venue add-on flag
 };
@@ -87,9 +92,17 @@ const SAAS_CATALOG = {
 // Which plan the volume band says a venue SHOULD be on. volumeMinor is PENCE.
 function saasPlanForVolume(volumeMinor: number): string {
   for (const [key, p] of Object.entries(SAAS_CATALOG.plans)) {
+    if (p.legacy) continue;
     if (volumeMinor >= p.volume_min && (p.volume_max === null || volumeMinor <= p.volume_max)) return key;
   }
   return 'scale';
+}
+
+// The old Free plan sits in Starter's band: a venue still on Free is not told to
+// "move to Starter" by the band check (moving it is Peter's call, venue by venue).
+function sameBand(a: string, b: string): boolean {
+  const pa = SAAS_CATALOG.plans[a], pb = SAAS_CATALOG.plans[b];
+  return !!pa && !!pb && pa.volume_min === pb.volume_min && pa.volume_max === pb.volume_max;
 }
 
 // Monthly fee in POUNDS for plan + extras — the number written to
@@ -680,7 +693,7 @@ Deno.serve(async (req) => {
         prev_volume_minor, // PENCE, previous complete month
         hubrise_detected: hubConnected.has(String(l.id)),
         // Advisory only. Free at low volume is a correct, configured state.
-        recommended_plan: recommended !== plan ? recommended : null,
+        recommended_plan: recommended !== plan && !sameBand(recommended, plan) ? recommended : null,
         devices_over: allowance != null && devices.count > allowance ? { count: devices.count, allowance } : null,
       };
     });
@@ -867,13 +880,13 @@ Deno.serve(async (req) => {
         // must never whisper "downgrade" at a correctly configured paid venue.
         // Upgrade nudges stand (volume only grows within the month).
         const monthComplete = to.getTime() <= Date.now();
-        const rank: Record<string, number> = { free: 0, growth: 1, scale: 2 };
+        const rank: Record<string, number> = { starter: 0, free: 0, growth: 1, scale: 2 };
         let recommended = saasPlanForVolume(volume_total);
         if (!monthComplete && (rank[recommended] ?? 0) <= (rank[saas.item.plan] ?? 0)) recommended = saas.item.plan;
         const devCount = devCountByOps.get(saas.opsId) ?? 0;
         saasDetail = {
           ...saas.item,
-          recommended_plan: recommended !== saas.item.plan ? recommended : null,
+          recommended_plan: recommended !== saas.item.plan && !sameBand(recommended, saas.item.plan) ? recommended : null,
           devices_over: saas.item.device_allowance != null && devCount > saas.item.device_allowance
             ? { count: devCount, allowance: saas.item.device_allowance } : null,
           device_count: devCount,
