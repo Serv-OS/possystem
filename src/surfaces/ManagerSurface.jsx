@@ -19,6 +19,7 @@ import { opsHeartbeat, opsRegisterDevice, opsPinLogin, opsClaimDemo } from '../l
 import { ensureAuthToken } from '../lib/supabase';
 import { fetchManagerSnapshot } from '../lib/manager/data';
 import { roleFlags, TABS } from '../lib/manager/access';
+import { regionPack } from '../lib/regionPack';
 import CardErrorBoundary from '../components/CardErrorBoundary';
 import { Icon } from '../components/ServOSIcons';
 import ManagerHome from './manager/ManagerHome';
@@ -26,6 +27,7 @@ import ManagerReports from './manager/ManagerReports';
 import ManagerTeam from './manager/ManagerTeam';
 import ManagerOps from './manager/ManagerOps';
 import ManagerKitchen from './manager/ManagerKitchen';
+import ManagerChat from './manager/ManagerChat';
 import { LayoutContext, useLayout, useViewportLayout } from './manager/useLayout';
 
 const mono = { fontFamily: 'var(--font-mono)' };
@@ -44,6 +46,7 @@ function ManagerApp() {
   const [dark, setDark] = useState(() => localStorage.getItem('mgr-theme') !== 'light');
   const [snap, setSnap] = useState(null);     // one shared snapshot for every tab
   const [snapErr, setSnapErr] = useState('');
+  const [chatFull, setChatFull] = useState(false);   // 5.11.102: a chat is open, the tab bar steps aside for its composer
 
   // ServOS glass skin for the whole surface; dark default, per-device light toggle.
   useEffect(() => {
@@ -135,13 +138,14 @@ function ManagerApp() {
       if (r?.ok) { setSnap(r); setSnapErr(''); } else setSnapErr(r?.error || 'Could not load');
     });
   };
-  const ctx = { loc, venueName, operator, flags, setTab, snap, snapErr, refreshSnap, dark,
+  // 5.11.102 review fix A8: dates the venue's way (en-US for a US venue), from its currency.
+  const ctx = { loc, venueName, operator, flags, setTab, snap, snapErr, refreshSnap, dark, setChatFull, locale: regionPack(snap?.money?.currency || 'GBP').locale,
     opsJump,
     goOps: (view) => { setOpsJump({ view, k: Date.now() }); setTab('ops'); },
     toggleTheme: () => { const n = !dark; setDark(n); localStorage.setItem('mgr-theme', n ? 'dark' : 'light'); } };
 
   return (
-    <Shell ctx={ctx} tabs={visibleTabs} active={activeTab} onTab={setTab}
+    <Shell ctx={ctx} tabs={visibleTabs} active={activeTab} onTab={setTab} hideNav={activeTab === 'chat' && chatFull}
       onLogout={() => { setOperator(null); setTab('home'); setStage('pin'); }}>
       <CardErrorBoundary>
         {activeTab === 'home' ? <ManagerHome ctx={ctx} />
@@ -149,6 +153,7 @@ function ManagerApp() {
           : activeTab === 'team' ? <ManagerTeam ctx={ctx} />
           : activeTab === 'ops' ? <ManagerOps ctx={ctx} />
           : activeTab === 'kitchen' ? <ManagerKitchen ctx={ctx} />
+          : activeTab === 'chat' ? <ManagerChat ctx={ctx} />
           : <ManagerHome ctx={ctx} />}
       </CardErrorBoundary>
     </Shell>
@@ -197,7 +202,7 @@ function Screen({ children }) {
   }}>{children}<ManagerToast /></div>;
 }
 
-function Shell({ ctx, tabs, active, onTab, onLogout, children }) {
+function Shell({ ctx, tabs, active, onTab, onLogout, hideNav, children }) {
   const L = useLayout();
   return (
     <div data-mgr-layout={L.phone ? undefined : L.band} style={{
@@ -228,7 +233,7 @@ function Shell({ ctx, tabs, active, onTab, onLogout, children }) {
         </button>
       </div>
       {children}
-      <TabBar tabs={tabs} active={active} onTab={onTab} />
+      {!hideNav && <TabBar tabs={tabs} active={active} onTab={onTab} />}
       <ManagerToast rail />
     </div>
   );
