@@ -47,6 +47,9 @@ create table public.wf_staff (
 create table public.staff_members (id uuid primary key default gen_random_uuid(), location_id uuid, org_id uuid, name text, role text default 'Server',
   pin text not null, active boolean default true, permissions jsonb not null default '[]'::jsonb, auth_user_id uuid);
 
+create table public.wf_shifts (id uuid primary key default gen_random_uuid(), location_id uuid not null, org_id uuid not null, staff_id uuid,
+  shift_date date not null, start_time time not null, finish_time time not null, status text not null default 'draft');
+
 -- As live: Back Office logins read their own venues' staff; the tables the migration reads are not opened further here.
 alter table public.wf_staff enable row level security;
 create policy wf_staff_rls_select on public.wf_staff for select using (location_id in (select ul.location_id from public.user_locations ul where ul.user_id = auth.uid()));

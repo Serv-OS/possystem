@@ -81,3 +81,19 @@ test('the staff app reads exactly the message columns the migration grants (sele
     assert.doesNotMatch(read(f), /from\('chat_messages'\)\.select\('\*'\)/, f);
   }
 });
+
+test('push: no Firebase anywhere, Apple and Web Push direct, push before the text, topics per app', () => {
+  const files = ['supabase/functions/_shared/push.ts', 'supabase/functions/_shared/pushCrypto.js', 'supabase/functions/_shared/staffNotify.ts',
+    'public/sw.js', 'src/lib/pushRegister.js', 'ios/ServOSPOS/PushBridge.swift', 'ios/project.yml'];
+  const code = (t) => t.split('\n').filter((l) => !/^\s*(\/\/|#)/.test(l)).join('\n');   // the comments say "no Firebase"
+  for (const f of files) assert.doesNotMatch(code(read(f)), /firebase|fcm\.googleapis\.com\/v1|google-services/i, f);
+  const push = read('supabase/functions/_shared/push.ts');
+  assert.match(push, /co\.posup\.rpos\.staff/);
+  assert.match(push, /co\.posup\.rpos\.manager/);
+  assert.match(push, /apnsHost\(d\.environment\)/, 'the host follows the phone');
+  const notify = read('supabase/functions/_shared/staffNotify.ts');
+  assert.ok(notify.indexOf('pushStaff(') < notify.indexOf('targets.slice(0, limit).map((to) => sendOne('), 'push first, then text the rest');
+  assert.match(read('ios/project.yml'), /SWIFT_ACTIVE_COMPILATION_CONDITIONS: RPOS_LOCATION RPOS_PUSH/);
+  assert.match(read('public/sw.js'), /addEventListener\('push'/);
+  assert.doesNotMatch(read('src/lib/pushConfig.js'), /VAPID_PRIVATE_KEY=/, 'only the public key is in git');
+});

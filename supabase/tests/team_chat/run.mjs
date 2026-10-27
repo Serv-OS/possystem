@@ -37,7 +37,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, '..', '..', '..');
 const MIGRATION = process.env.CHAT_MIGRATION || join(repo, 'supabase/migrations/20261103a_OPS_team_chat.sql');
 const ROLLBACK = process.env.CHAT_ROLLBACK || join(repo, 'supabase/migrations/20261103a_OPS_team_chat_ROLLBACK.sql');
-const EXPECT_CHECK = '11|46|3|f|f|6|0|t|3|t';
+const EXPECT_CHECK = '11|49|3|f|f|6|0|t|3|t';
 
 const bin = (name) => (existsSync(`/opt/homebrew/bin/${name}`) ? `/opt/homebrew/bin/${name}` : name);
 const env = { ...process.env, LC_ALL: 'en_US.UTF-8', PGOPTIONS: '-c client_min_messages=warning' };
@@ -314,7 +314,10 @@ try {
   ok(fn('chat_export_person', lit(MO.mA1), lit(MA.a1), lit('subject access request')).code === 'not_allowed', 'a manager cannot export a person');
   const ex = fn('chat_export_person', lit(MO.oA), lit(MA.a1), lit('subject access request'));
   ok(ex.ok === true && ex.messages.some((m) => m.text === 'you free saturday'), 'the owner exports everything Cara wrote, deleted text included');
-  ok(fn('chat_push_register', lit(MA.a1), lit('webpush'), lit('https://push.example/abc123'), `'{"keys":{}}'`).ok === true, 'a phone registers for push');
+  ok(fn('chat_push_register', lit(MA.a1), lit('webpush'), lit('https://push.example/abc123'), `'{"keys":{}}'`, 'null', lit('web')).ok === true, 'a phone registers for push');
+  ok(fn('chat_push_register', lit(MA.a1), lit('apns'), lit('ab'.repeat(32)), 'null', lit('sandbox'), lit('staff')).ok === true
+    && sql(`select environment from public.push_devices where token = '${'ab'.repeat(32)}'`) === 'sandbox', 'an Xcode build registers with the sandbox environment kept');
+  ok(fn('chat_push_register', lit(MA.a1), lit('apns'), lit('cd'.repeat(32)), 'null', lit('beta'), lit('staff')).code === 'bad_device', 'an unknown environment is refused');
   ok(fn('chat_send', lit(MA.a1), lit(V1), lit(''), `'[{"path":"${ORG_B}/${V1}/x.jpg"}]'`, 'null', 'false', 'null', "'{}'").code === 'bad_photos', 'a photo path outside this company and group is refused');
   ok(fn('chat_send', lit(MA.a1), lit(V1), lit(''), `'[{"path":"${ORG_A}/${V1}/x.jpg","caption":"tonight"}]'`, 'null', 'false', 'null', "'{}'").ok === true, 'a photo in its own folder is fine');
   ok(fn('chat_send', lit(MA.a1), lit(V1), lit('   '), "'[]'", 'null', 'false', 'null', "'{}'").code === 'empty', 'an empty message is refused');
@@ -362,6 +365,41 @@ try {
     const dms = fn('chat_dm_list', lit(MO.oA));
     ok(dms.ok && dms.dms.some((d) => d.id === dm.conversation_id) && JSON.stringify(dms).indexOf('saturday') === -1, 'the owner lists DMs (who and when, never what)');
     ok(fn('chat_dm_list', lit(MO.mA1)).code === 'not_allowed', 'a manager cannot');
+  }
+
+  console.log('5c. who a push reaches');
+  {
+    const targetsOf = (msgId) => fn('chat_push_targets', String(msgId));
+    const ids = (t) => t.targets.map((x) => x.member_id);
+    fn('chat_push_register', lit(MA.a2), lit('webpush'), lit('https://push.example/dev1'), `'{"keys":{"p256dh":"x","auth":"y"}}'`, 'null', lit('web'));
+    const plain = fn('chat_send', lit(MA.a1), lit(V1), lit('who is in today'), "'[]'", 'null', 'false', 'null', "'{}'");
+    let t = targetsOf(plain.message.id);
+    ok(t.ok && !ids(t).includes(MA.a1), 'never the sender');
+    ok(!ids(t).includes(MA.a2), 'quiet when off shift: Dev has no shift now, so no push');
+    ok(ids(t).includes(MO.mA1), 'a Back Office manager is never quiet');
+    sql(`insert into public.wf_shifts (location_id, org_id, staff_id, shift_date, start_time, finish_time, status)
+         values (${lit(LA1)}, ${lit(ORG_A)}, ${lit(S.a2)}, (now() at time zone 'Europe/London')::date - 1, '00:00', '00:00', 'published'),
+                (${lit(LA1)}, ${lit(ORG_A)}, ${lit(S.a2)}, (now() at time zone 'Europe/London')::date, '00:00', '23:59', 'published')`);
+    t = targetsOf(plain.message.id);
+    const dev = t.targets.find((x) => x.member_id === MA.a2);
+    ok(dev && dev.devices.length === 1 && dev.devices[0].token === 'https://push.example/dev1' && dev.sms === null, 'on shift: Dev gets it, on his phone, no text');
+    ok(!ids(t).includes(MA.a3), 'Quinn muted the Leeds group: no push');
+    const ment = fn('chat_send', lit(MO.mA1), lit(V1), lit('@Quinn Q can you cover'), "'[]'", 'null', 'false', 'null', arr([MA.a3]));
+    ok(ids(targetsOf(ment.message.id)).includes(MA.a3), 'a manager @mention gets through a mute and off shift');
+    const staffMent = fn('chat_send', lit(MA.a1), lit(V1), lit('@Quinn Q hi'), "'[]'", 'null', 'false', 'null', arr([MA.a3]));
+    ok(!ids(targetsOf(staffMent.message.id)).includes(MA.a3), 'a staff @mention does not wake someone off shift');
+    sql(`update public.wf_staff set mobile = '07700 900123' where id = ${lit(S.a1)}`);
+    const urgent2 = fn('chat_send', lit(MO.mA1), lit(ann.conversation_id), lit('Kitchen closed, go home safe'), "'[]'", 'null', 'true', 'null', "'{}'");
+    const tu = targetsOf(urgent2.message.id);
+    ok(tu.urgent === true && tu.title.startsWith('Urgent:') && ids(tu).includes(MA.a1) && ids(tu).length > 50, 'an urgent announcement reaches everyone, off shift or muted');
+    ok(tu.targets.find((x) => x.member_id === MA.a1).sms?.mobile === '07700 900123', 'with the mobile for the text backup');
+    fn('chat_settings_save', lit(MO.oA), `'{"sms_backup_urgent":false}'`);
+    ok(targetsOf(urgent2.message.id).targets.every((x) => x.sms === null), 'no text backup when the setting is off');
+    fn('chat_settings_save', lit(MO.oA), `'{"quiet_off_shift":false,"sms_backup_urgent":true}'`);
+    ok(ids(targetsOf(plain.message.id)).includes(MA.a5) === false && ids(targetsOf(plain.message.id)).length > 50, 'quiet off: everyone in the chat but muted people');
+    const sd = fn('chat_push_staff_devices', arr([S.a2, S.a5]));
+    ok(sd.ok && sd.staff.length === 1 && sd.staff[0].staff_id === S.a2, 'rota messages find a staff member\'s phones');
+    ok(read(U.a1, 'select public.chat_push_targets(1)').sqlstate === '42501', 'nobody but the server can ask who a push reaches');
   }
 
   console.log('6. automatic membership');

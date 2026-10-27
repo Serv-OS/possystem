@@ -47,7 +47,7 @@ begin
     raise exception 'This is not the Ops database (tbetcegmszzotrwdtqhi). Nothing was changed.';
   end if;
   if to_regclass('public.wf_staff') is null or to_regclass('public.locations') is null or to_regclass('public.user_profiles') is null
-     or to_regclass('public.staff_members') is null then
+     or to_regclass('public.staff_members') is null or to_regclass('public.wf_shifts') is null then
     raise exception 'The staff and venue tables are missing. Nothing was changed.';
   end if;
   if not exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'wf_staff' and column_name = 'portal_user_id') then
@@ -255,12 +255,16 @@ create table public.push_devices (
   platform text not null check (platform in ('apns', 'webpush')),
   token text not null check (char_length(token) between 8 and 1000),
   subscription jsonb,
+  environment text not null default 'production' check (environment in ('production', 'sandbox')),
+  app text not null default 'staff' check (app in ('staff', 'manager', 'web')),
   last_seen timestamptz not null default now(),
   created_at timestamptz not null default now(),
   unique (platform, token),
   foreign key (member_id, org_id) references public.chat_profiles (id, org_id) on delete cascade
 );
 create index push_devices_member on public.push_devices (member_id);
+comment on column public.push_devices.environment is 'APNs only: production (TestFlight, App Store) or sandbox (an Xcode debug build), as the app reports it (20261103a).';
+comment on column public.push_devices.app is 'Which app registered: staff (co.posup.rpos.staff), manager (co.posup.rpos.manager), web (a browser or home screen app) (20261103a).';
 
 -- The moderation log is append only.
 create function public._chat_log_append_only() returns trigger language plpgsql set search_path = public, pg_temp as $f$
@@ -1265,24 +1269,103 @@ begin
 end
 $f$;
 
-create function public.chat_push_register(p_member uuid, p_platform text, p_token text, p_subscription jsonb) returns jsonb
+create function public.chat_push_register(p_member uuid, p_platform text, p_token text, p_subscription jsonb, p_environment text, p_app text) returns jsonb
 language plpgsql volatile security definer set search_path = public, pg_temp as $f$
 declare
   a record;
 begin
   select * into a from public._chat_power(p_member);
   if a.org_id is null or not a.active then return jsonb_build_object('ok', false, 'code', 'no_member'); end if;
-  if p_platform not in ('apns', 'webpush') or char_length(coalesce(p_token, '')) not between 8 and 1000 then
+  if p_platform not in ('apns', 'webpush') or char_length(coalesce(p_token, '')) not between 8 and 1000
+     or coalesce(p_environment, 'production') not in ('production', 'sandbox') or coalesce(p_app, 'staff') not in ('staff', 'manager', 'web') then
     return jsonb_build_object('ok', false, 'code', 'bad_device');
   end if;
-  insert into public.push_devices (org_id, member_id, platform, token, subscription, last_seen)
-  values (a.org_id, p_member, p_platform, p_token, p_subscription, now())
+  insert into public.push_devices (org_id, member_id, platform, token, subscription, environment, app, last_seen)
+  values (a.org_id, p_member, p_platform, p_token, p_subscription, coalesce(p_environment, 'production'), coalesce(p_app, 'staff'), now())
   on conflict (platform, token) do update set org_id = excluded.org_id, member_id = excluded.member_id,
-    subscription = coalesce(excluded.subscription, push_devices.subscription), last_seen = now();
+    subscription = coalesce(excluded.subscription, push_devices.subscription), environment = excluded.environment, app = excluded.app, last_seen = now();
   delete from public.push_devices where member_id = p_member and id not in
     (select id from public.push_devices where member_id = p_member order by last_seen desc limit 10);
   return jsonb_build_object('ok', true);
 end
+$f$;
+
+-- Is this staff member working now (a published shift from 30 minutes before to 30 minutes after,
+-- in the venue's own time)? Quiet when off shift uses it.
+create function public._chat_on_shift(p_staff uuid) returns boolean
+language sql stable security definer set search_path = public, pg_temp as $f$
+  select exists (
+    select 1 from public.wf_shifts sh join public.locations l on l.id = sh.location_id
+     where sh.staff_id = p_staff and sh.status = 'published'
+       and sh.shift_date between (now() at time zone coalesce(l.timezone, 'Europe/London'))::date - 1
+                             and (now() at time zone coalesce(l.timezone, 'Europe/London'))::date
+       and now() between ((sh.shift_date + sh.start_time) at time zone coalesce(l.timezone, 'Europe/London')) - interval '30 minutes'
+                     and ((sh.shift_date + sh.finish_time + case when sh.finish_time <= sh.start_time then interval '1 day' else interval '0' end)
+                          at time zone coalesce(l.timezone, 'Europe/London')) + interval '30 minutes')
+$f$;
+
+-- Who a new message should reach, and on which phones. The rules (Peter, 26 Oct 2026):
+--   everyone in the chat but the sender, never someone with chat off;
+--   a chat they muted stays quiet, except an @mention of them or an urgent announcement;
+--   quiet when off shift (the setting, staff only): only urgent announcements and @mentions by a
+--   manager or owner come through;
+--   an urgent announcement also carries each staff member's mobile, for the text message backup
+--   when no push lands (the setting).
+create function public.chat_push_targets(p_message bigint) returns jsonb
+language plpgsql stable security definer set search_path = public, pg_temp as $f$
+declare
+  msg public.chat_messages;
+  c public.chat_conversations;
+  st public.chat_settings;
+  v_sender_name text;
+  v_sender_level text;
+  v_urgent boolean;
+  v_title text;
+begin
+  select * into msg from public.chat_messages where id = p_message;
+  if not found or msg.deleted_at is not null or msg.status <> 'visible' then return jsonb_build_object('ok', false, 'code', 'not_found'); end if;
+  select * into c from public.chat_conversations where id = msg.conversation_id;
+  st := public._chat_settings(msg.org_id);
+  select display_name into v_sender_name from public.chat_profiles where id = msg.sender_member_id;
+  select level into v_sender_level from public._chat_power(msg.sender_member_id);
+  v_urgent := msg.urgent and c.kind = 'announce';
+  v_title := case when c.kind = 'dm' then coalesce(v_sender_name, 'New message')
+                  when c.kind = 'announce' then coalesce(c.name, 'Announcement')
+                  else coalesce(v_sender_name, 'Someone') || ' in ' || coalesce(c.name, 'your group') end;
+  return jsonb_build_object('ok', true, 'conversation_id', c.id, 'kind', c.kind, 'urgent', v_urgent,
+    'title', case when v_urgent then 'Urgent: ' || v_title else v_title end,
+    'body', case when msg.body <> '' then left(msg.body, 200) when jsonb_array_length(msg.photos) > 0 then 'Photo' else '' end,
+    'targets', coalesce((select jsonb_agg(t) from (
+      select jsonb_build_object('member_id', m.member_id, 'staff_id', p.staff_id,
+               'devices', coalesce((select jsonb_agg(jsonb_build_object('id', d.id, 'platform', d.platform, 'token', d.token,
+                   'subscription', d.subscription, 'environment', d.environment, 'app', d.app))
+                 from public.push_devices d where d.member_id = m.member_id), '[]'::jsonb),
+               'sms', case when v_urgent and st.sms_backup_urgent and s.mobile is not null
+                           then jsonb_build_object('mobile', s.mobile, 'location_id', s.location_id, 'currency', l.currency) end) as t
+        from public.chat_members m
+        join public.chat_profiles p on p.id = m.member_id
+        left join public.wf_staff s on s.id = p.staff_id
+        left join public.locations l on l.id = s.location_id
+       where m.conversation_id = c.id and m.left_at is null and m.member_id is distinct from msg.sender_member_id
+         and (p.staff_id is null or s.status <> 'leaver')
+         and not exists (select 1 from public.chat_person_state ps where ps.member_id = m.member_id and ps.chat_off)
+         and (m.muted_until is null or m.muted_until <= now() or m.member_id = any(msg.mentions) or v_urgent)
+         and (not st.quiet_off_shift or p.staff_id is null or v_urgent
+              or (m.member_id = any(msg.mentions) and v_sender_level in ('manager', 'owner'))
+              or public._chat_on_shift(p.staff_id))
+       limit 3000) q), '[]'::jsonb));
+end
+$f$;
+
+-- The phones of some staff members (rota, swap and open shift messages from staffNotify.ts).
+create function public.chat_push_staff_devices(p_staff_ids uuid[]) returns jsonb
+language sql stable security definer set search_path = public, pg_temp as $f$
+  select jsonb_build_object('ok', true, 'staff', coalesce((select jsonb_agg(jsonb_build_object('staff_id', p.staff_id,
+           'devices', (select jsonb_agg(jsonb_build_object('id', d.id, 'platform', d.platform, 'token', d.token,
+                         'subscription', d.subscription, 'environment', d.environment, 'app', d.app)) from public.push_devices d where d.member_id = p.id)))
+    from public.chat_profiles p
+   where p.staff_id = any(coalesce(p_staff_ids, '{}'::uuid[]))
+     and exists (select 1 from public.push_devices d where d.member_id = p.id)), '[]'::jsonb))
 $f$;
 
 -- Nightly clean up. In batches, so one run stays well inside the time limit; the next night continues.
@@ -1577,7 +1660,7 @@ select public.chat_sync_org(o.org_id) from (select distinct org_id from public.l
 
 notify pgrst, 'reload schema';
 
--- VISIBLE CHECK. Expected: chat_tables 11, chat_functions 46, open_to_api 3 (the three read helpers,
+-- VISIBLE CHECK. Expected: chat_tables 11, chat_functions 49, open_to_api 3 (the three read helpers,
 -- authenticated only), anon_can_read false, authenticated_can_write false, member_policies 6,
 -- write_policies 0, venue_groups = the number of venues, realtime_tables 3 (0 where there is no
 -- supabase_realtime publication), staff_trigger true.

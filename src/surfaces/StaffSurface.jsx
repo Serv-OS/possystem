@@ -63,6 +63,17 @@ export default function StaffSurface() {
   const chatSource = useMemo(() => (stage === 'app' && !isMock && supabase ? staffChatSource(supabase) : null), [stage]);
   const chat = useTeamChat(chatSource);
   const [chatFull, setChatFull] = useState(false);   // a conversation is open: the tab bar steps aside for the composer
+  // A tapped notification: ?chat=<id> (a fresh start), the service worker's PUSH_OPEN, or the iOS shell.
+  const [chatOpenReq, setChatOpenReq] = useState(() => new URLSearchParams(window.location.search).get('chat'));
+  const [tabFromPush] = useState(() => (new URLSearchParams(window.location.search).get('chat') ? 'chat' : null));
+  useEffect(() => {
+    const go = (data) => { if (data?.conversation_id) { setChatOpenReq(String(data.conversation_id)); setTab('chat'); } };
+    const onSw = (e) => { if (e.data?.type === 'PUSH_OPEN') go(e.data.data); };
+    navigator.serviceWorker?.addEventListener?.('message', onSw);
+    window.__rposPushOpen = go;
+    return () => { navigator.serviceWorker?.removeEventListener?.('message', onSw); window.__rposPushOpen = undefined; };
+  }, []);
+  useEffect(() => { if (tabFromPush) setTab(tabFromPush); }, [tabFromPush]);
 
   // This surface was already written against env(safe-area-inset-*), but every
   // one of those was resolving to its 0px fallback: env() only reports real
@@ -219,7 +230,7 @@ export default function StaffSurface() {
       )}
       {tab === 'shifts' && <ShiftsTab snap={snap} onChanged={loadSnapshot} />}
       {tab === 'tasks' && <TasksTab snap={snap} onChanged={loadSnapshot} goToMe={() => setTab('me')} />}
-      {tab === 'chat' && <ChatTab chat={chat} locale={LOCALE} onFullScreen={setChatFull} />}
+      {tab === 'chat' && <ChatTab chat={chat} locale={LOCALE} onFullScreen={setChatFull} openRequest={chatOpenReq} onOpenHandled={() => setChatOpenReq(null)} />}
       {tab === 'news' && <NewsTab snap={snap} />}
       {tab === 'sheets' && <SheetsTab snap={snap} />}
       {tab === 'me' && <MeTab snap={snap} onSaved={loadSnapshot} />}

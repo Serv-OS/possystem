@@ -55,7 +55,7 @@ export default function ManagerChat({ ctx }) {
         {seg('reports', `Reports to check${reportCount ? ` (${reportCount})` : ''}`)}
       </div>
       {view === 'chats'
-        ? <ChatTab chat={chat} locale={ctx.locale || 'en-GB'} onFullScreen={ctx.setChatFull} />
+        ? <ChatTab chat={chat} locale={ctx.locale || 'en-GB'} onFullScreen={ctx.setChatFull} pushApp="manager" />
         : <ChatReports call={chat.call} locale={ctx.locale || 'en-GB'} onCount={setReportCount} />}
     </div>
   );

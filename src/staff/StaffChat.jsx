@@ -13,6 +13,7 @@
 
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { Icon } from '../components/ServOSIcons';
+import { registerPush, pushStatus } from '../lib/pushRegister';
 import {
   conversationTitle, kindLabel, messageText, previewText, mergeMessages, canEdit, canDelete, canReport, isMutedNow,
   seenBy, mentionAt, insertMention, mentionIds, groupReactions, sortConversations, timeLabel, newClientId, PAGE_SIZE, REACTIONS,
@@ -62,13 +63,27 @@ function PrivacyNotice({ who, onOk }) {
 }
 
 // ── The Chat tab ──────────────────────────────────────────────────────────────
-export function ChatTab({ chat, locale = 'en-GB', onFullScreen }) {
+export function ChatTab({ chat, locale = 'en-GB', onFullScreen, pushApp = 'staff', openRequest = null, onOpenHandled }) {
   const [openId, setOpenId] = useState(null);
   const [newOpen, setNewOpen] = useState(false);
+  const [push, setPush] = useState(() => pushStatus());
+  const [pushMsg, setPushMsg] = useState('');
   const { status, offText, who, me, profiles, rows, dmMembers, last, setOpen, load, setWho } = chat;
 
   const open = useCallback((id) => { setOpenId(id); setOpen(id); onFullScreen?.(!!id); }, [setOpen, onFullScreen]);
   useEffect(() => () => { setOpen(null); onFullScreen?.(false); }, [setOpen, onFullScreen]);
+  // A tapped notification asks for one chat: open it once the list has it.
+  useEffect(() => {
+    if (!openRequest || status !== 'ready' || !rows.some((c) => c.id === openRequest)) return undefined;
+    const t = setTimeout(() => { open(openRequest); onOpenHandled?.(); }, 0);
+    return () => clearTimeout(t);
+  }, [openRequest, status, rows, open, onOpenHandled]);
+  const turnOnPush = async () => {
+    setPushMsg('');
+    const r = await registerPush(chat.call, pushApp);
+    setPush(pushStatus());
+    setPushMsg(r.ok ? 'Notifications are on for this phone.' : (r.message || 'Notifications could not be turned on.'));
+  };
 
   if (status === 'idle' || status === 'loading') return <div style={{ color: 'var(--t3)', fontSize: 13, padding: 20, textAlign: 'center' }}>Loading chat…</div>;
   if (status === 'off') {
@@ -96,6 +111,12 @@ export function ChatTab({ chat, locale = 'en-GB', onFullScreen }) {
         <div style={{ fontSize: 17, fontWeight: 800 }}>Chats</div>
         <button onClick={() => setNewOpen(true)} style={primary}><span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Icon name="plus" size={13} />New</span></button>
       </div>
+      {(push === 'off' || push === 'blocked') && (
+        <button onClick={turnOnPush} className="sv-glass" style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left', padding: '10px 12px', borderRadius: 12, border: '1px solid var(--bdr)', marginBottom: 10, cursor: 'pointer', font: 'inherit', color: 'var(--t1)' }}>
+          <Icon name="bell" size={15} /><span style={{ flex: 1, fontSize: 13, fontWeight: 700 }}>{push === 'blocked' ? 'Notifications are blocked on this phone' : 'Turn on notifications'}</span>
+        </button>
+      )}
+      {pushMsg && <div style={{ fontSize: 12.5, color: 'var(--t2)', marginBottom: 8 }}>{pushMsg}</div>}
       {who?.muted_until && <div style={{ fontSize: 12.5, color: 'var(--red)', fontWeight: 600, marginBottom: 8 }}>You are muted until {new Date(who.muted_until).toLocaleString(locale, { weekday: 'short', hour: '2-digit', minute: '2-digit' })}.</div>}
       {sorted.length === 0 && <div style={{ color: 'var(--t3)', fontSize: 13, padding: 20, textAlign: 'center' }}>No chats yet. Tap New to message someone.</div>}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>

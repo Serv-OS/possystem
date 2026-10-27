@@ -509,9 +509,11 @@ Deno.serve(async (req) => {
       case 'push.register': {
         const platform = body.platform === 'apns' ? 'apns' : body.platform === 'webpush' ? 'webpush' : '';
         const sub = platform === 'webpush' && body.subscription && typeof body.subscription === 'object' ? body.subscription : null;
-        const token = platform === 'webpush' ? textOr(sub?.endpoint ?? body.token, 1000) : textOr(body.token, 1000);
+        const token = platform === 'webpush' ? textOr(sub?.endpoint ?? body.token, 1000) : textOr(body.token, 200).replace(/[^0-9a-f]/gi, '');
         if (platform === 'webpush' && !/^https:\/\//.test(token)) return refuse('bad_device');
-        return answer(await rpc('chat_push_register', { p_member: me, p_platform: platform, p_token: token, p_subscription: sub }));
+        const environment = platform === 'apns' && body.environment === 'sandbox' ? 'sandbox' : 'production';
+        const app = platform === 'webpush' ? 'web' : (body.app === 'manager' ? 'manager' : 'staff');
+        return answer(await rpc('chat_push_register', { p_member: me, p_platform: platform, p_token: token, p_subscription: sub, p_environment: environment, p_app: app }));
       }
       case 'photo.upload_url': {
         const conv = uuidOrNull(body.conversation_id);
