@@ -19,6 +19,7 @@ import { opsHeartbeat, opsRegisterDevice, opsPinLogin, opsClaimDemo } from '../l
 import { ensureAuthToken } from '../lib/supabase';
 import { fetchManagerSnapshot } from '../lib/manager/data';
 import { roleFlags, TABS } from '../lib/manager/access';
+import { regionPack } from '../lib/regionPack';
 import CardErrorBoundary from '../components/CardErrorBoundary';
 import { Icon } from '../components/ServOSIcons';
 import ManagerHome from './manager/ManagerHome';
@@ -137,7 +138,8 @@ function ManagerApp() {
       if (r?.ok) { setSnap(r); setSnapErr(''); } else setSnapErr(r?.error || 'Could not load');
     });
   };
-  const ctx = { loc, venueName, operator, flags, setTab, snap, snapErr, refreshSnap, dark, setChatFull,
+  // 5.11.102 review fix A8: dates the venue's way (en-US for a US venue), from its currency.
+  const ctx = { loc, venueName, operator, flags, setTab, snap, snapErr, refreshSnap, dark, setChatFull, locale: regionPack(snap?.money?.currency || 'GBP').locale,
     opsJump,
     goOps: (view) => { setOpsJump({ view, k: Date.now() }); setTab('ops'); },
     toggleTheme: () => { const n = !dark; setDark(n); localStorage.setItem('mgr-theme', n ? 'dark' : 'light'); } };

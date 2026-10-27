@@ -17,9 +17,10 @@
 // built in strong or mild word (a pub called The Cock, a dish called spotted dick).
 //
 // TRICKS it sees through: capitals, accents, look alike letters from other alphabets (Cyrillic,
-// Greek, full width), numbers and symbols for letters inside a word (sh1t, a$$, f@g), dots, dashes
-// and spaces between letters (f.u.c.k, f u c k), and stretched letters (fuuuuck). A number on its
-// own is never read as letters (table 455 is not a swear word).
+// Greek, full width), invisible characters (zero width spaces, soft hyphens, joiners), numbers and
+// symbols for letters inside a word (sh1t, a$$, f@g, fa66ot), any punctuation, symbol or emoji
+// between letters (f.u.c.k, n#igger), spaces (f u c k, f 4 g g 0 t), and stretched letters
+// (fuuuuck). A number on its own is never read as letters (table 455 is not a swear word).
 //
 // MONEY GUARDS: a card number (15 or 16 digits passing the Luhn check, spaces or dashes allowed)
 // and UK bank details (a sort code with an 8 digit account number, or the words sort code with
@@ -76,32 +77,48 @@ const LOOKALIKE = {
 };
 
 // Numbers and symbols that stand for letters inside a word. Two readings of 1 and | (i and l).
-const LEET_I = { '0': 'o', '1': 'i', '3': 'e', '4': 'a', '5': 's', '7': 't', '8': 'b', '9': 'g', '@': 'a', '$': 's', '!': 'i', '|': 'i', '€': 'e', '£': 'l', '+': 't' };
+const LEET_I = { '0': 'o', '1': 'i', '3': 'e', '4': 'a', '5': 's', '6': 'g', '7': 't', '8': 'b', '9': 'g', '@': 'a', '$': 's', '!': 'i', '|': 'i', '€': 'e', '£': 'l', '+': 't' };
 const LEET_L = { ...LEET_I, '1': 'l', '|': 'l', '!': 'i' };
 
 const LETTER = 'a-z\\u00f1';
-const SEP = '[\\s._\\-*,\'"`~^:;/\\\\]*';
+// Anything that is not a letter or a digit may sit between the letters of a word: spaces, dots,
+// punctuation, symbols, emoji (review fix S3, 5.11.102). Letters and digits are never skipped, so
+// the patterns stay linear (the two classes never overlap).
+const SEP = '[^a-z0-9\\u00f1]*';
 
-/** Lower case, accents off (ñ kept: coño is not cono), look alikes mapped. */
+/** Lower case, invisible characters and accents off (ñ kept: coño is not cono), look alikes mapped. */
 function fold(text) {
-  let s = String(text || '').normalize('NFKC').toLowerCase();
+  // MARKER 5.11.102 chatFilter review fix S3: zero width spaces, soft hyphens, joiners (\p{Cf}) go.
+  let s = String(text || '').normalize('NFKC').toLowerCase().replace(/\p{Cf}/gu, '');
   // Keep ñ through the accent strip.
   s = s.replace(/ñ/g, '\uE000');
-  s = s.normalize('NFKD').replace(/[̀-ͯ]/g, '');
+  s = s.normalize('NFKD').replace(/\p{M}/gu, '');
   s = s.replace(/\uE000/g, 'ñ');
   let out = '';
   for (const ch of s) out += LOOKALIKE[ch] ?? ch;
   return out;
 }
 
-/** Numbers and symbols read as letters, only inside a token that also has a letter in it. */
+/**
+ * Numbers and symbols read as letters: inside a token that also has a letter in it, and a lone digit
+ * spelled out between single letters (f 4 g g 0 t). A number on its own stays a number (table 455).
+ */
 function deLeet(text, map) {
-  return text.replace(/\S+/g, (tok) => {
-    if (!/[a-zñ]/.test(tok)) return tok;
-    let out = '';
-    for (const ch of tok) out += map[ch] ?? ch;
-    return out;
+  const toks = [];
+  text.replace(/\S+/g, (tok, at) => { toks.push({ tok, at }); return tok; });
+  const single = (i) => i >= 0 && i < toks.length && /^[a-zñ]$/.test(toks[i].tok);
+  let out = '';
+  let last = 0;
+  toks.forEach(({ tok, at }, i) => {
+    let t = tok;
+    if (/[a-zñ]/.test(tok) || (/^\d$/.test(tok) && map[tok] && (single(i - 1) || single(i + 1)))) {
+      t = '';
+      for (const ch of tok) t += map[ch] ?? ch;
+    }
+    out += text.slice(last, at) + t;
+    last = at + tok.length;
   });
+  return out + text.slice(last);
 }
 
 /** The readings of a text that the word patterns run over (folded; with 1 as i; with 1 as l). */

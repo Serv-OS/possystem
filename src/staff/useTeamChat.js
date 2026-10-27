@@ -25,6 +25,15 @@ export function useTeamChat(source) {
   const reloadTimer = useRef(null);
   const marks = useRef({});                         // my read markers, sent once each
 
+  // MARKER 5.11.102 useTeamChat review fix A6: a new source (signed out, someone else signed in)
+  // starts from nothing, so the last person's chats never show for a moment.
+  const [prevSource, setPrevSource] = useState(source);
+  if (source !== prevSource) {
+    setPrevSource(source);
+    setStatus('idle'); setOffText(''); setWho(null); setProfiles({}); setConvs([]); setMine({}); setDmMembers({}); setLast({}); setUnread({});
+  }
+  useEffect(() => { marks.current = {}; openRef.current = null; }, [source]);
+
   const me = who?.member_id || null;
   const call = useCallback((body) => (source ? source.call(body) : Promise.resolve({ ok: false, code: 'off' })), [source]);
 
@@ -62,11 +71,27 @@ export function useTeamChat(source) {
     return () => { document.removeEventListener('visibilitychange', onVis); if (t) clearInterval(t); };
   }, [source, load, reloadSoon]);
 
+  const minesRef = useRef(mine);
+  useEffect(() => { minesRef.current = mine; }, [mine]);
+
   const convKey = convs.map((c) => c.id).slice(0, 100).join(',');
   useEffect(() => {
     if (!source?.live || !me) return undefined;
     return source.subscribe(me, convKey ? convKey.split(',') : [], ({ table, p }) => {
-      if (table === 'members') { reloadSoon(); return; }
+      // review fix A2: my own row changing (read marker, mute) is patched in place; only joining a
+      // chat or leaving one reloads the list.
+      if (table === 'members') {
+        const row = p.new || {};
+        const known = row.conversation_id && Object.prototype.hasOwnProperty.call(minesRef.current, row.conversation_id);
+        if (p.eventType === 'UPDATE' && known && !row.left_at) {
+          setMine((m) => ({ ...m, [row.conversation_id]: { ...m[row.conversation_id], muted_until: row.muted_until, last_read_message_id: row.last_read_message_id, role: row.role } }));
+          const mark = Number(row.last_read_message_id || 0);
+          if (mark > (marks.current[row.conversation_id] || 0)) marks.current[row.conversation_id] = mark;
+          return;
+        }
+        reloadSoon();
+        return;
+      }
       if (table === 'reactions') {
         for (const fn of listeners.current) fn({ type: 'reaction', row: p.new && p.new.message_id ? p.new : null, old: p.old, event: p.eventType });
         return;

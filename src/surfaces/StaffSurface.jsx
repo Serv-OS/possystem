@@ -28,6 +28,7 @@ import { wfMoneyText } from '../lib/regionPack';
 import { ChatTab } from '../staff/StaffChat';
 import { useTeamChat } from '../staff/useTeamChat';
 import { staffChatSource } from '../staff/chatSource';
+import { unregisterPush } from '../lib/pushRegister';
 
 const glass = { padding: '14px 16px', borderRadius: 16 };
 
@@ -211,7 +212,7 @@ export default function StaffSurface() {
             style={{ padding: '7px 10px', borderRadius: 999, border: '1px solid var(--bdr)', color: 'var(--t3)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, lineHeight: 1 }}>
             <span style={{ display: 'inline-block', animation: refreshing ? 'spin 0.9s linear infinite' : 'none' }}>↻</span>
           </button>
-          <button onClick={async () => { await supabase.auth.signOut(); setSnap(null); setStage('login'); }} className="sv-glass" style={{ padding: '7px 12px', borderRadius: 999, border: '1px solid var(--bdr)', color: 'var(--t3)', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>Sign out</button>
+          <button onClick={async () => { await unregisterPush(chat.call); await supabase.auth.signOut(); setSnap(null); setStage('login'); }} className="sv-glass" style={{ padding: '7px 12px', borderRadius: 999, border: '1px solid var(--bdr)', color: 'var(--t3)', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>Sign out</button>
         </div>
       }
     >

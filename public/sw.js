@@ -37,18 +37,33 @@ self.addEventListener('message', e => {
 // Web Push for the home screen staff app (Android, desktop, iPhone home screen). The server
 // (supabase/functions/_shared/push.ts) encrypts { title, body, tag, data } for this browser; the
 // push service never sees the words. No Firebase: the browser's own push service, our VAPID keys.
+// Which chat each open window has on screen (the page tells us). review fix A5: no banner and no
+// sound for the chat someone is looking at. Lost if the worker sleeps; then the banner shows.
+const openChats = new Map();
+self.addEventListener('message', e => {
+  if (e.data?.type === 'CHAT_OPEN' && e.source?.id) openChats.set(e.source.id, e.data.conversation_id || null);
+});
+
 self.addEventListener('push', e => {
   let msg = {};
   try { msg = e.data ? e.data.json() : {}; } catch { msg = { body: e.data ? e.data.text() : '' }; }
   const title = msg.title || 'ServOS';
-  e.waitUntil(self.registration.showNotification(title, {
+  const chatId = msg.data?.conversation_id || null;
+  const show = () => self.registration.showNotification(title, {
     body: msg.body || '',
     tag: msg.tag || undefined,
     renotify: !!msg.tag,
     icon: '/icons/icon-192x192.png',
     badge: '/icons/icon-72x72.png',
     data: msg.data || {},
-  }));
+  });
+  e.waitUntil((async () => {
+    if (chatId) {
+      const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      if (wins.some(w => w.focused && w.visibilityState === 'visible' && openChats.get(w.id) === chatId)) return;
+    }
+    return show();
+  })());
 });
 
 // Tapping a notification opens (or focuses) the staff app, on the chat when it was a chat message.

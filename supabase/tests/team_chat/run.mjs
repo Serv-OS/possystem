@@ -37,7 +37,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, '..', '..', '..');
 const MIGRATION = process.env.CHAT_MIGRATION || join(repo, 'supabase/migrations/20261103a_OPS_team_chat.sql');
 const ROLLBACK = process.env.CHAT_ROLLBACK || join(repo, 'supabase/migrations/20261103a_OPS_team_chat_ROLLBACK.sql');
-const EXPECT_CHECK = '11|49|3|f|f|6|0|t|3|t';
+const EXPECT_CHECK = '11|50|3|f|f|6|0|t|3|t';
 
 const bin = (name) => (existsSync(`/opt/homebrew/bin/${name}`) ? `/opt/homebrew/bin/${name}` : name);
 const env = { ...process.env, LC_ALL: 'en_US.UTF-8', PGOPTIONS: '-c client_min_messages=warning' };
@@ -127,6 +127,7 @@ try {
   ok(check === EXPECT_CHECK, `check row as documented (${check})`);
   const again = psql({ args: ['-1', '-f', MIGRATION], allowFail: true });
   ok(again.status !== 0 && /has run already/.test(again.stderr), 'a second run is refused');
+  ok(sql(`select count(*) from pg_indexes where indexname in ('chat_messages_reply_to', 'chat_reports_message')`) === '2', 'review fix S6: reply and report lookups are indexed');
   const raw = readFileSync(MIGRATION, 'utf8') + readFileSync(ROLLBACK, 'utf8');
   ok([...raw].every((c) => c.charCodeAt(0) < 128) && !raw.includes('!'), 'both files are ASCII and carry no exclamation mark');
 
@@ -252,6 +253,18 @@ try {
   ok(fn('chat_edit', lit(MA.a2), m1.message.id, lit('hacked')).code === 'not_yours', 'nobody else can edit it');
   sql(`update public.chat_messages set created_at = now() - interval '16 minutes' where id = ${m1.message.id}`);
   ok(fn('chat_edit', lit(MA.a1), m1.message.id, lit('later')).code === 'too_late', 'after 15 minutes it cannot be edited');
+  {
+    const fresh = fn('chat_send', lit(MA.a2), lit(V1), lit('typo here'), "'[]'", 'null', 'false', 'null', "'{}'");
+    sql(`insert into public.chat_person_state (member_id, org_id, muted_until) values (${lit(MA.a2)}, ${lit(ORG_A)}, now() + interval '1 hour')`);
+    ok(fn('chat_edit', lit(MA.a2), fresh.message.id, lit('typo fixed')).code === 'muted', 'review fix S8: a muted person cannot edit either');
+    sql(`update public.chat_person_state set muted_until = null, chat_off = true where member_id = ${lit(MA.a2)}`);
+    ok(fn('chat_edit', lit(MA.a2), fresh.message.id, lit('typo fixed')).code === 'chat_off', 'nor someone with chat off');
+    sql(`delete from public.chat_person_state where member_id = ${lit(MA.a2)}`);
+    sql(`update public.chat_conversations set archived_at = now() where id = ${lit(V1)}`);
+    ok(fn('chat_edit', lit(MA.a2), fresh.message.id, lit('typo fixed')).code === 'archived', 'nor in a closed chat');
+    sql(`update public.chat_conversations set archived_at = null where id = ${lit(V1)}`);
+    ok(fn('chat_edit', lit(MA.a2), fresh.message.id, lit('typo fixed')).ok === true, 'otherwise the edit goes through');
+  }
   ok(fn('chat_delete', lit(MA.a2), m1.message.id).code === 'not_yours', 'nobody else can delete it');
   const d1 = fn('chat_delete', lit(MA.a1), dmMsg.message.id);
   ok(d1.ok === true && d1.message.body === '' && d1.message.deleted_at, 'the sender deletes their own message: the text is gone for everyone');
@@ -290,6 +303,27 @@ try {
   ok(fn('chat_send', lit(MA.a2), lit(V1), lit('hello?'), "'[]'", 'null', 'false', 'null', "'{}'").code === 'muted', 'Dev cannot post while muted');
   ok(cnt(U.a2, 'select count(*) from public.chat_messages') !== '0', 'but still reads');
   ok(fn('chat_mod', lit(MO.mA1), lit('mute_person'), 'null', 'null', lit(MA.a5), 'null', 'null', 'null').code === 'not_allowed', 'the Leeds manager cannot mute Pat (Hudds only)');
+  // Review fix S1: who a moderation is about comes from the database, never the caller (X1 to X4).
+  {
+    const om = fn('chat_send', lit(MO.oA), lit(V1), lit('owner says hi'), "'[]'", 'null', 'false', 'null', "'{}'");
+    const x1 = fn('chat_mod', lit(MO.mA1), lit('hide'), 'null', om.message.id, lit(MA.a1), 'null', 'null', 'null');
+    ok(x1.code === 'mismatch' && sql(`select status from public.chat_messages where id = ${om.message.id}`) === 'visible', 'X1: a manager cannot hide the owner\'s message by naming someone else');
+    ok(fn('chat_mod', lit(MO.mA1), lit('hide'), 'null', om.message.id, 'null', 'null', 'null', 'null').code === 'not_allowed', 'nor plainly (managers never moderate an owner)');
+    ok(fn('chat_mod', lit(MO.mA1), lit('chat_off'), 'null', 'null', lit(MA.a5), lit(V1), 'null', 'null').code === 'not_allowed'
+      && sql(`select count(*) from public.chat_person_state where member_id = ${lit(MA.a5)} and chat_off`) === '0', 'X2: naming his own venue\'s group does not let the Leeds manager switch Pat (Hudds) off');
+    ok(fn('chat_mod', lit(MO.mA1), lit('chat_off'), 'null', 'null', lit(MO.mA2), lit(V1), 'null', 'null').code === 'not_allowed', 'X3: nor the Hudds manager');
+    ok(fn('chat_mod', lit(MO.mA1), lit('mute_person'), 'null', 'null', lit(MA.a3), lit(V1), 'null', 'null').ok === true, 'he still mutes Quinn, who works at Leeds too');
+    fn('chat_mod', lit(MO.mA1), lit('unmute_person'), 'null', 'null', lit(MA.a3), 'null', 'null', 'null');
+    const mmx = fn('chat_send', lit(MO.mA1), lit(V1), lit('manager rant'), "'[]'", 'null', 'false', 'null', "'{}'");
+    const repx = fn('chat_report', lit(MA.a1), mmx.message.id, lit('about the manager'));
+    fn('chat_mod', lit(MO.oA), lit('hide'), lit(repx.report_id), 'null', 'null', 'null', 'null', 'null');
+    const x4 = fn('chat_mod', lit(MO.mA1), lit('keep'), lit(repx.report_id), 'null', lit(MA.a1), 'null', 'null', 'null');
+    ok(x4.code === 'mismatch' && sql(`select status from public.chat_reports where id = ${lit(repx.report_id)}`) === 'hidden', 'X4: a manager cannot keep a report about himself by naming someone else');
+    ok(fn('chat_mod', lit(MO.mA1), lit('keep'), lit(repx.report_id), 'null', 'null', 'null', 'null', 'null').code === 'own_report', 'nor plainly');
+    ok(fn('chat_mod', lit(MO.mA1), lit('hide'), lit(repx.report_id), String(m1.message.id), 'null', 'null', 'null', 'null').code === 'mismatch', 'a report with a different message is refused');
+    ok(fn('chat_mod', lit(MO.mA2), lit('remove'), 'null', 'null', lit(MA.a1), lit(VB), 'null', 'null').code === 'not_found', 'remove: never a group of another company');
+    fn('chat_mod', lit(MO.oA), lit('keep'), lit(repx.report_id), 'null', 'null', 'null', 'null', 'null');
+  }
   ok(fn('chat_mod', lit(MO.mA1), lit('chat_off'), 'null', 'null', lit(MA.a2), 'null', 'null', lit('investigation')).ok === true, 'chat off for Dev');
   ok(cnt(U.a2, 'select count(*) from public.chat_messages') === '0' && fn('chat_send', lit(MA.a2), lit(V1), lit('x'), "'[]'", 'null', 'false', 'null', "'{}'").code === 'chat_off', 'Dev now reads and sends nothing');
   fn('chat_mod', lit(MO.mA1), lit('chat_on'), 'null', 'null', lit(MA.a2), 'null', 'null', 'null');
@@ -318,6 +352,9 @@ try {
   ok(fn('chat_push_register', lit(MA.a1), lit('apns'), lit('ab'.repeat(32)), 'null', lit('sandbox'), lit('staff')).ok === true
     && sql(`select environment from public.push_devices where token = '${'ab'.repeat(32)}'`) === 'sandbox', 'an Xcode build registers with the sandbox environment kept');
   ok(fn('chat_push_register', lit(MA.a1), lit('apns'), lit('cd'.repeat(32)), 'null', lit('beta'), lit('staff')).code === 'bad_device', 'an unknown environment is refused');
+  ok(fn('chat_push_register', lit(MA.a1), lit('apns'), lit('ef'.repeat(32)), 'null', lit('production'), lit('manager')).code === 'bad_device', 'review fix A3: no push on the Manager app (shared venue devices)');
+  ok(fn('chat_push_unregister', lit(MA.b1), lit('apns'), lit('ab'.repeat(32))).removed === 0, 'signing out forgets only your own phone');
+  sql(`insert into public.push_devices (org_id, member_id, platform, token, app) values (${lit(ORG_A)}, ${lit(MA.a1)}, 'apns', '${'99'.repeat(32)}', 'manager')`);
   ok(fn('chat_send', lit(MA.a1), lit(V1), lit(''), `'[{"path":"${ORG_B}/${V1}/x.jpg"}]'`, 'null', 'false', 'null', "'{}'").code === 'bad_photos', 'a photo path outside this company and group is refused');
   ok(fn('chat_send', lit(MA.a1), lit(V1), lit(''), `'[{"path":"${ORG_A}/${V1}/x.jpg","caption":"tonight"}]'`, 'null', 'false', 'null', "'{}'").ok === true, 'a photo in its own folder is fine');
   ok(fn('chat_send', lit(MA.a1), lit(V1), lit('   '), "'[]'", 'null', 'false', 'null', "'{}'").code === 'empty', 'an empty message is refused');
@@ -397,6 +434,8 @@ try {
     ok(targetsOf(urgent2.message.id).targets.every((x) => x.sms === null), 'no text backup when the setting is off');
     fn('chat_settings_save', lit(MO.oA), `'{"quiet_off_shift":false,"sms_backup_urgent":true}'`);
     ok(ids(targetsOf(plain.message.id)).includes(MA.a5) === false && ids(targetsOf(plain.message.id)).length > 50, 'quiet off: everyone in the chat but muted people');
+    ok(!JSON.stringify(fn('chat_push_staff_devices', arr([S.a1]))).includes('99'.repeat(32)), 'a Manager app phone (an older row) is never pushed');
+    ok(fn('chat_push_unregister', lit(MA.a1), lit('apns'), lit('ab'.repeat(32))).removed === 1, 'signing out of the staff app forgets that phone');
     const sd = fn('chat_push_staff_devices', arr([S.a2, S.a5]));
     ok(sd.ok && sd.staff.length === 1 && sd.staff[0].staff_id === S.a2, 'rota messages find a staff member\'s phones');
     ok(read(U.a1, 'select public.chat_push_targets(1)').sqlstate === '42501', 'nobody but the server can ask who a push reaches');
@@ -450,7 +489,8 @@ try {
   const rb2 = psql({ args: ['-1', '-f', ROLLBACK] });
   const rbCheck = rb2.stdout.trim().split('\n').pop();
   ok(rbCheck === '0|0|f|t', `rollback check row (${rbCheck})`);
-  ok(sql(`select count(*) from public.wf_staff`) !== '0' && sql(`select count(*) from storage.buckets where id = 'chat-photos'`) === '0', 'staff kept, the empty photo bucket gone');
+  ok(sql(`select count(*) from public.wf_staff`) !== '0' && sql(`select count(*) from storage.buckets where id = 'chat-photos'`) === '0', 'staff kept, the empty photo bucket gone (through protect_buckets_delete, review fix S4)');
+  ok(as('postgres', `delete from storage.buckets where id = 'nothing'`).status !== 0, 'the harness bucket guard is real: a plain delete is refused');
   const reapply = psql({ args: ['-1', '-f', MIGRATION], allowFail: true });
   ok(reapply.status === 0 && reapply.stdout.trim().split('\n').pop() === EXPECT_CHECK, 'the migration applies again after the rollback');
   ok(Number(sql(`select count(*) from public.chat_members where conversation_id = (select id from public.chat_conversations where kind = 'venue' and location_id = ${lit(LA1)})`)) > 50, 'and rebuilds the venue groups');

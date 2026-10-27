@@ -24,16 +24,86 @@ export function pushKind(w = typeof window !== 'undefined' ? window : {}) {
   return 'none';
 }
 
-/** 'on' | 'off' | 'blocked' | 'unsupported' for the button label (the iOS shell always says off until asked). */
-export function pushStatus(w = typeof window !== 'undefined' ? window : {}) {
+/**
+ * 'on' | 'off' | 'blocked' | 'unsupported' for the button. Never only the saved flag (review fix A7):
+ * the iOS shell reports iOS's own permission (window.RposPush.permission), a browser its permission
+ * and whether a subscription really exists (pass the registration's subscription when known).
+ */
+export function pushStatus(w = typeof window !== 'undefined' ? window : {}, { subscribed = null } = {}) {
   const kind = pushKind(w);
   if (kind === 'none') return 'unsupported';
-  if (kind === 'ios') return w.localStorage?.getItem?.('rpos-push-on') === '1' ? 'on' : 'off';
+  let flag = false;
+  try { flag = w.localStorage?.getItem?.('rpos-push-on') === '1'; } catch { flag = false; }
+  if (kind === 'ios') {
+    const perm = w.RposPush.permission;
+    if (perm === 'denied') return 'blocked';
+    return perm === 'granted' && flag ? 'on' : 'off';
+  }
   if (w.Notification.permission === 'denied') return 'blocked';
-  return w.Notification.permission === 'granted' && w.localStorage?.getItem?.('rpos-push-on') === '1' ? 'on' : 'off';
+  if (w.Notification.permission !== 'granted') return 'off';
+  if (subscribed === false) return 'off';
+  return flag ? 'on' : 'off';
 }
 
-const remember = () => { try { localStorage.setItem('rpos-push-on', '1'); } catch { /* private mode */ } };
+/** Whether this browser really has a push subscription (null when unknown). */
+export async function webSubscribed() {
+  try {
+    if (pushKind() !== 'web') return null;
+    const reg = await navigator.serviceWorker.getRegistration();
+    return !!(reg && (await reg.pushManager.getSubscription()));
+  } catch {
+    return null;
+  }
+}
+
+const remember = (token) => {
+  try {
+    localStorage.setItem('rpos-push-on', '1');
+    if (token) localStorage.setItem('rpos-push-token', token);
+  } catch { /* private mode */ }
+};
+const forget = () => { try { localStorage.removeItem('rpos-push-on'); localStorage.removeItem('rpos-push-token'); } catch { /* private mode */ } };
+
+/**
+ * The iOS shell re-sends the token at every launch when permission is already given (a token can
+ * change). Register it quietly. Call once the person's chat is ready. review fix A7.
+ */
+export function quietIosRefresh(call, app = 'staff') {
+  if (typeof window === 'undefined' || pushKind() !== 'ios') return;
+  const go = async (t) => {
+    if (!t?.token) return;
+    const r = await call({ action: 'push.register', platform: 'apns', token: t.token, environment: t.environment === 'sandbox' ? 'sandbox' : 'production', app });
+    if (r.ok) remember(t.token);
+  };
+  window.__rposPushQuiet = go;
+  if (window.__rposPushLast) go(window.__rposPushLast);
+}
+
+/** Forget this phone for this person (before signing out of the staff app). Never throws. review fix A3/A6. */
+export async function unregisterPush(call) {
+  try {
+    const kind = pushKind();
+    if (kind === 'ios') {
+      const token = localStorage.getItem('rpos-push-token');
+      if (token) await call({ action: 'push.unregister', platform: 'apns', token });
+    } else if (kind === 'web') {
+      const reg = await navigator.serviceWorker.getRegistration();
+      const sub = reg && (await reg.pushManager.getSubscription());
+      if (sub) {
+        await call({ action: 'push.unregister', platform: 'webpush', subscription: { endpoint: sub.endpoint } });
+        await sub.unsubscribe().catch(() => {});
+      }
+    }
+  } catch { /* signing out still happens */ }
+  forget();
+  if (typeof window !== 'undefined') window.__rposPushQuiet = undefined;
+}
+
+/** The page tells the shell and the service worker which chat is on screen (no banner for it). review fix A5. */
+export function setOpenChat(id) {
+  try { window.RposPush?.setOpen?.(id || null); } catch { /* old shell */ }
+  try { navigator.serviceWorker?.controller?.postMessage({ type: 'CHAT_OPEN', conversation_id: id || null }); } catch { /* no worker */ }
+}
 
 /** Ask, subscribe and register. call: the team-chat caller; app: 'staff' or 'manager' (the iOS topic). */
 export async function registerPush(call, app = 'staff') {
@@ -45,7 +115,7 @@ export async function registerPush(call, app = 'staff') {
       window.__rposPushToken = async (res) => {
         if (!res || res.error || !res.token) { done({ ok: false, message: res?.error === 'denied' ? 'Notifications are off for this app in Settings.' : 'Notifications could not be turned on.' }); return; }
         const r = await call({ action: 'push.register', platform: 'apns', token: res.token, environment: res.environment === 'sandbox' ? 'sandbox' : 'production', app });
-        if (r.ok) remember();
+        if (r.ok) { remember(res.token); window.RposPush.permission = 'granted'; }
         done(r);
       };
       window.RposPush.register();

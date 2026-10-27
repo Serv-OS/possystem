@@ -340,7 +340,8 @@ targets:
         MARKETING_VERSION: "1.0.0"
         # Build 6 (5.11.102): app push for team chat (PushBridge.swift, RPOS_PUSH).
         CURRENT_PROJECT_VERSION: "6"
-        SWIFT_ACTIVE_COMPILATION_CONDITIONS: RPOS_PUSH
+        # $(inherited) keeps DEBUG in debug builds (the sandbox push host). review fix A7.
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) RPOS_PUSH
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: LYQ8K25MGZ
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -486,7 +487,7 @@ targets:
         # #if RPOS_LOCATION). Apple's upload check reads the BINARY: any target that
         # carries CoreLocation without NSLocationWhenInUseUsageDescription is rejected
         # with ITMS-90683, which is what stopped ServOS KDS build 5 on 28 Sep 2026.
-        SWIFT_ACTIVE_COMPILATION_CONDITIONS: RPOS_LOCATION RPOS_PUSH
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) RPOS_LOCATION RPOS_PUSH
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: LYQ8K25MGZ
         TARGETED_DEVICE_FAMILY: "1,2"

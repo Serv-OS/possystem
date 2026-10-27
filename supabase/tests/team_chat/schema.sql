@@ -29,6 +29,15 @@ alter default privileges in schema public grant all on functions to anon, authen
 create schema if not exists storage;
 create table storage.buckets (id text primary key, name text not null, public boolean default false);
 create table storage.objects (id uuid primary key default gen_random_uuid(), bucket_id text, name text);
+-- As live: a direct delete from storage.buckets is refused unless storage.allow_delete_query is 'true'.
+create function storage.protect_delete() returns trigger language plpgsql as $$
+begin
+  if coalesce(current_setting('storage.allow_delete_query', true), '') <> 'true' then
+    raise exception 'Direct deletion from storage tables is not allowed. Use the Storage API instead.';
+  end if;
+  return old;
+end $$;
+create trigger protect_buckets_delete before delete on storage.buckets for each statement execute function storage.protect_delete();
 create publication supabase_realtime;
 
 create table public.organisations (id uuid primary key, name text not null);

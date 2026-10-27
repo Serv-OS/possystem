@@ -92,8 +92,21 @@ test('push: no Firebase anywhere, Apple and Web Push direct, push before the tex
   assert.match(push, /co\.posup\.rpos\.manager/);
   assert.match(push, /apnsHost\(d\.environment\)/, 'the host follows the phone');
   const notify = read('supabase/functions/_shared/staffNotify.ts');
-  assert.ok(notify.indexOf('pushStaff(') < notify.indexOf('targets.slice(0, limit).map((to) => sendOne('), 'push first, then text the rest');
-  assert.match(read('ios/project.yml'), /SWIFT_ACTIVE_COMPILATION_CONDITIONS: RPOS_LOCATION RPOS_PUSH/);
+  // review fix S5: the text still goes to everyone; the push runs beside it with a short cap.
+  assert.doesNotMatch(notify, /pushedIds\.has\(p\.id\)/, 'nobody is skipped for the text because of a push');
+  assert.match(notify, /const PUSH_CAP_MS = 3000;/);
+  assert.ok(notify.indexOf('const pushing = pushStaff(') < notify.indexOf('await Promise.all(targets'), 'the push starts, then the texts are awaited');
+  assert.match(read("ios/project.yml"), /SWIFT_ACTIVE_COMPILATION_CONDITIONS: \$\(inherited\) RPOS_LOCATION RPOS_PUSH/, "DEBUG survives (A7)");
   assert.match(read('public/sw.js'), /addEventListener\('push'/);
   assert.doesNotMatch(read('src/lib/pushConfig.js'), /VAPID_PRIVATE_KEY=/, 'only the public key is in git');
+});
+
+test('review fix S2: the Manager app PIN never becomes a login, never reaches owner tools or push', () => {
+  const pin = FN.slice(FN.indexOf('async function pinCaller'), FN.indexOf('async function loginCaller'));
+  assert.doesNotMatch(pin, /auth_user_id\)|loginCaller\(/, 'no staff_members.auth_user_id branch');
+  assert.match(pin, /eq\('pos_user_id', op\.id\)\.eq\('org_id', orgId\)/, 'only the till user\'s Workforce record in the paired venue\'s company');
+  const never = FN.match(/PIN_NEVER = new Set\(\[([^\]]+)\]\)/)[1];
+  for (const a of ['owner.open_dm', 'export_person', 'settings.save', 'words.get', 'words.save', 'log.list', 'dm.list', 'push.register']) assert.match(never, new RegExp(`'${a.replace('.', '\\.')}'`), a);
+  assert.match(FN, /if \(w\?\.level !== 'manager'\) return refuse/, 'moderation through a PIN is capped at manager');
+  assert.match(FN, /if \(want && !orgs\.has\(want\)\) return json/, 'no quiet fallback to another company');
 });

@@ -13,7 +13,7 @@
 
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { Icon } from '../components/ServOSIcons';
-import { registerPush, pushStatus } from '../lib/pushRegister';
+import { registerPush, pushStatus, webSubscribed, quietIosRefresh, setOpenChat } from '../lib/pushRegister';
 import {
   conversationTitle, kindLabel, messageText, previewText, mergeMessages, canEdit, canDelete, canReport, isMutedNow,
   seenBy, mentionAt, insertMention, mentionIds, groupReactions, sortConversations, timeLabel, newClientId, PAGE_SIZE, REACTIONS,
@@ -64,24 +64,46 @@ function PrivacyNotice({ who, onOk }) {
 
 // ── The Chat tab ──────────────────────────────────────────────────────────────
 export function ChatTab({ chat, locale = 'en-GB', onFullScreen, pushApp = 'staff', openRequest = null, onOpenHandled }) {
+  // pushApp 'none': no notifications offered (the Manager app runs on shared venue devices, A3).
   const [openId, setOpenId] = useState(null);
   const [newOpen, setNewOpen] = useState(false);
-  const [push, setPush] = useState(() => pushStatus());
+  const [push, setPush] = useState(() => (pushApp === 'none' ? 'unsupported' : pushStatus()));
   const [pushMsg, setPushMsg] = useState('');
+  const [catchUp, setCatchUp] = useState(0);        // a tap on a notification for the chat already open
   const { status, offText, who, me, profiles, rows, dmMembers, last, setOpen, load, setWho } = chat;
 
-  const open = useCallback((id) => { setOpenId(id); setOpen(id); onFullScreen?.(!!id); }, [setOpen, onFullScreen]);
+  const conv = openId ? rows.find((c) => c.id === openId) || null : null;
+  const open = useCallback((id) => { setOpenId(id); setOpen(id); }, [setOpen]);
+  // MARKER 5.11.102 ChatTab review fix A4: full screen follows the chat that is really open; a chat
+  // that disappears (left, removed, closed) hands the tab bar back.
+  useEffect(() => { onFullScreen?.(!!conv); }, [conv, onFullScreen]);
+  useEffect(() => {
+    if (status !== 'ready' || !openId || conv) return undefined;
+    const t = setTimeout(() => open(null), 0);
+    return () => clearTimeout(t);
+  }, [status, openId, conv, open]);
   useEffect(() => () => { setOpen(null); onFullScreen?.(false); }, [setOpen, onFullScreen]);
-  // A tapped notification asks for one chat: open it once the list has it.
+  // A tapped notification asks for one chat: open it once the list has it, or catch up if it is open.
   useEffect(() => {
     if (!openRequest || status !== 'ready' || !rows.some((c) => c.id === openRequest)) return undefined;
-    const t = setTimeout(() => { open(openRequest); onOpenHandled?.(); }, 0);
+    const t = setTimeout(() => {
+      if (openRequest === openId) setCatchUp((n) => n + 1); else open(openRequest);
+      onOpenHandled?.();
+    }, 0);
     return () => clearTimeout(t);
-  }, [openRequest, status, rows, open, onOpenHandled]);
+  }, [openRequest, status, rows, open, openId, onOpenHandled]);
+  // The real state of push on this phone, and the iOS shell's token re-sent quietly at launch (A7).
+  useEffect(() => {
+    if (pushApp === 'none' || status !== 'ready') return undefined;
+    let alive = true;
+    quietIosRefresh(chat.call, pushApp);
+    webSubscribed().then((subscribed) => { if (alive) setPush(pushStatus(window, { subscribed })); });
+    return () => { alive = false; };
+  }, [pushApp, status, chat.call]);
   const turnOnPush = async () => {
     setPushMsg('');
     const r = await registerPush(chat.call, pushApp);
-    setPush(pushStatus());
+    setPush(pushStatus(window, { subscribed: await webSubscribed() }));
     setPushMsg(r.ok ? 'Notifications are on for this phone.' : (r.message || 'Notifications could not be turned on.'));
   };
 
@@ -100,8 +122,7 @@ export function ChatTab({ chat, locale = 'en-GB', onFullScreen, pushApp = 'staff
   if (who?.chat_off) return <div className="sv-glass" style={{ padding: 18, borderRadius: 16, fontSize: 14, color: 'var(--t2)' }}>Chat is switched off for you. Please speak to your manager.</div>;
 
   const titleOf = (c) => conversationTitle(c, { me, membersByConv: dmMembers, profilesById: profiles });
-  const conv = openId ? rows.find((c) => c.id === openId) : null;
-  if (openId && conv) return <Conversation key={conv.id} chat={chat} conv={conv} title={titleOf(conv)} locale={locale} onBack={() => open(null)} />;
+  if (conv) return <Conversation key={conv.id} chat={chat} conv={conv} title={titleOf(conv)} locale={locale} catchUp={catchUp} onBack={() => open(null)} />;
 
   const canGroup = who && (who.level !== 'staff' || who.settings?.groups_by === 'everyone');
   const sorted = sortConversations(rows, titleOf);
@@ -202,7 +223,7 @@ function NewChat({ chat, canGroup, onClose, onOpened }) {
 }
 
 // ── One conversation ──────────────────────────────────────────────────────────
-function Conversation({ chat, conv, title, locale, onBack }) {
+function Conversation({ chat, conv, title, locale, catchUp = 0, onBack }) {
   const { me, profiles, mine, subscribe, markRead, reloadSoon, source, call } = chat;
   const [msgs, setMsgs] = useState([]);
   const [reactions, setReactions] = useState([]);
@@ -250,22 +271,38 @@ function Conversation({ chat, conv, title, locale, onBack }) {
     return list;
   }, [conv.id, source]);
 
-  // No live channel (the Manager app): ask for anything newer every few seconds while on screen.
+  // Anything newer than what is on screen: merged in and marked read.
   const newest = msgs.length ? msgs[msgs.length - 1].id : null;
+  const fetchNewer = useCallback(async () => {
+    const { messages, reactions: rs } = await source.thread(conv.id, { after: newest });
+    if (messages.length) {
+      setMsgs((m) => mergeMessages(m, messages));
+      setReactions((r) => [...r, ...rs]);
+      markRead(conv.id, messages[0].id);
+      scrollEnd();
+    }
+  }, [source, conv.id, newest, markRead]);
+  // No live channel (the Manager app): ask every few seconds while on screen.
   useEffect(() => {
     if (source.live || loading) return undefined;
-    const t = setInterval(async () => {
-      if (document.visibilityState !== 'visible') return;
-      const { messages, reactions: rs } = await source.thread(conv.id, { after: newest });
-      if (messages.length) {
-        setMsgs((m) => mergeMessages(m, messages));
-        setReactions((r) => [...r, ...rs]);
-        markRead(conv.id, messages[0].id);
-        scrollEnd();
-      }
-    }, 5000);
+    const t = setInterval(() => { if (document.visibilityState === 'visible') fetchNewer(); }, 5000);
     return () => clearInterval(t);
-  }, [source, loading, conv.id, newest, markRead]);
+  }, [source, loading, fetchNewer]);
+  // MARKER 5.11.102 Conversation review fix A1: back from sleep, or a tapped notification for this
+  // chat, catches up (the live channel says nothing about what happened while the phone slept).
+  useEffect(() => {
+    if (loading) return undefined;
+    const onVis = () => { if (document.visibilityState === 'visible') fetchNewer(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, [loading, fetchNewer]);
+  useEffect(() => {
+    if (!catchUp || loading) return undefined;
+    const t = setTimeout(fetchNewer, 0);
+    return () => clearTimeout(t);
+  }, [catchUp, loading, fetchNewer]);
+  // review fix A5: the shell and the service worker know which chat is on screen (no banner for it).
+  useEffect(() => { setOpenChat(conv.id); return () => setOpenChat(null); }, [conv.id]);
 
   useEffect(() => {
     let alive = true;   // one Conversation per chat (keyed by its id), so the state starts empty

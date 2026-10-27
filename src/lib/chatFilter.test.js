@@ -137,3 +137,20 @@ test('matchers are cached per setting and the lists are frozen', () => {
   assert.equal(findBlocked('', buildMatcher({})), null);
   assert.ok(readings('Sh1t').includes('shit') && readings('Sh1t').includes('shlt'));
 });
+
+test('review fix S3: symbols, emoji and invisible characters between letters, 6 for g, digits spelled out', () => {
+  for (const t of ['n#igger', 'n=igger', 'n😀igger', 'fa66ot', 'n1663r', 'f 4 g g 0 t', 'f​u​c​k', 'sh­it', 'cu‍nt', 'f́ück', 'fu♥ck']) {
+    assert.ok(blocked(t, { level: 'standard' }), JSON.stringify(t));
+  }
+  assert.equal(checkText('n#igger', { level: 'custom' }).category, 'hate');
+  for (const t of ['table 4 and 6 covers', 'call 0 7 7 0 0', 'see you at 6', 'shift 1 of 3', 'tables 6 and 8, then 4']) {
+    assert.ok(passes(t, { level: 'strict' }), t);
+  }
+});
+
+test('review fix S3: the worst case stays fast', () => {
+  const nasty = ['f.'.repeat(1990), 'a!'.repeat(1999), ('s' + '​'.repeat(3)).repeat(900), 'n#'.repeat(1990) + 'x'];
+  const t0 = Date.now();
+  for (const n of nasty) for (const level of ['strict', 'standard']) checkText(n, { level, block: ['secret menu', 'competitor'] });
+  assert.ok(Date.now() - t0 < 1500, `took ${Date.now() - t0} ms`);
+});

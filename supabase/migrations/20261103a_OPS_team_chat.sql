@@ -180,6 +180,7 @@ create index chat_messages_conv_time on public.chat_messages (conversation_id, c
 create index chat_messages_sender_time on public.chat_messages (sender_member_id, created_at desc);
 create unique index chat_messages_client on public.chat_messages (sender_member_id, client_id) where client_id is not null;
 create index chat_messages_org_time on public.chat_messages (org_id, created_at);
+create index chat_messages_reply_to on public.chat_messages (reply_to) where reply_to is not null;
 comment on column public.chat_messages.original_body is 'The text before the first edit. Server only (no grant) (20261103a).';
 comment on column public.chat_messages.removed_body is 'The text when the sender deleted it or a manager hid it; body is then empty. Server only (20261103a).';
 
@@ -219,6 +220,7 @@ create table public.chat_reports (
 create unique index chat_reports_one_person on public.chat_reports (message_id, reporter_member_id) where reporter_member_id is not null;
 create unique index chat_reports_one_ai on public.chat_reports (message_id) where source = 'ai';
 create index chat_reports_org_status on public.chat_reports (org_id, status, created_at desc);
+create index chat_reports_message on public.chat_reports (message_id);
 
 create table public.chat_moderation_log (
   id bigint generated always as identity primary key,
@@ -686,6 +688,11 @@ begin
   if msg.sender_member_id is distinct from p_member then return jsonb_build_object('ok', false, 'code', 'not_yours'); end if;
   if msg.deleted_at is not null or msg.status <> 'visible' then return jsonb_build_object('ok', false, 'code', 'gone'); end if;
   if msg.created_at < now() - interval '15 minutes' then return jsonb_build_object('ok', false, 'code', 'too_late'); end if;
+  -- MARKER 5.11.102 chat_edit review fix S8: muted, chat off (the gate) or a closed chat: no edits either.
+  if (g.c).archived_at is not null then return jsonb_build_object('ok', false, 'code', 'archived'); end if;
+  if exists (select 1 from public.chat_person_state ps where ps.member_id = p_member and ps.muted_until > now()) then
+    return jsonb_build_object('ok', false, 'code', 'muted');
+  end if;
   if v_body = '' and jsonb_array_length(msg.photos) = 0 then return jsonb_build_object('ok', false, 'code', 'empty'); end if;
   if char_length(v_body) > 4000 then return jsonb_build_object('ok', false, 'code', 'too_long'); end if;
   update public.chat_messages set original_body = coalesce(original_body, body), body = v_body, edited_at = now()
@@ -1032,11 +1039,17 @@ $f$;
 --   hide (a message, or the message of p_report)   keep (the report: the message stays, or comes back)
 --   mute_person / unmute_person (p_target, p_until)  remove (p_target from p_conversation)
 --   chat_off / chat_on (p_target)
--- Managers handle people at their own venues (or messages in their venues' groups), owners everyone,
--- nobody anything about themselves. Every action is in the moderation log.
+-- WHO IT IS ABOUT comes from the database, never from the caller (review fix S1, 5.11.102):
+--   with a report: its message, its conversation and its person; anything else passed must match;
+--   with a message: the person is always its sender and the venue always its conversation's;
+--   mute_person, chat_off and their undos: the person's own venues must be the manager's (a group's
+--   venue never counts); remove: the group's venue counts only when the person is in that group.
+-- Managers handle people at their own venues, owners everyone, nobody anything about themselves,
+-- managers never an owner. Every action is in the moderation log.
 create function public.chat_mod(p_member uuid, p_action text, p_report uuid, p_message bigint, p_target uuid,
   p_conversation uuid, p_until timestamptz, p_note text)
 returns jsonb language plpgsql volatile security definer set search_path = public, pg_temp as $f$
+-- MARKER 5.11.102 chat_mod review fix S1
 declare
   a record;
   r public.chat_reports;
@@ -1046,6 +1059,7 @@ declare
   v_code text;
   v_conv uuid := p_conversation;
   v_msg bigint := p_message;
+  v_loc uuid;
 begin
   select * into a from public._chat_power(p_member);
   if a.org_id is null or not a.active then return jsonb_build_object('ok', false, 'code', 'no_member'); end if;
@@ -1056,28 +1070,39 @@ begin
   if p_report is not null then
     select * into r from public.chat_reports where id = p_report and org_id = a.org_id for update;
     if not found then return jsonb_build_object('ok', false, 'code', 'not_found'); end if;
-    v_msg := coalesce(v_msg, r.message_id);
-    v_conv := coalesce(v_conv, r.conversation_id);
-    v_offender := coalesce(v_offender, r.offender_member_id);
+    if (p_message is not null and p_message is distinct from r.message_id)
+       or (p_target is not null and p_target is distinct from r.offender_member_id)
+       or (p_conversation is not null and p_conversation is distinct from r.conversation_id) then
+      return jsonb_build_object('ok', false, 'code', 'mismatch');
+    end if;
+    v_msg := r.message_id; v_conv := r.conversation_id; v_offender := r.offender_member_id;
   end if;
   if v_msg is not null then
     select * into msg from public.chat_messages where id = v_msg and org_id = a.org_id for update;
-    if not found and p_action = 'hide' then return jsonb_build_object('ok', false, 'code', 'not_found'); end if;
     if found then
-      v_conv := coalesce(v_conv, msg.conversation_id);
-      v_offender := coalesce(v_offender, msg.sender_member_id);
+      if (p_target is not null and p_target is distinct from msg.sender_member_id)
+         or (p_conversation is not null and p_conversation is distinct from msg.conversation_id) then
+        return jsonb_build_object('ok', false, 'code', 'mismatch');
+      end if;
+      v_offender := msg.sender_member_id;
+      v_conv := msg.conversation_id;
+    elsif p_action = 'hide' or p_report is null then
+      return jsonb_build_object('ok', false, 'code', 'not_found');
     end if;
   end if;
-  if p_action in ('hide') and v_msg is null then return jsonb_build_object('ok', false, 'code', 'bad_message'); end if;
-  if p_action = 'keep' and p_report is null then return jsonb_build_object('ok', false, 'code', 'bad_report'); end if;
-  if p_action in ('mute_person', 'unmute_person', 'remove', 'chat_off', 'chat_on') and v_offender is null then
-    return jsonb_build_object('ok', false, 'code', 'bad_member');
-  end if;
+  if p_action = 'hide' and v_msg is null then return jsonb_build_object('ok', false, 'code', 'bad_message'); end if;
+  if p_action = 'keep' and p_report is null and v_msg is null then return jsonb_build_object('ok', false, 'code', 'bad_report'); end if;
+  if v_offender is null then return jsonb_build_object('ok', false, 'code', 'bad_member'); end if;
   if v_conv is not null then
     select * into c from public.chat_conversations where id = v_conv and org_id = a.org_id;
     if not found then return jsonb_build_object('ok', false, 'code', 'not_found'); end if;
   end if;
-  v_code := public._chat_can_moderate(p_member, v_offender, c.location_id);
+  -- The venue that may put this in a manager's reach.
+  v_loc := case
+    when p_action in ('hide', 'keep') then c.location_id
+    when p_action = 'remove' and exists (select 1 from public.chat_members m where m.conversation_id = c.id and m.member_id = v_offender and m.left_at is null) then c.location_id
+    else null end;
+  v_code := public._chat_can_moderate(p_member, v_offender, v_loc);
   if v_code is not null then return jsonb_build_object('ok', false, 'code', v_code); end if;
 
   if p_action = 'hide' then
@@ -1277,7 +1302,8 @@ begin
   select * into a from public._chat_power(p_member);
   if a.org_id is null or not a.active then return jsonb_build_object('ok', false, 'code', 'no_member'); end if;
   if p_platform not in ('apns', 'webpush') or char_length(coalesce(p_token, '')) not between 8 and 1000
-     or coalesce(p_environment, 'production') not in ('production', 'sandbox') or coalesce(p_app, 'staff') not in ('staff', 'manager', 'web') then
+     or coalesce(p_environment, 'production') not in ('production', 'sandbox') or coalesce(p_app, 'staff') not in ('staff', 'web') then
+    -- MARKER 5.11.102 chat_push_register review fix A3: no push on the Manager app (shared venue devices).
     return jsonb_build_object('ok', false, 'code', 'bad_device');
   end if;
   insert into public.push_devices (org_id, member_id, platform, token, subscription, environment, app, last_seen)
@@ -1288,6 +1314,13 @@ begin
     (select id from public.push_devices where member_id = p_member order by last_seen desc limit 10);
   return jsonb_build_object('ok', true);
 end
+$f$;
+
+-- Forget this phone for this person (the staff app signing out). review fix A3.
+create function public.chat_push_unregister(p_member uuid, p_platform text, p_token text) returns jsonb
+language sql volatile security definer set search_path = public, pg_temp as $f$
+  with gone as (delete from public.push_devices where member_id = p_member and platform = p_platform and token = p_token returning 1)
+  select jsonb_build_object('ok', true, 'removed', (select count(*) from gone))
 $f$;
 
 -- Is this staff member working now (a published shift from 30 minutes before to 30 minutes after,
@@ -1339,7 +1372,7 @@ begin
       select jsonb_build_object('member_id', m.member_id, 'staff_id', p.staff_id,
                'devices', coalesce((select jsonb_agg(jsonb_build_object('id', d.id, 'platform', d.platform, 'token', d.token,
                    'subscription', d.subscription, 'environment', d.environment, 'app', d.app))
-                 from public.push_devices d where d.member_id = m.member_id), '[]'::jsonb),
+                 from public.push_devices d where d.member_id = m.member_id and d.app <> 'manager'), '[]'::jsonb),
                'sms', case when v_urgent and st.sms_backup_urgent and s.mobile is not null
                            then jsonb_build_object('mobile', s.mobile, 'location_id', s.location_id, 'currency', l.currency) end) as t
         from public.chat_members m
@@ -1362,10 +1395,10 @@ create function public.chat_push_staff_devices(p_staff_ids uuid[]) returns jsonb
 language sql stable security definer set search_path = public, pg_temp as $f$
   select jsonb_build_object('ok', true, 'staff', coalesce((select jsonb_agg(jsonb_build_object('staff_id', p.staff_id,
            'devices', (select jsonb_agg(jsonb_build_object('id', d.id, 'platform', d.platform, 'token', d.token,
-                         'subscription', d.subscription, 'environment', d.environment, 'app', d.app)) from public.push_devices d where d.member_id = p.id)))
+                         'subscription', d.subscription, 'environment', d.environment, 'app', d.app)) from public.push_devices d where d.member_id = p.id and d.app <> 'manager')))
     from public.chat_profiles p
    where p.staff_id = any(coalesce(p_staff_ids, '{}'::uuid[]))
-     and exists (select 1 from public.push_devices d where d.member_id = p.id)), '[]'::jsonb))
+     and exists (select 1 from public.push_devices d where d.member_id = p.id and d.app <> 'manager')), '[]'::jsonb))
 $f$;
 
 -- Nightly clean up. In batches, so one run stays well inside the time limit; the next night continues.
@@ -1660,7 +1693,7 @@ select public.chat_sync_org(o.org_id) from (select distinct org_id from public.l
 
 notify pgrst, 'reload schema';
 
--- VISIBLE CHECK. Expected: chat_tables 11, chat_functions 49, open_to_api 3 (the three read helpers,
+-- VISIBLE CHECK. Expected: chat_tables 11, chat_functions 50, open_to_api 3 (the three read helpers,
 -- authenticated only), anon_can_read false, authenticated_can_write false, member_policies 6,
 -- write_policies 0, venue_groups = the number of venues, realtime_tables 3 (0 where there is no
 -- supabase_realtime publication), staff_trigger true.

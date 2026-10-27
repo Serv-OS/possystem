@@ -6,6 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
+import { webPushHostOk } from '../../supabase/functions/_shared/webPushHosts.js';
 import { b64u, es256Jwt, importP8, importVapidPrivate, apnsJwt, vapidAuthHeader, encryptWebPush, apnsHost, apnsPayload } from '../../supabase/functions/_shared/pushCrypto.js';
 
 const subtle = globalThis.crypto.subtle;
@@ -100,4 +101,14 @@ test('es256Jwt signs any header and payload', async () => {
   const jwt = await es256Jwt({ kid: 'k' }, { a: 1 }, kp.privateKey);
   assert.equal(await verifyJwt(jwt, kp.publicKey), true);
   assert.equal(jwt.split('.')[2].length, 86, 'a 64 byte raw signature');
+});
+
+test('review fix S7: Web Push only to the browsers\' own push services', () => {
+  for (const ok of ['https://fcm.googleapis.com/fcm/send/abc', 'https://updates.push.services.mozilla.com/wpush/v2/x', 'https://web.push.apple.com/QK', 'https://wns2-par02p.notify.windows.com/w/?token=x']) {
+    assert.equal(webPushHostOk(ok), true, ok);
+  }
+  for (const bad of ['http://fcm.googleapis.com/x', 'https://fcm.googleapis.com.evil.com/x', 'https://evil.com/fcm.googleapis.com', 'https://fcm.googleapis.com:8443/x',
+    'https://user@web.push.apple.com/x', 'https://169.254.169.254/latest', 'not a url', '', null]) {
+    assert.equal(webPushHostOk(bad), false, String(bad));
+  }
 });

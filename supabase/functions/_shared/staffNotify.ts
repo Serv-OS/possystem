@@ -7,9 +7,10 @@
 // with the VENUE's country (_shared/regionPack.js toE164: a US venue's 801 555 1234 is +1, never +44).
 // A person with no usable mobile is skipped and counted, never an error.
 //
-// PUSH FIRST (5.11.102): each person with the staff app on their phone (push_devices, through
-// their chat profile) gets an app push; only the people no push reached get the text. One place,
-// so every caller gets push without changing. sent counts everyone reached (push or text).
+// PUSH AS WELL (5.11.102, review decision S5): each person with the staff app on their phone
+// (push_devices, through their chat profile) also gets an app push. The text still goes to everyone
+// as before: an accepted push is not a seen push. The push runs beside the texts and is given at most
+// PUSH_CAP_MS in all, so it can never slow a shift change down. sent counts texts, as before.
 //
 // Never throws: a text that did not go is reported in the answer, and the shift change it is about
 // has already happened.
@@ -22,6 +23,7 @@ export type NotifyResult = { sent: number; skipped: number; failed: number; push
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+const PUSH_CAP_MS = 3000;
 
 async function sendOne(to: string, message: string, locationId: string, type: string, ref: string | null): Promise<boolean> {
   try {
@@ -47,15 +49,14 @@ export async function notifyStaff(
   message: string,
   { type = 'rota_notification', ref = null, limit = 60 }: { type?: string; ref?: string | null; limit?: number } = {},
 ): Promise<NotifyResult> {
+  // MARKER 5.11.102 staffNotify notifyStaff push beside the text (review fix S5)
   const out: NotifyResult = { sent: 0, skipped: 0, failed: 0, pushed: 0, texted: 0 };
+  const started = Date.now();
+  const pushing = pushStaff((people || []).map((p) => p?.id).filter((x): x is string => typeof x === 'string'),
+    { title: (venue as any)?.name || 'ServOS', body: message, data: { type } }).catch(() => new Set<string>());
   const seen = new Set<string>();
   const targets: string[] = [];
-  // PUSH HOOK (5.11.102): the app push first; whoever it reached is not texted.
-  const pushedIds = await pushStaff((people || []).map((p) => p?.id).filter((x): x is string => typeof x === 'string'),
-    { title: (venue as any)?.name || 'ServOS', body: message, data: { type } });
-  out.pushed = pushedIds.size;
   for (const p of people || []) {
-    if (p?.id && pushedIds.has(p.id)) continue;
     const to = toE164(p?.mobile || '', { currency: venue.currency || 'GBP', country: venue.country || undefined });
     if (!to || seen.has(to)) { out.skipped++; continue; }
     seen.add(to);
@@ -64,7 +65,10 @@ export async function notifyStaff(
   const results = await Promise.all(targets.slice(0, limit).map((to) => sendOne(to, message, venue.id, type, ref)));
   for (const r of results) { if (r) out.texted!++; else out.failed++; }
   out.skipped += Math.max(0, targets.length - limit);
-  out.sent = out.pushed! + out.texted!;
+  out.sent = out.texted!;
+  const left = Math.max(0, PUSH_CAP_MS - (Date.now() - started));
+  const pushed = await Promise.race([pushing, new Promise<Set<string>>((r) => setTimeout(() => r(new Set()), left))]);
+  out.pushed = pushed.size;
   return out;
 }
 

@@ -42,6 +42,8 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { secondStepRefusal } from '../_shared/second-step.ts';
 import { checkMessage, checkName, BLOCKED_WORD_TEXT } from '../_shared/chatFilter.js';
 import { pushChatMessage } from '../_shared/staffNotify.ts';
+// MARKER 5.11.102 team-chat review fix S7: Web Push only to the browsers' own push services.
+import { webPushHostOk } from '../_shared/webPushHosts.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -106,6 +108,9 @@ const CODE_TEXT: Record<string, string> = {
   bad_policy: 'That posting rule cannot be used here.',
   bad_device: 'This phone could not be registered.',
   bad_request: 'Something was missing from that request.',
+  mismatch: 'That does not match the report.',
+  owner_pin: 'As an owner, handle reports in Back Office.',
+  bad_endpoint: 'This browser\'s notifications service is not supported.',
 };
 const refuse = (code: string, extra: Record<string, unknown> = {}) => json({ ok: false, code, message: CODE_TEXT[code] ?? CODE_TEXT.not_allowed, ...extra });
 
@@ -144,7 +149,7 @@ async function filterOpts(orgId: string): Promise<FilterOpts> {
 }
 
 // ── Who is calling ───────────────────────────────────────────────────────────
-type Caller = { uid: string; orgId: string; memberId: string; staffId: string | null; hasBackOffice: boolean };
+type Caller = { uid: string; orgId: string; memberId: string; staffId: string | null; hasBackOffice: boolean; viaPin?: boolean };
 
 async function resolveCaller(req: Request, body: any): Promise<Caller | Response> {
   const jwt = (req.headers.get('authorization') || '').replace(/^Bearer\s+/i, '');
@@ -169,7 +174,7 @@ async function pinCaller(deviceUid: string, loc: string, pin: string): Promise<C
   const { data: dev } = await admin.from('ops_devices').select('id').eq('device_uid', deviceUid).eq('location_id', loc)
     .eq('active', true).not('claimed_at', 'is', null).maybeSingle();
   if (!dev) return no();
-  const { data: rows } = await admin.from('staff_members').select('id, role, permissions, active, auth_user_id').eq('location_id', loc).eq('pin', pin).limit(5);
+  const { data: rows } = await admin.from('staff_members').select('id, role, permissions, active').eq('location_id', loc).eq('pin', pin).limit(5);
   const op = (rows ?? []).find((r: any) => r.active !== false) as any;
   if (!op) return no('pin', 'PIN not recognised');
   const role = String(op.role || '').toLowerCase();
@@ -178,17 +183,16 @@ async function pinCaller(deviceUid: string, loc: string, pin: string): Promise<C
   const { data: locRow } = await admin.from('locations').select('org_id').eq('id', loc).maybeSingle();
   const orgId = (locRow as any)?.org_id;
   if (!isUuid(orgId)) return no('no_member', CODE_TEXT.no_member);
-  if (isUuid(op.auth_user_id)) {
-    const c = await loginCaller(op.auth_user_id, { org_id: orgId });
-    if (!(c instanceof Response)) return { ...c, hasBackOffice: false };
-  }
+  // MARKER 5.11.102 team-chat review fix S2: ONLY the Workforce record linked to the till user. Never
+  // staff_members.auth_user_id (a login can change that column itself), so a PIN can never become
+  // somebody's own login, and the record must be in the paired venue's company.
   const { data: st } = await admin.from('wf_staff').select('id').eq('pos_user_id', op.id).eq('org_id', orgId).neq('status', 'leaver').limit(1);
   const staffId = (st as any)?.[0]?.id;
   if (!isUuid(staffId)) return no('no_member', 'Link this PIN to a staff record in Workforce first.');
   const prof = await rpc('chat_profile_for', { p_org: orgId, p_staff: staffId, p_user: null, p_name: null });
   if (!prof?.ok || !isUuid(prof.member_id)) return no('no_member', CODE_TEXT.no_member);
   if (prof.created) await rpc('chat_sync_org', { p_org: orgId, p_staff: null });
-  return { uid: deviceUid, orgId, memberId: prof.member_id, staffId, hasBackOffice: false };
+  return { uid: deviceUid, orgId, memberId: prof.member_id, staffId, hasBackOffice: false, viaPin: true };
 }
 
 // A person's own login: a staff app login or a Back Office login.
@@ -208,7 +212,9 @@ async function loginCaller(uid: string, body: any): Promise<Caller | Response> {
   const staffList = (staffRows ?? []) as Array<{ id: string; org_id: string }>;
   const orgs = new Set<string>([...staffList.map((s) => s.org_id), ...boOrgs]);
   const want = uuidOrNull(body?.org_id);
-  const orgId = want && orgs.has(want) ? want : (staffList[0]?.org_id ?? boOrgs[0] ?? null);
+  // review fix S2: a company asked for must be one of this login's; never a quiet fallback to another.
+  if (want && !orgs.has(want)) return json({ ok: false, code: 'not_allowed', message: CODE_TEXT.not_allowed }, 403);
+  const orgId = want ?? (staffList[0]?.org_id ?? boOrgs[0] ?? null);
   if (!orgId) return json({ ok: false, code: 'no_member', message: CODE_TEXT.no_member }, 403);
   const staff = staffList.find((s) => s.org_id === orgId) ?? null;
   const hasBackOffice = boOrgs.includes(orgId);
@@ -281,6 +287,9 @@ async function aiCheck(orgId: string, messageId: number, text: string) {
 }
 
 // ── The door ─────────────────────────────────────────────────────────────────
+const PIN_NEVER = new Set(['owner.open_dm', 'export_person', 'settings.save', 'words.get', 'words.save', 'log.list', 'dm.list',
+  'push.register', 'push.unregister', 'admin.groups', 'admin.members', 'people']);
+const PIN_MANAGER_ONLY = new Set(['reports.list', 'report.context']);
 const SECOND_STEP_ACTIONS = new Set(['report.context', 'reports.list', 'log.list', 'dm.list', 'owner.open_dm', 'settings.save', 'words.get', 'words.save', 'export_person',
   'mod.hide', 'mod.keep', 'mod.mute_person', 'mod.unmute_person', 'mod.remove', 'mod.chat_off', 'mod.chat_on']);
 
@@ -292,6 +301,16 @@ Deno.serve(async (req) => {
     const action = typeof body?.action === 'string' ? body.action : '';
     const caller = await resolveCaller(req, body);
     if (caller instanceof Response) return caller;
+    // review fix S2: the Manager app's PIN is a shared device's door. It never reaches the owner
+    // tools or push, and an owner's PIN does not carry owner powers there (moderation stays in Back
+    // Office for owners).
+    if (caller.viaPin) {
+      if (PIN_NEVER.has(action)) return refuse('not_allowed');
+      if (PIN_MANAGER_ONLY.has(action) || action.startsWith('mod.')) {
+        const w = await rpc('chat_whoami', { p_member: caller.memberId });
+        if (w?.level !== 'manager') return refuse(w?.level === 'owner' ? 'owner_pin' : 'not_allowed');
+      }
+    }
     if (SECOND_STEP_ACTIONS.has(action) && caller.hasBackOffice) {
       const block = await secondStepRefusal(req); if (block) return block;
     }
@@ -510,10 +529,16 @@ Deno.serve(async (req) => {
         const platform = body.platform === 'apns' ? 'apns' : body.platform === 'webpush' ? 'webpush' : '';
         const sub = platform === 'webpush' && body.subscription && typeof body.subscription === 'object' ? body.subscription : null;
         const token = platform === 'webpush' ? textOr(sub?.endpoint ?? body.token, 1000) : textOr(body.token, 200).replace(/[^0-9a-f]/gi, '');
-        if (platform === 'webpush' && !/^https:\/\//.test(token)) return refuse('bad_device');
+        if (platform === 'webpush' && !webPushHostOk(token)) return refuse('bad_endpoint');
         const environment = platform === 'apns' && body.environment === 'sandbox' ? 'sandbox' : 'production';
         const app = platform === 'webpush' ? 'web' : (body.app === 'manager' ? 'manager' : 'staff');
         return answer(await rpc('chat_push_register', { p_member: me, p_platform: platform, p_token: token, p_subscription: sub, p_environment: environment, p_app: app }));
+      }
+      case 'push.unregister': {
+        const platform = body.platform === 'apns' ? 'apns' : 'webpush';
+        const token = platform === 'webpush' ? textOr(body.subscription?.endpoint ?? body.token, 1000) : textOr(body.token, 200).replace(/[^0-9a-f]/gi, '');
+        if (!token) return refuse('bad_device');
+        return answer(await rpc('chat_push_unregister', { p_member: me, p_platform: platform, p_token: token }));
       }
       case 'photo.upload_url': {
         const conv = uuidOrNull(body.conversation_id);

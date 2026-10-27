@@ -51,6 +51,9 @@ begin
             where p.pronamespace = 'public'::regnamespace and (p.proname like 'chat\_%' or p.proname like '\_chat\_%') loop
     execute format('drop function %s cascade', f);
   end loop;
+  -- Supabase guards storage.buckets with protect_buckets_delete; this setting is how a direct delete
+  -- is allowed (review fix S4, 5.11.102). It lasts for this transaction only.
+  perform set_config('storage.allow_delete_query', 'true', true);
   if to_regclass('storage.buckets') is not null and to_regclass('storage.objects') is not null then
     if not exists (select 1 from storage.objects where bucket_id = 'chat-photos') then
       delete from storage.buckets where id = 'chat-photos';
