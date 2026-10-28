@@ -11,6 +11,8 @@ import { t, tf, tn } from '../../lib/i18n';
 import { money } from '../../lib/currency';
 import { kioskPromoLabel } from '../../lib/kioskCheckout';
 import { TickIcon } from './KioskIcons';
+// v5.11.108: the device keyboard never covers the box (lib/kioskKeyboard.js).
+import { kioskRevealOnFocus } from '../../lib/kioskKeyboard.js';
 
 export default function KioskCodeCard({ giftCardPayment, giftCardCredit, promoApplied, promoCredit, onApply, onRemoveGift, onRemovePromo }) {
   const [input, setInput] = useState('');
@@ -68,6 +70,7 @@ export default function KioskCodeCard({ giftCardPayment, giftCardCredit, promoAp
           <input
             value={input}
             onChange={e => setInput(e.target.value.toUpperCase())}
+            onFocus={kioskRevealOnFocus}
             placeholder={t('k2.code.placeholder')}
             aria-label={t('k2.code.title')}
             autoCapitalize="characters"

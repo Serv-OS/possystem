@@ -45,7 +45,9 @@ import { resolveItemPrice, variantChildren, variantFromPrice } from '../lib/menu
 import { normalizeGroup, kioskSheetGroupHint } from '../lib/kioskGroupRules';
 // v5.11.93 (multi site stock Drop 2): kcal, 'May contain' and 'Allergens being checked' from the stock facts.
 import { kcalWords, mayContainWords, KCAL_NOTE_KEY, ALLERGEN_CHECK_KEY } from '../lib/menuStockFacts';
-import { kioskAllergenLabels } from '../lib/kioskAllergens';
+import { kioskAllergenLabels, kioskPickedOptionIds, shownAllergenIds } from '../lib/kioskAllergens';
+// v5.11.108: the one allergen chip row every surface shows (kiosk, online, QR, till).
+import AllergenChips, { KIOSK_ALLERGEN_PALETTE } from '../components/AllergenChips.js';
 import {
   kioskOptionGroupPlan, kioskSheetGroupIds, kioskSheetInstructionIds, kioskSheetGroups,
   kioskPruneSelections, kioskPruneNestedSelections,
@@ -417,6 +419,13 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
   const variantGroup = groups.find(g => g.__isVariantGroup);
   const pickedVariantId = variantGroup ? (selections[variantGroup.id] || [])[0] : null;
   const pickedVariantOpt = (variantGroup && pickedVariantId) ? variantGroup.options.find(o => o.id === pickedVariantId) : null;
+  // v5.11.108: the allergens this screen shows: the item, its picked size and the picked options
+  // (the same list the new design's sheet shows). Display only.
+  const shownIds = shownAllergenIds({
+    item,
+    size: pickedVariantOpt ? (allItems || []).find(i => i && i.id === pickedVariantOpt.id) || null : null,
+    optionLists: [kioskPickedOptionIds({ groups, selections, nestedSelections, subGroupsCache, resolveOpt })],
+  });
   // A variant parent is never charged its own basePrice (0). Before a size is
   // picked the header shows "from <cheapest>"; once picked, that size's absolute
   // resolved price is the base the modifier deltas stack on, and it is the
@@ -772,34 +781,11 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
           </div>
         )}
 
-        {/* Allergens — icon + label, then comma list. Brand-color text matches reference. */}
-        {Array.isArray(item?.allergens) && item.allergens.length > 0 && (
+        {/* v5.11.108: the allergens as the shared chip row (the item, its size and the picked
+            options), then the stock recipe's may contain and check lines. */}
+        {(shownIds.length > 0 || mayContainLine || facts?.needsCheck) && (
           <div style={{ marginBottom: 'clamp(24px, 3.2vw, 36px)' }}>
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 10,
-              marginBottom: 6,
-              color: brandColor,
-            }}>
-              {/* Inline allergen-warning icon (test-tube + drop). currentColor inherits brand. */}
-              <svg viewBox="0 0 24 24" width={26} height={26} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M9 3 H15" />
-                <path d="M10 3 V11 L6 18 Q6 21 9 21 H15 Q18 21 18 18 L14 11 V3" />
-                <circle cx="20" cy="6" r="2.5" />
-              </svg>
-              <span style={{
-                fontSize: 'clamp(18px, 2.2vw, 22px)',
-                fontWeight: 800,
-                letterSpacing: '-0.01em',
-              }}>{t('product.allergens')}</span>
-            </div>
-            <div style={{
-              fontSize: 'clamp(16px, 1.9vw, 20px)',
-              color: brandColor,
-              fontWeight: 600,
-              textTransform: 'capitalize',
-            }}>{item.allergens.join(', ')}</div>
+            <AllergenChips ids={shownIds} size="detail" active={avoidAllergens} palette={KIOSK_ALLERGEN_PALETTE} fontSize="clamp(15px, 1.8vw, 19px)" translate={t} />
             {mayContainLine && (
               <div style={{ fontSize: 'clamp(15px, 1.7vw, 18px)', color: 'var(--kFgMuted)', fontWeight: 600, marginTop: 6 }}>{mayContainLine}</div>
             )}
@@ -1011,19 +997,7 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
                                 fontWeight: 600,
                               }}>{priceLabel}</span>
                             )}
-                            {effective.allergens && effective.allergens.length > 0 && (
-                              <span style={{
-                                fontSize: 'clamp(10px, 1.2vw, 13px)',
-                                color: 'var(--kAllergen-fg)',
-                                fontWeight: 600,
-                                lineHeight: 1.3,
-                                textTransform: 'capitalize',
-                                display: '-webkit-box',
-                                WebkitLineClamp: 2,
-                                WebkitBoxOrient: 'vertical',
-                                overflow: 'hidden',
-                              }}>{effective.allergens.join(', ')}</span>
-                            )}
+                            <AllergenChips ids={effective.allergens} size="card" palette={KIOSK_ALLERGEN_PALETTE} fontSize="clamp(10px, 1.2vw, 13px)" translate={t} />
                             {/* v5.5.285: Stock badge for modifier options */}
                             {optSoldOut && (
                               <span style={{ fontSize: 'clamp(10px, 1.2vw, 13px)', color: 'var(--kError-fg, #e53e3e)', fontWeight: 700 }}>Sold out</span>
@@ -1157,15 +1131,7 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
                                       {subEffective.description && (
                                         <span style={{ fontSize: 'clamp(12px, 1.3vw, 14px)', color: 'var(--kFgMuted)', lineHeight: 1.35 }}>{subEffective.description}</span>
                                       )}
-                                      {subEffective.allergens && subEffective.allergens.length > 0 && (
-                                        <span style={{
-                                          fontSize: 'clamp(11px, 1.2vw, 13px)',
-                                          color: 'var(--kAllergen-fg)',
-                                          fontWeight: 600,
-                                          textTransform: 'capitalize',
-                                          marginTop: 2,
-                                        }}>{subEffective.allergens.join(', ')}</span>
-                                      )}
+                                      <AllergenChips ids={subEffective.allergens} size="card" palette={KIOSK_ALLERGEN_PALETTE} fontSize="clamp(11px, 1.2vw, 13px)" translate={t} style={{ marginTop: 2 }} />
                                     </span>
                                     {subPriceLabel && (
                                       <span style={{

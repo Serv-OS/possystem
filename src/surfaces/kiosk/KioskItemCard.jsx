@@ -14,6 +14,8 @@ import { itemName, itemDescription, useMenuText } from '../../lib/menuText';
 import { kioskCardLabelSize } from '../../lib/kioskFlow';
 import { KioskPhoto } from './KioskChrome';
 import { PlusIcon } from './KioskIcons';
+// v5.11.108: the one allergen chip row every surface shows (kiosk, online, QR, till).
+import AllergenChips, { KIOSK_ALLERGEN_PALETTE } from '../../components/AllergenChips.js';
 
 /**
  * addMode   : kioskAddMode result (what a tap on the button does)
@@ -22,8 +24,9 @@ import { PlusIcon } from './KioskIcons';
  * fromPrice : the cheapest size still on sale (sized items), else null
  * unsafe    : the item has an allergen the customer asked to avoid
  * lowStock  : number left for the low stock badge, or null
+ * avoid     : the allergens the customer asked to avoid (the allergenFilter), to highlight
  */
-export default function KioskItemCard({ item, addMode, button, price, fromPrice = null, unsafe = false, lowStock = null, primary, onOpen, onQuickAdd }) {
+export default function KioskItemCard({ item, addMode, button, price, fromPrice = null, unsafe = false, lowStock = null, avoid = null, primary, onOpen, onQuickAdd }) {
   useMenuText();   // re-render when the customer's language changes the venue text
   const soldOut = addMode.mode === 'soldout';
   const quick = addMode.mode === 'quick';
@@ -63,6 +66,8 @@ export default function KioskItemCard({ item, addMode, button, price, fromPrice 
             fontSize: 18, color: 'var(--k2InkSubtle)', lineHeight: 1.35, minHeight: 48,
             display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
           }}>{itemDescription(item)}</div>
+          {/* v5.11.108: the item's allergens, the shared chip row (wraps, never cut off). */}
+          <AllergenChips ids={item.allergens} size="card" active={avoid} palette={KIOSK_ALLERGEN_PALETTE} fontSize={16} translate={t} style={{ marginTop: 4 }} />
           {quick && addMode.hasExtras ? (
             <div style={{ fontSize: 17, fontWeight: 600, color: 'var(--k2AccentInk, var(--k2PrimaryInk))', marginTop: 2 }}>{t('k2.menu.tapForExtras')}</div>
           ) : null}

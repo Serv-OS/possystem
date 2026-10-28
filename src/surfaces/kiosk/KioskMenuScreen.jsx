@@ -158,6 +158,7 @@ export default function KioskMenuScreen({
                         price={resolveItemPrice(it, orderType, activeMenuId)}
                         fromPrice={sizes ? variantFromPrice(it, sizes, orderType, activeMenuId) : null}
                         unsafe={isUnsafe(it, allergenFilter, variantChildren(it, items))}
+                        avoid={allergenFilter}
                         lowStock={kioskLowStock(it, dailyCounts)}
                         primary={primary}
                         onOpen={() => onOpenItem(it)}

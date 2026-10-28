@@ -22,6 +22,7 @@ import { getLocationConfig } from '../lib/locationTime';
 import { isOpenNow, nextOpensAt, formatHoursPreview } from '../lib/openingHours';
 import KioskV2Preview from './kiosk/preview/KioskV2Preview';
 import { VERSION } from '../lib/version';
+import { ensureKioskViewportMeta } from '../lib/kioskKeyboard.js';
 
 const LS_KIOSK_ID = 'rpos-kiosk-id';
 const LS_KIOSK_TOKEN = 'rpos-kiosk-token';
@@ -32,6 +33,8 @@ const LS_KIOSK_TOKEN = 'rpos-kiosk-token';
 const PREVIEW = import.meta.env.DEV && new URLSearchParams(window.location.search).has('kioskPreview');
 
 export default function KioskSurface() {
+  // v5.11.108: Android shrinks the page for the keyboard instead of drawing over it.
+  useEffect(() => { ensureKioskViewportMeta(); }, []);
   return PREVIEW ? <KioskV2Preview /> : <KioskSurfaceInner />;
 }
 

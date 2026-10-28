@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useStore } from '../store';
+import AllergenChips, { TILL_ALLERGEN_PALETTE } from './AllergenChips.js';
 import { ALLERGENS, PIZZA_TOPPINGS, PIZZA_BASES, PIZZA_CRUSTS, PIZZA_SIZES } from '../data/seed';
 import { money, currencySymbol } from '../lib/currency';
 import { orderOptionFlow, flowOrderedMods } from '../lib/optionFlow';
@@ -38,22 +39,9 @@ function ModalShellWrapper({ item, price, children, onAdd, canAdd, onCancel, add
             </div>
             <button onClick={onCancel} style={{ fontSize:22, color:'var(--t3)', background:'none', border:'none', cursor:'pointer', lineHeight:1, padding:0, flexShrink:0 }}>×</button>
           </div>
-          {item.allergens?.length > 0 && (
-            <div style={{ display:'flex', flexWrap:'wrap', gap:4, marginTop:10 }}>
-              {item.allergens.map(a => {
-                const al = ALLERGENS.find(x => x.id === a);
-                const isActive = activeAllergens.includes(a);
-                return (
-                  <span key={a} style={{
-                    fontSize:11, padding:'2px 7px', borderRadius:6, fontWeight:500,
-                    background: isActive ? 'var(--red-d)' : 'var(--bg3)',
-                    border: `1px solid ${isActive ? 'var(--red-b)' : 'var(--bdr)'}`,
-                    color: isActive ? 'var(--red)' : 'var(--t3)',
-                  }}>{al?.icon} {al?.label}</span>
-                );
-              })}
-            </div>
-          )}
+          {/* v5.11.108: the shared allergen chip row (the kiosk's look and words); the guest's
+              own allergens stand out. */}
+          <AllergenChips ids={item.allergens} size="detail" active={activeAllergens} palette={TILL_ALLERGEN_PALETTE} fontSize={12} style={{ marginTop:10 }} />
           {flagged.length > 0 && (
             <div style={{ marginTop:10, padding:'8px 12px', borderRadius:8, background:'var(--red-d)', border:'1px solid var(--red-b)', fontSize:12, color:'var(--red)' }}>
               ⚠ Contains active guest allergen — confirm before adding

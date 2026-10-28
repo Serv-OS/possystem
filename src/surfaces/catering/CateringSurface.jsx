@@ -22,6 +22,8 @@ import { cateringMenuIdFor, cateringOrderMenuId } from '../../lib/cateringPricin
 // v5.11.81 (channel parity round 2): the kiosk's allergen rule (marked, never hidden), the venue's
 // menu translations (shown only, the order keeps the English) and a paged menu read.
 import { itemAllergenIds, unsafeAllergenIds } from '../../lib/kioskAllergens';
+// v5.11.108: the one allergen chip row every surface shows (kiosk, online, QR, till).
+import AllergenChips, { allergenPaletteFromTheme } from '../../components/AllergenChips.js';
 import { useMenuText, itemName as tItemName, itemDescription as tItemDescription, categoryLabel as tCategoryLabel } from '../../lib/menuText';
 import { loadMenuTranslationRows, customerMenuLang, applyMenuLang, languageLabel } from '../../lib/menuTextLoad';
 import { readAllRows } from '../../lib/venueMenuRead';
@@ -480,12 +482,8 @@ export default function CateringSurface({ location }) {
                       <div style={{ padding: 14 }}>
                         <div style={{ fontWeight: 700 }}>{tItemName(item) || item.name}</div>
                         {tItemDescription(item) && <div style={{ fontSize: 12.5, color: '#64748b', marginTop: 3 }}>{tItemDescription(item)}</div>}
-                        {unsafe.length > 0 && <div style={{ marginTop: 6, fontSize: 11.5, fontWeight: 800, color: '#b91c1c', textTransform: 'capitalize' }}>⚠ Contains {unsafe.join(', ')}</div>}
-                        {(item.allergens || []).length > 0 && (
-                          <div title={`Contains: ${item.allergens.join(', ')}`} style={{ marginTop: 6, fontSize: 11, fontWeight: 700, color: '#b45309' }}>
-                            ⚠ {item.allergens.length === 1 ? item.allergens[0] : `${item.allergens.length} allergens`}
-                          </div>
-                        )}
+                        {/* v5.11.108: the shared allergen chip row; the ones the guest asked to avoid stand out. */}
+                        <AllergenChips ids={[...itemAllergenIds(item), ...unsafe]} size="card" active={unsafe} palette={allergenPaletteFromTheme(theme)} style={{ marginTop: 6 }} />
                         <div style={{ marginTop: 8, fontWeight: 800, color: theme.brand }}>{sold ? 'Sold out' : money(cardPrice(item), cur)}{!sold && limText && <span style={{ fontSize: 11.5, fontWeight: 600, color: '#94a3b8', marginLeft: 8 }}>{limText}</span>}{!sold && showKcal && item.kcal != null && <span style={{ fontSize: 11.5, fontWeight: 600, color: '#94a3b8', marginLeft: 8 }}>{kcalWords(item.kcal)}</span>}</div>
                       </div>
                     </button>

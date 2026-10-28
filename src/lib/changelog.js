@@ -23,6 +23,21 @@ export const CHANGELOG = [
     ],
   },
   {
+    v: '5.11.108',
+    date: '28 Oct 2026',
+    items: [
+      "Allergens now look the same everywhere a guest or your team sees an item: the kiosk (both designs), online ordering, QR ordering, catering and the till. Each allergen is a small chip with a warning mark and its name (Gluten, Milk, Tree nuts and so on), in the same order and the same words on every screen. No icons.",
+      "Online and QR: the menu card shows every allergen under the description as chips that wrap onto a new line, never cut off. The card used to show one allergen or a count like 3 allergens. The allergens come from the allergen list on the item in the menu builder, not from words typed in the description.",
+      "Online, QR and kiosk product screens: the chips sit under the description and include the size the guest picked and the options they add. Pick oat milk or a nut topping and its allergens join the list straight away. Online and QR option rows now show each option's own allergens too, as the kiosk does.",
+      "Allergens a guest asked to avoid stand out on the chip itself (on the till: the guest's own allergens). Items are still marked, never hidden.",
+      "The chips take their colours from each screen's own theme: the venue's Appearance colours online and on QR, the kiosk theme on the kiosk, the till theme on the till. They read in light and dark.",
+      "Prices, baskets, options and ordering are unchanged.",
+      "Habitum Coffee: 30 products also had a typed Allergens sentence at the end of the description, so they would show allergens twice. A one off database file takes that sentence out of 29 of them, for Habitum only, keeps a backup of every description first, and keeps a may contain note as its own line. Freddo Cappuccino keeps its words, because cinnamon is not one of the 14 allergens and has no chip. The app never removes a venue's words by itself.",
+      "Kiosk: the screen keyboard no longer covers what you type. On a product, the notes box (Anything else?) and the Add button move up above the keyboard while you type, and the box scrolls into view. The other boxes a customer types in on the kiosk (name, mobile number, email, code, gift card, tip amount) also scroll into view once the keyboard is up, and on Android the page now shrinks to make room for the keyboard instead of sitting under it.",
+      "Web app only. The Habitum description tidy is a separate SQL file Peter runs.",
+    ],
+  },
+  {
     v: '5.11.107',
     date: '28 Oct 2026',
     items: [
