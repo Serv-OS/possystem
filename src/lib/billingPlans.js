@@ -3,7 +3,7 @@
  *
  * Per LOCATION. GTV = gross takings INCLUDING VAT, ALL tenders and channels.
  *
- *   Free    £0      GTV £0        – £8,000     2 devices
+ *   Starter £99     GTV £0        – £8,000     2 devices   (replaced Free £0, 27 Oct 2026)
  *   Growth  £149    GTV £8,000.01 – £15,000    5 devices
  *   Scale   £299    GTV £15,000.01+           10 devices
  *
@@ -16,12 +16,12 @@
 
 // Pence, to avoid float money entirely.
 export const PLANS = [
-  { code: 'free',   name: 'Free',   fromMinor: 0,        toMinor: 800000,  priceMinor: 0,     devices: 2 },
+  { code: 'starter', name: 'Starter', fromMinor: 0,       toMinor: 800000,  priceMinor: 9900,  devices: 2 },
   { code: 'growth', name: 'Growth', fromMinor: 800001,   toMinor: 1500000, priceMinor: 14900, devices: 5 },
   { code: 'scale',  name: 'Scale',  fromMinor: 1500001,  toMinor: null,    priceMinor: 29900, devices: 10 },
 ];
 
-/** The plan a location lands on for a given GTV. Never returns null — 0 falls in Free. */
+/** The plan a location lands on for a given GTV. Never returns null — 0 falls in Starter. */
 export function planForGtv(gtvMinor) {
   const g = Math.max(0, Math.round(Number(gtvMinor) || 0));
   return PLANS.find(p => g >= p.fromMinor && (p.toMinor === null || g <= p.toMinor)) || PLANS[0];

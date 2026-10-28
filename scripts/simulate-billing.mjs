@@ -2,10 +2,10 @@ import { PLANS, planForGtv, chargeForPeriod, money } from '../src/lib/billingPla
 
 // Boundary-first: the pounds either side of every threshold are where billing goes wrong.
 const cases = [
-  [0,          'free',   0],
-  [1,          'free',   0],
-  [799999,     'free',   0],   // £7,999.99
-  [800000,     'free',   0],   // £8,000.00 exactly -> still Free
+  [0,          'starter', 9900],
+  [1,          'starter', 9900],
+  [799999,     'starter', 9900],   // £7,999.99
+  [800000,     'starter', 9900],   // £8,000.00 exactly -> still Starter
   [800001,     'growth', 14900], // £8,000.01 -> Growth
   [1000000,    'growth', 14900],
   [1499999,    'growth', 14900],

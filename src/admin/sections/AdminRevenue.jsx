@@ -9,8 +9,12 @@
 // HONESTY RULES, deliberately visible in the UI:
 //   · SaaS (v5.7.4): itemized per venue — plan fee + extra devices + HubRise —
 //     from the server catalog, with quiet advisory notes where the volume band
-//     or device count disagrees with the chosen plan. A venue on Free at £0 is
+//     or device count disagrees with the chosen plan. A venue on Free at 0 is
 //     a legitimately configured state, not a warning.
+//   · Currency (27 Oct 2026): plans are priced per currency (GBP and USD). A
+//     venue's SaaS is shown in its own currency, and SaaS totals and the venues
+//     by plan line are kept per currency: dollars are never added to pounds.
+//     Commission totals are unchanged.
 //   · Costs: what Adyen charges US arrives per payment only via settlement
 //     report ingestion (fee_minor). Margin is shown only where that data
 //     exists; otherwise commission is shown with a note.
@@ -30,6 +34,8 @@ import PaymentCheck from '../components/PaymentCheck';
 // count, volume and earnings are added into its channel's column
 // (foldDebitCategories) and the tooltip says how many were debit.
 import { foldDebitCategories } from '../../lib/payments/rateCard';
+// 27 Oct 2026: plan names per currency (scale is Full for a USD venue).
+import { saasPlanName } from '../../lib/saasNewVenue';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
@@ -71,22 +77,27 @@ const S = {
 
 const monthNow = () => new Date().toISOString().slice(0, 7);
 
+// 27 Oct 2026: a USD amount is written the US way ($149.00, not US$149.00);
+// every other currency keeps the en-GB format it always had.
+const fmtLocale = (cur) => (String(cur || 'GBP').toUpperCase() === 'USD' ? 'en-US' : 'en-GB');
 function money(minor, cur = 'GBP') {
-  return new Intl.NumberFormat('en-GB', { style: 'currency', currency: cur || 'GBP' }).format((Number(minor) || 0) / 100);
+  return new Intl.NumberFormat(fmtLocale(cur), { style: 'currency', currency: cur || 'GBP' }).format((Number(minor) || 0) / 100);
 }
 
-// SaaS itemization (v5.7.4). Fees inside r.saas are POUNDS (they mirror
-// subscriptions.monthly_fee); saas_fee_minor stays pence like every other
-// money field in this table.
-const pounds = (v) => new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'GBP' }).format(Number(v) || 0);
-const PLAN_LABELS = { free: 'Free', growth: 'Growth', scale: 'Scale' };
-const planLabel = (p) => PLAN_LABELS[p] ?? p;
+// SaaS itemization (v5.7.4). Fees inside r.saas are MAJOR UNITS of the venue's
+// own currency (they mirror subscriptions.monthly_fee); saas_fee_minor stays
+// minor units like every other money field in this table.
+const major = (v, cur = 'GBP') => new Intl.NumberFormat(fmtLocale(cur), { style: 'currency', currency: cur || 'GBP' }).format(Number(v) || 0);
+const PLAN_ORDER = ['starter', 'growth', 'scale', 'free'];
+const CUR_ORDER = ['GBP', 'USD'];
+const sortCurrencies = (keys) => [...keys].sort((a, b) => (CUR_ORDER.indexOf(a) + 1 || 99) - (CUR_ORDER.indexOf(b) + 1 || 99) || a.localeCompare(b));
 
-function saasBreakdown(s) {
+function saasBreakdown(s, planLabel) {
   if (!s) return null;
-  const parts = [`${planLabel(s.plan)} plan${s.plan_fee != null ? ` ${pounds(s.plan_fee)}` : ''}`];
-  if (s.extra_devices > 0) parts.push(`${s.extra_devices} extra device${s.extra_devices === 1 ? '' : 's'} ${pounds(s.device_fee)}`);
-  if (s.hubrise) parts.push(`HubRise ${pounds(s.hubrise_fee)}`);
+  const cur = s.currency || 'GBP';
+  const parts = [`${s.plan_label || planLabel(s.plan, cur)} plan${s.plan_fee != null ? ` ${major(s.plan_fee, cur)}` : ''}`];
+  if (s.extra_devices > 0) parts.push(`${s.extra_devices} extra device${s.extra_devices === 1 ? '' : 's'} ${major(s.device_fee, cur)}${s.device_price_to_confirm ? ' (price to confirm)' : ''}`);
+  if (s.hubrise) parts.push(`HubRise ${major(s.hubrise_fee, cur)}`);
   if (s.stale) parts.push('stored fee differs from plan pricing, re-save the venue in Processing');
   return parts.join(' · ');
 }
@@ -123,6 +134,18 @@ export default function AdminRevenue() {
   const totals = data?.totals || {};
   const rows = data?.rows || [];
   const saas = data?.saas || {};
+  // Plan names per currency, from the server catalogs when sent.
+  // saasPlanName is the fallback for a function deployed before 27 Oct 2026
+  // (the top plan is Scale in the UK, Full in the US).
+  const planLabel = (p, c = 'GBP') => saas.catalogs?.[c]?.plans?.[p]?.label ?? saasPlanName(p, c);
+  // SaaS per currency. A server from before 27 Oct 2026 sends one number only,
+  // which is then the report currency's.
+  const saasByCur = totals.saas_fee_minor_by_currency
+    ?? (totals.saas_fee_minor != null ? { [cur]: totals.saas_fee_minor } : {});
+  const saasCurs = sortCurrencies(Object.keys(saasByCur));
+  const otherSaasCurs = saasCurs.filter((c) => c !== cur && saasByCur[c]);
+  const plansByCur = saas.plans_by_currency ?? (Object.keys(saas.plans || {}).length > 0 ? { [cur]: saas.plans } : {});
+  const planCurs = sortCurrencies(Object.keys(plansByCur));
 
   const exportCsv = () => {
     const esc = (v) => {
@@ -150,7 +173,7 @@ export default function AdminRevenue() {
         p2(r.commission_minor),
         r.fees_minor == null ? '' : p2(r.fees_minor),
         r.margin_minor == null ? '' : p2(r.margin_minor),
-        // SaaS breakdown values are POUNDS already (never divide by 100)
+        // SaaS breakdown values are MAJOR UNITS of the venue's currency already (never divide by 100)
         r.saas_plan ?? '',
         r.saas?.plan_fee == null ? '' : Number(r.saas.plan_fee).toFixed(2),
         r.saas?.extra_devices ?? '',
@@ -164,7 +187,7 @@ export default function AdminRevenue() {
     for (const u of saas.unmapped || []) {
       const s = u.saas || null;
       lines.push([
-        `${u.name} (SaaS only)`, cur, 0, '', '', ...TIERS.flatMap(() => ['', '', '']), '', '', '', '', '',
+        `${u.name} (SaaS only)`, u.currency || cur, 0, '', '', ...TIERS.flatMap(() => ['', '', '']), '', '', '', '', '',
         u.plan ?? '',
         s?.plan_fee == null ? '' : Number(s.plan_fee).toFixed(2),
         s?.extra_devices ?? '',
@@ -206,14 +229,36 @@ export default function AdminRevenue() {
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 14 }}>
             <Tile label="Processed volume" value={money(totals.volume_minor, cur)} hint={`${totals.payments_count ?? 0} successful payments`} />
             <Tile label="Commission earned" value={money(totals.commission_minor, cur)} accent />
-            <Tile label="SaaS fees" value={money(totals.saas_fee_minor, cur)} hint="Sum of each venue's stored monthly fee, the number actually invoiced. The breakdown shows current plan pricing." />
-            <Tile label="Platform revenue" value={money(totals.revenue_minor, cur)} accent hint="Commission + SaaS (where amounts exist)" />
+            <Tile label="SaaS fees"
+              value={saasCurs.length === 0 ? money(0, cur) : saasCurs.map((c) => money(saasByCur[c], c)).join(' + ')}
+              hint="Sum of each venue's stored monthly fee, the number actually invoiced, kept apart per currency. The breakdown shows current plan pricing." />
+            <Tile label="Platform revenue"
+              value={[money(totals.revenue_minor, cur), ...otherSaasCurs.map((c) => money(saasByCur[c], c))].join(' + ')}
+              accent
+              hint={otherSaasCurs.length > 0
+                ? `Commission + SaaS in ${cur}, plus SaaS in ${otherSaasCurs.join(', ')} kept apart (never added together)`
+                : 'Commission + SaaS (where amounts exist)'} />
             <Tile
               label={totals.fees_minor != null ? 'Processor fees (known)' : 'Processor fees'}
               value={totals.fees_minor != null ? money(totals.fees_minor, cur) : '—'}
               hint="What Adyen charges us, from settlement reports — known only for payments a report has touched."
             />
           </div>
+
+          {planCurs.length > 0 && (
+            <div style={{ fontSize: 12.5, color: 'var(--t3)', marginBottom: 14, display: 'grid', gap: 4 }}>
+              {planCurs.map((c) => {
+                const pc = plansByCur[c] || {};
+                const keys = PLAN_ORDER.filter((k) => pc[k]).concat(Object.keys(pc).filter((k) => !PLAN_ORDER.includes(k)));
+                if (keys.length === 0) return null;
+                return (
+                  <div key={c}>
+                    Venues by plan{planCurs.length > 1 ? ` (${c})` : ''}: {keys.map((k) => `${pc[k]} ${planLabel(k, c)}`).join(' · ')}
+                  </div>
+                );
+              })}
+            </div>
+          )}
 
           {data.classified === false && (
             <div style={S.note}>
@@ -278,7 +323,7 @@ export default function AdminRevenue() {
                         {/* Advisory SaaS notes — quiet, informational, never alarms */}
                         {r.saas?.recommended_plan && (
                           <div style={{ fontSize: 10.5, color: 'var(--t4)', fontWeight: 400 }}>
-                            Volume suggests the {planLabel(r.saas.recommended_plan)} plan (currently {planLabel(r.saas.plan)})
+                            Volume suggests the {planLabel(r.saas.recommended_plan, r.saas.currency || rcur)} plan (currently {planLabel(r.saas.plan, r.saas.currency || rcur)})
                           </div>
                         )}
                         {r.saas?.devices_over && (
@@ -304,10 +349,10 @@ export default function AdminRevenue() {
                         {r.margin_minor == null ? '—' : money(r.margin_minor, rcur)}
                       </td>
                       <td style={{ ...S.td, color: r.saas_fee_minor ? 'var(--t2)' : 'var(--t4)' }}
-                        title={r.saas ? saasBreakdown(r.saas) : (r.saas_plan ? `Plan: ${r.saas_plan}` : 'No subscription mapped to this venue')}>
-                        {r.saas_fee_minor == null ? '—' : money(r.saas_fee_minor, rcur)}
+                        title={r.saas ? saasBreakdown(r.saas, planLabel) : (r.saas_plan ? `Plan: ${r.saas_plan}` : 'No subscription mapped to this venue')}>
+                        {r.saas_fee_minor == null ? '—' : money(r.saas_fee_minor, r.saas_currency || rcur)}
                         {r.saas && (r.saas.extra_devices > 0 || r.saas.hubrise) && (
-                          <div style={{ fontSize: 10, color: 'var(--t4)', whiteSpace: 'nowrap' }}>{saasBreakdown(r.saas)}</div>
+                          <div style={{ fontSize: 10, color: 'var(--t4)', whiteSpace: 'nowrap' }}>{saasBreakdown(r.saas, planLabel)}</div>
                         )}
                       </td>
                       <td style={{ ...S.td, fontWeight: 700, color: 'var(--t1)' }}>{money(r.revenue_minor, rcur)}</td>
@@ -322,8 +367,8 @@ export default function AdminRevenue() {
                     {TIERS.map(t => <td key={t.id} style={{ ...S.td, color: 'var(--t4)' }}>—</td>)}
                     <td style={S.td}>—</td>
                     <td style={S.td}>—</td>
-                    <td style={{ ...S.td, color: 'var(--t2)' }}>{money(Math.round((Number(u.monthly_fee) || 0) * 100), cur)}</td>
-                    <td style={{ ...S.td, fontWeight: 700 }}>{money(Math.round((Number(u.monthly_fee) || 0) * 100), cur)}</td>
+                    <td style={{ ...S.td, color: 'var(--t2)' }}>{money(Math.round((Number(u.monthly_fee) || 0) * 100), u.currency || cur)}</td>
+                    <td style={{ ...S.td, fontWeight: 700 }}>{money(Math.round((Number(u.monthly_fee) || 0) * 100), u.currency || cur)}</td>
                   </tr>
                 ))}
               </tbody>
