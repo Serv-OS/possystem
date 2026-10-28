@@ -16,6 +16,10 @@
 // Everything goes through the team-chat function with this Back Office login; the database decides
 // what this login may see and do (20261103a). Chat is company wide, so this screen is too: the
 // venue switcher does not narrow it (a manager sees only their own venues' groups anyway).
+//
+// MARKER 5.11.109 Back Office chat notifications: the chat bell (components/ChatBell.jsx) opens this
+// screen on Chats, and the chat it was pressed on. Settings has a Notifications box: how many phones
+// have notifications on, and the last 20 pushes, sent or not (team-chat notify.status, push_log).
 
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { supabase } from '../../../lib/supabase';
@@ -24,6 +28,7 @@ import ChatReports from '../../../staff/ChatReports';
 import { useTeamChat } from '../../../staff/useTeamChat';
 import { ChatTab } from '../../../staff/StaffChat';
 import { Card, Badge, inputStyle, labelStyle, LoadingCard, EmptyState } from '../../../staff/wfUi';
+import { useChatOpenRequest } from '../../components/chatBellData';
 
 const KIND = { group: 'Group', venue: 'Venue group', position: 'Position group', announce: 'Announcements' };
 const isUuid = (v) => typeof v === 'string' && /^[0-9a-f-]{36}$/i.test(v);
@@ -50,6 +55,10 @@ export default function WfChat({ ctx, showToast }) {
   // unread count on the Chats tab stays right while another tab is open.
   const [source, setSource] = useState(null);
   const chat = useTeamChat(source);
+  // 5.11.109: the chat bell asked for Chats (and maybe one chat).
+  const [openReq, clearOpenReq] = useChatOpenRequest();
+  const [prevReq, setPrevReq] = useState(null);
+  if (openReq && openReq !== prevReq) { setPrevReq(openReq); setTab('chats'); }
 
   useEffect(() => {
     let alive = true;
@@ -74,7 +83,8 @@ export default function WfChat({ ctx, showToast }) {
   return (
     <div>
       <Tabs tabs={tabs} active={tab} onTab={setTab} />
-      {tab === 'chats' && <ChatTab chat={chat} locale="en-GB" pushApp="none" embed emptyNote="Your chats. Groups you are in, and direct messages." />}
+      {tab === 'chats' && <ChatTab chat={chat} locale="en-GB" pushApp="none" embed emptyNote="Your chats. Groups you are in, and direct messages."
+        openRequest={openReq?.id || null} onOpenHandled={clearOpenReq} />}
       {tab === 'groups' && <Groups call={call} who={who} toast={toast} />}
       {tab === 'reports' && <Card><ChatReports call={call} onCount={setOpenCount} /></Card>}
       {tab === 'settings' && owner && <Settings call={call} who={who} setWho={setWho} toast={toast} />}
@@ -315,10 +325,64 @@ function Settings({ call, who, setWho, toast }) {
       {row('Automatic check for hurtful messages', 'ai_check', [[true, 'On: flags bullying, harassment, threats and sexual comments for you to check'], [false, 'Off']], 'It never blocks a message. It only puts it in Reports to check.')}
       {row('Keep messages for', 'keep_years', [[1, '1 year'], [2, '2 years'], [3, '3 years']], 'The moderation log is always kept for 6 years.')}
       {row('Text message backup', 'sms_backup_urgent', [[true, 'Text urgent announcements to anyone the app could not reach'], [false, 'Off']])}
-      {row('Quiet when off shift', 'quiet_off_shift', [[true, 'Yes (urgent announcements and manager mentions still come through)'], [false, 'No']])}
+      {row('Quiet when off shift', 'quiet_off_shift', [[false, 'No: every message pings their phone (the default)'], [true, 'Yes, for everyone (urgent announcements and manager mentions still come through)']],
+        'Each person can also turn on Quiet when off shift for themselves in the staff app, Me.')}
       {err && <div style={{ color: 'var(--red)', fontSize: 12.5, fontWeight: 600, marginBottom: 10 }}>{err}</div>}
       <button className="btn btn-acc" onClick={save}>Save settings</button>
+      <Notifications call={call} />
     </Card>
+  );
+}
+
+// 5.11.109: are phones getting the pushes? How many have notifications on, and the last 20 pushes.
+const PUSH_KIND = { chat: 'Chat message', rota_notification: 'Rota', open_shift: 'Open shift' };
+const pushWhy = (p) => {
+  if (p.ok) return 'Sent';
+  const r = String(p.reason || '');
+  if (r === 'apns_not_set_up' || r === 'webpush_not_set_up') return 'Not sent: notifications are not set up on the server for this kind of phone';
+  if (r === 'gone' || p.status === 404 || p.status === 410) return 'Not sent: that phone has turned notifications off or removed the app (it is forgotten)';
+  return `Not sent${p.status ? ` (${p.status})` : ''}${r ? `: ${r}` : ''}`;
+};
+function Notifications({ call }) {
+  const [d, setD] = useState(null);
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    call({ action: 'notify.status' }).then((r) => { if (alive) setD(r); });
+    return () => { alive = false; };
+  }, [call, tick]);
+  return (
+    <div style={{ marginTop: 22, paddingTop: 16, borderTop: '1px solid var(--bdr)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
+        <div style={{ fontSize: 14, fontWeight: 800 }}>Notifications</div>
+        <button className="btn" onClick={() => setTick((n) => n + 1)}>Check again</button>
+      </div>
+      {!d && <div style={{ fontSize: 12.5, color: 'var(--t3)' }}>Loading…</div>}
+      {d && !d.ok && <div style={{ fontSize: 12.5, color: 'var(--red)' }}>{d.message || 'Could not load.'}</div>}
+      {d?.ok && (
+        <>
+          <div style={{ fontSize: 13, color: 'var(--t2)', marginBottom: 10, lineHeight: 1.5 }}>
+            <b>{d.phones}</b> {d.phones === 1 ? 'phone has' : 'phones have'} notifications on, for {d.people} {d.people === 1 ? 'person' : 'people'}
+            {d.phones ? ` (${d.iphones} iPhone app, ${d.browsers} Android or browser)` : ''}.
+            {!d.phones && ' Ask your team to open Chat in the staff app and press Turn on notifications.'}
+          </div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t3)', marginBottom: 6 }}>Last 20 pushes</div>
+          {!d.pushes?.length && <div style={{ fontSize: 12.5, color: 'var(--t3)' }}>No pushes yet.</div>}
+          {d.pushes?.length > 0 && (
+            <div style={{ border: '1px solid var(--bdr)', borderRadius: 10, overflow: 'hidden' }}>
+              {d.pushes.map((p, i) => (
+                <div key={i} style={{ display: 'grid', gridTemplateColumns: '92px 1fr auto', gap: 10, alignItems: 'center', padding: '7px 10px', borderBottom: i < d.pushes.length - 1 ? '1px solid var(--bdr)' : 'none', fontSize: 12.5 }}>
+                  <span style={{ color: 'var(--t3)' }}>{new Date(p.at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>
+                  <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name} · {PUSH_KIND[p.kind] || p.kind}</span>
+                  <span title={pushWhy(p)} style={{ fontWeight: 700, color: p.ok ? 'var(--grn)' : 'var(--red)' }}>{p.ok ? 'Sent' : 'Failed'}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {d.pushes?.some((p) => !p.ok) && <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 6 }}>Point at Failed to see why.</div>}
+        </>
+      )}
+    </div>
   );
 }
 

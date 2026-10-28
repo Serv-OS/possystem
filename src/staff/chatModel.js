@@ -161,13 +161,87 @@ export function timeLabel(iso, locale = 'en-GB', now = new Date()) {
   return d.toLocaleDateString(locale, { day: 'numeric', month: 'short' });
 }
 
-/** Sort the chats list: newest message first, then by name. */
+/** Sort the chats list: chats with something for me first (5.11.109), then newest message, then by name. */
 export function sortConversations(list, titleOf = (c) => c.name || '') {
   return [...(list || [])].sort((a, b) => {
+    const fa = Number(a.for_you || 0) > 0 ? 1 : 0;
+    const fb = Number(b.for_you || 0) > 0 ? 1 : 0;
     const ta = a.last_message_at ? Date.parse(a.last_message_at) : 0;
     const tb = b.last_message_at ? Date.parse(b.last_message_at) : 0;
-    return tb - ta || String(titleOf(a)).localeCompare(String(titleOf(b)));
+    return fb - fa || tb - ta || String(titleOf(a)).localeCompare(String(titleOf(b)));
   });
+}
+
+// ── 5.11.109: what is for me, the badge, @names in a bubble ─────────────────
+
+/** Is this message for me: a direct message to me, or one that @mentions me? (Never my own.) */
+export function isForMe(msg, me, conv) {
+  if (!msg || !me || msg.sender_member_id === me || msg.deleted_at) return false;
+  if (conv?.kind === 'dm') return true;
+  return Array.isArray(msg.mentions) && msg.mentions.includes(me);
+}
+
+/** The mark on a chat row with something for me: "For you" in a direct message, else "Mentions you". */
+export function forYouLabel(conv) {
+  return conv?.kind === 'dm' ? 'For you' : 'Mentions you';
+}
+
+/**
+ * The badge on the Chat tab (and the Back Office bell): unread in chats I have not muted, plus what
+ * is for me in muted chats (a direct ask always counts, as it always pushes). Shown whenever > 0.
+ */
+export function badgeTotal(rows, now = Date.now()) {
+  return (rows || []).reduce((n, r) => {
+    const muted = r.muted_until && new Date(r.muted_until).getTime() > now;
+    return n + (muted ? Number(r.for_you || 0) : Number(r.unread || 0));
+  }, 0);
+}
+
+/** How many unread messages are for me, across chats. */
+export function forYouTotal(rows) {
+  return (rows || []).reduce((n, r) => n + Number(r.for_you || 0), 0);
+}
+
+const escapeRe = (t) => String(t).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * A message's text in pieces, so @names can be drawn highlighted: [{ text, at, me }].
+ * names: the display names that may be mentioned (the chat's members); myName: mine (drawn
+ * stronger). Longest names first, so @Sam Lee beats @Sam; an @name sits between word edges (an
+ * email address is not a mention).
+ */
+export function mentionParts(text, names = [], myName = '') {
+  const t = String(text || '');
+  const list = [...new Set((names || []).map((n) => String(n || '').trim()).filter(Boolean))].sort((a, b) => b.length - a.length);
+  if (!t.includes('@') || !list.length) return [{ text: t, at: false, me: false }];
+  const re = new RegExp(`(?<![\\p{L}\\p{N}])@(${list.map(escapeRe).join('|')})(?![\\p{L}\\p{N}])`, 'giu');
+  const out = [];
+  let last = 0;
+  for (let m = re.exec(t); m; m = re.exec(t)) {
+    if (m.index > last) out.push({ text: t.slice(last, m.index), at: false, me: false });
+    out.push({ text: m[0], at: true, me: !!myName && m[1].toLowerCase() === String(myName).toLowerCase() });
+    last = m.index + m[0].length;
+  }
+  if (last < t.length) out.push({ text: t.slice(last), at: false, me: false });
+  return out.length ? out : [{ text: t, at: false, me: false }];
+}
+
+/**
+ * The Back Office chat bell: the chats with something unread, for me first (direct messages and
+ * @mentions), then newest. rows: the inbox chats ({ id, kind, name, unread, for_you, muted_until,
+ * last_message_at, last }). Returns { unread, forYou, items: [{ id, title, unread, forYou, last }] }.
+ */
+export function inboxSummary(rows, { me = null, dmMembers = {}, profilesById = {}, now = Date.now(), max = 8 } = {}) {
+  const list = (rows || []).filter((r) => Number(r.unread || 0) > 0 || Number(r.for_you || 0) > 0);
+  const sorted = sortConversations(list);
+  return {
+    unread: badgeTotal(rows, now),
+    forYou: forYouTotal(rows),
+    items: sorted.slice(0, max).map((r) => ({
+      id: r.id, kind: r.kind, title: conversationTitle(r, { me, membersByConv: dmMembers, profilesById }),
+      unread: Number(r.unread || 0), forYou: Number(r.for_you || 0), last: r.last || null,
+    })),
+  };
 }
 
 /** A client id that makes a retry of the same send safe. */
@@ -175,4 +249,22 @@ export function newClientId() {
   const c = globalThis.crypto;
   if (c?.randomUUID) return c.randomUUID();
   return `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * One team-chat inbox answer as the Back Office bell shows it: inboxSummary on its chats, with the
+ * caller's profile id (member_id) and the people, or null when the answer is a refusal. for_you
+ * comes from the server (20261105a); before it, a direct message's unread counts as for you.
+ */
+export function inboxAnswerSummary(r) {
+  if (!r || !r.ok) return null;
+  const profilesById = Object.fromEntries((r.profiles || []).map((p) => [p.id, p]));
+  const dmMembers = {};
+  for (const d of r.dm_members || []) (dmMembers[d.conversation_id] ||= []).push(d);
+  const rows = (r.convs || []).map((c) => ({
+    ...c, unread: Number(c.unread || 0),
+    for_you: c.for_you != null ? Number(c.for_you || 0) : (c.kind === 'dm' ? Number(c.unread || 0) : 0),
+  }));
+  const me = typeof r.member_id === 'string' && /^[0-9a-f-]{36}$/i.test(r.member_id) ? r.member_id : null;
+  return { ...inboxSummary(rows, { me, dmMembers, profilesById }), me, profilesById };
 }

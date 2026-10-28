@@ -7,6 +7,22 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.109',
+    date: '29 Oct 2026',
+    items: [
+      "Team chat: every message now pings everyone's phone by default. Quiet when off shift stays as a company setting in Team chat, Settings, but it starts off.",
+      "Staff app, Me: a new switch, Quiet when off shift, for each person. Turn it on and, when you are not on shift, only urgent announcements and @mentions from a manager ping your phone.",
+      "Staff app: the Chat tab shows how many messages you have not read whenever there are any. Each chat shows its own count, and a separate For you mark for a direct message to you, or Mentions you when someone @mentions you. Those chats go to the top of the list.",
+      "@names are highlighted inside messages in the staff app, the Manager app and Back Office. Your own name stands out more.",
+      "Back Office: a chat bell at the top of every page with your unread messages, direct messages and @mentions first. Click a chat to open it in Workforce, Team chat. Workforce and Team chat in the sidebar show the same count. It checks every 30 seconds while the page is in front.",
+      "Team chat, Settings, Notifications: how many phones have notifications on, and the last 20 pushes, sent or failed (point at Failed to see why).",
+      "Discounts: the Buy X get Y editor now says the rule in one plain sentence as you type, for example: Customer buys 3 from Donuts at full price, then the next 1 from Donuts is 10% off. Needs 4 donuts in the basket. The list of rules says the same.",
+      "Discounts: a new automatic deal, Buy X, discount the lot. For example 6 donuts, 15% off all 6. With 7 donuts the cheapest 6 get it; with 12 it counts twice. Works the same on the till, kiosk, online and QR. An item never gets two automatic deals.",
+      "Menu manager: open a menu's settings (the pencil on the menu) and press Set every item on this menu to one price. Type the price, see how many items change, confirm. It sets the menu price on each item (sizes too), never the base price, so the menu's schedule decides when it applies.",
+      "Needs two database updates (20261105a chat notifications, 20261105b the new deal on the server; Peter runs them after UK close, before the web app) and the team-chat, staff-portal and manager-approve edge functions deployed.",
+    ],
+  },
+  {
     v: '5.11.108',
     date: '28 Oct 2026',
     items: [

@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { evaluateAutoDiscounts, isRuleActiveNow } from './discountEngine.js';
+import { evaluateAutoDiscounts, isRuleActiveNow, percentOff } from './discountEngine.js';
 
 const near = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} ≈ ${b}`);
 
@@ -170,4 +170,82 @@ test('manual item discount wins: a line carrying item.discount is excluded from 
 test('voided items are ignored', () => {
   const items = [pizza('p1', 10), pizza('p2', 12), { ...pizza('p3', 8), voided: true }];
   assert.equal(evaluateAutoDiscounts(items, [BOGO], 'pos').length, 0);
+});
+
+// ── Buy X, discount the lot (v5.11.109) ─────────────────────────────────────────
+const donut = (uid, price, qty = 1) => ({ uid, itemId: 'donut', name: 'Donut', cat: 'donuts', price, qty });
+const SIX15 = {
+  id: 'r-six', name: '6 donuts 15% off', active: true,
+  triggerType: 'buy_x_all', triggerCategoryIds: ['donuts'], triggerQty: 6, rewardQty: 1,
+  rewardType: 'percent', rewardValue: 15, channels: { pos: true, online: true, qr: true, kiosk: true },
+};
+const sumSaving = (res) => Math.round(res.reduce((s, r) => s + r.totalSaving, 0) * 100) / 100;
+
+test('buy_x_all: 6 donuts at 15% take 15% off all 6', () => {
+  const res = evaluateAutoDiscounts([donut('d', 2, 6)], [SIX15], 'pos');
+  assert.equal(res.length, 1);
+  assert.equal(res[0].appliedItems.length, 6);
+  near(res[0].totalSaving, 1.8);
+  for (const a of res[0].appliedItems) near(a.saving, 0.3);
+  // every channel runs it the same way
+  for (const ch of ['kiosk', 'online', 'qr']) near(sumSaving(evaluateAutoDiscounts([donut('d', 2, 6)], [SIX15], ch)), 1.8);
+});
+
+test('buy_x_all: 5 donuts is not enough, nothing comes off', () => {
+  assert.equal(evaluateAutoDiscounts([donut('d', 2, 5)], [SIX15], 'pos').length, 0);
+});
+
+test('buy_x_all: 7 donuts discount the cheapest 6, once', () => {
+  const items = [donut('a', 3), donut('b', 2, 5), donut('c', 1)];
+  const res = evaluateAutoDiscounts(items, [SIX15], 'pos');
+  assert.equal(res.length, 1);
+  assert.equal(res[0].appliedItems.length, 6);
+  assert.ok(!res[0].appliedItems.some((a) => a.uid === 'a'), 'the dearest donut pays full price');
+  near(res[0].totalSaving, Math.round((2 * 5 + 1) * 0.15 * 100) / 100);
+});
+
+test('buy_x_all: 12 donuts and two rules, the higher priority rule takes them and a unit is discounted once', () => {
+  const DOZEN25 = { ...SIX15, id: 'r-dozen', name: '12 donuts 25% off', triggerQty: 12, rewardValue: 25 };
+  const items = [donut('d', 2, 12)];
+  const sixFirst = evaluateAutoDiscounts(items, [SIX15, DOZEN25], 'pos');
+  assert.deepEqual(sixFirst.map((r) => r.ruleId), ['r-six'], 'the six deal fires twice and uses all 12');
+  assert.equal(sixFirst[0].appliedItems.length, 12);
+  near(sixFirst[0].totalSaving, 3.6);
+  const dozenFirst = evaluateAutoDiscounts(items, [DOZEN25, SIX15], 'pos');
+  assert.deepEqual(dozenFirst.map((r) => r.ruleId), ['r-dozen']);
+  near(dozenFirst[0].totalSaving, 6);
+  // beside a Buy X get Y rule: a unit never takes two deals
+  const BOGO_D = { ...SIX15, id: 'r-bogo', triggerType: 'buy_x', triggerQty: 2, rewardQty: 1, rewardType: 'free' };
+  const both = evaluateAutoDiscounts([donut('d', 2, 9)], [SIX15, BOGO_D], 'pos');
+  assert.deepEqual(both.map((r) => r.ruleId), ['r-six', 'r-bogo']);
+  assert.equal(both[0].appliedItems.length, 6);
+  assert.equal(both[1].appliedItems.length, 1, 'the 3 left over make one buy 2 get 1 free');
+});
+
+test('buy_x_all: mixed categories count together, other items are left alone', () => {
+  const rule = { ...SIX15, triggerCategoryIds: ['donuts', 'muffins'], rewardType: 'amount', rewardValue: 0.5 };
+  const items = [donut('d', 2, 4), { uid: 'm', name: 'Muffin', cat: 'muffins', price: 3, qty: 2 }, { uid: 'c', name: 'Coffee', cat: 'coffee', price: 3, qty: 1 }];
+  const res = evaluateAutoDiscounts(items, [rule], 'pos');
+  assert.equal(res.length, 1);
+  assert.equal(res[0].appliedItems.length, 6);
+  assert.ok(!res[0].appliedItems.some((a) => a.uid === 'c'), 'the coffee is not in the deal');
+  near(res[0].totalSaving, 3, 1e-9);
+  // a line carried by its other categories (cats) counts too
+  const multi = [donut('d', 2, 5), { uid: 'x', name: 'Box', cat: 'boxes', cats: ['boxes', 'muffins'], price: 4, qty: 1 }];
+  assert.equal(evaluateAutoDiscounts(multi, [rule], 'pos')[0].appliedItems.length, 6);
+});
+
+test('review fix: a percent saving is worked in whole pence, so an exact half penny rounds up as on the server', () => {
+  // 6 x 1.15 at 50%: each 57.5p rounds to 58p (the server's round on exact numbers), 3.48 in all.
+  const half = { ...SIX15, rewardValue: 50 };
+  const res = evaluateAutoDiscounts([donut('d', 1.15, 6)], [half], 'pos');
+  assert.equal(res[0].totalSaving, 3.48);
+  for (const a of res[0].appliedItems) assert.equal(a.saving, 0.58);
+  // Buy X get Y takes the same rounding: buy 1, the next 1 at 50% off 1.15 is 0.58.
+  const bxgy = { ...BOGO, triggerCategoryIds: ['donuts'], triggerQty: 1, rewardQty: 1, rewardValue: 50 };
+  assert.equal(evaluateAutoDiscounts([donut('d', 1.15, 2)], [bxgy], 'pos')[0].totalSaving, 0.58);
+  assert.equal(percentOff(1.15, 50), 0.58);
+  assert.equal(percentOff(2, 15), 0.3);
+  assert.equal(percentOff(0.15, 50), 0.08);
+  assert.equal(percentOff(10, 12.5), 1.25);
 });

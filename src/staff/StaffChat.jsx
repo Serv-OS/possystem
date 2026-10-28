@@ -22,6 +22,11 @@
 // message list is the only thing that scrolls, the message box sits at the bottom of the box, so
 // the keyboard pushes up the message box and never the whole chat. The page under it cannot scroll
 // while a conversation is open. Focusing the message box shows the newest message.
+//
+// MARKER 5.11.109 chat counts: each chat row shows its unread count and, separately, a "For you"
+// (a direct message) or "Mentions you" (an @mention of me) mark, and those chats sort to the top
+// (chatModel sortConversations). @names are highlighted inside the message bubbles, mine stronger
+// (chatModel mentionParts). The same screen in the staff app, the Manager app and Back Office.
 
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
@@ -30,6 +35,7 @@ import { registerPush, pushStatus, webSubscribed, quietIosRefresh, setOpenChat }
 import {
   conversationTitle, kindLabel, messageText, previewText, mergeMessages, canEdit, canDelete, canReport, isMutedNow,
   seenBy, mentionAt, insertMention, mentionIds, groupReactions, sortConversations, timeLabel, newClientId, PAGE_SIZE, REACTIONS,
+  forYouLabel, mentionParts,
 } from './chatModel';
 
 const MAX_PHOTO_BYTES = 8 * 1024 * 1024;
@@ -84,6 +90,19 @@ const inputStyle = { width: '100%', padding: '11px 13px', borderRadius: 12, bord
 function Avatar({ name, size = 36 }) {
   const initials = String(name || '?').split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase() || '?';
   return <div style={{ width: size, height: size, borderRadius: 999, background: 'var(--bg2)', border: '1px solid var(--bdr)', display: 'grid', placeItems: 'center', fontSize: size * 0.36, fontWeight: 800, color: 'var(--t2)', flexShrink: 0 }}>{initials}</div>;
+}
+
+// 5.11.109: a message's text with its @names highlighted (only the people it really mentions).
+function MessageBody({ msg, gone, profiles, me, mine }) {
+  const text = messageText(msg);
+  if (gone || !Array.isArray(msg.mentions) || !msg.mentions.length) return text;
+  const names = msg.mentions.map((id) => profiles[id]?.display_name).filter(Boolean);
+  const parts = mentionParts(text, names, profiles[me]?.display_name || '');
+  return parts.map((p, i) => (!p.at ? <span key={i}>{p.text}</span> : (
+    <span key={i} style={mine
+      ? { fontWeight: 800, textDecoration: 'underline' }
+      : { fontWeight: 800, color: 'var(--acc)', ...(p.me ? { background: 'color-mix(in srgb, var(--acc) 18%, transparent)', borderRadius: 4, padding: '0 2px' } : {}) }}>{p.text}</span>
+  )));
 }
 
 function Sheet({ title, onClose, children }) {
@@ -217,6 +236,7 @@ export function ChatTab({ chat, locale = 'en-GB', onFullScreen, pushApp = 'staff
                   </span>
                   <span style={{ display: 'flex', gap: 4, alignItems: 'center', flexShrink: 0 }}>
                     {muted && <span title="Muted" style={{ color: 'var(--t3)' }}><Icon name="bell" size={12} /></span>}
+                    {c.for_you > 0 && <span title={c.kind === 'dm' ? 'A direct message to you' : 'Someone mentioned you'} style={{ height: 18, padding: '0 7px', borderRadius: 999, border: '1px solid var(--acc)', color: 'var(--acc)', fontSize: 10.5, fontWeight: 800, display: 'grid', placeItems: 'center', whiteSpace: 'nowrap' }}>{c.kind === 'dm' ? '' : '@ '}{forYouLabel(c)}</span>}
                     {c.unread > 0 && <span style={{ minWidth: 18, height: 18, padding: '0 5px', borderRadius: 999, background: muted ? 'var(--t3)' : 'var(--acc)', color: '#fff', fontSize: 10.5, fontWeight: 800, display: 'grid', placeItems: 'center' }}>{c.unread > 99 ? '99+' : c.unread}</span>}
                   </span>
                 </div>
@@ -549,7 +569,7 @@ function Conversation({ chat, conv, title, locale, catchUp = 0, onBack, embed = 
                       : <div key={p.path} style={{ width: 104, height: 104, borderRadius: 10, background: 'rgba(127,127,127,.2)' }} />))}
                   </div>
                 )}
-                <div style={{ fontSize: 14.5, lineHeight: 1.4, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontStyle: gone ? 'italic' : 'normal' }}>{messageText(m)}</div>
+                <div style={{ fontSize: 14.5, lineHeight: 1.4, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontStyle: gone ? 'italic' : 'normal' }}><MessageBody msg={m} gone={gone} profiles={profiles} me={me} mine={mineMsg} /></div>
                 <div style={{ fontSize: 10.5, opacity: 0.7, marginTop: 3, textAlign: 'right' }}>{m.edited_at && !gone ? 'edited · ' : ''}{timeLabel(m.created_at, locale)}</div>
               </button>
               {reacts.length > 0 && (

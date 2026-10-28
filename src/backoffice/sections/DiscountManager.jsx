@@ -7,6 +7,7 @@ import { reportSave } from '../../lib/saveHealth';
 import { upsertDiscount, deleteDiscount, upsertDiscountRule, deleteDiscountRule } from '../../lib/db';
 import { money, currencySymbol } from '../../lib/currency';
 import { selectOnFocus } from '../../lib/selectOnFocus';
+import { ruleSentence } from '../../lib/discountWords';
 // v5.11.92 (20261023a): what a preset is for (Staff, Comp, Loyalty), shared with the till and SyncBridge.
 import { DISCOUNT_KIND_LABELS, DISCOUNT_KIND_HELP, DISCOUNT_KIND_NOT_SAVED, cleanDiscountKind } from '../../lib/discountKinds';
 
@@ -237,6 +238,9 @@ function RuleForm({ rule, categories, onSave, onCancel }) {
   );
 
   const isBundle = form.triggerType === 'bundle';
+  // v5.11.109: Buy X, discount the lot. The % or amount comes off every one of the X items.
+  const isAll = form.triggerType === 'buy_x_all';
+  const pickType = (val) => setForm(p => ({ ...p, triggerType: val, ...(val === 'buy_x_all' && p.rewardType === 'free' ? { rewardType: 'percent' } : {}) }));
 
   const toggleChannel = (ch) => {
     f('channels', { ...form.channels, [ch]: !form.channels[ch] });
@@ -267,7 +271,9 @@ function RuleForm({ rule, categories, onSave, onCancel }) {
       rewardValue: parseFloat(form.rewardValue) || 0,
       triggerQty: parseInt(form.triggerQty) || 2,
       rewardQty: parseInt(form.rewardQty) || 1,
-      rewardCategoryIds: sameRewardCats ? [] : form.rewardCategoryIds,
+      rewardCategoryIds: sameRewardCats || isAll ? [] : form.rewardCategoryIds,
+      // Buy X, discount the lot has no reward quantity of its own (all X items take it).
+      ...(isAll ? { rewardQty: 1, rewardType: form.rewardType === 'free' ? 'percent' : form.rewardType } : {}),
       schedule: schedulePayload,
       // For bundle type, set reward type to fixed_price automatically
       ...(isBundle ? { rewardType: 'fixed_price', rewardQty: 0 } : {}),
@@ -287,11 +293,8 @@ function RuleForm({ rule, categories, onSave, onCancel }) {
     });
     summary = `${groupParts.join(' + ')} = ${currencySymbol()}${form.rewardValue || '?'}`;
   } else {
-    const triggerCatNames = categories.filter(c => form.triggerCategoryIds.includes(c.id)).map(c => c.label).join(', ') || 'any category';
-    const rewardLabel = form.rewardType === 'free' ? 'free'
-      : form.rewardType === 'percent' ? `${form.rewardValue || '?'}% off`
-      : `${currencySymbol()}${form.rewardValue || '?'} off`;
-    summary = `Buy ${form.triggerQty} from ${triggerCatNames}, get ${form.rewardQty} ${rewardLabel}`;
+    // v5.11.109: one plain sentence, live as the person types (lib/discountWords.js).
+    summary = ruleSentence(form, categories, { sym: currencySymbol(), sameRewardCats });
   }
 
   return (
@@ -299,20 +302,20 @@ function RuleForm({ rule, categories, onSave, onCancel }) {
       <div style={{ fontSize:14, fontWeight:700, color:'var(--t1)', marginBottom:4 }}>
         {rule?.id ? 'Edit auto-discount rule' : 'Add auto-discount rule'}
       </div>
-      <div style={{ fontSize:11, color:'var(--t3)', marginBottom:16, fontStyle:'italic' }}>{summary}</div>
+      <div aria-live="polite" style={{ fontSize:13, lineHeight:1.5, color:'var(--t1)', fontWeight:600, marginBottom:16, padding:'10px 12px', borderRadius:8, background:'var(--bg1)', border:'1px solid var(--bdr)' }}>{summary}</div>
 
       <div style={{ marginBottom:14 }}>
         <label style={S.label}>Rule name</label>
         <input style={S.input} value={form.name} onChange={e => f('name', e.target.value)}
-          placeholder={isBundle ? 'e.g. Lunch deal — starter + main + drink £15' : 'e.g. Buy 2 pizzas get 3rd 50% off'} />
+          placeholder={isBundle ? 'e.g. Lunch deal — starter + main + drink £15' : isAll ? 'e.g. 6 donuts, 15% off all 6' : 'e.g. Buy 2 pizzas get 3rd 50% off'} />
       </div>
 
       {/* Rule type selector */}
       <div style={{ marginBottom:14 }}>
         <label style={S.label}>Rule type</label>
         <div style={{ display:'flex', gap:6 }}>
-          {[['buy_x','Buy X get Y'],['bundle','Bundle / Meal deal']].map(([val, label]) => (
-            <button key={val} type="button" onClick={() => f('triggerType', val)} style={{
+          {[['buy_x','Buy X get Y'],['buy_x_all','Buy X, discount the lot'],['bundle','Bundle / Meal deal']].map(([val, label]) => (
+            <button key={val} type="button" onClick={() => pickType(val)} style={{
               flex:1, padding:'10px 14px', borderRadius:8, cursor:'pointer', fontFamily:'inherit',
               fontSize:12, fontWeight:700, textAlign:'center',
               border:`1.5px solid ${form.triggerType === val ? 'var(--acc)' : 'var(--bdr)'}`,
@@ -331,9 +334,10 @@ function RuleForm({ rule, categories, onSave, onCancel }) {
           <div style={{ fontSize:12, fontWeight:700, color:'var(--t1)', marginBottom:10 }}>Trigger condition</div>
           <div style={S.row}>
             <div>
-              <label style={S.label}>Buy quantity</label>
+              <label style={S.label}>{isAll ? 'How many to buy' : 'Buy quantity'}</label>
               <input style={S.input} type="number" min="1" value={form.triggerQty}
                 onChange={e => f('triggerQty', e.target.value)} />
+              <div style={{ fontSize:11, color:'var(--t3)', marginTop:4 }}>{isAll ? 'Every one of these items gets the discount.' : 'How many items the customer pays full price for first'}</div>
             </div>
             <div>
               <label style={S.label}>From categories</label>
@@ -383,18 +387,21 @@ function RuleForm({ rule, categories, onSave, onCancel }) {
       {!isBundle && (
         <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:10, padding:14, marginBottom:14 }}>
           <div style={{ fontSize:12, fontWeight:700, color:'var(--t1)', marginBottom:10 }}>Reward</div>
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:14, marginBottom:14 }}>
+          <div style={{ display:'grid', gridTemplateColumns: isAll ? '1fr 1fr' : '1fr 1fr 1fr', gap:14, marginBottom:14 }}>
+            {!isAll && (
             <div>
               <label style={S.label}>Reward quantity</label>
               <input style={S.input} type="number" min="1" value={form.rewardQty}
                 onChange={e => f('rewardQty', e.target.value)} />
+              <div style={{ fontSize:11, color:'var(--t3)', marginTop:4 }}>How many items get the discount after the full price ones</div>
             </div>
+            )}
             <div>
               <label style={S.label}>Discount type</label>
               <select style={S.select} value={form.rewardType} onChange={e => f('rewardType', e.target.value)}>
                 <option value="percent">% off</option>
-                <option value="amount">£ off</option>
-                <option value="free">Free (100% off)</option>
+                <option value="amount">{isAll ? `${currencySymbol()} off each` : '£ off'}</option>
+                {!isAll && <option value="free">Free (100% off)</option>}
               </select>
             </div>
             {form.rewardType !== 'free' && (
@@ -407,12 +414,16 @@ function RuleForm({ rule, categories, onSave, onCancel }) {
             )}
           </div>
 
+          {isAll && <div style={{ fontSize:11, color:'var(--t3)', marginBottom:4 }}>It counts again for every full set. When there are more items than a full set, the cheapest ones get it. An item never gets two automatic deals.</div>}
+          {!isAll && <div style={{ fontSize:11, color:'var(--t3)', marginBottom:10 }}>When prices differ, the cheapest items get the discount.</div>}
+          {!isAll && (
           <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom: sameRewardCats ? 0 : 10 }}>
             <Toggle value={sameRewardCats} onChange={setSameRewardCats} />
             <span style={{ fontSize:12, color:'var(--t2)' }}>Reward applies to same categories as trigger</span>
           </div>
+          )}
 
-          {!sameRewardCats && (
+          {!isAll && !sameRewardCats && (
             <div>
               <label style={S.label}>Reward categories</label>
               <CategoryPicker selected={form.rewardCategoryIds} onChange={v => f('rewardCategoryIds', v)} categories={categories} />
@@ -850,12 +861,8 @@ export default function DiscountManager() {
                           {' = '}<strong>{money(Number(rule.rewardValue || 0))}</strong>
                         </>
                       ) : (
-                        <>
-                          Buy {rule.triggerQty} from{' '}
-                          <strong>{categories.filter(c => rule.triggerCategoryIds.includes(c.id)).map(c => c.label).join(', ') || 'any'}</strong>
-                          {' → '}get {rule.rewardQty}{' '}
-                          {rule.rewardType === 'free' ? 'free' : rule.rewardType === 'percent' ? `${rule.rewardValue}% off` : `${currencySymbol()}${rule.rewardValue} off`}
-                        </>
+                        // v5.11.109: the same plain sentence as the editor (lib/discountWords.js).
+                        ruleSentence(rule, categories, { sym: currencySymbol(), sameRewardCats: !(rule.rewardCategoryIds || []).length })
                       )}
                     </div>
                     {scheduleSummary(rule.schedule) && (

@@ -25,6 +25,14 @@ const itemMatchesCategories = (item, categoryIds) => {
 };
 
 /**
+ * A percent off one unit, worked in whole pence (v5.11.109 review fix): the unit in pence, the
+ * percent of it rounded to the nearest penny, as the server does on exact numbers
+ * (_public_order_auto: round(u_price * v_rv / 100)). Floating point used to land an exact half
+ * penny below it (6 x 1.15 at 50%: 3.42 here, 3.48 on the server).
+ */
+export const percentOff = (unitPrice, percent) => Math.round(Math.round(unitPrice * 100) * percent / 100) / 100;
+
+/**
  * Is a rule live RIGHT NOW given its schedule (day-of-week + time window + start/expiry)?
  *
  * Pure: takes the rule plus a pre-resolved LOCATION-LOCAL context so the engine
@@ -229,7 +237,7 @@ export const evaluateAutoDiscounts = (items, rules, channel = 'pos', ctx = null)
       for (const ri of rewardItems) {
         let saving = 0;
         if (rewardType === 'percent') {
-          saving = ri._unitPrice * rewardValue / 100;
+          saving = percentOff(ri._unitPrice, rewardValue);
         } else if (rewardType === 'amount') {
           saving = Math.min(rewardValue, ri._unitPrice);
         } else if (rewardType === 'free') {
@@ -246,6 +254,44 @@ export const evaluateAutoDiscounts = (items, rules, channel = 'pos', ctx = null)
       // Consume the deal units (trigger + reward) so a later rule can't reuse them
       dealUnits.forEach(u => consumed.add(u._key));
 
+      results.push({
+        ruleId: rule.id,
+        ruleName: rule.name,
+        rewardType,
+        rewardValue,
+        appliedItems,
+        totalSaving,
+      });
+      continue;
+    }
+
+    // ── Buy X, discount the lot (v5.11.109) ────────────────────────────────
+    // trigger_type='buy_x_all': once the basket holds triggerQty units from the categories, the
+    // % or amount comes off EVERY one of those units (6 donuts, 15% off all 6). It fires once per
+    // full triggerQty; with more than a full set, the cheapest units take it (7 donuts: the
+    // cheapest 6). reward_qty and reward categories play no part. 'amount' is off each unit.
+    // The server's _public_order_auto has the same branch (20261105b).
+    if (triggerType === 'buy_x_all') {
+      if (!(triggerQty > 0)) continue;
+      const units = expandAvailable(activeItems.filter(it => itemMatchesCategories(it, triggerCats)));
+      if (units.length < triggerQty) continue;
+      units.sort((a, b) => a._unitPrice - b._unitPrice);
+      const fireCount = Math.floor(units.length / triggerQty);
+      const dealUnits = units.slice(0, triggerQty * fireCount);
+      const appliedItems = [];
+      let totalSaving = 0;
+      for (const u of dealUnits) {
+        let saving = 0;
+        if (rewardType === 'percent') saving = percentOff(u._unitPrice, rewardValue);
+        else if (rewardType === 'amount') saving = Math.min(rewardValue, u._unitPrice);
+        else if (rewardType === 'free') saving = u._unitPrice;
+        saving = Math.round(saving * 100) / 100;
+        appliedItems.push({ uid: u._originalUid, name: u.name, saving });
+        totalSaving += saving;
+      }
+      totalSaving = Math.round(totalSaving * 100) / 100;
+      if (totalSaving <= 0) continue;
+      dealUnits.forEach(u => consumed.add(u._key));
       results.push({
         ruleId: rule.id,
         ruleName: rule.name,

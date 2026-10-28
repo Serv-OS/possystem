@@ -37,7 +37,7 @@ async function post(client, body) {
 /** One call to the team-chat function with this client's login (Back Office uses its own). */
 export const callTeamChat = (client, body) => post(client, body);
 
-const empty = () => ({ profiles: {}, convs: [], mine: {}, dmMembers: {}, last: {}, unread: {} });
+const empty = () => ({ profiles: {}, convs: [], mine: {}, dmMembers: {}, last: {}, unread: {}, forYou: {} });
 
 export function staffChatSource(client = staffSupabase) {
   return {
@@ -61,12 +61,18 @@ export function staffChatSource(client = staffSupabase) {
       }
       await Promise.all(out.convs.map(async (c) => {
         const mark = Number(out.mine[c.id]?.last_read_message_id || 0);
-        const [lm, uc] = await Promise.all([
+        // 5.11.109: what is for me. A direct message: every unread one. A group: unread ones that
+        // @mention me (chat_messages.mentions holds the profile ids).
+        const [lm, uc, fy] = await Promise.all([
           client.from('chat_messages').select(MSG_COLUMNS).eq('conversation_id', c.id).order('id', { ascending: false }).limit(1),
           client.from('chat_messages').select('id', { count: 'exact', head: true }).eq('conversation_id', c.id).gt('id', mark).neq('sender_member_id', w.member_id),
+          c.kind === 'dm' ? null
+            : client.from('chat_messages').select('id', { count: 'exact', head: true }).eq('conversation_id', c.id).gt('id', mark).neq('sender_member_id', w.member_id)
+              .is('deleted_at', null).contains('mentions', [w.member_id]),
         ]);
         if (lm.data?.[0]) out.last[c.id] = lm.data[0];
         out.unread[c.id] = uc.count || 0;
+        out.forYou[c.id] = c.kind === 'dm' ? out.unread[c.id] : (fy?.count || 0);
       }));
       return out;
     },
