@@ -12,10 +12,15 @@
 // A missing secret means that kind of push is skipped, never an error: the code runs before the keys
 // are set. A phone Apple or the push service says is gone (uninstalled, expired) is forgotten.
 // The cryptography is in pushCrypto.js (tested from node).
+//
+// MARKER 5.11.109 push log: every phone a push was tried on gets a row in push_log (company,
+// person, kind, sent or not, the push service's status and reason), written after the batch, as
+// the service role, never awaited past TIMEOUT_MS and never an error (20261105a; before it runs
+// the insert is refused and nothing else changes). Team chat, Settings, Notifications reads it.
 
 import { apnsJwt, importP8, importVapidPrivate, vapidAuthHeader, encryptWebPush, apnsHost, apnsPayload } from './pushCrypto.js';
 
-export type PushDevice = { id: string; platform: 'apns' | 'webpush'; token: string; subscription?: any; environment?: string; app?: string };
+export type PushDevice = { id: string; platform: 'apns' | 'webpush'; token: string; subscription?: any; environment?: string; app?: string; org_id?: string; member_id?: string };
 export type PushMessage = { title: string; body: string; threadId?: string | null; data?: Record<string, unknown>; urgent?: boolean };
 export type PushResult = { ok: boolean; gone: boolean; status?: number; skipped?: string };
 
@@ -102,6 +107,7 @@ export async function sendPushMany(devices: PushDevice[], m: PushMessage): Promi
   const landed = new Set<string>();
   const gone: string[] = [];
   let skipped = 0;
+  const log: PushLogRow[] = [];
   for (let i = 0; i < devices.length; i += 20) {
     const batch = devices.slice(i, i + 20);
     const results = await Promise.all(batch.map((d) => sendPush(d, m)));
@@ -109,10 +115,37 @@ export async function sendPushMany(devices: PushDevice[], m: PushMessage): Promi
       if (r.ok) landed.add(batch[j].id);
       else if (r.gone) gone.push(batch[j].id);
       else if (r.skipped) skipped++;
+      const row = pushLogRow(batch[j], m, r);
+      if (row) log.push(row);
     });
   }
   if (gone.length) await forgetDevices(gone);
+  if (log.length) await writePushLog(log);
   return { landed, gone, skipped };
+}
+
+// ── The push log (5.11.109) ──────────────────────────────────────────────────
+export type PushLogRow = { org_id: string; member_id: string | null; kind: string; ok: boolean; status: number | null; reason: string | null };
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** One log row for one phone, or null when the phone does not say its company (an older database). */
+export function pushLogRow(d: PushDevice, m: PushMessage, r: PushResult): PushLogRow | null {
+  if (!d || !UUID_RE.test(String(d.org_id || ''))) return null;
+  const kind = String((m?.data as any)?.type || 'push').replace(/[^\w.-]/g, '').slice(0, 40) || 'push';
+  const reason = r.ok ? null : String(r.skipped || (r.gone ? 'gone' : '') || '').slice(0, 200) || null;
+  return { org_id: String(d.org_id), member_id: UUID_RE.test(String(d.member_id || '')) ? String(d.member_id) : null, kind, ok: !!r.ok,
+    status: Number.isFinite(r.status) ? Number(r.status) : null, reason };
+}
+
+async function writePushLog(rows: PushLogRow[]) {
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/push_log`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+      headers: { apikey: SERVICE_ROLE, authorization: `Bearer ${SERVICE_ROLE}`, 'content-type': 'application/json', prefer: 'return=minimal' },
+      body: JSON.stringify(rows.slice(0, 1000)),
+    });
+  } catch { /* only a record: the push itself has gone */ }
 }
 
 // ── The database, through the REST API as the service role (no client import needed) ──

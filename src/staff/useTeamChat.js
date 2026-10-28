@@ -6,7 +6,7 @@
 // polls. Pass null to switch it off (signed out).
 
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
-import { unreadTotal } from './chatModel';
+import { badgeTotal, forYouTotal, isForMe } from './chatModel';
 
 const POLL_LIST_MS = 15000;
 
@@ -20,6 +20,7 @@ export function useTeamChat(source) {
   const [dmMembers, setDmMembers] = useState({});   // conversation_id -> [{ member_id }]
   const [last, setLast] = useState({});             // conversation_id -> newest message
   const [unread, setUnread] = useState({});         // conversation_id -> count
+  const [forYou, setForYou] = useState({});         // conversation_id -> unread DMs to me and @mentions of me (5.11.109)
   const openRef = useRef(null);                     // the conversation on screen
   const listeners = useRef(new Set());              // the open conversation's live handler
   const reloadTimer = useRef(null);
@@ -30,7 +31,7 @@ export function useTeamChat(source) {
   const [prevSource, setPrevSource] = useState(source);
   if (source !== prevSource) {
     setPrevSource(source);
-    setStatus('idle'); setOffText(''); setWho(null); setProfiles({}); setConvs([]); setMine({}); setDmMembers({}); setLast({}); setUnread({});
+    setStatus('idle'); setOffText(''); setWho(null); setProfiles({}); setConvs([]); setMine({}); setDmMembers({}); setLast({}); setUnread({}); setForYou({});
   }
   useEffect(() => { marks.current = {}; openRef.current = null; }, [source]);
 
@@ -44,9 +45,10 @@ export function useTeamChat(source) {
     setWho(w);
     const d = await source.inbox(w);
     if (d.error) { setOffText(d.message || 'Chat could not load. Pull down to try again.'); setStatus('off'); return; }
-    if (openRef.current) d.unread[openRef.current] = 0;
+    const fy = d.forYou || {};
+    if (openRef.current) { d.unread[openRef.current] = 0; fy[openRef.current] = 0; }
     for (const [k, r] of Object.entries(d.mine)) marks.current[k] = Math.max(marks.current[k] || 0, Number(r?.last_read_message_id || 0));
-    setProfiles(d.profiles); setMine(d.mine); setDmMembers(d.dmMembers); setConvs(d.convs); setLast(d.last); setUnread(d.unread);
+    setProfiles(d.profiles); setMine(d.mine); setDmMembers(d.dmMembers); setConvs(d.convs); setLast(d.last); setUnread(d.unread); setForYou(fy);
     setStatus('ready');
   }, [source]);
 
@@ -73,6 +75,8 @@ export function useTeamChat(source) {
 
   const minesRef = useRef(mine);
   useEffect(() => { minesRef.current = mine; }, [mine]);
+  const convsRef = useRef(convs);
+  useEffect(() => { convsRef.current = convs; }, [convs]);
 
   const convKey = convs.map((c) => c.id).slice(0, 100).join(',');
   useEffect(() => {
@@ -104,17 +108,21 @@ export function useTeamChat(source) {
         setConvs((cs) => cs.map((c) => (c.id === msg.conversation_id ? { ...c, last_message_at: msg.created_at } : c)));
         if (msg.sender_member_id !== me && openRef.current !== msg.conversation_id) {
           setUnread((u) => ({ ...u, [msg.conversation_id]: (u[msg.conversation_id] || 0) + 1 }));
+          const conv = convsRef.current.find((c) => c.id === msg.conversation_id);
+          if (isForMe(msg, me, conv)) setForYou((f) => ({ ...f, [msg.conversation_id]: (f[msg.conversation_id] || 0) + 1 }));
         }
       }
     });
   }, [source, me, convKey, reloadSoon]);
 
-  const rows = useMemo(() => convs.map((c) => ({ ...c, unread: unread[c.id] || 0, muted_until: mine[c.id]?.muted_until || null })), [convs, unread, mine]);
-  const total = useMemo(() => unreadTotal(rows), [rows]);
+  const rows = useMemo(() => convs.map((c) => ({ ...c, unread: unread[c.id] || 0, for_you: forYou[c.id] || 0, muted_until: mine[c.id]?.muted_until || null })), [convs, unread, forYou, mine]);
+  // 5.11.109: the badge counts unread in chats I have not muted, plus what is for me anywhere.
+  const total = useMemo(() => badgeTotal(rows), [rows]);
+  const forYouCount = useMemo(() => forYouTotal(rows), [rows]);
 
   const setOpen = useCallback((id) => {
     openRef.current = id;
-    if (id) setUnread((u) => ({ ...u, [id]: 0 }));
+    if (id) { setUnread((u) => ({ ...u, [id]: 0 })); setForYou((f) => ({ ...f, [id]: 0 })); }
   }, []);
   const subscribe = useCallback((fn) => { listeners.current.add(fn); return () => listeners.current.delete(fn); }, []);
   const markRead = useCallback((convId, messageId) => {
@@ -123,5 +131,5 @@ export function useTeamChat(source) {
     source.call({ action: 'read', conversation_id: convId, message_id: messageId });
   }, [source]);
 
-  return { source, call, status, offText, who, me, profiles, rows, mine, dmMembers, last, total, load, reloadSoon, setOpen, subscribe, markRead, setWho };
+  return { source, call, status, offText, who, me, profiles, rows, mine, dmMembers, last, total, forYouCount, load, reloadSoon, setOpen, subscribe, markRead, setWho };
 }

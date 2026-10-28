@@ -37,6 +37,14 @@
 //   mod.chat_off, mod.chat_on, owner.open_dm
 //   settings.save, words.get, words.save, export_person
 //   push.register, photo.upload_url, photo.urls
+//   me.quiet, notify.status (5.11.109)
+//
+// MARKER 5.11.109 team-chat notifications: every message pushes by default (20261105a: the company
+// setting Quiet when off shift now starts off). me.quiet is the person's own Quiet when off shift
+// (the staff app, Me); notify.status is Team chat, Settings, Notifications (phones on, the last 20
+// pushes from push_log) for owners and managers. inbox answers carry for_you per chat (direct
+// messages and @mentions of the caller) and the caller's own profile id (member_id), which the Back
+// Office chat bell needs. Neither new action is open to the Manager app's PIN.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { secondStepRefusal } from '../_shared/second-step.ts';
@@ -112,6 +120,7 @@ const CODE_TEXT: Record<string, string> = {
   owner_pin: 'As an owner, use Back Office or the staff app for that.',
   report_needed: 'Direct messages are private: a message there can be hidden only once someone reports it.',
   bad_endpoint: 'This browser\'s notifications service is not supported.',
+  not_ready: 'This needs a database update first. Please ask ServOS.',
 };
 const refuse = (code: string, extra: Record<string, unknown> = {}) => json({ ok: false, code, message: CODE_TEXT[code] ?? CODE_TEXT.not_allowed, ...extra });
 
@@ -369,7 +378,7 @@ async function aiCheck(orgId: string, messageId: number, text: string) {
 
 // ── The door ─────────────────────────────────────────────────────────────────
 const PIN_NEVER = new Set(['owner.open_dm', 'export_person', 'settings.save', 'words.get', 'words.save', 'log.list', 'dm.list',
-  'push.register', 'push.unregister', 'admin.groups', 'admin.members', 'people']);
+  'push.register', 'push.unregister', 'admin.groups', 'admin.members', 'people', 'me.quiet', 'notify.status']);
 const PIN_MANAGER_ONLY = new Set(['reports.list', 'report.context']);
 const OWNER_PIN_OK = new Set(['bootstrap', 'privacy.ok', 'inbox', 'thread', 'members.list', 'photo.urls', 'photo.upload_url',
   'send', 'edit', 'delete', 'react', 'read', 'report', 'dm.open', 'mute', 'leave']);
@@ -414,8 +423,12 @@ Deno.serve(async (req) => {
         return answer(w);
       }
       // ── Reads for the Manager app (no personal login, so no row level security reads) ──
-      case 'inbox':
-        return answer(await rpc2('chat_inbox', { p_member: me }));
+      case 'inbox': {
+        // 5.11.109: the caller's own profile id rides with the answer (the Back Office chat bell
+        // names direct messages with it); 20261105a adds it in the database as well.
+        const d = await rpc2('chat_inbox', { p_member: me });
+        return answer(d?.ok ? { ...d, member_id: d.member_id || me } : d);
+      }
       case 'thread': {
         const conv = uuidOrNull(body.conversation_id);
         if (!conv) return refuse('bad_request');
@@ -617,6 +630,24 @@ Deno.serve(async (req) => {
         return answer(await rpc2('chat_export_person', { p_member: me, p_target: target, p_reason: textOr(body.reason, 500) }));
       }
 
+      // MARKER 5.11.109 team-chat me.quiet: the person's own Quiet when off shift.
+      case 'me.quiet': {
+        try {
+          return answer(await rpc2('chat_me_quiet', { p_member: me, p_on: body.on === true }));
+        } catch (e) {
+          console.error('[team-chat] me.quiet', (e as Error)?.message ?? e);
+          return refuse('not_ready');
+        }
+      }
+      // MARKER 5.11.109 team-chat notify.status: phones on and the last 20 pushes (owners, managers).
+      case 'notify.status': {
+        try {
+          return answer(await rpc2('chat_notify_status', { p_member: me }));
+        } catch (e) {
+          console.error('[team-chat] notify.status', (e as Error)?.message ?? e);
+          return refuse('not_ready');
+        }
+      }
       case 'push.register': {
         const platform = body.platform === 'apns' ? 'apns' : body.platform === 'webpush' ? 'webpush' : '';
         const sub = platform === 'webpush' && body.subscription && typeof body.subscription === 'object' ? body.subscription : null;

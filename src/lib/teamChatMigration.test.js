@@ -57,7 +57,9 @@ test('the staff app login is matched through portal_user_id inside a SECURITY DE
 test('every rpc the edge function calls is a function of the migration', () => {
   const called = [...new Set([...FN.matchAll(/rpc2?\('(\w+)'/g)].map((m) => m[1]))];
   assert.ok(called.length >= 20, `calls ${called.length}`);
-  for (const c of called) assert.ok(MIG.includes(`create function public.${c}(`), `${c} exists`);
+  // 5.11.109: chat_me_quiet and chat_notify_status come with 20261105a.
+  const MIG2 = read('supabase/migrations/20261105a_OPS_chat_notifications.sql');
+  for (const c of called) assert.ok(MIG.includes(`create function public.${c}(`) || MIG2.includes(`create function public.${c}(`), `${c} exists`);
 });
 
 test('the edge function: the caller from the login, anonymous refused, the filter before the store, second step on moderation', () => {

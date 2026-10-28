@@ -5,6 +5,8 @@ import { pushedByName } from '../lib/pushedBy';
 import { mergeInstructionGroups } from '../lib/threeWayMerge';
 import { ServOSIcon } from '../components/ServOSBrand';
 import { Icon } from '../components/ServOSIcons';
+import { ChatBell, ChatCount } from './components/ChatBell';
+import { useBoChatInbox, requestChatOpen } from './components/chatBellData';
 import SupportChat from '../components/SupportChat';
 import { broadcastConfigPush } from '../sync/SyncBridge';
 import { supabase, isMock, platformSupabase, getLocationId, setResolvedLocationId, clearResolvedLocationId } from '../lib/supabase';
@@ -522,6 +524,10 @@ export default function BackOfficeApp() {
     setAskedSection(routed);
   };
   const canOpen = useCallback((routeId) => canOpenRoute(routeId, access), [access]);
+  // MARKER 5.11.109 Back Office chat bell: unread Team chat on every page (components/ChatBell.jsx),
+  // only for a login that may open Team chat.
+  const chatSummary = useBoChatInbox({ enabled: !isMock && !!authUser && secondStepOk && !!orgCtx && canOpen('wf-chat'), orgId: orgCtx?.venueOrgId || null });
+  const openTeamChat = (conversationId) => { requestChatOpen(conversationId); setSection('wf-chat'); };
   // v5.11.92 (Drop 4a, contract 2.2): one report to open in Stock and GP with its filters (a "See the
   // report" link on a stock screen, or a share link in the address bar). Held until BOReports has
   // applied it once (onLinkUsed), then cleared. The guard still decides: openStockReport goes
@@ -1029,6 +1035,7 @@ export default function BackOfficeApp() {
                 }}>
                   <Icon name={sec.icon} size={19} style={{ color: hasActive?'var(--acc)':'var(--t3)' }} />
                   <span style={{ flex:1, fontSize:13.5, fontWeight: hasActive?600:500 }}>{sec.label}</span>
+                  {sec.label === 'Workforce' && <ChatCount summary={chatSummary} />}
                   <Icon name="chevron" size={13} style={{ color:'var(--t4)', transform: open?'rotate(90deg)':'none', transition:'transform .2s' }} />
                 </button>
                 {/* v5.9.69: the cap comes from the row count. A fixed 460px (June reskin) clipped the tail of any
@@ -1048,6 +1055,7 @@ export default function BackOfficeApp() {
                           <span style={{ width:5, height:5, borderRadius:'50%', background:'currentColor', opacity: active?1:0.4, flexShrink:0 }} />
                           {label}
                           {isBetaRoute(id) && <BetaTag />}
+                          {id === 'wf-chat' && <ChatCount summary={chatSummary} />}
                         </button>
                       );
                     })}
@@ -1162,6 +1170,8 @@ export default function BackOfficeApp() {
             {isBetaRoute(section) && <BetaTag />}
           </div>
           <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+            {/* v5.11.109: Team chat from every page (unread, direct messages and @mentions first). */}
+            <ChatBell summary={chatSummary} onOpen={openTeamChat} />
             {/* Quick nav: POS / Office segmented (Office active) */}
             <div style={{ display:'inline-flex', gap:2, padding:3, borderRadius:11, background:'var(--inset)', border:'1px solid var(--inset-border)' }}>
               <a href="?mode=pos" onClick={() => { dropAdminPlaceholder(); }} style={{ padding:'6px 12px', borderRadius:8, color:'var(--t3)', fontSize:12, fontWeight:600, cursor:'pointer', fontFamily:'inherit', textDecoration:'none', display:'inline-flex', alignItems:'center', gap:6 }}><Icon name="pos" size={14}/>POS</a>

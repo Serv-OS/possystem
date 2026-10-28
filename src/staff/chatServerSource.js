@@ -16,7 +16,7 @@ export const BO_BOOTSTRAP_KEEP_MS = 5 * 60 * 1000;
 // in useTeamChat).
 export const BO_THREAD_POLL_MS = 10000;
 
-const empty = () => ({ profiles: {}, convs: [], mine: {}, dmMembers: {}, last: {}, unread: {} });
+const empty = () => ({ profiles: {}, convs: [], mine: {}, dmMembers: {}, last: {}, unread: {}, forYou: {} });
 
 /** The reads every server source shares: inbox, thread, members, no live channel. */
 export function serverReads(call, upload) {
@@ -31,6 +31,8 @@ export function serverReads(call, upload) {
         out.mine[c.id] = { conversation_id: c.id, role: c.my_role, muted_until: c.muted_until, last_read_message_id: c.last_read_message_id };
         if (c.last) out.last[c.id] = c.last;
         out.unread[c.id] = Number(c.unread || 0);
+        // 5.11.109: for_you from the server (20261105a); before it, a direct message's unread.
+        out.forYou[c.id] = c.for_you != null ? Number(c.for_you || 0) : (c.kind === 'dm' ? out.unread[c.id] : 0);
       }
       out.convs = (r.convs || []).slice(0, MAX_LIST);
       for (const d of r.dm_members || []) (out.dmMembers[d.conversation_id] ||= []).push(d);

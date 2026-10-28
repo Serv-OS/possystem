@@ -248,7 +248,7 @@ export default function StaffSurface() {
       )}
       {tab === 'news' && <NewsTab snap={snap} />}
       {tab === 'sheets' && <SheetsTab snap={snap} />}
-      {tab === 'me' && <MeTab snap={snap} onSaved={loadSnapshot} />}
+      {tab === 'me' && <MeTab snap={snap} onSaved={loadSnapshot} chat={chat} />}
       {!(tab === 'chat' && chatFull) && <nav style={{ position: 'fixed', left: 0, right: 0, bottom: 'calc(12px + env(safe-area-inset-bottom, 0px))', display: 'flex', justifyContent: 'center', pointerEvents: 'none', zIndex: 20 }}>
         <div className="sv-glass" style={{ display: 'flex', gap: 4, padding: 6, borderRadius: 999, pointerEvents: 'auto' }}>
           {[['shifts', 'clock', 'Shifts'], ['tasks', 'check', 'Tasks'], ['chat', 'chat', 'Chat'], ['news', 'status', 'News'], ['sheets', 'clipboard', 'Sheets'], ['me', 'team', 'Me']].map(([k, icon, lbl]) => (
@@ -699,7 +699,7 @@ function SheetsTab({ snap }) {
   );
 }
 
-function MeTab({ snap, onSaved }) {
+function MeTab({ snap, onSaved, chat }) {
   const me = snap?.me || {};
   const [editing, setEditing] = useState(null);   // 'details' | 'bank' | null
   const [busy, setBusy] = useState(false);
@@ -767,6 +767,9 @@ function MeTab({ snap, onSaved }) {
         )}
       </div>
 
+      {/* MARKER 5.11.109 staff app Me chat notifications: the person's own Quiet when off shift. */}
+      <ChatQuiet chat={chat} />
+
       {/* v5.11.101: a US venue pays through its payroll provider, which holds bank details. */}
       {snap?.region?.bankDetails === false ? (
         <div className="sv-glass" style={{ ...glass, fontSize: 12.5, color: 'var(--t2)' }}>Your pay goes through the venue's payroll provider, which holds your bank details. Ask your manager to change them.</div>
@@ -805,6 +808,45 @@ function useScrollIntoViewWhen(active) {
     return () => clearTimeout(id);
   }, [active]);
   return ref;
+}
+
+// 5.11.109: Me, Chat notifications. Every chat message pings the phone by default; a person can
+// choose Quiet when off shift for themselves (team-chat me.quiet, chat_profiles.quiet_off_shift).
+// Urgent announcements and @mentions from a manager always come through.
+function ChatQuiet({ chat }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const who = chat?.who;
+  if (!who?.ok || who.chat_off) return null;
+  const mine = who.my_quiet_off_shift === true;
+  const company = who.settings?.quiet_off_shift === true;
+  const flip = async () => {
+    setBusy(true); setErr('');
+    const r = await chat.call({ action: 'me.quiet', on: !mine });
+    setBusy(false);
+    if (!r?.ok) { setErr(r?.message || 'That did not save. Try again.'); return; }
+    chat.setWho({ ...who, my_quiet_off_shift: r.my_quiet_off_shift === true });
+  };
+  return (
+    <div className="sv-glass" style={glass}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 800 }}>Quiet when off shift</div>
+          <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 4, lineHeight: 1.5 }}>
+            {mine || company
+              ? 'When you are not on shift, only urgent announcements and @mentions from a manager ping your phone.'
+              : 'Every chat message pings your phone. Turn this on to keep it quiet when you are not on shift.'}
+            {company && ' Your company has this on for everyone.'}
+          </div>
+        </div>
+        <button onClick={flip} disabled={busy} role="switch" aria-checked={mine} aria-label="Quiet when off shift"
+          style={{ width: 48, height: 28, borderRadius: 999, border: 'none', cursor: 'pointer', position: 'relative', flexShrink: 0, background: mine ? 'var(--acc)' : 'var(--bdr)', opacity: busy ? 0.6 : 1 }}>
+          <span style={{ position: 'absolute', top: 3, left: mine ? 23 : 3, width: 22, height: 22, borderRadius: 999, background: '#fff', transition: 'left .15s' }} />
+        </button>
+      </div>
+      {err && <div style={{ color: 'var(--red)', fontSize: 12, fontWeight: 600, marginTop: 8 }}>{err}</div>}
+    </div>
+  );
 }
 
 function RowHead({ title, onEdit, open }) {

@@ -122,7 +122,7 @@ test('Workforce, Team chat: Chats is the first tab and opens first, with the unr
   }
   assert.match(WF, /const chat = useTeamChat\(source\);/, 'the store lives on the screen, so the count shows on every tab');
   assert.match(WF, /setSource\(r\.level === 'staff' \? null : backOfficeChatSource\(\{ orgId, who: r \}\)\);/);
-  assert.match(WF, /\{tab === 'chats' && <ChatTab chat=\{chat\} locale="en-GB" pushApp="none" embed emptyNote="Your chats\. Groups you are in, and direct messages\." \/>\}/);
+  assert.match(WF, /\{tab === 'chats' && <ChatTab chat=\{chat\} locale="en-GB" pushApp="none" embed emptyNote="Your chats\. Groups you are in, and direct messages\."\s+openRequest=\{openReq\?\.id \|\| null\} onOpenHandled=\{clearOpenReq\} \/>\}/);
   assert.match(WF, /import \{ ChatTab \} from '\.\.\/\.\.\/\.\.\/staff\/StaffChat';/, 'the staff app\'s own screen, not a copy');
   assert.doesNotMatch(WF, /function (Conversation|NewChat)\b/, 'no forked chat components');
 });
