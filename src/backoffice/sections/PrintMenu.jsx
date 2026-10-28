@@ -16,6 +16,7 @@ import { buildMenuPdf } from '../../lib/printMenuPdf';
 // v5.11.93 (multi site stock Drop 2): the stock facts laid over the products (allergens the recipe at
 // this site adds, kcal); the Calories toggle starts from the venue's Show calories setting.
 import { withFacts, showCalories as venueShowsCalories } from '../../lib/menuStockFacts';
+import { compareMenuItems } from '../../lib/menuItemOrder';
 
 const CUR = { gbp: '£', usd: '$', eur: '€', aud: '$', cad: '$', nzd: '$' };
 
@@ -182,13 +183,13 @@ export default function PrintMenu() {
     const byId = Object.fromEntries(vis.map(i => [i.id, i]));
     const kids = {};
     for (const it of vis) if (it.parent_id && byId[it.parent_id]) (kids[it.parent_id] ||= []).push(it);
-    for (const k in kids) kids[k].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+    for (const k in kids) kids[k].sort(compareMenuItems);   // v5.11.111: position, then creation order
     const m = {};
     for (const it of vis) {
       if (it.parent_id && byId[it.parent_id]) continue;
       for (const cid of [it.cat, ...(Array.isArray(it.cats) ? it.cats : [])].filter(Boolean)) (m[cid] ||= []).push({ ...it, _variants: kids[it.id] || [] });
     }
-    for (const k in m) m[k].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+    for (const k in m) m[k].sort(compareMenuItems);
     return m;
   }, [items]);
 

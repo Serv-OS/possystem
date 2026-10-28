@@ -8,6 +8,7 @@ import { productImage } from '../../lib/productImage';
 import { supabase } from '../../lib/supabase';
 import { money } from '../../lib/currency';
 import { dietaryBadges, DIET_LABELS } from '../../lib/dietary';
+import { compareMenuItems } from '../../lib/menuItemOrder';
 import { orderOptionFlow, flowOrderedMods } from '../../lib/optionFlow';
 import { sizeOrMainOptions, subitemNameIndex } from '../../lib/menuRules';
 // v5.11.81 (channel parity round 2): the venue's menu translations (shown only, the order keeps the
@@ -204,7 +205,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
           }));
         }
         if (!alive) return;
-        const all = [...fetched.values()].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+        const all = [...fetched.values()].sort(compareMenuItems);
         const subGroupIds = new Set();
         all.forEach(g => (g.options || []).forEach(o => o?.subGroupId && subGroupIds.add(o.subGroupId)));
         // Top-level groups are the ones in modGroupIds that aren't sub-groups

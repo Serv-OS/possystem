@@ -26,6 +26,7 @@ import { tabBill, tabCloseTax } from '../lib/barTabTax';
 import { tillLineTaxRefs, tillLineTaxFields, tillLineCat, tillLineCats, tillLineUnitPrice, addToRoundLines } from '../lib/tillLine';
 import { resolveItemPrice, variantFromPrice, refusesNoPriceLine } from '../lib/menuPricing';
 import { resolveActiveMenu } from '../lib/menus/resolveActiveMenu';
+import { compareMenuItems } from '../lib/menuItemOrder.js';
 
 const CAT_META = {
   quick:    { icon:'⚡', color:'#e8a020' },
@@ -294,7 +295,7 @@ export default function BarSurface() {
     return ITEMS.filter(i=>!eightySixIds.includes(i.id)&&(i.cat===cat||(i.cats||[]).includes(cat)));
   },[cat,ITEMS,eightySixIds]);
   const displayItems = useMemo(()=>{
-    if (!search.trim()) return rawItems.sort((a,b)=>(a.sortOrder??999)-(b.sortOrder??999));
+    if (!search.trim()) return rawItems.sort(compareMenuItems);   // v5.11.111: position, then creation order
     const q=search.toLowerCase();
     return ITEMS.filter(i=>!eightySixIds.includes(i.id)&&((i.menuName||i.name||'').toLowerCase().includes(q)||i.description?.toLowerCase().includes(q)));
   },[cat,search,rawItems,ITEMS,eightySixIds]);

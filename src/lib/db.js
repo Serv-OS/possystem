@@ -229,7 +229,7 @@ export const fetchMenuItems = async (locationId = null) => {
     .select('*')
     .eq('location_id', locationId)
     .eq('archived', false)
-    .order('sort_order');
+    .order('sort_order').order('id');   // v5.11.111: creation order breaks a tie, like online
 };
 
 /**

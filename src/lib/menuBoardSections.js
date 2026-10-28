@@ -37,9 +37,12 @@
 import { isOptionOnlyItem } from './menuRules.js';
 import { applyMenuToSections } from './menuBoardMenus.js';
 import { isImageBlock, normaliseSlides, DEFAULT_SLIDE_SECONDS } from './menuBoardSlides.js';
+import { compareMenuItems } from './menuItemOrder.js';
 
-const bySort = (a, b) => (a.sort_order || 0) - (b.sort_order || 0);
-const sortCats = (a, b) => bySort(a, b) || String(a.label || '').localeCompare(String(b.label || ''));
+const byCatSort = (a, b) => (a.sort_order || 0) - (b.sort_order || 0);
+const sortCats = (a, b) => byCatSort(a, b) || String(a.label || '').localeCompare(String(b.label || ''));
+// v5.11.111: items in the one order every screen uses (position, then creation order).
+const bySort = compareMenuItems;
 const str = (v) => (typeof v === 'string' ? v.trim() : '');
 
 /** May this row be a product line on a board? (rule 2, plus archived and the kiosk visibility switch) */

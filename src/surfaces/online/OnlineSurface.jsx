@@ -38,6 +38,7 @@ import { kitchenOverride, receiptOverride } from '../../lib/itemDisplay';
 import { lineTaxRefsFor } from '../../lib/taxRefs';
 import { lineCategories } from '../../lib/lineCategories';   // round 1 fix: one category rule on every channel
 import { dietaryBadges, DIET_LABELS } from '../../lib/dietary';
+import { compareMenuItems } from '../../lib/menuItemOrder';
 import { getStashedTab, clearStashedTab, stashTab } from '../../lib/qrTabStorage';
 import { publicRead, ensureCustomerSession } from '../../lib/publicOrderClient';
 import { openTabsFromResult, chooseTrackKey, UNVERIFIED_MESSAGE, mergeResumeTab, publicOrderRefusalMessage } from '../../lib/publicOrder';
@@ -697,7 +698,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
     if (!channelVisible(i, visibleChannel, priceType)) return false;
     if (!itemInSection(i, sectionTrees.get(catId) || catId)) return false;
     return true;
-  });
+  }).sort(compareMenuItems);   // v5.11.111: position, then creation order, the one rule every screen uses
   const unsafeFor = (item, kids) => unsafeAllergenIds(item, activeAllergens, kids);
 
   // ── Cart math ────────────────────────────────────────────────────────────

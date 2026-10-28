@@ -1,6 +1,7 @@
 import { useState, useMemo, useRef, useCallback } from 'react';
 import { useStore } from '../../store';
 import { money } from '../../lib/currency';
+import { compareMenuItems } from '../../lib/menuItemOrder.js';
 
 // ══════════════════════════════════════════════════════════════════════════════
 // MENU VISUALIZER
@@ -49,7 +50,7 @@ export default function MenuVisualizer() {
   // Items per category
   const itemsForCat = useCallback((catId) =>
     menuItems.filter(i => !i.archived && !i.parentId && i.cat === catId)
-      .sort((a,b) => (a.sortOrder??999)-(b.sortOrder??999)),
+      .sort(compareMenuItems),   // v5.11.111: position, then creation order
     [menuItems]
   );
 
@@ -365,7 +366,7 @@ function ItemQuickEdit({ item, onClose, menuItems, menuCategories, modifierGroup
 
   const p = item.pricing || { base: item.price || 0 };
   const is86 = eightySixIds.includes(item.id);
-  const variants = menuItems.filter(c=>c.parentId===item.id&&!c.archived).sort((a,b)=>(a.sortOrder??999)-(b.sortOrder??999));
+  const variants = menuItems.filter(c=>c.parentId===item.id&&!c.archived).sort(compareMenuItems);
   const isParent = variants.length>0;
   const isPizza = item.type==='pizza';
 
