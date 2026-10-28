@@ -50,6 +50,31 @@ test('the menu price wins on that menu only, every order type, and the base pric
   assert.equal(hasOwnMenuPrices({ pricing: veg }, 'm-happy'), false);
 });
 
+test('review fix: a product whose price is shared with other venues is left alone; this venue only', () => {
+  const items = [
+    ...ITEMS,
+    { id: 'glob', cat: 'c-pizza', scope: 'global', pricing: { base: 9 } },
+    { id: 'shared-locked', cat: 'c-pizza', scope: 'shared', lockPricing: true, pricing: { base: 9 } },
+    { id: 'shared-open', cat: 'c-pizza', scope: 'shared', lock_pricing: false, pricing: { base: 9 } },
+    { id: 'glob-copy', cat: 'c-pizza', scope: 'global', master_id: 'glob-elsewhere', pricing: { base: 9 } },
+    { id: 'big', cat: 'c-pizza', scope: 'shared', lock_pricing: true, pricing: { base: 9 } },
+    { id: 'big-s', parentId: 'big', cat: 'c-pizza', scope: 'shared', pricing: { base: 8 } },
+  ];
+  const r = menuPriceTargets({ menuId: 'm-happy', categories: CATS, links: LINKS, items });
+  const ids = r.targets.map((t) => t.id);
+  assert.ok(!ids.includes('glob') && !ids.includes('shared-locked'), 'global, and shared with Lock pricing, are not written');
+  assert.ok(!ids.includes('big-s'), 'a size of a shared product with Lock pricing is not written');
+  assert.ok(ids.includes('shared-open'), 'shared without Lock pricing keeps its own price at each venue: written here only');
+  assert.ok(ids.includes('glob-copy'), 'a copy at this venue never propagates: written here only');
+  assert.equal(r.shared, 3);
+  assert.match(previewWords(r, 'Happy hour', '£5.00'), /3 shared products are left alone \(they are set in the multi site menu\)\./);
+  assert.match(previewWords({ ...r, shared: 1 }, 'Happy hour', '£5.00'), /1 shared product is left alone/);
+  // The rule matches the sharing engine: those rows are exactly the ones whose pricing would follow.
+  const store = readFileSync(new URL('../store/index.js', import.meta.url), 'utf8');
+  assert.match(store, /if \(!isMasterRow\(row\)\) return;/);
+  assert.match(store, /propagatedFields\(scope, \{ lockPricing: !!\(owner\.lockPricing \?\? owner\.lock_pricing\) \}\)/);
+});
+
 test('typed amounts', () => {
   assert.equal(readAmount('5'), 5);
   assert.equal(readAmount('£4.5'), 4.5);

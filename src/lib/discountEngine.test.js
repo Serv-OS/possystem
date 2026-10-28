@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { evaluateAutoDiscounts, isRuleActiveNow } from './discountEngine.js';
+import { evaluateAutoDiscounts, isRuleActiveNow, percentOff } from './discountEngine.js';
 
 const near = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} ≈ ${b}`);
 
@@ -233,4 +233,19 @@ test('buy_x_all: mixed categories count together, other items are left alone', (
   // a line carried by its other categories (cats) counts too
   const multi = [donut('d', 2, 5), { uid: 'x', name: 'Box', cat: 'boxes', cats: ['boxes', 'muffins'], price: 4, qty: 1 }];
   assert.equal(evaluateAutoDiscounts(multi, [rule], 'pos')[0].appliedItems.length, 6);
+});
+
+test('review fix: a percent saving is worked in whole pence, so an exact half penny rounds up as on the server', () => {
+  // 6 x 1.15 at 50%: each 57.5p rounds to 58p (the server's round on exact numbers), 3.48 in all.
+  const half = { ...SIX15, rewardValue: 50 };
+  const res = evaluateAutoDiscounts([donut('d', 1.15, 6)], [half], 'pos');
+  assert.equal(res[0].totalSaving, 3.48);
+  for (const a of res[0].appliedItems) assert.equal(a.saving, 0.58);
+  // Buy X get Y takes the same rounding: buy 1, the next 1 at 50% off 1.15 is 0.58.
+  const bxgy = { ...BOGO, triggerCategoryIds: ['donuts'], triggerQty: 1, rewardQty: 1, rewardValue: 50 };
+  assert.equal(evaluateAutoDiscounts([donut('d', 1.15, 2)], [bxgy], 'pos')[0].totalSaving, 0.58);
+  assert.equal(percentOff(1.15, 50), 0.58);
+  assert.equal(percentOff(2, 15), 0.3);
+  assert.equal(percentOff(0.15, 50), 0.08);
+  assert.equal(percentOff(10, 12.5), 1.25);
 });

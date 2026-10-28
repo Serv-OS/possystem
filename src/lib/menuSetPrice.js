@@ -10,21 +10,38 @@
 
 import { allowedCategoryIds, itemInAllowedCats } from './menuMembership.js';
 import { isOptionOnlyItem } from './menuRules.js';
+import { isMasterRow, fieldOf } from './shareCopy.js';
+
+/**
+ * Review fix (5.11.109): would a price written here be copied to the company's other venues? The
+ * sharing engine (store scheduleScopedPropagation, lib/shareCopy.js propagatedFields) carries
+ * pricing from a master row that is 'global', or 'shared' with Lock pricing (a size takes Lock
+ * pricing from its product), onto every peer venue's menu of the same name. This action is for
+ * this venue only, so those rows are left alone.
+ */
+export function pricingIsShared(row, owner = row) {
+  if (!row || !isMasterRow(row)) return false;
+  const scope = row.scope || 'local';
+  if (scope === 'global') return true;
+  return scope === 'shared' && !!(fieldOf(owner || row, 'lock_pricing'));
+}
 
 /**
  * What "every item on this menu" means: the products the tills show on it (live, sold on their
  * own, in a category on the menu or a sub category of one). A product with sizes is priced on
  * each size, so its sizes are written instead of it.
- * Returns { targets, products, withSizes, sizes, ownPrices }:
- *   targets    the rows to write (products without sizes, and every size of the others)
+ * Returns { targets, products, withSizes, sizes, ownPrices, shared }:
+ *   targets    the rows to write (products without sizes, and every size of the others), never a
+ *              row whose price the sharing engine would copy to other venues (pricingIsShared)
  *   products   how many products are on the menu
  *   withSizes  how many of them have sizes
  *   sizes      how many sizes that is
  *   ownPrices  how many targets already have order type prices of their own on this menu
  *              (they are replaced, so the menu shows one price everywhere)
+ *   shared     how many products are left alone because their price is shared with other venues
  */
 export function menuPriceTargets({ menuId, categories, links, items }) {
-  const empty = { targets: [], products: 0, withSizes: 0, sizes: 0, ownPrices: 0 };
+  const empty = { targets: [], products: 0, withSizes: 0, sizes: 0, ownPrices: 0, shared: 0 };
   if (!menuId) return empty;
   const allowed = allowedCategoryIds(categories || [], menuId, links || []);
   const live = (items || []).filter((i) => i && !i.archived);
@@ -36,13 +53,18 @@ export function menuPriceTargets({ menuId, categories, links, items }) {
     if (parent && ids.has(parent)) sizesOf.set(parent, [...(sizesOf.get(parent) || []), s]);
   }
   const targets = [];
-  let withSizes = 0, sizes = 0;
+  let withSizes = 0, sizes = 0, shared = 0;
   for (const p of products) {
     const kids = sizesOf.get(p.id);
-    if (kids?.length) { withSizes += 1; sizes += kids.length; targets.push(...kids); } else targets.push(p);
+    const rows = kids?.length ? kids : [p];
+    const own = rows.filter((r) => !pricingIsShared(r, p));
+    if (own.length < rows.length) shared += 1;
+    if (!own.length) continue;
+    if (kids?.length) { withSizes += 1; sizes += own.length; }
+    targets.push(...own);
   }
   const ownPrices = targets.filter((t) => hasOwnMenuPrices(t, menuId)).length;
-  return { targets, products: products.length, withSizes, sizes, ownPrices };
+  return { targets, products: products.length, withSizes, sizes, ownPrices, shared };
 }
 
 /** Does this row carry prices other than the menu wide one for this menu (an order type, Base)? */
@@ -66,9 +88,10 @@ export function readAmount(text) {
 }
 
 /** The preview line before anything is written. */
-export function previewWords({ products, withSizes, sizes, ownPrices, targets }, menuName, priceText) {
+export function previewWords({ products, withSizes, sizes, ownPrices, targets, shared = 0 }, menuName, priceText) {
   if (!products) return `No products are on ${menuName} yet.`;
   const parts = [`This sets ${targets.length} ${targets.length === 1 ? 'item' : 'items'} on ${menuName} to ${priceText}.`];
+  if (shared) parts.push(`${shared} shared ${shared === 1 ? 'product is' : 'products are'} left alone (they are set in the multi site menu).`);
   if (withSizes) parts.push(`${withSizes} ${withSizes === 1 ? 'product has' : 'products have'} sizes: all ${sizes} sizes get ${priceText}.`);
   if (ownPrices) parts.push(`${ownPrices} had their own order type prices on this menu; those are replaced too.`);
   parts.push('Base prices are not changed.');

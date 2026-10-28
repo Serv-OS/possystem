@@ -98,6 +98,14 @@ try {
     'a muffin cheaper than 50p off': [line(1, 'muffins', 40, 3)],
     'nothing qualifies': [line(1, 'coffee', 300, 2)],
   };
+  // Review fix (5.11.109): an exact half penny. The half price rule is its own, so only it runs here.
+  const HALF = { id: '00000000-0000-4000-8000-000000000009', name: 'Half price donuts', trigger_type: 'buy_x_all', trigger_category_ids: ['halfdonut'],
+    trigger_qty: 6, reward_type: 'percent', reward_value: 50, reward_qty: 1, priority: 40 };
+  RULES.push(HALF);
+  sql(`insert into public.discount_rules (id, location_id, name, trigger_type, trigger_category_ids, trigger_qty, reward_type, reward_value, reward_qty, priority)
+       values (${lit(HALF.id)}, ${lit(LOC)}, ${lit(HALF.name)}, 'buy_x_all', array['halfdonut'], 6, 'percent', 50, 1, 40)`);
+  engineRules.unshift({ ...HALF, active: true });
+  BASKETS['six at 1.15, half price (an exact half penny each)'] = [line(1, 'halfdonut', 115, 6)];
   const server = (lines) => JSON.parse(sql(`select public._public_order_auto(${lit(LOC)}, 'online', ${lit(JSON.stringify(lines))})`));
   const app = (lines) => {
     const items = lines.map((l) => ({ uid: `u${l.n}`, name: l.cat, cat: l.cat, cats: l.cats || null, price: l.unit / 100, qty: l.qty }));
@@ -129,10 +137,12 @@ try {
   }
   ok(server(BASKETS['twelve donuts']).total_minor === 360, 'twelve donuts: 15% off all twelve (twice six), 3.60');
   ok(server(BASKETS['seven donuts, mixed prices']).total_minor === Math.round((200 * 5 + 150) * 0.15), 'seven donuts: the cheapest six');
+  ok(server(BASKETS['six at 1.15, half price (an exact half penny each)']).total_minor === 348 && app(BASKETS['six at 1.15, half price (an exact half penny each)']).total === 348,
+    'six at 1.15 half price: 3.48 on the server and in the apps (58p each)');
 
   console.log('4. the rollback');
   const rb = psql({ args: ['-1', '-f', ROLLBACK] });
-  ok(rb.stdout.trim().split('\n').pop() === '0|1|2', `rollback check row, the two test rules still on (${rb.stdout.trim().split('\n').pop()})`);
+  ok(rb.stdout.trim().split('\n').pop() === '0|1|3', `rollback check row, the three test rules still on (${rb.stdout.trim().split('\n').pop()})`);
   const after = sql(`select pg_get_functiondef('public._public_order_auto(text,text,jsonb)'::regprocedure)`);
   ok(!after.includes('buy_x_all') && after.includes('line_minor'), 'the 20261020a function is back');
   ok(sql(`select has_function_privilege('anon', 'public._public_order_auto(text,text,jsonb)'::regprocedure, 'execute')`) === 'f', 'and still only the service role runs it');

@@ -136,13 +136,24 @@ test('team-chat: me.quiet and notify.status, never through the Manager app PIN, 
 
 test('push.ts: every phone tried gets a push_log row (company, person, kind, sent or not, status, reason), never an error', async () => {
   assert.match(PUSH, /MARKER 5\.11\.109 push log/);
-  assert.match(PUSH, /if \(log\.length\) await writePushLog\(log\);/);
+  // review fix: nothing waits for the log (waitUntil, else fire and forget with a 2 s cap).
+  assert.match(PUSH, /if \(log\.length\) logLater\(log\);/);
+  assert.doesNotMatch(PUSH, /await writePushLog|await logLater/, 'the log is never awaited');
+  assert.match(PUSH, /if \(rt\?\.waitUntil\) rt\.waitUntil\(writePushLog\(rows, TIMEOUT_MS\)\);\n\s+else writePushLog\(rows, LOG_CAP_MS\);/);
+  assert.match(PUSH, /const LOG_CAP_MS = 2000;/);
+  assert.match(PUSH, /signal: AbortSignal\.timeout\(capMs\),/);
+  // the urgent text backup follows the push batch, which no longer waits for the log
+  const notify = read('supabase/functions/_shared/staffNotify.ts');
+  const chatPush = notify.slice(notify.indexOf('export async function pushChatMessage'));
+  assert.ok(chatPush.indexOf('await sendPushMany(all, msg)') < chatPush.indexOf('if (t.urgent)'), 'the texts go after the batch');
+  assert.doesNotMatch(chatPush, /push_log|writePushLog/, 'and nothing there waits for the log');
   assert.match(PUSH, /\$\{SUPABASE_URL\}\/rest\/v1\/push_log/);
   assert.match(PUSH, /catch \{ \/\* only a record: the push itself has gone \*\/ \}/);
   // pushLogRow, run here (the file is TypeScript, so the function is lifted out and its types dropped).
   const src = PUSH.slice(PUSH.indexOf('export function pushLogRow'), PUSH.indexOf('async function writePushLog'))
     .replace('export function pushLogRow(d: PushDevice, m: PushMessage, r: PushResult): PushLogRow | null', 'function pushLogRow(d, m, r)')
-    .replace(/\(m\?\.data as any\)/, '(m?.data)');
+    .replace(/\(m\?\.data as any\)/, '(m?.data)')
+    .replace(/\nconst LOG_CAP_MS[\s\S]*$/, '');
   const pushLogRow = new Function('UUID_RE', `${src}; return pushLogRow;`)(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
   const org = '0a000000-0000-4000-8000-000000000001', mem = '0b000000-0000-4000-8000-000000000001';
   assert.deepEqual(pushLogRow({ org_id: org, member_id: mem }, { data: { type: 'chat' } }, { ok: true, status: 201 }),

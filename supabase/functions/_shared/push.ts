@@ -15,8 +15,11 @@
 //
 // MARKER 5.11.109 push log: every phone a push was tried on gets a row in push_log (company,
 // person, kind, sent or not, the push service's status and reason), written after the batch, as
-// the service role, never awaited past TIMEOUT_MS and never an error (20261105a; before it runs
-// the insert is refused and nothing else changes). Team chat, Settings, Notifications reads it.
+// the service role, and never an error (20261105a; before it runs the insert is refused and
+// nothing else changes). Team chat, Settings, Notifications reads it.
+// MARKER 5.11.109 push log never waits (review fix): nothing waits for the log. It is handed to
+// EdgeRuntime.waitUntil (finishes after the answer, TIMEOUT_MS at most), else fired and forgotten
+// with a LOG_CAP_MS cap, so the urgent text backup and every answer go out without waiting for it.
 
 import { apnsJwt, importP8, importVapidPrivate, vapidAuthHeader, encryptWebPush, apnsHost, apnsPayload } from './pushCrypto.js';
 
@@ -120,7 +123,7 @@ export async function sendPushMany(devices: PushDevice[], m: PushMessage): Promi
     });
   }
   if (gone.length) await forgetDevices(gone);
-  if (log.length) await writePushLog(log);
+  if (log.length) logLater(log);
   return { landed, gone, skipped };
 }
 
@@ -137,11 +140,20 @@ export function pushLogRow(d: PushDevice, m: PushMessage, r: PushResult): PushLo
     status: Number.isFinite(r.status) ? Number(r.status) : null, reason };
 }
 
-async function writePushLog(rows: PushLogRow[]) {
+const LOG_CAP_MS = 2000;
+
+/** Write the log without anyone waiting for it (see the MARKER above). */
+function logLater(rows: PushLogRow[]) {
+  const rt = (globalThis as any).EdgeRuntime;
+  if (rt?.waitUntil) rt.waitUntil(writePushLog(rows, TIMEOUT_MS));
+  else writePushLog(rows, LOG_CAP_MS);
+}
+
+async function writePushLog(rows: PushLogRow[], capMs: number) {
   try {
     await fetch(`${SUPABASE_URL}/rest/v1/push_log`, {
       method: 'POST',
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: AbortSignal.timeout(capMs),
       headers: { apikey: SERVICE_ROLE, authorization: `Bearer ${SERVICE_ROLE}`, 'content-type': 'application/json', prefer: 'return=minimal' },
       body: JSON.stringify(rows.slice(0, 1000)),
     });
