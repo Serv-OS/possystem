@@ -17,6 +17,7 @@ export const CHANGELOG = [
       "The chips take their colours from each screen's own theme: the venue's Appearance colours online and on QR, the kiosk theme on the kiosk, the till theme on the till. They read in light and dark.",
       "Prices, baskets, options and ordering are unchanged.",
       "Habitum Coffee: 30 products also had a typed Allergens sentence at the end of the description, so they would show allergens twice. A one off database file takes that sentence out for Habitum only, keeps a backup of every description first, and keeps a may contain note as its own line. The app never removes a venue's words by itself.",
+      "Kiosk: the screen keyboard no longer covers what you type. On a product, the notes box (Anything else?) and the Add button move up above the keyboard while you type, and the box scrolls into view. The other boxes a customer types in on the kiosk (name, mobile number, email, code, gift card, tip amount) also scroll into view once the keyboard is up, and on Android the page now shrinks to make room for the keyboard instead of sitting under it.",
       "Web app only. The Habitum description tidy is a separate SQL file Peter runs.",
     ],
   },

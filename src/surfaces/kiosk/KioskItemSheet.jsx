@@ -15,13 +15,15 @@
  *
  * Sizes are design px (the canvas scales them). No vw, vh or clamp.
  */
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { t, tf } from '../../lib/i18n';
 import { money } from '../../lib/currency';
 import { itemName, itemDescription, groupName, optionName, useMenuText } from '../../lib/menuText';
 import { kioskAllergenLabels, kioskPickedOptionIds, shownAllergenIds, sheetUnsafeIds } from '../../lib/kioskAllergens';
 // v5.11.108: the one allergen chip row every surface shows (kiosk, online, QR, till).
 import AllergenChips, { KIOSK_ALLERGEN_PALETTE } from '../../components/AllergenChips.js';
+// v5.11.108: the device keyboard never covers the notes box or the Add button (lib/kioskKeyboard.js).
+import { useKioskKeyboardLift, kioskRevealOnFocus } from '../../lib/kioskKeyboard.js';
 // v5.11.93 (multi site stock Drop 2): kcal and the 2,000 kcal line where the venue shows calories;
 // 'May contain' and 'Allergens being checked' from the stock recipe linked at this site.
 import { kcalWords, mayContainWords, KCAL_NOTE_KEY, ALLERGEN_CHECK_KEY } from '../../lib/menuStockFacts';
@@ -36,6 +38,9 @@ export default function KioskItemSheet(props) {
     selections, nestedSelections, subGroupsCache, resolveOpt, showCalories = false,
   } = props;
   const facts = item?.stockFacts || null;   // v5.11.93: the stock recipe's facts at this site, when any
+  // v5.11.108: while the notes box has focus, the sheet's bottom sits on top of the keyboard.
+  const shellRef = useRef(null);
+  const keyboardLift = useKioskKeyboardLift(shellRef);
 
   // The picked options' own allergens (options, nested picks), as the modal resolves them.
   // v5.11.108: the walk moved word for word to lib/kioskAllergens.js kioskPickedOptionIds, so the
@@ -97,7 +102,7 @@ export default function KioskItemSheet(props) {
   const canMore = !loading && qty < lineMaxQty;
 
   return (
-    <div style={{ position: 'absolute', inset: 0, background: 'var(--k2Scrim)', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', zIndex: 30 }}>
+    <div ref={shellRef} data-keyboard-lift={keyboardLift || undefined} style={{ position: 'absolute', inset: 0, bottom: keyboardLift, background: 'var(--k2Scrim)', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', zIndex: 30 }}>
       <div
         role="dialog"
         aria-modal="true"
@@ -174,6 +179,7 @@ export default function KioskItemSheet(props) {
                 id="k2-item-note"
                 value={instructions}
                 onChange={e => setInstructions(e.target.value)}
+                onFocus={kioskRevealOnFocus}
                 placeholder={t('product.anythingElse.placeholder')}
                 maxLength={140}
                 rows={2}
