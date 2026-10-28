@@ -2,20 +2,27 @@
 // MARKER 5.11.102 Back Office team chat
 //
 // Workforce, Team chat (5.11.102): running ServOS Team Chat from Back Office.
+//   Chats            (5.11.106) chatting from Back Office: the signed in person's own chats (their
+//                    office chat profile, which bootstrap makes), the staff app's chat screen
+//                    (ChatTab, embed) fed through the server with this login (backOfficeChatSource),
+//                    polled while this screen is open and the browser tab is in front. Read every
+//                    group they are in, send, post urgent announcements, message anyone.
 //   Groups           every group this login runs (owners: the company; managers: their venues),
 //                    new groups, rename, archive, members (picker with venue and position filters,
 //                    add everyone shown), admins.
 //   Reports to check (ChatReports, shared with the Manager app).
-//   Owner and Admin only: Settings, Word lists, Moderation log, Export a person, Open a DM (with
-//   a typed reason, logged).
+//   Owner and Admin only: Settings, Word lists, Moderation log, Export a person, Read a private
+//   message (reading only, with a typed reason, logged; not a chat list).
 // Everything goes through the team-chat function with this Back Office login; the database decides
 // what this login may see and do (20261103a). Chat is company wide, so this screen is too: the
 // venue switcher does not narrow it (a manager sees only their own venues' groups anyway).
 
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { supabase } from '../../../lib/supabase';
-import { callTeamChat } from '../../../staff/chatSource';
+import { callTeamChat, backOfficeChatSource } from '../../../staff/chatSource';
 import ChatReports from '../../../staff/ChatReports';
+import { useTeamChat } from '../../../staff/useTeamChat';
+import { ChatTab } from '../../../staff/StaffChat';
 import { Card, Badge, inputStyle, labelStyle, LoadingCard, EmptyState } from '../../../staff/wfUi';
 
 const KIND = { group: 'Group', venue: 'Venue group', position: 'Position group', announce: 'Announcements' };
@@ -36,26 +43,38 @@ export default function WfChat({ ctx, showToast }) {
   const call = useCallback((body) => callTeamChat(supabase, orgId ? { org_id: orgId, ...body } : body), [orgId]);
   const [who, setWho] = useState(null);
   const [err, setErr] = useState('');
-  const [tab, setTab] = useState('groups');
+  const [tab, setTab] = useState('chats');
   const [openCount, setOpenCount] = useState(0);
+  // MARKER 5.11.106 Back Office chat: one chat source per company and login, made from the first
+  // bootstrap answer (so the Chats tab does not ask again). It lives here, not in the tab, so the
+  // unread count on the Chats tab stays right while another tab is open.
+  const [source, setSource] = useState(null);
+  const chat = useTeamChat(source);
 
   useEffect(() => {
     let alive = true;
-    call({ action: 'bootstrap' }).then((r) => { if (!alive) return; if (r.ok) setWho(r); else setErr(r.message || 'Team chat is not switched on yet.'); });
+    call({ action: 'bootstrap' }).then((r) => {
+      if (!alive) return;
+      if (r.ok) {
+        setErr(''); setWho(r);
+        setSource(r.level === 'staff' ? null : backOfficeChatSource({ orgId, who: r }));
+      } else { setWho(null); setSource(null); setErr(r.message || 'Team chat is not switched on yet.'); }
+    });
     return () => { alive = false; };
-  }, [call]);
+  }, [call, orgId]);
 
   if (err) return <EmptyState icon="team" title="Team chat" body={err} />;
   if (!who) return <LoadingCard label="Loading team chat…" />;
   if (who.level === 'staff') return <EmptyState icon="team" title="Team chat" body="Running team chat is for managers and owners. Your own chats are in the staff app." />;
   const owner = who.level === 'owner';
-  const tabs = [['groups', 'Groups'], ['reports', 'Reports to check', openCount],
-    ...(owner ? [['settings', 'Settings'], ['words', 'Word lists'], ['log', 'Moderation log'], ['export', 'Export a person'], ['dm', 'Open a DM']] : [])];
+  const tabs = [['chats', 'Chats', chat.total], ['groups', 'Groups'], ['reports', 'Reports to check', openCount],
+    ...(owner ? [['settings', 'Settings'], ['words', 'Word lists'], ['log', 'Moderation log'], ['export', 'Export a person'], ['dm', 'Read a private message (owner only)']] : [])];
   const toast = (msg, type = 'success') => showToast?.(msg, type);
 
   return (
     <div>
       <Tabs tabs={tabs} active={tab} onTab={setTab} />
+      {tab === 'chats' && <ChatTab chat={chat} locale="en-GB" pushApp="none" embed emptyNote="Your chats. Groups you are in, and direct messages." />}
       {tab === 'groups' && <Groups call={call} who={who} toast={toast} />}
       {tab === 'reports' && <Card><ChatReports call={call} onCount={setOpenCount} /></Card>}
       {tab === 'settings' && owner && <Settings call={call} who={who} setWho={setWho} toast={toast} />}
@@ -397,7 +416,12 @@ function OpenDm({ call }) {
   };
   return (
     <Card>
-      <div style={{ fontSize: 13, color: 'var(--t2)', marginBottom: 10 }}>Direct messages are private. Open one only when you have to (a grievance, a safety worry, the law). Your reason is kept in the log for 6 years.</div>
+      <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6 }}>Read a private message (owner only)</div>
+      <div style={{ fontSize: 13, color: 'var(--t2)', marginBottom: 10, lineHeight: 1.5 }}>
+        Direct messages between staff are private. As the owner you can read one between two other people only for a grievance, a safety worry or the law, and only by typing a reason. Your reason is kept in the log for 6 years.
+        This is for reading, not sending: to message someone, use the Chats tab.
+        The list is empty until people have sent each other direct messages.
+      </div>
       <label style={{ display: 'block', marginBottom: 10 }}><span style={labelStyle}>Direct message</span>
         <select value={pick} onChange={(e) => { setPick(e.target.value); setMsgs(null); }} style={inputStyle}>
           <option value="">Pick one</option>

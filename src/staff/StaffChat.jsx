@@ -10,8 +10,21 @@
 //
 // useTeamChat(source) (useTeamChat.js) lives in StaffSurface or the Manager app (the unread badge on the tab bar needs
 // it while another tab is open); <ChatTab chat={...}/> draws it.
+//
+// MARKER 5.11.106 Back Office chat: <ChatTab embed /> is the same screen inside Back Office. The
+// composer sits in the panel instead of fixed to the bottom of the phone, and on a wide screen the
+// list stays on the left with the open conversation on the right. Narrow screens get the staff
+// app's single column.
+//
+// MARKER 5.11.106 iPhone chat: <ChatTab fitScreen /> is the staff app on a phone. An open
+// conversation is one box the size of the VISIBLE screen (window.visualViewport: height and
+// offsetTop, followed on resize and scroll), drawn over the page. The header stays at the top, the
+// message list is the only thing that scrolls, the message box sits at the bottom of the box, so
+// the keyboard pushes up the message box and never the whole chat. The page under it cannot scroll
+// while a conversation is open. Focusing the message box shows the newest message.
 
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { Icon } from '../components/ServOSIcons';
 import { registerPush, pushStatus, webSubscribed, quietIosRefresh, setOpenChat } from '../lib/pushRegister';
 import {
@@ -20,11 +33,53 @@ import {
 } from './chatModel';
 
 const MAX_PHOTO_BYTES = 8 * 1024 * 1024;
+const WIDE_QUERY = '(min-width: 1024px)';
+const EMBED_HEIGHT = 'min(78vh, 820px)';
+
+// Staff app on a phone: the part of the screen the person can see (the keyboard takes the rest).
+function readViewport() {
+  const vv = window.visualViewport;
+  const height = vv ? vv.height : window.innerHeight;
+  return { top: vv ? vv.offsetTop : 0, height, keyboard: window.innerHeight - height > 120 };
+}
+function useVisualViewport(on) {
+  const [box, setBox] = useState(() => (on && typeof window !== 'undefined' ? readViewport() : null));
+  useEffect(() => {
+    if (!on || typeof window === 'undefined') return undefined;
+    const vv = window.visualViewport;
+    const update = () => setBox(readViewport());
+    update();
+    vv?.addEventListener('resize', update);
+    vv?.addEventListener('scroll', update);
+    window.addEventListener('resize', update);
+    return () => {
+      vv?.removeEventListener('resize', update);
+      vv?.removeEventListener('scroll', update);
+      window.removeEventListener('resize', update);
+    };
+  }, [on]);
+  return on ? box : null;
+}
+
+// Back Office only: is the window wide enough for the list and the conversation side by side?
+function useWide(on) {
+  const [wide, setWide] = useState(() => !!(on && typeof window !== 'undefined' && window.matchMedia && window.matchMedia(WIDE_QUERY).matches));
+  useEffect(() => {
+    if (!on || typeof window === 'undefined' || !window.matchMedia) return undefined;
+    const mq = window.matchMedia(WIDE_QUERY);
+    const onChange = () => setWide(mq.matches);
+    onChange();
+    mq.addEventListener?.('change', onChange);
+    return () => mq.removeEventListener?.('change', onChange);
+  }, [on]);
+  return !!on && wide;
+}
 
 // ── Little pieces ─────────────────────────────────────────────────────────────
 const btn = { border: '1px solid var(--bdr)', borderRadius: 999, padding: '7px 12px', background: 'transparent', color: 'var(--t2)', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' };
 const primary = { ...btn, background: 'var(--acc)', color: '#fff', border: 'none' };
-const inputStyle = { width: '100%', padding: '11px 13px', borderRadius: 12, border: '1px solid var(--bdr)', background: 'var(--bg2)', color: 'var(--t1)', fontSize: 15, fontFamily: 'inherit', boxSizing: 'border-box' };
+// 16px: iOS zooms the page into any box with smaller text when it is tapped (5.11.106).
+const inputStyle = { width: '100%', padding: '11px 13px', borderRadius: 12, border: '1px solid var(--bdr)', background: 'var(--bg2)', color: 'var(--t1)', fontSize: 16, fontFamily: 'inherit', boxSizing: 'border-box' };
 
 function Avatar({ name, size = 36 }) {
   const initials = String(name || '?').split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase() || '?';
@@ -63,8 +118,11 @@ function PrivacyNotice({ who, onOk }) {
 }
 
 // ── The Chat tab ──────────────────────────────────────────────────────────────
-export function ChatTab({ chat, locale = 'en-GB', onFullScreen, pushApp = 'staff', openRequest = null, onOpenHandled }) {
+export function ChatTab({ chat, locale = 'en-GB', onFullScreen, pushApp = 'staff', openRequest = null, onOpenHandled, embed = false, emptyNote = '', fitScreen = false }) {
   // pushApp 'none': no notifications offered (the Manager app runs on shared venue devices, A3).
+  // embed: inside Back Office (5.11.106); emptyNote: one more line under the empty list.
+  // fitScreen: the staff app on a phone, an open chat fits the visible screen (5.11.106).
+  const split = useWide(embed);
   const [openId, setOpenId] = useState(null);
   const [newOpen, setNewOpen] = useState(false);
   const [push, setPush] = useState(() => (pushApp === 'none' ? 'unsupported' : pushStatus()));
@@ -122,11 +180,12 @@ export function ChatTab({ chat, locale = 'en-GB', onFullScreen, pushApp = 'staff
   if (who?.chat_off) return <div className="sv-glass" style={{ padding: 18, borderRadius: 16, fontSize: 14, color: 'var(--t2)' }}>Chat is switched off for you. Please speak to your manager.</div>;
 
   const titleOf = (c) => conversationTitle(c, { me, membersByConv: dmMembers, profilesById: profiles });
-  if (conv) return <Conversation key={conv.id} chat={chat} conv={conv} title={titleOf(conv)} locale={locale} catchUp={catchUp} onBack={() => open(null)} />;
+  const convView = conv ? <Conversation key={conv.id} chat={chat} conv={conv} title={titleOf(conv)} locale={locale} catchUp={catchUp} onBack={() => open(null)} embed={embed} fit={fitScreen && !embed} /> : null;
+  if (conv && !split) return convView;
 
   const canGroup = who && (who.level !== 'staff' || who.settings?.groups_by === 'everyone');
   const sorted = sortConversations(rows, titleOf);
-  return (
+  const listView = (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
         <div style={{ fontSize: 17, fontWeight: 800 }}>Chats</div>
@@ -139,13 +198,13 @@ export function ChatTab({ chat, locale = 'en-GB', onFullScreen, pushApp = 'staff
       )}
       {pushMsg && <div style={{ fontSize: 12.5, color: 'var(--t2)', marginBottom: 8 }}>{pushMsg}</div>}
       {who?.muted_until && <div style={{ fontSize: 12.5, color: 'var(--red)', fontWeight: 600, marginBottom: 8 }}>You are muted until {new Date(who.muted_until).toLocaleString(locale, { weekday: 'short', hour: '2-digit', minute: '2-digit' })}.</div>}
-      {sorted.length === 0 && <div style={{ color: 'var(--t3)', fontSize: 13, padding: 20, textAlign: 'center' }}>No chats yet. Tap New to message someone.</div>}
+      {sorted.length === 0 && <div style={{ color: 'var(--t3)', fontSize: 13, padding: 20, textAlign: 'center' }}>No chats yet. Tap New to message someone.{emptyNote && <div style={{ marginTop: 6 }}>{emptyNote}</div>}</div>}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         {sorted.map((c) => {
           const lm = last[c.id];
           const muted = isMutedNow(c.muted_until);
           return (
-            <button key={c.id} onClick={() => open(c.id)} className="sv-glass" style={{ display: 'flex', gap: 11, alignItems: 'center', width: '100%', textAlign: 'left', padding: '11px 12px', borderRadius: 14, border: '1px solid var(--bdr)', cursor: 'pointer', font: 'inherit', color: 'var(--t1)' }}>
+            <button key={c.id} onClick={() => open(c.id)} className="sv-glass" style={{ display: 'flex', gap: 11, alignItems: 'center', width: '100%', textAlign: 'left', padding: '11px 12px', borderRadius: 14, border: split && c.id === openId ? '1px solid var(--acc)' : '1px solid var(--bdr)', cursor: 'pointer', font: 'inherit', color: 'var(--t1)' }}>
               <Avatar name={titleOf(c)} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
@@ -167,6 +226,18 @@ export function ChatTab({ chat, locale = 'en-GB', onFullScreen, pushApp = 'staff
         })}
       </div>
       {newOpen && <NewChat chat={chat} canGroup={canGroup} onClose={() => setNewOpen(false)} onOpened={async (id) => { setNewOpen(false); await load(); open(id); }} />}
+    </div>
+  );
+  if (!split) return listView;
+  // Back Office on a wide screen: the list on the left, the open conversation on the right.
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px, 340px) minmax(0, 1fr)', gap: 14, alignItems: 'start' }}>
+      <div style={{ maxHeight: EMBED_HEIGHT, overflowY: 'auto', paddingRight: 2 }}>{listView}</div>
+      {convView || (
+        <div className="sv-glass" style={{ height: EMBED_HEIGHT, minHeight: 420, borderRadius: 16, border: '1px solid var(--bdr)', display: 'grid', placeItems: 'center', color: 'var(--t3)', fontSize: 13.5, textAlign: 'center', padding: 20 }}>
+          Pick a chat on the left, or press New to message someone.
+        </div>
+      )}
     </div>
   );
 }
@@ -223,7 +294,8 @@ function NewChat({ chat, canGroup, onClose, onOpened }) {
 }
 
 // ── One conversation ──────────────────────────────────────────────────────────
-function Conversation({ chat, conv, title, locale, catchUp = 0, onBack }) {
+function Conversation({ chat, conv, title, locale, catchUp = 0, onBack, embed = false, fit = false }) {
+  const vp = useVisualViewport(fit);
   const { me, profiles, mine, subscribe, markRead, reloadSoon, source, call } = chat;
   const [msgs, setMsgs] = useState([]);
   const [reactions, setReactions] = useState([]);
@@ -244,6 +316,7 @@ function Conversation({ chat, conv, title, locale, catchUp = 0, onBack }) {
   const [seenFor, setSeenFor] = useState(null);
   const clientId = useRef(newClientId());
   const endRef = useRef(null);
+  const scrollRef = useRef(null);                 // Back Office and the phone box: the message list that scrolls
   const fileRef = useRef(null);
   const taRef = useRef(null);
   const myRow = mine[conv.id] || {};
@@ -252,7 +325,10 @@ function Conversation({ chat, conv, title, locale, catchUp = 0, onBack }) {
   const muted = isMutedNow(myRow.muted_until);
   const nameOf = (id) => profiles[id]?.display_name || 'Someone';
 
-  const scrollEnd = () => setTimeout(() => endRef.current?.scrollIntoView({ block: 'end' }), 30);
+  const scrollEnd = () => setTimeout(() => {
+    const box = scrollRef.current;
+    if (box) box.scrollTop = box.scrollHeight; else endRef.current?.scrollIntoView({ block: 'end' });
+  }, 30);
 
   const loadPage = useCallback(async (beforeId) => {
     const { messages: page, reactions: rs } = await source.thread(conv.id, { before: beforeId || null });
@@ -282,10 +358,10 @@ function Conversation({ chat, conv, title, locale, catchUp = 0, onBack }) {
       scrollEnd();
     }
   }, [source, conv.id, newest, markRead]);
-  // No live channel (the Manager app): ask every few seconds while on screen.
+  // No live channel (the Manager app, Back Office): ask every few seconds while on screen.
   useEffect(() => {
     if (source.live || loading) return undefined;
-    const t = setInterval(() => { if (document.visibilityState === 'visible') fetchNewer(); }, 5000);
+    const t = setInterval(() => { if (document.visibilityState === 'visible') fetchNewer(); }, source.threadPollMs || 5000);
     return () => clearInterval(t);
   }, [source, loading, fetchNewer]);
   // MARKER 5.11.102 Conversation review fix A1: back from sleep, or a tapped notification for this
@@ -303,6 +379,21 @@ function Conversation({ chat, conv, title, locale, catchUp = 0, onBack }) {
   }, [catchUp, loading, fetchNewer]);
   // review fix A5: the shell and the service worker know which chat is on screen (no banner for it).
   useEffect(() => { setOpenChat(conv.id); return () => setOpenChat(null); }, [conv.id]);
+  // The phone box: the page under it never scrolls while the chat is open.
+  useEffect(() => {
+    if (!fit) return undefined;
+    const html = document.documentElement, body = document.body;
+    const prev = [html.style.overflow, body.style.overflow, body.style.overscrollBehavior];
+    html.style.overflow = 'hidden'; body.style.overflow = 'hidden'; body.style.overscrollBehavior = 'none';
+    return () => { html.style.overflow = prev[0]; body.style.overflow = prev[1]; body.style.overscrollBehavior = prev[2]; };
+  }, [fit]);
+  // The keyboard coming up (the box getting shorter) keeps the newest message in sight while typing.
+  const vpHeight = vp?.height || 0;
+  useEffect(() => {
+    if (!fit || !vpHeight || document.activeElement !== taRef.current) return undefined;
+    const t = setTimeout(() => { const box = scrollRef.current; if (box) box.scrollTop = box.scrollHeight; }, 30);
+    return () => clearTimeout(t);
+  }, [fit, vpHeight]);
 
   useEffect(() => {
     let alive = true;   // one Conversation per chat (keyed by its id), so the state starts empty
@@ -414,8 +505,10 @@ function Conversation({ chat, conv, title, locale, catchUp = 0, onBack }) {
 
   const byId = useMemo(() => Object.fromEntries(msgs.map((m) => [String(m.id), m])), [msgs]);
 
-  return (
-    <div style={{ paddingBottom: 150 }}>
+  const view = (
+    <div style={embed ? { display: 'flex', flexDirection: 'column', height: EMBED_HEIGHT, minHeight: 420 }
+      : fit ? { display: 'flex', flexDirection: 'column', height: '100%', width: '100%', maxWidth: 560, boxSizing: 'border-box', padding: 'calc(8px + env(safe-area-inset-top, 0px)) 10px 0' }
+      : { paddingBottom: 150 }}>
       <div className="sv-glass" style={{ position: 'sticky', top: 0, zIndex: 10, display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', borderRadius: 14, marginBottom: 10 }}>
         <button onClick={onBack} style={{ ...btn, padding: '6px 9px' }} aria-label="Back"><Icon name="back" size={14} /></button>
         <div style={{ flex: 1, minWidth: 0 }}>
@@ -425,6 +518,7 @@ function Conversation({ chat, conv, title, locale, catchUp = 0, onBack }) {
         <button onClick={() => setMenu(true)} style={{ ...btn, padding: '6px 10px' }} aria-label="Chat options">•••</button>
       </div>
 
+      <div ref={embed || fit ? scrollRef : null} style={embed || fit ? { flex: 1, minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain', WebkitOverflowScrolling: 'touch', padding: '0 4px' } : undefined}>
       {more && <div style={{ textAlign: 'center', marginBottom: 8 }}><button onClick={() => loadPage(msgs[0]?.id)} style={btn}>Load earlier</button></div>}
       {loading && <div style={{ color: 'var(--t3)', fontSize: 13, textAlign: 'center', padding: 16 }}>Loading…</div>}
       {!loading && !msgs.length && <div style={{ color: 'var(--t3)', fontSize: 13, textAlign: 'center', padding: 16 }}>No messages yet. Say hello.</div>}
@@ -471,9 +565,14 @@ function Conversation({ chat, conv, title, locale, catchUp = 0, onBack }) {
         })}
       </div>
       <div ref={endRef} />
+      </div>
 
-      {/* Composer, fixed above the home indicator (the tab bar hides while a chat is open). */}
-      <div className="sv-glass" style={{ position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 30, padding: '8px 12px calc(10px + env(safe-area-inset-bottom, 0px))', maxWidth: 560, margin: '0 auto', borderRadius: '16px 16px 0 0', background: 'var(--bg)' }}>
+      {/* Composer, fixed above the home indicator (the tab bar hides while a chat is open). In Back
+          Office it sits at the foot of the panel. */}
+      <div className="sv-glass" style={embed
+        ? { marginTop: 8, padding: '8px 12px 10px', borderRadius: 14, border: '1px solid var(--bdr)', background: 'var(--bg)' }
+        : fit ? { margin: '8px -10px 0', padding: `8px 12px ${vp?.keyboard ? '8px' : 'calc(10px + env(safe-area-inset-bottom, 0px))'}`, borderRadius: '16px 16px 0 0', background: 'var(--bg)' }
+        : { position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 30, padding: '8px 12px calc(10px + env(safe-area-inset-bottom, 0px))', maxWidth: 560, margin: '0 auto', borderRadius: '16px 16px 0 0', background: 'var(--bg)' }}>
         {err && <div style={{ color: err.startsWith('Thanks') ? 'var(--grn)' : 'var(--red)', fontSize: 12.5, fontWeight: 600, margin: '0 2px 6px' }}>{err}</div>}
         {(replyTo || editing) && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--t2)', marginBottom: 6 }}>
@@ -494,6 +593,7 @@ function Conversation({ chat, conv, title, locale, catchUp = 0, onBack }) {
             {!editing && <button onClick={() => fileRef.current?.click()} style={{ ...btn, padding: '9px 10px' }} aria-label="Add a photo"><Icon name="camera" size={16} /></button>}
             <input ref={fileRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { pickPhoto(e.target.files?.[0]); e.target.value = ''; }} />
             <textarea ref={taRef} value={text} rows={1} maxLength={4000} placeholder="Message"
+              onFocus={() => { if (fit) setTimeout(scrollEnd, 300); }}
               onChange={(e) => { setText(e.target.value); setCaret(e.target.selectionStart || 0); }}
               onSelect={(e) => setCaret(e.target.selectionStart || 0)}
               style={{ ...inputStyle, resize: 'none', minHeight: 42, maxHeight: 120, padding: '10px 12px' }} />
@@ -544,5 +644,15 @@ function Conversation({ chat, conv, title, locale, catchUp = 0, onBack }) {
         </Sheet>
       )}
     </div>
+  );
+  if (!fit || !vp) return view;
+  // The phone box, on the page itself (outside the scrolling staff app page and its pull to refresh),
+  // exactly over the visible screen.
+  return createPortal(
+    <div style={{ position: 'fixed', left: 0, right: 0, top: vp.top, height: vp.height, zIndex: 40, display: 'flex', justifyContent: 'center',
+      background: 'var(--bg)', color: 'var(--t1)', touchAction: 'manipulation', overscrollBehavior: 'none' }}>
+      {view}
+    </div>,
+    document.body,
   );
 }

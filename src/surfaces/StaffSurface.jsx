@@ -49,6 +49,9 @@ const fmtDay = iso => new Date(iso + 'T00:00:00').toLocaleDateString(LOCALE, { w
 const fmtStamp = (iso) => iso ? new Date(iso).toLocaleString(LOCALE, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—';
 const hm = h => { const m = Math.round((Number(h) || 0) * 60); return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m`; };
 
+// The staff app's viewport (5.11.106): fixed to the screen, notch aware, keyboard shrinks the page.
+export const STAFF_VIEWPORT = 'width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content';
+
 export default function StaffSurface() {
   const [stage, setStage] = useState('boot');   // boot | invite | login | app
   const [inviteToken] = useState(() => new URLSearchParams(window.location.search).get('invite') || '');
@@ -83,12 +86,18 @@ export default function StaffSurface() {
   // written. Set on mount and reverted on unmount rather than in index.html,
   // because the surfaces that have NO inset handling would then render under the
   // notch instead of above it.
+  // MARKER 5.11.106 staff app fixed to the screen: no pinch zoom and no zoom into a box on tap
+  // (maximum-scale=1, user-scalable=no), and browsers that support it shrink the page for the
+  // keyboard (interactive-widget=resizes-content). Safari in a browser tab ignores user-scalable,
+  // so its pinch gesture is refused too, for the staff app only, and handed back on unmount.
   useEffect(() => {
     const m = document.querySelector('meta[name="viewport"]');
-    if (!m) return undefined;
+    const noPinch = (e) => e.preventDefault();
+    document.addEventListener('gesturestart', noPinch);
+    if (!m) return () => document.removeEventListener('gesturestart', noPinch);
     const prev = m.getAttribute('content');
-    m.setAttribute('content', 'width=device-width, initial-scale=1.0, viewport-fit=cover');
-    return () => { if (prev) m.setAttribute('content', prev); };
+    m.setAttribute('content', STAFF_VIEWPORT);
+    return () => { document.removeEventListener('gesturestart', noPinch); if (prev) m.setAttribute('content', prev); };
   }, []);
 
   // The staff app deliberately uses the servos glass skin (same as Manager).
@@ -231,7 +240,12 @@ export default function StaffSurface() {
       )}
       {tab === 'shifts' && <ShiftsTab snap={snap} onChanged={loadSnapshot} />}
       {tab === 'tasks' && <TasksTab snap={snap} onChanged={loadSnapshot} goToMe={() => setTab('me')} />}
-      {tab === 'chat' && <ChatTab chat={chat} locale={LOCALE} onFullScreen={setChatFull} openRequest={chatOpenReq} onOpenHandled={() => setChatOpenReq(null)} />}
+      {tab === 'chat' && (
+        // touch-action: no double tap zoom on the chat (5.11.106).
+        <div style={{ touchAction: 'manipulation' }}>
+          <ChatTab chat={chat} locale={LOCALE} onFullScreen={setChatFull} openRequest={chatOpenReq} onOpenHandled={() => setChatOpenReq(null)} fitScreen />
+        </div>
+      )}
       {tab === 'news' && <NewsTab snap={snap} />}
       {tab === 'sheets' && <SheetsTab snap={snap} />}
       {tab === 'me' && <MeTab snap={snap} onSaved={loadSnapshot} />}

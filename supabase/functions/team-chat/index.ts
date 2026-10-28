@@ -248,6 +248,76 @@ async function loginCaller(uid: string, body: any): Promise<Caller | Response> {
   return { uid, orgId, memberId: prof2.member_id, staffId: staff?.id ?? null, hasBackOffice };
 }
 
+// MARKER 5.11.106 team-chat owner seats: an owner (or Admin) runs every venue of the company, but
+// chat_sync_org seats Back Office people in venue groups only through user_locations rows, and an
+// owner holds every venue of their company with no such row (20260921u). So a Back Office owner's
+// bootstrap seats them as an admin of each venue group and venue announcement group of THEIR
+// company. The seat rows are not automatic (auto false), so the sync leaves them alone, and
+// sweepOwnerSeats hands them back to the sync the moment their holder is no longer an owner.
+// Only after chat_whoami says owner for this profile; the database still judges every later action.
+//
+// TODO (needs a migration, not tonight): put owners and Admins into want0 of chat_sync_org (every
+// venue and venue announcement group of the company, role admin, auto = true). The sync then seats
+// and unseats them like managers, and seatOwner and sweepOwnerSeats can both go.
+
+// The groups an owner is seated in: venue groups and venue announcement groups of this company.
+async function seatGroups(orgId: string, openOnly: boolean) {
+  let q = admin.from('chat_conversations').select('id, created_by').eq('org_id', orgId).in('kind', ['venue', 'announce'])
+    .not('location_id', 'is', null);
+  if (openOnly) q = q.is('archived_at', null);
+  const { data } = await q.limit(300);
+  return ((data ?? []) as Array<{ id: string; created_by: string | null }>).filter((c) => isUuid(c.id));
+}
+
+async function seatOwner(caller: Caller, level: unknown) {
+  if (level !== 'owner' || !caller.hasBackOffice || caller.viaPin) return;
+  const convs = await seatGroups(caller.orgId, true);
+  if (!convs.length) return;
+  const ids = convs.map((c) => c.id);
+  // An owner again (demoted, then made owner again): seats the sweep handed to the sync, and the
+  // sync then took away, come back. Only rows the automatic side took (left_reason auto); someone
+  // who left by themselves or was taken out by an admin stays out.
+  const { error: backErr } = await admin.from('chat_members').update({ left_at: null, left_reason: null, auto: false, role: 'admin' })
+    .eq('member_id', caller.memberId).eq('org_id', caller.orgId).eq('left_reason', 'auto').not('left_at', 'is', null).in('conversation_id', ids);
+  if (backErr) console.error('[team-chat] owner seats back:', backErr.message);
+  const { data: have } = await admin.from('chat_members').select('conversation_id').eq('member_id', caller.memberId).eq('org_id', caller.orgId).limit(1000);
+  const got = new Set((have ?? []).map((r: any) => r.conversation_id));
+  const rows = ids.filter((id) => !got.has(id))
+    .map((id: string) => ({ conversation_id: id, member_id: caller.memberId, org_id: caller.orgId, role: 'admin', auto: false }));
+  if (!rows.length) return;
+  const { error } = await admin.from('chat_members').upsert(rows, { onConflict: 'conversation_id,member_id', ignoreDuplicates: true });
+  if (error) console.error('[team-chat] owner seats:', error.message);
+}
+
+// Security review fix (5.11.106): an owner seat must not outlive the owner. A demoted owner (now a
+// manager of one venue, or an Admin made a manager) would otherwise keep reading, posting urgent
+// announcements and admin powers in every venue's groups. Runs on every Back Office bootstrap,
+// BEFORE chat_sync_org: each active seat row (auto false, in a venue or venue announcement group) of
+// someone chat_whoami no longer calls an owner is handed back to the sync (auto true). The sync then
+// takes it away (left_reason auto), or keeps it if that person still belongs there (a manager of
+// that venue keeps their own venue's group, as admin), so nothing flips in and out on each visit.
+// The one other auto false row in these groups is the creator of an announcement group
+// (chat_group_create): never touched.
+async function sweepOwnerSeats(caller: Caller) {
+  if (!caller.hasBackOffice || caller.viaPin) return;
+  const convs = await seatGroups(caller.orgId, false);
+  if (!convs.length) return;
+  const creator = new Map(convs.map((c) => [c.id, c.created_by]));
+  const { data: seats } = await admin.from('chat_members').select('conversation_id, member_id')
+    .eq('org_id', caller.orgId).eq('auto', false).is('left_at', null).in('conversation_id', convs.map((c) => c.id)).limit(1000);
+  const held = ((seats ?? []) as Array<{ conversation_id: string; member_id: string }>).filter((r) => creator.get(r.conversation_id) !== r.member_id);
+  const members = [...new Set(held.map((r) => r.member_id))].filter(isUuid).slice(0, 50);
+  for (const m of members) {
+    const w = await rpc('chat_whoami', { p_member: m }).catch(() => null);
+    if (!w) continue;                                          // the check failed: try again next visit
+    if (w.ok && w.level === 'owner' && w.active !== false) continue;
+    const convIds = held.filter((r) => r.member_id === m).map((r) => r.conversation_id);
+    const { error } = await admin.from('chat_members').update({ auto: true })
+      .eq('member_id', m).eq('org_id', caller.orgId).eq('auto', false).is('left_at', null).in('conversation_id', convIds);
+    if (error) console.error('[team-chat] owner seats sweep:', error.message);
+  }
+}
+
 async function isMember(caller: Caller, conversationId: string): Promise<boolean> {
   const { data } = await admin.from('chat_members').select('member_id')
     .eq('conversation_id', conversationId).eq('member_id', caller.memberId).eq('org_id', caller.orgId).is('left_at', null).maybeSingle();
@@ -335,8 +405,13 @@ Deno.serve(async (req) => {
 
     switch (action) {
       case 'bootstrap': {
-        if (caller.hasBackOffice) await rpc2('chat_sync_org', { p_org: caller.orgId, p_staff: null });
-        return answer(await rpc2('chat_whoami', { p_member: me }));
+        if (caller.hasBackOffice) {
+          await sweepOwnerSeats(caller).catch((e) => console.error('[team-chat] owner seats sweep:', (e as Error)?.message ?? e));
+          await rpc2('chat_sync_org', { p_org: caller.orgId, p_staff: null });
+        }
+        const w = await rpc2('chat_whoami', { p_member: me });
+        if (w?.ok) await seatOwner(caller, w.level).catch((e) => console.error('[team-chat] owner seats:', (e as Error)?.message ?? e));
+        return answer(w);
       }
       // ── Reads for the Manager app (no personal login, so no row level security reads) ──
       case 'inbox':
