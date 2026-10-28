@@ -34,6 +34,8 @@ import { resolveActiveMenu } from '../lib/menus/resolveActiveMenu';
 import { resolveItemPrice, variantFromPrice, refusesNoPriceLine } from '../lib/menuPricing';
 import { depleteForSaleServer } from '../lib/stock/deplete';
 import KioskProductModal from './KioskProductModal';
+// v5.11.108: the one allergen chip row every surface shows (kiosk, online, QR, till).
+import AllergenChips, { KIOSK_ALLERGEN_PALETTE } from '../components/AllergenChips.js';
 import KioskCategoryTile from './kiosk/KioskCategoryTile';
 // v5.11.93 (multi site stock Drop 2): the stock facts (allergens the recipe at this site adds, kcal)
 // laid over the products, and the venue's Show calories setting (Ops locations.pos_settings).
@@ -2699,6 +2701,9 @@ function MenuItemCard({ item, price, fromPrice = null, brandColor, allergenFilte
             overflow: 'hidden',
           }}>{shownItemDescription(item)}</div>
         )}
+
+        {/* v5.11.108: the item's allergens, the shared chip row (wraps, never cut off). */}
+        <AllergenChips ids={item.allergens} size="card" active={allergenFilter} palette={KIOSK_ALLERGEN_PALETTE} fontSize="clamp(11px, 1.3vw, 14px)" translate={t} />
 
         {/* Add button — visual affordance; same as card-tap */}
         <button

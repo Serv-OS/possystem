@@ -13,7 +13,9 @@ import { sizeOrMainOptions, subitemNameIndex } from '../../lib/menuRules';
 // v5.11.81 (channel parity round 2): the venue's menu translations (shown only, the order keeps the
 // English) and the kiosk's allergen rule (a product with an avoided allergen is marked, never hidden).
 import { useMenuText, itemName as tItemName, itemDescription as tItemDescription, groupName as tGroupName, optionName as tOptionName } from '../../lib/menuText';
-import { unsafeAllergenIds, itemAllergenIds } from '../../lib/kioskAllergens';
+import { unsafeAllergenIds, itemAllergenIds, optionAllergenList, shownAllergenIds } from '../../lib/kioskAllergens';
+// v5.11.108: the one allergen chip row every surface shows (kiosk, online, QR, till).
+import AllergenChips, { allergenPaletteFromTheme, allergenChipLabels } from '../../components/AllergenChips.js';
 // v5.11.93 (multi site stock Drop 2): kcal and the 2,000 kcal line where the venue shows calories;
 // 'May contain' and 'Allergens being checked' from the stock recipe linked at this site.
 import { kcalWords, mayContainWords, KCAL_NOTE_EN, ALLERGEN_CHECK_EN } from '../../lib/menuStockFacts';
@@ -493,6 +495,28 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
     const sizes = selectedVariant ? [selectedVariant] : (variants || []);
     return unsafeAllergenIds({ allergens: [...itemAllergenIds(item), ...extra.flatMap((r) => itemAllergenIds(r))] }, avoidAllergens, sizes);
   }, [avoidAllergens, allItems, selections, subPicks, selectedVariant, variants, item]);
+  // v5.11.108: the allergens shown on this sheet: the product, its picked size and every picked
+  // option (an option's own list, else the menu item it is linked to or named after), so oat milk
+  // or a nut topping shows the moment it is picked. Display only: nothing here prices or adds.
+  const pickedOpts = [];
+  for (const v of Object.values(selections || {})) for (const o of (Array.isArray(v) ? v : [v])) if (o) pickedOpts.push(o);
+  for (const o of Object.values(subPicks || {})) if (o) pickedOpts.push(o);
+  for (const [gid, picks] of Object.entries(qtyPicks || {})) {
+    const grp = (allModGroups || modGroups).find(g => g.id === gid);
+    for (const [optId, count] of Object.entries(picks || {})) {
+      if (!count) continue;
+      const opt = grp?.options?.find(o => (o.id || o.name) === optId);
+      if (opt) pickedOpts.push(opt);
+    }
+  }
+  const rowById = (id) => (id != null && Array.isArray(allItems) ? allItems.find(r => r && r.id === id) : null) || null;
+  const shownIds = shownAllergenIds({
+    item,
+    size: selectedVariant && selectedVariant.id !== item.id ? selectedVariant : null,
+    optionLists: pickedOpts.map(o => optionAllergenList(o, rowById(resolveOptItemId(o)))),
+  });
+  const chipPalette = allergenPaletteFromTheme(theme);
+  const avoidWords = allergenChipLabels(avoidHits).map(r => r.label).join(', ');
   const heroImg  = productImage(item, null) || productImage(effectiveItem, defaultImage);
   // GF/V/VG/DF from menu_items.tags — variant's own tags, else the base item's.
   const ownDiet    = dietaryBadges(effectiveItem);
@@ -564,6 +588,23 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
             </div>
           )}
 
+          {/* v5.11.108: the allergens as the shared chip row, under the description (the kiosk's
+              look and words); the ones the guest asked to avoid stand out. */}
+          {(shownIds.length > 0 || facts?.mayContain?.length > 0 || facts?.needsCheck) && (
+            <div style={{ marginBottom: 18 }}>
+              <AllergenChips ids={shownIds} size="detail" active={avoidAllergens} palette={chipPalette}/>
+              {facts?.mayContain?.length > 0 && (
+                <div style={{ fontSize: 12, color: muted, lineHeight: 1.5, marginTop: 6 }}>{mayContainWords(facts.mayContain.map(capFirst))}</div>
+              )}
+              {facts?.needsCheck && (
+                <div style={{ fontSize: 12, color: theme.fg, fontWeight: 700, marginTop: 4 }}>{ALLERGEN_CHECK_EN}</div>
+              )}
+              <div style={{ fontSize: 11, color: muted, marginTop: 6 }}>
+                If you have a severe allergy, please confirm with the venue before ordering.
+              </div>
+            </div>
+          )}
+
           {/* v5.11.93: '<n> kcal' and the 2,000 kcal line, where the venue shows calories. */}
           {showCalories && item?.kcal != null && (
             <div style={{ fontSize: 13, color: muted, lineHeight: 1.5, marginBottom: 16 }}>
@@ -575,10 +616,10 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
               option's item (the kiosk's rule, lib/kioskAllergens.js), said before it is added. */}
           {avoidHits.length > 0 && (
             <div style={{
-              padding: '12px 14px', borderRadius: 12, background: '#fee2e2', border: '2px solid #ef4444',
-              marginBottom: 18, fontSize: 13, fontWeight: 800, color: '#991b1b', lineHeight: 1.5,
+              padding: '12px 14px', borderRadius: 12, background: chipPalette.bg, border: `2px solid ${theme.fg}`,
+              marginBottom: 18, fontSize: 13, fontWeight: 800, color: theme.fg, lineHeight: 1.5,
             }}>
-              ⚠ This contains <span style={{ textTransform: 'capitalize' }}>{avoidHits.join(', ')}</span>, which you asked to avoid. Please check with the venue before ordering.
+              {'\u26A0\uFE0E'} This contains {avoidWords}, which you asked to avoid. Please check with the venue before ordering.
             </div>
           )}
 
@@ -603,35 +644,6 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
                 })}
               </div>
             </Section>
-          )}
-
-          {/* Allergen warning chips — surfaced upfront so customers can see
-              before they get to the modifier flow. */}
-          {(item.allergens || []).length > 0 && (
-            <div style={{
-              padding: '12px 14px', borderRadius: 12,
-              background: '#fde6e6', border: '1px solid #fcaeae',
-              marginBottom: 18, display: 'flex', alignItems: 'flex-start', gap: 10,
-            }}>
-              <div style={{ fontSize: 18, lineHeight: 1 }}>⚠️</div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 12, fontWeight: 800, color: '#991b1b', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>
-                  Contains
-                </div>
-                <div style={{ fontSize: 13, color: '#7f1d1d', textTransform: 'capitalize', lineHeight: 1.5 }}>
-                  {(item.allergens || []).join(' · ')}
-                </div>
-                {facts?.mayContain?.length > 0 && (
-                  <div style={{ fontSize: 12, color: '#7f1d1d', lineHeight: 1.5, marginTop: 4 }}>{mayContainWords(facts.mayContain.map(capFirst))}</div>
-                )}
-                {facts?.needsCheck && (
-                  <div style={{ fontSize: 11, color: '#991b1b', fontWeight: 700, marginTop: 4 }}>{ALLERGEN_CHECK_EN}</div>
-                )}
-                <div style={{ fontSize: 11, color: '#991b1b', opacity: 0.8, marginTop: 4 }}>
-                  If you have a severe allergy, please confirm with the venue before ordering.
-                </div>
-              </div>
-            </div>
           )}
 
           {/* Modifier groups */}
@@ -902,7 +914,6 @@ function OptionRow({ label, priceDelta, absolutePrice, checked, onClick, mode, t
 
 // Rich variant row — image, name, description, allergen pill, absolute price.
 function VariantRow({ variant, active, price, onClick, theme, cardBdr, inputBg, is86 = false, extraPrices = false }) {
-  const allergens = variant.allergens || [];
   return (
     <button onClick={is86 ? undefined : onClick} disabled={is86}
       className={is86 ? undefined : 'op-btn'}
@@ -943,15 +954,8 @@ function VariantRow({ variant, active, price, onClick, theme, cardBdr, inputBg, 
             {tItemDescription(variant)}
           </div>
         )}
-        {allergens.length > 0 && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
-            <span style={{
-              padding: '1px 7px', borderRadius: 99,
-              background: '#fde6e6', color: '#991b1b',
-              fontSize: 10, fontWeight: 700, textTransform: 'capitalize',
-            }}>⚠ {allergens.length === 1 ? allergens[0] : `${allergens.length} allergens`}</span>
-          </div>
-        )}
+        {/* v5.11.108: the size's allergens, the shared chip row. */}
+        <AllergenChips ids={variant.allergens} size="card" palette={allergenPaletteFromTheme(theme)} style={{ marginTop: 2 }}/>
       </div>
       {variant.image && (
         <div style={{

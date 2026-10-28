@@ -19,7 +19,9 @@ import { useMemo, useState } from 'react';
 import { t, tf } from '../../lib/i18n';
 import { money } from '../../lib/currency';
 import { itemName, itemDescription, groupName, optionName, useMenuText } from '../../lib/menuText';
-import { itemAllergenIds, kioskAllergenLabels, allergenIdsOfLists, sheetUnsafeIds } from '../../lib/kioskAllergens';
+import { kioskAllergenLabels, kioskPickedOptionIds, shownAllergenIds, sheetUnsafeIds } from '../../lib/kioskAllergens';
+// v5.11.108: the one allergen chip row every surface shows (kiosk, online, QR, till).
+import AllergenChips, { KIOSK_ALLERGEN_PALETTE } from '../../components/AllergenChips.js';
 // v5.11.93 (multi site stock Drop 2): kcal and the 2,000 kcal line where the venue shows calories;
 // 'May contain' and 'Allergens being checked' from the stock recipe linked at this site.
 import { kcalWords, mayContainWords, KCAL_NOTE_KEY, ALLERGEN_CHECK_KEY } from '../../lib/menuStockFacts';
@@ -36,29 +38,12 @@ export default function KioskItemSheet(props) {
   const facts = item?.stockFacts || null;   // v5.11.93: the stock recipe's facts at this site, when any
 
   // The picked options' own allergens (options, nested picks), as the modal resolves them.
-  const optionIds = useMemo(() => {
-    const lists = [];
-    for (const g of (groups || [])) {
-      if (g.__isVariantGroup) continue;
-      const picked = selections?.[g.id] || [];
-      const seen = {};
-      for (const optId of picked) {
-        const opt = (g.options || []).find(o => o.id === optId);
-        if (!opt) continue;
-        lists.push(resolveOpt(opt).allergens);
-        const occ = seen[optId] || 0;
-        seen[optId] = occ + 1;
-        const sub = opt.subGroupId ? subGroupsCache?.[opt.subGroupId] : null;
-        if (!sub) continue;
-        const subSel = nestedSelections?.[g.id + ':' + optId + ':' + occ]?.[sub.id] || [];
-        for (const subId of subSel) {
-          const subOpt = (sub.options || []).find(o => o.id === subId);
-          if (subOpt) lists.push(resolveOpt(subOpt).allergens);
-        }
-      }
-    }
-    return allergenIdsOfLists(lists);
-  }, [groups, selections, nestedSelections, subGroupsCache, resolveOpt]);
+  // v5.11.108: the walk moved word for word to lib/kioskAllergens.js kioskPickedOptionIds, so the
+  // current kiosk design reads the same list.
+  const optionIds = useMemo(
+    () => kioskPickedOptionIds({ groups, selections, nestedSelections, subGroupsCache, resolveOpt }),
+    [groups, selections, nestedSelections, subGroupsCache, resolveOpt],
+  );
 
   const byId = useMemo(() => new Map((allItems || []).filter(Boolean).map(i => [i.id, i])), [allItems]);
   const unsafeIds = sheetUnsafeIds({
@@ -82,7 +67,12 @@ export default function KioskItemSheet(props) {
     tryAdd();
   };
 
-  const allergenLabels = kioskAllergenLabels(itemAllergenIds(item), t);
+  // v5.11.108: the item, its picked size and the picked options, as the shared chip row.
+  const shownIds = shownAllergenIds({
+    item,
+    size: pickedVariantOpt ? byId.get(pickedVariantOpt.id) || null : null,
+    optionLists: [optionIds],
+  });
 
   let priceLine;
   if (variantGroup) {
@@ -129,11 +119,7 @@ export default function KioskItemSheet(props) {
             {showCalories === true && item?.kcal != null ? (
               <div style={{ fontSize: 19, color: 'var(--k2InkSubtle)', marginTop: 4, lineHeight: 1.35 }}>{kcalWords(item.kcal, t)} · {t(KCAL_NOTE_KEY)}</div>
             ) : null}
-            {allergenLabels.length > 0 ? (
-              <div style={{ fontSize: 21, color: 'var(--k2InkBody)', marginTop: 8, lineHeight: 1.35 }}>
-                {tf('k2.sheet.allergens', { list: allergenLabels.join(', ') })}
-              </div>
-            ) : null}
+            <AllergenChips ids={shownIds} size="detail" active={avoidAllergens} palette={KIOSK_ALLERGEN_PALETTE} fontSize={19} translate={t} style={{ marginTop: 10 }} />
             {facts?.mayContain?.length ? (
               <div style={{ fontSize: 19, color: 'var(--k2InkSubtle)', marginTop: 4, lineHeight: 1.35 }}>{mayContainWords(kioskAllergenLabels(facts.mayContain, t), t)}</div>
             ) : null}
@@ -480,10 +466,9 @@ function OptionCard({ g, opt, ...props }) {
   );
 }
 
+// v5.11.108: an option's own allergens, the shared chip row at card size.
 function AllergenNote({ list }) {
-  const labels = kioskAllergenLabels(itemAllergenIds({ allergens: list }), t);
-  if (!labels.length) return null;
-  return <span style={{ fontSize: 18, fontWeight: 600, color: 'var(--k2WarnInk)', lineHeight: 1.3 }}>{labels.join(', ')}</span>;
+  return <AllergenChips ids={list} size="card" palette={KIOSK_ALLERGEN_PALETTE} fontSize={16} translate={t} style={{ marginTop: 4 }} />;
 }
 
 function StockNote({ st }) {

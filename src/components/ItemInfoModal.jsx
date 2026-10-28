@@ -1,6 +1,7 @@
 import { useState, useRef } from 'react';
 import { useStore } from '../store';
-import { ALLERGENS, CAT_META } from '../data/seed';
+import { CAT_META } from '../data/seed';
+import AllergenChips, { TILL_ALLERGEN_PALETTE, allergenChipIds } from './AllergenChips.js';
 import { money } from '../lib/currency';
 // v5.11.93 (multi site stock Drop 2): the recipe card for staff comes from the stock recipe linked at
 // this site (stock_recipe_card, read with the till's own device session; lib/recipeCard.js). The
@@ -97,7 +98,8 @@ export default function ItemInfoModal({ item, is86, onToggle86, onClose, onAddTo
     ? Math.min(...item.variants.map(v=>v.price))
     : item.price;
 
-  const allergenList = ALLERGENS.filter(a => item.allergens?.includes(a.id));
+  // v5.11.108: the declared allergens as the shared chip row (the kiosk's look, words and order).
+  const allergenList = allergenChipIds(item.allergens);
 
   return (
     <div className="modal-back" onClick={e=>e.target===e.currentTarget&&onClose()}>
@@ -192,21 +194,7 @@ export default function ItemInfoModal({ item, is86, onToggle86, onClose, onAddTo
                 {allergenList.length === 0 ? (
                   <div style={{ fontSize:12, color:'var(--grn)', fontWeight:600 }}>✓ No declared allergens</div>
                 ) : (
-                  <div style={{ display:'flex', gap:5, flexWrap:'wrap' }}>
-                    {ALLERGENS.map(a => {
-                      const active = item.allergens?.includes(a.id);
-                      return (
-                        <div key={a.id} style={{
-                          padding:'4px 10px', borderRadius:20, fontSize:11, fontWeight:700,
-                          background:active?'var(--red-d)':'var(--bg3)',
-                          border:`1px solid ${active?'var(--red-b)':'var(--bdr)'}`,
-                          color:active?'var(--red)':'var(--t4)',
-                        }}>
-                          {a.icon} {a.label}
-                        </div>
-                      );
-                    })}
-                  </div>
+                  <AllergenChips ids={allergenList} size="detail" heading={false} palette={TILL_ALLERGEN_PALETTE} fontSize={12} />
                 )}
               </div>
 
