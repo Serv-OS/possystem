@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.110',
+    date: '29 Oct 2026',
+    items: [
+      "Kiosk: an item's dietary tags now show on both kiosk designs, on the menu card and on the item screen, as words next to the allergens: Vegetarian, Vegan, Gluten free, Dairy free. They come from the Allergens & dietary box on the item in the menu builder (online ordering has shown them as V, VG, GF, DF chips for a while; the kiosk never showed them).",
+      "Kiosk: on the item screen a chosen size's own dietary tags win over the item's, the same rule online uses. The words follow the kiosk language (Spanish, French, German, Italian, Portuguese, Chinese).",
+      "Web app only, nothing to run in the database.",
+    ],
+  },
+  {
     v: '5.11.109',
     date: '29 Oct 2026',
     items: [

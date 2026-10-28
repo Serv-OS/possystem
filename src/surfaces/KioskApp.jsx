@@ -36,6 +36,7 @@ import { depleteForSaleServer } from '../lib/stock/deplete';
 import KioskProductModal from './KioskProductModal';
 // v5.11.108: the one allergen chip row every surface shows (kiosk, online, QR, till).
 import AllergenChips, { KIOSK_ALLERGEN_PALETTE } from '../components/AllergenChips.js';
+import DietaryChips, { KIOSK_DIET_PALETTE } from '../components/DietaryChips.js';
 // v5.11.108: the device keyboard never covers a box the customer types in (lib/kioskKeyboard.js).
 import { kioskRevealOnFocus } from '../lib/kioskKeyboard.js';
 import KioskCategoryTile from './kiosk/KioskCategoryTile';
@@ -2710,6 +2711,8 @@ function MenuItemCard({ item, price, fromPrice = null, brandColor, allergenFilte
 
         {/* v5.11.108: the item's allergens, the shared chip row (wraps, never cut off). */}
         <AllergenChips ids={item.allergens} size="card" active={allergenFilter} palette={KIOSK_ALLERGEN_PALETTE} fontSize="clamp(11px, 1.3vw, 14px)" translate={t} />
+        {/* v5.11.110: the item's dietary tags (Vegetarian, Vegan, Gluten free, Dairy free) as words. */}
+        <DietaryChips item={item} size="card" palette={KIOSK_DIET_PALETTE} fontSize="clamp(11px, 1.3vw, 14px)" translate={t} />
 
         {/* Add button — visual affordance; same as card-tap */}
         <button

@@ -350,6 +350,9 @@ button { font-family: inherit; }
   --kAllergen-bg: rgba(234,179,8,0.12);
   --kAllergen-border: rgba(234,179,8,0.32);
   --kAllergen-fg: #ddc270;
+  --kDiet-bg: rgba(34,197,94,0.12);
+  --kDiet-border: rgba(34,197,94,0.34);
+  --kDiet-fg: #9fdcb0;
   --kError-bg: rgba(239,68,68,0.12);
   --kError-border: rgba(239,68,68,0.40);
   --kError-fg: #fca5a5;
@@ -374,6 +377,9 @@ button { font-family: inherit; }
   --kAllergen-bg: rgba(180,120,0,0.10);
   --kAllergen-border: rgba(180,120,0,0.32);
   --kAllergen-fg: #8a5a00;
+  --kDiet-bg: rgba(22,120,60,0.08);
+  --kDiet-border: rgba(22,120,60,0.30);
+  --kDiet-fg: #1e6b3a;
   --kError-bg: rgba(220,38,38,0.08);
   --kError-border: rgba(220,38,38,0.32);
   --kError-fg: #b91c1c;
@@ -421,6 +427,9 @@ button { font-family: inherit; }
   --kAllergen-bg: #FCF4E2;
   --kAllergen-border: #E2C88A;
   --kAllergen-fg: #8A6A1E;
+  --kDiet-bg: #E6F3EA;
+  --kDiet-border: #B7DCC3;
+  --kDiet-fg: #1F6B3A;
   --kError-fg: #B3261E;
   --kSurfaceCheckoutBar: #14110F;
   font-family: 'Plus Jakarta Sans', system-ui, sans-serif;

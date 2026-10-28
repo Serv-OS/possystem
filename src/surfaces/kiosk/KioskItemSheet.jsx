@@ -22,6 +22,7 @@ import { itemName, itemDescription, groupName, optionName, useMenuText } from '.
 import { kioskAllergenLabels, kioskPickedOptionIds, shownAllergenIds, sheetUnsafeIds } from '../../lib/kioskAllergens';
 // v5.11.108: the one allergen chip row every surface shows (kiosk, online, QR, till).
 import AllergenChips, { KIOSK_ALLERGEN_PALETTE } from '../../components/AllergenChips.js';
+import DietaryChips, { KIOSK_DIET_PALETTE } from '../../components/DietaryChips.js';
 // v5.11.108: the device keyboard never covers the notes box or the Add button (lib/kioskKeyboard.js).
 import { useKioskKeyboardLift, kioskRevealOnFocus } from '../../lib/kioskKeyboard.js';
 // v5.11.93 (multi site stock Drop 2): kcal and the 2,000 kcal line where the venue shows calories;
@@ -124,6 +125,8 @@ export default function KioskItemSheet(props) {
             {showCalories === true && item?.kcal != null ? (
               <div style={{ fontSize: 19, color: 'var(--k2InkSubtle)', marginTop: 4, lineHeight: 1.35 }}>{kcalWords(item.kcal, t)} · {t(KCAL_NOTE_KEY)}</div>
             ) : null}
+            {/* v5.11.110: dietary tags as words; the picked size's own tags win over the item's. */}
+            <DietaryChips item={pickedVariantOpt ? byId.get(pickedVariantOpt.id) || null : null} fallback={item} size="detail" palette={KIOSK_DIET_PALETTE} fontSize={19} translate={t} style={{ marginTop: 10 }} />
             <AllergenChips ids={shownIds} size="detail" active={avoidAllergens} palette={KIOSK_ALLERGEN_PALETTE} fontSize={19} translate={t} style={{ marginTop: 10 }} />
             {facts?.mayContain?.length ? (
               <div style={{ fontSize: 19, color: 'var(--k2InkSubtle)', marginTop: 4, lineHeight: 1.35 }}>{mayContainWords(kioskAllergenLabels(facts.mayContain, t), t)}</div>
