@@ -140,12 +140,12 @@ test('the owner\'s private message door is a reading door, explained in plain wo
 });
 
 test('the shared chat screen fits Back Office: composer in the panel, list beside the chat when wide', () => {
-  assert.match(CHAT, /export function ChatTab\(\{[^}]*embed = false, emptyNote = '' \}\)/);
+  assert.match(CHAT, /export function ChatTab\(\{[^}]*embed = false, emptyNote = '', fitScreen = false \}\)/);
   assert.match(CHAT, /const split = useWide\(embed\);/);
   assert.match(CHAT, /const WIDE_QUERY = '\(min-width: 1024px\)';/);
   assert.match(CHAT, /if \(conv && !split\) return convView;/, 'narrow: the staff app\'s single column');
   assert.match(CHAT, /gridTemplateColumns: 'minmax\(260px, 340px\) minmax\(0, 1fr\)'/);
-  assert.match(CHAT, /<Conversation key=\{conv\.id\}.* embed=\{embed\} \/>/);
+  assert.match(CHAT, /<Conversation key=\{conv\.id\}.* embed=\{embed\} fit=\{fitScreen && !embed\} \/>/);
   const composer = CHAT.slice(CHAT.indexOf('In Back\n          Office it sits at the foot of the panel.'));
   assert.match(composer, /style=\{embed\s+\? \{ marginTop: 8,/, 'not fixed to the bottom of the window in Back Office');
   assert.match(CHAT, /source\.threadPollMs \|\| 5000/, 'the Manager app keeps 5 s, Back Office uses its own');
@@ -170,4 +170,47 @@ test('plain words: no dashes as punctuation in the new Back Office chat text', (
   for (const [name, s] of [['WfChat', WF], ['StaffChat', CHAT], ['chatServerSource', read('src/staff/chatServerSource.js')]]) {
     assert.doesNotMatch(s, /[–—]/, `${name} has no en or em dash`);
   }
+});
+
+// ── 5.11.106 iPhone fixes (Peter, on his iPhone): "when the keyboard comes up it pushes the whole
+// chat off the screen rather than just the text" and "you can pinch and zoom, which is wrong".
+const STAFF = read('src/surfaces/StaffSurface.jsx');
+const MANAGER = read('src/surfaces/manager/ManagerChat.jsx');
+
+test('the staff app viewport: fixed to the screen, notch aware, keyboard shrinks the page, put back on leaving', () => {
+  assert.match(STAFF, /export const STAFF_VIEWPORT = 'width=device-width, initial-scale=1\.0, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content';/);
+  const fx = STAFF.slice(STAFF.indexOf('MARKER 5.11.106 staff app fixed to the screen'), STAFF.indexOf('The staff app deliberately uses the servos glass skin'));
+  assert.match(fx, /m\.setAttribute\('content', STAFF_VIEWPORT\);/);
+  assert.match(fx, /if \(prev\) m\.setAttribute\('content', prev\);/, 'reverted on unmount (the notch trap: other surfaces keep their own)');
+  assert.match(fx, /document\.addEventListener\('gesturestart', noPinch\);/);
+  assert.match(fx, /document\.removeEventListener\('gesturestart', noPinch\)/);
+  assert.doesNotMatch(read('index.html'), /user-scalable=no/, 'only the staff app is fixed, not every surface');
+});
+
+test('the staff app chat: no double tap zoom, 16px boxes, the phone box only in the staff app', () => {
+  assert.match(STAFF, /<div style=\{\{ touchAction: 'manipulation' \}\}>\s+<ChatTab [^\n]* fitScreen \/>/);
+  assert.match(CHAT, /const inputStyle = \{[^}]*fontSize: 16,/);
+  assert.match(CHAT, /fit=\{fitScreen && !embed\}/);
+  assert.doesNotMatch(MANAGER, /fitScreen/, 'the Manager app layout is unchanged');
+  assert.doesNotMatch(WF, /fitScreen/, 'the Back Office layout is unchanged');
+});
+
+test('an open chat on a phone is the size of the visible screen: header still, list scrolls, box at the bottom', () => {
+  const hook = CHAT.slice(CHAT.indexOf('function readViewport()'), CHAT.indexOf('// Back Office only: is the window wide enough'));
+  assert.match(hook, /top: vv \? vv\.offsetTop : 0, height/);
+  assert.match(hook, /const height = vv \? vv\.height : window\.innerHeight;/);
+  assert.match(hook, /vv\?\.addEventListener\('resize', update\);\s+vv\?\.addEventListener\('scroll', update\);/);
+  assert.match(hook, /vv\?\.removeEventListener\('resize', update\);\s+vv\?\.removeEventListener\('scroll', update\);/);
+  assert.match(CHAT, /const vp = useVisualViewport\(fit\);/);
+  const portal = CHAT.slice(CHAT.indexOf('if (!fit || !vp) return view;'));
+  assert.match(portal, /createPortal\(\s+<div style=\{\{ position: 'fixed', left: 0, right: 0, top: vp\.top, height: vp\.height,/);
+  assert.match(portal, /touchAction: 'manipulation'/);
+  assert.match(portal, /document\.body,/, 'outside the staff page that scrolls and pulls to refresh');
+  assert.match(CHAT, /ref=\{embed \|\| fit \? scrollRef : null\} style=\{embed \|\| fit \? \{ flex: 1, minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain'/, 'the list is the only scroller');
+  const composer = CHAT.slice(CHAT.indexOf('In Back\n          Office it sits at the foot of the panel.'));
+  assert.match(composer, /: fit \? \{ margin: '8px -10px 0', padding: `8px 12px \$\{vp\?\.keyboard \? '8px'/, 'not position fixed on the phone');
+  assert.match(CHAT, /html\.style\.overflow = 'hidden'; body\.style\.overflow = 'hidden';/, 'no page scroll while a chat is open');
+  assert.match(CHAT, /return \(\) => \{ html\.style\.overflow = prev\[0\]; body\.style\.overflow = prev\[1\];/);
+  assert.match(CHAT, /onFocus=\{\(\) => \{ if \(fit\) setTimeout\(scrollEnd, 300\); \}\}/, 'focusing the box shows the newest message');
+  assert.match(CHAT, /if \(!fit \|\| !vpHeight \|\| document\.activeElement !== taRef\.current\) return undefined;/, 'and again as the keyboard comes up');
 });
