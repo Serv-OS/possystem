@@ -31,6 +31,10 @@ test('the kiosk asks Android to shrink the page for the keyboard', () => {
   const surface = read('../surfaces/KioskSurface.jsx');
   assert.match(surface, /useEffect\(\(\) => \{ ensureKioskViewportMeta\(\); \}, \[\]\);/);
   const helper = read('./kioskKeyboard.js');
+  // Review fix: the canvas bottom comes from the unzoomed parent and style.zoom, never the canvas's own rect.
+  assert.match(helper, /parentTop: canvas\.parentElement\.getBoundingClientRect\(\)\.top,/);
+  assert.match(helper, /zoom: parseFloat\(canvas\.style\.zoom\) \|\| 1,/);
+  assert.doesNotMatch(helper, /canvas\.getBoundingClientRect\(\)/);
   assert.match(helper, /vv\?\.addEventListener\('resize', measure\);/);
   assert.match(helper, /vv\?\.addEventListener\('scroll', measure\);/);
   assert.match(helper, /vv\?\.removeEventListener\('resize', measure\);/);

@@ -10,7 +10,8 @@
 //   useKioskKeyboardLift(ref)  for a sheet drawn at the bottom of the new design's canvas: while a
 //                              box inside it has focus, how many design px of it the keyboard
 //                              covers (window.visualViewport height and offsetTop against the
-//                              sheet's bottom, followed on resize and scroll). The sheet sets its
+//                              canvas's bottom, worked out from its unzoomed parent and its
+//                              style.zoom, followed on resize and scroll). The sheet sets its
 //                              bottom to that, so it shrinks above the keyboard and its Add
 //                              button stays on screen. The canvas keeps its full height while a
 //                              box is typed in (lib/kioskFlow.js nextViewport), so without this
@@ -24,7 +25,6 @@
 import { useEffect, useRef, useState } from 'react';
 
 export const KIOSK_VIEWPORT_KEY = 'interactive-widget=resizes-content';
-const CANVAS_WIDTH = 1080;   // lib/kioskFlow.js KIOSK_CANVAS_WIDTH (that file stays import free)
 
 /** The viewport meta content with interactive-widget=resizes-content added once. */
 export function withInteractiveWidget(content) {
@@ -128,6 +128,28 @@ export function kioskRevealOnFocus(e) {
   revealWhenKeyboardUp(e?.currentTarget || e?.target || null);
 }
 
+/** The keyboard is up when the visible part is more than this many px shorter than full height. */
+export const KEYBOARD_MIN_PX = 120;
+
+/**
+ * Design px to lift a sheet that ends at the bottom of the new design's canvas.
+ *   parentTop    : top of the canvas's (unzoomed) parent box, screen px (getBoundingClientRect)
+ *   canvasHeight : the canvas's own height in design px (its style.height)
+ *   zoom         : the canvas's CSS zoom (its style.zoom)
+ *   vvTop, vvHeight : window.visualViewport offsetTop and height
+ *   fullHeight   : the tallest visual viewport seen at this width (the screen with no keyboard)
+ * The canvas's bottom on screen is worked out from the unzoomed parent, never from the canvas's
+ * own getBoundingClientRect: Android WebView before Chrome 128 (the Sunmi kiosks) reports a zoomed
+ * box unzoomed. With the visible part back at full height the lift is 0, even while a box keeps focus.
+ */
+export function canvasKeyboardLift({ parentTop, canvasHeight, zoom, vvTop, vvHeight, fullHeight } = {}) {
+  const z = Number(zoom) > 0 ? Number(zoom) : 1;
+  const full = Number(fullHeight) || 0;
+  if (!(full - (Number(vvHeight) || 0) > KEYBOARD_MIN_PX)) return 0;
+  const bottom = (Number(parentTop) || 0) + (Number(canvasHeight) || 0) * z;
+  return liftInDesignPx(coveredBelow(bottom, vvTop, vvHeight), z);
+}
+
 /**
  * Design px the keyboard covers of the box in ref while a box inside it has focus (0 otherwise).
  * The box is inside the new design's canvas ([data-kiosk-canvas], 1080 design px wide).
@@ -138,39 +160,48 @@ export function useKioskKeyboardLift(ref) {
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
     const vv = window.visualViewport;
-    let frame = 0;
+    // The tallest visible height seen since the sheet opened (or the screen turned): the screen
+    // with no keyboard.
+    let fullHeight = 0;
+    const onTurn = () => { fullHeight = 0; measure(); };
+    const readHeight = () => (vv ? vv.height : window.innerHeight);
+    // Worked out at once on every event (a few reads, no frame wait), so a skipped frame can never
+    // leave a stale lift, and the full height is always the one from before the keyboard came up.
     const measure = () => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
-        try {
-          const el = ref.current;
-          let next = 0;
-          if (el && isTypingIn(el)) {
-            const canvas = el.closest('[data-kiosk-canvas]');
-            const scale = canvas ? canvas.getBoundingClientRect().width / CANVAS_WIDTH : 1;
-            // The bottom the box would have with no lift, so the reading does not chase itself.
-            const bottom = el.getBoundingClientRect().bottom + liftRef.current * (scale || 1);
-            const top = vv ? vv.offsetTop : 0;
-            const height = vv ? vv.height : window.innerHeight;
-            next = liftInDesignPx(coveredBelow(bottom, top, height), scale);
-          }
-          if (next !== liftRef.current) { liftRef.current = next; setLift(next); }
-        } catch { /* keep the last lift */ }
-      });
+      try {
+        const vvHeight = readHeight();
+        if (vvHeight > fullHeight) fullHeight = vvHeight;
+        const el = ref.current;
+        const vvTop = vv ? vv.offsetTop : 0;
+        let next = 0;
+        const canvas = el ? el.closest('[data-kiosk-canvas]') : null;
+        if (el && canvas && canvas.parentElement && isTypingIn(el)) {
+          next = canvasKeyboardLift({
+            parentTop: canvas.parentElement.getBoundingClientRect().top,
+            canvasHeight: parseFloat(canvas.style.height),
+            zoom: parseFloat(canvas.style.zoom) || 1,
+            vvTop, vvHeight, fullHeight,
+          });
+        }
+        if (next !== liftRef.current) { liftRef.current = next; setLift(next); }
+      } catch { /* keep the last lift */ }
     };
+    // focusout fires before the next box takes focus: read again once it has.
+    const measureSoon = () => setTimeout(measure, 0);
     measure();
     vv?.addEventListener('resize', measure);
     vv?.addEventListener('scroll', measure);
     window.addEventListener('resize', measure);
+    window.addEventListener('orientationchange', onTurn);
     document.addEventListener('focusin', measure);
-    document.addEventListener('focusout', measure);
+    document.addEventListener('focusout', measureSoon);
     return () => {
-      cancelAnimationFrame(frame);
       vv?.removeEventListener('resize', measure);
       vv?.removeEventListener('scroll', measure);
       window.removeEventListener('resize', measure);
+      window.removeEventListener('orientationchange', onTurn);
       document.removeEventListener('focusin', measure);
-      document.removeEventListener('focusout', measure);
+      document.removeEventListener('focusout', measureSoon);
     };
   }, [ref]);
   return lift;
