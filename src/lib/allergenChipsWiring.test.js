@@ -75,6 +75,11 @@ test('the product sheet shows item + size + picked options, under the descriptio
   assert.doesNotMatch(sheet, /#fde6e6|#fcaeae|#7f1d1d|#fee2e2/, 'the old pink boxes are gone');
   const variantRow = between(sheet, 'function VariantRow(', '\n}\n');
   assert.match(variantRow, /<AllergenChips ids=\{variant\.allergens\} size="card"/);
+  // Each option row shows its own allergens (as the kiosk does), by the kiosk's rule.
+  assert.match(sheet, /allergens: optionAllergenList\(opt, linked\)/);
+  assert.match(between(sheet, 'function OptionRow(', '\n}\n'), /<AllergenChips ids=\{allergens \?\? media\?\.allergens\} size="card"/);
+  assert.match(between(sheet, 'function QtyOptionRow(', '\n}\n'), /<AllergenChips ids=\{media\?\.allergens\} size="card"/);
+  assert.match(sheet, /allergens=\{resolveOptMedia\(sopt\)\.allergens\}/);
 });
 
 test('both kiosk designs read the same picked option list and show the chips on cards and sheets', () => {

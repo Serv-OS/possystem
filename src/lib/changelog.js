@@ -12,7 +12,7 @@ export const CHANGELOG = [
     items: [
       "Allergens now look the same everywhere a guest or your team sees an item: the kiosk (both designs), online ordering, QR ordering, catering and the till. Each allergen is a small chip with a warning mark and its name (Gluten, Milk, Tree nuts and so on), in the same order and the same words on every screen. No icons.",
       "Online and QR: the menu card shows every allergen under the description as chips that wrap onto a new line, never cut off. The card used to show one allergen or a count like 3 allergens. The allergens come from the allergen list on the item in the menu builder, not from words typed in the description.",
-      "Online, QR and kiosk product screens: the chips sit under the description and include the size the guest picked and the options they add. Pick oat milk or a nut topping and its allergens join the list straight away.",
+      "Online, QR and kiosk product screens: the chips sit under the description and include the size the guest picked and the options they add. Pick oat milk or a nut topping and its allergens join the list straight away. Online and QR option rows now show each option's own allergens too, as the kiosk does.",
       "Allergens a guest asked to avoid stand out on the chip itself (on the till: the guest's own allergens). Items are still marked, never hidden.",
       "The chips take their colours from each screen's own theme: the venue's Appearance colours online and on QR, the kiosk theme on the kiosk, the till theme on the till. They read in light and dark.",
       "Prices, baskets, options and ordering are unchanged.",

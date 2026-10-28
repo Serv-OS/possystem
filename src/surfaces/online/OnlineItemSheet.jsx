@@ -113,8 +113,13 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
   const resolveOptMedia = useCallback((opt) => {
     const key = String(opt?.name || opt?.label || '').trim().toLowerCase();
     const match = key ? subitemByName.get(key) : null;
-    return { image: opt?.image || match?.image || null };
-  }, [subitemByName]);
+    // v5.11.108: the option's allergens for its chip row (the kiosk's rule: its own list, else
+    // the menu item it is linked to, else any sub item of the same name). Display only.
+    const linkId = opt?.itemId || opt?.item_id;
+    const linked = (linkId && Array.isArray(allItems) ? allItems.find(r => r && r.id === linkId) : null)
+      || (key ? (match || anySubitemByName.get(key)) : null);
+    return { image: opt?.image || match?.image || null, allergens: optionAllergenList(opt, linked) };
+  }, [subitemByName, anySubitemByName, allItems]);
 
   const resolveOptItemId = (opt) => {
     if (opt?.itemId || opt?.item_id) return opt.itemId || opt.item_id;
@@ -777,6 +782,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
                                     onClick={() => setSubPicks(s => ({ ...s, [subKey]: sChecked ? null : sopt }))}
                                     mode="single"
                                     is86={optIs86(sopt)}
+                                    allergens={resolveOptMedia(sopt).allergens}
                                     theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
                                 </div>
                               );
@@ -873,7 +879,7 @@ function Section({ title, meta, required, erroring, children }) {
   );
 }
 
-function OptionRow({ label, priceDelta, absolutePrice, checked, onClick, mode, theme, cardBdr, inputBg, is86 = false, media }) {
+function OptionRow({ label, priceDelta, absolutePrice, checked, onClick, mode, theme, cardBdr, inputBg, is86 = false, media, allergens = null }) {
   // Two pricing modes:
   //   • absolutePrice (used for variants): "£2.50" — variants ARE their own price
   //   • priceDelta (used for modifiers):   "+£0.50" / "−£0.50" — modifies base
@@ -904,7 +910,11 @@ function OptionRow({ label, priceDelta, absolutePrice, checked, onClick, mode, t
           width: 46, height: 46, borderRadius: 9, objectFit: 'cover', flexShrink: 0,
         }}/>
       )}
-      <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere', fontSize: 14, fontWeight: 600, textDecoration: is86 ? 'line-through' : 'none' }}>{label}</span>
+      <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <span style={{ overflowWrap: 'anywhere', fontSize: 14, fontWeight: 600, textDecoration: is86 ? 'line-through' : 'none' }}>{label}</span>
+        {/* v5.11.108: the option's own allergens, the shared chip row (as on the kiosk). */}
+        <AllergenChips ids={allergens ?? media?.allergens} size="card" palette={allergenPaletteFromTheme(theme)}/>
+      </span>
       {is86
         ? <span style={{ fontSize: 11, fontWeight: 800, color: '#dc2626', flexShrink: 0 }}>Sold out</span>
         : (priceLabel && <span style={{ fontSize: 13, fontWeight: 700, color: priceColor, flexShrink: 0 }}>{priceLabel}</span>)}
@@ -986,7 +996,11 @@ function QtyOptionRow({ option, count, canAdd, onInc, onDec, theme, cardBdr, inp
           width: 46, height: 46, borderRadius: 9, objectFit: 'cover', flexShrink: 0,
         }}/>
       )}
-      <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere', fontSize: 14, fontWeight: 600, textDecoration: is86 ? 'line-through' : 'none' }}>{option.name || option.label}</span>
+      <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <span style={{ overflowWrap: 'anywhere', fontSize: 14, fontWeight: 600, textDecoration: is86 ? 'line-through' : 'none' }}>{option.name || option.label}</span>
+        {/* v5.11.108: the option's own allergens, the shared chip row (as on the kiosk). */}
+        <AllergenChips ids={media?.allergens} size="card" palette={allergenPaletteFromTheme(theme)}/>
+      </span>
       {is86
         ? <span style={{ fontSize: 11, fontWeight: 800, color: '#dc2626', flexShrink: 0 }}>Sold out</span>
         : (px > 0 && (
