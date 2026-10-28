@@ -561,10 +561,10 @@ export default function KioskSettings({ kioskId, onBack }) {
               </div>
             </Field>}
 
-            <Field label="Average wait time" hint="Shown to customer on attract & order-done screens">
+            <Field label="Average wait time" hint="Shown on the start screen. Type 0 to show no wait on this kiosk, even when online quotes one">
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <input type="number" min="1" max="60"
-                  value={draft.kiosk_avg_wait_minutes || 8}
+                  value={draft.kiosk_avg_wait_minutes ?? 8}
                   onChange={e => setField('kiosk_avg_wait_minutes', parseInt(e.target.value) || 0)}
                   style={Object.assign({}, inp(), { width: 80, textAlign: 'center' })}
                 />
@@ -642,7 +642,7 @@ export default function KioskSettings({ kioskId, onBack }) {
               <div style={{ height: '100%', background: 'linear-gradient(135deg, ' + (draft.kiosk_brand_color || '#f97316') + ', ' + (draft.kiosk_brand_accent_color || '#fbbf24') + ')', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 16, color: '#fff' }}>
                 {draft.kiosk_brand_logo_url && <img src={draft.kiosk_brand_logo_url} alt="" style={{ maxWidth: 80, maxHeight: 80, marginBottom: 14 }} />}
                 <div style={{ fontSize: 20, fontWeight: 800, textAlign: 'center', letterSpacing: '-0.02em', marginBottom: 4 }}>{draft.kiosk_brand_name || device.name || 'Order here'}</div>
-                <div style={{ fontSize: 10, opacity: 0.85, marginBottom: 18, textAlign: 'center' }}>~{draft.kiosk_avg_wait_minutes || 8} min wait</div>
+                <div style={{ fontSize: 10, opacity: 0.85, marginBottom: 18, textAlign: 'center' }}>{(draft.kiosk_avg_wait_minutes ?? 8) > 0 ? `~${draft.kiosk_avg_wait_minutes ?? 8} min wait` : 'no wait shown'}</div>
                 <div style={{ background: '#fff', color: draft.kiosk_brand_color || '#f97316', padding: '10px 22px', borderRadius: 100, fontSize: 12, fontWeight: 800 }}>TAP TO ORDER</div>
               </div>
             </div>}
