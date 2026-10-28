@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.105',
+    date: '28 Oct 2026',
+    items: [
+      "Workforce, security: who a staff record IS can no longer be changed by a manager. A staff record carries two links: the staff app login behind it and the till user behind it (the Manager app PIN, clock punches, sales, and team chat). Until now any Back Office login of the company could point a colleague's record at their own till user and act as that colleague. The database now refuses every direct write of those links from Back Office (the columns are closed to the app, and a guard checks every change).",
+      "Set up on the POS (Workforce, a person's record) now goes through one server door, for an owner of the company or the super admin only, past the second sign in step. It checks the till user belongs to this company and is not already somebody else's record. A manager who tries is told: Only an owner of this company can link a till user to a staff record.",
+      "Every change of either link, by anyone (an owner, the staff app invite, the clock creating a record, the SQL editor), writes a row in the Workforce audit log: who, which record, from what to what, and why. The rows cannot be edited.",
+      "Staff invites, offboarding, bank details, rates, sections and every other Workforce edit work exactly as before.",
+      "Needs the database update 20261104a (Peter runs it after UK close). Until it has run, Set up on the POS writes as before.",
+    ],
+  },
+  {
     v: '5.11.104',
     date: '27 Oct 2026',
     items: [
