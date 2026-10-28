@@ -152,15 +152,17 @@ test('the shared chat screen fits Back Office: composer in the panel, list besid
   assert.match(CHAT, /if \(document\.visibilityState === 'visible'\) fetchNewer\(\)/, 'no polling while the browser tab is hidden');
 });
 
-test('team-chat: an owner is seated in the venue groups of their own company only, never re-added, never automatic', () => {
+test('team-chat: an owner is seated in the venue groups of their own company only, not automatic, existing rows kept', () => {
   const boot = FN.slice(FN.indexOf("case 'bootstrap': {"), FN.indexOf("case 'inbox':"));
-  assert.match(boot, /if \(caller\.hasBackOffice\) await rpc2\('chat_sync_org'/, 'managers: the sync seats them (user_locations)');
+  assert.match(boot, /await rpc2\('chat_sync_org', \{ p_org: caller\.orgId, p_staff: null \}\)/, 'managers: the sync seats them (user_locations)');
   assert.match(boot, /const w = await rpc2\('chat_whoami', \{ p_member: me \}\);\s+if \(w\?\.ok\) await seatOwner\(caller, w\.level\)/);
-  const seat = FN.slice(FN.indexOf('async function seatOwner('), FN.indexOf('async function isMember('));
+  const groups = FN.slice(FN.indexOf('async function seatGroups('), FN.indexOf('async function seatOwner('));
+  assert.match(groups, /from\('chat_conversations'\)\.select\('id, created_by'\)\.eq\('org_id', orgId\)\.in\('kind', \['venue', 'announce'\]\)/);
+  assert.match(groups, /if \(openOnly\) q = q\.is\('archived_at', null\);/);
+  const seat = FN.slice(FN.indexOf('async function seatOwner('), FN.indexOf('async function sweepOwnerSeats('));
   assert.match(seat, /if \(level !== 'owner' \|\| !caller\.hasBackOffice \|\| caller\.viaPin\) return;/);
-  assert.match(seat, /from\('chat_conversations'\)\.select\('id'\)\.eq\('org_id', caller\.orgId\)\.in\('kind', \['venue', 'announce'\]\)/);
-  assert.match(seat, /\.not\('location_id', 'is', null\)\.is\('archived_at', null\)/);
-  assert.match(seat, /!got\.has\(id\)/, 'a row that exists (left or removed) is never touched');
+  assert.match(seat, /const convs = await seatGroups\(caller\.orgId, true\);/, 'their own company only');
+  assert.match(seat, /!got\.has\(id\)/, 'a row that exists is never inserted again');
   assert.match(seat, /role: 'admin', auto: false/);
   assert.match(seat, /ignoreDuplicates: true/);
   assert.match(FN, /MARKER 5\.11\.106 team-chat owner seats/);
@@ -213,4 +215,23 @@ test('an open chat on a phone is the size of the visible screen: header still, l
   assert.match(CHAT, /return \(\) => \{ html\.style\.overflow = prev\[0\]; body\.style\.overflow = prev\[1\];/);
   assert.match(CHAT, /onFocus=\{\(\) => \{ if \(fit\) setTimeout\(scrollEnd, 300\); \}\}/, 'focusing the box shows the newest message');
   assert.match(CHAT, /if \(!fit \|\| !vpHeight \|\| document\.activeElement !== taRef\.current\) return undefined;/, 'and again as the keyboard comes up');
+});
+
+// ── 5.11.106 security review of the owner seats: a seat must not outlive the owner.
+test('team-chat: a demoted owner\'s seats go back to the sync before it runs; a re-promoted owner is seated again', () => {
+  const boot = FN.slice(FN.indexOf("case 'bootstrap': {"), FN.indexOf("case 'inbox':"));
+  assert.match(boot, /if \(caller\.hasBackOffice\) \{\s+await sweepOwnerSeats\(caller\)[^\n]*\n\s+await rpc2\('chat_sync_org'/, 'Back Office only, and before the sync');
+  const sweep = FN.slice(FN.indexOf('async function sweepOwnerSeats('), FN.indexOf('async function isMember('));
+  assert.match(sweep, /if \(!caller\.hasBackOffice \|\| caller\.viaPin\) return;/);
+  assert.match(sweep, /\.eq\('org_id', caller\.orgId\)\.eq\('auto', false\)\.is\('left_at', null\)\.in\('conversation_id', convs\.map/, 'this company\'s active seat rows in venue and announcement groups');
+  assert.match(sweep, /creator\.get\(r\.conversation_id\) !== r\.member_id/, 'the creator of an announcement group is never touched');
+  assert.match(sweep, /rpc\('chat_whoami', \{ p_member: m \}\)/, 'the database says who is still an owner');
+  assert.match(sweep, /if \(w\.ok && w\.level === 'owner' && w\.active !== false\) continue;/);
+  assert.match(sweep, /update\(\{ auto: true \}\)/, 'handed back to the sync, which removes it or keeps a manager in their own venue');
+  const groups = FN.slice(FN.indexOf('async function seatGroups('), FN.indexOf('async function seatOwner('));
+  assert.match(groups, /\.in\('kind', \['venue', 'announce'\]\)\s+\.not\('location_id', 'is', null\)/);
+  const seat = FN.slice(FN.indexOf('async function seatOwner('), FN.indexOf('async function sweepOwnerSeats('));
+  assert.match(seat, /update\(\{ left_at: null, left_reason: null, auto: false, role: 'admin' \}\)\s+\.eq\('member_id', caller\.memberId\)\.eq\('org_id', caller\.orgId\)\.eq\('left_reason', 'auto'\)/, 'only rows the automatic side took');
+  assert.ok(seat.indexOf("eq('left_reason', 'auto')") < seat.indexOf('upsert('), 'seated again before new seats are added');
+  assert.match(FN, /TODO \(needs a migration, not tonight\): put owners and Admins into want0 of chat_sync_org/);
 });
