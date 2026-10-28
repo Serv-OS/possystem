@@ -248,6 +248,28 @@ async function loginCaller(uid: string, body: any): Promise<Caller | Response> {
   return { uid, orgId, memberId: prof2.member_id, staffId: staff?.id ?? null, hasBackOffice };
 }
 
+// MARKER 5.11.106 team-chat owner seats: an owner (or Admin) runs every venue of the company, but
+// chat_sync_org seats Back Office people in venue groups only through user_locations rows, and an
+// owner holds every venue of their company with no such row (20260921u). So a Back Office owner's
+// bootstrap seats them as an admin of each venue group and venue announcement group of THEIR
+// company that they have never been in. A row that exists is never touched (someone who left or was
+// removed stays out). The rows are not automatic (auto false), so the sync never takes them away.
+// Only after chat_whoami says owner for this profile; the database still judges every later action.
+async function seatOwner(caller: Caller, level: unknown) {
+  if (level !== 'owner' || !caller.hasBackOffice || caller.viaPin) return;
+  const [{ data: convs }, { data: have }] = await Promise.all([
+    admin.from('chat_conversations').select('id').eq('org_id', caller.orgId).in('kind', ['venue', 'announce'])
+      .not('location_id', 'is', null).is('archived_at', null).limit(500),
+    admin.from('chat_members').select('conversation_id').eq('member_id', caller.memberId).eq('org_id', caller.orgId).limit(1000),
+  ]);
+  const got = new Set((have ?? []).map((r: any) => r.conversation_id));
+  const rows = (convs ?? []).map((c: any) => c.id).filter((id: unknown) => isUuid(id) && !got.has(id))
+    .map((id: string) => ({ conversation_id: id, member_id: caller.memberId, org_id: caller.orgId, role: 'admin', auto: false }));
+  if (!rows.length) return;
+  const { error } = await admin.from('chat_members').upsert(rows, { onConflict: 'conversation_id,member_id', ignoreDuplicates: true });
+  if (error) console.error('[team-chat] owner seats:', error.message);
+}
+
 async function isMember(caller: Caller, conversationId: string): Promise<boolean> {
   const { data } = await admin.from('chat_members').select('member_id')
     .eq('conversation_id', conversationId).eq('member_id', caller.memberId).eq('org_id', caller.orgId).is('left_at', null).maybeSingle();
@@ -336,7 +358,9 @@ Deno.serve(async (req) => {
     switch (action) {
       case 'bootstrap': {
         if (caller.hasBackOffice) await rpc2('chat_sync_org', { p_org: caller.orgId, p_staff: null });
-        return answer(await rpc2('chat_whoami', { p_member: me }));
+        const w = await rpc2('chat_whoami', { p_member: me });
+        if (w?.ok) await seatOwner(caller, w.level).catch((e) => console.error('[team-chat] owner seats:', (e as Error)?.message ?? e));
+        return answer(w);
       }
       // ── Reads for the Manager app (no personal login, so no row level security reads) ──
       case 'inbox':

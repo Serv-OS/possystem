@@ -7,13 +7,14 @@
 //   serverChatSource()  the Manager app: a paired device and a manager's PIN, no personal login,
 //                       so row level security would show nothing. Everything goes through the
 //                       team-chat function (inbox, thread, members.list) and is polled.
+//   backOfficeChatSource()  Back Office (5.11.106): the Back Office login's own chats, the same
+//                       server reads as the Manager app, polled (chatServerSource.js).
 // Each source: { live, call(body), inbox(who), thread(convId, { before, after }), members(convId),
 // subscribe(me, convIds, onEvent), upload(path, token, file) }.
 
 import { staffSupabase, supabase as mainSupabase } from '../lib/supabase';
 import { MSG_COLUMNS, PAGE_SIZE } from './chatModel';
-
-const MAX_LIST = 60;
+import { MAX_LIST, serverReads, backOfficeChatSource as backOfficeSource } from './chatServerSource';
 
 async function post(client, body) {
   try {
@@ -104,32 +105,14 @@ export function staffChatSource(client = staffSupabase) {
 
 export function serverChatSource({ opsLocationId, pin, client = mainSupabase }) {
   const call = (body) => post(client, { ...body, ops_location_id: opsLocationId, pin: String(pin || '') });
-  return {
-    live: false,
-    call,
-    async inbox() {
-      const r = await call({ action: 'inbox' });
-      const out = empty();
-      if (!r.ok) return { ...out, error: true, message: r.message };
-      for (const p of r.profiles || []) out.profiles[p.id] = p;
-      for (const c of r.convs || []) {
-        out.mine[c.id] = { conversation_id: c.id, role: c.my_role, muted_until: c.muted_until, last_read_message_id: c.last_read_message_id };
-        if (c.last) out.last[c.id] = c.last;
-        out.unread[c.id] = Number(c.unread || 0);
-      }
-      out.convs = (r.convs || []).slice(0, MAX_LIST);
-      for (const d of r.dm_members || []) (out.dmMembers[d.conversation_id] ||= []).push(d);
-      return out;
-    },
-    async thread(convId, { before = null, after = null } = {}) {
-      const r = await call({ action: 'thread', conversation_id: convId, before, after });
-      return r.ok ? { messages: r.messages || [], reactions: r.reactions || [] } : { messages: [], reactions: [] };
-    },
-    async members(convId) {
-      const r = await call({ action: 'members.list', conversation_id: convId });
-      return r.ok ? r.members || [] : [];
-    },
-    subscribe() { return () => {}; },
+  return { ...serverReads(call, (path, token, file) => client.storage.from('chat-photos').uploadToSignedUrl(path, token, file)), call };
+}
+
+// MARKER 5.11.106 Back Office chat: the signed in Back Office person's own chats, through the
+// server with their Back Office login (chatServerSource.js), polled.
+export function backOfficeChatSource({ orgId = null, who = null, client = mainSupabase } = {}) {
+  return backOfficeSource({
+    post: (body) => post(client, body), orgId, who,
     upload: (path, token, file) => client.storage.from('chat-photos').uploadToSignedUrl(path, token, file),
-  };
+  });
 }

@@ -7,6 +7,20 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.106',
+    date: '28 Oct 2026',
+    items: [
+      "Team chat: you can now chat from Back Office. Workforce, Team chat has a new first tab, Chats, with your own chats: every group you are in and your direct messages. Read them, send messages and photos, reply, react, edit or delete your own messages, mention people with @, and mute a chat.",
+      "Owners and managers can post in announcement groups from Back Office and mark a message urgent, and see who has seen it.",
+      "Press New to message anyone in the company, or to make a group.",
+      "The Chats tab shows how many messages you have not read, even while you are on another tab. It checks for new messages every 15 seconds while Team chat is open (every 10 seconds inside an open chat), and stops while the browser tab is hidden.",
+      "On a wide screen your chats are on the left and the open chat is on the right. On a narrow screen it works like the staff app, one screen at a time.",
+      "Owners: the Open a DM tab is now called Read a private message (owner only). It is for reading a private message between two other people, only for a grievance, a safety worry or the law, with a typed reason kept in the log. It is not for sending: use Chats for that.",
+      "Owners are now put in every venue group of their company as an admin when they open Team chat, including venues they were never linked to one by one. Anyone who left a group or was taken out stays out. Managers were already in the groups of the venues they manage.",
+      "Needs the team-chat edge function deployed (the owner seats). The rest is the web app. No database update.",
+    ],
+  },
+  {
     v: '5.11.105',
     date: '28 Oct 2026',
     items: [

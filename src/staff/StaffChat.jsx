@@ -10,6 +10,11 @@
 //
 // useTeamChat(source) (useTeamChat.js) lives in StaffSurface or the Manager app (the unread badge on the tab bar needs
 // it while another tab is open); <ChatTab chat={...}/> draws it.
+//
+// MARKER 5.11.106 Back Office chat: <ChatTab embed /> is the same screen inside Back Office. The
+// composer sits in the panel instead of fixed to the bottom of the phone, and on a wide screen the
+// list stays on the left with the open conversation on the right. Narrow screens get the staff
+// app's single column.
 
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { Icon } from '../components/ServOSIcons';
@@ -20,6 +25,22 @@ import {
 } from './chatModel';
 
 const MAX_PHOTO_BYTES = 8 * 1024 * 1024;
+const WIDE_QUERY = '(min-width: 1024px)';
+const EMBED_HEIGHT = 'min(78vh, 820px)';
+
+// Back Office only: is the window wide enough for the list and the conversation side by side?
+function useWide(on) {
+  const [wide, setWide] = useState(() => !!(on && typeof window !== 'undefined' && window.matchMedia && window.matchMedia(WIDE_QUERY).matches));
+  useEffect(() => {
+    if (!on || typeof window === 'undefined' || !window.matchMedia) return undefined;
+    const mq = window.matchMedia(WIDE_QUERY);
+    const onChange = () => setWide(mq.matches);
+    onChange();
+    mq.addEventListener?.('change', onChange);
+    return () => mq.removeEventListener?.('change', onChange);
+  }, [on]);
+  return !!on && wide;
+}
 
 // ── Little pieces ─────────────────────────────────────────────────────────────
 const btn = { border: '1px solid var(--bdr)', borderRadius: 999, padding: '7px 12px', background: 'transparent', color: 'var(--t2)', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' };
@@ -63,8 +84,10 @@ function PrivacyNotice({ who, onOk }) {
 }
 
 // ── The Chat tab ──────────────────────────────────────────────────────────────
-export function ChatTab({ chat, locale = 'en-GB', onFullScreen, pushApp = 'staff', openRequest = null, onOpenHandled }) {
+export function ChatTab({ chat, locale = 'en-GB', onFullScreen, pushApp = 'staff', openRequest = null, onOpenHandled, embed = false, emptyNote = '' }) {
   // pushApp 'none': no notifications offered (the Manager app runs on shared venue devices, A3).
+  // embed: inside Back Office (5.11.106); emptyNote: one more line under the empty list.
+  const split = useWide(embed);
   const [openId, setOpenId] = useState(null);
   const [newOpen, setNewOpen] = useState(false);
   const [push, setPush] = useState(() => (pushApp === 'none' ? 'unsupported' : pushStatus()));
@@ -122,11 +145,12 @@ export function ChatTab({ chat, locale = 'en-GB', onFullScreen, pushApp = 'staff
   if (who?.chat_off) return <div className="sv-glass" style={{ padding: 18, borderRadius: 16, fontSize: 14, color: 'var(--t2)' }}>Chat is switched off for you. Please speak to your manager.</div>;
 
   const titleOf = (c) => conversationTitle(c, { me, membersByConv: dmMembers, profilesById: profiles });
-  if (conv) return <Conversation key={conv.id} chat={chat} conv={conv} title={titleOf(conv)} locale={locale} catchUp={catchUp} onBack={() => open(null)} />;
+  const convView = conv ? <Conversation key={conv.id} chat={chat} conv={conv} title={titleOf(conv)} locale={locale} catchUp={catchUp} onBack={() => open(null)} embed={embed} /> : null;
+  if (conv && !split) return convView;
 
   const canGroup = who && (who.level !== 'staff' || who.settings?.groups_by === 'everyone');
   const sorted = sortConversations(rows, titleOf);
-  return (
+  const listView = (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
         <div style={{ fontSize: 17, fontWeight: 800 }}>Chats</div>
@@ -139,13 +163,13 @@ export function ChatTab({ chat, locale = 'en-GB', onFullScreen, pushApp = 'staff
       )}
       {pushMsg && <div style={{ fontSize: 12.5, color: 'var(--t2)', marginBottom: 8 }}>{pushMsg}</div>}
       {who?.muted_until && <div style={{ fontSize: 12.5, color: 'var(--red)', fontWeight: 600, marginBottom: 8 }}>You are muted until {new Date(who.muted_until).toLocaleString(locale, { weekday: 'short', hour: '2-digit', minute: '2-digit' })}.</div>}
-      {sorted.length === 0 && <div style={{ color: 'var(--t3)', fontSize: 13, padding: 20, textAlign: 'center' }}>No chats yet. Tap New to message someone.</div>}
+      {sorted.length === 0 && <div style={{ color: 'var(--t3)', fontSize: 13, padding: 20, textAlign: 'center' }}>No chats yet. Tap New to message someone.{emptyNote && <div style={{ marginTop: 6 }}>{emptyNote}</div>}</div>}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
         {sorted.map((c) => {
           const lm = last[c.id];
           const muted = isMutedNow(c.muted_until);
           return (
-            <button key={c.id} onClick={() => open(c.id)} className="sv-glass" style={{ display: 'flex', gap: 11, alignItems: 'center', width: '100%', textAlign: 'left', padding: '11px 12px', borderRadius: 14, border: '1px solid var(--bdr)', cursor: 'pointer', font: 'inherit', color: 'var(--t1)' }}>
+            <button key={c.id} onClick={() => open(c.id)} className="sv-glass" style={{ display: 'flex', gap: 11, alignItems: 'center', width: '100%', textAlign: 'left', padding: '11px 12px', borderRadius: 14, border: split && c.id === openId ? '1px solid var(--acc)' : '1px solid var(--bdr)', cursor: 'pointer', font: 'inherit', color: 'var(--t1)' }}>
               <Avatar name={titleOf(c)} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
@@ -167,6 +191,18 @@ export function ChatTab({ chat, locale = 'en-GB', onFullScreen, pushApp = 'staff
         })}
       </div>
       {newOpen && <NewChat chat={chat} canGroup={canGroup} onClose={() => setNewOpen(false)} onOpened={async (id) => { setNewOpen(false); await load(); open(id); }} />}
+    </div>
+  );
+  if (!split) return listView;
+  // Back Office on a wide screen: the list on the left, the open conversation on the right.
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px, 340px) minmax(0, 1fr)', gap: 14, alignItems: 'start' }}>
+      <div style={{ maxHeight: EMBED_HEIGHT, overflowY: 'auto', paddingRight: 2 }}>{listView}</div>
+      {convView || (
+        <div className="sv-glass" style={{ height: EMBED_HEIGHT, minHeight: 420, borderRadius: 16, border: '1px solid var(--bdr)', display: 'grid', placeItems: 'center', color: 'var(--t3)', fontSize: 13.5, textAlign: 'center', padding: 20 }}>
+          Pick a chat on the left, or press New to message someone.
+        </div>
+      )}
     </div>
   );
 }
@@ -223,7 +259,7 @@ function NewChat({ chat, canGroup, onClose, onOpened }) {
 }
 
 // ── One conversation ──────────────────────────────────────────────────────────
-function Conversation({ chat, conv, title, locale, catchUp = 0, onBack }) {
+function Conversation({ chat, conv, title, locale, catchUp = 0, onBack, embed = false }) {
   const { me, profiles, mine, subscribe, markRead, reloadSoon, source, call } = chat;
   const [msgs, setMsgs] = useState([]);
   const [reactions, setReactions] = useState([]);
@@ -244,6 +280,7 @@ function Conversation({ chat, conv, title, locale, catchUp = 0, onBack }) {
   const [seenFor, setSeenFor] = useState(null);
   const clientId = useRef(newClientId());
   const endRef = useRef(null);
+  const scrollRef = useRef(null);                 // Back Office: the message panel that scrolls
   const fileRef = useRef(null);
   const taRef = useRef(null);
   const myRow = mine[conv.id] || {};
@@ -252,7 +289,10 @@ function Conversation({ chat, conv, title, locale, catchUp = 0, onBack }) {
   const muted = isMutedNow(myRow.muted_until);
   const nameOf = (id) => profiles[id]?.display_name || 'Someone';
 
-  const scrollEnd = () => setTimeout(() => endRef.current?.scrollIntoView({ block: 'end' }), 30);
+  const scrollEnd = () => setTimeout(() => {
+    const box = scrollRef.current;
+    if (box) box.scrollTop = box.scrollHeight; else endRef.current?.scrollIntoView({ block: 'end' });
+  }, 30);
 
   const loadPage = useCallback(async (beforeId) => {
     const { messages: page, reactions: rs } = await source.thread(conv.id, { before: beforeId || null });
@@ -282,10 +322,10 @@ function Conversation({ chat, conv, title, locale, catchUp = 0, onBack }) {
       scrollEnd();
     }
   }, [source, conv.id, newest, markRead]);
-  // No live channel (the Manager app): ask every few seconds while on screen.
+  // No live channel (the Manager app, Back Office): ask every few seconds while on screen.
   useEffect(() => {
     if (source.live || loading) return undefined;
-    const t = setInterval(() => { if (document.visibilityState === 'visible') fetchNewer(); }, 5000);
+    const t = setInterval(() => { if (document.visibilityState === 'visible') fetchNewer(); }, source.threadPollMs || 5000);
     return () => clearInterval(t);
   }, [source, loading, fetchNewer]);
   // MARKER 5.11.102 Conversation review fix A1: back from sleep, or a tapped notification for this
@@ -415,7 +455,7 @@ function Conversation({ chat, conv, title, locale, catchUp = 0, onBack }) {
   const byId = useMemo(() => Object.fromEntries(msgs.map((m) => [String(m.id), m])), [msgs]);
 
   return (
-    <div style={{ paddingBottom: 150 }}>
+    <div style={embed ? { display: 'flex', flexDirection: 'column', height: EMBED_HEIGHT, minHeight: 420 } : { paddingBottom: 150 }}>
       <div className="sv-glass" style={{ position: 'sticky', top: 0, zIndex: 10, display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', borderRadius: 14, marginBottom: 10 }}>
         <button onClick={onBack} style={{ ...btn, padding: '6px 9px' }} aria-label="Back"><Icon name="back" size={14} /></button>
         <div style={{ flex: 1, minWidth: 0 }}>
@@ -425,6 +465,7 @@ function Conversation({ chat, conv, title, locale, catchUp = 0, onBack }) {
         <button onClick={() => setMenu(true)} style={{ ...btn, padding: '6px 10px' }} aria-label="Chat options">•••</button>
       </div>
 
+      <div ref={embed ? scrollRef : null} style={embed ? { flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 4px' } : undefined}>
       {more && <div style={{ textAlign: 'center', marginBottom: 8 }}><button onClick={() => loadPage(msgs[0]?.id)} style={btn}>Load earlier</button></div>}
       {loading && <div style={{ color: 'var(--t3)', fontSize: 13, textAlign: 'center', padding: 16 }}>Loading…</div>}
       {!loading && !msgs.length && <div style={{ color: 'var(--t3)', fontSize: 13, textAlign: 'center', padding: 16 }}>No messages yet. Say hello.</div>}
@@ -471,9 +512,13 @@ function Conversation({ chat, conv, title, locale, catchUp = 0, onBack }) {
         })}
       </div>
       <div ref={endRef} />
+      </div>
 
-      {/* Composer, fixed above the home indicator (the tab bar hides while a chat is open). */}
-      <div className="sv-glass" style={{ position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 30, padding: '8px 12px calc(10px + env(safe-area-inset-bottom, 0px))', maxWidth: 560, margin: '0 auto', borderRadius: '16px 16px 0 0', background: 'var(--bg)' }}>
+      {/* Composer, fixed above the home indicator (the tab bar hides while a chat is open). In Back
+          Office it sits at the foot of the panel. */}
+      <div className="sv-glass" style={embed
+        ? { marginTop: 8, padding: '8px 12px 10px', borderRadius: 14, border: '1px solid var(--bdr)', background: 'var(--bg)' }
+        : { position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 30, padding: '8px 12px calc(10px + env(safe-area-inset-bottom, 0px))', maxWidth: 560, margin: '0 auto', borderRadius: '16px 16px 0 0', background: 'var(--bg)' }}>
         {err && <div style={{ color: err.startsWith('Thanks') ? 'var(--grn)' : 'var(--red)', fontSize: 12.5, fontWeight: 600, margin: '0 2px 6px' }}>{err}</div>}
         {(replyTo || editing) && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--t2)', marginBottom: 6 }}>
