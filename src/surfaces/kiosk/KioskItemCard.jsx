@@ -16,6 +16,7 @@ import { KioskPhoto } from './KioskChrome';
 import { PlusIcon } from './KioskIcons';
 // v5.11.108: the one allergen chip row every surface shows (kiosk, online, QR, till).
 import AllergenChips, { KIOSK_ALLERGEN_PALETTE } from '../../components/AllergenChips.js';
+import DietaryChips, { KIOSK_DIET_PALETTE } from '../../components/DietaryChips.js';
 
 /**
  * addMode   : kioskAddMode result (what a tap on the button does)
@@ -68,6 +69,8 @@ export default function KioskItemCard({ item, addMode, button, price, fromPrice 
           }}>{itemDescription(item)}</div>
           {/* v5.11.108: the item's allergens, the shared chip row (wraps, never cut off). */}
           <AllergenChips ids={item.allergens} size="card" active={avoid} palette={KIOSK_ALLERGEN_PALETTE} fontSize={16} translate={t} style={{ marginTop: 4 }} />
+          {/* v5.11.110: the item's dietary tags (Vegetarian, Vegan, Gluten free, Dairy free) as words. */}
+          <DietaryChips item={item} size="card" palette={KIOSK_DIET_PALETTE} fontSize={16} translate={t} style={{ marginTop: 4 }} />
           {quick && addMode.hasExtras ? (
             <div style={{ fontSize: 17, fontWeight: 600, color: 'var(--k2AccentInk, var(--k2PrimaryInk))', marginTop: 2 }}>{t('k2.menu.tapForExtras')}</div>
           ) : null}

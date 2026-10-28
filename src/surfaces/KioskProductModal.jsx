@@ -48,6 +48,7 @@ import { kcalWords, mayContainWords, KCAL_NOTE_KEY, ALLERGEN_CHECK_KEY } from '.
 import { kioskAllergenLabels, kioskPickedOptionIds, shownAllergenIds } from '../lib/kioskAllergens';
 // v5.11.108: the one allergen chip row every surface shows (kiosk, online, QR, till).
 import AllergenChips, { KIOSK_ALLERGEN_PALETTE } from '../components/AllergenChips.js';
+import DietaryChips, { KIOSK_DIET_PALETTE } from '../components/DietaryChips.js';
 import {
   kioskOptionGroupPlan, kioskSheetGroupIds, kioskSheetInstructionIds, kioskSheetGroups,
   kioskPruneSelections, kioskPruneNestedSelections,
@@ -781,6 +782,8 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
           </div>
         )}
 
+        {/* v5.11.110: dietary tags as words; the picked size's own tags win over the item's. */}
+        <DietaryChips item={pickedVariantOpt ? (allItems || []).find(i => i && i.id === pickedVariantOpt.id) || null : null} fallback={item} size="detail" palette={KIOSK_DIET_PALETTE} fontSize="clamp(15px, 1.8vw, 19px)" translate={t} style={{ marginBottom: 'clamp(20px, 2.6vw, 28px)' }} />
         {/* v5.11.108: the allergens as the shared chip row (the item, its size and the picked
             options), then the stock recipe's may contain and check lines. */}
         {(shownIds.length > 0 || mayContainLine || facts?.needsCheck) && (
