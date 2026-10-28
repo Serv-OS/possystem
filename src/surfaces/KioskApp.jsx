@@ -34,6 +34,10 @@ import { resolveActiveMenu } from '../lib/menus/resolveActiveMenu';
 import { resolveItemPrice, variantFromPrice, refusesNoPriceLine } from '../lib/menuPricing';
 import { depleteForSaleServer } from '../lib/stock/deplete';
 import KioskProductModal from './KioskProductModal';
+// v5.11.108: the one allergen chip row every surface shows (kiosk, online, QR, till).
+import AllergenChips, { KIOSK_ALLERGEN_PALETTE } from '../components/AllergenChips.js';
+// v5.11.108: the device keyboard never covers a box the customer types in (lib/kioskKeyboard.js).
+import { kioskRevealOnFocus } from '../lib/kioskKeyboard.js';
 import KioskCategoryTile from './kiosk/KioskCategoryTile';
 // v5.11.93 (multi site stock Drop 2): the stock facts (allergens the recipe at this site adds, kcal)
 // laid over the products, and the venue's Show calories setting (Ops locations.pos_settings).
@@ -2704,6 +2708,9 @@ function MenuItemCard({ item, price, fromPrice = null, brandColor, allergenFilte
           }}>{shownItemDescription(item)}</div>
         )}
 
+        {/* v5.11.108: the item's allergens, the shared chip row (wraps, never cut off). */}
+        <AllergenChips ids={item.allergens} size="card" active={allergenFilter} palette={KIOSK_ALLERGEN_PALETTE} fontSize="clamp(11px, 1.3vw, 14px)" translate={t} />
+
         {/* Add button — visual affordance; same as card-tap */}
         <button
           onClick={(e) => { e.stopPropagation(); onSelect(); }}
@@ -3181,7 +3188,7 @@ function ScreenTip({ brandColor, subtotal, tipPresets, tip, onSetTip, onContinue
             <div style={{ fontSize: 11, color: 'var(--kFgMuted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>Custom tip (£)</div>
             <div style={{ position: 'relative' }}>
               <span style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', fontSize: 22, color: 'var(--kFgFaint)', fontFamily: 'ui-monospace, monospace' }}>£</span>
-              <input type="number" step="0.01" min="0" value={customStr} onChange={e => setCustomFromInput(e.target.value)}
+              <input type="number" step="0.01" min="0" value={customStr} onChange={e => setCustomFromInput(e.target.value)} onFocus={kioskRevealOnFocus}
                 placeholder="0.00" autoFocus
                 style={{ width: '100%', padding: '14px 14px 14px 36px', background: 'var(--kSurface2)', border: '1px solid var(--kBorder1)', borderRadius: 10, color: 'var(--kFg)', fontSize: 22, fontFamily: 'ui-monospace, monospace', fontWeight: 700, outline: 'none' }} />
             </div>
@@ -3475,6 +3482,7 @@ function ScreenGiftPromo({ brandColor, total, promoBasket = 0, promoLines = null
                   type="text"
                   value={manualGCCode}
                   onChange={e => setManualGCCode(e.target.value.toUpperCase())}
+                  onFocus={kioskRevealOnFocus}
                   placeholder={giftCardPayment ? 'e.g. WELCOME10' : 'e.g. ABCD-1234-EFGH'}
                   style={{
                     flex: 1, padding: '12px 14px', borderRadius: 10, fontSize: 16, fontWeight: 600,
@@ -4425,6 +4433,7 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
               <input
                 value={phone}
                 onChange={e => setPhone(e.target.value.replace(/[^0-9 +]/g, ''))}
+                onFocus={kioskRevealOnFocus}
                 placeholder={t('details.mobile.placeholder')}
                 type="tel" inputMode="tel" autoFocus
                 style={{
@@ -4460,6 +4469,7 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
             <input
               value={otpCode}
               onChange={e => setOtpCode(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
+              onFocus={kioskRevealOnFocus}
               placeholder="000000"
               type="tel" inputMode="numeric" autoFocus
               maxLength={6}
@@ -4819,6 +4829,7 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
           <input
             value={name}
             onChange={e => setName(e.target.value)}
+            onFocus={kioskRevealOnFocus}
             placeholder={t('details.name.placeholder')}
             style={detailsInputStyle()}
           />
@@ -4843,6 +4854,7 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
             <input
               value={phone}
               onChange={e => setPhone(e.target.value.replace(/[^0-9 +]/g, ''))}
+              onFocus={kioskRevealOnFocus}
               placeholder={t('details.mobile.placeholder')}
               type="tel" inputMode="tel"
               style={{
@@ -4885,6 +4897,7 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
           <input
             value={email}
             onChange={e => setEmail(e.target.value)}
+            onFocus={kioskRevealOnFocus}
             placeholder={t('details.email.placeholder')}
             type="email"
             inputMode="email"

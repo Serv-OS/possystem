@@ -26,6 +26,8 @@ import { resolveItemPrice, repriceCartLines, refusesNoPriceLine } from '../../li
 // the kiosk's allergen marking (lib/kioskAllergens.js) and the venue's menu translations (lib/menuText.js).
 import { channelVisible, storefrontMenuId, categoriesOnMenu, storefrontPriceType } from '../../lib/channelMenu';
 import { itemAllergenIds, unsafeAllergenIds } from '../../lib/kioskAllergens';
+// v5.11.108: the one allergen chip row every surface shows (kiosk, online, QR, till).
+import AllergenChips, { allergenPaletteFromTheme } from '../../components/AllergenChips.js';
 import { useMenuText, itemName as tItemName, itemDescription as tItemDescription, categoryLabel as tCategoryLabel } from '../../lib/menuText';
 import { loadMenuTranslationRows, customerMenuLang, applyMenuLang, languageLabel } from '../../lib/menuTextLoad';
 import { readAllRows } from '../../lib/venueMenuRead';
@@ -1891,7 +1893,9 @@ function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick, variantInfo, is
   const isVariantParent = !!variantInfo?.kids?.length;
   // Variant parents have base price 0; show "from £X" using cheapest child.
   const displayPrice = isVariantParent ? (variantInfo.fromPrice || 0) : ownPrice;
-  const allergens = item.allergens || [];
+  // v5.11.108: the allergen FIELD as the shared chip row (never words typed in the description),
+  // plus any avoided allergen only a size carries, so a marked card always says why.
+  const chipIds = [...itemAllergenIds(item), ...(marked ? unsafe : [])];
   const diet = dietaryBadges(item); // GF/V/VG/DF chips — [] for untagged items (no visual change)
   return (
     <button onClick={is86 ? undefined : onPick} disabled={is86}
@@ -1950,11 +1954,10 @@ function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick, variantInfo, is
             {tItemDescription(item)}
           </div>
         )}
-        {marked && (
-          <div style={{ fontSize: 11, fontWeight: 800, color: '#b91c1c', textTransform: 'capitalize' }}>
-            ⚠ Contains {unsafe.join(', ')}
-          </div>
-        )}
+        {/* v5.11.108: every allergen, wrapping, never cut off; the ones the guest asked to avoid
+            stand out (the kiosk's rule, marked never hidden). */}
+        <AllergenChips ids={chipIds} size="card" active={marked ? unsafe : null}
+          palette={allergenPaletteFromTheme(theme)} style={{ marginTop: 4 }}/>
         <div style={{ flex: 1 }}/>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
           <div style={{ fontSize: 14, fontWeight: 800 }}>
@@ -1978,14 +1981,6 @@ function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick, variantInfo, is
               fontSize: 10, fontWeight: 800, letterSpacing: '0.04em',
             }}>{d}</span>
           ))}
-          {allergens.length > 0 && (
-            <span title={`Contains: ${allergens.join(', ')}`} style={{
-              padding: '2px 8px', borderRadius: 99,
-              background: '#fde6e6', color: '#991b1b',
-              fontSize: 10, fontWeight: 700, letterSpacing: '0.02em',
-              textTransform: 'capitalize',
-            }}>⚠ {allergens.length === 1 ? allergens[0] : `${allergens.length} allergens`}</span>
-          )}
         </div>
       </div>
     </button>

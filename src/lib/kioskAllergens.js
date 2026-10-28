@@ -78,6 +78,58 @@ export function allergenIdsOfLists(lists) {
 }
 
 /**
+ * v5.11.108: the kiosk item sheet's picked options, as their allergen ids (options and nested
+ * picks, the size group left out), resolved the way the kiosk modal resolves them. Moved here
+ * from KioskItemSheet word for word so both kiosk designs read the same list.
+ *   resolveOpt(opt) -> { allergens }: the option's own list, else its sub item's
+ */
+export function kioskPickedOptionIds({ groups, selections, nestedSelections, subGroupsCache, resolveOpt } = {}) {
+  const lists = [];
+  const resolve = typeof resolveOpt === 'function' ? resolveOpt : (o) => ({ allergens: o?.allergens });
+  for (const g of (Array.isArray(groups) ? groups : [])) {
+    if (!g || g.__isVariantGroup) continue;
+    const picked = selections?.[g.id] || [];
+    const seen = {};
+    for (const optId of picked) {
+      const opt = (g.options || []).find(o => o.id === optId);
+      if (!opt) continue;
+      lists.push(resolve(opt).allergens);
+      const occ = seen[optId] || 0;
+      seen[optId] = occ + 1;
+      const sub = opt.subGroupId ? subGroupsCache?.[opt.subGroupId] : null;
+      if (!sub) continue;
+      const subSel = nestedSelections?.[g.id + ':' + optId + ':' + occ]?.[sub.id] || [];
+      for (const subId of subSel) {
+        const subOpt = (sub.options || []).find(o => o.id === subId);
+        if (subOpt) lists.push(resolve(subOpt).allergens);
+      }
+    }
+  }
+  return allergenIdsOfLists(lists);
+}
+
+/**
+ * v5.11.108: one picked option's allergens: its own list when it has one, else the menu item it
+ * is linked to or named after (the kiosk's resolveOpt rule). A list of values, not yet normalised.
+ */
+export function optionAllergenList(opt, linked = null) {
+  if (Array.isArray(opt?.allergens) && opt.allergens.length > 0) return opt.allergens;
+  return Array.isArray(linked?.allergens) ? linked.allergens : [];
+}
+
+/**
+ * v5.11.108: what a guest is shown for an item as it is being built, on every channel: the
+ * item, its picked size and every picked option (oat milk, a nut topping), as one list of ids
+ * without repeats, in the sheet's order. optionLists: allergen value lists (optionAllergenList)
+ * or ids (kioskPickedOptionIds), one per pick.
+ */
+export function shownAllergenIds({ item = null, size = null, optionLists = [] } = {}) {
+  const lists = [item?.allergens, size?.allergens];
+  for (const l of (Array.isArray(optionLists) ? optionLists : [])) lists.push(l);
+  return allergenIdsOfLists(lists);
+}
+
+/**
  * What the item sheet warns about: the avoided allergens in the item, its size (the picked
  * size, or every size before one is picked) and the picked options.
  *   { item, pickedSize, sizes, optionIds, filter } -> ids in the sheet's order
