@@ -635,12 +635,25 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
 // reports the money. Volume bands and device allowances are advisory: the
 // server sends a recommended plan and a devices-over flag, shown quietly under
 // each row, never enforced.
-const gbp = (pounds) => new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'GBP' }).format(Number(pounds) || 0);
+// 27 Oct 2026: one catalog per currency (GBP, USD). The server names each
+// venue's currency and sends catalogs[currency]; every price on this row is
+// shown in that currency (fmt below), never a hard coded pound sign.
+// planPrice: a whole plan price for the dropdown ("Starter £99", "Full $399").
+const planPrice = (n, cur) => {
+  const code = String(cur || 'GBP').toUpperCase();
+  try {
+    return new Intl.NumberFormat(code === 'GBP' ? 'en-GB' : 'en-US', { style: 'currency', currency: code, maximumFractionDigits: 0 }).format(Number(n) || 0);
+  } catch { return `${Number(n) || 0} ${code}`; }
+};
 
 // SaasPlansPanel (one list of every venue) was replaced on 10 Sep 2026 by
 // VenuePlanPanel inside each expanded venue (Plan), below AdyenBlock.
 
 function SaasVenueRow({ venue, catalog, deviceNote, onSaved, onError }) {
+  const cur = String(catalog?.currency || venue.currency || 'GBP').toUpperCase();
+  // HubRise is a UK delivery integration: a catalog with no HubRise price (USD)
+  // does not offer it, and the server refuses hubrise true for that venue.
+  const hubriseOffered = catalog?.hubrise_monthly != null;
   // A stored plan outside the catalog (legacy or hand-set) is kept as-is, not
   // silently coerced to Free: the row would be born dirty and one Save click
   // would rewrite the venue's fee with no warning. Saving requires picking a
@@ -667,8 +680,9 @@ function SaasVenueRow({ venue, catalog, deviceNote, onSaved, onError }) {
   const planDef = catalog?.plans?.[plan];
   const extraNum = extra === '' ? 0 : Math.max(0, Math.round(Number(extra) || 0));
   // Live preview from the SERVER catalog, the same sum the edge fn writes.
-  const total = (planDef?.monthly ?? 0) + extraNum * (catalog?.extra_device_monthly ?? 0) + (hubrise ? (catalog?.hubrise_monthly ?? 0) : 0);
-  const dirty = plan !== venue.plan || extraNum !== (venue.extra_devices ?? 0) || hubrise !== !!venue.hubrise;
+  const hubOn = hubriseOffered && hubrise;
+  const total = (planDef?.monthly ?? 0) + extraNum * (catalog?.extra_device_monthly ?? 0) + (hubOn ? (catalog?.hubrise_monthly ?? 0) : 0);
+  const dirty = plan !== venue.plan || extraNum !== (venue.extra_devices ?? 0) || hubOn !== !!venue.hubrise;
   const planSelectable = plan in (catalog?.plans ?? {});
 
   const allowance = (planDef?.devices ?? 0) + extraNum;
@@ -679,7 +693,7 @@ function SaasVenueRow({ venue, catalog, deviceNote, onSaved, onError }) {
   const save = async () => {
     setState('saving'); setErrMsg(null);
     try {
-      await callPaymentsAdmin('saas_pricing', { set: true, location_id: venue.location_id, plan, extra_devices: extraNum, hubrise });
+      await callPaymentsAdmin('saas_pricing', { set: true, location_id: venue.location_id, plan, extra_devices: extraNum, hubrise: hubOn });
       setState('saved');
       setTimeout(() => setState(s => (s === 'saved' ? 'idle' : s)), 2500);
       onSaved?.();
@@ -700,8 +714,8 @@ function SaasVenueRow({ venue, catalog, deviceNote, onSaved, onError }) {
           <label style={S.label}>Plan</label>
           <select value={plan} onChange={e => setPlan(e.target.value)} style={{ ...S.input, width: 170 }}>
             {!planKnown && <option value={venue.plan}>{venue.plan} (not in catalog)</option>}
-            {Object.entries(catalog?.plans ?? {}).map(([key, p]) => (
-              <option key={key} value={key}>{p.monthly > 0 ? `${p.label} ${p.monthly} GBP` : p.label}</option>
+            {Object.entries(catalog?.plans ?? {}).filter(([key, p]) => !p.legacy || key === venue.plan).map(([key, p]) => (
+              <option key={key} value={key}>{p.monthly > 0 ? `${p.label} ${planPrice(p.monthly, cur)}` : p.label}</option>
             ))}
           </select>
           {!planSelectable && (
@@ -714,19 +728,24 @@ function SaasVenueRow({ venue, catalog, deviceNote, onSaved, onError }) {
           <label style={S.label}>Additional devices</label>
           <input type="number" step="1" min="0" max="500" value={extra}
             onChange={e => setExtra(e.target.value)} style={{ ...S.input, ...S.inputMono, width: 110 }} />
-          <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 3 }}>{catalog?.extra_device_monthly ?? 39} GBP each</div>
+          <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 3 }}>
+            {planPrice(catalog?.extra_device_monthly ?? 39, cur)} each
+            {catalog?.extra_device_price_to_confirm && <span style={{ color: 'var(--orn, #e8a020)', fontWeight: 700 }}> (price to confirm)</span>}
+          </div>
         </div>
-        <div>
-          <label style={S.label}>HubRise add-on</label>
-          <label style={{ display: 'flex', gap: 7, alignItems: 'center', fontSize: 13, color: 'var(--t1)', cursor: 'pointer', padding: '8px 0' }}>
-            <input type="checkbox" checked={hubrise} onChange={e => setHubrise(e.target.checked)} />
-            HubRise
-          </label>
-          <div style={{ fontSize: 10.5, color: 'var(--t4)' }}>{catalog?.hubrise_monthly ?? 45} GBP per month</div>
-        </div>
+        {hubriseOffered && (
+          <div>
+            <label style={S.label}>HubRise add-on</label>
+            <label style={{ display: 'flex', gap: 7, alignItems: 'center', fontSize: 13, color: 'var(--t1)', cursor: 'pointer', padding: '8px 0' }}>
+              <input type="checkbox" checked={hubrise} onChange={e => setHubrise(e.target.checked)} />
+              HubRise
+            </label>
+            <div style={{ fontSize: 10.5, color: 'var(--t4)' }}>{planPrice(catalog.hubrise_monthly, cur)} per month</div>
+          </div>
+        )}
         <div style={{ minWidth: 110 }}>
           <label style={S.label}>Monthly total</label>
-          <div style={{ fontSize: 17, fontWeight: 800, color: 'var(--acc)', padding: '6px 0' }}>{gbp(planSelectable ? total : (venue.monthly_fee ?? 0))}</div>
+          <div style={{ fontSize: 17, fontWeight: 800, color: 'var(--acc)', padding: '6px 0' }}>{fmt(planSelectable ? total : (venue.monthly_fee ?? 0), cur)}</div>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', paddingBottom: 4 }}>
           <button onClick={save} disabled={state === 'saving' || !dirty || !planSelectable} style={{ ...S.btn, ...(dirty && planSelectable ? S.btnPrim : S.btnGhost) }}>
@@ -742,7 +761,7 @@ function SaasVenueRow({ venue, catalog, deviceNote, onSaved, onError }) {
         <span title={deviceNote || undefined}>
           {devCount} paired device{devCount === 1 ? '' : 's'}{typeSummary ? ` (${typeSummary})` : ''} · plan covers {allowance}
         </span>
-        <span>Card volume this month: {gbp((venue.volume_minor ?? 0) / 100)}</span>
+        <span>Card volume this month: {fmt((venue.volume_minor ?? 0) / 100, cur)}</span>
         {venue.recommended_plan && (
           <span style={{ padding: '2px 8px', borderRadius: 99, background: 'var(--orn-d, rgba(230,160,60,.12))', color: 'var(--orn, #e8a020)', border: '1px solid var(--orn-b, var(--bdr2))', fontWeight: 700 }}>
             Volume suggests {catalog?.plans?.[venue.recommended_plan]?.label ?? venue.recommended_plan}
@@ -753,7 +772,7 @@ function SaasVenueRow({ venue, catalog, deviceNote, onSaved, onError }) {
             {venue.devices_over.count} devices paired, plan covers {venue.devices_over.allowance}
           </span>
         )}
-        {venue.hubrise_detected === true && !hubrise && (
+        {hubriseOffered && venue.hubrise_detected === true && !hubrise && (
           <span title="A live HubRise connection exists for this venue but the add-on is not ticked.">HubRise connection detected</span>
         )}
       </div>
@@ -1240,7 +1259,7 @@ function VenuePlanPanel({ location, onError }) {
       )}
       {data && !data.error && data.typed !== false && !venue && <div style={QUIET}>This venue has no plan row yet.</div>}
       {data && !data.error && data.typed !== false && venue && (
-        <SaasVenueRow venue={venue} catalog={data.catalog} deviceNote={data.device_count_note} onSaved={() => setRev((n) => n + 1)} onError={onError} />
+        <SaasVenueRow venue={venue} catalog={data.catalogs?.[venue.currency] ?? data.catalog} deviceNote={data.device_count_note} onSaved={() => setRev((n) => n + 1)} onError={onError} />
       )}
     </div>
   );
