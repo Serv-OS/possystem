@@ -7,14 +7,49 @@
 
 export const CHANGELOG = [
   {
-    v: '5.11.104',
-    date: '27 Oct 2026',
+    v: '5.11.105',
+    date: '28 Oct 2026',
     items: [
       "Workforce, security: who a staff record IS can no longer be changed by a manager. A staff record carries two links: the staff app login behind it and the till user behind it (the Manager app PIN, clock punches, sales, and team chat). Until now any Back Office login of the company could point a colleague's record at their own till user and act as that colleague. The database now refuses every direct write of those links from Back Office (the columns are closed to the app, and a guard checks every change).",
       "Set up on the POS (Workforce, a person's record) now goes through one server door, for an owner of the company or the super admin only, past the second sign in step. It checks the till user belongs to this company and is not already somebody else's record. A manager who tries is told: Only an owner of this company can link a till user to a staff record.",
       "Every change of either link, by anyone (an owner, the staff app invite, the clock creating a record, the SQL editor), writes a row in the Workforce audit log: who, which record, from what to what, and why. The rows cannot be edited.",
       "Staff invites, offboarding, bank details, rates, sections and every other Workforce edit work exactly as before.",
       "Needs the database update 20261104a (Peter runs it after UK close). Until it has run, Set up on the POS writes as before.",
+    ],
+  },
+  {
+    v: '5.11.103',
+    date: '27 Oct 2026',
+    items: [
+      "Admin, plans: Starter at 99 GBP a month replaces Free for new venues. It covers the same as Free did: up to 8,000 GBP card volume a month and 2 devices. Growth (149 GBP) and Scale (299 GBP) are unchanged.",
+      "Venues already on Free stay on it at 0 GBP, shown as Free (old plan). The plan list offers it only to a venue already on it, and the volume check never tells a Free venue to move to Starter: moving each one is a choice made in Admin, Processing, Plan.",
+      "A UK venue added from now on starts on Starter at 99 GBP.",
+      "Admin, Revenue: the plan names follow the new list, and a line shows how many venues are on each plan.",
+      "Admin, plans: US venues now have their own prices in dollars. Starter is 149 USD a month, Growth 299 USD and Full 399 USD (Full is the US name for Scale). UK prices stay in pounds.",
+      "Each venue is priced in its own currency, from the currency set on the venue. The plan list, the monthly total and the card volume line in Admin, Processing, Plan show the right currency sign.",
+      "A US venue already on Free stays on it at 0 USD, shown as Free (old plan), the same as in the UK.",
+      "US extra devices show 39 USD each, marked price to confirm, until a US price is agreed.",
+      "The HubRise add-on is for UK venues only: it is hidden for a US venue, and saving it for one is refused.",
+      "A US venue added from now on starts on Starter at 149 USD.",
+      "Admin, Revenue: plan fees are shown in each venue's own currency. The SaaS total and the venues by plan line are kept apart per currency, so dollars are never added to pounds. Commission is worked out the same as before.",
+      "Needs the payments-admin function deployed. No database update.",
+    ],
+  },
+  {
+    v: '5.11.102',
+    date: '26 Oct 2026',
+    items: [
+      "ServOS Team Chat, in the staff app: a new Chat tab with an unread count. Everyone at a venue is in its venue group automatically (people who work at two venues are in both, starters join, leavers leave). Direct messages with anyone in the company, groups, photos, replies, reactions, editing for 15 minutes, deleting, @mentions, muting a chat, and Seen by on announcements. A short privacy notice shows the first time.",
+      "Groups and announcements: managers make groups (a setting can let everyone), everyone in a position, and announcement groups where only admins post. An announcement can be marked Urgent.",
+      "A word filter on every message, photo caption and group name: English and Spanish, Standard by default (Strict and Custom too), slurs always blocked, and your own block and allow lists. A blocked message is refused, the sender is told This message has a word your team does not allow, and the text stays in the box. Card numbers and UK bank details are refused too.",
+      "An automatic check (on by default) flags bullying, harassment, threats and sexual comments after a message is sent, for a manager to look at. It never blocks or hides anything by itself.",
+      "Reports to check, in Back Office (Workforce, Team chat) and the Manager app (a new Chat tab, with a manager PIN): see the message and the few around it, then hide it, keep it, mute the person for 24 hours or switch chat off for them. Managers handle their own venues, owners every venue, and nobody handles a report about themselves. Direct messages stay private: an owner can open one only with a typed reason, which is logged.",
+      "Back Office, Workforce, Team chat: groups and members (pick people by venue and position, or add everyone at a venue), Reports to check, and for owners and Admins the chat settings, word lists, the moderation log (kept 6 years), export everything one person wrote, and open a direct message with a reason.",
+      "Settings: who makes groups, direct messages (anyone, same venue only, or off), the filter level, the automatic check, how long messages are kept (1, 2 or 3 years, 2 by default), a text message backup for urgent announcements, and quiet when off shift.",
+      "Push notifications, with no Firebase: the iPhone staff app (ServOS Staff build 5) through Apple directly, Android and the home screen app through the browser's own push service. Turn on notifications in the Chat tab. Quiet when off shift: only urgent announcements and a manager's @mention come through. Mutes are kept except for @mentions. An urgent announcement is texted to anyone the app could not reach.",
+      "Rota, swap and open shift texts now also arrive as a push on phones with the staff app. The text still goes as before.",
+      "Every chat change is checked by the server: the same company, a member of the chat, not muted, who may post, who may make groups. Nobody can read a chat they are not in, and two companies can never see each other.",
+      "Needs the database update 20261103a (Peter runs it after UK close), the push keys, and the team-chat, staff-portal and manager-approve functions deployed.",
     ],
   },
   {

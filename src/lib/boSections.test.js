@@ -66,7 +66,7 @@ test('15 sections, the decided keys, in sidebar order', () => {
 });
 
 test('the route map is built from the sidebar: every route in exactly one section', () => {
-  assert.equal(allRoutes.length, 100);   // 16 Oct 2026: stock-areas and stock-transfers under Inventory; 17 Oct: multi-site-menu under Menu; v5.11.96: the 6 Drop 3 stock routes; v5.11.92 (Drop 4a): stock-gp under Reports
+  assert.equal(allRoutes.length, 101);   // 5.11.102: wf-chat (Team chat) under Workforce; 16 Oct 2026: stock-areas and stock-transfers under Inventory; 17 Oct: multi-site-menu under Menu; v5.11.96: the 6 Drop 3 stock routes; v5.11.92 (Drop 4a): stock-gp under Reports
   assert.equal(new Set(allRoutes).size, allRoutes.length, 'no route listed twice');
   const map = buildRouteSections(NAV_IA);
   assert.equal(map.size, allRoutes.length);
@@ -143,13 +143,13 @@ test('Mo: exactly Team, Workforce, Customers and Reports, every screen in them, 
   const rows = filterNav(NAV_IA, MO);
   assert.deepEqual(rows.map((r) => r.label), ['Team', 'Workforce', 'Customers', 'Reports']);
   const mine = rows.flatMap(routesOfRow);
-  assert.equal(mine.length, 1 + 13 + 13 + 5);
+  assert.equal(mine.length, 1 + 14 + 13 + 5);   // 5.11.102: Workforce has Team chat
   for (const id of mine) assert.equal(canOpenRoute(id, MO), true, `Mo opens ${id}`);
   // v5.11.92: Reports only, even in a multi site company, never shows Stock and GP (it needs
   // Inventory, Produce or Purchasing), and the count above stays.
   const moMulti = { ...MO, stock: MULTI_STOCK };
   assert.equal(canOpenRoute(STOCK_GP_ROUTE, moMulti), false);
-  assert.equal(filterNav(NAV_IA, moMulti).flatMap(routesOfRow).length, 1 + 13 + 13 + 5);
+  assert.equal(filterNav(NAV_IA, moMulti).flatMap(routesOfRow).length, 1 + 14 + 13 + 5);
   assert.equal(STOCK_REPORTS_ALIAS(STOCK_REPORTS_ROUTE, moMulti), STOCK_GP_ROUTE, 'the alias is just a name; canOpenRoute refuses it next');
   assert.equal(canOpenRoute(STOCK_GP_ROUTE, { role: 'manager', sections: ['inventory'], stock: MULTI_STOCK }), false, 'Inventory alone: no Reports section');
   assert.equal(canOpenRoute(STOCK_GP_ROUTE, { role: 'manager', sections: ['inventory', 'reports'], stock: MULTI_STOCK }), true);

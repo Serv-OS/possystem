@@ -23,8 +23,9 @@
 //                        card_present fallback (see handler comment)
 //   saas_pricing         get/set each venue's SaaS plan (v5.7.4): plan +
 //                        extra devices + HubRise add-on on OPS subscriptions,
-//                        priced from the SAAS_CATALOG const below (the single
-//                        source of truth), with paired-device counts, month
+//                        priced from the SAAS_CATALOGS const below (the single
+//                        source of truth, one catalog per currency, picked by
+//                        the venue's currency), with paired-device counts, month
 //                        card volume and advisory plan recommendations
 //   revenue              { month } → per-location platform revenue for the admin
 //                        Revenue section: processed volume + count by pricing
@@ -66,37 +67,103 @@ const platformAdmin = createClient(
 );
 
 // ── SaaS plan catalog (v5.7.4) — the single source of truth for plan pricing.
+//    27 Oct 2026: ONE CATALOG PER CURRENCY (GBP and USD), picked by the venue's
+//    Ops locations.currency (saasCatalogFor). A venue is priced, saved, itemized
+//    and shown in its own currency; nothing here ever adds dollars to pounds.
 //    UNITS, kept deliberately explicit because they differ:
-//      · monthly / extra_device_monthly / hubrise_monthly are POUNDS
-//        (ops subscriptions.monthly_fee is numeric pounds, e.g. '149.00')
-//      · volume_min / volume_max are MINOR UNITS (pence), because card volume
-//        is summed from platform adyen_payments.amount_minor
-//    Bands: Free covers up to £8,000 monthly card volume, Growth £8,000.01 to
-//    £15,000, Scale above £15,000. The bands are ADVISORY — the operator picks
-//    the plan manually and the system only recommends when they disagree.
-const SAAS_CATALOG = {
-  plans: {
-    free:   { label: 'Free',   monthly: 0,   devices: 2,  volume_min: 0,       volume_max: 800000 },
-    growth: { label: 'Growth', monthly: 149, devices: 5,  volume_min: 800001,  volume_max: 1500000 },
-    scale:  { label: 'Scale',  monthly: 299, devices: 10, volume_min: 1500001, volume_max: null },
-  } as Record<string, { label: string; monthly: number; devices: number; volume_min: number; volume_max: number | null }>,
-  extra_device_monthly: 39, // pounds per month, per device beyond the plan allowance
-  hubrise_monthly: 45,      // pounds per month, per-venue add-on flag
+//      · monthly / extra_device_monthly / hubrise_monthly are MAJOR UNITS of the
+//        catalog's own currency (pounds for GBP, dollars for USD); ops
+//        subscriptions.monthly_fee stores that number for the venue, e.g. '149.00'
+//      · volume_min / volume_max are MINOR UNITS (pence or cents), because card
+//        volume is summed from platform adyen_payments.amount_minor. USD keeps
+//        the same numbers as GBP for now (advisory only, never enforced).
+//    Bands: Starter covers up to 8,000 monthly card volume, Growth 8,000.01 to
+//    15,000, Scale (Full in USD) above 15,000. The bands are ADVISORY: the
+//    operator picks the plan manually and the system only recommends when they
+//    disagree.
+//    27 Oct 2026: Starter £99 replaced Free for new venues. Free stays as an OLD
+//    plan (legacy: true) in both currencies so the venues already on it keep 0
+//    until Peter moves each one; it is never recommended and only offered to a
+//    venue already on it.
+//    US plans (Peter, 27 Oct 2026): Starter $149, Growth $299, Full $399. Same
+//    plan KEYS as the UK (starter / growth / scale) so ranks and stored rows
+//    still work; only the label of scale differs ("Full").
+//    US extras: no US prices yet. Extra devices keep the number 39 and are
+//    marked extra_device_price_to_confirm; HubRise is a UK delivery integration,
+//    so hubrise_monthly is null for USD and saving hubrise true is refused.
+// MARKER 5.11.103 payments-admin Starter plan
+// MARKER 5.11.103 payments-admin US plan prices
+type SaasCurrency = 'GBP' | 'USD';
+type SaasPlanDef = { label: string; monthly: number; devices: number; volume_min: number; volume_max: number | null; legacy?: boolean };
+type SaasCatalog = {
+  currency: SaasCurrency;
+  plans: Record<string, SaasPlanDef>;
+  extra_device_monthly: number;          // major units per month, per device beyond the plan allowance
+  extra_device_price_to_confirm: boolean; // true = a placeholder number, not an agreed price yet
+  hubrise_monthly: number | null;        // major units per month; null = add-on not offered in this currency
+};
+const SAAS_CATALOGS: Record<SaasCurrency, SaasCatalog> = {
+  GBP: {
+    currency: 'GBP',
+    plans: {
+      starter: { label: 'Starter',         monthly: 99,  devices: 2,  volume_min: 0,       volume_max: 800000 },
+      growth:  { label: 'Growth',          monthly: 149, devices: 5,  volume_min: 800001,  volume_max: 1500000 },
+      scale:   { label: 'Scale',           monthly: 299, devices: 10, volume_min: 1500001, volume_max: null },
+      free:    { label: 'Free (old plan)', monthly: 0,   devices: 2,  volume_min: 0,       volume_max: 800000, legacy: true },
+    },
+    extra_device_monthly: 39, // pounds
+    extra_device_price_to_confirm: false,
+    hubrise_monthly: 45,      // pounds
+  },
+  USD: {
+    currency: 'USD',
+    plans: {
+      starter: { label: 'Starter',         monthly: 149, devices: 2,  volume_min: 0,       volume_max: 800000 },
+      growth:  { label: 'Growth',          monthly: 299, devices: 5,  volume_min: 800001,  volume_max: 1500000 },
+      scale:   { label: 'Full',            monthly: 399, devices: 10, volume_min: 1500001, volume_max: null },
+      free:    { label: 'Free (old plan)', monthly: 0,   devices: 2,  volume_min: 0,       volume_max: 800000, legacy: true },
+    },
+    extra_device_monthly: 39, // dollars, PRICE TO CONFIRM (no US price agreed yet)
+    extra_device_price_to_confirm: true,
+    hubrise_monthly: null,    // HubRise is UK only: not offered to USD venues
+  },
 };
 
-// Which plan the volume band says a venue SHOULD be on. volumeMinor is PENCE.
-function saasPlanForVolume(volumeMinor: number): string {
-  for (const [key, p] of Object.entries(SAAS_CATALOG.plans)) {
+// The venue's SaaS currency from Ops locations.currency: USD is priced in
+// dollars, everything else (GBP, blank) in pounds.
+function saasCurrency(cur: unknown): SaasCurrency {
+  return String(cur ?? '').trim().toUpperCase() === 'USD' ? 'USD' : 'GBP';
+}
+function saasCatalogFor(cur: unknown): SaasCatalog {
+  return SAAS_CATALOGS[saasCurrency(cur)];
+}
+
+// Which plan the volume band says a venue SHOULD be on. volumeMinor is minor
+// units (pence or cents) of the venue's currency.
+function saasPlanForVolume(volumeMinor: number, cur: unknown): string {
+  for (const [key, p] of Object.entries(saasCatalogFor(cur).plans)) {
+    if (p.legacy) continue;
     if (volumeMinor >= p.volume_min && (p.volume_max === null || volumeMinor <= p.volume_max)) return key;
   }
   return 'scale';
 }
 
-// Monthly fee in POUNDS for plan + extras — the number written to
-// subscriptions.monthly_fee (2dp).
-function saasMonthlyFee(plan: string, extraDevices: number, hubrise: boolean): number {
-  const base = SAAS_CATALOG.plans[plan]?.monthly ?? 0;
-  return Math.round((base + extraDevices * SAAS_CATALOG.extra_device_monthly + (hubrise ? SAAS_CATALOG.hubrise_monthly : 0)) * 100) / 100;
+// The old Free plan sits in Starter's band: a venue still on Free is not told to
+// "move to Starter" by the band check (moving it is Peter's call, venue by venue).
+function sameBand(a: string, b: string, cur: unknown): boolean {
+  const plans = saasCatalogFor(cur).plans;
+  const pa = plans[a], pb = plans[b];
+  return !!pa && !!pb && pa.volume_min === pb.volume_min && pa.volume_max === pb.volume_max;
+}
+
+// Monthly fee in the venue's own currency's MAJOR UNITS for plan + extras: the
+// number written to subscriptions.monthly_fee (2dp). HubRise counts only where
+// the currency offers it (never for USD; the save refuses it before this).
+function saasMonthlyFee(plan: string, extraDevices: number, hubrise: boolean, cur: unknown): number {
+  const cat = saasCatalogFor(cur);
+  const base = cat.plans[plan]?.monthly ?? 0;
+  const hub = hubrise && cat.hubrise_monthly != null ? cat.hubrise_monthly : 0;
+  return Math.round((base + extraDevices * cat.extra_device_monthly + hub) * 100) / 100;
 }
 
 // Plain words on the screen (10 Sep 2026); the file name rides apart as
@@ -518,8 +585,10 @@ Deno.serve(async (req) => {
   // ── saas_pricing: get/set each venue's SaaS plan (v5.7.4) ────────────────
   //    Peter invoices SaaS manually through the CRM — the platform only STORES
   //    the plan per venue and REPORTS the money. Pricing comes from
-  //    SAAS_CATALOG above (single source of truth); the computed monthly fee is
-  //    written to ops subscriptions.monthly_fee in POUNDS.
+  //    SAAS_CATALOGS above (single source of truth), the venue's own currency's
+  //    catalog; the computed monthly fee is written to ops
+  //    subscriptions.monthly_fee in that currency's MAJOR UNITS (pounds for a
+  //    GBP venue, dollars for a USD venue).
   //      { }                                      → { catalog, venues, typed }
   //      { set:true, location_id, plan, extra_devices, hubrise } → update/insert
   //    subscriptions is an OPS DB table — every read and write here uses
@@ -533,13 +602,26 @@ Deno.serve(async (req) => {
 
     if (body.set === true) {
       if (!location_id) return json({ error: 'location_id required' }, 400);
+      // The venue's currency picks its catalog (27 Oct 2026: GBP or USD), so it
+      // is read first; the same row gives org_id for a first save below.
+      const { data: opsLoc, error: locErr } = await opsAdmin.from('locations')
+        .select('id, org_id, currency').eq('id', location_id).maybeSingle();
+      if (locErr) return json({ error: `location read failed: ${locErr.message}` }, 500);
+      if (!opsLoc) return json({ error: 'location not found in the ops database' }, 404);
+      const cur = saasCurrency(opsLoc.currency);
+      const cat = SAAS_CATALOGS[cur];
       const plan = String(body.plan ?? '');
-      if (!SAAS_CATALOG.plans[plan]) return json({ error: `plan must be one of: ${Object.keys(SAAS_CATALOG.plans).join(', ')}` }, 400);
+      if (!cat.plans[plan]) return json({ error: `plan must be one of: ${Object.keys(cat.plans).join(', ')}` }, 400);
       const extra = Number(body.extra_devices);
       if (!Number.isInteger(extra) || extra < 0) return json({ error: 'extra_devices must be a whole number, zero or more' }, 400);
       if (typeof body.hubrise !== 'boolean') return json({ error: 'hubrise must be true or false' }, 400);
       const hubrise = body.hubrise as boolean;
-      const monthly_fee = saasMonthlyFee(plan, extra, hubrise).toFixed(2); // POUNDS, 2dp
+      // HubRise is a UK delivery integration: not offered in a currency whose
+      // catalog has no HubRise price (USD), so the add-on is refused there.
+      if (hubrise && cat.hubrise_monthly == null) {
+        return json({ error: `The HubRise add-on is not offered for ${cur} venues. Untick HubRise and save again.` }, 400);
+      }
+      const monthly_fee = saasMonthlyFee(plan, extra, hubrise, cur).toFixed(2); // venue currency MAJOR UNITS, 2dp
       const patch = { plan, extra_devices: extra, hubrise, monthly_fee, updated_at: new Date().toISOString() };
 
       const { data: updated, error: upErr } = await opsAdmin.from('subscriptions')
@@ -551,10 +633,7 @@ Deno.serve(async (req) => {
       if (!updated || updated.length === 0) {
         // No subscription row for this venue yet — insert one, resolving
         // org_id the way the existing rows carry it: the ops locations.org_id
-        // for the venue (verified identical on all six live rows).
-        const { data: opsLoc, error: locErr } = await opsAdmin.from('locations')
-          .select('id, org_id').eq('id', location_id).maybeSingle();
-        if (locErr || !opsLoc) return json({ error: 'location not found in the ops database' }, 404);
+        // for the venue (verified identical on all six live rows), read above.
         const { error: insErr } = await opsAdmin.from('subscriptions').insert({
           org_id: opsLoc.org_id,
           location_id,
@@ -575,7 +654,7 @@ Deno.serve(async (req) => {
           }
         }
       }
-      return json({ ok: true, success: true, plan, extra_devices: extra, hubrise, monthly_fee: Number(monthly_fee) });
+      return json({ ok: true, success: true, plan, extra_devices: extra, hubrise, monthly_fee: Number(monthly_fee), currency: cur });
     }
 
     // get — the catalog plus one entry per ops venue.
@@ -591,7 +670,7 @@ Deno.serve(async (req) => {
     const subByLoc = new Map<string, any>();
     for (const s of subs ?? []) if (s.location_id) subByLoc.set(s.location_id, s);
 
-    const { data: opsLocs, error: olErr } = await opsAdmin.from('locations').select('id, name, org_id');
+    const { data: opsLocs, error: olErr } = await opsAdmin.from('locations').select('id, name, org_id, currency');
     if (olErr) return json({ error: `locations read failed: ${olErr.message}` }, 500);
 
     // Paired device count per venue from the ops devices registry — a device
@@ -657,36 +736,40 @@ Deno.serve(async (req) => {
     const venues = (opsLocs ?? []).map((l: any) => {
       const sub = subByLoc.get(l.id) ?? null;
       const plan = String(sub?.plan ?? 'free');
-      const planDef = SAAS_CATALOG.plans[plan] ?? null;
+      const cur = saasCurrency(l.currency);
+      const planDef = SAAS_CATALOGS[cur].plans[plan] ?? null;
       const extra = typed ? Number(sub?.extra_devices) || 0 : 0;
       const hubOn = typed ? !!sub?.hubrise : false;
       const devices = devByLoc.get(l.id) ?? { count: 0, by_type: {} };
       const volume_minor = volByOps.get(l.id) ?? 0;
       const prev_volume_minor = prevVolByOps.get(l.id) ?? 0;
-      const recommended = saasPlanForVolume(Math.max(volume_minor, prev_volume_minor));
+      const recommended = saasPlanForVolume(Math.max(volume_minor, prev_volume_minor), cur);
       const allowance = planDef ? planDef.devices + extra : null;
       return {
         location_id: l.id,
         org_id: l.org_id,
         name: l.name ?? '(unnamed venue)',
         has_subscription: !!sub,
+        currency: cur, // the catalog this venue is priced from (catalogs[currency])
         plan,
-        monthly_fee: Number(sub?.monthly_fee) || 0, // POUNDS as stored
+        monthly_fee: Number(sub?.monthly_fee) || 0, // venue currency MAJOR UNITS as stored
         extra_devices: extra,
         hubrise: hubOn,
         devices,
         plan_device_allowance: planDef?.devices ?? null,
-        volume_minor, // PENCE, current calendar month to date
-        prev_volume_minor, // PENCE, previous complete month
+        volume_minor, // minor units, current calendar month to date
+        prev_volume_minor, // minor units, previous complete month
         hubrise_detected: hubConnected.has(String(l.id)),
         // Advisory only. Free at low volume is a correct, configured state.
-        recommended_plan: recommended !== plan ? recommended : null,
+        recommended_plan: recommended !== plan && !sameBand(recommended, plan, cur) ? recommended : null,
         devices_over: allowance != null && devices.count > allowance ? { count: devices.count, allowance } : null,
       };
     });
     venues.sort((a, b) => String(a.name).localeCompare(String(b.name)));
 
-    return json({ ok: true, typed, catalog: SAAS_CATALOG, device_count_note: DEVICE_COUNT_NOTE, migration_note: typed ? null : SAAS_MIGRATION_NOTE, migration_file: typed ? null : SAAS_MIGRATION_FILE, volume_capped: volumeCapped, venues });
+    // catalogs: one per currency, each venue names its own (venue.currency).
+    // catalog stays the GBP one for a screen built before 27 Oct 2026.
+    return json({ ok: true, typed, catalog: SAAS_CATALOGS.GBP, catalogs: SAAS_CATALOGS, device_count_note: DEVICE_COUNT_NOTE, migration_note: typed ? null : SAAS_MIGRATION_NOTE, migration_file: typed ? null : SAAS_MIGRATION_FILE, volume_capped: volumeCapped, venues });
   }
 
   // ── revenue: the internal platform-revenue report (admin Revenue section) ──
@@ -694,7 +777,8 @@ Deno.serve(async (req) => {
   //    tier (adyen_payments.rate_category), commission earned
   //    (sum commission_minor), Adyen fees where settlement reports have filled
   //    fee_minor, and the SaaS fee from the ops subscriptions table, itemized
-  //    per venue (plan fee + extra devices + HubRise from SAAS_CATALOG) with
+  //    per venue (plan fee + extra devices + HubRise from the venue's own
+  //    currency's catalog in SAAS_CATALOGS) with
   //    advisory flags where volume or device count disagrees with the chosen
   //    plan. A venue on Free at £0 is a legitimately configured state.
   //    Honest about costs: what Adyen charges US arrives
@@ -752,8 +836,8 @@ Deno.serve(async (req) => {
     for (const l of locs ?? []) { locById.set(l.id, l); if (l.ops_location_id) locByOps.set(l.ops_location_id, l); }
 
     // SaaS (v5.7.4): ops subscriptions stores plan + extra_devices + hubrise +
-    // the computed monthly_fee (POUNDS). Itemized per venue below from
-    // SAAS_CATALOG. Reads retry without the two 20260822 columns and report
+    // the computed monthly_fee (MAJOR UNITS of the venue's currency). Itemized
+    // per venue below from that currency's catalog. Reads retry without the two 20260822 columns and report
     // saas_typed:false until the migration is applied.
     let saasTyped = true;
     let { data: subs, error: subErr } = await opsAdmin.from('subscriptions')
@@ -764,9 +848,10 @@ Deno.serve(async (req) => {
         .select('location_id, org_id, plan, monthly_fee'));
     }
     if (subErr) return json({ error: `subscriptions read failed: ${subErr.message}` }, 500);
-    const { data: opsLocs } = await opsAdmin.from('locations').select('id, name');
+    const { data: opsLocs } = await opsAdmin.from('locations').select('id, name, currency');
     const opsNameById = new Map<string, string>();
-    for (const l of opsLocs ?? []) opsNameById.set(l.id, l.name);
+    const opsCurById = new Map<string, SaasCurrency>();
+    for (const l of opsLocs ?? []) { opsNameById.set(l.id, l.name); opsCurById.set(l.id, saasCurrency(l.currency)); }
 
     // Paired device count per ops venue (devices registry rows not marked
     // unpaired — POS, kiosk, KDS, handheld) for the devices-over advisory.
@@ -810,43 +895,56 @@ Deno.serve(async (req) => {
     }
 
     // SaaS per ops location → merged onto the platform row where the mapping
-    // exists, listed standalone where it does not. Itemization from
-    // SAAS_CATALOG (all POUNDS): plan fee + extra devices at 39 + HubRise at
-    // 45; saas_total is the STORED monthly_fee — the number actually invoiced.
+    // exists, listed standalone where it does not. Itemization from the
+    // venue's own currency's catalog (MAJOR UNITS of that currency): plan fee +
+    // extra devices + HubRise (GBP only); saas_total is the STORED monthly_fee,
+    // the number actually invoiced. 27 Oct 2026: every item carries its
+    // currency, and every SaaS sum below is kept per currency.
     const itemizeSaas = (sub: any) => {
       const plan = String(sub.plan ?? 'free');
-      const planDef = SAAS_CATALOG.plans[plan] ?? null;
+      const currency = opsCurById.get(sub.location_id) ?? 'GBP';
+      const cat = SAAS_CATALOGS[currency];
+      const planDef = cat.plans[plan] ?? null;
       const extra = saasTyped ? Number(sub.extra_devices) || 0 : 0;
       const hubrise = saasTyped ? !!sub.hubrise : false;
+      const hubFee = hubrise && cat.hubrise_monthly != null ? cat.hubrise_monthly : 0;
       return {
         plan,
+        plan_label: planDef?.label ?? plan,
+        currency,
         plan_fee: planDef ? planDef.monthly : null,
         extra_devices: extra,
-        device_fee: extra * SAAS_CATALOG.extra_device_monthly,
+        device_fee: extra * cat.extra_device_monthly,
+        device_price_to_confirm: cat.extra_device_price_to_confirm,
         hubrise,
-        hubrise_fee: hubrise ? SAAS_CATALOG.hubrise_monthly : 0,
+        hubrise_fee: hubFee,
         saas_total: Number(sub.monthly_fee) || 0,
         device_allowance: planDef ? planDef.devices + extra : null,
         // stale = the stored fee (what is invoiced) no longer matches the
         // catalog itemization — a pre-v5.7.4 row, or catalog prices changed.
         // Re-saving the venue in Processing refreshes it.
         stale: saasTyped && planDef
-          ? Math.abs((planDef.monthly + extra * SAAS_CATALOG.extra_device_monthly + (hubrise ? SAAS_CATALOG.hubrise_monthly : 0)) - (Number(sub.monthly_fee) || 0)) > 0.005
+          ? Math.abs((planDef.monthly + extra * cat.extra_device_monthly + hubFee) - (Number(sub.monthly_fee) || 0)) > 0.005
           : false,
       };
     };
     const saasByPlatformLoc = new Map<string, { opsId: string; item: ReturnType<typeof itemizeSaas> }>();
     const saasUnmapped: any[] = [];
     const planCounts: Record<string, number> = {};
+    // Venues by plan PER CURRENCY ({ GBP: { starter: 9 }, USD: { free: 1 } }):
+    // a $149 Starter and a £99 Starter are not the same plan line.
+    const planCountsByCur: Record<string, Record<string, number>> = {};
     for (const sub of subs ?? []) {
       const item = itemizeSaas(sub);
       planCounts[item.plan] = (planCounts[item.plan] ?? 0) + 1;
+      const pc = (planCountsByCur[item.currency] ??= {});
+      pc[item.plan] = (pc[item.plan] ?? 0) + 1;
       const platformLoc = sub.location_id ? locByOps.get(sub.location_id) : null;
       if (platformLoc) saasByPlatformLoc.set(platformLoc.id, { opsId: sub.location_id, item });
-      else saasUnmapped.push({ ops_location_id: sub.location_id, name: opsNameById.get(sub.location_id) ?? '(unknown venue)', plan: item.plan, monthly_fee: item.saas_total, saas: item });
+      else saasUnmapped.push({ ops_location_id: sub.location_id, name: opsNameById.get(sub.location_id) ?? '(unknown venue)', currency: item.currency, plan: item.plan, monthly_fee: item.saas_total, saas: item });
     }
 
-    const toPence = (pounds: number) => Math.round(pounds * 100);
+    const toPence = (major: number) => Math.round(major * 100); // major units → minor units of the same currency
     const out: any[] = [];
     const allLocIds = new Set<string>([...byLoc.keys(), ...saasByPlatformLoc.keys()]);
     for (const locId of allLocIds) {
@@ -858,6 +956,10 @@ Deno.serve(async (req) => {
       const count_total = Object.values(tiers).reduce((s, t) => s + t.count, 0);
       const fee_known = agg?.fee_known ?? 0;
       const saas_fee_minor = saas ? toPence(saas.item.saas_total) : null;
+      // A venue's card money and its plan fee are in the same currency; if they
+      // ever are not, the row's revenue leaves the plan fee out rather than add
+      // dollars to pounds (the SaaS column still shows it, in its own currency).
+      const saasCurMismatch = !!(saas && agg?.currency && String(agg.currency).toUpperCase() !== saas.item.currency);
       // Advisory flags, computed against THIS month's card volume and today's
       // paired device count. A venue on Free with volume inside the Free band
       // is a correctly configured state — recommended_plan stays null there.
@@ -867,13 +969,13 @@ Deno.serve(async (req) => {
         // must never whisper "downgrade" at a correctly configured paid venue.
         // Upgrade nudges stand (volume only grows within the month).
         const monthComplete = to.getTime() <= Date.now();
-        const rank: Record<string, number> = { free: 0, growth: 1, scale: 2 };
-        let recommended = saasPlanForVolume(volume_total);
+        const rank: Record<string, number> = { starter: 0, free: 0, growth: 1, scale: 2 };
+        let recommended = saasPlanForVolume(volume_total, saas.item.currency);
         if (!monthComplete && (rank[recommended] ?? 0) <= (rank[saas.item.plan] ?? 0)) recommended = saas.item.plan;
         const devCount = devCountByOps.get(saas.opsId) ?? 0;
         saasDetail = {
           ...saas.item,
-          recommended_plan: recommended !== saas.item.plan ? recommended : null,
+          recommended_plan: recommended !== saas.item.plan && !sameBand(recommended, saas.item.plan, saas.item.currency) ? recommended : null,
           devices_over: saas.item.device_allowance != null && devCount > saas.item.device_allowance
             ? { count: devCount, allowance: saas.item.device_allowance } : null,
           device_count: devCount,
@@ -882,7 +984,9 @@ Deno.serve(async (req) => {
       out.push({
         location_id: locId === 'unmatched' ? null : locId,
         name: locId === 'unmatched' ? '(payments not matched to a venue)' : (locById.get(locId)?.name ?? '(unknown venue)'),
-        currency: agg?.currency ?? null,
+        // The payments' currency; a venue with no payments this month takes its
+        // plan's currency so its SaaS fee is shown in dollars or pounds rightly.
+        currency: agg?.currency ?? saas?.item.currency ?? null,
         by_category: tiers,
         payments_count: count_total,
         volume_minor: volume_total,
@@ -893,29 +997,39 @@ Deno.serve(async (req) => {
         margin_minor: fee_known > 0 ? commission_total - agg!.fees_minor : null,
         saas_plan: saasDetail?.plan ?? null,
         saas_fee_minor,
+        saas_currency: saas?.item.currency ?? null,
         saas: saasDetail,
-        revenue_minor: commission_total + (saas_fee_minor ?? 0),
+        revenue_minor: commission_total + (saasCurMismatch ? 0 : (saas_fee_minor ?? 0)),
       });
     }
     out.sort((a, b) => b.revenue_minor - a.revenue_minor || String(a.name).localeCompare(String(b.name)));
 
+    // SaaS sums are kept PER CURRENCY (27 Oct 2026): never add dollars to
+    // pounds. saas_fee_minor (and so revenue_minor) is the report currency's
+    // share only; the other currencies' SaaS rides in saas_fee_minor_by_currency.
+    // Commission totals are unchanged.
+    const reportCurrency = String(currency ?? 'GBP').toUpperCase();
+    const saasByCur: Record<string, number> = {};
+    for (const r of out) if (r.saas_fee_minor != null && r.saas_currency) saasByCur[r.saas_currency] = (saasByCur[r.saas_currency] ?? 0) + r.saas_fee_minor;
+    for (const u of saasUnmapped) saasByCur[u.currency] = (saasByCur[u.currency] ?? 0) + toPence(u.monthly_fee);
     const totals = {
       payments_count: out.reduce((s, r) => s + r.payments_count, 0),
       volume_minor: out.reduce((s, r) => s + r.volume_minor, 0),
       refunds_minor: out.reduce((s, r) => s + r.refunds_minor, 0),
       commission_minor: out.reduce((s, r) => s + r.commission_minor, 0),
       fees_minor: out.some((r) => r.fees_minor != null) ? out.reduce((s, r) => s + (r.fees_minor ?? 0), 0) : null,
-      saas_fee_minor: out.reduce((s, r) => s + (r.saas_fee_minor ?? 0), 0) + saasUnmapped.reduce((s, r) => s + toPence(r.monthly_fee), 0),
+      saas_fee_minor: saasByCur[reportCurrency] ?? 0,
+      saas_fee_minor_by_currency: saasByCur,
       unclassified_count: out.reduce((s, r) => s + (r.by_category.unclassified?.count ?? 0), 0),
     };
 
     return json({
       ok: true,
       month,
-      currency: currency ?? 'GBP',
+      currency: reportCurrency,
       rows: out,
       totals: { ...totals, revenue_minor: totals.commission_minor + totals.saas_fee_minor },
-      saas: { plans: planCounts, typed: saasTyped, unmapped: saasUnmapped },
+      saas: { plans: planCounts, plans_by_currency: planCountsByCur, catalogs: SAAS_CATALOGS, typed: saasTyped, unmapped: saasUnmapped },
       classified,
       fees_live: feesLive,
       not_live_rows: notLiveRows,

@@ -13,6 +13,8 @@ import AdminRevenue from './sections/AdminRevenue';
 import AdminReseller from './sections/AdminReseller';
 import AdminCustomerImport from './sections/AdminCustomerImport';
 import { money, CURRENCIES } from '../lib/currency';
+// 27 Oct 2026: a new venue starts on Starter in its own currency (99 GBP, 149 USD).
+import { newVenueSubscription, saasPlanName } from '../lib/saasNewVenue';
 import { seedVenueTaxRates, seedWords } from '../lib/venueTaxRates';
 import { ServOSIcon, ServOSWordmark } from '../components/ServOSBrand';
 
@@ -407,7 +409,7 @@ function AdminPanel({ authUser }) {
     // "No platform row found for ops location ...".
     const provisioned = await provisionLocation(loc.id);
     const maxDevices = parseInt(form.maxDevices) || 3;
-    await sbFetch('subscriptions', { method:'POST', body:{ org_id:selectedOrg.id, location_id:loc.id, plan:'free', gmv_this_month:0, billing_period_start:new Date().toISOString().slice(0,10) } });
+    await sbFetch('subscriptions', { method:'POST', body:{ org_id:selectedOrg.id, location_id:loc.id, ...newVenueSubscription(loc.currency || form.locCurrency), gmv_this_month:0, billing_period_start:new Date().toISOString().slice(0,10) } });
     await sbFetch('location_features', { method:'POST', body:{ location_id:loc.id, feature:'max_devices', enabled:true, price_per_month:maxDevices } });
     // 27 Sep 2026 (Peter: "for some reason every products tax rate has been removed ... please
     // chase"): the new venue gets its country's standard tax rates now (lib/venueTaxRates.js;
@@ -645,7 +647,8 @@ function AdminPanel({ authUser }) {
                     ? <div style={{ color:'var(--t3)', fontSize:13 }}>No locations yet — add one above</div>
                     : locations.map((loc, idx) => {
                         const maxDev = loc.location_features?.find(f=>f.feature==='max_devices')?.price_per_month || 3;
-                        const plan = loc.subscriptions?.[0]?.plan || 'free';
+                        const planKey = loc.subscriptions?.[0]?.plan;
+                        const plan = planKey ? saasPlanName(planKey, loc.currency) : 'No plan';
                         const gmv = loc.subscriptions?.[0]?.gmv_this_month || 0;
                         const locUsers = usersForLocation(loc.id);
                         const isEditingUsers = editUsersFor === loc.id;

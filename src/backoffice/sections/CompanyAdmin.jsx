@@ -3,6 +3,8 @@ import { pullSharedProductsTo } from '../../lib/db';
 import { reportSave } from '../../lib/saveHealth';
 import { supabase } from '../../lib/supabase';
 import { CURRENCIES } from '../../lib/currency';
+// 27 Oct 2026: a new venue starts on Starter in its own currency (99 GBP, 149 USD).
+import { newVenueSubscription } from '../../lib/saasNewVenue';
 import { seedVenueTaxRates, seedWords } from '../../lib/venueTaxRates';
 
 const S = {
@@ -144,7 +146,7 @@ export default function CompanyAdmin() {
     // Create a subscription row for this location
     await supabase.from('subscriptions').insert({
       org_id: selectedOrg.id, location_id: loc.id,
-      plan: 'free', gmv_this_month: 0, billing_period_start: new Date().toISOString().slice(0,10),
+      ...newVenueSubscription(loc.currency || form.locCurrency), gmv_this_month: 0, billing_period_start: new Date().toISOString().slice(0,10),
     });
 
     // 27 Sep 2026 (Peter: "for some reason every products tax rate has been removed ... please
