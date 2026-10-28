@@ -15,6 +15,7 @@
 // every flow is testable without a backend. Production always hits Supabase.
 
 import { supabase, isMock } from '../lib/supabase';
+import { aiRequestInit } from '../lib/aiRequest';
 import { toE164 as regionToE164, venueMoney } from '../lib/regionPack';
 import { getActiveCurrencyCode } from '../lib/currency';
 import { reportSave } from '../lib/saveHealth';
@@ -175,13 +176,11 @@ export async function saveStaffBank(staffId, sortCode, accountFull, accountName)
   return { masked, sort, account: digits, accountName: name };
 }
 
-/** Call the Claude proxy (/api/ai). Returns the Anthropic Messages response. */
+/** Call the Claude proxy (/api/ai). Returns the Anthropic Messages response.
+ *  v5.11.104: the route checks who is asking; the call sends this session's token and the venue. */
 export async function callAI(messages, mode = 'boh') {
   if (isMock) throw new Error('AI is only available on the live system');
-  const res = await fetch('/api/ai', {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ messages, mode }),
-  });
+  const res = await fetch('/api/ai', await aiRequestInit({ messages, mode }));
   const j = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(j.error || 'AI request failed');
   return j;

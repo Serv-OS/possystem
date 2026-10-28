@@ -3,7 +3,7 @@
  *
  * Flow:
  *   1. Drop zone accepts PDF / DOCX / XLSX / JPG / PNG (max 7MB)
- *   2. File base64-encoded and sent to /api/ai/menu-import
+ *   2. File base64-encoded and sent to /api/ai/menu-import with this session's token and venue
  *   3. Claude returns { categories, items, notes }
  *   4. User reviews in an editable preview
  *   5. User clicks Publish — creates categories + items via existing store actions
@@ -13,6 +13,7 @@
 import { useState, useRef } from 'react';
 import { useStore } from '../../store';
 import { selectOnFocus } from '../../lib/selectOnFocus';
+import { aiRequestInit } from '../../lib/aiRequest';
 
 const ACCEPTED_MIME = [
   'application/pdf',
@@ -70,11 +71,8 @@ export default function MenuImportModal({ menuId, onClose }) {
       setPhase('parsing');
       setStatusMsg('AI is parsing your menu — this can take 15–45 seconds...');
 
-      const res = await fetch('/api/ai/menu-import', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filename: file.name, mimeType: file.type, base64 }),
-      });
+      // v5.11.104: the route checks who is asking; send this session's token and the venue.
+      const res = await fetch('/api/ai/menu-import', await aiRequestInit({ filename: file.name, mimeType: file.type, base64 }));
 
       // Read response as text first so we can surface the real error even if
       // the server returned HTML (e.g. Vercel "An error occurred" page) instead

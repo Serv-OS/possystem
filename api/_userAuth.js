@@ -17,8 +17,16 @@
  *      device at this venue). The Manager app scans a delivery note on the Kitchen tab from such a
  *      phone; a till, a kiosk, an online or QR customer session is refused.
  *
+ * v5.11.104: the AI routes (api/ai.js, api/ai/menu-import.js) use the same helper through
+ * requireUser(), which takes three choices the scan route does not need: a venue may be optional
+ * (a signed in user must still reach at least one venue; the venue named is checked when the body
+ * names one), the
+ * device arm may be 'pos' (a till, kiosk or Ops phone BOUND to that venue: the database's
+ * pos_accessible_location_keys(), the device arm of pos_can_access) or 'none' (a signed in person
+ * only), and the sign in message names the feature. requireVenueUser() is unchanged for the scan.
+ *
  * Pure apart from fetch, which the caller may pass in (node --test drives it with a stand in:
- * src/lib/stock/invoiceScanAuth.test.js).
+ * src/lib/stock/invoiceScanAuth.test.js, src/lib/aiEndpointAuth.test.js).
  */
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -65,35 +73,55 @@ export function idList(body) {
   return body.map((r) => (r && typeof r === 'object' ? Object.values(r)[0] : r)).filter((x) => x != null).map(String);
 }
 
+const SIGN_IN_SCAN = 'Sign in to Back Office to scan an invoice.';
 const headersFor = (anon, token) => ({ apikey: anon, authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json' });
 
 /**
- * May the bearer of this request act for this venue?
- * Returns { ok: true, user, via: 'reach' | 'device' } or { ok: false, status, error }.
+ * Who is asking, and may they act for this venue?
+ *   locationId     the venue named in the body (null when the body names none)
+ *   venueRequired  true: a missing or malformed venue is a 400 (the scan route); false: a signed in
+ *                  user with no venue passes when they reach at least one venue (the AI routes)
+ *   device         which anonymous sessions may pass, and only for the venue named:
+ *                  'ops'  a Manager or Ops phone paired to it (ops_can_write)
+ *                  'pos'  a till, kiosk or Ops phone bound to it (pos_accessible_location_keys)
+ *                  'none' no anonymous session at all
+ *   signInMessage  the 401 text
+ * Returns { ok: true, user, via: 'reach' | 'user' | 'device' } or { ok: false, status, error }.
  */
-export async function requireVenueUser(req, { locationId = null, env, fetchImpl } = {}) {
+export async function requireUser(req, { locationId = null, venueRequired = true, device = 'ops', signInMessage = SIGN_IN_SCAN, env, fetchImpl } = {}) {
   const f = fetchImpl || (typeof fetch !== 'undefined' ? fetch : null);
   const { url, anon } = supabaseEnv(env);
   if (!url || !anon || !f) return { ok: false, status: 500, error: 'This server cannot check who is signed in (the Supabase address or public key is not set).' };
   const token = bearerToken(req);
-  if (!token) return { ok: false, status: 401, error: 'Sign in to Back Office to scan an invoice.' };
+  if (!token) return { ok: false, status: 401, error: signInMessage };
   let who;
   try { who = await getJson(f, `${url}/auth/v1/user`, { method: 'GET', headers: headersFor(anon, token) }); }
   catch { return { ok: false, status: 503, error: 'Could not check who is signed in. Try again.' }; }
   const user = who.ok ? who.body : null;
-  if (!user || !user.id) return { ok: false, status: 401, error: 'Sign in to Back Office to scan an invoice.' };
-  const loc = locationId == null ? '' : String(locationId);
-  if (!UUID_RE.test(loc)) return { ok: false, status: 400, error: 'location_id required' };
+  if (!user || !user.id) return { ok: false, status: 401, error: signInMessage };
+  const loc = locationId == null || locationId === '' ? '' : String(locationId);
+  if (venueRequired && !UUID_RE.test(loc)) return { ok: false, status: 400, error: 'location_id required' };
+  if (loc && !UUID_RE.test(loc)) return { ok: false, status: 400, error: 'location_id must be a venue id' };
 
-  if (user.is_anonymous === true) {
-    // a Manager or Ops phone paired to this venue, and nothing else
-    let dev;
-    try { dev = await getJson(f, `${url}/rest/v1/rpc/ops_can_write`, { method: 'POST', headers: headersFor(anon, token), body: JSON.stringify({ p_location_id: loc }) }); }
-    catch { return { ok: false, status: 503, error: 'Could not check this device. Try again.' }; }
-    if (dev.ok && dev.body === true) return { ok: true, user, via: 'device' };
-    return { ok: false, status: 401, error: 'Sign in to Back Office to scan an invoice.' };
+  // A missing is_anonymous never counts as a person: only an explicit false does.
+  if (user.is_anonymous !== false) {
+    // a device bound to this venue, and nothing else; a device with no venue named is nothing
+    if (device === 'none' || !loc) return { ok: false, status: 401, error: signInMessage };
+    try {
+      if (device === 'pos') {
+        const keys = await getJson(f, `${url}/rest/v1/rpc/pos_accessible_location_keys`, { method: 'POST', headers: headersFor(anon, token), body: '{}' });
+        if (keys.ok && idList(keys.body).includes(loc)) return { ok: true, user, via: 'device' };
+      } else {
+        const dev = await getJson(f, `${url}/rest/v1/rpc/ops_can_write`, { method: 'POST', headers: headersFor(anon, token), body: JSON.stringify({ p_location_id: loc }) });
+        if (dev.ok && dev.body === true) return { ok: true, user, via: 'device' };
+      }
+    } catch { return { ok: false, status: 503, error: 'Could not check this device. Try again.' }; }
+    return { ok: false, status: 401, error: signInMessage };
   }
 
+  // A signed in person is always asked which venues they reach. Signup on the Ops Auth project is
+  // open, so a token alone proves an email address, not a venue: a login that reaches no venue at
+  // all is refused even when the body names none (v5.11.104 review).
   let reach;
   try {
     reach = await getJson(f, `${url}/rest/v1/rpc/stock_reach_locations`, { method: 'POST', headers: headersFor(anon, token), body: '{}' });
@@ -102,6 +130,20 @@ export async function requireVenueUser(req, { locationId = null, env, fetchImpl 
     }
   } catch { return { ok: false, status: 503, error: 'Could not check which venues this login reaches. Try again.' }; }
   if (!reach.ok) return { ok: false, status: 503, error: 'Could not check which venues this login reaches. Try again.' };
-  if (!idList(reach.body).includes(loc)) return { ok: false, status: 403, error: 'Not allowed: this login does not reach that venue.' };
+  const reached = idList(reach.body);
+  if (!loc) {
+    if (reached.length === 0) return { ok: false, status: 403, error: 'Not allowed: this login reaches no venue.' };
+    return { ok: true, user, via: 'user' };
+  }
+  if (!reached.includes(loc)) return { ok: false, status: 403, error: 'Not allowed: this login does not reach that venue.' };
   return { ok: true, user, via: 'reach' };
+}
+
+/**
+ * May the bearer of this request act for this venue? The scan route's check, unchanged: a venue is
+ * required, and the only anonymous session that passes is a Manager or Ops phone paired to it.
+ * Returns { ok: true, user, via: 'reach' | 'device' } or { ok: false, status, error }.
+ */
+export async function requireVenueUser(req, { locationId = null, env, fetchImpl } = {}) {
+  return requireUser(req, { locationId, venueRequired: true, device: 'ops', signInMessage: SIGN_IN_SCAN, env, fetchImpl });
 }
