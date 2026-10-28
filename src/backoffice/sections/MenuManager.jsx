@@ -72,6 +72,7 @@ import {
   ITEM_CODE_MAX, ITEM_CODE_HELP, checkItemCode, codeOf, loadItemCodes,
   suggestItemCode, takenItemCodes,
 } from '../../lib/itemCode';
+import { compareMenuItems } from '../../lib/menuItemOrder.js';
 
 // 27 Sep 2026: the tax rates a product here may use are THIS venue's only. Leeds had no rates
 // of its own; the Back Office still held Train Station's from the last push and offered them,
@@ -178,7 +179,7 @@ async function cloneItem(item, menuItems, addMenuItem, updateMenuItem, markBOCha
   // Clone child variants if the original has sizes
   if (item.type === 'variants') {
     const children = menuItems.filter(c => c.parentId === item.id && !c.archived)
-      .sort((a,b) => (a.sortOrder??999) - (b.sortOrder??999));
+      .sort(compareMenuItems);
 
     // Update the cloned parent to be variants type
     await new Promise(r => setTimeout(r, 100)); // let addMenuItem settle
@@ -650,7 +651,7 @@ function MenuTab() {
     const inCat = i => i.cat===selCatId || subs.includes(i.cat) || (i.cats||[]).includes(selCatId) || (i.cats||[]).some(c=>subs.includes(c));
     return menuItems
       .filter(i=>!i.archived && !isOptionOnlyItem(i) && !i.parentId && inCat(i))
-      .sort((a,b)=>(a.sortOrder??999)-(b.sortOrder??999));
+      .sort(compareMenuItems);   // v5.11.111: position, then creation order, the one rule every screen uses
   },[selCatId, menuCategories, menuItems]);
 
   // Spacers stored as [{id, sortOrder}] on selCat.spacerSlots
@@ -664,7 +665,7 @@ function MenuTab() {
     const all = [
       ...gridItems.map(i => ({ ...i, _spacer: false })),
       ...spacers.map(s => ({ ...s, _spacer: true })),
-    ].sort((a, b) => (a.sortOrder ?? 999) - (b.sortOrder ?? 999));
+    ].sort(compareMenuItems);
     return all;
   }, [gridItems, selCat]);
 
@@ -716,7 +717,7 @@ function MenuTab() {
   const searchResults = useMemo(()=>{
     if (!search.trim()) return [];
     const q = search.toLowerCase();
-    return menuItems.filter(i=>!i.archived&&i.type!=='subitem'&&((i.menuName||i.name||'').toLowerCase().includes(q)||(i.description||'').toLowerCase().includes(q))).sort((a,b)=>(a.sortOrder??999)-(b.sortOrder??999));
+    return menuItems.filter(i=>!i.archived&&i.type!=='subitem'&&((i.menuName||i.name||'').toLowerCase().includes(q)||(i.description||'').toLowerCase().includes(q))).sort(compareMenuItems);
   },[search, menuItems]);
 
   const displayItems = search.trim() ? searchResults : gridItems;
@@ -1425,7 +1426,7 @@ function MenuTab() {
                         <div style={{ margin:'4px 0 0', padding:'8px', background:'var(--bg3)', borderRadius:10, border:`1px solid ${catColor}33` }}>
                           <div style={{ fontSize:9, fontWeight:700, color:catColor, textTransform:'uppercase', letterSpacing:'.07em', marginBottom:6 }}>Variants — {children.length} sizes</div>
                           <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
-                            {children.sort((a,b)=>(a.sortOrder??999)-(b.sortOrder??999)).map(child=>{
+                            {children.sort(compareMenuItems).map(child=>{
                               const cp = child.pricing?.base ?? child.price ?? 0;
                               const isSelChild = selItemId===child.id;
                               return (
@@ -1533,7 +1534,7 @@ function ListItemView({ items, menuItems, selItemId, setSelItemId, catColor, add
 
   const variantsOf = (parentId) =>
     menuItems.filter(c => c.parentId === parentId && !c.archived)
-      .sort((a,b) => (a.sortOrder??999)-(b.sortOrder??999));
+      .sort(compareMenuItems);
 
   const toggleExpand = id =>
     setCollapsedIds(s => { const n=new Set(s); n.has(id)?n.delete(id):n.add(id); return n; });
@@ -1850,18 +1851,18 @@ function ItemsLibrary() {
       return items.sort((a,b) => {
         const ga = a.subGroup||'', gb = b.subGroup||'';
         if (ga !== gb) return ga.localeCompare(gb);
-        return (a.sortOrder??999)-(b.sortOrder??999);
+        return compareMenuItems(a, b);
       });
     }
     return items.sort((a,b) => {
       const ca = allCats.findIndex(c=>c.id===a.cat);
       const cb = allCats.findIndex(c=>c.id===b.cat);
       if (ca !== cb) return ca-cb;
-      return (a.sortOrder??999)-(b.sortOrder??999);
+      return compareMenuItems(a, b);
     });
   }, [menuItems, allCats, search, typeFilter, catFilter, showArchived]);
 
-  const variantsOf = pid => menuItems.filter(c=>c.parentId===pid&&!c.archived).sort((a,b)=>(a.sortOrder??999)-(b.sortOrder??999));
+  const variantsOf = pid => menuItems.filter(c=>c.parentId===pid&&!c.archived).sort(compareMenuItems);
   const totalVariants = menuItems.filter(i=>!i.archived&&i.parentId).length;
 
   const addNewItem = () => {
@@ -2784,7 +2785,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
 
   // ── Variants ───────────────────────────────────────────────────────────────
   const variants = menuItems.filter(c => c.parentId===item.id && !c.archived)
-    .sort((a,b) => (a.sortOrder??999)-(b.sortOrder??999));
+    .sort(compareMenuItems);
   const isParent = variants.length > 0;
 
   const addVariant = () => {
@@ -4555,7 +4556,7 @@ function QuickScreenManager() {
       if (search) return (i.menuName||i.name||'').toLowerCase().includes(search.toLowerCase());
       return true;
     })
-    .sort((a,b) => (a.sortOrder??999)-(b.sortOrder??999));
+    .sort(compareMenuItems);
 
   const catFor = item => menuCategories.find(c => c.id === item?.cat);
 

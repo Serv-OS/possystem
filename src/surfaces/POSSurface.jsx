@@ -60,6 +60,7 @@ import { stampSummary, stampChip } from '../lib/stampSummary';
 import { announceOrderCustomer } from '../lib/orderCustomerLoyalty';
 import { receiptRewardLines } from '../lib/loyaltyMultiRedeem';
 import { setTillUiState, resetTillUiState } from '../lib/msm/msmTillWatch.js';
+import { compareMenuItems } from '../lib/menuItemOrder.js';
 // 17 Oct 2026 (v5.11.73, PR 295 follow up): VIP and Regular on the check header. Display only: it
 // reads the guest's CRM record once (cached five minutes), renders nothing when there is nothing
 // to say, and nothing at all if it ever fails (bookings/GuestTags.jsx, lib/bookings/tillGuestTags.js).
@@ -716,7 +717,7 @@ export default function POSSurface() {
     // v5.6.97: itemInAllowedCats keeps the grid honest if the selected cat goes
     // out-of-menu mid-session (e.g. a profile change pins a different menu).
     const base = MENU_ITEMS.filter(i => !i.archived && !isOptionOnlyItem(i) && !i.parentId && itemInAllowedCats(i, allowedCatIds))
-      .slice().sort((a,b) => (a.sortOrder??999) - (b.sortOrder??999));
+      .slice().sort(compareMenuItems);   // v5.11.111: position, then creation order
     const inCat = (i, id) => i.cat === id || (i.cats||[]).includes(id);
     let items;
     if (subCat) items = base.filter(i => inCat(i, subCat));
@@ -734,7 +735,7 @@ export default function POSSurface() {
     const all = [
       ...items,
       ...spacers.map(s => ({ _spacer: true, id: s.id, sortOrder: s.sortOrder })),
-    ].sort((a, b) => (a.sortOrder ?? 999) - (b.sortOrder ?? 999));
+    ].sort(compareMenuItems);
     return all;
   }, [cat, subCat, subCategories, MENU_ITEMS, quickItems, menuCategories, allowedCatIds]);
 
@@ -812,7 +813,7 @@ export default function POSSurface() {
     // Variant parent: detected by type OR by having linked children
     const variantChildren = MENU_ITEMS
       .filter(i => i.parentId === item.id && !i.archived && !eightySixIds.includes(i.id))
-      .sort((a,b) => (a.sortOrder??999) - (b.sortOrder??999));
+      .sort(compareMenuItems);
     if (item.type === 'variants' || variantChildren.length > 0) {
       if (variantChildren.length > 0) {
         setModalItem({

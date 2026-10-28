@@ -37,6 +37,7 @@ import KioskProductModal from './KioskProductModal';
 // v5.11.108: the one allergen chip row every surface shows (kiosk, online, QR, till).
 import AllergenChips, { KIOSK_ALLERGEN_PALETTE } from '../components/AllergenChips.js';
 import DietaryChips, { KIOSK_DIET_PALETTE } from '../components/DietaryChips.js';
+import { compareMenuItems } from '../lib/menuItemOrder.js';
 // v5.11.108: the device keyboard never covers a box the customer types in (lib/kioskKeyboard.js).
 import { kioskRevealOnFocus } from '../lib/kioskKeyboard.js';
 import KioskCategoryTile from './kiosk/KioskCategoryTile';
@@ -175,7 +176,7 @@ function useKioskMenu(profile, locationId, tz = 'Europe/London', reloadKey = 0, 
         // booked tax_amount null until a restart. They load in their own effect below
         // (loadCustomerRates: after the session, with retries) and gate the card screen.
         const [iRes0, cRes, mRes, pRes, tpRes, tlRes, psRes] = await Promise.all([
-          supabase.from('menu_items').select('*').eq('location_id', locationId).eq('archived', false).order('sort_order'),
+          supabase.from('menu_items').select('*').eq('location_id', locationId).eq('archived', false).order('sort_order').order('id'),
           supabase.from('menu_categories').select('*').eq('location_id', locationId).order('sort_order'),
           supabase.from('menus').select('*').eq('location_id', locationId).eq('is_active', true),
           // v5.5.953: instruction-group DEFINITIONS (cooking preference etc.) have no DB
@@ -814,7 +815,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
       // a sub item that is only sold as an option ("No Ice") is never a card, like the till.
       .filter(kioskCardEligible)
       .filter(i => itemInCategory(i, selectedCategoryId))
-      .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+      .sort(compareMenuItems);   // v5.11.111: position, then creation order, like the till and online
   }, [items, selectedCategoryId]);
 
   // Today's kiosk side list: a category that only held option sub items is left out, since

@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.111',
+    date: '28 Oct 2026',
+    items: [
+      "Products now appear in the same order on every screen: the till and bar, both kiosk designs, online and QR ordering, catering, menu boards, the print menu and the menu builder. The rule is the position you gave the item in the menu builder, then the order the items were made in.",
+      "Why it differed: an item you have never dragged into place has no position yet. Online showed those in the order they were made; the kiosk showed them in whatever order the database handed back, which could change between loads. Habitum saw Electrolyte Hydration Refresher first online and on the till but not on the kiosk.",
+      "Web app only, nothing to run in the database.",
+    ],
+  },
+  {
     v: '5.11.110',
     date: '28 Oct 2026',
     items: [

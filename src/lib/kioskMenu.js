@@ -20,6 +20,7 @@ import {
 } from './kioskGroupRules.js';
 import { isUnsafe } from './kioskAllergens.js';
 import { isOptionOnlyItem } from './menuRules.js';
+import { compareMenuItems } from './menuItemOrder.js';
 
 const parentOf = (c) => c?.parent_id ?? c?.parentId ?? null;
 const orderOf = (c) => Number(c?.sort_order ?? c?.sortOrder ?? 0) || 0;
@@ -143,7 +144,7 @@ export function kioskMenuSections({ rootId, visibleCategories, items } = {}) {
   for (const catId of subtreeIds(rootId, cats)) {
     const inCat = eligible
       .filter(it => itemInCategory(it, catId) && !shown.has(it.id))
-      .sort((a, b) => orderOf(a) - orderOf(b));
+      .sort(compareMenuItems);   // v5.11.111: position, then creation order, like every other screen
     if (!inCat.length) continue;
     inCat.forEach(it => shown.add(it.id));
     const category = byId.get(catId);
