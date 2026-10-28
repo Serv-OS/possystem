@@ -725,9 +725,13 @@ export default function KioskApp({ kioskId, onUnpair }) {
   // turned it back into 8 so the operator could never switch the pill off.
   const kioskWaitFallback = profile?.kiosk_avg_wait_minutes ?? 8;
   const venueLeadMin = Number(venueRow?.online_collection_lead_min);
-  const avgWaitMinutes = (Number.isFinite(venueLeadMin) && venueLeadMin > 0 && kioskLoad != null)
-    ? prepMinutes(venueLeadMin, kioskLoad, prepRuleFromLocation(venueRow)).minutes
-    : kioskWaitFallback;
+  // 28 Oct 2026: a typed 0 on the kiosk profile means "never show a wait on THIS kiosk", even when the
+  // venue quotes a wait to online and QR customers. Before, the venue quote always won and the kiosk
+  // operator had no way to switch the pill off without also switching online's quote off.
+  const avgWaitMinutes = kioskWaitFallback === 0 ? 0
+    : (Number.isFinite(venueLeadMin) && venueLeadMin > 0 && kioskLoad != null)
+      ? prepMinutes(venueLeadMin, kioskLoad, prepRuleFromLocation(venueRow)).minutes
+      : kioskWaitFallback;
   const bannerFor = (screen) => banners.find(b => b.screen === screen && b.imageUrl);
   // v5.3.4: theme is dominant. brand_bg_color only takes effect if it visually matches the theme
   // (avoids the bug where saving a dark bg via the picker AND switching to light theme leaves a dark bg).

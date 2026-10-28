@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.107',
+    date: '28 Oct 2026',
+    items: [
+      "Kiosk: a kiosk can show no wait at all. In Kiosk settings, type 0 in Average wait time and the wait line leaves that kiosk's start screen, even when the venue quotes a wait to online and QR customers. Before, the box turned a 0 back into 8, and the online quote always won on the kiosk.",
+      "Kiosk settings: the preview under the box now says when no wait is shown.",
+    ],
+  },
+  {
     v: '5.11.106',
     date: '28 Oct 2026',
     items: [
