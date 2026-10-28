@@ -10,7 +10,7 @@
 // Pure: the caller passes how to read a row and how to save one.
 
 /**
- * entries: [{ id, patch, onlyIf?(row) }]. `onlyIf` is judged on the row as it is when its turn
+ * entries: [{ id, patch, onlyIf?(row) }]. patch may be (row) => patch (v5.11.109). `onlyIf` is judged on the row as it is when its turn
  * comes (a gap filled since the list was made is left alone).
  * deps: { getRow(id), update(id, patch) => Promise<{ ok, outcome }>, concurrency, onProgress }
  * Resolves { saved, skipped, gone, failed, unchanged, total }:
@@ -33,7 +33,9 @@ export async function runBulkEdits(entries, { getRow, update, concurrency = 6, o
         out.unchanged += 1;
       } else {
         let r;
-        try { r = await update(e.id, e.patch); }
+        // v5.11.109: a patch may be a function of the row as it is now (a whole jsonb column
+        // such as pricing is then built from the latest row, never a stale copy).
+        try { r = await update(e.id, typeof e.patch === 'function' ? e.patch(row) : e.patch); }
         catch (err) { r = { ok: false, outcome: 'error', error: err }; }
         const o = r?.outcome;
         if (r?.ok) out.saved += 1;

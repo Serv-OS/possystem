@@ -45,6 +45,7 @@ import { rankQuickPicks, DAYPARTS } from '../../lib/quickRank';
 import { getLocationConfig } from '../../lib/locationTime';
 // v4.7.8: per-menu pricing tier UI (item-level)
 import PerMenuPricingTiers from './PerMenuPricingTiers';
+import MenuOnePrice from './MenuOnePrice';
 import MenuItemFactsPanel from './stock/MenuItemFactsPanel';   // v5.11.93 (multi site stock Drop 2): 'From the recipe at this site'
 import MenuImportModal from '../components/MenuImportModal';
 // v5.8.65: category kiosk photo (saves on its own, not part of CatModal's form)
@@ -954,6 +955,8 @@ function MenuTab() {
                         Set as default
                       </button>
                     )}
+                    {/* v5.11.109: one price for every item on this menu (MenuOnePrice.jsx). */}
+                    <MenuOnePrice menu={m} categoryLinks={categoryLinks} />
                   </div>
                 )}
               </div>
