@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.113',
+    date: '29 Oct 2026',
+    items: [
+      "Apple's app reviewer could not pair the ServOS KDS: \"the app cannot be verified using the provided code\". The code had already been used once, and a pairing code is used up the first time it works. Apple's own instructions tell the reviewer to uninstall the app and install it again, so their second attempt could never pair, and there is nobody to hand them a fresh code mid review.",
+      "At a venue flagged as a demo venue, and only there, a pairing code is now a standing invitation: using it does not use it up, and a screen that is already paired is taken over by the new one. So the same code pairs again after a reinstall, for ever.",
+      "Nothing changes for a real venue. A code at a trading venue is still single use, still expires, and still refuses a screen that belongs to another till. The demo flag is off everywhere unless it is set by hand.",
+      "RUN IN THE DATABASE: 20261106b_OPS_demo_device_code_not_consumed.sql.",
+    ],
+  },
+  {
     v: '5.11.112',
     date: '29 Oct 2026',
     items: [
