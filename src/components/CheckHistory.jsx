@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { useStore } from '../store';
 import { printService } from '../lib/printer';
 import { receiptRewardsOf } from '../lib/printDoc';
+import { receiptDiscountLines } from '../lib/receiptDiscountLines';
 import { money } from '../lib/currency';
 import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
 import { recordCheckBasis } from '../lib/taxBasis';
@@ -891,6 +892,8 @@ export default function CheckHistory(){
           covers: selectedCheck.covers,
           method: selectedCheck.method,
           customer: selectedCheck.customer,
+          // 29 Oct 2026 (v5.11.114): the discounts the bill took print again as named lines.
+          discounts: receiptDiscountLines(nonVoided, selectedCheck.discounts),
           // v5.5.720: carry the card-scheme block into re-prints (in-memory checks stamp
           // cardReceipt; DB-loaded checks carry it on paymentIntents[0].card)
           cardReceipt: selectedCheck.cardReceipt || null,
@@ -1074,6 +1077,10 @@ export default function CheckHistory(){
               {/* Totals */}
               <div style={{padding:'10px 0',marginBottom:12}}>
                 <div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--t3)',marginBottom:3}}><span>Subtotal</span><span style={{fontFamily:'DM Mono,monospace'}}>{money(selectedCheck.subtotal)}</span></div>
+                {/* 29 Oct 2026 (v5.11.114): each discount the bill took, by name, as Back Office and the receipt show it */}
+                {receiptDiscountLines(selectedCheck.items, selectedCheck.discounts).map((d, i) => (
+                  <div key={`d${i}`} style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--grn)',marginBottom:3}}><span>{d.label}</span><span style={{fontFamily:'DM Mono,monospace'}}>{String.fromCodePoint(0x2212)}{money(d.amount)}</span></div>
+                ))}
                 {/* 30 Sep 2026: each loyalty reward the check used (several stamp cards on one order) */}
                 {receiptRewardsOf(selectedCheck).map((l, i) => (
                   <div key={i} style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--grn)',marginBottom:3}}><span>{l.label}</span><span style={{fontFamily:'DM Mono,monospace'}}>{String.fromCodePoint(0x2212)}{money(l.amount)}</span></div>

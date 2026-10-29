@@ -20,6 +20,7 @@ import { TIP_DEFAULTS, normaliseTipRule, parsePctList } from '../../lib/tipping'
 import MenuTranslations from './MenuTranslations';
 import { patchBranding } from '../../lib/locationAdmin';
 import { COUNTER_PATH, COUNTER_DEFAULT_LABEL, COUNTER_LABEL_MAX, counterCollect, counterCollectPatch } from '../../lib/counterOrder';
+import { callGiftPublic } from '../../surfaces/gift/giftHelpers';
 
 // Reuses the existing receipt-assets bucket with an online/ prefix so logo
 // + hero uploads don't collide with the receipt branding's logo/QR assets.
@@ -86,12 +87,17 @@ export default function OnlineOrdering({ setSection, canOpen = () => true }) {
     let alive = true;
     (async () => {
       try {
+        // 29 Oct 2026 (v5.11.114): the gift pill said OFF at a venue whose gift cards were ON.
+        // The direct Platform read is fenced by gift_brand_config's row policy (a company role row
+        // the Back Office login does not hold), so it came back empty and the pill stayed OFF while
+        // the public page, which reads through gift-branding-public, was selling. The pill now asks
+        // the same question the public page asks, so the two can never disagree.
         const [g, l] = await Promise.all([
-          platformSupabase.from('gift_brand_config').select('enabled').eq('company_id', row.company_id).maybeSingle(),
+          callGiftPublic('gift-branding-public', { company_id: row.company_id }).catch(() => null),
           platformSupabase.from('loyalty_config').select('enabled').eq('company_id', row.company_id).maybeSingle(),
         ]);
         if (!alive) return;
-        setGiftOn(!!g?.data?.enabled);
+        setGiftOn(!!g?.enabled);
         setLoyaltyOn(!!l?.data?.enabled);
       } catch { /* pills stay OFF — never claim a feature is live on a read failure */ }
     })();
