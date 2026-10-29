@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.118',
+    date: '29 Oct 2026',
+    items: [
+      "Marketing: a quick send has no schedule. The hour job no longer continues a quick send that stopped short; it closes the run and leaves it for a person. The Continue sending button in Quick send is the only way it carries on, and it still picks up exactly where it stopped with nobody sent twice.",
+      "Edge function to deploy: marketing-run. Nothing to run in the database.",
+    ],
+  },
+  {
     v: '5.11.117',
     date: '29 Oct 2026',
     items: [

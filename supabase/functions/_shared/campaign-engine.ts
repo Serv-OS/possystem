@@ -359,6 +359,13 @@ export async function resumeStalledRuns(sb: SB, opts: RunOpts): Promise<RunSumma
     }
     const { data: c } = await sb.from('campaigns').select('*').eq('id', run.campaign_id).maybeSingle();
     if (!c) continue;
+    // Peter, 29 Oct 2026: "a quick send has no schedule". A quick send (ephemeral campaign) that stopped
+    // short is only ever continued by a person, through Continue sending in Quick send. The hour job
+    // closes its run so nothing picks it up later; its pending rows stay and the button reclaims them.
+    if (c.ephemeral === true) {
+      await sb.from('campaign_runs').update({ status: 'error', finished_at: new Date().toISOString(), error: 'stopped short: a quick send is only continued by Continue sending in Quick send' }).eq('id', run.id).eq('status', 'running');
+      continue;
+    }
     out.push(await runCampaign(sb, c, { ...opts, force: true, resumeRunId: run.id }));
   }
   return out;
