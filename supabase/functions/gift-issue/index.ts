@@ -4,16 +4,34 @@
 // and creates the card + initial ledger entry.
 //
 // Body: { org_id?, amount, recipient_email?, recipient_name?, recipient_phone?,
-//         expires_at?, note?, staff_id?, location_id?, channel? }
+//         expires_at?, note?, staff_id?, location_id?, channel?, closed_check_id? }
 //
 // org_id is optional: if omitted, resolved from the caller's company role.
+//
+// v5.11.118 (Drop C, sell gift cards at the till). channel 'pos' is the paired till printing a
+// brand new card after a paid sale. The caller may then be a device BOUND to the venue (the
+// till is an anonymous session) or staff (_shared/gift-authority.ts decideGiftTillAuthority);
+// location_id and closed_check_id are required; the card gets source 'pos' and
+// issued_at_location_id; the 'issue' ledger row carries channel 'pos', order_id = the closed
+// check id and staff_id; the reply adds balance_minor and balance_url (the venue's public
+// balance page) for the slip. Every other channel is Back Office and unchanged: staff only.
 
 import {
   cors, json, platformAdmin, authenticateCaller, resolveCompanyForLocation,
   generateCode, normalizeCode, codeLast4, formatCode,
   hmacLookup, hashValue, generateHmacSecret,
 } from '../_shared/gift-card-utils.ts';
-import { requireStaff } from '../_shared/loyalty-utils.ts';
+import { requireStaff, callerStaffOrDevice, recordAuthority, deviceHintOf } from '../_shared/loyalty-utils.ts';
+import { decideGiftTillAuthority } from '../_shared/gift-authority.ts';
+import { authorityLogRow } from '../_shared/loyalty-authority.ts';
+
+/** The venue's public balance page, from the Platform locations row (ops id first, then id). */
+async function balanceUrlFor(locationId: string | null): Promise<string | null> {
+  if (!locationId) return null;
+  let { data } = await platformAdmin.from('locations').select('online_slug').eq('ops_location_id', locationId).maybeSingle();
+  if (!data) ({ data } = await platformAdmin.from('locations').select('online_slug').eq('id', locationId).maybeSingle());
+  return data?.online_slug ? `https://${data.online_slug}.serv-os.app/gift/balance` : null;
+}
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -39,7 +57,13 @@ Deno.serve(async (req) => {
     staff_id,
     location_id,
     channel = 'backoffice',
+    closed_check_id,
   } = body as any;
+  const isTill = channel === 'pos';
+  if (isTill && !location_id) return json({ error: 'location_id required for a till issue' }, 400);
+  if (isTill && (closed_check_id == null || String(closed_check_id).trim() === '')) {
+    return json({ error: 'closed_check_id required for a till issue' }, 400);
+  }
 
   // v5.5.207: resolve company via location_id (reliable) with user fallback.
   // 18 Sep 2026 (round three): the company always comes from the location when one is sent; a
@@ -61,11 +85,25 @@ Deno.serve(async (req) => {
     companyId = resolved;
   }
 
-  // ── Staff only (18 Sep 2026, round three, enforced now) ────────────────
+  // ── Who may issue (18 Sep 2026, round three, enforced now) ─────────────
   // Any session used to be able to create a card for any amount here and be handed the code
-  // (an anonymous one is free with the public anon key). The only caller is Back Office
-  // (GiftCards.jsx, a signed in user). Same access rule as the database (_shared/staffAccess.ts).
-  const refused = await requireStaff({
+  // (an anonymous one is free with the public anon key). Back Office (GiftCards.jsx, a signed in
+  // user) is staff only, the same access rule as the database (_shared/staffAccess.ts).
+  // v5.11.118: channel 'pos' is the paired till after a paid sale: staff, or a device BOUND to
+  // the venue (the device arm of pos_can_access). Never an unbound session.
+  const tillRefusal = async (): Promise<Response | null> => {
+    const who = await callerStaffOrDevice(caller, (location_id as string) || null, String(companyId));
+    const authority = decideGiftTillAuthority({ user: caller, staff: who.staff, device: who.device, deviceReason: who.deviceReason }, 'issue gift cards at the till');
+    if (authority.ok) return null;
+    recordAuthority(authorityLogRow({
+      fn: 'gift-issue', mode: 'enforce', outcome: 'refused',
+      decision: { ok: false, reason: authority.reason, callerKind: caller?.is_anonymous ? (who.deviceReason === 'other_venue' || who.deviceReason === 'not_bound' ? 'device_other' : 'anonymous') : 'user_no_access' },
+      user: caller, companyId, locationId: location_id, closedCheckId: closed_check_id, channel,
+      deviceHint: deviceHintOf(body), detail: { device_reason: who.deviceReason },
+    }));
+    return json({ error: authority.error, code: 'gift_till_not_allowed', reason: authority.reason }, authority.status);
+  };
+  const refused = isTill ? await tillRefusal() : await requireStaff({
     fn: 'gift-issue', caller, locationId: (location_id as string) || null, companyId: companyId!,
     what: 'issue gift cards', body,
   });
@@ -161,6 +199,8 @@ Deno.serve(async (req) => {
       recipient_email: recipient_email || null,
       recipient_phone: recipient_phone || null,
       note: note || null,
+      // v5.11.118: a card the till printed says so; Back Office keeps the column default.
+      ...(isTill ? { source: 'pos' } : {}),
     })
     .select('id')
     .single();
@@ -177,6 +217,9 @@ Deno.serve(async (req) => {
       amount_minor: amountMinor,
       balance_after_minor: amountMinor,
       location_id: location_id || null,
+      // v5.11.118: the till's issue row names the closed check it was sold on (gift-load status
+      // lists the cards of a check by this). Back Office issues carry no order.
+      order_id: isTill ? String(closed_check_id) : null,
       channel,
       staff_id: staff_id || null,
       note: note || null,
@@ -188,11 +231,16 @@ Deno.serve(async (req) => {
     return json({ error: `Failed to create ledger entry: ${txErr.message}` }, 500);
   }
 
+  // v5.11.118: the slip prints where the customer checks the balance.
+  const balanceUrl = isTill ? await balanceUrlFor((location_id as string) || null) : null;
+
   return json({
     card_id: card.id,
     code: formatCode(code),
     code_last4: last4,
     balance: amountMinor,
+    balance_minor: amountMinor,
+    balance_url: balanceUrl,
     currency: config.currency,
     expires_at: expiresAt,
     status: 'active',

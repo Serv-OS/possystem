@@ -752,6 +752,7 @@ import { linesGoods } from '../lib/taxShare.js';
 import { closeMoney } from '../lib/closeMoney.js';
 import { mintCheckId, usableCheckId, walkInCloseId, bookedCheck, secondCardOnBooked } from '../lib/walkInCheckId.js';
 import { loyaltyEarnItems, earnChannelFor, partRefundLoyaltyBody, channelEarnCustomer } from '../lib/loyaltyEarnItems.js';
+import { giftCardSaleLine, cleanGiftAmountMinor, giftLinesTotal, isNoDiscountLine } from '../lib/giftCardLine.js';
 import { promoReleaseOrderIds } from '../../supabase/functions/_shared/promoRelease.js';
 import { withVenueServiceRule } from '../lib/venueServiceRule.js';   // v5.11.81 round 1: Pay at table books the service the reader charged
 
@@ -3289,6 +3290,30 @@ export const useStore = create((set, get) => ({
     }
   },
 
+  // 29 Oct 2026 (v5.11.118, Drop C): one gift card sold at the till = one line (two cards = two
+  // lines). `amountMinor` is whole minor units, 500..50000 (giftCardLine.cleanGiftAmountMinor).
+  // The line is outside tax, never discounted, earns no loyalty, has no stock and never goes to
+  // the kitchen (giftCardLine.js). Added to the table session or the walk in order exactly as a
+  // custom item is. Returns the line, or null when the amount is refused.
+  addGiftCardLine: (amountMinor) => {
+    const minor = cleanGiftAmountMinor(Number(amountMinor) / 100);
+    if (minor == null) return null;
+    const { activeTableId, staff } = get();
+    const newItem = giftCardSaleLine(minor, uid());
+    if (activeTableId) {
+      set(s=>({ tables:s.tables.map(t=>{
+        if (t.id!==activeTableId) return t;
+        const session = t.session||{ id:newSessionOrderId(), items:[], firedCourses:[], sentAt:null, covers:2, server:staff?.name||'Staff', seatedAt:Date.now(), _loc:venueTag(), note:'', orderNote:'', subtotal:0, total:0 };
+        const items=[...session.items, newItem];
+        const subtotal=items.reduce((s,i)=>s+i.price*i.qty,0);
+        return {...t, session:{...session, items, subtotal, total:subtotal*1.125, lastUpdated: Date.now()}};
+      }) }));
+    } else {
+      set(s=>{const items=[...(s.walkInOrder?.items||[]),newItem];return{walkInOrder:{...(s.walkInOrder||{id:newSessionOrderId()}),items}};});
+    }
+    return newItem;
+  },
+
   removeItem: (itemUid) => {
     const { activeTableId } = get();
     // v4.6.11: restore daily count for the removed item (only if it was never sent —
@@ -4886,7 +4911,8 @@ export const useStore = create((set, get) => ({
             // v5.5.259 rule (a size takes its product's category, comps flagged), moved to
             // lib/loyaltyEarnItems.js unchanged so a part refund counts the stamps the same way.
             items: loyaltyEarnItems(orderRecord.items || [], get().menuItems || []),
-            subtotal: Number(orderRecord.total) || 0,
+            // v5.11.118: a gift card sold on the check is money in, not spend: left out of the basis.
+            subtotal: Math.max(0, (Number(orderRecord.total) || 0) - giftLinesTotal(orderRecord.items || [])),
             staff_id: orderRecord.staffId || null,
             // Database fence stage 1: the member signed in at the kiosk proves the earn is theirs
             // even when the kiosk's device link is missing (lib/memberSession, only for THIS
@@ -8589,6 +8615,11 @@ export const useStore = create((set, get) => ({
   // Item-level discount
   addItemDiscount: (tableId, itemUid, discount) => {
     discount = scrubDiscount(discount);
+    // v5.11.118: a gift card sold at the till is never discounted (giftCardLine.isNoDiscountLine).
+    const target = (tableId
+      ? (get().tables.find(t => t.id === tableId)?.session?.items || [])
+      : (get().walkInOrder?.items || [])).find(i => i.uid === itemUid);
+    if (target && isNoDiscountLine(target)) return;
     if (tableId) {
       set(s => ({ tables:s.tables.map(t => {
         if (t.id!==tableId||!t.session) return t;

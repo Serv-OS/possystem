@@ -137,7 +137,9 @@ Deno.serve(async (req) => {
     const [checks, olderRefunds, { data: fc }, tsRows, shifts, staff, sess, ftables] = !full
       ? [[], [], { data: null }, [], [], [], [], []] as any[]
       : await Promise.all([
-      pagedRows('closed checks', () => sb.from('closed_checks').select(SALES_CHECK_COLS).eq('location_id', loc).gte('closed_at', startIso).order('closed_at').order('id')),
+      // v5.11.118 (Drop C): items too, so a gift card sold at the till (a line of kind 'gift_card_sale')
+      // is money in, not sales, here as in every report (one venue, 36 hours: the heavy column is cheap).
+      pagedRows('closed checks', () => sb.from('closed_checks').select(`${SALES_CHECK_COLS}, items`).eq('location_id', loc).gte('closed_at', startIso).order('closed_at').order('id')),
       // Older checks that carry a refund (few): only their refunds are read, never their sales.
       pagedRows('older refunds', () => sb.from('closed_checks').select(SALES_CHECK_COLS).eq('location_id', loc).gte('closed_at', refundsSinceIso).lt('closed_at', startIso).neq('refunds', '[]').order('closed_at').order('id')),
       sb.from('wf_sales_forecast').select('forecast_date, amount').eq('location_id', loc).eq('forecast_date', bizDay).maybeSingle(),
@@ -195,6 +197,9 @@ Deno.serve(async (req) => {
       refunds: r2(sales.refunds || 0), refundVat: r2(sales.refund_vat || 0), vatMissing: sales.vat_missing || 0, vatMissingRefs: sales.vat_missing_refs || [],
       // v5.11.99: the business day the figures are for, and whether demo checks were left out.
       businessDay: bizDay, demoLeftOut,
+      // v5.11.118 (Drop C): gift cards sold today, money in that is outside net, vat and gross
+      // (the one sales rule, _shared/tradingSales.js checkSalesParts giftCardsSold).
+      giftCardsSold: r2(sales.gift_sold || 0),
     };
 
     // ── Floor (active_sessions.session jsonb → floor.js input shape) ──

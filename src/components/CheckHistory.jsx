@@ -12,6 +12,11 @@ import { refundBreakdown, legRefundedMinor, toMinor, defaultLegPicks } from '../
 import { giftPartRefundPlan } from '../lib/giftCommit';
 import { useRefundCardLegs } from '../lib/payments/useRefundCardLegs';
 import { PROCESSOR_NAME, processorLabel, refundProcessorName } from '../lib/payments/refundProcessorLabel';
+import GiftActivateModal from './GiftActivateModal';
+import { giftLinesOf } from '../lib/giftCardLine';
+import { giftFunctionsUrl, giftCardsOnCheck, giftLineSlots, giftActivationWords } from '../lib/giftAtTill';
+import { ensureAuthToken, getActiveLocationSync } from '../lib/supabase';
+import { moneyMinor } from '../lib/currency';
 
 const REFUND_REASONS = [
   'Wrong item served','Quality issue','Customer complaint',
@@ -774,6 +779,49 @@ function TipWindowCard({ check }){
   );
 }
 
+// ── v5.11.118 (Drop C): the gift cards sold on a closed check ───────────────────────────────
+// Asks gift-load `status` what the check recorded and shows one line per gift card line: "Card
+// ending WXYZ loaded with £20.00", "New card ending WXYZ printed", or "Gift card not yet issued"
+// with the same two choices the till offered at pay (both open GiftActivateModal on this check).
+// `refreshKey` changes when the modal loads or issues a card, so the words update.
+function GiftCardsCard({ check, location, onOpen, refreshKey = 0 }){
+  const [state,setState]=useState({ loading:true, error:'', slots: giftLineSlots(check?.items, []) });
+  const currency=location?.currency;
+  const fmt=(m)=>moneyMinor(m,currency);
+  useEffect(()=>{
+    let alive=true;
+    (async()=>{
+      setState(s=>({...s,loading:true,error:''}));
+      const token=await ensureAuthToken().catch(()=>null);
+      const r=await giftCardsOnCheck({ locationId: check?.locationId || location?.id || getActiveLocationSync(), closedCheckId: check?.id }, { functionsUrl: giftFunctionsUrl(), token });
+      if(!alive)return;
+      if(!r.ok){ setState({ loading:false, error:r.error||'Could not read the gift card status', slots: giftLineSlots(check?.items, []) }); return; }
+      setState({ loading:false, error:'', slots: giftLineSlots(check?.items, r.cards) });
+    })();
+    return ()=>{alive=false;};
+  },[check?.id, refreshKey]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const pending=state.slots.filter(s=>!s.card).length;
+  return(
+    <div data-testid="history-gift-cards" style={{background:'var(--bg3)',border:`1px solid ${pending?'var(--amber-b, rgba(245,166,35,.45))':'var(--bdr)'}`,borderRadius:12,padding:'12px 14px',marginBottom:12}}>
+      <div style={{fontSize:11,fontWeight:700,color:'var(--t3)',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:8}}>Gift cards</div>
+      {state.loading&&<div style={{fontSize:12,color:'var(--t3)'}}>Checking…</div>}
+      {!state.loading&&state.error&&<div style={{fontSize:12,color:'var(--red)',marginBottom:6}}>{state.error}</div>}
+      {state.slots.map((s,i)=>(
+        <div key={i} style={{display:'flex',justifyContent:'space-between',alignItems:'center',fontSize:12,padding:'5px 0',borderBottom:i<state.slots.length-1?'1px solid var(--bdr)':'none',color:s.card?'var(--t2)':'var(--amber, #F5A623)'}}>
+          <span>Gift card {fmt(s.amountMinor)}</span>
+          <span style={{fontWeight:600}}>{s.card?giftActivationWords(s.card,fmt):'Gift card not yet issued'}</span>
+        </div>
+      ))}
+      {!state.loading&&pending>0&&(
+        <div style={{display:'flex',gap:8,marginTop:10}}>
+          <button className="btn btn-ghost" style={{flex:1,fontSize:12}} data-testid="history-gift-code" onClick={onOpen}>Card code</button>
+          <button className="btn btn-acc" style={{flex:1,fontSize:12}} data-testid="history-gift-print" onClick={onOpen}>Print new card</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Check History Panel ───────────────────────────────────────────────────────
 export default function CheckHistory(){
   const {closedChecks,refundCheck,retryRefundReversal,showToast,location,hydrateCaptureStatus}=useStore();
@@ -783,6 +831,9 @@ export default function CheckHistory(){
   const [showRefund,setShowRefund]=useState(false);
   const [reprinting,setReprinting]=useState(false);
   const [retrying,setRetrying]=useState(null);
+  // v5.11.118 (Drop C): finish a gift card sale left for Later (GiftActivateModal on this check).
+  const [giftOpen,setGiftOpen]=useState(false);
+  const [giftRefresh,setGiftRefresh]=useState(0);
 
   const selectedCheck=closedChecks.find(c=>c.id===selected);
 
@@ -1094,6 +1145,22 @@ export default function CheckHistory(){
 
               {/* v5.7.5 - tip on printed receipt: the open/settling window */}
               <TipWindowCard check={selectedCheck}/>
+
+              {/* v5.11.118 (Drop C): the gift cards sold on this check, and the way to finish one */}
+              {giftLinesOf(selectedCheck.items).length>0&&(
+                <GiftCardsCard check={selectedCheck} location={location} refreshKey={giftRefresh} onOpen={()=>setGiftOpen(true)}/>
+              )}
+              {giftOpen&&(
+                <GiftActivateModal
+                  closedCheckId={selectedCheck.id}
+                  checkRef={selectedCheck.ref}
+                  items={selectedCheck.items}
+                  server={selectedCheck.server}
+                  location={location}
+                  onChanged={()=>setGiftRefresh(n=>n+1)}
+                  onClose={()=>{setGiftOpen(false);setGiftRefresh(n=>n+1);}}
+                />
+              )}
 
               {/* Refund audit trail */}
               {selectedCheck.refunds.length>0&&(

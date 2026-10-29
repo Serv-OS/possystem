@@ -22,7 +22,10 @@ import { getAssignedNetworkReader } from '../lib/networkReader';
 import { CATEGORIES, MENU_ITEMS as SEED_MENU_ITEMS, ALLERGENS, QUICK_IDS, CAT_META } from '../data/seed';
 import { daypartOfHour } from '../lib/quickRank';
 import { taxCtxHasConfig } from '../lib/taxCompute';
-import { creditDiscountsFromPayment, shownCheckDiscounts } from '../lib/taxBasis';
+import { creditDiscountsFromPayment, shownCheckDiscounts, linesAfterItemDiscounts } from '../lib/taxBasis';
+import GiftActivateModal from '../components/GiftActivateModal';
+import { giftLinesOf, isGiftCardSaleLine, isNoDiscountLine, cleanGiftAmountMinor, GIFT_CARD_PRESETS_MINOR, giftAmountRuleWords } from '../lib/giftCardLine';
+import { moneyMinor } from '../lib/currency';
 import { receiptDiscountLines } from '../lib/receiptDiscountLines';
 import { isQuoteOfOrder } from '../lib/orderPlacedFrom';   // v5.11.78 round 1: an order's fee is bound to that order
 import { resolveQuickItems } from '../lib/quickRank';
@@ -85,7 +88,7 @@ export default function POSSurface() {
   const compact = useCompact();
   const {
     staff, allergens, toggleAllergen, clearAllergens,
-    addItem, addCustomItem, removeItem, updateItemQty, updateItemNote, configureLineOptions,
+    addItem, addCustomItem, addGiftCardLine, removeItem, updateItemQty, updateItemNote, configureLineOptions,
     updateItemSeat, updateItemCourse, setOrderNote,
     sendToKitchen, fireCourse, saveTableSession, toggleServiceCharge,
     reprintKitchenTickets,
@@ -446,6 +449,11 @@ export default function POSSurface() {
   const [customName, setCustomName] = useState('');
   const [customPrice, setCustomPrice] = useState('');
   const [customNote, setCustomNote] = useState('');
+  // 29 Oct 2026 (v5.11.118, Drop C): sell a gift card. The amount picker, then after pay the
+  // activation steps (one per card) on the closed check.
+  const [showGift, setShowGift] = useState(false);
+  const [giftAmount, setGiftAmount] = useState('');
+  const [giftActivate, setGiftActivate] = useState(null);   // { closedCheckId, checkRef, items, server }
   const [showCustomerModal, setShowCustomerModal] = useState(false);
   // 27 Sep 2026: the order's customer "Link to existing member" is open for (LinkMemberModal)
   const [linkMemberFor, setLinkMemberFor] = useState(null);
@@ -482,7 +490,7 @@ export default function POSSurface() {
   // 17 Oct 2026 (Multi site menu): a head office menu update waits until this till is idle (no
   // lines, no payment screen, nothing open). Only lib/msm/msmTillWatch.js reads this; an ordinary
   // Push to POS is not affected.
-  const _tillModalOpen = !!(modalItem || editLine || flagPromptFor || showAllergens || showCustom || showCustomerModal
+  const _tillModalOpen = !!(modalItem || editLine || flagPromptFor || showAllergens || showCustom || showGift || giftActivate || showCustomerModal
     || linkMemberFor || pendingOrderType || voidTarget || showDiscount || showReceipt || showReprint || infoItem
     || showReview || showSendModal || showAllergenGate || showTableActions);
   useEffect(() => {
@@ -1015,6 +1023,9 @@ export default function POSSurface() {
 
   const handlePayComplete = (paymentInfo = {}) => {
     setShowCheckout(false);
+    // v5.11.118 (Drop C): the gift card lines this check sold, read BEFORE the close clears them.
+    // After the close ran, GiftActivateModal puts each one on a card (code, or print a new card).
+    const soldGiftLines = giftLinesOf(items);
 
     // ── Snapshot everything needed to print the customer receipt BEFORE
     //    we clear the table/walk-in. After clear, items/session are gone.
@@ -1095,7 +1106,9 @@ export default function POSSurface() {
         // always false and table orders paid with unsent items never fired.
         clearTable(activeTableId, paymentInfo);
         showToast('Payment complete, table cleared', 'success');
-        setSurface('tables');
+        // v5.11.118: a gift card sale keeps the till here until its card is loaded or printed
+        // (the activation modal lives on this surface); GiftActivateModal's close goes to tables.
+        if (!soldGiftLines.length || isTrainingMode()) setSurface('tables');
       } else {
         // v5.5.792: unsent lines fire INSIDE recordWalkInClosed (store choke point)
         // as one combined send — all courses at once, no holds, no double-fire.
@@ -1142,6 +1155,24 @@ export default function POSSurface() {
       }
     } else {
       console.info('[PayComplete] no receiptSnapshot — auto-print skipped');
+    }
+
+    // v5.11.118 (Drop C): a gift card sold on this check is a liability with no card until it is
+    // loaded or issued. The closed check the store just appended (newest at index 0) carries the id
+    // (closed_checks.id) gift-load / gift-issue dedupe on. Training mode commits nothing, so no card.
+    if (soldGiftLines.length) {
+      if (isTrainingMode()) {
+        showToast('Training mode: no gift card is issued', 'info');
+      } else {
+        const closed = useStore.getState().closedChecks[0] || null;
+        setGiftActivate({
+          closedCheckId: closed?.id || paymentInfo.closedCheckId || null,
+          checkRef: closed?.ref || null,
+          items: soldGiftLines,
+          server: session?.server || staff?.name || null,
+          then: activeTableId ? 'tables' : null,
+        });
+      }
     }
 
     // v5.7.5 - merchant tip slip, after the customer receipt so the printer
@@ -1753,7 +1784,8 @@ export default function POSSurface() {
               {(()=>{
                 const checkDiscounts=activeTableId?(tables.find(t=>t.id===activeTableId)?.session?.discounts||[]):(useStore.getState().walkInOrder?.discounts||[]);
                 // v5.11.81: never more than the bill (an amount bigger than the bill shows what it takes off)
-                const shownDisc=shownCheckDiscounts(checkDiscounts, subtotal);
+                // v5.11.118: a percent discount is of the lines it can touch (never a gift card line)
+                const shownDisc=shownCheckDiscounts(checkDiscounts, linesAfterItemDiscounts(items));
                 return checkDiscounts.length>0?(
                   <div style={{padding:'0 12px 4px'}}>
                     {checkDiscounts.map((d,di)=>(
@@ -1803,6 +1835,10 @@ export default function POSSurface() {
             <button onClick={()=>setShowCustom(true)} title="Custom item" style={{width:40,height:40,borderRadius:11,border:'1px solid var(--bdr2)',background:'var(--bg3)',color:'var(--t3)',cursor:'pointer',fontFamily:'inherit',fontSize:20,flexShrink:0,transition:'all .14s'}}
               onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--bdr3)';e.currentTarget.style.color='var(--t2)';}}
               onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--bdr2)';e.currentTarget.style.color='var(--t3)';}}>+</button>
+            {/* v5.11.118 (Drop C): sell a gift card, same style as the custom item button */}
+            <button onClick={()=>{setGiftAmount('');setShowGift(true);}} title="Gift card" data-testid="sell-gift-card" style={{height:40,padding:'0 10px',borderRadius:11,border:'1px solid var(--bdr2)',background:'var(--bg3)',color:'var(--t3)',cursor:'pointer',fontFamily:'inherit',fontSize:11,fontWeight:800,letterSpacing:'.04em',flexShrink:0,transition:'all .14s'}}
+              onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--bdr3)';e.currentTarget.style.color='var(--t2)';}}
+              onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--bdr2)';e.currentTarget.style.color='var(--t3)';}}>GIFT</button>
             {activeTableId ? (() => {
               // Table mode: one button — label depends on state
               // No items → Save (hold table)
@@ -2246,8 +2282,8 @@ export default function POSSurface() {
       {/* Discount modal */}
       {showDiscount&&(
         <DiscountModal
-          items={items}
-          subtotal={subtotal}
+          items={items.filter(i=>!isNoDiscountLine(i)) /* v5.11.118: a gift card is never discounted */}
+          subtotal={linesAfterItemDiscounts(items)}
           onConfirm={(disc)=>{
             if (disc.scope==='check') {
               if (activeTableId) addCheckDiscount(activeTableId, disc);
@@ -2293,6 +2329,48 @@ export default function POSSurface() {
             const stations = reprintKitchenTickets(uids);
             if (stations > 0) showToast(`Reprinted ${uids.length} item${uids.length!==1?'s':''} to ${stations} station${stations!==1?'s':''}`, 'success');
           }}
+        />
+      )}
+      {showGift&&(()=>{
+        const minor = cleanGiftAmountMinor(giftAmount);
+        const fmt = (m) => moneyMinor(m, location?.currency);
+        const add = (m) => {
+          const line = addGiftCardLine(m);
+          if (!line) { showToast(`Gift card amount: ${giftAmountRuleWords(fmt)}`, 'error'); return; }
+          showToast(`Gift card ${fmt(m)} added`, 'success');
+          setShowGift(false); setGiftAmount('');
+        };
+        return (
+        <div className="modal-back"><div className="modal-box" style={{maxWidth:360}} data-testid="gift-amount-modal">
+          <div style={{fontSize:16,fontWeight:600,marginBottom:6,color:'var(--t1)'}}>Gift card</div>
+          <div style={{fontSize:12,color:'var(--t3)',marginBottom:14}}>No VAT at the sale. The card is loaded or printed after payment.</div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginBottom:12}}>
+            {GIFT_CARD_PRESETS_MINOR.map(m=>(
+              <button key={m} className="btn btn-ghost" style={{padding:'12px 0',fontSize:15,fontWeight:800,fontFamily:'var(--font-mono)'}} onClick={()=>add(m)}>{fmt(m)}</button>
+            ))}
+          </div>
+          <div style={{marginBottom:16}}>
+            <label style={{display:'block',fontSize:11,color:'var(--t2)',fontWeight:700,textTransform:'uppercase',letterSpacing:'.06em',marginBottom:6}}>Other amount</label>
+            <input className="input" type="number" inputMode="decimal" min="5" max="500" step="0.01" placeholder="0.00" value={giftAmount} autoFocus
+              onChange={e=>setGiftAmount(e.target.value)}
+              onKeyDown={e=>{if(e.key==='Enter'&&minor!=null){e.preventDefault();add(minor);}}}/>
+            <div style={{fontSize:11,color:giftAmount&&minor==null?'var(--red)':'var(--t3)',marginTop:6}}>{giftAmountRuleWords(fmt)}</div>
+          </div>
+          <div style={{display:'flex',gap:8}}>
+            <button className="btn btn-ghost" style={{flex:1}} onClick={()=>{setShowGift(false);setGiftAmount('');}}>Cancel</button>
+            <button className="btn btn-acc" style={{flex:1}} disabled={minor==null} onClick={()=>add(minor)}>Add</button>
+          </div>
+        </div></div>
+        );
+      })()}
+      {giftActivate&&(
+        <GiftActivateModal
+          closedCheckId={giftActivate.closedCheckId}
+          checkRef={giftActivate.checkRef}
+          items={giftActivate.items}
+          server={giftActivate.server}
+          location={location}
+          onClose={()=>{const then=giftActivate.then;setGiftActivate(null);if(then)setSurface(then);}}
         />
       )}
       {showCustom&&(
@@ -2532,6 +2610,8 @@ function OrderItem({
               display:'flex',alignItems:'center',gap:6,
             }}>
               {item.name}
+              {/* v5.11.118: a gift card sold at the till is outside VAT and never discounted */}
+              {isGiftCardSaleLine(item) && <span data-testid="gift-line-no-vat" style={{fontSize:9,fontWeight:700,padding:'1px 5px',borderRadius:4,background:'var(--bg4)',color:'var(--t3)',letterSpacing:.04}}>no VAT</span>}
               {isVoided && <span style={{fontSize:9,fontWeight:800,padding:'1px 5px',borderRadius:4,background:'var(--red-d)',color:'var(--red)',letterSpacing:.04}}>VOIDED</span>}
               {/* v5.7.27: pre-order line seated without its options chosen (how
                   is the steak cooked?) — amber badge opens the same options
@@ -2567,8 +2647,8 @@ function OrderItem({
               </div>
             )}
 
-            {/* Inline note editor */}
-            {!isVoided && (editNote ? (
+            {/* Inline note editor (not on a gift card line: nothing goes to the kitchen) */}
+            {!isVoided && !isGiftCardSaleLine(item) && (editNote ? (
               <div style={{marginTop:6}}>
                 <input autoFocus value={noteVal} onChange={e=>setNoteVal(e.target.value)}
                   onKeyDown={e=>{if(e.key==='Enter'){onNote(noteVal);setEditNote(false);}if(e.key==='Escape'){setNoteVal(item.notes||'');setEditNote(false);}}}

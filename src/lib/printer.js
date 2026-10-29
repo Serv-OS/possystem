@@ -22,7 +22,7 @@ import { breakdownLabel, breakdownIsExclusive } from './receiptTax.js';
 import { consolidateReceiptLines } from './receiptLines.js';
 import { cardReceiptLines } from './cardReceipt.js';
 import {
-  buildCustomerReceiptDoc, buildMerchantTipSlipDoc, buildKitchenTicketDoc, buildFireCourseTicketDoc,
+  buildCustomerReceiptDoc, buildMerchantTipSlipDoc, buildGiftCardSlipDoc, buildKitchenTicketDoc, buildFireCourseTicketDoc,
   buildTransferNoticeTicketDoc, buildTestPageDoc, docHasCut, docHasDrawer,
 } from './printDoc.js';
 import {
@@ -95,6 +95,13 @@ export async function buildMerchantTipSlip(args, printer = null) {
   const spec = resolvePrinterSpec(printer);
   const assets = await loadReceiptAssets(args?.location, { qr: false });
   return encodeDocForPrinter(buildMerchantTipSlipDoc(args, { cols: spec.cols, assets }), printer);
+}
+
+// v5.11.118: the gift card slip (Drop C), same branding assets as the tip slip.
+export async function buildGiftCardSlip(args, printer = null) {
+  const spec = resolvePrinterSpec(printer);
+  const assets = await loadReceiptAssets(args?.location, { qr: false });
+  return encodeDocForPrinter(buildGiftCardSlipDoc(args, { cols: spec.cols, assets }), printer);
 }
 
 export function buildKitchenTicket(ticketData, printer = null) {
@@ -882,6 +889,49 @@ class PrintService {
       idempotencyKey: opts.idempotencyKey || (check?.ref ? `tipslip-${check.ref}-${Date.now()}` : undefined),
       metadata: { ref: check?.ref, total: totals?.grand, tableLabel: check?.tableLabel, type: 'merchant-tip-slip', routedBy: src },
       label: `Tip slip ${check?.ref || ''} - ${money(totals?.grand || 0)}`.trim(),
+    });
+  }
+
+  // v5.11.118 (Drop C, 29 Oct 2026): the gift card slip for a card ISSUED at the till (gift-issue
+  // channel pos, "Print new card"). Same routing, branding and fail closed rule as the tip slip:
+  // no receipt printer on this device = { ok:false, reason:'no-printer' }, never a browser print
+  // (the code stays on screen, so the card is never lost). Its own duplicate guard keyspace, keyed
+  // on the card, so two cards sold on one check both print and a second tap within seconds does not.
+  //   { location, card: { code, balance_minor, currency?, balance_url? }, check: { ref, server? } }
+  async printGiftCardSlip({ location, card, check }, printerId = null, opts = {}) {
+    let locationWithBranding = location;
+    let effectiveLocationId = location?.id || null;
+    if (!effectiveLocationId) {
+      try { effectiveLocationId = await getLocationId(); } catch { /* branding optional */ }
+    }
+    if (effectiveLocationId || location?.receipt_branding) {
+      try {
+        const branding = location?.receipt_branding || await loadLocationBranding(effectiveLocationId);
+        if (branding) locationWithBranding = mergeBrandingIntoLocation(location || { id: effectiveLocationId }, branding);
+      } catch (e) {
+        console.warn('[Print] Gift slip branding fetch failed, using plain slip:', e?.message || e);
+      }
+    }
+    const { printer, src } = this._receiptTarget(printerId, opts);
+    if (!printer?.address) {
+      return { ok: false, error: 'No receipt printer configured for this device', reason: 'no-printer' };
+    }
+    const cardKey = String(card?.code || card?.card_id || '').replace(/[^A-Za-z0-9]/g, '');
+    const guardKey = cardKey
+      ? receiptGuardKey(effectiveLocationId, `giftslip:${cardKey}`, (Number(card?.balance_minor) || 0) / 100, printer.id)
+      : null;
+    if (guardKey) {
+      if (receiptPrintedRecently(guardKey)) {
+        console.info(`[Print] Gift slip for card ending ${cardKey.slice(-4)} was printed on this machine seconds ago - skipping the duplicate.`);
+        return { ok: true, transport: 'duplicate-suppressed', printer: printer.name };
+      }
+      markReceiptPrinted(guardKey);
+    }
+    const bytes = await buildGiftCardSlip({ location: locationWithBranding, card, check }, printer);
+    return this._submitJob(printer, 'receipt', bytes, {
+      idempotencyKey: opts.idempotencyKey || (cardKey ? `giftslip-${cardKey}-${Date.now()}` : undefined),
+      metadata: { ref: check?.ref, type: 'gift-card-slip', cardLast4: cardKey.slice(-4), value: (Number(card?.balance_minor) || 0) / 100, routedBy: src },
+      label: `Gift card slip ${check?.ref || ''} - ${money((Number(card?.balance_minor) || 0) / 100)}`.trim(),
     });
   }
 

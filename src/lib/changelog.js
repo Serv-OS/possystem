@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.119',
+    date: '30 Oct 2026',
+    items: [
+      "Sell gift cards at the till. A GIFT button beside the custom item button: pick an amount (£10, £20, £25, £50 or typed, £5 to £500), pay as a normal sale by any tender. After payment the till asks for the card: scan or type the code on a physical card to load it (a card with money on it is topped up), or print a new card, which prints a slip with the code, the value and the balance check address. Both choices are always there. Later leaves it for History, which shows each gift sale with its card or a reminder to issue one, and the same two buttons.",
+      "A gift card sale is money in, not sales: no VAT at the sale, never discounted, no loyalty earned, no service charge on it, nothing for the kitchen. It shows as its own line, Gift cards sold, in the Business summary, Daily trading, the X and Z slips, the Owner and Manager apps and the Xero daily invoice, outside net sales and the VAT return.",
+      "Back Office, Gift cards, Bulk create gains Blank cards for the till: printed with their codes, worth nothing until a sale at the till loads them.",
+      "Marketing: a quick send has no schedule. The hour job no longer continues a quick send that stopped short; the Continue sending button in Quick send is the only way it carries on.",
+      "RUN IN THE DATABASE: Platform 20261108a_PLATFORM_gift_till.sql (blank cards, loads, cards sold at the till) and 20261107a_PLATFORM_processor_defaults_adyen.sql; Ops 20261107a_OPS_processor_defaults_adyen.sql. Edge functions to deploy: gift-bulk-create, gift-issue, gift-load (new), marketing-run, and the report functions that share the sales rule.",
+    ],
+  },
+  {
     v: '5.11.117',
     date: '29 Oct 2026',
     items: [

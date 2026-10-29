@@ -3,13 +3,16 @@
 // v5.5.199: Bulk-create gift cards. Creates a batch of cards with the same
 // value. No recipient details required — cards are anonymous until redeemed.
 //
-// Body: { amount, quantity, batch_name, expires_at? }
-//   amount     — card value in minor currency units (e.g. 2500 = £25)
+// Body: { amount, quantity, batch_name, expires_at?, blank? }
+//   amount     — card value in minor currency units (e.g. 2500 = £25); not needed when blank
 //   quantity   — number of cards to create (1-500)
 //   batch_name — user-defined label for this batch
 //   expires_at — optional ISO date (overrides default_expiry_months)
+//   blank      — v5.11.118 (Drop C): true makes PRINTED cards with nothing on them: initial 0,
+//                balance 0, status 'blank', source 'bulk'. The till loads them at the sale
+//                (gift-load). No ledger row until then; no expiry (it starts when loaded).
 //
-// Returns: { batch_id, batch_name, quantity, cards: [{ code, code_last4, card_id }] }
+// Returns: { batch_id, batch_name, quantity, cards: [{ code, code_last4, card_id }], blank }
 //
 // The plaintext codes are returned ONCE in the response. They are hashed
 // on the card record and cannot be recovered later.
@@ -35,6 +38,7 @@ Deno.serve(async (req) => {
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
 
   const { amount, quantity, batch_name, expires_at } = body as any;
+  const blank = (body as any).blank === true;
 
   // v5.5.207: resolve company via location_id (reliable) with user fallback
   const companyResult = await resolveCompanyForLocation(caller.id, body.location_id as string);
@@ -50,9 +54,9 @@ Deno.serve(async (req) => {
   });
   if (refused) return refused;
 
-  // Validate
-  const amountMinor = Math.round(Number(amount));
-  if (!Number.isFinite(amountMinor) || amountMinor <= 0) {
+  // Validate. A blank batch carries no amount (0 on the card until the till loads it).
+  const amountMinor = blank ? 0 : Math.round(Number(amount));
+  if (!blank && (!Number.isFinite(amountMinor) || amountMinor <= 0)) {
     return json({ error: 'amount must be positive (minor currency units)' }, 400);
   }
   const qty = Math.round(Number(quantity));
@@ -80,17 +84,19 @@ Deno.serve(async (req) => {
     config = newConfig;
   }
 
-  // Validate against limits
-  if (amountMinor < config.min_card_value_minor) {
+  // Validate against limits (a blank card has no value yet; gift-load checks the loaded amount)
+  if (!blank && amountMinor < config.min_card_value_minor) {
     return json({ error: `Amount below minimum (${config.min_card_value_minor} minor units)` }, 400);
   }
-  if (amountMinor > config.max_card_value_minor) {
+  if (!blank && amountMinor > config.max_card_value_minor) {
     return json({ error: `Amount exceeds maximum (${config.max_card_value_minor} minor units)` }, 400);
   }
 
-  // Compute expiry
+  // Compute expiry. A blank card's clock starts when it is loaded, so none is set here.
   let expiresAt: string | null = null;
-  if (expires_at) {
+  if (blank) {
+    expiresAt = null;
+  } else if (expires_at) {
     expiresAt = new Date(expires_at as string).toISOString();
   } else if (config.default_expiry_months) {
     const d = new Date();
@@ -138,7 +144,7 @@ Deno.serve(async (req) => {
           code_plain: normalized,
           initial_amount_minor: amountMinor,
           balance_minor: amountMinor,
-          status: 'active',
+          status: blank ? 'blank' : 'active',
           expires_at: expiresAt,
           batch_id: batchId,
           batch_name: trimmedName,
@@ -149,6 +155,12 @@ Deno.serve(async (req) => {
 
       if (cardErr) {
         errors.push(`Card ${i + 1}: ${cardErr.message}`);
+        continue;
+      }
+
+      // A blank card has no ledger row until the till loads it (gift-load writes 'load').
+      if (blank) {
+        results.push({ code: formatCode(code), code_last4: last4, card_id: card.id });
         continue;
       }
 
@@ -191,5 +203,6 @@ Deno.serve(async (req) => {
     currency: config.currency,
     amount: amountMinor,
     expires_at: expiresAt,
+    blank,
   });
 });

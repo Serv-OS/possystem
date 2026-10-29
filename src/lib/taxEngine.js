@@ -227,7 +227,7 @@ export function makeCascadeResolver({
  *
  * @param {Object}   args
  * @param {Array}    args.lines  order lines:
- *   { price, qty, discountedPrice?, itemId, categoryId?, voided?,
+ *   { price, qty, discountedPrice?, itemId, categoryId?, voided?, taxExempt?,
  *     netValue?, serviceShare?, deliveryShare?,
  *     lineId?, name?, custom?,                      (8 Oct 2026: for the fallback note; custom =
  *                                                   an open price till item with no Back Office rule)
@@ -283,6 +283,9 @@ export function computeTax({
   for (let li = 0; li < lines.length; li++) {
     const ol = lines[li];
     if (!ol || ol.voided) continue;
+    // 29 Oct 2026 (v5.11.118): a tax exempt line (a gift card sold at the till) carries no tax at
+    // all: no profile, no rate line, lineTaxes stay 0. taxCompute.toEngineLine stamps the flag.
+    if (ol.taxExempt === true) continue;
     const profileId = resolveProfileId ? resolveProfileId(ol, orderType) : null;
     if (!profileId) continue;
     const profile = profilesById[profileId];

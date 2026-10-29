@@ -100,7 +100,9 @@ export function isLiveCheck(c) {
 
 /** A line that counts: not voided on the ticket. */
 export function isLiveLine(i) {
-  return !!i && !i.voided && i.status !== 'voided';
+  // 29 Oct 2026 (Drop C): a gift card sold at the till (kind 'gift_card_sale') is money in, not an
+  // item sale: it is in no mix, group, category or item list (accountingDay.js GIFT_SALE_KIND).
+  return !!i && !i.voided && i.status !== 'voided' && i.kind !== 'gift_card_sale';
 }
 
 /** The close instant in ms from either row shape (closedAt ms, closed_at ISO), or null. */

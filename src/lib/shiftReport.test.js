@@ -179,3 +179,29 @@ test('16 Oct 2026: the Back Office Z report reads the same figures as the till s
   const bo = fs.readFileSync(new URL('../backoffice/sections/BOReports.jsx', import.meta.url), 'utf8');
   assert.match(bo, /<ZReport [^>]*locationId=\{activeLocId\} filters=\{reportFilters\} locationConfig=\{locationConfig\}/);
 });
+
+// 29 Oct 2026 (v5.11.118, Drop C): gift cards sold at the till on the X and Z slip. Money in, not
+// sales: a "plus Gift cards sold" line in the ladder (outside Net sales and VAT, inside Money
+// collected) and named again under Payments, where its money sits inside Card and Cash.
+test('the slip: a £20 gift card and a £10 latte by card prints net 8.33, gift cards sold 20, money collected 30', () => {
+  n = 0;
+  const giftLine = { itemId: 'gift_card', kind: 'gift_card_sale', name: 'Gift card', price: 20, qty: 1, taxExempt: true, noDiscount: true };
+  const rows = [sale({ items: [line(10, 1, { itemId: 'm-latte' }), giftLine], subtotal: 30, taxAmount: 1.67, total: 30, tenders: [card(30)] })];
+  const { sales, payments } = summariseShift(rows, { range: DAY_RANGE, currency: 'GBP' });
+  assert.equal(sales.net, 8.33); assert.equal(sales.tax, 1.67); assert.equal(sales.sales, 10);
+  assert.equal(sales.giftSold, 20); assert.equal(sales.collected, 30);
+  assert.deepEqual(payments.map((p) => [p.label, p.count, p.amount]), [['Card', 1, 30], ['Cash', 0, 0], ['Gift card', 0, 0]]);
+  assert.equal(Math.round(payments.reduce((t, p) => t + p.amount, 0) * 100) / 100, sales.collected, 'payments still add up to Money collected');
+  const t = textOf(buildShiftReportDoc({ kind: 'Z', sales, payments, currency: 'GBP', drawer: { expected: 0, declared: 0, variance: 0 } }));
+  for (const want of ['Item sales (including VAT) | £10.00', '  Net sales excluding VAT | £8.33', 'plus Gift cards sold | £20.00', 'Money collected | £30.00', 'Card (1) | £30.00', 'Gift cards sold (in the payments above) | £20.00']) {
+    assert.ok(t.includes(want), `missing "${want}" in\n${t.join('\n')}`);
+  }
+  assert.ok(t.join(' ').includes('Gift cards sold are money in, not sales'));
+  // The same figures as the one rule and the Owner app's reading.
+  const p = checkSalesParts(toAccountingRow(rows[0]));
+  assert.equal(p.net, sales.net); assert.equal(p.giftCardsSold, sales.giftSold);
+  // No gift card sold: no gift lines on the slip at all.
+  const plain = summariseShift(theDay(), { range: DAY_RANGE });
+  const tp = textOf(buildShiftReportDoc({ kind: 'X', ...plain, currency: 'GBP' }));
+  assert.ok(!tp.some((s) => /Gift cards sold/.test(s)));
+});

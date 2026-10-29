@@ -184,7 +184,11 @@ const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
 test('wiring: one seam; every reader of it follows', () => {
   const ct = read('./payments/checkTotals.js');
   // v5.11.81: a discount that names its lines takes VAT off those lines' rates (one share otherwise).
-  assert.match(ct, /tax = inclusiveTaxOnChargedLines\(tax, liveItems, allCheckDiscounts, discountedSub,/);
+  // v5.11.118: on the TAXED lines and the money charged for them: a gift card sold at the till (no
+  // VAT, never discounted) is left out of both sides; with no gift line taxedLive is liveItems and
+  // fixedGoods is 0, so the call is what it was.
+  assert.match(ct, /tax = inclusiveTaxOnChargedLines\(tax, taxedLive, allCheckDiscounts, discountedSub - fixedGoods,/);
+  assert.match(ct, /const taxedLive = fixedGoods > 0 \? liveItems\.filter\(i => !isNoDiscountLine\(i\)\) : liveItems;/);
   const tc = read('./taxCompute.js');
   assert.match(tc, /const booked = bookedTaxRecord\(check\);\n {2}if \(booked\) return booked;/);
   const ch = read('../components/CheckHistory.jsx');

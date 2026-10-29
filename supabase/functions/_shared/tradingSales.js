@@ -43,6 +43,14 @@
 // (ledgerDays), so the P&L, Stock and GP and their parity test share one piece of maths, and demo
 // history is left out of every figure by the one demo rule (demoHistory.js).
 //
+// 29 Oct 2026 (v5.11.118, Drop C: sell gift cards at the till): a gift card sold at the till is
+// a line of kind 'gift_card_sale' on the check, paid like any line. Peter's call: MONEY IN, NOT
+// SALES (a multi purpose voucher: VAT is charged when the card is spent). accountingDay.js
+// checkTenderParts carves its money out of every tender's goods before service and VAT are
+// apportioned, so gross, vat and net here never hold it; it is reported beside them as
+// giftCardsSold (checkSalesParts) and gift_sold (tradingDays), the "Gift cards sold" line of
+// every report. Refunds of a gift card sale are not in Drop C.
+//
 // PURE: imports only accountingDay.js and demoHistory.js (pure as well); runs under node --test and in Deno.
 
 import { checkTenderParts, refundParts, isVoidedCheck, MONEY_KINDS, toMinor, checkTaxRecorded, moneyDiscounts } from './accountingDay.js';
@@ -65,26 +73,31 @@ export function chargedNothing(row) {
  * @param {any} row  a closed_checks row: subtotal, total, tax_amount, service, tip, discounts,
  *                   tenders, and for rows before tenders: method, payment_method, source,
  *                   gift_card, loyalty, promo, payment_intents, processor
- * @returns {{ net: number, vat: number, gross: number }}  major units, each a whole number of pence
+ * @returns {{ net: number, vat: number, gross: number, giftCardsSold: number }}  major units, each a
+ *   whole number of pence; giftCardsSold (29 Oct 2026) is the gift cards sold on the check, money
+ *   in that is outside gross, vat and net. The tenders' money = gross + service + tips + giftCardsSold.
  */
 export function checkSalesParts(row) {
-  const { sales, tax } = checkSalesMinor(row);
-  return { net: (sales - tax) / 100, vat: tax / 100, gross: sales / 100 };
+  const { sales, tax, gift } = checkSalesMinor(row);
+  return { net: (sales - tax) / 100, vat: tax / 100, gross: sales / 100, giftCardsSold: gift / 100 };
 }
 
-// The money parts' sales and tax, minor units. Loyalty and promo parts are discounts.
+// The money parts' sales, tax and gift cards sold, minor units. Loyalty and promo parts are discounts.
 function moneyMinor(parts) {
-  let sales = 0, tax = 0;
+  let sales = 0, tax = 0, gift = 0;
   for (const p of parts) {
     if (!MONEY_KINDS.has(p.kind)) continue;
     sales += p.sales;
     tax += p.tax;
+    gift += p.gift || 0;
   }
-  return { sales, tax };
+  return { sales, tax, gift };
 }
 
 function checkSalesMinor(row) {
-  if (chargedNothing(row)) return { sales: 0, tax: 0 };
+  // A comp whose discounts cover the whole subtotal sold nothing; a gift card on it could still
+  // have been paid for (the line takes no discount), so its money is still read from the tenders.
+  if (chargedNothing(row)) return { sales: 0, tax: 0, gift: moneyMinor(checkTenderParts(row || {}).parts).gift };
   return moneyMinor(checkTenderParts(row || {}).parts);
 }
 
@@ -120,12 +133,13 @@ function refundSalesMinor(entry, row) {
  * Per day, major units: gross (sales inc VAT, before refunds), refunds (inc VAT), sales_vat,
  * refund_vat, vat (sales_vat - refund_vat, the VAT owed), net (gross - refunds - vat),
  * checks / refund_count, and (8 Oct 2026) no_vat / no_vat_refs: sales with money taken and no
- * VAT recorded, counted 0 and named.
- * @returns {Record<string, { gross: number, refunds: number, sales_vat: number, refund_vat: number, vat: number, net: number, checks: number, refund_count: number, no_vat: number, no_vat_refs: string[] }>}
+ * VAT recorded, counted 0 and named; (29 Oct 2026) gift_sold: gift cards sold that day, money in
+ * that is in none of the sales figures.
+ * @returns {Record<string, { gross: number, refunds: number, sales_vat: number, refund_vat: number, vat: number, net: number, checks: number, refund_count: number, no_vat: number, no_vat_refs: string[], gift_sold: number }>}
  */
 export function tradingDays({ saleRows = [], refundRows = [], dayOf }) {
   const acc = {};
-  const at = (key) => (acc[key] ??= { sales: 0, salesTax: 0, refunds: 0, refundTax: 0, checks: 0, refundCount: 0, noVat: 0, noVatRefs: [] });
+  const at = (key) => (acc[key] ??= { sales: 0, salesTax: 0, gift: 0, refunds: 0, refundTax: 0, checks: 0, refundCount: 0, noVat: 0, noVatRefs: [] });
   const seen = new Set();
   for (const row of saleRows) {
     if (!row || seen.has(row.id)) continue;
@@ -133,9 +147,9 @@ export function tradingDays({ saleRows = [], refundRows = [], dayOf }) {
     if (isVoidedCheck(row)) continue;
     const ms = Date.parse(row.closed_at);
     if (!Number.isFinite(ms)) continue;
-    const { sales, tax } = checkSalesMinor(row);
+    const { sales, tax, gift } = checkSalesMinor(row);
     const d = at(dayOf(ms));
-    d.sales += sales; d.salesTax += tax; d.checks += 1;
+    d.sales += sales; d.salesTax += tax; d.gift += gift; d.checks += 1;
     // 8 Oct 2026 (the VAT audit): a sale with money taken and NO VAT recorded counts 0 VAT and
     // is NAMED, never a silent 0 (Preston QR-4OGI7 read as 4.85 of net sales in this report).
     if (sales > 0 && !checkTaxRecorded(row)) { d.noVat += 1; if (d.noVatRefs.length < 25) d.noVatRefs.push(row.ref || row.id); }
@@ -168,6 +182,7 @@ export function tradingDays({ saleRows = [], refundRows = [], dayOf }) {
       refund_count: d.refundCount,
       no_vat: d.noVat,
       no_vat_refs: d.noVatRefs,
+      gift_sold: d.gift / 100,
     };
   }
   return out;

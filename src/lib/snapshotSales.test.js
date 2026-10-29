@@ -221,3 +221,18 @@ test('manager-snapshot: every wf_timesheets read selects id, and each punch send
   assert.match(src, /pagedRows\('timesheets', \(\) => sb\.from\('wf_timesheets'\)\.select\('id, /);
   assert.match(src, /const punches = tsRows[\s\S]*?\.map\(\(t: any\) => \(\{\s*id: t\.id, staffId: t\.staff_id,/);
 });
+
+// 29 Oct 2026 (Drop C): a gift card sold at the till (a line of kind 'gift_card_sale') is money in,
+// not sales: gift_sold beside net, vat and gross, never inside them. The same check as tradingSales.test.js.
+test('gift card sold at the till: gift_sold 20, net 8.33, VAT 1.67, gross 10 (the Owner and Manager apps)', () => {
+  const row = {
+    subtotal: 30, total: 30, tax_amount: 1.67, service: 0, tip: 0,
+    items: [{ itemId: 'm-latte', qty: 1, price: 10 }, { itemId: 'gift_card', kind: 'gift_card_sale', name: 'Gift card', price: 20, qty: 1, taxExempt: true, noDiscount: true }],
+    tenders: [card(30)],
+  };
+  assert.equal(emptySales().gift_sold, 0);
+  const a = day([row]);
+  sameDay(a, { net: 8.33, vat: 1.67, gross: 10, orders: 1, tips: 0 });
+  near(a.gift_sold, 20);
+  near(a.gross + a.gift_sold, 30, 'the card took goods, VAT and the gift card');
+});

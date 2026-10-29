@@ -35,6 +35,13 @@
 
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
 
+// 29 Oct 2026 (v5.11.118): a gift card sold at the till (kind gift_card_sale, or any line stamped
+// noDiscount) is never discounted: it is left out of the subtotal a percent check discount is
+// taken on, no untargeted discount is spread onto it, and it takes no share of the service
+// charge or delivery fee. The same predicate as giftCardLine.isNoDiscountLine (kept inline so
+// this module stays import free).
+const noDiscount = (i) => !!i && (i.noDiscount === true || i.kind === 'gift_card_sale');
+
 /** Line value after its own item discount (computeCheckTotals' reducer, verbatim maths). */
 export function lineAfterItemDiscount(i) {
   const base = num(i?.price) * (i?.qty || 1);
@@ -91,9 +98,12 @@ export function allocateCheckBasis(items = [], checkBasis = {}) {
   const live = Array.isArray(items) ? items : [];
   const gross = live.map(i => num(i?.price) * (i?.qty || 1));
   const after = live.map(lineAfterItemDiscount);
-  const subtotal = after.reduce((a, b) => a + b, 0);
+  // A gift card line is kept whole: nothing is taken off it and it carries no service share.
+  const fixed = live.map(noDiscount);
+  const discountable = after.map((v, n) => (fixed[n] ? 0 : v));
+  const subtotal = discountable.reduce((a, b) => a + b, 0);
 
-  const remaining = after.slice();
+  const remaining = discountable.slice();
   let untargeted = 0;
   let discount = 0;
   for (const d of (Array.isArray(checkBasis?.discounts) ? checkBasis.discounts : [])) {
@@ -115,9 +125,13 @@ export function allocateCheckBasis(items = [], checkBasis = {}) {
   }
   const rest = remaining.reduce((a, b) => a + b, 0);
   const factor = rest > 0 ? Math.max(0, 1 - untargeted / rest) : 0;
-  const net = remaining.map(v => v * factor);
+  const net = remaining.map((v, n) => (fixed[n] ? after[n] : v * factor));
 
-  const { w, s } = weightsOf(net, after, gross);
+  const { w, s } = weightsOf(
+    net.map((v, n) => (fixed[n] ? 0 : v)),
+    discountable,
+    gross.map((v, n) => (fixed[n] ? 0 : v)),
+  );
   const service = num(checkBasis?.service);
   const deliveryFee = num(checkBasis?.deliveryFee);
   const lines = live.map((_, n) => ({
@@ -156,9 +170,13 @@ export function creditDiscountsFromPayment(paymentInfo) {
   });
 }
 
-/** 27 Sep 2026: the live lines after their own item discounts (what a lines-only bill charges). */
+/**
+ * 27 Sep 2026: the live lines after their own item discounts (what a lines-only bill charges).
+ * 29 Oct 2026 (v5.11.118): without any gift card line: this is the basis a percent check discount
+ * is taken on, and a gift card is never discounted.
+ */
 export function linesAfterItemDiscounts(items) {
-  return (Array.isArray(items) ? items : []).filter(i => i && !i.voided).reduce((s, i) => s + lineAfterItemDiscount(i), 0);
+  return (Array.isArray(items) ? items : []).filter(i => i && !i.voided && !noDiscount(i)).reduce((s, i) => s + lineAfterItemDiscount(i), 0);
 }
 
 /**

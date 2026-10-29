@@ -97,7 +97,10 @@ export const isRuleActiveNow = (rule, ctx) => {
 export const evaluateAutoDiscounts = (items, rules, channel = 'pos', ctx = null) => {
   if (!rules?.length || !items?.length) return [];
 
-  const activeItems = items.filter(i => !i.voided);
+  // 29 Oct 2026 (v5.11.118): a gift card sold at the till (kind gift_card_sale, or a line stamped
+  // noDiscount) never triggers a deal and never takes one (giftCardLine.isNoDiscountLine, inline
+  // so this module stays import free).
+  const activeItems = items.filter(i => !i.voided && !(i.noDiscount === true || i.kind === 'gift_card_sale'));
   if (!activeItems.length) return [];
 
   // A physical unit participates in at most one auto-rule. Units of the same line

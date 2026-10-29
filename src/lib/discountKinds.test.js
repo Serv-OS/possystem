@@ -266,7 +266,7 @@ test('presetId and kind survive the store, the close and the row, and change no 
   assert.deepEqual(strip(after), strip(before), 'nothing else in the row changes');
   // net of VAT, VAT and gross are identical (the one sales rule the day totals use): chips comped,
   // half off the burger, 3.00 cash with 0.50 VAT in it
-  assert.deepEqual(checkSalesParts(before), { net: 2.5, vat: 0.5, gross: 3 });
+  assert.deepEqual(checkSalesParts(before), { net: 2.5, vat: 0.5, gross: 3, giftCardsSold: 0 });   // 29 Oct 2026: gift cards sold ride beside, 0 here
   assert.deepEqual(checkSalesParts(after), checkSalesParts(before));
   assert.equal(after.discounts[0].amount, 3, 'the stamped amount is the same 50% of the burger');
   // a custom discount carries null for both and is still the same money

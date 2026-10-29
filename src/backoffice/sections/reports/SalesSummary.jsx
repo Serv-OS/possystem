@@ -32,7 +32,7 @@ import { vatMissingLine } from '../../../lib/salesStats';
 // exclude VAT, loyalty rewards are not sales, refunds come off on the day they were made, and the
 // ladder ends in the money collected, which the tender line beneath it adds up to.
 import {
-  salesBreakdown, breakdownFromDaySums, breakdownLines, tenderLine, subtotalOffLine, discountOffLine, rewardsVatLine,
+  salesBreakdown, breakdownFromDaySums, breakdownLines, tenderLine, subtotalOffLine, discountOffLine, rewardsVatLine, giftSoldLine,
   checkNetSales, BREAKDOWN_FIELDS,
 } from '../../../lib/salesBreakdown';
 import { useRefundLookback, toMs } from './_refundLookback';
@@ -182,6 +182,8 @@ function SalesSummaryOne({ checks, prevChecks, fmt, fmtN, locationConfig, compar
           {cur.vatMissing.length > 0 && <div style={{ fontSize:11, color:'var(--red)', fontWeight:700, paddingTop:6, lineHeight:1.5 }}>{vatMissingLine(cur)}</div>}
           {notes.map(n => <div key={n} style={{ fontSize:11, color:'var(--amber)', paddingTop:6, lineHeight:1.5 }}>{n}</div>)}
           {rewardsVatLine(cur, fmt) && <div style={{ fontSize:11, color:'var(--t4)', paddingTop:6, lineHeight:1.5 }}>{rewardsVatLine(cur, fmt)}</div>}
+          {/* 29 Oct 2026 (Drop C): gift cards sold at the till are money in, not sales (their own ladder line). */}
+          {giftSoldLine(cur, fmt) && <div style={{ fontSize:11, color:'var(--t4)', paddingTop:6, lineHeight:1.5 }}>{giftSoldLine(cur, fmt)}</div>}
         </div>
         <ExceptionsSnapshot cur={cur} fmt={fmt}/>
       </div>
@@ -280,13 +282,13 @@ const perCover = (s) => (s.covers ? s.net / s.covers : 0);
 const LINE_VALUE = {
   items: b => b.items, voids: b => -b.voids, delivery: b => b.deliveryFees, discounts: b => -b.discounts,
   rewards: b => -b.rewards, refunds: b => -b.refunds, shelf: b => b.shelfSales, added: b => b.addedTax,
-  sales: b => b.sales, tax: b => b.tax, net: b => b.net, service: b => b.service, tips: b => b.tips, collected: b => b.collected,
+  sales: b => b.sales, tax: b => b.tax, net: b => b.net, service: b => b.service, tips: b => b.tips, gift: b => b.giftSold || 0, collected: b => b.collected,
 };
 // The lines of a block: the block total's ladder with every line kept, less the optional lines
-// (voids, delivery) no site has; then the counts.
+// (voids, delivery, gift cards sold) no site has; then the counts.
 function siteLines(all) {
   const lines = breakdownLines(all, { keepZero: true })
-    .filter(l => !((l.key === 'voids' || l.key === 'delivery') && Math.abs(l.value) < 0.005))
+    .filter(l => !((l.key === 'voids' || l.key === 'delivery' || l.key === 'gift') && Math.abs(l.value) < 0.005))
     .map(l => ({ label: l.label, v: LINE_VALUE[l.key], strong: l.kind === 'head' || l.kind === 'sub' || l.kind === 'total' || l.key === 'net' }));
   return [
     ...lines,

@@ -35,6 +35,7 @@
 //     time code, where the card may have no stored code.
 //   * gift-issue, gift-import, gift-bulk-create, gift-config, gift-void, gift-resend: staff only.
 //   * gift-reverse-redeem: staff or a bound device of the venue. Never the customer.
+//   * gift-issue with channel 'pos', gift-load (Drop C): staff or a bound device of the venue.
 //   * gift-fulfill: the service role (the processor webhooks) or staff of the purchase's venue.
 //
 // PURE. No imports, so node tests load it directly.
@@ -136,6 +137,28 @@ export function decideGiftCardIdAuthority(i: GiftCallerFacts & {
     ok: false, status: 403,
     error: 'Enter the gift card code to use this card.',
     reason: i.memberTokenSent ? (i.memberSession ? 'member_not_card_owner' : 'member_token_invalid') : 'card_id_without_code',
+  };
+}
+
+// ── The till sells and loads gift cards (Drop C, v5.11.118, 29 Oct 2026) ────
+//
+// gift-issue with channel 'pos' (print a new card at the sale) and gift-load (put money on a
+// printed blank card, or top one up) are called by a paired till after a paid sale. A till is an
+// anonymous session, so "staff only" would refuse every real caller. Same arm as the reverse:
+// staff, or a device BOUND to the venue the call names. Never the customer: an unbound session
+// could otherwise mint a card worth whatever it typed.
+export function decideGiftTillAuthority(i: GiftCallerFacts & {
+  device: boolean;
+  deviceReason?: string | null;
+}, what = 'load gift cards'): { ok: true; via: 'staff' | 'device' } | GiftRefusal {
+  if (!i.user) return { ok: false, status: 401, error: 'Unauthorized', reason: 'no_session' };
+  if (!i.user.is_anonymous && i.staff) return { ok: true, via: 'staff' };
+  if (i.device) return { ok: true, via: 'device' };
+  return {
+    ok: false, status: 403,
+    error: `Only a till of this venue or a manager can ${what}. Pair this till again if it should be allowed.`,
+    reason: i.deviceReason === 'other_venue' ? 'device_other_venue'
+      : (i.deviceReason === 'not_bound' ? 'device_not_bound' : (i.user.is_anonymous ? 'anonymous_no_device' : 'no_location_access')),
   };
 }
 

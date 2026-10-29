@@ -419,3 +419,56 @@ test('actual labour is approved and paid timesheets only, in whole pence, each o
   assert.deepEqual(Object.keys(days), ['2026-09-26']);
   near(days['2026-09-26'], 184.15);
 });
+
+// ── 29 Oct 2026 (v5.11.118, Drop C): gift cards sold at the till ─────────────
+// The till writes the sale as a line { itemId: 'gift_card', kind: 'gift_card_sale', price, qty: 1,
+// taxExempt: true, noDiscount: true } and takes the money with any tender. Peter's call: MONEY IN,
+// NOT SALES. The canonical check every report test uses: a £10 latte at 20% VAT and a £20 gift
+// card, £30 by card: net 8.33, VAT 1.67, gift cards sold 20.00, money collected 30.00.
+const GIFT_LINE = { itemId: 'gift_card', kind: 'gift_card_sale', name: 'Gift card', price: 20, qty: 1, taxExempt: true, noDiscount: true };
+const giftCheck = (extra = {}) => ({
+  id: 'gift1', ref: 'G1', closed_at: '2026-10-16T10:00:00Z', status: 'paid', subtotal: 30, total: 30, tax_amount: 1.67, service: 0, tip: 0,
+  items: [{ itemId: 'm-latte', name: 'Latte', qty: 1, price: 10 }, GIFT_LINE], tenders: [card(30)], ...extra,
+});
+
+test('gift card sold at the till: money in, not sales (net 8.33, VAT 1.67, gift 20.00 off a £30 card)', () => {
+  const p = parts(giftCheck(), 10, 1.67, 8.33);
+  near(p.giftCardsSold, 20);
+  // The tenders' money is the whole story: goods + VAT inside + service + tips + gift cards sold.
+  near(p.gross + p.giftCardsSold, 30);
+});
+
+test('gift card: the money sits with the tenders in proportion; a split still gives the same net and gift', () => {
+  const p = parts(giftCheck({ tenders: [card(20), { method: 'cash', amount: 10, tip: 0 }] }), 10, 1.67, 8.33);
+  near(p.giftCardsSold, 20);
+  // With a tip and service: neither is sales, neither is gift.
+  const q = parts(giftCheck({ total: 34, service: 3, tip: 1, tenders: [card(33, 1)] }), 10, 1.67, 8.33);
+  near(q.giftCardsSold, 20);
+});
+
+test('gift card beside a loyalty reward: the reward is a discount, the gift money is the card\'s, VAT stays on the goods', () => {
+  // A free latte (loyalty 10) and a £20 gift card by card. The venue took £20, all of it gift money.
+  const p = parts(giftCheck({ tenders: [{ method: 'loyalty', amount: 10, tip: 0 }, card(20)] }), 0, 0, 0);
+  near(p.giftCardsSold, 20);
+});
+
+test('gift card only: no goods, no VAT, gift 20; a comp that also sold a gift card still shows the gift money', () => {
+  const only = parts(giftCheck({ subtotal: 20, total: 20, tax_amount: 0, items: [GIFT_LINE], tenders: [card(20)] }), 0, 0, 0);
+  near(only.giftCardsSold, 20);
+  // A 100% comp on the latte (its discounts cover the subtotal of goods) with a gift card paid by card.
+  const comp = parts(giftCheck({ subtotal: 10, total: 20, tax_amount: 0, discounts: [pct100(10)], tenders: [card(20)] }), 0, 0, 0);
+  near(comp.giftCardsSold, 20);
+  // A voided gift line counts for nothing.
+  near(parts(giftCheck({ total: 10, items: [{ itemId: 'm-latte', qty: 1, price: 10 }, { ...GIFT_LINE, voided: true }], tenders: [card(10)] }), 10, 1.67, 8.33).giftCardsSold, 0);
+  // Gift money is capped at what the tenders took.
+  near(parts(giftCheck({ total: 25, tenders: [card(25)] }), 5, 1.67, 3.33).giftCardsSold, 20);
+});
+
+test('tradingDays: gift_sold per day, outside gross, VAT and net', () => {
+  const dayOf = (ms) => businessDayOf(ms, 'Europe/London', '06:30');
+  const d = tradingDays({ saleRows: [giftCheck(), { ...giftCheck(), id: 'plain', items: [{ itemId: 'm-latte', qty: 1, price: 12 }], subtotal: 12, total: 12, tax_amount: 2, tenders: [card(12)] }], refundRows: [], dayOf });
+  const t = d['2026-10-16'];
+  near(t.gross, 22); near(t.vat, 3.67); near(t.net, 18.33); near(t.gift_sold, 20);
+  assert.equal(t.checks, 2);
+  assert.equal(t.no_vat, 0);
+});

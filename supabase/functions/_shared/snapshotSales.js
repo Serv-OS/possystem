@@ -24,9 +24,9 @@ import { isVoidedCheck, checkTaxRecorded } from './accountingDay.js';
 // day can come off the day (addRefundSales), as Daily trading and Xero take it.
 export const SALES_CHECK_COLS = 'id, ref, closed_at, subtotal, total, tax_amount, service, tip, status, voided, discounts, refunds, tenders, method, payment_method, source, processor, gift_card, loyalty, promo, payment_intents';
 
-/** A day's running figures, major units. */
+/** A day's running figures, major units. gift_sold (29 Oct 2026): gift cards sold, money in, outside net, vat and gross. */
 export function emptySales() {
-  return { net: 0, vat: 0, gross: 0, orders: 0, tips: 0, refunds: 0, refund_vat: 0, vat_missing: 0, vat_missing_refs: [] };
+  return { net: 0, vat: 0, gross: 0, orders: 0, tips: 0, refunds: 0, refund_vat: 0, vat_missing: 0, vat_missing_refs: [], gift_sold: 0 };
 }
 
 /** Adds one closed check to `agg`. A voided check adds nothing; returns whether it counted. */
@@ -36,6 +36,7 @@ export function addCheckSales(agg, row) {
   agg.net += p.net;
   agg.vat += p.vat;
   agg.gross += p.gross;
+  agg.gift_sold = (agg.gift_sold || 0) + (p.giftCardsSold || 0);
   agg.orders += 1;
   agg.tips += Number(row?.tip) || 0;
   // 8 Oct 2026 (the VAT audit): money taken and no VAT recorded counts 0 VAT and is named.
