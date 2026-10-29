@@ -15,9 +15,9 @@
 //   * carry OUR purchase id in its metadata (gift-checkout-session puts it there), so a paid
 //     session for another purchase cannot be pointed at this one,
 //   * be for at least the purchase amount, in the purchase currency.
-// Adyen: there is no online gift card purchase flow on Adyen (gift-checkout-session sells through
-// Stripe Checkout or the Ryft embedded page only), so an 'adyen' or unknown processor is refused
-// as unverifiable rather than trusted.
+// Adyen (29 Oct 2026, v5.11.115): the proof is the adyen_payments ledger row adyen-webhook wrote
+// from the HMAC verified AUTHORISATION for merchantReference `gift:<purchase id>` (see
+// _shared/giftAdyenRules.js adyenLedgerProvesPurchase). An unknown processor is still refused.
 //
 // PURE. No imports, so node tests load it directly.
 
@@ -59,9 +59,10 @@ export function ryftSessionProvesPurchase(ps: any, p: PurchaseRow): ProofResult 
 }
 
 /** Which processor to ask. Anything else cannot be verified and is refused. */
-export function purchaseProcessor(p: { processor?: unknown }): 'stripe' | 'ryft' | null {
+export function purchaseProcessor(p: { processor?: unknown }): 'stripe' | 'ryft' | 'adyen' | null {
   const v = typeof p.processor === 'string' ? p.processor.trim().toLowerCase() : 'stripe';
   if (v === '' || v === 'stripe') return 'stripe';
   if (v === 'ryft') return 'ryft';
+  if (v === 'adyen') return 'adyen';
   return null;
 }
