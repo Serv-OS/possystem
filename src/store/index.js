@@ -4206,6 +4206,28 @@ export const useStore = create((set, get) => ({
     get().showToast('Course ' + courseNum + ' fired to kitchen', 'success');
   },
 
+  // 30 Oct 2026 (v5.11.120): the left bar's Gift item. Peter: the sell gift card button lives
+  // under Orders, and is not there at all when the company has gift cards turned off.
+  giftSaleRequest: 0,          // a timestamp the POS surface watches: open the amount picker
+  giftCardsOn: null,           // null until read; true when gift_brand_config.enabled for the company
+  requestGiftSale: () => set({ giftSaleRequest: Date.now() }),
+  loadGiftCardsOn: async () => {
+    try {
+      const locId = getActiveLocationSync();
+      if (!locId || !platformSupabase) { set({ giftCardsOn: false }); return; }
+      const { data: pLoc } = await platformSupabase.from('locations').select('company_id').or(`ops_location_id.eq.${locId},id.eq.${locId}`).limit(1).maybeSingle();
+      if (!pLoc?.company_id) { set({ giftCardsOn: false }); return; }
+      // The same question the public gift page and the Back Office pill ask (gift-branding-public).
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/gift-branding-public`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`, apikey: import.meta.env.VITE_SUPABASE_ANON_KEY },
+        body: JSON.stringify({ company_id: pLoc.company_id }),
+      });
+      const j = await res.json().catch(() => ({}));
+      set({ giftCardsOn: res.ok && j?.enabled === true });
+    } catch { set({ giftCardsOn: false }); }   // never show a button for a feature we cannot confirm
+  },
+
   // ── Walk-in order (non-table) ──────────────
   walkInOrder: null,
   // 30 Sep 2026: the next order starts on the profile's default order type (lib/tillOrderType.js),

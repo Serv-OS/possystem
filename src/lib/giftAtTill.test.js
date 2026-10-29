@@ -261,7 +261,14 @@ test('wiring: the store action, the till button and modal, pay complete opens th
   assert.match(store, /if \(target && isNoDiscountLine\(target\)\) return;/, 'no item discount on a gift card');
 
   const till = read('../surfaces/POSSurface.jsx');
-  assert.match(till, /data-testid="sell-gift-card"/, 'the Gift card button');
+  // v5.11.120 (Peter): the button lives in the left bar under Orders and only when gift cards are on
+  assert.ok(!/data-testid="sell-gift-card"/.test(till), 'no gift button in the top bar any more');
+  assert.match(till, /useEffect\(\(\) => \{ if \(giftSaleRequest\) \{ setGiftAmount\(''\); setShowGift\(true\); \} \}, \[giftSaleRequest\]\);/, 'the picker opens on the left bar request');
+  const app = read('../App.jsx');
+  assert.match(app, /\{ id:'orders',  label:'Orders', icon:'orders' \},\n  \{ id:'gift',    label:'Gift',   icon:'gift' \}/, 'Gift sits right under Orders');
+  assert.match(app, /if \(n\.id === 'gift' && giftCardsOn !== true\) return false;/, 'hidden unless the company has gift cards on');
+  assert.match(app, /if \(n\.id === 'gift'\) \{ setSurface\('pos'\); requestGiftSale\(\); \}/, 'opens the picker on the POS');
+  assert.match(store, /set\(\{ giftCardsOn: res\.ok && j\?\.enabled === true \}\)/, 'the switch is the public gift config');
   assert.match(till, /data-testid="gift-amount-modal"/, 'the amount picker');
   assert.match(till, /GIFT_CARD_PRESETS_MINOR\.map/, 'presets 10 20 25 50');
   assert.match(till, /addGiftCardLine\(m\)/, 'Add calls the store action');

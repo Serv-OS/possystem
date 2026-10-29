@@ -516,14 +516,28 @@ function BulkCreatePanel({ config }) {
       if (!qty || qty < 1 || qty > 500) throw new Error('Quantity must be 1-500');
       if (!batchName.trim()) throw new Error('Enter a batch name');
 
-      const res = await callGift('gift-bulk-create', {
-        amount: amountMinor,
-        quantity: qty,
-        batch_name: batchName.trim(),
-        expires_at: blank ? undefined : (expiresAt || undefined),
-        ...(blank ? { blank: true } : {}),
-      });
-      setResult(res);
+      // v5.11.120: the function makes at most 20 cards a call (each code is slow hashed on purpose);
+      // keep calling with the same batch id until nothing remains, then show the whole batch.
+      let left = qty, batchId = null, res = null; const cards = []; const errs = [];
+      while (left > 0) {
+        res = await callGift('gift-bulk-create', {
+          amount: amountMinor,
+          quantity: left,
+          batch_name: batchName.trim(),
+          expires_at: blank ? undefined : (expiresAt || undefined),
+          ...(blank ? { blank: true } : {}),
+          ...(batchId ? { batch_id: batchId } : {}),
+        });
+        batchId = res.batch_id;
+        cards.push(...(res.cards || []));
+        if (res.errors) errs.push(...res.errors);
+        const next = Number(res.remaining ?? 0);
+        if (!(next < left)) break;   // the function made no progress: stop rather than loop for ever
+        left = next;
+        setResult(null); setError(`Creating… ${cards.length} of ${qty}`);
+      }
+      setError(null);
+      setResult({ ...res, cards, quantity: cards.length, errors: errs.length ? errs : undefined });
     } catch (e) {
       setError(String(e?.message ?? e));
     } finally {
@@ -535,7 +549,7 @@ function BulkCreatePanel({ config }) {
     if (!result?.cards) return;
     const rows = [['Code', 'Last 4', 'Amount', 'Currency', 'Batch', 'Expires']];
     result.cards.forEach(c => {
-      rows.push([c.code, c.code_last4, result.blank ? 'Blank (loaded at the till)' : fmtMoney(result.amount, result.currency), result.currency, result.batch_name, result.expires_at || 'Never']);
+      rows.push([c.code, c.code_last4, result.blank ? 'Blank (loaded at the POS)' : fmtMoney(result.amount, result.currency), result.currency, result.batch_name, result.expires_at || 'Never']);
     });
     const csv = rows.map(r => r.map(v => `"${v}"`).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
@@ -557,12 +571,12 @@ function BulkCreatePanel({ config }) {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 14 }}>
             <div>
               <label style={S.label}>Amount per card</label>
-              <input type="number" value={blank ? '' : amount} onChange={e => setAmount(e.target.value)} placeholder={blank ? 'Loaded at the till' : '25.00'} step="0.01" min="0" disabled={blank} style={S.input}/>
+              <input type="number" value={blank ? '' : amount} onChange={e => setAmount(e.target.value)} placeholder={blank ? 'Loaded at the POS' : '25.00'} step="0.01" min="0" disabled={blank} style={S.input}/>
               <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--t2)', marginTop: 6, cursor: 'pointer' }}>
                 <input type="checkbox" checked={blank} onChange={e => setBlank(e.target.checked)}/>
-                Blank cards for the till
+                Blank cards for the POS
               </label>
-              {blank && <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 4 }}>Printed with their codes, worth nothing until a sale at the till loads them.</div>}
+              {blank && <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 4 }}>Printed with their codes, worth nothing until a sale at the POS loads them.</div>}
             </div>
             <div>
               <label style={S.label}>Quantity (1-500)</label>
@@ -594,7 +608,7 @@ function BulkCreatePanel({ config }) {
               {result.quantity} cards created — batch "{result.batch_name}"
             </div>
             <div style={{ fontSize: 12 }}>
-              {result.blank ? 'Blank cards: worth nothing until a sale at the till loads them' : `Each card: ${fmtMoney(result.amount, result.currency)}`} | Expires: {result.expires_at ? new Date(result.expires_at).toLocaleDateString() : 'Never'}
+              {result.blank ? 'Blank cards: worth nothing until a sale at the POS loads them' : `Each card: ${fmtMoney(result.amount, result.currency)}`} | Expires: {result.expires_at ? new Date(result.expires_at).toLocaleDateString() : 'Never'}
             </div>
             {result.errors && (
               <div style={{ marginTop: 8, fontSize: 12, color: 'var(--red)' }}>
