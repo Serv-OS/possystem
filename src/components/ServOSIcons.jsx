@@ -11,6 +11,7 @@ const PATHS = {
   floor:     '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
   pos:       '<rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 9h18M7 14h4"/>',
   orders:    '<path d="M9 4h6l1 3H8z"/><rect x="5" y="7" width="14" height="14" rx="2"/><path d="M9 12h6"/>',
+  gift:      '<rect x="3" y="9" width="18" height="12" rx="2"/><path d="M3 13h18M12 9v12M12 9c-2.5 0-4.5-1.5-4.5-3.2S9.5 3 12 6c2.5-3 4.5-1.3 4.5-.2S14.5 9 12 9z"/>',
   ai:        '<path d="M12 3l1.6 4.4L18 9l-4.4 1.6L12 15l-1.6-4.4L6 9l4.4-1.6z"/><path d="M18 15l.8 2.2L21 18l-2.2.8L18 21l-.8-2.2L15 18l2.2-.8z"/>',
   status:    '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   office:    '<path d="M3 21V8l9-5 9 5v13"/><path d="M9 21v-6h6v6"/>',

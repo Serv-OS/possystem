@@ -23,7 +23,7 @@ export function giftFunctionsUrl() {
 
 async function postGift(fn, body, { functionsUrl, token, fetchImpl = (typeof fetch === 'function' ? fetch : null) } = {}) {
   if (!functionsUrl) return { ok: false, status: 0, error: 'Gift card service address is not set on this device' };
-  if (!token) return { ok: false, status: 0, error: 'This till is not signed in; pair the device and try again' };
+  if (!token) return { ok: false, status: 0, error: 'This POS is not signed in; pair the device and try again' };
   if (!fetchImpl) return { ok: false, status: 0, error: 'No network on this device' };
   let res;
   try {
@@ -50,7 +50,7 @@ export function plainError(j, status) {
   if (e && typeof e === 'object' && typeof e.message === 'string') return e.message;
   if (status === 404) return 'Card not found';
   if (status === 409) return 'This card cannot take the load';
-  if (status === 401 || status === 403) return 'This till is not allowed to issue gift cards';
+  if (status === 401 || status === 403) return 'This POS is not allowed to issue gift cards';
   return `Gift card service error${status ? ` (${status})` : ''}`;
 }
 

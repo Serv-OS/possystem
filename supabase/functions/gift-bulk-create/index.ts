@@ -104,14 +104,19 @@ Deno.serve(async (req) => {
     expiresAt = d.toISOString();
   }
 
-  // Generate batch ID
-  const batchId = crypto.randomUUID();
+  // 30 Oct 2026 (v5.11.120): each code is hashed with a deliberately slow hash (argon2id, 16 MB), so a
+  // request of 50 ran past the function's time limit after 33 cards (HTTP 546). A request now makes
+  // at most PER_CALL cards and answers `remaining`; Back Office keeps calling with the same batch_id
+  // until remaining is 0. A continued batch reuses its id and name.
+  const PER_CALL = 20;
+  const batchId = (body as any).batch_id ? String((body as any).batch_id) : crypto.randomUUID();
+  const todo = Math.min(qty, PER_CALL);
   const trimmedName = String(batch_name).trim();
   const results: Array<{ code: string; code_last4: string; card_id: string }> = [];
   const errors: string[] = [];
 
-  // Generate all cards
-  for (let i = 0; i < qty; i++) {
+  // Generate this call's cards
+  for (let i = 0; i < todo; i++) {
     try {
       const code = generateCode();
       const normalized = normalizeCode(code);
@@ -198,6 +203,7 @@ Deno.serve(async (req) => {
     batch_name: trimmedName,
     quantity: results.length,
     requested: qty,
+    remaining: Math.max(0, qty - todo),   // v5.11.120: what the caller still has to ask for
     cards: results,
     errors: errors.length > 0 ? errors : undefined,
     currency: config.currency,

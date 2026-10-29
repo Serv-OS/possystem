@@ -452,6 +452,9 @@ export default function POSSurface() {
   // 29 Oct 2026 (v5.11.118, Drop C): sell a gift card. The amount picker, then after pay the
   // activation steps (one per card) on the closed check.
   const [showGift, setShowGift] = useState(false);
+  // v5.11.120: the left bar's Gift item asks for the picker through the store (the bar is outside this surface).
+  const giftSaleRequest = useStore(st => st.giftSaleRequest);
+  useEffect(() => { if (giftSaleRequest) { setGiftAmount(''); setShowGift(true); } }, [giftSaleRequest]);
   const [giftAmount, setGiftAmount] = useState('');
   const [giftActivate, setGiftActivate] = useState(null);   // { closedCheckId, checkRef, items, server }
   const [showCustomerModal, setShowCustomerModal] = useState(false);
@@ -1835,10 +1838,7 @@ export default function POSSurface() {
             <button onClick={()=>setShowCustom(true)} title="Custom item" style={{width:40,height:40,borderRadius:11,border:'1px solid var(--bdr2)',background:'var(--bg3)',color:'var(--t3)',cursor:'pointer',fontFamily:'inherit',fontSize:20,flexShrink:0,transition:'all .14s'}}
               onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--bdr3)';e.currentTarget.style.color='var(--t2)';}}
               onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--bdr2)';e.currentTarget.style.color='var(--t3)';}}>+</button>
-            {/* v5.11.118 (Drop C): sell a gift card, same style as the custom item button */}
-            <button onClick={()=>{setGiftAmount('');setShowGift(true);}} title="Gift card" data-testid="sell-gift-card" style={{height:40,padding:'0 10px',borderRadius:11,border:'1px solid var(--bdr2)',background:'var(--bg3)',color:'var(--t3)',cursor:'pointer',fontFamily:'inherit',fontSize:11,fontWeight:800,letterSpacing:'.04em',flexShrink:0,transition:'all .14s'}}
-              onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--bdr3)';e.currentTarget.style.color='var(--t2)';}}
-              onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--bdr2)';e.currentTarget.style.color='var(--t3)';}}>GIFT</button>
+            {/* v5.11.120: the sell gift card button moved to the left bar (App.jsx NAV 'gift'); it opens the picker through store.giftSaleRequest */}
             {activeTableId ? (() => {
               // Table mode: one button — label depends on state
               // No items → Save (hold table)

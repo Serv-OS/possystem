@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.120',
+    date: '30 Oct 2026',
+    items: [
+      "POS: the sell gift card button is now in the left bar, right under Orders, and only appears when the company has gift cards turned on in Back Office. Pressing it opens the amount picker. The button beside the custom item button is gone.",
+      "Back Office, Gift cards, Bulk create: a batch of 50 blank cards stopped after 33 with HTTP 546. Each code is hashed with a deliberately slow hash, so a big batch ran past the function's time limit. Cards are now made 20 at a time until the batch is complete, with progress shown. The 33 cards already made are good.",
+      "Every label now says POS, not till.",
+      "Edge function to deploy: gift-bulk-create. Nothing to run in the database.",
+    ],
+  },
+  {
     v: '5.11.119',
     date: '30 Oct 2026',
     items: [

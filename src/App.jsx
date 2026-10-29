@@ -1147,6 +1147,7 @@ const NAV = [
   { id:'tables',  label:'Floor',  icon:'floor' },
   { id:'pos',     label:'POS',    icon:'pos' },
   { id:'orders',  label:'Orders', icon:'orders' },
+  { id:'gift',    label:'Gift',   icon:'gift' },     // v5.11.120: opens the sell gift card picker on the POS; hidden when gift cards are off
   { id:'ai',      label:'AI',     icon:'ai' },
   // icon = ServOS line-icon name (see components/ServOSIcons.jsx); was emoji.
   // KDS is NOT in the nav — KDS devices are separate terminals that boot straight to KDS surface
@@ -1333,7 +1334,8 @@ function ShiftBar({ version, onWhatsNew, theme, onToggleTheme, syncPulse }) {
 }
 
 function Sidebar({ surface, setSurface }) {
-  const { setAppMode, syncStatus, deviceConfig } = useStore();
+  const { setAppMode, syncStatus, deviceConfig, giftCardsOn, loadGiftCardsOn, requestGiftSale } = useStore();
+  useEffect(() => { if (giftCardsOn === null) loadGiftCardsOn(); }, [giftCardsOn, loadGiftCardsOn]);
   const [showStatus, setShowStatus] = useState(false);
   const [showSupport, setShowSupport] = useState(false);
 
@@ -1348,6 +1350,8 @@ function Sidebar({ surface, setSurface }) {
   const visibleNav = NAV.filter(n => {
     // Table service disabled → hide floor plan
     if (n.id === 'tables' && deviceConfig && deviceConfig.tableServiceEnabled === false) return false;
+    // v5.11.120: Gift only when the company has gift cards on (Back Office, Gift cards)
+    if (n.id === 'gift' && giftCardsOn !== true) return false;
     // Hidden features → hide matching nav item
     return !hidden.some(f => FEATURE_MAP[f] === n.id);
   });
@@ -1357,7 +1361,7 @@ function Sidebar({ surface, setSurface }) {
     <nav style={{ width:'var(--nav)', background:'var(--glass-bg)', backdropFilter:'blur(22px) saturate(150%)', WebkitBackdropFilter:'blur(22px) saturate(150%)', border:'1px solid var(--glass-border)', borderRadius:20, boxShadow:'var(--glass-shadow), var(--glass-hi), var(--glass-lo)', display:'flex', flexDirection:'column', alignItems:'center', padding:'10px 0', gap:4, flexShrink:0, position:'relative', zIndex:60 }}>
       {visibleNav.map(n=>{
         const active=surface===n.id;
-        return(<button key={n.id} onClick={()=>setSurface(n.id)} style={{ width:46, height:46, borderRadius:12, cursor:'pointer', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:3, background:active?'var(--acc-d)':'transparent', border:`1px solid ${active?'var(--acc-b)':'transparent'}`, boxShadow:active?'var(--glass-hi)':'none', color:active?'var(--acc)':'var(--t3)', transition:'all .15s', fontFamily:'inherit', position:'relative' }}>
+        return(<button key={n.id} onClick={()=>{ if (n.id === 'gift') { setSurface('pos'); requestGiftSale(); } else setSurface(n.id); }} data-testid={n.id === 'gift' ? 'nav-gift' : undefined} style={{ width:46, height:46, borderRadius:12, cursor:'pointer', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:3, background:active?'var(--acc-d)':'transparent', border:`1px solid ${active?'var(--acc-b)':'transparent'}`, boxShadow:active?'var(--glass-hi)':'none', color:active?'var(--acc)':'var(--t3)', transition:'all .15s', fontFamily:'inherit', position:'relative' }}>
           <Icon name={n.icon} size={21} stroke={active?2:1.7} />
           <span style={{ fontSize:9, fontWeight:700, letterSpacing:'.04em', color:active?'var(--acc)':'var(--t3)' }}>{n.label}</span>
         </button>);

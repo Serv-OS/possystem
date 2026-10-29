@@ -295,7 +295,16 @@ test('the Platform migration adds blank, pos and load and lets a card start at 0
 
 test('Back Office bulk create offers blank cards for the till', () => {
   const src = readFileSync(new URL('../backoffice/sections/GiftCards.jsx', import.meta.url), 'utf8');
-  assert.ok(src.includes('Blank cards for the till'));
+  assert.ok(src.includes('Blank cards for the POS'), 'Peter: it is the POS, not the till');
+  assert.ok(src.includes('...(batchId ? { batch_id: batchId } : {})') && src.includes('const next = Number(res.remaining ?? 0);'), 'Back Office keeps calling until the batch is done');
   assert.ok(src.includes('...(blank ? { blank: true } : {})'), 'sends blank: true to gift-bulk-create');
   assert.ok(src.includes("const amountMinor = blank ? 0 : Math.round(parseFloat(amount) * 100);"));
+});
+
+test('bulk create makes at most 20 cards a call and answers remaining, so a big batch never hits the time limit', () => {
+  const src = readFileSync(new URL('../../supabase/functions/gift-bulk-create/index.ts', import.meta.url), 'utf8');
+  assert.ok(src.includes('const PER_CALL = 20;') && src.includes('const todo = Math.min(qty, PER_CALL);'));
+  assert.ok(src.includes('for (let i = 0; i < todo; i++) {'), 'the loop runs todo, not qty');
+  assert.ok(src.includes('remaining: Math.max(0, qty - todo)'));
+  assert.ok(src.includes("(body as any).batch_id ? String((body as any).batch_id) : crypto.randomUUID()"), 'a continued batch keeps its id');
 });
