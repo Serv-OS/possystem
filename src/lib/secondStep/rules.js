@@ -138,10 +138,15 @@ export function hasVerified(factors, type) {
  * mode 'recovery' (the password reset link): only a login that HAS a second step must pass it
  * before choosing a new password (the auth server insists too); nothing is set up mid reset.
  * appGate false is Peter's break glass (second_step_settings.app_gate): let everyone in.
+ * demoAccount true is one login that can only ever reach DEMO venues (App Review, 29 Oct 2026):
+ * the database decides it, never this screen (public.second_step_demo_only, read through
+ * second_step_status().demo), and the same answer lets that login's reads through the row
+ * rules, so the screen and the fence can never disagree. Everyone else is asked as before.
  */
-export function gateStep({ session, factors, appGate = true, mode = 'login' } = {}) {
+export function gateStep({ session, factors, appGate = true, demoAccount = false, mode = 'login' } = {}) {
   if (!isRealLogin(session)) return 'none';
   if (appGate === false) return 'ok';
+  if (demoAccount === true) return 'ok';
   const aal = sessionAal(session);
   const verified = verifiedFactors(factors);
   // A PASSKEY SIGN IN IS DONE (20 Sep 2026). It is aal1 by design, and asking such a person for

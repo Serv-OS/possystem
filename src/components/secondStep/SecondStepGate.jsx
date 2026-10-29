@@ -82,7 +82,13 @@ export default function SecondStepGate({
       setFace(faceSupport);
       let step = gateStep({ session, factors: all, mode });
       if (step === 'none') { setPhase('ended'); return; }
-      if (step !== 'ok' && !(await client.appGate())) step = 'ok';
+      // Only now do we ask the server anything: Peter's break glass, and whether this login
+      // can only ever reach demo venues (App Review, 29 Oct 2026). One call answers both, and
+      // the pure rule still decides what the screen does with the answer.
+      if (step !== 'ok') {
+        const gate = await client.gateAnswer();
+        step = gateStep({ session, factors: all, mode, appGate: gate.appGate, demoAccount: gate.demo });
+      }
       if (step === 'ok') {
         // Just set up, and this device could hold a passkey: offer one, because it is the
         // better version of the Face ID factor we used to offer here (and Supabase refused

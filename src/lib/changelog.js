@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.112',
+    date: '29 Oct 2026',
+    items: [
+      "Apple's app reviewer could not open the ServOS Owner app. They signed in with the review account we gave them, and the second sign in step then asked for a six digit code from an authenticator app that only we hold. A code like that changes every thirty seconds, so there was no fixed one to send them.",
+      "A login that can ONLY ever see demo venues is no longer asked for the second step. No account is named anywhere: the rule reads the venues the login is linked to, so it stops applying by itself the moment that login is given a real venue. Every other login, including every owner, manager and super admin of a trading venue, is asked exactly as before.",
+      "To take it back at any time, with no deploy: turn the demo flag off on the venue, or unlink the account from it.",
+      "RUN IN THE DATABASE: 20261106a_OPS_second_step_demo_exempt.sql.",
+    ],
+  },
+  {
     v: '5.11.111',
     date: '28 Oct 2026',
     items: [
