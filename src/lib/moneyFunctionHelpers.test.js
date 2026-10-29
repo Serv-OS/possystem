@@ -256,7 +256,7 @@ test('an unpaid purchase never fulfils; a paid one (Stripe or Ryft) still does',
   const ps = { status: 'Captured', metadata: { purchase_id: 'pur-1' }, amount: 2500, currency: 'GBP' };
   assert.deepEqual(ryftSessionProvesPurchase(ps, purchase), { ok: true });
   assert.equal(ryftSessionProvesPurchase({ ...ps, status: 'Approved' }, purchase).reason, 'not_paid');
-  assert.equal(purchaseProcessor({ processor: 'adyen' }), null, 'Adyen has no gift purchase flow: refused');
+  assert.equal(purchaseProcessor({ processor: 'adyen' }), 'adyen', '29 Oct 2026 (v5.11.115): Adyen sells gift cards online; proven against the ledger row');
 });
 
 test('one card per purchase; an outage is retried; "not paid" is final', async () => {

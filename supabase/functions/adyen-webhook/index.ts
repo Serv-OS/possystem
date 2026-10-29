@@ -91,6 +91,7 @@ import { promotePaidBooking, markPaymentNeedsRefund, loadBookingDue } from '../_
 // 16 Oct 2026 (v5.11.70 host tools): table booking refunds and part refunds.
 import { settleBookingRefundEvent, partRefundFromAdyen } from '../_shared/bookingRefund.ts';
 import { looksLikeBackendDown } from '../_shared/backendDown.js';
+import { giftPurchaseIdFromReference, adyenGiftAmountOk } from '../_shared/giftAdyenRules.js';
 // v5.11.16: a reader tip the settle could not record is healed from Adyen's own
 // AUTHORISATION the moment it lands (see the live money event block below).
 import { jobIdFromMerchantReference } from '../_shared/readerTip.js';
@@ -272,6 +273,50 @@ async function resolveLocation(item: any, jobOpsLocationId: string | null, live:
 // The entry is marked failed rather than deleted. A refund that was attempted
 // and refused is a thing that happened, and erasing it would leave a customer
 // complaint with no record behind it.
+// ── Online gift card purchase on Adyen (29 Oct 2026, v5.11.115) ─────────────────────────
+// Mirrors ryft-webhook maybeFulfilGift. The purchase row is NOT the proof (it is anon writable
+// until Platform file C lands): gift-fulfill asks the ledger row this webhook wrote for the
+// reference. A card is never issued for more than Adyen authorised.
+async function maybeFulfilGift(purchaseId: string, item: any): Promise<void> {
+  const { data: p } = await platformAdmin
+    .from('gift_card_purchases')
+    .select('id, amount_minor, status, processor')
+    .eq('id', purchaseId)
+    .maybeSingle();
+  if (!p) { console.error('[adyen-webhook] gift purchase not found', purchaseId); return; }
+  if (String(p.processor || '').toLowerCase() !== 'adyen') { console.error('[adyen-webhook] gift purchase is not an Adyen purchase', purchaseId, p.processor); return; }
+  if (p.status === 'fulfilled' || p.status === 'fulfilling') return;
+  const authorised = Number(item?.amount?.value);
+  if (!adyenGiftAmountOk(authorised, p.amount_minor)) {
+    console.error('[adyen-webhook] gift amount mismatch, NOT issuing', p.id, authorised, p.amount_minor);
+    return;
+  }
+  await platformAdmin.from('gift_card_purchases')
+    .update({ status: 'paid' })
+    .eq('id', p.id).eq('status', 'pending');   // never rewind a fulfilling or fulfilled purchase
+
+  let status = 0;
+  let body: any = null;
+  try {
+    const r = await fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/gift-fulfill`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''}`,
+      },
+      body: JSON.stringify({ purchase_id: p.id }),
+    });
+    status = r.status;
+    body = await r.json().catch(() => null);
+  } catch (e) {
+    console.error('[adyen-webhook] gift-fulfill error', p.id, (e as Error).message);
+  }
+  if (status >= 200 && status < 300) return;
+  // Left at 'paid': Back Office -> Gift cards -> Online purchases -> Fulfill finishes it, and
+  // the success page tells the customer the card is on its way.
+  console.error('[adyen-webhook] gift-fulfill did not issue (purchase stays paid)', p.id, status, body);
+}
+
 async function unRefundOnFailure(merchantReference: string, reason: string | null) {
   const m = /^rf:([^:]+):/.exec(merchantReference || '');
   if (!m) return;
@@ -1023,6 +1068,16 @@ async function applyMoneyEvent(item: any, live: boolean | null = null, region: A
     if (upErr) {
       console.error('[adyen-webhook] ledger upsert failed:', upErr.message, rowKey);
       return looksLikeBackendDown(upErr) ? 'unavailable' : 'failed';
+    }
+
+    // ── Online gift card purchase (29 Oct 2026, v5.11.115) ───────────────────
+    // merchantReference `gift:<purchase id>` (gift-checkout-session) on a successful
+    // AUTHORISATION: the card is issued by THIS webhook, never by the browser (same rule as
+    // stripe-webhook-connect and ryft-webhook). Runs after the ledger upsert so gift-fulfill
+    // can prove the money against the row just written. Never blocks the acknowledgement.
+    if (!isModification && code === 'AUTHORISATION' && okEvent) {
+      const giftId = giftPurchaseIdFromReference(merchantReference);
+      if (giftId) await maybeFulfilGift(giftId, item).catch((e) => console.error('[adyen-webhook] gift fulfil failed', giftId, (e as Error)?.message || e));
     }
 
     // ── v5.7.5 tip-on-receipt capture window (best-effort, never blocks) ─────

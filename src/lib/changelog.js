@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.115',
+    date: '29 Oct 2026',
+    items: [
+      "Online gift cards now sell at a venue on Adyen. The gift page at every Coffee Boy venue looked fine but the Buy button answered \"Payments not configured for this venue\": gift cards were built on Stripe in May, Ryft was added in July, and when every ordering channel moved to Adyen in September this page was left behind. The customer now pays in page with the same card and wallet form online ordering uses, and the money settles to that venue's own Adyen store.",
+      "The card is issued by the Adyen webhook on the verified payment, never by the browser, and only for a payment of at least the gift amount, the same rule as Stripe and Ryft. If the issue step fails the purchase waits as Paid in Back Office, Gift cards, Online purchases, and Fulfill finishes it.",
+      "Edge functions to deploy: gift-checkout-session, adyen-webhook, gift-fulfill. Nothing to run in the database.",
+    ],
+  },
+  {
     v: '5.11.114',
     date: '29 Oct 2026',
     items: [

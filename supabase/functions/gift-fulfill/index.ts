@@ -53,6 +53,7 @@ import {
 import {
   purchaseCardId, issueLedgerKey, proofReasonRetryable, processorErrorReason,
 } from '../_shared/giftFulfilPlan.ts';
+import { giftReference, adyenLedgerProvesPurchase } from '../_shared/giftAdyenRules.js';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -110,6 +111,21 @@ async function provePurchasePaid(purchase: any): Promise<ProofResult> {
       const got = await getPaymentSession(String(purchase.ryft_payment_session_id), mra?.ryft_account_id ? { accountId: mra.ryft_account_id } : {});
       if (!got.ok) return { ok: false, reason: `ryft_${got.status}` };
       return ryftSessionProvesPurchase(got.data, purchase);
+    }
+    if (processor === 'adyen') {
+      // 29 Oct 2026 (v5.11.115): the ledger row adyen-webhook wrote from the verified AUTHORISATION
+      // for this purchase's reference, at this purchase's venue. Read by OUR key, never the row.
+      const { data: led, error: ledErr } = await platformAdmin
+        .from('adyen_payments')
+        .select('merchant_reference, success, last_event_code, amount_minor, currency, location_id')
+        .eq('merchant_reference', giftReference(purchase.id))
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (ledErr) throw ledErr;
+      if (!led) return { ok: false, reason: 'no_processor_session' };
+      if (String(led.location_id || '') !== String(purchase.location_id || '')) return { ok: false, reason: 'session_not_for_purchase' };
+      return adyenLedgerProvesPurchase(led, purchase);
     }
     return { ok: false, reason: 'processor_unverifiable' };
   } catch (e) {

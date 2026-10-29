@@ -20,6 +20,7 @@
 
 import Stripe from 'https://esm.sh/stripe@14.21.0?target=denonext';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { giftReference } from '../_shared/giftAdyenRules.js';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -104,6 +105,10 @@ Deno.serve(async (req) => {
     const { data: locRow } = await platformAdmin
       .from('locations').select('payment_processor').eq('id', location_id).maybeSingle();
     if (locRow?.payment_processor === 'ryft') processor = 'ryft';
+    // 29 Oct 2026 (v5.11.115): an Adyen venue sells gift cards too. Every ordering channel moved
+    // to Adyen in September; this page was left on Stripe/Ryft and answered "Payments not
+    // configured" at every Coffee Boy venue.
+    if (locRow?.payment_processor === 'adyen') processor = 'adyen';
   } catch { /* stay on stripe */ }
 
   if (processor === 'ryft') {
@@ -177,6 +182,46 @@ Deno.serve(async (req) => {
       await platformAdmin.from('gift_card_purchases').delete().eq('id', rPurchase.id);
       return json({ error: `Payment setup failed: ${(e as Error).message}` }, 500);
     }
+  }
+
+  if (processor === 'adyen') {
+    // The venue's own Adyen store takes the money (the store id rides on the payment, so it
+    // settles to that venue's balance account, as every online order does).
+    const { data: maa } = await platformAdmin
+      .from('merchant_adyen_accounts')
+      .select('merchant_account, store_id, receive_payments_ok')
+      .eq('location_id', location_id)
+      .maybeSingle();
+    if (!maa?.merchant_account || maa.receive_payments_ok === false) {
+      return json({ error: 'Payments not configured for this venue' }, 400);
+    }
+
+    const { data: aPurchase, error: aErr } = await platformAdmin
+      .from('gift_card_purchases')
+      .insert({
+        company_id, location_id, amount_minor: amt,
+        currency: config.currency || 'gbp',
+        sender_name, sender_email, sender_phone: sender_phone || null,
+        recipient_name, recipient_email, message: message || null,
+        delivery_type, status: 'pending', processor: 'adyen',
+      })
+      .select('id')
+      .single();
+    if (aErr) return json({ error: `Failed to create purchase record: ${aErr.message}` }, 500);
+
+    // The customer pays IN-PAGE through AdyenPaymentForm (the same form online and QR use), which
+    // runs the payment through adyen-checkout with THIS reference as Adyen's merchantReference.
+    // THAT REFERENCE IS THE WHOLE FULFILMENT CONTRACT: adyen-webhook reads it on AUTHORISATION
+    // and calls gift-fulfill, which proves the money against the ledger row for it. The amount
+    // the browser sends is fenced twice (webhook and proof) against this row's amount_minor.
+    return json({
+      processor: 'adyen',
+      purchase_id: aPurchase.id,
+      reference: giftReference(aPurchase.id),
+      location_id,
+      currency: config.currency || 'gbp',
+      amount_minor: amt,
+    });
   }
 
   // Look up the merchant's Stripe account for this location
