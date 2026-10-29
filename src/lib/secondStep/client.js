@@ -117,6 +117,20 @@ export function createSecondStepClient(supabase, { allowLocalhost = false } = {}
     return true;
   }
 
+  /**
+   * The two server answers the gate needs, in ONE call: Peter's break glass, and whether this
+   * login can only ever reach demo venues (App Review, 29 Oct 2026, when the reviewer could not
+   * pass the authenticator code on the Owner app). Any failure (the SQL not run yet, no
+   * connection, refused) answers "ask as normal", so a call that dies never lets anyone in.
+   */
+  async function gateAnswer() {
+    try {
+      const res = await withTimeout(supabase.rpc('second_step_status'), 3000, null);
+      const d = res && !res.error ? res.data : null;
+      return { appGate: d?.app_gate !== false, demo: d?.demo === true };
+    } catch { return { appGate: true, demo: false }; }
+  }
+
   async function status() {
     try {
       const res = await withTimeout(supabase.rpc('second_step_status'), 3000, null);
@@ -312,7 +326,7 @@ export function createSecondStepClient(supabase, { allowLocalhost = false } = {}
   }
 
   return {
-    getSession, listFactors, appGate, status, startAuthenticatorApp, verifyCode, verifyAnyCode,
+    getSession, listFactors, appGate, gateAnswer, status, startAuthenticatorApp, verifyCode, verifyAnyCode,
     addFaceId, useFaceId, removeFactor, changePassword, cleanupLeftovers,
     emailProofStatus, sendEmailCode, claimEmailCode,
     canUsePasskey, listPasskeys, addPasskey, signInWithPasskey, removePasskey,

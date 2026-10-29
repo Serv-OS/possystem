@@ -73,6 +73,21 @@ test('gateStep: who must do a second step, and which one', () => {
   assert.equal(gateStep({ session: session(), factors: [totp()], appGate: false }), 'ok');
   // but never turns a till into a login
   assert.equal(gateStep({ session: session({ anonymous: true }), factors: [], appGate: false }), 'none');
+
+  // A login that can only ever reach demo venues is not asked (App Review, 29 Oct 2026).
+  assert.equal(gateStep({ session: session(), factors: [totp()], demoAccount: true }), 'ok');
+  assert.equal(gateStep({ session: session(), factors: [], demoAccount: true }), 'ok', 'and is never pushed into setting one up');
+  assert.equal(gateStep({ session: session(), factors: [totp()], mode: 'recovery', demoAccount: true }), 'ok');
+  // Everyone else is asked exactly as before, whatever the call answered.
+  assert.equal(gateStep({ session: session(), factors: [totp()], demoAccount: false }), 'challenge');
+  assert.equal(gateStep({ session: session(), factors: [] }), 'setup', 'the default is to ask');
+  // Only the literal true counts, so a failed or malformed answer can never let anyone in.
+  for (const notTrue of [undefined, null, 0, '', 'true', 1, {}, []]) {
+    assert.equal(gateStep({ session: session(), factors: [totp()], demoAccount: notTrue }), 'challenge',
+      `demoAccount ${JSON.stringify(notTrue)} must not open the gate`);
+  }
+  // An anonymous till is still nothing to do with any of this.
+  assert.equal(gateStep({ session: session({ anonymous: true }), factors: [], demoAccount: true }), 'none');
 });
 
 test('gateStep recovery: a reset link must pass the second step first when there is one', () => {
