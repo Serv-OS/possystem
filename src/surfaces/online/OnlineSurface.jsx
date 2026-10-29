@@ -236,7 +236,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
               // tab straight from the DB, so it MUST carry the processor + Ryft
               // ids (or TabResumeScreen would mis-route a Ryft close to Stripe
               // and strand the held funds). Default missing processor → stripe.
-              processor: r.customer?.processor || 'stripe',
+              processor: r.customer?.processor || 'adyen',
               payment_session_id: r.customer?.payment_session_id || null,
               ryft_customer_id: r.customer?.ryft_customer_id || null,
               ryft_payment_method_id: r.customer?.ryft_payment_method_id || null,
@@ -826,7 +826,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
     setPickedTableTab(tab);
     setResumeTab({
       payment_intent_id: tab.payment_intent_id, stripe_account: tab.stripe_account,
-      processor: tab.processor || 'stripe', payment_session_id: tab.payment_session_id || null,
+      processor: tab.processor || 'adyen', payment_session_id: tab.payment_session_id || null,
       ryft_customer_id: tab.ryft_customer_id || null, ryft_payment_method_id: tab.ryft_payment_method_id || null,
       tab_ref: tab.tab_ref, table_label: tab.table_label, pre_auth_amount: tab.pre_auth_amount,
       tab_join_code: tab.tab_join_code || null,
@@ -836,7 +836,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
     try {
       stashTab(location.online_slug, tableId, {
         tab_ref: tab.tab_ref, payment_intent_id: tab.payment_intent_id, tab_join_code: tab.tab_join_code || null,
-        processor: tab.processor || 'stripe', stripe_account: tab.stripe_account || null,
+        processor: tab.processor || 'adyen', stripe_account: tab.stripe_account || null,
         payment_session_id: tab.payment_session_id || null, ryft_customer_id: tab.ryft_customer_id || null,
         ryft_payment_method_id: tab.ryft_payment_method_id || null,
         table_label: tab.table_label, pre_auth_amount: tab.pre_auth_amount, joined: true,

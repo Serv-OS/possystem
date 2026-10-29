@@ -49,7 +49,9 @@ Deno.serve(async (req) => {
   if (!loc) return json({ error: 'location not found' }, 404);
   // v5.5.966: three-way — 'adyen' joins the switch (unknown values still fall
   // back to 'stripe', the backward-compatible contract).
-  const processor = (loc.payment_processor === 'ryft' || loc.payment_processor === 'adyen')
-    ? loc.payment_processor : 'stripe';
+  // 29 Oct 2026 (v5.11.116): Adyen is the only processor; a row with none set, or an unknown
+  // value, is an Adyen venue. An explicit 'stripe' or 'ryft' still answers itself until removal.
+  const processor = (loc.payment_processor === 'ryft' || loc.payment_processor === 'stripe')
+    ? loc.payment_processor : 'adyen';
   return json({ processor });
 });

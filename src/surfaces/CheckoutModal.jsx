@@ -71,7 +71,7 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
   const [state, setState] = useState('waiting');                      // waiting | approved
   const [errorMsg, setErrorMsg] = useState(null);
   const [piResult, setPiResult] = useState(null);
-  const [processor, setProcessor] = useState('stripe');                // 'stripe' | 'ryft' — per location
+  const [processor, setProcessor] = useState('adyen');                // 'stripe' | 'ryft' — per location
   // v5.5.808: null = still resolving, true = definitive answer, false = lookup
   // FAILED ('stripe' is only a guess). A failed lookup must never fall through
   // to the click-to-approve simulator on a production till.
@@ -1414,7 +1414,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   // v5.5.808: resolve the venue's card processor at modal level too — the card
   // press, split card legs and the terminal flow all dispatch by this. Defaults
   // to 'stripe', so live Stripe venues are never affected by a failed lookup.
-  const [cardProcessor, setCardProcessor] = useState('stripe');
+  const [cardProcessor, setCardProcessor] = useState('adyen');
   // v5.5.829: Ryft has no on-reader tip prompt, so on Ryft venues WITH a customer
   // display we ask the customer to choose a gratuity on their own screen, then
   // charge bill+tip as one amount.
@@ -1919,7 +1919,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
       bookingPayment: bookingRecord,
       readerLegs: legs,
       pspRef: stripePaymentIntentId,
-      processor: paidProcessor || (splitWithReader ? 'adyen' : 'stripe'),
+      processor: paidProcessor || 'adyen',
     });
     onComplete({
       method: finalMethod,
@@ -1989,7 +1989,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
       // which refuses a terminal with no adyen_terminal_id, so 'adyen' here is proven by
       // the legs' existence, not guessed — and it is what closeApprovedTerminalJob writes
       // when the reader finishes the same table itself.
-      processor: paidProcessor || (splitWithReader ? 'adyen' : 'stripe'),
+      processor: paidProcessor || 'adyen',
       cardReceipt,   // card-scheme receipt block (brand/last4/auth code/AID/CVM) — printed at the receipt bottom
       // v5.7.5 - TIP ON PRINTED RECEIPT. The capture-window row this sale opened
       // (manual-capture Adyen auth, tip written on the merchant slip). The store
@@ -2995,7 +2995,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                   : pi?.processor === 'ryft' ? tipAmt                                          // Ryft REST — POS-chosen
                   : receivedGbp != null      ? Math.max(0, +(receivedGbp - grand).toFixed(2))   // Stripe reader — FIXED
                   : 0;
-                complete('card', realTip, null, pi?.paymentIntentId || null, pi?.card || null, pi?.processor || 'stripe',
+                complete('card', realTip, null, pi?.paymentIntentId || null, pi?.card || null, pi?.processor || 'adyen',
                   Number.isFinite(receivedMinor) ? receivedMinor : null);
               }}
               onBack={()=>{ setTipAmt(0); setScreen('review'); }}
@@ -3191,8 +3191,8 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
             // v5.9.11: the portions ARE the tenders. Until now they were handed up here and
             // dropped by the store's row map, so a split check said only 'split' and no
             // accounts system could tell its card money from its cash.
-            const tenders = splitTenders(portions, { legTip, giftLegs, processor: cardProcessor || 'stripe' });
-            onComplete({ method:'split', tip:tipTotal, grand:grossTotal+tipTotal, service: Number.isFinite(Number(service)) ? Number(service) : 0, tenders, portions, paymentIntents, stripePaymentIntentId: paymentIntents[0]?.id || null, processor: cardProcessor || 'stripe', printReceipt,
+            const tenders = splitTenders(portions, { legTip, giftLegs, processor: cardProcessor || 'adyen' });
+            onComplete({ method:'split', tip:tipTotal, grand:grossTotal+tipTotal, service: Number.isFinite(Number(service)) ? Number(service) : 0, tenders, portions, paymentIntents, stripePaymentIntentId: paymentIntents[0]?.id || null, processor: cardProcessor || 'adyen', printReceipt,
               closedCheckId: getCheckId(),
               // v5.5.902: split gift legs — the store folds these into the check's
               // gift_card jsonb so a refund can reverse every card that part-paid it.

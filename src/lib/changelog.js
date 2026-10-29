@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.116',
+    date: '29 Oct 2026',
+    items: [
+      "Adyen is now the default everywhere. Whenever the app could not tell a venue's card processor it assumed Stripe, which no live venue uses, so a lookup blip could send a customer down a dead path. Every such default, on the till, the kiosk, online, QR, catering, Orders Hub, the bar, the handheld and the server, now answers Adyen.",
+      "Catering: pay now works at an Adyen venue. The catering checkout only knew Ryft and Stripe and sent an Adyen venue to Stripe, where it failed. It now pays in page with the same card and wallet form online ordering uses.",
+      "Handheld: the simulated card approval can no longer be reached in production. A handset with no reader assigned used to land on a \"Simulate approved\" button that closed a real bill as paid with no money taken. It now stops on the error screen with the reason. The simulation still works in the mock build and in training mode.",
+      "Orders Hub: an open Adyen QR tab can be closed and charged. A guard that wanted a Stripe account refused every Adyen tab with \"Tab missing payment info\", so staff could only release the hold.",
+      "Kiosk: cancelling a live card prompt on an Adyen reader now aborts it on the reader, as the till does. It used to call a Ryft only function that answered an error and left the reader on its prompt.",
+      "RUN IN THE DATABASE: 20261107a_PLATFORM_processor_defaults_adyen.sql (Platform project) and 20261107a_OPS_processor_defaults_adyen.sql (Ops project): the column defaults for a venue's processor, a closed bill, a card job, a device and a gift purchase become Adyen.",
+    ],
+  },
+  {
     v: '5.11.115',
     date: '29 Oct 2026',
     items: [

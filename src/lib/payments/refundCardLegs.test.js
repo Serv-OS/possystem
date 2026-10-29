@@ -47,10 +47,10 @@ test('the row map carries the card reference, processor and tenders', () => {
   assert.equal(f.source, 'pos_send_to_terminal');
 });
 
-test('the row map keeps the defaults the boot loaders always used', () => {
+test('the row map keeps the defaults the boot loaders always used (processor: Adyen since v5.11.116)', () => {
   assert.deepEqual(closedCheckRefundFields({}), {
     giftCard: null, stripePaymentIntentId: null, paymentIntents: null,
-    processor: 'stripe', loyalty: null, source: 'pos', tenders: null,
+    processor: 'adyen', loyalty: null, source: 'pos', tenders: null,
   });
   assert.equal(closedCheckRefundFields({ tenders: 'junk' }).tenders, null);
 });

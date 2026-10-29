@@ -144,7 +144,7 @@ export function qrTabShortLine(rows, formatMoney = (n) => n.toFixed(2)) {
  */
 export function shortTabClosedCheck(tab, short, { nowIso = new Date().toISOString(), taxFor = null } = {}) {
   if (!tab || !short || !(short.paidMinor > 0)) return null;
-  const processor = ['stripe', 'ryft', 'adyen'].includes(tab.processor) ? tab.processor : 'stripe';
+  const processor = ['stripe', 'ryft', 'adyen'].includes(tab.processor) ? tab.processor : 'adyen';
   const holdRef = processor === 'ryft' ? (tab.payment_session_id || tab.payment_intent_id) : tab.payment_intent_id;
   if (!holdRef) return null;
   const paid = Math.round(short.paidMinor) / 100;

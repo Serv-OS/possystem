@@ -180,8 +180,11 @@ const BLOCKS = [
     name: 'ScreenPay logic',
     start: "const [cardState, setCardState] = useState('idle');",
     end: 'const cardDueAmount = total;',
-    length: 12669,
-    sha256: 'cf7253971568703e4778ce74749fdb11870fdd2e4a26ad8f29d240bc328806d6',
+    // v5.11.116 (29 Oct 2026, payments audit Drop A): cancelReaderAction aborts an Adyen job on the
+    // reader (abortTerminalJob) instead of terminal-job-cancel, which is Ryft only. Signed off by
+    // Peter with Drop A ("looks fine so go").
+    length: 13070,
+    sha256: 'ed9cdc93bf470a7fa8368c5f47aec491279b2348dbd384c3b0844e7e4fb7c388',
   },
   {
     name: 'credits',

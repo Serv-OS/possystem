@@ -22,7 +22,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../store';
 import { resolvePlatformLocationId, getAssignedNetworkReader } from '../../lib/networkReader';
-import { getActiveLocationSync, supabase, ensureAuthToken } from '../../lib/supabase';
+import { getActiveLocationSync, supabase, ensureAuthToken, isMock } from '../../lib/supabase';
 import { confirmLinkBeforeCard } from '../../lib/deviceLink';
 import { usePaymentBusy } from '../../lib/usePaymentBusy';
 import { Sx, money } from './MShellStyles';
@@ -99,6 +99,16 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // 29 Oct 2026 (v5.11.116): the simulated approval closes a REAL bill as card paid with no money
+  // taken. It is for the mock build and training mode only. In production a handset with no
+  // reader stops on the error screen with the reason, as the till has since v5.5.808.
+  const simAllowed = isMock || isTrainingMode();
+  const enterSim = (why) => {
+    if (simAllowed) { setPhase('sim'); return; }
+    setErrorMsg(`No card reader is available on this handset, so no card payment can be taken. ${why || ''}`.trim());
+    setPhase('error');
+  };
+
   const runFlow = async () => {
     try {
       // TRAINING MODE: never reach a real processor (Tap to Pay or reader).
@@ -142,8 +152,9 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
         if (!reader) {
           // v5.8.26: say WHY, on screen. The lookup's reason was being discarded, so
           // staff saw a simulated approval with no clue which link was missing.
+          enterSim(reason || 'No card terminal is bound to this handset in Back Office → Card readers.');
           setStatusMsg(`No reader assigned — using simulated approval. ${reason || 'No card terminal is bound to this handset in Back Office → Card readers.'} (this handset: ${String(getPosDeviceId() || 'no device id').slice(0, 8)})`);
-          setPhase('sim');
+          return;
           return;
         }
         await runRestFlow(reader);
@@ -154,7 +165,7 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
       // changed in Back Office after pairing stays cached on the device until a
       // Push to POS or a re-pair, and that is invisible without this line.
       setStatusMsg(`Simulated approval — this handset's payment mode is "${paymentMode}". For a card reader, set the device profile to "Assigned network reader" and press Push to POS in Back Office.`);
-      setPhase('sim');
+      enterSim(`This handset's payment mode is "${paymentMode}". Set the device profile to "Assigned network reader" and pick a terminal in Back Office, Card readers.`);
     } catch (e) {
       setErrorMsg(e?.message || String(e));
       setPhase('error');
@@ -442,7 +453,7 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
     if (!initRes.ok) {
       // Not fatal — let staff still test the rest of the flow; show why.
       setStatusMsg(initRes.message || 'Tap to Pay unavailable');
-      setPhase('sim');
+      enterSim(initRes.message || 'Tap to Pay unavailable.');
       return;
     }
 
@@ -575,6 +586,7 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
   };
 
   const simulateApprove = () => {
+    if (!simAllowed) return;
     setPhase('approved');
     onApproved?.({ method:'card', paymentIntentId:`sim_${Date.now()}`, tip: payment.tip, grand, simulated:true });
   };

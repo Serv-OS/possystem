@@ -32,7 +32,7 @@ export function closedCheckRefundFields(row) {
     giftCard: row?.gift_card || null,                        // v5.5.217: gift card reversal on refund
     stripePaymentIntentId: row?.stripe_payment_intent_id || null,
     paymentIntents: row?.payment_intents || null,            // v5.5.323: multi-card refund source
-    processor: row?.processor || 'stripe',                   // refund routes by this
+    processor: row?.processor || 'adyen',                   // refund routes by this
     loyalty: row?.loyalty || null,
     source: row?.source || 'pos',                            // v5.5.140: report filters
     // v5.9.11: what paid the check. A reader sale's card tender carries its psp_ref, which

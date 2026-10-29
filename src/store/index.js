@@ -6652,7 +6652,7 @@ export const useStore = create((set, get) => ({
       tenders:    closeFigures.tenders,
       giftCard:   giftRecordFrom(paymentInfo),                   // v5.5.217 refund reversal; v5.5.902 also carries split legs
       stripePaymentIntentId: paymentInfo.stripePaymentIntentId || paymentInfo.paymentIntentId || null,  // v5.5.301: for card refunds
-      processor:  paymentInfo.processor || 'stripe',             // which processor took the payment (refund routes by this)
+      processor:  paymentInfo.processor || 'adyen',             // which processor took the payment (refund routes by this)
       paymentIntents: attachCaptureToIntents(attachCardToIntents(derivePaymentIntents(paymentInfo), paymentInfo.cardReceipt), paymentInfo.capture),  // v5.5.323 legs + v5.5.719 card block + v5.7.5 tip-on-receipt capture window
       cardReceipt: paymentInfo.cardReceipt || null,              // v5.5.719: card-scheme receipt block (brand/last4/auth/AID/CVM) for the printed receipt
       loyaltyRedemption: paymentInfo.loyaltyRedemption || null,  // v5.5.315: link redeem→check for refund restore
@@ -7366,7 +7366,7 @@ export const useStore = create((set, get) => ({
           ]),
           giftCard: giftRecordFrom(paymentInfo),
           stripePaymentIntentId: paymentInfo.stripePaymentIntentId || paymentInfo.paymentIntentId || null,
-          processor: paymentInfo.processor || 'stripe',
+          processor: paymentInfo.processor || 'adyen',
           paymentIntents: attachCardToIntents(derivePaymentIntents(paymentInfo), paymentInfo.cardReceipt),
           cardReceipt: paymentInfo.cardReceipt || null,
           drawerId: get().myDrawer?.()?.id || null,
@@ -7530,7 +7530,7 @@ export const useStore = create((set, get) => ({
       tenders: closeFigures.tenders,   // v5.9.11 (lib/closeMoney.js)
       giftCard: giftRecordFrom(paymentInfo),                                         // v5.5.217 / v5.5.902
       stripePaymentIntentId: paymentInfo.stripePaymentIntentId || paymentInfo.paymentIntentId || null,              // v5.5.301
-      processor: paymentInfo.processor || 'stripe',                                  // refund routes by this
+      processor: paymentInfo.processor || 'adyen',                                  // refund routes by this
       paymentIntents: attachCaptureToIntents(attachCardToIntents(derivePaymentIntents(paymentInfo), paymentInfo.cardReceipt), paymentInfo.capture),  // v5.5.323 legs + v5.5.719 card block + v5.7.5 tip-on-receipt (counter sales open windows too)
       cardReceipt: paymentInfo.cardReceipt || null,                                  // v5.5.719: card-scheme receipt block
       loyaltyRedemption: paymentInfo.loyaltyRedemption || null,                      // v5.5.315

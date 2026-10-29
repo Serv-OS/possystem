@@ -562,7 +562,7 @@ export function cardLegsOf(check) {
       id: String(p.id),
       amountMinor: Number.isFinite(Number(p.amountMinor)) && Number(p.amountMinor) > 0
         ? Math.round(Number(p.amountMinor)) : null,
-      processor: String(p.processor || check?.processor || tenderProcessor(p.id) || 'stripe').toLowerCase(),
+      processor: String(p.processor || check?.processor || tenderProcessor(p.id) || 'adyen').toLowerCase(),
       card: p.card || null,
       brand: p.card?.brand || null,
       last4: p.card?.last4 || null,
