@@ -717,7 +717,10 @@ export function planXeroInvoiceDay(grouped, { mapping = {}, detail = {}, site = 
   const salesLines = [
     ...sideLines(groups.sales, st, summary.sales?.credits, true, vatTie, vatLarge),
   ];
-  const giftSold = Object.values(groups.sales || {}).reduce((s, b) => s + (b.gift || 0), 0);
+  // 29 Oct 2026 (Drop C): gift cards sold at the till (groups.giftSold, carved out of the tenders'
+  // goods by the accounting layer) post on the same "Gift cards sold" line, No VAT, to the gift
+  // card liability, beside gift card menu items booked at a No VAT rate (each bucket's gift).
+  const giftSold = Object.values(groups.sales || {}).reduce((s, b) => s + (b.gift || 0), 0) + (groups.giftSold || 0);
   if (giftSold) salesLines.push(giftLine(giftSold, 'Gift cards sold'));
   salesLines.push(...extras(st, false));
   const rt = summary.refunds?.totals || { gross: 0, tip: 0, service: 0 };
@@ -948,7 +951,7 @@ export function seenFromGrouped(grouped) {
   const summary = grouped?.summary || {};
   const groups = grouped?.groups || {};
   const g = new Set(), d = new Set();
-  let gift = false, deposits = false;
+  let gift = !!groups.giftSold, deposits = false;
   for (const side of [groups.sales, groups.refunds]) {
     for (const b of Object.values(side || {})) {
       for (const [k, v] of Object.entries(b.goods || {})) if (v) g.add(k);

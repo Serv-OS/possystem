@@ -27,6 +27,10 @@
 //     of which VAT
 //     Net sales excluding VAT  (Daily trading, the Owner app, Xero)
 //   plus Service, plus Tips
+//   plus Gift cards sold (29 Oct 2026, Drop C: gift cards sold at the till, lines of kind
+//                        'gift_card_sale'; Peter's call: MONEY IN, NOT SALES. Outside Item sales,
+//                        Net sales and the VAT; accountingDay.js carves the money out of every
+//                        tender before service and VAT are apportioned, so every report agrees)
 //   = Money collected    card + cash + gift card (+ deposits, channels) less money refunded
 //
 // Where tax is ADDED ON TOP of prices (US tax profiles: tax_breakdown.hasExclusiveTax), item
@@ -36,7 +40,7 @@
 // Accepts the Back Office's camelCase checks or closed_checks rows (saleVat.toAccountingRow).
 // PURE: imports only the shared rule files; runs under node --test.
 
-import { checkTenderParts, refundParts, isVoidedCheck, MONEY_KINDS, toMinor, checkTaxRecorded } from '../../supabase/functions/_shared/accountingDay.js';
+import { checkTenderParts, refundParts, isVoidedCheck, MONEY_KINDS, toMinor, checkTaxRecorded, isGiftSaleLine } from '../../supabase/functions/_shared/accountingDay.js';
 import { chargedNothing, recordedDiscountMinor } from '../../supabase/functions/_shared/tradingSales.js';
 import { toAccountingRow } from '../../supabase/functions/_shared/saleVat.js';
 import { lineAfterItemDiscount } from './taxBasis.js';
@@ -52,7 +56,7 @@ const ALWAYS_NAMED = new Set(['card', 'cash', 'gift_card']);
 // The numeric fields of a breakdown (major units unless a count), for adding sites together.
 export const BREAKDOWN_FIELDS = [
   'items', 'voids', 'deliveryFees', 'discounts', 'recordedDiscounts', 'rewards', 'rewardsTax', 'refunds', 'shelfSales',
-  'addedTax', 'sales', 'tax', 'net', 'service', 'tips', 'collected', 'count', 'covers', 'voidCount', 'refundCount',
+  'addedTax', 'sales', 'tax', 'net', 'service', 'tips', 'giftSold', 'collected', 'count', 'covers', 'voidCount', 'refundCount',
   ...TENDER_ORDER.map((k) => `tender_${k}`),
 ];
 
@@ -69,15 +73,21 @@ export function addedTaxShare(row) {
   return Math.max(0, Math.min(1, num(rec.exclusiveTax) / total));
 }
 
-/** The live lines of a check: { listed (price x qty), after (after item discounts), lines }. Minor units. */
+/**
+ * The live lines of a check: { listed (price x qty), after (after item discounts), lines, gift }.
+ * Minor units. A gift card sold (kind 'gift_card_sale') is not an item sale: its value is `gift`,
+ * outside listed and after, and it does not count as a line.
+ */
 function itemsOf(row, withVoidedLines = false) {
   const list = Array.isArray(row?.items) ? row.items.filter((i) => i && (withVoidedLines || !i.voided)) : [];
-  let listed = 0, after = 0;
+  let listed = 0, after = 0, gift = 0, lines = 0;
   for (const i of list) {
+    if (isGiftSaleLine(i)) { gift += toMinor(num(i.price) * (Number(i.qty) || 1)); continue; }
+    lines += 1;
     listed += toMinor(num(i.price) * (Number(i.qty) || 1));
     after += toMinor(lineAfterItemDiscount(i));
   }
-  return { listed, after, lines: list.length };
+  return { listed, after, lines, gift };
 }
 
 function deliveryMinor(c, row) {
@@ -99,34 +109,42 @@ export function checkPieces(check) {
   // check that took nothing is an old till row whose every line was voided (the till then kept
   // only live lines): its subtotal is the voided goods, never a sale, so it reads 0 and is named.
   const storedSub = Math.max(0, toMinor(row?.subtotal));
-  const emptyVoidedRow = !items.lines && Array.isArray(row?.items) && toMinor(row?.total) <= 0 && storedSub > 0;
-  const goods = items.lines ? items.listed : emptyVoidedRow ? 0 : storedSub;
+  const hasLines = items.lines || items.gift;
+  const emptyVoidedRow = !hasLines && Array.isArray(row?.items) && toMinor(row?.total) <= 0 && storedSub > 0;
+  // A check with only a gift card line sold no goods: 0, never its stored subtotal.
+  const goods = items.lines ? items.listed : (emptyVoidedRow || items.gift) ? 0 : storedSub;
   const delivery = deliveryMinor(check, row);
   const out = {
-    row, voided, goods, itemsFromSubtotal: !items.lines && !emptyVoidedRow, delivery,
-    moneySales: 0, moneyTax: 0, moneyAdded: 0, rewardsShelf: 0, rewardsTax: 0,
+    row, voided, goods, itemsFromSubtotal: !hasLines && !emptyVoidedRow, delivery,
+    moneySales: 0, moneyTax: 0, moneyAdded: 0, rewardsShelf: 0, rewardsTax: 0, gift: 0,
     service: 0, tips: 0, byTender: {}, tipsByTender: {}, recordedDiscount: 0, itemDiscount: 0, subtotalOff: null,
   };
   // A stored subtotal that is not its own lines (price x qty, BEFORE item discounts, as the till
-  // stores it: tradingSales.js and the till's linesGoods): named so it can be fixed.
-  if (items.lines && !voided) {
+  // stores it: tradingSales.js and the till's linesGoods): named so it can be fixed. A gift card
+  // sold may or may not be inside the stored subtotal; either reading is its own lines.
+  if (hasLines && !voided) {
     const sub = toMinor(row?.subtotal);
-    if (Math.abs(sub - items.listed) > 1) out.subtotalOff = { stored: sub / 100, items: items.listed / 100 };
+    if (Math.abs(sub - items.listed) > 1 && Math.abs(sub - items.listed - items.gift) > 1) out.subtotalOff = { stored: sub / 100, items: items.listed / 100 };
     out.itemDiscount = Math.max(0, items.listed - items.after);
   } else if (emptyVoidedRow && !voided) {
     out.subtotalOff = { stored: storedSub / 100, items: 0 };
   }
   out.recordedDiscount = recordedDiscountMinor(row) + out.itemDiscount;
-  if (out.voided || chargedNothing(row)) return out;
+  if (out.voided) return out;
+  const comp = chargedNothing(row);
   const share = addedTaxShare(row);
   for (const p of checkTenderParts(row).parts) {
     const added = Math.round(p.tax * share);
     if (MONEY_KINDS.has(p.kind)) {
+      // The gift cards sold are read from the tenders (the one rule), even on a comp: the gift
+      // line takes no discount, so its money was taken whatever the goods' discounts covered.
+      out.gift += p.gift || 0;
+      if (comp) continue;
       out.moneySales += p.sales; out.moneyTax += p.tax; out.moneyAdded += added;
       out.service += p.service; out.tips += p.tip;
       out.byTender[p.kind] = (out.byTender[p.kind] || 0) + p.gross;
       out.tipsByTender[p.kind] = (out.tipsByTender[p.kind] || 0) + p.tip;
-    } else {
+    } else if (!comp) {
       out.rewardsShelf += p.sales - added;
       out.rewardsTax += p.tax;
     }
@@ -207,7 +225,7 @@ function eachRefund(checks, refundRows, range, fn) {
  */
 export function salesBreakdown(checks, { range = null, refundRows = null, currency = null } = {}) {
   let items = 0, voids = 0, delivery = 0, discounts = 0, recorded = 0, rewards = 0, rewardsTax = 0;
-  let moneySales = 0, moneyTax = 0, moneyAdded = 0, service = 0, tips = 0;
+  let moneySales = 0, moneyTax = 0, moneyAdded = 0, service = 0, tips = 0, giftSold = 0;
   let count = 0, covers = 0, voidCount = 0, anyAdded = false;
   const tender = {}, tenderTips = {}, tenderChecks = {};
   const subtotalOff = [], discountOff = [], vatMissing = [];
@@ -224,7 +242,7 @@ export function salesBreakdown(checks, { range = null, refundRows = null, curren
     recorded += p.recordedDiscount;
     rewards += p.rewardsShelf; rewardsTax += p.rewardsTax;
     moneySales += p.moneySales; moneyTax += p.moneyTax; moneyAdded += p.moneyAdded;
-    service += p.service; tips += p.tips;
+    service += p.service; tips += p.tips; giftSold += p.gift;
     if (p.moneyAdded > 0 || addedTaxShare(p.row) > 0) anyAdded = true;
     for (const [k, v] of Object.entries(p.byTender)) {
       tender[k] = (tender[k] || 0) + v;
@@ -251,13 +269,14 @@ export function salesBreakdown(checks, { range = null, refundRows = null, curren
   const sales = moneySales - refSales;                       // == shelfSales + addedTax
   const tax = moneyTax - refTax;
   const net = sales - tax;
-  const collected = sales + service + tips;
+  // Money collected holds the gift cards sold (the tenders took that money); Sales and Net do not.
+  const collected = sales + service + tips + giftSold;
   const addedOn = anyAdded || (String(currency || '').toUpperCase() === 'USD' && tax - addedTax === 0);
   const m = (x) => x / 100;
   const out = {
     items: m(items), voids: m(voids), deliveryFees: m(delivery), discounts: m(discounts), recordedDiscounts: m(recorded),
     rewards: m(rewards), rewardsTax: m(rewardsTax), refunds: m(refunds), shelfSales: m(shelfSales), addedTax: m(addedTax),
-    sales: m(sales), tax: m(tax), net: m(net), service: m(service), tips: m(tips), collected: m(collected),
+    sales: m(sales), tax: m(tax), net: m(net), service: m(service), tips: m(tips), giftSold: m(giftSold), collected: m(collected),
     count, covers, voidCount, refundCount: refCount,
     addedOn, taxWord: addedOn || String(currency || '').toUpperCase() === 'USD' ? 'tax' : 'VAT',
     subtotalOff, discountOff, vatMissing, estimated: false,
@@ -314,7 +333,9 @@ export function breakdownFromDaySums(stats, byTender = {}, { currency = null, re
   const out = {
     items, voids, deliveryFees: delivery, discounts, recordedDiscounts: discounts, rewards, rewardsTax: r2(saleTax - moneyTax),
     refunds, shelfSales: sales, addedTax: 0, sales, tax, net: r2(sales - tax), service: r2(service), tips: r2(tips),
-    collected: r2(sales + service + tips), count: num(s.count), covers: num(s.covers), voidCount: 0, refundCount: made ? num(made.count) : 0,
+    // The server day sums (report_day_sums) do not know gift cards sold yet: 0 here, estimated.
+    giftSold: num(s.giftSold),
+    collected: r2(sales + service + tips + num(s.giftSold)), count: num(s.count), covers: num(s.covers), voidCount: 0, refundCount: made ? num(made.count) : 0,
     addedOn: false, taxWord: usd ? 'tax' : 'VAT', subtotalOff: [], discountOff: [], vatMissing: [], estimated: true,
   };
   for (const k of TENDER_ORDER) out[`tender_${k}`] = num(byTender[k]);
@@ -353,8 +374,18 @@ export function breakdownLines(b, { keepZero = false } = {}) {
   }
   add('service', 'plus Service', b.service, 'plus');
   add('tips', 'plus Tips', b.tips, 'plus');
+  // 29 Oct 2026: gift cards sold are money in, not sales: outside every line above, inside the money.
+  add('gift', 'plus Gift cards sold', b.giftSold || 0, 'plus', true);
   add('collected', 'Money collected', b.collected, 'total');
   return lines;
+}
+
+/** Gift cards sold are money in, not sales: a note for the reports ('' when none were sold). */
+export function giftSoldLine(b, fmt) {
+  if (!b || !(b.giftSold >= 0.005)) return '';
+  const f = fmt || ((n) => n.toFixed(2));
+  const w = b.taxWord === 'tax' ? 'tax' : 'VAT';
+  return `Gift cards sold (${f(b.giftSold)}) are money in, not sales: outside Item sales, Net sales and the ${w} (${w} is charged when a card is spent). They are inside Money collected.`;
 }
 
 /** "Card £x, Cash £y, Gift card £z" (and any other money kind that took money): adds up to Money collected. */

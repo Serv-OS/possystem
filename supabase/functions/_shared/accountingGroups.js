@@ -39,8 +39,13 @@
 // A category id from another venue resolves through master_id to this venue's copy.
 
 import {
-  buildAccountingDay, checkTenderParts, refundParts, isVoidedCheck, taxContext, allocate, toMinor, moneyDiscounts,
+  buildAccountingDay, checkTenderParts, refundParts, isVoidedCheck, taxContext, allocate, toMinor, moneyDiscounts, isGiftSaleLine,
 } from './accountingDay.js';
+// 29 Oct 2026 (Drop C): a gift card SOLD AT THE TILL is a line of kind 'gift_card_sale'. Its money
+// is carved out of the tenders' goods by checkTenderParts (parts[].gift), so no rate bucket holds
+// it: the line is left out of the items that weigh the groups, and the day's till gift money is
+// returned as groups.giftSold (minor units) for the invoice's "Gift cards sold" line, beside the
+// older per bucket `gift` (an isGiftCard menu item, which the till books at its own No VAT rate).
 
 export const OTHER_GROUP = 'other';
 export const DISCOUNT_GROUPS = ['customer', 'loyalty', 'staff', 'comp', 'promo'];
@@ -334,7 +339,7 @@ export function buildGroupedDay({ day, saleRows = [], refundRows = [], venue = {
   };
   const categories = {};
   const discountLabels = {};
-  let unresolvedGoods = 0, unresolvedCount = 0, goodsTotal = 0;
+  let unresolvedGoods = 0, unresolvedCount = 0, goodsTotal = 0, giftSold = 0;
   const groups = { sales: {}, refunds: {} };
   let trackCategories = true;
   const ctxFor = (withDiscounts) => ({
@@ -360,6 +365,7 @@ export function buildGroupedDay({ day, saleRows = [], refundRows = [], venue = {
     const goods = {};
     const creditsBy = {};
     for (const p of parts) {
+      giftSold += p.gift || 0;
       for (const [r, v] of Object.entries(ratesOf(p))) {
         add(goods, r, v.sales);
         if (p.kind === 'discount') {
@@ -373,7 +379,7 @@ export function buildGroupedDay({ day, saleRows = [], refundRows = [], venue = {
     // A rate the check's breakdown names can hold an item even when no money landed there (a
     // free cookie at 0%): its full price and its discount then post at its own rate.
     const keys = [...moneyKeys, ...buckets.map((b) => b?.key).filter((k) => k && !moneyKeys.includes(k))];
-    const items = (Array.isArray(row.items) ? row.items : []).filter((i) => i && typeof i === 'object' && !i.voided && qtyOf(i, false) > 0);
+    const items = (Array.isArray(row.items) ? row.items : []).filter((i) => i && typeof i === 'object' && !i.voided && !isGiftSaleLine(i) && qtyOf(i, false) > 0);
     const values = items.map((i) => valueOf(i, false));
     const afters = items.map((i) => afterItemDiscount(i, false));
     const bucketsOf = items.map((i) => itemBucket(i, row, keys, buckets, taxCtx));
@@ -539,7 +545,7 @@ export function buildGroupedDay({ day, saleRows = [], refundRows = [], venue = {
       let estimated = false;
       const lists = [[entry.items, true], [row.items, false]];
       for (const [list, own] of lists) {
-        const items = (Array.isArray(list) ? list : []).filter((it) => it && typeof it === 'object' && !it.voided && qtyOf(it, own) > 0);
+        const items = (Array.isArray(list) ? list : []).filter((it) => it && typeof it === 'object' && !it.voided && !isGiftSaleLine(it) && qtyOf(it, own) > 0);
         if (!items.length) continue;
         const values = items.map((it) => afterItemDiscount(it, own));
         const bucketsOf = items.map((it) => itemBucket(it, row, keys, r.buckets || [], taxCtx));
@@ -571,6 +577,7 @@ export function buildGroupedDay({ day, saleRows = [], refundRows = [], venue = {
       discountLabels,
       unresolved: { goods: unresolvedGoods, count: unresolvedCount },
       goodsTotal,
+      giftSold,
       flags: [...flags.values()],
     },
   };

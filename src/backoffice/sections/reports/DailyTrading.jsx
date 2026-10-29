@@ -152,6 +152,10 @@ export default function DailyTrading({ fromDay, toDay, fmt }) {
           <div style={{ ...S.lRow, color: 'var(--red)', fontWeight: 700 }}><span>{totals.no_vat === 1 ? '1 sale has' : `${totals.no_vat} sales have`} no VAT recorded: {(totals.no_vat_refs || []).join(', ')}</span><span/></div>
         )}
         <div style={{ ...S.lRow, ...S.lSub }}><span>Net sales (ex-VAT)</span><span style={S.mono}>{money(totals.actual_sales)}</span></div>
+        {/* 29 Oct 2026 (Drop C): gift cards sold at the till are money in, not sales: outside the lines above and the VAT, shown beside them. */}
+        {totals.gift_sold > 0 && (
+          <div style={S.lRow}><span style={{ color: 'var(--t3)' }}>Gift cards sold <span style={S.lHint}>— money in, not sales: outside Net sales and VAT (VAT is charged when a card is spent)</span></span><span style={{ ...S.mono, color: 'var(--t3)' }}>{money(totals.gift_sold)}</span></div>
+        )}
         <div style={S.lRow}><span style={S.lLess}>less COGS <span style={S.lHint}>— {basis === 'recipe' ? 'recipe cost' : 'estimate'}{totals.actual_sales > 0 ? ` ${Math.round(totals.cogs_actual / totals.actual_sales * 100)}%` : ''}</span></span><span style={{ ...S.mono, color: 'var(--red)' }}>−{money(totals.cogs_actual)}</span></div>
         {basis === 'estimate' && totals.cogs_recipe > 0 && (
           <div style={S.lRow}><span style={{ ...S.lLess, ...S.lHint }}>recipe cost so far (from stock)</span><span style={{ ...S.mono, color: 'var(--t3)' }}>{money(totals.cogs_recipe)}</span></div>
@@ -189,6 +193,7 @@ export default function DailyTrading({ fromDay, toDay, fmt }) {
           <thead><tr>
             <th style={{ ...S.th, ...S.thL }}>Day</th>
             <th style={S.th}>Forecast</th><th style={S.th}>Takings before refunds (inc VAT)</th><th style={S.th}>Refunds</th><th style={S.th}>VAT</th><th style={S.th}>Net sales</th><th style={S.th}>vs forecast</th>
+            {totals.gift_sold > 0 && <th style={S.th} title="Money in, not sales: outside Net sales and VAT">Gift cards sold</th>}
             <th style={S.th}>Labour (act / pred)</th><th style={S.th}>Labour % pred</th><th style={S.th}>Labour % act</th>
             <th style={S.th}>COGS</th><th style={S.th}>Waste</th><th style={S.th}>Op. profit</th>
           </tr></thead>
@@ -209,6 +214,7 @@ export default function DailyTrading({ fromDay, toDay, fmt }) {
                 <td style={{ ...S.td, color: 'var(--t3)' }}>{money(r.vat)}</td>
                 <td style={S.td}>{money(r.actual_sales)}</td>
                 <td style={{ ...S.td, ...sign(vsFc(r.actual_sales, r.forecast)) }}>{vsFcText(vsFc(r.actual_sales, r.forecast))}</td>
+                {totals.gift_sold > 0 && <td style={{ ...S.td, color: 'var(--t3)' }}>{money(r.gift_sold || 0)}</td>}
                 <td style={S.td}>{money(r.labour_actual)}<span style={{ color: 'var(--t4)' }}> / {money(r.labour_theo)}</span></td>
                 <td style={{ ...S.td, ...(over(pct1(r.labour_theo, r.forecast)) ? S.neg : null) }}>{pct1(r.labour_theo, r.forecast) != null ? `${pct1(r.labour_theo, r.forecast)}%` : '—'}</td>
                 <td style={{ ...S.td, ...(over(r.labour_pct_actual) || (r.labour_pct_actual == null && r.labour_actual > 0) ? S.neg : null) }}
@@ -228,6 +234,7 @@ export default function DailyTrading({ fromDay, toDay, fmt }) {
             <td style={{ ...S.td, color: 'var(--t3)' }}>{money(totals.vat)}</td>
             <td style={S.td}>{money(totals.actual_sales)}</td>
             <td style={{ ...S.td, ...sign(vsFc(totals.actual_sales, totals.forecast)) }}>{vsFcText(vsFc(totals.actual_sales, totals.forecast))}</td>
+            {totals.gift_sold > 0 && <td style={{ ...S.td, color: 'var(--t3)' }}>{money(totals.gift_sold)}</td>}
             <td style={S.td}>{money(totals.labour_actual)}</td>
             <td style={{ ...S.td, ...(over(predPct) ? S.neg : null) }}>{predPct != null ? `${predPct}%` : '—'}</td>
             <td style={{ ...S.td, ...(over(totals.labour_pct_actual) ? S.neg : null) }}>{totals.labour_pct_actual != null ? `${totals.labour_pct_actual}%` : '—'}</td>
@@ -237,7 +244,7 @@ export default function DailyTrading({ fromDay, toDay, fmt }) {
           </tr></tfoot>
         </table>
       </div>
-      <div style={S.note}>{dayStart ? <>Each day runs from <b>{dayStart}</b> to {dayStart} the next morning (the venue’s business day, the same as Sales summary and Xero), so sales after midnight count on the night they belong to. </> : null}VAT is shown separately because it’s collected for HMRC, it’s never profit. Net sales (ex-VAT) are the P&amp;L basis: takings before refunds, less refunds, less VAT. Sales are what customers paid for the goods, after discounts and comps: loyalty rewards and promo codes are discounts, and tips and service charge are not sales. A refund comes off on the day it was made, not the day of the sale. Type a forecast (net) and press Enter, or tap “LY” for the same weekday last year. Labour shows actual / theoretical (rota): the rota on its shift date, a timesheet on the business day most of the shift falls in. Operating profit = net sales − COGS − waste − labour − overhead. Waste is stock thrown away, valued at cost, from the stock ledger: the same figure as the Wastage log and Stock and GP, refunded food included once. COGS basis is currently <b>{basis === 'recipe' ? 'recipe cost (actual ingredient cost from the stock ledger)' : `estimate (${cogs || '0'}% of sales)`}</b>. change it above.</div>
+      <div style={S.note}>{dayStart ? <>Each day runs from <b>{dayStart}</b> to {dayStart} the next morning (the venue’s business day, the same as Sales summary and Xero), so sales after midnight count on the night they belong to. </> : null}VAT is shown separately because it’s collected for HMRC, it’s never profit. Net sales (ex-VAT) are the P&amp;L basis: takings before refunds, less refunds, less VAT. Sales are what customers paid for the goods, after discounts and comps: loyalty rewards and promo codes are discounts, and tips and service charge are not sales. A refund comes off on the day it was made, not the day of the sale. Gift cards sold at the till are money in, not sales: outside net sales and VAT until the card is spent. Type a forecast (net) and press Enter, or tap “LY” for the same weekday last year. Labour shows actual / theoretical (rota): the rota on its shift date, a timesheet on the business day most of the shift falls in. Operating profit = net sales − COGS − waste − labour − overhead. Waste is stock thrown away, valued at cost, from the stock ledger: the same figure as the Wastage log and Stock and GP, refunded food included once. COGS basis is currently <b>{basis === 'recipe' ? 'recipe cost (actual ingredient cost from the stock ledger)' : `estimate (${cogs || '0'}% of sales)`}</b>. change it above.</div>
     </div>
   );
 }

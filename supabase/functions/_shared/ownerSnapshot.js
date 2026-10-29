@@ -82,7 +82,7 @@
 
 import { pagedRows, pagedEach, limiter } from './pagedRows.js';
 import { SALES_CHECK_COLS, emptySales, addCheckSales, addRefundSales, refundMadeAt } from './snapshotSales.js';
-import { isVoidedCheck, checkTenderParts, MONEY_KINDS } from './accountingDay.js';
+import { isVoidedCheck, checkTenderParts, MONEY_KINDS, GIFT_SALE_KIND } from './accountingDay.js';
 import { checkSalesParts, refundSalesParts, chargedNothing, timesheetDayMs } from './tradingSales.js';
 import { wallClock, wallTimeToInstant, businessDayOf, businessDayStartMs, dayStartMinutes, venueZone, DEFAULT_DAY_START, DEFAULT_VENUE_TZ } from './businessDay.js';
 import {
@@ -300,8 +300,25 @@ async function firstSaleDay(ops, id, p, gate) {
   return firstTradingDay(rows, p.dayOf);
 }
 
+// 29 Oct 2026 (v5.11.118, Drop C): a gift card sold at the till is a line of kind 'gift_card_sale'
+// inside `items`, the heavy column the sales windows leave out on purpose (8 Oct 2026). Peter's
+// call: money in, not sales. So each sales window first reads ONLY the checks that sold one
+// (items @> [{ kind: 'gift_card_sale' }]: a handful a day), id and items, and those lines are put
+// onto the sales rows before the one sales rule reads them (snapshotSales.addCheckSales), so net
+// sales leave the gift money out here as in every report. Rows read with items already keep theirs.
+const GIFT_SALE_FILTER = [{ kind: GIFT_SALE_KIND }];
+async function giftLinesOf(ops, id, windows, opts) {
+  const map = new Map();
+  const keep = (rows) => { for (const r of rows) map.set(r.id, r.items); };
+  await Promise.all(windows.map((w) => pagedEach('gift cards sold', () => ops.from('closed_checks').select('id, items')
+    .eq('location_id', id).contains('items', GIFT_SALE_FILTER).gte('closed_at', w.from).lt('closed_at', w.to).order('closed_at').order('id'), withoutDemoRows((rows) => keep(rows)), opts)));
+  return map;
+}
+const withGiftLines = (map, rows) => (map.size ? rows.map((c) => (c && map.has(c.id) && !Array.isArray(c.items) ? { ...c, items: map.get(c.id) } : c)) : rows);
+
 const addInto = (a, v) => {
   a.net += v.net; a.vat += v.vat; a.gross += v.gross; a.orders += v.orders; a.tips += v.tips;
+  a.gift_sold = (a.gift_sold || 0) + (v.gift_sold || 0);
   a.refunds = (a.refunds || 0) + (v.refunds || 0); a.refund_vat = (a.refund_vat || 0) + (v.refund_vat || 0);
   a.vat_missing = (a.vat_missing || 0) + (v.vat_missing || 0);
   if (Array.isArray(v.vat_missing_refs) && v.vat_missing_refs.length) a.vat_missing_refs = [...(a.vat_missing_refs || []), ...v.vat_missing_refs].slice(0, 25);
@@ -421,9 +438,14 @@ export async function buildOwnerSnapshot({ ops, opsIds, meta, now = new Date(), 
     }
   };
 
-  const salesOf = (id) => Promise.all(windowsOf(plan[id], plan[id].salesDays, SLICE_DAYS[period]).map((w) =>
-    pagedEach('closed checks', () => ops.from('closed_checks').select(SALES_CHECK_COLS)
-      .eq('location_id', id).gte('closed_at', w.from).lt('closed_at', w.to).order('closed_at').order('id'), withoutDemoRows((rows) => addSales(id, rows), markDemo(id)), opts)));
+  // 29 Oct 2026: the gift cards sold (giftLinesOf, above) are read first and put onto the rows.
+  const salesOf = async (id) => {
+    const windows = windowsOf(plan[id], plan[id].salesDays, SLICE_DAYS[period]);
+    const gifts = await giftLinesOf(ops, id, windows, opts);
+    return Promise.all(windows.map((w) =>
+      pagedEach('closed checks', () => ops.from('closed_checks').select(SALES_CHECK_COLS)
+        .eq('location_id', id).gte('closed_at', w.from).lt('closed_at', w.to).order('closed_at').order('id'), withoutDemoRows((rows) => addSales(id, withGiftLines(gifts, rows)), markDemo(id)), opts)));
+  };
   // Items for the period's own days only (today's, under Today): they are the heavy column.
   const itemsOf = (id) => Promise.all(windowsOf(plan[id], [{ from: plan[id].range.from, to: plan[id].today }], SLICE_DAYS[period]).map((w) =>
     pagedEach('items sold', () => ops.from('closed_checks').select('id, closed_at, status, voided, items')
@@ -538,6 +560,9 @@ export async function buildOwnerSnapshot({ ops, opsIds, meta, now = new Date(), 
         last_week_gross_sales_by_now: r2(cuts[id].get(d.lwToday)?.sales.gross ?? (lwT.gross || 0)),
         // 8 Oct 2026: refunds made today (off net_sales and vat above) and sales with no VAT recorded, named.
         ...(t.refunds || t.vat_missing ? { refunds: r2(t.refunds || 0), refund_vat: r2(t.refund_vat || 0), vat_missing: t.vat_missing || 0, vat_missing_refs: t.vat_missing_refs || [] } : {}),
+        // 29 Oct 2026 (Drop C): gift cards sold today, money in that is outside net_sales, vat and
+        // gross_sales (the one sales rule, tradingSales.checkSalesParts giftCardsSold). Sent when any were sold.
+        ...(t.gift_sold ? { gift_cards_sold: r2(t.gift_sold) } : {}),
       },
       wtd: {
         net_sales: week.net_sales, last_week_net_sales: week.cmp_net_sales, vs_last_week_pct: week.pct,
@@ -598,6 +623,8 @@ function rollupOf(locations) {
     vat: r2(acc.vat + (l.today.vat || 0)),
     wtd_gross: r2(acc.wtd_gross + (l.wtd.gross_sales || 0)),
     wtd_last_week_gross: r2(acc.wtd_last_week_gross + (l.wtd.last_week_gross_sales || 0)),
+    // 29 Oct 2026: gift cards sold today across the venues, present only when any were sold.
+    ...(acc.gift_cards_sold || l.today.gift_cards_sold ? { gift_cards_sold: r2((acc.gift_cards_sold || 0) + (l.today.gift_cards_sold || 0)) } : {}),
   }), emptyRollup());
   rollup.forecast_pct = rollup.forecast > 0 ? Math.round(rollup.net_sales / rollup.forecast * 100) : null;
   rollup.labour_pct = rollup.net_sales > 0 ? r2(rollup.labour / rollup.net_sales * 100) : null;
@@ -874,10 +901,15 @@ export async function buildOwnerDetail({ ops, opsIds, meta, target, currency = n
   const cmpOf = (id) => Promise.all(windowsOf(plan[id], [cmpSpan(plan[id])], slice).map((w) =>
     pagedEach('closed checks', () => ops.from('closed_checks').select(`${SALES_CHECK_COLS}, items`)
       .eq('location_id', id).gte('closed_at', w.from).lt('closed_at', w.to).order('closed_at').order('id'), withoutDemoRows((rows) => addCmp(id, rows), markDemo), opts)));
-  // Every other day that is needed (this week and last), with the sales columns only.
-  const otherOf = (id) => Promise.all(windowsOf(plan[id], subtractDayRange(subtractDayRange(plan[id].salesDays, plan[id].range), cmpSpan(plan[id])), slice).map((w) =>
-    pagedEach('closed checks', () => ops.from('closed_checks').select(SALES_CHECK_COLS)
-      .eq('location_id', id).gte('closed_at', w.from).lt('closed_at', w.to).order('closed_at').order('id'), withoutDemoRows((rows) => addOther(id, rows), markDemo), opts)));
+  // Every other day that is needed (this week and last), with the sales columns only, plus (29 Oct
+  // 2026) the gift cards sold on those days (giftLinesOf), so their net sales leave the gift money out.
+  const otherOf = async (id) => {
+    const windows = windowsOf(plan[id], subtractDayRange(subtractDayRange(plan[id].salesDays, plan[id].range), cmpSpan(plan[id])), slice);
+    const gifts = await giftLinesOf(ops, id, windows, opts);
+    return Promise.all(windows.map((w) =>
+      pagedEach('closed checks', () => ops.from('closed_checks').select(SALES_CHECK_COLS)
+        .eq('location_id', id).gte('closed_at', w.from).lt('closed_at', w.to).order('closed_at').order('id'), withoutDemoRows((rows) => addOther(id, withGiftLines(gifts, rows)), markDemo), opts)));
+  };
   // Older checks that carry a refund: the refund may have been made in this period.
   const refundsOf = (id) => pagedEach('refunds', () => ops.from('closed_checks').select(`${SALES_CHECK_COLS}, refunds`)
     .eq('location_id', id).gte('closed_at', new Date(plan[id].startMs - REFUND_LOOKBACK_DAYS * DAY_MS).toISOString()).lt('closed_at', new Date(plan[id].startMs).toISOString()).neq('refunds', '[]')
@@ -945,6 +977,8 @@ export async function buildOwnerDetail({ ops, opsIds, meta, target, currency = n
         avg_check_gross: sales.orders ? r2(sales.gross / sales.orders) : 0,
         // 8 Oct 2026: refunds made in the period (already off the figures above), and sales with no VAT recorded, named.
         refunds: r2(sales.refunds || 0), refund_vat: r2(sales.refund_vat || 0), vat_missing: sales.vat_missing || 0, vat_missing_refs: sales.vat_missing_refs || [],
+        // 29 Oct 2026 (Drop C): gift cards sold in the period, money in outside every sales figure above. Sent when any were sold.
+        ...(sales.gift_sold ? { gift_cards_sold: r2(sales.gift_sold) } : {}),
       },
       compare: scope.kind === 'venue' ? { period, ...compares[0] } : { period, ...groupCompare(compares) },
       hours: used.length ? hourRows.slice(used[0], used[used.length - 1] + 1) : [],

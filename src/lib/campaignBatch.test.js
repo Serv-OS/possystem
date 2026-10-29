@@ -79,6 +79,9 @@ test('the engine claims in bulk, sends through deliverBatch, time boxes and resu
   assert.ok(src.includes("if (outOfTime(startedMs, Date.now(), budgetMs)) break;"), 'time boxed');
   assert.ok(src.includes("summary.status = 'running';\n      return summary;"), 'a time boxed run stays running with the rest pending');
   assert.ok(src.includes('export async function resumeStalledRuns('), 'the cron can resume');
+  // Peter 29 Oct: a quick send has no schedule. The hour job never resumes an ephemeral campaign.
+  const rs = src.slice(src.indexOf('export async function resumeStalledRuns('));
+  assert.ok(rs.includes('if (c.ephemeral === true) {') && rs.indexOf('if (c.ephemeral === true) {') < rs.indexOf('resumeRunId: run.id'), 'a quick send is closed, not resumed');
   assert.ok(src.includes("if (opts.resumeRunId) {"), 'a continuation reuses its run');
 });
 

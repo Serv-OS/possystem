@@ -1,5 +1,6 @@
 import { money } from './currency.js';
 import { taxOverrideFor, taxOrderTypeKey, roundHalfUpMinor, taxFallbackNote, TAX_FALLBACK_REASONS, NOT_IN_MENU } from './taxRule.js';
+import { isTaxExemptLine } from './giftCardLine.js';
 /**
  * Tax calculation engine — handles UK VAT (inclusive) and US sales tax (exclusive)
  *
@@ -45,6 +46,10 @@ export { taxOverrideFor, taxOrderTypeKey };
 export function resolveLineTaxRate(item, taxRates = [], orderType = 'dine-in') {
   const none = { rate: null, fallback: null };
   if (!item || !Array.isArray(taxRates) || !taxRates.length) return none;
+  // 29 Oct 2026 (v5.11.118): a gift card sold at the till (kind gift_card_sale, or any line stamped
+  // taxExempt) is outside tax: no rate, no VAT inside it, no fallback note. The money is still in
+  // the check (calculateOrderTax keeps it in subtotal and total); VAT is charged when it is spent.
+  if (isTaxExemptLine(item)) return none;
   const byId = (id) => taxRates.find(r => r && r.id === id && r.active !== false) || null;
   const def = taxRates.find(r => r && (r.isDefault || r.is_default) && r.active !== false) || null;
   let note = null;

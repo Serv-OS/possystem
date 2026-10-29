@@ -16,6 +16,9 @@
 // (Huddersfield 16 Oct: the slip would have said 2,085.10, the Owner app 1,703.30). Payments are
 // the money tenders (card, cash, gift card), which add up to Money collected; a loyalty reward
 // is never money. Print only: nothing a customer is charged changes.
+// 29 Oct 2026 (v5.11.118, Drop C): gift cards sold at the till print as their own "plus Gift cards
+// sold" line of the ladder (money in, not sales: outside Item sales, Net sales and the VAT, inside
+// Money collected) and are named again under Payments, where their money sits inside Card and Cash.
 // Pure: no store, no printer, no clock of its own.
 
 import { salesBreakdown, breakdownLines, TENDER_ORDER, TENDER_WORDS } from './salesBreakdown.js';
@@ -118,6 +121,12 @@ export function buildShiftReportDoc(r, { cols = 42 } = {}) {
   for (const p of payments) {
     b.twoColTrunc(`${p.label} (${p.count || 0})`, m(p.amount));
     if (Math.abs(Number(p.tips) || 0) >= 0.005) b.twoColTrunc('  of which tips', m(p.tips));
+  }
+  if ((Number(s.giftSold) || 0) >= 0.005) {
+    b.twoColTrunc('Gift cards sold (in the payments above)', m(s.giftSold));
+    b.fontB();
+    for (const ln of wrapWords('Gift cards sold are money in, not sales: outside Net sales and VAT until the card is spent.', cols)) b.line(ln);
+    b.fontA();
   }
   b.bold(true).twoColTrunc('Money collected', m(s.collected)).bold(false);
   if (r.kind === 'Z' && r.drawer) {

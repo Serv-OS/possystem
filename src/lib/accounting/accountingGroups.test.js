@@ -335,3 +335,25 @@ test('voided checks, checks outside the day and duplicates are left out, as in b
   assertTies(g, 'filters');
   assert.equal(g.summary.sales.totals.count, 5);
 });
+
+// 29 Oct 2026 (v5.11.118, Drop C): a gift card SOLD AT THE TILL (a line of kind 'gift_card_sale',
+// outside the till's VAT) is carved out of the tenders' goods by the accounting layer, so it sits
+// in no rate bucket: groups.giftSold carries it for the invoice, the ties per rate still hold.
+test('a gift card sold at the till sits in no bucket: groups.giftSold, the goods tie at their rate', () => {
+  const giftLine = { itemId: 'gift_card', kind: 'gift_card_sale', name: 'Gift card', price: 20, qty: 1, taxExempt: true, noDiscount: true };
+  const row = {
+    id: 'TG', closed_at: at(2), subtotal: 30, total: 30, tip: 0, service: 0, tax_amount: 1.67,
+    tax_breakdown: breakdown([{ id: 'r20', gross: 10, tax: 1.6667 }]),
+    items: [{ uid: 't1', cat: 'cat-hot_1e945c26', itemId: 'm-latte', qty: 1, price: 10, taxRateId: 'r20' }, giftLine],
+    tenders: [{ method: 'card', amount: 30, tip: 0, processor: 'adyen' }],
+  };
+  const g = buildGroupedDay({ day: DAY, saleRows: [row], refundRows: [], venue: UK, taxRates: UK_TAX, resolver: makeGroupResolver(mapping(), CATEGORIES) });
+  assertTies(g, 'till gift');
+  assert.equal(g.groups.giftSold, 2000);
+  assert.deepEqual(g.groups.sales['rate:r20'].goods, { 'hot-drinks': 1000 });
+  assert.equal(g.groups.sales['rate:r20'].gift, 0, 'not a menu item gift card');
+  assert.deepEqual(g.summary.sales.totals.byRate, { 'rate:r20': { sales: 1000, tax: 167 } });
+  assert.equal(g.summary.sales.totals.gift, 2000);
+  assert.ok(!g.groups.flags.some((f) => f.code === 'gift_card_vat_charged'));
+  assert.ok(!Object.keys(g.groups.categories).some((k) => /gift/i.test(k)), 'no category for the gift line');
+});

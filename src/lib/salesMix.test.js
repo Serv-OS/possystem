@@ -885,3 +885,15 @@ test('deploy: owner-snapshot ships salesMix.js and accountingGroups.js', () => {
     assert.ok(deps.includes(`supabase/functions/_shared/${f}`), `owner-snapshot ships ${f}`);
   }
 });
+
+// 29 Oct 2026 (v5.11.118, Drop C): a gift card sold at the till (kind 'gift_card_sale') is money in,
+// not an item sale: it is in no mix, group, category or item list.
+test('a gift card sold at the till is not a live line: the mix never counts it', () => {
+  const giftLine = { itemId: 'gift_card', kind: 'gift_card_sale', name: 'Gift card', price: 20, qty: 1, taxExempt: true, noDiscount: true };
+  assert.equal(isLiveLine(giftLine), false);
+  assert.equal(isLiveLine({ itemId: 'm-latte', price: 3.5, qty: 1 }), true);
+  const resolver = makeMixResolver(toResolverCategories(CATEGORIES), xeroMapping());
+  const mix = mixFromChecks([{ id: 'c1', status: 'paid', items: [{ uid: 'a', cat: 'cat-hot_1e945c26', itemId: 'm-latte', price: 10, qty: 1 }, giftLine] }], resolver);
+  assert.equal(r2(mix.total), 10);
+  assert.equal(mix.lines, 1);
+});

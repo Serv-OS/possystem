@@ -20,6 +20,8 @@ import { evaluateAutoDiscounts, toAppliedDiscount } from '../discountEngine.js';
 import { buildScheduleCtx } from '../scheduleCtx.js';
 import { computeOrderTaxUnified, taxCtxHasConfig } from '../taxCompute.js';
 import { inclusiveTaxOnChargedLines } from '../taxShare.js';
+import { linesAfterItemDiscounts } from '../taxBasis.js';
+import { isNoDiscountLine } from '../giftCardLine.js';
 
 /**
  * @param {object} ctx
@@ -73,13 +75,21 @@ export function computeCheckTotals(ctx) {
     .map(toAppliedDiscount);
   const allCheckDiscounts = [...checkDiscounts, ...autoDiscounts];
 
+  // 29 Oct 2026 (v5.11.118): a gift card sold at the till is money in, not sales. It stays in the
+  // subtotal and the total, but a percent check discount is taken on the OTHER lines only, no
+  // discount can reach into it, and the service charge is worked out without it. A bill with no
+  // gift card line: discountBasis === subtotal, every figure byte for byte as before.
+  const discountBasis = linesAfterItemDiscounts(items);
+  const fixedGoods = Math.max(0, subtotal - discountBasis);
+
   // Check-level discounts (manual + auto)
-  const checkDiscount = allCheckDiscounts.reduce((s, d) => s + (d.type === 'percent' ? subtotal * d.value / 100 : d.value), 0);
+  let checkDiscount = allCheckDiscounts.reduce((s, d) => s + (d.type === 'percent' ? discountBasis * d.value / 100 : d.value), 0);
+  if (fixedGoods > 0) checkDiscount = Math.min(checkDiscount, discountBasis);   // never into the gift card
   const discountedSub = Math.max(0, subtotal - checkDiscount);
 
   // Service charge — from device profile config, dine-in only, respects waived flag
   const serviceRate = resolveServiceCharge({ deviceConfig, orderType, covers, waived: serviceChargeWaived });
-  const service = discountedSub * serviceRate;
+  const service = Math.max(0, discountedSub - fixedGoods) * serviceRate;
 
   // v5.5.646: address-based delivery surcharge. The accepted quote is held on
   // store.deliveryQuote; only fold it in for delivery orders.
@@ -127,7 +137,10 @@ export function computeCheckTotals(ctx) {
     // before, byte for byte. Added-on (US) tax already carries the basis and is never scaled.
     // v5.11.81: on what each LINE was charged, when a discount belongs to some lines on a bill with
     // more than one rate (taxShare.inclusiveTaxOnChargedLines); every other bill: exactly as before.
-    tax = inclusiveTaxOnChargedLines(tax, liveItems, allCheckDiscounts, discountedSub,
+    // v5.11.118: the share is of the TAXED goods: a gift card line (no VAT, never discounted) is
+    // left out of both sides, so the VAT on the food follows the food's own discount.
+    const taxedLive = fixedGoods > 0 ? liveItems.filter(i => !isNoDiscountLine(i)) : liveItems;
+    tax = inclusiveTaxOnChargedLines(tax, taxedLive, allCheckDiscounts, discountedSub - fixedGoods,
       (lines) => computeOrderTaxUnified(lines, taxSource, orderType || 'dine-in', null));
   }
 

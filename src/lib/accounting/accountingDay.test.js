@@ -954,3 +954,45 @@ test('deploy: xero-sales, xero-config and xero-bills ship the shared files they 
     assert.doesNotMatch(src, /from\s+['"](?!\.\/)/, `${f} has no outside imports`);
   }
 });
+
+// ── 29 Oct 2026 (v5.11.118, Drop C): gift cards sold at the till ─────────────
+// A line of kind 'gift_card_sale' is money in, not sales: its money is carved out of every tender's
+// goods BEFORE service and tax are apportioned (parts[].gift), so no rate bucket holds it.
+test('gift card sold: carved out of the tenders\' goods before service and tax, exactly, split tender too', () => {
+  const giftLine = { itemId: 'gift_card', kind: 'gift_card_sale', name: 'Gift card', price: 20, qty: 1, taxExempt: true, noDiscount: true };
+  const row = {
+    id: 'g', closed_at: '2026-09-18T12:00:00Z', subtotal: 30, total: 30, tax_amount: 1.67, service: 0, tip: 0,
+    items: [{ itemId: 'm-latte', qty: 1, price: 10, taxRateId: 'r20' }, giftLine],
+    tenders: [{ method: 'card', amount: 30, tip: 0, processor: 'adyen' }],
+  };
+  const one = checkTenderParts(row).parts[0];
+  assert.deepEqual([one.gross, one.service, one.gift, one.tax, one.sales], [3000, 0, 2000, 167, 1000]);
+  // Split card 20 / cash 10 with £3 service and a £1 tip: service by amount, gift by money amount,
+  // tax by what is left for goods; every part adds up and the check does too.
+  const split = { ...row, id: 'g2', total: 34, service: 3, tip: 1, tenders: [{ method: 'card', amount: 22, tip: 1 }, { method: 'cash', amount: 11, tip: 0 }] };
+  const { parts } = checkTenderParts(split);
+  for (const p of parts) assert.equal(p.amount, p.sales + p.service + p.gift, `${p.method} adds up`);
+  assert.equal(sum(parts, 'gift'), 2000); assert.equal(sum(parts, 'service'), 300); assert.equal(sum(parts, 'tax'), 167); assert.equal(sum(parts, 'sales'), 1000);
+  // A loyalty reward pays the latte and the card pays the gift card: the gift money is the card's,
+  // the VAT sits with the goods (the reward), the card sold no goods.
+  const loyal = { ...row, tenders: [{ method: 'loyalty', amount: 10, tip: 0 }, { method: 'card', amount: 20, tip: 0 }] };
+  const lp = checkTenderParts(loyal).parts;
+  assert.deepEqual(lp.map((p) => [p.kind, p.gift, p.tax, p.sales]), [['discount', 0, 167, 1000], ['card', 2000, 0, 0]]);
+  // By rate (UK rates): the goods are £10 at 20% with 1.67 of VAT; nothing lands anywhere else.
+  const ctx = taxContext([{ id: 'r20', name: 'Standard', code: 'VAT20', rate: 0.2, type: 'inclusive', is_default: true, active: true }, { id: 'r0', name: 'Zero', code: 'ZERO', rate: 0, type: 'inclusive', is_default: false, active: true }]);
+  const rated = checkTenderParts({ ...row, tax_breakdown: { totalTax: 1.67, total: 10, hasExclusiveTax: false, breakdown: [{ rate: { id: 'r20', rate: 0.2, type: 'inclusive', name: 'Standard' }, gross: 10, tax: 1.67, net: 8.33 }] } }, ctx);
+  assert.deepEqual(rated.parts[0].byRate, { 'rate:r20': { sales: 1000, tax: 167 } });
+  assert.ok(!rated.flags.includes('tax_not_recorded'));
+  // Without a saved breakdown the implied split works on the GOODS (10), never the gift money.
+  const implied = checkTenderParts(row, ctx);
+  assert.deepEqual(implied.parts[0].byRate, { 'rate:r20': { sales: 1000, tax: 167 } });
+  // A gift card alone, with VAT 0 recorded: no goods, so nothing is flagged.
+  const only = checkTenderParts({ ...row, subtotal: 20, total: 20, tax_amount: 0, items: [giftLine], tenders: [{ method: 'card', amount: 20, tip: 0 }] }, ctx);
+  assert.deepEqual([only.parts[0].gift, only.parts[0].sales, only.parts[0].tax, only.flags], [2000, 0, 0, []]);
+  // The day: totals carry gift; gross = sales + service + gift + tip.
+  const s = day([row, split]);
+  const t = s.sales.totals;
+  assert.deepEqual([t.count, t.gross, t.sales, t.tax, t.service, t.gift, t.tip], [2, 6400, 2000, 334, 300, 4000, 100]);
+  assert.equal(t.gross, t.sales + t.service + t.gift + t.tip);
+  assert.equal(sum(s.sales.byMethod, 'gift'), 4000);
+});

@@ -67,6 +67,8 @@ function fakeOps(tables, { cap = 1000, failWhen = null, wait = 0, rpc = null } =
       // .not(col, 'is', true): every row where the column is not true, null included.
       not: (c, op, v) => where(`not.${op}`, c, v, (r) => r[c] !== v),
       neq: (c, v) => where('neq', c, v, (r) => r[c] != null && JSON.stringify(r[c]) !== v),
+      // jsonb @>: a list column holds every object given (each matched by its keys), as PostgREST's `cs` does.
+      contains: (c, v) => where('contains', c, v, (r) => Array.isArray(r[c]) && (Array.isArray(v) ? v : [v]).every((o) => r[c].some((x) => x && typeof x === 'object' && Object.entries(o).every(([k, val]) => x[k] === val)))),
       limit: (n) => { q.limit = n; return b; },
       order: (c) => { q.orders.push(c); return b; },
       range: (a, z) => { q.range = [a, z]; return b; },
@@ -107,7 +109,10 @@ const firstSaleReads = (ops) => ops.log.filter(isFirstSaleRead);
 // 8 Oct 2026 (review): the one read per venue of OLDER checks that carry a refund (refunds <> '[]').
 const isRefundRead = (q) => q.table === 'closed_checks' && q.filters.some((f) => f.col === 'refunds' && f.op === 'neq');
 const refundReads = (ops) => ops.log.filter(isRefundRead);
-const checkReads = (ops, cols) => ops.log.filter((q) => q.table === 'closed_checks' && !isFirstSaleRead(q) && !isRefundRead(q) && (cols === 'items' ? q.select.includes('items') : !q.select.includes('items')));
+// 29 Oct 2026 (Drop C): the light read per sales window of only the checks that sold a gift card (items @> ...).
+const isGiftRead = (q) => q.table === 'closed_checks' && q.filters.some((f) => f.col === 'items' && f.op === 'contains');
+const giftReads = (ops) => ops.log.filter(isGiftRead);
+const checkReads = (ops, cols) => ops.log.filter((q) => q.table === 'closed_checks' && !isFirstSaleRead(q) && !isRefundRead(q) && !isGiftRead(q) && (cols === 'items' ? q.select.includes('items') : !q.select.includes('items')));
 const bound = (q, op) => q.filters.find((f) => f.col === 'closed_at' && f.op === op)?.val;
 
 // Friday 2 Oct 2026, 12:00 in Leeds (BST, UTC+1). The week began Monday 28 Sep.
@@ -1128,7 +1133,7 @@ const r2sum = (xs) => Math.round(xs.reduce((a, b) => a + b, 0) * 100) / 100;
 test('detail reads the period with the heavy columns once, the comparison span with items for the mix, and every other day with the sales columns', async () => {
   const ops = fakeOps(detailTables());
   await detailOf(ops);
-  const reads = ops.log.filter((q) => q.table === 'closed_checks' && !isFirstSaleRead(q));
+  const reads = ops.log.filter((q) => q.table === 'closed_checks' && !isFirstSaleRead(q) && !isGiftRead(q));
   const refunds = reads.filter((q) => q.filters.some((f) => f.op === 'neq'));
   const heavy = reads.filter((q) => q.select.includes('items') && !refunds.includes(q));
   const light = reads.filter((q) => !q.select.includes('items') && !refunds.includes(q));
@@ -1564,4 +1569,49 @@ test('v5.11.92: ownerVenueIds is the office reach rule as a list: links, plus th
   assert.match(src, /if \(prof\?\.role === 'owner' && prof\?\.org_id\) \{/);
   assert.match(src, /opsIds = ownerVenueIds\(\{ user, profile: prof \?\? null, linkedIds, companyVenues \}\);/);
   assert.doesNotMatch(src, /stock_control/);
+});
+
+// 29 Oct 2026 (v5.11.118, Drop C): gift cards sold at the till. Money in, not sales: the Owner app
+// gets gift_cards_sold beside net_sales (never inside it) on Today, the period totals and the
+// rollup, only when any were sold (an app that never saw the key sees the same snapshot as before).
+test('gift cards sold today: 20.00 beside net sales 8.33, in the period totals and the rollup, never a top item', async () => {
+  seq = 0;
+  const giftLine = { itemId: 'gift_card', kind: 'gift_card_sale', name: 'Gift card', price: 20, qty: 1, taxExempt: true, noDiscount: true };
+  const t = tables({ closed_checks: [
+    chk('L', '2026-10-02T08:30:00Z', { gross: 30, tax_amount: 1.67, items: [{ name: 'Latte', qty: 1, price: 10 }, giftLine] }),
+    chk('L', '2026-10-01T10:00:00Z'),
+  ] });
+  const snap = await build(fakeOps(t), 'today');
+  const l = snap.locations[0];
+  assert.equal(l.today.net_sales, 8.33); assert.equal(l.today.vat, 1.67); assert.equal(l.today.gross_sales, 10);
+  assert.equal(l.today.gift_cards_sold, 20);
+  assert.equal(l.period_totals.net_sales, 8.33); assert.equal(l.period_totals.gift_cards_sold, 20);
+  assert.equal(snap.rollup.net_sales, 8.33); assert.equal(snap.rollup.gift_cards_sold, 20);
+  assert.deepEqual(l.top_items.map((x) => x.name), ['Latte']);
+  // Yesterday sold no gift card: the key is not there (an older app reads what it always read).
+  const yesterday = await buildOwnerSnapshot({ ops: fakeOps(t), opsIds: ['L'], meta: { L: LEEDS }, now: new Date('2026-10-01T11:00:00Z'), period: 'today' });
+  assert.equal(yesterday.locations[0].today.net_sales, 10);
+  assert.ok(!('gift_cards_sold' in yesterday.locations[0].today));
+  assert.ok(!('gift_cards_sold' in yesterday.locations[0].period_totals));
+  assert.ok(!('gift_cards_sold' in yesterday.rollup));
+});
+
+test('gift cards sold: one light read per sales window of only the checks that sold one, never items for the whole window', async () => {
+  const ops = fakeOps(leeds());
+  await build(ops, 'today');
+  const sales = checkReads(ops, 'sales'), gifts = giftReads(ops);
+  assert.equal(sales.length, 1);
+  assert.equal(gifts.length, 1, 'one gift read for the one sales window');
+  assert.equal(gifts[0].select, 'id, items');
+  assert.deepEqual(gifts[0].filters.find((f) => f.op === 'contains'), { op: 'contains', col: 'items', val: [{ kind: 'gift_card_sale' }] });
+  assert.deepEqual([bound(gifts[0], 'gte'), bound(gifts[0], 'lt')], [bound(sales[0], 'gte'), bound(sales[0], 'lt')], 'the same window as the sales read');
+  assert.deepEqual(gifts[0].filters.find((f) => f.col === 'location_id'), { op: 'eq', col: 'location_id', val: 'L' });
+  assert.deepEqual(gifts[0].orders, ['closed_at', 'id']);
+  assert.deepEqual(gifts[0].range, [0, 999]);
+  for (const q of sales) assert.ok(!q.select.includes('items'), 'the sales window still leaves the heavy column out');
+  // The detail call: its other days (the sales columns only) get the same light read; the period and the comparison carry items already.
+  const d = fakeOps(detailTables());
+  await detailOf(d);
+  assert.ok(giftReads(d).length >= 1);
+  for (const q of giftReads(d)) assert.equal(q.select, 'id, items');
 });

@@ -515,3 +515,37 @@ test('what a day holds for the Ready checklist: groups, discount groups, money k
   assert.equal(seen.unresolvedShare, 0);
   assert.equal(seen.names['hot-drinks'], 'Hot drinks');
 });
+
+// 29 Oct 2026 (v5.11.118, Drop C): a gift card sold at the till (a 'gift_card_sale' line, outside
+// the till's VAT) posts on the "Gift cards sold" line, No VAT, to the gift card liability; the
+// goods post at their rate with the till's VAT; the card clearing account takes all the money.
+test('a gift card sold at the till: Gift cards sold 20.00 No VAT to the liability, goods 10.00 at 20% with 1.67, card paid 30.00', () => {
+  const giftLine = { itemId: 'gift_card', kind: 'gift_card_sale', name: 'Gift card', price: 20, qty: 1, taxExempt: true, noDiscount: true };
+  const row = {
+    id: 'TG', closed_at: at(2), subtotal: 30, total: 30, tip: 0, service: 0, tax_amount: 1.67,
+    tax_breakdown: breakdown([{ id: 'r20', gross: 10, tax: 1.6667 }]),
+    items: [{ uid: 't1', cat: 'cat-hot_1e945c26', itemId: 'm-latte', qty: 1, price: 10, taxRateId: 'r20' }, giftLine],
+    tenders: [{ method: 'card', amount: 30, tip: 0, processor: 'adyen' }],
+  };
+  const g = grouped([row]);
+  const p = plan(g);
+  assert.deepEqual(p.blocked, []);
+  assert.ok(!p.warnings.some((w) => w.code === 'gift_card_vat_charged'));
+  const gift = p.invoice.lines.find((l) => l.kind === 'gift');
+  assert.deepEqual([gift.description, gift.account, gift.taxType, gift.amount, gift.tax], ['Gift cards sold', '830', 'NONE', 2000, 0]);
+  const goods = p.invoice.lines.filter((l) => l.kind === 'sales');
+  assert.deepEqual(goods.map((l) => [l.description, l.account, l.amount, l.tax]), [['Hot drinks 20%', '201', 1000, 167]]);
+  assert.equal(sumBy(p.invoice.lines, (l) => l.amount), 3000, 'the invoice is the money the card took');
+  assert.deepEqual(p.payments.map((x) => [x.account, x.amount]), [['CARDCLR', 3000]]);
+  for (const t of p.vatTie) assert.equal(t.invoiceVat, t.tillVat);
+  assert.equal(seenFromGrouped(g).gift, true, 'the Ready checklist asks for the liability account');
+  // A menu item gift card (isGiftCard at a No VAT rate) and a till gift card on one day: one line, both added.
+  const sold = { id: 'GS', closed_at: at(3), total: 23.8, tip: 0, service: 0, tax_amount: 0.63,
+    tax_breakdown: breakdown([{ id: 'r20', gross: 3.8, tax: 0.6333 }, { id: 'rnv', gross: 20, tax: 0 }]),
+    items: [{ uid: 'g1', cat: 'cat-hot_1e945c26', itemId: 'm-latte', qty: 1, price: 3.8, taxRateId: 'r20' }, { uid: 'g2', cat: 'cat-gift_1e945c26', itemId: 'gift', qty: 1, price: 20, taxRateId: 'rnv', isGiftCard: true }],
+    tenders: [{ method: 'card', amount: 23.8, tip: 0, processor: 'adyen' }] };
+  const both = plan(grouped([row, sold]));
+  assert.deepEqual(both.blocked, []);
+  assert.deepEqual(both.invoice.lines.filter((l) => l.kind === 'gift').map((l) => l.amount), [4000]);
+  assert.deepEqual(both.payments.map((x) => [x.account, x.amount]), [['CARDCLR', 5380]]);
+});

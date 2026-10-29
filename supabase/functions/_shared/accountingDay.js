@@ -145,6 +145,30 @@ export function creditTaxMinor(row) {
   return out;
 }
 
+/**
+ * 29 Oct 2026 (v5.11.118, Drop C: sell gift cards at the till). The till writes the sale as a
+ * line { itemId: 'gift_card', kind: 'gift_card_sale', price, qty: 1, taxExempt: true, noDiscount:
+ * true } and takes the money with any tender, so total and the tenders include it. Peter's call:
+ * a gift card sale is MONEY IN, NOT SALES (a multi purpose voucher: VAT is charged when the card
+ * is spent). Its money is carved out of every tender's goods BEFORE service and tax are
+ * apportioned (checkTenderParts), so net sales, VAT and the split by rate never see it, and each
+ * part reports it as `gift`. Every report reads "Gift cards sold" from here.
+ */
+export const GIFT_SALE_KIND = 'gift_card_sale';
+export const isGiftSaleLine = (i) => !!i && typeof i === 'object' && i.kind === GIFT_SALE_KIND;
+
+/** The gift cards sold on a check (its live gift_card_sale lines, price x qty), minor units. */
+export function giftSoldMinor(row) {
+  const items = Array.isArray(row?.items) ? row.items : [];
+  let out = 0;
+  for (const i of items) {
+    if (!isGiftSaleLine(i) || i.voided || i.status === 'voided') continue;
+    const qty = Number(i.qty);
+    out += Math.max(0, toMinor((Number(i.price) || 0) * (Number.isFinite(qty) && qty > 0 ? qty : 1)));
+  }
+  return out;
+}
+
 const LIST_METHOD = /^\s*[a-z_ ]+:\s*\d+(?:\.\d+)?\s*(?:,\s*[a-z_ ]+:\s*\d+(?:\.\d+)?\s*)*$/i;
 
 // What a legacy gift_card record says was really debited, in minor units.
@@ -390,6 +414,8 @@ function isUsableBreakdown(b) {
 // of the goods zero rated (or no rate when the venue has no 0% rate).
 function impliedWeights(row, ctx, goods, tax) {
   const one = (bucket, flags, source = 'implied') => ({ weights: [{ bucket, gross: goods, tax }], source, flags });
+  // 29 Oct 2026: no goods and no tax (a check that sold only a gift card): nothing to split, nothing to guess.
+  if (goods <= 0 && tax <= 0 && giftSoldMinor(row) > 0) return { weights: [], source: 'implied', flags: [] };
   if (!ctx.known) return one(DEFAULT_TAX_BUCKET, [], 'default');                 // no rates loaded: exactly today
   const def = ctx.defaultRate;
   if (!def) return one(DEFAULT_TAX_BUCKET, ['tax_no_rates'], 'default');
@@ -466,35 +492,49 @@ export function splitByRate(sales, tax, weights) {
   return out;
 }
 
-// A check's bill money, service and clamped tax in minor units, as its tenders took them.
+// A check's bill money, service, gift cards sold and clamped tax in minor units, as its tenders
+// took them. The gift money (giftSoldMinor) is capped at what was taken after service; the tax
+// is capped at what is left for goods.
 function checkMoney(row, tenders) {
   const amounts = tenders.map((t) => t.amount);
   const billTotal = amounts.reduce((a, b) => a + b, 0);
   const service = Math.min(Math.max(0, toMinor(row?.service)), billTotal);
-  const tax = Math.min(checkTaxMinor(row), Math.max(0, billTotal - service));
-  return { amounts, billTotal, service, tax };
+  const gift = Math.min(giftSoldMinor(row), Math.max(0, billTotal - service));
+  const tax = Math.min(checkTaxMinor(row), Math.max(0, billTotal - service - gift));
+  return { amounts, billTotal, service, gift, tax };
 }
 
 /**
- * Split one check's service and tax across its tenders in proportion to the bill money each
- * took, so a split check's service charge and VAT land with the tenders that paid them.
- * Returns per tender { ...tender, gross, service, tax, sales } where gross = amount + tip and
- * sales = amount - service (goods, tax included). Given a taxContext, each part also carries
- * byRate { [bucket key]: { sales, tax } } and the result the check's `buckets` and `rateSource`.
+ * Split one check's service, gift cards sold and tax across its tenders in proportion to the
+ * bill money each took, so a split check's service charge and VAT land with the tenders that
+ * paid them. Returns per tender { ...tender, gross, service, gift, tax, sales } where gross =
+ * amount + tip, gift = its share of the gift cards sold (29 Oct 2026: money in, not sales) and
+ * sales = amount - service - gift (goods, tax included). Given a taxContext, each part also
+ * carries byRate { [bucket key]: { sales, tax } } and the result the check's `buckets` and
+ * `rateSource`. So for every check: sum(amount) = sum(sales) + service + gift, exactly.
  */
 export function checkTenderParts(row, taxCtx) {
   const { tenders, legacy, flags } = checkTenders(row);
-  const { amounts, billTotal, service, tax } = checkMoney(row, tenders);
+  const { amounts, billTotal, service, gift, tax } = checkMoney(row, tenders);
   const svc = allocate(service, amounts);
-  const tx = allocate(tax, amounts);
-  const parts = tenders.map((t, i) => ({ ...t, gross: t.amount + t.tip, service: svc[i], tax: tx[i], sales: t.amount - svc[i] }));
+  // The gift money sits with the MONEY tenders (a loyalty reward or promo code never pays for
+  // a gift card: the line takes no discount), in proportion to what each took.
+  const moneyAmounts = tenders.map((t) => (MONEY_KINDS.has(t.kind) ? t.amount : 0));
+  const gf = allocate(gift, moneyAmounts.some((a) => a > 0) ? moneyAmounts : amounts);
+  // Tax follows each tender's GOODS money (amount less its gift share): with no gift card on the
+  // check that is the amount, exactly as before.
+  const goodsAmounts = amounts.map((a, i) => Math.max(0, a - gf[i]));
+  const tx = allocate(tax, gift ? goodsAmounts : amounts);
+  const parts = tenders.map((t, i) => ({ ...t, gross: t.amount + t.tip, service: svc[i], gift: gf[i], tax: tx[i], sales: t.amount - svc[i] - gf[i] }));
   if (!taxCtx) return { legacy, flags, parts };
-  const w = checkRateWeights(row, taxCtx, billTotal - service, tax);
+  const goods = billTotal - service - gift;
+  const w = checkRateWeights(row, taxCtx, goods, tax);
   for (const p of parts) p.byRate = splitByRate(p.sales, p.tax, w.weights);
   const all = [...flags, ...w.flags];
   // 8 Oct 2026: goods were sold and no VAT was booked at a venue that has rates. Flagged once
   // whatever the record says (a usable breakdown beside a null figure is still "not recorded").
-  if (!checkTaxRecorded(row) && billTotal - service > 0 && taxCtx.known && taxCtx.rates.length && !all.includes('tax_not_recorded')) all.push('tax_not_recorded');
+  // A check that sold only a gift card (goods 0) booked no VAT rightly and is not flagged.
+  if (!checkTaxRecorded(row) && goods > 0 && taxCtx.known && taxCtx.rates.length && !all.includes('tax_not_recorded')) all.push('tax_not_recorded');
   return { legacy, flags: all, parts, buckets: w.weights.map((x) => x.bucket), rateSource: w.source };
 }
 
@@ -588,9 +628,11 @@ export function refundParts(entry, row, taxCtx) {
   // `total` as the card part only, so pro rata on total alone gave the whole VAT back on a part
   // refund (1.67 where the Tax summary said 0.33) and the reports disagreed by pounds.
   const taxBasis = Math.max(1, toMinor(refundTaxBasis(row)));
+  // 29 Oct 2026: gift cards sold on the check are not goods, so they leave the basis too.
+  const goodsBasis = Math.max(1, taxBasis - Math.min(giftSoldMinor(row), taxBasis));
   let tax = entry?.taxAmount != null && entry.taxAmount !== ''
     ? Math.max(0, toMinor(entry.taxAmount))
-    : Math.min(checkTaxMinor(row), Math.round((checkTaxMinor(row) * amount) / taxBasis));
+    : Math.min(checkTaxMinor(row), Math.round((checkTaxMinor(row) * amount) / goodsBasis));
   tax = Math.min(tax, amount - tip - service);
 
   // Where the money went back.
@@ -662,7 +704,7 @@ export function refundParts(entry, row, taxCtx) {
   // 28 Sep 2026: goods and tax given back split by the check's own tax rates, pro rata (the
   // same rule refundMath uses for UK VAT), the credit put back on top included.
   const money = checkMoney(row, tenders);
-  const rw = checkRateWeights(row, taxCtx, money.billTotal - money.service, money.tax);
+  const rw = checkRateWeights(row, taxCtx, money.billTotal - money.service - money.gift, money.tax);
   for (const p of parts) p.byRate = splitByRate(p.sales, p.tax, rw.weights);
   flags.push(...rw.flags);
   return { atMs, amount, parts, flags, skipped: false, buckets: rw.weights.map((x) => x.bucket), rateSource: rw.source };
@@ -689,7 +731,9 @@ const WARN_TEXT = {
 
 const MAX_IDS = 25;
 
-function blankTotals() { return { count: 0, gross: 0, tip: 0, service: 0, tax: 0, sales: 0 }; }
+// 29 Oct 2026: `gift` is the gift cards sold (money in, not sales). For every row and total,
+// exactly: gross = sales + service + gift + tip (see checkTenderParts).
+function blankTotals() { return { count: 0, gross: 0, tip: 0, service: 0, gift: 0, tax: 0, sales: 0 }; }
 function addRates(t, p) {
   if (!t.byRate || !p.byRate) return;
   for (const [k, v] of Object.entries(p.byRate)) {
@@ -697,7 +741,7 @@ function addRates(t, p) {
     e.sales += v.sales; e.tax += v.tax;
   }
 }
-function addTo(t, p) { t.gross += p.gross; t.tip += p.tip; t.service += p.service; t.tax += p.tax; t.sales += p.sales; addRates(t, p); }
+function addTo(t, p) { t.gross += p.gross; t.tip += p.tip; t.service += p.service; t.gift += p.gift || 0; t.tax += p.tax; t.sales += p.sales; addRates(t, p); }
 
 /**
  * Build one business day.

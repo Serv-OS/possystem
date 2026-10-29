@@ -51,6 +51,7 @@
  */
 
 import { computeTax, makeCascadeResolver, lineBasisSettings } from './taxEngine.js';
+import { isTaxExemptLine } from './giftCardLine.js';
 import { buildLegacyProfiles, legacyProfileId } from './taxAdapter.js';
 import { calculateOrderTax } from './tax.js';
 import { allocateCheckBasis, recordCheckBasis } from './taxBasis.js';
@@ -254,6 +255,8 @@ function toEngineLine(i, remap) {
     lineId: i.uid ?? i.id ?? null,
     name: typeof i.name === 'string' ? i.name : null,
     custom: itemId === 'custom',
+    // 29 Oct 2026 (v5.11.118): a gift card sold at the till is outside tax (giftCardLine.js).
+    taxExempt: isTaxExemptLine(i),
     legacy: {
       taxRateId: i.taxRateId ?? i.tax_rate_id ?? null,
       taxOverrides: i.taxOverrides ?? i.tax_overrides ?? undefined,
@@ -338,7 +341,8 @@ export function computeOrderTaxUnified(items = [], taxCtx = null, orderType = 'd
     onFallback: (ol, note) => engineFallbacks.push(taxFallbackNote(note.reason, ol, note.rateId)),
   });
   const resolveProfileId = (ol, ot) =>
-    (ol.taxProfileId && prep.profilesById[ol.taxProfileId]) ? ol.taxProfileId : baseResolve(ol, ot);
+    ol.taxExempt ? null   // a gift card sold at the till: no profile, no fallback note
+    : (ol.taxProfileId && prep.profilesById[ol.taxProfileId]) ? ol.taxProfileId : baseResolve(ol, ot);
 
   let eng = null;
   let engErr = null;

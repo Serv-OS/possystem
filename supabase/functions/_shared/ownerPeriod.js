@@ -146,6 +146,7 @@ export function addCheckItems(map, items, catOf = null) {
   if (!Array.isArray(items)) return;
   for (const it of items) {
     if (it?.voided || it?.status === 'voided') continue;
+    if (it?.kind === 'gift_card_sale') continue;   // 29 Oct 2026: a gift card sold is money in, never a top item
     const name = it?.name || 'Item';
     const qty = Number(it?.qty) || 1;
     let e = map.get(name);
@@ -287,6 +288,9 @@ export function periodTotals({ sales, cmpNet = 0, cmpGross = null, forecast = 0,
       cmp_gross_sales: cmpG, vs_cmp_pct_gross: reason && reason !== 'ok' ? null : vsPct(gross, cmpG),
     });
   }
+  // 29 Oct 2026 (Drop C): gift cards sold in the period (money in, outside net, VAT and gross),
+  // sent when any were sold, as `refunds` is on the Today block.
+  if (sales.gift_sold) out.gift_cards_sold = r2(sales.gift_sold);
   return out;
 }
 

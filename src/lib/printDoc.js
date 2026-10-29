@@ -18,6 +18,7 @@ import { v2ReceiptLines, taxLineLabel, breakdownLabel } from './receiptTax.js';
 import { consolidateReceiptLines } from './receiptLines.js';
 import { cardReceiptLines } from './cardReceipt.js';
 import { receiptRewardLines } from './loyaltyMultiRedeem.js';
+import { isTaxExemptLine } from './giftCardLine.js';
 
 /**
  * The reward lines for a check: what the till staged (check.loyaltyRewards, [{ label, amount }]),
@@ -160,6 +161,9 @@ export function buildCustomerReceiptDoc({ location, check, items, totals }, { co
     const printName=item.receiptName||item.name;
     const nameStr=item.qty>1?`${item.qty}x ${printName}`:printName;
     b.twoColTrunc(nameStr, linePrice);
+    // 29 Oct 2026 (v5.11.118): a gift card sold at the till prints as an ordinary line with a note
+    // that no VAT is inside it (the 'of which VAT' lines below never include it: taxCompute).
+    if (isTaxExemptLine(item)) b.fontB().line('  No VAT').fontA();
     const modLines = Array.isArray(item.mods) ? item.mods : (item.mods ? item.mods.split(' · ') : []);
     modLines.forEach(m => b.fontB().line(`  ${typeof m === 'string' ? m : (m.label||'')}`).fontA());
     if(item.notes) b.fontB().line(`  Note: ${item.notes}`).fontA();
@@ -322,6 +326,62 @@ export function buildMerchantTipSlipDoc({ location, check, totals }, { cols = 42
   b.fontB().line('  SIGNATURE').fontA();
   b.lf().center().bold(true).line('* MERCHANT COPY *').bold(false);
   b.fontB().center().line('Guest keeps the printed receipt').fontA();
+  b.lf(4).cut();
+  return b.toDoc();
+}
+
+// ─── v5.11.118 Gift card slip (Drop C, 29 Oct 2026) ─────────────────────────────
+// Printed after the customer receipt when a gift card sold at the till is issued as a NEW card
+// ("Print new card" in GiftActivateModal, gift-issue channel pos). Same branding as the receipt,
+// then GIFT CARD large, the code large and spaced so it can be read back or typed, the value,
+// where to check the balance, the date and the check it was sold on. No items: the receipt is
+// the bill, this slip IS the card.
+//   card:  { code, balance_minor, currency?, balance_url? }
+//   check: { ref, server? }
+export function buildGiftCardSlipDoc({ location, card, check }, { cols = 42, assets = {} } = {}) {
+  const b = new DocBuilder(cols);
+  const { time: timeStr, date: dateStr } = datePart(new Date());
+  const branding = location?.receipt_branding || null;
+  const header = branding?.header || null;
+  const currency = card?.currency || location?.currency;
+
+  b.init();
+
+  if (header?.logo_url && assets.logo) b.center().bitmap(assets.logo).lf();
+
+  const businessName = header?.business_name || location?.name || 'Restaurant';
+  b.center().bold(true).doubleBoth().text(businessName).lf().normal().center();
+  const addressLines = header?.address_lines?.length
+    ? header.address_lines.filter(Boolean)
+    : (location?.address ? String(location.address).split('\n') : []);
+  addressLines.forEach(line => b.line(line));
+  if (header?.phone) b.line(header.phone);
+
+  b.lf().divider().left();
+  b.lf().center().bold(true).doubleBoth().line('GIFT CARD').normal().left().lf();
+
+  // The code: four groups of four, a space between every character so it reads at a glance.
+  const code = String(card?.code || '').toUpperCase();
+  const groups = code.replace(/[^A-Z0-9]/g, '').match(/.{1,4}/g) || [];
+  const spaced = groups.map(g => g.split('').join(' ')).join('  -  ');
+  b.center().bold(true).doubleHeight().line(spaced || code).normal().left();
+  b.lf();
+
+  b.center().bold(true).doubleBoth().line(money((Number(card?.balance_minor) || 0) / 100, currency)).normal().left();
+  b.fontB().center().line('Value loaded on this card').fontA().left();
+  b.lf();
+
+  if (card?.balance_url) {
+    b.center().line('Check your balance at').line(String(card.balance_url)).left();
+    b.lf();
+  }
+
+  b.divider();
+  b.twoCol('Date', `${dateStr} ${timeStr}`);
+  if (check?.ref) b.twoCol('Check', String(shortOrderRef(check.ref) || check.ref));
+  if (check?.server) b.twoCol('Server', String(check.server));
+  b.divider();
+  b.fontB().center().line('Treat this card like cash').fontA().left();
   b.lf(4).cut();
   return b.toDoc();
 }

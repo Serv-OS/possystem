@@ -90,7 +90,7 @@ const REFUND_LOOKBACK_DAYS = 400;
 const DAY_MS = 86400000;
 
 type Clock = { timezone: string; dayStart: string };
-type DaySales = { gross: number; refunds: number; sales_vat: number; refund_vat: number; vat: number; net: number; checks: number; refund_count: number; no_vat?: number; no_vat_refs?: string[] };
+type DaySales = { gross: number; refunds: number; sales_vat: number; refund_vat: number; vat: number; net: number; checks: number; refund_count: number; no_vat?: number; no_vat_refs?: string[]; gift_sold?: number };
 
 // The real instants a run of business days covers: [fromIso, toIso).
 function rangeWindow(fromYmd: string, toYmd: string, clock: Clock) {
@@ -238,6 +238,8 @@ Deno.serve(async (req) => {
         refund_count: s?.refund_count ?? 0,
         // 8 Oct 2026: sales with money taken and no VAT recorded, counted 0 and named on screen.
         no_vat: s?.no_vat ?? 0, no_vat_refs: s?.no_vat_refs ?? [],
+        // v5.11.118 (Drop C): gift cards sold that day, money in, outside every sales figure above.
+        gift_sold: r2(s?.gift_sold ?? 0),
         sales_variance: r2(actualSales - forecast),
         labour_theo: r2(lt), labour_actual: r2(la),
         labour_pct_theo: forecast > 0 ? r2(lt / forecast * 100) : null,
@@ -259,6 +261,7 @@ Deno.serve(async (req) => {
       refund_count: rows.reduce((n, r) => n + r.refund_count, 0),
       no_vat: rows.reduce((n, r) => n + (r.no_vat || 0), 0),
       no_vat_refs: rows.flatMap((r) => r.no_vat_refs || []).slice(0, 25),
+      gift_sold: sum('gift_sold'),
       labour_theo: sum('labour_theo'), labour_actual: sum('labour_actual'),
       cogs_theo: sum('cogs_theo'), cogs_actual: sum('cogs_actual'),
       cogs_recipe: sum('cogs_recipe'), cogs_estimate: sum('cogs_estimate'), waste: sum('waste'), overhead: sum('overhead'),

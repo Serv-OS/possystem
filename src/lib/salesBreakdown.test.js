@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  salesBreakdown, breakdownLines, tenderLine, subtotalOffLine, discountOffLine, rewardsVatLine, checkNetSales,
+  salesBreakdown, breakdownLines, tenderLine, subtotalOffLine, discountOffLine, rewardsVatLine, giftSoldLine, checkNetSales,
   breakdownFromDaySums, addedTaxShare,
 } from './salesBreakdown.js';
 import { tradingDays, checkSalesParts } from '../../supabase/functions/_shared/tradingSales.js';
@@ -232,4 +232,58 @@ test('no long dashes in the Business summary or its rule', () => {
     const src = fs.readFileSync(path.join(here, f), 'utf8');
     assert.ok(!/[–—]/.test(src), `${f} has a long dash`);
   }
+});
+
+// ── 29 Oct 2026 (v5.11.118, Drop C): gift cards sold at the till ─────────────
+// Peter's call: money in, not sales. The ladder gains "plus Gift cards sold" between Tips and Money
+// collected; Item sales, Sales, VAT and Net sales never hold it; Money collected does.
+const GIFT_LINE = { itemId: 'gift_card', kind: 'gift_card_sale', name: 'Gift card', price: 20, qty: 1, taxExempt: true, noDiscount: true };
+const giftCheck = (extra = {}) => check({ items: [line(10, 1, { itemId: 'm-latte' }), GIFT_LINE], subtotal: 30, tax_amount: 1.67, total: 30, tenders: [card(30)], ...extra });
+
+test('gift card sold: Item sales 10, Net sales 8.33, VAT 1.67, Gift cards sold 20, Money collected 30', () => {
+  n = 0;
+  const b = salesBreakdown([giftCheck()], { currency: 'GBP' });
+  near(b.items, 10); near(b.sales, 10); near(b.tax, 1.67); near(b.net, 8.33);
+  near(b.giftSold, 20); near(b.collected, 30); near(b.tender_card, 30);
+  near(b.discounts, 0);
+  assert.deepEqual(b.subtotalOff, [], 'a stored subtotal holding the gift card is its own lines');
+  assert.deepEqual(b.discountOff, []);
+  const lines = breakdownLines(b);
+  const gift = lines.find((l) => l.key === 'gift');
+  assert.deepEqual(gift, { key: 'gift', label: 'plus Gift cards sold', value: 20, kind: 'plus' });
+  assert.equal(lines.indexOf(gift), lines.findIndex((l) => l.key === 'collected') - 1, 'just above Money collected');
+  assert.ok(lines.findIndex((l) => l.key === 'gift') > lines.findIndex((l) => l.key === 'tips'));
+  assert.match(giftSoldLine(b), /Gift cards sold \(20\.00\) are money in, not sales/);
+  // The stored subtotal may leave the gift card out: the same figures, nothing named.
+  n = 0;
+  const b2 = salesBreakdown([giftCheck({ subtotal: 10 })], { currency: 'GBP' });
+  near(b2.items, 10); near(b2.net, 8.33); near(b2.giftSold, 20); near(b2.collected, 30);
+  assert.deepEqual(b2.subtotalOff, []);
+});
+
+test('gift card sold: no line when none were sold; a gift card alone sells no goods; a voided check\'s gift counts for nothing', () => {
+  n = 0;
+  const none = salesBreakdown(theDay(), { range: { fromMs: DAY_FROM, toMs: DAY_TO } });
+  assert.equal(none.giftSold, 0);
+  assert.ok(!breakdownLines(none).some((l) => l.key === 'gift'));
+  assert.equal(giftSoldLine(none), '');
+  assert.ok(breakdownLines(none, { keepZero: true }).some((l) => l.key === 'gift'), 'kept when every line is asked for');
+  n = 0;
+  const only = salesBreakdown([giftCheck({ items: [GIFT_LINE], subtotal: 20, total: 20, tax_amount: 0, tenders: [card(20)] })]);
+  near(only.items, 0); near(only.sales, 0); near(only.net, 0); near(only.giftSold, 20); near(only.collected, 20);
+  assert.deepEqual(only.vatMissing, [], 'no goods, so no VAT to miss');
+  n = 0;
+  const voided = salesBreakdown([giftCheck({ status: 'voided' })]);
+  near(voided.giftSold, 0); near(voided.collected, 0); near(voided.voids, 10);
+});
+
+test('computeSalesStats (the old reading) takes the gift card out of gross and reports giftSold', () => {
+  n = 0;
+  const camel = (c) => ({ ...c, taxAmount: c.tax_amount, closedAt: Date.parse(c.closed_at) });
+  const s = computeSalesStats([camel(giftCheck())]);
+  near(s.gross, 10); near(s.net, 10); near(s.giftSold, 20); near(s.total, 30);
+  n = 0;
+  const s2 = computeSalesStats([camel(giftCheck({ subtotal: 10 }))]);
+  near(s2.gross, 10); near(s2.giftSold, 20);   // a stored subtotal without the gift card is left alone
+  near(computeSalesStats([camel(giftCheck({ status: 'voided' }))]).giftSold, 0);
 });

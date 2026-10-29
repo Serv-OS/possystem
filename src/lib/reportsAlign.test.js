@@ -30,6 +30,12 @@ import { emptySales, addCheckSales, addRefundSales, refundMadeAt } from '../../s
 import { buildOwnerSnapshot } from '../../supabase/functions/_shared/ownerSnapshot.js';
 import { toAccountingRow } from '../../supabase/functions/_shared/saleVat.js';
 import { salesBreakdown } from './salesBreakdown.js';
+import { computeSalesStats } from './salesStats.js';
+import { summariseShift, buildShiftReportDoc } from './shiftReport.js';
+import { checkSalesParts } from '../../supabase/functions/_shared/tradingSales.js';
+import { buildGroupedDay, makeGroupResolver } from '../../supabase/functions/_shared/accountingGroups.js';
+import { planXeroInvoiceDay } from '../../supabase/functions/_shared/xeroInvoicePlan.js';
+import { UK_TAX, CATEGORIES, mapping as xeroMapping, DETAIL as XERO_DETAIL, SITE as XERO_SITE, breakdown as xeroBreakdown } from './accounting/xeroInvoiceFixtures.js';
 import { wasteFromLedger } from './stock/wasteLedger.js';
 import { stockGpDays } from './stock/alignTwin.js';
 
@@ -62,18 +68,22 @@ export function world(seed = 1, { days = 6, demo = true } = {}) {
       const tip = rand() < 0.2 ? 0.5 : 0;
       const service = rand() < 0.1 ? r2(goods * 0.1) : 0;
       const kind = pick(['card', 'card', 'cash', 'split', 'loyalty', 'gift']);
-      const money = r2(goods + service);
+      const comp = rand() < 0.08;
+      // 29 Oct 2026 (Drop C): now and then a gift card is sold on the check too (money in, not sales),
+      // paid with the rest of the bill; never on a comp (a comp takes no money).
+      const giftSold = !comp && rand() < 0.15 ? pick([10, 20, 25]) : 0;
+      const money = r2(goods + service + giftSold);
       const tenders = kind === 'split' ? [{ method: 'card', amount: r2(money / 2), tip }, { method: 'cash', amount: r2(money - r2(money / 2)), tip: 0 }]
         : kind === 'loyalty' ? [{ method: 'loyalty', amount: lines[0].price, tip: 0 }, { method: 'card', amount: r2(money - lines[0].price), tip }]
         : kind === 'gift' ? [{ method: 'gift_card', amount: 2, tip: 0 }, { method: 'card', amount: r2(money - 2), tip }]
         : [{ method: kind, amount: money, tip }];
       const hour = pick([8, 9, 12, 13, 17, 22, 24.7]);   // 24.7: 00:42 the next morning, still this business day
       const closed = at(d, Math.floor(hour), Math.round((hour % 1) * 60));
-      const comp = rand() < 0.08;
-      const row = { id, location_id: 'L', ref: `R${n}`, closed_at: closed, subtotal: goods, total: r2(goods + service + tip), tax_amount: r2((comp ? 0 : goods) / 6),
+      const items = giftSold ? [...lines, { uid: 'ug', itemId: 'gift_card', kind: 'gift_card_sale', name: 'Gift card', price: giftSold, qty: 1, taxExempt: true, noDiscount: true }] : lines;
+      const row = { id, location_id: 'L', ref: `R${n}`, closed_at: closed, subtotal: r2(goods + giftSold), total: r2(money + tip), tax_amount: r2((comp ? 0 : goods) / 6),
         service: comp ? 0 : service, tip: comp ? 0 : tip, status: 'paid', voided: false, discounts: comp ? [{ amount: goods, kind: 'comp' }] : [],
         tenders: comp ? [] : tenders, method: kind, payment_method: kind, source: 'pos', processor: null, gift_card: null, loyalty: null, promo: null,
-        payment_intents: null, items: lines, refunds: [], order_type: 'dine-in' };
+        payment_intents: null, items, refunds: [], order_type: 'dine-in' };
       if (rand() < 0.05) { row.voided = true; row.status = 'voided'; }
       checks.push(row);
       // the sale's stock, taken off when the check closed (the drainer's sale rows)
@@ -135,13 +145,14 @@ function pnl(w) {
 }
 // the Business summary and All sites overview (BOReports leaves demo out first): salesBreakdown over the
 // day's checks, with the older checks for the refunds made that day
-function businessSummary(w, d) {
+function businessSummaryAll(w, d) {
   const rows = leaveOutDemo(w.checks).rows;
   const win = businessDayWindow(d, TZ, START);
   const inDay = rows.filter((c) => { const t = Date.parse(c.closed_at); return t >= win.fromMs && t < win.toMs; });
   const older = rows.filter((c) => Date.parse(c.closed_at) < win.fromMs);
-  return salesBreakdown(inDay, { range: { fromMs: win.fromMs, toMs: win.toMs - 1 }, refundRows: older, currency: 'GBP' }).net;
+  return salesBreakdown(inDay, { range: { fromMs: win.fromMs, toMs: win.toMs - 1 }, refundRows: older, currency: 'GBP' });
 }
+function businessSummary(w, d) { return businessSummaryAll(w, d).net; }
 // Daily trend: the same rule over the rows as the report has them (camelCase through toAccountingRow)
 function dailyTrend(w) {
   const rows = leaveOutDemo(w.checks).rows.map(toAccountingRow);
@@ -160,7 +171,7 @@ function managerMoney(w, bizDay) {
     if (at == null || dayOf(at) !== bizDay) continue;
     labour += Number(t.pay_amount) || 0;
   }
-  return { net: sales.net, labour };
+  return { net: sales.net, labour, gift: sales.gift_sold };
 }
 // the Owner app itself (buildOwnerSnapshot), through a stand in that answers like PostgREST
 function fakeOps(tables) {
@@ -182,6 +193,7 @@ function fakeOps(tables) {
       eq: (c, v) => where((r) => r[c] === v), in: (c, vs) => where((r) => vs.includes(r[c])),
       gte: (c, v) => where((r) => cmp(r[c], v) >= 0), lte: (c, v) => where((r) => cmp(r[c], v) <= 0), lt: (c, v) => where((r) => cmp(r[c], v) < 0),
       not: (c, op, v) => where((r) => r[c] !== v), neq: (c, v) => where((r) => r[c] != null && JSON.stringify(r[c]) !== v),
+      contains: (c, v) => where((r) => Array.isArray(r[c]) && v.every((o) => r[c].some((x) => x && typeof x === 'object' && Object.entries(o).every(([k, val]) => x[k] === val)))),
       limit: () => b, order: (c) => { q.orders.push(c); return b; }, range: (a, z) => { q.range = [a, z]; return b; },
       then: (ok, bad) => run(q).then(ok, bad),
     };
@@ -207,10 +219,17 @@ async function parity(w, label, { owner = true } = {}) {
   const kept = ledgerDays({ movements: w.movements.filter((m) => voided.has(m.source_id)), dayOf }).cogs;
   for (const d of w.DAYS) {
     const net = p.sales[d]?.net ?? 0;
-    near(businessSummary(w, d), net, `${label} ${d}: Business summary and All sites overview net`);
+    const gift = p.sales[d]?.gift_sold ?? 0;
+    const bs = businessSummaryAll(w, d);
+    near(bs.net, net, `${label} ${d}: Business summary and All sites overview net`);
+    // 29 Oct 2026 (Drop C): gift cards sold agree everywhere too, and sit outside net and inside the money.
+    near(bs.giftSold, gift, `${label} ${d}: Business summary gift cards sold`);
+    near(bs.collected, bs.sales + bs.service + bs.tips + bs.giftSold, `${label} ${d}: Money collected = sales + service + tips + gift cards sold`);
     near(trend[d]?.net ?? 0, net, `${label} ${d}: Daily trend net`);
+    near(trend[d]?.gift_sold ?? 0, gift, `${label} ${d}: Daily trend gift cards sold`);
     const m = managerMoney(w, d);
     near(m.net, net, `${label} ${d}: Manager app net`);
+    near(m.gift, gift, `${label} ${d}: Manager app gift cards sold`);
     near(m.labour, p.labour[d] ?? 0, `${label} ${d}: Manager app labour`);
     near(twin[d]?.net ?? 0, net, `${label} ${d}: Stock and GP net (the SQL's twin)`);
     near(twin[d]?.labour ?? 0, p.labour[d] ?? 0, `${label} ${d}: Stock and GP labour`);
@@ -223,16 +242,74 @@ async function parity(w, label, { owner = true } = {}) {
     if (owner) {
       const o = await ownerToday(w, d);
       near(o.today.net_sales, net, `${label} ${d}: Owner app net`);
+      near(o.today.gift_cards_sold ?? 0, gift, `${label} ${d}: Owner app gift cards sold`);
       near(o.today.labour, p.labour[d] ?? 0, `${label} ${d}: Owner app labour`);
       assert.equal(o.demo_left_out, w.checks.some((c) => isDemoCheck(c)), `${label} ${d}: the Owner app says when demo history was left out`);
     }
   }
 }
 
+// ── 29 Oct 2026 (v5.11.118, Drop C): gift cards sold at the till ─────────────
+// Peter's call: a gift card sale is MONEY IN, NOT SALES. One closed check with a £20 gift card line
+// and a £10 latte at 20% VAT, £30 by card, goes through EVERY report's own rule, and each must say:
+// net sales 8.33, VAT 1.67, gift cards sold 20.00, money collected 30.00.
+test('Drop C parity: a £20 gift card and a £10 latte paid £30 by card reads the same in every report', async () => {
+  const d = '2026-10-14';
+  const closed = new Date(businessDayWindow(d, TZ, START).fromMs + 5 * 3600000).toISOString();
+  const giftLine = { uid: 'ug', itemId: 'gift_card', kind: 'gift_card_sale', name: 'Gift card', price: 20, qty: 1, taxExempt: true, noDiscount: true };
+  const row = {
+    id: 'gift-parity', location_id: 'L', ref: 'GP1', closed_at: closed, subtotal: 30, total: 30, tax_amount: 1.67, service: 0, tip: 0, status: 'paid', voided: false,
+    discounts: [], tenders: [{ method: 'card', amount: 30, tip: 0, processor: 'adyen' }], method: 'card', payment_method: 'card', source: 'pos', processor: 'adyen',
+    gift_card: null, loyalty: null, promo: null, payment_intents: null, refunds: [], order_type: 'dine-in',
+    tax_breakdown: xeroBreakdown([{ id: 'r20', gross: 10, tax: 1.6667 }]),
+    items: [{ uid: 'u0', cat: 'cat-hot_1e945c26', itemId: 'm-latte', name: 'Latte', qty: 1, price: 10, taxRateId: 'r20' }, giftLine],
+  };
+  const want = { net: 8.33, vat: 1.67, gift: 20, collected: 30 };
+  // the one rule itself
+  const parts = checkSalesParts(row);
+  near(parts.net, want.net, 'checkSalesParts net'); near(parts.vat, want.vat, 'checkSalesParts VAT'); near(parts.giftCardsSold, want.gift, 'checkSalesParts gift');
+  near(parts.gross + parts.giftCardsSold, want.collected, 'the card took goods, VAT and the gift card');
+  // Daily trading (tradingDays) and Daily trend
+  const td = tradingDays({ saleRows: [row], refundRows: [row], dayOf })[d];
+  near(td.net, want.net, 'Daily trading net'); near(td.vat, want.vat, 'Daily trading VAT'); near(td.gift_sold, want.gift, 'Daily trading gift cards sold');
+  // the Business summary and the X and Z slip (salesBreakdown through summariseShift)
+  const w = { checks: [row], timesheets: [], movements: [], waste: [] };
+  const bs = businessSummaryAll(w, d);
+  near(bs.net, want.net, 'Business summary net'); near(bs.tax, want.vat, 'Business summary VAT'); near(bs.giftSold, want.gift, 'Business summary gift cards sold');
+  near(bs.collected, want.collected, 'Business summary money collected'); near(bs.items, 10, 'Business summary item sales leave the gift card out');
+  const win = businessDayWindow(d, TZ, START);
+  const shift = summariseShift([row], { range: { fromMs: win.fromMs, toMs: win.toMs - 1 }, currency: 'GBP' });
+  near(shift.sales.net, want.net, 'Z report net'); near(shift.sales.giftSold, want.gift, 'Z report gift cards sold'); near(shift.sales.collected, want.collected, 'Z report money collected');
+  near(shift.payments.reduce((s, p) => s + p.amount, 0), want.collected, 'Z report payments');
+  const slip = buildShiftReportDoc({ kind: 'Z', sales: shift.sales, payments: shift.payments, currency: 'GBP' }).ops
+    .filter((o) => o.t === 'twoCol' || o.t === 'twoColTrunc').map((o) => `${o.l} | ${o.r}`);
+  assert.ok(slip.includes('plus Gift cards sold | £20.00') && slip.includes('  Net sales excluding VAT | £8.33'), slip.join('\n'));
+  // the old Business summary reading (computeSalesStats, still used for the service period split)
+  const old = computeSalesStats([toAccountingRow(row)].map((r) => ({ ...r, taxAmount: r.tax_amount, closedAt: Date.parse(r.closed_at) })));
+  near(old.giftSold, want.gift, 'computeSalesStats gift cards sold'); near(old.gross, 10, 'computeSalesStats gross leaves the gift card out'); near(old.total, want.collected, 'computeSalesStats total');
+  // the Manager app's money loop and the Owner app itself
+  const m = managerMoney(w, d);
+  near(m.net, want.net, 'Manager app net'); near(m.gift, want.gift, 'Manager app gift cards sold');
+  const o = await ownerToday(w, d);
+  near(o.today.net_sales, want.net, 'Owner app net'); near(o.today.vat, want.vat, 'Owner app VAT'); near(o.today.gift_cards_sold, want.gift, 'Owner app gift cards sold');
+  near(o.today.gross_sales, 10, 'Owner app gross leaves the gift card out');
+  // the Stock and GP SQL's twin
+  const twin = stockGpDays({ checks: [row], movements: [], timesheets: [], dayOf, isComp: () => false });
+  near(twin[d]?.net ?? 0, want.net, 'Stock and GP twin net');
+  // the Xero daily invoice: goods at 20% with the till's VAT, Gift cards sold No VAT to the liability, the card paid 30.00
+  const g = buildGroupedDay({ day: win, saleRows: [row], refundRows: [], venue: { timezone: TZ, dayStart: START }, taxRates: UK_TAX, resolver: makeGroupResolver(xeroMapping(), CATEGORIES) });
+  const plan = planXeroInvoiceDay(g, { mapping: xeroMapping(), detail: XERO_DETAIL, site: XERO_SITE, date: d, currency: 'GBP' });
+  assert.deepEqual(plan.blocked, []);
+  assert.deepEqual(plan.invoice.lines.map((l) => [l.kind, l.description, l.taxType, l.amount, l.tax]), [['sales', 'Hot drinks 20%', 'OUTPUT2', 1000, 167], ['gift', 'Gift cards sold', 'NONE', 2000, 0]]);
+  assert.deepEqual(plan.payments.map((x) => [x.account, x.amount]), [['CARDCLR', 3000]]);
+  near(g.summary.sales.totals.sales / 100 - g.summary.sales.totals.tax / 100, want.net, 'Xero net');
+});
+
 test('one seeded world: every report gives the same net, labour, waste and cost per venue day', async () => {
   const w = world(7);
   assert.ok(w.checks.some((c) => c.refunds.length && c.refunds.some((e) => dayOf(e.timestamp) !== dayOf(Date.parse(c.closed_at)))), 'the world has a refund made on a later day');
   assert.ok(w.checks.some(isDemoCheck) && w.checks.some((c) => c.voided), 'and demo checks and a voided check');
+  assert.ok(w.checks.some((c) => c.items.some((i) => i.kind === 'gift_card_sale')), 'and gift cards sold at the till');
   await parity(w, 'seed 7');
   // the figures that moved the most in the audit, here: a refund comes off the day it was MADE
   const p = pnl(w);

@@ -501,6 +501,8 @@ function BulkCreatePanel({ config }) {
   const [quantity, setQuantity] = useState('10');
   const [batchName, setBatchName] = useState('');
   const [expiresAt, setExpiresAt] = useState('');
+  // 29 Oct 2026 (Drop C): blank cards for the till. £0 and inactive until a sale at the till loads them.
+  const [blank, setBlank] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState(null);
   const [result, setResult] = useState(null);
@@ -508,8 +510,8 @@ function BulkCreatePanel({ config }) {
   const handleCreate = async () => {
     setError(null); setResult(null); setCreating(true);
     try {
-      const amountMinor = Math.round(parseFloat(amount) * 100);
-      if (!Number.isFinite(amountMinor) || amountMinor <= 0) throw new Error('Enter a valid amount');
+      const amountMinor = blank ? 0 : Math.round(parseFloat(amount) * 100);
+      if (!blank && (!Number.isFinite(amountMinor) || amountMinor <= 0)) throw new Error('Enter a valid amount');
       const qty = parseInt(quantity, 10);
       if (!qty || qty < 1 || qty > 500) throw new Error('Quantity must be 1-500');
       if (!batchName.trim()) throw new Error('Enter a batch name');
@@ -518,7 +520,8 @@ function BulkCreatePanel({ config }) {
         amount: amountMinor,
         quantity: qty,
         batch_name: batchName.trim(),
-        expires_at: expiresAt || undefined,
+        expires_at: blank ? undefined : (expiresAt || undefined),
+        ...(blank ? { blank: true } : {}),
       });
       setResult(res);
     } catch (e) {
@@ -532,7 +535,7 @@ function BulkCreatePanel({ config }) {
     if (!result?.cards) return;
     const rows = [['Code', 'Last 4', 'Amount', 'Currency', 'Batch', 'Expires']];
     result.cards.forEach(c => {
-      rows.push([c.code, c.code_last4, fmtMoney(result.amount, result.currency), result.currency, result.batch_name, result.expires_at || 'Never']);
+      rows.push([c.code, c.code_last4, result.blank ? 'Blank (loaded at the till)' : fmtMoney(result.amount, result.currency), result.currency, result.batch_name, result.expires_at || 'Never']);
     });
     const csv = rows.map(r => r.map(v => `"${v}"`).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
@@ -554,7 +557,12 @@ function BulkCreatePanel({ config }) {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 14 }}>
             <div>
               <label style={S.label}>Amount per card</label>
-              <input type="number" value={amount} onChange={e => setAmount(e.target.value)} placeholder="25.00" step="0.01" min="0" style={S.input}/>
+              <input type="number" value={blank ? '' : amount} onChange={e => setAmount(e.target.value)} placeholder={blank ? 'Loaded at the till' : '25.00'} step="0.01" min="0" disabled={blank} style={S.input}/>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--t2)', marginTop: 6, cursor: 'pointer' }}>
+                <input type="checkbox" checked={blank} onChange={e => setBlank(e.target.checked)}/>
+                Blank cards for the till
+              </label>
+              {blank && <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 4 }}>Printed with their codes, worth nothing until a sale at the till loads them.</div>}
             </div>
             <div>
               <label style={S.label}>Quantity (1-500)</label>
@@ -574,8 +582,8 @@ function BulkCreatePanel({ config }) {
           {error && <div style={{ ...S.errorBox, marginTop: 14 }}>{error}</div>}
 
           <div style={{ marginTop: 16 }}>
-            <button onClick={handleCreate} disabled={creating || !amount || !batchName.trim()} style={{ ...S.btn, ...S.btnPrim }}>
-              {creating ? 'Creating...' : `Create ${quantity || '?'} cards`}
+            <button onClick={handleCreate} disabled={creating || (!blank && !amount) || !batchName.trim()} style={{ ...S.btn, ...S.btnPrim }}>
+              {creating ? 'Creating...' : `Create ${quantity || '?'} ${blank ? 'blank ' : ''}cards`}
             </button>
           </div>
         </>
@@ -586,7 +594,7 @@ function BulkCreatePanel({ config }) {
               {result.quantity} cards created — batch "{result.batch_name}"
             </div>
             <div style={{ fontSize: 12 }}>
-              Each card: {fmtMoney(result.amount, result.currency)} | Expires: {result.expires_at ? new Date(result.expires_at).toLocaleDateString() : 'Never'}
+              {result.blank ? 'Blank cards: worth nothing until a sale at the till loads them' : `Each card: ${fmtMoney(result.amount, result.currency)}`} | Expires: {result.expires_at ? new Date(result.expires_at).toLocaleDateString() : 'Never'}
             </div>
             {result.errors && (
               <div style={{ marginTop: 8, fontSize: 12, color: 'var(--red)' }}>

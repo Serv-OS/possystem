@@ -2,6 +2,20 @@
 // Office Sales summary on 28 Sep 2026 so the till can print an X or Z report without loading the
 // report screens (SalesSummary.jsx and ZReport.jsx re-export and use it unchanged).
 import { refundVatOf, saleGoods } from '../../supabase/functions/_shared/saleVat.js';
+import { isGiftSaleLine } from '../../supabase/functions/_shared/accountingDay.js';
+
+// 29 Oct 2026 (Drop C): a gift card sold at the till is a line of kind 'gift_card_sale'. Money in,
+// not sales: its value leaves gross (the stored subtotal, when that holds it) and net, and is
+// reported as giftSold. `total` stays the money taken, which includes it.
+function giftLines(c) {
+  let gift = 0, rest = 0, lines = 0;
+  for (const i of Array.isArray(c?.items) ? c.items : []) {
+    if (!i || i.voided || i.status === 'voided') continue;
+    const v = (Number(i.price) || 0) * (Number(i.qty) || 1);
+    if (isGiftSaleLine(i)) gift += v; else { rest += v; lines += 1; }
+  }
+  return { gift, rest, lines };
+}
 
 // Compute the headline statistics from a list of closed checks.
 // Tax prefers the stored tax_amount column (v4.6.19) when present, and falls back
@@ -36,15 +50,21 @@ export function computeSalesStats(checks) {
   let refundsItems=0, refundsTip=0, refundsService=0, refundsTax=0;
   const vatMissing = [];          // 8 Oct 2026: sales with goods and no VAT recorded, named
   let refundsTaxEstimated = 0;    // 8 Oct 2026: refund entries whose VAT was pro rated here
+  let giftSold = 0;               // 29 Oct 2026: gift cards sold (money in, not sales)
   (checks||[]).forEach(c => {
-    const sub = c.subtotal || 0;
+    const g = giftLines(c);
+    const storedSub = c.subtotal || 0;
+    // The gift value leaves the subtotal unless the stored subtotal is already the other lines alone.
+    const giftInSub = g.gift > 0 && Math.abs(storedSub - g.rest) > 0.011 ? Math.min(g.gift, storedSub) : 0;
+    const sub = storedSub - giftInSub;
+    if (c.status !== 'voided') giftSold += g.gift;
     const tip = c.tip || 0;
     const svc = c.service || 0;
     const tot = c.total || 0;
     let tax;
     if (c.taxAmount != null) { tax = c.taxAmount; taxStored += tax; }
     else {
-      tax = Math.max(0, tot - sub - svc - tip); taxDerived += tax;
+      tax = Math.max(0, tot - sub - giftInSub - svc - tip); taxDerived += tax;
       if (c.status !== 'voided' && saleGoods(c) > 0) vatMissing.push({ id: c.id, ref: c.ref, total: tot });
     }
     const dDiscounts = (c.discounts||[]).reduce((s,d) => s + (d.amount || d.value || 0), 0);
@@ -65,7 +85,7 @@ export function computeSalesStats(checks) {
     refundsTip     += dRefTip;
     refundsService += dRefSvc;
     refundsTax     += dRefTax;
-    if (c.status === 'voided') voids += tot;
+    if (c.status === 'voided') voids += tot - g.gift;
     service    += svc - dRefSvc;
     tips       += tip - dRefTip;
     deliveryFees += Number(c.customer?.delivery_fee ?? c.deliveryFee) || 0;
@@ -78,6 +98,7 @@ export function computeSalesStats(checks) {
     gross, discounts, voids, refunds, refundsItems, refundsTip, refundsService, refundsTax,
     service, tips, deliveryFees, tax: taxTotal, taxStored, taxDerived, total, covers, count, net,
     vatMissing, vatMissingCount: vatMissing.length, refundsTaxEstimated,
+    giftSold,
   };
 }
 

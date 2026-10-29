@@ -51,7 +51,9 @@ export function loyaltyEarnItems(items, menuItems = []) {
       id: i.itemId || i.id || null,
       isComp: !!i.isComp,
       staffDiscount: !!i.isStaffDiscount,
-      isGiftCard: !!i.isGiftCard,
+      // 29 Oct 2026 (v5.11.118): a gift card sold at the till (kind gift_card_sale) earns nothing;
+      // loyalty-earn already leaves isGiftCard lines out of points and stamps.
+      isGiftCard: !!i.isGiftCard || i.kind === 'gift_card_sale',
     };
   });
 }
