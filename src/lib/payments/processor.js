@@ -1,8 +1,9 @@
 // src/lib/payments/processor.js
 //
 // Which payment processor does a location use? Cached per location for the
-// session. Defaults to 'stripe' on any error/unknown, so existing Stripe venues
-// are never affected — but ONLY definitive answers are cached. A transient
+// session. 29 Oct 2026 (v5.11.116): defaults to 'adyen' on any error/unknown. Every live
+// venue is on Adyen and Stripe and Ryft are being removed, so a lookup blip must never
+// send a customer down a dead Stripe path (it did: the gift page, catering). ONLY definitive answers are cached. A transient
 // lookup failure must never pin 'stripe' for the whole session on a Ryft venue:
 // that downgrade used to end at the production simulated card screen, letting
 // staff close real checks as paid with no money taken.
@@ -17,9 +18,9 @@ const _cache = new Map(); // locationId -> 'stripe' | 'ryft'
 // not as a confirmed Stripe venue. Tolerates both the old fn shape (silent
 // 'stripe' default) and the new one (explicit error on lookup failure).
 export async function getLocationProcessorInfo(locationId) {
-  if (!locationId) return { processor: 'stripe', definitive: false };
+  if (!locationId) return { processor: 'adyen', definitive: false };
   if (_cache.has(locationId)) return { processor: _cache.get(locationId), definitive: true };
-  if (isMock || !supabase) { _cache.set(locationId, 'stripe'); return { processor: 'stripe', definitive: true }; }
+  if (isMock || !supabase) { _cache.set(locationId, 'adyen'); return { processor: 'adyen', definitive: true }; }
   try {
     await ensureAuthToken();
     const { data, error } = await supabase.functions.invoke('payments-processor', { body: { location_id: locationId } });
@@ -30,9 +31,9 @@ export async function getLocationProcessorInfo(locationId) {
       _cache.set(locationId, data.processor);
       return { processor: data.processor, definitive: true };
     }
-    return { processor: 'stripe', definitive: false };
+    return { processor: 'adyen', definitive: false };
   } catch {
-    return { processor: 'stripe', definitive: false }; // fail safe — never break the live Stripe path
+    return { processor: 'adyen', definitive: false }; // fail safe: the live processor, never a dead one
   }
 }
 

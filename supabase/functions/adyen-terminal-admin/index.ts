@@ -4192,7 +4192,7 @@ Deno.serve(async (req) => {
         ok: true,
         venue: loc.name,
         venueAddress,
-        processor: loc.payment_processor || 'stripe',
+        processor: loc.payment_processor || 'adyen',
         merchant,
         environment: cfg.env,
         region: cfg.region,

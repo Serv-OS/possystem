@@ -84,7 +84,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   const [step, setStep] = useState('details');
   const [pi, setPi] = useState(null);
   const [stripePromise, setStripePromise] = useState(null);
-  const [processor, setProcessor] = useState('stripe');   // 'stripe' | 'ryft' (fail-safe stripe)
+  const [processor, setProcessor] = useState('adyen');   // 'stripe' | 'ryft' (fail-safe stripe)
   useEffect(() => { getLocationProcessor(platformLocationId).then(setProcessor).catch(() => {}); }, [platformLocationId]);
 
   const [name, setName]   = useState(loyalty?.name  || '');
@@ -352,7 +352,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
       // 'tab_not_verified' the proof is asked for once and the round sent again.
       // FENCE STAGE 1 FALLBACK: the direct insert, only while place_public_order does not exist.
       const tabPi = roundCustomer.payment_intent_id || existingTab?.payment_intent_id || null;
-      const tabProcessor = roundCustomer.processor || existingTab?.processor || 'stripe';
+      const tabProcessor = roundCustomer.processor || existingTab?.processor || 'adyen';
       const sendRound = () => placePublicOrder({
         opsLocationId,
         // Database fence stage 1 (fix round 7): the menu these prices came from. A per menu price

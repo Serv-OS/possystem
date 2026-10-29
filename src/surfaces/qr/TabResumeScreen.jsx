@@ -165,7 +165,7 @@ export default function TabResumeScreen({
       const capProof = await requestPaymentProof({ opsLocationId: locId, processor: procName, kind: 'capture', paymentRef: tab.payment_intent_id });
       const ovProofIds = [];
       for (const ovId of overageIds) {
-        const pr = await requestPaymentProof({ opsLocationId: locId, processor: isRyft ? 'ryft' : 'stripe', kind: 'card', paymentRef: ovId });
+        const pr = await requestPaymentProof({ opsLocationId: locId, processor: isRyft ? 'ryft' : 'adyen', kind: 'card', paymentRef: ovId });
         if (pr.proofId) ovProofIds.push(pr.proofId);
       }
       // 27 Sep 2026: the tab's VAT (it booked tax_amount null), from the venue rows this page
@@ -214,9 +214,9 @@ export default function TabResumeScreen({
             total: runningTotal,
             method: 'card',
             // v5.9.11: one card tender for the tab, its tip on it.
-            tenders: singleTender('card', runningTotal, tabTip, { pspRef: isRyft ? ryftSession : tab.payment_intent_id, processor: tab.processor || (isRyft ? 'ryft' : 'stripe') }),
+            tenders: singleTender('card', runningTotal, tabTip, { pspRef: isRyft ? ryftSession : tab.payment_intent_id, processor: tab.processor || (isRyft ? 'ryft' : 'adyen') }),
             // Refund routing (refundCheck reads top-level processor + payment_intents).
-            processor: isRyft ? 'ryft' : 'stripe',
+            processor: isRyft ? 'ryft' : 'adyen',
             stripe_payment_intent_id: isRyft ? null : tab.payment_intent_id,
             payment_intents: [{ id: isRyft ? ryftSession : tab.payment_intent_id, amountMinor: Math.round(runningTotal * 100) }],
             closed_at: new Date().toISOString(),

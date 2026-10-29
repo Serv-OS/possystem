@@ -14,6 +14,7 @@ import { requestPaymentProof, placePublicOrder } from '../../lib/publicOrderClie
 import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient';
 import { getLocationProcessor } from '../../lib/payments/processor';
 import RyftPaymentForm from '../../components/RyftPaymentForm';
+import AdyenPaymentForm from '../../components/AdyenPaymentForm';
 import { computeOrderTaxUnified, taxCtxHasConfig } from '../../lib/taxCompute';
 import VatGateNotice from '../online/VatGateNotice';
 import { publicCheckTaxFields } from '../../lib/publicCheckTax';
@@ -65,7 +66,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
   const [promoErr, setPromoErr] = useState(''); const [promoBusy, setPromoBusy] = useState(false);
   const [payMode, setPayMode] = useState('now');           // 'now' | 'later'
   const [step, setStep] = useState('details');             // 'details' | 'pay'
-  const [processor, setProcessor] = useState('stripe');
+  const [processor, setProcessor] = useState('adyen');
   const [pi, setPi] = useState(null); const [stripePromise, setStripePromise] = useState(null);
   const [busy, setBusy] = useState(false); const [placed, setPlaced] = useState(null); const [err, setErr] = useState('');
 
@@ -273,7 +274,9 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
     { const why = vatRefusal(); if (why) { setErr(why); return; } }
     if (!valid) { setErr(belowMin ? `Minimum order for delivery is ${deliveryQuote?.minOrderMinor != null ? money(deliveryQuote.minOrderMinor / 100, cur) : 'higher'} — add more items or choose collection.` : 'Please complete the required fields.'); return; }
     setErr('');
-    if (processor === 'ryft') { setStep('pay'); return; }
+    // 29 Oct 2026 (v5.11.116): an Adyen venue pays in page (the form online and QR use). This
+    // file only knew Ryft and Stripe, so every Adyen venue fell to Stripe and failed.
+    if (processor === 'ryft' || processor === 'adyen') { setStep('pay'); return; }
     setBusy(true);
     try {
       const token = await ensureAuthToken();
@@ -469,7 +472,9 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
 
         {step === 'pay' ? (
           <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, padding: 16 }}>
-            {processor === 'ryft' ? (
+            {processor === 'adyen' ? (
+              <AdyenPaymentForm locationId={platformLocationId} amountMinor={totalMinor} currency={String(cur || 'gbp').toUpperCase()} reference={ref} merchantName={location?.name || ''} customerEmail={email.trim()} onSuccess={finalizeNow} onError={(e) => setErr(e?.message || 'Payment failed')} />
+            ) : processor === 'ryft' ? (
               <RyftPaymentForm amountMinor={totalMinor} currency={cur} locationId={platformLocationId} channel="online" merchantName={location?.name || ''} customerEmail={email.trim()} payLabel={`Pay ${money(total, cur)}`} onSuccess={finalizeNow} onError={(e) => setErr(e?.message || 'Payment failed')} />
             ) : pi && stripePromise ? (
               <Elements stripe={stripePromise} options={{ clientSecret: pi.client_secret, appearance: { theme: 'stripe' } }}>

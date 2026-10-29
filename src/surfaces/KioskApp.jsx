@@ -71,7 +71,7 @@ import { promoBasketLines } from '../../supabase/functions/_shared/promoMath.js'
 import { kioskLoyaltyCreditMinor, kioskRewardTapCheck } from '../lib/kioskLoyaltyReward';
 import { money, stripeCurrency } from '../lib/currency';
 import { getLocationProcessor, takesCardsOnTerminal } from '../lib/payments/processor';
-import { findPaxTerminal, dispatchTerminalJob, pollTerminalJob, cancelTerminalJob, buildCheckKey, markJobReconciled } from '../lib/payments/terminalJobs';
+import { findPaxTerminal, dispatchTerminalJob, pollTerminalJob, cancelTerminalJob, abortTerminalJob, buildCheckKey, markJobReconciled } from '../lib/payments/terminalJobs';
 import { kioskReaderPayment, isKioskReaderPayment, kioskPaymentIsThisBasket, kioskHeldPaymentFits, kioskCheckPaymentFields } from '../lib/kioskCardLink';
 import KioskV2Root from './kiosk/KioskV2Root';
 import KioskV2Status from './kiosk/KioskV2Status';
@@ -3579,8 +3579,12 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCred
       activeRyftJobRef.current = null;
       try { ryftAbortRef.current?.abort(); } catch { /* noop */ }
       try {
-        const r = await cancelTerminalJob(ryftJobId);
-        console.log('[kiosk] cancelled Ryft terminal job:', ryftJobId, r?.status || r?.reason || '');
+        // 29 Oct 2026 (v5.11.116): an Adyen job is aborted on the reader (adyen-terminal-charge abort,
+        // as the till does); terminal-job-cancel only knows Ryft and answered 500 for an Adyen job,
+        // leaving the reader on its prompt after the customer had backed out.
+        const proc = await getLocationProcessor(locationId);
+        const r = proc === 'adyen' ? await abortTerminalJob(ryftJobId) : await cancelTerminalJob(ryftJobId);
+        console.log('[kiosk] cancelled terminal job:', proc, ryftJobId, r?.status || r?.reason || '');
       } catch (e) { console.warn('[kiosk] cancel Ryft job failed:', e?.message || e); }
     }
     // Stripe reader action

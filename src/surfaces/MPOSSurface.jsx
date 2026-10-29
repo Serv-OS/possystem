@@ -457,7 +457,7 @@ function MPOSRouter() {
       tenders:    tendersFromPaymentInfo(paymentInfo || {}, { total: paymentInfo?.grand || subtotal, tip: paymentInfo?.tip || 0 }),   // v5.9.11
       giftCard:   paymentInfo?.giftCard || null,
       stripePaymentIntentId: paymentInfo?.stripePaymentIntentId || paymentInfo?.paymentIntentId || null,
-      processor:  paymentInfo?.processor || 'stripe',
+      processor:  paymentInfo?.processor || 'adyen',
       cardReceipt: paymentInfo?.cardReceipt || null,
       drawerId:   st.myDrawer?.()?.id || null,
       shiftId:    st.currentShift?.id || null,

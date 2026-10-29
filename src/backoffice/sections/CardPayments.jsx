@@ -312,7 +312,7 @@ export default function CardPayments() {
     (async () => {
       if (isMock) { if (alive) setProcessor('adyen'); return; }
       const locId = await getLocationId().catch(() => null);
-      const p = await getLocationProcessor(locId).catch(() => 'stripe');
+      const p = await getLocationProcessor(locId).catch(() => 'adyen');
       if (alive) setProcessor(p);
     })();
     return () => { alive = false; };

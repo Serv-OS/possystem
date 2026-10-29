@@ -52,7 +52,7 @@ export function closedCheckRow(check, locationId) {
     source:       check.source   || null,   // v5.5.276: pos / kiosk / online / qr — null = 'pos' default
     stripe_payment_intent_id: check.stripePaymentIntentId || null,  // v5.5.301: for card refunds
     payment_intents: check.paymentIntents || null,  // v5.5.323: ALL card PIs (split portions + bar tabs) for multi-card refund
-    processor:    check.processor || 'stripe',   // which processor took the payment — refund routes by this
+    processor:    check.processor || 'adyen',   // which processor took the payment — refund routes by this
   };
   // v5.9.11: only sent when there is a list, so a check with none never needs the column.
   if (Array.isArray(check.tenders) && check.tenders.length) row.tenders = check.tenders;

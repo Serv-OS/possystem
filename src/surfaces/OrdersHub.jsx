@@ -390,7 +390,7 @@ export default function OrdersHub() {
           // Ryft tab routing — close goes through the ryft-tab edge fn instead
           // of /api/stripe-capture. Default missing processor → stripe so tabs
           // opened before dual-processor stay on the Stripe path.
-          processor: o.customer?.processor || 'stripe',
+          processor: o.customer?.processor || 'adyen',
           payment_session_id: o.customer?.payment_session_id || null,
           ryft_customer_id: o.customer?.ryft_customer_id || null,
           ryft_payment_method_id: o.customer?.ryft_payment_method_id || null,
@@ -641,7 +641,11 @@ export default function OrdersHub() {
     // the ryft-tab edge fn resolves the merchant account from location_id.
     const isRyft = (tab.processor === 'ryft') || (!tab.stripe_account && !!tab.payment_session_id);
     const ryftSession = tab.payment_session_id || tab.payment_intent_id;
-    if (isRyft ? !ryftSession : (!tab.payment_intent_id || !tab.stripe_account)) {
+    // 29 Oct 2026 (v5.11.116): an Adyen tab carries its psp reference in payment_intent_id and
+    // never a stripe_account, so the old two way guard refused every Adyen tab with "Tab missing
+    // payment info" and staff could only release the hold, never capture the bill.
+    const isAdyen = tab.processor === 'adyen';
+    if (isRyft ? !ryftSession : isAdyen ? !tab.payment_intent_id : (!tab.payment_intent_id || !tab.stripe_account)) {
       showToast('Tab missing payment info — cannot capture', 'error');
       return;
     }
@@ -822,7 +826,7 @@ export default function OrdersHub() {
         // 19 Oct 2026 (v5.11.78, channel parity): the QR service charge the rounds took is booked as
         // service (headlessTax.qrTabService), never as goods with VAT on it.
         const tabService = qrTabService(tab.rows);
-        const tabProcessor = tab.firstRow?.customer?.processor || (isRyft ? 'ryft' : 'stripe');
+        const tabProcessor = tab.firstRow?.customer?.processor || (isRyft ? 'ryft' : 'adyen');
         // 27 Sep 2026: the VAT on what this close took (tax_amount was null). A capture short of the
         // bill books only its share; QR round totals include any added-on (US) tax, taken out of subtotal.
         const qrTax = qrCloseTax(tab.allItems, qrTaxCtx(), { paidGoods: totalCollected - tabTip - surcharge - tabService });
@@ -867,7 +871,7 @@ export default function OrdersHub() {
           // payment_intents[].id (payment_session_id for Ryft, payment_intent_id
           // for Stripe). Reference the main captured hold; the overage is a
           // separate session and is not auto-refunded here.
-          processor: isRyft ? 'ryft' : 'stripe',
+          processor: isRyft ? 'ryft' : 'adyen',
           stripe_payment_intent_id: isRyft ? null : tab.payment_intent_id,
           payment_intents: [{ id: isRyft ? ryftSession : tab.payment_intent_id, amountMinor: Math.round(capturedFromAuth * 100) }],
           closed_at: new Date().toISOString(),
@@ -1063,7 +1067,7 @@ export default function OrdersHub() {
           method: 'card',
           // v5.9.11: one card tender, the amount the hold captured, the tab's tip on it.
           tenders: singleTender('card', capturedMajor, Math.min(Number(o.customer?.tip) || 0, capturedMajor),
-            { pspRef: pi, processor: o.customer?.processor || 'stripe' }),
+            { pspRef: pi, processor: o.customer?.processor || 'adyen' }),
           closed_at: new Date().toISOString(),
           status: 'paid',
           refunds: [],

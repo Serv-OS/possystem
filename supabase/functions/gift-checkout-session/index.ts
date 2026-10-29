@@ -100,11 +100,12 @@ Deno.serve(async (req) => {
   // FAIL-SAFE: anything other than a definitive 'ryft' — lookup error, missing row,
   // column unset — falls through to the Stripe path, which behaves exactly as it always
   // has. A blip must never take a working venue's gift sales offline.
-  let processor = 'stripe';
+  let processor = 'adyen';   // 29 Oct 2026 (v5.11.116): Adyen is the only processor; a row with none set is an Adyen venue
   try {
     const { data: locRow } = await platformAdmin
       .from('locations').select('payment_processor').eq('id', location_id).maybeSingle();
     if (locRow?.payment_processor === 'ryft') processor = 'ryft';
+    if (locRow?.payment_processor === 'stripe') processor = 'stripe';
     // 29 Oct 2026 (v5.11.115): an Adyen venue sells gift cards too. Every ordering channel moved
     // to Adyen in September; this page was left on Stripe/Ryft and answered "Payments not
     // configured" at every Coffee Boy venue.

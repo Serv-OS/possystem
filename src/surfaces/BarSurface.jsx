@@ -504,7 +504,7 @@ export default function BarSurface() {
       // block. Without these a Ryft bar-tab payment recorded processor 'stripe',
       // so a later refund routed to Stripe with a ps_ id and silently failed —
       // and the UK card receipt block never printed on bar-tab receipts.
-      processor: payInfo?.processor || 'stripe',
+      processor: payInfo?.processor || 'adyen',
       cardReceipt: payInfo?.cardReceipt || null,
       // v5.5.323: carry the card PaymentIntent so a refund returns funds to the
       // original card automatically (bar tabs previously stored none).
@@ -660,12 +660,12 @@ export default function BarSurface() {
         // 'stripe', so a refund would route to Stripe with an Adyen psp
         // reference. Demo tabs record 'adyen' with their DEMO-HOLD- reference,
         // auditable the same way demo sales carry a DEMO- transaction id.
-        processor: tab.preAuthProcessor || 'stripe',
+        processor: tab.preAuthProcessor || 'adyen',
         stripePaymentIntentId: tab.preAuthPaymentIntentId,
         paymentIntents: [{ id: tab.preAuthPaymentIntentId, amountMinor: capturedMinor }],
         // v5.9.11: the card tender is what the hold CAPTURED, which can be short of the bill,
         // and never more than was asked for (Stripe's `amount` is the hold, not the capture).
-        tenders: singleTender('card', Math.min(capturedMinor, captureMinor) / 100, 0, { pspRef: tab.preAuthPaymentIntentId, processor: tab.preAuthProcessor || 'stripe' }),
+        tenders: singleTender('card', Math.min(capturedMinor, captureMinor) / 100, 0, { pspRef: tab.preAuthPaymentIntentId, processor: tab.preAuthProcessor || 'adyen' }),
       });
       setHoldClose(null); setHoldCloseState('idle');
       const shortfallMinor = totalMinor - capturedMinor;
@@ -1000,7 +1000,7 @@ export default function BarSurface() {
         <TabPreAuthTerminal
           amountMinor={Math.round((pendingTabOpts.preAuthAmount||50)*100)}
           guestName={pendingTabOpts.name}
-          onAuthorized={({ paymentIntentId, stripeAccount, heldMinor, processor })=>doOpenTab({ ...pendingTabOpts, preAuthPaymentIntentId:paymentIntentId, preAuthStripeAccount:stripeAccount, preAuthHeldMinor:heldMinor, preAuthProcessor:processor||'stripe' })}
+          onAuthorized={({ paymentIntentId, stripeAccount, heldMinor, processor })=>doOpenTab({ ...pendingTabOpts, preAuthPaymentIntentId:paymentIntentId, preAuthStripeAccount:stripeAccount, preAuthHeldMinor:heldMinor, preAuthProcessor:processor|| 'adyen' })}
           onSkip={()=>doOpenTab(pendingTabOpts)}
           onCancel={()=>setPendingTabOpts(null)}
         />

@@ -246,7 +246,7 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
         if (!linkGate.ok) { setState('error'); setErrorMsg(linkGate.message); return; }
         // v5.5.808: dispatch by processor. Non-definitive lookups do NOT count
         // as Stripe — see the no-reader guard below.
-        let procInfo = { processor: 'stripe', definitive: false };
+        let procInfo = { processor: 'adyen', definitive: false };
         try { procInfo = await getLocationProcessorInfo(opsLocationId); } catch { /* stays non-definitive */ }
         if (cancelled) return;
         processorRef.current = procInfo.processor;

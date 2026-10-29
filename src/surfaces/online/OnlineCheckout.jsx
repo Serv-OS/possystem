@@ -140,7 +140,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   useEffect(() => { stepRef.current = step; }, [step]);
   const [pi, setPi] = useState(null);             // { client_secret, stripe_account, ... }
   const [stripePromise, setStripePromise] = useState(null);
-  const [processor, setProcessor] = useState('stripe');   // 'stripe' | 'ryft' — defaults stripe (fail-safe)
+  const [processor, setProcessor] = useState('adyen');   // 'stripe' | 'ryft' — defaults stripe (fail-safe)
 
   // Resolve the location's processor once (defaults to stripe on any error).
   useEffect(() => { getLocationProcessor(platformLocationId).then(setProcessor).catch(() => {}); }, [platformLocationId]);
