@@ -11,6 +11,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { runCampaign } from '../_shared/campaign-engine.ts';
+import { blastProgress, DEFAULT_BUDGET_MS } from '../_shared/campaignBatch.js';
 import { PREBUILT, resolveSegmentRef } from '../_shared/segments-prebuilt.ts';
 import { secondStepRefusal } from '../_shared/second-step.ts';
 
@@ -38,6 +39,18 @@ async function authed(req: Request, opsLocationId: string): Promise<boolean> {
 async function orgFor(opsLocationId: string): Promise<string | null> {
   const { data } = await sb.from('locations').select('org_id').eq('id', opsLocationId).maybeSingle();
   return data?.org_id ?? null;
+}
+
+// v5.11.117: carry on after this response is sent. EdgeRuntime.waitUntil keeps the worker alive for
+// the call; where it is missing the fetch still starts before the response goes out.
+function continueLater(ops: string, campaignId: string, runId: string | null): void {
+  const p = fetch(`${SUPABASE_URL}/functions/v1/marketing-campaigns`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${SERVICE_ROLE}` },
+    body: JSON.stringify({ action: 'blast_continue', ops_location_id: ops, campaign_id: campaignId, run_id: runId }),
+  }).then(() => undefined).catch((e) => console.error('[marketing-campaigns] continuation failed', campaignId, (e as Error)?.message || e));
+  const rt = (globalThis as any).EdgeRuntime;
+  if (rt && typeof rt.waitUntil === 'function') rt.waitUntil(p);
 }
 
 Deno.serve(async (req) => {
@@ -130,8 +143,61 @@ Deno.serve(async (req) => {
     };
     const { data: camp, error } = await sb.from('campaigns').insert(row).select('*').maybeSingle();
     if (error || !camp) return json({ error: error?.message || 'could not create blast' }, 500);
-    const summary = await runCampaign(sb, camp, { today: new Date().toISOString().slice(0, 10), supabaseUrl: SUPABASE_URL, serviceRole: SERVICE_ROLE, force: true });
-    return json({ ok: true, campaign_id: camp.id, summary });
+    // 29 Oct 2026 (v5.11.117): time boxed. A big audience is sent in batches until the budget is
+    // spent; the rest stays pending under the run and THIS function continues it (blast_continue)
+    // after answering, so the Back Office never waits on the whole send and the gateway never
+    // rate limits a per recipient call. The hourly cron resumes a run whose continuation died.
+    const summary = await runCampaign(sb, camp, { today: new Date().toISOString().slice(0, 10), supabaseUrl: SUPABASE_URL, serviceRole: SERVICE_ROLE, force: true, deadlineMs: DEFAULT_BUDGET_MS });
+    const continuing = summary.status === 'running' && Number(summary.remaining || 0) > 0;
+    if (continuing) continueLater(ops, camp.id, summary.run_id || null);
+    return json({ ok: true, campaign_id: camp.id, summary, continuing });
+  }
+
+  // v5.11.117: carry on a time boxed blast (called by this function on itself, by the cron, or by
+  // the Quick send screen's "Continue sending" button).
+  if (action === 'blast_continue') {
+    const cid = String(body.campaign_id ?? '').trim();
+    if (!cid) return json({ error: 'campaign_id required' }, 400);
+    const { data: camp } = await sb.from('campaigns').select('*').eq('id', cid).eq('org_id', org_id).maybeSingle();
+    if (!camp) return json({ error: 'campaign not found' }, 404);
+    let runId = String(body.run_id ?? '').trim() || null;
+    if (!runId) {
+      const { data: run } = await sb.from('campaign_runs').select('id').eq('campaign_id', cid).eq('status', 'running').order('run_at', { ascending: false }).limit(1).maybeSingle();
+      runId = run?.id ?? null;
+    }
+    // No run still open (the earlier one died and was marked error, or finished short): start a fresh
+    // forced run. The claim rule skips everyone already sent and takes over failed and stale rows.
+    const summary = await runCampaign(sb, camp, { today: new Date().toISOString().slice(0, 10), supabaseUrl: SUPABASE_URL, serviceRole: SERVICE_ROLE, force: true, deadlineMs: DEFAULT_BUDGET_MS, ...(runId ? { resumeRunId: runId } : {}) });
+    const continuing = summary.status === 'running' && Number(summary.remaining || 0) > 0;
+    if (continuing) continueLater(ops, camp.id, summary.run_id || runId);
+    return json({ ok: true, campaign_id: cid, summary, continuing });
+  }
+
+  // v5.11.117: progress of a blast for the Quick send screen (counts by status + the latest run).
+  if (action === 'blast_status') {
+    const cid = String(body.campaign_id ?? '').trim();
+    if (!cid) return json({ error: 'campaign_id required' }, 400);
+    const [{ data: sends }, { data: run }] = await Promise.all([
+      sb.from('campaign_sends').select('status').eq('org_id', org_id).eq('campaign_id', cid),
+      sb.from('campaign_runs').select('id, status, error, run_at, finished_at, candidates, sent, skipped, failed').eq('campaign_id', cid).order('run_at', { ascending: false }).limit(1).maybeSingle(),
+    ]);
+    const counts: Record<string, number> = {};
+    for (const r of sends ?? []) counts[r.status] = (counts[r.status] || 0) + 1;
+    return json({ ok: true, campaign_id: cid, counts, progress: blastProgress(counts), run: run ?? null });
+  }
+
+  // v5.11.117: the last few quick sends, with what is still to go, so a blast cut short can be continued.
+  if (action === 'blast_recent') {
+    const { data: camps } = await sb.from('campaigns').select('id, name, channel, created_at').eq('org_id', org_id).eq('ephemeral', true).order('created_at', { ascending: false }).limit(5);
+    const out: any[] = [];
+    for (const c of camps ?? []) {
+      const { data: sends } = await sb.from('campaign_sends').select('status').eq('campaign_id', c.id);
+      const counts: Record<string, number> = {};
+      for (const r of sends ?? []) counts[r.status] = (counts[r.status] || 0) + 1;
+      const { data: run } = await sb.from('campaign_runs').select('id, status, candidates, error, run_at').eq('campaign_id', c.id).order('run_at', { ascending: false }).limit(1).maybeSingle();
+      out.push({ ...c, counts, progress: blastProgress(counts), run: run ?? null });
+    }
+    return json({ ok: true, blasts: out });
   }
 
   if (action === 'blast_recipients') {

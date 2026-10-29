@@ -40,12 +40,50 @@ export default function QuickSend() {
   const [form, setForm] = useState({ name: '', segment_id: '', channel: 'email', offer_id: '', subject: '', email_blocks: STARTER_BLOCKS(), sms_body: '' });
   const [count, setCount] = useState(null);          // audience size
   const [counting, setCounting] = useState(false);
-  const [send, setSend] = useState({});              // { busy|err|summary, campaign_id }
+  const [send, setSend] = useState({});              // { busy|err|summary, campaign_id, continuing }
+  // 29 Oct 2026 (v5.11.117): a big audience is sent in time boxed batches; the screen follows the
+  // run and can continue one that stopped short (the function died, a deploy in between).
+  const [progress, setProgress] = useState(null);    // { done, pending, total, sent, failed, skipped, run }
+  const [recent, setRecent] = useState([]);           // the last quick sends, with what is still to go
+  const [continuing, setContinuing] = useState(null); // campaign id being continued from a button
 
   const load = async (id) => {
     const { data } = await supabase.functions.invoke('marketing-campaigns', { body: { action: 'list_campaigns', ops_location_id: id } });
     setSegments(data?.segments || []); setPrebuilt(data?.prebuilt || []); setOffers(data?.offers || []);
+    try {
+      const { data: rb } = await supabase.functions.invoke('marketing-campaigns', { body: { action: 'blast_recent', ops_location_id: id } });
+      setRecent(rb?.blasts || []);
+    } catch { /* the panel is optional */ }
   };
+  const refreshRecent = async () => {
+    if (!locId) return;
+    try { const { data: rb } = await supabase.functions.invoke('marketing-campaigns', { body: { action: 'blast_recent', ops_location_id: locId } }); setRecent(rb?.blasts || []); } catch {}
+  };
+  const continueBlast = async (campaignId) => {
+    setContinuing(campaignId);
+    try {
+      const { data, error } = await supabase.functions.invoke('marketing-campaigns', { body: { action: 'blast_continue', ops_location_id: locId, campaign_id: campaignId } });
+      if (error) throw new Error(error.message);
+      if (data?.error) throw new Error(data.error);
+      await refreshRecent();
+    } catch (e) { alert(e?.message || 'Could not continue'); }
+    finally { setContinuing(null); }
+  };
+  // Follow a send that is still going: poll its counts every 4 s until nothing is pending and the run is not running.
+  useEffect(() => {
+    if (!send.campaign_id || !locId) return undefined;
+    let alive = true;
+    const tick = async () => {
+      try {
+        const { data } = await supabase.functions.invoke('marketing-campaigns', { body: { action: 'blast_status', ops_location_id: locId, campaign_id: send.campaign_id } });
+        if (!alive || !data?.progress) return;
+        setProgress({ ...data.progress, run: data.run || null });
+        if (data.progress.pending > 0 || data.run?.status === 'running') setTimeout(tick, 4000);
+      } catch { if (alive) setTimeout(tick, 6000); }
+    };
+    tick();
+    return () => { alive = false; };
+  }, [send.campaign_id, locId]);
   useEffect(() => {
     (async () => { try { const id = await getActiveLocationSync(); setLocId(id); if (!supabase || !id) { setLoading(false); return; } await load(id); } catch {} finally { setLoading(false); } })();
   }, []);
@@ -78,7 +116,7 @@ export default function QuickSend() {
       } } });
       if (error) throw new Error(error.message);
       if (data?.error) throw new Error(data.error);
-      setSend({ summary: data.summary, campaign_id: data.campaign_id });
+      setSend({ summary: data.summary, campaign_id: data.campaign_id, continuing: !!data.continuing });
     } catch (e) { setSend({ err: e.message || 'Send failed' }); }
   };
 
@@ -111,7 +149,22 @@ export default function QuickSend() {
       <div>
         <h1 style={S.h1}>Quick send</h1>
         <div style={S.card}>
-          <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--grn)', marginBottom: 6 }}>✓ Sent</div>
+          {(() => {
+            const pr = progress;
+            const stillGoing = pr ? (pr.pending > 0 || pr.run?.status === 'running') : !!send.continuing;
+            const stalled = pr && pr.pending > 0 && pr.run && pr.run.status !== 'running';
+            return (
+              <>
+                <div style={{ fontSize: 16, fontWeight: 800, color: stillGoing ? 'var(--t1)' : 'var(--grn)', marginBottom: 6 }}>{stillGoing ? 'Sending…' : '✓ Sent'}</div>
+                {pr && (
+                  <div style={{ fontSize: 13, color: 'var(--t2)', marginBottom: 6 }}>
+                    {pr.done} of {pr.total} done · <b>{pr.sent} sent</b> · {pr.skipped} skipped{pr.failed ? ` · ${pr.failed} failed` : ''}{pr.pending ? ` · ${pr.pending} to go` : ''}
+                    {stalled && <button style={{ ...S.ghost, marginLeft: 10 }} disabled={continuing === send.campaign_id} onClick={() => continueBlast(send.campaign_id)}>{continuing === send.campaign_id ? 'Continuing…' : 'Continue sending'}</button>}
+                  </div>
+                )}
+              </>
+            );
+          })()}
           <div style={{ fontSize: 14, color: 'var(--t1)' }}>{sm.candidates} matched · <b>{sm.sent} sent</b> · {sm.skipped} skipped{sm.failed ? ` · ${sm.failed} failed` : ''}</div>
           <div style={{ ...S.hint, marginTop: 6 }}>Skipped = no consent, suppressed, or unreachable on the chosen channel. Sandbox mode logs instead of delivering until a provider is configured.</div>
           <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
@@ -126,6 +179,18 @@ export default function QuickSend() {
   return (
     <div>
       <h1 style={S.h1}>Quick send</h1>
+      {recent.some((b) => b.progress && b.progress.pending > 0) && (
+        <div style={{ ...S.card, borderColor: 'var(--amb-b, #f0c060)' }}>
+          <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>A quick send stopped before it finished</div>
+          {recent.filter((b) => b.progress && b.progress.pending > 0).map((b) => (
+            <div key={b.id} style={{ display: 'flex', gap: 12, alignItems: 'center', fontSize: 13, marginBottom: 6 }}>
+              <span><b>{b.name || 'Quick send'}</b> · {new Date(b.created_at).toLocaleString('en-GB')} · {b.progress.sent} sent · {b.progress.failed} failed · {b.progress.pending} still to go</span>
+              <button style={S.btn} disabled={continuing === b.id} onClick={() => continueBlast(b.id)}>{continuing === b.id ? 'Continuing…' : 'Continue sending'}</button>
+            </div>
+          ))}
+          <div style={S.hint}>Continue picks up exactly where it stopped. Nobody who already received it gets it twice.</div>
+        </div>
+      )}
       <div style={S.sub}>Blast an offer to a segment right now. Pick the audience, write the message, attach an offer for unique single-use codes, and send. Consent &amp; suppression are always checked.</div>
 
       <div style={S.card}>

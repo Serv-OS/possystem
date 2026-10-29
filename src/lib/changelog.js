@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.117',
+    date: '29 Oct 2026',
+    items: [
+      "Marketing: a big quick send now goes out. Coffee Boy's loyalty email to 8,820 customers sent 10, failed 1,242 and then the screen said \"Edge Function returned a non-2xx status code\". The engine sent one email at a time by calling our own email function once per recipient, which Supabase rate limits between functions, and then the run overran the function's time limit.",
+      "Emails now go in batches of 100 through one Resend request each, in process, two batches a second. A run is time boxed and carries on by itself until every recipient is done; the hourly job picks up a run that stopped short. Nobody is ever sent the same campaign twice: every recipient is claimed once and every provider send carries its own key.",
+      "Quick send follows the run as it goes (done, sent, skipped, failed, still to go) and shows a Continue sending button for a send that stopped before it finished, including tonight's.",
+      "Edge functions to deploy: marketing-campaigns, marketing-run. Nothing to run in the database.",
+    ],
+  },
+  {
     v: '5.11.116',
     date: '29 Oct 2026',
     items: [
