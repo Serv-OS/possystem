@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.114',
+    date: '29 Oct 2026',
+    items: [
+      "A discount on a bill now shows on the printed receipt and on the till's History screen. A bill with 10% off printed Subtotal 16.00 then TOTAL 14.40 with nothing in between, and History listed the same two figures. Both now carry one line per discount, by name, with what it took off: \"10% Off Soft Drinks  -1.60\".",
+      "Why: the receipt builder has printed named discount lines since v5.5.853, but only online, kiosk and delivery orders ever handed it the list. The till's own receipt at pay, the Receipt dialog's Print button and the History reprint built the receipt with no discounts on it. Back Office reads the saved bill directly, which is why it was always right there. Nothing was lost: every discount was saved, it just was not printed.",
+      "One rule for the figure (lib/receiptDiscountLines): the same amount the saved bill carries, so the receipt, History and Back Office show one number. Auto discounts and promo codes print the same way.",
+      "Web app only, nothing to run in the database.",
+    ],
+  },
+  {
     v: '5.11.113',
     date: '29 Oct 2026',
     items: [

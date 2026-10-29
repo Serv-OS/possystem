@@ -23,6 +23,7 @@ import { CATEGORIES, MENU_ITEMS as SEED_MENU_ITEMS, ALLERGENS, QUICK_IDS, CAT_ME
 import { daypartOfHour } from '../lib/quickRank';
 import { taxCtxHasConfig } from '../lib/taxCompute';
 import { creditDiscountsFromPayment, shownCheckDiscounts } from '../lib/taxBasis';
+import { receiptDiscountLines } from '../lib/receiptDiscountLines';
 import { isQuoteOfOrder } from '../lib/orderPlacedFrom';   // v5.11.78 round 1: an order's fee is bound to that order
 import { resolveQuickItems } from '../lib/quickRank';
 import ProductModal, { AllergenModal } from '../components/ProductModal';
@@ -1039,10 +1040,15 @@ export default function POSSurface() {
       // Placeholder — will be overwritten after clearTable/recordWalkInClosed runs,
       // using the store-assigned "#NNNN" ref from the freshly appended closedCheck.
       const ref = 'PENDING';
+      // 29 Oct 2026 (v5.11.114): the bill's discounts print as named lines under Subtotal. The
+      // printer always could (printDoc, v5.5.853); the till never handed it the list.
+      const st = useStore.getState();
+      const liveDiscounts = st.activeTableId ? (st.tables.find(t => t.id === st.activeTableId)?.session?.discounts || []) : (st.walkInOrder?.discounts || []);
+      const discounts = receiptDiscountLines(nonVoided, liveDiscounts, autoDiscounts);
       return {
         location,
         // 30 Sep 2026: each loyalty reward prints on its own line (two stamp cards on one order).
-        check: { ref, server, tableLabel, orderType, covers, method: paymentInfo.method, customer, processor: paymentInfo.processor || null, cardReceipt: paymentInfo.cardReceipt || null, loyaltyRewards: receiptRewardLines(paymentInfo.loyaltyRedemption) },
+        check: { ref, server, tableLabel, orderType, covers, method: paymentInfo.method, customer, processor: paymentInfo.processor || null, cardReceipt: paymentInfo.cardReceipt || null, loyaltyRewards: receiptRewardLines(paymentInfo.loyaltyRedemption), discounts },
         items: nonVoided,
         totals: { subtotal, service, tip, grand, taxBreakdown },
       };
@@ -2265,6 +2271,7 @@ export default function POSSurface() {
         <ReceiptModal
           items={items} subtotal={subtotal} service={service} total={total} taxBreakdown={billTax}
           checkDiscount={checkDiscount}
+          discounts={receiptDiscountLines(items, activeTableId ? (tables.find(t => t.id === activeTableId)?.session?.discounts || []) : (useStore.getState().walkInOrder?.discounts || []), autoDiscounts)}
           orderType={orderType}
           tableLabel={activeTable?.label}
           server={session?.server || staff?.name}

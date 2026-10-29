@@ -10,7 +10,7 @@ import { money } from '../lib/currency';
 import { breakdownLabel, breakdownIsExclusive } from '../lib/receiptTax';
 
 // ── Receipt display & print ───────────────────────────────────────────────────
-export function ReceiptModal({ items, subtotal, service, total, taxBreakdown: billTaxBreakdown, checkDiscount, orderType, tableLabel, server, covers, customer, ref: checkRef, method, tip, onClose }) {
+export function ReceiptModal({ items, subtotal, service, total, taxBreakdown: billTaxBreakdown, checkDiscount, discounts = [], orderType, tableLabel, server, covers, customer, ref: checkRef, method, tip, onClose }) {
   // On screen the walk in header shows the raw key ('takeaway'); drive thru (16 Sep 2026)
   // is the one key with a hyphen, so only it is mapped. The check object handed to the
   // printer keeps the raw key, as every type does.
@@ -38,7 +38,8 @@ export function ReceiptModal({ items, subtotal, service, total, taxBreakdown: bi
     try {
       const result = await printService.printReceipt({
         location,
-        check: { ref: checkRef, server, tableLabel, orderType, covers, method },
+        // 29 Oct 2026 (v5.11.114): named discount lines reach the printer (lib/receiptDiscountLines).
+        check: { ref: checkRef, server, tableLabel, orderType, covers, method, discounts: Array.isArray(discounts) ? discounts : [] },
         items: nonVoided,
         totals: { subtotal, service, tip: tip || 0, grand: total + (tip || 0), taxBreakdown },
       }, null, {
