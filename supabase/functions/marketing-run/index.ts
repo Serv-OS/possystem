@@ -8,7 +8,7 @@
 // cron function can call it without holding the service-role key). Optional body: { today, campaign_id }.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { runCampaign, runDueCampaigns } from '../_shared/campaign-engine.ts';
+import { runCampaign, runDueCampaigns, resumeStalledRuns } from '../_shared/campaign-engine.ts';
 import { runWorkflows } from '../_shared/workflow-engine.ts';
 import { refreshSendingDomains } from '../_shared/sending-domain.ts';
 
@@ -44,13 +44,15 @@ Deno.serve(async (req) => {
       return json({ ok: true, today: opts.today, results: [summary] });
     }
     const results = await runDueCampaigns(sb, opts);     // now + today flow into recurring/scheduled gates
+    // v5.11.117: a time boxed blast whose continuation died is picked up here (pending rows under a stalled run).
+    const resumed = await resumeStalledRuns(sb, opts);
     const workflows = await runWorkflows(sb, opts);
     // Once a day, re-check custom sending domains against Resend (catch silent DNS breakage).
     let domains_checked = 0;
     if (new Date(opts.now || new Date().toISOString()).getUTCHours() === 7) {
       domains_checked = await refreshSendingDomains(sb, Deno.env.get('RESEND_API_KEY') ?? '');
     }
-    return json({ ok: true, today: opts.today, count: results.length, results, workflows, domains_checked });
+    return json({ ok: true, today: opts.today, count: results.length, results, resumed, workflows, domains_checked });
   } catch (e) {
     return json({ error: e instanceof Error ? e.message : String(e) }, 500);
   }

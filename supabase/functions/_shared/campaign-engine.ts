@@ -9,6 +9,8 @@
 // All money/consent/deliverability concerns live in marketing-send; this file orchestrates only.
 
 import { genCode } from './promo.ts';
+import { deliverBatch } from './marketingDeliver.ts';
+import { chunk, claimDecision, outOfTime, sendOutcome, runStalled, EMAIL_BATCH, SMS_BATCH, RESEND_BATCH_GAP_MS, DEFAULT_BUDGET_MS } from './campaignBatch.js';
 
 type SB = ReturnType<typeof import('https://esm.sh/@supabase/supabase-js@2').createClient>;
 
@@ -17,11 +19,15 @@ export interface RunOpts {
   supabaseUrl: string;
   serviceRole: string;
   force?: boolean;          // ignore the per-day run claim (BO "run now")
+  deadlineMs?: number;      // 29 Oct 2026 (v5.11.117): stop sending after this long and leave the rest pending under this run
+  resumeRunId?: string | null;   // continue an earlier time boxed run instead of claiming a new one
 }
 
 export interface RunSummary {
   campaign_id: string; run_key: string; status: string;
   candidates: number; sent: number; skipped: number; failed: number; error?: string;
+  remaining?: number;       // v5.11.117: recipients left pending when the run was time boxed
+  run_id?: string | null;
 }
 
 // Stable 32-bit FNV-1a hash → deterministic A/B variant assignment (no Math.random, so a recipient
@@ -140,24 +146,6 @@ async function issueCode(sb: SB, campaign: any, offer: any, customerId: string):
   return null;
 }
 
-async function sendOne(opts: RunOpts, org: string, campaignId: string, channel: 'email' | 'sms',
-  customerId: string, content: { subject?: string; html?: string; sms?: string }, merge: Record<string, unknown>,
-  promoCode: string | null, dedupeKey: string): Promise<{ ok: boolean; status: string; message_id?: string }> {
-  const res = await fetch(`${opts.supabaseUrl}/functions/v1/marketing-send`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${opts.serviceRole}` },
-    body: JSON.stringify({
-      action: 'send', org_id: org, channel,
-      to: { customer_id: customerId },
-      subject: content.subject, html: content.html, sms_body: content.sms,
-      merge, campaign_id: campaignId, promo_code: promoCode || undefined,
-      idempotency_key: `c:${campaignId}:${customerId}:${dedupeKey}:${channel}`,
-    }),
-  });
-  const j = await res.json().catch(() => ({}));
-  return { ok: !!j.ok, status: j.status || (res.ok ? 'sent' : 'failed'), message_id: j.message_id };
-}
-
 // Bounded-concurrency map: run `fn` over `items` with at most `concurrency` in flight. A blast used
 // to dispatch strictly one recipient at a time — each await is a marketing-send round trip to
 // Resend/Twilio (~200-800ms) — so a large audience (≈600+) overran the edge-function wall-clock
@@ -186,7 +174,12 @@ export async function runCampaign(sb: SB, campaign: any, opts: RunOpts): Promise
 
   // 1. Claim the run (idempotent per day-window) unless forced.
   let runId: string | null = null;
-  if (!opts.force) {
+  if (opts.resumeRunId) {
+    // v5.11.117: a continuation of a time boxed run. Its counts so far carry on.
+    const { data: run } = await sb.from('campaign_runs').select('id, sent, skipped, failed, candidates').eq('id', opts.resumeRunId).eq('campaign_id', campaign.id).maybeSingle();
+    if (!run) { summary.status = 'error'; summary.error = 'run to resume not found'; return summary; }
+    runId = run.id; summary.sent = Number(run.sent || 0); summary.skipped = Number(run.skipped || 0); summary.failed = Number(run.failed || 0);
+  } else if (!opts.force) {
     const { data: run } = await sb.from('campaign_runs')
       .upsert({ org_id: org, campaign_id: campaign.id, run_key: runKey, status: 'running' }, { onConflict: 'campaign_id,run_key', ignoreDuplicates: true })
       .select('id').maybeSingle();
@@ -249,65 +242,89 @@ export async function runCampaign(sb: SB, campaign: any, opts: RunOpts): Promise
 
     const channels: ('email' | 'sms')[] = campaign.channel === 'both' ? ['email', 'sms'] : [campaign.channel];
 
-    // Dispatch recipients with bounded concurrency (was strictly sequential — see mapPool). Each
-    // iteration's claim→send→update is independent and race-safe, so the pool can't double-send.
-    await mapPool(ids, SEND_CONCURRENCY, async (customerId) => {
-      // 3. Claim the send FIRST → never twice. On conflict, reclaim only an ORPHANED row: a failed
-      // attempt, or a 'pending' older than 5 min (a crashed run). A FRESH 'pending' means a concurrent
-      // run owns it → skip (no double-send). A terminal success (sent/partial/skipped) is never resent.
-      let claimedId: string | null = null;
-      let reuseCode: string | null = null;
+    // 29 Oct 2026 (v5.11.117): claimed in bulk, sent in batches, time boxed. The per recipient HTTP
+    // call to marketing-send is gone (the gateway rate limited it and the run overran the wall clock
+    // on the first big audience). See _shared/campaignBatch.js for the rules.
+    const startedMs = Date.now();
+    const budgetMs = Math.max(10_000, Number(opts.deadlineMs ?? DEFAULT_BUDGET_MS));
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    type Work = { id: string; customer_id: string; promo_code: string | null };
+    const work: Work[] = [];
+    for (const part of chunk(ids, 500)) {
+      const rows = part.map((customerId: string) => ({ org_id: org, campaign_id: campaign.id, run_id: runId, customer_id: customerId, dedupe_key: dedupeKey, channel: campaign.channel, status: 'pending' }));
+      // ON CONFLICT DO NOTHING returns only the rows it inserted: those are claimed by this run.
       const { data: claimed } = await sb.from('campaign_sends')
-        .upsert({ org_id: org, campaign_id: campaign.id, run_id: runId, customer_id: customerId, dedupe_key: dedupeKey, channel: campaign.channel, status: 'pending' },
-          { onConflict: 'campaign_id,customer_id,dedupe_key', ignoreDuplicates: true })
-        .select('id').maybeSingle();
-      if (claimed) {
-        claimedId = claimed.id;
-      } else {
-        const { data: ex } = await sb.from('campaign_sends').select('id, status, promo_code, created_at')
-          .eq('campaign_id', campaign.id).eq('customer_id', customerId).eq('dedupe_key', dedupeKey).maybeSingle();
-        const stalePending = ex?.status === 'pending' && (Date.now() - new Date(ex.created_at).getTime() > 5 * 60 * 1000);
-        if (ex && (ex.status === 'failed' || stalePending)) {
-          claimedId = ex.id; reuseCode = ex.promo_code || null;   // reuse an already-issued code (no leak on retry)
-          await sb.from('campaign_sends').update({ run_id: runId, status: 'pending', error: null }).eq('id', claimedId);
-        } else { summary.skipped++; return; }
+        .upsert(rows, { onConflict: 'campaign_id,customer_id,dedupe_key', ignoreDuplicates: true })
+        .select('id, customer_id');
+      const got = new Set((claimed ?? []).map((r: any) => r.customer_id));
+      for (const r of claimed ?? []) work.push({ id: r.id, customer_id: r.customer_id, promo_code: null });
+      const missing = part.filter((c: string) => !got.has(c));
+      if (missing.length) {
+        const { data: ex } = await sb.from('campaign_sends').select('id, customer_id, status, promo_code, created_at, run_id')
+          .eq('campaign_id', campaign.id).eq('dedupe_key', dedupeKey).in('customer_id', missing);
+        const nowMs = Date.now();
+        const reclaim = (ex ?? []).filter((r: any) => claimDecision(r, { ownRunId: runId, nowMs }) === 'reclaim');
+        if (reclaim.length) {
+          await sb.from('campaign_sends').update({ run_id: runId, status: 'pending', error: null }).in('id', reclaim.map((r: any) => r.id));
+          for (const r of reclaim) work.push({ id: r.id, customer_id: r.customer_id, promo_code: r.promo_code || null });   // reuse an issued code (no leak on retry)
+        }
+        if (!opts.resumeRunId) summary.skipped += (ex ?? []).length - reclaim.length;   // terminal rows: already sent or skipped
       }
+    }
 
-      try {
-        // Reuse a code already issued for this send; only mint a new one if none exists. Persist it
-        // immediately so a later retry reuses it rather than issuing another.
-        let promoCode = reuseCode;
-        if (offer && !promoCode) { promoCode = await issueCode(sb, campaign, offer, customerId); if (promoCode) await sb.from('campaign_sends').update({ promo_code: promoCode }).eq('id', claimedId); }
-        const merge = { promo_code: promoCode || '', offer: offer?.reward_label || '' };
-        // A/B subject split (email-only): pick a variant deterministically per (customer, campaign).
-        const variants = Array.isArray(campaign.variants) ? campaign.variants.filter((v: any) => v && v.subject) : [];
-        let variantKey: string | null = null;
-        let subjectForRecipient = campaign.subject;
-        if (variants.length >= 2) {
-          // Reduce via the well-mixed high bits (NOT % n: the FNV multiply preserves low bits, so a
-          // mod-2 split would degenerate to character-parity and ignore the campaign salt).
-          const idx = Math.min(Math.floor((hashInt(`${customerId}:${campaign.id}`) / 4294967296) * variants.length), variants.length - 1);
-          const v = variants[idx];
-          variantKey = v.key || null;
-          subjectForRecipient = v.subject || campaign.subject;
+    const batchSize = campaign.channel === 'sms' ? SMS_BATCH : EMAIL_BATCH;
+    let remaining = work.length;
+    for (const part of chunk(work, batchSize)) {
+      if (outOfTime(startedMs, Date.now(), budgetMs)) break;
+      // one unique code per recipient when an offer is attached; persisted at once so a retry reuses it
+      for (const w of part) {
+        if (offer && !w.promo_code) {
+          w.promo_code = await issueCode(sb, campaign, offer, w.customer_id);
+          if (w.promo_code) await sb.from('campaign_sends').update({ promo_code: w.promo_code }).eq('id', w.id);
         }
-        let emailMid: string | undefined, smsMid: string | undefined, anyOk = false, anyFail = false;
-        for (const ch of channels) {
-          const r = await sendOne(opts, org, campaign.id, ch, customerId,
-            { subject: subjectForRecipient, html: campaign.email_html, sms: campaign.sms_body }, merge, promoCode, dedupeKey);
-          if (ch === 'email') emailMid = r.message_id; else smsMid = r.message_id;
-          if (r.ok) anyOk = true; else anyFail = true;
-        }
-        const status = anyOk && anyFail ? 'partial' : anyOk ? 'sent' : 'skipped';
-        await sb.from('campaign_sends').update({ status, run_id: runId, promo_code: promoCode, email_message_id: emailMid || null, sms_message_id: smsMid || null, variant_key: variantKey }).eq('id', claimedId);
-        if (anyOk) summary.sent++; else summary.skipped++;
-      } catch (e) {
-        // The recovery write is itself guarded — a transient failure here must NOT abort the run or
-        // orphan the row permanently (a 'failed'/stale-'pending' row is reclaimable on a later run).
-        try { await sb.from('campaign_sends').update({ status: 'failed', error: String(e instanceof Error ? e.message : e).slice(0, 400) }).eq('id', claimedId); } catch (_e2) { /* swallow; reclaimable */ }
-        summary.failed++;
       }
-    });
+      const variants = Array.isArray(campaign.variants) ? campaign.variants.filter((v: any) => v && v.subject) : [];
+      const recips = part.map((w) => {
+        let variantKey: string | null = null, subject: string | null = campaign.subject || null;
+        if (variants.length >= 2) {
+          const idx = Math.min(Math.floor((hashInt(`${w.customer_id}:${campaign.id}`) / 4294967296) * variants.length), variants.length - 1);
+          variantKey = variants[idx].key || null; subject = variants[idx].subject || campaign.subject;
+        }
+        return { w, variantKey, subject, merge: { promo_code: w.promo_code || '', offer: offer?.reward_label || '' } };
+      });
+      const perCustomer = new Map<string, { emailMid?: string | null; smsMid?: string | null; results: { ok: boolean; status: string }[] }>();
+      for (const ch of channels) {
+        const results = await deliverBatch(sb, {
+          org_id: org, channel: ch, campaign_id: campaign.id,
+          subject: campaign.subject, html: campaign.email_html, sms_body: campaign.sms_body,
+          recipients: recips.map((r) => ({ customer_id: r.w.customer_id, idempotency_key: `c:${campaign.id}:${r.w.customer_id}:${dedupeKey}:${ch}`, merge: r.merge, promo_code: r.w.promo_code, subject: r.subject })),
+        });
+        for (const r of results) {
+          const s = perCustomer.get(r.customer_id) || { results: [] };
+          if (ch === 'email') s.emailMid = r.message_id || null; else s.smsMid = r.message_id || null;
+          s.results.push({ ok: !!r.ok, status: r.status });
+          perCustomer.set(r.customer_id, s);
+        }
+      }
+      await mapPool(part, SEND_CONCURRENCY, async (w) => {
+        const s = perCustomer.get(w.customer_id) || { results: [{ ok: false, status: 'failed' }] };
+        const status = sendOutcome(s.results);
+        const variantKey = recips.find((r) => r.w.customer_id === w.customer_id)?.variantKey ?? null;
+        await sb.from('campaign_sends').update({ status, run_id: runId, promo_code: w.promo_code, email_message_id: s.emailMid || null, sms_message_id: s.smsMid || null, variant_key: variantKey, error: status === 'failed' ? 'provider refused the batch' : null }).eq('id', w.id);
+        if (status === 'sent' || status === 'partial') summary.sent++; else if (status === 'failed') summary.failed++; else summary.skipped++;
+      });
+      remaining -= part.length;
+      await sleep(RESEND_BATCH_GAP_MS);   // Resend allows two requests a second
+    }
+    summary.remaining = remaining;
+    summary.run_id = runId;
+    if (remaining > 0) {
+      // Time boxed: the unsent rows stay 'pending' under this run. The caller continues it at once
+      // (marketing-campaigns blast_continue) and the hourly cron resumes a run that stalled.
+      await sb.from('campaign_runs').update({ status: 'running', candidates: summary.candidates, sent: summary.sent, skipped: summary.skipped, failed: summary.failed, error: `time boxed: ${remaining} still to send` }).eq('id', runId);
+      summary.status = 'running';
+      return summary;
+    }
 
     summary.status = 'done';
     // v5.5.946: a zero-recipient run must SAY SO — 'done, 0' with no explanation is how
@@ -326,6 +343,25 @@ export async function runCampaign(sb: SB, campaign: any, opts: RunOpts): Promise
     await sb.from('campaign_runs').update({ status: 'error', error: summary.error.slice(0, 500), finished_at: new Date().toISOString() }).eq('id', runId);
   }
   return summary;
+}
+
+// 29 Oct 2026 (v5.11.117): a time boxed run whose continuation never came (the function died, a
+// deploy in between) is picked up by the hourly cron. Only runs that still have pending rows.
+export async function resumeStalledRuns(sb: SB, opts: RunOpts): Promise<RunSummary[]> {
+  const out: RunSummary[] = [];
+  const { data: runs } = await sb.from('campaign_runs').select('id, campaign_id, status, run_at, finished_at').eq('status', 'running').order('run_at', { ascending: true }).limit(10);
+  for (const run of runs ?? []) {
+    if (!runStalled(run)) continue;
+    const { count } = await sb.from('campaign_sends').select('id', { count: 'exact', head: true }).eq('run_id', run.id).eq('status', 'pending');
+    if (!count) {
+      await sb.from('campaign_runs').update({ status: 'done', finished_at: new Date().toISOString(), error: null }).eq('id', run.id);
+      continue;
+    }
+    const { data: c } = await sb.from('campaigns').select('*').eq('id', run.campaign_id).maybeSingle();
+    if (!c) continue;
+    out.push(await runCampaign(sb, c, { ...opts, force: true, resumeRunId: run.id }));
+  }
+  return out;
 }
 
 // Run all active automations (the daily cron entry).
