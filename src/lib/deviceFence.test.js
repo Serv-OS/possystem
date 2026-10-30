@@ -594,10 +594,8 @@ test('fix round 2 (HIGH): every card start on a till or kiosk checks the link FI
   };
   const GATE = 'const linkGate = await confirmLinkBeforeCard();';
   const co = read('../surfaces/CheckoutModal.jsx');
-  const rest = co.indexOf('const runRestFlow = async () => {');
-  const restGate = co.indexOf(GATE, rest);
-  before(co, restGate, "if (processor === 'ryft') return runRyftTerminalFlow();", 'checkout: before the Ryft terminal');
-  before(co, restGate, '/functions/v1/stripe-process-payment-on-reader', 'checkout: before the Stripe reader');
+  // Drop D (29 Oct 2026): the till's only card start is the Adyen terminal job; the Stripe reader
+  // flow (runRestFlow) is gone with its gate.
   const job = co.indexOf('const startTerminalJob = async () => {');
   const jobGate = co.indexOf(GATE, job);
   before(co, jobGate, 'await dispatchTerminalJob({', 'checkout: before a terminal job (and before a gift debit for it)');
@@ -605,22 +603,15 @@ test('fix round 2 (HIGH): every card start on a till or kiosk checks the link FI
   const sp = read('../components/SplitModal.jsx');
   const spGate = sp.indexOf(GATE);
   before(sp, spGate, 'runPaxJob(opsLocationId, target);', 'split: before the terminal job');
-  before(sp, spGate, 'runRyftPayment(opsLocationId);', 'split: before Ryft');
-  const tp = read('../components/TabPreAuthTerminal.jsx');
-  before(tp, tp.indexOf(GATE), '/functions/v1/stripe-process-payment-on-reader', 'bar tab hold');
   const mc = read('../surfaces/mpos/MCardFlow.jsx');
   const mcGate = mc.indexOf(GATE);
   before(mc, mcGate, 'await runAdyenLocalTerminalFlow();', 'MPOS: before the on device terminal');
-  before(mc, mcGate, 'await runTapToPayFlow();', 'MPOS: before Tap to Pay');
   before(mc, mcGate, 'await runCloudTerminalFlow(terminal);', 'MPOS: before a cloud terminal');
-  const bar = read('../surfaces/BarSurface.jsx');
-  const barFn = bar.indexOf('const captureHeldTab = async (tab) => {');
-  before(bar, bar.indexOf(GATE, barFn), "await fetch('/api/stripe-capture', {", 'bar: before a hold capture');
   const oh = read('../surfaces/OrdersHub.jsx');
   const qrFn = oh.indexOf('const forceCloseQrTab = async (tab) => {');
-  before(oh, oh.indexOf(GATE, qrFn), "await fetch('/api/stripe-capture', {", 'QR tab close: before the capture');
+  before(oh, oh.indexOf(GATE, qrFn), "await adyenTab('tab_capture', {", 'QR tab close: before the capture');
   const tabFn = oh.indexOf('const forceCloseTab = async (o) => {');
-  before(oh, oh.indexOf(GATE, tabFn), "await fetch('/api/stripe-capture', {", 'QR tab force close: before the capture');
+  before(oh, oh.indexOf(GATE, tabFn), "await adyenTab('tab_capture', {", 'QR tab force close: before the capture');
   // The kiosk: ScreenPay starts the reader on mount, so it only MOUNTS behind the link gate, in
   // the old kiosk and in the new design. ScreenPay and submitOrder are untouched (card path guard).
   const kiosk = read('../surfaces/KioskApp.jsx');
@@ -634,7 +625,7 @@ test('fix round 2 (HIGH): every card start on a till or kiosk checks the link FI
   const gate = read('../surfaces/kiosk/KioskPayLinkGate.jsx');
   assert.ok(gate.includes("if (gate.phase === 'ok') return children;"), 'the reader starts only after the server said linked');
   assert.ok(gate.indexOf('confirmLinkBeforeCard()') > 0);
-  assert.ok(!/submitOrder\(|startCardPayment|dispatchTerminalJob|stripe-process-payment-on-reader/.test(gate), 'the gate never touches the card path itself');
+  assert.ok(!/submitOrder\(|startCardPayment|dispatchTerminalJob|adyen-terminal-charge/.test(gate), 'the gate never touches the card path itself');
 });
 
 test('fix round 2 (MEDIUM): every surface reports its build on the heartbeat, and every last_seen write carries it', () => {

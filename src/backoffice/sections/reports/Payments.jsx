@@ -10,8 +10,9 @@ import { useParts, exportSites } from './_siteSplit';
 import { SplitHeader, Blocks, SiteMatrix } from './SiteSplit';
 
 // Normalise the check.method string into a canonical bucket.
-// The check writer currently uses 'cash', 'card', 'stripe' and may include
-// 'apple-pay' / 'google-pay' / 'split' for future Stripe Terminal integration.
+// The check writer uses 'cash' and 'card'; older checks also carry 'stripe' or
+// 'terminal' as their card method, and 'apple-pay' / 'google-pay' / 'split' are
+// kept as their own buckets.
 function bucket(method) {
   const m = (method || '').toLowerCase();
   if (m === 'cash') return 'cash';

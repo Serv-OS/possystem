@@ -173,8 +173,10 @@ const BLOCKS = [
     name: 'submitOrder',
     start: 'const submitOrder = useCallback(async (nameOverride, phoneOverride, cardPayment) => {',
     end: 'tableNumber, resetSession]);',
-    length: 20589,
-    sha256: '3319750f33a0eea56b761790ae6261b97ac4c59043868be506410903acb8c8ef',
+    // 29 Oct 2026 (Drop D, Adyen only): one comment line changed ("its processor (the column
+    // default is 'stripe')" became "its processor"); no code in the block changed.
+    length: 20556,
+    sha256: 'eb95c9ad41acd58de62b23a66ccaaea797c47f8b393f216245b78423f27c5cfe',
   },
   {
     name: 'ScreenPay logic',
@@ -183,8 +185,14 @@ const BLOCKS = [
     // v5.11.116 (29 Oct 2026, payments audit Drop A): cancelReaderAction aborts an Adyen job on the
     // reader (abortTerminalJob) instead of terminal-job-cancel, which is Ryft only. Signed off by
     // Peter with Drop A ("looks fine so go").
-    length: 13070,
-    sha256: 'ed9cdc93bf470a7fa8368c5f47aec491279b2348dbd384c3b0844e7e4fb7c388',
+    // 29 Oct 2026 (Drop D, Adyen only, Peter: "remove all stripe and all ryft"): the Stripe reader
+    // branch (stripe-process-payment-on-reader, its poll and its cancel) is gone; cancelReaderAction
+    // aborts the Adyen job only; startRyftTerminalPayment / activeRyftJobRef / ryftAbortRef became
+    // startTerminalPayment / activeJobRef / jobAbortRef; stripeCurrency became venueCurrency. The
+    // Adyen job path (findPaxTerminal, dispatchTerminalJob, pollTerminalJob, kioskReaderPayment)
+    // is byte for byte Drop A.
+    length: 8122,
+    sha256: '8688ebd458a349a7ef23e171923f395ae836a46444b60af7d4c1e0f11cc77dfa',
   },
   {
     name: 'credits',
@@ -302,17 +310,17 @@ test('card path guard: the new design reset and idle rules only apply when the d
   assert.equal(count(SRC, 'setTimeout(() => resetSession(), 30000);'), 1);
 });
 
-test('card path guard: every card surface decides "card machine or Stripe reader" with one rule', () => {
+test('card path guard: every card surface decides "card machine" with one rule (Adyen only)', () => {
   const proc = fs.readFileSync(new URL('./payments/processor.js', import.meta.url), 'utf8');
-  assert.match(proc, /export function takesCardsOnTerminal\(processor\) \{\n  return processor === 'ryft' \|\| processor === 'adyen';\n\}/);
-  assert.match(SRC, /if \(takesCardsOnTerminal\(processor\)\) \{ await startRyftTerminalPayment\(\); return; \}/);
+  assert.match(proc, /export function takesCardsOnTerminal\(processor\) \{\n  return processor === 'adyen';\n\}/);
+  assert.match(SRC, /if \(takesCardsOnTerminal\(processor\)\) \{ await startTerminalPayment\(\); return; \}/);
   assert.match(SRC, /findPaxTerminal\(\{ posDeviceId: kioskId, locationId \}\)/);
   for (const rel of ['../surfaces/CheckoutModal.jsx', '../components/SplitModal.jsx']) {
     const other = fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
     assert.match(other, /takesCardsOnTerminal\(/, rel);
     assert.doesNotMatch(other, /=== 'ryft' \|\| [\w.]+ === 'adyen'/, rel);
   }
-  assert.doesNotMatch(SRC, /processor === 'ryft'\) \{ await startRyftTerminalPayment/);
+  assert.doesNotMatch(SRC, /ryft|stripe-process-payment-on-reader/i, 'Drop D: no other processor is reachable from the kiosk');
   const jobs = fs.readFileSync(new URL('./payments/terminalJobs.js', import.meta.url), 'utf8');
   assert.match(jobs, /const locationId = explicitLocationId \|\| getActiveLocationSync\(\);/);
   assert.match(jobs, /const locationId = p\?\.locationId \|\| getActiveLocationSync\(\);/);
@@ -327,8 +335,10 @@ test('card path guard: a kiosk card machine sale is booked linked to its job (30
   assert.equal(count(pay, "const closedCheckId = (typeof ensureCheckId === 'function' && ensureCheckId())"), 1);
   assert.equal(count(pay, 'const paid = kioskReaderPayment(finalJob, closedCheckId);'), 1);
   assert.equal(count(pay, 'setTimeout(() => onPaid(paid), 800);'), 1);
-  // Only the approved branch passes a payment: the Stripe branch and the covered order pass none.
-  assert.equal(count(pay, 'setTimeout(() => onPaid(), 800);'), 1);
+  // Only the approved branch passes a payment; a basket already paid (heldPayment) or fully
+  // covered calls onPaid() with none.
+  assert.equal(count(pay, 'setTimeout(() => onPaid(), 800);'), 0);
+  assert.equal(count(pay, 'onPaid();'), 2);
   // submitOrder: only a real payment is kept, the row is spread with the linked fields, and the
   // job is reconciled only after the insert landed.
   assert.equal(count(submit, 'const handed = isKioskReaderPayment(cardPayment) ? cardPayment : null;'), 1);
@@ -370,7 +380,7 @@ test('card path guard: a payment is tied to its basket, and a paid basket is nev
   const startAt = pay.indexOf('const startCardPayment = async () => {');
   const heldAt = pay.indexOf("if (isKioskReaderPayment(typeof heldPayment === 'function' ? heldPayment() : null)) {");
   const lockAt = pay.indexOf('if (alreadyPaidRef.current) {');
-  const chargeAt = pay.indexOf('if (takesCardsOnTerminal(processor)) { await startRyftTerminalPayment(); return; }');
+  const chargeAt = pay.indexOf('if (takesCardsOnTerminal(processor)) { await startTerminalPayment(); return; }');
   assert.ok(startAt > 0 && heldAt > startAt && lockAt > heldAt && chargeAt > lockAt, 'held and ALREADY_PAID checks come before any charge');
   assert.equal(count(pay, "if (e?.code === 'ALREADY_PAID') alreadyPaidRef.current = true;"), 1);
 });

@@ -13,6 +13,8 @@ const exists = (p) => fs.existsSync(new URL(`../../../${p}`, import.meta.url));
 
 // Every edge function that authorises a real login from its JWT (the 18 Sep authority map,
 // plus customer-import, menu-translate, po-send and terminal-job-cancel found while wiring).
+// 29 Oct 2026 (Drop D): the stripe-*, ryft-*, payments-onboard and terminal-job-charge functions
+// are deleted (ServOS works with Adyen only); src/lib/adyenOnlyServer.test.js pins their absence.
 export const WIRED_AT_TOP = [
   'adyen-create-session', 'adyen-financial', 'adyen-modify', 'booking-charge', 'booking-host', 'adyen-onboard', 'adyen-terminal-admin', 'adyen-terminal-charge',
   'challenge21-counter', 'create-user', 'customer-import', 'ezcater-connect', 'gift-fulfill',
@@ -20,16 +22,10 @@ export const WIRED_AT_TOP = [
   'location-admin', 'manager-approve', 'manager-snapshot',
   'marketing-admin', 'marketing-campaigns', 'marketing-compliance', 'marketing-domains', 'marketing-report',
   'marketing-segments', 'marketing-send', 'marketing-workflows',
-  'menu-translate', 'owner-snapshot', 'payments-admin', 'payments-onboard', 'payments-processor', 'provision-location',
+  'menu-translate', 'owner-snapshot', 'payments-admin', 'payments-processor', 'provision-location',
   'review-admin', 'review-google', 'review-reply', 'review-request', 'review-sync',
-  'ryft-create-payment-session', 'ryft-disputes', 'ryft-refund', 'ryft-tab', 'ryft-terminal-cancel',
-  'ryft-terminal-debug', 'ryft-terminal-payment', 'ryft-terminal-poll', 'ryft-terminals',
   'send-receipt', 'send-sms', 'send-welcome',
-  'stripe-assign-reader-to-pos', 'stripe-cancel-reader-action', 'stripe-create-payment-intent', 'stripe-increment-authorization',
-  'stripe-link-merchant', 'stripe-poll-reader-action', 'stripe-process-payment-on-reader', 'stripe-readers-status', 'stripe-refund',
-  'stripe-register-network-reader', 'stripe-sync-location-reader-config', 'stripe-terminal-connection-token',
-  'stripe-unregister-reader', 'stripe-update-reader-display', 'stripe-upload-reader-splashscreen',
-  'terminal-job-cancel', 'terminal-job-charge', 'terminal-job-create', 'terminal-job-status',
+  'terminal-job-cancel', 'terminal-job-create', 'terminal-job-status',
   'trading-report', 'uber-direct', 'wifi-admin', 'workforce-clock', 'workforce-compute',
   'xero-bills', 'xero-config', 'xero-connect', 'xero-sales', 'po-send',
 ];

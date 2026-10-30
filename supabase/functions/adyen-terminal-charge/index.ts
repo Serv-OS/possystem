@@ -1,7 +1,7 @@
 // supabase/functions/adyen-terminal-charge
 //
 // The Adyen in-person charge path for terminal_jobs (processor='adyen') —
-// the sibling of terminal-job-charge (Ryft/PAX), sharing its money-safety
+// the terminal charge path (Adyen readers over nexo cloud), with the money-safety
 // contract but speaking nexo 3.0 to Adyen hardware. ADYEN_INTEGRATION_PLAN.md
 // Phase 3 core, built key-independent in Phase 0.
 //
@@ -37,7 +37,7 @@
 //                   press refused as TERMINAL_BUSY books them too
 //                   (terminal-job-create, scheduleBusyAsks).
 //
-// MONEY-SAFETY (inherited verbatim from terminal-job-charge):
+// MONEY-SAFETY:
 //   • CAS write-ahead: UPDATE … SET status='charging' WHERE status='charging_unsent'
 //     BEFORE any network call — exactly one initiator ever reaches the terminal.
 //   • The amount is THE DB'S (terminal_jobs.charge_minor, tj_charge_identity-proven),
@@ -183,7 +183,7 @@ async function withCapture(bodyObj: Record<string, unknown>, job: { id: string; 
 }
 
 // nexo card block → the snake_case receipt shape terminal_job_settle_from_processor
-// stores and the POS/receipts already render (same keys the Ryft path writes).
+// stores and the POS/receipts already render.
 function settleCard(p: ReturnType<typeof parsePaymentResponse>) {
   const c = p.card;
   if (!c.brand && !c.last4 && !c.authCode) return null;
@@ -869,7 +869,7 @@ async function logRefusal(reason: string, ctx: Record<string, unknown>) {
 
 // v5.6.94 — DEMO BAR-TAB HOLDS. The browser demo reader (?mode=readerdemo) is a
 // terminal_devices row whose serial the surface mints as DEMO-… — a real PAX
-// serial or paxpay's AID-<ANDROID_ID> ladder can never start with that. That is
+// serial can never start with that. That is
 // the same server-side authority terminal-job-create trusts to mark demo SALES
 // simulated. Sales ride terminal_jobs; bar-tab pre-auth holds have NO job row,
 // so they are simulated HERE instead: hold_start on a DEMO- terminal returns a
@@ -1149,7 +1149,7 @@ Deno.serve(async (req) => {
   // FENCE — demo-only BY CONSTRUCTION, no venue-user branch needed: the caller
   // must OWN the named terminal row (terminal_devices.device_uid = auth.uid(),
   // stamped by register_terminal_device and never client-assertable), the row's
-  // OWN serial must be DEMO-… (a real PAX serial or paxpay's AID-<ANDROID_ID>
+  // OWN serial must be DEMO-… (a real reader serial
   // ladder can never start with that), and the row must be paired + active at a
   // location. So only the demo window itself — the one browser session that
   // registered the demo serial — can wake a table, and only for its own venue's
@@ -1583,7 +1583,7 @@ Deno.serve(async (req) => {
   const { data: job, error: jobErr } = await opsAdmin.from('terminal_jobs').select('*').eq('id', jobId).maybeSingle();
   if (jobErr) return json({ error: jobErr.message }, 500);
   if (!job) return json({ error: 'job not found' }, 404);
-  if (job.processor !== 'adyen') return json({ error: `job is ${job.processor ?? 'ryft'} — wrong charge path` }, 409);
+  if (job.processor !== 'adyen') return json({ error: `job is ${job.processor ?? 'adyen'} — wrong charge path` }, 409);
 
   // ── Fence ──────────────────────────────────────────────────────────────────
   // Two accepted identities (or the service role). BOTH are server-stamped from
@@ -1672,7 +1672,7 @@ Deno.serve(async (req) => {
     if (maa) maa.merchant_account = effectiveMerchantAccount(cfg, maa.merchant_account) || null;
 
     // Drift-reconcile the POIID against platform payment_devices — the exact
-    // guard that saved the Ryft path (ops column can go stale on re-pair).
+    // guard (ops column can go stale on re-pair).
     // Retired rows (readers from a previous environment, cleared by
     // set_environment reprovision) are not authoritative for anything.
     let poiid = term?.adyen_terminal_id as string | null;

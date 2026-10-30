@@ -89,6 +89,7 @@ export function staleFunctions(liveFns, lastCommitOf, io = defaultIo, minHours =
     const dir = `${FUNCTIONS_DIR}/${fn.slug}`;
     let committed = Number(lastCommitOf(dir)) || 0;
     if (!committed) continue;                       // not in this repo
+    if (!io.list(dir).length) continue;             // deleted in the code (deletedFunctions lists it): nothing to deploy
     // The folder plus every _shared file it ships: the newest commit to any of them.
     let newestPath = dir;
     for (const p of deployPathsOf(fn.slug, io).slice(1)) {
@@ -100,4 +101,21 @@ export function staleFunctions(liveFns, lastCommitOf, io = defaultIo, minHours =
     if (hours > minHours) stale.push({ slug: fn.slug, hours, newestPath });
   }
   return stale.sort((a, b) => b.hours - a.hours);
+}
+
+/**
+ * Which live functions were DELETED in the code: their folder has a commit history but no files
+ * in this checkout. 29 Oct 2026 (Drop D): the Stripe and Ryft functions are deleted in the code
+ * first and undeployed in a later release step, so for a while they are live with no source. They
+ * are never "stale" (a deploy would fail): the deploy check lists them for the undeploy step.
+ */
+export function deletedFunctions(liveFns, lastCommitOf, io = defaultIo) {
+  const gone = [];
+  for (const fn of liveFns || []) {
+    const dir = `${FUNCTIONS_DIR}/${fn.slug}`;
+    if (!(Number(lastCommitOf(dir)) || 0)) continue;   // never in this repo
+    if (io.list(dir).length) continue;                 // still here
+    gone.push(fn.slug);
+  }
+  return gone.sort();
 }

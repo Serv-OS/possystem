@@ -30,9 +30,7 @@ import {
   normalisePromoCode, escapeLike, promoRowMatches, pickPromoRow, offerInOrg, planSaveOffer,
 } from '../../supabase/functions/_shared/promoLookup.ts';
 import { opsIdsOf, companyOrgIds, locationInCompany, customerInCompany } from '../../supabase/functions/_shared/orgScope.ts';
-import {
-  stripeSessionProvesPurchase, ryftSessionProvesPurchase, purchaseProcessor,
-} from '../../supabase/functions/_shared/giftPurchaseProof.ts';
+import { purchaseProcessor } from '../../supabase/functions/_shared/giftPurchaseProof.ts';
 import {
   purchaseCardId, issueLedgerKey, proofReasonRetryable, processorErrorReason, fulfilResponseRetryable,
 } from '../../supabase/functions/_shared/giftFulfilPlan.ts';
@@ -246,17 +244,15 @@ test('the venue org comes from the Ops row (Platform locations has no org_id)', 
 // ── Gift card purchases ─────────────────────────────────────────────────────
 const purchase = { id: 'pur-1', amount_minor: 2500, currency: 'gbp' };
 
-test('an unpaid purchase never fulfils; a paid one (Stripe or Ryft) still does', () => {
-  const paid = { payment_status: 'paid', metadata: { purchase_id: 'pur-1' }, amount_total: 2500, currency: 'gbp' };
-  assert.deepEqual(stripeSessionProvesPurchase(paid, purchase), { ok: true });
-  assert.equal(stripeSessionProvesPurchase({ ...paid, payment_status: 'unpaid' }, purchase).reason, 'not_paid');
-  assert.equal(stripeSessionProvesPurchase({ ...paid, metadata: { purchase_id: 'pur-2' } }, purchase).reason, 'session_not_for_purchase');
-  assert.equal(stripeSessionProvesPurchase({ ...paid, amount_total: 500 }, purchase).reason, 'amount_short', 'a row whose amount was raised after paying');
-  assert.equal(stripeSessionProvesPurchase({ ...paid, currency: 'usd' }, purchase).reason, 'currency_mismatch');
-  const ps = { status: 'Captured', metadata: { purchase_id: 'pur-1' }, amount: 2500, currency: 'GBP' };
-  assert.deepEqual(ryftSessionProvesPurchase(ps, purchase), { ok: true });
-  assert.equal(ryftSessionProvesPurchase({ ...ps, status: 'Approved' }, purchase).reason, 'not_paid');
+test('Drop D: a gift purchase is proven on Adyen only; an old Stripe or Ryft purchase is unverifiable', () => {
   assert.equal(purchaseProcessor({ processor: 'adyen' }), 'adyen', '29 Oct 2026 (v5.11.115): Adyen sells gift cards online; proven against the ledger row');
+  assert.equal(purchaseProcessor({ processor: ' Adyen ' }), 'adyen');
+  assert.equal(purchaseProcessor({ processor: 'stripe' }), null, 'Stripe is gone: refused, never issued');
+  assert.equal(purchaseProcessor({ processor: 'ryft' }), null, 'Ryft is gone: refused, never issued');
+  assert.equal(purchaseProcessor({ processor: '' }), null, 'no processor on the row is no proof');
+  assert.equal(purchaseProcessor({}), null);
+  const proof = read('../../supabase/functions/_shared/giftPurchaseProof.ts');
+  assert.ok(!proof.includes('stripeSessionProvesPurchase') && !proof.includes('ryftSessionProvesPurchase'));
 });
 
 test('one card per purchase; an outage is retried; "not paid" is final', async () => {
@@ -266,23 +262,20 @@ test('one card per purchase; an outage is retried; "not paid" is final', async (
   assert.match(a, /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
   assert.equal(issueLedgerKey('p-1'), 'issue:purchase:p-1');
   assert.equal(proofReasonRetryable('processor_unreachable'), true);
-  assert.equal(proofReasonRetryable('ryft_503'), true);
+  assert.equal(proofReasonRetryable('ryft_503'), false, 'Drop D: no Ryft status codes are parsed');
   assert.equal(proofReasonRetryable('not_paid'), false);
-  assert.equal(processorErrorReason({ type: 'StripeInvalidRequestError', statusCode: 404 }), 'processor_rejected');
+  assert.equal(processorErrorReason({ statusCode: 404 }), 'processor_rejected');
+  assert.equal(processorErrorReason({ status: 503 }), 'processor_unreachable');
   assert.equal(processorErrorReason(new TypeError('fetch failed')), 'processor_unreachable');
   assert.equal(fulfilResponseRetryable(503, { retryable: true }), true);
   assert.equal(fulfilResponseRetryable(402, { code: 'payment_not_proven' }), false);
   const ful = fnSrc('gift-fulfill');
   assert.ok(ful.includes('const cardId = await purchaseCardId(purchase.id);'));
   assert.ok(ful.includes('idempotency_key: issueLedgerKey(purchase.id),'));
-  assert.ok(ful.includes(".from('merchant_stripe_accounts').select('stripe_account_id').eq('location_id', purchase.location_id)"), 'the merchant account from OUR table, never the row');
-  const st = fnSrc('stripe-webhook-connect');
-  assert.ok(st.includes("(session as any).payment_status !== 'paid'"), 'only a paid session marks a purchase paid');
-  assert.ok(st.includes(".eq('id', meta.purchase_id).eq('status', 'pending');"), 'never rewinds a fulfilled purchase');
-  assert.ok(st.includes("return new Response('retry later', { status: 503 });"));
-  const ry = fnSrc('ryft-webhook');
-  assert.ok(ry.includes(".eq('id', p.id).eq('status', 'pending');"));
-  assert.ok(ry.includes('if (fulfilResponseRetryable(status, body)) {'));
+  assert.ok(ful.includes(".eq('merchant_reference', giftReference(purchase.id))"), 'the Adyen ledger row for THIS purchase, read by OUR key, never the row');
+  assert.ok(!ful.includes('merchant_stripe_accounts') && !ful.includes('merchant_ryft_accounts'), 'Drop D: no Stripe or Ryft account lookups');
+  const aw = fnSrc('adyen-webhook');
+  assert.ok(aw.includes('functions/v1/gift-fulfill') && aw.includes("gift-fulfill did not issue (purchase stays paid)"), 'the Adyen webhook issues through gift-fulfill and leaves a failed purchase at paid for Back Office');
   assert.ok(fnSrc('gift-purchase-status').includes("status: purchase.status === 'fulfilling' ? 'paid' : purchase.status,"));
   assert.ok(read('../surfaces/gift/GiftSuccessSurface.jsx').includes("data.status === 'fulfilling'"));
 });
@@ -306,7 +299,7 @@ test('the log cannot flood and carries nothing secret', () => {
   assert.equal(row.company_id, null);
   assert.equal(row.location_id.length, 80);
   assert.equal(row.detail, null, 'a hint that is not an id is dropped');
-  for (const f of ['loyalty-earn', 'gift-redeem', 'gift-list', 'gift-lookup', 'gift-reverse-redeem', 'gift-fulfill', 'stripe-refund', 'ryft-refund']) {
+  for (const f of ['loyalty-earn', 'gift-redeem', 'gift-list', 'gift-lookup', 'gift-reverse-redeem', 'gift-fulfill']) {
     assert.ok(!fnSrc(f).includes('await recordAuthority('), `${f} never waits on the log`);
   }
 });

@@ -2,9 +2,9 @@
 //
 // "THIS DEVICE IS THE CARD READER."
 //
-// Every other card path in the codebase assumes the reader is somewhere else: a
-// Stripe WisePOS on the counter, a PAX A920 on the bar, an AMS1 the till drives
-// over the cloud. An Adyen Android terminal (S1F2L / S1E2L / S1E4 Pro) running our
+// Every other card path in the codebase assumes the reader is somewhere else: an
+// AMS1 on the counter that the till drives over the cloud. An Adyen Android
+// terminal (S1F2L / S1E2L / S1E4 Pro) running our
 // MPOS wrapper is BOTH the till and the reader, so before it can take a payment it
 // has to hold a terminal_devices row of its OWN — the same row a PAX self-registers
 // and a manager claims in Back Office → Card readers.

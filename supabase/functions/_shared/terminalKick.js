@@ -113,7 +113,7 @@ export function isLocalBridgeJob({ localBridge, checkDraft, terminalDeviceUid, p
  */
 export function shouldServerKick(job, { localBridge, terminalDeviceUid, posDeviceUid } = {}) {
   if (!job || typeof job !== 'object') return { kick: false, reason: 'no job' };
-  if (job.processor !== 'adyen') return { kick: false, reason: `processor ${job.processor ?? 'ryft'}` };
+  if (job.processor !== 'adyen') return { kick: false, reason: `processor ${job.processor ?? 'adyen'}` };
   if (job.status !== 'charging_unsent') return { kick: false, reason: `status ${job.status}` };
   if (job.charge_minor == null || !Number.isFinite(Number(job.charge_minor))) return { kick: false, reason: 'no charge_minor' };
   if (job.simulated === true) return { kick: false, reason: 'simulated' };
@@ -255,10 +255,8 @@ export function shouldAskReaderAfterLostCas(job) {
  * Which jobs the reconciler must ask the reader about instead of quarantining.
  *
  * The sweep moves a dispatched job to 'unknown' + needs_human, which is the
- * right call for a PAX on Ryft (we cannot ask it anything) and the WRONG call
- * for Adyen, where the reader itself will tell us. The reconciler's own note
- * says so: "When lookupByReference() exists, the query goes in the marked
- * block below and unknowns start resolving themselves." For Adyen it exists.
+ * right call for a reader that cannot be asked and the WRONG call for Adyen,
+ * where the reader itself will tell us (adyen-terminal-charge 'result').
  *
  * @param {Array<object>} jobs terminal_jobs rows in 'unknown'
  * @returns {string[]} job ids to ask about, oldest first

@@ -9,15 +9,15 @@
 // gift_card_purchases_service policy is FOR ALL TO public USING (true), see
 // 000_baseline_platform.sql; Platform file C of the stage 1 fence, 20260919c, closes it), so
 // status, amount_minor and the session ids on the row can be forged until then. The row is therefore NEVER the proof. The proof is
-// the processor's own record of the payment session, fetched server side by id, and it must:
-//   * say the money was taken (Stripe checkout session payment_status 'paid'; Ryft payment
-//     session status 'Captured'),
-//   * carry OUR purchase id in its metadata (gift-checkout-session puts it there), so a paid
-//     session for another purchase cannot be pointed at this one,
+// the processor's own record of the payment, read server side, and it must:
+//   * say the money was taken,
+//   * name OUR purchase id (gift-checkout-session puts it in the reference), so a paid
+//     payment for another purchase cannot be pointed at this one,
 //   * be for at least the purchase amount, in the purchase currency.
 // Adyen (29 Oct 2026, v5.11.115): the proof is the adyen_payments ledger row adyen-webhook wrote
 // from the HMAC verified AUTHORISATION for merchantReference `gift:<purchase id>` (see
-// _shared/giftAdyenRules.js adyenLedgerProvesPurchase). An unknown processor is still refused.
+// _shared/giftAdyenRules.js adyenLedgerProvesPurchase). Drop D (29 Oct 2026): Adyen is the only
+// processor; the Stripe and Ryft session checks are gone and anything else is refused.
 //
 // PURE. No imports, so node tests load it directly.
 
@@ -30,39 +30,12 @@ export type PurchaseRow = {
 
 export type ProofResult = { ok: true } | { ok: false; reason: string };
 
-const cur = (v: unknown) => (typeof v === 'string' ? v.trim().toLowerCase() : '');
-
-function amountAndCurrency(paidMinor: unknown, paidCurrency: unknown, p: PurchaseRow): ProofResult {
-  const want = Math.round(Number(p.amount_minor));
-  const got = Math.round(Number(paidMinor));
-  if (!Number.isFinite(want) || want <= 0) return { ok: false, reason: 'purchase_amount_invalid' };
-  if (!Number.isFinite(got) || got < want) return { ok: false, reason: 'amount_short' };
-  const wantCur = cur(p.currency) || 'gbp';
-  if (cur(paidCurrency) && cur(paidCurrency) !== wantCur) return { ok: false, reason: 'currency_mismatch' };
-  return { ok: true };
-}
-
-/** A Stripe Checkout Session (retrieved on the merchant's connected account). */
-export function stripeSessionProvesPurchase(session: any, p: PurchaseRow): ProofResult {
-  if (!session || typeof session !== 'object') return { ok: false, reason: 'no_session' };
-  if (session.payment_status !== 'paid') return { ok: false, reason: 'not_paid' };
-  if (session.metadata?.purchase_id !== p.id) return { ok: false, reason: 'session_not_for_purchase' };
-  return amountAndCurrency(session.amount_total, session.currency, p);
-}
-
-/** A Ryft payment session (retrieved on the venue's sub account). */
-export function ryftSessionProvesPurchase(ps: any, p: PurchaseRow): ProofResult {
-  if (!ps || typeof ps !== 'object') return { ok: false, reason: 'no_session' };
-  if (ps.status !== 'Captured') return { ok: false, reason: 'not_paid' };
-  if (ps.metadata?.purchase_id !== p.id) return { ok: false, reason: 'session_not_for_purchase' };
-  return amountAndCurrency(ps.amount, ps.currency, p);
-}
-
-/** Which processor to ask. Anything else cannot be verified and is refused. */
-export function purchaseProcessor(p: { processor?: unknown }): 'stripe' | 'ryft' | 'adyen' | null {
-  const v = typeof p.processor === 'string' ? p.processor.trim().toLowerCase() : 'stripe';
-  if (v === '' || v === 'stripe') return 'stripe';
-  if (v === 'ryft') return 'ryft';
+/**
+ * Which processor to ask. Adyen is the only one (29 Oct 2026, Drop D); anything else, including
+ * an old Stripe or Ryft purchase or a row with no processor, cannot be verified and is refused.
+ */
+export function purchaseProcessor(p: { processor?: unknown }): 'adyen' | null {
+  const v = typeof p.processor === 'string' ? p.processor.trim().toLowerCase() : '';
   if (v === 'adyen') return 'adyen';
   return null;
 }

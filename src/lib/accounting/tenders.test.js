@@ -36,8 +36,8 @@ test('one tender: rounded to the penny, empty ones dropped, extras only when set
 });
 
 test('the till: plain card and plain cash', () => {
-  assert.deepEqual(tillTenders({ method: 'card', tillMoney: 22, tip: 2, pspRef: 'PI', processor: 'stripe' }),
-    [{ method: 'card', amount: 20, tip: 2, psp_ref: 'PI', processor: 'stripe' }]);
+  assert.deepEqual(tillTenders({ method: 'card', tillMoney: 22, tip: 2, pspRef: 'PSP', processor: 'adyen' }),
+    [{ method: 'card', amount: 20, tip: 2, psp_ref: 'PSP', processor: 'adyen' }]);
   assert.deepEqual(tillTenders({ method: 'cash', tillMoney: 12.5, tip: 0 }), [{ method: 'cash', amount: 12.5, tip: 0 }]);
 });
 
@@ -111,14 +111,14 @@ test('channel orders: the platform is the method, the channel tip on the platfor
 });
 
 test('tab card legs: the hold capture and the overage, the tab tip once', () => {
-  const t = cardLegTenders([{ amount: 40, pspRef: 'HOLD', processor: 'stripe' }, { amount: 6, pspRef: null, processor: 'stripe' }, { amount: 0 }], { tip: 4 });
+  const t = cardLegTenders([{ amount: 40, pspRef: 'HOLD', processor: 'adyen' }, { amount: 6, pspRef: null, processor: 'adyen' }, { amount: 0 }], { tip: 4 });
   assert.deepEqual(t.map((x) => [x.amount, x.tip, x.psp_ref || null]), [[36, 4, 'HOLD'], [6, 0, null]]);
 });
 
 test('the fallback: gift card and booking split out; a composite method is never used as a method', () => {
-  const t = tendersFromPaymentInfo({ method: 'gift_card+card', giftCard: { card_id: 'G', applied: 1000 }, stripePaymentIntentId: 'PI', processor: 'ryft' }, { total: 32, tip: 2 });
+  const t = tendersFromPaymentInfo({ method: 'gift_card+card', giftCard: { card_id: 'G', applied: 1000 }, stripePaymentIntentId: 'PSP', processor: 'adyen' }, { total: 32, tip: 2 });
   assert.deepEqual(t.map((x) => [x.method, x.amount, x.tip]), [['gift_card', 10, 0], ['card', 20, 2]]);
-  assert.equal(t[1].psp_ref, 'PI');
+  assert.equal(t[1].psp_ref, 'PSP');
   assert.equal(tendersFromPaymentInfo({ method: 'loyalty+split' }, { total: 10 }), null);
   assert.deepEqual(tendersFromPaymentInfo({}, { total: 5, tip: 0 }), [{ method: 'card', amount: 5, tip: 0 }]);
   const given = [{ method: 'cash', amount: 3, tip: 0 }];

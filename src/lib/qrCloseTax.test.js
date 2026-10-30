@@ -109,7 +109,7 @@ test('closeShortQrTab: the check books the share of VAT the capture paid for', (
   const rows = [
     { ref: 'Q1', location_id: 'leeds', customer: { tip: 1, payment_state: 'short', tab_close_short: { paid_minor: 1000, due_minor: 1900 } } },
   ];
-  const tab = { rows, allItems: qrItems(), firstRow: rows[0], payment_intent_id: 'pi_1', processor: 'stripe', tableId: 't1', tableLabel: '4' };
+  const tab = { rows, allItems: qrItems(), firstRow: rows[0], payment_intent_id: 'PSP_1', processor: 'adyen', tableId: 't1', tableLabel: '4' };
   const short = qrTabShortInfo(rows);
   const check = shortTabClosedCheck(tab, short, { nowIso: '2026-09-27T20:00:00.000Z', taxFor: (paidGoods) => qrCloseTax(tab.allItems, ctx, { paidGoods }) });
   assert.equal(check.subtotal, 9);             // £10 paid less the £1 tip

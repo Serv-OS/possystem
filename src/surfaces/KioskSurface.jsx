@@ -109,7 +109,7 @@ function KioskSurfaceInner() {
       await ensureAuthToken();
       await supabase.rpc('claim_device', { p_code: codeNorm });
     } catch (e) {
-      console.warn('[KioskSurface] claim_device (device_uid stamp) failed: Ryft terminal payments will be unavailable until re-pair:', e?.message);
+      console.warn('[KioskSurface] claim_device (device_uid stamp) failed: card terminal payments will be unavailable until re-pair:', e?.message);
     }
     return { row: data, clearCode: true };
   };
@@ -124,7 +124,7 @@ function KioskSurfaceInner() {
     try {
       // Database fence stage 1 (contract A4): claim_device_v2 binds this kiosk's session to its
       // devices row, clears the code on the server and hands back a one time device secret.
-      // v5.5.871: the kiosk needs devices.device_uid = auth.uid() for Ryft "send to terminal".
+      // v5.5.871: the kiosk needs devices.device_uid = auth.uid() for "send to terminal".
       try { await ensureAuthToken(); } catch (e) { console.warn('[KioskSurface] no auth session:', e?.message); }
       let row = null;
       let clearCode = false;

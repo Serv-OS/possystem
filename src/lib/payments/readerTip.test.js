@@ -428,7 +428,7 @@ test('planTipHeal: only a parked adyen job is ever looked at', () => {
   assert.equal(np({ status: 'reconciled' }), 'not_parked');
   assert.equal(np({ status: 'charging' }), 'not_parked');
   assert.equal(np({ needs_human: false }), 'not_parked', 'a manager acknowledged it: never overridden');
-  assert.equal(np({ processor: 'ryft' }), 'not_parked');
+  assert.equal(np({ processor: null }), 'not_parked', 'no processor on the row (an old read)');
   assert.equal(planTipHeal(null, []).outcome, 'not_parked');
 });
 

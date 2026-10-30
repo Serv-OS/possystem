@@ -488,7 +488,7 @@ const TEST_ROW = {
 const PD_ROWS = [
   { id: 'pd-1', label: 'Bar reader', adyen_terminal_id: 'AMS1-000168243358252', serial_number: '000168243358252' },
   { id: 'pd-2', label: 'Till 2', adyen_terminal_id: 'S1F2L-000150000000002', serial_number: '000150000000002' },
-  { id: 'pd-stripe', label: 'Stripe one', adyen_terminal_id: null, serial_number: 'tmr_1' },
+  { id: 'pd-unlinked', label: 'Not linked yet', adyen_terminal_id: null, serial_number: 'SN-0000' },
 ];
 const TD_ROWS = [
   { id: 'td-1', label: 'Bar reader', adyen_terminal_id: 'AMS1-000168243358252', serial_number: '000168243358252' },

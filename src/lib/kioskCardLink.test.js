@@ -80,8 +80,8 @@ test('single card leg: processor, the refund reference and one card tender', () 
   assert.equal(legs[0].amountMinor, 480);
 });
 
-test('the old kiosk row (no processor, no reference, no tenders) had no card leg and routed to stripe', () => {
-  assert.deepEqual(cardLegsOf({ total: 4.8, processor: 'stripe', tenders: null, stripe_payment_intent_id: null }), []);
+test('the old kiosk row (no reference, no tenders) had no card leg to refund', () => {
+  assert.deepEqual(cardLegsOf({ total: 4.8, processor: 'adyen', tenders: null, stripe_payment_intent_id: null }), []);
 });
 
 test('the kiosk tip rides inside the charge and is booked as the card tip', () => {
@@ -124,12 +124,12 @@ test('a gift card whose debit failed is not a tender', () => {
   assert.deepEqual(f.tenders.map(t => t.method), ['card']);
 });
 
-test('a Ryft job books on Ryft', () => {
-  const reader = kioskReaderPayment({ ...R3128_JOB, processor: 'RYFT', transaction_id: 'ps_123' });
+test('the job processor is booked lower cased, on the row and on the tender', () => {
+  const reader = kioskReaderPayment({ ...R3128_JOB, processor: 'ADYEN', transaction_id: 'PSP_123' });
   const f = kioskCheckPaymentFields({ reader, tip: 0 });
-  assert.equal(f.processor, 'ryft');
-  assert.equal(f.stripe_payment_intent_id, 'ps_123');
-  assert.equal(f.tenders[0].processor, 'ryft');
+  assert.equal(f.processor, 'adyen');
+  assert.equal(f.stripe_payment_intent_id, 'PSP_123');
+  assert.equal(f.tenders[0].processor, 'adyen');
 });
 
 test('an approved job with no reference: the processor and the card tender, no refund reference', () => {
@@ -142,7 +142,7 @@ test('an approved job with no reference: the processor and the card tender, no r
 
 test('no card machine payment: the row is written exactly as before (no new columns)', () => {
   assert.deepEqual(kioskCheckPaymentFields({ reader: null, tip: 0 }), {});
-  // Fully covered by a gift card, or the Stripe reader branch that still passes nothing.
+  // Fully covered by a gift card: no card machine payment to name.
   assert.deepEqual(kioskCheckPaymentFields({ reader: null, tip: 1, giftRecord: { card_id: 'g', applied: 1200 }, loyaltyCredit: 2 }), {});
   assert.deepEqual(kioskCheckPaymentFields(), {});
 });

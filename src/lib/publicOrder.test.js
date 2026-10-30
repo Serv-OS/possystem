@@ -30,7 +30,7 @@ const noSleep = async () => {};
 test('a proof is returned as soon as the server saw the payment', async () => {
   let n = 0;
   const r = await requestProofWithRetry({
-    body: { processor: 'stripe', kind: 'card', payment_ref: 'pi_1' }, sleep: noSleep,
+    body: { processor: 'adyen', kind: 'card', payment_ref: 'PSP1' }, sleep: noSleep,
     invoke: async () => { n += 1; return n < 2 ? { status: 409, data: { ok: false, reason: 'not_seen' } } : { status: 200, data: { ok: true, proof_id: 'p1', amount_minor: 1250 } }; },
   });
   assert.deepEqual(r, { proofId: 'p1', amountMinor: 1250 });
@@ -38,15 +38,15 @@ test('a proof is returned as soon as the server saw the payment', async () => {
 });
 
 test('FENCE STAGE 1 FALLBACK: a function or table not deployed yet is "unavailable"', async () => {
-  const a = await requestProofWithRetry({ body: { processor: 'stripe', kind: 'card', payment_ref: 'x' }, sleep: noSleep, invoke: async () => ({ status: 404, data: {} }) });
+  const a = await requestProofWithRetry({ body: { processor: 'adyen', kind: 'card', payment_ref: 'x' }, sleep: noSleep, invoke: async () => ({ status: 404, data: {} }) });
   assert.deepEqual(a, { unavailable: true });
-  const b = await requestProofWithRetry({ body: { processor: 'stripe', kind: 'card', payment_ref: 'x' }, sleep: noSleep, invoke: async () => ({ status: 200, data: { ok: false, reason: 'unsupported' } }) });
+  const b = await requestProofWithRetry({ body: { processor: 'adyen', kind: 'card', payment_ref: 'x' }, sleep: noSleep, invoke: async () => ({ status: 200, data: { ok: false, reason: 'unsupported' } }) });
   assert.deepEqual(b, { unavailable: true });
 });
 
 test('a refusal that cannot change stops asking; network errors are retried then reported', async () => {
   let n = 0;
-  const r = await requestProofWithRetry({ body: { processor: 'stripe', kind: 'card', payment_ref: 'x' }, sleep: noSleep,
+  const r = await requestProofWithRetry({ body: { processor: 'adyen', kind: 'card', payment_ref: 'x' }, sleep: noSleep,
     invoke: async () => { n += 1; return { status: 409, data: { ok: false, reason: 'other_venue' } }; } });
   assert.equal(n, 1); assert.equal(r.failed, true); assert.equal(r.reason, 'other_venue');
   let m = 0;
@@ -54,7 +54,7 @@ test('a refusal that cannot change stops asking; network errors are retried then
     invoke: async () => { m += 1; throw new Error('Failed to fetch'); } });
   assert.equal(net.failed, true); assert.equal(net.reason, 'network');
   assert.equal(m, 4, 'Adyen (webhook ledger) gets the longer retry plan');
-  assert.deepEqual(await requestProofWithRetry({ body: { processor: 'stripe' } }), { failed: true, reason: 'missing' });
+  assert.deepEqual(await requestProofWithRetry({ body: { processor: 'adyen' } }), { failed: true, reason: 'missing' });
 });
 
 // ── C1, C8, C11: placing the order ───────────────────────────────────────────
@@ -202,15 +202,15 @@ test('the tracker reads order_track_row and no longer listens to every order of 
 // ── C4, C5, C6: QR tabs ──────────────────────────────────────────────────────
 
 test('open tabs at a table carry handles only', () => {
-  const rows = openTabsFromResult([{ tab_handle: 'h1', tab_ref: 'QR-1', table_label: '4.1', opened_at: 't', processor: 'stripe', total: '23.5', rounds: '2', has_join_code: true, payment_intent_id: 'pi_leak', tab_join_code: '123456' }]);
-  assert.deepEqual(rows, [{ tab_handle: 'h1', tab_ref: 'QR-1', table_label: '4.1', opened_at: 't', processor: 'stripe', total: 23.5, rounds: 2, has_join_code: true }]);
+  const rows = openTabsFromResult([{ tab_handle: 'h1', tab_ref: 'QR-1', table_label: '4.1', opened_at: 't', processor: 'adyen', total: '23.5', rounds: '2', has_join_code: true, payment_intent_id: 'psp_leak', tab_join_code: '123456' }]);
+  assert.deepEqual(rows, [{ tab_handle: 'h1', tab_ref: 'QR-1', table_label: '4.1', opened_at: 't', processor: 'adyen', total: 23.5, rounds: 2, has_join_code: true }]);
   assert.ok(!('payment_intent_id' in rows[0]) && !('tab_join_code' in rows[0]), 'nothing a stranger could use');
   assert.deepEqual(openTabsFromResult(null), []);
 });
 
 test('qr_tab_rounds answers become the tab object the QR screens use', () => {
-  const t = tabFromRoundsResult({ tab: { payment_intent_id: 'pi', tab_ref: 'QR-1', processor: 'ryft' }, rounds: [{ ref: 'a', total: 10, items: [1] }, { ref: 'b', total: '5.5', items: [2, 3] }] });
-  assert.equal(t.payment_intent_id, 'pi'); assert.equal(t.total, 15.5); assert.deepEqual(t.items, [1, 2, 3]); assert.equal(t.rounds.length, 2);
+  const t = tabFromRoundsResult({ tab: { payment_intent_id: 'psp', tab_ref: 'QR-1', processor: 'adyen' }, rounds: [{ ref: 'a', total: 10, items: [1] }, { ref: 'b', total: '5.5', items: [2, 3] }] });
+  assert.equal(t.payment_intent_id, 'psp'); assert.equal(t.total, 15.5); assert.deepEqual(t.items, [1, 2, 3]); assert.equal(t.rounds.length, 2);
   assert.equal(tabFromRoundsResult(null), null);
   assert.equal(tabFromRoundsResult({ rounds: [] }), null);
 });
@@ -389,12 +389,12 @@ test('C17: an unproven payment is checked again in the background, then verified
   const calls = [];
   let n = 0;
   const r = await verifyPaymentInBackground({
-    reprove: [{ processor: 'stripe', kind: 'card', paymentRef: 'pi_1' }], proofIds: ['g1'], sleep: async () => {},
+    reprove: [{ processor: 'adyen', kind: 'card', paymentRef: 'PSP1' }], proofIds: ['g1'], sleep: async () => {},
     requestProof: async (req) => { calls.push(['proof', req.paymentRef]); n += 1; return n < 2 ? { failed: true } : { proofId: 'c1' }; },
     verify: async (ids) => { calls.push(['verify', ids]); return ids.includes('c1') ? { data: { ok: true, paid: true, check_id: 'chk-9' } } : { data: { ok: true, paid: false } }; },
   });
   assert.deepEqual(r, { verified: true, checkId: 'chk-9' });
-  assert.deepEqual(calls, [['proof', 'pi_1'], ['verify', ['g1']], ['proof', 'pi_1'], ['verify', ['g1', 'c1']]]);
+  assert.deepEqual(calls, [['proof', 'PSP1'], ['verify', ['g1']], ['proof', 'PSP1'], ['verify', ['g1', 'c1']]]);
 });
 
 test('C17: it stops on an answer that cannot change, and gives up after about 3 minutes', async () => {
@@ -468,7 +468,7 @@ test('C22: a new QR tab holds at least its first round; a round past the hold is
   const qr = read('../surfaces/qr/QrCheckout.jsx');
   assert.ok(qr.includes('const tabPreAuthAmount = tabHoldFor({ configured: configuredPreAuth, minimum: MIN_PRE_AUTH, firstRound: total });'));
   assert.ok(qr.indexOf('const tabPreAuthAmount = ') > qr.indexOf('const total = useMemo('), 'worked out once the round total is known');
-  assert.ok(qr.includes('? Math.round(tabPreAuthAmount * 100)'), 'the Stripe hold is that amount');
+  assert.ok(qr.includes('amountMinor={Math.round((isOpenTab ? tabPreAuthAmount : total) * 100)}'), 'the Adyen hold is that amount');
 });
 
 test('C23: closing a tab from the phone: short and not yours in plain words, the card is never charged again', async () => {

@@ -2018,7 +2018,7 @@ function OnlineOrderingSection({ setSection }) {
               slug={slug}
               urlSuffix=""
               root={ROOT}
-              desc="Remote orders — collection / delivery, customer details, Stripe checkout."
+              desc="Remote orders — collection / delivery, customer details, Adyen checkout."
               setSection={setSection}/>
             <StatusCard
               title="📱 QR table-side"

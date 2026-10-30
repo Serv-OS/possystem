@@ -1,7 +1,9 @@
 // supabase/functions/gift-purchase-status/index.ts
 //
 // PUBLIC (no auth required) — polls purchase status for the success page.
-// Body: { session_id, company_id }
+// Body: { purchase_id, company_id }
+// 29 Oct 2026 (Drop D): looked up by OUR purchase id only. The Stripe session id lookup is gone
+// with the processor; a body carrying only a session_id answers 404 (the contract stays tolerant).
 // Returns: { status, amount_minor, currency, recipient_name, recipient_email,
 //            code_last4?, delivery_type }
 
@@ -31,21 +33,22 @@ Deno.serve(async (req) => {
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
 
   const sessionId  = body.session_id as string | undefined;
-  // v5.5.911: a Ryft purchase has NO Stripe session id — it is looked up by our own
-  // purchase id instead. The company_id fence below is unchanged and still applies to
-  // both, so a bare purchase_id can never read another tenant's row.
+  // The company_id fence applies to every lookup, so a bare purchase_id can never read
+  // another tenant's row.
   const purchaseId = body.purchase_id as string | undefined;
   const companyId  = body.company_id as string;
 
   if (!sessionId && !purchaseId) return json({ error: 'session_id or purchase_id required' }, 400);
   if (!companyId) return json({ error: 'company_id required' }, 400);
+  // An old page that still sends only a Stripe session id: nothing to look up.
+  if (!purchaseId) return json({ error: 'Purchase not found', status: 'not_found' }, 404);
 
-  let q = platformAdmin
+  const { data: purchase } = await platformAdmin
     .from('gift_card_purchases')
     .select('id, status, amount_minor, currency, recipient_name, recipient_email, code_last4, delivery_type, sender_name')
-    .eq('company_id', companyId);
-  q = purchaseId ? q.eq('id', purchaseId) : q.eq('stripe_session_id', sessionId!);
-  const { data: purchase } = await q.maybeSingle();
+    .eq('company_id', companyId)
+    .eq('id', purchaseId)
+    .maybeSingle();
 
   if (!purchase) {
     return json({ error: 'Purchase not found', status: 'not_found' }, 404);

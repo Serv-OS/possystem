@@ -23,7 +23,7 @@ export const KICK_SETTLE_LIMIT_MS = 130_000;
 /**
  * @param {object} p
  * @param {string} p.status        the job's current status
- * @param {string} p.processor     'adyen' | 'ryft' | ...
+ * @param {string} p.processor     'adyen' (anything else, or none, never auto checks)
  * @param {boolean} p.kickPending  the till's own 'start' call has not answered yet
  * @param {number|string|Date|null} p.dispatchedAt  when the job went to the reader (dispatched_at,
  *                                 or created_at / the screen's mount time when that is not known)

@@ -72,9 +72,9 @@ export function allRememberedJobs() {
 // ── identity ──────────────────────────────────────────────────────────────────
 
 /**
- * This till's Ops `devices.id`, from the pairing record. Same source the Stripe
- * reader path uses (CheckoutModal reads `rpos-device`.id) — NOT deviceConfig,
- * which is the device *profile* and has no device id on it.
+ * This till's Ops `devices.id`, from the pairing record (CheckoutModal reads
+ * `rpos-device`.id too) — NOT deviceConfig, which is the device *profile* and has
+ * no device id on it.
  *
  * Used to prefer a terminal bound to this till, and server-side to resolve
  * training mode from the till's profile.
@@ -168,8 +168,8 @@ export function terminalIsOnline(t) {
  * Is there a PAX terminal at this location we can send a payment to?
  *
  * Returns `{ terminal, reason }`. NEVER THROWS — a lookup failure must not take
- * the card button down, so an unreachable server leaves `terminal: null` and
- * every existing venue (Stripe readers, Ryft REST) behaves exactly as before.
+ * the card button down, so an unreachable server leaves `terminal: null` and the
+ * caller says so instead of crashing.
  *
  * v5.5.838 — RESOLUTION IS NOW FORGIVING. It used to require an exact
  * bound_pos_device_id match or fall through to `data[0]`, and NOTHING ever wrote
@@ -475,8 +475,8 @@ async function sendTerminalJob(p) {
 
     // Adyen cloud terminals (AMS1) have no on-device app to pick the job up —
     // the TILL kicks the charge. Fire-and-forget: adyen-terminal-charge 'start'
-    // is one long /sync call that settles server-side; the JobPoller keeps
-    // watching terminal_jobs exactly as it does for Ryft. The fn's CAS guard
+    // is one long /sync call that settles server-side; pollTerminalJob keeps
+    // watching terminal_jobs throughout. The fn's CAS guard
     // (charging_unsent→charging) makes a duplicate kick harmless.
     //
     // v5.6.81 — NOT WHEN THIS DEVICE IS THE READER.
@@ -622,8 +622,8 @@ export async function fetchJobCapture(job) {
  *   { kind: 'error', message }   transport/fence/processor failure. Nothing
  *                                settled, nothing reset — try again later.
  *
- * NEVER THROWS. Adyen jobs only — the fn refuses other processors (that comes
- * back as kind:'error'), and Ryft keeps its own live-cancel path.
+ * NEVER THROWS. The fn refuses a job it cannot ask about (that comes back as
+ * kind:'error').
  */
 export async function checkJobWithReader(jobId) {
   if (!jobId) return { kind: 'error', message: 'no job to check' };
@@ -786,12 +786,12 @@ async function watchTerminalJob(jobId, { onUpdate, intervalMs = 1000, timeoutMs 
  * v5.5.871 — GOES THROUGH terminal-job-cancel, NOT the bare RPC.
  *
  * The RPC (terminal_job_cancel) only flips a PRE-charge row; it refuses once the
- * card is being taken (charged_at set) and, crucially, never voided the LIVE
- * in-person action on the PAX — so a "cancelled" bill left the card prompt up on
- * the terminal and a force-close/relaunch of paxpay resurrected it. The edge fn
- * runs that same fenced RPC first (pre-charge fast path) and, when the job is live,
- * aborts the action at Ryft (cancel-action) and settles from the SESSION verdict
- * (a card that captured anyway comes back code:'ALREADY_CAPTURED', never cancelled).
+ * card is being taken (charged_at set) and never ends the live prompt on the
+ * reader. The edge fn runs that same fenced RPC first (pre-charge fast path) and,
+ * when the job is live, answers with the job's real state (a card that captured
+ * anyway comes back code:'ALREADY_CAPTURED', never cancelled). An in-flight Adyen
+ * tender is ended with abortTerminalJob above, which asks the reader to stop and
+ * then asks what happened.
  */
 export async function cancelTerminalJob(jobId) {
   if (!supabase) return { ok: false, reason: 'offline' };
@@ -803,9 +803,9 @@ export async function cancelTerminalJob(jobId) {
     // as a bare cancel that could mislabel a paid bill.
     if (e?.code) return { ok: false, code: e.code, reason: e.message, status: e.jobStatus ?? null };
     // Transport / deploy-drift only: fall back to the pure DB pre-charge cancel so
-    // a not-yet-charging job can still be cancelled. This canNOT void Ryft — it is
-    // the old behaviour, kept solely so the button never dies when the edge fn is
-    // briefly unreachable.
+    // a not-yet-charging job can still be cancelled. It cannot stop a reader that
+    // is already taking the card; it is kept solely so the button never dies when
+    // the edge fn is briefly unreachable.
     try {
       const { data, error } = await supabase.rpc('terminal_job_cancel', { p_job_id: jobId });
       if (error) return { ok: false, reason: error.message };

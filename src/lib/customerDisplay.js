@@ -7,13 +7,11 @@
 //   display → POS  : 'customer-phone' (customer typed their number for rewards),
 //                    'customer-tip'   (customer chose a gratuity)
 //
-// The tip round-trip exists because Ryft's terminal API has NO on-reader tip
-// prompt (it takes one amount and reports back only that amount). So on Ryft the
-// customer chooses the tip HERE, and the POS then charges bill+tip as a single
-// amount. Stripe venues are unaffected — their reader still prompts.
+// The tip round-trip lets the customer choose a gratuity on this screen; the POS then
+// sends bill+tip to the card machine as a single amount.
 //
-// Sibling of readerDisplay.js (which targets the WisePOS E screen). Destination is
-// chosen per terminal via device_profiles.customer_display_mode (off|reader|screen|auto).
+// Destination is chosen per terminal via device_profiles.customer_display_mode
+// (off|reader|screen|auto).
 
 import { supabase, isMock, ensureAuthToken } from './supabase';
 

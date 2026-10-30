@@ -6,8 +6,9 @@
 // v5.11.16 (R3618, 29 Sep 2026): the old text said the check was "held until a manager
 // checks it". It was not: the reconciler books the sale at the bill amount (v5.5.866,
 // paid money is never stranded). Staff reading "held" may take payment again. The text
-// now says what really happens, and, on Adyen, that a tip is added by itself (the heal in
-// supabase/functions/_shared/readerTipHeal.ts) while anything else alerts a manager.
+// now says what really happens, and that a tip is added by itself (the heal in
+// supabase/functions/_shared/readerTipHeal.ts) while anything else alerts a manager. A job
+// whose processor is not known (an old read) gets the plain "a manager checks" line.
 
 const SYMBOLS = { GBP: '£', USD: '$', EUR: '€' };
 
@@ -32,9 +33,9 @@ export function amountMismatchCopy({ reportedMinor = null, billMinor = null, cur
   const first = figures
     ? `The card machine took ${formatMinor(reportedMinor, currency)} and the bill was ${formatMinor(billMinor, currency)}.`
     : 'The card machine took a different amount from the bill.';
-  // v5.11.16 review: the card machine took LESS than the bill (a short PAX or Ryft
-  // report). The sale is still booked at the bill amount, so "do not take payment
-  // again" would leave the rest uncollected: say what is still owed instead.
+  // v5.11.16 review: the card machine took LESS than the bill (a short report). The
+  // sale is still booked at the bill amount, so "do not take payment again" would
+  // leave the rest uncollected: say what is still owed instead.
   if (figures && Number(reportedMinor) < Number(billMinor)) {
     const owed = formatMinor(Number(billMinor) - Number(reportedMinor), currency);
     return {

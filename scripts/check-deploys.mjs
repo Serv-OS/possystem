@@ -20,7 +20,7 @@
 // Run it from the checkout you deployed from: the dates are read from THIS checkout's git log.
 
 import { execSync } from 'node:child_process';
-import { staleFunctions } from './edgeFnDeps.mjs';
+import { staleFunctions, deletedFunctions } from './edgeFnDeps.mjs';
 
 const PROJECT = 'tbetcegmszzotrwdtqhi';
 const TOKEN = process.env.SUPABASE_ACCESS_TOKEN;
@@ -39,7 +39,17 @@ const lastCommitOf = (p) => {
   catch { return 0; }
 };
 // The decision itself lives in edgeFnDeps.mjs, where a test feeds it a made up history.
-const stale = staleFunctions(await res.json(), lastCommitOf);
+const live = await res.json();
+const stale = staleFunctions(live, lastCommitOf);
+
+// Deleted in the code, still deployed (Drop D, 29 Oct 2026: the Stripe and Ryft functions are
+// undeployed in a later release step, webhooks last). Never deployed from here: there is no source.
+const deleted = deletedFunctions(live, lastCommitOf);
+if (deleted.length) {
+  console.log(`🗑  ${deleted.length} edge function(s) deleted in the code but still deployed (undeploy with: npx supabase functions delete <slug> --project-ref ${PROJECT}):\n`);
+  for (const slug of deleted) console.log(`   ${slug}`);
+  console.log('');
+}
 
 if (!stale.length) { console.log('✅ every edge function is live with its committed code'); process.exit(0); }
 

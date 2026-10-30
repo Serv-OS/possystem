@@ -33,8 +33,8 @@ test('true as soon as the kick has settled (answered or failed): charging now me
   assert.equal(shouldAutoCheckReader({ status: 'charging', processor: 'adyen', kickPending: undefined, dispatchedAt: null, now: Date.now() }), true, 'no kick handed over (the server won the claim): the old rule');
 });
 
-test('never for a non Adyen job, or a status that is not charging or unknown', () => {
-  for (const processor of ['ryft', 'stripe', null, undefined]) {
+test('never for a job with no processor (an old read), or a status that is not charging or unknown', () => {
+  for (const processor of ['', null, undefined]) {
     assert.equal(shouldAutoCheckReader({ ...base, processor, kickPending: false, now: T0 + 999_999 }), false, String(processor));
   }
   for (const status of ['pending', 'claimed', 'tipping', 'charging_unsent', 'approved', 'reconciled', 'declined', 'cancelled', 'expired']) {

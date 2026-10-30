@@ -84,7 +84,11 @@ test('CustomerModal.jsx: name only, heading, subtitle and button', () => {
 
 test('CheckoutModal.jsx: drive thru skips the tip prompt and the context label reads Drive thru', () => {
   const src = read('../surfaces/CheckoutModal.jsx');
-  has(src, "const skipTip  = isBarTab || orderType==='takeaway' || orderType==='collection' || orderType==='drive-thru';", 'skipTip');
+  // 30 Sep 2026: the reader's own tip settings decide for every order type but a bar tab
+  // (lib/payments/readerTipRule.js), drive thru included; the till pre-collects no tip of its own.
+  // 29 Oct 2026 (Drop D): the on screen tip ask that keyed on drive thru went with its processor.
+  has(src, 'const skipReaderTip = suppressReaderTip(orderType);', 'reader tip rule');
+  assert.ok(!src.includes("orderType==='drive-thru'") || !/skipTip\b/.test(src), 'no till side drive thru tip gate is left');
   has(src, "const orderTypeLabel = orderType === 'drive-thru' ? 'Drive thru' : orderType;", 'contextLabel map');
 });
 

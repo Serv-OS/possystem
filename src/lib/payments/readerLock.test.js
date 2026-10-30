@@ -246,7 +246,6 @@ test('busyPressAskDelays: only an Adyen job that was really sent, 45 s or more a
   const busy = (over = {}) => ({ job_id: JOB, status: 'charging', processor: 'adyen', sent_at: '2026-10-13T06:37:50.000Z', source: 'pos_send_to_terminal', ...over });
   assert.deepEqual(busyPressAskDelays(busy(), { now }), [0, 3_000, 23_000, 43_000, 63_000, 83_000]);
   for (const [why, over] of [
-    ['a Ryft job', { processor: 'ryft' }],
     ['no processor (an old read)', { processor: null }],
     ['not sent yet', { status: 'charging_unsent' }],
     ['a PAX status', { status: 'tipping' }],
@@ -300,7 +299,6 @@ test('selectReaderAskJobs keeps only Adyen jobs that were really sent, never sim
   const pick = (jobs, over = {}) => selectReaderAskJobs(jobs, { now: NOW, ...maps, ...over });
   assert.deepEqual(pick([sentJob()]), [{ id: 'job-1', delays: [0, 15_000, 35_000, 55_000] }]);
   for (const [why, over] of [
-    ['not adyen', { processor: 'ryft' }],
     ['no processor', { processor: null }],
     ['not sent yet', { status: 'charging_unsent' }],
     ['the till gave up on it', { status: 'unknown' }],

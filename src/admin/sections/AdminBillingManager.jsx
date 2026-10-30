@@ -1,7 +1,6 @@
 // src/admin/sections/AdminBillingManager.jsx
-// Admin-only "Processing" section: per-location PROCESSOR (Stripe | Adyen),
-// the merchant account link for whichever is active, and the negotiated
-// pricing: the TIERED RATE CARD every competitor uses (card-present credit
+// Admin-only "Processing" section: each venue's Adyen merchant account link
+// and the negotiated pricing: the TIERED RATE CARD every competitor uses (card-present credit
 // and debit / card-not-present online / American Express and business cards
 // / manually keyed, each % + pence), set as a platform default and
 // overridable per venue. The v5.7.0 flat rate stays on file as the legacy
@@ -9,8 +8,8 @@
 // negotiated stops working.
 //
 // Writes go through the service-role `payments-admin` edge function
-// (super_admin only): Stripe markup pricing + unlink, the processor toggle,
-// the Adyen rate card (adyen_pricing v2) and, since 8 Sep 2026, the bulk
+// (super_admin only): the Adyen rate card (adyen_pricing v2) and, since 8 Sep
+// 2026, the bulk
 // adyen_accounts read the compact list is built from. The account/pricing
 // tables are RLS select-only (or service-role-only) for the anon platform
 // client, so client-side writes silently no-op: reads stay direct where
@@ -54,10 +53,9 @@ import AdyenEnvironmentControls from '../components/AdyenEnvironmentControls';
 import AdyenGoLiveFlow from '../components/AdyenGoLiveFlow';
 import RateCardRows from '../components/RateCardRows';
 import AdyenRatesPanel from '../components/AdyenRatesPanel';
-import { adyenVenueStatus, stripeVenueStatus, matchesVenueSearch, kycRecheckLine } from '../../lib/payments/adyenAdminRows';
+import { adyenVenueStatus, matchesVenueSearch, kycRecheckLine } from '../../lib/payments/adyenAdminRows';
 import { RATE_CARD_TIERS, emptyCard, cardToState, stateToCard, cardsEqual, fmtRate, rowView, serverKnowsDebit } from '../../lib/payments/rateCard';
 import { rateCardProblems } from '../../lib/payments/adyenLink';
-import { selectOnFocus } from '../../lib/selectOnFocus';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
@@ -167,9 +165,6 @@ const S = {
   errorBox:{ padding: 12, background: 'var(--red-d)', color: 'var(--red)', borderRadius: 8, marginBottom: 14, fontSize: 13, border: '1px solid var(--red-b)' },
   okBox:   { padding: 10, background: 'var(--grn-d)', color: 'var(--grn)', borderRadius: 8, marginBottom: 0, fontSize: 12, border: '1px solid var(--grn-b)' },
   warnBox: { padding: 10, background: 'var(--orn-d, rgba(230,160,60,.12))', color: 'var(--orn, #e8a020)', borderRadius: 8, marginBottom: 14, fontSize: 12, border: '1px solid var(--orn-b, var(--bdr2))', lineHeight: 1.5 },
-  // Segmented processor toggle
-  seg:     { display: 'inline-flex', border: '1px solid var(--bdr2)', borderRadius: 8, overflow: 'hidden' },
-  segBtn:  (active) => ({ padding: '6px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer', border: 'none', fontFamily: 'inherit', background: active ? 'var(--acc)' : 'transparent', color: active ? '#0b0c10' : 'var(--t2)' }),
 };
 
 // Row chips. The owner's palette: live red, test grey, ok green, missing
@@ -186,11 +181,9 @@ function Chip({ tone = 'muted', title, children }) {
   return <span title={title} style={{ ...S.pill, ...CHIP_TONES[tone], whiteSpace: 'nowrap' }}>{children}</span>;
 }
 
-export default function AdminBillingManager({ authUser }) {
+export default function AdminBillingManager() {
   const [companies, setCompanies] = useState([]);
   const [locations, setLocations] = useState([]);
-  const [msaByLoc, setMsaByLoc] = useState({});
-  const [bsByLoc, setBsByLoc] = useState({});
   // merchant_adyen_accounts rows (whitelisted fields) by platform location
   // id, from the bulk adyen_accounts read. null = the read failed (an older
   // payments-admin build): the rows then say "status unknown" rather than
@@ -201,10 +194,9 @@ export default function AdminBillingManager({ authUser }) {
   // locations directly when that read failed).
   const [venueCodes, setVenueCodes] = useState({});
   const [rowsNote, setRowsNote] = useState(null);
-  const [platformDefaults, setPlatformDefaults] = useState({ default_cardpresent_markup_percent: 1.0, default_online_markup_percent: 0.5 });
+  const [platformDefaults, setPlatformDefaults] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [linkModalLoc, setLinkModalLoc] = useState(null);
   const [filterCompanyId, setFilterCompanyId] = useState('');
   const [search, setSearch] = useState(() => ssGet(SS_SEARCH));
   const [expandedId, setExpandedId] = useState(() => ssGet(SS_EXPANDED));
@@ -248,16 +240,15 @@ export default function AdminBillingManager({ authUser }) {
     setLoading(true);
     setError(null);
     try {
-      const [{ data: cos, error: coErr }, { data: ps }, adyenDef] = await Promise.all([
+      const [{ data: cos, error: coErr }, adyenDef] = await Promise.all([
         platformSupabase.from('companies').select('id, name').order('name'),
-        platformSupabase.from('platform_settings').select('*').eq('id', true).maybeSingle(),
         // platform_settings can be unreadable to the anon platform client, so
         // the Adyen defaults come through the service-role payments-admin fn.
         callPaymentsAdmin('adyen_pricing', {}).catch(e => { console.warn('[billing] adyen defaults failed', e?.message); return null; }),
       ]);
       if (coErr) throw coErr;
       setCompanies(cos ?? []);
-      const merged = { ...(ps ?? {}) };
+      const merged = {};
       if (adyenDef?.defaults) {
         merged.default_adyen_markup_percent = adyenDef.defaults.default_markup_percent;
         merged.default_adyen_markup_fixed_pence = adyenDef.defaults.default_markup_fixed_pence;
@@ -277,20 +268,6 @@ export default function AdminBillingManager({ authUser }) {
       const { data: locs, error: locErr } = await q;
       if (locErr) throw locErr;
       setLocations(locs ?? []);
-
-      const ids = (locs ?? []).map(l => l.id);
-      if (ids.length) {
-        const [{ data: msas }, { data: bses }] = await Promise.all([
-          platformSupabase.from('merchant_stripe_accounts').select('*').in('location_id', ids),
-          platformSupabase.from('billing_state').select('*').in('location_id', ids),
-        ]);
-        const m = {}; (msas ?? []).forEach(r => { m[r.location_id] = r; });
-        const b = {}; (bses ?? []).forEach(r => { b[r.location_id] = r; });
-        setMsaByLoc(m);
-        setBsByLoc(b);
-      } else {
-        setMsaByLoc({}); setBsByLoc({});
-      }
       await loadAdyenRows(locs ?? []);
     } catch (e) {
       setError(String(e?.message ?? e));
@@ -302,12 +279,6 @@ export default function AdminBillingManager({ authUser }) {
   useEffect(() => { refresh(); }, [refresh]);
 
   const companyName = (id) => companies.find(c => c.id === id)?.name ?? '(unknown)';
-  const upsertMsaPatch = (locationId, patch) => {
-    setMsaByLoc(prev => ({ ...prev, [locationId]: { ...(prev[locationId] ?? {}), ...patch } }));
-  };
-  const setLocProcessor = (locationId, processor) => {
-    setLocations(prev => prev.map(l => l.id === locationId ? { ...l, payment_processor: processor } : l));
-  };
   const toggleRow = (id) => setExpandedId((cur) => { const next = cur === id ? '' : id; ssSet(SS_EXPANDED, next); return next; });
   const onSearch = (value) => { setSearch(value); ssSet(SS_SEARCH, value); };
 
@@ -318,13 +289,12 @@ export default function AdminBillingManager({ authUser }) {
   return (
     <div style={S.page}>
       <h1 style={S.h1}>Processing: accounts and pricing</h1>
-      <div style={S.sub}>Which processor each venue uses, the Adyen link found by venue code, and the card rates each venue pays.</div>
+      <div style={S.sub}>The Adyen link found by venue code, and the card rates each venue pays.</div>
 
       {/* Platform-wide defaults */}
       <PlatformDefaultsPanel
         defaults={platformDefaults}
         onSave={(next) => { setPlatformDefaults(next); }}
-        authUserId={authUser?.id}
         onError={setError}
       />
 
@@ -375,7 +345,6 @@ export default function AdminBillingManager({ authUser }) {
               venueCode={venueCodes[loc.id] || null}
               adyenRow={adyenByLoc ? (adyenByLoc[loc.id] ?? null) : null}
               adyenKnown={adyenByLoc !== null}
-              msa={msaByLoc[loc.id]}
               expanded={expandedId === loc.id}
               onToggle={() => toggleRow(loc.id)}
             >
@@ -383,63 +352,23 @@ export default function AdminBillingManager({ authUser }) {
                 location={loc}
                 venueCode={venueCodes[loc.id] || null}
                 adyenRow={adyenByLoc ? (adyenByLoc[loc.id] ?? null) : null}
-                msa={msaByLoc[loc.id]}
-                bs={bsByLoc[loc.id]}
                 defaults={platformDefaults}
                 onError={setError}
                 onAdyenChanged={() => loadAdyenRows(locations)}
-                onSetProcessor={async (processor) => {
-                  const prev = loc.payment_processor || 'stripe';
-                  setLocProcessor(loc.id, processor);            // optimistic
-                  try { await callPaymentsAdmin('set_processor', { location_id: loc.id, processor }); }
-                  catch (e) { setLocProcessor(loc.id, prev); setError(`Couldn't switch processor: ${e.message}`); }
-                }}
-                onLink={() => setLinkModalLoc(loc)}
-                onUnlink={async () => {
-                  if (!confirm(`Unlink Stripe account from ${loc.name}? Future payments will fail until re-linked.`)) return;
-                  // Same RLS reason as onSavePricing: a direct client .delete() no-ops
-                  // (0 rows, no error), so the account never actually detaches. Route
-                  // the delete through the service-role payments-admin edge fn.
-                  try { await callPaymentsAdmin('stripe_unlink', { location_id: loc.id }); refresh(); }
-                  catch (e) { setError(`Unlink failed: ${e.message}`); }
-                }}
-                onSavePricing={async ({ cardpresent, online, notes }) => {
-                  // merchant_stripe_accounts is RLS select-only for the anon platform
-                  // client, so a direct .update() here silently affects 0 rows. Route
-                  // the write through the service-role payments-admin edge fn.
-                  const patch = {
-                    cardpresent_markup_percent: cardpresent === '' ? null : Number(cardpresent),
-                    online_markup_percent:      online      === '' ? null : Number(online),
-                    pricing_notes: notes || null,
-                  };
-                  try { await callPaymentsAdmin('stripe_pricing', { location_id: loc.id, cardpresent, online, notes }); }
-                  catch (e) { setError(`Save failed: ${e.message}`); return false; }
-                  upsertMsaPatch(loc.id, patch);
-                  return true;
-                }}
               />
             </VenueRow>
           ))}
         </div>
-      )}
-
-      {linkModalLoc && (
-        <StripeLinkModal
-          location={linkModalLoc}
-          onClose={() => setLinkModalLoc(null)}
-          onLinked={() => { setLinkModalLoc(null); refresh(); }}
-        />
       )}
     </div>
   );
 }
 
 // ─── Platform-wide defaults panel ─────────────────────────────────────────
-// Stripe: markup defaults (unchanged). ServOS Payments (Adyen): the DEFAULT
-// TIERED RATE CARD (four payment types, each % + pence) used wherever a
+// ServOS Payments (Adyen): the DEFAULT TIERED RATE CARD (four payment types, each % + pence) used wherever a
 // venue has no override. The old flat default stays on file as the legacy
 // card-present fallback until this card is saved.
-function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
+function PlatformDefaultsPanel({ defaults, onSave, onError }) {
   // Collapsed by default (10 Sep 2026): the venues are the page.
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -454,16 +383,12 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
       .catch((e) => { if (live) setKnown({ error: e.message }); });
     return () => { live = false; };
   }, [open, known]);
-  const [cp, setCp] = useState(defaults.default_cardpresent_markup_percent);
-  const [on, setOn] = useState(defaults.default_online_markup_percent);
   const [drc, setDrc] = useState(cardToState(defaults.default_adyen_rate_card));
   const [busy, setBusy] = useState(false);
   // A rate above the usual limit asked once: the sentences, and Save again sends it.
   const [overLimit, setOverLimit] = useState(null);
 
   useEffect(() => {
-    setCp(defaults.default_cardpresent_markup_percent);
-    setOn(defaults.default_online_markup_percent);
     setDrc(cardToState(defaults.default_adyen_rate_card));
     setOverLimit(null);
   }, [defaults]);
@@ -494,23 +419,14 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
     if (check.overLimit.length && !confirmOver) { setOverLimit(check.overLimit.map((x) => x.text)); return; }
     setBusy(true);
     try {
-      // The Adyen rate card FIRST, through the service role fn (platform_settings
-      // is not reliably writable from the anon platform client), so a card the
-      // server refuses leaves the Stripe markup untouched too. The card this
+      // The Adyen rate card goes through the service role fn (platform_settings
+      // is not reliably writable from the anon platform client). The card this
       // editor opened rides as expected_rate_card.
       await callPaymentsAdmin('adyen_pricing', {
         set: true, rate_card: card, expected_rate_card: stateToCard(cardToState(defaults.default_adyen_rate_card)),
         ...(confirmOver ? { over_limit: true } : {}),
       });
-      const patch = {
-        default_cardpresent_markup_percent: Number(cp),
-        default_online_markup_percent: Number(on),
-        updated_at: new Date().toISOString(),
-        updated_by_user_id: authUserId,
-      };
-      const { error } = await platformSupabase.from('platform_settings').update(patch).eq('id', true);
-      if (error) throw error;
-      onSave({ ...defaults, ...patch, default_adyen_rate_card: card });
+      onSave({ ...defaults, default_adyen_rate_card: card });
       setOverLimit(null);
       setEditing(false);
     } catch (e) {
@@ -524,7 +440,6 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
     }
   };
 
-  const pct = (v) => `${Number(v ?? 0).toFixed(2)}%`;
   // What the SAVED default card resolves to per row, the same walk the editor
   // and the server do (a blank debit row reads its credit row's rate).
   const savedDefaultState = cardToState(defaults.default_adyen_rate_card);
@@ -544,7 +459,7 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
             Platform defaults
           </div>
           <div style={{ ...PLAIN, color: 'var(--t1)', marginBottom: 8 }}>
-            The standard card rates a venue pays when it has no rates of its own, the Stripe markup, and the Adyen accounts we know.
+            The standard card rates a venue pays when it has no rates of its own, and the Adyen accounts we know.
           </div>
           {open && (
             <div style={{ marginBottom: 12 }}>
@@ -565,10 +480,6 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
           {open && !editing && (
             <div style={{ display: 'grid', gap: 10 }}>
               <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
-                <Stat label="Stripe in-person markup" value={pct(defaults.default_cardpresent_markup_percent)} />
-                <Stat label="Stripe online markup"    value={pct(defaults.default_online_markup_percent)} />
-              </div>
-              <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', paddingTop: 8, borderTop: '1px solid var(--bdr)' }}>
                 {TIERS.map(t => {
                   const r = resolvedDefault(t.id);
                   return <Stat key={t.id} label={t.label} value={fmtRate(r.pct, r.fix)} accent={r.pct != null || r.fix != null} />;
@@ -589,13 +500,6 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
           )}
           {open && editing && (
             <div style={{ display: 'grid', gap: 14, maxWidth: 640 }}>
-              <div>
-                <div style={TITLE}>Stripe markup <span style={BRACK}>(platform fee)</span></div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                  <NumField label="In-person %" value={cp} onChange={setCp} />
-                  <NumField label="Online %" value={on} onChange={setOn} />
-                </div>
-              </div>
               <div>
                 <div style={TITLE}>Standard card rates: what a venue pays per payment type</div>
                 <RateCardRows big value={drc} onChange={(v) => { setDrc(v); setOverLimit(null); }} fallbackFor={fallbackFor} debitReady={defaults.adyen_debit_ready === true} />
@@ -780,51 +684,28 @@ function SaasVenueRow({ venue, catalog, deviceNote, onSaved, onError }) {
   );
 }
 
-function NumField({ label, value, onChange }) {
-  return (
-    <div>
-      <label style={S.label}>{label}</label>
-      <input type="number" step="0.01" min="0" max="100" {...selectOnFocus} value={value} onChange={e => onChange(e.target.value)} style={{ ...S.input, ...S.inputMono }} />
-    </div>
-  );
-}
-
 
 // ─── Compact venue row (OWNER RULE 2) ──────────────────────────────────────
 // One line per venue: name and company, the venue code, then the chips. The
 // chips are derived from the bulk adyen_accounts row (adyenAdminRows.js), so
 // the list makes no Adyen call at all; the detail below loads on expand.
-function VenueRow({ location, companyName, venueCode, adyenRow, adyenKnown, msa, expanded, onToggle, children }) {
-  const processor = location.payment_processor || 'stripe';
+function VenueRow({ location, companyName, venueCode, adyenRow, adyenKnown, expanded, onToggle, children }) {
   let chips;
-  if (processor === 'adyen') {
-    if (adyenKnown) {
-      const s = adyenVenueStatus(adyenRow, location);
-      const c = s.chips;
-      chips = (
-        <>
-          <Chip tone="muted" title={c.region.title}>{c.region.label}</Chip>
-          <Chip tone={c.environment.tone} title={c.environment.title}>{c.environment.label}</Chip>
-          <Chip tone={c.linked.tone} title={c.linked.title}>{c.linked.label}</Chip>
-          <Chip tone={c.holder.tone} title={c.holder.title}>{c.holder.label}</Chip>
-          <Chip tone={c.kyc.tone} title={c.kyc.title}>{c.kyc.label}</Chip>
-          <Chip tone={c.payouts.tone} title={c.payouts.title}>{c.payouts.label}</Chip>
-        </>
-      );
-    } else {
-      chips = <Chip tone="muted" title="The bulk row read failed; expand the venue for its live detail">Adyen · status unknown</Chip>;
-    }
-  } else if (processor === 'stripe') {
-    const s = stripeVenueStatus(msa);
+  if (adyenKnown) {
+    const s = adyenVenueStatus(adyenRow, location);
+    const c = s.chips;
     chips = (
       <>
-        <Chip tone="muted" title="Stripe account country">{msa?.country || (String(location.currency || '').toUpperCase() === 'USD' ? 'US' : 'UK')}</Chip>
-        <Chip tone="test" title="This venue takes payments through Stripe">Stripe</Chip>
-        <Chip tone={s.status.tone} title={s.status.title}>{s.status.label}</Chip>
+        <Chip tone="muted" title={c.region.title}>{c.region.label}</Chip>
+        <Chip tone={c.environment.tone} title={c.environment.title}>{c.environment.label}</Chip>
+        <Chip tone={c.linked.tone} title={c.linked.title}>{c.linked.label}</Chip>
+        <Chip tone={c.holder.tone} title={c.holder.title}>{c.holder.label}</Chip>
+        <Chip tone={c.kyc.tone} title={c.kyc.title}>{c.kyc.label}</Chip>
+        <Chip tone={c.payouts.tone} title={c.payouts.title}>{c.payouts.label}</Chip>
       </>
     );
   } else {
-    chips = <Chip tone="bad" title="A retired processor: switch the venue to Stripe or Adyen in its detail">Retired: {processor}</Chip>;
+    chips = <Chip tone="muted" title="The bulk row read failed; expand the venue for its live detail">Adyen · status unknown</Chip>;
   }
   const onKey = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(); } };
   return (
@@ -851,35 +732,14 @@ function VenueRow({ location, companyName, venueCode, adyenRow, adyenKnown, msa,
 }
 
 // ─── Expanded venue detail ────────────────────────────────────────────────
-function VenueDetail({ location, venueCode, adyenRow, msa, bs, defaults, onError, onAdyenChanged,
-  onSetProcessor, onLink, onUnlink, onSavePricing }) {
-  const processor = location.payment_processor || 'stripe';
-  const currency = (msa?.default_currency || bs?.current_period_currency || location.currency || 'gbp').toUpperCase();
-
+function VenueDetail({ location, venueCode, adyenRow, defaults, onError, onAdyenChanged }) {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16, margin: '6px 0 12px', flexWrap: 'wrap' }}>
         <div style={{ fontSize: 11, color: 'var(--t4)', fontFamily: 'var(--font-mono, monospace)' }}>{location.id}</div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <span style={{ ...S.label, marginBottom: 0 }}>Processor</span>
-          <div style={S.seg}>
-            <button style={S.segBtn(processor === 'stripe')} onClick={() => processor !== 'stripe' && onSetProcessor('stripe')}>Stripe</button>
-            <button style={S.segBtn(processor === 'adyen')} onClick={() => processor !== 'adyen' && onSetProcessor('adyen')}>Adyen</button>
-          </div>
-        </div>
       </div>
 
-      {processor === 'stripe'
-        ? <StripeBlock msa={msa} bs={bs} currency={currency} defaults={defaults} onLink={onLink} onUnlink={onUnlink} onSavePricing={onSavePricing} />
-        : processor === 'adyen'
-        ? <AdyenBlock location={location} venueCode={venueCode} adyenRow={adyenRow} defaults={defaults} onError={onError} onRowChanged={onAdyenChanged} />
-        : (
-          // A retired processor value (the removed Ryft, for example): say so
-          // plainly and let the toggle above move the venue onto a live one.
-          <div style={{ padding: '14px 16px', borderRadius: 12, background: 'var(--bg2)', border: '1px solid var(--bdr2)', fontSize: 12.5, color: 'var(--t3)' }}>
-            This venue is set to a retired processor ({processor}). Switch it to Stripe or Adyen above.
-          </div>
-        )}
+      <AdyenBlock location={location} venueCode={venueCode} adyenRow={adyenRow} defaults={defaults} onError={onError} onRowChanged={onAdyenChanged} />
     </div>
   );
 }
@@ -1462,122 +1322,9 @@ function ManualLink({ location, adyenRow, onSaved }) {
   );
 }
 
-// ─── Stripe block (unchanged behaviour) ────────────────────────────────────
-function StripeBlock({ msa, bs, currency, defaults, onLink, onUnlink, onSavePricing }) {
-  const linked = !!msa;
-  const status = !linked
-    ? { label: 'Not linked',       color: 'var(--t3)' }
-    : !msa.charges_enabled
-      ? { label: 'Onboarding incomplete', color: 'var(--orn)' }
-      : { label: 'Live · charges enabled', color: 'var(--grn)' };
-
-  const [cp, setCp] = useState(msa?.cardpresent_markup_percent ?? '');
-  const [on, setOn] = useState(msa?.online_markup_percent ?? '');
-  const [notes, setNotes] = useState(msa?.pricing_notes ?? '');
-  const [busy, setBusy] = useState(false);
-  const [savedAt, setSavedAt] = useState(null);
-
-  // Keep the inputs in step with the row when the list refreshes. Deriving
-  // state from a changed prop DURING render is the React-sanctioned pattern
-  // (not an effect), the same as SaasVenueRow.
-  const [seen, setSeen] = useState({ cp: msa?.cardpresent_markup_percent ?? '', on: msa?.online_markup_percent ?? '', notes: msa?.pricing_notes ?? '' });
-  const nowCp = msa?.cardpresent_markup_percent ?? '';
-  const nowOn = msa?.online_markup_percent ?? '';
-  const nowNotes = msa?.pricing_notes ?? '';
-  if (seen.cp !== nowCp || seen.on !== nowOn || seen.notes !== nowNotes) {
-    setSeen({ cp: nowCp, on: nowOn, notes: nowNotes });
-    setCp(nowCp);
-    setOn(nowOn);
-    setNotes(nowNotes);
-  }
-
-  const dirty = linked && (
-    String(cp) !== String(msa?.cardpresent_markup_percent ?? '') ||
-    String(on) !== String(msa?.online_markup_percent ?? '') ||
-    (notes ?? '') !== (msa?.pricing_notes ?? '')
-  );
-  const effectiveCp = cp === '' ? defaults.default_cardpresent_markup_percent : Number(cp);
-  const effectiveOn = on === '' ? defaults.default_online_markup_percent      : Number(on);
-
-  return (
-    <>
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: linked ? 16 : 0 }}>
-        <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 13, color: status.color, fontWeight: 700 }}>
-          <span style={{ width: 8, height: 8, borderRadius: 99, background: status.color }} />
-          {status.label}
-        </span>
-        {linked && (
-          <>
-            <span style={S.pill}>{msa.country ?? 'n/a'}</span>
-            <span style={S.pill}>{currency}</span>
-            <span style={S.pill}>{msa.link_method === 'admin_manual' ? 'Manual' : 'Express'}</span>
-            <code style={{ fontSize: 11, color: 'var(--t2)', fontFamily: 'var(--font-mono, monospace)' }}>{msa.stripe_account_id}</code>
-          </>
-        )}
-        <div style={{ marginLeft: 'auto' }}>
-          {!linked && <button onClick={onLink} style={{ ...S.btn, ...S.btnPrim }}>Link Stripe account</button>}
-          {linked && <button onClick={onUnlink} style={{ ...S.btn, ...S.btnDan }}>Unlink</button>}
-        </div>
-      </div>
-
-      {linked && (
-        <>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
-            <MarkupField label="In-person (card present) markup %" value={cp} onChange={setCp} effective={effectiveCp} isOverride={cp !== ''} def={defaults.default_cardpresent_markup_percent} />
-            <MarkupField label="Online markup %" value={on} onChange={setOn} effective={effectiveOn} isOverride={on !== ''} def={defaults.default_online_markup_percent} />
-          </div>
-          <NotesRow notes={notes} setNotes={setNotes} />
-          <SaveRow busy={busy} dirty={dirty} savedAt={savedAt}
-            onSave={async () => { setBusy(true); const ok = await onSavePricing({ cardpresent: cp, online: on, notes }); setBusy(false); if (ok) { setSavedAt(Date.now()); setTimeout(() => setSavedAt(null), 2500); } }}
-            onReset={() => { setCp(msa?.cardpresent_markup_percent ?? ''); setOn(msa?.online_markup_percent ?? ''); setNotes(msa?.pricing_notes ?? ''); }}
-          />
-          {bs && (
-            <div style={{ display: 'flex', gap: 22, flexWrap: 'wrap', paddingTop: 12, borderTop: '1px solid var(--bdr)', marginTop: 14 }}>
-              <Stat label="GMV this month" value={fmt(bs.gmv_this_month, currency)} />
-              <Stat label="Plan" value={(bs.current_plan ?? 'n/a').toUpperCase()} accent />
-              <Stat label="Monthly SaaS fee" value={fmt(bs.current_monthly_fee, currency)} />
-              <Stat label="Last month GMV" value={fmt(bs.gmv_last_month, currency)} />
-            </div>
-          )}
-        </>
-      )}
-    </>
-  );
-}
-
 // ─── Small shared pieces ───────────────────────────────────────────────────
-function MarkupField({ label, value, onChange, effective, isOverride, def, muted, unit = '%' }) {
-  const isPence = unit === 'p';
-  const fmtV = (v) => (isPence ? `${Math.round(Number(v || 0))}p` : `${Number(v || 0).toFixed(2)}%`);
-  return (
-    <div>
-      <label style={S.label}>{label}</label>
-      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-        <input type="number" step={isPence ? '1' : '0.01'} min="0" max={isPence ? '1000' : '100'} {...selectOnFocus}
-          placeholder={`default ${isPence ? Math.round(Number(def ?? 0)) : Number(def ?? 0).toFixed(2)}`}
-          value={value} onChange={e => onChange(e.target.value)}
-          style={{ ...S.input, ...S.inputMono, ...(muted ? { opacity: 0.92 } : null) }} />
-        <span style={{ color: 'var(--t3)', fontSize: 13, fontWeight: 700 }}>{unit}</span>
-      </div>
-      <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 4 }}>
-        {isOverride ? <>Override: <strong>{fmtV(value)}</strong></> : <>Using default. Effective: <strong>{fmtV(effective ?? 0)}</strong></>}
-      </div>
-    </div>
-  );
-}
-
-function NotesRow({ notes, setNotes }) {
-  return (
-    <div style={{ marginBottom: 14 }}>
-      <label style={S.label}>Pricing notes (internal)</label>
-      <input type="text" value={notes} onChange={e => setNotes(e.target.value)}
-        placeholder="e.g. Negotiated by Sales Aug-26, locked-in until Dec-26" style={S.input} />
-    </div>
-  );
-}
-
 // label and busyLabel: the Card rates box says "Save the rates", the same
-// words as the flow's editor; the Stripe block keeps its own.
+// words as the flow's editor.
 function SaveRow({ busy, dirty, savedAt, onSave, onReset, label = 'Save pricing', busyLabel = 'Saving…' }) {
   return (
     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -1595,65 +1342,6 @@ function Stat({ label, value, accent }) {
     <div>
       <div style={{ fontSize: 10, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 2, fontWeight: 700 }}>{label}</div>
       <div style={{ fontSize: 14, fontWeight: 700, color: accent ? 'var(--acc)' : 'var(--t1)' }}>{value}</div>
-    </div>
-  );
-}
-
-// ─── Stripe link modal (unchanged) ─────────────────────────────────────────
-function StripeLinkModal({ location, onClose, onLinked }) {
-  const [acctId, setAcctId] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState(null);
-
-  const submit = async () => {
-    setError(null);
-    if (!acctId.startsWith('acct_')) { setError("Account ID must start with 'acct_'"); return; }
-    setSubmitting(true);
-    try {
-      const { data: session } = await supabase.auth.getSession();
-      const token = session?.session?.access_token;
-      if (!token) throw new Error('not authenticated');
-      const res = await fetch(`${FUNCTIONS_URL}/stripe-link-merchant`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({ stripe_account_id: acctId.trim(), location_id: location.id }),
-      });
-      const j = await res.json();
-      if (!res.ok || j.error) throw new Error(j.error ?? `HTTP ${res.status}`);
-      onLinked();
-    } catch (e) {
-      setError(String(e?.message ?? e));
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <ModalShell onClose={onClose} title="Link Stripe account" subtitle={location.name}>
-      <label style={S.label}>Stripe account ID</label>
-      <input type="text" value={acctId} onChange={e => setAcctId(e.target.value)} placeholder="acct_1ABC..." style={{ ...S.input, ...S.inputMono }} autoFocus />
-      <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 6, marginBottom: 16 }}>
-        The connected account from <code style={{ fontFamily: 'var(--font-mono, monospace)' }}>dashboard.stripe.com → Connect → Accounts</code>. Validated with Stripe before linking.
-      </div>
-      {error && <div style={S.errorBox}>{error}</div>}
-      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-        <button onClick={onClose} disabled={submitting} style={{ ...S.btn, ...S.btnGhost }}>Cancel</button>
-        <button onClick={submit} disabled={submitting || !acctId} style={{ ...S.btn, ...S.btnPrim }}>
-          {submitting ? 'Linking…' : 'Link account'}
-        </button>
-      </div>
-    </ModalShell>
-  );
-}
-
-function ModalShell({ title, subtitle, onClose, children }) {
-  return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(2px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={onClose}>
-      <div style={{ ...S.card, width: 520, maxWidth: 'calc(100vw - 32px)', marginBottom: 0, boxShadow: 'var(--sh3)' }} onClick={e => e.stopPropagation()}>
-        <h2 style={{ ...S.h1, fontSize: 18, marginBottom: 4 }}>{title}</h2>
-        {subtitle && <div style={{ fontSize: 13, color: 'var(--t3)', marginBottom: 16 }}>to <strong style={{ color: 'var(--t1)' }}>{subtitle}</strong></div>}
-        {children}
-      </div>
     </div>
   );
 }

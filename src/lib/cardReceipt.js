@@ -5,8 +5,8 @@
 // was read (entry mode) and how the cardholder was verified (CVM), plus the EMV application id
 // (AID) + preferred name for chip/contactless. The merchant identity (name/address/VAT) already
 // prints in the receipt HEADER from receipt_branding. This module normalises the card block we
-// capture at payment time (Stripe Terminal via stripe-poll-reader-action, Ryft via
-// ryft-terminal-poll) and formats it for every render path (ESC/POS, browser print, email).
+// capture at payment time (the nexo card block adyen-terminal-charge stores on the job and the
+// closed check's payment leg) and formats it for every render path (ESC/POS, browser print, email).
 //
 // Pure functions only — unit-tested, no I/O.
 
@@ -16,9 +16,11 @@ const BRAND_LABEL = {
   interac: 'Interac', eftpos_au: 'eftpos', unknown: null,
 };
 const READ_LABEL = {
+  chip: 'Chip', contactless: 'Contactless', swiped: 'Swiped', manual: 'Keyed',
+  // Entry mode codes stamped on closed checks taken before a venue moved to Adyen. A reprint
+  // of one of those receipts must still read them; nothing writes them any more.
   contactless_emv: 'Contactless', contactless_magstripe_mode: 'Contactless (MSD)',
   contact_emv: 'Chip', magnetic_stripe_track2: 'Swiped', magnetic_stripe_fallback: 'Swiped (fallback)',
-  chip: 'Chip', contactless: 'Contactless', swiped: 'Swiped', manual: 'Keyed',
 };
 const CVM_LABEL = {
   none: 'No CVM required', offline_pin: 'PIN verified', online_pin: 'PIN verified',
@@ -30,8 +32,10 @@ const titleCase = (s) => String(s).replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) =
 /**
  * Normalise the card block off a check, wherever it lives:
  * in-memory record (cardReceipt / paymentIntents[].card) or a closed_checks DB row
- * (card inside payment_intents jsonb). Returns null when the check wasn't a card payment
- * or predates capture — renderers must skip the block entirely then.
+ * (card inside payment_intents jsonb). One shape, the snake_case block adyen-terminal-charge
+ * writes (brand, last4, auth_code, read_method, cvm, aid, application_name). Returns null
+ * when the check wasn't a card payment or predates capture — renderers must skip the block
+ * entirely then.
  */
 export function cardReceiptOf(check) {
   if (!check) return null;
@@ -46,9 +50,9 @@ export function cardReceiptOf(check) {
 }
 
 function normalise(c) {
-  const brandRaw = c.brand ?? c.scheme ?? null;
+  const brandRaw = c.brand ?? null;
   const brandKey = brandRaw ? String(brandRaw).toLowerCase() : null;
-  const last4 = c.last4 ?? c.lastFour ?? null;
+  const last4 = c.last4 ?? null;
   const out = {
     // Key-presence check (not ??): BRAND_LABEL maps unknown→null to SUPPRESS the label — `??`
     // would defeat that and print "Unknown" on the receipt.

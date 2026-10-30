@@ -5,14 +5,12 @@
 //   1. Customer picks an amount (presets or custom)
 //   2. Enters sender + recipient details + optional message
 //   3. Clicks "Buy gift card" → calls gift-checkout-session edge function
-//   4. Redirected to Stripe Checkout (hosted page on merchant's connected acct), or pays in
-//      page on Ryft / Adyen (v5.5.911 / v5.11.115)
-//   5. On success, Stripe webhook fires → gift-fulfill issues card + emails it
-//   6. Customer lands on /gift/success with session_id in query string
+//   4. Pays in page on Adyen (v5.11.115), the card and wallet form online and QR use
+//   5. On the verified AUTHORISATION, adyen-webhook → gift-fulfill issues the card + emails it
+//   6. Customer lands on /gift/success with purchase_id in the query string
 
 import { useState, useEffect, useMemo } from 'react';
 import { callGiftPublic, formatAmount, buildGiftTheme, fetchGiftBranding, fetchGiftLimits, giftPresetsFor, GIFT_DEFAULT_LIMITS, giftUrl } from './giftHelpers';
-import RyftPaymentForm from '../../components/RyftPaymentForm';
 import AdyenPaymentForm from '../../components/AdyenPaymentForm';
 import { supabase } from '../../lib/supabase';
 
@@ -46,10 +44,7 @@ export default function GiftPurchaseSurface({ location }) {
   // State
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  // v5.5.911: a Ryft venue pays IN-PAGE — Ryft has no hosted checkout page to redirect
-  // to. The server hands back a payment session it created; this holds it.
-  const [ryftSession, setRyftSession] = useState(null);
-  // 29 Oct 2026 (v5.11.115): an Adyen venue pays in page too, through the same card and wallet
+  // 29 Oct 2026 (v5.11.115): the customer pays in page on Adyen, through the same card and wallet
   // form online and QR use. The server fixed the amount and the reference (`gift:<purchase id>`).
   const [adyenSession, setAdyenSession] = useState(null);
 
@@ -88,16 +83,13 @@ export default function GiftPurchaseSurface({ location }) {
         delivery_type: deliveryType,
         success_url: (() => {
           const loc = new URLSearchParams(window.location.search).get('loc');
-          return `${window.location.origin}/gift/success?session_id={CHECKOUT_SESSION_ID}${loc ? `&loc=${encodeURIComponent(loc)}` : ''}`;
+          return `${window.location.origin}/gift/success${loc ? `?loc=${encodeURIComponent(loc)}` : ''}`;
         })(),
         cancel_url: giftUrl('/gift'),
       };
       const data = await callGiftPublic('gift-checkout-session', body);
-      // v5.5.911 — the SERVER decides the processor, and answers in one of two shapes.
-      if (data.processor === 'ryft' && data.clientSecret) {
-        setRyftSession(data);     // stay on the page; the embedded form takes it from here
-        setLoading(false);
-      } else if (data.processor === 'adyen' && data.reference) {
+      // The SERVER fixes the amount and the reference; the card is taken here on Adyen.
+      if (data.processor === 'adyen' && data.reference) {
         // adyen-checkout answers an anonymous session (as online ordering), and this page has
         // none until now: sign in anonymously before the form mounts, as OnlineCheckout does.
         if (supabase) {
@@ -109,10 +101,9 @@ export default function GiftPurchaseSurface({ location }) {
         }
         setAdyenSession(data);
         setLoading(false);
-      } else if (data.checkout_url) {
-        window.location.href = data.checkout_url;      // Stripe — unchanged
       } else {
-        throw new Error('No checkout URL returned');
+        // The venue has no card account the gift page can take money on: a plain refusal.
+        throw new Error(data?.error || 'This venue cannot take gift card payments right now');
       }
     } catch (err) {
       setError(err.message || 'Something went wrong');
@@ -276,42 +267,6 @@ export default function GiftPurchaseSurface({ location }) {
           )}
         </Section>
 
-        {/* ── Ryft: pay in-page (v5.5.911) ────────────────
-            Ryft has no hosted checkout page to redirect to, so once the server has
-            created the payment session the customer pays right here. onSuccess ONLY
-            navigates — the card is issued by ryft-webhook on PaymentSession.captured,
-            never from this callback, which the browser could assert. */}
-        {ryftSession && (
-          <div style={{
-            background: t.card, border: `1px solid ${t.border}`, borderRadius: t.radius,
-            padding: '20px 24px', marginBottom: 16,
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-              <span style={{ fontSize: 14, fontWeight: 600, color: t.textMuted }}>Paying</span>
-              <span style={{ fontSize: 22, fontWeight: 800 }}>{formatAmount(amountMinor)}</span>
-            </div>
-            <RyftPaymentForm
-              session={ryftSession}
-              amountMinor={amountMinor}
-              currency={ryftSession.currency || 'gbp'}
-              locationId={location?.id}
-              channel="online"
-              merchantName={t.displayName || location?.name || ''}
-              customerEmail={senderEmail.trim()}
-              showSessionId={false}
-              payLabel={`Pay ${formatAmount(amountMinor)}`}
-              onSuccess={() => {
-                // giftUrl() adds its own ?loc= for the multi-location case, so append
-                // with the right separator rather than a second '?'.
-                const base = giftUrl('/gift/success');
-                window.location.href =
-                  `${base}${base.includes('?') ? '&' : '?'}purchase_id=${encodeURIComponent(ryftSession.purchase_id)}`;
-              }}
-              onError={(e) => setError(e?.message || 'Payment failed — please try again')}
-            />
-          </div>
-        )}
-
         {/* ── Adyen: pay in page (29 Oct 2026, v5.11.115) ──────────────
             onSuccess ONLY navigates. The card is issued by adyen-webhook on the verified
             AUTHORISATION for this reference, never from this callback. */}
@@ -342,7 +297,7 @@ export default function GiftPurchaseSurface({ location }) {
         )}
 
         {/* ── Summary + buy button ───────────────────────── */}
-        {!ryftSession && !adyenSession && amountMinor > 0 && (
+        {!adyenSession && amountMinor > 0 && (
           <div style={{
             background: t.card, border: `1px solid ${t.border}`, borderRadius: t.radius,
             padding: '20px 24px', marginBottom: 16,
@@ -386,7 +341,7 @@ export default function GiftPurchaseSurface({ location }) {
             marginBottom: 16,
           }}
         >
-          {loading ? 'Redirecting to payment…' : `Buy ${amountMinor > 0 ? formatAmount(amountMinor) : ''} Gift Card`}
+          {loading ? 'Starting payment…' : `Buy ${amountMinor > 0 ? formatAmount(amountMinor) : ''} Gift Card`}
         </button>
 
         {/* Links */}

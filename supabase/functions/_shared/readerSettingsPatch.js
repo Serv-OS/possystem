@@ -1,8 +1,8 @@
 // supabase/functions/_shared/readerSettingsPatch.js
 //
 // Database fence stage 1, contract P2: the ONLY columns of Platform location_reader_settings a
-// Back Office screen may write, and how each is checked. The Stripe configuration fields
-// (stripe_configuration_id, idle_screen_file_id and the rest) are server only.
+// Back Office screen may write, and how each is checked. The server side fields
+// (idle_screen_file_id and the rest) are server only.
 //
 // Pure: no Deno, no Supabase. Imported by location-admin (save_reader_settings) and by the
 // browser (src/lib/readerSettingsClient.js), and tested from src/lib/readerSettingsPatch.test.js.

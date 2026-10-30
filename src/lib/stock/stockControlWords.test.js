@@ -155,7 +155,7 @@ test('one site: Location settings is main\'s file plus one import and one card l
   once(now, CAL_CARD);
   once(now, KIND_IMPORT);
   once(now, KIND_CARD);
-  assert.equal(sha(now.replace(IMPORT, '').replace(CARD, '').replace(CAL_IMPORT, '').replace(CAL_CARD, '').replace(KIND_IMPORT, '').replace(KIND_CARD, '')), '4b6a266b789b8862c3a4a363e20b5c8050e5ed7e92bc5309c1c111278170563e');
+  assert.equal(sha(now.replace(IMPORT, '').replace(CARD, '').replace(CAL_IMPORT, '').replace(CAL_CARD, '').replace(KIND_IMPORT, '').replace(KIND_CARD, '')), '2ce2c50cec8845534f42ca6fb657bca7034ddfdb08f491a6f94b2d076da397c5');   // 29 Oct 2026 (Drop D): main's file now says Adyen, not Stripe, in one comment and one label
   const card = readSrc('backoffice/sections/stock/SiteGroupsCard.jsx');
   assert.ok(card.includes('export default function SiteGroupsCard() {\n  const sc = useStockScope();\n  if (!groupsCardShows(sc)) return null;\n'), 'nothing at all before the scope says multi and All sites');
 });

@@ -443,7 +443,7 @@ test('13 Oct, the 07:41:44 and 07:42:20 presses: once the promised time has pass
   const hit = findPossibleRepeat(nextPress, [stuck()], at(234));
   assert.equal(repeatRefusal(hit, hit.job.job_id, { tz: TZ }).code, 'TERMINAL_BUSY');
   assert.equal(repeatRefusal(hit, hit.job.job_id, { tz: TZ }).error, PASSED);
-  assert.equal(repeatMessage(findPossibleRepeat(nextPress, [stuck({ processor: 'ryft' })], at(234)), { tz: TZ }), TODAY);
+  assert.equal(repeatMessage(findPossibleRepeat(nextPress, [stuck({ processor: null })], at(234)), { tz: TZ }), TODAY);
   // A table reads as the table. The place named is where the button is in Back Office.
   assert.equal(repeatMessage(findPossibleRepeat(nextPress, [stuck({ check_draft: draft([], 'R14202', { tableId: 'T3', tableLabel: 'T3' }) })], at(234)), { tz: TZ }),
     'The card machine has still not finished £6.00 for T3 sent at 07:37 (R14202). Ask a manager to press Release stuck payment in Back Office, Card readers, Advanced.');
@@ -460,12 +460,11 @@ test('an Adyen job that was never sent "has not gone to the card machine", at an
   assert.equal(repeatRefusal(findPossibleRepeat(nextPress, [unsent], at(50)), null, { tz: TZ }).code, 'TERMINAL_BUSY');
 });
 
-test('a job with no processor, a Ryft job, and PAX statuses keep today\'s sentence at any age', () => {
+test('a job with no processor (an old read), and the pre send statuses, keep today\'s sentence at any age', () => {
   for (const s of [5, 25, 50, 200, 290]) {
     assert.equal(repeatMessage(findPossibleRepeat(nextPress, [stuck({ processor: undefined })], at(s)), { tz: TZ }), TODAY, `no processor, ${s} s`);
     assert.equal(repeatMessage(findPossibleRepeat(nextPress, [stuck({ processor: null })], at(s)), { tz: TZ }), TODAY);
-    assert.equal(repeatMessage(findPossibleRepeat(nextPress, [stuck({ processor: 'ryft' })], at(s)), { tz: TZ }), TODAY, `ryft, ${s} s`);
-    assert.equal(repeatMessage(findPossibleRepeat(nextPress, [stuck({ processor: 'ryft', status: 'charging_unsent' })], at(s)), { tz: TZ }), TODAY);
+    assert.equal(repeatMessage(findPossibleRepeat(nextPress, [stuck({ processor: null, status: 'charging_unsent' })], at(s)), { tz: TZ }), TODAY);
     for (const status of ['claimed', 'tipping']) {
       assert.equal(repeatMessage(findPossibleRepeat(nextPress, [stuck({ status })], at(s)), { tz: TZ }), TODAY, `adyen ${status}, ${s} s`);
     }
@@ -474,7 +473,6 @@ test('a job with no processor, a Ryft job, and PAX statuses keep today\'s senten
 
 test('repeatDetail carries the processor; the other tiers and the lists are unchanged by it', () => {
   assert.equal(repeatDetail(stuck(), null, { now: at(50) }).processor, 'adyen');
-  assert.equal(repeatDetail(stuck({ processor: 'ryft' })).processor, 'ryft');
   assert.equal(repeatDetail(job97c, job97c.booked).processor, null, 'an old read with no processor column');
   assert.equal(repeatDetail(stuck(), null, { now: at(50) }).age_ms, 50_000, 'a live job is aged from its send');
   assert.deepEqual([...LIVE_STATUSES], ['claimed', 'tipping', 'charging_unsent', 'charging']);

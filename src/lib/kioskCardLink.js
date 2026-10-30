@@ -1,14 +1,14 @@
 // src/lib/kioskCardLink.js
 //
-// A kiosk card sale taken on a card machine (a terminal job: Adyen or Ryft), booked so the
-// till can refund it to the card.
+// A kiosk card sale taken on a card machine (an Adyen terminal job), booked so the till can
+// refund it to the card.
 //
 // 30 Sep 2026 (Coffee Boy Barnsley, R3127 and R3128): the kiosk sent the charge to the reader
 // as a terminal job with a throwaway closed check id ('chk-kiosk-<uuid>'), and on approval
 // called onPaid() with nothing. submitOrder then booked the sale under its own id with no
-// processor (so the column default 'stripe'), no card reference and no tenders. The till's
-// "Return to card" said "via Stripe Terminal" and "No card payment is linked to this check",
-// and a manager's refund was recorded while the card was never reversed.
+// processor, no card reference and no tenders. The till's "Return to card" said "No card
+// payment is linked to this check", and a manager's refund was recorded while the card was
+// never reversed.
 //
 // Now the reader's approved job is handed to submitOrder, and the sale is booked the way the
 // till books a reader sale (store.closeApprovedTerminalJob):
@@ -106,9 +106,9 @@ export function kioskHeldPaymentFits(held, dueMinor) {
  * reader added itself (the reader tip heal adds that to the sale later, like the till).
  *
  * With none: {} and the row is written exactly as before. A kiosk that cannot name its card
- * payment (the Stripe reader branch, which still passes nothing) must never write a tender
- * list that leaves the card out, and a fully covered order is split exactly from its own
- * gift_card, loyalty and promo fields by the accounting reader (_shared/accountingDay.js).
+ * payment must never write a tender list that leaves the card out, and a fully covered order
+ * is split exactly from its own gift_card, loyalty and promo fields by the accounting reader
+ * (_shared/accountingDay.js).
  */
 export function kioskCheckPaymentFields({ reader = null, tip = 0, giftRecord = null, loyaltyCredit = 0, promoCredit = 0 } = {}) {
   if (!isKioskReaderPayment(reader)) return {};

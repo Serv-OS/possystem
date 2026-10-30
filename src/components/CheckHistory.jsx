@@ -29,13 +29,12 @@ const managersFrom = (staffMembers) =>
     .map(s => ({ pin: s.pin, name: s.name, id: s.id }));
 const METHOD_ICON = {card:'💳',cash:'💵',split:'⚖','bar-tab':'🍸'};
 
-// v5.6.78 — the refund screens said "Stripe Terminal" on EVERY check, whichever
-// processor actually took the money. On an Adyen or Ryft sale that is simply
-// false, and it is false at the exact moment staff are deciding whether to trust
+// v5.6.78 — the refund screens used to name one processor on EVERY check, whichever
+// actually took the money, at the exact moment staff are deciding whether to trust
 // the screen with a customer's refund. Name the real one; say "the card
 // terminal" when the check predates processor stamping.
 // 30 Sep 2026 (Barnsley R3127): named from the card leg the refund will reverse, never from
-// the 'stripe' column default (lib/payments/refundProcessorLabel.js).
+// a column default (lib/payments/refundProcessorLabel.js).
 const STATUS_META = {
   paid:           {color:'var(--grn)',bg:'var(--grn-d)',border:'var(--grn-b)',label:'Paid'},
   partial_refund: {color:'var(--acc)',bg:'var(--acc-d)',border:'var(--acc-b)',label:'Part refund'},
@@ -77,8 +76,8 @@ function RefundModal({check, onConfirm, onCancel}){
 
   const refundedQtys=useMemo(()=>{
     const map={};
-    // v5.6.79 — `r.items` is NOT guaranteed. ryft-webhook writes reconciliation
-    // refunds with no items key at all, and a tip-only refund has none either, so
+    // v5.6.79 — `r.items` is NOT guaranteed. A reconciliation refund written by a webhook
+    // has no items key at all, and a tip-only refund has none either, so
     // the old unguarded `r.items.forEach` threw and took the whole panel down.
     (check.refunds||[]).forEach(r=>(Array.isArray(r.items)?r.items:[]).forEach(ri=>{
       map[ri.uid]=(map[ri.uid]||0)+ri.refundQty;
@@ -399,9 +398,7 @@ function RefundModal({check, onConfirm, onCancel}){
                   <span style={{fontSize:28}}>💳</span>
                   <div>
                     <div style={{fontSize:14,fontWeight:700,color:'var(--t1)'}}>Return to card</div>
-                    {/* v5.6.78: was hard-coded "Stripe Terminal" on every check,
-                        including Adyen and Ryft sales. Name the processor that
-                        actually took the money. */}
+                    {/* v5.6.78: name the processor that actually took the money. */}
                     <div style={{fontSize:11,color:'var(--t3)',marginTop:2}}>{processorLabel(check,legs)} · 1–3 business days</div>
                   </div>
                 </button>
@@ -1180,7 +1177,7 @@ export default function CheckHistory(){
                         </div>
                       </div>
                       <div style={{fontSize:11,color:'var(--t3)',marginBottom:3}}>Reason: {r.reason}</div>
-                      {/* v5.6.79 — guarded. A reconciliation refund from ryft-webhook
+                      {/* v5.6.79 — guarded. A reconciliation refund written by a webhook
                           carries no items key, and the unguarded .map threw here. */}
                       {Array.isArray(r.items)&&r.items.length>0&&(
                         <div style={{fontSize:11,color:'var(--t3)'}}>{r.items.map(ri=>`${ri.refundQty}× ${ri.name}`).join(', ')}</div>

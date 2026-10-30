@@ -7,27 +7,19 @@
 //      presented to THIS screen, not to a machine somewhere else. Highest priority:
 //      when there is a reader in your hand, nothing else should be considered.
 //      See runAdyenLocalTerminalFlow for the money contract.
-//   1) If the native MPOS app injected the Tap to Pay bridge (window.RposTapToPay)
-//      and this device isn't pinned to a hardware reader → NATIVE Tap to Pay:
-//      connect the device's built-in reader, create a card_present PaymentIntent,
-//      collect+confirm the tap natively (the NFC reader can't be driven from a
-//      WebView). This bridge is implemented by the native iOS MPOS app (Apple Tap
-//      to Pay on iPhone). On Android the bridge is absent, so this branch is
-//      skipped — the Android MPOS app takes orders and uses a hardware reader.
-//   2) If profile.payment_mode is 'assigned_reader' AND a network reader is
-//      bound to this device → REST flow (stripe-process-payment-on-reader, poll,
-//      customer pays on the WisePOS E screen).
-//   3) Otherwise → simulated approval (browser dev / unconfigured devices).
+//   1) If profile.payment_mode is 'assigned_reader' AND an Adyen terminal is bound to
+//      this device in Back Office → Card readers → the same cloud terminal-job route
+//      the till uses (runCloudTerminalFlow).
+//   2) Otherwise → no reader: the mock build and training mode simulate an approval;
+//      a production handset stops on the error screen with the reason.
 
 import { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../store';
-import { resolvePlatformLocationId, getAssignedNetworkReader } from '../../lib/networkReader';
-import { getActiveLocationSync, supabase, ensureAuthToken, isMock } from '../../lib/supabase';
+import { getActiveLocationSync, supabase, isMock } from '../../lib/supabase';
 import { confirmLinkBeforeCard } from '../../lib/deviceLink';
 import { usePaymentBusy } from '../../lib/usePaymentBusy';
 import { Sx, money } from './MShellStyles';
-import { stripeCurrency, getActiveCurrencyCode } from '../../lib/currency';
-import { tapToPayAvailable, tapInit, tapCollect, tapCancel } from '../../lib/tapToPay';
+import { getActiveCurrencyCode } from '../../lib/currency';
 import { isTrainingMode } from '../../lib/trainingMode';
 import { adyenLocalBridgeAvailable, runAdyenLocalPayment, abortAdyenLocalPayment } from '../../lib/payments/adyenLocalTerminal';
 import { resolveSelfHostedAdyenTerminal } from '../../lib/payments/localTerminalIdentity';
@@ -70,13 +62,12 @@ const LOCAL_STAGE_COPY = {
 };
 
 export default function MCardFlow({ payment, onCancel, onApproved }) {
-  const { deviceConfig, walkInOrder, activeTableId, tables } = useStore();
-  const [phase, setPhase] = useState('starting'); // starting | rest | local | localSetup | sim | approved | error
+  const { deviceConfig, activeTableId } = useStore();
+  const [phase, setPhase] = useState('starting'); // starting | local | localSetup | sim | approved | error
   const [statusMsg, setStatusMsg] = useState('Preparing payment…');
   const [errorMsg, setErrorMsg] = useState(null);
   const [localStage, setLocalStage] = useState('starting');
   const [localSetup, setLocalSetup] = useState(null);   // { reason, claimCode } when the reader is not ready
-  const pollAbortRef = useRef(false);
   const startedRef = useRef(false);
   // The on-device Adyen tender, held across renders so Cancel knows what is live.
   const localJobRef = useRef(null);        // { jobId, checkKey, closedCheckId }
@@ -84,6 +75,7 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
   const localAbortSentRef = useRef(false);
   const localCancelRequestedRef = useRef(false);
 
+  // 'assigned_reader' is the one mode with a card machine; any other value means no reader.
   const paymentMode = deviceConfig?.paymentMode || 'tap_to_pay';
   const grand = payment?.grand ?? 0;
 
@@ -95,7 +87,6 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
     if (startedRef.current) return;
     startedRef.current = true;
     runFlow();
-    return () => { pollAbortRef.current = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -111,7 +102,7 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
 
   const runFlow = async () => {
     try {
-      // TRAINING MODE: never reach a real processor (Tap to Pay or reader).
+      // TRAINING MODE: never reach a real processor.
       // Simulate an instant approval so the MPOS close flow runs in-memory.
       if (isTrainingMode()) {
         setStatusMsg('TRAINING — no card charged');
@@ -132,35 +123,21 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
         await runAdyenLocalTerminalFlow();
         return;
       }
-      // Native Tap to Pay takes priority when the MPOS app injected the bridge,
-      // unless this device is explicitly pinned to a hardware (network) reader.
-      if (paymentMode !== 'assigned_reader' && tapToPayAvailable()) {
-        await runTapToPayFlow();
-        return;
-      }
       if (paymentMode === 'assigned_reader') {
-        // v5.8.23: an Adyen (or Ryft) reader bound to THIS device in Back Office →
-        // Card readers takes the same cloud terminal-job route the till uses. The
-        // Stripe registry lookup below used to be the only path, so an Adyen reader
-        // bound to an MPOS was invisible and the MPOS "simulated" the approval.
+        // v5.8.23: an Adyen reader bound to THIS device in Back Office → Card readers takes
+        // the same cloud terminal-job route the till uses.
         const { terminal, reason } = await findPaxTerminal({ posDeviceId: getPosDeviceId() });
-        if (terminal && (terminal.adyen_terminal_id || terminal.ryft_terminal_id)) {
+        if (terminal && terminal.adyen_terminal_id) {
           await runCloudTerminalFlow(terminal);
           return;
         }
-        const reader = await getAssignedNetworkReader();
-        if (!reader) {
-          // v5.8.26: say WHY, on screen. The lookup's reason was being discarded, so
-          // staff saw a simulated approval with no clue which link was missing.
-          enterSim(reason || 'No card terminal is bound to this handset in Back Office → Card readers.');
-          setStatusMsg(`No reader assigned — using simulated approval. ${reason || 'No card terminal is bound to this handset in Back Office → Card readers.'} (this handset: ${String(getPosDeviceId() || 'no device id').slice(0, 8)})`);
-          return;
-          return;
-        }
-        await runRestFlow(reader);
+        // v5.8.26: say WHY, on screen. The lookup's reason was being discarded, so
+        // staff saw a simulated approval with no clue which link was missing.
+        enterSim(reason || 'No card terminal is bound to this handset in Back Office → Card readers.');
+        setStatusMsg(`No reader assigned — using simulated approval. ${reason || 'No card terminal is bound to this handset in Back Office → Card readers.'} (this handset: ${String(getPosDeviceId() || 'no device id').slice(0, 8)})`);
         return;
       }
-      // No native bridge (browser/dev) and no hardware reader → simulate.
+      // No hardware reader → simulate (mock / training) or say so.
       // v5.8.26: say which payment mode this handset thinks it is in. A profile
       // changed in Back Office after pairing stays cached on the device until a
       // Push to POS or a re-pair, and that is invisible without this line.
@@ -269,7 +246,7 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
       setPhase('approved');
       onApproved?.({
         method: 'card',
-        processor: done.processor || (terminal.adyen_terminal_id ? 'adyen' : 'ryft'),
+        processor: done.processor || 'adyen',
         closedCheckId,
         paymentIntentId: done.transaction_id || done.payment_session_id || null,
         cardReceipt: done.card || null,
@@ -428,161 +405,10 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
     abortAdyenLocalPayment(live.jobId);
   };
 
-  // Native Stripe Tap to Pay: connect the phone's reader, create a card_present
-  // PaymentIntent (amount incl. tip, captured automatically), then collect+confirm
-  // the tap on-device. The whole money path stays Stripe — we just brand it 'stripe'.
-  const runTapToPayFlow = async () => {
-    setPhase('rest'); setStatusMsg('Connecting Tap to Pay…');
-    const opsLocation = getActiveLocationSync();
-    const platformLocId = await resolvePlatformLocationId(opsLocation);
-    if (!platformLocId) throw new Error('No connected Stripe account for this location');
-    const token = await ensureAuthToken();
-    if (!token) throw new Error('Could not obtain auth token — check Anonymous sign-ins are enabled in Supabase Auth.');
-
-    // Stripe Terminal Location (tml_…) for connectReader — per-merchant config.
-    const tmlId = import.meta.env.VITE_STRIPE_TERMINAL_LOCATION_ID || deviceConfig?.tapTerminalLocationId || '';
-
-    // 1) Connect the built-in Tap to Pay reader (one-time per app session).
-    const initRes = await tapInit({
-      locationId: platformLocId,
-      supabaseUrl: import.meta.env.VITE_SUPABASE_URL,
-      supabaseAnonKey: import.meta.env.VITE_SUPABASE_ANON_KEY,
-      accessToken: token,
-      stripeTerminalLocationId: tmlId,
-    });
-    if (!initRes.ok) {
-      // Not fatal — let staff still test the rest of the flow; show why.
-      setStatusMsg(initRes.message || 'Tap to Pay unavailable');
-      enterSim(initRes.message || 'Tap to Pay unavailable.');
-      return;
-    }
-
-    // 2) Create the card_present PaymentIntent (tip already in `grand`).
-    setStatusMsg('Ready — present card');
-    const piRes = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-create-payment-intent`, {
-      method:'POST',
-      headers:{ 'content-type':'application/json', authorization:`Bearer ${token}` },
-      body: JSON.stringify({
-        location_id: platformLocId,
-        amount_minor: Math.round(grand * 100),
-        currency: stripeCurrency(),
-        channel: 'card_present',
-        payment_method_types: ['card_present'],
-        capture_method: 'automatic',
-        description: 'MPOS Tap to Pay',
-        ...(payment?.tip > 0 ? { metadata: { tip_minor: String(Math.round(payment.tip * 100)) } } : {}),
-      }),
-    });
-    const pj = await piRes.json();
-    if (!piRes.ok || pj.error || !pj.client_secret) throw new Error(pj.error || `HTTP ${piRes.status}`);
-
-    // 3) Run the tap natively (full-screen OS Tap to Pay UI takes over here).
-    const tap = await tapCollect({
-      clientSecret: pj.client_secret,
-      paymentIntentId: pj.payment_intent_id,
-      amountMinor: Math.round(grand * 100),
-      currency: stripeCurrency(),
-    });
-    if (!tap.ok) {
-      const code = String(tap.code || '').toUpperCase();
-      if (code.includes('CANCEL')) { onCancel?.(); return; }
-      throw new Error(tap.message || 'Tap to Pay failed');
-    }
-
-    setPhase('approved');
-    onApproved?.({
-      method: 'card',
-      paymentIntentId: tap.paymentIntentId || pj.payment_intent_id,
-      tip: payment.tip,
-      grand,
-      processor: 'stripe',
-    });
-  };
-
   const cancelFlow = () => {
     // On-device Adyen owns its own cancel semantics (abort, then wait for the truth).
     if (phase === 'local') { cancelLocalFlow(); return; }
-    // Best-effort cancel of an in-progress native tap, then bubble up.
-    try { if (tapToPayAvailable()) tapCancel(); } catch (e) { /* noop */ }
     onCancel?.();
-  };
-
-  const runRestFlow = async (reader) => {
-    setPhase('rest'); setStatusMsg('Pushing cart to reader…');
-    const opsLocation = getActiveLocationSync();
-    const platformLocId = await resolvePlatformLocationId(opsLocation);
-
-    const items = activeTableId
-      ? (tables.find(t => t.id === activeTableId)?.session?.items || []).filter(i => !i.voided)
-      : (walkInOrder?.items || []);
-    const lineItems = items.map(it => ({
-      description: String(it.name || 'Item').slice(0, 60),
-      amount: Math.round((it.price || 0) * 100),
-      quantity: Math.max(1, it.qty || 1),
-    }));
-    if (payment?.tip > 0) lineItems.push({ description:'Tip', amount: Math.round(payment.tip * 100), quantity:1 });
-
-    // v5.5.170: was sending the whole rpos-device JSON blob as opsDeviceId,
-    // edge fn looked up pos_devices.id and returned "device not found".
-    // Parse + extract the id field. Same fix as CheckoutModal.
-    const opsDeviceId = (() => {
-      try {
-        const raw = localStorage.getItem('rpos-device');
-        if (!raw) return '';
-        const parsed = JSON.parse(raw);
-        return parsed?.id || '';
-      } catch { return ''; }
-    })();
-    const token = await ensureAuthToken();
-    if (!token) throw new Error('Could not obtain auth token — check Anonymous sign-ins are enabled in Supabase Auth.');
-
-    const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-process-payment-on-reader`, {
-      method:'POST',
-      headers:{ 'content-type':'application/json', authorization:`Bearer ${token}` },
-      body: JSON.stringify({
-        pos_device_id: opsDeviceId,
-        amount_minor: Math.round(grand * 100),
-        currency: stripeCurrency(),
-        line_items: lineItems,
-      }),
-    });
-    const j = await res.json();
-    if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
-
-    setStatusMsg('Customer is paying on the reader');
-    const piId = j.payment_intent_id;
-    const start = Date.now();
-    while (!pollAbortRef.current && Date.now() - start < 5*60*1000) {
-      await new Promise(r => setTimeout(r, 1500));
-      if (pollAbortRef.current) return;
-      const pollToken = await ensureAuthToken();
-      const pr = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-poll-reader-action`, {
-        method:'POST',
-        headers:{ 'content-type':'application/json', authorization:`Bearer ${pollToken}` },
-        body: JSON.stringify({ payment_intent_id: piId, reader_id: j.reader_id, location_id: platformLocId }),
-      });
-      const pj = await pr.json();
-      if (!pr.ok) continue;
-      const ra = pj.reader_action;
-      if (ra?.type === 'process_payment_intent' && ra?.status === 'in_progress') {
-        setStatusMsg('Card prompt active on reader');
-      }
-      if (pj.is_terminal_state) {
-        if (pj.is_success) {
-          setPhase('approved');
-          onApproved?.({
-            method:'card',
-            paymentIntentId: piId,
-            tip: payment.tip,
-            grand,
-            applicationFee: pj.application_fee_amount,
-          });
-          return;
-        }
-        throw new Error(pj.last_payment_error || `Payment ${pj.payment_intent_status}`);
-      }
-    }
-    if (!pollAbortRef.current) throw new Error('Timed out — customer did not complete payment');
   };
 
   const simulateApprove = () => {
@@ -649,7 +475,7 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
       </div>
     );
   }
-  if (phase === 'rest' || phase === 'starting') {
+  if (phase === 'starting') {
     // "Customer paying on reader" is wrong when the reader is the thing in your hand.
     const onThisDevice = adyenLocalBridgeAvailable();
     return (

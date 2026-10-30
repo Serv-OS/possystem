@@ -23,7 +23,6 @@
 import { getLocationId, supabase, getDeviceMode } from '../lib/supabase';
 import { useStore } from '../store';
 import { fetchApprovedTablePayJobs, getPosDeviceId } from '../lib/payments/terminalJobs';
-import { getLocationProcessor } from '../lib/payments/processor';
 import { closerRole, closeWaitMs, isDue, createSightings, isWatchedHere, adoptBookedSale } from '../lib/payments/terminalJobCloser';
 import { moneyMinor } from '../lib/currency';
 
@@ -58,21 +57,9 @@ export async function startTerminalJobReconciler() {
   _locationId = await getLocationId().catch(() => null);
   if (!_locationId || !supabase) { _running = false; return; }
 
-  // v5.5.892: terminal_jobs are a PAX/Ryft-only mechanism — on a Stripe venue this poller
-  // called the terminal-job-status edge fn every ~8s on every device for jobs that can never
-  // exist. Gate on the venue processor once at start (processor changes require BO work + a
-  // till restart anyway, which re-runs this).
-  try {
-    const proc = await getLocationProcessor(_locationId);
-    // terminal_jobs now carry BOTH fleets: PAX/Ryft and Adyen (v5.6.62 — the
-    // ryft-only gate left every Adyen pay-at-table check unbooked: money taken,
-    // table still open, and a second charge possible).
-    if (proc !== 'ryft' && proc !== 'adyen') {
-      console.log('[TerminalJobReconciler] venue processor is', proc, '— terminal job reconciler not needed, staying idle');
-      _running = false;
-      return;
-    }
-  } catch { /* unknown processor — keep the reconciler running (fail open, PAX venues must close jobs) */ }
+  // Every venue takes cards on Adyen terminals through terminal_jobs, so every till runs this
+  // (v5.6.62: a processor gate here once left every Adyen pay-at-table check unbooked: money
+  // taken, table still open, and a second charge possible).
 
   const tick = async () => {
     // An offline till cannot be the closer; the job stays approved and any online
@@ -115,21 +102,18 @@ export async function startTerminalJobReconciler() {
   // ±1.5s jitter so a fleet of tills doesn't hit the edge fn in lock-step.
   _timer = setInterval(tick, 8000 + Math.round((Math.random() - 0.5) * 3000));
 
-  // v5.6.66 — keep the Adyen fns WARM on Adyen venues. Pay at Table's
-  // button-to-bill lag was two stacked cold starts; an OPTIONS ping costs
-  // nothing and keeps the isolates resident. Every ~4 min, jittered.
+  // v5.6.66 — keep the Adyen fns WARM. Pay at Table's button-to-bill lag was two
+  // stacked cold starts; an OPTIONS ping costs nothing and keeps the isolates
+  // resident. Every ~4 min, jittered.
   if (_adyenWarm) clearInterval(_adyenWarm);
   try {
-    const proc = await getLocationProcessor(_locationId);
-    if (proc === 'adyen') {
-      const warm = () => {
-        for (const fn of ['adyen-terminal-events', 'adyen-terminal-charge']) {
-          fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/${fn}`, { method: 'OPTIONS' }).catch(() => {});
-        }
-      };
-      warm();
-      _adyenWarm = setInterval(warm, 240000 + Math.round(Math.random() * 30000));
-    }
+    const warm = () => {
+      for (const fn of ['adyen-terminal-events', 'adyen-terminal-charge']) {
+        fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/${fn}`, { method: 'OPTIONS' }).catch(() => {});
+      }
+    };
+    warm();
+    _adyenWarm = setInterval(warm, 240000 + Math.round(Math.random() * 30000));
   } catch { /* warm-up is best-effort */ }
 }
 

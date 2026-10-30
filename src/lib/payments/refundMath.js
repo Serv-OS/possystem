@@ -515,9 +515,9 @@ export function refundBreakdown(check, {
  * so every downstream path has exactly one shape to handle.
  *
  * PROCESSOR PER LEG. A leg may name its own processor; otherwise it inherits the
- * check's. That inheritance is what makes an Adyen check route to Adyen instead of
- * falling into the old `!== 'ryft' ? stripe` trap, which aimed every Adyen refund
- * at Stripe where it landed nowhere at all.
+ * check's, and a check that names none is an Adyen check (ServOS works with Adyen
+ * only). A historic leg keeps whatever processor it was recorded with, so the refund
+ * screen can say honestly when a card cannot be refunded from here.
  *
  * WHERE THE LEGS COME FROM (28 Sep 2026, Leeds R6404). First the leg list, then the
  * single id, each under its camelCase name and then the row's own snake_case name (a
@@ -526,7 +526,7 @@ export function refundBreakdown(check, {
  * still refund to the card instead of "issue the card refund manually". A check with
  * none of the three has no card leg, exactly as before. A leg built from a tender routes
  * by the processor that tender names (written where the card was taken). A copy with no
- * processor at all takes its matching tender's, never a guessed 'stripe'; copies made by
+ * processor at all takes its matching tender's before the Adyen default; copies made by
  * closedCheckRefundFields always carry the row's processor, so they route exactly as the
  * boot loaders always have. No row in the Ops DB on 28 Sep had a card tender as its only
  * card record, so this changes no existing sale; it is the fallback for short copies and
@@ -572,7 +572,8 @@ export function cardLegsOf(check) {
 /**
  * Leg outcomes that mean MONEY IS MOVING and the leg's headroom is spent.
  *
- *   'succeeded' the processor confirmed the refund synchronously (Stripe, Ryft).
+ *   'succeeded' a refund confirmed synchronously (legs recorded before Adyen; kept so
+ *               that history still counts against the cap).
  *   'accepted'  the processor took the request and will settle it asynchronously.
  *               Adyen answers `received` and the truth arrives later by webhook,
  *               so this is the strongest word we are entitled to use. It is NOT

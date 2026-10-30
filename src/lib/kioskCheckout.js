@@ -424,7 +424,7 @@ export function kioskChargeTotal(grandTotal) {
   return Math.max(0, Math.round(num(grandTotal) * 100)) / 100;
 }
 
-// Stripe refuses a card charge under 30 minor units (stripe-process-payment-on-reader).
+// The kiosk never sends a card charge under 30 minor units to the reader.
 export const KIOSK_CARD_MINIMUM = 0.30;
 
 /**

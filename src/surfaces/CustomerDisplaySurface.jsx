@@ -5,8 +5,7 @@
 //   • active    → SPLIT: LEFT = loyalty phone-capture keypad (if loyalty enabled),
 //                 RIGHT = live order (items + mods + total)
 //   • tip       → customer chooses a gratuity, then the POS charges bill+tip as ONE
-//                 amount. Exists because Ryft's terminal API has no on-reader tip
-//                 prompt; this screen is the customer's tip surface on Ryft venues.
+//                 amount (a till with no on-reader tip prompt asks here).
 //   • paying    → "follow the card reader" + amount
 //   • approved/declined → full-screen ✓ / ✕
 //
@@ -213,8 +212,8 @@ export default function CustomerDisplaySurface() {
   }
 
   // ── Gratuity (full screen) ───────────────────────────────────────────────
-  // Ryft's terminal cannot prompt for a tip, so the customer chooses here and the
-  // POS then charges bill+tip as ONE amount. Shown ahead of every other state so a
+  // When the till asks, the customer chooses a tip here and the POS then charges
+  // bill+tip as ONE amount. Shown ahead of every other state so a
   // late cart broadcast can't yank the screen away mid-decision.
   if (tipReq) {
     const bill = Number(tipReq.total) || 0;

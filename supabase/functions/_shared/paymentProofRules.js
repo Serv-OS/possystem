@@ -5,19 +5,18 @@
 // Pure decisions only. No I/O, no Deno, no Supabase: imported by the payment-proof edge
 // function and unit tested from src/lib/paymentProofRules.test.js under plain node.
 //
-// The rule for every processor: the amount comes from the PROCESSOR's own record (or our
-// server written ledger), never from the request body. A proof is written only for a payment
+// The rule for every processor: the amount comes from our server written ledger of the
+// processor's own record, never from the request body. A proof is written only for a payment
 // the function could see, for THIS venue, in the state the kind asks for:
-//   card     money taken (Stripe succeeded, Ryft Approved or Captured, Adyen authorised
-//            and not a hold)
-//   preauth  a card hold that is still open (Stripe requires_capture, Ryft Approved with a
-//            manual capture flow, Adyen authorised hold not captured yet)
-//   capture  a hold that was captured (Stripe succeeded, Ryft Captured, Adyen captured)
+//   card     money taken (Adyen authorised and not a hold)
+//   preauth  a card hold that is still open (Adyen authorised hold not captured yet)
+//   capture  a hold that was captured (Adyen captured)
+// 29 Oct 2026 (Drop D): ServOS works with Adyen only; the Stripe and Ryft rules are gone.
 //   gift     a gift card redeem row on the ledger, for a card of the venue's company
 //   loyalty  a loyalty redemption row on the ledger, for the venue's company or venue
 
 export const PROOF_KINDS = ['card', 'preauth', 'capture', 'gift', 'loyalty'];
-export const PROOF_PROCESSORS = ['stripe', 'ryft', 'adyen', 'gift', 'loyalty'];
+export const PROOF_PROCESSORS = ['adyen', 'gift', 'loyalty'];
 
 const posInt = (v) => {
   const n = Math.round(Number(v));
@@ -38,57 +37,6 @@ export function parseProofRequest(raw) {
   if ((processor === 'gift') !== (kind === 'gift')) return { ok: false, reason: 'kind' };
   if ((processor === 'loyalty') !== (kind === 'loyalty')) return { ok: false, reason: 'kind' };
   return { ok: true, body: { ops_location_id: ops, processor, kind, payment_ref: ref } };
-}
-
-/**
- * Stripe PaymentIntent (fetched with the venue's Stripe-Account header).
- * metadata.ops_location_id must name this venue: every customer page sets it.
- */
-export function stripeProof(pi, kind, opsLocationId) {
-  if (!pi || typeof pi !== 'object') return { ok: false, reason: 'not_seen' };
-  const md = pi.metadata || {};
-  if (String(md.ops_location_id || '') !== String(opsLocationId)) return { ok: false, reason: 'other_venue' };
-  const currency = pi.currency ? String(pi.currency).toUpperCase() : null;
-  if (kind === 'card' || kind === 'capture') {
-    if (pi.status !== 'succeeded') return { ok: false, reason: 'not_paid' };
-    const amt = posInt(pi.amount_received);
-    return amt > 0 ? { ok: true, amount_minor: amt, currency } : { ok: false, reason: 'not_paid' };
-  }
-  if (kind === 'preauth') {
-    if (pi.status !== 'requires_capture') return { ok: false, reason: pi.status === 'succeeded' ? 'captured' : 'not_held' };
-    const amt = posInt(pi.amount_capturable);
-    return amt > 0 ? { ok: true, amount_minor: amt, currency } : { ok: false, reason: 'not_held' };
-  }
-  return { ok: false, reason: 'kind' };
-}
-
-/** Ryft payment session (fetched on the venue's sub-account). */
-export function ryftProof(session, kind, { venueAccountId } = {}) {
-  if (!session || typeof session !== 'object') return { ok: false, reason: 'not_seen' };
-  // The session must belong to the venue's sub account when the venue has one. Ryft echoes
-  // the account it was booked to in paymentSettings; a session read through the venue's
-  // Account header is the venue's already, so a missing echo is accepted.
-  const bookTo = session?.paymentSettings?.platform?.paymentFees?.combined?.bookTo || null;
-  if (venueAccountId && bookTo && bookTo !== venueAccountId) return { ok: false, reason: 'other_venue' };
-  const status = String(session.status || '');
-  const currency = session.currency ? String(session.currency).toUpperCase() : null;
-  const manual = String(session.captureFlow || '').toLowerCase() === 'manual';
-  const amount = posInt(session.amount);
-  const captured = posInt(session.capturedAmount ?? session.amountCaptured ?? 0);
-  if (kind === 'card') {
-    if (status === 'Captured') return { ok: true, amount_minor: captured || amount, currency };
-    if (status === 'Approved' && !manual) return { ok: true, amount_minor: amount, currency };
-    return { ok: false, reason: 'not_paid' };
-  }
-  if (kind === 'preauth') {
-    if (status === 'Approved' && manual) return amount > 0 ? { ok: true, amount_minor: amount, currency } : { ok: false, reason: 'not_held' };
-    return { ok: false, reason: status === 'Captured' ? 'captured' : 'not_held' };
-  }
-  if (kind === 'capture') {
-    if (status === 'Captured') return { ok: true, amount_minor: captured || amount, currency };
-    return { ok: false, reason: 'not_captured' };
-  }
-  return { ok: false, reason: 'kind' };
 }
 
 /**
@@ -166,40 +114,18 @@ export function allowProofRequest(history, now, { max = 30, windowMs = 10 * 60 *
  * never let a proof whose order_ref names another order pay this one (a payment made for one
  * order cannot be replayed onto a bigger one). Null when the processor record names none (the
  * proof then counts for the order it is attached to, as before).
- *   stripe  payment_intent.metadata.ref (every customer page sets it)
  *   adyen   the ledger row's merchant_reference, else raw.merchantReference (our order ref)
- *   ryft    the session metadata ref or order_ref, when the page set one
  */
 export function processorOrderRef(processor, record) {
   if (!record || typeof record !== 'object') return null;
   let ref = null;
-  if (processor === 'stripe') ref = record.metadata && record.metadata.ref;
-  else if (processor === 'adyen') ref = record.merchant_reference || (record.raw && (record.raw.merchantReference || record.raw.merchant_reference));
-  else if (processor === 'ryft') ref = record.metadata && (record.metadata.ref || record.metadata.order_ref);
+  if (processor === 'adyen') ref = record.merchant_reference || (record.raw && (record.raw.merchantReference || record.raw.merchant_reference));
   const s = ref == null ? '' : String(ref).trim();
   // Only an order ref shape (place_public_order: letters, digits, dot, underscore, colon, dash,
   // up to 40). Adyen references of other flows (terminal jobs, refunds, tab captures) are not
   // order refs.
   if (!s || !/^[A-Za-z0-9][A-Za-z0-9._:-]{1,39}$/.test(s)) return null;
   if (processor === 'adyen' && /^(tj-|rf:|tab-capture:|tab-cancel:)/.test(s)) return null;
-  return s;
-}
-
-/**
- * Fix round 2 (C24): the card hold an OVERAGE charge belongs to, recorded as meta.parent_ref on its
- * proof. settle_qr_tab counts a card proof toward a QR tab only when it names the tab (order_ref)
- * or the tab's hold (parent_ref), so without this an overage taken when a tab is closed never
- * counts and the close comes up short. Null when the record names no hold.
- *   stripe  payment_intent.metadata.parent_payment_intent (api/stripe-charge-overage callers set it)
- *   ryft    the overage session's metadata.tab_overage_of (ryft-tab 'overage'), else previousPayment.id
- */
-export function processorParentRef(processor, record) {
-  if (!record || typeof record !== 'object') return null;
-  let ref = null;
-  if (processor === 'stripe') ref = record.metadata && record.metadata.parent_payment_intent;
-  else if (processor === 'ryft') ref = (record.metadata && record.metadata.tab_overage_of) || (record.previousPayment && record.previousPayment.id);
-  const s = ref == null ? '' : String(ref).trim();
-  if (!s || !/^[A-Za-z0-9][A-Za-z0-9._:-]{1,99}$/.test(s)) return null;
   return s;
 }
 

@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.121',
+    date: '30 Oct 2026',
+    items: [
+      "ServOS works with Adyen only. Every Stripe and Ryft screen, branch and helper is gone from the app: online, QR, catering and gift checkouts, the till card button and splits, the kiosk, the bar tab hold, the handheld, Orders Hub, Card readers and Admin billing. The Adyen path is unchanged.",
+      "Server: the ten functions that still carried a Stripe or Ryft branch (payments-admin, terminal-job-cancel, gift-checkout-session, gift-fulfill, payment-proof, payments-processor, terminal-job-create, terminal-job-reconcile, gift-purchase-status, adyen-terminal-charge) are Adyen only. 29 Stripe and Ryft functions, the two Vercel capture routes and the Android PAX app are deleted from the code; they are switched off on the server in the next step, webhooks last.",
+      "Old bills taken on Stripe or Ryft stay readable in History and the reports. A refund on one is refused with a plain message: refund it in that processor's own dashboard.",
+      "Edge functions to deploy: payments-admin, terminal-job-cancel, gift-checkout-session, gift-fulfill, payment-proof, payments-processor, terminal-job-create, terminal-job-reconcile, gift-purchase-status, adyen-terminal-charge. Nothing to run in the database yet (the table drops come with the switch off step).",
+    ],
+  },
+  {
     v: '5.11.120',
     date: '30 Oct 2026',
     items: [

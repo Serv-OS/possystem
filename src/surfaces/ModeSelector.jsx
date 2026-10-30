@@ -53,7 +53,7 @@ export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelect
         <Card
           icon="📱"
           title="MPOS (mobile)"
-          desc="A phone or Sunmi handheld used by servers and runners — portrait UI, Stripe Tap to Pay, walk-in orders."
+          desc="A phone or Sunmi handheld used by servers and runners — portrait UI, Adyen card reader, walk-in orders."
           note="Pairs to a location like a regular POS"
           accent="#22c55e"
           onClick={onSelectMPOS}

@@ -1,9 +1,9 @@
-// v5.5.243 — Online ordering checkout w/ Stripe, gift cards, & loyalty rewards.
+// v5.5.243 — Online ordering checkout w/ card (Adyen), gift cards, & loyalty rewards.
 // Four-step flow (rewards step only if loyalty signed in):
 //   STEP 1: Details + when (name/phone/email/address, ASAP / scheduled slot)
 //   STEP 2: Gift card (optional — enter code, apply balance toward order)
 //   STEP 3: Rewards (if loyalty signed in — browse & redeem a reward for a discount)
-//   STEP 4: Card details (Stripe Elements + CardElement, skipped if fully covered)
+//   STEP 4: Card details (the Adyen card and wallet form, skipped if fully covered)
 //
 // Auth: online customers aren't logged in to Supabase, so we use
 // signInAnonymously() — the edge fns accept anon-role JWTs for the
@@ -17,7 +17,6 @@
 //     after payment succeeds and the order exists (v5.5.897).
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { prepMinutes, prepRuleFromLocation, liveOrderCount } from '../../lib/prepTime';
 import { tipRuleFor, tipChips, tipInitialKey, tipAmount as calcTip } from '../../lib/tipping';
 import { supabase, platformSupabase } from '../../lib/supabase';
@@ -25,10 +24,7 @@ import { decrementStockRPC, fetchActiveDiscountRules } from '../../lib/db';
 import { logOrderActivity, logActivity } from '../../lib/activity';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../../lib/discountEngine';
 import { buildScheduleCtx } from '../../lib/locationTime';
-import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient';
-import { getLocationProcessor } from '../../lib/payments/processor';
 import AdyenPaymentForm from '../../components/AdyenPaymentForm';
-import RyftPaymentForm from '../../components/RyftPaymentForm';
 import AddressAutocomplete from '../../components/AddressAutocomplete';
 import { attributeOnlineOrder } from '../../lib/customerLookup';
 import { requestPaymentProof, placePublicOrder } from '../../lib/publicOrderClient';
@@ -47,7 +43,7 @@ import { publicCheckTaxFields, offerTaxForOnline } from '../../lib/publicCheckTa
 import VatGateNotice from './VatGateNotice';
 import { creditDiscounts } from '../../lib/taxBasis';
 import { breakdownIsExclusive, taxTermFor } from '../../lib/receiptTax';   // v5.7.34: rate-null guards + VAT/Sales Tax wording
-import { money, stripeCurrency } from '../../lib/currency';
+import { money, venueCurrency } from '../../lib/currency';
 import { orderTypeChip, tipModuleFor } from '../../lib/counterOrder';
 import { eligibleMatcher, eligibleItemNames, eligibleOrderLines } from '../../lib/loyaltyMenuMatch';
 
@@ -138,12 +134,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   // v5.7.68: current step readable from stale closures (late loyalty lookup)
   const stepRef = useRef('details');
   useEffect(() => { stepRef.current = step; }, [step]);
-  const [pi, setPi] = useState(null);             // { client_secret, stripe_account, ... }
-  const [stripePromise, setStripePromise] = useState(null);
-  const [processor, setProcessor] = useState('adyen');   // 'stripe' | 'ryft' — defaults stripe (fail-safe)
-
-  // Resolve the location's processor once (defaults to stripe on any error).
-  useEffect(() => { getLocationProcessor(platformLocationId).then(setProcessor).catch(() => {}); }, [platformLocationId]);
+  const processor = 'adyen';   // ServOS takes card payments on Adyen only
 
   // Customer details — pre-fill from loyalty sign-in if available
   const [name, setName]   = useState(loyalty?.customer?.name || '');
@@ -423,8 +414,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   }, [name, phone, email, address1, postcode, isDelivery, timeMode, slot, deliveryQuote]);
 
   // Compose order ref + customer + items + collection ISO once details are valid.
-  // Used by both the createPaymentIntent description/metadata and the
-  // post-payment order_queue write.
+  // Used by both the card payment's reference and the post-payment order_queue write.
   const orderIdsRef = useRef(null);
   const orderShape = useMemo(() => {
     const collectionAt = timeMode === 'asap'
@@ -444,7 +434,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       ? new Date(collectionAt.getTime() - leadMin * 60_000)
       : new Date(collectionAt.getTime() - kitchenStartMin * 60_000);
     // Fix round (19 Sep, contract C18): the ref is minted ONCE per checkout, not per step. The
-    // Stripe payment is created before the step moves to 'pay' and carries metadata.ref; the
+    // card payment carries it as its merchant reference; the
     // proof records that ref as meta.order_ref, and the server never lets a payment made for one
     // ref pay another. A new ref per step would have put every card order in "Payment being
     // checked".
@@ -729,7 +719,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     // customer isn't actually using.
     // v5.7.31 review fix: the cap must include exclusive tax or a US gift card
     // can never cover the bill (and the tax-only card remainder can fall under
-    // Stripe's 50 cent minimum, hard-blocking checkout). UK: term is 0.
+    // the processor's minimum charge, hard-blocking checkout). UK: term is 0.
     const amountDueMinor = Math.max(0, discountedSubtotalMinor + exclusiveTaxMinor - promoAppliedMinor - rewardDiscountMinor);
     if (Math.min(giftCard.balance, amountDueMinor) <= 0) { setGiftError('Nothing to redeem'); return; }
     setGiftApplied(stageGiftCard({
@@ -780,7 +770,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     }
   };
 
-  // Skip gift card → rewards (if loyalty + points) or Stripe payment
+  // Skip gift card → rewards (if loyalty + points) or card payment
   const skipGiftCard = async () => {
     if (rewardsAvailable) { setStep('rewards'); return; }
     setWorking(true); setError('');
@@ -811,9 +801,6 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     }
   };
 
-  // v5.5.243: Shared Stripe PI creation (used by multiple paths)
-  // Dispatch to the location's processor. Ryft is card-not-present here —
-  // RyftPaymentForm creates its own session, so we just advance to the pay step.
   // v5.5.660: hard delivery gate, evaluated at the LAST step before any payment/placement.
   // The valid() gate only governs the details→gift button; a fast customer could reach pay
   // before the debounced quote resolved, slipping a below-minimum / out-of-range delivery
@@ -836,46 +823,8 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     catch (e) { setError(e?.message || 'Could not work out the VAT. Try again.'); setStep('details'); return; }
     const gate = deliveryGateError();
     if (gate) { setError(gate); setStep('details'); return; }
-    if (processor === 'ryft') { setError(''); setStep('pay'); return; }
     // Adyen (slice 1a): the Drop-in creates its own session — advance to pay.
-    if (processor === 'adyen') { setError(''); setStep('pay'); return; }
-    return startStripePayment();
-  };
-
-  const startStripePayment = async () => {
-    const token = await getAuthToken();
-    const { ref, customer } = orderShape;
-    const amountMinor = remainingMinor;
-    const parts = [];
-    if (giftApplied) parts.push('gift card');
-    if (rewardApplied) parts.push('loyalty');
-    if (promoApplied) parts.push('promo');
-    const desc = `Online order ${ref} · ${customer.name}${parts.length ? ` (partial ${parts.join(' + ')})` : ''}`;
-    const piRes = await createPaymentIntent({
-      authToken: token,
-      locationId: platformLocationId,
-      amountMinor,
-      currency: stripeCurrency(),
-      channel: 'online',
-      description: desc,
-      paymentMethodTypes: ['card'],
-      metadata: {
-        source: 'online',
-        ref,
-        ops_location_id: String(opsLocationId),
-        customer_name: customer.name,
-        customer_email: customer.email,
-        customer_phone: customer.phone,
-        order_type: orderType,
-        ...(giftApplied ? { gift_card_applied: String(giftApplied.applied) } : {}),
-        ...(rewardApplied ? { loyalty_reward: rewardApplied.reward_name, loyalty_discount: String(rewardApplied.discount_value) } : {}),
-        ...(promoApplied ? { promo_code: promoApplied.code, promo_discount: String(promoAppliedMinor) } : {}),
-      },
-    });
-    if (!piRes?.client_secret) throw new Error('Payment could not start. Please try again.');
-    setPi(piRes);
-    setStripePromise(getStripeForAccount(piRes.stripe_account));
-    setStep('pay');
+    setError(''); setStep('pay');
   };
 
   // ── Fetch available rewards when entering rewards step ─────────────────
@@ -1120,7 +1069,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     } catch { /* feed best-effort */ }
   };
 
-  // ── Gift-only payment (no Stripe) ─────────────────────────────────────
+  // ── Gift-only payment (no card) ───────────────────────────────────────
   const onGiftOnlyPayment = async () => {
     // 8 Oct 2026: this path books a check too (paid by gift card or reward): same gate as a card.
     if (vatGate) { setError(vatGate.message); setStep('details'); return; }
@@ -1322,18 +1271,16 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     }
   };
 
-  // Called by the inner ConfirmStep after stripe.confirmCardPayment succeeds.
+  // Called by AdyenPaymentForm once the payment is authorised.
   // Writes the order_queue row (status='received' so the operator chimes/
   // sees it instantly), clears cart, hands ref up to OnlineSurface so it
   // shows the live OrderTracker.
   const onPaymentSuccess = async (paymentIntent) => {
     try {
       const { ref, checkId, collectionAt, sentAt, customer, items } = orderShape;
-      // The success payload is a Stripe PaymentIntent OR a Ryft payment-session.
-      // Store the right id + processor so the order is refundable later.
-      const payId = processor === 'adyen' ? (paymentIntent?.id || null)
-        : processor === 'ryft' ? (paymentIntent?.sessionId || paymentIntent?.id || null)
-        : (paymentIntent?.id || null);
+      // The success payload carries the Adyen psp reference as id. Store it + the processor so
+      // the order is refundable later.
+      const payId = paymentIntent?.id || null;
       const collectionTimeLabel = collectionAt.toLocaleTimeString('en-GB', {
         timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false,
       });
@@ -1405,7 +1352,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
 
       // v5.5.127: also write to closed_checks so the paid online order shows
       // up in History / EOD / Payments reports identically to in-store paid
-      // orders. status='paid' (not 'open') because Stripe already collected.
+      // orders. status='paid' (not 'open') because the card was already charged.
       // The receipt formatter prints check.ref as "ORDER #" — no extra wiring.
       let closedCheck = null;
       try {
@@ -1438,9 +1385,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             tender('promo', promoAppliedMinor / 100),
             tender('card', (remainingMinor - Math.min(tipMinor, remainingMinor)) / 100, Math.min(tipMinor, remainingMinor) / 100, { pspRef: payId, processor }),
           ]),
-          stripe_payment_intent_id: payId,
+          stripe_payment_intent_id: payId,   // the column holds the Adyen reference (renamed later, never dropped)
           payment_intents: payId ? [{ id: payId, amountMinor: remainingMinor }] : null,
-          processor,   // 'stripe' | 'ryft' — refund routes by this
+          processor,   // refund routes by this
           payment_method: (giftApplied || rewardApplied)
             ? [
                 giftApplied ? `gift_card:${(giftApplied.applied / 100).toFixed(2)}` : null,
@@ -1603,7 +1550,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             </div>
           </div>
           <button onClick={
-            step === 'pay' ? () => { setStep(rewardsAvailable ? 'rewards' : 'gift'); setPi(null); setError(''); }
+            step === 'pay' ? () => { setStep(rewardsAvailable ? 'rewards' : 'gift'); setError(''); }
             : step === 'rewards' ? () => { setStep('gift'); setRewardError(''); setError(''); }
             : step === 'gift' ? () => { setStep('details'); setError(''); }
             : onClose
@@ -1625,12 +1572,12 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         </div>
 
         {/* ── STEP: PAY (Adyen card via Drop-in sessions) ─────────────── */}
-        {step === 'pay' && processor === 'adyen' ? (
+        {step === 'pay' ? (
           <div style={{ padding: '0 24px 16px' }}>
             <AdyenPaymentForm
               locationId={platformLocationId}
               amountMinor={remainingMinor}
-              currency={stripeCurrency()}
+              currency={venueCurrency()}
               reference={orderShape?.ref}
               merchantName={location?.name || ''}
               customerEmail={orderShape?.customer?.email}
@@ -1639,33 +1586,6 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             />
             {error && <div style={{ color: theme.danger || '#e5484d', fontSize: 13, marginTop: 10 }}>{error}</div>}
           </div>
-        ) : /* ── STEP: PAY (Ryft card, card-not-present) ─────────────────── */
-        step === 'pay' && processor === 'ryft' ? (
-          <div style={{ padding: '0 24px 16px' }}>
-            <RyftPaymentForm
-              amountMinor={remainingMinor}
-              currency={stripeCurrency()}
-              locationId={platformLocationId}
-              channel="online"
-              merchantName={location?.name || ''}
-              customerEmail={orderShape?.customer?.email}
-              payLabel={`Pay ${money(remainingMinor / 100)}`}
-              onSuccess={onPaymentSuccess}
-              onError={(e) => setError(e?.message || 'Payment failed')}
-            />
-            {error && <div style={{ color: theme.danger || '#e5484d', fontSize: 13, marginTop: 10 }}>{error}</div>}
-          </div>
-        ) : /* ── STEP: PAY (Stripe card) ──────────────────────────────── */
-        step === 'pay' && pi && stripePromise ? (
-          <Elements stripe={stripePromise} options={{ clientSecret: pi.client_secret, appearance: { theme: theme.isLight ? 'stripe' : 'night' } }}>
-            <PayStep
-              pi={pi} subtotal={remainingMinor / 100} theme={theme} cardBdr={cardBdr} inputBg={inputBg} muted={muted}
-              cart={cart} autoDiscounts={autoDiscounts} giftApplied={giftApplied} rewardApplied={rewardApplied}
-              onPaid={onPaymentSuccess}
-              onError={setError}
-              error={error}
-            />
-          </Elements>
         ) : step === 'gift' ? (
         /* ── STEP: GIFT CARD ──────────────────────────────────────────── */
         <div style={{ padding: '0 24px 12px', display: 'flex', flexDirection: 'column', gap: 18 }}>
@@ -2195,7 +2115,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             )}
             {!giftApplied && !rewardsAvailable && (
               <div style={{ fontSize: 10, color: muted, textAlign: 'center', marginTop: 8 }}>
-                {`🔒 Card details next, processed securely by ${processor === 'adyen' ? 'ServOS Payments' : processor === 'ryft' ? 'Ryft' : 'Stripe'}.`}
+                🔒 Card details next, processed securely by ServOS Payments.
               </div>
             )}
           </div>
@@ -2221,7 +2141,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             </button>
             {!rewardApplied && !fullyPaid && (
               <div style={{ fontSize: 10, color: muted, textAlign: 'center', marginTop: 8 }}>
-                {`🔒 Card details next, processed securely by ${processor === 'adyen' ? 'ServOS Payments' : processor === 'ryft' ? 'Ryft' : 'Stripe'}.`}
+                🔒 Card details next, processed securely by ServOS Payments.
               </div>
             )}
           </div>
@@ -2382,114 +2302,6 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         </div>
       )}
     </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// PayStep — renders the CardElement + Pay button. Lives inside <Elements>
-// so it can use useStripe() / useElements() to confirm the PaymentIntent.
-function PayStep({ pi, subtotal, theme, cardBdr, inputBg, muted, cart, autoDiscounts = [], giftApplied, rewardApplied, onPaid, onError, error }) {
-  const stripe = useStripe();
-  const elements = useElements();
-  const [busy, setBusy] = useState(false);
-
-  const submit = async () => {
-    if (!stripe || !elements) return;
-    setBusy(true); onError('');
-    const card = elements.getElement(CardElement);
-    const { error: stripeErr, paymentIntent } = await stripe.confirmCardPayment(pi.client_secret, {
-      payment_method: { card },
-    });
-    setBusy(false);
-    if (stripeErr) {
-      onError(stripeErr.message || 'Card declined.');
-      return;
-    }
-    if (paymentIntent?.status === 'succeeded') {
-      await onPaid(paymentIntent);
-    } else {
-      onError(`Payment status: ${paymentIntent?.status || 'unknown'}.`);
-    }
-  };
-
-  return (
-    <>
-      <div style={{ padding: '0 24px 12px', display: 'flex', flexDirection: 'column', gap: 14 }}>
-        <SectionTitle>Card details</SectionTitle>
-        <div style={{
-          padding: 14, borderRadius: 12, border: `1.5px solid ${cardBdr}`,
-          background: inputBg,
-        }}>
-          <CardElement options={{
-            style: { base: {
-              color: theme.fg,
-              fontSize: '16px',
-              fontFamily: 'inherit',
-              '::placeholder': { color: theme.isLight ? '#9a9aa1' : '#7d7d85' },
-            } },
-          }}/>
-        </div>
-        <div style={{ fontSize: 11, color: muted, lineHeight: 1.5 }}>
-          Test mode: use card <code style={{ fontFamily: 'monospace', fontWeight: 700 }}>4242 4242 4242 4242</code> · any future expiry · any CVC.
-        </div>
-
-        {/* Mini summary so customer sees what they're paying for */}
-        <div style={{ background: inputBg, border: `1px solid ${cardBdr}`, borderRadius: 12, padding: '12px 14px', marginTop: 4 }}>
-          {cart.map(line => {
-            const unit = line.price + (line.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0);
-            return (
-              <div key={line.uid} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 13 }}>
-                <span style={{ flex: 1, minWidth: 0 }}>{line.qty || 1} × {line.name}</span>
-                <span style={{ fontWeight: 700 }}>{money((unit * (line.qty || 1)))}</span>
-              </div>
-            );
-          })}
-          {autoDiscounts.map((d, i) => (
-            <div key={`offer-${i}`} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 13, color: theme.accent }}>
-              <span>🏷 {d.label}</span>
-              <span style={{ fontWeight: 700 }}>-{money(d.value || 0)}</span>
-            </div>
-          ))}
-          {giftApplied && (
-            <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 13, color: theme.accent }}>
-              <span>💳 Gift card</span>
-              <span style={{ fontWeight: 700 }}>-{money((giftApplied.applied / 100))}</span>
-            </div>
-          )}
-          {rewardApplied && (
-            <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 13, color: theme.accent }}>
-              <span>🎁 {rewardApplied.reward_name}</span>
-              <span style={{ fontWeight: 700 }}>-{money((rewardApplied.discount_value / 100))}</span>
-            </div>
-          )}
-          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0 0', borderTop: `1px solid ${cardBdr}`, marginTop: 6 }}>
-            <span style={{ fontSize: 14, fontWeight: 800 }}>{(giftApplied || rewardApplied) ? 'Card payment' : 'Total'}</span>
-            <span style={{ fontSize: 18, fontWeight: 900 }}>{money(subtotal)}</span>
-          </div>
-        </div>
-      </div>
-
-      <div style={{
-        position: 'sticky', bottom: 0,
-        padding: '14px 24px calc(14px + env(safe-area-inset-bottom)) 24px',
-        background: theme.bg, borderTop: `1px solid ${cardBdr}`,
-      }}>
-        {error && <div style={{ fontSize: 12, color: '#ef4444', marginBottom: 10 }}>{error}</div>}
-        <button onClick={submit} disabled={busy || !stripe} className="op-btn-primary" style={{
-          width: '100%', padding: '16px 22px', borderRadius: 14,
-          background: theme.accent, color: contrastFg(theme.accent),
-          border: 'none', fontSize: 16, fontWeight: 800, cursor: busy ? 'wait' : 'pointer',
-          fontFamily: 'inherit', opacity: busy ? 0.7 : 1,
-          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-        }}>
-          <span>{busy ? 'Processing payment…' : 'Pay & place order'}</span>
-          <span>{money(subtotal)}</span>
-        </button>
-        <div style={{ fontSize: 10, color: muted, textAlign: 'center', marginTop: 8 }}>
-          🔒 Your order is only sent to the kitchen once payment clears.
-        </div>
-      </div>
-    </>
   );
 }
 

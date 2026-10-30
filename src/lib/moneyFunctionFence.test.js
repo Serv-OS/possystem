@@ -476,7 +476,7 @@ test('gift-reverse-redeem (puts money back on a card): staff or a bound till of 
   assert.match(d.error, /Pair this till again/);
 });
 
-test('card refunds (stripe-refund, ryft-refund): the service role, staff, or a bound till of the venue', async () => {
+test('card refunds (decideCardRefundAuthority, the shared rule): the service role, staff, or a bound till of the venue', async () => {
   for (const [caller, ok] of [
     [who.manager1, true], [who.superAdmin, true], [who.till1, true],
     [who.customer, false], [who.till3, false], [who.unbound, false], [who.stranger, false], [who.profileOnly, false], [null, false],
@@ -688,17 +688,11 @@ test('promo codes: exact match inside the venue\'s own org, never a wildcard; of
   assert.ok(!admin.includes("upsert(row, { onConflict: 'id' })"), 'no upsert on a caller supplied offer id');
 });
 
-test('card refunds: the gate comes before the processor is asked; the service role still works', () => {
-  for (const fn of ['stripe-refund', 'ryft-refund']) {
-    const src = fnSrc(fn);
-    assert.ok(src.includes('const serviceRole = isServiceRoleRequest(req);'), fn);
-    const gate = src.indexOf('decideCardRefundAuthority({ serviceRole, user: caller, staff: who.staff, device: who.device, deviceReason: who.deviceReason })');
-    assert.ok(gate > 0, fn);
-    const refund = fn === 'stripe-refund' ? src.indexOf('stripe.refunds.create(') : src.indexOf('refundPaymentSession(sessionId');
-    assert.ok(refund > gate, `${fn}: refunds only after the gate`);
-    assert.ok(src.indexOf("from('merchant_") > gate, `${fn}: reads the merchant account only after the gate`);
-    assert.ok(src.includes("code: 'refund_not_allowed'"), fn);
-  }
+test('Drop D: the Stripe and Ryft refund functions are gone; the refund rule stays for Adyen', () => {
+  assert.ok(!fs.existsSync(new URL('../../supabase/functions/stripe-refund', import.meta.url)));
+  assert.ok(!fs.existsSync(new URL('../../supabase/functions/ryft-refund', import.meta.url)));
+  const ga = read('../../supabase/functions/_shared/gift-authority.ts');
+  assert.ok(ga.includes('export function decideCardRefundAuthority('), 'the pure rule is kept');
 });
 
 test('workforce pay: user_locations or a super admin, never the profile venue, never anonymous', () => {

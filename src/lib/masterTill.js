@@ -25,7 +25,7 @@
 // print engines, no venue has one on a master profile, and Back Office could not see it.
 export const NON_TILL_MODES = Object.freeze([
   'office', 'backoffice', 'admin', 'kiosk', 'customer-display', 'owner', 'menuboard', 'orderscreen',
-  'readerdemo', 'ops', 'waitlist', 'bookings', 'staff', 'manager', 'mpos', 'clock', 'ryft-test',
+  'readerdemo', 'ops', 'waitlist', 'bookings', 'staff', 'manager', 'mpos', 'clock',
 ]);
 const NON_TILL = new Set(NON_TILL_MODES);
 

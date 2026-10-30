@@ -65,9 +65,8 @@ function onlineState(lastSeenAt) {
 
 // v5.5.838: the tip shape written onto terminal_devices.tip_config.
 //
-// REUSED, NOT REINVENTED. These are the same three controls, the same defaults
-// and the same wording as the Stripe reader's tipping block (Card readers →
-// "Reader settings"): an on/off, up to five percentage bands, and a custom-amount
+// REUSED, NOT REINVENTED. The same three controls, defaults and wording for
+// every terminal: an on/off, up to five percentage bands, and a custom-amount
 // flag. A manager who has configured tipping once should not have to learn a
 // second vocabulary for a second bit of hardware.
 //
@@ -104,7 +103,7 @@ export default function PaxTerminals() {
   const [locationId, setLocationId] = useState(null);
   const [terminals, setTerminals] = useState([]);
   const [posDevices, setPosDevices] = useState([]);
-  const [venueIdleImage, setVenueIdleImage] = useState(null);   // shared with the Stripe reader idle screen
+  const [venueIdleImage, setVenueIdleImage] = useState(null);   // the venue's one idle-screen image
   // v5.5.839: the PLATFORM DB's own id for this venue (locations.ops_location_id -> id).
   // location_reader_settings lives in the Platform DB and its FK points at THAT id.
   const [platformLocId, setPlatformLocId] = useState(null);
@@ -165,10 +164,10 @@ export default function PaxTerminals() {
         .order('name');
       setPosDevices(devs || []);
 
-      // v5.5.838: the venue's idle-screen image, shared with the Stripe reader
-      // screensaver (Card readers → "Idle screen / screensaver"). It lives on
-      // location_reader_settings in the PLATFORM DB; the terminal app can only
-      // reach the Ops project, so Back Office mirrors the URL onto the terminal row.
+      // v5.5.838: the venue's idle-screen image, one per venue for every
+      // terminal. It lives on location_reader_settings in the PLATFORM DB; the
+      // terminal app can only reach the Ops project, so Back Office mirrors the
+      // URL onto the terminal row.
       //
       // v5.5.839: the Platform DB has its OWN location ids — the Ops id is stored
       // there as locations.ops_location_id. Passing the Ops id straight through
@@ -458,10 +457,8 @@ function TerminalSettings({ terminal, posDevices, locationId, platformLocId, ven
       const url = pub?.publicUrl;
       if (!url) throw new Error('Upload succeeded but no public URL came back.');
 
-      // Share it with the venue's existing idle-screen setting so both bits of
-      // hardware show one image. idle_screen_image_url is already the
-      // human-viewable copy of that feature (Stripe reads idle_screen_file_id,
-      // not this), so writing it cannot change what a Stripe reader displays.
+      // Keep it on the venue's idle-screen setting (idle_screen_image_url) so
+      // every terminal here shows one image.
       // v5.5.839: MUST be the PLATFORM location id, not the Ops one. The Platform
       // DB keys locations by its own uuid and stores the Ops id as ops_location_id;
       // writing the Ops id here violated location_reader_settings_location_id_fkey.
@@ -488,7 +485,7 @@ function TerminalSettings({ terminal, posDevices, locationId, platformLocId, ven
             .from('location_reader_settings')
             .upsert({ location_id: platformLocId, ...row }, { onConflict: 'location_id' }),
         });
-        if (!saved.ok) setErr(`Image uploaded and will work on this terminal, but sharing it with the Stripe reader failed: ${saved.error}`);
+        if (!saved.ok) setErr(`Image uploaded and will work on this terminal, but saving it as the venue's idle-screen image failed: ${saved.error}`);
       }
 
       setSsImage(url);
@@ -547,8 +544,7 @@ function TerminalSettings({ terminal, posDevices, locationId, platformLocId, ven
       </div>
 
       {/* ── Tipping ───────────────────────────────────────────────────────
-          Same controls, defaults and wording as the Stripe reader's tipping
-          block in Card readers → Reader settings. One vocabulary, two devices. */}
+          Same controls, defaults and wording on every terminal. One vocabulary. */}
       <div style={S.fieldset}>
         <div style={S.legend}>Tipping</div>
         <div style={{ ...S.sub, marginBottom:12 }}>
@@ -669,14 +665,13 @@ function TerminalSettings({ terminal, posDevices, locationId, platformLocId, ven
       </div>
 
       {/* ── Idle screen ───────────────────────────────────────────────────
-          Reuses the venue's existing idle-screen image, shared with the Stripe
-          reader screensaver. The on/off is per terminal. */}
+          Reuses the venue's existing idle-screen image. The on/off is per terminal. */}
       <div style={S.fieldset}>
         <div style={S.legend}>Idle screen / screensaver</div>
         <div style={{ ...S.sub, marginBottom:10 }}>
           Show a full-screen image on this terminal when it is sitting idle on the home screen. Any touch
-          dismisses it. It never appears during a payment. This is the same venue image as the card
-          reader idle screen (Card readers → Idle screen) — uploading here replaces it for both.
+          dismisses it. It never appears during a payment. This is the venue's one idle-screen image,
+          so uploading here replaces it for every terminal at this venue.
         </div>
 
         <div style={S.box}>

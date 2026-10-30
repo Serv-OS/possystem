@@ -24,7 +24,8 @@ const ago = (ms) => new Date(NOW - ms).toISOString();
 
 const cloudTerm = { id: 'term-cloud', device_uid: 'random-uid-from-admin', adyen_terminal_id: 'AMS1-000168254080883', status: 'paired', active: true };
 const mposTerm = { id: 'term-mpos', device_uid: 'uid-mpos-session', adyen_terminal_id: 'S1F2L-000000000000001', status: 'paired', active: true };
-const paxTerm = { id: 'term-pax', device_uid: 'uid-pax', adyen_terminal_id: null, status: 'paired', active: true };
+// A terminal_devices row with no Adyen POIID yet (not linked in Back Office): never a cloud kick target.
+const unlinkedTerm = { id: 'term-unlinked', device_uid: 'uid-unlinked', adyen_terminal_id: null, status: 'paired', active: true };
 
 const job = (over = {}) => ({
   id: 'job-1',
@@ -76,8 +77,8 @@ test('server kick: a fresh adyen cloud job in charging_unsent with a charge is k
 
 test('server kick: refuses every state the fn would refuse anyway', () => {
   const t = { localBridge: false, terminalDeviceUid: cloudTerm.device_uid, posDeviceUid: 'uid-till' };
-  assert.equal(shouldServerKick(job({ processor: 'ryft' }), t).kick, false);
   assert.equal(shouldServerKick(job({ processor: undefined }), t).kick, false);
+  assert.equal(shouldServerKick(job({ processor: null }), t).kick, false);
   assert.equal(shouldServerKick(job({ status: 'pending' }), t).kick, false);
   assert.equal(shouldServerKick(job({ status: 'charging' }), t).kick, false);
   assert.equal(shouldServerKick(job({ status: 'approved' }), t).kick, false);
@@ -119,7 +120,7 @@ test('create-time kick: the MPOS cloud flow kicks itself, so terminal-job-create
 
 // ── selectUnsentSweepCandidates ──────────────────────────────────────────────
 
-const terms = new Map([[cloudTerm.id, cloudTerm], [mposTerm.id, mposTerm], [paxTerm.id, paxTerm]]);
+const terms = new Map([[cloudTerm.id, cloudTerm], [mposTerm.id, mposTerm], [unlinkedTerm.id, unlinkedTerm]]);
 const devs = new Map([
   ['dev-till', { id: 'dev-till', device_uid: 'uid-till' }],
   ['dev-mpos', { id: 'dev-mpos', device_uid: 'uid-mpos-session' }],
@@ -166,11 +167,11 @@ test('sweep: backs off for 20s after the row was last written (a CAS revert bump
 });
 
 test('sweep: only a paired CLOUD reader qualifies', () => {
-  const pax = job({ id: 'pax', target_terminal_id: 'term-pax' });
+  const unlinked = job({ id: 'unlinked', target_terminal_id: 'term-unlinked' });
   const missing = job({ id: 'missing', target_terminal_id: 'term-nope' });
-  const r = sweep([pax, missing]);
+  const r = sweep([unlinked, missing]);
   assert.deepEqual(r.kick, []);
-  assert.equal(r.skipped.find(s => s.id === 'pax').reason, 'terminal not a cloud reader');
+  assert.equal(r.skipped.find(s => s.id === 'unlinked').reason, 'terminal not a cloud reader');
   assert.equal(r.skipped.find(s => s.id === 'missing').reason, 'terminal row missing');
   const retired = new Map(terms);
   retired.set('term-cloud', { ...cloudTerm, status: 'retired', active: false });
@@ -207,7 +208,7 @@ test('sweep: bounded to ten per run, oldest first', () => {
 
 test('sweep: re-checks the base rule even if the query was wider (processor, status, charge, simulated)', () => {
   const r = sweep([
-    job({ id: 'ryft', processor: 'ryft' }),
+    job({ id: 'noproc', processor: null }),
     job({ id: 'charging', status: 'charging' }),
     job({ id: 'nocharge', charge_minor: null }),
     job({ id: 'demo', simulated: true }),
@@ -235,7 +236,7 @@ test('sweep: tolerates junk input', () => {
 test('the server asks the reader after it stands down for a client', () => {
   // Not another kick: a second start is how a card gets charged twice.
   assert.equal(shouldAskReaderAfterLostCas({ processor: 'adyen' }), true);
-  assert.equal(shouldAskReaderAfterLostCas({ processor: 'ryft' }), false, 'a PAX cannot be asked anything');
+  assert.equal(shouldAskReaderAfterLostCas({ processor: null }), false, 'no processor on the row: nothing to ask');
   assert.equal(shouldAskReaderAfterLostCas({ processor: 'adyen', simulated: true }), false);
   assert.equal(shouldAskReaderAfterLostCas({ processor: 'adyen', training: true }), false);
   assert.equal(shouldAskReaderAfterLostCas(null), false);
@@ -249,7 +250,7 @@ test('the reconciler asks about the jobs it can, and only those', () => {
   const rows = [
     { id: 'newer', status: 'unknown', processor: 'adyen', nexo_service_id: 's2', created_at: '2026-09-21T18:30:00Z' },
     { id: 'older', status: 'unknown', processor: 'adyen', nexo_service_id: 's1', created_at: '2026-09-21T18:28:56Z' },
-    { id: 'pax', status: 'unknown', processor: 'ryft', nexo_service_id: 's3', created_at: '2026-09-21T18:00:00Z' },
+    { id: 'noproc', status: 'unknown', processor: null, nexo_service_id: 's3', created_at: '2026-09-21T18:00:00Z' },
     { id: 'never-sent', status: 'unknown', processor: 'adyen', nexo_service_id: null, created_at: '2026-09-21T18:00:00Z' },
     { id: 'live', status: 'charging', processor: 'adyen', nexo_service_id: 's4', created_at: '2026-09-21T18:31:00Z' },
     { id: 'demo', status: 'unknown', processor: 'adyen', simulated: true, nexo_service_id: 's5', created_at: '2026-09-21T17:00:00Z' },
@@ -275,9 +276,9 @@ test('both servers ask, and neither of them kicks again', () => {
   assert.doesNotMatch(ask, /action: 'start'/);
   assert.match(ask, /LOST_CAS_ASK_AFTER_MS/);
   // the reconciler asks before it leaves anything for a human
-  const pass = recon.slice(recon.indexOf('const asked:'), recon.indexOf('BLOCKED ON RYFT'));
+  const pass = recon.slice(recon.indexOf('const asked:'), recon.indexOf('awaiting_human:'));
   assert.match(pass, /selectReaderAskCandidates\(stuck \?\? \[\]\)/);
   assert.match(pass, /action: 'result'/);
   assert.doesNotMatch(pass, /action: 'start'/, 'the sweeper still never starts a charge');
-  assert.match(recon, /processor_lookup_available: \{ adyen: true, ryft: false \}/);
+  assert.match(recon, /processor_lookup_available: \{ adyen: true \}/);
 });

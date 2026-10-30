@@ -145,7 +145,7 @@ const KNOWN_DETAIL = [
   { re: /no card terminal is available/i, text: 'No card reader set up for this kiosk. Set one up in Back Office, Kiosks, Settings.', notCharged: true },
   { re: /(is set to another till|none is set to this till)/i, text: 'No card reader is set to this kiosk. Choose one in Back Office, Card readers.', notCharged: true },
   { re: /(reader rejected|confirm the reader is online|reader is offline|reader.{0,20}not online)/i, text: 'The card reader did not answer. Check it is switched on and online.' },
-  { re: /(merchant (stripe )?account not linked|cannot accept charges yet|no adyen account|onboarding incomplete)/i, text: 'Card payments are not set up for this venue yet.', notCharged: true },
+  { re: /(merchant account not linked|cannot accept charges yet|no adyen account|onboarding incomplete)/i, text: 'Card payments are not set up for this venue yet.', notCharged: true },
   { re: /(device id missing|re-?pair this kiosk|pos device not found)/i, text: 'This kiosk needs to be paired again.', notCharged: true },
   { re: /(could not obtain auth token|unauthori[sz]ed|invalid token)/i, text: 'The kiosk could not sign in to take card payments.' },
   { re: /(failed to fetch|networkerror|network request failed|load failed|internet connection appears to be offline)/i, text: 'The kiosk could not connect to the internet.' },

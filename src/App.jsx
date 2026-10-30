@@ -37,7 +37,6 @@ import KioskAutoUpdate from './components/KioskAutoUpdate';
 import ChangeDueOverlay from './components/ChangeDueOverlay';
 import MenuDiag from './components/MenuDiag';
 import OnboardingSignSurface from './surfaces/OnboardingSignSurface';
-import RyftTestSurface from './surfaces/RyftTestSurface';
 import ReaderDemoSurface from './surfaces/ReaderDemoSurface';
 // v5.5.889: customer web routes are LAZY — they were riding in the one 5.1MB bundle every
 // till and kiosk downloaded. Customer sessions are short + fresh-loaded, so a split chunk is
@@ -208,8 +207,6 @@ export default function App() {
   // Public Workforce contract-signing page: /sign/<token>
   const signMatch = window.location.pathname.match(/^\/sign\/([A-Za-z0-9_-]{8,})/);
   if (signMatch) return <OnboardingSignSurface token={signMatch[1]} />;
-  // Dev: Ryft sandbox payment harness (?mode=ryft-test) — sandbox only.
-  if (urlMode === 'ryft-test') return <RyftTestSurface />;
   if (!urlMode) {
     const customerCtx = parseCustomerUrlForBoot();
     // Multi-site group landing pages — /order/<groupSlug> (or ?group=) for online
@@ -330,7 +327,7 @@ export default function App() {
 
   // MPOS — phone-shaped POS for servers/runners. Reuses the same store + sync
   // layer as ?mode=pos but with a portrait, single-column UI. Phase 1A: walk-in
-  // only, cash + REST card. Phase 1B will add Stripe Tap to Pay native bridges.
+  // only, cash + REST card.
   // Kiosk card problems stay on screen until staff tap OK (components/KioskStaffAlert.jsx).
   if (deviceMode === 'mpos') return <><SyncBridge onSyncPulse={handleSyncPulse}/><MposDeviceProfileSync pairedDevice={pairedDevice}/><MPOSSurface /><KioskStaffAlert /><DeviceLinkBanner /></>;
 

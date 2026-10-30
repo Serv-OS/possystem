@@ -3,13 +3,14 @@
 // Database fence stage 1, contract C0. The ONLY writer of Ops public.payment_proofs.
 //
 // A customer page (online, QR, catering) asks: "I paid with this payment, please record it".
-// This function looks the payment up at the PROCESSOR (or in our server written ledger for
-// Adyen, gift cards and loyalty), checks it belongs to this venue and is in the state the kind
-// asks for, and upserts one proof row with the amount the processor reports. Nothing in the
+// This function looks the payment up in our server written ledger (adyen_payments, the gift
+// card ledger, the loyalty ledgers), checks it belongs to this venue and is in the state the
+// kind asks for, and upserts one proof row with the amount the ledger reports. Nothing in the
 // request body is trusted for money. place_public_order and settle_qr_tab then count only
-// these rows as "paid".
+// these rows as "paid". 29 Oct 2026 (Drop D): Adyen is the only card processor; the Stripe
+// and Ryft lookups are gone and 'stripe' / 'ryft' are refused at parse ('processor').
 //
-// Body: { ops_location_id, processor: 'stripe'|'ryft'|'adyen'|'gift'|'loyalty',
+// Body: { ops_location_id, processor: 'adyen'|'gift'|'loyalty',
 //         kind: 'card'|'preauth'|'capture'|'gift'|'loyalty', payment_ref }
 // Answer: { ok: true, proof_id, amount_minor, kind } or { ok: false, reason }.
 //   reason 'unsupported' means the payment_proofs table does not exist yet (20260919a not
@@ -19,12 +20,10 @@
 // (it checks the caller's session itself: any session may ask, because a proof only records
 // what the processor already says, for the venue the payment itself names).
 
-import Stripe from 'https://esm.sh/stripe@14.21.0?target=denonext';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { getPaymentSession } from '../_shared/ryft.ts';
 import {
-  parseProofRequest, stripeProof, ryftProof, adyenProof, giftProof, loyaltyProof, allowProofRequest,
-  processorOrderRef, processorParentRef, loyaltyRewardValueMinor, loyaltyRewardMeta,
+  parseProofRequest, adyenProof, giftProof, loyaltyProof, allowProofRequest,
+  processorOrderRef, loyaltyRewardValueMinor, loyaltyRewardMeta,
 } from '../_shared/paymentProofRules.js';
 
 const cors = {
@@ -33,7 +32,6 @@ const cors = {
 };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
 
-const stripe = new Stripe(Deno.env.get('STRIPE_SECRET_KEY') ?? '', { apiVersion: '2024-06-20' });
 const opsAdmin = createClient(
   Deno.env.get('SUPABASE_URL') ?? '',
   Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
@@ -81,28 +79,7 @@ Deno.serve(async (req) => {
   let verdict: { ok: boolean; amount_minor?: number; currency?: string | null; reason?: string } = { ok: false, reason: 'not_seen' };
   const meta: Record<string, unknown> = { caller: caller.id };
   try {
-    if (processor === 'stripe') {
-      const { data: msa } = await platformAdmin.from('merchant_stripe_accounts')
-        .select('stripe_account_id').in('location_id', platformIds).limit(1).maybeSingle();
-      if (!msa?.stripe_account_id) return json({ ok: false, reason: 'no_account' }, 400);
-      const pi = await stripe.paymentIntents.retrieve(ref, {}, { stripeAccount: msa.stripe_account_id });
-      verdict = stripeProof(pi, kind, opsId);
-      meta.status = (pi as any)?.status ?? null;
-      // Fix round (C18): the order this payment was made for, from the processor's own record.
-      meta.order_ref = processorOrderRef('stripe', pi);
-      // Fix round 2 (C24): an overage names the tab's card hold it belongs to.
-      meta.parent_ref = processorParentRef('stripe', pi);
-    } else if (processor === 'ryft') {
-      const { data: mra } = await platformAdmin.from('merchant_ryft_accounts')
-        .select('ryft_account_id').in('location_id', platformIds).limit(1).maybeSingle();
-      const accountId = (mra?.ryft_account_id as string | undefined) || undefined;
-      const ses = await getPaymentSession(ref, accountId ? { accountId } : {});
-      if (!ses.ok) return json({ ok: false, reason: ses.status === 404 ? 'not_seen' : 'processor' }, ses.status === 404 ? 404 : 502);
-      verdict = ryftProof(ses.data, kind, { venueAccountId: accountId });
-      meta.status = ses.data?.status ?? null;
-      meta.order_ref = processorOrderRef('ryft', ses.data);
-      meta.parent_ref = processorParentRef('ryft', ses.data);
-    } else if (processor === 'adyen') {
+    if (processor === 'adyen') {
       const { data: row } = await platformAdmin.from('adyen_payments')
         .select('psp_reference, location_id, amount_minor, currency, success, capture_required, captured_at, last_event_code, merchant_reference, raw')
         .eq('psp_reference', ref).maybeSingle();
@@ -151,7 +128,6 @@ Deno.serve(async (req) => {
 
   if (!verdict.ok) return json({ ok: false, reason: verdict.reason || 'not_seen' }, 409);
   if (meta.order_ref == null) delete meta.order_ref;
-  if (meta.parent_ref == null) delete meta.parent_ref;
 
   const { data: up, error: upErr } = await opsAdmin.from('payment_proofs').upsert({
     processor,

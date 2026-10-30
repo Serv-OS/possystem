@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  kycState, adyenVenueStatus, stripeVenueStatus, matchesVenueSearch,
+  kycState, adyenVenueStatus, matchesVenueSearch,
   lookupRows, planLine, linkResultLines, candidateLabel,
 } from './adyenAdminRows.js';
 
@@ -88,12 +88,6 @@ test('adyenVenueStatus: Payouts means allowed AND paid out once the sweep column
 
 test('adyenVenueStatus: a legacy EU row reads as UK', () => {
   assert.equal(adyenVenueStatus({ region: 'EU' }, { currency: 'GBP' }).region, 'UK');
-});
-
-test('stripeVenueStatus: three states', () => {
-  assert.equal(stripeVenueStatus(null).status.label, 'Not linked');
-  assert.equal(stripeVenueStatus({ charges_enabled: false }).status.tone, 'missing');
-  assert.equal(stripeVenueStatus({ charges_enabled: true, stripe_account_id: 'acct_1' }).status.tone, 'ok');
 });
 
 test('matchesVenueSearch: name, code, slug and company, every token', () => {

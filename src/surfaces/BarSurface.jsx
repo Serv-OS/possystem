@@ -13,7 +13,6 @@ import { getActiveLocationSync, ensureAuthToken, isMock } from '../lib/supabase'
 import { confirmLinkBeforeCard } from '../lib/deviceLink';
 import { holdPaymentBusy } from '../lib/paymentBusy';
 import { usePaymentBusy } from '../lib/usePaymentBusy';
-import { getLocationProcessorInfo } from '../lib/payments/processor';
 import { usableOrderRef } from '../lib/payments/terminalJobCloser';
 import { isTrainingMode } from '../lib/trainingMode';
 import { money, currencySymbol } from '../lib/currency';
@@ -55,11 +54,7 @@ function timeOpen(date) {
 }
 
 // ─── Open Tab Modal ──────────────────────────────────────────────────────────
-// v5.5.909: `canPreAuth` is resolved ONCE by BarSurface (below) and passed in, rather than
-// looked up here — the lookup is async, so doing it in the modal would render the pre-auth
-// toggle for a frame and then yank it away, which is exactly the "offered then withdrawn"
-// behaviour we are removing.
-function OpenTabModal({ onConfirm, onCancel, canPreAuth = true }) {
+function OpenTabModal({ onConfirm, onCancel }) {
   const { tables, tabs } = useStore();
   const [name, setName]           = useState('');
   const [seatId, setSeatId]       = useState('');
@@ -133,13 +128,6 @@ function OpenTabModal({ onConfirm, onCancel, canPreAuth = true }) {
             <input className="input" placeholder="Birthday, celebrating, VIP..." value={note} onChange={e=>setNote(e.target.value)}/>
           </div>
 
-          {/* v5.5.909 — NEVER OFFER A HOLD WE CANNOT TAKE. Ryft in-person terminals have no
-              card-hold capability at all (pre-auth is Stripe-Terminal-only), so on a Ryft venue
-              this toggle could only ever lead to a dead end. There WAS a guard, but it fired in
-              TabPreAuthTerminal AFTER staff had flipped the toggle and pressed "Open tab" — they
-              were still offered something that always failed. Hidden at source now. Tabs still
-              open normally on Ryft, just without a hold. */}
-          {canPreAuth && (
           <div style={{ background:'var(--bg3)', borderRadius:12, padding:'12px 14px', border:'1px solid var(--bdr)' }}>
             <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom: preAuth ? 10 : 0 }}>
               <div>
@@ -169,7 +157,7 @@ function OpenTabModal({ onConfirm, onCancel, canPreAuth = true }) {
               </div>
             )}
           </div>
-          )}
+
         </div>
 
         <div style={{ display:'flex', gap:8, marginTop:20 }}>
@@ -198,19 +186,6 @@ export default function BarSurface() {
   const { tabs, activeTabId, setActiveTab, openTab, addRoundToTab, updateTabNote, updateTabStatus, setTabHold, closeTab, voidTabRound, seedTabs, showToast, eightySixIds, allergens, setPendingItem, clearPendingItem, pendingItem, menuCategories, quickScreenIds, menuItems: storeMenuItems, modifierGroupDefs, menus, deviceConfig, staff, recordWalkInClosedCheck } = useStore();
 
   const [showOpenModal, setShowOpenModal]   = useState(false);
-  // v5.5.909: can this venue take a card hold at all? Ryft in-person cannot — pre-auth is
-  // Stripe-Terminal-only. Resolved once here (the helper caches per location) so the modal
-  // never flashes a toggle it is about to remove. Defaults TRUE and only ever goes false on a
-  // DEFINITIVE 'ryft': getLocationProcessorInfo returns { processor:'stripe', definitive:false }
-  // on any lookup blip, and a blip must never hide a working Stripe venue's pre-auth.
-  const [canPreAuth, setCanPreAuth] = useState(true);
-  useEffect(() => {
-    let alive = true;
-    getLocationProcessorInfo(getActiveLocationSync())
-      .then(info => { if (alive) setCanPreAuth(!(info?.definitive && info.processor === 'ryft')); })
-      .catch(() => { /* leave it enabled — fail open to today's Stripe behaviour */ });
-    return () => { alive = false; };
-  }, []);
   const [cat, setCat]                       = useState('all');
   const [search, setSearch]                 = useState('');
   const [roundItems, setRoundItems]         = useState([]);  // items being built for next round
@@ -501,9 +476,7 @@ export default function BarSurface() {
       // which used to be dropped here entirely (nothing to reverse on a refund).
       giftCard: giftRecordFrom(payInfo || {}),
       // v5.5.808: stamp WHICH processor took the card + the card-scheme receipt
-      // block. Without these a Ryft bar-tab payment recorded processor 'stripe',
-      // so a later refund routed to Stripe with a ps_ id and silently failed —
-      // and the UK card receipt block never printed on bar-tab receipts.
+      // block (the refund routes by the processor; the UK card receipt block prints from it).
       processor: payInfo?.processor || 'adyen',
       cardReceipt: payInfo?.cardReceipt || null,
       // v5.5.323: carry the card PaymentIntent so a refund returns funds to the
@@ -553,24 +526,13 @@ export default function BarSurface() {
 
   const releaseHold = async (tab) => {
     if (!tab?.preAuthPaymentIntentId) return;
-    if (tab.preAuthProcessor === 'adyen') {
-      try { await adyenHoldCall('hold_release', tab); }
-      catch (e) { console.warn('[bar-tab] adyen release failed:', e?.message); }
-      return;
-    }
-    try {
-      const token = await ensureAuthToken();
-      await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-cancel-reader-action`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({ payment_intent_id: tab.preAuthPaymentIntentId, location_id: getActiveLocationSync() }),
-      });
-    } catch (e) { console.warn('[bar-tab] release hold failed:', e?.message); }
+    try { await adyenHoldCall('hold_release', tab); }
+    catch (e) { console.warn('[bar-tab] adyen release failed:', e?.message); }
   };
 
-  // v5.5.614: STEP UP a card hold — raise the pre-auth ceiling on the existing PI (Stripe
-  // incremental authorization; no re-tap). Lets a tab keep one running bill past its original
-  // hold. Falls back to the lock ("take payment / new tab") where the card doesn't support it.
+  // v5.5.614: STEP UP a card hold — raise the pre-auth ceiling on the existing hold (no re-tap).
+  // Lets a tab keep one running bill past its original hold. Falls back to the lock ("take
+  // payment / new tab") where the card doesn't support it.
   const [holdBusy, setHoldBusy] = useState(false);
   const increaseHold = async (tab) => {
     if (!tab?.preAuthPaymentIntentId || holdBusy) return;
@@ -583,26 +545,9 @@ export default function BarSurface() {
     setHoldBusy(true);
     const releaseBusy = holdPaymentBusy('bar tab hold increase');   // v5.11.1 (lib/paymentBusy.js)
     try {
-      const token = await ensureAuthToken();
-      if (tab.preAuthProcessor === 'adyen') {
-        await adyenHoldCall('hold_increase', tab, Math.round(newAmt * 100));
-        setTabHold(tab.id, Math.round(newAmt * 100));
-        showToast(`Hold raised to ${money(newAmt)}`, 'success');
-        setHoldBusy(false);
-        return;
-      }
-      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-increment-authorization`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({ payment_intent_id: tab.preAuthPaymentIntentId, location_id: getActiveLocationSync(), amount_minor: Math.round(newAmt * 100) }),
-      });
-      const j = await res.json().catch(() => ({}));
-      if (j?.ok && j.amount_minor) {
-        setTabHold(tab.id, j.amount_minor);
-        showToast(`Card hold increased to ${money(j.amount_minor / 100)}`, 'success');
-      } else {
-        showToast(`Couldn't increase the hold on this card — take payment to close, or open a new tab.`, 'error');
-      }
+      await adyenHoldCall('hold_increase', tab, Math.round(newAmt * 100));
+      setTabHold(tab.id, Math.round(newAmt * 100));
+      showToast(`Hold raised to ${money(newAmt)}`, 'success');
     } catch (e) {
       showToast('Could not reach the card processor — try again.', 'error');
     } finally { setHoldBusy(false); releaseBusy(); }
@@ -633,38 +578,21 @@ export default function BarSurface() {
         // TRAINING MODE: never capture a real pre-auth. Simulate a full capture so
         // the tab closes in-memory (the closed_check itself is gated in db.js).
         capturedMinor = captureMinor;
-      } else if (tab.preAuthProcessor === 'adyen') {
+      } else {
         await adyenHoldCall('hold_capture', tab, captureMinor);
         capturedMinor = captureMinor;
-      } else {
-        // /api/stripe-capture is the same Vercel endpoint the QR tab flow uses;
-        // it clamps to the actual amount_capturable on the connected account.
-        const res = await fetch('/api/stripe-capture', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            paymentIntentId: tab.preAuthPaymentIntentId,
-            stripeAccount: tab.preAuthStripeAccount,
-            amountToCapture: captureMinor,
-          }),
-        });
-        const j = await res.json().catch(() => ({}));
-        if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
-        capturedMinor = Number.isFinite(j.amount) ? j.amount : captureMinor;
       }
       recordTabClosedCheck(tab, {
         method: 'card',
         grand: billTotal,   // v5.7.34: the taxed bill (UK inclusive-only: === tab.total)
         // v5.6.94: stamp WHICH processor held the card (v5.5.808's rule — the
-        // refund routes by this). An Adyen-held tab recorded processor
-        // 'stripe', so a refund would route to Stripe with an Adyen psp
-        // reference. Demo tabs record 'adyen' with their DEMO-HOLD- reference,
+        // refund routes by this). Demo tabs record 'adyen' with their DEMO-HOLD- reference,
         // auditable the same way demo sales carry a DEMO- transaction id.
         processor: tab.preAuthProcessor || 'adyen',
         stripePaymentIntentId: tab.preAuthPaymentIntentId,
         paymentIntents: [{ id: tab.preAuthPaymentIntentId, amountMinor: capturedMinor }],
         // v5.9.11: the card tender is what the hold CAPTURED, which can be short of the bill,
-        // and never more than was asked for (Stripe's `amount` is the hold, not the capture).
+        // and never more than was asked for (the hold is a ceiling, not the capture).
         tenders: singleTender('card', Math.min(capturedMinor, captureMinor) / 100, 0, { pspRef: tab.preAuthPaymentIntentId, processor: tab.preAuthProcessor || 'adyen' }),
       });
       setHoldClose(null); setHoldCloseState('idle');
@@ -994,7 +922,7 @@ export default function BarSurface() {
       </div>
 
       {/* Modals */}
-      {showOpenModal&&<OpenTabModal onConfirm={handleOpenTab} onCancel={()=>setShowOpenModal(false)} canPreAuth={canPreAuth}/>}
+      {showOpenModal&&<OpenTabModal onConfirm={handleOpenTab} onCancel={()=>setShowOpenModal(false)}/>}
       {/* v5.5.324: card pre-auth hold collected on the reader before the tab opens */}
       {pendingTabOpts&&(
         <TabPreAuthTerminal
@@ -1104,7 +1032,7 @@ export default function BarSurface() {
                 {row('Bill total', gbp(totalMinor))}
                 {row('Held on card', gbp(heldMinor))}
                 {row('Will charge now', gbp(captureMinor), true)}
-                {shortfall > 0 && <div style={{ fontSize:11, color:'#e8a020', marginTop:8, lineHeight:1.4 }}>⚠ Bill is {gbp(shortfall)} over the hold — Stripe can only capture the held amount. Collect the {gbp(shortfall)} difference separately after closing.</div>}
+                {shortfall > 0 && <div style={{ fontSize:11, color:'#e8a020', marginTop:8, lineHeight:1.4 }}>⚠ Bill is {gbp(shortfall)} over the hold — only the held amount can be captured. Collect the {gbp(shortfall)} difference separately after closing.</div>}
               </div>
               {holdCloseState === 'error' && <div style={{ fontSize:12, color:'var(--red)', marginBottom:12 }}>{holdCloseErr}</div>}
               <div style={{ display:'flex', flexDirection:'column', gap:8 }}>

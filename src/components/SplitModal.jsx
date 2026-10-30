@@ -1,33 +1,24 @@
 import { useState, useMemo, useRef, useEffect } from 'react';
 import { useStore } from '../store';
-import { supabase, isMock } from '../lib/supabase';
-import { getActiveLocationSync, ensureAuthToken } from '../lib/supabase';
+import { supabase } from '../lib/supabase';
+import { getActiveLocationSync } from '../lib/supabase';
 import { confirmLinkBeforeCard } from '../lib/deviceLink';
 import { usePaymentBusy } from '../lib/usePaymentBusy';
-import {
-  resolvePlatformLocationId,
-  getAssignedNetworkReader,
-} from '../lib/networkReader';
 import { getLocationProcessorInfo, takesCardsOnTerminal } from '../lib/payments/processor';
-import { chargeRyftTerminal } from '../lib/payments/ryftTerminal';
 // v5.5.904: split legs dispatch a REAL terminal job, exactly like a full payment.
 import { KICK_WAIT_MS } from '../lib/payments/kickRace';
 import { findPaxTerminal, dispatchTerminalJob, buildCheckKey, toMinor, getPosDeviceId,
          pollTerminalJob, cancelTerminalJob } from '../lib/payments/terminalJobs';
-import { publishTipRequest, onCustomerTip, displayUsesScreen } from '../lib/customerDisplay';
-import { money, currencySymbol, stripeCurrency } from '../lib/currency';
+import { money, currencySymbol, venueCurrency } from '../lib/currency';
 import { isTrainingMode } from '../lib/trainingMode';
 import { stageGiftCard } from '../lib/giftCommit';
 
 // ─── v5.5.291: Card terminal for split portions ─────────────────────────────
-// Sends the portion amount to the card terminal — same flow as CheckoutModal's
-// CardTerminal but scoped to a single split portion. v5.5.808: dispatches by
-// the venue's processor — Ryft venues drive the PAX via chargeRyftTerminal.
-// v5.5.830: Ryft has no on-reader tip prompt, so each split payer is asked for a
-// gratuity on the CUSTOMER DISPLAY before their portion is charged — matching
-// Stripe splits, which pass skip_tipping:false so the reader asks per portion.
+// Sends the portion amount to the paired Adyen terminal as a terminal job — same flow as
+// CheckoutModal's PaxTerminal but scoped to a single split portion. The terminal collects
+// the tip itself (terminal_devices.tip_config), so each split payer is asked on the terminal.
 function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
-  const [state, setState] = useState('resolving'); // resolving | awaiting_tip | starting | collecting | success | error | cancelling | simulated
+  const [state, setState] = useState('resolving'); // resolving | starting | collecting | success | error | cancelling
   const [statusMsg, setStatusMsg] = useState('Connecting to reader…');
   const [errorMsg, setErrorMsg] = useState(null);
   const [readerLabel, setReaderLabel] = useState('');
@@ -43,63 +34,21 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
     legKeyRef.current = (typeof crypto !== 'undefined' && crypto.randomUUID)
       ? crypto.randomUUID() : `leg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   }
-  const piIdRef = useRef(null);
-  const readerIdRef = useRef(null);
-  const platformLocRef = useRef(null);
   const startedRef = useRef(false);
-  const processorRef = useRef('stripe');
-  const ryftAbortRef = useRef(null);
-  const ryftFlightRef = useRef(null);
-  const tipNonceRef = useRef(0);
-  const portionTipRef = useRef(0);   // gratuity for THIS portion, chosen on the display
-  const tipSkipRef = useRef(null);   // staff override while waiting on the customer
+  const portionTipRef = useRef(0);   // gratuity for THIS portion, chosen on the terminal
   // v5.11.1: payment busy while this leg's card screen is up (lib/paymentBusy.js), taken before
   // the effect below starts the card.
   usePaymentBusy(true, 'split card leg');
 
-  // Ask this payer for a gratuity on the customer display, then continue.
-  // Resolves to the tip (0 if declined, skipped, or nothing is listening).
-  const askPortionTip = () => new Promise((resolve) => {
-    if (!displayUsesScreen()) return resolve(0);
-    (async () => {
-      // v5.6.90: this used to fetch location_reader_settings (tipping_enabled +
-      // percentages) and bail out with no tip when tipping_enabled === false.
-      // Two problems: the row is written by the Stripe Reader settings panel
-      // keyed by the PLATFORM location id but was read here with the OPS id, so
-      // on venues where the ids differ it silently read nothing — and where they
-      // matched, a stale tipping_enabled=false row could kill split-leg tips
-      // with no UI to turn them back on (that panel is hidden on non-Stripe
-      // venues from v5.6.90). The real tipping switch is per terminal:
-      // terminal_devices.tip_config, resolved server-side by terminal-job-create
-      // — and this legacy display prompt only runs when no such terminal exists.
-      // cfg {} makes the display fall back to its own defaults; the customer can
-      // always decline, and staff can always skip.
-      const cfg = {};
-
-      const nonce = ++tipNonceRef.current;
-      let settled = false;
-      const done = (v) => { if (settled) return; settled = true; off && off(); resolve(v); };
-      const off = onCustomerTip((pl) => {
-        if (!pl || pl.nonce !== nonce) return;
-        done(Math.max(0, Number(pl.tip) || 0));
-      });
-      setState('awaiting_tip');
-      setStatusMsg('Waiting for the customer to choose a tip…');
-      publishTipRequest({ total: amount, cfg, nonce });
-      setTimeout(() => done(0), 60000);   // never strand the till
-      tipSkipRef.current = () => done(0); // staff "Skip tip" button
-    })();
-  });
-
   // ─── PAX terminal job branch (v5.5.904) ───────────────────────────────
-  // THE FIX: a split card leg now creates a terminal_jobs row, which is the ONLY thing
-  // paxpay's JobPoller reads. Before this, splits called chargeRyftTerminal directly (the
-  // pre-v5.5.837 REST route), so no job row existed and the terminal never woke — a full
-  // payment landed on the PAX and a split leg silently did not.
+  // THE FIX: a split card leg creates a terminal_jobs row, which is the ONLY thing the
+  // terminal's poller reads. Before this, splits charged the terminal directly, so no job row
+  // existed and the terminal never woke — a full payment landed on the PAX and a split leg
+  // silently did not.
   //
-  // NOTE: no askPortionTip here. The PAX collects the tip itself (bands come from
+  // NOTE: no tip prompt here. The PAX collects the tip itself (bands come from
   // terminal_devices.tip_config), so prompting on the customer display too would ask twice
-  // and desync the amount. askPortionTip stays on the legacy fallback below.
+  // and desync the amount.
   const runPaxJob = async (opsLocationId, terminal) => {
     setState('starting');
     setStatusMsg('Sending to the card terminal…');
@@ -124,7 +73,7 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
         tipBasisMinor: dueMinor,
         dueMinor,
         closedCheckId,
-        currency: stripeCurrency(),
+        currency: venueCurrency(),
         // 'pos_split_leg' is deliberately NOT 'pax_table_pay': TerminalJobReconciler filters
         // on that source to auto-close a WHOLE check, which must never happen for one leg.
         checkDraft: { source: 'pos_split_leg', portionLabel, totalMinor: dueMinor },
@@ -144,7 +93,7 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
       });
       // v5.5.908 — APPROVED MEANS THE MONEY MOVED. `needs_human` is ADVISORY: the settle
       // RPC only sets it on an amount/session mismatch AFTER it has already resolved the
-      // job to 'approved' (20260729_terminal_jobs_ryft_settle.sql:145-156) — the card was
+      // job to 'approved' (the terminal settle RPC) — the card was
       // captured for due + tip either way. Treating it as a failure dead-ended the leg into
       // "Terminal did not complete", so the portion never marked paid and the gratuity the
       // customer typed on the PAX was discarded. Retrying then throws ALREADY_PAID, so the
@@ -182,47 +131,6 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
     }
   };
 
-  // ─── Ryft terminal branch (v5.5.808) ──────────────────────────────────
-  const runRyftPayment = async (opsLocationId) => {
-    // v5.5.830: settle the gratuity FIRST — Ryft takes one amount and cannot
-    // add a tip after the fact, so portion+tip must be known before charging.
-    const tip = await askPortionTip();
-    portionTipRef.current = tip;
-    setState('starting');
-    setStatusMsg('Starting terminal payment…');
-    setErrorMsg(null);
-    setReaderLabel('Ryft terminal');
-    const controller = new AbortController();
-    ryftAbortRef.current = controller;
-    const flight = chargeRyftTerminal({
-      locationId: opsLocationId,
-      posDeviceId: (() => { try { return JSON.parse(localStorage.getItem('rpos-device') || 'null')?.id || null; } catch { return null; } })(),
-      amountMinor: Math.round((amount + portionTipRef.current) * 100),
-      currency: stripeCurrency(),
-      captureMethod: 'automatic',
-      signal: controller.signal,
-      onProgress: (st) => {
-        if (st === 'present_card') { setState('collecting'); setStatusMsg('Ask the customer to present their card'); }
-        else if (st === 'processing') setStatusMsg('Processing on the terminal…');
-      },
-    });
-    ryftFlightRef.current = flight;
-    try {
-      const result = await flight;
-      setState('success');
-      setStatusMsg('Payment approved');
-      // Tip was chosen by this payer on the customer display before charging.
-      setTimeout(() => onComplete('card', result.paymentSessionId, portionTipRef.current), 800);
-    } catch (e) {
-      if (e?.message === 'cancelled') return;   // staff cancel — handled by cancelReader
-      setState('error');
-      setErrorMsg(e?.declined ? 'Card declined — try another card' : (e?.message || 'Terminal payment failed'));
-    } finally {
-      ryftAbortRef.current = null;
-      ryftFlightRef.current = null;
-    }
-  };
-
   // Resolve processor + reader, then start payment. Re-runs on Retry (attempt).
   useEffect(() => {
     let cancelled = false;
@@ -244,54 +152,26 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
         const linkGate = await confirmLinkBeforeCard();
         if (cancelled) return;
         if (!linkGate.ok) { setState('error'); setErrorMsg(linkGate.message); return; }
-        // v5.5.808: dispatch by processor. Non-definitive lookups do NOT count
-        // as Stripe — see the no-reader guard below.
+        // v5.5.808: the venue's payment account ('adyen'; a non-definitive answer is a lookup blip).
         let procInfo = { processor: 'adyen', definitive: false };
         try { procInfo = await getLocationProcessorInfo(opsLocationId); } catch { /* stays non-definitive */ }
         if (cancelled) return;
-        processorRef.current = procInfo.processor;
         if (takesCardsOnTerminal(procInfo.processor)) {
           if (!startedRef.current) {
             startedRef.current = true;
-            // v5.5.904: prefer the terminal-job path (same as a full payment). Only fall
-            // back to the direct REST charge when this till has no PAX bound to it —
-            // and ONLY on Ryft: the REST helper speaks Ryft's API, never Adyen's.
+            // v5.5.904: the terminal-job path (same as a full payment). With no PAX bound to
+            // this till there is nothing to charge: say so.
             let target = null, why = null;
             try { const r = await findPaxTerminal({ posDeviceId: getPosDeviceId() }); target = r?.terminal || null; why = r?.reason || null; }
-            catch { /* fall through to legacy */ }
+            catch { /* no terminal found */ }
             if (cancelled) return;
             if (target) runPaxJob(opsLocationId, target);
-            else if (procInfo.processor === 'ryft') {
-              if (why) console.warn('[split] no PAX terminal —', why);
-              runRyftPayment(opsLocationId);
-            } else {
+            else {
               setState('error');
               setErrorMsg(why || 'No card reader is linked to this venue — register one in Back Office → Card readers.');
             }
           }
           return;
-        }
-        const platformId = await resolvePlatformLocationId(opsLocationId);
-        if (cancelled) return;
-        platformLocRef.current = platformId;
-        const assigned = await getAssignedNetworkReader();
-        if (cancelled) return;
-        if (!assigned) {
-          // v5.5.808: the click-to-approve simulator is dev-mock ONLY — it used
-          // to close real split portions as PAID with no money taken. Production
-          // gets an honest dead-end instead.
-          if (isMock) { setState('simulated'); return; }
-          setState('error');
-          setErrorMsg(procInfo.definitive
-            ? 'No card reader is available on this till — check the reader assignment, or take cash / gift card.'
-            : 'Card payments unavailable — check this till’s connection and try again.');
-          return;
-        }
-        setReaderLabel(assigned.label || assigned.stripe_reader_id);
-        readerIdRef.current = assigned.stripe_reader_id;
-        if (!startedRef.current) {
-          startedRef.current = true;
-          runPayment(assigned, platformId);
         }
       } catch (e) {
         if (!cancelled) { setState('error'); setErrorMsg(e?.message || 'Reader setup failed'); }
@@ -300,118 +180,13 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
     return () => {
       cancelled = true;
       pollAbortRef.current = true;
-      // Best-effort cancel on unmount — Ryft abort fires ryft-terminal-cancel
-      // from the helper so the PAX doesn't sit live collecting.
-      try { ryftAbortRef.current?.abort(); } catch { /* */ }
-      if (piIdRef.current && readerIdRef.current && platformLocRef.current) {
-        cancelStripeActionSilent().catch(() => {});
-      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [attempt]);
 
-  // Cancel the Stripe reader action WITHOUT touching UI state — used by the
-  // unmount cleanup and the interactive cancel button.
-  const cancelStripeActionSilent = async () => {
-    const token = await ensureAuthToken();
-    await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-cancel-reader-action`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-      body: JSON.stringify({ payment_intent_id: piIdRef.current, reader_id: readerIdRef.current, location_id: platformLocRef.current }),
-    });
-  };
-
-  const runPayment = async (reader, platformId) => {
-    setState('starting');
-    setStatusMsg('Pushing to reader…');
-    setErrorMsg(null);
-    try {
-      const opsDeviceId = (() => {
-        try { const raw = localStorage.getItem('rpos-device'); return raw ? (JSON.parse(raw)?.id || '') : ''; }
-        catch { return ''; }
-      })();
-      if (!opsDeviceId) throw new Error('POS device id missing — pair this device first.');
-
-      const token = await ensureAuthToken();
-      if (!token) throw new Error('Could not obtain auth token');
-
-      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-process-payment-on-reader`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          pos_device_id: opsDeviceId,
-          amount_minor: Math.round(amount * 100),
-          currency: stripeCurrency(),
-          line_items: [{ description: portionLabel || 'Split portion', amount: Math.round(amount * 100), quantity: 1 }],
-          // v5.5.331: DON'T skip the reader tip prompt on split portions. It was
-          // hardcoded skip_tipping:true ("handled at table level") but split tips
-          // were never actually collected at table level (the split records
-          // tip:0), so split card payers were never asked to tip. Omitting the
-          // flag makes each portion follow the location's tipping settings —
-          // same as the main checkout — so the reader prompts per portion.
-          skip_tipping: false,
-        }),
-      });
-      const j = await res.json();
-      console.log('[SplitCardTerminal] process-payment response:', j);
-      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
-
-      piIdRef.current = j.payment_intent_id;
-      setState('collecting');
-      setStatusMsg('Tap or insert card on reader');
-      pollAbortRef.current = false;
-      pollPayment(j.payment_intent_id, j.reader_id, platformId);
-    } catch (e) {
-      setState('error');
-      setErrorMsg(e?.message || 'Payment failed');
-    }
-  };
-
-  const pollPayment = async (piId, readerId, locId) => {
-    const start = Date.now();
-    const TIMEOUT = 5 * 60 * 1000;
-    while (!pollAbortRef.current && Date.now() - start < TIMEOUT) {
-      await new Promise(r => setTimeout(r, 1500));
-      if (pollAbortRef.current) return;
-      try {
-        const token = await ensureAuthToken();
-        const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-poll-reader-action`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-          body: JSON.stringify({ payment_intent_id: piId, reader_id: readerId, location_id: locId }),
-        });
-        const j = await res.json();
-        if (!res.ok) { console.warn('[SplitCardTerminal] poll error:', j.error); continue; }
-        if (j.reader_action?.status === 'in_progress') setStatusMsg('Customer is paying…');
-        if (j.is_terminal_state) {
-          if (j.is_success) {
-            setState('success');
-            setStatusMsg('Payment approved');
-            // v5.5.323: carry the PaymentIntent id up so this split portion's
-            // card refund can be auto-processed back to the customer's card.
-            // v5.5.332: also derive the reader-collected tip (amount_received
-            // minus the portion base) so split tips reach the closed check for
-            // reports + reconciliation — same as the main checkout flow.
-            const receivedMinor = Number.isFinite(j.amount_received) ? j.amount_received : null;
-            const tip = receivedMinor != null ? Math.max(0, +((receivedMinor / 100) - amount).toFixed(2)) : 0;
-            setTimeout(() => onComplete('card', piIdRef.current, tip), 800);
-          } else {
-            setState('error');
-            setErrorMsg(j.last_payment_error || j.reader_action?.failure_message || 'Payment failed');
-          }
-          return;
-        }
-      } catch (e) { console.warn('[SplitCardTerminal] poll failed:', e?.message); }
-    }
-    if (!pollAbortRef.current) { setState('error'); setErrorMsg('Timed out — 5 minutes'); }
-  };
-
   const cancelReader = async () => {
     pollAbortRef.current = true;
     setState('cancelling');
-    // v5.5.808: Ryft branch — abort the in-flight charge and WAIT for the
-    // cancel to be confirmed before leaving (same rule as the main checkout:
-    // never walk away from a PAX that might still be live collecting).
     // v5.5.904: a dispatched PAX job is cancelled server-side (which voids the live action
     // at the processor); never just walk away from a terminal that may still be collecting.
     if (paxJobRef.current) {
@@ -433,46 +208,10 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
       onBack();
       return;
     }
-    if (processorRef.current === 'ryft') {
-      try { ryftAbortRef.current?.abort(); } catch { /* */ }
-      const flight = ryftFlightRef.current;
-      if (flight) {
-        const outcome = await Promise.race([
-          flight.then(() => ({ ok: true, paid: true }))
-                .catch(e => ({ ok: e?.message === 'cancelled' && e?.cancelConfirmed !== false, paid: false })),
-          new Promise(r => setTimeout(() => r({ ok: false, timeout: true }), 10000)),
-        ]);
-        if (outcome.paid) { setState('success'); return; }   // tap beat the cancel — runRyftPayment already completed the portion
-        if (!outcome.ok) {
-          setState('error');
-          setErrorMsg('Could not confirm the terminal cancel — check the terminal screen before retrying. Do NOT let the customer tap.');
-          return;
-        }
-      }
-      onBack();
-      return;
-    }
-    try {
-      await cancelStripeActionSilent();
-    } catch (e) { console.warn('[SplitCardTerminal] cancel failed:', e?.message); }
     onBack();
   };
 
   // ─── Render ─────────────────────────────────────────────────
-  if (state === 'simulated') {
-    // No reader assigned — simulated approval (dev-mock ONLY, gated above)
-    return (
-      <div style={{ textAlign: 'center', padding: '16px 0' }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 8 }}>No card reader assigned · dev simulator</div>
-        <div style={{ fontSize: 32, fontWeight: 800, color: 'var(--t1)', fontFamily: 'DM Mono,monospace', marginBottom: 16 }}>{money(amount)}</div>
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
-          <button className="btn btn-ghost" style={{ height: 42 }} onClick={onBack}>← Back</button>
-          <button className="btn btn-grn" style={{ height: 42, padding: '0 24px' }} onClick={() => onComplete('card', null)}>Simulate approved</button>
-        </div>
-      </div>
-    );
-  }
-
   if (state === 'success') {
     return (
       <div style={{ textAlign: 'center', padding: '20px 0' }}>
@@ -494,29 +233,6 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
           <button className="btn btn-grn" style={{ height: 42, padding: '0 22px' }}
             onClick={() => { startedRef.current = false; pollAbortRef.current = false; setState('resolving'); setErrorMsg(null); setAttempt(a => a + 1); }}>
             Retry
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // v5.5.830: waiting on this payer's gratuity choice on the customer display.
-  if (state === 'awaiting_tip') {
-    return (
-      <div style={{ textAlign: 'center', padding: '16px 0' }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.07em', marginBottom: 8 }}>
-          {portionLabel} — Gratuity
-        </div>
-        <div style={{ fontSize: 40, marginBottom: 8 }}>💬</div>
-        <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--t1)' }}>Waiting for the customer</div>
-        <div style={{ fontSize: 13, color: 'var(--t3)', marginTop: 6, lineHeight: 1.5 }}>
-          They're choosing a tip on the customer display for {money(amount)}.
-        </div>
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginTop: 16 }}>
-          <button className="btn btn-ghost" style={{ height: 42 }} onClick={onBack}>← Back</button>
-          <button className="btn" style={{ height: 42, padding: '0 18px' }}
-            onClick={() => { try { tipSkipRef.current && tipSkipRef.current(); } catch { /* noop */ } }}>
-            Skip tip · take payment
           </button>
         </div>
       </div>

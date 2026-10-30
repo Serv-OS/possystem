@@ -99,7 +99,7 @@ export default function EODClose() {
       t.covers += Number(c.covers) || 0;
       t.checks++;
       if (c.method === 'cash') t.cash += total;
-      else if (c.method === 'card' || c.method === 'stripe') t.card += total;
+      else if (c.method === 'card' || c.method === 'stripe') t.card += total;   // older checks carry 'stripe' as the card method
       else t.other += total;
       if (Array.isArray(c.refunds)) t.refunds += c.refunds.reduce((s, r) => s + (Number(r.amount) || 0), 0);
     });

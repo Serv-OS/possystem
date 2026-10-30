@@ -562,7 +562,7 @@ const OK_LEG = new Set(['succeeded', 'accepted']);
  * service and tax portions), tipAmount, serviceAmount, taxAmount (a share of amount, may be
  * null), tenderMethod ('card' | 'cash' | ...), legs[] (card reversals, amountMinor + status),
  * cardStatus. Older entries have amount and tenderMethod only (their amount was the items);
- * a Ryft dashboard refund (source 'ryft_reconcile') has amount only.
+ * a processor dashboard refund (history rows with source 'ryft_reconcile') has amount only.
  *
  * Rules, in order:
  *   - failed:true (the Adyen failure webhook) or cardStatus 'failed': no money moved, skipped.

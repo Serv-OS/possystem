@@ -12,13 +12,13 @@
 //      retry, a takeover or a racing Back Office "Fulfill" finds the card already there and
 //      finishes the job with it (the same code, the same ledger row) instead of issuing again.
 //      The issue ledger row carries issueLedgerKey(purchase), so it is written once too.
-//   2. A short Stripe or Ryft outage made gift-fulfill answer 402 "payment not proven" for a paid
-//      purchase, the webhooks swallowed it and answered 200, and nobody retried: the customer paid
-//      and got no card. Now an outage (network error, processor 5xx or 429) is a 503 with
-//      retryable: true, and the webhooks answer the processor with a non 2xx for any retryable
-//      failure (fulfilResponseRetryable) and let the retried event through their duplicate check,
-//      so Stripe (up to 3 days) and Ryft (0, 1, 5, 10, 10, 10 minutes) deliver it again. A real
-//      "not paid" stays a final 402. Back Office "Fulfill" remains the manual backstop.
+//   2. A short processor outage made gift-fulfill answer 402 "payment not proven" for a paid
+//      purchase, the webhook swallowed it and answered 200, and nobody retried: the customer paid
+//      and got no card. Now an outage (network error, ledger read failure, 5xx or 429) is a 503
+//      with retryable: true, and the webhook answers the processor with a non 2xx for any
+//      retryable failure (fulfilResponseRetryable) and lets the retried event through its
+//      duplicate check, so Adyen delivers it again. A real "not paid" stays a final 402. Back
+//      Office "Fulfill" remains the manual backstop.
 //
 // PURE. No imports (Web Crypto is global in Deno and in node 20), so node tests load it directly.
 
@@ -42,27 +42,18 @@ export function issueLedgerKey(purchaseId: string): string {
  * than because it said the money was not taken (final)?
  */
 export function proofReasonRetryable(reason: string | null | undefined): boolean {
-  const r = String(reason || '');
-  if (r === 'processor_unreachable') return true;
-  const m = /^ryft_(\d+)$/.exec(r);
-  if (m) {
-    const s = Number(m[1]);
-    return s === 0 || s === 408 || s === 429 || s >= 500;
-  }
-  return false;
+  return String(reason || '') === 'processor_unreachable';
 }
 
 /**
- * A thrown processor SDK error: an outage (retry) or a refusal about THIS request (final)?
- * Stripe errors carry `type` and `statusCode`; a bare network failure carries neither.
+ * A thrown error from the proof lookup: an outage (retry) or a refusal about THIS request
+ * (final)? A ledger read error or a bare network failure carries no status and is retried; an
+ * error carrying a 4xx status (other than 429) is about this request and is final.
  */
 export function processorErrorReason(e: any): 'processor_unreachable' | 'processor_rejected' {
   const status = Number(e?.statusCode ?? e?.status ?? 0);
-  const type = String(e?.type || '');
-  if (type === 'StripeConnectionError' || type === 'StripeAPIError' || type === 'StripeRateLimitError') return 'processor_unreachable';
   if (status === 429 || status >= 500) return 'processor_unreachable';
   if (status >= 400 && status < 500) return 'processor_rejected';
-  if (type === 'StripeInvalidRequestError' || type === 'StripeAuthenticationError' || type === 'StripePermissionError') return 'processor_rejected';
   return 'processor_unreachable';
 }
 

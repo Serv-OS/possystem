@@ -80,7 +80,7 @@ export function nextReachedReader(prev, cardState) {
 export function kioskCardCopy(phase, cause = null) {
   switch (phase) {
     case 'connecting':
-      // No Cancel until the reader (or Ryft job) is known ('collecting'). While the start call
+      // No Cancel until the terminal job is known ('collecting'). While the start call
       // is in flight there is nothing for ScreenPay's cancel to cancel: the charge would land on
       // the reader after the screen had gone, and a tap would charge with no order. A start that
       // fails lands on "ask a member of staff", so the customer is never stuck here.

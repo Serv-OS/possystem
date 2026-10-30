@@ -1,5 +1,5 @@
 // src/lib/payments/adyenTab.js
-// Adyen twin of ryftTab(): QR open-tab close lifecycle on the adyen-checkout fn.
+// QR open-tab close lifecycle on the adyen-checkout fn.
 //   tab_capture { location_id, psp_reference, amount_minor, hold_minor?, currency?, reference? }
 //   tab_cancel  { location_id, psp_reference }
 import { supabase, isMock, ensureAuthToken } from '../supabase';

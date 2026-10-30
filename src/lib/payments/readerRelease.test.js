@@ -48,8 +48,8 @@ test('the statuses and columns the page reads are the ones that hold a card mach
 
 test('jobsToAsk: only an Adyen payment that was sent is asked about', () => {
   const live = [
-    job(), job({ id: 'unsent', status: 'charging_unsent' }), job({ id: 'pax', processor: 'ryft' }),
-    job({ id: 'tip', processor: 'ryft', status: 'tipping' }), job({ id: 'none', processor: null }),
+    job(), job({ id: 'unsent', status: 'charging_unsent' }), job({ id: 'none', processor: null }),
+    job({ id: 'tip', processor: null, status: 'tipping' }),
   ];
   assert.deepEqual(jobsToAsk(live).map((j) => j.id), ['df9c6528']);
   assert.deepEqual(jobsToAsk(null), []);
@@ -205,12 +205,12 @@ test('"Nothing was stuck" only when nothing was live and the release cleared not
 });
 
 test('a live payment nobody asked about still gets a reason', () => {
-  const pax = job({ id: 'pax-1', processor: 'ryft', status: 'tipping', charge_minor: null, due_minor: 1250 });
-  assert.deepEqual(lines([], { still: [pax] }).lines, [
+  const tipping = job({ id: 'tip-1', processor: null, status: 'tipping', charge_minor: null, due_minor: 1250 });
+  assert.deepEqual(lines([], { still: [tipping] }).lines, [
     '£12.50 sent at 07:37 is waiting on the card machine. Finish or cancel it on the card machine. Not released.',
     'Drive Thru is still busy with the payment above.',
   ]);
-  assert.equal(lines([], { still: [job({ id: 'ryft-2', processor: 'ryft' })] }).lines[0],
+  assert.equal(lines([], { still: [job({ id: 'noproc-2', processor: null })] }).lines[0],
     '£6.00 sent at 07:37 is on the card machine now. Finish or cancel it on the card machine. Not released.');
   assert.equal(lines([], { still: [job({ id: 'u', status: 'charging_unsent', dispatched_at: null, created_at: SENT })] }).lines[0],
     '£6.00 sent at 07:37 has not gone to the card machine yet. Not released. Try again in a minute.');

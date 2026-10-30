@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { relativeSpecifiers, sharedDepsOf, deployPathsOf, staleFunctions } from '../../scripts/edgeFnDeps.mjs';
+import { relativeSpecifiers, sharedDepsOf, deployPathsOf, staleFunctions, deletedFunctions } from '../../scripts/edgeFnDeps.mjs';
 
 const read = (p) => fs.readFileSync(new URL(p, import.meta.url), 'utf8');
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -82,9 +82,10 @@ test('the six ezCater release functions: each ships _shared/ezcaterCatering.js w
 
 test('check-deploys hands its decision to staleFunctions with this checkout\'s git log', () => {
   const src = read('../../scripts/check-deploys.mjs');
-  assert.match(src, /import \{ staleFunctions \} from '\.\/edgeFnDeps\.mjs';/);
+  assert.match(src, /import \{ staleFunctions, deletedFunctions \} from '\.\/edgeFnDeps\.mjs';/);
   assert.match(src, /git log -1 --format=%ct -- "\$\{p\}"/);
-  assert.match(src, /const stale = staleFunctions\(await res\.json\(\), lastCommitOf\);/);
+  assert.match(src, /const live = await res\.json\(\);\nconst stale = staleFunctions\(live, lastCommitOf\);/);
+  assert.match(src, /const deleted = deletedFunctions\(live, lastCommitOf\);/, 'deleted in the code, still deployed, is listed for the undeploy step');
   // The deploy it offers keeps JWT checking off: ezCater's notifications carry no Supabase JWT.
   assert.match(src, /functions deploy \$\{s\.slug\} --project-ref \$\{PROJECT\} --no-verify-jwt/);
 });
@@ -136,4 +137,21 @@ test('staleFunctions: a change made ONLY in _shared reports every importing func
   // Redeployed after the _shared change: live again.
   const redeployed = live.map((f) => ({ ...f, updated_at: (deployedAt + 49 * H) * 1000 }));
   assert.deepEqual(staleFunctions(redeployed, lastCommitOf, io), []);
+});
+
+test('a function deleted in the code is listed for the undeploy step, never reported stale (Drop D)', () => {
+  const io = fakeIo({
+    'supabase/functions/adyen-checkout/index.ts': "import { a } from '../_shared/adyen.ts';",
+    'supabase/functions/_shared/adyen.ts': 'export const a = 1;',
+  });
+  const t0 = 1_700_000_000;
+  const live = [
+    { slug: 'adyen-checkout', updated_at: t0 * 1000 },
+    { slug: 'stripe-webhook', updated_at: t0 * 1000 },     // deleted in the code, still live
+    { slug: 'not-ours', updated_at: t0 * 1000 },           // never in this repo
+  ];
+  // the deletion commit is newer than the deploy: without the rule it would read as 3 days stale
+  const lastCommitOf = (p) => ({ 'supabase/functions/adyen-checkout': t0, 'supabase/functions/stripe-webhook': t0 + 3 * 86400 })[p] || 0;
+  assert.deepEqual(deletedFunctions(live, lastCommitOf, io), ['stripe-webhook']);
+  assert.deepEqual(staleFunctions(live, lastCommitOf, io), []);
 });
