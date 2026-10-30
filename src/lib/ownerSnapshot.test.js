@@ -68,7 +68,11 @@ function fakeOps(tables, { cap = 1000, failWhen = null, wait = 0, rpc = null } =
       not: (c, op, v) => where(`not.${op}`, c, v, (r) => r[c] !== v),
       neq: (c, v) => where('neq', c, v, (r) => r[c] != null && JSON.stringify(r[c]) !== v),
       // jsonb @>: a list column holds every object given (each matched by its keys), as PostgREST's `cs` does.
-      contains: (c, v) => where('contains', c, v, (r) => Array.isArray(r[c]) && (Array.isArray(v) ? v : [v]).every((o) => r[c].some((x) => x && typeof x === 'object' && Object.entries(o).every(([k, val]) => x[k] === val)))),
+      // 30 Oct 2026: as supabase-js: a jsonb containment filter must be JSON TEXT. An array would be sent
+      // as a Postgres array literal and the database says "invalid input syntax for type json".
+      contains: (c, v) => { if (typeof v !== 'string') throw new Error(`invalid input syntax for type json (contains on ${c} got a ${Array.isArray(v) ? 'JavaScript array' : typeof v})`);
+        const want = JSON.parse(v);
+        return where('contains', c, v, (r) => Array.isArray(r[c]) && (Array.isArray(want) ? want : [want]).every((o) => r[c].some((x) => x && typeof x === 'object' && Object.entries(o).every(([k, val]) => x[k] === val)))); },
       limit: (n) => { q.limit = n; return b; },
       order: (c) => { q.orders.push(c); return b; },
       range: (a, z) => { q.range = [a, z]; return b; },
@@ -1603,7 +1607,7 @@ test('gift cards sold: one light read per sales window of only the checks that s
   assert.equal(sales.length, 1);
   assert.equal(gifts.length, 1, 'one gift read for the one sales window');
   assert.equal(gifts[0].select, 'id, items');
-  assert.deepEqual(gifts[0].filters.find((f) => f.op === 'contains'), { op: 'contains', col: 'items', val: [{ kind: 'gift_card_sale' }] });
+  assert.deepEqual(gifts[0].filters.find((f) => f.op === 'contains'), { op: 'contains', col: 'items', val: '[{"kind":"gift_card_sale"}]' });
   assert.deepEqual([bound(gifts[0], 'gte'), bound(gifts[0], 'lt')], [bound(sales[0], 'gte'), bound(sales[0], 'lt')], 'the same window as the sales read');
   assert.deepEqual(gifts[0].filters.find((f) => f.col === 'location_id'), { op: 'eq', col: 'location_id', val: 'L' });
   assert.deepEqual(gifts[0].orders, ['closed_at', 'id']);
@@ -1614,4 +1618,16 @@ test('gift cards sold: one light read per sales window of only the checks that s
   await detailOf(d);
   assert.ok(giftReads(d).length >= 1);
   for (const q of giftReads(d)) assert.equal(q.select, 'id, items');
+});
+
+// 30 Oct 2026 (5.11.122): the gift cards sold read filters jsonb with the JSON TEXT. A JavaScript array
+// here becomes a Postgres array literal ({[object Object]}) and the whole Owner app failed with
+// "Could not read gift cards sold: invalid input syntax for type json".
+test('gift cards sold: the jsonb containment filter is JSON text, never a JavaScript array', () => {
+  const src = fs.readFileSync(new URL('../../supabase/functions/_shared/ownerSnapshot.js', import.meta.url), 'utf8');
+  assert.match(src, /const GIFT_SALE_FILTER = JSON\.stringify\(\[\{ kind: GIFT_SALE_KIND \}\]\);/);
+  assert.match(src, /\.contains\('items', GIFT_SALE_FILTER\)/);
+  for (const m of src.matchAll(/\.contains\('(\w+)', ([^)]+)\)/g)) {
+    assert.ok(/^JSON\.stringify\(|^GIFT_SALE_FILTER$/.test(m[2]), `contains on ${m[1]} passes a string: ${m[2]}`);
+  }
 });
