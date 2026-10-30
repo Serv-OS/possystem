@@ -317,12 +317,18 @@ function AdminPanel({ authUser }) {
         await sbFetch(`location_features?location_id=eq.${locId}`, { method:'DELETE', prefer:'' });
         await sbFetch(`eighty_six?location_id=eq.${locId}`, { method:'DELETE', prefer:'' });
       }
-      // Delete user_locations and user_profiles for this org
-      const { data: ups } = await sbFetch(`user_profiles?org_id=eq.${org.id}&select=id`);
+      // Delete the company's logins. 30 Oct 2026: the auth login goes too (delete-user; the
+      // database drops the profile and venue links with it). Before, only the rows went and the
+      // login stayed behind, which later blocked "add user" as "already exists". A login the
+      // server refuses to remove (a platform administrator) keeps its rows removed as before.
+      const { data: ups } = await sbFetch(`user_profiles?org_id=eq.${org.id}&select=id,email,role`);
       for (const up of ups || []) {
-        await sbFetch(`user_locations?user_id=eq.${up.id}`, { method:'DELETE', prefer:'' });
+        const gone = up.role !== 'super_admin' && await removeLogin({ userId: up.id }, { quiet: true });
+        if (!gone) {
+          await sbFetch(`user_locations?user_id=eq.${up.id}`, { method:'DELETE', prefer:'' });
+          await sbFetch(`user_profiles?id=eq.${up.id}`, { method:'DELETE', prefer:'' });
+        }
       }
-      await sbFetch(`user_profiles?org_id=eq.${org.id}`, { method:'DELETE', prefer:'' });
       // Finally delete locations and org
       if (locIds.length) await sbFetch(`locations?org_id=eq.${org.id}`, { method:'DELETE', prefer:'' });
       await sbFetch(`organisations?id=eq.${org.id}`, { method:'DELETE', prefer:'' });
@@ -429,6 +435,29 @@ function AdminPanel({ authUser }) {
     setForm(p => ({ ...p, locName:'', locAddress:'', maxDevices:'' }));
     setSection('org-detail');
     await loadLocations(selectedOrg.id);
+  };
+
+  // ── Remove a login (30 Oct 2026) ─────────────────────────────────────────────
+  // ServOS only. The server deletes the auth login; the database drops its profile and venue
+  // links with it. Also used by deleteOrg so a deleted company leaves no orphan logins behind.
+  const removeLogin = async ({ userId, email }, { quiet = false } = {}) => {
+    const token = await getAccessToken();
+    const resp = await fetch('https://tbetcegmszzotrwdtqhi.supabase.co/functions/v1/delete-user', {
+      method:'POST', headers:{ 'Content-Type':'application/json', 'Authorization':`Bearer ${token}` },
+      body: JSON.stringify(userId ? { userId } : { email }),
+    });
+    const result = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }));
+    if (result.error) { if (!quiet) err(result.error); return false; }
+    return true;
+  };
+  const deleteLogin = async (u) => {
+    if (!confirm(`Remove the login ${u.email}? They will not be able to sign in to any venue. This cannot be undone.`)) return;
+    setWorking(true);
+    const done = await removeLogin({ userId: u.id });
+    setWorking(false);
+    if (!done) return;
+    ok(`✓ Login removed: ${u.email}`);
+    await Promise.all([selectedOrg ? loadUsers(selectedOrg.id) : Promise.resolve(), loadAllUsers()]);
   };
 
   // ── Create user ──────────────────────────────────────────────────────────────
@@ -731,6 +760,13 @@ function AdminPanel({ authUser }) {
                                           </div>
                                           {!sameOrg && <span style={{ ...S.badge, background:'#2d2540', color:'#c89bff', marginLeft:'auto', fontSize:10 }}>cross-org</span>}
                                           {has && <span style={{ ...S.badge, background:'#0d2e1a', color:'#86efac', marginLeft: sameOrg ? 'auto' : 6, fontSize:10 }}>✓ Access</span>}
+                                          {u.role !== 'super_admin' && (
+                                            <button type="button" disabled={working} title="Remove this login from ServOS for good"
+                                              onClick={(e) => { e.preventDefault(); e.stopPropagation(); deleteLogin(u); }}
+                                              style={{ ...S.btn, ...S.btnGhost, padding:'3px 9px', fontSize:11, color:'var(--red, #f87171)', marginLeft: (has || !sameOrg) ? 6 : 'auto' }}>
+                                              Remove login
+                                            </button>
+                                          )}
                                         </label>
                                       );
                                     });
