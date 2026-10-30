@@ -306,7 +306,10 @@ async function firstSaleDay(ops, id, p, gate) {
 // (items @> [{ kind: 'gift_card_sale' }]: a handful a day), id and items, and those lines are put
 // onto the sales rows before the one sales rule reads them (snapshotSales.addCheckSales), so net
 // sales leave the gift money out here as in every report. Rows read with items already keep theirs.
-const GIFT_SALE_FILTER = [{ kind: GIFT_SALE_KIND }];
+// 30 Oct 2026 (5.11.122): a STRING. supabase-js turns a JavaScript array into a Postgres array literal
+// ({[object Object]}), and the Owner app said "Could not read gift cards sold: invalid input syntax
+// for type json". The jsonb containment filter needs the JSON text (as adyen-webhook's refunds read).
+const GIFT_SALE_FILTER = JSON.stringify([{ kind: GIFT_SALE_KIND }]);
 async function giftLinesOf(ops, id, windows, opts) {
   const map = new Map();
   const keep = (rows) => { for (const r of rows) map.set(r.id, r.items); };

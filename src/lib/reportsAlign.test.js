@@ -193,7 +193,9 @@ function fakeOps(tables) {
       eq: (c, v) => where((r) => r[c] === v), in: (c, vs) => where((r) => vs.includes(r[c])),
       gte: (c, v) => where((r) => cmp(r[c], v) >= 0), lte: (c, v) => where((r) => cmp(r[c], v) <= 0), lt: (c, v) => where((r) => cmp(r[c], v) < 0),
       not: (c, op, v) => where((r) => r[c] !== v), neq: (c, v) => where((r) => r[c] != null && JSON.stringify(r[c]) !== v),
-      contains: (c, v) => where((r) => Array.isArray(r[c]) && v.every((o) => r[c].some((x) => x && typeof x === 'object' && Object.entries(o).every(([k, val]) => x[k] === val)))),
+      // 30 Oct 2026: as supabase-js: jsonb containment takes JSON TEXT; an array breaks the real database.
+      contains: (c, v) => { if (typeof v !== 'string') throw new Error(`invalid input syntax for type json (contains on ${c})`); const want = JSON.parse(v);
+        return where((r) => Array.isArray(r[c]) && want.every((o) => r[c].some((x) => x && typeof x === 'object' && Object.entries(o).every(([k, val]) => x[k] === val)))); },
       limit: () => b, order: (c) => { q.orders.push(c); return b; }, range: (a, z) => { q.range = [a, z]; return b; },
       then: (ok, bad) => run(q).then(ok, bad),
     };
