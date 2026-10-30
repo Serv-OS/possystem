@@ -13,6 +13,7 @@ import { regionPack } from '../_shared/regionPack.js';
 import { writeWfAudit } from '../_shared/wfAudit.js';
 import { notifyStaff } from '../_shared/staffNotify.ts';
 import { openOnboardingSteps } from '../_shared/onboardingOpen.js';
+import { countHidden } from '../_shared/openShiftsHidden.js';
 
 type Admin = any;
 type Venue = { id: string; name: string; currency: string; timezone: string; country: string; todayIso: string; nowMin: number };
@@ -106,12 +107,18 @@ export async function swapsSnapshot(admin: Admin, staff: any, v: Venue) {
   });
 
   const open: any[] = [], offers: any[] = [];
+  // 5.11.122: open (unassigned) shifts hidden by reason, so the app can say "2 open shifts need a
+  // bartender" instead of "Nothing up for grabs" (Peter's Provo test, 28 Oct 2026).
+  const hiddenOpen: any[] = [];
   for (const sh of Object.values(shiftById)) {
     if (sh.date < v.todayIso || sh.date > horizon) continue;
     const rq = reqByShift[sh.id] || null;
     if (sh.staffId && !(rq && (rq.kind === 'drop' || rq.kind === 'offer'))) continue;
     const why = judge(sh, rq);
-    if (why && HIDDEN.has(why.code)) continue;
+    if (why && HIDDEN.has(why.code)) {
+      if (!sh.staffId && !rq) hiddenOpen.push({ code: why.code, role: roleLabel[sh.roleKey] || sh.roleKey || '' });
+      continue;
+    }
     if (rq?.kind === 'offer') offers.push(card(sh, rq, why)); else open.push(card(sh, rq, why));
   }
   const byWhen = (a: any, b: any) => (a.date + a.start).localeCompare(b.date + b.start);
@@ -133,6 +140,7 @@ export async function swapsSnapshot(admin: Admin, staff: any, v: Venue) {
     swaps: {
       mode: swapMode(settings),
       open, offers, mine,
+      hidden: countHidden(hiddenOpen),
       colleagues: (team ?? []).filter((t: any) => t.id !== staff.id).map((t: any) => ({ id: t.id, name: t.name, roleKey: t.role_key })),
       upShiftIds: liveReqs.filter((r: any) => r.fromStaffId === staff.id && r.shiftId).map((r: any) => r.shiftId),
     },

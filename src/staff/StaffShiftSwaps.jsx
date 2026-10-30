@@ -14,6 +14,7 @@
 // Mobile first; the venue's skin tokens (var(--acc) etc.), as the rest of the staff app.
 
 import { useState } from 'react';
+import { openShiftsEmptyWords } from '../../supabase/functions/_shared/openShiftsHidden.js';
 import { dayText, timeText } from './staffDates';
 
 const glass = { padding: '14px 16px', borderRadius: 16 };
@@ -107,7 +108,7 @@ export function SwapsSection({ swaps, locale, call, onChanged }) {
       <div className="sv-glass" style={glass}>
         <div style={{ fontSize: 13.5, fontWeight: 800, marginBottom: 4 }}>Open shifts</div>
         <div style={{ fontSize: 11.5, color: 'var(--t4)', marginBottom: swaps.open.length ? 8 : 0 }}>
-          {swaps.open.length ? (instant ? 'Claim one and it is yours straight away. The first claim wins.' : 'Claim one and a manager approves it. The first claim wins.') : 'Nothing up for grabs in the next three weeks.'}
+          {swaps.open.length ? (instant ? 'Claim one and it is yours straight away. The first claim wins.' : 'Claim one and a manager approves it. The first claim wins.') : openShiftsEmptyWords(swaps.hidden)}
         </div>
         {swaps.open.map(o => (
           <div key={o.shiftId} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 0', borderTop: '1px solid var(--bdr)' }}>

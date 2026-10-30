@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.122',
+    date: '30 Oct 2026',
+    items: [
+      "Staff app, Shifts: when every open shift is hidden from you, the app now says why instead of \"Nothing up for grabs\". For example \"2 open shifts need a bartender, not your position. 1 open shift has already started.\" Nothing changes in who can claim what.",
+      "Code: the two chat hotfixes run on 28 Oct (no forced row security on the chat tables; the Back Office second step skips chat paths) are now in the repo as migration 20261110a with a rollback and tests, so a fresh database gets the same shape the live one has.",
+      "Edge function to deploy: staff-portal. Nothing to run in the database (the live Ops database already has 20261110a's effect).",
+    ],
+  },
+  {
     v: '5.11.121',
     date: '30 Oct 2026',
     items: [
