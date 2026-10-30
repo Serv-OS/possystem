@@ -1,11 +1,7 @@
 // src/lib/networkReader.js
 //
-// v5.5.58: WiFi-only payment terminal helpers.
-// Replaced the old stripeTerminal.js (Bluetooth bridge + SDK) after the
-// REST-on-WisePOS-E pivot. We no longer initialise the Stripe Terminal SDK
-// from the device — payments run server-side via stripe-process-payment-on-reader.
-// What remains is a tiny set of helpers used to identify this POS device and
-// look up the network reader the admin assigned to it in BO.
+// v5.5.58: a tiny set of helpers used to identify this POS device and resolve its venue's
+// Platform location id (the Ops and Platform projects can carry different ids for one venue).
 
 import { platformSupabase } from './supabase';
 
@@ -40,30 +36,4 @@ export async function resolvePlatformLocationId(opsLocationId) {
     return byOps.id;
   }
   return null;
-}
-
-function getActiveLocationSyncMaybe() {
-  try {
-    return localStorage.getItem('rpos-bo-location') || localStorage.getItem('rpos-active-location') || null;
-  } catch { return null; }
-}
-
-/**
- * Fetch the network reader assigned to this POS/kiosk device, if any.
- * Returns the payment_devices row or null.
- */
-export async function getAssignedNetworkReader() {
-  const opsLocationId = getActiveLocationSyncMaybe();
-  const posDeviceId = getPosDeviceId();
-  if (!opsLocationId || !posDeviceId || !platformSupabase) return null;
-  const platformLocationId = await resolvePlatformLocationId(opsLocationId);
-  if (!platformLocationId) return null;
-  const { data } = await platformSupabase
-    .from('payment_devices')
-    .select('id, stripe_reader_id, label, status, ip_address, device_type, last_seen_at, serial_number, customer_display_enabled')
-    .eq('location_id', platformLocationId)
-    .eq('connection_kind', 'network')
-    .eq('bound_pos_device_id', posDeviceId)
-    .maybeSingle();
-  return data ?? null;
 }

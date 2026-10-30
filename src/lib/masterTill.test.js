@@ -39,7 +39,7 @@ test('isTillMode: pos, kds, bar, tables, orders, ai and an unknown word are till
   for (const mode of ['', null, undefined, ...NON_TILL_MODES]) assert.equal(isTillMode(mode), false, String(mode));
   assert.ok(Object.isFrozen(NON_TILL_MODES));
   assert.deepEqual([...NON_TILL_MODES], ['office', 'backoffice', 'admin', 'kiosk', 'customer-display', 'owner', 'menuboard', 'orderscreen',
-    'readerdemo', 'ops', 'waitlist', 'bookings', 'staff', 'manager', 'mpos', 'clock', 'ryft-test']);
+    'readerdemo', 'ops', 'waitlist', 'bookings', 'staff', 'manager', 'mpos', 'clock']);
 });
 
 test('every mode App.jsx routes away is named, so a new surface cannot become a master by accident', () => {
@@ -47,8 +47,6 @@ test('every mode App.jsx routes away is named, so a new surface cannot become a 
   const routed = new Set([...app.matchAll(/deviceMode === '([a-z_-]+)'/g)].map((x) => x[1]));
   assert.ok(routed.size >= 16, 'App.jsx still names its modes this way');
   for (const m of routed) assert.ok(NON_TILL_MODES.includes(m), 'name the new surface in NON_TILL_MODES: ' + m);
-  assert.match(app, /urlMode === 'ryft-test'/);
-  assert.ok(NON_TILL_MODES.includes('ryft-test'));
   // The rear screen of a Sunmi till and a handset: the two that share a till's storage or profile.
   assert.ok(NON_TILL_MODES.includes('customer-display'));
   assert.ok(NON_TILL_MODES.includes('mpos'));

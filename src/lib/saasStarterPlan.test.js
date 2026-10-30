@@ -133,7 +133,7 @@ test('each venue is priced from its own currency: fees, bands and the currency r
 
 test('the Admin plan row shows each venue in its own currency and hides HubRise where not offered', () => {
   const ui = read('src/admin/sections/AdminBillingManager.jsx');
-  const row = ui.slice(ui.indexOf('function SaasVenueRow'), ui.indexOf('function NumField'));
+  const row = ui.slice(ui.indexOf('function SaasVenueRow'), ui.indexOf('// ─── Compact venue row'));
   assert.doesNotMatch(row, /\bGBP\b(?!'\))/, 'no hard coded GBP in the plan row');
   assert.doesNotMatch(row, /£/);
   assert.ok(row.includes('`${p.label} ${planPrice(p.monthly, cur)}`'));

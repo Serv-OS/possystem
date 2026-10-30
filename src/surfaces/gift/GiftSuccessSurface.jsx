@@ -1,7 +1,7 @@
 // v5.5.205 — Gift card purchase success page.
-// URL: https://<slug>.serv-os.app/gift/success?session_id=cs_xxxx
+// URL: https://<slug>.serv-os.app/gift/success?purchase_id=<our purchase id>
 //
-// Stripe Checkout redirects here after a successful payment. The page
+// The in page Adyen form lands here after a successful payment. The page
 // polls gift-purchase-status to check whether the gift-fulfill webhook
 // handler has finished issuing the card. Shows a confirmation once ready.
 
@@ -19,13 +19,11 @@ export default function GiftSuccessSurface({ location }) {
   const [error, setError] = useState('');
 
   const _qs = new URLSearchParams(window.location.search);
-  const sessionId = _qs.get('session_id');
-  // v5.5.911: Stripe returns its own session id; a Ryft purchase comes back with OUR
-  // purchase id instead. Either identifies the row.
+  // OUR purchase id (the row gift-checkout-session created), handed on by the purchase page.
   const purchaseId = _qs.get('purchase_id');
 
   useEffect(() => {
-    if (!sessionId && !purchaseId) {
+    if (!purchaseId) {
       setStatus('error');
       setError('No order reference — you may have arrived here by mistake.');
       return;
@@ -38,8 +36,7 @@ export default function GiftSuccessSurface({ location }) {
     const poll = async () => {
       try {
         const data = await callGiftPublic('gift-purchase-status', {
-          session_id: sessionId || undefined,
-          purchase_id: purchaseId || undefined,
+          purchase_id: purchaseId,
           company_id: location.company_id,
         });
         if (cancelled) return;
@@ -78,7 +75,7 @@ export default function GiftSuccessSurface({ location }) {
 
     poll();
     return () => { cancelled = true; };
-  }, [sessionId, purchaseId, location.company_id]);
+  }, [purchaseId, location.company_id]);
 
   return (
     <div style={{

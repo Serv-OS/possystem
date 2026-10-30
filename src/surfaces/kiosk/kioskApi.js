@@ -44,7 +44,7 @@ function withTimeout(promise, ms, fallback) {
 
 /**
  * The venue currency. getLocationConfig(locationId) saves it for money() and
- * stripeCurrency(), which today's kiosk never did (it asked with no id and got GBP).
+ * venueCurrency(), which today's kiosk never did (it asked with no id and got GBP).
  * Resolves the active currency code.
  */
 export async function loadCurrency(locationId) {

@@ -1,6 +1,7 @@
 // paymentProofRules.test.js: what the payment-proof edge function accepts as proof that money
 // was taken (database fence stage 1, contract C0). The amount always comes from the processor's
 // record, never the request; the payment must belong to this venue and be in the right state.
+// 29 Oct 2026 (Drop D): ServOS works with Adyen only. 'stripe' and 'ryft' are refused at parse.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -8,45 +9,24 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import {
-  parseProofRequest, stripeProof, ryftProof, adyenProof, giftProof, loyaltyProof, allowProofRequest,
-  processorOrderRef, processorParentRef, loyaltyRewardValueMinor, loyaltyRewardMeta,
+  PROOF_PROCESSORS, parseProofRequest, adyenProof, giftProof, loyaltyProof, allowProofRequest,
+  processorOrderRef, loyaltyRewardValueMinor, loyaltyRewardMeta,
 } from '../../supabase/functions/_shared/paymentProofRules.js';
 
 const OPS = '7218c716-eeb4-4f96-b284-f3500823595c';
 
 test('the request is checked before anything is looked up', () => {
-  assert.equal(parseProofRequest({ ops_location_id: OPS, processor: 'stripe', kind: 'card', payment_ref: 'pi_1' }).ok, true);
-  assert.equal(parseProofRequest({ ops_location_id: 'loc-demo', processor: 'stripe', kind: 'card', payment_ref: 'pi' }).reason, 'venue');
+  assert.deepEqual(PROOF_PROCESSORS, ['adyen', 'gift', 'loyalty'], 'Drop D: Adyen is the only card processor');
+  assert.equal(parseProofRequest({ ops_location_id: OPS, processor: 'adyen', kind: 'card', payment_ref: 'PSP1' }).ok, true);
+  assert.equal(parseProofRequest({ ops_location_id: 'loc-demo', processor: 'adyen', kind: 'card', payment_ref: 'PSP1' }).reason, 'venue');
   assert.equal(parseProofRequest({ ops_location_id: OPS, processor: 'paypal', kind: 'card', payment_ref: 'x' }).reason, 'processor');
-  assert.equal(parseProofRequest({ ops_location_id: OPS, processor: 'stripe', kind: 'refund', payment_ref: 'x' }).reason, 'kind');
-  assert.equal(parseProofRequest({ ops_location_id: OPS, processor: 'stripe', kind: 'card', payment_ref: '' }).reason, 'payment_ref');
-  assert.equal(parseProofRequest({ ops_location_id: OPS, processor: 'stripe', kind: 'gift', payment_ref: 'x' }).reason, 'kind', 'a gift proof comes from the gift ledger only');
+  assert.equal(parseProofRequest({ ops_location_id: OPS, processor: 'stripe', kind: 'card', payment_ref: 'pi_1' }).reason, 'processor', 'Stripe is gone');
+  assert.equal(parseProofRequest({ ops_location_id: OPS, processor: 'ryft', kind: 'card', payment_ref: 'ps_1' }).reason, 'processor', 'Ryft is gone');
+  assert.equal(parseProofRequest({ ops_location_id: OPS, processor: 'adyen', kind: 'refund', payment_ref: 'x' }).reason, 'kind');
+  assert.equal(parseProofRequest({ ops_location_id: OPS, processor: 'adyen', kind: 'card', payment_ref: '' }).reason, 'payment_ref');
+  assert.equal(parseProofRequest({ ops_location_id: OPS, processor: 'adyen', kind: 'gift', payment_ref: 'x' }).reason, 'kind', 'a gift proof comes from the gift ledger only');
   assert.equal(parseProofRequest({ ops_location_id: OPS, processor: 'gift', kind: 'card', payment_ref: 'x' }).reason, 'kind');
   assert.equal(parseProofRequest(null).reason, 'venue');
-});
-
-test('Stripe: amount_received for a card or capture, amount_capturable for a hold, venue from metadata', () => {
-  const pi = (o) => ({ status: 'succeeded', amount_received: 1250, amount_capturable: 0, currency: 'gbp', metadata: { ops_location_id: OPS }, ...o });
-  assert.deepEqual(stripeProof(pi(), 'card', OPS), { ok: true, amount_minor: 1250, currency: 'GBP' });
-  assert.deepEqual(stripeProof(pi(), 'capture', OPS), { ok: true, amount_minor: 1250, currency: 'GBP' });
-  assert.equal(stripeProof(pi({ metadata: { ops_location_id: 'other' } }), 'card', OPS).reason, 'other_venue');
-  assert.equal(stripeProof(pi({ metadata: {} }), 'card', OPS).reason, 'other_venue', 'no venue on the intent is no proof');
-  assert.equal(stripeProof(pi({ status: 'requires_payment_method' }), 'card', OPS).reason, 'not_paid');
-  assert.deepEqual(stripeProof(pi({ status: 'requires_capture', amount_capturable: 2500, amount_received: 0 }), 'preauth', OPS), { ok: true, amount_minor: 2500, currency: 'GBP' });
-  assert.equal(stripeProof(pi(), 'preauth', OPS).reason, 'captured', 'a captured hold is not an open tab');
-  assert.equal(stripeProof(pi({ status: 'requires_capture', amount_received: 0 }), 'card', OPS).reason, 'not_paid', 'a hold is not money taken');
-  assert.equal(stripeProof(null, 'card', OPS).reason, 'not_seen');
-});
-
-test('Ryft: Approved automatic or Captured is a card; Approved manual is a hold; Captured is a capture', () => {
-  const s = (o) => ({ status: 'Approved', amount: 900, captureFlow: 'Automatic', currency: 'GBP', ...o });
-  assert.deepEqual(ryftProof(s(), 'card'), { ok: true, amount_minor: 900, currency: 'GBP' });
-  assert.equal(ryftProof(s({ captureFlow: 'Manual' }), 'card').reason, 'not_paid');
-  assert.deepEqual(ryftProof(s({ captureFlow: 'Manual' }), 'preauth'), { ok: true, amount_minor: 900, currency: 'GBP' });
-  assert.deepEqual(ryftProof(s({ status: 'Captured', capturedAmount: 700 }), 'capture'), { ok: true, amount_minor: 700, currency: 'GBP' });
-  assert.equal(ryftProof(s(), 'capture').reason, 'not_captured');
-  assert.equal(ryftProof(s({ paymentSettings: { platform: { paymentFees: { combined: { bookTo: 'acc_other' } } } } }), 'card', { venueAccountId: 'acc_mine' }).reason, 'other_venue');
-  assert.equal(ryftProof(s({ status: 'PendingPayment' }), 'card').reason, 'not_paid');
 });
 
 test('Adyen: the webhook ledger row, for this venue, in the right state', () => {
@@ -86,15 +66,15 @@ test('about 30 proofs per caller in 10 minutes', () => {
 // ── Fix round (19 Sep 2026), contract C18: a payment is bound to its order ────────
 
 test('C18: the processor\'s own order reference is recorded, from the processor record only', () => {
-  assert.equal(processorOrderRef('stripe', { metadata: { ref: 'OL-AB12C', ops_location_id: OPS } }), 'OL-AB12C');
-  assert.equal(processorOrderRef('stripe', { metadata: {} }), null, 'no ref: the proof counts for the order it is attached to');
+  assert.equal(processorOrderRef('adyen', { merchant_reference: 'OL-AB12C' }), 'OL-AB12C');
+  assert.equal(processorOrderRef('adyen', { merchant_reference: null, raw: {} }), null, 'no ref: the proof counts for the order it is attached to');
   assert.equal(processorOrderRef('adyen', { merchant_reference: 'QR-ZZ9Y8' }), 'QR-ZZ9Y8');
   assert.equal(processorOrderRef('adyen', { merchant_reference: null, raw: { merchantReference: 'CA-11AA2' } }), 'CA-11AA2');
   assert.equal(processorOrderRef('adyen', { merchant_reference: 'tj-5d2c' }), null, 'a terminal job is not an order ref');
   assert.equal(processorOrderRef('adyen', { merchant_reference: 'tab-capture:psp123' }), null);
-  assert.equal(processorOrderRef('ryft', { metadata: { order_ref: 'OL-RY123' } }), 'OL-RY123');
-  assert.equal(processorOrderRef('ryft', { metadata: { channel: 'online' } }), null);
-  assert.equal(processorOrderRef('stripe', { metadata: { ref: 'not a ref!' } }), null, 'only the order ref shape place_public_order accepts');
+  assert.equal(processorOrderRef('adyen', { merchant_reference: 'not a ref!' }), null, 'only the order ref shape place_public_order accepts');
+  assert.equal(processorOrderRef('stripe', { metadata: { ref: 'OL-AB12C' } }), null, 'Drop D: a Stripe record is not read');
+  assert.equal(processorOrderRef('ryft', { metadata: { order_ref: 'OL-RY123' } }), null, 'Drop D: a Ryft record is not read');
   assert.equal(processorOrderRef('gift', { metadata: { ref: 'OL-AB12C' } }), null);
 });
 
@@ -149,11 +129,11 @@ test('C25: payment-proof writes meta.reward for points rewards and stamp cards',
   assert.ok(src.includes("select('type, location_id, program_id')"), 'the stamp ledger read carries the programme');
 });
 
-test('C18: payment-proof records meta.order_ref for every processor and the reward value', () => {
+test('C18: payment-proof records meta.order_ref for the Adyen ledger row and the reward value', () => {
   const src = fs.readFileSync(fileURLToPath(new URL('../../supabase/functions/payment-proof/index.ts', import.meta.url)), 'utf8');
-  assert.ok(src.includes("meta.order_ref = processorOrderRef('stripe', pi);"));
-  assert.ok(src.includes("meta.order_ref = processorOrderRef('ryft', ses.data);"));
   assert.ok(src.includes("meta.order_ref = processorOrderRef('adyen', row);"));
+  assert.ok(!src.includes("processor === 'stripe'") && !src.includes("processor === 'ryft'"), 'Drop D: no Stripe or Ryft branch');
+  assert.ok(!/esm\.sh\/stripe|_shared\/ryft\.ts/.test(src), 'Drop D: no Stripe SDK, no Ryft helper');
   assert.ok(src.includes('merchant_reference, raw'), 'the Adyen ledger read includes the merchant reference');
   assert.ok(src.includes('verdict = loyaltyProof(row, { companyId, opsLocationId: opsId, rewardValueMinor });'));
 });
@@ -161,7 +141,7 @@ test('C18: payment-proof records meta.order_ref for every processor and the rewa
 test('C18: the customer pages mint ONE order ref per checkout, so the payment\'s ref is the order\'s', () => {
   const read = (rel) => fs.readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
   const oc = read('../surfaces/online/OnlineCheckout.jsx');
-  assert.ok(oc.includes('if (!orderIdsRef.current) {') && oc.includes('const { ref } = orderIdsRef.current;'), 'online: the Stripe payment is made before the step moves to pay');
+  assert.ok(oc.includes('if (!orderIdsRef.current) {') && oc.includes('const { ref } = orderIdsRef.current;'), 'online: the payment is made before the step moves to pay');
   assert.ok(!/const ref = `OL-/.test(oc), 'no ref minted per step');
   const qc = read('../surfaces/qr/QrCheckout.jsx');
   assert.ok(qc.includes('const ref = orderRefRef.current;'));
@@ -169,21 +149,12 @@ test('C18: the customer pages mint ONE order ref per checkout, so the payment\'s
   assert.ok(read('../surfaces/catering/CateringCheckout.jsx').includes("const ref = useMemo(() => `CA-${Math.random().toString(36).slice(2, 7).toUpperCase()}`, []);"), 'catering was already stable');
 });
 
-test('C24 (fix round 2): an overage names the card hold of its tab (meta.parent_ref), from the processor record only', () => {
+test('C24 (Drop D): the overage parent ref went with the Stripe and Ryft overage paths', () => {
   const read = (rel) => fs.readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
-  // settle_qr_tab counts a card proof toward a tab only when it names the tab or the tab's hold.
-  assert.equal(processorParentRef('stripe', { metadata: { source: 'qr_overage', parent_payment_intent: 'pi_HOLD1' } }), 'pi_HOLD1');
-  assert.equal(processorParentRef('stripe', { metadata: { ref: 'QR-AB12C' } }), null);
-  assert.equal(processorParentRef('ryft', { metadata: { tab_overage_of: 'ps_HOLD2' } }), 'ps_HOLD2');
-  assert.equal(processorParentRef('ryft', { previousPayment: { id: 'ps_HOLD3' } }), 'ps_HOLD3');
-  assert.equal(processorParentRef('adyen', { raw: { merchantReference: 'x' } }), null);
-  assert.equal(processorParentRef('stripe', { metadata: { parent_payment_intent: 'bad value with spaces' } }), null);
-  assert.equal(processorParentRef('stripe', null), null);
+  // processorParentRef read Stripe payment_intent metadata and Ryft previousPayment only; with those
+  // processors gone the helper is gone too, and payment-proof writes no meta.parent_ref.
+  const rules = read('../../supabase/functions/_shared/paymentProofRules.js');
+  assert.ok(!rules.includes('processorParentRef'));
   const src = read('../../supabase/functions/payment-proof/index.ts');
-  assert.ok(src.includes("meta.parent_ref = processorParentRef('stripe', pi);"));
-  assert.ok(src.includes("meta.parent_ref = processorParentRef('ryft', ses.data);"));
-  assert.ok(src.includes('if (meta.parent_ref == null) delete meta.parent_ref;'));
-  // The phone's own overage charge names the hold (Stripe) and the venue (payment-proof checks it).
-  const tr = read('../surfaces/qr/TabResumeScreen.jsx');
-  assert.ok(tr.includes('parent_payment_intent: tab.payment_intent_id,') && tr.includes("ops_location_id: String(locId || ''),"));
+  assert.ok(!src.includes('parent_ref'));
 });

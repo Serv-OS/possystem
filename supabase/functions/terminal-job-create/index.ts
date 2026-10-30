@@ -1,6 +1,6 @@
 // supabase/functions/terminal-job-create
 //
-// PaxPay mode 3: the POS sends a payment job to a specific PAX terminal.
+// The POS sends a payment job to a specific paired card terminal (Adyen, nexo cloud).
 //
 // WHY AN EDGE FUNCTION AND NOT AN RPC / RLS INSERT
 //   terminal_jobs has NO insert policy — an anonymous kiosk/QR/online session
@@ -39,7 +39,7 @@
 //   re-attaches instead of double-charging. Only 23505 is treated that way —
 //   every other error surfaces (spec money-safety rule 3 / rule 14).
 //
-// Spec: docs/PAXPAY_TRANSPORT_SPEC.md
+// Spec: the money-safety rules in adyen-terminal-charge.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { readTipOnReceipt } from '../_shared/tip_capture.ts';
@@ -168,8 +168,8 @@ function scheduleReaderAsk(jobId: string, why: string) {
  * and that press is a request that always reaches us. It now books the same
  * asks for the job that is holding the reader: once now, then at each timer ask
  * time still ahead, up to 185 s after the send (busyPressAskDelays, pure and
- * tested in _shared/readerLock.js; nothing for a job under 45 s old, a PAX or
- * Ryft job, a job not sent yet, or one the device drives over the local bridge).
+ * tested in _shared/readerLock.js; nothing for a job under 45 s old, a job not
+ * sent yet, or one the device drives over the local bridge).
  *
  * These are ASKS, never a kick and never an abort: a conservative ask may only
  * settle a payment the reader or Adyen's ledger proves, or cancel one proven
@@ -556,13 +556,13 @@ Deno.serve(async (req) => {
   // ── 3c. Demo reader (v5.6.92) — the TERMINAL ROW is the authority, again ───
   // The browser demo reader (?mode=readerdemo) self-registers with a serial the
   // surface mints as DEMO-… (register_terminal_device stores it verbatim; a real
-  // PAX serial or paxpay's AID-<ANDROID_ID> ladder can never start with DEMO-).
+  // Adyen reader's serial can never start with DEMO-).
   // Jobs addressed to such a terminal are marked simulated=true, because
   // terminal_report_result only settles a device-reported outcome on SIMULATED
   // jobs — on a real job the report is an advisory claim and the job would
   // strand in 'charging' until the sweeper parked it needs_human. Simulated
-  // also means the real charge paths refuse it outright (terminal-job-charge /
-  // adyen-terminal-charge both 409 on simulated), so a demo job can never touch
+  // also means the real charge path refuses it outright (adyen-terminal-charge
+  // 409s on simulated), so a demo job can never touch
   // a processor. The booked check stays auditable: the demo reader reports a
   // DEMO-… transaction id, which lands on the closed check.
   const isDemoTerminal = String((term as any).serial_number ?? '').toUpperCase().startsWith('DEMO-');
@@ -570,6 +570,13 @@ Deno.serve(async (req) => {
     console.log('[terminal-job-create] demo terminal — job will be simulated', JSON.stringify({
       job_id, terminal: target_terminal_id, serial: (term as any).serial_number,
     }));
+  }
+  // 29 Oct 2026 (Drop D): ServOS works with Adyen only. A paired terminal that is
+  // neither linked to an Adyen POIID nor the demo reader can take no payment, so
+  // the job is refused here, plainly, instead of being minted for a processor
+  // that no longer exists.
+  if (!term.adyen_terminal_id && !isDemoTerminal) {
+    return json({ error: 'terminal is not linked to an Adyen reader', code: 'TERMINAL_NOT_LINKED' }, 409);
   }
 
   // ── 3d. Tip on printed receipt (v5.7.5, US signature flow) ────────────────
@@ -725,22 +732,28 @@ Deno.serve(async (req) => {
     // 20260823_tip_on_receipt.sql is hand-applied (edge fns deploy separately).
     ...(captureMode ? { capture_mode: captureMode } : {}),
     // The terminal row is the PROCESSOR authority too (v5.6.46): a terminal
-    // linked to an Adyen POIID routes its jobs to adyen-terminal-charge; the
-    // PAX/Ryft fleet keeps 'ryft'. No client input trusted.
+    // linked to an Adyen POIID routes its jobs to adyen-terminal-charge. No
+    // client input trusted. 29 Oct 2026 (Drop D): Adyen is the only processor;
+    // a terminal with no Adyen id is refused above, never given another job.
     //
-    // Lifecycle by fleet: PAX walks pending→claimed→tipping→charging_unsent ON
-    // the device. An AMS1 has no on-device app — its tip prompt rides inside
-    // the nexo PaymentRequest — so the job is born charging_unsent, ready for
-    // the till's adyen-terminal-charge 'start' kick (CAS makes dupes harmless).
-    status: term.adyen_terminal_id ? 'charging_unsent' : 'pending',
-    processor: term.adyen_terminal_id ? 'adyen' : 'ryft',
-    // Adyen-born jobs need the server-computed charge NOW: on PAX the
-    // on-device tip walk stamps charge_minor, but an AMS1 job goes straight
-    // to 'start', whose money-safety gate refuses a null charge. Base charge
+    // An Adyen reader has no on-device app — its tip prompt rides inside the
+    // nexo PaymentRequest — so the job is born charging_unsent, ready for the
+    // till's adyen-terminal-charge 'start' kick (CAS makes dupes harmless).
+    //
+    // The browser demo reader (§ 3c, simulated) is the one terminal without an
+    // Adyen id. It walks pending→claimed→tipping→charging_unsent itself and
+    // settles through terminal_report_result, never a processor, so its job is
+    // born 'pending' and labelled 'demo': no till or server kick ever asks
+    // adyen-terminal-charge about it (which would answer 409 SIMULATED).
+    status: isDemoTerminal ? 'pending' : 'charging_unsent',
+    processor: isDemoTerminal ? 'demo' : 'adyen',
+    // An Adyen job needs the server-computed charge NOW: it goes straight to
+    // 'start', whose money-safety gate refuses a null charge. Base charge
     // = due; the gratuity the customer picks on the reader arrives on top in
     // the PaymentResponse and the settle writer records it (tj_charge_identity
-    // holds: tip_minor stays NULL until settle).
-    ...(term.adyen_terminal_id ? { charge_minor: due } : {}),
+    // holds: tip_minor stays NULL until settle). The demo reader stamps its
+    // own charge_minor in its on-device tip walk.
+    ...(isDemoTerminal ? {} : { charge_minor: due }),
     claim_expires_at: new Date(Date.now() + 15 * 60_000).toISOString(),
     dispatched_at: new Date().toISOString(),
   };

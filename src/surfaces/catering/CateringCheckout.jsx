@@ -1,19 +1,14 @@
 // src/surfaces/catering/CateringCheckout.jsx
 //
-// Catering checkout. Pay-NOW (card, full charge — reuses the online payment plumbing: per-venue
-// Stripe/Ryft via getLocationProcessor + createPaymentIntent + RyftPaymentForm) OR pay-LATER (order
-// arrives confirmed-unpaid). Pay-now writes order_queue (paid=true) + closed_checks (paid, net) like
-// the online flow; pay-later writes order_queue (paid=false). Money: major (£) on rows, minor at the
-// Stripe/Ryft boundary. Deposits/invoicing are the Events module, not here.
+// Catering checkout. Pay-NOW (card, full charge in page on Adyen, the form online and QR use) OR
+// pay-LATER (order arrives confirmed-unpaid). Pay-now writes order_queue (paid=true) + closed_checks
+// (paid, net) like the online flow; pay-later writes order_queue (paid=false). Money: major (£) on
+// rows, minor at the Adyen boundary. Deposits/invoicing are the Events module, not here.
 
 import { useEffect, useMemo, useState } from 'react';
-import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { supabase, ensureAuthToken } from '../../lib/supabase';
 import { logOrderActivity, logActivity } from '../../lib/activity';
 import { requestPaymentProof, placePublicOrder } from '../../lib/publicOrderClient';
-import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient';
-import { getLocationProcessor } from '../../lib/payments/processor';
-import RyftPaymentForm from '../../components/RyftPaymentForm';
 import AdyenPaymentForm from '../../components/AdyenPaymentForm';
 import { computeOrderTaxUnified, taxCtxHasConfig } from '../../lib/taxCompute';
 import VatGateNotice from '../online/VatGateNotice';
@@ -66,11 +61,8 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
   const [promoErr, setPromoErr] = useState(''); const [promoBusy, setPromoBusy] = useState(false);
   const [payMode, setPayMode] = useState('now');           // 'now' | 'later'
   const [step, setStep] = useState('details');             // 'details' | 'pay'
-  const [processor, setProcessor] = useState('adyen');
-  const [pi, setPi] = useState(null); const [stripePromise, setStripePromise] = useState(null);
+  const processor = 'adyen';   // ServOS takes card payments on Adyen only
   const [busy, setBusy] = useState(false); const [placed, setPlaced] = useState(null); const [err, setErr] = useState('');
-
-  useEffect(() => { getLocationProcessor(platformLocationId).then(setProcessor).catch(() => {}); }, [platformLocationId]);
 
   const isDelivery = fulfilment === 'delivery';
   // v5.5.656: catering delivery is driven ENTIRELY by the platform Delivery (Uber Direct) setup —
@@ -274,21 +266,8 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
     { const why = vatRefusal(); if (why) { setErr(why); return; } }
     if (!valid) { setErr(belowMin ? `Minimum order for delivery is ${deliveryQuote?.minOrderMinor != null ? money(deliveryQuote.minOrderMinor / 100, cur) : 'higher'} — add more items or choose collection.` : 'Please complete the required fields.'); return; }
     setErr('');
-    // 29 Oct 2026 (v5.11.116): an Adyen venue pays in page (the form online and QR use). This
-    // file only knew Ryft and Stripe, so every Adyen venue fell to Stripe and failed.
-    if (processor === 'ryft' || processor === 'adyen') { setStep('pay'); return; }
-    setBusy(true);
-    try {
-      const token = await ensureAuthToken();
-      const piRes = await createPaymentIntent({
-        authToken: token, locationId: platformLocationId, amountMinor: totalMinor, currency: cur, channel: 'online',
-        description: `Catering order ${ref} · ${name.trim()} · ${eventDate}`,
-        paymentMethodTypes: ['card'],
-        metadata: { source: 'catering', ref, ops_location_id: String(opsId), customer_name: name.trim(), customer_email: email.trim(), customer_phone: phone.replace(/\s+/g, ''), order_type: fulfilment, event_date: eventDate },
-      });
-      if (!piRes?.client_secret) throw new Error('Payment could not start. Please try again.');
-      setPi(piRes); setStripePromise(getStripeForAccount(piRes.stripe_account)); setStep('pay');
-    } catch (e) { setErr(e?.message || 'Payment could not start.'); } finally { setBusy(false); }
+    // The customer pays in page on Adyen (the form online and QR use).
+    setStep('pay');
   };
 
   const finalizeNow = async (paymentIntent) => {
@@ -472,15 +451,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
 
         {step === 'pay' ? (
           <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, padding: 16 }}>
-            {processor === 'adyen' ? (
-              <AdyenPaymentForm locationId={platformLocationId} amountMinor={totalMinor} currency={String(cur || 'gbp').toUpperCase()} reference={ref} merchantName={location?.name || ''} customerEmail={email.trim()} onSuccess={finalizeNow} onError={(e) => setErr(e?.message || 'Payment failed')} />
-            ) : processor === 'ryft' ? (
-              <RyftPaymentForm amountMinor={totalMinor} currency={cur} locationId={platformLocationId} channel="online" merchantName={location?.name || ''} customerEmail={email.trim()} payLabel={`Pay ${money(total, cur)}`} onSuccess={finalizeNow} onError={(e) => setErr(e?.message || 'Payment failed')} />
-            ) : pi && stripePromise ? (
-              <Elements stripe={stripePromise} options={{ clientSecret: pi.client_secret, appearance: { theme: 'stripe' } }}>
-                <CateringPayStep theme={theme} total={total} cur={cur} pi={pi} onPaid={finalizeNow} onError={setErr} />
-              </Elements>
-            ) : <div>Starting payment…</div>}
+            <AdyenPaymentForm locationId={platformLocationId} amountMinor={totalMinor} currency={String(cur || 'gbp').toUpperCase()} reference={ref} merchantName={location?.name || ''} customerEmail={email.trim()} onSuccess={finalizeNow} onError={(e) => setErr(e?.message || 'Payment failed')} />
             {err && <div style={{ color: '#dc2626', fontSize: 13, marginTop: 12 }}>{err}</div>}
           </div>
         ) : (
@@ -540,32 +511,6 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
           </div>
         )}
       </div>
-    </div>
-  );
-}
-
-// Stripe card entry — inside <Elements> so it can confirm the PaymentIntent (mirrors OnlineCheckout's PayStep).
-function CateringPayStep({ theme, total, cur, pi, onPaid, onError }) {
-  const stripe = useStripe();
-  const elements = useElements();
-  const [busy, setBusy] = useState(false);
-  const submit = async () => {
-    if (!stripe || !elements) return;
-    setBusy(true); onError('');
-    const card = elements.getElement(CardElement);
-    const { error: stripeErr, paymentIntent } = await stripe.confirmCardPayment(pi.client_secret, { payment_method: { card } });
-    setBusy(false);
-    if (stripeErr) { onError(stripeErr.message || 'Card declined.'); return; }
-    if (paymentIntent?.status === 'succeeded') await onPaid(paymentIntent);
-    else onError(`Payment status: ${paymentIntent?.status || 'unknown'}.`);
-  };
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <div style={{ fontWeight: 800 }}>Card details</div>
-      <div style={{ padding: 14, borderRadius: 12, border: '1.5px solid #cbd5e1', background: '#fff' }}>
-        <CardElement options={{ style: { base: { color: '#0f172a', fontSize: '16px', fontFamily: 'inherit', '::placeholder': { color: '#9a9aa1' } } } }} />
-      </div>
-      <button onClick={submit} disabled={busy} style={{ width: '100%', padding: '13px', borderRadius: 10, border: 'none', background: theme.brand, color: '#fff', fontWeight: 800, fontSize: 15, cursor: 'pointer', opacity: busy ? 0.6 : 1 }}>{busy ? 'Processing…' : `Pay ${money(total, cur)}`}</button>
     </div>
   );
 }

@@ -45,7 +45,7 @@ export default function CustomerBoot({ slug, mode, tableId }) {
         if (cancelled) return;
         if (!loc) { setState({ loading: false, location: null, error: 'not_found' }); return; }
         // v5.5.326: resolve this venue's currency so online/QR/gift/portal money
-        // displays + Stripe charges use the right symbol/code (not the GBP default).
+        // displays + card charges use the right symbol/code (not the GBP default).
         setActiveCurrency(loc.currency || 'GBP');
         setState({ loading: false, location: loc, error: null });
       } catch (e) {
@@ -299,7 +299,7 @@ function OnlineStub({ location }) {
       </div>
       <div style={{ fontSize:18, fontWeight:800, marginBottom:6 }}>Open for collection &amp; delivery</div>
       <div style={{ fontSize:13, color:'#aaa', lineHeight:1.6 }}>
-        We're open right now. Phase 3a builds the menu browse + cart + customer-detail capture + Stripe checkout flow on top of this surface.
+        We're open right now. Phase 3a builds the menu browse + cart + customer-detail capture + Adyen checkout flow on top of this surface.
       </div>
       <div style={{ marginTop:18, padding:'12px 14px', background:'#0e0e10', border:'1px solid #2a2a30', borderRadius:10, fontSize:11, color:'#888' }}>
         Resolved location: <b style={{ color:'#ccc' }}>{location.name}</b> ({location.id.slice(0, 8)}…)

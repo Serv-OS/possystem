@@ -1343,7 +1343,7 @@ function PurchasesPanel({ companyId, businessName, brandConfig }) {
         <button onClick={() => { setLoading(true); loadPurchases(); }}
           style={{ ...S.btn, ...S.btnGhost, fontSize: 10, padding: '3px 8px' }}>Refresh</button>
       </div>
-      <div style={{ fontSize: 12, color: 'var(--t4)', marginBottom: 14 }}>Gift cards bought by customers via Stripe Checkout.</div>
+      <div style={{ fontSize: 12, color: 'var(--t4)', marginBottom: 14 }}>Gift cards bought by customers on the online gift card page.</div>
       {error && <div style={S.errorBox}>{error}</div>}
       {loading ? (
         <div style={{ padding: 20, textAlign: 'center', color: 'var(--t3)', fontSize: 13 }}>Loading...</div>

@@ -152,8 +152,9 @@ function tabToRow(t, locationId) {
     pre_auth_ref: t.preAuthPaymentIntentId || t.preAuthRef || null,
     pre_auth_processor: t.preAuthProcessor || null,
     pre_auth_held_minor: t.preAuthHeldMinor ?? null,
-    // v968: Stripe holds also need the connected-account id to be captured or
-    // released from another till (review finding — ref alone 400s at Stripe).
+    // v968: the account the hold was taken under (column pre_auth_account), so another
+    // till can capture or release it. The in-memory tab still carries it under its old
+    // key (BarSurface preAuthStripeAccount) as well as preAuthAccount.
     pre_auth_account: t.preAuthStripeAccount || t.preAuthAccount || null,
     rounds: t.rounds || [],
     note: t.note || '',

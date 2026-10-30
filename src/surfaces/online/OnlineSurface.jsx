@@ -231,15 +231,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
             if (!pi) return;
             if (!byPi[pi]) byPi[pi] = {
               payment_intent_id: pi,
-              stripe_account: r.customer?.stripe_account || null,
-              // Ryft tab routing — this no-stash "Settle bill" path builds the
-              // tab straight from the DB, so it MUST carry the processor + Ryft
-              // ids (or TabResumeScreen would mis-route a Ryft close to Stripe
-              // and strand the held funds). Default missing processor → stripe.
-              processor: r.customer?.processor || 'adyen',
-              payment_session_id: r.customer?.payment_session_id || null,
-              ryft_customer_id: r.customer?.ryft_customer_id || null,
-              ryft_payment_method_id: r.customer?.ryft_payment_method_id || null,
+              processor: 'adyen',
               tab_ref: r.customer?.tab_ref || r.ref,
               table_label: r.customer?.tableLabel || tableLabel || tableId,
               pre_auth_amount: Number(r.customer?.pre_auth_amount || 0),
@@ -592,7 +584,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   // addToCart snapshots l.price at add time; before this nothing ever touched
   // it again, so a customer who added Half at Collection (3.02), tapped the
   // header pill and picked Delivery saw every card at 2.85 while the cart
-  // line, the checkout subtotal, the Stripe or Adyen amount and the
+  // line, the checkout subtotal, the Adyen amount and the
   // order_queue line price all still carried 3.02. The same happened when a
   // timed menu flipped at the minute tick under a cart that already had lines.
   // Online lines keep modifiers in l.mods with their own prices, so a plain
@@ -825,9 +817,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   const enterTab = (tab) => {
     setPickedTableTab(tab);
     setResumeTab({
-      payment_intent_id: tab.payment_intent_id, stripe_account: tab.stripe_account,
-      processor: tab.processor || 'adyen', payment_session_id: tab.payment_session_id || null,
-      ryft_customer_id: tab.ryft_customer_id || null, ryft_payment_method_id: tab.ryft_payment_method_id || null,
+      payment_intent_id: tab.payment_intent_id, processor: 'adyen',
       tab_ref: tab.tab_ref, table_label: tab.table_label, pre_auth_amount: tab.pre_auth_amount,
       tab_join_code: tab.tab_join_code || null,
     });
@@ -836,9 +826,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
     try {
       stashTab(location.online_slug, tableId, {
         tab_ref: tab.tab_ref, payment_intent_id: tab.payment_intent_id, tab_join_code: tab.tab_join_code || null,
-        processor: tab.processor || 'adyen', stripe_account: tab.stripe_account || null,
-        payment_session_id: tab.payment_session_id || null, ryft_customer_id: tab.ryft_customer_id || null,
-        ryft_payment_method_id: tab.ryft_payment_method_id || null,
+        processor: 'adyen',
         table_label: tab.table_label, pre_auth_amount: tab.pre_auth_amount, joined: true,
       });
     } catch { /* best effort */ }

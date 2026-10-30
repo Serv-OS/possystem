@@ -1,6 +1,6 @@
 // supabase/functions/terminal-job-reconcile
 //
-// The PaxPay sweeper. Runs on a schedule (cron) under the SERVICE ROLE.
+// The terminal job sweeper. Runs on a schedule (cron) under the SERVICE ROLE.
 //
 // WHAT IT DOES — and, more importantly, WHAT IT NEVER DOES
 //   It resolves expired leases and nothing else. It NEVER starts a charge, NEVER
@@ -21,14 +21,10 @@
 //   charge that may have succeeded loses the money the other way; it blocks in
 //   both directions until a human decides (spec rule 8).
 //
-// HONEST GAP, DELIBERATELY LEFT OPEN
-//   Until the Ryft G8:Cloud REST spec lands we cannot ASK the processor what
-//   happened to a given transaction. So this sweeper cannot establish an outcome
-//   — it can only quarantine. A PAX that is lost, wiped or dies mid-charge is
-//   recoverable by hand against the Ryft dashboard and nowhere else. That is
-//   bounded and pilot-only, and it must be in the runbook rather than discovered
-//   by an operator. When lookupByReference() exists, the query goes in the
-//   marked block below and unknowns start resolving themselves.
+// A job that stays 'unknown' is asked about on the reader first (Adyen,
+// adyen-terminal-charge 'result', below) and quarantined for a human only when
+// the reader cannot answer. 29 Oct 2026 (Drop D): ServOS works with Adyen only;
+// the Ryft/PAX placeholders that used to sit here are gone.
 //
 //   POST {}                                   → sweep (default)
 //   POST { action: 'resolve', job_id, outcome, note }
@@ -37,7 +33,7 @@
 // Auth: service role ONLY. Both RPCs re-check the JWT role in the database, so
 // this fence is belt and braces.
 //
-// Spec: docs/PAXPAY_TRANSPORT_SPEC.md § "Money-safety rules", § "Risks".
+// Spec: money-safety rules 6, 7 and 8 above.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { selectReaderAskCandidates } from '../_shared/terminalKick.js';
@@ -85,11 +81,9 @@ Deno.serve(async (req) => {
   if (sweepErr) return json({ error: sweepErr.message }, 500);
 
   // ── ADYEN: ASK THE READER BEFORE CALLING FOR A HUMAN (21 Sep 2026) ────────
-  // The block below says: "When lookupByReference() exists, the query goes in
-  // the marked block below and unknowns start resolving themselves." For Adyen
-  // it exists, and has since v5.7.37: adyen-terminal-charge 'result' sends the
-  // reader a nexo TransactionStatusRequest and settles the job from the
-  // reader's OWN answer, checking Adyen's ledger before it decides anything.
+  // Since v5.7.37 adyen-terminal-charge 'result' sends the reader a nexo
+  // TransactionStatusRequest and settles the job from the reader's OWN answer,
+  // checking Adyen's ledger before it decides anything.
   //
   // Live that day: a kiosk's cloud 'start' won the CAS and then its browser
   // took the call away with it. This sweep moved the job to unknown +
@@ -129,18 +123,6 @@ Deno.serve(async (req) => {
     console.error(`[terminal-job-reconcile] reader ask pass failed: ${(e as Error)?.message || e}`);
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // BLOCKED ON RYFT — the recovery query goes here.
-  //
-  // When G8:Cloud exposes "look up a transaction by our own merchant reference"
-  // (open question 3 in the spec — a go-live blocker), load the jobs now sitting
-  // in 'unknown', call lookupByReference(job.id), and relay the answer through
-  // terminal_job_reconcile(). Until then we quarantine and stop. Do NOT be
-  // tempted to infer an outcome from elapsed time or from the absence of a
-  // result — an inferred verdict on a real card is a double charge or a lost
-  // sale, and this queue is exactly where those get made.
-  // ─────────────────────────────────────────────────────────────────────────
-
   const { count } = await opsAdmin
     .from('terminal_jobs')
     .select('id', { count: 'exact', head: true })
@@ -155,7 +137,6 @@ Deno.serve(async (req) => {
     // is answerable from the cron's own output.
     asked_reader: asked,
     // Surfaced so the runbook/alerting can see it without reading this source.
-    // Adyen CAN be asked (adyen-terminal-charge 'result'); Ryft/PAX still cannot.
-    processor_lookup_available: { adyen: true, ryft: false },
+    processor_lookup_available: { adyen: true },
   });
 });

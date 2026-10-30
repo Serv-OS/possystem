@@ -69,9 +69,9 @@ import { promoBasketValue, promoCheckKey } from '../lib/promoBasis';
 import { classicPromoContinue } from '../lib/kioskCheckout';   // v5.11.81 round 1: the old design re-checks a code on Continue
 import { promoBasketLines } from '../../supabase/functions/_shared/promoMath.js';
 import { kioskLoyaltyCreditMinor, kioskRewardTapCheck } from '../lib/kioskLoyaltyReward';
-import { money, stripeCurrency } from '../lib/currency';
+import { money, venueCurrency } from '../lib/currency';
 import { getLocationProcessor, takesCardsOnTerminal } from '../lib/payments/processor';
-import { findPaxTerminal, dispatchTerminalJob, pollTerminalJob, cancelTerminalJob, abortTerminalJob, buildCheckKey, markJobReconciled } from '../lib/payments/terminalJobs';
+import { findPaxTerminal, dispatchTerminalJob, pollTerminalJob, abortTerminalJob, buildCheckKey, markJobReconciled } from '../lib/payments/terminalJobs';
 import { kioskReaderPayment, isKioskReaderPayment, kioskPaymentIsThisBasket, kioskHeldPaymentFits, kioskCheckPaymentFields } from '../lib/kioskCardLink';
 import KioskV2Root from './kiosk/KioskV2Root';
 import KioskV2Status from './kiosk/KioskV2Status';
@@ -84,9 +84,8 @@ import { kioskLineKeyV2, repriceKioskCart } from '../lib/kioskBasket';
 import { kioskCardEligible, itemInCategory, kioskLegacyCategoryShown } from '../lib/kioskMenu';
 import { setActiveMemberSession } from '../lib/memberSession.js';
 import { kioskCounterCollect } from '../lib/counterOrder';
-// networkReader import removed — kiosk payment now uses server-side edge function directly
-// v5.5.871: card payment is processor-aware — Stripe reader (edge fn) OR Ryft PAX
-// terminal (the same "send to terminal" job path the POS/Table-Pay use).
+// v5.5.871: a kiosk card payment goes to the venue's Adyen terminal through the same "send to
+// terminal" job path the POS/Table-Pay use (lib/payments/terminalJobs.js).
 
 // ── OTP portal caller (mirrors CustomerPortal.callPortal) ───────────────────
 const OPS_URL = import.meta.env.VITE_SUPABASE_URL;
@@ -1232,7 +1231,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
         payment_method: (loyaltyCredit > 0 || giftCardCredit > 0 || promoCredit > 0) ? 'split' : 'card-external',
         method: (loyaltyCredit > 0 || giftCardCredit > 0 || promoCredit > 0) ? 'split' : 'card',
         // 30 Sep 2026 (Barnsley kiosk refunds): a card machine sale is booked like the till's
-        // reader sales: its processor (the column default is 'stripe'), its card reference and
+        // reader sales: its processor, its card reference and
         // its tenders, so "Return to card" reverses it on the right processor. Nothing is added
         // when no card machine took the money (lib/kioskCardLink.js kioskCheckPaymentFields).
         ...kioskCheckPaymentFields({
@@ -3554,58 +3553,32 @@ function LinkedScreenPay(props) {
   );
 }
 
-function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCredit = 0, promoApplied = null, locationId, kioskId, cart, submitting, error, onPaid, onBack, loyaltyRedemption, onCancel, look, v2, ensureCheckId = null, heldPayment = null }) {
+function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCredit = 0, promoApplied = null, locationId, kioskId, submitting, error, onPaid, onBack, loyaltyRedemption, onCancel, look, v2, ensureCheckId = null, heldPayment = null }) {
   const [cardState, setCardState] = useState('idle'); // idle | processing | collecting | success | error | declined
   const [cardError, setCardError] = useState(null);
   const [cardStatusMsg, setCardStatusMsg] = useState('');
   const pollAbortRef = useRef(false);
-  const activeReaderRef = useRef(null); // track reader ID for cancel on timeout/unmount
-  const activePiRef = useRef(null);     // track PI ID for cancel
-  // v5.5.871 — Ryft PAX terminal path
-  const activeRyftJobRef = useRef(null);        // live terminal_jobs id, for cancel on abort
-  const ryftAbortRef = useRef(null);            // AbortController for pollTerminalJob
+  // v5.5.871 — the terminal job path
+  const activeJobRef = useRef(null);            // live terminal_jobs id, for cancel on abort
+  const jobAbortRef = useRef(null);             // AbortController for pollTerminalJob
   const payNonceRef = useRef(0);                // unique leg per payment attempt (checkKey mutex)
   const alreadyPaidRef = useRef(false);         // the card machine said this bill is already paid
   // v5.5.900: gift card / promo entry moved to its own checkout step (ScreenGiftPromo)
   // BEFORE this screen — it was unreachable here because card payment auto-starts on mount.
 
-  // Cancel active reader action (timeout, unmount, or back navigation).
-  // v5.5.871: handles BOTH processors — a Stripe reader action AND a live Ryft PAX
-  // terminal job (which cancelTerminalJob voids on the machine + settles).
+  // Cancel the live terminal job (timeout, unmount, or back navigation).
+  // 29 Oct 2026 (v5.11.116): the job is aborted on the reader (adyen-terminal-charge abort, as the
+  // till does), so the reader leaves its prompt after the customer has backed out.
   const cancelReaderAction = useCallback(async () => {
-    // Ryft PAX terminal job
-    const ryftJobId = activeRyftJobRef.current;
-    if (ryftJobId) {
-      activeRyftJobRef.current = null;
-      try { ryftAbortRef.current?.abort(); } catch { /* noop */ }
-      try {
-        // 29 Oct 2026 (v5.11.116): an Adyen job is aborted on the reader (adyen-terminal-charge abort,
-        // as the till does); terminal-job-cancel only knows Ryft and answered 500 for an Adyen job,
-        // leaving the reader on its prompt after the customer had backed out.
-        const proc = await getLocationProcessor(locationId);
-        const r = proc === 'adyen' ? await abortTerminalJob(ryftJobId) : await cancelTerminalJob(ryftJobId);
-        console.log('[kiosk] cancelled terminal job:', proc, ryftJobId, r?.status || r?.reason || '');
-      } catch (e) { console.warn('[kiosk] cancel Ryft job failed:', e?.message || e); }
-    }
-    // Stripe reader action
-    const readerId = activeReaderRef.current;
-    const piId = activePiRef.current;
-    if (!readerId) return;
-    activeReaderRef.current = null;
-    activePiRef.current = null;
+    const jobId = activeJobRef.current;
+    if (!jobId) return;
+    activeJobRef.current = null;
+    try { jobAbortRef.current?.abort(); } catch { /* noop */ }
     try {
-      const token = await ensureAuthToken();
-      if (!token) return;
-      await fetch(`${OPS_URL}/functions/v1/stripe-cancel-reader-action`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({ reader_id: readerId, location_id: locationId, ...(piId ? { payment_intent_id: piId } : {}) }),
-      });
-      console.log('[kiosk] cancelled reader action:', readerId);
-    } catch (e) {
-      console.warn('[kiosk] cancel reader action failed:', e?.message || e);
-    }
-  }, [locationId]);
+      const r = await abortTerminalJob(jobId);
+      console.log('[kiosk] cancelled terminal job:', jobId, r?.status || r?.reason || '');
+    } catch (e) { console.warn('[kiosk] cancel terminal job failed:', e?.message || e); }
+  }, []);
 
   // Cleanup: cancel reader + stop polling on unmount
   useEffect(() => () => {
@@ -3614,7 +3587,7 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCred
   }, []);
 
 
-  // v5.5.871: Ryft PAX terminal payment — reuses the POS "send to terminal" job
+  // v5.5.871: the terminal payment — reuses the POS "send to terminal" job
   // path (findPaxTerminal → dispatchTerminalJob → pollTerminalJob) as a pure charge
   // TRANSPORT. The kiosk still books its own sale via submitOrder() on success (onPaid),
   // with a 'kiosk_send_to_terminal' source the POS reconciler deliberately ignores
@@ -3627,7 +3600,7 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCred
   // books it with that payment instead (heldPayment). The check key alone does not stop that
   // (the nonce restarts at 1 on every mount and moves on after a Try again), so this screen also
   // never starts another charge once the card machine has answered ALREADY_PAID.
-  const startRyftTerminalPayment = async () => {
+  const startTerminalPayment = async () => {
     try {
       const { terminal, reason } = await findPaxTerminal({ posDeviceId: kioskId, locationId });
       if (!terminal) {
@@ -3653,15 +3626,15 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCred
         suppressTip: true,        // kiosk collects the tip in its own screen — never re-prompt on the PAX
         closedCheckId,
         checkDraft: { source: 'kiosk_send_to_terminal', locationId },
-        currency: (stripeCurrency() || 'gbp').toUpperCase(),
+        currency: (venueCurrency() || 'gbp').toUpperCase(),
       });
 
-      activeRyftJobRef.current = job.id;
+      activeJobRef.current = job.id;
       setCardState('collecting');
       setCardStatusMsg('Follow the prompts on the card machine');
 
       const controller = new AbortController();
-      ryftAbortRef.current = controller;
+      jobAbortRef.current = controller;
       const finalJob = await pollTerminalJob(job.id, {
         signal: controller.signal,
         onUpdate: (j) => {
@@ -3670,8 +3643,8 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCred
           }
         },
       });
-      activeRyftJobRef.current = null;
-      ryftAbortRef.current = null;
+      activeJobRef.current = null;
+      jobAbortRef.current = null;
 
       if (finalJob?.status === 'approved') {
         setCardState('success');
@@ -3687,18 +3660,17 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCred
         setCardError('The payment could not be confirmed. Please ask a member of staff before trying again.');
       }
     } catch (e) {
-      activeRyftJobRef.current = null;
-      ryftAbortRef.current = null;
+      activeJobRef.current = null;
+      jobAbortRef.current = null;
       if (e?.name === 'AbortError') return;   // cancelled / unmounted — not a failure
       if (e?.code === 'ALREADY_PAID') alreadyPaidRef.current = true;
-      console.warn('[kiosk] Ryft terminal payment failed:', e?.message || e);
+      console.warn('[kiosk] terminal payment failed:', e?.message || e);
       setCardState('error');
       setCardError(e?.message || 'Payment error');
     }
   };
 
-  // v5.5.268: Server-side card payment via stripe-process-payment-on-reader
-  // Same REST flow as POS CheckoutModal — edge fn resolves device → reader → Stripe
+  // v5.5.268: the card payment, on the venue's terminal.
   const startCardPayment = async () => {
     // A basket already paid on the card machine (the charge went through, the order did not save,
     // then this screen opened again or Try again was tapped) is never charged again. submitOrder
@@ -3729,95 +3701,15 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCred
       const token = await ensureAuthToken();
       if (!token) throw new Error('Could not obtain auth token');
 
-      // v5.5.871: route by the venue's payment processor. A Ryft venue takes card
-      // payments on a paired PAX terminal (the same "send to terminal" job path the
-      // POS/Table-Pay use), NOT a Stripe reader. Stripe venues are unchanged.
-      // v5.8.75: Adyen venues too (lib/payments/processor.js takesCardsOnTerminal, the till's rule).
+      // v5.8.75: the venue takes card payments on a paired terminal (lib/payments/processor.js
+      // takesCardsOnTerminal, the till's rule).
       const processor = await getLocationProcessor(locationId);
-      if (takesCardsOnTerminal(processor)) { await startRyftTerminalPayment(); return; }
-
-      const amountMinor = Math.round(total * 100);
-      const lineItems = cart.map(l => ({
-        description: (l.name || 'Item').slice(0, 50),
-        amount: Math.round((l.linePrice || 0) * 100),
-        quantity: l.qty || 1,
-      }));
-
-      const res = await fetch(`${OPS_URL}/functions/v1/stripe-process-payment-on-reader`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          pos_device_id: kioskId,
-          amount_minor: amountMinor,
-          currency: stripeCurrency(),
-          line_items: lineItems,
-          skip_tipping: true, // kiosk collects tip in its own UI — don't prompt again on reader
-        }),
-      });
-      const j = await res.json();
-      console.log('[kiosk] stripe-process-payment-on-reader response:', j);
-      if (!res.ok || j.error) {
-        throw new Error(j.error || `HTTP ${res.status}`);
-      }
-
-      // Payment pushed to reader — track for cancel and start polling
-      activeReaderRef.current = j.reader_id;
-      activePiRef.current = j.payment_intent_id;
-      setCardState('collecting');
-      setCardStatusMsg('Tap or insert your card on the reader');
-      pollPaymentIntent(j.payment_intent_id, j.reader_id);
+      if (takesCardsOnTerminal(processor)) { await startTerminalPayment(); return; }
+      throw new Error('No card terminal is available. Assign one to this kiosk in Back Office → Kiosks → Settings → Card terminal.');
     } catch (e) {
       console.warn('[kiosk] card payment start failed:', e?.message || e);
       setCardState('error');
       setCardError(e?.message || 'Payment error');
-    }
-  };
-
-  // Poll Stripe until payment completes or times out
-  const pollPaymentIntent = async (piId, readerId) => {
-    const start = Date.now();
-    const POLL_INTERVAL = 1500;
-    const TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
-    while (!pollAbortRef.current && Date.now() - start < TIMEOUT_MS) {
-      await new Promise(r => setTimeout(r, POLL_INTERVAL));
-      if (pollAbortRef.current) return;
-      try {
-        const pollToken = await ensureAuthToken();
-        const res = await fetch(`${OPS_URL}/functions/v1/stripe-poll-reader-action`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', authorization: `Bearer ${pollToken}` },
-          body: JSON.stringify({ payment_intent_id: piId, reader_id: readerId }),
-        });
-        const j = await res.json();
-        if (!res.ok) { console.warn('[kiosk] poll error:', j.error); continue; }
-        // Update status based on reader action stage
-        const ra = j.reader_action;
-        if (ra?.type === 'process_payment_intent' && ra?.status === 'in_progress') {
-          setCardStatusMsg('Customer is paying on reader');
-        }
-        if (j.is_terminal_state) {
-          // Clear refs — payment is done, no cancel needed
-          activeReaderRef.current = null;
-          activePiRef.current = null;
-          if (j.is_success) {
-            setCardState('success');
-            setCardStatusMsg('Payment approved');
-            setTimeout(() => onPaid(), 800);
-          } else {
-            setCardState(j.last_payment_error ? 'declined' : 'error');
-            setCardError(j.last_payment_error || ra?.failure_message || `Payment ${j.payment_intent_status}`);
-          }
-          return;
-        }
-      } catch (e) {
-        console.warn('[kiosk] poll iter failed:', e?.message || e);
-      }
-    }
-    if (!pollAbortRef.current) {
-      // Timed out — cancel the pending action on the reader so it doesn't stay stuck
-      cancelReaderAction();
-      setCardState('error');
-      setCardError('Timed out - customer did not complete payment within 5 minutes');
     }
   };
 

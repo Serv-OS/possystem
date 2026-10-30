@@ -1,7 +1,7 @@
 // src/components/AdyenPaymentForm.jsx
 //
 // Adyen card AND wallet form for ONLINE / QR checkout (programme slice 1a),
-// the Adyen sibling of RyftPaymentForm: give it an amount and an order ref, it
+// the one card form for the customer web: give it an amount and an order ref, it
 // collects the payment and calls onSuccess/onError.
 //
 // ADVANCED flow (11 Aug): the card encrypts in the browser, but the payment

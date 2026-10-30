@@ -375,7 +375,7 @@ test('QR tab close with a deal: net sales equal the same sale paid now (every cl
   assert.equal(net({ subtotal: qrGrossSubtotal(vat.subtotal, deals), discounts: deals }), payNow, 'TabResume close');
   assert.equal(net({ subtotal: qrGrossSubtotal(15, deals), discounts: deals }), payNow, 'Orders force close');
   // The till's short close, the real writer.
-  const sc = shortTabClosedCheck({ rows: [round], allItems: items, firstRow: round, payment_intent_id: 'pi_x', processor: 'stripe' },
+  const sc = shortTabClosedCheck({ rows: [round], allItems: items, firstRow: round, payment_intent_id: 'PSP_X', processor: 'adyen' },
     { paidMinor: 1500, dueMinor: 1500 }, { taxFor: () => ({ taxAmount: 2.5, exclusiveTax: 0 }) });
   assert.equal(sc.subtotal, 20);
   assert.equal(net({ subtotal: sc.subtotal, discounts: sc.discounts }), payNow, 'short close');

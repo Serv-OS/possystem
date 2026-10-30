@@ -274,7 +274,7 @@ test('the cool-down keeps a poll loop snappy while the outage lasts', async () =
   await run(first, storage, { state });
   assert.equal(first.calls.refreshSession, 2, 'the first call pays for the retries');
 
-  // A Stripe reader poll ticks every 1.5s. Inside the cool-down it must not pay again.
+  // The terminal job poll ticks every second or so. Inside the cool-down it must not pay again.
   const second = mk();
   const res = await resolveAuthToken({
     auth: second, storage, storageKey: 'rpos-auth', state,

@@ -210,7 +210,6 @@ const PRICE_BOX_FILES = [
   ['backoffice/sections/PackageBuilder.jsx', 3],
   ['backoffice/sections/DiscountManager.jsx', 3],
   ['admin/components/RateCardRows.jsx', 2],
-  ['admin/sections/AdminBillingManager.jsx', 2],
 ];
 
 for (const [rel, atLeast] of PRICE_BOX_FILES) {

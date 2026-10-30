@@ -26,9 +26,9 @@ const LOC = '7218c716-eeb4-4f96-b284-f3500823595c';
 
 // The order rows place_public_order writes (20260919a): unproven = paid false plus
 // customer.payment_state 'checking', payment_ref and payment_processor.
-const qrChecking = { ref: 'QR-AB12C', source: 'qr', paid: false, total: 23.5, customer: { name: 'Sam', payment_state: 'checking', payment_unverified: true, payment_ref: 'pi_123', payment_processor: 'stripe' } };
+const qrChecking = { ref: 'QR-AB12C', source: 'qr', paid: false, total: 23.5, customer: { name: 'Sam', payment_state: 'checking', payment_unverified: true, payment_ref: 'PSP123', payment_processor: 'adyen' } };
 const onlineChecking = { ...qrChecking, ref: 'OL-XY98Z', source: 'online' };
-const cateringChecking = { ...qrChecking, ref: 'CA-11AA2', source: 'catering', customer: { ...qrChecking.customer, payment_processor: 'adyen', payment_ref: 'PSP77' } };
+const cateringChecking = { ...qrChecking, ref: 'CA-11AA2', source: 'catering', customer: { ...qrChecking.customer, payment_ref: 'PSP77' } };
 
 test('the three states: paid, checking, unpaid', () => {
   assert.equal(orderPaymentState(qrChecking), 'checking', 'an unverified QR order no longer looks unpaid (it invited a second charge)');
@@ -56,10 +56,11 @@ test('only a truly unpaid order may be charged', () => {
 });
 
 test('Check payment asks for the card payment the server recorded on the order', () => {
-  assert.deepEqual(paymentCheckRequest(qrChecking), { processor: 'stripe', kind: 'card', paymentRef: 'pi_123' });
+  assert.deepEqual(paymentCheckRequest(qrChecking), { processor: 'adyen', kind: 'card', paymentRef: 'PSP123' });
   assert.deepEqual(paymentCheckRequest(cateringChecking), { processor: 'adyen', kind: 'card', paymentRef: 'PSP77' });
   assert.equal(paymentCheckRequest({ customer: { payment_state: 'checking' } }), null, 'a gift or promo only order: a manager confirms it');
   assert.equal(paymentCheckRequest({ customer: { payment_ref: 'x', payment_processor: 'gift' } }), null);
+  assert.equal(paymentCheckRequest({ customer: { payment_ref: 'pi_old', payment_processor: 'stripe' } }), null, 'a processor ServOS no longer works with is not asked');
 });
 
 test('Check payment: proof, then verify; an unproven answer never charges anything', async () => {
@@ -68,7 +69,7 @@ test('Check payment: proof, then verify; an unproven answer never charges anythi
   const r = await checkOrderPayment({ requestProof: async (req) => { calls.push(['proof', req]); return { proofId: 'p1' }; }, rpc, locationId: LOC, order: qrChecking, isMissingRpc });
   assert.deepEqual(r, { status: 'paid', checkId: 'chk-1', already: false });
   assert.deepEqual(calls, [
-    ['proof', { processor: 'stripe', kind: 'card', paymentRef: 'pi_123' }],
+    ['proof', { processor: 'adyen', kind: 'card', paymentRef: 'PSP123' }],
     ['verify_public_order_payment', { p_location_id: LOC, p_ref: 'QR-AB12C', p_proof_ids: ['p1'] }],
   ]);
 
@@ -98,9 +99,9 @@ test('Confirm payment (manager) needs a note and calls confirm_public_order_paym
   const none = await confirmOrderPayment({ rpc, locationId: LOC, order: qrChecking, note: '  ' });
   assert.equal(none.status, 'error');
   assert.equal(calls.length, 0, 'nothing is confirmed without saying what was checked');
-  const ok = await confirmOrderPayment({ rpc, locationId: LOC, order: qrChecking, note: 'seen in Stripe (manager: Jo)' });
+  const ok = await confirmOrderPayment({ rpc, locationId: LOC, order: qrChecking, note: 'seen in Adyen (manager: Jo)' });
   assert.equal(ok.status, 'paid');
-  assert.deepEqual(calls[0], ['confirm_public_order_payment', { p_location_id: LOC, p_ref: 'QR-AB12C', p_note: 'seen in Stripe (manager: Jo)' }]);
+  assert.deepEqual(calls[0], ['confirm_public_order_payment', { p_location_id: LOC, p_ref: 'QR-AB12C', p_note: 'seen in Adyen (manager: Jo)' }]);
 });
 
 test('the local copy settles at once (paid, and no longer checking)', () => {
@@ -147,7 +148,7 @@ test('MPOS, the checkout modal and the kitchen ticket respect "being checked"', 
 // payment_state 'short' with payment_unverified and the amounts in customer.order_pricing.
 const olShort = {
   ref: 'OL-SH0RT', source: 'online', paid: false, total: 30,
-  customer: { name: 'Ali', payment_state: 'short', payment_unverified: true, payment_ref: 'pi_9', payment_processor: 'stripe',
+  customer: { name: 'Ali', payment_state: 'short', payment_unverified: true, payment_ref: 'PSP9', payment_processor: 'adyen',
     order_pricing: { due_minor: 3000, proven_minor: 2400, unknown_lines: 0 } },
 };
 
@@ -176,7 +177,7 @@ test('S5: a manager Confirm books only what the online payment took (never the s
   assert.equal(calls[0][0], 'confirm_public_order_payment');
   assert.equal(calls[0][1].p_amount_minor, 2400);
   calls.length = 0;
-  await confirmOrderPayment({ rpc, locationId: LOC, order: qrChecking, note: 'seen in Stripe', isMissingRpc });
+  await confirmOrderPayment({ rpc, locationId: LOC, order: qrChecking, note: 'seen in Adyen', isMissingRpc });
   assert.equal('p_amount_minor' in calls[0][1], false);
   // Check payment while still short says so in plain words, and never "charge again".
   const a = readPaymentAnswer({ data: { ok: true, paid: false, due_minor: 3000, proven_minor: 2400 } });
@@ -189,37 +190,39 @@ test('S5: a manager Confirm books only what the online payment took (never the s
 
 test('S5: a QR tab whose close came up short is closed on the till WITHOUT charging the card again', () => {
   const rounds = [
-    { ref: 'QR-R1', location_id: LOC, customer: { tab_open: true, tab_ref: 'QR-R1', payment_intent_id: 'pi_hold', processor: 'stripe', tip: 2, payment_state: 'short', payment_unverified: true, tab_close_short: { paid_minor: 5000, due_minor: 6200 } } },
-    { ref: 'QR-R2', location_id: LOC, customer: { tab_open: true, tab_ref: 'QR-R1', payment_intent_id: 'pi_hold', processor: 'stripe', tip: 0, payment_state: 'short', payment_unverified: true, tab_close_short: { paid_minor: 5000, due_minor: 6200 } } },
+    { ref: 'QR-R1', location_id: LOC, customer: { tab_open: true, tab_ref: 'QR-R1', payment_intent_id: 'PSP_HOLD', processor: 'adyen', tip: 2, payment_state: 'short', payment_unverified: true, tab_close_short: { paid_minor: 5000, due_minor: 6200 } } },
+    { ref: 'QR-R2', location_id: LOC, customer: { tab_open: true, tab_ref: 'QR-R1', payment_intent_id: 'PSP_HOLD', processor: 'adyen', tip: 0, payment_state: 'short', payment_unverified: true, tab_close_short: { paid_minor: 5000, due_minor: 6200 } } },
   ];
   assert.deepEqual(qrTabShortInfo(rounds), { paidMinor: 5000, dueMinor: 6200, restMinor: 1200 });
   assert.equal(qrTabShortInfo([{ customer: { tab_open: true } }]), null);
   assert.equal(qrTabShortLine(rounds, (n) => `£${n.toFixed(2)}`), 'Paid £50.00 of £62.00');
-  const tab = { rows: rounds, firstRow: rounds[0], allItems: [{ name: 'IPA', qty: 2, price: 6 }], payment_intent_id: 'pi_hold', processor: 'stripe', tableId: 'T4', tableLabel: '4.1' };
+  const tab = { rows: rounds, firstRow: rounds[0], allItems: [{ name: 'IPA', qty: 2, price: 6 }], payment_intent_id: 'PSP_HOLD', processor: 'adyen', tableId: 'T4', tableLabel: '4.1' };
   const check = shortTabClosedCheck(tab, qrTabShortInfo(rounds), { nowIso: '2026-09-19T20:00:00.000Z' });
-  assert.equal(check.id, 'chk-qrshort-pi_hold', 'one id per hold: Close pressed twice can never book twice');
+  assert.equal(check.id, 'chk-qrshort-PSP_HOLD', 'one id per hold: Close pressed twice can never book twice');
   assert.equal(check.total, 50, 'books ONLY what the capture took');
   assert.equal(check.tip, 2);
   assert.equal(check.subtotal, 48);
-  assert.deepEqual(check.payment_intents, [{ id: 'pi_hold', amountMinor: 5000 }]);
-  assert.equal(check.stripe_payment_intent_id, 'pi_hold');
+  assert.deepEqual(check.payment_intents, [{ id: 'PSP_HOLD', amountMinor: 5000 }]);
+  assert.equal(check.stripe_payment_intent_id, 'PSP_HOLD', 'the column holds the Adyen reference');
+  assert.equal(check.processor, 'adyen');
   assert.equal(check.status, 'paid');
   assert.equal(check.source, 'qr');
   assert.equal(check.customer.shortfall_minor, 1200);
   assert.equal('tab_join_code' in check.customer, false);
   assert.deepEqual(check.items, [{ name: 'IPA', qty: 2, price: 6, voided: false }]);
-  const ryft = shortTabClosedCheck({ ...tab, processor: 'ryft', payment_session_id: 'ps_1' }, qrTabShortInfo(rounds));
-  assert.deepEqual(ryft.payment_intents, [{ id: 'ps_1', amountMinor: 5000 }]);
-  assert.equal(ryft.stripe_payment_intent_id, null);
+  // Whatever an old stash says, the check is an Adyen check on the hold's reference.
+  const old = shortTabClosedCheck({ ...tab, processor: 'ryft', payment_session_id: 'ps_1' }, qrTabShortInfo(rounds));
+  assert.equal(old.processor, 'adyen');
+  assert.deepEqual(old.payment_intents, [{ id: 'PSP_HOLD', amountMinor: 5000 }]);
   assert.equal(shortTabClosedCheck(tab, null), null);
   // The Orders Hub never captures or charges a short tab again.
   const oh = read('../surfaces/OrdersHub.jsx');
   const fn = oh.indexOf('const forceCloseQrTab = async (tab) => {');
   const shortAt = oh.indexOf('if (shortTab) { await closeShortQrTab(tab, shortTab); return; }', fn);
-  const capture = oh.indexOf("await fetch('/api/stripe-capture', {", fn);
+  const capture = oh.indexOf("await adyenTab('tab_capture', {", fn);
   assert.ok(shortAt > fn && capture > shortAt, 'the short path returns before any capture');
   const close = oh.slice(oh.indexOf('const closeShortQrTab = async (tab, short) => {'), fn);
-  assert.ok(!/stripe-capture|stripe-charge-overage|ryftTab\(|adyenTab\(/.test(close), 'closing a short tab never touches the card');
+  assert.ok(!/adyenTab\(|stripe|ryft/i.test(close), 'closing a short tab never touches the card');
   assert.ok(close.includes("String(ccErr.code || '') !== '23505'"), 'a second press is a duplicate, not an error');
   assert.ok(oh.includes("{shortLine ? (closingTab ? 'Closing…' : 'Close (already charged)')"));
 });

@@ -35,11 +35,12 @@ test('every "unknown processor" default in the app answers Adyen', () => {
   const proc = read('src/lib/payments/processor.js');
   assert.equal((proc.match(/processor: 'adyen', definitive: false/g) || []).length, 3, 'the three fail safe answers are Adyen');
   const fn = read('supabase/functions/payments-processor/index.ts');
-  assert.ok(fn.includes("? loc.payment_processor : 'adyen';"), 'the server answers Adyen for a row with no processor');
+  assert.ok(fn.includes("return json({ processor: 'adyen' });"), 'the server answers Adyen for every known location');
   for (const f of ['supabase/functions/adyen-onboard/index.ts', 'supabase/functions/adyen-terminal-admin/index.ts']) {
     assert.ok(!read(f).includes("payment_processor || 'stripe'"), f);
   }
-  assert.ok(read('supabase/functions/gift-checkout-session/index.ts').includes("let processor = 'adyen';"));
+  // Drop D: gift-checkout-session has one path and stamps the purchase row on Adyen.
+  assert.ok(read('supabase/functions/gift-checkout-session/index.ts').includes("status: 'pending', processor: 'adyen',"));
 });
 
 test('the database defaults follow: two migrations, one per project, with rollbacks', () => {
@@ -54,7 +55,8 @@ test('the database defaults follow: two migrations, one per project, with rollba
 test('catering pay now has an Adyen branch that pays in page', () => {
   const src = read('src/surfaces/catering/CateringCheckout.jsx');
   assert.ok(src.includes("import AdyenPaymentForm from '../../components/AdyenPaymentForm';"));
-  assert.ok(src.includes("if (processor === 'ryft' || processor === 'adyen') { setStep('pay'); return; }"), 'Adyen never reaches createPaymentIntent (Stripe)');
+  assert.ok(src.includes("const processor = 'adyen';"), 'catering pays on Adyen only');
+  assert.ok(!/createPaymentIntent|RyftPaymentForm|@stripe\//.test(src), 'no other processor is reachable');
   const form = src.slice(src.indexOf('<AdyenPaymentForm'), src.indexOf('/>', src.indexOf('<AdyenPaymentForm')));
   assert.ok(form.includes('reference={ref}') && form.includes('amountMinor={totalMinor}') && form.includes('onSuccess={finalizeNow}'));
 });
@@ -65,17 +67,21 @@ test('the handheld simulated approval is reachable only in the mock build or tra
   assert.equal((src.match(/setPhase\('sim'\)/g) || []).length, 1, "only enterSim may open the 'sim' screen");
   assert.ok(src.includes("if (simAllowed) { setPhase('sim'); return; }") && src.includes("setPhase('error');"), 'in production it is the error screen');
   assert.ok(src.includes("const simulateApprove = () => {\n    if (!simAllowed) return;"), 'the approve button is inert in production');
-  assert.equal((src.match(/enterSim\(/g) || []).length, 3, 'three call sites');
+  // Drop D (29 Oct 2026): the Tap to Pay call site went with Stripe; the two left are the handset
+  // with no bound terminal and the handset in another payment mode.
+  assert.equal((src.match(/enterSim\(/g) || []).length, 2, 'two call sites');
 });
 
 test('Orders Hub captures an Adyen tab by its psp reference', () => {
   const src = read('src/surfaces/OrdersHub.jsx');
-  assert.ok(src.includes("const isAdyen = tab.processor === 'adyen';"));
-  assert.ok(src.includes("if (isRyft ? !ryftSession : isAdyen ? !tab.payment_intent_id : (!tab.payment_intent_id || !tab.stripe_account)) {"));
+  assert.ok(src.includes("if (!tab.payment_intent_id) {\n      showToast('Tab missing payment info — cannot capture', 'error');"), 'the psp reference is the only payment info a tab needs');
+  assert.ok(!/stripe-capture|stripe-charge-overage|ryftTab\(/.test(src), 'no other processor is reachable');
+  assert.equal((src.match(/await adyenTab\('tab_capture', \{/g) || []).length, 2, 'the pooled close and the single row close both capture on Adyen');
 });
 
 test('the kiosk aborts a live Adyen card prompt on the reader', () => {
   const src = read('src/surfaces/KioskApp.jsx');
   assert.ok(src.includes('abortTerminalJob'), 'imported');
-  assert.ok(src.includes("const r = proc === 'adyen' ? await abortTerminalJob(ryftJobId) : await cancelTerminalJob(ryftJobId);"));
+  assert.ok(src.includes('const r = await abortTerminalJob(jobId);'));
+  assert.ok(!src.includes('cancelTerminalJob'), 'the kiosk has no other cancel path');
 });

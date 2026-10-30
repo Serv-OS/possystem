@@ -78,7 +78,7 @@ test('tenders psp_ref is a card leg when it is the only record, with the tender 
   const legs = cardLegsOf(copy);
   assert.equal(legs.length, 1);
   assert.equal(legs[0].id, PSP);
-  assert.equal(legs[0].processor, 'adyen');   // never the 'stripe' default
+  assert.equal(legs[0].processor, 'adyen');
   assert.equal(legs[0].amountMinor, 990);
 });
 
@@ -124,7 +124,7 @@ test('existing precedence is unchanged: legs list, then the single id, then tend
   assert.deepEqual(cardLegsOf({ total: 5, paymentIntents: [{ id: null, amountMinor: 500, method: 'booking_prepaid' }] }), []);
   assert.deepEqual(cardLegsOf({ total: 5, paymentIntents: [{ id: null, amountMinor: 500, capture: 'pending' }] }), []);
   // The check's own processor still wins over a tender for the single id leg.
-  assert.equal(cardLegsOf({ total: 1, processor: 'ryft', stripePaymentIntentId: 'ps_1', tenders: [{ method: 'card', amount: 1, psp_ref: 'ps_1', processor: 'adyen' }] })[0].processor, 'ryft');
+  assert.equal(cardLegsOf({ total: 1, processor: 'ADYEN', stripePaymentIntentId: 'PSP_1', tenders: [{ method: 'card', amount: 1, psp_ref: 'PSP_1', processor: 'adyen' }] })[0].processor, 'adyen');
 });
 
 test('a reader sale with a booking deposit refunds its card (list holds only the booking legs)', () => {
@@ -144,7 +144,7 @@ test('a reader sale with a booking deposit refunds its card (list holds only the
 });
 
 test('a cash sale has no card leg', () => {
-  assert.deepEqual(cardLegsOf({ total: 4.1, method: 'cash', processor: 'stripe', tenders: [{ method: 'cash', amount: 4.1, tip: 0 }] }), []);
+  assert.deepEqual(cardLegsOf({ total: 4.1, method: 'cash', processor: 'adyen', tenders: [{ method: 'cash', amount: 4.1, tip: 0 }] }), []);
 });
 
 // ── resolveRefundCardLegs: the row is the record when the copy is short ──────
@@ -181,7 +181,7 @@ test('a failed read is reported, never treated as "no card"', async () => {
 test('no row, or a row with no card, is "no card" (the old manual message), not a failure', async () => {
   const none = await resolveRefundCardLegs(oldRealtimeCopy(leedsRow()), { readRow: async () => null });
   assert.deepEqual([none.from, none.lookupFailed, none.legs.length], ['none', false, 0]);
-  const legacy = await resolveRefundCardLegs(oldRealtimeCopy(leedsRow()), { readRow: async () => ({ processor: 'stripe', stripe_payment_intent_id: null, payment_intents: null, tenders: null }) });
+  const legacy = await resolveRefundCardLegs(oldRealtimeCopy(leedsRow()), { readRow: async () => ({ processor: 'adyen', stripe_payment_intent_id: null, payment_intents: null, tenders: null }) });
   assert.deepEqual([legacy.from, legacy.lookupFailed, legacy.legs.length], ['none', false, 0]);
 });
 

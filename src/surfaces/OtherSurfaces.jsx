@@ -120,7 +120,7 @@ export function PaymentScreen({ subtotal, service, total, items, taxBreakdown, o
             <div style={{ fontSize:17, fontWeight:700, marginBottom:4 }}>{money(grand)} due</div>
             <div style={{ fontSize:12, color:'var(--t3)', marginBottom:20 }}>Includes {money(tipAmt)} tip</div>
             {[
-              { id:'card', icon:'💳', label:'Card payment', sub:'Stripe Terminal · tap, chip or swipe' },
+              { id:'card', icon:'💳', label:'Card payment', sub:'Card terminal · tap, chip or swipe' },
               { id:'cash', icon:'💵', label:'Cash payment', sub:'Enter tendered amount and calculate change' },
             ].map(m => (
               <div key={m.id} style={{
@@ -143,7 +143,7 @@ export function PaymentScreen({ subtotal, service, total, items, taxBreakdown, o
           <div style={{ textAlign:'center', padding:'32px 0' }}>
             <div style={{ fontSize:56, marginBottom:20 }}>💳</div>
             <div style={{ fontSize:24, fontWeight:700, marginBottom:8 }}>{money(grand)}</div>
-            <div style={{ fontSize:13, color:'var(--t3)', marginBottom:32 }}>Present card to Stripe Reader S700</div>
+            <div style={{ fontSize:13, color:'var(--t3)', marginBottom:32 }}>Present card to the card terminal</div>
             <div style={{
               display:'inline-flex', alignItems:'center', gap:8, padding:'10px 20px',
               background:'var(--acc-d)', border:'1px solid var(--acc-b)',

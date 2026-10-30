@@ -3,8 +3,10 @@
 // The two defects these lock down:
 //   #108  a "full" refund returned ITEMS ONLY, so the tip and the service charge
 //         were never given back, and full-vs-partial was decided against subtotal.
-//   #107  every card leg was routed to Stripe unless the check said 'ryft', so
-//         Adyen refunds aimed at a processor that had never heard of the payment.
+//   #107  every card leg was routed by a guessed processor instead of the one that
+//         took the payment, so Adyen refunds aimed at a processor that had never
+//         heard of the payment. ServOS works with Adyen only: a leg routes by its
+//         own processor, then the check's, then Adyen.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -120,22 +122,23 @@ test('itemsBasis ignores voided lines and falls back to subtotal', () => {
 test('a leg inherits the CHECK processor, so an Adyen check routes to Adyen', () => {
   const legs = cardLegsOf(check());
   assert.equal(legs.length, 1);
-  assert.equal(legs[0].processor, 'adyen');   // the old rule made this 'stripe'
+  assert.equal(legs[0].processor, 'adyen');
   assert.equal(legs[0].last4, '4242');
 });
 
-test('a leg may name its OWN processor, overriding the check', () => {
-  const c = { ...check(), processor: 'adyen', paymentIntents: [{ id: 'pi_1', amountMinor: 100, processor: 'stripe' }] };
-  assert.equal(cardLegsOf(c)[0].processor, 'stripe');
+test('a leg may name its OWN processor (lower cased), and a check naming none is Adyen', () => {
+  const c = { ...check(), processor: undefined, paymentIntents: [{ id: 'psp_1', amountMinor: 100, processor: 'ADYEN' }] };
+  assert.equal(cardLegsOf(c)[0].processor, 'adyen');
+  assert.equal(cardLegsOf({ ...check(), processor: undefined })[0].processor, 'adyen');
 });
 
 test('the legacy single-id field normalises to a one-leg list', () => {
-  const c = { total: 20, processor: 'ryft', stripePaymentIntentId: 'ps_9', refunds: [] };
+  const c = { total: 20, processor: 'adyen', stripePaymentIntentId: 'PSP9', refunds: [] };
   const legs = cardLegsOf(c);
   assert.equal(legs.length, 1);
-  assert.equal(legs[0].id, 'ps_9');
+  assert.equal(legs[0].id, 'PSP9');
   assert.equal(legs[0].amountMinor, 2000);
-  assert.equal(legs[0].processor, 'ryft');
+  assert.equal(legs[0].processor, 'adyen');
 });
 
 test('a 3-card split fills legs front-to-back, each capped at its own charge', () => {
@@ -160,7 +163,7 @@ test('per-leg operator picks are honoured but still clamped to each card', () =>
 });
 
 test('a leg with an UNKNOWN captured amount is not capped', () => {
-  const { allocations } = allocateToLegs([{ id: 'L1', amountMinor: null, processor: 'stripe' }], 4200);
+  const { allocations } = allocateToLegs([{ id: 'L1', amountMinor: null, processor: 'adyen' }], 4200);
   assert.equal(allocations[0].refundMinor, 4200);
 });
 

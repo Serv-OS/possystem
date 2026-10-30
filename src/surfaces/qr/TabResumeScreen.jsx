@@ -6,7 +6,7 @@
 //   • 🍽 Add more — drops them back into the menu with `existingTab`
 //     context so the next checkout adds a NEW order_queue row tied to
 //     the same payment_intent (= a new kitchen ticket, no new pre-auth)
-//   • 🔒 Close & pay — captures the held pre-auth via /api/stripe-capture,
+//   • 🔒 Close & pay — captures the held Adyen pre-auth (adyen-tab tab_capture),
 //     marks every round on this tab as collected, writes one closed_check
 //     covering the lot, clears the localStorage stash
 //
@@ -19,7 +19,6 @@ import { useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { clearStashedTab } from '../../lib/qrTabStorage';
 import { money } from '../../lib/currency';
-import { ryftTab } from '../../lib/payments/ryft';
 import { adyenTab } from '../../lib/payments/adyenTab';
 import { singleTender } from '../../lib/accounting/tenders';
 import { writeClosedCheckRow } from '../../lib/closedCheckWrite';
@@ -56,118 +55,35 @@ export default function TabResumeScreen({
     // 8 Oct 2026: before the capture, before the question: no close while the rates are not loaded.
     if (vatGate) { setError(vatGate.message); return; }
     if (!confirm(`Close your tab and charge ${money(runningTotal)} to your card?`)) return;
-    // Route by processor (the stash carries it). Ryft holds are addressed by
-    // payment_session_id; ryft-tab resolves the merchant account from
-    // location_id. Default missing processor → stripe (pre-dual-processor tabs).
-    const isRyft = (tab.processor === 'ryft') || (!tab.stripe_account && !!tab.payment_session_id);
-    const ryftSession      = tab.payment_session_id || tab.payment_intent_id;
-    const ryftCustomerId   = tab.ryft_customer_id || rounds?.[0]?.customer?.ryft_customer_id || null;
-    const ryftStoredCardId = tab.ryft_payment_method_id || rounds?.[0]?.customer?.ryft_payment_method_id || null;
-    const locId            = rounds?.[0]?.location_id || null;
-    const isAdyen          = !isRyft && (tab.processor === 'adyen' || rounds?.[0]?.customer?.processor === 'adyen');
-    // Card payment ids of any overage charged below (each needs its own 'card' proof).
-    const overageIds = [];
+    const locId = rounds?.[0]?.location_id || null;
     setClosing(true); setError('');
     try {
-      // Capture the bill, clamped to the hold. Both paths yield the same shape:
+      // Capture the bill, clamped to the hold:
       // { captured, captured_amount(minor), shortfall(minor), currency, amount }.
-      let data;
-      if (isRyft) {
-        const r = await ryftTab('capture', { location_id: locId, payment_session_id: ryftSession, amount_minor: Math.round(runningTotal * 100) });
-        const cap = Number(r.captured_amount || 0);
-        // Real hold currency (echoed by capture) so an overage MIT matches it.
-        data = { captured: !!r.success, captured_amount: cap, shortfall: Number(r.shortfall || 0), currency: (r.currency || 'gbp').toLowerCase(), amount: cap };
-      } else if (tab.processor === 'adyen' || rounds?.[0]?.customer?.processor === 'adyen') {
-        // v5.8.17: Adyen pre-auth, captured for the running total.
-        const r = await adyenTab('tab_capture', {
-          location_id: locId, psp_reference: tab.payment_intent_id,
-          amount_minor: Math.round(runningTotal * 100),
-          hold_minor: Math.round(Number(rounds?.[0]?.customer?.pre_auth_amount || 0) * 100) || undefined,
-          reference: `tabclose:${tab.tab_ref || tab.payment_intent_id}`.slice(0, 60),
-        });
-        data = { captured: !!r.captured, captured_amount: Number(r.captured_amount || 0), shortfall: Number(r.shortfall || 0), currency: (r.currency || 'gbp').toLowerCase(), amount: Number(r.captured_amount || 0), error: r.error };
-      } else {
-        const res = await fetch('/api/stripe-capture', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            paymentIntentId: tab.payment_intent_id,
-            stripeAccount:   tab.stripe_account,
-            amountToCapture: Math.round(runningTotal * 100),
-          }),
-        });
-        data = await res.json();
-        if (!res.ok) throw new Error(data?.error || 'Capture failed');
-      }
+      // v5.8.17: Adyen pre-auth, captured for the running total.
+      const r = await adyenTab('tab_capture', {
+        location_id: locId, psp_reference: tab.payment_intent_id,
+        amount_minor: Math.round(runningTotal * 100),
+        hold_minor: Math.round(Number(rounds?.[0]?.customer?.pre_auth_amount || 0) * 100) || undefined,
+        reference: `tabclose:${tab.tab_ref || tab.payment_intent_id}`.slice(0, 60),
+      });
+      const data = { captured: !!r.captured, captured_amount: Number(r.captured_amount || 0), shortfall: Number(r.shortfall || 0), currency: (r.currency || 'gbp').toLowerCase(), amount: Number(r.captured_amount || 0), error: r.error };
       if (!data.captured) throw new Error(data?.error || 'Capture failed');
 
-      // Charge any shortfall off-session on the card saved at tab open.
+      // A bill above the hold: the hold is captured, the rest is settled with staff (an Adyen
+      // tab keeps no card for an off-session charge).
       const shortfallMinor = Number(data.shortfall || 0);
-      const paymentMethodId = rounds?.[0]?.customer?.payment_method_id || null;
-      const hasSavedCard = isRyft ? (!!ryftCustomerId && !!ryftStoredCardId) : !!paymentMethodId;
-      if (shortfallMinor > 0 && !hasSavedCard) {
+      if (shortfallMinor > 0) {
         setError(`We charged ${money((data.amount / 100))} (the held amount). The remaining ${money((shortfallMinor / 100))} needs to be settled with staff.`);
-      } else if (shortfallMinor > 0 && isRyft) {
-        try {
-          const ov = await ryftTab('overage', {
-            location_id: locId,
-            previous_session_id: ryftSession,
-            customer_id: ryftCustomerId,
-            stored_card_id: ryftStoredCardId,
-            amount_minor: shortfallMinor,
-            currency: data.currency || 'gbp',
-          });
-          if (ov.charged && ov.overage?.id) overageIds.push(ov.overage.id);
-          if (!ov.charged) {
-            console.warn('[TabResume] ryft overage not approved:', ov?.error || ov?.detail);
-            setError(`We charged ${money((data.amount / 100))} to your card. The remaining ${money((shortfallMinor / 100))} could not be captured automatically — please ask staff to settle the balance.`);
-          }
-        } catch (e) {
-          console.warn('[TabResume] ryft overage failed:', e?.message);
-          setError(`We charged ${money((data.amount / 100))} to your card. The remaining ${money((shortfallMinor / 100))} could not be captured automatically — please ask staff to settle the balance.`);
-        }
-      } else if (shortfallMinor > 0) {
-        try {
-          const ovRes = await fetch('/api/stripe-charge-overage', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              stripeAccount: tab.stripe_account,
-              paymentMethodId,
-              amount: shortfallMinor,
-              currency: data.currency || 'gbp',
-              description: `QR tab overage · self-close · ${tab.payment_intent_id}`,
-              metadata: {
-                source: 'qr_overage',
-                ops_location_id: String(locId || ''),   // fence stage 1: payment-proof checks the venue on the intent
-                parent_payment_intent: tab.payment_intent_id,
-                table_label: String(tab.table_label || tableLabel || ''),
-              },
-            }),
-          });
-          const ov = await ovRes.json();
-          if (ovRes.ok && ov.ok && ov.payment_intent) overageIds.push(ov.payment_intent);
-          if (!ovRes.ok || !ov.ok) {
-            console.warn('[TabResume] overage failed:', ov?.error);
-            setError(`We charged ${money((data.amount / 100))} to your card. The remaining ${money((shortfallMinor / 100))} could not be captured automatically — please ask staff to settle the balance.`);
-          }
-        } catch (e) {
-          console.warn('[TabResume] overage failed:', e?.message);
-        }
       }
 
-      // Database fence stage 1 (contract C10, gaps G16 and G17): the capture and overage calls
-      // above stay. The server records proof of what was really captured (payment-proof reads
-      // the processor), and settle_qr_tab marks the rounds collected and writes ONE closed check
-      // for what was captured; a shortfall is recorded for staff, never booked as paid.
+      // Database fence stage 1 (contract C10, gaps G16 and G17): the capture call above stays.
+      // The server records proof of what was really captured (payment-proof reads Adyen), and
+      // settle_qr_tab marks the rounds collected and writes ONE closed check for what was
+      // captured; a shortfall is recorded for staff, never booked as paid.
       const tableLabelForCheck = tab.table_label ? `Table ${tab.table_label}` : (tableLabel ? `Table ${tableLabel}` : null);
-      const procName = isRyft ? 'ryft' : isAdyen ? 'adyen' : 'stripe';
-      const capProof = await requestPaymentProof({ opsLocationId: locId, processor: procName, kind: 'capture', paymentRef: tab.payment_intent_id });
+      const capProof = await requestPaymentProof({ opsLocationId: locId, processor: 'adyen', kind: 'capture', paymentRef: tab.payment_intent_id });
       const ovProofIds = [];
-      for (const ovId of overageIds) {
-        const pr = await requestPaymentProof({ opsLocationId: locId, processor: isRyft ? 'ryft' : 'adyen', kind: 'card', paymentRef: ovId });
-        if (pr.proofId) ovProofIds.push(pr.proofId);
-      }
       // 27 Sep 2026: the tab's VAT (it booked tax_amount null), from the venue rows this page
       // already loaded (its buildLocalTaxCtx, menu and rates). Booked by the fallback write below,
       // and handed to settle_qr_tab, which writes the check when the fence is live.
@@ -214,11 +130,11 @@ export default function TabResumeScreen({
             total: runningTotal,
             method: 'card',
             // v5.9.11: one card tender for the tab, its tip on it.
-            tenders: singleTender('card', runningTotal, tabTip, { pspRef: isRyft ? ryftSession : tab.payment_intent_id, processor: tab.processor || (isRyft ? 'ryft' : 'adyen') }),
+            tenders: singleTender('card', runningTotal, tabTip, { pspRef: tab.payment_intent_id, processor: 'adyen' }),
             // Refund routing (refundCheck reads top-level processor + payment_intents).
-            processor: isRyft ? 'ryft' : 'adyen',
-            stripe_payment_intent_id: isRyft ? null : tab.payment_intent_id,
-            payment_intents: [{ id: isRyft ? ryftSession : tab.payment_intent_id, amountMinor: Math.round(runningTotal * 100) }],
+            processor: 'adyen',
+            stripe_payment_intent_id: tab.payment_intent_id,   // the column holds the Adyen reference (renamed later, never dropped)
+            payment_intents: [{ id: tab.payment_intent_id, amountMinor: Math.round(runningTotal * 100) }],
             closed_at: new Date().toISOString(),
             status: 'paid',
             refunds: [],

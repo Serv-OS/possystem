@@ -144,8 +144,8 @@ export function qrTabShortLine(rows, formatMoney = (n) => n.toFixed(2)) {
  */
 export function shortTabClosedCheck(tab, short, { nowIso = new Date().toISOString(), taxFor = null } = {}) {
   if (!tab || !short || !(short.paidMinor > 0)) return null;
-  const processor = ['stripe', 'ryft', 'adyen'].includes(tab.processor) ? tab.processor : 'adyen';
-  const holdRef = processor === 'ryft' ? (tab.payment_session_id || tab.payment_intent_id) : tab.payment_intent_id;
+  const processor = 'adyen';   // ServOS takes card payments on Adyen only
+  const holdRef = tab.payment_intent_id;
   if (!holdRef) return null;
   const paid = Math.round(short.paidMinor) / 100;
   const rows = Array.isArray(tab.rows) ? tab.rows : [];
@@ -186,7 +186,7 @@ export function shortTabClosedCheck(tab, short, { nowIso = new Date().toISOStrin
     total: paid,
     method: 'card',
     processor,
-    stripe_payment_intent_id: processor === 'stripe' ? holdRef : null,
+    stripe_payment_intent_id: holdRef,   // the column holds the Adyen reference (renamed later, never dropped)
     payment_intents: [{ id: holdRef, amountMinor: Math.round(short.paidMinor) }],
     closed_at: nowIso,
     status: 'paid',
@@ -202,7 +202,7 @@ export const isPaymentChecking = (o) => orderPaymentState(o) === 'checking';
 /** Only a truly unpaid order may be charged on the till. */
 export const mayChargeOrder = (o) => orderPaymentState(o) === 'unpaid';
 
-const PROCESSORS = ['stripe', 'ryft', 'adyen'];
+const PROCESSORS = ['adyen'];
 
 /**
  * What "Check payment" asks the payment-proof function for: the card payment the server recorded
@@ -272,7 +272,7 @@ export async function checkOrderPayment({ requestProof, rpc, locationId, order, 
 export async function confirmOrderPayment({ rpc, locationId, order, note, isMissingRpc } = {}) {
   if (!rpc || !locationId || !order || !order.ref) return { status: 'error', message: 'No order.' };
   const n = String(note || '').trim();
-  if (!n) return { status: 'error', message: 'Say what you checked, for example "seen in Stripe".' };
+  if (!n) return { status: 'error', message: 'Say what you checked, for example "seen in Adyen".' };
   const args = { p_location_id: String(locationId), p_ref: String(order.ref), p_note: n.slice(0, 200) };
   const amount = confirmAmountMinor(order);
   if (amount) args.p_amount_minor = amount;

@@ -174,18 +174,12 @@ export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete
       // corrected tip-recording line in CheckoutModal; amountReceived is the leg
       // that is genuinely refundable (the charge, never the check face value).
       setTimeout(() => { if (!unmountedRef.current) fire.current?.({
-        // v5.6.79 (#107) — WAS HARDCODED 'ryft'. A card sale taken on an ADYEN
-        // reader through the till therefore booked processor:'ryft', while
-        // closeApprovedTerminalJob booked 'adyen' for the very same sale when the
-        // reconciler closed it. Refunds route by the check's processor, so every
-        // Adyen sale finished on this screen was unrefundable — aimed at a
-        // processor that had never heard of the transaction.
-        //
-        // The JOB ROW is the authority: terminal_jobs.processor is set server-side
-        // by terminal-job-create from the terminal's own record, and it is the
+        // v5.6.79 (#107) — the JOB ROW is the authority: terminal_jobs.processor is set
+        // server-side by terminal-job-create from the terminal's own record, and it is the
         // same field dispatchTerminalJob already reads to decide whether to kick
-        // adyen-terminal-charge. Resolve it, never assume it.
-        processor: job.processor || 'ryft',
+        // adyen-terminal-charge. Refunds route by the check's processor, so a sale finished
+        // on this screen must book the same processor the reconciler would.
+        processor: job.processor || 'adyen',
         tipMinor: job.tip_minor ?? 0,
         amountReceived: job.charge_minor ?? null,
         paymentIntentId: job.transaction_id || null,
@@ -225,8 +219,7 @@ export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete
   // check has existed server-side all along: adyen-terminal-charge 'result' asks
   // the READER via a nexo TransactionStatusRequest and settles from its answer.
   // In those two states the dead Cancel becomes "Check card machine" — same slot,
-  // same tap, an answer instead of a refusal. Adyen only: on Ryft, cancel during
-  // 'charging' is a REAL processor void (v5.5.905) and must stay exactly as it is.
+  // same tap, an answer instead of a refusal. Gated on the job's processor being Adyen.
   // The processor comes off the job row (falling back to the create-response row —
   // pollTerminalJob's timeout can synthesise a row without it).
   const processor = job?.processor ?? initialJob?.processor ?? null;

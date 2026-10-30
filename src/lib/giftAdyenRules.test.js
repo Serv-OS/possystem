@@ -44,15 +44,18 @@ test('the webhook amount fence: never a card worth more than Adyen authorised', 
   assert.equal(adyenGiftAmountOk(2500, 0), false);
 });
 
-test('gift-checkout-session sells on an Adyen venue through its own store, in page', () => {
+test('gift-checkout-session sells through the venue\'s own Adyen store, in page, and nothing else', () => {
   const src = read('supabase/functions/gift-checkout-session/index.ts');
-  assert.ok(src.includes("if (locRow?.payment_processor === 'adyen') processor = 'adyen';"));
-  const i = src.indexOf("if (processor === 'adyen') {");
+  // Drop D (29 Oct 2026): no processor gate, no Stripe Checkout Session, no Ryft session.
+  assert.ok(!src.includes('payment_processor'), 'Adyen is the only processor: nothing to look up');
+  assert.ok(!/esm\.sh\/stripe|merchant_stripe_accounts|merchant_ryft_accounts|ryft-create-payment-session/.test(src));
+  const i = src.indexOf("// ── Adyen (29 Oct 2026, Drop D: the only processor)");
   assert.ok(i > 0);
-  const block = src.slice(i, src.indexOf("// Look up the merchant's Stripe account"));
+  const block = src.slice(i);
   assert.ok(block.includes("from('merchant_adyen_accounts')") && block.includes('receive_payments_ok'), 'the venue must be able to take money');
   assert.ok(block.includes("processor: 'adyen'") && block.includes('reference: giftReference(aPurchase.id)'), 'the row and its reference');
   assert.ok(!block.includes('checkout_url'), 'no hosted page: the customer pays in page');
+  assert.ok(!src.includes("if (!success_url || !cancel_url)"), 'the old hosted page urls are no longer required');
 });
 
 test('adyen-webhook issues the card on a verified AUTHORISATION for a gift reference, fenced on amount', () => {
@@ -82,10 +85,11 @@ test('gift-fulfill proves an Adyen purchase against the ledger row at its own ve
 test('the gift page pays in page on Adyen with the server reference and only navigates on success', () => {
   const src = read('src/surfaces/gift/GiftPurchaseSurface.jsx');
   assert.ok(src.includes("import AdyenPaymentForm from '../../components/AdyenPaymentForm';"));
-  assert.ok(src.includes("} else if (data.processor === 'adyen' && data.reference) {"));
+  assert.ok(src.includes("if (data.processor === 'adyen' && data.reference) {"));
+  assert.ok(!/checkout_url|RyftPaymentForm|ryftSession/.test(src), 'no redirect and no other processor: Adyen in page is the only way to pay');
   assert.ok(src.includes('signInAnonymously()'), 'adyen-checkout needs a session; the page signs in anonymously first');
   const form = src.slice(src.indexOf('<AdyenPaymentForm'), src.indexOf('/>', src.indexOf('<AdyenPaymentForm')));
   assert.ok(form.includes('reference={adyenSession.reference}') && form.includes('amountMinor={adyenSession.amount_minor || amountMinor}'));
   assert.ok(form.includes("purchase_id=${encodeURIComponent(adyenSession.purchase_id)}"), 'success page polls by purchase id');
-  assert.ok(src.includes('{!ryftSession && !adyenSession && amountMinor > 0 && ('), 'the buy button gives way to the form');
+  assert.ok(src.includes('{!adyenSession && amountMinor > 0 && ('), 'the buy button gives way to the form');
 });

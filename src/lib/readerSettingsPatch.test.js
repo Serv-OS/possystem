@@ -15,7 +15,7 @@ test('exactly the six columns, each checked, unknown keys refused', () => {
   assert.deepEqual([...READER_SETTINGS_FIELDS], ['tipping_enabled', 'tip_percentages', 'allow_custom_tip', 'smart_tip_threshold_minor', 'idle_screen_enabled', 'idle_screen_image_url']);
   const ok = cleanReaderSettingsPatch({ tipping_enabled: true, tip_percentages: [10, 15, 20], allow_custom_tip: 'false', smart_tip_threshold_minor: 1000, idle_screen_enabled: false, idle_screen_image_url: 'https://x.supabase.co/a.png' });
   assert.deepEqual(ok, { ok: true, row: { tipping_enabled: true, tip_percentages: [10, 15, 20], allow_custom_tip: false, smart_tip_threshold_minor: 1000, idle_screen_enabled: false, idle_screen_image_url: 'https://x.supabase.co/a.png' } });
-  assert.equal(cleanReaderSettingsPatch({ stripe_configuration_id: 'tmc_1' }).field, 'stripe_configuration_id', 'Stripe fields are server only');
+  assert.equal(cleanReaderSettingsPatch({ reader_configuration_id: 'cfg_1' }).field, 'reader_configuration_id', 'other columns are server only');
   assert.equal(cleanReaderSettingsPatch({ idle_screen_file_id: 'file_1' }).error, 'unknown_field');
   assert.equal(cleanReaderSettingsPatch({ tip_percentages: [0] }).error, 'invalid_value');
   assert.equal(cleanReaderSettingsPatch({ tip_percentages: [1, 2, 3, 4, 5, 6] }).error, 'invalid_value');
@@ -52,16 +52,15 @@ test('saves through location-admin; FENCE STAGE 1 FALLBACK only on "unknown acti
   });
   assert.equal(refused.ok, false); assert.equal(refused.error, 'no access to this location');
 
-  const bad = await saveReaderSettingsWithFallback({ opsLocationId: 'L1', patch: { stripe_configuration_id: 'x' }, callFunction: async () => { throw new Error('never'); } });
+  const bad = await saveReaderSettingsWithFallback({ opsLocationId: 'L1', patch: { reader_configuration_id: 'x' }, callFunction: async () => { throw new Error('never'); } });
   assert.equal(bad.ok, false); assert.equal(bad.path, 'check');
 });
 
-test('location-admin and both Back Office writers use the one rule', () => {
+test('location-admin and the Back Office writer use the one rule', () => {
   const fn = read('../../supabase/functions/location-admin/index.ts');
   assert.ok(fn.includes("import { cleanReaderSettingsPatch } from '../_shared/readerSettingsPatch.js';"));
   assert.ok(fn.includes("if (action === 'save_reader_settings') {") && fn.includes(".upsert({ location_id: loc.id, ...got.row }, { onConflict: 'location_id' })"));
   const i = fn.indexOf("if (action === 'save_reader_settings') {");
   assert.ok(i > fn.indexOf('if (!(await authed(req, ops)))'), 'behind the same fence as save_location');
-  assert.ok(read('../backoffice/sections/CardReaders.jsx').includes('await saveReaderSettingsWithFallback({'));
   assert.ok(read('../backoffice/sections/PaxTerminals.jsx').includes("patch: { idle_screen_image_url: url },"));
 });

@@ -4,7 +4,7 @@
 // A kiosk item with sizes (a variant parent, e.g. Latte with Small / Large
 // child rows) is added to the basket as the PARENT: the basket screen shows
 // "Latte" with the summary "Large · Oat Milk", and every money path (subtotal,
-// auto discounts, tax, Stripe line items) reads the parent line exactly as it
+// auto discounts, tax, line items) reads the parent line exactly as it
 // always has. The chosen size rides on the basket line as `line.variant`.
 //
 // Before this module the size was dropped the moment the line left the basket

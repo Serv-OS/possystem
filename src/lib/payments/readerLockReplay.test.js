@@ -405,17 +405,6 @@ test('a Pay press refused by the one live job per reader index books the same as
       assert.equal(jobOf().status, 'charging', 'under 155 s a silent reader is not cancelled by these asks');
     },
   });
-  let pax = null;
-  await replay('a PAX job holds the reader', {
-    sent: SENT_13_OCT, untilS: 130, cron: false, start: false, adyen: () => { throw new Error('nothing may be asked of Adyen'); },
-    before: () => { Object.assign(jobOf(), { processor: 'ryft', status: 'charging', dispatched_at: SENT_13_OCT }); },
-    events: [{ at: 110, run: () => { pax = press('press at 110 s'); } }],
-    check: () => {
-      assert.equal(pax.status, 409); assert.equal(pax.body.code, 'TERMINAL_BUSY');
-      assert.equal(pax.body.error, 'The card machine is still taking £6.00 for the order sent at 07:37 (R14202). If it is this customer, do not send it again.');
-      assert.equal(selfAsks.length, 0, 'a PAX or Ryft job is never asked about');
-    },
-  });
 });
 
 // ── an ask we cut off is not an answer (the double charge path the review found) ──

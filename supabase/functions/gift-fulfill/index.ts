@@ -1,7 +1,7 @@
 // supabase/functions/gift-fulfill/index.ts
 //
-// Called by stripe-webhook-connect on checkout.session.completed for gift
-// card purchases, OR from back office "Manual Fulfill" button.
+// Called by adyen-webhook on AUTHORISATION of a `gift:<purchase id>` reference,
+// OR from back office "Manual Fulfill" button.
 // Issues the card (generates code, hashes, creates card + ledger entry)
 // and sends the delivery email.
 //
@@ -14,15 +14,15 @@
 // Database fence stage 1 (19 Sep 2026, enforced always; first built on the parked lockdown
 // branch). This used to issue a card for ANY purchase_id, paid or not, to any session, and hand a
 // signed in caller the code; gift-checkout-session hands the purchase_id out before payment. Now:
-//   * callers: the service role (stripe-webhook-connect, ryft-webhook) or staff for the
-//     purchase's venue (Back Office "Fulfill"). Anybody else: 401/403 before anything happens.
-//   * payment is proven by the PROCESSOR for every caller: the Stripe checkout session or the
-//     Ryft payment session named on the purchase is fetched by id and must be paid (Stripe
-//     'paid', Ryft 'Captured'), carry this purchase id in its metadata and cover the amount in
-//     the purchase currency (_shared/giftPurchaseProof.ts). The purchase row is NOT proof: it is
-//     writable with the Platform anon key until 20260919c (Platform file C) runs. Unproven:
-//     402 payment_not_proven, nothing issued. Adyen has no online gift purchase flow, so it is
-//     refused as unverifiable.
+//   * callers: the service role (adyen-webhook) or staff for the purchase's venue (Back
+//     Office "Fulfill"). Anybody else: 401/403 before anything happens.
+//   * payment is proven by the PROCESSOR for every caller: the adyen_payments ledger row the
+//     HMAC verified webhook wrote for this purchase's reference, at this purchase's venue, must
+//     be a successful authorisation covering the amount in the purchase currency
+//     (_shared/giftPurchaseProof.ts, _shared/giftAdyenRules.js). The purchase row is NOT proof:
+//     it is writable with the Platform anon key until 20260919c (Platform file C) runs.
+//     Unproven: 402 payment_not_proven, nothing issued. 29 Oct 2026 (Drop D): Adyen is the
+//     only processor; an old Stripe or Ryft purchase is refused as unverifiable.
 //   * one issuer: the row is claimed ('fulfilling') before a card is made, released on failure.
 //   * the code is returned only to staff (Back Office shows it); the webhook gets last 4.
 //
@@ -31,8 +31,8 @@
 //     (_shared/giftFulfilPlan.ts purchaseCardId), so a retry after a killed isolate or a stale
 //     claim takeover finds the card already issued and finishes with it; the issue ledger row
 //     has a fixed idempotency key. A second card can never be made for the same money.
-//   * a processor outage is retryable: 503 { retryable: true } (the webhooks then make Stripe or
-//     Ryft send the event again); a real "not paid" is still a final 402.
+//   * a processor outage is retryable: 503 { retryable: true } (the webhook then makes Adyen
+//     send the event again); a real "not paid" is still a final 402.
 //   * the plaintext code is no longer copied onto gift_card_purchases (code_last4 only). It
 //     lives on the card (gift_cards.code_plain, service role only).
 //   * the buyer's CRM link reads the org from the Ops location (Platform locations has no org_id).
@@ -40,16 +40,12 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { argon2id } from 'https://esm.sh/hash-wasm@4.11.0';
 import { secondStepRefusal } from '../_shared/second-step.ts';
-import Stripe from 'https://esm.sh/stripe@14.21.0?target=denonext';
-import { getPaymentSession } from '../_shared/ryft.ts';
 import { callerIsStaffFor, recordAuthority } from '../_shared/loyalty-utils.ts';
 import { authorityLogRow } from '../_shared/loyalty-authority.ts';
 import { decideGiftFulfilAuthority } from '../_shared/gift-authority.ts';
 import { phoneMatchKey, phoneRegionFromCurrency, phoneRawText } from '../_shared/phoneKey.js';
 import { readCustomerByPhone } from '../_shared/customerPhoneRead.js';
-import {
-  stripeSessionProvesPurchase, ryftSessionProvesPurchase, purchaseProcessor, type ProofResult,
-} from '../_shared/giftPurchaseProof.ts';
+import { purchaseProcessor, type ProofResult } from '../_shared/giftPurchaseProof.ts';
 import {
   purchaseCardId, issueLedgerKey, proofReasonRetryable, processorErrorReason,
 } from '../_shared/giftFulfilPlan.ts';
@@ -87,31 +83,6 @@ const CUSTOMER_DOMAIN = Deno.env.get('CUSTOMER_DOMAIN') ?? 'serv-os.app';
 async function provePurchasePaid(purchase: any): Promise<ProofResult> {
   const processor = purchaseProcessor(purchase);
   try {
-    if (processor === 'stripe') {
-      const secret = Deno.env.get('STRIPE_SECRET_KEY') ?? '';
-      if (!secret) return { ok: false, reason: 'stripe_not_configured' };
-      if (!purchase.stripe_session_id) return { ok: false, reason: 'no_processor_session' };
-      // The venue's connected account, read from OUR table by the purchase's venue, never from
-      // the (anon writable) purchase row: a session on some other account proves nothing here.
-      const { data: msa } = await platformAdmin
-        .from('merchant_stripe_accounts').select('stripe_account_id').eq('location_id', purchase.location_id).maybeSingle();
-      if (!msa?.stripe_account_id) return { ok: false, reason: 'no_merchant_account' };
-      const stripe = new Stripe(secret, { apiVersion: '2024-06-20' });
-      const session = await stripe.checkout.sessions.retrieve(
-        String(purchase.stripe_session_id),
-        { stripeAccount: String(msa.stripe_account_id) },
-      );
-      return stripeSessionProvesPurchase(session, purchase);
-    }
-    if (processor === 'ryft') {
-      if (!purchase.ryft_payment_session_id) return { ok: false, reason: 'no_processor_session' };
-      // The venue's sub account, read from OUR table by the purchase's venue (never from the row).
-      const { data: mra } = await platformAdmin
-        .from('merchant_ryft_accounts').select('ryft_account_id').eq('location_id', purchase.location_id).maybeSingle();
-      const got = await getPaymentSession(String(purchase.ryft_payment_session_id), mra?.ryft_account_id ? { accountId: mra.ryft_account_id } : {});
-      if (!got.ok) return { ok: false, reason: `ryft_${got.status}` };
-      return ryftSessionProvesPurchase(got.data, purchase);
-    }
     if (processor === 'adyen') {
       // 29 Oct 2026 (v5.11.115): the ledger row adyen-webhook wrote from the verified AUTHORISATION
       // for this purchase's reference, at this purchase's venue. Read by OUR key, never the row.
@@ -384,7 +355,7 @@ Deno.serve(async (req) => {
       detail: { purchase_id: purchase.id, processor: purchase.processor ?? null },
     }));
     // Lockdown step 1 (e): the processor could not be ASKED (outage). Nothing is issued, and the
-    // answer says "try again" so the webhook makes Stripe or Ryft send the event again.
+    // answer says "try again" so the webhook makes Adyen send the event again.
     if (proofReasonRetryable(proof.reason)) {
       return json({
         error: 'The card processor could not be reached to confirm this payment. It will be tried again.',

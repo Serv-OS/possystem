@@ -154,10 +154,10 @@ test('wiring: OnlineSurface waits for the session before the menu reads and load
 
 test('wiring: the three checkouts refuse to open payment (or charge the card) while the gate is shut', () => {
   const qr = read('../surfaces/qr/QrCheckout.jsx');
-  const qrContinue = qr.slice(qr.indexOf('const continueToPayment = async () => {'), qr.indexOf("if (processor === 'ryft')", qr.indexOf('const continueToPayment = async () => {')));
+  const qrContinue = qr.slice(qr.indexOf('const continueToPayment = async () => {'), qr.indexOf("setError(''); setStep('pay');", qr.indexOf('const continueToPayment = async () => {')));
   assert.match(qrContinue, /if \(vatGate\) \{ setError\(vatGate\.message\); return; \}/, 'QR pay now and open tab: before any processor path');
   const online = read('../surfaces/online/OnlineCheckout.jsx');
-  const start = online.slice(online.indexOf('const startPayment = async () => {'), online.indexOf("if (processor === 'ryft')", online.indexOf('const startPayment = async () => {')));
+  const start = online.slice(online.indexOf('const startPayment = async () => {'), online.indexOf("setError(''); setStep('pay');", online.indexOf('const startPayment = async () => {')));
   assert.match(start, /if \(vatGate\) \{ setError\(vatGate\.message\); setStep\('details'\); return; \}/, 'online card payment');
   const giftOnly = online.slice(online.indexOf('const onGiftOnlyPayment = async () => {'), online.indexOf('const giftCommit = await commitGift'));
   assert.match(giftOnly, /if \(vatGate\) \{ setError\(vatGate\.message\); setStep\('details'\); return; \}/, 'online paid by gift card or reward: it books a check too');

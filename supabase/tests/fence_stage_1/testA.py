@@ -450,7 +450,7 @@ select status || '|' || coalesce(bound_via, '-') from public.devices where name 
 expect('kiosk pairing with claim_device_v2 then its own row write works', last(o) == 'online|code', o + e)
 
 # ---------- place_public_order: the server decides paid, from ITS OWN valuation (fix round 2)
-def proof(ref, kind, amount, loc=L1, proc='stripe', order_ref=None, meta=None):
+def proof(ref, kind, amount, loc=L1, proc='adyen', order_ref=None, meta=None):
     m = dict(meta or {})
     if order_ref is not None:
         m['order_ref'] = order_ref
@@ -502,7 +502,7 @@ p1 = proof('pi_card_1', 'card', 2500, order_ref='OL-OK1')
 o, e, r = place('customer', {'ref': 'OL-OK1', 'source': 'online', 'type': 'collection', 'status': 'collected', 'staff': 'Evil',
                              'items': [line('mi-burger', 20, mods=[{'id': 'opt-bacon', 'name': 'Bacon', 'price': 5}])], 'total': 25,
                              'customer': {'name': 'Ann', 'phone': '07700 900123', 'paid': True, 'order_pricing': {'due_minor': 1}}},
-                {'id': 'chk-ok-1', 'total': 25, 'subtotal': 20.83, 'tax_amount': 4.17, 'processor': 'stripe',
+                {'id': 'chk-ok-1', 'total': 25, 'subtotal': 20.83, 'tax_amount': 4.17, 'processor': 'adyen',
                  'stripe_payment_intent_id': 'pi_card_1', 'status': 'refunded', 'staff_id': 'x'}, [p1])
 res = j(o)
 expect('a real paid online order with a covering card proof is paid', res.get('paid') is True and res.get('check_id') == 'chk-ok-1', o + e)
@@ -1314,7 +1314,7 @@ run("delete from public.fence_attempts where bucket like 'order:%'")
 
 # And the same two lines as a QR TAB round are carried on the tab instead of being refused.
 run(f"insert into public.payment_proofs (processor, payment_ref, kind, location_id, amount_minor, verified_by) "
-    f"values ('stripe', 'pi_r5_tab', 'preauth', '{L1}', 5000, 'test')")
+    f"values ('adyen', 'pi_r5_tab', 'preauth', '{L1}', 5000, 'test')")
 o, e, r = place('customer', {'ref': 'R5-TAB', 'source': 'qr', 'type': 'dineIn', 'total': 20,
                              'items': [line('mi-burger', 20), line('mi-bread', 0, name='House Bread')],
                              'customer': {'tab_open': True, 'payment_intent_id': 'pi_r5_tab', 'tableLabel': '9'}})
@@ -1342,7 +1342,7 @@ expect('an archived donut cannot be the third donut that fires "buy two get the 
 
 # A QR tab round must be entirely on the menu (it is settled from its value later).
 o, e, r = run(f"insert into public.payment_proofs (processor, payment_ref, kind, location_id, amount_minor, verified_by) "
-              f"values ('stripe', 'pi_r4_tab', 'preauth', '{L1}', 5000, 'test')")
+              f"values ('adyen', 'pi_r4_tab', 'preauth', '{L1}', 5000, 'test')")
 o, e, r = place('customer', {'ref': 'R4-TAB', 'source': 'qr', 'type': 'dineIn', 'total': 20,
                              'items': [line('mi-burger', 20), line('mi-cola', 0, qty=5, name='Cola')],
                              'customer': {'tab_open': True, 'payment_intent_id': 'pi_r4_tab', 'tableLabel': '9'}})
@@ -1643,18 +1643,18 @@ expect('the baseline has no tenders column yet, and every check above was still 
 run("alter table public.closed_checks add column if not exists tenders jsonb")
 p = proof('pi_tend', 'card', 2500, order_ref='OL-TEND')
 o, e, r = place('customer', online('OL-TEND', [line('mi-meal', 25)], 25),
-                {'id': chk('OL-TEND'), 'total': 25, 'tip': 0, 'stripe_payment_intent_id': 'pi_tend', 'processor': 'stripe',
-                 'tenders': [{'method': 'card', 'amount': 25, 'tip': 0, 'psp_ref': 'pi_tend', 'processor': 'stripe'}]}, [p])
+                {'id': chk('OL-TEND'), 'total': 25, 'tip': 0, 'stripe_payment_intent_id': 'pi_tend', 'processor': 'adyen',
+                 'tenders': [{'method': 'card', 'amount': 25, 'tip': 0, 'psp_ref': 'pi_tend', 'processor': 'adyen'}]}, [p])
 o2, _, _ = run("select tenders from public.closed_checks where id = 'chk-OL-TEND-a1b2'")
 expect('the tenders the page built are kept on the check the server writes',
-       j(o).get('paid') is True and json.loads(o2 or 'null') == [{'method': 'card', 'amount': 25, 'tip': 0, 'psp_ref': 'pi_tend', 'processor': 'stripe'}],
+       j(o).get('paid') is True and json.loads(o2 or 'null') == [{'method': 'card', 'amount': 25, 'tip': 0, 'psp_ref': 'pi_tend', 'processor': 'adyen'}],
        o + e + o2)
 p = proof('pi_tend2', 'card', 2700, order_ref='OL-TEND2')
 o, e, r = place('customer', online('OL-TEND2', [line('mi-meal', 25)], 27),
-                {'id': chk('OL-TEND2'), 'total': 27, 'tip': 2, 'stripe_payment_intent_id': 'pi_tend2', 'processor': 'stripe'}, [p])
+                {'id': chk('OL-TEND2'), 'total': 27, 'tip': 2, 'stripe_payment_intent_id': 'pi_tend2', 'processor': 'adyen'}, [p])
 o2, _, _ = run("select tenders from public.closed_checks where id = 'chk-OL-TEND2-a1b2'")
 expect('a check written with no tenders (an older page) still gets one card tender, its tip on it',
-       j(o).get('paid') is True and json.loads(o2 or 'null') == [{'tip': 2.0, 'amount': 25.0, 'method': 'card', 'psp_ref': 'pi_tend2', 'processor': 'stripe'}],
+       j(o).get('paid') is True and json.loads(o2 or 'null') == [{'tip': 2.0, 'amount': 25.0, 'method': 'card', 'psp_ref': 'pi_tend2', 'processor': 'adyen'}],
        o + e + o2)
 
 # ---------- FIX ROUND 6 (19 Sep): the money on the check is the server's own, not the phone's.
@@ -1666,33 +1666,33 @@ expect('a check written with no tenders (an older page) still gets one card tend
 p = proof('pi_r6_tip', 'card', 9500, order_ref='R6-TIP')
 o, e, r = place('customer', online('R6-TIP', [line('mi-feast', 95)], 95),
                 {'id': chk('R6-TIP'), 'total': 95, 'subtotal': 0, 'tip': 95, 'service': 0,
-                 'stripe_payment_intent_id': 'pi_r6_tip', 'processor': 'stripe',
+                 'stripe_payment_intent_id': 'pi_r6_tip', 'processor': 'adyen',
                  'tenders': [{'method': 'card', 'amount': 0, 'tip': 95}]}, [p])
 o2, _, _ = run("select total::text || '|' || subtotal::text || '|' || tip::text || '|' || coalesce(tenders::text, '-') "
                "from public.closed_checks where id = 'chk-R6-TIP-a1b2'")
 expect('a 95 pound order sent as subtotal 0.00 and tip 95.00 books a 95.00 SALE and no tip, on a rebuilt card tender',
        j(o).get('paid') is True and o2.startswith('95.00|95.00|0.00|')
        and json.loads(o2.split('|', 3)[3]) == [{'tip': 0.0, 'amount': 95.0, 'method': 'card',
-                                                'psp_ref': 'pi_r6_tip', 'processor': 'stripe'}],
+                                                'psp_ref': 'pi_r6_tip', 'processor': 'adyen'}],
        o + e + o2)
 # A genuine tip IS kept: money the card really took over what the order owed for its goods.
 p = proof('pi_r6_tip2', 'card', 2700, order_ref='R6-TIP2')
 o, e, r = place('customer', online('R6-TIP2', [line('mi-meal', 25)], 27),
                 {'id': chk('R6-TIP2'), 'total': 27, 'subtotal': 25, 'tip': 2, 'service': 0,
-                 'stripe_payment_intent_id': 'pi_r6_tip2', 'processor': 'stripe',
-                 'tenders': [{'method': 'card', 'amount': 25, 'tip': 2, 'psp_ref': 'pi_r6_tip2', 'processor': 'stripe'}]}, [p])
+                 'stripe_payment_intent_id': 'pi_r6_tip2', 'processor': 'adyen',
+                 'tenders': [{'method': 'card', 'amount': 25, 'tip': 2, 'psp_ref': 'pi_r6_tip2', 'processor': 'adyen'}]}, [p])
 o2, _, _ = run("select total::text || '|' || subtotal::text || '|' || tip::text || '|' || coalesce(tenders::text, '-') "
                "from public.closed_checks where id = 'chk-R6-TIP2-a1b2'")
 expect('an honest 2.00 tip on a 25.00 meal is booked, and the page tenders are kept',
        j(o).get('paid') is True and o2.startswith('27.00|25.00|2.00|')
        and json.loads(o2.split('|', 3)[3]) == [{'tip': 2.0, 'amount': 25.0, 'method': 'card',
-                                                'psp_ref': 'pi_r6_tip2', 'processor': 'stripe'}],
+                                                'psp_ref': 'pi_r6_tip2', 'processor': 'adyen'}],
        o + e + o2)
 # A card sale declared as CASH is not booked into the cash drawer: no storefront takes cash.
 p = proof('pi_r6_cash', 'card', 2500, order_ref='R6-CASH')
 o, e, r = place('customer', online('R6-CASH', [line('mi-meal', 25)], 25),
                 {'id': chk('R6-CASH'), 'total': 25, 'subtotal': 25, 'tip': 0,
-                 'stripe_payment_intent_id': 'pi_r6_cash', 'processor': 'stripe',
+                 'stripe_payment_intent_id': 'pi_r6_cash', 'processor': 'adyen',
                  'tenders': [{'method': 'cash', 'amount': 25, 'tip': 0}]}, [p])
 o2, _, _ = run("select tenders->0->>'method' from public.closed_checks where id = 'chk-R6-CASH-a1b2'")
 expect('a card sale the page declared as cash is rebuilt as the card it really was',
@@ -1705,19 +1705,19 @@ expect('a card sale the page declared as cash is rebuilt as the card it really w
 p = proof('pi_r7_split', 'card', 9500, order_ref='R7-SPLIT')
 o, e, r = place('attacker', online('R7-SPLIT', [line('mi-feast', 95)], 95),
                 {'id': chk('R7-SPLIT'), 'total': 95, 'subtotal': 95, 'tip': 0,
-                 'stripe_payment_intent_id': 'pi_r7_split', 'processor': 'stripe',
+                 'stripe_payment_intent_id': 'pi_r7_split', 'processor': 'adyen',
                  'tenders': [{'method': 'loyalty', 'amount': 90, 'tip': 0},
-                             {'method': 'card', 'amount': 5, 'tip': 0, 'psp_ref': 'pi_r7_split', 'processor': 'stripe'}]}, [p])
+                             {'method': 'card', 'amount': 5, 'tip': 0, 'psp_ref': 'pi_r7_split', 'processor': 'adyen'}]}, [p])
 o2, _, _ = run("select tenders from public.closed_checks where id = '" + chk('R7-SPLIT') + "'")
 expect('a 95.00 card sale split onto a loyalty line the server never allowed is rebuilt as one 95.00 card tender',
        j(o).get('paid') is True and json.loads(o2 or 'null') == [{'tip': 0.0, 'amount': 95.0, 'method': 'card',
-                                                                  'psp_ref': 'pi_r7_split', 'processor': 'stripe'}],
+                                                                  'psp_ref': 'pi_r7_split', 'processor': 'adyen'}],
        o + e + o2)
 # The same with a gift card that was never debited: the sum still adds up, the split does not.
 p = proof('pi_r7_split2', 'card', 2500, order_ref='R7-SPLIT2')
 o, e, r = place('attacker', online('R7-SPLIT2', [line('mi-meal', 25)], 25),
                 {'id': chk('R7-SPLIT2'), 'total': 25, 'subtotal': 25, 'tip': 0,
-                 'stripe_payment_intent_id': 'pi_r7_split2', 'processor': 'stripe',
+                 'stripe_payment_intent_id': 'pi_r7_split2', 'processor': 'adyen',
                  'tenders': [{'method': 'gift_card', 'amount': 20, 'tip': 0, 'gift_card_id': 'gc-made-up'},
                              {'method': 'card', 'amount': 5, 'tip': 0}]}, [p])
 o2, _, _ = run("select tenders from public.closed_checks where id = '" + chk('R7-SPLIT2') + "'")
@@ -1731,7 +1731,7 @@ p = proof('pi_r7_fee', 'card', 2600, order_ref='R7-FEE')
 o, e, r = place('attacker', online('R7-FEE', [line('mi-burger', 22)], 26, type_='delivery',
                                    customer={'name': 'Dee', 'delivery_fee': 4}),
                 {'id': chk('R7-FEE'), 'total': 26, 'subtotal': 22, 'tip': 4, 'service': 0,
-                 'stripe_payment_intent_id': 'pi_r7_fee', 'processor': 'stripe'}, [p])
+                 'stripe_payment_intent_id': 'pi_r7_fee', 'processor': 'adyen'}, [p])
 o2, _, _ = run("select total::text || '|' || subtotal::text || '|' || tip::text from public.closed_checks where id = '" + chk('R7-FEE') + "'")
 expect('a 4.00 courier fee sent as a 4.00 tip books NO tip: the sale is 22.00 and the fee is the fee',
        j(o).get('paid') is True and o2 == '26.00|22.00|0.00', o + e + o2)
@@ -1739,7 +1739,7 @@ p = proof('pi_r7_fee2', 'card', 2800, order_ref='R7-FEE2')
 o, e, r = place('customer', online('R7-FEE2', [line('mi-burger', 22)], 28, type_='delivery',
                                    customer={'name': 'Dee', 'delivery_fee': 4}),
                 {'id': chk('R7-FEE2'), 'total': 28, 'subtotal': 22, 'tip': 2, 'service': 0,
-                 'stripe_payment_intent_id': 'pi_r7_fee2', 'processor': 'stripe'}, [p])
+                 'stripe_payment_intent_id': 'pi_r7_fee2', 'processor': 'adyen'}, [p])
 o2, _, _ = run("select tip::text from public.closed_checks where id = '" + chk('R7-FEE2') + "'")
 expect('HONEST: a real 2.00 tip on top of the fee is still booked', j(o).get('paid') is True and o2 == '2.00', o + e + o2)
 # US added-on sales tax the same way; UK VAT (inclusive) must NOT be taken off the headroom.
@@ -1747,14 +1747,14 @@ p = proof('pi_r7_tax', 'card', 2700, order_ref='R7-TAX')
 o, e, r = place('attacker', online('R7-TAX', [line('mi-meal', 25)], 27),
                 {'id': chk('R7-TAX'), 'total': 27, 'subtotal': 25, 'tip': 2, 'service': 0,
                  'tax_amount': 2, 'tax_breakdown': [{'rate': {'name': 'Sales Tax', 'type': 'exclusive'}, 'tax': 2}],
-                 'stripe_payment_intent_id': 'pi_r7_tax', 'processor': 'stripe'}, [p])
+                 'stripe_payment_intent_id': 'pi_r7_tax', 'processor': 'adyen'}, [p])
 o2, _, _ = run("select tip::text from public.closed_checks where id = '" + chk('R7-TAX') + "'")
 expect('added-on US sales tax sent as a tip books NO tip', j(o).get('paid') is True and o2 == '0.00', o + e + o2)
 p = proof('pi_r7_vat', 'card', 2700, order_ref='R7-VAT')
 o, e, r = place('customer', online('R7-VAT', [line('mi-meal', 25)], 27),
                 {'id': chk('R7-VAT'), 'total': 27, 'subtotal': 25, 'tip': 2, 'service': 0,
                  'tax_amount': 4.17, 'tax_breakdown': [{'rate': {'name': 'VAT20', 'type': 'inclusive'}, 'tax': 4.17}],
-                 'stripe_payment_intent_id': 'pi_r7_vat', 'processor': 'stripe'}, [p])
+                 'stripe_payment_intent_id': 'pi_r7_vat', 'processor': 'adyen'}, [p])
 o2, _, _ = run("select tip::text from public.closed_checks where id = '" + chk('R7-VAT') + "'")
 expect('HONEST: UK VAT is inside the goods, so a 2.00 tip on a VAT inclusive bill is still booked',
        j(o).get('paid') is True and o2 == '2.00', o + e + o2)
@@ -1769,7 +1769,7 @@ o, e, r = as_commit('customer', f"select public.settle_qr_tab('{L1}', 'pi_tab_te
 o2, _, _ = run("select tenders from public.closed_checks where ref = 'QR-TEND' and source = 'qr'")
 expect('a closed QR tab books one card tender for the capture, with the tip the server allowed on it',
        j(o).get('ok') is True and json.loads(o2 or 'null') == [{'tip': 10.0, 'amount': 95.0, 'method': 'card',
-                                                                'psp_ref': 'pi_tab_tend', 'processor': 'stripe'}],
+                                                                'psp_ref': 'pi_tab_tend', 'processor': 'adyen'}],
        o + e + (o2 or ''))
 run("alter table public.closed_checks drop column if exists tenders")
 
@@ -1780,15 +1780,15 @@ run("alter table public.closed_checks drop column if exists tenders")
 p = proof('pi_r7_meth', 'card', 2500, order_ref='R7-METH')
 o, e, r = place('attacker', online('R7-METH', [line('mi-meal', 25)], 25),
                 {'id': chk('R7-METH'), 'total': 25, 'subtotal': 25, 'tip': 0, 'method': 'cash',
-                 'payment_method': 'cash:25.00', 'stripe_payment_intent_id': 'pi_r7_meth', 'processor': 'stripe'}, [p])
+                 'payment_method': 'cash:25.00', 'stripe_payment_intent_id': 'pi_r7_meth', 'processor': 'adyen'}, [p])
 o2, _, _ = run("select method || '|' || coalesce(payment_method, '-') from public.closed_checks where id = '" + chk('R7-METH') + "'")
 expect('a card sale declared as cash books method card and payment_method card, column or no column',
        j(o).get('paid') is True and o2 == 'card|card', o + e + o2)
 
 # ---------- an unproven pay now order: checked, never looks unpaid, and gets its check once proven
 qrpay = {'ref': 'QR-PAY1', 'source': 'qr', 'type': 'dine-in', 'items': [line('mi-pizza', 12)], 'total': 12,
-         'customer': {'name': 'Pat', 'tableId': 'T9', 'payment_intent_id': 'pi_qrpay_0001', 'processor': 'stripe', 'paid': True}}
-o, e, r = place('customer', qrpay, {'id': 'chk-qrpay1', 'total': 12, 'stripe_payment_intent_id': 'pi_qrpay_0001', 'processor': 'stripe'})
+         'customer': {'name': 'Pat', 'tableId': 'T9', 'payment_intent_id': 'pi_qrpay_0001', 'processor': 'adyen', 'paid': True}}
+o, e, r = place('customer', qrpay, {'id': 'chk-qrpay1', 'total': 12, 'stripe_payment_intent_id': 'pi_qrpay_0001', 'processor': 'adyen'})
 expect('QR pay now without proof is placed, marked unverified', j(o).get('payment_unverified') is True, o + e)
 o, _, _ = run("select paid, customer->>'payment_state', customer->>'payment_ref', customer ? 'payment_intent_id', customer ? 'paid' from public.order_queue where ref = 'QR-PAY1'")
 expect('the till sees "payment being checked" with the payment ref, never a pay-me order', o == 'f|checking|pi_qrpay_0001|f|f', o)
@@ -1824,13 +1824,14 @@ expect('and is not used up', o == 't', o)
 o, e, r = as_commit('customer', f"select public.verify_public_order_payment('{L1}', 'OL-VICT');")
 expect('its own order verifies with it', j(o).get('paid') is True, o + e)
 # a card payment the processor tied to no order belongs to the first order that named it
+# (29 Oct 2026, Drop D: every proof here is an Adyen one; ServOS works with Adyen only)
 o, e, r = place('customer', {'ref': 'QR-RY1', 'source': 'qr', 'type': 'dine-in', 'items': [line('mi-pizza', 12)], 'total': 12,
-                             'customer': {'tableId': 'T9', 'payment_intent_id': 'ses_victim_01', 'processor': 'ryft'}},
-                {'id': 'chk-ry1', 'total': 12, 'payment_intents': [{'id': 'ses_victim_01'}], 'processor': 'ryft'})
-p_ry = proof('ses_victim_01', 'card', 1200, proc='ryft')
+                             'customer': {'tableId': 'T9', 'payment_intent_id': 'ses_victim_01', 'processor': 'adyen'}},
+                {'id': 'chk-ry1', 'total': 12, 'payment_intents': [{'id': 'ses_victim_01'}], 'processor': 'adyen'})
+p_ry = proof('ses_victim_01', 'card', 1200)
 o, e, r = place('attacker', {'ref': 'QR-RY2', 'source': 'qr', 'type': 'dine-in', 'items': [line('mi-pizza', 12)], 'total': 12,
-                             'customer': {'tableId': 'T8', 'payment_intent_id': 'ses_victim_01', 'processor': 'ryft'}},
-                {'id': 'chk-ry2', 'total': 12, 'payment_intents': [{'id': 'ses_victim_01'}], 'processor': 'ryft'}, [p_ry])
+                             'customer': {'tableId': 'T8', 'payment_intent_id': 'ses_victim_01', 'processor': 'adyen'}},
+                {'id': 'chk-ry2', 'total': 12, 'payment_intents': [{'id': 'ses_victim_01'}], 'processor': 'adyen'}, [p_ry])
 expect('LOW: a card payment with no order reference another order named first never pays a copycat', j(o).get('paid') is False, o + e)
 o, e, r = as_commit('attacker', f"select public.verify_public_order_payment('{L1}', 'QR-RY2', array['{p_ry}']::uuid[]);")
 expect('not even through Check payment', j(o).get('paid') is False, o + e)

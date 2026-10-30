@@ -354,8 +354,7 @@ function derivePaymentIntents(paymentInfo = {}) {
   if (paymentInfo.stripePaymentIntentId) {
     return [{ id: paymentInfo.stripePaymentIntentId, amountMinor: Math.round((paymentInfo.grand || 0) * 100) || null }];
   }
-  // Single-flow card-present (Stripe reader OR Ryft terminal) hands back the id
-  // as `paymentIntentId` (for Ryft this is the ps_ payment-session id). Capture
+  // Single-flow card-present hands back the id as `paymentIntentId`. Capture
   // it so the check is refundable; refundCheck routes by the check's processor.
   if (paymentInfo.paymentIntentId) {
     return [{ id: paymentInfo.paymentIntentId, amountMinor: Math.round((paymentInfo.grand || 0) * 100) || null }];
@@ -5401,7 +5400,7 @@ export const useStore = create((set, get) => ({
   },
   updateTabNote: (tabId,note) => set(s=>({ tabs:s.tabs.map(t=>t.id===tabId?{...t,note}:t) })),
   updateTabStatus: (tabId,status) => set(s=>({ tabs:s.tabs.map(t=>t.id===tabId?{...t,status}:t) })),
-  // Raise the card-hold ceiling after a successful Stripe incremental authorization (step-up).
+  // Raise the card-hold ceiling after a successful hold increase (step-up).
   setTabHold: (tabId, heldMinor) => set(s=>({ tabs:s.tabs.map(t=>t.id===tabId?{...t, preAuthHeldMinor: heldMinor, preAuthAmount: heldMinor/100}:t) })),
   // v5.11.81 (channel parity: bar tabs can take a manual discount): the check discounts put on a
   // tab on THIS till (the till's DiscountModal, the same manager rule), kept beside the tab until
@@ -6900,9 +6899,9 @@ export const useStore = create((set, get) => ({
       tender('loyalty', credits.loyaltyMinor / 100, 0, { rewards: rewardsRecord(d.loyaltyRedemption) }),
       tender('promo', credits.promoMinor / 100),
       tender('card', ((job.charge_minor ?? 0) - (job.tip_minor ?? 0)) / 100, (job.tip_minor ?? 0) / 100,
-        { pspRef: job.transaction_id, processor: job.processor || 'ryft' }),
+        { pspRef: job.transaction_id, processor: job.processor || 'adyen' }),
       ...priorLegs.map(l => tender('card', (Number(l.chargeMinor) - (Number(l.tipMinor) || 0)) / 100, (Number(l.tipMinor) || 0) / 100,
-        { pspRef: l.transactionId, processor: job.processor || 'ryft' })),
+        { pspRef: l.transactionId, processor: job.processor || 'adyen' })),
     ]);
 
     // 28 Sep 2026: the ref the till froze into the job when it sent it (null from an older till,
@@ -6933,7 +6932,7 @@ export const useStore = create((set, get) => ({
       // the POS SplitModal's single-check model so reports/refunds treat both
       // the same.
       method: closeMethod,
-      processor: job.processor || 'ryft',
+      processor: job.processor || 'adyen',
       grand: closeGrandMinor / 100,   // every leg's base + tip, plus the booking money (16 Oct 2026)
       tip:   ((job.tip_minor ?? 0) + priorTipMinor) / 100,
       stripePaymentIntentId: job.transaction_id || null,
@@ -7015,7 +7014,7 @@ export const useStore = create((set, get) => ({
         tenders: jobTenders,            // v5.9.11
         giftCard: d.giftCard || null,   // v5.5.902 — see termPay above
         stripePaymentIntentId: job.transaction_id || null,
-        processor: job.processor || 'ryft',
+        processor: job.processor || 'adyen',
         paymentIntents: cardIntents, cardReceipt,
         loyaltyRedemption: d.loyaltyRedemption || null,   // 19 Oct 2026: the reward this sale used
         closedAt: Date.now(),
@@ -7673,9 +7672,8 @@ export const useStore = create((set, get) => ({
   //   1. The amount came from ITEMS ALONE and full-vs-partial was decided against
   //      `subtotal`, so a "full" refund never returned the tip or the service
   //      charge. The customer kept paying a gratuity on a meal they did not have.
-  //   2. Nothing was ever reversed on ADYEN: the router was
-  //      `processor === 'ryft' ? ryft : stripe`, so an Adyen check aimed at Stripe
-  //      and landed nowhere — while the screen said "processed".
+  //   2. Nothing was ever reversed on ADYEN: the router aimed every check at a
+  //      retired processor and landed nowhere — while the screen said "processed".
   //
   // It is now ASYNC and returns a verdict. Callers must await it and report what
   // it says, not what they hoped: `{ ok, amount, cardStatus, legs, message }`.
@@ -8088,8 +8086,8 @@ export const useStore = create((set, get) => ({
     //
     // Every card leg, routed by ITS OWN processor. Three things changed here:
     //
-    //   1. ROUTING. It was `processor === 'ryft' ? ryft : stripe`, so an ADYEN
-    //      check aimed at Stripe and landed nowhere. A leg now carries its own
+    //   1. ROUTING. The router aimed every check at a retired processor, so an ADYEN
+    //      check landed nowhere. A leg now carries its own
     //      processor (inheriting the check's), and an UNKNOWN processor fails
     //      loudly instead of defaulting into the wrong one.
     //   2. AWAITED. This was fire-and-forget behind a success toast, so a refusal

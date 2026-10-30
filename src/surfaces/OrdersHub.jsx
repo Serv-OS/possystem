@@ -20,7 +20,6 @@ import { qrSessionShownInQrSection } from '../lib/qrTabStranded';
 import { NEXT_STEP_LABEL, qrCardNextStep } from '../lib/orderNextStep';
 import { money, currencySymbol } from '../lib/currency';
 import { shortOrderRef } from '../lib/db';
-import { ryftTab } from '../lib/payments/ryft';
 import { getActiveLocationSync } from '../lib/supabase';
 import { hubrisePushStatus } from '../lib/hubrise';
 import { getDeliveryDetail } from '../lib/delivery/deliveryConfig';
@@ -386,14 +385,7 @@ export default function OrdersHub() {
           key,
           isOpenTab: isOpen,
           payment_intent_id: pi || null,
-          stripe_account: o.customer?.stripe_account || null,
-          // Ryft tab routing — close goes through the ryft-tab edge fn instead
-          // of /api/stripe-capture. Default missing processor → stripe so tabs
-          // opened before dual-processor stay on the Stripe path.
-          processor: o.customer?.processor || 'adyen',
-          payment_session_id: o.customer?.payment_session_id || null,
-          ryft_customer_id: o.customer?.ryft_customer_id || null,
-          ryft_payment_method_id: o.customer?.ryft_payment_method_id || null,
+          processor: 'adyen',
           tableLabel: o.customer?.tableLabel || '?',
           tableId: o.customer?.tableId || null,
           customerName: o.customer?.name || 'Guest',
@@ -499,9 +491,8 @@ export default function OrdersHub() {
   // v5.5.157: force-close a POOLED QR tab (multiple rounds aggregated by
   // payment_intent_id). Sums totals across all rounds, applies the auto-
   // surcharge if the tab is past the threshold, captures the held pre-auth
-  // (capped at the held amount — Stripe rejects over-capture), marks
-  // every round on this PI as collected, writes ONE closed_check covering
-  // the full bill.
+  // (capped at the held amount), marks every round on this PI as collected,
+  // writes ONE closed_check covering the full bill.
   // 8 Sep 2026: release an Adyen tab's hold WITHOUT charging (a walked out or
   // abandoned tab, or a zero bill). tab_cancel voids the pre-authorisation at
   // Adyen so the guest's bank releases it now instead of at expiry (up to 28
@@ -636,16 +627,8 @@ export default function OrdersHub() {
     const vatGate = useStore.getState().vatGate?.();
     if (vatGate) { showToast(vatGate.message, 'error', 9000); return; }
     if (shortTab) { await closeShortQrTab(tab, shortTab); return; }
-    // Route by processor. Default missing processor → stripe (tabs opened
-    // before dual-processor). Ryft holds are addressed by payment_session_id;
-    // the ryft-tab edge fn resolves the merchant account from location_id.
-    const isRyft = (tab.processor === 'ryft') || (!tab.stripe_account && !!tab.payment_session_id);
-    const ryftSession = tab.payment_session_id || tab.payment_intent_id;
-    // 29 Oct 2026 (v5.11.116): an Adyen tab carries its psp reference in payment_intent_id and
-    // never a stripe_account, so the old two way guard refused every Adyen tab with "Tab missing
-    // payment info" and staff could only release the hold, never capture the bill.
-    const isAdyen = tab.processor === 'adyen';
-    if (isRyft ? !ryftSession : isAdyen ? !tab.payment_intent_id : (!tab.payment_intent_id || !tab.stripe_account)) {
+    // An Adyen tab carries the psp reference of its hold in payment_intent_id.
+    if (!tab.payment_intent_id) {
       showToast('Tab missing payment info — cannot capture', 'error');
       return;
     }
@@ -665,34 +648,23 @@ export default function OrdersHub() {
     const finalTotal = +(tab.total + surcharge).toFixed(2);
     // An Adyen tab with nothing to charge: Adyen refuses a zero capture, so
     // release the hold instead (8 Sep 2026).
-    if (tab.processor === 'adyen' && finalTotal <= 0) {
+    if (finalTotal <= 0) {
       await releaseAdyenHold({ pspReference: tab.payment_intent_id, locationId: tab.firstRow?.location_id, rows: tab.rows, label: `Table ${tab.tableLabel}` });
       return;
     }
-    // v5.5.160: ALWAYS request the full bill. The capture endpoint clamps
-    // to the actual amount_capturable on the PI and reports any shortfall;
-    // we then charge the difference off_session on the saved payment_method
-    // (saved at tab open via setup_future_usage='off_session'). User no
-    // longer has to remember the £/percent pre-auth — bill above pre-auth
-    // is now a normal flow, not an error.
+    // v5.5.160: ALWAYS request the full bill. adyen-tab clamps the capture to the hold and
+    // reports any shortfall. An Adyen tab keeps no card for a second, off-session charge, so a
+    // bill above the hold is captured up to the hold and the rest is collected on the terminal.
     const willOverage = tab.preAuthAmount > 0 && finalTotal > tab.preAuthAmount;
-    const paymentMethodId = tab.firstRow?.customer?.payment_method_id || null;
-    // Off-session overage needs a saved card: Stripe → payment_method id;
-    // Ryft → the stored customer + tokenized payment-method captured at open.
-    const ryftCustomerId   = tab.ryft_customer_id || tab.firstRow?.customer?.ryft_customer_id || null;
-    const ryftStoredCardId = tab.ryft_payment_method_id || tab.firstRow?.customer?.ryft_payment_method_id || null;
-    const hasSavedCard = isRyft ? (!!ryftCustomerId && !!ryftStoredCardId) : !!paymentMethodId;
-    if (willOverage && !hasSavedCard) {
+    if (willOverage) {
       if (!confirm(
-        `Bill is ${money(finalTotal)} but only ${money(tab.preAuthAmount)} was pre-authorised, and this tab was opened BEFORE v5.5.160 (no saved card on file).\n\n`
+        `Bill is ${money(finalTotal)} but only ${money(tab.preAuthAmount)} was pre-authorised.\n\n`
         + `Only ${money(tab.preAuthAmount)} can be captured. The ${money((finalTotal - tab.preAuthAmount))} shortfall must be collected via terminal or cash.\n\nProceed?`
       )) return;
     } else if (!confirm(
-      (willOverage
-        ? `Close Table ${tab.tableLabel}? Capture ${money(tab.preAuthAmount)} pre-auth + charge ${money((finalTotal - tab.preAuthAmount))} overage on saved card = ${money(finalTotal)} total.`
-        : surcharge > 0
-          ? `Close Table ${tab.tableLabel}? Bill ${money(tab.total)} + surcharge ${money(surcharge)} (${surchargeReason}) = ${money(finalTotal)} captured.`
-          : `Close Table ${tab.tableLabel} (${tab.rows.length} round${tab.rows.length === 1 ? '' : 's'}) and charge ${money(finalTotal)}?`)
+      (surcharge > 0
+        ? `Close Table ${tab.tableLabel}? Bill ${money(tab.total)} + surcharge ${money(surcharge)} (${surchargeReason}) = ${money(finalTotal)} captured.`
+        : `Close Table ${tab.tableLabel} (${tab.rows.length} round${tab.rows.length === 1 ? '' : 's'}) and charge ${money(finalTotal)}?`)
       + (tab.preAuthAmount > finalTotal
         ? `\n\nNOTE: customer's card was HELD for ${money(tab.preAuthAmount)} when the tab opened. We capture ${money(finalTotal)} now; the remaining ${money((tab.preAuthAmount - finalTotal))} hold is released by their bank in 1–7 days. Customer's bank statement may briefly show both — this is normal.`
         : '')
@@ -700,98 +672,25 @@ export default function OrdersHub() {
 
     setClosingTabRef(tab.payment_intent_id);
     try {
-      // Capture the bill, clamped to the hold. Both paths return the same
-      // shape: { captured, captured_amount(minor), shortfall(minor), currency }.
-      let data;
-      if (isRyft) {
-        const r = await ryftTab('capture', {
-          location_id: tab.firstRow?.location_id,
-          payment_session_id: ryftSession,
-          amount_minor: Math.round(finalTotal * 100),
-        });
-        // Use the hold's real currency (echoed by capture) for the overage —
-        // never assume GBP, or a USD/EUR venue's MIT would currency-mismatch.
-        data = { captured: !!r.success, captured_amount: Number(r.captured_amount || 0), shortfall: Number(r.shortfall || 0), currency: (r.currency || 'gbp').toLowerCase() };
-      } else if (tab.processor === 'adyen') {
-        // v5.8.17: Adyen pre-auth. Same normalised shape as the other two.
-        const r = await adyenTab('tab_capture', {
-          location_id: tab.firstRow?.location_id,
-          psp_reference: tab.payment_intent_id,
-          amount_minor: Math.round(finalTotal * 100),
-          hold_minor: Math.round(Number(tab.preAuthAmount || 0) * 100) || undefined,
-          reference: `tabclose:${tab.firstRow?.ref || tab.payment_intent_id}`.slice(0, 60),
-        });
-        data = { captured: !!r.captured, captured_amount: Number(r.captured_amount || 0), shortfall: Number(r.shortfall || 0), currency: (r.currency || 'gbp').toLowerCase(), amount: Number(r.captured_amount || 0), error: r.error };
-      } else {
-        const res = await fetch('/api/stripe-capture', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            paymentIntentId: tab.payment_intent_id,
-            stripeAccount: tab.stripe_account,
-            amountToCapture: Math.round(finalTotal * 100),
-          }),
-        });
-        data = await res.json();
-        if (!res.ok) throw new Error(data?.error || 'Capture failed');
-      }
+      // Capture the bill, clamped to the hold (v5.8.17, Adyen pre-auth):
+      // { captured, captured_amount(minor), shortfall(minor), currency }.
+      const r = await adyenTab('tab_capture', {
+        location_id: tab.firstRow?.location_id,
+        psp_reference: tab.payment_intent_id,
+        amount_minor: Math.round(finalTotal * 100),
+        hold_minor: Math.round(Number(tab.preAuthAmount || 0) * 100) || undefined,
+        reference: `tabclose:${tab.firstRow?.ref || tab.payment_intent_id}`.slice(0, 60),
+      });
+      const data = { captured: !!r.captured, captured_amount: Number(r.captured_amount || 0), shortfall: Number(r.shortfall || 0), currency: (r.currency || 'gbp').toLowerCase(), amount: Number(r.captured_amount || 0), error: r.error };
       if (!data.captured) throw new Error(data?.error || 'Capture failed');
 
-      // v5.5.160: if the capture was capped at the auth amount, charge the
-      // shortfall off_session on the saved payment_method. Stripe will
-      // immediately confirm or decline; if decline, surface a clear error
-      // to the operator so they can collect via terminal/cash.
-      let overageCaptured = 0;
+      // A capture capped at the hold leaves a shortfall. Nothing charges it here (no card is
+      // kept on an Adyen tab): the operator is told and collects it on the terminal or in cash.
+      const overageCaptured = 0;
       let overageError = null;
       const shortfallMinor = Number(data.shortfall || 0);
       if (shortfallMinor > 0) {
-        if (!hasSavedCard) {
-          overageError = `Could not auto-charge ${money((shortfallMinor / 100))} overage — no saved card on this tab.`;
-        } else if (isRyft) {
-          // Off-session MIT on the card stored at tab open (new Unscheduled
-          // session referencing the hold + customer + tokenized card).
-          try {
-            const ov = await ryftTab('overage', {
-              location_id: tab.firstRow?.location_id,
-              previous_session_id: ryftSession,
-              customer_id: ryftCustomerId,
-              stored_card_id: ryftStoredCardId,
-              amount_minor: shortfallMinor,
-              currency: data.currency || 'gbp',
-            });
-            if (!ov.charged) overageError = ov?.detail || ov?.error || 'Overage charge was not approved.';
-            else overageCaptured = shortfallMinor / 100;
-          } catch (e) {
-            overageError = e?.detail || e?.message || 'Overage charge failed.';
-          }
-        } else {
-          try {
-            const ovRes = await fetch('/api/stripe-charge-overage', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                stripeAccount: tab.stripe_account,
-                paymentMethodId,
-                amount: shortfallMinor,
-                currency: data.currency || 'gbp',
-                description: `QR tab overage · Table ${tab.tableLabel} · ${tab.payment_intent_id}`,
-                metadata: {
-                  source: 'qr_overage',
-                  parent_payment_intent: tab.payment_intent_id,
-                  table_label: String(tab.tableLabel || ''),
-                },
-              }),
-            });
-            const ov = await ovRes.json();
-            if (!ovRes.ok || !ov.ok) {
-              overageError = ov?.error || `Overage charge failed (HTTP ${ovRes.status}).`;
-            } else {
-              overageCaptured = Number(ov.amount || shortfallMinor) / 100;
-            }
-          } catch (e) {
-            overageError = e?.message || 'Overage charge failed.';
-          }
-        }
+        overageError = `Could not auto-charge ${money((shortfallMinor / 100))} overage — no saved card on this tab.`;
       }
 
       // Mark every round on this PI as collected
@@ -826,7 +725,7 @@ export default function OrdersHub() {
         // 19 Oct 2026 (v5.11.78, channel parity): the QR service charge the rounds took is booked as
         // service (headlessTax.qrTabService), never as goods with VAT on it.
         const tabService = qrTabService(tab.rows);
-        const tabProcessor = tab.firstRow?.customer?.processor || (isRyft ? 'ryft' : 'adyen');
+        const tabProcessor = 'adyen';
         // 27 Sep 2026: the VAT on what this close took (tax_amount was null). A capture short of the
         // bill books only its share; QR round totals include any added-on (US) tax, taken out of subtotal.
         const qrTax = qrCloseTax(tab.allItems, qrTaxCtx(), { paidGoods: totalCollected - tabTip - surcharge - tabService });
@@ -864,16 +763,13 @@ export default function OrdersHub() {
           // the tab's tip on the first. closed_checks.tenders.
           tenders: cardLegTenders([
             // never more than was asked for (an older capture answer reported the hold)
-            { amount: Math.min(capturedFromAuth, finalTotal), pspRef: isRyft ? ryftSession : tab.payment_intent_id, processor: tabProcessor },
-            { amount: overageCaptured, pspRef: null, processor: tabProcessor },
+            { amount: Math.min(capturedFromAuth, finalTotal), pspRef: tab.payment_intent_id, processor: tabProcessor },
           ], { tip: tabTip }),
           // Refund routing: refundCheck reads top-level processor + refunds each
-          // payment_intents[].id (payment_session_id for Ryft, payment_intent_id
-          // for Stripe). Reference the main captured hold; the overage is a
-          // separate session and is not auto-refunded here.
-          processor: isRyft ? 'ryft' : 'adyen',
-          stripe_payment_intent_id: isRyft ? null : tab.payment_intent_id,
-          payment_intents: [{ id: isRyft ? ryftSession : tab.payment_intent_id, amountMinor: Math.round(capturedFromAuth * 100) }],
+          // payment_intents[].id (the psp reference of the captured hold).
+          processor: 'adyen',
+          stripe_payment_intent_id: tab.payment_intent_id,   // the column holds the Adyen reference (renamed later, never dropped)
+          payment_intents: [{ id: tab.payment_intent_id, amountMinor: Math.round(capturedFromAuth * 100) }],
           closed_at: new Date().toISOString(),
           // v5.5.162: was using 'partial' on shortfall but that may violate
           // a status enum/check constraint and silently fail the insert →
@@ -908,11 +804,6 @@ export default function OrdersHub() {
           `Table ${tab.tableLabel}: captured ${money(capturedFromAuth)} from pre-auth, but overage ${money((finalTotal - capturedFromAuth))} could not be charged: ${overageError}. Collect via terminal/cash.`,
           'error', 12000
         );
-      } else if (overageCaptured > 0) {
-        showToast(
-          `Table ${tab.tableLabel}: ${money(capturedFromAuth)} captured + ${money(overageCaptured)} overage on saved card = ${money(totalCollected)} total ✓`,
-          'success'
-        );
       } else {
         showToast(
           surcharge > 0
@@ -939,26 +830,21 @@ export default function OrdersHub() {
     }
   };
 
-  // v5.5.150: force-close a QR open-tab. Calls /api/stripe-capture to capture
-  // the held pre-auth amount on the connected Stripe account, then writes
-  // closed_checks + marks the order_queue row collected.
-  // Customer.payment_intent_id + customer.stripe_account were stashed at
-  // tab open by QrCheckout (no schema migration on bar_tabs needed —
-  // see feedback_qr_no_bartabs memory).
+  // v5.5.150: force-close a QR open-tab. Captures the held Adyen pre-auth (adyen-tab
+  // tab_capture), then writes closed_checks + marks the order_queue row collected.
+  // customer.payment_intent_id (the hold's psp reference) was stashed at tab open by
+  // QrCheckout (no schema migration on bar_tabs needed — see feedback_qr_no_bartabs memory).
   // Auto-surcharge for left-open tabs: deferred to commit 3c (this commit
   // covers the manual force-close from the operator queue).
   const forceCloseTab = async (o) => {
     if (closingTabRef) return;
     if (isTrainingMode()) { showToast('Training mode — live tabs are not charged or closed here', 'info'); return; }
     const pi = o.customer?.payment_intent_id;
-    const acct = o.customer?.stripe_account;
-    const isAdyenTab = o.customer?.processor === 'adyen';
-    // An Adyen tab has no Stripe account; its psp reference is enough.
-    if (!pi || (!acct && !isAdyenTab)) {
+    if (!pi) {
       showToast(`${shortOrderRef(o.ref)}: no payment intent on this tab — can't capture`, 'error');
       return;
     }
-    if (isAdyenTab && Number(o.total || 0) <= 0) {
+    if (Number(o.total || 0) <= 0) {
       await releaseAdyenHold({ pspReference: pi, locationId: o.location_id, rows: [o], label: shortOrderRef(o.ref) });
       return;
     }
@@ -994,14 +880,14 @@ export default function OrdersHub() {
     }
     const finalTotal = +(Number(o.total || 0) + surcharge).toFixed(2);
 
-    // Cap at pre-auth — Stripe rejects capture > authorised amount. The
+    // Cap at pre-auth: a capture above the authorised amount is refused. The
     // operator gets a clear warning if the auth wasn't enough so they can
     // chase the customer for the difference manually.
     const preAuth = Number(o.customer?.pre_auth_amount || 0);
     if (preAuth > 0 && finalTotal > preAuth) {
       if (!confirm(
         `WARNING: bill is ${money(finalTotal)} but only ${money(preAuth)} was pre-authorised.\n\n`
-        + `Stripe will only capture ${money(preAuth)}. The ${money((finalTotal - preAuth))} shortfall must be collected separately.\n\n`
+        + `Only ${money(preAuth)} will be captured. The ${money((finalTotal - preAuth))} shortfall must be collected separately.\n\n`
         + `Proceed?`
       )) return;
     } else if (!confirm(
@@ -1013,29 +899,14 @@ export default function OrdersHub() {
     setClosingTabRef(o.ref);
     const captureAmount = preAuth > 0 ? Math.min(finalTotal, preAuth) : finalTotal;
     try {
-      let data;
-      if (o.customer?.processor === 'adyen') {
-        // v5.8.17: Adyen pre-auth capture (customer-safe fn, same shape).
-        const r = await adyenTab('tab_capture', {
-          location_id: o.location_id, psp_reference: pi,
-          amount_minor: Math.round(finalTotal * 100),
-          hold_minor: preAuth > 0 ? Math.round(preAuth * 100) : undefined,
-          reference: `tabclose:${o.ref}`.slice(0, 60),
-        });
-        data = { captured: !!r.captured, captured_amount: Number(r.captured_amount || 0), error: r.error };
-      } else {
-        const res = await fetch('/api/stripe-capture', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            paymentIntentId: pi,
-            stripeAccount: acct,
-            amountToCapture: Math.round(captureAmount * 100), // pence
-          }),
-        });
-        data = await res.json();
-        if (!res.ok) throw new Error(data?.error || 'Capture failed');
-      }
+      // v5.8.17: Adyen pre-auth capture (customer-safe fn).
+      const r = await adyenTab('tab_capture', {
+        location_id: o.location_id, psp_reference: pi,
+        amount_minor: Math.round(finalTotal * 100),
+        hold_minor: preAuth > 0 ? Math.round(preAuth * 100) : undefined,
+        reference: `tabclose:${o.ref}`.slice(0, 60),
+      });
+      const data = { captured: !!r.captured, captured_amount: Number(r.captured_amount || 0), error: r.error };
       if (!data.captured) {
         throw new Error(data?.error || 'Capture failed');
       }
@@ -1067,7 +938,7 @@ export default function OrdersHub() {
           method: 'card',
           // v5.9.11: one card tender, the amount the hold captured, the tab's tip on it.
           tenders: singleTender('card', capturedMajor, Math.min(Number(o.customer?.tip) || 0, capturedMajor),
-            { pspRef: pi, processor: o.customer?.processor || 'adyen' }),
+            { pspRef: pi, processor: 'adyen' }),
           closed_at: new Date().toISOString(),
           status: 'paid',
           refunds: [],
@@ -1336,7 +1207,7 @@ export default function OrdersHub() {
                     <QrTabCard key={t.key}
                       tab={t}
                       onForceClose={() => forceCloseQrTab(t)}
-                      onRelease={t.processor === 'adyen' && t.isOpenTab
+                      onRelease={t.isOpenTab
                         ? () => releaseAdyenHold({ pspReference: t.payment_intent_id, locationId: t.firstRow?.location_id, rows: t.rows, label: `Table ${t.tableLabel}` })
                         : null}
                       onAdvance={(row) => advance(row)}
@@ -1872,9 +1743,8 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
             </button>
           )}
           {/* v5.5.150: force-close-and-charge button for open QR tabs.
-              Capture flows through /api/stripe-capture on the connected
-              account; on success closed_checks is written and the row
-              is marked collected. */}
+              Capture flows through adyen-tab tab_capture; on success
+              closed_checks is written and the row is marked collected. */}
           {isOpenTab && (
             <button onClick={onForceClose} disabled={!!closingTab} style={{
               padding:'4px 12px', borderRadius:7, cursor: closingTab ? 'wait' : 'pointer',

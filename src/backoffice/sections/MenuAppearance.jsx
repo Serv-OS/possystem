@@ -389,7 +389,7 @@ export default function MenuAppearance() {
               </div>
               <div style={{ padding: '10px 12px', borderRadius: 10, background: 'var(--bg2)', border: '1px solid var(--bdr)', fontSize: 12, color: 'var(--t3)', lineHeight: 1.6 }}>
                 Gift card <b>pages</b> use your brand automatically (colour, logo, display name — set in Brand basics).
-                Amounts, expiry and limits live in <b>Gift cards → Settings</b>. The Stripe payment page itself is branded from your Stripe dashboard.
+                Amounts, expiry and limits live in <b>Gift cards → Settings</b>.
               </div>
             </>)}
 

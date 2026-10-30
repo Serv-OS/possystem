@@ -124,17 +124,6 @@ export function adyenVenueStatus(row, location) {
   };
 }
 
-// The Stripe row's chips, from the merchant_stripe_accounts row (msa).
-export function stripeVenueStatus(msa) {
-  const m = isObj(msa) ? msa : null;
-  const status = !m
-    ? { tone: 'missing', label: 'Not linked', title: 'No Stripe account is linked' }
-    : m.charges_enabled
-      ? { tone: 'ok', label: 'Charges enabled', title: `Stripe ${m.stripe_account_id ?? ''}` }
-      : { tone: 'missing', label: 'Onboarding incomplete', title: 'Stripe has not enabled charges yet' };
-  return { linked: !!m, status };
-}
-
 // Search: every whitespace separated token must appear in the name, the
 // venue code, the slug or the company name (case insensitive). An empty
 // query matches everything.

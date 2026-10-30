@@ -657,7 +657,7 @@ export default function LocationSettings() {
 // Phase 2 — lets the operator pick a slug ("peters-cafe") that becomes
 // peters-cafe.serv-os.app for the customer, and toggle the two
 // customer-facing surfaces independently:
-//   • Online ordering   — collection / delivery, customer details, Stripe online
+//   • Online ordering   — collection / delivery, customer details, Adyen online
 //   • QR table-side     — diners scan a QR at their table, fires into the
 //                         table's session on the POS, server brings food
 function OnlineOrderingCard({
@@ -704,7 +704,7 @@ function OnlineOrderingCard({
           <div style={{ flex:1 }}>
             <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)' }}>🌐 Online ordering</div>
             <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>
-              {slug ? <><code style={{ fontFamily:'var(--font-mono)' }}>{onlineUrl}</code> — collection / delivery, customer details, Stripe online checkout.</> : 'Set a slug above first.'}
+              {slug ? <><code style={{ fontFamily:'var(--font-mono)' }}>{onlineUrl}</code> — collection / delivery, customer details, Adyen online checkout.</> : 'Set a slug above first.'}
             </div>
           </div>
           <Toggle on={onlineEnabled} onChange={setOnlineEnabled} disabled={!slug}/>

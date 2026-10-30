@@ -1,8 +1,9 @@
 // supabase/functions/payments-processor
 //
-// Returns which payment processor a location uses ('stripe' | 'ryft') so the
-// client can dispatch checkout to the right path. Defaults to 'stripe' for any
-// location not explicitly switched. Auth: service-role or signed-in user.
+// Returns which payment processor a location uses. 29 Oct 2026 (Drop D): ServOS
+// works with Adyen only, so a known location always answers 'adyen'; the lookup
+// is kept so an unknown location still answers 404 (never a silent default the
+// client would cache). Auth: service-role or signed-in user.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { secondStepRefusal } from '../_shared/second-step.ts';
@@ -35,23 +36,18 @@ Deno.serve(async (req) => {
   // catering send the PLATFORM location id (and the two genuinely diverge —
   // e.g. platform a1b2c3d4-0002… ↔ ops 7218c716…, and provision-location mints
   // a fresh platform uuid). Try ops_location_id first, fall back to id —
-  // the same dual-resolution idiom as ryft-terminal-payment / ryft-tab.
+  // the same dual-resolution idiom as adyen-checkout.
   let { data: loc } = await platformAdmin.from('locations')
-    .select('id, payment_processor').eq('ops_location_id', body.location_id).maybeSingle();
+    .select('id').eq('ops_location_id', body.location_id).maybeSingle();
   if (!loc) {
     const fb = await platformAdmin.from('locations')
-      .select('id, payment_processor').eq('id', body.location_id).maybeSingle();
+      .select('id').eq('id', body.location_id).maybeSingle();
     loc = fb.data ?? null;
   }
-  // Definitive error when the location can't be found — never a silent 'stripe'
-  // the client would cache. Default to 'stripe' ONLY when the row exists and
-  // has no processor set (backward-compatible contract).
+  // Definitive error when the location can't be found — never a silent default
+  // the client would cache.
   if (!loc) return json({ error: 'location not found' }, 404);
-  // v5.5.966: three-way — 'adyen' joins the switch (unknown values still fall
-  // back to 'stripe', the backward-compatible contract).
-  // 29 Oct 2026 (v5.11.116): Adyen is the only processor; a row with none set, or an unknown
-  // value, is an Adyen venue. An explicit 'stripe' or 'ryft' still answers itself until removal.
-  const processor = (loc.payment_processor === 'ryft' || loc.payment_processor === 'stripe')
-    ? loc.payment_processor : 'adyen';
-  return json({ processor });
+  // 29 Oct 2026 (Drop D): Adyen is the only processor. Whatever the row says
+  // (none set, or a dead venue still marked otherwise), the answer is 'adyen'.
+  return json({ processor: 'adyen' });
 });

@@ -247,7 +247,7 @@ test('refunds sit on the day of the refund, not the day the check closed', () =>
 });
 
 test('a refund with no tip or service split (processor dashboard) is estimated from the check, flagged', () => {
-  const r = refundParts({ id: 'ry', timestamp: 1, amount: 17.5, source: 'ryft_reconcile' }, card30);
+  const r = refundParts({ id: 'pd', timestamp: 1, amount: 17.5, source: 'processor_dashboard' }, card30);
   assert.deepEqual(r.flags, ['refund_split_estimated']);
   const p = r.parts[0];
   assert.equal(p.gross, 1750);

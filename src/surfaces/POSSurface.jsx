@@ -14,11 +14,9 @@ import { missingInstructionGroups } from '../lib/bookings/preorderChoices';
 import { bookingCreditFor } from '../lib/bookings/bookingCredit';
 import { linkedCategoryIdSet, categoryVisibleInMenu, allowedCategoryIds, itemInAllowedCats } from '../lib/menuMembership';
 import { supabase } from '../lib/supabase';
-import { pushReaderDisplay, clearReaderDisplay, cacheReaderDisplaySetting } from '../lib/readerDisplay';
-import { publishDisplay, getCustomerDisplayMode, displayUsesReader, displayUsesScreen, cacheCustomerDisplayMode, onCustomerPhone, publishLoyalty, onRedeemReward, isLoyaltyEnabled } from '../lib/customerDisplay';
-import { displayLinesFor, readerLinesFor } from '../lib/displayLines';
+import { publishDisplay, getCustomerDisplayMode, displayUsesScreen, cacheCustomerDisplayMode, onCustomerPhone, publishLoyalty, onRedeemReward, isLoyaltyEnabled } from '../lib/customerDisplay';
+import { displayLinesFor } from '../lib/displayLines';
 import { captureLoyaltyByPhone, fetchCustomerByPhone } from '../lib/customerLookup';
-import { getAssignedNetworkReader } from '../lib/networkReader';
 import { CATEGORIES, MENU_ITEMS as SEED_MENU_ITEMS, ALLERGENS, QUICK_IDS, CAT_META } from '../data/seed';
 import { daypartOfHour } from '../lib/quickRank';
 import { taxCtxHasConfig } from '../lib/taxCompute';
@@ -56,7 +54,7 @@ import FlagNumberModal from '../components/FlagNumberModal';   // 30 Sep 2026: f
 import { needsFlagPrompt, flagTableLabel, defaultOrderTypeFor } from '../lib/tillOrderType';
 // 30 Sep 2026 (Peter, Coffee Boy): one customer details setting for every till order type.
 import { promptsOnTypeChange, sendsWithoutPrompt } from '../lib/customerDetailsRule';
-import { money, stripeCurrency, getActiveCurrencyCode } from '../lib/currency';
+import { money, getActiveCurrencyCode } from '../lib/currency';
 import { breakdownLabel, breakdownIsExclusive } from '../lib/receiptTax';   // v5.7.34: rate-null guards
 import { Icon, emojiToIcon } from '../components/ServOSIcons';
 import { customerInitials, customerLabel } from '../lib/customerInitials';
@@ -568,18 +566,10 @@ export default function POSSurface() {
     } catch { /* noop */ }
   }, [items, activeTableId]);
 
-  // v5.5.188: cache the per-reader customer display setting on boot.
-  // Reads payment_devices.customer_display_enabled once; pushReaderDisplay
-  // then checks localStorage synchronously on every cart change.
+  // v5.5.346: cache this terminal's customer-display destination (off|reader|screen|auto) on boot.
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      try {
-        const reader = await getAssignedNetworkReader();
-        if (cancelled) return;
-        cacheReaderDisplaySetting(reader?.customer_display_enabled);
-      } catch {}
-      // v5.5.346: cache this terminal's customer-display destination (off|reader|screen|auto).
       try {
         const dev = JSON.parse(localStorage.getItem('rpos-device') || 'null');
         if (dev?.profileId && supabase) {
@@ -592,35 +582,28 @@ export default function POSSurface() {
     return () => { cancelled = true; };
   }, []);
 
-  // v5.5.171: live cart push to the connected Stripe reader. As items are
-  // added/removed/modified — the customer-facing reader screen updates in
-  // real time. Debounced 600ms inside readerDisplay.js. Edge fn no-ops if
-  // no reader assigned, and skips when a payment is in flight.
+  // v5.5.171: live cart push to the dedicated customer display. As items are
+  // added/removed/modified — the customer-facing screen updates in real time.
   // v5.5.175: track previous item count so we only push "Welcome" when
   // going from a non-empty cart back to empty (post-transaction). On a
-  // fresh POS mount with no cart the reader keeps its prior state.
+  // fresh POS mount with no cart the display keeps its prior state.
   const _prevItemCountRef = useRef(0);
   const _loyaltyEnabledRef = useRef(null); // v5.5.369: broadcast to the customer display so its keypad shows reliably; null = not yet resolved (v5.7.70 — never broadcast a guess)
   useEffect(() => {
     // v5.11.88 (21 Oct 2026): a line's price already includes its paid options (lib/displayLines.js),
-    // so the reader lines and the display lines no longer add the option prices on again.
-    const lineItems = readerLinesFor(items);
-    // Richer items for the dedicated customer-display screen (vs the reader's flat lines).
+    // so the display lines no longer add the option prices on again.
     const displayItems = displayLinesFor(items);
-    const totalMinor = Math.round(((total || 0)) * 100);
     const mode = getCustomerDisplayMode();
     const prevCount = _prevItemCountRef.current;
-    _prevItemCountRef.current = lineItems.length;
+    _prevItemCountRef.current = displayItems.length;
 
-    if (lineItems.length === 0) {
-      // Only reset displays if we previously HAD a cart — avoids stomping the
+    if (displayItems.length === 0) {
+      // Only reset the display if we previously HAD a cart — avoids stomping the
       // idle screen on every fresh POS load with no active check.
       if (prevCount > 0) {
-        if (displayUsesReader(mode)) clearReaderDisplay();
         if (displayUsesScreen(mode)) publishDisplay({ items: [], total: 0, state: 'idle', currency: getActiveCurrencyCode() });
       }
     } else {
-      if (displayUsesReader(mode)) pushReaderDisplay({ lineItems, totalMinor, currency: stripeCurrency() });
       if (displayUsesScreen(mode)) publishDisplay({ items: displayItems, total: total || 0, state: 'active', currency: getActiveCurrencyCode(), ...(typeof _loyaltyEnabledRef.current === 'boolean' ? { loyaltyEnabled: _loyaltyEnabledRef.current } : {}) });
     }
   }, [items, total]);

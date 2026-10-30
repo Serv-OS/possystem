@@ -73,8 +73,8 @@ export const DEFAULT_BACKOFF_MS = [250, 750];
 
 /**
  * After a failed retry cycle, do not spend the backoff again for this long. The
- * Stripe reader poll loops call ensureAuthToken every 1.5 seconds; without this a
- * long outage would add the full backoff to every one of those ticks.
+ * terminal job poll (pollTerminalJob) calls ensureAuthToken every second; without
+ * this a long outage would add the full backoff to every one of those ticks.
  */
 export const DEFAULT_COOLDOWN_MS = 5000;
 

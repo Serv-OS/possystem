@@ -668,7 +668,7 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       // v5.5.122: every NEW order from a customer surface (kiosk / online /
       // QR table-side) fires the loud chime + a top-of-screen OrderAlert
       // banner that stays for 5s and is dismissable. Online orders are
-      // written to order_queue ONLY after Stripe payment succeeds, so the
+      // written to order_queue ONLY after the card payment succeeds, so the
       // INSERT itself is the moment of truth.
       if (payload.eventType === 'INSERT' && ['kiosk','online','qr','hubrise'].includes(payload.new?.source)) {
         const row = payload.new;

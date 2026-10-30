@@ -795,7 +795,7 @@ function QrSettingsBlock({
             type="number" min="0"
             value={tabPreAuth}
             onChange={v => setTabPreAuth(parseFloat(v) || 0)}
-            help="Amount Stripe holds on the card when the tab opens. Higher = covers more. Released or captured at close. Default £100."/>
+            help="Amount held on the card when the tab opens. Higher = covers more. Released or captured at close. Default £100."/>
 
           <div style={{ marginTop: 12 }}>
             <div style={S.label}>Customer warning message</div>

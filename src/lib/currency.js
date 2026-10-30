@@ -1,7 +1,7 @@
 // src/lib/currency.js
 //
 // v5.5.326: multi-currency support. A single source of truth for money
-// formatting + Stripe currency codes, resolved from the active location's
+// formatting + lowercase ISO currency codes, resolved from the active location's
 // currency setting.
 //
 // KEY PROPERTY: money(n) returns exactly `£${n.toFixed(2)}` for GBP — the same
@@ -11,9 +11,9 @@
 // makes a 600+ site sweep safe to ship next to a GBP launch customer.
 
 export const CURRENCIES = {
-  GBP: { code: 'GBP', stripe: 'gbp', symbol: '£', locale: 'en-GB', label: 'British Pound (£)' },
-  USD: { code: 'USD', stripe: 'usd', symbol: '$', locale: 'en-US', label: 'US Dollar ($)' },
-  EUR: { code: 'EUR', stripe: 'eur', symbol: '€', locale: 'en-IE', label: 'Euro (€)' },
+  GBP: { code: 'GBP', iso: 'gbp', symbol: '£', locale: 'en-GB', label: 'British Pound (£)' },
+  USD: { code: 'USD', iso: 'usd', symbol: '$', locale: 'en-US', label: 'US Dollar ($)' },
+  EUR: { code: 'EUR', iso: 'eur', symbol: '€', locale: 'en-IE', label: 'Euro (€)' },
 };
 
 const DEFAULT_CURRENCY = 'GBP';
@@ -49,9 +49,10 @@ export function currencySymbol(code) {
   return currencyConfig(code).symbol;
 }
 
-// Lowercase ISO code Stripe expects ('gbp' | 'usd' | 'eur').
-export function stripeCurrency(code) {
-  return currencyConfig(code).stripe;
+// Lowercase ISO code for the venue's currency ('gbp' | 'usd' | 'eur'), the form the payment
+// functions take.
+export function venueCurrency(code) {
+  return currencyConfig(code).iso;
 }
 
 // Format a MAJOR-unit amount as a money string: "£12.34" / "$12.34" / "€12.34".

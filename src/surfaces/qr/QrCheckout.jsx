@@ -5,26 +5,21 @@
 //   - No scheduled-time picker; always ASAP
 //   - Tip selector (5% / 10% / 12.5% / 15% / Custom / No tip)
 //   - Service charge auto-applied if location.qr_service_charge_pct is set
-//   - Single "Pay & send to kitchen" button; Stripe Elements card input
+//   - Single "Pay & send to kitchen" button; the Adyen card and wallet form
 //   - On success: writes closed_checks (status=paid, source=qr,
 //     table_label='Table T5') AND order_queue (source='qr', type='dine-in',
 //     status=prep, tableLabel) — kitchen routes via existing
 //     routeKioskOrderPrints, prints with TABLE T5 header, KDS shows it
 //
-// Open-tab path (with Stripe pre-auth + bar_tabs row) lands in commit 2.
+// Open-tab path (an Adyen pre-auth; no bar_tabs row, see feedback_qr_no_bartabs) landed in commit 2.
 // Email receipts land in commit 3 (needs Resend/SES infra).
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { supabase } from '../../lib/supabase';
 import { logOrderActivity, logActivity } from '../../lib/activity';
 import { requestPaymentProof, placePublicOrder, publicRead } from '../../lib/publicOrderClient';
 import { tabRoundJoinCode, publicOrderRefusalMessage, tabHoldFor, chooseTrackKey, afterPlaced, qrTableLabel, qrRowOnFloor } from '../../lib/publicOrder';
-import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient';
-import { getLocationProcessor } from '../../lib/payments/processor';
 import AdyenPaymentForm from '../../components/AdyenPaymentForm';
-import RyftPaymentForm from '../../components/RyftPaymentForm';
-import { readRyftStoredCard } from '../../lib/payments/ryft';
 import { attributeOnlineOrder } from '../../lib/customerLookup';
 import { computeOrderTaxUnified, taxCtxHasConfig } from '../../lib/taxCompute';
 import { publicCheckTaxFields, offerChargedTax, qrBillTotal } from '../../lib/publicCheckTax';
@@ -36,7 +31,7 @@ import { evaluateAutoDiscounts, toAppliedDiscount } from '../../lib/discountEngi
 import { buildScheduleCtx } from '../../lib/locationTime';
 import { stashTab } from '../../lib/qrTabStorage';
 import { syncQrTableSession } from '../../lib/qrTableSession';
-import { money, currencySymbol, stripeCurrency } from '../../lib/currency';
+import { money, currencySymbol, venueCurrency } from '../../lib/currency';
 import { tipRuleFor, tipChips, tipInitialKey, tipInitialKeyFor, tipAmount as calcTip } from '../../lib/tipping';
 import { singleTender } from '../../lib/accounting/tenders';
 import { writeClosedCheckRow } from '../../lib/closedCheckWrite';
@@ -46,7 +41,7 @@ import { writeClosedCheckRow } from '../../lib/closedCheckWrite';
 export default function QrCheckout({ cart, theme, location, tableId, tableLabel, loyalty, taxRates = [], taxCtx = null, existingTab = null, onClose, onPlaced, menuId = null, vatGate = null, onRetryRates = null }) {
   // v5.5.155: when existingTab is set the customer is in "Add more"
   // mode — they already opened a tab earlier and tapped Add more on
-  // the resume screen. Skip Stripe pre-auth + card input entirely;
+  // the resume screen. Skip the pre-auth + card input entirely;
   // append a new order_queue row with the same payment_intent_id and
   // tab_open=true. Force-close (or the customer's Close & pay) captures
   // the lot at end. No tip/service/customer-detail re-prompts —
@@ -82,10 +77,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   const tabsAllowed    = paymentMode === 'open_tab' || paymentMode === 'both';
 
   const [step, setStep] = useState('details');
-  const [pi, setPi] = useState(null);
-  const [stripePromise, setStripePromise] = useState(null);
-  const [processor, setProcessor] = useState('adyen');   // 'stripe' | 'ryft' (fail-safe stripe)
-  useEffect(() => { getLocationProcessor(platformLocationId).then(setProcessor).catch(() => {}); }, [platformLocationId]);
+  const processor = 'adyen';   // ServOS takes card payments on Adyen only
 
   const [name, setName]   = useState(loyalty?.name  || '');
   const [phone, setPhone] = useState(loyalty?.phone || '');
@@ -113,9 +105,9 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   useEffect(() => { if (!openTabAvailable && payChoice === 'open_tab') setPayChoice('pay_now'); }, [openTabAvailable, payChoice]);
   const isOpenTab = payChoice === 'open_tab' && openTabAvailable;
   // v5.5.160: enforce a sensible MINIMUM pre-auth even when the venue config
-  // is 0 / null. Stripe rejects amount=0 PIs and a £0 hold leaves us with
-  // no card on file to capture from. £25 is a safe starter — if the bill
-  // exceeds it at close we charge the overage off-session on the saved card.
+  // is 0 / null. A zero hold cannot be authorised and leaves nothing to capture
+  // from. £25 is a safe starter; a bill above it is captured up to the hold at
+  // close and the rest is settled with staff (fence C22 below sizes the hold).
   const MIN_PRE_AUTH = 25;
   const configuredPreAuth = Number(location.qr_tab_pre_auth_amount ?? 0);
   // (tabPreAuthAmount itself is worked out below, once this round's total is known: fence C22.)
@@ -263,8 +255,8 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
     return true;
   }, [name, phone, email]);
 
-  // Fix round (19 Sep, contract C18): one ref per checkout, not per step. The Stripe payment is
-  // made before the step moves to 'pay' and carries metadata.ref, which the proof records as
+  // Fix round (19 Sep, contract C18): one ref per checkout, not per step. The card payment
+  // carries this ref as its merchant reference, which the proof records as
   // meta.order_ref; a new ref per step would have left every card order "Payment being checked".
   const orderRefRef = useRef(null);
   if (!orderRefRef.current) orderRefRef.current = `QR-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
@@ -303,8 +295,8 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step]);
 
-  // v5.5.155: append a new round to an already-open tab. No Stripe call —
-  // we reuse the existing payment_intent that was pre-auth'd at first
+  // v5.5.155: append a new round to an already-open tab. No card call —
+  // we reuse the existing pre-auth (payment_intent_id) taken at first
   // open. Just insert another order_queue row tagged with the same
   // payment_intent_id so the close-and-capture sweep finds it.
   const addToExistingTab = async () => {
@@ -352,7 +344,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
       // 'tab_not_verified' the proof is asked for once and the round sent again.
       // FENCE STAGE 1 FALLBACK: the direct insert, only while place_public_order does not exist.
       const tabPi = roundCustomer.payment_intent_id || existingTab?.payment_intent_id || null;
-      const tabProcessor = roundCustomer.processor || existingTab?.processor || 'adyen';
+      const tabProcessor = 'adyen';
       const sendRound = () => placePublicOrder({
         opsLocationId,
         // Database fence stage 1 (fix round 7): the menu these prices came from. A per menu price
@@ -401,91 +393,18 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
     if (vatGate) { setError(vatGate.message); return; }
     try { publicCheckTaxFields(taxBreakdown, { hasTaxConfig, goods: subtotal }); }
     catch (e) { setError(e?.message || 'Could not work out the VAT. Try again.'); return; }
-    // Ryft is card-not-present here. RyftPaymentForm creates its own session, so
-    // we just advance to the pay step — for an open tab it's created with a
-    // manual-capture hold + the card stored (Unscheduled), exactly like Stripe's
-    // pre-auth, and the close path captures the actual bill (see render block).
-    if (processor === 'ryft') { setError(''); setStep('pay'); return; }
-    // v5.8.15: Adyen venues were falling through to the STRIPE path below and
-    // taking a Stripe payment on an Adyen venue. The Drop-in creates its own
-    // session (adyen-checkout), exactly as OnlineCheckout does.
-    // v5.8.17: an open tab is a pre-authorisation (capture_method manual, card
-    // kept on file) captured at close through adyen-checkout tab_capture.
-    if (processor === 'adyen') { setError(''); setStep('pay'); return; }
-    setWorking(true); setError('');
-    try {
-      // Anonymous sign-in so the connected-account edge fn accepts the JWT
-      // (same path OnlineCheckout uses).
-      let authToken = null;
-      const existing = await supabase?.auth.getSession();
-      authToken = existing?.data?.session?.access_token || null;
-      if (!authToken) {
-        const { data, error: anonErr } = await supabase.auth.signInAnonymously();
-        if (anonErr) throw new Error('Could not start payment session: ' + anonErr.message);
-        authToken = data?.session?.access_token;
-      }
-      if (!authToken) throw new Error('Could not obtain auth token for payment.');
-
-      const { ref, customer } = orderShape;
-      // v5.5.150: open-tab path uses captureMethod='manual' + a pre-auth
-      // hold (set in BO). Pay-now path captures immediately for the actual
-      // total. Same edge fn either way; the captureMethod flag is what
-      // changes Stripe's behaviour.
-      const piRes = await createPaymentIntent({
-        authToken,
-        locationId: platformLocationId,
-        amountMinor: isOpenTab
-          ? Math.round(tabPreAuthAmount * 100)
-          : Math.round(total * 100),
-        currency: stripeCurrency(),
-        channel: 'online', // applies online_markup_percent on the connected account
-        captureMethod: isOpenTab ? 'manual' : 'automatic',
-        // v5.5.160: open-tab needs the card saved off_session so we can
-        // charge an overage if the actual bill exceeds the pre-auth.
-        // Stripe rejects capture amounts > authorized; off_session re-charge
-        // on the same payment_method is the only way to recover the diff.
-        setupFutureUsage: isOpenTab ? 'off_session' : undefined,
-        description: isOpenTab
-          ? `QR Tab open · Table ${tableLabel || tableId} · ${ref} · ${customer.name}`
-          : `QR Table ${tableLabel || tableId} — ${ref} — ${customer.name}`,
-        paymentMethodTypes: ['card'],
-        metadata: {
-          source: 'qr',
-          ref,
-          ops_location_id: String(opsLocationId),
-          table_id: String(tableId || ''),
-          table_label: String(tableLabel || tableId || ''),
-          customer_name: customer.name,
-          customer_email: customer.email,
-          customer_phone: customer.phone,
-          subtotal: String(subtotal),
-          service_charge: String(serviceCharge),
-          tip: String(tipAmount),
-          tab_open: isOpenTab ? 'true' : 'false',
-        },
-      });
-      if (!piRes?.client_secret) throw new Error('Payment could not start. Please try again.');
-      setPi(piRes);
-      setStripePromise(getStripeForAccount(piRes.stripe_account));
-      setStep('pay');
-    } catch (e) {
-      console.error('[QrCheckout] createPaymentIntent failed:', e);
-      setError(e?.message || 'Could not start payment.');
-    } finally {
-      setWorking(false);
-    }
+    // The Adyen Drop-in creates its own session (adyen-checkout), exactly as OnlineCheckout
+    // does. v5.8.17: an open tab is a pre-authorisation (capture_method manual) captured at
+    // close through adyen-checkout tab_capture.
+    setError(''); setStep('pay');
   };
 
   const onPaymentSuccess = async (paymentIntent) => {
     try {
       const { ref, customer, items } = orderShape;
-      // Ryft's id is a payment-session (ps_). On an open tab the manual-capture
-      // hold also stored the card — pull cus_/pmt_ so the close can charge any
-      // overage off-session (mirrors Stripe's payment_method_id stash).
-      const ryft = processor === 'ryft';
-      const ryftCard = ryft ? readRyftStoredCard(paymentIntent) : null;
-      const payId = ryft ? (ryftCard?.sessionId || paymentIntent?.sessionId || paymentIntent?.id || null) : (paymentIntent?.id || null);
-      const tabMode = isOpenTab;            // both processors now run the open-tab/pre-auth path
+      // The Adyen psp reference of the payment (pay now) or of the hold (open tab).
+      const payId = paymentIntent?.id || null;
+      const tabMode = isOpenTab;
 
       // v5.5.155: sub-numbering for multiple QR TABS at the same table.
       // 2 Oct 2026 (Peter, Leeds: "one on the actual table 6 and 6.1, that needs to not
@@ -533,7 +452,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
 
       // v5.5.150: stash payment metadata in the order_queue.customer jsonb
       // (no schema migration needed). Force-close on POS reads these fields,
-      // calls /api/stripe-capture, then writes closed_checks + marks the
+      // captures the hold (adyen-tab tab_capture), then writes closed_checks + marks the
       // queue row collected. tab_open=true tells the operator UI it's an
       // unpaid tab so it can show a "Force close & charge" button instead
       // of the regular advance buttons.
@@ -542,23 +461,10 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
         // The label staff read. A pay now order: the table itself ("Table 4"). A second
         // open tab on the same table: the sub-numbered version ("Table 4.2").
         tableLabel: effectiveTableLabel,
-        // payment_intent_id stays the universal pooling key (holds the Ryft
-        // session id when on Ryft) so OrdersHub pooling + sub-numbering are
-        // processor-agnostic.
+        // payment_intent_id is the universal pooling key (the psp reference of the hold) for
+        // OrdersHub pooling + sub-numbering.
         payment_intent_id: payId,
-        processor,   // 'stripe' | 'ryft' — close + refund route by this
-        stripe_account: pi?.stripe_account || null,
-        // v5.5.160: stash payment_method id so we can charge an off_session
-        // overage if the bill > pre-auth at close time. Stripe sets this on
-        // the PI after confirm. Without it the overage path can't run.
-        payment_method_id: paymentIntent?.payment_method || null,
-        // Ryft equivalents: the session id + the card stored at tab open
-        // (customer + tokenized payment-method) for the off-session overage.
-        ...(ryft ? {
-          payment_session_id: payId,
-          ryft_customer_id: ryftCard?.customerId || null,
-          ryft_payment_method_id: ryftCard?.storedCardId || null,
-        } : {}),
+        processor,   // close + refund route by this
         ...(tabMode ? {
           tab_open: true,
           tab_opened_at: new Date().toISOString(),
@@ -626,9 +532,9 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
         // v5.9.11: what paid the check, per tender. place_public_order keeps it on the row it
         // writes, so a QR sale still posts to the right accounts.
         tenders: singleTender('card', total, tipAmount, { pspRef: payId, processor }),
-        stripe_payment_intent_id: payId,
+        stripe_payment_intent_id: payId,   // the column holds the Adyen reference (renamed later, never dropped)
         payment_intents: payId ? [{ id: payId, amountMinor: Math.round(total * 100) }] : null,
-        processor,   // 'stripe' | 'ryft': refund routes by this
+        processor,   // refund routes by this
         drawer_id: null,
         shift_id: null,
         closed_at: new Date().toISOString(),
@@ -730,14 +636,6 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
             track_token: placed?.trackToken || null,
             tab_join_code: joinCode,   // v5.5.716: so the opener can re-share it from the resume screen (fence stage 1: the server's code)
             processor,
-            stripe_account: pi?.stripe_account || null,
-            // Ryft: the session + stored-card ids the close path needs (the
-            // resume screen reads straight from this stash, no DB re-fetch).
-            ...(ryft ? {
-              payment_session_id: payId,
-              ryft_customer_id: ryftCard?.customerId || null,
-              ryft_payment_method_id: ryftCard?.storedCardId || null,
-            } : {}),
             phone_last4: (customer.phone || '').replace(/\D/g, '').slice(-4),
             opened_at: new Date().toISOString(),
             table_label: effectiveTableLabel, // the table; a second open tab is sub-numbered (4.2, 4.3, ...)
@@ -765,7 +663,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   };
 
   // v5.5.155: ADD-MORE-TO-TAB sheet — short-circuit render. Customer is
-  // already on an open tab; no Stripe round-trip, no re-collect of name/
+  // already on an open tab; no card round-trip, no re-collect of name/
   // tip/service. Just confirm the round and send to kitchen.
   if (isAddMoreRound) {
     return (
@@ -894,7 +792,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
               Table {tableLabel || tableId || '?'} · {cart.length} item{cart.length === 1 ? '' : 's'} · {money(total)}
             </div>
           </div>
-          <button onClick={step === 'pay' ? () => { setStep('details'); setPi(null); setError(''); } : onClose}
+          <button onClick={step === 'pay' ? () => { setStep('details'); setError(''); } : onClose}
             style={{
               padding: '0 14px', height: 36, borderRadius: 99, border: `1px solid ${cardBdr}`,
               background: inputBg, color: theme.fg,
@@ -907,7 +805,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
           <div style={{ flex: 1, height: 4, borderRadius: 2, background: step === 'pay' ? theme.accent : cardBdr }}/>
         </div>
 
-        {step === 'pay' && processor === 'adyen' ? (
+        {step === 'pay' ? (
           <div style={{ padding: '0 24px 16px' }}>
             {/* 8 Sep 2026: storeCard is OFF for an Adyen tab. The Adyen close
                 path never charges an overage off session (it captures the
@@ -916,7 +814,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
             <AdyenPaymentForm
               locationId={platformLocationId}
               amountMinor={Math.round((isOpenTab ? tabPreAuthAmount : total) * 100)}
-              currency={stripeCurrency()}
+              currency={venueCurrency()}
               reference={orderShape?.ref}
               merchantName={location?.name || ''}
               captureMethod={isOpenTab ? 'manual' : 'automatic'}
@@ -928,34 +826,6 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
             />
             {error && <div style={{ color: theme.danger || '#e5484d', fontSize: 13, marginTop: 10 }}>{error}</div>}
           </div>
-        ) : step === 'pay' && processor === 'ryft' ? (
-          <div style={{ padding: '0 24px 16px' }}>
-            <RyftPaymentForm
-              amountMinor={Math.round((isOpenTab ? tabPreAuthAmount : total) * 100)}
-              currency={stripeCurrency()}
-              locationId={platformLocationId}
-              channel="online"
-              merchantName={location?.name || ''}
-              captureMethod={isOpenTab ? 'manual' : 'automatic'}
-              storeCard={isOpenTab}
-              customerEmail={orderShape?.customer?.email}
-              payLabel={isOpenTab ? `Authorise ${money(tabPreAuthAmount)} hold` : `Pay ${money(total)}`}
-              onSuccess={onPaymentSuccess}
-              onError={(e) => setError(e?.message || 'Payment failed')}
-            />
-            {error && <div style={{ color: theme.danger || '#e5484d', fontSize: 13, marginTop: 10 }}>{error}</div>}
-          </div>
-        ) : step === 'pay' && pi && stripePromise ? (
-          <Elements stripe={stripePromise} options={{ clientSecret: pi.client_secret, appearance: { theme: theme.isLight ? 'stripe' : 'night' } }}>
-            <PayStep
-              pi={pi} subtotal={subtotal} serviceCharge={serviceCharge} tipAmount={tipAmount} total={total}
-              tableLabel={tableLabel || tableId}
-              theme={theme} cardBdr={cardBdr} inputBg={inputBg} muted={muted}
-              cart={cart} taxBreakdown={taxBreakdown}
-              onPaid={onPaymentSuccess} onError={setError} error={error}
-              isOpenTab={isOpenTab} tabPreAuthAmount={tabPreAuthAmount}
-            />
-          </Elements>
         ) : (
         <div style={{ padding: '0 24px 12px', display: 'flex', flexDirection: 'column', gap: 18 }}>
           <SectionTitle>Your details</SectionTitle>
@@ -1076,109 +946,12 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
             <div style={{ fontSize: 10, color: muted, textAlign: 'center', marginTop: 8 }}>
               {isOpenTab
                 ? `🔒 We'll hold ${currencySymbol()}${tabPreAuthAmount} on your card. Final bill is taken when staff close the tab.`
-                : `🔒 Card next, processed securely by ${processor === 'adyen' ? 'ServOS Payments' : processor === 'ryft' ? 'Ryft' : 'Stripe'}.`}
+                : '🔒 Card next, processed securely by ServOS Payments.'}
             </div>
           </div>
         )}
       </div>
     </div>
-  );
-}
-
-function PayStep({ pi, subtotal, serviceCharge, tipAmount, total, tableLabel, theme, cardBdr, inputBg, muted, cart, taxBreakdown, onPaid, onError, error, isOpenTab, tabPreAuthAmount }) {
-  const stripe = useStripe();
-  const elements = useElements();
-  const [busy, setBusy] = useState(false);
-
-  const submit = async () => {
-    if (!stripe || !elements) return;
-    setBusy(true); onError('');
-    const card = elements.getElement(CardElement);
-    const { error: stripeErr, paymentIntent } = await stripe.confirmCardPayment(pi.client_secret, {
-      payment_method: { card },
-    });
-    setBusy(false);
-    if (stripeErr) { onError(stripeErr.message || 'Card declined.'); return; }
-    // v5.5.156: open-tab uses captureMethod='manual' so the post-confirm
-    // status is 'requires_capture' (auth held, capture later) — that's the
-    // success path for an open tab. Pay-now stays 'succeeded' (captured
-    // immediately). Both are valid outcomes that route to onPaid.
-    const ok = paymentIntent?.status === 'succeeded'
-      || (isOpenTab && paymentIntent?.status === 'requires_capture');
-    if (ok) {
-      await onPaid(paymentIntent);
-    } else {
-      onError(`Payment status: ${paymentIntent?.status || 'unknown'}.`);
-    }
-  };
-
-  return (
-    <>
-      <div style={{ padding: '0 24px 12px', display: 'flex', flexDirection: 'column', gap: 14 }}>
-        <SectionTitle>Card details</SectionTitle>
-        <div style={{ padding: 14, borderRadius: 12, border: `1.5px solid ${cardBdr}`, background: inputBg }}>
-          <CardElement options={{
-            style: { base: {
-              color: theme.fg, fontSize: '16px', fontFamily: 'inherit',
-              '::placeholder': { color: theme.isLight ? '#9a9aa1' : '#7d7d85' },
-            } },
-          }}/>
-        </div>
-        <div style={{ fontSize: 11, color: muted, lineHeight: 1.5 }}>
-          Test mode: <code style={{ fontFamily: 'monospace', fontWeight: 700 }}>4242 4242 4242 4242</code> · any future expiry · any CVC.
-        </div>
-        <div style={{ background: inputBg, border: `1px solid ${cardBdr}`, borderRadius: 12, padding: '12px 14px', marginTop: 4 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: muted, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
-            Table {tableLabel || '?'} · paying now
-          </div>
-          {cart.map(line => {
-            const unit = line.price + (line.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0);
-            return (
-              <div key={line.uid} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 13 }}>
-                <span style={{ flex: 1, minWidth: 0 }}>{line.qty || 1} × {line.name}</span>
-                <span style={{ fontWeight: 700 }}>{money((unit * (line.qty || 1)))}</span>
-              </div>
-            );
-          })}
-          <SummaryLine label="Subtotal" value={subtotal} muted={muted}/>
-          {taxBreakdown?.totalTax > 0 && taxBreakdown.breakdown.map((b, i) => (
-            <SummaryLine key={`vat-${i}`}
-              label={`${breakdownIsExclusive(b) ? '+ ' : 'incl. '}${b.rate?.name || b.name || (b.rate ? `${taxTermFor(taxBreakdown)} ${(Number(b.rate.rate) * 100).toFixed(0)}%` : 'Tax')}`}
-              value={b.tax} muted={muted}/>
-          ))}
-          {serviceCharge > 0 && <SummaryLine label="Service charge" value={serviceCharge} muted={muted}/>}
-          {tipAmount > 0 && <SummaryLine label="Tip" value={tipAmount} muted={muted}/>}
-          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0 0', borderTop: `1px solid ${cardBdr}`, marginTop: 6 }}>
-            <span style={{ fontSize: 14, fontWeight: 800 }}>Total</span>
-            <span style={{ fontSize: 18, fontWeight: 900 }}>{money(total)}</span>
-          </div>
-        </div>
-      </div>
-      <div style={{
-        position: 'sticky', bottom: 0,
-        padding: '14px 24px calc(14px + env(safe-area-inset-bottom)) 24px',
-        background: theme.bg, borderTop: `1px solid ${cardBdr}`,
-      }}>
-        {error && <div style={{ fontSize: 12, color: '#ef4444', marginBottom: 10 }}>{error}</div>}
-        <button onClick={submit} disabled={busy || !stripe} className="op-btn-primary" style={{
-          width: '100%', padding: '16px 22px', borderRadius: 14,
-          background: theme.accent, color: contrastFg(theme.accent),
-          border: 'none', fontSize: 16, fontWeight: 800, cursor: busy ? 'wait' : 'pointer',
-          fontFamily: 'inherit', opacity: busy ? 0.7 : 1,
-          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-        }}>
-          <span>{busy
-            ? (isOpenTab ? 'Authorising…' : 'Processing payment…')
-            : (isOpenTab ? 'Authorise & open tab' : 'Pay & send to kitchen')}</span>
-          <span>{money((isOpenTab ? tabPreAuthAmount : total))}{isOpenTab ? ' hold' : ''}</span>
-        </button>
-        <div style={{ fontSize: 10, color: muted, textAlign: 'center', marginTop: 8 }}>
-          {isOpenTab
-            ? `🔒 ${currencySymbol()}${tabPreAuthAmount} card hold. Actual bill taken when staff close the tab.`
-            : '🔒 Your order goes to the kitchen the moment payment clears.'}
-        </div>
-      </div>
-    </>
   );
 }
 

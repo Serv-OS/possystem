@@ -26,8 +26,8 @@ test('Adyen: both amounts, booked automatically, do not charge again, the tip se
   noDashes(c.title); noDashes(c.body);
 });
 
-test('not Adyen: no promise of a tip being added by itself', () => {
-  const c = amountMismatchCopy({ reportedMinor: 2200, billMinor: 2000, currency: 'GBP', processor: 'ryft' });
+test('processor not known (an old read): no promise of a tip being added by itself', () => {
+  const c = amountMismatchCopy({ reportedMinor: 2200, billMinor: 2000, currency: 'GBP', processor: null });
   assert.ok(c.body.includes('£22.00') && c.body.includes('£20.00'));
   assert.ok(c.body.includes('recorded automatically at the bill amount'));
   assert.ok(!/tip/i.test(c.body));
@@ -35,7 +35,7 @@ test('not Adyen: no promise of a tip being added by itself', () => {
 });
 
 test('the card machine took LESS than the bill: say what is still owed, never "do not take payment again"', () => {
-  for (const processor of ['pax', 'ryft', 'adyen']) {
+  for (const processor of [null, 'adyen']) {
     const c = amountMismatchCopy({ reportedMinor: 500, billMinor: 725, currency: 'GBP', processor });
     assert.equal(c.title, 'Card amount differs from the bill');
     assert.equal(c.body,

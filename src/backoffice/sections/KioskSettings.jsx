@@ -628,7 +628,7 @@ export default function KioskSettings({ kioskId, onBack }) {
           </Section>
 
           {/* ── Card terminal ── */}
-          <Section title="Card terminal" desc="Assign the paired card terminal this kiosk sends card payments to. Only needed at venues that pair a terminal running the ServOS app — Stripe-reader venues take card automatically.">
+          <Section title="Card terminal" desc="Assign the paired card terminal this kiosk sends card payments to. Only needed at venues that pair a terminal running the ServOS app.">
             <KioskCardTerminalSection kioskId={kioskId} locationId={device.location_id} />
           </Section>
 
@@ -871,8 +871,8 @@ function LargeToggleRow({ checked, onChange, title, desc }) {
 
 // v5.5.871 — assign a paired card terminal to this kiosk (bind_pos_device_id →
 // the kiosk's devices.id) via the dedicated set_terminal_bound_device RPC. Binding
-// is immediate (not part of the profile Save). On a Stripe venue there are no
-// terminal_devices rows, so the list is empty and the section is a no-op.
+// is immediate (not part of the profile Save). With no terminal_devices rows
+// the list is empty and the section is a no-op.
 function KioskCardTerminalSection({ kioskId, locationId }) {
   const [terminals, setTerminals] = useState(null); // null = loading
   const [busy, setBusy] = useState(null);           // terminal id being (un)bound
@@ -921,7 +921,7 @@ function KioskCardTerminalSection({ kioskId, locationId }) {
           {terminals.map(t => {
             const mine = t.bound_pos_device_id === kioskId;
             const other = t.bound_pos_device_id && !mine;
-            const linked = !!terminalProcessor(t);   // Adyen or Ryft (13 Oct 2026: it tested Ryft only)
+            const linked = !!terminalProcessor(t);   // linked to Adyen (13 Oct 2026: it tested the wrong id)
             return (
               <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', background: 'var(--bg2)', border: '1.5px solid ' + (mine ? 'var(--acc)' : 'var(--bdr)'), borderRadius: 8 }}>
                 <div style={{ flex: 1, minWidth: 0 }}>

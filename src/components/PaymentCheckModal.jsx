@@ -145,7 +145,7 @@ export default function PaymentCheckModal({ order, onClose, onSettled }) {
                 Confirming books only the {money(short.provenMinor / 100)} the online payment took. If you took the rest on the till, that is its own sale.
               </div>
             )}
-            <div style={{ fontSize: 12, color: 'var(--t3)', marginBottom: 6 }}>What did you check? For example "seen in Stripe, 12.50".</div>
+            <div style={{ fontSize: 12, color: 'var(--t3)', marginBottom: 6 }}>What did you check? For example "seen in Adyen, 12.50".</div>
             <input value={note} onChange={e => setNote(e.target.value)} maxLength={160} autoFocus
               style={{ width: '100%', boxSizing: 'border-box', padding: '9px 10px', borderRadius: 8, border: '1px solid var(--bdr)', background: 'var(--bg)', color: 'var(--t1)', fontFamily: 'inherit', fontSize: 13, marginBottom: 10 }} />
             <div style={{ display: 'flex', gap: 8 }}>

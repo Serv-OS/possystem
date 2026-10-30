@@ -284,7 +284,7 @@ test('money guard: helpers never change the basket line the money paths read', (
   const snapshot = JSON.parse(JSON.stringify(cart));
   cart.map(kioskOrderItem); cart.map(kioskDepleteItem); kioskCartUsage(cart); cart.forEach(kioskLineStockId);
   assert.deepEqual(JSON.parse(JSON.stringify(cart)), snapshot);
-  // Subtotal, Stripe line items and tax inputs all read name / linePrice / item.
+  // Subtotal, line items and tax inputs all read name / linePrice / item.
   assert.equal(cart.reduce((a, l) => a + l.lineTotal, 0), 5.5);
   assert.deepEqual(cart.map(l => ({ name: l.name, amount: Math.round(l.linePrice * 100), quantity: l.qty })),
     [{ name: 'Latte', amount: 400, quantity: 1 }, { name: 'Latte', amount: 150, quantity: 1 }]);

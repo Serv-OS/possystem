@@ -48,7 +48,7 @@ const newId = () => (
 /**
  * Stage a gift card against the amount currently due. Pure — touches no server.
  * Partial balances are preserved: a card worth less than the bill applies what it has and
- * the remainder goes to the card reader / Stripe.
+ * the remainder goes to the card.
  *
  * @param {{ cardId:string, code?:string|null, codeLast4?:string|null,
  *           balanceMinor:number, amountDueMinor:number }} args
@@ -86,7 +86,7 @@ export function stageGiftCard({ cardId, code = null, codeLast4 = null, balanceMi
  * @param {string} opts.closedCheckId STABLE across retries — also used as order_id
  * @param {boolean} [opts.allowPartial=true] When the card lost value between apply and
  *        commit, take whatever IS left. Correct when the card leg has already been charged
- *        (kiosk, online+Stripe). Pass FALSE on a gift-only order, where a short card must
+ *        (kiosk, online). Pass FALSE on a gift-only order, where a short card must
  *        debit NOTHING so the customer can go back and pay by card with the balance intact.
  * @param {string|null} [opts.memberToken] the member's loyalty-otp session token (kiosk linked
  *        cards, which gift-redeem may only spend by card_id for the member they belong to).

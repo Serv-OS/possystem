@@ -3,7 +3,7 @@
  *
  * CARD PATH RULE (owner, non negotiable). This file is only the LOOK of the card screen.
  * ScreenPay keeps every piece of the card path: the reader start on mount, polling, cancel,
- * the Ryft terminal job and the call to submitOrder. It passes its own state (cardState,
+ * the terminal job and the call to submitOrder. It passes its own state (cardState,
  * cardError, total, submitting, submitError) and its own handlers, and this file decides
  * what the customer sees (lib/kioskPay.js) and which handler a button calls:
  *   Try again  ScreenPay's own retry, offered ONLY after a settled decline

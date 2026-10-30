@@ -84,7 +84,7 @@ test('a device name containing " · " stays whole', () => {
 });
 
 test('the 500 character slice: detail cut short is marked, the rest still parses', () => {
-  const long = 'Stripe rejected PaymentIntent: ' + 'card_error '.repeat(80);
+  const long = 'Adyen refused the payment: ' + 'card_error '.repeat(80);
   const body = kioskStaffAlert({ deviceName: 'Front kiosk', amountText: '£16.00', reference: 'KTLDV48', cause: 'unconfirmed', raw: long }).body;
   assert.equal(body.length, 500);
   const p = parseKioskAlertBody(body);
@@ -94,7 +94,7 @@ test('the 500 character slice: detail cut short is marked, the rest still parses
   const v = kioskStaffAlertView(row({ body }));
   assert.equal(v.headline, 'Kiosk payment not confirmed');
   assert.ok(v.detail.endsWith('…'));
-  assert.ok(v.detail.startsWith('Stripe rejected PaymentIntent: card_error'));
+  assert.ok(v.detail.startsWith('Adyen refused the payment: card_error'));
 });
 
 test('the 500 character slice: a huge device name cut before the reference', () => {
