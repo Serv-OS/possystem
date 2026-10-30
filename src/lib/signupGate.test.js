@@ -18,9 +18,9 @@ test('anonymous sign in is allowed (kiosk, online, QR, gift, catering keep worki
   assert.equal(decideUserCreation(wrap({ ...anonUser, is_anonymous: undefined, app_metadata: { providers: ['anonymous'] } })).allow, true);
 });
 
-test('an email sign up is refused with the plain message, 403, http_code in the body', () => {
+test('an email sign up is refused: HTTP 200 (the auth server rejects any other status), http_code 403 in the body', () => {
   const d = decideUserCreation(wrap(emailUser));
-  assert.equal(d.allow, false); assert.equal(d.status, 403); assert.equal(d.reason, 'closed');
+  assert.equal(d.allow, false); assert.equal(d.status, 200); assert.equal(d.reason, 'closed');
   assert.deepEqual(d.body, { error: { message: CLOSED_MESSAGE, http_code: 403 } });
   assert.equal(d.who, 's***@e***.com');
   assert.ok(!CLOSED_MESSAGE.includes('!'));

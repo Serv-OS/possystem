@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.124',
+    date: '30 Oct 2026',
+    items: [
+      "Closed sign ups now refuse cleanly. The first live proof showed the auth server turning the hook's 403 into a 500 \"Unexpected status code returned from hook\": it only accepts 200 from a hook and reads the refusal from the body. The hook now answers 200 with http_code 403 and the message inside, so a person trying to sign up sees \"Sign ups are closed. ServOS accounts are set up for you by your company owner.\" instead of an error id. Anonymous sign in was and is unchanged.",
+    ],
+  },
+  {
     v: '5.11.123',
     date: '30 Oct 2026',
     items: [

@@ -34,8 +34,11 @@ export function decideUserCreation(payload) {
   const user = payload && typeof payload === 'object' ? payload.user : null;
   const who = maskEmail(user?.email);
   if (isAnonymous(user)) return { allow: true, status: 200, body: {}, reason: 'anonymous', who };
+  // The auth server only accepts 200/202/204 from an HTTP hook (anything else = "Unexpected status
+  // code returned from hook", a 500 for the caller). The refusal travels in the body: error.http_code
+  // becomes the status the person signing up sees. Proven 30 Oct: a real 403 came back as a 500.
   return {
-    allow: false, status: 403, reason: 'closed', who,
+    allow: false, status: 200, reason: 'closed', who,
     body: { error: { message: CLOSED_MESSAGE, http_code: 403 } },
   };
 }
