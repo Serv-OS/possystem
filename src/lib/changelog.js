@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.11.123',
+    date: '30 Oct 2026',
+    items: [
+      "Sign ups are closed. Until ServOS has a self sign up product, nobody can create an account on their own: a new function (auth-before-user-created) answers the Ops project's Before User Created auth hook, lets every anonymous sign in through (kiosk, online, QR, gift and catering pages keep working) and refuses any other new account with \"Sign ups are closed. ServOS accounts are set up for you by your company owner.\" Every account ServOS makes (Back Office Users, staff app invites, Peter by hand) uses the admin path the hook never sees, so nothing changes for them.",
+      "The hook request is checked against Supabase's signature when the secret is set. A wrong secret is logged, never allowed to take the kiosks down: the answer always comes from what Supabase sent.",
+      "Admin, Create user: adding mickey@nextflavourkitchens.com said the user already existed, yet no such user showed anywhere. The account was made in July; the lookup for an existing email walked at most 4,000 accounts and Ops now has over 6,000 (mostly anonymous kiosk and online sessions), so it found nothing and showed the raw database message. The lookup now asks for the email directly. An existing login with no profile row gets one (it was an update that saved nothing), and when ServOS types a password for an existing login it is set. The screen says what happened: linked, password set.",
+      "Edge functions to deploy: auth-before-user-created (no JWT check), create-user. Then in the Supabase dashboard: Authentication, Hooks, Before User Created, HTTPS, the function's URL, Generate secret, and set that secret on the function as BEFORE_USER_CREATED_HOOK_SECRET. Nothing to run in the database.",
+    ],
+  },
+  {
     v: '5.11.122',
     date: '30 Oct 2026',
     items: [

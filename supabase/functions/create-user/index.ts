@@ -3,6 +3,8 @@ import { secondStepRefusal } from '../_shared/second-step.ts';
 // Back Office section access (8 Oct 2026): the same rules file the web app reads, so the
 // list of sections and the "never more than the creator" rule cannot drift apart.
 import { allowedKeys, isEverythingRole, planLoginSections, sameSections, storedSections, isSectionsColumnMissing } from '../_shared/boSectionRules.js';
+// 30 Oct 2026: one request finds an existing email, however many users there are (was a 4,000 user walk).
+import { findAuthUserByEmail } from '../_shared/authUserLookup.js';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -114,19 +116,22 @@ Deno.serve(async (req) => {
       if (!dup) {
         return new Response(JSON.stringify({ error: createErr.message }), { status: 400, headers: corsHeaders });
       }
-      // Look up the existing auth user by email (paginate defensively).
-      try {
-        let page = 1;
-        while (page <= 20 && !userId) {
-          const { data: list } = await supabaseAdmin.auth.admin.listUsers({ page, perPage: 200 });
-          const match = (list?.users || []).find((u: any) => (u.email || '').toLowerCase() === String(email).toLowerCase());
-          if (match) { userId = match.id; alreadyExisted = true; break; }
-          if (!list || (list.users || []).length < 200) break;
-          page++;
-        }
-      } catch (e) { /* fall through to error below if still unresolved */ }
+      // Look up the existing auth user by email. 30 Oct 2026: GoTrue's filter, one request; the
+      // 20 page walk only as a fallback (Ops has over 6,000 users, so the walk alone missed
+      // accounts made months ago and this returned the raw "already been registered").
+      const existing = await findAuthUserByEmail({
+        supabaseUrl: Deno.env.get('SUPABASE_URL') ?? '', serviceKey: Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '', email,
+        listUsers: (a: any) => supabaseAdmin.auth.admin.listUsers(a),
+      });
+      if (existing?.id) { userId = existing.id; alreadyExisted = true; }
       if (!userId) {
-        return new Response(JSON.stringify({ error: createErr.message }), { status: 400, headers: corsHeaders });
+        return new Response(JSON.stringify({ error: 'That email already has a login, but it could not be found to link it. Tell Claude.' }), { status: 400, headers: corsHeaders });
+      }
+      // ServOS (super admin) typed a password for this login: it is set, so the person can sign in
+      // with what ServOS gives them. A venue caller never changes an existing login's password.
+      if (isSuper && password) {
+        const { error: pwErr } = await supabaseAdmin.auth.admin.updateUserById(userId, { password });
+        if (pwErr) return new Response(JSON.stringify({ error: `That login exists but its password could not be set: ${pwErr.message}` }), { status: 500, headers: corsHeaders });
       }
     }
 
@@ -183,13 +188,17 @@ Deno.serve(async (req) => {
     // sign up trigger writes that), and an owner opens everything whatever list it holds, so a
     // write that silently failed left a "manager" who was really an unlimited owner. If the
     // role did not land, stop BEFORE the venue link: a login with no link reaches no venue.
-    const { data: savedProfile, error: profileErr } = await supabaseAdmin.from('user_profiles').update({
+    // 30 Oct 2026: UPSERT, not update. An auth login made before the profile trigger existed, or
+    // whose profile row was removed, has none: an update then saved nothing and this failed with
+    // "profile could not be saved" for an account that plainly existed.
+    const { data: savedProfile, error: profileErr } = await supabaseAdmin.from('user_profiles').upsert({
+      id: userId,
       email,
       org_id: orgId,
       location_id: locationId || null,
       role: role || 'owner',
       full_name: fullName || email,
-    }).eq('id', userId).select('id, role');
+    }, { onConflict: 'id' }).select('id, role');
     if (profileErr || !savedProfile?.length || savedProfile[0].role !== loginRole) {
       return new Response(JSON.stringify({ error: 'The login was made, but its profile could not be saved, so it has no access yet. Try again.', userId }), { status: 500, headers: corsHeaders });
     }

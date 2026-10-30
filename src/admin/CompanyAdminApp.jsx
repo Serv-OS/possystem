@@ -446,7 +446,7 @@ function AdminPanel({ authUser }) {
       const result = await resp.json();
       setWorking(false);
       if (result.error) return err(result.error);
-      ok(`✓ User created: ${result.email}`);
+      ok(result.alreadyExisted ? `✓ ${result.email} already had a login. It is now linked to ${selectedOrg.name} and the password you typed is set.` : `✓ User created: ${result.email}`);
       setForm(p => ({ ...p, inviteEmail:'', invitePassword:'', inviteName:'', inviteLocationId:'' }));
       setSection('org-detail');
       await Promise.all([loadUsers(selectedOrg.id), loadAllUsers()]);
