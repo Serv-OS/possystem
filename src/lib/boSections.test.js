@@ -740,7 +740,8 @@ test('create-user: the caller\'s own list is read by the server, and a limited c
   assert.ok(existing.indexOf('if (callerLimited)') < link && limited > 0 && limited < link, 'both checks come before the venue link');
   assert.match(existing, /const canLimit = sectionsInstalled && callerIsOwner && !!target && target\.org_id === orgId && !isEverythingRole\(target\.role\);\s+if \(!canLimit\) \{\s+return new Response/);
   // A new login: the role write is checked (a new profile starts as 'owner', who opens everything).
-  assert.match(fnCode, /\}\)\.eq\('id', userId\)\.select\('id, role'\);\s+if \(profileErr \|\| !savedProfile\?\.length \|\| savedProfile\[0\]\.role !== loginRole\) \{\s+return new Response/);
+  // 30 Oct 2026: an UPSERT on id, so an existing login with no profile row gets one.
+  assert.match(fnCode, /\}, \{ onConflict: 'id' \}\)\.select\('id, role'\);\s+if \(profileErr \|\| !savedProfile\?\.length \|\| savedProfile\[0\]\.role !== loginRole\) \{\s+return new Response/);
   // The list has its own write; a missing column does not stop the login, any other failure does,
   // and both come before the venue link.
   const tail = fnCode.slice(fnCode.indexOf('const { data: savedProfile, error: profileErr }'));
