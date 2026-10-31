@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.12.3',
+    date: '31 Oct 2026',
+    items: [
+      'Website builder: the designer answered "disable_parallel_tool_use: true cannot be used with programmatic tool calling" when asked to read a linked site. The page reader filters pages with code on Anthropic\'s side and that mode refuses the one-call-at-a-time flag, so the flag is gone. The prompt already asks for exactly one apply_site_patch call.',
+    ],
+  },
+  {
     v: '5.12.2',
     date: '31 Oct 2026',
     items: [
