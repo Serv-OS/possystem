@@ -237,7 +237,11 @@ export async function callClaude({ apiKey, model, system, messages, tool, fetchI
     body: JSON.stringify({
       model, max_tokens: maxTokens, system, messages,
       tools: [tool],
-      tool_choice: { type: 'tool', name: TOOL_NAME },
+      // 5.12.2: Claude Opus 5.5 (and Sonnet 5.5, Fable 5.1) refuse a forced tool choice with 400
+      // "tool_choice: type "tool" and "any" are not supported for this model". auto + the system
+      // prompt's "always answer through apply_site_patch" does the same job; a text only answer
+      // is still handled below (it becomes the reply, nothing changes).
+      tool_choice: { type: 'auto', disable_parallel_tool_use: true },
     }),
   });
   let body = null;

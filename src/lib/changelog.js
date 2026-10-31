@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.12.2',
+    date: '31 Oct 2026',
+    items: [
+      'Website builder: the AI designer answered "tool_choice: type tool and any are not supported for this model" on every request. Claude Opus 5.5 refuses a forced tool call, so the designer now lets the model choose and tells it to always answer through its one tool. Build me a website and the designer chat work again.',
+    ],
+  },
+  {
     v: '5.12.1',
     date: '31 Oct 2026',
     items: [

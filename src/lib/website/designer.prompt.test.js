@@ -151,3 +151,14 @@ test('fallback validator: refuses unknown blocks, bad slugs, two heroes; accepts
   assert.ok(bad.errors.some((e) => e.includes('"Marquee" does not exist')));
   assert.ok(bad.errors.some((e) => e.includes('2 Hero blocks')));
 });
+
+// 5.12.2: Opus 5.5 refuses a forced tool choice; the request must say auto and the prompt must
+// tell the model to always answer through the tool.
+import fsForToolChoice from 'node:fs';
+test('the designer never forces the tool (Opus 5.5 answers 400 to type tool / any) and the prompt asks for it instead', () => {
+  const src = fsForToolChoice.readFileSync(new URL('../../../api/website-designer.js', import.meta.url), 'utf8');
+  assert.ok(src.includes("tool_choice: { type: 'auto', disable_parallel_tool_use: true }"));
+  assert.ok(!/tool_choice:\s*\{\s*type:\s*'(tool|any)'/.test(src));
+  const prompt = fsForToolChoice.readFileSync(new URL('../../../api/_lib/website/designerPrompt.js', import.meta.url), 'utf8');
+  assert.ok(prompt.includes('ALWAYS answer by calling apply_site_patch'));
+});

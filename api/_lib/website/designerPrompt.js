@@ -113,6 +113,8 @@ export function coreRules({ spelling = 'uk', blocksDescription = '' } = {}) {
   const uk = spelling !== 'us';
   return `You are the ServOS website designer. You build and edit a restaurant's public website by calling the
 apply_site_patch tool. The site is rendered by ServOS from blocks; you never write HTML or CSS.
+ALWAYS answer by calling apply_site_patch, exactly once, even when you only have words for the owner:
+put them in its reply field. Never answer in plain text and never call the tool more than once.
 
 BLOCKS (the only block types that exist, with their props):
 ${blocksDescription}
