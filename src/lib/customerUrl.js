@@ -28,12 +28,28 @@
 
 import { CUSTOMER_ROOT } from './env';
 import { parseCustomerLocation } from './customerHost';
+import { parseWebsiteLocation } from '../surfaces/website/hostParse.js';
 
 function readStoredSlug() {
   return (window.localStorage || {}).getItem?.('rpos-online-slug') || null;
 }
 
+// 31 Oct 2026 (v5.12.0, website builder): a venue WEBSITE host is checked first and additively.
+//   <slug>.sites.serv-os.app  → { mode: 'website', host, siteSlug }
+//   any host that is not one of ours (a venue's own domain) → { mode: 'website', host }
+//   ?site=<slug> on a TESTING host only (localhost, IPs, Vercel previews, the operator app host)
+//   and only when the path names no customer surface → { mode: 'website', host, siteSlug }
+// <slug>.serv-os.app, <slug>.wifi.serv-os.app, app., dev., vercel.app and localhost are untouched:
+// every existing mode parses exactly as before (lib/customerHost.js is not changed). The ?site=
+// door used to fire on any host, which took the WiFi captive portal (/wifi?site=<unifi site id>)
+// and any ordering link carrying ?site= to the website; the pure rule now lives in hostParse.js.
+export function parseWebsiteContext(loc) {
+  return parseWebsiteLocation(loc, { customerRoot: CUSTOMER_ROOT });
+}
+
 export function parseCustomerUrl(loc = (typeof window !== 'undefined' ? window.location : null)) {
+  const site = parseWebsiteContext(loc);
+  if (site) return site;
   return parseCustomerLocation(loc, { customerRoot: CUSTOMER_ROOT, readStoredSlug });
 }
 

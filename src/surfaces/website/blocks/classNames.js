@@ -1,0 +1,56 @@
+// src/surfaces/website/blocks/classNames.js
+//
+// The class names the SSR string renderer (ssr/renderBlocks.js) and the React components
+// (blocks/components/*.jsx) both use. Defined once so the server HTML and the React paint are
+// the same document: React replaces the server markup on mount and nothing should move.
+// Every public site class starts with `w-` so it never collides with the POS or Back Office CSS.
+
+export const CN = Object.freeze({
+  site: 'w-site',
+  header: 'w-header',
+  nav: 'w-nav',
+  navLink: 'w-nav-link',
+  navToggle: 'w-nav-toggle',
+  logo: 'w-logo',
+  main: 'w-main',
+  footer: 'w-footer',
+  footerLinks: 'w-footer-links',
+  powered: 'w-powered',
+  block: 'w-block',
+  inner: 'w-inner',
+  h2: 'w-h2',
+  btn: 'w-btn',
+  btnPrimary: 'w-btn-primary',
+  btnSecondary: 'w-btn-secondary',
+  btnLink: 'w-btn-link',
+  muted: 'w-muted',
+  card: 'w-card',
+  empty: 'w-empty',
+  // blocks
+  hero: 'w-hero', heroTall: 'w-hero-tall', heroShort: 'w-hero-short', heroBody: 'w-hero-body', heroStatus: 'w-hero-status',
+  orderBar: 'w-orderbar',
+  menu: 'w-menu', menuCards: 'w-menu-cards', menuList: 'w-menu-list', menuBoard: 'w-menu-board',
+  menuSection: 'w-menu-section', menuGrid: 'w-menu-grid', menuItem: 'w-menu-item', menuItemSoldOut: 'w-menu-item-soldout',
+  menuPhoto: 'w-menu-photo', menuName: 'w-menu-name', menuDesc: 'w-menu-desc', menuPrice: 'w-menu-price',
+  menuBadges: 'w-menu-badges', badge: 'w-badge', menuAllergens: 'w-menu-allergens', soldOut: 'w-soldout',
+  specials: 'w-specials',
+  embed: 'w-embed', embedCard: 'w-embed-card', iframe: 'w-iframe',
+  loyalty: 'w-loyalty', loyaltyCard: 'w-loyalty-card',
+  gift: 'w-gift', giftArt: 'w-gift-art',
+  book: 'w-book', waitlist: 'w-waitlist',
+  hours: 'w-hours', hoursTable: 'w-hours-table', hoursToday: 'w-hours-today', open: 'w-open', closed: 'w-closed',
+  findus: 'w-findus', findusGrid: 'w-findus-grid', locCard: 'w-loc', locName: 'w-loc-name', locAddr: 'w-loc-addr',
+  locActions: 'w-loc-actions', nearestBtn: 'w-nearest', nearest: 'w-loc-nearest',
+  reviews: 'w-reviews', review: 'w-review', stars: 'w-stars',
+  blogList: 'w-bloglist', post: 'w-post', postCover: 'w-post-cover', postMeta: 'w-post-meta', postBody: 'w-post-body',
+  text: 'w-text', prose: 'w-prose',
+  columns: 'w-columns', cols2: 'w-cols-2', cols3: 'w-cols-3',
+  gallery: 'w-gallery',
+  faq: 'w-faq', faqItem: 'w-faq-item',
+  instagram: 'w-instagram',
+  divider: 'w-divider',
+  spacer: 'w-spacer', spacerS: 'w-spacer-s', spacerM: 'w-spacer-m', spacerL: 'w-spacer-l',
+  customHtml: 'w-custom',
+  notFound: 'w-notfound',
+  breadcrumb: 'w-breadcrumb',
+});

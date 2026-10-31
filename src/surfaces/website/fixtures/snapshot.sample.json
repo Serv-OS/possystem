@@ -1,0 +1,78 @@
+{
+  "generated_at": "2026-10-31T10:00:00.000Z",
+  "site": {
+    "id": "11111111-1111-4111-8111-111111111111",
+    "slug": "mozz",
+    "custom_domain": "www.mozzpizza.com",
+    "apex_domain": "mozzpizza.com",
+    "status": "live",
+    "company_name": "Mozz Pizza",
+    "theme": { "layout": "ember", "type": "warm-serif", "buttons": "pill", "mood": "light", "brand_color": null },
+    "nav": [
+      { "label": "Home", "kind": "page", "page_id": "p-home" },
+      { "label": "Menu", "kind": "page", "page_id": "p-menu" },
+      { "label": "Order", "kind": "page", "page_id": "p-order" },
+      { "label": "Find us", "kind": "page", "page_id": "p-findus" },
+      { "label": "News", "kind": "page", "page_id": "p-blog" }
+    ],
+    "footer": { "text": "Mozz Pizza. Wood fired in Leeds since 2019.", "links": [ { "label": "Our story", "href": "page:p-story" } ], "show_powered_by": true, "instagram": "mozzpizza", "email": "hello@mozzpizza.com", "phone": "0113 496 0000" },
+    "seo": { "title": "Mozz Pizza Leeds", "description": "Wood fired pizza in Leeds. Order online for collection or delivery.", "og_image_url": "https://example.com/og.jpg", "google_site_verification": "abc123", "locale": "en_GB", "keywords": ["pizza", "leeds"] },
+    "settings": { "allow_custom_code": false, "custom_head_html": "<script>alert(1)</script>", "nearest_store": true, "default_location_id": "loc-leeds", "order_mode": "embed", "channels": { "online": true, "catering": false, "loyalty": true, "gift": true, "bookings": true, "waitlist": false }, "cuisine": "Pizza", "price_range": "££" }
+  },
+  "pages": [
+    { "id": "p-home", "slug": "", "title": "Home", "kind": "home", "sort_order": 0, "status": "published", "seo": {}, "layout": { "root": { "props": {} }, "content": [
+      { "type": "Hero", "props": { "id": "hero-1", "headline": "Wood fired pizza in Leeds", "sub": "Fresh dough every morning. Order online or book a table.", "photo_url": "https://example.com/hero.jpg", "show_status": true, "primary": { "label": "Order now", "href": "servos:order" }, "secondary": { "label": "See the menu", "href": "page:p-menu" }, "height": "tall" } },
+      { "type": "OrderBar", "props": { "id": "ob-1", "collection": true, "delivery": true, "book": true, "catering": true } },
+      { "type": "Specials", "props": { "id": "sp-1", "title": "This week", "source": "tagged" } },
+      { "type": "LiveMenu", "props": { "id": "menu-1", "title": "Menu", "menu_id": "follow", "layout": "cards", "max_items": 6, "show": { "prices": true, "photos": true, "descriptions": true, "allergens": true, "dietary": true, "hide_sold_out": false, "add_button": true } } },
+      { "type": "LoyaltyJoin", "props": { "id": "loy-1", "headline": "Join Mozz Club", "sub": "A free pizza for every ten.", "show_card_preview": true } },
+      { "type": "GiftCards", "props": { "id": "gift-1" } },
+      { "type": "FAQ", "props": { "id": "faq-1", "title": "Questions", "items": [ { "q": "Do you deliver?", "a": "Yes, within 3 miles of each shop." }, { "q": "Gluten free?", "a": "Every pizza can be made on a **gluten free** base." } ] } },
+      { "type": "CustomHtml", "props": { "id": "ch-1", "html": "<b>should not show</b>" } },
+      { "type": "Text", "props": { "id": "txt-1", "md": "## About\n\nWe are a family business. [Read more](/our-story)." } }
+    ] } },
+    { "id": "p-menu", "slug": "menu", "title": "Menu", "kind": "menu", "sort_order": 1, "status": "published", "seo": { "title": "Menu | Mozz Pizza Leeds", "description": "Our full pizza menu with prices." }, "layout": { "root": { "props": {} }, "content": [
+      { "type": "LiveMenu", "props": { "id": "menu-2", "title": "Our menu", "layout": "list", "show": { "prices": true, "photos": false, "descriptions": true, "allergens": true, "dietary": true, "hide_sold_out": true, "add_button": false } } }
+    ] } },
+    { "id": "p-order", "slug": "order", "title": "Order", "kind": "order", "sort_order": 2, "status": "published", "seo": {}, "layout": { "root": { "props": {} }, "content": [
+      { "type": "OrderEmbed", "props": { "id": "oe-1", "mode": "online", "location_id": "default", "height": 900 } }
+    ] } },
+    { "id": "p-catering", "slug": "catering", "title": "Catering", "kind": "catering", "sort_order": 3, "status": "published", "seo": {}, "layout": { "root": { "props": {} }, "content": [
+      { "type": "OrderEmbed", "props": { "id": "oe-2", "mode": "catering", "location_id": "default", "height": 900 } }
+    ] } },
+    { "id": "p-findus", "slug": "find-us", "title": "Find us", "kind": "findus", "sort_order": 4, "status": "published", "seo": {}, "layout": { "root": { "props": {} }, "content": [
+      { "type": "FindUs", "props": { "id": "fu-1", "title": "Our shops", "show_map": true, "show_nearest": true, "show_hours": true, "show_order_buttons": true, "location_id": "all" } },
+      { "type": "Hours", "props": { "id": "hrs-1", "title": "Opening hours", "location_id": "all", "show_today_first": true } }
+    ] } },
+    { "id": "p-blog", "slug": "blog", "title": "News", "kind": "blog", "sort_order": 5, "status": "published", "seo": {}, "layout": { "root": { "props": {} }, "content": [
+      { "type": "BlogList", "props": { "id": "bl-1", "title": "News", "count": 10, "show_excerpt": true } }
+    ] } },
+    { "id": "p-story", "slug": "our-story", "title": "Our story", "kind": "custom", "sort_order": 6, "status": "draft", "seo": {}, "layout": { "root": { "props": {} }, "content": [
+      { "type": "Text", "props": { "id": "txt-2", "md": "Draft text." } }
+    ] } },
+    { "id": "p-loc-leeds", "slug": "leeds", "title": "Mozz Pizza Leeds", "kind": "location", "location_id": "loc-leeds", "sort_order": 7, "status": "published", "seo": { "title": "Mozz Pizza Leeds city centre", "description": "Hours, address and menu for our Leeds shop." }, "layout": { "root": { "props": {} }, "content": [
+      { "type": "Hero", "props": { "id": "hero-leeds", "headline": "Mozz Pizza Leeds", "height": "short", "primary": { "label": "Order now", "href": "servos:order:loc-leeds" }, "secondary": { "label": "", "href": "" } } },
+      { "type": "Hours", "props": { "id": "hrs-leeds", "location_id": "loc-leeds" } },
+      { "type": "FindUs", "props": { "id": "fu-leeds", "location_id": "loc-leeds", "show_nearest": false } },
+      { "type": "LiveMenu", "props": { "id": "menu-leeds", "location_id": "loc-leeds" } },
+      { "type": "OrderEmbed", "props": { "id": "oe-leeds", "location_id": "loc-leeds" } }
+    ] } }
+  ],
+  "posts": [
+    { "id": "post-1", "slug": "new-winter-menu", "title": "Our new winter menu", "excerpt": "Nduja, honey and a lot of cheese.", "body_md": "# Winter is here\n\nWe have added **three** new pizzas.\n\n- Nduja and honey\n- Four cheese\n- Mushroom and truffle", "cover_url": "https://example.com/winter.jpg", "author": "Marco", "tags": ["menu"], "status": "published", "published_at": "2026-10-20T09:00:00.000Z", "updated_at": "2026-10-21T09:00:00.000Z" },
+    { "id": "post-2", "slug": "secret-draft", "title": "Not yet", "excerpt": "", "body_md": "draft", "status": "draft", "published_at": null }
+  ],
+  "locations": [
+    { "id": "loc-leeds", "ops_location_id": "ops-leeds", "name": "Mozz Pizza Leeds", "online_slug": "mozz-leeds", "timezone": "Europe/London", "currency": "GBP", "sort_order": 0,
+      "address": "12 Call Lane, Leeds, LS1 6DN", "phone": "0113 496 0001", "latitude": 53.796, "longitude": -1.54,
+      "opening_hours": { "weekly": { "mon": [{ "open": "11:30", "close": "22:00" }], "tue": [{ "open": "11:30", "close": "22:00" }], "wed": [{ "open": "11:30", "close": "22:00" }], "thu": [{ "open": "11:30", "close": "22:00" }], "fri": [{ "open": "11:30", "close": "23:00" }], "sat": [{ "open": "11:30", "close": "23:00" }], "sun": [] }, "closedDates": [] },
+      "online_branding": { "brand_color": "#e2581f", "display_name": "Mozz Pizza", "logo_url": "https://example.com/logo.png", "hero_url": "https://example.com/hero.jpg" },
+      "channels": { "online": true, "catering": true, "loyalty": true, "gift": true, "bookings": true, "waitlist": false } },
+    { "id": "loc-hudds", "ops_location_id": "ops-hudds", "name": "Mozz Pizza Huddersfield", "online_slug": "mozz-huddersfield", "timezone": "Europe/London", "currency": "GBP", "sort_order": 1,
+      "address": { "address_line1": "4 Market Street", "city": "Huddersfield", "postcode": "HD1 2AA", "country": "GB" }, "phone": "01484 400 000",
+      "opening_hours": { "weekly": { "mon": [], "tue": [{ "open": "12:00", "close": "21:00" }], "wed": [{ "open": "12:00", "close": "21:00" }], "thu": [{ "open": "12:00", "close": "21:00" }], "fri": [{ "open": "12:00", "close": "22:00" }], "sat": [{ "open": "12:00", "close": "22:00" }], "sun": [{ "open": "12:00", "close": "20:00" }] }, "closedDates": [] },
+      "online_branding": { "brand_color": "#e2581f", "display_name": "Mozz Pizza", "logo_url": "https://example.com/logo.png" },
+      "channels": { "online": true, "catering": false, "loyalty": true, "gift": true, "bookings": false, "waitlist": false } },
+    { "id": "loc-nosite", "ops_location_id": "ops-x", "name": "Dark kitchen", "online_slug": null, "timezone": "Europe/London", "currency": "GBP", "sort_order": 2 }
+  ]
+}
