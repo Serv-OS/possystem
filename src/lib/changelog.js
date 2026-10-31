@@ -11,6 +11,7 @@ export const CHANGELOG = [
     date: '31 Oct 2026',
     items: [
       'Website builder: the AI designer answered "tool_choice: type tool and any are not supported for this model" on every request. Claude Opus 5.5 refuses a forced tool call, so the designer now lets the model choose and tells it to always answer through its one tool. Build me a website and the designer chat work again.',
+      'Website builder: the designer can now read a website the owner links. Paste one or more sites you like ("build it as close to this as possible") and it reads the home, menu, about and contact pages first, then rebuilds that structure, tone and colour mood with your own menu, hours and photos. It never copies their text, images or prices.',
     ],
   },
   {

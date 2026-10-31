@@ -160,5 +160,41 @@ test('the designer never forces the tool (Opus 5.5 answers 400 to type tool / an
   assert.ok(src.includes("tool_choice: { type: 'auto', disable_parallel_tool_use: true }"));
   assert.ok(!/tool_choice:\s*\{\s*type:\s*'(tool|any)'/.test(src));
   const prompt = fsForToolChoice.readFileSync(new URL('../../../api/_lib/website/designerPrompt.js', import.meta.url), 'utf8');
-  assert.ok(prompt.includes('ALWAYS answer by calling apply_site_patch'));
+  assert.ok(prompt.includes('ALWAYS finish by calling apply_site_patch') && prompt.includes('REFERENCE SITES') && prompt.includes('read it\nFIRST with web_fetch'));
+});
+
+// 5.12.2: reference sites. The web fetch tool is offered only when the owner linked something, and
+// a pause_turn answer is resumed by resending the turn with the assistant content appended.
+import { callClaude, linksIn, webFetchTool, historyText } from '../../../api/website-designer.js';
+test('linksIn finds the owner\'s links, trims trailing punctuation and deduplicates', () => {
+  assert.deepEqual(linksIn('like https://www.mozzartisanpizza.com. and https://www.mozzartisanpizza.com and http://a.b/c?x=1,'), ['https://www.mozzartisanpizza.com', 'http://a.b/c?x=1']);
+  assert.deepEqual(linksIn('no links here'), []);
+  assert.equal(historyText([{ role: 'user', content: 'see https://x.y' }, { role: 'assistant', content: 'ok' }]), 'see https://x.y');
+});
+
+test('callClaude offers web_fetch only with allowFetch, never forces the tool, and resumes pause_turn', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    const req = JSON.parse(init.body);
+    calls.push(req);
+    const first = calls.length === 1;
+    const body = first
+      ? { stop_reason: 'pause_turn', content: [{ type: 'server_tool_use', id: 'srvtoolu_1', name: 'web_fetch', input: { url: 'https://www.mozzartisanpizza.com' } }] }
+      : { stop_reason: 'tool_use', content: [{ type: 'text', text: 'Read it.' }, { type: 'tool_use', id: 'toolu_1', name: 'apply_site_patch', input: { reply: 'Built in that spirit.' } }] };
+    return { ok: true, status: 200, json: async () => body };
+  };
+  const tool = { name: 'apply_site_patch', description: 'x', input_schema: { type: 'object' } };
+  const out = await callClaude({ apiKey: 'k', model: 'm', system: 's', messages: [{ role: 'user', content: 'like https://www.mozzartisanpizza.com' }], tool, fetchImpl, allowFetch: true });
+  assert.equal(calls.length, 2, 'pause_turn was resumed once');
+  assert.deepEqual(calls[0].tools.map((t) => t.name), ['apply_site_patch', 'web_fetch']);
+  assert.equal(calls[0].tools[1].type, 'web_fetch_20260209');
+  assert.deepEqual(calls[0].tool_choice, { type: 'auto', disable_parallel_tool_use: true });
+  assert.equal(calls[1].messages.length, 2, 'the assistant content was appended, no extra user turn');
+  assert.equal(calls[1].messages[1].role, 'assistant');
+  assert.deepEqual(out.patch, { reply: 'Built in that spirit.' });
+  assert.deepEqual(out.fetched, []);
+  const plain = [];
+  await callClaude({ apiKey: 'k', model: 'm', system: 's', messages: [{ role: 'user', content: 'hi' }], tool, fetchImpl: async (u, init) => { plain.push(JSON.parse(init.body)); return { ok: true, status: 200, json: async () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: 'hello' }] }) }; } });
+  assert.deepEqual(plain[0].tools.map((t) => t.name), ['apply_site_patch']);
+  assert.ok(webFetchTool().max_uses > 0);
 });
