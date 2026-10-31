@@ -86,7 +86,11 @@ const headersFor = (anon, token) => ({ apikey: anon, authorization: `Bearer ${to
  *                  'pos'  a till, kiosk or Ops phone bound to it (pos_accessible_location_keys)
  *                  'none' no anonymous session at all
  *   signInMessage  the 401 text
- * Returns { ok: true, user, via: 'reach' | 'user' | 'device' } or { ok: false, status, error }.
+ * Returns { ok: true, user, via: 'reach' | 'user' | 'device', reached? } or { ok: false, status, error }.
+ * `reached` (a signed in person only) is the list of Ops location ids the login reaches, so a route
+ * that fences by COMPANY on the Platform DB (api/website-designer.js) can map them there instead of
+ * looking the Ops auth uid up in Platform tables that key on platform_users (a cross DB lookup that
+ * never matches).
  */
 export async function requireUser(req, { locationId = null, venueRequired = true, device = 'ops', signInMessage = SIGN_IN_SCAN, env, fetchImpl } = {}) {
   const f = fetchImpl || (typeof fetch !== 'undefined' ? fetch : null);
@@ -133,10 +137,10 @@ export async function requireUser(req, { locationId = null, venueRequired = true
   const reached = idList(reach.body);
   if (!loc) {
     if (reached.length === 0) return { ok: false, status: 403, error: 'Not allowed: this login reaches no venue.' };
-    return { ok: true, user, via: 'user' };
+    return { ok: true, user, via: 'user', reached };
   }
   if (!reached.includes(loc)) return { ok: false, status: 403, error: 'Not allowed: this login does not reach that venue.' };
-  return { ok: true, user, via: 'reach' };
+  return { ok: true, user, via: 'reach', reached };
 }
 
 /**

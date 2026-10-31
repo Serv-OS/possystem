@@ -7,6 +7,22 @@
 
 export const CHANGELOG = [
   {
+    v: '5.12.0',
+    date: '31 Oct 2026',
+    items: [
+      "Website builder. Back Office, Channels, Appearance has a fifth tab, Website builder. A venue gets a real public website at <slug>.sites.serv-os.app, built from the same branding, menu, hours and locations ServOS already holds.",
+      "Build me a website. One press and the AI designer reads your menu, locations, hours, branding and which channels are on, then builds the whole site: home, live menu, ordering, catering, loyalty, gift cards, find us, one page per location, a draft Our story and two draft blog posts. You can talk to it afterwards to change any page in plain words.",
+      "Pages and blocks. A page editor with a palette of ServOS blocks (hero, live menu, specials, order bar, opening hours, find us with nearest shop, loyalty, gift cards, book a table, waitlist, latest posts) and content blocks (text, columns, gallery, button, FAQ, Instagram, divider, spacer). Drafts save on their own three seconds after a change, with undo and a phone view.",
+      "The menu on the site is live. It reads the same menu, prices, photos, dietary badges and allergen words as online ordering, follows the timed menu that is on right now, and an item marked sold out on the till shows as sold out on the website within a second.",
+      "Ordering, catering, loyalty, gift cards, bookings and the waitlist are embedded from the venue's existing customer pages, so nothing is duplicated and every order still lands on the till the same way. Switching a channel off in the Overview hides its blocks and nav links everywhere.",
+      "Your own domain. Type it in Branding and domain, press Check, and the screen shows the exact records to add (with copy buttons and an Email these steps link), the SSL state, and goes green when the records are live. We never sell domains; the free address always works.",
+      "Blog. Posts with a cover photo, markdown body, tags, drafts and publish. The designer can write a post for you from your own menu and news.",
+      "Built for Google. Every page is served as real HTML from the server, with a single h1, titles and descriptions, open graph tags, a sitemap, robots.txt and JSON-LD for the restaurant, each location, the menu, breadcrumbs, blog posts and FAQs. Search engines read the venue, not an empty page.",
+      "Publish history. Every publish is kept. One press restores an earlier version, and Take offline hides the site without losing anything. Drafts can be previewed from a link that works for 30 minutes.",
+      "To go live: run the SQL in docs/website-builder/RELEASE.md on the Platform project, set the secrets, add the *.sites DNS record, deploy website-admin and website-domain, and add the Platform keys to Vercel. The steps are numbered in that file.",
+    ],
+  },
+  {
     v: '5.11.124',
     date: '30 Oct 2026',
     items: [

@@ -1,0 +1,17 @@
+/* src/backoffice/sections/website/puck-theme.css
+   Puck's own stylesheet is global once imported. These rules are scoped to the editor
+   wrapper so nothing leaks into the rest of Back Office, and the Puck colour variables
+   are remapped (in Editor.jsx, PUCK_THEME_VARS) so the editor follows the BO skin, dark
+   or light. Only layout and shape fixes live here. */
+.svw-puck { position: relative; border: 1px solid var(--bdr); border-radius: 14px; overflow: hidden; background: var(--bg2); }
+.svw-puck > div { height: 100%; }
+.svw-puck [class*="_PuckLayout_"] { height: 100%; min-height: 0; }
+.svw-puck [class*="_PuckLayout-inner_"] { height: 100%; }
+.svw-puck [class*="_PuckHeader_"] { border-bottom: 1px solid var(--bdr); background: var(--bg1); }
+.svw-puck [class*="_PuckCanvas_"] { background: var(--bg3); }
+.svw-puck [class*="_SidebarSection_"], .svw-puck [class*="_PuckFields_"] { background: var(--bg1); color: var(--t1); }
+.svw-puck input, .svw-puck textarea, .svw-puck select { font-family: inherit; }
+.svw-puck [class*="_Input-input_"], .svw-puck [class*="_Input_"] textarea, .svw-puck [class*="_Input_"] select { background: var(--bg2); color: var(--t1); border-color: var(--bdr2); border-radius: 8px; }
+.svw-puck [class*="_Drawer_"] [class*="_DrawerItem_"] { border-radius: 10px; }
+.svw-puck [class*="_Button--primary_"] { background: var(--acc); color: #0b0c10; border-radius: 8px; }
+.svw-puck [class*="_Button--secondary_"] { border-radius: 8px; }

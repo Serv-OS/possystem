@@ -8,6 +8,38 @@
       "destination": "/api/$1"
     },
     {
+      "source": "/assets/(.*)",
+      "destination": "/assets/$1"
+    },
+    {
+      "source": "/favicon(.*)",
+      "destination": "/favicon$1"
+    },
+    {
+      "source": "/.well-known/(.*)",
+      "destination": "/.well-known/$1"
+    },
+    {
+      "source": "/(.*)",
+      "has": [
+        {
+          "type": "host",
+          "value": "(?<slug>[a-z0-9-]+)\\.sites\\.serv-os\\.app"
+        }
+      ],
+      "destination": "/api/site?path=/$1"
+    },
+    {
+      "source": "/(.*)",
+      "has": [
+        {
+          "type": "host",
+          "value": "^(?!.*(serv-os\\.app|servos\\.app|pos-up\\.com|vercel\\.app|localhost)).*$"
+        }
+      ],
+      "destination": "/api/site?path=/$1"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }

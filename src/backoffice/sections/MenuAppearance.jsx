@@ -11,7 +11,7 @@
 // platform locations.online_branding jsonb — additive keys, no schema change; every consumer
 // falls back per-key so untouched venues are unaffected.
 
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { platformSupabase, supabase, getLocationId } from '../../lib/supabase';
 import { patchBranding } from '../../lib/locationAdmin';
 import MenuHeader from '../../surfaces/menu/MenuHeader';
@@ -63,7 +63,11 @@ const SECTIONS = [
   ['storefront', '🍽', 'Storefront'],
   ['portal', '⭐', 'Loyalty portal'],
   ['gift', '🎁', 'Gift cards'],
+  ['website', '🌐', 'Website builder'],
 ];
+// v5.12.0: the website builder is a lazy chunk so Puck and the designer never load for
+// the other four tabs (or the POS bundle). It owns the whole width, see below.
+const WebsiteBuilder = lazy(() => import('./website/WebsiteBuilder.jsx'));
 
 // Sample card for the storefront preview (mirrors the live storefront card style).
 function SampleCard({ name, desc, price, img }) {
@@ -280,6 +284,13 @@ export default function MenuAppearance() {
         ))}
       </div>
 
+      {/* The website builder has its own layout (editor, designer, overview) and would be
+          squeezed by the controls + preview grid below, so it gets its own full width branch. */}
+      {section === 'website' ? (
+        <Suspense fallback={<div style={S.empty}>Loading the website builder…</div>}>
+          <WebsiteBuilder venueName={branding.display_name || name} onBack={() => setSection('brand')} />
+        </Suspense>
+      ) : (
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(300px, 380px) 1fr', gap: 20, alignItems: 'start' }}>
         {/* ── Controls ── */}
         <div>
@@ -436,6 +447,7 @@ export default function MenuAppearance() {
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 }

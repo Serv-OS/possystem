@@ -1,0 +1,294 @@
+{
+  "site": {
+    "id": "6f1c2a40-9b7e-4c3a-9a1e-2b6d4e8f0a11",
+    "slug": "mozz",
+    "custom_domain": "www.mozzpizza.co.uk",
+    "apex_domain": "mozzpizza.co.uk",
+    "status": "live",
+    "theme": { "layout": "ember", "type": "warm-serif", "buttons": "pill", "mood": "light", "brand_color": null },
+    "nav": [
+      { "label": "Menu", "page_id": "0d3f5a72-1c4b-4e6d-8f90-a1b2c3d4e5f6", "kind": "page" },
+      { "label": "Order", "page_id": "1e4a6b83-2d5c-4f7e-9a01-b2c3d4e5f607", "kind": "page" },
+      { "label": "Loyalty", "page_id": "2f5b7c94-3e6d-4a8f-ab12-c3d4e5f60718", "kind": "page" },
+      { "label": "Find us", "page_id": "3a6c8da5-4f7e-4b90-bc23-d4e5f6071829", "kind": "page" },
+      { "label": "Blog", "page_id": "4b7d9eb6-5a8f-4ca1-cd34-e5f60718293a", "kind": "page" },
+      { "label": "Book on OpenTable", "href": "https://www.opentable.co.uk/r/mozz-pizza-leeds", "kind": "link" }
+    ],
+    "footer": {
+      "text": "Wood fired pizza in Leeds and Huddersfield since 2019.",
+      "links": [
+        { "label": "Allergens", "href": "/allergens" },
+        { "label": "Privacy", "href": "/privacy" }
+      ],
+      "show_powered_by": true,
+      "instagram": "mozzpizzauk",
+      "facebook": "mozzpizzauk",
+      "email": "hello@mozzpizza.co.uk",
+      "phone": "+44 113 496 0123"
+    },
+    "seo": {
+      "title": "Mozz Pizza, wood fired pizza in Leeds",
+      "description": "Neapolitan pizza in Leeds and Huddersfield. Order online for collection or delivery, join the stamp card, book a table.",
+      "og_image_url": "https://yhzjgyrkyjabvhblqxzu.supabase.co/storage/v1/object/public/web-assets/6f1c2a40-9b7e-4c3a-9a1e-2b6d4e8f0a11/og-share.jpg",
+      "google_site_verification": "",
+      "locale": "en_GB",
+      "keywords": ["pizza leeds", "wood fired pizza", "pizza huddersfield", "neapolitan pizza"]
+    },
+    "settings": {
+      "allow_custom_code": false,
+      "custom_head_html": "",
+      "nearest_store": true,
+      "default_location_id": "a1000000-0000-4000-8000-000000000001",
+      "order_mode": "embed",
+      "channels": { "order": true, "catering": false, "loyalty": true, "gift": true, "book": true, "waitlist": false },
+      "cuisine": "Pizza",
+      "price_range": "££",
+      "geo": {
+        "a1000000-0000-4000-8000-000000000002": { "lat": 53.6458, "lng": -1.7850, "at": "2026-10-31T09:00:00.000Z", "source": "nominatim" }
+      }
+    }
+  },
+  "pages": [
+    {
+      "id": "0c2e4961-0b3a-4d5c-8e8f-90a1b2c3d4e5",
+      "slug": "",
+      "title": "Home",
+      "kind": "home",
+      "sort_order": 0,
+      "location_id": null,
+      "seo": { "title": "Mozz Pizza, wood fired pizza in Leeds", "description": "Neapolitan pizza in Leeds and Huddersfield. Order online for collection or delivery.", "og_image_url": null, "noindex": false },
+      "layout": {
+        "root": { "props": {} },
+        "content": [
+          { "type": "Hero", "props": { "id": "Hero-home", "headline": "Wood fired pizza, Leeds and Huddersfield", "sub": "Neapolitan dough, 72 hour ferment, fired in 90 seconds.", "photo_url": null, "show_status": true, "primary": { "label": "Order online", "href": "servos:order" }, "secondary": { "label": "See the menu", "href": "page:0d3f5a72-1c4b-4e6d-8f90-a1b2c3d4e5f6" }, "height": "tall" } },
+          { "type": "OrderBar", "props": { "id": "OrderBar-home", "collection": true, "delivery": true, "book": true, "catering": false } },
+          { "type": "Specials", "props": { "id": "Specials-home", "title": "This week", "source": "tagged" } },
+          { "type": "LiveMenu", "props": { "id": "LiveMenu-home", "menu_id": "follow", "categories": [], "layout": "cards", "show": { "prices": true, "photos": true, "descriptions": true, "allergens": true, "dietary": true, "hide_sold_out": false, "add_button": true }, "price_mode": "collection", "location_id": "default", "max_items": 12 } },
+          { "type": "LoyaltyJoin", "props": { "id": "LoyaltyJoin-home", "headline": "Every tenth pizza is on us", "sub": "Join the stamp card with your phone number.", "show_card_preview": true } },
+          { "type": "Reviews", "props": { "id": "Reviews-home", "min_stars": 4, "count": 6 } },
+          { "type": "FindUs", "props": { "id": "FindUs-home", "show_map": true, "show_nearest": true, "show_hours": true, "show_order_buttons": true } }
+        ]
+      }
+    },
+    {
+      "id": "0d3f5a72-1c4b-4e6d-8f90-a1b2c3d4e5f6",
+      "slug": "menu",
+      "title": "Menu",
+      "kind": "menu",
+      "sort_order": 1,
+      "location_id": null,
+      "seo": { "title": "Menu, Mozz Pizza Leeds", "description": "Pizzas, sides and desserts with live prices. Order online for collection.", "og_image_url": null, "noindex": false },
+      "layout": {
+        "root": { "props": {} },
+        "content": [
+          { "type": "Hero", "props": { "id": "Hero-menu", "headline": "The menu", "sub": "Live from the kitchen, prices included.", "photo_url": null, "show_status": false, "primary": { "label": "Order online", "href": "servos:order" }, "secondary": null, "height": "short" } },
+          { "type": "LiveMenu", "props": { "id": "LiveMenu-menu", "menu_id": "follow", "categories": [], "layout": "list", "show": { "prices": true, "photos": true, "descriptions": true, "allergens": true, "dietary": true, "hide_sold_out": false, "add_button": true }, "price_mode": "collection", "location_id": "default", "max_items": 300 } }
+        ]
+      }
+    },
+    {
+      "id": "1e4a6b83-2d5c-4f7e-9a01-b2c3d4e5f607",
+      "slug": "order",
+      "title": "Order online",
+      "kind": "order",
+      "sort_order": 2,
+      "location_id": null,
+      "seo": { "title": "Order online, Mozz Pizza Leeds", "description": "Collection or delivery from Mozz Pizza. Pay online, ready in 20 minutes.", "og_image_url": null, "noindex": false },
+      "layout": {
+        "root": { "props": {} },
+        "content": [
+          { "type": "OrderEmbed", "props": { "id": "OrderEmbed-order", "mode": "online", "location_id": "default", "height": 900 } }
+        ]
+      }
+    },
+    {
+      "id": "2f5b7c94-3e6d-4a8f-ab12-c3d4e5f60718",
+      "slug": "loyalty",
+      "title": "Stamp card",
+      "kind": "loyalty",
+      "sort_order": 3,
+      "location_id": null,
+      "seo": { "title": "Stamp card, Mozz Pizza", "description": "Ten stamps, one free pizza. Join with your phone number.", "og_image_url": null, "noindex": false },
+      "layout": {
+        "root": { "props": {} },
+        "content": [
+          { "type": "LoyaltyJoin", "props": { "id": "LoyaltyJoin-page", "headline": "Every tenth pizza is on us", "sub": "Join the stamp card with your phone number.", "show_card_preview": true } },
+          { "type": "GiftCards", "props": { "id": "GiftCards-page", "headline": "Gift cards", "sub": "Send a pizza night. Any amount, sent by email.", "show_art": true } }
+        ]
+      }
+    },
+    {
+      "id": "3a6c8da5-4f7e-4b90-bc23-d4e5f6071829",
+      "slug": "find-us",
+      "title": "Find us",
+      "kind": "findus",
+      "sort_order": 4,
+      "location_id": null,
+      "seo": { "title": "Find us, Mozz Pizza Leeds and Huddersfield", "description": "Two shops: Call Lane in Leeds and Byram Street in Huddersfield. Hours, directions and phone numbers.", "og_image_url": null, "noindex": false },
+      "layout": {
+        "root": { "props": {} },
+        "content": [
+          { "type": "Hero", "props": { "id": "Hero-findus", "headline": "Two shops, one oven each", "sub": "Leeds and Huddersfield.", "photo_url": null, "show_status": false, "primary": null, "secondary": null, "height": "short" } },
+          { "type": "FindUs", "props": { "id": "FindUs-page", "show_map": true, "show_nearest": true, "show_hours": true, "show_order_buttons": true } },
+          { "type": "FAQ", "props": { "id": "FAQ-findus", "items": [ { "q": "Is there parking?", "a": "Leeds: Trinity car park is a three minute walk. Huddersfield: free on street parking after 6pm." }, { "q": "Do you take bookings?", "a": "Yes, for groups of 4 or more. Walk ins always welcome." } ] } }
+        ]
+      }
+    },
+    {
+      "id": "4b7d9eb6-5a8f-4ca1-cd34-e5f60718293a",
+      "slug": "blog",
+      "title": "Blog",
+      "kind": "blog",
+      "sort_order": 5,
+      "location_id": null,
+      "seo": { "title": "Blog, Mozz Pizza", "description": "Dough, ovens, and what is new at Mozz.", "og_image_url": null, "noindex": false },
+      "layout": {
+        "root": { "props": {} },
+        "content": [
+          { "type": "BlogList", "props": { "id": "BlogList-blog", "count": 12, "show_excerpt": true } }
+        ]
+      }
+    },
+    {
+      "id": "5c8eafc7-6b90-4db2-de45-f60718293a4b",
+      "slug": "leeds",
+      "title": "Mozz Pizza Leeds",
+      "kind": "location",
+      "sort_order": 6,
+      "location_id": "a1000000-0000-4000-8000-000000000001",
+      "seo": { "title": "Mozz Pizza Leeds, Call Lane", "description": "Wood fired pizza on Call Lane, Leeds. Open 7 days. Order online for collection or delivery.", "og_image_url": null, "noindex": false },
+      "layout": {
+        "root": { "props": {} },
+        "content": [
+          { "type": "Hero", "props": { "id": "Hero-leeds", "headline": "Mozz Pizza Leeds", "sub": "12 Call Lane, by the Corn Exchange.", "photo_url": null, "show_status": true, "primary": { "label": "Order from Leeds", "href": "servos:order" }, "secondary": { "label": "Book a table", "href": "servos:book" }, "height": "short" } },
+          { "type": "Hours", "props": { "id": "Hours-leeds", "location_id": "a1000000-0000-4000-8000-000000000001", "show_today_first": true } },
+          { "type": "FindUs", "props": { "id": "FindUs-leeds", "show_map": true, "show_nearest": false, "show_hours": false, "show_order_buttons": true, "location_id": "a1000000-0000-4000-8000-000000000001" } },
+          { "type": "LiveMenu", "props": { "id": "LiveMenu-leeds", "menu_id": "follow", "categories": [], "layout": "cards", "show": { "prices": true, "photos": true, "descriptions": false, "allergens": true, "dietary": true, "hide_sold_out": true, "add_button": true }, "price_mode": "collection", "location_id": "a1000000-0000-4000-8000-000000000001", "max_items": 24 } },
+          { "type": "OrderEmbed", "props": { "id": "OrderEmbed-leeds", "mode": "online", "location_id": "a1000000-0000-4000-8000-000000000001", "height": 800 } }
+        ]
+      }
+    },
+    {
+      "id": "6d9fb0d8-7ca1-4ec3-ef56-0718293a4b5c",
+      "slug": "huddersfield",
+      "title": "Mozz Pizza Huddersfield",
+      "kind": "location",
+      "sort_order": 7,
+      "location_id": "a1000000-0000-4000-8000-000000000002",
+      "seo": { "title": "Mozz Pizza Huddersfield, Byram Street", "description": "Wood fired pizza on Byram Street, Huddersfield. Order online for collection.", "og_image_url": null, "noindex": false },
+      "layout": {
+        "root": { "props": {} },
+        "content": [
+          { "type": "Hero", "props": { "id": "Hero-hudds", "headline": "Mozz Pizza Huddersfield", "sub": "4 Byram Street, opposite the parish church.", "photo_url": null, "show_status": true, "primary": { "label": "Order from Huddersfield", "href": "servos:order" }, "secondary": null, "height": "short" } },
+          { "type": "Hours", "props": { "id": "Hours-hudds", "location_id": "a1000000-0000-4000-8000-000000000002", "show_today_first": true } },
+          { "type": "FindUs", "props": { "id": "FindUs-hudds", "show_map": true, "show_nearest": false, "show_hours": false, "show_order_buttons": true, "location_id": "a1000000-0000-4000-8000-000000000002" } },
+          { "type": "LiveMenu", "props": { "id": "LiveMenu-hudds", "menu_id": "follow", "categories": [], "layout": "cards", "show": { "prices": true, "photos": true, "descriptions": false, "allergens": true, "dietary": true, "hide_sold_out": true, "add_button": true }, "price_mode": "collection", "location_id": "a1000000-0000-4000-8000-000000000002", "max_items": 24 } },
+          { "type": "OrderEmbed", "props": { "id": "OrderEmbed-hudds", "mode": "online", "location_id": "a1000000-0000-4000-8000-000000000002", "height": 800 } }
+        ]
+      }
+    }
+  ],
+  "posts": [
+    {
+      "id": "7eafc1e9-8db2-4fd4-a067-18293a4b5c6d",
+      "slug": "why-72-hour-dough",
+      "title": "Why our dough takes 72 hours",
+      "excerpt": "Slow fermentation is the whole secret. Here is what happens in the fridge.",
+      "body_md": "## Time does the work\n\nOur dough is mixed on Monday and baked on Thursday. Three days in the cold room lets the yeast work slowly, so the crust blisters and the base stays light.\n\n### What you taste\n\n- A sour edge from the long ferment\n- Big air pockets in the cornicione\n- A base that holds up to San Marzano sauce\n\nCome and try it at Call Lane or Byram Street.",
+      "cover_url": "https://yhzjgyrkyjabvhblqxzu.supabase.co/storage/v1/object/public/web-assets/6f1c2a40-9b7e-4c3a-9a1e-2b6d4e8f0a11/dough.jpg",
+      "author": "Marco",
+      "tags": ["dough", "kitchen"],
+      "published_at": "2026-10-20T10:00:00.000Z"
+    },
+    {
+      "id": "8fb0d2fa-9ec3-4ae5-b178-293a4b5c6d7e",
+      "slug": "huddersfield-is-open",
+      "title": "Huddersfield is open",
+      "excerpt": "Our second oven is lit. Byram Street opens Tuesday to Sunday.",
+      "body_md": "We opened the doors on Byram Street last Friday. Same dough, same oven, five minutes from the station.\n\nOrder online for collection and skip the queue.",
+      "cover_url": null,
+      "author": "Mozz team",
+      "tags": ["news", "huddersfield"],
+      "published_at": "2026-10-10T09:00:00.000Z"
+    }
+  ],
+  "locations": [
+    {
+      "id": "a1000000-0000-4000-8000-000000000001",
+      "ops_location_id": "b2000000-0000-4000-8000-000000000001",
+      "name": "Mozz Pizza Leeds",
+      "slug": "mozz-leeds",
+      "address": "12 Call Lane, Leeds LS1 7DH",
+      "phone": "+44 113 496 0123",
+      "timezone": "Europe/London",
+      "currency": "GBP",
+      "opening_hours": {
+        "weekly": {
+          "mon": [{ "open": "12:00", "close": "22:00" }],
+          "tue": [{ "open": "12:00", "close": "22:00" }],
+          "wed": [{ "open": "12:00", "close": "22:00" }],
+          "thu": [{ "open": "12:00", "close": "23:00" }],
+          "fri": [{ "open": "12:00", "close": "23:30" }],
+          "sat": [{ "open": "12:00", "close": "23:30" }],
+          "sun": [{ "open": "12:00", "close": "21:00" }]
+        },
+        "closedDates": ["2026-12-25", "2026-12-26"]
+      },
+      "online_branding": {
+        "brand_color": "#C8102E",
+        "display_name": "Mozz Pizza",
+        "logo_url": "https://yhzjgyrkyjabvhblqxzu.supabase.co/storage/v1/object/public/web-assets/6f1c2a40-9b7e-4c3a-9a1e-2b6d4e8f0a11/logo.png",
+        "hero_url": "https://yhzjgyrkyjabvhblqxzu.supabase.co/storage/v1/object/public/web-assets/6f1c2a40-9b7e-4c3a-9a1e-2b6d4e8f0a11/hero-leeds.jpg",
+        "header_style": "cinematic",
+        "logo_shape": "square",
+        "show_open_status": true,
+        "show_powered_by": true
+      },
+      "online_enabled": true,
+      "online_delivery_enabled": true,
+      "qr_enabled": true,
+      "lat": 53.7966,
+      "lng": -1.5406,
+      "sort_order": 0
+    },
+    {
+      "id": "a1000000-0000-4000-8000-000000000002",
+      "ops_location_id": "b2000000-0000-4000-8000-000000000002",
+      "name": "Mozz Pizza Huddersfield",
+      "slug": "mozz-huddersfield",
+      "address": "4 Byram Street, Huddersfield HD1 1DA",
+      "phone": "+44 1484 123 456",
+      "timezone": "Europe/London",
+      "currency": "GBP",
+      "opening_hours": {
+        "weekly": {
+          "mon": [],
+          "tue": [{ "open": "16:00", "close": "22:00" }],
+          "wed": [{ "open": "16:00", "close": "22:00" }],
+          "thu": [{ "open": "16:00", "close": "22:00" }],
+          "fri": [{ "open": "12:00", "close": "23:00" }],
+          "sat": [{ "open": "12:00", "close": "23:00" }],
+          "sun": [{ "open": "12:00", "close": "21:00" }]
+        },
+        "closedDates": []
+      },
+      "online_branding": {
+        "brand_color": "#C8102E",
+        "display_name": "Mozz Pizza Huddersfield",
+        "logo_url": "https://yhzjgyrkyjabvhblqxzu.supabase.co/storage/v1/object/public/web-assets/6f1c2a40-9b7e-4c3a-9a1e-2b6d4e8f0a11/logo.png",
+        "hero_url": null,
+        "header_style": "cinematic",
+        "logo_shape": "square",
+        "show_open_status": true,
+        "show_powered_by": true
+      },
+      "online_enabled": true,
+      "online_delivery_enabled": false,
+      "qr_enabled": false,
+      "lat": 53.6458,
+      "lng": -1.785,
+      "sort_order": 1
+    }
+  ],
+  "generated_at": "2026-10-31T09:30:00.000Z"
+}

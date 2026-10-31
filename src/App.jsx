@@ -43,6 +43,8 @@ import ReaderDemoSurface from './surfaces/ReaderDemoSurface';
 // safe there; operational surfaces (POS/kiosk/KDS/…) stay static so a mid-shift till never
 // has to fetch a chunk after a deploy.
 const CustomerBoot = lazy(() => import('./surfaces/CustomerBoot'));
+// v5.12.0: the venue website (website builder), its own lazy chunk, never in the POS bundle.
+const WebsiteSurface = lazy(() => import('./surfaces/website/WebsiteSurface.jsx'));
 // v5.5.890: What's New modal (carries the 1MB changelog array) loads only when opened.
 const WhatsNewModal = lazy(() => import('./components/WhatsNewModal'));
 import GroupOrderSurface from './surfaces/GroupOrderSurface';
@@ -209,6 +211,16 @@ export default function App() {
   if (signMatch) return <OnboardingSignSurface token={signMatch[1]} />;
   if (!urlMode) {
     const customerCtx = parseCustomerUrlForBoot();
+    // v5.12.0 website builder: <slug>.sites.serv-os.app, a venue's own domain, or ?site=<slug> on
+    // any host (local testing). The server (api/site.js) already painted the page on real website
+    // hosts; this replaces that HTML with the same markup. Checked before every other customer mode.
+    if (customerCtx?.mode === 'website') {
+      return (
+        <Suspense fallback={<div style={{ minHeight: '100vh' }} />}>
+          <WebsiteSurface host={customerCtx.host} siteSlug={customerCtx.siteSlug || null} />
+        </Suspense>
+      );
+    }
     // Multi-site group landing pages — /order/<groupSlug> (or ?group=) for online
     // ordering, /cater/<groupSlug> (or ?cater=) for catering. Resolves a COMPANY
     // (platform companies.slug), not a venue; the customer picks a venue and is
