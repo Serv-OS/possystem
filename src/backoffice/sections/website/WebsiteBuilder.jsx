@@ -15,6 +15,8 @@ import Branding from './Branding.jsx';
 import Blog from './Blog.jsx';
 import { buildBrief, siteUrl, freeHost } from './helpers.js';
 import { previewToken } from './adminClient.js';
+import PublishTermsModal from './PublishTermsModal.jsx';
+import { PUBLISH_TERMS_VERSION, publishTermsAccepted } from '../../../lib/website/publishTerms.js';
 
 // Agent D owns the designer view. A glob import resolves to nothing (no build error) when
 // the file is not in the tree yet, so this tab still builds and shows a plain placeholder.
@@ -72,11 +74,29 @@ export default function WebsiteBuilder({ venueName: fallbackName, onBack }) {
     if (win) win.location = url; else window.open(url, '_blank');
   }, [ws.site?.slug, toast]);
 
-  const publish = useCallback(async (note) => {
-    const { error } = await ws.publish(note || 'Published from Back Office');
+  // 5.12.1: the publishing terms gate. The first publish (and the first after the terms change)
+  // shows the full statement; Accept and publish sends the version with the publish call and
+  // the server records who accepted and when. Every caller still gets a plain true / false.
+  const [terms, setTerms] = useState(null); // { note, resolve } while the statement is open
+  const [termsBusy, setTermsBusy] = useState(false);
+  const runPublish = useCallback(async (note, acceptTerms) => {
+    const { error } = await ws.publish(note || 'Published from Back Office', acceptTerms);
     if (error) toast(error.message || 'Publish failed', 'error'); else toast('Your site is live.');
     return !error;
   }, [ws, toast]);
+  const publish = useCallback((note) => new Promise((resolve) => {
+    if (publishTermsAccepted(ws.site?.settings)) { runPublish(note, null).then(resolve); return; }
+    setTerms({ note, resolve });
+  }), [ws.site?.settings, runPublish]);
+  const acceptTerms = useCallback(async () => {
+    if (!terms) return;
+    setTermsBusy(true);
+    const ok = await runPublish(terms.note, PUBLISH_TERMS_VERSION);
+    setTermsBusy(false);
+    setTerms(null);
+    terms.resolve(ok);
+  }, [terms, runPublish]);
+  const cancelTerms = useCallback(() => { if (!terms) return; terms.resolve(false); setTerms(null); }, [terms]);
 
   const viewLive = useCallback(() => {
     const url = siteUrl(ws.site);
@@ -149,6 +169,8 @@ export default function WebsiteBuilder({ venueName: fallbackName, onBack }) {
       {view === 'blog' && (
         <Blog ws={ws} toast={toast} onWriteForMe={(postId) => openDesigner({ postId, mode: 'post' })} />
       )}
+
+      {terms && <PublishTermsModal busy={termsBusy} onAccept={acceptTerms} onCancel={cancelTerms} />}
     </div>
   );
 }

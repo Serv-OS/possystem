@@ -39,7 +39,7 @@ import { websiteCaller, resolveCompany, platformAdmin, PLATFORM_URL, json, cors,
 import {
   LIMITS, isPlainObject, isUuid, slugify, siteSlugProblem, pageSlugProblem,
   validateSitePatch, validatePagePatch, validatePostPatch, validateAiPatch, signPreviewToken, freeHostFor,
-  touchesCustomCode, mayChangeCustomCode,
+  touchesCustomCode, mayChangeCustomCode, PUBLISH_TERMS_VERSION, publishTermsAccepted, publishTermsRecord,
 } from '../_shared/websiteRules.js';
 import { buildSnapshot, publicLocation } from '../_shared/websiteSnapshot.js';
 
@@ -175,7 +175,7 @@ Deno.serve(async (req: Request) => {
   const action = String(body.action ?? '').trim();
   if (!action) return bad('action is needed.');
 
-  const picked = resolveCompany(caller, body.company_id);
+  const picked = await resolveCompany(caller, body);
   if ('refusal' in picked) return picked.refusal;
   const companyId = picked.companyId;
 
@@ -223,6 +223,9 @@ Deno.serve(async (req: Request) => {
         // Custom code is an OWNER only switch (never the designer, never a manager's login): the head
         // HTML runs on every visitor's page, so only the business owner may turn it on or change it.
         if (touchesCustomCode(clean.settings) && !mayChangeCustomCode(caller)) return json({ error: 'Only the owner can change custom code.' }, 403);
+        // The publishing terms record is written by the publish action only (5.12.1). The screens
+        // send their whole settings copy back, so the key is dropped here, never trusted.
+        delete (clean.settings as Row).publish_terms;
         row.settings = mergeObj(site.settings, clean.settings);
       }
       if ('slug' in clean) row.slug = clean.slug;
@@ -350,6 +353,15 @@ Deno.serve(async (req: Request) => {
     // ── publish / unpublish ────────────────────────────────────────────────────────────
     if (action === 'publish') {
       const note = typeof body.note === 'string' ? body.note.trim().slice(0, 500) : '';
+      // 5.12.1: the publishing terms gate. The first publish (and the first after the terms
+      // change) must carry accept_terms = the current version; acceptance is recorded on the site.
+      if (!publishTermsAccepted(settings)) {
+        if (body.accept_terms !== PUBLISH_TERMS_VERSION) {
+          return json({ error: 'Read and accept the publishing terms before you publish.', terms_required: PUBLISH_TERMS_VERSION }, 428);
+        }
+        const nextSettings = { ...settings, publish_terms: publishTermsRecord({ userId: caller.userId, role: caller.role }) };
+        try { site = await updateSite(siteId, { settings: nextSettings }); } catch (e) { return failed('record the publishing terms', e); }
+      }
       const r = await publishNow(site, note, caller.userId);
       if ('refusal' in r) return r.refusal;
       return json({ ok: true, ...r.result, free_host: freeHostFor(site.slug as string) });
