@@ -12,7 +12,7 @@
 // matters for a ServOS admin signed in across several. Every helper resolves { ok, data } or
 // { ok:false, error } with the server's plain English reason; nothing here throws.
 
-import { supabase } from './supabase';
+import { supabase, getLocationId } from './supabase';
 import { reportSave } from './saveHealth';
 
 // supabase-js turns a non-2xx invoke into a FunctionsHttpError whose message is a generic
@@ -40,7 +40,11 @@ async function call(fn, entity, body, { companyId = null } = {}) {
     reportSave(entity, error);
     return { ok: false, error };
   }
-  const payload = companyId ? { ...body, company_id: companyId } : body;
+  // 5.12.1: say which venue the Back Office is open on, so a login that manages several
+  // companies (a group owner) lands on that venue's company instead of "Say which one".
+  let locationId = null;
+  try { locationId = await getLocationId(); } catch { locationId = null; }
+  const payload = { ...body, ...(locationId ? { location_id: locationId } : {}), ...(companyId ? { company_id: companyId } : {}) };
   let res;
   try {
     res = await supabase.functions.invoke(fn, { body: payload });
@@ -77,7 +81,8 @@ export const savePost = (postId, patch, opts) => admin('website post', { action:
 export const deletePost = (postId, opts) => admin('website post', { action: 'delete_post', post_id: postId }, opts);
 
 /** Snapshot built on the server, kept as a version, site goes live. Resolves { version_id, published_at, site }. */
-export const publishSite = (note = '', opts) => admin('website publish', { action: 'publish', note }, opts);
+/** acceptTerms: the PUBLISH_TERMS_VERSION the owner just accepted (first publish, or after the terms change). */
+export const publishSite = (note = '', opts, acceptTerms = null) => admin('website publish', acceptTerms ? { action: 'publish', note, accept_terms: acceptTerms } : { action: 'publish', note }, opts);
 export const unpublishSite = (opts) => admin('website publish', { action: 'unpublish' }, opts);
 export const restoreVersion = (versionId, opts) => admin('website publish', { action: 'restore_version', version_id: versionId }, opts);
 

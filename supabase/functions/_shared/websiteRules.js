@@ -318,6 +318,7 @@ export function settingsProblems(settings) {
   if (settings.order_mode !== undefined && settings.order_mode !== null && !['embed', 'link'].includes(settings.order_mode)) errors.push('Settings order_mode must be embed or link.');
   if (settings.channels !== undefined && !isPlainObject(settings.channels)) errors.push('Settings channels must be an object of switches.');
   if (settings.geo !== undefined && !isPlainObject(settings.geo)) errors.push('Settings geo must be an object.');
+  if (settings.publish_terms !== undefined && settings.publish_terms !== null && !isPlainObject(settings.publish_terms)) errors.push('Settings publish_terms must be an object.');
   if (settings.cuisine !== undefined) errors.push(strProblem('Settings cuisine', settings.cuisine, 120));
   if (settings.price_range !== undefined) errors.push(strProblem('Settings price_range', settings.price_range, 10));
   return errors.filter(Boolean);
@@ -459,6 +460,55 @@ export function validateAiPatch(patch, { schemas = null, allowCustomCode = false
 }
 
 // ── Domains (contract section 3) ──────────────────────────────────────────────────────────
+
+// ── Which company (pure) ──────────────────────────────────────────────────────────────────
+// 1 Nov 2026 (5.12.1): a login that manages several companies (Peter, a group owner) hit
+// "Say which one (company_id)" on the first open, because the Back Office never said which
+// venue it was open on. The client now sends location_id (the Ops venue it shows) and the
+// server maps it to that venue's company. The body's company_id still works as an explicit pick.
+/**
+ * pickCompany(caller, { wanted, locationCompanies }) → { companyId } | { problem, status }.
+ *   caller: { companyIds, superAdmin, service }
+ *   wanted: body.company_id (an explicit pick), locationCompanies: the companies the body's
+ *   location_id maps to (0, 1 or more; [] when no location_id was sent).
+ */
+export function pickCompany(caller, { wanted = '', locationCompanies = [] } = {}) {
+  const ids = Array.isArray(caller?.companyIds) ? caller.companyIds.filter(Boolean) : [];
+  const trusted = Boolean(caller?.service || caller?.superAdmin);
+  const want = typeof wanted === 'string' && wanted.trim() ? wanted.trim() : '';
+  const fromLoc = [...new Set((Array.isArray(locationCompanies) ? locationCompanies : []).filter(Boolean))];
+  if (want) {
+    if (trusted || ids.includes(want)) return { companyId: want };
+    return { problem: 'This login does not manage that company.', status: 403 };
+  }
+  if (fromLoc.length === 1 && (trusted || ids.includes(fromLoc[0]))) return { companyId: fromLoc[0] };
+  if (trusted) {
+    if (ids.length === 1) return { companyId: ids[0] };
+    return { problem: 'company_id is needed for this login.', status: 400 };
+  }
+  if (ids.length === 1) return { companyId: ids[0] };
+  if (fromLoc.length === 1) return { problem: 'This login does not manage the company of the venue it is open on.', status: 403 };
+  return { problem: 'This login manages more than one company. Say which one (company_id).', status: 400, companies: ids };
+}
+
+// ── Publishing terms (5.12.1) ─────────────────────────────────────────────────────────────
+// Before a site goes live the owner accepts the publishing terms (accessibility and disability
+// standards, content, law, intellectual property, domains, liability). The publish action
+// refuses (428) until the body carries accept_terms equal to the current version or the site
+// already recorded that version. The record lives in settings.publish_terms and is written by
+// the publish action only: save_site strips the key so a browser copy can never change it.
+export const PUBLISH_TERMS_VERSION = '2026-10-31';
+
+/** True when the site's settings record acceptance of the CURRENT terms version. */
+export function publishTermsAccepted(settings, version = PUBLISH_TERMS_VERSION) {
+  const rec = isPlainObject(settings) && isPlainObject(settings.publish_terms) ? settings.publish_terms : null;
+  return Boolean(rec && rec.version === version && typeof rec.accepted_at === 'string' && rec.accepted_at);
+}
+
+/** The record the publish action stores. */
+export function publishTermsRecord({ userId = null, role = null, now = new Date() } = {}, version = PUBLISH_TERMS_VERSION) {
+  return { version, accepted_at: new Date(now).toISOString(), accepted_by: userId, role };
+}
 
 export const WEBSITE_CNAME_TARGET = 'sites.serv-os.app';
 export const WEBSITE_APEX_A = '76.76.21.21';

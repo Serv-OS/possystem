@@ -138,8 +138,8 @@ export function useWebsite() {
     return res;
   }, []);
 
-  const publish = useCallback(async (note) => {
-    const res = await admin.publishSite(note);
+  const publish = useCallback(async (note, acceptTerms = null) => {
+    const res = await admin.publishSite(note, undefined, acceptTerms);
     if (!res.error) await reload();
     return res;
   }, [reload]);

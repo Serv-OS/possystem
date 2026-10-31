@@ -72,8 +72,12 @@ test('fence order: second step, bearer, real user, venues read server side, comp
     assert.ok(at > last, `fence step out of order or missing: ${step}`);
     last = at;
   }
-  // The body's company_id can only choose among the caller's companies.
-  assert.ok(/caller\.companyIds\.includes\(wanted\)/.test(auth));
+  // The body's company_id can only choose among the caller's companies, and the venue the Back
+  // Office is open on (body.location_id) picks that venue's company (5.12.1, pure rule pickCompany).
+  const rules = read('supabase/functions/_shared/websiteRules.js');
+  assert.ok(auth.includes("import { pickCompany } from './websiteRules.js'") && auth.includes('pickCompany(caller'));
+  assert.ok(auth.includes("body?.location_id") && auth.includes('companiesForOpsLocations([locationId])'));
+  assert.ok(/ids\.includes\(want\)/.test(rules) && /ids\.includes\(fromLoc\[0\]\)/.test(rules));
   for (const fn of [admin, domainFn]) {
     assert.ok(fn.includes('websiteCaller(req)') && fn.includes('resolveCompany('), 'both functions use the shared fence');
     assert.ok(!/body\.company_id\)\s*;?\s*const site/.test(fn));

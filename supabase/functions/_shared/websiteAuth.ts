@@ -20,6 +20,7 @@
 
 import { createClient, SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { secondStepRefusal } from './second-step.ts';
+import { pickCompany } from './websiteRules.js';
 
 export const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -105,23 +106,19 @@ export async function websiteCaller(req: Request): Promise<{ caller: Caller } | 
 }
 
 /**
- * The company this request works on. The body's company_id may only pick among the caller's
- * companies; a super admin or the service role must name one (they reach every company).
+ * The company this request works on. The body may carry location_id (the Ops venue the Back
+ * Office is open on): that venue's company is used when the caller manages it. The body's
+ * company_id is an explicit pick among the caller's companies; a super admin or the service role
+ * must name one of the two (they reach every company). Pure rule: websiteRules.js pickCompany.
  */
-export function resolveCompany(caller: Caller, bodyCompanyId: unknown): { companyId: string } | { refusal: Response } {
-  const wanted = typeof bodyCompanyId === 'string' && bodyCompanyId.trim() ? bodyCompanyId.trim() : '';
-  if (caller.service || caller.superAdmin) {
-    if (wanted) return { companyId: wanted };
-    if (caller.companyIds.length === 1) return { companyId: caller.companyIds[0] };
-    return { refusal: json({ error: 'company_id is needed for this login.' }, 400) };
-  }
-  if (wanted) {
-    return caller.companyIds.includes(wanted)
-      ? { companyId: wanted }
-      : { refusal: json({ error: 'This login does not manage that company.' }, 403) };
-  }
-  if (caller.companyIds.length === 1) return { companyId: caller.companyIds[0] };
-  return { refusal: json({ error: 'This login manages more than one company. Say which one (company_id).', companies: caller.companyIds }, 400) };
+export async function resolveCompany(caller: Caller, body: Record<string, unknown>): Promise<{ companyId: string } | { refusal: Response }> {
+  const locationId = typeof body?.location_id === 'string' && body.location_id.trim() ? body.location_id.trim() : '';
+  const locationCompanies = locationId ? await companiesForOpsLocations([locationId]) : [];
+  const picked = pickCompany(caller, { wanted: body?.company_id, locationCompanies }) as { companyId?: string; problem?: string; status?: number; companies?: string[] };
+  if (picked.companyId) return { companyId: picked.companyId };
+  const out: Record<string, unknown> = { error: picked.problem };
+  if (picked.companies) out.companies = picked.companies;
+  return { refusal: json(out, picked.status || 400) };
 }
 
 /** fetch with a hard timeout. Resolves to null on any failure, never throws. */

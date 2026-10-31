@@ -22,7 +22,7 @@ function StatusCard({ site, pages, posts, onViewLive, onPreview }) {
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, fontSize: 13 }}>
         <div><div style={W.label}>Address</div><div style={{ ...W.mono, color: 'var(--t1)', wordBreak: 'break-all' }}>{siteUrl(site).replace(/^https:\/\//, '') || 'not set'}</div></div>
-        <div><div style={W.label}>Domain</div><div style={{ color: 'var(--t1)' }}>{site?.custom_domain ? `${site.custom_domain} · ${st.state || 'pending'}` : 'Free address'}</div></div>
+        <div><div style={W.label}>Domain</div><div style={{ color: 'var(--t1)' }}>{site?.custom_domain ? `${site.custom_domain} · ${st.state || 'pending'}` : 'Free address, no domain needed'}</div></div>
         <div><div style={W.label}>SSL</div><div style={{ color: 'var(--t1)' }}>{site?.custom_domain ? (st.ssl === 'active' ? 'Active' : st.ssl || 'none') : 'Active (free address)'}</div></div>
         <div><div style={W.label}>Published</div><div style={{ color: 'var(--t1)' }}>{formatWhen(site?.published_at)}{drafts.count ? ` · ${drafts.count} unpublished change${drafts.count === 1 ? '' : 's'}` : ''}</div></div>
       </div>

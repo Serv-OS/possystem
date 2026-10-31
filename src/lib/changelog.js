@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.12.1',
+    date: '31 Oct 2026',
+    items: [
+      'Website builder: a login that manages more than one company no longer sees "Say which one (company_id)" on the Website builder tab. The Back Office now says which venue it is open on and the site for that venue\'s company opens.',
+      'Website builder: publishing terms. The first Publish (and the first after the terms change) shows the full Website Builder publishing terms: no guarantee that an AI built site meets any accessibility or disability standard (WCAG, Equality Act 2010, ADA and others), the owner is responsible for content, law, intellectual property and domains, limitation of liability and indemnity. The owner ticks and accepts; the server records the version, time and user on the site and refuses to publish without it.',
+      'Website builder: the Overview and Publish card now say plainly that Preview shows the draft and Publish goes live on the free address (<slug>.sites.serv-os.app) with no domain needed; a custom domain can be added any time.',
+    ],
+  },
+  {
     v: '5.12.0',
     date: '31 Oct 2026',
     items: [

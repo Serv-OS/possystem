@@ -121,7 +121,7 @@ Deno.serve(async (req: Request) => {
   if (!isPlainObject(body)) return bad('The request body must be an object.');
   const action = String(body.action ?? '').trim();
 
-  const picked = resolveCompany(who.caller, body.company_id);
+  const picked = await resolveCompany(who.caller, body);
   if ('refusal' in picked) return picked.refusal;
   const site = await loadSite(picked.companyId);
   if (!site) return json({ error: 'Open the website builder once before adding a domain.' }, 404);

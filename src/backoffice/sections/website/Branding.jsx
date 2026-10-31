@@ -234,7 +234,7 @@ function PublishCard({ ws, toast, onPublish, onViewLive, onPreview }) {
         <span style={W.pill(live ? 'good' : site?.status === 'offline' ? 'bad' : 'warn')}>{live ? 'Live' : site?.status === 'offline' ? 'Offline' : 'Draft'}</span>
       </div>
       <div style={{ fontSize: 13, color: 'var(--t2)', lineHeight: 1.6 }}>
-        {live ? <>Live at <a href={siteUrl(site)} target="_blank" rel="noreferrer" style={{ color: 'var(--acc)' }}>{siteUrl(site).replace(/^https:\/\//, '')}</a>, published {formatWhen(site?.published_at)}.</> : site?.status === 'offline' ? 'The site is offline. Visitors see a plain "no site here" page and Google is told not to index it.' : 'Not published yet. Publish makes the site live on the free address.'}
+        {live ? <>Live at <a href={siteUrl(site)} target="_blank" rel="noreferrer" style={{ color: 'var(--acc)' }}>{siteUrl(site).replace(/^https:\/\//, '')}</a>, published {formatWhen(site?.published_at)}.</> : site?.status === 'offline' ? 'The site is offline. Visitors see a plain "no site here" page and Google is told not to index it.' : <>Not published yet. Preview shows the draft now. Publish makes the site live on your free address <span style={W.mono}>{siteUrl(site).replace(/^https:\/\//, '')}</span>, no domain needed. Add your own domain any time below.</>}
         {drafts.count > 0 && <div style={{ marginTop: 4 }}><b>{drafts.count}</b> unpublished change{drafts.count === 1 ? '' : 's'} ({drafts.pages.length} page{drafts.pages.length === 1 ? '' : 's'}, {drafts.posts.length} post{drafts.posts.length === 1 ? '' : 's'}{drafts.site ? ', site settings' : ''}).</div>}
       </div>
       <div style={{ ...W.row, marginTop: 12 }}>
