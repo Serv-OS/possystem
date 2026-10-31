@@ -229,24 +229,71 @@ export async function loadSite({ platform, siteId, fetchImpl }) {
 }
 
 // ── Claude ─────────────────────────────────────────────────────────────────────────────────────────
-export async function callClaude({ apiKey, model, system, messages, tool, fetchImpl, maxTokens = MAX_TOKENS }) {
+const URL_RE = /https?:\/\/[^\s<>"')\]]+/gi;
+
+/** The http(s) links in a message, deduplicated, at most `max`. */
+export function linksIn(text, max = 6) {
+  const out = [];
+  for (const m of String(text || '').matchAll(URL_RE)) {
+    const u = m[0].replace(/[.,;:!?]+$/, '');
+    if (!out.includes(u)) out.push(u);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+/**
+ * 5.12.2: when the owner links a site ("make it like this one"), the designer may READ it first with
+ * Anthropic's server side web fetch tool (web_fetch_20260209, no beta header, runs on their side).
+ * It can only fetch links that are already in the conversation, so nothing beyond what the owner
+ * typed is reachable. Capped reads and content so one request stays bounded.
+ */
+export function webFetchTool({ maxUses = 8 } = {}) {
+  return { type: 'web_fetch_20260209', name: 'web_fetch', max_uses: maxUses, max_content_tokens: 40000 };
+}
+
+export const MAX_CONTINUATIONS = 4;
+
+/** The owner's recent words as one string, so a link from an earlier turn still opens the reader. */
+export function historyText(recent = []) {
+  return (recent || []).filter((m) => m?.role === 'user' && typeof m.content === 'string').slice(-4).map((m) => m.content).join('\n');
+}
+
+export async function callClaude({ apiKey, model, system, messages, tool, fetchImpl, maxTokens = MAX_TOKENS, allowFetch = false }) {
   const f = fetchImpl || fetch;
-  const res = await f(ANTHROPIC_URL, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({
-      model, max_tokens: maxTokens, system, messages,
-      tools: [tool],
-      tool_choice: { type: 'tool', name: TOOL_NAME },
-    }),
-  });
+  const tools = allowFetch ? [tool, webFetchTool()] : [tool];
+  let turn = [...messages];
   let body = null;
-  try { body = await res.json(); } catch { body = null; }
-  if (!res.ok) return { ok: false, status: res.status, error: body?.error?.message || 'The designer could not be reached.' };
+  for (let i = 0; i <= MAX_CONTINUATIONS; i++) {
+    const res = await f(ANTHROPIC_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({
+        model, max_tokens: maxTokens, system, messages: turn,
+        tools,
+        // Claude Opus 5.5 (and Sonnet 5.5, Fable 5.1) refuse a forced tool choice with 400
+        // "tool_choice: type "tool" and "any" are not supported for this model". auto + the system
+        // prompt's "always answer through apply_site_patch" does the same job; a text only answer
+        // is still handled by the caller (it becomes the reply, nothing changes).
+        tool_choice: { type: 'auto', disable_parallel_tool_use: true },
+      }),
+    });
+    body = null;
+    try { body = await res.json(); } catch { body = null; }
+    if (!res.ok) return { ok: false, status: res.status, error: body?.error?.message || 'The designer could not be reached.' };
+    // Server side tools (web fetch) run in a loop on Anthropic's side; after its iteration limit the
+    // answer stops with pause_turn. Resend the turn with the assistant content appended and it resumes.
+    if (body?.stop_reason === 'pause_turn' && Array.isArray(body.content) && i < MAX_CONTINUATIONS) {
+      turn = [...turn, { role: 'assistant', content: body.content }];
+      continue;
+    }
+    break;
+  }
   const content = Array.isArray(body?.content) ? body.content : [];
   const toolUse = content.find((c) => c?.type === 'tool_use' && c.name === TOOL_NAME);
   const text = content.filter((c) => c?.type === 'text').map((c) => c.text).join('\n').trim();
-  return { ok: true, patch: toolUse?.input || null, text, raw: body };
+  const fetched = content.filter((c) => c?.type === 'server_tool_use' && c.name === 'web_fetch').map((c) => c.input?.url).filter(Boolean);
+  return { ok: true, patch: toolUse?.input || null, text, fetched, raw: body };
 }
 
 function deepMerge(base, patch) {
@@ -418,7 +465,7 @@ export async function runDesigner({ body, user, reached = [], env = globalThis.p
   for (let attempt = 0; attempt < 2; attempt++) {
     let out;
     try {
-      out = await callClaude({ apiKey, model, system, messages, tool, fetchImpl });
+      out = await callClaude({ apiKey, model, system, messages, tool, fetchImpl, allowFetch: linksIn(message).length > 0 || linksIn(historyText(facts.recent_messages)).length > 0 });
     } catch (e) {
       return { status: 502, json: { error: e?.message || 'The designer could not be reached.' } };
     }

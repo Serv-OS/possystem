@@ -318,7 +318,7 @@ export default function Designer(props) {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(input); } }}
-              placeholder={pages.length ? 'Ask for a change…' : 'Describe your site, or press Build my site'}
+              placeholder={pages.length ? 'Ask for a change, or paste a site you like and say what to take from it' : 'Describe your site, paste a website you like, or press Build my site'}
               rows={2}
               style={{ ...W.textarea, minHeight: 52 }}
               disabled={busy}
