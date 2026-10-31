@@ -157,7 +157,7 @@ test('fallback validator: refuses unknown blocks, bad slugs, two heroes; accepts
 import fsForToolChoice from 'node:fs';
 test('the designer never forces the tool (Opus 5.5 answers 400 to type tool / any) and the prompt asks for it instead', () => {
   const src = fsForToolChoice.readFileSync(new URL('../../../api/website-designer.js', import.meta.url), 'utf8');
-  assert.ok(src.includes("tool_choice: { type: 'auto', disable_parallel_tool_use: true }"));
+  assert.ok(src.includes("tool_choice: { type: 'auto' }") && !src.includes('disable_parallel_tool_use'));
   assert.ok(!/tool_choice:\s*\{\s*type:\s*'(tool|any)'/.test(src));
   const prompt = fsForToolChoice.readFileSync(new URL('../../../api/_lib/website/designerPrompt.js', import.meta.url), 'utf8');
   assert.ok(prompt.includes('ALWAYS finish by calling apply_site_patch') && prompt.includes('REFERENCE SITES') && prompt.includes('read it\nFIRST with web_fetch'));
@@ -188,7 +188,7 @@ test('callClaude offers web_fetch only with allowFetch, never forces the tool, a
   assert.equal(calls.length, 2, 'pause_turn was resumed once');
   assert.deepEqual(calls[0].tools.map((t) => t.name), ['apply_site_patch', 'web_fetch']);
   assert.equal(calls[0].tools[1].type, 'web_fetch_20260209');
-  assert.deepEqual(calls[0].tool_choice, { type: 'auto', disable_parallel_tool_use: true });
+  assert.deepEqual(calls[0].tool_choice, { type: 'auto' });
   assert.equal(calls[1].messages.length, 2, 'the assistant content was appended, no extra user turn');
   assert.equal(calls[1].messages[1].role, 'assistant');
   assert.deepEqual(out.patch, { reply: 'Built in that spirit.' });

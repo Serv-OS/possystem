@@ -275,7 +275,9 @@ export async function callClaude({ apiKey, model, system, messages, tool, fetchI
         // "tool_choice: type "tool" and "any" are not supported for this model". auto + the system
         // prompt's "always answer through apply_site_patch" does the same job; a text only answer
         // is still handled by the caller (it becomes the reply, nothing changes).
-        tool_choice: { type: 'auto', disable_parallel_tool_use: true },
+        // 5.12.3: no one-call-at-a-time flag here. web_fetch_20260209 filters pages with code on
+        // Anthropic's side (programmatic tool calling) and the API refuses that flag alongside it.
+        tool_choice: { type: 'auto' },
       }),
     });
     body = null;
