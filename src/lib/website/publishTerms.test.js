@@ -45,3 +45,23 @@ test('the publish action is gated on the server and save_site never writes the r
   const client = read('src/lib/websiteAdmin.js');
   assert.ok(client.includes('accept_terms: acceptTerms'));
 });
+
+// 5.12.4: Peter accepted the statement and the server still answered 428 "Read and accept the
+// publishing terms" because the screen's client wrapper forwarded the note alone. The accepted
+// version must travel through every hop: screen -> hook -> adminClient -> websiteAdmin -> body.
+test('the accepted terms version reaches the publish body through every client hop', () => {
+  const client = read('src/backoffice/sections/website/adminClient.js');
+  assert.match(client, /export const publishSite = \(note, opts, acceptTerms = null\) => run\('publishSite', note \|\| '', opts, acceptTerms\)/);
+  const hook = read('src/backoffice/sections/website/useWebsite.js');
+  assert.ok(hook.includes('admin.publishSite(note, undefined, acceptTerms)'));
+  const lib = read('src/lib/websiteAdmin.js');
+  assert.ok(lib.includes("{ action: 'publish', note, accept_terms: acceptTerms }"));
+  const builder = read('src/backoffice/sections/website/WebsiteBuilder.jsx');
+  assert.ok(builder.includes('runPublish(terms.note, PUBLISH_TERMS_VERSION)'));
+});
+
+test('a terms refusal is not a "changes are not saving" failure', () => {
+  const lib = read('src/lib/websiteAdmin.js');
+  assert.ok(lib.includes('e.terms_required = body.terms_required'));
+  assert.ok(lib.includes('reportSave(entity, failure?.terms_required ? null : failure)'));
+});
