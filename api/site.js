@@ -24,7 +24,9 @@ import { getShell, injectShell, bootScript } from './_lib/website/shell.js';
 import { resolveSite, loadDraftSnapshot } from './_lib/website/resolveSite.js';
 import { menuForPage } from './_lib/website/menuForPage.js';
 
-const CACHE_LIVE = 'public, s-maxage=60, stale-while-revalidate=600';
+// 5.12.20 (Peter published and saw the old page for minutes): a fresh copy every 15 s, a stale one
+// served for at most a minute more while the next is fetched. Was 60 s + 10 minutes stale.
+const CACHE_LIVE = 'public, s-maxage=15, stale-while-revalidate=60';
 const CACHE_NONE = 'no-store';
 
 let clients = null;

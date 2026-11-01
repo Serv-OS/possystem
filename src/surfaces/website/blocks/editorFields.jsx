@@ -16,6 +16,7 @@ import {
   CUSTOM_LINK, categoryIds, categoryOptions, classifyHref, insertMarkdown, isHexColor, linkOptions, menuOptions,
   normaliseHex, toggleCategory,
 } from './editorFields.js';
+import { sameCategory } from '../data/loadMenu.js';
 
 const PHOTO_MAX_EDGE = 1600;
 
@@ -155,7 +156,8 @@ export function MenuField({ name, value, onChange, readOnly, field, opts }) {
 /** categories: tick the categories to show; none ticked = all. Written as [{ id }] in menu order. */
 export function CategoriesField({ name, value, onChange, readOnly, field, opts }) {
   const options = categoryOptions(opts && opts.categories);
-  const ticked = categoryIds(value);
+  // 5.12.20: a saved id from another venue's copy of a category ticks this venue's row.
+  const ticked = categoryIds(value).map((id) => { const o = options.find((x) => sameCategory(x, id)); return o ? o.id : id; });
   const order = options.map((o) => o.id);
   // A saved id the menu no longer has still shows, so an untick can clear it.
   const extra = ticked.filter((id) => !order.includes(id)).map((id) => ({ id, label: `Category ${id}` }));
@@ -166,7 +168,7 @@ export function CategoriesField({ name, value, onChange, readOnly, field, opts }
       {rows.length === 0 && <div style={F.hint}>Your categories appear here once the venue menu has loaded.</div>}
       {rows.map((o) => (
         <label key={o.id} style={F.check}>
-          <input type="checkbox" checked={ticked.includes(o.id)} disabled={readOnly} onChange={() => onChange(toggleCategory(value, o.id, order))} />
+          <input type="checkbox" checked={ticked.includes(o.id)} disabled={readOnly} onChange={() => onChange(toggleCategory(ticked.map((id) => ({ id })), o.id, order))} />
           <span>{o.label}</span>
         </label>
       ))}

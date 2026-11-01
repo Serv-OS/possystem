@@ -6,7 +6,7 @@ import { useCallback, useRef, useState } from 'react';
 import { CN } from '../classNames.js';
 import { useSite } from '../../siteContext.js';
 import { multiVenue, menuLocation, menuVenues, menuOrderHref, onVenuePage } from '../../resolveHref.js';
-import { formatPrice, capCategories } from '../../data/loadMenu.js';
+import { formatPrice, capCategories, pickCategories } from '../../data/loadMenu.js';
 import { findUsPath } from '../../routes.js';
 import { A } from '../../Link.jsx';
 import { isActivationKey } from '../itemSheet.js';
@@ -115,7 +115,7 @@ export function LiveMenu({ id, title, categories, layout, show = {}, max_items, 
     return <Section width={width} type="LiveMenu" id={id} className={cls(CN.menu, layoutCn)}>{head}{switcher}<Empty>{menuLoading ? 'Loading the menu…' : 'The menu is being updated. Please check back soon.'}</Empty></Section>;
   }
   const only = Array.isArray(categories) ? categories.map((c) => c && c.id).filter(Boolean) : [];
-  const cats = only.length ? menu.categories.filter((c) => only.includes(c.id)) : menu.categories;
+  const cats = pickCategories(menu.categories, only);
   // 5.12.9: ask which venue first unless the visitor picked one (or this is the venue's own page).
   const orderHref = show.add_button ? menuOrderHref(ctx, loc) : '';
   const sections = capCategories(cats, show.hide_sold_out, max_items).map((c) => (
@@ -131,7 +131,7 @@ export function LiveMenu({ id, title, categories, layout, show = {}, max_items, 
       {show.store_finder ? <A className={cls(CN.btn, CN.btnSecondary)} href={findUsPath(ctx.snapshot)}>Find my local store</A> : null}
     </div>
   ) : null;
-  return <Section width={width} type="LiveMenu" id={id} className={cls(CN.menu, layoutCn)}>{head}{switcher}{sections.length ? sections : <Empty>Nothing on the menu right now.</Empty>}{under}{sheet}</Section>;
+  return <Section width={width} type="LiveMenu" id={id} className={cls(CN.menu, layoutCn)}>{head}{switcher}{sections.length ? sections : <Empty>{only.length ? 'None of the picked categories is on this menu.' : 'Nothing on the menu right now.'}</Empty>}{under}{sheet}</Section>;
 }
 
 export function Specials({ id, title, source, ids, button = null, width }) {

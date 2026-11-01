@@ -3,7 +3,7 @@
 // and never a throw when a read fails.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadMenu, shapeItem, groupMenu, formatPrice, capCategories, itemCategoryIds, visibleOnline } from './data/loadMenu.js';
+import { loadMenu, shapeItem, groupMenu, formatPrice, capCategories, itemCategoryIds, visibleOnline, soldAlone, sameCategory, pickCategories } from './data/loadMenu.js';
 
 // A tiny fake Supabase client: tables → rows, with the chain the loader uses. `fail` names a table
 // whose read answers with an error.
@@ -166,4 +166,32 @@ test('real Ops rows: cat and cats place the item, an item in two sections appear
   assert.equal(visibleOnline({ visibility: { online: true } }), true);
   assert.equal(visibleOnline({}), true, 'no visibility column means shown, as the storefront does');
   assert.equal(shapeItem({ id: 'x', cat: 'c1', cats: ['c1', 'c2'], pricing: { base: 1 } }, { channel: 'collection', menuId: null, currency: 'GBP' }).category_id, 'c1');
+});
+
+
+// ── 5.12.20 (Peter, Coffee Boy): options are not products; a pick follows the category across venues ──
+test('soldAlone: a sub item is listed only when its switch is on; anything else unless switched off', () => {
+  assert.equal(soldAlone({ type: 'subitem', sold_alone: false }), false, 'Biscoff Syrup');
+  assert.equal(soldAlone({ type: 'subitem' }), false, 'a sub item with no switch is an option only');
+  assert.equal(soldAlone({ type: 'subitem', sold_alone: true }), true);
+  assert.equal(soldAlone({ type: 'variants', sold_alone: true }), true, 'Cappuccino');
+  assert.equal(soldAlone({ type: 'simple' }), true);
+  assert.equal(soldAlone({ type: 'simple', sold_alone: false }), false);
+  assert.equal(soldAlone(null), false);
+});
+
+test('sameCategory and pickCategories: id, master id, or the id without the venue suffix', () => {
+  const leeds = { id: 'cat-1790020616524_5c26956b', master_id: 'cat-1790020616524', label: 'Hot/Iced Coffee' };
+  const preston = { id: 'cat-1790020616524_74d78e2a', master_id: 'cat-1790020616524', label: 'Hot/Iced Coffee' };
+  const other = { id: 'cat-1789160729377_5c26956b', master_id: 'cat-1789160729377', label: 'Food' };
+  const central = { id: 'msmc-ff647bc14823_6ac39cc7', label: 'Coffee' };
+  assert.equal(sameCategory(leeds, 'cat-1790020616524_74d78e2a'), true, 'the pick came from another venue');
+  assert.equal(sameCategory(leeds, 'cat-1790020616524'), true, 'the master id itself');
+  assert.equal(sameCategory({ id: 'cat-1790020616524_42820abf' }, { id: 'cat-1790020616524_8e52e0fa' }), true, 'no master id: the suffix comes off');
+  assert.equal(sameCategory(leeds, other), false);
+  assert.equal(sameCategory(central, 'msmc-ff647bc14823'), true);
+  assert.equal(sameCategory(central, 'msmc-0d874a967ea5_6ac39cc7'), false);
+  assert.deepEqual(pickCategories([leeds, other], [{ id: preston.id }]).map((c) => c.id), [leeds.id]);
+  assert.deepEqual(pickCategories([leeds, other], []).length, 2, 'no pick = everything');
+  assert.deepEqual(pickCategories([leeds, other], ['nope']), []);
 });

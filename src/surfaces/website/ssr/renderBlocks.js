@@ -13,6 +13,7 @@ import { CN } from '../blocks/classNames.js';
 import { layoutBlocks, normaliseProps, walkBlocks } from '../blocks/schema.js';
 import { rowPlan, styleText } from '../blocks/rowPlan.js';
 import { heroSlides, slideSeconds } from '../blocks/heroSlides.js';
+import { pickCategories } from '../data/loadMenu.js';
 import { siteVars, cssText, fontLinks, themeColor, isDarkHex } from '../theme.js';
 import { SITE_CSS } from '../siteStyles.js';
 import { hoursRows, openStatus } from '../hours.js';
@@ -162,9 +163,8 @@ const R = {
     if (!menu || !Array.isArray(menu.categories) || !menu.categories.length) {
       return section(b, cls(CN.menu, layoutCn), heading(p.title) + switcher + empty('The menu is being updated. Please check back soon.'));
     }
-    let cats = menu.categories;
     const only = Array.isArray(p.categories) ? p.categories.map((c) => c && c.id).filter(Boolean) : [];
-    if (only.length) cats = cats.filter((c) => only.includes(c.id));
+    const cats = pickCategories(menu.categories, only);
     let left = Number(p.max_items) > 0 ? Number(p.max_items) : Infinity;
     // 5.12.9: ask which venue first unless the visitor picked one (or this is the venue's own page).
     const orderHref = show.add_button ? menuOrderHref(ctx, loc) : '';

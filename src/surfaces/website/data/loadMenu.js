@@ -60,6 +60,43 @@ export function itemCategoryIds(row) {
   return out;
 }
 
+/** True for a product sold on its own: a sub item only when its switch is on (the Back Office rule). */
+export function soldAlone(row) {
+  if (!row) return false;
+  return row.type === 'subitem' ? row.sold_alone === true : row.sold_alone !== false;
+}
+
+/** The shared id behind a venue's copy of a category: master_id, else the id without its venue suffix. */
+export function categoryBase(cat) {
+  if (!cat) return '';
+  if (typeof cat === 'string') return cat.replace(/_[0-9a-f]{8}$/i, '');
+  if (cat.master_id) return String(cat.master_id);
+  return String(cat.id || '').replace(/_[0-9a-f]{8}$/i, '');
+}
+
+/**
+ * 5.12.20 (Peter picked a category and the menu went empty): the picker lists the DEFAULT venue's
+ * categories, but the menu shown is the visitor's venue, whose copy of the same category has its own
+ * id. A pick matches by id, by master id, or by the id with the venue suffix taken off.
+ */
+export function sameCategory(a, b) {
+  if (!a || !b) return false;
+  const ida = String(typeof a === 'string' ? a : a.id || '');
+  const idb = String(typeof b === 'string' ? b : b.id || '');
+  if (ida && ida === idb) return true;
+  const ba = categoryBase(a);
+  const bb = categoryBase(b);
+  return !!ba && ba === bb;
+}
+
+/** The categories a block's pick keeps, in menu order. `only` = the picked ids ([] = everything). */
+export function pickCategories(categories, only) {
+  const list = Array.isArray(categories) ? categories : [];
+  const want = (Array.isArray(only) ? only : []).map((x) => (x && typeof x === 'object' ? x.id : x)).filter(Boolean);
+  if (!want.length) return list;
+  return list.filter((c) => want.some((w) => sameCategory(c, w)));
+}
+
 /** False when the venue hid the item from online channels (visibility.online === false). */
 export function visibleOnline(row) {
   const v = row && row.visibility;
@@ -103,7 +140,10 @@ export function groupMenu(items, categories, { allowed, onlyCategoryIds, hideSol
     return cur;
   };
   const top = cats.filter((c) => !c.parent_id && (!allowed || allowed.has(c.id)));
-  const only = onlyCategoryIds && onlyCategoryIds.length ? new Set(onlyCategoryIds) : null;
+  // 5.12.20: a pick matches a venue's copy of the category too (sameCategory), never raw ids only.
+  const byId = new Map(cats.map((c) => [c.id, c]));
+  const onlyList = onlyCategoryIds && onlyCategoryIds.length ? onlyCategoryIds : null;
+  const only = onlyList ? { has: (id) => onlyList.some((w) => sameCategory(byId.get(id) || { id }, w)) } : null;
   const buckets = new Map(top.map((c) => [c.id, []]));
   let count = 0;
   for (const it of items || []) {
@@ -123,7 +163,7 @@ export function groupMenu(items, categories, { allowed, onlyCategoryIds, hideSol
   }
   return top
     .filter((c) => !only || only.has(c.id) || (buckets.get(c.id) || []).length)
-    .map((c) => ({ id: c.id, label: str(c.name || c.label || 'Menu'), items: buckets.get(c.id) || [] }))
+    .map((c) => ({ id: c.id, master_id: c.master_id ? String(c.master_id) : null, label: str(c.name || c.label || 'Menu'), items: buckets.get(c.id) || [] }))
     .filter((c) => c.items.length);
 }
 
@@ -175,8 +215,9 @@ export async function loadMenu(client, opsLocationId, options = {}) {
 
     const channel = PRICE_CHANNEL[options.priceMode] || 'collection';
     const currency = options.currency || 'GBP';
-    // Parents only (sizes hang off them), and never an item the venue hid from online.
-    const parents = items.filter((r) => r && !r.parent_id && visibleOnline(r));
+    // Parents only (sizes hang off them), never an item the venue hid from online, and never a sub
+    // item that is only an option (5.12.20, Peter: syrups, milks and extra shots listed as items).
+    const parents = items.filter((r) => r && !r.parent_id && visibleOnline(r) && soldAlone(r));
     const shaped = parents.map((row) => shapeItem(row, { channel, menuId, currency, kids: variantChildren(row, items), soldOutIds, stock }));
 
     // 5.12.7 (Peter, 1 Nov): an item on the 86 list, or out of stock, comes OFF the website. The
