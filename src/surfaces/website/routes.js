@@ -241,15 +241,29 @@ export function visibleNav(snapshot) {
   const pages = publishedPages(snapshot);
   const nav = Array.isArray(site.nav) ? site.nav : [];
   const out = [];
+  // 5.12.18 (Peter: "still no drop down menus on the header", after 5.12.12 made it a setting he
+  // never saw): every public venue as a child item, its own page when the site has one, else its
+  // /locations/<slug> route. The Find us page item carries them automatically when the site has
+  // more than one venue (dropdown: false on the item turns that off); a 'locations' item always.
+  const venueChildren = () => siteLocations(snapshot).map((l) => {
+    const pg = pages.find((p) => p.kind === 'location' && (p.location_id === l.id || slugOf(p) === l.online_slug));
+    return { label: String((pg && pg.title) || l.name || l.online_slug), href: pg ? pathForPage(pg, snapshot) : `/locations/${l.online_slug}` };
+  });
+  const autoDrop = (page, item) => {
+    if (page.kind !== 'findus' || (item && item.dropdown === false)) return null;
+    const kids = venueChildren();
+    return kids.length > 1 ? kids : null;
+  };
   // One flat item from a saved nav entry, or null when its page is missing or its channel is off.
-  const flat = (item) => {
+  const flat = (item, withDrop = false) => {
     if (!item || !item.label) return null;
     if (item.kind === 'page' || item.page_id) {
       const page = pages.find((p) => p.id === item.page_id || slugOf(p) === item.page_id);
       if (!page) return null;
       const ch = PAGE_KIND_CHANNEL[page.kind];
       if (ch && !channelOn(settings, ch)) return null;
-      return { label: String(item.label), href: pathForPage(page, snapshot) };
+      const kids = withDrop ? autoDrop(page, item) : null;
+      return kids ? { label: String(item.label), href: pathForPage(page, snapshot), children: kids } : { label: String(item.label), href: pathForPage(page, snapshot) };
     }
     if (item.href) return { label: String(item.label), href: String(item.href) };
     return null;
@@ -259,11 +273,7 @@ export function visibleNav(snapshot) {
     // 5.12.12 (Peter: "the main nav, you cannot add a drop down for which location"): a 'locations'
     // item opens every published venue page; a 'group' item opens the children the owner picked.
     if (item.kind === 'locations') {
-      // Every public venue: its own page when the site has one, else its /locations/<slug> route.
-      const children = siteLocations(snapshot).map((l) => {
-        const pg = pages.find((p) => p.kind === 'location' && (p.location_id === l.id || slugOf(p) === l.online_slug));
-        return { label: String((pg && pg.title) || l.name || l.online_slug), href: pg ? pathForPage(pg, snapshot) : `/locations/${l.online_slug}` };
-      });
+      const children = venueChildren();
       if (children.length) out.push({ label: String(item.label), href: findUsPath(snapshot), children });
       continue;
     }
@@ -272,7 +282,7 @@ export function visibleNav(snapshot) {
       if (children.length) out.push({ label: String(item.label), href: children[0].href, children });
       continue;
     }
-    const one = flat(item);
+    const one = flat(item, true);
     if (one) out.push(one);
   }
   if (!out.length) {
@@ -281,7 +291,8 @@ export function visibleNav(snapshot) {
       if (p.kind === 'location') continue;
       const ch = PAGE_KIND_CHANNEL[p.kind];
       if (ch && !channelOn(settings, ch)) continue;
-      out.push({ label: String(p.title || p.slug || 'Home'), href: pathForPage(p, snapshot) });
+      const kids = autoDrop(p, null);
+      out.push(kids ? { label: String(p.title || p.slug || 'Home'), href: pathForPage(p, snapshot), children: kids } : { label: String(p.title || p.slug || 'Home'), href: pathForPage(p, snapshot) });
     }
   }
   return out;

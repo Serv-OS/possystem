@@ -61,7 +61,10 @@ export function Row(props) {
     const slot = props[`col${i}`];
     const bg = plan.colBg[i - 1];
     let content = null;
-    if (typeof slot === 'function') { const Col = slot; content = <Col />; }
+    // 5.12.18 (Peter: "Space left and right does nothing"): in the editor Puck paints the dropped
+    // blocks inside <Col />, so they need the nested marker here too, or they render as page level
+    // blocks (no data-nested, no data-inset, 40px of block padding) and look nothing like the site.
+    if (typeof slot === 'function') { const Col = slot; content = <NestedContext.Provider value={true}><Col /></NestedContext.Provider>; }
     else content = <NestedBlocks items={slot} />;
     cols.push(
       <div key={i} className={CN.rowCol} data-col={i} data-bg={bg ? 'true' : 'false'} style={bg ? { '--w-col-bg': bg } : undefined}>{content}</div>,

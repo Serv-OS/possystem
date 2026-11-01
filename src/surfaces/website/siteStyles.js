@@ -96,6 +96,10 @@ export const SITE_CSS = `
 .${C.rowGrid}{display:grid;gap:var(--w-row-gap,24px);grid-template-columns:1fr;align-items:start}
 .${C.row}[data-align="center"] .${C.rowGrid}{align-items:center}
 @media (min-width:760px){.${C.rowGrid}{grid-template-columns:repeat(var(--w-row-cols,2),1fr)}}
+/* 5.12.18 find my nearest: the postcode fallback sits beside the button */
+.${C.nearestRow}{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
+.${C.nearestForm}{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.${C.nearestInput}{min-height:44px;padding:8px 14px;border-radius:var(--w-radius);border:1.5px solid var(--w-line);background:var(--w-card);color:var(--w-ink);font:inherit;width:200px;max-width:60vw}
 .${C.rowCol}{min-width:0}
 .${C.row}[data-colpad="small"] .${C.rowCol}{padding:12px}
 .${C.row}[data-colpad="normal"] .${C.rowCol}{padding:20px}

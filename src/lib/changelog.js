@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.12.18',
+    date: '1 Nov 2026',
+    items: [
+      'Website: the Find us page item in the header opens a dropdown of your venues by itself when you have more than one (no setting to find). Header and navigation still lets you build your own dropdown.',
+      'Website: Find my nearest has a postcode or town box when the browser will not share a location, so visitors on a desktop can still sort the shops by distance.',
+      'Website editor: blocks inside a Row column now paint in the editor exactly as on the site. "Space left and right" on Text, Heading and Button works in the editor (it already worked on the live site), and column blocks no longer carry page level spacing in the canvas.',
+    ],
+  },
+  {
     v: '5.12.17',
     date: '1 Nov 2026',
     items: [

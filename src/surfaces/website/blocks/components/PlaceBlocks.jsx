@@ -3,6 +3,7 @@
 // asks for the visitor's position ON TAP (never on load), sorts the cards by Haversine distance
 // and marks the nearest shop (ARCHITECTURE.md section 8).
 
+import { useState } from 'react';
 import { CN } from '../classNames.js';
 import { useSite } from '../../siteContext.js';
 import { A } from '../../Link.jsx';
@@ -60,7 +61,8 @@ const CTA = Object.freeze({
 });
 
 export function FindUs({ id, title, show_map, show_nearest, show_hours, show_order_buttons, show_book = true, location_id, cta = 'order', blockType = 'FindUs' }) {
-  const { ctx, here, requestNearest, nearestState } = useSite();
+  const { ctx, here, requestNearest, locateByText, nearestState } = useSite();
+  const [typed, setTyped] = useState('');
   const main = CTA[cta] || CTA.order;
   const base = location_id === 'all' ? ctx.locations : [pickLocation(ctx, location_id)].filter(Boolean);
   const head = title ? <h2 className={CN.h2}>{title}</h2> : null;
@@ -71,9 +73,20 @@ export function FindUs({ id, title, show_map, show_nearest, show_hours, show_ord
     <Section type={blockType} id={id} className={CN.findus}>
       {head}
       {show_nearest && base.length > 1 ? (
-        <button type="button" className={cls(CN.btn, CN.btnSecondary, CN.nearestBtn)} data-nearest onClick={requestNearest} disabled={nearestState === 'asking'}>
-          {nearestState === 'asking' ? 'Finding you…' : nearestState === 'denied' ? 'Location not shared. Try again' : here ? 'Nearest first' : 'Find my nearest'}
-        </button>
+        <div className={CN.nearestRow}>
+          <button type="button" className={cls(CN.btn, CN.btnSecondary, CN.nearestBtn)} data-nearest onClick={requestNearest} disabled={nearestState === 'asking' || nearestState === 'searching'}>
+            {nearestState === 'asking' ? 'Finding you…' : nearestState === 'denied' ? 'Location not shared. Try again' : here ? 'Nearest first' : 'Find my nearest'}
+          </button>
+          {/* 5.12.18: when the browser will not share a location (or it was never asked), a postcode
+              or town does the same job. Shown after a refusal, a miss, or once a location is known. */}
+          {nearestState === 'denied' || nearestState === 'notfound' || nearestState === 'searching' || here ? (
+            <form className={CN.nearestForm} onSubmit={(e) => { e.preventDefault(); locateByText(typed); }}>
+              <input className={CN.nearestInput} value={typed} onChange={(e) => setTyped(e.target.value)} placeholder="Postcode or town" aria-label="Postcode or town" autoComplete="postal-code" />
+              <button type="submit" className={cls(CN.btn, CN.btnSecondary)} disabled={nearestState === 'searching' || !typed.trim()}>{nearestState === 'searching' ? 'Looking…' : 'Find'}</button>
+              {nearestState === 'notfound' ? <span className={CN.muted}>Not found, try a postcode</span> : null}
+            </form>
+          ) : null}
+        </div>
       ) : null}
       <div className={CN.findusGrid}>
         {locs.map((loc) => {

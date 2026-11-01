@@ -235,8 +235,24 @@ export default function WebsiteSurface({ host, siteSlug = null }) {
       { timeout: 10000, maximumAge: 300000 },
     );
   }, []);
+  // 5.12.18 (Peter: "find location still does not work": his browser refused the location and the
+  // button only said try again): a postcode or town typed in is looked up (OpenStreetMap Nominatim,
+  // the same service the Back Office uses for venues) and sorts the venues the same way.
+  const locateByText = useCallback(async (text) => {
+    const q = String(text || '').trim();
+    if (!q) return;
+    setNearestState('searching');
+    try {
+      const r = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(q)}`, { headers: { Accept: 'application/json' } });
+      const rows = r.ok ? await r.json() : [];
+      const hit = Array.isArray(rows) && rows[0];
+      const lat = hit && Number(hit.lat), lng = hit && Number(hit.lon);
+      if (Number.isFinite(lat) && Number.isFinite(lng)) { setHere({ lat, lng }); setNearestState('ok'); }
+      else setNearestState('notfound');
+    } catch { setNearestState('notfound'); }
+  }, []);
 
-  const value = useMemo(() => ({ ctx, menu, menuLoading, here, nearestState, requestNearest, navigate, menuVenue, setMenuVenue }), [ctx, menu, menuLoading, here, nearestState, requestNearest, navigate, menuVenue, setMenuVenue]);
+  const value = useMemo(() => ({ ctx, menu, menuLoading, here, nearestState, requestNearest, locateByText, navigate, menuVenue, setMenuVenue }), [ctx, menu, menuLoading, here, nearestState, requestNearest, locateByText, navigate, menuVenue, setMenuVenue]);
 
   if (loadState === 'loading') {
     return <div className={CN.site} style={vars}><div className={cls(CN.inner, CN.notFound)}><p className={CN.muted}>Loading…</p></div></div>;

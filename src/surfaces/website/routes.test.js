@@ -126,3 +126,21 @@ test('visibleNav: a locations item opens every published venue page, a group ite
   assert.deepEqual(nav[2].children.map((c) => c.href), ['/menu', '/blog']);
   assert.equal(nav[2].href, '/menu', 'a group item itself points at its first child');
 });
+
+
+// ── 5.12.18: the Find us page item opens the venues by itself ────────────────────────────────
+test('visibleNav: a Find us page item carries every venue as a dropdown when the site has more than one; dropdown: false turns it off; one venue = no dropdown', () => {
+  const s = snap();
+  const findUs = visibleNav(s).find((n) => n.href === '/find-us');
+  assert.ok(findUs && Array.isArray(findUs.children) && findUs.children.length === 2, 'two public venues = two children');
+  assert.deepEqual(findUs.children.map((c) => c.href), ['/locations/mozz-leeds', '/locations/mozz-huddersfield'], 'every venue under /locations/<online slug>, page or not');
+  assert.ok(!visibleNav(s).find((n) => n.href === '/menu').children, 'other pages stay plain');
+  s.site.nav = [{ label: 'Shops', kind: 'page', page_id: 'find-us', dropdown: false }];
+  assert.equal(visibleNav(s)[0].children, undefined, 'dropdown: false keeps it a plain link');
+  s.site.nav = [];
+  const fallback = visibleNav(s).find((n) => n.href === '/find-us');
+  assert.equal(fallback.children.length, 2, 'the automatic nav gets it too');
+  s.locations = s.locations.slice(0, 1);
+  s.site.nav = [{ label: 'Find us', kind: 'page', page_id: 'find-us' }];
+  assert.equal(visibleNav(s)[0].children, undefined, 'one venue: nothing to drop down');
+});
