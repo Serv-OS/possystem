@@ -115,7 +115,34 @@ function useFrameScroll(active) {
   }, [active]);
 }
 
-const PUCK_OVERRIDES = { header: () => <EditorHeader /> };
+// 5.12.20 (Peter: "still no way to delete an element once added like those separators"): Puck's only
+// delete is a small bin in the floating bar over the selected block, easy to miss on a thin block.
+// This sits at the top of the fields of whatever is selected (a Row has a long field list, so under
+// them it was off screen): a plain Delete button, plus Duplicate.
+function SelectedBlockActions() {
+  const { appState, selectedItem, dispatch, config } = usePuck();
+  const sel = appState?.ui?.itemSelector;
+  if (!sel || !selectedItem) return null;
+  const label = config?.components?.[selectedItem.type]?.label || selectedItem.type;
+  const zone = sel.zone || 'root:default-zone';
+  return (
+    <div style={{ display: 'flex', gap: 8, padding: '12px 16px', borderBottom: '1px solid var(--bdr)' }}>
+      <button type="button" style={W.ghost} onClick={() => dispatch({ type: 'duplicate', sourceIndex: sel.index, sourceZone: zone })}>Duplicate</button>
+      <button type="button" style={W.danger} onClick={() => dispatch({ type: 'remove', index: sel.index, zone })}>Delete this {label}</button>
+    </div>
+  );
+}
+
+function EditorFields({ children }) {
+  return (
+    <>
+      <SelectedBlockActions />
+      {children}
+    </>
+  );
+}
+
+const PUCK_OVERRIDES = { header: () => <EditorHeader />, fields: EditorFields };
 
 function AddPageModal({ pages, onClose, onCreate }) {
   const [title, setTitle] = useState('');

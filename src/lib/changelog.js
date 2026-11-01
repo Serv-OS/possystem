@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.12.20',
+    date: '1 Nov 2026',
+    items: [
+      'Website: sub items that are only options (syrups, milks, extra shots) no longer appear as menu items. Only products sold on their own are listed.',
+      'Website: picking categories on a Live menu now works on every venue. A category picked from the first venue matches the same category at the venue the visitor is looking at, so the menu no longer goes empty. When no picked category is on a menu the block says so.',
+      'Website editor: a Delete button (and Duplicate) now sits at the top of the panel for whatever block is selected, so a divider or a row can be removed without hunting for the small bin in the floating bar.',
+      'Website: a published change reaches visitors within about a minute. Pages were being served from a cache for up to ten minutes after publishing, which made new settings look like they had not worked.',
+    ],
+  },
+  {
     v: '5.12.19',
     date: '1 Nov 2026',
     items: [
