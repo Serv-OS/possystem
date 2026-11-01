@@ -69,8 +69,9 @@ test('pagePath, venueUrl and isInternalHref', () => {
 // 5.12.8: whose menu an unpinned menu block shows.
 test('menuLocation: a pinned block keeps its venue; an unpinned one follows the visitor pick, else the default', async () => {
   const { menuLocation, menuVenues } = await import('./resolveHref.js');
-  assert.equal(menuLocation(ctx, 'loc-a').id, 'loc-a', 'pinned');
-  assert.equal(menuLocation({ ...ctx, menuVenue: 'mozz-a' }, 'loc-b').id, 'loc-b', 'a pinned block ignores the pick');
+  assert.equal(menuLocation(ctx, 'loc-a').id, 'loc-a', 'pinned = the starting venue');
+  assert.equal(menuLocation({ ...ctx, menuVenue: 'mozz-a' }, 'loc-b').id, 'loc-a', '5.12.9: the visitor pick beats the starting venue');
+  assert.equal(menuLocation({ ...ctx, menuVenue: 'mozz-a', pageKind: 'location' }, 'loc-b').id, 'loc-b', 'a venue page is that venue, pick ignored');
   assert.equal(menuLocation(ctx, 'default').id, 'loc-b', 'site default');
   assert.equal(menuLocation({ ...ctx, menuVenue: 'mozz-a' }, 'default').id, 'loc-a', 'the pick by slug');
   assert.equal(menuLocation({ ...ctx, menuVenue: 'loc-a' }, 'all').id, 'loc-a', 'the pick by id');

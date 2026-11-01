@@ -352,7 +352,7 @@ test('venue switch: buttons above an unpinned menu on a group site, the shown ve
   assert.doesNotMatch(picked.body, /href="\/\?venue=mozz-leeds" aria-current="true"/);
 });
 
-test('venue switch: dropdown is a plain GET form; none hides it; a pinned block and a one venue site never show it', () => {
+test('venue switch: dropdown is a plain GET form; none hides it; a venue page and a one venue site never show it, a pinned block still does', () => {
   const s = snap();
   const menuBlock = (page) => page.layout.content.find((b) => b.type === 'LiveMenu');
   menuBlock(s.pages[0]).props.venue_switch = 'dropdown';
@@ -364,19 +364,33 @@ test('venue switch: dropdown is a plain GET form; none hides it; a pinned block 
   assert.doesNotMatch(render(s, '/').body, /w-venue-/);
   const t = snap();
   menuBlock(t.pages[0]).props.location_id = 'loc-hudds';
-  const pinned = render(t, '/', { menuVenue: 'mozz-leeds' });
-  assert.doesNotMatch(pinned.body, /w-venue-/, 'pinned to Huddersfield: no switch');
+  const pinned = render(t, '/');
+  assert.match(pinned.body, /href="\/\?venue=mozz-huddersfield" aria-current="true"/, '5.12.9: a block that names a venue starts on it and still offers the switch');
+  const picked = render(t, '/', { menuVenue: 'mozz-leeds' });
+  assert.match(picked.body, /href="\/\?venue=mozz-leeds" aria-current="true"/, 'the visitor pick wins over the starting venue');
+  assert.doesNotMatch(render(t, '/locations/mozz-huddersfield', { menuVenue: 'mozz-leeds' }).body, /w-venue-/, 'a venue page: no switch');
   const one = snap();
   one.locations = one.locations.filter((l) => l.id === 'loc-leeds');
   assert.doesNotMatch(render(one, '/').body, /w-venue-/, 'one venue: nothing to switch');
 });
 
-test('live menu order buttons go to the venue whose menu is shown, never the chooser or another venue', () => {
+test('live menu order buttons: ask which venue until the visitor picked one, then straight to that venue; a venue page goes straight', () => {
   const s = snap();
   s.pages[0].layout.content.find((b) => b.type === 'LiveMenu').props.show = { prices: true, add_button: true };
-  assert.match(render(s, '/').body, /href="https:\/\/mozz-leeds\.serv-os\.app\/"/, 'default venue');
+  const none = render(s, '/').body;
+  const menuPart = none.slice(none.indexOf('data-block="LiveMenu"'));
+  assert.match(menuPart, /class="w-btn w-btn-secondary" href="\/order">Order<\/a>/, '5.12.9: no pick yet = the choose your venue page');
+  assert.doesNotMatch(menuPart, /href="https:\/\/mozz-leeds\.serv-os\.app\/">Order/, 'never straight to a venue the visitor did not choose');
   const picked = render(s, '/', { menuVenue: 'mozz-huddersfield' });
-  assert.match(picked.body, /data-block="LiveMenu"[\s\S]*href="https:\/\/mozz-huddersfield\.serv-os\.app\/"/, 'the picked venue');
+  assert.match(picked.body, /data-block="LiveMenu"[\s\S]*href="https:\/\/mozz-huddersfield\.serv-os\.app\/">Order/, 'picked: straight to that venue');
+  s.pages.find((p) => p.id === 'p-loc-leeds').layout.content.find((b) => b.type === 'LiveMenu').props.show = { prices: true, add_button: true };
+  const venuePage = render(s, '/locations/mozz-leeds', { menuVenue: 'mozz-huddersfield' }).body;
+  assert.match(venuePage, /data-block="LiveMenu"[\s\S]*href="https:\/\/mozz-leeds\.serv-os\.app\/">Order/, 'a venue page orders at that venue, whatever the pick says');
+  assert.doesNotMatch(venuePage, /w-venue-btn/, 'and shows no switch');
+  const one = snap();
+  one.locations = one.locations.filter((l) => l.id === 'loc-leeds');
+  one.pages[0].layout.content.find((b) => b.type === 'LiveMenu').props.show = { prices: true, add_button: true };
+  assert.match(render(one, '/').body, /data-block="LiveMenu"[\s\S]*href="https:\/\/mozz-leeds\.serv-os\.app\/">Order/, 'one venue: straight there');
 });
 
 test('header options: brand mark, header button and sticky follow settings.header; defaults keep the old header', () => {

@@ -169,7 +169,7 @@ export default function WebsiteSurface({ host, siteSlug = null }) {
   }, []);
 
   const route = useMemo(() => (snapshot ? resolveRoute(snapshot, path) : null), [snapshot, path]);
-  const ctx = useMemo(() => buildCtx({ snapshot, host, path, menu, customerRoot: CUSTOMER_ROOT, menuVenue }), [snapshot, host, path, menu, menuVenue]);
+  const ctx = useMemo(() => buildCtx({ snapshot, host, path, menu, customerRoot: CUSTOMER_ROOT, menuVenue, pageKind: route && route.page ? route.page.kind : null }), [snapshot, host, path, menu, menuVenue, route]);
   const vars = useMemo(() => siteVars(ctx.site.theme, (pickLocation(ctx, 'default') || {}).online_branding), [ctx]);
   const plan = useMemo(() => (route && route.page ? menuPlanFor(route.page, ctx) : null), [route, ctx]);
 

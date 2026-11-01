@@ -159,6 +159,8 @@ HARD RULES
   a page has slug, title, kind, seo, layout, status, location_id and nothing else.
 - Location pages: kind 'location', slug = that location's online slug, location_id = its id from the
   facts, and every ServOS block on it points at that location_id.
+- Every other page keeps location_id 'default' on its blocks (never a venue id): a group site then
+  shows the venue switch above the menu and asks which venue before ordering.
 
 SEO RULES (the venue must come up in Google and compete)
 - Site seo.title <= 60 characters and includes the town. seo.description <= 155 characters with the

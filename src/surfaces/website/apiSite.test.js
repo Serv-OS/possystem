@@ -183,5 +183,6 @@ test('requestTarget reads ?venue= (lower cased, capped); menuPlan follows it on 
   assert.equal(menuPlan(home, buildCtx({ snapshot: s, host: 'h', path: '/', menuVenue: 'MOZZ-HUDDERSFIELD' })).location.id, 'loc-hudds', 'case does not matter');
   assert.equal(menuPlan(home, buildCtx({ snapshot: s, host: 'h', path: '/', menuVenue: 'nope' })).location.id, 'loc-leeds', 'unknown pick = default');
   const leeds = s.pages.find((p) => p.id === 'p-loc-leeds');
-  assert.equal(menuPlan(leeds, buildCtx({ snapshot: s, host: 'h', path: '/leeds', menuVenue: 'mozz-huddersfield' })).location.id, 'loc-leeds', 'a venue page is pinned: the pick is ignored');
+  assert.equal(menuPlan(leeds, buildCtx({ snapshot: s, host: 'h', path: '/leeds', menuVenue: 'mozz-huddersfield', pageKind: 'location' })).location.id, 'loc-leeds', 'a venue page is that venue: the pick is ignored');
+  assert.equal(menuPlan(leeds, buildCtx({ snapshot: s, host: 'h', path: '/leeds', menuVenue: 'mozz-huddersfield' })).location.id, 'loc-hudds', 'anywhere else the pick wins, even over a block that names a venue (its venue is the starting one)');
 });

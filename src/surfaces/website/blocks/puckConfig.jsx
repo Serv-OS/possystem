@@ -33,7 +33,7 @@ export function snapshotFromEditor(ctx = {}) {
 
 export function puckConfig(ctx = {}) {
   const snapshot = snapshotFromEditor(ctx);
-  const siteCtx = buildCtx({ snapshot, host: ctx.host || '', path: ctx.path || '/', menu: ctx.menu, reviews: ctx.reviews, customerRoot: ctx.customerRoot, now: ctx.now });
+  const siteCtx = buildCtx({ snapshot, host: ctx.host || '', path: ctx.path || '/', menu: ctx.menu, reviews: ctx.reviews, customerRoot: ctx.customerRoot, now: ctx.now, pageKind: ctx.page && ctx.page.kind ? ctx.page.kind : null });
   const loc0 = pickLocation(siteCtx, 'default');
   let vars = {};
   try { vars = siteVars(siteCtx.site.theme || {}, ctx.branding || (loc0 && loc0.online_branding) || {}); } catch { vars = {}; }

@@ -15,7 +15,7 @@ import { siteVars, cssText, fontLinks, themeColor } from '../theme.js';
 import { SITE_CSS } from '../siteStyles.js';
 import { hoursRows, openStatus } from '../hours.js';
 import { addressText, directionsUrl } from '../geo.js';
-import { resolveHref, pickLocation, venueUrl, explicitLocation, multiVenue, menuLocation, menuVenues } from '../resolveHref.js';
+import { resolveHref, pickLocation, venueUrl, explicitLocation, multiVenue, menuLocation, menuVenues, menuOrderHref, onVenuePage } from '../resolveHref.js';
 import { formatPrice } from '../data/loadMenu.js';
 import { blockVisible, visibleNav, breadcrumbsFor, siteLocations, publishedPosts, publishedPages, pathForPage, sitemapPaths, channelOn, locationChannelOn, PAGE_KIND_CHANNEL, headerOptions, HEADER_CTA_LABELS } from '../routes.js';
 import { restaurantLd, menuLd, organizationLd, webSiteLd, breadcrumbLd, blogPostingLd, faqLd, siteName } from './jsonld.js';
@@ -47,7 +47,9 @@ function blockLocation(ctx, props) { return pickLocation(ctx, props && props.loc
  * form, so it works before the script runs). The React LiveMenu paints the same markup.
  */
 export function venueSwitchHtml(ctx, p, current) {
-  if (!p || p.venue_switch === 'none' || explicitLocation(p.location_id) || !multiVenue(ctx)) return '';
+  // 5.12.9: the block's venue is only the starting venue, so a pinned block still gets the switch;
+  // a venue's own page never does.
+  if (!p || p.venue_switch === 'none' || onVenuePage(ctx) || !multiVenue(ctx)) return '';
   const venues = menuVenues(ctx);
   if (venues.length < 2) return '';
   const path = ctx.path || '/';
@@ -130,8 +132,8 @@ const R = {
     const only = Array.isArray(p.categories) ? p.categories.map((c) => c && c.id).filter(Boolean) : [];
     if (only.length) cats = cats.filter((c) => only.includes(c.id));
     let left = Number(p.max_items) > 0 ? Number(p.max_items) : Infinity;
-    // The order button goes to THE VENUE WHOSE MENU THIS IS, never to another venue (Peter, 1 Nov).
-    const orderHref = show.add_button && loc ? resolveHref(ctx, `servos:order:${loc.id}`) : '';
+    // 5.12.9: ask which venue first unless the visitor picked one (or this is the venue's own page).
+    const orderHref = show.add_button ? menuOrderHref(ctx, loc) : '';
     const sections = cats.map((c) => {
       const items = (c.items || []).filter((it) => !(show.hide_sold_out && it.sold_out)).slice(0, Math.max(0, left));
       left -= items.length;
@@ -361,7 +363,7 @@ function breadcrumbHtml(crumbs) {
 }
 
 /** Build the render context every renderer reads. */
-export function buildCtx({ snapshot, host, path, menu, reviews, customerRoot, now, menuVenue }) {
+export function buildCtx({ snapshot, host, path, menu, reviews, customerRoot, now, menuVenue, pageKind }) {
   const site = (snapshot && snapshot.site) || {};
   const locations = siteLocations(snapshot);
   return {
@@ -369,6 +371,8 @@ export function buildCtx({ snapshot, host, path, menu, reviews, customerRoot, no
     site, settings: site.settings || {}, pages: publishedPages(snapshot), locations,
     // 5.12.8: the venue the visitor picked for menus (?venue=<slug>), honoured by unpinned menu blocks.
     menuVenue: menuVenue ? String(menuVenue).toLowerCase() : null,
+    // 5.12.9: the kind of page being painted ('location' = a venue's own page: no switch, no pick).
+    pageKind: pageKind || null,
     host: String(host || ''), path: path || '/', menu: menu || null, reviews: reviews || [],
     customerRoot: customerRoot || 'serv-os.app', now: now instanceof Date ? now : new Date(), h1Used: false, faqItems: [],
   };
@@ -401,8 +405,8 @@ function ogTag(prop, content) { return content ? `<meta property="${attr(prop)}"
 export function renderPage(args) {
   const { snapshot, path = '/', host = '', route, menu, reviews, customerRoot, now, status, menuVenue } = args || {};
   const preview = !!(args && (args.preview === true || status === 'draft' || (snapshot && snapshot.preview === true)));
-  const ctx = buildCtx({ snapshot, host, path, menu, reviews, customerRoot, now, menuVenue });
   const page = (route && route.page) || args.page || null;
+  const ctx = buildCtx({ snapshot, host, path, menu, reviews, customerRoot, now, menuVenue, pageKind: page ? page.kind : null });
   const post = route && route.kind === 'post' ? route.post : null;
   const kind = route ? route.kind : (page ? 'page' : 'notfound');
   const crumbs = breadcrumbsFor(route || { kind: page ? 'page' : 'notfound', page, path }, snapshot);

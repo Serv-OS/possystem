@@ -4,7 +4,7 @@
 
 import { CN } from '../classNames.js';
 import { useSite } from '../../siteContext.js';
-import { resolveHref, explicitLocation, multiVenue, menuLocation, menuVenues } from '../../resolveHref.js';
+import { multiVenue, menuLocation, menuVenues, menuOrderHref, onVenuePage } from '../../resolveHref.js';
 import { formatPrice, capCategories } from '../../data/loadMenu.js';
 
 const cls = (...xs) => xs.filter(Boolean).join(' ');
@@ -43,7 +43,8 @@ export function MenuItem({ it, show = {}, orderHref = '' }) {
  */
 export function VenueSwitch({ mode, location_id, current }) {
   const { ctx, setMenuVenue } = useSite();
-  if (mode === 'none' || explicitLocation(location_id) || !multiVenue(ctx)) return null;
+  void location_id; // the block's venue is only the starting venue (5.12.9); the switch shows regardless
+  if (mode === 'none' || onVenuePage(ctx) || !multiVenue(ctx)) return null;
   const venues = menuVenues(ctx);
   if (venues.length < 2) return null;
   const path = ctx.path || '/';
@@ -80,8 +81,8 @@ export function LiveMenu({ id, title, categories, layout, show = {}, max_items, 
   }
   const only = Array.isArray(categories) ? categories.map((c) => c && c.id).filter(Boolean) : [];
   const cats = only.length ? menu.categories.filter((c) => only.includes(c.id)) : menu.categories;
-  // The order button goes to the venue whose menu this is, never to another venue.
-  const orderHref = show.add_button && loc ? resolveHref(ctx, `servos:order:${loc.id}`) : '';
+  // 5.12.9: ask which venue first unless the visitor picked one (or this is the venue's own page).
+  const orderHref = show.add_button ? menuOrderHref(ctx, loc) : '';
   const sections = capCategories(cats, show.hide_sold_out, max_items).map((c) => (
     <div key={c.id} className={CN.menuSection}>
       <h3>{c.label}</h3>
