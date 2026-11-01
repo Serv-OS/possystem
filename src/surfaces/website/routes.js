@@ -214,6 +214,22 @@ export function resolveRoute(snapshot, rawPath) {
   return { kind: 'notfound', path };
 }
 
+/**
+ * 5.12.8: the header options the owner set in Back Office (settings.header), with safe defaults.
+ * brand: what the logo slot shows. cta: a button at the end of the nav. sticky: stays at the top.
+ */
+export const HEADER_BRANDS = Object.freeze(['logo', 'name', 'both']);
+export const HEADER_CTAS = Object.freeze(['none', 'order', 'book']);
+export const HEADER_CTA_LABELS = Object.freeze({ order: 'Order now', book: 'Book a table' });
+export function headerOptions(settings) {
+  const h = settings && settings.header && typeof settings.header === 'object' ? settings.header : {};
+  return {
+    brand: HEADER_BRANDS.includes(h.brand) ? h.brand : 'logo',
+    cta: HEADER_CTAS.includes(h.cta) ? h.cta : 'none',
+    sticky: h.sticky !== false,
+  };
+}
+
 /** Nav items the visitor should see: site.nav with channel switches and missing pages applied. */
 export function visibleNav(snapshot) {
   const site = (snapshot && snapshot.site) || {};

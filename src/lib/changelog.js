@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.12.8',
+    date: '1 Nov 2026',
+    items: [
+      'Website: pick whose menu a Live menu block shows. The venue field in the page editor is now a dropdown of your venues (Default venue, All venues, or one venue) instead of a typed id.',
+      'Website: on a site with several venues an unpinned Live menu gets a venue switch above it (buttons or a dropdown, or none): "Provo menu", "Location 2 menu". The pick lands in the address (?venue=) so the page can be shared and reloaded on that venue, and the server renders it too.',
+      'Website: the order button on a menu item now goes to the venue whose menu you are looking at, never to another venue and never back to the chooser.',
+      'Website: Header and navigation card on Branding and domain. Brand mark (logo, name, or both), a header button (none, Order now, Book a table) and whether the header stays at the top. Navigation items can be added, relabelled, pointed at a page or a link, reordered and removed, or set back to automatic.',
+    ],
+  },
+  {
     v: '5.12.7',
     date: '1 Nov 2026',
     items: [

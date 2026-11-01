@@ -6,7 +6,7 @@
 // Shared with WebsiteSurface's logic by convention (same block → same venue → same prices).
 
 import { layoutBlocks } from '../../../src/surfaces/website/blocks/schema.js';
-import { pickLocation } from '../../../src/surfaces/website/resolveHref.js';
+import { menuLocation } from '../../../src/surfaces/website/resolveHref.js';
 import { loadMenu } from '../../../src/surfaces/website/data/loadMenu.js';
 
 /** The menu block that drives the page's menu read, or null when the page shows no menu. */
@@ -19,7 +19,8 @@ export function menuBlockOf(page) {
 export function menuPlan(page, ctx) {
   const block = menuBlockOf(page);
   if (!block) return null;
-  const location = pickLocation(ctx, block.props.location_id);
+  // 5.12.8: a block on the default venue follows ?venue=<slug> (ctx.menuVenue); a pinned one does not.
+  const location = menuLocation(ctx, block.props.location_id);
   if (!location || !location.ops_location_id) return null;
   const p = block.props;
   return {

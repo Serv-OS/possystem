@@ -54,7 +54,10 @@ test('home: hero headline is the h1, menu items carry real prices, sold out mark
   // 5.12.7: two venues on this site, so every plain order link asks "which venue?" first.
   assert.match(out.body, /<a class="w-btn w-btn-primary" href="\/order">Order now<\/a>/, 'servos:order goes to the chooser on a multi venue site');
   assert.match(out.body, /href="\/order\/book">Book a table/);
-  assert.doesNotMatch(out.body, /href="https:\/\/mozz-leeds\.serv-os\.app\/"/, 'no straight line to one venue from a plain link');
+  // 5.12.8: the hero and order bar (plain links) still ask first; the menu item Order buttons go to
+  // the venue whose menu is on the page (Leeds, the default), which is the one straight line allowed.
+  const beforeMenu = out.body.slice(0, out.body.indexOf('data-block="LiveMenu"'));
+  assert.doesNotMatch(beforeMenu, /href="https:\/\/mozz-leeds\.serv-os\.app\/"/, 'no straight line to one venue from a plain link');
   assert.match(out.body, /href="\/menu"/, 'page:p-menu resolves to the site path');
 });
 
@@ -333,4 +336,63 @@ test('a window that opens and closes at the same minute is open all day', () => 
   assert.equal(allDayWindow({ open: '09:00', close: '09:00' }), true);
   assert.equal(allDayWindow({ open: '09:00', close: '17:00' }), false);
   assert.equal(allDayWindow(null), false);
+});
+
+// 5.12.8 (Peter, 1 Nov): "show menu A on the home page, then buttons or a drop down to say
+// location 1 or location 2 menu"; and the header options from Back Office.
+test('venue switch: buttons above an unpinned menu on a group site, the shown venue marked, order buttons go to that venue', () => {
+  const s = snap();
+  const out = render(s, '/');
+  assert.match(out.body, /<nav class="w-venue-switch" aria-label="Choose a venue">/);
+  assert.match(out.body, /<a class="w-venue-btn" href="\/\?venue=mozz-huddersfield">Mozz Pizza Huddersfield menu<\/a>/);
+  assert.match(out.body, /<a class="w-venue-btn" href="\/\?venue=mozz-leeds" aria-current="true">Mozz Pizza Leeds menu<\/a>/, 'the default venue is the one shown');
+  assert.doesNotMatch(out.body, /Dark kitchen menu/, 'a venue with no online slug cannot be picked');
+  const picked = render(s, '/', { menuVenue: 'mozz-huddersfield' });
+  assert.match(picked.body, /href="\/\?venue=mozz-huddersfield" aria-current="true"/);
+  assert.doesNotMatch(picked.body, /href="\/\?venue=mozz-leeds" aria-current="true"/);
+});
+
+test('venue switch: dropdown is a plain GET form; none hides it; a pinned block and a one venue site never show it', () => {
+  const s = snap();
+  const menuBlock = (page) => page.layout.content.find((b) => b.type === 'LiveMenu');
+  menuBlock(s.pages[0]).props.venue_switch = 'dropdown';
+  const dd = render(s, '/');
+  assert.match(dd.body, /<form class="w-venue-form" method="get" action="\/"><label>Menu for <select name="venue" aria-label="Choose a venue">/);
+  assert.match(dd.body, /<option value="mozz-leeds" selected>Mozz Pizza Leeds menu<\/option>/);
+  assert.match(dd.body, /<button type="submit" class="w-btn w-btn-secondary">Show<\/button>/);
+  menuBlock(s.pages[0]).props.venue_switch = 'none';
+  assert.doesNotMatch(render(s, '/').body, /w-venue-/);
+  const t = snap();
+  menuBlock(t.pages[0]).props.location_id = 'loc-hudds';
+  const pinned = render(t, '/', { menuVenue: 'mozz-leeds' });
+  assert.doesNotMatch(pinned.body, /w-venue-/, 'pinned to Huddersfield: no switch');
+  const one = snap();
+  one.locations = one.locations.filter((l) => l.id === 'loc-leeds');
+  assert.doesNotMatch(render(one, '/').body, /w-venue-/, 'one venue: nothing to switch');
+});
+
+test('live menu order buttons go to the venue whose menu is shown, never the chooser or another venue', () => {
+  const s = snap();
+  s.pages[0].layout.content.find((b) => b.type === 'LiveMenu').props.show = { prices: true, add_button: true };
+  assert.match(render(s, '/').body, /href="https:\/\/mozz-leeds\.serv-os\.app\/"/, 'default venue');
+  const picked = render(s, '/', { menuVenue: 'mozz-huddersfield' });
+  assert.match(picked.body, /data-block="LiveMenu"[\s\S]*href="https:\/\/mozz-huddersfield\.serv-os\.app\/"/, 'the picked venue');
+});
+
+test('header options: brand mark, header button and sticky follow settings.header; defaults keep the old header', () => {
+  const s = snap();
+  const base = render(s, '/').body;
+  assert.match(base, /<header class="w-header"><div class="w-inner"><a class="w-logo" href="\/" aria-label="Mozz Pizza home"><img /);
+  assert.doesNotMatch(base, /w-header-cta/);
+  s.site.settings.header = { brand: 'name', cta: 'order', sticky: false };
+  const out = render(s, '/').body;
+  assert.match(out, /<header class="w-header" data-sticky="false">/);
+  assert.match(out, /<a class="w-logo" href="\/" aria-label="Mozz Pizza home"><span>Mozz Pizza<\/span><\/a>/, 'name only, no img');
+  assert.match(out, /<a class="w-nav-link w-header-cta" href="\/order">Order now<\/a><\/nav>/, 'group site: the button goes to the venue chooser');
+  s.site.settings.header = { brand: 'both', cta: 'book' };
+  const both = render(s, '/').body;
+  assert.match(both, /<a class="w-logo" href="\/" aria-label="Mozz Pizza home"><img [^>]*><span>Mozz Pizza<\/span><\/a>/);
+  assert.match(both, /w-header-cta" href="\/order\/book">Book a table<\/a>/);
+  s.site.settings.header = { brand: 'nonsense', cta: 'nope', sticky: 'maybe' };
+  assert.equal(render(s, '/').body.includes('w-header-cta'), false, 'odd values fall back to the defaults, never a throw');
 });

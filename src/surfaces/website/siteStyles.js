@@ -49,6 +49,17 @@ export const SITE_CSS = `
   .${C.nav}{display:none;position:absolute;left:0;right:0;top:100%;background:var(--w-bg);border-bottom:1px solid var(--w-line);padding:8px 16px 16px;flex-direction:column;align-items:stretch}
   .${C.nav}[data-open="true"]{display:flex}
 }
+.${C.header}[data-sticky="false"]{position:static}
+.${C.headerCta}{background:var(--w-brand);color:var(--w-on-brand);font-weight:700}
+.${C.headerCta}:hover{background:var(--w-brand-deep)}
+/* venue switch above a menu (5.12.8) */
+.${C.venueSwitch}{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 20px}
+.${C.venueBtn}{display:inline-flex;align-items:center;min-height:40px;padding:8px 16px;border-radius:var(--w-radius);border:1.5px solid var(--w-line);color:var(--w-ink);text-decoration:none;font-weight:600}
+.${C.venueBtn}:hover{border-color:var(--w-ink)}
+.${C.venueBtn}[aria-current="true"]{background:var(--w-brand);color:var(--w-on-brand);border-color:var(--w-brand)}
+.${C.venueForm}{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:0 0 20px}
+.${C.venueForm} label{display:inline-flex;align-items:center;gap:8px;font-weight:600}
+.${C.venueForm} select{min-height:40px;padding:6px 10px;border-radius:var(--w-radius);border:1.5px solid var(--w-line);background:var(--w-card);color:var(--w-ink);font:inherit}
 /* footer */
 .${C.footer}{border-top:1px solid var(--w-line);padding:40px 0 60px;color:var(--w-muted);font-size:.95rem}
 .${C.footer} .${C.inner}{display:grid;gap:16px}

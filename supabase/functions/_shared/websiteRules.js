@@ -11,7 +11,7 @@
 // designer accepted is refused by the editor and the owner sees a site that will not save.
 //
 // Block schema import contract (owned by agent B, src/surfaces/website/blocks/schema.js):
-//   BLOCK_SCHEMAS = { [type]: { props: { [name]: { type:'string'|'text'|'href'|'number'|'boolean'|
+//   BLOCK_SCHEMAS = { [type]: { props: { [name]: { type:'string'|'text'|'href'|'location'|'number'|'boolean'|
 //                    'enum'|'array'|'object', enum?:[] (or options:[]), required?:bool, max?:number,
 //                    min?:number, item?:rule (array), fields?:{...} (object), default? } } } }
 //   BLOCK_TYPES   = Object.keys(BLOCK_SCHEMAS)
@@ -33,6 +33,10 @@ export const LIMITS = Object.freeze({
 
 // Site slug: 3 to 40, lower case letters, digits and hyphens, no hyphen at either end
 // (the same shape as online_slug in src/lib/customerUrl.js).
+// 5.12.8: header options (settings.header), mirrored in src/surfaces/website/routes.js headerOptions.
+export const HEADER_BRANDS = Object.freeze(['logo', 'name', 'both']);
+export const HEADER_CTAS = Object.freeze(['none', 'order', 'book']);
+
 export const SITE_SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])?$/;
 // Page and post slugs: 1 to 60. '' is the home page and is allowed only for kind 'home'.
 export const PAGE_SLUG_RE = /^[a-z0-9-]{1,60}$/;
@@ -129,6 +133,7 @@ function propProblem(blockType, name, rule, value) {
     case 'string':
     case 'text':
     case 'href':
+    case 'location': // 5.12.8: the venue picker ('default', 'all' or a venue id) is a string
       if (typeof value !== 'string') return `${where} must be text.`;
       if (rule.max && value.length > rule.max) return `${where} is longer than ${rule.max} characters.`;
       return '';
@@ -321,6 +326,17 @@ export function settingsProblems(settings) {
   if (settings.publish_terms !== undefined && settings.publish_terms !== null && !isPlainObject(settings.publish_terms)) errors.push('Settings publish_terms must be an object.');
   if (settings.cuisine !== undefined) errors.push(strProblem('Settings cuisine', settings.cuisine, 120));
   if (settings.price_range !== undefined) errors.push(strProblem('Settings price_range', settings.price_range, 10));
+  // 5.12.8: the header options the owner sets in Back Office (brand mark, header button, sticky).
+  if (settings.header !== undefined && settings.header !== null) {
+    if (!isPlainObject(settings.header)) errors.push('Settings header must be an object.');
+    else {
+      const h = settings.header;
+      if (h.brand !== undefined && !HEADER_BRANDS.includes(h.brand)) errors.push(`Settings header brand must be one of: ${HEADER_BRANDS.join(', ')}.`);
+      if (h.cta !== undefined && !HEADER_CTAS.includes(h.cta)) errors.push(`Settings header cta must be one of: ${HEADER_CTAS.join(', ')}.`);
+      if (h.sticky !== undefined && typeof h.sticky !== 'boolean') errors.push('Settings header sticky must be true or false.');
+      for (const k of Object.keys(h)) if (!['brand', 'cta', 'sticky'].includes(k)) errors.push(`Settings header has no option called "${k}".`);
+    }
+  }
   return errors.filter(Boolean);
 }
 

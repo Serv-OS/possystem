@@ -39,14 +39,15 @@ export function puckConfig(ctx = {}) {
   try { vars = siteVars(siteCtx.site.theme || {}, ctx.branding || (loc0 && loc0.online_branding) || {}); } catch { vars = {}; }
   // In the editor every block is shown, switches or not: the owner must see what they are editing.
   siteCtx.settings = { ...siteCtx.settings, allow_custom_code: true, channels: {} };
-  const value = { ctx: siteCtx, menu: ctx.menu || null, menuLoading: false, here: null, nearestState: 'idle', requestNearest: () => {}, navigate: () => {} };
+  const value = { ctx: siteCtx, menu: ctx.menu || null, menuLoading: false, here: null, nearestState: 'idle', requestNearest: () => {}, navigate: () => {}, menuVenue: null, setMenuVenue: () => {} };
   const components = {};
   for (const type of BLOCK_TYPES) {
     const schema = BLOCK_SCHEMAS[type];
     const Comp = COMPONENTS[type];
     components[type] = {
       label: schema.label,
-      fields: puckFields(schema.props),
+      // 5.12.8: venue props are a dropdown of the company's venues, not a free text id.
+      fields: puckFields(schema.props, { locations: siteCtx.locations }),
       defaultProps: defaultPropsFor(type),
       render: (props) => {
         // Puck hands its own `puck` prop and the id; the component gets normalised block props.

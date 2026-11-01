@@ -4,7 +4,7 @@
 
 import { CN } from '../classNames.js';
 import { useSite } from '../../siteContext.js';
-import { pickLocation, resolveHref } from '../../resolveHref.js';
+import { resolveHref, explicitLocation, multiVenue, menuLocation, menuVenues } from '../../resolveHref.js';
 import { formatPrice, capCategories } from '../../data/loadMenu.js';
 
 const cls = (...xs) => xs.filter(Boolean).join(' ');
@@ -36,24 +36,59 @@ export function MenuItem({ it, show = {}, orderHref = '' }) {
   );
 }
 
-export function LiveMenu({ id, title, categories, layout, show = {}, max_items, location_id }) {
+/**
+ * 5.12.8 (Peter, 1 Nov): the venue switch above a menu on a site with several venues. Same markup
+ * as the server's venueSwitchHtml; a pick sets the venue in the site context (and ?venue= in the
+ * address bar) and the page's menu reloads for that venue.
+ */
+export function VenueSwitch({ mode, location_id, current }) {
+  const { ctx, setMenuVenue } = useSite();
+  if (mode === 'none' || explicitLocation(location_id) || !multiVenue(ctx)) return null;
+  const venues = menuVenues(ctx);
+  if (venues.length < 2) return null;
+  const path = ctx.path || '/';
+  const isCurrent = (l) => !!(current && l.id === current.id);
+  if (mode === 'dropdown') {
+    const value = (venues.find(isCurrent) || venues[0]).online_slug;
+    return (
+      <form className={CN.venueForm} method="get" action={path} onSubmit={(e) => e.preventDefault()}>
+        <label>Menu for <select name="venue" aria-label="Choose a venue" value={value} onChange={(e) => setMenuVenue(e.target.value)}>
+          {venues.map((l) => <option key={l.id} value={l.online_slug}>{l.name || l.online_slug} menu</option>)}
+        </select></label>
+      </form>
+    );
+  }
+  return (
+    <nav className={CN.venueSwitch} aria-label="Choose a venue">
+      {venues.map((l) => (
+        <a key={l.id} className={CN.venueBtn} href={`${path}?venue=${encodeURIComponent(l.online_slug)}`} aria-current={isCurrent(l) ? 'true' : undefined}
+          onClick={(e) => { e.preventDefault(); setMenuVenue(l.online_slug); }}>{l.name || l.online_slug} menu</a>
+      ))}
+    </nav>
+  );
+}
+
+export function LiveMenu({ id, title, categories, layout, show = {}, max_items, location_id, venue_switch = 'buttons' }) {
   const { ctx, menu, menuLoading } = useSite();
   const layoutCn = layout === 'list' ? CN.menuList : layout === 'board' ? CN.menuBoard : CN.menuCards;
   const head = title ? <h2 className={CN.h2}>{title}</h2> : null;
+  // 5.12.8: the venue this menu is for (the visitor's pick on an unpinned block) and its switch.
+  const loc = menuLocation(ctx, location_id);
+  const switcher = <VenueSwitch mode={venue_switch} location_id={location_id} current={loc} />;
   if (!menu || !menu.categories || !menu.categories.length) {
-    return <Section type="LiveMenu" id={id} className={cls(CN.menu, layoutCn)}>{head}<Empty>{menuLoading ? 'Loading the menu…' : 'The menu is being updated. Please check back soon.'}</Empty></Section>;
+    return <Section type="LiveMenu" id={id} className={cls(CN.menu, layoutCn)}>{head}{switcher}<Empty>{menuLoading ? 'Loading the menu…' : 'The menu is being updated. Please check back soon.'}</Empty></Section>;
   }
   const only = Array.isArray(categories) ? categories.map((c) => c && c.id).filter(Boolean) : [];
   const cats = only.length ? menu.categories.filter((c) => only.includes(c.id)) : menu.categories;
-  const loc = pickLocation(ctx, location_id);
-  const orderHref = show.add_button && loc ? resolveHref(ctx, 'servos:order') : '';
+  // The order button goes to the venue whose menu this is, never to another venue.
+  const orderHref = show.add_button && loc ? resolveHref(ctx, `servos:order:${loc.id}`) : '';
   const sections = capCategories(cats, show.hide_sold_out, max_items).map((c) => (
     <div key={c.id} className={CN.menuSection}>
       <h3>{c.label}</h3>
       <div className={CN.menuGrid}>{c.items.map((it) => <MenuItem key={it.id} it={it} show={show} orderHref={orderHref} />)}</div>
     </div>
   ));
-  return <Section type="LiveMenu" id={id} className={cls(CN.menu, layoutCn)}>{head}{sections.length ? sections : <Empty>Nothing on the menu right now.</Empty>}</Section>;
+  return <Section type="LiveMenu" id={id} className={cls(CN.menu, layoutCn)}>{head}{switcher}{sections.length ? sections : <Empty>Nothing on the menu right now.</Empty>}</Section>;
 }
 
 export function Specials({ id, title, source, ids }) {

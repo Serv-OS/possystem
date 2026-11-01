@@ -35,7 +35,9 @@ function cloneDefault(f) {
 }
 
 // A location picker: 'default' = settings.default_location_id; 'all' where the block allows it.
-const locationPick = (def = 'default', extra = {}) => s(def, { label: 'Location', hint: "'default', 'all' or a location id", ...extra });
+// 5.12.8: its own field type, so the editor shows a dropdown of the venues (puckFields.js) while
+// the stored value stays a string ('default', 'all' or a location id) for the AI and the renderers.
+const locationPick = (def = 'default', extra = {}) => ({ type: 'location', default: def, label: 'Venue', hint: "'default' = the site's default venue, 'all' = every venue, or a venue id", ...extra });
 const linkObj = (label = '', href = '') => obj({ label: s(label, { label: 'Label' }), href: h(href, { label: 'Link' }) });
 
 export const BLOCK_SCHEMAS = {
@@ -79,6 +81,9 @@ export const BLOCK_SCHEMAS = {
       }, { label: 'Show' }),
       price_mode: e(['collection', 'dinein', 'delivery'], 'collection', { label: 'Price shown' }),
       location_id: locationPick('default'),
+      // 5.12.8 (Peter, 1 Nov): on a site with several venues the visitor picks whose menu to see.
+      // Buttons or a dropdown above the menu; 'none' hides it. A block pinned to one venue never shows it.
+      venue_switch: e(['buttons', 'dropdown', 'none'], 'buttons', { label: 'Venue switch', hint: 'Several venues: how the visitor picks whose menu to see' }),
       max_items: n(0, { label: 'Max items', hint: '0 = no cap', min: 0, max: 1000 }),
     },
   },
@@ -240,7 +245,7 @@ export function defaultPropsFor(type) {
 // a page saved with an odd value still renders (customer facing never fails).
 function coerceValue(f, v) {
   switch (f.type) {
-    case 'string': case 'href': return typeof v === 'string' ? v : (v == null ? f.default : String(v));
+    case 'string': case 'href': case 'location': return typeof v === 'string' ? v : (v == null ? f.default : String(v));
     case 'text': return typeof v === 'string' ? v : f.default;
     case 'number': { const x = Number(v); return Number.isFinite(x) ? x : f.default; }
     case 'boolean': return typeof v === 'boolean' ? v : (v === 'true' ? true : v === 'false' ? false : f.default);
@@ -296,7 +301,7 @@ function mapProps(fields) {
 function mapField(f) {
   const desc = f.hint ? { description: f.hint } : {};
   switch (f.type) {
-    case 'string': case 'text': case 'href': return { type: 'string', ...desc };
+    case 'string': case 'text': case 'href': case 'location': return { type: 'string', ...desc };
     case 'number': return { type: 'number', ...(f.min != null ? { minimum: f.min } : {}), ...(f.max != null ? { maximum: f.max } : {}), ...desc };
     case 'boolean': return { type: 'boolean', ...desc };
     case 'enum': return { type: 'string', enum: f.options.slice(), ...desc };

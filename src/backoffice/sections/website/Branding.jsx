@@ -9,6 +9,7 @@ import { useRef, useState } from 'react';
 import { W } from './ui.js';
 import { checkDomain, removeDomain } from './adminClient.js';
 import { BUTTON_SHAPES, LAYOUTS, MOODS, TYPE_PAIRINGS, draftChanges, expectedRecords, formatWhen, freeHost, isValidDomain, normaliseDomain, recordsMailto, siteUrl } from './helpers.js';
+import HeaderNavCard from './HeaderNav.jsx';
 
 async function copyText(text) {
   try { await navigator.clipboard.writeText(String(text)); return true; } catch { return false; }
@@ -299,6 +300,7 @@ export default function Branding({ ws, toast, onBrandBasics, onPublish, onViewLi
       <div>
         <DefaultVenueCard site={site} locations={ws.publicLocations} saveSite={ws.saveSite} toast={toast} />
         <SyncedBrandingCard branding={branding} location={defaultLocation} onBrandBasics={onBrandBasics} />
+        <HeaderNavCard site={site} pages={ws.pages} saveSite={ws.saveSite} toast={toast} />
         <ThemeCard site={site} saveSite={ws.saveSite} toast={toast} />
         <SeoCard key={site.updated_at || site.id} site={site} saveSite={ws.saveSite} uploadAsset={ws.uploadAsset} toast={toast} />
       </div>

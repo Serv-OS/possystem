@@ -24,6 +24,28 @@ export function explicitLocation(locId) {
   return !!locId && locId !== 'default' && locId !== 'all';
 }
 
+/**
+ * 5.12.8: the venue a menu block shows. A block pinned to a venue shows that venue. A block on
+ * 'default' or 'all' follows the visitor's pick (ctx.menuVenue, from ?venue=<slug> or the venue
+ * switch above the menu) when that names one of the site's venues, else the site default.
+ */
+export function menuLocation(ctx, locationId) {
+  if (explicitLocation(locationId)) return pickLocation(ctx, locationId);
+  const want = ctx && ctx.menuVenue ? String(ctx.menuVenue) : '';
+  if (want) {
+    const list = Array.isArray(ctx.locations) ? ctx.locations : [];
+    const hit = list.find((l) => l && (l.online_slug === want || l.id === want || l.ops_location_id === want));
+    if (hit) return hit;
+  }
+  return pickLocation(ctx, 'default');
+}
+
+/** The venues a visitor can switch a menu between: every venue with an online slug, by name. */
+export function menuVenues(ctx) {
+  const list = Array.isArray(ctx && ctx.locations) ? ctx.locations : [];
+  return list.filter((l) => l && l.online_slug && l.ops_location_id).slice().sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+}
+
 /** True when the site has more than one venue a visitor can order from. */
 export function multiVenue(ctx) {
   const list = Array.isArray(ctx && ctx.locations) ? ctx.locations : [];

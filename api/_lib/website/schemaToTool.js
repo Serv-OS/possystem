@@ -75,6 +75,8 @@ export function fieldToJsonSchema(field) {
   const description = field.hint || field.description || field.label || undefined;
   // The registry's enum (options, possibly aliased as enum for the validator) comes first, so the
   // JSON Schema short cut below does not mistake it for a finished schema.
+  // 5.12.8: the registry's venue picker is a string to the AI ('default', 'all' or a venue id).
+  if (t === 'location') return { type: 'string', ...(description ? { description } : {}) };
   if (t === 'select' || t === 'radio' || t === 'enum') {
     const options = Array.isArray(field.options) ? field.options.map((o) => (o && typeof o === 'object' ? o.value : o)) : [];
     const allStrings = options.every((v) => typeof v === 'string');
