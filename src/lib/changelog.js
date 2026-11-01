@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.12.14',
+    date: '1 Nov 2026',
+    items: [
+      'Back Office: fixed the "App Error: Cannot access \'oe\' before initialization" screen that 5.12.12 showed on load. The website editor read a value before it was declared; it now declares it first.',
+    ],
+  },
+  {
     v: '5.12.12',
     date: '1 Nov 2026',
     items: [
