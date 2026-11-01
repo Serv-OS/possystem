@@ -399,3 +399,111 @@ test('real modules: the tool schema comes from B\'s registry and a build patch p
   assert.ok(refused.json.errors.some((e) => e.includes('wobble')), JSON.stringify(refused.json.errors));
   assert.equal(b.writes.filter((w) => w.table.startsWith('web_pages')).length, 0);
 });
+
+
+// ── 5.12.11 staged build ────────────────────────────────────────────────────────
+import { sanitisePlan, planFromPatch, pageOnlyPatch, pageStepMessage, DEFAULT_PAGE_MODEL } from '../../../api/website-designer.js';
+
+test('plan mode: theme, nav, footer and posts are saved, pages become empty draft placeholders for NEW slugs only, briefs come back as the plan', async () => {
+  const patch = {
+    reply: 'Marquee, black and white, seven pages.',
+    theme: { layout: 'marquee', type: 'warm-serif', buttons: 'pill', mood: 'dark', brand_color: null },
+    nav: [{ label: 'Home', kind: 'page', page_id: '' }, { label: 'Menu', kind: 'page', page_id: 'menu' }],
+    footer: { text: 'Coffee Boy', show_powered_by: true },
+    pages: [
+      { slug: '', title: 'Home', kind: 'home', brief: 'Hero slideshow DRINK. EAT. TREAT.', layout: { content: [{ type: 'Hero', props: {} }] } },
+      { slug: 'menu', title: 'Menu', kind: 'menu', brief: 'Live menu, cards', layout: { content: [] } },
+      { slug: 'rewards', title: 'Rewards', kind: 'loyalty', status: 'draft', brief: 'Three steps', layout: { content: [] } },
+    ],
+    posts: [{ slug: 'welcome', title: 'Welcome', body_md: 'Hello.' }],
+  };
+  const { fetch, claudeCalls, writes } = fakeFetch({ data: tables({ photoCoverage: 80 }), claude: [patch] });
+  const out = await runDesigner({ body: { site_id: SITE_A, message: 'Build the full Coffee Boy website', mode: 'plan', layout: 'marquee' }, user: USER, env: ENV, fetchImpl: fetch, importers, now: new Date('2026-11-01T18:00:00Z') });
+  assert.equal(out.status, 200, JSON.stringify(out.json));
+  assert.equal(out.json.applied, true);
+  assert.deepEqual(out.json.plan.pages.map((p) => [p.slug, p.status, p.brief]), [['', 'published', 'Hero slideshow DRINK. EAT. TREAT.'], ['menu', 'published', 'Live menu, cards'], ['rewards', 'draft', 'Three steps']]);
+  assert.equal(out.json.plan.layout, 'marquee');
+  assert.equal(claudeCalls[0].model, 'claude-test-model', 'the plan runs on the main model');
+  assert.ok(claudeCalls[0].system.includes('PLAN MODE'));
+  assert.ok(claudeCalls[0].tools[0].input_schema.properties.pages.items.properties.brief, 'the tool schema has the brief');
+  assert.ok(claudeCalls[0].messages.at(-1).content.startsWith('Plan my website with the marquee layout.'));
+  const pages = writes.find((w) => w.table.startsWith('web_pages'));
+  assert.deepEqual(pages.body.map((p) => p.slug), ['', 'rewards'], 'the existing menu page is not blanked; new slugs get placeholders');
+  assert.ok(pages.body.every((p) => p.status === 'draft' && p.layout.content.length === 0 && p.brief === undefined));
+  const site = writes.find((w) => w.table.startsWith('web_sites'));
+  assert.equal(site.body.theme.layout, 'marquee');
+  assert.equal(site.body.nav[1].page_id, 'pg1', 'nav still resolves the existing menu page id');
+  assert.ok(writes.find((w) => w.table.startsWith('web_posts')));
+  const msgs = writes.find((w) => w.table === 'web_ai_messages');
+  assert.equal(msgs.body[0].content, 'Build the full Coffee Boy website');
+});
+
+test('page mode: one page on the page model from the plan brief, other keys dropped, slug and status forced from the plan, no chat rows saved', async () => {
+  const plan = { layout: 'marquee', pages: [
+    { slug: '', title: 'Home', kind: 'home', status: 'published', brief: 'Hero slideshow' },
+    { slug: 'menu', title: 'Menu', kind: 'menu', status: 'published', brief: 'Live menu, cards, venue switch buttons' },
+  ] };
+  const answer = {
+    reply: 'Menu page with the live menu.',
+    theme: { layout: 'ember' },
+    nav: [{ label: 'Nope', kind: 'link', href: '/x' }],
+    pages: [
+      { slug: 'our-menu', title: 'Menu', kind: 'menu', status: 'draft', layout: { content: [{ type: 'Hero', props: { height: 'short' } }, { type: 'LiveMenu', props: { layout: 'cards' } }] } },
+    ],
+  };
+  const { fetch, claudeCalls, writes } = fakeFetch({ data: tables({ photoCoverage: 80 }), claude: [answer] });
+  const out = await runDesigner({ body: { site_id: SITE_A, message: 'Build the full Coffee Boy website', mode: 'page', plan, plan_page: 'menu' }, user: USER, env: ENV, fetchImpl: fetch, importers });
+  assert.equal(out.status, 200, JSON.stringify(out.json));
+  assert.equal(out.json.applied, true);
+  assert.deepEqual(out.json.pages_changed, ['menu']);
+  assert.equal(out.json.saved, true);
+  assert.equal(claudeCalls[0].model, DEFAULT_PAGE_MODEL);
+  assert.ok(claudeCalls[0].system.includes('PAGE MODE'));
+  assert.ok(claudeCalls[0].system.includes('Follow the marquee recipe'));
+  assert.equal(claudeCalls[0].messages.length, 1, 'page steps carry no chat history');
+  const turn = claudeCalls[0].messages[0].content;
+  assert.ok(turn.includes('Build the page "menu" (menu, "Menu", status published)'));
+  assert.ok(turn.includes('Live menu, cards, venue switch buttons'));
+  assert.ok(turn.includes('"" home "Home"'), 'the other planned pages are listed');
+  assert.ok(turn.includes('Build the full Coffee Boy website'));
+  const pages = writes.find((w) => w.table.startsWith('web_pages'));
+  assert.equal(pages.body.length, 1);
+  assert.equal(pages.body[0].slug, 'menu', 'the planned slug wins over the model\'s');
+  assert.equal(pages.body[0].status, 'published', 'the planned status wins');
+  assert.equal(pages.body[0].layout.content.length, 2);
+  assert.equal(writes.find((w) => w.table.startsWith('web_sites')), undefined, 'theme and nav from a page step are ignored');
+  assert.equal(writes.find((w) => w.table === 'web_ai_messages'), undefined, 'no chat rows for a page step');
+});
+
+test('page mode without a usable plan is a 400; the env page model overrides the default', async () => {
+  const { fetch } = fakeFetch({ data: tables(), claude: [] });
+  const out = await runDesigner({ body: { site_id: SITE_A, message: 'x', mode: 'page', plan: { pages: [] }, plan_page: 'menu' }, user: USER, env: ENV, fetchImpl: fetch, importers });
+  assert.equal(out.status, 400);
+  const plan = { layout: 'ledger', pages: [{ slug: 'menu', title: 'Menu', kind: 'menu', status: 'published', brief: 'b' }] };
+  const f2 = fakeFetch({ data: tables(), claude: [{ reply: 'ok', pages: [{ slug: 'menu', title: 'Menu', kind: 'menu', layout: { content: [{ type: 'LiveMenu', props: {} }] } }] }] });
+  const out2 = await runDesigner({ body: { site_id: SITE_A, message: 'x', mode: 'page', plan, plan_page: 'menu' }, user: USER, env: { ...ENV, WEBSITE_DESIGNER_PAGE_MODEL: 'page-model-x' }, fetchImpl: f2.fetch, importers });
+  assert.equal(out2.status, 200);
+  assert.equal(f2.claudeCalls[0].model, 'page-model-x');
+});
+
+test('sanitisePlan, planFromPatch, pageOnlyPatch and pageStepMessage: junk is dropped, slugs and statuses are kept honest', () => {
+  assert.equal(sanitisePlan(null), null);
+  assert.equal(sanitisePlan({ pages: [] }), null);
+  const p = sanitisePlan({ layout: 'nope', pages: [{ slug: 'Menu', title: 'M', kind: 'menu', status: 'weird', brief: 'x' }, { slug: 'bad slug', title: 'B' }, { slug: 'menu' }, 'junk', { slug: '', title: 'Home', kind: 'home', location_id: 'not-a-uuid' }] });
+  assert.equal(p.layout, null);
+  assert.deepEqual(p.pages.map((x) => [x.slug, x.status, x.location_id]), [['menu', 'published', null], ['', 'published', null]]);
+  const r = planFromPatch({ reply: 'r', theme: { layout: 'ember' }, pages: [{ slug: 'menu', title: 'Menu', kind: 'menu', brief: 'B', layout: { content: [{ type: 'Hero', props: {} }] } }] }, { site: { pages: [] } });
+  assert.deepEqual(r.patch.pages, [{ slug: 'menu', title: 'Menu', kind: 'menu', status: 'draft', layout: { root: { props: {} }, content: [] } }]);
+  assert.equal(r.plan.pages[0].brief, 'B');
+  assert.equal(r.plan.layout, 'ember');
+  const none = planFromPatch({ reply: 'r', pages: [{ slug: 'menu', title: 'Menu', kind: 'menu', brief: 'B' }] }, { site: { pages: [{ slug: 'menu' }] } });
+  assert.equal(none.patch.pages, undefined, 'an existing page gets no placeholder write');
+  const pp = { slug: 'menu', title: 'Menu', kind: 'menu', status: 'published', location_id: null, brief: '' };
+  assert.deepEqual(pageOnlyPatch({ reply: 'x', pages: [] }, pp), { reply: 'x' });
+  const only = pageOnlyPatch({ reply: 'x', theme: {}, pages: [{ slug: 'z', title: '', kind: '', status: 'draft', brief: 'b', layout: { content: [] } }] }, pp);
+  assert.deepEqual(Object.keys(only), ['reply', 'pages']);
+  assert.deepEqual(only.pages[0], { slug: 'menu', title: 'Menu', kind: 'menu', status: 'published', layout: { content: [] } });
+  const msg = pageStepMessage({ plan: { pages: [pp, { slug: '', title: 'Home', kind: 'home' }] }, planPage: pp, message: 'Make it black' });
+  assert.ok(msg.includes('Build the page "menu"') && msg.includes('"" home "Home"') && msg.includes('Make it black'));
+  assert.ok(!msg.includes('"menu" menu "Menu"\n'), 'the page itself is not listed among the others');
+});

@@ -168,6 +168,7 @@ const pageSchema = (blockSchemas) => ({
     kind: str('Page kind', { enum: PAGE_KINDS }),
     location_id: str('Only for kind location: the location id from the facts'),
     status: str('published or draft', { enum: ['published', 'draft'] }),
+    brief: str('PLAN MODE only: 4 to 8 lines on what this page shows, section by section, with the exact headline words and which blocks to use. Empty in every other mode.'),
     seo: { type: 'object', properties: { title: str('<= 60 characters, includes the town'), description: str('<= 155 characters: cuisine, town, order online'), og_image_url: str(''), noindex: bool('') } },
     layout: {
       type: 'object',

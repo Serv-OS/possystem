@@ -211,6 +211,35 @@ a post about a menu category from the facts), real facts only.
 Our story: status 'draft', a Hero and one Text block that the owner can finish; say in the reply that it
 needs their words.`;
   }
+  // 5.12.11: a whole site in one call took minutes and the server cut it off at 60 s (Coffee Boy,
+  // 1 Nov: "The designer could not answer (504)"). The build is now staged: PLAN once, then one
+  // call per PAGE. The plan carries the words; the page steps turn them into blocks.
+  if (mode === 'plan') {
+    const chosen = layout && LAYOUT_IDS.includes(layout) ? layout : pickLayout(facts?.menu?.photo_coverage_pct);
+    const pages = buildPageSet(facts);
+    return `PLAN MODE
+Plan the whole site in one apply_site_patch call, but build NO page content yet. Layout: ${chosen} (${layout ? 'the owner chose it' : layoutReason(chosen, facts?.menu?.photo_coverage_pct)}).
+Set theme (layout, type, buttons, mood, brand_color), nav (one entry per published page in order,
+home first, then a link item to '/blog' labelled News), footer and site seo now: they are saved from
+this call.
+Then list every page in pages with slug, title, kind${pages.some((p) => p.location_id) ? ', location_id' : ''}, status, seo and a brief, and
+layout { root: { props: {} }, content: [] } (EMPTY: a later call builds each page from your brief).
+The brief is the whole design of that page: 4 to 8 lines, section by section, the exact headline and
+button words, which blocks and which Row columns, the photo mood, and what the owner asked for on
+that page. Write the copy here, in the venue's voice, so every page sounds like one site.
+Default page set (add, rename or drop pages to match the owner's words):
+${pages.map((p) => `  "${p.slug}" ${p.kind} "${p.title}"${p.location_id ? ` location_id ${p.location_id}` : ''}${p.status === 'draft' ? ' (status draft)' : ''}`).join('\n')}
+Blog: write exactly two starter posts as status 'draft' in posts, real facts only.
+In the reply tell the owner the layout, the palette and the pages you planned, in a few lines.`;
+  }
+  if (mode === 'page') {
+    return `PAGE MODE
+Build exactly ONE page: the one named in the message, from its brief in the site plan. Call
+apply_site_patch with pages holding that single page (slug, title, kind, location_id when given,
+status, seo, full layout) and nothing else: no theme, nav, footer, site seo, posts or other pages.
+Follow the ${layout && LAYOUT_IDS.includes(layout) ? layout : 'chosen'} recipe for its page kind, use the brief's words, this venue's facts and photos,
+and link to the other planned pages by their slugs. Reply in one line saying what the page has.`;
+  }
   if (mode === 'post') {
     return `POST MODE
 Write or rewrite the blog post named in the message as one entry in posts (status 'draft' unless the
@@ -254,6 +283,7 @@ export function buildSystemPrompt({ facts, mode = 'chat', layout = null, blocksD
 export function buildUserMessage({ message, mode = 'chat', layout = null, page = null, post = null } = {}) {
   const parts = [];
   if (mode === 'build') parts.push(`Build my website${layout ? ` with the ${layout} layout` : ''}.`);
+  if (mode === 'plan') parts.push(`Plan my website${layout ? ` with the ${layout} layout` : ''}.`);
   if (page) parts.push(`Page in context: slug "${page.slug}" (${page.kind}, "${page.title}"). Current blocks: ${(page.blocks || []).join(', ') || 'none'}.`);
   if (post) parts.push(`Post in context: slug "${post.slug}" ("${post.title}").`);
   const m = String(message || '').trim();
