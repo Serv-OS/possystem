@@ -42,10 +42,17 @@ export function bootScript(payload) {
  * Put `head` before </head>, `body` inside <div id="root"></div> and `boot` right after it.
  * The shell's own <title> and description are removed so the page carries one of each.
  */
+// 5.12.5: the SPA's global stylesheet pins html, body and #root to the viewport with overflow
+// hidden (the till scrolls inside its own panes). A public website must scroll like a web page,
+// so the shell carries this reset after the SPA's own styles. Kept out of SITE_CSS on purpose:
+// that string is also mounted inside the Back Office preview, where the app's pinning must stay.
+export const SHELL_RESET_CSS = 'html,body,#root{overflow:auto !important;height:auto !important;min-height:100%;position:static !important}body{overscroll-behavior:auto}';
+export const SHELL_RESET_TAG = `<style id="w-shell-reset">${SHELL_RESET_CSS}</style>`;
+
 export function injectShell(shellHtml, { head = '', body = '', boot = '' } = {}) {
   let html = String(shellHtml || '');
   html = html.replace(/<title>[\s\S]*?<\/title>/i, '').replace(/<meta name="description"[^>]*>/i, '');
-  html = html.replace(/<\/head>/i, `${head}\n</head>`);
+  html = html.replace(/<\/head>/i, `${SHELL_RESET_TAG}${head}\n</head>`);
   html = html.replace(/<div id="root"><\/div>/i, `<div id="root">${body}</div>${boot}`);
   return html;
 }

@@ -23,6 +23,7 @@ import { SiteContext } from '../../../../surfaces/website/siteContext.js';
 import { buildCtx } from '../../../../surfaces/website/ssr/renderBlocks.js';
 import { SITE_CSS } from '../../../../surfaces/website/siteStyles.js';
 import { CUSTOMER_ROOT } from '../../../../lib/env';
+import { MAX_SHOTS, shrinkImage } from './screenshots.js';
 
 // The site stylesheet is scoped to .w-site, so one copy in the Back Office document is harmless.
 function ensureSiteCss() {
@@ -216,6 +217,8 @@ export default function Designer(props) {
   const [layout, setLayout] = useState(site?.theme?.layout || null);
   const [busy, setBusy] = useState(false);
   const [showCards, setShowCards] = useState(!pages.length);
+  const [shots, setShots] = useState([]); // screenshots waiting to go with the next message
+  const fileRef = useRef(null);
   const listRef = useRef(null);
   const alive = useRef(true);
   useEffect(() => () => { alive.current = false; }, []);
@@ -242,16 +245,20 @@ export default function Designer(props) {
     if (!message && sendMode !== 'build') return;
     setBusy(true);
     const stamp = new Date().toISOString();
-    const shown = message || `Build my website${sendLayout ? ` with the ${sendLayout} layout` : ''}.`;
-    setMsgs((cur) => [...cur, { role: 'user', content: shown, created_at: stamp, local: true }]);
+    const images = shots.map((sh) => ({ media_type: sh.media_type, data: sh.data }));
+    const shown = `${message || `Build my website${sendLayout ? ` with the ${sendLayout} layout` : ''}.`}${images.length ? ` [${images.length} screenshot${images.length === 1 ? '' : 's'} attached]` : ''}`;
+    setMsgs((cur) => [...cur, { role: 'user', content: shown, created_at: stamp, local: true, previews: shots.map((sh) => sh.preview) }]);
     setInput('');
-    const r = await designerRequest({ site_id: siteId, message, mode: sendMode, page_id: pageId, post_id: postId, layout: sendLayout });
+    setShots([]);
+    const r = await designerRequest({ site_id: siteId, message, mode: sendMode, page_id: pageId, post_id: postId, layout: sendLayout, ...(images.length ? { images } : {}) });
     if (!alive.current) return;
     if (r.error) {
       notify(r.error, 'error');
       setMsgs((cur) => [...cur, { role: 'assistant', content: `I could not do that: ${r.error}`, created_at: new Date().toISOString(), local: true }]);
     } else {
-      setMsgs((cur) => [...cur, { role: 'assistant', content: r.reply || 'Done.', created_at: new Date().toISOString(), local: true, applied: r.applied }]);
+      setMsgs((cur) => [...cur, { role: 'assistant', content: r.reply || 'Done.', created_at: new Date().toISOString(), local: true, applied: r.applied, fetched: Array.isArray(r.fetched) ? r.fetched : [] }]);
+      if (r.saved === false) notify('The designer answered but this conversation could not be saved. It will not be here after a reload.', 'error');
+      if (images.length && Number.isFinite(r.images_used) && r.images_used < images.length) notify(`${r.images_used} of ${images.length} screenshots were used. The rest were too large.`, 'info');
       if (r.applied) {
         notify(sendMode === 'build' ? 'Your site is built. Check the preview on the right.' : `Updated ${r.pages_changed?.length || 0} page${r.pages_changed?.length === 1 ? '' : 's'}.`);
         setShowCards(false);
@@ -262,7 +269,21 @@ export default function Designer(props) {
     }
     setBusy(false);
     loadFacts();
-  }, [siteId, busy, pageId, postId, notify, refresh, loadFacts]);
+  }, [siteId, busy, pageId, postId, notify, refresh, loadFacts, shots]);
+
+  const addShots = useCallback(async (files) => {
+    const list = Array.from(files || []).slice(0, MAX_SHOTS);
+    if (!list.length) return;
+    const made = (await Promise.all(list.map((f) => shrinkImage(f)))).filter(Boolean);
+    if (!alive.current) return;
+    if (!made.length) { notify('Those files are not images.', 'error'); return; }
+    setShots((cur) => {
+      const next = [...cur, ...made].slice(0, MAX_SHOTS);
+      if (cur.length + made.length > MAX_SHOTS) notify(`Up to ${MAX_SHOTS} screenshots go with one message.`, 'info');
+      return next;
+    });
+  }, [notify]);
+  const removeShot = useCallback((i) => setShots((cur) => cur.filter((_, k) => k !== i)), []);
 
   const buildSite = useCallback(() => send(input || brief, { mode: 'build', layout }), [send, input, brief, layout]);
 
@@ -301,6 +322,11 @@ export default function Designer(props) {
             {msgs.map((m, i) => (
               <div key={m.id || `${m.created_at || ''}-${i}`} style={D.bubble(m.role === 'user')}>
                 {m.content}
+                {Array.isArray(m.previews) && m.previews.length > 0 && (
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+                    {m.previews.map((src, k) => <img key={k} src={src} alt="" style={{ width: 72, height: 54, objectFit: 'cover', borderRadius: 6, border: '1px solid rgba(0,0,0,.15)' }} />)}
+                  </div>
+                )}
                 {m.role === 'assistant' && (m.patch || m.applied) ? <div style={{ ...W.hint, marginTop: 6, color: 'var(--grn)' }}>Changes applied</div> : null}
               </div>
             ))}
@@ -313,17 +339,31 @@ export default function Designer(props) {
             ))}
           </div>
 
+          {shots.length > 0 && (
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }} aria-label="Screenshots to send">
+              {shots.map((sh, i) => (
+                <div key={`${sh.name}-${i}`} style={{ position: 'relative' }}>
+                  <img src={sh.preview} alt={sh.name} title={sh.name} style={{ width: 84, height: 60, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--bdr)' }} />
+                  <button type="button" aria-label={`Remove ${sh.name}`} onClick={() => removeShot(i)} style={{ position: 'absolute', top: -6, right: -6, width: 20, height: 20, borderRadius: 10, border: '1px solid var(--bdr)', background: 'var(--bg1)', color: 'var(--t1)', fontSize: 12, lineHeight: '18px', padding: 0, cursor: 'pointer' }}>×</button>
+                </div>
+              ))}
+              <div style={{ ...W.hint, alignSelf: 'center' }}>{shots.length} screenshot{shots.length === 1 ? '' : 's'} will go with your next message.</div>
+            </div>
+          )}
           <div style={D.inputRow}>
+            <input ref={fileRef} type="file" accept="image/*" multiple style={{ display: 'none' }} onChange={(e) => { addShots(e.target.files); e.target.value = ''; }} />
+            <button type="button" style={{ ...W.ghost, minHeight: 52 }} disabled={busy || shots.length >= MAX_SHOTS} title="Attach screenshots of a site or look you like" onClick={() => fileRef.current?.click()}>📷 Screenshots</button>
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(input); } }}
-              placeholder={pages.length ? 'Ask for a change, or paste a site you like and say what to take from it' : 'Describe your site, paste a website you like, or press Build my site'}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(input.trim() || (shots.length ? 'Use these screenshots as the reference for the design.' : '')); } }}
+              onPaste={(e) => { const files = Array.from(e.clipboardData?.files || []).filter((f) => /^image\//.test(f.type)); if (files.length) { e.preventDefault(); addShots(files); } }}
+              placeholder={pages.length ? 'Ask for a change, paste a site you like, or attach screenshots of one' : 'Describe your site, paste a website you like or screenshots of one, or press Build my site'}
               rows={2}
               style={{ ...W.textarea, minHeight: 52 }}
               disabled={busy}
             />
-            <button type="button" style={{ ...W.btn, opacity: busy || !input.trim() ? 0.6 : 1 }} disabled={busy || !input.trim()} onClick={() => send(input)}>Send</button>
+            <button type="button" style={{ ...W.btn, opacity: busy || (!input.trim() && !shots.length) ? 0.6 : 1 }} disabled={busy || (!input.trim() && !shots.length)} onClick={() => send(input.trim() || 'Use these screenshots as the reference for the design.')}>Send</button>
           </div>
         </section>
 

@@ -165,7 +165,7 @@ test('the designer never forces the tool (Opus 5.5 answers 400 to type tool / an
 
 // 5.12.2: reference sites. The web fetch tool is offered only when the owner linked something, and
 // a pause_turn answer is resumed by resending the turn with the assistant content appended.
-import { callClaude, linksIn, webFetchTool, historyText } from '../../../api/website-designer.js';
+import { callClaude, linksIn, webFetchTool, historyText, classifyFetches, fetchNotes, BLOCKED_NOTE, sanitiseImages, userTurnContent, MAX_IMAGES } from '../../../api/website-designer.js';
 test('linksIn finds the owner\'s links, trims trailing punctuation and deduplicates', () => {
   assert.deepEqual(linksIn('like https://www.mozzartisanpizza.com. and https://www.mozzartisanpizza.com and http://a.b/c?x=1,'), ['https://www.mozzartisanpizza.com', 'http://a.b/c?x=1']);
   assert.deepEqual(linksIn('no links here'), []);
@@ -180,7 +180,9 @@ test('callClaude offers web_fetch only with allowFetch, never forces the tool, a
     const first = calls.length === 1;
     const body = first
       ? { stop_reason: 'pause_turn', content: [{ type: 'server_tool_use', id: 'srvtoolu_1', name: 'web_fetch', input: { url: 'https://www.mozzartisanpizza.com' } }] }
-      : { stop_reason: 'tool_use', content: [{ type: 'text', text: 'Read it.' }, { type: 'tool_use', id: 'toolu_1', name: 'apply_site_patch', input: { reply: 'Built in that spirit.' } }] };
+      : { stop_reason: 'tool_use', content: [
+        { type: 'web_fetch_tool_result', tool_use_id: 'srvtoolu_1', content: { type: 'web_fetch_result', url: 'https://www.mozzartisanpizza.com', content: { type: 'document', title: 'Mozz Artisan Pizza', source: { type: 'text', media_type: 'text/plain', data: 'Mozz Artisan Pizza. Sourdough pizza in Provo. '.repeat(20) } } } },
+        { type: 'text', text: 'Read it.' }, { type: 'tool_use', id: 'toolu_1', name: 'apply_site_patch', input: { reply: 'Built in that spirit.' } }] };
     return { ok: true, status: 200, json: async () => body };
   };
   const tool = { name: 'apply_site_patch', description: 'x', input_schema: { type: 'object' } };
@@ -192,9 +194,57 @@ test('callClaude offers web_fetch only with allowFetch, never forces the tool, a
   assert.equal(calls[1].messages.length, 2, 'the assistant content was appended, no extra user turn');
   assert.equal(calls[1].messages[1].role, 'assistant');
   assert.deepEqual(out.patch, { reply: 'Built in that spirit.' });
-  assert.deepEqual(out.fetched, []);
+  assert.deepEqual(out.fetched, [{ url: 'https://www.mozzartisanpizza.com', ok: true, note: '' }], 'a read in the first turn is reported after the resume');
   const plain = [];
   await callClaude({ apiKey: 'k', model: 'm', system: 's', messages: [{ role: 'user', content: 'hi' }], tool, fetchImpl: async (u, init) => { plain.push(JSON.parse(init.body)); return { ok: true, status: 200, json: async () => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: 'hello' }] }) }; } });
   assert.deepEqual(plain[0].tools.map((t) => t.name), ['apply_site_patch']);
   assert.ok(webFetchTool().max_uses > 0);
+});
+
+// 5.12.5 (1 Nov 2026): mozzartisanpizza.com sits behind a Cloudflare challenge. The reader got a
+// "Just a moment" page, the model built from the brief and never said so. The owner is now told
+// from the tool results which pages were read and which were not, and asked for screenshots.
+test('classifyFetches: a challenge page, an error, an empty page and a real page are told apart, and fetchNotes says what to do', () => {
+  const content = [
+    { type: 'server_tool_use', id: 'a', name: 'web_fetch', input: { url: 'https://blocked.example' } },
+    { type: 'web_fetch_tool_result', tool_use_id: 'a', content: { type: 'web_fetch_result', url: 'https://blocked.example', content: { type: 'document', title: 'Just a moment...', source: { type: 'text', media_type: 'text/html', data: 'Enable JavaScript and cookies to continue. Verifying you are human.' } } } },
+    { type: 'server_tool_use', id: 'b', name: 'web_fetch', input: { url: 'https://down.example' } },
+    { type: 'web_fetch_tool_result', tool_use_id: 'b', content: { type: 'web_fetch_tool_error', error_code: 'url_not_accessible' } },
+    { type: 'server_tool_use', id: 'c', name: 'web_fetch', input: { url: 'https://thin.example' } },
+    { type: 'web_fetch_tool_result', tool_use_id: 'c', content: { type: 'web_fetch_result', url: 'https://thin.example', content: { type: 'document', source: { type: 'text', media_type: 'text/plain', data: 'Menu' } } } },
+    { type: 'server_tool_use', id: 'd', name: 'web_fetch', input: { url: 'https://good.example/menu' } },
+    { type: 'web_fetch_tool_result', tool_use_id: 'd', content: { type: 'web_fetch_result', url: 'https://good.example/menu', content: { type: 'document', title: 'Our menu', source: { type: 'text', media_type: 'text/plain', data: 'Margherita 12. Marinara 10. Diavola 14. Salads, desserts, drinks. '.repeat(6) } } } },
+    { type: 'server_tool_use', id: 'e', name: 'web_fetch', input: { url: 'https://lost.example' } },
+  ];
+  const f = classifyFetches(content);
+  assert.deepEqual(f.map((x) => [x.url, x.ok]), [['https://blocked.example', false], ['https://down.example', false], ['https://thin.example', false], ['https://good.example/menu', true], ['https://lost.example', false]]);
+  assert.equal(f[0].note, BLOCKED_NOTE);
+  assert.equal(f[1].note, 'the page could not be reached');
+  assert.equal(f[2].note, 'the page came back almost empty');
+  assert.equal(f[4].note, 'no answer came back from the reader');
+  const notes = fetchNotes(f);
+  assert.equal(notes[3], 'Read: https://good.example/menu');
+  assert.match(notes[0], /^Could not read https:\/\/blocked\.example: the site blocks automated readers\. Drop screenshots/);
+  assert.deepEqual(classifyFetches([]), []);
+  assert.deepEqual(fetchNotes([]), []);
+});
+
+test('screenshots: only real image types within the caps go through, and the user turn carries them before the words', () => {
+  const ok = { media_type: 'image/jpeg', data: 'data:image/jpeg;base64,' + 'QUJD'.repeat(50) };
+  const png = { media_type: 'image/png', data: 'QUJD'.repeat(50) };
+  const big = { media_type: 'image/jpeg', data: 'A'.repeat(1.7 * 1024 * 1024) };
+  const odd = { media_type: 'application/pdf', data: 'QUJD' };
+  const junk = { media_type: 'image/jpeg', data: '<script>' };
+  const list = sanitiseImages([ok, png, big, odd, junk, ...Array.from({ length: 8 }, () => png)]);
+  assert.equal(list.length, MAX_IMAGES);
+  assert.equal(list[0].data, 'QUJD'.repeat(50), 'the data: prefix is stripped');
+  assert.ok(list.every((im) => ['image/jpeg', 'image/png'].includes(im.media_type)));
+  assert.deepEqual(sanitiseImages(null), []);
+  assert.deepEqual(sanitiseImages('nope'), []);
+  assert.equal(userTurnContent('hello', []), 'hello');
+  const turn = userTurnContent('Build it like these', list.slice(0, 2));
+  assert.equal(turn.length, 3);
+  assert.deepEqual(turn[0], { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: 'QUJD'.repeat(50) } });
+  assert.equal(turn[2].type, 'text');
+  assert.match(turn[2].text, /^Build it like these\n\nThe owner attached 2 screenshots/);
 });

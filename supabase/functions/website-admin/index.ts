@@ -123,6 +123,24 @@ async function updateSite(siteId: string, patch: Row): Promise<Row> {
 
 const mergeObj = (a: unknown, b: unknown): Row => ({ ...(isPlainObject(a) ? a as Row : {}), ...(isPlainObject(b) ? b as Row : {}) });
 
+/** The platform locations.id for an Ops venue id, only when that venue belongs to this company. */
+async function ownPlatformLocation(companyId: string, opsLocationId: unknown): Promise<string | null> {
+  const ops = typeof opsLocationId === 'string' ? opsLocationId.trim() : '';
+  if (!ops) return null;
+  try {
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ops);
+    if (!isUuid && !/^[A-Za-z0-9_-]+$/.test(ops)) return null; // never a filter built from odd input
+    let q = platformAdmin.from('locations').select('id, ops_location_id').eq('company_id', companyId);
+    q = isUuid ? q.or(`ops_location_id.eq.${ops},id.eq.${ops}`) : q.eq('ops_location_id', ops);
+    const { data } = await q.limit(2);
+    const rows = (data ?? []) as Array<{ id: string; ops_location_id: string | null }>;
+    const hit = rows.find((r) => r.ops_location_id === ops) || rows.find((r) => r.id === ops) || null;
+    return hit ? hit.id : null;
+  } catch {
+    return null;
+  }
+}
+
 // ── Publish ──────────────────────────────────────────────────────────────────────────────
 
 async function publishSnapshot(site: Row, snapshot: Row, note: string, userId: string | null) {
@@ -182,6 +200,16 @@ Deno.serve(async (req: Request) => {
   let site: Row;
   try { site = await ensureSite(companyId); } catch (e) { return failed('open the site', e); }
   const siteId = site.id as string;
+  // 5.12.5: a site with no default venue takes the one the Back Office is open on (body.location_id,
+  // an Ops id), so the public site speaks for that venue and not the first by name. Owners change
+  // it later under Branding and domain. Best effort: a failure here never blocks the action.
+  if (!(isPlainObject(site.settings) && (site.settings as Row).default_location_id)) {
+    const own = await ownPlatformLocation(companyId, body.location_id);
+    if (own) {
+      try { site = await updateSite(siteId, { settings: mergeObj(site.settings, { default_location_id: own }) }); }
+      catch (e) { console.warn('[website-admin] default venue not set:', String((e as Error)?.message || e)); }
+    }
+  }
   const settings = isPlainObject(site.settings) ? site.settings as Row : {};
   const allowCustomCode = settings.allow_custom_code === true;
 

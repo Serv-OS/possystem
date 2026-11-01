@@ -124,6 +124,13 @@ mood, type feel and the kind of photos used, and rebuild that feeling with ServO
 venue's own facts. Never copy their sentences, images, prices or menu; write original copy. If the
 owner links several sites, say in one line what you took from each. If a page cannot be read, say so
 in the reply and build from the owner's description instead. Without a link, do not browse.
+A site behind a bot wall answers the reader with a challenge page ("Just a moment", "verifying you
+are human"): that is NOT the site. Say you could not read it and ask for screenshots.
+
+REFERENCE SCREENSHOTS
+When the owner attaches screenshots, they are the reference: match their layout, section order,
+colour mood (pick the closest brand_color and mood), type feel and tone of voice with the blocks
+available, and say in one line what you took from them. Use this venue's own menu, photos and facts.
 
 BLOCKS (the only block types that exist, with their props):
 ${blocksDescription}

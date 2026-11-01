@@ -7,6 +7,19 @@
 
 export const CHANGELOG = [
   {
+    v: '5.12.5',
+    date: '1 Nov 2026',
+    items: [
+      'Website builder, the first live site (posup-test) fixed in six places. The page did not scroll: the app shell pinned the page like the till does; the public site now scrolls like any web page.',
+      'The menu said "The menu is being updated" with 157 items at the venue: the loader read a category column that does not exist. Items are placed by their real categories (cat and cats), an item in two sections shows in both, and anything hidden from online stays off the site.',
+      'The site spoke for the wrong venue: with no default set it took the first venue by name (a demo venue), so the colour, card and hours were another venue\'s. A new Default venue picker under Branding and domain sets it, and a new site takes the venue Back Office is open on.',
+      'Hours set as 00:00 to 00:00 now read "Open 24 hours" instead of the literal times.',
+      'AI designer: it now says plainly which linked pages it read and which it could not (mozzartisanpizza.com sits behind a bot wall that hands readers a "Just a moment" page, so it was never read), and asks for screenshots instead. A failed chat save is reported, not swallowed.',
+      'AI designer: attach screenshots (camera button, or paste an image into the box) of a site or look you like; the designer builds from them. Up to six per message. The designer function also gets a longer time limit for reads.',
+      'Needs the website-admin function deployed (the default venue on a new site); everything else is live with this build.',
+    ],
+  },
+  {
     v: '5.12.4',
     date: '31 Oct 2026',
     items: [

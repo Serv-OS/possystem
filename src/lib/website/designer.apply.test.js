@@ -306,6 +306,27 @@ test('chat with no change: a reply alone is saved and nothing is written to page
   assert.equal(writes.filter((w) => w.table !== 'web_ai_messages' && !w.table.startsWith('rpc/')).length, 0);
 });
 
+// 5.12.5: screenshots ride along as image blocks, the stored message says they were there, and the
+// answer carries saved:true so the screen can warn when the chat did not persist.
+test('screenshots reach Claude as image blocks before the words, are counted in the saved message, and saved is reported', async () => {
+  const { fetch, claudeCalls, writes } = fakeFetch({ data: tables(), claude: [{ reply: 'Matched the look.' }] });
+  const images = [{ media_type: 'image/jpeg', data: 'QUJD'.repeat(40) }, { media_type: 'application/pdf', data: 'QUJD' }];
+  const out = await runDesigner({ body: { site_id: SITE_A, message: 'Make it like these', mode: 'chat', images }, user: USER, env: ENV, fetchImpl: fetch, importers });
+  assert.equal(out.status, 200);
+  assert.equal(out.json.saved, true);
+  assert.equal(out.json.images_used, 1, 'the pdf was dropped');
+  assert.deepEqual(out.json.fetched, []);
+  const user = claudeCalls[0].messages.at(-1);
+  assert.equal(user.role, 'user');
+  assert.equal(user.content[0].type, 'image');
+  assert.equal(user.content[0].source.media_type, 'image/jpeg');
+  assert.match(user.content[1].text, /^Make it like these\n\nThe owner attached 1 screenshot of/);
+  assert.ok(claudeCalls[0].system.includes('REFERENCE SCREENSHOTS'));
+  const msgs = writes.find((w) => w.table === 'web_ai_messages');
+  assert.equal(msgs.body[0].content, 'Make it like these [1 screenshot attached]');
+  assert.equal(msgs.body[1].content, 'Matched the look.');
+});
+
 test('facts_only answers the summary and messages without calling Claude', async () => {
   const { fetch, claudeCalls } = fakeFetch({ data: tables() });
   const out = await runDesigner({ body: { site_id: SITE_A, facts_only: true }, user: USER, env: { ...ENV, ANTHROPIC_API_KEY: '' }, fetchImpl: fetch, importers });
