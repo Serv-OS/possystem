@@ -84,7 +84,7 @@ test('Row: slot columns, backgrounds and defaults; junk columns normalise to [] 
   const Zone = () => null;
   assert.equal(normaliseProps('Row', { col1: Zone }).col1, Zone);
   // The editor gets a real Puck slot field for every column.
-  assert.deepEqual(puckField(BLOCK_SCHEMAS.Row.props.col1), { type: 'slot' });
+  assert.deepEqual(puckField(BLOCK_SCHEMAS.Row.props.col1), { type: 'slot', disallow: ['Row'] }, 'a Row is never offered inside a Row');
   assert.equal(jsonSchemaFor('Row').properties.col1.type, 'array');
 });
 

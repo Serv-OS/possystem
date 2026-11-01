@@ -8,13 +8,16 @@ import { useSite } from '../../siteContext.js';
 import { multiVenue, menuLocation, menuVenues, menuOrderHref, onVenuePage } from '../../resolveHref.js';
 import { formatPrice, capCategories } from '../../data/loadMenu.js';
 import { isActivationKey } from '../itemSheet.js';
+import { useNested } from '../nested.js';
 import { ItemSheet } from './ItemSheet.jsx';
 
 const cls = (...xs) => xs.filter(Boolean).join(' ');
 const DIET_WORDS = { V: 'Vegetarian', VG: 'Vegan', GF: 'Gluten free', DF: 'Dairy free' };
 
 function Section({ type, id, className, children }) {
-  return <section className={cls(CN.block, className)} data-block={type} data-id={id}><div className={CN.inner}>{children}</div></section>;
+  // 5.12.9: inside a Row column the block is marked nested (same attribute as the SSR section()).
+  const nested = useNested();
+  return <section className={cls(CN.block, className)} data-block={type} data-id={id} data-nested={nested ? 'true' : undefined}><div className={CN.inner}>{children}</div></section>;
 }
 export function Empty({ children }) { return <p className={CN.empty}>{children}</p>; }
 

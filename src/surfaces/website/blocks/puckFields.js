@@ -49,7 +49,8 @@ export function puckField(f, opts = {}) {
     // are custom fields in the editor). Slots are Puck's own drop zones.
     case 'image': case 'color': case 'menu': return { ...base, type: 'text', placeholder: f.hint || undefined };
     case 'categories': return { ...base, type: 'array', arrayFields: puckFields(f.item, opts), defaultItemProps: { id: '' }, getItemSummary: (item, i) => summaryOf(item, i) };
-    case 'slot': return { type: 'slot' };
+    // A Row never sits inside a Row (the server refuses it too); the editor just does not offer it.
+    case 'slot': return { type: 'slot', disallow: ['Row'] };
     case 'location':
       return Array.isArray(opts.locations) && opts.locations.length
         ? { ...base, type: 'select', options: locationOptions(opts.locations) }
