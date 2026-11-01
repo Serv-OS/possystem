@@ -32,6 +32,10 @@ import { buildPatchTool, describeBlocks, schemasFromModule, FALLBACK_BLOCK_SCHEM
 import { buildSystemPrompt, buildUserMessage, historyTurns, pickLayout, LAYOUT_IDS } from './_lib/website/designerPrompt.js';
 
 export const DEFAULT_MODEL = 'claude-opus-5-5';
+// 5.12.11: page steps run on a faster model so each fits the server limit; the plan (the words,
+// the palette, the structure) stays on the default model. WEBSITE_DESIGNER_PAGE_MODEL overrides.
+export const DEFAULT_PAGE_MODEL = 'claude-sonnet-5-5';
+export const PLAN_PAGE_MAX = 14;
 export const MAX_TOKENS = 16000;
 export const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -508,6 +512,76 @@ export async function saveMessages({ platform, siteId, userText, reply, patch, f
   return r.ok;
 }
 
+// ── 5.12.11 staged build ───────────────────────────────────────────────────────────────────────
+const PLAN_STATUSES = ['published', 'draft'];
+/** The plan the client sends back on every page step, checked: { layout, pages:[{slug,title,kind,location_id,status,brief}] }. */
+export function sanitisePlan(plan) {
+  if (!plan || typeof plan !== 'object') return null;
+  const layout = LAYOUT_IDS.includes(plan.layout) ? plan.layout : null;
+  const seen = new Set();
+  const pages = [];
+  for (const p of Array.isArray(plan.pages) ? plan.pages.slice(0, PLAN_PAGE_MAX) : []) {
+    if (!p || typeof p !== 'object') continue;
+    const slug = String(p.slug ?? '').trim().toLowerCase();
+    if (!(slug === '' || SLUG_RE.test(slug)) || seen.has(slug)) continue;
+    seen.add(slug);
+    pages.push({
+      slug, title: String(p.title || slug || 'Home').slice(0, 200), kind: String(p.kind || 'custom').slice(0, 40),
+      location_id: UUID_RE.test(String(p.location_id || '')) ? String(p.location_id) : null,
+      status: PLAN_STATUSES.includes(p.status) ? p.status : 'published',
+      brief: String(p.brief || '').slice(0, 4000),
+    });
+  }
+  return pages.length ? { layout, pages } : null;
+}
+
+/**
+ * PLAN mode: the model's patch carries theme, nav, footer, seo, posts and the page list with briefs.
+ * The briefs come out (the validator knows no such key) into the plan the client drives the page
+ * steps with; the pages written now are empty placeholders, status draft, and only for slugs the
+ * site does not have yet, so a rebuild never blanks a live page before its turn comes.
+ */
+export function planFromPatch(rawPatch, facts) {
+  const existing = new Set((facts?.site?.pages || []).map((p) => p.slug));
+  const pages = Array.isArray(rawPatch?.pages) ? rawPatch.pages : [];
+  const planPages = [];
+  const placeholders = [];
+  for (const p of pages) {
+    if (!p || typeof p !== 'object') continue;
+    const { brief, ...rest } = p;
+    const slug = String(rest.slug ?? '');
+    planPages.push({ slug, title: rest.title, kind: rest.kind, location_id: rest.location_id || null, status: PLAN_STATUSES.includes(rest.status) ? rest.status : 'published', brief: String(brief || '') });
+    if (!existing.has(slug)) placeholders.push({ ...rest, status: 'draft', layout: { root: { props: {} }, content: [] } });
+  }
+  const layout = LAYOUT_IDS.includes(rawPatch?.theme?.layout) ? rawPatch.theme.layout : null;
+  const patch = { ...rawPatch, pages: placeholders };
+  if (!placeholders.length) delete patch.pages;
+  return { patch, plan: sanitisePlan({ layout, pages: planPages }) };
+}
+
+/** PAGE mode: keep only the planned page (renamed to its planned slug when the model used another), drop everything else. */
+export function pageOnlyPatch(rawPatch, planPage) {
+  const pages = Array.isArray(rawPatch?.pages) ? rawPatch.pages.filter((p) => p && typeof p === 'object') : [];
+  let page = pages.find((p) => String(p.slug ?? '') === planPage.slug) || (pages.length === 1 ? pages[0] : null);
+  if (!page) return { reply: rawPatch?.reply || `The ${planPage.title} page came back empty.` };
+  page = { ...page, slug: planPage.slug, title: page.title || planPage.title, kind: page.kind || planPage.kind, status: planPage.status };
+  if (planPage.kind === 'location' && planPage.location_id) page.location_id = planPage.location_id;
+  delete page.brief;
+  return { reply: rawPatch?.reply || `Built the ${planPage.title} page.`, pages: [page] };
+}
+
+/** The user turn for one page step: the plan in brief, this page's brief, the owner's original words. */
+export function pageStepMessage({ plan, planPage, message }) {
+  const others = plan.pages.filter((p) => p.slug !== planPage.slug).map((p) => `  "${p.slug}" ${p.kind} "${p.title}"`).join('\n');
+  const parts = [
+    `Build the page "${planPage.slug}" (${planPage.kind}, "${planPage.title}", status ${planPage.status}${planPage.location_id ? `, location_id ${planPage.location_id}` : ''}).`,
+    `Its brief from the site plan:\n${planPage.brief || '(no brief: follow the recipe for this page kind)'}`,
+    others ? `The other planned pages (link to them by slug):\n${others}` : '',
+    message ? `What the owner asked for the whole site:\n${String(message).slice(0, 6000)}` : '',
+  ];
+  return parts.filter(Boolean).join('\n\n');
+}
+
 /** Plain English for a refused patch. */
 export function refusalReply(errors) {
   const list = (errors || []).slice(0, 8).map((e) => `- ${e}`).join('\n');
@@ -527,7 +601,10 @@ export async function runDesigner({ body, user, reached = [], env = globalThis.p
   if (!platform.url || !platform.key) return { status: 500, json: { error: 'The website designer is not configured on this server (Platform key).' } };
   const siteId = String(body?.site_id || '');
   if (!UUID_RE.test(siteId)) return { status: 400, json: { error: 'site_id required' } };
-  const mode = ['build', 'chat', 'post'].includes(body?.mode) ? body.mode : 'chat';
+  const mode = ['build', 'chat', 'post', 'plan', 'page'].includes(body?.mode) ? body.mode : 'chat';
+  const plan = mode === 'page' ? sanitisePlan(body?.plan) : null;
+  const planPage = mode === 'page' ? plan?.pages.find((p) => p.slug === String(body?.plan_page ?? '\u0000')) || null : null;
+  if (mode === 'page' && !planPage) return { status: 400, json: { error: 'page mode needs the site plan and the slug of one planned page.' } };
   const layout = LAYOUT_IDS.includes(body?.layout) ? body.layout : null;
   const message = String(body?.message || '').slice(0, MAX_STRING);
 
@@ -547,17 +624,18 @@ export async function runDesigner({ body, user, reached = [], env = globalThis.p
 
   const apiKey = env.ANTHROPIC_API_KEY;
   if (!apiKey) return { status: 500, json: { error: 'AI not configured' } };
-  const model = env.WEBSITE_DESIGNER_MODEL || DEFAULT_MODEL;
+  const model = mode === 'page' ? (env.WEBSITE_DESIGNER_PAGE_MODEL || DEFAULT_PAGE_MODEL) : (env.WEBSITE_DESIGNER_MODEL || DEFAULT_MODEL);
   const schemas = await loadBlockSchemas(importers.schemas);
   const validate = await loadValidator(importers.validator);
   const tool = buildPatchTool(schemas);
-  const chosenLayout = mode === 'build' ? (layout || pickLayout(facts.menu.photo_coverage_pct)) : layout;
+  const chosenLayout = mode === 'build' || mode === 'plan' ? (layout || pickLayout(facts.menu.photo_coverage_pct)) : (mode === 'page' ? plan.layout || layout : layout);
   // The system prompt gets the OWNER's pick (null when none), so build mode can say why it chose.
-  const system = buildSystemPrompt({ facts, mode, layout, blocksDescription: describeBlocks(schemas) });
+  const system = buildSystemPrompt({ facts, mode, layout: mode === 'page' ? chosenLayout : layout, blocksDescription: describeBlocks(schemas) });
   const page = body?.page_id ? facts.site?.pages?.find((p) => p.id === body.page_id) || null : null;
-  const userText = buildUserMessage({ message, mode, layout: chosenLayout, page });
+  const userText = mode === 'page' ? pageStepMessage({ plan, planPage, message }) : buildUserMessage({ message, mode, layout: chosenLayout, page });
   const images = sanitiseImages(body?.images);
-  const messages = [...historyTurns(facts.recent_messages), { role: 'user', content: userTurnContent(userText, images) }];
+  // Page steps start from the plan, not the chat history: shorter, and the plan is the one truth.
+  const messages = [...(mode === 'page' ? [] : historyTurns(facts.recent_messages)), { role: 'user', content: userTurnContent(userText, images) }];
 
   let reply = '';
   let applied = false;
@@ -565,6 +643,7 @@ export async function runDesigner({ body, user, reached = [], env = globalThis.p
   let errors = [];
   let finalPatch = null;
   let fetched = [];
+  let planOut = null;
 
   for (let attempt = 0; attempt < 2; attempt++) {
     let out;
@@ -575,7 +654,9 @@ export async function runDesigner({ body, user, reached = [], env = globalThis.p
     }
     if (!out.ok) return { status: out.status || 502, json: { error: out.error } };
     if (Array.isArray(out.fetched) && out.fetched.length) fetched = out.fetched;
-    const rawPatch = attachLocationIds(ensureBlockIds(out.patch || { reply: out.text || 'I had nothing to change.' }), facts);
+    let rawPatch = attachLocationIds(ensureBlockIds(out.patch || { reply: out.text || 'I had nothing to change.' }), facts);
+    if (mode === 'plan') { const r = planFromPatch(rawPatch, facts); rawPatch = r.patch; planOut = r.plan; }
+    if (mode === 'page') rawPatch = pageOnlyPatch(rawPatch, planPage);
     const patchSlugs = new Set((Array.isArray(rawPatch.pages) ? rawPatch.pages : []).map((p) => p?.slug));
     const v = validate(rawPatch, {
       schemas,
@@ -613,8 +694,10 @@ export async function runDesigner({ body, user, reached = [], env = globalThis.p
   const notes = fetchNotes(fetched);
   if (notes.length) reply = `${reply}\n\n${notes.join('\n')}`.trim();
   const storedUser = `${message || userText}${images.length ? ` [${images.length} screenshot${images.length === 1 ? '' : 's'} attached]` : ''}`;
-  const saved = await saveMessages({ platform, siteId, userText: storedUser, reply, patch: applied ? finalPatch : null, fetchImpl });
-  return { status: 200, json: { reply, applied, pages_changed: pagesChanged, errors, fetched, saved, images_used: images.length } };
+  // Page steps save no chat rows: the plan's reply already describes the site, and seven "built the
+  // menu page" lines would bury the conversation. The client shows the progress itself.
+  const saved = mode === 'page' ? true : await saveMessages({ platform, siteId, userText: storedUser, reply, patch: applied ? finalPatch : null, fetchImpl });
+  return { status: 200, json: { reply, applied, pages_changed: pagesChanged, errors, fetched, saved, images_used: images.length, ...(planOut ? { plan: planOut } : {}) } };
 }
 
 export default async function handler(req, res) {

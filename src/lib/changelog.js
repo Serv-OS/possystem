@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.12.11',
+    date: '1 Nov 2026',
+    items: [
+      'Website designer: building a whole site no longer fails with "The designer could not answer (504)". The build runs in stages: a plan (look, navigation, footer, a brief per page), then one page at a time, with "Building page 3 of 7: Menu" shown in the chat.',
+      'Website designer: a long "build my site with these pages" message in the chat box runs as a staged build too, not as one call.',
+      'Website designer: the server allows each step up to five minutes.',
+    ],
+  },
+  {
     v: '5.12.10',
     date: '1 Nov 2026',
     items: [

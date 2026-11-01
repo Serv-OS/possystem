@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, Component } from 'react';
 import { W } from '../ui.js';
 import { designerRequest, designerFacts } from '../../../../lib/website/designerClient.js';
+import { stagedBuild, looksLikeSiteBuild } from '../../../../lib/website/stagedBuild.js';
 import { siteVars } from '../../../../surfaces/website/theme.js';
 // The public site's own renderer, context and stylesheet (agent B), so the preview is the real
 // site markup: same blocks, same class names, same theme variables. Puck is not involved here.
@@ -225,6 +226,7 @@ export default function Designer(props) {
   const [input, setInput] = useState(mode === 'build' ? brief : '');
   const [layout, setLayout] = useState(site?.theme?.layout || null);
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState(''); // 5.12.11: "Building page 3 of 7: Menu" while a staged build runs
   const [showCards, setShowCards] = useState(!pages.length);
   const [shots, setShots] = useState([]); // screenshots waiting to go with the next message
   const fileRef = useRef(null);
@@ -259,6 +261,20 @@ export default function Designer(props) {
     setMsgs((cur) => [...cur, { role: 'user', content: shown, created_at: stamp, local: true, previews: shots.map((sh) => sh.preview) }]);
     setInput('');
     setShots([]);
+    // 5.12.11: a whole site is built in stages (plan, then one call per page) so no single call
+    // outruns the server. A long "build me a site with these pages" message in the chat box counts.
+    const staged = sendMode === 'build' || (sendMode === 'chat' && !pageId && !postId && looksLikeSiteBuild(message));
+    if (staged) {
+      const result = await stagedBuild({ siteId, message, layout: sendLayout, images, request: designerRequest, onStep: (s) => { if (alive.current) setProgress(s); } });
+      if (!alive.current) return;
+      setProgress('');
+      for (const m of result.messages) setMsgs((cur) => [...cur, { role: 'assistant', content: m, created_at: new Date().toISOString(), local: true, applied: result.applied }]);
+      if (result.error) notify(result.error, 'error');
+      if (result.applied) { notify('Your site is built. Check the preview on the right.'); setShowCards(false); await refresh(); }
+      setBusy(false);
+      loadFacts();
+      return;
+    }
     const r = await designerRequest({ site_id: siteId, message, mode: sendMode, page_id: pageId, post_id: postId, layout: sendLayout, ...(images.length ? { images } : {}) });
     if (!alive.current) return;
     if (r.error) {
@@ -339,7 +355,7 @@ export default function Designer(props) {
                 {m.role === 'assistant' && (m.patch || m.applied) ? <div style={{ ...W.hint, marginTop: 6, color: 'var(--grn)' }}>Changes applied</div> : null}
               </div>
             ))}
-            {busy && <div style={D.bubble(false)}>Working on it…</div>}
+            {busy && <div style={D.bubble(false)}>{progress || 'Working on it…'}</div>}
           </div>
 
           <div style={D.chips}>
