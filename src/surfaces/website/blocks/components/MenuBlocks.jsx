@@ -7,6 +7,8 @@ import { CN } from '../classNames.js';
 import { useSite } from '../../siteContext.js';
 import { multiVenue, menuLocation, menuVenues, menuOrderHref, onVenuePage } from '../../resolveHref.js';
 import { formatPrice, capCategories } from '../../data/loadMenu.js';
+import { findUsPath } from '../../routes.js';
+import { A } from '../../Link.jsx';
 import { isActivationKey } from '../itemSheet.js';
 import { useNested } from '../nested.js';
 import { ItemSheet } from './ItemSheet.jsx';
@@ -101,7 +103,7 @@ function useItemSheet(locationId) {
   return [sheet, openSheet];
 }
 
-export function LiveMenu({ id, title, categories, layout, show = {}, max_items, location_id, venue_switch = 'buttons' }) {
+export function LiveMenu({ id, title, categories, layout, show = {}, max_items, location_id, venue_switch = 'buttons', button = null }) {
   const { ctx, menu, menuLoading } = useSite();
   const [sheet, openSheet] = useItemSheet(location_id);
   const layoutCn = layout === 'list' ? CN.menuList : layout === 'board' ? CN.menuBoard : CN.menuCards;
@@ -122,10 +124,17 @@ export function LiveMenu({ id, title, categories, layout, show = {}, max_items, 
       <div className={CN.menuGrid}>{c.items.map((it) => <MenuItem key={it.id} it={it} show={show} orderHref={orderHref} onOpen={openSheet} />)}</div>
     </div>
   ));
-  return <Section type="LiveMenu" id={id} className={cls(CN.menu, layoutCn)}>{head}{switcher}{sections.length ? sections : <Empty>Nothing on the menu right now.</Empty>}{sheet}</Section>;
+  // 5.12.12: a button under the menu (owner's words) and "Find my local store" to the Find us page.
+  const under = (button && button.label) || show.store_finder ? (
+    <div className={CN.menuMore}>
+      {button && button.label ? <A className={cls(CN.btn, CN.btnSecondary)} href={button.href}>{button.label}</A> : null}
+      {show.store_finder ? <A className={cls(CN.btn, CN.btnSecondary)} href={findUsPath(ctx.snapshot)}>Find my local store</A> : null}
+    </div>
+  ) : null;
+  return <Section type="LiveMenu" id={id} className={cls(CN.menu, layoutCn)}>{head}{switcher}{sections.length ? sections : <Empty>Nothing on the menu right now.</Empty>}{under}{sheet}</Section>;
 }
 
-export function Specials({ id, title, source, ids }) {
+export function Specials({ id, title, source, ids, button = null }) {
   const { menu } = useSite();
   const [sheet, openSheet] = useItemSheet(undefined);
   if (!menu) return null;
@@ -140,6 +149,7 @@ export function Specials({ id, title, source, ids }) {
     <Section type="Specials" id={id} className={cls(CN.menu, CN.specials, CN.menuCards)}>
       {title ? <h2 className={CN.h2}>{title}</h2> : null}
       <div className={CN.menuGrid}>{items.map((it) => <MenuItem key={it.id} it={it} show={{ prices: true, photos: true, descriptions: true, dietary: true }} onOpen={openSheet} />)}</div>
+      {button && button.label ? <div className={CN.menuMore}><A className={cls(CN.btn, CN.btnSecondary)} href={button.href}>{button.label}</A></div> : null}
       {sheet}
     </Section>
   );

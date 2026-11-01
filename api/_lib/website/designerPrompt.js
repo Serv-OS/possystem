@@ -201,7 +201,8 @@ export function modeRules(mode, { layout, facts } = {}) {
 Build the whole site in one apply_site_patch call. Layout: ${chosen} (${layout ? 'the owner chose it' : layoutReason(chosen, facts?.menu?.photo_coverage_pct)}).
 Say which layout you used and why in the reply.
 Set theme, nav (one entry per published page in this order, home first, then a link item to '/blog'
-labelled News), footer (text with the venue name, show_powered_by true, email/phone/instagram only
+labelled News; with two or more venues use ONE nav item { kind: 'locations', label: 'Locations' }
+instead of a link per venue page), footer (text with the venue name, show_powered_by true, email/phone/instagram only
 if the facts give them) and site seo.
 Pages to create, in this order (slug, kind, title${pages.some((p) => p.location_id) ? ', location_id' : ''}):
 ${pages.map((p) => `  "${p.slug}" ${p.kind} "${p.title}"${p.location_id ? ` location_id ${p.location_id}` : ''}${p.status === 'draft' ? ' (status draft)' : ''}`).join('\n')}
@@ -220,7 +221,8 @@ needs their words.`;
     return `PLAN MODE
 Plan the whole site in one apply_site_patch call, but build NO page content yet. Layout: ${chosen} (${layout ? 'the owner chose it' : layoutReason(chosen, facts?.menu?.photo_coverage_pct)}).
 Set theme (layout, type, buttons, mood, brand_color), nav (one entry per published page in order,
-home first, then a link item to '/blog' labelled News), footer and site seo now: they are saved from
+home first, then a link item to '/blog' labelled News; with two or more venues use ONE nav item
+{ kind: 'locations', label: 'Locations' } as a dropdown instead of a link per venue page), footer and site seo now: they are saved from
 this call.
 Then list every page in pages with slug, title, kind${pages.some((p) => p.location_id) ? ', location_id' : ''}, status, seo and a brief, and
 layout { root: { props: {} }, content: [] } (EMPTY: a later call builds each page from your brief).

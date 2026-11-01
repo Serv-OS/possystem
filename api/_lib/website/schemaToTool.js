@@ -200,8 +200,11 @@ export function buildPatchTool(blockSchemas = FALLBACK_BLOCK_SCHEMAS) {
           brand_color: { type: ['string', 'null'], description: 'null inherits the branding colour (default)' },
         } },
         nav: { type: 'array', items: { type: 'object', properties: {
-          label: str('Up to 60 characters'), kind: str("'page' for a site page, 'link' for a URL", { enum: ['page', 'link'] }),
+          label: str('Up to 60 characters'), kind: str("'page' for a site page, 'link' for a URL, 'locations' for a dropdown of every venue page, 'group' for a dropdown of the children listed", { enum: ['page', 'link', 'locations', 'group'] }),
           page_id: str("kind page: the page's slug ('' for home) or its id when the facts give one"), href: str("kind link: a URL or site path such as '/blog'"),
+          children: { type: 'array', description: "kind group only: the items in the dropdown", items: { type: 'object', properties: {
+            label: str(''), kind: str('', { enum: ['page', 'link'] }), page_id: str(''), href: str(''),
+          }, required: ['label', 'kind'] } },
         }, required: ['label', 'kind'] } },
         footer: { type: 'object', properties: { text: str(''), links: { type: 'array', items: { type: 'object', properties: { label: str(''), href: str('') } } }, show_powered_by: bool(''), instagram: str(''), facebook: str(''), email: str(''), phone: str('') } },
         seo: { type: 'object', properties: { title: str('<= 60 characters'), description: str('<= 155 characters'), og_image_url: str(''), locale: str('en-GB or en-US'), keywords: { type: 'array', items: { type: 'string', maxLength: 60 }, maxItems: 30 } } },

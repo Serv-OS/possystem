@@ -70,7 +70,7 @@ export function Row(props) {
   return (
     <section
       className={cls(CN.block, CN.row)} data-block="Row" data-id={props.id}
-      data-cols={plan.cols} data-full={plan.full ? 'true' : 'false'} data-width={plan.width} data-tone={plan.tone || undefined}
+      data-cols={plan.cols} data-full={plan.full ? 'true' : 'false'} data-width={plan.width} data-colpad={plan.colPad} data-tone={plan.tone || undefined}
       data-gap={plan.gap} data-pad={plan.pad} data-align={plan.align} data-bg={plan.hasBg ? 'true' : 'false'} data-darken={plan.darken ? 'true' : 'false'}
       style={plan.style}
     >

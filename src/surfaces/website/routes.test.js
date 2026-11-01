@@ -107,3 +107,22 @@ test('the choose your venue page is synthesised for /order paths without a page'
   const own = resolveRoute({ pages: [{ slug: 'order', title: 'Order', kind: 'order', status: 'published', layout: { content: [] } }] }, '/order');
   assert.equal(own.page.synthesised, undefined, 'a real order page wins');
 });
+
+
+// ── 5.12.12 nav dropdowns ───────────────────────────────────────────────────────
+test('visibleNav: a locations item opens every published venue page, a group item its visible children, empty dropdowns vanish', () => {
+  const s = snap();
+  s.site.nav = [
+    { label: 'Home', kind: 'page', page_id: '' },
+    { label: 'Locations', kind: 'locations' },
+    { label: 'More', kind: 'group', children: [{ label: 'Menu', kind: 'page', page_id: 'menu' }, { label: 'News', kind: 'link', href: '/blog' }, { label: 'Gone', kind: 'page', page_id: 'no-such-page' }] },
+    { label: 'Empty', kind: 'group', children: [{ label: 'Gone', kind: 'page', page_id: 'no-such-page' }] },
+  ];
+  const nav = visibleNav(s);
+  assert.deepEqual(nav.map((n) => n.label), ['Home', 'Locations', 'More']);
+  const locs = nav[1];
+  assert.ok(locs.children.length >= 2, 'one child per venue page');
+  assert.ok(locs.children.every((c) => c.href.startsWith('/locations/')));
+  assert.deepEqual(nav[2].children.map((c) => c.href), ['/menu', '/blog']);
+  assert.equal(nav[2].href, '/menu', 'a group item itself points at its first child');
+});

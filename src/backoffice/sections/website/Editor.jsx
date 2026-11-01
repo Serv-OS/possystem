@@ -138,6 +138,23 @@ export default function Editor({ ws, toast, pageId, onPageChange, onAskDesigner,
   const page = ordered.find((p) => p.id === pageId) || ordered[0] || null;
   const [viewport, setViewport] = useState('desktop');
   const [adding, setAdding] = useState(false);
+  // 5.12.12 (Peter: "the design scrolls with the page, you cannot see the field to edit"): the
+  // editor fills the window below its own top edge, so the page itself never scrolls and Puck's
+  // panes scroll on their own. Measured, because the Appearance header above it varies in height.
+  const puckBox = useRef(null);
+  const pageKey = page ? page.id : null;
+  const [puckHeight, setPuckHeight] = useState('max(560px, calc(100vh - 170px))');
+  useEffect(() => {
+    const measure = () => {
+      const el = puckBox.current;
+      if (!el) return;
+      const top = el.getBoundingClientRect().top + window.scrollY;
+      setPuckHeight(`max(480px, calc(100vh - ${Math.round(top)}px - 12px))`);
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, [pageKey, configMod]);
   const [publishing, setPublishing] = useState(false);
   const [saveState, setSaveState] = useState('');
   const [configMod, setConfigMod] = useState(loadPuckConfig ? undefined : null); // undefined = loading
@@ -260,7 +277,7 @@ export default function Editor({ ws, toast, pageId, onPageChange, onAskDesigner,
       )}
       {page && configMod === undefined && <div style={W.empty}>Loading the editor…</div>}
       {page && configMod !== undefined && (
-        <div className="svw-puck" style={{ ...PUCK_THEME_VARS, height: 'max(560px, calc(100vh - 170px))' }}>
+        <div className="svw-puck" ref={puckBox} style={{ ...PUCK_THEME_VARS, height: puckHeight }}>
           {!loadPuckConfig && <div style={{ padding: '6px 12px', fontSize: 12, color: 'var(--acc)', background: 'var(--acc-d)' }}>The block library is not in this build yet, so the palette is empty.</div>}
           <Puck
             key={page.id}

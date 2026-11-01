@@ -11,9 +11,11 @@ import { pickLocation } from '../../resolveHref.js';
 import { openStatus } from '../../hours.js';
 import { siteName } from '../../ssr/jsonld.js';
 import { heroSlides, slideSeconds, nextSlide } from '../heroSlides.js';
+import { isDarkHex } from '../../theme.js';
 
 const cls = (...xs) => xs.filter(Boolean).join(' ');
-const bg = (url) => (url ? { backgroundImage: `url(${JSON.stringify(url)})` } : undefined);
+const bg = (url, hex) => (url ? { backgroundImage: `url(${JSON.stringify(url)})` } : (hex ? { backgroundColor: hex } : undefined));
+const tone = (url, hex) => (!url && hex ? (isDarkHex(hex) ? 'light' : 'dark') : undefined);
 
 function reducedMotion() {
   try { return typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch { return false; }
@@ -39,12 +41,14 @@ export function Hero(props) {
   const { ctx } = useSite();
   const loc = pickLocation(ctx, 'default');
   const branding = (loc && loc.online_branding) || {};
-  const photo = photo_url || branding.hero_url || '';
+  const usePhoto = props.use_photo !== false;
+  const hex = /^#[0-9a-f]{6}$/i.test(String(props.bg_color || '')) ? String(props.bg_color) : '';
+  const photo = usePhoto ? (photo_url || branding.hero_url || '') : '';
   const title = headline || branding.display_name || (loc && loc.name) || siteName(ctx.snapshot);
   const st = show_status && loc ? openStatus(loc.opening_hours, loc.timezone, ctx.now) : { text: '' };
   const H = isFirst ? 'h1' : 'h2';
   const status = st.text ? <div className={cls(CN.heroStatus, st.open ? CN.open : CN.closed)}>{st.text}</div> : null;
-  const slides = heroSlides({ headline, sub, photo_url, primary, secondary, slides: props.slides }, { fallbackPhoto: branding.hero_url || '', fallbackHeadline: title });
+  const slides = heroSlides({ headline, sub, photo_url: usePhoto ? photo_url : '', primary, secondary, slides: props.slides }, { fallbackPhoto: usePhoto ? branding.hero_url || '' : '', fallbackHeadline: title });
   const seconds = slideSeconds(props);
   const sizeCls = height === 'short' ? CN.heroShort : CN.heroTall;
 
@@ -61,7 +65,7 @@ export function Hero(props) {
 
   if (count < 2) {
     return (
-      <section className={cls(CN.block, CN.hero, sizeCls)} data-block="Hero" data-id={id} data-photo={photo ? 'true' : 'false'} style={bg(photo)}>
+      <section className={cls(CN.block, CN.hero, sizeCls)} data-block="Hero" data-id={id} data-photo={photo ? 'true' : 'false'} data-tone={tone(photo, hex)} style={bg(photo, hex)}>
         <Body slide={slides[0]} tag={H} status={status} />
       </section>
     );
@@ -73,7 +77,7 @@ export function Hero(props) {
       onMouseEnter={() => setPaused(true)} onMouseLeave={() => setPaused(false)}
     >
       {slides.map((sl, i) => (
-        <div key={i} className={CN.heroSlide} data-slide={i} data-active={i === shown ? 'true' : 'false'} data-photo={sl.photo ? 'true' : 'false'} style={bg(sl.photo)} aria-hidden={i === shown ? undefined : 'true'}>
+        <div key={i} className={CN.heroSlide} data-slide={i} data-active={i === shown ? 'true' : 'false'} data-photo={sl.photo ? 'true' : 'false'} data-tone={tone(sl.photo, hex)} style={bg(sl.photo, hex)} aria-hidden={i === shown ? undefined : 'true'}>
           <Body slide={sl} tag={i === 0 ? H : 'h2'} status={i === 0 ? status : null} />
         </div>
       ))}

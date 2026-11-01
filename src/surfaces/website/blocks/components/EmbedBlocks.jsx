@@ -81,7 +81,7 @@ export function LoyaltyJoin({ id, headline, sub, show_card_preview, location_id 
         {sub ? <p className={CN.muted}>{sub}</p> : null}
         {href ? <a className={cls(CN.btn, CN.btnPrimary)} href={href} rel="noopener">Join free</a> : null}
       </div>
-      {show_card_preview ? <div className={CN.loyaltyCard}><span>{venueName(loc, ctx)}</span><span>Loyalty card</span></div> : null}
+      {show_card_preview ? <div className={CN.loyaltyCard}><span>{siteName(ctx.snapshot) || venueName(loc, ctx)}</span><span>Loyalty card</span></div> : null}
     </Section>
   );
 }

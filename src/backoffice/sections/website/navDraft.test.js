@@ -56,3 +56,23 @@ test('headerDraft fills defaults; the server validates settings.header the same 
   const bad = settingsProblems({ header: { brand: 'huge', cta: 'buy', sticky: 'yes', colour: 'red' } });
   assert.equal(bad.length, 4, bad.join(' | '));
 });
+
+
+// ── 5.12.12 nav dropdowns ───────────────────────────────────────────────────────
+test('dropdown rows: locations and group come back as rows and go out as nav items; an empty group is refused', () => {
+  const pages = [{ id: 'p1', slug: '', title: 'Home', kind: 'home', status: 'published' }, { id: 'p2', slug: 'menu', title: 'Menu', kind: 'menu', status: 'published' }, { id: 'p3', slug: 'leeds', title: 'Leeds', kind: 'location', status: 'published' }];
+  const site = { nav: [{ label: 'Locations', kind: 'locations' }, { label: 'More', kind: 'group', children: [{ label: 'Menu', kind: 'page', page_id: 'menu' }, { label: 'News', kind: 'link', href: '/blog' }] }] };
+  const { rows, auto } = navRowsFrom(site, pages);
+  assert.equal(auto, false);
+  assert.deepEqual(rows[0], { label: 'Locations', kind: 'locations', page_id: '', href: '' });
+  assert.equal(rows[1].kind, 'group');
+  assert.deepEqual(rows[1].page_ids, ['p2'], 'a slug child is matched to its page id');
+  assert.equal(rows[1].links.length, 1);
+  const out = navPatchFrom(rows, { p1: 'Home', p2: 'Menu', p3: 'Leeds' });
+  assert.deepEqual(out.errors, []);
+  assert.deepEqual(out.nav[0], { label: 'Locations', kind: 'locations' });
+  assert.deepEqual(out.nav[1], { label: 'More', kind: 'group', children: [{ label: 'Menu', kind: 'page', page_id: 'p2' }, { label: 'News', kind: 'link', href: '/blog' }] });
+  const bad = navPatchFrom([{ label: 'Empty', kind: 'group', page_ids: [], links: [] }]);
+  assert.equal(bad.errors.length, 1);
+  assert.ok(bad.errors[0].includes('nothing in it'));
+});

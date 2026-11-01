@@ -303,18 +303,25 @@ export function navProblems(nav) {
   if (nav === undefined) return errors;
   if (!Array.isArray(nav)) return ['Nav must be a list.'];
   if (nav.length > LIMITS.MAX_NAV_ITEMS) errors.push(`Nav can hold at most ${LIMITS.MAX_NAV_ITEMS} items.`);
-  nav.forEach((item, i) => {
-    const at = `Nav item ${i + 1}`;
+  // 5.12.12: 'locations' (a dropdown of every venue page) and 'group' (a dropdown of chosen items).
+  const one = (item, at, depth) => {
     if (!isPlainObject(item)) { errors.push(`${at} is not an object.`); return; }
     if (typeof item.label !== 'string' || !item.label.trim()) errors.push(`${at} needs a label.`);
     else if (item.label.length > 60) errors.push(`${at} label is longer than 60 characters.`);
-    if (item.kind !== 'page' && item.kind !== 'link') errors.push(`${at} kind must be page or link.`);
+    const kinds = depth === 0 ? ['page', 'link', 'locations', 'group'] : ['page', 'link'];
+    if (!kinds.includes(item.kind)) errors.push(`${at} kind must be ${kinds.join(' or ')}.`);
     if (item.kind === 'page' && typeof item.page_id !== 'string') errors.push(`${at} needs a page_id.`);
     if (item.kind === 'link') {
       if (typeof item.href !== 'string' || !item.href.trim()) errors.push(`${at} needs an href.`);
       else if (item.href.length > 2048) errors.push(`${at} href is longer than 2048 characters.`);
     }
-  });
+    if (item.kind === 'group') {
+      if (!Array.isArray(item.children) || !item.children.length) errors.push(`${at} (a dropdown) needs children.`);
+      else if (item.children.length > LIMITS.MAX_NAV_ITEMS) errors.push(`${at} has more than ${LIMITS.MAX_NAV_ITEMS} children.`);
+      else item.children.forEach((c, j) => one(c, `${at} child ${j + 1}`, depth + 1));
+    }
+  };
+  nav.forEach((item, i) => one(item, `Nav item ${i + 1}`, 0));
   return errors;
 }
 
