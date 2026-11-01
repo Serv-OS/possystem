@@ -22,6 +22,11 @@ export function puckField(f, opts = {}) {
   const base = { label: f.label || undefined };
   switch (f.type) {
     case 'string': case 'href': return { ...base, type: 'text', placeholder: f.hint || undefined };
+    // 5.12.9 plumbing: plain fields until the editor's pickers replace them (image upload, colour,
+    // menu and category dropdowns). Slots are Puck's own drop zones.
+    case 'image': case 'color': case 'menu': return { ...base, type: 'text', placeholder: f.hint || undefined };
+    case 'categories': return { ...base, type: 'array', arrayFields: puckFields(f.item, opts), defaultItemProps: { id: '' }, getItemSummary: (item, i) => summaryOf(item, i) };
+    case 'slot': return { type: 'slot' };
     case 'location':
       return Array.isArray(opts.locations) && opts.locations.length
         ? { ...base, type: 'select', options: locationOptions(opts.locations) }

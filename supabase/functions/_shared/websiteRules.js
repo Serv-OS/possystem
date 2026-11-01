@@ -134,9 +134,20 @@ function propProblem(blockType, name, rule, value) {
     case 'text':
     case 'href':
     case 'location': // 5.12.8: the venue picker ('default', 'all' or a venue id) is a string
+    case 'image': case 'color': case 'menu': // 5.12.9: a photo URL, a hex colour, a menu id or 'follow'
       if (typeof value !== 'string') return `${where} must be text.`;
+      if (rule.type === 'color' && value && !/^#[0-9a-fA-F]{6}$/.test(value)) return `${where} must be a colour like #c8493b.`;
+      if (rule.type === 'image' && value.length > 2048) return `${where} is longer than 2048 characters.`;
       if (rule.max && value.length > rule.max) return `${where} is longer than ${rule.max} characters.`;
       return '';
+    case 'categories':
+      if (!Array.isArray(value)) return `${where} must be a list.`;
+      if (value.length > 200) return `${where} has more than 200 entries.`;
+      return value.every((x) => isPlainObject(x) && typeof x.id === 'string') ? '' : `${where} items need an id.`;
+    case 'slot': // blocks inside a block: a list of { type, props }; the layout check walks into them
+      if (!Array.isArray(value)) return `${where} must be a list of blocks.`;
+      if (value.length > 60) return `${where} holds more than 60 blocks.`;
+      return value.every((x) => isPlainObject(x) && typeof x.type === 'string' && isPlainObject(x.props)) ? '' : `${where} items need a type and props.`;
     case 'number':
       if (typeof value !== 'number' || !Number.isFinite(value)) return `${where} must be a number.`;
       if (rule.max !== undefined && value > rule.max) return `${where} is above ${rule.max}.`;

@@ -34,6 +34,17 @@ function cloneDefault(f) {
   return d;
 }
 
+// 5.12.9 field types the editor turns into pickers (puckFields.js); stored values stay plain:
+//   image      a photo URL (the editor uploads and fills it)      → string
+//   color      a hex colour like #c8493b, '' = none                → string
+//   menu       a menu id, or 'follow' = the menu live right now    → string
+//   categories menu category ids to show, [] = all                 → [{ id }]
+//   slot       blocks dropped inside this block (Puck slot)        → [{ type, props }]
+const img = (def = '', extra = {}) => ({ type: 'image', default: def, ...extra });
+const color = (def = '', extra = {}) => ({ type: 'color', default: def, hint: 'A colour like #c8493b. Empty = none', ...extra });
+const slot = (extra = {}) => ({ type: 'slot', default: [], ...extra });
+export const FIELD_HELPERS = Object.freeze({ s, t, n, b, e, h, arr, obj, img, color, slot });
+
 // A location picker: 'default' = settings.default_location_id; 'all' where the block allows it.
 // 5.12.8: its own field type, so the editor shows a dropdown of the venues (puckFields.js) while
 // the stored value stays a string ('default', 'all' or a location id) for the AI and the renderers.
@@ -47,7 +58,7 @@ export const BLOCK_SCHEMAS = {
     props: {
       headline: s('', { label: 'Headline' }),
       sub: t('', { label: 'Sub heading' }),
-      photo_url: s('', { label: 'Photo URL', hint: 'Empty = the branding hero photo' }),
+      photo_url: img('', { label: 'Photo', hint: 'Empty = the branding hero photo' }),
       show_status: b(true, { label: 'Show open or closed now' }),
       primary: linkObj('Order now', 'servos:order'),
       secondary: linkObj('See the menu', '/menu'),
@@ -67,8 +78,8 @@ export const BLOCK_SCHEMAS = {
     label: 'Live menu', group: 'servos',
     props: {
       title: s('Menu', { label: 'Heading' }),
-      menu_id: s('follow', { label: 'Menu', hint: "'follow' = the menu live right now" }),
-      categories: arr({ id: s('', { label: 'Category id' }) }, [], { label: 'Categories', hint: 'Empty = all' }),
+      menu_id: { type: 'menu', default: 'follow', label: 'Menu', hint: "'follow' = the menu live right now, else a menu id" },
+      categories: { type: 'categories', default: [], item: { id: s('', { label: 'Category id' }) }, label: 'Categories', hint: 'Empty = all' },
       layout: e(['cards', 'list', 'board'], 'cards', { label: 'Layout' }),
       show: obj({
         prices: b(true, { label: 'Prices' }),
@@ -186,7 +197,7 @@ export const BLOCK_SCHEMAS = {
     label: 'Gallery', group: 'content',
     props: {
       title: s('', { label: 'Heading' }),
-      photos: arr({ url: s('', { label: 'Photo URL' }), alt: s('', { label: 'Alt text' }) }, [], { label: 'Photos' }),
+      photos: arr({ url: img('', { label: 'Photo' }), alt: s('', { label: 'Alt text' }) }, [], { label: 'Photos' }),
       cols: n(3, { label: 'Columns', min: 1, max: 4 }),
     },
   },
@@ -245,7 +256,14 @@ export function defaultPropsFor(type) {
 // a page saved with an odd value still renders (customer facing never fails).
 function coerceValue(f, v) {
   switch (f.type) {
-    case 'string': case 'href': case 'location': return typeof v === 'string' ? v : (v == null ? f.default : String(v));
+    case 'string': case 'href': case 'location': case 'image': case 'color': case 'menu': return typeof v === 'string' ? v : (v == null ? f.default : String(v));
+    case 'categories': return Array.isArray(v) ? v.filter((x) => x && typeof x === 'object' && typeof x.id === 'string').map((x) => ({ id: x.id })) : [];
+    case 'slot': {
+      // Blocks dropped inside a block: each one normalised like a top level block, junk dropped.
+      if (!Array.isArray(v)) return [];
+      return v.filter((x) => x && typeof x === 'object' && typeof x.type === 'string' && isBlockType(x.type))
+        .map((x) => ({ type: x.type, props: normaliseProps(x.type, x.props || {}) }));
+    }
     case 'text': return typeof v === 'string' ? v : f.default;
     case 'number': { const x = Number(v); return Number.isFinite(x) ? x : f.default; }
     case 'boolean': return typeof v === 'boolean' ? v : (v === 'true' ? true : v === 'false' ? false : f.default);
@@ -301,7 +319,9 @@ function mapProps(fields) {
 function mapField(f) {
   const desc = f.hint ? { description: f.hint } : {};
   switch (f.type) {
-    case 'string': case 'text': case 'href': case 'location': return { type: 'string', ...desc };
+    case 'string': case 'text': case 'href': case 'location': case 'image': case 'color': case 'menu': return { type: 'string', ...desc };
+    case 'categories': return { type: 'array', items: { type: 'object', properties: { id: { type: 'string' } }, additionalProperties: false }, ...desc };
+    case 'slot': return { type: 'array', items: { type: 'object', properties: { type: { type: 'string' }, props: { type: 'object' } }, required: ['type', 'props'] }, description: `${f.hint || 'Blocks inside this block'}: each item is { type, props } like a page block` };
     case 'number': return { type: 'number', ...(f.min != null ? { minimum: f.min } : {}), ...(f.max != null ? { maximum: f.max } : {}), ...desc };
     case 'boolean': return { type: 'boolean', ...desc };
     case 'enum': return { type: 'string', enum: f.options.slice(), ...desc };
