@@ -115,6 +115,11 @@ export function normaliseTheme(theme) {
     buttons: BUTTONS.includes(t.buttons) ? t.buttons : 'rounded',
     mood: MOODS.includes(t.mood) ? t.mood : 'light',
     brand_color: validHex(t.brand_color) ? withHash(String(t.brand_color).trim()) : null,
+    // 5.12.15 (Peter: "no way to override background colours of the site"): page, card and text
+    // colours the owner sets over the mood. null = the mood decides.
+    bg_color: validHex(t.bg_color) ? withHash(String(t.bg_color).trim()) : null,
+    card_color: validHex(t.card_color) ? withHash(String(t.card_color).trim()) : null,
+    text_color: validHex(t.text_color) ? withHash(String(t.text_color).trim()) : null,
   };
 }
 
@@ -159,6 +164,22 @@ export function siteVars(theme, onlineBranding) {
     accentDeep = d['--brand-deep'];
     warm = d['--ember1'];
   }
+  // 5.12.15: the owner's own colours. A page colour re-derives card, line, muted and the accent so
+  // everything still reads on it; a card or text colour alone replaces just that one.
+  if (t.bg_color) {
+    bg = t.bg_color;
+    const lightBg = isLightColor(bg);
+    // Cards lift towards white on a light page; a page that is already (near) white gets cards a
+    // shade darker instead, so they still separate.
+    card = lightBg ? (contrastRatio(bg, '#ffffff') < 1.08 ? mix(bg, '#000000', 0.045) : mix(bg, '#ffffff', 0.6)) : mix(bg, '#ffffff', 0.07);
+    ink = lightBg ? PAPER.ink : PAPER.bg;
+    line = lightBg ? mix(bg, '#000000', 0.1) : mix(bg, '#ffffff', 0.15);
+    accent = ensureContrast(d['--brand'], bg, 3);
+    accentDeep = lightBg ? d['--brand-deep'] : mix(accent, '#ffffff', 0.15);
+  }
+  if (t.card_color) card = t.card_color;
+  if (t.text_color) ink = t.text_color;
+  if (t.bg_color || t.text_color) muted = mix(ink, bg, 0.35);
   ink = ensureContrast(ink, bg);
   muted = ensureContrast(muted, bg);
   // Button text: white when it reads (the storefront look), else ink; 3:1 is the UI floor (WCAG AA).

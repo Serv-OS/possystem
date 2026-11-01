@@ -45,7 +45,7 @@ const HeaderCtx = createContext(null);
 // Rendered INSIDE Puck (header override), so usePuck works here.
 function EditorHeader() {
   const h = useContext(HeaderCtx) || {};
-  const { page, pages, saveState, viewport, setViewport, onPickPage, onAddPage, onAskDesigner, onPreview, onPublish, publishing } = h;
+  const { page, pages, saveState, viewport, setViewport, onPickPage, onAddPage, onAskDesigner, onPreview, onPublish, publishing, onExit } = h;
   const { history, dispatch } = usePuck();
   const pick = (vp) => {
     setViewport?.(vp);
@@ -54,6 +54,7 @@ function EditorHeader() {
   };
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '8px 12px', background: 'var(--bg1)', borderBottom: '1px solid var(--bdr)' }}>
+      {onExit && <button style={{ ...W.ghost, fontWeight: 700 }} onClick={onExit} title="Back to the Website overview">← Website</button>}
       <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
         {orderPages(pages).map((p) => (
           <button key={p.id} style={W.tab(p.id === page?.id)} onClick={() => onPickPage?.(p.id)} title={pagePath(p)}>{p.title || 'Untitled'}{p.status !== 'published' ? ' ·' : ''}</button>
@@ -132,7 +133,7 @@ function starterLayout(kind) {
   return { content: [{ type: block, props }], root: { props: {} } };
 }
 
-export default function Editor({ ws, toast, pageId, onPageChange, onAskDesigner, onPreview, onPublish }) {
+export default function Editor({ ws, toast, pageId, onPageChange, onAskDesigner, onPreview, onPublish, onExit }) {
   const { site, pages, locations, publicLocations, defaultLocation, branding, savePage, uploadAsset } = ws;
   const ordered = useMemo(() => orderPages(pages), [pages]);
   const page = ordered.find((p) => p.id === pageId) || ordered[0] || null;
@@ -141,26 +142,17 @@ export default function Editor({ ws, toast, pageId, onPageChange, onAskDesigner,
   const [publishing, setPublishing] = useState(false);
   const [saveState, setSaveState] = useState('');
   const [configMod, setConfigMod] = useState(loadPuckConfig ? undefined : null); // undefined = loading
-  // 5.12.12 (Peter: "the design scrolls with the page, you cannot see the field to edit"): the
-  // editor fills the window below its own top edge, so the page itself never scrolls and Puck's
-  // panes scroll on their own. Measured, because the Appearance header above it varies in height.
-  // 5.12.14: this sits BELOW the configMod state on purpose. The effect's dependency list names
-  // configMod and React reads that list during render, so with the effect above the useState the
-  // whole Back Office died on first render with "Cannot access 'oe' before initialization".
-  const puckBox = useRef(null);
-  const pageKey = page ? page.id : null;
-  const [puckHeight, setPuckHeight] = useState('max(560px, calc(100vh - 170px))');
+  // 5.12.15 (Peter, twice: "the page scrolls with the editor, it all scrolls together, impossible
+  // to edit"): the editor takes the whole window while a page is open (position fixed, see
+  // puck-theme.css .svw-puck-full). Puck is built for a full viewport: its canvas and its field
+  // panel then scroll on their own and the Back Office page behind never moves. 5.12.12 measured
+  // a height instead and the page still scrolled. The header's "Website" button leaves.
   useEffect(() => {
-    const measure = () => {
-      const el = puckBox.current;
-      if (!el) return;
-      const top = el.getBoundingClientRect().top + window.scrollY;
-      setPuckHeight(`max(480px, calc(100vh - ${Math.round(top)}px - 12px))`);
-    };
-    measure();
-    window.addEventListener('resize', measure);
-    return () => window.removeEventListener('resize', measure);
-  }, [pageKey, configMod]);
+    if (!page || configMod === undefined) return undefined;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = prev; };
+  }, [page, configMod]);
 
   useEffect(() => {
     if (!loadPuckConfig) return undefined;
@@ -265,7 +257,8 @@ export default function Editor({ ws, toast, pageId, onPageChange, onAskDesigner,
     setPublishing(false);
   };
 
-  const headerValue = { page, pages, saveState, viewport, setViewport, onPickPage: pickPage, onAddPage: () => setAdding(true), onAskDesigner, onPreview, onPublish: publish, publishing };
+  const exit = async () => { await flush(); onExit?.(); };
+  const headerValue = { page, pages, saveState, viewport, setViewport, onPickPage: pickPage, onAddPage: () => setAdding(true), onAskDesigner, onPreview, onPublish: publish, publishing, onExit: onExit ? exit : null };
 
   if (!site) return <div style={W.empty}>No site yet. Go to Overview and press Build me a website.</div>;
 
@@ -280,7 +273,7 @@ export default function Editor({ ws, toast, pageId, onPageChange, onAskDesigner,
       )}
       {page && configMod === undefined && <div style={W.empty}>Loading the editor…</div>}
       {page && configMod !== undefined && (
-        <div className="svw-puck" ref={puckBox} style={{ ...PUCK_THEME_VARS, height: puckHeight }}>
+        <div className="svw-puck svw-puck-full" style={PUCK_THEME_VARS}>
           {!loadPuckConfig && <div style={{ padding: '6px 12px', fontSize: 12, color: 'var(--acc)', background: 'var(--acc-d)' }}>The block library is not in this build yet, so the palette is empty.</div>}
           <Puck
             key={page.id}

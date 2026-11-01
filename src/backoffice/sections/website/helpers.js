@@ -212,3 +212,23 @@ export const PUCK_THEME_VARS = {
 };
 
 export const VIEWPORTS = { desktop: { width: 1280, height: 'auto', label: 'Desktop' }, phone: { width: 390, height: 'auto', label: 'Phone' } };
+
+
+/**
+ * 5.12.13 (Peter, 1 Nov: "where will we set coordinates, it needs to do this from the address"):
+ * venues the website still cannot place on a map. A venue is placed when its row has latitude and
+ * longitude, or when the site's settings.geo has a cached fix for it. Only venues with an address
+ * count, since nothing can be looked up without one.
+ */
+export function venuesNeedingGeocode(site, locations) {
+  const geo = site && site.settings && site.settings.geo && typeof site.settings.geo === 'object' ? site.settings.geo : {};
+  const num = (v) => (v === null || v === undefined || v === '' ? null : Number(v));
+  return (Array.isArray(locations) ? locations : []).filter((l) => {
+    if (!l || !l.id) return false;
+    if (typeof l.address !== 'string' || !l.address.trim()) return false;
+    const lat = num(l.latitude), lng = num(l.longitude);
+    if (Number.isFinite(lat) && Number.isFinite(lng)) return false;
+    const g = geo[l.id];
+    return !(g && Number.isFinite(Number(g.lat)) && Number.isFinite(Number(g.lng)));
+  });
+}

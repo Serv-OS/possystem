@@ -91,6 +91,30 @@ function ThemeCard({ site, saveSite, toast }) {
       <Picker label="Type pairing" options={TYPE_PAIRINGS} value={theme.type || 'warm-serif'} onPick={(v) => set({ type: v })} hint={TYPE_PAIRINGS.find(([v]) => v === (theme.type || 'warm-serif'))?.[2]} />
       <Picker label="Buttons" options={BUTTON_SHAPES} value={theme.buttons || 'pill'} onPick={(v) => set({ buttons: v })} />
       <Picker label="Mood" options={MOODS} value={theme.mood || 'light'} onPick={(v) => set({ mood: v })} hint="Dark is ink with paper text and your brand colour as the accent. Brand paints the page in your colour." />
+      {/* 5.12.15 (Peter: "no way to override background colours of the site"): the owner's own
+          page, card and text colours sit over the mood. Automatic = the mood decides. */}
+      <div style={W.field}>
+        <label style={W.label}>Colours</label>
+        <div style={{ ...W.row, gap: 14 }}>
+          <ColourField label="Page" value={theme.bg_color} onChange={(v) => set({ bg_color: v })} />
+          <ColourField label="Cards" value={theme.card_color} onChange={(v) => set({ card_color: v })} />
+          <ColourField label="Text" value={theme.text_color} onChange={(v) => set({ text_color: v })} />
+        </div>
+        <div style={W.hint}>Automatic follows the mood. A page colour re-tints cards, lines and buttons so everything still reads; a text colour that does not read on the page is nudged until it does.</div>
+      </div>
+    </div>
+  );
+}
+
+function ColourField({ label, value, onChange }) {
+  const auto = !value;
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <span style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--t1)' }}>{label}</span>
+      <input type="color" aria-label={`${label} colour`} value={value || '#f6f2ec'} onChange={(e) => onChange(e.target.value)} style={{ width: 34, height: 30, padding: 0, border: '1px solid var(--bdr2)', borderRadius: 8, background: 'transparent', cursor: 'pointer' }} />
+      {auto
+        ? <span style={{ ...W.chip, fontSize: 11 }}>Automatic</span>
+        : <button type="button" style={{ ...W.ghost, padding: '4px 8px', fontSize: 11.5 }} onClick={() => onChange(null)}>Automatic</button>}
     </div>
   );
 }

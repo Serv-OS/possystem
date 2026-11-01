@@ -285,7 +285,7 @@ export default function WebsiteSurface({ host, siteSlug = null }) {
   return (
     <SiteContext.Provider value={value}>
       <div className={CN.site} style={vars} data-layout={(ctx.site.theme && ctx.site.theme.layout) || 'ember'}>
-        <header className={CN.header} data-sticky={hdr.sticky ? undefined : 'false'}>
+        <header className={CN.header} data-sticky={hdr.sticky ? undefined : 'false'} data-logo={hdr.logo_size !== 'normal' ? hdr.logo_size : undefined}>
           <div className={CN.inner}>
             <A className={CN.logo} href="/" aria-label={`${name} home`}>{showImg ? <img src={logo} alt={name} /> : null}{showName ? <span>{name}</span> : null}</A>
             <button type="button" className={CN.navToggle} aria-expanded={navOpen} aria-controls="w-nav" onClick={() => setNavOpen((o) => !o)}>Menu</button>

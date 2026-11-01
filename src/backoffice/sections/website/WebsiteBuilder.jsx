@@ -159,6 +159,7 @@ export default function WebsiteBuilder({ venueName: fallbackName, onBack }) {
           onPageChange={(pageId) => setCtx((c) => ({ ...c, pageId }))}
           onAskDesigner={(pageId) => openDesigner({ pageId, mode: 'chat' })}
           onPreview={openPreview} onPublish={publish}
+          onExit={() => setView('overview')}
         />
       )}
 

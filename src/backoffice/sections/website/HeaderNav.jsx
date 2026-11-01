@@ -6,7 +6,7 @@
 
 import { useState } from 'react';
 import { W } from './ui.js';
-import { HEADER_BRAND_OPTIONS, HEADER_CTA_OPTIONS, MAX_NAV_ITEMS, headerDraft, moveRow, navPages, navPatchFrom, navRowsFrom } from './navDraft.js';
+import { HEADER_BRAND_OPTIONS, HEADER_CTA_OPTIONS, HEADER_LOGO_OPTIONS, MAX_NAV_ITEMS, headerDraft, moveRow, navPages, navPatchFrom, navRowsFrom } from './navDraft.js';
 
 const LINK = '__link__';
 
@@ -103,6 +103,7 @@ export default function HeaderNavCard({ site, pages, saveSite, toast }) {
     <div style={W.card}>
       <div style={W.cardHead}><h2 style={W.h2}>Header and navigation</h2></div>
       <Seg label="Brand mark" options={HEADER_BRAND_OPTIONS} value={hdr.brand} onPick={(v) => saveHeader({ brand: v })} hint={HEADER_BRAND_OPTIONS.find(([v]) => v === hdr.brand)?.[2]} />
+      <Seg label="Logo size" options={HEADER_LOGO_OPTIONS} value={hdr.logo_size} onPick={(v) => saveHeader({ logo_size: v })} hint={HEADER_LOGO_OPTIONS.find(([v]) => v === hdr.logo_size)?.[2]} />
       <Seg label="Header button" options={HEADER_CTA_OPTIONS} value={hdr.cta} onPick={(v) => saveHeader({ cta: v })} hint={HEADER_CTA_OPTIONS.find(([v]) => v === hdr.cta)?.[2] || 'A coloured button at the end of the menu.'} />
       <div style={W.switchRow}>
         <div>

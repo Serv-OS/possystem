@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { platformSupabase, getLocationId } from '../../../lib/supabase';
 import * as admin from './adminClient.js';
-import { orderPages } from './helpers.js';
+import { orderPages, venuesNeedingGeocode } from './helpers.js';
 
 function pickDefaultLocation(site, locations, ownRow) {
   const want = site?.settings?.default_location_id;
@@ -52,16 +52,33 @@ export function useWebsite() {
     } catch { /* history is a nicety, the page works without it */ }
   }, []);
 
+  // 5.12.13: venues are placed on the map from their address, in the background, the first time the
+  // builder sees one without coordinates (and again after a publish). Nominatim, cached on
+  // settings.geo by the website-admin function; one attempt per set of missing venues per session.
+  const geocodeTried = useRef('');
+  const geocodeMissing = useCallback(async (s, locs) => {
+    const missing = venuesNeedingGeocode(s, locs);
+    if (!missing.length) return;
+    const key = missing.map((l) => l.id).sort().join(',');
+    if (geocodeTried.current === key) return;
+    geocodeTried.current = key;
+    try {
+      const { data } = await admin.geocodeLocations();
+      if (alive.current && data && data.site && data.site.id) setSite(data.site);
+    } catch { /* the Find my nearest button simply stays off until the next try */ }
+  }, []);
+
   const reload = useCallback(async () => {
     const { data, error } = await admin.getSite();
     if (!alive.current) return { error };
     if (error) { setLoadError(error.message || 'Could not load the website'); return { error }; }
     setLoadError(null);
     applySiteData(data);
+    if (data) geocodeMissing(data.site || data, Array.isArray(data.locations) ? data.locations : []);
     const siteId = data?.site?.id || data?.id;
     if (siteId) loadVersions(siteId);
     return { data, error: null };
-  }, [applySiteData, loadVersions]);
+  }, [applySiteData, loadVersions, geocodeMissing]);
 
   useEffect(() => {
     (async () => {
@@ -139,10 +156,11 @@ export function useWebsite() {
   }, []);
 
   const publish = useCallback(async (note, acceptTerms = null) => {
+    geocodeMissing(site, publicLocations);
     const res = await admin.publishSite(note, undefined, acceptTerms);
     if (!res.error) await reload();
     return res;
-  }, [reload]);
+  }, [reload, geocodeMissing, site, publicLocations]);
 
   const unpublish = useCallback(async () => {
     const res = await admin.unpublishSite();

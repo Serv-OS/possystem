@@ -40,6 +40,14 @@ export const SITE_CSS = `
 .${C.header} .${C.inner}{display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:64px}
 .${C.logo}{display:flex;align-items:center;gap:10px;text-decoration:none;font-family:var(--w-font-display);font-weight:700;font-size:1.15rem}
 .${C.logo} img{height:40px;width:auto;max-width:160px;object-fit:contain}
+.${C.header}[data-logo="small"] .${C.logo} img{height:28px;max-width:120px}
+.${C.header}[data-logo="large"] .${C.logo} img{height:60px;max-width:240px}
+.${C.header}[data-logo="large"] .${C.inner}{min-height:84px}
+.${C.header}[data-logo="xlarge"] .${C.logo} img{height:84px;max-width:320px}
+.${C.header}[data-logo="xlarge"] .${C.inner}{min-height:108px}
+.${C.header}[data-logo="small"] .${C.logo}{font-size:1rem}
+.${C.header}[data-logo="large"] .${C.logo}{font-size:1.4rem}
+.${C.header}[data-logo="xlarge"] .${C.logo}{font-size:1.7rem}
 .${C.nav}{display:flex;gap:4px;align-items:center;flex-wrap:wrap}
 .${C.navLink}{padding:8px 12px;border-radius:10px;text-decoration:none;font-weight:500;color:var(--w-ink)}
 .${C.navLink}:hover,.${C.navLink}[aria-current="page"]{background:var(--w-card)}

@@ -408,6 +408,13 @@ test('header options: brand mark, header button and sticky follow settings.heade
   s.site.settings.header = { brand: 'both', cta: 'book' };
   const both = render(s, '/').body;
   assert.match(both, /<a class="w-logo" href="\/" aria-label="Mozz Pizza home"><img [^>]*><span>Mozz Pizza<\/span><\/a>/);
+  // 5.12.15 (Peter: "you should be able to change the logo size in the header"): logo_size is a
+  // header attribute the CSS sizes the mark by; normal (the default) adds nothing.
+  assert.doesNotMatch(both, /data-logo=/);
+  s.site.settings.header = { logo_size: 'xlarge' };
+  assert.match(render(s, '/').body, /<header class="w-header" data-logo="xlarge">/);
+  s.site.settings.header = { logo_size: 'huge' };
+  assert.doesNotMatch(render(s, '/').body, /data-logo=/, 'an unknown size falls back to normal');
   assert.match(both, /w-header-cta" href="\/order\/book">Book a table<\/a>/);
   s.site.settings.header = { brand: 'nonsense', cta: 'nope', sticky: 'maybe' };
   assert.equal(render(s, '/').body.includes('w-header-cta'), false, 'odd values fall back to the defaults, never a throw');
@@ -439,7 +446,7 @@ test('Row: two columns holding a Text and a LiveMenu paint the grid, the data at
     col1: [{ type: 'Text', props: { id: 't1', md: 'Hello **there**' } }],
     col2: [{ type: 'LiveMenu', props: { id: 'm1', layout: 'list' } }],
   }));
-  assert.match(html, /^<section class="w-block w-row" data-block="Row" data-id="row1" data-cols="2" data-full="true" data-width="page" data-colpad="none" data-tone="light"/);
+  assert.match(html, /^<section class="w-block w-row" data-block="Row" data-id="row1" data-cols="2" data-full="true" data-width="page" data-colpad="normal" data-tone="light"/);
   assert.match(html, /data-darken="true"/);
   assert.match(html, /style="--w-row-cols:2;--w-row-bg:#1b1b1b;--w-row-img:url\(&quot;https:\/\/x\/bg\.jpg&quot;\)"/);
   assert.match(html, /<div class="w-inner w-row-grid">/);
@@ -561,13 +568,13 @@ test('Hero slideshow: one slide keeps the old markup; more slides paint layers (
 
 
 // ── 5.12.12: column padding, hero colour, book switch, buttons, brand loyalty card, nav dropdown ──
-test('Row: column padding is none at page width and normal edge to edge unless the owner picks one', () => {
+test('Row: column padding is normal unless the owner picks one (5.12.15: at page width too)', () => {
   const ctx = rowCtx();
-  assert.match(renderBlock(ctx, rowBlock({ columns: '2' })), /data-colpad="none"/);
+  assert.match(renderBlock(ctx, rowBlock({ columns: '2' })), /data-colpad="normal"/);
   assert.match(renderBlock(ctx, rowBlock({ columns: '2', width: 'full' })), /data-colpad="normal"/);
   assert.match(renderBlock(ctx, rowBlock({ columns: '2', width: 'full', col_padding: 'none' })), /data-colpad="none"/);
   assert.match(renderBlock(ctx, rowBlock({ columns: '2', col_padding: 'large' })), /data-colpad="large"/);
-  assert.match(renderBlock(ctx, rowBlock({ columns: '2', col_padding: 'huge' })), /data-colpad="none"/);
+  assert.match(renderBlock(ctx, rowBlock({ columns: '2', col_padding: 'huge' })), /data-colpad="normal"/);
 });
 
 test('Hero: Show a photo off paints the background colour with a light tone on a dark colour; a colour alone is used when no photo exists', () => {

@@ -61,3 +61,33 @@ test('ensureContrast moves towards the readable extreme and stops once it passes
   assert.equal(ensureContrast('#cccccc', '#f6f2ec'), ensureContrast('#cccccc', '#f6f2ec'));
   assert.equal(ensureContrast('#000000', '#ffffff'), '#000000');
 });
+
+
+// ── 5.12.15: the owner's page, card and text colours over the mood ──────────────────────────
+test('bg_color repaints the page and keeps text, muted text and buttons readable on it', () => {
+  for (const bg of ['#000000', '#ffffff', '#1a237e', '#ffeb3b', '#2d5016', '#fce4ec']) {
+    for (const mood of MOODS) {
+      const v = siteVars({ mood, bg_color: bg }, { brand_color: '#15C26A' });
+      assert.equal(v['--w-bg'], bg, `${mood} ${bg} page`);
+      assert.ok(contrastRatio(v['--w-ink'], bg) >= MIN_BODY_CONTRAST, `${mood} ${bg} ink`);
+      assert.ok(contrastRatio(v['--w-muted'], bg) >= MIN_BODY_CONTRAST, `${mood} ${bg} muted`);
+      assert.ok(contrastRatio(v['--w-brand'], bg) >= 3, `${mood} ${bg} button`);
+      assert.notEqual(v['--w-card'], bg, 'cards still separate from the page');
+    }
+  }
+});
+
+test('card_color and text_color replace one colour each; bad values and null fall back to the mood', () => {
+  const base = siteVars({ mood: 'light' }, { brand_color: '#e2581f' });
+  const card = siteVars({ mood: 'light', card_color: '#fff3e0' }, { brand_color: '#e2581f' });
+  assert.equal(card['--w-card'], '#fff3e0');
+  assert.equal(card['--w-bg'], base['--w-bg'], 'the page colour did not move');
+  const text = siteVars({ mood: 'light', text_color: '#1a237e' }, { brand_color: '#e2581f' });
+  assert.equal(text['--w-ink'], '#1a237e', 'a readable text colour is used as is');
+  const faint = siteVars({ mood: 'light', text_color: '#f0f0f0' }, { brand_color: '#e2581f' });
+  assert.notEqual(faint['--w-ink'], '#f0f0f0', 'an unreadable text colour is nudged');
+  assert.ok(contrastRatio(faint['--w-ink'], faint['--w-bg']) >= MIN_BODY_CONTRAST);
+  assert.deepEqual(siteVars({ mood: 'light', bg_color: 'red', card_color: null, text_color: '' }, { brand_color: '#e2581f' }), base);
+  assert.equal(normaliseTheme({ bg_color: '1a237e' }).bg_color, '#1a237e');
+  assert.equal(normaliseTheme({ bg_color: 'blue' }).bg_color, null);
+});

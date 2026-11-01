@@ -36,6 +36,7 @@ export const LIMITS = Object.freeze({
 // 5.12.8: header options (settings.header), mirrored in src/surfaces/website/routes.js headerOptions.
 export const HEADER_BRANDS = Object.freeze(['logo', 'name', 'both']);
 export const HEADER_CTAS = Object.freeze(['none', 'order', 'book']);
+export const HEADER_LOGO_SIZES = Object.freeze(['small', 'normal', 'large', 'xlarge']);
 
 export const SITE_SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])?$/;
 // Page and post slugs: 1 to 60. '' is the home page and is allowed only for kind 'home'.
@@ -292,8 +293,12 @@ export function themeProblems(theme) {
   if (theme.brand_color !== undefined && theme.brand_color !== null && !(typeof theme.brand_color === 'string' && HEX_COLOUR_RE.test(theme.brand_color))) {
     errors.push('Theme brand_color must be a hex colour like #15C26A, or null to follow the venue branding.');
   }
+  // 5.12.15: the owner's page, card and text colours over the mood (null = the mood decides).
+  for (const k of ['bg_color', 'card_color', 'text_color']) {
+    if (theme[k] !== undefined && theme[k] !== null && !(typeof theme[k] === 'string' && HEX_COLOUR_RE.test(theme[k]))) errors.push(`Theme ${k} must be a hex colour like #F6F2EC, or null to follow the mood.`);
+  }
   for (const k of Object.keys(theme)) {
-    if (!['layout', 'type', 'buttons', 'mood', 'brand_color'].includes(k)) errors.push(`Theme has no setting called "${k}".`);
+    if (!['layout', 'type', 'buttons', 'mood', 'brand_color', 'bg_color', 'card_color', 'text_color'].includes(k)) errors.push(`Theme has no setting called "${k}".`);
   }
   return errors;
 }
@@ -381,7 +386,8 @@ export function settingsProblems(settings) {
       if (h.brand !== undefined && !HEADER_BRANDS.includes(h.brand)) errors.push(`Settings header brand must be one of: ${HEADER_BRANDS.join(', ')}.`);
       if (h.cta !== undefined && !HEADER_CTAS.includes(h.cta)) errors.push(`Settings header cta must be one of: ${HEADER_CTAS.join(', ')}.`);
       if (h.sticky !== undefined && typeof h.sticky !== 'boolean') errors.push('Settings header sticky must be true or false.');
-      for (const k of Object.keys(h)) if (!['brand', 'cta', 'sticky'].includes(k)) errors.push(`Settings header has no option called "${k}".`);
+      if (h.logo_size !== undefined && !HEADER_LOGO_SIZES.includes(h.logo_size)) errors.push(`Settings header logo_size must be one of: ${HEADER_LOGO_SIZES.join(', ')}.`);
+      for (const k of Object.keys(h)) if (!['brand', 'cta', 'sticky', 'logo_size'].includes(k)) errors.push(`Settings header has no option called "${k}".`);
     }
   }
   return errors.filter(Boolean);

@@ -7,10 +7,14 @@
 
 export const CHANGELOG = [
   {
-    v: '5.12.14',
+    v: '5.12.15',
     date: '1 Nov 2026',
     items: [
-      'Back Office: fixed the "App Error: Cannot access \'oe\' before initialization" screen that 5.12.12 showed on load. The website editor read a value before it was declared; it now declares it first.',
+      'Website: venues are placed on the map from their address automatically. The first time the Website builder opens (and after each publish) any venue without coordinates is looked up in the background, so "Find my nearest" works without anyone typing coordinates.',
+      'Website: the header has a "Logo size" setting (small, normal, large, extra large) so the brand mark can be made bigger.',
+      'Website editor: editing a page now takes the whole window. The canvas and the field panel scroll on their own and the Back Office page behind never scrolls with them. The Website button at the top left goes back.',
+      'Website: columns have space inside by default (Row: Space inside columns = auto is now normal at every width), so text never sits on a column edge.',
+      'Website: Look has Colours: page, cards and text, each over the mood or Automatic. A page colour re-tints cards, lines and buttons so everything still reads. The designer can set them too.',
     ],
   },
   {
