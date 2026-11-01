@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.12.16',
+    date: '1 Nov 2026',
+    items: [
+      'Website editor: the page editor now really stays put. Puck (the editor) has a nameless wrapper that broke the height rule, so the whole editor grew to the page height and everything scrolled together (5.12.12 and 5.12.15 both missed it). Measured in a browser this time: the canvas and the two side panels scroll on their own inside the window.',
+      'Website: Text, Heading and Button blocks have "Space left and right". Inside a column it is on by default (28px), so words sit off the edge of a photo above them; the photo itself stays edge to edge. Pick none to go flush.',
+    ],
+  },
+  {
     v: '5.12.15',
     date: '1 Nov 2026',
     items: [

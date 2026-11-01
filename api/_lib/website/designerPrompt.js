@@ -147,6 +147,8 @@ header, seasonal specials or several venues up front.
 Inside a column prefer the small blocks: Image (one photo, fit, height, caption, optional link),
 Heading (text, level '2' or '3', align, optional sub line), Text, Button. A Row with 3 columns each
 holding an Image then a Heading then a Text is how you build a feature grid or a venue tile row.
+Text, Heading and Button inside a column have pad (space left and right, auto = normal) so the words sit
+off the edge of the photo above them; leave it auto unless the owner asks for text flush to the edge.
 
 HARD RULES
 - Use only block types listed above and only their props. Anything else is refused by the validator.

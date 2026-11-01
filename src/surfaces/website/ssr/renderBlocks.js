@@ -41,6 +41,14 @@ const button = (ctx, link, style = 'primary') => {
   return `<a class="${cls(CN.btn, styleCn)}" href="${attr(href)}"${ext}>${esc(link.label)}</a>`;
 };
 const empty = (text) => `<p class="${CN.empty}">${esc(text)}</p>`;
+// 5.12.16: Text, Heading and Button inside a column carry data-inset (their "Space left and right");
+// auto = normal. On the page itself the gutter already gives space, so no attribute there.
+const INSETS = ['none', 'small', 'normal', 'large'];
+const insetAttr = (b) => {
+  if (!(b && b.nested)) return '';
+  const v = b.props && INSETS.includes(b.props.pad) ? b.props.pad : 'normal';
+  return ` data-inset="${v}"`;
+};
 
 /** The venue a block means (its location_id prop, else the site default). */
 function blockLocation(ctx, props) { return pickLocation(ctx, props && props.location_id); }
@@ -277,7 +285,7 @@ const R = {
   },
   Text(ctx, b) {
     const html = renderMarkdown(b.props.md);
-    return html ? section(b, CN.text, `<div class="${CN.prose}">${html}</div>`) : '';
+    return html ? section(b, CN.text, `<div class="${CN.prose}">${html}</div>`, insetAttr(b)) : '';
   },
   Columns(ctx, b) {
     const p = b.props;
@@ -313,7 +321,7 @@ const R = {
   },
   Button(ctx, b) {
     const html = button(ctx, { label: b.props.label, href: b.props.href }, b.props.style);
-    return html ? section(b, '', html) : '';
+    return html ? section(b, '', html, insetAttr(b)) : '';
   },
   // 5.12.10: one photo, optional caption and link. Only http(s) photo URLs are painted.
   Image(ctx, b) {
@@ -332,7 +340,7 @@ const R = {
     if (!text) return '';
     const tag = p.level === '3' ? 'h3' : 'h2';
     const sub = p.sub ? `<p class="${CN.headingSub}">${esc(p.sub)}</p>` : '';
-    return section(b, CN.headingBlock, `<${tag} class="${CN.h2}">${esc(text)}</${tag}>${sub}`, ` data-align="${attr(p.align || 'left')}"`);
+    return section(b, CN.headingBlock, `<${tag} class="${CN.h2}">${esc(text)}</${tag}>${sub}`, ` data-align="${attr(p.align || 'left')}"${insetAttr(b)}`);
   },
   FAQ(ctx, b) {
     const p = b.props;

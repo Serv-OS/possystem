@@ -199,7 +199,9 @@ export const BLOCK_SCHEMAS = {
   // ── Content blocks ─────────────────────────────────────────────────────────
   Text: {
     label: 'Text', group: 'content',
-    props: { md: t('', { label: 'Text (markdown)', markdown: true }) },
+    // 5.12.16 (Peter: "all I want is to add padding left and right so it is not right against
+    // the edge of the image"): space either side of the text when it sits in a column.
+    props: { md: t('', { label: 'Text (markdown)', markdown: true }), pad: e(['auto', 'none', 'small', 'normal', 'large'], 'auto', { label: 'Space left and right', hint: 'Inside a column: auto = normal (20px), so text sits off the edge of a photo above it. On the page itself the page edges already give space' }), },
   },
   Columns: {
     label: 'Columns', group: 'content',
@@ -269,6 +271,7 @@ export const BLOCK_SCHEMAS = {
       level: e(['2', '3'], '2', { label: 'Size', hint: '2 = section heading, 3 = smaller' }),
       align: e(['left', 'center'], 'left', { label: 'Align' }),
       sub: s('', { label: 'Line under it' }),
+      pad: e(['auto', 'none', 'small', 'normal', 'large'], 'auto', { label: 'Space left and right', hint: 'Inside a column: auto = normal (20px), so text sits off the edge of a photo above it. On the page itself the page edges already give space' }),
     },
   },
   Button: {
@@ -277,6 +280,7 @@ export const BLOCK_SCHEMAS = {
       label: s('Order now', { label: 'Label' }),
       href: h('servos:order', { label: 'Link' }),
       style: e(['primary', 'secondary', 'link'], 'primary', { label: 'Style' }),
+      pad: e(['auto', 'none', 'small', 'normal', 'large'], 'auto', { label: 'Space left and right', hint: 'Inside a column: auto = normal (20px), so text sits off the edge of a photo above it. On the page itself the page edges already give space' }),
     },
   },
   FAQ: {

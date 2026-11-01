@@ -7,9 +7,17 @@
 /* 5.12.15: a page being edited owns the whole window, so the Back Office page behind it can never
    scroll with the canvas. Puck lays itself out for a full viewport (its own 100dvh). */
 .svw-puck-full { position: fixed; inset: 0; z-index: 900; border: 0; border-radius: 0; height: 100vh; height: 100dvh; width: 100vw; }
+/* Height chain (5.12.16, measured in a browser): Puck renders .Puck > div (NO class) > .PuckLayout
+   > .PuckLayout-inner. A plain "height: 100%" on the layout fell to auto at that nameless div, so
+   the layout grew to the page's full height and the whole editor scrolled as one. Every link in
+   the chain is named here, and the editor row of the grid is capped (minmax(0, 1fr)) so the
+   canvas and both side panels scroll on their own. */
 .svw-puck > div { height: 100%; }
+.svw-puck [class*="_Puck_"] { height: 100%; overflow: hidden; }
+.svw-puck [class*="_Puck_"] > div { height: 100%; }
 .svw-puck [class*="_PuckLayout_"] { height: 100%; min-height: 0; }
-.svw-puck [class*="_PuckLayout-inner_"] { height: 100%; }
+.svw-puck [class*="_PuckLayout-inner_"] { height: 100%; grid-template-rows: min-content minmax(0, 1fr); }
+.svw-puck-full [class*="_PuckLayout-inner_"] { height: 100vh; height: 100dvh; }
 .svw-puck [class*="_PuckHeader_"] { border-bottom: 1px solid var(--bdr); background: var(--bg1); }
 .svw-puck [class*="_PuckCanvas_"] { background: var(--bg3); }
 .svw-puck [class*="_SidebarSection_"], .svw-puck [class*="_PuckFields_"] { background: var(--bg1); color: var(--t1); }

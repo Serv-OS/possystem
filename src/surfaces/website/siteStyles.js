@@ -104,6 +104,12 @@ export const SITE_CSS = `
 .${C.rowCol}[data-bg="true"]{background:var(--w-col-bg);border-radius:16px;padding:20px}
 .${C.rowCol} .${C.block}{padding:0}
 .${C.rowCol} .${C.block}+.${C.block}{margin-top:24px}
+/* 5.12.16: Text, Heading and Button in a column keep clear of the column edge (and of a photo above
+   them) by their own "Space left and right"; a photo keeps the plain gutter so it stays edge to edge. */
+.${C.rowCol} .${C.block}[data-inset="none"]>.${C.inner}{padding-left:0;padding-right:0}
+.${C.rowCol} .${C.block}[data-inset="small"]>.${C.inner}{padding-left:12px;padding-right:12px}
+.${C.rowCol} .${C.block}[data-inset="normal"]>.${C.inner}{padding-left:28px;padding-right:28px}
+.${C.rowCol} .${C.block}[data-inset="large"]>.${C.inner}{padding-left:44px;padding-right:44px}
 .${C.rowCol} .${C.block} .${C.inner}{max-width:none;padding:0}
 .${C.rowCol} .${C.hero}{min-height:280px;border-radius:16px}
 /* image + heading blocks (5.12.10) */
