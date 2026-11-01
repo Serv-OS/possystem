@@ -50,7 +50,7 @@ export const FALLBACK_BLOCK_SCHEMAS = {
   BookTable: { label: 'Book a table', group: 'servos', properties: { location_id: str(''), height: num('') } },
   Waitlist: { label: 'Waitlist', group: 'servos', properties: { location_id: str('') } },
   Hours: { label: 'Opening hours', group: 'servos', properties: { location_id: str("A location id or 'all'"), show_today_first: bool('') } },
-  FindUs: { label: 'Find us', group: 'servos', properties: { show_map: bool(''), show_nearest: bool(''), show_hours: bool(''), show_order_buttons: bool(''), location_id: str('Only this location, or empty for all') } },
+  FindUs: { label: 'Find us', group: 'servos', properties: { show_map: bool(''), show_nearest: bool(''), show_hours: bool(''), show_order_buttons: bool(''), cta: str("'order', 'catering' or 'book': what the first button on each venue opens"), location_id: str('Only this location, or empty for all') } },
   Reviews: { label: 'Reviews', group: 'servos', properties: { min_stars: num(''), count: num('') } },
   BlogList: { label: 'Blog list', group: 'servos', properties: { count: num(''), show_excerpt: bool('') } },
   Text: { label: 'Text', group: 'content', properties: { md: str('Markdown text') } },

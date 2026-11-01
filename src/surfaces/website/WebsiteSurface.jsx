@@ -17,7 +17,7 @@ import { ensureCustomerSession } from '../../lib/publicOrderClient';
 import { SiteContext } from './siteContext.js';
 import { A } from './Link.jsx';
 import { CN } from './blocks/classNames.js';
-import { SITE_CSS } from './siteStyles.js';
+import { SITE_CSS, SHELL_RESET_CSS, SHELL_RESET_ID } from './siteStyles.js';
 import { siteVars } from './theme.js';
 import { resolveRoute, visibleNav, breadcrumbsFor, normalisePath, layoutHasHero } from './routes.js';
 import { buildCtx, renderPage, siteName } from './ssr/renderBlocks.js';
@@ -127,6 +127,13 @@ export default function WebsiteSurface({ host, siteSlug = null }) {
 
   // 3. The site stylesheet, once (the SSR head already carries it; this covers the client only path).
   useEffect(() => {
+    // 5.12.7: the scroll reset too, so a page the SPA shell served (no SSR head) still scrolls.
+    if (!document.getElementById(SHELL_RESET_ID)) {
+      const r = document.createElement('style');
+      r.id = SHELL_RESET_ID;
+      r.textContent = SHELL_RESET_CSS;
+      document.head.appendChild(r);
+    }
     if (document.getElementById('w-css')) return;
     const el = document.createElement('style');
     el.id = 'w-css';

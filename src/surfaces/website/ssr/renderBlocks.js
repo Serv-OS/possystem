@@ -15,7 +15,7 @@ import { siteVars, cssText, fontLinks, themeColor } from '../theme.js';
 import { SITE_CSS } from '../siteStyles.js';
 import { hoursRows, openStatus } from '../hours.js';
 import { addressText, directionsUrl } from '../geo.js';
-import { resolveHref, pickLocation, venueUrl } from '../resolveHref.js';
+import { resolveHref, pickLocation, venueUrl, explicitLocation, multiVenue } from '../resolveHref.js';
 import { formatPrice } from '../data/loadMenu.js';
 import { blockVisible, visibleNav, breadcrumbsFor, siteLocations, publishedPosts, publishedPages, pathForPage, sitemapPaths, channelOn, locationChannelOn, PAGE_KIND_CHANNEL } from '../routes.js';
 import { restaurantLd, menuLd, organizationLd, webSiteLd, breadcrumbLd, blogPostingLd, faqLd, siteName } from './jsonld.js';
@@ -40,14 +40,28 @@ const empty = (text) => `<p class="${CN.empty}">${esc(text)}</p>`;
 /** The venue a block means (its location_id prop, else the site default). */
 function blockLocation(ctx, props) { return pickLocation(ctx, props && props.location_id); }
 
-/** Link card + iframe for an embedded ServOS surface. */
-function embed(ctx, { title, text, href, height, label = 'Open in a new tab' }) {
+/**
+ * 5.12.7 (Peter, 1 Nov): never an iframe of a ServOS surface ("leaves it open to bugs, especially
+ * on mobile"). A card with the venue's name and one button that opens the venue's own page in
+ * the same tab. `height` is kept on the blocks for old layouts and ignored.
+ */
+function embed(ctx, { title, text, href, label = 'Open' }) {
   if (!href) return empty(`${title} is not set up yet.`);
-  const h = Math.max(400, Math.min(3000, Number(height) || 900));
   return `<div class="${cls(CN.card, CN.embedCard)}"><div><strong>${esc(title)}</strong>${text ? `<p class="${CN.muted}">${esc(text)}</p>` : ''}</div>` +
-    `<a class="${cls(CN.btn, CN.btnSecondary)}" href="${attr(href)}" target="_blank" rel="noopener">${esc(label)}</a></div>` +
-    `<iframe class="${CN.iframe}" src="${attr(href)}" title="${attr(title)}" loading="lazy" style="height:${h}px" allow="payment *; geolocation *"></iframe>`;
+    `<a class="${cls(CN.btn, CN.btnPrimary)}" href="${attr(href)}">${esc(label)}</a></div>`;
 }
+
+/** The FindUs props for a "which venue?" chooser standing in for a per venue embed. */
+function chooserProps(p, cta) {
+  return { id: p.id, title: 'Choose your venue', location_id: 'all', show_nearest: true, show_hours: false, show_map: true, show_order_buttons: true, cta };
+}
+
+/** The first button on a venue card: label, venue path and the channel it needs. */
+const CTA = Object.freeze({
+  order: { label: 'Order here', path: '/', channel: 'online' },
+  catering: { label: 'Catering orders', path: '/catering', channel: 'catering' },
+  book: { label: 'Book here', path: '/book', channel: 'bookings' },
+});
 
 // ── block renderers ──────────────────────────────────────────────────────────
 const R = {
@@ -93,7 +107,7 @@ const R = {
     if (only.length) cats = cats.filter((c) => only.includes(c.id));
     let left = Number(p.max_items) > 0 ? Number(p.max_items) : Infinity;
     const loc = blockLocation(ctx, p);
-    const orderHref = show.add_button && loc ? venueUrl(loc.online_slug, '/', ctx.customerRoot) : '';
+    const orderHref = show.add_button && loc ? resolveHref(ctx, 'servos:order') : '';
     const sections = cats.map((c) => {
       const items = (c.items || []).filter((it) => !(show.hide_sold_out && it.sold_out)).slice(0, Math.max(0, left));
       left -= items.length;
@@ -117,10 +131,12 @@ const R = {
   },
   OrderEmbed(ctx, b) {
     const p = b.props;
-    const loc = blockLocation(ctx, p);
     const catering = p.mode === 'catering';
+    // Several venues and no venue named: the visitor picks first (never straight to one venue).
+    if (!explicitLocation(p.location_id) && multiVenue(ctx)) return R.FindUs(ctx, { ...b, props: chooserProps(p, catering ? 'catering' : 'order') });
+    const loc = blockLocation(ctx, p);
     const href = loc ? venueUrl(loc.online_slug, catering ? '/catering' : '/', ctx.customerRoot) : '';
-    return section(b, CN.embed, embed(ctx, { title: catering ? 'Catering orders' : 'Order online', text: loc ? `${(loc.online_branding && loc.online_branding.display_name) || loc.name}` : '', href, height: p.height, label: catering ? 'Open catering' : 'Open ordering' }));
+    return section(b, CN.embed, embed(ctx, { title: catering ? 'Catering orders' : 'Order online', text: loc ? `${(loc.online_branding && loc.online_branding.display_name) || loc.name}` : '', href, label: catering ? 'Order catering' : 'Order now' }));
   },
   LoyaltyJoin(ctx, b) {
     const p = b.props;
@@ -142,14 +158,15 @@ const R = {
   },
   BookTable(ctx, b) {
     const p = b.props;
+    if (!explicitLocation(p.location_id) && multiVenue(ctx)) return R.FindUs(ctx, { ...b, props: chooserProps(p, 'book') });
     const loc = blockLocation(ctx, p);
     const href = loc ? venueUrl(loc.online_slug, '/book', ctx.customerRoot) : '';
-    return section(b, cls(CN.embed, CN.book), embed(ctx, { title: 'Book a table', text: loc ? loc.name : '', href, height: p.height, label: 'Open booking' }));
+    return section(b, cls(CN.embed, CN.book), embed(ctx, { title: 'Book a table', text: loc ? loc.name : '', href, label: 'Book a table' }));
   },
   Waitlist(ctx, b) {
     const loc = blockLocation(ctx, b.props);
     const href = loc ? venueUrl(loc.online_slug, '/waitlist', ctx.customerRoot) : '';
-    return section(b, cls(CN.embed, CN.waitlist), embed(ctx, { title: 'Join the waitlist', text: loc ? loc.name : '', href, height: 640, label: 'Open waitlist' }));
+    return section(b, cls(CN.embed, CN.waitlist), embed(ctx, { title: 'Join the waitlist', text: loc ? loc.name : '', href, label: 'Join the waitlist' }));
   },
   Hours(ctx, b) {
     const p = b.props;
@@ -173,11 +190,12 @@ const R = {
       const addr = addressText(loc);
       const rows = p.show_hours ? hoursRows(loc.opening_hours, loc.timezone, { todayFirst: true, now: ctx.now }).slice(0, 7) : [];
       const dir = p.show_map ? directionsUrl(loc, ctx.settings) : '';
-      const canOrder = p.show_order_buttons && locationChannelOn(loc, ctx.settings, 'online');
+      const cta = CTA[p.cta] || CTA.order;
+      const canMain = p.show_order_buttons && locationChannelOn(loc, ctx.settings, cta.channel);
       const actions = [
-        canOrder ? `<a class="${cls(CN.btn, CN.btnPrimary)}" href="${attr(venueUrl(loc.online_slug, '/', ctx.customerRoot))}">Order here</a>` : '',
+        canMain ? `<a class="${cls(CN.btn, CN.btnPrimary)}" href="${attr(venueUrl(loc.online_slug, cta.path, ctx.customerRoot))}">${esc(cta.label)}</a>` : '',
         dir ? `<a class="${cls(CN.btn, CN.btnSecondary)}" href="${attr(dir)}" target="_blank" rel="noopener">Directions</a>` : '',
-        locationChannelOn(loc, ctx.settings, 'bookings') ? `<a class="${cls(CN.btn, CN.btnSecondary)}" href="${attr(venueUrl(loc.online_slug, '/book', ctx.customerRoot))}">Book</a>` : '',
+        cta !== CTA.book && locationChannelOn(loc, ctx.settings, 'bookings') ? `<a class="${cls(CN.btn, CN.btnSecondary)}" href="${attr(venueUrl(loc.online_slug, '/book', ctx.customerRoot))}">Book</a>` : '',
       ].join(' ');
       return `<article class="${cls(CN.card, CN.locCard)}" data-location="${attr(loc.id)}"><h3 class="${CN.locName}"><a href="/locations/${attr(loc.online_slug)}">${esc(loc.name)}</a></h3>` +
         (addr ? `<p class="${CN.locAddr}">${esc(addr)}</p>` : '') +

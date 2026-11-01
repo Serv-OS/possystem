@@ -178,12 +178,15 @@ export async function loadMenu(client, opsLocationId, options = {}) {
     const parents = items.filter((r) => r && !r.parent_id && visibleOnline(r));
     const shaped = parents.map((row) => shapeItem(row, { channel, menuId, currency, kids: variantChildren(row, items), soldOutIds, stock }));
 
+    // 5.12.7 (Peter, 1 Nov): an item on the 86 list, or out of stock, comes OFF the website. The
+    // eighty_six feed reloads the menu live, so it disappears the moment the till marks it.
+    const onSale = shaped.filter((it) => !it.sold_out);
     const specialCatIds = new Set(categories.filter((c) => c && c.is_special).map((c) => c.id));
-    const specials = shaped.filter((it) => specialCatIds.has(it.category_id) || it.tags.some((t) => /^special/i.test(t)));
+    const specials = onSale.filter((it) => specialCatIds.has(it.category_id) || it.tags.some((t) => /^special/i.test(t)));
 
-    const grouped = groupMenu(shaped, categories, {
+    const grouped = groupMenu(onSale, categories, {
       allowed, onlyCategoryIds: Array.isArray(options.categories) ? options.categories : null,
-      hideSoldOut: !!options.hideSoldOut, maxItems: Number(options.maxItems) || 0,
+      hideSoldOut: true, maxItems: Number(options.maxItems) || 0,
     });
     return { categories: grouped, specials, menuId, currency, error: null };
   } catch (e) {

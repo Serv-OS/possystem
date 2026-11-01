@@ -126,6 +126,33 @@ export function synthesiseLocationPage(loc, snapshot) {
   };
 }
 
+const CHOOSE_SURFACES = Object.freeze({
+  order: { title: 'Order online', headline: 'Where are you ordering from?', sub: 'Pick your venue and we will take you to its menu.' },
+  catering: { title: 'Catering', headline: 'Catering: pick your venue', sub: 'Each venue takes its own catering orders.' },
+  book: { title: 'Book a table', headline: 'Book a table: pick your venue', sub: 'Choose where you would like to sit down with us.' },
+});
+
+/**
+ * 5.12.7: the "which venue?" page a company with several venues shows before ordering, catering
+ * or booking (/order, /order/catering, /order/book). Nearest first on tap, one button per venue
+ * straight to that venue's own page. Never an iframe.
+ */
+export function synthesiseChoosePage(surface = 'order') {
+  const key = CHOOSE_SURFACES[surface] ? surface : 'order';
+  const words = CHOOSE_SURFACES[key];
+  const mk = (type, props) => ({ type, props: { ...defaultPropsFor(type), ...props, id: `${type}-choose-${key}` } });
+  return {
+    id: `synth-choose-${key}`, slug: key === 'order' ? 'order' : `order/${key}`, kind: 'order', status: 'published',
+    title: words.title,
+    seo: { title: words.title, description: words.sub },
+    layout: { root: { props: {} }, content: [
+      mk('Hero', { headline: words.headline, sub: words.sub, height: 'short', show_status: false, primary: { label: '', href: '' }, secondary: { label: '', href: '' } }),
+      mk('FindUs', { title: 'Choose your venue', location_id: 'all', show_nearest: true, show_hours: false, show_map: true, show_order_buttons: true, cta: key }),
+    ] },
+    synthesised: true,
+  };
+}
+
 /** The blog list when no 'blog' page exists. */
 export function synthesiseBlogPage() {
   return {
@@ -179,6 +206,10 @@ export function resolveRoute(snapshot, rawPath) {
     // No home page saved yet: the first published page stands in, so the site is never blank.
     const first = pages[0];
     if (first) return { kind: 'page', page: first, path };
+  }
+  // /order, /order/catering, /order/book with no page of that slug: the choose your venue page.
+  if (seg[0] === 'order' && (seg.length === 1 || (seg.length === 2 && (seg[1] === 'catering' || seg[1] === 'book')))) {
+    return { kind: 'page', page: synthesiseChoosePage(seg[1] || 'order'), path };
   }
   return { kind: 'notfound', path };
 }

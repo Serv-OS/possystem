@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.12.7',
+    date: '1 Nov 2026',
+    items: [
+      'Website builder: a company with several venues never sends a visitor straight to one venue. Order, Catering and Book a table buttons go to a "which venue?" page first (nearest first on tap, one button per venue to its own ordering), then straight on. A company with one venue goes straight there as before. A link that names a venue (a location page) still goes straight to it.',
+      'Website builder: no more iframes of ordering, booking or the waitlist on the site. Each is a card with one button that opens the venue\'s own page in the same tab. Peter: an embedded frame leaves the site open to bugs, especially on phones.',
+      'Website builder: an item on the 86 list, or out of stock, comes off the website entirely, and comes back the moment the till clears it (the site already listens to the 86 feed). It used to stay on the page marked sold out.',
+      'Website builder: the home page of a free address came back as the bare app shell (no server rendered page for Google, and the page would not scroll after a click). A small edge rule now sends "/" on a website address to the site renderer like every other path, and the site applies its own scroll fix as well.',
+    ],
+  },
+  {
     v: '5.12.6',
     date: '1 Nov 2026',
     items: [

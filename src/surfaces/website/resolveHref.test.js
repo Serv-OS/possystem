@@ -18,16 +18,23 @@ test('page: links become site paths', () => {
   assert.equal(resolveHref(ctx, 'page:gone'), '');
 });
 
-test('servos: links go to the default location, or the one named', () => {
-  assert.equal(resolveHref(ctx, 'servos:order'), 'https://mozz-b.serv-os.app/');
-  assert.equal(resolveHref(ctx, 'servos:catering'), 'https://mozz-b.serv-os.app/catering');
+test('servos: links go to the venue chooser on a multi venue site, to the one venue otherwise, or to the one named', () => {
+  // 5.12.7 (Peter, 1 Nov): two venues here, so a plain order, catering or book link asks first.
+  assert.equal(resolveHref(ctx, 'servos:order'), '/order');
+  assert.equal(resolveHref(ctx, 'servos:catering'), '/order/catering');
+  assert.equal(resolveHref(ctx, 'servos:book'), '/order/book');
+  assert.equal(resolveHref(ctx, 'servos:order:default'), '/order');
+  const one = { ...ctx, locations: [{ id: 'loc-b', online_slug: 'mozz-b' }, { id: 'loc-c', online_slug: null }] };
+  assert.equal(resolveHref(one, 'servos:order'), 'https://mozz-b.serv-os.app/', 'one venue a visitor can order from: straight there');
+  assert.equal(resolveHref(one, 'servos:catering'), 'https://mozz-b.serv-os.app/catering');
+  assert.equal(resolveHref(one, 'servos:book'), 'https://mozz-b.serv-os.app/book');
+  // Company wide surfaces never ask.
   assert.equal(resolveHref(ctx, 'servos:loyalty'), 'https://mozz-b.serv-os.app/account');
   assert.equal(resolveHref(ctx, 'servos:gift'), 'https://mozz-b.serv-os.app/gift');
-  assert.equal(resolveHref(ctx, 'servos:book'), 'https://mozz-b.serv-os.app/book');
   assert.equal(resolveHref(ctx, 'servos:waitlist'), 'https://mozz-b.serv-os.app/waitlist');
   assert.equal(resolveHref(ctx, 'servos:order:loc-a'), 'https://mozz-a.serv-os.app/');
   assert.equal(resolveHref(ctx, 'servos:order:mozz-a'), 'https://mozz-a.serv-os.app/');
-  assert.equal(resolveHref({ ...ctx, customerRoot: 'dev.serv-os.app' }, 'servos:order'), 'https://mozz-b.dev.serv-os.app/');
+  assert.equal(resolveHref({ ...ctx, customerRoot: 'dev.serv-os.app' }, 'servos:order:loc-b'), 'https://mozz-b.dev.serv-os.app/');
   assert.equal(resolveHref(ctx, 'servos:unknown'), '');
   assert.equal(resolveHref({ ...ctx, locations: [] }, 'servos:order'), '', 'no venue = no link, never a throw');
 });

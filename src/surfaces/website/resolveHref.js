@@ -16,6 +16,20 @@ export const SERVOS_PATHS = Object.freeze({
 
 export const DEFAULT_CUSTOMER_ROOT = 'serv-os.app';
 
+/** The site pages that ask "which venue?" before a per venue surface opens. */
+export const CHOOSE_PATHS = Object.freeze({ order: '/order', catering: '/order/catering', book: '/order/book' });
+
+/** True when a servos: link names one venue (an id or slug), not 'default' or 'all'. */
+export function explicitLocation(locId) {
+  return !!locId && locId !== 'default' && locId !== 'all';
+}
+
+/** True when the site has more than one venue a visitor can order from. */
+export function multiVenue(ctx) {
+  const list = Array.isArray(ctx && ctx.locations) ? ctx.locations : [];
+  return list.filter((l) => l && l.online_slug).length > 1;
+}
+
 /** The venue's customer origin for a slug: https://<slug>.<customerRoot>. '' without a slug. */
 export function customerOrigin(slug, customerRoot = DEFAULT_CUSTOMER_ROOT) {
   if (!slug) return '';
@@ -64,6 +78,10 @@ export function resolveHref(ctx, href) {
     const [, surface, locId] = h.split(':');
     const path = SERVOS_PATHS[surface];
     if (!path) return '';
+    // 5.12.7 (Peter, 1 Nov): a company with several venues never sends a visitor straight to one
+    // venue's ordering. Order, catering and book links with no venue of their own go to the site's
+    // choose your venue page first; a link that names a venue still goes straight there.
+    if (CHOOSE_PATHS[surface] && !explicitLocation(locId) && multiVenue(ctx)) return CHOOSE_PATHS[surface];
     const loc = pickLocation(ctx, locId);
     return venueUrl(loc && loc.online_slug, path, ctx && ctx.customerRoot);
   }

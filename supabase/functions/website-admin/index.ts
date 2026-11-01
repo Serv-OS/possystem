@@ -47,7 +47,7 @@ const BUCKET = 'web-assets';
 const ASSET_KINDS = new Set(['photo', 'logo', 'og', 'favicon', 'post']);
 const ASSET_EXT = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'svg', 'ico', 'avif']);
 const EMPTY_LAYOUT = { content: [], root: { props: {} } };
-const DEFAULT_SETTINGS = { allow_custom_code: false, custom_head_html: '', nearest_store: true, default_location_id: null, order_mode: 'embed' };
+const DEFAULT_SETTINGS = { allow_custom_code: false, custom_head_html: '', nearest_store: true, default_location_id: null, order_mode: 'link' };
 
 type Row = Record<string, unknown>;
 

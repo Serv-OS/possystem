@@ -91,3 +91,19 @@ test('a location page whose venue has no online_slug: out of the sitemap, but it
   s.pages.at(-1).location_id = 'loc-gone';
   assert.ok(!sitemapPaths(s).map((u) => u.path).includes('/locations/dark-kitchen'));
 });
+
+// 5.12.7: /order, /order/catering and /order/book answer on every site, as the "which venue?" page
+// when the designer made no page of that slug.
+test('the choose your venue page is synthesised for /order paths without a page', () => {
+  const r = resolveRoute({ pages: [{ slug: '', title: 'Home', status: 'published' }], locations: [] }, '/order');
+  assert.equal(r.kind, 'page');
+  assert.equal(r.page.synthesised, true);
+  assert.equal(r.page.kind, 'order');
+  assert.deepEqual(r.page.layout.content.map((b) => b.type), ['Hero', 'FindUs']);
+  assert.equal(r.page.layout.content[1].props.cta, 'order');
+  assert.equal(resolveRoute({ pages: [] }, '/order/catering').page.layout.content[1].props.cta, 'catering');
+  assert.equal(resolveRoute({ pages: [] }, '/order/book').page.title, 'Book a table');
+  assert.equal(resolveRoute({ pages: [] }, '/order/nope').kind, 'notfound');
+  const own = resolveRoute({ pages: [{ slug: 'order', title: 'Order', kind: 'order', status: 'published', layout: { content: [] } }] }, '/order');
+  assert.equal(own.page.synthesised, undefined, 'a real order page wins');
+});

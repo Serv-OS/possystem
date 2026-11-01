@@ -51,7 +51,10 @@ test('home: hero headline is the h1, menu items carry real prices, sold out mark
   assert.match(out.body, /Nduja &lt;hot&gt;/, 'item names are escaped');
   assert.doesNotMatch(out.body, /<hot>/);
   assert.match(out.body, /Open now/, 'hero status from the venue clock');
-  assert.match(out.body, /href="https:\/\/mozz-leeds\.serv-os\.app\/"/, 'servos:order resolves to the default venue');
+  // 5.12.7: two venues on this site, so every plain order link asks "which venue?" first.
+  assert.match(out.body, /<a class="w-btn w-btn-primary" href="\/order">Order now<\/a>/, 'servos:order goes to the chooser on a multi venue site');
+  assert.match(out.body, /href="\/order\/book">Book a table/);
+  assert.doesNotMatch(out.body, /href="https:\/\/mozz-leeds\.serv-os\.app\/"/, 'no straight line to one venue from a plain link');
   assert.match(out.body, /href="\/menu"/, 'page:p-menu resolves to the site path');
 });
 
@@ -138,10 +141,29 @@ test('head: title, description, canonical on the custom domain, og and twitter, 
   assert.equal(offline.noindex, true);
 });
 
-test('embeds render a link card and an iframe of the venue customer URL', () => {
+// 5.12.7 (Peter, 1 Nov): never an iframe, and never straight to one venue when there are several.
+test('order page on a multi venue site: a venue chooser, one button per venue to its own ordering, no iframe', () => {
   const out = render(snap(), '/order');
-  assert.match(out.body, /<a class="w-btn w-btn-secondary" href="https:\/\/mozz-leeds\.serv-os\.app\/" target="_blank" rel="noopener">Open ordering<\/a>/);
-  assert.match(out.body, /<iframe class="w-iframe" src="https:\/\/mozz-leeds\.serv-os\.app\/"/);
+  assert.doesNotMatch(out.body, /<iframe/);
+  assert.match(out.body, /data-block="OrderEmbed"/, 'the block keeps its own name');
+  assert.match(out.body, /Choose your venue/);
+  assert.match(out.body, /<button type="button" class="w-btn w-btn-secondary w-nearest" data-nearest>Find my nearest<\/button>/);
+  assert.match(out.body, /<a class="w-btn w-btn-primary" href="https:\/\/mozz-leeds\.serv-os\.app\/">Order here<\/a>/);
+  assert.match(out.body, /<a class="w-btn w-btn-primary" href="https:\/\/mozz-huddersfield\.serv-os\.app\/">Order here<\/a>/);
+  // The synthesised book chooser: book buttons, no second Book link.
+  const book = render(snap(), '/order/book');
+  assert.equal(book.noindex, false);
+  assert.match(book.body, /<h1>Book a table: pick your venue<\/h1>/);
+  assert.match(book.body, /href="https:\/\/mozz-leeds\.serv-os\.app\/book">Book here</);
+  assert.doesNotMatch(book.body, />Book<\/a>/);
+  // One venue only: straight to it, as a card with one button.
+  const s = snap();
+  s.locations = s.locations.filter((l) => l.id === 'loc-leeds');
+  const one = render(s, '/order');
+  assert.doesNotMatch(one.body, /<iframe/);
+  assert.match(one.body, /<a class="w-btn w-btn-primary" href="https:\/\/mozz-leeds\.serv-os\.app\/">Order now<\/a>/);
+  assert.doesNotMatch(one.body, /Choose your venue/);
+  assert.match(render(s, '/').body, /href="https:\/\/mozz-leeds\.serv-os\.app\/" rel="noopener">Order now/, 'one venue: the hero button goes straight there');
 });
 
 test('find us: every location with a slug, address text, hours today first, directions, order and book buttons; the dark kitchen is left out', () => {

@@ -4,7 +4,7 @@
 
 import { CN } from '../classNames.js';
 import { useSite } from '../../siteContext.js';
-import { pickLocation, venueUrl } from '../../resolveHref.js';
+import { pickLocation, resolveHref } from '../../resolveHref.js';
 import { formatPrice, capCategories } from '../../data/loadMenu.js';
 
 const cls = (...xs) => xs.filter(Boolean).join(' ');
@@ -46,7 +46,7 @@ export function LiveMenu({ id, title, categories, layout, show = {}, max_items, 
   const only = Array.isArray(categories) ? categories.map((c) => c && c.id).filter(Boolean) : [];
   const cats = only.length ? menu.categories.filter((c) => only.includes(c.id)) : menu.categories;
   const loc = pickLocation(ctx, location_id);
-  const orderHref = show.add_button && loc ? venueUrl(loc.online_slug, '/', ctx.customerRoot) : '';
+  const orderHref = show.add_button && loc ? resolveHref(ctx, 'servos:order') : '';
   const sections = capCategories(cats, show.hide_sold_out, max_items).map((c) => (
     <div key={c.id} className={CN.menuSection}>
       <h3>{c.label}</h3>

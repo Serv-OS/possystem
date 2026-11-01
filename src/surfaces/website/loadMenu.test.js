@@ -60,21 +60,21 @@ const TABLES = {
   stock_levels: [{ location_id: LOC, item_id: 'i-eggs', remaining: 0 }],
 };
 
-test('the all day menu at lunch: prices by mode, sub category folds into its parent, sizes show from, sold out marked', async () => {
+test('the all day menu at lunch: prices by mode, sub category folds into its parent, sizes show from, 86d items gone', async () => {
   const noon = new Date('2026-10-31T12:00:00Z');
   const r = await loadMenu(fakeClient(TABLES), LOC, { priceMode: 'collection', timezone: 'Europe/London', currency: 'GBP', now: noon });
   assert.equal(r.error, null);
   assert.equal(r.menuId, 'm-all');
   assert.deepEqual(r.categories.map((c) => c.label), ['Pizza', 'Drinks']);
   const pizza = r.categories[0];
-  assert.deepEqual(pizza.items.map((i) => i.name), ['Margherita', 'Garden', 'Gone']);
+  assert.deepEqual(pizza.items.map((i) => i.name), ['Margherita', 'Garden'], '5.12.7: the 86d item is off the site, not marked');
   const marg = pizza.items[0];
   assert.equal(marg.price, 8.5, 'collection price');
   assert.deepEqual(marg.dietary, ['V']);
   assert.deepEqual(marg.allergens, ['gluten']);
   assert.equal(marg.image, 'https://x/m.jpg');
   assert.equal(marg.description, 'Classic');
-  assert.equal(pizza.items[2].sold_out, true, '86 list');
+  assert.ok(!r.categories.some((c) => c.items.some((i) => i.id === 'i-gone')), '86 list: gone from every section');
   const cola = r.categories[1].items[0];
   assert.equal(cola.price, 2, 'cheapest size');
   assert.equal(cola.from, true);
@@ -90,8 +90,8 @@ test('timed menu: at 08:00 the brunch menu wins and stock 0 is sold out; a named
   const early = new Date('2026-10-31T07:00:00Z'); // 08:00 BST
   const r = await loadMenu(fakeClient(TABLES), LOC, { timezone: 'Europe/London', now: early });
   assert.equal(r.menuId, 'm-brunch');
-  assert.deepEqual(r.categories.map((c) => c.label), ['Brunch']);
-  assert.equal(r.categories[0].items[0].sold_out, true, 'stock remaining 0');
+  // Eggs (stock 0) is the only brunch item and is off the site, so the brunch menu shows nothing.
+  assert.deepEqual(r.categories, [], 'stock remaining 0 = off the site');
   const named = await loadMenu(fakeClient(TABLES), LOC, { menuId: 'm-all', timezone: 'Europe/London', now: early });
   assert.equal(named.menuId, 'm-all');
   const hidden = await loadMenu(fakeClient(TABLES), LOC, { timezone: 'Europe/London', now: early, hideSoldOut: true });
@@ -156,7 +156,7 @@ test('real Ops rows: cat and cats place the item, an item in two sections appear
   assert.equal(r.error, null);
   const pizza = r.categories.find((c) => c.label === 'Pizza');
   const drinks = r.categories.find((c) => c.label === 'Drinks');
-  assert.deepEqual(pizza.items.map((i) => i.name), ['Margherita', 'Garden', 'Gone', 'Garlic bread', 'Lemonade']);
+  assert.deepEqual(pizza.items.map((i) => i.name), ['Margherita', 'Garden', 'Garlic bread', 'Lemonade']);
   assert.deepEqual(drinks.items.map((i) => i.name), ['Cola', 'Lemonade']);
   assert.ok(!r.categories.some((c) => c.items.some((i) => i.name === 'Staff meal')), 'visibility.online false never reaches the site');
   assert.ok(!r.categories.some((c) => c.items.some((i) => i.name === 'Loose item')), 'an item in no category is not shown');
