@@ -238,17 +238,39 @@ export function visibleNav(snapshot) {
   const pages = publishedPages(snapshot);
   const nav = Array.isArray(site.nav) ? site.nav : [];
   const out = [];
-  for (const item of nav) {
-    if (!item || !item.label) continue;
+  // One flat item from a saved nav entry, or null when its page is missing or its channel is off.
+  const flat = (item) => {
+    if (!item || !item.label) return null;
     if (item.kind === 'page' || item.page_id) {
       const page = pages.find((p) => p.id === item.page_id || slugOf(p) === item.page_id);
-      if (!page) continue;
+      if (!page) return null;
       const ch = PAGE_KIND_CHANNEL[page.kind];
-      if (ch && !channelOn(settings, ch)) continue;
-      out.push({ label: String(item.label), href: pathForPage(page, snapshot) });
-    } else if (item.href) {
-      out.push({ label: String(item.label), href: String(item.href) });
+      if (ch && !channelOn(settings, ch)) return null;
+      return { label: String(item.label), href: pathForPage(page, snapshot) };
     }
+    if (item.href) return { label: String(item.label), href: String(item.href) };
+    return null;
+  };
+  for (const item of nav) {
+    if (!item || !item.label) continue;
+    // 5.12.12 (Peter: "the main nav, you cannot add a drop down for which location"): a 'locations'
+    // item opens every published venue page; a 'group' item opens the children the owner picked.
+    if (item.kind === 'locations') {
+      // Every public venue: its own page when the site has one, else its /locations/<slug> route.
+      const children = siteLocations(snapshot).map((l) => {
+        const pg = pages.find((p) => p.kind === 'location' && (p.location_id === l.id || slugOf(p) === l.online_slug));
+        return { label: String((pg && pg.title) || l.name || l.online_slug), href: pg ? pathForPage(pg, snapshot) : `/locations/${l.online_slug}` };
+      });
+      if (children.length) out.push({ label: String(item.label), href: findUsPath(snapshot), children });
+      continue;
+    }
+    if (item.kind === 'group') {
+      const children = (Array.isArray(item.children) ? item.children : []).map(flat).filter(Boolean);
+      if (children.length) out.push({ label: String(item.label), href: children[0].href, children });
+      continue;
+    }
+    const one = flat(item);
+    if (one) out.push(one);
   }
   if (!out.length) {
     // No nav saved: every published page except location pages, in order.
@@ -271,7 +293,7 @@ export function breadcrumbsFor(route, snapshot) {
   if (route.path === '/') return [home];
   return [home, { name: route.page.title || route.page.slug, path: route.path }];
 }
-function findUsPath(snapshot) {
+export function findUsPath(snapshot) {
   const p = publishedPages(snapshot).find((x) => x.kind === 'findus');
   return p ? pathForPage(p, snapshot) : '/';
 }

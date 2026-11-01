@@ -30,6 +30,12 @@ export function safeImageUrl(v) {
  *   cols, full, gap, pad, align, darken, tone ('' = inherit, 'light' or 'dark' text),
  *   hasBg, style: { '--w-row-cols', '--w-row-bg'?, '--w-row-img'? }, colBg: ['#hex' | '', ...] }
  */
+const COL_PADS = ['none', 'small', 'normal', 'large'];
+function colPadOf(p) {
+  if (COL_PADS.includes(p.col_padding)) return p.col_padding;
+  return ['full'].includes(p.width) ? 'normal' : 'none';
+}
+
 export function rowPlan(props) {
   const p = props && typeof props === 'object' ? props : {};
   const cols = Math.max(1, Math.min(4, parseInt(p.columns, 10) || 2));
@@ -48,6 +54,8 @@ export function rowPlan(props) {
     cols,
     full: p.full_width === true,
     width: ['page', 'wide', 'full'].includes(p.width) ? p.width : 'page',
+    // 5.12.12 (Peter: "text is touching the edges"): auto = none at page width, normal edge to edge.
+    colPad: colPadOf(p),
     gap: SIZES.includes(p.gap) ? p.gap : 'normal',
     pad: SIZES.includes(p.padding) ? p.padding : 'normal',
     align: p.align === 'center' ? 'center' : 'top',

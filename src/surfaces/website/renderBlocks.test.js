@@ -439,7 +439,7 @@ test('Row: two columns holding a Text and a LiveMenu paint the grid, the data at
     col1: [{ type: 'Text', props: { id: 't1', md: 'Hello **there**' } }],
     col2: [{ type: 'LiveMenu', props: { id: 'm1', layout: 'list' } }],
   }));
-  assert.match(html, /^<section class="w-block w-row" data-block="Row" data-id="row1" data-cols="2" data-full="true" data-width="page" data-tone="light"/);
+  assert.match(html, /^<section class="w-block w-row" data-block="Row" data-id="row1" data-cols="2" data-full="true" data-width="page" data-colpad="none" data-tone="light"/);
   assert.match(html, /data-darken="true"/);
   assert.match(html, /style="--w-row-cols:2;--w-row-bg:#1b1b1b;--w-row-img:url\(&quot;https:\/\/x\/bg\.jpg&quot;\)"/);
   assert.match(html, /<div class="w-inner w-row-grid">/);
@@ -557,4 +557,53 @@ test('Hero slideshow: one slide keeps the old markup; more slides paint layers (
   assert.equal((show.match(/class="w-hero-dot"/g) || []).length, 3);
   assert.match(show, /aria-selected="true" aria-label="Slide 1" data-go="0"/);
   assert.match(show, /Book/);
+});
+
+
+// ── 5.12.12: column padding, hero colour, book switch, buttons, brand loyalty card, nav dropdown ──
+test('Row: column padding is none at page width and normal edge to edge unless the owner picks one', () => {
+  const ctx = rowCtx();
+  assert.match(renderBlock(ctx, rowBlock({ columns: '2' })), /data-colpad="none"/);
+  assert.match(renderBlock(ctx, rowBlock({ columns: '2', width: 'full' })), /data-colpad="normal"/);
+  assert.match(renderBlock(ctx, rowBlock({ columns: '2', width: 'full', col_padding: 'none' })), /data-colpad="none"/);
+  assert.match(renderBlock(ctx, rowBlock({ columns: '2', col_padding: 'large' })), /data-colpad="large"/);
+  assert.match(renderBlock(ctx, rowBlock({ columns: '2', col_padding: 'huge' })), /data-colpad="none"/);
+});
+
+test('Hero: Show a photo off paints the background colour with a light tone on a dark colour; a colour alone is used when no photo exists', () => {
+  const s = snap();
+  const dark = renderBlock(rowCtx(s), { type: 'Hero', props: { id: 'h', headline: 'Hi', use_photo: false, bg_color: '#141414' } });
+  assert.match(dark, /data-photo="false" data-tone="light" style="background-color:#141414"/);
+  assert.doesNotMatch(dark, /background-image/);
+  const light = renderBlock(rowCtx(s), { type: 'Hero', props: { id: 'h', headline: 'Hi', use_photo: false, bg_color: '#f6f6f6' } });
+  assert.match(light, /data-tone="dark" style="background-color:#f6f6f6"/);
+  const junk = renderBlock(rowCtx(s), { type: 'Hero', props: { id: 'h', headline: 'Hi', use_photo: false, bg_color: 'red' } });
+  assert.doesNotMatch(junk, /data-tone|background-color/);
+  const slides = renderBlock(rowCtx(s), { type: 'Hero', props: { id: 'h', headline: 'Hi', use_photo: false, bg_color: '#141414', slides: [{ headline: 'Two' }] } });
+  assert.equal((slides.match(/data-tone="light" style="background-color:#141414"/g) || []).length, 2, 'both slides take the colour');
+});
+
+test('FindUs: the Book button can be switched off; Specials and LiveMenu paint the button under the items and Find my local store', () => {
+  const s = snap();
+  const on = renderBlock(rowCtx(s), { type: 'FindUs', props: { id: 'f', location_id: 'all', show_order_buttons: true } });
+  const off = renderBlock(rowCtx(s), { type: 'FindUs', props: { id: 'f', location_id: 'all', show_order_buttons: true, show_book: false } });
+  assert.ok(on.includes('>Book</a>') ? !off.includes('>Book</a>') : true, 'show_book false removes every Book button');
+  assert.doesNotMatch(off, />Book<\/a>/);
+  const sp = renderBlock(rowCtx(s), { type: 'Specials', props: { id: 'sp', title: 'Specials', button: { label: 'View full menu', href: '/menu' } } });
+  assert.match(sp, /<div class="w-menu-more"><a class="w-btn w-btn-secondary" href="\/menu">View full menu<\/a><\/div><\/div><\/section>$/);
+  const spNone = renderBlock(rowCtx(s), { type: 'Specials', props: { id: 'sp', title: 'Specials', button: { label: '', href: '/menu' } } });
+  assert.doesNotMatch(spNone, /w-menu-more/);
+  const lm = renderBlock(rowCtx(s), { type: 'LiveMenu', props: { id: 'm', show: { store_finder: true }, button: { label: 'See everything', href: '/menu' } } });
+  assert.match(lm, /<div class="w-menu-more"><a class="w-btn w-btn-secondary" href="\/menu">See everything<\/a><a class="w-btn w-btn-secondary" href="[^"]+">Find my local store<\/a><\/div>/);
+  const lmNone = renderBlock(rowCtx(s), { type: 'LiveMenu', props: { id: 'm' } });
+  assert.doesNotMatch(lmNone, /w-menu-more/);
+});
+
+test('LoyaltyJoin: the card carries the site name, never one venue; header paints a dropdown for a nav item with children', () => {
+  const s = snap();
+  const html = renderBlock(rowCtx(s), { type: 'LoyaltyJoin', props: { id: 'l', headline: 'Join', show_card_preview: true, location_id: 'default' } });
+  assert.match(html, new RegExp(`<div class="w-loyalty-card"><span>${siteName(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}</span>`));
+  s.site.nav = [{ label: 'Home', kind: 'page', page_id: '' }, { label: 'Locations', kind: 'locations' }];
+  const out = render(s, '/');
+  assert.match(out.body, /<div class="w-nav-item"><button type="button" class="w-nav-link w-nav-drop" aria-haspopup="true" aria-expanded="false">Locations<\/button><div class="w-nav-sub"><a class="w-nav-link" href="\/locations\//);
 });

@@ -13,13 +13,13 @@ import { CN } from '../blocks/classNames.js';
 import { layoutBlocks, normaliseProps, walkBlocks } from '../blocks/schema.js';
 import { rowPlan, styleText } from '../blocks/rowPlan.js';
 import { heroSlides, slideSeconds } from '../blocks/heroSlides.js';
-import { siteVars, cssText, fontLinks, themeColor } from '../theme.js';
+import { siteVars, cssText, fontLinks, themeColor, isDarkHex } from '../theme.js';
 import { SITE_CSS } from '../siteStyles.js';
 import { hoursRows, openStatus } from '../hours.js';
 import { addressText, directionsUrl } from '../geo.js';
 import { resolveHref, pickLocation, venueUrl, explicitLocation, multiVenue, menuLocation, menuVenues, menuOrderHref, onVenuePage } from '../resolveHref.js';
 import { formatPrice } from '../data/loadMenu.js';
-import { blockVisible, visibleNav, breadcrumbsFor, siteLocations, publishedPosts, publishedPages, pathForPage, sitemapPaths, channelOn, locationChannelOn, PAGE_KIND_CHANNEL, headerOptions, HEADER_CTA_LABELS } from '../routes.js';
+import { blockVisible, visibleNav, breadcrumbsFor, siteLocations, publishedPosts, publishedPages, pathForPage, sitemapPaths, channelOn, locationChannelOn, PAGE_KIND_CHANNEL, headerOptions, HEADER_CTA_LABELS, findUsPath } from '../routes.js';
 import { restaurantLd, menuLd, organizationLd, webSiteLd, breadcrumbLd, blogPostingLd, faqLd, siteName } from './jsonld.js';
 import { canonicalHost } from '../hostParse.js';
 
@@ -97,24 +97,29 @@ const R = {
     const p = b.props;
     const loc = blockLocation(ctx, p);
     const branding = (loc && loc.online_branding) || {};
-    const photo = p.photo_url || branding.hero_url || '';
+    // 5.12.12: "Show a photo" off, or no photo anywhere, paints the background colour instead.
+    const usePhoto = p.use_photo !== false;
+    const photo = usePhoto ? (p.photo_url || branding.hero_url || '') : '';
+    const bgHex = /^#[0-9a-f]{6}$/i.test(String(p.bg_color || '')) ? String(p.bg_color) : '';
     const headline = p.headline || branding.display_name || (loc && loc.name) || siteName(ctx.snapshot);
     const tag = ctx.h1Used ? 'h2' : 'h1';
     ctx.h1Used = true;
     const st = p.show_status && loc ? openStatus(loc.opening_hours, loc.timezone, ctx.now) : { text: '' };
     const status = st.text ? `<div class="${cls(CN.heroStatus, st.open ? CN.open : CN.closed)}">${esc(st.text)}</div>` : '';
-    const slides = heroSlides(p, { fallbackPhoto: branding.hero_url || '', fallbackHeadline: headline });
+    const slides = heroSlides(usePhoto ? p : { ...p, photo_url: '' }, { fallbackPhoto: usePhoto ? branding.hero_url || '' : '', fallbackHeadline: headline });
     const sizeCls = p.height === 'short' ? CN.heroShort : CN.heroTall;
     // attr() turns the quotes into &quot;, which the browser decodes back to url("...") in the style.
-    const bgStyle = (url) => (url ? ` style="background-image:url(${attr(JSON.stringify(url))})"` : '');
+    // No photo + a colour: the colour paints, and data-tone says whether the text goes light.
+    const bgStyle = (url) => (url ? ` style="background-image:url(${attr(JSON.stringify(url))})"` : (bgHex ? ` style="background-color:${bgHex}"` : ''));
+    const toneAttr = (url) => (!url && bgHex ? ` data-tone="${isDarkHex(bgHex) ? 'light' : 'dark'}"` : '');
     const body = (sl, hTag, withStatus) => `<div class="${CN.heroBody}">${withStatus ? status : ''}<${hTag}>${esc(sl.headline)}</${hTag}>${sl.sub ? `<p>${esc(sl.sub)}</p>` : ''}` +
       `<div>${button(ctx, sl.primary, 'primary')}${button(ctx, sl.secondary, 'secondary')}</div></div>`;
     if (slides.length < 2) {
-      return `<section class="${cls(CN.block, CN.hero, sizeCls)}" data-block="Hero" data-id="${attr(p.id)}" data-photo="${photo ? 'true' : 'false'}"${bgStyle(photo)}>` +
+      return `<section class="${cls(CN.block, CN.hero, sizeCls)}" data-block="Hero" data-id="${attr(p.id)}" data-photo="${photo ? 'true' : 'false'}"${toneAttr(photo)}${bgStyle(photo)}>` +
         body(slides[0], tag, true) + '</section>';
     }
     // 5.12.10 slideshow: every slide is in the markup (slide 1 visible), the React Hero advances them.
-    const layers = slides.map((sl, i) => `<div class="${CN.heroSlide}" data-slide="${i}" data-active="${i === 0 ? 'true' : 'false'}" data-photo="${sl.photo ? 'true' : 'false'}"${bgStyle(sl.photo)}${i === 0 ? '' : ' aria-hidden="true"'}>${body(sl, i === 0 ? tag : 'h2', i === 0)}</div>`).join('');
+    const layers = slides.map((sl, i) => `<div class="${CN.heroSlide}" data-slide="${i}" data-active="${i === 0 ? 'true' : 'false'}" data-photo="${sl.photo ? 'true' : 'false'}"${toneAttr(sl.photo)}${bgStyle(sl.photo)}${i === 0 ? '' : ' aria-hidden="true"'}>${body(sl, i === 0 ? tag : 'h2', i === 0)}</div>`).join('');
     const dots = `<div class="${CN.heroDots}" role="tablist" aria-label="Slides">${slides.map((sl, i) => `<button type="button" class="${CN.heroDot}" role="tab" aria-selected="${i === 0 ? 'true' : 'false'}" aria-label="Slide ${i + 1}" data-go="${i}"></button>`).join('')}</div>`;
     return `<section class="${cls(CN.block, CN.hero, CN.heroSlides, sizeCls)}" data-block="Hero" data-id="${attr(p.id)}" data-photo="${slides[0].photo ? 'true' : 'false'}" data-slides="${slides.length}" data-seconds="${slideSeconds(p)}">${layers}${dots}</section>`;
   },
@@ -154,7 +159,13 @@ const R = {
       if (!items.length) return '';
       return `<div class="${CN.menuSection}"><h3>${esc(c.label)}</h3><div class="${CN.menuGrid}">${items.map((it) => menuItemHtml(it, show, orderHref)).join('')}</div></div>`;
     }).join('');
-    return section(b, cls(CN.menu, layoutCn), heading(p.title) + switcher + (sections || empty('Nothing on the menu right now.')));
+    // 5.12.12: a button under the menu (owner's words) and "Find my local store" to the Find us page.
+    const under = [
+      p.button && p.button.label ? button(ctx, p.button, 'secondary') : '',
+      show.store_finder ? button(ctx, { label: 'Find my local store', href: findUsPath(ctx.snapshot) }, 'secondary') : '',
+    ].join('');
+    const more = under ? `<div class="${CN.menuMore}">${under}</div>` : '';
+    return section(b, cls(CN.menu, layoutCn), heading(p.title) + switcher + (sections || empty('Nothing on the menu right now.')) + more);
   },
   Specials(ctx, b) {
     const p = b.props;
@@ -167,7 +178,8 @@ const R = {
       items = ids.map((id) => all.find((it) => it.id === id)).filter(Boolean);
     } else items = menu.specials || [];
     if (!items.length) return '';
-    return section(b, cls(CN.menu, CN.specials, CN.menuCards), heading(p.title) + `<div class="${CN.menuGrid}">${items.map((it) => menuItemHtml(it, { prices: true, photos: true, descriptions: true, dietary: true }, '')).join('')}</div>`);
+    const more = p.button && p.button.label ? `<div class="${CN.menuMore}">${button(ctx, p.button, 'secondary')}</div>` : '';
+    return section(b, cls(CN.menu, CN.specials, CN.menuCards), heading(p.title) + `<div class="${CN.menuGrid}">${items.map((it) => menuItemHtml(it, { prices: true, photos: true, descriptions: true, dietary: true }, '')).join('')}</div>` + more);
   },
   OrderEmbed(ctx, b) {
     const p = b.props;
@@ -182,7 +194,8 @@ const R = {
     const p = b.props;
     const loc = blockLocation(ctx, p);
     const href = loc ? venueUrl(loc.online_slug, '/account', ctx.customerRoot) : '';
-    const name = (loc && ((loc.online_branding && loc.online_branding.display_name) || loc.name)) || siteName(ctx.snapshot);
+    // 5.12.12: loyalty is company wide, so the card carries the brand, never one venue's name.
+    const name = siteName(ctx.snapshot) || (loc && loc.name) || '';
     const card = p.show_card_preview ? `<div class="${CN.loyaltyCard}"><span>${esc(name)}</span><span>Loyalty card</span></div>` : '';
     return section(b, CN.loyalty, `<div>${heading(p.headline)}${p.sub ? `<p class="${CN.muted}">${esc(p.sub)}</p>` : ''}${href ? `<a class="${cls(CN.btn, CN.btnPrimary)}" href="${attr(href)}">Join free</a>` : ''}</div>${card}`);
   },
@@ -235,7 +248,7 @@ const R = {
       const actions = [
         canMain ? `<a class="${cls(CN.btn, CN.btnPrimary)}" href="${attr(venueUrl(loc.online_slug, cta.path, ctx.customerRoot))}">${esc(cta.label)}</a>` : '',
         dir ? `<a class="${cls(CN.btn, CN.btnSecondary)}" href="${attr(dir)}" target="_blank" rel="noopener">Directions</a>` : '',
-        cta !== CTA.book && locationChannelOn(loc, ctx.settings, 'bookings') ? `<a class="${cls(CN.btn, CN.btnSecondary)}" href="${attr(venueUrl(loc.online_slug, '/book', ctx.customerRoot))}">Book</a>` : '',
+        p.show_book !== false && cta !== CTA.book && locationChannelOn(loc, ctx.settings, 'bookings') ? `<a class="${cls(CN.btn, CN.btnSecondary)}" href="${attr(venueUrl(loc.online_slug, '/book', ctx.customerRoot))}">Book</a>` : '',
       ].join(' ');
       return `<article class="${cls(CN.card, CN.locCard)}" data-location="${attr(loc.id)}"><h3 class="${CN.locName}"><a href="/locations/${attr(loc.online_slug)}">${esc(loc.name)}</a></h3>` +
         (addr ? `<p class="${CN.locAddr}">${esc(addr)}</p>` : '') +
@@ -287,7 +300,7 @@ const R = {
       cols.push(`<div class="${CN.rowCol}" data-col="${i}" data-bg="${bg ? 'true' : 'false'}"${bg ? ` style="--w-col-bg:${attr(bg)}"` : ''}>${inner}</div>`);
     }
     // attr() turns the quotes in url("...") into &quot;, which the browser decodes back in the style.
-    return `<section class="${cls(CN.block, CN.row)}" data-block="Row" data-id="${attr(p.id)}" data-cols="${plan.cols}" data-full="${plan.full ? 'true' : 'false'}" data-width="${plan.width}"` +
+    return `<section class="${cls(CN.block, CN.row)}" data-block="Row" data-id="${attr(p.id)}" data-cols="${plan.cols}" data-full="${plan.full ? 'true' : 'false'}" data-width="${plan.width}" data-colpad="${plan.colPad}"` +
       `${plan.tone ? ` data-tone="${plan.tone}"` : ''} data-gap="${plan.gap}" data-pad="${plan.pad}" data-align="${plan.align}" data-bg="${plan.hasBg ? 'true' : 'false'}" data-darken="${plan.darken ? 'true' : 'false'}"` +
       ` style="${attr(styleText(plan.style))}"><div class="${cls(CN.inner, CN.rowGrid)}">${cols.join('')}</div></section>`;
   },
@@ -391,7 +404,11 @@ export function renderHeader(ctx) {
   const logo = img + text;
   const nav = visibleNav(ctx.snapshot);
   const cta = headerCta(ctx);
-  const links = nav.map((n) => `<a class="${CN.navLink}" href="${attr(resolveHref(ctx, n.href))}"${n.href === ctx.path ? ' aria-current="page"' : ''}>${esc(n.label)}</a>`).join('') +
+  const link = (n) => `<a class="${CN.navLink}" href="${attr(resolveHref(ctx, n.href))}"${n.href === ctx.path ? ' aria-current="page"' : ''}>${esc(n.label)}</a>`;
+  // 5.12.12: an item with children is a dropdown (hover or focus on a desktop, open list on a phone).
+  const links = nav.map((n) => (Array.isArray(n.children) && n.children.length
+    ? `<div class="${CN.navItem}"><button type="button" class="${cls(CN.navLink, CN.navDrop)}" aria-haspopup="true" aria-expanded="false">${esc(n.label)}</button><div class="${CN.navSub}">${n.children.map(link).join('')}</div></div>`
+    : link(n))).join('') +
     (cta ? `<a class="${cls(CN.navLink, CN.headerCta)}" href="${attr(cta.href)}">${esc(cta.label)}</a>` : '');
   return `<header class="${CN.header}"${opts.sticky ? '' : ' data-sticky="false"'}><div class="${CN.inner}"><a class="${CN.logo}" href="/" aria-label="${attr(name)} home">${logo}</a>` +
     `<button type="button" class="${CN.navToggle}" aria-expanded="false" aria-controls="w-nav">Menu</button>` +

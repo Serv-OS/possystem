@@ -48,7 +48,7 @@ export const CN = Object.freeze({
   reviews: 'w-reviews', review: 'w-review', stars: 'w-stars',
   blogList: 'w-bloglist', post: 'w-post', postCover: 'w-post-cover', postMeta: 'w-post-meta', postBody: 'w-post-body',
   text: 'w-text', prose: 'w-prose',
-  image: 'w-image', imageBox: 'w-image-box', imageCaption: 'w-image-caption', headingBlock: 'w-heading', headingSub: 'w-heading-sub',
+  menuMore: 'w-menu-more', navItem: 'w-nav-item', navDrop: 'w-nav-drop', navSub: 'w-nav-sub', image: 'w-image', imageBox: 'w-image-box', imageCaption: 'w-image-caption', headingBlock: 'w-heading', headingSub: 'w-heading-sub',
   columns: 'w-columns', cols2: 'w-cols-2', cols3: 'w-cols-3',
   row: 'w-row', rowGrid: 'w-row-grid', rowCol: 'w-row-col',
   gallery: 'w-gallery',

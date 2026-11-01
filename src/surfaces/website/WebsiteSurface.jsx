@@ -40,6 +40,22 @@ function keptQuery(search, siteSlug, menuVenue) {
   return `${base ? `${base}&` : '?'}venue=${encodeURIComponent(menuVenue)}`;
 }
 
+/** 5.12.12: a nav item with children. Hover and focus open it through CSS; a tap toggles it on a phone. */
+function NavDropdown({ item, path, ctx }) {
+  // Closes when the path changes: derived during render (no setState in an effect).
+  const [st, setSt] = useState({ open: false, path });
+  if (st.path !== path) setSt({ open: false, path });
+  const open = st.path === path && st.open;
+  return (
+    <div className={CN.navItem} data-open={open ? 'true' : 'false'}>
+      <button type="button" className={cls(CN.navLink, CN.navDrop)} aria-haspopup="true" aria-expanded={open} onClick={() => setSt({ open: !open, path })}>{item.label}</button>
+      <div className={CN.navSub}>
+        {item.children.map((c) => <A key={`${c.label}-${c.href}`} className={CN.navLink} href={c.href} aria-current={resolveHref(ctx, c.href) === path ? 'page' : undefined}>{c.label}</A>)}
+      </div>
+    </div>
+  );
+}
+
 function readBoot() {
   try {
     const b = typeof window !== 'undefined' ? window.__SERVOS_SITE__ : null;
@@ -274,7 +290,11 @@ export default function WebsiteSurface({ host, siteSlug = null }) {
             <A className={CN.logo} href="/" aria-label={`${name} home`}>{showImg ? <img src={logo} alt={name} /> : null}{showName ? <span>{name}</span> : null}</A>
             <button type="button" className={CN.navToggle} aria-expanded={navOpen} aria-controls="w-nav" onClick={() => setNavOpen((o) => !o)}>Menu</button>
             <nav id="w-nav" className={CN.nav} aria-label="Site" data-open={navOpen ? 'true' : 'false'}>
-              {nav.map((n) => <A key={`${n.label}-${n.href}`} className={CN.navLink} href={n.href} aria-current={resolveHref(ctx, n.href) === path ? 'page' : undefined}>{n.label}</A>)}
+              {nav.map((n) => (Array.isArray(n.children) && n.children.length ? (
+                <NavDropdown key={`${n.label}-${n.href}`} item={n} path={path} ctx={ctx} />
+              ) : (
+                <A key={`${n.label}-${n.href}`} className={CN.navLink} href={n.href} aria-current={resolveHref(ctx, n.href) === path ? 'page' : undefined}>{n.label}</A>
+              )))}
               {cta ? <A className={cls(CN.navLink, CN.headerCta)} href={cta.href}>{cta.label}</A> : null}
             </nav>
           </div>

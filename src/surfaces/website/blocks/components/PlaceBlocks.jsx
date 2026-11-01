@@ -59,7 +59,7 @@ const CTA = Object.freeze({
   book: { label: 'Book here', path: '/book', channel: 'bookings' },
 });
 
-export function FindUs({ id, title, show_map, show_nearest, show_hours, show_order_buttons, location_id, cta = 'order', blockType = 'FindUs' }) {
+export function FindUs({ id, title, show_map, show_nearest, show_hours, show_order_buttons, show_book = true, location_id, cta = 'order', blockType = 'FindUs' }) {
   const { ctx, here, requestNearest, nearestState } = useSite();
   const main = CTA[cta] || CTA.order;
   const base = location_id === 'all' ? ctx.locations : [pickLocation(ctx, location_id)].filter(Boolean);
@@ -81,7 +81,7 @@ export function FindUs({ id, title, show_map, show_nearest, show_hours, show_ord
           const addr = addressText(loc);
           const dir = show_map ? directionsUrl(loc, ctx.settings) : '';
           const canMain = show_order_buttons && locationChannelOn(loc, ctx.settings, main.channel);
-          const canBook = main !== CTA.book && locationChannelOn(loc, ctx.settings, 'bookings');
+          const canBook = show_book !== false && main !== CTA.book && locationChannelOn(loc, ctx.settings, 'bookings');
           return (
             <article key={loc.id} className={cls(CN.card, CN.locCard, loc.id === nearestId && CN.nearest)} data-location={loc.id}>
               <h3 className={CN.locName}><A href={`/locations/${loc.online_slug}`}>{loc.name}</A>{loc.id === nearestId ? <span className={CN.muted}> · nearest</span> : null}</h3>

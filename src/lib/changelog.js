@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    v: '5.12.12',
+    date: '1 Nov 2026',
+    items: [
+      'Website: Row has "Space inside columns" (auto, none, small, normal, large). Edge to edge rows pad their columns by default so text never touches the screen edge.',
+      'Website: Hero has "Show a photo" and a "Background colour", so a header can be a plain colour; light text picks itself on a dark colour. Slides without a photo use the colour too.',
+      'Website: Specials has a button under the items (default "View full menu"). Live menu has an optional button under the menu and a "Find my local store" button that opens your Find us page.',
+      'Website: Find us venue cards have a Book button switch (venues without bookings never showed it; now you can hide it everywhere).',
+      'Website: the loyalty card preview shows the brand name, not one venue, since loyalty is company wide.',
+      'Website editor: the editor fills the window below the tabs, so the page no longer scrolls away from the field panel when you click a block further down.',
+    ],
+  },
+  {
     v: '5.12.11',
     date: '1 Nov 2026',
     items: [
