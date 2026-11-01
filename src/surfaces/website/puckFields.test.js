@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { puckField, puckFields } from './blocks/puckFields.js';
 import { BLOCK_SCHEMAS, BLOCK_TYPES } from './blocks/schema.js';
 
-const PUCK_TYPES = new Set(['text', 'textarea', 'number', 'select', 'radio', 'array', 'object']);
+const PUCK_TYPES = new Set(['text', 'textarea', 'number', 'select', 'radio', 'array', 'object', 'slot']);
 
 test('every prop of every block maps to a Puck field type Puck 0.20 knows', () => {
   for (const type of BLOCK_TYPES) {

@@ -193,6 +193,35 @@ export const BLOCK_SCHEMAS = {
       items: arr({ md: t('', { label: 'Text (markdown)', markdown: true }) }, [{ md: '' }, { md: '' }], { label: 'Columns' }),
     },
   },
+  // 5.12.9 (Peter, 1 Nov): "create columns and rows, set background images and colours on rows and
+  // columns, drag and drop things into columns". A Row holds up to four slot columns; each slot is a
+  // list of ordinary blocks ({ type, props }) the owner drops in. One level deep: a Row never holds a Row.
+  Row: {
+    label: 'Row', group: 'content',
+    props: {
+      columns: e(['1', '2', '3', '4'], '2', { label: 'Columns' }),
+      gap: e(['none', 'small', 'normal', 'large'], 'normal', { label: 'Space between columns' }),
+      padding: e(['none', 'small', 'normal', 'large'], 'normal', { label: 'Space above and below' }),
+      align: e(['top', 'center'], 'top', { label: 'Line columns up at the' }),
+      full_width: b(false, { label: 'Background edge to edge', hint: 'The content keeps the page width' }),
+      background: obj({
+        color: color('', { label: 'Background colour' }),
+        image: img('', { label: 'Background photo' }),
+        darken: b(false, { label: 'Darken the photo so text reads' }),
+        tone: e(['auto', 'light', 'dark'], 'auto', { label: 'Text colour', hint: 'auto = light text on a dark background' }),
+      }, { label: 'Background' }),
+      col_bg: obj({
+        col1: color('', { label: 'Column 1' }),
+        col2: color('', { label: 'Column 2' }),
+        col3: color('', { label: 'Column 3' }),
+        col4: color('', { label: 'Column 4' }),
+      }, { label: 'Column backgrounds' }),
+      col1: slot({ label: 'Column 1' }),
+      col2: slot({ label: 'Column 2' }),
+      col3: slot({ label: 'Column 3' }),
+      col4: slot({ label: 'Column 4' }),
+    },
+  },
   Gallery: {
     label: 'Gallery', group: 'content',
     props: {
@@ -260,6 +289,8 @@ function coerceValue(f, v) {
     case 'categories': return Array.isArray(v) ? v.filter((x) => x && typeof x === 'object' && typeof x.id === 'string').map((x) => ({ id: x.id })) : [];
     case 'slot': {
       // Blocks dropped inside a block: each one normalised like a top level block, junk dropped.
+      // In the Puck editor the slot arrives as Puck's own drop zone component (a function): kept as is.
+      if (typeof v === 'function') return v;
       if (!Array.isArray(v)) return [];
       return v.filter((x) => x && typeof x === 'object' && typeof x.type === 'string' && isBlockType(x.type))
         .map((x) => ({ type: x.type, props: normaliseProps(x.type, x.props || {}) }));
@@ -300,6 +331,34 @@ export function layoutBlocks(layout) {
   return content
     .filter((c) => c && isBlockType(c.type))
     .map((c) => ({ type: c.type, props: normaliseProps(c.type, c.props) }));
+}
+
+/** The slot prop names of a block type (the columns of a Row); [] for blocks with none. */
+export function slotKeysOf(type) {
+  const schema = isBlockType(type) ? BLOCK_SCHEMAS[type] : null;
+  return schema ? Object.keys(schema.props).filter((k) => schema.props[k].type === 'slot') : [];
+}
+
+/**
+ * 5.12.9: every block of a layout, top level and inside slots (a Row's columns), depth first, as
+ * [{type, props}] with normalised props. Readers that look for "the first LiveMenu on the page"
+ * (menuForPage.js, WebsiteSurface, routes.layoutHasHero) use this so a block inside a Row counts.
+ * Never throws: junk slots are already [] after normaliseProps.
+ */
+export function walkBlocks(layout, maxDepth = 3) {
+  const out = [];
+  const visit = (blocks, depth) => {
+    for (const b of blocks) {
+      out.push(b);
+      if (depth >= maxDepth) continue;
+      for (const k of slotKeysOf(b.type)) {
+        const kids = Array.isArray(b.props[k]) ? b.props[k] : [];
+        visit(kids.filter((c) => c && isBlockType(c.type)).map((c) => ({ type: c.type, props: normaliseProps(c.type, c.props) })), depth + 1);
+      }
+    }
+  };
+  visit(layoutBlocks(layout), 0);
+  return out;
 }
 
 /**

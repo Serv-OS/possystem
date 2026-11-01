@@ -2,15 +2,17 @@
 // every prop has a default, normaliseProps never throws, the JSON schema has no open props.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BLOCK_SCHEMAS, BLOCK_TYPES, GROUPS, defaultPropsFor, normaliseProps, layoutBlocks, jsonSchemaFor, layoutJsonSchema, isBlockType } from './blocks/schema.js';
+import { BLOCK_SCHEMAS, BLOCK_TYPES, GROUPS, defaultPropsFor, normaliseProps, layoutBlocks, walkBlocks, slotKeysOf, jsonSchemaFor, layoutJsonSchema, isBlockType } from './blocks/schema.js';
+import { puckField } from './blocks/puckFields.js';
 
+// Section 6 plus Row (5.12.9: columns the owner drops blocks into).
 const SECTION_6 = ['Hero', 'OrderBar', 'LiveMenu', 'Specials', 'OrderEmbed', 'LoyaltyJoin', 'GiftCards', 'BookTable', 'Waitlist', 'Hours', 'FindUs', 'Reviews', 'BlogList',
-  'Text', 'Columns', 'Gallery', 'Button', 'FAQ', 'Instagram', 'Divider', 'Spacer', 'CustomHtml'];
+  'Text', 'Columns', 'Row', 'Gallery', 'Button', 'FAQ', 'Instagram', 'Divider', 'Spacer', 'CustomHtml'];
 
 test('every block from section 6 exists, in the right group, and nothing else', () => {
   assert.deepEqual([...BLOCK_TYPES].sort(), [...SECTION_6].sort());
   assert.equal(GROUPS.servos.length, 13);
-  assert.equal(GROUPS.content.length, 9);
+  assert.equal(GROUPS.content.length, 10);
   for (const t of GROUPS.servos) assert.equal(BLOCK_SCHEMAS[t].group, 'servos');
   for (const t of GROUPS.content) assert.equal(BLOCK_SCHEMAS[t].group, 'content');
   assert.ok(isBlockType('Hero') && !isBlockType('Carousel') && !isBlockType('__proto__'));
@@ -60,4 +62,44 @@ test('JSON schema: closed objects, enums carried, a layout schema the designer t
   assert.equal(l.properties.content.items.oneOf.length, BLOCK_TYPES.length);
   assert.doesNotThrow(() => JSON.stringify(l));
   assert.equal(jsonSchemaFor('Nope'), null);
+});
+
+// ── Row block (5.12.9) ───────────────────────────────────────────────────────
+test('Row: slot columns, backgrounds and defaults; junk columns normalise to [] and a Puck drop zone component passes through', () => {
+  const d = defaultPropsFor('Row');
+  assert.equal(d.columns, '2');
+  assert.deepEqual(d.col1, []);
+  assert.deepEqual(d.background, { color: '', image: '', darken: false, tone: 'auto' });
+  assert.deepEqual(d.col_bg, { col1: '', col2: '', col3: '', col4: '' });
+  assert.deepEqual(slotKeysOf('Row'), ['col1', 'col2', 'col3', 'col4']);
+  assert.deepEqual(slotKeysOf('Text'), []);
+  const p = normaliseProps('Row', { id: 'r', columns: 3, col1: 'junk', col2: [{ type: 'Text', props: { md: 'hi' } }, { type: 'Nope', props: {} }, null, 7], col3: [{ type: 'Row', props: {} }] });
+  assert.equal(p.columns, '3');
+  assert.deepEqual(p.col1, []);
+  assert.equal(p.col2.length, 1);
+  assert.equal(p.col2[0].type, 'Text');
+  assert.equal(p.col2[0].props.md, 'hi');
+  assert.equal(p.col3[0].type, 'Row', 'the schema keeps a nested Row; the validator and the renderers refuse it');
+  // In the editor Puck hands the slot as its own drop zone component: normaliseProps must not wipe it.
+  const Zone = () => null;
+  assert.equal(normaliseProps('Row', { col1: Zone }).col1, Zone);
+  // The editor gets a real Puck slot field for every column.
+  assert.deepEqual(puckField(BLOCK_SCHEMAS.Row.props.col1), { type: 'slot' });
+  assert.equal(jsonSchemaFor('Row').properties.col1.type, 'array');
+});
+
+test('walkBlocks yields top level and nested blocks depth first, normalised, junk dropped', () => {
+  const layout = { content: [
+    { type: 'Hero', props: { id: 'h' } },
+    { type: 'Row', props: { id: 'r', columns: '2', col1: [{ type: 'Text', props: { id: 't', md: 'x' } }], col2: [{ type: 'LiveMenu', props: { id: 'm', location_id: 'loc-2' } }, { type: 'Nope', props: {} }], col3: [{ type: 'Specials', props: { id: 's' } }] } },
+    { type: 'Text', props: { id: 't2' } },
+  ] };
+  const types = walkBlocks(layout).map((b) => b.type);
+  // col3 is walked too (the block keeps its data even when columns says 2; the renderers skip it).
+  assert.deepEqual(types, ['Hero', 'Row', 'Text', 'LiveMenu', 'Specials', 'Text']);
+  const menu = walkBlocks(layout).find((b) => b.type === 'LiveMenu');
+  assert.equal(menu.props.location_id, 'loc-2');
+  assert.equal(menu.props.layout, 'cards', 'nested props are normalised');
+  assert.deepEqual(walkBlocks(null), []);
+  assert.deepEqual(walkBlocks({ content: [{ type: 'Row', props: { col1: 'junk' } }] }).map((b) => b.type), ['Row']);
 });

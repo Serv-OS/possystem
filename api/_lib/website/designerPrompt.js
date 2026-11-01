@@ -135,6 +135,12 @@ available, and say in one line what you took from them. Use this venue's own men
 BLOCKS (the only block types that exist, with their props):
 ${blocksDescription}
 
+ROW (columns): a Row block lays blocks side by side. columns is '1' to '4'; col1 to col4 are lists of
+ordinary blocks, each { type, props } exactly like a page block (col3 and col4 are ignored unless
+columns says so). background.color (hex) and background.image (https URL) paint the row, darken dims a
+photo so text reads, tone 'auto' picks light text on a dark colour; col_bg.col1 to col4 colour one
+column each. One level deep only: never put a Row inside a Row, never a Hero inside a Row.
+
 HARD RULES
 - Use only block types listed above and only their props. Anything else is refused by the validator.
 - Every ServOS block for a channel that is ON in the facts must be present somewhere sensible (menu,

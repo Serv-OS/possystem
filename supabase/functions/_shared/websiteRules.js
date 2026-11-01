@@ -58,8 +58,14 @@ export const SITE_STATUSES = Object.freeze(['draft', 'live', 'offline']);
 export const CONTRACT_BLOCK_TYPES = Object.freeze([
   'Hero', 'OrderBar', 'LiveMenu', 'Specials', 'OrderEmbed', 'LoyaltyJoin', 'GiftCards', 'BookTable',
   'Waitlist', 'Hours', 'FindUs', 'Reviews', 'BlogList',
-  'Text', 'Columns', 'Gallery', 'Button', 'FAQ', 'Instagram', 'Divider', 'Spacer', 'CustomHtml',
+  'Text', 'Columns', 'Row', 'Gallery', 'Button', 'FAQ', 'Instagram', 'Divider', 'Spacer', 'CustomHtml',
 ]);
+
+// 5.12.9 Row block: its columns are slots (lists of { type, props } blocks). Without a schema module
+// at hand (the website-admin edge function) these are the slot props the layout check walks into.
+const CONTRACT_SLOT_KEYS = Object.freeze({ Row: ['col1', 'col2', 'col3', 'col4'] });
+// Blocks inside a block: a Row's columns (depth 1). A Row never holds a Row, so nothing sits deeper.
+const MAX_BLOCK_DEPTH = 1;
 
 export const THEME_LAYOUTS = Object.freeze(['ember', 'ledger', 'marquee']);
 export const THEME_TYPES = Object.freeze(['warm-serif', 'clean-sans', 'classic']);
@@ -212,37 +218,60 @@ export function validateLayout(layout, { schemas = null, allowCustomCode = false
   }
   if (layout.content.length > LIMITS.MAX_BLOCKS_PER_PAGE) errors.push(`A page can hold at most ${LIMITS.MAX_BLOCKS_PER_PAGE} blocks.`);
   const known = schemas && isPlainObject(schemas) ? Object.keys(schemas) : CONTRACT_BLOCK_TYPES;
-  const seenIds = new Set();
-  let heroes = 0;
-  layout.content.forEach((block, i) => {
-    const at = `Block ${i + 1}`;
-    if (!isPlainObject(block)) { errors.push(`${at} is not an object.`); return; }
-    const type = block.type;
-    if (typeof type !== 'string' || !known.includes(type)) { errors.push(`${at}: unknown block type "${String(type)}".`); return; }
-    if (type === 'CustomHtml' && !allowCustomCode) errors.push(`${at}: custom code is switched off for this site.`);
-    if (type === 'Hero') heroes += 1;
-    const props = block.props;
-    if (!isPlainObject(props)) { errors.push(`${at} (${type}): props must be an object.`); return; }
-    if (typeof props.id !== 'string' || !props.id) errors.push(`${at} (${type}): props.id is required.`);
-    else if (seenIds.has(props.id)) errors.push(`${at} (${type}): props.id "${props.id}" is used twice on this page.`);
-    else seenIds.add(props.id);
-    for (const [k, v] of Object.entries(props)) {
-      if (typeof v === 'string' && v.length > LIMITS.MAX_STRING) errors.push(`${at} (${type}): ${k} is longer than ${LIMITS.MAX_STRING / 1024} KB.`);
-    }
-    const schema = schemas && isPlainObject(schemas[type]) && isPlainObject(schemas[type].props) ? schemas[type].props : null;
-    if (schema) {
-      for (const [name, rule] of Object.entries(schema)) {
-        if (!isPlainObject(rule)) continue;
-        const why = propProblem(type, name, rule, props[name]);
-        if (why) errors.push(`${at}: ${why}`);
-      }
-      for (const name of Object.keys(props)) {
-        if (name !== 'id' && !(name in schema)) errors.push(`${at}: ${type} has no setting called "${name}".`);
-      }
-    }
-  });
-  if (heroes > 1) errors.push('A page can have one Hero block, this one has ' + heroes + '.');
+  const state = { errors, known, schemas, allowCustomCode, seenIds: new Set(), heroes: 0 };
+  layout.content.forEach((block, i) => blockProblems(block, `Block ${i + 1}`, 0, state));
+  if (state.heroes > 1) errors.push('A page can have one Hero block, this one has ' + state.heroes + '.');
   return { ok: errors.length === 0, errors };
+}
+
+/**
+ * One block, top level or inside a Row column (5.12.9): type known, custom code gated, props checked
+ * against the schema, then every slot prop walked with the same rules. `depth` 0 is the page;
+ * a block inside a Row is depth 1; a Row inside a Row is refused with a plain message. Nested blocks
+ * may omit props.id (Puck adds one on drop, the designer need not), but an id given must be unique.
+ */
+function blockProblems(block, at, depth, state) {
+  const { errors, known, schemas, allowCustomCode, seenIds } = state;
+  if (!isPlainObject(block)) { errors.push(`${at} is not an object.`); return; }
+  const type = block.type;
+  if (typeof type !== 'string' || !known.includes(type)) { errors.push(`${at}: unknown block type "${String(type)}".`); return; }
+  if (type === 'CustomHtml' && !allowCustomCode) errors.push(`${at}: custom code is switched off for this site.`);
+  if (type === 'Hero') state.heroes += 1;
+  if (type === 'Row' && depth > 0) { errors.push(`${at}: a Row cannot sit inside a Row. Put it on the page instead.`); return; }
+  const props = block.props;
+  if (!isPlainObject(props)) { errors.push(`${at} (${type}): props must be an object.`); return; }
+  if (typeof props.id !== 'string' || !props.id) { if (depth === 0) errors.push(`${at} (${type}): props.id is required.`); }
+  else if (seenIds.has(props.id)) errors.push(`${at} (${type}): props.id "${props.id}" is used twice on this page.`);
+  else seenIds.add(props.id);
+  for (const [k, v] of Object.entries(props)) {
+    if (typeof v === 'string' && v.length > LIMITS.MAX_STRING) errors.push(`${at} (${type}): ${k} is longer than ${LIMITS.MAX_STRING / 1024} KB.`);
+  }
+  const schema = schemas && isPlainObject(schemas[type]) && isPlainObject(schemas[type].props) ? schemas[type].props : null;
+  if (schema) {
+    for (const [name, rule] of Object.entries(schema)) {
+      if (!isPlainObject(rule)) continue;
+      const why = propProblem(type, name, rule, props[name]);
+      if (why) errors.push(`${at}: ${why}`);
+    }
+    for (const name of Object.keys(props)) {
+      if (name !== 'id' && !(name in schema)) errors.push(`${at}: ${type} has no setting called "${name}".`);
+    }
+  }
+  // Blocks inside this block (a Row's columns), checked like page blocks.
+  const slotKeys = schema
+    ? Object.keys(schema).filter((k) => isPlainObject(schema[k]) && schema[k].type === 'slot')
+    : (CONTRACT_SLOT_KEYS[type] || []);
+  for (const key of slotKeys) {
+    const items = props[key];
+    if (!Array.isArray(items)) continue; // propProblem already said "must be a list of blocks"
+    if (depth >= MAX_BLOCK_DEPTH) { if (items.length) errors.push(`${at}: ${type}.${key} holds blocks too deep. Blocks go one level inside a Row only.`); continue; }
+    items.forEach((child, j) => blockProblems(child, `${at}, ${columnLabel(key)}, item ${j + 1}`, depth + 1, state));
+  }
+}
+
+function columnLabel(key) {
+  const m = /^col(\d)$/.exec(key);
+  return m ? `column ${m[1]}` : key;
 }
 
 // ── Site level objects ────────────────────────────────────────────────────────────────────

@@ -5,13 +5,13 @@
 // site default) and the price mode. One menu read per page render. Pure apart from loadMenu.
 // Shared with WebsiteSurface's logic by convention (same block → same venue → same prices).
 
-import { layoutBlocks } from '../../../src/surfaces/website/blocks/schema.js';
+import { walkBlocks } from '../../../src/surfaces/website/blocks/schema.js';
 import { menuLocation } from '../../../src/surfaces/website/resolveHref.js';
 import { loadMenu } from '../../../src/surfaces/website/data/loadMenu.js';
 
-/** The menu block that drives the page's menu read, or null when the page shows no menu. */
+/** The menu block that drives the page's menu read, or null when the page shows no menu. 5.12.9: a block inside a Row column counts. */
 export function menuBlockOf(page) {
-  const blocks = layoutBlocks(page && page.layout);
+  const blocks = walkBlocks(page && page.layout);
   return blocks.find((b) => b.type === 'LiveMenu') || blocks.find((b) => b.type === 'Specials') || null;
 }
 
