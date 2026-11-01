@@ -418,7 +418,7 @@ test('5.12.9 menu cards are buttons that open the item sheet: role, tabindex and
   const ctx = buildCtx({ snapshot: s, host: 'www.mozzpizza.com', path: '/menu', menu: MENU, now: NOW });
   const shown = renderBlock(ctx, { type: 'LiveMenu', props: { ...defaultPropsFor('LiveMenu'), id: 'm-all', show: { prices: true, add_button: true, hide_sold_out: false } } });
   assert.match(shown, /<article class="w-menu-item w-menu-item-soldout" data-item="i2" role="button" tabindex="0" aria-haspopup="dialog">/, 'a sold out card (when shown) is still tappable');
-  assert.match(shown, /data-item="i1"[^>]*aria-haspopup="dialog">[\s\S]*?<a class="w-btn w-btn-secondary" href="https:\/\/mozz-leeds\.serv-os\.app\/">Order<\/a><\/div><\/article>/, 'the card keeps its own Order link');
+  assert.match(shown, /data-item="i1"[^>]*aria-haspopup="dialog">[\s\S]*?<a class="w-btn w-btn-secondary" href="\/order">Order<\/a><\/div><\/article>/, 'the card keeps its own Order link (no venue picked on a group site: the chooser)');
   const home = render(s, '/').body;
   assert.match(home, /data-block="Specials"[\s\S]*<article class="w-menu-item" data-item="i1" role="button" tabindex="0" aria-haspopup="dialog">/, 'Specials card');
   assert.doesNotMatch(out, /w-sheet/, 'the server renders no sheet: it opens on a tap');
