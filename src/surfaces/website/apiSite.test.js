@@ -146,7 +146,7 @@ test('env names reuse the api/ conventions and the release pack names', () => {
 });
 
 test('requestTarget reads host and path from the rewrite', () => {
-  assert.deepEqual(requestTarget({ url: '/api/site?path=/menu', headers: { host: 'WWW.Mozzpizza.com:443' } }), { host: 'www.mozzpizza.com', path: '/menu', siteParam: null, token: null });
+  assert.deepEqual(requestTarget({ url: '/api/site?path=/menu', headers: { host: 'WWW.Mozzpizza.com:443' } }), { host: 'www.mozzpizza.com', path: '/menu', siteParam: null, token: null, venue: null });
   assert.deepEqual(requestTarget({ url: '/api/site?path=/index.html', headers: { 'x-forwarded-host': 'a.sites.serv-os.app, proxy', host: 'x' } }).path, '/');
   const t = requestTarget({ url: '/preview?token=abc&site=Mozz', headers: {} });
   assert.equal(t.path, '/preview');
@@ -169,4 +169,19 @@ test('menuPlan: the first menu block names the venue and price mode; pages witho
   assert.equal(menuPlan(s.pages.find((p) => p.id === 'p-order'), ctx), null);
   assert.equal(menuPlan(null, ctx), null);
   assert.equal(menuPlan(s.pages[0], buildCtx({ snapshot: { site: {}, pages: [], locations: [] } })), null, 'no venue = no read, never a throw');
+});
+
+// 5.12.8: the venue switch. ?venue=<slug> reaches the menu plan through ctx.menuVenue.
+test('requestTarget reads ?venue= (lower cased, capped); menuPlan follows it on an unpinned block only', () => {
+  assert.equal(requestTarget({ url: '/api/site?path=/menu&venue=Mozz-Huddersfield', headers: { host: 'h' } }).venue, 'mozz-huddersfield');
+  assert.equal(requestTarget({ url: '/api/site?path=/menu', headers: { host: 'h' } }).venue, null);
+  assert.equal(requestTarget({ url: `/api/site?path=/&venue=${'x'.repeat(200)}`, headers: { host: 'h' } }).venue.length, 80);
+  const s = snap();
+  const home = s.pages[0];
+  assert.equal(menuPlan(home, buildCtx({ snapshot: s, host: 'h', path: '/' })).location.id, 'loc-leeds', 'no pick: the default venue');
+  assert.equal(menuPlan(home, buildCtx({ snapshot: s, host: 'h', path: '/', menuVenue: 'mozz-huddersfield' })).location.id, 'loc-hudds', 'the pick');
+  assert.equal(menuPlan(home, buildCtx({ snapshot: s, host: 'h', path: '/', menuVenue: 'MOZZ-HUDDERSFIELD' })).location.id, 'loc-hudds', 'case does not matter');
+  assert.equal(menuPlan(home, buildCtx({ snapshot: s, host: 'h', path: '/', menuVenue: 'nope' })).location.id, 'loc-leeds', 'unknown pick = default');
+  const leeds = s.pages.find((p) => p.id === 'p-loc-leeds');
+  assert.equal(menuPlan(leeds, buildCtx({ snapshot: s, host: 'h', path: '/leeds', menuVenue: 'mozz-huddersfield' })).location.id, 'loc-leeds', 'a venue page is pinned: the pick is ignored');
 });

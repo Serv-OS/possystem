@@ -48,7 +48,9 @@ export function requestTarget(req) {
   if (path === '/api/site' || path === '/index.html') path = '/';
   const siteParam = (url.searchParams.get('site') || '').toLowerCase() || null;
   const token = url.searchParams.get('token') || null;
-  return { host: rawHost, path, siteParam, token };
+  // 5.12.8: ?venue=<online slug> picks whose menu an unpinned menu block shows (the venue switch).
+  const venue = (url.searchParams.get('venue') || '').toLowerCase().slice(0, 80) || null;
+  return { host: rawHost, path, siteParam, token, venue };
 }
 
 function send(res, status, type, body, cache, extra = {}) {
@@ -60,7 +62,7 @@ function send(res, status, type, body, cache, extra = {}) {
 }
 
 export default async function handler(req, res) {
-  const { host, path, siteParam, token } = requestTarget(req);
+  const { host, path, siteParam, token, venue } = requestTarget(req);
   const root = customerRoot();
   const parsed = parseWebsiteHost(host, root);
   const { platform, service, ops } = getClients();
@@ -101,9 +103,9 @@ export default async function handler(req, res) {
 
     const pagePath = preview ? (new URL(req.url || '/', 'https://x.invalid').searchParams.get('page') || '/') : path;
     const route = resolveRoute(snapshot, pagePath);
-    const ctx = buildCtx({ snapshot, host, path: pagePath, customerRoot: root });
+    const ctx = buildCtx({ snapshot, host, path: pagePath, customerRoot: root, menuVenue: venue });
     const menu = route.page ? await menuForPage(ops, route.page, ctx) : null;
-    const rendered = renderPage({ snapshot, route, path: pagePath, host, menu, customerRoot: root, status, preview });
+    const rendered = renderPage({ snapshot, route, path: pagePath, host, menu, customerRoot: root, status, preview, menuVenue: venue });
 
     const boot = bootScript({ snapshot, path: pagePath, host, preview, status });
     const dep = req.headers['x-vercel-deployment-url'] || process.env.VERCEL_URL || '';

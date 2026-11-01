@@ -33,3 +33,21 @@ test('field shapes: enum → select options, boolean → yes/no radio, array →
   assert.equal(o.type, 'object');
   assert.equal(o.objectFields.href.type, 'text');
 });
+
+// 5.12.8: venue props are a dropdown of the company's venues in the editor.
+test('location field: a select of default, all and every venue by name; a text box when the editor has no venues', async () => {
+  const { locationOptions } = await import('./blocks/puckFields.js');
+  const locs = [{ id: 'b', name: 'Zed' }, { id: 'a', name: 'Alpha', online_slug: 'alpha' }, null, { name: 'no id' }];
+  const f = puckField({ type: 'location', default: 'default', label: 'Venue' }, { locations: locs });
+  assert.equal(f.type, 'select');
+  assert.deepEqual(f.options.map((o) => o.value), ['default', 'all', 'a', 'b']);
+  assert.equal(f.options[2].label, 'Alpha');
+  assert.deepEqual(locationOptions([]).map((o) => o.value), ['default', 'all']);
+  const plain = puckField({ type: 'location', default: 'default', hint: 'h' });
+  assert.equal(plain.type, 'text');
+  assert.equal(plain.placeholder, 'h');
+  const live = puckFields(BLOCK_SCHEMAS.LiveMenu.props, { locations: locs });
+  assert.equal(live.location_id.type, 'select');
+  assert.equal(live.venue_switch.type, 'select');
+  assert.deepEqual(live.venue_switch.options.map((o) => o.value), ['buttons', 'dropdown', 'none']);
+});

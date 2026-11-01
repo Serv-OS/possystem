@@ -65,3 +65,17 @@ test('pagePath, venueUrl and isInternalHref', () => {
   assert.equal(venueUrl(null, '/'), '');
   assert.ok(isInternalHref('/menu') && !isInternalHref('//evil.com') && !isInternalHref('https://x'));
 });
+
+// 5.12.8: whose menu an unpinned menu block shows.
+test('menuLocation: a pinned block keeps its venue; an unpinned one follows the visitor pick, else the default', async () => {
+  const { menuLocation, menuVenues } = await import('./resolveHref.js');
+  assert.equal(menuLocation(ctx, 'loc-a').id, 'loc-a', 'pinned');
+  assert.equal(menuLocation({ ...ctx, menuVenue: 'mozz-a' }, 'loc-b').id, 'loc-b', 'a pinned block ignores the pick');
+  assert.equal(menuLocation(ctx, 'default').id, 'loc-b', 'site default');
+  assert.equal(menuLocation({ ...ctx, menuVenue: 'mozz-a' }, 'default').id, 'loc-a', 'the pick by slug');
+  assert.equal(menuLocation({ ...ctx, menuVenue: 'loc-a' }, 'all').id, 'loc-a', 'the pick by id');
+  assert.equal(menuLocation({ ...ctx, menuVenue: 'nowhere' }, 'default').id, 'loc-b', 'an unknown pick falls back to the default, never a throw');
+  assert.equal(menuLocation({ ...ctx, locations: [] }, 'default'), null);
+  const withOps = { ...ctx, locations: [{ id: 'loc-b', online_slug: 'mozz-b', ops_location_id: 'o2', name: 'Zed' }, { id: 'loc-a', online_slug: 'mozz-a', ops_location_id: 'o1', name: 'Alpha' }, { id: 'loc-c', online_slug: null, ops_location_id: 'o3', name: 'Dark' }] };
+  assert.deepEqual(menuVenues(withOps).map((l) => l.id), ['loc-a', 'loc-b'], 'venues with a slug, by name; no slug = not switchable');
+});

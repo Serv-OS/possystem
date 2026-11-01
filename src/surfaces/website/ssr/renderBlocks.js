@@ -15,9 +15,9 @@ import { siteVars, cssText, fontLinks, themeColor } from '../theme.js';
 import { SITE_CSS } from '../siteStyles.js';
 import { hoursRows, openStatus } from '../hours.js';
 import { addressText, directionsUrl } from '../geo.js';
-import { resolveHref, pickLocation, venueUrl, explicitLocation, multiVenue } from '../resolveHref.js';
+import { resolveHref, pickLocation, venueUrl, explicitLocation, multiVenue, menuLocation, menuVenues } from '../resolveHref.js';
 import { formatPrice } from '../data/loadMenu.js';
-import { blockVisible, visibleNav, breadcrumbsFor, siteLocations, publishedPosts, publishedPages, pathForPage, sitemapPaths, channelOn, locationChannelOn, PAGE_KIND_CHANNEL } from '../routes.js';
+import { blockVisible, visibleNav, breadcrumbsFor, siteLocations, publishedPosts, publishedPages, pathForPage, sitemapPaths, channelOn, locationChannelOn, PAGE_KIND_CHANNEL, headerOptions, HEADER_CTA_LABELS } from '../routes.js';
 import { restaurantLd, menuLd, organizationLd, webSiteLd, breadcrumbLd, blogPostingLd, faqLd, siteName } from './jsonld.js';
 import { canonicalHost } from '../hostParse.js';
 
@@ -39,6 +39,27 @@ const empty = (text) => `<p class="${CN.empty}">${esc(text)}</p>`;
 
 /** The venue a block means (its location_id prop, else the site default). */
 function blockLocation(ctx, props) { return pickLocation(ctx, props && props.location_id); }
+
+/**
+ * 5.12.8 (Peter, 1 Nov): "show menu A on the home page, then a drop down or buttons to say
+ * location 1 or location 2 menu". On a site with several venues a menu block that is not pinned to
+ * one venue gets a switch: buttons (links to ?venue=<slug> on this page) or a dropdown (a plain GET
+ * form, so it works before the script runs). The React LiveMenu paints the same markup.
+ */
+export function venueSwitchHtml(ctx, p, current) {
+  if (!p || p.venue_switch === 'none' || explicitLocation(p.location_id) || !multiVenue(ctx)) return '';
+  const venues = menuVenues(ctx);
+  if (venues.length < 2) return '';
+  const path = ctx.path || '/';
+  const isCurrent = (l) => !!(current && l.id === current.id);
+  if (p.venue_switch === 'dropdown') {
+    const opts = venues.map((l) => `<option value="${attr(l.online_slug)}"${isCurrent(l) ? ' selected' : ''}>${esc(l.name || l.online_slug)} menu</option>`).join('');
+    return `<form class="${CN.venueForm}" method="get" action="${attr(path)}"><label>Menu for <select name="venue" aria-label="Choose a venue">${opts}</select></label>` +
+      `<button type="submit" class="${cls(CN.btn, CN.btnSecondary)}">Show</button></form>`;
+  }
+  const links = venues.map((l) => `<a class="${CN.venueBtn}" href="${attr(`${path}?venue=${encodeURIComponent(l.online_slug)}`)}"${isCurrent(l) ? ' aria-current="true"' : ''}>${esc(l.name || l.online_slug)} menu</a>`).join('');
+  return `<nav class="${CN.venueSwitch}" aria-label="Choose a venue">${links}</nav>`;
+}
 
 /**
  * 5.12.7 (Peter, 1 Nov): never an iframe of a ServOS surface ("leaves it open to bugs, especially
@@ -99,22 +120,25 @@ const R = {
     const menu = ctx.menu;
     const show = p.show || {};
     const layoutCn = p.layout === 'list' ? CN.menuList : p.layout === 'board' ? CN.menuBoard : CN.menuCards;
+    // 5.12.8: the venue this menu is for (the visitor's pick on a default block), and the switch.
+    const loc = menuLocation(ctx, p.location_id);
+    const switcher = venueSwitchHtml(ctx, p, loc);
     if (!menu || !Array.isArray(menu.categories) || !menu.categories.length) {
-      return section(b, cls(CN.menu, layoutCn), heading(p.title) + empty('The menu is being updated. Please check back soon.'));
+      return section(b, cls(CN.menu, layoutCn), heading(p.title) + switcher + empty('The menu is being updated. Please check back soon.'));
     }
     let cats = menu.categories;
     const only = Array.isArray(p.categories) ? p.categories.map((c) => c && c.id).filter(Boolean) : [];
     if (only.length) cats = cats.filter((c) => only.includes(c.id));
     let left = Number(p.max_items) > 0 ? Number(p.max_items) : Infinity;
-    const loc = blockLocation(ctx, p);
-    const orderHref = show.add_button && loc ? resolveHref(ctx, 'servos:order') : '';
+    // The order button goes to THE VENUE WHOSE MENU THIS IS, never to another venue (Peter, 1 Nov).
+    const orderHref = show.add_button && loc ? resolveHref(ctx, `servos:order:${loc.id}`) : '';
     const sections = cats.map((c) => {
       const items = (c.items || []).filter((it) => !(show.hide_sold_out && it.sold_out)).slice(0, Math.max(0, left));
       left -= items.length;
       if (!items.length) return '';
       return `<div class="${CN.menuSection}"><h3>${esc(c.label)}</h3><div class="${CN.menuGrid}">${items.map((it) => menuItemHtml(it, show, orderHref)).join('')}</div></div>`;
     }).join('');
-    return section(b, cls(CN.menu, layoutCn), heading(p.title) + (sections || empty('Nothing on the menu right now.')));
+    return section(b, cls(CN.menu, layoutCn), heading(p.title) + switcher + (sections || empty('Nothing on the menu right now.')));
   },
   Specials(ctx, b) {
     const p = b.props;
@@ -290,14 +314,28 @@ export function renderBlock(ctx, block) {
 }
 
 // ── page chrome ──────────────────────────────────────────────────────────────
+/** 5.12.8: the header button the owner chose (settings.header.cta): label + href, or null. */
+export function headerCta(ctx) {
+  const { cta } = headerOptions(ctx.settings);
+  if (cta === 'none') return null;
+  const href = resolveHref(ctx, `servos:${cta}`);
+  return href ? { label: HEADER_CTA_LABELS[cta], href } : null;
+}
+
 export function renderHeader(ctx) {
   const loc = pickLocation(ctx, 'default');
   const branding = (loc && loc.online_branding) || {};
   const name = siteName(ctx.snapshot);
-  const logo = branding.logo_url ? `<img src="${attr(branding.logo_url)}" alt="${attr(name)}">` : `<span>${esc(name)}</span>`;
+  const opts = headerOptions(ctx.settings);
+  // 5.12.8: the owner chooses the brand mark: the logo (name when there is none), the name, or both.
+  const img = branding.logo_url && opts.brand !== 'name' ? `<img src="${attr(branding.logo_url)}" alt="${attr(name)}">` : '';
+  const text = !img || opts.brand === 'both' ? `<span>${esc(name)}</span>` : '';
+  const logo = img + text;
   const nav = visibleNav(ctx.snapshot);
-  const links = nav.map((n) => `<a class="${CN.navLink}" href="${attr(resolveHref(ctx, n.href))}"${n.href === ctx.path ? ' aria-current="page"' : ''}>${esc(n.label)}</a>`).join('');
-  return `<header class="${CN.header}"><div class="${CN.inner}"><a class="${CN.logo}" href="/" aria-label="${attr(name)} home">${logo}</a>` +
+  const cta = headerCta(ctx);
+  const links = nav.map((n) => `<a class="${CN.navLink}" href="${attr(resolveHref(ctx, n.href))}"${n.href === ctx.path ? ' aria-current="page"' : ''}>${esc(n.label)}</a>`).join('') +
+    (cta ? `<a class="${cls(CN.navLink, CN.headerCta)}" href="${attr(cta.href)}">${esc(cta.label)}</a>` : '');
+  return `<header class="${CN.header}"${opts.sticky ? '' : ' data-sticky="false"'}><div class="${CN.inner}"><a class="${CN.logo}" href="/" aria-label="${attr(name)} home">${logo}</a>` +
     `<button type="button" class="${CN.navToggle}" aria-expanded="false" aria-controls="w-nav">Menu</button>` +
     `<nav id="w-nav" class="${CN.nav}" aria-label="Site">${links}</nav></div></header>`;
 }
@@ -323,12 +361,14 @@ function breadcrumbHtml(crumbs) {
 }
 
 /** Build the render context every renderer reads. */
-export function buildCtx({ snapshot, host, path, menu, reviews, customerRoot, now }) {
+export function buildCtx({ snapshot, host, path, menu, reviews, customerRoot, now, menuVenue }) {
   const site = (snapshot && snapshot.site) || {};
   const locations = siteLocations(snapshot);
   return {
     snapshot: snapshot || { site: {}, pages: [], posts: [], locations: [] },
     site, settings: site.settings || {}, pages: publishedPages(snapshot), locations,
+    // 5.12.8: the venue the visitor picked for menus (?venue=<slug>), honoured by unpinned menu blocks.
+    menuVenue: menuVenue ? String(menuVenue).toLowerCase() : null,
     host: String(host || ''), path: path || '/', menu: menu || null, reviews: reviews || [],
     customerRoot: customerRoot || 'serv-os.app', now: now instanceof Date ? now : new Date(), h1Used: false, faqItems: [],
   };
@@ -359,9 +399,9 @@ function ogTag(prop, content) { return content ? `<meta property="${attr(prop)}"
  * link must never be indexed in place of the live page.
  */
 export function renderPage(args) {
-  const { snapshot, path = '/', host = '', route, menu, reviews, customerRoot, now, status } = args || {};
+  const { snapshot, path = '/', host = '', route, menu, reviews, customerRoot, now, status, menuVenue } = args || {};
   const preview = !!(args && (args.preview === true || status === 'draft' || (snapshot && snapshot.preview === true)));
-  const ctx = buildCtx({ snapshot, host, path, menu, reviews, customerRoot, now });
+  const ctx = buildCtx({ snapshot, host, path, menu, reviews, customerRoot, now, menuVenue });
   const page = (route && route.page) || args.page || null;
   const post = route && route.kind === 'post' ? route.post : null;
   const kind = route ? route.kind : (page ? 'page' : 'notfound');

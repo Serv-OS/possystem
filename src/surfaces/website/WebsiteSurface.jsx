@@ -19,15 +19,26 @@ import { A } from './Link.jsx';
 import { CN } from './blocks/classNames.js';
 import { SITE_CSS, SHELL_RESET_CSS, SHELL_RESET_ID } from './siteStyles.js';
 import { siteVars } from './theme.js';
-import { resolveRoute, visibleNav, breadcrumbsFor, normalisePath, layoutHasHero } from './routes.js';
-import { buildCtx, renderPage, siteName } from './ssr/renderBlocks.js';
-import { resolveHref, pickLocation } from './resolveHref.js';
+import { resolveRoute, visibleNav, breadcrumbsFor, normalisePath, layoutHasHero, headerOptions } from './routes.js';
+import { buildCtx, renderPage, siteName, headerCta } from './ssr/renderBlocks.js';
+import { resolveHref, pickLocation, menuLocation } from './resolveHref.js';
 import { layoutBlocks } from './blocks/schema.js';
 import { loadMenu } from './data/loadMenu.js';
 import { BlockRenderer } from './blocks/BlockRenderer.jsx';
 import { PostArticle } from './blocks/components/ContentBlocks.jsx';
 
 const cls = (...xs) => xs.filter(Boolean).join(' ');
+
+/** 5.12.8: the visitor's venue pick for menus, from ?venue=<slug> in the address bar. */
+function readVenueParam() {
+  try { return (new URLSearchParams(window.location.search).get('venue') || '').toLowerCase() || null; } catch { return null; }
+}
+/** The query to keep on client side navigation: ?site= (when present) and the venue pick. */
+function keptQuery(search, siteSlug, menuVenue) {
+  const base = siteQueryFor(search, siteSlug);
+  if (!menuVenue) return base;
+  return `${base ? `${base}&` : '?'}venue=${encodeURIComponent(menuVenue)}`;
+}
 
 function readBoot() {
   try {
@@ -74,7 +85,8 @@ function menuPlanFor(page, ctx) {
   const blocks = layoutBlocks(page && page.layout);
   const block = blocks.find((b) => b.type === 'LiveMenu') || blocks.find((b) => b.type === 'Specials');
   if (!block) return null;
-  const location = pickLocation(ctx, block.props.location_id);
+  // 5.12.8: an unpinned block follows the visitor's venue pick (same rule as the server's menuPlan).
+  const location = menuLocation(ctx, block.props.location_id);
   if (!location || !location.ops_location_id) return null;
   return {
     key: `${location.ops_location_id}|${block.props.menu_id || 'follow'}|${block.props.price_mode || 'collection'}`,
@@ -95,6 +107,8 @@ export default function WebsiteSurface({ host, siteSlug = null }) {
   const [here, setHere] = useState(null);
   const [nearestState, setNearestState] = useState('idle');
   const [navOpen, setNavOpen] = useState(false);
+  // 5.12.8: whose menu an unpinned menu block shows (online slug), from the venue switch or ?venue=.
+  const [menuVenue, setMenuVenueState] = useState(() => (typeof window !== 'undefined' ? readVenueParam() : null));
   const menuKeyRef = useRef('');
 
   // 1. The snapshot: boot payload, else the Platform RPC.
@@ -111,19 +125,32 @@ export default function WebsiteSurface({ host, siteSlug = null }) {
 
   // 2. Client side routing on the pathname.
   useEffect(() => {
-    const onPop = () => setPath(normalisePath(window.location.pathname));
+    const onPop = () => { setPath(normalisePath(window.location.pathname)); setMenuVenueState(readVenueParam()); };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, []);
   const navigate = useCallback((href) => {
     const target = normalisePath(href);
-    const keepQuery = siteQueryFor(typeof window !== 'undefined' ? window.location.search : '', siteSlug);
+    const keepQuery = keptQuery(typeof window !== 'undefined' ? window.location.search : '', siteSlug, menuVenue);
     // A draft preview keeps its /preview?token address: the live paths may not exist yet.
     if (!preview) { try { window.history.pushState({}, '', target + keepQuery); } catch { /* file: or sandboxed */ } }
     setPath(target);
     setNavOpen(false);
     try { window.scrollTo({ top: 0, behavior: 'instant' }); } catch { window.scrollTo(0, 0); }
-  }, [siteSlug, preview]);
+  }, [siteSlug, preview, menuVenue]);
+
+  // 5.12.8: the venue switch. The pick lands in the address bar (?venue=) so the page can be
+  // shared and reloaded on the same venue; a draft preview keeps its /preview?token address.
+  const setMenuVenue = useCallback((slug) => {
+    const v = slug ? String(slug).toLowerCase() : null;
+    setMenuVenueState(v);
+    if (preview) return;
+    try {
+      const u = new URL(window.location.href);
+      if (v) u.searchParams.set('venue', v); else u.searchParams.delete('venue');
+      window.history.replaceState({}, '', u.pathname + u.search);
+    } catch { /* file: or sandboxed */ }
+  }, [preview]);
 
   // 3. The site stylesheet, once (the SSR head already carries it; this covers the client only path).
   useEffect(() => {
@@ -142,7 +169,7 @@ export default function WebsiteSurface({ host, siteSlug = null }) {
   }, []);
 
   const route = useMemo(() => (snapshot ? resolveRoute(snapshot, path) : null), [snapshot, path]);
-  const ctx = useMemo(() => buildCtx({ snapshot, host, path, menu, customerRoot: CUSTOMER_ROOT }), [snapshot, host, path, menu]);
+  const ctx = useMemo(() => buildCtx({ snapshot, host, path, menu, customerRoot: CUSTOMER_ROOT, menuVenue }), [snapshot, host, path, menu, menuVenue]);
   const vars = useMemo(() => siteVars(ctx.site.theme, (pickLocation(ctx, 'default') || {}).online_branding), [ctx]);
   const plan = useMemo(() => (route && route.page ? menuPlanFor(route.page, ctx) : null), [route, ctx]);
 
@@ -174,13 +201,13 @@ export default function WebsiteSurface({ host, siteSlug = null }) {
   useEffect(() => {
     if (!snapshot || !route) return;
     try {
-      const r = renderPage({ snapshot, route, path, host, menu, customerRoot: CUSTOMER_ROOT });
+      const r = renderPage({ snapshot, route, path, host, menu, customerRoot: CUSTOMER_ROOT, menuVenue });
       document.title = r.title;
       let m = document.querySelector('meta[name="description"]');
       if (!m) { m = document.createElement('meta'); m.setAttribute('name', 'description'); document.head.appendChild(m); }
       m.setAttribute('content', r.description || '');
     } catch { /* a head that does not update is not worth a crash */ }
-  }, [snapshot, route, path, host, menu]);
+  }, [snapshot, route, path, host, menu, menuVenue]);
 
   // 6. Nearest shop: geolocation ON TAP, Haversine sorting in the FindUs block.
   const requestNearest = useCallback(() => {
@@ -193,7 +220,7 @@ export default function WebsiteSurface({ host, siteSlug = null }) {
     );
   }, []);
 
-  const value = useMemo(() => ({ ctx, menu, menuLoading, here, nearestState, requestNearest, navigate }), [ctx, menu, menuLoading, here, nearestState, requestNearest, navigate]);
+  const value = useMemo(() => ({ ctx, menu, menuLoading, here, nearestState, requestNearest, navigate, menuVenue, setMenuVenue }), [ctx, menu, menuLoading, here, nearestState, requestNearest, navigate, menuVenue, setMenuVenue]);
 
   if (loadState === 'loading') {
     return <div className={CN.site} style={vars}><div className={cls(CN.inner, CN.notFound)}><p className={CN.muted}>Loading…</p></div></div>;
@@ -205,6 +232,11 @@ export default function WebsiteSurface({ host, siteSlug = null }) {
   const name = siteName(snapshot);
   const loc0 = pickLocation(ctx, 'default');
   const logo = loc0 && loc0.online_branding && loc0.online_branding.logo_url;
+  // 5.12.8: the owner's header options (brand mark, header button, sticky), same rules as the SSR.
+  const hdr = headerOptions(ctx.settings);
+  const showImg = !!logo && hdr.brand !== 'name';
+  const showName = !showImg || hdr.brand === 'both';
+  const cta = headerCta(ctx);
   const nav = visibleNav(snapshot);
   const crumbs = breadcrumbsFor(route, snapshot);
   const footer = ctx.site.footer || {};
@@ -237,12 +269,13 @@ export default function WebsiteSurface({ host, siteSlug = null }) {
   return (
     <SiteContext.Provider value={value}>
       <div className={CN.site} style={vars} data-layout={(ctx.site.theme && ctx.site.theme.layout) || 'ember'}>
-        <header className={CN.header}>
+        <header className={CN.header} data-sticky={hdr.sticky ? undefined : 'false'}>
           <div className={CN.inner}>
-            <A className={CN.logo} href="/" aria-label={`${name} home`}>{logo ? <img src={logo} alt={name} /> : <span>{name}</span>}</A>
+            <A className={CN.logo} href="/" aria-label={`${name} home`}>{showImg ? <img src={logo} alt={name} /> : null}{showName ? <span>{name}</span> : null}</A>
             <button type="button" className={CN.navToggle} aria-expanded={navOpen} aria-controls="w-nav" onClick={() => setNavOpen((o) => !o)}>Menu</button>
             <nav id="w-nav" className={CN.nav} aria-label="Site" data-open={navOpen ? 'true' : 'false'}>
               {nav.map((n) => <A key={`${n.label}-${n.href}`} className={CN.navLink} href={n.href} aria-current={resolveHref(ctx, n.href) === path ? 'page' : undefined}>{n.label}</A>)}
+              {cta ? <A className={cls(CN.navLink, CN.headerCta)} href={cta.href}>{cta.label}</A> : null}
             </nav>
           </div>
         </header>
