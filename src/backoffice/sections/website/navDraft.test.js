@@ -1,7 +1,7 @@
 // 5.12.8: the Header and navigation card's pure half (navDraft.js).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { autoNavRows, navRowsFrom, navPatchFrom, moveRow, headerDraft, MAX_NAV_ITEMS } from './navDraft.js';
+import { autoNavRows, navRowsFrom, navPatchFrom, moveRow, moveSibling, setUnder, removeRow, orderedRows, parentOptions, headerDraft, MAX_NAV_ITEMS } from './navDraft.js';
 import { navProblems, settingsProblems, themeProblems } from '../../../../supabase/functions/_shared/websiteRules.js';
 
 const pages = [
@@ -60,23 +60,47 @@ test('headerDraft fills defaults; the server validates settings.header the same 
 });
 
 
-// ── 5.12.12 nav dropdowns ───────────────────────────────────────────────────────
-test('dropdown rows: locations and group come back as rows and go out as nav items; an empty group is refused', () => {
-  const pages = [{ id: 'p1', slug: '', title: 'Home', kind: 'home', status: 'published' }, { id: 'p2', slug: 'menu', title: 'Menu', kind: 'menu', status: 'published' }, { id: 'p3', slug: 'leeds', title: 'Leeds', kind: 'location', status: 'published' }];
-  const site = { nav: [{ label: 'Locations', kind: 'locations' }, { label: 'More', kind: 'group', children: [{ label: 'Menu', kind: 'page', page_id: 'menu' }, { label: 'News', kind: 'link', href: '/blog' }] }] };
+// ── 5.12.12 nav dropdowns, 5.12.19 rows under rows ──────────────────────────────
+test('dropdown rows: a locations item and a group come back as rows (the group as a parent with rows under it) and go out the same', () => {
+  const site = { nav: [{ label: 'Locations', kind: 'locations' }, { label: 'Menu', kind: 'group', page_id: 'menu', children: [{ label: 'Brunch', kind: 'page', page_id: 'menu' }, { label: 'News', kind: 'link', href: '/blog' }] }, { label: 'More', kind: 'group', children: [{ label: 'Home', kind: 'page', page_id: 'p1' }] }] };
   const { rows, auto } = navRowsFrom(site, pages);
   assert.equal(auto, false);
-  assert.deepEqual(rows[0], { label: 'Locations', kind: 'locations', page_id: '', href: '' });
-  assert.equal(rows[1].kind, 'group');
-  assert.deepEqual(rows[1].page_ids, ['p2'], 'a slug child is matched to its page id');
-  assert.equal(rows[1].links.length, 1);
-  const out = navPatchFrom(rows, { p1: 'Home', p2: 'Menu', p3: 'Leeds' });
+  assert.deepEqual(rows.map((r) => [r.label, r.kind, r.page_id, r.href, r.under ? rows.find((x) => x.key === r.under).label : '']), [
+    ['Locations', 'locations', '', '', ''], ['Menu', 'page', 'p2', '', ''], ['Brunch', 'page', 'p2', '', 'Menu'], ['News', 'link', '', '/blog', 'Menu'], ['More', 'group', '', '', ''], ['Home', 'page', 'p1', '', 'More'],
+  ]);
+  assert.deepEqual(orderedRows(rows).map((r) => r.label), ['Locations', 'Menu', 'Brunch', 'News', 'More', 'Home']);
+  const out = navPatchFrom(rows);
   assert.deepEqual(out.errors, []);
-  assert.deepEqual(out.nav[0], { label: 'Locations', kind: 'locations' });
-  assert.deepEqual(out.nav[1], { label: 'More', kind: 'group', children: [{ label: 'Menu', kind: 'page', page_id: 'p2' }, { label: 'News', kind: 'link', href: '/blog' }] });
-  const bad = navPatchFrom([{ label: 'Empty', kind: 'group', page_ids: [], links: [] }]);
+  assert.deepEqual(out.nav, [
+    { label: 'Locations', kind: 'locations' },
+    { label: 'Menu', kind: 'group', page_id: 'p2', children: [{ label: 'Brunch', kind: 'page', page_id: 'p2' }, { label: 'News', kind: 'link', href: '/blog' }] },
+    { label: 'More', kind: 'group', children: [{ label: 'Home', kind: 'page', page_id: 'p1' }] },
+  ]);
+  assert.deepEqual(navProblems(out.nav), [], 'the server agrees');
+  const bad = navPatchFrom([{ key: 'g', label: 'Empty', kind: 'group', page_id: '', href: '', under: '' }]);
   assert.equal(bad.errors.length, 1);
-  assert.ok(bad.errors[0].includes('nothing in it'));
+  assert.ok(bad.errors[0].includes('nothing under it'));
+  const loc = navPatchFrom([{ key: 'l', label: 'Shops', kind: 'locations', page_id: '', href: '', under: '' }, { key: 'c', label: 'Menu', kind: 'page', page_id: 'p2', href: '', under: 'l' }]);
+  assert.ok(loc.errors[0].includes('nothing can sit under it'));
+});
+
+test('setUnder, removeRow, moveSibling: one level deep, nothing lost, moves stay among siblings', () => {
+  const { rows } = navRowsFrom({ nav: [{ label: 'Home', kind: 'page', page_id: 'p1' }, { label: 'Menu', kind: 'page', page_id: 'p2' }, { label: 'Leeds', kind: 'page', page_id: 'p3' }, { label: 'Shops', kind: 'locations' }] }, pages);
+  const [home, menu, leeds, shops] = rows;
+  assert.deepEqual(parentOptions(rows, leeds.key).map((r) => r.label), ['Home', 'Menu'], 'not itself, not the venues dropdown');
+  let r1 = setUnder(rows, leeds.key, menu.key);
+  assert.equal(r1.find((r) => r.key === leeds.key).under, menu.key);
+  assert.equal(setUnder(r1, menu.key, home.key).find((r) => r.key === leeds.key).under, '', 'a parent that moves under another lifts its own rows (one level only)');
+  assert.equal(setUnder(r1, shops.key, home.key), r1, 'a venues dropdown cannot sit under anything');
+  assert.equal(setUnder(r1, home.key, leeds.key), r1, 'a row under another cannot hold rows');
+  const r2 = removeRow(r1, menu.key);
+  assert.deepEqual(r2.map((r) => [r.label, r.under]), [['Home', ''], ['Shops', ''], ['Leeds', '']], 'removing a parent lifts its rows');
+  r1 = setUnder(r1, home.key, menu.key);
+  assert.deepEqual(orderedRows(r1).map((r) => r.label), ['Menu', 'Leeds', 'Home', 'Shops']);
+  const r3 = moveSibling(r1, home.key, -1);
+  assert.deepEqual(orderedRows(r3).map((r) => r.label), ['Menu', 'Home', 'Leeds', 'Shops'], 'moves among the rows under Menu');
+  assert.equal(moveSibling(r3, home.key, -1), r3, 'already first');
+  assert.deepEqual(orderedRows(moveSibling(r3, shops.key, -1)).map((r) => r.label), ['Shops', 'Menu', 'Home', 'Leeds'], 'a top row moves among top rows');
 });
 
 

@@ -128,19 +128,16 @@ test('visibleNav: a locations item opens every published venue page, a group ite
 });
 
 
-// ── 5.12.18: the Find us page item opens the venues by itself ────────────────────────────────
-test('visibleNav: a Find us page item carries every venue as a dropdown when the site has more than one; dropdown: false turns it off; one venue = no dropdown', () => {
+// ── 5.12.19: nothing drops down unless the owner built it; a parent page links and opens its items ──
+test('visibleNav: a page item never grows a dropdown by itself; a group with its own page is a link that opens its children', () => {
   const s = snap();
-  const findUs = visibleNav(s).find((n) => n.href === '/find-us');
-  assert.ok(findUs && Array.isArray(findUs.children) && findUs.children.length === 2, 'two public venues = two children');
-  assert.deepEqual(findUs.children.map((c) => c.href), ['/locations/mozz-leeds', '/locations/mozz-huddersfield'], 'every venue under /locations/<online slug>, page or not');
-  assert.ok(!visibleNav(s).find((n) => n.href === '/menu').children, 'other pages stay plain');
-  s.site.nav = [{ label: 'Shops', kind: 'page', page_id: 'find-us', dropdown: false }];
-  assert.equal(visibleNav(s)[0].children, undefined, 'dropdown: false keeps it a plain link');
-  s.site.nav = [];
-  const fallback = visibleNav(s).find((n) => n.href === '/find-us');
-  assert.equal(fallback.children.length, 2, 'the automatic nav gets it too');
-  s.locations = s.locations.slice(0, 1);
+  assert.ok(visibleNav(s).every((n) => !n.children), 'the automatic nav is flat');
   s.site.nav = [{ label: 'Find us', kind: 'page', page_id: 'find-us' }];
-  assert.equal(visibleNav(s)[0].children, undefined, 'one venue: nothing to drop down');
+  assert.equal(visibleNav(s)[0].children, undefined, 'a plain page item stays plain');
+  s.site.nav = [{ label: 'Food', kind: 'group', page_id: 'menu', children: [{ label: 'Shops', kind: 'page', page_id: 'find-us' }, { label: 'Gone', kind: 'page', page_id: 'no-such-page' }] }, { label: 'Elsewhere', kind: 'group', href: 'https://x.test', children: [{ label: 'News', kind: 'link', href: '/blog' }] }];
+  const [food, elsewhere] = visibleNav(s);
+  assert.deepEqual(food, { label: 'Food', href: '/menu', link: true, children: [{ label: 'Shops', href: '/find-us' }] }, 'its own page, not the first child');
+  assert.deepEqual(elsewhere, { label: 'Elsewhere', href: 'https://x.test', link: true, children: [{ label: 'News', href: '/blog' }] });
+  s.site.nav = [{ label: 'Food', kind: 'group', page_id: 'no-such-page', children: [{ label: 'Shops', kind: 'page', page_id: 'find-us' }] }];
+  assert.deepEqual(visibleNav(s)[0], { label: 'Food', href: '/find-us', children: [{ label: 'Shops', href: '/find-us' }] }, 'a parent whose page is gone becomes a heading');
 });

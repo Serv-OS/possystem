@@ -30,8 +30,13 @@ const cls = (...xs) => xs.filter(Boolean).join(' ');
 // 5.12.9: `nested` (default: the block's own flag, set by renderBlock for blocks inside a Row column)
 // paints data-nested="true", the same attribute the React Section wrappers add, so a nested block
 // fills its column instead of wrapping itself in another page width container (siteStyles.js).
+// 5.12.19: every page level block carries its width (Image writes its own, the default is page).
+const widthAttr = (block, nested) => {
+  const w = block && block.props ? block.props.width : '';
+  return !nested && block.type !== 'Image' && (w === 'wide' || w === 'full') ? ` data-width="${w}"` : '';
+};
 const section = (block, cn, inner, extraAttrs = '', nested = !!(block && block.nested)) =>
-  `<section class="${cls(CN.block, cn)}" data-block="${attr(block.type)}" data-id="${attr(block.props && block.props.id)}"${nested ? ' data-nested="true"' : ''}${extraAttrs}><div class="${CN.inner}">${inner}</div></section>`;
+  `<section class="${cls(CN.block, cn)}" data-block="${attr(block.type)}" data-id="${attr(block.props && block.props.id)}"${nested ? ' data-nested="true"' : widthAttr(block, nested)}${extraAttrs}><div class="${CN.inner}">${inner}</div></section>`;
 const heading = (text) => (text ? `<h2 class="${CN.h2}">${esc(text)}</h2>` : '');
 const button = (ctx, link, style = 'primary') => {
   const href = resolveHref(ctx, link && link.href);
@@ -116,6 +121,8 @@ const R = {
     const status = st.text ? `<div class="${cls(CN.heroStatus, st.open ? CN.open : CN.closed)}">${esc(st.text)}</div>` : '';
     const slides = heroSlides(usePhoto ? p : { ...p, photo_url: '' }, { fallbackPhoto: usePhoto ? branding.hero_url || '' : '', fallbackHeadline: headline });
     const sizeCls = p.height === 'short' ? CN.heroShort : CN.heroTall;
+    // 5.12.19: the hero is edge to edge unless its width says page or wide.
+    const heroWidth = p.width === 'page' || p.width === 'wide' ? ` data-width="${p.width}"` : '';
     // attr() turns the quotes into &quot;, which the browser decodes back to url("...") in the style.
     // No photo + a colour: the colour paints, and data-tone says whether the text goes light.
     const bgStyle = (url) => (url ? ` style="background-image:url(${attr(JSON.stringify(url))})"` : (bgHex ? ` style="background-color:${bgHex}"` : ''));
@@ -123,13 +130,13 @@ const R = {
     const body = (sl, hTag, withStatus) => `<div class="${CN.heroBody}">${withStatus ? status : ''}<${hTag}>${esc(sl.headline)}</${hTag}>${sl.sub ? `<p>${esc(sl.sub)}</p>` : ''}` +
       `<div>${button(ctx, sl.primary, 'primary')}${button(ctx, sl.secondary, 'secondary')}</div></div>`;
     if (slides.length < 2) {
-      return `<section class="${cls(CN.block, CN.hero, sizeCls)}" data-block="Hero" data-id="${attr(p.id)}" data-photo="${photo ? 'true' : 'false'}"${toneAttr(photo)}${bgStyle(photo)}>` +
+      return `<section class="${cls(CN.block, CN.hero, sizeCls)}" data-block="Hero" data-id="${attr(p.id)}"${heroWidth} data-photo="${photo ? 'true' : 'false'}"${toneAttr(photo)}${bgStyle(photo)}>` +
         body(slides[0], tag, true) + '</section>';
     }
     // 5.12.10 slideshow: every slide is in the markup (slide 1 visible), the React Hero advances them.
     const layers = slides.map((sl, i) => `<div class="${CN.heroSlide}" data-slide="${i}" data-active="${i === 0 ? 'true' : 'false'}" data-photo="${sl.photo ? 'true' : 'false'}"${toneAttr(sl.photo)}${bgStyle(sl.photo)}${i === 0 ? '' : ' aria-hidden="true"'}>${body(sl, i === 0 ? tag : 'h2', i === 0)}</div>`).join('');
     const dots = `<div class="${CN.heroDots}" role="tablist" aria-label="Slides">${slides.map((sl, i) => `<button type="button" class="${CN.heroDot}" role="tab" aria-selected="${i === 0 ? 'true' : 'false'}" aria-label="Slide ${i + 1}" data-go="${i}"></button>`).join('')}</div>`;
-    return `<section class="${cls(CN.block, CN.hero, CN.heroSlides, sizeCls)}" data-block="Hero" data-id="${attr(p.id)}" data-photo="${slides[0].photo ? 'true' : 'false'}" data-slides="${slides.length}" data-seconds="${slideSeconds(p)}">${layers}${dots}</section>`;
+    return `<section class="${cls(CN.block, CN.hero, CN.heroSlides, sizeCls)}" data-block="Hero" data-id="${attr(p.id)}"${heroWidth} data-photo="${slides[0].photo ? 'true' : 'false'}" data-slides="${slides.length}" data-seconds="${slideSeconds(p)}">${layers}${dots}</section>`;
   },
   OrderBar(ctx, b) {
     const p = b.props;
@@ -354,7 +361,7 @@ const R = {
     if (!/^[a-z0-9._]{1,30}$/i.test(handle)) return '';
     return section(b, CN.instagram, `<a class="${cls(CN.btn, CN.btnSecondary)}" href="https://www.instagram.com/${attr(handle)}" target="_blank" rel="noopener">Follow @${esc(handle)} on Instagram</a>`);
   },
-  Divider(ctx, b) { return `<div class="${cls(CN.block, CN.divider)}" data-block="Divider" data-id="${attr(b.props.id)}"><div class="${CN.inner}"><hr></div></div>`; },
+  Divider(ctx, b) { return `<div class="${cls(CN.block, CN.divider)}" data-block="Divider" data-id="${attr(b.props.id)}"${b.nested ? ' data-nested="true"' : widthAttr(b, false)}><div class="${CN.inner}"><hr></div></div>`; },
   Spacer(ctx, b) {
     const s = b.props.size === 's' ? CN.spacerS : b.props.size === 'l' ? CN.spacerL : CN.spacerM;
     return `<div class="${cls(CN.spacer, s)}" data-block="Spacer" data-id="${attr(b.props.id)}"></div>`;
@@ -414,8 +421,11 @@ export function renderHeader(ctx) {
   const cta = headerCta(ctx);
   const link = (n) => `<a class="${CN.navLink}" href="${attr(resolveHref(ctx, n.href))}"${n.href === ctx.path ? ' aria-current="page"' : ''}>${esc(n.label)}</a>`;
   // 5.12.12: an item with children is a dropdown (hover or focus on a desktop, open list on a phone).
+  // 5.12.19: a parent that is itself a page is a link (hover opens the list); a heading is a button.
   const links = nav.map((n) => (Array.isArray(n.children) && n.children.length
-    ? `<div class="${CN.navItem}"><button type="button" class="${cls(CN.navLink, CN.navDrop)}" aria-haspopup="true" aria-expanded="false">${esc(n.label)}</button><div class="${CN.navSub}">${n.children.map(link).join('')}</div></div>`
+    ? `<div class="${CN.navItem}">${n.link
+      ? `<a class="${cls(CN.navLink, CN.navDrop)}" href="${attr(resolveHref(ctx, n.href))}" aria-haspopup="true"${n.href === ctx.path ? ' aria-current="page"' : ''}>${esc(n.label)}</a>`
+      : `<button type="button" class="${cls(CN.navLink, CN.navDrop)}" aria-haspopup="true" aria-expanded="false">${esc(n.label)}</button>`}<div class="${CN.navSub}">${n.children.map(link).join('')}</div></div>`
     : link(n))).join('') +
     (cta ? `<a class="${cls(CN.navLink, CN.headerCta)}" href="${attr(cta.href)}">${esc(cta.label)}</a>` : '');
   return `<header class="${CN.header}"${opts.sticky ? '' : ' data-sticky="false"'}${opts.logo_size !== 'normal' ? ` data-logo="${opts.logo_size}"` : ''}><div class="${CN.inner}"><a class="${CN.logo}" href="/" aria-label="${attr(name)} home">${logo}</a>` +

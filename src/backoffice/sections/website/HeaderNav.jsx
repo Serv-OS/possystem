@@ -3,12 +3,17 @@
 // 5.12.8: the Header and navigation card on Branding and domain. Header options save at once
 // (settings.header, merged server side); the navigation is edited as rows and saved with one
 // button (save_site nav), with "Back to automatic" clearing it. Publish puts either live.
+// 5.12.19 (Peter: "drag one menu item under another or say sub menu item of this"): every row has
+// a "Show under" pick. Rows under another sit indented beneath it; the site shows them as a
+// dropdown. Arrows move a row among the rows beside it.
 
 import { useState } from 'react';
 import { W } from './ui.js';
-import { HEADER_BRAND_OPTIONS, HEADER_CTA_OPTIONS, HEADER_LOGO_OPTIONS, MAX_NAV_ITEMS, headerDraft, moveRow, navPages, navPatchFrom, navRowsFrom } from './navDraft.js';
+import { HEADER_BRAND_OPTIONS, HEADER_CTA_OPTIONS, HEADER_LOGO_OPTIONS, MAX_NAV_ITEMS, childrenOf, headerDraft, moveSibling, navPages, navPatchFrom, navRowsFrom, newRow, orderedRows, parentOptions, removeRow, setUnder, topRows } from './navDraft.js';
 
 const LINK = '__link__';
+const LOCATIONS = '__locations__';
+const GROUP = '__group__';
 
 function Seg({ label, options, value, onPick, hint }) {
   return (
@@ -50,35 +55,26 @@ export default function HeaderNavCard({ site, pages, saveSite, toast }) {
     else toast('Header saved. Publish to put it live.');
   };
 
-  const edit = (i, patch) => {
-    setDirty(true);
-    setNav((cur) => ({ auto: false, rows: cur.rows.map((r, k) => (k === i ? { ...r, ...patch } : r)) }));
-  };
-  const move = (i, d) => { setDirty(true); setNav((cur) => ({ auto: false, rows: moveRow(cur.rows, i, d) })); };
-  const remove = (i) => { setDirty(true); setNav((cur) => ({ auto: false, rows: cur.rows.filter((_, k) => k !== i) })); };
+  const change = (fn) => { setDirty(true); setNav((cur) => ({ auto: false, rows: fn(cur.rows) })); };
+  const edit = (key, patch) => change((rs) => rs.map((r) => (r.key === key ? { ...r, ...patch } : r)));
+  const move = (key, d) => change((rs) => moveSibling(rs, key, d));
+  const remove = (key) => change((rs) => removeRow(rs, key));
+  const under = (key, parentKey) => change((rs) => setUnder(rs, key, parentKey));
   const add = () => {
-    setDirty(true);
     const used = new Set(rows.map((r) => r.page_id));
     const page = list.find((p) => !used.has(p.id));
-    setNav((cur) => ({ auto: false, rows: [...cur.rows, page ? { label: String(page.title || page.slug || 'Page'), kind: 'page', page_id: page.id, href: '' } : { label: '', kind: 'link', page_id: '', href: '' }] }));
+    change((rs) => [...rs, page ? newRow({ label: String(page.title || page.slug || 'Page'), kind: 'page', page_id: page.id }) : newRow({ label: '', kind: 'link' })]);
   };
-  // 5.12.12: two dropdown kinds. LOCATIONS = every venue page, GROUP = the pages ticked below the row.
-  const LOCATIONS = '__locations__';
-  const GROUP = '__group__';
-  const pickTarget = (i, v) => {
-    if (v === LINK) return edit(i, { kind: 'link', page_id: '', href: rows[i].href || '' });
-    if (v === LOCATIONS) return edit(i, { kind: 'locations', page_id: '', href: '', label: rows[i].label || 'Locations' });
-    if (v === GROUP) return edit(i, { kind: 'group', page_id: '', href: '', page_ids: rows[i].page_ids || [], links: rows[i].links || [] });
-    return edit(i, { kind: 'page', page_id: v, href: '' });
+  const pickTarget = (key, v) => {
+    const r = rows.find((x) => x.key === key) || {};
+    if (v === LINK) return edit(key, { kind: 'link', page_id: '', href: r.href || '' });
+    if (v === LOCATIONS) return change((rs) => setUnder(rs, key, '').map((x) => (x.key === key ? { ...x, kind: 'locations', page_id: '', href: '', label: x.label || 'Locations', under: '' } : (x.under === key ? { ...x, under: '' } : x))));
+    if (v === GROUP) return change((rs) => setUnder(rs, key, '').map((x) => (x.key === key ? { ...x, kind: 'group', page_id: '', href: '', under: '' } : x)));
+    return edit(key, { kind: 'page', page_id: v, href: '' });
   };
-  const toggleChild = (i, id) => {
-    const cur = Array.isArray(rows[i].page_ids) ? rows[i].page_ids : [];
-    edit(i, { page_ids: cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id] });
-  };
-  const pageTitles = Object.fromEntries(list.map((p) => [p.id, p.title || p.slug || 'Home']));
 
   const save = async () => {
-    const { nav, errors } = navPatchFrom(rows, pageTitles);
+    const { nav, errors } = navPatchFrom(rows);
     setProblems(errors);
     if (errors.length) return;
     setBusy(true);
@@ -99,6 +95,8 @@ export default function HeaderNavCard({ site, pages, saveSite, toast }) {
     toast('Navigation follows your pages again. Publish to put it live.');
   };
 
+  const shown = orderedRows(rows);
+  const tops = topRows(rows);
   return (
     <div style={W.card}>
       <div style={W.cardHead}><h2 style={W.h2}>Header and navigation</h2></div>
@@ -117,43 +115,48 @@ export default function HeaderNavCard({ site, pages, saveSite, toast }) {
         <h3 style={{ ...W.h2, fontSize: 14 }}>Navigation</h3>
         <span style={W.chip}>{auto && !dirty ? 'Automatic: follows your pages' : 'Custom'}</span>
       </div>
-      <div style={W.hint}>Each item is a page of your site or a link. Drag is not needed: use the arrows to reorder.</div>
+      <div style={W.hint}>Each item is a page, a link, a heading, or every venue. Pick "Show under" to put an item under another: the site shows those as a dropdown. The arrows reorder.</div>
       <div style={{ marginTop: 8 }}>
-        {rows.map((r, i) => (
-          <div key={i} style={{ ...W.listRow, flexWrap: 'wrap' }}>
-            <input aria-label={`Item ${i + 1} label`} style={{ ...W.input, flex: '1 1 140px', width: 'auto' }} value={r.label} maxLength={60} placeholder="Label" onChange={(e) => edit(i, { label: e.target.value })} />
-            <select aria-label={`Item ${i + 1} goes to`} style={{ ...W.input, flex: '1 1 160px', width: 'auto' }} value={r.kind === 'link' ? LINK : r.kind === 'locations' ? LOCATIONS : r.kind === 'group' ? GROUP : r.page_id} onChange={(e) => pickTarget(i, e.target.value)}>
-              <option value={LOCATIONS}>Dropdown: all venue pages</option>
-              <option value={GROUP}>Dropdown: pages I tick</option>
-              {r.kind === 'page' && r.page_id && !list.some((p) => p.id === r.page_id) ? <option value={r.page_id}>Missing page</option> : null}
-              {list.map((p) => <option key={p.id} value={p.id}>{p.title || p.slug || 'Home'}{p.kind === 'location' ? ' (venue page)' : ''}{p.status === 'draft' ? ' (draft)' : ''}</option>)}
-              <option value={LINK}>Custom link</option>
-            </select>
-            {r.kind === 'link' ? <input aria-label={`Item ${i + 1} link`} style={{ ...W.input, flex: '2 1 200px', width: 'auto' }} value={r.href} placeholder="https://… or /menu" onChange={(e) => edit(i, { href: e.target.value })} /> : null}
-            {r.kind === 'group' ? (
-              <div style={{ flex: '1 1 100%', display: 'flex', flexWrap: 'wrap', gap: 6, padding: '4px 0 2px' }}>
-                {list.map((p) => (
-                  <label key={p.id} style={{ ...W.chip, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                    <input type="checkbox" checked={(r.page_ids || []).includes(p.id)} onChange={() => toggleChild(i, p.id)} />
-                    {p.title || p.slug || 'Home'}{p.kind === 'location' ? ' (venue page)' : ''}
-                  </label>
-                ))}
-                {(r.links || []).length ? <span style={W.hint}>{(r.links || []).length} link{(r.links || []).length === 1 ? '' : 's'} from the designer kept</span> : null}
+        {shown.map((r) => {
+          const isChild = !!r.under && rows.some((x) => x.key === r.under);
+          const kids = childrenOf(rows, r.key);
+          const sibs = isChild ? childrenOf(rows, r.under) : tops;
+          const at = sibs.findIndex((x) => x.key === r.key);
+          const n = shown.indexOf(r) + 1;
+          const parents = parentOptions(rows, r.key);
+          return (
+            <div key={r.key} style={{ ...W.listRow, flexWrap: 'wrap', paddingLeft: isChild ? 28 : 0 }}>
+              {isChild ? <span aria-hidden="true" style={{ color: 'var(--t3)', fontWeight: 700 }}>↳</span> : null}
+              <input aria-label={`Item ${n} label`} style={{ ...W.input, flex: '1 1 140px', width: 'auto' }} value={r.label} maxLength={60} placeholder="Label" onChange={(e) => edit(r.key, { label: e.target.value })} />
+              <select aria-label={`Item ${n} goes to`} style={{ ...W.input, flex: '1 1 160px', width: 'auto' }} value={r.kind === 'link' ? LINK : r.kind === 'locations' ? LOCATIONS : r.kind === 'group' ? GROUP : r.page_id} onChange={(e) => pickTarget(r.key, e.target.value)}>
+                {r.kind === 'page' && r.page_id && !list.some((p) => p.id === r.page_id) ? <option value={r.page_id}>Missing page</option> : null}
+                {list.map((p) => <option key={p.id} value={p.id}>{p.title || p.slug || 'Home'}{p.kind === 'location' ? ' (venue page)' : ''}{p.status === 'draft' ? ' (draft)' : ''}</option>)}
+                <option value={LINK}>Custom link</option>
+                {isChild ? null : <option value={GROUP}>Heading only (opens the items under it)</option>}
+                {isChild ? null : <option value={LOCATIONS}>Every venue page (dropdown)</option>}
+              </select>
+              {r.kind === 'link' ? <input aria-label={`Item ${n} link`} style={{ ...W.input, flex: '2 1 200px', width: 'auto' }} value={r.href} placeholder="https://… or /menu" onChange={(e) => edit(r.key, { href: e.target.value })} /> : null}
+              {r.kind === 'locations' ? null : (
+                <select aria-label={`Item ${n} show under`} style={{ ...W.input, flex: '1 1 150px', width: 'auto' }} value={isChild ? r.under : ''} disabled={kids.length > 0} title={kids.length ? 'Has items under it; move those first' : ''} onChange={(e) => under(r.key, e.target.value)}>
+                  <option value="">Top level</option>
+                  {parents.map((p) => <option key={p.key} value={p.key}>Under {p.label || '(no label)'}</option>)}
+                </select>
+              )}
+              {r.kind === 'locations' ? <span style={{ ...W.hint, flex: '1 1 100%' }}>Opens every published venue page. New venues appear on their own.</span> : null}
+              {r.kind === 'group' && !kids.length ? <span style={{ ...W.hint, flex: '1 1 100%' }}>A heading needs items under it: set "Show under" on other items.</span> : null}
+              <div style={{ ...W.row, gap: 4, flex: '0 0 auto' }}>
+                <button type="button" style={W.ghost} aria-label="Move up" disabled={at <= 0} onClick={() => move(r.key, -1)}>↑</button>
+                <button type="button" style={W.ghost} aria-label="Move down" disabled={at >= sibs.length - 1} onClick={() => move(r.key, 1)}>↓</button>
+                <button type="button" style={W.danger} aria-label="Remove" onClick={() => remove(r.key)}>Remove</button>
               </div>
-            ) : null}
-            {r.kind === 'locations' ? <span style={{ ...W.hint, flex: '1 1 100%' }}>Opens every published venue page. New venues appear on their own.</span> : null}
-            <div style={{ ...W.row, gap: 4, flex: '0 0 auto' }}>
-              <button type="button" style={W.ghost} aria-label="Move up" disabled={i === 0} onClick={() => move(i, -1)}>↑</button>
-              <button type="button" style={W.ghost} aria-label="Move down" disabled={i === rows.length - 1} onClick={() => move(i, 1)}>↓</button>
-              <button type="button" style={W.danger} aria-label="Remove" onClick={() => remove(i)}>Remove</button>
             </div>
-          </div>
-        ))}
+          );
+        })}
         {!rows.length ? <div style={{ ...W.hint, padding: '10px 0' }}>No items. Add one, or go back to automatic.</div> : null}
       </div>
       {problems.length ? <div style={{ color: 'var(--red)', fontSize: 12.5, marginTop: 8 }}>{problems.map((p) => <div key={p}>{p}</div>)}</div> : null}
       <div style={{ ...W.row, marginTop: 12 }}>
-        <button type="button" style={W.ghost} onClick={add} disabled={rows.length >= MAX_NAV_ITEMS}>Add item</button>
+        <button type="button" style={W.ghost} onClick={add} disabled={tops.length >= MAX_NAV_ITEMS}>Add item</button>
         <button type="button" style={W.btn} onClick={save} disabled={busy || !dirty}>{busy ? 'Saving…' : 'Save navigation'}</button>
         {!auto || dirty ? <button type="button" style={W.ghost} onClick={backToAuto} disabled={busy}>Back to automatic</button> : null}
       </div>

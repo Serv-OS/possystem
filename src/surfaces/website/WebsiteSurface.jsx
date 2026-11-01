@@ -48,7 +48,9 @@ function NavDropdown({ item, path, ctx }) {
   const open = st.path === path && st.open;
   return (
     <div className={CN.navItem} data-open={open ? 'true' : 'false'}>
-      <button type="button" className={cls(CN.navLink, CN.navDrop)} aria-haspopup="true" aria-expanded={open} onClick={() => setSt({ open: !open, path })}>{item.label}</button>
+      {item.link
+        ? <A className={cls(CN.navLink, CN.navDrop)} href={item.href} aria-haspopup="true" aria-current={resolveHref(ctx, item.href) === path ? 'page' : undefined}>{item.label}</A>
+        : <button type="button" className={cls(CN.navLink, CN.navDrop)} aria-haspopup="true" aria-expanded={open} onClick={() => setSt({ open: !open, path })}>{item.label}</button>}
       <div className={CN.navSub}>
         {item.children.map((c) => <A key={`${c.label}-${c.href}`} className={CN.navLink} href={c.href} aria-current={resolveHref(ctx, c.href) === path ? 'page' : undefined}>{c.label}</A>)}
       </div>
