@@ -138,9 +138,15 @@ export default function Editor({ ws, toast, pageId, onPageChange, onAskDesigner,
   const page = ordered.find((p) => p.id === pageId) || ordered[0] || null;
   const [viewport, setViewport] = useState('desktop');
   const [adding, setAdding] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const [saveState, setSaveState] = useState('');
+  const [configMod, setConfigMod] = useState(loadPuckConfig ? undefined : null); // undefined = loading
   // 5.12.12 (Peter: "the design scrolls with the page, you cannot see the field to edit"): the
   // editor fills the window below its own top edge, so the page itself never scrolls and Puck's
   // panes scroll on their own. Measured, because the Appearance header above it varies in height.
+  // 5.12.14: this sits BELOW the configMod state on purpose. The effect's dependency list names
+  // configMod and React reads that list during render, so with the effect above the useState the
+  // whole Back Office died on first render with "Cannot access 'oe' before initialization".
   const puckBox = useRef(null);
   const pageKey = page ? page.id : null;
   const [puckHeight, setPuckHeight] = useState('max(560px, calc(100vh - 170px))');
@@ -155,9 +161,6 @@ export default function Editor({ ws, toast, pageId, onPageChange, onAskDesigner,
     window.addEventListener('resize', measure);
     return () => window.removeEventListener('resize', measure);
   }, [pageKey, configMod]);
-  const [publishing, setPublishing] = useState(false);
-  const [saveState, setSaveState] = useState('');
-  const [configMod, setConfigMod] = useState(loadPuckConfig ? undefined : null); // undefined = loading
 
   useEffect(() => {
     if (!loadPuckConfig) return undefined;
