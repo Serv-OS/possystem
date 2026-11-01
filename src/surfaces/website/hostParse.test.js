@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseWebsiteHost, parseWebsiteLocation, isWebsiteTestingHost, canonicalHost, freeSiteSuffixes, ownHostSuffixes } from './hostParse.js';
+import { parseWebsiteHost, parseWebsiteLocation, isWebsiteTestingHost, canonicalHost, freeSiteSuffixes, ownHostSuffixes, siteQueryFor } from './hostParse.js';
 import { parseCustomerLocation } from '../../lib/customerHost.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -104,4 +104,14 @@ test('wiring: customerUrl.js, App.jsx and vercel.json carry the website branch',
     assert.ok(rw.findIndex((r) => r.source === src) < rw.indexOf(sites), `${src} is rewritten to itself before the site rewrites`);
   }
   assert.ok(vercel.headers.some((h) => h.source === '/assets/(.*)'), 'existing headers kept');
+});
+
+// 5.12.6: the logo on posup-test.sites.serv-os.app took visitors to "/?site=posup-test". The
+// testing query rides along only where it already was.
+test('siteQueryFor keeps ?site= only when the address already carries it', () => {
+  assert.equal(siteQueryFor('', 'posup-test'), '');
+  assert.equal(siteQueryFor('?utm=x', 'posup-test'), '');
+  assert.equal(siteQueryFor('?site=mozz', 'mozz'), '?site=mozz');
+  assert.equal(siteQueryFor('?site=mozz&x=1', null), '?site=mozz');
+  assert.equal(siteQueryFor(undefined, undefined), '');
 });

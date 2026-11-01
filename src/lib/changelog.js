@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.12.6',
+    date: '1 Nov 2026',
+    items: [
+      'Website builder: the logo and every site link now go where they say. On the live site a click on the logo landed on "/?site=posup-test" (a testing query carried over by mistake); links stay clean on a venue\'s own address. In the AI designer preview, links inside the page did nothing; they now switch the previewed page (logo to Home, menu links to Menu).',
+    ],
+  },
+  {
     v: '5.12.5',
     date: '1 Nov 2026',
     items: [

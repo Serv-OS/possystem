@@ -9,6 +9,7 @@
 // online-86:<location> realtime channel like the storefront. Never a literal colour: everything
 // is a --w-* variable from theme.js.
 
+import { siteQueryFor } from './hostParse.js';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase, platformSupabase } from '../../lib/supabase';
 import { CUSTOMER_ROOT } from '../../lib/env';
@@ -116,7 +117,7 @@ export default function WebsiteSurface({ host, siteSlug = null }) {
   }, []);
   const navigate = useCallback((href) => {
     const target = normalisePath(href);
-    const keepQuery = siteSlug ? `?site=${encodeURIComponent(siteSlug)}` : '';
+    const keepQuery = siteQueryFor(typeof window !== 'undefined' ? window.location.search : '', siteSlug);
     // A draft preview keeps its /preview?token address: the live paths may not exist yet.
     if (!preview) { try { window.history.pushState({}, '', target + keepQuery); } catch { /* file: or sandboxed */ } }
     setPath(target);
