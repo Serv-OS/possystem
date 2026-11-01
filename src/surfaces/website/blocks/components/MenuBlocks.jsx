@@ -2,22 +2,36 @@
 // LiveMenu and Specials in React. The menu itself comes from SiteContext (WebsiteSurface loads it
 // with data/loadMenu.js and refreshes it on the 86 channel); these components only lay it out.
 
+import { useCallback, useRef, useState } from 'react';
 import { CN } from '../classNames.js';
 import { useSite } from '../../siteContext.js';
-import { resolveHref, explicitLocation, multiVenue, menuLocation, menuVenues } from '../../resolveHref.js';
+import { multiVenue, menuLocation, menuVenues, menuOrderHref, onVenuePage } from '../../resolveHref.js';
 import { formatPrice, capCategories } from '../../data/loadMenu.js';
+import { isActivationKey } from '../itemSheet.js';
+import { useNested } from '../nested.js';
+import { ItemSheet } from './ItemSheet.jsx';
 
 const cls = (...xs) => xs.filter(Boolean).join(' ');
 const DIET_WORDS = { V: 'Vegetarian', VG: 'Vegan', GF: 'Gluten free', DF: 'Dairy free' };
 
 function Section({ type, id, className, children }) {
-  return <section className={cls(CN.block, className)} data-block={type} data-id={id}><div className={CN.inner}>{children}</div></section>;
+  // 5.12.9: inside a Row column the block is marked nested (same attribute as the SSR section()).
+  const nested = useNested();
+  return <section className={cls(CN.block, className)} data-block={type} data-id={id} data-nested={nested ? 'true' : undefined}><div className={CN.inner}>{children}</div></section>;
 }
 export function Empty({ children }) { return <p className={CN.empty}>{children}</p>; }
 
-export function MenuItem({ it, show = {}, orderHref = '' }) {
+/**
+ * 5.12.9: one menu card. A tap (or Enter / Space) opens the item sheet through onOpen(item, cardEl);
+ * the markup, attribute order included, matches the server's menuItemHtml so nothing moves on
+ * mount. The card's own Order link still goes straight to ordering and never opens the sheet.
+ */
+export function MenuItem({ it, show = {}, orderHref = '', onOpen }) {
+  const open = (e) => { if (typeof onOpen === 'function') onOpen(it, e.currentTarget); };
+  const onKeyDown = (e) => { if (isActivationKey(e)) { e.preventDefault(); open(e); } };
+  const stop = (e) => e.stopPropagation();
   return (
-    <article className={cls(CN.menuItem, it.sold_out && CN.menuItemSoldOut)} data-item={it.id}>
+    <article className={cls(CN.menuItem, it.sold_out && CN.menuItemSoldOut)} data-item={it.id} role="button" tabIndex={0} aria-haspopup="dialog" onClick={open} onKeyDown={onKeyDown}>
       {show.photos !== false && it.image ? <img className={CN.menuPhoto} src={it.image} alt={it.name} loading="lazy" /> : null}
       <div>
         <h4 className={CN.menuName}>{it.name}</h4>
@@ -30,7 +44,7 @@ export function MenuItem({ it, show = {}, orderHref = '' }) {
       </div>
       <div>
         {show.prices !== false && it.price > 0 ? <div className={CN.menuPrice}>{it.from ? 'from ' : ''}{formatPrice(it.price, it.currency)}</div> : null}
-        {orderHref && !it.sold_out ? <a className={cls(CN.btn, CN.btnSecondary)} href={orderHref} rel="noopener">Order</a> : null}
+        {orderHref && !it.sold_out ? <a className={cls(CN.btn, CN.btnSecondary)} href={orderHref} rel="noopener" onClick={stop} onKeyDown={stop}>Order</a> : null}
       </div>
     </article>
   );
@@ -43,7 +57,8 @@ export function MenuItem({ it, show = {}, orderHref = '' }) {
  */
 export function VenueSwitch({ mode, location_id, current }) {
   const { ctx, setMenuVenue } = useSite();
-  if (mode === 'none' || explicitLocation(location_id) || !multiVenue(ctx)) return null;
+  void location_id; // the block's venue is only the starting venue (5.12.9); the switch shows regardless
+  if (mode === 'none' || onVenuePage(ctx) || !multiVenue(ctx)) return null;
   const venues = menuVenues(ctx);
   if (venues.length < 2) return null;
   const path = ctx.path || '/';
@@ -68,8 +83,27 @@ export function VenueSwitch({ mode, location_id, current }) {
   );
 }
 
+/**
+ * 5.12.9: which item's sheet is open for one menu block, and focus back to the card on close.
+ * Returns [sheetProps or null, openSheet]. Plain hook (no component) so fast refresh stays happy.
+ */
+function useItemSheet(locationId) {
+  const [item, setItem] = useState(null);
+  const openerRef = useRef(null);
+  const openSheet = useCallback((it, el) => { openerRef.current = el || null; setItem(it || null); }, []);
+  const closeSheet = useCallback(() => {
+    setItem(null);
+    const el = openerRef.current;
+    openerRef.current = null;
+    if (el && typeof el.focus === 'function' && el.isConnected !== false) { try { el.focus(); } catch { /* the card went away */ } }
+  }, []);
+  const sheet = item ? <ItemSheet item={item} locationId={locationId} onClose={closeSheet} /> : null;
+  return [sheet, openSheet];
+}
+
 export function LiveMenu({ id, title, categories, layout, show = {}, max_items, location_id, venue_switch = 'buttons' }) {
   const { ctx, menu, menuLoading } = useSite();
+  const [sheet, openSheet] = useItemSheet(location_id);
   const layoutCn = layout === 'list' ? CN.menuList : layout === 'board' ? CN.menuBoard : CN.menuCards;
   const head = title ? <h2 className={CN.h2}>{title}</h2> : null;
   // 5.12.8: the venue this menu is for (the visitor's pick on an unpinned block) and its switch.
@@ -80,19 +114,20 @@ export function LiveMenu({ id, title, categories, layout, show = {}, max_items, 
   }
   const only = Array.isArray(categories) ? categories.map((c) => c && c.id).filter(Boolean) : [];
   const cats = only.length ? menu.categories.filter((c) => only.includes(c.id)) : menu.categories;
-  // The order button goes to the venue whose menu this is, never to another venue.
-  const orderHref = show.add_button && loc ? resolveHref(ctx, `servos:order:${loc.id}`) : '';
+  // 5.12.9: ask which venue first unless the visitor picked one (or this is the venue's own page).
+  const orderHref = show.add_button ? menuOrderHref(ctx, loc) : '';
   const sections = capCategories(cats, show.hide_sold_out, max_items).map((c) => (
     <div key={c.id} className={CN.menuSection}>
       <h3>{c.label}</h3>
-      <div className={CN.menuGrid}>{c.items.map((it) => <MenuItem key={it.id} it={it} show={show} orderHref={orderHref} />)}</div>
+      <div className={CN.menuGrid}>{c.items.map((it) => <MenuItem key={it.id} it={it} show={show} orderHref={orderHref} onOpen={openSheet} />)}</div>
     </div>
   ));
-  return <Section type="LiveMenu" id={id} className={cls(CN.menu, layoutCn)}>{head}{switcher}{sections.length ? sections : <Empty>Nothing on the menu right now.</Empty>}</Section>;
+  return <Section type="LiveMenu" id={id} className={cls(CN.menu, layoutCn)}>{head}{switcher}{sections.length ? sections : <Empty>Nothing on the menu right now.</Empty>}{sheet}</Section>;
 }
 
 export function Specials({ id, title, source, ids }) {
   const { menu } = useSite();
+  const [sheet, openSheet] = useItemSheet(undefined);
   if (!menu) return null;
   let items = [];
   if (source === 'manual') {
@@ -104,7 +139,8 @@ export function Specials({ id, title, source, ids }) {
   return (
     <Section type="Specials" id={id} className={cls(CN.menu, CN.specials, CN.menuCards)}>
       {title ? <h2 className={CN.h2}>{title}</h2> : null}
-      <div className={CN.menuGrid}>{items.map((it) => <MenuItem key={it.id} it={it} show={{ prices: true, photos: true, descriptions: true, dietary: true }} />)}</div>
+      <div className={CN.menuGrid}>{items.map((it) => <MenuItem key={it.id} it={it} show={{ prices: true, photos: true, descriptions: true, dietary: true }} onOpen={openSheet} />)}</div>
+      {sheet}
     </Section>
   );
 }

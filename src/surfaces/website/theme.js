@@ -75,6 +75,17 @@ function mix(hex, towards, amount) {
 export function isLightColor(hex) { return luminance(hex) > 0.4; }
 
 /**
+ * 5.12.9 Row block: true when white text reads better than black on this background, so a row
+ * with a dark owner colour gets light text. Pure: a 3 or 6 digit hex (with or without #) only;
+ * anything else is false (no colour = inherit the page tone).
+ */
+export function isDarkHex(hex) {
+  const v = String(hex || '').trim();
+  if (!/^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(v)) return false;
+  return contrastRatio('#ffffff', v) >= contrastRatio('#000000', v);
+}
+
+/**
  * Move `fg` towards white or black in small steps until it reads at `min` contrast against `bg`,
  * taking whichever direction gets there with the smaller change. When neither extreme reaches
  * `min` (a mid grey background) the extreme with the higher contrast is returned.
@@ -165,6 +176,10 @@ export function siteVars(theme, onlineBranding) {
     // Text over a hero photo always sits on a dark scrim, whatever the mood.
     '--w-on-photo': '#ffffff',
     '--w-scrim': 'linear-gradient(180deg,rgba(0,0,0,.05),rgba(0,0,0,.72))',
+    // 5.12.9 Row block: dark text for a row the owner set to a light tone, and the even "darken"
+    // layer over a row photo (the hero scrim fades in from the top, a row needs the whole photo dimmed).
+    '--w-on-light': PAPER.ink,
+    '--w-dim': 'rgba(0,0,0,.5)',
     '--w-radius': RADIUS[t.buttons],
     '--w-font-display': pair.display,
     '--w-font-body': pair.body,

@@ -35,6 +35,9 @@ export const CN = Object.freeze({
   menuBadges: 'w-menu-badges', badge: 'w-badge', menuAllergens: 'w-menu-allergens', soldOut: 'w-soldout',
   venueSwitch: 'w-venue-switch', venueBtn: 'w-venue-btn', venueForm: 'w-venue-form',
   specials: 'w-specials',
+  // 5.12.9: the menu item detail sheet (components/ItemSheet.jsx); w-sheet-open goes on <html> while it is up
+  sheetBackdrop: 'w-sheet-backdrop', sheet: 'w-sheet', sheetClose: 'w-sheet-close', sheetPhoto: 'w-sheet-photo',
+  sheetBody: 'w-sheet-body', sheetTitle: 'w-sheet-title', sheetFoot: 'w-sheet-foot', sheetOpen: 'w-sheet-open',
   embed: 'w-embed', embedCard: 'w-embed-card', iframe: 'w-iframe',
   loyalty: 'w-loyalty', loyaltyCard: 'w-loyalty-card',
   gift: 'w-gift', giftArt: 'w-gift-art',
@@ -46,6 +49,7 @@ export const CN = Object.freeze({
   blogList: 'w-bloglist', post: 'w-post', postCover: 'w-post-cover', postMeta: 'w-post-meta', postBody: 'w-post-body',
   text: 'w-text', prose: 'w-prose',
   columns: 'w-columns', cols2: 'w-cols-2', cols3: 'w-cols-3',
+  row: 'w-row', rowGrid: 'w-row-grid', rowCol: 'w-row-col',
   gallery: 'w-gallery',
   faq: 'w-faq', faqItem: 'w-faq-item',
   instagram: 'w-instagram',

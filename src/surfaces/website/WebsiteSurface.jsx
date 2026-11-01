@@ -22,7 +22,7 @@ import { siteVars } from './theme.js';
 import { resolveRoute, visibleNav, breadcrumbsFor, normalisePath, layoutHasHero, headerOptions } from './routes.js';
 import { buildCtx, renderPage, siteName, headerCta } from './ssr/renderBlocks.js';
 import { resolveHref, pickLocation, menuLocation } from './resolveHref.js';
-import { layoutBlocks } from './blocks/schema.js';
+import { layoutBlocks, walkBlocks } from './blocks/schema.js';
 import { loadMenu } from './data/loadMenu.js';
 import { BlockRenderer } from './blocks/BlockRenderer.jsx';
 import { PostArticle } from './blocks/components/ContentBlocks.jsx';
@@ -80,9 +80,9 @@ function rowSnapshot(row) {
   return s;
 }
 
-/** The menu block that drives this page's menu read (first LiveMenu, else first Specials). */
+/** The menu block that drives this page's menu read (first LiveMenu, else first Specials; 5.12.9: inside a Row column too). */
 function menuPlanFor(page, ctx) {
-  const blocks = layoutBlocks(page && page.layout);
+  const blocks = walkBlocks(page && page.layout);
   const block = blocks.find((b) => b.type === 'LiveMenu') || blocks.find((b) => b.type === 'Specials');
   if (!block) return null;
   // 5.12.8: an unpinned block follows the visitor's venue pick (same rule as the server's menuPlan).
@@ -169,7 +169,7 @@ export default function WebsiteSurface({ host, siteSlug = null }) {
   }, []);
 
   const route = useMemo(() => (snapshot ? resolveRoute(snapshot, path) : null), [snapshot, path]);
-  const ctx = useMemo(() => buildCtx({ snapshot, host, path, menu, customerRoot: CUSTOMER_ROOT, menuVenue }), [snapshot, host, path, menu, menuVenue]);
+  const ctx = useMemo(() => buildCtx({ snapshot, host, path, menu, customerRoot: CUSTOMER_ROOT, menuVenue, pageKind: route && route.page ? route.page.kind : null }), [snapshot, host, path, menu, menuVenue, route]);
   const vars = useMemo(() => siteVars(ctx.site.theme, (pickLocation(ctx, 'default') || {}).online_branding), [ctx]);
   const plan = useMemo(() => (route && route.page ? menuPlanFor(route.page, ctx) : null), [route, ctx]);
 

@@ -34,6 +34,17 @@ function cloneDefault(f) {
   return d;
 }
 
+// 5.12.9 field types the editor turns into pickers (puckFields.js); stored values stay plain:
+//   image      a photo URL (the editor uploads and fills it)      → string
+//   color      a hex colour like #c8493b, '' = none                → string
+//   menu       a menu id, or 'follow' = the menu live right now    → string
+//   categories menu category ids to show, [] = all                 → [{ id }]
+//   slot       blocks dropped inside this block (Puck slot)        → [{ type, props }]
+const img = (def = '', extra = {}) => ({ type: 'image', default: def, ...extra });
+const color = (def = '', extra = {}) => ({ type: 'color', default: def, hint: 'A colour like #c8493b. Empty = none', ...extra });
+const slot = (extra = {}) => ({ type: 'slot', default: [], ...extra });
+export const FIELD_HELPERS = Object.freeze({ s, t, n, b, e, h, arr, obj, img, color, slot });
+
 // A location picker: 'default' = settings.default_location_id; 'all' where the block allows it.
 // 5.12.8: its own field type, so the editor shows a dropdown of the venues (puckFields.js) while
 // the stored value stays a string ('default', 'all' or a location id) for the AI and the renderers.
@@ -47,7 +58,7 @@ export const BLOCK_SCHEMAS = {
     props: {
       headline: s('', { label: 'Headline' }),
       sub: t('', { label: 'Sub heading' }),
-      photo_url: s('', { label: 'Photo URL', hint: 'Empty = the branding hero photo' }),
+      photo_url: img('', { label: 'Photo', hint: 'Empty = the branding hero photo' }),
       show_status: b(true, { label: 'Show open or closed now' }),
       primary: linkObj('Order now', 'servos:order'),
       secondary: linkObj('See the menu', '/menu'),
@@ -67,8 +78,8 @@ export const BLOCK_SCHEMAS = {
     label: 'Live menu', group: 'servos',
     props: {
       title: s('Menu', { label: 'Heading' }),
-      menu_id: s('follow', { label: 'Menu', hint: "'follow' = the menu live right now" }),
-      categories: arr({ id: s('', { label: 'Category id' }) }, [], { label: 'Categories', hint: 'Empty = all' }),
+      menu_id: { type: 'menu', default: 'follow', label: 'Menu', hint: "'follow' = the menu live right now, else a menu id" },
+      categories: { type: 'categories', default: [], item: { id: s('', { label: 'Category id' }) }, label: 'Categories', hint: 'Empty = all' },
       layout: e(['cards', 'list', 'board'], 'cards', { label: 'Layout' }),
       show: obj({
         prices: b(true, { label: 'Prices' }),
@@ -182,11 +193,40 @@ export const BLOCK_SCHEMAS = {
       items: arr({ md: t('', { label: 'Text (markdown)', markdown: true }) }, [{ md: '' }, { md: '' }], { label: 'Columns' }),
     },
   },
+  // 5.12.9 (Peter, 1 Nov): "create columns and rows, set background images and colours on rows and
+  // columns, drag and drop things into columns". A Row holds up to four slot columns; each slot is a
+  // list of ordinary blocks ({ type, props }) the owner drops in. One level deep: a Row never holds a Row.
+  Row: {
+    label: 'Row', group: 'content',
+    props: {
+      columns: e(['1', '2', '3', '4'], '2', { label: 'Columns' }),
+      gap: e(['none', 'small', 'normal', 'large'], 'normal', { label: 'Space between columns' }),
+      padding: e(['none', 'small', 'normal', 'large'], 'normal', { label: 'Space above and below' }),
+      align: e(['top', 'center'], 'top', { label: 'Line columns up at the' }),
+      full_width: b(false, { label: 'Background edge to edge', hint: 'The content keeps the page width' }),
+      background: obj({
+        color: color('', { label: 'Background colour' }),
+        image: img('', { label: 'Background photo' }),
+        darken: b(false, { label: 'Darken the photo so text reads' }),
+        tone: e(['auto', 'light', 'dark'], 'auto', { label: 'Text colour', hint: 'auto = light text on a dark background' }),
+      }, { label: 'Background' }),
+      col_bg: obj({
+        col1: color('', { label: 'Column 1' }),
+        col2: color('', { label: 'Column 2' }),
+        col3: color('', { label: 'Column 3' }),
+        col4: color('', { label: 'Column 4' }),
+      }, { label: 'Column backgrounds' }),
+      col1: slot({ label: 'Column 1' }),
+      col2: slot({ label: 'Column 2' }),
+      col3: slot({ label: 'Column 3' }),
+      col4: slot({ label: 'Column 4' }),
+    },
+  },
   Gallery: {
     label: 'Gallery', group: 'content',
     props: {
       title: s('', { label: 'Heading' }),
-      photos: arr({ url: s('', { label: 'Photo URL' }), alt: s('', { label: 'Alt text' }) }, [], { label: 'Photos' }),
+      photos: arr({ url: img('', { label: 'Photo' }), alt: s('', { label: 'Alt text' }) }, [], { label: 'Photos' }),
       cols: n(3, { label: 'Columns', min: 1, max: 4 }),
     },
   },
@@ -245,7 +285,16 @@ export function defaultPropsFor(type) {
 // a page saved with an odd value still renders (customer facing never fails).
 function coerceValue(f, v) {
   switch (f.type) {
-    case 'string': case 'href': case 'location': return typeof v === 'string' ? v : (v == null ? f.default : String(v));
+    case 'string': case 'href': case 'location': case 'image': case 'color': case 'menu': return typeof v === 'string' ? v : (v == null ? f.default : String(v));
+    case 'categories': return Array.isArray(v) ? v.filter((x) => x && typeof x === 'object' && typeof x.id === 'string').map((x) => ({ id: x.id })) : [];
+    case 'slot': {
+      // Blocks dropped inside a block: each one normalised like a top level block, junk dropped.
+      // In the Puck editor the slot arrives as Puck's own drop zone component (a function): kept as is.
+      if (typeof v === 'function') return v;
+      if (!Array.isArray(v)) return [];
+      return v.filter((x) => x && typeof x === 'object' && typeof x.type === 'string' && isBlockType(x.type))
+        .map((x) => ({ type: x.type, props: normaliseProps(x.type, x.props || {}) }));
+    }
     case 'text': return typeof v === 'string' ? v : f.default;
     case 'number': { const x = Number(v); return Number.isFinite(x) ? x : f.default; }
     case 'boolean': return typeof v === 'boolean' ? v : (v === 'true' ? true : v === 'false' ? false : f.default);
@@ -284,6 +333,34 @@ export function layoutBlocks(layout) {
     .map((c) => ({ type: c.type, props: normaliseProps(c.type, c.props) }));
 }
 
+/** The slot prop names of a block type (the columns of a Row); [] for blocks with none. */
+export function slotKeysOf(type) {
+  const schema = isBlockType(type) ? BLOCK_SCHEMAS[type] : null;
+  return schema ? Object.keys(schema.props).filter((k) => schema.props[k].type === 'slot') : [];
+}
+
+/**
+ * 5.12.9: every block of a layout, top level and inside slots (a Row's columns), depth first, as
+ * [{type, props}] with normalised props. Readers that look for "the first LiveMenu on the page"
+ * (menuForPage.js, WebsiteSurface, routes.layoutHasHero) use this so a block inside a Row counts.
+ * Never throws: junk slots are already [] after normaliseProps.
+ */
+export function walkBlocks(layout, maxDepth = 3) {
+  const out = [];
+  const visit = (blocks, depth) => {
+    for (const b of blocks) {
+      out.push(b);
+      if (depth >= maxDepth) continue;
+      for (const k of slotKeysOf(b.type)) {
+        const kids = Array.isArray(b.props[k]) ? b.props[k] : [];
+        visit(kids.filter((c) => c && isBlockType(c.type)).map((c) => ({ type: c.type, props: normaliseProps(c.type, c.props) })), depth + 1);
+      }
+    }
+  };
+  visit(layoutBlocks(layout), 0);
+  return out;
+}
+
 /**
  * JSON Schema for one block's props (draft 7 subset), for the designer's tool and the validator.
  * `additionalProperties:false` so the model cannot invent props.
@@ -301,7 +378,9 @@ function mapProps(fields) {
 function mapField(f) {
   const desc = f.hint ? { description: f.hint } : {};
   switch (f.type) {
-    case 'string': case 'text': case 'href': case 'location': return { type: 'string', ...desc };
+    case 'string': case 'text': case 'href': case 'location': case 'image': case 'color': case 'menu': return { type: 'string', ...desc };
+    case 'categories': return { type: 'array', items: { type: 'object', properties: { id: { type: 'string' } }, additionalProperties: false }, ...desc };
+    case 'slot': return { type: 'array', items: { type: 'object', properties: { type: { type: 'string' }, props: { type: 'object' } }, required: ['type', 'props'] }, description: `${f.hint || 'Blocks inside this block'}: each item is { type, props } like a page block` };
     case 'number': return { type: 'number', ...(f.min != null ? { minimum: f.min } : {}), ...(f.max != null ? { maximum: f.max } : {}), ...desc };
     case 'boolean': return { type: 'boolean', ...desc };
     case 'enum': return { type: 'string', enum: f.options.slice(), ...desc };

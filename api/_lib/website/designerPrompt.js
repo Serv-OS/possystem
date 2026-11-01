@@ -135,6 +135,12 @@ available, and say in one line what you took from them. Use this venue's own men
 BLOCKS (the only block types that exist, with their props):
 ${blocksDescription}
 
+ROW (columns): a Row block lays blocks side by side. columns is '1' to '4'; col1 to col4 are lists of
+ordinary blocks, each { type, props } exactly like a page block (col3 and col4 are ignored unless
+columns says so). background.color (hex) and background.image (https URL) paint the row, darken dims a
+photo so text reads, tone 'auto' picks light text on a dark colour; col_bg.col1 to col4 colour one
+column each. One level deep only: never put a Row inside a Row, never a Hero inside a Row.
+
 HARD RULES
 - Use only block types listed above and only their props. Anything else is refused by the validator.
 - Every ServOS block for a channel that is ON in the facts must be present somewhere sensible (menu,
@@ -159,6 +165,8 @@ HARD RULES
   a page has slug, title, kind, seo, layout, status, location_id and nothing else.
 - Location pages: kind 'location', slug = that location's online slug, location_id = its id from the
   facts, and every ServOS block on it points at that location_id.
+- Every other page keeps location_id 'default' on its blocks (never a venue id): a group site then
+  shows the venue switch above the menu and asks which venue before ordering.
 
 SEO RULES (the venue must come up in Google and compete)
 - Site seo.title <= 60 characters and includes the town. seo.description <= 155 characters with the

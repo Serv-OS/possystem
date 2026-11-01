@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    v: '5.12.9',
+    date: '1 Nov 2026',
+    items: [
+      'Website editor: photos are uploaded, not pasted as links. Every photo field (hero, gallery, row backgrounds) has an Upload photo button and a preview.',
+      'Website editor: no more codes. Links are a picker (a page of your site, Order online, Catering, Book a table, Loyalty, Gift cards, Waitlist, Blog, or a web address). Text boxes get a toolbar (heading, bold, italic, list, link) and a preview.',
+      'Website editor: the Live menu block has a Menu dropdown (Live right now, or a named menu such as Main or Bar) and tick boxes for categories, and the editor shows your real menu while you build.',
+      'Website: Row block. Drop blocks into 1 to 4 columns, set a row background colour or photo (with a darken option), a colour per column, spacing and alignment. Same on the server render and in the browser.',
+      'Website: tap a menu item to see its photo, description, allergens and price in a sheet with an order button.',
+      'Website: a menu block\'s venue is the starting venue; the visitor switch still works, and ordering from a menu asks which venue first on a group site until the visitor has picked one. A venue\'s own page goes straight to that venue.',
+    ],
+  },
+  {
     v: '5.12.8',
     date: '1 Nov 2026',
     items: [

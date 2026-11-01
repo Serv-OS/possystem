@@ -10,7 +10,9 @@ import { renderPage, renderBlock, renderSitemap, renderRobots, renderNoSite, ren
 import { siteName } from './ssr/jsonld.js';
 import { hoursRows, openingHoursSpecification, allDayWindow } from './hours.js';
 import { resolveRoute } from './routes.js';
-import { BLOCK_TYPES, defaultPropsFor } from './blocks/schema.js';
+import { BLOCK_TYPES, defaultPropsFor, walkBlocks } from './blocks/schema.js';
+import { isDarkHex } from './theme.js';
+import { menuBlockOf } from '../../../api/_lib/website/menuForPage.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const AGENT_A = path.resolve(here, '../../lib/website/fixtures/snapshot.sample.json');
@@ -352,7 +354,7 @@ test('venue switch: buttons above an unpinned menu on a group site, the shown ve
   assert.doesNotMatch(picked.body, /href="\/\?venue=mozz-leeds" aria-current="true"/);
 });
 
-test('venue switch: dropdown is a plain GET form; none hides it; a pinned block and a one venue site never show it', () => {
+test('venue switch: dropdown is a plain GET form; none hides it; a venue page and a one venue site never show it, a pinned block still does', () => {
   const s = snap();
   const menuBlock = (page) => page.layout.content.find((b) => b.type === 'LiveMenu');
   menuBlock(s.pages[0]).props.venue_switch = 'dropdown';
@@ -364,19 +366,33 @@ test('venue switch: dropdown is a plain GET form; none hides it; a pinned block 
   assert.doesNotMatch(render(s, '/').body, /w-venue-/);
   const t = snap();
   menuBlock(t.pages[0]).props.location_id = 'loc-hudds';
-  const pinned = render(t, '/', { menuVenue: 'mozz-leeds' });
-  assert.doesNotMatch(pinned.body, /w-venue-/, 'pinned to Huddersfield: no switch');
+  const pinned = render(t, '/');
+  assert.match(pinned.body, /href="\/\?venue=mozz-huddersfield" aria-current="true"/, '5.12.9: a block that names a venue starts on it and still offers the switch');
+  const picked = render(t, '/', { menuVenue: 'mozz-leeds' });
+  assert.match(picked.body, /href="\/\?venue=mozz-leeds" aria-current="true"/, 'the visitor pick wins over the starting venue');
+  assert.doesNotMatch(render(t, '/locations/mozz-huddersfield', { menuVenue: 'mozz-leeds' }).body, /w-venue-/, 'a venue page: no switch');
   const one = snap();
   one.locations = one.locations.filter((l) => l.id === 'loc-leeds');
   assert.doesNotMatch(render(one, '/').body, /w-venue-/, 'one venue: nothing to switch');
 });
 
-test('live menu order buttons go to the venue whose menu is shown, never the chooser or another venue', () => {
+test('live menu order buttons: ask which venue until the visitor picked one, then straight to that venue; a venue page goes straight', () => {
   const s = snap();
   s.pages[0].layout.content.find((b) => b.type === 'LiveMenu').props.show = { prices: true, add_button: true };
-  assert.match(render(s, '/').body, /href="https:\/\/mozz-leeds\.serv-os\.app\/"/, 'default venue');
+  const none = render(s, '/').body;
+  const menuPart = none.slice(none.indexOf('data-block="LiveMenu"'));
+  assert.match(menuPart, /class="w-btn w-btn-secondary" href="\/order">Order<\/a>/, '5.12.9: no pick yet = the choose your venue page');
+  assert.doesNotMatch(menuPart, /href="https:\/\/mozz-leeds\.serv-os\.app\/">Order/, 'never straight to a venue the visitor did not choose');
   const picked = render(s, '/', { menuVenue: 'mozz-huddersfield' });
-  assert.match(picked.body, /data-block="LiveMenu"[\s\S]*href="https:\/\/mozz-huddersfield\.serv-os\.app\/"/, 'the picked venue');
+  assert.match(picked.body, /data-block="LiveMenu"[\s\S]*href="https:\/\/mozz-huddersfield\.serv-os\.app\/">Order/, 'picked: straight to that venue');
+  s.pages.find((p) => p.id === 'p-loc-leeds').layout.content.find((b) => b.type === 'LiveMenu').props.show = { prices: true, add_button: true };
+  const venuePage = render(s, '/locations/mozz-leeds', { menuVenue: 'mozz-huddersfield' }).body;
+  assert.match(venuePage, /data-block="LiveMenu"[\s\S]*href="https:\/\/mozz-leeds\.serv-os\.app\/">Order/, 'a venue page orders at that venue, whatever the pick says');
+  assert.doesNotMatch(venuePage, /w-venue-btn/, 'and shows no switch');
+  const one = snap();
+  one.locations = one.locations.filter((l) => l.id === 'loc-leeds');
+  one.pages[0].layout.content.find((b) => b.type === 'LiveMenu').props.show = { prices: true, add_button: true };
+  assert.match(render(one, '/').body, /data-block="LiveMenu"[\s\S]*href="https:\/\/mozz-leeds\.serv-os\.app\/">Order/, 'one venue: straight there');
 });
 
 test('header options: brand mark, header button and sticky follow settings.header; defaults keep the old header', () => {
@@ -395,4 +411,93 @@ test('header options: brand mark, header button and sticky follow settings.heade
   assert.match(both, /w-header-cta" href="\/order\/book">Book a table<\/a>/);
   s.site.settings.header = { brand: 'nonsense', cta: 'nope', sticky: 'maybe' };
   assert.equal(render(s, '/').body.includes('w-header-cta'), false, 'odd values fall back to the defaults, never a throw');
+});
+
+test('5.12.9 menu cards are buttons that open the item sheet: role, tabindex and haspopup on the server markup too', () => {
+  const s = snap();
+  const out = render(s, '/menu').body;
+  assert.match(out, /<article class="w-menu-item" data-item="i1" role="button" tabindex="0" aria-haspopup="dialog"><div><h4 class="w-menu-name">Margherita<\/h4>/, 'LiveMenu card, attribute order as React paints it');
+  const ctx = buildCtx({ snapshot: s, host: 'www.mozzpizza.com', path: '/menu', menu: MENU, now: NOW });
+  const shown = renderBlock(ctx, { type: 'LiveMenu', props: { ...defaultPropsFor('LiveMenu'), id: 'm-all', show: { prices: true, add_button: true, hide_sold_out: false } } });
+  assert.match(shown, /<article class="w-menu-item w-menu-item-soldout" data-item="i2" role="button" tabindex="0" aria-haspopup="dialog">/, 'a sold out card (when shown) is still tappable');
+  assert.match(shown, /data-item="i1"[^>]*aria-haspopup="dialog">[\s\S]*?<a class="w-btn w-btn-secondary" href="\/order">Order<\/a><\/div><\/article>/, 'the card keeps its own Order link (no venue picked on a group site: the chooser)');
+  const home = render(s, '/').body;
+  assert.match(home, /data-block="Specials"[\s\S]*<article class="w-menu-item" data-item="i1" role="button" tabindex="0" aria-haspopup="dialog">/, 'Specials card');
+  assert.doesNotMatch(out, /w-sheet/, 'the server renders no sheet: it opens on a tap');
+  assert.doesNotMatch(out, /role="dialog"/);
+});
+
+// ── Row block (5.12.9) ───────────────────────────────────────────────────────
+const rowCtx = (s = snap()) => buildCtx({ snapshot: s, host: 'www.mozzpizza.com', path: '/', menu: MENU, now: NOW });
+const rowBlock = (props) => ({ type: 'Row', props: { id: 'row1', ...props } });
+
+test('Row: two columns holding a Text and a LiveMenu paint the grid, the data attributes, the style variables and nested blocks', () => {
+  const html = renderBlock(rowCtx(), rowBlock({
+    columns: '2', full_width: true,
+    background: { color: '#1b1b1b', image: 'https://x/bg.jpg', darken: true, tone: 'auto' },
+    col_bg: { col2: '#ffffff' },
+    col1: [{ type: 'Text', props: { id: 't1', md: 'Hello **there**' } }],
+    col2: [{ type: 'LiveMenu', props: { id: 'm1', layout: 'list' } }],
+  }));
+  assert.match(html, /^<section class="w-block w-row" data-block="Row" data-id="row1" data-cols="2" data-full="true" data-tone="light"/);
+  assert.match(html, /data-darken="true"/);
+  assert.match(html, /style="--w-row-cols:2;--w-row-bg:#1b1b1b;--w-row-img:url\(&quot;https:\/\/x\/bg\.jpg&quot;\)"/);
+  assert.match(html, /<div class="w-inner w-row-grid">/);
+  assert.equal((html.match(/<div class="w-row-col"/g) || []).length, 2, 'only the columns that exist');
+  assert.match(html, /<div class="w-row-col" data-col="2" data-bg="true" style="--w-col-bg:#ffffff">/);
+  assert.match(html, /<section class="w-block w-text" data-block="Text" data-id="t1" data-nested="true">/, 'a nested block is marked nested');
+  assert.match(html, /<strong>there<\/strong>/);
+  assert.match(html, /data-block="LiveMenu" data-id="m1" data-nested="true"/);
+  assert.match(html, /Margherita/, 'the nested menu renders the live items');
+  assert.doesNotMatch(html, /<script/);
+});
+
+test('Row: tone follows the background; one column for columns 1; junk slots, junk colours and junk photo URLs are ignored; a Row in a Row paints nothing', () => {
+  const ctx = rowCtx();
+  const plain = renderBlock(ctx, rowBlock({ columns: '1', col1: [{ type: 'Text', props: { id: 't', md: 'x' } }] }));
+  assert.match(plain, /data-cols="1" data-full="false"/);
+  assert.doesNotMatch(plain, /data-tone/, 'no background = inherit the page tone');
+  assert.equal((plain.match(/<div class="w-row-col"/g) || []).length, 1);
+  assert.match(plain, /style="--w-row-cols:1"/);
+  const light = renderBlock(ctx, rowBlock({ background: { color: '#f6f2ec' } }));
+  assert.doesNotMatch(light, /data-tone/, 'a light colour inherits');
+  const forced = renderBlock(ctx, rowBlock({ background: { color: '#f6f2ec', tone: 'dark' } }));
+  assert.match(forced, /data-tone="dark"/);
+  const dark = renderBlock(ctx, rowBlock({ background: { color: '#102030' } }));
+  assert.match(dark, /data-tone="light"/, 'light text on a dark row colour');
+  const junk = renderBlock(ctx, rowBlock({ columns: 'nine', col1: 'junk', col2: [null, 7, { type: 'Nope', props: {} }, { type: 'Row', props: { id: 'inner', col1: [{ type: 'Text', props: { md: 'deep' } }] } }, { type: 'Text', props: { id: 't', md: 'ok' } }], background: { color: 'red', image: 'javascript:alert(1)' }, col_bg: { col1: 'url(x)' } }));
+  assert.match(junk, /data-cols="2"/, 'a junk column count falls back to the default');
+  assert.doesNotMatch(junk, /--w-row-bg|--w-row-img|--w-col-bg|javascript|url\(x\)/, 'junk colours and URLs never reach the style attribute');
+  assert.doesNotMatch(junk, /data-id="inner"|deep/, 'a Row inside a Row paints nothing');
+  assert.match(junk, /data-id="t" data-nested="true"/, 'the valid block still renders');
+  assert.equal(renderBlock(ctx, rowBlock({ columns: '3' })).match(/<div class="w-row-col"/g).length, 3, 'empty columns still paint');
+  for (const bad of [{}, { col1: 1 }, { background: 'x' }, { col_bg: [] }, null]) assert.doesNotThrow(() => renderBlock(ctx, { type: 'Row', props: bad }));
+});
+
+test('Row on a page: the nested LiveMenu drives the page menu read (menuBlockOf), the Menu JSON-LD and the meta description', () => {
+  const s = snap();
+  const page = s.pages.find((p) => p.id === 'p-story');
+  page.status = 'published'; // the fixture keeps this page as a draft
+  page.seo = {}; // no owner description, so the fallback has to find the Text inside the Row
+  page.layout = { root: { props: {} }, content: [rowBlock({
+    col1: [{ type: 'Text', props: { id: 't', md: 'Our pizza is made with love in Leeds.' } }],
+    col2: [{ type: 'LiveMenu', props: { id: 'm', location_id: 'loc-leeds', venue_switch: 'none' } }],
+  })] };
+  const found = menuBlockOf(page);
+  assert.equal(found && found.type, 'LiveMenu');
+  assert.equal(found.props.location_id, 'loc-leeds');
+  assert.deepEqual(walkBlocks(page.layout).map((b) => b.type), ['Row', 'Text', 'LiveMenu']);
+  const out = render(s, '/our-story');
+  assert.match(out.body, /data-block="Row"/);
+  assert.match(out.body, /data-block="LiveMenu" data-id="m" data-nested="true"/);
+  assert.equal(h1Count(out.body), 1);
+  assert.ok(out.jsonld.some((ld) => ld && ld['@type'] === 'Menu'), 'Menu JSON-LD for a nested LiveMenu');
+  // The site's own seo.description wins on the page; the fallback (a page with none, on a site with none) reads into the Row.
+  assert.match(fallbackDescription(page, 'Mozz Pizza'), /Our pizza is made with love in Leeds/, 'the first Text inside the Row gives the description');
+});
+
+test('isDarkHex: white text reads better on these; invalid input is never dark', () => {
+  for (const hex of ['#000000', '#102030', '#1b1b1b', '#c8493b', '#333', '7a1f1f']) assert.equal(isDarkHex(hex), true, hex);
+  for (const hex of ['#ffffff', '#f6f2ec', '#ffd166', '#fff', '#15C26A']) assert.equal(isDarkHex(hex), false, hex);
+  for (const junk of ['', null, undefined, 'red', '#12345', '#gggggg', 'url(x)', 12]) assert.equal(isDarkHex(junk), false, String(junk));
 });

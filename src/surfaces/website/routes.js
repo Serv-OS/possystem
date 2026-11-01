@@ -11,11 +11,12 @@
 // Also the visibility rules: the site's "Connected to your ServOS" switches (settings.channels)
 // hide blocks and nav items for channels the venue turned off.
 
-import { defaultPropsFor, layoutBlocks } from './blocks/schema.js';
+import { defaultPropsFor, walkBlocks } from './blocks/schema.js';
 
 /** True when the layout holds a Hero (the page then takes its h1 from it). */
 export function layoutHasHero(layout) {
-  return layoutBlocks(layout).some((b) => b.type === 'Hero');
+  // 5.12.9: a Hero inside a Row column counts too (walkBlocks sees nested blocks).
+  return walkBlocks(layout).some((b) => b.type === 'Hero');
 }
 
 export const BLOCK_CHANNEL = Object.freeze({

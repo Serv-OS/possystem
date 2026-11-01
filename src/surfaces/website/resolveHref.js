@@ -30,14 +30,31 @@ export function explicitLocation(locId) {
  * switch above the menu) when that names one of the site's venues, else the site default.
  */
 export function menuLocation(ctx, locationId) {
-  if (explicitLocation(locationId)) return pickLocation(ctx, locationId);
+  // 5.12.9 (Peter, 1 Nov): a block's venue is the STARTING venue ("show menu A first"); the visitor's
+  // pick still wins everywhere except on a venue's own page, which is that venue and nothing else.
+  if (onVenuePage(ctx)) return pickLocation(ctx, locationId);
   const want = ctx && ctx.menuVenue ? String(ctx.menuVenue) : '';
   if (want) {
     const list = Array.isArray(ctx.locations) ? ctx.locations : [];
     const hit = list.find((l) => l && (l.online_slug === want || l.id === want || l.ops_location_id === want));
     if (hit) return hit;
   }
-  return pickLocation(ctx, 'default');
+  // No pick: the block's own venue ('default' and 'all' resolve to the site default).
+  return pickLocation(ctx, locationId);
+}
+
+/** True on a venue's own page (kind 'location'): no venue switch, no pick, straight to that venue. */
+export function onVenuePage(ctx) { return !!(ctx && ctx.pageKind === 'location'); }
+
+/**
+ * 5.12.9: where a menu item's Order button goes. A visitor who has not said which venue yet is
+ * asked first (the choose your venue page on a group site); once they picked, or on a venue's
+ * own page, straight to that venue's ordering. A one venue site resolves straight anyway.
+ */
+export function menuOrderHref(ctx, loc) {
+  if (!loc) return '';
+  const chosen = onVenuePage(ctx) || !!(ctx && ctx.menuVenue);
+  return resolveHref(ctx, chosen ? `servos:order:${loc.id}` : 'servos:order');
 }
 
 /** The venues a visitor can switch a menu between: every venue with an online slug, by name. */

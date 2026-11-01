@@ -4,7 +4,8 @@
 // OnlineSurface.jsx does (menu_items, menu_categories, menu_category_links, menus, eighty_six,
 // stock_levels; anon RLS already allows every one of them) and returns one plain shape:
 //   { categories: [{ id, label, items: [{ id, name, description, price, currency, image,
-//                    dietary[], allergens[], sold_out }] }], specials: [...], menuId, error }
+//                    dietary[], allergens[], sold_out }] }], specials: [...], menuId, error,
+//     menus: [{ id, name }] }   (5.12.9: the venue's active menus, for the editor's menu picker)
 // Shared by React (browser client) and api/site.js (Node client, same anon RLS). Pure apart from
 // the client passed in, so node:test drives it with a fake.
 //
@@ -132,7 +133,7 @@ export function groupMenu(items, categories, { allowed, onlyCategoryIds, hideSol
  *            maxItems, currency, now }
  */
 export async function loadMenu(client, opsLocationId, options = {}) {
-  const empty = (error) => ({ categories: [], specials: [], menuId: null, currency: options.currency || 'GBP', error: error || null });
+  const empty = (error) => ({ categories: [], specials: [], menus: [], menuId: null, currency: options.currency || 'GBP', error: error || null });
   if (!client || !opsLocationId) return empty(new Error('no client or location'));
   const loc = String(opsLocationId);
   try {
@@ -188,7 +189,9 @@ export async function loadMenu(client, opsLocationId, options = {}) {
       allowed, onlyCategoryIds: Array.isArray(options.categories) ? options.categories : null,
       hideSoldOut: true, maxItems: Number(options.maxItems) || 0,
     });
-    return { categories: grouped, specials, menuId, currency, error: null };
+    // 5.12.9: the active menus by name, so the page editor's Menu picker lists them.
+    const menuList = menus.filter((m) => m && m.id).map((m) => ({ id: String(m.id), name: str(m.name).trim() || `Menu ${m.id}` }));
+    return { categories: grouped, specials, menus: menuList, menuId, currency, error: null };
   } catch (e) {
     return empty(e instanceof Error ? e : new Error(String(e)));
   }

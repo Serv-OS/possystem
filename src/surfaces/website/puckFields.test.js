@@ -1,10 +1,10 @@
 // Schema prop → Puck 0.20 field mapping (the editor's fields come from the one schema).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { puckField, puckFields } from './blocks/puckFields.js';
+import { puckField, puckFields, rendererFor } from './blocks/puckFields.js';
 import { BLOCK_SCHEMAS, BLOCK_TYPES } from './blocks/schema.js';
 
-const PUCK_TYPES = new Set(['text', 'textarea', 'number', 'select', 'radio', 'array', 'object']);
+const PUCK_TYPES = new Set(['text', 'textarea', 'number', 'select', 'radio', 'array', 'object', 'custom', 'slot']);
 
 test('every prop of every block maps to a Puck field type Puck 0.20 knows', () => {
   for (const type of BLOCK_TYPES) {
@@ -50,4 +50,68 @@ test('location field: a select of default, all and every venue by name; a text b
   assert.equal(live.location_id.type, 'select');
   assert.equal(live.venue_switch.type, 'select');
   assert.deepEqual(live.venue_switch.options.map((o) => o.value), ['buttons', 'dropdown', 'none']);
+});
+
+// 5.12.9: the editor's pickers. With opts.renderers a typed field is a Puck custom field whose render
+// calls the renderer with Puck's props plus the schema field and the opts; without them the plain
+// fields stay (node tests and the SSR side never see React).
+test('renderers: image, color, menu, categories, href and markdown text become custom fields; plain fallbacks without them', () => {
+  const calls = [];
+  const mk = (name) => (p) => { calls.push({ name, p }); return `<${name}/>`; };
+  const renderers = { image: mk('image'), color: mk('color'), menu: mk('menu'), categories: mk('categories'), href: mk('href'), markdown: mk('markdown') };
+  const opts = { renderers, pages: [{ id: 'p1', slug: '', title: 'Home' }], menus: [{ id: 'm', name: 'M' }], categories: [{ id: 'c', label: 'C' }], uploadAsset: () => {} };
+  const hero = puckFields(BLOCK_SCHEMAS.Hero.props, opts);
+  assert.equal(hero.photo_url.type, 'custom');
+  assert.equal(hero.photo_url.label, 'Photo');
+  assert.equal(typeof hero.photo_url.render, 'function');
+  assert.equal(hero.headline.type, 'text', 'a plain string stays a text box');
+  assert.equal(hero.primary.type, 'object');
+  assert.equal(hero.primary.objectFields.href.type, 'custom', 'an href inside an object gets the link picker');
+  assert.equal(hero.primary.objectFields.label.type, 'text');
+  const live = puckFields(BLOCK_SCHEMAS.LiveMenu.props, opts);
+  assert.equal(live.menu_id.type, 'custom');
+  assert.equal(live.categories.type, 'custom');
+  assert.equal(live.title.type, 'text');
+  const gallery = puckFields(BLOCK_SCHEMAS.Gallery.props, opts);
+  assert.equal(gallery.photos.type, 'array');
+  assert.equal(gallery.photos.arrayFields.url.type, 'custom', 'a photo inside an array gets the upload picker');
+  assert.equal(gallery.photos.arrayFields.alt.type, 'text');
+  const text = puckFields(BLOCK_SCHEMAS.Text.props, opts);
+  assert.equal(text.md.type, 'custom', 'markdown text gets the toolbar');
+  const cols = puckFields(BLOCK_SCHEMAS.Columns.props, opts);
+  assert.equal(cols.items.arrayFields.md.type, 'custom');
+  const faq = puckFields(BLOCK_SCHEMAS.FAQ.props, opts);
+  assert.equal(faq.items.arrayFields.a.type, 'custom');
+  assert.equal(faq.items.arrayFields.q.type, 'text');
+  assert.equal(puckField({ type: 'text', default: '' }, opts).type, 'textarea', 'text without markdown stays a textarea');
+  assert.equal(puckField({ type: 'color', default: '' }, opts).type, 'custom');
+  assert.equal(puckField({ type: 'button', default: '' }, opts).type, 'text', 'an unknown type is a text box');
+
+  // The render passes Puck's props through, plus the schema field and the opts.
+  const out = hero.photo_url.render({ name: 'photo_url', id: 'x', value: 'https://a/b.jpg', onChange: () => {}, readOnly: false });
+  assert.equal(out, '<image/>');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].p.value, 'https://a/b.jpg');
+  assert.equal(calls[0].p.field.type, 'image');
+  assert.equal(calls[0].p.field.hint, 'Empty = the branding hero photo');
+  assert.equal(calls[0].p.opts, opts);
+  assert.equal(calls[0].p.name, 'photo_url');
+
+  // Without renderers: today's plain fields, and categories is a plain array field of ids.
+  const plain = puckFields(BLOCK_SCHEMAS.LiveMenu.props);
+  assert.equal(plain.menu_id.type, 'text');
+  assert.equal(plain.categories.type, 'array');
+  assert.deepEqual(Object.keys(plain.categories.arrayFields), ['id']);
+  assert.deepEqual(plain.categories.defaultItemProps, { id: '' });
+  assert.equal(puckFields(BLOCK_SCHEMAS.Hero.props).photo_url.type, 'text');
+  assert.equal(puckFields(BLOCK_SCHEMAS.Text.props).md.type, 'textarea');
+  assert.equal(puckField({ type: 'color', default: '' }, { renderers: {} }).type, 'text', 'a renderer that is not a function is ignored');
+  assert.equal(puckField({ type: 'slot', default: [] }).type, 'slot');
+
+  // rendererFor is the one rule.
+  assert.equal(rendererFor({ type: 'image' }), 'image');
+  assert.equal(rendererFor({ type: 'text', markdown: true }), 'markdown');
+  assert.equal(rendererFor({ type: 'text' }), null);
+  assert.equal(rendererFor({ type: 'string' }), null);
+  assert.equal(rendererFor(null), null);
 });

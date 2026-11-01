@@ -1,7 +1,13 @@
 // src/surfaces/website/blocks/puckFields.js
 //
-// Schema prop → Puck 0.20 field (text, textarea, number, select, radio, array, object). Plain JS so
-// node:test can check the mapping; puckConfig.jsx wires these fields to the React components.
+// Schema prop → Puck 0.20 field (text, textarea, number, select, radio, array, object, custom,
+// slot). Plain JS so node:test can check the mapping; puckConfig.jsx wires these fields to the
+// React components.
+//
+// 5.12.9: opts.renderers = { image, color, menu, categories, href, markdown } turns a typed field
+// into a Puck custom field ({ type: 'custom', render }) so the editor shows a picker (photo upload,
+// colour swatch, menu and category dropdowns, link chooser, markdown toolbar) instead of a text box
+// for an id or a URL. Without renderers (node tests, the SSR side) the plain fields stay.
 
 const YES_NO = [{ label: 'Yes', value: true }, { label: 'No', value: false }];
 
@@ -17,11 +23,34 @@ export function locationOptions(locations) {
   return [{ label: 'Default venue (site setting)', value: 'default' }, { label: 'All venues', value: 'all' }, ...venues];
 }
 
-/** One schema prop → one Puck field. opts: { locations } for the venue dropdown. */
+/** Which renderer (opts.renderers key) a schema field uses; null = a plain Puck field. */
+export function rendererFor(f) {
+  if (!f || typeof f !== 'object') return null;
+  switch (f.type) {
+    case 'image': case 'color': case 'menu': case 'categories': case 'href': return f.type;
+    case 'text': return f.markdown === true ? 'markdown' : null;
+    default: return null;
+  }
+}
+
+/**
+ * One schema prop → one Puck field. opts: { locations } for the venue dropdown, { renderers } for
+ * the editor's pickers (see the file comment); the rest of opts (pages, menus, categories,
+ * uploadAsset) rides along to the renderer as `opts`.
+ */
 export function puckField(f, opts = {}) {
   const base = { label: f.label || undefined };
+  const key = rendererFor(f);
+  const renderer = key && opts.renderers && typeof opts.renderers[key] === 'function' ? opts.renderers[key] : null;
+  if (renderer) return { ...base, type: 'custom', render: (p) => renderer({ ...p, field: f, opts }) };
   switch (f.type) {
     case 'string': case 'href': return { ...base, type: 'text', placeholder: f.hint || undefined };
+    // Plain fallbacks when no renderer is given (image upload, colour, menu and category pickers
+    // are custom fields in the editor). Slots are Puck's own drop zones.
+    case 'image': case 'color': case 'menu': return { ...base, type: 'text', placeholder: f.hint || undefined };
+    case 'categories': return { ...base, type: 'array', arrayFields: puckFields(f.item, opts), defaultItemProps: { id: '' }, getItemSummary: (item, i) => summaryOf(item, i) };
+    // A Row never sits inside a Row (the server refuses it too); the editor just does not offer it.
+    case 'slot': return { type: 'slot', disallow: ['Row'] };
     case 'location':
       return Array.isArray(opts.locations) && opts.locations.length
         ? { ...base, type: 'select', options: locationOptions(opts.locations) }

@@ -103,7 +103,7 @@ export default async function handler(req, res) {
 
     const pagePath = preview ? (new URL(req.url || '/', 'https://x.invalid').searchParams.get('page') || '/') : path;
     const route = resolveRoute(snapshot, pagePath);
-    const ctx = buildCtx({ snapshot, host, path: pagePath, customerRoot: root, menuVenue: venue });
+    const ctx = buildCtx({ snapshot, host, path: pagePath, customerRoot: root, menuVenue: venue, pageKind: route.page ? route.page.kind : null });
     const menu = route.page ? await menuForPage(ops, route.page, ctx) : null;
     const rendered = renderPage({ snapshot, route, path: pagePath, host, menu, customerRoot: root, status, preview, menuVenue: venue });
 

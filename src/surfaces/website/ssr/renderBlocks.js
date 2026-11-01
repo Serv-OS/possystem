@@ -10,12 +10,13 @@
 
 import { esc, renderMarkdown, markdownToText } from '../markdown.js';
 import { CN } from '../blocks/classNames.js';
-import { layoutBlocks, normaliseProps } from '../blocks/schema.js';
+import { layoutBlocks, normaliseProps, walkBlocks } from '../blocks/schema.js';
+import { rowPlan, styleText } from '../blocks/rowPlan.js';
 import { siteVars, cssText, fontLinks, themeColor } from '../theme.js';
 import { SITE_CSS } from '../siteStyles.js';
 import { hoursRows, openStatus } from '../hours.js';
 import { addressText, directionsUrl } from '../geo.js';
-import { resolveHref, pickLocation, venueUrl, explicitLocation, multiVenue, menuLocation, menuVenues } from '../resolveHref.js';
+import { resolveHref, pickLocation, venueUrl, explicitLocation, multiVenue, menuLocation, menuVenues, menuOrderHref, onVenuePage } from '../resolveHref.js';
 import { formatPrice } from '../data/loadMenu.js';
 import { blockVisible, visibleNav, breadcrumbsFor, siteLocations, publishedPosts, publishedPages, pathForPage, sitemapPaths, channelOn, locationChannelOn, PAGE_KIND_CHANNEL, headerOptions, HEADER_CTA_LABELS } from '../routes.js';
 import { restaurantLd, menuLd, organizationLd, webSiteLd, breadcrumbLd, blogPostingLd, faqLd, siteName } from './jsonld.js';
@@ -25,8 +26,11 @@ const DIET_WORDS = { V: 'Vegetarian', VG: 'Vegan', GF: 'Gluten free', DF: 'Dairy
 
 const attr = (v) => esc(v);
 const cls = (...xs) => xs.filter(Boolean).join(' ');
-const section = (block, cn, inner, extraAttrs = '') =>
-  `<section class="${cls(CN.block, cn)}" data-block="${attr(block.type)}" data-id="${attr(block.props && block.props.id)}"${extraAttrs}><div class="${CN.inner}">${inner}</div></section>`;
+// 5.12.9: `nested` (default: the block's own flag, set by renderBlock for blocks inside a Row column)
+// paints data-nested="true", the same attribute the React Section wrappers add, so a nested block
+// fills its column instead of wrapping itself in another page width container (siteStyles.js).
+const section = (block, cn, inner, extraAttrs = '', nested = !!(block && block.nested)) =>
+  `<section class="${cls(CN.block, cn)}" data-block="${attr(block.type)}" data-id="${attr(block.props && block.props.id)}"${nested ? ' data-nested="true"' : ''}${extraAttrs}><div class="${CN.inner}">${inner}</div></section>`;
 const heading = (text) => (text ? `<h2 class="${CN.h2}">${esc(text)}</h2>` : '');
 const button = (ctx, link, style = 'primary') => {
   const href = resolveHref(ctx, link && link.href);
@@ -47,7 +51,9 @@ function blockLocation(ctx, props) { return pickLocation(ctx, props && props.loc
  * form, so it works before the script runs). The React LiveMenu paints the same markup.
  */
 export function venueSwitchHtml(ctx, p, current) {
-  if (!p || p.venue_switch === 'none' || explicitLocation(p.location_id) || !multiVenue(ctx)) return '';
+  // 5.12.9: the block's venue is only the starting venue, so a pinned block still gets the switch;
+  // a venue's own page never does.
+  if (!p || p.venue_switch === 'none' || onVenuePage(ctx) || !multiVenue(ctx)) return '';
   const venues = menuVenues(ctx);
   if (venues.length < 2) return '';
   const path = ctx.path || '/';
@@ -130,8 +136,8 @@ const R = {
     const only = Array.isArray(p.categories) ? p.categories.map((c) => c && c.id).filter(Boolean) : [];
     if (only.length) cats = cats.filter((c) => only.includes(c.id));
     let left = Number(p.max_items) > 0 ? Number(p.max_items) : Infinity;
-    // The order button goes to THE VENUE WHOSE MENU THIS IS, never to another venue (Peter, 1 Nov).
-    const orderHref = show.add_button && loc ? resolveHref(ctx, `servos:order:${loc.id}`) : '';
+    // 5.12.9: ask which venue first unless the visitor picked one (or this is the venue's own page).
+    const orderHref = show.add_button ? menuOrderHref(ctx, loc) : '';
     const sections = cats.map((c) => {
       const items = (c.items || []).filter((it) => !(show.hide_sold_out && it.sold_out)).slice(0, Math.max(0, left));
       left -= items.length;
@@ -256,6 +262,25 @@ const R = {
     if (!items.length) return '';
     return section(b, cls(CN.columns, String(p.cols) === '3' ? CN.cols3 : CN.cols2), items.map((h) => `<div class="${CN.prose}">${h}</div>`).join(''));
   },
+  Row(ctx, b) {
+    // 5.12.9: columns the owner drops blocks into, with row and column backgrounds (rowPlan.js is the
+    // one source of the attributes and style variables, shared with the React Row). One level deep:
+    // a Row inside a Row paints nothing. A junk column (not a list) paints an empty column.
+    if (b.nested) return '';
+    const p = b.props;
+    const plan = rowPlan(p);
+    const cols = [];
+    for (let i = 1; i <= plan.cols; i++) {
+      const items = Array.isArray(p[`col${i}`]) ? p[`col${i}`] : [];
+      const bg = plan.colBg[i - 1];
+      const inner = items.map((c) => renderBlock(ctx, c, { nested: true })).join('');
+      cols.push(`<div class="${CN.rowCol}" data-col="${i}" data-bg="${bg ? 'true' : 'false'}"${bg ? ` style="--w-col-bg:${attr(bg)}"` : ''}>${inner}</div>`);
+    }
+    // attr() turns the quotes in url("...") into &quot;, which the browser decodes back in the style.
+    return `<section class="${cls(CN.block, CN.row)}" data-block="Row" data-id="${attr(p.id)}" data-cols="${plan.cols}" data-full="${plan.full ? 'true' : 'false'}"` +
+      `${plan.tone ? ` data-tone="${plan.tone}"` : ''} data-gap="${plan.gap}" data-pad="${plan.pad}" data-align="${plan.align}" data-bg="${plan.hasBg ? 'true' : 'false'}" data-darken="${plan.darken ? 'true' : 'false'}"` +
+      ` style="${attr(styleText(plan.style))}"><div class="${cls(CN.inner, CN.rowGrid)}">${cols.join('')}</div></section>`;
+  },
   Gallery(ctx, b) {
     const p = b.props;
     const photos = (p.photos || []).filter((ph) => ph && /^https?:\/\//i.test(String(ph.url || '')));
@@ -298,17 +323,21 @@ function menuItemHtml(it, show, orderHref) {
   const desc = show.descriptions !== false && it.description ? `<p class="${CN.menuDesc}">${esc(it.description)}</p>` : '';
   const sold = it.sold_out ? `<span class="${CN.soldOut}">Sold out today</span>` : '';
   const add = orderHref && !it.sold_out ? `<a class="${cls(CN.btn, CN.btnSecondary)}" href="${attr(orderHref)}">Order</a>` : '';
-  return `<article class="${cls(CN.menuItem, it.sold_out && CN.menuItemSoldOut)}" data-item="${attr(it.id)}">${photo}<div><h4 class="${CN.menuName}">${esc(it.name)}</h4>${desc}${badges}${allergens}${sold}</div><div>${price}${add}</div></article>`;
+  // 5.12.9: the card is a button that opens the item sheet once React mounts (same attributes there).
+  return `<article class="${cls(CN.menuItem, it.sold_out && CN.menuItemSoldOut)}" data-item="${attr(it.id)}" role="button" tabindex="0" aria-haspopup="dialog">${photo}<div><h4 class="${CN.menuName}">${esc(it.name)}</h4>${desc}${badges}${allergens}${sold}</div><div>${price}${add}</div></article>`;
 }
 
 function dateText(iso) {
   try { return new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }); } catch { return ''; }
 }
 
-/** One block → HTML. Unknown or hidden blocks give ''. A renderer that throws gives '' (never a crash). */
-export function renderBlock(ctx, block) {
-  if (!block || !R[block.type]) return '';
-  const b = { type: block.type, props: normaliseProps(block.type, block.props) };
+/**
+ * One block → HTML. Unknown or hidden blocks give ''. A renderer that throws gives '' (never a crash).
+ * 5.12.9: `nested` marks a block inside a Row column (section() paints data-nested, a Row paints nothing).
+ */
+export function renderBlock(ctx, block, { nested = false } = {}) {
+  if (!block || typeof block !== 'object' || !R[block.type]) return '';
+  const b = { type: block.type, props: normaliseProps(block.type, block.props), nested: nested === true };
   if (!blockVisible(b, ctx.settings)) return '';
   try { return R[block.type](ctx, b) || ''; } catch { return ''; }
 }
@@ -361,7 +390,7 @@ function breadcrumbHtml(crumbs) {
 }
 
 /** Build the render context every renderer reads. */
-export function buildCtx({ snapshot, host, path, menu, reviews, customerRoot, now, menuVenue }) {
+export function buildCtx({ snapshot, host, path, menu, reviews, customerRoot, now, menuVenue, pageKind }) {
   const site = (snapshot && snapshot.site) || {};
   const locations = siteLocations(snapshot);
   return {
@@ -369,6 +398,8 @@ export function buildCtx({ snapshot, host, path, menu, reviews, customerRoot, no
     site, settings: site.settings || {}, pages: publishedPages(snapshot), locations,
     // 5.12.8: the venue the visitor picked for menus (?venue=<slug>), honoured by unpinned menu blocks.
     menuVenue: menuVenue ? String(menuVenue).toLowerCase() : null,
+    // 5.12.9: the kind of page being painted ('location' = a venue's own page: no switch, no pick).
+    pageKind: pageKind || null,
     host: String(host || ''), path: path || '/', menu: menu || null, reviews: reviews || [],
     customerRoot: customerRoot || 'serv-os.app', now: now instanceof Date ? now : new Date(), h1Used: false, faqItems: [],
   };
@@ -382,7 +413,7 @@ function metaTag(name, content) { return content ? `<meta name="${attr(name)}" c
  * Every page carries one, so Google never writes its own snippet and shared links always show text.
  */
 export function fallbackDescription(page, name) {
-  const blocks = layoutBlocks(page && page.layout);
+  const blocks = walkBlocks(page && page.layout);
   const hero = blocks.find((b) => b.type === 'Hero' && b.props && typeof b.props.sub === 'string' && b.props.sub.trim());
   if (hero) return hero.props.sub.trim().slice(0, 155);
   const text = blocks.find((b) => b.type === 'Text' && b.props && typeof b.props.md === 'string' && b.props.md.trim());
@@ -401,8 +432,8 @@ function ogTag(prop, content) { return content ? `<meta property="${attr(prop)}"
 export function renderPage(args) {
   const { snapshot, path = '/', host = '', route, menu, reviews, customerRoot, now, status, menuVenue } = args || {};
   const preview = !!(args && (args.preview === true || status === 'draft' || (snapshot && snapshot.preview === true)));
-  const ctx = buildCtx({ snapshot, host, path, menu, reviews, customerRoot, now, menuVenue });
   const page = (route && route.page) || args.page || null;
+  const ctx = buildCtx({ snapshot, host, path, menu, reviews, customerRoot, now, menuVenue, pageKind: page ? page.kind : null });
   const post = route && route.kind === 'post' ? route.post : null;
   const kind = route ? route.kind : (page ? 'page' : 'notfound');
   const crumbs = breadcrumbsFor(route || { kind: page ? 'page' : 'notfound', page, path }, snapshot);
@@ -445,7 +476,7 @@ export function renderPage(args) {
     const locs = kind === 'location' && route.location ? [route.location] : ctx.locations;
     for (const l of locs) jsonld.push(restaurantLd(l, { snapshot, host, customerRoot: ctx.customerRoot }));
   }
-  if (page && menu && layoutBlocks(page.layout).some((b) => b.type === 'LiveMenu')) jsonld.push(menuLd(menu, { host, name: `${name} menu` }));
+  if (page && menu && walkBlocks(page.layout).some((b) => b.type === 'LiveMenu')) jsonld.push(menuLd(menu, { host, name: `${name} menu` }));
   if (crumbs.length > 1) jsonld.push(breadcrumbLd(crumbs, host));
   if (ctx.faqItems.length) jsonld.push(faqLd(ctx.faqItems));
   const ld = jsonld.filter(Boolean);
