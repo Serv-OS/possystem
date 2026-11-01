@@ -298,7 +298,8 @@ function menuItemHtml(it, show, orderHref) {
   const desc = show.descriptions !== false && it.description ? `<p class="${CN.menuDesc}">${esc(it.description)}</p>` : '';
   const sold = it.sold_out ? `<span class="${CN.soldOut}">Sold out today</span>` : '';
   const add = orderHref && !it.sold_out ? `<a class="${cls(CN.btn, CN.btnSecondary)}" href="${attr(orderHref)}">Order</a>` : '';
-  return `<article class="${cls(CN.menuItem, it.sold_out && CN.menuItemSoldOut)}" data-item="${attr(it.id)}">${photo}<div><h4 class="${CN.menuName}">${esc(it.name)}</h4>${desc}${badges}${allergens}${sold}</div><div>${price}${add}</div></article>`;
+  // 5.12.9: the card is a button that opens the item sheet once React mounts (same attributes there).
+  return `<article class="${cls(CN.menuItem, it.sold_out && CN.menuItemSoldOut)}" data-item="${attr(it.id)}" role="button" tabindex="0" aria-haspopup="dialog">${photo}<div><h4 class="${CN.menuName}">${esc(it.name)}</h4>${desc}${badges}${allergens}${sold}</div><div>${price}${add}</div></article>`;
 }
 
 function dateText(iso) {
