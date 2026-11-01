@@ -22,6 +22,10 @@ import { resolveHref, pickLocation, venueUrl, explicitLocation, multiVenue, menu
 import { formatPrice } from '../data/loadMenu.js';
 import { blockVisible, visibleNav, breadcrumbsFor, siteLocations, publishedPosts, publishedPages, pathForPage, sitemapPaths, channelOn, locationChannelOn, PAGE_KIND_CHANNEL, headerOptions, HEADER_CTA_LABELS, findUsPath } from '../routes.js';
 import { restaurantLd, menuLd, organizationLd, webSiteLd, breadcrumbLd, blogPostingLd, faqLd, siteName } from './jsonld.js';
+
+// 5.12.21: the loyalty and gift cards carry a picture when the owner set one. attr() turns the quotes
+// in url("...") into &quot;, which the browser decodes back in the style. The shade keeps the words readable.
+const cardStyle = (url) => (url ? ` data-img="1" style="background-image:linear-gradient(rgba(0,0,0,.18),rgba(0,0,0,.5)),url(${attr(JSON.stringify(url))})"` : '');
 import { canonicalHost } from '../hostParse.js';
 
 const DIET_WORDS = { V: 'Vegetarian', VG: 'Vegan', GF: 'Gluten free', DF: 'Dairy free' };
@@ -211,7 +215,7 @@ const R = {
     const href = loc ? venueUrl(loc.online_slug, '/account', ctx.customerRoot) : '';
     // 5.12.12: loyalty is company wide, so the card carries the brand, never one venue's name.
     const name = siteName(ctx.snapshot) || (loc && loc.name) || '';
-    const card = p.show_card_preview ? `<div class="${CN.loyaltyCard}"><span>${esc(name)}</span><span>Loyalty card</span></div>` : '';
+    const card = p.show_card_preview ? `<div class="${CN.loyaltyCard}"${cardStyle(p.image)}><span>${esc(name)}</span><span>Loyalty card</span></div>` : '';
     return section(b, CN.loyalty, `<div>${heading(p.headline)}${p.sub ? `<p class="${CN.muted}">${esc(p.sub)}</p>` : ''}${href ? `<a class="${cls(CN.btn, CN.btnPrimary)}" href="${attr(href)}">Join free</a>` : ''}</div>${card}`);
   },
   GiftCards(ctx, b) {
@@ -219,8 +223,10 @@ const R = {
     const loc = blockLocation(ctx, p);
     const buy = loc ? venueUrl(loc.online_slug, '/gift', ctx.customerRoot) : '';
     const bal = loc ? venueUrl(loc.online_slug, '/gift/balance', ctx.customerRoot) : '';
-    const name = (loc && ((loc.online_branding && loc.online_branding.display_name) || loc.name)) || siteName(ctx.snapshot);
-    const art = p.show_art ? `<div class="${CN.giftArt}"><span>${esc(name)}</span><span>Gift card</span></div>` : '';
+    // 5.12.21 (Peter: "not sure why it says Barnsley"): gift cards spend at every venue, so the card
+    // carries the brand like the loyalty card, never the default venue's name.
+    const name = siteName(ctx.snapshot) || (loc && ((loc.online_branding && loc.online_branding.display_name) || loc.name)) || '';
+    const art = p.show_art ? `<div class="${CN.giftArt}"${cardStyle(p.image)}><span>${esc(name)}</span><span>Gift card</span></div>` : '';
     const btns = buy ? `<div><a class="${cls(CN.btn, CN.btnPrimary)}" href="${attr(buy)}">Buy a gift card</a> <a class="${cls(CN.btn, CN.btnSecondary)}" href="${attr(bal)}">Check a balance</a></div>` : '';
     return section(b, CN.gift, `<div>${heading(p.headline)}${p.sub ? `<p class="${CN.muted}">${esc(p.sub)}</p>` : ''}${btns}</div>${art}`);
   },

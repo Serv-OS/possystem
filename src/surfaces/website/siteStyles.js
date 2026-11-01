@@ -220,6 +220,7 @@ html.${C.sheetOpen},html.${C.sheetOpen} body{overflow:hidden !important}
 .${C.loyalty} .${C.inner},.${C.gift} .${C.inner}{display:grid;gap:22px;align-items:center}
 @media (min-width:760px){.${C.loyalty} .${C.inner},.${C.gift} .${C.inner}{grid-template-columns:1.2fr 1fr}}
 .${C.loyaltyCard},.${C.giftArt}{aspect-ratio:1.6;border-radius:20px;background:linear-gradient(135deg,var(--w-brand),var(--w-brand-deep));color:var(--w-on-brand);padding:22px;display:flex;flex-direction:column;justify-content:space-between;font-family:var(--w-font-display);font-weight:600;max-width:420px}
+.${C.loyaltyCard}[data-img],.${C.giftArt}[data-img]{background-size:cover;background-position:center;color:#fff;text-shadow:0 1px 8px rgba(0,0,0,.45)}
 /* hours */
 .${C.hoursTable}{width:100%;border-collapse:collapse;max-width:520px}
 .${C.hoursTable} td{padding:9px 0;border-bottom:1px solid var(--w-line)}
