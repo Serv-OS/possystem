@@ -63,6 +63,15 @@ export const BLOCK_SCHEMAS = {
       primary: linkObj('Order now', 'servos:order'),
       secondary: linkObj('See the menu', '/menu'),
       height: e(['tall', 'short'], 'tall', { label: 'Height' }),
+      // 5.12.10: more slides make the hero a slideshow. The fields above are slide 1.
+      slides: arr({
+        photo_url: img('', { label: 'Photo' }),
+        headline: s('', { label: 'Headline' }),
+        sub: t('', { label: 'Line under it' }),
+        button_label: s('', { label: 'Button label' }),
+        button_href: h('', { label: 'Button link' }),
+      }, [], { label: 'More slides', hint: 'Add slides to make the hero a slideshow. The fields above are slide 1', max: 9 }),
+      slide_seconds: e(['0', '4', '6', '8', '10'], '6', { label: 'Seconds per slide', hint: '0 = no auto play' }),
     },
   },
   OrderBar: {
@@ -203,6 +212,7 @@ export const BLOCK_SCHEMAS = {
       gap: e(['none', 'small', 'normal', 'large'], 'normal', { label: 'Space between columns' }),
       padding: e(['none', 'small', 'normal', 'large'], 'normal', { label: 'Space above and below' }),
       align: e(['top', 'center'], 'top', { label: 'Line columns up at the' }),
+      width: e(['page', 'wide', 'full'], 'page', { label: 'Content width', hint: 'Page = the normal column, Wide = a wider column, Full = edge to edge' }),
       full_width: b(false, { label: 'Background edge to edge', hint: 'The content keeps the page width' }),
       background: obj({
         color: color('', { label: 'Background colour' }),
@@ -228,6 +238,30 @@ export const BLOCK_SCHEMAS = {
       title: s('', { label: 'Heading' }),
       photos: arr({ url: img('', { label: 'Photo' }), alt: s('', { label: 'Alt text' }) }, [], { label: 'Photos' }),
       cols: n(3, { label: 'Columns', min: 1, max: 4 }),
+    },
+  },
+  // 5.12.10 (Peter, 1 Nov: "still no image element", "a different image in each column"): the
+  // small building blocks a drag and drop layout needs. Drop them into a Row column or on the page.
+  Image: {
+    label: 'Image', group: 'content',
+    props: {
+      url: img('', { label: 'Photo' }),
+      alt: s('', { label: 'Describe the photo', hint: 'Read out by screen readers and shown if the photo fails' }),
+      caption: s('', { label: 'Caption' }),
+      fit: e(['cover', 'contain'], 'cover', { label: 'Fit', hint: 'Cover fills the box, contain shows the whole photo' }),
+      height: e(['natural', 'short', 'medium', 'tall'], 'natural', { label: 'Height' }),
+      width: e(['page', 'wide', 'full'], 'page', { label: 'Width', hint: 'On the page: Page = the normal column, Wide = a wider column, Full = edge to edge. In a Row column the photo fills the column' }),
+      rounded: b(true, { label: 'Rounded corners' }),
+      href: h('', { label: 'Link (optional)' }),
+    },
+  },
+  Heading: {
+    label: 'Heading', group: 'content',
+    props: {
+      text: s('Heading', { label: 'Text' }),
+      level: e(['2', '3'], '2', { label: 'Size', hint: '2 = section heading, 3 = smaller' }),
+      align: e(['left', 'center'], 'left', { label: 'Align' }),
+      sub: s('', { label: 'Line under it' }),
     },
   },
   Button: {

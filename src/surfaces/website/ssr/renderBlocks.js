@@ -12,6 +12,7 @@ import { esc, renderMarkdown, markdownToText } from '../markdown.js';
 import { CN } from '../blocks/classNames.js';
 import { layoutBlocks, normaliseProps, walkBlocks } from '../blocks/schema.js';
 import { rowPlan, styleText } from '../blocks/rowPlan.js';
+import { heroSlides, slideSeconds } from '../blocks/heroSlides.js';
 import { siteVars, cssText, fontLinks, themeColor } from '../theme.js';
 import { SITE_CSS } from '../siteStyles.js';
 import { hoursRows, openStatus } from '../hours.js';
@@ -102,11 +103,20 @@ const R = {
     ctx.h1Used = true;
     const st = p.show_status && loc ? openStatus(loc.opening_hours, loc.timezone, ctx.now) : { text: '' };
     const status = st.text ? `<div class="${cls(CN.heroStatus, st.open ? CN.open : CN.closed)}">${esc(st.text)}</div>` : '';
+    const slides = heroSlides(p, { fallbackPhoto: branding.hero_url || '', fallbackHeadline: headline });
+    const sizeCls = p.height === 'short' ? CN.heroShort : CN.heroTall;
     // attr() turns the quotes into &quot;, which the browser decodes back to url("...") in the style.
-    const style = photo ? ` style="background-image:url(${attr(JSON.stringify(photo))})"` : '';
-    return `<section class="${cls(CN.block, CN.hero, p.height === 'short' ? CN.heroShort : CN.heroTall)}" data-block="Hero" data-id="${attr(p.id)}" data-photo="${photo ? 'true' : 'false'}"${style}>` +
-      `<div class="${CN.heroBody}">${status}<${tag}>${esc(headline)}</${tag}>${p.sub ? `<p>${esc(p.sub)}</p>` : ''}` +
-      `<div>${button(ctx, p.primary, 'primary')}${button(ctx, p.secondary, 'secondary')}</div></div></section>`;
+    const bgStyle = (url) => (url ? ` style="background-image:url(${attr(JSON.stringify(url))})"` : '');
+    const body = (sl, hTag, withStatus) => `<div class="${CN.heroBody}">${withStatus ? status : ''}<${hTag}>${esc(sl.headline)}</${hTag}>${sl.sub ? `<p>${esc(sl.sub)}</p>` : ''}` +
+      `<div>${button(ctx, sl.primary, 'primary')}${button(ctx, sl.secondary, 'secondary')}</div></div>`;
+    if (slides.length < 2) {
+      return `<section class="${cls(CN.block, CN.hero, sizeCls)}" data-block="Hero" data-id="${attr(p.id)}" data-photo="${photo ? 'true' : 'false'}"${bgStyle(photo)}>` +
+        body(slides[0], tag, true) + '</section>';
+    }
+    // 5.12.10 slideshow: every slide is in the markup (slide 1 visible), the React Hero advances them.
+    const layers = slides.map((sl, i) => `<div class="${CN.heroSlide}" data-slide="${i}" data-active="${i === 0 ? 'true' : 'false'}" data-photo="${sl.photo ? 'true' : 'false'}"${bgStyle(sl.photo)}${i === 0 ? '' : ' aria-hidden="true"'}>${body(sl, i === 0 ? tag : 'h2', i === 0)}</div>`).join('');
+    const dots = `<div class="${CN.heroDots}" role="tablist" aria-label="Slides">${slides.map((sl, i) => `<button type="button" class="${CN.heroDot}" role="tab" aria-selected="${i === 0 ? 'true' : 'false'}" aria-label="Slide ${i + 1}" data-go="${i}"></button>`).join('')}</div>`;
+    return `<section class="${cls(CN.block, CN.hero, CN.heroSlides, sizeCls)}" data-block="Hero" data-id="${attr(p.id)}" data-photo="${slides[0].photo ? 'true' : 'false'}" data-slides="${slides.length}" data-seconds="${slideSeconds(p)}">${layers}${dots}</section>`;
   },
   OrderBar(ctx, b) {
     const p = b.props;
@@ -277,7 +287,7 @@ const R = {
       cols.push(`<div class="${CN.rowCol}" data-col="${i}" data-bg="${bg ? 'true' : 'false'}"${bg ? ` style="--w-col-bg:${attr(bg)}"` : ''}>${inner}</div>`);
     }
     // attr() turns the quotes in url("...") into &quot;, which the browser decodes back in the style.
-    return `<section class="${cls(CN.block, CN.row)}" data-block="Row" data-id="${attr(p.id)}" data-cols="${plan.cols}" data-full="${plan.full ? 'true' : 'false'}"` +
+    return `<section class="${cls(CN.block, CN.row)}" data-block="Row" data-id="${attr(p.id)}" data-cols="${plan.cols}" data-full="${plan.full ? 'true' : 'false'}" data-width="${plan.width}"` +
       `${plan.tone ? ` data-tone="${plan.tone}"` : ''} data-gap="${plan.gap}" data-pad="${plan.pad}" data-align="${plan.align}" data-bg="${plan.hasBg ? 'true' : 'false'}" data-darken="${plan.darken ? 'true' : 'false'}"` +
       ` style="${attr(styleText(plan.style))}"><div class="${cls(CN.inner, CN.rowGrid)}">${cols.join('')}</div></section>`;
   },
@@ -291,6 +301,25 @@ const R = {
   Button(ctx, b) {
     const html = button(ctx, { label: b.props.label, href: b.props.href }, b.props.style);
     return html ? section(b, '', html) : '';
+  },
+  // 5.12.10: one photo, optional caption and link. Only http(s) photo URLs are painted.
+  Image(ctx, b) {
+    const p = b.props;
+    if (!/^https?:\/\//i.test(String(p.url || ''))) return '';
+    const img = `<img src="${attr(p.url)}" alt="${attr(p.alt || '')}" loading="lazy">`;
+    const href = p.href ? resolveHref(ctx, p.href) : '';
+    const box = `<div class="${CN.imageBox}">${href ? `<a href="${attr(href)}">${img}</a>` : img}</div>`;
+    const cap = p.caption ? `<p class="${CN.imageCaption}">${esc(p.caption)}</p>` : '';
+    const width = ['page', 'wide', 'full'].includes(p.width) ? p.width : 'page';
+    return section(b, CN.image, box + cap, ` data-fit="${attr(p.fit || 'cover')}" data-height="${attr(p.height || 'natural')}" data-width="${width}" data-rounded="${p.rounded === false ? 'false' : 'true'}"`);
+  },
+  Heading(ctx, b) {
+    const p = b.props;
+    const text = String(p.text || '').trim();
+    if (!text) return '';
+    const tag = p.level === '3' ? 'h3' : 'h2';
+    const sub = p.sub ? `<p class="${CN.headingSub}">${esc(p.sub)}</p>` : '';
+    return section(b, CN.headingBlock, `<${tag} class="${CN.h2}">${esc(text)}</${tag}>${sub}`, ` data-align="${attr(p.align || 'left')}"`);
   },
   FAQ(ctx, b) {
     const p = b.props;

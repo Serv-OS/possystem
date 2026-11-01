@@ -10,10 +10,11 @@ import { publishedPosts } from '../../routes.js';
 import { useNested } from '../nested.js';
 
 const cls = (...xs) => xs.filter(Boolean).join(' ');
-function Section({ type, id, className, children }) {
+function Section({ type, id, className, extra, children }) {
   // 5.12.9: inside a Row column the block is marked nested (same attribute as the SSR section()).
+  // 5.12.10: `extra` = data attributes the CSS keys on (Image fit/height, Heading align).
   const nested = useNested();
-  return <section className={cls(CN.block, className)} data-block={type} data-id={id} data-nested={nested ? 'true' : undefined}><div className={CN.inner}>{children}</div></section>;
+  return <section className={cls(CN.block, className)} data-block={type} data-id={id} data-nested={nested ? 'true' : undefined} {...(extra || {})}><div className={CN.inner}>{children}</div></section>;
 }
 const Empty = ({ children }) => <p className={CN.empty}>{children}</p>;
 // The markdown renderer escapes every piece of user text itself, so this HTML is safe to set.
@@ -42,6 +43,30 @@ export function Gallery({ id, title, photos, cols }) {
     <Section type="Gallery" id={id} className={CN.gallery}>
       {title ? <h2 className={CN.h2}>{title}</h2> : null}
       <div style={{ '--w-gallery-cols': c }}>{list.map((ph, n) => <img key={n} src={ph.url} alt={ph.alt || ''} loading="lazy" />)}</div>
+    </Section>
+  );
+}
+
+// 5.12.10: one photo, optional caption and link (same markup as the SSR Image renderer).
+export function Image({ id, url, alt, caption, fit, height, width, rounded, href }) {
+  if (!/^https?:\/\//i.test(String(url || ''))) return null;
+  const img = <img src={url} alt={alt || ''} loading="lazy" />;
+  return (
+    <Section type="Image" id={id} className={CN.image} extra={{ 'data-fit': fit || 'cover', 'data-height': height || 'natural', 'data-width': ['page', 'wide', 'full'].includes(width) ? width : 'page', 'data-rounded': rounded === false ? 'false' : 'true' }}>
+      <div className={CN.imageBox}>{href ? <A href={href}>{img}</A> : img}</div>
+      {caption ? <p className={CN.imageCaption}>{caption}</p> : null}
+    </Section>
+  );
+}
+
+export function Heading({ id, text, level, align, sub }) {
+  const t = String(text || '').trim();
+  if (!t) return null;
+  const Tag = level === '3' ? 'h3' : 'h2';
+  return (
+    <Section type="Heading" id={id} className={CN.headingBlock} extra={{ 'data-align': align || 'left' }}>
+      <Tag className={CN.h2}>{t}</Tag>
+      {sub ? <p className={CN.headingSub}>{sub}</p> : null}
     </Section>
   );
 }

@@ -58,7 +58,7 @@ export const SITE_STATUSES = Object.freeze(['draft', 'live', 'offline']);
 export const CONTRACT_BLOCK_TYPES = Object.freeze([
   'Hero', 'OrderBar', 'LiveMenu', 'Specials', 'OrderEmbed', 'LoyaltyJoin', 'GiftCards', 'BookTable',
   'Waitlist', 'Hours', 'FindUs', 'Reviews', 'BlogList',
-  'Text', 'Columns', 'Row', 'Gallery', 'Button', 'FAQ', 'Instagram', 'Divider', 'Spacer', 'CustomHtml',
+  'Text', 'Columns', 'Row', 'Gallery', 'Image', 'Heading', 'Button', 'FAQ', 'Instagram', 'Divider', 'Spacer', 'CustomHtml',
 ]);
 
 // 5.12.9 Row block: its columns are slots (lists of { type, props } blocks). Without a schema module

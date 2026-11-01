@@ -62,7 +62,7 @@ async function fileForUpload(file) {
   return new File([blob], `${base}.jpg`, { type: 'image/jpeg' });
 }
 
-/** image: thumbnail, Upload photo (shrunk then opts.uploadAsset(file, 'page')), Remove, or paste a web address. */
+/** image: thumbnail, Upload photo (shrunk then opts.uploadAsset(file, 'photo')), Remove, or paste a web address. */
 export function ImageField({ name, value, onChange, readOnly, field, opts }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -78,7 +78,7 @@ export function ImageField({ name, value, onChange, readOnly, field, opts }) {
     setErr('');
     try {
       const ready = await fileForUpload(file);
-      const res = await opts.uploadAsset(ready, 'page');
+      const res = await opts.uploadAsset(ready, 'photo');
       if (!res || res.error || !res.url) setErr(plainError(res && res.error));
       else onChange(res.url);
     } catch (e2) {
