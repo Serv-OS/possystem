@@ -66,6 +66,25 @@ export const SITE_CSS = `
 .${C.footerLinks}{display:flex;flex-wrap:wrap;gap:8px 18px;padding:0;margin:0;list-style:none}
 .${C.footerLinks} a{text-decoration:none}
 .${C.powered} a{color:inherit}
+/* item sheet (5.12.9): a tap on a menu card opens it; bottom sheet on a phone, centred dialog wider */
+.${C.menuItem}[role="button"]{cursor:pointer}
+.${C.menuItem}[role="button"]:focus-visible{outline:2px solid var(--w-brand);outline-offset:2px}
+html.${C.sheetOpen},html.${C.sheetOpen} body{overflow:hidden !important}
+.${C.sheetBackdrop}{position:fixed;inset:0;z-index:40;display:flex;align-items:flex-end;justify-content:center;background:var(--w-scrim);background:color-mix(in srgb,var(--w-ink) 55%,transparent);animation:w-sheet-fade .18s ease-out}
+.${C.sheet}{position:relative;width:100%;max-width:560px;max-height:92dvh;overflow:auto;background:var(--w-bg);color:var(--w-ink);border:1px solid var(--w-line);border-bottom:0;border-radius:20px 20px 0 0;box-shadow:0 -12px 40px color-mix(in srgb,var(--w-ink) 25%,transparent);animation:w-sheet-rise .22s ease-out}
+.${C.sheetClose}{position:absolute;top:12px;right:12px;z-index:2;width:38px;height:38px;border-radius:50%;border:1px solid var(--w-line);background:var(--w-card);color:var(--w-ink);font:inherit;font-size:1.4rem;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.${C.sheetClose}:hover{border-color:var(--w-ink)}
+.${C.sheetPhoto}{display:block;width:100%;max-height:300px;aspect-ratio:16/10;object-fit:cover;background:var(--w-line)}
+.${C.sheetBody}{display:grid;gap:10px;padding:18px 20px 8px}
+.${C.sheetTitle}{font-size:1.45rem;margin:0;padding-right:48px}
+.${C.sheet} .${C.menuDesc}{font-size:1rem}
+.${C.sheetFoot}{position:sticky;bottom:0;display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 20px 20px;background:var(--w-bg);border-top:1px solid var(--w-line)}
+.${C.sheetFoot} .${C.menuPrice}{font-size:1.25rem}
+.${C.sheetFoot} .${C.btn}{flex:1 1 auto;max-width:320px}
+@media (min-width:760px){.${C.sheetBackdrop}{align-items:center;padding:24px}.${C.sheet}{border-radius:20px;border-bottom:1px solid var(--w-line);max-height:86vh;animation-name:w-sheet-fade}.${C.sheetPhoto}{border-radius:20px 20px 0 0}}
+@keyframes w-sheet-rise{from{transform:translateY(28px);opacity:.5}to{transform:none;opacity:1}}
+@keyframes w-sheet-fade{from{opacity:0}to{opacity:1}}
+@media (prefers-reduced-motion:reduce){.${C.sheetBackdrop},.${C.sheet}{animation:none}}
 /* hero */
 .${C.hero}{position:relative;display:flex;align-items:flex-end;background:var(--w-card);background-size:cover;background-position:center;color:var(--w-ink);overflow:hidden;isolation:isolate}
 .${C.hero}[data-photo="true"]{color:var(--w-on-photo)}
