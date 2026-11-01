@@ -10,10 +10,13 @@ import { pickLocation, venueUrl } from '../../resolveHref.js';
 import { hoursRows, openStatus } from '../../hours.js';
 import { addressText, directionsUrl, sortByDistance, distanceText } from '../../geo.js';
 import { locationChannelOn } from '../../routes.js';
+import { useNested } from '../nested.js';
 
 const cls = (...xs) => xs.filter(Boolean).join(' ');
 function Section({ type, id, className, children }) {
-  return <section className={cls(CN.block, className)} data-block={type} data-id={id}><div className={CN.inner}>{children}</div></section>;
+  // 5.12.9: inside a Row column the block is marked nested (same attribute as the SSR section()).
+  const nested = useNested();
+  return <section className={cls(CN.block, className)} data-block={type} data-id={id} data-nested={nested ? 'true' : undefined}><div className={CN.inner}>{children}</div></section>;
 }
 const Empty = ({ children }) => <p className={CN.empty}>{children}</p>;
 

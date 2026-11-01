@@ -60,6 +60,30 @@ export const SITE_CSS = `
 .${C.venueForm}{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:0 0 20px}
 .${C.venueForm} label{display:inline-flex;align-items:center;gap:8px;font-weight:600}
 .${C.venueForm} select{min-height:40px;padding:6px 10px;border-radius:var(--w-radius);border:1.5px solid var(--w-line);background:var(--w-card);color:var(--w-ink);font:inherit}
+/* row (5.12.9): columns with row and column backgrounds; nested blocks fill their column */
+.${C.row}{position:relative;isolation:isolate;background-color:var(--w-row-bg,transparent);background-image:var(--w-row-img,none);background-size:cover;background-position:center}
+.${C.row}[data-darken="true"]::before{content:"";position:absolute;inset:0;background:var(--w-dim);z-index:-1}
+.${C.row}[data-full="false"]{background:none}
+.${C.row}[data-full="false"]::before{display:none}
+.${C.row}[data-full="false"][data-bg="true"] .${C.rowGrid}{position:relative;isolation:isolate;background-color:var(--w-row-bg,transparent);background-image:var(--w-row-img,none);background-size:cover;background-position:center;border-radius:16px;padding:24px 16px}
+.${C.row}[data-full="false"][data-darken="true"] .${C.rowGrid}::before{content:"";position:absolute;inset:0;background:var(--w-dim);border-radius:inherit;z-index:-1}
+.${C.row}[data-tone="light"]{--w-ink:var(--w-on-photo);--w-muted:var(--w-on-photo);color:var(--w-ink)}
+.${C.row}[data-tone="dark"]{--w-ink:var(--w-on-light);--w-muted:var(--w-on-light);color:var(--w-ink)}
+.${C.row}[data-pad="none"]{padding:0}
+.${C.row}[data-pad="small"]{padding:16px 0}
+.${C.row}[data-pad="large"]{padding:72px 0}
+.${C.row}[data-gap="none"]{--w-row-gap:0px}
+.${C.row}[data-gap="small"]{--w-row-gap:12px}
+.${C.row}[data-gap="large"]{--w-row-gap:40px}
+.${C.rowGrid}{display:grid;gap:var(--w-row-gap,24px);grid-template-columns:1fr;align-items:start}
+.${C.row}[data-align="center"] .${C.rowGrid}{align-items:center}
+@media (min-width:760px){.${C.rowGrid}{grid-template-columns:repeat(var(--w-row-cols,2),1fr)}}
+.${C.rowCol}{min-width:0}
+.${C.rowCol}[data-bg="true"]{background:var(--w-col-bg);border-radius:16px;padding:20px}
+.${C.rowCol} .${C.block}{padding:0}
+.${C.rowCol} .${C.block}+.${C.block}{margin-top:24px}
+.${C.rowCol} .${C.block} .${C.inner}{max-width:none;padding:0}
+.${C.rowCol} .${C.hero}{min-height:280px;border-radius:16px}
 /* footer */
 .${C.footer}{border-top:1px solid var(--w-line);padding:40px 0 60px;color:var(--w-muted);font-size:.95rem}
 .${C.footer} .${C.inner}{display:grid;gap:16px}

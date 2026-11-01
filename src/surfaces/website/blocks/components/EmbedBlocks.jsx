@@ -11,10 +11,13 @@ import { pickLocation, venueUrl, explicitLocation, multiVenue } from '../../reso
 import { FindUs } from './PlaceBlocks.jsx';
 import { channelOn } from '../../routes.js';
 import { siteName } from '../../ssr/jsonld.js';
+import { useNested } from '../nested.js';
 
 const cls = (...xs) => xs.filter(Boolean).join(' ');
 function Section({ type, id, className, children }) {
-  return <section className={cls(CN.block, className)} data-block={type} data-id={id}><div className={CN.inner}>{children}</div></section>;
+  // 5.12.9: inside a Row column the block is marked nested (same attribute as the SSR section()).
+  const nested = useNested();
+  return <section className={cls(CN.block, className)} data-block={type} data-id={id} data-nested={nested ? 'true' : undefined}><div className={CN.inner}>{children}</div></section>;
 }
 const Empty = ({ children }) => <p className={CN.empty}>{children}</p>;
 

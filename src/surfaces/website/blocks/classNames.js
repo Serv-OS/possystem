@@ -49,6 +49,7 @@ export const CN = Object.freeze({
   blogList: 'w-bloglist', post: 'w-post', postCover: 'w-post-cover', postMeta: 'w-post-meta', postBody: 'w-post-body',
   text: 'w-text', prose: 'w-prose',
   columns: 'w-columns', cols2: 'w-cols-2', cols3: 'w-cols-3',
+  row: 'w-row', rowGrid: 'w-row-grid', rowCol: 'w-row-col',
   gallery: 'w-gallery',
   faq: 'w-faq', faqItem: 'w-faq-item',
   instagram: 'w-instagram',

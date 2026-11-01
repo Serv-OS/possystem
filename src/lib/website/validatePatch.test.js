@@ -225,3 +225,49 @@ test('delete_pages never deletes the home page', () => {
   assert.ok(r.errors.some((e) => /home page cannot be deleted/.test(e)));
   assert.equal(validatePatch({ delete_pages: ['our-story'] }).ok, true);
 });
+
+// ── Row block (5.12.9): nested blocks are checked like page blocks ───────────
+const rowLayout = (cols) => ({ root: { props: {} }, content: [{ type: 'Row', props: { id: 'r', ...cols } }] });
+
+test('Row (contract list, no schema): a valid Row passes; a Row inside a Row and an unknown nested type are refused by name', () => {
+  const ok = rowLayout({ col1: [{ type: 'Text', props: { id: 't', md: 'Hello' } }], col2: [{ type: 'LiveMenu', props: { id: 'm' } }] });
+  assert.deepEqual(validateLayout(ok, { schemas: null }).errors, []);
+  const rowInRow = rowLayout({ col1: [{ type: 'Row', props: { id: 'r2', col1: [] } }] });
+  const e1 = validateLayout(rowInRow, { schemas: null }).errors;
+  assert.ok(e1.some((e) => /Block 1, column 1, item 1: a Row cannot sit inside a Row/.test(e)), e1.join('\n'));
+  const unknown = rowLayout({ col2: [{ type: 'Carousel', props: { id: 'c' } }] });
+  const e2 = validateLayout(unknown, { schemas: null }).errors;
+  assert.ok(e2.some((e) => /Block 1, column 2, item 1: unknown block type "Carousel"/.test(e)), e2.join('\n'));
+  // Custom code inside a column is gated the same way as on the page.
+  const custom = rowLayout({ col1: [{ type: 'CustomHtml', props: { id: 'c', html: '<b>x</b>' } }] });
+  assert.ok(validateLayout(custom, { schemas: null, allowCustomCode: false }).errors.some((e) => /custom code is switched off/.test(e)));
+  assert.equal(validateLayout(custom, { schemas: null, allowCustomCode: true }).ok, true);
+  // Ids are unique across the page, nested included; a nested block may omit its id.
+  const dup = rowLayout({ col1: [{ type: 'Text', props: { id: 'r', md: 'x' } }] });
+  assert.ok(validateLayout(dup, { schemas: null }).errors.some((e) => /"r" is used twice/.test(e)));
+  const noId = rowLayout({ col1: [{ type: 'Text', props: { md: 'x' } }] });
+  assert.equal(validateLayout(noId, { schemas: null }).ok, true);
+  assert.equal(validateLayout(rowLayout({ col1: 'junk' }), { schemas: null }).ok, true, 'without a schema a junk column is skipped (the renderer paints it empty)');
+});
+
+test('Row (real registry): nested props are checked, a Row in a Row and a bad nested enum are refused, the layout byte limit still applies', async () => {
+  let mod = null;
+  try { mod = await import('../../surfaces/website/blocks/schema.js'); } catch { /* not on this branch yet */ }
+  if (!mod?.BLOCK_SCHEMAS) return;
+  const schemas = mod.BLOCK_SCHEMAS;
+  const ok = rowLayout({ columns: '2', background: { color: '#1b1b1b', image: 'https://x/a.jpg', darken: true, tone: 'auto' }, col_bg: { col1: '#ffffff' }, col1: [{ type: 'Text', props: { id: 't', md: 'Hello' } }], col2: [{ type: 'LiveMenu', props: { id: 'm', layout: 'list' } }] });
+  assert.deepEqual(validateLayout(ok, { schemas }).errors, []);
+  const rowInRow = rowLayout({ col1: [{ type: 'Row', props: { id: 'r2' } }] });
+  assert.ok(validateLayout(rowInRow, { schemas }).errors.some((e) => /a Row cannot sit inside a Row/.test(e)));
+  const unknown = rowLayout({ col1: [{ type: 'Carousel', props: { id: 'c' } }] });
+  assert.ok(validateLayout(unknown, { schemas }).errors.some((e) => /unknown block type "Carousel"/.test(e)));
+  const badEnum = rowLayout({ col1: [{ type: 'LiveMenu', props: { id: 'm', layout: 'carousel' } }] });
+  assert.ok(validateLayout(badEnum, { schemas }).errors.some((e) => /Block 1, column 1, item 1: LiveMenu.layout must be one of/.test(e)));
+  const badColour = rowLayout({ background: { color: 'red' } });
+  assert.ok(validateLayout(badColour, { schemas }).errors.some((e) => /Row.background.color must be a colour/.test(e)));
+  const junkCol = rowLayout({ col1: 'junk' });
+  assert.ok(validateLayout(junkCol, { schemas }).errors.some((e) => /Row.col1 must be a list of blocks/.test(e)));
+  const big = 'x'.repeat(LIMITS.MAX_STRING - 10);
+  const huge = rowLayout({ col1: Array.from({ length: 24 }, (_, i) => ({ type: 'Text', props: { id: `z${i}`, md: big } })) });
+  assert.ok(validateLayout(huge, { schemas }).errors.some((e) => /the limit is 400 KB/.test(e)), 'nested text counts towards the layout byte limit');
+});
