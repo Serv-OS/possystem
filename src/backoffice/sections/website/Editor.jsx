@@ -53,7 +53,10 @@ function EditorHeader() {
     dispatch({ type: 'setUi', ui: { viewports: { current: { width: v.width, height: v.height }, controlsVisible: false, options: Object.values(VIEWPORTS) } } });
   };
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '8px 12px', background: 'var(--bg1)', borderBottom: '1px solid var(--bdr)' }}>
+    // 5.12.17 (Peter's screenshot: page tabs stacked in a narrow column, a huge blank top): the header
+    // override REPLACES Puck's <header>, which carried grid-area: header. Without it this div was auto
+    // placed into the first grid cell (the left side bar's width) and wrapped 20 buttons downwards.
+    <div style={{ gridArea: 'header', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '8px 12px', background: 'var(--bg1)', borderBottom: '1px solid var(--bdr)' }}>
       {onExit && <button style={{ ...W.ghost, fontWeight: 700 }} onClick={onExit} title="Back to the Website overview">← Website</button>}
       <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
         {orderPages(pages).map((p) => (
@@ -77,6 +80,39 @@ function EditorHeader() {
       </div>
     </div>
   );
+}
+
+// 5.12.17 (measured in harness/editor.html): Puck copies the Back Office stylesheets into its
+// canvas iframe, and globals.css sets html, body, #root { height: 100%; overflow: hidden } for the
+// till. Puck itself puts overflow: hidden on the frame body too. So the page inside the canvas
+// could never scroll; before 5.12.16 the whole editor grew instead, after it nothing moved.
+// This style, added to the frame document, makes the body the scroll container. (Puck's iframe
+// override never rendered here, so the editor watches for the frame itself: see useFrameScroll.)
+const FRAME_FIX_ID = 'svw-frame-fix';
+const FRAME_FIX_CSS = 'html,body,#frame-root{height:100%!important}body{overflow:auto!important;overscroll-behavior:contain}';
+function fixFrameDocument(doc) {
+  if (!doc || !doc.head || doc.getElementById(FRAME_FIX_ID)) return false;
+  const st = doc.createElement('style');
+  st.id = FRAME_FIX_ID;
+  st.textContent = FRAME_FIX_CSS;
+  doc.head.appendChild(st);
+  return true;
+}
+function useFrameScroll(active) {
+  useEffect(() => {
+    if (!active || typeof document === 'undefined') return undefined;
+    // Puck remounts the frame on a page switch and may rewrite its document while it copies
+    // styles, so this keeps looking while the editor is open (a cheap check twice a second).
+    const tick = () => {
+      const fr = document.getElementById('preview-frame');
+      let doc = null;
+      try { doc = fr && fr.contentDocument; } catch { doc = null; }
+      if (doc) fixFrameDocument(doc);
+    };
+    tick();
+    const id = setInterval(tick, 500);
+    return () => clearInterval(id);
+  }, [active]);
 }
 
 const PUCK_OVERRIDES = { header: () => <EditorHeader /> };
@@ -147,6 +183,7 @@ export default function Editor({ ws, toast, pageId, onPageChange, onAskDesigner,
   // puck-theme.css .svw-puck-full). Puck is built for a full viewport: its canvas and its field
   // panel then scroll on their own and the Back Office page behind never moves. 5.12.12 measured
   // a height instead and the page still scrolled. The header's "Website" button leaves.
+  useFrameScroll(!!page && configMod !== undefined);
   useEffect(() => {
     if (!page || configMod === undefined) return undefined;
     const prev = document.body.style.overflow;
