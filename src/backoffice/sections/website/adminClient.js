@@ -41,7 +41,9 @@ export const deletePage = (pageId) => run('deletePage', pageId);
 export const reorderPages = (ids) => run('reorderPages', ids);
 export const savePost = (postId, patch) => run('savePost', postId ?? null, patch);
 export const deletePost = (postId) => run('deletePost', postId);
-export const publishSite = (note) => run('publishSite', note || '');
+// 5.12.4: the accepted terms version travels with the call (the hook passes it third); a
+// wrapper that dropped it left the server answering 428 on every publish.
+export const publishSite = (note, opts, acceptTerms = null) => run('publishSite', note || '', opts, acceptTerms);
 export const unpublishSite = () => run('unpublishSite');
 export const restoreVersion = (versionId) => run('restoreVersion', versionId);
 export const previewToken = () => run('previewToken');

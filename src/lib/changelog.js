@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.12.4',
+    date: '31 Oct 2026',
+    items: [
+      'Website builder: Publish failed after accepting the publishing terms. The screen showed the statement and sent the publish, but one client wrapper forwarded the note alone, so the server kept answering "Read and accept the publishing terms" and the red "your changes are not saving" bar came up. The accepted version now travels with the call, and a terms question no longer raises that bar.',
+    ],
+  },
+  {
     v: '5.12.3',
     date: '31 Oct 2026',
     items: [

@@ -28,6 +28,7 @@ async function unwrapError(error) {
       if (body.code) e.code = body.code;
       if (Array.isArray(body.errors)) e.errors = body.errors;
       if (Array.isArray(body.companies)) e.companies = body.companies;
+      if (body.terms_required) e.terms_required = body.terms_required;
       return e;
     }
   } catch { /* body was not JSON, fall through to the transport error */ }
@@ -55,7 +56,9 @@ async function call(fn, entity, body, { companyId = null } = {}) {
   // A 2xx body can still carry { error } (website-domain answers 200 with the error inside the
   // status so the screen keeps rendering): that is a failed call, not a saved one.
   const failure = (await unwrapError(res.error)) || (res.data?.error && res.data?.ok !== true ? Object.assign(new Error(String(res.data.error)), { data: res.data }) : null);
-  reportSave(entity, failure);
+  // A 428 "accept the terms" is a question for the owner, not a save that failed, so it never
+  // raises the red "your changes are not saving" bar.
+  reportSave(entity, failure?.terms_required ? null : failure);
   return failure ? { ok: false, error: failure, data: res.data ?? null } : { ok: true, data: res.data };
 }
 
