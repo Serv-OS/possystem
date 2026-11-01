@@ -12,9 +12,14 @@ import './puck-theme.css';
 import { W } from './ui.js';
 import { PAGE_KINDS, PUCK_THEME_VARS, VIEWPORTS, isValidSlug, kindForSlug, orderPages, pagePath, slugify } from './helpers.js';
 import { CUSTOMER_ROOT } from '../../../lib/env';
+import { supabase } from '../../../lib/supabase';
+import { ensureCustomerSession } from '../../../lib/publicOrderClient';
 // The public site's stylesheet (scoped to .w-site). Puck copies the document's <style> tags into
 // its canvas iframe, so one copy here styles the blocks the owner is editing.
 import { SITE_CSS } from '../../../surfaces/website/siteStyles.js';
+// 5.12.9: the default venue's live menu, read once per venue, so the Live menu block shows real
+// items in the editor and the Menu and Categories pickers list real menus and categories.
+import { loadMenu } from '../../../surfaces/website/data/loadMenu.js';
 
 const EMPTY_LAYOUT = { content: [], root: { props: {} } };
 const AUTOSAVE_MS = 3000;
@@ -128,7 +133,7 @@ function starterLayout(kind) {
 }
 
 export default function Editor({ ws, toast, pageId, onPageChange, onAskDesigner, onPreview, onPublish }) {
-  const { site, pages, locations, publicLocations, defaultLocation, branding, savePage } = ws;
+  const { site, pages, locations, publicLocations, defaultLocation, branding, savePage, uploadAsset } = ws;
   const ordered = useMemo(() => orderPages(pages), [pages]);
   const page = ordered.find((p) => p.id === pageId) || ordered[0] || null;
   const [viewport, setViewport] = useState('desktop');
@@ -157,7 +162,36 @@ export default function Editor({ ws, toast, pageId, onPageChange, onAskDesigner,
   // The public locations (from get_site) carry hours, address and coordinates; the platform rows
   // the branding panel reads do not, so the blocks get the public shape when it is there.
   const blockLocations = publicLocations && publicLocations.length ? publicLocations : locations;
-  const config = useMemo(() => buildConfig(configMod, { site, pages, location: defaultLocation, locations: blockLocations, branding, customerRoot: CUSTOMER_ROOT, mode: 'editor' }), [configMod, site, pages, defaultLocation, blockLocations, branding]);
+
+  // 5.12.9: the default venue's live menu for the editor. The platform row (defaultLocation) has no
+  // Ops id; the public row of the same venue does (ops_location_id, timezone, currency).
+  const menuVenue = useMemo(() => {
+    const list = Array.isArray(publicLocations) ? publicLocations : [];
+    const hit = defaultLocation ? list.find((l) => l && l.id === defaultLocation.id) : null;
+    return hit || (defaultLocation && defaultLocation.ops_location_id ? defaultLocation : null) || list.find((l) => l && l.ops_location_id) || null;
+  }, [publicLocations, defaultLocation]);
+  const menuOpsId = menuVenue && menuVenue.ops_location_id ? String(menuVenue.ops_location_id) : '';
+  const menuTimezone = (menuVenue && menuVenue.timezone) || 'Europe/London';
+  const menuCurrency = (menuVenue && menuVenue.currency) || 'GBP';
+  const menuPinned = (menuVenue && menuVenue.online_menu_id) || null;
+  const [menu, setMenu] = useState(null);
+  useEffect(() => {
+    if (!menuOpsId || !supabase) return undefined;
+    let on = true;
+    (async () => {
+      // The Back Office is signed in; this only covers a tab with no session yet (never mints anon here).
+      try { await ensureCustomerSession(); } catch { /* public reads still answer */ }
+      let m = null;
+      try { m = await loadMenu(supabase, menuOpsId, { menuId: 'follow', pinnedMenuId: menuPinned, timezone: menuTimezone, currency: menuCurrency }); }
+      catch (e) { console.warn('[website] editor menu read failed', e); }
+      // A failed read never blocks the editor: the block shows its "being updated" line and the
+      // pickers their "once the menu has loaded" hint.
+      if (on) setMenu(m && !m.error ? m : null);
+    })();
+    return () => { on = false; };
+  }, [menuOpsId, menuTimezone, menuCurrency, menuPinned]);
+
+  const config = useMemo(() => buildConfig(configMod, { site, pages, location: defaultLocation, locations: blockLocations, branding, menu, uploadAsset, customerRoot: CUSTOMER_ROOT, mode: 'editor' }), [configMod, site, pages, defaultLocation, blockLocations, branding, menu, uploadAsset]);
 
   // Autosave: the latest layout per page waits 3 s after the last change, then saves.
   const pending = useRef({ pageId: null, layout: null, timer: null });

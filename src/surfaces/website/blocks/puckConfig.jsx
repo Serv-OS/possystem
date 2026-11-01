@@ -4,19 +4,34 @@
 // schema (schema.js) and the same React components the public site renders, so what the owner
 // sees in the editor is what the site shows. Agent C mounts <Puck config={puckConfig(ctx)} data={layout}>.
 // Puck itself is imported ONLY by the Back Office; this file imports no Puck code, it only produces
-// the plain config object Puck reads (fields: text, textarea, number, select, radio, array, object).
+// the plain config object Puck reads (fields: text, textarea, number, select, radio, array, object,
+// and 5.12.9 custom fields for the pickers in editorFields.jsx).
 
 import { BLOCK_SCHEMAS, BLOCK_TYPES, GROUPS, defaultPropsFor, normaliseProps } from './schema.js';
 import { puckFields } from './puckFields.js';
+import { CategoriesField, ColorField, ImageField, LinkField, MarkdownField, MenuField } from './editorFields.jsx';
 import { COMPONENTS } from './components/index.jsx';
 import { SiteContext } from '../siteContext.js';
 import { buildCtx } from '../ssr/renderBlocks.js';
 import { siteVars } from '../theme.js';
 import { pickLocation } from '../resolveHref.js';
 
+// 5.12.9: the editor's pickers. Each renderer is mounted by Puck as a component and gets Puck's
+// field props plus the schema field and the editor opts (puckFields.js).
+const RENDERERS = Object.freeze({
+  image: (p) => <ImageField {...p} />,
+  color: (p) => <ColorField {...p} />,
+  menu: (p) => <MenuField {...p} />,
+  categories: (p) => <CategoriesField {...p} />,
+  href: (p) => <LinkField {...p} />,
+  markdown: (p) => <MarkdownField {...p} />,
+});
+
 /**
- * puckConfig(ctx) → Puck config. ctx: { snapshot, menu, customerRoot, reviews, now }, or the Back
- * Office editor's shape { site, pages, posts, locations, branding } (a snapshot is built from it).
+ * puckConfig(ctx) → Puck config. ctx: { snapshot, menu, customerRoot, reviews, now, uploadAsset },
+ * or the Back Office editor's shape { site, pages, posts, locations, branding } (a snapshot is built
+ * from it). ctx.menu is the loadMenu result for the default venue (the pickers list its menus and
+ * categories, the Live menu block shows its items); ctx.uploadAsset(file, kind) → { url, error }.
  * The site context the components read comes from the same buildCtx the public site uses, so a
  * block in the editor shows the venue's real hours, locations and menu.
  */
@@ -40,6 +55,14 @@ export function puckConfig(ctx = {}) {
   // In the editor every block is shown, switches or not: the owner must see what they are editing.
   siteCtx.settings = { ...siteCtx.settings, allow_custom_code: true, channels: {} };
   const value = { ctx: siteCtx, menu: ctx.menu || null, menuLoading: false, here: null, nearestState: 'idle', requestNearest: () => {}, navigate: () => {}, menuVenue: null, setMenuVenue: () => {} };
+  const fieldOpts = {
+    locations: siteCtx.locations,
+    pages: snapshot.pages,
+    menus: ctx.menu && Array.isArray(ctx.menu.menus) ? ctx.menu.menus : [],
+    categories: ctx.menu && Array.isArray(ctx.menu.categories) ? ctx.menu.categories : [],
+    uploadAsset: typeof ctx.uploadAsset === 'function' ? ctx.uploadAsset : null,
+    renderers: RENDERERS,
+  };
   const components = {};
   for (const type of BLOCK_TYPES) {
     const schema = BLOCK_SCHEMAS[type];
@@ -47,7 +70,9 @@ export function puckConfig(ctx = {}) {
     components[type] = {
       label: schema.label,
       // 5.12.8: venue props are a dropdown of the company's venues, not a free text id.
-      fields: puckFields(schema.props, { locations: siteCtx.locations }),
+      // 5.12.9: photos upload, colours have a swatch, menus and categories are pickers, links are a
+      // dropdown and markdown text has a toolbar (editorFields.jsx).
+      fields: puckFields(schema.props, fieldOpts),
       defaultProps: defaultPropsFor(type),
       render: (props) => {
         // Puck hands its own `puck` prop and the id; the component gets normalised block props.
