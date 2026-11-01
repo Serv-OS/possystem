@@ -8,6 +8,14 @@
 
 import { CN as C } from './blocks/classNames.js';
 
+// 5.12.5/5.12.7: the SPA's global stylesheet pins html, body and #root to the viewport with overflow
+// hidden (the till scrolls inside its own panes). A public website must scroll like a web page.
+// The SSR shell injects this (api/_lib/website/shell.js) and WebsiteSurface adds it on mount for
+// the client only path. Kept out of SITE_CSS on purpose: that string is also mounted inside the
+// Back Office preview, where the app's pinning must stay.
+export const SHELL_RESET_ID = 'w-shell-reset';
+export const SHELL_RESET_CSS = 'html,body,#root{overflow:auto !important;height:auto !important;min-height:100%;position:static !important}body{overscroll-behavior:auto}';
+
 export const SITE_CSS = `
 .${C.site}{background:var(--w-bg);color:var(--w-ink);font-family:var(--w-font-body);min-height:100vh;line-height:1.55;-webkit-font-smoothing:antialiased}
 .${C.site} *,.${C.site} *::before,.${C.site} *::after{box-sizing:border-box}

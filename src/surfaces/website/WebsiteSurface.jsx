@@ -9,6 +9,7 @@
 // online-86:<location> realtime channel like the storefront. Never a literal colour: everything
 // is a --w-* variable from theme.js.
 
+import { siteQueryFor } from './hostParse.js';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase, platformSupabase } from '../../lib/supabase';
 import { CUSTOMER_ROOT } from '../../lib/env';
@@ -16,7 +17,7 @@ import { ensureCustomerSession } from '../../lib/publicOrderClient';
 import { SiteContext } from './siteContext.js';
 import { A } from './Link.jsx';
 import { CN } from './blocks/classNames.js';
-import { SITE_CSS } from './siteStyles.js';
+import { SITE_CSS, SHELL_RESET_CSS, SHELL_RESET_ID } from './siteStyles.js';
 import { siteVars } from './theme.js';
 import { resolveRoute, visibleNav, breadcrumbsFor, normalisePath, layoutHasHero } from './routes.js';
 import { buildCtx, renderPage, siteName } from './ssr/renderBlocks.js';
@@ -116,7 +117,7 @@ export default function WebsiteSurface({ host, siteSlug = null }) {
   }, []);
   const navigate = useCallback((href) => {
     const target = normalisePath(href);
-    const keepQuery = siteSlug ? `?site=${encodeURIComponent(siteSlug)}` : '';
+    const keepQuery = siteQueryFor(typeof window !== 'undefined' ? window.location.search : '', siteSlug);
     // A draft preview keeps its /preview?token address: the live paths may not exist yet.
     if (!preview) { try { window.history.pushState({}, '', target + keepQuery); } catch { /* file: or sandboxed */ } }
     setPath(target);
@@ -126,6 +127,13 @@ export default function WebsiteSurface({ host, siteSlug = null }) {
 
   // 3. The site stylesheet, once (the SSR head already carries it; this covers the client only path).
   useEffect(() => {
+    // 5.12.7: the scroll reset too, so a page the SPA shell served (no SSR head) still scrolls.
+    if (!document.getElementById(SHELL_RESET_ID)) {
+      const r = document.createElement('style');
+      r.id = SHELL_RESET_ID;
+      r.textContent = SHELL_RESET_CSS;
+      document.head.appendChild(r);
+    }
     if (document.getElementById('w-css')) return;
     const el = document.createElement('style');
     el.id = 'w-css';

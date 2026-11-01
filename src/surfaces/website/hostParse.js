@@ -94,3 +94,15 @@ export function canonicalHost(site, requestHost) {
   if (slug && !req) return `${slug}.${FREE_SITE_ZONE}.serv-os.app`;
   return req || (slug ? `${slug}.${FREE_SITE_ZONE}.serv-os.app` : '');
 }
+
+/**
+ * 5.12.6: the query a client side navigation keeps. The ?site= testing door only exists on a
+ * testing host, so it is carried over only when the address already has it; on a venue's own
+ * host (free or custom) links stay clean ("/" not "/?site=mozz").
+ */
+export function siteQueryFor(search, siteSlug) {
+  const current = String(new URLSearchParams(String(search || '')).get('site') || '');
+  if (!current) return '';
+  const slug = String(siteSlug || current);
+  return `?site=${encodeURIComponent(slug)}`;
+}

@@ -22,6 +22,8 @@ import { BlockRenderer } from '../../../../surfaces/website/blocks/BlockRenderer
 import { SiteContext } from '../../../../surfaces/website/siteContext.js';
 import { buildCtx } from '../../../../surfaces/website/ssr/renderBlocks.js';
 import { SITE_CSS } from '../../../../surfaces/website/siteStyles.js';
+import { normalisePath } from '../../../../surfaces/website/routes.js';
+import { pagePath } from '../../../../surfaces/website/resolveHref.js';
 import { CUSTOMER_ROOT } from '../../../../lib/env';
 import { MAX_SHOTS, shrinkImage } from './screenshots.js';
 
@@ -162,7 +164,14 @@ function Preview({ site, pages, branding, publicLocations, onOpenEditor }) {
       locations: Array.isArray(publicLocations) ? publicLocations : [],
     };
     const ctx = buildCtx({ snapshot, host: '', path: '/', menu: null, customerRoot: CUSTOMER_ROOT });
-    return { ctx, menu: null, menuLoading: false, here: null, nearestState: 'idle', requestNearest: () => {}, navigate: () => {} };
+    // 5.12.6: links inside the preview switch the previewed page (logo and nav to Home, menu
+    // links to Menu). A link to a path that is not a page is left alone.
+    const navigate = (href) => {
+      const target = normalisePath(href);
+      const hit = (pages || []).find((p) => pagePath(p) === target);
+      if (hit) setSlug(hit.slug);
+    };
+    return { ctx, menu: null, menuLoading: false, here: null, nearestState: 'idle', requestNearest: () => {}, navigate };
   }, [site, pages, publicLocations]);
   if (!page) return <div style={W.empty}>No pages yet. Build the site to see a preview here.</div>;
   return (

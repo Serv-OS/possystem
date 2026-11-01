@@ -144,6 +144,7 @@ export const BLOCK_SCHEMAS = {
       show_nearest: b(true, { label: 'Nearest shop button' }),
       show_hours: b(true, { label: 'Opening hours' }),
       show_order_buttons: b(true, { label: 'Order buttons' }),
+      cta: e(['order', 'catering', 'book'], 'order', { label: 'Main button', hint: 'What the first button on each venue opens' }),
       location_id: locationPick('all'),
     },
   },

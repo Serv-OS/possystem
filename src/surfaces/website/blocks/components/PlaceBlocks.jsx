@@ -48,15 +48,24 @@ export function Hours({ id, title, location_id, show_today_first }) {
   );
 }
 
-export function FindUs({ id, title, show_map, show_nearest, show_hours, show_order_buttons, location_id }) {
+// The first button on each venue card (5.12.7: the block also stands in as the "which venue?"
+// chooser for OrderEmbed and BookTable, so the button can open catering or booking too).
+const CTA = Object.freeze({
+  order: { label: 'Order here', path: '/', channel: 'online' },
+  catering: { label: 'Catering orders', path: '/catering', channel: 'catering' },
+  book: { label: 'Book here', path: '/book', channel: 'bookings' },
+});
+
+export function FindUs({ id, title, show_map, show_nearest, show_hours, show_order_buttons, location_id, cta = 'order', blockType = 'FindUs' }) {
   const { ctx, here, requestNearest, nearestState } = useSite();
+  const main = CTA[cta] || CTA.order;
   const base = location_id === 'all' ? ctx.locations : [pickLocation(ctx, location_id)].filter(Boolean);
   const head = title ? <h2 className={CN.h2}>{title}</h2> : null;
-  if (!base.length) return <Section type="FindUs" id={id} className={CN.findus}>{head}<Empty>No locations yet.</Empty></Section>;
+  if (!base.length) return <Section type={blockType} id={id} className={CN.findus}>{head}<Empty>No locations yet.</Empty></Section>;
   const locs = sortByDistance(base, here, ctx.settings);
   const nearestId = here && locs[0] && locs[0].distance_km != null ? locs[0].id : null;
   return (
-    <Section type="FindUs" id={id} className={CN.findus}>
+    <Section type={blockType} id={id} className={CN.findus}>
       {head}
       {show_nearest && base.length > 1 ? (
         <button type="button" className={cls(CN.btn, CN.btnSecondary, CN.nearestBtn)} data-nearest onClick={requestNearest} disabled={nearestState === 'asking'}>
@@ -68,8 +77,8 @@ export function FindUs({ id, title, show_map, show_nearest, show_hours, show_ord
           const st = openStatus(loc.opening_hours, loc.timezone, ctx.now);
           const addr = addressText(loc);
           const dir = show_map ? directionsUrl(loc, ctx.settings) : '';
-          const canOrder = show_order_buttons && locationChannelOn(loc, ctx.settings, 'online');
-          const canBook = locationChannelOn(loc, ctx.settings, 'bookings');
+          const canMain = show_order_buttons && locationChannelOn(loc, ctx.settings, main.channel);
+          const canBook = main !== CTA.book && locationChannelOn(loc, ctx.settings, 'bookings');
           return (
             <article key={loc.id} className={cls(CN.card, CN.locCard, loc.id === nearestId && CN.nearest)} data-location={loc.id}>
               <h3 className={CN.locName}><A href={`/locations/${loc.online_slug}`}>{loc.name}</A>{loc.id === nearestId ? <span className={CN.muted}> · nearest</span> : null}</h3>
@@ -79,7 +88,7 @@ export function FindUs({ id, title, show_map, show_nearest, show_hours, show_ord
               {st.text ? <p className={cls(CN.muted, st.open ? CN.open : CN.closed)}>{st.text}</p> : null}
               {show_hours ? <HoursTable loc={loc} now={ctx.now} short /> : null}
               <div className={CN.locActions}>
-                {canOrder ? <a className={cls(CN.btn, CN.btnPrimary)} href={venueUrl(loc.online_slug, '/', ctx.customerRoot)} rel="noopener">Order here</a> : null}
+                {canMain ? <a className={cls(CN.btn, CN.btnPrimary)} href={venueUrl(loc.online_slug, main.path, ctx.customerRoot)} rel="noopener">{main.label}</a> : null}
                 {dir ? <a className={cls(CN.btn, CN.btnSecondary)} href={dir} target="_blank" rel="noopener">Directions</a> : null}
                 {canBook ? <a className={cls(CN.btn, CN.btnSecondary)} href={venueUrl(loc.online_slug, '/book', ctx.customerRoot)} rel="noopener">Book</a> : null}
               </div>
