@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.12.17',
+    date: '1 Nov 2026',
+    items: [
+      'Website editor: the page tabs and buttons sit in one bar across the top again (5.12.16 stacked them in a narrow column and left a huge blank area).',
+      'Website editor: the page inside the canvas scrolls with the mouse wheel. The Back Office stylesheet copied into the canvas had locked it, which is why nothing moved in 5.12.16.',
+    ],
+  },
+  {
     v: '5.12.16',
     date: '1 Nov 2026',
     items: [
