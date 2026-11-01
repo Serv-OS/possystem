@@ -37,6 +37,9 @@ function Chooser({ id, type, cta }) {
   return <FindUs id={id} blockType={type} title="Choose your venue" location_id="all" show_nearest show_hours={false} show_map show_order_buttons cta={cta} />;
 }
 
+// 5.12.21 (Peter: "just an orange square, can't edit the pic"): a card picture when the owner set one.
+// The shade keeps the white words readable over any photo.
+const cardStyle = (url) => (url ? { backgroundImage: `linear-gradient(rgba(0,0,0,.18),rgba(0,0,0,.5)),url(${JSON.stringify(url)})` } : undefined);
 const venueName = (loc, ctx) => (loc && ((loc.online_branding && loc.online_branding.display_name) || loc.name)) || siteName(ctx.snapshot);
 
 export function OrderBar({ id, collection, delivery, book, catering, width }) {
@@ -70,7 +73,7 @@ export function OrderEmbed({ id, mode, location_id, width }) {
   );
 }
 
-export function LoyaltyJoin({ id, headline, sub, show_card_preview, location_id, width }) {
+export function LoyaltyJoin({ id, headline, sub, show_card_preview, image, location_id, width }) {
   const { ctx } = useSite();
   const loc = pickLocation(ctx, location_id);
   const href = loc ? venueUrl(loc.online_slug, '/account', ctx.customerRoot) : '';
@@ -81,12 +84,12 @@ export function LoyaltyJoin({ id, headline, sub, show_card_preview, location_id,
         {sub ? <p className={CN.muted}>{sub}</p> : null}
         {href ? <a className={cls(CN.btn, CN.btnPrimary)} href={href} rel="noopener">Join free</a> : null}
       </div>
-      {show_card_preview ? <div className={CN.loyaltyCard}><span>{siteName(ctx.snapshot) || venueName(loc, ctx)}</span><span>Loyalty card</span></div> : null}
+      {show_card_preview ? <div className={CN.loyaltyCard} data-img={image ? '1' : undefined} style={cardStyle(image)}><span>{siteName(ctx.snapshot) || venueName(loc, ctx)}</span><span>Loyalty card</span></div> : null}
     </Section>
   );
 }
 
-export function GiftCards({ id, headline, sub, show_art, location_id, width }) {
+export function GiftCards({ id, headline, sub, show_art, image, location_id, width }) {
   const { ctx } = useSite();
   const loc = pickLocation(ctx, location_id);
   const buy = loc ? venueUrl(loc.online_slug, '/gift', ctx.customerRoot) : '';
@@ -98,7 +101,7 @@ export function GiftCards({ id, headline, sub, show_art, location_id, width }) {
         {sub ? <p className={CN.muted}>{sub}</p> : null}
         {buy ? <div><a className={cls(CN.btn, CN.btnPrimary)} href={buy} rel="noopener">Buy a gift card</a> <a className={cls(CN.btn, CN.btnSecondary)} href={bal} rel="noopener">Check a balance</a></div> : null}
       </div>
-      {show_art ? <div className={CN.giftArt}><span>{venueName(loc, ctx)}</span><span>Gift card</span></div> : null}
+      {show_art ? <div className={CN.giftArt} data-img={image ? '1' : undefined} style={cardStyle(image)}><span>{siteName(ctx.snapshot) || venueName(loc, ctx)}</span><span>Gift card</span></div> : null}
     </Section>
   );
 }

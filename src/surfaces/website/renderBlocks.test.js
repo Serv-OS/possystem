@@ -628,3 +628,18 @@ test('Text, Heading and Button in a column carry data-inset (auto = normal); on 
   assert.doesNotMatch(col({ type: 'Image', props: { id: 'i1', url: 'https://x/a.jpg' } }), /data-inset=/, 'a photo keeps the plain gutter');
   assert.doesNotMatch(renderBlock(ctx, { type: 'Text', props: { id: 't2', md: 'Page level' } }), /data-inset=/, 'on the page the gutter already gives space');
 });
+
+
+// ── 5.12.21: gift card art carries the brand and both cards take a picture ───────────────────
+test('GiftCards and LoyaltyJoin: brand name on the card, a Card picture paints it with a shade', () => {
+  const s = snap();
+  const name = siteName(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const gift = renderBlock(rowCtx(s), { type: 'GiftCards', props: { id: 'g', headline: 'Buy a gift card', show_art: true, location_id: 'default' } });
+  assert.match(gift, new RegExp(`<div class="w-gift-art"><span>${name}</span><span>Gift card</span>`), 'the brand, not the default venue');
+  const pic = renderBlock(rowCtx(s), { type: 'GiftCards', props: { id: 'g', show_art: true, image: 'https://cdn.test/card.jpg', location_id: 'default' } });
+  assert.match(pic, /<div class="w-gift-art" data-img="1" style="background-image:linear-gradient\([^"]*\),url\(&quot;https:\/\/cdn\.test\/card\.jpg&quot;\)">/);
+  const loy = renderBlock(rowCtx(s), { type: 'LoyaltyJoin', props: { id: 'l', show_card_preview: true, image: 'https://cdn.test/loy.jpg', location_id: 'default' } });
+  assert.match(loy, /<div class="w-loyalty-card" data-img="1" style="background-image:[^"]*loy\.jpg[^"]*">/);
+  const none = renderBlock(rowCtx(s), { type: 'GiftCards', props: { id: 'g', show_art: true, image: '', location_id: 'default' } });
+  assert.doesNotMatch(none, /data-img/, 'no picture = the brand colour card');
+});

@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.12.21',
+    date: '1 Nov 2026',
+    items: [
+      'Website: the Gift cards and Loyalty blocks have a Card picture setting. Upload your own card design or any photo; leave it empty for a card in your brand colour.',
+      'Website: the gift card art shows your brand name, not the default venue (it said Barnsley). Gift cards spend at every venue.',
+    ],
+  },
+  {
     v: '5.12.20',
     date: '1 Nov 2026',
     items: [
