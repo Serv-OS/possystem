@@ -28,6 +28,37 @@ function Picker({ label, options, value, onPick, hint }) {
   );
 }
 
+// 5.12.5: which venue the site speaks for. The first live site took the company's venues in name
+// order, so a demo venue ("Location 2") set the colour, card and hours instead of the one the Back
+// Office was open on. Saved as settings.default_location_id; every block with no venue of its own
+// (order bar, hero status, hours, loyalty card) and the synced branding follow it.
+function DefaultVenueCard({ site, locations, saveSite, toast }) {
+  const [busy, setBusy] = useState(false);
+  const list = Array.isArray(locations) ? locations.filter((l) => l && l.id) : [];
+  if (list.length < 2) return null;
+  const current = site?.settings?.default_location_id || '';
+  const pick = async (id) => {
+    setBusy(true);
+    const { error } = await saveSite({ settings: { default_location_id: id || null } });
+    setBusy(false);
+    if (error) toast(error.message || 'Could not save the default venue', 'error');
+    else toast('Default venue saved. Publish to put it live.');
+  };
+  return (
+    <div style={W.card}>
+      <div style={W.cardHead}><h2 style={W.h2}>Default venue</h2></div>
+      <div style={W.hint}>The venue the site speaks for when a page does not name one: brand colour, logo, hours, the order button and the loyalty card. Visitors can still pick another venue on Find us.</div>
+      <div style={{ ...W.field, marginTop: 10 }}>
+        <label style={W.label} htmlFor="wb-default-venue">Venue</label>
+        <select id="wb-default-venue" style={W.input} value={current} disabled={busy} onChange={(e) => pick(e.target.value)}>
+          <option value="">First venue by name (not recommended)</option>
+          {list.map((l) => <option key={l.id} value={l.id}>{l.name || l.online_slug || l.id}</option>)}
+        </select>
+      </div>
+    </div>
+  );
+}
+
 function SyncedBrandingCard({ branding, location, onBrandBasics }) {
   return (
     <div style={W.card}>
@@ -266,6 +297,7 @@ export default function Branding({ ws, toast, onBrandBasics, onPublish, onViewLi
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 16, alignItems: 'start' }}>
       <div>
+        <DefaultVenueCard site={site} locations={ws.publicLocations} saveSite={ws.saveSite} toast={toast} />
         <SyncedBrandingCard branding={branding} location={defaultLocation} onBrandBasics={onBrandBasics} />
         <ThemeCard site={site} saveSite={ws.saveSite} toast={toast} />
         <SeoCard key={site.updated_at || site.id} site={site} saveSite={ws.saveSite} uploadAsset={ws.uploadAsset} toast={toast} />

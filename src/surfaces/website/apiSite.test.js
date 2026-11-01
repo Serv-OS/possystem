@@ -52,6 +52,9 @@ test('shell: fetched once per deployment, cached for 5 minutes, refused when it 
   assert.doesNotMatch(out, /content="pos"/);
   assert.match(out, /<div id="root"><h1>Hi<\/h1><\/div><script>window\.__SERVOS_SITE__=\{"a":1\}<\/script>/);
   assert.match(out, /<script src="\/assets\/a\.js">/, 'the SPA bundle still loads');
+  // 5.12.5: the SPA's global css pins html, body and #root with overflow hidden; the site must scroll.
+  assert.match(out, /<style id="w-shell-reset">html,body,#root\{overflow:auto !important;height:auto !important[^<]*<\/style><title>Mozz<\/title>/, 'the scroll reset sits before the page head');
+  assert.equal((out.match(/w-shell-reset/g) || []).length, 1);
   assert.match(bootScript({ s: '</script><script>x' }), /\\u003c\/script>/, 'a closing tag in the data cannot end the script');
 });
 

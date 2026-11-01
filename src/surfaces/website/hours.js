@@ -21,8 +21,15 @@ export function todayKey(timezone, now = new Date()) {
   }
 }
 
+// 5.12.5: a window that opens and closes at the same minute (00:00 to 00:00 is how a venue
+// says "all day" in Back Office) reads as open all day, never as a zero length window.
+export function allDayWindow(w) {
+  return !!(w && w.open && w.close && String(w.open) === String(w.close));
+}
+
 function windowText(w) {
   if (!w || !w.open || !w.close) return '';
+  if (allDayWindow(w)) return 'Open 24 hours';
   return `${w.open} to ${w.close}`;
 }
 
@@ -68,6 +75,8 @@ export function openingHoursSpecification(hours) {
     const wins = Array.isArray(weekly[key]) ? weekly[key] : [];
     for (const w of wins) {
       if (!w || !w.open || !w.close) continue;
+      // schema.org reads opens 00:00 closes 23:59 as open all day.
+      if (allDayWindow(w)) { out.push({ '@type': 'OpeningHoursSpecification', dayOfWeek: DAY_LABEL[key], opens: '00:00', closes: '23:59' }); continue; }
       out.push({ '@type': 'OpeningHoursSpecification', dayOfWeek: DAY_LABEL[key], opens: String(w.open), closes: String(w.close) });
     }
   }

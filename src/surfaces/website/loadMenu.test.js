@@ -3,7 +3,7 @@
 // and never a throw when a read fails.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { loadMenu, shapeItem, groupMenu, formatPrice, capCategories } from './data/loadMenu.js';
+import { loadMenu, shapeItem, groupMenu, formatPrice, capCategories, itemCategoryIds, visibleOnline } from './data/loadMenu.js';
 
 // A tiny fake Supabase client: tables → rows, with the chain the loader uses. `fail` names a table
 // whose read answers with an error.
@@ -42,14 +42,14 @@ const TABLES = {
     { id: 'c-spec', location_id: LOC, name: 'Specials', sort_order: 9, is_special: true, menu_id: 'm-all' },
   ],
   menu_items: [
-    { id: 'i-marg', location_id: LOC, name: 'Margherita', description: 'Classic', category_id: 'c-pizza', pricing: { base: 9, collection: 8.5, delivery: 9.5, dineIn: 10 }, tags: ['v'], allergens: ['gluten'], image: 'https://x/m.jpg', archived: false, sort_order: 1 },
-    { id: 'i-veg', location_id: LOC, name: 'Garden', category_id: 'c-pizza-veg', pricing: { base: 11 }, tags: ['vegan', 'special'], archived: false, sort_order: 2 },
-    { id: 'i-cola', location_id: LOC, name: 'Cola', category_id: 'c-drinks', pricing: { base: 0 }, type: 'variants', archived: false, sort_order: 1 },
-    { id: 'i-cola-s', location_id: LOC, name: 'Small', category_id: 'c-drinks', parent_id: 'i-cola', pricing: { base: 2 }, archived: false, sort_order: 1 },
-    { id: 'i-cola-l', location_id: LOC, name: 'Large', category_id: 'c-drinks', parent_id: 'i-cola', pricing: { base: 3 }, archived: false, sort_order: 2 },
-    { id: 'i-eggs', location_id: LOC, name: 'Eggs', category_id: 'c-brunch', pricing: { base: 7 }, archived: false, sort_order: 1 },
-    { id: 'i-gone', location_id: LOC, name: 'Gone', category_id: 'c-pizza', pricing: { base: 5 }, archived: false, sort_order: 3 },
-    { id: 'i-other', location_id: 'ops-2', name: 'Other venue', category_id: 'c-pizza', pricing: { base: 1 }, archived: false },
+    { id: 'i-marg', location_id: LOC, name: 'Margherita', description: 'Classic', cat: 'c-pizza', pricing: { base: 9, collection: 8.5, delivery: 9.5, dineIn: 10 }, tags: ['v'], allergens: ['gluten'], image: 'https://x/m.jpg', archived: false, sort_order: 1 },
+    { id: 'i-veg', location_id: LOC, name: 'Garden', cat: 'c-pizza-veg', pricing: { base: 11 }, tags: ['vegan', 'special'], archived: false, sort_order: 2 },
+    { id: 'i-cola', location_id: LOC, name: 'Cola', cat: 'c-drinks', pricing: { base: 0 }, type: 'variants', archived: false, sort_order: 1 },
+    { id: 'i-cola-s', location_id: LOC, name: 'Small', cat: 'c-drinks', parent_id: 'i-cola', pricing: { base: 2 }, archived: false, sort_order: 1 },
+    { id: 'i-cola-l', location_id: LOC, name: 'Large', cat: 'c-drinks', parent_id: 'i-cola', pricing: { base: 3 }, archived: false, sort_order: 2 },
+    { id: 'i-eggs', location_id: LOC, name: 'Eggs', cat: 'c-brunch', pricing: { base: 7 }, archived: false, sort_order: 1 },
+    { id: 'i-gone', location_id: LOC, name: 'Gone', cat: 'c-pizza', pricing: { base: 5 }, archived: false, sort_order: 3 },
+    { id: 'i-other', location_id: 'ops-2', name: 'Other venue', cat: 'c-pizza', pricing: { base: 1 }, archived: false },
   ],
   menus: [
     { id: 'm-all', location_id: LOC, name: 'All day', is_active: true, is_default: true, sort_order: 1 },
@@ -141,4 +141,29 @@ test('helpers: shapeItem defaults, groupMenu skips specials and empties, capCate
   assert.equal(formatPrice(9.5, 'GBP'), '£9.50');
   assert.equal(formatPrice(12, 'USD'), '$12.00');
   assert.equal(formatPrice('x'), '');
+});
+
+// 5.12.5: the Ops table has cat (primary) and cats (every category), never category_id. The first
+// live site read category_id and showed "The menu is being updated" with 157 items in the venue.
+test('real Ops rows: cat and cats place the item, an item in two sections appears in both, hidden online items stay off', async () => {
+  const items = TABLES.menu_items.concat([
+    { id: 'i-cats-only', location_id: LOC, name: 'Garlic bread', cat: null, cats: ['c-pizza'], pricing: { base: 4 }, archived: false, sort_order: 4 },
+    { id: 'i-two', location_id: LOC, name: 'Lemonade', cat: 'c-drinks', cats: ['c-drinks', 'c-pizza'], pricing: { base: 3 }, archived: false, sort_order: 5 },
+    { id: 'i-hidden', location_id: LOC, name: 'Staff meal', cat: 'c-pizza', visibility: { pos: true, online: false }, pricing: { base: 1 }, archived: false, sort_order: 6 },
+    { id: 'i-nocat', location_id: LOC, name: 'Loose item', cat: null, cats: [], pricing: { base: 1 }, archived: false, sort_order: 7 },
+  ]);
+  const r = await loadMenu(fakeClient({ ...TABLES, menu_items: items }), LOC, { timezone: 'Europe/London', now: new Date('2026-10-31T12:00:00Z') });
+  assert.equal(r.error, null);
+  const pizza = r.categories.find((c) => c.label === 'Pizza');
+  const drinks = r.categories.find((c) => c.label === 'Drinks');
+  assert.deepEqual(pizza.items.map((i) => i.name), ['Margherita', 'Garden', 'Gone', 'Garlic bread', 'Lemonade']);
+  assert.deepEqual(drinks.items.map((i) => i.name), ['Cola', 'Lemonade']);
+  assert.ok(!r.categories.some((c) => c.items.some((i) => i.name === 'Staff meal')), 'visibility.online false never reaches the site');
+  assert.ok(!r.categories.some((c) => c.items.some((i) => i.name === 'Loose item')), 'an item in no category is not shown');
+  assert.deepEqual(itemCategoryIds({ cat: 'a', cats: ['a', 'b'], category_id: 'c' }), ['a', 'b', 'c']);
+  assert.deepEqual(itemCategoryIds({ cats: ['b'] }), ['b']);
+  assert.equal(visibleOnline({ visibility: { online: false } }), false);
+  assert.equal(visibleOnline({ visibility: { online: true } }), true);
+  assert.equal(visibleOnline({}), true, 'no visibility column means shown, as the storefront does');
+  assert.equal(shapeItem({ id: 'x', cat: 'c1', cats: ['c1', 'c2'], pricing: { base: 1 } }, { channel: 'collection', menuId: null, currency: 'GBP' }).category_id, 'c1');
 });

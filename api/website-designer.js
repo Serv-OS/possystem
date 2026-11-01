@@ -264,6 +264,7 @@ export async function callClaude({ apiKey, model, system, messages, tool, fetchI
   const tools = allowFetch ? [tool, webFetchTool()] : [tool];
   let turn = [...messages];
   let body = null;
+  const seen = []; // every assistant block across continuations, so a read in an early turn is reported too
   for (let i = 0; i <= MAX_CONTINUATIONS; i++) {
     const res = await f(ANTHROPIC_URL, {
       method: 'POST',
@@ -285,6 +286,7 @@ export async function callClaude({ apiKey, model, system, messages, tool, fetchI
     if (!res.ok) return { ok: false, status: res.status, error: body?.error?.message || 'The designer could not be reached.' };
     // Server side tools (web fetch) run in a loop on Anthropic's side; after its iteration limit the
     // answer stops with pause_turn. Resend the turn with the assistant content appended and it resumes.
+    if (Array.isArray(body?.content)) seen.push(...body.content);
     if (body?.stop_reason === 'pause_turn' && Array.isArray(body.content) && i < MAX_CONTINUATIONS) {
       turn = [...turn, { role: 'assistant', content: body.content }];
       continue;
@@ -294,8 +296,104 @@ export async function callClaude({ apiKey, model, system, messages, tool, fetchI
   const content = Array.isArray(body?.content) ? body.content : [];
   const toolUse = content.find((c) => c?.type === 'tool_use' && c.name === TOOL_NAME);
   const text = content.filter((c) => c?.type === 'text').map((c) => c.text).join('\n').trim();
-  const fetched = content.filter((c) => c?.type === 'server_tool_use' && c.name === 'web_fetch').map((c) => c.input?.url).filter(Boolean);
-  return { ok: true, patch: toolUse?.input || null, text, fetched, raw: body };
+  return { ok: true, patch: toolUse?.input || null, text, fetched: classifyFetches(seen), raw: body };
+}
+
+// 5.12.5: what the reader actually got. A site behind a bot wall (Cloudflare's "Just a moment",
+// 1 Nov 2026: mozzartisanpizza.com) answers the reader with a challenge page, which the model may
+// read as "the site" and carry on. The owner is told plainly which pages were read and which were
+// not, from the tool results themselves, never from the model's say so.
+const CHALLENGE_RE = /just a moment|enable javascript and cookies|verifying you are human|checking your browser|attention required|access denied|are you a robot|captcha/i;
+const ERROR_NOTE = {
+  url_not_accessible: 'the page could not be reached',
+  url_too_long: 'the address was too long to read',
+  unsupported_content_type: 'that kind of page cannot be read',
+  too_many_requests: 'the site refused repeated reads',
+  max_uses_exceeded: 'the read limit for one request was reached',
+  unavailable: 'the reader was unavailable',
+};
+export const BLOCKED_NOTE = 'the site blocks automated readers';
+
+/** [{url, ok, note}] for every web_fetch the model asked for, from the tool result blocks. */
+export function classifyFetches(content = []) {
+  const uses = new Map();
+  const out = [];
+  for (const c of content || []) {
+    if (c?.type === 'server_tool_use' && c.name === 'web_fetch' && c.input?.url) {
+      uses.set(c.id, c.input.url);
+      out.push({ url: c.input.url, ok: false, note: 'no answer came back from the reader', id: c.id });
+    }
+  }
+  for (const c of content || []) {
+    if (c?.type !== 'web_fetch_tool_result') continue;
+    const hit = out.find((f) => f.id === c.tool_use_id) || null;
+    const res = c.content || {};
+    const url = res.url || (hit && hit.url) || uses.get(c.tool_use_id) || '';
+    const target = hit || (url ? (out.push({ url, ok: false, note: '', id: c.tool_use_id }), out[out.length - 1]) : null);
+    if (!target) continue;
+    if (res.type === 'web_fetch_tool_error' || res.error_code) {
+      target.ok = false;
+      target.note = ERROR_NOTE[res.error_code] || 'the page could not be read';
+      continue;
+    }
+    const doc = res.content || {};
+    const src = doc.source || {};
+    const textData = src.type === 'text' && typeof src.data === 'string' ? src.data : '';
+    const title = typeof doc.title === 'string' ? doc.title : '';
+    if (CHALLENGE_RE.test(title) || (textData && CHALLENGE_RE.test(textData.slice(0, 4000)) && textData.length < 6000)) {
+      target.ok = false; target.note = BLOCKED_NOTE; continue;
+    }
+    if (src.type === 'text' && textData.trim().length < 120) {
+      target.ok = false; target.note = 'the page came back almost empty'; continue;
+    }
+    target.ok = true; target.note = '';
+  }
+  return out.map(({ url, ok, note }) => ({ url, ok, note }));
+}
+
+/** Plain lines for the chat: what was read, what was not and what to do instead. */
+export function fetchNotes(fetched = []) {
+  const lines = [];
+  for (const f of fetched || []) {
+    if (!f?.url) continue;
+    if (f.ok) lines.push(`Read: ${f.url}`);
+    else lines.push(`Could not read ${f.url}: ${f.note || 'the page could not be read'}. Drop screenshots of it into this chat and I will work from those.`);
+  }
+  return lines;
+}
+
+// 5.12.5: screenshots the owner attaches (a site behind a bot wall, a flyer, a look they like).
+// Capped so one request stays inside the function's body limit; anything else is dropped, never
+// an error, and the owner is told how many went through.
+export const IMAGE_TYPES = Object.freeze(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+export const MAX_IMAGES = 6;
+export const MAX_IMAGE_BYTES = 1.6 * 1024 * 1024;  // base64 length, about 1.2 MB of JPEG
+export const MAX_IMAGES_BYTES = 4 * 1024 * 1024;
+export function sanitiseImages(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  let total = 0;
+  for (const im of list) {
+    if (out.length >= MAX_IMAGES) break;
+    const type = String(im?.media_type || '').toLowerCase();
+    const data = typeof im?.data === 'string' ? im.data.replace(/^data:[^,]*,/, '').trim() : '';
+    if (!IMAGE_TYPES.includes(type) || !data || data.length > MAX_IMAGE_BYTES || !/^[A-Za-z0-9+/=\s]+$/.test(data.slice(0, 2000))) continue;
+    if (total + data.length > MAX_IMAGES_BYTES) break;
+    total += data.length;
+    out.push({ media_type: type, data });
+  }
+  return out;
+}
+
+/** The user turn: plain text, or the screenshots first and the words after them. */
+export function userTurnContent(userText, images = []) {
+  if (!images.length) return userText;
+  const n = images.length;
+  const note = `The owner attached ${n} screenshot${n === 1 ? '' : 's'} of a website or look they like. Study the layout, section order, colour mood, type feel, photo style and tone of voice in the image${n === 1 ? '' : 's'} and rebuild that feeling with the blocks available and this venue's own facts. Never copy their sentences, prices or menu.`;
+  return [
+    ...images.map((im) => ({ type: 'image', source: { type: 'base64', media_type: im.media_type, data: im.data } })),
+    { type: 'text', text: `${userText}\n\n${note}` },
+  ];
 }
 
 function deepMerge(base, patch) {
@@ -405,6 +503,8 @@ export async function saveMessages({ platform, siteId, userText, reply, patch, f
     { site_id: siteId, role: 'assistant', content: String(reply || '').slice(0, MAX_STRING), patch: patch || null },
   ];
   const r = await restWrite(platform, 'POST', 'web_ai_messages', rows, { fetchImpl, prefer: 'return=minimal' });
+  // 5.12.5: a failed save is reported, not swallowed (the first live site kept a chat of 0 rows).
+  if (!r.ok) console.error('[website-designer] web_ai_messages write failed', r.status, JSON.stringify(r.body || null).slice(0, 400));
   return r.ok;
 }
 
@@ -456,13 +556,15 @@ export async function runDesigner({ body, user, reached = [], env = globalThis.p
   const system = buildSystemPrompt({ facts, mode, layout, blocksDescription: describeBlocks(schemas) });
   const page = body?.page_id ? facts.site?.pages?.find((p) => p.id === body.page_id) || null : null;
   const userText = buildUserMessage({ message, mode, layout: chosenLayout, page });
-  const messages = [...historyTurns(facts.recent_messages), { role: 'user', content: userText }];
+  const images = sanitiseImages(body?.images);
+  const messages = [...historyTurns(facts.recent_messages), { role: 'user', content: userTurnContent(userText, images) }];
 
   let reply = '';
   let applied = false;
   let pagesChanged = [];
   let errors = [];
   let finalPatch = null;
+  let fetched = [];
 
   for (let attempt = 0; attempt < 2; attempt++) {
     let out;
@@ -472,6 +574,7 @@ export async function runDesigner({ body, user, reached = [], env = globalThis.p
       return { status: 502, json: { error: e?.message || 'The designer could not be reached.' } };
     }
     if (!out.ok) return { status: out.status || 502, json: { error: out.error } };
+    if (Array.isArray(out.fetched) && out.fetched.length) fetched = out.fetched;
     const rawPatch = attachLocationIds(ensureBlockIds(out.patch || { reply: out.text || 'I had nothing to change.' }), facts);
     const patchSlugs = new Set((Array.isArray(rawPatch.pages) ? rawPatch.pages : []).map((p) => p?.slug));
     const v = validate(rawPatch, {
@@ -506,8 +609,12 @@ export async function runDesigner({ body, user, reached = [], env = globalThis.p
     finalPatch = null;
   }
 
-  await saveMessages({ platform, siteId, userText: message || userText, reply, patch: applied ? finalPatch : null, fetchImpl });
-  return { status: 200, json: { reply, applied, pages_changed: pagesChanged, errors } };
+  // What the reader did, in the owner's words, whatever the model said about it.
+  const notes = fetchNotes(fetched);
+  if (notes.length) reply = `${reply}\n\n${notes.join('\n')}`.trim();
+  const storedUser = `${message || userText}${images.length ? ` [${images.length} screenshot${images.length === 1 ? '' : 's'} attached]` : ''}`;
+  const saved = await saveMessages({ platform, siteId, userText: storedUser, reply, patch: applied ? finalPatch : null, fetchImpl });
+  return { status: 200, json: { reply, applied, pages_changed: pagesChanged, errors, fetched, saved, images_used: images.length } };
 }
 
 export default async function handler(req, res) {

@@ -48,6 +48,23 @@ function withTimeout(p, ms, label) {
 
 const str = (v) => (v == null ? '' : String(v));
 
+// 5.12.5: Ops menu_items carry the category as `cat` (text, the primary one) and `cats` (text[],
+// every category the item sits in). There is no category_id column; the first build read one and
+// every item fell out of the menu ("The menu is being updated" on a live site with 157 items).
+// The fixtures' category_id is still honoured so a caller may hand in the shaped name.
+export function itemCategoryIds(row) {
+  const out = [];
+  const push = (v) => { const id = str(v); if (id && !out.includes(id)) out.push(id); };
+  if (row) { push(row.cat); if (Array.isArray(row.cats)) row.cats.forEach(push); push(row.category_id); }
+  return out;
+}
+
+/** False when the venue hid the item from online channels (visibility.online === false). */
+export function visibleOnline(row) {
+  const v = row && row.visibility;
+  return !(v && typeof v === 'object' && v.online === false);
+}
+
 /** Shape one product row for the site. `kids` are its size children (empty for a plain item). */
 export function shapeItem(row, { channel, menuId, currency, kids = [], soldOutIds, stock }) {
   const hasKids = kids.length > 0;
@@ -67,7 +84,8 @@ export function shapeItem(row, { channel, menuId, currency, kids = [], soldOutId
     allergens: Array.isArray(row.allergens) ? row.allergens.map(str).filter(Boolean) : [],
     sold_out,
     tags: Array.isArray(row.tags) ? row.tags.map(str) : [],
-    category_id: row.category_id ?? null,
+    category_id: itemCategoryIds(row)[0] || null,
+    category_ids: itemCategoryIds(row),
   };
 }
 
@@ -89,12 +107,18 @@ export function groupMenu(items, categories, { allowed, onlyCategoryIds, hideSol
   let count = 0;
   for (const it of items || []) {
     if (!it || (hideSoldOut && it.sold_out)) continue;
-    const t = topOf(it.category_id);
-    if (!t || !buckets.has(t)) continue;
-    if (only && !only.has(t) && !only.has(it.category_id)) continue;
-    if (maxItems > 0 && count >= maxItems) break;
-    buckets.get(t).push(it);
-    count++;
+    // An item in several categories (cats) is listed once under each top level section.
+    const ids = Array.isArray(it.category_ids) && it.category_ids.length ? it.category_ids : [it.category_id];
+    const tops = [];
+    for (const id of ids) { const t = topOf(id); if (t && buckets.has(t) && !tops.includes(t)) tops.push(t); }
+    let placed = false;
+    for (const t of tops) {
+      if (only && !only.has(t) && !ids.some((id) => only.has(id))) continue;
+      if (maxItems > 0 && count >= maxItems) break;
+      buckets.get(t).push(it);
+      placed = true;
+    }
+    if (placed) count++;
   }
   return top
     .filter((c) => !only || only.has(c.id) || (buckets.get(c.id) || []).length)
@@ -150,7 +174,8 @@ export async function loadMenu(client, opsLocationId, options = {}) {
 
     const channel = PRICE_CHANNEL[options.priceMode] || 'collection';
     const currency = options.currency || 'GBP';
-    const parents = items.filter((r) => r && !r.parent_id);
+    // Parents only (sizes hang off them), and never an item the venue hid from online.
+    const parents = items.filter((r) => r && !r.parent_id && visibleOnline(r));
     const shaped = parents.map((row) => shapeItem(row, { channel, menuId, currency, kids: variantChildren(row, items), soldOutIds, stock }));
 
     const specialCatIds = new Set(categories.filter((c) => c && c.is_special).map((c) => c.id));

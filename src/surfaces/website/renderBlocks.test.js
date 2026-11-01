@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { renderPage, renderBlock, renderSitemap, renderRobots, renderNoSite, renderDocument, buildCtx, fallbackDescription } from './ssr/renderBlocks.js';
 import { siteName } from './ssr/jsonld.js';
+import { hoursRows, openingHoursSpecification, allDayWindow } from './hours.js';
 import { resolveRoute } from './routes.js';
 import { BLOCK_TYPES, defaultPropsFor } from './blocks/schema.js';
 
@@ -294,4 +295,20 @@ test('every page carries a meta description: hero sub line, else first text bloc
   assert.equal(fallbackDescription(null, 'X'), 'X: menu, opening hours and online ordering.');
   assert.equal(fallbackDescription({ layout: { content: [{ type: 'Hero', props: { sub: 'a'.repeat(200) } }] } }, 'X').length, 155);
   assert.ok(render(s, '/nothing-here').description, 'even the 404 page has one');
+});
+
+// 5.12.5: Provo's hours are 00:00 to 00:00 every day (Back Office's "all day"); the site printed
+// that literally. Same minute open and close reads as open all day, and schema.org gets 00:00 to 23:59.
+test('a window that opens and closes at the same minute is open all day', () => {
+  const hours = { weekly: { mon: [{ open: '00:00', close: '00:00' }], tue: [{ open: '11:30', close: '23:00' }], wed: [] } };
+  const rows = hoursRows(hours, 'America/Denver', { todayFirst: false, now: new Date('2026-11-02T18:00:00Z') });
+  assert.equal(rows[0].text, 'Open 24 hours');
+  assert.equal(rows[1].text, '11:30 to 23:00');
+  assert.equal(rows[2].text, 'Closed');
+  const spec = openingHoursSpecification(hours);
+  assert.deepEqual(spec[0], { '@type': 'OpeningHoursSpecification', dayOfWeek: 'Monday', opens: '00:00', closes: '23:59' });
+  assert.equal(spec[1].closes, '23:00');
+  assert.equal(allDayWindow({ open: '09:00', close: '09:00' }), true);
+  assert.equal(allDayWindow({ open: '09:00', close: '17:00' }), false);
+  assert.equal(allDayWindow(null), false);
 });
