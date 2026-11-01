@@ -33,6 +33,8 @@ export const FALLBACK_BLOCK_SCHEMAS = {
   Hero: { label: 'Hero', group: 'servos', properties: {
     headline: str('One line, the venue name or what it does'), sub: str('One or two short sentences'),
     photo_url: str('Photo URL; leave empty to use the branding hero photo'), show_status: bool('Show open or closed now'),
+    slides: { type: 'array', items: { type: 'object', properties: { photo_url: str(''), headline: str(''), sub: str(''), button_label: str(''), button_href: str('') } } },
+    slide_seconds: str('', { enum: ['0', '4', '6', '8', '10'] }),
     primary: link('Main button'), secondary: link('Second button'), height: str('tall or short', { enum: ['tall', 'short'] }),
   } },
   OrderBar: { label: 'Order bar', group: 'servos', properties: { collection: bool(''), delivery: bool(''), book: bool(''), catering: bool('') } },
@@ -56,6 +58,8 @@ export const FALLBACK_BLOCK_SCHEMAS = {
   Text: { label: 'Text', group: 'content', properties: { md: str('Markdown text') } },
   Columns: { label: 'Columns', group: 'content', properties: { cols: str('2 or 3', { enum: ['2', '3'] }), items: { type: 'array', items: { type: 'object', properties: { md: str('') } } } } },
   Gallery: { label: 'Gallery', group: 'content', properties: { photos: { type: 'array', items: { type: 'object', properties: { url: str(''), alt: str('') } } }, cols: num('') } },
+  Image: { label: 'Image', group: 'content', properties: { url: str('Photo URL (https)'), alt: str(''), caption: str(''), fit: str('cover or contain', { enum: ['cover', 'contain'] }), height: str('', { enum: ['natural', 'short', 'medium', 'tall'] }), width: str('', { enum: ['page', 'wide', 'full'] }), rounded: bool(''), href: str('') } },
+  Heading: { label: 'Heading', group: 'content', properties: { text: str(''), level: str('2 or 3', { enum: ['2', '3'] }), align: str('', { enum: ['left', 'center'] }), sub: str('') } },
   Button: { label: 'Button', group: 'content', properties: { label: str(''), href: str(''), style: str('primary or secondary', { enum: ['primary', 'secondary'] }) } },
   FAQ: { label: 'FAQ', group: 'content', properties: { items: { type: 'array', items: { type: 'object', properties: { q: str(''), a: str('') }, required: ['q', 'a'] } } } },
   Instagram: { label: 'Instagram', group: 'content', properties: { handle: str('Without the @') } },

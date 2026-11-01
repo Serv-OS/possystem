@@ -7,12 +7,12 @@ import { puckField } from './blocks/puckFields.js';
 
 // Section 6 plus Row (5.12.9: columns the owner drops blocks into).
 const SECTION_6 = ['Hero', 'OrderBar', 'LiveMenu', 'Specials', 'OrderEmbed', 'LoyaltyJoin', 'GiftCards', 'BookTable', 'Waitlist', 'Hours', 'FindUs', 'Reviews', 'BlogList',
-  'Text', 'Columns', 'Row', 'Gallery', 'Button', 'FAQ', 'Instagram', 'Divider', 'Spacer', 'CustomHtml'];
+  'Text', 'Columns', 'Row', 'Gallery', 'Image', 'Heading', 'Button', 'FAQ', 'Instagram', 'Divider', 'Spacer', 'CustomHtml'];
 
 test('every block from section 6 exists, in the right group, and nothing else', () => {
   assert.deepEqual([...BLOCK_TYPES].sort(), [...SECTION_6].sort());
   assert.equal(GROUPS.servos.length, 13);
-  assert.equal(GROUPS.content.length, 10);
+  assert.equal(GROUPS.content.length, 12);
   for (const t of GROUPS.servos) assert.equal(BLOCK_SCHEMAS[t].group, 'servos');
   for (const t of GROUPS.content) assert.equal(BLOCK_SCHEMAS[t].group, 'content');
   assert.ok(isBlockType('Hero') && !isBlockType('Carousel') && !isBlockType('__proto__'));
@@ -102,4 +102,25 @@ test('walkBlocks yields top level and nested blocks depth first, normalised, jun
   assert.equal(menu.props.layout, 'cards', 'nested props are normalised');
   assert.deepEqual(walkBlocks(null), []);
   assert.deepEqual(walkBlocks({ content: [{ type: 'Row', props: { col1: 'junk' } }] }).map((b) => b.type), ['Row']);
+});
+
+// ── 5.12.10: Image, Heading, widths, hero slides ────────────────────────────────
+test('Image and Heading: content blocks with sensible defaults; Row and Image carry a width enum; Hero has slides', () => {
+  assert.equal(BLOCK_SCHEMAS.Image.group, 'content');
+  assert.equal(BLOCK_SCHEMAS.Heading.group, 'content');
+  const img = defaultPropsFor('Image');
+  assert.deepEqual([img.url, img.fit, img.height, img.width, img.rounded, img.href], ['', 'cover', 'natural', 'page', true, '']);
+  const hd = defaultPropsFor('Heading');
+  assert.deepEqual([hd.text, hd.level, hd.align, hd.sub], ['Heading', '2', 'left', '']);
+  assert.equal(BLOCK_SCHEMAS.Image.props.url.type, 'image', 'the editor shows an Upload photo button');
+  assert.deepEqual(BLOCK_SCHEMAS.Row.props.width.options, ['page', 'wide', 'full']);
+  assert.equal(defaultPropsFor('Row').width, 'page');
+  assert.equal(normaliseProps('Image', { url: 'https://x/a.jpg', width: 'huge', level: 9 }).width, 'page');
+  const hero = defaultPropsFor('Hero');
+  assert.deepEqual(hero.slides, []);
+  assert.equal(hero.slide_seconds, '6');
+  assert.equal(BLOCK_SCHEMAS.Hero.props.slides.item.photo_url.type, 'image');
+  const n = normaliseProps('Hero', { slides: [{ photo_url: 'https://x/2.jpg', headline: 'Two' }, 'junk'] });
+  assert.equal(n.slides.length >= 1, true);
+  assert.equal(n.slides[0].headline, 'Two');
 });

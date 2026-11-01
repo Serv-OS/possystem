@@ -47,6 +47,7 @@ export function rowPlan(props) {
   return {
     cols,
     full: p.full_width === true,
+    width: ['page', 'wide', 'full'].includes(p.width) ? p.width : 'page',
     gap: SIZES.includes(p.gap) ? p.gap : 'normal',
     pad: SIZES.includes(p.padding) ? p.padding : 'normal',
     align: p.align === 'center' ? 'center' : 'top',

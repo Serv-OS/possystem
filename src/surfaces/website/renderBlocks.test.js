@@ -439,7 +439,7 @@ test('Row: two columns holding a Text and a LiveMenu paint the grid, the data at
     col1: [{ type: 'Text', props: { id: 't1', md: 'Hello **there**' } }],
     col2: [{ type: 'LiveMenu', props: { id: 'm1', layout: 'list' } }],
   }));
-  assert.match(html, /^<section class="w-block w-row" data-block="Row" data-id="row1" data-cols="2" data-full="true" data-tone="light"/);
+  assert.match(html, /^<section class="w-block w-row" data-block="Row" data-id="row1" data-cols="2" data-full="true" data-width="page" data-tone="light"/);
   assert.match(html, /data-darken="true"/);
   assert.match(html, /style="--w-row-cols:2;--w-row-bg:#1b1b1b;--w-row-img:url\(&quot;https:\/\/x\/bg\.jpg&quot;\)"/);
   assert.match(html, /<div class="w-inner w-row-grid">/);
@@ -500,4 +500,61 @@ test('isDarkHex: white text reads better on these; invalid input is never dark',
   for (const hex of ['#000000', '#102030', '#1b1b1b', '#c8493b', '#333', '7a1f1f']) assert.equal(isDarkHex(hex), true, hex);
   for (const hex of ['#ffffff', '#f6f2ec', '#ffd166', '#fff', '#15C26A']) assert.equal(isDarkHex(hex), false, hex);
   for (const junk of ['', null, undefined, 'red', '#12345', '#gggggg', 'url(x)', 12]) assert.equal(isDarkHex(junk), false, String(junk));
+});
+
+// ── 5.12.10: Image, Heading, width, hero slideshow ──────────────────────────────
+test('Image: paints the photo with fit, height, width and rounded data attributes, a caption and an optional link; no photo paints nothing', () => {
+  const ctx = rowCtx();
+  const html = renderBlock(ctx, { type: 'Image', props: { id: 'img1', url: 'https://x/p.jpg', alt: 'A <pizza>', caption: 'Our oven', fit: 'contain', height: 'tall', width: 'full', rounded: false, href: '/menu' } });
+  assert.match(html, /^<section class="w-block w-image" data-block="Image" data-id="img1" data-fit="contain" data-height="tall" data-width="full" data-rounded="false">/);
+  assert.match(html, /<a href="\/menu"><img src="https:\/\/x\/p\.jpg" alt="A &lt;pizza&gt;" loading="lazy"><\/a>/);
+  assert.match(html, /<p class="w-image-caption">Our oven<\/p>/);
+  const plain = renderBlock(ctx, { type: 'Image', props: { id: 'img2', url: 'https://x/p.jpg' } });
+  assert.match(plain, /data-fit="cover" data-height="natural" data-width="page" data-rounded="true"/);
+  assert.doesNotMatch(plain, /<a /);
+  assert.equal(renderBlock(ctx, { type: 'Image', props: { id: 'img3', url: 'javascript:alert(1)' } }), '');
+  assert.equal(renderBlock(ctx, { type: 'Image', props: { id: 'img4', url: '' } }), '');
+});
+
+test('Heading: h2 by default, h3 on level 3, align and sub line; empty text paints nothing', () => {
+  const ctx = rowCtx();
+  assert.match(renderBlock(ctx, { type: 'Heading', props: { id: 'hd1', text: 'Our <story>', sub: 'Since 2012' } }), /^<section class="w-block w-heading" data-block="Heading" data-id="hd1" data-align="left"><div class="w-inner"><h2 class="w-h2">Our &lt;story&gt;<\/h2><p class="w-heading-sub">Since 2012<\/p><\/div><\/section>$/);
+  assert.match(renderBlock(ctx, { type: 'Heading', props: { id: 'hd2', text: 'Small', level: '3', align: 'center' } }), /data-align="center".*<h3 class="w-h2">Small<\/h3>/);
+  assert.equal(renderBlock(ctx, { type: 'Heading', props: { id: 'hd3', text: '   ' } }), '');
+});
+
+test('Row: content width is page by default, wide or full when asked, junk is page; an Image in each column is nested', () => {
+  const ctx = rowCtx();
+  assert.match(renderBlock(ctx, rowBlock({ columns: '2' })), /data-full="false" data-width="page"/);
+  assert.match(renderBlock(ctx, rowBlock({ columns: '2', width: 'full' })), /data-width="full"/);
+  assert.match(renderBlock(ctx, rowBlock({ columns: '2', width: 'wide' })), /data-width="wide"/);
+  assert.match(renderBlock(ctx, rowBlock({ columns: '2', width: 'huge' })), /data-width="page"/);
+  const html = renderBlock(ctx, rowBlock({
+    columns: '4',
+    col1: [{ type: 'Image', props: { id: 'a', url: 'https://x/1.jpg' } }], col2: [{ type: 'Image', props: { id: 'b', url: 'https://x/2.jpg' } }],
+    col3: [{ type: 'Image', props: { id: 'c', url: 'https://x/3.jpg' } }], col4: [{ type: 'Heading', props: { id: 'd', text: 'Four' } }],
+  }));
+  assert.equal((html.match(/data-block="Image" data-id="[abc]" data-nested="true"/g) || []).length, 3);
+  assert.match(html, /data-block="Heading" data-id="d" data-nested="true"/);
+});
+
+test('Hero slideshow: one slide keeps the old markup; more slides paint layers (slide 1 active, others hidden), dots and the timing; still one h1', () => {
+  const s = snap();
+  const ctx = rowCtx(s);
+  const single = renderBlock(ctx, { type: 'Hero', props: { id: 'h', headline: 'Hi', slides: [] } });
+  assert.match(single, /^<section class="w-block w-hero w-hero-tall" data-block="Hero"/);
+  assert.doesNotMatch(single, /w-hero-slide/);
+  const ctx2 = rowCtx(s);
+  const show = renderBlock(ctx2, { type: 'Hero', props: { id: 'h', headline: 'Hi', photo_url: 'https://x/1.jpg', slide_seconds: '8', slides: [
+    { photo_url: 'https://x/2.jpg', headline: 'Two', sub: 'Second', button_label: 'Book', button_href: 'servos:book' },
+    { headline: 'Three' },
+  ] } });
+  assert.match(show, /^<section class="w-block w-hero w-hero-slides w-hero-tall" data-block="Hero" data-id="h" data-photo="true" data-slides="3" data-seconds="8">/);
+  assert.match(show, /<div class="w-hero-slide" data-slide="0" data-active="true" data-photo="true" style="background-image:url\(&quot;https:\/\/x\/1\.jpg&quot;\)"><div class="w-hero-body">(<div class="w-hero-status[^>]*>[^<]*<\/div>)?<h1>Hi<\/h1>/);
+  assert.match(show, /<div class="w-hero-slide" data-slide="1" data-active="false" data-photo="true" style="[^"]+" aria-hidden="true"><div class="w-hero-body"><h2>Two<\/h2><p>Second<\/p>/);
+  assert.match(show, /data-slide="2" data-active="false" data-photo="false" aria-hidden="true"/);
+  assert.equal(h1Count(show), 1);
+  assert.equal((show.match(/class="w-hero-dot"/g) || []).length, 3);
+  assert.match(show, /aria-selected="true" aria-label="Slide 1" data-go="0"/);
+  assert.match(show, /Book/);
 });

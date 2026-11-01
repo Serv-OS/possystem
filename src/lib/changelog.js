@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.12.10',
+    date: '1 Nov 2026',
+    items: [
+      'Website: Image block. One photo with fit (cover or contain), height, rounded corners, caption and an optional link. Drop one into each column of a Row for a photo grid.',
+      'Website: Heading block (text, size, align, line under it) so a column can carry its own title without a Text block and markdown.',
+      'Website editor: photo uploads from a page field failed with "kind must be one of: photo, logo, og, favicon, post". Fixed, uploads are saved as photos.',
+    ],
+  },
+  {
     v: '5.12.9',
     date: '1 Nov 2026',
     items: [

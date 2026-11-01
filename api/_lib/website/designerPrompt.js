@@ -140,6 +140,13 @@ ordinary blocks, each { type, props } exactly like a page block (col3 and col4 a
 columns says so). background.color (hex) and background.image (https URL) paint the row, darken dims a
 photo so text reads, tone 'auto' picks light text on a dark colour; col_bg.col1 to col4 colour one
 column each. One level deep only: never put a Row inside a Row, never a Hero inside a Row.
+HERO SLIDESHOW: Hero.slides is a list of extra slides ({ photo_url, headline, sub, button_label,
+button_href }); the Hero's own fields are slide 1. Two or more slides make the hero a slideshow that
+advances every slide_seconds ('0' = no auto play). Use it when the owner asks for a moving or sliding
+header, seasonal specials or several venues up front.
+Inside a column prefer the small blocks: Image (one photo, fit, height, caption, optional link),
+Heading (text, level '2' or '3', align, optional sub line), Text, Button. A Row with 3 columns each
+holding an Image then a Heading then a Text is how you build a feature grid or a venue tile row.
 
 HARD RULES
 - Use only block types listed above and only their props. Anything else is refused by the validator.

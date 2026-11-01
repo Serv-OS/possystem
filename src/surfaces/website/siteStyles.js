@@ -63,6 +63,8 @@ export const SITE_CSS = `
 /* row (5.12.9): columns with row and column backgrounds; nested blocks fill their column */
 .${C.row}{position:relative;isolation:isolate;background-color:var(--w-row-bg,transparent);background-image:var(--w-row-img,none);background-size:cover;background-position:center}
 .${C.row}[data-darken="true"]::before{content:"";position:absolute;inset:0;background:var(--w-dim);z-index:-1}
+.${C.row}[data-width="wide"] .${C.rowGrid}{max-width:1400px}
+.${C.row}[data-width="full"] .${C.rowGrid}{max-width:none;padding-left:0;padding-right:0}
 .${C.row}[data-full="false"]{background:none}
 .${C.row}[data-full="false"]::before{display:none}
 .${C.row}[data-full="false"][data-bg="true"] .${C.rowGrid}{position:relative;isolation:isolate;background-color:var(--w-row-bg,transparent);background-image:var(--w-row-img,none);background-size:cover;background-position:center;border-radius:16px;padding:24px 16px}
@@ -84,6 +86,22 @@ export const SITE_CSS = `
 .${C.rowCol} .${C.block}+.${C.block}{margin-top:24px}
 .${C.rowCol} .${C.block} .${C.inner}{max-width:none;padding:0}
 .${C.rowCol} .${C.hero}{min-height:280px;border-radius:16px}
+/* image + heading blocks (5.12.10) */
+.${C.image} .${C.imageBox} img{display:block;width:100%;height:auto}
+.${C.image}[data-rounded="true"] .${C.imageBox} img{border-radius:var(--w-radius)}
+.${C.image}[data-fit="cover"][data-height="short"] .${C.imageBox} img{height:220px;object-fit:cover}
+.${C.image}[data-fit="cover"][data-height="medium"] .${C.imageBox} img{height:360px;object-fit:cover}
+.${C.image}[data-fit="cover"][data-height="tall"] .${C.imageBox} img{height:520px;object-fit:cover}
+.${C.image}[data-fit="contain"][data-height="short"] .${C.imageBox} img{height:220px;object-fit:contain}
+.${C.image}[data-fit="contain"][data-height="medium"] .${C.imageBox} img{height:360px;object-fit:contain}
+.${C.image}[data-fit="contain"][data-height="tall"] .${C.imageBox} img{height:520px;object-fit:contain}
+.${C.image}[data-width="wide"] > .${C.inner}{max-width:1400px}
+.${C.image}[data-width="full"] > .${C.inner}{max-width:none;padding:0}
+.${C.image}[data-width="full"][data-rounded="true"] .${C.imageBox} img{border-radius:0}
+.${C.imageCaption}{margin:8px 0 0;color:var(--w-muted);font-size:.95rem}
+.${C.headingBlock}[data-align="center"]{text-align:center}
+.${C.headingBlock} .${C.h2}{margin-bottom:6px}
+.${C.headingSub}{margin:0;color:var(--w-muted)}
 /* footer */
 .${C.footer}{border-top:1px solid var(--w-line);padding:40px 0 60px;color:var(--w-muted);font-size:.95rem}
 .${C.footer} .${C.inner}{display:grid;gap:16px}
@@ -119,6 +137,18 @@ html.${C.sheetOpen},html.${C.sheetOpen} body{overflow:hidden !important}
 .${C.heroBody} p{font-size:clamp(1.05rem,2.4vw,1.35rem);max-width:60ch;margin:0 0 22px;opacity:.92}
 .${C.heroBody} .${C.btn}+.${C.btn}{margin-left:10px}
 .${C.hero}[data-photo="true"] .${C.btnSecondary}{color:var(--w-on-photo);border-color:var(--w-on-photo)}
+/* hero slideshow (5.12.10): layers stacked in one grid cell, the active one fades in */
+.${C.heroSlides}{display:grid;align-items:stretch}
+.${C.heroSlides}::before{display:none}
+.${C.heroSlide}{grid-area:1/1;position:relative;isolation:isolate;display:flex;align-items:flex-end;background:var(--w-card);background-size:cover;background-position:center;color:var(--w-ink);opacity:0;transition:opacity .8s ease;pointer-events:none}
+.${C.heroSlide}[data-active="true"]{opacity:1;pointer-events:auto}
+.${C.heroSlide}[data-photo="true"]{color:var(--w-on-photo)}
+.${C.heroSlide}[data-photo="true"]::before{content:"";position:absolute;inset:0;background:var(--w-scrim);z-index:-1}
+.${C.heroSlide}[data-photo="true"] .${C.btnSecondary}{color:var(--w-on-photo);border-color:var(--w-on-photo)}
+.${C.heroDots}{grid-area:1/1;align-self:end;justify-self:center;display:flex;gap:8px;padding:0 0 14px;z-index:1}
+.${C.heroDot}{width:10px;height:10px;border-radius:50%;border:0;padding:0;background:var(--w-on-photo);opacity:.45;cursor:pointer}
+.${C.heroDot}[aria-selected="true"]{opacity:1;transform:scale(1.2)}
+@media (prefers-reduced-motion:reduce){.${C.heroSlide}{transition:none}}
 .${C.heroStatus}{display:inline-flex;align-items:center;gap:8px;font-size:.9rem;font-weight:600;margin-bottom:14px;padding:6px 12px;border-radius:999px;background:var(--w-card);color:var(--w-ink)}
 .${C.heroStatus}::before{content:"";width:9px;height:9px;border-radius:50%;background:var(--w-muted)}
 .${C.heroStatus}.${C.open}::before{background:var(--w-brand)}
