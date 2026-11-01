@@ -17,6 +17,13 @@ function Section({ type, id, className, extra, children }) {
   return <section className={cls(CN.block, className)} data-block={type} data-id={id} data-nested={nested ? 'true' : undefined} {...(extra || {})}><div className={CN.inner}>{children}</div></section>;
 }
 const Empty = ({ children }) => <p className={CN.empty}>{children}</p>;
+// 5.12.16: the same data-inset the SSR writes (insetAttr in ssr/renderBlocks.js): only inside a column.
+const INSETS = ['none', 'small', 'normal', 'large'];
+function useInset(pad) {
+  const nested = useNested();
+  if (!nested) return {};
+  return { 'data-inset': INSETS.includes(pad) ? pad : 'normal' };
+}
 // The markdown renderer escapes every piece of user text itself, so this HTML is safe to set.
 const Prose = ({ md, className }) => <div className={cls(CN.prose, className)} dangerouslySetInnerHTML={{ __html: renderMarkdown(md) }} />;
 
@@ -24,9 +31,10 @@ function dateText(iso) {
   try { return new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }); } catch { return ''; }
 }
 
-export function Text({ id, md }) {
+export function Text({ id, md, pad }) {
+  const inset = useInset(pad);
   if (!renderMarkdown(md)) return null;
-  return <Section type="Text" id={id} className={CN.text}><Prose md={md} /></Section>;
+  return <Section type="Text" id={id} className={CN.text} extra={inset}><Prose md={md} /></Section>;
 }
 
 export function Columns({ id, cols, items }) {
@@ -59,22 +67,24 @@ export function Image({ id, url, alt, caption, fit, height, width, rounded, href
   );
 }
 
-export function Heading({ id, text, level, align, sub }) {
+export function Heading({ id, text, level, align, sub, pad }) {
+  const inset = useInset(pad);
   const t = String(text || '').trim();
   if (!t) return null;
   const Tag = level === '3' ? 'h3' : 'h2';
   return (
-    <Section type="Heading" id={id} className={CN.headingBlock} extra={{ 'data-align': align || 'left' }}>
+    <Section type="Heading" id={id} className={CN.headingBlock} extra={{ 'data-align': align || 'left', ...inset }}>
       <Tag className={CN.h2}>{t}</Tag>
       {sub ? <p className={CN.headingSub}>{sub}</p> : null}
     </Section>
   );
 }
 
-export function Button({ id, label, href, style }) {
+export function Button({ id, label, href, style, pad }) {
+  const inset = useInset(pad);
   if (!label) return null;
   const styleCn = style === 'secondary' ? CN.btnSecondary : style === 'link' ? CN.btnLink : CN.btnPrimary;
-  return <Section type="Button" id={id}><A className={cls(CN.btn, styleCn)} href={href}>{label}</A></Section>;
+  return <Section type="Button" id={id} extra={inset}><A className={cls(CN.btn, styleCn)} href={href}>{label}</A></Section>;
 }
 
 export function FAQ({ id, title, items }) {

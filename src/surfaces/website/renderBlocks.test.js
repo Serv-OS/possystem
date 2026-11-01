@@ -452,7 +452,7 @@ test('Row: two columns holding a Text and a LiveMenu paint the grid, the data at
   assert.match(html, /<div class="w-inner w-row-grid">/);
   assert.equal((html.match(/<div class="w-row-col"/g) || []).length, 2, 'only the columns that exist');
   assert.match(html, /<div class="w-row-col" data-col="2" data-bg="true" style="--w-col-bg:#ffffff">/);
-  assert.match(html, /<section class="w-block w-text" data-block="Text" data-id="t1" data-nested="true">/, 'a nested block is marked nested');
+  assert.match(html, /<section class="w-block w-text" data-block="Text" data-id="t1" data-nested="true" data-inset="normal">/, 'a nested block is marked nested and, for text, inset');
   assert.match(html, /<strong>there<\/strong>/);
   assert.match(html, /data-block="LiveMenu" data-id="m1" data-nested="true"/);
   assert.match(html, /Margherita/, 'the nested menu renders the live items');
@@ -613,4 +613,18 @@ test('LoyaltyJoin: the card carries the site name, never one venue; header paint
   s.site.nav = [{ label: 'Home', kind: 'page', page_id: '' }, { label: 'Locations', kind: 'locations' }];
   const out = render(s, '/');
   assert.match(out.body, /<div class="w-nav-item"><button type="button" class="w-nav-link w-nav-drop" aria-haspopup="true" aria-expanded="false">Locations<\/button><div class="w-nav-sub"><a class="w-nav-link" href="\/locations\//);
+});
+
+
+// ── 5.12.16: space left and right for text in a column ─────────────────────────────────────
+test('Text, Heading and Button in a column carry data-inset (auto = normal); on the page they do not', () => {
+  const ctx = rowCtx();
+  const col = (block) => renderBlock(ctx, rowBlock({ columns: '1', col1: [block] }));
+  assert.match(col({ type: 'Text', props: { id: 't1', md: 'Hi' } }), /data-block="Text"[^>]*data-inset="normal"/);
+  assert.match(col({ type: 'Text', props: { id: 't1', md: 'Hi', pad: 'none' } }), /data-block="Text"[^>]*data-inset="none"/);
+  assert.match(col({ type: 'Heading', props: { id: 'h1', text: 'Drink', pad: 'large' } }), /data-block="Heading"[^>]*data-inset="large"/);
+  assert.match(col({ type: 'Button', props: { id: 'b1', label: 'View menu', href: '/menu', pad: 'small' } }), /data-block="Button"[^>]*data-inset="small"/);
+  assert.match(col({ type: 'Text', props: { id: 't1', md: 'Hi', pad: 'huge' } }), /data-inset="normal"/, 'an unknown value is auto');
+  assert.doesNotMatch(col({ type: 'Image', props: { id: 'i1', url: 'https://x/a.jpg' } }), /data-inset=/, 'a photo keeps the plain gutter');
+  assert.doesNotMatch(renderBlock(ctx, { type: 'Text', props: { id: 't2', md: 'Page level' } }), /data-inset=/, 'on the page the gutter already gives space');
 });
