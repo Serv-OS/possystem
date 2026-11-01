@@ -167,7 +167,7 @@ HARD RULES
   'servos:loyalty', 'servos:gift', 'servos:book', 'servos:waitlist' for ServOS surfaces, '/blog' for
   the blog list (the site serves /blog and /locations itself, so no page may use those slugs).
 - Nav items: {label, kind:'page', page_id:<page slug, or its id from the facts>} or
-  {label, kind:'link', href}. Theme has exactly layout, type, buttons, mood, brand_color.
+  {label, kind:'link', href}. Theme has exactly layout, type, buttons, mood, brand_color, bg_color, card_color, text_color (the last three are page, card and text colours over the mood; null = the mood decides).
 - Every block's props carry only the props listed for that block (plus id). No extra keys anywhere:
   a page has slug, title, kind, seo, layout, status, location_id and nothing else.
 - Location pages: kind 'location', slug = that location's online slug, location_id = its id from the

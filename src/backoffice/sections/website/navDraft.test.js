@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { autoNavRows, navRowsFrom, navPatchFrom, moveRow, headerDraft, MAX_NAV_ITEMS } from './navDraft.js';
-import { navProblems, settingsProblems } from '../../../../supabase/functions/_shared/websiteRules.js';
+import { navProblems, settingsProblems, themeProblems } from '../../../../supabase/functions/_shared/websiteRules.js';
 
 const pages = [
   { id: 'p1', slug: '', title: 'Home', kind: 'home', status: 'published' },
@@ -47,10 +47,12 @@ test('moveRow swaps neighbours and never falls off an end', () => {
 });
 
 test('headerDraft fills defaults; the server validates settings.header the same way', () => {
-  assert.deepEqual(headerDraft(null), { brand: 'logo', cta: 'none', sticky: true });
-  assert.deepEqual(headerDraft({ settings: { header: { brand: 'both', cta: 'book', sticky: false } } }), { brand: 'both', cta: 'book', sticky: false });
-  assert.deepEqual(headerDraft({ settings: { header: { brand: 'x', cta: 'y', sticky: 'z' } } }), { brand: 'logo', cta: 'none', sticky: true });
-  assert.deepEqual(settingsProblems({ header: { brand: 'both', cta: 'order', sticky: true } }), []);
+  assert.deepEqual(headerDraft(null), { brand: 'logo', cta: 'none', sticky: true, logo_size: 'normal' });
+  assert.deepEqual(headerDraft({ settings: { header: { brand: 'both', cta: 'book', sticky: false, logo_size: 'xlarge' } } }), { brand: 'both', cta: 'book', sticky: false, logo_size: 'xlarge' });
+  assert.deepEqual(headerDraft({ settings: { header: { brand: 'x', cta: 'y', sticky: 'z', logo_size: 'giant' } } }), { brand: 'logo', cta: 'none', sticky: true, logo_size: 'normal' });
+  assert.deepEqual(settingsProblems({ header: { brand: 'both', cta: 'order', sticky: true, logo_size: 'large' } }), []);
+  // 5.12.15: the server accepts the four logo sizes and nothing else.
+  assert.equal(settingsProblems({ header: { logo_size: 'giant' } }).length, 1);
   assert.deepEqual(settingsProblems({ header: null }), []);
   assert.equal(settingsProblems({ header: 'x' }).length, 1);
   const bad = settingsProblems({ header: { brand: 'huge', cta: 'buy', sticky: 'yes', colour: 'red' } });
@@ -75,4 +77,13 @@ test('dropdown rows: locations and group come back as rows and go out as nav ite
   const bad = navPatchFrom([{ label: 'Empty', kind: 'group', page_ids: [], links: [] }]);
   assert.equal(bad.errors.length, 1);
   assert.ok(bad.errors[0].includes('nothing in it'));
+});
+
+
+// ── 5.12.15: site colours the server accepts ────────────────────────────────────────────────
+test('themeProblems accepts bg_color, card_color and text_color as hex or null and refuses anything else', () => {
+  assert.deepEqual(themeProblems({ mood: 'light', bg_color: '#1A237E', card_color: null, text_color: '#ffffff' }), []);
+  assert.equal(themeProblems({ bg_color: 'blue' }).length, 1);
+  assert.equal(themeProblems({ bg_color: '#fff' }).length, 1, 'six digits only, like brand_color');
+  assert.equal(themeProblems({ page_color: '#ffffff' }).length, 1, 'an unknown theme key is refused');
 });

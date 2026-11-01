@@ -221,6 +221,8 @@ export function resolveRoute(snapshot, rawPath) {
  */
 export const HEADER_BRANDS = Object.freeze(['logo', 'name', 'both']);
 export const HEADER_CTAS = Object.freeze(['none', 'order', 'book']);
+// 5.12.15 (Peter: "you should be able to change the logo size in the header"): the brand mark height.
+export const HEADER_LOGO_SIZES = Object.freeze(['small', 'normal', 'large', 'xlarge']);
 export const HEADER_CTA_LABELS = Object.freeze({ order: 'Order now', book: 'Book a table' });
 export function headerOptions(settings) {
   const h = settings && settings.header && typeof settings.header === 'object' ? settings.header : {};
@@ -228,6 +230,7 @@ export function headerOptions(settings) {
     brand: HEADER_BRANDS.includes(h.brand) ? h.brand : 'logo',
     cta: HEADER_CTAS.includes(h.cta) ? h.cta : 'none',
     sticky: h.sticky !== false,
+    logo_size: HEADER_LOGO_SIZES.includes(h.logo_size) ? h.logo_size : 'normal',
   };
 }
 

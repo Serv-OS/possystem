@@ -198,6 +198,9 @@ export function buildPatchTool(blockSchemas = FALLBACK_BLOCK_SCHEMAS) {
           layout: str('', { enum: LAYOUTS }), type: str('', { enum: TYPE_PAIRINGS }),
           buttons: str('', { enum: BUTTON_SHAPES }), mood: str('', { enum: MOODS }),
           brand_color: { type: ['string', 'null'], description: 'null inherits the branding colour (default)' },
+          bg_color: { type: ['string', 'null'], description: 'Page background hex over the mood; null lets the mood decide (default). Set it when the owner asks for a page or site background colour' },
+          card_color: { type: ['string', 'null'], description: 'Card background hex; null follows the mood or the page colour' },
+          text_color: { type: ['string', 'null'], description: 'Body text hex; null picks ink or paper so it reads; a colour that does not read on the page is nudged' },
         } },
         nav: { type: 'array', items: { type: 'object', properties: {
           label: str('Up to 60 characters'), kind: str("'page' for a site page, 'link' for a URL, 'locations' for a dropdown of every venue page, 'group' for a dropdown of the children listed", { enum: ['page', 'link', 'locations', 'group'] }),

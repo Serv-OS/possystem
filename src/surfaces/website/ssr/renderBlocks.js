@@ -410,7 +410,7 @@ export function renderHeader(ctx) {
     ? `<div class="${CN.navItem}"><button type="button" class="${cls(CN.navLink, CN.navDrop)}" aria-haspopup="true" aria-expanded="false">${esc(n.label)}</button><div class="${CN.navSub}">${n.children.map(link).join('')}</div></div>`
     : link(n))).join('') +
     (cta ? `<a class="${cls(CN.navLink, CN.headerCta)}" href="${attr(cta.href)}">${esc(cta.label)}</a>` : '');
-  return `<header class="${CN.header}"${opts.sticky ? '' : ' data-sticky="false"'}><div class="${CN.inner}"><a class="${CN.logo}" href="/" aria-label="${attr(name)} home">${logo}</a>` +
+  return `<header class="${CN.header}"${opts.sticky ? '' : ' data-sticky="false"'}${opts.logo_size !== 'normal' ? ` data-logo="${opts.logo_size}"` : ''}><div class="${CN.inner}"><a class="${CN.logo}" href="/" aria-label="${attr(name)} home">${logo}</a>` +
     `<button type="button" class="${CN.navToggle}" aria-expanded="false" aria-controls="w-nav">Menu</button>` +
     `<nav id="w-nav" class="${CN.nav}" aria-label="Site">${links}</nav></div></header>`;
 }

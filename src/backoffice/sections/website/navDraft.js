@@ -86,10 +86,11 @@ export function moveRow(rows, i, delta) {
 
 /** The header option choices, with the words the card shows. */
 export const HEADER_BRAND_OPTIONS = [['logo', 'Logo', 'Your logo; the venue name when there is none'], ['name', 'Name', 'The venue name as text'], ['both', 'Logo and name', 'The logo with the name beside it']];
+export const HEADER_LOGO_OPTIONS = [['small', 'Small', 'A 28px tall mark'], ['normal', 'Normal', 'A 40px tall mark'], ['large', 'Large', 'A 60px tall mark; the header grows with it'], ['xlarge', 'Extra large', 'An 84px tall mark; the header grows with it']];
 export const HEADER_CTA_OPTIONS = [['none', 'None', ''], ['order', 'Order now', 'Goes to online ordering (the choose a venue page on a group site)'], ['book', 'Book a table', 'Goes to bookings']];
 
 /** The header options as saved, with the defaults the site uses filled in. */
 export function headerDraft(site) {
   const h = (site && site.settings && site.settings.header) || {};
-  return { brand: ['logo', 'name', 'both'].includes(h.brand) ? h.brand : 'logo', cta: ['none', 'order', 'book'].includes(h.cta) ? h.cta : 'none', sticky: h.sticky !== false };
+  return { brand: ['logo', 'name', 'both'].includes(h.brand) ? h.brand : 'logo', cta: ['none', 'order', 'book'].includes(h.cta) ? h.cta : 'none', sticky: h.sticky !== false, logo_size: ['small', 'normal', 'large', 'xlarge'].includes(h.logo_size) ? h.logo_size : 'normal' };
 }

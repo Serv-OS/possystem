@@ -218,7 +218,7 @@ export const BLOCK_SCHEMAS = {
       gap: e(['none', 'small', 'normal', 'large'], 'normal', { label: 'Space between columns' }),
       padding: e(['none', 'small', 'normal', 'large'], 'normal', { label: 'Space above and below' }),
       align: e(['top', 'center'], 'top', { label: 'Line columns up at the' }),
-      col_padding: e(['auto', 'none', 'small', 'normal', 'large'], 'auto', { label: 'Space inside columns', hint: 'Auto = none at page width, normal when the row is edge to edge. Text never touches the edge' }),
+      col_padding: e(['auto', 'none', 'small', 'normal', 'large'], 'auto', { label: 'Space inside columns', hint: 'Auto = normal (20px). Pick none for columns that should touch' }),
       width: e(['page', 'wide', 'full'], 'page', { label: 'Content width', hint: 'Page = the normal column, Wide = a wider column, Full = edge to edge' }),
       full_width: b(false, { label: 'Background edge to edge', hint: 'The content keeps the page width' }),
       background: obj({

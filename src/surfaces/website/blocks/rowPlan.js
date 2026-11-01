@@ -31,9 +31,11 @@ export function safeImageUrl(v) {
  *   hasBg, style: { '--w-row-cols', '--w-row-bg'?, '--w-row-img'? }, colBg: ['#hex' | '', ...] }
  */
 const COL_PADS = ['none', 'small', 'normal', 'large'];
+// 5.12.15 (Peter: "still no padding on the text boxes"): auto is normal everywhere. 5.12.12 made
+// auto none at page width and his columns still had text on their edges.
 function colPadOf(p) {
   if (COL_PADS.includes(p.col_padding)) return p.col_padding;
-  return ['full'].includes(p.width) ? 'normal' : 'none';
+  return 'normal';
 }
 
 export function rowPlan(props) {
