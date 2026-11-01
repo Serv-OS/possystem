@@ -109,3 +109,22 @@ test('channels default on; brief names the venue; puck theme only uses BO tokens
   assert.match(buildBrief({ name: 'Mozz Pizza', locations: [1, 2] }), /Mozz Pizza with 2 locations/);
   for (const v of Object.values(PUCK_THEME_VARS)) assert.ok(/^(var\(--|inherit|ui-monospace)/.test(v), v);
 });
+
+
+// ── 5.12.13 automatic geocoding ─────────────────────────────────────────────────
+import { venuesNeedingGeocode } from './helpers.js';
+test('venuesNeedingGeocode: venues with an address but no coordinates on the row or in settings.geo', () => {
+  const site = { settings: { geo: { c: { lat: 53.8, lng: -1.5 }, d: { lat: 'x' } } } };
+  const locs = [
+    { id: 'a', address: '45 Fishergate, Preston', latitude: null, longitude: null },
+    { id: 'b', address: 'The Light, Leeds', latitude: 53.79, longitude: -1.54 },
+    { id: 'c', address: 'Cached', latitude: null, longitude: null },
+    { id: 'd', address: 'Bad cache', latitude: null, longitude: null },
+    { id: 'e', address: '   ', latitude: null, longitude: null },
+    { id: 'f', latitude: null, longitude: null },
+    null,
+  ];
+  assert.deepEqual(venuesNeedingGeocode(site, locs).map((l) => l.id), ['a', 'd']);
+  assert.deepEqual(venuesNeedingGeocode(null, locs).map((l) => l.id), ['a', 'c', 'd']);
+  assert.deepEqual(venuesNeedingGeocode(site, null), []);
+});

@@ -49,4 +49,5 @@ export const restoreVersion = (versionId) => run('restoreVersion', versionId);
 export const previewToken = () => run('previewToken');
 export const uploadUrl = (kind, ext) => run('uploadUrl', kind, ext);
 export const checkDomain = (customDomain) => run('checkDomain', customDomain);
+export const geocodeLocations = () => run('geocodeLocations');
 export const removeDomain = () => run('removeDomain');
