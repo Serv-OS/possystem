@@ -241,6 +241,13 @@ export function visibleNav(snapshot) {
   const pages = publishedPages(snapshot);
   const nav = Array.isArray(site.nav) ? site.nav : [];
   const out = [];
+  // 5.12.12: every public venue as a child item, its own page when the site has one, else its
+  // /locations/<slug> route. Only a 'locations' item carries them (5.12.19, Peter: "I do not want
+  // it automatic, I should be able to build a menu": nothing drops down unless the owner built it).
+  const venueChildren = () => siteLocations(snapshot).map((l) => {
+    const pg = pages.find((p) => p.kind === 'location' && (p.location_id === l.id || slugOf(p) === l.online_slug));
+    return { label: String((pg && pg.title) || l.name || l.online_slug), href: pg ? pathForPage(pg, snapshot) : `/locations/${l.online_slug}` };
+  });
   // One flat item from a saved nav entry, or null when its page is missing or its channel is off.
   const flat = (item) => {
     if (!item || !item.label) return null;
@@ -259,17 +266,17 @@ export function visibleNav(snapshot) {
     // 5.12.12 (Peter: "the main nav, you cannot add a drop down for which location"): a 'locations'
     // item opens every published venue page; a 'group' item opens the children the owner picked.
     if (item.kind === 'locations') {
-      // Every public venue: its own page when the site has one, else its /locations/<slug> route.
-      const children = siteLocations(snapshot).map((l) => {
-        const pg = pages.find((p) => p.kind === 'location' && (p.location_id === l.id || slugOf(p) === l.online_slug));
-        return { label: String((pg && pg.title) || l.name || l.online_slug), href: pg ? pathForPage(pg, snapshot) : `/locations/${l.online_slug}` };
-      });
+      const children = venueChildren();
       if (children.length) out.push({ label: String(item.label), href: findUsPath(snapshot), children });
       continue;
     }
     if (item.kind === 'group') {
       const children = (Array.isArray(item.children) ? item.children : []).map(flat).filter(Boolean);
-      if (children.length) out.push({ label: String(item.label), href: children[0].href, children });
+      if (!children.length) continue;
+      // 5.12.19 (Peter: "drag one menu item under another"): a group that is itself a page or a
+      // link opens that on a click and its children on hover (link: true); one without is a heading.
+      const own = item.page_id ? flat({ label: item.label, kind: 'page', page_id: item.page_id }) : (item.href ? flat({ label: item.label, kind: 'link', href: item.href }) : null);
+      out.push(own ? { label: String(item.label), href: own.href, link: true, children } : { label: String(item.label), href: children[0].href, children });
       continue;
     }
     const one = flat(item);

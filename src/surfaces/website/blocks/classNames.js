@@ -44,7 +44,7 @@ export const CN = Object.freeze({
   book: 'w-book', waitlist: 'w-waitlist',
   hours: 'w-hours', hoursTable: 'w-hours-table', hoursToday: 'w-hours-today', open: 'w-open', closed: 'w-closed',
   findus: 'w-findus', findusGrid: 'w-findus-grid', locCard: 'w-loc', locName: 'w-loc-name', locAddr: 'w-loc-addr',
-  locActions: 'w-loc-actions', nearestBtn: 'w-nearest', nearest: 'w-loc-nearest',
+  locActions: 'w-loc-actions', nearestBtn: 'w-nearest', nearest: 'w-loc-nearest', nearestRow: 'w-nearest-row', nearestForm: 'w-nearest-form', nearestInput: 'w-nearest-input',
   reviews: 'w-reviews', review: 'w-review', stars: 'w-stars',
   blogList: 'w-bloglist', post: 'w-post', postCover: 'w-post-cover', postMeta: 'w-post-meta', postBody: 'w-post-body',
   text: 'w-text', prose: 'w-prose',

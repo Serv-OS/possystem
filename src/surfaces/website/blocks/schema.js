@@ -305,6 +305,16 @@ export const BLOCK_SCHEMAS = {
   },
 };
 
+// 5.12.19 (Peter, 1 Nov: "no way to set a section to full width like the menu on the home page"):
+// every page level block takes a width. Row and Image already had one; the Hero is edge to edge
+// unless told otherwise. Inside a Row column the column decides, so the setting does nothing there.
+export const WIDTHS = Object.freeze(['page', 'wide', 'full']);
+const WIDTH_HINT = 'Page = the normal column, Wide = a wider column, Full = edge to edge. Inside a Row column the column decides';
+for (const [type, def] of Object.entries(BLOCK_SCHEMAS)) {
+  if (type === 'Spacer' || type === 'CustomHtml' || def.props.width) continue;
+  def.props.width = e(WIDTHS, type === 'Hero' ? 'full' : 'page', { label: 'Width', hint: WIDTH_HINT });
+}
+
 export const BLOCK_TYPES = Object.freeze(Object.keys(BLOCK_SCHEMAS));
 
 export const GROUPS = Object.freeze({

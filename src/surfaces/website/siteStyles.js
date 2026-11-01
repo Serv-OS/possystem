@@ -26,6 +26,9 @@ export const SITE_CSS = `
 .${C.site} h2,.${C.site} .${C.h2}{font-size:clamp(1.5rem,4vw,2.2rem);font-weight:600}
 .${C.inner}{max-width:1120px;margin:0 auto;padding:0 16px}
 .${C.block}{padding:40px 0}
+/* 5.12.19: a page level block's width (Peter: "no way to set a section to full width") */
+.${C.block}[data-width="wide"]>.${C.inner}{max-width:1400px}
+.${C.block}[data-width="full"]>.${C.inner}{max-width:none}
 .${C.muted}{color:var(--w-muted)}
 .${C.card}{background:var(--w-card);border:1px solid var(--w-line);border-radius:16px;padding:18px}
 .${C.empty}{color:var(--w-muted);padding:18px;border:1px dashed var(--w-line);border-radius:14px;text-align:center}
@@ -96,6 +99,10 @@ export const SITE_CSS = `
 .${C.rowGrid}{display:grid;gap:var(--w-row-gap,24px);grid-template-columns:1fr;align-items:start}
 .${C.row}[data-align="center"] .${C.rowGrid}{align-items:center}
 @media (min-width:760px){.${C.rowGrid}{grid-template-columns:repeat(var(--w-row-cols,2),1fr)}}
+/* 5.12.18 find my nearest: the postcode fallback sits beside the button */
+.${C.nearestRow}{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
+.${C.nearestForm}{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.${C.nearestInput}{min-height:44px;padding:8px 14px;border-radius:var(--w-radius);border:1.5px solid var(--w-line);background:var(--w-card);color:var(--w-ink);font:inherit;width:200px;max-width:60vw}
 .${C.rowCol}{min-width:0}
 .${C.row}[data-colpad="small"] .${C.rowCol}{padding:12px}
 .${C.row}[data-colpad="normal"] .${C.rowCol}{padding:20px}
@@ -111,6 +118,8 @@ export const SITE_CSS = `
 .${C.rowCol} .${C.block}[data-inset="normal"]>.${C.inner}{padding-left:28px;padding-right:28px}
 .${C.rowCol} .${C.block}[data-inset="large"]>.${C.inner}{padding-left:44px;padding-right:44px}
 .${C.rowCol} .${C.block} .${C.inner}{max-width:none;padding:0}
+/* 5.12.19: a divider in a column keeps a hit area (1px tall could not be selected in the editor) */
+.${C.rowCol} .${C.divider}{padding:12px 0}
 .${C.rowCol} .${C.hero}{min-height:280px;border-radius:16px}
 /* image + heading blocks (5.12.10) */
 .${C.image} .${C.imageBox} img{display:block;width:100%;height:auto}
@@ -167,7 +176,10 @@ html.${C.sheetOpen},html.${C.sheetOpen} body{overflow:hidden !important}
 .${C.heroBody} .${C.btn}+.${C.btn}{margin-left:10px}
 .${C.hero}[data-photo="true"] .${C.btnSecondary}{color:var(--w-on-photo);border-color:var(--w-on-photo)}
 /* hero slideshow (5.12.10): layers stacked in one grid cell, the active one fades in */
-.${C.heroSlides}{display:grid;align-items:stretch}
+/* 5.12.19: no block padding around the slides (it painted grey bars above and below the photo) */
+.${C.heroSlides}{display:grid;align-items:stretch;padding:0}
+.${C.hero}[data-width="page"]{max-width:1120px;margin:0 auto}
+.${C.hero}[data-width="wide"]{max-width:1400px;margin:0 auto}
 .${C.heroSlides}::before{display:none}
 .${C.heroSlide}{grid-area:1/1;position:relative;isolation:isolate;display:flex;align-items:flex-end;background:var(--w-card);background-size:cover;background-position:center;color:var(--w-ink);opacity:0;transition:opacity .8s ease;pointer-events:none}
 .${C.heroSlide}[data-active="true"]{opacity:1;pointer-events:auto}
@@ -187,10 +199,10 @@ html.${C.sheetOpen},html.${C.sheetOpen} body{overflow:hidden !important}
 .${C.menuSection}{margin-bottom:34px}
 .${C.menuSection} h3{font-size:1.35rem;margin-bottom:12px}
 .${C.menuGrid}{display:grid;gap:14px}
-.${C.menuCards} .${C.menuGrid}{grid-template-columns:repeat(auto-fill,minmax(240px,1fr))}
+.${C.menuCards} .${C.menuGrid}{grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
 .${C.menuItem}{display:grid;gap:8px;background:var(--w-card);border:1px solid var(--w-line);border-radius:16px;padding:14px;position:relative}
 .${C.menuList} .${C.menuItem}{grid-template-columns:1fr auto;align-items:start;border-radius:12px}
-.${C.menuBoard} .${C.menuGrid}{grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}
+.${C.menuBoard} .${C.menuGrid}{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
 .${C.menuBoard} .${C.menuItem}{background:transparent;border:0;border-bottom:1px solid var(--w-line);border-radius:0;padding:10px 0;grid-template-columns:1fr auto}
 .${C.menuPhoto}{width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:12px;background:var(--w-line)}
 .${C.menuName}{font-weight:600;font-size:1.05rem;margin:0}
@@ -215,7 +227,7 @@ html.${C.sheetOpen},html.${C.sheetOpen} body{overflow:hidden !important}
 .${C.hoursToday} td{font-weight:700;color:var(--w-ink)}
 .${C.hours} h3{font-size:1.15rem;margin:18px 0 6px}
 /* find us */
-.${C.findusGrid}{display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(280px,1fr))}
+.${C.findusGrid}{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
 .${C.locCard}{display:grid;gap:10px;align-content:start}
 .${C.locCard}.${C.nearest}{border-color:var(--w-brand);box-shadow:0 0 0 2px var(--w-brand) inset}
 .${C.locName}{font-size:1.2rem;margin:0}
@@ -223,10 +235,10 @@ html.${C.sheetOpen},html.${C.sheetOpen} body{overflow:hidden !important}
 .${C.locActions}{display:flex;flex-wrap:wrap;gap:8px}
 .${C.nearestBtn}{margin-bottom:16px}
 /* reviews */
-.${C.reviews} .${C.inner}>div{display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(260px,1fr))}
+.${C.reviews} .${C.inner}>div{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
 .${C.stars}{color:var(--w-brand);letter-spacing:2px}
 /* blog */
-.${C.blogList} .${C.inner}>div{display:grid;gap:16px;grid-template-columns:repeat(auto-fill,minmax(280px,1fr))}
+.${C.blogList} .${C.inner}>div{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
 .${C.post}{text-decoration:none;display:grid;gap:8px}
 .${C.postCover}{aspect-ratio:16/9;object-fit:cover;border-radius:12px;background:var(--w-line)}
 .${C.postMeta}{color:var(--w-muted);font-size:.9rem}

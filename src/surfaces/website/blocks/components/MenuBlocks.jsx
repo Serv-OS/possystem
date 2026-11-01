@@ -16,10 +16,10 @@ import { ItemSheet } from './ItemSheet.jsx';
 const cls = (...xs) => xs.filter(Boolean).join(' ');
 const DIET_WORDS = { V: 'Vegetarian', VG: 'Vegan', GF: 'Gluten free', DF: 'Dairy free' };
 
-function Section({ type, id, className, children }) {
+function Section({ type, id, className, children, width }) {
   // 5.12.9: inside a Row column the block is marked nested (same attribute as the SSR section()).
   const nested = useNested();
-  return <section className={cls(CN.block, className)} data-block={type} data-id={id} data-nested={nested ? 'true' : undefined}><div className={CN.inner}>{children}</div></section>;
+  return <section className={cls(CN.block, className)} data-block={type} data-id={id} data-nested={nested ? 'true' : undefined} data-width={!nested && (width === 'wide' || width === 'full') ? width : undefined}><div className={CN.inner}>{children}</div></section>;
 }
 export function Empty({ children }) { return <p className={CN.empty}>{children}</p>; }
 
@@ -103,7 +103,7 @@ function useItemSheet(locationId) {
   return [sheet, openSheet];
 }
 
-export function LiveMenu({ id, title, categories, layout, show = {}, max_items, location_id, venue_switch = 'buttons', button = null }) {
+export function LiveMenu({ id, title, categories, layout, show = {}, max_items, location_id, venue_switch = 'buttons', button = null, width }) {
   const { ctx, menu, menuLoading } = useSite();
   const [sheet, openSheet] = useItemSheet(location_id);
   const layoutCn = layout === 'list' ? CN.menuList : layout === 'board' ? CN.menuBoard : CN.menuCards;
@@ -112,7 +112,7 @@ export function LiveMenu({ id, title, categories, layout, show = {}, max_items, 
   const loc = menuLocation(ctx, location_id);
   const switcher = <VenueSwitch mode={venue_switch} location_id={location_id} current={loc} />;
   if (!menu || !menu.categories || !menu.categories.length) {
-    return <Section type="LiveMenu" id={id} className={cls(CN.menu, layoutCn)}>{head}{switcher}<Empty>{menuLoading ? 'Loading the menu…' : 'The menu is being updated. Please check back soon.'}</Empty></Section>;
+    return <Section width={width} type="LiveMenu" id={id} className={cls(CN.menu, layoutCn)}>{head}{switcher}<Empty>{menuLoading ? 'Loading the menu…' : 'The menu is being updated. Please check back soon.'}</Empty></Section>;
   }
   const only = Array.isArray(categories) ? categories.map((c) => c && c.id).filter(Boolean) : [];
   const cats = only.length ? menu.categories.filter((c) => only.includes(c.id)) : menu.categories;
@@ -131,10 +131,10 @@ export function LiveMenu({ id, title, categories, layout, show = {}, max_items, 
       {show.store_finder ? <A className={cls(CN.btn, CN.btnSecondary)} href={findUsPath(ctx.snapshot)}>Find my local store</A> : null}
     </div>
   ) : null;
-  return <Section type="LiveMenu" id={id} className={cls(CN.menu, layoutCn)}>{head}{switcher}{sections.length ? sections : <Empty>Nothing on the menu right now.</Empty>}{under}{sheet}</Section>;
+  return <Section width={width} type="LiveMenu" id={id} className={cls(CN.menu, layoutCn)}>{head}{switcher}{sections.length ? sections : <Empty>Nothing on the menu right now.</Empty>}{under}{sheet}</Section>;
 }
 
-export function Specials({ id, title, source, ids, button = null }) {
+export function Specials({ id, title, source, ids, button = null, width }) {
   const { menu } = useSite();
   const [sheet, openSheet] = useItemSheet(undefined);
   if (!menu) return null;
@@ -146,7 +146,7 @@ export function Specials({ id, title, source, ids, button = null }) {
   } else items = menu.specials || [];
   if (!items.length) return null;
   return (
-    <Section type="Specials" id={id} className={cls(CN.menu, CN.specials, CN.menuCards)}>
+    <Section width={width} type="Specials" id={id} className={cls(CN.menu, CN.specials, CN.menuCards)}>
       {title ? <h2 className={CN.h2}>{title}</h2> : null}
       <div className={CN.menuGrid}>{items.map((it) => <MenuItem key={it.id} it={it} show={{ prices: true, photos: true, descriptions: true, dietary: true }} onOpen={openSheet} />)}</div>
       {button && button.label ? <div className={CN.menuMore}><A className={cls(CN.btn, CN.btnSecondary)} href={button.href}>{button.label}</A></div> : null}

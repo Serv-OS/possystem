@@ -3,6 +3,7 @@
 // asks for the visitor's position ON TAP (never on load), sorts the cards by Haversine distance
 // and marks the nearest shop (ARCHITECTURE.md section 8).
 
+import { useState } from 'react';
 import { CN } from '../classNames.js';
 import { useSite } from '../../siteContext.js';
 import { A } from '../../Link.jsx';
@@ -13,10 +14,10 @@ import { locationChannelOn } from '../../routes.js';
 import { useNested } from '../nested.js';
 
 const cls = (...xs) => xs.filter(Boolean).join(' ');
-function Section({ type, id, className, children }) {
+function Section({ type, id, className, children, width }) {
   // 5.12.9: inside a Row column the block is marked nested (same attribute as the SSR section()).
   const nested = useNested();
-  return <section className={cls(CN.block, className)} data-block={type} data-id={id} data-nested={nested ? 'true' : undefined}><div className={CN.inner}>{children}</div></section>;
+  return <section className={cls(CN.block, className)} data-block={type} data-id={id} data-nested={nested ? 'true' : undefined} data-width={!nested && (width === 'wide' || width === 'full') ? width : undefined}><div className={CN.inner}>{children}</div></section>;
 }
 const Empty = ({ children }) => <p className={CN.empty}>{children}</p>;
 
@@ -29,13 +30,13 @@ function HoursTable({ loc, now, todayFirst = true, short = false, rows: given })
   );
 }
 
-export function Hours({ id, title, location_id, show_today_first }) {
+export function Hours({ id, title, location_id, show_today_first, width }) {
   const { ctx } = useSite();
   const locs = location_id === 'all' ? ctx.locations : [pickLocation(ctx, location_id)].filter(Boolean);
   const head = title ? <h2 className={CN.h2}>{title}</h2> : null;
-  if (!locs.length) return <Section type="Hours" id={id} className={CN.hours}>{head}<Empty>Opening hours are not set yet.</Empty></Section>;
+  if (!locs.length) return <Section width={width} type="Hours" id={id} className={CN.hours}>{head}<Empty>Opening hours are not set yet.</Empty></Section>;
   return (
-    <Section type="Hours" id={id} className={CN.hours}>
+    <Section width={width} type="Hours" id={id} className={CN.hours}>
       {head}
       {locs.map((loc) => {
         const st = openStatus(loc.opening_hours, loc.timezone, ctx.now);
@@ -59,21 +60,33 @@ const CTA = Object.freeze({
   book: { label: 'Book here', path: '/book', channel: 'bookings' },
 });
 
-export function FindUs({ id, title, show_map, show_nearest, show_hours, show_order_buttons, show_book = true, location_id, cta = 'order', blockType = 'FindUs' }) {
-  const { ctx, here, requestNearest, nearestState } = useSite();
+export function FindUs({ id, title, show_map, show_nearest, show_hours, show_order_buttons, show_book = true, location_id, cta = 'order', blockType = 'FindUs', width }) {
+  const { ctx, here, requestNearest, locateByText, nearestState } = useSite();
+  const [typed, setTyped] = useState('');
   const main = CTA[cta] || CTA.order;
   const base = location_id === 'all' ? ctx.locations : [pickLocation(ctx, location_id)].filter(Boolean);
   const head = title ? <h2 className={CN.h2}>{title}</h2> : null;
-  if (!base.length) return <Section type={blockType} id={id} className={CN.findus}>{head}<Empty>No locations yet.</Empty></Section>;
+  if (!base.length) return <Section width={width} type={blockType} id={id} className={CN.findus}>{head}<Empty>No locations yet.</Empty></Section>;
   const locs = sortByDistance(base, here, ctx.settings);
   const nearestId = here && locs[0] && locs[0].distance_km != null ? locs[0].id : null;
   return (
-    <Section type={blockType} id={id} className={CN.findus}>
+    <Section width={width} type={blockType} id={id} className={CN.findus}>
       {head}
       {show_nearest && base.length > 1 ? (
-        <button type="button" className={cls(CN.btn, CN.btnSecondary, CN.nearestBtn)} data-nearest onClick={requestNearest} disabled={nearestState === 'asking'}>
-          {nearestState === 'asking' ? 'Finding you…' : nearestState === 'denied' ? 'Location not shared. Try again' : here ? 'Nearest first' : 'Find my nearest'}
-        </button>
+        <div className={CN.nearestRow}>
+          <button type="button" className={cls(CN.btn, CN.btnSecondary, CN.nearestBtn)} data-nearest onClick={requestNearest} disabled={nearestState === 'asking' || nearestState === 'searching'}>
+            {nearestState === 'asking' ? 'Finding you…' : nearestState === 'denied' ? 'Location not shared. Try again' : here ? 'Nearest first' : 'Find my nearest'}
+          </button>
+          {/* 5.12.18: when the browser will not share a location (or it was never asked), a postcode
+              or town does the same job. Shown after a refusal, a miss, or once a location is known. */}
+          {nearestState === 'denied' || nearestState === 'notfound' || nearestState === 'searching' || here ? (
+            <form className={CN.nearestForm} onSubmit={(e) => { e.preventDefault(); locateByText(typed); }}>
+              <input className={CN.nearestInput} value={typed} onChange={(e) => setTyped(e.target.value)} placeholder="Postcode or town" aria-label="Postcode or town" autoComplete="postal-code" />
+              <button type="submit" className={cls(CN.btn, CN.btnSecondary)} disabled={nearestState === 'searching' || !typed.trim()}>{nearestState === 'searching' ? 'Looking…' : 'Find'}</button>
+              {nearestState === 'notfound' ? <span className={CN.muted}>Not found, try a postcode</span> : null}
+            </form>
+          ) : null}
+        </div>
       ) : null}
       <div className={CN.findusGrid}>
         {locs.map((loc) => {

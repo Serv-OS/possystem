@@ -38,6 +38,8 @@ function Body({ slide, tag, status }) {
 
 export function Hero(props) {
   const { headline, sub, photo_url, show_status, primary, secondary, height, id, isFirst = true } = props;
+  // 5.12.19: the hero is edge to edge unless its width says page or wide.
+  const widthAttr = props.width === 'page' || props.width === 'wide' ? props.width : undefined;
   const { ctx } = useSite();
   const loc = pickLocation(ctx, 'default');
   const branding = (loc && loc.online_branding) || {};
@@ -65,14 +67,14 @@ export function Hero(props) {
 
   if (count < 2) {
     return (
-      <section className={cls(CN.block, CN.hero, sizeCls)} data-block="Hero" data-id={id} data-photo={photo ? 'true' : 'false'} data-tone={tone(photo, hex)} style={bg(photo, hex)}>
+      <section className={cls(CN.block, CN.hero, sizeCls)} data-block="Hero" data-id={id} data-width={widthAttr} data-photo={photo ? 'true' : 'false'} data-tone={tone(photo, hex)} style={bg(photo, hex)}>
         <Body slide={slides[0]} tag={H} status={status} />
       </section>
     );
   }
   return (
     <section
-      className={cls(CN.block, CN.hero, CN.heroSlides, sizeCls)} data-block="Hero" data-id={id}
+      className={cls(CN.block, CN.hero, CN.heroSlides, sizeCls)} data-block="Hero" data-id={id} data-width={widthAttr}
       data-photo={slides[0].photo ? 'true' : 'false'} data-slides={count} data-seconds={seconds}
       onMouseEnter={() => setPaused(true)} onMouseLeave={() => setPaused(false)}
     >

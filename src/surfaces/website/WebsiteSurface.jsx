@@ -48,7 +48,9 @@ function NavDropdown({ item, path, ctx }) {
   const open = st.path === path && st.open;
   return (
     <div className={CN.navItem} data-open={open ? 'true' : 'false'}>
-      <button type="button" className={cls(CN.navLink, CN.navDrop)} aria-haspopup="true" aria-expanded={open} onClick={() => setSt({ open: !open, path })}>{item.label}</button>
+      {item.link
+        ? <A className={cls(CN.navLink, CN.navDrop)} href={item.href} aria-haspopup="true" aria-current={resolveHref(ctx, item.href) === path ? 'page' : undefined}>{item.label}</A>
+        : <button type="button" className={cls(CN.navLink, CN.navDrop)} aria-haspopup="true" aria-expanded={open} onClick={() => setSt({ open: !open, path })}>{item.label}</button>}
       <div className={CN.navSub}>
         {item.children.map((c) => <A key={`${c.label}-${c.href}`} className={CN.navLink} href={c.href} aria-current={resolveHref(ctx, c.href) === path ? 'page' : undefined}>{c.label}</A>)}
       </div>
@@ -235,8 +237,24 @@ export default function WebsiteSurface({ host, siteSlug = null }) {
       { timeout: 10000, maximumAge: 300000 },
     );
   }, []);
+  // 5.12.18 (Peter: "find location still does not work": his browser refused the location and the
+  // button only said try again): a postcode or town typed in is looked up (OpenStreetMap Nominatim,
+  // the same service the Back Office uses for venues) and sorts the venues the same way.
+  const locateByText = useCallback(async (text) => {
+    const q = String(text || '').trim();
+    if (!q) return;
+    setNearestState('searching');
+    try {
+      const r = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(q)}`, { headers: { Accept: 'application/json' } });
+      const rows = r.ok ? await r.json() : [];
+      const hit = Array.isArray(rows) && rows[0];
+      const lat = hit && Number(hit.lat), lng = hit && Number(hit.lon);
+      if (Number.isFinite(lat) && Number.isFinite(lng)) { setHere({ lat, lng }); setNearestState('ok'); }
+      else setNearestState('notfound');
+    } catch { setNearestState('notfound'); }
+  }, []);
 
-  const value = useMemo(() => ({ ctx, menu, menuLoading, here, nearestState, requestNearest, navigate, menuVenue, setMenuVenue }), [ctx, menu, menuLoading, here, nearestState, requestNearest, navigate, menuVenue, setMenuVenue]);
+  const value = useMemo(() => ({ ctx, menu, menuLoading, here, nearestState, requestNearest, locateByText, navigate, menuVenue, setMenuVenue }), [ctx, menu, menuLoading, here, nearestState, requestNearest, locateByText, navigate, menuVenue, setMenuVenue]);
 
   if (loadState === 'loading') {
     return <div className={CN.site} style={vars}><div className={cls(CN.inner, CN.notFound)}><p className={CN.muted}>Loading…</p></div></div>;

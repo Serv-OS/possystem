@@ -14,10 +14,10 @@ import { siteName } from '../../ssr/jsonld.js';
 import { useNested } from '../nested.js';
 
 const cls = (...xs) => xs.filter(Boolean).join(' ');
-function Section({ type, id, className, children }) {
+function Section({ type, id, className, children, width }) {
   // 5.12.9: inside a Row column the block is marked nested (same attribute as the SSR section()).
   const nested = useNested();
-  return <section className={cls(CN.block, className)} data-block={type} data-id={id} data-nested={nested ? 'true' : undefined}><div className={CN.inner}>{children}</div></section>;
+  return <section className={cls(CN.block, className)} data-block={type} data-id={id} data-nested={nested ? 'true' : undefined} data-width={!nested && (width === 'wide' || width === 'full') ? width : undefined}><div className={CN.inner}>{children}</div></section>;
 }
 const Empty = ({ children }) => <p className={CN.empty}>{children}</p>;
 
@@ -39,7 +39,7 @@ function Chooser({ id, type, cta }) {
 
 const venueName = (loc, ctx) => (loc && ((loc.online_branding && loc.online_branding.display_name) || loc.name)) || siteName(ctx.snapshot);
 
-export function OrderBar({ id, collection, delivery, book, catering }) {
+export function OrderBar({ id, collection, delivery, book, catering, width }) {
   const { ctx } = useSite();
   const loc = pickLocation(ctx, 'default');
   const s = ctx.settings;
@@ -51,31 +51,31 @@ export function OrderBar({ id, collection, delivery, book, catering }) {
   ].filter(Boolean);
   if (!loc || !items.length) return null;
   return (
-    <Section type="OrderBar" id={id} className={CN.orderBar}>
+    <Section width={width} type="OrderBar" id={id} className={CN.orderBar}>
       {items.map((it, i) => <A key={it.label} className={cls(CN.btn, i === 0 ? CN.btnPrimary : CN.btnSecondary)} href={it.href}>{it.label}</A>)}
     </Section>
   );
 }
 
-export function OrderEmbed({ id, mode, location_id }) {
+export function OrderEmbed({ id, mode, location_id, width }) {
   const { ctx } = useSite();
   const catering = mode === 'catering';
   if (!explicitLocation(location_id) && multiVenue(ctx)) return <Chooser id={id} type="OrderEmbed" cta={catering ? 'catering' : 'order'} />;
   const loc = pickLocation(ctx, location_id);
   const href = loc ? venueUrl(loc.online_slug, catering ? '/catering' : '/', ctx.customerRoot) : '';
   return (
-    <Section type="OrderEmbed" id={id} className={CN.embed}>
+    <Section width={width} type="OrderEmbed" id={id} className={CN.embed}>
       <Embed title={catering ? 'Catering orders' : 'Order online'} text={loc ? venueName(loc, ctx) : ''} href={href} label={catering ? 'Order catering' : 'Order now'} />
     </Section>
   );
 }
 
-export function LoyaltyJoin({ id, headline, sub, show_card_preview, location_id }) {
+export function LoyaltyJoin({ id, headline, sub, show_card_preview, location_id, width }) {
   const { ctx } = useSite();
   const loc = pickLocation(ctx, location_id);
   const href = loc ? venueUrl(loc.online_slug, '/account', ctx.customerRoot) : '';
   return (
-    <Section type="LoyaltyJoin" id={id} className={CN.loyalty}>
+    <Section width={width} type="LoyaltyJoin" id={id} className={CN.loyalty}>
       <div>
         {headline ? <h2 className={CN.h2}>{headline}</h2> : null}
         {sub ? <p className={CN.muted}>{sub}</p> : null}
@@ -86,13 +86,13 @@ export function LoyaltyJoin({ id, headline, sub, show_card_preview, location_id 
   );
 }
 
-export function GiftCards({ id, headline, sub, show_art, location_id }) {
+export function GiftCards({ id, headline, sub, show_art, location_id, width }) {
   const { ctx } = useSite();
   const loc = pickLocation(ctx, location_id);
   const buy = loc ? venueUrl(loc.online_slug, '/gift', ctx.customerRoot) : '';
   const bal = loc ? venueUrl(loc.online_slug, '/gift/balance', ctx.customerRoot) : '';
   return (
-    <Section type="GiftCards" id={id} className={CN.gift}>
+    <Section width={width} type="GiftCards" id={id} className={CN.gift}>
       <div>
         {headline ? <h2 className={CN.h2}>{headline}</h2> : null}
         {sub ? <p className={CN.muted}>{sub}</p> : null}
@@ -103,17 +103,17 @@ export function GiftCards({ id, headline, sub, show_art, location_id }) {
   );
 }
 
-export function BookTable({ id, location_id }) {
+export function BookTable({ id, location_id, width }) {
   const { ctx } = useSite();
   if (!explicitLocation(location_id) && multiVenue(ctx)) return <Chooser id={id} type="BookTable" cta="book" />;
   const loc = pickLocation(ctx, location_id);
   const href = loc ? venueUrl(loc.online_slug, '/book', ctx.customerRoot) : '';
-  return <Section type="BookTable" id={id} className={cls(CN.embed, CN.book)}><Embed title="Book a table" text={loc ? loc.name : ''} href={href} label="Book a table" /></Section>;
+  return <Section width={width} type="BookTable" id={id} className={cls(CN.embed, CN.book)}><Embed title="Book a table" text={loc ? loc.name : ''} href={href} label="Book a table" /></Section>;
 }
 
-export function Waitlist({ id, location_id }) {
+export function Waitlist({ id, location_id, width }) {
   const { ctx } = useSite();
   const loc = pickLocation(ctx, location_id);
   const href = loc ? venueUrl(loc.online_slug, '/waitlist', ctx.customerRoot) : '';
-  return <Section type="Waitlist" id={id} className={cls(CN.embed, CN.waitlist)}><Embed title="Join the waitlist" text={loc ? loc.name : ''} href={href} label="Join the waitlist" /></Section>;
+  return <Section width={width} type="Waitlist" id={id} className={cls(CN.embed, CN.waitlist)}><Embed title="Join the waitlist" text={loc ? loc.name : ''} href={href} label="Join the waitlist" /></Section>;
 }

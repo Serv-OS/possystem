@@ -7,6 +7,25 @@
 
 export const CHANGELOG = [
   {
+    v: '5.12.19',
+    date: '1 Nov 2026',
+    items: [
+      'Website: every block has a Width setting (Page, Wide or Full) so a menu, text or any section can run edge to edge, not only Rows and Images.',
+      'Website: menu cards, specials, reviews and posts stretch to fill a full width row instead of sitting left with empty columns beside them.',
+      'Website: the hero slideshow no longer paints a grey bar above and below the photo.',
+      'Website editor: a Divider inside a column can be selected and removed (it was 1px tall, so there was nothing to click).',
+      'Website: build the header menu yourself in Header and navigation. Every item has a Show under pick, so a page can sit under another page (a dropdown on the site, the parent still opens its own page). Nothing drops down unless you put items under it.',
+    ],
+  },
+  {
+    v: '5.12.18',
+    date: '1 Nov 2026',
+    items: [
+      'Website: Find my nearest has a postcode or town box when the browser will not share a location, so visitors on a desktop can still sort the shops by distance.',
+      'Website editor: blocks inside a Row column now paint in the editor exactly as on the site. "Space left and right" on Text, Heading and Button works in the editor (it already worked on the live site), and column blocks no longer carry page level spacing in the canvas.',
+    ],
+  },
+  {
     v: '5.12.17',
     date: '1 Nov 2026',
     items: [
