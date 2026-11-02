@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import {
   groupIdsOf, itemHasGroup, itemsCarrying, attachableItems, matchItems, matchGroups,
   attachPatches, detachPatches, attachButtonLabel, attachResultLine,
-  displayNameOf, expandPicks, pickedRealCount, sizesOf, attachCatOptions,
+  displayNameOf, expandPicks, pickedRealCount, sizesOf, attachCatOptions, splitLockedTargets, lockedResultLine,
 } from './modifierAttach.js';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -217,4 +217,21 @@ test('5.12.27: the category drop down shows each category LABEL (there is no nam
   const src = readFileSync(join(HERE, '../../backoffice/sections/MenuManager.jsx'), 'utf8');
   assert.ok(src.includes("attachCatOptions(menuCategories||[]).map(c => <option key={c.id} value={c.id}>{c.words}</option>)"), 'the modifier group builder uses it');
   assert.ok(!/<option key=\{c\.id\} value=\{c\.id\}>\{c\.name\}<\/option>/.test(src), 'no category option reads c.name');
+});
+
+test('5.12.28: products whose option groups head office sets are split out and named, never pretended', () => {
+  const locked = new Set(['i1']);
+  assert.deepEqual(splitLockedTargets(['i1', 'i3', 'i5'], (id) => locked.has(id)), { free: ['i3', 'i5'], locked: ['i1'] });
+  assert.deepEqual(splitLockedTargets(null, () => true), { free: [], locked: [] });
+  assert.deepEqual(splitLockedTargets(['i1'], null), { free: ['i1'], locked: [] });
+  assert.equal(lockedResultLine(0), '');
+  assert.equal(lockedResultLine(1), '1 product is set by head office in the Multi site menu, so it was not changed here.');
+  assert.equal(lockedResultLine(3), '3 products are set by head office in the Multi site menu, so they were not changed here.');
+  const src = readFileSync(join(HERE, '../../backoffice/sections/MenuManager.jsx'), 'utf8');
+  assert.ok(src.includes("const optionLocked = (id) => { const l = itemLock(msmLockSt, id); return !!l && l.locked('assigned_modifier_groups'); };"), 'the builder asks the same lock as the item editor');
+  assert.ok(src.includes("const targetSplit = sel ? splitLockedTargets(expandPicks(menuItems||[], [...picked]), optionLocked)"), 'targets are split after sizes are expanded');
+  assert.ok(src.includes("disabled={has || locked}"), 'a locked row cannot be ticked');
+  assert.ok(src.includes("&& !optionLocked(it.id)).map(it=>it.id)))}"), 'Select all leaves locked rows out');
+  assert.ok(src.includes("if (optionLocked(itemId)) { showToast?.(lockedResultLine(1), 'warning'); return; }"), 'taking a group off a locked product says so and stops');
+  assert.doesNotMatch(src.split('\n').filter((l) => l.includes('5.12.28') || l.includes('optionLocked')).join('\n'), /[\u2013\u2014]/, 'no long dashes in the new lines');
 });
