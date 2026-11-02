@@ -19,7 +19,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { prepMinutes, prepRuleFromLocation, liveOrderCount } from '../../lib/prepTime';
 import { tipRuleFor, tipChips, tipInitialKey, tipAmount as calcTip } from '../../lib/tipping';
-import { supabase, platformSupabase } from '../../lib/supabase';
+import { supabase } from '../../lib/supabase';
 import { decrementStockRPC, fetchActiveDiscountRules } from '../../lib/db';
 import { logOrderActivity, logActivity } from '../../lib/activity';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../../lib/discountEngine';
@@ -37,7 +37,10 @@ import { promoBasketLines } from '../../../supabase/functions/_shared/promoMath.
 import { getDeliveryQuote, recordDeliverySurcharge } from '../../lib/delivery/quoteService';
 import { dispatchDelivery } from '../../lib/delivery/dispatch';
 import { sendEmailReceipt } from '../../lib/sendReceipt';
-import { getDayWindows, resolveLocalDateTime } from '../../lib/openingHours';
+// 5.12.34: the slot rule and the Day / Time pick are shared with the menu page's Order timing sheet.
+import { buildCollectionSlots } from '../../lib/online/collectionSlots';
+import { leadMinutesFor, advanceDaysFor, initialTiming, settleTiming } from '../../lib/online/orderTiming';
+import SlotPicker from './SlotPicker';
 import { computeOrderTaxUnified, chargesAddedOnRate, taxCtxHasConfig } from '../../lib/taxCompute';
 import { publicCheckTaxFields, offerTaxForOnline } from '../../lib/publicCheckTax';
 import VatGateNotice from './VatGateNotice';
@@ -87,7 +90,7 @@ function decrementOnlineStock(cart, locationId) {
 // ever fall inside opening windows) and the ASAP option isn't offered.
 // vatGate / onRetryRates (8 Oct 2026): ratesGate's answer from the surface (null when the venue's
 // tax rates are in) and the way to load them again. Payment never opens while it is shut.
-export default function OnlineCheckout({ cart, theme, location, orderType, loyalty, taxRates = [], taxCtx = null, onClose, onPlaced, onOpenLoyalty, onLoyaltyVerified, orderAheadOnly = false, counter = false, counterLabel = null, menuItems = [], menuId = null, categories = [], vatGate = null, onRetryRates = null }) {
+export default function OnlineCheckout({ cart, theme, location, orderType, loyalty, taxRates = [], taxCtx = null, onClose, onPlaced, onOpenLoyalty, onLoyaltyVerified, orderAheadOnly = false, counter = false, counterLabel = null, menuItems = [], menuId = null, categories = [], vatGate = null, onRetryRates = null, timing: timingProp = null, onTimingChange = null, onDeliveryAddress = null }) {
   const opsLocationId = location.ops_location_id || location.id; // ops DB
   const platformLocationId = location.id;                         // platform DB
   const tz = location.timezone || 'Europe/London';
@@ -97,8 +100,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   // Number(...) || 30 turned an explicit 0 into 30, so a venue that set "no
   // wait" was quoted 30 here while the storefront banner showed nothing. The
   // column is NOT NULL DEFAULT 30, so only a genuine null should fall back.
-  const baseLeadMin = Number.isFinite(Number(location.online_collection_lead_min))
-    ? Number(location.online_collection_lead_min) : 30;
+  const baseLeadMin = leadMinutesFor(location);   // 5.12.34: one rule with the menu page (lib/online/orderTiming.js)
   // v5.8.8: tipping on online orders, set on the module (Back Office > Online
   // Ordering > Tipping on online orders). Online never took a tip before: every
   // write below carried tip: 0. Off by default, so nothing changes for a venue
@@ -223,9 +225,17 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   // Clear hint when loyalty sign-in succeeds
   useEffect(() => { if (loyalty?.verified) setLoyaltyHint(null); }, [loyalty?.verified]);
 
-  // Timing — ASAP or scheduled (closed venues: scheduled only)
-  const [timeMode, setTimeMode] = useState(orderAheadOnly ? 'scheduled' : 'asap'); // 'asap' | 'scheduled'
-  const [slot, setSlot]         = useState(null);
+  // Timing: ASAP or scheduled (closed venues: scheduled only).
+  // 5.12.34: the MENU PAGE owns this choice (its Order timing sheet) and passes it in as `timing`
+  // with onTimingChange; this step reads and writes that one state, so the header row and this
+  // step can never disagree. Without the prop (no page above) the step keeps its own.
+  const [ownTiming, setOwnTiming] = useState(() => initialTiming({ orderAheadOnly }));
+  const timing = timingProp || ownTiming;
+  const setTiming = (next) => { if (onTimingChange) onTimingChange(next); else setOwnTiming(next); };
+  const timeMode = timing.mode === 'scheduled' ? 'scheduled' : 'asap';   // 'asap' | 'scheduled'
+  const slot = timing.slot || null;
+  const setTimeMode = (mode) => setTiming({ mode, slot: timing.slot || null });
+  const setSlot = (next) => setTiming({ mode: timing.mode, slot: next });
 
   // Submit
   const [working, setWorking] = useState(false);
@@ -370,29 +380,31 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     return () => clearInterval(t);
   }, []);
   // v5.8.18: how far ahead this venue takes orders. 0 = today only.
-  const advanceDays = (location.online_advance_days !== null && location.online_advance_days !== undefined && Number.isFinite(Number(location.online_advance_days)))
-    ? Math.max(0, Number(location.online_advance_days)) : 7;
+  const advanceDays = advanceDaysFor(location);   // 5.12.34: one rule with the menu page
   const slots = useMemo(() => buildCollectionSlots(location, tz, leadMin, advanceDays), [location, tz, leadMin, nowTick, advanceDays]);
 
   // When the customer first picks Schedule, auto-select the earliest slot
   // so the dropdowns aren't empty and "Place order" isn't blocked on a
   // micro-interaction.
+  // A slot already chosen must be re-checked every time the list rebuilds.
+  // Previously this only ever fired when nothing was selected, so a customer
+  // who picked 18:15 and then took their time (or hit a rush that pushed the
+  // uplift up) kept a slot the checkout no longer offers, and the venue
+  // accepted a collection time it could not make.
+  // 5.12.34: the rule is lib/online/orderTiming.js settleTiming (orderAheadOnly forces Schedule).
   useEffect(() => {
-    if (timeMode !== 'scheduled') return;
-    if (!slots.length) return;
-    // A slot already chosen must be re-checked every time the list rebuilds.
-    // Previously this only ever fired when nothing was selected, so a customer
-    // who picked 18:15 and then took their time (or hit a rush that pushed the
-    // uplift up) kept a slot the checkout no longer offers, and the venue
-    // accepted a collection time it could not make.
-    if (slot && !slots.some(s2 => s2.iso === slot.iso)) {
-      setSlot(slots[0]);
-      setSlotMoved(true);
-      return;
-    }
-    if (!slot) setSlot(slots[0]);
-  }, [timeMode, slot, slots]);
-  const [slotMoved, setSlotMoved] = useState(false);
+    const next = settleTiming(timing, slots, { orderAheadOnly });
+    if (next === timing) return;
+    setTiming({ mode: next.mode, slot: next.slot });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timing, slots, orderAheadOnly]);
+  // 5.12.34: the header's "Delivery to <address>" row follows what is typed here.
+  useEffect(() => {
+    if (!onDeliveryAddress) return;
+    const line = [address1, postcode].map(x => String(x || '').trim()).filter(Boolean).join(', ');
+    onDeliveryAddress(orderType === 'delivery' ? line : '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [address1, postcode, orderType]);
 
   const muted   = theme.isLight ? '#6b6b70' : '#a0a0a8';
   const cardBdr = theme.isLight ? '#ececef' : '#2a2a30';
@@ -2346,143 +2358,7 @@ function ModeChip({ active, onClick, theme, cardBdr, children }) {
   );
 }
 
-function SlotPicker({ slots, value, onChange, theme, cardBdr, inputBg }) {
-  if (!slots.length) {
-    return <div style={{ padding: 14, fontSize: 12, color: theme.isLight ? '#6b6b70' : '#a0a0a8', background: inputBg, borderRadius: 10, border: `1px solid ${cardBdr}` }}>
-      No collection slots available right now. Try ASAP, or come back during opening hours.
-    </div>;
-  }
-  // Group by day, preserving insertion order (already chronological)
-  const byDay = {};
-  slots.forEach(s => {
-    if (!byDay[s.day]) byDay[s.day] = [];
-    byDay[s.day].push(s);
-  });
-  const days = Object.keys(byDay);
-  // If no value yet, default to first slot of first day so the time
-  // dropdown isn't blank when the customer first picks Schedule.
-  const selectedDay = value ? value.day : days[0];
-  const selectedTime = value ? value.iso : '';
-  const timesForDay = byDay[selectedDay] || [];
-
-  const handleDayChange = (day) => {
-    const list = byDay[day] || [];
-    if (list.length) onChange(list[0]);
-  };
-  const handleTimeChange = (iso) => {
-    const slot = (byDay[selectedDay] || []).find(s => s.iso === iso);
-    if (slot) onChange(slot);
-  };
-
-  const selectStyle = {
-    width: '100%', padding: '12px 14px', borderRadius: 10,
-    background: inputBg, color: theme.fg, border: `1.5px solid ${cardBdr}`,
-    fontSize: 14, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box',
-    fontWeight: 600,
-    appearance: 'none', WebkitAppearance: 'none', MozAppearance: 'none',
-    backgroundImage: `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path d='M1 1l5 5 5-5' stroke='%23${(theme.isLight ? '6b6b70' : 'a0a0a8')}' stroke-width='1.6' fill='none' stroke-linecap='round'/></svg>")`,
-    backgroundRepeat: 'no-repeat',
-    backgroundPosition: 'right 14px center',
-    paddingRight: 36,
-    cursor: 'pointer',
-  };
-  const labelStyle = { fontSize: 11, fontWeight: 700, color: theme.isLight ? '#6b6b70' : '#a0a0a8', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6, display: 'block' };
-
-  return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-      <div>
-        <label style={labelStyle}>Day</label>
-        <select value={selectedDay} onChange={e => handleDayChange(e.target.value)} style={selectStyle}>
-          {days.map(d => (
-            <option key={d} value={d}>{d}</option>
-          ))}
-        </select>
-      </div>
-      <div>
-        <label style={labelStyle}>Time</label>
-        <select value={selectedTime} onChange={e => handleTimeChange(e.target.value)} style={selectStyle}>
-          {timesForDay.map(s => (
-            <option key={s.iso} value={s.iso}>{s.label}</option>
-          ))}
-        </select>
-      </div>
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Advance a YYYY-MM-DD by one calendar day without touching real time, so DST
-// transitions cannot skip or repeat a day.
-function nextIsoDate(iso) {
-  const [y, m, d] = iso.split('-').map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d + 1));
-  return dt.toISOString().slice(0, 10);
-}
-
-// Build the next ~24h of valid collection slots.
-// Slots are 15-min increments inside opening windows, starting at the
-// earliest slot ≥ now+leadMin, snapped to :00/:15/:30/:45.
-function buildCollectionSlots(location, tz, leadMin, maxDaysAhead = 7) {
-  const hours = location.opening_hours;
-  if (!hours?.weekly) return [];
-  const out = [];
-  const now = new Date();
-  const earliest = new Date(now.getTime() + leadMin * 60_000);
-  // Round up to next 15-min boundary
-  const m = earliest.getMinutes();
-  const ceil = Math.ceil(m / 15) * 15;
-  earliest.setMinutes(ceil, 0, 0);
-
-  // Walk up to 7 days ahead, generate slots inside open windows ≥ earliest.
-  // Days are advanced on the VENUE CALENDAR, not by adding 24h of real time:
-  // across a DST change a 24h hop lands on the same date twice (or skips one),
-  // which silently lost a whole day of bookable slots twice a year.
-  const seen = new Set();
-  let cursorIso = now.toLocaleDateString('en-CA', { timeZone: tz });
-  const days = Math.max(0, Math.min(60, Number(maxDaysAhead) || 0)) + 1;   // today + N ahead
-  for (let dayOffset = 0; dayOffset < days; dayOffset++) {
-    const probe = resolveLocalDateTime(cursorIso, 12 * 60, tz);   // midday, safe from DST edges
-    cursorIso = nextIsoDate(cursorIso);
-    const windows = getDayWindows(hours, tz, probe);
-    if (!windows.length) continue;
-    const dayLabel = probe.toLocaleDateString('en-GB', { timeZone: tz, weekday: 'short', day: 'numeric', month: 'short' });
-    // v5.7.22 — window times ("09:00") are VENUE wall-clock, so the slot
-    // instants must be built in the venue's timezone. setHours() built them on
-    // the customer's DEVICE clock, so a phone in another timezone was offered
-    // slots shifted by the whole tz difference.
-    const isoDate = probe.toLocaleDateString('en-CA', { timeZone: tz });
-    for (const w of windows) {
-      const [oh, om] = w.open.split(':').map(Number);
-      const [ch, cm] = w.close.split(':').map(Number);
-      const openMin  = oh * 60 + om;
-      const closeMin = ch * 60 + cm;
-      let cur = resolveLocalDateTime(isoDate, openMin, tz);
-      // A window that closes at or before it opens runs past midnight ("17:00
-      // to 01:00", or "12:00 to 00:00"). The close belongs to the NEXT day.
-      // Without this the while-loop below never ran once, so a late-night venue
-      // was offered no scheduled collection slots at all — and when it was shut
-      // the ASAP chip is hidden too, so there was no way to order at all.
-      const end = closeMin <= openMin
-        ? resolveLocalDateTime(nextIsoDate(isoDate), closeMin, tz)
-        : resolveLocalDateTime(isoDate, closeMin, tz);
-      while (cur.getTime() < end.getTime()) {
-        const iso = cur.toISOString();
-        // Overnight windows overlap the next day's pass, so dedupe by instant.
-        if (cur.getTime() >= earliest.getTime() && !seen.has(iso)) {
-          seen.add(iso);
-          out.push({
-            iso,
-            day: dayOffset === 0 ? 'Today' : (dayOffset === 1 ? 'Tomorrow' : dayLabel),
-            label: cur.toLocaleTimeString('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }),
-          });
-        }
-        cur = new Date(cur.getTime() + 15 * 60_000);
-      }
-    }
-    if (out.length >= 60) break; // reasonable upper bound
-  }
-  return out;
-}
+// SlotPicker, nextIsoDate and buildCollectionSlots moved to SlotPicker.jsx and lib/online/collectionSlots.js (5.12.34).
 
 function TipChip({ active, onClick, theme, cardBdr, children }) {
   return (
