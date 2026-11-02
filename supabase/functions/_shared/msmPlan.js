@@ -577,6 +577,15 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
     return vid ? { ...rest, groupId: vid } : null;
   }).filter(Boolean);
   // The venue value of one column for product p at this site. undefined = cannot be worked out.
+  // 5.12.30 (Peter, 2 Nov 2026: groups published onto the pizzas "are not on the POS"): the kind of
+  // row a venue gets. A top level product with option groups is never written as plain 'simple',
+  // because the till skips the options screen for 'simple' (POSSurface needsModal). The same rule
+  // the Back Office writer has always applied (menuItemWrite.itemTypeOf). Any other kind is kept.
+  const venueType = (p) => {
+    const t = p.type || 'simple';
+    if (t === 'simple' && !p.parent_product_id && mapGroups(p).length > 0) return 'modifiable';
+    return t;
+  };
   const columnValue = (p, ps, column) => {
     switch (column) {
       case 'name': return p.name;
@@ -584,7 +593,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
       case 'receipt_name': return p.receipt_name ?? p.name;
       case 'kitchen_name': return p.kitchen_name ?? p.name;
       case 'description': return p.description ?? '';
-      case 'type': return p.type || 'simple';
+      case 'type': return venueType(p);
       case 'cat': return p.category_id ? (venueCatOf(p.category_id) || ensureCategory(p.category_id, p.name)) : null;
       case 'cats': return mapCats(p);
       case 'parent_id': return mapParent(p);
@@ -757,7 +766,7 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
       for (const k of PUBLISHED_CHANNELS) pricing[k] = channelPrice(p, ps, k);
       const row = {
         id: ps.venue_item_id, name: p.name, menu_name: p.menu_name ?? p.name, receipt_name: p.receipt_name ?? p.name,
-        kitchen_name: p.kitchen_name ?? p.name, description: p.description ?? '', type: p.type || 'simple',
+        kitchen_name: p.kitchen_name ?? p.name, description: p.description ?? '', type: venueType(p),
         cat: columnValue(p, ps, 'cat'), cats: mapCats(p), parent_id: mapParent(p), sort_order: p.sort_order ?? 0,
         pricing, allergens: listOf(p.allergens), assigned_modifier_groups: mapGroups(p),
         visibility: optionOnlyP(p) ? HIDDEN : soldVisibility(p), sold_alone: !!p.sold_alone, archived: false,
@@ -823,6 +832,8 @@ export function planSite({ central, touched, locationId: loc, orgId = null, venu
       if (f === 'tax_by_type') { ORDER_TYPE_TAX_KEYS.forEach((k) => taxKeys.add(k)); continue; }
       const col = PRODUCT_COLUMN[f];
       if (col && col !== 'pricing') cols.add(col);
+      // 5.12.30: option groups added to a 'simple' product make it 'modifiable' in the same write.
+      if (col === 'assigned_modifier_groups') cols.add('type');
     }
     for (const f of w.siteFields) {
       if (f === 'active') cols.add('archived');
