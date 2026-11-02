@@ -336,14 +336,18 @@ export function reachableChannels(channel, customer) {
  *   enrollment      their existing enrollment in this automation, or null
  *   codesFromForm   promo codes this form's automation already gave them
  *   perCustomer     offers.per_customer_limit of the step's offer (1 when there is no offer)
+ *   offerRedeemed   how many times they already USED that offer, any code, any channel (5.12.37:
+ *                   proving it live, a code went to a person who had used the offer in July, and
+ *                   checkout refused it; a code they cannot use is never sent)
  * → { action: 'enrol' | 'rearm' | 'skip', reason }
  *   enrol  = first time: a new enrollment at step 1
  *   rearm  = they finished and the offer allows another code: start again (next round)
  *   skip   = no tick, still going through it, or already had their codes
  */
-export function planFormEnrol({ consent, enrollment, codesFromForm = 0, perCustomer = 1 }) {
+export function planFormEnrol({ consent, enrollment, codesFromForm = 0, perCustomer = 1, offerRedeemed = 0 }) {
   if (!consent) return { action: 'skip', reason: 'no_consent' };
   const limit = Math.max(1, Number(perCustomer) || 1);
+  if ((Number(offerRedeemed) || 0) >= limit) return { action: 'skip', reason: 'offer_used' };
   if (!enrollment) return { action: 'enrol', reason: 'first' };
   if (enrollment.status === 'active') return { action: 'skip', reason: 'in_progress' };
   if ((Number(codesFromForm) || 0) < limit) return { action: 'rearm', reason: 'offer_allows_more' };

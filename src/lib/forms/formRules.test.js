@@ -138,6 +138,8 @@ test('the automation decision: tick, once per person per form, more only when th
   assert.deepEqual(planFormEnrol({ consent: true, enrollment: { status: 'completed' }, codesFromForm: 1, perCustomer: 3 }), { action: 'rearm', reason: 'offer_allows_more' });
   assert.deepEqual(planFormEnrol({ consent: true, enrollment: { status: 'completed' }, codesFromForm: 3, perCustomer: 3 }), { action: 'skip', reason: 'already_sent' });
   assert.deepEqual(planFormEnrol({ consent: true, enrollment: { status: 'completed' }, codesFromForm: 0, perCustomer: 0 }), { action: 'rearm', reason: 'offer_allows_more' }, 'a finished round that sent no code (no channel then) may go again');
+  assert.deepEqual(planFormEnrol({ consent: true, enrollment: null, perCustomer: 1, offerRedeemed: 1 }), { action: 'skip', reason: 'offer_used' }, 'already used the offer: no dead code');
+  assert.deepEqual(planFormEnrol({ consent: true, enrollment: null, perCustomer: 2, offerRedeemed: 1 }), { action: 'enrol', reason: 'first' });
   assert.deepEqual(reachableChannels('email', { email: 'a@b.co' }), ['email']);
   assert.deepEqual(reachableChannels('sms', { email: 'a@b.co' }), []);
   assert.deepEqual(reachableChannels('both', { email: '', phone: '+44' }), ['sms']);

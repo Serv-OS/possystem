@@ -11,6 +11,8 @@ export const CHANGELOG = [
       'Automations: a new trigger, Form submitted (pick the form), and a Send a promo code step (pick the offer, email or text, a message with the code in it). The person gets their code the moment they send the form, only when they ticked the marketing box and only on a channel they gave. One code per person per form, unless the offer allows more than one each. Each send shows in the Marketing report and each code carries the form and the customer.',
       'Protection: a hidden box catches robots, the same form from one connection is limited to 5 in 10 minutes, answers are checked against the form\'s own fields and capped in size. A failed email or text never fails the form.',
       'Automations: saving an automation now checks it belongs to your company (an id alone was enough before).',
+      'A form automation never sends a code to someone who has already used up that offer (they could not use it at checkout).',
+      'Online checkout: promo codes with a prefix (5OFF-..., WELC-..., BDAY-...) work again. The dash was taken out before the code was checked, so every one said "Code not recognised". A refused code now says why (already used, expired, minimum spend and so on).',
     ],
   },
   {

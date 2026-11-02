@@ -136,6 +136,25 @@ test('the offer allows 2 each: a second submission gets a second code (round 1),
   assert.equal(sends.length, 2);
 });
 
+test('the person already used the offer (any code): no code is sent (found proving it live, 2 Nov)', async () => {
+  const s = seed();
+  s.customers = [{ id: 'cust-used', org_id: ORG, name: 'Ana', email: 'ana@example.com', phone: null, sources: [], deleted_at: null, created_at: '2026-01-01' }];
+  s.promo_redemptions = [{ id: 'r1', offer_id: OFFER_ID, customer_id: 'cust-used', released_at: null }];
+  const db = memDb(s);
+  const r = await submit(db, post({ phone: '' }));
+  assert.equal(r.status, 200);
+  assert.equal(db.rows('promo_codes').length, 0);
+  assert.equal(sends.length, 0);
+  assert.equal(db.rows('workflow_enrollments').length, 0);
+  // a use given back by a refund does not count
+  const s2 = seed();
+  s2.customers = s.customers;
+  s2.promo_redemptions = [{ id: 'r1', offer_id: OFFER_ID, customer_id: 'cust-used', released_at: '2026-10-01' }];
+  const db2 = memDb(s2);
+  await submit(db2, post({ phone: '' }));
+  assert.equal(db2.rows('promo_codes').length, 1);
+});
+
 test('the person has no address for the step: no code is wasted, the step is skipped', async () => {
   const s = seed();
   s.workflows[0].steps[0].channel = 'sms';

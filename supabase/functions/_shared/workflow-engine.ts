@@ -153,11 +153,18 @@ export async function enrollFromForm(sb: SB, wf: any, customerId: string, consen
   }
   const offerStep = steps.find((st: any) => st && st.offer_id);
   let perCustomer = 1;
+  let offerRedeemed = 0;
   if (offerStep) {
     const { data: offer } = await sb.from('offers').select('per_customer_limit').eq('id', offerStep.offer_id).eq('org_id', wf.org_id).maybeSingle();
     perCustomer = Number(offer?.per_customer_limit) || 1;
+    // 5.12.37: uses of the offer already made (a use given back by a refund does not count, as in
+    // promo-redeem; before that column exists every use counts).
+    const used = () => sb.from('promo_redemptions').select('id', { count: 'exact', head: true }).eq('offer_id', offerStep.offer_id).eq('customer_id', customerId);
+    let { count, error } = await used().is('released_at', null);
+    if (error) ({ count } = await used());
+    offerRedeemed = count ?? 0;
   }
-  const plan = planFormEnrol({ consent, enrollment: existing, codesFromForm, perCustomer });
+  const plan = planFormEnrol({ consent, enrollment: existing, codesFromForm, perCustomer, offerRedeemed });
   const nowMs = new Date(opts.now || new Date().toISOString()).getTime();
   const firstDue = new Date(nowMs + (Number(steps[0].after_days) || 0) * 86400000).toISOString();
   if (plan.action === 'enrol') {
