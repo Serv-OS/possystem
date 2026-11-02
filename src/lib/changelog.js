@@ -1,5 +1,16 @@
 export const CHANGELOG = [
   {
+    v: '5.12.35',
+    date: '2 Nov 2026',
+    items: [
+      'Online ordering: picking Delivery (on the welcome screen or from the header pill) now asks for the delivery address first and checks it before anything goes in the basket. Covered: "We deliver to <address>", the delivery fee and the minimum order in the venue currency, Continue. Not covered: "We do not deliver there yet", with Collection instead and, when the company has another venue online, Try <venue> (opens Change location). A check that cannot run says so and offers Try again or collection; the page never blanks.',
+      'The header row reads "Delivery to <address>" and reopens the sheet. Checkout step 1 starts with the address, its coordinates and the quote filled; an edit there updates the header, and the quote is re run as before.',
+      'Basket bar: under the delivery minimum it says "Add <amount> more for delivery" before checkout. Checkout keeps its own minimum order message.',
+      'One rule in one place: the quote call and every coverage word moved to lib/online/deliveryCoverage.js; the checkout imports them and has no quote call of its own. A picked Mapbox suggestion now keeps its coordinates (the text echo used to drop them).',
+      'Collection, the counter link, table QR pages and venues with delivery off are unchanged: no sheet.',
+    ],
+  },
+  {
     v: '5.12.34',
     date: '2 Nov 2026',
     items: [

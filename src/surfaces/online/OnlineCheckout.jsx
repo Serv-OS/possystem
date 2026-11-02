@@ -34,7 +34,10 @@ import { tender, giftTenders, finishTenders } from '../../lib/accounting/tenders
 import { writeClosedCheckRow } from '../../lib/closedCheckWrite';
 import { commitRedemption } from '../../lib/commitRedemptions';
 import { promoBasketLines } from '../../../supabase/functions/_shared/promoMath.js';   // v5.11.81: a code's own rules
-import { getDeliveryQuote, recordDeliverySurcharge } from '../../lib/delivery/quoteService';
+import { recordDeliverySurcharge } from '../../lib/delivery/quoteService';
+// 5.12.35: the delivery address, its quote and every coverage word have one home
+// (lib/online/deliveryCoverage.js), shared with the menu page's address sheet.
+import { EMPTY_DELIVERY, canCheckAddress, quoteDeliveryAddress, withQuote, typeAddress, typePostcode, pickAddress, deliveryBlockWords, postcodeLabel, addressCountry } from '../../lib/online/deliveryCoverage';
 import { dispatchDelivery } from '../../lib/delivery/dispatch';
 import { sendEmailReceipt } from '../../lib/sendReceipt';
 // 5.12.34: the slot rule and the Day / Time pick are shared with the menu page's Order timing sheet.
@@ -90,7 +93,7 @@ function decrementOnlineStock(cart, locationId) {
 // ever fall inside opening windows) and the ASAP option isn't offered.
 // vatGate / onRetryRates (8 Oct 2026): ratesGate's answer from the surface (null when the venue's
 // tax rates are in) and the way to load them again. Payment never opens while it is shut.
-export default function OnlineCheckout({ cart, theme, location, orderType, loyalty, taxRates = [], taxCtx = null, onClose, onPlaced, onOpenLoyalty, onLoyaltyVerified, orderAheadOnly = false, counter = false, counterLabel = null, menuItems = [], menuId = null, categories = [], vatGate = null, onRetryRates = null, timing: timingProp = null, onTimingChange = null, onDeliveryAddress = null }) {
+export default function OnlineCheckout({ cart, theme, location, orderType, loyalty, taxRates = [], taxCtx = null, onClose, onPlaced, onOpenLoyalty, onLoyaltyVerified, orderAheadOnly = false, counter = false, counterLabel = null, menuItems = [], menuId = null, categories = [], vatGate = null, onRetryRates = null, timing: timingProp = null, onTimingChange = null, delivery: deliveryProp = null, onDeliveryChange = null }) {
   const opsLocationId = location.ops_location_id || location.id; // ops DB
   const platformLocationId = location.id;                         // platform DB
   const tz = location.timezone || 'Europe/London';
@@ -142,8 +145,16 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   const [name, setName]   = useState(loyalty?.customer?.name || '');
   const [phone, setPhone] = useState(loyalty?.phone || '');
   const [email, setEmail] = useState(loyalty?.customer?.email || '');
-  const [address1, setAddress1] = useState('');
-  const [postcode, setPostcode] = useState('');
+  // 5.12.35: the delivery address { address1, postcode, geo, quote } is the PAGE's (taken by the
+  // address sheet when Delivery was picked) and arrives as a controlled prop; own state only when
+  // the page does not pass one. An edit here flows back, so the header's row follows it.
+  const [ownDelivery, setOwnDelivery] = useState(EMPTY_DELIVERY);
+  const delivery = deliveryProp || ownDelivery;
+  const setDelivery = onDeliveryChange || setOwnDelivery;
+  const address1 = delivery.address1 || '';
+  const postcode = delivery.postcode || '';
+  const deliveryGeo = delivery.geo || null;      // precise coords from the address autocomplete
+  const deliveryQuote = delivery.quote || null;
   const [notes, setNotes] = useState('');
 
   // v5.5.221: Gift card payment
@@ -316,16 +327,18 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     });
   }, [taxBreakdown, autoDiscountMinor, subtotalMinor, discountedSubtotalMinor, onlineTaxLines, autoDiscounts, taxCtx, taxRates, orderType]);
   // v5.5.648: live delivery quote (Uber Direct, or the configured fee for HubRise-bridge
-  // venues) — fold the customer fee into the amount payable so it's charged + shown.
-  const [deliveryQuote, setDeliveryQuote] = useState(null);
-  const [deliveryGeo, setDeliveryGeo] = useState(null);   // precise coords from address autocomplete
+  // venues): fold the customer fee into the amount payable so it's charged + shown.
+  // 5.12.35: the quote is re run here whenever the address or the basket changes, through the
+  // same shared helper the page's address sheet used, and lands on the page's delivery object
+  // (only if the address is still the one it was asked for).
   const _delivAddrKey = orderType === 'delivery' ? `${address1}|${postcode}` : '';
   useEffect(() => {
-    if (orderType !== 'delivery' || !address1.trim() || !postcode.trim()) { setDeliveryQuote(null); return; }
+    if (orderType !== 'delivery' || !canCheckAddress(delivery)) return undefined;
     let live = true;
+    const asked = { address1, postcode, geo: deliveryGeo };
     const t = setTimeout(async () => {
-      const q = await getDeliveryQuote({ opsLocationId, dropoff: { line1: address1.trim(), postcode: postcode.trim().toUpperCase(), ...(deliveryGeo ? { lat: deliveryGeo.lat, lng: deliveryGeo.lng } : {}) }, orderSubtotalMinor: discountedSubtotalMinor });
-      if (live) setDeliveryQuote(q);
+      const q = await quoteDeliveryAddress({ opsLocationId, delivery: asked, orderSubtotalMinor: discountedSubtotalMinor });
+      if (live) setDelivery((d) => withQuote(d, asked, q));
     }, 500);
     return () => { live = false; clearTimeout(t); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -398,19 +411,12 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     setTiming({ mode: next.mode, slot: next.slot });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timing, slots, orderAheadOnly]);
-  // 5.12.34: the header's "Delivery to <address>" row follows what is typed here.
-  useEffect(() => {
-    if (!onDeliveryAddress) return;
-    const line = [address1, postcode].map(x => String(x || '').trim()).filter(Boolean).join(', ');
-    onDeliveryAddress(orderType === 'delivery' ? line : '');
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [address1, postcode, orderType]);
-
   const muted   = theme.isLight ? '#6b6b70' : '#a0a0a8';
   const cardBdr = theme.isLight ? '#ececef' : '#2a2a30';
   const inputBg = theme.isLight ? '#f5f5f7' : '#1f1f24';
 
   const isDelivery = orderType === 'delivery';
+  const fmtMinor = (m) => money(m / 100);
   const valid = useMemo(() => {
     if (!name.trim()) return false;
     if (!/^\+?[0-9 ]{7,}$/.test(phone)) return false;
@@ -535,15 +541,8 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   // dismissed the hint, or the phone isn't a member — proceed straight through.
   const continueToGift = async () => {
     if (!valid) {
-      if (isDelivery && deliveryQuote && !deliveryQuote.available) {
-        setError((deliveryQuote.reason === 'out_of_radius' || deliveryQuote.reason === 'out_of_coverage') ? 'Sorry, your address is outside our delivery area — please choose collection.' : 'Delivery isn’t available for this address — please choose collection.');
-        return;
-      }
-      if (isDelivery && deliveryQuote?.belowMinimum) {
-        const min = deliveryQuote.minOrderMinor != null ? money(deliveryQuote.minOrderMinor / 100) : '';
-        setError(`Minimum order for delivery is ${min}. Add more to your basket or switch to collection.`);
-        return;
-      }
+      const block = isDelivery ? deliveryBlockWords(deliveryQuote, { fmt: fmtMinor, location }) : null;
+      if (block) { setError(block); return; }
       const missing = [];
       if (!name.trim()) missing.push('name');
       if (!/^\+?[0-9 ]{7,}$/.test(phone)) missing.push('phone number');
@@ -819,12 +818,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   // order through. Returns an error string to block, or null to allow.
   const deliveryGateError = () => {
     if (!isDelivery) return null;
-    if (!deliveryQuote) return 'Checking delivery for your address — one moment, then try again.';
-    if (!deliveryQuote.available) return (deliveryQuote.reason === 'out_of_radius' || deliveryQuote.reason === 'out_of_coverage')
-      ? 'Sorry, your address is outside our delivery area — please choose collection.'
-      : 'Delivery isn’t available for this address — please choose collection.';
-    if (deliveryQuote.belowMinimum) return `Minimum order for delivery is ${deliveryQuote.minOrderMinor != null ? money(deliveryQuote.minOrderMinor / 100) : ''}. Add more to your basket or choose collection.`;
-    return null;
+    return deliveryBlockWords(deliveryQuote, { fmt: fmtMinor, whileChecking: true, location });
   };
 
   const startPayment = async () => {
@@ -1959,14 +1953,15 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                 <div style={{ fontSize: 11, fontWeight: 700, color: theme.isLight ? '#6b6b70' : '#a0a0a8', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6 }}>Delivery address</div>
                 <AddressAutocomplete
                   value={address1}
-                  onChangeText={(t) => { setAddress1(t); setDeliveryGeo(null); }}
-                  onSelect={(a) => { setAddress1(a.line1 || a.label); if (a.postcode) setPostcode(a.postcode); setDeliveryGeo(a.lat != null ? { lat: a.lat, lng: a.lng } : null); }}
+                  onChangeText={(t) => setDelivery((d) => typeAddress(d, t))}
+                  onSelect={(a) => setDelivery((d) => pickAddress(d, a))}
+                  country={addressCountry(location)}
                   proximity={(location && Number.isFinite(location.lat) && Number.isFinite(location.lng)) ? { lat: location.lat, lng: location.lng } : undefined}
                   placeholder="Start typing your address…"
                   inputStyle={{ width: '100%', padding: '12px 14px', borderRadius: 10, background: inputBg, color: theme.fg, border: `1.5px solid ${cardBdr}`, fontSize: 14, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }}
                 />
               </div>
-              <Field label="Postcode" value={postcode} onChange={(v) => { setPostcode(v); setDeliveryGeo(null); }} placeholder="SW1A 1AA" theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
+              <Field label={postcodeLabel(location)} value={postcode} onChange={(v) => setDelivery((d) => typePostcode(d, v))} placeholder={postcodeLabel(location) === 'ZIP code' ? '84601' : 'SW1A 1AA'} theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
             </>
           )}
           {isDelivery && deliveryQuote?.belowMinimum && (
