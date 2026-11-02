@@ -15,7 +15,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { venueServiceRuleCached } from '../../lib/db';   // v5.11.81 round 1: the QR service rule, asked as the menu loads
 import { productImage, resolveDefaultProductImage } from '../../lib/productImage';
-import { supabase } from '../../lib/supabase';
+import { supabase, platformSupabase } from '../../lib/supabase';
 import { prepMinutes, prepRuleFromLocation, liveOrderCount } from '../../lib/prepTime';
 import { assembleTaxProfiles } from '../../lib/rowMapping';
 import { buildLocalTaxCtx, taxCtxHasConfig } from '../../lib/taxCompute';
@@ -53,6 +53,16 @@ import JoinTabScreen from '../qr/JoinTabScreen';
 import { money } from '../../lib/currency';
 import { COUNTER_TYPE, counterCollect, orderTypeChip } from '../../lib/counterOrder';
 import MenuHeader from '../menu/MenuHeader';
+// 5.12.34 (Peter: Toast's ordering header, "we should steal this"): the ordering header block under
+// the themed header, its three sheets, and the menu search. Words and rules are pure and tested in
+// lib/online; the page owns the timing choice and hands it to OnlineCheckout.
+import OnlineHeaderBlock, { OrderTypeSheet, OrderTimingSheet, ChangeLocationSheet, SearchIcon } from './OnlineHeaderBlock';
+import { useNarrowOnline } from './useNarrowOnline';
+import { buildCollectionSlots } from '../../lib/online/collectionSlots';
+import { leadMinutesFor, advanceDaysFor, initialTiming, settleTiming, timingRowWords, orderTypePillWords, orderTypeChoices, locationRowParts, prepRangeWords } from '../../lib/online/orderTiming';
+import { loadSiblingVenues, venueAddressLine, siblingVenueUrl } from '../../lib/online/siblingVenues';
+import { searchMenuRows, searchCountWords, normaliseQuery } from '../../lib/online/menuSearch';
+import { customerUrl } from '../../lib/env';
 import { readTheme, deriveVars, DISPLAY_FONT } from '../menu/menuTheme';
 
 // The item sheet's theme builder lives in ./sheetTheme so the guest booking
@@ -152,6 +162,17 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   // v5.5.145: QR mode skips the welcome/order-type picker — table-side is
   // always dine-in. Online mode keeps the existing welcome flow.
   const [orderType, setOrderType]   = useState(isQr ? 'dine-in' : (counter === true ? COUNTER_TYPE : null));
+  // 5.12.34: the ordering header block's state. The timing choice (ASAP or Schedule for later,
+  // with the slot) is THE page's and is passed into OnlineCheckout, so step 1 starts on it and a
+  // change there updates the header. A closed venue taking orders ahead starts on Schedule.
+  const [timing, setTiming] = useState(() => initialTiming({ orderAheadOnly: !!closedInfo }));
+  const [sheet, setSheet] = useState(null);               // 'type' | 'timing' | 'location' | null
+  const [siblings, setSiblings] = useState([]);           // the company's other venues with online ordering on
+  const [opsVenueRow, setOpsVenueRow] = useState(null);   // ops locations row: address + receipt_branding (the address fallback chain)
+  const [deliveryAddress, setDeliveryAddress] = useState('');   // what the checkout has typed, for "Delivery to <address>"
+  const [search, setSearch] = useState('');
+  const [searchOpen, setSearchOpen] = useState(false);    // phone: the search icon expanded
+  const narrow = useNarrowOnline();
   const [showLoyalty, setShowLoyalty] = useState(false);
   const [loyalty, setLoyalty]       = useState(null); // { phone, verified, customer?, loyalty?, giftCards?, stampCards?, token? }
   const [cart, setCart]             = useState([]);
@@ -366,7 +387,8 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
             .eq('location_id', opsLocationId).order('sort_order'),
           // v5.7.34: default_tax_profile_id rides the branding read — the venue
           // default the reviewer flagged missing (cascade step 4 on this surface).
-          supabase.from('locations').select('receipt_branding, default_tax_profile_id, pos_settings')
+          // 5.12.34: address too, for the header block ("Collection from <address>", the group page's chain).
+          supabase.from('locations').select('receipt_branding, default_tax_profile_id, pos_settings, address')
             .eq('id', opsLocationId).maybeSingle(),
           // v5.11.81: the pinned menu's links are read with every other menu's below (the pin now
           // goes through the shared resolver, lib/channelMenu.js storefrontMenuId).
@@ -402,6 +424,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         const linksData      = mRes.value?.data || null;
         const brandingData   = lRes.value?.data?.receipt_branding || null;
         setDefaultImage(resolveDefaultProductImage(lRes.status === 'fulfilled' ? lRes.value?.data?.pos_settings : null));
+        setOpsVenueRow(lRes.status === 'fulfilled' ? (lRes.value?.data || null) : null);
         setShowKcal(venueShowsCalories(lRes.status === 'fulfilled' ? lRes.value?.data?.pos_settings : null));
         const snap           = pRes.value?.data || null; // v5.5.891: row IS { instructionGroupDefs } now
 
@@ -533,6 +556,21 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
     return () => { alive = false; };
   }, [opsLocationId, ratesAttempt]);
   const retryRates = () => setRatesAttempt(n => n + 1);
+
+  // 5.12.34: the company's other venues for Change location, read the way the group landing page
+  // (GroupOrderSurface.jsx) reads them: the customer's own platform client, then the ops address
+  // chain. [] on any failure, so the link simply does not show. QR and the counter link never
+  // switch venue.
+  useEffect(() => {
+    if (isQr || isCounter || !location?.company_id) return undefined;
+    let alive = true;
+    (async () => {
+      await ensureCustomerSession().catch(() => null);
+      const list = await loadSiblingVenues({ platformSupabase, supabase, companyId: location.company_id, currentId: location.id });
+      if (alive) setSiblings(list);
+    })();
+    return () => { alive = false; };
+  }, [isQr, isCounter, location?.company_id, location?.id]);
 
   // v5.8.31: follow the timed menus. The ONE shared resolver (src/lib/menus/
   // resolveActiveMenu.js, the till's chain: schedule on the venue clock, then
@@ -783,18 +821,43 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
     const t = setInterval(read, 60_000);
     return () => { alive = false; clearInterval(t); };
   }, [opsLocationId]);
+  // Same fallback as the checkout (lib/online/orderTiming.js leadMinutesFor, 5.12.34: one rule).
+  // `|| 0` treated a venue with no column set as "no wait" and hid the pill, while the checkout
+  // quoted 30 and pushed every slot 30 minutes out. One setting, two different promises.
+  const prep = useMemo(() => prepMinutes(leadMinutesFor(location), busyLive ?? 0, prepRuleFromLocation(location)), [location, busyLive]);
+  // The QR table pill keeps its wait words. Online no longer shows a prep pill: the header block's
+  // timing row carries the range (5.12.34).
   const prepBanner = useMemo(() => {
-    // Same fallback as the checkout. `|| 0` treated a venue with no column set
-    // as "no wait" and hid the pill, while the checkout quoted 30 and pushed
-    // every slot 30 minutes out. One setting, two different promises.
-    const base = Number.isFinite(Number(location.online_collection_lead_min))
-      ? Number(location.online_collection_lead_min) : 30;
-    if (base <= 0) return null;
-    const { minutes, busy } = prepMinutes(base, busyLive ?? 0, prepRuleFromLocation(location));
-    // A QR diner is sitting at a table waiting for food, not collecting it.
+    if (leadMinutesFor(location) <= 0) return null;
     const noun = isQr ? 'wait' : 'prep time';
-    return busy ? `${minutes} min ${noun} · busy` : `${minutes} min ${noun}`;
-  }, [location, busyLive, isQr]);
+    return prep.busy ? `${prep.minutes} min ${noun} · busy` : `${prep.minutes} min ${noun}`;
+  }, [location, prep, isQr]);
+
+  // 5.12.34: the slot list for the Order timing sheet, the checkout's own rule
+  // (lib/online/collectionSlots.js), rebuilt on the minute tick so it never goes stale.
+  const orderAheadOnly = !!closedInfo;
+  const slots = useMemo(
+    () => (isQr ? [] : buildCollectionSlots(location, tzOnline, prep.minutes, advanceDaysFor(location))),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [isQr, location, tzOnline, prep.minutes, menuTick],
+  );
+  useEffect(() => {
+    if (isQr) return;
+    const next = settleTiming(timing, slots, { orderAheadOnly });
+    if (next !== timing) setTiming({ mode: next.mode, slot: next.slot });
+  }, [isQr, timing, slots, orderAheadOnly]);
+
+  // The header block's words (lib/online/orderTiming.js, lib/online/siblingVenues.js).
+  const venueAddress = venueAddressLine(location, opsVenueRow);
+  const pillOpens = !isQr && !isCounter && allOrderTypes.length > 1;
+  const pillWords = orderTypePillWords(orderType, { types: allOrderTypes, counterLabel: counterName, location });
+  const locationParts = locationRowParts({ orderType, address: venueAddress, deliveryAddress, location });
+  const timingWords = timingRowWords(timing, { minutes: prep.minutes, busy: prep.busy, orderAheadOnly, delivery: orderType === 'delivery' });
+  const goToVenue = (v) => {
+    const url = siblingVenueUrl(v?.online_slug, typeof window !== 'undefined' ? window.location : null, customerUrl);
+    if (url && typeof window !== 'undefined') window.location.assign(url);
+  };
+  const query = normaliseQuery(search);
 
   const headerBg = vars ? 'var(--bg)' : theme.bg;
 
@@ -1019,9 +1082,24 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           : (mt.showOpenStatus
             ? (closedInfo
               ? [{ label: reopenShort ? `Closed — opens ${reopenShort}` : 'Closed' }]
-              : [{ label: 'Open now', dot: true, green: true }].concat(prepBanner ? [{ label: prepBanner }] : []))
+              : [{ label: 'Open now', dot: true, green: true }])   // 5.12.34: the prep time moved to the header block's timing row
             : [])
       }/>
+
+      {/* 5.12.34: the ordering header block (Toast's layout on our theme). Not on a QR table. */}
+      {!isQr && (
+        <OnlineHeaderBlock
+          theme={theme} muted={muted} narrow={narrow}
+          name={location.name} address={venueAddress}
+          canChangeLocation={siblings.length > 0} onChangeLocation={() => setSheet('location')}
+          pillIcon={orderTypeChip(orderType, { counterLabel: counterName }).icon} pillLabel={pillWords}
+          pillOpens={pillOpens} onPill={() => setSheet('type')}
+          locationWords={locationParts.lead} locationBold={locationParts.bold}
+          locationOpens={siblings.length > 0} onLocationRow={() => setSheet('location')}
+          timingWords={timingWords} timingDashed={timing.mode !== 'scheduled'}
+          timingOpens={!isCounter && !browseOnly} onTimingRow={() => setSheet('timing')}
+        />
+      )}
 
       {/* Sticky header — order-type pill + allergy filter + loyalty + categories */}
       <div style={{
@@ -1037,20 +1115,8 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap',
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            {/* Order-type pill — online only (QR is always dine-in at the table) */}
-            {!isQr && (
-              <button onClick={() => { if (!isCounter) setOrderType(null); }} className="op-btn" style={{
-                padding: '6px 12px', borderRadius: 99,
-                background: `${theme.accent}18`, color: theme.fg,
-                border: `1px solid ${theme.accent}55`,
-                fontSize: 12, fontWeight: 800, fontFamily: 'inherit', cursor: 'pointer',
-                display: 'inline-flex', alignItems: 'center', gap: 6,
-              }}>
-                <span>{orderTypeChip(orderType, { counterLabel: counterName }).icon}</span>
-                <span>{orderTypeChip(orderType, { counterLabel: counterName }).label}</span>
-                {!isCounter && <span style={{ opacity: 0.5, fontSize: 11 }}>↓</span>}
-              </button>
-            )}
+            {/* 5.12.34: the order type pill moved to the header block above (it opens a sheet to
+                pick in place; it no longer sends the customer back to the welcome screen). */}
 
             {/* Loyalty / sign-in */}
             <button onClick={() => { if (!loyalty?.verified) setShowLoyalty(true); }} className="op-btn" style={{
@@ -1091,26 +1157,57 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           </div>
         </div>
 
-        {/* Category chips */}
-        <div style={{ maxWidth: 1100, margin: '0 auto', padding: '6px 20px 10px',
-          overflowX: 'auto', whiteSpace: 'nowrap',
-          WebkitOverflowScrolling: 'touch',
-          scrollbarWidth: 'none', msOverflowStyle: 'none',
-        }}>
-          {topCategories.map(c => {
-            if (itemsForCat(c.id).length === 0) return null;
-            return (
-              <button key={c.id} className="op-btn" onClick={() => {
-                document.getElementById(`cat-${c.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-              }} style={{
-                display: 'inline-block', padding: '7px 13px', marginRight: 6,
-                borderRadius: 99,
-                background: 'transparent', color: theme.fg,
-                border: `1.5px solid ${cardBdr}`,
-                fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit',
-              }}>{tCategoryLabel(c) || c.name}</button>
-            );
-          })}
+        {/* Category chips, with the menu search at the right end (5.12.34). On a phone the search is
+            an icon that expands over the chips. */}
+        <div style={{ maxWidth: 1100, margin: '0 auto', padding: '6px 20px 10px', display: 'flex', alignItems: 'center', gap: 10 }}>
+          {!(narrow && searchOpen) && (
+            <div style={{ flex: 1, minWidth: 0,
+              overflowX: 'auto', whiteSpace: 'nowrap',
+              WebkitOverflowScrolling: 'touch',
+              scrollbarWidth: 'none', msOverflowStyle: 'none',
+            }}>
+              {topCategories.map(c => {
+                if (itemsForCat(c.id).length === 0) return null;
+                const jump = () => document.getElementById(`cat-${c.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                return (
+                  <button key={c.id} className="op-btn" onClick={() => {
+                    // A chip tap while searching clears the search first, so the section is there to scroll to.
+                    if (query) { setSearch(''); setTimeout(jump, 0); } else jump();
+                  }} style={{
+                    display: 'inline-block', padding: '7px 13px', marginRight: 6,
+                    borderRadius: 99,
+                    background: 'transparent', color: theme.fg,
+                    border: `1.5px solid ${cardBdr}`,
+                    fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit',
+                  }}>{tCategoryLabel(c) || c.name}</button>
+                );
+              })}
+            </div>
+          )}
+          {narrow && !searchOpen ? (
+            <button type="button" aria-label="Search the menu" className="op-btn" onClick={() => setSearchOpen(true)} style={{
+              flex: 'none', width: 38, height: 38, borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              background: query ? `${theme.accent}18` : 'transparent', color: theme.fg, border: `1.5px solid ${query ? theme.accent : cardBdr}`, cursor: 'pointer',
+            }}><SearchIcon /></button>
+          ) : (
+            <div style={{ flex: narrow ? 1 : '0 0 240px', minWidth: 0, position: 'relative', display: 'flex', alignItems: 'center' }}>
+              <span aria-hidden="true" style={{ position: 'absolute', left: 13, display: 'inline-flex', color: muted, pointerEvents: 'none' }}><SearchIcon size={16} /></span>
+              {/* type text, not search: WebKit draws its own clear cross inside a search input next to ours */}
+              <input type="text" role="searchbox" inputMode="search" value={search} onChange={e => setSearch(e.target.value)} placeholder="Search" aria-label="Search the menu"
+                autoFocus={narrow && searchOpen} enterKeyHint="search" autoComplete="off"
+                style={{
+                  width: '100%', padding: '9px 36px 9px 38px', borderRadius: 999, boxSizing: 'border-box',
+                  border: `1.5px solid ${query ? theme.accent : cardBdr}`, background: 'transparent', color: theme.fg,
+                  fontSize: 14, fontWeight: 600, fontFamily: 'inherit', outline: 'none', WebkitAppearance: 'none',
+                }} />
+              {(query || (narrow && searchOpen)) && (
+                <button type="button" aria-label="Clear search" onClick={() => { setSearch(''); setSearchOpen(false); }} style={{
+                  position: 'absolute', right: 6, width: 28, height: 28, borderRadius: '50%', border: 'none', background: 'transparent',
+                  color: theme.fg, fontSize: 18, lineHeight: 1, cursor: 'pointer', fontFamily: 'inherit', display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                }}>×</button>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -1146,45 +1243,68 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           </div>
         )}
 
-        {!loading && items.length > 0 && topCategories.map(cat => {
-          const catItems = itemsForCat(cat.id);
-          if (!catItems.length) return null;
-          return (
-            <section key={cat.id} id={`cat-${cat.id}`} style={{ marginBottom: 36, scrollMarginTop: 80 + noticeH }}>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 18 }}>
-                <h2 style={{ fontFamily: DISPLAY_FONT, fontWeight: 700, fontSize: 'clamp(20px,4.4cqw,28px)', margin: 0, letterSpacing: '-.02em', color: 'var(--ink)' }}>{tCategoryLabel(cat) || cat.name}</h2>
-                <span style={{ height: 1, flex: 1, background: 'var(--line)' }} />
-                <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>{catItems.length} item{catItems.length === 1 ? '' : 's'}</span>
-              </div>
-              <div style={{ display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fill, minmax(min(47%, 300px), 1fr))',
-                gap: 14,
-              }}>
-                {catItems.map(item => {
-                  // v5.5.141: variant parent is sold-out only when ALL of its
-                  // children are 86'd. Single-variant 86 still leaves the
-                  // parent tappable so the customer can pick a sibling size.
-                  const vinfo = variantInfo(item);
-                  const itemSoldOut = isItemEightySixed(item, eightySixIds);
-                  const variantsAllSoldOut = vinfo?.kids?.length
-                    ? vinfo.kids.every(k => isItemEightySixed(k, eightySixIds))
-                    : false;
-                  const is86 = itemSoldOut || variantsAllSoldOut;
-                  const stock = stockLevels[item.id] || null;
-                  return (
-                    <ItemCard key={item.id} item={item} theme={theme} priceFor={priceFor} defaultImage={defaultImage}
-                      cardBg={cardBg} cardBdr={cardBdr} muted={muted}
-                      variantInfo={vinfo}
-                      unsafe={unsafeFor(item, childrenByParent[item.id])}
-                      is86={is86}
-                      stock={stock}
-                      onPick={() => is86 ? null : setOpenItem(item)}/>
-                  );
-                })}
-              </div>
-            </section>
+        {!loading && items.length > 0 && (() => {
+          const cardFor = (item) => {
+            // v5.5.141: variant parent is sold-out only when ALL of its
+            // children are 86'd. Single-variant 86 still leaves the
+            // parent tappable so the customer can pick a sibling size.
+            const vinfo = variantInfo(item);
+            const itemSoldOut = isItemEightySixed(item, eightySixIds);
+            const variantsAllSoldOut = vinfo?.kids?.length
+              ? vinfo.kids.every(k => isItemEightySixed(k, eightySixIds))
+              : false;
+            const is86 = itemSoldOut || variantsAllSoldOut;
+            const stock = stockLevels[item.id] || null;
+            return (
+              <ItemCard key={item.id} item={item} theme={theme} priceFor={priceFor} defaultImage={defaultImage}
+                cardBg={cardBg} cardBdr={cardBdr} muted={muted}
+                variantInfo={vinfo}
+                unsafe={unsafeFor(item, childrenByParent[item.id])}
+                is86={is86}
+                stock={stock}
+                onPick={() => is86 ? null : setOpenItem(item)}/>
+            );
+          };
+          const grid = { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(47%, 300px), 1fr))', gap: 14 };
+          const heading = (label, count) => (
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 18 }}>
+              <h2 style={{ fontFamily: DISPLAY_FONT, fontWeight: 700, fontSize: 'clamp(20px,4.4cqw,28px)', margin: 0, letterSpacing: '-.02em', color: 'var(--ink)' }}>{label}</h2>
+              <span style={{ height: 1, flex: 1, background: 'var(--line)' }} />
+              <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 600 }}>{count}</span>
+            </div>
           );
-        })}
+          // 5.12.34: search. The SAME rows the sections show (itemsForCat: sold alone, visible on
+          // this channel, on the menu), matched on the name and description in the menu language
+          // (lib/online/menuSearch.js), as one Results section in place of the categories.
+          if (query) {
+            // Each row carries the label(s) of the section(s) it shows under, so "pizza" finds the pizzas.
+            const sectionsOf = new Map();
+            const rows = topCategories.flatMap(c => itemsForCat(c.id).map(r => {
+              const label = tCategoryLabel(c) || c.name || '';
+              sectionsOf.set(r.id, [...(sectionsOf.get(r.id) || []), label]);
+              return r;
+            }));
+            const results = searchMenuRows(rows, query, { name: tItemName, description: tItemDescription, section: (r) => sectionsOf.get(r.id) || [] });
+            return (
+              <section id="search-results" aria-live="polite" style={{ marginBottom: 36, scrollMarginTop: 80 + noticeH }}>
+                {heading('Results', searchCountWords(results.length, query))}
+                {results.length
+                  ? <div style={grid}>{results.map(cardFor)}</div>
+                  : <div style={{ padding: '28px 0', color: muted, fontSize: 14, fontWeight: 600 }}>Nothing on the menu matches. Try another word, or clear the search to see every section.</div>}
+              </section>
+            );
+          }
+          return topCategories.map(cat => {
+            const catItems = itemsForCat(cat.id);
+            if (!catItems.length) return null;
+            return (
+              <section key={cat.id} id={`cat-${cat.id}`} style={{ marginBottom: 36, scrollMarginTop: 80 + noticeH }}>
+                {heading(<>{tCategoryLabel(cat) || cat.name}</>, `${catItems.length} item${catItems.length === 1 ? '' : 's'}`)}
+                <div style={grid}>{catItems.map(cardFor)}</div>
+              </section>
+            );
+          });
+        })()}
       </div>
 
       {/* Floating cart CTA */}
@@ -1253,7 +1373,9 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           taxCtx={taxCtx} /* v5.7.34: the unified seam context - LIVE */
           vatGate={vatGate} /* 8 Oct 2026: no payment while the rates are not loaded */
           onRetryRates={retryRates}
-          orderAheadOnly={!!closedInfo}
+          orderAheadOnly={orderAheadOnly}
+          timing={timing} onTimingChange={setTiming} /* 5.12.34: the page's timing choice, one state with the header */
+          onDeliveryAddress={setDeliveryAddress}
           counter={isCounter}
           counterLabel={counterName}
           onClose={() => setShowCheckout(false)}
@@ -1294,6 +1416,28 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           theme={theme} cardBdr={cardBdr} muted={muted}
           info={confirmation}
           onClose={() => setConfirmation(null)}/>
+      )}
+
+      {/* 5.12.34: the header block's sheets (centred on a wide screen, from the bottom on a phone) */}
+      {sheet === 'type' && !isQr && (
+        <OrderTypeSheet theme={theme} cardBdr={cardBdr} muted={muted} narrow={narrow}
+          choices={orderTypeChoices(allOrderTypes, location)} value={orderType}
+          icons={{ collection: orderTypeChip('collection').icon, delivery: orderTypeChip('delivery').icon }}
+          onPick={(t) => { if (t && t !== orderType) setOrderType(t); }}
+          onClose={() => setSheet(null)} />
+      )}
+      {sheet === 'timing' && !isQr && (
+        <OrderTimingSheet theme={theme} cardBdr={cardBdr} muted={muted} narrow={narrow}
+          timing={timing} slots={slots} orderAheadOnly={orderAheadOnly}
+          asapWords={`${orderType === 'delivery' ? 'Delivered' : 'Ready'} in ${prepRangeWords(prep.minutes)}${prep.busy ? ', busy' : ''}`}
+          onConfirm={(t) => setTiming(t)}
+          onClose={() => setSheet(null)} />
+      )}
+      {sheet === 'location' && !isQr && (
+        <ChangeLocationSheet theme={theme} cardBdr={cardBdr} muted={muted} narrow={narrow}
+          current={{ name: location.name, address: venueAddress }} venues={siblings} cartCount={cartCount}
+          onContinue={goToVenue}
+          onClose={() => setSheet(null)} />
       )}
 
       {showAllergyPicker && (

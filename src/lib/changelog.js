@@ -1,5 +1,18 @@
 export const CHANGELOG = [
   {
+    v: '5.12.34',
+    date: '2 Nov 2026',
+    items: [
+      'Online ordering: the top of the menu page now works like Toast. Under the venue header sit the venue name, its street address and Change location on the left; on the right the order type pill, a "Collection from <address>" row and an "ASAP, ready in 30 to 35 min" row, each opening a small sheet on the venue theme.',
+      'The order type pill picks Collection or Delivery in place. It used to send the customer back to the welcome screen.',
+      'Order timing: ASAP or Schedule for later can be chosen before anything is in the basket, with the same slots the checkout offers. The choice carries into checkout step 1, and a change there updates the header. One slot rule, shared by the page and the checkout.',
+      'Change location: the other venues in the company with online ordering on, with their address. Continue opens that venue online page. With items in the basket the sheet says the basket will start again at the other venue.',
+      'Search: a search box at the end of the category row finds products by name, description or section (pizza finds Pepperoni under Sourdough Pizza), in the menu language. Only products the menu already shows can appear. On a phone the box is an icon that expands.',
+      'Phone layout: the header stacks (name and address, the two rows, then the pill) and the sheets rise from the bottom.',
+      'Table QR pages are unchanged: the Table pill and wait stay in the header, with no location or timing rows.',
+    ],
+  },
+  {
     v: '5.12.33',
     date: '2 Nov 2026',
     items: [
