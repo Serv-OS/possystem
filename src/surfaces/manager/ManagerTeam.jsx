@@ -146,11 +146,14 @@ export default function ManagerTeam({ ctx }) {
     setOutFor(null);
     setOutErr({ id: p.id, msg: r?.error || 'Could not clock out' });
   };
+  // 5.12.24 (Peter, 2 Nov 2026: "on the manager app on iOS the clock out button doesn't do anything"):
+  // this used to ask with the browser's confirm() box. None of the iOS shells shows one, so it
+  // answered no at once and the tap did nothing. The question now sits in the row itself, with the
+  // PIN box when no manager PIN is cached yet.
   const askClockOut = (p) => {
-    if (!confirm(`Clock ${nameOf[p.staffId] || 'this person'} out now?`)) return;
     setOutErr({ id: null, msg: '' });
-    if (pin) clockOut(p, pin);
-    else { setOutEntry(''); setOutFor(p.id); }
+    setOutEntry('');
+    setOutFor(p.id);
   };
 
   return (
@@ -375,16 +378,17 @@ export default function ManagerTeam({ ctx }) {
                 </div>
                 {canClockOut(p, flags) && outFor === p.id && (
                   <div style={{ marginTop: 10, borderTop: '1px solid var(--bdr)', paddingTop: 10 }}>
-                    <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t2)', marginBottom: 6 }}>Manager PIN to clock out</div>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--t2)', marginBottom: 6 }}>Clock {nameOf[p.staffId] || 'this person'} out now?{pin ? '' : ' Manager PIN:'}</div>
                     <div style={{ display: 'flex', gap: 8 }}>
-                      <input type="password" inputMode="numeric" autoComplete="off" autoFocus value={outEntry} placeholder="PIN"
+                      {!pin && <input type="password" inputMode="numeric" autoComplete="off" autoFocus value={outEntry} placeholder="PIN"
                         onChange={(e) => { setOutErr({ id: null, msg: '' }); setOutEntry(e.target.value.replace(/\D/g, '').slice(0, 6)); }}
                         onKeyDown={(e) => { if (e.key === 'Enter' && outEntry.length >= 4 && acting !== p.id) clockOut(p, outEntry); }}
-                        style={{ flex: 1, minWidth: 0, padding: '10px 12px', borderRadius: 11, border: '1px solid var(--bdr)', background: 'var(--glass-bg)', color: 'var(--t1)', fontFamily: 'var(--font-mono)', fontSize: 16, letterSpacing: '.3em', outline: 'none', ...L.s.pinInput }} />
+                        style={{ flex: 1, minWidth: 0, padding: '10px 12px', borderRadius: 11, border: '1px solid var(--bdr)', background: 'var(--glass-bg)', color: 'var(--t1)', fontFamily: 'var(--font-mono)', fontSize: 16, letterSpacing: '.3em', outline: 'none', ...L.s.pinInput }} />}
+                      {pin && <div style={{ flex: 1 }} />}
                       <button onClick={() => { setOutFor(null); setOutEntry(''); setOutErr({ id: null, msg: '' }); }} disabled={acting === p.id} className="sv-glass"
                         style={{ padding: '0 12px', borderRadius: 11, border: '1px solid var(--bdr)', cursor: 'pointer', color: 'var(--t2)', fontWeight: 700, fontSize: 12.5, fontFamily: 'inherit' }}>Cancel</button>
-                      <button onClick={() => clockOut(p, outEntry)} disabled={outEntry.length < 4 || acting === p.id} className="sv-glass"
-                        style={{ padding: '0 14px', borderRadius: 11, border: '1px solid var(--grn-b)', cursor: outEntry.length >= 4 ? 'pointer' : 'default', color: 'var(--grn)', fontWeight: 800, fontSize: 12.5, fontFamily: 'inherit', opacity: outEntry.length >= 4 ? 1 : 0.5 }}>
+                      <button onClick={() => clockOut(p, pin || outEntry)} disabled={(!pin && outEntry.length < 4) || acting === p.id} className="sv-glass"
+                        style={{ padding: '0 14px', borderRadius: 11, border: '1px solid var(--grn-b)', cursor: (pin || outEntry.length >= 4) ? 'pointer' : 'default', color: 'var(--grn)', fontWeight: 800, fontSize: 12.5, fontFamily: 'inherit', opacity: (pin || outEntry.length >= 4) ? 1 : 0.5 }}>
                         {acting === p.id ? '…' : 'Clock out'}
                       </button>
                     </div>

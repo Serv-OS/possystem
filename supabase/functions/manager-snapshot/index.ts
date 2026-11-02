@@ -94,7 +94,7 @@ Deno.serve(async (req) => {
     // Venue metadata (timezone for "today", currency).
     const [{ data: vs }, { data: locRow }] = await Promise.all([
       sb.from('wf_venue_settings').select('currency, labour_target_pct').eq('location_id', loc).maybeSingle(),
-      sb.from('locations').select('timezone, name').eq('id', loc).maybeSingle(),
+      sb.from('locations').select('timezone, name, is_demo').eq('id', loc).maybeSingle(),
     ]);
     const tz = locRow?.timezone || 'Europe/London';
     const currency = vs?.currency || 'GBP';
@@ -163,7 +163,12 @@ Deno.serve(async (req) => {
     // ── Money (today, venue-local): what customers paid for the goods, VAT apart; voided checks
     //    count for nothing (_shared/snapshotSales.js, the same reading as owner-snapshot) ──
     // v5.11.99: demo checks left out by the one demo rule (_shared/demoHistory.js).
-    const live = leaveOutDemo(checks), older = leaveOutDemo(olderRefunds);
+    // 5.12.24 (Peter, 2 Nov 2026: "record a demo of the manager app, can we see it with data"): a venue
+    // flagged is_demo exists to show its made up history, so it keeps it. A real venue has is_demo
+    // false and leaves demo checks out exactly as before.
+    const demoVenue = (locRow as { is_demo?: boolean } | null)?.is_demo === true;
+    const live = demoVenue ? { rows: checks, left: 0 } : leaveOutDemo(checks);
+    const older = demoVenue ? { rows: olderRefunds, left: 0 } : leaveOutDemo(olderRefunds);
     const demoLeftOut = live.left + older.left > 0;
     const sales = emptySales();
     for (const c of live.rows) { const t = Date.parse(c.closed_at); if (Number.isFinite(t) && dayOf(t) === bizDay) addCheckSales(sales, c); }

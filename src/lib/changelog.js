@@ -7,6 +7,23 @@
 
 export const CHANGELOG = [
   {
+    v: '5.12.25',
+    date: '2 Nov 2026',
+    items: [
+      'Manager app: a stock count that could not reach ServOS no longer sits on Loading for good. The area list and the count sheet give up after 20 seconds, say so, and offer Try again. A tapped area now says Opening the count.',
+      'Manager app on iPad: Recipe cards product buttons were squashed to small squares with the names spilling out. They span the list again.',
+      'Manager app: tapping a product on Recipe cards said Sign in to see recipe cards. The server read the card as itself, which the database refuses; it now reads as the paired device. Needs the manager-approve server update.',
+    ],
+  },
+  {
+    v: '5.12.24',
+    date: '2 Nov 2026',
+    items: [
+      'Manager app: Clock out works on iPhone and iPad. The button asked with a browser pop up box that the iOS app cannot show, so the tap did nothing. The question now sits in the row, with the manager PIN box.',
+      'Manager app: a demo venue shows its own demo sales again. Since 5.11.99 every report left demo history out, which emptied the Manager app at the demo venues too. Real venues are unchanged.',
+    ],
+  },
+  {
     v: '5.12.23',
     date: '1 Nov 2026',
     items: [

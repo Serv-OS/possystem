@@ -50,16 +50,21 @@ export default function ManagerStock({ ctx, onClose }) {
   const [waiting, setWaiting] = useState('');        // v5.11.96: 'Waiting for a second approval. Over £500.'
   const call = useCallback((action, target, extra) => managerApprove(loc, pin, action, target, extra), [loc, pin]);
 
+  const [areasTry, setAreasTry] = useState(0);        // 5.12.25: Try again after a timed out area list
+  const [areasFailed, setAreasFailed] = useState(false);
   useEffect(() => {
     if (!pin || areas) return undefined;
     let live = true;
     call('stock.areas', 'areas').then((r) => {
       if (!live) return;
       if (r?.ok) setAreas(r);
-      else setErr(phoneStockNotReady(r?.error) ? 'Counting on the phone is not ready at this venue yet: the server update for it is still to come.' : (r?.error || 'Could not read the areas'));
+      else {
+        setAreasFailed(true);
+        setErr(phoneStockNotReady(r?.error) ? 'Counting on the phone is not ready at this venue yet: the server update for it is still to come.' : (r?.error || 'Could not read the areas'));
+      }
     });
     return () => { live = false; };
-  }, [pin, areas, call]);
+  }, [pin, areas, call, areasTry]);
 
   // Saved as you go: whatever waits on the phone is sent every few seconds while the sheet is open.
   // flushEntries runs one send per count at a time; a call while one is running waits for that one.
@@ -192,10 +197,12 @@ export default function ManagerStock({ ctx, onClose }) {
       {mode === 'count' && !count && (
         <>
           <SectionTitle>Pick an area</SectionTitle>
-          {!areas && <div style={{ color: 'var(--t3)', ...mono }}>Loading…</div>}
+          {!areas && !areasFailed && <div style={{ color: 'var(--t3)', ...mono }}>Loading the areas…</div>}
+          {!areas && areasFailed && <button onClick={() => { setErr(''); setAreasFailed(false); setAreasTry((n) => n + 1); }} className="sv-glass" style={{ ...btn(), textAlign: 'left' }}>Try again</button>}
+          {busy && <div style={{ color: 'var(--t3)', ...mono }}>Opening the count…</div>}
           <div style={{ display: 'grid', gap: 8 }}>
-            {(areas?.areas || []).map((a) => <button key={a.id} disabled={busy} onClick={() => openSheet(a.id)} className="sv-glass" style={{ ...btn(), textAlign: 'left' }}>{a.name}</button>)}
-            <button disabled={busy} onClick={() => openSheet(null)} className="sv-glass" style={{ ...btn(), textAlign: 'left' }}>The whole venue</button>
+            {(areas?.areas || []).map((a) => <button key={a.id} disabled={busy} onClick={() => openSheet(a.id)} className="sv-glass" style={{ ...btn(), textAlign: 'left', opacity: busy ? 0.5 : 1 }}>{a.name}</button>)}
+            <button disabled={busy} onClick={() => openSheet(null)} className="sv-glass" style={{ ...btn(), textAlign: 'left', opacity: busy ? 0.5 : 1 }}>The whole venue</button>
             <button onClick={() => setMode(null)} style={btn('var(--t3)')}>Back</button>
           </div>
         </>

@@ -77,7 +77,16 @@ const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
 
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+const ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY') ?? '';
 const sb = createClient(Deno.env.get('SUPABASE_URL') ?? '', SERVICE_ROLE, { auth: { autoRefreshToken: false, persistSession: false } });
+// 5.12.25: a client that is the CALLER (the paired device's own session, or a Back Office login),
+// for a database function that decides by auth.uid(). stock_recipe_card admits a claimed ops_device
+// at its own venue and a signed in login that reaches the site, and refuses a session with no uid,
+// which is what the service role is: every Manager app recipe card tap answered "Sign in to see
+// recipe cards." since 5.11.93. The device fence above already proved this caller, so its own
+// session is the right one to read with.
+const asCaller = (caller: Caller) => caller.service || !caller.token ? sb
+  : createClient(Deno.env.get('SUPABASE_URL') ?? '', ANON_KEY, { global: { headers: { Authorization: `Bearer ${caller.token}` } }, auth: { autoRefreshToken: false, persistSession: false } });
 const nowIso = () => new Date().toISOString();
 const r2 = (n: number) => Math.round(n * 100) / 100;
 // the venue's calendar day (the same Intl reading manager-snapshot uses for `today`)
@@ -783,11 +792,12 @@ Deno.serve(async (req) => {
         }
       } else if (action === 'stock.recipe_card') {
         // v5.11.93 (multi site stock Drop 2, contract 3.6): the recipe card for staff (build, method,
-        // allergens, kcal; never a cost), read as the service role for THIS venue only
-        // (stock_recipe_card(p_loc, p_menu_item_id), migration 20261025a). target_id is the till
+        // allergens, kcal; never a cost), read as the CALLER for THIS venue only (5.12.25: the
+        // function refuses the service role; stock_recipe_card(p_loc, p_menu_item_id), migration
+        // 20261025a). target_id is the till
         // product. A staff PIN is enough, as for the other stock reads. Before 20261025a the
         // function is missing: said in words, never a throw. Nothing is written.
-        const { data, error } = await sb.rpc('stock_recipe_card', { p_loc: loc, p_menu_item_id: String(target_id) });
+        const { data, error } = await asCaller(caller).rpc('stock_recipe_card', { p_loc: loc, p_menu_item_id: String(target_id) });
         if (error) {
           const missing = /PGRST202|42883|could not find the function|does not exist/i.test(`${error.code || ''} ${error.message || ''}`);
           out = { error: missing ? 'Recipe cards need a database update (20261025a).' : (error.message || 'Could not read the recipe card') };

@@ -104,6 +104,21 @@ test('the Kitchen tab opens counting only where there is stock; the sheet is the
   assert.match(stock, /const r = await flushEntries\(count\.id, async \(batch, sentAt\) => \{/, 'every send goes through the guarded flush');
   assert.match(stock, /await flush\(\);\s+\/\/[^\n]*\n\s+if \(pendingEntries\(count\.id\)\.length\) await flush\(\);/, 'Approve sends what waits first');
   assert.match(stock, /const t = setInterval\(flush, 5000\);\s+return \(\) => clearInterval\(t\);/);
+  // 5.12.25: a woken phone's hung call must give up and say so, and the screen must offer a way back.
+  const data = read('./data.js');
+  assert.match(data, /export const MANAGER_APPROVE_TIMEOUT_MS = 20000;/);
+  assert.match(data, /export const MANAGER_READ_ACTIONS = new Set\(\['stock\.areas', 'stock\.count_open', 'stock\.count_sheet', 'stock\.items', 'stock\.recipe_card'\]\);/);
+  assert.match(data, /MANAGER_READ_ACTIONS\.has\(action\)\s+\? await withTimeout\(sent, MANAGER_APPROVE_TIMEOUT_MS, `Manager \$\{action\}`\)\s+: await sent;/, 'reads race the timer, writes never do');
+  const fn = read('../../../supabase/functions/manager-approve/index.ts');
+  assert.match(fn, /await asCaller\(caller\)\.rpc\('stock_recipe_card'/, "5.12.25: the recipe card is read as the caller; the function refuses the service role with 'Sign in to see recipe cards.'");
+  assert.match(fn, /createClient\(Deno\.env\.get\('SUPABASE_URL'\) \?\? '', ANON_KEY, \{ global: \{ headers: \{ Authorization: `Bearer \$\{caller\.token\}` \} \}/);
+  assert.match(data, /e instanceof TimeoutError \? MANAGER_UNREACHABLE/, 'a timeout says Could not reach ServOS');
+  assert.match(stock, /\{!areas && areasFailed && <button onClick=\{\(\) => \{ setErr\(''\); setAreasFailed\(false\); setAreasTry\(\(n\) => n \+ 1\); \}\}/, 'Try again after a failed area list');
+  assert.match(stock, /\{busy && <div[^>]*>Opening the count…<\/div>\}/, 'a tapped area says it is opening');
+  assert.match(stock, /\}, \[pin, areas, call, areasTry\]\);/, 'Try again re runs the area read');
+  const recipe = read('../../surfaces/manager/ManagerRecipeCard.jsx');
+  assert.doesNotMatch(recipe, /\.\.\.L\.s\.hit/, '5.12.25: hit is a 44 px icon square; it squashed every product button on the tablet');
+  assert.match(recipe, /minHeight: 44, width: '100%' \}\}>/, 'product buttons span the list');
   for (const [name, text] of [['ManagerStock.jsx', stock], ['stockPhone.js', read('./stockPhone.js')]]) {
     assert.doesNotMatch(text, /[\u2013\u2014]/, `${name}: no long dashes`);
   }
