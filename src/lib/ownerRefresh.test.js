@@ -47,4 +47,5 @@ test('the manager app cannot hang on its snapshot either', () => {
   assert.ok(src.includes("'Manager snapshot')"), 'it is raced against that timer');
   assert.ok(src.includes('e instanceof TimeoutError ? MANAGER_UNREACHABLE'), 'a timeout reads as a connection problem');
   assert.ok(!/withTimeout\([\s\S]{0,200}manager-approve/.test(src), 'writes are NOT given a timeout: a lost reply must not look like a failed approval');
+  assert.ok(/MANAGER_READ_ACTIONS\.has\(action\)\s+\? await withTimeout\(sent/.test(src), '5.12.25: only the stock READS are timed');
 });

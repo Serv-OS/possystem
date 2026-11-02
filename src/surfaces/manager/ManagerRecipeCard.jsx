@@ -118,7 +118,7 @@ export default function ManagerRecipeCard({ ctx, onClose }) {
         <div style={{ display: 'grid', gap: 6 }}>
           {shown.map((p) => (
             <button key={p.menu_item_id} onClick={() => open(p)} className="sv-glass"
-              style={{ textAlign: 'left', padding: '12px 14px', borderRadius: 12, border: '1px solid var(--bdr)', cursor: 'pointer', color: 'var(--t1)', fontWeight: 700, fontSize: 14, fontFamily: 'inherit', ...L.s.hit }}>
+              style={{ textAlign: 'left', padding: '12px 14px', borderRadius: 12, border: '1px solid var(--bdr)', cursor: 'pointer', color: 'var(--t1)', fontWeight: 700, fontSize: 14, fontFamily: 'inherit', minHeight: 44, width: '100%' }}>
               {p.name}
             </button>
           ))}

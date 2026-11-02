@@ -8,6 +8,9 @@ import { approveErrorMessage } from './approveError.js';
 export const MANAGER_SNAPSHOT_TIMEOUT_MS = 15000;
 export const MANAGER_UNREACHABLE =
   'Could not reach ServOS. Try again, or close and reopen the app.';
+/** A manager-approve READ that has not answered by now never will (writes are never timed). */
+export const MANAGER_APPROVE_TIMEOUT_MS = 20000;
+export const MANAGER_READ_ACTIONS = new Set(['stock.areas', 'stock.count_open', 'stock.count_sheet', 'stock.items', 'stock.recipe_card']);
 
 /** One-call snapshot for the paired venue: { ok, money, floor[], team{}, kitchen{}, ops{}, venueName, tz }. */
 export async function fetchManagerSnapshot(opsLocationId) {
@@ -32,11 +35,23 @@ export async function fetchManagerSnapshot(opsLocationId) {
  *  action: 'timesheet.approve' | 'timeoff.decide' (extra: { decision:'approved'|'denied' }). */
 export async function managerApprove(opsLocationId, pin, action, targetId, extra = {}) {
   if (!supabase || !opsLocationId) return { ok: false, error: 'offline' };
-  const { data, error } = await supabase.functions.invoke('manager-approve', {
+  // 5.12.25: the same woken phone fault as the snapshot, for the READS that come through here (a
+  // stock count's area list and sheet, the item list, a recipe card, and opening a count, which
+  // re uses its own draft for 18 hours). Without a timer a hung call left "Pick an area" on
+  // Loading for good and a tapped area doing nothing. A WRITE (an approval, a save, waste) is
+  // never timed: a lost reply must not look like a failed approval.
+  const sent = supabase.functions.invoke('manager-approve', {
     body: { action, ops_location_id: opsLocationId, pin: String(pin || ''), target_id: targetId, ...extra },
   });
-  if (error) return { ok: false, error: await approveErrorMessage(error) };
-  return data;
+  try {
+    const { data, error } = MANAGER_READ_ACTIONS.has(action)
+      ? await withTimeout(sent, MANAGER_APPROVE_TIMEOUT_MS, `Manager ${action}`)
+      : await sent;
+    if (error) return { ok: false, error: await approveErrorMessage(error) };
+    return data;
+  } catch (e) {
+    return { ok: false, error: e instanceof TimeoutError ? MANAGER_UNREACHABLE : (e?.message || 'Could not reach ServOS') };
+  }
 }
 
 /** Raise a purchase order for one supplier's below-par lines (Manager Kitchen tab). Same secure
