@@ -2,7 +2,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isOptionOnlyItem, assignmentGroupId, sizeOrMainOptions, modifierGroupMin, modifierGroupRequired, instructionGroupMin, moveMainProductOptions, resolveSoldAlone, soldAlonePatchForTypeChange, subitemNameIndex } from './menuRules.js';
+import { isOptionOnlyItem, assignmentGroupId, sizeOrMainOptions, modifierGroupMin, modifierGroupRequired, instructionGroupMin, moveMainProductOptions, resolveSoldAlone, soldAlonePatchForTypeChange, subitemNameIndex, optionOnlyCategoryIds } from './menuRules.js';
 
 // Live rows (Ops DB, Provo).
 const NO_ICE = { id: 'm-1776807172397', name: 'No Ice', type: 'subitem', sold_alone: false, cat: 'cat-1776803885509' };
@@ -257,4 +257,57 @@ test('rule 8: sub item name index, allergens and 86 see every sub item, pictures
   assert.equal(any.get('rice milk').id, 'm4');
   assert.equal(sold.has('rice milk'), false);
   assert.equal(subitemNameIndex(null).size, 0);
+});
+
+// Rule 9 (Peter, 2 Nov 2026: "when a category is empty and just has sub items that cant be sold
+// alone we should hide the category from the POS kiosk etc"). Live Provo rows: the importer put
+// six cheeses (sub items, not sold alone) in their own Cheeses category.
+test('rule 9: a category holding only option only sub items is left out; empty and real ones stay', () => {
+  const cats = [
+    { id: 'pizza', label: 'Sourdough Pizza', parentId: null },
+    { id: 'cheeses', label: 'Cheeses', parentId: null },
+    { id: 'empty', label: 'Cold Sandwiches', parentId: null },
+    { id: 'alcohol', label: 'Alcohol', parentId: null },
+    { id: 'draught', label: 'Draught', parentId: 'alcohol' },
+    { id: 'addons', label: 'Add ons', parentId: 'alcohol' },
+  ];
+  const items = [
+    { id: 'p1', type: 'simple', cat: 'pizza' },
+    { id: 'c1', name: 'Gouda', type: 'subitem', soldAlone: false, cat: 'cheeses' },
+    { id: 'c2', name: 'Ricotta', type: 'subitem', soldAlone: false, cat: 'cheeses' },
+    { id: 'c3', name: 'old', type: 'simple', archived: true, cat: 'cheeses' },          // archived: not counted
+    { id: 'b1', type: 'simple', cat: 'draught' },
+    { id: 'b1s', type: 'simple', parentId: 'b1', cat: 'draught' },                     // a size row: not counted
+    { id: 'a1', type: 'subitem', soldAlone: false, cat: 'addons' },
+  ];
+  const hidden = optionOnlyCategoryIds(cats, items);
+  assert.deepEqual([...hidden].sort(), ['addons', 'cheeses']);
+  // The parent of a sub category with real products stays, even with an option only sibling.
+  assert.equal(hidden.has('alcohol'), false);
+  // A category with nothing in it is left alone (it shows as it always did).
+  assert.equal(hidden.has('empty'), false);
+});
+
+test('rule 9: a parent whose sub categories hold only options goes too; snake_case rows and cats arrays count', () => {
+  const cats = [
+    { id: 'extras', label: 'Extras', parent_id: null },
+    { id: 'meats', label: 'Meats', parent_id: 'extras' },
+    { id: 'pizza', label: 'Pizza', parent_id: null },
+  ];
+  const items = [
+    { id: 'm1', type: 'subitem', sold_alone: false, cat: 'meats' },
+    { id: 'p1', type: 'simple', cat: 'pizza', cats: ['pizza', 'meats'] },   // on sale in Pizza AND Meats
+  ];
+  assert.deepEqual([...optionOnlyCategoryIds(cats, items)], []);
+  // Take the pizza out of Meats and both Meats and its parent go.
+  items[1].cats = ['pizza'];
+  assert.deepEqual([...optionOnlyCategoryIds(cats, items)].sort(), ['extras', 'meats']);
+  // A sub item sold alone is a product: its category stays.
+  items[0].sold_alone = true;
+  assert.deepEqual([...optionOnlyCategoryIds(cats, items)], []);
+  // Bad input is an empty set, never a throw.
+  assert.deepEqual([...optionOnlyCategoryIds(null, undefined)], []);
+  // A cyclic parent id does not loop: the category that holds the option is still left out.
+  const loop = [{ id: 'a', parentId: 'b' }, { id: 'b', parentId: 'a' }];
+  assert.equal(optionOnlyCategoryIds(loop, [{ id: 'x', type: 'subitem', cat: 'a' }]).has('a'), true);
 });

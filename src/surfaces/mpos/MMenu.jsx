@@ -13,7 +13,7 @@ import MAllergenPicker from './MAllergenPicker';
 import MVoiceOrder from './MVoiceOrder';
 import { resolveItemPrice, variantFromPrice } from '../../lib/menuPricing';
 import { channelVisible } from '../../lib/channelMenu';
-import { isOptionOnlyItem } from '../../lib/menuRules';
+import { isOptionOnlyItem, optionOnlyCategoryIds } from '../../lib/menuRules';
 
 // categoryLinks: the menu_category_links rows MPOSSurface resolved the active
 // menu with (store links, or its early-boot backstop fetch). Same list, same
@@ -81,11 +81,15 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
   //
   // Categories with no menuId at all still pass — they're treated as "global"
   // (legacy data shape).
+  //
+  // 5.12.31 (lib/menuRules.js rule 9): a category holding only option only sub items is left out,
+  // as on the till: nothing in it can be rung up.
+  const optionOnlyCats = useMemo(() => optionOnlyCategoryIds(menuCategories, menuItems), [menuCategories, menuItems]);
   const topLevelCategories = useMemo(() => {
-    const allTop = menuCategories.filter(c => !c.parentId && c.visible !== false);
+    const allTop = menuCategories.filter(c => !c.parentId && c.visible !== false && !optionOnlyCats.has(c.id));
     if (!effectiveMenuId) return allTop;
     return allTop.filter(c => !c.menuId || c.menuId === effectiveMenuId || linkedCatIds.has(c.id));
-  }, [menuCategories, effectiveMenuId, linkedCatIds]);
+  }, [menuCategories, effectiveMenuId, linkedCatIds, optionOnlyCats]);
 
   // Items by predicate. Hide child variants here (parentId set) so they don't
   // appear as their own rows — they show up inside the parent variant picker.
