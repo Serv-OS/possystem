@@ -22,6 +22,7 @@ import { writeWfAudit } from '../_shared/wfAudit.js';
 // v5.11.101: the venue's region (currency, US overtime) and the pay premiums, applied at last.
 import { regionPack } from '../_shared/regionPack.js';
 import { premiumFor, anyPremium, overtimeSplit, venueMidnightIso, workweekSpan } from '../_shared/payPremiums.js';
+import { overtimeAcrossSites } from '../_shared/multiSiteOvertime.js';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -499,14 +500,68 @@ Deno.serve(async (req) => {
       // Every work week touching the period is read whole (the days before and after it too), so a
       // week split by the period's edge counts its overtime once, in the period it fell in. The week
       // starts on the venue's day (Workforce settings, Work week starts; Monday when not set).
-      let overtime: Record<string, { regular: number; overtime: number }> | null = null;
+      // 5.12.36 (Peter, 2 Nov 2026: "20 hours at one site and 25 hours at another site, then that is 5
+      // hours over time"): a person linked across sites (wf_staff.person_id, 20261111a) has their work
+      // week counted across every one of them. Each overtime hour belongs to the site where it was
+      // worked; the half time is owed at the week's blended regular rate (_shared/multiSiteOvertime.js).
+      // A record that is not linked reads exactly as before, plus the premium and the rate.
+      let overtime: Record<string, { regular: number; overtime: number; otherSiteHours: number; overtimePremium: number; regularRate: number | null }> | null = null;
       if (pack.overtimeWeeklyHours) {
         const wsd = Number.isInteger(Number(policy.workweekStart)) && Number(policy.workweekStart) >= 0 && Number(policy.workweekStart) <= 6 ? Number(policy.workweekStart) : 1;
         const span = workweekSpan(from, to, wsd);
-        const { data: weekSheets } = await admin.from('wf_timesheets').select('staff_id, actual_hours, clock_in, status')
-          .eq('location_id', location_id).in('status', ['approved', 'paid'])
-          .gte('clock_in', venueMidnightIso(span.from, venue.timezone)).lt('clock_in', venueMidnightIso(nextDay(span.to), venue.timezone));
-        overtime = overtimeSplit(weekSheets ?? [], pack.overtimeWeeklyHours, venue.timezone, { weekStartDow: wsd, from, to });
+        const spanFrom = venueMidnightIso(span.from, venue.timezone), spanTo = venueMidnightIso(nextDay(span.to), venue.timezone);
+        const sheetCols = 'staff_id, actual_hours, paid_break_mins, effective_rate, rate_source, clock_in, clock_out, status';
+        const [{ data: weekSheets }, { data: hereStaff }] = await Promise.all([
+          admin.from('wf_timesheets').select(sheetCols).eq('location_id', location_id).in('status', ['approved', 'paid'])
+            .gte('clock_in', spanFrom).lt('clock_in', spanTo),
+          admin.from('wf_staff').select('id, person_id, role_key').eq('location_id', location_id),
+        ]);
+        const personOf: Record<string, string> = {};
+        const roleOfStaff: Record<string, { loc: string; role: string | null }> = {};
+        (hereStaff ?? []).forEach((x: any) => { personOf[x.id] = x.person_id || x.id; roleOfStaff[x.id] = { loc: location_id, role: x.role_key ?? null }; });
+        const persons = [...new Set((hereStaff ?? []).map((x: any) => x.person_id).filter(Boolean))];
+        // The same people's records at their other sites, and those sites' sheets, zones and premiums.
+        let otherSheets: any[] = [];
+        const zoneOf: Record<string, string> = { [location_id]: venue.timezone };
+        const premiumsOf: Record<string, any> = { [location_id]: premiums };
+        const eligibleOf: Record<string, Record<string, boolean>> = {};
+        if (persons.length) {
+          const { data: linked } = await admin.from('wf_staff').select('id, person_id, location_id, role_key')
+            .eq('org_id', org).in('person_id', persons).neq('location_id', location_id);
+          (linked ?? []).forEach((x: any) => { personOf[x.id] = x.person_id; roleOfStaff[x.id] = { loc: x.location_id, role: x.role_key ?? null }; });
+          const linkedIds = (linked ?? []).map((x: any) => x.id);
+          const otherLocs = [...new Set((linked ?? []).map((x: any) => x.location_id))];
+          if (linkedIds.length) {
+            // One day either side: each site's own venue day decides its week below.
+            const wideFrom = new Date(Date.parse(spanFrom) - 86400000).toISOString();
+            const wideTo = new Date(Date.parse(spanTo) + 86400000).toISOString();
+            const [{ data: os }, { data: locs }, { data: vss }, { data: rls }] = await Promise.all([
+              admin.from('wf_timesheets').select(`${sheetCols}, location_id`).in('staff_id', linkedIds).in('status', ['approved', 'paid'])
+                .gte('clock_in', wideFrom).lt('clock_in', wideTo),
+              admin.from('locations').select('id, timezone').in('id', otherLocs),
+              admin.from('wf_venue_settings').select('location_id, premiums').in('location_id', otherLocs),
+              admin.from('wf_roles').select('location_id, key, premium_eligible').in('location_id', [location_id, ...otherLocs]),
+            ]);
+            otherSheets = os ?? [];
+            (locs ?? []).forEach((l: any) => { zoneOf[l.id] = l.timezone || venue.timezone; });
+            (vss ?? []).forEach((v: any) => { premiumsOf[v.location_id] = v.premiums ?? {}; });
+            (rls ?? []).forEach((r: any) => { (eligibleOf[r.location_id] ??= {})[r.key] = r.premium_eligible !== false; });
+          }
+        }
+        // Pay premiums are part of the regular rate (shift differentials count), each by its own site's rules.
+        const premiumPay = (t: any, loc: string) => {
+          const pr = premiumsOf[loc] ?? {};
+          if (!anyPremium(pr) || !t.clock_in || !t.clock_out) return 0;
+          const rk = roleOfStaff[t.staff_id]?.role;
+          const el = rk ? (eligibleOf[loc]?.[rk] ?? true) : true;
+          return premiumFor({ startMs: t.clock_in, endMs: t.clock_out, workedHours: Number(t.actual_hours || 0), rate: Number(t.effective_rate || 0),
+            premiums: pr, tz: zoneOf[loc] || venue.timezone, country: pack.country, eligible: el, hourly: t.rate_source !== 'salaried' }).pay;
+        };
+        const all = [
+          ...(weekSheets ?? []).map((t: any) => ({ ...t, location_id, person: personOf[t.staff_id] || t.staff_id, tz: venue.timezone, premium_pay: premiumPay(t, location_id) })),
+          ...otherSheets.map((t: any) => ({ ...t, person: personOf[t.staff_id] || t.staff_id, tz: zoneOf[t.location_id] || venue.timezone, premium_pay: premiumPay(t, t.location_id) })),
+        ];
+        overtime = overtimeAcrossSites(all, pack.overtimeWeeklyHours, { tz: venue.timezone, weekStartDow: wsd, from, to, here: location_id });
       }
 
       const troncTips: Record<string, number> = {};
@@ -607,7 +662,15 @@ Deno.serve(async (req) => {
         };
         // Only a venue that pays premiums or overtime carries these keys: every other line is as before.
         if (withPremiums) { line.premium_hours = round2(prem.hours); line.premium_pay = round2(prem.pay); }
-        if (overtime) { line.regular_hours = overtime[id]?.regular ?? 0; line.overtime_hours = overtime[id]?.overtime ?? 0; }
+        if (overtime) {
+          const o = overtime[id];
+          line.regular_hours = o?.regular ?? 0; line.overtime_hours = o?.overtime ?? 0;
+          // 5.12.36: hours at the person's other sites, the half time owed and the blended rate.
+          line.other_site_hours = o?.otherSiteHours ?? 0;
+          line.overtime_premium = o?.overtimePremium ?? 0;
+          line.regular_rate = o?.regularRate ?? null;
+          line.total = round2(line.total + line.overtime_premium);
+        }
         return line as { staff_id: string; hours: number; pay: number; holiday_hours: number; holiday_pay: number; tips_tronc: number; tips_direct: number; tips: number; total: number; premium_pay?: number };
       }).sort((a, b) => b.total - a.total);
       const totals: Record<string, number> = {
@@ -619,6 +682,7 @@ Deno.serve(async (req) => {
         total: round2(staff.reduce((a, s) => a + s.total, 0)),
       };
       if (withPremiums) totals.premium_pay = round2(staff.reduce((a, s) => a + (s.premium_pay || 0), 0));
+      if (overtime) totals.overtime_premium = round2(staff.reduce((a, s: any) => a + (s.overtime_premium || 0), 0));
       const payload = {
         ok: true, from, to, staff, totals,
         policy: { tipMode, directPct: Math.round(directShare * 100), allocator, troncmasterName: policy.troncmasterName ?? null },

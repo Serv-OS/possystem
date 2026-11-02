@@ -5,7 +5,7 @@
 // content (block email + SMS) and optional offer. Customers are enrolled on the trigger and advanced
 // daily by the engine (marketing-run). All sends go through marketing-send (consent/suppression/
 // sandbox enforced). Reads/writes via the marketing-workflows edge fn.
-// 5.12.36: trigger "Form submitted" (pick one of Customers, Forms): the person who sends the form
+// 5.12.37: trigger "Form submitted" (pick one of Customers, Forms): the person who sends the form
 // joins the moment they send it, only with the marketing tick. "Send a promo code" adds a step with
 // an offer and a message carrying {{promo_code}} (one code per person per form unless the offer
 // allows more).
@@ -40,7 +40,7 @@ const STATUS_COLOR = { active: 'var(--grn)', paused: 'var(--amber,#d98a00)', dra
 
 const newStep = (n) => ({ key: `s${n}_${Math.round(Math.random() * 1e6)}`, after_days: n === 0 ? 0 : 3, channel: 'email', subject: '', email_blocks: STARTER_BLOCKS(), sms_body: '', offer_id: '' });
 const BLANK = () => ({ name: '', description: '', status: 'draft', entry_trigger: { type: 'signup' }, segment_id: '', steps: [newStep(0)] });
-// 5.12.36: the "Send a promo code" step: straight away, an offer to pick, the code in the message.
+// 5.12.37: the "Send a promo code" step: straight away, an offer to pick, the code in the message.
 const promoStep = (n, offerId = '') => ({
   ...newStep(n), after_days: 0, channel: 'email', offer_id: offerId,
   subject: 'Your code: {{promo_code}}',

@@ -1,6 +1,6 @@
 // supabase/functions/form-submit/index.ts
 //
-// MARKETING FORMS (5.12.36): THE public submit path for every form, wherever it sits (the venue
+// MARKETING FORMS (5.12.37): THE public submit path for every form, wherever it sits (the venue
 // website builder, the hosted page behind the embed snippet, any outside site). Deploy with
 // --no-verify-jwt: a person filling in a form has no login. The only door to
 // marketing_form_submissions (no rule lets anyone else write a row).

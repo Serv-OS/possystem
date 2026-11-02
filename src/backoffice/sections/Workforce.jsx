@@ -14,8 +14,9 @@ import { supabase } from '../../lib/supabase';
 import { Icon } from '../../components/ServOSIcons';
 import { DAYS, TODAY, SECTIONS, ROLES, SECTION_REQ, FORECAST, PAYROWS } from '../../staff/seed';
 import { hoursOf, effectiveRate, wageByDay, labourPct, LABOUR_TARGET, troncRun, tsVariance, isHourly, FIXED_HOLIDAY_DAYS } from '../../staff/labour';
-import { loadStaff, saveStaff, offboardStaff, markPosUser, loadRoles, loadSections, loadSettings, loadDocuments, loadTimesheets, loadOnboarding, loadAccrual, accrualBalances, signedDocUrl, saveStaffBank, saveOnboarding, sendEmail, sendPortalInvite } from '../../staff/wfData';
+import { loadStaff, saveStaff, offboardStaff, markPosUser, loadRoles, loadSections, loadSettings, loadDocuments, loadTimesheets, loadOnboarding, loadAccrual, accrualBalances, signedDocUrl, saveStaffBank, saveOnboarding, sendEmail, sendPortalInvite, loadCompanySites, loadCompanyStaffRecords, loadSiteRoles, addStaffSite, linkStaffRecords, unlinkStaffRecord } from '../../staff/wfData';
 import { buildWeek } from '../../staff/wfWeek';
+import { otherSites, linkCandidates, sitesToAdd, linkErrorWords } from '../../staff/peopleAcrossSites';
 import WfRota from './workforce/WfRota';
 import { PickTemplateModal, freshSteps, genToken, toHtml, signEmailHtml, normalizeCase } from './workforce/WfOnboarding';
 import WfTimesheets from './workforce/WfTimesheets';
@@ -249,7 +250,7 @@ export default function Workforce({ section, orgCtx }) {
       {key === 'settings' && <WfSettings {...sectionProps} />}
       {key === 'chat' && <WfChat ctx={{ venueOrgId: orgCtx?.venueOrgId || null }} showToast={showToast} />}
 
-      {viewing && <StaffDetailModal staff={viewing} roles={rolesMap} ctx={ctx} showToast={showToast} onClose={() => setViewing(null)} onEdit={(s) => { setViewing(null); setEditing(s); }} onSetPos={(s) => { setViewing(null); setPosFor(s); }}
+      {viewing && <StaffDetailModal staff={viewing} roles={rolesMap} ctx={ctx} showToast={showToast} onPeopleChanged={() => loadStaff(locationId).then(rows => setStaff(rows))} onClose={() => setViewing(null)} onEdit={(s) => { setViewing(null); setEditing(s); }} onSetPos={(s) => { setViewing(null); setPosFor(s); }}
         onPatch={(patch) => { setStaff(st => st.map(x => x.id === viewing.id ? { ...x, ...patch } : x)); setViewing(v => v ? { ...v, ...patch } : v); }} />}
       {(addOpen || editing) && <AddStaffModal locName={locName} staff={editing} roles={rolesMap} sections={sections} onClose={() => { setAddOpen(false); setEditing(null); }} onSave={saveMember} />}
       {posFor && <PosUserModal staff={posFor} onClose={() => setPosFor(null)} onSave={(opts) => setAsPosUser(posFor, opts)} />}
@@ -453,7 +454,7 @@ function DetailDocView({ path }) {
 }
 
 // Staff profile — HR record + payroll bank + contract + documents + timesheets.
-function StaffDetailModal({ staff: s, roles = ROLES, ctx, showToast, onClose, onEdit, onSetPos, onPatch }) {
+function StaffDetailModal({ staff: s, roles = ROLES, ctx, showToast, onClose, onEdit, onSetPos, onPatch, onPeopleChanged }) {
   const role = roles[s.role];
   const [data, setData] = useState({ docs: [], timesheets: [], onb: null, holidayHrs: 0, loading: true });
   const [inviteBusy, setInviteBusy] = useState(false);
@@ -553,6 +554,9 @@ function StaffDetailModal({ staff: s, roles = ROLES, ctx, showToast, onClose, on
           </button>
         </div>
 
+        <SectionTitle>Sites</SectionTitle>
+        <SitesPanel s={s} ctx={ctx} roles={roles} showToast={showToast} onChanged={onPeopleChanged} />
+
         <SectionTitle>Documents</SectionTitle>
         {data.loading ? <Muted>Loading…</Muted> : data.docs.length === 0 ? <Muted>No documents on file.</Muted> : (
           <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 16 }}>
@@ -604,6 +608,122 @@ function StaffDetailModal({ staff: s, roles = ROLES, ctx, showToast, onClose, on
     </div>
   );
 }
+// 5.12.36 (Peter, 2 Nov 2026: "one member of staff might work at 2 sites or 3 sites" and "a pos user
+// shared between sites with the same pin, changed at one location changed at both"). One staff record
+// per site stays (the site's position, rate, rota and timesheets); the records of one person are
+// linked. Linked: their week counts across every site for US overtime, their PIN, card and own details
+// are shared. Every change goes through a database door that checks access to every site.
+function SitesPanel({ s, ctx, roles = ROLES, showToast, onChanged }) {
+  const [state, setState] = useState({ loading: true, sites: [], records: [] });
+  const [tick, setTick] = useState(0);
+  const [addSite, setAddSite] = useState('');
+  const [addRoles, setAddRoles] = useState([]);
+  const [addRole, setAddRole] = useState('');
+  const [addRate, setAddRate] = useState('');
+  const [busy, setBusy] = useState('');
+  const [confirmLink, setConfirmLink] = useState(null);
+  const [confirmUnlink, setConfirmUnlink] = useState(false);
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      const [sites, records] = await Promise.all([loadCompanySites(ctx.orgId), loadCompanyStaffRecords(ctx.orgId)]);
+      if (live) setState({ loading: false, sites, records });
+    })();
+    return () => { live = false; };
+  }, [ctx.orgId, s.id, tick]);
+  useEffect(() => {
+    let live = true;
+    if (!addSite) return undefined;
+    loadSiteRoles(addSite).then((list) => { if (live) { setAddRoles(list); setAddRole(list.some(r => r.key === s.role) ? s.role : (list[0]?.key || '')); } });
+    return () => { live = false; };
+  }, [addSite, s.role]);
+
+  const names = useMemo(() => Object.fromEntries(state.sites.map(x => [x.id, x.name])), [state.sites]);
+  const me = useMemo(() => {
+    const row = state.records.find(r => r.id === s.id);
+    return { id: s.id, name: s.name, email: s.email, mobile: s.mobile, personId: row?.person_id ?? s.personId ?? null, locationId: ctx.locationId };
+  }, [state.records, s, ctx.locationId]);
+  const linked = otherSites(me, state.records, names);
+  const candidates = linkCandidates(me, state.records, names);
+  const canAdd = sitesToAdd(me, state.records, state.sites);
+  const roleName = (key) => roles[key]?.lbl || addRoles.find(r => r.key === key)?.lbl || key || 'No position';
+
+  const run = async (label, fn, done) => {
+    setBusy(label);
+    try { await fn(); showToast?.(done, 'success'); setTick(t => t + 1); onChanged?.(); }
+    catch (e) { showToast?.(linkErrorWords(e), 'error'); }
+    finally { setBusy(''); setConfirmLink(null); setConfirmUnlink(false); }
+  };
+
+  if (state.loading) return <Muted>Loading…</Muted>;
+  if (state.sites.length < 2) return <Muted>This company has one site.</Muted>;
+  const box = { padding: '10px 12px', borderRadius: 10, background: 'var(--inset)', border: '1px solid var(--inset-border)', marginBottom: 8 };
+  return (
+    <div style={{ marginBottom: 16 }}>
+      {linked.length > 0 ? (
+        <div style={box}>
+          <div style={{ fontSize: 12.5, color: 'var(--t2)', marginBottom: 6 }}>
+            <b>Also works at</b>. Their hours at every site count toward one 40 hour week for overtime. Their PIN, card and own details are the same everywhere.
+          </div>
+          {linked.map(l => (
+            <div key={l.staffId} style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, padding: '3px 0' }}>
+              <b>{l.site}</b><span style={{ color: 'var(--t3)' }}>{roleName(l.role)}{l.rate != null ? ` · ${rateText(l.rate)}` : ''}</span>
+              {l.leaver && <Badge tone="grey">Leaver</Badge>}
+            </div>
+          ))}
+          <div style={{ marginTop: 8 }}>
+            {!confirmUnlink
+              ? <button className="btn btn-ghost btn-xs" disabled={!!busy} onClick={() => setConfirmUnlink(true)}>Unlink from other sites</button>
+              : <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 12 }}>
+                  <span style={{ color: 'var(--t3)' }}>Their hours here will count on their own and their PIN stops sharing.</span>
+                  <button className="btn btn-ghost btn-xs" onClick={() => setConfirmUnlink(false)}>Keep</button>
+                  <button className="btn btn-acc btn-xs" disabled={!!busy} onClick={() => run('unlink', () => unlinkStaffRecord(s.id), `${s.name} is now at ${ctx.locName} only`)}>{busy === 'unlink' ? 'Unlinking…' : 'Unlink'}</button>
+                </span>}
+          </div>
+        </div>
+      ) : <div style={{ fontSize: 12.5, color: 'var(--t3)', marginBottom: 8 }}>Works at {ctx.locName} only.</div>}
+
+      {candidates.map(c => (
+        <div key={c.staffId} style={{ ...box, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 13 }}>Looks like the same person at <b>{c.site}</b>: {c.name} ({c.why})</span>
+          <span style={{ flex: 1 }} />
+          {confirmLink !== c.staffId
+            ? <button className="btn btn-ghost btn-xs" disabled={!!busy} onClick={() => setConfirmLink(c.staffId)}>Link</button>
+            : <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 12 }}>
+                <span style={{ color: 'var(--t3)' }}>Their details and till PIN at {c.site} become this record's.</span>
+                <button className="btn btn-ghost btn-xs" onClick={() => setConfirmLink(null)}>Cancel</button>
+                <button className="btn btn-acc btn-xs" disabled={!!busy} onClick={() => run('link', () => linkStaffRecords(s.id, c.staffId), `${s.name} linked with ${c.site}`)}>{busy === 'link' ? 'Linking…' : 'Link them'}</button>
+              </span>}
+        </div>
+      ))}
+
+      {canAdd.length > 0 && (
+        <div style={{ ...box, display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <label style={{ fontSize: 12, color: 'var(--t3)' }}>Also works at
+            <select value={addSite} onChange={e => setAddSite(e.target.value)} style={{ ...inputStyle, width: 'auto', display: 'block', minWidth: 150, marginTop: 4 }}>
+              <option value="">Pick a site</option>
+              {canAdd.map(x => <option key={x.id} value={x.id}>{x.name}</option>)}
+            </select>
+          </label>
+          {addSite && <label style={{ fontSize: 12, color: 'var(--t3)' }}>Position there
+            <select value={addRole} onChange={e => setAddRole(e.target.value)} style={{ ...inputStyle, width: 'auto', display: 'block', minWidth: 130, marginTop: 4 }}>
+              {addRoles.length === 0 && <option value={s.role || ''}>{roleName(s.role)}</option>}
+              {addRoles.map(r => <option key={r.key} value={r.key}>{r.lbl}</option>)}
+            </select>
+          </label>}
+          {addSite && <label style={{ fontSize: 12, color: 'var(--t3)' }}>Pay rate there
+            <input inputMode="decimal" placeholder="Position rate" value={addRate} onChange={e => setAddRate(e.target.value.replace(/[^\d.]/g, ''))} style={{ ...inputStyle, display: 'block', width: 110, marginTop: 4 }} />
+          </label>}
+          <button className="btn btn-acc btn-sm" disabled={!addSite || !!busy}
+            onClick={() => run('add', () => addStaffSite(s.id, addSite, addRole || s.role || null, addRate), `${s.name} now also works at ${names[addSite] || 'that site'}${s.posUserId ? ', with the same PIN' : ''}`)}>
+            {busy === 'add' ? 'Adding…' : 'Add site'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SectionTitle({ children }) { return <div className="mono" style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--t3)', margin: '4px 0 8px' }}>{children}</div>; }
 function Muted({ children }) { return <div style={{ fontSize: 13, color: 'var(--t3)', padding: '6px 0 14px' }}>{children}</div>; }
 

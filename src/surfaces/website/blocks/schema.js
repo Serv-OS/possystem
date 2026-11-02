@@ -40,7 +40,7 @@ function cloneDefault(f) {
 //   menu       a menu id, or 'follow' = the menu live right now    → string
 //   categories menu category ids to show, [] = all                 → [{ id }]
 //   slot       blocks dropped inside this block (Puck slot)        → [{ type, props }]
-//   form       a marketing form id (5.12.36)                       → string
+//   form       a marketing form id (5.12.37)                       → string
 const img = (def = '', extra = {}) => ({ type: 'image', default: def, ...extra });
 const color = (def = '', extra = {}) => ({ type: 'color', default: def, hint: 'A colour like #c8493b. Empty = none', ...extra });
 const slot = (extra = {}) => ({ type: 'slot', default: [], ...extra });
@@ -51,7 +51,7 @@ export const FIELD_HELPERS = Object.freeze({ s, t, n, b, e, h, arr, obj, img, co
 // the stored value stays a string ('default', 'all' or a location id) for the AI and the renderers.
 const locationPick = (def = 'default', extra = {}) => ({ type: 'location', default: def, label: 'Venue', hint: "'default' = the site's default venue, 'all' = every venue, or a venue id", ...extra });
 const linkObj = (label = '', href = '') => obj({ label: s(label, { label: 'Label' }), href: h(href, { label: 'Link' }) });
-// 5.12.36: a marketing form picker. The stored value is the form's id (a string); the editor shows a
+// 5.12.37: a marketing form picker. The stored value is the form's id (a string); the editor shows a
 // dropdown of the company's forms (puckFields.js), the AI and the renderers see a plain string.
 const formPick = (extra = {}) => ({ type: 'form', default: '', label: 'Form', hint: 'The id of one of your forms (Customers, Forms). Empty = pick one in the editor', ...extra });
 
@@ -199,7 +199,7 @@ export const BLOCK_SCHEMAS = {
       count: n(6, { label: 'How many', min: 1, max: 24 }),
     },
   },
-  // 5.12.36 (Peter, 2 Nov): "forms that you can create and embed on a website or on the website
+  // 5.12.37 (Peter, 2 Nov): "forms that you can create and embed on a website or on the website
   // builder". A real form post that works with no JavaScript (src/lib/forms/formHtml.js).
   Form: {
     label: 'Form', group: 'servos',

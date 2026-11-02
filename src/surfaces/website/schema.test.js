@@ -5,13 +5,13 @@ import assert from 'node:assert/strict';
 import { BLOCK_SCHEMAS, BLOCK_TYPES, GROUPS, defaultPropsFor, normaliseProps, layoutBlocks, walkBlocks, slotKeysOf, jsonSchemaFor, layoutJsonSchema, isBlockType } from './blocks/schema.js';
 import { puckField } from './blocks/puckFields.js';
 
-// Section 6 plus Row (5.12.9: columns the owner drops blocks into) plus Form (5.12.36: marketing forms).
+// Section 6 plus Row (5.12.9: columns the owner drops blocks into) plus Form (5.12.37: marketing forms).
 const SECTION_6 = ['Hero', 'OrderBar', 'LiveMenu', 'Specials', 'OrderEmbed', 'LoyaltyJoin', 'GiftCards', 'BookTable', 'Waitlist', 'Hours', 'FindUs', 'Reviews', 'BlogList', 'Form',
   'Text', 'Columns', 'Row', 'Gallery', 'Image', 'Heading', 'Button', 'FAQ', 'Instagram', 'Divider', 'Spacer', 'CustomHtml'];
 
 test('every block from section 6 exists, in the right group, and nothing else', () => {
   assert.deepEqual([...BLOCK_TYPES].sort(), [...SECTION_6].sort());
-  assert.equal(GROUPS.servos.length, 14);   // 5.12.36: Form
+  assert.equal(GROUPS.servos.length, 14);   // 5.12.37: Form
   assert.equal(GROUPS.content.length, 12);
   for (const t of GROUPS.servos) assert.equal(BLOCK_SCHEMAS[t].group, 'servos');
   for (const t of GROUPS.content) assert.equal(BLOCK_SCHEMAS[t].group, 'content');

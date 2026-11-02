@@ -1,4 +1,4 @@
-// api/form.js: the hosted marketing form (5.12.36) behind the embed snippet.
+// api/form.js: the hosted marketing form (5.12.37) behind the embed snippet.
 //
 //   GET /api/form?id=<form id>            the form as a whole, server rendered page: works with no
 //                                         JavaScript (a real post to form-submit, which sends the

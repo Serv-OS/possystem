@@ -1,6 +1,6 @@
 // supabase/functions/_shared/formRules.js
 //
-// MARKETING FORMS (5.12.36): every rule a form lives by, with no database, no clock and no
+// MARKETING FORMS (5.12.37): every rule a form lives by, with no database, no clock and no
 // network in it. Plain JS so the same file runs in the Deno functions (form-submit,
 // marketing-forms, marketing-run), in the browser (src/lib/forms/formRules.js re-exports it),
 // in the Vercel functions (api/site.js, api/form.js) and in node tests.

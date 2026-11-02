@@ -1,4 +1,4 @@
-// Marketing forms (5.12.36) on the website builder, the hosted page and the embed: the server
+// Marketing forms (5.12.37) on the website builder, the hosted page and the embed: the server
 // rendered form works with no JavaScript, the AI tool and the validators accept the Form block,
 // and source pins for the paths that must never change shape (the plain post, CORS, the fences).
 import { test } from 'node:test';

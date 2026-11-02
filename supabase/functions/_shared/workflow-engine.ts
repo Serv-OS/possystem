@@ -6,7 +6,7 @@
 //      (enrollment_id, step_key) with the same claim-first / reclaim / guarded-recovery model as slice 4.
 // `opts.now` (ISO) overrides the clock so a drip can be fast-forwarded in tests; the cron omits it.
 //
-// 5.12.36 Marketing forms: a "Form submitted" trigger ({ type:'form_submitted', form_id }) enrols
+// 5.12.37 Marketing forms: a "Form submitted" trigger ({ type:'form_submitted', form_id }) enrols
 // nobody on the daily pass; the public form-submit function enrols the person the moment they send
 // the form (enrollFromForm) and runs just that enrollment (opts.enrollmentId), so a step with no
 // delay sends straight away. Codes carry the form and the automation (promo_codes.form_id,
@@ -138,7 +138,7 @@ export async function enrollCustomers(sb: SB, wf: any, customerIds: string[], op
 }
 
 /**
- * 5.12.36: take the person who just sent a form into a "Form submitted" automation. One code per
+ * 5.12.37: take the person who just sent a form into a "Form submitted" automation. One code per
  * person per form unless the offer allows more (planFormEnrol in formRules.js decides). Returns the
  * enrollment to run now, or null with the reason it was skipped.
  */
@@ -192,7 +192,7 @@ export async function runWorkflow(sb: SB, wf: any, opts: WfOpts): Promise<WfSumm
   };
 
   // 1. ENROLL — use the run's own clock so an immediate (after_days 0) step 0 is due in THIS run.
-  // 5.12.36: a run for one enrollment (form-submit) enrols nobody else.
+  // 5.12.37: a run for one enrollment (form-submit) enrols nobody else.
   const o = { ...opts, now: nowIso };
   if (!opts.enrollmentId) {
     try { const er = await enrollCustomers(sb, wf, await entryAudience(sb, wf, o), o); summary.enrolled = er.enrolled; }
@@ -238,7 +238,7 @@ export async function runWorkflow(sb: SB, wf: any, opts: WfOpts): Promise<WfSumm
     try {
       let offer = offerCache[step.offer_id];
       if (step.offer_id && offer === undefined) { const { data } = await sb.from('offers').select('*').eq('id', step.offer_id).eq('org_id', org).maybeSingle(); offer = data; offerCache[step.offer_id] = data; }
-      // 5.12.36: no code for a person the step cannot reach (no email for an email step, no phone for
+      // 5.12.37: no code for a person the step cannot reach (no email for an email step, no phone for
       // a text): the code would be wasted and the offer's count wrong. Skipped, and the run moves on.
       let channels: ('email' | 'sms')[] = step.channel === 'both' ? ['email', 'sms'] : [step.channel];
       if (offer && !reuseCode) {

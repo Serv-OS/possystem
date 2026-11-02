@@ -1,6 +1,6 @@
 export const CHANGELOG = [
   {
-    v: '5.12.36',
+    v: '5.12.37',
     date: '2 Nov 2026',
     items: [
       'Forms (Customers, Forms): build a form with up to 12 fields (first name, last name, email, phone, birthday, free text, dropdown, tick box, each required or not), your own marketing tick words, button words and thank you words, for one venue or the whole company. The list shows how many people sent each form.',
@@ -11,6 +11,27 @@ export const CHANGELOG = [
       'Automations: a new trigger, Form submitted (pick the form), and a Send a promo code step (pick the offer, email or text, a message with the code in it). The person gets their code the moment they send the form, only when they ticked the marketing box and only on a channel they gave. One code per person per form, unless the offer allows more than one each. Each send shows in the Marketing report and each code carries the form and the customer.',
       'Protection: a hidden box catches robots, the same form from one connection is limited to 5 in 10 minutes, answers are checked against the form\'s own fields and capped in size. A failed email or text never fails the form.',
       'Automations: saving an automation now checks it belongs to your company (an id alone was enough before).',
+    ],
+  },
+  {
+    v: '5.12.36',
+    date: '2 Nov 2026',
+    items: [
+      'Workforce, one person at several sites: on a staff profile, Sites, Also works at adds them at another site of the company with that site\'s own position and pay rate. When they are a till user, they get a till user there with the same PIN, card and sign in method. Records already made by hand at two sites are suggested (same name, email or mobile) and joined with Link. Unlink puts them back to one site.',
+      'Linked records share a PIN: a PIN changed at one site is the PIN at every site. A PIN already used by someone else at any of their sites is refused with that person\'s name. Only someone with access to every one of their sites can link them, add a site or change that PIN, so a manager of one site can never sign in at another. Their own details (name, contact, address, payroll ids, bank) follow them; position, permissions, rate and status stay per site.',
+      'US overtime across sites: a linked person\'s work week counts at every site, so 20 hours at one site and 25 at another is 5 hours of overtime, on the line of the site where the 40th hour was crossed. Payroll now shows their hours at other sites and the overtime premium (half time at the week\'s blended regular rate, all sites and pay premiums included) and adds it to the total. The US export carries hours at other sites, the blended rate and the premium.',
+      'Needs the SQL 20261111a in the Ops database, and workforce-compute deployed. Until the SQL runs, Workforce reads and works exactly as before.',
+    ],
+  },
+  {
+    v: '5.12.35',
+    date: '2 Nov 2026',
+    items: [
+      'Online ordering: picking Delivery (on the welcome screen or from the header pill) now asks for the delivery address first and checks it before anything goes in the basket. Covered: "We deliver to <address>", the delivery fee and the minimum order in the venue currency, Continue. Not covered: "We do not deliver there yet", with Collection instead and, when the company has another venue online, Try <venue> (opens Change location). A check that cannot run says so and offers Try again or collection; the page never blanks.',
+      'The header row reads "Delivery to <address>" and reopens the sheet. Checkout step 1 starts with the address, its coordinates and the quote filled; an edit there updates the header, and the quote is re run as before.',
+      'Basket bar: under the delivery minimum it says "Add <amount> more for delivery" before checkout. Checkout keeps its own minimum order message.',
+      'One rule in one place: the quote call and every coverage word moved to lib/online/deliveryCoverage.js; the checkout imports them and has no quote call of its own. A picked Mapbox suggestion now keeps its coordinates (the text echo used to drop them).',
+      'Collection, the counter link, table QR pages and venues with delivery off are unchanged: no sheet.',
     ],
   },
   {

@@ -142,7 +142,7 @@ function propProblem(blockType, name, rule, value) {
     case 'href':
     case 'location': // 5.12.8: the venue picker ('default', 'all' or a venue id) is a string
     case 'image': case 'color': case 'menu': // 5.12.9: a photo URL, a hex colour, a menu id or 'follow'
-    case 'form': // 5.12.36: a marketing form id ('' = not picked yet)
+    case 'form': // 5.12.37: a marketing form id ('' = not picked yet)
       if (typeof value !== 'string') return `${where} must be text.`;
       if (rule.type === 'form' && value && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) return `${where} must be a form id.`;
       if (rule.type === 'color' && value && !/^#[0-9a-fA-F]{6}$/.test(value)) return `${where} must be a colour like #c8493b.`;

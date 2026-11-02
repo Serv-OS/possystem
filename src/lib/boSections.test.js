@@ -66,7 +66,7 @@ test('15 sections, the decided keys, in sidebar order', () => {
 });
 
 test('the route map is built from the sidebar: every route in exactly one section', () => {
-  assert.equal(allRoutes.length, 102);   // 5.12.36: marketing-forms (Forms) under Customers; 5.11.102: wf-chat (Team chat) under Workforce; 16 Oct 2026: stock-areas and stock-transfers under Inventory; 17 Oct: multi-site-menu under Menu; v5.11.96: the 6 Drop 3 stock routes; v5.11.92 (Drop 4a): stock-gp under Reports
+  assert.equal(allRoutes.length, 102);   // 5.12.37: marketing-forms (Forms) under Customers; 5.11.102: wf-chat (Team chat) under Workforce; 16 Oct 2026: stock-areas and stock-transfers under Inventory; 17 Oct: multi-site-menu under Menu; v5.11.96: the 6 Drop 3 stock routes; v5.11.92 (Drop 4a): stock-gp under Reports
   assert.equal(new Set(allRoutes).size, allRoutes.length, 'no route listed twice');
   const map = buildRouteSections(NAV_IA);
   assert.equal(map.size, allRoutes.length);
@@ -143,7 +143,7 @@ test('Mo: exactly Team, Workforce, Customers and Reports, every screen in them, 
   const rows = filterNav(NAV_IA, MO);
   assert.deepEqual(rows.map((r) => r.label), ['Team', 'Workforce', 'Customers', 'Reports']);
   const mine = rows.flatMap(routesOfRow);
-  assert.equal(mine.length, 1 + 14 + 14 + 5);   // 5.11.102: Workforce has Team chat; 5.12.36: Customers has Forms
+  assert.equal(mine.length, 1 + 14 + 14 + 5);   // 5.11.102: Workforce has Team chat; 5.12.37: Customers has Forms
   for (const id of mine) assert.equal(canOpenRoute(id, MO), true, `Mo opens ${id}`);
   // v5.11.92: Reports only, even in a multi site company, never shows Stock and GP (it needs
   // Inventory, Produce or Purchasing), and the count above stays.

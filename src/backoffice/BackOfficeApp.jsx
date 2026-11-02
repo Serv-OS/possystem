@@ -101,7 +101,7 @@ import Segments from './sections/marketing/Segments';
 import Campaigns from './sections/marketing/Campaigns';
 import QuickSend from './sections/marketing/QuickSend';
 import Workflows from './sections/marketing/Workflows';
-// 5.12.36: lazy, it carries the form preview (website theme + form markup).
+// 5.12.37: lazy, it carries the form preview (website theme + form markup).
 const Forms = lazy(() => import('./sections/marketing/Forms'));
 import MarketingReports from './sections/marketing/MarketingReports';
 import CateringSettings from './sections/CateringSettings';

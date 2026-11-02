@@ -15,7 +15,7 @@ const surface = read('src/surfaces/online/OnlineSurface.jsx');
 const block = read('src/surfaces/online/OnlineHeaderBlock.jsx');
 
 test('OnlineCheckout reads the page timing through props and settles it with the shared rule', () => {
-  assert.match(checkout, /timing: timingProp = null, onTimingChange = null, onDeliveryAddress = null/);
+  assert.match(checkout, /timing: timingProp = null, onTimingChange = null, delivery: deliveryProp = null, onDeliveryChange = null/);
   assert.match(checkout, /const timing = timingProp \|\| ownTiming;/);
   assert.match(checkout, /settleTiming\(timing, slots, \{ orderAheadOnly \}\)/);
   assert.match(checkout, /const baseLeadMin = leadMinutesFor\(location\)/);
@@ -35,7 +35,7 @@ test('the slot rule and the Day / Time pick have one home each', () => {
 
 test('the page hands its timing and the delivery address seam to the checkout', () => {
   assert.match(surface, /timing=\{timing\} onTimingChange=\{setTiming\}/);
-  assert.match(surface, /onDeliveryAddress=\{setDeliveryAddress\}/);
+  assert.match(surface, /delivery=\{delivery\} onDeliveryChange=\{setDelivery\}/);   // 5.12.35: the address object, not a line of text
   assert.match(surface, /initialTiming\(\{ orderAheadOnly: !!closedInfo \}\)/);
   assert.match(surface, /settleTiming\(timing, slots, \{ orderAheadOnly \}\)/);
 });

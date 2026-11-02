@@ -1,4 +1,4 @@
-// Marketing forms (5.12.36): the pure rules every writer shares (supabase/functions/_shared/formRules.js).
+// Marketing forms (5.12.37): the pure rules every writer shares (supabase/functions/_shared/formRules.js).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {

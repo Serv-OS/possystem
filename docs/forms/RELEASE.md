@@ -1,4 +1,4 @@
-# Forms (5.12.36): release steps
+# Forms (5.12.37): release steps
 
 Forms in Back Office (Customers, Forms), the Form block in the website builder, the embed code for
 any website, and the "Form submitted" automation that sends a promo code. Nothing here charges
