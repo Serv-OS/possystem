@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.12.29',
+    date: '2 Nov 2026',
+    items: [
+      'Multi site menu, Sites: a site\'s own option groups (built by hand at the venue, not in the group menu) are listed, with Look at the option groups. Each says what it looks like in the group menu; Link to Which syrup or Bring in as a new group puts it in the draft with its options, by the same rules as bringing a product in: nothing is written at the site, every price, name or rule the site has of its own is kept, a Then ask group comes in with it. Head office then puts it on products with Add to products on the group, and publishes.',
+    ],
+  },
+  {
     v: '5.12.27',
     date: '2 Nov 2026',
     items: [
