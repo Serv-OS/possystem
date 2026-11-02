@@ -101,6 +101,8 @@ import Segments from './sections/marketing/Segments';
 import Campaigns from './sections/marketing/Campaigns';
 import QuickSend from './sections/marketing/QuickSend';
 import Workflows from './sections/marketing/Workflows';
+// 5.12.36: lazy, it carries the form preview (website theme + form markup).
+const Forms = lazy(() => import('./sections/marketing/Forms'));
 import MarketingReports from './sections/marketing/MarketingReports';
 import CateringSettings from './sections/CateringSettings';
 import MenuAppearance from './sections/MenuAppearance';
@@ -220,6 +222,7 @@ const NAV = [
   { id: 'campaigns', label: 'Campaigns', icon: '\u{1F4E3}', group: 'Analytics' },
   { id: 'quicksend', label: 'Quick send', icon: '\u{1F4EC}', group: 'Analytics' },
   { id: 'workflows', label: 'Automations', icon: '\u{1F500}', group: 'Analytics' },
+  { id: 'marketing-forms', label: 'Forms', icon: '\u{1F4DD}', group: 'Analytics' },
   { id: 'marketing-reports', label: 'Marketing report', icon: '\u{1F4C8}', group: 'Analytics' },
   { id: 'compliance', label: 'Marketing compliance', icon: '\u{1F6E1}', group: 'Analytics' },
   { id: 'security', label: 'Sign in security', icon: '\u{1F510}', group: 'Settings' },
@@ -1218,6 +1221,7 @@ export default function BackOfficeApp() {
           {section === 'campaigns' && <Campaigns />}
           {section === 'quicksend' && <QuickSend />}
           {section === 'workflows' && <Workflows />}
+          {section === 'marketing-forms' && <Suspense fallback={<div style={{ padding:24, color:'var(--t3)', fontSize:13 }}>Loading forms…</div>}><Forms /></Suspense>}
           {section === 'marketing-reports' && <MarketingReports />}
           {section === 'compliance' && <Compliance />}
           {section === 'sending-domain' && <SendingDomain />}

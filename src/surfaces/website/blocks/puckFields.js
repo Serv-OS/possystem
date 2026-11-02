@@ -27,7 +27,7 @@ export function locationOptions(locations) {
 export function rendererFor(f) {
   if (!f || typeof f !== 'object') return null;
   switch (f.type) {
-    case 'image': case 'color': case 'menu': case 'categories': case 'href': return f.type;
+    case 'image': case 'color': case 'menu': case 'categories': case 'href': case 'form': return f.type;
     case 'text': return f.markdown === true ? 'markdown' : null;
     default: return null;
   }
@@ -47,7 +47,7 @@ export function puckField(f, opts = {}) {
     case 'string': case 'href': return { ...base, type: 'text', placeholder: f.hint || undefined };
     // Plain fallbacks when no renderer is given (image upload, colour, menu and category pickers
     // are custom fields in the editor). Slots are Puck's own drop zones.
-    case 'image': case 'color': case 'menu': return { ...base, type: 'text', placeholder: f.hint || undefined };
+    case 'image': case 'color': case 'menu': case 'form': return { ...base, type: 'text', placeholder: f.hint || undefined };
     case 'categories': return { ...base, type: 'array', arrayFields: puckFields(f.item, opts), defaultItemProps: { id: '' }, getItemSummary: (item, i) => summaryOf(item, i) };
     // A Row never sits inside a Row (the server refuses it too); the editor just does not offer it.
     case 'slot': return { type: 'slot', disallow: ['Row'] };

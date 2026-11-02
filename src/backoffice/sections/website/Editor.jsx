@@ -271,7 +271,19 @@ export default function Editor({ ws, toast, pageId, onPageChange, onAskDesigner,
     return () => { on = false; };
   }, [menuOpsId, menuTimezone, menuCurrency, menuPinned]);
 
-  const config = useMemo(() => buildConfig(configMod, { site, pages, location: defaultLocation, locations: blockLocations, branding, menu, uploadAsset, customerRoot: CUSTOMER_ROOT, mode: 'editor' }), [configMod, site, pages, defaultLocation, blockLocations, branding, menu, uploadAsset]);
+  // 5.12.36: the company's marketing forms, for the Form block's picker and its preview. Read through
+  // marketing-forms with the website's own venue, so a login with several companies sees this one's.
+  const [forms, setForms] = useState([]);
+  useEffect(() => {
+    if (!menuOpsId || !supabase) return undefined;
+    let on = true;
+    supabase.functions.invoke('marketing-forms', { body: { action: 'list_forms', ops_location_id: menuOpsId } })
+      .then(({ data }) => { if (on) setForms(Array.isArray(data?.forms) ? data.forms.filter((f) => f.status !== 'archived') : []); })
+      .catch(() => { /* no forms: the picker says so */ });
+    return () => { on = false; };
+  }, [menuOpsId]);
+
+  const config = useMemo(() => buildConfig(configMod, { site, pages, location: defaultLocation, locations: blockLocations, branding, menu, forms, uploadAsset, customerRoot: CUSTOMER_ROOT, mode: 'editor' }), [configMod, site, pages, defaultLocation, blockLocations, branding, menu, forms, uploadAsset]);
 
   // Autosave: the latest layout per page waits 3 s after the last change, then saves.
   const pending = useRef({ pageId: null, layout: null, timer: null });

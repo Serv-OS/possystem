@@ -40,6 +40,7 @@ function cloneDefault(f) {
 //   menu       a menu id, or 'follow' = the menu live right now    → string
 //   categories menu category ids to show, [] = all                 → [{ id }]
 //   slot       blocks dropped inside this block (Puck slot)        → [{ type, props }]
+//   form       a marketing form id (5.12.36)                       → string
 const img = (def = '', extra = {}) => ({ type: 'image', default: def, ...extra });
 const color = (def = '', extra = {}) => ({ type: 'color', default: def, hint: 'A colour like #c8493b. Empty = none', ...extra });
 const slot = (extra = {}) => ({ type: 'slot', default: [], ...extra });
@@ -50,6 +51,9 @@ export const FIELD_HELPERS = Object.freeze({ s, t, n, b, e, h, arr, obj, img, co
 // the stored value stays a string ('default', 'all' or a location id) for the AI and the renderers.
 const locationPick = (def = 'default', extra = {}) => ({ type: 'location', default: def, label: 'Venue', hint: "'default' = the site's default venue, 'all' = every venue, or a venue id", ...extra });
 const linkObj = (label = '', href = '') => obj({ label: s(label, { label: 'Label' }), href: h(href, { label: 'Link' }) });
+// 5.12.36: a marketing form picker. The stored value is the form's id (a string); the editor shows a
+// dropdown of the company's forms (puckFields.js), the AI and the renderers see a plain string.
+const formPick = (extra = {}) => ({ type: 'form', default: '', label: 'Form', hint: 'The id of one of your forms (Customers, Forms). Empty = pick one in the editor', ...extra });
 
 export const BLOCK_SCHEMAS = {
   // ── ServOS blocks (live data) ──────────────────────────────────────────────
@@ -193,6 +197,16 @@ export const BLOCK_SCHEMAS = {
       title: s('What people say', { label: 'Heading' }),
       min_stars: n(4, { label: 'Minimum stars', min: 1, max: 5 }),
       count: n(6, { label: 'How many', min: 1, max: 24 }),
+    },
+  },
+  // 5.12.36 (Peter, 2 Nov): "forms that you can create and embed on a website or on the website
+  // builder". A real form post that works with no JavaScript (src/lib/forms/formHtml.js).
+  Form: {
+    label: 'Form', group: 'servos',
+    props: {
+      form_id: formPick(),
+      title: s('', { label: 'Heading', hint: 'Empty = no heading' }),
+      sub: t('', { label: 'Line under it' }),
     },
   },
   BlogList: {
@@ -348,7 +362,7 @@ export function defaultPropsFor(type) {
 // a page saved with an odd value still renders (customer facing never fails).
 function coerceValue(f, v) {
   switch (f.type) {
-    case 'string': case 'href': case 'location': case 'image': case 'color': case 'menu': return typeof v === 'string' ? v : (v == null ? f.default : String(v));
+    case 'string': case 'href': case 'location': case 'image': case 'color': case 'menu': case 'form': return typeof v === 'string' ? v : (v == null ? f.default : String(v));
     case 'categories': return Array.isArray(v) ? v.filter((x) => x && typeof x === 'object' && typeof x.id === 'string').map((x) => ({ id: x.id })) : [];
     case 'slot': {
       // Blocks dropped inside a block: each one normalised like a top level block, junk dropped.
@@ -441,7 +455,7 @@ function mapProps(fields) {
 function mapField(f) {
   const desc = f.hint ? { description: f.hint } : {};
   switch (f.type) {
-    case 'string': case 'text': case 'href': case 'location': case 'image': case 'color': case 'menu': return { type: 'string', ...desc };
+    case 'string': case 'text': case 'href': case 'location': case 'image': case 'color': case 'menu': case 'form': return { type: 'string', ...desc };
     case 'categories': return { type: 'array', items: { type: 'object', properties: { id: { type: 'string' } }, additionalProperties: false }, ...desc };
     case 'slot': return { type: 'array', items: { type: 'object', properties: { type: { type: 'string' }, props: { type: 'object' } }, required: ['type', 'props'] }, description: `${f.hint || 'Blocks inside this block'}: each item is { type, props } like a page block` };
     case 'number': return { type: 'number', ...(f.min != null ? { minimum: f.min } : {}), ...(f.max != null ? { maximum: f.max } : {}), ...desc };

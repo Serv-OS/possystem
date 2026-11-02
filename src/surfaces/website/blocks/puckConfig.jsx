@@ -9,7 +9,7 @@
 
 import { BLOCK_SCHEMAS, BLOCK_TYPES, GROUPS, defaultPropsFor, normaliseProps } from './schema.js';
 import { puckFields } from './puckFields.js';
-import { CategoriesField, ColorField, ImageField, LinkField, MarkdownField, MenuField } from './editorFields.jsx';
+import { CategoriesField, ColorField, FormField, ImageField, LinkField, MarkdownField, MenuField } from './editorFields.jsx';
 import { COMPONENTS } from './components/index.jsx';
 import { SiteContext } from '../siteContext.js';
 import { buildCtx } from '../ssr/renderBlocks.js';
@@ -25,6 +25,7 @@ const RENDERERS = Object.freeze({
   categories: (p) => <CategoriesField {...p} />,
   href: (p) => <LinkField {...p} />,
   markdown: (p) => <MarkdownField {...p} />,
+  form: (p) => <FormField {...p} />,
 });
 
 /**
@@ -54,13 +55,18 @@ export function puckConfig(ctx = {}) {
   try { vars = siteVars(siteCtx.site.theme || {}, ctx.branding || (loc0 && loc0.online_branding) || {}); } catch { vars = {}; }
   // In the editor every block is shown, switches or not: the owner must see what they are editing.
   siteCtx.settings = { ...siteCtx.settings, allow_custom_code: true, channels: {} };
-  const value = { ctx: siteCtx, menu: ctx.menu || null, menuLoading: false, here: null, nearestState: 'idle', requestNearest: () => {}, navigate: () => {}, menuVenue: null, setMenuVenue: () => {} };
+  // 5.12.36: the company's forms (ctx.forms, a list from marketing-forms) by id for the Form block.
+  const formList = Array.isArray(ctx.forms) ? ctx.forms.filter((f) => f && f.id) : [];
+  const formsById = Object.fromEntries(formList.map((f) => [f.id, f]));
+  siteCtx.forms = formsById;
+  const value = { ctx: siteCtx, menu: ctx.menu || null, menuLoading: false, here: null, nearestState: 'idle', requestNearest: () => {}, navigate: () => {}, menuVenue: null, setMenuVenue: () => {}, forms: formsById, editor: true };
   const fieldOpts = {
     locations: siteCtx.locations,
     pages: snapshot.pages,
     menus: ctx.menu && Array.isArray(ctx.menu.menus) ? ctx.menu.menus : [],
     categories: ctx.menu && Array.isArray(ctx.menu.categories) ? ctx.menu.categories : [],
     uploadAsset: typeof ctx.uploadAsset === 'function' ? ctx.uploadAsset : null,
+    forms: formList.map((f) => ({ id: f.id, name: f.name })),
     renderers: RENDERERS,
   };
   const components = {};

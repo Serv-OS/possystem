@@ -26,6 +26,8 @@ import { layoutBlocks, walkBlocks } from './blocks/schema.js';
 import { loadMenu } from './data/loadMenu.js';
 import { BlockRenderer } from './blocks/BlockRenderer.jsx';
 import { PostArticle } from './blocks/components/ContentBlocks.jsx';
+import { formIdsOf, siteOpsLocationIds } from './formsOnPage.js';
+import { submitUrl } from '../../lib/forms/formHtml.js';
 
 const cls = (...xs) => xs.filter(Boolean).join(' ');
 
@@ -128,6 +130,10 @@ export default function WebsiteSurface({ host, siteSlug = null }) {
   // 5.12.8: whose menu an unpinned menu block shows (online slug), from the venue switch or ?venue=.
   const [menuVenue, setMenuVenueState] = useState(() => (typeof window !== 'undefined' ? readVenueParam() : null));
   const menuKeyRef = useRef('');
+  // 5.12.36: the marketing forms the page's Form blocks show. The server hands its reads over in the
+  // boot payload; a page reached by client side navigation reads the rest (marketing_form_public).
+  const [forms, setForms] = useState(() => (boot && boot.forms && typeof boot.forms === 'object' ? boot.forms : {}));
+  const formAction = (boot && boot.formAction) || submitUrl(import.meta.env.VITE_SUPABASE_URL || '');
 
   // 1. The snapshot: boot payload, else the Platform RPC.
   useEffect(() => {
@@ -187,7 +193,28 @@ export default function WebsiteSurface({ host, siteSlug = null }) {
   }, []);
 
   const route = useMemo(() => (snapshot ? resolveRoute(snapshot, path) : null), [snapshot, path]);
-  const ctx = useMemo(() => buildCtx({ snapshot, host, path, menu, customerRoot: CUSTOMER_ROOT, menuVenue, pageKind: route && route.page ? route.page.kind : null }), [snapshot, host, path, menu, menuVenue, route]);
+  const ctx = useMemo(() => buildCtx({ snapshot, host, path, menu, customerRoot: CUSTOMER_ROOT, menuVenue, pageKind: route && route.page ? route.page.kind : null, forms, formAction }), [snapshot, host, path, menu, menuVenue, route, forms, formAction]);
+
+  // 5.12.36: forms on this page that the server did not read (client side navigation). Never throws.
+  useEffect(() => {
+    const page = route && route.page;
+    const missing = formIdsOf(page).filter((id) => !forms[id]);
+    if (!missing.length || !supabase) return undefined;
+    const venues = siteOpsLocationIds(snapshot);
+    if (!venues.length) return undefined;
+    let alive = true;
+    (async () => {
+      const got = {};
+      await Promise.all(missing.map(async (id) => {
+        try {
+          const { data, error } = await supabase.rpc('marketing_form_public', { p_form_id: id, p_location_ids: venues });
+          if (!error && data && data.id) got[id] = data;
+        } catch { /* left out: the block paints nothing */ }
+      }));
+      if (alive && Object.keys(got).length) setForms((f) => ({ ...f, ...got }));
+    })();
+    return () => { alive = false; };
+  }, [route, snapshot, forms]);
   const vars = useMemo(() => siteVars(ctx.site.theme, (pickLocation(ctx, 'default') || {}).online_branding), [ctx]);
   const plan = useMemo(() => (route && route.page ? menuPlanFor(route.page, ctx) : null), [route, ctx]);
 
@@ -254,7 +281,7 @@ export default function WebsiteSurface({ host, siteSlug = null }) {
     } catch { setNearestState('notfound'); }
   }, []);
 
-  const value = useMemo(() => ({ ctx, menu, menuLoading, here, nearestState, requestNearest, locateByText, navigate, menuVenue, setMenuVenue }), [ctx, menu, menuLoading, here, nearestState, requestNearest, locateByText, navigate, menuVenue, setMenuVenue]);
+  const value = useMemo(() => ({ ctx, menu, menuLoading, here, nearestState, requestNearest, locateByText, navigate, menuVenue, setMenuVenue, forms }), [ctx, menu, menuLoading, here, nearestState, requestNearest, locateByText, navigate, menuVenue, setMenuVenue, forms]);
 
   if (loadState === 'loading') {
     return <div className={CN.site} style={vars}><div className={cls(CN.inner, CN.notFound)}><p className={CN.muted}>Loading…</p></div></div>;

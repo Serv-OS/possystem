@@ -23,6 +23,9 @@ import { verifyPreviewToken } from './_lib/website/preview.js';
 import { getShell, injectShell, bootScript } from './_lib/website/shell.js';
 import { resolveSite, loadDraftSnapshot } from './_lib/website/resolveSite.js';
 import { menuForPage } from './_lib/website/menuForPage.js';
+import { formsForPage } from './_lib/website/formsForPage.js';
+import { formStateFrom } from '../src/lib/forms/formRules.js';
+import { submitUrl } from '../src/lib/forms/formHtml.js';
 
 // 5.12.20 (Peter published and saw the old page for minutes): a fresh copy every 15 s, a stale one
 // served for at most a minute more while the next is fetched. Was 60 s + 10 minutes stale.
@@ -52,7 +55,9 @@ export function requestTarget(req) {
   const token = url.searchParams.get('token') || null;
   // 5.12.8: ?venue=<online slug> picks whose menu an unpinned menu block shows (the venue switch).
   const venue = (url.searchParams.get('venue') || '').toLowerCase().slice(0, 80) || null;
-  return { host: rawHost, path, siteParam, token, venue };
+  // 5.12.36: the outcome of a plain form post (?form_sent= / ?form_failed=&form_error=).
+  const formState = formStateFrom(url.search);
+  return { host: rawHost, path, siteParam, token, venue, formState };
 }
 
 function send(res, status, type, body, cache, extra = {}) {
@@ -64,7 +69,7 @@ function send(res, status, type, body, cache, extra = {}) {
 }
 
 export default async function handler(req, res) {
-  const { host, path, siteParam, token, venue } = requestTarget(req);
+  const { host, path, siteParam, token, venue, formState } = requestTarget(req);
   const root = customerRoot();
   const parsed = parseWebsiteHost(host, root);
   const { platform, service, ops } = getClients();
@@ -106,10 +111,11 @@ export default async function handler(req, res) {
     const pagePath = preview ? (new URL(req.url || '/', 'https://x.invalid').searchParams.get('page') || '/') : path;
     const route = resolveRoute(snapshot, pagePath);
     const ctx = buildCtx({ snapshot, host, path: pagePath, customerRoot: root, menuVenue: venue, pageKind: route.page ? route.page.kind : null });
-    const menu = route.page ? await menuForPage(ops, route.page, ctx) : null;
-    const rendered = renderPage({ snapshot, route, path: pagePath, host, menu, customerRoot: root, status, preview, menuVenue: venue });
+    const [menu, forms] = route.page ? await Promise.all([menuForPage(ops, route.page, ctx), formsForPage(ops, route.page, snapshot)]) : [null, {}];
+    const formAction = submitUrl(opsEnv().url);
+    const rendered = renderPage({ snapshot, route, path: pagePath, host, menu, customerRoot: root, status, preview, menuVenue: venue, forms, formAction, formState });
 
-    const boot = bootScript({ snapshot, path: pagePath, host, preview, status });
+    const boot = bootScript({ snapshot, path: pagePath, host, preview, status, forms, formAction });
     const dep = req.headers['x-vercel-deployment-url'] || process.env.VERCEL_URL || '';
     const shell = dep ? await getShell(dep) : null;
     const html = shell ? injectShell(shell, { head: rendered.head, body: rendered.body, boot })

@@ -21,7 +21,7 @@ export const WIRED_AT_TOP = [
   'hubrise-catalog-push', 'hubrise-connect', 'hubrise-inventory-push', 'hubrise-order-status',
   'location-admin', 'manager-approve', 'manager-snapshot',
   'marketing-admin', 'marketing-campaigns', 'marketing-compliance', 'marketing-domains', 'marketing-report',
-  'marketing-segments', 'marketing-send', 'marketing-workflows',
+  'marketing-segments', 'marketing-send', 'marketing-workflows', 'marketing-forms',
   'menu-translate', 'owner-snapshot', 'payments-admin', 'payments-processor', 'provision-location',
   'review-admin', 'review-google', 'review-reply', 'review-request', 'review-sync',
   'send-receipt', 'send-sms', 'send-welcome',
