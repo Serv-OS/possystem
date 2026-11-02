@@ -14,8 +14,12 @@ import assert from 'node:assert/strict';
 import {
   groupIdsOf, itemHasGroup, itemsCarrying, attachableItems, matchItems, matchGroups,
   attachPatches, detachPatches, attachButtonLabel, attachResultLine,
-  displayNameOf, expandPicks, pickedRealCount, sizesOf,
+  displayNameOf, expandPicks, pickedRealCount, sizesOf, attachCatOptions,
 } from './modifierAttach.js';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+const HERE = dirname(fileURLToPath(import.meta.url));
 
 const item = (over) => ({ id: 'i1', name: 'Latte', type: 'product', cat: 'c-hot', ...over });
 
@@ -197,4 +201,20 @@ test('the result names what really happened', () => {
   assert.equal(attachResultLine(0, 5), 'All 5 already had it.');
   assert.equal(attachResultLine(0, 1), 'That product already had it.');
   assert.equal(attachResultLine(0, 0), 'Nothing to change.');
+});
+
+test('5.12.27: the category drop down shows each category LABEL (there is no name column): roots then their subs, specials left out', () => {
+  const cats = [
+    { id: 'c-food', label: 'Food', sortOrder: 1 },
+    { id: 'c-drinks', label: 'Drinks', sortOrder: 0 },
+    { id: 'c-hot', label: 'Hot', parentId: 'c-drinks', sortOrder: 0 },
+    { id: 'c-fav', label: 'Favourites', isSpecial: true },
+  ];
+  assert.deepEqual(attachCatOptions(cats), [
+    { id: 'c-drinks', words: 'Drinks' }, { id: 'c-hot', words: 'Drinks > Hot' }, { id: 'c-food', words: 'Food' },
+  ]);
+  assert.deepEqual(attachCatOptions(null), []);
+  const src = readFileSync(join(HERE, '../../backoffice/sections/MenuManager.jsx'), 'utf8');
+  assert.ok(src.includes("attachCatOptions(menuCategories||[]).map(c => <option key={c.id} value={c.id}>{c.words}</option>)"), 'the modifier group builder uses it');
+  assert.ok(!/<option key=\{c\.id\} value=\{c\.id\}>\{c\.name\}<\/option>/.test(src), 'no category option reads c.name');
 });

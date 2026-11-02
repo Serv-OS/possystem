@@ -211,3 +211,21 @@ export function attachResultLine(changed, alreadyHad) {
   if (a < 1) return first;
   return first + ' ' + (a === 1 ? '1 already had it.' : a + ' already had it.');
 }
+
+/**
+ * The category drop down of "On these products" (5.12.27). A category's words are its label
+ * (menu_categories.label; there is no name column, which is why the list was blank). Roots first
+ * in their order, each followed by its own sub categories as 'Parent > Sub'; special categories
+ * (favourites and the like) are left out. Answer [{ id, words }].
+ */
+export function attachCatOptions(categories) {
+  const list = (categories || []).filter((c) => c && c.id && !c.isSpecial);
+  const by = (a, b) => (Number(a.sortOrder ?? 0) - Number(b.sortOrder ?? 0)) || String(a.label || '').localeCompare(String(b.label || ''));
+  const roots = list.filter((c) => !c.parentId).sort(by);
+  const out = [];
+  for (const r of roots) {
+    out.push({ id: r.id, words: String(r.label || r.name || 'Category') });
+    for (const c of list.filter((x) => x.parentId === r.id).sort(by)) out.push({ id: c.id, words: `${r.label || r.name || 'Category'} > ${c.label || c.name || 'Category'}` });
+  }
+  return out;
+}
