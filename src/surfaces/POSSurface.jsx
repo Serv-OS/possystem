@@ -29,7 +29,7 @@ import { isQuoteOfOrder } from '../lib/orderPlacedFrom';   // v5.11.78 round 1: 
 import { resolveQuickItems } from '../lib/quickRank';
 import ProductModal, { AllergenModal } from '../components/ProductModal';
 import InlineItemFlow from '../components/InlineItemFlow';
-import { isOptionOnlyItem } from '../lib/menuRules';
+import { isOptionOnlyItem, optionOnlyCategoryIds } from '../lib/menuRules';
 import CheckoutModal from './CheckoutModal';
 import CustomerModal from '../components/CustomerModal';
 import LinkMemberModal from '../components/LinkMemberModal';
@@ -702,10 +702,15 @@ export default function POSSurface() {
   // When the main category changes, reset the subcategory selection
   useEffect(() => { setSubCat(null); }, [cat]);
 
+  // 5.12.31 (lib/menuRules.js rule 9): a category whose rows are all option only sub items
+  // (the importer's Cheeses, a brought in option group) is not on the strip: nothing in it can
+  // be rung up. The kiosk, online and QR already left such a section out.
+  const optionOnlyCats = useMemo(() => optionOnlyCategoryIds(menuCategories, MENU_ITEMS), [menuCategories, MENU_ITEMS]);
+
   // Find subcategories of the active category
   const subCategories = useMemo(() =>
-    menuCategories.filter(c => c.parentId === cat).sort((a,b) => (a.sortOrder||0)-(b.sortOrder||0)),
-  [cat, menuCategories]);
+    menuCategories.filter(c => c.parentId === cat && !optionOnlyCats.has(c.id)).sort((a,b) => (a.sortOrder||0)-(b.sortOrder||0)),
+  [cat, menuCategories, optionOnlyCats]);
 
   const catItems = useMemo(() => {
     if (cat === 'quick') return quickItems;
@@ -1872,7 +1877,7 @@ export default function POSSurface() {
           {/* Quick screen always first */}
           {[{ id:'quick', label:'Quick', icon:'⚡', color:'var(--acc)' }].concat(
             // v4.7.6: cat is in this menu if its primary menu_id matches OR it's joined via menu_category_links
-          menuCategories.filter(c => !c.parentId && !c.isSpecial && categoryVisibleInMenu(c, deviceMenuId, _linkedCatIdsForDeviceMenu)).sort((a,b) => (a.sortOrder||0)-(b.sortOrder||0))
+          menuCategories.filter(c => !c.parentId && !c.isSpecial && !optionOnlyCats.has(c.id) && categoryVisibleInMenu(c, deviceMenuId, _linkedCatIdsForDeviceMenu)).sort((a,b) => (a.sortOrder||0)-(b.sortOrder||0))
           ).map(c => {
             const isActive = cat === c.id && !search;
             const color = c.color || 'var(--acc)';

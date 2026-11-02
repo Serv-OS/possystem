@@ -46,6 +46,29 @@ test('nobody writes the "option only sub item" rule again: they call isOptionOnl
   }
 });
 
+// 5.12.31 (Peter, 2 Nov 2026): a category holding only option only sub items is not on the
+// till's strip, the bar's tabs or the phone's list (rule 9). The kiosk (kioskRailRoots,
+// kioskLegacyCategoryShown), online, QR and catering already drop a section with no product.
+test('the till, bar and phone leave out a category that holds only option only sub items (rule 9)', () => {
+  const till = read('surfaces/POSSurface.jsx');
+  assert.match(till, /optionOnlyCategoryIds\(menuCategories, MENU_ITEMS\)/);
+  assert.match(till, /!c\.parentId && !c\.isSpecial && !optionOnlyCats\.has\(c\.id\)/, 'root strip');
+  assert.match(till, /c\.parentId === cat && !optionOnlyCats\.has\(c\.id\)/, 'sub category strip');
+  const bar = read('surfaces/BarSurface.jsx');
+  assert.match(bar, /optionOnlyCategoryIds\(menuCategories, storeMenuItems \|\| MENU_ITEMS\)/);
+  assert.match(bar, /!c\.isSpecial&&!optionOnlyCats\.has\(c\.id\)/);
+  const phone = read('surfaces/mpos/MMenu.jsx');
+  assert.match(phone, /optionOnlyCategoryIds\(menuCategories, menuItems\)/);
+  assert.match(phone, /c\.visible !== false && !optionOnlyCats\.has\(c\.id\)/);
+  // The kiosk's own rule is still in place (both designs).
+  const kiosk = read('lib/kioskMenu.js');
+  assert.match(kiosk, /export function kioskRailRoots/);
+  assert.match(kiosk, /export function kioskLegacyCategoryShown/);
+  // Online and QR, and catering, skip a section with no product.
+  assert.match(read('surfaces/online/OnlineSurface.jsx'), /if \(itemsForCat\(c\.id\)\.length === 0\) return null;/);
+  assert.match(read('surfaces/catering/CateringSurface.jsx'), /if \(!ci\.length\) return null;/);
+});
+
 test('the till, kiosk and online choose size options with sizeOrMainOptions', () => {
   const till = read('components/InlineItemFlow.jsx');
   assert.match(till, /sizeOrMainOptions\(buildModGroups\(activeItem\), buildModGroups\(item\)\)/);

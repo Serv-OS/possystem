@@ -3,7 +3,7 @@ import { useStore } from '../store';
 import { MENU_ITEMS, ALLERGENS } from '../data/seed';
 import ProductModal, { AllergenModal } from '../components/ProductModal';
 import InlineItemFlow from '../components/InlineItemFlow';
-import { isOptionOnlyItem } from '../lib/menuRules';
+import { isOptionOnlyItem, optionOnlyCategoryIds } from '../lib/menuRules';
 import { channelVisible } from '../lib/channelMenu';
 import CheckoutModal from './CheckoutModal';
 import TabPreAuthTerminal from '../components/TabPreAuthTerminal';
@@ -255,6 +255,8 @@ export default function BarSurface() {
   const activeMenuCatIds = useMemo(
     () => allowedCategoryIds(menuCategories, deviceMenuId, _categoryLinks),
     [menuCategories, deviceMenuId, _categoryLinks]); // null means show all
+  // 5.12.31 (lib/menuRules.js rule 9): a category holding only option only sub items is not a tab, as on the till.
+  const optionOnlyCats = useMemo(() => optionOnlyCategoryIds(menuCategories, storeMenuItems || MENU_ITEMS), [menuCategories, storeMenuItems]);
 
   // v5.11.81 (channel parity round 2): Back Office "Visible on" POS off hides a product on the bar
   // tab screen as on the till (POSSurface isBlocked) and the handheld; the bar showed it.
@@ -866,7 +868,7 @@ export default function BarSurface() {
             {!activeTab&&<button onClick={()=>setShowOpenModal(true)} className="btn btn-acc btn-sm">+ New tab</button>}
           </div>
           <div style={{ display:'flex',gap:4,overflowX:'auto',paddingBottom:2 }}>
-            {[{id:'all',label:'All',icon:'🍽',color:'var(--acc)'},...(menuCategories||[]).filter(c=>!c.parentId&&!c.parent_id&&!c.isSpecial&&categoryVisibleInMenu(c,deviceMenuId,linkedCatIds)).sort((a,b)=>(a.sortOrder||0)-(b.sortOrder||0))].map(c=>{
+            {[{id:'all',label:'All',icon:'🍽',color:'var(--acc)'},...(menuCategories||[]).filter(c=>!c.parentId&&!c.parent_id&&!c.isSpecial&&!optionOnlyCats.has(c.id)&&categoryVisibleInMenu(c,deviceMenuId,linkedCatIds)).sort((a,b)=>(a.sortOrder||0)-(b.sortOrder||0))].map(c=>{
               const color = c.color||'var(--acc)';
               const isActive=cat===c.id&&!search;
               return(

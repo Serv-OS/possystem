@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.12.31',
+    date: '2 Nov 2026',
+    items: [
+      'Till, bar screen and phone: a category whose rows are all sub items not sold alone (the importer\'s Cheeses, a brought in option group) is left off the category strip. Nothing in it could be rung up, so it showed as an empty tile. The kiosk, online ordering, QR and catering already left such a section out. A category with nothing in it at all shows as before.',
+    ],
+  },
+  {
     v: '5.12.30',
     date: '2 Nov 2026',
     items: [
