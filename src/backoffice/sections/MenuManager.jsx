@@ -21,7 +21,7 @@
  *  └── Same — options are plain strings
  */
 import { useState, useMemo, useCallback, useEffect, useRef, createContext, useContext } from 'react';
-import { attachCatOptions } from '../../lib/menu/modifierAttach';
+import { attachCatOptions, splitLockedTargets, lockedResultLine } from '../../lib/menu/modifierAttach';
 import { useStore, findDuplicateProductName, bulkUpdateMenuItems, bulkSummaryWords, runInMenuWriteQueue, MENU_WAIT_MS, loadVenueMenu, tabVenue } from '../../store';
 import { msmManagedState, subscribeMsmManaged, isMsmManaged } from '../../lib/msm/msmManaged.js';
 import { itemLock, groupLock, OWNED_TAX_KEYS } from '../../lib/msm/msmLock.js';
@@ -3900,7 +3900,12 @@ function ModifiersTab() {
   const offerable   = sel ? matchItems(attachableItems(menuItems||[]), { search:attachSearch, categoryId:attachCat, all:menuItems||[] }) : [];
   // A product with sizes never shows its OWN modifiers at the till: the variants
   // modal configures the size. So ticking the product means all of its sizes.
-  const realTargets = sel ? expandPicks(menuItems||[], [...picked]) : [];
+  // 5.12.28: a product whose option groups head office sets (Multi site menu) cannot take the group
+  // here: the store would refuse it and the press would look done. Such rows are shown locked, never
+  // picked, and the result line names how many were left.
+  const optionLocked = (id) => { const l = itemLock(msmLockSt, id); return !!l && l.locked('assigned_modifier_groups'); };
+  const targetSplit = sel ? splitLockedTargets(expandPicks(menuItems||[], [...picked]), optionLocked) : { free: [], locked: [] };
+  const realTargets = targetSplit.free;
   const pickedIds   = [...picked];
   const togglePick  = id => setPicked(prev => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   const clearPicked = () => setPicked(new Set());
@@ -3910,12 +3915,14 @@ function ModifiersTab() {
     const patches = attachPatches(menuItems||[], sel.id, realTargets);
     for (const { id, patch } of patches) updateMenuItem(id, patch);
     if (patches.length) markBOChange();
-    showToast?.(attachResultLine(patches.length, realTargets.length - patches.length));
+    const lockedWords = lockedResultLine(targetSplit.locked.length);
+    showToast?.(attachResultLine(patches.length, realTargets.length - patches.length) + (lockedWords ? ' ' + lockedWords : ''), lockedWords ? 'warning' : undefined);
     clearPicked();
   };
 
   const detachOne = itemId => {
     if (!sel) return;
+    if (optionLocked(itemId)) { showToast?.(lockedResultLine(1), 'warning'); return; }
     const patches = detachPatches(menuItems||[], sel.id, [itemId]);
     for (const { id, patch } of patches) updateMenuItem(id, patch);
     if (patches.length) { markBOChange(); showToast?.('Taken off that product.'); }
@@ -4229,8 +4236,8 @@ function ModifiersTab() {
                 <div style={{ display:'flex', flexWrap:'wrap', gap:5, marginBottom:10 }}>
                   {carrying.map(it => (
                     <span key={it.id} style={{ display:'inline-flex', alignItems:'center', gap:6, padding:'4px 8px', borderRadius:7, background:'var(--acc-d)', border:'1px solid var(--acc-b)', fontSize:11, color:'var(--t1)' }}>
-                      {displayNameOf(it, menuItems||[])}
-                      <button onClick={()=>detachOne(it.id)} title="Take it off this product"
+                      {displayNameOf(it, menuItems||[])}{optionLocked(it.id) ? ' 🔒' : ''}
+                      <button onClick={()=>detachOne(it.id)} title={optionLocked(it.id) ? 'Head office sets the option groups on this product in the Multi site menu' : 'Take it off this product'}
                         style={{ background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:12, lineHeight:1, padding:0 }}>×</button>
                     </span>
                   ))}
@@ -4257,7 +4264,7 @@ function ModifiersTab() {
               ) : (
                 <>
                   <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:6 }}>
-                    <button onClick={()=>setPicked(new Set(offerable.filter(it=>!carrying.some(c=>c.id===it.id)).map(it=>it.id)))}
+                    <button onClick={()=>setPicked(new Set(offerable.filter(it=>!carrying.some(c=>c.id===it.id) && !optionLocked(it.id)).map(it=>it.id)))}
                       style={{ background:'none', border:'none', color:'var(--acc)', cursor:'pointer', fontSize:11, fontWeight:700, padding:0 }}>
                       Select all {offerable.length} shown
                     </button>
@@ -4274,16 +4281,19 @@ function ModifiersTab() {
                         ? sizes.every(sz => carrying.some(c => c.id === sz.id))
                         : carrying.some(c => c.id === it.id);
                       const on  = picked.has(it.id);
+                      const locked = !has && optionLocked(it.id);
                       return (
-                        <label key={it.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'6px 9px', borderRadius:7, cursor:has?'default':'pointer',
-                          background: on ? 'var(--acc-d)' : 'transparent', border:`1px solid ${on ? 'var(--acc-b)' : 'transparent'}`, opacity: has ? .55 : 1,
+                        <label key={it.id} title={locked ? 'Head office sets the option groups on this product in the Multi site menu' : undefined}
+                          style={{ display:'flex', alignItems:'center', gap:8, padding:'6px 9px', borderRadius:7, cursor:(has || locked)?'default':'pointer',
+                          background: on ? 'var(--acc-d)' : 'transparent', border:`1px solid ${on ? 'var(--acc-b)' : 'transparent'}`, opacity: (has || locked) ? .55 : 1,
                           marginLeft: it.parentId ? 14 : 0 }}>
-                          <input type="checkbox" checked={has || on} disabled={has} onChange={()=>togglePick(it.id)} style={{ width:14, height:14 }}/>
+                          <input type="checkbox" checked={has || on} disabled={has || locked} onChange={()=>togglePick(it.id)} style={{ width:14, height:14 }}/>
                           <span style={{ fontSize:12, color:'var(--t1)', flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
                             {displayNameOf(it, menuItems||[])}
                           </span>
-                          {sizes.length > 0 && !has && <span style={{ fontSize:9, color:'var(--t3)' }}>all {sizes.length} sizes</span>}
+                          {sizes.length > 0 && !has && !locked && <span style={{ fontSize:9, color:'var(--t3)' }}>all {sizes.length} sizes</span>}
                           {has && <span style={{ fontSize:9, color:'var(--t4)' }}>already on</span>}
+                          {locked && <span style={{ fontSize:9, color:'var(--t4)' }}>🔒 head office</span>}
                         </label>
                       );
                     })}
