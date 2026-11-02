@@ -1,5 +1,13 @@
 export const CHANGELOG = [
   {
+    v: '5.12.33',
+    date: '2 Nov 2026',
+    items: [
+      'Till: tapping a category, or a sub category, closes an open options or sizes screen and shows that category\'s products at once. The screen stayed open and hid the grid.',
+      'Till: the Allergen filter button shows when the list is open (accent colour), not only when a filter is ticked (red). On the iPad a tap looked like nothing happened.',
+    ],
+  },
+  {
     v: '5.12.32',
     date: '2 Nov 2026',
     items: [

@@ -1890,8 +1890,11 @@ export default function POSSurface() {
             // Picking a category means "I want to serve somebody", so it comes back from
             // History, Deliveries or whatever else is on the panel (Peter, 21 Sep 2026).
             // Nothing happens when the menu is already showing.
+            // 5.12.33 (Peter, 2 Nov 2026): it also closes an open options or sizes screen
+            // (InlineItemFlow) and a pre order line being edited, so the category's products
+            // show at once. The flow stayed open and hid the grid.
             return (
-              <button key={c.id} onClick={() => { setCat(c.id); setSearch(''); setRightTab('menu'); }} className="cat-btn" style={{
+              <button key={c.id} onClick={() => { setCat(c.id); setSearch(''); setRightTab('menu'); setModalItem(null); setEditLine(null); }} className="cat-btn" style={{
                 marginBottom:3, gap:10,
                 background:isActive?`${color}1f`:'transparent',
                 borderColor:isActive?`${color}66`:'transparent',
@@ -1917,12 +1920,16 @@ export default function POSSurface() {
           })}
         </div>
         <div style={{padding:'8px 7px 10px',borderTop:'1px solid var(--bdr)'}}>
-          <button onClick={()=>setShowAllergens(s=>!s)} style={{
+          {/* 5.12.33 (Peter, 2 Nov 2026, iPad: "clicking on the allergen filter doesnt turn the
+              button red"): the button only went red once an allergen was ticked; a tap that opened
+              the list looked like nothing happened. Open with nothing ticked is now the accent
+              colour, red stays for "a filter is on". */}
+          <button onClick={()=>setShowAllergens(s=>!s)} aria-pressed={showAllergens} style={{
             width:'100%',padding:'9px 10px',borderRadius:10,cursor:'pointer',fontFamily:'inherit',
             display:'flex',alignItems:'center',gap:7,
-            background:allergens.length>0?'var(--red-d)':'var(--bg3)',
-            border:`1.5px solid ${allergens.length>0?'var(--red-b)':'var(--bdr)'}`,
-            color:allergens.length>0?'var(--red)':'var(--t3)',fontSize:11,fontWeight:700,
+            background:allergens.length>0?'var(--red-d)':showAllergens?'var(--acc-d, var(--bg3))':'var(--bg3)',
+            border:`1.5px solid ${allergens.length>0?'var(--red-b)':showAllergens?'var(--acc)':'var(--bdr)'}`,
+            color:allergens.length>0?'var(--red)':showAllergens?'var(--acc)':'var(--t3)',fontSize:11,fontWeight:700,
             transition:'all .14s',
           }}>
             <Icon name="warn" size={15} />
@@ -2052,10 +2059,10 @@ export default function POSSurface() {
             {/* Subcategory pills */}
             {!search && cat !== 'quick' && subCategories.length > 0 && (
               <div style={{ display:'flex', gap:4, padding:'6px 0 10px', flexWrap:'wrap' }}>
-                <button onClick={() => { setSubCat(null); setRightTab('menu'); }} style={{ padding:'4px 12px', borderRadius:20, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:!subCat?800:500, border:'none', background:!subCat?'var(--acc)':'var(--bg3)', color:!subCat?'#0b0c10':'var(--t3)' }}>All</button>
+                <button onClick={() => { setSubCat(null); setRightTab('menu'); setModalItem(null); setEditLine(null); }} style={{ padding:'4px 12px', borderRadius:20, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:!subCat?800:500, border:'none', background:!subCat?'var(--acc)':'var(--bg3)', color:!subCat?'#0b0c10':'var(--t3)' }}>All</button>
                 {subCategories.map(sc => {
                   const a = subCat === sc.id, cl = sc.color||'var(--acc)';
-                  return (<button key={sc.id} onClick={() => { setSubCat(sc.id); setRightTab('menu'); }} style={{ padding:'4px 12px', borderRadius:20, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:a?800:500, border:`1.5px solid ${a?cl:'var(--bdr)'}`, background:a?`${cl}20`:'var(--bg3)', color:a?cl:'var(--t3)', display:'inline-flex', alignItems:'center', gap:5 }}>{sc.icon && (emojiToIcon(sc.icon) ? <Icon name={emojiToIcon(sc.icon)} size={13}/> : <span>{sc.icon}</span>)}{sc.label}</button>);
+                  return (<button key={sc.id} onClick={() => { setSubCat(sc.id); setRightTab('menu'); setModalItem(null); setEditLine(null); }} style={{ padding:'4px 12px', borderRadius:20, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:a?800:500, border:`1.5px solid ${a?cl:'var(--bdr)'}`, background:a?`${cl}20`:'var(--bg3)', color:a?cl:'var(--t3)', display:'inline-flex', alignItems:'center', gap:5 }}>{sc.icon && (emojiToIcon(sc.icon) ? <Icon name={emojiToIcon(sc.icon)} size={13}/> : <span>{sc.icon}</span>)}{sc.label}</button>);
                 })}
               </div>
             )}
