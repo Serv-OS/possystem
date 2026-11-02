@@ -658,3 +658,17 @@ test('siteName: settings.brand_name wins on the cards, the footer and the JSON-L
   s.site.settings.brand_name = '   ';
   assert.equal(siteName(s), before, 'blank = the old fallback');
 });
+
+
+// ── 5.12.23: the owner's own words on the card, or none ───────────────────────────────────────
+test('GiftCards and LoyaltyJoin: card title and label override, empty label = none, words off = picture only', () => {
+  const s = snap();
+  const gift = (props) => renderBlock(rowCtx(s), { type: 'GiftCards', props: { id: 'g', show_art: true, location_id: 'default', ...props } });
+  assert.match(gift({ card_title: ' Treat them ', card_label: 'Any venue' }), /<div class="w-gift-art"><span>Treat them<\/span><span>Any venue<\/span><\/div>/);
+  assert.match(gift({ card_label: '' }), /<div class="w-gift-art"><span>[^<]+<\/span><\/div>/, 'empty label = title alone');
+  assert.match(gift({ card_words: false, image: 'https://cdn.test/c.jpg' }), /<div class="w-gift-art" data-img="1" style="[^"]*"><\/div>/, 'no words at all');
+  const old = gift({});
+  assert.match(old, /<span>Gift card<\/span>/, 'a block saved before 5.12.23 keeps its default label');
+  const loy = renderBlock(rowCtx(s), { type: 'LoyaltyJoin', props: { id: 'l', show_card_preview: true, card_title: 'Club', card_label: '', location_id: 'default' } });
+  assert.match(loy, /<div class="w-loyalty-card"><span>Club<\/span><\/div>/);
+});

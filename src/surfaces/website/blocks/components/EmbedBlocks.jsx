@@ -39,6 +39,13 @@ function Chooser({ id, type, cta }) {
 
 // 5.12.21 (Peter: "just an orange square, can't edit the pic"): a card picture when the owner set one.
 // The shade keeps the white words readable over any photo.
+// 5.12.23: the words on the card (see renderBlocks.js cardWords, same rules).
+function CardWords({ p, brand, defLabel }) {
+  if (p.card_words === false) return null;
+  const title = typeof p.card_title === 'string' && p.card_title.trim() ? p.card_title.trim() : brand;
+  const label = typeof p.card_label === 'string' ? p.card_label.trim() : defLabel;
+  return <><span>{title || ''}</span>{label ? <span>{label}</span> : null}</>;
+}
 const cardStyle = (url) => (url ? { backgroundImage: `linear-gradient(rgba(0,0,0,.18),rgba(0,0,0,.5)),url(${JSON.stringify(url)})` } : undefined);
 const venueName = (loc, ctx) => (loc && ((loc.online_branding && loc.online_branding.display_name) || loc.name)) || siteName(ctx.snapshot);
 
@@ -73,7 +80,7 @@ export function OrderEmbed({ id, mode, location_id, width }) {
   );
 }
 
-export function LoyaltyJoin({ id, headline, sub, show_card_preview, image, location_id, width }) {
+export function LoyaltyJoin({ id, headline, sub, show_card_preview, image, card_title, card_label, card_words, location_id, width }) {
   const { ctx } = useSite();
   const loc = pickLocation(ctx, location_id);
   const href = loc ? venueUrl(loc.online_slug, '/account', ctx.customerRoot) : '';
@@ -84,12 +91,12 @@ export function LoyaltyJoin({ id, headline, sub, show_card_preview, image, locat
         {sub ? <p className={CN.muted}>{sub}</p> : null}
         {href ? <a className={cls(CN.btn, CN.btnPrimary)} href={href} rel="noopener">Join free</a> : null}
       </div>
-      {show_card_preview ? <div className={CN.loyaltyCard} data-img={image ? '1' : undefined} style={cardStyle(image)}><span>{siteName(ctx.snapshot) || venueName(loc, ctx)}</span><span>Loyalty card</span></div> : null}
+      {show_card_preview ? <div className={CN.loyaltyCard} data-img={image ? '1' : undefined} style={cardStyle(image)}><CardWords p={{ card_title, card_label, card_words }} brand={siteName(ctx.snapshot) || venueName(loc, ctx)} defLabel="Loyalty card" /></div> : null}
     </Section>
   );
 }
 
-export function GiftCards({ id, headline, sub, show_art, image, location_id, width }) {
+export function GiftCards({ id, headline, sub, show_art, image, card_title, card_label, card_words, location_id, width }) {
   const { ctx } = useSite();
   const loc = pickLocation(ctx, location_id);
   const buy = loc ? venueUrl(loc.online_slug, '/gift', ctx.customerRoot) : '';
@@ -101,7 +108,7 @@ export function GiftCards({ id, headline, sub, show_art, image, location_id, wid
         {sub ? <p className={CN.muted}>{sub}</p> : null}
         {buy ? <div><a className={cls(CN.btn, CN.btnPrimary)} href={buy} rel="noopener">Buy a gift card</a> <a className={cls(CN.btn, CN.btnSecondary)} href={bal} rel="noopener">Check a balance</a></div> : null}
       </div>
-      {show_art ? <div className={CN.giftArt} data-img={image ? '1' : undefined} style={cardStyle(image)}><span>{siteName(ctx.snapshot) || venueName(loc, ctx)}</span><span>Gift card</span></div> : null}
+      {show_art ? <div className={CN.giftArt} data-img={image ? '1' : undefined} style={cardStyle(image)}><CardWords p={{ card_title, card_label, card_words }} brand={siteName(ctx.snapshot) || venueName(loc, ctx)} defLabel="Gift card" /></div> : null}
     </Section>
   );
 }
