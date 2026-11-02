@@ -173,3 +173,71 @@ export function subitemNameIndex(items, { soldAloneOnly = false } = {}) {
   }
   return map;
 }
+
+/**
+ * Rule 9. CATEGORIES. A category whose rows are all option only sub items (rule 1) is not a
+ * category for sale: nothing in it can be rung up, so the till, the bar screen, the phone, the
+ * kiosk, online, QR and catering leave it out. The category and every category under it are
+ * counted together, so a parent whose sub categories hold only options goes too.
+ *
+ * A category with nothing in it at all is left alone: it shows as it always did, so only the
+ * categories that read as empty because of rule 1 change.
+ *
+ * WHY (Peter, 2 Nov 2026): the importer makes add ons as sub items in their own section
+ * (Cheeses), and the Multi site menu brings a site's option groups in the same way. "When a
+ * category is empty and just has sub items that cant be sold alone we should hide the category
+ * from the POS kiosk etc." The kiosk (lib/kioskMenu.js), online, QR and catering already
+ * dropped such a section; the till, bar and phone showed an empty tile.
+ *
+ * Returns the Set of category ids to leave out. Reads camelCase and snake_case shapes, items in
+ * a category through cat or cats. Archived rows and size rows (a parent id) are not counted.
+ */
+export function optionOnlyCategoryIds(categories, items) {
+  const cats = (Array.isArray(categories) ? categories : []).filter(Boolean);
+  const rows = new Map();   // category id -> { all, sellable }
+  const bump = (id, sellable) => {
+    if (id == null) return;
+    const r = rows.get(id) || { all: 0, sellable: 0 };
+    r.all += 1;
+    if (sellable) r.sellable += 1;
+    rows.set(id, r);
+  };
+  for (const it of (Array.isArray(items) ? items : [])) {
+    if (!it || it.archived || field(it, 'parentId', 'parent_id')) continue;
+    const sellable = !isOptionOnlyItem(it);
+    const seen = new Set();
+    for (const id of [it.cat, ...(Array.isArray(it.cats) ? it.cats : [])]) {
+      if (id == null || seen.has(id)) continue;
+      seen.add(id);
+      bump(id, sellable);
+    }
+  }
+  const kids = new Map();
+  for (const c of cats) {
+    const p = field(c, 'parentId', 'parent_id');
+    if (p == null) continue;
+    if (!kids.has(p)) kids.set(p, []);
+    kids.get(p).push(c.id);
+  }
+  const totals = new Map();
+  const sum = (id, trail) => {
+    if (totals.has(id)) return totals.get(id);
+    if (trail.has(id)) return { all: 0, sellable: 0 };   // a cyclic parent id adds nothing twice
+    trail.add(id);
+    const own = rows.get(id) || { all: 0, sellable: 0 };
+    const t = { all: own.all, sellable: own.sellable };
+    for (const k of (kids.get(id) || [])) {
+      const s = sum(k, trail);
+      t.all += s.all;
+      t.sellable += s.sellable;
+    }
+    totals.set(id, t);
+    return t;
+  };
+  const out = new Set();
+  for (const c of cats) {
+    const t = sum(c.id, new Set());
+    if (t.all > 0 && t.sellable === 0) out.add(c.id);
+  }
+  return out;
+}
