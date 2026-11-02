@@ -9,6 +9,7 @@
 
 import { claimProblem, swapMode, problemText, eligibleStaff, shiftWords,
   textOpenShift, textOffered, textTaken, textAsked, textOfferDeclined } from '../_shared/openShiftRules.js';
+import { linkedShiftsFor } from '../_shared/linkedShifts.js';
 import { regionPack } from '../_shared/regionPack.js';
 import { writeWfAudit } from '../_shared/wfAudit.js';
 import { notifyStaff } from '../_shared/staffNotify.ts';
@@ -93,7 +94,9 @@ export async function swapsSnapshot(admin: Admin, staff: any, v: Venue) {
   for (const r of roles ?? []) roleLabel[r.key] = r.label || r.key;
   const settings = vs?.settings ?? {};
   const me = { id: staff.id, locationId: loc, status: staff.status, roleKey: staff.role_key };
-  const theirShifts = (myShifts ?? []).map(mapShift);
+  // 5.12.38: their shifts at every site they work at, so the list says what the claim will say
+  // (_wf_claim_problem counts every linked site since 20261112a).
+  const theirShifts = [...(myShifts ?? []).map(mapShift), ...(await linkedShiftsFor(admin, staff, addDays(v.todayIso, -7), addDays(horizon, 7)))];
   const availability = av?.[0] ? { perDay: Array.isArray(av[0].per_day) ? av[0].per_day : [] } : null;
   const leaveRows = (leave ?? []).map((l: any) => ({ status: l.status, startDate: l.start_date, endDate: l.end_date }));
 
@@ -159,7 +162,7 @@ async function auditSwap(admin: Admin, staff: any, action: string, entityId: str
 
 /** Who could take this shift now (the same rules), with their mobiles, for the "open shift" text. */
 async function whoCouldTake(admin: Admin, shift: any, ownerId: string | null, request: any, v: Venue) {
-  const { data: team } = await admin.from('wf_staff').select('id, name, role_key, status, location_id, mobile, bank_account_masked, pos_user_id').eq('location_id', shift.locationId).eq('status', 'active').limit(1000);
+  const { data: team } = await admin.from('wf_staff').select('id, name, role_key, status, location_id, mobile, bank_account_masked, pos_user_id, person_id, org_id').eq('location_id', shift.locationId).eq('status', 'active').limit(1000);
   const people = eligibleStaff(shift, (team ?? []).map(mapStaff), ownerId);
   if (!people.length) return [];
   const ids = people.map((p: any) => p.id);
@@ -176,6 +179,13 @@ async function whoCouldTake(admin: Admin, shift: any, ownerId: string | null, re
   const bankDetails = regionPack({ currency: v.currency }).bankDetails;
   const shiftsOf: Record<string, any[]> = {};
   for (const s of sh ?? []) (shiftsOf[s.staff_id] ||= []).push(mapShift(s));
+  // 5.12.38: someone who also works at another site is only texted when the claim would pass there too.
+  const rawOf: Record<string, any> = {};
+  for (const t of team ?? []) rawOf[t.id] = t;
+  await Promise.all(people.filter((p: any) => rawOf[p.id]?.person_id).map(async (p: any) => {
+    const away = await linkedShiftsFor(admin, rawOf[p.id], mon, sun);
+    if (away.length) (shiftsOf[p.id] ||= []).push(...away);
+  }));
   const availOf: Record<string, any> = {};
   for (const a of av ?? []) if (!availOf[a.staff_id]) availOf[a.staff_id] = { perDay: Array.isArray(a.per_day) ? a.per_day : [] };
   return people.filter((p: any) => !claimProblem({

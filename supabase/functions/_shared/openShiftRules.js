@@ -168,7 +168,8 @@ export function claimProblem(c) {
     if (o.id === shift.id || o.staffId !== claimer.id) continue;
     if (o.status !== 'published' && o.status !== 'draft') continue;
     const [b0, b1] = spanMins(o.date, o.start, o.finish);
-    if (s0 < b1 && b0 < s1) return { code: 'overlap', text: `It overlaps your shift on ${shiftWords(o, country)}.` };
+    // 5.12.38: their shifts at their other linked sites are in theirShifts too (o.site names it).
+    if (s0 < b1 && b0 < s1) return { code: 'overlap', text: `It overlaps your shift on ${shiftWords(o, country)}${o.site ? ` at ${o.site}` : ''}.` };
   }
   const leave = (c.leave || []).find(l => l.status === 'approved' && l.startDate <= shift.date && shift.date <= l.endDate);
   if (leave) return { code: 'leave', text: 'You are booked off on leave that day.' };

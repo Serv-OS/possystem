@@ -203,7 +203,7 @@ Deno.serve(async (req) => {
     // actual labour (approved/paid timesheets), on the business day most of the shift falls
     // in. A shift that clocked in up to two days before the range can still belong to it.
     const tsFrom = new Date(Date.parse(fromIso) - 2 * DAY_MS).toISOString();
-    const ts = await pagedRows('timesheets', () => opsAdmin.from('wf_timesheets').select('id, clock_in, clock_out, pay_amount, status').eq('location_id', ops).gte('clock_in', tsFrom).lt('clock_in', toIso).order('clock_in').order('id'));
+    const ts = await pagedRows('timesheets', () => opsAdmin.from('wf_timesheets').select('id, clock_in, clock_out, pay_amount, overtime_premium, status').eq('location_id', ops).gte('clock_in', tsFrom).lt('clock_in', toIso).order('clock_in').order('id'));
     const labAct = timesheetDays({ timesheets: ts, dayOf });
 
     // Stock-ledger costs per business day (_shared/tradingSales.js ledgerDays): SALE_DEPLETION =

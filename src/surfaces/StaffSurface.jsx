@@ -420,6 +420,8 @@ function ShiftsTab({ snap, onChanged }) {
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 14.5, fontWeight: 800 }}>{dayText(s.date, LOCALE)}</div>
                 {s.section && <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: 2 }}>{s.section}</div>}
+                {/* 5.12.38: a shift at another site they work at. */}
+                {s.otherSite && <div style={{ fontSize: 11.5, color: 'var(--acc)', marginTop: 2, fontWeight: 700 }}>At {s.site}</div>}
               </div>
               <div style={{ textAlign: 'right' }}>
                 <div className="mono" style={{ fontSize: 15, fontWeight: 700 }}>{timeText(s.start, LOCALE)} to {timeText(s.finish, LOCALE)}</div>
@@ -427,7 +429,7 @@ function ShiftsTab({ snap, onChanged }) {
               </div>
             </div>
             {/* v5.11.101: put it up for someone else (the venue setting decides if a manager approves the swap). */}
-            {s.id && snap?.swaps && (upIds.has(s.id)
+            {s.id && !s.otherSite && snap?.swaps && (upIds.has(s.id)
               ? <div style={{ fontSize: 11.5, color: 'var(--amber)', marginTop: 8 }}>Up for someone to take. It stays yours until they do. See My swaps below.</div>
               : cantDo === s.id
                 ? <CantDoPanel shift={s} colleagues={snap.swaps.colleagues} myRole={s.roleKey || snap?.me?.role} call={withJwt}
