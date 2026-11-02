@@ -50,7 +50,7 @@ import OrderTracker from './OrderTracker';
 import QrCheckout from '../qr/QrCheckout';
 import TabResumeScreen from '../qr/TabResumeScreen';
 import JoinTabScreen from '../qr/JoinTabScreen';
-import { money } from '../../lib/currency';
+import { money, moneyMinor } from '../../lib/currency';
 import { COUNTER_TYPE, counterCollect, orderTypeChip } from '../../lib/counterOrder';
 import MenuHeader from '../menu/MenuHeader';
 // 5.12.34 (Peter: Toast's ordering header, "we should steal this"): the ordering header block under
@@ -61,6 +61,10 @@ import { useNarrowOnline } from './useNarrowOnline';
 import { buildCollectionSlots } from '../../lib/online/collectionSlots';
 import { leadMinutesFor, advanceDaysFor, initialTiming, settleTiming, timingRowWords, orderTypePillWords, orderTypeChoices, locationRowParts, prepRangeWords } from '../../lib/online/orderTiming';
 import { loadSiblingVenues, venueAddressLine, siblingVenueUrl } from '../../lib/online/siblingVenues';
+// 5.12.35: the delivery address and coverage check happen the moment Delivery is picked
+// (lib/online/deliveryCoverage.js, one quote call and one set of words shared with the checkout).
+import { EMPTY_DELIVERY, deliveryAddressLine, basketMinimumWords, quoteDeliveryAddress } from '../../lib/online/deliveryCoverage';
+import DeliveryAddressSheet from './DeliveryAddressSheet';
 import { searchMenuRows, searchCountWords, normaliseQuery } from '../../lib/online/menuSearch';
 import { customerUrl } from '../../lib/env';
 import { readTheme, deriveVars, DISPLAY_FONT } from '../menu/menuTheme';
@@ -166,10 +170,14 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   // with the slot) is THE page's and is passed into OnlineCheckout, so step 1 starts on it and a
   // change there updates the header. A closed venue taking orders ahead starts on Schedule.
   const [timing, setTiming] = useState(() => initialTiming({ orderAheadOnly: !!closedInfo }));
-  const [sheet, setSheet] = useState(null);               // 'type' | 'timing' | 'location' | null
+  const [sheet, setSheet] = useState(null);               // 'type' | 'timing' | 'location' | 'address' | null
   const [siblings, setSiblings] = useState([]);           // the company's other venues with online ordering on
   const [opsVenueRow, setOpsVenueRow] = useState(null);   // ops locations row: address + receipt_branding (the address fallback chain)
-  const [deliveryAddress, setDeliveryAddress] = useState('');   // what the checkout has typed, for "Delivery to <address>"
+  // 5.12.35: THE delivery address { address1, postcode, geo, quote }. Filled by the address sheet
+  // when Delivery is picked, handed to OnlineCheckout as a controlled prop (its step 1 starts with
+  // it filled and an edit there updates the header). The type becomes Delivery only once the
+  // venue has said it delivers there.
+  const [delivery, setDelivery] = useState(EMPTY_DELIVERY);
   const [search, setSearch] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);    // phone: the search icon expanded
   const narrow = useNarrowOnline();
@@ -851,12 +859,43 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   const venueAddress = venueAddressLine(location, opsVenueRow);
   const pillOpens = !isQr && !isCounter && allOrderTypes.length > 1;
   const pillWords = orderTypePillWords(orderType, { types: allOrderTypes, counterLabel: counterName, location });
+  const deliveryAddress = deliveryAddressLine(delivery.address1, delivery.postcode);
   const locationParts = locationRowParts({ orderType, address: venueAddress, deliveryAddress, location });
+  // 5.12.35: Delivery opens the address sheet first; the type changes on its Continue. Any other
+  // type is picked at once. Used by the welcome screen and the order type sheet alike.
+  const pickType = (t) => {
+    if (!t) return;
+    if (t === 'delivery') { setSheet('address'); return; }
+    if (t !== orderType) setOrderType(t);
+  };
+  const fmtMinor = (m) => moneyMinor(m, delivery.quote?.currency || location?.currency);
+  const minimumWords = orderType === 'delivery' ? basketMinimumWords(delivery.quote, Math.round(cartTotal * 100), fmtMinor) : '';
+  const checkDeliveryAddress = (d) => quoteDeliveryAddress({ opsLocationId, delivery: d, orderSubtotalMinor: Math.round(cartTotal * 100) });
   const timingWords = timingRowWords(timing, { minutes: prep.minutes, busy: prep.busy, orderAheadOnly, delivery: orderType === 'delivery' });
   const goToVenue = (v) => {
     const url = siblingVenueUrl(v?.online_slug, typeof window !== 'undefined' ? window.location : null, customerUrl);
     if (url && typeof window !== 'undefined') window.location.assign(url);
   };
+  // The address and Change location sheets render on the welcome screen too (Delivery is picked
+  // there), so they live in one place for both branches.
+  const deliverySheets = !isQr && (
+    <>
+      {sheet === 'address' && !isQr && (
+        <DeliveryAddressSheet theme={theme} cardBdr={cardBdr} muted={muted} inputBg={cardBg} narrow={narrow}
+          location={location} siblings={siblings} value={delivery} fmt={fmtMinor} check={checkDeliveryAddress}
+          onContinue={(d) => { setDelivery(d); setSheet(null); if (orderType !== 'delivery') setOrderType('delivery'); }}
+          onCollect={() => { setSheet(null); if (orderType !== 'collection') setOrderType('collection'); }}
+          onTryVenue={() => setSheet('location')}
+          onClose={() => setSheet(null)} />
+      )}
+      {sheet === 'location' && !isQr && (
+        <ChangeLocationSheet theme={theme} cardBdr={cardBdr} muted={muted} narrow={narrow}
+          current={{ name: location.name, address: venueAddress }} venues={siblings} cartCount={cartCount}
+          onContinue={goToVenue}
+          onClose={() => setSheet(null)} />
+      )}
+    </>
+  );
   const query = normaliseQuery(search);
 
   const headerBg = vars ? 'var(--bg)' : theme.bg;
@@ -1058,8 +1097,9 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           theme={theme}
           orderTypes={allOrderTypes}
           loyalty={loyalty}
-          onPickType={setOrderType}
+          onPickType={pickType}
           onLoyalty={() => setShowLoyalty(true)}/>
+        {deliverySheets}
         {showLoyalty && (
           <LoyaltyModal theme={theme} cardBdr={cardBdr} muted={muted}
             companyId={location.company_id}
@@ -1095,7 +1135,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           pillIcon={orderTypeChip(orderType, { counterLabel: counterName }).icon} pillLabel={pillWords}
           pillOpens={pillOpens} onPill={() => setSheet('type')}
           locationWords={locationParts.lead} locationBold={locationParts.bold}
-          locationOpens={siblings.length > 0} onLocationRow={() => setSheet('location')}
+          locationOpens={orderType === 'delivery' || siblings.length > 0} onLocationRow={() => setSheet(orderType === 'delivery' ? 'address' : 'location')}
           timingWords={timingWords} timingDashed={timing.mode !== 'scheduled'}
           timingOpens={!isCounter && !browseOnly} onTimingRow={() => setSheet('timing')}
         />
@@ -1315,8 +1355,12 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           background: headerBg, backdropFilter: 'saturate(180%) blur(12px)',
           WebkitBackdropFilter: 'saturate(180%) blur(12px)',
           borderTop: `1px solid ${cardBdr}`,
-          display: 'flex', justifyContent: 'center',
+          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8,
         }}>
+          {/* 5.12.35: under the delivery minimum, say how much more before checkout (lib/online/deliveryCoverage.js) */}
+          {minimumWords && (
+            <div role="status" style={{ width: '100%', maxWidth: 540, textAlign: 'center', fontSize: 13.5, fontWeight: 700, color: theme.fg }}>{minimumWords}</div>
+          )}
           <button onClick={() => setShowCart(true)} className="op-btn-primary" style={{
             width: '100%', maxWidth: 540,
             padding: '16px 22px', borderRadius: 14,
@@ -1375,7 +1419,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           onRetryRates={retryRates}
           orderAheadOnly={orderAheadOnly}
           timing={timing} onTimingChange={setTiming} /* 5.12.34: the page's timing choice, one state with the header */
-          onDeliveryAddress={setDeliveryAddress}
+          delivery={delivery} onDeliveryChange={setDelivery} /* 5.12.35: the address, coordinates and quote the sheet took, one state with the header */
           counter={isCounter}
           counterLabel={counterName}
           onClose={() => setShowCheckout(false)}
@@ -1423,8 +1467,8 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         <OrderTypeSheet theme={theme} cardBdr={cardBdr} muted={muted} narrow={narrow}
           choices={orderTypeChoices(allOrderTypes, location)} value={orderType}
           icons={{ collection: orderTypeChip('collection').icon, delivery: orderTypeChip('delivery').icon }}
-          onPick={(t) => { if (t && t !== orderType) setOrderType(t); }}
-          onClose={() => setSheet(null)} />
+          onPick={pickType}
+          onClose={() => setSheet((s) => (s === 'type' ? null : s))} /* Delivery has just opened the address sheet: leave it */ />
       )}
       {sheet === 'timing' && !isQr && (
         <OrderTimingSheet theme={theme} cardBdr={cardBdr} muted={muted} narrow={narrow}
@@ -1433,12 +1477,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           onConfirm={(t) => setTiming(t)}
           onClose={() => setSheet(null)} />
       )}
-      {sheet === 'location' && !isQr && (
-        <ChangeLocationSheet theme={theme} cardBdr={cardBdr} muted={muted} narrow={narrow}
-          current={{ name: location.name, address: venueAddress }} venues={siblings} cartCount={cartCount}
-          onContinue={goToVenue}
-          onClose={() => setSheet(null)} />
-      )}
+      {deliverySheets}
 
       {showAllergyPicker && (
         <AllergyPickerModal
