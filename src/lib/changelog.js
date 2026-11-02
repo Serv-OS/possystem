@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.12.31',
+    date: '2 Nov 2026',
+    items: [
+      'Multi site menu: bringing an option group in from a site now brings each option\'s sub item in too (Gouda, Mozzarella and so on) as a group menu product with the id it has at the site, so head office can pick it for another group and send it to other sites. A sub item that looks like a group menu product is linked, never doubled; one sold on its own stays so. Nothing is written at the site.',
+      'Multi site menu, Sites: a group brought in before this says "Provo: 23 options in 3 groups point at sub items the group menu does not manage", with Bring the sub items in, which repairs them the same way, writing nothing at the site.',
+      'Multi site menu, Sites: Sync from sites reads every site and shows one list of what each sells that the group menu does not (its own products, its own option groups, sub items its options use), each with Bring in, and Bring in all per site.',
+    ],
+  },
+  {
     v: '5.12.30',
     date: '2 Nov 2026',
     items: [

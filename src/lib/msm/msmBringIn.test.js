@@ -9,7 +9,7 @@ import { applyChanges } from '../../../supabase/functions/_shared/msmDiff.js';
 import { checkChange } from '../../../supabase/functions/_shared/msmModel.js';
 import { A, B, ORG, idGen } from './msmFixture.js';
 import { groupVenues, groupSites, S, VAT } from './msmGroupFixture.js';
-import { ownProducts, bringInChanges, ownCountWords, ownGroups, bringInGroupChanges, ownGroupCountWords } from './msmBringIn.js';
+import { ownProducts, bringInChanges, ownCountWords, ownGroups, bringInGroupChanges, ownGroupCountWords, unmanagedSubItems, repairSubItemsChanges, subItemCountWords, bringInAllChanges } from './msmBringIn.js';
 
 function setup() {
   const v = groupVenues();
@@ -159,8 +159,15 @@ test('link a site\'s own group to the group menu\'s: options matched by name, it
   assert.equal(os.find((c) => c.entity_id === car.id).after.active, false, 'Caramel is not offered at B: off there');
   const haz = r.changes.find((c) => c.target === 'modifier_option' && c.after.name === 'Hazelnut');
   assert.ok(haz, 'Hazelnut is new in the group menu');
-  assert.equal(haz.after.product_id, null, 'its sub item is B\'s own, not in the group menu');
-  assert.equal(os.find((c) => c.entity_id === haz.entity_id).after.kept.item_link, 'own-haz-sub', 'B keeps its own sub item link');
+  // 5.12.31: its sub item comes in too, as a managed product with B's EXISTING venue item id.
+  const hazSub = r.changes.find((c) => c.target === 'product' && c.after.name === 'Hazelnut shot');
+  assert.ok(hazSub, 'the sub item is a group menu product now');
+  assert.deepEqual([hazSub.after.type, hazSub.after.sold_alone, hazSub.after.default_price, hazSub.after.parent_product_id], ['subitem', false, 0.3, null]);
+  const hazPs = r.changes.find((c) => c.target === 'product_site' && c.entity_id === hazSub.entity_id);
+  assert.deepEqual([hazPs.location_id, hazPs.after.venue_item_id, hazPs.after.active], [B, 'own-haz-sub', true]);
+  assert.equal(haz.after.product_id, hazSub.entity_id, 'the option points at it');
+  assert.equal(os.find((c) => c.entity_id === haz.entity_id).after.kept.item_link, undefined, 'no own link kept: the group menu manages the sub item');
+  assert.ok(r.changes.indexOf(hazSub) < r.changes.indexOf(haz), 'the product before the option that offers it');
   assert.equal(r.changes.find((c) => c.target === 'modifier_option_site' && c.entity_id === haz.entity_id && c.location_id === A).after.active, false, 'off at A');
   // The proof, both ways, and nothing at A either.
   assert.deepEqual(writesAt(central, r.changes, B, raw).filter((l) => l.groupId === syrup.id), []);
@@ -169,6 +176,8 @@ test('link a site\'s own group to the group menu\'s: options matched by name, it
   assert.equal(r.words[0], 'Which syrup at Site B becomes Site B\'s copy of the group menu\'s Which syrup.');
   assert.match(r.words.join(' '), /Site B keeps its own rule \(how many to choose\) and its own price on 1 option/);
   assert.match(r.words.join(' '), /Hazelnut is new in the group menu: on at Site B, off at the other sites/);
+  assert.match(r.words.join(' '), /Sub item Hazelnut shot comes into the group menu too, on at Site B only/);
+  assert.deepEqual(ownProducts(applyChanges(central, r.changes).central, B, raw).map((o) => o.id).sort(), ['l-old-b', 'own-special'], 'the sub item is managed now; the products of B\'s own stay its own');
   assert.match(r.words.join(' '), /1 of Which syrup's options is not offered at Site B and stays off there/);
   assert.match(r.words.join(' '), /Nothing changes at Site B/);
   // Once in the draft it is managed here: it drops out of the list.
@@ -241,4 +250,119 @@ test('bring in for products is unchanged: a product\'s own group still rides in 
   const gs = r.changes.find((c) => c.target === 'modifier_group_site');
   assert.deepEqual([gs.entity_id, gs.after.venue_group_id, gs.after.kept.max], [syrup.id, 'mgd-syrup-b', 2]);
   assert.deepEqual(writesAt(central, r.changes, B, raw, false), []);
+});
+
+// ── Sub items (2 Nov 2026, 5.12.31) ─────────────────────────────────────────────────────────────
+
+test('a sub item that looks like a group menu product is linked, never doubled; one sold on its own stays so; a product with sizes stays the site\'s own link', () => {
+  const { v, central, P } = setup();
+  const raw = v[B];
+  const base = raw.items.find((i) => i.id === S('m-oat', B));
+  // Caramel: the group menu has a Caramel sub item (from A), not at B. Shot: sold on its own too.
+  raw.items.push(
+    { ...base, id: 'own-car-b', name: 'Caramel', menu_name: 'Caramel', master_id: null, pricing: { base: 0.4 } },
+    { ...base, id: 'own-shot-b', name: 'Espresso shot', menu_name: 'Espresso shot', master_id: null, sold_alone: true, type: 'simple', pricing: { base: 1 } },
+    { ...base, id: 'own-cake-b', name: 'Cake slice', menu_name: 'Cake slice', master_id: null, sold_alone: true, type: 'simple', pricing: { base: 3 } },
+    { ...base, id: 'own-cake-b-l', name: 'Large', menu_name: 'Large', master_id: null, parent_id: 'own-cake-b', type: 'simple', pricing: { base: 4 } },
+  );
+  raw.groups.push({ id: 'mgd-extras-b', location_id: B, name: 'Extras', min: 0, max: 3, selection_type: 'multiple', sort_order: 6, options: [
+    { id: 'opt-b-car', name: 'Caramel', price: 0.4, itemId: 'own-car-b' },
+    { id: 'opt-b-shot', name: 'Extra shot', price: 1, itemId: 'own-shot-b' },
+    { id: 'opt-b-cake', name: 'Cake', price: 3, itemId: 'own-cake-b' },
+  ] });
+  const r = bringInGroupChanges(central, B, raw, 'mgd-extras-b', { idGen: idGen('s'), siteName: 'Site B' });
+  assert.ok(r.ok, r.problems.join(' | '));
+  for (const c of r.changes) assert.ok(checkChange(c).ok, `${c.target}: ${checkChange(c).words}`);
+  const products = r.changes.filter((c) => c.target === 'product');
+  assert.deepEqual(products.map((c) => c.after.name), ['Espresso shot'], 'Caramel is linked, Cake slice has sizes: neither is a new product');
+  assert.equal(products[0].after.sold_alone, true, 'sold on its own stays so');
+  assert.equal(products[0].after.type, 'simple');
+  const carPs = r.changes.find((c) => c.target === 'product_site' && c.entity_id === P('Caramel').id);
+  assert.deepEqual([carPs.location_id, carPs.after.venue_item_id, carPs.after.price], [B, 'own-car-b', 0.4], 'B\'s copy of the group menu\'s Caramel, at B\'s price');
+  const opts = r.changes.filter((c) => c.target === 'modifier_option');
+  assert.equal(opts.find((c) => c.after.name === 'Caramel').after.product_id, P('Caramel').id);
+  assert.equal(opts.find((c) => c.after.name === 'Extra shot').after.product_id, products[0].entity_id);
+  const cake = opts.find((c) => c.after.name === 'Cake');
+  assert.equal(cake.after.product_id, null);
+  assert.equal(r.changes.find((c) => c.target === 'modifier_option_site' && c.entity_id === cake.entity_id).after.kept.item_link, 'own-cake-b', 'a product with sizes stays B\'s own link, as before');
+  assert.deepEqual(writesAt(central, r.changes, B, raw, false), []);
+  assert.deepEqual(writesAt(central, r.changes, B, raw).filter((l) => l.groupId === r.groupId || l.productId === P('Caramel').id || l.productId === products[0].entity_id), []);
+  assert.deepEqual(writesAt(central, r.changes, A, v[A], false), []);
+  assert.match(r.words.join(' '), /Sub item Caramel at Site B becomes Site B's copy of the group menu's Caramel/);
+});
+
+// The shape 5.12.29 left live: the option has no sub item, the site keeps its own link.
+function brokenSyrupAtB(v, central) {
+  const { raw, syrup } = ownSyrupAtB(v, central);
+  const r = bringInGroupChanges(central, B, raw, 'mgd-syrup-b', { linkTo: syrup.id, idGen: idGen('g'), siteName: 'Site B' });
+  assert.ok(r.ok, r.problems.join(' | '));
+  const hazSub = r.changes.find((c) => c.target === 'product' && c.after.name === 'Hazelnut shot');
+  const haz = r.changes.find((c) => c.target === 'modifier_option' && c.after.name === 'Hazelnut');
+  const changes = r.changes.filter((c) => !(c.target === 'product' && c.entity_id === hazSub.entity_id) && !(c.target === 'product_site' && c.entity_id === hazSub.entity_id));
+  haz.after.product_id = null;
+  r.changes.find((c) => c.target === 'modifier_option_site' && c.entity_id === haz.entity_id && c.location_id === B).after.kept = { item_link: 'own-haz-sub' };
+  const live = applyChanges(central, changes).central;
+  live.menu = central.menu;
+  return { raw, live, syrup, hazId: haz.entity_id };
+}
+
+test('options pointing at sub items the group menu does not manage are listed, and Bring the sub items in repairs them writing NOTHING at the site', () => {
+  const { v, central } = setup();
+  const { raw, live, syrup, hazId } = brokenSyrupAtB(v, central);
+  const list = unmanagedSubItems(live, B, raw);
+  assert.deepEqual(list, [{ optionId: hazId, optionName: 'Hazelnut', groupId: syrup.id, groupName: 'Which syrup', itemId: 'own-haz-sub', itemName: 'Hazelnut shot' }]);
+  assert.equal(subItemCountWords(list, 'Site B'), 'Site B: 1 option in 1 group points at sub items the group menu does not manage.');
+  assert.equal(subItemCountWords([], 'Site B'), 'Every sub item Site B\'s options use is in the group menu.');
+  assert.deepEqual(unmanagedSubItems(live, A, v[A]), [], 'A\'s options all have their sub items');
+
+  const r = repairSubItemsChanges(live, B, raw, { idGen: idGen('r'), siteName: 'Site B' });
+  assert.ok(r.ok, r.problems.join(' | '));
+  for (const c of r.changes) assert.ok(checkChange(c).ok, `${c.target}: ${checkChange(c).words}`);
+  assert.equal(r.count, 1);
+  const prod = r.changes.find((c) => c.target === 'product');
+  assert.deepEqual([prod.after.name, prod.after.type, prod.after.sold_alone], ['Hazelnot shot'.replace('not', 'nut'), 'subitem', false]);
+  const ps = r.changes.find((c) => c.target === 'product_site');
+  assert.deepEqual([ps.entity_id, ps.location_id, ps.after.venue_item_id], [prod.entity_id, B, 'own-haz-sub']);
+  const upd = r.changes.find((c) => c.target === 'modifier_option');
+  assert.deepEqual([upd.op, upd.entity_id, upd.after, upd.before], ['update', hazId, { product_id: prod.entity_id }, { product_id: null }]);
+  const osU = r.changes.find((c) => c.target === 'modifier_option_site');
+  assert.deepEqual([osU.op, osU.location_id, osU.after.kept, osU.before.kept], ['update', B, {}, { item_link: 'own-haz-sub' }], 'the own link goes: the group menu manages the sub item now');
+  assert.ok(r.changes.indexOf(prod) < r.changes.indexOf(upd), 'the product before the option that points at it');
+  // The proof: the draft's own changes, and the products with everything touched.
+  assert.deepEqual(writesAt(live, r.changes, B, raw, false), []);
+  assert.deepEqual(writesAt(live, r.changes, B, raw).filter((l) => l.productId === prod.entity_id || l.groupId === syrup.id), []);
+  assert.deepEqual(writesAt(live, r.changes, A, v[A], false), [], 'Hazelnut is off at A: nothing there');
+  assert.match(r.words[0], /^1 option in 1 group at Site B now points at a sub item the group menu manages\.$/);
+  assert.match(r.words.join(' '), /Nothing changes at Site B/);
+  assert.doesNotMatch(r.words.join(' '), /other site/, 'off everywhere else: no sub item goes anywhere');
+  assert.deepEqual(unmanagedSubItems(applyChanges(live, r.changes).central, B, raw), [], 'repaired');
+  assert.match(repairSubItemsChanges(applyChanges(live, r.changes).central, B, raw, { siteName: 'Site B' }).problems[0], /Every sub item Site B's options use is in the group menu/);
+});
+
+test('bring in all: own groups, own products and unmanaged sub items in one set, nothing written at the site', () => {
+  const { v, central } = setup();
+  const { raw, live } = brokenSyrupAtB(v, central);
+  // B also has a group of its own (Extras) and a product of its own (Spiced latte, asking Which syrup).
+  const base = raw.items.find((i) => i.id === S('m-oat', B));
+  raw.items.push({ ...base, id: 'own-mar-b', name: 'Marshmallow', menu_name: 'Marshmallow', master_id: null, pricing: { base: 0.5 } });
+  raw.groups.push({ id: 'mgd-extras-b', location_id: B, name: 'Extras', min: 0, max: 3, selection_type: 'multiple', sort_order: 6, options: [{ id: 'opt-b-mar', name: 'Marshmallow', price: 0.5, itemId: 'own-mar-b' }] });
+  assert.equal(ownGroups(live, B, raw).length, 1);
+  assert.deepEqual(ownProducts(live, B, raw).filter((o) => !o.archived).map((o) => o.id), ['own-special'], 'l-old-b is archived at B: left alone, as the Sites screen leaves it');
+  assert.equal(unmanagedSubItems(live, B, raw).length, 1);
+  const r = bringInAllChanges(live, B, raw, { idGen: idGen('a'), siteName: 'Site B', orgId: ORG });
+  assert.ok(r.ok, r.problems.join(' | '));
+  assert.deepEqual(r.counts, { groups: 1, products: 1, subItems: 1 });
+  for (const c of r.changes) assert.ok(checkChange(c).ok, `${c.target}: ${checkChange(c).words}`);
+  const after = applyChanges(live, r.changes).central;
+  assert.deepEqual(ownGroups(after, B, raw), []);
+  assert.deepEqual(ownProducts(after, B, raw).filter((o) => !o.archived), []);
+  assert.deepEqual(unmanagedSubItems(after, B, raw), []);
+  assert.deepEqual(writesAt(live, r.changes, B, raw, false), []);
+  assert.deepEqual(writesAt(live, r.changes, A, v[A], false), []);
+  assert.deepEqual(r.problems, []);
+  assert.match(r.words[0], /Option group Extras comes into the group menu, on at Site B only, with its 1 option/);
+  assert.ok(r.words.some((w) => /Spiced latte comes into the group menu as a product on at Site B only/.test(w)), r.words.join(' | '));
+  assert.ok(r.words.some((w) => /1 option in 1 group at Site B now points at a sub item the group menu manages/.test(w)), r.words.join(' | '));
+  assert.match(r.words[r.words.length - 1], /Nothing changes at Site B when you publish/);
+  assert.match(bringInAllChanges(after, B, raw, { siteName: 'Site B' }).problems[0], /Everything Site B sells is in the group menu/);
 });

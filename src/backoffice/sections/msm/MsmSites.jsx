@@ -22,11 +22,16 @@
 //     now each says what it looks like in the group menu; [Link to Which syrup] or [Bring in as a
 //     new group] goes into the draft by the same rules, writing NOTHING at the site. Head office then
 //     puts it on products with Add to products on the group, and publishes.
+//   * Sub items (2 Nov 2026, v5.12.31): "Provo: 23 options in 3 groups point at sub items the group
+//     menu does not manage [Bring the sub items in]" repairs groups brought in before their sub items
+//     came with them (lib/msm/msmBringIn.js repairSubItemsChanges). "Sync from sites" at the top reads
+//     every site and shows one list: own products, own option groups, unmanaged sub items, each with
+//     Bring in, and Bring in all per site (bringInAllChanges). Same pieces, no new data path.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { sitesReached, siteDrift } from '../../../../supabase/functions/_shared/msmDiff.js';
 import { openDrift, driftWords, keepChanges, putBackChanges, bringInOption } from '../../../lib/msm/msmDriftView';
-import { ownProducts, bringInChanges, ownCountWords, ownGroups, bringInGroupChanges, ownGroupCountWords, planJoinSiteAsync, joinableProducts } from '../../../lib/msm/msmBringIn';
+import { ownProducts, bringInChanges, ownCountWords, ownGroups, bringInGroupChanges, ownGroupCountWords, unmanagedSubItems, repairSubItemsChanges, subItemCountWords, bringInAllChanges, planJoinSiteAsync, joinableProducts } from '../../../lib/msm/msmBringIn';
 import { planAddSite } from '../../../../supabase/functions/_shared/msmSites.js';
 import { whenText } from '../../../../supabase/functions/_shared/msmSchedule.js';
 import { readAllRows } from '../../../../supabase/functions/_shared/venueMenuCore.js';
@@ -41,6 +46,8 @@ export default function MsmSites({ api, client, menu, live, eff, sites, rows, ca
   const [check, setCheck] = useState(null);         // { at, drift: { loc: [lines] }, own: { loc: n }, raw: { loc: raw }, failed: [] }
   const [bringing, setBringing] = useState(null);   // locationId
   const [bringingGroups, setBringingGroups] = useState(null);   // locationId
+  const [repairing, setRepairing] = useState(null);   // locationId
+  const [syncing, setSyncing] = useState(false);
   const [checking, setChecking] = useState(false);
   const [review, setReview] = useState(null);       // locationId
   const [adding, setAdding] = useState(false);
@@ -65,15 +72,16 @@ export default function MsmSites({ api, client, menu, live, eff, sites, rows, ca
   // Worked out from the rows read and the group menu as it is now (with the draft), so a line the
   // draft already keeps, or a product already brought in, drops out at once.
   const derived = useMemo(() => {
-    const drift = {}, own = {}, groups = {};
+    const drift = {}, own = {}, groups = {}, subs = {};
     for (const s of sites) {
       const raw = check?.raw?.[s.id];
       if (!raw) continue;
       try { drift[s.id] = openDrift(live, eff, s.id, raw, names); } catch { drift[s.id] = siteDrift(live, s.id, raw, names); }
       try { own[s.id] = ownProducts(eff || live, s.id, raw).filter((o) => !o.archived); } catch { own[s.id] = []; }
       try { groups[s.id] = ownGroups(eff || live, s.id, raw); } catch { groups[s.id] = []; }
+      try { subs[s.id] = unmanagedSubItems(eff || live, s.id, raw); } catch { subs[s.id] = []; }
     }
-    return { drift, own, groups };
+    return { drift, own, groups, subs };
   }, [check, sites, live, eff, names]);
   const driftCount = useMemo(() => Object.fromEntries(Object.entries(derived.drift).map(([k, v]) => [k, v.length])), [derived]);
   // Never "In sync" for a site nobody has looked at yet (17 Oct verification).
@@ -99,6 +107,7 @@ export default function MsmSites({ api, client, menu, live, eff, sites, rows, ca
           </div>
         </div>
         <Btn kind="soft" disabled={checking} onClick={runCheck}>{checking ? 'Reading every site…' : 'Find changes made at sites'}</Btn>
+        <Btn kind="soft" disabled={checking} onClick={async () => { await runCheck(); setSyncing(true); }} data-testid="msm-sync-from-sites">Sync from sites</Btn>
         {canEdit && <Btn kind="primary" onClick={() => setAdding(true)}>Add a site</Btn>}
       </div>
       {history.error && <Notice tone="bad">{history.error}</Notice>}
@@ -127,12 +136,14 @@ export default function MsmSites({ api, client, menu, live, eff, sites, rows, ca
               {c.drift > 0 && <div>{c.drift} change{c.drift === 1 ? ' was' : 's were'} made at {c.name} since the last publish</div>}
               {check?.raw?.[c.id] && <div>{ownCountWords((derived.own[c.id] || []).length, c.name)}</div>}
               {(derived.groups[c.id] || []).length > 0 && <div>{ownGroupCountWords(derived.groups[c.id].length, c.name)}</div>}
+              {(derived.subs[c.id] || []).length > 0 && <div style={{ color: 'var(--red)' }}>{subItemCountWords(derived.subs[c.id], c.name)}</div>}
             </div>
             <div style={{ ...ui.row, marginTop: 12, flexWrap: 'wrap' }}>
               {canEdit && c.failed && <Btn small kind="primary" disabled={busy === c.id} onClick={() => retry(c)}>Retry {c.name}</Btn>}
               {c.drift > 0 && <Btn small kind="soft" onClick={() => setReview(c.id)}>Look at the changes</Btn>}
               {(derived.own[c.id] || []).length > 0 && <Btn small kind="soft" onClick={() => setBringing(c.id)}>Look at them</Btn>}
               {(derived.groups[c.id] || []).length > 0 && <Btn small kind="soft" onClick={() => setBringingGroups(c.id)}>Look at the option groups</Btn>}
+              {editable && (derived.subs[c.id] || []).length > 0 && <Btn small kind="primary" onClick={() => setRepairing(c.id)}>Bring the sub items in</Btn>}
               {waiting.has(c.id) && <Btn small kind="link" onClick={() => setTab('publish')}>See what changes</Btn>}
             </div>
           </div>
@@ -150,6 +161,14 @@ export default function MsmSites({ api, client, menu, live, eff, sites, rows, ca
       {bringingGroups && (
         <BringInGroups site={sites.find((s) => s.id === bringingGroups)} own={derived.groups[bringingGroups] || []} raw={check?.raw?.[bringingGroups]} central={eff || live}
           editable={editable} stage={stage} onClose={() => setBringingGroups(null)} />
+      )}
+      {repairing && (
+        <RepairSubItems site={sites.find((s) => s.id === repairing)} list={derived.subs[repairing] || []} raw={check?.raw?.[repairing]} central={eff || live}
+          editable={editable} stage={stage} onClose={() => setRepairing(null)} />
+      )}
+      {syncing && (
+        <SyncSheet sites={sites} check={check} checking={checking} derived={derived} central={eff || live} editable={editable} stage={stage} orgId={menu?.org_id || null}
+          onClose={() => setSyncing(false)} />
       )}
       {adding && (
         <AddSite api={api} client={client} menu={menu} live={live} sites={sites} setNote={setNote}
@@ -353,6 +372,156 @@ function BringInGroups({ site, own, raw, central, editable, stage, onClose }) {
                     </div>
                   </>
                   : <Notice tone="bad">{pick.result.problems.join(' ')}</Notice>}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </Sheet>
+  );
+}
+
+// What a bring in would do, in words, then Add to draft (or why it cannot).
+function Proposal({ result, busy, onAdd, onCancel }) {
+  return (
+    <div style={{ marginTop: 8, padding: '10px 12px', borderRadius: 10, background: 'var(--bg2)' }}>
+      {result.ok
+        ? <>
+          <ul style={{ margin: '0 0 8px', paddingLeft: 18, fontSize: 13, lineHeight: 1.5 }}>{result.words.map((w) => <li key={w}>{w}</li>)}</ul>
+          {result.problems?.length > 0 && <div style={{ ...ui.sub, marginBottom: 8 }}>Left out: {result.problems.join(' ')}</div>}
+          <div style={{ ...ui.row }}>
+            <Btn small kind="primary" disabled={busy} onClick={onAdd}>{busy ? 'Adding…' : 'Add to draft'}</Btn>
+            <Btn small onClick={onCancel}>Cancel</Btn>
+          </div>
+        </>
+        : <Notice tone="bad">{result.problems.join(' ')}</Notice>}
+    </div>
+  );
+}
+
+// Bring the sub items in (5.12.31): the options at a site that point at sub items the group menu
+// does not manage, and the repair in words before Add to draft.
+function RepairSubItems({ site, list, raw, central, editable, stage, onClose }) {
+  const [busy, setBusy] = useState(false);
+  const name = site?.name || 'the site';
+  const result = useMemo(() => (raw ? repairSubItemsChanges(central, site.id, raw, { siteName: name }) : null), [central, site, raw, name]);
+  const byGroup = useMemo(() => {
+    const m = new Map();
+    for (const u of list) { if (!m.has(u.groupId)) m.set(u.groupId, { name: u.groupName, rows: [] }); m.get(u.groupId).rows.push(u); }
+    return [...m.values()];
+  }, [list]);
+  const add = async () => {
+    if (!result?.ok) return;
+    setBusy(true);
+    const r = await stage(result.changes, { done: result.words.join(' ') });
+    setBusy(false);
+    if (r?.ok) onClose();
+  };
+  return (
+    <Sheet title={`Sub items at ${name} the group menu does not manage`} width={680} onClose={onClose}
+      sub={`${subItemCountWords(list, name)} Each becomes a group menu product with the id it has at ${name}, and the option points at it, so head office can use it in other groups and send it to other sites. Nothing changes at ${name}.`}
+      footer={(
+        <>
+          <div style={{ flex: 1 }} />
+          <Btn onClick={onClose}>Cancel</Btn>
+          {editable && <Btn kind="primary" disabled={busy || !result?.ok} onClick={add} data-testid="msm-repair-sub-items">{busy ? 'Adding…' : 'Add to draft'}</Btn>}
+        </>
+      )}>
+      {!list.length && <Notice tone="good">Every sub item {name}'s options use is in the group menu.</Notice>}
+      {byGroup.map((g) => (
+        <div key={g.name} style={{ padding: '8px 0', borderBottom: '1px solid var(--bdr)' }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700 }}>{g.name}</div>
+          <div style={{ ...ui.sub, display: 'grid', gap: 2, marginTop: 4 }}>
+            {g.rows.map((u) => <div key={u.optionId}>{u.optionName} uses {u.itemName}</div>)}
+          </div>
+        </div>
+      ))}
+      {result && (result.ok
+        ? <ul style={{ margin: '12px 0 0', paddingLeft: 18, fontSize: 13, lineHeight: 1.5 }}>{result.words.map((w) => <li key={w}>{w}</li>)}{result.problems.map((w) => <li key={w} style={{ color: 'var(--t3)' }}>{w}</li>)}</ul>
+        : <div style={{ marginTop: 12 }}><Notice tone="bad">{result.problems.join(' ')}</Notice></div>)}
+    </Sheet>
+  );
+}
+
+// Sync from sites (5.12.31): one list across every site of what it sells that the group menu does
+// not, read just now. Each line has its Bring in; each site has Bring in all. The same pure functions
+// as the cards, so a line drops out as soon as it is in the draft.
+function SyncSheet({ sites, check, checking, derived, central, editable, stage, orgId, onClose }) {
+  const [pick, setPick] = useState(null);   // { key, result }
+  const [busy, setBusy] = useState(false);
+  const propose = (key, result) => setPick({ key, result });
+  const add = async () => {
+    if (!pick?.result?.ok) return;
+    setBusy(true);
+    const r = await stage(pick.result.changes, { done: pick.result.words.join(' ') });
+    setBusy(false);
+    if (r?.ok) setPick(null);
+  };
+  const box = (key) => (pick?.key === key ? <Proposal result={pick.result} busy={busy} onAdd={add} onCancel={() => setPick(null)} /> : null);
+  const read = sites.filter((s) => check?.raw?.[s.id]);
+  const total = read.reduce((n, s) => n + (derived.own[s.id] || []).length + (derived.groups[s.id] || []).length + ((derived.subs[s.id] || []).length ? 1 : 0), 0);
+  return (
+    <Sheet title="Sync from sites" width={760} onClose={onClose}
+      sub="Everything the sites sell that the group menu does not, read just now: products and option groups a site built itself, and sub items its options use. Bringing anything in changes nothing at the site; after that, one change in the group menu reaches it."
+      footer={<><div style={{ flex: 1, ...ui.sub }}>{checking ? 'Reading every site…' : total ? `${total} thing${total === 1 ? '' : 's'} to bring in.` : read.length ? 'Everything the sites sell is in the group menu.' : ''}</div><Btn onClick={onClose}>Done</Btn></>}>
+      {check?.failed?.length > 0 && <Notice tone="bad">Could not read {check.failed.map((l) => sites.find((s) => s.id === l)?.name || 'one site').join(', ')}.</Notice>}
+      {checking && <div style={ui.sub}>Reading every site…</div>}
+      {read.map((s) => {
+        const raw = check.raw[s.id];
+        const own = derived.own[s.id] || [], groups = derived.groups[s.id] || [], subs = derived.subs[s.id] || [];
+        const nothing = !own.length && !groups.length && !subs.length;
+        return (
+          <div key={s.id} style={{ padding: '10px 0', borderBottom: '1px solid var(--bdr)' }} data-testid="msm-sync-site">
+            <div style={{ ...ui.row, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 0, fontSize: 15, fontWeight: 750 }}>{s.name}</div>
+              {editable && !nothing && <Btn small kind="primary" onClick={() => propose(`all|${s.id}`, bringInAllChanges(central, s.id, raw, { siteName: s.name, orgId }))}>Bring in all for {s.name}</Btn>}
+            </div>
+            {box(`all|${s.id}`)}
+            {nothing && <div style={{ ...ui.sub, marginTop: 4 }}>Everything {s.name} sells is in the group menu.</div>}
+            {own.map((o) => (
+              <div key={`p|${o.id}`} style={{ marginTop: 8 }}>
+                <div style={{ ...ui.row, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 700 }}>{o.name}<span style={{ ...ui.sub, fontWeight: 500 }}> · product{o.sizes.length ? `, ${o.sizes.length} size${o.sizes.length === 1 ? '' : 's'}` : ''}</span></div>
+                    <div style={ui.sub}>{o.match ? `Looks like ${o.match.name} in the group menu${o.match.how === 'family' ? ' (already shared between sites)' : ' (same name)'}` : 'Not in the group menu'}{o.groups.length ? ` · option groups: ${o.groups.join(', ')}` : ''}</div>
+                  </div>
+                  {editable && (
+                    <>
+                      {o.match && <Btn small kind="primary" onClick={() => propose(`p|${o.id}`, bringInChanges(central, s.id, raw, o.id, { linkTo: o.match.productId, siteName: s.name }))}>Link to {o.match.name}</Btn>}
+                      <Btn small kind={o.match ? 'soft' : 'primary'} onClick={() => propose(`p|${o.id}`, bringInChanges(central, s.id, raw, o.id, { linkTo: null, siteName: s.name }))}>Bring in as a new product</Btn>
+                    </>
+                  )}
+                </div>
+                {box(`p|${o.id}`)}
+              </div>
+            ))}
+            {groups.map((g) => (
+              <div key={`g|${g.id}`} style={{ marginTop: 8 }}>
+                <div style={{ ...ui.row, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 700 }}>{g.name}<span style={{ ...ui.sub, fontWeight: 500 }}> · option group, {g.options} option{g.options === 1 ? '' : 's'}</span></div>
+                    <div style={ui.sub}>{g.match ? `Looks like ${g.match.name} in the group menu${g.match.how === 'family' ? ' (already shared between sites)' : ' (same name)'}` : 'Not in the group menu'}{g.usedBy.length ? ` · asked by ${g.usedBy.slice(0, 3).join(', ')}${g.usedBy.length > 3 ? ` and ${g.usedBy.length - 3} more` : ''}` : ''}</div>
+                  </div>
+                  {editable && (
+                    <>
+                      {g.match && <Btn small kind="primary" onClick={() => propose(`g|${g.id}`, bringInGroupChanges(central, s.id, raw, g.id, { linkTo: g.match.groupId, siteName: s.name }))}>Link to {g.match.name}</Btn>}
+                      <Btn small kind={g.match ? 'soft' : 'primary'} onClick={() => propose(`g|${g.id}`, bringInGroupChanges(central, s.id, raw, g.id, { linkTo: null, siteName: s.name }))}>Bring in as a new group</Btn>
+                    </>
+                  )}
+                </div>
+                {box(`g|${g.id}`)}
+              </div>
+            ))}
+            {subs.length > 0 && (
+              <div style={{ marginTop: 8 }}>
+                <div style={{ ...ui.row, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--red)' }}>{subItemCountWords(subs, s.name)}</div>
+                    <div style={ui.sub}>{[...new Set(subs.map((u) => u.itemName))].slice(0, 6).join(', ')}{subs.length > 6 ? ' and more' : ''}</div>
+                  </div>
+                  {editable && <Btn small kind="primary" onClick={() => propose(`s|${s.id}`, repairSubItemsChanges(central, s.id, raw, { siteName: s.name }))}>Bring the sub items in</Btn>}
+                </div>
+                {box(`s|${s.id}`)}
               </div>
             )}
           </div>
