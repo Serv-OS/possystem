@@ -203,6 +203,8 @@ function mapStaff(r) {
     niNumber: r.ni_number || null,
     // v5.11.101: US payroll fields (region pack): the payroll provider's id and SSN last 4 only.
     payrollEmployeeId: r.payroll_employee_id || null, ssnLast4: r.ssn_last4 || null,
+    // 5.12.36: one person, many sites. Records with the same personId are one person (20261111a).
+    personId: r.person_id || null, locationId: r.location_id || null,
     // The staff app: do they have a login yet, and is an invite still live? The
     // onboarding screen needs both to say "invite sent" or "send it again"
     // (21 Sep 2026: an invite only ever fired at the moment onboarding started,
@@ -221,7 +223,9 @@ export async function loadStaff(locationId) {
     .eq('location_id', locationId).neq('status', 'leaver').order('created_at', { ascending: true });
   // v5.11.101: the two US payroll columns come with 20261031a. Until it has run, read without them
   // (a missing column would otherwise empty the whole staff list).
-  let { data, error } = await read(COLS + ',payroll_employee_id,ssn_last4');
+  // 5.12.36: person_id comes with 20261111a; until it has run, read without it (same reason).
+  let { data, error } = await read(COLS + ',location_id,payroll_employee_id,ssn_last4,person_id');
+  if (error && /person_id|42703|PGRST204/i.test(`${error.code || ''} ${error.message || ''}`)) ({ data, error } = await read(COLS + ',location_id,payroll_employee_id,ssn_last4'));
   if (error && /payroll_employee_id|ssn_last4|42703|PGRST204/i.test(`${error.code || ''} ${error.message || ''}`)) ({ data, error } = await read(COLS));
   if (error) { console.warn('[wf] loadStaff:', error.message); return []; }
   return (data || []).map(mapStaff);
@@ -295,6 +299,46 @@ export async function markPosUser(staffId, posUserId, reason = 'Workforce: set u
   }
   checkWrite('staff', error);
 }
+
+// ============================================================================
+// ONE PERSON, MANY SITES (5.12.36, 20261111a)
+// ============================================================================
+// The company's sites, and its staff records at every site (for the Sites panel on a profile). Reads
+// only: every change goes through the three database doors below, which check access to every site.
+export async function loadCompanySites(orgId) {
+  if (isMock || !supabase || !orgId) return [];
+  const { data, error } = await supabase.from('locations').select('id, name').eq('org_id', orgId).order('name');
+  if (error) { console.warn('[wf] loadCompanySites:', error.message); return []; }
+  return data || [];
+}
+export async function loadCompanyStaffRecords(orgId) {
+  if (isMock || !supabase || !orgId) return [];
+  const read = (cols) => supabase.from('wf_staff').select(cols).eq('org_id', orgId).limit(2000);
+  let { data, error } = await read('id, name, email, mobile, location_id, person_id, role_key, rate_override, status');
+  // Before 20261111a there is no person_id: nobody is linked yet, the suggestions still show.
+  if (error && /person_id|42703|PGRST204/i.test(`${error.code || ''} ${error.message || ''}`)) ({ data, error } = await read('id, name, email, mobile, location_id, role_key, rate_override, status'));
+  if (error) { console.warn('[wf] loadCompanyStaffRecords:', error.message); return []; }
+  return data || [];
+}
+/** A site's own positions, read only (never seeds defaults at another site). */
+export async function loadSiteRoles(locationId) {
+  if (isMock || !supabase || !locationId) return [];
+  const { data, error } = await supabase.from('wf_roles').select('*').eq('location_id', locationId).order('sort_order');
+  if (error) { console.warn('[wf] loadSiteRoles:', error.message); return []; }
+  return (data || []).map(mapRole);
+}
+const peopleDoor = async (fn, args) => {
+  const { data, error } = await supabase.rpc(fn, args);
+  if (error) { const e = new Error(error.message || 'That did not save'); e.code = error.code; throw e; }
+  return data;
+};
+/** "Also works at": a record at another site for the same person, and a till user there with the same PIN. */
+export const addStaffSite = (staffId, locationId, roleKey = null, rate = null) =>
+  peopleDoor('wf_staff_add_site', { p_staff_id: staffId, p_location_id: locationId, p_role_key: roleKey || null, p_rate: rate === '' || rate == null ? null : Number(rate) });
+/** Join a record made by hand at another site: it takes this record's details and PIN. */
+export const linkStaffRecords = (staffId, otherId) => peopleDoor('wf_staff_link', { p_staff_id: staffId, p_other_id: otherId });
+/** This site only again. */
+export const unlinkStaffRecord = (staffId) => peopleDoor('wf_staff_unlink', { p_staff_id: staffId });
 
 // ============================================================================
 // ROLES (wf_roles — editable rate card)
