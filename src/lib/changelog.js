@@ -10,6 +10,7 @@ export const CHANGELOG = [
     v: '5.12.24',
     date: '2 Nov 2026',
     items: [
+      'Manager app: Clock out works on iPhone and iPad. The button asked with a browser pop up box that the iOS app cannot show, so the tap did nothing. The question now sits in the row, with the manager PIN box.',
       'Manager app: a demo venue shows its own demo sales again. Since 5.11.99 every report left demo history out, which emptied the Manager app at the demo venues too. Real venues are unchanged.',
     ],
   },
