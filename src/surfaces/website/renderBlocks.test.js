@@ -643,3 +643,18 @@ test('GiftCards and LoyaltyJoin: brand name on the card, a Card picture paints i
   const none = renderBlock(rowCtx(s), { type: 'GiftCards', props: { id: 'g', show_art: true, image: '', location_id: 'default' } });
   assert.doesNotMatch(none, /data-img/, 'no picture = the brand colour card');
 });
+
+
+// ── 5.12.22: the owner's brand name beats every fallback ─────────────────────────────────────
+test('siteName: settings.brand_name wins on the cards, the footer and the JSON-LD', () => {
+  const s = snap();
+  const before = siteName(s);
+  s.site.settings = { ...(s.site.settings || {}), brand_name: '  Coffee Boy  ' };
+  assert.equal(siteName(s), 'Coffee Boy', 'trimmed');
+  const gift = renderBlock(rowCtx(s), { type: 'GiftCards', props: { id: 'g', show_art: true, location_id: 'default' } });
+  assert.match(gift, /<div class="w-gift-art"><span>Coffee Boy<\/span>/);
+  const loy = renderBlock(rowCtx(s), { type: 'LoyaltyJoin', props: { id: 'l', show_card_preview: true, location_id: 'default' } });
+  assert.match(loy, /<div class="w-loyalty-card"><span>Coffee Boy<\/span>/);
+  s.site.settings.brand_name = '   ';
+  assert.equal(siteName(s), before, 'blank = the old fallback');
+});

@@ -60,6 +60,35 @@ function DefaultVenueCard({ site, locations, saveSite, toast }) {
   );
 }
 
+// 5.12.22 (Peter: "the loyalty and gift cards still say the location name"): the site has no name
+// of its own, so the cards, the footer and search results fell back to the default venue's display
+// name ("Coffee Boy Barnsley"). Saved as settings.brand_name.
+function BrandNameCard({ site, fallback, saveSite, toast }) {
+  const saved = (site?.settings?.brand_name || '').trim();
+  const [value, setValue] = useState(saved);
+  const [busy, setBusy] = useState(false);
+  const [seen, setSeen] = useState(saved);
+  if (saved !== seen) { setSeen(saved); setValue(saved); }
+  const save = async () => {
+    setBusy(true);
+    const next = value.trim().slice(0, 80);
+    const { error } = await saveSite({ settings: { brand_name: next || null } });
+    setBusy(false);
+    if (error) toast(error.message || 'Could not save the brand name', 'error');
+    else toast(next ? 'Brand name saved. Publish to put it live.' : 'Brand name cleared. Publish to put it live.');
+  };
+  return (
+    <div style={W.card}>
+      <div style={W.cardHead}><h2 style={W.h2}>Brand name</h2></div>
+      <div style={W.hint}>On the loyalty and gift cards, in the footer and in search results. Empty: the default venue's name{fallback ? ` (${fallback})` : ''}.</div>
+      <div style={{ ...W.row, marginTop: 10, gap: 8 }}>
+        <input aria-label="Brand name" style={{ ...W.input, flex: '1 1 200px', width: 'auto' }} value={value} maxLength={80} placeholder={fallback || 'Your brand'} onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') save(); }} />
+        <button type="button" style={W.btn} onClick={save} disabled={busy || value.trim() === saved}>{busy ? 'Saving…' : 'Save'}</button>
+      </div>
+    </div>
+  );
+}
+
 function SyncedBrandingCard({ branding, location, onBrandBasics }) {
   return (
     <div style={W.card}>
@@ -324,6 +353,7 @@ export default function Branding({ ws, toast, onBrandBasics, onPublish, onViewLi
       <div>
         <DefaultVenueCard site={site} locations={ws.publicLocations} saveSite={ws.saveSite} toast={toast} />
         <SyncedBrandingCard branding={branding} location={defaultLocation} onBrandBasics={onBrandBasics} />
+        <BrandNameCard site={site} fallback={branding?.display_name || defaultLocation?.name || ''} saveSite={ws.saveSite} toast={toast} />
         <HeaderNavCard site={site} pages={ws.pages} saveSite={ws.saveSite} toast={toast} />
         <ThemeCard site={site} saveSite={ws.saveSite} toast={toast} />
         <SeoCard key={site.updated_at || site.id} site={site} saveSite={ws.saveSite} uploadAsset={ws.uploadAsset} toast={toast} />

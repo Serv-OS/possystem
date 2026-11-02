@@ -33,7 +33,11 @@ export function siteName(snapshot) {
   const s = snapshot && snapshot.site ? snapshot.site : {};
   const loc = (snapshot && Array.isArray(snapshot.locations) && snapshot.locations[0]) || null;
   const branding = (loc && loc.online_branding) || {};
-  return s.company_name || s.name || branding.display_name || (loc && loc.name) || (s.seo && s.seo.title) || (s.slug ? s.slug : 'Our site');
+  // 5.12.22 (Peter: the loyalty and gift cards said "Coffee Boy Barnsley"): the owner's own brand
+  // name from Branding and domain wins. The site row has no name of its own, so without it the
+  // first venue's display name stands in.
+  const own = s.settings && typeof s.settings.brand_name === 'string' ? s.settings.brand_name.trim() : '';
+  return own || s.company_name || s.name || branding.display_name || (loc && loc.name) || (s.seo && s.seo.title) || (s.slug ? s.slug : 'Our site');
 }
 
 export function originFor(host) {
