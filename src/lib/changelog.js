@@ -14,6 +14,13 @@ export const CHANGELOG = [
     ],
   },
   {
+    v: '5.12.28',
+    date: '2 Nov 2026',
+    items: [
+      'Modifier groups at a site on the Multi site menu: On these products now shows a product whose option groups head office sets as locked, with a head office tag. It cannot be ticked, Select all leaves it out, and a press says how many products were left unchanged. Before, the press looked done and nothing changed.',
+    ],
+  },
+  {
     v: '5.12.27',
     date: '2 Nov 2026',
     items: [

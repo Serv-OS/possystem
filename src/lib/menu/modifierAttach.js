@@ -229,3 +229,24 @@ export function attachCatOptions(categories) {
   }
   return out;
 }
+
+/**
+ * 5.12.28 (Peter, 2 Nov 2026: at a site on the Multi site menu, "when you set the modifiers against
+ * the products it doesn't take effect but doesn't say you can't"). The store refuses a change to the
+ * option groups of a product head office owns, so the builder must say so before the press, not
+ * pretend. Split the real targets into the ones this site may change and the ones head office sets.
+ *   isLocked(id) answers true when the product's option groups are head office's.
+ */
+export function splitLockedTargets(ids, isLocked) {
+  const free = [];
+  const locked = [];
+  for (const id of Array.isArray(ids) ? ids : []) (typeof isLocked === 'function' && isLocked(id) ? locked : free).push(id);
+  return { free, locked };
+}
+
+/** The words for the products a press could not change because head office sets their option groups. */
+export function lockedResultLine(n) {
+  const c = Math.max(0, Math.floor(Number(n) || 0));
+  if (c < 1) return '';
+  return (c === 1 ? '1 product is' : c + ' products are') + ' set by head office in the Multi site menu, so ' + (c === 1 ? 'it was' : 'they were') + ' not changed here.';
+}
