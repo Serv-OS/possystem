@@ -99,18 +99,21 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
       return [parts.slice(0, -1).join(' ') || parts[0] || '', parts.length > 1 ? parts[parts.length - 1] : ''];
     };
     const rows = [
-      ['Employee ID', 'First name', 'Last name', 'SSN last 4', 'Period start', 'Period end', 'Regular hours', 'Overtime hours', 'Gross wages', ...(withPrem ? ['Premium pay'] : []), 'Holiday hours', 'Holiday pay', 'Tips (direct)', 'Tips (pooled)', 'Total'],
+      ['Employee ID', 'First name', 'Last name', 'SSN last 4', 'Period start', 'Period end', 'Regular hours', 'Overtime hours', 'Hours at other sites', 'Regular rate (blended)', 'Overtime premium', 'Gross wages', ...(withPrem ? ['Premium pay'] : []), 'Holiday hours', 'Holiday pay', 'Tips (direct)', 'Tips (pooled)', 'Total'],
       ...run.staff.map(r => {
         const s = staffById[r.staff_id] || {};
         const [first, last] = names(r.staff_id);
         return [s.payrollEmployeeId || '', first, last, s.ssnLast4 || '', period.startIso, period.endIso,
-          Number(r.regular_hours ?? r.hours ?? 0).toFixed(2), Number(r.overtime_hours || 0).toFixed(2), Number(r.pay || 0).toFixed(2),
+          Number(r.regular_hours ?? r.hours ?? 0).toFixed(2), Number(r.overtime_hours || 0).toFixed(2),
+          Number(r.other_site_hours || 0).toFixed(2), r.regular_rate != null ? Number(r.regular_rate).toFixed(4) : '', Number(r.overtime_premium || 0).toFixed(2),
+          Number(r.pay || 0).toFixed(2),
           ...(withPrem ? [Number(r.premium_pay || 0).toFixed(2)] : []), Number(r.holiday_hours || 0).toFixed(2), Number(r.holiday_pay || 0).toFixed(2),
           Number(r.tips_direct || 0).toFixed(2), Number(r.tips_tronc || 0).toFixed(2), Number(r.total || 0).toFixed(2)];
       }),
       [],
       ['Notes for payroll:'],
-      ['Overtime hours are hours over 40 in a Monday to Sunday work week (federal FLSA). Gross wages are at the straight rate; apply the overtime rate and any state rules in your payroll provider.'],
+      ['Overtime hours are hours over 40 in the work week (federal FLSA), counted across every site the person works at when their records are linked (Workforce, Staff, Sites). Each overtime hour is on the line of the site where it was worked.'],
+      ['Gross wages are at the straight rate. Overtime premium is the half time on top: overtime hours x 0.5 x the blended regular rate (all pay and pay premiums of the week at every site, divided by the hours). Total includes it. If your provider works out overtime from hours itself, give it the blended rate, not the site rate, or the overtime is underpaid. State rules (for example California daily overtime) are applied in your provider.'],
       ['Tips belong to staff and are reported separately from wages. Managers and supervisors must not receive pooled tips (FLSA). Tip credit rules vary by state.'],
     ];
     const blob = new Blob([rows.map(r => r.map(esc).join(',')).join('\n')], { type: 'text/csv' });
@@ -261,6 +264,7 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
                     {!usExport && <th style={th}>Bank</th>}
                     <th style={{ ...th, textAlign: 'right' }}>Hours</th>
                     {usExport && <th style={{ ...th, textAlign: 'right' }}>Overtime</th>}
+                    {usExport && <th style={{ ...th, textAlign: 'right' }} title="Half time on each overtime hour, at the week's blended regular rate across every site">OT premium</th>}
                     <th style={{ ...th, textAlign: 'right' }}>Base pay</th>
                     {withPrem && <th style={{ ...th, textAlign: 'right' }}>Premiums</th>}
                     <th style={{ ...th, textAlign: 'right' }}>Holiday</th>
@@ -281,8 +285,15 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
                         )}
                         {bankOf(r.staff_id) || 'No bank on file'}
                       </td>}
-                      <td style={{ ...td, textAlign: 'right' }} className="mono">{Number(r.hours || 0).toFixed(2)}</td>
+                      <td style={{ ...td, textAlign: 'right' }} className="mono">
+                        {Number(r.hours || 0).toFixed(2)}
+                        {/* 5.12.36: the same person's hours at their other sites count toward their 40. */}
+                        {usExport && Number(r.other_site_hours) > 0 && <div style={{ fontSize: 10.5, color: 'var(--t3)' }}>+{Number(r.other_site_hours).toFixed(2)} at other sites</div>}
+                      </td>
                       {usExport && <td style={{ ...td, textAlign: 'right' }} className="mono">{Number(r.overtime_hours || 0).toFixed(2)}</td>}
+                      {usExport && <td style={{ ...td, textAlign: 'right' }} className="mono" title={r.regular_rate != null ? `Blended regular rate ${money(r.regular_rate)} an hour` : undefined}>
+                        {r.overtime_premium ? money(r.overtime_premium) : <span style={{ color: 'var(--t4)' }}>—</span>}
+                      </td>}
                       <td style={{ ...td, textAlign: 'right' }} className="mono">{money(r.pay)}</td>
                       {withPrem && <td style={{ ...td, textAlign: 'right' }} className="mono" title={r.premium_hours ? `${Number(r.premium_hours).toFixed(1)}h at a premium` : undefined}>{r.premium_pay ? money(r.premium_pay) : <span style={{ color: 'var(--t4)' }}>—</span>}</td>}
                       <td style={{ ...td, textAlign: 'right' }} className="mono" title={r.holiday_hours ? `${Number(r.holiday_hours).toFixed(1)}h paid holiday` : undefined}>
@@ -299,6 +310,7 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
                     <td style={{ ...td, fontWeight: 700, borderBottom: 'none' }}>Total</td>
                     <td style={{ ...td, borderBottom: 'none' }} />
                     <td style={{ ...td, borderBottom: 'none' }} />
+                    {usExport && <td style={{ ...td, textAlign: 'right', fontWeight: 700, borderBottom: 'none' }} className="mono">{money(run.totals.overtime_premium || 0)}</td>}
                     <td style={{ ...td, textAlign: 'right', fontWeight: 700, borderBottom: 'none' }} className="mono">{money(run.totals.pay)}</td>
                     {withPrem && <td style={{ ...td, textAlign: 'right', fontWeight: 700, borderBottom: 'none' }} className="mono">{money(run.totals.premium_pay || 0)}</td>}
                     <td style={{ ...td, textAlign: 'right', fontWeight: 700, borderBottom: 'none' }} className="mono">{money(run.totals.holiday_pay || 0)}</td>

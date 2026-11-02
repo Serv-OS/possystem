@@ -1,5 +1,15 @@
 export const CHANGELOG = [
   {
+    v: '5.12.36',
+    date: '2 Nov 2026',
+    items: [
+      'Workforce, one person at several sites: on a staff profile, Sites, Also works at adds them at another site of the company with that site\'s own position and pay rate. When they are a till user, they get a till user there with the same PIN, card and sign in method. Records already made by hand at two sites are suggested (same name, email or mobile) and joined with Link. Unlink puts them back to one site.',
+      'Linked records share a PIN: a PIN changed at one site is the PIN at every site. A PIN already used by someone else at any of their sites is refused with that person\'s name. Only someone with access to every one of their sites can link them, add a site or change that PIN, so a manager of one site can never sign in at another. Their own details (name, contact, address, payroll ids, bank) follow them; position, permissions, rate and status stay per site.',
+      'US overtime across sites: a linked person\'s work week counts at every site, so 20 hours at one site and 25 at another is 5 hours of overtime, on the line of the site where the 40th hour was crossed. Payroll now shows their hours at other sites and the overtime premium (half time at the week\'s blended regular rate, all sites and pay premiums included) and adds it to the total. The US export carries hours at other sites, the blended rate and the premium.',
+      'Needs the SQL 20261111a in the Ops database, and workforce-compute deployed. Until the SQL runs, Workforce reads and works exactly as before.',
+    ],
+  },
+  {
     v: '5.12.35',
     date: '2 Nov 2026',
     items: [
