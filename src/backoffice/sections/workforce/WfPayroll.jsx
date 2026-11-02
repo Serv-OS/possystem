@@ -367,6 +367,71 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
           </div>
         </Card>
       )}
+
+      {usExport && <AcaCard ctx={ctx} />}
     </div>
+  );
+}
+
+// 5.12.38: health cover (ACA) hours for a US venue, counted at every site a person works at. Who is
+// full time (130 hours of service in a month), and the company's full time plus full time equivalents
+// against the 50 that makes it an Applicable Large Employer. The rules: _shared/acaHours.js.
+function AcaCard({ ctx }) {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
+  useEffect(() => {
+    let alive = true;
+    wf.invokeCompute('aca.hours', { location_id: ctx.locationId })
+      .then((r) => { if (!alive) return; if (r?.ok) setData(r); else setErr(r?.error || 'Could not read the hours'); })
+      .catch((e) => { if (alive) setErr(e?.message || 'Could not read the hours'); });
+    return () => { alive = false; };
+  }, [ctx.locationId]);
+  const monthWord = (m) => new Date(`${m}-01T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', year: '2-digit', timeZone: 'UTC' });
+  const last3 = data ? data.months.slice(-4, -1) : [];
+  const lastFull = data ? data.months[data.months.length - 2] : null;
+  const co = data?.company;
+  return (
+    <Card style={{ marginTop: 16 }}>
+      <div style={{ fontSize: 15, fontWeight: 700 }}>Health cover hours (ACA)</div>
+      <div style={{ fontSize: 12.5, color: 'var(--t3)', marginTop: 4, marginBottom: 12 }}>
+        Hours of service each month at <b>every site</b> a person works at. <b>130 hours</b> in a month is full time for health cover.
+        Approved timesheets only: paid leave also counts as hours of service, so add it in your payroll provider.
+      </div>
+      {err ? <div style={{ fontSize: 13, color: 'var(--red)' }}>{err}</div> : !data ? <div style={{ fontSize: 13, color: 'var(--t3)' }}>Loading…</div> : (
+        <>
+          {co && lastFull && (
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+              <Badge tone={co.large ? 'amber' : 'green'}>{co.large ? 'Large employer: must offer health cover' : 'Under 50: not a large employer'}</Badge>
+              <span style={{ fontSize: 12.5, color: 'var(--t2)' }}>
+                Company, every site: <b>{co.average}</b> full time and equivalents a month over the last 12 months (50 or more is a large employer). {monthWord(lastFull)}: {co.byMonth[lastFull]?.fullTime ?? 0} full time, {co.byMonth[lastFull]?.fte ?? 0} equivalents.
+              </span>
+            </div>
+          )}
+          {data.people.length === 0 ? <div style={{ fontSize: 13, color: 'var(--t3)' }}>No approved hours in the last 12 months.</div> : (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead><tr>
+                  <th style={th}>Staff</th>
+                  {last3.map(m => <th key={m} style={{ ...th, textAlign: 'right' }}>{monthWord(m)}</th>)}
+                  <th style={{ ...th, textAlign: 'right' }} title="Months in the last 12 with 130 hours or more">Full time months</th>
+                </tr></thead>
+                <tbody>
+                  {data.people.map(p => (
+                    <tr key={p.staffId}>
+                      <td style={td}>{p.name}{p.linked && <span style={{ fontSize: 10.5, color: 'var(--t3)' }}> · every site</span>}</td>
+                      {last3.map(m => { const x = p.months.find(y => y.month === m) || { hours: 0 }; return (
+                        <td key={m} style={{ ...td, textAlign: 'right', fontWeight: x.fullTime ? 700 : 400, color: x.fullTime ? 'var(--t1)' : 'var(--t3)' }} className="mono"
+                          title={x.hours !== x.here ? `${x.here} h here, ${Math.round((x.hours - x.here) * 10) / 10} h at other sites` : undefined}>{x.hours}</td>
+                      ); })}
+                      <td style={{ ...td, textAlign: 'right' }} className="mono">{p.fullTimeMonths}/12</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </Card>
   );
 }

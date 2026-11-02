@@ -204,8 +204,18 @@ export function timesheetDayMs(ts) {
 }
 
 /**
- * Actual labour per day: the pay of approved and paid timesheets (wf_timesheets.pay_amount),
- * each on the day of timesheetDayMs. Drafts and open timesheets are not labour yet.
+ * A timesheet's labour cost: its pay plus its US overtime premium (wf_timesheets.overtime_premium,
+ * 5.12.38: the half time owed past 40 hours in the work week, counted at every site the person works
+ * at, kept by the database). 0 at a UK site and before 20261112a. Every labour report uses this.
+ * @returns {number} major units
+ */
+export function timesheetCost(t) {
+  return (toMinor(t?.pay_amount) + toMinor(t?.overtime_premium)) / 100;
+}
+
+/**
+ * Actual labour per day: the cost of approved and paid timesheets (timesheetCost: pay_amount plus the
+ * overtime premium), each on the day of timesheetDayMs. Drafts and open timesheets are not labour yet.
  * @returns {Record<string, number>} major units
  */
 export function timesheetDays({ timesheets = [], dayOf }) {
@@ -218,7 +228,7 @@ export function timesheetDays({ timesheets = [], dayOf }) {
     const ms = timesheetDayMs(t);
     if (ms == null) continue;
     const key = dayOf(ms);
-    acc[key] = (acc[key] || 0) + toMinor(t.pay_amount);
+    acc[key] = (acc[key] || 0) + toMinor(t.pay_amount) + toMinor(t.overtime_premium);
   }
   return Object.fromEntries(Object.entries(acc).map(([k, v]) => [k, v / 100]));
 }

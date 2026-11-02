@@ -39,7 +39,7 @@ import { liveOrAll, liveFilter } from '../_shared/stockPhone.js';
 // P&L labour rule and the one demo rule.
 import { businessDayOf, businessDayWindow } from '../_shared/businessDay.js';
 import { venueClock } from '../_shared/accountingData.ts';
-import { timesheetDayMs } from '../_shared/tradingSales.js';
+import { timesheetDayMs, timesheetCost } from '../_shared/tradingSales.js';
 import { leaveOutDemo } from '../_shared/demoHistory.js';
 
 // A refund counts on the day it was MADE, so older checks that carry one are read too: the same
@@ -143,7 +143,7 @@ Deno.serve(async (req) => {
       // Older checks that carry a refund (few): only their refunds are read, never their sales.
       pagedRows('older refunds', () => sb.from('closed_checks').select(SALES_CHECK_COLS).eq('location_id', loc).gte('closed_at', refundsSinceIso).lt('closed_at', startIso).neq('refunds', '[]').order('closed_at').order('id')),
       sb.from('wf_sales_forecast').select('forecast_date, amount').eq('location_id', loc).eq('forecast_date', bizDay).maybeSingle(),
-      pagedRows('timesheets', () => sb.from('wf_timesheets').select('id, staff_id, clock_in, clock_out, break_taken, break_open_at, pay_amount, status, effective_rate').eq('location_id', loc).gte('clock_in', startIso).order('clock_in').order('id')),
+      pagedRows('timesheets', () => sb.from('wf_timesheets').select('id, staff_id, clock_in, clock_out, break_taken, break_open_at, pay_amount, overtime_premium, status, effective_rate').eq('location_id', loc).gte('clock_in', startIso).order('clock_in').order('id')),
       // The business day's rota AND the calendar day's: between midnight and the day start the
       // business day is still yesterday, and the early opener sits on today's calendar rota.
       pagedRows('shifts', () => sb.from('wf_shifts').select('staff_id, role_key, shift_date, start_time, finish_time, status').eq('location_id', loc).in('shift_date', bizDay === today ? [today] : [bizDay, today]).order('id')),
@@ -188,7 +188,7 @@ Deno.serve(async (req) => {
       if (!['approved', 'paid'].includes(String(t.status))) continue;
       const at = timesheetDayMs(t);
       if (at == null || dayOf(at) !== bizDay) continue;
-      labour += Number(t.pay_amount) || 0;
+      labour += timesheetCost(t);
     }
     const forecast = Number(fc?.amount) || 0;
     const money = {

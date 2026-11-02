@@ -24,7 +24,8 @@ import { findClash, clashWarnings } from '../../../staff/wfClash';
 import { OpenShiftModal, OpenShiftsCard } from './WfOpenShifts';
 import { claimProblem, eligibleStaff, swapMode, textOpenShift } from '../../../../supabase/functions/_shared/openShiftRules.js';
 import { plannedPremium } from '../../../../supabase/functions/_shared/payPremiums.js';
-import { activeCountry } from '../../../lib/regionPack';
+import { activeCountry, activeRegionPack } from '../../../lib/regionPack';
+import { mapLinkedShifts, otherSiteClash, otherSiteClashWords, weekHoursLine, asRuleShifts } from '../../../staff/crossSiteRota';
 
 const GRP_ORDER = ['mgmt', 'bar', 'floor', 'kitchen', 'door'];
 const TPL_COLOURS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#64748b'];
@@ -233,11 +234,12 @@ function TemplatesModal({ templates, sections, onSave, onClose, saving, defaultB
 // ── Copy shift modal ────────────────────────────────────────────────────────
 // Duplicate an existing shift to another day and/or person. The copy lands as
 // a DRAFT. Overlaps block; leave/availability warn but never block.
-function CopyShiftModal({ source, staff, wk, shifts, timeOff, avail, onCopy, onClose, saving }) {
+function CopyShiftModal({ source, staff, wk, shifts, otherShifts = [], timeOff, avail, onCopy, onClose, saving }) {
   const [staffId, setStaffId] = useState(source.staffId);
   const [dateIso, setDateIso] = useState(source.date);
   const target = staff.find(s => s.id === staffId);
-  const clash = findClash(shifts, staffId, dateIso, source.start, source.finish);
+  // 5.12.38: a shift at one of their other sites blocks the copy the same way.
+  const clash = findClash(shifts, staffId, dateIso, source.start, source.finish) || otherSiteClash(otherShifts, staffId, dateIso, source.start, source.finish);
   const warnings = useMemo(() => clashWarnings({ staffName: target?.name, staffId, dateIso, timeOff, availability: avail }), [target, staffId, dateIso, timeOff, avail]);
 
   return (
@@ -341,6 +343,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   const [rateChanges, setRateChanges] = useState([]);
   const [copyWeekOpen, setCopyWeekOpen] = useState(false);
   const [swaps, setSwaps] = useState([]);              // v5.11.101: live claim and swap requests
+  const [otherShifts, setOtherShifts] = useState([]);  // 5.12.38: their shifts at their other linked sites
   const [openEditing, setOpenEditing] = useState(null); // { shift } | { day } for the open shift editor
   const [deciding, setDeciding] = useState(null);       // request id being approved or declined
 
@@ -369,7 +372,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   async function reload(w) {
     setLoading(true);
     try {
-      const [sh, fc, ac, sc, ts, lv, av, rc, ob, sw] = await Promise.all([
+      const [sh, fc, ac, sc, ts, lv, av, rc, ob, sw, ls] = await Promise.all([
         wf.loadShifts(ctx.locationId, w.startIso, w.endIso),
         wf.loadForecast(ctx.locationId, w.startIso, w.endIso),
         wf.loadActualSales(ctx.locationId, w.startIso, w.endIso),
@@ -380,8 +383,10 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
         wf.loadRateChanges(ctx.locationId),
         wf.loadOnboarding(ctx.locationId),
         wf.loadSwapRequests(ctx.locationId),
+        wf.loadLinkedShifts(ctx.locationId, ctx.orgId, staff, w.startIso, w.endIso).catch(() => null),
       ]);
       setShifts(sh || []);
+      setOtherShifts(ls ? mapLinkedShifts({ ...ls, hereStaff: staff }) : []);
       setForecast(fc || {});
       setForecastReasons(fc?.reasons || {});
       setActual(ac || {});
@@ -403,6 +408,16 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   }
 
   useEffect(() => { reload(wk); /* eslint-disable-next-line */ }, [ctx.locationId, wk.startIso]);
+  // 5.12.38: the staff list can arrive after the rota; their other site shifts follow it.
+  const personKey = useMemo(() => (staff || []).map(x => x.personId || '').join(','), [staff]);
+  useEffect(() => {
+    let alive = true;
+    wf.loadLinkedShifts(ctx.locationId, ctx.orgId, staff, wk.startIso, wk.endIso)
+      .then(ls => { if (alive) setOtherShifts(ls ? mapLinkedShifts({ ...ls, hereStaff: staff }) : []); })
+      .catch(() => {});
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctx.locationId, ctx.orgId, wk.startIso, personKey]);
 
   // staff grouped by their role's section
   const groups = useMemo(() => {
@@ -436,7 +451,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
       const iso = t.clockIn ? ymd(new Date(t.clockIn)) : null;
       if (iso == null || m[iso] == null) return;
       const pay = t.payAmount != null ? Number(t.payAmount) : Number(t.actualHours || 0) * Number(t.effectiveRate || 0);
-      m[iso] += pay;
+      m[iso] += pay + (Number(t.overtimePremium) || 0);   // 5.12.38: + the US overtime premium, as every report
     });
     return m;
   }, [timesheets, wk]);
@@ -466,9 +481,19 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   // Time-off / availability warnings for a given person on a given day. Passed
   // to ShiftModal as a callback so it re-runs when the modal's own person picker
   // changes (the section grid opens the modal before anyone is chosen).
+  // 5.12.38: plus their hours at their other sites this week, and the overtime that makes (US, over 40).
+  const overtimeWeekly = activeRegionPack()?.overtimeWeeklyHours || null;
+  const weekLineFor = useCallback(
+    (person) => weekHoursLine({ name: person.name, staffId: person.id, hereShifts: shifts, otherShifts, weekly: overtimeWeekly, fromIso: wk?.startIso, toIso: wk?.endIso }),
+    [shifts, otherShifts, overtimeWeekly, wk?.startIso, wk?.endIso],
+  );
   const warningsFor = useCallback(
-    (person, day) => clashWarnings({ staffName: person.name, staffId: person.id, dateIso: day.iso, timeOff, availability: avail }),
-    [timeOff, avail],
+    (person, day) => {
+      const out = clashWarnings({ staffName: person.name, staffId: person.id, dateIso: day.iso, timeOff, availability: avail });
+      const line = weekLineFor(person);
+      return line ? [...out, line] : out;
+    },
+    [timeOff, avail, weekLineFor],
   );
 
   // ── Section view: every shift MUST land in a row ──────────────────────────
@@ -606,6 +631,9 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
       showToast(`Clashes with their ${clash.start}–${clash.finish} shift on ${day.label} — change the times, or edit that shift instead`, 'error');
       return;
     }
+    // 5.12.38: nor a shift at one of their other sites.
+    const away = otherSiteClash(otherShifts, s.id, day.iso, payload.start, payload.finish);
+    if (away) { showToast(otherSiteClashWords(away, day.label), 'error'); return; }
     const role = roles.map[s.role];
     const { rate, source } = resolveRateOn(s, role, day.iso, rateChanges);
     const hours = Math.max(0, hoursOf(payload.start, payload.finish) - payload.breakMins / 60);
@@ -675,6 +703,8 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   async function copyShift(target, dateIso) {
     const gate = onboardingBlock(target.id);
     if (gate) { showToast(gate, 'error'); return; }
+    const away = otherSiteClash(otherShifts, target.id, dateIso, copying.start, copying.finish);
+    if (away) { showToast(otherSiteClashWords(away), 'error'); return; }
     const src = copying;
     const role = roles.map[target.role];
     const { rate, source } = resolveRateOn(target, role, dateIso, rateChanges);
@@ -706,8 +736,12 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   async function copyWeek(target) {
     setSaving(true);
     try {
-      const existing = await wf.loadShifts(ctx.locationId, target.startIso, target.endIso);
-      const working = [...(existing || [])];
+      const [existing, linked] = await Promise.all([
+        wf.loadShifts(ctx.locationId, target.startIso, target.endIso),
+        wf.loadLinkedShifts(ctx.locationId, ctx.orgId, staff, target.startIso, target.endIso).catch(() => null),
+      ]);
+      // 5.12.38: their shifts at their other sites that week block a copy that overlaps one.
+      const working = [...(existing || []), ...(linked ? mapLinkedShifts({ ...linked, hereStaff: staff }) : [])];
       const staffById = Object.fromEntries(staff.map(s => [s.id, s]));
       const toInsert = [];
       let skipped = 0, warned = 0;
@@ -866,7 +900,9 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
         };
       });
       const tpls = templates.map(t => ({ name: t.name, start: t.start, finish: t.finish, breakMins: Number(t.breakMins) || 0, section: secName(t.sectionId) }));
-      const existing = shifts.map(x => ({ staffId: x.staffId, date: x.date, start: x.start, finish: x.finish, breakMins: x.breakMins || 0, section: x.section || secName(x.sectionId) }));
+      // 5.12.38: their shifts at their other sites count for overlap, rest, days in a row and weekly
+      // hours, never as cover here (their section is "(at Daybreak)", which no section here is called).
+      const existing = [...shifts.map(x => ({ staffId: x.staffId, date: x.date, start: x.start, finish: x.finish, breakMins: x.breakMins || 0, section: x.section || secName(x.sectionId) })), ...asRuleShifts(otherShifts)];
       const sectionReq = (secs || []).map(sec => ({ name: sec.name, minCoverage: sec.minCoverage }));
       const hhmm = (m) => `${String(Math.floor((m % 1440) / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
       const days = wk.days.map(d => {
@@ -1077,7 +1113,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
         <TemplatesModal templates={templates} sections={secs} saving={saving} defaultBreakMins={breakPolicy.defaultMins} onSave={saveTemplates} onClose={() => setTplOpen(false)} />
       )}
       {copying && (
-        <CopyShiftModal source={copying} staff={staff} wk={wk} shifts={shifts} timeOff={timeOff} avail={avail} saving={saving} onCopy={copyShift} onClose={() => setCopying(null)} />
+        <CopyShiftModal source={copying} staff={staff} wk={wk} shifts={shifts} otherShifts={otherShifts} timeOff={timeOff} avail={avail} saving={saving} onCopy={copyShift} onClose={() => setCopying(null)} />
       )}
       {copyWeekOpen && (
         <CopyWeekModal wk={wk} shiftCount={shifts.length} saving={saving} onCopy={copyWeek} onClose={() => setCopyWeekOpen(false)} />
@@ -1207,6 +1243,8 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
             <tbody>
               {groups.map(g => (
                 <RotaGroup key={g.grp} g={g} wk={wk} roles={roles} shiftsFor={shiftsFor}
+                  otherFor={(staffId, iso) => otherShifts.filter(x => x.staffId === staffId && x.date === iso)}
+                  weekLineFor={weekLineFor}
                   warnFor={(s, iso) => clashWarnings({ staffName: s.name, staffId: s.id, dateIso: iso, timeOff, availability: avail })}
                   onCell={(s, d, shift) => setEditing({ staff: s, day: d, shift })} />
               ))}
@@ -1314,7 +1352,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
 }
 
 // ── group of staff rows under a section heading ───────────────────────────────
-function RotaGroup({ g, wk, roles, shiftsFor, warnFor, onCell }) {
+function RotaGroup({ g, wk, roles, shiftsFor, otherFor, weekLineFor, warnFor, onCell }) {
   const col = groupColor(g.grp);
   return (
     <>
@@ -1333,6 +1371,7 @@ function RotaGroup({ g, wk, roles, shiftsFor, warnFor, onCell }) {
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontWeight: 600, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.name}</div>
                 <RoleChip role={s.role} roles={roles.map} />
+                {(() => { const line = weekLineFor?.(s); return line ? <div style={{ fontSize: 10, color: /overtime/.test(line) ? 'var(--amber)' : 'var(--t3)', marginTop: 3, whiteSpace: 'normal', lineHeight: 1.3 }}>{line}</div> : null; })()}
               </div>
             </div>
           </td>
@@ -1342,6 +1381,14 @@ function RotaGroup({ g, wk, roles, shiftsFor, warnFor, onCell }) {
             return (
               <td key={d.iso} style={{ ...td, textAlign: 'center', padding: 4, background: d.isToday ? cellTint('var(--acc)', 5) : 'transparent', verticalAlign: 'top' }}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {/* 5.12.38: their shift at another of their sites that day, read only. */}
+                  {(otherFor?.(s.id, d.iso) || []).map(o => (
+                    <div key={o.id} title={`At ${o.site}. Change it on that site's rota.`}
+                      style={{ borderRadius: 9, padding: '4px 4px', border: '1px dashed var(--bdr2)', color: 'var(--t3)', fontSize: 10, lineHeight: 1.25 }}>
+                      <div className="mono" style={{ fontWeight: 700 }}>{o.start}-{o.finish}</div>
+                      <div>at {o.site}</div>
+                    </div>
+                  ))}
                   {list.map(sh => (
                     <button
                       key={sh.id}

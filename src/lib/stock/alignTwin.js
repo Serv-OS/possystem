@@ -88,7 +88,7 @@ export function stockGpDays({ checks = [], movements = [], timesheets = [], dayO
     const ms = shiftMiddleMs(t);
     if (ms == null) continue;
     const d = dayOf(ms); days.add(d);
-    add(labour, d, toMinor(t.pay_amount));
+    add(labour, d, toMinor(t.pay_amount) + toMinor(t.overtime_premium));   // 5.12.38: + US overtime premium (stock_rp__labour, 20261112a)
   }
   const out = {};
   for (const d of days) {
