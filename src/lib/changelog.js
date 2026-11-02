@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.12.27',
+    date: '2 Nov 2026',
+    items: [
+      'Modifier groups: the category drop down under On these products was blank. It read a field categories never had. It now lists every category, with sub categories as Parent > Sub.',
+      'Import menu: a row can be a Sub item. The AI marks add ons and choices (Extra cheese, Oat milk, a choose your sauce list) as options, each row has a Product / Sub item switch, and a sub item lands as an option only, tagged with its menu section. Put it in a modifier group afterwards.',
+    ],
+  },
+  {
     v: '5.12.26',
     date: '2 Nov 2026',
     items: [

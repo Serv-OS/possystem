@@ -21,6 +21,7 @@
  *  └── Same — options are plain strings
  */
 import { useState, useMemo, useCallback, useEffect, useRef, createContext, useContext } from 'react';
+import { attachCatOptions } from '../../lib/menu/modifierAttach';
 import { useStore, findDuplicateProductName, bulkUpdateMenuItems, bulkSummaryWords, runInMenuWriteQueue, MENU_WAIT_MS, loadVenueMenu, tabVenue } from '../../store';
 import { msmManagedState, subscribeMsmManaged, isMsmManaged } from '../../lib/msm/msmManaged.js';
 import { itemLock, groupLock, OWNED_TAX_KEYS } from '../../lib/msm/msmLock.js';
@@ -4244,7 +4245,8 @@ function ModifiersTab() {
                 </div>
                 <select style={{ ...inp, fontSize:12, maxWidth:170 }} value={attachCat} onChange={e=>setAttachCat(e.target.value)}>
                   <option value="">Every category</option>
-                  {(menuCategories||[]).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  {/* 5.12.27: a category's words are its label (c.name never existed, so every row was blank). */}
+                  {attachCatOptions(menuCategories||[]).map(c => <option key={c.id} value={c.id}>{c.words}</option>)}
                 </select>
               </div>
 

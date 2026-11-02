@@ -98,6 +98,11 @@ const SUBMIT_DRAFT_MENU = {
                 required: ['name', 'price'],
               },
             },
+            kind: {
+              type: 'string',
+              enum: ['product', 'option'],
+              description: 'product = sold on its own (a dish, a drink). option = an add on, extra or choice sold only as part of another item: "Extra cheese 1.00", "Add bacon", "Oat milk +0.40", sauces or sides listed under a "choose your" or "add" heading. Its price is the extra charge, 0 when free. Default product.',
+            },
             confidence: {
               type: 'string',
               enum: ['high','medium','low'],
@@ -133,6 +138,7 @@ RULES:
     → high: name + price crystal clear
     → medium: minor ambiguity (slight OCR issue, abbreviation)
     → low: missing price, unclear if one item or two, multiple possible interpretations
+- Add ons, extras and choices that are only sold as part of another item ("Extra cheese 1.00", "Add bacon", "Oat milk +0.40", a "choose your sauce" list) are kind "option", with the extra charge as the price (0 when free). Everything sold on its own is kind "product". When unsure, "product".
 - Add item "notes" for anything the reviewer should know ("MP", "seasonal", "ask staff")
 - If the menu has combo deals or meal bundles, create them as items at their combo price and add a note "combo — modifiers may need manual setup"
 - Pick category icons from: 🍽 🥗 🍖 🍕 🍸 ☕ 🎂 🥤 🌿 🔥 ❄️ ⭐ 🌮 🦞 🍜 🥩 🍤 🥚 🥐

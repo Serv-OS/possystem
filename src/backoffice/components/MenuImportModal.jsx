@@ -182,6 +182,7 @@ export default function MenuImportModal({ menuId, onClose }) {
       }
 
       // 2) Create items with pre-assigned IDs
+      let subItems = 0;
       for (const it of draft.items) {
         const realCat = catIdMap[it.categoryId];
         if (!realCat) continue; // category was removed during review
@@ -212,6 +213,24 @@ export default function MenuImportModal({ menuId, onClose }) {
               pricing: { base: Number(v.price) || 0, dineIn:null, takeaway:null, collection:null, delivery:null, driveThru:null },
             });
           }
+        } else if (it.kind === 'option') {
+          // 5.12.27 (Peter, 2 Nov 2026: "on the importer is there a way we can make an item a sub
+          // item"): an add on or choice lands as a Sub item, not sold alone (only an option, never a
+          // product on the till), tagged with its menu section so the Items > Sub items view groups
+          // it. The owner then puts it in a modifier group, as for any sub item.
+          subItems += 1;
+          addMenuItem({
+            id: genItemId(),
+            name: it.name,
+            menuName: it.name,
+            description: it.description || '',
+            type: 'subitem',
+            soldAlone: false,
+            subGroup: draft.categories.find(c => c.id === it.categoryId)?.label || '',
+            cat: realCat,
+            allergens: it.allergens || [],
+            pricing: { base: Number(it.price) || 0, dineIn:null, takeaway:null, collection:null, delivery:null, driveThru:null },
+          });
         } else {
           addMenuItem({
             id: genItemId(),
@@ -227,7 +246,9 @@ export default function MenuImportModal({ menuId, onClose }) {
       }
 
       markBOChange?.();
-      showToast(`Imported ${draft.categories.length} categories and ${draft.items.length} items`, 'success');
+      showToast(subItems
+        ? `Imported ${draft.categories.length} categories, ${draft.items.length - subItems} products and ${subItems} sub items. Put the sub items in modifier groups on the Modifier groups tab.`
+        : `Imported ${draft.categories.length} categories and ${draft.items.length} items`, 'success');
       setPhase('done');
       setTimeout(onClose, 1500);
     } catch (err) {
@@ -367,7 +388,7 @@ function ReviewPanel({ draft, meta, updateCat, removeCat, updateItem, removeItem
         </div>
       )}
       <div style={{ fontSize:11, color:'var(--t4)', marginBottom:14 }}>
-        Review everything below. Edit names, prices, allergens. Delete anything wrong. Low-confidence items are flagged in red — give those extra attention.
+        Review everything below. Edit names, prices, allergens. Delete anything wrong. Low-confidence items are flagged in red: give those extra attention. A row set to Sub item lands as an option (an add on or choice) rather than a product; put it in a modifier group afterwards.
       </div>
 
       {draft.categories.map(cat => (
@@ -414,6 +435,15 @@ function ReviewPanel({ draft, meta, updateCat, removeCat, updateItem, removeItem
                     <div style={{ display:'flex', gap:8 }}>
                       <input style={{ ...inp, flex:1, fontWeight:600 }}
                         value={item.name} onChange={e=>updateItem(item.id, { name: e.target.value })} />
+                      {/* 5.12.27: Product or Sub item. The AI marks add ons and choices as options; the owner can flip any row. */}
+                      {!hasVariants && (
+                        <select value={item.kind === 'option' ? 'option' : 'product'} onChange={e=>updateItem(item.id, { kind: e.target.value })}
+                          title="A sub item is an add on or choice sold only as part of another product"
+                          style={{ ...inp, width:104, fontSize:11, color: item.kind === 'option' ? 'var(--acc)' : 'var(--t1)' }}>
+                          <option value="product">Product</option>
+                          <option value="option">Sub item</option>
+                        </select>
+                      )}
                       {!hasVariants && (
                         <input type="number" step="0.01" {...selectOnFocus} style={{ ...inp, width:90, textAlign:'right' }}
                           value={item.price} onChange={e=>updateItem(item.id, { price: parseFloat(e.target.value)||0 })} />
