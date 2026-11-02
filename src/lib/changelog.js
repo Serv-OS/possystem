@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.12.23',
+    date: '1 Nov 2026',
+    items: [
+      'Website: the Gift cards and Loyalty blocks now have Card title, Card label and a Words on the card switch. Type your own words, clear the label, or turn the words off to show just your uploaded card design.',
+    ],
+  },
+  {
     v: '5.12.22',
     date: '1 Nov 2026',
     items: [
