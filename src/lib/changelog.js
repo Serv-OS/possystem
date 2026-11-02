@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.12.26',
+    date: '2 Nov 2026',
+    items: [
+      'Manager app: Recipe cards name a size or variant with its product in front, Latte Large rather than a bare Large, the same rule as the Back Office Recipes screen. Needs the manager-snapshot server update.',
+    ],
+  },
+  {
     v: '5.12.25',
     date: '2 Nov 2026',
     items: [
