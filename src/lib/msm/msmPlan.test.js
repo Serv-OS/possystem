@@ -208,6 +208,27 @@ test('ROUND 2: a sub item\'s price or name change NEVER changes an option (the r
   assert.deepEqual(p.writes.items.update, [{ id: 'm-oat', set: { name: 'Oat', menu_name: 'Oat' }, pricing: { base: 0.5 } }]);
 });
 
+test('5.12.30: option groups put on a simple product make its venue row modifiable in the same write (the till skips options on simple)', () => {
+  const { v, central, P } = setup();
+  const mocha = P('Mocha');
+  assert.equal(mocha.type || 'simple', 'simple', 'the fixture Mocha starts as a plain product');
+  const milk = central.groups.find((g) => g.name === 'Milk') || central.groups[0];
+  const p = plan(central, [{ target: 'product', entity_id: mocha.id, op: 'update', after: { modifier_groups: [{ groupId: milk.id }] } }], A, v[A]);
+  const up = p.writes.items.update.find((u) => u.id === 'm-mocha');
+  assert.ok(up, 'Mocha is written at site A');
+  assert.equal(up.set.type, 'modifiable', 'never left simple with groups on it');
+  assert.equal(up.set.assigned_modifier_groups.length, 1);
+  // Every group taken off again: the row goes back to the kind head office holds (an options screen
+  // with nothing on it is worse than none).
+  const after = applyChanges(central, [{ target: 'product', entity_id: mocha.id, op: 'update', after: { modifier_groups: [{ groupId: milk.id }] } }]).central;
+  const venueAfter = { ...v[A], items: v[A].items.map((i) => (i.id === 'm-mocha' ? { ...i, type: 'modifiable', assigned_modifier_groups: [{ groupId: 'mgd-milk' }] } : i)) };
+  const off = planSite({ central: applyChanges(after, [{ target: 'product', entity_id: mocha.id, op: 'update', after: { modifier_groups: [] } }]).central,
+    touched: touchedFromChanges([{ target: 'product', entity_id: mocha.id, op: 'update', after: { modifier_groups: [] } }]), locationId: A, orgId: ORG, venue: venueAfter });
+  const down = off.writes.items.update.find((u) => u.id === 'm-mocha');
+  assert.ok(down, 'Mocha is written at site A');
+  assert.equal(down.set.type, 'simple', 'back to what head office holds once no group is on it');
+});
+
 test('a size whose parent is not at the site is blocking', () => {
   const { v, central, P } = setup();
   const lg = P('Large latte');

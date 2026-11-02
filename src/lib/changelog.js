@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.12.30',
+    date: '2 Nov 2026',
+    items: [
+      'Multi site menu: a product that gets option groups from head office is published as Modifiable, never left as Simple. The till skips the options screen for a Simple product, so groups published onto the pizzas never showed. Needs the msm-publish server update, and a one off SQL for the twelve rows already written.',
+    ],
+  },
+  {
     v: '5.12.29',
     date: '2 Nov 2026',
     items: [
