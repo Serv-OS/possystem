@@ -17,11 +17,16 @@
 //     them]". Each says what it looks like in the group menu; [Link to Latte] or [Bring in as a new
 //     product] goes into the draft, worked out so that publishing writes NOTHING at the site
 //     (lib/msm/msmBringIn.js). Its option groups come in with it.
+//   * A site's own option groups (2 Nov 2026, v5.12.29): "Provo has 2 option groups of its own
+//     [Look at the option groups]". A group a site built by hand only came in riding on a product;
+//     now each says what it looks like in the group menu; [Link to Which syrup] or [Bring in as a
+//     new group] goes into the draft by the same rules, writing NOTHING at the site. Head office then
+//     puts it on products with Add to products on the group, and publishes.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { sitesReached, siteDrift } from '../../../../supabase/functions/_shared/msmDiff.js';
 import { openDrift, driftWords, keepChanges, putBackChanges, bringInOption } from '../../../lib/msm/msmDriftView';
-import { ownProducts, bringInChanges, ownCountWords, planJoinSiteAsync, joinableProducts } from '../../../lib/msm/msmBringIn';
+import { ownProducts, bringInChanges, ownCountWords, ownGroups, bringInGroupChanges, ownGroupCountWords, planJoinSiteAsync, joinableProducts } from '../../../lib/msm/msmBringIn';
 import { planAddSite } from '../../../../supabase/functions/_shared/msmSites.js';
 import { whenText } from '../../../../supabase/functions/_shared/msmSchedule.js';
 import { readAllRows } from '../../../../supabase/functions/_shared/venueMenuCore.js';
@@ -35,6 +40,7 @@ export default function MsmSites({ api, client, menu, live, eff, sites, rows, ca
   const history = useMsmHistory(api, menu?.id, { every: 20000, onSettled: () => { reload(); refreshSets(); } });
   const [check, setCheck] = useState(null);         // { at, drift: { loc: [lines] }, own: { loc: n }, raw: { loc: raw }, failed: [] }
   const [bringing, setBringing] = useState(null);   // locationId
+  const [bringingGroups, setBringingGroups] = useState(null);   // locationId
   const [checking, setChecking] = useState(false);
   const [review, setReview] = useState(null);       // locationId
   const [adding, setAdding] = useState(false);
@@ -59,14 +65,15 @@ export default function MsmSites({ api, client, menu, live, eff, sites, rows, ca
   // Worked out from the rows read and the group menu as it is now (with the draft), so a line the
   // draft already keeps, or a product already brought in, drops out at once.
   const derived = useMemo(() => {
-    const drift = {}, own = {};
+    const drift = {}, own = {}, groups = {};
     for (const s of sites) {
       const raw = check?.raw?.[s.id];
       if (!raw) continue;
       try { drift[s.id] = openDrift(live, eff, s.id, raw, names); } catch { drift[s.id] = siteDrift(live, s.id, raw, names); }
       try { own[s.id] = ownProducts(eff || live, s.id, raw).filter((o) => !o.archived); } catch { own[s.id] = []; }
+      try { groups[s.id] = ownGroups(eff || live, s.id, raw); } catch { groups[s.id] = []; }
     }
-    return { drift, own };
+    return { drift, own, groups };
   }, [check, sites, live, eff, names]);
   const driftCount = useMemo(() => Object.fromEntries(Object.entries(derived.drift).map(([k, v]) => [k, v.length])), [derived]);
   // Never "In sync" for a site nobody has looked at yet (17 Oct verification).
@@ -119,11 +126,13 @@ export default function MsmSites({ api, client, menu, live, eff, sites, rows, ca
               {c.lastDoneAt != null && <div style={{ color: 'var(--t3)' }}>Last updated {new Date(c.lastDoneAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}{c.lastVersionNo ? ` (version ${c.lastVersionNo})` : ''}</div>}
               {c.drift > 0 && <div>{c.drift} change{c.drift === 1 ? ' was' : 's were'} made at {c.name} since the last publish</div>}
               {check?.raw?.[c.id] && <div>{ownCountWords((derived.own[c.id] || []).length, c.name)}</div>}
+              {(derived.groups[c.id] || []).length > 0 && <div>{ownGroupCountWords(derived.groups[c.id].length, c.name)}</div>}
             </div>
             <div style={{ ...ui.row, marginTop: 12, flexWrap: 'wrap' }}>
               {canEdit && c.failed && <Btn small kind="primary" disabled={busy === c.id} onClick={() => retry(c)}>Retry {c.name}</Btn>}
               {c.drift > 0 && <Btn small kind="soft" onClick={() => setReview(c.id)}>Look at the changes</Btn>}
               {(derived.own[c.id] || []).length > 0 && <Btn small kind="soft" onClick={() => setBringing(c.id)}>Look at them</Btn>}
+              {(derived.groups[c.id] || []).length > 0 && <Btn small kind="soft" onClick={() => setBringingGroups(c.id)}>Look at the option groups</Btn>}
               {waiting.has(c.id) && <Btn small kind="link" onClick={() => setTab('publish')}>See what changes</Btn>}
             </div>
           </div>
@@ -137,6 +146,10 @@ export default function MsmSites({ api, client, menu, live, eff, sites, rows, ca
       {bringing && (
         <BringIn site={sites.find((s) => s.id === bringing)} own={derived.own[bringing] || []} raw={check?.raw?.[bringing]} central={eff || live}
           editable={editable} stage={stage} onClose={() => setBringing(null)} />
+      )}
+      {bringingGroups && (
+        <BringInGroups site={sites.find((s) => s.id === bringingGroups)} own={derived.groups[bringingGroups] || []} raw={check?.raw?.[bringingGroups]} central={eff || live}
+          editable={editable} stage={stage} onClose={() => setBringingGroups(null)} />
       )}
       {adding && (
         <AddSite api={api} client={client} menu={menu} live={live} sites={sites} setNote={setNote}
@@ -251,6 +264,79 @@ function BringIn({ site, own, raw, central, editable, stage, onClose }) {
                       onChange={(e) => { if (e.target.value) work(o, e.target.value); }}>
                       <option value="">Link to another…</option>
                       {linkable.map((p) => <option key={p.id} value={p.id}>{p.menu_name || p.name}</option>)}
+                    </select>
+                  )}
+                </>
+              )}
+            </div>
+            {open && (
+              <div style={{ marginTop: 8, padding: '10px 12px', borderRadius: 10, background: 'var(--bg2)' }}>
+                {pick.result.ok
+                  ? <>
+                    <ul style={{ margin: '0 0 8px', paddingLeft: 18, fontSize: 13, lineHeight: 1.5 }}>{pick.result.words.map((w) => <li key={w}>{w}</li>)}</ul>
+                    <div style={{ ...ui.row }}>
+                      <Btn small kind="primary" disabled={busy} onClick={add}>{busy ? 'Adding…' : 'Add to draft'}</Btn>
+                      <Btn small onClick={() => setPick(null)}>Cancel</Btn>
+                    </div>
+                  </>
+                  : <Notice tone="bad">{pick.result.problems.join(' ')}</Notice>}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </Sheet>
+  );
+}
+
+// A site's own option groups (2 Nov 2026): what each looks like in the group menu, and the two ways
+// in. Pressing one works the changes out at once (proved to write nothing at the site) and shows them
+// in words before Add to draft.
+function BringInGroups({ site, own, raw, central, editable, stage, onClose }) {
+  const [pick, setPick] = useState(null);         // { id, linkTo, result }
+  const [busy, setBusy] = useState(false);
+  const name = site?.name || 'the site';
+  const here = new Set((central?.groupSites || []).filter((gs) => gs.location_id === site?.id).map((gs) => gs.group_id));
+  const linkable = (central?.groups || []).filter((g) => !g.archived && !here.has(g.id))
+    .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  const work = (o, linkTo) => {
+    const result = bringInGroupChanges(central, site.id, raw, o.id, { linkTo: linkTo || null, siteName: name });
+    setPick({ id: o.id, linkTo: linkTo || null, result });
+  };
+  const add = async () => {
+    if (!pick?.result?.ok) return;
+    setBusy(true);
+    const r = await stage(pick.result.changes, { done: pick.result.words.join(' ') });
+    setBusy(false);
+    if (r?.ok) setPick(null);
+  };
+  return (
+    <Sheet title={`${name}'s own option groups`} width={680} onClose={onClose}
+      sub={`${ownGroupCountWords(own.length, name)} Bring a group in so head office can put it on products at every site. Bringing it in changes nothing at ${name}: anything ${name} does differently stays ${name}'s own.`}
+      footer={<><div style={{ flex: 1 }} /><Btn onClick={onClose}>Done</Btn></>}>
+      {!own.length && <Notice tone="good">Every option group {name} asks is in the group menu.</Notice>}
+      {own.map((o) => {
+        const open = pick?.id === o.id;
+        return (
+          <div key={o.id} style={{ padding: '9px 0', borderBottom: '1px solid var(--bdr)' }} data-testid="msm-own-group">
+            <div style={{ ...ui.row, flexWrap: 'wrap', alignItems: 'center' }}>
+              <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+                <div style={{ fontSize: 13.5, fontWeight: 700 }}>{o.name}<span style={{ ...ui.sub, fontWeight: 500 }}> · {o.options} option{o.options === 1 ? '' : 's'}</span></div>
+                <div style={ui.sub}>
+                  {o.match ? `Looks like ${o.match.name} in the group menu${o.match.how === 'family' ? ' (already shared between sites)' : ' (same name)'}` : 'Not in the group menu'}
+                  {o.usedBy.length ? ` · asked by ${o.usedBy.slice(0, 3).join(', ')}${o.usedBy.length > 3 ? ` and ${o.usedBy.length - 3} more` : ''}` : ''}
+                  {o.thenAskOf.length ? ` · asked next by ${o.thenAskOf.join(', ')}` : ''}
+                </div>
+              </div>
+              {editable && (
+                <>
+                  {o.match && <Btn small kind="primary" onClick={() => work(o, o.match.groupId)}>Link to {o.match.name}</Btn>}
+                  <Btn small kind={o.match ? 'soft' : 'primary'} onClick={() => work(o, null)}>Bring in as a new group</Btn>
+                  {linkable.length > 0 && (
+                    <select aria-label={`Link ${o.name} to another option group`} style={{ ...ui.input, width: 'auto', maxWidth: 200, padding: '5px 8px', fontSize: 12.5 }} value=""
+                      onChange={(e) => { if (e.target.value) work(o, e.target.value); }}>
+                      <option value="">Link to another…</option>
+                      {linkable.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
                     </select>
                   )}
                 </>

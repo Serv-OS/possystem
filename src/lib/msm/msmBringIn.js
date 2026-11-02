@@ -19,6 +19,14 @@
 // out with the real planner (msmPlan.planSite) with every field of everything brought in touched,
 // until it plans zero writes. If it cannot get there, nothing is staged and the reason is said in
 // words. The guard in the database refuses a venue item that is already managed.
+//
+// BRING IN THIS GROUP (2 Nov 2026, v5.12.29): the same for one of a site's own option groups (a
+// modifier group at the venue the group menu does not manage). A site built its groups by hand and
+// had no way to get them into the group menu: Bring in only carried a group riding on a product, and
+// a site's own group is not drift, so the Sites screen said "in sync". Now the Sites screen lists
+// them (ownGroups) with "Link to Which syrup" or "Bring in as a new group" (bringInGroupChanges):
+// the same rules, the same machinery, the same proof. Head office then puts the group on products
+// with Add to products on the group and publishes.
 
 import { planSite, touchedFromChanges, groupOptionRows } from '../../../supabase/functions/_shared/msmPlan.js';
 import { applyChanges } from '../../../supabase/functions/_shared/msmDiff.js';
@@ -208,18 +216,90 @@ export function bringInChanges(central, locationId, raw, venueItemId, opts = {})
   }
 
   // ── Option groups (Then ask first) ────────────────────────────────────────
+  const problems = [];
+  const { mapGroup } = groupMachinery({ C, changes, loc, idGen, siteName, words, productOfItem, siteRows, affected, groupsHere });
+
+  const usedGroups = new Set();
+  for (const r of [row, ...sizes]) for (const a of listOf(r.assigned_modifier_groups)) { const g = gidOf(a); if (g) usedGroups.add(g); }
+  const mapped = new Map();
+  for (const vgid of usedGroups) { const g = mapGroup(vgid); if (g) mapped.set(vgid, g); }
+  // A NEW product takes the site's groups, mapped (a linked product keeps the group menu's; the
+  // site's own list is kept by the settle below).
+  if (!link) {
+    for (const r of [row, ...sizes]) {
+      const pid = productOfItem.get(r.id);
+      const pc = changes.find((c) => c.target === 'product' && c.entity_id === pid);
+      if (!pc) continue;
+      pc.after.modifier_groups = listOf(r.assigned_modifier_groups).map((a) => {
+        const g = mapped.get(gidOf(a));
+        if (!g) return null;
+        return typeof a === 'string' ? { groupId: g } : { ...a, groupId: g };
+      }).filter(Boolean);
+    }
+  }
+
+  // ── The settle: every value that differs becomes the site's own, until nothing is written ──
+  const vItem = new Map(items.map((i) => [i.id, i]));
+  const last = settleAtSite({ central, changes, loc, raw, affected, siteRows, groupsHere, items });
+  if (last.lines.length) {
+    for (const l of last.lines.slice(0, 3)) problems.push(`${l.table === 'groups' ? 'An option group' : nameOf(vItem.get(l.id) || row)} at ${siteName} would change (${String(l.column).replace(/[()._]/g, ' ').trim()}), so nothing was added to the draft. Tell ServOS if this stays.`);
+    return { ok: false, changes: [], words: [], problems };
+  }
+  // What the site keeps, in words.
+  const keptCols = new Set();
+  let noPrice = false;
+  for (const c of siteRows.ps.values()) {
+    for (const k of Object.keys(c.after.kept || {})) { if (k === 'no_price') noPrice = true; else keptCols.add(k); }
+    if (c.after.price != null) keptCols.add('price');
+  }
+  if (noPrice) words.push(`"${nameOf(row)}" has no price at ${siteName}, and keeps none there until someone sets one in the group menu.`);
+  if (keptCols.size && link) {
+    const w = { price: 'its own price', cat: 'its own category', name: 'its own name', menu_name: 'its own name', image: 'its own photo', tax_rate_id: 'its own VAT', tax_overrides: 'its own VAT by order type', assigned_modifier_groups: 'its own option groups', description: 'its own description', allergens: 'its own allergens' };
+    const list = [...new Set([...keptCols].map((k) => w[k] || 'some settings of its own'))];
+    const said = list.length === 1 ? list[0] : `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}`;
+    words.push(`${siteName} keeps ${said}, so nothing changes there until someone changes it in the group menu.`);
+  } else {
+    words.push(`Nothing changes at ${siteName}: the tills keep selling it exactly as they do now.`);
+  }
+  return { ok: true, changes: orderForGuard(changes), words, problems: [], productId: mainId };
+}
+
+// In the order the database guard checks references: a group before the products that use it, a
+// product before its site rows and the options that offer it, an option before its site rows.
+function orderForGuard(changes) {
+  const RANK = { modifier_group: 0, product: 1, product_site: 2, modifier_group_site: 3, modifier_option: 4, modifier_option_site: 5 };
+  return changes.map((c, i) => ({ c, i })).sort((a, b) => (RANK[a.c.target] - RANK[b.c.target]) || (a.i - b.i)).map((x) => x.c);
+}
+
+// "Looks like Which syrup in the group menu": the same shared family, else the same normalised
+// name, among groups not at this site yet. The one rule for a product's groups, a Then ask group
+// and Bring in this group.
+function groupLike(C, loc, vg) {
+  const fam = familyOf(vg);
+  const free = listOf(C?.groups).filter((g) => g && !g.archived && !listOf(C?.groupSites).some((gs) => gs.group_id === g.id && gs.location_id === loc));
+  const byFamily = free.find((g) => g.family_base === fam);
+  if (byFamily) return { group: byFamily, how: 'family' };
+  const byName = free.find((g) => normName(g.name) === normName(vg.name));
+  return byName ? { group: byName, how: 'name' } : null;
+}
+
+// The option group machinery Bring in (a product's groups) and Bring in this group share. It adds
+// to ctx.changes, ctx.C (the working copy), ctx.siteRows, ctx.affected and ctx.words as it goes.
+//   ctx: { C, changes, loc, idGen, siteName, words, productOfItem, siteRows, affected, groupsHere }
+function groupMachinery(ctx) {
+  const { C, changes, loc, idGen, siteName, words, productOfItem, siteRows, affected, groupsHere } = ctx;
   const centralOfVenueGroup = new Map(listOf(C.groupSites).filter((gs) => gs.location_id === loc).map((gs) => [gs.venue_group_id, gs.group_id]));
   const visiting = new Set();
-  const problems = [];
-  function mapGroup(vgid) {
+  // link: undefined = the group menu group that looks like it, if any (a product's groups, a Then
+  // ask group); null = a new group whatever is there; a group menu group = that one (Bring in this
+  // group's choice). top = the group the person pressed (its own sentence).
+  function mapGroup(vgid, link, top = false) {
     if (centralOfVenueGroup.has(vgid)) return centralOfVenueGroup.get(vgid);
     const vg = groupsHere.get(vgid);
     if (!vg || visiting.has(vgid)) return null;
     visiting.add(vgid);
     for (const e of listOf(vg.options)) if (e && e.subGroupId) mapGroup(e.subGroupId);
-    const fam = familyOf(vg);
-    const existing = listOf(C.groups).find((g) => g && !g.archived && !listOf(C.groupSites).some((gs) => gs.group_id === g.id && gs.location_id === loc)
-      && (g.family_base === fam || normName(g.name) === normName(vg.name)));
+    const existing = link === undefined ? (groupLike(C, loc, vg)?.group || null) : link;
     let gid;
     if (existing) {
       gid = existing.id;
@@ -232,7 +312,7 @@ export function bringInChanges(central, locationId, raw, venueItemId, opts = {})
       words.push(`${vg.name || 'An option group'} at ${siteName} becomes ${siteName}'s copy of the group menu's ${existing.name}.`);
     } else {
       gid = idGen();
-      const g = { name: vg.name || 'Options', min: Number(vg.min ?? 0), max: Number(vg.max ?? 1), selection_type: vg.selection_type || 'single', sort_order: Number(vg.sort_order ?? 0), family_base: fam };
+      const g = { name: vg.name || 'Options', min: Number(vg.min ?? 0), max: Number(vg.max ?? 1), selection_type: vg.selection_type || 'single', sort_order: Number(vg.sort_order ?? 0), family_base: familyOf(vg) };
       changes.push({ target: 'modifier_group', entity_id: gid, location_id: null, op: 'create', after: g });
       C.groups.push({ id: gid, archived: false, options: [], ...g });
       const gsC = { target: 'modifier_group_site', entity_id: gid, location_id: loc, op: 'create', after: { venue_group_id: vg.id, kept: {} } };
@@ -245,7 +325,9 @@ export function bringInChanges(central, locationId, raw, venueItemId, opts = {})
         if (!e || typeof e !== 'object' || e.id == null || e.id === '') continue;
         newOption(gid, e, i++, true);
       }
-      words.push(`Option group ${vg.name || 'Options'} comes in too (new in the group menu, at ${siteName} only).`);
+      words.push(top
+        ? `Option group ${vg.name || 'Options'} comes into the group menu, on at ${siteName} only, with its ${i} option${i === 1 ? '' : 's'}.`
+        : `Option group ${vg.name || 'Options'} comes in too (new in the group menu, at ${siteName} only).`);
     }
     affected.groups.add(gid);
     visiting.delete(vgid);
@@ -319,30 +401,16 @@ export function bringInChanges(central, locationId, raw, venueItemId, opts = {})
       C.optionSites.push({ option_id: o.id, location_id: loc, venue_option_id: null, active: false, price: null, kept: {} });
     }
   }
+  return { mapGroup };
+}
 
-  const usedGroups = new Set();
-  for (const r of [row, ...sizes]) for (const a of listOf(r.assigned_modifier_groups)) { const g = gidOf(a); if (g) usedGroups.add(g); }
-  const mapped = new Map();
-  for (const vgid of usedGroups) { const g = mapGroup(vgid); if (g) mapped.set(vgid, g); }
-  // A NEW product takes the site's groups, mapped (a linked product keeps the group menu's; the
-  // site's own list is kept by the settle below).
-  if (!link) {
-    for (const r of [row, ...sizes]) {
-      const pid = productOfItem.get(r.id);
-      const pc = changes.find((c) => c.target === 'product' && c.entity_id === pid);
-      if (!pc) continue;
-      pc.after.modifier_groups = listOf(r.assigned_modifier_groups).map((a) => {
-        const g = mapped.get(gidOf(a));
-        if (!g) return null;
-        return typeof a === 'string' ? { groupId: g } : { ...a, groupId: g };
-      }).filter(Boolean);
-    }
-  }
-
-  // ── The settle: every value that differs becomes the site's own, until nothing is written ──
+// THE SETTLE, then the proof: every value the site has that differs from what the create changes
+// say becomes the site's own (mutating the create changes in siteRows), with the real planner and
+// every field of everything brought in touched, until it plans zero writes (six passes at most).
+// Returns the final plan: lines.length === 0 is the proof.
+function settleAtSite({ central, changes, loc, raw, affected, siteRows, groupsHere, items }) {
   const vItem = new Map(items.map((i) => [i.id, i]));
-  let last = null;
-  for (let pass = 0; pass < 6; pass++) {
+  const planNow = () => {
     const after = applyChanges(central, changes).central;
     const touched = touchedFromChanges(touchEverything({
       products: listOf(after.products).filter((p) => affected.products.has(p.id)),
@@ -351,8 +419,10 @@ export function bringInChanges(central, locationId, raw, venueItemId, opts = {})
       options: listOf(after.options).filter((o) => affected.groups.has(o.group_id)),
       optionSites: listOf(after.optionSites).filter((os) => os.location_id === loc && listOf(after.options).some((o) => o.id === os.option_id && affected.groups.has(o.group_id))),
     }));
-    const plan = planSite({ central: after, touched, locationId: loc, orgId: null, venue: raw });
-    last = plan;
+    return { after, plan: planSite({ central: after, touched, locationId: loc, orgId: null, venue: raw }) };
+  };
+  for (let pass = 0; pass < 6; pass++) {
+    const { after, plan } = planNow();
     let changed = 0;
     for (const pr of plan.problems) {
       if (!pr.productId || pr.level !== 'block') continue;
@@ -412,41 +482,7 @@ export function bringInChanges(central, locationId, raw, venueItemId, opts = {})
     }
     if (!changed) break;
   }
-  // The proof.
-  const after = applyChanges(central, changes).central;
-  const touched = touchedFromChanges(touchEverything({
-    products: listOf(after.products).filter((p) => affected.products.has(p.id)),
-    productSites: listOf(after.productSites).filter((ps) => ps.location_id === loc && affected.products.has(ps.product_id)),
-    groups: listOf(after.groups).filter((g) => affected.groups.has(g.id)),
-    options: listOf(after.options).filter((o) => affected.groups.has(o.group_id)),
-    optionSites: listOf(after.optionSites).filter((os) => os.location_id === loc && listOf(after.options).some((o) => o.id === os.option_id && affected.groups.has(o.group_id))),
-  }));
-  last = planSite({ central: after, touched, locationId: loc, orgId: null, venue: raw });
-  if (last.lines.length) {
-    for (const l of last.lines.slice(0, 3)) problems.push(`${l.table === 'groups' ? 'An option group' : nameOf(vItem.get(l.id) || row)} at ${siteName} would change (${String(l.column).replace(/[()._]/g, ' ').trim()}), so nothing was added to the draft. Tell ServOS if this stays.`);
-    return { ok: false, changes: [], words: [], problems };
-  }
-  // What the site keeps, in words.
-  const keptCols = new Set();
-  let noPrice = false;
-  for (const c of siteRows.ps.values()) {
-    for (const k of Object.keys(c.after.kept || {})) { if (k === 'no_price') noPrice = true; else keptCols.add(k); }
-    if (c.after.price != null) keptCols.add('price');
-  }
-  if (noPrice) words.push(`"${nameOf(row)}" has no price at ${siteName}, and keeps none there until someone sets one in the group menu.`);
-  if (keptCols.size && link) {
-    const w = { price: 'its own price', cat: 'its own category', name: 'its own name', menu_name: 'its own name', image: 'its own photo', tax_rate_id: 'its own VAT', tax_overrides: 'its own VAT by order type', assigned_modifier_groups: 'its own option groups', description: 'its own description', allergens: 'its own allergens' };
-    const list = [...new Set([...keptCols].map((k) => w[k] || 'some settings of its own'))];
-    const said = list.length === 1 ? list[0] : `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}`;
-    words.push(`${siteName} keeps ${said}, so nothing changes there until someone changes it in the group menu.`);
-  } else {
-    words.push(`Nothing changes at ${siteName}: the tills keep selling it exactly as they do now.`);
-  }
-  // In the order the database guard checks references: a group before the products that use it,
-  // a product before its site rows and the options that offer it, an option before its site rows.
-  const RANK = { modifier_group: 0, product: 1, product_site: 2, modifier_group_site: 3, modifier_option: 4, modifier_option_site: 5 };
-  const ordered = changes.map((c, i) => ({ c, i })).sort((a, b) => (RANK[a.c.target] - RANK[b.c.target]) || (a.i - b.i)).map((x) => x.c);
-  return { ok: true, changes: ordered, words, problems: [], productId: mainId };
+  return planNow().plan;
 }
 
 /**
@@ -537,6 +573,114 @@ function* joinSteps(live, opts) {
 export function ownCountWords(n, siteName) {
   if (!n) return `Every product ${siteName} sells is in the group menu.`;
   return `${siteName} has ${n} product${n === 1 ? '' : 's'} of its own, not in the group menu.`;
+}
+
+/**
+ * The site's own option groups (not managed by the group menu), each with what it looks like.
+ *   central   the group menu (the draft applied)
+ *   raw       readVenueRaw(...) of that site
+ * Returns [{ id, name, row, options, usedBy: [product names], thenAskOf: [group names],
+ *            match: { groupId, name, how } | null }], by name. A group already in the group menu
+ * here (a modifier_group_site row) is never listed; a Then ask group of another own group is (it
+ * comes in with its parent, and drops out of the list once it is in the draft).
+ */
+export function ownGroups(central, locationId, raw) {
+  const managed = new Set(listOf(central?.groupSites).filter((gs) => gs.location_id === locationId).map((gs) => gs.venue_group_id));
+  const groups = listOf(raw?.groups).filter((g) => g && g.id != null && g.id !== '');
+  const items = listOf(raw?.items).filter(Boolean);
+  const out = [];
+  for (const vg of groups) {
+    if (managed.has(vg.id) || String(vg.id).startsWith('demo-')) continue;
+    const entries = listOf(vg.options).filter((e) => e && typeof e === 'object' && e.id != null && e.id !== '');
+    const usedBy = items.filter((i) => i.archived !== true && !i.parent_id && listOf(i.assigned_modifier_groups).some((a) => gidOf(a) === vg.id)).map(nameOf);
+    const thenAskOf = groups.filter((g) => g.id !== vg.id && listOf(g.options).some((e) => e && e.subGroupId === vg.id)).map((g) => g.name || 'Options');
+    const like = groupLike(central, locationId, vg);
+    out.push({
+      id: vg.id, name: vg.name || 'Options', row: vg, options: entries.length,
+      usedBy: [...new Set(usedBy)], thenAskOf: [...new Set(thenAskOf)],
+      match: like ? { groupId: like.group.id, name: like.group.name, how: like.how } : null,
+    });
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * The draft changes that bring one of a site's own option groups in, settled so publishing them
+ * writes nothing at the site.
+ *   central        the group menu with the draft applied (eff)
+ *   locationId     the site
+ *   raw            readVenueRaw(...) of that site
+ *   venueGroupId   the site's group
+ *   opts           { linkTo: central group id | null, idGen, siteName }
+ * Linked: the site's group becomes this site's copy of that group menu group; its options are
+ * matched by sub item and name (the site's own price kept), a site option the group does not have
+ * comes in as a new option on here and off at the other sites, the group's options the site does not
+ * offer stay off here, and a rule the site has of its own (name, Choose up to) is kept. New: a new
+ * group on at this site only, with every option. A Then ask group it asks comes in first, by the
+ * same rules. Returns { ok, changes, words: [sentences], problems: [words], groupId }.
+ */
+export function bringInGroupChanges(central, locationId, raw, venueGroupId, opts = {}) {
+  const idGen = opts.idGen || defaultUuid;
+  const loc = locationId;
+  const siteName = opts.siteName || 'this site';
+  const items = listOf(raw?.items).filter(Boolean);
+  const groupsHere = new Map(listOf(raw?.groups).filter(Boolean).map((g) => [g.id, g]));
+  const vg = groupsHere.get(venueGroupId);
+  const fail = (w) => ({ ok: false, changes: [], words: [], problems: [w] });
+  if (!vg) return fail('That option group is no longer at the site. Check the sites again.');
+  const gname = vg.name || 'That option group';
+  if (listOf(central?.groupSites).some((gs) => gs.location_id === loc && gs.venue_group_id === vg.id)) return fail(`${gname} is already in the group menu.`);
+  if (!listOf(central?.sites).some((s) => s.location_id === loc)) return fail('That site is not in the group menu yet. Add the site first.');
+  const link = opts.linkTo ? listOf(central?.groups).find((g) => g.id === opts.linkTo && !g.archived) : null;
+  if (opts.linkTo && !link) return fail('The option group to link to is not in the group menu any more.');
+  if (link && listOf(central?.groupSites).some((gs) => gs.group_id === link.id && gs.location_id === loc)) return fail(`${link.name} is already at ${siteName}. Bring this one in as a new group instead.`);
+
+  const changes = [];
+  const words = [];
+  const C = applyChanges(central, []).central;
+  const productOfItem = new Map(listOf(C.productSites).filter((ps) => ps.location_id === loc).map((ps) => [ps.venue_item_id, ps.product_id]));
+  const affected = { products: new Set(), groups: new Set() };
+  const siteRows = { ps: new Map(), gs: new Map(), os: new Map() };
+  const { mapGroup } = groupMachinery({ C, changes, loc, idGen, siteName, words, productOfItem, siteRows, affected, groupsHere });
+  const gid = mapGroup(vg.id, link || null, true);
+  if (!gid) return fail(`${gname} could not be worked out. Check the sites again.`);
+  // The pressed group's sentence first, then the Then ask groups that came with it.
+  const mine = words.pop();
+  words.unshift(mine);
+
+  const last = settleAtSite({ central, changes, loc, raw, affected, siteRows, groupsHere, items });
+  if (last.lines.length) {
+    const problems = last.lines.slice(0, 3).map((l) => `${groupsHere.get(l.id)?.name || gname} at ${siteName} would change (${String(l.column).replace(/[()._]/g, ' ').trim()}), so nothing was added to the draft. Tell ServOS if this stays.`);
+    return { ok: false, changes: [], words: [], problems };
+  }
+
+  // What the site keeps, in words.
+  const gsC = siteRows.gs.get(gid);
+  const keptRule = Object.keys(gsC?.after?.kept || {});
+  const mineOs = changes.filter((c) => c.target === 'modifier_option_site' && c.location_id === loc && listOf(C.options).find((o) => o.id === c.entity_id)?.group_id === gid);
+  const ownPrices = mineOs.filter((c) => c.after.venue_option_id && c.after.price != null).length;
+  const ownNames = mineOs.filter((c) => c.after.venue_option_id && has(c.after.kept, 'name')).length;
+  const offHere = mineOs.filter((c) => !c.after.venue_option_id && c.after.active === false).length;
+  const newOpts = changes.filter((c) => c.target === 'modifier_option' && c.after.group_id === gid).map((c) => c.after.name);
+  if (link) {
+    const kept = [];
+    if (keptRule.includes('name')) kept.push('its own name for it');
+    if (keptRule.some((k) => k !== 'name')) kept.push('its own rule (how many to choose)');
+    if (ownPrices) kept.push(`its own price on ${ownPrices} option${ownPrices === 1 ? '' : 's'}`);
+    if (ownNames) kept.push(`its own name on ${ownNames} option${ownNames === 1 ? '' : 's'}`);
+    if (kept.length) words.push(`${siteName} keeps ${kept.length === 1 ? kept[0] : `${kept.slice(0, -1).join(', ')} and ${kept[kept.length - 1]}`}, so nothing changes there until someone changes it in the group menu.`);
+    if (newOpts.length) words.push(`${newOpts.join(', ')} ${newOpts.length === 1 ? 'is' : 'are'} new in the group menu: on at ${siteName}, off at the other sites.`);
+    if (offHere) words.push(`${offHere} of ${link.name}'s options ${offHere === 1 ? 'is' : 'are'} not offered at ${siteName} and ${offHere === 1 ? 'stays' : 'stay'} off there.`);
+  }
+  words.push(`Nothing changes at ${siteName}: the tills keep asking it exactly as they do now.`);
+  if (!link) words.push('Put it on products from Option groups (Add to products), then publish.');
+  return { ok: true, changes: orderForGuard(changes), words, problems: [], groupId: gid };
+}
+
+/** "Leeds has 3 option groups of its own, not in the group menu." */
+export function ownGroupCountWords(n, siteName) {
+  if (!n) return `Every option group ${siteName} asks is in the group menu.`;
+  return `${siteName} has ${n} option group${n === 1 ? '' : 's'} of its own, not in the group menu.`;
 }
 
 export { money2 };
