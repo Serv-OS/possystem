@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.12.22',
+    date: '1 Nov 2026',
+    items: [
+      'Website: a Brand name setting on Branding and domain. It goes on the loyalty and gift cards, in the footer and in search results. Before, the site used the default venue name (Coffee Boy Barnsley) because a site had no name of its own.',
+      'Website editor: the selection box and its toolbar now follow the block when you scroll the page. Before, they stayed where the block had been.',
+    ],
+  },
+  {
     v: '5.12.21',
     date: '1 Nov 2026',
     items: [

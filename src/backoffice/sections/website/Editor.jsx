@@ -86,10 +86,14 @@ function EditorHeader() {
 // canvas iframe, and globals.css sets html, body, #root { height: 100%; overflow: hidden } for the
 // till. Puck itself puts overflow: hidden on the frame body too. So the page inside the canvas
 // could never scroll; before 5.12.16 the whole editor grew instead, after it nothing moved.
-// This style, added to the frame document, makes the body the scroll container. (Puck's iframe
-// override never rendered here, so the editor watches for the frame itself: see useFrameScroll.)
+// This style, added to the frame document, lets the page scroll again. (Puck's iframe override
+// never rendered here, so the editor watches for the frame itself: see useFrameScroll.)
+// 5.12.22 (Peter: "when you select and then scroll the select moves with the scroll"): 5.12.17 made
+// the BODY the scroll container. Puck places the selection box and its action bar from the frame
+// WINDOW's scroll position, which never moves when the body scrolls, so the box stayed where the
+// block had been. The html element scrolls now (window.scrollY moves) and the box follows the block.
 const FRAME_FIX_ID = 'svw-frame-fix';
-const FRAME_FIX_CSS = 'html,body,#frame-root{height:100%!important}body{overflow:auto!important;overscroll-behavior:contain}';
+const FRAME_FIX_CSS = 'html{height:auto!important;overflow:auto!important;overscroll-behavior:contain}body,#frame-root{height:auto!important;min-height:100%;overflow:visible!important}';
 function fixFrameDocument(doc) {
   if (!doc || !doc.head || doc.getElementById(FRAME_FIX_ID)) return false;
   const st = doc.createElement('style');
