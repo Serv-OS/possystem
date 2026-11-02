@@ -303,3 +303,43 @@ test('two central ids sharing their first 12 characters never collide at a venue
   assert.ok(ids.includes(`msmc-${c2.replace(/-/g, '')}_${sfx(A)}`));
   assert.ok(checkSite(a).ok);
 });
+
+// 5.12.31: an option's sub item brought in with its group (lib/msm/msmBringIn.js) is a managed product
+// with the site's EXISTING venue item id. The planner, given everything about the group and the sub
+// item, writes nothing at that site and never says the sub item is missing; at a site where the
+// option is on without the sub item, it inserts the sub item hidden from the menus (as it always
+// has for a managed sub item).
+test('a sub item brought in with its group: the planner writes nothing at the site, and makes it where the option is on without it', async () => {
+  const { groupVenues, groupSites } = await import('./msmGroupFixture.js');
+  const { bringInGroupChanges, repairSubItemsChanges, unmanagedSubItems } = await import('./msmBringIn.js');
+  const { touchEverything } = await import('../../../supabase/functions/_shared/msmImport.js');
+  const v = groupVenues();
+  const sites = groupSites(v);
+  const { central } = buildCentral(proposeImport(sites, { idGen: idGen() }), sites, {}, { idGen: idGen('g') });
+  central.menu = { id: '99999999-0000-4000-8000-000000000001', name: 'Group menu', description: '', use_name_everywhere: false, refreshed_at: '2026-10-17' };
+  const raw = v[B];
+  raw.items.push({ ...raw.items.find((i) => i.id === `m-oat_${sfx(B)}`), id: 'own-haz-sub', name: 'Hazelnut shot', menu_name: 'Hazelnut shot', master_id: null, pricing: { base: 0.3 } });
+  raw.groups.push({ id: 'mgd-syrup-b', location_id: B, name: 'Which syrup', min: 1, max: 1, selection_type: 'single', sort_order: 3, options: [{ id: 'opt-b-haz', name: 'Hazelnut', price: 0.3, itemId: 'own-haz-sub' }] });
+  const syrup = central.groups.find((g) => g.name === 'Which syrup');
+  const r = bringInGroupChanges(central, B, raw, 'mgd-syrup-b', { linkTo: syrup.id, idGen: idGen('h'), siteName: 'Site B' });
+  assert.ok(r.ok, r.problems.join(' | '));
+  const after = applyChanges(central, r.changes).central;
+  const sub = after.products.find((p) => p.name === 'Hazelnut shot');
+  assert.ok(sub && sub.type === 'subitem');
+  // Everything about the group, its options and the sub item touched: nothing to write at B.
+  const all = touchEverything({ products: [sub], productSites: after.productSites.filter((ps) => ps.product_id === sub.id), groups: [syrup], options: after.options.filter((o) => o.group_id === syrup.id), optionSites: after.optionSites.filter((os) => after.options.some((o) => o.id === os.option_id && o.group_id === syrup.id)) });
+  const atB = planSite({ central: after, touched: touchedFromChanges(all), locationId: B, orgId: ORG, venue: raw });
+  assert.deepEqual(atB.lines, []);
+  assert.deepEqual(atB.problems.filter((p) => p.code === 'sub_item_missing'), []);
+  assert.deepEqual(unmanagedSubItems(after, B, raw), []);
+  // Turn Hazelnut on at A, where the sub item is not: the planner makes the sub item there, hidden,
+  // then adds the option pointing at it. Nothing else.
+  const haz = after.options.find((o) => o.group_id === syrup.id && o.name === 'Hazelnut');
+  const on = [{ target: 'modifier_option_site', entity_id: haz.id, location_id: A, op: 'update', after: { active: true }, before: { active: false } }];
+  const atA = planSite({ central: applyChanges(after, on).central, touched: touchedFromChanges(on), locationId: A, orgId: ORG, venue: v[A] });
+  assert.deepEqual(atA.writes.items.insert.map((i) => [i.name, i.type, i.visibility.pos]), [['Hazelnut shot', 'subitem', false]]);
+  assert.deepEqual(atA.lines.map((l) => l.column), ['(new)', '(option added)']);
+  assert.deepEqual(atA.problems.filter((p) => p.level === 'block'), []);
+  // The repair finds nothing to do once the sub item is managed.
+  assert.match(repairSubItemsChanges(after, B, raw, { siteName: 'Site B' }).problems[0], /Every sub item Site B's options use is in the group menu/);
+});

@@ -130,56 +130,12 @@ export function bringInChanges(central, locationId, raw, venueItemId, opts = {})
   const words = [];
   const C = applyChanges(central, []).central;          // a working copy we add to as we go
   const productOfItem = new Map(listOf(C.productSites).filter((ps) => ps.location_id === loc).map((ps) => [ps.venue_item_id, ps.product_id]));
-  const ratesOf = () => listOf(raw?.taxRates);
   const groupsHere = new Map(listOf(raw?.groups).filter(Boolean).map((g) => [g.id, g]));
   const affected = { products: new Set(), groups: new Set() };
   const siteRows = { ps: new Map(), gs: new Map(), os: new Map() };   // our create changes, to settle
+  const { productFields, addProductSite, mapGroup } = bringMachinery({ C, changes, loc, raw, items, idGen, siteName, words, productOfItem, siteRows, affected, groupsHere });
 
   // ── Products (the product and its sizes) ──────────────────────────────────
-  const catOf = (vcat) => (vcat ? listOf(C.catSites).find((cs) => cs.location_id === loc && cs.venue_category_id === vcat)?.category_id || null : null);
-  const rateOf = (id) => listOf(raw?.taxRates).find((r) => r.id === id) || null;
-  const productFields = (r, parentId) => {
-    const rate = r.tax_rate_id ? rateOf(r.tax_rate_id) : null;
-    const channels = {};
-    for (const k of PUBLISHED_CHANNELS) channels[k] = num(r.pricing?.[k]);
-    return {
-      category_id: catOf(r.cat), extra_category_ids: listOf(r.cats).map(catOf).filter(Boolean), parent_product_id: parentId,
-      type: r.type || 'simple', name: r.name ?? r.menu_name ?? 'Item', menu_name: r.menu_name ?? null, receipt_name: r.receipt_name ?? null,
-      kitchen_name: r.kitchen_name ?? null, description: r.description ?? '', default_price: num(r.pricing?.base) ?? 0,
-      default_channels: channels, tax_rate_name: rate ? rate.name : null, tax_rate_percent: rate ? Number(rate.rate) : null,
-      allergens: listOf(r.allergens), tags: listOf(r.tags), image: r.image ?? null, modifier_groups: [],
-      visibility: r.visibility ?? null, sold_alone: !!r.sold_alone, item_code: r.item_code ?? null, site_only_location_id: null,
-      archived: false, sort_order: r.sort_order ?? 0, family_base: familyOf(r),
-      tax_by_type: parentId ? null : importTaxByType([{ loc, row: r }], ratesOf, loc).taxByType,
-    };
-  };
-  const addProductSite = (pid, r, product) => {
-    const price = num(r.pricing?.base);
-    const ch = {};
-    for (const k of PUBLISHED_CHANNELS) {
-      const v = num(r.pricing?.[k]);
-      const def = num(product?.default_channels?.[k]);
-      if (v != null && !samePrice(v, def)) ch[k] = v;
-    }
-    // VAT by order type: what this site has that differs from the product's, and its other keys
-    // (counter, drive-thru, collection, an explicit null), kept as they are (as the import does).
-    const hasOwnTax = r.tax_overrides && typeof r.tax_overrides === 'object' && Object.keys(r.tax_overrides).length;
-    // A size follows its product's row at the site (17 Oct recheck): it keeps only what differs.
-    const sizeOf = product?.parent_product_id && r.parent_id ? items.find((i) => i && i.id === r.parent_id) : null;
-    const taxKept = sizeOf ? sizeKeptTax(r, sizeOf)
-      : hasOwnTax ? importTaxByType([{ loc, row: r }], ratesOf, loc, product?.tax_by_type || {}).kept.get(loc) : null;
-    const after = {
-      venue_item_id: r.id, active: r.archived !== true,
-      price: price == null || samePrice(price, product?.default_price) ? null : price,
-      channel_prices: Object.keys(ch).length ? ch : null, kept: taxKept ? { tax_overrides: taxKept } : {},
-    };
-    const c = { target: 'product_site', entity_id: pid, location_id: loc, op: 'create', after };
-    changes.push(c);
-    siteRows.ps.set(pid, c);
-    productOfItem.set(r.id, pid);
-    affected.products.add(pid);
-  };
-
   let mainId;
   const sizes = items.filter((i) => i.parent_id === row.id && !productOfItem.has(i.id));
   if (link) {
@@ -217,7 +173,6 @@ export function bringInChanges(central, locationId, raw, venueItemId, opts = {})
 
   // ── Option groups (Then ask first) ────────────────────────────────────────
   const problems = [];
-  const { mapGroup } = groupMachinery({ C, changes, loc, idGen, siteName, words, productOfItem, siteRows, affected, groupsHere });
 
   const usedGroups = new Set();
   for (const r of [row, ...sizes]) for (const a of listOf(r.assigned_modifier_groups)) { const g = gidOf(a); if (g) usedGroups.add(g); }
@@ -283,11 +238,89 @@ function groupLike(C, loc, vg) {
   return byName ? { group: byName, how: 'name' } : null;
 }
 
-// The option group machinery Bring in (a product's groups) and Bring in this group share. It adds
-// to ctx.changes, ctx.C (the working copy), ctx.siteRows, ctx.affected and ctx.words as it goes.
-//   ctx: { C, changes, loc, idGen, siteName, words, productOfItem, siteRows, affected, groupsHere }
-function groupMachinery(ctx) {
-  const { C, changes, loc, idGen, siteName, words, productOfItem, siteRows, affected, groupsHere } = ctx;
+// The machinery Bring in (a product, its sizes and its groups), Bring in this group, Bring the sub
+// items in and Bring in all share. It adds to ctx.changes, ctx.C (the working copy), ctx.siteRows,
+// ctx.affected and ctx.words as it goes.
+//   ctx: { C, changes, loc, raw, items, idGen, siteName, words, productOfItem, siteRows, affected, groupsHere }
+function bringMachinery(ctx) {
+  const { C, changes, loc, raw, items, idGen, siteName, words, productOfItem, siteRows, affected, groupsHere } = ctx;
+  const vItem = new Map(items.map((i) => [i.id, i]));
+  const ratesOf = () => listOf(raw?.taxRates);
+  const catOf = (vcat) => (vcat ? listOf(C.catSites).find((cs) => cs.location_id === loc && cs.venue_category_id === vcat)?.category_id || null : null);
+  const rateOf = (id) => listOf(raw?.taxRates).find((r) => r.id === id) || null;
+  const productFields = (r, parentId) => {
+    const rate = r.tax_rate_id ? rateOf(r.tax_rate_id) : null;
+    const channels = {};
+    for (const k of PUBLISHED_CHANNELS) channels[k] = num(r.pricing?.[k]);
+    return {
+      category_id: catOf(r.cat), extra_category_ids: listOf(r.cats).map(catOf).filter(Boolean), parent_product_id: parentId,
+      type: r.type || 'simple', name: r.name ?? r.menu_name ?? 'Item', menu_name: r.menu_name ?? null, receipt_name: r.receipt_name ?? null,
+      kitchen_name: r.kitchen_name ?? null, description: r.description ?? '', default_price: num(r.pricing?.base) ?? 0,
+      default_channels: channels, tax_rate_name: rate ? rate.name : null, tax_rate_percent: rate ? Number(rate.rate) : null,
+      allergens: listOf(r.allergens), tags: listOf(r.tags), image: r.image ?? null, modifier_groups: [],
+      visibility: r.visibility ?? null, sold_alone: !!r.sold_alone, item_code: r.item_code ?? null, site_only_location_id: null,
+      archived: false, sort_order: r.sort_order ?? 0, family_base: familyOf(r),
+      tax_by_type: parentId ? null : importTaxByType([{ loc, row: r }], ratesOf, loc).taxByType,
+    };
+  };
+  const addProductSite = (pid, r, product) => {
+    const price = num(r.pricing?.base);
+    const ch = {};
+    for (const k of PUBLISHED_CHANNELS) {
+      const v = num(r.pricing?.[k]);
+      const def = num(product?.default_channels?.[k]);
+      if (v != null && !samePrice(v, def)) ch[k] = v;
+    }
+    // VAT by order type: what this site has that differs from the product's, and its other keys
+    // (counter, drive-thru, collection, an explicit null), kept as they are (as the import does).
+    const hasOwnTax = r.tax_overrides && typeof r.tax_overrides === 'object' && Object.keys(r.tax_overrides).length;
+    // A size follows its product's row at the site (17 Oct recheck): it keeps only what differs.
+    const sizeOf = product?.parent_product_id && r.parent_id ? items.find((i) => i && i.id === r.parent_id) : null;
+    const taxKept = sizeOf ? sizeKeptTax(r, sizeOf)
+      : hasOwnTax ? importTaxByType([{ loc, row: r }], ratesOf, loc, product?.tax_by_type || {}).kept.get(loc) : null;
+    const after = {
+      venue_item_id: r.id, active: r.archived !== true,
+      price: price == null || samePrice(price, product?.default_price) ? null : price,
+      channel_prices: Object.keys(ch).length ? ch : null, kept: taxKept ? { tax_overrides: taxKept } : {},
+    };
+    const c = { target: 'product_site', entity_id: pid, location_id: loc, op: 'create', after };
+    changes.push(c);
+    siteRows.ps.set(pid, c);
+    productOfItem.set(r.id, pid);
+    affected.products.add(pid);
+  };
+
+
+  // AN OPTION'S SUB ITEM (2 Nov 2026, 5.12.31). A site option points at a sub item of the site's
+  // own (Gouda, say). It used to stay the site's own link (kept item_link, product_id null), so head
+  // office could not pick Gouda for another group or send it to another site, and the group menu did
+  // not manage it. Now it comes in as a product: linked to the group menu product that looks like it
+  // (same family, or same name and kind) or new (type and sold on its own as the row is, hidden on the
+  // menus when the row says nothing), with a product site carrying the EXISTING venue item id, so the
+  // option's product_id points at it and publishing writes nothing. A sub item already managed here
+  // is used, never doubled. A size, a product with sizes or a demo row stays the site's own link.
+  // Returns the group menu product id, or null.
+  function bringSubItem(itemId) {
+    if (!itemId) return null;
+    if (productOfItem.has(itemId)) return productOfItem.get(itemId);
+    const r = vItem.get(itemId);
+    if (!r || r.parent_id || r.type === 'spacer' || String(r.id).startsWith('demo-') || items.some((i) => i && i.parent_id === r.id)) return null;
+    const m = matchFor(C, loc, r);
+    const existing = m ? listOf(C.products).find((p) => p.id === m.productId) : null;
+    if (existing) {
+      addProductSite(existing.id, r, existing);
+      words.push(`Sub item ${nameOf(r)} at ${siteName} becomes ${siteName}'s copy of the group menu's ${existing.menu_name || existing.name}.`);
+      return existing.id;
+    }
+    const pid = idGen();
+    const f = productFields(r, null);
+    if (!f.visibility) f.visibility = { pos: false, kiosk: false, online: false, onlineDelivery: false };
+    changes.push({ target: 'product', entity_id: pid, location_id: null, op: 'create', after: f });
+    C.products.push({ id: pid, ...f });
+    addProductSite(pid, r, f);
+    words.push(`Sub item ${nameOf(r)} comes into the group menu too, on at ${siteName} only.`);
+    return pid;
+  }
   const centralOfVenueGroup = new Map(listOf(C.groupSites).filter((gs) => gs.location_id === loc).map((gs) => [gs.venue_group_id, gs.group_id]));
   const visiting = new Set();
   // link: undefined = the group menu group that looks like it, if any (a product's groups, a Then
@@ -336,7 +369,7 @@ function groupMachinery(ctx) {
   // A site option the group menu does not have: a new option, on here (same venue id), off elsewhere.
   function newOption(gid, e, sortOrder, onlyHere) {
     const oid = idGen();
-    const pid = e.itemId ? productOfItem.get(e.itemId) || null : null;
+    const pid = bringSubItem(e.itemId);
     const sub = e.subGroupId ? centralOfVenueGroup.get(e.subGroupId) || null : null;
     const o = { group_id: gid, name: e.name ?? 'Option', price: Number(e.price ?? 0), product_id: pid, sub_group_id: sub, sort_order: sortOrder };
     changes.push({ target: 'modifier_option', entity_id: oid, location_id: null, op: 'create', after: o });
@@ -377,7 +410,7 @@ function groupMachinery(ctx) {
     let next = rows.length;
     for (const e of listOf(vg.options)) {
       if (!e || typeof e !== 'object' || e.id == null || e.id === '') continue;
-      const pid = e.itemId ? productOfItem.get(e.itemId) || null : null;
+      const pid = bringSubItem(e.itemId);
       const nk = normName(e.name);
       const free = rows.filter((o) => !taken.has(o.id) && !o.archived);
       const hit = (pid && free.find((o) => o.product_id === pid && normName(o.name) === nk))
@@ -401,24 +434,26 @@ function groupMachinery(ctx) {
       C.optionSites.push({ option_id: o.id, location_id: loc, venue_option_id: null, active: false, price: null, kept: {} });
     }
   }
-  return { mapGroup };
+  return { productFields, addProductSite, mapGroup, bringSubItem };
 }
 
 // THE SETTLE, then the proof: every value the site has that differs from what the create changes
 // say becomes the site's own (mutating the create changes in siteRows), with the real planner and
 // every field of everything brought in touched, until it plans zero writes (six passes at most).
 // Returns the final plan: lines.length === 0 is the proof.
-function settleAtSite({ central, changes, loc, raw, affected, siteRows, groupsHere, items }) {
+// touchGroups false (Bring the sub items in): the groups are published already, so only the changes
+// themselves are touched there (a price changed by hand at the site in that group is not our business).
+function settleAtSite({ central, changes, loc, raw, affected, siteRows, groupsHere, items, touchGroups = true }) {
   const vItem = new Map(items.map((i) => [i.id, i]));
   const planNow = () => {
     const after = applyChanges(central, changes).central;
-    const touched = touchedFromChanges(touchEverything({
+    const touched = touchedFromChanges([...touchEverything({
       products: listOf(after.products).filter((p) => affected.products.has(p.id)),
       productSites: listOf(after.productSites).filter((ps) => ps.location_id === loc && affected.products.has(ps.product_id)),
-      groups: listOf(after.groups).filter((g) => affected.groups.has(g.id)),
-      options: listOf(after.options).filter((o) => affected.groups.has(o.group_id)),
-      optionSites: listOf(after.optionSites).filter((os) => os.location_id === loc && listOf(after.options).some((o) => o.id === os.option_id && affected.groups.has(o.group_id))),
-    }));
+      groups: touchGroups ? listOf(after.groups).filter((g) => affected.groups.has(g.id)) : [],
+      options: touchGroups ? listOf(after.options).filter((o) => affected.groups.has(o.group_id)) : [],
+      optionSites: touchGroups ? listOf(after.optionSites).filter((os) => os.location_id === loc && listOf(after.options).some((o) => o.id === os.option_id && affected.groups.has(o.group_id))) : [],
+    }), ...(touchGroups ? [] : changes)]);
     return { after, plan: planSite({ central: after, touched, locationId: loc, orgId: null, venue: raw }) };
   };
   for (let pass = 0; pass < 6; pass++) {
@@ -641,7 +676,7 @@ export function bringInGroupChanges(central, locationId, raw, venueGroupId, opts
   const productOfItem = new Map(listOf(C.productSites).filter((ps) => ps.location_id === loc).map((ps) => [ps.venue_item_id, ps.product_id]));
   const affected = { products: new Set(), groups: new Set() };
   const siteRows = { ps: new Map(), gs: new Map(), os: new Map() };
-  const { mapGroup } = groupMachinery({ C, changes, loc, idGen, siteName, words, productOfItem, siteRows, affected, groupsHere });
+  const { mapGroup } = bringMachinery({ C, changes, loc, raw, items, idGen, siteName, words, productOfItem, siteRows, affected, groupsHere });
   const gid = mapGroup(vg.id, link || null, true);
   if (!gid) return fail(`${gname} could not be worked out. Check the sites again.`);
   // The pressed group's sentence first, then the Then ask groups that came with it.
@@ -675,6 +710,159 @@ export function bringInGroupChanges(central, locationId, raw, venueGroupId, opts
   words.push(`Nothing changes at ${siteName}: the tills keep asking it exactly as they do now.`);
   if (!link) words.push('Put it on products from Option groups (Add to products), then publish.');
   return { ok: true, changes: orderForGuard(changes), words, problems: [], groupId: gid };
+}
+
+/**
+ * OPTIONS THAT POINT AT SUB ITEMS THE GROUP MENU DOES NOT MANAGE (2 Nov 2026, 5.12.31): the groups
+ * brought in before the sub items came with them (and an option brought in from Find changes made
+ * at sites). The option is managed here (a site row with the venue option id), the venue entry has a
+ * sub item, that sub item is not a managed product here, and the option has no sub item of its own.
+ * Returns [{ optionId, optionName, groupId, groupName, itemId, itemName }], by group then option.
+ */
+export function unmanagedSubItems(central, locationId, raw) {
+  const loc = locationId;
+  const managedItem = new Set(listOf(central?.productSites).filter((ps) => ps.location_id === loc).map((ps) => ps.venue_item_id));
+  const vItem = new Map(listOf(raw?.items).filter(Boolean).map((i) => [i.id, i]));
+  const vGroup = new Map(listOf(raw?.groups).filter(Boolean).map((g) => [g.id, g]));
+  const out = [];
+  for (const gs of listOf(central?.groupSites).filter((x) => x.location_id === loc && x.venue_group_id)) {
+    const g = listOf(central?.groups).find((x) => x.id === gs.group_id && !x.archived);
+    const vg = vGroup.get(gs.venue_group_id);
+    if (!g || !vg) continue;
+    for (const o of groupOptionRows(g, central?.options).rows) {
+      if (o.archived || o.product_id || String(o.id).startsWith('legacy:')) continue;
+      const os = listOf(central?.optionSites).find((x) => x.option_id === o.id && x.location_id === loc);
+      if (!os || !os.venue_option_id || os.active === false) continue;
+      const e = listOf(vg.options).find((x) => x && x.id === os.venue_option_id);
+      if (!e || !e.itemId || managedItem.has(e.itemId)) continue;
+      const r = vItem.get(e.itemId);
+      if (!r || r.parent_id || String(r.id).startsWith('demo-')) continue;
+      out.push({ optionId: o.id, optionName: e.name ?? o.name, groupId: g.id, groupName: g.name, itemId: e.itemId, itemName: nameOf(r) });
+    }
+  }
+  return out;
+}
+
+/**
+ * BRING THE SUB ITEMS IN (the repair): for every option listed by unmanagedSubItems, the sub item
+ * comes in as a product (bringSubItem: linked or new, the EXISTING venue item id), the option's
+ * product_id is set to it, and the site's kept item_link goes. Planned with the real planner (the
+ * products with every field touched, the options by the changes) until it writes nothing at the site.
+ *   opts   { idGen, siteName, only: [optionId] (default every one) }
+ * Returns { ok, changes, words, problems, count }.
+ */
+export function repairSubItemsChanges(central, locationId, raw, opts = {}) {
+  const idGen = opts.idGen || defaultUuid;
+  const loc = locationId;
+  const siteName = opts.siteName || 'this site';
+  const items = listOf(raw?.items).filter(Boolean);
+  const fail = (w) => ({ ok: false, changes: [], words: [], problems: [w], count: 0 });
+  if (!listOf(central?.sites).some((s) => s.location_id === loc)) return fail('That site is not in the group menu yet. Add the site first.');
+  let list = unmanagedSubItems(central, loc, raw);
+  if (opts.only) list = list.filter((u) => opts.only.includes(u.optionId));
+  if (!list.length) return fail(`Every sub item ${siteName}'s options use is in the group menu.`);
+
+  const changes = [];
+  const words = [];
+  const C = applyChanges(central, []).central;
+  const productOfItem = new Map(listOf(C.productSites).filter((ps) => ps.location_id === loc).map((ps) => [ps.venue_item_id, ps.product_id]));
+  const groupsHere = new Map(listOf(raw?.groups).filter(Boolean).map((g) => [g.id, g]));
+  const affected = { products: new Set(), groups: new Set() };
+  const siteRows = { ps: new Map(), gs: new Map(), os: new Map() };
+  const { bringSubItem } = bringMachinery({ C, changes, loc, raw, items, idGen, siteName, words, productOfItem, siteRows, affected, groupsHere });
+  const problems = [];
+  let count = 0;
+  const elsewhere = new Set();
+  for (const u of list) {
+    const pid = bringSubItem(u.itemId);
+    if (!pid) { problems.push(`${u.itemName} (${u.groupName}: ${u.optionName}) has sizes or is a size, so it stays ${siteName}'s own.`); continue; }
+    const o = listOf(C.options).find((x) => x.id === u.optionId);
+    changes.push({ target: 'modifier_option', entity_id: u.optionId, location_id: null, op: 'update', after: { product_id: pid }, before: { product_id: o?.product_id ?? null } });
+    o.product_id = pid;
+    const os = listOf(C.optionSites).find((x) => x.option_id === u.optionId && x.location_id === loc);
+    if (os && has(os.kept, 'item_link')) {
+      const kept = { ...os.kept };
+      delete kept.item_link;
+      changes.push({ target: 'modifier_option_site', entity_id: u.optionId, location_id: loc, op: 'update', after: { kept }, before: { kept: os.kept } });
+      os.kept = kept;
+    }
+    for (const x of listOf(C.optionSites)) if (x.option_id === u.optionId && x.location_id !== loc && x.active !== false) elsewhere.add(x.location_id);
+    affected.groups.add(u.groupId);
+    count++;
+  }
+  if (!count) return { ok: false, changes: [], words: [], problems, count: 0 };
+
+  const last = settleAtSite({ central, changes, loc, raw, affected, siteRows, groupsHere, items, touchGroups: false });
+  if (last.lines.length) {
+    const vItem = new Map(items.map((i) => [i.id, i]));
+    for (const l of last.lines.slice(0, 3)) problems.unshift(`${l.table === 'groups' ? (groupsHere.get(l.id)?.name || 'An option group') : nameOf(vItem.get(l.id))} at ${siteName} would change (${String(l.column).replace(/[()._]/g, ' ').trim()}), so nothing was added to the draft. Tell ServOS if this stays.`);
+    return { ok: false, changes: [], words: [], problems, count: 0 };
+  }
+  const groups = new Set(list.filter((u) => changes.some((c) => c.target === 'modifier_option' && c.entity_id === u.optionId)).map((u) => u.groupId));
+  words.unshift(`${count} option${count === 1 ? '' : 's'} in ${groups.size} group${groups.size === 1 ? '' : 's'} at ${siteName} now ${count === 1 ? 'points' : 'point'} at ${count === 1 ? 'a sub item' : 'sub items'} the group menu manages.`);
+  words.push(`Nothing changes at ${siteName}: the tills keep selling them exactly as they do now.`);
+  if (elsewhere.size) words.push(`${elsewhere.size} other site${elsewhere.size === 1 ? ' has' : 's have'} ${count === 1 ? 'this option' : 'these options'} on without the sub item${count === 1 ? '' : 's'}: the next publish puts ${count === 1 ? 'it' : 'them'} there, hidden from the menus.`);
+  return { ok: true, changes: orderForGuard(changes), words, problems, count };
+}
+
+/** "Provo: 23 options in 3 groups point at sub items the group menu does not manage." */
+export function subItemCountWords(list, siteName) {
+  const n = listOf(list).length;
+  if (!n) return `Every sub item ${siteName}'s options use is in the group menu.`;
+  const g = new Set(list.map((u) => u.groupId)).size;
+  return `${siteName}: ${n} option${n === 1 ? '' : 's'} in ${g} group${g === 1 ? '' : 's'} point${n === 1 ? 's' : ''} at sub items the group menu does not manage.`;
+}
+
+/**
+ * BRING IN ALL (Sync from sites, 5.12.31): everything a site has that the group menu does not, in
+ * one set of changes: its own option groups first (linked to the group that looks like them, else
+ * new), then its own products (linked to the product that looks like them, by family or name, else
+ * new, with their sizes), then the sub items its managed options still point at. Each step is worked
+ * out on the draft as the steps before it left it, and each must write nothing at the site on its
+ * own (a step that cannot is left out and said). Then the whole set is planned once more and must
+ * write nothing. Returns { ok, changes, words, problems, counts: { groups, products, subItems } }.
+ */
+export function bringInAllChanges(central, locationId, raw, opts = {}) {
+  const loc = locationId;
+  const siteName = opts.siteName || 'this site';
+  const idGen = opts.idGen || defaultUuid;
+  const fail = (w) => ({ ok: false, changes: [], words: [], problems: [w], counts: { groups: 0, products: 0, subItems: 0 } });
+  if (!raw) return fail('Read the sites first.');
+  if (!listOf(central?.sites).some((s) => s.location_id === loc)) return fail('That site is not in the group menu yet. Add the site first.');
+  let C = applyChanges(central, []).central;
+  let changes = [];
+  const words = [];
+  const problems = [];
+  const counts = { groups: 0, products: 0, subItems: 0 };
+  const take = (r, kind) => {
+    if (!r.ok) { problems.push(...r.problems); return false; }
+    changes = [...changes, ...r.changes];
+    C = applyChanges(C, r.changes).central;
+    counts[kind]++;
+    return true;
+  };
+  for (const g of ownGroups(C, loc, raw)) {
+    if (listOf(C.groupSites).some((gs) => gs.location_id === loc && gs.venue_group_id === g.id)) continue;   // came in as a Then ask group
+    const r = bringInGroupChanges(C, loc, raw, g.id, { linkTo: g.match?.groupId || null, idGen, siteName });
+    if (take(r, 'groups')) words.push(r.words[0]);
+  }
+  for (const o of ownProducts(C, loc, raw).filter((x) => !x.archived)) {
+    if (listOf(C.productSites).some((ps) => ps.location_id === loc && ps.venue_item_id === o.id)) continue;   // came in as a sub item
+    const r = bringInChanges(C, loc, raw, o.id, { linkTo: o.match?.productId || null, idGen, siteName });
+    if (take(r, 'products')) words.push(r.words[0]);
+  }
+  const subs = unmanagedSubItems(C, loc, raw);
+  if (subs.length) {
+    const r = repairSubItemsChanges(C, loc, raw, { idGen, siteName });
+    if (r.ok) { changes = [...changes, ...r.changes]; C = applyChanges(C, r.changes).central; counts.subItems = r.count; words.push(r.words[0]); }
+    problems.push(...r.problems);
+  }
+  if (!changes.length) return { ...fail(`Everything ${siteName} sells is in the group menu.`), problems: [`Everything ${siteName} sells is in the group menu.`, ...problems] };
+  // The whole set, planned as the server will: it must write nothing at the site.
+  const plan = planSite({ central: C, touched: touchedFromChanges(changes), locationId: loc, orgId: opts.orgId || null, venue: raw });
+  if (plan.lines.length) return { ...fail(`Bringing everything in would change ${plan.lines.length} thing${plan.lines.length === 1 ? '' : 's'} at ${siteName}, so nothing was put in the draft. Bring them in one at a time to see which.`), problems };
+  words.push(`Nothing changes at ${siteName} when you publish: what it does differently stays its own.`);
+  return { ok: true, changes, words, problems, counts };
 }
 
 /** "Leeds has 3 option groups of its own, not in the group menu." */
