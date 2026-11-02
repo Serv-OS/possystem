@@ -525,12 +525,27 @@ Deno.serve(async (req) => {
         for (const r of (rs ?? [])) live.add(String(r.id));
       }
       const itemIds = [...new Set((links ?? []).filter((l: any) => live.has(String(l.recipe_id))).map((l: any) => String(l.menu_item_id)))];
-      const names: Record<string, string> = {};
+      // 5.12.26: a variant carries its parent's name in front ('Latte Large', never a bare 'Large'),
+      // the same rule as Back Office's Recipes screen (menuItemLabel in src/lib/stock/recipeMatch.js).
+      const rows: Record<string, { name: string; parent_id: string | null }> = {};
       for (let i = 0; i < itemIds.length; i += 100) {
-        const { data: mis } = await sb.from('menu_items').select('id, name, menu_name, archived').in('id', itemIds.slice(i, i + 100)).eq('location_id', loc);
-        for (const m of (mis ?? [])) if (!m.archived) names[String(m.id)] = m.menu_name || m.name || 'Product';
+        const { data: mis } = await sb.from('menu_items').select('id, name, menu_name, archived, parent_id').in('id', itemIds.slice(i, i + 100)).eq('location_id', loc);
+        for (const m of (mis ?? [])) if (!m.archived) rows[String(m.id)] = { name: m.menu_name || m.name || 'Product', parent_id: m.parent_id ? String(m.parent_id) : null };
       }
-      kitchenRecipes = itemIds.filter((id) => names[id]).map((id) => ({ menu_item_id: id, name: names[id] }))
+      const parentIds = [...new Set(Object.values(rows).map((r) => r.parent_id).filter((x): x is string => !!x && !rows[x]))];
+      const parents: Record<string, string> = {};
+      for (let i = 0; i < parentIds.length; i += 100) {
+        const { data: ps } = await sb.from('menu_items').select('id, name, menu_name').in('id', parentIds.slice(i, i + 100)).eq('location_id', loc);
+        for (const m of (ps ?? [])) parents[String(m.id)] = m.menu_name || m.name || '';
+      }
+      const label = (id: string) => {
+        const r = rows[id];
+        const n = r.name.trim();
+        const pn = (r.parent_id ? (parents[r.parent_id] ?? rows[r.parent_id]?.name ?? '') : '').trim();
+        if (!pn) return n;
+        return n.toLowerCase().startsWith(pn.toLowerCase()) ? n : `${pn} ${n}`.trim();
+      };
+      kitchenRecipes = itemIds.filter((id) => rows[id]).map((id) => ({ menu_item_id: id, name: label(id) }))
         .sort((a, b) => a.name.localeCompare(b.name));
     } catch { kitchenRecipes = []; }
 

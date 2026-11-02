@@ -116,6 +116,11 @@ test('the Kitchen tab opens counting only where there is stock; the sheet is the
   assert.match(stock, /\{!areas && areasFailed && <button onClick=\{\(\) => \{ setErr\(''\); setAreasFailed\(false\); setAreasTry\(\(n\) => n \+ 1\); \}\}/, 'Try again after a failed area list');
   assert.match(stock, /\{busy && <div[^>]*>Opening the count…<\/div>\}/, 'a tapped area says it is opening');
   assert.match(stock, /\}, \[pin, areas, call, areasTry\]\);/, 'Try again re runs the area read');
+  // 5.12.26: the snapshot names a variant with its parent in front, Back Office's rule (menuItemLabel).
+  const snapshot = read('../../../supabase/functions/manager-snapshot/index.ts');
+  assert.match(snapshot, /select\('id, name, menu_name, archived, parent_id'\)\.in\('id', itemIds\.slice/, 'the recipe product read carries parent_id');
+  assert.match(snapshot, /return n\.toLowerCase\(\)\.startsWith\(pn\.toLowerCase\(\)\) \? n : `\$\{pn\} \$\{n\}`\.trim\(\);/, 'the same rule as menuItemLabel');
+  assert.match(read('../stock/recipeMatch.js'), /return n\.toLowerCase\(\)\.startsWith\(pn\.toLowerCase\(\)\) \? n : `\$\{pn\} \$\{n\}`\.trim\(\);/, 'Back Office rule unchanged');
   const recipe = read('../../surfaces/manager/ManagerRecipeCard.jsx');
   assert.doesNotMatch(recipe, /\.\.\.L\.s\.hit/, '5.12.25: hit is a 44 px icon square; it squashed every product button on the tablet');
   assert.match(recipe, /minHeight: 44, width: '100%' \}\}>/, 'product buttons span the list');
