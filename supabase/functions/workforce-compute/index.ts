@@ -25,6 +25,7 @@ import { premiumFor, anyPremium, overtimeSplit, venueMidnightIso, workweekSpan, 
 import { tipCreditTopUps } from '../_shared/tipCredit.js';
 import { ptoRules, ptoAccruals } from '../_shared/usPto.js';
 import { caRules, caOvertimeAcrossSites } from '../_shared/caOvertime.js';
+import { primaryRecord, personBalance } from '../_shared/primaryLocation.js';
 import { acaReport, monthsBetween } from '../_shared/acaHours.js';
 import { overtimeAcrossSites, overtimeRules } from '../_shared/multiSiteOvertime.js';
 
@@ -295,13 +296,32 @@ Deno.serve(async (req) => {
         .select('*').eq('id', time_off_id).eq('location_id', location_id).maybeSingle();
       if (!req) return json({ error: 'request not found' }, 404);
 
+      // 5.12.55 (Peter, 3 Nov 2026): holiday and PTO are earned at every linked site into one balance
+      // and TAKEN at the person's primary location (_shared/primaryLocation.js). An approved request
+      // filed at another site moves to the primary record first, so its deduction, labour and payroll
+      // land there. A person at one site: their record is the primary, nothing moves.
+      const { data: meRec } = await admin.from('wf_staff').select('id, person_id, org_id, location_id, primary_venue_id, created_at, status').eq('id', req.staff_id).maybeSingle();
+      let linkedRecs: any[] = meRec ? [meRec] : [];
+      if (meRec?.person_id) {
+        const { data: lr } = await admin.from('wf_staff').select('id, location_id, primary_venue_id, created_at, status')
+          .eq('org_id', meRec.org_id).eq('person_id', meRec.person_id);
+        if (lr?.length) linkedRecs = lr;
+      }
+      const prim = primaryRecord(linkedRecs) || meRec;
+      if (status === 'approved' && prim && prim.id !== req.staff_id) {
+        const { error: mvErr } = await admin.from('wf_time_off').update({ staff_id: prim.id, location_id: prim.location_id }).eq('id', time_off_id);
+        if (mvErr) return json({ error: `could not move the request to the primary location: ${mvErr.message}` }, 500);
+        req.staff_id = prim.id; req.location_id = prim.location_id;
+      }
+      const chargeLoc = String(req.location_id || location_id);
+
       const { data: vsRow } = await admin.from('wf_venue_settings')
-        .select('settings').eq('location_id', location_id).maybeSingle();
+        .select('settings').eq('location_id', chargeLoc).maybeSingle();
       const fallbackDayHours = Math.max(1, Number((vsRow?.settings as any)?.holidayDayHours) || 8);
 
       const [{ data: st }, { data: roles }] = await Promise.all([
         admin.from('wf_staff').select('id, contract_type, role_key, rate_override').eq('id', req.staff_id).maybeSingle(),
-        admin.from('wf_roles').select('key, base_rate, salary_annual').eq('location_id', location_id),
+        admin.from('wf_roles').select('key, base_rate, salary_annual').eq('location_id', chargeLoc),
       ]);
       const role = (roles ?? []).find((r: any) => r.key === st?.role_key);
       const salaried = st?.contract_type === 'salaried' || (role?.salary_annual != null && role?.base_rate == null && st?.rate_override == null);
@@ -392,7 +412,7 @@ Deno.serve(async (req) => {
       } else {
         // Idempotent: the partial unique index makes a second approval a no-op.
         const { error: ledErr } = await admin.from('wf_holiday_accrual').insert({
-          location_id, org_id: org, staff_id: req.staff_id, kind: 'taken',
+          location_id: chargeLoc, org_id: org, staff_id: req.staff_id, kind: 'taken',
           accrued_hours: -hours, accrued_pay: rate > 0 ? round2(-hours * rate) : null,
           currency: cur, source_time_off_id: time_off_id,
           note: `${days} day${days === 1 ? '' : 's'}${leaveDays && days !== Number(req.days || 0) ? ` of ${req.days} requested` : ''} ${req.start_date} → ${req.end_date} @ ${dayHours}h/day${avgUsed ? ' (52-wk avg)' : ''}`,
@@ -402,9 +422,10 @@ Deno.serve(async (req) => {
         }
       }
 
+      // One balance: every linked record's ledger.
       const { data: led } = await admin.from('wf_holiday_accrual')
-        .select('accrued_hours').eq('staff_id', req.staff_id);
-      const balance = round2((led ?? []).reduce((a: number, r: any) => a + Number(r.accrued_hours || 0), 0));
+        .select('accrued_hours').in('staff_id', linkedRecs.length ? linkedRecs.map((r: any) => r.id) : [req.staff_id]);
+      const balance = personBalance(led ?? []);
 
       await writeAudit(location_id, org, 'timeoff.decide', {
         actorId: user.id,

@@ -42,6 +42,7 @@ import { regionPack } from '../_shared/regionPack.js';
 import { linkedShiftsFor } from '../_shared/linkedShifts.js';
 import { asksCashTips } from '../_shared/cashTips.js';
 import { pickClockTarget } from '../_shared/shiftClockTarget.js';
+import { primaryRecord } from '../_shared/primaryLocation.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -672,8 +673,9 @@ Deno.serve(async (req) => {
       // widening the main Promise.all's failure surface.
       const [{ data: leave }, { data: accrual }, { data: roleRow }] = await Promise.all([
         admin.from('wf_time_off').select('id, type, start_date, end_date, days, note, status, created_at')
-          .eq('staff_id', staff.id).order('created_at', { ascending: false }).limit(20),
-        admin.from('wf_holiday_accrual').select('accrued_hours').eq('staff_id', staff.id).limit(5000),
+          .in('staff_id', myIds).order('created_at', { ascending: false }).limit(20),
+        // 5.12.55: one balance, earned at every linked site.
+        admin.from('wf_holiday_accrual').select('accrued_hours').in('staff_id', myIds).limit(5000),
         staff.role_key
           ? admin.from('wf_roles').select('base_rate, salary_annual').eq('location_id', staff.location_id).eq('key', staff.role_key).maybeSingle()
           : Promise.resolve({ data: null }),
@@ -856,8 +858,15 @@ Deno.serve(async (req) => {
       }
       const days = Math.round((new Date(to + 'T00:00:00').getTime() - new Date(from + 'T00:00:00').getTime()) / 86400000) + 1;
       if (days > 60) return json({ error: 'That is more than 60 days — talk to your manager directly' }, 400);
+      // 5.12.55: time off is taken at the person's primary location (_shared/primaryLocation.js).
+      let homeRec = { id: staff.id, location_id: staff.location_id };
+      if (staff.person_id) {
+        const { data: lr } = await admin.from('wf_staff').select('id, location_id, primary_venue_id, created_at, status')
+          .eq('org_id', staff.org_id).eq('person_id', staff.person_id);
+        homeRec = primaryRecord(lr ?? []) || homeRec;
+      }
       const { error } = await admin.from('wf_time_off').insert({
-        location_id: staff.location_id, org_id: staff.org_id, staff_id: staff.id,
+        location_id: homeRec.location_id, org_id: staff.org_id, staff_id: homeRec.id,
         type, start_date: from, end_date: to, days, note: String(body.note || '').slice(0, 500) || null, status: 'pending',
       });
       if (error) return json({ error: error.message }, 500);

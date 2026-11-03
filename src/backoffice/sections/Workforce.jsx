@@ -14,7 +14,7 @@ import { supabase } from '../../lib/supabase';
 import { Icon } from '../../components/ServOSIcons';
 import { DAYS, TODAY, SECTIONS, ROLES, SECTION_REQ, FORECAST, PAYROWS } from '../../staff/seed';
 import { hoursOf, effectiveRate, wageByDay, labourPct, LABOUR_TARGET, troncRun, tsVariance, isHourly, FIXED_HOLIDAY_DAYS } from '../../staff/labour';
-import { loadStaff, saveStaff, offboardStaff, markPosUser, loadRoles, loadSections, loadSettings, loadDocuments, loadTimesheets, loadOnboarding, loadAccrual, accrualBalances, signedDocUrl, saveStaffBank, saveOnboarding, sendEmail, sendPortalInvite, loadCompanySites, loadCompanyStaffRecords, loadSiteRoles, addStaffSite, linkStaffRecords, unlinkStaffRecord } from '../../staff/wfData';
+import { loadStaff, saveStaff, offboardStaff, markPosUser, loadRoles, loadSections, loadSettings, loadDocuments, loadTimesheets, loadOnboarding, loadAccrual, accrualBalances, signedDocUrl, saveStaffBank, saveOnboarding, sendEmail, sendPortalInvite, loadCompanySites, loadCompanyStaffRecords, loadSiteRoles, addStaffSite, linkStaffRecords, unlinkStaffRecord, setPrimaryLocation } from '../../staff/wfData';
 import { buildWeek } from '../../staff/wfWeek';
 import { otherSites, linkCandidates, sitesToAdd, linkErrorWords } from '../../staff/peopleAcrossSites';
 import WfRota from './workforce/WfRota';
@@ -685,6 +685,16 @@ function SitesPanel({ s, ctx, roles = ROLES, showToast, onChanged }) {
               {l.leaver && <Badge tone="grey">Leaver</Badge>}
             </div>
           ))}
+          {/* 5.12.55: holiday and PTO are earned at every site and taken at the primary location. */}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 12.5, marginTop: 8 }}>
+            <span style={{ color: 'var(--t2)' }}><b>Primary location</b> for holiday and PTO:</span>
+            <select className="input" style={{ padding: '4px 8px', fontSize: 12.5 }} disabled={!!busy}
+              value={s.primaryVenueId || ctx.locationId}
+              onChange={e => run('primary', () => setPrimaryLocation(s.id, e.target.value), 'Primary location saved')}>
+              {[{ locationId: ctx.locationId, site: ctx.locName }, ...linked.filter(l => !l.leaver)].map(o => <option key={o.locationId} value={o.locationId}>{o.site}</option>)}
+            </select>
+            <span style={{ color: 'var(--t4)', fontSize: 11.5 }}>Earned at every site into one balance; time off is taken and paid here.</span>
+          </div>
           <div style={{ marginTop: 8 }}>
             {!confirmUnlink
               ? <button className="btn btn-ghost btn-xs" disabled={!!busy} onClick={() => setConfirmUnlink(true)}>Unlink from other sites</button>

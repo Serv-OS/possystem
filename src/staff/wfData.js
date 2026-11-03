@@ -193,7 +193,7 @@ function mapStaff(r) {
   return {
     id: r.id, name: r.name, role: r.role_key, contractType: r.contract_type,
     mobile: r.mobile, email: r.email, dob: r.dob, startDate: r.start_date,
-    status: r.status, posUserId: r.pos_user_id, sectionIds: r.section_ids || [],
+    status: r.status, posUserId: r.pos_user_id, sectionIds: r.section_ids || [], primaryVenueId: r.primary_venue_id || null,
     rateOverride: r.rate_override, contractedWeek: r.contracted_week,
     weeklyHoursTarget: r.weekly_hours_target != null ? Number(r.weekly_hours_target) : null,
     holidayEntitlementDays: r.holiday_entitlement_days != null ? Number(r.holiday_entitlement_days) : null,
@@ -239,7 +239,7 @@ export async function saveStaff(member, locationId, orgId) {
     contract_type: member.contractType || 'partTime', mobile: member.mobile || null,
     email: member.email || null, dob: member.dob || null, start_date: member.startDate || null,
     address: member.address || null, emergency_contact: member.emergencyContact || null,
-    primary_venue_id: locationId, venue_ids: [locationId], status: member.status || 'active',
+    venue_ids: [locationId], status: member.status || 'active',
   };
   // NI number: only write when the form actually carried the field (avoid
   // wiping it from save paths that don't know about it).
@@ -266,6 +266,9 @@ export async function saveStaff(member, locationId, orgId) {
   if (member.rateOverride !== undefined) row.rate_override = (member.rateOverride === '' || member.rateOverride == null) ? null : Number(member.rateOverride);
   const real = member.id && !String(member.id).startsWith('tmp-') && !String(member.id).startsWith('wf-');
   if (real) row.id = member.id;
+  // 5.12.55: the primary location (holiday and PTO) is set once, when the record is made; after that only
+  // the Sites panel changes it (setPrimaryLocation), so a save at another site never moves it.
+  else row.primary_venue_id = locationId;
   const q = real ? supabase.from('wf_staff').upsert(row, { onConflict: 'id' }) : supabase.from('wf_staff').insert(row);
   const { data, error } = await q.select().single();
   if (error) { console.warn('[wf] saveStaff:', error.message); throw new Error(error.message); }
@@ -339,6 +342,8 @@ export const addStaffSite = (staffId, locationId, roleKey = null, rate = null) =
 export const linkStaffRecords = (staffId, otherId) => peopleDoor('wf_staff_link', { p_staff_id: staffId, p_other_id: otherId });
 /** This site only again. */
 export const unlinkStaffRecord = (staffId) => peopleDoor('wf_staff_unlink', { p_staff_id: staffId });
+/** 5.12.55: a person's primary location for holiday and PTO, on every linked record (20261118a). */
+export const setPrimaryLocation = (staffId, locationId) => peopleDoor('wf_staff_set_primary', { p_staff_id: staffId, p_location: locationId });
 
 // ============================================================================
 // ROLES (wf_roles — editable rate card)
