@@ -16,6 +16,7 @@
 //     Apply-only: the discount is staged locally; loyalty-redeem fires
 //     after payment succeeds and the order exists (v5.5.897).
 
+import { typedPromoCode, giftCodeDigits, promoRefusalWords } from '../../lib/online/promoEntry.js';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { prepMinutes, prepRuleFromLocation, liveOrderCount } from '../../lib/prepTime';
 import { tipRuleFor, tipChips, tipInitialKey, tipAmount as calcTip } from '../../lib/tipping';
@@ -650,7 +651,10 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   };
 
   // ── Promo/offer code validate (no write — redeemed after the order is placed) ──
+  // 5.12.40: why the last code was refused, in plain words (promoEntry.promoRefusalWords).
+  const promoRefusalRef = useRef('');
   const tryPromoCode = async (code) => {
+    promoRefusalRef.current = '';
     try {
       const token = await getAuthToken();
       const baseUrl = import.meta.env.VITE_SUPABASE_URL;
@@ -677,6 +681,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         setGiftCode('');
         return true;
       }
+      promoRefusalRef.current = promoRefusalWords(j, money);
       return false;
     } catch {
       return false;
@@ -685,14 +690,15 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
 
   // ── Gift card OR promo code lookup — one field handles both ───────────
   const lookupGiftCard = async () => {
-    const clean = giftCode.replace(/[\s-]/g, '');
+    // 5.12.40: the gift card check drops separators; a promo code keeps its hyphen (promoEntry.js).
+    const clean = giftCodeDigits(giftCode);
     if (clean.length < 3) { setGiftError('Enter a code'); return; }
     setGiftLoading(true); setGiftError(''); setGiftCard(null);
     try {
       // Short codes can't be gift cards (16 chars) — try promo directly.
       if (clean.length < 16) {
-        if (await tryPromoCode(clean.toUpperCase())) return;
-        throw new Error('Code not recognised');
+        if (await tryPromoCode(typedPromoCode(giftCode))) return;
+        throw new Error(promoRefusalRef.current || 'Code not recognised');
       }
       const token = await getAuthToken();
       const baseUrl = import.meta.env.VITE_SUPABASE_URL;
@@ -704,8 +710,8 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       const j = await res.json();
       if (!res.ok || j.error) {
         // Not a gift card — try the same code as a promo before erroring.
-        if (!promoApplied && await tryPromoCode(clean.toUpperCase())) return;
-        throw new Error(j.error === 'Card not found' ? 'Code not recognised' : (j.error || `HTTP ${res.status}`));
+        if (!promoApplied && await tryPromoCode(typedPromoCode(giftCode))) return;
+        throw new Error(j.error === 'Card not found' ? (promoRefusalRef.current || 'Code not recognised') : (j.error || `HTTP ${res.status}`));
       }
       if (j.status !== 'active') throw new Error(`Card is ${j.status}`);
       if (j.balance <= 0) throw new Error('Card has zero balance');

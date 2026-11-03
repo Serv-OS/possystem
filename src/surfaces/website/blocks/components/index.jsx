@@ -8,10 +8,11 @@ import { OrderBar, OrderEmbed, LoyaltyJoin, GiftCards, BookTable, Waitlist } fro
 import { Hours, FindUs } from './PlaceBlocks.jsx';
 import { Text, Columns, Gallery, Button, FAQ, Instagram, Divider, Spacer, CustomHtml, Reviews, BlogList, Image, Heading } from './ContentBlocks.jsx';
 import { Row } from './LayoutBlocks.jsx';
+import { Form } from './FormBlock.jsx';
 import { BLOCK_REGISTRY } from '../nested.js';
 
 export const COMPONENTS = Object.freeze({
-  Hero, OrderBar, LiveMenu, Specials, OrderEmbed, LoyaltyJoin, GiftCards, BookTable, Waitlist, Hours, FindUs, Reviews, BlogList,
+  Hero, OrderBar, LiveMenu, Specials, OrderEmbed, LoyaltyJoin, GiftCards, BookTable, Waitlist, Hours, FindUs, Reviews, BlogList, Form,
   Text, Columns, Row, Gallery, Button, FAQ, Instagram, Divider, Spacer, CustomHtml, Image, Heading,
 });
 

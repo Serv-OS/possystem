@@ -36,6 +36,7 @@ const cardWords = (p, brand, defLabel) => {
 };
 const cardStyle = (url) => (url ? ` data-img="1" style="background-image:linear-gradient(rgba(0,0,0,.18),rgba(0,0,0,.5)),url(${attr(JSON.stringify(url))})"` : '');
 import { canonicalHost } from '../hostParse.js';
+import { formHtml } from '../../../lib/forms/formHtml.js';
 
 const DIET_WORDS = { V: 'Vegetarian', VG: 'Vegan', GF: 'Gluten free', DF: 'Dairy free' };
 
@@ -238,6 +239,18 @@ const R = {
     const art = p.show_art ? `<div class="${CN.giftArt}"${cardStyle(p.image)}>${cardWords(p, name, 'Gift card')}</div>` : '';
     const btns = buy ? `<div><a class="${cls(CN.btn, CN.btnPrimary)}" href="${attr(buy)}">Buy a gift card</a> <a class="${cls(CN.btn, CN.btnSecondary)}" href="${attr(bal)}">Check a balance</a></div>` : '';
     return section(b, CN.gift, `<div>${heading(p.headline)}${p.sub ? `<p class="${CN.muted}">${esc(p.sub)}</p>` : ''}${btns}</div>${art}`);
+  },
+  // 5.12.40: a marketing form, server rendered as a real <form method="post"> that works with no
+  // JavaScript. The form comes from ctx.forms (api/site.js reads it for the page); none, or not yet
+  // picked, paints nothing on the live site (never an error).
+  Form(ctx, b) {
+    const p = b.props;
+    const form = p.form_id && ctx.forms ? ctx.forms[p.form_id] : null;
+    if (!form) return '';
+    const st = ctx.formState || {};
+    const returnTo = ctx.host ? `https://${ctx.host}${ctx.path || '/'}` : '';
+    const inner = formHtml(form, { action: ctx.formAction || '', returnTo, source: 'website', title: p.title, sub: p.sub, sent: st.sent === form.id, error: st.errorFor === form.id ? st.error : '' });
+    return inner ? section(b, 'w-formblock', inner) : '';
   },
   BookTable(ctx, b) {
     const p = b.props;
@@ -469,7 +482,7 @@ function breadcrumbHtml(crumbs) {
 }
 
 /** Build the render context every renderer reads. */
-export function buildCtx({ snapshot, host, path, menu, reviews, customerRoot, now, menuVenue, pageKind }) {
+export function buildCtx({ snapshot, host, path, menu, reviews, customerRoot, now, menuVenue, pageKind, forms, formAction, formState }) {
   const site = (snapshot && snapshot.site) || {};
   const locations = siteLocations(snapshot);
   return {
@@ -481,6 +494,9 @@ export function buildCtx({ snapshot, host, path, menu, reviews, customerRoot, no
     pageKind: pageKind || null,
     host: String(host || ''), path: path || '/', menu: menu || null, reviews: reviews || [],
     customerRoot: customerRoot || 'serv-os.app', now: now instanceof Date ? now : new Date(), h1Used: false, faqItems: [],
+    // 5.12.40: the page's marketing forms by id, the form-submit address, and the outcome of a
+    // plain post (?form_sent= / ?form_error=) so the page paints the thank you words or the error.
+    forms: forms && typeof forms === 'object' ? forms : {}, formAction: formAction || '', formState: formState || null,
   };
 }
 
@@ -509,10 +525,10 @@ function ogTag(prop, content) { return content ? `<meta property="${attr(prop)}"
  * link must never be indexed in place of the live page.
  */
 export function renderPage(args) {
-  const { snapshot, path = '/', host = '', route, menu, reviews, customerRoot, now, status, menuVenue } = args || {};
+  const { snapshot, path = '/', host = '', route, menu, reviews, customerRoot, now, status, menuVenue, forms, formAction, formState } = args || {};
   const preview = !!(args && (args.preview === true || status === 'draft' || (snapshot && snapshot.preview === true)));
   const page = (route && route.page) || args.page || null;
-  const ctx = buildCtx({ snapshot, host, path, menu, reviews, customerRoot, now, menuVenue, pageKind: page ? page.kind : null });
+  const ctx = buildCtx({ snapshot, host, path, menu, reviews, customerRoot, now, menuVenue, pageKind: page ? page.kind : null, forms, formAction, formState });
   const post = route && route.kind === 'post' ? route.post : null;
   const kind = route ? route.kind : (page ? 'page' : 'notfound');
   const crumbs = breadcrumbsFor(route || { kind: page ? 'page' : 'notfound', page, path }, snapshot);

@@ -146,7 +146,7 @@ test('env names reuse the api/ conventions and the release pack names', () => {
 });
 
 test('requestTarget reads host and path from the rewrite', () => {
-  assert.deepEqual(requestTarget({ url: '/api/site?path=/menu', headers: { host: 'WWW.Mozzpizza.com:443' } }), { host: 'www.mozzpizza.com', path: '/menu', siteParam: null, token: null, venue: null });
+  assert.deepEqual(requestTarget({ url: '/api/site?path=/menu', headers: { host: 'WWW.Mozzpizza.com:443' } }), { host: 'www.mozzpizza.com', path: '/menu', siteParam: null, token: null, venue: null, formState: { sent: null, errorFor: null, error: '' } });
   assert.deepEqual(requestTarget({ url: '/api/site?path=/index.html', headers: { 'x-forwarded-host': 'a.sites.serv-os.app, proxy', host: 'x' } }).path, '/');
   const t = requestTarget({ url: '/preview?token=abc&site=Mozz', headers: {} });
   assert.equal(t.path, '/preview');

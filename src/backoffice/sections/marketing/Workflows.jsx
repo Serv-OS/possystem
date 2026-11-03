@@ -5,6 +5,10 @@
 // content (block email + SMS) and optional offer. Customers are enrolled on the trigger and advanced
 // daily by the engine (marketing-run). All sends go through marketing-send (consent/suppression/
 // sandbox enforced). Reads/writes via the marketing-workflows edge fn.
+// 5.12.40: trigger "Form submitted" (pick one of Customers, Forms): the person who sends the form
+// joins the moment they send it, only with the marketing tick. "Send a promo code" adds a step with
+// an offer and a message carrying {{promo_code}} (one code per person per form unless the offer
+// allows more).
 
 import { useEffect, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';
@@ -36,6 +40,18 @@ const STATUS_COLOR = { active: 'var(--grn)', paused: 'var(--amber,#d98a00)', dra
 
 const newStep = (n) => ({ key: `s${n}_${Math.round(Math.random() * 1e6)}`, after_days: n === 0 ? 0 : 3, channel: 'email', subject: '', email_blocks: STARTER_BLOCKS(), sms_body: '', offer_id: '' });
 const BLANK = () => ({ name: '', description: '', status: 'draft', entry_trigger: { type: 'signup' }, segment_id: '', steps: [newStep(0)] });
+// 5.12.40: the "Send a promo code" step: straight away, an offer to pick, the code in the message.
+const promoStep = (n, offerId = '') => ({
+  ...newStep(n), after_days: 0, channel: 'email', offer_id: offerId,
+  subject: 'Your code: {{promo_code}}',
+  email_blocks: [
+    STARTER_BLOCKS()[0],
+    { type: 'heading', text: 'Thanks, {{first_name}}!', align: 'center' },
+    { type: 'text', text: 'Here is your code: {{promo_code}} ({{offer}}). Show it in store or type it at checkout.', align: 'center' },
+  ],
+  sms_body: 'Thanks {{first_name}}! Your code is {{promo_code}} ({{offer}}). Reply STOP to opt out.',
+});
+const TRIGGER_WORDS = { signup: 'new sign up', birthday: 'birthday', segment: 'entering a segment', wifi_connect: 'WiFi connect', wifi_not_loyal: 'WiFi guest not in loyalty', manual: 'manual only', form_submitted: 'form sent' };
 const ensureStepBlocks = (st) => ({ ...st, email_blocks: (Array.isArray(st.email_blocks) && st.email_blocks.length) ? st.email_blocks : (st.email_html ? [{ type: 'html', html: st.email_html }] : STARTER_BLOCKS()) });
 
 export default function Workflows() {
@@ -45,6 +61,7 @@ export default function Workflows() {
   const [segments, setSegments] = useState([]);
   const [prebuilt, setPrebuilt] = useState([]);
   const [offers, setOffers] = useState([]);
+  const [forms, setForms] = useState([]);
   const [editing, setEditing] = useState(null);
   const [expanded, setExpanded] = useState(0);
   const [save, setSave] = useState({});
@@ -56,7 +73,7 @@ export default function Workflows() {
 
   const load = async (id = locId) => {
     const { data } = await supabase.functions.invoke('marketing-workflows', { body: { action: 'list_workflows', ops_location_id: id } });
-    setWorkflows(data?.workflows || []); setSegments(data?.segments || []); setPrebuilt(data?.prebuilt || []); setOffers(data?.offers || []);
+    setWorkflows(data?.workflows || []); setSegments(data?.segments || []); setPrebuilt(data?.prebuilt || []); setOffers(data?.offers || []); setForms(data?.forms || []);
   };
 
   const segmentOptions = () => (
@@ -78,6 +95,7 @@ export default function Workflows() {
   const saveWf = async () => {
     if (!editing?.name?.trim()) { setSave({ err: 'Give the automation a name.' }); return; }
     if (!editing.steps.length) { setSave({ err: 'Add at least one step.' }); return; }
+    if (editing.entry_trigger?.type === 'form_submitted' && !editing.entry_trigger?.form_id) { setSave({ err: 'Pick the form that starts this automation.' }); return; }
     setSave({ busy: true });
     try {
       const steps = editing.steps.map((st) => ({ key: st.key, after_days: Number(st.after_days) || 0, channel: st.channel, subject: st.subject || null, email_blocks: st.email_blocks || [], email_html: (st.channel === 'email' || st.channel === 'both') ? compileEmail(st.email_blocks || []) : null, sms_body: st.sms_body || null, offer_id: st.offer_id || null }));
@@ -95,6 +113,7 @@ export default function Workflows() {
   // step editing
   const setStep = (i, patch) => setEditing((e) => ({ ...e, steps: e.steps.map((s, j) => (j === i ? { ...s, ...patch } : s)) }));
   const addStep = () => setEditing((e) => { const next = [...e.steps, newStep(e.steps.length)]; setExpanded(next.length - 1); return { ...e, steps: next }; });
+  const addPromoStep = () => setEditing((e) => { const next = [...e.steps, promoStep(e.steps.length, offers[0]?.id || '')]; setExpanded(next.length - 1); return { ...e, steps: next }; });
   const rmStep = (i) => setEditing((e) => ({ ...e, steps: e.steps.filter((_, j) => j !== i) }));
   const moveStep = (i, d) => setEditing((e) => { const j = i + d; if (j < 0 || j >= e.steps.length) return e; const n = [...e.steps]; [n[i], n[j]] = [n[j], n[i]]; return { ...e, steps: n }; });
 
@@ -123,7 +142,7 @@ export default function Workflows() {
               <div key={w.id} style={S.row}>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)' }}>{w.name} <span style={{ ...S.pill, marginLeft: 6, color: STATUS_COLOR[w.status] || 'var(--t2)' }}>{w.status}</span></div>
-                  <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>On {w.entry_trigger?.type || 'manual'} · {(w.steps || []).length} step{(w.steps || []).length === 1 ? '' : 's'}</div>
+                  <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>On {TRIGGER_WORDS[w.entry_trigger?.type || 'manual'] || w.entry_trigger?.type}{w.entry_trigger?.type === 'form_submitted' ? `: ${forms.find((f) => f.id === w.entry_trigger.form_id)?.name || 'a form'}` : ''} · {(w.steps || []).length} step{(w.steps || []).length === 1 ? '' : 's'}</div>
                   {rm.summary && <div style={{ ...S.ok, marginTop: 6 }}>Ran: {rm.summary.enrolled} enrolled · {rm.summary.advanced} advanced · {rm.summary.completed} completed{rm.summary.failed ? ` · ${rm.summary.failed} failed` : ''}</div>}
                   {rm.err && <div style={S.err}>{rm.err}</div>}
                 </div>
@@ -151,15 +170,21 @@ export default function Workflows() {
               <select style={S.input} value={tr.type || 'signup'} onChange={(e) => setTrigger({ type: e.target.value })}>
                 <option value="signup">New sign-up</option><option value="birthday">Birthday</option><option value="segment">Entering a segment</option>
                 <option value="wifi_connect">Connected to WiFi</option><option value="wifi_not_loyal">WiFi guest — not yet in loyalty</option>
+                <option value="form_submitted">Form submitted</option>
                 <option value="manual">Manual only</option>
               </select>
             </div>
+            {tr.type === 'form_submitted' && <div style={S.field}><label style={S.label}>Form</label>
+              <select style={S.input} value={tr.form_id || ''} onChange={(e) => setTrigger({ form_id: e.target.value })}><option value="">Select…</option>{forms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}</select>
+              {!forms.length && <div style={S.hint}>No forms yet. Make one in Customers, Forms.</div>}
+            </div>}
             {(tr.type || 'signup') === 'birthday' && <div style={S.field}><label style={S.label}>Days before birthday</label><input style={S.input} type="number" min={0} max={60} value={tr.days_before ?? 7} onChange={(e) => setTrigger({ days_before: Number(e.target.value) })} /></div>}
             {(tr.type === 'wifi_connect' || tr.type === 'wifi_not_loyal') && <div style={S.field}><label style={S.label}>Connected within (days)</label><input style={S.input} type="number" min={1} max={30} value={tr.days_within ?? 2} onChange={(e) => setTrigger({ days_within: Number(e.target.value) })} /></div>}
             {tr.type === 'segment' && <div style={S.field}><label style={S.label}>Segment</label>
               <select style={S.input} value={tr.segment_id || ''} onChange={(e) => setTrigger({ segment_id: e.target.value })}><option value="">Select…</option>{segmentOptions()}</select>
             </div>}
           </div>
+          {tr.type === 'form_submitted' && <div style={{ ...S.hint, marginTop: -4, marginBottom: 8 }}>The person joins the moment they send the form, only when they ticked the marketing box, and only once per form (unless the offer allows more than one code each). A first step with 0 days sends straight away. Add a <b>Send a promo code</b> step below.</div>}
           {(tr.type === 'wifi_connect' || tr.type === 'wifi_not_loyal') && <div style={{ ...S.hint, marginTop: -4, marginBottom: 8 }}>Tip: a “review request” automation = trigger “Connected to WiFi”, step 1 delay ≈ 0.17 days (4h), message asking for a review. Enrols once per guest.</div>}
 
           <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--t1)', margin: '8px 0' }}>Steps</div>
@@ -198,7 +223,10 @@ export default function Workflows() {
               )}
             </div>
           ))}
-          <button style={S.ghost} onClick={addStep}>+ Add step</button>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button style={S.ghost} onClick={addStep}>+ Add step</button>
+            <button style={S.ghost} onClick={addPromoStep}>+ Send a promo code</button>
+          </div>
 
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 16 }}>
             <button style={S.btn} onClick={saveWf} disabled={save.busy}>{save.busy ? 'Saving…' : (editing.id ? 'Save automation' : 'Create automation')}</button>

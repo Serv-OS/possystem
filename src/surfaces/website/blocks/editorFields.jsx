@@ -153,6 +153,24 @@ export function MenuField({ name, value, onChange, readOnly, field, opts }) {
   );
 }
 
+/** 5.12.40 form: the company's marketing forms by name; an unknown saved id stays as "Form <id>". */
+export function FormField({ name, value, onChange, readOnly, field, opts }) {
+  const v = typeof value === 'string' ? value : '';
+  const list = Array.isArray(opts && opts.forms) ? opts.forms : [];
+  const known = list.some((f) => f.id === v);
+  return (
+    <div style={F.wrap}>
+      <Label field={field} name={name} />
+      <select style={F.select} value={v} disabled={readOnly} onChange={(e) => onChange(e.target.value)}>
+        <option value="">Pick a form</option>
+        {list.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+        {v && !known ? <option value={v}>Form {v.slice(0, 8)} (not found)</option> : null}
+      </select>
+      {!list.length && <div style={F.hint}>No forms yet. Make one in Customers, Forms, then pick it here.</div>}
+    </div>
+  );
+}
+
 /** categories: tick the categories to show; none ticked = all. Written as [{ id }] in menu order. */
 export function CategoriesField({ name, value, onChange, readOnly, field, opts }) {
   const options = categoryOptions(opts && opts.categories);

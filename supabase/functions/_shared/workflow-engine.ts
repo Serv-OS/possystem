@@ -5,12 +5,21 @@
 //      has an offer), then schedule the next step or complete. Per-step idempotency via unique
 //      (enrollment_id, step_key) with the same claim-first / reclaim / guarded-recovery model as slice 4.
 // `opts.now` (ISO) overrides the clock so a drip can be fast-forwarded in tests; the cron omits it.
+//
+// 5.12.40 Marketing forms: a "Form submitted" trigger ({ type:'form_submitted', form_id }) enrols
+// nobody on the daily pass; the public form-submit function enrols the person the moment they send
+// the form (enrollFromForm) and runs just that enrollment (opts.enrollmentId), so a step with no
+// delay sends straight away. Codes carry the form and the automation (promo_codes.form_id,
+// workflow_id). A step with a code is skipped, with no code issued, when the person has none of
+// the step's channels. A round (workflow_enrollments.round) lets the same person through again
+// when the offer allows more than one code each; each round's steps are keyed <key>#r<round>.
 
 import { genCode } from './promo.ts';
+import { planFormEnrol, reachableChannels, roundStepKey, formTriggerId } from './formRules.js';
 
 type SB = ReturnType<typeof import('https://esm.sh/@supabase/supabase-js@2').createClient>;
 
-export interface WfOpts { today: string; supabaseUrl: string; serviceRole: string; now?: string; }
+export interface WfOpts { today: string; supabaseUrl: string; serviceRole: string; now?: string; enrollmentId?: string; }
 export interface WfSummary { workflow_id: string; name: string; enrolled: number; advanced: number; completed: number; skipped: number; failed: number; error?: string; }
 
 const TERMINAL = ['sent', 'partial', 'skipped'];
@@ -33,14 +42,25 @@ async function resolveIds(sb: SB, org: string, def: any): Promise<string[]> {
   return out;
 }
 
-async function issueCode(sb: SB, org: string, offer: any, customerId: string): Promise<string | null> {
+// A column the database does not have yet (the forms SQL not run): retry without the attribution
+// so a code is still issued. Same reading as the app's isMissingColumnError.
+const missingColumn = (e: any) => !!e && (e.code === '42703' || e.code === 'PGRST204' || /column .* does not exist|Could not find the '.*' column/i.test(String(e.message || '')));
+
+async function issueCode(sb: SB, org: string, offer: any, customerId: string, attrib: { form_id?: string | null; workflow_id?: string | null } = {}): Promise<string | null> {
+  let withAttrib = !!(attrib.form_id || attrib.workflow_id);
   for (let a = 0; a < 6; a++) {
     const code = genCode(offer.code_prefix || '', offer.code_length || 5);
-    const { data, error } = await sb.from('promo_codes').insert({
+    const row: Record<string, unknown> = {
       offer_id: offer.id, org_id: org, code, customer_id: customerId,
       uses_allowed: 1, expires_at: offer.valid_to || null, status: 'issued',
-    }).select('code').maybeSingle();
-    if (!error && data) return data.code;
+    };
+    if (withAttrib) { row.form_id = attrib.form_id || null; row.workflow_id = attrib.workflow_id || null; }
+    const { data, error } = await sb.from('promo_codes').insert(row).select('code').maybeSingle();
+    if (!error && data) {
+      try { await sb.from('offers').update({ issued_count: (Number(offer.issued_count) || 0) + 1, updated_at: new Date().toISOString() }).eq('id', offer.id); offer.issued_count = (Number(offer.issued_count) || 0) + 1; } catch (_e) { /* the count is a display figure */ }
+      return data.code;
+    }
+    if (withAttrib && missingColumn(error)) { withAttrib = false; a--; }
   }
   return null;
 }
@@ -91,7 +111,7 @@ async function entryAudience(sb: SB, wf: any, opts: WfOpts): Promise<string[]> {
       }
       ids = ids.filter((id) => !loyal.has(id));
     }
-  } else { return []; }   // manual → only enrolled via the BO action
+  } else { return []; }   // manual → only enrolled via the BO action; form_submitted → by form-submit (enrollFromForm)
   if (wf.segment_id && type !== 'segment') {
     const { data: seg } = await sb.from('segments').select('definition').eq('id', wf.segment_id).eq('org_id', org).maybeSingle();
     if (seg) { const set = new Set(await resolveIds(sb, org, seg.definition)); ids = ids.filter((id) => set.has(id)); }
@@ -117,6 +137,52 @@ export async function enrollCustomers(sb: SB, wf: any, customerIds: string[], op
   return { enrolled, skipped };
 }
 
+/**
+ * 5.12.40: take the person who just sent a form into a "Form submitted" automation. One code per
+ * person per form unless the offer allows more (planFormEnrol in formRules.js decides). Returns the
+ * enrollment to run now, or null with the reason it was skipped.
+ */
+export async function enrollFromForm(sb: SB, wf: any, customerId: string, consent: boolean, opts: WfOpts): Promise<{ enrollmentId: string | null; action: string; reason: string }> {
+  const steps = Array.isArray(wf.steps) ? wf.steps : [];
+  if (!steps.length || !formTriggerId(wf)) return { enrollmentId: null, action: 'skip', reason: 'not_a_form_automation' };
+  const { data: existing } = await sb.from('workflow_enrollments').select('id, status, round').eq('workflow_id', wf.id).eq('customer_id', customerId).maybeSingle();
+  let codesFromForm = 0;
+  if (existing) {
+    const { count } = await sb.from('workflow_step_sends').select('id', { count: 'exact', head: true }).eq('enrollment_id', existing.id).not('promo_code', 'is', null).in('status', ['sent', 'partial']);
+    codesFromForm = count ?? 0;
+  }
+  const offerStep = steps.find((st: any) => st && st.offer_id);
+  let perCustomer = 1;
+  let offerRedeemed = 0;
+  if (offerStep) {
+    const { data: offer } = await sb.from('offers').select('per_customer_limit').eq('id', offerStep.offer_id).eq('org_id', wf.org_id).maybeSingle();
+    perCustomer = Number(offer?.per_customer_limit) || 1;
+    // 5.12.40: uses of the offer already made (a use given back by a refund does not count, as in
+    // promo-redeem; before that column exists every use counts).
+    const used = () => sb.from('promo_redemptions').select('id', { count: 'exact', head: true }).eq('offer_id', offerStep.offer_id).eq('customer_id', customerId);
+    let { count, error } = await used().is('released_at', null);
+    if (error) ({ count } = await used());
+    offerRedeemed = count ?? 0;
+  }
+  const plan = planFormEnrol({ consent, enrollment: existing, codesFromForm, perCustomer, offerRedeemed });
+  const nowMs = new Date(opts.now || new Date().toISOString()).getTime();
+  const firstDue = new Date(nowMs + (Number(steps[0].after_days) || 0) * 86400000).toISOString();
+  if (plan.action === 'enrol') {
+    const { data: en } = await sb.from('workflow_enrollments')
+      .upsert({ org_id: wf.org_id, workflow_id: wf.id, customer_id: customerId, status: 'active', current_step: 0, next_run_at: firstDue }, { onConflict: 'workflow_id,customer_id', ignoreDuplicates: true })
+      .select('id').maybeSingle();
+    return en ? { enrollmentId: en.id, action: 'enrol', reason: plan.reason } : { enrollmentId: null, action: 'skip', reason: 'raced' };
+  }
+  if (plan.action === 'rearm' && existing) {
+    // Only a finished enrollment is re-armed (the status filter makes two racing submits arm it once).
+    const { data: en } = await sb.from('workflow_enrollments')
+      .update({ status: 'active', current_step: 0, next_run_at: firstDue, completed_at: null, round: (Number(existing.round) || 0) + 1 })
+      .eq('id', existing.id).neq('status', 'active').select('id').maybeSingle();
+    return en ? { enrollmentId: en.id, action: 'rearm', reason: plan.reason } : { enrollmentId: null, action: 'skip', reason: 'raced' };
+  }
+  return { enrollmentId: null, action: 'skip', reason: plan.reason };
+}
+
 export async function runWorkflow(sb: SB, wf: any, opts: WfOpts): Promise<WfSummary> {
   const org = wf.org_id;
   const steps = Array.isArray(wf.steps) ? wf.steps : [];
@@ -133,19 +199,25 @@ export async function runWorkflow(sb: SB, wf: any, opts: WfOpts): Promise<WfSumm
   };
 
   // 1. ENROLL — use the run's own clock so an immediate (after_days 0) step 0 is due in THIS run.
+  // 5.12.40: a run for one enrollment (form-submit) enrols nobody else.
   const o = { ...opts, now: nowIso };
-  try { const er = await enrollCustomers(sb, wf, await entryAudience(sb, wf, o), o); summary.enrolled = er.enrolled; }
-  catch (e) { summary.error = `enroll: ${e instanceof Error ? e.message : e}`; }
+  if (!opts.enrollmentId) {
+    try { const er = await enrollCustomers(sb, wf, await entryAudience(sb, wf, o), o); summary.enrolled = er.enrolled; }
+    catch (e) { summary.error = `enroll: ${e instanceof Error ? e.message : e}`; }
+  }
 
   // 2. ADVANCE due enrollments (one step per enrollment per run).
-  const { data: due } = await sb.from('workflow_enrollments').select('*').eq('workflow_id', wf.id).eq('status', 'active').lte('next_run_at', nowIso).limit(1000);
+  let dueQ = sb.from('workflow_enrollments').select('*').eq('workflow_id', wf.id).eq('status', 'active').lte('next_run_at', nowIso);
+  if (opts.enrollmentId) dueQ = dueQ.eq('id', opts.enrollmentId);
+  const { data: due } = await dueQ.limit(1000);
   const offerCache: Record<string, any> = {};
+  const formId = formTriggerId(wf);
   const STALE_MS = 5 * 60 * 1000;
   for (const en of due ?? []) {
     const idx = en.current_step;
     const step = steps[idx];
     if (!step) { await sb.from('workflow_enrollments').update({ status: 'completed', completed_at: nowIso }).eq('id', en.id); summary.completed++; continue; }
-    const stepKey = step.key || `s${idx}`;
+    const stepKey = roundStepKey(step.key || `s${idx}`, en.round);
 
     // Resolve + claim the step row first. Reclaim only an ORPHAN (failed, or a 'pending' older than 5
     // min from a crashed/concurrent run); a FRESH pending means another run owns it → skip (no double-send).
@@ -173,10 +245,21 @@ export async function runWorkflow(sb: SB, wf: any, opts: WfOpts): Promise<WfSumm
     try {
       let offer = offerCache[step.offer_id];
       if (step.offer_id && offer === undefined) { const { data } = await sb.from('offers').select('*').eq('id', step.offer_id).eq('org_id', org).maybeSingle(); offer = data; offerCache[step.offer_id] = data; }
+      // 5.12.40: no code for a person the step cannot reach (no email for an email step, no phone for
+      // a text): the code would be wasted and the offer's count wrong. Skipped, and the run moves on.
+      let channels: ('email' | 'sms')[] = step.channel === 'both' ? ['email', 'sms'] : [step.channel];
+      if (offer && !reuseCode) {
+        const { data: cust } = await sb.from('customers').select('email, phone').eq('id', en.customer_id).eq('org_id', org).maybeSingle();
+        const reach = reachableChannels(step.channel, cust) as ('email' | 'sms')[];
+        if (!reach.length) {
+          await sb.from('workflow_step_sends').update({ status: 'skipped', error: 'no_channel' }).eq('id', rowId);
+          summary.skipped++; await advance(en.id, idx); continue;
+        }
+        channels = reach;
+      }
       let promoCode = reuseCode;
-      if (offer && !promoCode) { promoCode = await issueCode(sb, org, offer, en.customer_id); if (promoCode) await sb.from('workflow_step_sends').update({ promo_code: promoCode }).eq('id', rowId); }
+      if (offer && !promoCode) { promoCode = await issueCode(sb, org, offer, en.customer_id, { form_id: formId, workflow_id: wf.id }); if (promoCode) await sb.from('workflow_step_sends').update({ promo_code: promoCode }).eq('id', rowId); }
       const merge = { promo_code: promoCode || '', offer: offer?.reward_label || '' };
-      const channels: ('email' | 'sms')[] = step.channel === 'both' ? ['email', 'sms'] : [step.channel];
       let emailMid: string | undefined, smsMid: string | undefined;
       const results: { ok: boolean; status: string }[] = [];
       for (const ch of channels) {

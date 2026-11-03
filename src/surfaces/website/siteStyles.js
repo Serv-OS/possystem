@@ -7,6 +7,7 @@
 // Phone first: the layout works at 390 px with a 16 px gutter; wider screens get the grid.
 
 import { CN as C } from './blocks/classNames.js';
+import { FORM_CSS } from '../../lib/forms/formHtml.js';
 
 // 5.12.5/5.12.7: the SPA's global stylesheet pins html, body and #root to the viewport with overflow
 // hidden (the till scrolls inside its own panes). A public website must scroll like a web page.
@@ -263,4 +264,4 @@ html.${C.sheetOpen},html.${C.sheetOpen} body{overflow:hidden !important}
 .${C.breadcrumb}{font-size:.9rem;color:var(--w-muted);padding:14px 0 0}
 .${C.breadcrumb} a{text-decoration:none}
 .${C.notFound}{padding:80px 16px;text-align:center}
-`;
+${FORM_CSS}`;

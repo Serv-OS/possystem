@@ -8,6 +8,8 @@
 //   run_now          { ops_location_id, id, now? }               → enroll + advance one pass (test)
 //   enroll           { ops_location_id, id, segment_id?|customer_ids? } → manual enrolment
 //   list_enrollments { ops_location_id, workflow_id }            → enrollments + recent step sends
+// 5.12.40: list_workflows also returns the company's forms (for the "Form submitted" trigger), and
+// save_workflow refuses a form trigger whose form is not this company's.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { runWorkflow, enrollCustomers } from '../_shared/workflow-engine.ts';
@@ -52,12 +54,14 @@ Deno.serve(async (req) => {
   if (!org_id) return json({ error: 'location not provisioned (no org)' }, 400);
 
   if (action === 'list_workflows') {
-    const [{ data: workflows }, { data: segments }, { data: offers }] = await Promise.all([
+    const [{ data: workflows }, { data: segments }, { data: offers }, formsRes] = await Promise.all([
       sb.from('workflows').select('*').eq('org_id', org_id).order('created_at', { ascending: false }),
       sb.from('segments').select('id, name').eq('org_id', org_id).order('name'),
-      sb.from('offers').select('id, name').eq('org_id', org_id).eq('active', true).order('name'),
+      sb.from('offers').select('id, name, per_customer_limit').eq('org_id', org_id).eq('active', true).order('name'),
+      // The forms table may not be there yet (SQL not run): no forms, never an error.
+      sb.from('marketing_forms').select('id, name, status').eq('org_id', org_id).neq('status', 'archived').order('name'),
     ]);
-    return json({ workflows: workflows ?? [], segments: segments ?? [], offers: offers ?? [], prebuilt: PREBUILT });
+    return json({ workflows: workflows ?? [], segments: segments ?? [], offers: offers ?? [], forms: formsRes?.data ?? [], prebuilt: PREBUILT });
   }
 
   if (action === 'save_workflow') {
@@ -66,6 +70,20 @@ Deno.serve(async (req) => {
     for (const k of WORKFLOW_FIELDS) if (k in incoming) row[k] = incoming[k];
     if (incoming.id) row.id = incoming.id;
     if (!row.name) return json({ error: 'name required' }, 400);
+    // 5.12.40: an id means "update MY automation" (same rule as save_offer since review round four):
+    // upserting on a caller's id let one company overwrite another company's automation.
+    if (incoming.id) {
+      const { data: mine } = await sb.from('workflows').select('id').eq('id', String(incoming.id)).eq('org_id', org_id).maybeSingle();
+      if (!mine) return json({ error: 'automation not found' }, 404);
+    }
+    const trig = row.entry_trigger as any;
+    if (trig && typeof trig === 'object' && trig.type === 'form_submitted') {
+      const fid = String(trig.form_id ?? '').trim();
+      if (!fid) return json({ error: 'Pick the form that starts this automation.' }, 400);
+      const { data: form } = await sb.from('marketing_forms').select('id').eq('id', fid).eq('org_id', org_id).maybeSingle();
+      if (!form) return json({ error: 'That form is not one of yours.' }, 400);
+      row.entry_trigger = { type: 'form_submitted', form_id: fid };
+    }
     // Guarantee every step has a UNIQUE key — the engine keys per-step idempotency on (enrollment, step_key),
     // so a duplicate/missing key would make one step silently overwrite/skip another.
     if (Array.isArray(row.steps)) {
