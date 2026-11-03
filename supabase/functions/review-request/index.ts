@@ -17,13 +17,16 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { mayMessageCustomer } from '../_shared/ezcaterCatering.js';
 import { isVenueWriter } from '../_shared/venueWriter.js';
 import { secondStepRefusal } from '../_shared/second-step.ts';
+import { reviewCardLink, REVIEW_CARD_ROOT } from '../_shared/reviewLink.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
-const CARD_BASE = (Deno.env.get('REVIEW_CARD_BASE') ?? 'https://possystem-liard.vercel.app').replace(/\/+$/, '');
+// 5.12.44: asks link to the venue's ServOS address (<slug>.serv-os.app/review), never the old
+// temporary host. REVIEW_CARD_ROOT can point the dev tier elsewhere (dev.serv-os.app).
+const CARD_ROOT = Deno.env.get('REVIEW_CARD_ROOT') ?? REVIEW_CARD_ROOT;
 const opsAdmin = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { autoRefreshToken: false, persistSession: false } });
 const platformAdmin = createClient(Deno.env.get('PLATFORM_SUPABASE_URL') ?? '', Deno.env.get('PLATFORM_SUPABASE_SERVICE_ROLE_KEY') ?? '', { auth: { autoRefreshToken: false, persistSession: false } });
 
@@ -57,7 +60,7 @@ async function scanLocation(opsLocationId: string, opts: { test?: boolean } = {}
   const tz = loc?.timezone || 'Europe/London';
   const slug = loc?.online_slug;
   if (!slug) return { skipped: 'no_online_slug' };
-  const link = `${CARD_BASE}/?loc=${slug}&surface=review`;
+  const link = reviewCardLink(slug, CARD_ROOT) as string;
 
   const hour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: 'numeric', hour12: false }).format(new Date()));
   if (!opts.test && (hour < cfg.ask_window_start || hour >= cfg.ask_window_end)) return { skipped: 'outside_window', hour };
@@ -146,7 +149,7 @@ Deno.serve(async (req) => {
     const slug = loc?.online_slug;
     if (!slug) return json({ error: 'venue has no online_slug to build the review link' }, 400);
     const { data: cfg } = await opsAdmin.from('review_settings').select('ask_message').eq('location_id', ops).maybeSingle();
-    const link = `${CARD_BASE}/?loc=${slug}&surface=review`;
+    const link = reviewCardLink(slug, CARD_ROOT) as string;
     const msg = buildMsg(cfg?.ask_message ?? null, { name: body.name || null, venue: loc?.name || 'us', link });
     const ref = `manual_${Date.now()}`;
     const r = await sendSms(phone, msg, ops, ref);
