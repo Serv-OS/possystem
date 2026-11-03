@@ -1,5 +1,15 @@
 export const CHANGELOG = [
   {
+    v: '5.12.52',
+    date: '3 Nov 2026',
+    items: [
+      'US state break rules: Workforce settings (US venues only), State break rules. Pick your state (California, Oregon, Washington, Colorado, Nevada, New York, Illinois, Massachusetts and 8 more), no state rule (federal, for example Utah), or your own rule. The setting shows what the rule asks in words.',
+      'Timesheets, the rota and the Manager app flag a missing meal break against your state instead of the UK rule. Utah and other states with no adult rule check only your own default break.',
+      'The clock out auto deduct (when switched on) uses your state\'s meal break as the floor, never the UK 20 minutes. Before, a US venue with auto deduct on got the UK floor.',
+      'UK venues are unchanged. Needs workforce-clock deployed.',
+    ],
+  },
+  {
     v: '5.12.51',
     date: '3 Nov 2026',
     items: [
