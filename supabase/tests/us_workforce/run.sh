@@ -1,5 +1,8 @@
 #!/bin/zsh
-# us_workforce/run.sh: the US workforce functions run for real in node on made up rows (5.12.47, 5.12.49).
+# us_workforce/run.sh: the workforce functions run for real in node on made up rows (5.12.47 to 5.12.54).
+#   clockin: staff app clock in follows the shift across linked sites (UK and US): lands at the shift's
+#            site, asks which site with no shift, uses a picked site, refuses while open elsewhere and
+#            clocks out there, leaves out a refusing site, a one site person is never asked.
 #   zsh supabase/tests/us_workforce/run.sh
 # Bundles workforce-clock and workforce-compute with rolldown, points supabase-js at mockdb.mjs, then:
 #   clock:   US asks and keeps cash tips; setting off, UK venue, older app keep nothing; a bad amount is
@@ -18,8 +21,9 @@ cp "$HERE/mockdb.mjs" "$B/"
 ( cd "$TOP" && node --input-type=module -e "
 import { build } from 'rolldown';
 await build({ input: 'supabase/functions/workforce-clock/index.ts', external: [/^https:\/\//], output: { file: '$B/wcl.mjs', format: 'esm' }, logLevel: 'silent' });
-await build({ input: 'supabase/functions/workforce-compute/index.ts', external: [/^https:\/\//], output: { file: '$B/wfc.mjs', format: 'esm' }, logLevel: 'silent' });" )
-sed -i '' 's#"https://esm.sh/@supabase/supabase-js@2"#"./mockdb.mjs"#' "$B/wcl.mjs" "$B/wfc.mjs"
+await build({ input: 'supabase/functions/workforce-compute/index.ts', external: [/^https:\/\//], output: { file: '$B/wfc.mjs', format: 'esm' }, logLevel: 'silent' });
+await build({ input: 'supabase/functions/staff-portal/index.ts', external: [/^https:\/\//], output: { file: '$B/sp.mjs', format: 'esm' }, logLevel: 'silent' });" )
+sed -i '' 's#"https://esm.sh/@supabase/supabase-js@2"#"./mockdb.mjs"#' "$B/wcl.mjs" "$B/wfc.mjs" "$B/sp.mjs"
 export BUNDLE_DIR="$B"
 want() { [ "$2" = "$3" ] || { echo "FAIL $1"; echo "  got  $2"; echo "  want $3"; exit 1; }; }
 c() { node "$HERE/clock.mjs" "$1" 2>/dev/null | tail -1; }
@@ -40,4 +44,11 @@ want break-ca "$(c caAuto)" '{"sc":"caAuto","breakMins":30,"autoBreak":30}'
 want break-ut "$(c utAuto)" '{"sc":"utAuto","breakMins":10,"autoBreak":10}'
 want break-uk "$(c ukAuto)" '{"sc":"ukAuto","breakMins":20,"autoBreak":20}'
 want payroll-ca "$(node "$HERE/payroll.mjs" ca 2>/dev/null | tail -1)" '{"ot":4,"dt":1,"otPremium":45,"meal":30,"mealDays":2,"total":415}'
-echo "us_workforce: 16 checks pass"
+k() { node "$HERE/clockin.mjs" "$1" 2>/dev/null | tail -1; }
+want clockin-shift  "$(k shift)"  '{"sc":"shift","statusSite":"Daybreak","ask":null,"elsewhere":null,"landed":"Daybreak","out":null,"sheets":"rd:open"}'
+want clockin-ask    "$(k ask)"    '{"sc":"ask","statusSite":null,"ask":["Provo","Daybreak"],"elsewhere":null,"landed":null,"out":null,"sheets":""}'
+want clockin-pick   "$(k pick)"   '{"sc":"pick","statusSite":null,"ask":["Provo","Daybreak"],"elsewhere":null,"landed":"Daybreak","out":null,"sheets":"rd:open"}'
+want clockin-open   "$(k open)"   '{"sc":"open","statusSite":null,"ask":null,"elsewhere":"Provo","landed":null,"out":true,"sheets":"rp:closed"}'
+want clockin-refuse "$(k refuse)" '{"sc":"refuse","statusSite":null,"ask":["Provo"],"elsewhere":null,"landed":null,"out":null,"sheets":""}'
+want clockin-single "$(k single)" '{"sc":"single","statusSite":"Provo","ask":null,"elsewhere":null,"landed":"Provo","out":null,"sheets":"rp:open"}'
+echo "us_workforce: 22 checks pass"

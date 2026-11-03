@@ -41,6 +41,7 @@ import { venueFacts, regionForApp, swapsSnapshot, handleSwapAction } from './ope
 import { regionPack } from '../_shared/regionPack.js';
 import { linkedShiftsFor } from '../_shared/linkedShifts.js';
 import { asksCashTips } from '../_shared/cashTips.js';
+import { pickClockTarget } from '../_shared/shiftClockTarget.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -150,6 +151,38 @@ async function judgeFence(locationId: string, fix: Record<string, unknown> | nul
 }
 
 /** Durable evidence. Distance only — never coordinates. Never throws. */
+
+// 5.12.54: a person linked at several sites (wf_staff.person_id) clocks in at the site of the shift they
+// are on, not the site their login belongs to (_shared/shiftClockTarget.js). This gathers their live
+// records, those sites' names, zones and clock settings, their open sheet anywhere, and their published
+// shifts around today. A person at one site gets just their own record, as before.
+async function clockContext(staff: any) {
+  let recs: any[] = [{ id: staff.id, location_id: staff.location_id }];
+  if (staff.person_id && staff.org_id) {
+    const { data } = await admin.from('wf_staff').select('id, location_id, status')
+      .eq('org_id', staff.org_id).eq('person_id', staff.person_id).neq('status', 'leaver');
+    const others = (data ?? []).filter((r: any) => r.id !== staff.id);
+    recs = [...recs, ...others.map((r: any) => ({ id: r.id, location_id: r.location_id }))];
+  }
+  const locIds = [...new Set(recs.map((r) => r.location_id))];
+  const ids = recs.map((r) => r.id);
+  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+  const [{ data: locs }, { data: vss }, { data: open }, { data: shifts }] = await Promise.all([
+    admin.from('locations').select('id, name, timezone').in('id', locIds),
+    admin.from('wf_venue_settings').select('location_id, settings, clock_geofence').in('location_id', locIds),
+    admin.from('wf_timesheets').select('id, staff_id, location_id, clock_in, break_open_at, break_taken').in('staff_id', ids).is('clock_out', null)
+      .order('clock_in', { ascending: false }).limit(5),
+    admin.from('wf_shifts').select('id, staff_id, location_id, shift_date, start_time, finish_time').in('staff_id', ids)
+      .eq('status', 'published').gte('shift_date', yesterday).lte('shift_date', tomorrow).limit(50),
+  ]);
+  const locOf = Object.fromEntries((locs ?? []).map((l: any) => [l.id, l]));
+  const vsOf = Object.fromEntries((vss ?? []).map((v: any) => [v.location_id, v]));
+  const records = recs.map((r) => ({ id: r.id, location_id: r.location_id, site: locOf[r.location_id]?.name || 'your site',
+    tz: locOf[r.location_id]?.timezone || 'Europe/London', noShift: vsOf[r.location_id]?.settings?.clockInNoShift === 'refuse' ? 'refuse' : 'ask' }));
+  return { records, open: open ?? [], shifts: shifts ?? [], vsOf };
+}
+
 async function recordClockEvent(row: Record<string, unknown>) {
   try { await admin.from('wf_clock_events').insert(row); }
   catch (e) { console.error('[staff-portal] clock event not recorded:', (e as Error).message); }
@@ -484,15 +517,16 @@ Deno.serve(async (req) => {
     // ── clock_status / clock_punch: geofenced clocking from the staff app ────
     // The venue is ALWAYS staff.location_id, never anything the caller sends.
     if (action === 'clock_status') {
-      const { data: open } = await admin.from('wf_timesheets')
-        .select('id, clock_in, break_open_at, break_taken')
-        .eq('staff_id', staff.id).is('clock_out', null)
-        .order('clock_in', { ascending: false }).limit(1).maybeSingle();
+      // 5.12.54: the open sheet at ANY linked site, and where a clock in now would land.
+      const ctx = await clockContext(staff);
+      const open = ctx.open[0] ?? null;
+      const pick = pickClockTarget({ now: Date.now(), records: ctx.records, shifts: ctx.shifts, open: ctx.open });
+      const hereLoc = open?.location_id || pick.target?.location_id || staff.location_id;
       const { data: vs } = await admin.from('wf_venue_settings')
-        .select('clock_geofence, settings').eq('location_id', staff.location_id).maybeSingle();
+        .select('clock_geofence, settings').eq('location_id', hereLoc).maybeSingle();
       const g = (vs?.clock_geofence ?? {}) as Record<string, unknown>;
       // 5.12.49: a US venue asks for cash tips at clock out (Workforce settings); never a UK venue.
-      const { data: curRow } = await admin.from('locations').select('currency').eq('id', staff.location_id).maybeSingle();
+      const { data: curRow } = await admin.from('locations').select('currency').eq('id', hereLoc).maybeSingle();
       const askCashTips = asksCashTips({ country: regionPack({ currency: curRow?.currency || 'GBP' }).country, settings: (vs as any)?.settings ?? null });
       return json({
         ok: true,
@@ -506,6 +540,14 @@ Deno.serve(async (req) => {
         location_required: !!(g.enabled && typeof g.lat === 'number'),
         venue_name: (await admin.from('locations').select('name')
           .eq('id', staff.location_id).maybeSingle()).data?.name ?? null,
+        // 5.12.54: where the open shift is, or where Clock in would land (a shift at a linked site),
+        // or the sites to choose from when there is no shift.
+        open_site: open ? (ctx.records.find((r) => r.id === open.staff_id)?.site ?? null) : null,
+        clock_in_site: pick.target?.site ?? null,
+        clock_in_shift: !!pick.target?.shift_id,
+        ask_site: pick.askSite ?? null,
+        no_shift_refused: pick.refused === 'no_shift',
+        multi_site: ctx.records.length > 1,
       });
     }
 
@@ -517,13 +559,32 @@ Deno.serve(async (req) => {
       const fix = (body.fix ?? null) as Record<string, unknown> | null;
       const punchId = typeof body.punch_id === 'string' ? body.punch_id : null;
 
+      // 5.12.54 (Peter, 3 Nov 2026): clock in lands at the site of the shift they are on, at any of their
+      // linked sites (_shared/shiftClockTarget.js); no shift asks which site (or refuses, per site); one
+      // open shift at a time. Clock out and breaks follow the open sheet, wherever it is.
+      const ctx = await clockContext(staff);
+      let tStaff = staff.id, tLoc = staff.location_id;
+      if (kind === 'in') {
+        const pick = pickClockTarget({ now: Date.now(), records: ctx.records, shifts: ctx.shifts, open: ctx.open,
+          chosenSite: typeof body.site_id === 'string' ? body.site_id : null });
+        if (pick.openElsewhere) {
+          return json({ ok: false, open_elsewhere: pick.openElsewhere,
+            reason: `You are still clocked in at ${pick.openElsewhere.site}. Clock out there first.` }, 200);
+        }
+        if (pick.askSite) return json({ ok: false, ask_site: pick.askSite }, 200);
+        if (pick.refused) return json({ ok: false, refused: true, reason: 'There is no shift for you right now. Ask a manager to add one, then clock in.' }, 200);
+        tStaff = pick.target!.staff_id; tLoc = pick.target!.location_id;
+      } else if (ctx.open[0]) {
+        tStaff = ctx.open[0].staff_id; tLoc = ctx.open[0].location_id;
+      }
+
       // Only clocking IN is fenced. See the note on judgeFence.
       const judged = kind === 'in'
-        ? await judgeFence(staff.location_id, fix)
+        ? await judgeFence(tLoc, fix)
         : { verdict: 'not_enforced', distance_m: null, accuracy_m: null, allowed: true } as Verdict;
 
       const evidence = {
-        location_id: staff.location_id, staff_id: staff.id, punch_id: punchId,
+        location_id: tLoc, staff_id: tStaff, punch_id: punchId,
         kind, source: 'phone',
         distance_m: judged.distance_m, accuracy_m: judged.accuracy_m,
         verdict: judged.verdict, refused: !judged.allowed,
@@ -546,7 +607,7 @@ Deno.serve(async (req) => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json',
                    Authorization: `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''}` },
-        body: JSON.stringify({ action: kind, staff_id: staff.id, location_id: staff.location_id,
+        body: JSON.stringify({ action: kind, staff_id: tStaff, location_id: tLoc,
           // 5.12.49: the cash tips they declared (workforce-clock keeps them only where the venue asks).
           ...(kind === 'out' && body.cash_tips !== undefined ? { cash_tips: body.cash_tips } : {}) }),
       }).catch(() => null);
@@ -562,7 +623,7 @@ Deno.serve(async (req) => {
 
       // Provenance for the timesheet screen: which punches came from a phone.
       const { data: sheet } = await admin.from('wf_timesheets')
-        .select('id').eq('staff_id', staff.id)
+        .select('id').eq('staff_id', tStaff)
         .order('clock_in', { ascending: false }).limit(1).maybeSingle();
       if (sheet?.id) {
         const stamp: Record<string, unknown> = kind === 'in'
@@ -573,7 +634,7 @@ Deno.serve(async (req) => {
         }
       }
       await recordClockEvent({ ...evidence, timesheet_id: sheet?.id ?? null });
-      return json({ ok: true, kind, ...wc });
+      return json({ ok: true, kind, site: ctx.records.find((r) => r.id === tStaff)?.site ?? null, ...wc });
     }
 
     if (action === 'snapshot') {
@@ -581,21 +642,32 @@ Deno.serve(async (req) => {
       const horizon = new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10);
       const monthAgo = new Date(Date.now() - 28 * 86400000).toISOString();
       const fortnightAgo = new Date(Date.now() - 14 * 86400000).toISOString();
+      // 5.12.54: timesheets, announcements and training from every site the person is linked at.
+      const sctx = await clockContext(staff);
+      const myIds = sctx.records.map((r) => r.id);
+      const myLocs = [...new Set(sctx.records.map((r) => r.location_id))];
+      const siteOfRec = Object.fromEntries(sctx.records.map((r) => [r.id, r.site]));
+      const siteOfLoc = Object.fromEntries(sctx.records.map((r) => [r.location_id, r.site]));
       const [{ data: shifts }, { data: ts }, { data: ann }, { data: onbRows }, { data: trainRows }] = await Promise.all([
         admin.from('wf_shifts').select('id, shift_date, start_time, finish_time, break_mins, section, status, role_key')
           .eq('staff_id', staff.id).eq('status', 'published').gte('shift_date', today).lte('shift_date', horizon)
           .order('shift_date').limit(50),
-        admin.from('wf_timesheets').select('clock_in, clock_out, break_taken, actual_hours, pay_amount, status')
-          .eq('staff_id', staff.id).gte('clock_in', monthAgo).order('clock_in', { ascending: false }).limit(60),
-        admin.from('wf_announcements').select('body, audience, author_name, created_at')
-          .eq('location_id', staff.location_id).gte('created_at', fortnightAgo)
+        admin.from('wf_timesheets').select('clock_in, clock_out, break_taken, actual_hours, pay_amount, status, staff_id')
+          .in('staff_id', myIds).gte('clock_in', monthAgo).order('clock_in', { ascending: false }).limit(60),
+        admin.from('wf_announcements').select('body, audience, author_name, created_at, location_id')
+          .in('location_id', myLocs).gte('created_at', fortnightAgo)
           .order('created_at', { ascending: false }).limit(20),
         admin.from('wf_onboarding').select('*').eq('staff_id', staff.id)
           .order('created_at', { ascending: false }).limit(1),
         admin.from('wf_training_assignments')
           .select('id, module_id, assigned_at, due_date, tasks_done, opened_files, attested_at, completed_at, status, wf_training_modules(name, description, content, tasks, attachments)')
-          .eq('staff_id', staff.id).order('due_date', { ascending: true }).limit(50),
+          .in('staff_id', myIds).order('due_date', { ascending: true }).limit(50),
       ]);
+      // Each line says which site it is from when the person works at more than one.
+      if (sctx.records.length > 1) {
+        (ts ?? []).forEach((t: any) => { t.site = siteOfRec[t.staff_id] ?? null; });
+        (ann ?? []).forEach((a: any) => { a.site = siteOfLoc[a.location_id] ?? null; });
+      }
       // Their leave, accrued holiday and pay rate — small follow-ups, not worth
       // widening the main Promise.all's failure surface.
       const [{ data: leave }, { data: accrual }, { data: roleRow }] = await Promise.all([
@@ -674,7 +746,7 @@ Deno.serve(async (req) => {
         if (k === 'role') return String(a.audience?.value || '').toLowerCase() === roleLc;
         if (k === 'section') return mySections.has(a.audience?.value);
         return false;
-      }).slice(0, 10).map((a: any) => ({ body: a.body, author: a.author_name, at: a.created_at }));
+      }).slice(0, 10).map((a: any) => ({ body: a.body, author: a.author_name, at: a.created_at, site: a.site ?? null }));
       return json({
         ok: true,
         me: {
@@ -689,7 +761,7 @@ Deno.serve(async (req) => {
           ...(shifts ?? []).map((s: any) => ({ id: s.id, roleKey: s.role_key || null, date: s.shift_date, start: String(s.start_time || '').slice(0, 5), finish: String(s.finish_time || '').slice(0, 5), breakMins: s.break_mins || 0, section: s.section })),
           ...(await linkedShiftsFor(admin, staff, today, horizon, { published: true })).map((s: any) => ({ id: s.id, roleKey: s.roleKey, date: s.date, start: s.start, finish: s.finish, breakMins: s.breakMins, section: s.section, site: s.site, otherSite: true })),
         ].sort((a: any, b: any) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.start < b.start ? -1 : a.start > b.start ? 1 : 0)),
-        timesheets: (ts ?? []).map((t: any) => ({ in: t.clock_in, out: t.clock_out, breakMins: t.break_taken || 0, hours: t.actual_hours != null ? Number(t.actual_hours) : null, pay: t.pay_amount != null ? Number(t.pay_amount) : null, status: t.status })),
+        timesheets: (ts ?? []).map((t: any) => ({ in: t.clock_in, out: t.clock_out, breakMins: t.break_taken || 0, hours: t.actual_hours != null ? Number(t.actual_hours) : null, pay: t.pay_amount != null ? Number(t.pay_amount) : null, status: t.status, site: t.site ?? null })),
         announcements,
         onboarding,
         training,

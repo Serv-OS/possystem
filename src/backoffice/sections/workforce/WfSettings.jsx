@@ -118,6 +118,8 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
   const [minimumWage, setMinimumWage] = useState('');
   // 5.12.49: US venues ask staff for cash tips at clock out unless switched off (_shared/cashTips.js).
   const [askCashTips, setAskCashTips] = useState(true);
+  // 5.12.54 (UK and US): a staff app clock in with no shift at a linked site asks which site, or refuses.
+  const [clockInNoShift, setClockInNoShift] = useState('ask');
   // 5.12.51: US paid time off (_shared/usPto.js). Off by default; no law requires it.
   const [ptoEnabled, setPtoEnabled] = useState(false);
   const [ptoEvery, setPtoEvery] = useState('30');
@@ -162,6 +164,7 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
     setWorkweekStart(String(Number.isInteger(Number(sj.workweekStart)) ? Number(sj.workweekStart) : 1));
     setMinimumWage(Number(sj.minimumWage) > 0 ? String(sj.minimumWage) : '');
     setAskCashTips(sj.askCashTips !== false);
+    setClockInNoShift(sj.clockInNoShift === 'refuse' ? 'refuse' : 'ask');
     setPtoEnabled(sj.ptoEnabled === true);
     setPtoEvery(Number(sj.ptoEvery) >= 1 ? String(sj.ptoEvery) : '30');
     setPtoYearCap(Number(sj.ptoYearCap) > 0 ? String(sj.ptoYearCap) : '');
@@ -252,6 +255,7 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
         workweekStart: Math.min(6, Math.max(0, parseInt(workweekStart, 10) || 0)),
         // 5.12.41: blank = the federal minimum wage; a change recomputes the last 10 weeks' overtime.
         minimumWage: Number(minimumWage) > 0 ? Math.round(Number(minimumWage) * 100) / 100 : null,
+        clockInNoShift,
         ...(pack.country === 'US' ? { askCashTips } : {}),
         ...(pack.country === 'US' ? { ptoEnabled, ptoEvery: Math.min(200, Math.max(1, Number(ptoEvery) || 30)), ptoYearCap: Number(ptoYearCap) > 0 ? Math.round(Number(ptoYearCap) * 100) / 100 : null } : {}),
         overtimeExempt: otExempt,
@@ -372,6 +376,14 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
               )}
             </div>
           ) : null}
+          <div>
+            <label style={labelStyle}>Clock in without a shift</label>
+            <select style={inputStyle} value={clockInNoShift} onChange={e => setClockInNoShift(e.target.value)} disabled={savingVenue}>
+              <option value="ask">Allow: ask which site</option>
+              <option value="refuse">Refuse: a shift is needed</option>
+            </select>
+            <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>Staff app. Clock in lands at the site of the shift someone is on (from 60 minutes before it starts), at any site they work at. With no shift, Allow asks which site; Refuse stops a clock in here without one.</div>
+          </div>
           <div>
             <label style={labelStyle}>Currency and country</label>
             <div style={{ ...inputStyle, display: 'flex', alignItems: 'center', color: 'var(--t2)' }}>{ALL_CURRENCIES[currency]?.label || currency} · {pack.countryName}</div>

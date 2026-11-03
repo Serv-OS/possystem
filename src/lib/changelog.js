@@ -1,5 +1,16 @@
 export const CHANGELOG = [
   {
+    v: '5.12.54',
+    date: '3 Nov 2026',
+    items: [
+      'Staff app clock in follows the shift (UK and US): someone who works at more than one site is clocked in at the site of the shift they are on, from 60 minutes before it starts to its end, with that site\'s location check, pay rate and rules. Before, every phone clock in landed at the site their login belonged to.',
+      'No shift: the app asks which site, listing only the sites they work at. Workforce settings, Clock in without a shift: Allow (ask which site) or Refuse, per site.',
+      'One open shift at a time: still clocked in at another site, the app says so and offers Clock out there. Clock out, breaks and cash tips follow the open shift wherever it is.',
+      'The staff app shows timesheets, announcements and training from every site they work at, each named with its site. The button reads Clock in at Daybreak when a shift is found.',
+      'Someone at one site only sees no change. Needs staff-portal deployed.',
+    ],
+  },
+  {
     v: '5.12.53',
     date: '3 Nov 2026',
     items: [
