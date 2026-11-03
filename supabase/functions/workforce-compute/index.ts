@@ -24,6 +24,7 @@ import { regionPack } from '../_shared/regionPack.js';
 import { premiumFor, anyPremium, overtimeSplit, venueMidnightIso, workweekSpan, venueDay } from '../_shared/payPremiums.js';
 import { tipCreditTopUps } from '../_shared/tipCredit.js';
 import { ptoRules, ptoAccruals } from '../_shared/usPto.js';
+import { caRules, caOvertimeAcrossSites } from '../_shared/caOvertime.js';
 import { acaReport, monthsBetween } from '../_shared/acaHours.js';
 import { overtimeAcrossSites, overtimeRules } from '../_shared/multiSiteOvertime.js';
 
@@ -553,13 +554,14 @@ Deno.serve(async (req) => {
       // worked; the half time is owed at the week's blended regular rate (_shared/multiSiteOvertime.js).
       // A record that is not linked reads exactly as before, plus the premium and the rate.
       let overtime: Record<string, { regular: number; overtime: number; otherSiteHours: number; overtimePremium: number; regularRate: number | null }> | null = null;
+      let caVenue = false;   // 5.12.53: California daily rules in force for this payroll
       // 5.12.47: the whole work weeks this site's tip credit top up is worked out on (set below).
       let tipWeeks: { sheets: any[]; spanFrom: string; spanTo: string; span: { from: string; to: string }; wsd: number; sheetRules: (t: any) => { exempt: boolean; min_wage: number }; premiumHere: (t: any) => number } | null = null;
       if (pack.overtimeWeeklyHours) {
         const wsd = Number.isInteger(Number(policy.workweekStart)) && Number(policy.workweekStart) >= 0 && Number(policy.workweekStart) <= 6 ? Number(policy.workweekStart) : 1;
         const span = workweekSpan(from, to, wsd);
         const spanFrom = venueMidnightIso(span.from, venue.timezone), spanTo = venueMidnightIso(nextDay(span.to), venue.timezone);
-        const sheetCols = `staff_id, actual_hours, paid_break_mins, effective_rate, rate_source, clock_in, clock_out, status${pack.country === 'US' ? ', declared_cash_tips' : ''}`;
+        const sheetCols = `staff_id, actual_hours, paid_break_mins, effective_rate, rate_source, clock_in, clock_out, status${pack.country === 'US' ? ', declared_cash_tips, break_taken' : ''}`;
         const [{ data: weekSheets }, { data: hereStaff }] = await Promise.all([
           admin.from('wf_timesheets').select(sheetCols).eq('location_id', location_id).in('status', ['approved', 'paid'])
             .gte('clock_in', spanFrom).lt('clock_in', spanTo),
@@ -629,7 +631,13 @@ Deno.serve(async (req) => {
           ...(weekSheets ?? []).map((t: any) => ({ ...t, location_id, person: personOf[t.staff_id] || t.staff_id, tz: venue.timezone, week_start_dow: wsd, premium_pay: premiumPay(t, location_id), ...rulesOf(t, location_id) })),
           ...otherSheets.map((t: any) => ({ ...t, person: personOf[t.staff_id] || t.staff_id, tz: zoneOf[t.location_id] || venue.timezone, week_start_dow: wsdOf[t.location_id] ?? 1, premium_pay: premiumPay(t, t.location_id), ...rulesOf(t, t.location_id) })),
         ];
-        overtime = overtimeAcrossSites(all, pack.overtimeWeeklyHours, { tz: venue.timezone, weekStartDow: wsd, from, to, here: location_id });
+        // 5.12.53: a California venue (State break rules = California) works daily overtime, double time
+        // and the meal break premium (_shared/caOvertime.js); every other US venue is weekly, as before.
+        const ca = pack.country === 'US' ? caRules(policy) : null;
+        overtime = ca
+          ? caOvertimeAcrossSites(all, { tz: venue.timezone, weekStartDow: wsd, from, to, here: location_id, rules: ca }) as any
+          : overtimeAcrossSites(all, pack.overtimeWeeklyHours, { tz: venue.timezone, weekStartDow: wsd, from, to, here: location_id });
+        caVenue = !!ca;
         tipWeeks = { sheets: weekSheets ?? [], spanFrom, spanTo, span, wsd, sheetRules: (t: any) => rulesOf(t, location_id), premiumHere: (t: any) => premiumPay(t, location_id) };
       }
 
@@ -798,6 +806,13 @@ Deno.serve(async (req) => {
           line.overtime_premium = o?.overtimePremium ?? 0;
           line.regular_rate = o?.regularRate ?? null;
           line.total = round2(line.total + line.overtime_premium);
+          // 5.12.53: California: double time hours (their premium is in overtime_premium) and the meal break premium.
+          if (caVenue) {
+            line.double_time_hours = (o as any)?.doubleTime ?? 0;
+            line.meal_premium = (o as any)?.mealPremium ?? 0;
+            line.meal_premium_days = (o as any)?.mealPremiumDays ?? 0;
+            line.total = round2(line.total + line.meal_premium);
+          }
         }
         // 5.12.47: only a US venue with a tip credit week carries these keys.
         if (topUps[id]) { line.tip_credit_topup = topUps[id].topUp; line.tip_credit_weeks = topUps[id].weeks; line.total = round2(line.total + line.tip_credit_topup); }
@@ -815,6 +830,7 @@ Deno.serve(async (req) => {
       };
       if (withPremiums) totals.premium_pay = round2(staff.reduce((a, s) => a + (s.premium_pay || 0), 0));
       if (overtime) totals.overtime_premium = round2(staff.reduce((a, s: any) => a + (s.overtime_premium || 0), 0));
+      if (caVenue) totals.meal_premium = round2(staff.reduce((a, s: any) => a + (s.meal_premium || 0), 0));
       if (Object.keys(topUps).length) totals.tip_credit_topup = round2(staff.reduce((a, s: any) => a + (s.tip_credit_topup || 0), 0));
       if (anyCashDeclared) totals.tips_cash_declared = round2(staff.reduce((a, s: any) => a + (s.tips_cash_declared || 0), 0));
       const payload = {

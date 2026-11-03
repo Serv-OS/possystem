@@ -96,6 +96,9 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
   const [usBreakState, setUsBreakState] = useState('');
   const [usMealAfter, setUsMealAfter] = useState('');
   const [usMealMins, setUsMealMins] = useState('');
+  // 5.12.53: California daily overtime and meal break premium (_shared/caOvertime.js), on unless off.
+  const [caDailyOt, setCaDailyOt] = useState(true);
+  const [caMealPremium, setCaMealPremium] = useState(true);
   const [autoBreakHours, setAutoBreakHours] = useState('6');
   // Tipping policy (Employment (Allocation of Tips) Act 2023): how card tips
   // are distributed + who decides allocation (drives NIC treatment).
@@ -147,6 +150,7 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
     setDefaultBreakMins(String(settings?.settings?.defaultBreakMins ?? 30));
     setAutoBreak(!!settings?.settings?.autoBreak);
     { const ub = settings?.settings?.usBreaks || {}; setUsBreakState(String(ub.state || '').toUpperCase() === 'CUSTOM' ? 'custom' : String(ub.state || '').toUpperCase()); setUsMealAfter(ub.mealAfter ? String(ub.mealAfter) : ''); setUsMealMins(ub.mealMins ? String(ub.mealMins) : ''); }
+    setCaDailyOt(settings?.settings?.caDailyOvertime !== false); setCaMealPremium(settings?.settings?.caMealPremium !== false);
     setAutoBreakHours(String(settings?.settings?.autoBreakHours ?? 6));
     const sj = settings?.settings || {};
     setTipMode(['pool', 'direct', 'hybrid'].includes(sj.tipMode) ? sj.tipMode : 'pool');
@@ -238,6 +242,7 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
         defaultBreakMins: Math.min(120, Math.max(0, parseInt(defaultBreakMins, 10) || 0)),
         autoBreak,
         ...(pack.country === 'US' ? { usBreaks: { state: usBreakState || '', ...(usBreakState === 'custom' ? { mealAfter: Number(usMealAfter) || null, mealMins: Number(usMealMins) || null } : {}) } } : {}),
+        ...(pack.country === 'US' ? { caDailyOvertime: caDailyOt, caMealPremium } : {}),
         autoBreakHours: Math.min(13, Math.max(1, Number(autoBreakHours) || 6)),
         tipMode,
         directPct: Math.min(100, Math.max(0, parseInt(directPct, 10) || 0)),
@@ -632,6 +637,18 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
               <div><label style={labelStyle}>Meal break after (hours)</label><input style={{ ...inputStyle, width: 110, fontFamily: 'var(--font-mono)' }} inputMode="decimal" value={usMealAfter} onChange={e => setUsMealAfter(e.target.value.replace(/[^\d.]/g, ''))} disabled={savingVenue} /></div>
               <div><label style={labelStyle}>Meal break (minutes)</label><input style={{ ...inputStyle, width: 110, fontFamily: 'var(--font-mono)' }} inputMode="numeric" value={usMealMins} onChange={e => setUsMealMins(e.target.value.replace(/[^\d]/g, ''))} disabled={savingVenue} /></div>
             </>}
+            {usBreakState === 'CA' && (
+              <div style={{ flexBasis: '100%', display: 'grid', gap: 8 }}>
+                <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer', fontSize: 13, color: 'var(--t1)' }}>
+                  <input type="checkbox" checked={caDailyOt} onChange={e => setCaDailyOt(e.target.checked)} disabled={savingVenue} style={{ marginTop: 3 }} />
+                  <span><b>California daily overtime</b><span style={{ display: 'block', fontSize: 11.5, color: 'var(--t3)', marginTop: 2 }}>Payroll pays time and a half over 8 hours in a day and double time over 12, as well as over 40 in the week (never twice for the same hour).</span></span>
+                </label>
+                <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer', fontSize: 13, color: 'var(--t1)' }}>
+                  <input type="checkbox" checked={caMealPremium} onChange={e => setCaMealPremium(e.target.checked)} disabled={savingVenue} style={{ marginTop: 3 }} />
+                  <span><b>California meal break premium</b><span style={{ display: 'block', fontSize: 11.5, color: 'var(--t3)', marginTop: 2 }}>When a shift needed a meal break and the clocked break was shorter, Payroll adds one hour of pay at the regular rate for that day.</span></span>
+                </label>
+              </div>
+            )}
             <div style={{ flexBasis: '100%', fontSize: 11.5, color: 'var(--t3)' }}>
               The common adult rule for the state, simplified: minors, some industries and agreed waivers differ. Check the current law for your state.
             </div>

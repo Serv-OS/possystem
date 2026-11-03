@@ -10,6 +10,8 @@
 #            off writes nothing, a UK venue still accrues 12.07%.
 #   breaks:  the clock out auto deduct floor is the state's meal rule (California 30), none for Utah
 #            (the venue default 10), and the UK Working Time Regulations (20) for a UK venue.
+#   california: a $15 cook, 13 h with no break and 8 h with no break: 4 h overtime + 1 h double time
+#            ($45 premium) and two meal premiums ($30), total $415 with $25 tips.
 set -e
 HERE="${0:A:h}"; TOP="${HERE:h:h:h}"; B="$(mktemp -d)"; trap 'rm -rf "$B"' EXIT
 cp "$HERE/mockdb.mjs" "$B/"
@@ -37,4 +39,5 @@ want pto-uk  "$(p uk)"  '{"sc":"uk","first":{"accrued":2,"hours":7.24,"off":null
 want break-ca "$(c caAuto)" '{"sc":"caAuto","breakMins":30,"autoBreak":30}'
 want break-ut "$(c utAuto)" '{"sc":"utAuto","breakMins":10,"autoBreak":10}'
 want break-uk "$(c ukAuto)" '{"sc":"ukAuto","breakMins":20,"autoBreak":20}'
-echo "us_workforce: 15 checks pass"
+want payroll-ca "$(node "$HERE/payroll.mjs" ca 2>/dev/null | tail -1)" '{"ot":4,"dt":1,"otPremium":45,"meal":30,"mealDays":2,"total":415}'
+echo "us_workforce: 16 checks pass"
