@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import { useStore } from '../store';
-import { money } from '../lib/currency';  // v5.5.326: multi-currency
+import { money, getActiveCurrencyCode } from '../lib/currency';  // v5.5.326: multi-currency
+import { denominationsFor, countTotal } from '../lib/cashDenominations';
 import { Icon } from './ServOSIcons';
 
 /**
@@ -15,20 +16,7 @@ import { Icon } from './ServOSIcons';
  * gate which MUST be completed before any other POS action).
  */
 
-const DENOMS = [
-  { label: '£50 notes',  value: 50.00 },
-  { label: '£20 notes',  value: 20.00 },
-  { label: '£10 notes',  value: 10.00 },
-  { label: '£5 notes',   value: 5.00  },
-  { label: '£2 coins',   value: 2.00  },
-  { label: '£1 coins',   value: 1.00  },
-  { label: '50p coins',  value: 0.50  },
-  { label: '20p coins',  value: 0.20  },
-  { label: '10p coins',  value: 0.10  },
-  { label: '5p coins',   value: 0.05  },
-  { label: '2p coins',   value: 0.02  },
-  { label: '1p coins',   value: 0.01  },
-];
+// 5.12.46: the venue's own notes and coins (US bills and quarters, euro, UK), see lib/cashDenominations.js.
 
 const fmt = (n) => money(n);
 const fmtS = (n) => (n >= 0 ? '+' : '−') + money(Math.abs(n || 0));
@@ -42,6 +30,7 @@ export default function DrawerCashModal({
   onComplete,        // called with { amount, denominations, variance }
 }) {
   const openCashDrawer = useStore(s => s.openCashDrawer);
+  const DENOMS = useMemo(() => denominationsFor(getActiveCurrencyCode()), []);
   const [counts, setCounts] = useState(Object.fromEntries(DENOMS.map(d => [d.value, 0])));
   const [quickAmount, setQuickAmount] = useState('');
   const [mode2, setMode2] = useState('denoms'); // 'denoms' | 'quick' — allow a flat amount entry
@@ -51,7 +40,7 @@ export default function DrawerCashModal({
 
   const total = useMemo(() => {
     if (mode2 === 'quick') return parseFloat(quickAmount) || 0;
-    return DENOMS.reduce((s, d) => s + (counts[d.value] || 0) * d.value, 0);
+    return countTotal(counts);
   }, [counts, quickAmount, mode2]);
 
   const variance = mode === 'out' ? total - expectedCash : null;
@@ -121,7 +110,7 @@ export default function DrawerCashModal({
             <div>
               {DENOMS.map(d => {
                 const qty = counts[d.value] || 0;
-                const subtotal = qty * d.value;
+                const subtotal = countTotal({ [d.value]: qty });
                 return (
                   <div key={d.value} style={{ display:'grid', gridTemplateColumns:'1fr 110px 80px', alignItems:'center', gap:10, marginBottom:7 }}>
                     <div style={{ fontSize:13, color:'var(--t2)', fontWeight:500 }}>{d.label}</div>

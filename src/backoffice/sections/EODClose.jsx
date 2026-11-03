@@ -14,15 +14,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../store';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
-import { money } from '../../lib/currency';  // v5.5.326: multi-currency
+import { money, getActiveCurrencyCode } from '../../lib/currency';  // v5.5.326: multi-currency
+import { denominationLabel, countedValues, countTotal } from '../../lib/cashDenominations';
 import { Icon } from '../../components/ServOSIcons';
 
-const DENOMS_ORDER = [50, 20, 10, 5, 2, 1, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01];
-const DENOM_LABEL = {
-  50: '£50', 20: '£20', 10: '£10', 5: '£5',
-  2: '£2', 1: '£1',
-  0.5: '50p', 0.2: '20p', 0.1: '10p', 0.05: '5p', 0.02: '2p', 0.01: '1p',
-};
+// 5.12.46: labels come from the venue's own notes and coins (lib/cashDenominations.js).
 
 const fmt  = (n) => money(n);
 const fmtS = (n) => (n >= 0 ? '+' : '−') + money(Math.abs(Number(n) || 0));
@@ -398,12 +394,12 @@ function DrawerSummaryList({ rows, expandedDrawer, setExpandedDrawer }) {
                     {Object.keys(r.denomTotals).length === 0 ? (
                       <div style={{ fontSize:12, color:'var(--t4)', fontStyle:'italic' }}>No denomination breakdown recorded (quick count).</div>
                     ) : (
-                      DENOMS_ORDER.filter(v => r.denomTotals[v] > 0).map(v => {
+                      countedValues(r.denomTotals).filter(v => r.denomTotals[v] > 0).map(v => {
                         const qty = r.denomTotals[v];
-                        const sub = qty * v;
+                        const sub = countTotal({ [v]: qty });
                         return (
                           <div key={v} style={{ display:'grid', gridTemplateColumns:'50px 60px 1fr', gap:10, fontSize:12, padding:'3px 0', alignItems:'baseline' }}>
-                            <span style={{ color:'var(--t3)' }}>{DENOM_LABEL[v]}</span>
+                            <span style={{ color:'var(--t3)' }}>{denominationLabel(v, getActiveCurrencyCode())}</span>
                             <span style={{ color:'var(--t1)', fontFamily:'var(--font-mono)', fontWeight:700, textAlign:'right' }}>× {qty}</span>
                             <span style={{ color:'var(--t2)', fontFamily:'var(--font-mono)', textAlign:'right' }}>{fmt(sub)}</span>
                           </div>
