@@ -55,7 +55,7 @@ export function requestTarget(req) {
   const token = url.searchParams.get('token') || null;
   // 5.12.8: ?venue=<online slug> picks whose menu an unpinned menu block shows (the venue switch).
   const venue = (url.searchParams.get('venue') || '').toLowerCase().slice(0, 80) || null;
-  // 5.12.37: the outcome of a plain form post (?form_sent= / ?form_failed=&form_error=).
+  // 5.12.40: the outcome of a plain form post (?form_sent= / ?form_failed=&form_error=).
   const formState = formStateFrom(url.search);
   return { host: rawHost, path, siteParam, token, venue, formState };
 }

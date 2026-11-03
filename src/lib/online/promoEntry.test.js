@@ -1,4 +1,4 @@
-// 5.12.37: a promo code keeps its hyphen online (it used to be stripped, so every prefixed code failed).
+// 5.12.40: a promo code keeps its hyphen online (it used to be stripped, so every prefixed code failed).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

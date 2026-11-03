@@ -21,7 +21,8 @@ import { secondStepRefusal } from '../_shared/second-step.ts';
 import { writeWfAudit } from '../_shared/wfAudit.js';
 // v5.11.101: the venue's region (currency, US overtime) and the pay premiums, applied at last.
 import { regionPack } from '../_shared/regionPack.js';
-import { premiumFor, anyPremium, overtimeSplit, venueMidnightIso, workweekSpan } from '../_shared/payPremiums.js';
+import { premiumFor, anyPremium, overtimeSplit, venueMidnightIso, workweekSpan, venueDay } from '../_shared/payPremiums.js';
+import { acaReport, monthsBetween } from '../_shared/acaHours.js';
 import { overtimeAcrossSites } from '../_shared/multiSiteOvertime.js';
 
 const cors = {
@@ -524,6 +525,8 @@ Deno.serve(async (req) => {
         let otherSheets: any[] = [];
         const zoneOf: Record<string, string> = { [location_id]: venue.timezone };
         const premiumsOf: Record<string, any> = { [location_id]: premiums };
+        // 5.12.38: each sheet's week is its own site's work week (the same rule the reports' column uses).
+        const wsdOf: Record<string, number> = { [location_id]: wsd };
         const eligibleOf: Record<string, Record<string, boolean>> = {};
         if (persons.length) {
           const { data: linked } = await admin.from('wf_staff').select('id, person_id, location_id, role_key')
@@ -539,12 +542,16 @@ Deno.serve(async (req) => {
               admin.from('wf_timesheets').select(`${sheetCols}, location_id`).in('staff_id', linkedIds).in('status', ['approved', 'paid'])
                 .gte('clock_in', wideFrom).lt('clock_in', wideTo),
               admin.from('locations').select('id, timezone').in('id', otherLocs),
-              admin.from('wf_venue_settings').select('location_id, premiums').in('location_id', otherLocs),
+              admin.from('wf_venue_settings').select('location_id, premiums, settings').in('location_id', otherLocs),
               admin.from('wf_roles').select('location_id, key, premium_eligible').in('location_id', [location_id, ...otherLocs]),
             ]);
             otherSheets = os ?? [];
             (locs ?? []).forEach((l: any) => { zoneOf[l.id] = l.timezone || venue.timezone; });
-            (vss ?? []).forEach((v: any) => { premiumsOf[v.location_id] = v.premiums ?? {}; });
+            (vss ?? []).forEach((v: any) => {
+              premiumsOf[v.location_id] = v.premiums ?? {};
+              const d = Number(v.settings?.workweekStart);
+              wsdOf[v.location_id] = Number.isInteger(d) && d >= 0 && d <= 6 ? d : 1;
+            });
             (rls ?? []).forEach((r: any) => { (eligibleOf[r.location_id] ??= {})[r.key] = r.premium_eligible !== false; });
           }
         }
@@ -558,8 +565,8 @@ Deno.serve(async (req) => {
             premiums: pr, tz: zoneOf[loc] || venue.timezone, country: pack.country, eligible: el, hourly: t.rate_source !== 'salaried' }).pay;
         };
         const all = [
-          ...(weekSheets ?? []).map((t: any) => ({ ...t, location_id, person: personOf[t.staff_id] || t.staff_id, tz: venue.timezone, premium_pay: premiumPay(t, location_id) })),
-          ...otherSheets.map((t: any) => ({ ...t, person: personOf[t.staff_id] || t.staff_id, tz: zoneOf[t.location_id] || venue.timezone, premium_pay: premiumPay(t, t.location_id) })),
+          ...(weekSheets ?? []).map((t: any) => ({ ...t, location_id, person: personOf[t.staff_id] || t.staff_id, tz: venue.timezone, week_start_dow: wsd, premium_pay: premiumPay(t, location_id) })),
+          ...otherSheets.map((t: any) => ({ ...t, person: personOf[t.staff_id] || t.staff_id, tz: zoneOf[t.location_id] || venue.timezone, week_start_dow: wsdOf[t.location_id] ?? 1, premium_pay: premiumPay(t, t.location_id) })),
         ];
         overtime = overtimeAcrossSites(all, pack.overtimeWeeklyHours, { tz: venue.timezone, weekStartDow: wsd, from, to, here: location_id });
       }
@@ -722,6 +729,40 @@ Deno.serve(async (req) => {
     }
 
     // ── LABOUR (daily revenue from closed_checks) ─────────────────────────────
+    // ── HEALTH COVER HOURS (ACA), US only (5.12.38) ───────────────────────────
+    // Hours of service per person per month at EVERY site they work at (linked records), the last 12
+    // full months and this one; who is full time (130 h a month); and the company's full time plus
+    // full time equivalents, against the 50 that makes an Applicable Large Employer. The company
+    // figure needs every site's timesheets, so it is read here with the service role and only the
+    // totals leave; the people listed are this site's own.
+    if (action === 'aca.hours') {
+      if (pack.country !== 'US') return json({ ok: false, error: 'Health cover hours are for US venues.' });
+      const now = venueDay(new Date().toISOString(), venue.timezone) || new Date().toISOString().slice(0, 10);
+      const [ny, nm] = now.slice(0, 7).split('-').map(Number);
+      const startMonth = `${ny - 1}-${String(nm).padStart(2, '0')}`;   // 12 full months and this one
+      const months = monthsBetween(startMonth, now.slice(0, 7));
+      const fromIso = new Date(Date.parse(`${months[0]}-01T00:00:00Z`) - 86400000).toISOString();
+      const [{ data: staffRows }, { data: locs }] = await Promise.all([
+        admin.from('wf_staff').select('id, person_id, location_id, name').eq('org_id', org).limit(5000),
+        admin.from('locations').select('id, timezone').eq('org_id', org),
+      ]);
+      const zone: Record<string, string> = {};
+      (locs ?? []).forEach((l: any) => { zone[l.id] = l.timezone || venue.timezone; });
+      const rows: any[] = [];
+      for (let page = 0; page < 50; page++) {
+        const { data, error } = await admin.from('wf_timesheets').select('id, staff_id, location_id, actual_hours, clock_in')
+          .eq('org_id', org).in('status', ['approved', 'paid']).gte('clock_in', fromIso)
+          .order('clock_in').order('id').range(page * 1000, page * 1000 + 999);
+        if (error) return json({ ok: false, error: error.message });
+        for (const t of data ?? []) {
+          const d = venueDay(t.clock_in, zone[t.location_id] || venue.timezone);
+          if (d) rows.push({ staff_id: t.staff_id, location_id: t.location_id, hours: Number(t.actual_hours) || 0, month: d.slice(0, 7) });
+        }
+        if ((data ?? []).length < 1000) break;
+      }
+      return json({ ok: true, months, ...acaReport({ rows, staff: staffRows ?? [], here: location_id, months }) });
+    }
+
     if (action === 'labour') {
       const { from, to } = body;
       if (!from || !to) return json({ error: 'from/to required' }, 400);

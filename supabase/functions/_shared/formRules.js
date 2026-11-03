@@ -1,6 +1,6 @@
 // supabase/functions/_shared/formRules.js
 //
-// MARKETING FORMS (5.12.37): every rule a form lives by, with no database, no clock and no
+// MARKETING FORMS (5.12.40): every rule a form lives by, with no database, no clock and no
 // network in it. Plain JS so the same file runs in the Deno functions (form-submit,
 // marketing-forms, marketing-run), in the browser (src/lib/forms/formRules.js re-exports it),
 // in the Vercel functions (api/site.js, api/form.js) and in node tests.
@@ -336,7 +336,7 @@ export function reachableChannels(channel, customer) {
  *   enrollment      their existing enrollment in this automation, or null
  *   codesFromForm   promo codes this form's automation already gave them
  *   perCustomer     offers.per_customer_limit of the step's offer (1 when there is no offer)
- *   offerRedeemed   how many times they already USED that offer, any code, any channel (5.12.37:
+ *   offerRedeemed   how many times they already USED that offer, any code, any channel (5.12.40:
  *                   proving it live, a code went to a person who had used the offer in July, and
  *                   checkout refused it; a code they cannot use is never sent)
  * → { action: 'enrol' | 'rearm' | 'skip', reason }

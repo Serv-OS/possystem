@@ -240,7 +240,7 @@ const R = {
     const btns = buy ? `<div><a class="${cls(CN.btn, CN.btnPrimary)}" href="${attr(buy)}">Buy a gift card</a> <a class="${cls(CN.btn, CN.btnSecondary)}" href="${attr(bal)}">Check a balance</a></div>` : '';
     return section(b, CN.gift, `<div>${heading(p.headline)}${p.sub ? `<p class="${CN.muted}">${esc(p.sub)}</p>` : ''}${btns}</div>${art}`);
   },
-  // 5.12.37: a marketing form, server rendered as a real <form method="post"> that works with no
+  // 5.12.40: a marketing form, server rendered as a real <form method="post"> that works with no
   // JavaScript. The form comes from ctx.forms (api/site.js reads it for the page); none, or not yet
   // picked, paints nothing on the live site (never an error).
   Form(ctx, b) {
@@ -494,7 +494,7 @@ export function buildCtx({ snapshot, host, path, menu, reviews, customerRoot, no
     pageKind: pageKind || null,
     host: String(host || ''), path: path || '/', menu: menu || null, reviews: reviews || [],
     customerRoot: customerRoot || 'serv-os.app', now: now instanceof Date ? now : new Date(), h1Used: false, faqItems: [],
-    // 5.12.37: the page's marketing forms by id, the form-submit address, and the outcome of a
+    // 5.12.40: the page's marketing forms by id, the form-submit address, and the outcome of a
     // plain post (?form_sent= / ?form_error=) so the page paints the thank you words or the error.
     forms: forms && typeof forms === 'object' ? forms : {}, formAction: formAction || '', formState: formState || null,
   };

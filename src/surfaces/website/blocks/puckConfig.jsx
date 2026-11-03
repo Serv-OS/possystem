@@ -55,7 +55,7 @@ export function puckConfig(ctx = {}) {
   try { vars = siteVars(siteCtx.site.theme || {}, ctx.branding || (loc0 && loc0.online_branding) || {}); } catch { vars = {}; }
   // In the editor every block is shown, switches or not: the owner must see what they are editing.
   siteCtx.settings = { ...siteCtx.settings, allow_custom_code: true, channels: {} };
-  // 5.12.37: the company's forms (ctx.forms, a list from marketing-forms) by id for the Form block.
+  // 5.12.40: the company's forms (ctx.forms, a list from marketing-forms) by id for the Form block.
   const formList = Array.isArray(ctx.forms) ? ctx.forms.filter((f) => f && f.id) : [];
   const formsById = Object.fromEntries(formList.map((f) => [f.id, f]));
   siteCtx.forms = formsById;

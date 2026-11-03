@@ -1,6 +1,6 @@
 // src/lib/online/promoEntry.js
 //
-// 5.12.37 (found proving Forms live on Provo, 2 Nov 2026): online checkout stripped the hyphen out
+// 5.12.40 (found proving Forms live on Provo, 2 Nov 2026): online checkout stripped the hyphen out
 // of whatever was typed in "Gift card or promo code" before checking it as a promo code, and
 // promo-redeem matches the code exactly (lockdown step 1d), so every code with a prefix
 // (5OFF-7GRRTK5P, WELC-..., BDAY-...) said "Code not recognised" online. The kiosk already sent the

@@ -8,7 +8,7 @@
 //   run_now          { ops_location_id, id, now? }               → enroll + advance one pass (test)
 //   enroll           { ops_location_id, id, segment_id?|customer_ids? } → manual enrolment
 //   list_enrollments { ops_location_id, workflow_id }            → enrollments + recent step sends
-// 5.12.37: list_workflows also returns the company's forms (for the "Form submitted" trigger), and
+// 5.12.40: list_workflows also returns the company's forms (for the "Form submitted" trigger), and
 // save_workflow refuses a form trigger whose form is not this company's.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
@@ -70,7 +70,7 @@ Deno.serve(async (req) => {
     for (const k of WORKFLOW_FIELDS) if (k in incoming) row[k] = incoming[k];
     if (incoming.id) row.id = incoming.id;
     if (!row.name) return json({ error: 'name required' }, 400);
-    // 5.12.37: an id means "update MY automation" (same rule as save_offer since review round four):
+    // 5.12.40: an id means "update MY automation" (same rule as save_offer since review round four):
     // upserting on a caller's id let one company overwrite another company's automation.
     if (incoming.id) {
       const { data: mine } = await sb.from('workflows').select('id').eq('id', String(incoming.id)).eq('org_id', org_id).maybeSingle();

@@ -555,6 +555,23 @@ export async function loadShifts(locationId, fromIso, toIso) {
   if (error) { console.warn('[wf] loadShifts:', error.message); return []; }
   return (data || []).map(mapShift);
 }
+// 5.12.38: the shifts of this site's staff at their OTHER linked sites (wf_staff.person_id), raw:
+// { records, shifts, siteNames } for crossSiteRota.mapLinkedShifts. Empty when nobody is linked, in
+// mock mode, or before 20261111a (no person_id): the rota then reads exactly as before.
+export async function loadLinkedShifts(locationId, orgId, staff, fromIso, toIso) {
+  const empty = { records: [], shifts: [], siteNames: {} };
+  const persons = [...new Set((staff || []).map(s => s.personId).filter(Boolean))];
+  if (isMock || !supabase || !locationId || !orgId || !persons.length) return empty;
+  const { data: records, error } = await supabase.from('wf_staff').select('id, person_id, location_id')
+    .eq('org_id', orgId).in('person_id', persons).neq('location_id', locationId).neq('status', 'leaver');
+  if (error || !records?.length) return empty;
+  const locIds = [...new Set(records.map(r => r.location_id))];
+  let q = supabase.from('wf_shifts').select('*').in('staff_id', records.map(r => r.id)).in('status', ['draft', 'published']);
+  if (fromIso) q = q.gte('shift_date', fromIso);
+  if (toIso) q = q.lte('shift_date', toIso);
+  const [{ data: rows }, { data: locs }] = await Promise.all([q, supabase.from('locations').select('id, name').in('id', locIds)]);
+  return { records, shifts: (rows || []).map(mapShift), siteNames: Object.fromEntries((locs || []).map(l => [l.id, l.name])) };
+}
 export async function saveShift(shift, locationId, orgId) {
   if (isMock || !supabase) return lsUpsert('shifts', shift);
   const org = await resolveOrgForLocation(locationId, orgId);
@@ -623,6 +640,8 @@ const mapTs = r => ({
   breakTaken: r.break_taken || 0, breaks: Array.isArray(r.breaks) ? r.breaks : [], paidBreakMins: r.paid_break_mins || 0,
   scheduledHours: Number(r.scheduled_hours ?? 0), actualHours: Number(r.actual_hours ?? 0),
   variance: r.variance != null ? Number(r.variance) : null, payAmount: r.pay_amount != null ? Number(r.pay_amount) : null,
+  // 5.12.38: US overtime past 40 h in the work week, every linked site (kept by the database, 20261112a).
+  overtimeHours: Number(r.overtime_hours ?? 0), overtimePremium: Number(r.overtime_premium ?? 0),
   effectiveRate: r.effective_rate != null ? Number(r.effective_rate) : null, rateSource: r.rate_source,
   status: r.status, approvedBy: r.approved_by, approvedAt: r.approved_at, payrollRunId: r.payroll_run_id || null,
 });

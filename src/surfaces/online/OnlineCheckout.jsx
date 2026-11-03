@@ -651,7 +651,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   };
 
   // ── Promo/offer code validate (no write — redeemed after the order is placed) ──
-  // 5.12.37: why the last code was refused, in plain words (promoEntry.promoRefusalWords).
+  // 5.12.40: why the last code was refused, in plain words (promoEntry.promoRefusalWords).
   const promoRefusalRef = useRef('');
   const tryPromoCode = async (code) => {
     promoRefusalRef.current = '';
@@ -690,7 +690,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
 
   // ── Gift card OR promo code lookup — one field handles both ───────────
   const lookupGiftCard = async () => {
-    // 5.12.37: the gift card check drops separators; a promo code keeps its hyphen (promoEntry.js).
+    // 5.12.40: the gift card check drops separators; a promo code keeps its hyphen (promoEntry.js).
     const clean = giftCodeDigits(giftCode);
     if (clean.length < 3) { setGiftError('Enter a code'); return; }
     setGiftLoading(true); setGiftError(''); setGiftCard(null);

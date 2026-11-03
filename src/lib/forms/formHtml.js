@@ -1,6 +1,6 @@
 // src/lib/forms/formHtml.js
 //
-// Marketing forms (5.12.37): the ONE markup of a form, as a plain string. The website builder's
+// Marketing forms (5.12.40): the ONE markup of a form, as a plain string. The website builder's
 // server renderer (src/surfaces/website/ssr/renderBlocks.js), the hosted form page behind the embed
 // (api/form.js) and the React Form block (src/surfaces/website/blocks/components/FormBlock.jsx,
 // same class names) all paint this, so a form looks the same wherever it is.

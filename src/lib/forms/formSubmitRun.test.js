@@ -1,4 +1,4 @@
-// Marketing forms (5.12.37): one submission end to end through the REAL shared code the form-submit
+// Marketing forms (5.12.40): one submission end to end through the REAL shared code the form-submit
 // function runs (supabase/functions/_shared/formSubmitRun.js), and the "Form submitted" automation
 // through the REAL workflow engine (workflow-engine.ts, Node strips its types), on an in-memory
 // database. marketing-send is stubbed at fetch: what it is asked to send is what is checked.

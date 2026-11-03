@@ -83,7 +83,7 @@
 import { pagedRows, pagedEach, limiter } from './pagedRows.js';
 import { SALES_CHECK_COLS, emptySales, addCheckSales, addRefundSales, refundMadeAt } from './snapshotSales.js';
 import { isVoidedCheck, checkTenderParts, MONEY_KINDS, GIFT_SALE_KIND } from './accountingDay.js';
-import { checkSalesParts, refundSalesParts, chargedNothing, timesheetDayMs } from './tradingSales.js';
+import { checkSalesParts, refundSalesParts, chargedNothing, timesheetDayMs, timesheetCost } from './tradingSales.js';
 import { wallClock, wallTimeToInstant, businessDayOf, businessDayStartMs, dayStartMinutes, venueZone, DEFAULT_DAY_START, DEFAULT_VENUE_TZ } from './businessDay.js';
 import {
   ownerPeriod, periodRange, addDays, weekStartOf, dayCount, inDays, mergeDayRanges, sliceDayRange, subtractDayRange,
@@ -484,7 +484,7 @@ export async function buildOwnerSnapshot({ ops, opsIds, meta, now = new Date(), 
     Promise.all(opsIds.map(refundsOf)),
     Promise.all(opsIds.map((id) => firstSaleDay(ops, id, plan[id], gate))),
     gate(() => pagedRows('forecasts', () => ops.from('wf_sales_forecast').select('location_id, forecast_date, amount').in('location_id', opsIds).gte('forecast_date', fcFrom).lte('forecast_date', fcTo).order('id'))),
-    gate(() => pagedRows('timesheets', () => ops.from('wf_timesheets').select('location_id, clock_in, clock_out, pay_amount, status').in('location_id', opsIds).gte('clock_in', tsFrom).lt('clock_in', tsTo).order('clock_in').order('id'))),
+    gate(() => pagedRows('timesheets', () => ops.from('wf_timesheets').select('location_id, clock_in, clock_out, pay_amount, overtime_premium, status').in('location_id', opsIds).gte('clock_in', tsFrom).lt('clock_in', tsTo).order('clock_in').order('id'))),
     gate(() => pagedRows('open orders', () => ops.from('order_queue').select('location_id, status').in('location_id', opsIds).order('location_id').order('ref'))),
     gate(() => pagedRows('open tables', () => ops.from('active_sessions').select('location_id').in('location_id', opsIds).order('id'))),
     // v5.11.92 (multi site stock Drop 4a): the stock block per venue, from stock_report_league as
@@ -505,7 +505,7 @@ export async function buildOwnerSnapshot({ ops, opsIds, meta, now = new Date(), 
     const p = plan[t.location_id];
     const ms = timesheetDayMs(t);
     if (!p || ms == null) continue;
-    const d = p.dayOf(ms), pay = Number(t.pay_amount) || 0;
+    const d = p.dayOf(ms), pay = timesheetCost(t);
     if (d === p.today) labourToday[t.location_id] = (labourToday[t.location_id] || 0) + pay;
     if (inDays(d, p.range.from, p.today)) labourPeriod[t.location_id] = (labourPeriod[t.location_id] || 0) + pay;
   }
@@ -926,7 +926,7 @@ export async function buildOwnerDetail({ ops, opsIds, meta, target, currency = n
     Promise.all(ids.map(otherOf)),
     Promise.all(ids.map(refundsOf)),
     Promise.all(ids.map((id) => firstSaleDay(ops, id, plan[id], gate))),
-    gate(() => pagedRows('timesheets', () => ops.from('wf_timesheets').select('id, location_id, clock_in, clock_out, pay_amount, actual_hours, status').in('location_id', ids).gte('clock_in', tsFrom).lt('clock_in', tsTo).order('clock_in').order('id'))),
+    gate(() => pagedRows('timesheets', () => ops.from('wf_timesheets').select('id, location_id, clock_in, clock_out, pay_amount, overtime_premium, actual_hours, status').in('location_id', ids).gte('clock_in', tsFrom).lt('clock_in', tsTo).order('clock_in').order('id'))),
     gate(() => pagedRows('labour targets', () => ops.from('wf_venue_settings').select('location_id, labour_target_pct').in('location_id', ids).order('location_id'))),
     // v5.11.92 (multi site stock Drop 4a): the Stock card for ONE venue (the league row and the
     // attention rows from stock_report_dashboard). The group has no stock card: currencies and
@@ -940,7 +940,7 @@ export async function buildOwnerDetail({ ops, opsIds, meta, target, currency = n
     if (!['approved', 'paid'].includes(t.status)) continue;
     const p = plan[t.location_id], ms = timesheetDayMs(t);
     if (!p || ms == null || !inDays(p.dayOf(ms), p.range.from, p.range.to)) continue;
-    lab.cost += Number(t.pay_amount) || 0; lab.hours += Number(t.actual_hours) || 0; lab.shifts += 1;
+    lab.cost += timesheetCost(t); lab.hours += Number(t.actual_hours) || 0; lab.shifts += 1;
   }
   // The target is the venue's own (wf_venue_settings.labour_target_pct, a fraction: 0.28 is 28%).
   // A group has no single target.

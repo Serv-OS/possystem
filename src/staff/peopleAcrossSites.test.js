@@ -101,7 +101,7 @@ test('the SQL: one link column on both tables, three doors, a shared PIN that ch
 test('the Back Office Sites panel uses the doors and reads person_id safely before the SQL has run', () => {
   const wf = read('../backoffice/sections/Workforce.jsx');
   assert.match(wf, /<SectionTitle>Sites<\/SectionTitle>/);
-  assert.match(wf, /addStaffSite\(s\.id, addSite/);
+  assert.match(wf, /await addStaffSite\(s\.id, id, picked\[id\]\.role \|\| s\.role \|\| null, picked\[id\]\.rate\)/);   // any number of sites
   assert.match(wf, /linkStaffRecords\(s\.id, c\.staffId\)/);
   assert.match(wf, /unlinkStaffRecord\(s\.id\)/);
   const data = read('./wfData.js');

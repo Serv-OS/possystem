@@ -12,6 +12,7 @@ import {
   isSectionsColumnMissing, canSwitchLoginOn, missingProfileColumn,
 } from '../../lib/boSections';
 import { useStockScope } from '../StockScope';
+import TillSitesPanel from './TillSitesPanel';
 import { stockApi } from '../../lib/stock/stockApi';
 import { STOCK_CONTROL_CHOICES, stockControlLine, canChangeStockControl, savedWords } from '../../lib/stock/stockControlWords';
 
@@ -834,6 +835,10 @@ export default function StaffManager({ orgCtx = null } = {}) {
               </div>
               {sel.pin && <div style={{ display:'flex', gap:6 }}>{Array(4).fill(null).map((_,i)=><div key={i} style={{ width:16, height:16, borderRadius:'50%', background:'var(--t3)' }}/>)}</div>}
             </div>
+
+            {/* 5.12.39: Sites. Which sites they work at (same PIN and card everywhere), the same link as
+                Workforce, Staff, Sites (Peter, 2 Nov 2026: "we need both"). */}
+            <TillSitesPanel member={sel} orgCtx={orgCtx} showToast={showToast} />
 
             {/* Sign-in method — PIN or Card (enforced at the till). A 'Card' staff is refused a PIN
                 (manager override aside) — that's the security win. Assign cards here with a USB NFC

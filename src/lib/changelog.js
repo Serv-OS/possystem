@@ -1,6 +1,6 @@
 export const CHANGELOG = [
   {
-    v: '5.12.37',
+    v: '5.12.40',
     date: '2 Nov 2026',
     items: [
       'Forms (Customers, Forms): build a form with up to 12 fields (first name, last name, email, phone, birthday, free text, dropdown, tick box, each required or not), your own marketing tick words, button words and thank you words, for one venue or the whole company. The list shows how many people sent each form.',
@@ -13,6 +13,27 @@ export const CHANGELOG = [
       'Automations: saving an automation now checks it belongs to your company (an id alone was enough before).',
       'A form automation never sends a code to someone who has already used up that offer (they could not use it at checkout).',
       'Online checkout: promo codes with a prefix (5OFF-..., WELC-..., BDAY-...) work again. The dash was taken out before the code was checked, so every one said "Code not recognised". A refused code now says why (already used, expired, minimum spend and so on).',
+    ],
+  },
+  {
+    v: '5.12.39',
+    date: '2 Nov 2026',
+    items: [
+      'Team, Sites: on a till user, tick the sites they also work at (Select all for every site) and Add. They get a till user at each with the same PIN, card, sign in method, till role and permissions; their till role and permissions can then be set per site. A till user with the same name at another site is suggested, and Link makes them one person (the other takes this one\'s PIN and card). Unlink puts them back to one site. When the till user has a Workforce record, its Workforce record is made at each site too.',
+      'Workforce, Staff, Sites: tick any number of sites at once, each with their position and pay rate there (it was one site at a time).',
+      'A Workforce record made later for a linked till user (on their first clock in at a new site, or Set up on the POS) joins the person by itself, so their hours count across sites with no extra step.',
+      'Needs the SQL 20261113a in the Ops database. Until it runs, Team shows the sites and suggestions but adding or linking says a database update is needed.',
+    ],
+  },
+  {
+    v: '5.12.38',
+    date: '2 Nov 2026',
+    items: [
+      'Rota, one person at several sites: a shift that overlaps their shift at another of their sites is refused (add, edit, copy a shift, copy the week, build with AI). Their shift at the other site shows faintly in their row, and their name shows their hours there this week and, at a US site, the overtime that makes (Jane also has 25 h at Daybreak this week (45 h in all): 5 h overtime).',
+      'Staff app: their shifts at every site they work at, each with its site. Open shifts: a claim that overlaps their shift at another site, or takes them over the most hours a week counting every site, is refused, and the list says so before they try. The open shift text only goes to people who could take it counting every site.',
+      'Labour reports at a US site add the overtime premium: Daily trading, the Owner and Manager apps, Stock and GP and the rota\'s actual cost. The database keeps each timesheet\'s overtime hours and premium (past 40 hours in its work week, every linked site, half time at the week\'s blended rate), whoever writes the timesheet, and recomputes when a timesheet changes or a person is linked or unlinked. Payroll and the reports use the same rule.',
+      'Payroll, US: Health cover hours (ACA). Each person\'s hours of service a month at every site, who is full time (130 hours), and the company\'s full time plus equivalents against the 50 that makes it a large employer.',
+      'Needs the SQL 20261112a in the Ops database first, then workforce-compute, staff-portal, owner-snapshot, manager-snapshot and trading-report deployed.',
     ],
   },
   {

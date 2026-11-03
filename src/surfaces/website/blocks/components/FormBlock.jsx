@@ -1,6 +1,6 @@
 // src/surfaces/website/blocks/components/FormBlock.jsx
 //
-// 5.12.37 Marketing forms: the Form block in the browser and in the Back Office editor. The same
+// 5.12.40 Marketing forms: the Form block in the browser and in the Back Office editor. The same
 // markup and class names as the server's formHtml (src/lib/forms/formHtml.js), so React replaces
 // the server form without a jump. It is still a real <form method="post">: with JavaScript it
 // sends JSON with fetch and swaps in the thank you words; if fetch fails it lets the plain post go,

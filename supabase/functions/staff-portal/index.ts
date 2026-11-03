@@ -39,6 +39,7 @@ import { openOnboardingSteps } from '../_shared/onboardingOpen.js';
 // v5.11.101: open shifts, swaps, availability and the venue's region pack (openShifts.ts).
 import { venueFacts, regionForApp, swapsSnapshot, handleSwapAction } from './openShifts.ts';
 import { regionPack } from '../_shared/regionPack.js';
+import { linkedShiftsFor } from '../_shared/linkedShifts.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -675,7 +676,11 @@ Deno.serve(async (req) => {
           bankMasked: staff.bank_account_masked || null, bankSortCode: staff.bank_sort_code || null,
           bankAccountName: staff.bank_account_name || null,
         },
-        shifts: (shifts ?? []).map((s: any) => ({ id: s.id, roleKey: s.role_key || null, date: s.shift_date, start: String(s.start_time || '').slice(0, 5), finish: String(s.finish_time || '').slice(0, 5), breakMins: s.break_mins || 0, section: s.section })),
+        // 5.12.38: their published shifts at every site they work at (linked records), each with its site.
+        shifts: [
+          ...(shifts ?? []).map((s: any) => ({ id: s.id, roleKey: s.role_key || null, date: s.shift_date, start: String(s.start_time || '').slice(0, 5), finish: String(s.finish_time || '').slice(0, 5), breakMins: s.break_mins || 0, section: s.section })),
+          ...(await linkedShiftsFor(admin, staff, today, horizon, { published: true })).map((s: any) => ({ id: s.id, roleKey: s.roleKey, date: s.date, start: s.start, finish: s.finish, breakMins: s.breakMins, section: s.section, site: s.site, otherSite: true })),
+        ].sort((a: any, b: any) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.start < b.start ? -1 : a.start > b.start ? 1 : 0)),
         timesheets: (ts ?? []).map((t: any) => ({ in: t.clock_in, out: t.clock_out, breakMins: t.break_taken || 0, hours: t.actual_hours != null ? Number(t.actual_hours) : null, pay: t.pay_amount != null ? Number(t.pay_amount) : null, status: t.status })),
         announcements,
         onboarding,

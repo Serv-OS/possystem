@@ -172,7 +172,7 @@ test('trading-report reads sales and refunds per business day, paged, with the t
   assert.match(src, /return tradingDays\(\{ saleRows: sales\.rows, refundRows: refunds\.rows, dayOf: \(ms: number\) => businessDayOf\(ms, clock\.timezone, clock\.dayStart\) \}\);/);
   assert.match(src, /const clock = await venueClock\(platformAdmin, ops\);/);
   assert.match(src, /const labAct = timesheetDays\(\{ timesheets: ts, dayOf \}\);/);
-  assert.match(src, /select\('id, clock_in, clock_out, pay_amount, status'\)/);
+  assert.match(src, /select\('id, clock_in, clock_out, pay_amount, overtime_premium, status'\)/);
   // The rota stays on the day the manager planned it for.
   assert.match(src, /labTheo\[s\.shift_date\]/);
   assert.match(src, /const actualSales = s\?\.net \?\? 0;/);
