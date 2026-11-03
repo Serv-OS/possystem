@@ -353,8 +353,13 @@ function mapRole(r) {
     requiresSIA: !!r.requires_sia, premiumEligible: !!r.premium_eligible, sortOrder: r.sort_order || 0,
   };
 }
-/** Returns { list:[roleObj], map:{key:roleObj} } for the location, seeding defaults if empty. */
-export async function loadRoles(locationId, orgId) {
+/** Returns { list:[roleObj], map:{key:roleObj} } for the location.
+ *  5.12.50 (Peter, 3 Nov 2026: "when we start a new site it has positions and rates already there it
+ *  shouldn't, they need to be blank"): a real venue with no positions stays blank and Positions and
+ *  rates shows Add role. Before, the first open of Workforce wrote nine sample positions with UK pay
+ *  (Server 12.21, Chef 15.50, Duty Manager 32,000) into the venue, a US venue too. Only the offline
+ *  demo (no database) still shows the sample list. */
+export async function loadRoles(locationId) {
   let list;
   if (isMock || !supabase) {
     list = lsGet('roles');
@@ -364,7 +369,6 @@ export async function loadRoles(locationId, orgId) {
     const { data, error } = await supabase.from('wf_roles').select('*').eq('location_id', locationId).order('sort_order');
     if (error) { console.warn('[wf] loadRoles:', error.message); return { list: [], map: {} }; }
     list = (data || []).map(mapRole);
-    if (!list.length) { list = await seedDefaultRoles(locationId, orgId); }
   }
   const map = {}; list.forEach(r => { map[r.key] = r; });
   return { list, map };
@@ -375,18 +379,6 @@ function seedRoleObjects() {
     rate: r.rate ?? null, salary: r.salary ?? null, contractedWeek: 40, ageBands: [], troncWeight: 1,
     requiresSIA: !!r.requiresSIA, premiumEligible: true, sortOrder: i,
   }));
-}
-async function seedDefaultRoles(locationId, orgId) {
-  const org = await resolveOrgForLocation(locationId, orgId);
-  const rows = Object.entries(SEED_ROLES).map(([key, r], i) => ({
-    location_id: locationId, org_id: org, key, label: r.lbl, grp: r.grp,
-    pay_type: r.salary ? 'salaried' : r.band ? 'ageBanded' : 'hourly',
-    base_rate: r.rate ?? null, salary_annual: r.salary ?? null, contracted_week: 40,
-    tronc_weight: 1, requires_sia: !!r.requiresSIA, sort_order: i,
-  }));
-  const { data, error } = await supabase.from('wf_roles').insert(rows).select();
-  if (error) { console.warn('[wf] seedDefaultRoles:', error.message); return seedRoleObjects(); }
-  return (data || []).map(mapRole);
 }
 export async function saveRole(role, locationId, orgId) {
   if (isMock || !supabase) return lsUpsert('roles', role);

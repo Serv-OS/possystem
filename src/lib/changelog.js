@@ -1,5 +1,13 @@
 export const CHANGELOG = [
   {
+    v: '5.12.50',
+    date: '3 Nov 2026',
+    items: [
+      'Workforce: a new site starts with no positions. Positions and rates shows No roles yet with Add role. Before, the first open of Workforce wrote nine sample positions with UK pay (Server 12.21, Chef 15.50, Duty Manager 32,000) into the venue, a US venue too.',
+      'The untouched sample positions already written are removed at every company except POSUP Test by SQL 20261103b (114 rows at 14 sites; only exact samples never edited and used by no staff, shift or rate change, so positions in use stay).',
+    ],
+  },
+  {
     v: '5.12.49',
     date: '3 Nov 2026',
     items: [
