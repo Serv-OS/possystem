@@ -35,6 +35,7 @@ import { namedSheetId, openSheetFor } from '../_shared/clockSheet.js';
 // 5.12.49: declared cash tips at clock out (US venues, Workforce settings, Ask for cash tips at clock out).
 import { asksCashTips, parseCashTips } from '../_shared/cashTips.js';
 import { usBreakRule, usMealBreakMins } from '../_shared/usBreaks.js';
+import { isHeadOffice, HEAD_OFFICE_CLOCK_WORDS } from '../_shared/headOffice.js';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -212,18 +213,29 @@ Deno.serve(async (req) => {
       // policy travels back with the status it already asks for.
       let posLoginClockIn = false;
       let askCashTips = false;
+      let headOffice = false;
       try {
         const { data: gs } = await admin.from('wf_venue_settings')
           .select('clock_geofence, settings').eq('location_id', location_id).maybeSingle();
         posLoginClockIn = !!(gs?.clock_geofence as any)?.pos_login_clock_in;
+        // 5.12.56: head office staff do not clock in (the till offers no shift start for them).
+        headOffice = isHeadOffice(staff, (gs as any)?.settings ?? null);
+        if (headOffice) posLoginClockIn = false;
         // 5.12.49: a US venue asks for cash tips at clock out unless switched off; never a UK venue.
         askCashTips = asksCashTips({ country: regionPack({ currency: await currencyOf(location_id) }).country, settings: (gs as any)?.settings ?? null });
       } catch { /* policy is optional; never block a status read */ }
-      return json({ ok: true, staff: who, ...stateOf(open), announcements, outstanding, posLoginClockIn, askCashTips });
+      return json({ ok: true, staff: who, ...stateOf(open), announcements, outstanding, posLoginClockIn, askCashTips, headOffice, ...(headOffice ? { headOfficeWords: HEAD_OFFICE_CLOCK_WORDS } : {}) });
     }
 
     if (action === 'in') {
       if (open) return json({ error: 'already clocked in', staff: who, ...stateOf(open) }, 409);
+      // 5.12.56: head office staff (Workforce settings, Head office staff, and the tick on the person) are
+      // paid their salary with no timesheets, so a clock in is refused: no hours ever land in this site's
+      // labour. A sheet opened before they were ticked can still be closed (out is not touched).
+      if (staff?.head_office === true) {
+        const { data: hoRow } = await admin.from('wf_venue_settings').select('settings').eq('location_id', location_id).maybeSingle();
+        if (isHeadOffice(staff, (hoRow as any)?.settings ?? null)) return json({ error: HEAD_OFFICE_CLOCK_WORDS, head_office: true, staff: who, ...stateOf(null) }, 409);
+      }
       // Link today's published shift (if scheduled) + snapshot the rate.
       const { data: shifts } = await admin.from('wf_shifts')
         .select('id, computed_hours, effective_rate, rate_source, section')

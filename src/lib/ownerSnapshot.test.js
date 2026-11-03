@@ -1631,3 +1631,38 @@ test('gift cards sold: the jsonb containment filter is JSON text, never a JavaSc
     assert.ok(/^JSON\.stringify\(|^GIFT_SALE_FILTER$/.test(m[2]), `contains on ${m[1]} passes a string: ${m[2]}`);
   }
 });
+
+// ── 5.12.56: head office staff ───────────────────────────────────────────────
+
+test('5.12.56 head office: its own company line, on the venue days, never in the venue labour or labour %', async () => {
+  const withHo = (settings) => ({
+    ...leeds(),
+    wf_venue_settings: [{ location_id: 'L', settings }],
+    wf_staff: [
+      { id: 'h1', location_id: 'L', head_office: true, salary_annual: 36500 },                          // 100 a day
+      { id: 'h2', location_id: 'L', head_office: true, salary_annual: 73000, start_date: '2026-10-02' }, // 200 a day from today
+      { id: 'h3', location_id: 'L', head_office: true, salary_annual: 36500, leaver_date: '2026-09-01' }, // left long ago
+      { id: 's1', location_id: 'L', head_office: false, salary_annual: 99999 },                         // not head office
+    ],
+  });
+  const today = await build(fakeOps(withHo({ headOffice: true })), 'today');
+  assert.deepEqual(today.rollup.head_office, { today: 300, period: 300, people: 2, shared: false });
+  assert.deepEqual(today.rollup.by_currency[0].head_office, today.rollup.head_office);
+  // The venue's labour and the company's labour % are exactly what they were (timesheets only).
+  assert.equal(today.locations[0].today.labour, 6);
+  assert.equal(today.rollup.labour, 6);
+  assert.equal(today.rollup.labour_pct, 20);
+  assert.equal('head_office' in today.locations[0], false, 'never on a venue: it is not that venue\'s cost');
+  // This week, Mon 28 Sep to Fri 2 Oct: h1 five days (500), h2 today only (200).
+  const week = await build(fakeOps(withHo({ headOffice: true })), 'week');
+  assert.equal(week.rollup.head_office.period, 700);
+  assert.equal(week.rollup.head_office.today, 300);
+  // Head office staff switched off: no key at all, the company reads exactly as before.
+  const off = await build(fakeOps(withHo({})), 'today');
+  assert.equal('head_office' in off.rollup, false);
+  assert.equal('head_office' in off.rollup.by_currency[0], false);
+  // A database before 20261119a (no wf_staff table in the fake): no line, no error, the rest as before.
+  const old = await build(fakeOps({ ...leeds(), wf_venue_settings: [{ location_id: 'L', settings: { headOffice: true } }] }), 'today');
+  assert.equal('head_office' in old.rollup, false);
+  assert.equal(old.rollup.labour, 6);
+});

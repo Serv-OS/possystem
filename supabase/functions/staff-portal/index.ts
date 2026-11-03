@@ -43,6 +43,7 @@ import { linkedShiftsFor } from '../_shared/linkedShifts.js';
 import { asksCashTips } from '../_shared/cashTips.js';
 import { pickClockTarget } from '../_shared/shiftClockTarget.js';
 import { primaryRecord } from '../_shared/primaryLocation.js';
+import { isHeadOffice, HEAD_OFFICE_CLOCK_WORDS } from '../_shared/headOffice.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -158,12 +159,13 @@ async function judgeFence(locationId: string, fix: Record<string, unknown> | nul
 // records, those sites' names, zones and clock settings, their open sheet anywhere, and their published
 // shifts around today. A person at one site gets just their own record, as before.
 async function clockContext(staff: any) {
-  let recs: any[] = [{ id: staff.id, location_id: staff.location_id }];
+  let recs: any[] = [{ id: staff.id, location_id: staff.location_id, head_office: staff.head_office === true }];
   if (staff.person_id && staff.org_id) {
-    const { data } = await admin.from('wf_staff').select('id, location_id, status')
+    // select('*'): head_office arrives with 20261119a and reads as not ticked before it has run.
+    const { data } = await admin.from('wf_staff').select('*')
       .eq('org_id', staff.org_id).eq('person_id', staff.person_id).neq('status', 'leaver');
     const others = (data ?? []).filter((r: any) => r.id !== staff.id);
-    recs = [...recs, ...others.map((r: any) => ({ id: r.id, location_id: r.location_id }))];
+    recs = [...recs, ...others.map((r: any) => ({ id: r.id, location_id: r.location_id, head_office: r.head_office === true }))];
   }
   const locIds = [...new Set(recs.map((r) => r.location_id))];
   const ids = recs.map((r) => r.id);
@@ -180,8 +182,12 @@ async function clockContext(staff: any) {
   const locOf = Object.fromEntries((locs ?? []).map((l: any) => [l.id, l]));
   const vsOf = Object.fromEntries((vss ?? []).map((v: any) => [v.location_id, v]));
   const records = recs.map((r) => ({ id: r.id, location_id: r.location_id, site: locOf[r.location_id]?.name || 'your site',
-    tz: locOf[r.location_id]?.timezone || 'Europe/London', noShift: vsOf[r.location_id]?.settings?.clockInNoShift === 'refuse' ? 'refuse' : 'ask' }));
-  return { records, open: open ?? [], shifts: shifts ?? [], vsOf };
+    tz: locOf[r.location_id]?.timezone || 'Europe/London', noShift: vsOf[r.location_id]?.settings?.clockInNoShift === 'refuse' ? 'refuse' : 'ask',
+    // 5.12.56: a head office record (ticked, and Head office staff on at that site) never clocks in.
+    headOffice: isHeadOffice(r, vsOf[r.location_id]?.settings ?? null) }));
+  // Clock in only ever lands on a record that is not head office; all head office = no clock in at all.
+  const clockRecords = records.filter((r) => !r.headOffice);
+  return { records, clockRecords, open: open ?? [], shifts: shifts ?? [], vsOf };
 }
 
 async function recordClockEvent(row: Record<string, unknown>) {
@@ -521,7 +527,8 @@ Deno.serve(async (req) => {
       // 5.12.54: the open sheet at ANY linked site, and where a clock in now would land.
       const ctx = await clockContext(staff);
       const open = ctx.open[0] ?? null;
-      const pick = pickClockTarget({ now: Date.now(), records: ctx.records, shifts: ctx.shifts, open: ctx.open });
+      const pick = pickClockTarget({ now: Date.now(), records: ctx.clockRecords, shifts: ctx.shifts, open: ctx.open });
+      const headOffice = ctx.clockRecords.length === 0;
       const hereLoc = open?.location_id || pick.target?.location_id || staff.location_id;
       const { data: vs } = await admin.from('wf_venue_settings')
         .select('clock_geofence, settings').eq('location_id', hereLoc).maybeSingle();
@@ -549,6 +556,9 @@ Deno.serve(async (req) => {
         ask_site: pick.askSite ?? null,
         no_shift_refused: pick.refused === 'no_shift',
         multi_site: ctx.records.length > 1,
+        // 5.12.56: head office staff are paid their salary and do not clock in (no Clock in button).
+        head_office: headOffice && !open,
+        ...(headOffice && !open ? { head_office_words: HEAD_OFFICE_CLOCK_WORDS } : {}),
       });
     }
 
@@ -566,7 +576,9 @@ Deno.serve(async (req) => {
       const ctx = await clockContext(staff);
       let tStaff = staff.id, tLoc = staff.location_id;
       if (kind === 'in') {
-        const pick = pickClockTarget({ now: Date.now(), records: ctx.records, shifts: ctx.shifts, open: ctx.open,
+        // 5.12.56: head office staff do not clock in (checked here: workforce-clock's 409 reads as "already").
+        if (ctx.clockRecords.length === 0 && !ctx.open[0]) return json({ ok: false, refused: true, head_office: true, reason: HEAD_OFFICE_CLOCK_WORDS }, 200);
+        const pick = pickClockTarget({ now: Date.now(), records: ctx.clockRecords, shifts: ctx.shifts, open: ctx.open,
           chosenSite: typeof body.site_id === 'string' ? body.site_id : null });
         if (pick.openElsewhere) {
           return json({ ok: false, open_elsewhere: pick.openElsewhere,

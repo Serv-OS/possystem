@@ -15,6 +15,7 @@ import { writeWfAudit } from '../_shared/wfAudit.js';
 import { notifyStaff } from '../_shared/staffNotify.ts';
 import { openOnboardingSteps } from '../_shared/onboardingOpen.js';
 import { countHidden } from '../_shared/openShiftsHidden.js';
+import { isHeadOffice, HEAD_OFFICE_SHIFT_WORDS } from '../_shared/headOffice.js';
 
 type Admin = any;
 type Venue = { id: string; name: string; currency: string; timezone: string; country: string; todayIso: string; nowMin: number };
@@ -113,7 +114,10 @@ export async function swapsSnapshot(admin: Admin, staff: any, v: Venue) {
   // 5.11.122: open (unassigned) shifts hidden by reason, so the app can say "2 open shifts need a
   // bartender" instead of "Nothing up for grabs" (Peter's Provo test, 28 Oct 2026).
   const hiddenOpen: any[] = [];
+  // 5.12.56: head office staff are salaried and never on the rota, so nothing is up for grabs for them.
+  const headOffice = isHeadOffice(staff, settings);
   for (const sh of Object.values(shiftById)) {
+    if (headOffice) break;
     if (sh.date < v.todayIso || sh.date > horizon) continue;
     const rq = reqByShift[sh.id] || null;
     if (sh.staffId && !(rq && (rq.kind === 'drop' || rq.kind === 'offer'))) continue;
@@ -226,6 +230,11 @@ export async function handleSwapAction(admin: Admin, staff: any, action: string,
   if (action === 'shift_claim') {
     const shiftId = String(body.shift_id || '');
     if (!UUID.test(shiftId)) return err(400, 'Pick a shift');
+    // 5.12.56: head office staff do not take shifts (no clock in, not on the rota).
+    if (staff?.head_office === true) {
+      const { data: hoVs } = await admin.from('wf_venue_settings').select('settings').eq('location_id', staff.location_id).maybeSingle();
+      if (isHeadOffice(staff, (hoVs as any)?.settings ?? null)) return err(409, HEAD_OFFICE_SHIFT_WORDS, 'head_office');
+    }
     const { data: r, error } = await admin.rpc('wf_shift_claim', { p_staff_id: staff.id, p_shift_id: shiftId });
     if (error) return err(500, error.message);
     if (!r?.ok) return err(409, problemText(r?.code), r?.code);

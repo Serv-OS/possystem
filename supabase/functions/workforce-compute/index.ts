@@ -28,6 +28,7 @@ import { caRules, caOvertimeAcrossSites } from '../_shared/caOvertime.js';
 import { primaryRecord, personBalance } from '../_shared/primaryLocation.js';
 import { acaReport, monthsBetween } from '../_shared/acaHours.js';
 import { overtimeAcrossSites, overtimeRules } from '../_shared/multiSiteOvertime.js';
+import { headOfficeOn, isHeadOffice, headOfficePay } from '../_shared/headOffice.js';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -320,11 +321,14 @@ Deno.serve(async (req) => {
       const fallbackDayHours = Math.max(1, Number((vsRow?.settings as any)?.holidayDayHours) || 8);
 
       const [{ data: st }, { data: roles }] = await Promise.all([
-        admin.from('wf_staff').select('id, contract_type, role_key, rate_override').eq('id', req.staff_id).maybeSingle(),
+        // select('*'): head_office arrives with 20261119a and reads as not ticked before it has run.
+        admin.from('wf_staff').select('*').eq('id', req.staff_id).maybeSingle(),
         admin.from('wf_roles').select('key, base_rate, salary_annual').eq('location_id', chargeLoc),
       ]);
       const role = (roles ?? []).find((r: any) => r.key === st?.role_key);
-      const salaried = st?.contract_type === 'salaried' || (role?.salary_annual != null && role?.base_rate == null && st?.rate_override == null);
+      // 5.12.56: a head office person is paid their salary through time off too: no hourly holiday pay on top.
+      const salaried = st?.contract_type === 'salaried' || isHeadOffice(st, (vsRow?.settings as any) ?? null)
+        || (role?.salary_annual != null && role?.base_rate == null && st?.rate_override == null);
 
       // UK statutory reference period (ERA 1996 s.224, post-Apr 2020 method,
       // mirroring avgHoursPerDay in src/staff/labour.js): the last 52 weeks the
@@ -492,7 +496,7 @@ Deno.serve(async (req) => {
         admin.from('wf_payroll_runs').select('id, created_at, totals').eq('location_id', location_id).eq('period_start', from).maybeSingle(),
         admin.from('wf_timesheets').select('id').eq('location_id', location_id).eq('status', 'pending')
           .gte('clock_in', fromTs).lte('clock_in', toTs),
-        admin.from('wf_venue_settings').select('settings, premiums').eq('location_id', location_id).maybeSingle(),
+        admin.from('wf_venue_settings').select('settings, premiums, pay_period_type').eq('location_id', location_id).maybeSingle(),
         // Base pay from APPROVED + already-PAID timesheets (paid rows keep the
         // preview of a closed period faithful to what was actually paid).
         admin.from('wf_timesheets').select(`id, staff_id, actual_hours, effective_rate, rate_source, paid_break_mins, pay_amount, clock_in, clock_out, status${pack.country === 'US' ? ', declared_cash_tips' : ''}`)
@@ -804,7 +808,22 @@ Deno.serve(async (req) => {
         });
       }
 
-      const ids = new Set([...Object.keys(base), ...Object.keys(troncTips), ...Object.keys(directTips), ...Object.keys(holiday), ...Object.keys(topUps)]);
+      // 5.12.56: HEAD OFFICE STAFF (Workforce settings, Head office staff; _shared/headOffice.js). Their
+      // salary for the period with no timesheets: a full period is the year over the periods in a year,
+      // a start or leave inside it pays the days employed. Leavers are read too, so a last part month is
+      // paid. Only a site with the switch on reads them: every other payroll is exactly as before.
+      const hoPay: Record<string, { pay: number; basis: string; days: number; periodDays: number }> = {};
+      if (headOfficeOn(policy)) {
+        const { data: hoRows } = await admin.from('wf_staff').select('id, salary_annual, start_date, leaver_date')
+          .eq('location_id', location_id).eq('head_office', true);
+        (hoRows ?? []).forEach((r: any) => {
+          const p = headOfficePay({ salaryAnnual: r.salary_annual, from, to, periodType: (vs as any)?.pay_period_type || 'monthly',
+            startDate: r.start_date, leaverDate: r.leaver_date });
+          if (p.pay > 0) hoPay[r.id] = p;
+        });
+      }
+
+      const ids = new Set([...Object.keys(base), ...Object.keys(troncTips), ...Object.keys(directTips), ...Object.keys(holiday), ...Object.keys(topUps), ...Object.keys(hoPay)]);
       const staff = [...ids].map((id) => {
         const b = base[id] ?? { hours: 0, pay: 0 };
         const tronc = round2(troncTips[id] ?? 0);
@@ -839,6 +858,11 @@ Deno.serve(async (req) => {
         if (topUps[id]) { line.tip_credit_topup = topUps[id].topUp; line.tip_credit_weeks = topUps[id].weeks; line.total = round2(line.total + line.tip_credit_topup); }
         // 5.12.49: declared cash tips are reported with the wages, never added to what the venue pays.
         if (anyCashDeclared) line.tips_cash_declared = cashDeclared[id] ?? 0;
+        // 5.12.56: a head office person's salary for the period (only lines that have one carry the keys).
+        if (hoPay[id]) {
+          line.head_office = true; line.salary = hoPay[id].pay; line.salary_basis = hoPay[id].basis;
+          line.salary_days = hoPay[id].days; line.total = round2(line.total + line.salary);
+        }
         return line as { staff_id: string; hours: number; pay: number; holiday_hours: number; holiday_pay: number; tips_tronc: number; tips_direct: number; tips: number; total: number; premium_pay?: number };
       }).sort((a, b) => b.total - a.total);
       const totals: Record<string, number> = {
@@ -854,6 +878,8 @@ Deno.serve(async (req) => {
       if (caVenue) totals.meal_premium = round2(staff.reduce((a, s: any) => a + (s.meal_premium || 0), 0));
       if (Object.keys(topUps).length) totals.tip_credit_topup = round2(staff.reduce((a, s: any) => a + (s.tip_credit_topup || 0), 0));
       if (anyCashDeclared) totals.tips_cash_declared = round2(staff.reduce((a, s: any) => a + (s.tips_cash_declared || 0), 0));
+      // 5.12.56: head office salaries, its own total (in total, which is what the site pays out; never labour).
+      if (Object.keys(hoPay).length) totals.head_office_salary = round2(staff.reduce((a, s: any) => a + (s.salary || 0), 0));
       const payload = {
         ok: true, from, to, staff, totals,
         policy: { tipMode, directPct: Math.round(directShare * 100), allocator, troncmasterName: policy.troncmasterName ?? null },
