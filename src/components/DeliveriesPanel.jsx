@@ -10,6 +10,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { getActiveLocationSync } from '../lib/supabase';
 import { listDeliveries } from '../lib/delivery/deliveryConfig';
 import { statusLabel, statusColor, statusIcon } from '../lib/delivery/status';
+import { Icon } from './ServOSIcons';
 import { courierPhase, courierLegs, courierLateness } from '../lib/delivery/courierTimes';
 import CourierTrackingQR from './CourierTrackingQR';
 
@@ -68,7 +69,7 @@ export default function DeliveriesPanel() {
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }} onClick={() => d.tracking_url && setOpenId(open ? null : d.id)}>
                 <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>{d.order_ref || '—'}</span>
                 {d.tracking_url && <span style={{ fontSize: 11, color: 'var(--acc)' }}>{open ? '▲ map' : '▦ map'}</span>}
-                <span style={{ marginLeft: 'auto', fontSize: 10.5, fontWeight: 800, padding: '2px 8px', borderRadius: 12, background: `${color}22`, color, whiteSpace: 'nowrap' }}>{statusIcon(d.status)} {statusLabel(d.status)}</span>
+                <span style={{ marginLeft: 'auto', fontSize: 10.5, fontWeight: 800, padding: '2px 8px', borderRadius: 12, background: `${color}22`, color, whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 4 }}><Icon name={statusIcon(d.status)} size={11} />{statusLabel(d.status)}</span>
               </div>
               {phase === 'awaiting_courier' ? (
                 <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: 3 }}>Finding a courier…{d.courier_name ? ` · ${d.courier_name}` : ''}</div>

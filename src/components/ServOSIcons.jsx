@@ -5,6 +5,166 @@
 // (replaces emoji in the POS/BO chrome). Colour follows currentColor, so it
 // adapts to the surrounding text colour + theme automatically.
 
+import {
+  Apple, Archive, Armchair, ArrowDown, ArrowUp, Award, BadgePercent, Ban,
+  Banknote, Bean, Bed, Beef, Bike, Bird, BookOpen, Bot,
+  Briefcase, Building2, Calendar, Car, ChartBar, ChefHat, Circle, CircleCheck,
+  CircleHelp, CircleX, Coins, ConciergeBell, Cookie, CookingPot, Croissant, Crown,
+  CupSoda, Dessert, DoorOpen, Download, Drama, Drumstick, Earth, Egg,
+  FileText, Fish, Flower2, Folder, Footprints, Frown, Gem, GlassWater,
+  Globe, GraduationCap, Grid2x2, Hamburger, Hand, HandHeart, Hash, Heart,
+  House, IceCreamCone, IdCard, Image, Inbox, Key, Landmark, Languages,
+  Laugh, Leaf, Link, Lock, LockOpen, Mail, MailOpen, MapPin,
+  Martini, Megaphone, Meh, Menu, Mic, Milk, Monitor, Moon,
+  Mountain, Nut, Package, Palette, Paperclip, PartyPopper, PenLine, Pencil,
+  Phone, PhoneOff, Plug, Pointer, Popcorn, PoundSterling, Radio, RefreshCw,
+  Repeat, Salad, Scale, Shell, ShieldCheck, ShoppingCart, Shrimp, Signal,
+  Smartphone, Snowflake, Soup, Sparkles, Sprout, Square, SquareCheck, Star,
+  Store, Sunrise, Tablet, Target, ThumbsUp, Ticket, Trash2, TrendingUp,
+  Trophy, Truck, Tv, Umbrella, Upload, Users, Wallet, Wheat,
+  Wrench, Zap,
+} from 'lucide-react';
+import { emojiName } from '../lib/emojiIcons';
+
+// Lucide icons (ISC licence) for meanings the ServOS set does not draw yet. Same 24 grid and line weight.
+const LUCIDE = {
+  phone: Smartphone,
+  lock: Lock,
+  unlock: LockOpen,
+  star: Star,
+  package: Package,
+  checkCircle: CircleCheck,
+  globe: Globe,
+  scooter: Bike,
+  bike: Bike,
+  car: Car,
+  chart: ChartBar,
+  seat: Armchair,
+  mail: Mail,
+  mailOpen: MailOpen,
+  party: PartyPopper,
+  cart: ShoppingCart,
+  ban: Ban,
+  building: Building2,
+  trendUp: TrendingUp,
+  mapPin: MapPin,
+  chef: ChefHat,
+  monitor: Monitor,
+  money: Banknote,
+  wallet: Wallet,
+  salad: Salad,
+  download: Download,
+  upload: Upload,
+  tv: Tv,
+  pencil: Pencil,
+  leaf: Leaf,
+  users: Users,
+  target: Target,
+  ticket: Ticket,
+  phoneCall: Phone,
+  phoneOff: PhoneOff,
+  calendar: Calendar,
+  inbox: Inbox,
+  trash: Trash2,
+  soup: Soup,
+  fileText: FileText,
+  milk: Milk,
+  refresh: RefreshCw,
+  repeat: Repeat,
+  scale: Scale,
+  tablet: Tablet,
+  shield: ShieldCheck,
+  truck: Truck,
+  image: Image,
+  sprout: Sprout,
+  cupSoda: CupSoda,
+  beef: Beef,
+  fish: Fish,
+  store: Store,
+  thanks: HandHeart,
+  signature: PenLine,
+  mic: Mic,
+  signal: Signal,
+  megaphone: Megaphone,
+  house: House,
+  burger: Hamburger,
+  wheat: Wheat,
+  egg: Egg,
+  croissant: Croissant,
+  menu: Menu,
+  nut: Nut,
+  shrimp: Shrimp,
+  plug: Plug,
+  walk: Footprints,
+  paperclip: Paperclip,
+  trophy: Trophy,
+  folder: Folder,
+  wave: Hand,
+  serviceBell: ConciergeBell,
+  book: BookOpen,
+  radio: Radio,
+  graduation: GraduationCap,
+  key: Key,
+  link: Link,
+  heart: Heart,
+  palette: Palette,
+  bank: Landmark,
+  gem: Gem,
+  glass: GlassWater,
+  tools: Wrench,
+  crown: Crown,
+  robot: Bot,
+  theatre: Drama,
+  sunrise: Sunrise,
+  earth: Earth,
+  coins: Coins,
+  door: DoorOpen,
+  dot: Circle,
+  shell: Shell,
+  bean: Bean,
+  flower: Flower2,
+  hash: Hash,
+  briefcase: Briefcase,
+  archive: Archive,
+  mountain: Mountain,
+  pound: PoundSterling,
+  idCard: IdCard,
+  drumstick: Drumstick,
+  iceCream: IceCreamCone,
+  cookie: Cookie,
+  thumbsUp: ThumbsUp,
+  laugh: Laugh,
+  meh: Meh,
+  sad: Frown,
+  dessert: Dessert,
+  help: CircleHelp,
+  bird: Bird,
+  pointer: Pointer,
+  hand: Hand,
+  apple: Apple,
+  sleep: Moon,
+  xCircle: CircleX,
+  checkSquare: SquareCheck,
+  square: Square,
+  languages: Languages,
+  arrowUp: ArrowUp,
+  arrowDown: ArrowDown,
+  percent: BadgePercent,
+  sparkles: Sparkles,
+  martini: Martini,
+  popcorn: Popcorn,
+  snowflake: Snowflake,
+  bed: Bed,
+  umbrella: Umbrella,
+  award: Award,
+  zap: Zap,
+  cookingPot: CookingPot,
+  grid: Grid2x2,
+  beach: Umbrella,
+  bolt3: Zap,
+  cocktail2: Martini,
+};
+
 const PATHS = {
   // ── POS rail / nav ──
   bar:       '<path d="M5 3h14l-7 8z"/><path d="M12 11v8M8 21h8"/>',
@@ -98,7 +258,11 @@ const PATHS = {
  */
 export function Icon({ name, size = 20, stroke = 1.7, style = {}, ...rest }) {
   const d = PATHS[name];
-  if (!d) return null;
+  if (!d) {
+    const L = LUCIDE[name];
+    if (!L) return null;
+    return <L size={size} strokeWidth={stroke} aria-hidden="true" style={{ flexShrink: 0, display: 'block', ...style }} {...rest} />;
+  }
   return (
     <svg
       viewBox="0 0 24 24" width={size} height={size}
@@ -113,25 +277,23 @@ export function Icon({ name, size = 20, stroke = 1.7, style = {}, ...rest }) {
 }
 
 /** Does a named icon exist? (lets callers fall back to operator-set emoji.) */
-export function hasIcon(name) { return !!PATHS[name]; }
+export function hasIcon(name) { return !!(PATHS[name] || LUCIDE[name]); }
 
-// Map common (default) category emoji → ServOS line icons. Lets the POS render
-// clean icons for the usual categories while still falling back to whatever
-// custom emoji an operator set (we never overwrite their data).
-const EMOJI_ICON = {
-  '⚡':'bolt', '🍕':'pizza', '🍟':'wing', '🍗':'wing', '🍖':'wing',
-  '🍷':'wine', '🥂':'wine', '🍺':'beer', '🍻':'beer', '🍸':'cocktail', '🍹':'cocktail',
-  '🍾':'bottle', '🥫':'bottle', '☕':'cup', '🍵':'cup', '🧋':'cup',
-  '🍩':'donut', '🍰':'cake', '🧁':'cake', '🎂':'cake',
-  '🥪':'sandwich', '🌭':'sandwich', '🥖':'sandwich',
-  '🥤':'soda', '🧃':'soda',
-  '🍽':'utensils', '🍽️':'utensils', '🍴':'utensils', '🥗':'utensils', '🍝':'utensils', '🍔':'utensils', '🍲':'utensils', '🥘':'utensils',
-  '🥩':'utensils', '🥓':'utensils', '🍳':'utensils', '🦐':'utensils', '🐟':'utensils', '🍱':'utensils', '🍜':'utensils', '🌮':'utensils', '🌯':'utensils', '🧀':'utensils', '🥙':'utensils', '🫕':'utensils',
-  '🔥':'fire', '🌶':'fire', '🌶️':'fire', '⭐':'sparkle', '✨':'sparkle', '🌟':'sparkle',
-  '🥧':'cake', '🍦':'cake', '🍨':'cake', '🍪':'donut', '🥐':'sandwich', '🥯':'sandwich',
-  '🫖':'cup', '🥃':'cocktail', '🍶':'bottle', '🥛':'soda', '🧉':'cup',
-};
+
 /** Returns a ServOS icon name for a known category emoji, else null. */
-export function emojiToIcon(emoji) { return (emoji && EMOJI_ICON[emoji]) || null; }
+export function emojiToIcon(emoji) {
+  if (!emoji) return null;
+  const k = String(emoji).replace(/\uFE0F/g, '').trim();
+  return emojiName(k) || (PATHS[k] || LUCIDE[k] ? k : null);
+}
+
+/**
+ * Icon for a saved emoji (a section, category, stamp card or centre icon a venue picked).
+ * A known emoji or icon name draws its line icon; anything else draws the fallback, or nothing.
+ */
+export function EmojiIcon({ value, fallback = null, size = 20, ...rest }) {
+  const name = emojiToIcon(value) || fallback;
+  return name ? <Icon name={name} size={size} {...rest} /> : null;
+}
 
 export default Icon;

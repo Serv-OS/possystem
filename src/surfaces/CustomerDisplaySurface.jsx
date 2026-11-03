@@ -22,6 +22,7 @@ import { money, setActiveCurrency, getActiveCurrencyCode } from '../lib/currency
 import { displayNumberAccepted, ukRuleApplies, CHECK_NUMBER_TEXT } from '../lib/ukMobile';
 import { subscribeDisplay, getDisplayTargetId, publishCustomerPhone, publishRedeemReward, publishCustomerTip, isLoyaltyEnabled } from '../lib/customerDisplay';
 import { ServOSIcon } from '../components/ServOSBrand';
+import { Icon, EmojiIcon } from '../components/ServOSIcons';
 import { eligibleItemNames } from '../lib/loyaltyMenuMatch';
 import { displayHoldMs, loyaltyResultHoldMs } from '../lib/customerDisplayIdle';
 import { stampDots, showPoints } from '../lib/stampSummary';
@@ -266,7 +267,7 @@ export default function CustomerDisplaySurface() {
   if (state === 'paying') {
     return (
       <div style={{ ...root, alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
-        <div style={{ fontSize: 88, marginBottom: 8 }}>💳</div>
+        <div style={{ fontSize: 88, marginBottom: 8 }}><Icon name="card" size={80} style={{ margin: '0 auto' }} /></div>
         <div style={{ fontSize: 40, fontWeight: 800 }}>Please follow the card reader</div>
         <div style={{ marginTop: 20, fontSize: 64, fontWeight: 900, color: brand, fontVariantNumeric: 'tabular-nums' }}>{money(total)}</div>
         <div style={{ marginTop: 18, fontSize: 20, color: C.dim }}>Tap, insert or swipe your card</div>
@@ -348,7 +349,7 @@ function PhoneKeypad({ value, brand, C, error, ukNumber, onKey, onBackspace, onS
   const ready = (value || '').replace(/\D/g, '').length >= 7;
   return (
     <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-      <div style={{ fontSize: 30, fontWeight: 800, textAlign: 'center' }}>Earn rewards 🎁</div>
+      <div style={{ fontSize: 30, fontWeight: 800, textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}>Earn rewards <Icon name="gift" size={28} /></div>
       <div style={{ fontSize: 16, color: C.dim, textAlign: 'center', marginTop: 6, marginBottom: 18 }}>Enter your mobile to collect points</div>
       {/* 27 Sep 2026: the hint showed ten zeros, one short of a UK mobile (0776295512 came in with
           ten digits); a UK venue's hint now has the eleven of 07xxx xxxxxx. */}
@@ -395,15 +396,15 @@ function LoyaltyResultPanel({ result, brand, venueName, C, onRedeem }) {
   // 27 Sep 2026: the till refused the number (not a UK mobile, lib/ukMobile.js). Plain words, and
   // nothing was created. Checked before `error`, which the till also sends for an older display.
   if (result?.badNumber) {
-    return <Centered><div style={{ fontSize: 44 }}>📱</div><div style={{ fontSize: 24, fontWeight: 700, marginTop: 10 }}>{CHECK_NUMBER_TEXT}</div></Centered>;
+    return <Centered><div style={{ fontSize: 44 }}><Icon name="phone" size={40} style={{ margin: '0 auto' }} /></div><div style={{ fontSize: 24, fontWeight: 700, marginTop: 10 }}>{CHECK_NUMBER_TEXT}</div></Centered>;
   }
   if (result?.error) {
-    return <Centered><div style={{ fontSize: 44 }}>⚠️</div><div style={{ fontSize: 24, fontWeight: 700, marginTop: 10 }}>Sorry — please try again</div></Centered>;
+    return <Centered><div style={{ fontSize: 44 }}><Icon name="warn" size={40} style={{ margin: '0 auto' }} /></div><div style={{ fontSize: 24, fontWeight: 700, marginTop: 10 }}>Sorry — please try again</div></Centered>;
   }
   if (result?.rewardSelected) {
     return (
       <Centered>
-        <div style={{ fontSize: 64 }}>✅</div>
+        <div style={{ fontSize: 64 }}><Icon name="checkCircle" size={58} style={{ margin: '0 auto' }} /></div>
         <div style={{ fontSize: 26, fontWeight: 800, marginTop: 8 }}>{result.rewardSelected}</div>
         <div style={{ fontSize: 16, color: C.dim, marginTop: 10 }}>Added — applied at the till</div>
       </Centered>
@@ -414,7 +415,7 @@ function LoyaltyResultPanel({ result, brand, venueName, C, onRedeem }) {
     return (
       <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', padding: '26px 20px', overflowY: 'auto' }}>
         <div style={{ textAlign: 'center', flexShrink: 0 }}>
-          <div style={{ fontSize: 40 }}>🎉</div>
+          <div style={{ fontSize: 40 }}><Icon name="party" size={36} style={{ margin: '0 auto' }} /></div>
           <div style={{ fontSize: 26, fontWeight: 800, marginTop: 4 }}>Welcome back{result.name ? `, ${result.name}` : ''}!</div>
           {showPoints(result) && <div style={{ fontSize: 20, color: brand, fontWeight: 800, marginTop: 4 }}>{result.points} points</div>}
         </div>
@@ -425,7 +426,7 @@ function LoyaltyResultPanel({ result, brand, venueName, C, onRedeem }) {
             {result.stamps.map((s) => (
               <div key={s.id} data-stamp-card style={{ padding: '14px 16px', borderRadius: 14, background: C.surface, border: `1.5px solid ${brand}44` }}>
                 <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
-                  <div style={{ fontSize: 18, fontWeight: 800 }}>{s.icon} {s.name}</div>
+                  <div style={{ fontSize: 18, fontWeight: 800, display: 'flex', alignItems: 'center', gap: 6 }}><EmojiIcon value={s.icon} fallback="cup" size={18} />{s.name}</div>
                   <div style={{ fontSize: 20, fontWeight: 900, color: brand, whiteSpace: 'nowrap' }}>{s.have} of {s.need}</div>
                 </div>
                 {s.need <= 20 && (
@@ -469,7 +470,7 @@ function LoyaltyResultPanel({ result, brand, venueName, C, onRedeem }) {
   }
   return (
     <Centered>
-      <div style={{ fontSize: 64 }}>📱</div>
+      <div style={{ fontSize: 64 }}><Icon name="phone" size={58} style={{ margin: '0 auto' }} /></div>
       <div style={{ fontSize: 28, fontWeight: 800, marginTop: 8 }}>You're in!</div>
       <div style={{ fontSize: 16, color: C.dim, marginTop: 10, maxWidth: 300 }}>We've texted you a link to finish setting up your {venueName} rewards. Earning points on this order.</div>
     </Centered>

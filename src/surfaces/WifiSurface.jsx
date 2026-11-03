@@ -11,6 +11,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { supabase, viaWifiPortal } from '../lib/supabase';
+import { Icon } from '../components/ServOSIcons';
 
 const FALLBACK_ACCENT = '#15C36B';
 
@@ -175,13 +176,13 @@ export default function WifiSurface({ location }) {
         <div style={{ padding: '22px 22px 26px' }}>
           {phase === 'checking' ? (
             <div style={{ textAlign: 'center', padding: '24px 0' }}>
-              <div style={{ fontSize: 40, marginBottom: 8 }}>📶</div>
+              <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'center' }}><Icon name="signal" size={40} /></div>
               <h1 style={S.h1}>Getting you online…</h1>
               <p style={S.sub}>Welcome back — reconnecting you to {venueName} WiFi.</p>
             </div>
           ) : phase === 'connected' ? (
             <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 44, marginBottom: 6 }}>📶</div>
+              <div style={{ marginBottom: 6, display: 'flex', justifyContent: 'center' }}><Icon name="signal" size={44} /></div>
               <h1 style={S.h1}>{cfg?.success_copy || "You're connected. Enjoy your visit!"}</h1>
               {result?.authorized ? (
                 <>

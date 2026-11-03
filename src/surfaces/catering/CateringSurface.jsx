@@ -34,6 +34,7 @@ import OnlineCart from '../online/OnlineCart';
 import CateringCheckout from './CateringCheckout';
 import MenuHeader from '../menu/MenuHeader';
 import { readTheme, deriveVars, FIXED, BODY_FONT, DISPLAY_FONT } from '../menu/menuTheme';
+import { Icon } from '../../components/ServOSIcons';
 
 const FONT = '-apple-system,BlinkMacSystemFont,"Inter","Segoe UI",system-ui,sans-serif';
 // Customer surfaces must be their OWN scroll container — the operator app sets body{overflow:hidden},
@@ -377,7 +378,7 @@ export default function CateringSurface({ location }) {
   useEffect(() => { if (canCheckout && notice) setNotice(''); }, [canCheckout, notice]);
 
   if (boot.loading) return <div style={fullCenter}>Loading…</div>;
-  if (boot.error === 'unavailable') return <div style={fullCenter}><div><div style={{ fontSize: 40 }}>🍽️</div><h2>Catering isn’t available right now</h2><div style={{ color: '#64748b' }}>Please contact {location.name} directly.</div></div></div>;
+  if (boot.error === 'unavailable') return <div style={fullCenter}><div><div style={{ display: 'flex', justifyContent: 'center' }}><Icon name="utensils" size={40} /></div><h2>Catering isn’t available right now</h2><div style={{ color: '#64748b' }}>Please contact {location.name} directly.</div></div></div>;
   if (boot.error) return <div style={fullCenter}>Couldn’t load catering. Please try again.</div>;
 
   if (checkout) return (
@@ -447,7 +448,7 @@ export default function CateringSurface({ location }) {
                 background: activeAllergens.length ? '#fef2f2' : '#fff',
                 color: activeAllergens.length ? '#dc2626' : '#0f172a',
                 borderColor: activeAllergens.length ? '#fca5a5' : '#cbd5e1' }}>
-              <span aria-hidden>⚠</span>
+              <Icon name="warn" size={16} />
               {activeAllergens.length ? `${activeAllergens.length} allergy filter${activeAllergens.length === 1 ? '' : 's'}` : 'Allergies'}
             </button>
             {activeAllergens.length > 0 && (

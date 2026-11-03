@@ -11,6 +11,7 @@
 
 import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
+import { Icon } from '../components/ServOSIcons';
 
 const STAR_LABELS = ['BAD', 'POOR', 'OK', 'GOOD', 'GREAT'];
 const FALLBACK_ACCENT = '#5a51c2';
@@ -172,7 +173,7 @@ export default function ReviewSurface({ location }) {
             ) : (
               // Happy: invite (don't auto-post — no platform allows that) a Google review.
               <div style={{ textAlign: 'center' }}>
-                <div style={{ fontSize: 44, marginBottom: 6 }}>🎉</div>
+                <div style={{ marginBottom: 6, display: 'flex', justifyContent: 'center' }}><Icon name="party" size={44} /></div>
                 <h1 style={S.h1}>{cfg?.thanks_public_copy || 'Thanks — that means a lot!'}</h1>
                 <p style={S.sub}>If you’ve got a moment, would you share it on Google? It only takes a tap and really helps {venueName}.</p>
                 {result?.google_review_url
@@ -182,7 +183,7 @@ export default function ReviewSurface({ location }) {
             )
           ) : (
             <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 44, marginBottom: 6 }}>🙏</div>
+              <div style={{ marginBottom: 6, display: 'flex', justifyContent: 'center' }}><Icon name="thanks" size={44} /></div>
               <h1 style={S.h1}>Thank you — we'll make this right.</h1>
               <p style={S.sub}>The manager at {venueName} has your feedback and will follow up{email || phone ? ' using the details you left' : ''}.</p>
             </div>

@@ -41,7 +41,7 @@ export default function KioskLanguageSheet({ currentLang, onPick, onClose }) {
                   cursor: 'pointer', textAlign: 'left', flex: 'none',
                 }}
               >
-                <span aria-hidden="true" style={{ fontSize: 40, lineHeight: 1 }}>{L.flag}</span>
+                <span aria-hidden="true" style={{ fontSize: 20, fontWeight: 800, letterSpacing: '.06em', lineHeight: 1, minWidth: 64, padding: '12px 0', textAlign: 'center', borderRadius: 12, border: '1.5px solid var(--k2Hairline)', color: 'var(--k2InkSubtle)' }}>{L.flag}</span>
                 <span style={{ flex: 1, fontSize: 28, fontWeight: 700 }}>{L.nativeName}</span>
                 <span style={{ fontSize: 21, color: 'var(--k2InkSubtle)' }}>{L.name}</span>
               </button>

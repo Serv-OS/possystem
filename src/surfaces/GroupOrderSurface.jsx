@@ -55,6 +55,7 @@ import { isOpenNow, nextOpensAt } from '../lib/openingHours';
 import { readTheme, deriveVars, readableOn } from './menu/menuTheme';
 import MenuHeader from './menu/MenuHeader';
 import { pickBrandVenue, groupBodyBg } from '../lib/groupBrand';
+import { Icon } from '../components/ServOSIcons';
 
 // ── Handoff design tokens (cream neutrals — fixed per the spec; the brand red is
 //    the ONE token deliberately swapped for the group's theme accent) ───────────
@@ -325,7 +326,7 @@ export default function GroupOrderSurface({ groupSlug, variant = 'online' }) {
     return (
       <div style={shell}>
         <div style={{ maxWidth: 480, margin: '60px auto 0', padding: '40px 24px', textAlign: 'center', background: T.card, border: `1px solid ${T.border}`, borderRadius: 20 }}>
-          <div style={{ fontSize: 40, marginBottom: 12 }}>🔍</div>
+          <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'center' }}><Icon name="search" size={40} /></div>
           <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: '-.02em', marginBottom: 8 }}>Ordering page not found</div>
           <div style={{ fontSize: 14, color: T.muted, lineHeight: 1.6 }}>
             We couldn't find an ordering page for <b>{groupSlug}</b>. Check the link with the restaurant.
@@ -660,8 +661,8 @@ function VenueCard({ venue, isCatering, cta, now, targetUrl, selected, nearest, 
       {/* Catering fulfilment badges — what this venue offers for catering */}
       {isCatering && venue.catering && (venue.catering.delivery || venue.catering.collection) && (
         <div className="gop-badges">
-          {venue.catering.delivery && <span className="gop-badge"><span aria-hidden="true">🚚</span>Delivery</span>}
-          {venue.catering.collection && <span className="gop-badge"><span aria-hidden="true">🥡</span>{venue.catering.collectionLabel}</span>}
+          {venue.catering.delivery && <span className="gop-badge"><Icon name="truck" size={14} />Delivery</span>}
+          {venue.catering.collection && <span className="gop-badge"><Icon name="takeaway" size={14} />{venue.catering.collectionLabel}</span>}
         </div>
       )}
 

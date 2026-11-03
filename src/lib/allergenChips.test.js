@@ -8,7 +8,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import AllergenChips, {
   allergenChipIds, allergenChipLabels, allergenPaletteFromTheme, withAlpha,
-  KIOSK_ALLERGEN_PALETTE, TILL_ALLERGEN_PALETTE, ALLERGEN_MARK,
+  KIOSK_ALLERGEN_PALETTE, TILL_ALLERGEN_PALETTE,
 } from '../components/AllergenChips.js';
 import { shownAllergenIds, optionAllergenList, kioskPickedOptionIds } from './kioskAllergens.js';
 
@@ -27,10 +27,13 @@ test('words in the kiosk wording and the kiosk order, older spellings read as th
   assert.match(html, /aria-label="Allergens: Gluten, Milk, Tree nuts, Soy, Oats"/);
 });
 
-test('each chip is a small warning mark and the word, never an icon picture', () => {
+test('each chip is a small line warning mark and the word, never an allergen picture or emoji', () => {
   const html = render({ ids: ['milk'] });
-  assert.ok(html.includes(`>${ALLERGEN_MARK}</span>`), 'the mark is text');
-  assert.doesNotMatch(html, /<svg|<img/);
+  assert.equal((html.match(/<svg[^>]*data-allergen-mark/g) || []).length, 1, 'one warning mark');
+  assert.equal((html.match(/<svg/g) || []).length, 1, 'no other drawing');
+  assert.match(html, /stroke="currentColor"/);
+  assert.doesNotMatch(html, /<img/);
+  assert.doesNotMatch(html, /[\u{1F300}-\u{1FAFF}\u2600-\u27BF]/u, 'no emoji');
   assert.match(html, /data-allergen="milk"/);
 });
 

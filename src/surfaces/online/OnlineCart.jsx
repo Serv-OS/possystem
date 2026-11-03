@@ -6,6 +6,7 @@ import { computeOrderTaxUnified } from '../../lib/taxCompute';
 import { breakdownIsExclusive, taxTermFor } from '../../lib/receiptTax';   // v5.7.34: rate-null guards + VAT/Sales Tax wording
 import { money } from '../../lib/currency';
 import { orderTypeChip } from '../../lib/counterOrder';
+import { Icon } from '../../components/ServOSIcons';
 
 // checkoutDisabledReason (v5.5.802): when set, the Checkout button is disabled and
 // the reason shows above the CTAs — used while the venue is closed with no
@@ -68,7 +69,7 @@ export default function OnlineCart({ cart, theme, orderType, taxRates = [], taxC
         <div style={{ padding: '0 22px', flex: 1 }}>
           {cart.length === 0 && (
             <div style={{ padding: '40px 0', textAlign: 'center', color: muted }}>
-              <div style={{ fontSize: 32, marginBottom: 8 }}>🛒</div>
+              <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'center' }}><Icon name="cart" size={32} /></div>
               <div style={{ fontSize: 14 }}>Your basket is empty.</div>
             </div>
           )}
@@ -90,7 +91,7 @@ export default function OnlineCart({ cart, theme, orderType, taxRates = [], taxC
                     </div>
                   )}
                   {line.notes ? (
-                    <div style={{ fontSize: 12, color: muted, fontStyle: 'italic', marginBottom: 8 }}>📝 {line.notes}</div>
+                    <div style={{ fontSize: 12, color: muted, fontStyle: 'italic', marginBottom: 8 }}><Icon name="note" size={12} style={{ display: 'inline-block', verticalAlign: '-0.15em', marginRight: 4 }} />{line.notes}</div>
                   ) : null}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                     <button onClick={() => onUpdateQty(line.uid, (line.qty || 1) - 1)}
@@ -154,7 +155,7 @@ export default function OnlineCart({ cart, theme, orderType, taxRates = [], taxC
             background: '#fffbeb', border: '1.5px solid #f59e0b', color: '#92400e',
             fontSize: 13, fontWeight: 700, lineHeight: 1.5, display: 'flex', alignItems: 'center', gap: 8,
           }}>
-            <span>🌙</span><span>{checkoutDisabledReason}</span>
+            <Icon name="moon" size={16} /><span>{checkoutDisabledReason}</span>
           </div>
         )}
 

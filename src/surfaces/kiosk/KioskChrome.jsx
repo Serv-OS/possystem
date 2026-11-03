@@ -68,7 +68,7 @@ export function KioskLanguagePill({ lang, onClick }) {
         alignItems: 'center', gap: 10, cursor: 'pointer', minHeight: 64, flex: 'none',
       }}
     >
-      <span aria-hidden="true" style={{ fontSize: 24, lineHeight: 1 }}>{meta.flag}</span>
+      <span aria-hidden="true" style={{ fontSize: 15, fontWeight: 800, letterSpacing: '.06em', lineHeight: 1, padding: '6px 8px', borderRadius: 8, border: '1.5px solid currentColor', opacity: .75 }}>{meta.flag}</span>
       <span>{meta.nativeName}</span>
     </button>
   );

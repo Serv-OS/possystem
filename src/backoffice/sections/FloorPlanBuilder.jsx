@@ -6,6 +6,7 @@ import { removeSectionRefusal, sectionsSignature, OTHER_SECTION, MIGRATION_TEXT,
 import { deleteRefusalReason, writeRefusal, loadPlanState, normaliseFloorRow, pickDef, num, nextSeq, baseOfRow, floorRowOf } from '../../lib/tablePlan';
 import { isSessionClosed } from '../../sync/sessionClosure';
 import { reportSave } from '../../lib/saveHealth';
+import { Icon, EmojiIcon } from '../../components/ServOSIcons';
 
 const SHAPES = [{ id:'sq', label:'Square/Rect' }, { id:'rd', label:'Round' }];
 const SECTION_PALETTE = ['#3b82f6','#e8a020','#22c55e','#a855f7','#ef4444','#22d3ee','#f97316','#ec4899'];
@@ -471,7 +472,7 @@ export default function FloorPlanBuilder() {
                   borderLeft:`2px solid ${active ? sec.color : 'transparent'}`,
                   display:'flex', alignItems:'center', justifyContent:'space-between',
                 }}>
-                  <span>{sec.icon} {sec.label}</span>
+                  <span style={{ display:'inline-flex', alignItems:'center', gap:6 }}><EmojiIcon value={sec.icon} fallback="utensils" size={15} />{sec.label}</span>
                   {sec.hidden ? (
                     <span style={{ fontSize:9, color:'var(--amb,#e8a020)', background:'rgba(232,160,32,.12)', padding:'2px 6px', borderRadius:4, fontWeight:700, textTransform:'uppercase', letterSpacing:'.05em' }}>hidden</span>
                   ) : (
@@ -535,7 +536,7 @@ export default function FloorPlanBuilder() {
                   value={labelDraft} onChange={e => setLabelDraft(e.target.value)} onBlur={commitLabel}
                   onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}/>
                 {labelDraft.trim() && labelTaken(labelDraft, selectedTable.id) && (
-                  <div style={{ fontSize:10, color:'var(--red)', marginTop:3 }}>⚠ “{labelDraft.trim()}” is already used</div>
+                  <div style={{ fontSize:10, color:'var(--red)', marginTop:3, display:'flex', alignItems:'center', gap:4 }}><Icon name="warn" size={12} />“{labelDraft.trim()}” is already used</div>
                 )}
               </div>
 
@@ -670,7 +671,7 @@ export default function FloorPlanBuilder() {
             {saveStatus === 'failed' && (
               <span style={{ display:'flex', alignItems:'center', gap:5, color:'var(--red)', fontWeight:700 }}>
                 <div style={{ width:6, height:6, borderRadius:'50%', background:'var(--red)' }}/>
-                ✕ Not saved — the change was undone
+                ✕ Not saved: the change was undone
               </span>
             )}
             {saveStatus === 'saved' && (
@@ -715,7 +716,7 @@ export default function FloorPlanBuilder() {
                 position:'absolute', top:8, left:Math.max(8, minX),
                 fontSize:9, fontWeight:800, color:sec.color,
                 textTransform:'uppercase', letterSpacing:'.1em', opacity:.7,
-              }}>{sec.icon} {sec.label}</div>
+              display:'inline-flex', alignItems:'center', gap:4 }}><EmojiIcon value={sec.icon} fallback="utensils" size={11} />{sec.label}</div>
             );
           })}
 
@@ -826,7 +827,7 @@ function AddTableModal({ sections, defaultSection, labelTaken, onAdd, onClose })
           <div style={{ marginBottom:14 }}>
             <label style={{ display:'block', fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:6 }}>Label</label>
             <input style={inp} placeholder="T11, Bar stool 1, Banquette…" value={label} onChange={e => setLabel(e.target.value)} autoFocus/>
-            {dup && <div style={{ fontSize:11, color:'var(--red)', marginTop:5 }}>⚠ A table called “{label.trim()}” already exists at this location</div>}
+            {dup && <div style={{ fontSize:11, color:'var(--red)', marginTop:5, display:'flex', alignItems:'center', gap:4 }}><Icon name="warn" size={13} />A table called “{label.trim()}” already exists at this location</div>}
           </div>
           <div style={{ marginBottom:14 }}>
             <label style={{ display:'block', fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:8 }}>Max covers</label>
@@ -845,7 +846,7 @@ function AddTableModal({ sections, defaultSection, labelTaken, onAdd, onClose })
           <div style={{ marginBottom:20 }}>
             <label style={{ display:'block', fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:8 }}>Section</label>
             <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
-              {sections.map(s => <button key={s.id} onClick={() => setSection(s.id)} style={{ padding:'7px 14px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:700, border:`1.5px solid ${section===s.id?s.color:'var(--bdr)'}`, background:section===s.id?`${s.color}22`:'var(--bg3)', color:section===s.id?s.color:'var(--t2)' }}>{s.icon} {s.label}</button>)}
+              {sections.map(s => <button key={s.id} onClick={() => setSection(s.id)} style={{ padding:'7px 14px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:700, border:`1.5px solid ${section===s.id?s.color:'var(--bdr)'}`, background:section===s.id?`${s.color}22`:'var(--bg3)', color:section===s.id?s.color:'var(--t2)', display:'inline-flex', alignItems:'center', gap:6 }}><EmojiIcon value={s.icon} fallback="utensils" size={14} />{s.label}</button>)}
             </div>
           </div>
           <div style={{ display:'flex', gap:8 }}>
@@ -887,7 +888,7 @@ function SectionModal({ section, onSave, onDelete, onClose }) {
           <div style={{ marginBottom:20 }}>
             <label style={{ display:'block', fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:8 }}>Icon</label>
             <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
-              {ICONS.map(ic => <button key={ic} onClick={() => setIcon(ic)} style={{ width:36, height:36, borderRadius:9, border:`1.5px solid ${icon===ic?'var(--acc)':'var(--bdr)'}`, background:icon===ic?'var(--acc-d)':'var(--bg3)', cursor:'pointer', fontSize:18 }}>{ic}</button>)}
+              {ICONS.map(ic => <button key={ic} onClick={() => setIcon(ic)} style={{ width:36, height:36, borderRadius:9, border:`1.5px solid ${icon===ic?'var(--acc)':'var(--bdr)'}`, background:icon===ic?'var(--acc-d)':'var(--bg3)', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', color:'var(--t2)' }}><EmojiIcon value={ic} fallback="square" size={18} /></button>)}
             </div>
           </div>
           {/* v4.6.56: Hide on POS toggle (only on Edit) */}

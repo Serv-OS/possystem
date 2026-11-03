@@ -72,18 +72,18 @@ export function statusColor(s) {
   }
 }
 
-/** Emoji glyph for a status. */
+/** Icon name for a status (draw it with <Icon name> or <EmojiIcon value>). */
 export function statusIcon(s) {
   switch (s) {
-    case 'scheduled': return '🗓';
+    case 'scheduled': return 'calendar';
     case 'dispatching':
-    case 'pending':   return '🔍';
+    case 'pending':   return 'search';
     case 'pickup':
-    case 'dropoff':   return '🛵';
-    case 'delivered': return '✅';
-    case 'canceled':  return '⚠️';
-    case 'returned':  return '↩️';
-    case 'failed':    return '⏳';
-    default:          return '🛵';
+    case 'dropoff':   return 'scooter';
+    case 'delivered': return 'checkCircle';
+    case 'canceled':  return 'warn';
+    case 'returned':  return 'back';
+    case 'failed':    return 'clock';
+    default:          return 'scooter';
   }
 }

@@ -74,7 +74,7 @@ export function stampCardView(c, readyByProgram = {}) {
   return {
     id,
     name: String(c?.name || 'Stamp card'),
-    icon: String(c?.icon || '☕'),
+    icon: String(c?.icon || 'cup'),
     description: c?.description ? String(c.description) : '',
     need, have, toGo, finished, ready, used: words.usedCount, reward,
     dots: stampDots(have, need),

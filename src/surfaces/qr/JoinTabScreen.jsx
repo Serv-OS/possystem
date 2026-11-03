@@ -9,6 +9,7 @@
 // attempt limit blunts brute-forcing a 4-digit code through the UI.
 import { useState } from 'react';
 import { normalizeJoinCode, joinCodeReady } from '../../lib/publicOrder';
+import { Icon } from '../../components/ServOSIcons';
 
 const MAX_ATTEMPTS = 5;
 
@@ -41,7 +42,7 @@ export default function JoinTabScreen({ theme, tableLabel, hasCode, onJoin }) {
 
   return (
     <div style={{ maxWidth: 420, margin: '0 auto', padding: '40px 22px', textAlign: 'center' }}>
-      <div style={{ fontSize: 44, marginBottom: 14 }}>🔒</div>
+      <div style={{ marginBottom: 14, display: 'flex', justifyContent: 'center' }}><Icon name="lock" size={44} /></div>
       <div style={{ fontSize: 22, fontWeight: 800, color: theme.text, marginBottom: 8 }}>
         {tableLabel ? `Table ${tableLabel} has an open tab` : 'This table has an open tab'}
       </div>

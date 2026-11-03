@@ -21,8 +21,15 @@ import { createElement as h } from 'react';
 import { t as i18nT } from '../lib/i18n.js';
 import { itemAllergenIds, orderIds, kioskAllergenLabels } from '../lib/kioskAllergens.js';
 
-// A warning sign drawn as text (U+FE0E asks for the plain glyph, so it takes the chip's colour).
-export const ALLERGEN_MARK = '⚠︎';
+// A warning sign drawn as a line icon (the same triangle as Icon name="warn"), in currentColor so it
+// takes the chip's colour. Plain createElement so the node test can render it.
+export function AllergenMark({ colour }) {
+  return h('svg', {
+    'aria-hidden': 'true', 'data-allergen-mark': '', viewBox: '0 0 24 24', width: '0.95em', height: '0.95em',
+    fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round',
+    style: { color: colour, flexShrink: 0, display: 'block' },
+  }, h('path', { d: 'M12 3l9 16H3z' }), h('path', { d: 'M12 10v4M12 17h0' }));
+}
 
 // Default type size in px for each size, when the surface does not set its own.
 export const CHIP_FONT_SIZE = Object.freeze({ card: 11, detail: 13 });
@@ -121,7 +128,7 @@ export default function AllergenChips({ ids, size = 'card', active = null, palet
         overflowWrap: 'anywhere', textAlign: 'left',
       },
     },
-    h('span', { 'aria-hidden': 'true', style: { color: on ? pal.hotMark : pal.mark, fontSize: '0.95em', lineHeight: 1 } }, ALLERGEN_MARK),
+    h(AllergenMark, { colour: on ? pal.hotMark : pal.mark }),
     h('span', null, label));
   });
 
