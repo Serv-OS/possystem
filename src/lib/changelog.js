@@ -1,5 +1,17 @@
 export const CHANGELOG = [
   {
+    v: '5.12.42',
+    date: '3 Nov 2026',
+    items: [
+      'Icons, not emoji, on every customer screen: kiosk (both designs), online ordering, order tracking, table bookings, QR ordering and tabs, catering, the loyalty portal, gift card pages, the waitlist join page, reviews, guest WiFi and the customer display. Each picture emoji is now a ServOS line icon in the venue\'s own colours.',
+      'Icons a venue saved (section, category, stamp card and reward icons) are drawn as the matching line icon. Nothing saved is changed.',
+      'Language buttons on the kiosk show EN, ES, FR and ZH instead of flags.',
+      'Back Office, Floor plan: section names and the section icon picker use line icons. Orders Hub and the Deliveries panel show the courier status as an icon.',
+      'Gift card emails no longer carry emoji when a venue has no logo. What\'s new on the till shows no emoji.',
+      'Garbled text repaired in both databases: pound signs and emoji pasted through a clipboard with the wrong setting read as odd symbols (the offer "£5 off when you spend £20", section names, loyalty rewards, the "We miss you" campaign). Pay at table now writes the pound and euro signs correctly, and till messages such as too many incorrect PINs read cleanly. SQL 20261115a, already run.',
+    ],
+  },
+  {
     v: '5.12.41',
     date: '3 Nov 2026',
     items: [

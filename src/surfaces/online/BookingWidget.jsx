@@ -53,6 +53,7 @@ import {
 import { noticeWords } from '../../lib/bookings/optimiser';
 import { resolveActiveMenu } from '../../lib/menus/resolveActiveMenu';
 import { wallTimeToInstantMs } from '../../lib/cateringRules';
+import { Icon } from '../../components/ServOSIcons';
 
 const MONO = 'var(--font-mono, ui-monospace, monospace)';
 
@@ -1128,7 +1129,7 @@ function PreorderPage({ token, shell, brand, onBrand, venueName, opsId = null, s
     return <Shell {...shell}>
       <div style={S.card}>
         <div style={{ textAlign: 'center', padding: '34px 0', color: 'var(--muted)', fontSize: 14 }}>
-          <div style={{ fontSize: 30, marginBottom: 10 }}>⏳</div>
+          <div style={{ marginBottom: 10, display: 'flex', justifyContent: 'center' }}><Icon name="clock" size={30} /></div>
           Loading your booking…
         </div>
       </div>
@@ -1138,7 +1139,7 @@ function PreorderPage({ token, shell, brand, onBrand, venueName, opsId = null, s
   if (!info) {
     return <Shell {...shell}>
       <div style={{ ...S.card, textAlign: 'center', padding: '34px 22px' }}>
-        <div style={{ fontSize: 38, marginBottom: 10 }}>📞</div>
+        <div style={{ marginBottom: 10, display: 'flex', justifyContent: 'center' }}><Icon name="phoneCall" size={38} /></div>
         <div style={S.h1}>We couldn’t find that booking</div>
         <div style={S.sub}>
           This menu link may have expired, or the booking has changed. Please call {venueName} to
@@ -1591,7 +1592,7 @@ export default function BookingWidget({ location }) {
     return <Shell {...shell}>
       <div style={S.card}>
         <div style={{ textAlign: 'center', padding: '34px 0', color: 'var(--muted)', fontSize: 14 }}>
-          <div style={{ fontSize: 30, marginBottom: 10 }}>⏳</div>
+          <div style={{ marginBottom: 10, display: 'flex', justifyContent: 'center' }}><Icon name="clock" size={30} /></div>
           Checking availability…
         </div>
       </div>
@@ -1601,7 +1602,7 @@ export default function BookingWidget({ location }) {
   if (boot === 'off' || boot === 'error') {
     return <Shell {...shell}>
       <div style={{ ...S.card, textAlign: 'center', padding: '34px 22px' }}>
-        <div style={{ fontSize: 38, marginBottom: 10 }}>📞</div>
+        <div style={{ marginBottom: 10, display: 'flex', justifyContent: 'center' }}><Icon name="phoneCall" size={38} /></div>
         <div style={S.h1}>
           {boot === 'off' ? 'Online booking isn’t available' : 'We couldn’t load online booking'}
         </div>
@@ -1623,7 +1624,7 @@ export default function BookingWidget({ location }) {
   if (result?.status === 'pending_payment') {
     return <Shell {...shell}>
       <div style={{ ...S.card, textAlign: 'center', padding: '34px 22px' }}>
-        <div style={{ fontSize: 38, marginBottom: 10 }}>💳</div>
+        <div style={{ marginBottom: 10, display: 'flex', justifyContent: 'center' }}><Icon name="card" size={38} /></div>
         <div style={S.h1}>
           {result.paymentDue?.kind === 'hold' ? 'Almost there, save a card to hold your table' : 'Almost there, payment secures your table'}
         </div>

@@ -24,10 +24,10 @@ const DEFAULT_LANG = 'en';
 // Simplified Chinese are offered. German, Italian and Portuguese keep their complete text
 // blocks below (RETIRED_LANGUAGES, still tested) but are not on the kiosk button.
 export const LANGUAGES = [
-  { code: 'en', name: 'English',  nativeName: 'English',  flag: '🇬🇧' },
-  { code: 'es', name: 'Spanish',  nativeName: 'Español',  flag: '🇪🇸' },
-  { code: 'fr', name: 'French',   nativeName: 'Français', flag: '🇫🇷' },
-  { code: 'zh', name: 'Chinese',  nativeName: '中文',      flag: '🇨🇳' },
+  { code: 'en', name: 'English',  nativeName: 'English',  flag: 'EN' },
+  { code: 'es', name: 'Spanish',  nativeName: 'Español',  flag: 'ES' },
+  { code: 'fr', name: 'French',   nativeName: 'Français', flag: 'FR' },
+  { code: 'zh', name: 'Chinese',  nativeName: '中文',      flag: 'ZH' },
 ];
 export const RETIRED_LANGUAGES = ['de', 'it', 'pt'];
 

@@ -18,6 +18,7 @@ import { normalizePairingCode, isMissingRpc, claimRefusalMessage, classifyDevice
 import { checkDeviceLink } from '../lib/deviceLink';
 import DeviceLinkBanner from '../components/DeviceLinkBanner';
 import KioskApp from './KioskApp';
+import { Icon } from '../components/ServOSIcons';
 import { getLocationConfig } from '../lib/locationTime';
 import { isOpenNow, nextOpensAt, formatHoursPreview } from '../lib/openingHours';
 import KioskV2Preview from './kiosk/preview/KioskV2Preview';
@@ -201,7 +202,7 @@ function KioskSurfaceInner() {
   return (
     <div style={pageStyle()}>
       <div style={{ textAlign: 'center', maxWidth: 480, padding: '0 24px', width: '100%' }}>
-        <div style={{ fontSize: 64, marginBottom: 12 }}>🖥️</div>
+        <div style={{ fontSize: 64, marginBottom: 12 }}><Icon name="monitor" size={58} style={{ margin: '0 auto' }} /></div>
         <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: '-0.02em', marginBottom: 6 }}>Pair this kiosk</div>
         <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.7)', marginBottom: 28 }}>
           Generate a pairing code in Back Office → Channels → Kiosks
@@ -308,7 +309,7 @@ function KioskHoursGate({ kiosk, onUnpair }) {
   return (
     <div style={pageStyle()}>
       <div style={{ textAlign:'center', maxWidth:520, padding:'0 24px' }}>
-        <div style={{ fontSize:80, marginBottom:18 }}>🌙</div>
+        <div style={{ fontSize:80, marginBottom:18 }}><Icon name="moon" size={72} style={{ margin: '0 auto' }} /></div>
         <div style={{ fontSize:28, fontWeight:800, letterSpacing:'-0.02em', marginBottom:8 }}>We're closed</div>
         <div style={{ fontSize:15, color:'#aaa', marginBottom:18 }}>
           {fmt ? <>Opens <b style={{ color:'#fff' }}>{fmt}</b></> : 'Please come back later.'}

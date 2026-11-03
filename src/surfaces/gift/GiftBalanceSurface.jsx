@@ -8,6 +8,7 @@
 
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { callGiftPublic, formatAmount, buildGiftTheme, fetchGiftBranding, giftUrl } from './giftHelpers';
+import { Icon } from '../../components/ServOSIcons';
 
 export default function GiftBalanceSurface({ location }) {
   const [giftBranding, setGiftBranding] = useState(null);
@@ -80,8 +81,8 @@ export default function GiftBalanceSurface({ location }) {
           padding: '32px 24px', marginBottom: 16,
         }}>
           <div style={{
-            fontSize: 36, textAlign: 'center', marginBottom: 20,
-          }}>🎁</div>
+            display: 'flex', justifyContent: 'center', marginBottom: 20,
+          }}><Icon name="gift" size={36} /></div>
 
           <div style={{
             fontSize: 15, fontWeight: 700, marginBottom: 16, textAlign: 'center',

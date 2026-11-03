@@ -26,6 +26,7 @@ import { writeClosedCheckRow } from '../../lib/closedCheckWrite';
 import { foldLineMods } from '../../lib/channelMoney';
 import { attributeOnlineOrder } from '../../lib/customerLookup';
 import { chooseTrackKey, afterPlaced } from '../../lib/publicOrder';
+import { Icon } from '../../components/ServOSIcons';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 const money = (n, cur) => `${({ gbp: '£', usd: '$', eur: '€' }[cur] || '£')}${Number(n || 0).toFixed(2)}`;
@@ -385,11 +386,11 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
         </header>
         <div style={{ ...center, paddingTop: 24, paddingBottom: 40 }}>
           <div style={{ textAlign: 'center', marginBottom: 18 }}>
-            <div style={{ fontSize: 44 }}>{P.paid ? '✅' : '📩'}</div>
+            <div style={{ display: 'flex', justifyContent: 'center' }}><Icon name={P.paid ? 'checkCircle' : 'mailOpen'} size={44} /></div>
             <h2 style={{ margin: '8px 0 4px' }}>{P.paid ? 'Order confirmed' : 'Enquiry received'}</h2>
             <div style={{ color: '#475569', fontSize: 14 }}>Order <b style={{ color: theme.fg || '#0f172a' }}>{P.ref}</b> · {P.isDelivery ? 'Delivery' : 'Collection'} <b style={{ color: theme.fg || '#0f172a' }}>{P.eventDate} at {P.eventTime}</b></div>
             <div style={{ color: '#475569', fontSize: 14, marginTop: 4 }}>{P.paid ? `${location.name} has received your payment of ${money(P.total, cur)}.` : `${location.name} will confirm and arrange payment with you.`}</div>
-            {P.emailedTo && <div style={{ color: '#16a34a', fontSize: 13, marginTop: 6, fontWeight: 700 }}>✉ Confirmation sent to {P.emailedTo}</div>}
+            {P.emailedTo && <div style={{ color: '#16a34a', fontSize: 13, marginTop: 6, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}><Icon name="mail" size={15} />Confirmation sent to {P.emailedTo}</div>}
           </div>
 
           <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, padding: 16, color: '#0f172a' }}>
@@ -444,7 +445,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
           <div style={{ fontSize: 13, color: '#475569' }}>{cart.reduce((n, l) => n + (l.qty || 1), 0)} items · subtotal {money(subtotal, cur)}{exclusiveTax ? ` · tax ${money(exclusiveTax, cur)}` : ''}{deliveryFee ? ` · delivery ${money(deliveryFee, cur)}` : ''}{tip ? ` · tip ${money(tip, cur)}` : ''}{discount ? ` · promo −${money(discount, cur)}` : ''} · <b>total {money(total, cur)}</b></div>
           {isDelivery && (
             <div style={{ fontSize: 12, color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '8px 10px', marginTop: 10, lineHeight: 1.5 }}>
-              ⏱ <b>{eventTime}</b> is when your order is ready to leave the kitchen. Delivery adds travel time on top — please choose a time that allows for the courier to reach you.
+              <Icon name="clock" size={13} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 4 }} /><b>{eventTime}</b> is when your order is ready to leave the kitchen. Delivery adds travel time on top — please choose a time that allows for the courier to reach you.
             </div>
           )}
         </div>
@@ -469,7 +470,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
             )}
             {belowMin && (
               <div style={{ marginTop: 12, background: '#fffbeb', border: '1.5px solid #f59e0b', borderRadius: 12, padding: '12px 14px', color: '#92400e', fontSize: 13.5, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 10 }}>
-                <span style={{ fontSize: 18 }}>⚠️</span>
+                <Icon name="warn" size={18} />
                 <span>Minimum order for delivery is {deliveryQuote?.minOrderMinor != null ? money(deliveryQuote.minOrderMinor / 100, cur) : ''}. Add {money(Math.max(0, (deliveryQuote?.minOrderMinor || 0) / 100 - subtotal), cur)} more to your order, or choose collection.</span>
               </div>
             )}

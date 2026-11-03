@@ -185,7 +185,7 @@ function buildGiftCardEmail(opts: {
     : '';
   const logoBlock = logoUrl
     ? `<img src="${logoUrl}" alt="${venueName}" style="max-width:160px;max-height:64px;margin-bottom:16px;" />`
-    : `<div style="font-size:36px;margin-bottom:12px;">🎁</div>`;
+    : `<div style="font-size:36px;margin-bottom:12px;"></div>`;
 
   return `<!DOCTYPE html>
 <html>
@@ -236,7 +236,7 @@ function buildSenderConfirmEmail(opts: {
   const logoUrl = b.logo_url || null;
   const logoBlock = logoUrl
     ? `<img src="${logoUrl}" alt="${venueName}" style="max-width:120px;max-height:48px;margin-bottom:12px;" />`
-    : `<div style="font-size:32px;margin-bottom:8px;">✅</div>`;
+    : `<div style="font-size:32px;margin-bottom:8px;"></div>`;
 
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"></head>

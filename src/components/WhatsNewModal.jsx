@@ -2,6 +2,7 @@
 // array loads only when the modal opens. Lazy-loaded from App.jsx.
 import { useState } from 'react';
 import { CHANGELOG } from '../lib/changelog';
+import { stripEmoji } from '../lib/emojiIcons';
 
 // 28 Sep 2026 (release review): every entry since 5.8.5 is { v, items }; the older ones are
 // { version, changes }. Reading only the old shape threw on .map and the whole till showed
@@ -42,7 +43,7 @@ export default function WhatsNewModal({ onClose }) {
                   <span style={{ fontSize:12, fontWeight:700, color: selected===ver(c)?'var(--acc)':'var(--t1)', fontFamily:'DM Mono, monospace' }}>v{ver(c)}</span>
                   {i===0 && <span style={{ fontSize:9, fontWeight:700, padding:'1px 5px', borderRadius:20, background:'var(--acc)', color:'#0e0f14' }}>LATEST</span>}
                 </div>
-                <div style={{ fontSize:11, color:'var(--t3)' }}>{c.label}</div>
+                <div style={{ fontSize:11, color:'var(--t3)' }}>{stripEmoji(c.label)}</div>
                 <div style={{ fontSize:10, color:'var(--t4)', marginTop:1 }}>{c.date}</div>
               </button>
             ))}
@@ -52,14 +53,14 @@ export default function WhatsNewModal({ onClose }) {
           <div style={{ flex:1, overflowY:'auto', padding:'18px 20px' }}>
             <div style={{ display:'flex', alignItems:'baseline', gap:10, marginBottom:4 }}>
               <span style={{ fontSize:20, fontWeight:800, color:'var(--t1)', fontFamily:'DM Mono, monospace' }}>v{ver(entry)}</span>
-              <span style={{ fontSize:13, color:'var(--acc)', fontWeight:600 }}>{entry.label}</span>
+              <span style={{ fontSize:13, color:'var(--acc)', fontWeight:600 }}>{stripEmoji(entry.label)}</span>
             </div>
             <div style={{ fontSize:11, color:'var(--t4)', marginBottom:16 }}>{entry.date}</div>
             <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
               {changesOf(entry).map((change, i) => (
                 <div key={i} style={{ display:'flex', gap:10, padding:'8px 12px', background:'var(--bg3)', borderRadius:8, border:'1px solid var(--bdr)' }}>
                   <span style={{ color:'var(--acc)', fontWeight:700, flexShrink:0, marginTop:1 }}>✓</span>
-                  <span style={{ fontSize:13, color:'var(--t2)', lineHeight:1.5 }}>{change}</span>
+                  <span style={{ fontSize:13, color:'var(--t2)', lineHeight:1.5 }}>{stripEmoji(change)}</span>
                 </div>
               ))}
             </div>

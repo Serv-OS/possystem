@@ -30,6 +30,7 @@ import { chooseTrackKey, afterPlaced } from '../../lib/publicOrder';
 import { foldLineMods } from '../../lib/channelMoney';
 import { taxCtxHasConfig } from '../../lib/taxCompute';
 import VatGateNotice from '../online/VatGateNotice';
+import { Icon } from '../../components/ServOSIcons';
 
 // taxCtx / menuItems / taxRates: the venue's tax context (buildLocalTaxCtx), menu and rates the
 // page already loaded, for the tab's VAT. Without them the check books no VAT, as before.
@@ -193,7 +194,7 @@ export default function TabResumeScreen({
       fontFamily: '-apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif',
     }}>
       <div style={{ maxWidth: 480, width: '100%', margin: '0 auto', textAlign: 'center' }}>
-        <div style={{ fontSize: 56, marginBottom: 12 }}>👋</div>
+        <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'center' }}><Icon name="wave" size={52} /></div>
         <div style={{ fontSize: 28, fontWeight: 900, letterSpacing: '-0.025em' }}>Welcome back!</div>
         <div style={{ fontSize: 14, color: muted, marginTop: 8 }}>
           Your tab at Table <b style={{ color: theme.fg }}>{tab.table_label || tableLabel || tableId}</b> is still open.
@@ -248,8 +249,9 @@ export default function TabResumeScreen({
             background: theme.accent, color: contrastFg(theme.accent),
             border: 'none', fontSize: 16, fontWeight: 800, cursor: closing ? 'not-allowed' : 'pointer',
             fontFamily: 'inherit', opacity: closing ? 0.5 : 1,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
           }}>
-            🍽 Add more to this tab
+            <Icon name="utensils" size={18} />Add more to this tab
           </button>
           <button onClick={handleClose} disabled={closing} className="op-btn" style={{
             padding: '16px 22px', borderRadius: 14,
@@ -258,7 +260,7 @@ export default function TabResumeScreen({
             fontSize: 15, fontWeight: 700, cursor: closing ? 'wait' : 'pointer', fontFamily: 'inherit',
             display: 'flex', justifyContent: 'space-between', alignItems: 'center',
           }}>
-            <span>{closing ? 'Charging your card…' : '🔒 Close & pay'}</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>{closing ? 'Charging your card…' : <><Icon name="lock" size={16} />Close & pay</>}</span>
             <span>{money(runningTotal)}</span>
           </button>
           {onAbandon && (
@@ -271,7 +273,7 @@ export default function TabResumeScreen({
         </div>
 
         <div style={{ marginTop: 30, fontSize: 11, color: muted, lineHeight: 1.5 }}>
-          🔒 We held {money(Number(tab.pre_auth_amount || 0))} on your card when you opened this tab. Closing it captures the actual bill — anything held but unspent is released.
+          <Icon name="lock" size={12} style={{ display: 'inline-block', verticalAlign: '-2px', marginRight: 4 }} />We held {money(Number(tab.pre_auth_amount || 0))} on your card when you opened this tab. Closing it captures the actual bill — anything held but unspent is released.
         </div>
       </div>
     </div>

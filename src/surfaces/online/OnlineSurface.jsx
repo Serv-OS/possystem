@@ -52,6 +52,7 @@ import TabResumeScreen from '../qr/TabResumeScreen';
 import JoinTabScreen from '../qr/JoinTabScreen';
 import { money, moneyMinor } from '../../lib/currency';
 import { COUNTER_TYPE, counterCollect, orderTypeChip } from '../../lib/counterOrder';
+import { Icon, EmojiIcon } from '../../components/ServOSIcons';
 import MenuHeader from '../menu/MenuHeader';
 // 5.12.34 (Peter: Toast's ordering header, "we should steal this"): the ordering header block under
 // the themed header, its three sheets, and the menu search. Words and rules are pure and tested in
@@ -209,8 +210,8 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   useEffect(() => { applyMenuLang(menuLang, menuLangOffer); }, [menuLang, menuLangOffer]);
   useEffect(() => () => applyMenuLang('en', null), []);
   const allOrderTypes = useMemo(() => {
-    const arr = [{ id: 'collection', label: 'Collection', icon: '🥡', desc: 'Pick up at the venue' }];
-    if (location.online_delivery_enabled) arr.push({ id: 'delivery', label: 'Delivery', icon: '🚴', desc: 'Brought to your door' });
+    const arr = [{ id: 'collection', label: 'Collection', icon: 'takeaway', desc: 'Pick up at the venue' }];
+    if (location.online_delivery_enabled) arr.push({ id: 'delivery', label: 'Delivery', icon: 'bike', desc: 'Brought to your door' });
     return arr;
   }, [location.online_delivery_enabled]);
 
@@ -683,7 +684,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
       padding: '9px 14px', textAlign: 'center', fontSize: 13, fontWeight: 700, lineHeight: 1.45,
       borderBottom: '2px solid var(--brand)',
     }}>
-      🌙 Closed{reopenShort ? <> — opens <b>{reopenShort}</b></> : ''}
+      <Icon name="moon" size={14} style={{ display: 'inline-block', verticalAlign: '-0.15em', marginRight: 6 }} />Closed{reopenShort ? <> — opens <b>{reopenShort}</b></> : ''}
       {closedInfo.canOrderAhead ? ' · you can order ahead' : ' · browsing only'}
     </div>
   ) : null;
@@ -1132,7 +1133,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           theme={theme} muted={muted} narrow={narrow}
           name={location.name} address={venueAddress}
           canChangeLocation={siblings.length > 0} onChangeLocation={() => setSheet('location')}
-          pillIcon={orderTypeChip(orderType, { counterLabel: counterName }).icon} pillLabel={pillWords}
+          pillIcon={<EmojiIcon value={orderTypeChip(orderType, { counterLabel: counterName }).icon} size={16} />} pillLabel={pillWords}
           pillOpens={pillOpens} onPill={() => setSheet('type')}
           locationWords={locationParts.lead} locationBold={locationParts.bold}
           locationOpens={orderType === 'delivery' || siblings.length > 0} onLocationRow={() => setSheet(orderType === 'delivery' ? 'address' : 'location')}
@@ -1190,7 +1191,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
               fontSize: 12, fontWeight: 700, fontFamily: 'inherit', cursor: 'pointer',
               display: 'inline-flex', alignItems: 'center', gap: 6,
             }}>
-              <span>⚠️</span>
+              <Icon name="warn" size={14} />
               <span>{activeAllergens.length ? `${activeAllergens.length} allergy filter${activeAllergens.length === 1 ? '' : 's'}` : 'Allergies'}</span>
             </button>
           )}
@@ -1261,7 +1262,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
             background: '#ef444415', border: '1px solid #ef444455',
             fontSize: 12, color: '#b91c1c', fontWeight: 600, lineHeight: 1.5,
           }}>
-            ⚠ Items containing <b>{activeAllergens.join(', ')}</b> are marked on the menu. Always confirm with the venue if you have a severe allergy.
+            <Icon name="warn" size={14} style={{ display: 'inline-block', verticalAlign: '-0.15em', marginRight: 6 }} />Items containing <b>{activeAllergens.join(', ')}</b> are marked on the menu. Always confirm with the venue if you have a severe allergy.
           </div>
         </div>
       )}
@@ -1277,7 +1278,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
 
         {!loading && items.length === 0 && (
           <div style={{ padding: 60, textAlign: 'center', color: muted }}>
-            <div style={{ fontSize: 32, marginBottom: 8 }}>📋</div>
+            <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'center' }}><Icon name="clipboard" size={32} /></div>
             <div style={{ fontSize: 15, fontWeight: 700 }}>Menu is empty right now.</div>
             <div style={{ fontSize: 12, marginTop: 4 }}>Check back later or contact the venue directly.</div>
           </div>
@@ -1466,7 +1467,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
       {sheet === 'type' && !isQr && (
         <OrderTypeSheet theme={theme} cardBdr={cardBdr} muted={muted} narrow={narrow}
           choices={orderTypeChoices(allOrderTypes, location)} value={orderType}
-          icons={{ collection: orderTypeChip('collection').icon, delivery: orderTypeChip('delivery').icon }}
+          icons={{ collection: <EmojiIcon value={orderTypeChip('collection').icon} size={20} />, delivery: <EmojiIcon value={orderTypeChip('delivery').icon} size={20} /> }}
           onPick={pickType}
           onClose={() => setSheet((s) => (s === 'type' ? null : s))} /* Delivery has just opened the address sheet: leave it */ />
       )}
@@ -1565,7 +1566,7 @@ function Welcome({ theme, orderTypes, loyalty, onPickType, onLoyalty }) {
             }}
               onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-2px)'; }}
               onMouseLeave={e => { e.currentTarget.style.transform = ''; }}>
-              <div style={{ fontSize: 28 }}>{t.icon}</div>
+              <div style={{ fontSize: 28 }}><Icon name={t.icon} size={28} /></div>
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 17, fontWeight: 800 }}>{t.label}</div>
                 <div style={{ fontSize: 12, color: '#6b6b70', marginTop: 2 }}>{t.desc}</div>
@@ -1900,7 +1901,8 @@ function WalletButton({ type, theme, cardBdr, token, companyId }) {
       fontFamily: 'inherit', opacity: busy ? 0.6 : 1,
       display: 'inline-flex', alignItems: 'center', gap: 6,
     }}>
-      {isApple ? '🍎 Add to Apple Wallet' : '📱 Add to Google Wallet'}
+      <Icon name="wallet" size={14} />
+      {isApple ? 'Add to Apple Wallet' : 'Add to Google Wallet'}
     </button>
   );
 }
@@ -1924,7 +1926,7 @@ function ConfirmationModal({ theme, cardBdr, muted, info, onClose }) {
         borderRadius: 18, boxShadow: '0 20px 60px rgba(0,0,0,0.4)',
         padding: 32, textAlign: 'center',
       }}>
-        <div style={{ fontSize: 56, marginBottom: 12 }}>✅</div>
+        <div style={{ marginBottom: 12, display: 'flex', justifyContent: 'center' }}><Icon name="checkCircle" size={56} /></div>
         <div style={{ fontSize: 24, fontWeight: 900, letterSpacing: '-0.02em', marginBottom: 8 }}>
           Order placed!
         </div>
@@ -2045,7 +2047,7 @@ function Hero({ theme, muted, leadMin, tableLabel }) {
                   border: '1px solid rgba(255,255,255,0.2)',
                   backdropFilter: 'saturate(180%) blur(8px)',
                   WebkitBackdropFilter: 'saturate(180%) blur(8px)',
-                }}>⏱ {leadLabel}</span>
+                }}><Icon name="clock" size={14} />{leadLabel}</span>
               )}
             </div>
           </div>
@@ -2228,7 +2230,7 @@ function ConfirmTableScreen({ theme, cardBdr, muted, locationName, presetLabel, 
               {openTabs.length > 0 && onSettleTab && (
                 <div style={{ marginTop: 18, padding: 14, background:'rgba(0,0,0,0.35)', borderRadius:14, border:'1px solid rgba(255,255,255,0.25)' }}>
                   <div style={{ fontSize:12, fontWeight:800, opacity:0.95, marginBottom:8, textTransform:'uppercase', letterSpacing:'0.05em' }}>
-                    💳 Open bill{openTabs.length > 1 ? 's' : ''} at this table
+                    <Icon name="card" size={14} style={{ display: 'inline-block', verticalAlign: '-0.15em', marginRight: 6 }} />Open bill{openTabs.length > 1 ? 's' : ''} at this table
                   </div>
                   {openTabs.map(t => (
                     <button key={t.tab_handle || t.payment_intent_id} onClick={() => onSettleTab(t)}

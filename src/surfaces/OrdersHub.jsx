@@ -25,6 +25,7 @@ import { hubrisePushStatus } from '../lib/hubrise';
 import { getDeliveryDetail } from '../lib/delivery/deliveryConfig';
 import { dispatchDelivery, sendDeliveryTrackingSMS } from '../lib/delivery/dispatch';
 import { statusLabel, statusColor, statusIcon } from '../lib/delivery/status';
+import { Icon } from '../components/ServOSIcons';
 import { courierPhase, courierLegs, courierLateness } from '../lib/delivery/courierTimes';
 import { buildChannelCloseFields, foldLineMods } from '../lib/channelMoney';
 import { placedOrderForTill } from '../lib/orderPlacedFrom';
@@ -1343,7 +1344,7 @@ export default function OrdersHub() {
                 <div style={{ marginTop:12, padding:'12px 14px', borderRadius:12, background:'var(--bg2)', border:'1px solid var(--bdr)' }}>
                   <div style={{ display:'flex', alignItems:'center', gap:8 }}>
                     <span style={{ fontSize:12, fontWeight:800, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.05em' }}>Stuart courier</span>
-                    <span style={{ marginLeft:'auto', fontSize:11, fontWeight:800, padding:'3px 10px', borderRadius:12, background:`${color}22`, color }}>{hasRow ? `${statusIcon(st)} ` : ''}{label}</span>
+                    <span style={{ marginLeft:'auto', fontSize:11, fontWeight:800, padding:'3px 10px', borderRadius:12, background:`${color}22`, color, display:'inline-flex', alignItems:'center', gap:4 }}>{hasRow && <Icon name={statusIcon(st)} size={12} />}{label}</span>
                   </div>
                   {hasRow && phase !== 'terminal_bad' && (
                     <div style={{ marginTop:8, borderTop:'1px solid var(--bdr)', paddingTop:8 }}>

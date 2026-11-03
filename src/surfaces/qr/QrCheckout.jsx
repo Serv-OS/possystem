@@ -35,6 +35,7 @@ import { money, currencySymbol, venueCurrency } from '../../lib/currency';
 import { tipRuleFor, tipChips, tipInitialKey, tipInitialKeyFor, tipAmount as calcTip } from '../../lib/tipping';
 import { singleTender } from '../../lib/accounting/tenders';
 import { writeClosedCheckRow } from '../../lib/closedCheckWrite';
+import { Icon } from '../../components/ServOSIcons';
 
 // vatGate / onRetryRates (8 Oct 2026): ratesGate's answer from the surface (null when the venue's
 // tax rates are in) and the way to load them again. Payment never opens while it is shut.
@@ -758,7 +759,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
                 fontFamily: 'inherit',
                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',
               }}>
-              <span>{working ? 'Sending…' : '🍽 Send to kitchen'}</span>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>{working ? 'Sending…' : <><Icon name="utensils" size={18} />Send to kitchen</>}</span>
               <span>{money(roundTotal)}</span>
             </button>
           </div>
@@ -845,11 +846,11 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                 <PayChoiceCard active={payChoice === 'pay_now'} onClick={() => setPayChoice('pay_now')}
                   theme={theme} cardBdr={cardBdr} inputBg={inputBg}
-                  title="💳 Pay now" sub="Pay this round and we'll bring it over."/>
+                  title={<><Icon name="card" size={16} />Pay now</>} sub="Pay this round and we'll bring it over."/>
                 {openTabAvailable && (
                   <PayChoiceCard active={payChoice === 'open_tab'} onClick={() => setPayChoice('open_tab')}
                     theme={theme} cardBdr={cardBdr} inputBg={inputBg}
-                    title="📋 Open tab" sub={`Hold ${currencySymbol()}${tabPreAuthAmount} on your card; staff close the tab when you're done.`}/>
+                    title={<><Icon name="clipboard" size={16} />Open tab</>} sub={`Hold ${currencySymbol()}${tabPreAuthAmount} on your card; staff close the tab when you're done.`}/>
                 )}
               </div>
             </>
@@ -943,10 +944,11 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
               <span>{working ? 'Starting payment…' : (isOpenTab ? 'Continue — open a tab' : 'Continue to payment')}</span>
               <span>{money((isOpenTab ? tabPreAuthAmount : total))}{isOpenTab ? ' hold' : ''}</span>
             </button>
-            <div style={{ fontSize: 10, color: muted, textAlign: 'center', marginTop: 8 }}>
-              {isOpenTab
-                ? `🔒 We'll hold ${currencySymbol()}${tabPreAuthAmount} on your card. Final bill is taken when staff close the tab.`
-                : '🔒 Card next, processed securely by ServOS Payments.'}
+            <div style={{ fontSize: 10, color: muted, textAlign: 'center', marginTop: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 }}>
+              <Icon name="lock" size={11} />
+              <span>{isOpenTab
+                ? `We'll hold ${currencySymbol()}${tabPreAuthAmount} on your card. Final bill is taken when staff close the tab.`
+                : 'Card next, processed securely by ServOS Payments.'}</span>
             </div>
           </div>
         )}
@@ -986,7 +988,7 @@ function PayChoiceCard({ active, onClick, title, sub, theme, cardBdr, inputBg })
         opacity: active ? 1 : 0.85,
         display: 'flex', flexDirection: 'column', gap: 4,
       }}>
-      <div style={{ fontSize: 14, fontWeight: 800 }}>{title}</div>
+      <div style={{ fontSize: 14, fontWeight: 800, display: 'flex', alignItems: 'center', gap: 6 }}>{title}</div>
       <div style={{ fontSize: 11, color: theme.isLight ? '#6b6b70' : '#a0a0a8', lineHeight: 1.4 }}>{sub}</div>
     </button>
   );

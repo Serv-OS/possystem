@@ -30,6 +30,7 @@ import CateringSurface from './catering/CateringSurface';
 import WaitlistJoinSurface from './waitlist/WaitlistJoinSurface';
 import BookingWidget from './online/BookingWidget';
 import { counterCollect } from '../lib/counterOrder';
+import { Icon } from '../components/ServOSIcons';
 
 export default function CustomerBoot({ slug, mode, tableId }) {
   const [state, setState] = useState({ loading: true, location: null, error: null });
@@ -60,14 +61,14 @@ export default function CustomerBoot({ slug, mode, tableId }) {
   if (state.error === 'not_found' || !state.location) {
     return <CustomerShell>
       <ErrorState
-        icon="🔍"
+        icon="search"
         title="Shop not found"
         body={<>We couldn't find a shop at <code style={{ fontFamily:'var(--font-mono)' }}>{slug}.{CUSTOMER_ROOT}</code>. Check the link with the venue.</>}
       />
     </CustomerShell>;
   }
   if (state.error) {
-    return <CustomerShell><ErrorState icon="⚠️" title="Couldn't load" body={state.error}/></CustomerShell>;
+    return <CustomerShell><ErrorState icon="warn" title="Couldn't load" body={state.error}/></CustomerShell>;
   }
 
   const loc = state.location;
@@ -107,15 +108,15 @@ export default function CustomerBoot({ slug, mode, tableId }) {
 
   // Surface enabled check
   if (mode === 'online' && !loc.online_enabled) {
-    return <CustomerShell><ErrorState icon="🚫" title="Online ordering not enabled" body={<>Visit {loc.name} in person, or contact them directly.</>}/></CustomerShell>;
+    return <CustomerShell><ErrorState icon="ban" title="Online ordering not enabled" body={<>Visit {loc.name} in person, or contact them directly.</>}/></CustomerShell>;
   }
   if (mode === 'qr' && !loc.qr_enabled) {
-    return <CustomerShell><ErrorState icon="🚫" title="Table-side ordering not available" body={<>Please order with a server.</>}/></CustomerShell>;
+    return <CustomerShell><ErrorState icon="ban" title="Table-side ordering not available" body={<>Please order with a server.</>}/></CustomerShell>;
   }
   // v5.11.95 Counter collect: the counter link works once QR ordering and its Counter collect
   // switch are both on (lib/counterOrder.js).
   if (mode === 'counter' && !(loc.qr_enabled && counterCollect(loc).qr)) {
-    return <CustomerShell><ErrorState icon="🚫" title="Ordering from your phone is not available" body={<>Please order at the counter.</>}/></CustomerShell>;
+    return <CustomerShell><ErrorState icon="ban" title="Ordering from your phone is not available" body={<>Please order at the counter.</>}/></CustomerShell>;
   }
 
   // Opening hours gate
@@ -191,7 +192,7 @@ function CustomerShell({ children, location }) {
 function Spinner({ label }) {
   return (
     <div style={{ textAlign:'center', padding:'80px 0', color:'#777', fontSize:13 }}>
-      <div style={{ fontSize:30, marginBottom:12 }}>⏳</div>
+      <div style={{ fontSize:30, marginBottom:12 }}><Icon name="clock" size={28} style={{ margin: '0 auto' }} /></div>
       {label}
     </div>
   );
@@ -200,7 +201,7 @@ function Spinner({ label }) {
 function ErrorState({ icon, title, body }) {
   return (
     <div style={{ textAlign:'center', padding:'40px 24px', background:'rgba(127,127,127,0.10)', border:'1px solid rgba(127,127,127,0.25)', borderRadius:14 }}>
-      <div style={{ fontSize:42, marginBottom:14 }}>{icon}</div>
+      <div style={{ fontSize:42, marginBottom:14 }}><Icon name={icon} size={40} style={{ margin: '0 auto' }} /></div>
       <div style={{ fontSize:18, fontWeight:800, marginBottom:8 }}>{title}</div>
       <div style={{ fontSize:13, opacity:.7, lineHeight:1.6 }}>{body}</div>
     </div>
@@ -214,7 +215,7 @@ function ClosedBanner({ location, nextOpensAt }) {
     : null;
   return (
     <div style={{ textAlign:'center', padding:'40px 24px', background:'rgba(127,127,127,0.10)', border:'1px solid rgba(127,127,127,0.25)', borderRadius:14 }}>
-      <div style={{ fontSize:42, marginBottom:14 }}>🌙</div>
+      <div style={{ fontSize:42, marginBottom:14 }}><Icon name="moon" size={40} style={{ margin: '0 auto' }} /></div>
       <div style={{ fontSize:18, fontWeight:800, marginBottom:8 }}>We're closed</div>
       <div style={{ fontSize:13, opacity:.7, marginBottom:16 }}>
         {fmt ? <>Opens <b>{fmt}</b></> : 'Hours not set yet — please come back later.'}
@@ -251,7 +252,7 @@ function ClosedScreen({ location, nextOpens, canOrderAhead, onEnter }) {
           background:'var(--card)', border:'1px solid var(--line)', borderRadius:16,
           padding:'30px 22px', textAlign:'center', boxShadow:'0 1px 2px rgba(36,31,28,.04)',
         }}>
-          <div style={{ fontSize:38, marginBottom:10 }}>🌙</div>
+          <div style={{ fontSize:38, marginBottom:10 }}><Icon name="moon" size={36} style={{ margin: '0 auto' }} /></div>
           <div style={{ fontFamily: DISPLAY_FONT, fontSize:21, fontWeight:700, letterSpacing:'-.01em', marginBottom:6 }}>
             We're closed right now
           </div>

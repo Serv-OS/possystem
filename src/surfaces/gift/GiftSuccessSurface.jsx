@@ -7,6 +7,7 @@
 
 import { useEffect, useState, useMemo } from 'react';
 import { callGiftPublic, formatAmount, buildGiftTheme, fetchGiftBranding, giftUrl } from './giftHelpers';
+import { Icon } from '../../components/ServOSIcons';
 
 export default function GiftSuccessSurface({ location }) {
   const [giftBranding, setGiftBranding] = useState(null);
@@ -100,15 +101,15 @@ export default function GiftSuccessSurface({ location }) {
 
       <div style={{ width: '100%', maxWidth: 420 }}>
         {status === 'loading' && (
-          <StatusCard t={t} icon="⏳" title="Processing your purchase…" subtitle="Please wait while we set up your gift card." />
+          <StatusCard t={t} icon="clock" title="Processing your purchase…" subtitle="Please wait while we set up your gift card." />
         )}
 
         {status === 'pending' && (
-          <StatusCard t={t} icon="✨" title="Payment received!" subtitle="We're generating your gift card now. This usually takes just a few seconds…" />
+          <StatusCard t={t} icon="sparkles" title="Payment received!" subtitle="We're generating your gift card now. This usually takes just a few seconds…" />
         )}
 
         {status === 'error' && (
-          <StatusCard t={t} icon="⚠️" title="Something went wrong" subtitle={error}>
+          <StatusCard t={t} icon="warn" title="Something went wrong" subtitle={error}>
             <div style={{ marginTop: 20, display: 'flex', gap: 10 }}>
               <a href={giftUrl('/gift')} style={{
                 flex: 1, textAlign: 'center', padding: '12px 16px', borderRadius: 99,
@@ -139,7 +140,7 @@ export default function GiftSuccessSurface({ location }) {
               background: t.card, border: `1px solid ${t.border}`, borderRadius: t.radius,
               padding: '32px 24px', textAlign: 'center', marginBottom: 16,
             }}>
-              <div style={{ fontSize: 52, marginBottom: 16 }}>🎉</div>
+              <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'center' }}><Icon name="party" size={48} /></div>
               <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 6 }}>Gift card sent!</div>
               <div style={{ fontSize: 14, color: t.textMuted, lineHeight: 1.6 }}>
                 {purchase.delivery_type === 'self'
@@ -205,7 +206,7 @@ function StatusCard({ t, icon, title, subtitle, children }) {
       background: t.card, border: `1px solid ${t.border}`, borderRadius: t.radius,
       padding: '40px 24px', textAlign: 'center',
     }}>
-      <div style={{ fontSize: 42, marginBottom: 14 }}>{icon}</div>
+      <div style={{ marginBottom: 14, display: 'flex', justifyContent: 'center' }}><Icon name={icon} size={42} /></div>
       <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 8 }}>{title}</div>
       <div style={{ fontSize: 13, color: t.textMuted, lineHeight: 1.6 }}>{subtitle}</div>
       {children}

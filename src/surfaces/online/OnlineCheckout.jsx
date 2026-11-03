@@ -52,6 +52,7 @@ import { creditDiscounts } from '../../lib/taxBasis';
 import { breakdownIsExclusive, taxTermFor } from '../../lib/receiptTax';   // v5.7.34: rate-null guards + VAT/Sales Tax wording
 import { money, venueCurrency } from '../../lib/currency';
 import { orderTypeChip, tipModuleFor } from '../../lib/counterOrder';
+import { Icon } from '../../components/ServOSIcons';
 import { eligibleMatcher, eligibleItemNames, eligibleOrderLines } from '../../lib/loyaltyMenuMatch';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
@@ -1651,7 +1652,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                         {money((giftCard.balance / 100))} <span style={{ fontSize: 12, fontWeight: 500, color: muted }}>balance</span>
                       </div>
                     </div>
-                    <div style={{ fontSize: 28 }}>💳</div>
+                    <Icon name="card" size={28} />
                   </div>
                   <div style={{ fontSize: 12, color: muted, marginBottom: 10 }}>
                     {giftCard.balance >= discountedSubtotalMinor
@@ -1685,7 +1686,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
               display: 'flex', justifyContent: 'space-between', alignItems: 'center',
             }}>
               <div>
-                <div style={{ fontSize: 14, fontWeight: 700 }}>🏷️ {promoApplied.label}</div>
+                <div style={{ fontSize: 14, fontWeight: 700 }}><Icon name="tag" size={14} style={{ display: 'inline-block', verticalAlign: '-0.15em', marginRight: 6 }} />{promoApplied.label}</div>
                 <div style={{ fontSize: 12, color: muted, marginTop: 2 }}>
                   Code {promoApplied.code} · −{money(promoAppliedMinor / 100)}
                 </div>
@@ -1703,7 +1704,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
               borderRadius: 12, padding: '16px',
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                <span style={{ fontSize: 18 }}>✅</span>
+                <Icon name="checkCircle" size={18} />
                 <span style={{ fontSize: 14, fontWeight: 700, flex: 1 }}>Gift card applied</span>
                 {/* v5.5.901: removable — apply no longer debits the card, so taking it off
                     costs the customer nothing. */}
@@ -1738,7 +1739,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                 <div key={line.uid} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13 }}>
                   <span style={{ flex: 1, minWidth: 0 }}>
                     {line.qty || 1} × {line.name}
-                    {line.notes ? <span style={{ display: 'block', fontSize: 12, color: `${theme.fg}99`, fontStyle: 'italic', marginTop: 2 }}>📝 {line.notes}</span> : null}
+                    {line.notes ? <span style={{ display: 'block', fontSize: 12, color: `${theme.fg}99`, fontStyle: 'italic', marginTop: 2 }}><Icon name="note" size={12} style={{ display: 'inline-block', verticalAlign: '-0.15em', marginRight: 4 }} />{line.notes}</span> : null}
                   </span>
                   <span style={{ fontWeight: 700 }}>{money((unit * (line.qty || 1)))}</span>
                 </div>
@@ -1746,13 +1747,13 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             })}
             {autoDiscounts.map((d, i) => (
               <div key={`offer-${i}`} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13, color: theme.accent }}>
-                <span>🏷 {d.label}</span>
+                <span><Icon name="tag" size={14} style={{ display: 'inline-block', verticalAlign: '-0.15em', marginRight: 6 }} />{d.label}</span>
                 <span style={{ fontWeight: 700 }}>-{money(d.value || 0)}</span>
               </div>
             ))}
             {giftApplied && (
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13, color: theme.accent }}>
-                <span>💳 Gift card</span>
+                <span><Icon name="card" size={14} style={{ display: 'inline-block', verticalAlign: '-0.15em', marginRight: 6 }} />Gift card</span>
                 <span style={{ fontWeight: 700 }}>-{money((giftApplied.applied / 100))}</span>
               </div>
             )}
@@ -1784,7 +1785,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
               borderRadius: 12, padding: '16px',
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                <span style={{ fontSize: 18 }}>🎁</span>
+                <Icon name="gift" size={18} />
                 <span style={{ fontSize: 14, fontWeight: 700 }}>Reward applied</span>
               </div>
               <div style={{ fontSize: 13, color: muted }}>
@@ -1812,7 +1813,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                   background: inputBg, border: `1px solid ${cardBdr}`, borderRadius: 12,
                   padding: '20px 16px', textAlign: 'center',
                 }}>
-                  <div style={{ fontSize: 28, marginBottom: 8 }}>🏆</div>
+                  <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'center' }}><Icon name="trophy" size={28} /></div>
                   <div style={{ fontSize: 13, color: muted }}>
                     No rewards available right now. Keep earning points!
                   </div>
@@ -1876,7 +1877,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                 <div key={line.uid} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13 }}>
                   <span style={{ flex: 1, minWidth: 0 }}>
                     {line.qty || 1} × {line.name}
-                    {line.notes ? <span style={{ display: 'block', fontSize: 12, color: `${theme.fg}99`, fontStyle: 'italic', marginTop: 2 }}>📝 {line.notes}</span> : null}
+                    {line.notes ? <span style={{ display: 'block', fontSize: 12, color: `${theme.fg}99`, fontStyle: 'italic', marginTop: 2 }}><Icon name="note" size={12} style={{ display: 'inline-block', verticalAlign: '-0.15em', marginRight: 4 }} />{line.notes}</span> : null}
                   </span>
                   <span style={{ fontWeight: 700 }}>{money((unit * (line.qty || 1)))}</span>
                 </div>
@@ -1884,19 +1885,19 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             })}
             {autoDiscounts.map((d, i) => (
               <div key={`offer-${i}`} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13, color: theme.accent }}>
-                <span>🏷 {d.label}</span>
+                <span><Icon name="tag" size={14} style={{ display: 'inline-block', verticalAlign: '-0.15em', marginRight: 6 }} />{d.label}</span>
                 <span style={{ fontWeight: 700 }}>-{money(d.value || 0)}</span>
               </div>
             ))}
             {giftApplied && (
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13, color: theme.accent }}>
-                <span>💳 Gift card</span>
+                <span><Icon name="card" size={14} style={{ display: 'inline-block', verticalAlign: '-0.15em', marginRight: 6 }} />Gift card</span>
                 <span style={{ fontWeight: 700 }}>-{money((giftApplied.applied / 100))}</span>
               </div>
             )}
             {rewardApplied && (
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13, color: theme.accent }}>
-                <span>🎁 {rewardApplied.reward_name}</span>
+                <span><Icon name="gift" size={14} style={{ display: 'inline-block', verticalAlign: '-0.15em', marginRight: 6 }} />{rewardApplied.reward_name}</span>
                 <span style={{ fontWeight: 700 }}>-{money((rewardApplied.discount_value / 100))}</span>
               </div>
             )}
@@ -1928,7 +1929,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
               borderRadius: 12, padding: '12px 14px',
               display: 'flex', alignItems: 'center', gap: 10,
             }}>
-              <span style={{ fontSize: 22 }}>⭐</span>
+              <Icon name="star" size={22} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 13, fontWeight: 700 }}>You're a loyalty member!</div>
                 <div style={{ fontSize: 12, color: muted, marginTop: 2 }}>
@@ -1972,7 +1973,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           )}
           {isDelivery && deliveryQuote?.belowMinimum && (
             <div style={{ background: '#fffbeb', border: '1.5px solid #f59e0b', borderRadius: 12, padding: '12px 14px', color: '#92400e', fontSize: 13.5, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 10, margin: '4px 0' }}>
-              <span style={{ fontSize: 18 }}>⚠️</span>
+              <Icon name="warn" size={18} />
               <span>Minimum order for delivery is {deliveryQuote.minOrderMinor != null ? money(deliveryQuote.minOrderMinor / 100) : ''}. Add {money(Math.max(0, ((deliveryQuote.minOrderMinor || 0) - discountedSubtotalMinor) / 100))} more, or switch to collection.</span>
             </div>
           )}
@@ -1986,24 +1987,24 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
               background: inputBg, border: `1.5px solid ${cardBdr}`, borderRadius: 12,
               padding: '11px 14px', fontSize: 13, fontWeight: 600, lineHeight: 1.5,
             }}>
-              ⚡ As soon as it's ready, about {leadMin} min. We'll text you when it's ready to collect at the counter.
+              <Icon name="bolt" size={14} style={{ display: 'inline-block', verticalAlign: '-0.15em', marginRight: 6 }} />As soon as it's ready, about {leadMin} min. We'll text you when it's ready to collect at the counter.
             </div>
           ) : orderAheadOnly ? (
             <div style={{
               background: inputBg, border: `1.5px solid ${cardBdr}`, borderRadius: 12,
               padding: '11px 14px', fontSize: 13, fontWeight: 600, lineHeight: 1.5,
             }}>
-              🌙 We're closed right now — pick a time below and your order will be ready when we reopen.
+              <Icon name="moon" size={14} style={{ display: 'inline-block', verticalAlign: '-0.15em', marginRight: 6 }} />We're closed right now — pick a time below and your order will be ready when we reopen.
             </div>
           ) : (
             <div style={{ display: 'flex', gap: 8 }}>
               <ModeChip active={timeMode === 'asap'} onClick={() => setTimeMode('asap')}
                 theme={theme} cardBdr={cardBdr}>
-                ⚡ ASAP <span style={{ opacity: 0.6, marginLeft: 4 }}>· ~{leadMin} min</span>
+                <Icon name="bolt" size={16} />ASAP <span style={{ opacity: 0.6, marginLeft: 4 }}>· ~{leadMin} min</span>
               </ModeChip>
               <ModeChip active={timeMode === 'scheduled'} onClick={() => setTimeMode('scheduled')}
                 theme={theme} cardBdr={cardBdr}>
-                🗓 Schedule
+                <Icon name="calendar" size={16} />Schedule
               </ModeChip>
             </div>
           )}
@@ -2035,7 +2036,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                 <div key={line.uid} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13 }}>
                   <span style={{ flex: 1, minWidth: 0 }}>
                     {line.qty || 1} × {line.name}
-                    {line.notes ? <span style={{ display: 'block', fontSize: 12, color: `${theme.fg}99`, fontStyle: 'italic', marginTop: 2 }}>📝 {line.notes}</span> : null}
+                    {line.notes ? <span style={{ display: 'block', fontSize: 12, color: `${theme.fg}99`, fontStyle: 'italic', marginTop: 2 }}><Icon name="note" size={12} style={{ display: 'inline-block', verticalAlign: '-0.15em', marginRight: 4 }} />{line.notes}</span> : null}
                   </span>
                   <span style={{ fontWeight: 700 }}>{money((unit * (line.qty || 1)))}</span>
                 </div>
@@ -2043,7 +2044,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             })}
             {autoDiscounts.map((d, i) => (
               <div key={`offer-${i}`} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', fontSize: 13, color: theme.accent }}>
-                <span>🏷 {d.label}</span>
+                <span><Icon name="tag" size={14} style={{ display: 'inline-block', verticalAlign: '-0.15em', marginRight: 6 }} />{d.label}</span>
                 <span style={{ fontWeight: 700 }}>-{money(d.value || 0)}</span>
               </div>
             ))}
@@ -2128,7 +2129,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             )}
             {!giftApplied && !rewardsAvailable && (
               <div style={{ fontSize: 10, color: muted, textAlign: 'center', marginTop: 8 }}>
-                🔒 Card details next, processed securely by ServOS Payments.
+                <Icon name="lock" size={10} style={{ display: 'inline-block', verticalAlign: '-0.15em', marginRight: 4 }} />Card details next, processed securely by ServOS Payments.
               </div>
             )}
           </div>
@@ -2154,7 +2155,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             </button>
             {!rewardApplied && !fullyPaid && (
               <div style={{ fontSize: 10, color: muted, textAlign: 'center', marginTop: 8 }}>
-                🔒 Card details next, processed securely by ServOS Payments.
+                <Icon name="lock" size={10} style={{ display: 'inline-block', verticalAlign: '-0.15em', marginRight: 4 }} />Card details next, processed securely by ServOS Payments.
               </div>
             )}
           </div>
@@ -2189,7 +2190,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
               /* ── Enter 6-digit code ────────────────────────────────── */
               <>
                 <div style={{ textAlign: 'center', marginBottom: 18 }}>
-                  <div style={{ fontSize: 40, marginBottom: 8 }}>📱</div>
+                  <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'center' }}><Icon name="phone" size={40} /></div>
                   <div style={{ fontSize: 18, fontWeight: 800, color: theme.fg }}>
                     Check your texts
                   </div>
@@ -2268,7 +2269,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
               /* ── Initial prompt ────────────────────────────────────── */
               <>
                 <div style={{ textAlign: 'center', marginBottom: 18 }}>
-                  <div style={{ fontSize: 40, marginBottom: 8 }}>⭐</div>
+                  <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'center' }}><Icon name="star" size={40} /></div>
                   <div style={{ fontSize: 18, fontWeight: 800, color: theme.fg }}>
                     You're a loyalty member!
                   </div>

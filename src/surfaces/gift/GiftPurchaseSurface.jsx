@@ -247,7 +247,7 @@ export default function GiftPurchaseSurface({ location }) {
                 <textarea
                   value={message}
                   onChange={e => setMessage(e.target.value)}
-                  placeholder="Enjoy your meal! 🎉"
+                  placeholder="Enjoy your meal!"
                   maxLength={200}
                   rows={3}
                   style={{

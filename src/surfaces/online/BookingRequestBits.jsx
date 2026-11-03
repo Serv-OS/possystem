@@ -14,6 +14,7 @@
 
 import { useEffect, useState } from 'react';
 import { supabase, ensureAuthToken, isMock } from '../../lib/supabase';
+import { Icon } from '../../components/ServOSIcons';
 
 async function callWidget(body) {
   if (!supabase) return { ok: false, error: 'offline' };
@@ -149,7 +150,7 @@ export function PayLinkPage({ bookingId, token, opsId, venueName, shell, shellCo
   return (
     <Shell {...shell}>
       <div style={card}>
-        <div style={{ fontSize: 38, marginBottom: 10 }}>💳</div>
+        <div style={{ marginBottom: 10, display: 'flex', justifyContent: 'center' }}><Icon name="card" size={38} /></div>
         <div style={S.h1}>{kind === 'hold' ? 'Save a card to hold your table' : `Pay ${fmtAmount(info.paymentDue?.amountMinor, info.paymentDue?.currency)} to confirm your table`}</div>
         <div style={{ fontSize: 15, fontWeight: 700, margin: '12px 0 4px', color: 'var(--ink)' }}>{line}</div>
         {b?.packageName && <div style={{ fontSize: 13.5, color: 'var(--muted)', marginBottom: 12 }}>{b.packageName}</div>}

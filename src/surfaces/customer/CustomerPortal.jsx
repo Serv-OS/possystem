@@ -14,6 +14,7 @@ import { buildGiftTheme, fetchGiftBranding, formatAmount } from '../gift/giftHel
 import { firstNameOf } from '../../lib/customerInitials';
 import { readProfileReply, customerAfterSave, isSignInAgain } from '../../lib/portalProfileReply';
 import { portalLoyaltyView } from '../../lib/portalLoyaltyView';
+import { Icon, EmojiIcon } from '../../components/ServOSIcons';
 
 const OPS_URL = import.meta.env.VITE_SUPABASE_URL;
 const OPS_ANON = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -726,7 +727,7 @@ function RegisterScreen({ t, location, token, customer, loyalty, onComplete, onS
           borderRadius: t.radius + 4, padding: '24px 20px', marginBottom: 18,
           color: t.accentText, textAlign: 'center',
         }}>
-          <div style={{ fontSize: 36, marginBottom: 6 }}>🎉</div>
+          <div style={{ marginBottom: 6, display: 'flex', justifyContent: 'center' }}><Icon name="party" size={36} /></div>
           <div style={{ fontSize: 18, fontWeight: 800 }}>
             You've earned {welcomePoints} welcome points!
           </div>
@@ -972,14 +973,14 @@ function Dashboard({ t, location, customer, loyalty, giftCards, stampCards, tab,
   const view = useMemo(() => portalLoyaltyView({ loyalty, stampCards, customer }), [loyalty, stampCards, customer]);
   const pointsEnabled = view.showPoints;
   const tabs = [
-    { id: 'home', label: 'Home', icon: '🏠' },
+    { id: 'home', label: 'Home', icon: 'house' },
     // Earned stamp-card rewards must surface even on a stamps-only venue (the Rewards tab used
     // to be points-gated, so a completed card's free item was invisible: the original bug).
-    ...(view.tabs.rewards ? [{ id: 'rewards', label: 'Rewards', icon: '🎁' }] : []),
-    ...(view.tabs.stamps ? [{ id: 'stamps', label: 'Stamps', icon: '☕' }] : []),
-    ...(view.tabs.history ? [{ id: 'history', label: 'History', icon: '📋' }] : []),
-    { id: 'cards', label: 'Gift Cards', icon: '💳' },
-    { id: 'profile', label: 'Profile', icon: '👤' },
+    ...(view.tabs.rewards ? [{ id: 'rewards', label: 'Rewards', icon: 'gift' }] : []),
+    ...(view.tabs.stamps ? [{ id: 'stamps', label: 'Stamps', icon: 'cup' }] : []),
+    ...(view.tabs.history ? [{ id: 'history', label: 'History', icon: 'clipboard' }] : []),
+    { id: 'cards', label: 'Gift Cards', icon: 'card' },
+    { id: 'profile', label: 'Profile', icon: 'user' },
   ];
   // A tab the company does not run (points off) is never shown, even if it was open before.
   const activeTab = tabs.some(tb => tb.id === tab) ? tab : 'home';
@@ -1006,7 +1007,7 @@ function Dashboard({ t, location, customer, loyalty, giftCards, stampCards, tab,
             display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
             whiteSpace: 'nowrap',
           }}>
-            <span style={{ fontSize: 16 }}>{tb.icon}</span>
+            <Icon name={tb.icon} size={16} />
             {tb.label}
           </button>
         ))}
@@ -1066,7 +1067,7 @@ function LoyaltyHero({ t, view, loyalty, customer, onLogout }) {
               padding: '5px 14px', borderRadius: 99,
               background: `${t.accentText}33`, fontSize: 12, fontWeight: 700,
             }}>
-              {loyalty.tier.icon || '⭐'} {loyalty.tier.name}
+              <EmojiIcon value={loyalty.tier.icon} fallback="star" size={14} />{loyalty.tier.name}
               {loyalty.tier.multiplier > 1 && <span style={{ opacity: 0.75 }}> · {loyalty.tier.multiplier}x points</span>}
             </div>
           )}
@@ -1106,7 +1107,7 @@ function HeroStampCard({ t, card, compact = false }) {
       marginTop: 16, padding: compact ? '12px 12px 14px' : '16px 12px 18px',
       borderRadius: t.radius, background: `${t.accentText}24`,
     }}>
-      <div style={{ fontSize: 15, fontWeight: 800 }}>{card.icon} {card.name}</div>
+      <div style={{ fontSize: 15, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}><EmojiIcon value={card.icon} fallback="cup" size={16} />{card.name}</div>
       <StampDots t={t} dots={card.dots} icon={card.icon} onAccent size={compact ? 26 : 32} />
       <div style={{ fontSize: compact ? 22 : 30, fontWeight: 900, marginTop: 12, lineHeight: 1.1 }}>
         {card.countText}
@@ -1118,8 +1119,9 @@ function HeroStampCard({ t, card, compact = false }) {
         <div style={{
           marginTop: 12, padding: '10px 12px', borderRadius: 12,
           background: t.accentText, color: t.accent, fontSize: 15, fontWeight: 800,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
         }}>
-          🎁 {card.readyText}. Ask at the till to use it.
+          <Icon name="gift" size={16} /><span>{card.readyText}. Ask at the till to use it.</span>
         </div>
       ) : (
         <div style={{ marginTop: 10, fontSize: 13, fontWeight: 700, opacity: 0.85 }}>
@@ -1146,13 +1148,13 @@ function StampDots({ t, dots, icon, onAccent = false, size = 30 }) {
         <div key={i} style={{
           width: size, height: size, borderRadius: '50%', boxSizing: 'border-box',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: Math.round(size * 0.5), lineHeight: 1,
+          fontSize: Math.round(size * 0.5), lineHeight: 1, color: t.accent,
           background: on ? (onAccent ? t.accentText : `${t.accent}22`) : 'transparent',
           border: on
             ? `2px solid ${onAccent ? t.accentText : t.accent}`
             : `2px dashed ${onAccent ? `${t.accentText}80` : `${t.textMuted}60`}`,
         }}>
-          {on ? icon : ''}
+          {on ? <EmojiIcon value={icon} fallback="cup" size={Math.round(size * 0.5)} /> : ''}
         </div>
       ))}
     </div>
@@ -1174,10 +1176,10 @@ function HomeTab({ t, view, loyalty, giftCards, setTab, walletAvail, walletLoadi
   // is every visit at the company's sites, the same number Back Office shows.
   const rewardsTab = view.tabs.rewards ? 'rewards' : (view.tabs.stamps ? 'stamps' : null);
   const tiles = [];
-  if (view.showPoints) tiles.push({ key: 'earned', label: 'Points earned', value: view.pointsEarned.toLocaleString(), icon: '📈' });
-  if (loyalty && view.mode !== 'none') tiles.push({ key: 'ready', label: 'Rewards ready', value: view.rewardsReady, icon: '🎁', onClick: rewardsTab ? () => setTab(rewardsTab) : undefined });
-  if (view.visits != null) tiles.push({ key: 'visits', label: 'Visits', value: view.visits, icon: '🏪' });
-  tiles.push({ key: 'gift', label: 'Gift cards', value: giftActive, icon: '💳', onClick: () => setTab('cards') });
+  if (view.showPoints) tiles.push({ key: 'earned', label: 'Points earned', value: view.pointsEarned.toLocaleString(), icon: 'trendUp' });
+  if (loyalty && view.mode !== 'none') tiles.push({ key: 'ready', label: 'Rewards ready', value: view.rewardsReady, icon: 'gift', onClick: rewardsTab ? () => setTab(rewardsTab) : undefined });
+  if (view.visits != null) tiles.push({ key: 'visits', label: 'Visits', value: view.visits, icon: 'store' });
+  tiles.push({ key: 'gift', label: 'Gift cards', value: giftActive, icon: 'card', onClick: () => setTab('cards') });
   const pointsRewards = view.showPoints ? (loyalty?.rewards_available || []) : [];
 
   return (
@@ -1241,7 +1243,7 @@ function HomeTab({ t, view, loyalty, giftCards, setTab, walletAvail, walletLoadi
               display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0',
               borderTop: `1px solid ${t.border}`,
             }}>
-              <span style={{ fontSize: 22 }}>🎟️</span>
+              <Icon name="ticket" size={22} />
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 14, fontWeight: 700 }}>{sr.name}{sr.available > 1 ? ` ×${sr.available}` : ''}</div>
                 <div style={{ fontSize: 12, color: t.textMuted }}>From a finished stamp card. Ask at the till to use it.</div>
@@ -1253,7 +1255,7 @@ function HomeTab({ t, view, loyalty, giftCards, setTab, walletAvail, walletLoadi
               display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0',
               borderTop: `1px solid ${t.border}`,
             }}>
-              <span style={{ fontSize: 22 }}>{r.icon || '🎁'}</span>
+              <EmojiIcon value={r.icon} fallback="gift" size={22} />
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 13, fontWeight: 600 }}>{r.name}</div>
                 <div style={{ fontSize: 11, color: t.textMuted }}>{r.points_cost} pts</div>
@@ -1274,7 +1276,7 @@ function HomeTab({ t, view, loyalty, giftCards, setTab, walletAvail, walletLoadi
           </div>
           {view.otherCards.map(sc => (
             <div key={sc.id} style={{ padding: '12px 0 4px', borderTop: `1px solid ${t.border}`, marginTop: 8, textAlign: 'center' }}>
-              <div style={{ fontSize: 14, fontWeight: 700 }}>{sc.icon} {sc.name}</div>
+              <div style={{ fontSize: 14, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}><EmojiIcon value={sc.icon} fallback="cup" size={16} />{sc.name}</div>
               <StampDots t={t} dots={sc.dots} icon={sc.icon} size={24} />
               <div style={{ fontSize: 15, fontWeight: 800, marginTop: 8 }}>{sc.countText}</div>
               <div style={{ fontSize: 12, color: t.textMuted, marginTop: 2 }}>{sc.toGoText}</div>
@@ -1304,7 +1306,7 @@ function HomeTab({ t, view, loyalty, giftCards, setTab, walletAvail, walletLoadi
       {!loyalty && (
         <Card t={t}>
           <div style={{ textAlign: 'center', padding: '20px 0' }}>
-            <div style={{ fontSize: 36, marginBottom: 10 }}>⭐</div>
+            <div style={{ marginBottom: 10, display: 'flex', justifyContent: 'center' }}><Icon name="star" size={36} /></div>
             <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>Loyalty coming soon</div>
             <div style={{ fontSize: 13, color: t.textMuted, lineHeight: 1.5 }}>
               This venue hasn't enabled their loyalty programme yet. Check back soon!
@@ -1318,7 +1320,7 @@ function HomeTab({ t, view, loyalty, giftCards, setTab, walletAvail, walletLoadi
 
 // ── Rewards Tab ──────────────────────────────────────────────────────────
 function RewardsTab({ t, loyalty, pointsEnabled = true, stampRewards: stampRewardsIn = null }) {
-  if (!loyalty) return <Card t={t}><EmptyState icon="🎁" text="Loyalty not available yet" /></Card>;
+  if (!loyalty) return <Card t={t}><EmptyState icon="gift" text="Loyalty not available yet" /></Card>;
 
   // Points rewards only when the company runs points (21 Oct 2026).
   const available = pointsEnabled ? (loyalty.rewards_available || []) : [];
@@ -1334,7 +1336,7 @@ function RewardsTab({ t, loyalty, pointsEnabled = true, stampRewards: stampRewar
           {stampRewards.map(sr => (
             <Card key={sr.program_id} t={t} style={{ marginBottom: 10 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <span style={{ fontSize: 26 }}>🎟️</span>
+                <Icon name="ticket" size={26} />
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 800, fontSize: 14 }}>
                     {sr.name}{sr.available > 1 ? ` ×${sr.available}` : ''}
@@ -1368,7 +1370,7 @@ function RewardsTab({ t, loyalty, pointsEnabled = true, stampRewards: stampRewar
       )}
 
       {all.length === 0 && stampRewards.length === 0 && (
-        <Card t={t}><EmptyState icon="🎁" text={pointsEnabled ? 'No rewards set up yet. Keep earning points!' : 'No rewards ready yet.'} /></Card>
+        <Card t={t}><EmptyState icon="gift" text={pointsEnabled ? 'No rewards set up yet. Keep earning points!' : 'No rewards ready yet.'} /></Card>
       )}
     </>
   );
@@ -1386,7 +1388,7 @@ function RewardCard({ t, reward, available, balance = 0 }) {
           fontSize: 22, flexShrink: 0,
           color: available ? t.accentText : t.textMuted,
         }}>
-          {reward.icon || '🎁'}
+          <EmojiIcon value={reward.icon} fallback="gift" size={22} />
         </div>
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: 14, fontWeight: 700 }}>{reward.name}</div>
@@ -1418,10 +1420,10 @@ function RewardCard({ t, reward, available, balance = 0 }) {
 
 // ── History Tab ──────────────────────────────────────────────────────────
 function HistoryTab({ t, loyalty }) {
-  if (!loyalty) return <Card t={t}><EmptyState icon="📋" text="No history yet" /></Card>;
+  if (!loyalty) return <Card t={t}><EmptyState icon="clipboard" text="No history yet" /></Card>;
 
   const txs = loyalty.recent_transactions || [];
-  if (txs.length === 0) return <Card t={t}><EmptyState icon="📋" text="No transactions yet. Make a purchase to start earning!" /></Card>;
+  if (txs.length === 0) return <Card t={t}><EmptyState icon="clipboard" text="No transactions yet. Make a purchase to start earning!" /></Card>;
 
   return (
     <Card t={t}>
@@ -1473,7 +1475,7 @@ function StampCardsTab({ t, cards }) {
     return (
       <Card t={t}>
         <div style={{ textAlign: 'center', padding: '20px 0' }}>
-          <div style={{ fontSize: 36, marginBottom: 10 }}>☕</div>
+          <div style={{ marginBottom: 10, display: 'flex', justifyContent: 'center' }}><Icon name="cup" size={36} /></div>
           <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>No stamp cards</div>
           <div style={{ fontSize: 13, color: t.textMuted, lineHeight: 1.5 }}>
             No stamp card programs are available right now. Check back soon!
@@ -1503,7 +1505,7 @@ function StampCardVisual({ t, card }) {
     }}>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
-        <span style={{ fontSize: 26 }}>{icon}</span>
+        <EmojiIcon value={icon} fallback="cup" size={26} />
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: 15, fontWeight: 800 }}>{name}</div>
           {description && <div style={{ fontSize: 12, color: t.textMuted, marginTop: 2 }}>{description}</div>}
@@ -1522,7 +1524,7 @@ function StampCardVisual({ t, card }) {
             fontSize: filled ? 16 : 11, fontWeight: 700,
             color: filled ? t.accent : `${t.textMuted}60`,
           }}>
-            {filled ? icon : i + 1}
+            {filled ? <EmojiIcon value={icon} fallback="cup" size={16} /> : i + 1}
           </div>
         ))}
         {/* Reward slot */}
@@ -1531,7 +1533,7 @@ function StampCardVisual({ t, card }) {
           background: `${t.accent}10`, border: `2px solid ${t.accent}50`,
           flexDirection: 'column',
         }}>
-          <span style={{ fontSize: 16 }}>🎁</span>
+          <Icon name="gift" size={16} />
         </div>
       </div>
 
@@ -1547,7 +1549,7 @@ function StampCardVisual({ t, card }) {
         border: card.ready > 0 ? `2px solid ${t.accent}` : `1px dashed ${t.accent}30`,
         display: 'flex', alignItems: 'center', gap: 6,
       }}>
-        <span style={{ fontSize: 14 }}>🎁</span>
+        <Icon name="gift" size={14} />
         <span style={{ fontSize: 13, fontWeight: card.ready > 0 ? 800 : 600 }}>{card.readyText}</span>
       </div>
       {card.finished > 0 && (
@@ -1573,7 +1575,7 @@ function GiftCardsTab({ t, giftCards }) {
   };
 
   if (!giftCards || giftCards.length === 0) {
-    return <Card t={t}><EmptyState icon="💳" text="No active gift cards linked to your account" /></Card>;
+    return <Card t={t}><EmptyState icon="card" text="No active gift cards linked to your account" /></Card>;
   }
 
   return (
@@ -1596,9 +1598,9 @@ function GiftCardsTab({ t, giftCards }) {
             <div style={{
               width: 48, height: 48, borderRadius: 12,
               background: t.accent, display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontSize: 24,
+              fontSize: 24, color: t.accentText,
             }}>
-              💳
+              <Icon name="card" size={24} />
             </div>
           </div>
 
@@ -1798,7 +1800,7 @@ function ProfileTab({ t, customer, loyalty, token, location, onRefresh, onLogout
           {pointsEnabled && <InfoRow t={t} label="Points balance" value={(loyalty.points_balance || 0).toLocaleString()} />}
           {pointsEnabled && <InfoRow t={t} label="Total earned" value={(loyalty.points_earned_total || 0).toLocaleString()} />}
           {pointsEnabled && <InfoRow t={t} label="Total redeemed" value={(loyalty.points_redeemed_total || 0).toLocaleString()} />}
-          {pointsEnabled && loyalty.tier && <InfoRow t={t} label="Tier" value={`${loyalty.tier.icon || '⭐'} ${loyalty.tier.name}`} />}
+          {pointsEnabled && loyalty.tier && <InfoRow t={t} label="Tier" value={<span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><EmojiIcon value={loyalty.tier.icon} fallback="star" size={14} />{loyalty.tier.name}</span>} />}
         </Card>
       )}
 
@@ -1861,7 +1863,7 @@ function StatCard({ t, label, value, icon, onClick }) {
         cursor: onClick ? 'pointer' : 'default',
       }}
     >
-      <div style={{ fontSize: 20, marginBottom: 4 }}>{icon}</div>
+      <div style={{ marginBottom: 4, display: 'flex', justifyContent: 'center' }}><Icon name={icon} size={20} /></div>
       <div style={{ fontSize: 20, fontWeight: 800 }}>{value}</div>
       <div style={{ fontSize: 11, color: t.textMuted, marginTop: 2, fontWeight: 600 }}>{label}</div>
     </div>
@@ -1906,7 +1908,7 @@ function InfoRow({ t, label, value }) {
 function EmptyState({ icon, text }) {
   return (
     <div style={{ textAlign: 'center', padding: '24px 0' }}>
-      <div style={{ fontSize: 32, marginBottom: 8 }}>{icon}</div>
+      <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'center' }}><Icon name={icon} size={32} /></div>
       <div style={{ fontSize: 13, opacity: 0.6, lineHeight: 1.5 }}>{text}</div>
     </div>
   );

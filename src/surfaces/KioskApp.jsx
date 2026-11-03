@@ -50,6 +50,7 @@ import { kioskLineSlot } from '../lib/channelMenu';
 import { useClassicKioskMenuWords, shownItemName, shownItemDescription } from './kiosk/kioskMenuWords';
 import { railTileMode } from '../lib/categoryPhoto';
 import { t, setLang, useKioskLang, LANGUAGES, getLanguageMeta } from '../lib/i18n';
+import { Icon, EmojiIcon } from '../components/ServOSIcons';
 import { displayName } from '../lib/itemDisplay';
 import { kioskVariant, kioskLineStockIds, kioskLineRemaining, kioskLineRoom, kioskLineKey, kioskCartUsage, kioskOrderItem, kioskDepleteItem, kioskLineTaxRefs } from '../lib/kioskLine';
 // 8 Oct 2026 (VAT audit, Fix 2): the kiosk loads its rates like the customer pages (after its
@@ -1465,7 +1466,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
     if (newDesign) return <KioskV2Status profile={profile} title="Kiosk not configured" detail={profError || menuError || 'Profile not found. Please ask staff.'} onUnpair={onUnpair} />;
     return <div style={pageStyle()}>
       <div style={{ color: 'var(--kFg)', textAlign: 'center', padding: 40, maxWidth: 480 }}>
-        <div style={{ fontSize: 48, marginBottom: 16 }}>⚠️</div>
+        <div style={{ fontSize: 48, marginBottom: 16 }}><Icon name="warn" size={44} style={{ margin: '0 auto' }} /></div>
         <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Kiosk not configured</div>
         <div style={{ fontSize: 14, color: 'var(--kFgMuted)', marginBottom: 24 }}>{profError || menuError || 'Profile not found. Please ask staff.'}</div>
         <button onClick={onUnpair} style={btnGhostLight()}>Unpair</button>
@@ -1594,7 +1595,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
       {idleWarning && screen !== 'attract' && screen !== 'done' && (
         <div onClick={resetIdle} style={{ position: 'fixed', inset: 0, background: 'var(--kOverlay)', display: 'grid', placeItems: 'center', zIndex: 200, padding: 24 }}>
           <div style={{ background: 'var(--kSurfaceRaised)', border: '2px solid ' + brandColor, borderRadius: 24, padding: '40px 36px', maxWidth: 400, textAlign: 'center', cursor: 'pointer' }}>
-            <div style={{ fontSize: 64, marginBottom: 16 }}>⏰</div>
+            <div style={{ fontSize: 64, marginBottom: 16 }}><Icon name="clock" size={58} style={{ margin: '0 auto' }} /></div>
             <div style={{ fontSize: 24, fontWeight: 800, color: 'var(--kFg)', marginBottom: 8 }}>Still there?</div>
             <div style={{ fontSize: 14, color: 'var(--kFgMuted)', marginBottom: 24 }}>This order will reset in {warningCountdown}s</div>
             <div style={{ background: brandColor, color: 'var(--kFg)', padding: '14px 28px', borderRadius: 100, fontSize: 16, fontWeight: 700 }}>Tap to continue</div>
@@ -1668,7 +1669,7 @@ function ScreenAttract({ brandName, brandColor, brandAccent, brandLogoUrl, attra
         <div style={{ fontSize: 'clamp(48px, 9vw, 96px)', fontWeight: 900, letterSpacing: '-0.04em', color: '#fff', textAlign: 'center', lineHeight: 1, marginBottom: '2vh', textShadow: '0 4px 30px rgba(0,0,0,0.3)' }}>{brandName}</div>
         {/* v5.4.0: subtitle removed */}
         {avgWaitMinutes ? (
-          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '8px 18px', background: 'rgba(255,255,255,0.18)', backdropFilter: 'blur(10px)', borderRadius: 100, fontSize: 'clamp(13px, 1.8vw, 18px)', fontWeight: 600, color: '#fff', marginBottom: '6vh' }}>⏱ ~{avgWaitMinutes} min wait</div>
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '8px 18px', background: 'rgba(255,255,255,0.18)', backdropFilter: 'blur(10px)', borderRadius: 100, fontSize: 'clamp(13px, 1.8vw, 18px)', fontWeight: 600, color: '#fff', marginBottom: '6vh' }}><Icon name="clock" size="1em" />~{avgWaitMinutes} min wait</div>
         ) : null}
         <div style={{ background: '#fff', color: shade(brandColor, -30), padding: 'clamp(18px, 3vh, 28px) clamp(40px, 8vw, 100px)', borderRadius: 100, fontSize: 'clamp(20px, 3vw, 28px)', fontWeight: 800, boxShadow: '0 10px 40px rgba(0,0,0,0.25)', animation: 'kioskPulse 2s infinite', letterSpacing: '-0.02em' }}>{ctaLabel || 'TAP TO ORDER'}</div>
       </div>
@@ -1797,7 +1798,7 @@ function ScreenOrderType({ brandColor, brandLogoUrl, brandName, tableMode, count
               display: 'flex', alignItems: 'center', gap: 10,
               boxShadow: '0 2px 10px rgba(0,0,0,0.06)',
             }}>
-              <span style={{ fontSize: 'clamp(18px, 2.2vw, 24px)' }}>⭐</span>
+              <span style={{ fontSize: 'clamp(18px, 2.2vw, 24px)', display: 'flex', color: brandColor }}><Icon name="star" size="1em" /></span>
               <span style={{
                 fontSize: 'clamp(15px, 1.8vw, 19px)', fontWeight: 800, color: brandColor,
               }}>
@@ -1811,7 +1812,7 @@ function ScreenOrderType({ brandColor, brandLogoUrl, brandName, tableMode, count
       {/* Language pill */}
       <div style={{ padding: '1vh 6vw 4vh', display: 'flex', justifyContent: 'center', flexShrink: 0 }}>
         <button onClick={onOpenLanguagePicker} style={otLanguagePill(brandColor)} aria-label="Choose language">
-          <span style={{ fontSize: 22, lineHeight: 1 }}>{langMeta.flag}</span>
+          <span style={{ fontSize: 13, fontWeight: 800, letterSpacing: '0.06em', lineHeight: 1, color: brandColor }}>{langMeta.flag}</span>
           <span style={{ fontSize: 'clamp(15px, 1.8vw, 18px)', fontWeight: 700, color: brandColor }}>
             {langMeta.nativeName}
           </span>
@@ -1998,7 +1999,7 @@ function ScreenLanguagePicker({ brandColor, currentLang, onPick, onClose }) {
                   textAlign: 'left',
                 }}
               >
-                <span style={{ fontSize: 26, lineHeight: 1 }}>{L.flag}</span>
+                <span style={{ fontSize: 14, fontWeight: 800, letterSpacing: '0.06em', lineHeight: 1, minWidth: 26 }}>{L.flag}</span>
                 <span style={{ flex: 1 }}>{L.nativeName}</span>
                 <span style={{ fontSize: 13, opacity: 0.75 }}>{L.name}</span>
               </button>
@@ -2333,7 +2334,7 @@ function ScreenMenu({ brandColor, brandAccent, categoryPhotos = true, categoryPh
             flexShrink: 0,
             fontSize: 'clamp(22px, 2.6vw, 28px)',
             lineHeight: 1,
-          }}>⚠</span>
+          }}><Icon name="warn" size="1em" /></span>
           <span style={{ flex: 1, minWidth: 0, lineHeight: 1.25 }}>
             {hasAllergenFilter ? (
               <>
@@ -3458,7 +3459,7 @@ function ScreenGiftPromo({ brandColor, total, promoBasket = 0, promoLines = null
                   cursor: giftApplying ? 'wait' : 'pointer', fontFamily: 'inherit',
                   display: 'flex', alignItems: 'center', gap: 12, opacity: giftApplying ? 0.6 : 1,
                 }}>
-                <span style={{ fontSize: 22 }}>💳</span>
+                <span style={{ fontSize: 22, display: 'flex', color: brandColor }}><Icon name="card" size={22} /></span>
                 <div style={{ flex: 1, textAlign: 'left' }}>
                   <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--kFg)' }}>Gift Card {gc.last4 ? `···${gc.last4}` : ''}</div>
                   <div style={{ fontSize: 12, color: 'var(--kFgMuted)' }}>Balance: {money(((gc.balance || 0) / 100))}</div>
@@ -3474,8 +3475,9 @@ function ScreenGiftPromo({ brandColor, total, promoBasket = 0, promoLines = null
         {!(giftCardPayment && promoApplied) && total > 0 && (
           <div style={{ width: '100%', maxWidth: 440 }}>
             <div style={{ padding: 16, borderRadius: 14, background: 'var(--kSurfaceRaised)', border: '1.5px solid ' + brandColor + '33' }}>
-              <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--kFg)', marginBottom: 10 }}>
-                {giftCardPayment ? '🏷️ Enter a promo code' : '🎁 Enter gift card or promo code'}
+              <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--kFg)', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Icon name={giftCardPayment ? 'tag' : 'gift'} size={16} />
+                {giftCardPayment ? 'Enter a promo code' : 'Enter gift card or promo code'}
               </div>
               {giftError && (
                 <div style={{ padding: 8, borderRadius: 8, marginBottom: 8, fontSize: 13, color: '#e55', background: '#e5555515', border: '1px solid #e5555533', fontWeight: 600 }}>{giftError}</div>
@@ -3785,7 +3787,7 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCred
         {/* Card payment — connecting to reader */}
         {cardState === 'processing' && (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14 }}>
-            <div style={{ fontSize: 'clamp(48px, 8vw, 72px)', color: brandColor, animation: 'kioskPulse 1.5s infinite' }}>💳</div>
+            <div style={{ fontSize: 'clamp(48px, 8vw, 72px)', color: brandColor, animation: 'kioskPulse 1.5s infinite' }}><Icon name="card" size="1em" /></div>
             <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--kFgMuted)' }}>{cardStatusMsg || 'Connecting to card reader...'}</div>
           </div>
         )}
@@ -3803,7 +3805,7 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCred
         {/* Card payment success */}
         {cardState === 'success' && (
           <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: 64, marginBottom: 12 }}>✅</div>
+            <div style={{ fontSize: 64, marginBottom: 12 }}><Icon name="checkCircle" size={58} style={{ margin: '0 auto' }} /></div>
             <div style={{ fontSize: 22, fontWeight: 800, color: '#22c55e' }}>Payment approved</div>
           </div>
         )}
@@ -3811,7 +3813,7 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCred
         {/* Card declined / error */}
         {(cardState === 'error' || cardState === 'declined') && (
           <div style={{ textAlign: 'center', maxWidth: 400 }}>
-            <div style={{ fontSize: 48, marginBottom: 12 }}>{cardState === 'declined' ? '❌' : '⚠️'}</div>
+            <div style={{ fontSize: 48, marginBottom: 12 }}><Icon name={cardState === 'declined' ? 'xCircle' : 'warn'} size={44} style={{ margin: '0 auto' }} /></div>
             <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--kFg)', marginBottom: 8 }}>
               {cardState === 'declined' ? 'Card declined' : 'Payment error'}
             </div>
@@ -3825,7 +3827,7 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCred
         {/* Fully paid by loyalty/gift card — no card needed */}
         {fullyPaid && (
           <div style={{ textAlign: 'center' }}>
-            <div style={{ fontSize: 64, marginBottom: 12 }}>🎉</div>
+            <div style={{ fontSize: 64, marginBottom: 12 }}><Icon name="party" size={58} style={{ margin: '0 auto' }} /></div>
             <div style={{ fontSize: 20, fontWeight: 800, color: '#22c55e', marginBottom: 8 }}>Fully covered!</div>
             <div style={{ fontSize: 14, color: 'var(--kFgMuted)' }}>No card payment needed</div>
           </div>
@@ -3887,7 +3889,7 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
       // v5.5.885: earned stamp-card rewards first — a completed card is already paid for.
       ...(verifiedLoyalty.loyalty?.stamp_rewards || []).map(sr => ({
         id: `stamp:${sr.program_id}`, label: sr.name, description: 'Stamp card reward',
-        icon: '🎟️', pointsCost: 0, type: sr.reward_type, value: sr.reward_config || {},
+        icon: 'ticket', pointsCost: 0, type: sr.reward_type, value: sr.reward_config || {},
         stamp: true, stampProgramId: sr.program_id, available: sr.available,
       })),
       ...(verifiedLoyalty.loyalty?.rewards_available || []).map(r => ({
@@ -3951,7 +3953,7 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
             // v5.5.885: earned stamp-card rewards first — a completed card is already paid for.
             ...(data.loyalty?.stamp_rewards || []).map(sr => ({
               id: `stamp:${sr.program_id}`, label: sr.name, description: 'Stamp card reward',
-              icon: '🎟️', pointsCost: 0, type: sr.reward_type, value: sr.reward_config || {},
+              icon: 'ticket', pointsCost: 0, type: sr.reward_type, value: sr.reward_config || {},
               stamp: true, stampProgramId: sr.program_id, available: sr.available,
             })),
             ...(data.loyalty?.rewards_available || []).map(r => ({
@@ -4143,7 +4145,7 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
             marginTop: 'clamp(24px, 3.4vw, 40px)',
             marginBottom: 'clamp(24px, 3vw, 36px)',
           }}>
-            <div style={{ fontSize: 'clamp(36px, 4.4vw, 52px)', marginBottom: 10 }}>⭐</div>
+            <div style={{ fontSize: 'clamp(36px, 4.4vw, 52px)', marginBottom: 10 }}><Icon name="star" size="1em" style={{ margin: '0 auto' }} /></div>
             <div style={{
               fontSize: 'clamp(24px, 3.2vw, 34px)',
               fontWeight: 800,
@@ -4183,7 +4185,8 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
                 fontSize: 'clamp(24px, 3vw, 32px)',
                 flexShrink: 0,
                 boxShadow: '0 4px 12px ' + brandColor + '44',
-              }}>📲</div>
+                color: '#fff',
+              }}><Icon name="phone" size="1em" /></div>
               <div style={{ flex: 1 }}>
                 <div style={{
                   fontSize: 'clamp(18px, 2.4vw, 24px)',
@@ -4233,7 +4236,8 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 fontSize: 'clamp(24px, 3vw, 32px)',
                 flexShrink: 0,
-              }}>🍽️</div>
+                color: 'var(--kFg)',
+              }}><Icon name="utensils" size="1em" /></div>
               <div style={{ flex: 1 }}>
                 <div style={{
                   fontSize: 'clamp(18px, 2.4vw, 24px)',
@@ -4266,7 +4270,7 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
           marginBottom: 'clamp(6px, 0.8vw, 10px)',
         }}>
           <div style={{ fontSize: 'clamp(28px, 3.6vw, 38px)', marginBottom: 6 }}>
-            {showWelcome ? '👋' : otpStep === 'guest' ? '📝' : otpStep === 'code' || otpStep === 'verifying' ? '📱' : '📲'}
+            <Icon name={showWelcome ? 'wave' : otpStep === 'guest' ? 'note' : 'phone'} size="1em" style={{ margin: '0 auto' }} />
           </div>
           <div style={{
             fontSize: 'clamp(22px, 3vw, 30px)',
@@ -4428,11 +4432,11 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
               gap: 8,
               flexWrap: 'wrap',
             }}>
-              <span style={{ fontSize: 'clamp(18px, 2.2vw, 24px)' }}>⭐</span>
+              <span style={{ fontSize: 'clamp(18px, 2.2vw, 24px)', display: 'flex' }}><Icon name="star" size="1em" /></span>
               <span>{customerLookup.credit || 0} loyalty points</span>
               {customerLookup.tier && (
-                <span style={{ color: customerLookup.tier.color || brandColor, fontWeight: 800 }}>
-                  {customerLookup.tier.icon || ''} {customerLookup.tier.name}
+                <span style={{ color: customerLookup.tier.color || brandColor, fontWeight: 800, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  <EmojiIcon value={customerLookup.tier.icon} size="1em" />{customerLookup.tier.name}
                 </span>
               )}
             </div>
@@ -4495,8 +4499,9 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
                         justifyContent: 'center',
                         fontSize: 'clamp(14px, 1.6vw, 18px)',
                         flexShrink: 0,
+                        color: brandColor,
                       }}>
-                        {r.icon || '🎁'}
+                        <EmojiIcon value={r.icon} fallback="gift" size="1em" />
                       </div>
                       <div style={{ flex: 1, textAlign: 'left' }}>
                         <div style={{ fontSize: 'clamp(13px, 1.5vw, 16px)', fontWeight: 700, color: 'var(--kFg)' }}>{r.label}</div>
@@ -4578,7 +4583,7 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
                         border: '1.5px solid ' + brandColor + '33',
                       }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                          <span style={{ fontSize: 'clamp(16px, 2vw, 22px)' }}>{sc.icon || '☕'}</span>
+                          <span style={{ fontSize: 'clamp(16px, 2vw, 22px)', display: 'flex' }}><EmojiIcon value={sc.icon} fallback="cup" size="1em" /></span>
                           <div style={{ flex: 1 }}>
                             <div style={{ fontSize: 'clamp(13px, 1.5vw, 16px)', fontWeight: 700, color: 'var(--kFg)' }}>{sc.name}</div>
                             <div style={{ fontSize: 'clamp(11px, 1.2vw, 13px)', color: 'var(--kFgMuted)', marginTop: 1 }}>
@@ -4631,7 +4636,7 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
                               color: i < sc.stamps_collected ? brandColor : 'var(--kFgFaint, #555)',
                               fontWeight: 700,
                             }}>
-                              {i < sc.stamps_collected ? (sc.icon || '☕') : (i + 1)}
+                              {i < sc.stamps_collected ? <EmojiIcon value={sc.icon} fallback="cup" size="1em" /> : (i + 1)}
                             </div>
                           ))}
                           {/* Reward slot */}
@@ -4643,7 +4648,8 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
                             background: brandColor + '10',
                             border: '2px solid ' + brandColor + '50',
                             fontSize: 'clamp(10px, 1.2vw, 14px)',
-                          }}>🎁</div>
+                            color: brandColor,
+                          }}><Icon name="gift" size="1em" /></div>
                         </div>
                         {/* Reward description */}
                         {sc.reward_description && (
@@ -4658,7 +4664,7 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
                             color: 'var(--kFgMuted)',
                             display: 'flex', alignItems: 'center', gap: 6,
                           }}>
-                            <span>🎁</span> Reward: {sc.reward_description}
+                            <Icon name="gift" size="1em" /> Reward: {sc.reward_description}
                           </div>
                         )}
                       </div>
@@ -4696,7 +4702,8 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
                         display: 'flex', alignItems: 'center', justifyContent: 'center',
                         fontSize: 'clamp(14px, 1.6vw, 18px)',
                         flexShrink: 0,
-                      }}>💳</div>
+                        color: brandColor,
+                      }}><Icon name="card" size="1em" /></div>
                       <div style={{ flex: 1 }}>
                         <div style={{ fontSize: 'clamp(13px, 1.5vw, 16px)', fontWeight: 700, color: 'var(--kFg)' }}>
                           Gift Card {gc.last4 ? `···${gc.last4}` : ''}
@@ -4935,7 +4942,7 @@ function ScreenDone({ brandColor, customerName, customerPhone, orderNumber, orde
         </div>
         {avgWaitMinutes ? <div style={{ fontSize: 13, color: Wm, marginBottom: 40 }}>Average wait: {avgWaitMinutes} mins</div> : null}
         {phoneMasked && (
-          <div style={{ fontSize: 13, color: Wm, marginBottom: 30 }}>📱 Receipt sent to {phoneMasked}</div>
+          <div style={{ fontSize: 13, color: Wm, marginBottom: 30, display: 'flex', alignItems: 'center', gap: 6 }}><Icon name="phone" size={15} />Receipt sent to {phoneMasked}</div>
         )}
         <button onClick={onDone} style={{ background: 'transparent', border: '1px solid ' + Wf, color: Wm, padding: '10px 24px', borderRadius: 100, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' }}>Done</button>
       </div>
@@ -4989,23 +4996,23 @@ function ScreenHeader({ title, subtitle, onBack, onCancel, brandColor }) {
 // ============================================================
 function AllergenPickerOverlay({ brandColor, allergens, selected, onChange, onClose }) {
   const COMMON = [
-    { key: 'gluten', label: 'Gluten', icon: '🌾' },
-    { key: 'dairy', label: 'Dairy', icon: '🥛' },
-    { key: 'nuts', label: 'Nuts', icon: '🦜' },
-    { key: 'peanuts', label: 'Peanuts', icon: '🥜' },
-    { key: 'soy', label: 'Soy', icon: '🌱' },
-    { key: 'egg', label: 'Egg', icon: '🥚' },
-    { key: 'fish', label: 'Fish', icon: '🐟' },
-    { key: 'shellfish', label: 'Shellfish', icon: '🦐' },
-    { key: 'sesame', label: 'Sesame', icon: '🪴' },
-    { key: 'mustard', label: 'Mustard', icon: '🌶' },
-    { key: 'celery', label: 'Celery', icon: '🥬' },
-    { key: 'sulphites', label: 'Sulphites', icon: '🍷' },
+    { key: 'gluten', label: 'Gluten', icon: 'wheat' },
+    { key: 'dairy', label: 'Dairy', icon: 'milk' },
+    { key: 'nuts', label: 'Nuts', icon: 'nut' },
+    { key: 'peanuts', label: 'Peanuts', icon: 'nut' },
+    { key: 'soy', label: 'Soy', icon: 'sprout' },
+    { key: 'egg', label: 'Egg', icon: 'egg' },
+    { key: 'fish', label: 'Fish', icon: 'fish' },
+    { key: 'shellfish', label: 'Shellfish', icon: 'shrimp' },
+    { key: 'sesame', label: 'Sesame', icon: 'sprout' },
+    { key: 'mustard', label: 'Mustard', icon: 'fire' },
+    { key: 'celery', label: 'Celery', icon: 'salad' },
+    { key: 'sulphites', label: 'Sulphites', icon: 'wine' },
   ];
   const presentSet = new Set(allergens.map(a => String(a).toLowerCase()));
   const list = [
     ...COMMON.filter(a => presentSet.has(a.key) || presentSet.size === 0),
-    ...allergens.filter(a => !COMMON.find(c => c.key === String(a).toLowerCase())).map(a => ({ key: String(a).toLowerCase(), label: String(a), icon: '⚠' })),
+    ...allergens.filter(a => !COMMON.find(c => c.key === String(a).toLowerCase())).map(a => ({ key: String(a).toLowerCase(), label: String(a), icon: 'warn' })),
   ];
   const finalList = list.length > 0 ? list : COMMON;
   const toggle = (key) => {
@@ -5028,7 +5035,7 @@ function AllergenPickerOverlay({ brandColor, allergens, selected, onChange, onCl
                 border: '2px solid ' + (isSel ? '#ef4444' : 'transparent'),
                 borderRadius: 14, cursor: 'pointer', color: 'var(--kFg)', fontFamily: 'inherit', textAlign: 'left',
               }}>
-                <span style={{ fontSize: 22 }}>{a.icon}</span>
+                <Icon name={a.icon} size={22} />
                 <span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>{a.label}</span>
                 {isSel && <span style={{ fontSize: 12, fontWeight: 700, color: '#ef4444' }}>AVOID</span>}
               </button>

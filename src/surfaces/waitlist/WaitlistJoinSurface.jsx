@@ -26,6 +26,7 @@ import {
   waitlistSelfUpdate,
 } from '../../lib/waitlist/waitlistData';
 import { normalisePhone } from '../../lib/customerLookup';
+import { Icon } from '../../components/ServOSIcons';
 
 const FONT = '-apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif';
 const FALLBACK_ACCENT = '#15C36B';
@@ -189,13 +190,13 @@ export default function WaitlistJoinSurface({ location, view = 'join' }) {
   // ── boot states ───────────────────────────────────────────────────────────────
   if (boot === 'loading') {
     return <Card><div style={{ textAlign: 'center', padding: '28px 0' }}>
-      <div style={{ fontSize: 40, marginBottom: 8 }}>⏳</div>
+      <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'center' }}><Icon name="clock" size={40} /></div>
       <p style={S.sub}>One moment…</p>
     </div></Card>;
   }
   if (boot === 'closed') {
     return <Card><div style={{ textAlign: 'center', padding: '14px 0' }}>
-      <div style={{ fontSize: 44, marginBottom: 8 }}>📋</div>
+      <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'center' }}><Icon name="clipboard" size={44} /></div>
       <h1 style={S.h1}>Waitlist isn’t open right now</h1>
       <p style={S.sub}>Please see the host — they’ll get you on the list.</p>
     </div></Card>;
@@ -205,7 +206,7 @@ export default function WaitlistJoinSurface({ location, view = 'join' }) {
   if (mode === 'status') {
     if (!token || statusErr === 'not_found') {
       return <Card><div style={{ textAlign: 'center', padding: '14px 0' }}>
-        <div style={{ fontSize: 44, marginBottom: 8 }}>🔎</div>
+        <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'center' }}><Icon name="search" size={44} /></div>
         <h1 style={S.h1}>We couldn’t find your place</h1>
         <p style={S.sub}>This link may have expired. Please see the host to re-join.</p>
         <button onClick={() => { setMode('join'); setToken(null); }} style={{ ...S.btnOutline, marginTop: 14, color: accent, borderColor: `${accent}66` }}>Join the waitlist</button>
@@ -221,7 +222,7 @@ export default function WaitlistJoinSurface({ location, view = 'join' }) {
       <Card>
         {!status ? (
           <div style={{ textAlign: 'center', padding: '24px 0' }}>
-            <div style={{ fontSize: 40, marginBottom: 8 }}>⏳</div>
+            <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'center' }}><Icon name="clock" size={40} /></div>
             <p style={S.sub}>Checking your place in the queue…</p>
           </div>
         ) : (
@@ -229,19 +230,19 @@ export default function WaitlistJoinSurface({ location, view = 'join' }) {
             {/* Headline status banner */}
             {ready ? (
               <div style={{ ...S.banner, background: `${accent}18`, border: `1.5px solid ${accent}`, textAlign: 'center' }}>
-                <div style={{ fontSize: 46, marginBottom: 6 }}>🎉</div>
+                <div style={{ marginBottom: 6, display: 'flex', justifyContent: 'center' }}><Icon name="party" size={46} /></div>
                 <div style={{ fontSize: 22, fontWeight: 900, color: '#1f1f24', letterSpacing: '-0.02em' }}>Your table is ready!</div>
                 <div style={{ fontSize: 13.5, color: '#56565e', marginTop: 6 }}>Come and see the host now{status.partyName ? `, ${status.partyName}` : ''}.</div>
               </div>
             ) : cancelled ? (
               <div style={{ ...S.banner, background: '#fef2f2', border: '1.5px solid #fecaca', textAlign: 'center' }}>
-                <div style={{ fontSize: 42, marginBottom: 6 }}>🚫</div>
+                <div style={{ marginBottom: 6, display: 'flex', justifyContent: 'center' }}><Icon name="ban" size={42} /></div>
                 <div style={{ fontSize: 20, fontWeight: 900, color: '#b91c1c' }}>Cancelled</div>
                 <div style={{ fontSize: 13, color: '#9a4444', marginTop: 6 }}>You’re no longer on the list. See the host if you’d like to re-join.</div>
               </div>
             ) : seated ? (
               <div style={{ ...S.banner, background: `${accent}14`, border: `1.5px solid ${accent}55`, textAlign: 'center' }}>
-                <div style={{ fontSize: 42, marginBottom: 6 }}>✅</div>
+                <div style={{ marginBottom: 6, display: 'flex', justifyContent: 'center' }}><Icon name="checkCircle" size={42} /></div>
                 <div style={{ fontSize: 20, fontWeight: 900, color: '#1f1f24' }}>You’re seated</div>
                 <div style={{ fontSize: 13, color: '#56565e', marginTop: 6 }}>Enjoy your visit!</div>
               </div>

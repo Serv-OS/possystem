@@ -12,12 +12,13 @@ import { money } from '../../lib/currency';
 import { trackDelivery } from '../../lib/delivery/dispatch';
 import { courierPhase, courierLegs, courierLateness } from '../../lib/delivery/courierTimes';
 import { collectionLabel } from '../../lib/collectionLabel';
+import { Icon } from '../../components/ServOSIcons';
 
 const STEPS = [
-  { key: 'received', label: 'Received',  icon: '📥', desc: 'We\'ve got your order.' },
-  { key: 'prep',     label: 'Preparing', icon: '👨‍🍳', desc: 'The kitchen is on it.' },
-  { key: 'ready',    label: 'Ready',     icon: '🎁', desc: 'Ready when you are.' },
-  { key: 'collected',label: 'Collected', icon: '✅', desc: 'Enjoy!' },
+  { key: 'received', label: 'Received',  icon: 'inbox', desc: 'We\'ve got your order.' },
+  { key: 'prep',     label: 'Preparing', icon: 'chef', desc: 'The kitchen is on it.' },
+  { key: 'ready',    label: 'Ready',     icon: 'gift', desc: 'Ready when you are.' },
+  { key: 'collected',label: 'Collected', icon: 'checkCircle', desc: 'Enjoy!' },
 ];
 
 export default function OrderTracker({ orderRef, locationId, theme, onClose, tz = 'Europe/London', trackKey = null, counter = false }) {
@@ -119,11 +120,11 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose, tz 
   const isDelivery = orderType === 'delivery' || deliveryMode != null;
   const fmtEta = (iso) => { if (!iso) return null; const d = new Date(iso); return isNaN(d.getTime()) ? null : d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }); };
   const COURIER_LABEL = {
-    scheduled: ['Scheduled delivery', '🗓'],
-    dispatching: ['Finding a courier…', '🔍'], pending: ['Finding a courier…', '🔍'],
-    pickup: ['Courier heading to the kitchen', '🛵'], dropoff: ['On its way to you', '🛵'],
-    delivered: ['Delivered', '✅'], canceled: ['Delivery canceled', '⚠️'],
-    returned: ['Returned to venue', '↩️'], failed: ['Arranging your courier', '⏳'],
+    scheduled: ['Scheduled delivery', 'calendar'],
+    dispatching: ['Finding a courier…', 'search'], pending: ['Finding a courier…', 'search'],
+    pickup: ['Courier heading to the kitchen', 'scooter'], dropoff: ['On its way to you', 'scooter'],
+    delivered: ['Delivered', 'checkCircle'], canceled: ['Delivery canceled', 'warn'],
+    returned: ['Returned to venue', 'back'], failed: ['Arranging your courier', 'clock'],
   };
   const cardBdr = theme.isLight ? '#ececef' : '#2a2a30';
   const muted   = theme.isLight ? '#6b6b70' : '#a0a0a8';
@@ -152,7 +153,7 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose, tz 
           </div>
         </div>
         <div style={{ textAlign: 'center', marginBottom: 24 }}>
-          <div style={{ fontSize: 40, marginBottom: 6 }}>{cancelled ? '⚠️' : '✅'}</div>
+          <div style={{ marginBottom: 6, display: 'flex', justifyContent: 'center' }}><Icon name={cancelled ? 'warn' : 'checkCircle'} size={40} /></div>
           <div style={{ fontSize: 26, fontWeight: 900, letterSpacing: '-0.025em', color: theme.fg }}>{cancelled ? 'Order cancelled' : 'Order confirmed'}</div>
           <div style={{ fontSize: 13, color: muted, marginTop: 6 }}>
             ref <span style={{ fontFamily: 'monospace', fontWeight: 700, color: theme.fg }}>{orderRef}</span>
@@ -199,7 +200,7 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose, tz 
                   fontSize: 20, flexShrink: 0, position: 'relative',
                   animation: isCurrent ? 'pulse 1.6s ease-in-out infinite' : undefined,
                 }}>
-                  {step.icon}
+                  <Icon name={step.icon} size={20} />
                 </div>
                 <div style={{ flex: 1, paddingTop: 8 }}>
                   <div style={{ fontSize: 15, fontWeight: 800, color: reached ? theme.fg : muted }}>
@@ -220,7 +221,7 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose, tz 
           const phase = courierPhase(courier);
           const badStateEarly = phase === 'terminal_bad';
           // Title must match the hero — a 'failed'/canceled state reads as a problem, not "arranging".
-          const [clabel, cicon] = badStateEarly ? ['Delivery problem', '⚠️'] : (COURIER_LABEL[courier?.status] || ['Preparing your delivery', '🛵']);
+          const [clabel, cicon] = badStateEarly ? ['Delivery problem', 'warn'] : (COURIER_LABEL[courier?.status] || ['Preparing your delivery', 'scooter']);
           const late = courierLateness(courier);
           const dropTxt = fmtEta(courier?.eta);
           const pickedTxt = fmtEta(courier?.pickedAt);
@@ -228,7 +229,7 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose, tz 
           const badState = phase === 'terminal_bad';
           // One honest "arrival promise" hero: window/assigning → firm ETA → running-behind → delivered.
           let hero;
-          if (phase === 'done') hero = <>Delivered{deliveredTxt ? <> at <b style={{ color: theme.fg }}>{deliveredTxt}</b></> : ''} — enjoy! 🎉</>;
+          if (phase === 'done') hero = <>Delivered{deliveredTxt ? <> at <b style={{ color: theme.fg }}>{deliveredTxt}</b></> : ''} — enjoy!<Icon name="party" size={14} style={{ display: 'inline-block', verticalAlign: '-0.15em', marginLeft: 6 }} /></>;
           else if (badState) hero = <>There’s a problem with this delivery — please contact us and we’ll sort it.</>;
           else if (phase === 'scheduled') hero = <>Scheduled for later{dropTxt ? <> — arriving around <b style={{ color: theme.fg }}>{dropTxt}</b></> : ''}. Your courier is booked; we’ll confirm closer to the time.</>;
           else if (late.known && !late.onTime) hero = <span style={{ color: '#b45309', fontWeight: 700 }}>Running a little behind — your driver is on the way.</span>;
@@ -237,7 +238,7 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose, tz 
           return (
             <div style={{ background: inputBg, border: `1px solid ${cardBdr}`, borderRadius: 16, padding: 18, marginBottom: 16 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <div style={{ fontSize: 22 }}>{cicon}</div>
+                <Icon name={cicon} size={22} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 15, fontWeight: 800, color: theme.fg }}>{clabel}</div>
                   <div style={{ fontSize: 12, color: muted, marginTop: 2 }}>{hero}</div>
@@ -254,7 +255,7 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose, tz 
               )}
               {/* Call the driver (real browser → tel: works). */}
               {courier?.courierPhone && !badState && phase !== 'done' && (
-                <a href={`tel:${courier.courierPhone}`} style={{ display: 'inline-block', marginTop: 10, fontSize: 13, fontWeight: 800, color: theme.accent, textDecoration: 'none' }}>📞 Call your driver</a>
+                <a href={`tel:${courier.courierPhone}`} style={{ display: 'inline-block', marginTop: 10, fontSize: 13, fontWeight: 800, color: theme.accent, textDecoration: 'none' }}><Icon name="phoneCall" size={14} style={{ display: 'inline-block', verticalAlign: '-0.15em', marginRight: 6 }} />Call your driver</a>
               )}
               {/* Live tracking map — Stuart's shareable tracking page embedded (browser only). */}
               {courier?.trackingUrl && !badState && (
@@ -312,13 +313,13 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose, tz 
                     it lands, so it must not be labelled as an arrival. */}
                 {(() => { const when = collectionLabel(order.customer?.collection_at || order.collection_time, tz); return order.is_asap
                   ? (isDelivery
-                      ? <>⚡ <b>ASAP</b> — leaving the kitchen around <b>{when}</b>. Your courier is arranged once it’s ready.</>
+                      ? <><Icon name="bolt" size={14} style={{ display: 'inline-block', verticalAlign: '-0.15em', marginRight: 6 }} /><b>ASAP</b> — leaving the kitchen around <b>{when}</b>. Your courier is arranged once it’s ready.</>
                       : counterCollect
-                        ? <>⚡ <b>ASAP</b> · ready to collect at the counter around <b>{when}</b></>
-                        : <>⚡ <b>ASAP</b> — ready for collection around <b>{when}</b></>)
+                        ? <><Icon name="bolt" size={14} style={{ display: 'inline-block', verticalAlign: '-0.15em', marginRight: 6 }} /><b>ASAP</b> · ready to collect at the counter around <b>{when}</b></>
+                        : <><Icon name="bolt" size={14} style={{ display: 'inline-block', verticalAlign: '-0.15em', marginRight: 6 }} /><b>ASAP</b> — ready for collection around <b>{when}</b></>)
                   : (isDelivery
-                      ? <>🗓 Leaving the kitchen <b>{when}</b></>
-                      : <>🗓 Collection <b>{when}</b></>); })()}
+                      ? <><Icon name="calendar" size={14} style={{ display: 'inline-block', verticalAlign: '-0.15em', marginRight: 6 }} />Leaving the kitchen <b>{when}</b></>
+                      : <><Icon name="calendar" size={14} style={{ display: 'inline-block', verticalAlign: '-0.15em', marginRight: 6 }} />Collection <b>{when}</b></>); })()}
               </div>
             )}
           </div>

@@ -65,12 +65,12 @@ export function tipRuleFromCatering(cfg) {
 
 /**
  * Chip list for the UI. Always starts with "No tip"; ends with custom if allowed.
- * @returns {{ key:string, label:string }[]}
+ * @returns {{ key:string, label:string, icon?:string }[]}
  */
 export function tipChips(rule) {
   const out = [{ key: '0', label: 'No tip' }];
   rule.pct.forEach(p => out.push({ key: String(p), label: `${p}%` }));
-  if (rule.custom) out.push({ key: 'custom', label: '✏️' });
+  if (rule.custom) out.push({ key: 'custom', label: 'Other', icon: 'pencil' });
   return out;
 }
 
